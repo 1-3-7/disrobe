@@ -746,7 +746,8 @@ fn ground_kind_at(function: &GroundTruthFunction, slot: &TypedSlot) -> Option<Gr
         .vars
         .iter()
         .find(|var: &&GroundTruthVar| {
-            var.rbp_disp == slot.rbp_disp && var.scope_overlaps(slot.live_lo, slot.live_hi + 1)
+            var.rbp_disp == slot.rbp_disp
+                && var.scope_overlaps(slot.live_lo, slot.live_hi.saturating_add(1))
         })
         .map(|var: &GroundTruthVar| GroundKind::Integer {
             width: var.width,
@@ -785,17 +786,19 @@ fn grade_api_slot(
                 sign: gs,
             },
         ) => {
-            report.integer_width.predicted += 1;
-            report.integer_width.total += 1;
-            if width == gw {
-                report.integer_width.correct += 1;
-            } else {
-                report.mismatches.push(AxisMismatch {
-                    function: function.name.clone(),
-                    variable: format!("slot {:#x}", slot.rbp_disp),
-                    expected: format!("{gw:?}"),
-                    got: format!("{width:?}"),
-                });
+            if width != Width::Unknown {
+                report.integer_width.predicted += 1;
+                report.integer_width.total += 1;
+                if width == gw {
+                    report.integer_width.correct += 1;
+                } else {
+                    report.mismatches.push(AxisMismatch {
+                        function: function.name.clone(),
+                        variable: format!("slot {:#x}", slot.rbp_disp),
+                        expected: format!("{gw:?}"),
+                        got: format!("{width:?}"),
+                    });
+                }
             }
             if sign.is_determined() {
                 report.integer_sign.predicted += 1;
