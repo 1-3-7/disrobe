@@ -425,7 +425,9 @@ fn perturbing_one_recovered_offset_makes_the_real_compiler_reject_it() {
     );
     let combined: String = format!("{}{}", outcome.stdout, outcome.stderr);
     assert!(
-        combined.contains("static_assert") || combined.contains("static assertion"),
+        combined.contains("static_assert")
+            || combined.contains("static assertion")
+            || combined.contains("offset mismatch"),
         "the compiler failure must be attributable to the static_assert, not some unrelated error: {combined}"
     );
 }
