@@ -76,9 +76,16 @@ pub struct GroundTruthAggregate {
     pub is_union: bool,
     pub type_name: String,
     pub fields: Vec<GroundTruthField>,
+    pub scope_lo: u64,
+    pub scope_hi: u64,
 }
 
 impl GroundTruthAggregate {
+    #[must_use]
+    pub const fn scope_overlaps(&self, lo: u64, hi: u64) -> bool {
+        self.scope_lo < hi && lo < self.scope_hi
+    }
+
     #[must_use]
     pub fn field_slots(&self) -> std::collections::BTreeSet<(i64, Width)> {
         self.fields
@@ -328,7 +335,9 @@ fn collect_unit(
                 read_variable(dwarf, unit, entry, ctx.frame_offset, scope_lo, scope_hi)
             {
                 ctx.function.vars.push(var);
-            } else if let Some(aggregate) = read_aggregate(dwarf, unit, entry, ctx.frame_offset) {
+            } else if let Some(aggregate) =
+                read_aggregate(dwarf, unit, entry, ctx.frame_offset, scope_lo, scope_hi)
+            {
                 ctx.function.aggregates.push(aggregate);
             }
         }
@@ -555,6 +564,8 @@ fn read_aggregate(
     unit: &gimli::Unit<Slice<'_>>,
     entry: &gimli::DebuggingInformationEntry<'_, '_, Slice<'_>>,
     frame_offset: i64,
+    scope_lo: u64,
+    scope_hi: u64,
 ) -> Option<GroundTruthAggregate> {
     let fbreg: i64 = fbreg_offset(unit, entry)?;
     let rbp_disp: i64 = frame_offset.checked_add(fbreg)?;
@@ -616,6 +627,8 @@ fn read_aggregate(
         is_union,
         type_name,
         fields,
+        scope_lo,
+        scope_hi,
     })
 }
 
