@@ -590,13 +590,18 @@ fn build_preds(cfg: &FunctionCfg) -> Vec<Vec<BlockId>> {
     preds
 }
 
-fn block_for_offset(blocks: &[CfgBlock], offset: usize) -> Option<BlockId> {
-    for b in blocks {
-        if offset >= b.start_offset && offset <= b.end_offset {
-            return Some(b.id);
+fn block_for_offset(blocks: &[CfgBlock], offset: usize, cursor: &mut usize) -> Option<BlockId> {
+    let last: usize = blocks.len().checked_sub(1)?;
+    while *cursor < last {
+        let Some(end): Option<usize> = blocks.get(*cursor).map(|b| b.end_offset) else {
+            break;
+        };
+        if offset <= end {
+            break;
         }
+        *cursor += 1;
     }
-    blocks.last().map(|b| b.id)
+    blocks.get(*cursor).map(|b| b.id)
 }
 
 type CallSig = (SmallVec<[ValType; 4]>, SmallVec<[ValType; 1]>);
@@ -716,11 +721,12 @@ pub fn build_ssa_with_calls(
 
     let mut current_block: BlockId = cfg.entry;
     let mut produced_terminator: bool = false;
+    let mut block_cursor: usize = 0;
 
     for op_result in ops_reader.into_iter_with_offsets() {
         let (op, offset): (Operator<'_>, usize) =
             op_result.map_err(|e| Error::Parse(e.to_string()))?;
-        if let Some(b) = block_for_offset(&cfg.blocks, offset) {
+        if let Some(b) = block_for_offset(&cfg.blocks, offset, &mut block_cursor) {
             if b != current_block {
                 if !produced_terminator {
                     if let Some(prev) = builder.blocks.get_mut(current_block.0 as usize) {
@@ -1440,6 +1446,104 @@ mod tests {
         buf.push(body_len);
         buf.extend_from_slice(body_bytes);
         buf
+    }
+
+    fn linear_block_for_offset(blocks: &[CfgBlock], offset: usize) -> Option<BlockId> {
+        for b in blocks {
+            if offset >= b.start_offset && offset <= b.end_offset {
+                return Some(b.id);
+            }
+        }
+        blocks.last().map(|b| b.id)
+    }
+
+    fn contiguous_blocks(count: u32, span: usize) -> Vec<CfgBlock> {
+        let mut blocks: Vec<CfgBlock> = Vec::with_capacity(count as usize);
+        let mut start: usize = 0;
+        for i in 0..count {
+            let end: usize = start + span;
+            blocks.push(CfgBlock {
+                id: BlockId(i),
+                start_offset: start,
+                end_offset: end,
+                ..Default::default()
+            });
+            start = end;
+        }
+        blocks
+    }
+
+    #[test]
+    fn cursor_block_resolution_matches_linear_scan_over_monotonic_offsets() {
+        let blocks: Vec<CfgBlock> = contiguous_blocks(400, 3);
+        let top: usize = blocks.last().map_or(0, |b| b.end_offset);
+        let mut cursor: usize = 0;
+        for offset in 0..=top {
+            let expected: Option<BlockId> = linear_block_for_offset(&blocks, offset);
+            let got: Option<BlockId> = block_for_offset(&blocks, offset, &mut cursor);
+            assert_eq!(got, expected, "resolution diverged at offset {offset}");
+        }
+        let beyond: usize = top + 64;
+        assert_eq!(
+            block_for_offset(&blocks, beyond, &mut cursor),
+            linear_block_for_offset(&blocks, beyond),
+            "resolution diverged past the final block"
+        );
+    }
+
+    #[test]
+    fn cursor_block_resolution_handles_empty_and_single() {
+        let mut cursor: usize = 0;
+        assert_eq!(block_for_offset(&[], 0, &mut cursor), None);
+        let single: Vec<CfgBlock> = contiguous_blocks(1, 5);
+        let mut c2: usize = 0;
+        assert_eq!(block_for_offset(&single, 0, &mut c2), Some(BlockId(0)));
+        assert_eq!(block_for_offset(&single, 3, &mut c2), Some(BlockId(0)));
+        assert_eq!(block_for_offset(&single, 999, &mut c2), Some(BlockId(0)));
+    }
+
+    fn many_op_block_module(blocks: usize, ops_per_block: usize) -> Vec<u8> {
+        let mut body: String = String::with_capacity(blocks * (ops_per_block + 1) * 18);
+        for _ in 0..blocks {
+            for _ in 0..ops_per_block {
+                body.push_str("i32.const 0 drop ");
+            }
+            body.push_str("i32.const 0 br_if 0 ");
+        }
+        let source: String = format!("(module (func {body}))");
+        wat::parse_str(&source).expect("many-op module parses")
+    }
+
+    #[test]
+    fn build_ssa_scales_for_many_ops_and_blocks() {
+        let bytes: Vec<u8> = many_op_block_module(3000, 30);
+        let start: std::time::Instant = std::time::Instant::now();
+        let mut found: bool = false;
+        for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
+            if let Ok(wasmparser::Payload::CodeSectionEntry(body)) = payload {
+                let cfg: FunctionCfg = crate::cfg::build_function_cfg(&body).expect("cfg build");
+                let ssa: SsaFunction = build_ssa(&cfg, &body, &[]).expect("ssa build");
+                assert_eq!(
+                    ssa.blocks.len(),
+                    cfg.blocks.len(),
+                    "one ssa block per cfg block"
+                );
+                assert!(
+                    matches!(
+                        ssa.blocks.last().map(|b| &b.terminator),
+                        Some(SsaTerm::Return(_) | SsaTerm::Fallthrough(_) | SsaTerm::Unreachable)
+                    ),
+                    "final block must carry a terminator"
+                );
+                found = true;
+            }
+        }
+        assert!(found, "module must contain a code body");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(20),
+            "ssa build must scale, took {:?}",
+            start.elapsed()
+        );
     }
 
     #[test]
