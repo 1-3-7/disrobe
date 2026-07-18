@@ -48,6 +48,8 @@ const MAX_ZDEBUG_INITIAL_CAPACITY: usize = 8 * 1024 * 1024;
 const ZDEBUG_INITIAL_CAPACITY_FACTOR: usize = 16;
 const MAX_DWARF_FUNCS: usize = 1 << 18;
 const MAX_DWARF_TYPE_NAMES: usize = 1 << 16;
+const MAX_DWARF_NAMES_PER_FUNC: usize = 1 << 10;
+const MAX_DWARF_NAMES_TOTAL: usize = MAX_DWARF_FUNCS * MAX_DWARF_NAMES_PER_FUNC;
 
 #[must_use]
 pub fn recover_dwarf(image: &GoImage<'_>) -> DwarfReport {
@@ -174,8 +176,12 @@ fn collect_unit(
     let mut current: Option<DwarfFunction> = None;
     let mut func_depth: isize = isize::MIN;
     let mut depth: isize = 0;
+    let mut total_names: usize = 0;
 
     while let Ok(Some((delta, entry))) = entries.next_dfs() {
+        if total_names >= MAX_DWARF_NAMES_TOTAL {
+            break;
+        }
         depth += delta;
         if current.is_some() && depth <= func_depth {
             if let Some(done) = current.take() {
@@ -205,25 +211,36 @@ fn collect_unit(
         {
             match tag {
                 gimli::DW_TAG_formal_parameter => {
-                    if let Some(name) = attr_string(dwarf, unit, entry, gimli::DW_AT_name) {
+                    if func.params.len() < MAX_DWARF_NAMES_PER_FUNC
+                        && let Some(name) = attr_string(dwarf, unit, entry, gimli::DW_AT_name)
+                    {
                         func.params.push(name);
+                        total_names = total_names.saturating_add(1);
                     }
                 }
                 gimli::DW_TAG_variable => {
-                    if let Some(name) = attr_string(dwarf, unit, entry, gimli::DW_AT_name) {
+                    if func.locals.len() < MAX_DWARF_NAMES_PER_FUNC
+                        && let Some(name) = attr_string(dwarf, unit, entry, gimli::DW_AT_name)
+                    {
                         func.locals.push(name);
+                        total_names = total_names.saturating_add(1);
                     }
                 }
                 gimli::DW_TAG_template_type_parameter | gimli::DW_TAG_template_value_parameter => {
-                    if let Some(name) = attr_string(dwarf, unit, entry, gimli::DW_AT_name) {
+                    if func.type_params.len() < MAX_DWARF_NAMES_PER_FUNC
+                        && let Some(name) = attr_string(dwarf, unit, entry, gimli::DW_AT_name)
+                    {
                         func.type_params.push(name);
+                        total_names = total_names.saturating_add(1);
                     }
                 }
                 gimli::DW_TAG_typedef => {
-                    if let Some(name) = attr_string(dwarf, unit, entry, gimli::DW_AT_name)
+                    if func.type_params.len() < MAX_DWARF_NAMES_PER_FUNC
+                        && let Some(name) = attr_string(dwarf, unit, entry, gimli::DW_AT_name)
                         && name.starts_with(".param")
                     {
                         func.type_params.push(name);
+                        total_names = total_names.saturating_add(1);
                     }
                 }
                 _ => {}
@@ -439,5 +456,110 @@ mod tests {
             decompress_zdebug(&framed).is_none(),
             "a huge declared length with tiny compressed data is malformed"
         );
+    }
+
+    fn build_dwarf_sections(
+        build: impl FnOnce(&mut gimli::write::Unit, gimli::write::UnitEntryId),
+    ) -> BTreeMap<String, Vec<u8>> {
+        use gimli::write::{Dwarf as WriteDwarf, EndianVec, LineProgram, Sections, Unit};
+        let encoding: gimli::Encoding = gimli::Encoding {
+            format: gimli::Format::Dwarf32,
+            version: 4,
+            address_size: 8,
+        };
+        let mut dwarf: WriteDwarf = WriteDwarf::new();
+        let unit_id: gimli::write::UnitId =
+            dwarf.units.add(Unit::new(encoding, LineProgram::none()));
+        let unit: &mut Unit = dwarf.units.get_mut(unit_id);
+        let root: gimli::write::UnitEntryId = unit.root();
+        build(unit, root);
+        let mut sections: Sections<EndianVec<gimli::RunTimeEndian>> =
+            Sections::new(EndianVec::new(gimli::RunTimeEndian::Little));
+        dwarf.write(&mut sections).expect("write dwarf");
+        let mut map: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        sections
+            .for_each(
+                |id: gimli::SectionId, w: &EndianVec<gimli::RunTimeEndian>| {
+                    if !w.slice().is_empty() {
+                        map.insert(id.name().to_owned(), w.slice().to_vec());
+                    }
+                    Ok::<(), std::convert::Infallible>(())
+                },
+            )
+            .expect("collect sections");
+        map
+    }
+
+    fn walk_from_sections(map: &BTreeMap<String, Vec<u8>>) -> DwarfReport {
+        let empty: Vec<u8> = Vec::new();
+        let load = |id: gimli::SectionId| -> Result<EndianSlice<'_, RunTimeEndian>, gimli::Error> {
+            let data: &[u8] = map.get(id.name()).unwrap_or(&empty);
+            Ok(EndianSlice::new(data, RunTimeEndian::Little))
+        };
+        let dwarf: Dwarf<EndianSlice<'_, RunTimeEndian>> =
+            Dwarf::load(load).expect("load assembled dwarf");
+        walk_dwarf(&dwarf, false)
+    }
+
+    fn set_name(unit: &mut gimli::write::Unit, id: gimli::write::UnitEntryId, name: &str) {
+        unit.get_mut(id).set(
+            gimli::DW_AT_name,
+            gimli::write::AttributeValue::String(name.as_bytes().to_vec()),
+        );
+    }
+
+    #[test]
+    fn subprogram_names_are_capped_against_a_hostile_child_count() {
+        let child_count: usize = MAX_DWARF_NAMES_PER_FUNC + 777;
+        let map: BTreeMap<String, Vec<u8>> = build_dwarf_sections(|unit, root| {
+            set_name(unit, root, "main.go");
+            let sub: gimli::write::UnitEntryId = unit.add(root, gimli::DW_TAG_subprogram);
+            set_name(unit, sub, "main.hostile");
+            for i in 0..child_count {
+                let p: gimli::write::UnitEntryId = unit.add(sub, gimli::DW_TAG_formal_parameter);
+                set_name(unit, p, &format!("p{i}"));
+            }
+        });
+        let report: DwarfReport = walk_from_sections(&map);
+        let func: &DwarfFunction = report
+            .functions
+            .iter()
+            .find(|f: &&DwarfFunction| f.name == "main.hostile")
+            .expect("the subprogram is recovered");
+        assert!(
+            child_count > MAX_DWARF_NAMES_PER_FUNC,
+            "the fixture must exceed the per-function cap to exercise it"
+        );
+        assert_eq!(
+            func.params.len(),
+            MAX_DWARF_NAMES_PER_FUNC,
+            "params must stay bounded no matter how many children a subprogram declares"
+        );
+    }
+
+    #[test]
+    fn subprogram_recovers_params_locals_and_type_params_under_cap() {
+        let map: BTreeMap<String, Vec<u8>> = build_dwarf_sections(|unit, root| {
+            set_name(unit, root, "main.go");
+            let sub: gimli::write::UnitEntryId = unit.add(root, gimli::DW_TAG_subprogram);
+            set_name(unit, sub, "main.Add");
+            for nm in ["lhs", "rhs"] {
+                let p: gimli::write::UnitEntryId = unit.add(sub, gimli::DW_TAG_formal_parameter);
+                set_name(unit, p, nm);
+            }
+            let v: gimli::write::UnitEntryId = unit.add(sub, gimli::DW_TAG_variable);
+            set_name(unit, v, "sum");
+            let t: gimli::write::UnitEntryId = unit.add(sub, gimli::DW_TAG_template_type_parameter);
+            set_name(unit, t, "T");
+        });
+        let report: DwarfReport = walk_from_sections(&map);
+        let func: &DwarfFunction = report
+            .functions
+            .iter()
+            .find(|f: &&DwarfFunction| f.name == "main.Add")
+            .expect("the subprogram is recovered");
+        assert_eq!(func.params, vec!["lhs".to_owned(), "rhs".to_owned()]);
+        assert_eq!(func.locals, vec!["sum".to_owned()]);
+        assert_eq!(func.type_params, vec!["T".to_owned()]);
     }
 }
