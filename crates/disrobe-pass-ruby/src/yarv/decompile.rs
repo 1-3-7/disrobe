@@ -1,3 +1,6 @@
+use std::collections::BTreeMap;
+use std::rc::Rc;
+
 use serde::{Deserialize, Serialize};
 
 use crate::yarv::ibf::{
@@ -135,9 +138,11 @@ fn detect_shareable_constant_value(image: &IbfImage) -> bool {
 
 fn resolve_branch_targets(body: &YarvIseqBody) -> Vec<Option<usize>> {
     let mut rt_pc: Vec<u32> = Vec::with_capacity(body.instructions.len());
+    let mut pc_to_index: BTreeMap<u32, usize> = BTreeMap::new();
     let mut pc: u32 = 0;
-    for instr in &body.instructions {
+    for (idx, instr) in body.instructions.iter().enumerate() {
         rt_pc.push(pc);
+        pc_to_index.entry(pc).or_insert(idx);
         pc = pc.saturating_add(1 + instr.operands.len() as u32);
     }
     let mut targets: Vec<Option<usize>> = vec![None; body.instructions.len()];
@@ -156,7 +161,9 @@ fn resolve_branch_targets(body: &YarvIseqBody) -> Vec<Option<usize>> {
         if target_pc < 0 {
             continue;
         }
-        targets[idx] = rt_pc.iter().position(|&p| i64::from(p) == target_pc);
+        targets[idx] = u32::try_from(target_pc)
+            .ok()
+            .and_then(|p| pc_to_index.get(&p).copied());
     }
     targets
 }
@@ -452,7 +459,9 @@ fn render_region(
     while i < hi {
         let instr: &YarvIbfInstruction = &body.instructions[i];
         let m: &str = instr.mnemonic.as_str();
-        if let Some(next) = try_pattern_match(body, ctx, depth, i, hi, targets, stmts) {
+        if ctx.body_has_pattern(body.index)
+            && let Some(next) = try_pattern_match(body, ctx, depth, i, hi, targets, stmts)
+        {
             i = next;
             stack.clear();
             continue;
@@ -598,6 +607,13 @@ fn assignment_target(
 
 const T_ARRAY: u64 = 7;
 const T_HASH: u64 = 8;
+
+fn body_has_pattern_construct(body: &YarvIseqBody) -> bool {
+    body.instructions.iter().any(|instr| {
+        instr.mnemonic == "checkmatch"
+            || (instr.mnemonic == "checktype" && matches!(operand_num(instr, 0), T_ARRAY | T_HASH))
+    })
+}
 
 struct CaseInArm {
     pattern: String,
@@ -2475,6 +2491,7 @@ fn compound_value(body: &YarvIseqBody, lo: usize, set_idx: usize) -> Option<Stri
         bodies_by_index: Vec::new(),
         objects: &[],
         enclosing_scopes: Vec::new(),
+        pattern_present: Rc::from(Vec::<bool>::new()),
     };
     for j in lo..set_idx {
         let m: &str = body.instructions[j].mnemonic.as_str();
@@ -2652,6 +2669,7 @@ struct DecompileContext<'a> {
     bodies_by_index: Vec<Option<&'a YarvIseqBody>>,
     objects: &'a [crate::yarv::ibf::IbfObject],
     enclosing_scopes: Vec<Vec<Option<String>>>,
+    pattern_present: Rc<[bool]>,
 }
 
 impl<'a> DecompileContext<'a> {
@@ -2663,15 +2681,21 @@ impl<'a> DecompileContext<'a> {
             .max()
             .map_or(0, |m| m + 1);
         let mut bodies_by_index: Vec<Option<&'a YarvIseqBody>> = vec![None; max_index];
+        let mut pattern_present: Vec<bool> = vec![false; max_index];
         for body in &image.iseqs {
-            if let Some(slot) = bodies_by_index.get_mut(body.index as usize) {
+            let slot_index: usize = body.index as usize;
+            if let Some(slot) = bodies_by_index.get_mut(slot_index) {
                 *slot = Some(body);
+            }
+            if let Some(flag) = pattern_present.get_mut(slot_index) {
+                *flag = body_has_pattern_construct(body);
             }
         }
         Self {
             bodies_by_index,
             objects: &image.objects,
             enclosing_scopes: Vec::new(),
+            pattern_present: Rc::from(pattern_present),
         }
     }
 
@@ -2684,7 +2708,15 @@ impl<'a> DecompileContext<'a> {
             bodies_by_index: self.bodies_by_index.clone(),
             objects: self.objects,
             enclosing_scopes,
+            pattern_present: Rc::clone(&self.pattern_present),
         }
+    }
+
+    fn body_has_pattern(&self, iseq_index: u32) -> bool {
+        self.pattern_present
+            .get(iseq_index as usize)
+            .copied()
+            .unwrap_or(false)
     }
 
     fn local_at_level(&self, current: &[Option<String>], level: u32, operand: u64) -> String {
@@ -5036,5 +5068,119 @@ mod tests {
             stmts.iter().any(|s| s.contains("1 + 2")),
             "stmts: {stmts:?}"
         );
+    }
+
+    #[test]
+    fn resolve_branch_targets_hand_checked_chain() {
+        let forward: YarvIseqBody = synthetic_body(vec![
+            instr("jump", vec![YarvOperand::Offset(0)]),
+            instr("jump", vec![YarvOperand::Offset(0)]),
+            instr("jump", vec![YarvOperand::Offset(0)]),
+        ]);
+        let forward_targets: Vec<Option<usize>> = resolve_branch_targets(&forward);
+        assert_eq!(forward_targets, vec![Some(1), Some(2), None]);
+
+        let backward: YarvIseqBody = synthetic_body(vec![
+            instr("jump", vec![YarvOperand::Offset(0)]),
+            instr("jump", vec![YarvOperand::Offset((-4i32) as u32)]),
+        ]);
+        let backward_targets: Vec<Option<usize>> = resolve_branch_targets(&backward);
+        assert_eq!(backward_targets, vec![Some(1), Some(0)]);
+    }
+
+    #[test]
+    fn resolve_branch_targets_scales_over_many_branches() {
+        let count: usize = 100_000;
+        let instructions: Vec<YarvIbfInstruction> = (0..count)
+            .map(|_| instr("jump", vec![YarvOperand::Offset(0)]))
+            .collect();
+        let body: YarvIseqBody = synthetic_body(instructions);
+        let start: std::time::Instant = std::time::Instant::now();
+        let targets: Vec<Option<usize>> = resolve_branch_targets(&body);
+        let elapsed: std::time::Duration = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "resolve_branch_targets took {elapsed:?} for {count} branches"
+        );
+        assert_eq!(targets.len(), count);
+        assert_eq!(targets[0], Some(1));
+        assert_eq!(targets[count - 1], None);
+    }
+
+    #[test]
+    fn body_has_pattern_construct_flags_pattern_opcodes() {
+        let plain: YarvIseqBody =
+            synthetic_body(vec![instr("pop", vec![]), instr("putnil", vec![])]);
+        assert!(!body_has_pattern_construct(&plain));
+
+        let checkmatch_body: YarvIseqBody =
+            synthetic_body(vec![instr("checkmatch", vec![YarvOperand::Num(2)])]);
+        assert!(body_has_pattern_construct(&checkmatch_body));
+
+        let deconstruct_body: YarvIseqBody =
+            synthetic_body(vec![instr("checktype", vec![YarvOperand::Num(T_ARRAY)])]);
+        assert!(body_has_pattern_construct(&deconstruct_body));
+
+        let checktype_other: YarvIseqBody =
+            synthetic_body(vec![instr("checktype", vec![YarvOperand::Num(1)])]);
+        assert!(!body_has_pattern_construct(&checktype_other));
+    }
+
+    #[test]
+    fn find_case_in_region_is_none_without_pattern_opcodes() {
+        let body: YarvIseqBody = synthetic_body(vec![
+            instr("putnil", vec![]),
+            instr("pop", vec![]),
+            instr("putself", vec![]),
+            instr("leave", vec![]),
+        ]);
+        let targets: Vec<Option<usize>> = resolve_branch_targets(&body);
+        let n: usize = body.instructions.len();
+        for i in 0..n {
+            assert!(find_case_in_region(&body, i, n, &targets).is_none());
+        }
+    }
+
+    #[test]
+    fn large_non_pattern_body_decompiles_fast() {
+        let count: usize = 120_000;
+        let instructions: Vec<YarvIbfInstruction> =
+            (0..count).map(|_| instr("pop", vec![])).collect();
+        let body: YarvIseqBody = synthetic_body(instructions);
+        let start: std::time::Instant = std::time::Instant::now();
+        let stmts: Vec<String> = decompile_body(&body);
+        let elapsed: std::time::Duration = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "decompile took {elapsed:?} for {count} instructions"
+        );
+        assert!(stmts.is_empty(), "stmts: {stmts:?}");
+    }
+
+    #[test]
+    fn small_normal_body_still_decompiles_to_expected_source() {
+        let body: YarvIseqBody = YarvIseqBody {
+            index: 0,
+            offset: 0,
+            iseq_size: 0,
+            local_table: Vec::new(),
+            param_lead_num: 0,
+            param_size: 0,
+            param_flags: 0,
+            param_opt_num: 0,
+            param_rest_start: 0,
+            param_block_start: 0,
+            catch_entries: Vec::new(),
+            instructions: vec![
+                instr("newarray", vec![YarvOperand::Num(0)]),
+                instr(
+                    "setclassvariable",
+                    vec![YarvOperand::Id("@@items".to_owned()), YarvOperand::Num(0)],
+                ),
+                instr("leave", vec![]),
+            ],
+        };
+        let stmts: Vec<String> = decompile_body(&body);
+        assert_eq!(stmts, vec!["@@items = []".to_owned()], "stmts: {stmts:?}");
     }
 }
