@@ -96,6 +96,91 @@ pub(crate) fn decompile(
     }
 }
 
+fn api_type_c(ty: disrobe_typerec::ApiType) -> String {
+    use disrobe_typerec::{ApiType, Sign, Width};
+    let bits = |w: Width| -> Option<u32> {
+        match w {
+            Width::Byte => Some(8),
+            Width::Word => Some(16),
+            Width::Dword => Some(32),
+            Width::Qword => Some(64),
+            Width::Oword => Some(128),
+            Width::Unknown => None,
+        }
+    };
+    match ty {
+        ApiType::Pointer => "void*".to_owned(),
+        ApiType::Handle => "HANDLE".to_owned(),
+        ApiType::Code => "code*".to_owned(),
+        ApiType::Float { width } => match bits(width) {
+            Some(64) => "double",
+            _ => "float",
+        }
+        .to_owned(),
+        ApiType::Integer { width, sign } => match (bits(width), sign) {
+            (Some(b), Sign::Signed) => format!("int{b}_t"),
+            (Some(b), Sign::Unsigned) => format!("uint{b}_t"),
+            (Some(b), _) => format!("int{b}"),
+            (None, _) => "int".to_owned(),
+        },
+        ApiType::Unknown | ApiType::Conflict => "void".to_owned(),
+    }
+}
+
+fn api_prov(prov: &disrobe_typerec::Provenance) -> String {
+    use disrobe_typerec::{ApiSite, Provenance};
+    match prov {
+        Provenance::ApiDb {
+            library,
+            name,
+            site,
+        } => {
+            let site: String = match site {
+                ApiSite::Return => "ret".to_owned(),
+                ApiSite::Arg(index) => format!("arg{index}"),
+            };
+            format!("{library}!{name} {site} [ApiDb]")
+        }
+        Provenance::LivenessInferred => "[LivenessInferred]".to_owned(),
+        Provenance::Heuristic => "[Heuristic]".to_owned(),
+    }
+}
+
+fn build_header_comment(
+    format: DecompileLang,
+    name: &str,
+    addr: u64,
+    banner: Option<&Vec<String>>,
+) -> String {
+    match format {
+        DecompileLang::C => {
+            let mut out: String = format!("/* {name} @ {addr:#x}");
+            if let Some(lines) = banner {
+                out.push_str("\n   api-derived types:");
+                for line in lines {
+                    out.push_str("\n     ");
+                    out.push_str(line);
+                }
+                out.push_str("\n */");
+            } else {
+                out.push_str(" */");
+            }
+            out
+        }
+        DecompileLang::Rust => {
+            let mut out: String = format!("// {name} @ {addr:#x}");
+            if let Some(lines) = banner {
+                out.push_str("\n// api-derived types:");
+                for line in lines {
+                    out.push_str("\n//   ");
+                    out.push_str(line);
+                }
+            }
+            out
+        }
+    }
+}
+
 fn decompile_native(
     input: PathBuf,
     out: Option<PathBuf>,
@@ -183,6 +268,54 @@ fn decompile_native(
         .map(|rec: &RecoveredFunction| (rec.address, rec))
         .collect();
 
+    let (api_text_base, api_text): (u64, Vec<u8>) =
+        disrobe_typerec::load_text(&bytes).unwrap_or((0, Vec::new()));
+    let api_imports: disrobe_typerec::ImportMap = disrobe_typerec::ImportMap::from_image(&bytes);
+    let api_sigdb: disrobe_typerec::SigDb = disrobe_typerec::SigDb::builtin();
+    let api_abi: disrobe_typerec::Abi = match abi {
+        PseudoAbi::MsX64 => disrobe_typerec::Abi::Win64,
+        PseudoAbi::SysV | PseudoAbi::Aapcs64 => disrobe_typerec::Abi::SysV,
+    };
+    let mut api_banner: BTreeMap<u64, Vec<String>> = BTreeMap::new();
+    let mut api_slots_json: BTreeMap<u64, Vec<serde_json::Value>> = BTreeMap::new();
+    let mut api_slots_recovered: usize = 0;
+    if !api_text.is_empty() {
+        for pf in &program_functions {
+            let typing: disrobe_typerec::CallsiteTyping = disrobe_typerec::type_function(
+                &api_text,
+                api_text_base,
+                pf.address,
+                pf.address.saturating_add(pf.code.len() as u64),
+                &api_imports,
+                &api_sigdb,
+                api_abi,
+            );
+            let slots: Vec<disrobe_typerec::TypedSlot> = typing.typed_slots();
+            if slots.is_empty() {
+                continue;
+            }
+            let mut banner: Vec<String> = Vec::with_capacity(slots.len());
+            let mut json_slots: Vec<serde_json::Value> = Vec::with_capacity(slots.len());
+            for slot in &slots {
+                api_slots_recovered += 1;
+                let c_type: String = api_type_c(slot.ty);
+                let provenance: String = api_prov(&slot.provenance);
+                let sign: char = if slot.rbp_disp < 0 { '-' } else { '+' };
+                banner.push(format!(
+                    "[rbp{sign}{:#x}] {c_type} <- {provenance}",
+                    slot.rbp_disp.unsigned_abs()
+                ));
+                json_slots.push(serde_json::json!({
+                    "rbp_disp": slot.rbp_disp,
+                    "c_type": c_type,
+                    "provenance": provenance,
+                }));
+            }
+            api_banner.insert(pf.address, banner);
+            api_slots_json.insert(pf.address, json_slots);
+        }
+    }
+
     for f in module.functions() {
         let Some(rec): Option<&RecoveredFunction> = by_address.get(&f.address).copied() else {
             continue;
@@ -210,10 +343,8 @@ fn decompile_native(
             .filter(|l: &&str| !l.trim_start().starts_with("#include"))
             .collect::<Vec<&str>>()
             .join("\n");
-        let comment: String = match format {
-            DecompileLang::C => format!("/* {} @ {:#x} */", f.name, f.address),
-            DecompileLang::Rust => format!("// {} @ {:#x}", f.name, f.address),
-        };
+        let comment: String =
+            build_header_comment(format, &f.name, f.address, api_banner.get(&f.address));
         let _ = writeln!(bodies, "{comment}\n{}\n", renamed.trim());
         recovered.push(serde_json::json!({
             "name": f.name, "address": f.address, "emitted_as": rec.name
@@ -225,7 +356,9 @@ fn decompile_native(
     for pf in &program_functions {
         let recovered_types: disrobe_typerec::TypedFunction =
             disrobe_typerec::recover_function(&pf.code, pf.address);
-        if recovered_types.rbp_slots.is_empty() {
+        let api_slots: Vec<serde_json::Value> =
+            api_slots_json.get(&pf.address).cloned().unwrap_or_default();
+        if recovered_types.rbp_slots.is_empty() && api_slots.is_empty() {
             continue;
         }
         let mut slots: Vec<serde_json::Value> = Vec::with_capacity(recovered_types.rbp_slots.len());
@@ -243,6 +376,7 @@ fn decompile_native(
             "address": pf.address,
             "has_frame_pointer": recovered_types.has_frame_pointer,
             "slots": slots,
+            "api_slots": api_slots,
         }));
     }
     let types_manifest: serde_json::Value = serde_json::json!({
@@ -250,6 +384,7 @@ fn decompile_native(
         "input": input.display().to_string(),
         "functions_typed": typed_functions.len(),
         "slots_recovered": type_slots_recovered,
+        "api_slots_recovered": api_slots_recovered,
         "functions": typed_functions,
     });
     std::fs::write(
@@ -287,6 +422,7 @@ fn decompile_native(
         "functions_unrecovered": unrecovered.len(),
         "functions_typed": typed_functions.len(),
         "type_slots_recovered": type_slots_recovered,
+        "api_slots_recovered": api_slots_recovered,
         "source": src_path.display().to_string(),
         "types": out_dir.join("types.json").display().to_string(),
         "devirt": if devirt {
@@ -2854,6 +2990,59 @@ pub(crate) fn diff(a: PathBuf, b: PathBuf, json: bool) -> miette::Result<()> {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_type_and_provenance_render_for_the_banner() {
+        use disrobe_typerec::{ApiSite, ApiType, Provenance, Sign, Width};
+        assert_eq!(api_type_c(ApiType::Pointer), "void*");
+        assert_eq!(api_type_c(ApiType::Handle), "HANDLE");
+        assert_eq!(
+            api_type_c(ApiType::Integer {
+                width: Width::Dword,
+                sign: Sign::Signed
+            }),
+            "int32_t"
+        );
+        assert_eq!(
+            api_type_c(ApiType::Integer {
+                width: Width::Qword,
+                sign: Sign::Unsigned
+            }),
+            "uint64_t"
+        );
+        assert_eq!(
+            api_prov(&Provenance::ApiDb {
+                library: "libc".to_owned(),
+                name: "strlen".to_owned(),
+                site: ApiSite::Arg(0),
+            }),
+            "libc!strlen arg0 [ApiDb]"
+        );
+        assert_eq!(
+            api_prov(&Provenance::ApiDb {
+                library: "kernel32".to_owned(),
+                name: "CreateFileW".to_owned(),
+                site: ApiSite::Return,
+            }),
+            "kernel32!CreateFileW ret [ApiDb]"
+        );
+    }
+
+    #[test]
+    fn header_banner_wraps_api_types_in_the_comment() {
+        let bare: String = build_header_comment(DecompileLang::C, "f", 0x1179, None);
+        assert_eq!(bare, "/* f @ 0x1179 */");
+        let banner: Vec<String> = vec!["[rbp-0x8] void* <- libc!strlen arg0 [ApiDb]".to_owned()];
+        let annotated: String = build_header_comment(DecompileLang::C, "f", 0x1179, Some(&banner));
+        assert!(annotated.starts_with("/* f @ 0x1179"));
+        assert!(annotated.contains("api-derived types:"));
+        assert!(annotated.contains("[rbp-0x8] void* <- libc!strlen arg0 [ApiDb]"));
+        assert!(annotated.trim_end().ends_with("*/"));
+        let rust: String = build_header_comment(DecompileLang::Rust, "f", 0x1179, Some(&banner));
+        assert!(rust.starts_with("// f @ 0x1179"));
+        assert!(rust.contains("// api-derived types:"));
+        assert!(!rust.contains("/*"));
+    }
 
     fn corpus_path(rel: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
