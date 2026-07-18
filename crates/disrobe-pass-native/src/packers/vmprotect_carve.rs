@@ -192,11 +192,11 @@ fn read_u32(b: &[u8], off: usize) -> u32 {
 }
 
 fn read_cstr(b: &[u8], off: usize) -> String {
-    let end: usize = b[off..]
-        .iter()
-        .position(|c: &u8| *c == 0)
-        .map_or(b.len(), |p: usize| off + p);
-    String::from_utf8_lossy(&b[off..end]).into_owned()
+    let Some(tail): Option<&[u8]> = b.get(off..) else {
+        return String::new();
+    };
+    let end: usize = tail.iter().position(|c: &u8| *c == 0).unwrap_or(tail.len());
+    String::from_utf8_lossy(&tail[..end]).into_owned()
 }
 
 #[cfg(test)]
@@ -369,5 +369,50 @@ mod tests {
         assert!(rwx.read && rwx.write && rwx.execute);
         let none: SectionPerms = SectionPerms::from_characteristics(0);
         assert!(!none.read && !none.write && !none.execute);
+    }
+
+    #[test]
+    fn rebuild_imports_survives_out_of_range_name_rva() {
+        let mut descriptor: Vec<u8> = vec![0u8; IMPORT_DESCRIPTOR_SIZE];
+        descriptor[0..4].copy_from_slice(&0x2100u32.to_le_bytes());
+        descriptor[12..16].copy_from_slice(&0x3000u32.to_le_bytes());
+        descriptor[16..20].copy_from_slice(&0x2200u32.to_le_bytes());
+
+        let mut pe: Vec<u8> = build_vmp_pe(
+            &[
+                (
+                    b".vmp0",
+                    0x1000,
+                    IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_EXECUTE,
+                    &[0xAB; 32],
+                ),
+                (b".idata", 0x2000, IMAGE_SCN_MEM_READ, &descriptor),
+                (b".pad", 0x3000, IMAGE_SCN_MEM_READ, &[0x41; 8]),
+            ],
+            Some((0x2000, IMPORT_DESCRIPTOR_SIZE as u32)),
+        );
+        let pad_raw_ptr_off: usize = SEC_TABLE_OFFSET + 2 * 40 + 20;
+        pe[pad_raw_ptr_off..pad_raw_ptr_off + 4].copy_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
+
+        let carve: VmProtectCarve = carve_vmprotect(&pe).expect("carve completes without panic");
+        assert_eq!(carve.synthetic_imports.len(), 1, "one descriptor walked");
+        assert_eq!(
+            carve.synthetic_imports[0].dll, "",
+            "a name RVA mapping past end-of-file yields an empty name instead of a slice panic",
+        );
+        assert_eq!(carve.synthetic_imports[0].first_thunk_rva, 0x2200);
+    }
+
+    #[test]
+    fn read_cstr_out_of_range_offset_returns_empty() {
+        assert_eq!(read_cstr(b"kernel32.dll\0", 4096), "");
+        assert_eq!(read_cstr(&[], 1), "");
+    }
+
+    #[test]
+    fn read_cstr_in_range_resolves() {
+        assert_eq!(read_cstr(b"kernel32.dll\0ignored", 0), "kernel32.dll");
+        assert_eq!(read_cstr(b"user32.dll", 0), "user32.dll");
+        assert_eq!(read_cstr(b"aa\0bb\0", 3), "bb");
     }
 }
