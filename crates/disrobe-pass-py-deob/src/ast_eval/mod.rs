@@ -238,6 +238,14 @@ mod tests {
     }
 
     #[test]
+    fn refuses_overwide_padding() {
+        assert!(fold("x = 'a'.ljust(10**18)\n").contains("ljust"));
+        assert!(fold("x = 'a'.rjust(10**18)\n").contains("rjust"));
+        assert!(fold("x = 'a'.center(10**18)\n").contains("center"));
+        assert!(fold("x = 'a'.zfill(10**18)\n").contains("zfill"));
+    }
+
+    #[test]
     fn folds_remove_affixes() {
         assert_folds("x = 'foobar'.removeprefix('foo')\n", "'bar'");
         assert_folds("x = 'foobar'.removesuffix('bar')\n", "'foo'");

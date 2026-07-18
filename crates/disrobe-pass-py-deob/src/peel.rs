@@ -529,35 +529,15 @@ const fn hex_nibble(c: u8) -> Option<u8> {
     }
 }
 
-const EXEC_EVAL_CALLS: [&str; 3] = ["exec(", "eval(", "compile("];
+const EXEC_EVAL_KEYWORDS: [&str; 3] = ["exec", "eval", "compile"];
 
 fn find_exec_eval_argument(text: &str) -> Option<&str> {
+    let bytes: &[u8] = text.as_bytes();
     let mut best: Option<&str> = None;
     let mut best_len: usize = 0;
-    for needle in EXEC_EVAL_CALLS {
-        let mut from: usize = 0;
-        while let Some(rel) = text.get(from..).and_then(|w: &str| w.find(needle)) {
-            let open: usize = from + rel + needle.len() - 1;
-            if let Some(arg) = balanced_call_argument(text, open)
-                && arg.len() > best_len
-            {
-                best_len = arg.len();
-                best = Some(arg);
-            }
-            from = from + rel + needle.len();
-        }
-    }
-    best
-}
-
-fn balanced_call_argument(text: &str, open_paren: usize) -> Option<&str> {
-    let bytes: &[u8] = text.as_bytes();
-    if bytes.get(open_paren) != Some(&b'(') {
-        return None;
-    }
-    let mut depth: usize = 0;
+    let mut open_calls: Vec<(usize, bool)> = Vec::new();
     let mut quote: Option<u8> = None;
-    let mut i: usize = open_paren;
+    let mut i: usize = 0;
     while i < bytes.len() {
         let c: u8 = bytes[i];
         match quote {
@@ -572,11 +552,15 @@ fn balanced_call_argument(text: &str, open_paren: usize) -> Option<&str> {
             }
             None => match c {
                 b'\'' | b'"' => quote = Some(c),
-                b'(' => depth += 1,
+                b'(' => open_calls.push((i, paren_begins_exec_call(bytes, i))),
                 b')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return text.get(open_paren + 1..i);
+                    if let Some((open, begins_exec_call)) = open_calls.pop()
+                        && begins_exec_call
+                        && let Some(arg) = text.get(open + 1..i)
+                        && arg.len() > best_len
+                    {
+                        best_len = arg.len();
+                        best = Some(arg);
                     }
                 }
                 _ => {}
@@ -584,7 +568,14 @@ fn balanced_call_argument(text: &str, open_paren: usize) -> Option<&str> {
         }
         i += 1;
     }
-    None
+    best
+}
+
+fn paren_begins_exec_call(bytes: &[u8], open_paren: usize) -> bool {
+    let prefix: &[u8] = &bytes[..open_paren];
+    EXEC_EVAL_KEYWORDS
+        .iter()
+        .any(|kw: &&str| prefix.ends_with(kw.as_bytes()))
 }
 
 fn try_peel_exec_eval(source: &[u8]) -> Option<(String, Vec<u8>)> {
@@ -729,13 +720,18 @@ mod tests {
     }
 
     #[test]
-    fn balanced_call_argument_handles_nested_parens_and_quotes() {
+    fn find_exec_eval_argument_handles_nested_parens_and_quotes() {
         let s: &str = "exec(decompress(b64decode(b'AA')) + ')')";
-        let open: usize = s.find('(').expect("open");
-        let Some(arg): Option<&str> = balanced_call_argument(s, open) else {
+        let Some(arg): Option<&str> = find_exec_eval_argument(s) else {
             panic!("expected balanced argument");
         };
         assert_eq!(arg, "decompress(b64decode(b'AA')) + ')'");
+    }
+
+    #[test]
+    fn find_exec_eval_argument_is_linear_on_unterminated_calls() {
+        let hostile: String = "exec(".repeat(200_000);
+        assert!(find_exec_eval_argument(&hostile).is_none());
     }
 
     #[test]
