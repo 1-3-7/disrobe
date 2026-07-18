@@ -4,6 +4,7 @@ use crate::error::{Error, Result};
 
 const MAX_DEPTH: usize = 1024;
 const MAX_NODES: usize = 1 << 18;
+const MAX_REPEAT_COUNT: u32 = 2048;
 
 #[must_use]
 pub fn looks_like_swift_mangled(s: &str) -> bool {
@@ -1964,6 +1965,9 @@ impl<'a> Demangler<'a> {
             }
             if c.is_ascii_digit() {
                 repeat = i64::from(self.demangle_natural());
+                if repeat <= 0 || repeat > i64::from(MAX_REPEAT_COUNT) {
+                    return None;
+                }
                 if !self.peek().is_some_and(|d: u8| d.is_ascii_alphabetic()) {
                     return None;
                 }
@@ -2379,7 +2383,7 @@ impl<'a> Demangler<'a> {
     fn demangle_repeated_standard_substitution(&mut self) -> Option<Vec<NodeRef>> {
         self.pos += 1;
         let count: u32 = self.demangle_natural();
-        if count == 0 {
+        if count == 0 || count > MAX_REPEAT_COUNT {
             return None;
         }
         let letter: u8 = self.next()?;
@@ -2489,6 +2493,9 @@ impl<'a> Demangler<'a> {
             }
             if c.is_ascii_digit() {
                 repeat = i64::from(self.demangle_natural());
+                if repeat <= 0 || repeat > i64::from(MAX_REPEAT_COUNT) {
+                    return None;
+                }
                 if !self.peek().is_some_and(|d: u8| d.is_ascii_alphabetic()) {
                     return None;
                 }
@@ -4875,5 +4882,63 @@ mod tests {
                 "SIMD{width} initializer must recover every generic-parameter element"
             );
         }
+    }
+
+    #[test]
+    fn demangle_type_rejects_oversized_standard_substitution_repeat() {
+        assert_eq!(demangle_type("S900000000i"), None);
+        assert_eq!(demangle_type("SDyS900000000SG"), None);
+    }
+
+    #[test]
+    fn demangle_type_rejects_standard_substitution_repeat_just_over_cap() {
+        assert_eq!(demangle_type("SDyS2049SG"), None);
+    }
+
+    #[test]
+    fn demangle_type_small_standard_substitution_repeat_still_recovers() {
+        assert_eq!(
+            demangle_type("SDyS2SG").as_deref(),
+            Some("[Swift.String : Swift.String]")
+        );
+    }
+
+    #[test]
+    fn demangle_substitution_chain_rejects_oversized_repeat() {
+        let node: NodeRef = Node::leaf(Kind::Structure, "Demo".to_owned());
+        let mut dem: Demangler<'_> = Demangler::new("A900000000A");
+        dem.substitutions.push(Rc::clone(&node));
+        assert!(dem.demangle_substitution_chain().is_none());
+    }
+
+    #[test]
+    fn demangle_substitution_chain_small_repeat_fans_out() {
+        let node: NodeRef = Node::leaf(Kind::Structure, "Demo".to_owned());
+        let mut dem: Demangler<'_> = Demangler::new("A2A");
+        dem.substitutions.push(Rc::clone(&node));
+        let chain: Vec<NodeRef> = dem
+            .demangle_substitution_chain()
+            .expect("small repeat chain must resolve");
+        assert_eq!(chain.len(), 2);
+    }
+
+    #[test]
+    fn demangle_substitution_rejects_oversized_repeat() {
+        let node: NodeRef = Node::leaf(Kind::Structure, "Demo".to_owned());
+        let mut dem: Demangler<'_> = Demangler::new("A900000000A");
+        dem.substitutions.push(Rc::clone(&node));
+        assert!(dem.demangle_substitution().is_none());
+    }
+
+    #[test]
+    fn demangle_substitution_small_repeat_populates_pending() {
+        let node: NodeRef = Node::leaf(Kind::Structure, "Demo".to_owned());
+        let mut dem: Demangler<'_> = Demangler::new("A2A");
+        dem.substitutions.push(Rc::clone(&node));
+        let resolved: NodeRef = dem
+            .demangle_substitution()
+            .expect("small repeat substitution must resolve");
+        assert_eq!(resolved.kind, Kind::Structure);
+        assert_eq!(dem.pending_substitutions.len(), 1);
     }
 }
