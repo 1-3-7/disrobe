@@ -332,7 +332,7 @@ impl Lifter<'_> {
         out: &mut Vec<Stmt>,
         flags: &mut Flags,
     ) -> bool {
-        let arity: u32 = literal_u32(&ins.operands[0]);
+        let arity: u32 = literal_u32(&ins.operands[0]).min(crate::chunks::MAX_FUN_ARITY);
         let label: u32 = match &ins.operands[1] {
             Operand::Label(l) => *l,
             _ => 0,
@@ -352,7 +352,7 @@ impl Lifter<'_> {
         out: &mut Vec<Stmt>,
         flags: &mut Flags,
     ) -> bool {
-        let arity: u32 = literal_u32(&ins.operands[0]);
+        let arity: u32 = literal_u32(&ins.operands[0]).min(crate::chunks::MAX_FUN_ARITY);
         let args: Vec<Expr> = (0..arity).map(|i: u32| env.get(Reg::X(i))).collect();
         let call: Expr = match self.resolve_import(&ins.operands[1]) {
             Some((module, name, arity)) => call_ext_expr(&module, &name, arity, &args),
@@ -373,11 +373,11 @@ impl Lifter<'_> {
     ) -> bool {
         let (arity, fun): (u32, Expr) = if ins.name == "call_fun2" {
             (
-                literal_u32(&ins.operands[1]),
+                literal_u32(&ins.operands[1]).min(crate::chunks::MAX_FUN_ARITY),
                 self.value(&ins.operands[2], env),
             )
         } else {
-            let a: u32 = literal_u32(&ins.operands[0]);
+            let a: u32 = literal_u32(&ins.operands[0]).min(crate::chunks::MAX_FUN_ARITY);
             (a, env.get(Reg::X(a)))
         };
         let args: Vec<Expr> = (0..arity).map(|i: u32| env.get(Reg::X(i))).collect();
