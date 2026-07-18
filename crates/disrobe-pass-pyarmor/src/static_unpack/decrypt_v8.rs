@@ -10,6 +10,7 @@ use crate::v8v9::{BccArch, BccBlob};
 
 const MODULE_FLAGS_OFFSET: usize = 37;
 const MODULE_FLAG_BODY_ENCRYPTED: u8 = 0x01;
+const MAX_BCC_SEGMENTS: usize = 4096;
 
 pub(crate) fn run(
     bytes: &[u8],
@@ -148,9 +149,11 @@ fn peel_bcc(payload: &[u8], aes_key: &[u8; 16]) -> Result<(Vec<BccBlob>, usize)>
     let mut bcc_plain: Vec<u8> = payload[cipher_off..cipher_off + cipher_len].to_vec();
     aes_ctr_initial2(aes_key, &nonce, &mut bcc_plain);
 
+    let byte_budget: usize = bcc_plain.len().saturating_mul(2);
     let mut blobs: Vec<BccBlob> = Vec::new();
+    let mut total: usize = 0;
     let mut view: &[u8] = bcc_plain.as_slice();
-    while view.len() >= 16 {
+    while view.len() >= 16 && blobs.len() < MAX_BCC_SEGMENTS {
         let seg_off: usize = u32_le(view, 0)? as usize;
         let seg_len: usize = u32_le(view, 4)? as usize;
         let arch_id: u32 = u32_le(view, 8)?;
@@ -165,11 +168,18 @@ fn peel_bcc(payload: &[u8], aes_key: &[u8; 16]) -> Result<(Vec<BccBlob>, usize)>
                 got: view.len(),
             });
         }
+        total = total
+            .checked_add(seg_len)
+            .filter(|running: &usize| *running <= byte_budget)
+            .ok_or_else(|| Error::HeaderTruncated {
+                need: total.saturating_add(seg_len),
+                got: byte_budget,
+            })?;
         blobs.push(BccBlob {
             architecture: BccArch::from_id(arch_id),
             bytes: view[seg_off..segment_end].to_vec(),
         });
-        if next_off == 0 || next_off >= view.len() {
+        if next_off == 0 || next_off >= view.len() || next_off < 16 {
             break;
         }
         view = &view[next_off..];
@@ -332,5 +342,79 @@ mod tests {
             decrypt_with_runtime_key(&payload, &key, DecryptStatus::Functional).unwrap();
         assert_eq!(outcome.plaintext, plaintext_marshal);
         assert_eq!(outcome.status, DecryptStatus::Functional);
+    }
+
+    fn put_record(plain: &mut [u8], at: usize, seg_off: u32, seg_len: u32, arch: u32, next: u32) {
+        plain[at..at + 4].copy_from_slice(&seg_off.to_le_bytes());
+        plain[at + 4..at + 8].copy_from_slice(&seg_len.to_le_bytes());
+        plain[at + 8..at + 12].copy_from_slice(&arch.to_le_bytes());
+        plain[at + 12..at + 16].copy_from_slice(&next.to_le_bytes());
+    }
+
+    fn bcc_payload_from_plain(bcc_plain: &[u8], key: &[u8; 16]) -> Vec<u8> {
+        let cipher_len: u32 = u32::try_from(bcc_plain.len()).expect("len fits u32");
+        let mut payload: Vec<u8> = vec![0u8; 64 + bcc_plain.len()];
+        payload[20] = 0x09;
+        payload[28..32].copy_from_slice(&64u32.to_le_bytes());
+        payload[32..36].copy_from_slice(&cipher_len.to_le_bytes());
+        payload[56..60].copy_from_slice(&0u32.to_le_bytes());
+        let nonce: [u8; 12] = build_nonce(&payload).expect("nonce");
+        let mut encrypted: Vec<u8> = bcc_plain.to_vec();
+        aes_ctr_initial2(key, &nonce, &mut encrypted);
+        payload[64..].copy_from_slice(&encrypted);
+        payload
+    }
+
+    #[test]
+    fn peel_bcc_aliased_segments_are_bounded_by_byte_budget() {
+        let key: [u8; 16] = [0x5au8; 16];
+        let mut plain: Vec<u8> = vec![0u8; 256];
+        put_record(&mut plain, 0, 16, 200, 0x2001, 16);
+        put_record(&mut plain, 16, 16, 200, 0x2001, 16);
+        put_record(&mut plain, 32, 16, 200, 0x2001, 16);
+        let payload: Vec<u8> = bcc_payload_from_plain(&plain, &key);
+        let err: Error = peel_bcc(&payload, &key).unwrap_err();
+        assert!(
+            matches!(err, Error::HeaderTruncated { .. }),
+            "overlapping segments whose copied bytes exceed twice the region must stop, not amplify"
+        );
+    }
+
+    #[test]
+    fn peel_bcc_many_empty_segments_capped_by_count() {
+        let key: [u8; 16] = [0x77u8; 16];
+        let region: usize = (MAX_BCC_SEGMENTS + 64) * 16;
+        let mut plain: Vec<u8> = vec![0u8; region];
+        let mut at: usize = 0;
+        while at + 16 <= plain.len() {
+            put_record(&mut plain, at, 0, 0, 0x2001, 16);
+            at += 16;
+        }
+        let payload: Vec<u8> = bcc_payload_from_plain(&plain, &key);
+        let (blobs, _start): (Vec<BccBlob>, usize) =
+            peel_bcc(&payload, &key).expect("empty-segment table peels bounded");
+        assert!(
+            blobs.len() <= MAX_BCC_SEGMENTS,
+            "segment count is capped at {MAX_BCC_SEGMENTS}, got {}",
+            blobs.len()
+        );
+    }
+
+    #[test]
+    fn peel_bcc_valid_multi_segment_table_peels_every_segment() {
+        let key: [u8; 16] = [0x33u8; 16];
+        let mut plain: Vec<u8> = vec![0u8; 48];
+        put_record(&mut plain, 0, 16, 8, 0x2001, 24);
+        plain[16..24].fill(0xAAu8);
+        put_record(&mut plain, 24, 16, 8, 0x2003, 0);
+        plain[40..48].fill(0xBBu8);
+        let payload: Vec<u8> = bcc_payload_from_plain(&plain, &key);
+        let (blobs, _start): (Vec<BccBlob>, usize) =
+            peel_bcc(&payload, &key).expect("valid table peels");
+        assert_eq!(blobs.len(), 2, "both non-overlapping segments are peeled");
+        assert_eq!(blobs[0].architecture, BccArch::WinX64);
+        assert_eq!(blobs[0].bytes, vec![0xAAu8; 8]);
+        assert_eq!(blobs[1].architecture, BccArch::LinuxX64);
+        assert_eq!(blobs[1].bytes, vec![0xBBu8; 8]);
     }
 }
