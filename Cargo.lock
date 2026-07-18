@@ -2325,7 +2325,6 @@ dependencies = [
  "disrobe-llm-metadata",
  "flate2",
  "gimli 0.32.3",
- "goblin",
  "iced-x86",
  "insta",
  "miette",
@@ -2333,7 +2332,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]
@@ -2729,7 +2727,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]
