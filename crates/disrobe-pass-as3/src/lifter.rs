@@ -2071,7 +2071,7 @@ fn structure_try(stmts: Vec<Stmt>, regions: &[RegionInfo], depth: usize) -> Vec<
     let Some(target_idx): Option<usize> = label_at(&stmts, region.target) else {
         return stmts;
     };
-    if !(from_idx < to_idx && to_idx <= target_idx) {
+    if !(from_idx < to_idx && to_idx < target_idx) {
         return stmts;
     }
     let try_inner: &[Stmt] = &stmts[from_idx + 1..to_idx];
@@ -4867,6 +4867,137 @@ mod tests {
             rendered.len() < 8_000_000,
             "render stays bounded: {} bytes",
             rendered.len()
+        );
+    }
+
+    #[test]
+    fn degenerate_exception_region_to_equals_target_returns_unchanged() {
+        let stmts: Vec<Stmt> = vec![
+            Stmt::Label(0),
+            Stmt::Assign {
+                target: Expr::Local(1),
+                value: Expr::IntLit(5),
+            },
+            Stmt::Label(5),
+            Stmt::Return(None),
+        ];
+        let regions: Vec<RegionInfo> = vec![RegionInfo {
+            from: 0,
+            to: 5,
+            target: 5,
+            var_name: "error".to_owned(),
+            type_name: "*".to_owned(),
+        }];
+        let out: Vec<Stmt> = structure_try(stmts.clone(), &regions, MAX_STRUCTURE_DEPTH);
+        assert_eq!(
+            out, stmts,
+            "a to==target exception region has no gap slice and must early-return untouched"
+        );
+        assert!(
+            !out.iter().any(|s: &Stmt| matches!(s, Stmt::Try { .. })),
+            "no try block is fabricated from a degenerate region: {out:?}"
+        );
+    }
+
+    #[test]
+    fn inverted_exception_region_target_before_to_returns_unchanged() {
+        let stmts: Vec<Stmt> = vec![
+            Stmt::Label(0),
+            Stmt::Assign {
+                target: Expr::Local(1),
+                value: Expr::IntLit(5),
+            },
+            Stmt::Label(9),
+            Stmt::Assign {
+                target: Expr::Local(2),
+                value: Expr::IntLit(7),
+            },
+            Stmt::Label(5),
+            Stmt::Return(None),
+        ];
+        let regions: Vec<RegionInfo> = vec![RegionInfo {
+            from: 0,
+            to: 5,
+            target: 9,
+            var_name: "error".to_owned(),
+            type_name: "*".to_owned(),
+        }];
+        let out: Vec<Stmt> = structure_try(stmts.clone(), &regions, MAX_STRUCTURE_DEPTH);
+        assert_eq!(
+            out, stmts,
+            "a target-before-to region violates from<to<target and must early-return untouched"
+        );
+    }
+
+    #[test]
+    fn well_formed_exception_region_still_structures() {
+        let stmts: Vec<Stmt> = vec![
+            Stmt::Label(0),
+            Stmt::Assign {
+                target: Expr::Local(1),
+                value: Expr::IntLit(5),
+            },
+            Stmt::Jump { target_label: 100 },
+            Stmt::Label(5),
+            Stmt::Label(9),
+            Stmt::Assign {
+                target: Expr::Local(2),
+                value: Expr::CaughtException,
+            },
+            Stmt::Assign {
+                target: Expr::Local(2),
+                value: Expr::IntLit(7),
+            },
+            Stmt::Label(100),
+            Stmt::Return(None),
+        ];
+        let regions: Vec<RegionInfo> = vec![RegionInfo {
+            from: 0,
+            to: 5,
+            target: 9,
+            var_name: "error".to_owned(),
+            type_name: "*".to_owned(),
+        }];
+        let out: Vec<Stmt> = structure_try(stmts, &regions, MAX_STRUCTURE_DEPTH);
+        let try_stmt: &Stmt = out
+            .iter()
+            .find(|s: &&Stmt| matches!(s, Stmt::Try { .. }))
+            .expect("from<to<target region folds into a try");
+        let Stmt::Try { body, catches }: &Stmt = try_stmt else {
+            unreachable!("filtered to Try above")
+        };
+        assert_eq!(catches.len(), 1, "single catch clause");
+        assert!(
+            body.iter().any(|s: &Stmt| matches!(
+                s,
+                Stmt::Assign {
+                    value: Expr::IntLit(5),
+                    ..
+                }
+            )),
+            "try body retains its assignment: {body:?}"
+        );
+        assert!(
+            catches[0].body.iter().any(|s: &Stmt| matches!(
+                s,
+                Stmt::Assign {
+                    value: Expr::IntLit(7),
+                    ..
+                }
+            )),
+            "catch body retains its assignment: {:?}",
+            catches[0].body
+        );
+        assert!(
+            !catches[0].body.iter().any(|s: &Stmt| matches!(
+                s,
+                Stmt::Assign {
+                    value: Expr::CaughtException,
+                    ..
+                }
+            )),
+            "catch prologue is stripped: {:?}",
+            catches[0].body
         );
     }
 }
