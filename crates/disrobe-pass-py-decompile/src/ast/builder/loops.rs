@@ -17,8 +17,9 @@ use super::try_with::{
     structure_try,
 };
 use super::{
-    DecodedStream, LoopFrame, PY_CO_FLAG_FUNCTION_SCOPE, ScDesc, loop_frame_has_header,
-    negate_cond_expr, none_jump_test, pop_loop_frame, push_loop_frame, with_boolop_context,
+    DecodedStream, LoopFrame, MAX_SYNTH_OPERANDS, PY_CO_FLAG_FUNCTION_SCOPE, ScDesc,
+    loop_frame_has_header, negate_cond_expr, none_jump_test, pop_loop_frame, push_loop_frame,
+    with_boolop_context,
 };
 use crate::ast::node::{ConstValue, Expr, ExprCtx, Stmt};
 use crate::bytecode::opcode::CanonicalOp;
@@ -2558,7 +2559,7 @@ pub(super) fn recover_for_target(
         }
         CanonicalOp::BuildTuple(n) => {
             let count: usize = *n as usize;
-            let mut elts: Vec<Expr> = Vec::with_capacity(count);
+            let mut elts: Vec<Expr> = Vec::with_capacity(count.min(MAX_SYNTH_OPERANDS));
             let mut k: usize = after + 1;
             while elts.len() < count && k < region.body_end {
                 match &stream.ops[k] {
@@ -3085,4 +3086,104 @@ fn redundant_entry_guard_start(
 ) -> Option<usize> {
     let (start, guard_test): (usize, Expr) = recover_entry_guard_test(code, stream, lo, region)?;
     exprs_equal_ignoring_lines(&guard_test, loop_test).then_some(start)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod for_target_bounds {
+    use super::super::DecodedStream;
+    use super::super::try_with::{LoopKind, LoopRegion};
+    use super::recover_for_target;
+    use crate::ast::node::Expr;
+    use crate::bytecode::opcode::CanonicalOp;
+    use crate::bytecode::version::PyVersion;
+    use disrobe_py_marshal::{CodeEra, CodeObject, Object};
+
+    fn code_with_names(names: &[&str]) -> CodeObject {
+        let mut code: CodeObject = CodeObject::new(CodeEra::Py311Plus);
+        code.names = names
+            .iter()
+            .map(|n: &&str| Object::Unicode {
+                value: (*n).to_owned(),
+                interned: false,
+            })
+            .collect();
+        code
+    }
+
+    fn stream_from(ops: Vec<CanonicalOp>) -> DecodedStream {
+        let n: usize = ops.len();
+        DecodedStream {
+            ops,
+            offsets: (0..n).map(|i: usize| (i as u32) * 2).collect(),
+            next_offsets: (0..n).map(|i: usize| (i as u32 + 1) * 2).collect(),
+            code_len: (n as u32) * 2,
+            lines: vec![None; n],
+            wordcode: true,
+            instr_unit_jumps: true,
+            relative_cond_jumps: true,
+            exception_table: Vec::new(),
+            pre311_end_finally_idx: std::collections::BTreeSet::new(),
+            pre311_pop_block_idx: std::collections::BTreeSet::new(),
+            pre311_break_loop_idx: std::collections::BTreeSet::new(),
+            setup_loop_end: std::collections::BTreeMap::new(),
+            none_jump_kind: std::collections::BTreeMap::new(),
+            version: PyVersion::V3_12,
+        }
+    }
+
+    fn for_region(header: usize, body_end: usize) -> LoopRegion {
+        LoopRegion {
+            kind: LoopKind::For,
+            header,
+            body_start: header + 1,
+            body_end,
+            back_edge: body_end,
+            exit: body_end,
+            infinite: false,
+        }
+    }
+
+    #[test]
+    fn build_tuple_target_huge_operand_declines_without_eager_alloc() {
+        let code: CodeObject = code_with_names(&["x", "y"]);
+        let stream: DecodedStream = stream_from(vec![
+            CanonicalOp::ForIter(0),
+            CanonicalOp::BuildTuple(u32::MAX),
+            CanonicalOp::StoreName(0),
+            CanonicalOp::StoreName(1),
+        ]);
+        let region: LoopRegion = for_region(0, 4);
+        let recovered: Option<(Expr, usize)> = recover_for_target(&code, &stream, &region);
+        assert!(
+            recovered.is_none(),
+            "a build-tuple count far exceeding the loop body must decline, not reserve gigabytes"
+        );
+    }
+
+    #[test]
+    fn build_tuple_target_valid_pair_recovers_both_names() {
+        let code: CodeObject = code_with_names(&["x", "y"]);
+        let stream: DecodedStream = stream_from(vec![
+            CanonicalOp::ForIter(0),
+            CanonicalOp::BuildTuple(2),
+            CanonicalOp::StoreName(0),
+            CanonicalOp::StoreName(1),
+        ]);
+        let region: LoopRegion = for_region(0, 4);
+        let (target, next): (Expr, usize) =
+            recover_for_target(&code, &stream, &region).expect("valid tuple target recovers");
+        assert_eq!(next, 4);
+        let Expr::Tuple { elts, .. } = target else {
+            panic!("expected a tuple for target, found {target:?}");
+        };
+        let names: Vec<String> = elts
+            .iter()
+            .map(|e: &Expr| match e {
+                Expr::Name { id, .. } => id.clone(),
+                other => panic!("expected a name element, found {other:?}"),
+            })
+            .collect();
+        assert_eq!(names, vec!["x".to_owned(), "y".to_owned()]);
+    }
 }

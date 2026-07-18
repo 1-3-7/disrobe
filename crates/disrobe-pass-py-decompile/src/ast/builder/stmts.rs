@@ -3609,7 +3609,7 @@ fn collect_unpack_targets_expanded(
     start: usize,
     n: usize,
 ) -> Option<(Vec<Expr>, usize)> {
-    let mut targets: Vec<Expr> = Vec::with_capacity(n);
+    let mut targets: Vec<Expr> = Vec::with_capacity(n.min(ops.len().saturating_sub(start)));
     let mut i: usize = start;
     let mut consumed: usize = 0;
     while consumed < n && i < ops.len() {
@@ -5059,5 +5059,59 @@ mod block_range_repro {
             1,
             "a foreign loop-frame tail range must be declined, leaving the body intact"
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod unpack_target_bounds {
+    use super::collect_unpack_targets;
+    use crate::ast::node::Expr;
+    use crate::bytecode::opcode::CanonicalOp;
+    use disrobe_py_marshal::{CodeEra, CodeObject, Object};
+
+    fn code_with_names(names: &[&str]) -> CodeObject {
+        let mut code: CodeObject = CodeObject::new(CodeEra::Py311Plus);
+        code.names = names
+            .iter()
+            .map(|n: &&str| Object::Unicode {
+                value: (*n).to_owned(),
+                interned: false,
+            })
+            .collect();
+        code
+    }
+
+    fn store_name_ops(count: u32) -> Vec<CanonicalOp> {
+        (0..count).map(CanonicalOp::StoreName).collect()
+    }
+
+    #[test]
+    fn huge_operand_declines_without_eager_alloc() {
+        let code: CodeObject = code_with_names(&["a", "b", "c"]);
+        let ops: Vec<CanonicalOp> = store_name_ops(3);
+        let recovered: Option<(Vec<Expr>, usize)> =
+            collect_unpack_targets(&code, &ops, 0, u32::MAX as usize);
+        assert!(
+            recovered.is_none(),
+            "an operand far exceeding the available store ops must decline, not reserve gigabytes"
+        );
+    }
+
+    #[test]
+    fn valid_three_way_unpack_recovers_all_names() {
+        let code: CodeObject = code_with_names(&["a", "b", "c"]);
+        let ops: Vec<CanonicalOp> = store_name_ops(3);
+        let (targets, consumed): (Vec<Expr>, usize) =
+            collect_unpack_targets(&code, &ops, 0, 3).expect("valid three-way unpack recovers");
+        assert_eq!(consumed, 3);
+        let names: Vec<String> = targets
+            .iter()
+            .map(|t: &Expr| match t {
+                Expr::Name { id, .. } => id.clone(),
+                other => panic!("expected a name target, found {other:?}"),
+            })
+            .collect();
+        assert_eq!(names, vec!["a".to_owned(), "b".to_owned(), "c".to_owned()]);
     }
 }
