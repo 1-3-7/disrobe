@@ -5,6 +5,7 @@ use unicode_general_category::GeneralCategory;
 
 const CODE_REPR_ADDRESS: &str = "0x0000000000000000";
 const MAX_RENDER_DEPTH: usize = 64;
+const MAX_REPR_LONG_DIGITS: usize = 512;
 
 #[must_use]
 pub(crate) fn repr_const(object: &Object) -> String {
@@ -47,6 +48,9 @@ fn repr_bigint(big: &BigInt) -> String {
     if big.sign == 0 || big.digits.is_empty() {
         return "0".to_owned();
     }
+    if big.digits.len() > MAX_REPR_LONG_DIGITS {
+        return repr_bigint_summary(big);
+    }
     let mut value: Vec<u32> = vec![0];
     for &digit in big.digits.iter().rev() {
         let mut carry: u64 = u64::from(digit);
@@ -72,6 +76,29 @@ fn repr_bigint(big: &BigInt) -> String {
         crate::push_string_fmt(&mut out, format_args!("{chunk:09}"));
     }
     out
+}
+
+fn repr_bigint_summary(big: &BigInt) -> String {
+    let limb_count: usize = big.digits.len();
+    let bit_length: u64 = bigint_bit_length(big);
+    if big.sign < 0 {
+        format!("<negative int, {bit_length}-bit, {limb_count} base-2^15 limbs>")
+    } else {
+        format!("<int, {bit_length}-bit, {limb_count} base-2^15 limbs>")
+    }
+}
+
+fn bigint_bit_length(big: &BigInt) -> u64 {
+    let mut top_index: usize = big.digits.len();
+    while top_index > 0 {
+        top_index -= 1;
+        let limb: u16 = big.digits[top_index];
+        if limb != 0 {
+            let bits_in_limb: u64 = u64::from(u16::BITS - limb.leading_zeros());
+            return 15_u64 * top_index as u64 + bits_in_limb;
+        }
+    }
+    0
 }
 
 #[must_use]
@@ -635,5 +662,59 @@ mod tests {
         };
         let expected: u128 = 16u128 << 30;
         assert_eq!(repr_const(&Object::Long(big)), expected.to_string());
+    }
+
+    #[test]
+    fn bigint_small_multi_limb_stays_exact() {
+        let positive: BigInt = BigInt {
+            sign: 1,
+            digits: vec![5, 1],
+        };
+        assert_eq!(repr_const(&Object::Long(positive)), "32773");
+        let negative: BigInt = BigInt {
+            sign: -1,
+            digits: vec![5, 1],
+        };
+        assert_eq!(repr_const(&Object::Long(negative)), "-32773");
+    }
+
+    #[test]
+    fn bigint_at_cap_uses_exact_decimal_path() {
+        let big: BigInt = BigInt {
+            sign: 1,
+            digits: vec![1; MAX_REPR_LONG_DIGITS],
+        };
+        let rendered: String = repr_const(&Object::Long(big));
+        assert!(!rendered.starts_with('<'));
+        assert!(rendered.bytes().all(|b: u8| b.is_ascii_digit()));
+    }
+
+    #[test]
+    fn bigint_oversized_returns_bounded_summary_fast() {
+        let limb_count: usize = 1_000_000;
+        let big: BigInt = BigInt {
+            sign: 1,
+            digits: vec![0x7fff; limb_count],
+        };
+        let start: std::time::Instant = std::time::Instant::now();
+        let rendered: String = repr_const(&Object::Long(big));
+        let elapsed: std::time::Duration = start.elapsed();
+        assert_eq!(rendered, "<int, 15000000-bit, 1000000 base-2^15 limbs>");
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "oversized bigint repr took {elapsed:?}, expected the bounded path to skip the quadratic loop"
+        );
+    }
+
+    #[test]
+    fn bigint_oversized_negative_summary() {
+        let big: BigInt = BigInt {
+            sign: -1,
+            digits: vec![0x7fff; 1_000_000],
+        };
+        assert_eq!(
+            repr_const(&Object::Long(big)),
+            "<negative int, 15000000-bit, 1000000 base-2^15 limbs>"
+        );
     }
 }
