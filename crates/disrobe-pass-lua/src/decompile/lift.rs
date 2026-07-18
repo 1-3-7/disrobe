@@ -653,7 +653,7 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
             }
             Op::Concat => {
                 let end: u32 = if matches!(dialect, LuaDialect::Lua54) {
-                    d.a + d.b - 1
+                    d.a + d.b.saturating_sub(1)
                 } else {
                     d.c
                 };
@@ -1596,6 +1596,45 @@ mod tests {
                 .any(|w: &String| w.contains("multi-value table elements")),
             "must warn about the unresolved vararg/multi-value span; got: {:?}",
             out.warnings
+        );
+    }
+
+    const OP54_CONCAT: u32 = 53;
+    const OP54_RETURN1: u32 = 72;
+
+    #[test]
+    fn lua54_degenerate_concat_a0_b0_lifts_in_bounded_time() {
+        let code: Vec<u32> = vec![
+            enc54_abc(OP54_CONCAT, 0, 0, 0, 0),
+            enc54_abc(OP54_RETURN1, 0, 0, 0, 0),
+        ];
+        let p: LuaProto = proto(code, Vec::new(), 2);
+        let out: LiftedProto = lift_proto_dialect(&p, LuaDialect::Lua54, 0);
+        assert!(
+            !out.source.contains(" .. "),
+            "a B=0 CONCAT spans a single register and must not fabricate a join, got:\n{}",
+            out.source
+        );
+        assert!(
+            out.source.len() < 1024,
+            "a B=0 CONCAT must not expand into an unbounded register span, got {} bytes",
+            out.source.len()
+        );
+    }
+
+    #[test]
+    fn lua54_valid_concat_preserves_three_register_span() {
+        let code: Vec<u32> = vec![
+            enc54_abc(OP54_CONCAT, 1, 3, 0, 0),
+            enc54_abc(OP54_RETURN1, 1, 0, 0, 0),
+        ];
+        let p: LuaProto = proto(code, Vec::new(), 5);
+        let out: LiftedProto = lift_proto_dialect(&p, LuaDialect::Lua54, 0);
+        assert_eq!(
+            out.source.matches(" .. ").count(),
+            2,
+            "A=1 B=3 CONCAT must join exactly three registers (1..=3), got:\n{}",
+            out.source
         );
     }
 }
