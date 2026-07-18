@@ -63,6 +63,8 @@ struct LoopFrame {
     continue_block: Option<BlockId>,
 }
 
+const MAX_STRUCTURE_DEPTH: usize = 256;
+
 struct Structurer<'a, N: TokenNamer> {
     cfg: &'a Cfg,
     namer: &'a N,
@@ -73,6 +75,7 @@ struct Structurer<'a, N: TokenNamer> {
     block_code: Vec<BlockCode>,
     loop_header: Vec<bool>,
     visited: Vec<bool>,
+    depth: usize,
     loop_stack: Vec<LoopFrame>,
     goto_targets: BTreeSet<u32>,
     locals_used: BTreeSet<u32>,
@@ -125,6 +128,7 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             block_code,
             loop_header,
             visited: vec![false; count],
+            depth: 0,
             loop_stack: Vec::new(),
             goto_targets: BTreeSet::new(),
             locals_used,
@@ -134,6 +138,11 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
     }
 
     fn emit_region(&mut self, start: BlockId, stop: Option<BlockId>) -> Structured {
+        self.depth += 1;
+        if self.depth > MAX_STRUCTURE_DEPTH {
+            self.depth -= 1;
+            return self.goto(start);
+        }
         let mut seq: Vec<Structured> = Vec::new();
         let mut cur: Option<BlockId> = Some(start);
         while let Some(bid) = cur {
@@ -146,6 +155,7 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             }
             cur = self.emit_block_into(bid, stop, &mut seq);
         }
+        self.depth -= 1;
         finish_seq(seq)
     }
 
@@ -1600,6 +1610,74 @@ mod tests {
             out.body.contains("while ("),
             "backward branch must become a while loop; got:\n{}",
             out.body
+        );
+    }
+
+    fn deep_conditional_chain(n: u32) -> Vec<u8> {
+        let mut code: Vec<u8> = Vec::with_capacity(9 * n as usize + 1);
+        let tail_start: u32 = 6 * n + 1;
+        for i in 0..n {
+            let next_off: u32 = 6 * i + 6;
+            let s_off: u32 = tail_start + 3 * i;
+            let disp: i32 = (i64::from(s_off) - i64::from(next_off)) as i32;
+            code.push(0x02);
+            code.push(0x3A);
+            code.extend_from_slice(&disp.to_le_bytes());
+        }
+        code.push(0x2A);
+        for _ in 0..n {
+            code.push(0x2B);
+            code.push(0x00);
+            code.push(0x2A);
+        }
+        code
+    }
+
+    fn decompile_chain(n: u32) -> String {
+        let code: Vec<u8> = deep_conditional_chain(n);
+        let body: MethodBody = MethodBody {
+            max_stack: 8,
+            code_size: code.len() as u32,
+            local_var_sig_tok: 0,
+            init_locals: false,
+            instructions: disassemble(&code).expect("disasm"),
+            exception_clauses: Vec::new(),
+        };
+        crate::structurize::decompile_method_named(
+            "void M()",
+            &body,
+            &HexNamer,
+            &NameTable::default(),
+            TargetLang::CSharp,
+        )
+        .body
+    }
+
+    #[test]
+    fn deep_conditional_chain_recursion_is_depth_bounded() {
+        let shallow: String = decompile_chain(8);
+        assert_eq!(
+            shallow.matches("if (").count(),
+            8,
+            "a chain shorter than the depth budget structures fully; got:\n{shallow}"
+        );
+        assert_eq!(shallow.matches("goto ").count(), 0);
+
+        let cap: u32 = MAX_STRUCTURE_DEPTH as u32;
+        let deep: String = decompile_chain(cap * 2);
+        assert_eq!(
+            deep.matches("if (").count(),
+            MAX_STRUCTURE_DEPTH,
+            "the recovered nesting is capped at the depth budget rather than the chain length"
+        );
+        assert!(
+            deep.matches("goto ").count() > 0,
+            "the depth cap degrades to a goto instead of recursing"
+        );
+        assert_eq!(
+            decompile_chain(cap * 3).matches("if (").count(),
+            MAX_STRUCTURE_DEPTH,
+            "a longer chain still caps at the depth budget, so nesting is bounded regardless of chain length"
         );
     }
 }
