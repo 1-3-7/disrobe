@@ -1211,7 +1211,7 @@ fn jump_target_index(ins: &[MrubyInstruction], k: usize) -> Option<usize> {
     let offset: i64 = i64::from(offset_raw as u16 as i16);
     let next_pc: i64 = i64::from(ins.get(k.saturating_add(1))?.pc);
     let target: u32 = u32::try_from(next_pc.checked_add(offset)?).ok()?;
-    ins.iter().position(|i| i.pc == target)
+    ins.binary_search_by_key(&target, |instr| instr.pc).ok()
 }
 
 fn build_regions(ins: &[MrubyInstruction]) -> Vec<Region> {
@@ -2073,5 +2073,65 @@ mod tests {
         assert_eq!(out.unmodeled_opcodes, 1);
         assert!(out.unmodeled_mnemonics.contains(&"JMP".to_owned()));
         assert!(out.modeled_opcodes >= 2);
+    }
+
+    fn synthetic_jmpnot(pc: u32, cond_reg: u32, offset_raw: u32) -> MrubyInstruction {
+        MrubyInstruction {
+            pc,
+            opcode: 0,
+            mnemonic: "JMPNOT".to_owned(),
+            op: MrubyOp::JmpNot,
+            operands: vec![cond_reg, offset_raw],
+        }
+    }
+
+    fn synthetic_nop(pc: u32) -> MrubyInstruction {
+        MrubyInstruction {
+            pc,
+            opcode: 0,
+            mnemonic: "NOP".to_owned(),
+            op: MrubyOp::Nop,
+            operands: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn jump_target_index_resolves_forward_backward_and_miss() {
+        let forward: Vec<MrubyInstruction> = vec![
+            synthetic_jmpnot(0, 0, 4),
+            synthetic_nop(4),
+            synthetic_nop(8),
+        ];
+        assert_eq!(jump_target_index(&forward, 0), Some(2));
+
+        let backward: Vec<MrubyInstruction> = vec![
+            synthetic_jmpnot(0, 0, u32::from((-4i16) as u16)),
+            synthetic_nop(4),
+            synthetic_nop(8),
+        ];
+        assert_eq!(jump_target_index(&backward, 0), Some(0));
+
+        let miss: Vec<MrubyInstruction> = vec![
+            synthetic_jmpnot(0, 0, 1),
+            synthetic_nop(4),
+            synthetic_nop(8),
+        ];
+        assert_eq!(jump_target_index(&miss, 0), None);
+    }
+
+    #[test]
+    fn build_regions_scales_over_many_branches() {
+        let count: usize = 60_000;
+        let ins: Vec<MrubyInstruction> = (0..count)
+            .map(|k| synthetic_jmpnot(u32::try_from(k * 4).unwrap_or(u32::MAX), 0, 1))
+            .collect();
+        let start: std::time::Instant = std::time::Instant::now();
+        let regions: Vec<Region> = build_regions(&ins);
+        let elapsed: std::time::Duration = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "build_regions took {elapsed:?} for {count} branches"
+        );
+        assert!(!regions.is_empty());
     }
 }
