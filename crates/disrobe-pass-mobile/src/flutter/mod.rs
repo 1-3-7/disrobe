@@ -63,6 +63,8 @@ pub use string_pool::{DartPoolString, DartStringPool, DartStringRole, recover_st
 
 pub const DART_SNAPSHOT_MAGIC: u32 = 0xdcdc_f5f5;
 
+const AARCH64_INSTRUCTION_BYTES: u64 = 4;
+
 const DART_SNAPSHOT_VERSION_HASH_LEN: usize = 32;
 const DART_SNAPSHOT_HEADER_FIXED_LEN: usize = 4 + 8 + 8 + DART_SNAPSHOT_VERSION_HASH_LEN;
 const DART_SNAPSHOT_FEATURES_MAX: usize = 4096;
@@ -271,8 +273,13 @@ fn collect_function_symbols(
     let Some(end): Option<u64> = section.address.checked_add(section.size) else {
         return Vec::new();
     };
+    let max_symbols: usize =
+        usize::try_from(section.size / AARCH64_INSTRUCTION_BYTES).unwrap_or(usize::MAX);
     let mut symbols: Vec<DartFunctionSymbol> = Vec::new();
     for symbol in file.symbols() {
+        if symbols.len() >= max_symbols {
+            break;
+        }
         if symbol.kind() != ObjSymbolKind::Text {
             continue;
         }

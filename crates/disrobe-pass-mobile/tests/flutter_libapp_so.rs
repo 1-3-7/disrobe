@@ -15,10 +15,11 @@
 
 use disrobe_pass_mobile::DART_SNAPSHOT_MAGIC;
 use disrobe_pass_mobile::{
-    DART_ISOLATE_DATA_SYMBOL, DART_VM_DATA_SYMBOL, DartAotDecompile, DartProgramSkeleton,
-    DartRecoveryCounts, DartSnapshotHeader, DartSnapshotKind, DartStaticRecovery, Error,
-    FlutterObfuscationMap, LibAppLayout, build_dart_program_skeleton, dart_recovery_counts,
-    decompile_dart_aot, decompile_libapp_so_structured, parse_dart_snapshot,
+    AotLiftReport, DART_ISOLATE_DATA_SYMBOL, DART_ISOLATE_INSTR_SYMBOL, DART_VM_DATA_SYMBOL,
+    DartAotDecompile, DartLiftedFunction, DartProgramSkeleton, DartRecoveryCounts,
+    DartSnapshotHeader, DartSnapshotKind, DartStaticRecovery, Error, FlutterObfuscationMap,
+    LibAppLayout, build_dart_program_skeleton, dart_recovery_counts, decompile_dart_aot,
+    decompile_libapp_so_structured, lift_libapp_aot, parse_dart_snapshot,
     parse_flutter_obfuscation_map, parse_libapp_so, recover_dart_static,
 };
 
@@ -505,5 +506,178 @@ fn name_classifier_buckets_dart_identifiers() {
         recovery.class_names.len(),
         recovery.method_names.len(),
         recovery.library_uris.len()
+    );
+}
+
+fn synth_libapp_so_symbol_flood(text_len_bytes: usize, func_symbol_count: usize) -> Vec<u8> {
+    let mut text: Vec<u8> = Vec::with_capacity(text_len_bytes);
+    while text.len() < text_len_bytes {
+        write_u32(&mut text, 0xd503_201f);
+    }
+    text.truncate(text_len_bytes);
+
+    let mut shstrtab: Vec<u8> = Vec::new();
+    shstrtab.push(0);
+    let shstr_text_off: u32 = shstrtab.len() as u32;
+    shstrtab.extend_from_slice(b".text\0");
+    let shstr_shstrtab_off: u32 = shstrtab.len() as u32;
+    shstrtab.extend_from_slice(b".shstrtab\0");
+    let shstr_symtab_off: u32 = shstrtab.len() as u32;
+    shstrtab.extend_from_slice(b".symtab\0");
+    let shstr_strtab_off: u32 = shstrtab.len() as u32;
+    shstrtab.extend_from_slice(b".strtab\0");
+
+    let mut strtab: Vec<u8> = Vec::new();
+    strtab.push(0);
+    let str_instr_off: u32 = strtab.len() as u32;
+    strtab.extend_from_slice(DART_ISOLATE_INSTR_SYMBOL.as_bytes());
+    strtab.push(0);
+    let str_func_off: u32 = strtab.len() as u32;
+    strtab.extend_from_slice(b"A");
+    strtab.push(0);
+
+    let elf_header_size: u64 = 64;
+    let section_header_size: u64 = 64;
+    let section_count: u64 = 5;
+
+    let text_addr: u64 = 0x1000;
+    let text_off: u64 = elf_header_size;
+    let shstrtab_off: u64 = text_off + text.len() as u64;
+    let strtab_off: u64 = shstrtab_off + shstrtab.len() as u64;
+
+    let sym_entry_size: u64 = 24;
+    let sym_count: u64 = 2 + func_symbol_count as u64;
+    let symtab_size: u64 = sym_count * sym_entry_size;
+    let symtab_off: u64 = strtab_off + strtab.len() as u64;
+    let section_headers_off: u64 = symtab_off + symtab_size;
+
+    let mut buf: Vec<u8> = Vec::new();
+    buf.extend_from_slice(&[0x7f, b'E', b'L', b'F']);
+    buf.push(2);
+    buf.push(1);
+    buf.push(1);
+    buf.push(0);
+    buf.extend_from_slice(&[0u8; 8]);
+    write_u16(&mut buf, 3);
+    write_u16(&mut buf, 0xb7);
+    write_u32(&mut buf, 1);
+    write_u64(&mut buf, 0);
+    write_u64(&mut buf, 0);
+    write_u64(&mut buf, section_headers_off);
+    write_u32(&mut buf, 0);
+    write_u16(&mut buf, elf_header_size as u16);
+    write_u16(&mut buf, 0);
+    write_u16(&mut buf, 0);
+    write_u16(&mut buf, section_header_size as u16);
+    write_u16(&mut buf, section_count as u16);
+    write_u16(&mut buf, 2);
+    assert_eq!(buf.len(), 64);
+
+    buf.extend_from_slice(&text);
+    buf.extend_from_slice(&shstrtab);
+    buf.extend_from_slice(&strtab);
+
+    write_sym_entry(&mut buf, 0, 0, 0, 0, 0, 0);
+    write_sym_entry(
+        &mut buf,
+        str_instr_off,
+        0x11,
+        0,
+        1,
+        text_addr,
+        text.len() as u64,
+    );
+    let modulus: u64 = text.len().max(1) as u64;
+    for i in 0..func_symbol_count {
+        let value: u64 = text_addr + (i as u64 % modulus);
+        write_sym_entry(&mut buf, str_func_off, 0x12, 0, 1, value, text.len() as u64);
+    }
+    assert_eq!(buf.len() as u64, section_headers_off);
+
+    write_section_header(&mut buf, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    write_section_header(
+        &mut buf,
+        shstr_text_off,
+        1,
+        0x6,
+        text_addr,
+        text_off,
+        text.len() as u64,
+        0,
+        0,
+        16,
+        0,
+    );
+    write_section_header(
+        &mut buf,
+        shstr_shstrtab_off,
+        3,
+        0,
+        0,
+        shstrtab_off,
+        shstrtab.len() as u64,
+        0,
+        0,
+        1,
+        0,
+    );
+    write_section_header(
+        &mut buf,
+        shstr_symtab_off,
+        2,
+        0,
+        0,
+        symtab_off,
+        symtab_size,
+        4,
+        1,
+        8,
+        sym_entry_size,
+    );
+    write_section_header(
+        &mut buf,
+        shstr_strtab_off,
+        3,
+        0,
+        0,
+        strtab_off,
+        strtab.len() as u64,
+        0,
+        0,
+        1,
+        0,
+    );
+
+    buf
+}
+
+#[test]
+fn lift_libapp_aot_bounds_overlapping_symbol_flood() {
+    let text_len: usize = 4096;
+    let flood: usize = 4000;
+    let so: Vec<u8> = synth_libapp_so_symbol_flood(text_len, flood);
+    let cap: usize = text_len / 4;
+
+    let layout: LibAppLayout = parse_libapp_so(&so).expect("parse crafted libapp.so");
+    assert!(
+        layout.function_symbols.len() <= cap,
+        "the function-symbol collector must cap a flood at one entry per instruction slot; got {} for a {text_len}-byte region",
+        layout.function_symbols.len()
+    );
+
+    let report: AotLiftReport = lift_libapp_aot(&so).expect("lift crafted libapp.so");
+    assert!(
+        report.function_count <= cap,
+        "the symtab disassembler must not emit more functions than instruction slots; got {}",
+        report.function_count
+    );
+    let retained: usize = report
+        .functions
+        .iter()
+        .map(|f: &DartLiftedFunction| f.instruction_count)
+        .sum::<usize>();
+    assert!(
+        retained <= cap,
+        "overlapping symbols must decode each region slot at most once; retained {retained} for a {text_len}-byte region"
     );
 }
