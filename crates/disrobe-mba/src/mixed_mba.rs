@@ -98,8 +98,12 @@ fn build_remap(vars: &BTreeSet<u32>) -> (BTreeMap<u32, u32>, BTreeMap<u32, u32>)
 fn verify_whole(original: &Expr, candidate: &Expr, width: Width) -> bool {
     let var_count: u32 = original
         .max_var()
-        .map_or(0, |index: u32| index + 1)
-        .max(candidate.max_var().map_or(0, |index: u32| index + 1));
+        .map_or(0, |index: u32| index.saturating_add(1))
+        .max(
+            candidate
+                .max_var()
+                .map_or(0, |index: u32| index.saturating_add(1)),
+        );
     if width.is_exhaustible() && equivalent_exhaustive_runnable(width, var_count) {
         return equivalent_exhaustive(original, candidate, width, var_count);
     }
