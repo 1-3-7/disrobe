@@ -223,6 +223,8 @@ fn alignment_from_exponent(align: u8) -> u32 {
 
 const MAX_ORIGIN_DEPTH: u32 = 1024;
 
+pub(crate) const MAX_RENDER_INDENT: usize = 64;
+
 pub(crate) fn classify_base_origin(v: ValueId, ssa: &SsaFunction) -> BaseOrigin {
     classify_base_origin_depth(v, ssa, 0)
 }

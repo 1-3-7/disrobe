@@ -533,7 +533,10 @@ impl Cursor<'_> {
             || matches_present(opcode, ops.indirect_pointer_prefix)
             || opcode == ops.weak_prefix
         {
-            return self.read_reference();
+            self.depth = self.depth.saturating_add(1usize);
+            let result: Result<()> = self.read_reference();
+            self.depth = self.depth.saturating_sub(1usize);
+            return result;
         }
         Err(Error::OxcParse(format!(
             "v8 code-serializer map/reference position holds unexpected opcode 0x{opcode:02X} \
@@ -806,7 +809,10 @@ impl Cursor<'_> {
             || matches_present(opcode, ops.indirect_pointer_prefix)
             || opcode == ops.weak_prefix
         {
-            return self.read_map_slot();
+            self.depth = self.depth.saturating_add(1usize);
+            let result: Result<()> = self.read_map_slot();
+            self.depth = self.depth.saturating_sub(1usize);
+            return result;
         }
         Err(Error::OxcParse(format!(
             "v8 code-serializer map position holds unexpected opcode 0x{opcode:02X} \
@@ -1280,6 +1286,26 @@ mod tests {
             records: BTreeMap::new(),
             open_objects: Vec::new(),
         }
+    }
+
+    #[test]
+    fn prefix_run_in_reference_position_stays_depth_bounded() {
+        let weak_prefix: u8 = SerializerOpcodes::for_node(NodeVersion::Node24).weak_prefix;
+        let payload: Vec<u8> = vec![weak_prefix; 100_000usize];
+        let mut cursor: Cursor<'_> = test_cursor(&payload);
+        let outcome: Result<()> = cursor.read_reference();
+        assert!(outcome.is_err());
+        assert!(cursor.pos <= MAX_RECURSION_DEPTH + 1usize);
+    }
+
+    #[test]
+    fn prefix_run_in_map_slot_position_stays_depth_bounded() {
+        let weak_prefix: u8 = SerializerOpcodes::for_node(NodeVersion::Node24).weak_prefix;
+        let payload: Vec<u8> = vec![weak_prefix; 100_000usize];
+        let mut cursor: Cursor<'_> = test_cursor(&payload);
+        let outcome: Result<()> = cursor.read_map_slot();
+        assert!(outcome.is_err());
+        assert!(cursor.pos <= MAX_RECURSION_DEPTH + 1usize);
     }
 
     #[test]
