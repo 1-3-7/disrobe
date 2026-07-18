@@ -47,12 +47,16 @@ pub fn walk_cramfs(bytes: &[u8], max_total: u64) -> Result<CramfsWalk> {
     let mut files: Vec<CramfsFile> = Vec::new();
     let mut total: u64 = 0;
     let mut stack: Vec<(CramfsInode, String, usize)> = vec![(root, String::new(), 0)];
+    let mut visited: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     while let Some((inode, prefix, depth)) = stack.pop() {
         if depth > MAX_CRAMFS_DEPTH || files.len() > MAX_CRAMFS_FILES {
             break;
         }
         let kind: u16 = inode.mode & CRAMFS_TYPE_MASK;
         if kind == CRAMFS_MODE_DIR {
+            if !visited.insert(inode.data_offset) {
+                continue;
+            }
             read_directory(bytes, &inode, &prefix, depth, &mut stack)?;
         } else if kind == CRAMFS_MODE_FILE {
             let data: Vec<u8> = read_file_data(bytes, &inode, max_total)?;
@@ -345,5 +349,93 @@ mod tests {
         assert_eq!(result.kind, crate::container::ContainerKind::Cramfs);
         assert_eq!(std::fs::read(dir.join("note.txt")).expect("note"), body);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn self_referential_directory_terminates() {
+        let region_start: usize = CRAMFS_SUPER_LEN;
+        let entry_count: usize = 4;
+        let entry_len: usize = CRAMFS_INODE_LEN + 4;
+        let region_size: usize = entry_count * entry_len;
+        let mut image: Vec<u8> = vec![0u8; region_start + region_size];
+        image[0..4].copy_from_slice(&CRAMFS_MAGIC.to_le_bytes());
+        image[16..32].copy_from_slice(b"Compressed ROMFS");
+        let root: [u8; 12] = encode_inode(
+            CRAMFS_MODE_DIR | 0o755,
+            region_size as u32,
+            0,
+            (region_start / 4) as u32,
+        );
+        image[64..76].copy_from_slice(&root);
+        for k in 0..entry_count {
+            let at: usize = region_start + k * entry_len;
+            let child: [u8; 12] = encode_inode(
+                CRAMFS_MODE_DIR | 0o755,
+                region_size as u32,
+                1,
+                (region_start / 4) as u32,
+            );
+            image[at..at + CRAMFS_INODE_LEN].copy_from_slice(&child);
+            let name: String = format!("dir{k}");
+            image[at + CRAMFS_INODE_LEN..at + CRAMFS_INODE_LEN + 4]
+                .copy_from_slice(name.as_bytes());
+        }
+        let walk: CramfsWalk =
+            walk_cramfs(&image, 64 * 1024 * 1024).expect("self-referential cramfs terminates");
+        assert!(walk.files.is_empty());
+    }
+
+    #[test]
+    fn nested_directory_recovers_file() {
+        let body: &[u8] = b"cramfs nested file payload 0123456789abcdef";
+        let compressed: Vec<u8> = zlib_compress(body);
+
+        let root_region: usize = CRAMFS_SUPER_LEN;
+        let subdir_inode_off: usize = root_region;
+        let subdir_name_off: usize = subdir_inode_off + CRAMFS_INODE_LEN;
+        let subdir_region: usize = subdir_name_off + 4;
+        let file_inode_off: usize = subdir_region;
+        let file_name_off: usize = file_inode_off + CRAMFS_INODE_LEN;
+        let ptr_table_off: usize = file_name_off + 4;
+        let block_data_off: usize = ptr_table_off + 4;
+        let block_end: usize = block_data_off + compressed.len();
+
+        let mut image: Vec<u8> = vec![0u8; block_end];
+        image[0..4].copy_from_slice(&CRAMFS_MAGIC.to_le_bytes());
+        image[16..32].copy_from_slice(b"Compressed ROMFS");
+
+        let root: [u8; 12] = encode_inode(
+            CRAMFS_MODE_DIR | 0o755,
+            (CRAMFS_INODE_LEN + 4) as u32,
+            0,
+            (root_region / 4) as u32,
+        );
+        image[64..76].copy_from_slice(&root);
+
+        let subdir: [u8; 12] = encode_inode(
+            CRAMFS_MODE_DIR | 0o755,
+            (CRAMFS_INODE_LEN + 4) as u32,
+            1,
+            (subdir_region / 4) as u32,
+        );
+        image[subdir_inode_off..subdir_inode_off + CRAMFS_INODE_LEN].copy_from_slice(&subdir);
+        image[subdir_name_off..subdir_name_off + 4].copy_from_slice(b"subd");
+
+        let file: [u8; 12] = encode_inode(
+            CRAMFS_MODE_FILE | 0o755,
+            body.len() as u32,
+            1,
+            (ptr_table_off / 4) as u32,
+        );
+        image[file_inode_off..file_inode_off + CRAMFS_INODE_LEN].copy_from_slice(&file);
+        image[file_name_off..file_name_off + 4].copy_from_slice(b"file");
+
+        image[ptr_table_off..ptr_table_off + 4].copy_from_slice(&(block_end as u32).to_le_bytes());
+        image[block_data_off..block_end].copy_from_slice(&compressed);
+
+        let walk: CramfsWalk = walk_cramfs(&image, 64 * 1024 * 1024).expect("nested cramfs walk");
+        assert_eq!(walk.files.len(), 1);
+        assert_eq!(walk.files[0].path, "subd/file");
+        assert_eq!(walk.files[0].data, body);
     }
 }
