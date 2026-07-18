@@ -3,6 +3,7 @@ use std::fmt::Arguments;
 
 use wasmparser::{BlockType, FunctionBody, Operator, Parser, Payload, ValType};
 
+use crate::MAX_RENDER_INDENT;
 use crate::error::{Error, Result};
 use crate::gc_types::{
     ArrayTypeRecord, GcStorageKind, GcTypeGraph, StructTypeRecord, recover_gc_types,
@@ -444,7 +445,7 @@ impl Translator<'_> {
     }
 
     fn pad(&self) -> String {
-        "    ".repeat(self.indent)
+        "    ".repeat(self.indent.min(MAX_RENDER_INDENT))
     }
 
     fn local_name(&self, idx: u32) -> String {
@@ -3494,6 +3495,33 @@ mod merge_tests {
           local.set $acc
         end
         local.get $acc))"#;
+
+    #[test]
+    fn deeply_nested_blocks_clamp_structured_indentation() {
+        let depth: usize = 400usize;
+        let mut wat: String = String::from("(module (func $deep (export \"deep\") ");
+        for _ in 0..depth {
+            wat.push_str("block ");
+        }
+        for _ in 0..depth {
+            wat.push_str("end ");
+        }
+        wat.push_str("))");
+        let source: String = lift_only_function(&wat, HighLang::Rust);
+        let max_indent_spaces: usize = source
+            .lines()
+            .map(|line: &str| line.len() - line.trim_start_matches(' ').len())
+            .max()
+            .unwrap_or(0usize);
+        assert!(
+            max_indent_spaces <= 4usize * crate::MAX_RENDER_INDENT + 8usize,
+            "deep nesting must clamp indentation, saw {max_indent_spaces} leading spaces"
+        );
+        assert!(
+            source.len() < depth * 700usize,
+            "clamped output must stay linear in nesting depth"
+        );
+    }
 
     #[test]
     fn counted_loop_collapses_to_single_labeled_loop_rust() {

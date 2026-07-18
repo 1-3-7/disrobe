@@ -2,6 +2,7 @@ use std::fmt::Arguments;
 
 use wasmparser::{BlockType, Catch, FunctionBody, Operator, ValType};
 
+use crate::MAX_RENDER_INDENT;
 use crate::lift::{LiftCoverage, LiftResult, LiftTarget};
 use crate::op_names::operator_mnemonic;
 use crate::signature::{FunctionSig, MAX_FUNCTION_LOCALS};
@@ -557,13 +558,13 @@ fn render_operators(
         match rendered {
             Rendered::Translated(Some(line)) => {
                 coverage.record_translated();
-                let pad: String = "  ".repeat(depth);
+                let pad: String = "  ".repeat(depth.min(MAX_RENDER_INDENT));
                 push_line!(out, "{pad}{line}");
             }
             Rendered::Translated(None) => coverage.record_translated(),
             Rendered::Untranslated => {
                 coverage.record_untranslated(operator_mnemonic(op));
-                let pad: String = "  ".repeat(depth);
+                let pad: String = "  ".repeat(depth.min(MAX_RENDER_INDENT));
                 push_line!(out, "{pad}unreachable");
             }
         }
@@ -2636,6 +2637,35 @@ mod tests {
         end))";
     const FLOATS: &str =
         r"(module (func (result f64) f64.const 3.5 f64.const 2.0 f64.mul f64.sqrt))";
+
+    #[test]
+    fn deeply_nested_blocks_clamp_wat_indentation() {
+        let depth: usize = 400usize;
+        let mut wat: String = String::from("(module (func ");
+        for _ in 0..depth {
+            wat.push_str("block ");
+        }
+        for _ in 0..depth {
+            wat.push_str("end ");
+        }
+        wat.push_str("))");
+        let s: FunctionSig = sig("nested", Vec::new(), Vec::new());
+        let out: LiftResult = lift_first(&wat, &s);
+        let max_indent_spaces: usize = out
+            .pseudo_source
+            .lines()
+            .map(|line: &str| line.len() - line.trim_start_matches(' ').len())
+            .max()
+            .unwrap_or(0usize);
+        assert!(
+            max_indent_spaces <= 2usize * MAX_RENDER_INDENT + 8usize,
+            "deep nesting must clamp indentation, saw {max_indent_spaces} leading spaces"
+        );
+        assert!(
+            out.pseudo_source.len() < depth * 512usize,
+            "clamped output must stay linear in nesting depth"
+        );
+    }
 
     #[test]
     fn add_reparses_with_real_param_types() {
