@@ -50,10 +50,13 @@ pub(super) struct LiftError;
 
 type LiftResult<T> = std::result::Result<T, LiftError>;
 
+const MAX_LIFT_DEPTH: usize = 64;
+
 struct Lifter<'a> {
     code: &'a [Instruction],
     func: &'a AbyssFunction,
     loop_stack: Vec<LoopContext>,
+    depth: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -68,6 +71,7 @@ pub(super) fn lift_function(doc: &AbyssDoc, func: &AbyssFunction) -> LiftResult<
         code: &doc.code,
         func,
         loop_stack: Vec::new(),
+        depth: 0,
     };
     let mut body: Vec<PyStmt> = lifter.region(func.entry, end)?;
     strip_trailing_none_return(&mut body);
@@ -112,6 +116,17 @@ fn jump_arg(inst: &Instruction) -> Option<usize> {
 
 impl Lifter<'_> {
     fn region(&mut self, start: usize, end: usize) -> LiftResult<Vec<PyStmt>> {
+        self.depth += 1;
+        if self.depth > MAX_LIFT_DEPTH {
+            self.depth -= 1;
+            return Err(LiftError);
+        }
+        let result: LiftResult<Vec<PyStmt>> = self.region_inner(start, end);
+        self.depth -= 1;
+        result
+    }
+
+    fn region_inner(&mut self, start: usize, end: usize) -> LiftResult<Vec<PyStmt>> {
         let mut stmts: Vec<PyStmt> = Vec::new();
         let mut stack: Vec<PyExpr> = Vec::new();
         let mut ip: usize = start;
@@ -414,6 +429,9 @@ impl Lifter<'_> {
             Op::Store => Ok(AssignTarget::Name(arg_str(inst, 0)?)),
             Op::Unpack => {
                 let count: usize = arg_usize(inst, 0)?;
+                if count > self.code.len().saturating_sub(ip + 1) {
+                    return Err(LiftError);
+                }
                 let mut elts: Vec<AssignTarget> = Vec::with_capacity(count);
                 let mut cursor: usize = ip + 1;
                 for _ in 0..count {
@@ -432,6 +450,9 @@ impl Lifter<'_> {
             Op::Store => Ok(1),
             Op::Unpack => {
                 let count: usize = arg_usize(inst, 0)?;
+                if count > self.code.len().saturating_sub(ip + 1) {
+                    return Err(LiftError);
+                }
                 let mut total: usize = 1;
                 let mut cursor: usize = ip + 1;
                 for _ in 0..count {
@@ -502,6 +523,9 @@ impl Lifter<'_> {
                     .map(|v: &Json| v.as_str().map(str::to_owned).ok_or(LiftError))
                     .collect::<LiftResult<Vec<String>>>()?;
                 let total: usize = ops.len() + 1;
+                if total > stack.len() {
+                    return Err(LiftError);
+                }
                 let mut values: Vec<PyExpr> = Vec::with_capacity(total);
                 for _ in 0..total {
                     values.push(stack.pop().ok_or(LiftError)?);
@@ -532,6 +556,9 @@ impl Lifter<'_> {
                     kwargs.push((name.clone(), stack.pop().ok_or(LiftError)?));
                 }
                 kwargs.reverse();
+                if argc > stack.len() {
+                    return Err(LiftError);
+                }
                 let mut args: Vec<PyExpr> = Vec::with_capacity(argc);
                 for _ in 0..argc {
                     args.push(stack.pop().ok_or(LiftError)?);
@@ -577,6 +604,9 @@ impl Lifter<'_> {
             }
             Op::BuildDict => {
                 let count: usize = arg_usize(inst, 0)?;
+                if count > stack.len() / 2 {
+                    return Err(LiftError);
+                }
                 let mut pairs: Vec<(PyExpr, PyExpr)> = Vec::with_capacity(count);
                 for _ in 0..count {
                     let value: PyExpr = stack.pop().ok_or(LiftError)?;
@@ -662,12 +692,10 @@ impl Lifter<'_> {
 }
 
 fn pop_n(stack: &mut Vec<PyExpr>, count: usize) -> LiftResult<Vec<PyExpr>> {
-    let mut items: Vec<PyExpr> = Vec::with_capacity(count);
-    for _ in 0..count {
-        items.push(stack.pop().ok_or(LiftError)?);
+    if count > stack.len() {
+        return Err(LiftError);
     }
-    items.reverse();
-    Ok(items)
+    Ok(stack.split_off(stack.len() - count))
 }
 
 fn is_comprehension_start(code: &[Instruction], ip: usize) -> bool {
@@ -775,4 +803,162 @@ pub(super) fn render_indented(body: &[PyStmt], indent: usize) -> String {
         out.push_str("pass\n");
     }
     out
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use serde_json::Value as Json;
+
+    use super::{
+        AbyssDoc, AbyssFunction, AssignTarget, Instruction, LiftResult, Lifter, Op, PyStmt,
+        lift_function,
+    };
+
+    const HUGE: u64 = 4_000_000_000;
+
+    fn inst(op: Op, args: Vec<Json>) -> Instruction {
+        Instruction { op, args }
+    }
+
+    fn empty_func() -> AbyssFunction {
+        AbyssFunction {
+            entry: 0,
+            consts: Vec::new(),
+            globals: BTreeSet::new(),
+        }
+    }
+
+    fn lift(code: Vec<Instruction>) -> LiftResult<Vec<PyStmt>> {
+        let func: AbyssFunction = empty_func();
+        let doc: AbyssDoc = AbyssDoc {
+            code,
+            funcs: Vec::new(),
+        };
+        lift_function(&doc, &func)
+    }
+
+    #[test]
+    fn simple_assignment_lifts() {
+        let code: Vec<Instruction> = vec![
+            inst(Op::Load, vec![Json::from("x")]),
+            inst(Op::Store, vec![Json::from("y")]),
+            inst(Op::Return, Vec::new()),
+        ];
+        let stmts: Vec<PyStmt> = lift(code).expect("valid function lifts");
+        assert_eq!(stmts.len(), 1);
+        assert!(matches!(stmts.first(), Some(PyStmt::Assign(_, _))));
+    }
+
+    #[test]
+    fn huge_build_list_count_is_rejected() {
+        let code: Vec<Instruction> = vec![
+            inst(Op::BuildList, vec![Json::from(HUGE)]),
+            inst(Op::Return, Vec::new()),
+        ];
+        assert!(lift(code).is_err());
+    }
+
+    #[test]
+    fn huge_build_tuple_count_is_rejected() {
+        let code: Vec<Instruction> = vec![
+            inst(Op::BuildTuple, vec![Json::from(HUGE)]),
+            inst(Op::Return, Vec::new()),
+        ];
+        assert!(lift(code).is_err());
+    }
+
+    #[test]
+    fn huge_call_argc_is_rejected() {
+        let code: Vec<Instruction> = vec![
+            inst(Op::Load, vec![Json::from("f")]),
+            inst(Op::Call, vec![Json::from(HUGE)]),
+            inst(Op::Return, Vec::new()),
+        ];
+        assert!(lift(code).is_err());
+    }
+
+    #[test]
+    fn huge_build_dict_count_is_rejected() {
+        let code: Vec<Instruction> = vec![
+            inst(Op::BuildDict, vec![Json::from(HUGE)]),
+            inst(Op::Return, Vec::new()),
+        ];
+        assert!(lift(code).is_err());
+    }
+
+    #[test]
+    fn compare_chain_over_stack_is_rejected() {
+        let code: Vec<Instruction> = vec![
+            inst(Op::Load, vec![Json::from("a")]),
+            inst(
+                Op::CompareChain,
+                vec![Json::from(vec![Json::from("eq"), Json::from("lt")])],
+            ),
+            inst(Op::Return, Vec::new()),
+        ];
+        assert!(lift(code).is_err());
+    }
+
+    #[test]
+    fn huge_unpack_count_is_rejected() {
+        let code: Vec<Instruction> = vec![inst(Op::Unpack, vec![Json::from(HUGE)])];
+        let func: AbyssFunction = empty_func();
+        let lifter: Lifter<'_> = Lifter {
+            code: &code,
+            func: &func,
+            loop_stack: Vec::new(),
+            depth: 0,
+        };
+        assert!(lifter.read_store_target(0).is_err());
+        assert!(lifter.store_len(0).is_err());
+    }
+
+    #[test]
+    fn small_unpack_target_lifts() {
+        let code: Vec<Instruction> = vec![
+            inst(Op::Unpack, vec![Json::from(2_u64)]),
+            inst(Op::Store, vec![Json::from("a")]),
+            inst(Op::Store, vec![Json::from("b")]),
+        ];
+        let func: AbyssFunction = empty_func();
+        let lifter: Lifter<'_> = Lifter {
+            code: &code,
+            func: &func,
+            loop_stack: Vec::new(),
+            depth: 0,
+        };
+        assert!(matches!(
+            lifter.read_store_target(0),
+            Ok(AssignTarget::Tuple(_))
+        ));
+        assert_eq!(lifter.store_len(0).expect("unpack length"), 3);
+    }
+
+    #[test]
+    fn shallow_if_lifts() {
+        let code: Vec<Instruction> = vec![
+            inst(Op::Load, vec![Json::from("x")]),
+            inst(Op::JumpIfFalse, vec![Json::from(4_u64)]),
+            inst(Op::Load, vec![Json::from("y")]),
+            inst(Op::Pop, Vec::new()),
+            inst(Op::Return, Vec::new()),
+        ];
+        assert!(lift(code).is_ok());
+    }
+
+    #[test]
+    fn deeply_nested_if_is_rejected() {
+        let levels: usize = super::MAX_LIFT_DEPTH * 2 + 4;
+        let end_target: usize = levels * 2;
+        let mut code: Vec<Instruction> = Vec::with_capacity(end_target + 1);
+        for _ in 0..levels {
+            code.push(inst(Op::Load, vec![Json::from("x")]));
+            code.push(inst(Op::JumpIfFalse, vec![Json::from(end_target as u64)]));
+        }
+        code.push(inst(Op::Return, Vec::new()));
+        assert!(lift(code).is_err());
+    }
 }
