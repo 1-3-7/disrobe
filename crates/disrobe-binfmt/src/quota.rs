@@ -2,7 +2,7 @@ use crate::error::{Error, Result};
 
 use std::io::Read;
 
-const MAX_ENTRY_PREALLOC: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_ENTRY_PREALLOC: usize = 64 * 1024 * 1024;
 pub(crate) const DEFAULT_MAX_ENTRIES: usize = 65_535;
 pub(crate) const ABSOLUTE_MAX_ENTRIES: usize = 1_000_000;
 
