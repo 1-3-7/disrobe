@@ -289,7 +289,7 @@ fn read_file_data(
         return Err(Error::Minixfs("file exceeds total cap".to_owned()));
     }
     let zone_size: usize = sb.block_size << sb.log_zone_size;
-    let mut out: Vec<u8> = Vec::with_capacity(inode.size as usize);
+    let mut out: Vec<u8> = Vec::with_capacity(crate::quota::bounded_prealloc(inode.size));
     let zones: Vec<u32> = collect_data_zones(bytes, sb, inode);
     for z in zones {
         if out.len() as u64 >= inode.size {
@@ -337,9 +337,13 @@ pub fn walk_minixfs(bytes: &[u8], max_total: u64) -> Result<MinixWalk> {
     let mut files: Vec<MinixFile> = Vec::new();
     let mut total: u64 = 0;
     let mut stack: Vec<(u32, String, usize)> = vec![(ROOT_INODE, String::new(), 0)];
+    let mut visited: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
     while let Some((ino, prefix, depth)) = stack.pop() {
         if depth > MAX_DEPTH || files.len() > MAX_FILES {
             break;
+        }
+        if !visited.insert(ino) {
+            continue;
         }
         let inode: MinixInode = read_inode(bytes, &sb, ino)?;
         let kind: u16 = inode.mode & S_IFMT;
@@ -695,5 +699,92 @@ mod tests {
         assert_eq!(result.kind, crate::container::ContainerKind::MinixFs);
         assert_eq!(std::fs::read(dir.join("note.txt")).expect("note"), body);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn put_u16(img: &mut [u8], at: usize, v: u16) {
+        img[at..at + 2].copy_from_slice(&v.to_le_bytes());
+    }
+
+    fn put_u32(img: &mut [u8], at: usize, v: u32) {
+        img[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    }
+
+    fn write_v2_super(img: &mut [u8], first_data: u16, zones: u32) {
+        let base: usize = BOOT_BLOCK_LEN;
+        put_u16(img, base, 32);
+        put_u16(img, base + 4, 1);
+        put_u16(img, base + 6, 1);
+        put_u16(img, base + 8, first_data);
+        put_u16(img, base + 10, 0);
+        put_u32(img, base + 12, 0x1000_0000);
+        put_u16(img, base + 16, SUPER_MAGIC_V2_30);
+        put_u32(img, base + 20, zones);
+    }
+
+    fn write_v2_inode(img: &mut [u8], ino: u32, mode: u16, size: u32, zone0: u32) {
+        let table: usize = 4 * 1024;
+        let off: usize = table + (ino as usize - 1) * INODE_V2_LEN;
+        put_u16(img, off, mode);
+        put_u32(img, off + INODE_SIZE_OFFSET_V2, size);
+        put_u32(img, off + 24, zone0);
+    }
+
+    fn write_v2_dir_entry(img: &mut [u8], at: usize, ino: u16, name: &str) {
+        put_u16(img, at, ino);
+        let nb: &[u8] = name.as_bytes();
+        img[at + 2..at + 2 + nb.len()].copy_from_slice(nb);
+    }
+
+    #[test]
+    fn oversized_root_inode_size_stays_bounded() {
+        let body_a: Vec<u8> = b"alpha minix payload bytes".to_vec();
+        let body_b: Vec<u8> = b"beta minix payload bytes".to_vec();
+        let files: [(&str, &[u8], bool); 2] =
+            [("a.txt", &body_a, false), ("b.bin", &body_b, false)];
+        let mut builder: MinixBuilder = MinixBuilder::new(MinixVersion::V2);
+        let mut image: Vec<u8> = builder.build(&files);
+        let size_off: usize = builder.inode_offset(ROOT_INODE) + INODE_SIZE_OFFSET_V2;
+        image[size_off..size_off + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        let walk: MinixWalk =
+            walk_minixfs(&image, 64 * 1024 * 1024).expect("bounded walk with huge root size");
+        assert_eq!(walk.files.len(), 2);
+    }
+
+    #[test]
+    fn self_referential_directory_terminates() {
+        let block_size: usize = 1024;
+        let total_blocks: usize = 7;
+        let mut image: Vec<u8> = vec![0u8; total_blocks * block_size];
+        write_v2_super(&mut image, 5, total_blocks as u32);
+        write_v2_inode(&mut image, 1, S_IFDIR | 0o755, 32, 5);
+        write_v2_inode(&mut image, 2, S_IFDIR | 0o755, 8 * 32, 6);
+        write_v2_dir_entry(&mut image, 5 * block_size, 2, "sub");
+        let loop_off: usize = 6 * block_size;
+        for k in 0..8usize {
+            write_v2_dir_entry(&mut image, loop_off + k * 32, 2, &format!("d{k}"));
+        }
+        let walk: MinixWalk =
+            walk_minixfs(&image, 64 * 1024 * 1024).expect("self-referential walk terminates");
+        assert!(walk.files.is_empty());
+    }
+
+    #[test]
+    fn nested_directory_recovers_file() {
+        let block_size: usize = 1024;
+        let total_blocks: usize = 8;
+        let mut image: Vec<u8> = vec![0u8; total_blocks * block_size];
+        write_v2_super(&mut image, 5, total_blocks as u32);
+        let body: &[u8] = b"nested minix file body 0123456789";
+        write_v2_inode(&mut image, 1, S_IFDIR | 0o755, 32, 5);
+        write_v2_inode(&mut image, 2, S_IFDIR | 0o755, 32, 6);
+        write_v2_inode(&mut image, 3, S_IFREG | 0o644, body.len() as u32, 7);
+        write_v2_dir_entry(&mut image, 5 * block_size, 2, "sub");
+        write_v2_dir_entry(&mut image, 6 * block_size, 3, "file.txt");
+        let data_off: usize = 7 * block_size;
+        image[data_off..data_off + body.len()].copy_from_slice(body);
+        let walk: MinixWalk = walk_minixfs(&image, 64 * 1024 * 1024).expect("nested walk");
+        assert_eq!(walk.files.len(), 1);
+        assert_eq!(walk.files[0].path, "sub/file.txt");
+        assert_eq!(walk.files[0].data, body);
     }
 }
