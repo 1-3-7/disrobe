@@ -51,4 +51,5 @@ corpus/python/obfuscators/playground/*.py text eol=lf
 
 *.rs text eol=lf
 *.toml text eol=lf
+crates/disrobe-sleigh/tests/corpus/** text eol=lf
 crates/disrobe-pass-native/tests/fixtures/loader_generators/** -text

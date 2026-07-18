@@ -55,7 +55,7 @@ impl Display for Expression {
 #[test]
 fn normalized_architectural_effects_match_ghidra_pypcode() {
     let records: &str = include_str!("corpus/aarch64_pypcode.tsv");
-    let raw: &str = include_str!("corpus/aarch64_pypcode.raw");
+    let raw: String = include_str!("corpus/aarch64_pypcode.raw").replace('\r', "");
     assert!(raw.starts_with("pypcode 4.0.0\nAARCH64:LE:64:v8A\n"));
     let raw_headers: Vec<&str> = raw
         .lines()
@@ -96,7 +96,7 @@ fn normalized_architectural_effects_match_ghidra_pypcode() {
 #[test]
 fn multiarch_architectural_effects_match_ghidra_pypcode() {
     let records: &str = include_str!("corpus/multiarch_pypcode.tsv");
-    let raw: &str = include_str!("corpus/multiarch_pypcode.raw");
+    let raw: String = include_str!("corpus/multiarch_pypcode.raw").replace('\r', "");
     assert!(raw.starts_with("pypcode 4.0.0\n"));
     let raw_headers: Vec<&str> = raw
         .lines()
