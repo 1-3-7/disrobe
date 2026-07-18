@@ -1,6 +1,6 @@
 use crate::vm::{ObjCtor, PickleValue};
 
-const MAX_RENDER_DEPTH: u32 = 2_048;
+pub(crate) const MAX_RENDER_DEPTH: u32 = 2_048;
 const RENDER_DEPTH_MARKER: &str = "<max-depth>";
 
 #[must_use]
