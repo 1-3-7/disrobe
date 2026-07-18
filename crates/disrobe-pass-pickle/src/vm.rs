@@ -7,6 +7,7 @@ use base64::engine::general_purpose::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::decompile::MAX_RENDER_DEPTH;
 use crate::disasm::{DecodedArg, Disassembly, Insn};
 use crate::error::{Error, Result};
 
@@ -833,12 +834,12 @@ impl Session {
             .map(|(&k, v): (&u64, &PickleValue)| {
                 (
                     k,
-                    inline_unused_refs(v, &self.machine.memo, &self.machine.memo_used),
+                    inline_unused_refs(v, &self.machine.memo, &self.machine.memo_used, 0),
                 )
             })
             .collect();
         let value: PickleValue =
-            inline_unused_refs(&value, &self.machine.memo, &self.machine.memo_used);
+            inline_unused_refs(&value, &self.machine.memo, &self.machine.memo_used, 0);
         self.machine.memo = cleaned_memo;
         self.root_memo_key = key.filter(|_| is_container(&value));
         Ok(value)
@@ -1302,23 +1303,28 @@ fn detect_cycle(memo: &BTreeMap<u64, PickleValue>) -> bool {
         value: &PickleValue,
         memo: &BTreeMap<u64, PickleValue>,
         marks: &mut BTreeMap<u64, VisitMark>,
+        depth: u32,
     ) -> bool {
+        if depth >= MAX_RENDER_DEPTH {
+            return false;
+        }
+        let child: u32 = depth + 1;
         match value {
-            PickleValue::MemoRef { key } => walk(*key, memo, marks),
+            PickleValue::MemoRef { key } => walk(*key, memo, marks, child),
             PickleValue::List(items)
             | PickleValue::Tuple(items)
             | PickleValue::Set(items)
             | PickleValue::FrozenSet(items) => items
                 .iter()
-                .any(|item: &PickleValue| reaches(item, memo, marks)),
+                .any(|item: &PickleValue| reaches(item, memo, marks, child)),
             PickleValue::Dict(entries) => {
                 entries.iter().any(|(k, v): &(PickleValue, PickleValue)| {
-                    reaches(k, memo, marks) || reaches(v, memo, marks)
+                    reaches(k, memo, marks, child) || reaches(v, memo, marks, child)
                 })
             }
-            PickleValue::PersId { id } => reaches(id, memo, marks),
+            PickleValue::PersId { id } => reaches(id, memo, marks, child),
             PickleValue::Reduce { callable, args } => {
-                reaches(callable, memo, marks) || reaches(args, memo, marks)
+                reaches(callable, memo, marks, child) || reaches(args, memo, marks, child)
             }
             PickleValue::Object {
                 cls,
@@ -1329,19 +1335,19 @@ fn detect_cycle(memo: &BTreeMap<u64, PickleValue>) -> bool {
                 dictitems,
                 ..
             } => {
-                reaches(cls, memo, marks)
-                    || reaches(args, memo, marks)
+                reaches(cls, memo, marks, child)
+                    || reaches(args, memo, marks, child)
                     || kwargs
                         .as_deref()
-                        .is_some_and(|v: &PickleValue| reaches(v, memo, marks))
+                        .is_some_and(|v: &PickleValue| reaches(v, memo, marks, child))
                     || state
                         .as_deref()
-                        .is_some_and(|v: &PickleValue| reaches(v, memo, marks))
+                        .is_some_and(|v: &PickleValue| reaches(v, memo, marks, child))
                     || listitems
                         .iter()
-                        .any(|item: &PickleValue| reaches(item, memo, marks))
+                        .any(|item: &PickleValue| reaches(item, memo, marks, child))
                     || dictitems.iter().any(|(k, v): &(PickleValue, PickleValue)| {
-                        reaches(k, memo, marks) || reaches(v, memo, marks)
+                        reaches(k, memo, marks, child) || reaches(v, memo, marks, child)
                     })
             }
             _ => false,
@@ -1351,6 +1357,7 @@ fn detect_cycle(memo: &BTreeMap<u64, PickleValue>) -> bool {
         key: u64,
         memo: &BTreeMap<u64, PickleValue>,
         marks: &mut BTreeMap<u64, VisitMark>,
+        depth: u32,
     ) -> bool {
         match marks.get(&key) {
             Some(VisitMark::Visiting) => return true,
@@ -1360,19 +1367,24 @@ fn detect_cycle(memo: &BTreeMap<u64, PickleValue>) -> bool {
         marks.insert(key, VisitMark::Visiting);
         let hit: bool = memo
             .get(&key)
-            .is_some_and(|value: &PickleValue| reaches(value, memo, marks));
+            .is_some_and(|value: &PickleValue| reaches(value, memo, marks, depth));
         marks.insert(key, VisitMark::Done);
         hit
     }
     let mut marks: BTreeMap<u64, VisitMark> = BTreeMap::new();
-    memo.keys().any(|&key: &u64| walk(key, memo, &mut marks))
+    memo.keys().any(|&key: &u64| walk(key, memo, &mut marks, 0))
 }
 
 fn inline_unused_refs(
     value: &PickleValue,
     memo: &BTreeMap<u64, PickleValue>,
     memo_used: &BTreeMap<u64, bool>,
+    depth: u32,
 ) -> PickleValue {
+    if depth >= MAX_RENDER_DEPTH {
+        return value.clone();
+    }
+    let child: u32 = depth + 1;
     match value {
         PickleValue::MemoRef { key } => {
             if memo_used.get(key).copied().unwrap_or(false) {
@@ -1380,32 +1392,32 @@ fn inline_unused_refs(
             } else {
                 memo.get(key)
                     .map_or(PickleValue::MemoRef { key: *key }, |v: &PickleValue| {
-                        inline_unused_refs(v, memo, memo_used)
+                        inline_unused_refs(v, memo, memo_used, child)
                     })
             }
         }
         PickleValue::List(items) => PickleValue::List(
             items
                 .iter()
-                .map(|v: &PickleValue| inline_unused_refs(v, memo, memo_used))
+                .map(|v: &PickleValue| inline_unused_refs(v, memo, memo_used, child))
                 .collect(),
         ),
         PickleValue::Tuple(items) => PickleValue::Tuple(
             items
                 .iter()
-                .map(|v: &PickleValue| inline_unused_refs(v, memo, memo_used))
+                .map(|v: &PickleValue| inline_unused_refs(v, memo, memo_used, child))
                 .collect(),
         ),
         PickleValue::Set(items) => PickleValue::Set(
             items
                 .iter()
-                .map(|v: &PickleValue| inline_unused_refs(v, memo, memo_used))
+                .map(|v: &PickleValue| inline_unused_refs(v, memo, memo_used, child))
                 .collect(),
         ),
         PickleValue::FrozenSet(items) => PickleValue::FrozenSet(
             items
                 .iter()
-                .map(|v: &PickleValue| inline_unused_refs(v, memo, memo_used))
+                .map(|v: &PickleValue| inline_unused_refs(v, memo, memo_used, child))
                 .collect(),
         ),
         PickleValue::Dict(entries) => PickleValue::Dict(
@@ -1413,18 +1425,18 @@ fn inline_unused_refs(
                 .iter()
                 .map(|(k, v): &(PickleValue, PickleValue)| {
                     (
-                        inline_unused_refs(k, memo, memo_used),
-                        inline_unused_refs(v, memo, memo_used),
+                        inline_unused_refs(k, memo, memo_used, child),
+                        inline_unused_refs(v, memo, memo_used, child),
                     )
                 })
                 .collect(),
         ),
         PickleValue::PersId { id } => PickleValue::PersId {
-            id: Box::new(inline_unused_refs(id, memo, memo_used)),
+            id: Box::new(inline_unused_refs(id, memo, memo_used, child)),
         },
         PickleValue::Reduce { callable, args } => PickleValue::Reduce {
-            callable: Box::new(inline_unused_refs(callable, memo, memo_used)),
-            args: Box::new(inline_unused_refs(args, memo, memo_used)),
+            callable: Box::new(inline_unused_refs(callable, memo, memo_used, child)),
+            args: Box::new(inline_unused_refs(args, memo, memo_used, child)),
         },
         PickleValue::Object {
             ctor,
@@ -1436,24 +1448,24 @@ fn inline_unused_refs(
             dictitems,
         } => PickleValue::Object {
             ctor: *ctor,
-            cls: Box::new(inline_unused_refs(cls, memo, memo_used)),
-            args: Box::new(inline_unused_refs(args, memo, memo_used)),
+            cls: Box::new(inline_unused_refs(cls, memo, memo_used, child)),
+            args: Box::new(inline_unused_refs(args, memo, memo_used, child)),
             kwargs: kwargs
                 .as_deref()
-                .map(|v: &PickleValue| Box::new(inline_unused_refs(v, memo, memo_used))),
+                .map(|v: &PickleValue| Box::new(inline_unused_refs(v, memo, memo_used, child))),
             state: state
                 .as_deref()
-                .map(|v: &PickleValue| Box::new(inline_unused_refs(v, memo, memo_used))),
+                .map(|v: &PickleValue| Box::new(inline_unused_refs(v, memo, memo_used, child))),
             listitems: listitems
                 .iter()
-                .map(|v: &PickleValue| inline_unused_refs(v, memo, memo_used))
+                .map(|v: &PickleValue| inline_unused_refs(v, memo, memo_used, child))
                 .collect(),
             dictitems: dictitems
                 .iter()
                 .map(|(k, v): &(PickleValue, PickleValue)| {
                     (
-                        inline_unused_refs(k, memo, memo_used),
-                        inline_unused_refs(v, memo, memo_used),
+                        inline_unused_refs(k, memo, memo_used, child),
+                        inline_unused_refs(v, memo, memo_used, child),
                     )
                 })
                 .collect(),
@@ -1988,6 +2000,120 @@ mod tests {
         assert!(
             elapsed < std::time::Duration::from_secs(2),
             "clone bomb must bail fast, took {elapsed:?}"
+        );
+    }
+
+    fn deep_unused_memoref_chain(levels: usize) -> Vec<u8> {
+        const PROTO4: [u8; 2] = [0x80, 0x04];
+        const EMPTY_LIST: u8 = 0x5d;
+        const MEMOIZE: u8 = 0x94;
+        const TUPLE1: u8 = 0x85;
+        const STOP: u8 = b'.';
+        let mut bytes: Vec<u8> = Vec::with_capacity(PROTO4.len() + 2 + levels * 2 + 1);
+        bytes.extend_from_slice(&PROTO4);
+        bytes.push(EMPTY_LIST);
+        bytes.push(MEMOIZE);
+        for _ in 0..levels {
+            bytes.push(TUPLE1);
+            bytes.push(MEMOIZE);
+        }
+        bytes.push(STOP);
+        bytes
+    }
+
+    fn descend_single_containers(value: &PickleValue) -> (usize, &PickleValue) {
+        let mut depth: usize = 0;
+        let mut cursor: &PickleValue = value;
+        loop {
+            match cursor {
+                PickleValue::Tuple(items) | PickleValue::List(items) if items.len() == 1 => {
+                    depth += 1;
+                    cursor = &items[0];
+                }
+                _ => return (depth, cursor),
+            }
+        }
+    }
+
+    #[test]
+    fn deep_unused_memoref_chain_inlines_bounded() {
+        let levels: usize = 5_000;
+        let bytes: Vec<u8> = deep_unused_memoref_chain(levels);
+        let dis: Disassembly = disassemble(&bytes).expect("disasm");
+        let start: std::time::Instant = std::time::Instant::now();
+        let trace: VmTrace = execute(&dis).expect("deep unused-memoref chain must decode bounded");
+        let elapsed: std::time::Duration = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "inlining a deep unused-memoref chain must stay bounded, took {elapsed:?}"
+        );
+        assert!(!trace.cyclic, "an acyclic chain must not be flagged cyclic");
+        let (nesting, bottom): (usize, &PickleValue) = descend_single_containers(&trace.result);
+        assert!(
+            nesting >= 1_000 && nesting <= MAX_RENDER_DEPTH as usize,
+            "inlining must stop at the render-depth cap, reached {nesting}"
+        );
+        assert!(
+            nesting < levels,
+            "a {levels}-deep chain must collapse below its length, reached {nesting}"
+        );
+        assert!(
+            matches!(bottom, PickleValue::MemoRef { .. }),
+            "the cap must leave an unexpanded memo reference, found {bottom:?}"
+        );
+    }
+
+    #[test]
+    fn short_unused_memoref_chain_fully_inlines() {
+        let levels: usize = 4;
+        let bytes: Vec<u8> = deep_unused_memoref_chain(levels);
+        let dis: Disassembly = disassemble(&bytes).expect("disasm");
+        let trace: VmTrace = execute(&dis).expect("short chain must decode");
+        let (nesting, bottom): (usize, &PickleValue) = descend_single_containers(&trace.result);
+        assert_eq!(nesting, levels, "a short chain must inline every level");
+        assert!(
+            matches!(bottom, PickleValue::List(items) if items.is_empty()),
+            "the innermost value must be the fully inlined empty list, found {bottom:?}"
+        );
+        let rendered: String = crate::decompile::to_python(&trace.result);
+        assert!(
+            !rendered.contains("<max-depth>"),
+            "a short chain must render without hitting the depth marker: {rendered}"
+        );
+    }
+
+    #[test]
+    fn detect_cycle_bounded_on_deep_forward_chain() {
+        let n: u64 = 50_000;
+        let mut memo: BTreeMap<u64, PickleValue> = BTreeMap::new();
+        for k in 0..n {
+            memo.insert(
+                k,
+                PickleValue::Tuple(vec![PickleValue::MemoRef { key: k + 1 }]),
+            );
+        }
+        memo.insert(n, PickleValue::List(Vec::new()));
+        let start: std::time::Instant = std::time::Instant::now();
+        let cyclic: bool = detect_cycle(&memo);
+        let elapsed: std::time::Duration = start.elapsed();
+        assert!(
+            !cyclic,
+            "an acyclic forward chain must not be reported cyclic"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "cycle detection over a deep chain must stay bounded, took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn detect_cycle_flags_small_cycle() {
+        let mut memo: BTreeMap<u64, PickleValue> = BTreeMap::new();
+        memo.insert(0, PickleValue::Tuple(vec![PickleValue::MemoRef { key: 1 }]));
+        memo.insert(1, PickleValue::Tuple(vec![PickleValue::MemoRef { key: 0 }]));
+        assert!(
+            detect_cycle(&memo),
+            "a two-node memo cycle must still be detected after the depth cap"
         );
     }
 

@@ -236,10 +236,10 @@ fn scan_for_embedded(bytes: &[u8]) -> Vec<EmbeddedPickle> {
     let mut out: Vec<EmbeddedPickle> = Vec::new();
     let mut i: usize = 0;
     while i + 1 < bytes.len() {
-        if bytes[i] == 0x80
-            && bytes[i + 1] <= 5
-            && let Some(end) = find_stop(&bytes[i..])
-        {
+        if bytes[i] == 0x80 && bytes[i + 1] <= 5 {
+            let Some(end): Option<usize> = find_stop(&bytes[i..]) else {
+                break;
+            };
             out.push(EmbeddedPickle {
                 path: format!("<stacked@{i}>"),
                 offset: i,
@@ -341,6 +341,26 @@ mod tests {
         let bytes: &[u8] = b"\x80\x02N.\x80\x02K\x01.";
         let found: Vec<EmbeddedPickle> = scan_for_embedded(bytes);
         assert_eq!(found.len(), 2);
+    }
+
+    #[test]
+    fn stacked_scan_marker_flood_without_stop_stays_bounded() {
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(b"\x80\x04]\x94.");
+        for _ in 0..200_000 {
+            bytes.push(0x80);
+            bytes.push(0x00);
+        }
+        let start: std::time::Instant = std::time::Instant::now();
+        let found: Vec<EmbeddedPickle> = scan_for_embedded(&bytes);
+        let elapsed: std::time::Duration = start.elapsed();
+        assert_eq!(found.len(), 1, "only the leading valid pickle is embedded");
+        assert_eq!(found[0].offset, 0);
+        assert_eq!(found[0].length, 5);
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "a stop-less marker flood must not scan quadratically, took {elapsed:?}"
+        );
     }
 
     fn npy_with_descr(descr: &[u8], body: &[u8]) -> Vec<u8> {
