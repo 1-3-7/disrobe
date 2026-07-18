@@ -485,14 +485,24 @@ impl<'a> Reader<'a> {
 
     fn decode_string_ref(&mut self, ref_override: &mut Option<u32>) -> Result<Object> {
         let idx: u32 = self.read_u32()?;
-        let resolved: String =
-            self.interned_strings
-                .get(idx as usize)
-                .cloned()
-                .ok_or(Error::RefOutOfBounds {
-                    index: idx,
-                    len: self.interned_strings.len(),
-                })?;
+        let Some(value): Option<&String> = self.interned_strings.get(idx as usize) else {
+            return Err(Error::RefOutOfBounds {
+                index: idx,
+                len: self.interned_strings.len(),
+            });
+        };
+        let value_len: u64 = u64::try_from(value.len()).map_or(u64::MAX, |len: u64| len);
+        let remaining_bytes: u64 = BYTE_BUDGET.saturating_sub(self.materialized_bytes);
+        if value_len > remaining_bytes {
+            return Err(Error::ByteBudget { limit: BYTE_BUDGET });
+        }
+        let remaining_nodes: u64 = NODE_BUDGET.saturating_sub(self.materialized_nodes);
+        if remaining_nodes == 0 {
+            return Err(Error::NodeBudget { limit: NODE_BUDGET });
+        }
+        let resolved: String = value.clone();
+        self.materialized_bytes = self.materialized_bytes.saturating_add(value_len);
+        self.materialized_nodes = self.materialized_nodes.saturating_add(1);
         *ref_override = Some(idx);
         Ok(Object::String {
             value: resolved,
@@ -1224,6 +1234,57 @@ mod tests {
         };
         let err: Error = load(&data, PyVersion::PY27).unwrap_err();
         assert!(matches!(err, Error::RefOutOfBounds { .. }));
+    }
+
+    #[test]
+    fn stringref_byte_clone_bomb_returns_err_fast() {
+        const PAYLOAD_LEN: usize = 256 * 1024;
+        const REFS: u32 = 8;
+        let mut data: Vec<u8> = vec![b'['];
+        data.extend((REFS + 1).to_le_bytes());
+        data.push(b't');
+        data.extend((PAYLOAD_LEN as u32).to_le_bytes());
+        data.extend(core::iter::repeat_n(0x41, PAYLOAD_LEN));
+        for _ in 0..REFS {
+            data.push(b'R');
+            data.extend(0u32.to_le_bytes());
+        }
+        let start: std::time::Instant = std::time::Instant::now();
+        let err: Error = load(&data, PyVersion::PY312).unwrap_err();
+        let elapsed: std::time::Duration = start.elapsed();
+        assert!(
+            matches!(err, Error::ByteBudget { .. }),
+            "string-ref byte bomb must hit the byte budget, got {err:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "string-ref byte bomb must bail fast, took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn stringref_small_string_resolves_under_budget() {
+        const REFS: u32 = 16;
+        let mut data: Vec<u8> = vec![b'['];
+        data.extend((REFS + 1).to_le_bytes());
+        data.push(b't');
+        data.extend(2u32.to_le_bytes());
+        data.extend(b"hi");
+        for _ in 0..REFS {
+            data.push(b'R');
+            data.extend(0u32.to_le_bytes());
+        }
+        let obj: Object = load(&data, PyVersion::PY312).unwrap();
+        let Object::List(items) = obj else {
+            panic!("expected a list");
+        };
+        assert_eq!(items.len(), (REFS + 1) as usize);
+        for item in &items[1..] {
+            assert!(
+                matches!(item, Object::String { value, interned: true } if value == "hi"),
+                "each string-ref must still resolve, got {item:?}"
+            );
+        }
     }
 
     fn short(value: &str) -> Object {
