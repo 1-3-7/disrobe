@@ -1,12 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::abi::{self, ArgLocation, Convention, FunctionCode, RecoveredProto, ReturnKind};
+use crate::callsite::{self, ApiType, CallsiteTyping, TypedSlot};
 use crate::dwarf_gt::{
     AbiClass, DebugImage, GroundTruthAggregate, GroundTruthField, GroundTruthFunction,
     GroundTruthSignature, GroundTruthVar, GtReturn,
 };
+use crate::import_map::ImportMap;
 use crate::lattice::Width;
 use crate::recover::{RecoveredObject, RecoveredScalar, TypedFunction, recover_function};
+use crate::sigdb::{Abi, SigDb};
 use crate::structrec::{FieldNameTier, RecoveredField, RecoveredStruct};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -685,6 +688,140 @@ const fn expected_return(ret: GtReturn) -> ReturnKind {
         GtReturn::Integer => ReturnKind::IntRax,
         GtReturn::Sse => ReturnKind::Sse,
         GtReturn::Sret => ReturnKind::Sret,
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ApiTypeGradeReport {
+    pub pointer: AxisScore,
+    pub integer_width: AxisScore,
+    pub integer_sign: AxisScore,
+    pub graded_slots: usize,
+    pub mismatches: Vec<AxisMismatch>,
+}
+
+#[must_use]
+pub fn grade_api_types(
+    image: &DebugImage,
+    imports: &ImportMap,
+    sigdb: &SigDb,
+    abi: Abi,
+) -> ApiTypeGradeReport {
+    let mut report: ApiTypeGradeReport = ApiTypeGradeReport::default();
+    for function in &image.functions {
+        let typing: CallsiteTyping = callsite::type_function(
+            &image.text,
+            image.text_base,
+            function.low_pc,
+            function.high_pc,
+            imports,
+            sigdb,
+            abi,
+        );
+        for slot in typing.typed_slots() {
+            grade_api_slot(&mut report, function, &slot);
+        }
+    }
+    report
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GroundKind {
+    Pointer,
+    Integer {
+        width: Width,
+        sign: crate::lattice::Sign,
+    },
+}
+
+fn ground_kind_at(function: &GroundTruthFunction, slot: &TypedSlot) -> Option<GroundKind> {
+    if function
+        .aggregates
+        .iter()
+        .any(|aggregate: &GroundTruthAggregate| aggregate.rbp_disp == slot.rbp_disp)
+    {
+        return Some(GroundKind::Pointer);
+    }
+    function
+        .vars
+        .iter()
+        .find(|var: &&GroundTruthVar| {
+            var.rbp_disp == slot.rbp_disp && var.scope_overlaps(slot.live_lo, slot.live_hi + 1)
+        })
+        .map(|var: &GroundTruthVar| GroundKind::Integer {
+            width: var.width,
+            sign: var.sign,
+        })
+}
+
+fn grade_api_slot(
+    report: &mut ApiTypeGradeReport,
+    function: &GroundTruthFunction,
+    slot: &TypedSlot,
+) {
+    let Some(ground): Option<GroundKind> = ground_kind_at(function, slot) else {
+        return;
+    };
+    report.graded_slots += 1;
+    match (slot.ty, ground) {
+        (ApiType::Pointer, GroundKind::Pointer) => {
+            report.pointer.predicted += 1;
+            report.pointer.total += 1;
+            report.pointer.correct += 1;
+        }
+        (ApiType::Pointer, GroundKind::Integer { .. }) => {
+            report.pointer.predicted += 1;
+            report.mismatches.push(AxisMismatch {
+                function: function.name.clone(),
+                variable: format!("slot {:#x}", slot.rbp_disp),
+                expected: "integer".to_owned(),
+                got: "pointer".to_owned(),
+            });
+        }
+        (
+            ApiType::Integer { width, sign },
+            GroundKind::Integer {
+                width: gw,
+                sign: gs,
+            },
+        ) => {
+            report.integer_width.predicted += 1;
+            report.integer_width.total += 1;
+            if width == gw {
+                report.integer_width.correct += 1;
+            } else {
+                report.mismatches.push(AxisMismatch {
+                    function: function.name.clone(),
+                    variable: format!("slot {:#x}", slot.rbp_disp),
+                    expected: format!("{gw:?}"),
+                    got: format!("{width:?}"),
+                });
+            }
+            if sign.is_determined() {
+                report.integer_sign.predicted += 1;
+                report.integer_sign.total += 1;
+                if sign == gs {
+                    report.integer_sign.correct += 1;
+                } else {
+                    report.mismatches.push(AxisMismatch {
+                        function: function.name.clone(),
+                        variable: format!("slot {:#x} sign", slot.rbp_disp),
+                        expected: format!("{gs:?}"),
+                        got: format!("{sign:?}"),
+                    });
+                }
+            }
+        }
+        (ApiType::Integer { .. }, GroundKind::Pointer) => {
+            report.integer_width.predicted += 1;
+            report.mismatches.push(AxisMismatch {
+                function: function.name.clone(),
+                variable: format!("slot {:#x}", slot.rbp_disp),
+                expected: "pointer".to_owned(),
+                got: "integer".to_owned(),
+            });
+        }
+        _ => {}
     }
 }
 
