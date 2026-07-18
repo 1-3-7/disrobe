@@ -12,6 +12,7 @@ pub mod lattice;
 pub mod memssa;
 pub mod recover;
 pub mod region;
+pub mod sigdb;
 pub mod structrec;
 
 pub use abi::{
@@ -35,6 +36,7 @@ pub use lattice::{Confidence, Sign, TypeClass, TypeVar, Width};
 pub use memssa::{MemSsa, VersionInfo};
 pub use recover::{CIntType, RecoveredObject, RecoveredScalar, TypedFunction, recover_function};
 pub use region::{MemoryAccess, Region, RegionModel, may_alias};
+pub use sigdb::{Abi, Param, ParamDir, PointerTy, Prototype, ReturnSemantics, SigDb, SigKey, Ty};
 pub use structrec::{
     AccessFlags, FieldNameTier, ParamClass, RecoveredField, RecoveredStruct, recover_structs,
 };
