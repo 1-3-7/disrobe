@@ -55,23 +55,6 @@ const fn address_in_range(address: u64, start: u64, end: u64) -> bool {
     address >= start && address_is_before_end(address, end)
 }
 
-const fn address_in_block(address: u64, leader: u64, next_leader: Option<u64>, end: u64) -> bool {
-    if address < leader {
-        return false;
-    }
-    if address == leader {
-        return true;
-    }
-    match next_leader {
-        Some(next) => address < next,
-        None => address_is_before_end(address, end),
-    }
-}
-
-const fn instruction_in_function(offset: u64, start: u64, end: u64) -> bool {
-    address_in_range(offset, start, end) || offset == start
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SymbolRef {
     pub name: String,
@@ -300,8 +283,8 @@ impl Function {
         address_in_range(offset, self.address, self.end)
             || self
                 .instructions
-                .iter()
-                .any(|insn: &InsnView| insn.offset == offset)
+                .binary_search_by_key(&offset, |insn: &InsnView| insn.offset)
+                .is_ok()
     }
 
     #[must_use]
@@ -344,21 +327,22 @@ impl Function {
         for (idx, leader) in leaders.iter().enumerate() {
             let next_leader: Option<u64> = leaders.get(idx + 1).copied();
             let block_end: u64 = next_leader.unwrap_or(end);
-            let insns: Vec<InsnView> = self
+            let lo: usize = self
                 .instructions
-                .iter()
-                .filter(|i: &&InsnView| address_in_block(i.offset, *leader, next_leader, end))
-                .cloned()
-                .collect();
+                .partition_point(|i: &InsnView| i.offset < *leader);
+            let hi: usize = if block_end > *leader {
+                self.instructions
+                    .partition_point(|i: &InsnView| i.offset < block_end)
+            } else {
+                self.instructions
+                    .partition_point(|i: &InsnView| i.offset <= *leader)
+            };
+            let insns: Vec<InsnView> = self.instructions[lo..hi].to_vec();
             let Some(last): Option<&InsnView> = insns.last() else {
                 continue;
             };
             let fallthrough: Option<u64> = match next_leader {
-                Some(_) => self
-                    .instructions
-                    .iter()
-                    .find(|i: &&InsnView| i.offset >= block_end)
-                    .map(|i: &InsnView| i.offset),
+                Some(_) => self.instructions.get(hi).map(|i: &InsnView| i.offset),
                 None => None,
             };
             let (kind, successors): (BlockKind, Vec<u64>) =
@@ -380,8 +364,8 @@ impl Function {
             address_in_range(offset, self.address, end)
                 || self
                     .instructions
-                    .iter()
-                    .any(|insn: &InsnView| insn.offset == offset)
+                    .binary_search_by_key(&offset, |insn: &InsnView| insn.offset)
+                    .is_ok()
         };
         let mut starts: Vec<u64> = Vec::new();
         if let Some(first) = self.instructions.first() {
@@ -497,9 +481,15 @@ impl Module {
                 let end: u64 = function_symbols
                     .get(idx + 1)
                     .map_or(last_end, |next: &FunctionSymbol<'_>| next.address);
-                let instructions: Vec<InsnView> = sorted_insns
+                let lo: usize =
+                    sorted_insns.partition_point(|i: &&DisasmInstruction| i.offset < start);
+                let hi: usize = if end > start {
+                    sorted_insns.partition_point(|i: &&DisasmInstruction| i.offset < end)
+                } else {
+                    sorted_insns.partition_point(|i: &&DisasmInstruction| i.offset <= start)
+                };
+                let instructions: Vec<InsnView> = sorted_insns[lo..hi]
                     .iter()
-                    .filter(|i: &&&DisasmInstruction| instruction_in_function(i.offset, start, end))
                     .map(|i: &&DisasmInstruction| InsnView::from_disasm(i))
                     .collect();
                 Function {
