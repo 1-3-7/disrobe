@@ -990,6 +990,8 @@ pub fn opcode_mnemonic(op: u8) -> &'static str {
         0x6A => "deleteproperty",
         0x6C => "getslot",
         0x6D => "setslot",
+        0x6E => "getglobalslot",
+        0x6F => "setglobalslot",
         0x71 => "esc_xelem",
         0x72 => "esc_xattr",
         0x77 => "convert_o",

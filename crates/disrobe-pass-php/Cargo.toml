@@ -18,7 +18,6 @@ workspace = true
 disrobe-core = { workspace = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 base64 = { workspace = true }
@@ -26,7 +25,6 @@ regex = { workspace = true }
 memchr = { workspace = true }
 flate2 = { workspace = true }
 bzip2-rs = { workspace = true }
-sha2 = { workspace = true }
 aes = { workspace = true }
 cbc = { workspace = true }
 cipher = { version = "0.4", features = ["block-padding"] }

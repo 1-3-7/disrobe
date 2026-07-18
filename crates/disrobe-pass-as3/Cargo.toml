@@ -1,6 +1,6 @@
 [package]
 name = "disrobe-pass-as3"
-description = "AS3 / Flash SWF deobfuscation: JPEXS-FFDec-semantic port, ABC bytecode decompile, obfuscated SWF heuristic recovery."
+description = "AS3 / Flash SWF deobfuscation, ABC bytecode decompile, and obfuscated-SWF heuristic recovery."
 version.workspace = true
 readme.workspace = true
 edition.workspace = true
@@ -18,7 +18,6 @@ workspace = true
 disrobe-core = { workspace = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 flate2 = { workspace = true }
