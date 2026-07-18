@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const OPARRAY_MAGIC: &[u8; 4] = b"DZOA";
 
@@ -1022,16 +1022,25 @@ struct Lifter<'a> {
     var_names: &'a [Option<String>],
     slots: BTreeMap<(OperandType, u32), Expr>,
     call_stack: Vec<PendingCall>,
+    back_jump_targets: BTreeSet<u32>,
 }
 
 impl<'a> Lifter<'a> {
     fn new(ops: &'a [Op], literals: &'a [Literal], var_names: &'a [Option<String>]) -> Self {
+        let back_jump_targets: BTreeSet<u32> = ops
+            .iter()
+            .filter_map(|op: &Op| {
+                (op.opcode == op::JMPNZ || op.opcode == op::JMPNZ_EX || op.opcode == op::JMPZ)
+                    .then_some(op.op2)
+            })
+            .collect();
         Self {
             ops,
             literals,
             var_names,
             slots: BTreeMap::new(),
             call_stack: Vec::new(),
+            back_jump_targets,
         }
     }
 
@@ -1100,6 +1109,9 @@ impl<'a> Lifter<'a> {
     }
 
     fn find_back_jump(&self, body_start: u32, end: u32) -> Option<u32> {
+        if !self.back_jump_targets.contains(&body_start) {
+            return None;
+        }
         let mut k: u32 = body_start;
         while k < end {
             let op: &Op = self.ops.get(k as usize)?;
@@ -1872,6 +1884,73 @@ mod oparray_bounds_tests {
         assert!(
             matches!(err, Error::OpArrayTruncated { need, .. } if need as u32 == DECLARED),
             "declared count must be rejected against remaining input, got {err:?}"
+        );
+    }
+
+    fn echo_const() -> Op {
+        Op {
+            opcode: op::ECHO,
+            op1_type: OperandType::Const,
+            op2_type: OperandType::Unused,
+            result_type: OperandType::Unused,
+            op1: 0,
+            op2: 0,
+            result: 0,
+            extended_value: 0,
+            lineno: 0,
+        }
+    }
+
+    #[test]
+    fn straight_line_lift_scales_sub_quadratically() {
+        use std::time::{Duration, Instant};
+        fn lift_secs(n: usize) -> f64 {
+            let ops: Vec<Op> = (0..n).map(|_| echo_const()).collect();
+            let literals: Vec<Literal> = vec![Literal::Str("x".to_owned())];
+            let var_names: Vec<Option<String>> = Vec::new();
+            let start: Instant = Instant::now();
+            let stmts: Vec<Stmt> = Lifter::new(&ops, &literals, &var_names).lift();
+            let elapsed: Duration = start.elapsed();
+            assert_eq!(
+                stmts.len(),
+                n,
+                "each straight-line op should lift to one statement"
+            );
+            elapsed.as_secs_f64()
+        }
+        const BASE: usize = 200_000;
+        let t1: f64 = lift_secs(BASE);
+        let t4: f64 = lift_secs(BASE * 4);
+        let ratio: f64 = t4 / t1.max(1e-6);
+        assert!(
+            ratio < 8.0,
+            "lift cost grew {ratio:.1}x for a 4x input (linear is ~4x, quadratic ~16x); \
+             find_back_jump regressed to O(n^2): t1={t1:.4}s t4={t4:.4}s"
+        );
+    }
+
+    #[test]
+    fn do_while_header_still_recovers_with_target_cache() {
+        let ops: Vec<Op> = vec![
+            echo_const(),
+            Op {
+                opcode: op::JMPNZ,
+                op1_type: OperandType::Const,
+                op2_type: OperandType::Unused,
+                result_type: OperandType::Unused,
+                op1: 0,
+                op2: 0,
+                result: 0,
+                extended_value: 0,
+                lineno: 0,
+            },
+        ];
+        let literals: Vec<Literal> = vec![Literal::Bool(true)];
+        let var_names: Vec<Option<String>> = Vec::new();
+        let stmts: Vec<Stmt> = Lifter::new(&ops, &literals, &var_names).lift();
+        assert!(
+            matches!(stmts.first(), Some(Stmt::DoWhile { .. })),
+            "back-jump target present in cache should still structure a do-while, got {stmts:?}"
         );
     }
 }
