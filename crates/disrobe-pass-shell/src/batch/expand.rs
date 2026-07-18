@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+pub const MAX_EXPANSION_OUTPUT: usize = 16 * 1024 * 1024;
+
 #[derive(Debug, Clone, Copy)]
 pub struct ExpandStats {
     pub var_refs: usize,
@@ -72,6 +74,10 @@ fn expand_sigil(
     let chars: Vec<char> = input.chars().collect();
     let mut i: usize = 0;
     while i < chars.len() {
+        if out.len() > MAX_EXPANSION_OUTPUT {
+            out.extend(chars[i..].iter().copied());
+            break;
+        }
         let c: char = chars[i];
         if sigil == Sigil::Percent && c == '%' {
             if let Some((tilde, consumed)) = try_tilde_param(&chars[i..], args, stats) {
@@ -358,6 +364,14 @@ mod tests {
             .iter()
             .map(|(k, v): &(&str, &str)| (k.to_ascii_uppercase(), (*v).to_owned()))
             .collect()
+    }
+
+    #[test]
+    fn expansion_output_is_ceiling_bounded() {
+        let big: String = "a".repeat(MAX_EXPANSION_OUTPUT / 2);
+        let env: BTreeMap<String, String> = env_of(&[("A", big.as_str())]);
+        let (out, _stats): (String, ExpandStats) = expand_line("%A%%A%%A%%A%", &env, &[], false);
+        assert!(out.len() <= MAX_EXPANSION_OUTPUT + big.len() + 16);
     }
 
     #[test]
