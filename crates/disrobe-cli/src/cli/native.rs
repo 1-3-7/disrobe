@@ -96,18 +96,17 @@ pub(crate) fn decompile(
     }
 }
 
+fn sanitize_comment_text(text: &str) -> String {
+    text.chars()
+        .map(|c: char| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .replace("*/", "* /")
+        .replace("/*", "/ *")
+}
+
 fn api_type_c(ty: disrobe_typerec::ApiType) -> String {
     use disrobe_typerec::{ApiType, Sign, Width};
-    let bits = |w: Width| -> Option<u32> {
-        match w {
-            Width::Byte => Some(8),
-            Width::Word => Some(16),
-            Width::Dword => Some(32),
-            Width::Qword => Some(64),
-            Width::Oword => Some(128),
-            Width::Unknown => None,
-        }
-    };
+    let bits = |w: Width| -> Option<u32> { w.bytes().map(|b: u8| u32::from(b) * 8) };
     match ty {
         ApiType::Pointer => "void*".to_owned(),
         ApiType::Handle => "HANDLE".to_owned(),
@@ -152,6 +151,7 @@ fn build_header_comment(
     addr: u64,
     banner: Option<&Vec<String>>,
 ) -> String {
+    let name: String = sanitize_comment_text(name);
     match format {
         DecompileLang::C => {
             let mut out: String = format!("/* {name} @ {addr:#x}");
@@ -159,7 +159,7 @@ fn build_header_comment(
                 out.push_str("\n   api-derived types:");
                 for line in lines {
                     out.push_str("\n     ");
-                    out.push_str(line);
+                    out.push_str(&sanitize_comment_text(line));
                 }
                 out.push_str("\n */");
             } else {
@@ -173,7 +173,7 @@ fn build_header_comment(
                 out.push_str("\n// api-derived types:");
                 for line in lines {
                     out.push_str("\n//   ");
-                    out.push_str(line);
+                    out.push_str(&sanitize_comment_text(line));
                 }
             }
             out
@@ -3042,6 +3042,29 @@ mod tests {
         assert!(rust.starts_with("// f @ 0x1179"));
         assert!(rust.contains("// api-derived types:"));
         assert!(!rust.contains("/*"));
+    }
+
+    #[test]
+    fn header_comment_neutralizes_injection_from_attacker_names() {
+        let evil: String = build_header_comment(DecompileLang::C, "evil*/code", 0x1000, None);
+        assert!(
+            !evil.contains("*/code"),
+            "the break-out must be neutralized: {evil}"
+        );
+        assert!(evil.trim_end().ends_with("*/"));
+        let banner: Vec<String> = vec!["[rbp-0x8] void* <- ntdll!a*/b arg0 [ApiDb]".to_owned()];
+        let c: String = build_header_comment(DecompileLang::C, "f", 0x1000, Some(&banner));
+        let body: &str = c.strip_suffix("\n */").unwrap_or(&c);
+        assert!(
+            !body.contains("*/"),
+            "no interior comment close in the banner: {c}"
+        );
+        let rust: String = build_header_comment(DecompileLang::Rust, "line1\nline2", 0x1000, None);
+        assert_eq!(
+            rust.lines().count(),
+            1,
+            "a newline in the name must not inject a line: {rust}"
+        );
     }
 
     fn corpus_path(rel: &str) -> PathBuf {
