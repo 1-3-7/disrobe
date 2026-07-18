@@ -2159,6 +2159,34 @@ pub(super) fn structure_stmts(
         None => jumped,
     };
     let none_jump: bool = stream.none_jump_kind.contains_key(&jump_idx);
+    if then_arm_is_bare_continue
+        && jumped.is_empty()
+        && !fallthrough.is_empty()
+        && !matches!(
+            fallthrough.last(),
+            Some(Stmt::Return(_) | Stmt::Raise { .. } | Stmt::Break | Stmt::Continue)
+        )
+    {
+        let cont_test: Expr = if negate || none_jump {
+            test
+        } else {
+            Expr::UnaryOp {
+                op: crate::bytecode::opcode::UnaryOp::Not,
+                operand: Box::new(test),
+            }
+        };
+        let mut then_body: Vec<Stmt> = fallthrough;
+        then_body.push(Stmt::Continue);
+        let mut out: Vec<Stmt> = head;
+        out.push(Stmt::If {
+            test: cont_test,
+            body: non_empty(then_body),
+            orelse: Vec::new(),
+            line: None,
+        });
+        out.extend(structure_stmts(code, stream, join, hi)?);
+        return Ok(out);
+    }
     let positive_test: Expr =
         none_jump_test_taken(stream, jump_idx, test.clone()).unwrap_or_else(|| test.clone());
     let keep_positive_continue_guard: bool = then_arm_is_bare_continue
