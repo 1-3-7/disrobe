@@ -4,6 +4,8 @@ use crate::deflatten::deflatten;
 use crate::error::{Error, Result};
 use crate::token::{Lexer, TokKind, Token};
 
+const MAX_RESTRUCTURE_DEPTH: usize = 256;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RestructureReport {
     pub source: Vec<u8>,
@@ -102,6 +104,12 @@ enum Unit {
 impl State<'_> {
     fn structure_region(&mut self, toks: &[Token<'_>], out: &mut Vec<u8>, depth: usize) {
         let units: Vec<Unit> = drop_unreachable_gotos(parse_units(toks), toks, self.src);
+        if depth >= MAX_RESTRUCTURE_DEPTH {
+            for unit in &units {
+                self.emit_unit(unit, toks, out, depth);
+            }
+            return;
+        }
         let mut i: usize = 0;
         while i < units.len() {
             if let Some(consumed) = self.try_while(&units, i, toks, out, depth) {
@@ -248,6 +256,12 @@ impl State<'_> {
     }
 
     fn emit_units(&mut self, units: &[Unit], toks: &[Token<'_>], out: &mut Vec<u8>, depth: usize) {
+        if depth >= MAX_RESTRUCTURE_DEPTH {
+            for unit in units {
+                self.emit_unit(unit, toks, out, depth);
+            }
+            return;
+        }
         let mut i: usize = 0;
         while i < units.len() {
             if let Some(consumed) = self.try_while(units, i, toks, out, depth) {
@@ -291,8 +305,16 @@ impl State<'_> {
                 let header: &[u8] = slice_src(self.src, toks, *header_lo, *open).trim_ascii();
                 out.extend_from_slice(header);
                 out.extend_from_slice(b" {\n");
-                let inner: &[Token<'_>] = &toks[*open + 1..*close];
-                self.structure_region(inner, out, depth + 1);
+                if depth + 1 >= MAX_RESTRUCTURE_DEPTH {
+                    let raw: &[u8] = slice_src(self.src, toks, *open + 1, *close).trim_ascii();
+                    if !raw.is_empty() {
+                        out.extend_from_slice(raw);
+                        out.push(b'\n');
+                    }
+                } else {
+                    let inner: &[Token<'_>] = &toks[*open + 1..*close];
+                    self.structure_region(inner, out, depth + 1);
+                }
                 out.extend_from_slice(pad.as_bytes());
                 out.extend_from_slice(b"}\n");
             }
@@ -622,5 +644,22 @@ mod tests {
         assert_eq!(report.ifs_recovered, 0);
         assert!(out.contains("$a = 1"), "out:\n{out}");
         assert!(out.contains("echo $a"), "out:\n{out}");
+    }
+
+    #[test]
+    fn deeply_nested_brace_declarations_do_not_overflow() {
+        const NESTING: usize = MAX_RESTRUCTURE_DEPTH * 20;
+        let mut src: Vec<u8> = Vec::with_capacity(NESTING * 14 + 16);
+        src.extend_from_slice(b"<?php ");
+        for _ in 0..NESTING {
+            src.extend_from_slice(b"function f(){ ");
+        }
+        src.extend_from_slice(b"$x=1;");
+        src.extend(std::iter::repeat_n(b'}', NESTING));
+        let report: RestructureReport = restructure(&src).expect("restructure");
+        assert!(
+            report.source.windows(4).any(|w| w == b"$x=1"),
+            "innermost statement lost"
+        );
     }
 }

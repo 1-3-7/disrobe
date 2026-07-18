@@ -657,7 +657,7 @@ fn try_pattern_match(
     for arm_body in &bodies {
         let success: usize = find_success_branch(body, test_lo, arm_body.target, targets)?;
         let (pattern, guard): (String, Option<String>) =
-            parse_case_in_arm(body, ctx, test_lo, success);
+            parse_case_in_arm(body, ctx, depth, test_lo, success);
         arms.push(CaseInArm {
             pattern,
             guard,
@@ -923,6 +923,7 @@ fn case_in_region_end(bodies: &[ArmBody], else_body: Option<(usize, usize)>, hi:
 fn parse_case_in_arm(
     body: &YarvIseqBody,
     ctx: &DecompileContext<'_>,
+    depth: u32,
     test_lo: usize,
     success: usize,
 ) -> (String, Option<String>) {
@@ -949,7 +950,7 @@ fn parse_case_in_arm(
         |c| capture_value_start(body, c),
     );
     let pattern: String =
-        parse_pattern(body, ctx, test_lo, pattern_end).unwrap_or_else(|| "_".to_owned());
+        parse_pattern(body, ctx, depth, test_lo, pattern_end).unwrap_or_else(|| "_".to_owned());
     let pattern_bound: String = match bind {
         Some(b) if is_identifier(&b) => format!("{pattern} => {b}"),
         _ => pattern,
@@ -1058,18 +1059,20 @@ fn parse_guard_expr(
 fn parse_pattern(
     body: &YarvIseqBody,
     ctx: &DecompileContext<'_>,
+    depth: u32,
     lo: usize,
     hi: usize,
 ) -> Option<String> {
-    if let Some(alt) = split_alternatives(body, ctx, lo, hi) {
+    if let Some(alt) = split_alternatives(body, ctx, depth, lo, hi) {
         return Some(alt);
     }
-    single_pattern(body, ctx, lo, hi)
+    single_pattern(body, ctx, depth, lo, hi)
 }
 
 fn split_alternatives(
     body: &YarvIseqBody,
     ctx: &DecompileContext<'_>,
+    depth: u32,
     lo: usize,
     hi: usize,
 ) -> Option<String> {
@@ -1084,7 +1087,7 @@ fn split_alternatives(
                 .is_some_and(|x| matches!(x.mnemonic.as_str(), "branchunless" | "branchif"))
             && !segment_is_structural(body, seg_lo, j);
         if is_alt_boundary {
-            if let Some(p) = single_pattern(body, ctx, seg_lo, j + 1) {
+            if let Some(p) = single_pattern(body, ctx, depth, seg_lo, j + 1) {
                 alts.push(p);
             }
             seg_lo = skip_alt_separator(body, j + 2);
@@ -1097,7 +1100,7 @@ fn split_alternatives(
         return None;
     }
     if seg_lo < hi
-        && let Some(p) = single_pattern(body, ctx, seg_lo, hi)
+        && let Some(p) = single_pattern(body, ctx, depth, seg_lo, hi)
         && !alts.contains(&p)
     {
         alts.push(p);
@@ -1124,6 +1127,7 @@ fn skip_alt_separator(body: &YarvIseqBody, after_branch: usize) -> usize {
 fn single_pattern(
     body: &YarvIseqBody,
     ctx: &DecompileContext<'_>,
+    depth: u32,
     lo: usize,
     hi: usize,
 ) -> Option<String> {
@@ -1140,7 +1144,7 @@ fn single_pattern(
             const_prefix.as_deref(),
         ));
     }
-    if let Some(lambda) = parse_lambda_pattern(body, ctx, lo, hi) {
+    if let Some(lambda) = parse_lambda_pattern(body, ctx, depth, lo, hi) {
         return Some(lambda);
     }
     parse_value_or_class(body, ctx, lo, hi)
@@ -1149,6 +1153,7 @@ fn single_pattern(
 fn parse_lambda_pattern(
     body: &YarvIseqBody,
     ctx: &DecompileContext<'_>,
+    depth: u32,
     lo: usize,
     hi: usize,
 ) -> Option<String> {
@@ -1168,7 +1173,7 @@ fn parse_lambda_pattern(
         .take(block.param_lead_num as usize)
         .filter_map(Option::as_deref)
         .collect();
-    let inner: Vec<String> = render_iseq_statements(block, ctx, 0);
+    let inner: Vec<String> = render_iseq_statements(block, ctx, depth.saturating_add(1));
     let body_line: String = inner
         .iter()
         .map(|l| l.trim())
@@ -3416,7 +3421,7 @@ fn emit_send(
 
 fn render_block_lines(block: &YarvIseqBody, ctx: &DecompileContext<'_>, depth: u32) -> Vec<String> {
     let params: String = block_param_list(block);
-    let inner: Vec<String> = render_iseq_statements(block, ctx, 0);
+    let inner: Vec<String> = render_iseq_statements(block, ctx, depth.saturating_add(1));
     let body_only: Vec<&str> = inner
         .iter()
         .map(|l| l.trim())
@@ -5040,6 +5045,90 @@ mod tests {
             "no block should be rendered for sentinel iseq ref, stmts: {stmts:?}"
         );
         assert!(stmts.iter().all(|s| !s.contains('{')), "stmts: {stmts:?}");
+    }
+
+    #[test]
+    fn self_referential_block_iseq_terminates() {
+        let main: YarvIseqBody = YarvIseqBody {
+            index: 0,
+            offset: 0,
+            iseq_size: 3,
+            local_table: Vec::new(),
+            param_lead_num: 0,
+            param_size: 0,
+            param_flags: 0,
+            param_opt_num: 0,
+            param_rest_start: 0,
+            param_block_start: 0,
+            catch_entries: Vec::new(),
+            instructions: vec![
+                instr("putself", vec![]),
+                instr(
+                    "send",
+                    vec![
+                        YarvOperand::Call {
+                            method: "each".to_owned(),
+                            argc: 0,
+                            flags: 0,
+                        },
+                        YarvOperand::IseqRef(0),
+                    ],
+                ),
+                instr("leave", vec![]),
+            ],
+        };
+        let image: IbfImage = IbfImage {
+            iseq_offsets: Vec::new(),
+            objects: Vec::new(),
+            iseqs: vec![main.clone()],
+            recovered_literal_count: 0,
+            recovered_instruction_count: 0,
+        };
+        let stmts: Vec<String> = decompile_in_image(&main, &image);
+        assert!(stmts.len() < 4096, "stmts: {stmts:?}");
+    }
+
+    #[test]
+    fn self_referential_lambda_block_iseq_terminates() {
+        let main: YarvIseqBody = YarvIseqBody {
+            index: 0,
+            offset: 0,
+            iseq_size: 3,
+            local_table: Vec::new(),
+            param_lead_num: 0,
+            param_size: 0,
+            param_flags: 0,
+            param_opt_num: 0,
+            param_rest_start: 0,
+            param_block_start: 0,
+            catch_entries: Vec::new(),
+            instructions: vec![
+                instr("putself", vec![]),
+                instr(
+                    "send",
+                    vec![
+                        YarvOperand::Call {
+                            method: "lambda".to_owned(),
+                            argc: 0,
+                            flags: 0,
+                        },
+                        YarvOperand::IseqRef(0),
+                    ],
+                ),
+                instr("leave", vec![]),
+            ],
+        };
+        let image: IbfImage = IbfImage {
+            iseq_offsets: Vec::new(),
+            objects: Vec::new(),
+            iseqs: vec![main.clone()],
+            recovered_literal_count: 0,
+            recovered_instruction_count: 0,
+        };
+        let ctx: DecompileContext<'_> = DecompileContext::from_image(&image);
+        let lambda: Option<String> =
+            super::parse_lambda_pattern(&main, &ctx, 0, 0, main.instructions.len());
+        let _ = lambda;
     }
 
     #[test]
