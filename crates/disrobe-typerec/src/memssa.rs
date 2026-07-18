@@ -1,11 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use iced_x86::{Instruction, InstructionInfoFactory, Mnemonic, OpAccess, Register, UsedMemory};
+use iced_x86::{
+    CodeSize, FlowControl, Instruction, InstructionInfoFactory, Mnemonic, OpAccess, Register,
+    UsedMemory,
+};
 
 use crate::cells::CellStore;
 use crate::cfg::Cfg;
 use crate::lattice::{TypeClass, TypeVar, Width};
-use crate::region::{AliasOracle, MemoryAccess, Region, RegionModel};
+use crate::region::{AliasOracle, IndexSymbol, MemoryAccess, Region, RegionModel};
 
 pub type VersionId = u32;
 
@@ -19,8 +22,33 @@ pub enum AccessKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StackEvent {
     pub rbp_disp: i64,
+    pub index: Option<Register>,
+    pub index_address_size: u8,
+    pub index_symbol: Option<IndexSymbol>,
+    pub index_scale: u8,
     pub width: Width,
     pub kind: AccessKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct StackOffset {
+    rbp_disp: i64,
+    index: Option<Register>,
+    index_address_size: u8,
+    index_symbol: Option<IndexSymbol>,
+    index_scale: u8,
+}
+
+impl StackEvent {
+    const fn offset(self) -> StackOffset {
+        StackOffset {
+            rbp_disp: self.rbp_disp,
+            index: self.index,
+            index_address_size: self.index_address_size,
+            index_symbol: self.index_symbol,
+            index_scale: self.index_scale,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,9 +122,21 @@ fn stack_event(insn: &Instruction, factory: &mut InstructionInfoFactory) -> Opti
     let info: &iced_x86::InstructionInfo = factory.info(insn);
     for mem in info.used_memory() {
         let mem: UsedMemory = *mem;
-        if mem.base() != Register::RBP || mem.index() != Register::None {
+        if mem.base() != Register::RBP {
             continue;
         }
+        let raw_index: Register = mem.index();
+        let index: Option<Register> =
+            (raw_index != Register::None).then_some(raw_index.full_register());
+        let index_address_size: u8 = match mem.address_size() {
+            CodeSize::Code32 => 4,
+            CodeSize::Code64 => 8,
+            _ => continue,
+        };
+        let index_scale: u8 = match decoded_index_scale(mem.scale()) {
+            Some(scale) => scale,
+            None => continue,
+        };
         let kind: AccessKind = match mem.access() {
             OpAccess::Read | OpAccess::CondRead => AccessKind::Load,
             OpAccess::Write | OpAccess::CondWrite => AccessKind::Store,
@@ -108,11 +148,54 @@ fn stack_event(insn: &Instruction, factory: &mut InstructionInfoFactory) -> Opti
         let width: Width = bytes.map_or(Width::Unknown, Width::from_bytes);
         return Some(StackEvent {
             rbp_disp,
+            index,
+            index_address_size,
+            index_symbol: None,
+            index_scale,
             width,
             kind,
         });
     }
     None
+}
+
+fn annotate_index_symbols(instrs: &[Instruction], cfg: &Cfg, events: &mut [Option<StackEvent>]) {
+    let mut factory: InstructionInfoFactory = InstructionInfoFactory::new();
+    for (block_index, block) in cfg.blocks.iter().enumerate() {
+        let mut register_writes: BTreeMap<Register, usize> = BTreeMap::new();
+        let mut call_barrier: Option<usize> = None;
+        for instruction_index in block.start..block.end {
+            if let Some(Some(event)) = events.get_mut(instruction_index)
+                && let Some(index) = event.index
+            {
+                let register_write: Option<usize> = register_writes.get(&index).copied();
+                event.index_symbol =
+                    Some(IndexSymbol::new(block_index, register_write, call_barrier));
+            }
+            let Some(insn): Option<&Instruction> = instrs.get(instruction_index) else {
+                break;
+            };
+            let info: &iced_x86::InstructionInfo = factory.info(insn);
+            for used in info.used_registers() {
+                if writes_register(used.access()) {
+                    register_writes.insert(used.register().full_register(), instruction_index);
+                }
+            }
+            if matches!(
+                insn.flow_control(),
+                FlowControl::Call | FlowControl::IndirectCall
+            ) {
+                call_barrier = Some(instruction_index);
+            }
+        }
+    }
+}
+
+const fn writes_register(access: OpAccess) -> bool {
+    matches!(
+        access,
+        OpAccess::Write | OpAccess::CondWrite | OpAccess::ReadWrite | OpAccess::ReadCondWrite
+    )
 }
 
 fn escaped_slot(insn: &Instruction) -> Option<i64> {
@@ -127,6 +210,13 @@ fn escaped_slot(insn: &Instruction) -> Option<i64> {
     ))
 }
 
+fn has_indexed_frame_escape(insn: &Instruction) -> bool {
+    insn.mnemonic() == Mnemonic::Lea
+        && matches!(insn.memory_base(), Register::RBP | Register::RSP)
+        && insn.memory_index() != Register::None
+        && decoded_index_scale(insn.memory_index_scale()).is_some()
+}
+
 #[must_use]
 pub fn build(instrs: &[Instruction], cfg: &Cfg, store: &mut CellStore) -> MemSsa {
     build_with_oracle(instrs, cfg, store, &RegionModel::default())
@@ -139,12 +229,20 @@ fn build_with_oracle(
     oracle: &dyn AliasOracle,
 ) -> MemSsa {
     let mut factory: InstructionInfoFactory = InstructionInfoFactory::new();
-    let events: Vec<Option<StackEvent>> = instrs
+    let mut events: Vec<Option<StackEvent>> = instrs
         .iter()
         .map(|insn: &Instruction| stack_event(insn, &mut factory))
         .collect();
+    annotate_index_symbols(instrs, cfg, &mut events);
 
     let mut ssa: MemSsa = MemSsa::default();
+    if instrs
+        .iter()
+        .any(|insn: &Instruction| has_indexed_frame_escape(insn))
+    {
+        build_all_escaped(&mut ssa, store, instrs, &events);
+        return ssa;
+    }
     for insn in instrs {
         if let Some(rbp_disp) = escaped_slot(insn) {
             ssa.escaped.insert(rbp_disp);
@@ -152,9 +250,15 @@ fn build_with_oracle(
     }
 
     let mut widths: BTreeMap<i64, Width> = BTreeMap::new();
+    let mut offsets: BTreeMap<i64, Option<StackOffset>> = BTreeMap::new();
     for event in events.iter().flatten() {
         let entry: &mut Width = widths.entry(event.rbp_disp).or_insert(Width::Unknown);
         *entry = entry.join(event.width);
+        let offset: StackOffset = event.offset();
+        let known: &mut Option<StackOffset> = offsets.entry(event.rbp_disp).or_insert(Some(offset));
+        if known.is_some_and(|current: StackOffset| current != offset) {
+            *known = None;
+        }
     }
 
     for &rbp_disp in widths.keys() {
@@ -168,17 +272,22 @@ fn build_with_oracle(
         .copied()
         .filter(|rbp_disp: &i64| !ssa.escaped.contains(rbp_disp))
         .collect();
-    for group in group_offsets(&concrete, &widths, oracle) {
+    for group in group_offsets(&concrete, &widths, &offsets, oracle) {
         build_slot(&mut ssa, store, cfg, instrs, &events, &group);
     }
     ssa
 }
 
-const fn stack_alloc(rbp_disp: i64, width: Width) -> MemoryAccess {
+const fn stack_alloc(offset: StackOffset, width: Width) -> MemoryAccess {
     MemoryAccess {
         region: Region::Stack,
         base: Register::RBP,
-        rbp_disp,
+        rbp_disp: offset.rbp_disp,
+        index: offset.index,
+        index_address_size: offset.index_address_size,
+        index_symbol: offset.index_symbol,
+        index_scale: offset.index_scale,
+        index_bound: None,
         width,
         escapes: false,
     }
@@ -187,21 +296,34 @@ const fn stack_alloc(rbp_disp: i64, width: Width) -> MemoryAccess {
 fn group_offsets(
     concrete: &[i64],
     widths: &BTreeMap<i64, Width>,
+    offsets: &BTreeMap<i64, Option<StackOffset>>,
     oracle: &dyn AliasOracle,
 ) -> Vec<BTreeSet<i64>> {
     let count: usize = concrete.len();
     let mut parent: Vec<usize> = (0..count).collect();
     for left in 0..count {
         for right in (left + 1)..count {
+            let Some(offset_a): Option<StackOffset> =
+                offsets.get(&concrete[left]).copied().flatten()
+            else {
+                union_find_join(&mut parent, left, right);
+                continue;
+            };
+            let Some(offset_b): Option<StackOffset> =
+                offsets.get(&concrete[right]).copied().flatten()
+            else {
+                union_find_join(&mut parent, left, right);
+                continue;
+            };
             let a: MemoryAccess = stack_alloc(
-                concrete[left],
+                offset_a,
                 widths
                     .get(&concrete[left])
                     .copied()
                     .unwrap_or(Width::Unknown),
             );
             let b: MemoryAccess = stack_alloc(
-                concrete[right],
+                offset_b,
                 widths
                     .get(&concrete[right])
                     .copied()
@@ -220,6 +342,16 @@ fn group_offsets(
     let mut ordered: Vec<BTreeSet<i64>> = groups.into_values().collect();
     ordered.sort_by_key(|group: &BTreeSet<i64>| group.iter().next().copied().unwrap_or(0));
     ordered
+}
+
+const fn decoded_index_scale(scale: u32) -> Option<u8> {
+    match scale {
+        1 => Some(1),
+        2 => Some(2),
+        4 => Some(4),
+        8 => Some(8),
+        _ => None,
+    }
 }
 
 fn union_find_root(parent: &mut [usize], mut node: usize) -> usize {
@@ -257,6 +389,34 @@ fn build_escaped_slot(
             continue;
         };
         ssa.access.insert((insn.ip(), rbp_disp), version);
+        ssa.touch(version, insn.ip());
+    }
+}
+
+fn build_all_escaped(
+    ssa: &mut MemSsa,
+    store: &mut CellStore,
+    instrs: &[Instruction],
+    events: &[Option<StackEvent>],
+) {
+    let Some(representative): Option<i64> = events
+        .iter()
+        .flatten()
+        .map(|event: &StackEvent| event.rbp_disp)
+        .min()
+    else {
+        return;
+    };
+    let version: VersionId = ssa.fresh(store, representative, false, true);
+    for (index, event) in events.iter().enumerate() {
+        let Some(event): Option<&StackEvent> = event.as_ref() else {
+            continue;
+        };
+        let Some(insn): Option<&Instruction> = instrs.get(index) else {
+            continue;
+        };
+        ssa.escaped.insert(event.rbp_disp);
+        ssa.access.insert((insn.ip(), event.rbp_disp), version);
         ssa.touch(version, insn.ip());
     }
 }
@@ -499,19 +659,48 @@ mod tests {
         build_with_oracle(&instrs, &cfg, &mut store, oracle)
     }
 
+    fn assert_exact_mem_ssa_match(refined: &MemSsa, conflated: &MemSsa) {
+        assert_eq!(refined.versions, conflated.versions);
+        assert_eq!(refined.access, conflated.access);
+        assert_eq!(refined.escaped, conflated.escaped);
+    }
+
     #[test]
     fn always_may_alias_conflates_every_concrete_offset_into_one_group() {
         let concrete: [i64; 2] = [-16, -8];
         let mut widths: BTreeMap<i64, Width> = BTreeMap::new();
         widths.insert(-16, Width::Qword);
         widths.insert(-8, Width::Qword);
+        let offsets: BTreeMap<i64, Option<StackOffset>> = BTreeMap::from([
+            (
+                -16,
+                Some(StackOffset {
+                    rbp_disp: -16,
+                    index: None,
+                    index_address_size: 0,
+                    index_symbol: None,
+                    index_scale: 1,
+                }),
+            ),
+            (
+                -8,
+                Some(StackOffset {
+                    rbp_disp: -8,
+                    index: None,
+                    index_address_size: 0,
+                    index_symbol: None,
+                    index_scale: 1,
+                }),
+            ),
+        ]);
 
         let conflated: Vec<BTreeSet<i64>> =
-            group_offsets(&concrete, &widths, &crate::region::AlwaysMayAlias);
+            group_offsets(&concrete, &widths, &offsets, &crate::region::AlwaysMayAlias);
         assert_eq!(conflated.len(), 1, "the ignorant oracle merges every slot");
         assert_eq!(conflated[0].len(), 2);
 
-        let split: Vec<BTreeSet<i64>> = group_offsets(&concrete, &widths, &RegionModel::default());
+        let split: Vec<BTreeSet<i64>> =
+            group_offsets(&concrete, &widths, &offsets, &RegionModel::default());
         assert_eq!(split.len(), 2, "disjoint extents are proven and kept apart");
     }
 
@@ -531,6 +720,175 @@ mod tests {
             refined.version_cell(0x1010, -16),
             "the region oracle may split only what it proves disjoint",
         );
+    }
+
+    const CORRELATED_INDEXED_FIELDS: &[u8] = &[
+        0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x44, 0xcd, 0xc0, 0x48, 0x89, 0x54, 0xcd, 0xc8, 0x48,
+        0x8b, 0x44, 0xcd, 0xc0, 0x48, 0x8b, 0x54, 0xcd, 0xc8, 0x5d, 0xc3,
+    ];
+
+    #[test]
+    fn correlated_indexed_fields_split_only_with_the_region_model() {
+        let conflated: MemSsa = ssa_with(
+            CORRELATED_INDEXED_FIELDS,
+            0x1000,
+            &crate::region::AlwaysMayAlias,
+        );
+        let refined: MemSsa = ssa_with(CORRELATED_INDEXED_FIELDS, 0x1000, &RegionModel::default());
+
+        assert_eq!(
+            conflated.version_cell(0x100e, -0x40),
+            conflated.version_cell(0x1013, -0x38),
+            "the ignorant model merges both indexed fields",
+        );
+        assert_ne!(
+            refined.version_cell(0x100e, -0x40),
+            refined.version_cell(0x1013, -0x38),
+            "matching indexed fields with disjoint extents split",
+        );
+    }
+
+    const UNBOUNDED_DIFFERENT_INDEXES: &[u8] = &[
+        0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x44, 0xcd, 0xc0, 0x48, 0x89, 0x54, 0xd5, 0xc8, 0x48,
+        0x8b, 0x44, 0xcd, 0xc0, 0x48, 0x8b, 0x54, 0xd5, 0xc8, 0x5d, 0xc3,
+    ];
+
+    #[test]
+    fn unbounded_index_pair_matches_the_ignorant_version_chain() {
+        let conflated: MemSsa = ssa_with(
+            UNBOUNDED_DIFFERENT_INDEXES,
+            0x1000,
+            &crate::region::AlwaysMayAlias,
+        );
+        let refined: MemSsa =
+            ssa_with(UNBOUNDED_DIFFERENT_INDEXES, 0x1000, &RegionModel::default());
+
+        assert!(
+            !refined.versions().is_empty(),
+            "indexed accesses enter memory SSA"
+        );
+        assert_exact_mem_ssa_match(&refined, &conflated);
+        assert_eq!(
+            refined.version_cell(0x1004, -0x40),
+            conflated.version_cell(0x1004, -0x40),
+        );
+        assert_eq!(
+            refined.version_cell(0x1009, -0x38),
+            conflated.version_cell(0x1009, -0x38),
+        );
+        assert_eq!(
+            refined.version_cell(0x100e, -0x40),
+            conflated.version_cell(0x100e, -0x40),
+        );
+        assert_eq!(
+            refined.version_cell(0x1013, -0x38),
+            conflated.version_cell(0x1013, -0x38),
+        );
+    }
+
+    const REASSIGNED_INDEX_FIELDS: &[u8] = &[
+        0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x44, 0xcd, 0xc0, 0x89, 0xd1, 0x48, 0x89, 0x54, 0xcd,
+        0xc8, 0x5d, 0xc3,
+    ];
+
+    #[test]
+    fn reassigned_index_matches_the_ignorant_version_chain() {
+        let conflated: MemSsa = ssa_with(
+            REASSIGNED_INDEX_FIELDS,
+            0x1000,
+            &crate::region::AlwaysMayAlias,
+        );
+        let refined: MemSsa = ssa_with(REASSIGNED_INDEX_FIELDS, 0x1000, &RegionModel::default());
+
+        assert_exact_mem_ssa_match(&refined, &conflated);
+        assert_eq!(
+            refined.version_cell(0x1004, -0x40),
+            conflated.version_cell(0x1004, -0x40),
+        );
+        assert_eq!(
+            refined.version_cell(0x100b, -0x38),
+            conflated.version_cell(0x100b, -0x38),
+        );
+    }
+
+    const INDEXED_ESCAPE_FIELDS: &[u8] = &[
+        0x55, 0x48, 0x89, 0xe5, 0x48, 0x8d, 0x44, 0xcd, 0xc0, 0x48, 0x89, 0x44, 0xcd, 0xc0, 0x48,
+        0x89, 0x54, 0xcd, 0xc8, 0x5d, 0xc3,
+    ];
+
+    #[test]
+    fn indexed_frame_escape_matches_the_ignorant_version_chain() {
+        let conflated: MemSsa = ssa_with(
+            INDEXED_ESCAPE_FIELDS,
+            0x1000,
+            &crate::region::AlwaysMayAlias,
+        );
+        let refined: MemSsa = ssa_with(INDEXED_ESCAPE_FIELDS, 0x1000, &RegionModel::default());
+
+        assert!(refined.is_escaped(-0x40));
+        assert!(refined.is_escaped(-0x38));
+        assert_exact_mem_ssa_match(&refined, &conflated);
+        assert_eq!(
+            refined.version_cell(0x1009, -0x40),
+            conflated.version_cell(0x1009, -0x40),
+        );
+        assert_eq!(
+            refined.version_cell(0x100e, -0x38),
+            conflated.version_cell(0x100e, -0x38),
+        );
+    }
+
+    const RSP_INDEXED_ESCAPE_FIELDS: &[u8] = &[
+        0x55, 0x48, 0x89, 0xe5, 0x48, 0x8d, 0x44, 0xcc, 0xc0, 0x48, 0x89, 0x44, 0xcd, 0xc0, 0x48,
+        0x89, 0x54, 0xcd, 0xc8, 0x5d, 0xc3,
+    ];
+
+    #[test]
+    fn rsp_indexed_frame_escape_matches_the_ignorant_version_chain() {
+        let conflated: MemSsa = ssa_with(
+            RSP_INDEXED_ESCAPE_FIELDS,
+            0x1000,
+            &crate::region::AlwaysMayAlias,
+        );
+        let refined: MemSsa = ssa_with(RSP_INDEXED_ESCAPE_FIELDS, 0x1000, &RegionModel::default());
+
+        assert!(refined.is_escaped(-0x40));
+        assert!(refined.is_escaped(-0x38));
+        assert_exact_mem_ssa_match(&refined, &conflated);
+    }
+
+    const CALL_BARRIER_INDEX_FIELDS: &[u8] = &[
+        0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x44, 0xcd, 0xc0, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x48,
+        0x89, 0x54, 0xcd, 0xc8, 0x5d, 0xc3,
+    ];
+
+    #[test]
+    fn call_barrier_index_matches_the_ignorant_version_chain() {
+        let conflated: MemSsa = ssa_with(
+            CALL_BARRIER_INDEX_FIELDS,
+            0x1000,
+            &crate::region::AlwaysMayAlias,
+        );
+        let refined: MemSsa = ssa_with(CALL_BARRIER_INDEX_FIELDS, 0x1000, &RegionModel::default());
+
+        assert_exact_mem_ssa_match(&refined, &conflated);
+    }
+
+    const CROSS_BLOCK_INDEX_FIELDS: &[u8] = &[
+        0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x44, 0xcd, 0xc0, 0xeb, 0x00, 0x48, 0x89, 0x54, 0xcd,
+        0xc8, 0x5d, 0xc3,
+    ];
+
+    #[test]
+    fn cross_block_index_matches_the_ignorant_version_chain() {
+        let conflated: MemSsa = ssa_with(
+            CROSS_BLOCK_INDEX_FIELDS,
+            0x1000,
+            &crate::region::AlwaysMayAlias,
+        );
+        let refined: MemSsa = ssa_with(CROSS_BLOCK_INDEX_FIELDS, 0x1000, &RegionModel::default());
+
+        assert_exact_mem_ssa_match(&refined, &conflated);
     }
 
     #[test]

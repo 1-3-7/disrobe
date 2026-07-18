@@ -1,12 +1,18 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use disrobe_typerec::CellStore;
+use disrobe_typerec::cfg;
+use disrobe_typerec::decode::decode_all;
 use disrobe_typerec::dwarf_gt::{self, DebugImage};
 use disrobe_typerec::grade::{self, StructGradeReport};
-use disrobe_typerec::lattice::Width;
+use disrobe_typerec::lattice::{TypeVar, Width};
+use disrobe_typerec::memssa;
 use disrobe_typerec::recover::TypedFunction;
 use disrobe_typerec::structrec::{AccessFlags, FieldNameTier, RecoveredField, RecoveredStruct};
+use iced_x86::{Decoder, DecoderOptions, Instruction, OpKind, Register};
 
 fn fixture(name: &str) -> Vec<u8> {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -281,6 +287,157 @@ fn source_path() -> PathBuf {
     path.push("fixtures");
     path.push("struct_corpus.c");
     path
+}
+
+fn indexed_source_path() -> PathBuf {
+    let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.push("tests");
+    path.push("fixtures");
+    path.push("strided_indexed.c");
+    path
+}
+
+fn has_indexed_rbp_memory(text: &[u8], base: u64) -> bool {
+    let mut decoder: Decoder<'_> = Decoder::with_ip(64, text, base, DecoderOptions::NONE);
+    while decoder.can_decode() {
+        let instruction: Instruction = decoder.decode();
+        if instruction.is_invalid() {
+            return false;
+        }
+        let operand_count: u32 = instruction.op_count();
+        for operand in 0..operand_count {
+            if instruction.op_kind(operand) == OpKind::Memory
+                && instruction.memory_base() == Register::RBP
+                && instruction.memory_index() != Register::None
+                && instruction.memory_index_scale() == 8
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[test]
+fn o2_indexed_stack_fixture_matches_dwarf_offsets_and_widths() {
+    if !tool_available("clang") || !tool_available("objcopy") {
+        eprintln!("skipping: clang and objcopy are required for the indexed ELF fixture");
+        return;
+    }
+    let work: PathBuf =
+        std::env::temp_dir().join(format!("disrobe_typerec_indexed_{}", std::process::id()));
+    if std::fs::create_dir_all(&work).is_err() {
+        eprintln!("skipping: could not create a working directory");
+        return;
+    }
+    let unstripped: PathBuf = work.join("indexed.unstripped.elf");
+    let stripped: PathBuf = work.join("indexed.stripped.elf");
+    let built: bool = run(Command::new("clang")
+        .args([
+            "--target=x86_64-unknown-linux-gnu",
+            "-g",
+            "-O2",
+            "-gdwarf-4",
+            "-fno-omit-frame-pointer",
+            "-fno-asynchronous-unwind-tables",
+            "-nostdlib",
+            "-fuse-ld=lld",
+            "-Wl,-e,_start",
+            "-o",
+        ])
+        .arg(&unstripped)
+        .arg(indexed_source_path()));
+    if !built {
+        cleanup(&work);
+        eprintln!("skipping: clang could not build the indexed ELF fixture on this host");
+        return;
+    }
+    if !run(Command::new("objcopy")
+        .arg("--strip-debug")
+        .arg(&unstripped)
+        .arg(&stripped))
+    {
+        cleanup(&work);
+        eprintln!("skipping: objcopy could not strip the indexed ELF fixture on this host");
+        return;
+    }
+    let Some(ground_truth): Option<DebugImage> = std::fs::read(&unstripped)
+        .ok()
+        .and_then(|bytes: Vec<u8>| dwarf_gt::load(&bytes).ok())
+    else {
+        cleanup(&work);
+        panic!("freshly built indexed fixture must carry DWARF");
+    };
+    let Some((base, text)): Option<(u64, Vec<u8>)> = std::fs::read(&stripped)
+        .ok()
+        .and_then(|bytes: Vec<u8>| dwarf_gt::load_text(&bytes).ok())
+    else {
+        cleanup(&work);
+        panic!("freshly stripped indexed fixture must expose .text");
+    };
+    let functions: Vec<dwarf_gt::GroundTruthFunction> = ground_truth
+        .functions
+        .into_iter()
+        .filter(|function: &dwarf_gt::GroundTruthFunction| function.name == "indexed_pair")
+        .collect();
+    let image: DebugImage = DebugImage {
+        text_base: base,
+        text,
+        functions,
+    };
+    let Some(function): Option<dwarf_gt::GroundTruthFunction> = image
+        .functions
+        .iter()
+        .find(|function: &&dwarf_gt::GroundTruthFunction| function.name == "indexed_pair")
+        .cloned()
+    else {
+        cleanup(&work);
+        eprintln!("skipping: this build did not keep indexed_pair as a standalone function");
+        return;
+    };
+    let bytes: &[u8] = image
+        .function_bytes(&function)
+        .expect("indexed function bytes");
+    let instructions: Vec<Instruction> = decode_all(bytes, function.low_pc);
+    let control_flow: cfg::Cfg = cfg::build(&instructions);
+    let mut store: CellStore = CellStore::new();
+    let ssa: memssa::MemSsa = memssa::build(&instructions, &control_flow, &mut store);
+    let mut fields: BTreeSet<(i64, TypeVar)> = BTreeSet::new();
+    for instruction in &instructions {
+        if instruction.memory_base() != Register::RBP
+            || instruction.memory_index() == Register::None
+            || instruction.memory_index_scale() != 8
+        {
+            continue;
+        }
+        let displacement: i64 =
+            i64::from_ne_bytes(instruction.memory_displacement64().to_ne_bytes());
+        let Some(cell): Option<TypeVar> = ssa.version_cell(instruction.ip(), displacement) else {
+            continue;
+        };
+        fields.insert((displacement, cell));
+    }
+    if !has_indexed_rbp_memory(&image.text, image.text_base) || fields.len() != 2 {
+        cleanup(&work);
+        eprintln!("skipping: this build did not emit the expected two scale-8 indexed rbp fields");
+        return;
+    }
+    let report: StructGradeReport = grade::grade_struct_image(&image);
+    cleanup(&work);
+
+    let cells: BTreeSet<TypeVar> = fields
+        .iter()
+        .map(|(_, cell): &(i64, TypeVar)| *cell)
+        .collect();
+    assert_eq!(cells.len(), 2);
+    assert_eq!(report.aggregates_total, 1);
+    assert_eq!(report.aggregates_mapped, 1);
+    assert_eq!(report.offset.total, 2);
+    assert_eq!(report.offset.correct, 2);
+    assert_eq!(report.width.total, 2);
+    assert_eq!(report.width.correct, 2);
+    assert!((report.offset.recall() - 1.0).abs() < f64::EPSILON);
+    assert!((report.width.recall() - 1.0).abs() < f64::EPSILON);
 }
 
 #[test]
