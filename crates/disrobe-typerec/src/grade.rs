@@ -735,10 +735,14 @@ enum GroundKind {
 }
 
 fn ground_kind_at(function: &GroundTruthFunction, slot: &TypedSlot) -> Option<GroundKind> {
-    if function.aggregates.iter().any(|aggregate: &GroundTruthAggregate| {
-        aggregate.rbp_disp == slot.rbp_disp
-            && aggregate.scope_overlaps(slot.live_lo, slot.live_hi.saturating_add(1))
-    }) {
+    if function
+        .aggregates
+        .iter()
+        .any(|aggregate: &GroundTruthAggregate| {
+            aggregate.rbp_disp == slot.rbp_disp
+                && aggregate.scope_overlaps(slot.live_lo, slot.live_hi.saturating_add(1))
+        })
+    {
         return Some(GroundKind::Pointer);
     }
     function
