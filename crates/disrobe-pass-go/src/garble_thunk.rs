@@ -668,7 +668,10 @@ impl Emu<'_, '_> {
         }
         let size: usize = size.min(8);
         for i in 0..size {
-            let a: u64 = addr + i as u64;
+            let a: u64 = addr.wrapping_add(i as u64);
+            if self.mem.len() >= MAX_EMU_MEM_BYTES && !self.mem.contains_key(&a) {
+                continue;
+            }
             let b: u8 = ((val >> (8 * i)) & 0xff) as u8;
             self.mem.insert(a, b);
         }
@@ -1361,14 +1364,14 @@ fn exec_movups(
             *data_va = addr;
         }
         let bytes: Vec<u8> = (0..width)
-            .map(|i: usize| emu.read_mem(addr + i as u64, 1) as u8)
+            .map(|i: usize| emu.read_mem(addr.wrapping_add(i as u64), 1) as u8)
             .collect();
         emu.set_xmm(insn.op0_register(), &bytes);
     } else if insn.op0_kind() == OpKind::Memory {
         let addr: u64 = emu.mem_addr(insn);
         let bytes: Vec<u8> = emu.get_xmm(insn.op1_register(), width);
         for (i, b) in bytes.iter().enumerate() {
-            emu.write_mem(addr + i as u64, 1, u64::from(*b));
+            emu.write_mem(addr.wrapping_add(i as u64), 1, u64::from(*b));
         }
     }
 }
