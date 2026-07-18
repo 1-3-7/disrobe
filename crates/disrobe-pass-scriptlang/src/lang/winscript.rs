@@ -1021,6 +1021,17 @@ pub fn rebuild_replace(text: &str) -> Option<String> {
                 if from.is_empty() {
                     break;
                 }
+                let growth: usize = to.len().saturating_sub(from.len());
+                if growth > 0 {
+                    let occurrences: usize = subject.matches(from.as_str()).count();
+                    if subject
+                        .len()
+                        .saturating_add(occurrences.saturating_mul(growth))
+                        > MAX_INFLATE_BYTES
+                    {
+                        break;
+                    }
+                }
                 subject = subject.replace(&from, &to);
                 cursor = next;
                 applied = true;
@@ -1682,6 +1693,17 @@ fn is_printable_script(s: &str) -> bool {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn rebuild_replace_bounds_amplifying_replace() {
+        let big_to: String = "b".repeat(100_000);
+        let subject: String = "a".repeat(1000);
+        let src: String = format!("'{subject}'.replace('a','{big_to}')");
+        assert!(
+            rebuild_replace(&src).as_deref().map_or(0, str::len) < 1_000_000,
+            "amplifying replace must be capped"
+        );
+    }
 
     #[test]
     fn b64_roundtrip_matches_real() {
