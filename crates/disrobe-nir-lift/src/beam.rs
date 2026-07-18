@@ -521,7 +521,23 @@ fn string_from_bytes(bytes: &[u8]) -> String {
     )
 }
 
+const MAX_BIG_DECIMAL_BYTES: usize = 1024;
+
+fn big_to_hex(magnitude_be: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out: String = String::with_capacity(2 + magnitude_be.len() * 2);
+    out.push_str("0x");
+    for &byte in magnitude_be {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
 fn big_to_decimal(magnitude_be: &[u8]) -> String {
+    if magnitude_be.len() > MAX_BIG_DECIMAL_BYTES {
+        return big_to_hex(magnitude_be);
+    }
     let mut digits: Vec<u8> = vec![0];
     for &byte in magnitude_be {
         let mut carry: u32 = u32::from(byte);
@@ -675,6 +691,19 @@ fn value_u32(op: Option<&Operand>) -> Option<u32> {
 mod tests {
     use super::*;
     use disrobe_pass_beam::chunks::AtomTable;
+
+    #[test]
+    fn big_decimal_renders_small_magnitudes_and_caps_oversized_ones() {
+        assert_eq!(big_to_decimal(&[0x01, 0x00]), "256");
+        assert_eq!(big_to_decimal(&[0xff]), "255");
+        let oversized: Vec<u8> = vec![0xab; MAX_BIG_DECIMAL_BYTES + 1];
+        let rendered: String = big_to_decimal(&oversized);
+        assert!(
+            rendered.starts_with("0x"),
+            "an oversized magnitude falls back to hex instead of the quadratic decimal path"
+        );
+        assert_eq!(rendered.len(), 2 + oversized.len() * 2);
+    }
 
     fn empty_chunks() -> Chunks {
         Chunks {
