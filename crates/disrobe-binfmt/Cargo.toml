@@ -52,7 +52,6 @@ sha2 = { workspace = true }
 tar = { workspace = true }
 tempfile = "3"
 thiserror = { workspace = true }
-tracing = { workspace = true }
 zip = { workspace = true }
 zstd = { workspace = true }
 
@@ -65,4 +64,3 @@ name = "gen_container_fixture"
 path = "tests/fixtures/gen_container.rs"
 
 [dev-dependencies]
-insta = { workspace = true }

@@ -16,7 +16,6 @@ workspace = true
 
 [dependencies]
 disrobe-core = { workspace = true }
-disrobe-binfmt = { workspace = true }
 object = { workspace = true }
 iced-x86 = { workspace = true }
 gimli = { workspace = true }
@@ -33,4 +32,3 @@ chain = ["disrobe-core/chain"]
 llm-metadata = ["dep:disrobe-llm-metadata"]
 
 [dev-dependencies]
-insta = { workspace = true }

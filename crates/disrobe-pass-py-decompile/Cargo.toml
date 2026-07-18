@@ -20,7 +20,6 @@ disrobe-py-marshal = { workspace = true }
 disrobe-llm-metadata = { workspace = true, optional = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
@@ -36,4 +35,3 @@ chain = ["disrobe-core/chain"]
 llm-metadata = ["dep:disrobe-llm-metadata"]
 
 [dev-dependencies]
-insta = { workspace = true }

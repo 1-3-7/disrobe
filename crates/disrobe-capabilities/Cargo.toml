@@ -32,6 +32,5 @@ serde_yaml_ng = { version = "0.10", optional = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-blake3 = { workspace = true }
 goblin = { workspace = true }
 object = { workspace = true }

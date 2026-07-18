@@ -17,9 +17,7 @@ workspace = true
 [dependencies]
 disrobe-core = { workspace = true }
 disrobe-ir = { workspace = true }
-miette = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 base64 = "0.22"
@@ -27,8 +25,6 @@ regex = "1"
 flate2 = { workspace = true }
 zip = { workspace = true }
 cfb = "0.10"
-encoding_rs = "0.8"
-byteorder = "1"
 md-5 = "0.10"
 sha2 = { workspace = true }
 aes = { workspace = true }
@@ -40,7 +36,6 @@ default = []
 chain = ["disrobe-core/chain"]
 
 [dev-dependencies]
-insta = { workspace = true }
 base64 = "0.22"
 flate2 = { workspace = true }
 zip = { workspace = true }

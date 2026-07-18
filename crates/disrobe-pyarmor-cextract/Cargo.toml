@@ -19,7 +19,6 @@ doctest = false
 
 [dependencies]
 pyo3 = { workspace = true }
-pyo3-ffi = { workspace = true }
 blake3 = { version = "1", default-features = false, features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]

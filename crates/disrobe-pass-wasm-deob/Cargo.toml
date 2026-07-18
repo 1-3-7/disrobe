@@ -28,11 +28,9 @@ blake3 = { workspace = true }
 disrobe-llm-metadata = { workspace = true, optional = true }
 indexmap = { workspace = true }
 wasmparser = { workspace = true }
-wasm-tools = { workspace = true }
 walrus = { workspace = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 smallvec = { version = "1", features = ["serde", "union"] }
@@ -40,7 +38,6 @@ wasmtime = { workspace = true, optional = true }
 gimli = { version = "0.32.3", default-features = false, features = ["read-all"], optional = true }
 
 [dev-dependencies]
-insta = { workspace = true }
 divan = { workspace = true }
 wat = "1"
 wit-parser = "0.250"

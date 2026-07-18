@@ -26,12 +26,10 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-once_cell = { workspace = true }
 memchr = { workspace = true }
 regex = { workspace = true }
 aho-corasick = { version = "1.1" }
 base64 = { workspace = true }
-camino = { workspace = true }
 rand = { workspace = true }
 blake3 = { workspace = true }
 aes = { workspace = true }

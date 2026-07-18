@@ -19,7 +19,6 @@ disrobe-core = { workspace = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 zip = { workspace = true, optional = true }
 tar = { workspace = true, optional = true }
 
@@ -29,5 +28,4 @@ ml = ["dep:zip", "dep:tar"]
 chain = ["disrobe-core/chain"]
 
 [dev-dependencies]
-insta = { workspace = true }
 serde_json = { workspace = true }

@@ -23,14 +23,12 @@ oxc_parser = { workspace = true }
 oxc_ast = { workspace = true }
 oxc_span = { workspace = true }
 oxc_semantic = { workspace = true }
-oxc_codegen = { workspace = true }
 boa_engine = { workspace = true }
 regex = "1"
 base64 = "0.22"
 indexmap = { workspace = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 disrobe-llm-metadata = { workspace = true, optional = true }
@@ -41,7 +39,6 @@ chain = ["disrobe-core/chain"]
 llm-metadata = ["dep:disrobe-llm-metadata"]
 
 [dev-dependencies]
-insta = { workspace = true }
 divan = { workspace = true }
 
 [[bench]]
