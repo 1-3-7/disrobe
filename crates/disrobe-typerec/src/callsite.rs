@@ -826,10 +826,7 @@ mod tests {
         };
         assert_eq!(dword.meet(qword).meet(dword), unwidthed);
         assert_eq!(dword.meet(dword).meet(qword), unwidthed);
-        assert_eq!(
-            dword.meet(qword).meet(dword),
-            dword.meet(dword).meet(qword)
-        );
+        assert_eq!(dword.meet(qword).meet(dword), dword.meet(dword).meet(qword));
     }
 
     #[test]
