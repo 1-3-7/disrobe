@@ -5,6 +5,7 @@ use iced_x86::{Instruction, InstructionInfoFactory, Mnemonic, OpAccess, Register
 use crate::cells::CellStore;
 use crate::cfg::Cfg;
 use crate::lattice::{TypeClass, TypeVar, Width};
+use crate::region::{AliasOracle, MemoryAccess, Region, RegionModel};
 
 pub type VersionId = u32;
 
@@ -128,6 +129,15 @@ fn escaped_slot(insn: &Instruction) -> Option<i64> {
 
 #[must_use]
 pub fn build(instrs: &[Instruction], cfg: &Cfg, store: &mut CellStore) -> MemSsa {
+    build_with_oracle(instrs, cfg, store, &RegionModel::default())
+}
+
+fn build_with_oracle(
+    instrs: &[Instruction],
+    cfg: &Cfg,
+    store: &mut CellStore,
+    oracle: &dyn AliasOracle,
+) -> MemSsa {
     let mut factory: InstructionInfoFactory = InstructionInfoFactory::new();
     let events: Vec<Option<StackEvent>> = instrs
         .iter()
@@ -141,19 +151,91 @@ pub fn build(instrs: &[Instruction], cfg: &Cfg, store: &mut CellStore) -> MemSsa
         }
     }
 
-    let mut rbp_disps: BTreeSet<i64> = BTreeSet::new();
+    let mut widths: BTreeMap<i64, Width> = BTreeMap::new();
     for event in events.iter().flatten() {
-        rbp_disps.insert(event.rbp_disp);
+        let entry: &mut Width = widths.entry(event.rbp_disp).or_insert(Width::Unknown);
+        *entry = entry.join(event.width);
     }
 
-    for rbp_disp in rbp_disps {
+    for &rbp_disp in widths.keys() {
         if ssa.escaped.contains(&rbp_disp) {
             build_escaped_slot(&mut ssa, store, instrs, &events, rbp_disp);
-        } else {
-            build_slot(&mut ssa, store, cfg, instrs, &events, rbp_disp);
         }
     }
+
+    let concrete: Vec<i64> = widths
+        .keys()
+        .copied()
+        .filter(|rbp_disp: &i64| !ssa.escaped.contains(rbp_disp))
+        .collect();
+    for group in group_offsets(&concrete, &widths, oracle) {
+        build_slot(&mut ssa, store, cfg, instrs, &events, &group);
+    }
     ssa
+}
+
+const fn stack_alloc(rbp_disp: i64, width: Width) -> MemoryAccess {
+    MemoryAccess {
+        region: Region::Stack,
+        base: Register::RBP,
+        rbp_disp,
+        width,
+        escapes: false,
+    }
+}
+
+fn group_offsets(
+    concrete: &[i64],
+    widths: &BTreeMap<i64, Width>,
+    oracle: &dyn AliasOracle,
+) -> Vec<BTreeSet<i64>> {
+    let count: usize = concrete.len();
+    let mut parent: Vec<usize> = (0..count).collect();
+    for left in 0..count {
+        for right in (left + 1)..count {
+            let a: MemoryAccess = stack_alloc(
+                concrete[left],
+                widths
+                    .get(&concrete[left])
+                    .copied()
+                    .unwrap_or(Width::Unknown),
+            );
+            let b: MemoryAccess = stack_alloc(
+                concrete[right],
+                widths
+                    .get(&concrete[right])
+                    .copied()
+                    .unwrap_or(Width::Unknown),
+            );
+            if oracle.alias(&a, &b).may_alias() {
+                union_find_join(&mut parent, left, right);
+            }
+        }
+    }
+    let mut groups: BTreeMap<usize, BTreeSet<i64>> = BTreeMap::new();
+    for (index, &rbp_disp) in concrete.iter().enumerate() {
+        let root: usize = union_find_root(&mut parent, index);
+        groups.entry(root).or_default().insert(rbp_disp);
+    }
+    let mut ordered: Vec<BTreeSet<i64>> = groups.into_values().collect();
+    ordered.sort_by_key(|group: &BTreeSet<i64>| group.iter().next().copied().unwrap_or(0));
+    ordered
+}
+
+fn union_find_root(parent: &mut [usize], mut node: usize) -> usize {
+    while parent[node] != node {
+        parent[node] = parent[parent[node]];
+        node = parent[node];
+    }
+    node
+}
+
+fn union_find_join(parent: &mut [usize], left: usize, right: usize) {
+    let root_left: usize = union_find_root(parent, left);
+    let root_right: usize = union_find_root(parent, right);
+    if root_left != root_right {
+        parent[root_left.max(root_right)] = root_left.min(root_right);
+    }
 }
 
 fn build_escaped_slot(
@@ -185,26 +267,28 @@ fn build_slot(
     cfg: &Cfg,
     instrs: &[Instruction],
     events: &[Option<StackEvent>],
-    rbp_disp: i64,
+    group: &BTreeSet<i64>,
 ) {
     let block_count: usize = cfg.blocks.len();
     if block_count == 0 {
         return;
     }
+    let rep: i64 = group.iter().next().copied().unwrap_or(0);
     let mut store_version: BTreeMap<usize, VersionId> = BTreeMap::new();
     for (index, event) in events.iter().enumerate() {
-        if event.is_some_and(|event: StackEvent| {
-            event.rbp_disp == rbp_disp && event.kind == AccessKind::Store
-        }) {
-            let version: VersionId = ssa.fresh(store, rbp_disp, false, false);
+        let Some(event): Option<StackEvent> = *event else {
+            continue;
+        };
+        if group.contains(&event.rbp_disp) && event.kind == AccessKind::Store {
+            let version: VersionId = ssa.fresh(store, event.rbp_disp, false, false);
             store_version.insert(index, version);
         }
     }
-    let initial: VersionId = ssa.fresh(store, rbp_disp, false, false);
+    let initial: VersionId = ssa.fresh(store, rep, false, false);
     let mut phi: BTreeMap<usize, VersionId> = BTreeMap::new();
     for (block_index, block) in cfg.blocks.iter().enumerate() {
         if block.preds.len() >= 2 {
-            phi.insert(block_index, ssa.fresh(store, rbp_disp, true, false));
+            phi.insert(block_index, ssa.fresh(store, rep, true, false));
         }
     }
 
@@ -251,7 +335,7 @@ fn build_slot(
         cfg,
         instrs,
         events,
-        rbp_disp,
+        group,
         &entry,
         &store_version,
         initial,
@@ -286,7 +370,7 @@ fn assign_versions(
     cfg: &Cfg,
     instrs: &[Instruction],
     events: &[Option<StackEvent>],
-    rbp_disp: i64,
+    group: &BTreeSet<i64>,
     entry: &[Option<VersionId>],
     store_version: &BTreeMap<usize, VersionId>,
     initial: VersionId,
@@ -297,7 +381,7 @@ fn assign_versions(
             let Some(event): Option<StackEvent> = events.get(index).copied().flatten() else {
                 continue;
             };
-            if event.rbp_disp != rbp_disp {
+            if !group.contains(&event.rbp_disp) {
                 continue;
             }
             let Some(insn): Option<&Instruction> = instrs.get(index) else {
@@ -307,7 +391,7 @@ fn assign_versions(
                 AccessKind::Store => store_version.get(&index).copied().unwrap_or(current),
                 AccessKind::Load | AccessKind::Rmw => current,
             };
-            ssa.access.insert((insn.ip(), rbp_disp), version);
+            ssa.access.insert((insn.ip(), event.rbp_disp), version);
             ssa.touch(version, insn.ip());
             if event.kind == AccessKind::Store {
                 current = version;
@@ -401,5 +485,97 @@ mod tests {
             .collect();
         assert_eq!(live.len(), 1);
         assert!(live[0].escaped);
+    }
+
+    const TWO_DISJOINT_SLOTS: &[u8] = &[
+        0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x45, 0xf8, 0x48, 0x89, 0x45, 0xf0, 0x48, 0x8b, 0x4d,
+        0xf8, 0x48, 0x8b, 0x4d, 0xf0, 0x5d, 0xc3,
+    ];
+
+    fn ssa_with(bytes: &[u8], base: u64, oracle: &dyn AliasOracle) -> MemSsa {
+        let instrs: Vec<Instruction> = decode(bytes, base);
+        let cfg: cfg::Cfg = cfg::build(&instrs);
+        let mut store: CellStore = CellStore::new();
+        build_with_oracle(&instrs, &cfg, &mut store, oracle)
+    }
+
+    #[test]
+    fn always_may_alias_conflates_every_concrete_offset_into_one_group() {
+        let concrete: [i64; 2] = [-16, -8];
+        let mut widths: BTreeMap<i64, Width> = BTreeMap::new();
+        widths.insert(-16, Width::Qword);
+        widths.insert(-8, Width::Qword);
+
+        let conflated: Vec<BTreeSet<i64>> =
+            group_offsets(&concrete, &widths, &crate::region::AlwaysMayAlias);
+        assert_eq!(conflated.len(), 1, "the ignorant oracle merges every slot");
+        assert_eq!(conflated[0].len(), 2);
+
+        let split: Vec<BTreeSet<i64>> = group_offsets(&concrete, &widths, &RegionModel::default());
+        assert_eq!(split.len(), 2, "disjoint extents are proven and kept apart");
+    }
+
+    #[test]
+    fn conservativity_differential_conflates_disjoint_loads_under_ignorance() {
+        let conflated: MemSsa =
+            ssa_with(TWO_DISJOINT_SLOTS, 0x1000, &crate::region::AlwaysMayAlias);
+        assert_eq!(
+            conflated.version_cell(0x100c, -8),
+            conflated.version_cell(0x1010, -16),
+            "the ignorant oracle must fold both loads onto the last store",
+        );
+
+        let refined: MemSsa = ssa_with(TWO_DISJOINT_SLOTS, 0x1000, &RegionModel::default());
+        assert_ne!(
+            refined.version_cell(0x100c, -8),
+            refined.version_cell(0x1010, -16),
+            "the region oracle may split only what it proves disjoint",
+        );
+    }
+
+    #[test]
+    fn version_chain_observes_every_store_the_execution_observes() {
+        let refined: MemSsa = ssa_with(TWO_DISJOINT_SLOTS, 0x1000, &RegionModel::default());
+        assert_eq!(
+            refined.version_cell(0x100c, -8),
+            refined.version_cell(0x1004, -8),
+            "the load of slot -8 observes its own store",
+        );
+        assert_eq!(
+            refined.version_cell(0x1010, -16),
+            refined.version_cell(0x1008, -16),
+            "the load of slot -16 observes its own store",
+        );
+
+        let restore: &[u8] = &[
+            0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x45, 0xf8, 0x48, 0x8b, 0x4d, 0xf8, 0x48, 0x89,
+            0x45, 0xf8, 0x48, 0x8b, 0x4d, 0xf8, 0x5d, 0xc3,
+        ];
+        let chain: MemSsa = ssa_with(restore, 0x1000, &RegionModel::default());
+        let first_store: Option<TypeVar> = chain.version_cell(0x1004, -8);
+        let second_store: Option<TypeVar> = chain.version_cell(0x100c, -8);
+        assert_ne!(first_store, second_store, "each store advances the chain");
+        assert_eq!(
+            chain.version_cell(0x1008, -8),
+            first_store,
+            "the first load observes the first store",
+        );
+        assert_eq!(
+            chain.version_cell(0x1010, -8),
+            second_store,
+            "the second load observes the second store",
+        );
+    }
+
+    #[test]
+    fn build_matches_the_default_region_oracle() {
+        let instrs: Vec<Instruction> = decode(TWO_DISJOINT_SLOTS, 0x1000);
+        let cfg: cfg::Cfg = cfg::build(&instrs);
+        let mut store_a: CellStore = CellStore::new();
+        let plain: MemSsa = build(&instrs, &cfg, &mut store_a);
+        let mut store_b: CellStore = CellStore::new();
+        let via_oracle: MemSsa =
+            build_with_oracle(&instrs, &cfg, &mut store_b, &RegionModel::default());
+        assert_eq!(plain.versions().len(), via_oracle.versions().len());
     }
 }

@@ -19,6 +19,106 @@ impl Region {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(clippy::enum_variant_names)]
+pub enum AliasResult {
+    NoAlias,
+    #[default]
+    MayAlias,
+    PartialAlias,
+    MustAlias,
+}
+
+impl AliasResult {
+    #[must_use]
+    pub const fn may_alias(self) -> bool {
+        !matches!(self, Self::NoAlias)
+    }
+
+    #[must_use]
+    pub const fn is_must(self) -> bool {
+        matches!(self, Self::MustAlias)
+    }
+
+    #[must_use]
+    pub const fn is_partial(self) -> bool {
+        matches!(self, Self::PartialAlias)
+    }
+}
+
+pub trait AliasOracle {
+    fn alias(&self, a: &MemoryAccess, b: &MemoryAccess) -> AliasResult;
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AlwaysMayAlias;
+
+impl AliasOracle for AlwaysMayAlias {
+    fn alias(&self, _a: &MemoryAccess, _b: &MemoryAccess) -> AliasResult {
+        AliasResult::MayAlias
+    }
+}
+
+impl AliasOracle for RegionModel {
+    fn alias(&self, a: &MemoryAccess, b: &MemoryAccess) -> AliasResult {
+        let result: AliasResult = alias_access(a, b);
+        debug_assert!(
+            alias_access(b, a) == result,
+            "alias oracle must be symmetric",
+        );
+        debug_assert!(
+            !result.is_must() || result.may_alias(),
+            "MustAlias must imply MayAlias",
+        );
+        debug_assert!(
+            !(a.escapes || b.escapes) || result.may_alias(),
+            "an escaped access must never be proven NoAlias",
+        );
+        debug_assert!(
+            !(a.region == Region::Unknown || b.region == Region::Unknown) || result.may_alias(),
+            "an unknown-region access must never be proven NoAlias",
+        );
+        result
+    }
+}
+
+fn alias_access(a: &MemoryAccess, b: &MemoryAccess) -> AliasResult {
+    if a.escapes || b.escapes {
+        return AliasResult::MayAlias;
+    }
+    if matches!(a.region, Region::Unknown) || matches!(b.region, Region::Unknown) {
+        return AliasResult::MayAlias;
+    }
+    if a.region != b.region {
+        if a.region.never_aliases_other_region() && b.region.never_aliases_other_region() {
+            return AliasResult::NoAlias;
+        }
+        return AliasResult::MayAlias;
+    }
+    match a.region {
+        Region::Stack => stack_alias(a, b),
+        _ => AliasResult::MayAlias,
+    }
+}
+
+fn stack_alias(a: &MemoryAccess, b: &MemoryAccess) -> AliasResult {
+    if a.base.full_register() != b.base.full_register() {
+        return AliasResult::MayAlias;
+    }
+    let (Some(wa), Some(wb)): (Option<u8>, Option<u8>) = (a.width.bytes(), b.width.bytes()) else {
+        return AliasResult::MayAlias;
+    };
+    let end_a: i64 = a.rbp_disp.saturating_add(i64::from(wa));
+    let end_b: i64 = b.rbp_disp.saturating_add(i64::from(wb));
+    if a.rbp_disp >= end_b || b.rbp_disp >= end_a {
+        return AliasResult::NoAlias;
+    }
+    if a.rbp_disp == b.rbp_disp && wa == wb {
+        return AliasResult::MustAlias;
+    }
+    AliasResult::PartialAlias
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SectionKind {
     Rodata,
@@ -33,6 +133,7 @@ pub struct RegionModel {
     frame_regs: Vec<Register>,
     rodata: Vec<(u64, u64)>,
     data: Vec<(u64, u64)>,
+    bss: Vec<(u64, u64)>,
     reloc_targets: Vec<u64>,
 }
 
@@ -69,6 +170,10 @@ impl RegionModel {
         self.data.push((start, end));
     }
 
+    pub fn add_bss(&mut self, start: u64, end: u64) {
+        self.bss.push((start, end));
+    }
+
     pub fn add_reloc_target(&mut self, target: u64) {
         self.reloc_targets.push(target);
     }
@@ -99,6 +204,13 @@ impl RegionModel {
             .any(|(s, e): &(u64, u64)| addr >= *s && addr < *e)
         {
             return SectionKind::Data;
+        }
+        if self
+            .bss
+            .iter()
+            .any(|(s, e): &(u64, u64)| addr >= *s && addr < *e)
+        {
+            return SectionKind::Bss;
         }
         SectionKind::Other
     }
@@ -187,28 +299,7 @@ fn memory_width(insn: &Instruction) -> Width {
 
 #[must_use]
 pub fn may_alias(a: MemoryAccess, b: MemoryAccess) -> bool {
-    if a.region == Region::Unknown || b.region == Region::Unknown {
-        return true;
-    }
-    if a.escapes || b.escapes {
-        return true;
-    }
-    if a.region != b.region {
-        return false;
-    }
-    if a.region == Region::Stack && a.base == b.base {
-        return ranges_overlap(a.rbp_disp, a.width, b.rbp_disp, b.width);
-    }
-    true
-}
-
-fn ranges_overlap(off_a: i64, width_a: Width, off_b: i64, width_b: Width) -> bool {
-    let (Some(wa), Some(wb)): (Option<u8>, Option<u8>) = (width_a.bytes(), width_b.bytes()) else {
-        return true;
-    };
-    let end_a: i64 = off_a.saturating_add(i64::from(wa));
-    let end_b: i64 = off_b.saturating_add(i64::from(wb));
-    off_a < end_b && off_b < end_a
+    RegionModel::default().alias(&a, &b).may_alias()
 }
 
 #[cfg(test)]
@@ -294,8 +385,76 @@ mod tests {
         let mut model: RegionModel = RegionModel::new();
         model.add_rodata(0x2000, 0x3000);
         model.add_data(0x4000, 0x5000);
+        model.add_bss(0x6000, 0x7000);
         assert_eq!(model.section_of(0x2500), SectionKind::Rodata);
         assert_eq!(model.section_of(0x4001), SectionKind::Data);
+        assert_eq!(model.section_of(0x6800), SectionKind::Bss);
         assert_eq!(model.section_of(0x9000), SectionKind::Other);
+    }
+
+    fn heap_access(width: Width) -> MemoryAccess {
+        MemoryAccess {
+            region: Region::Heap,
+            base: Register::RAX,
+            rbp_disp: 0,
+            width,
+            escapes: false,
+        }
+    }
+
+    #[test]
+    fn default_alias_result_is_may_alias() {
+        assert_eq!(AliasResult::default(), AliasResult::MayAlias);
+        assert!(AliasResult::MayAlias.may_alias());
+        assert!(AliasResult::PartialAlias.may_alias());
+        assert!(AliasResult::MustAlias.may_alias());
+        assert!(!AliasResult::NoAlias.may_alias());
+    }
+
+    #[test]
+    fn oracle_reports_four_valued_stack_results() {
+        let model: RegionModel = RegionModel::new();
+        let identical_a: MemoryAccess = stack_access(-8, Width::Qword);
+        let identical_b: MemoryAccess = stack_access(-8, Width::Qword);
+        assert_eq!(
+            model.alias(&identical_a, &identical_b),
+            AliasResult::MustAlias
+        );
+
+        let wide: MemoryAccess = stack_access(-8, Width::Qword);
+        let inner: MemoryAccess = stack_access(-4, Width::Dword);
+        assert_eq!(model.alias(&wide, &inner), AliasResult::PartialAlias);
+
+        let low: MemoryAccess = stack_access(-16, Width::Qword);
+        let high: MemoryAccess = stack_access(-8, Width::Qword);
+        assert_eq!(model.alias(&low, &high), AliasResult::NoAlias);
+    }
+
+    #[test]
+    fn oracle_never_proves_disjoint_across_top_or_escape() {
+        let model: RegionModel = RegionModel::new();
+        let stack: MemoryAccess = stack_access(-8, Width::Qword);
+        let heap: MemoryAccess = heap_access(Width::Qword);
+        assert_eq!(model.alias(&stack, &heap), AliasResult::NoAlias);
+
+        let escaped: MemoryAccess = MemoryAccess {
+            escapes: true,
+            ..heap
+        };
+        assert!(model.alias(&stack, &escaped).may_alias());
+
+        let unknown: MemoryAccess = MemoryAccess {
+            region: Region::Unknown,
+            ..heap
+        };
+        assert!(model.alias(&stack, &unknown).may_alias());
+    }
+
+    #[test]
+    fn always_may_alias_stub_never_proves_disjoint() {
+        let stub: AlwaysMayAlias = AlwaysMayAlias;
+        let low: MemoryAccess = stack_access(-16, Width::Qword);
+        let high: MemoryAccess = stack_access(-8, Width::Qword);
+        assert_eq!(stub.alias(&low, &high), AliasResult::MayAlias);
     }
 }
