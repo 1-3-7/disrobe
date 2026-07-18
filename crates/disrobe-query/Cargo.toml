@@ -19,7 +19,6 @@ disrobe-core = { workspace = true }
 disrobe-ir = { workspace = true }
 disrobe-nir = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 indexmap = { workspace = true }
 thiserror = { workspace = true }
 
@@ -28,3 +27,4 @@ disrobe-binfmt = { workspace = true }
 iced-x86 = { workspace = true }
 object = { workspace = true }
 blake3 = { workspace = true }
+serde_json = { workspace = true }

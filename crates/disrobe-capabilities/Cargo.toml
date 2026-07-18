@@ -27,10 +27,10 @@ disrobe-query = { workspace = true }
 goblin = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 serde_yaml_ng = { version = "0.10", optional = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
 goblin = { workspace = true }
 object = { workspace = true }
+serde_json = { workspace = true }
