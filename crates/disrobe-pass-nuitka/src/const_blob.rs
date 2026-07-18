@@ -653,7 +653,8 @@ fn try_chunk(buf: &[u8], pos: usize) -> Option<ParsedChunk> {
 }
 
 fn try_chunk_with_layout(buf: &[u8], pos: usize, layout: ChunkValueLayout) -> Option<ParsedChunk> {
-    let name_end: usize = buf.get(pos..)?.iter().position(|&b: &u8| b == 0)? + pos;
+    let window: &[u8] = buf.get(pos..pos.saturating_add(MAX_NAME_LEN + 1).min(buf.len()))?;
+    let name_end: usize = window.iter().position(|&b: &u8| b == 0)? + pos;
     let name_bytes: &[u8] = buf.get(pos..name_end)?;
     if name_bytes.is_empty()
         || name_bytes.len() > MAX_NAME_LEN
@@ -774,7 +775,8 @@ fn table_header_hints(image: &[u8], ranges: &[(usize, usize)]) -> usize {
 }
 
 fn plausible_table_header(buf: &[u8], pos: usize) -> Option<()> {
-    let name_end: usize = buf.get(pos..)?.iter().position(|&b: &u8| b == 0)? + pos;
+    let window: &[u8] = buf.get(pos..pos.saturating_add(MAX_NAME_LEN + 1).min(buf.len()))?;
+    let name_end: usize = window.iter().position(|&b: &u8| b == 0)? + pos;
     let name_bytes: &[u8] = buf.get(pos..name_end)?;
     if name_bytes.is_empty()
         || name_bytes.len() > MAX_NAME_LEN
@@ -1093,6 +1095,15 @@ mod tests {
         assert!(
             result.is_empty(),
             "a 238MB declared length over a tiny buffer must be rejected, not allocated"
+        );
+    }
+
+    #[test]
+    fn zero_free_image_does_not_drive_quadratic_name_scan() {
+        let image: Vec<u8> = vec![0xFFu8; 256 * 1024];
+        assert!(
+            parse_constants(&image).is_empty(),
+            "a zero-free image has no valid chunk header and must stay a linear scan"
         );
     }
 
