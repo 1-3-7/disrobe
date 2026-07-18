@@ -1948,6 +1948,7 @@ impl<'a> Demangler<'a> {
                 let node: NodeRef = self.substitutions.get(idx).cloned()?;
                 let count: i64 = repeat.max(1);
                 for _ in 0..count {
+                    self.spend()?;
                     chain.push(Rc::clone(&node));
                 }
                 repeat = -1;
@@ -1959,6 +1960,7 @@ impl<'a> Demangler<'a> {
                 let node: NodeRef = self.substitutions.get(idx).cloned()?;
                 let count: i64 = repeat.max(1);
                 for _ in 0..count {
+                    self.spend()?;
                     chain.push(Rc::clone(&node));
                 }
                 return Some(chain);
@@ -2476,6 +2478,7 @@ impl<'a> Demangler<'a> {
                 let node: NodeRef = self.substitutions.get(idx).cloned()?;
                 let count: i64 = repeat.max(1);
                 for _ in 1..count {
+                    self.spend()?;
                     self.pending_substitutions.push(Rc::clone(&node));
                 }
                 repeat = -1;
@@ -2487,6 +2490,7 @@ impl<'a> Demangler<'a> {
                 let node: NodeRef = self.substitutions.get(idx).cloned()?;
                 let count: i64 = repeat.max(1);
                 for _ in 1..count {
+                    self.spend()?;
                     self.pending_substitutions.push(Rc::clone(&node));
                 }
                 return Some(node);
@@ -4940,5 +4944,37 @@ mod tests {
             .expect("small repeat substitution must resolve");
         assert_eq!(resolved.kind, Kind::Structure);
         assert_eq!(dem.pending_substitutions.len(), 1);
+    }
+
+    #[test]
+    fn demangle_substitution_chain_total_length_is_budget_bounded() {
+        let node: NodeRef = Node::leaf(Kind::Structure, "Demo".to_owned());
+        let input: String = format!("A{}_", "2048a".repeat(200));
+        let mut dem: Demangler<'_> = Demangler::new(&input);
+        dem.substitutions.push(Rc::clone(&node));
+        assert!(
+            dem.demangle_substitution_chain().is_none(),
+            "a run of in-range repeat groups must stop at the node budget"
+        );
+        assert_eq!(
+            dem.node_budget, 0,
+            "each chain clone must be charged against the global node budget"
+        );
+    }
+
+    #[test]
+    fn demangle_substitution_total_length_is_budget_bounded() {
+        let node: NodeRef = Node::leaf(Kind::Structure, "Demo".to_owned());
+        let input: String = format!("A{}_", "2048a".repeat(200));
+        let mut dem: Demangler<'_> = Demangler::new(&input);
+        dem.substitutions.push(Rc::clone(&node));
+        assert!(
+            dem.demangle_substitution().is_none(),
+            "a run of in-range repeat groups must stop at the node budget"
+        );
+        assert_eq!(
+            dem.node_budget, 0,
+            "each pending-substitution clone must be charged against the global node budget"
+        );
     }
 }
