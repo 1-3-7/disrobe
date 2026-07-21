@@ -58,6 +58,7 @@ members = [
     "crates/disrobe-transcode",
     "crates/disrobe-typerec",
     "crates/disrobe-validator",
+    "crates/disrobe-vulnmatch",
     "crates/disrobe-wasm",
     "xtask",
     "benches/native-unpack",
