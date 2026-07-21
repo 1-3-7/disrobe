@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::adapters::{TaintOracle, TaintStatus};
+use crate::adapters::{CallSiteId, TaintOracle, TaintStatus};
 use crate::matcher::CandidateSink;
-use crate::reach::{PathWitness, ReachabilityResult, ReachabilityState};
+use crate::reach::{EdgeSoundness, PathWitness, ReachabilityResult, ReachabilityState};
 use crate::rules::{ArgPredicate, Severity, SourceClass};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -10,6 +10,7 @@ use crate::rules::{ArgPredicate, Severity, SourceClass};
 pub enum FindingTier {
     Confirmed,
     Reachable,
+    ReachabilityUnknown,
     Present,
     Unknown,
 }
@@ -17,8 +18,9 @@ pub enum FindingTier {
 impl FindingTier {
     pub(crate) const fn score_band(self) -> u32 {
         match self {
-            Self::Confirmed => 3_000,
-            Self::Reachable => 2_000,
+            Self::Confirmed => 4_000,
+            Self::Reachable => 3_000,
+            Self::ReachabilityUnknown => 2_000,
             Self::Present => 1_000,
             Self::Unknown => 0,
         }
@@ -26,8 +28,9 @@ impl FindingTier {
 
     pub(crate) const fn output_rank(self) -> u8 {
         match self {
-            Self::Confirmed => 4,
-            Self::Reachable => 3,
+            Self::Confirmed => 5,
+            Self::Reachable => 4,
+            Self::ReachabilityUnknown => 3,
             Self::Present => 2,
             Self::Unknown => 1,
         }
@@ -48,7 +51,15 @@ pub struct FindingEvidence {
 #[serde(rename_all = "snake_case")]
 pub enum ReachabilityEvidence {
     Unreachable,
-    Reachable { distance: usize },
+    Reachable {
+        distance: usize,
+        weakest_edge_soundness: EdgeSoundness,
+    },
+    ReachabilityUnknown {
+        distance: usize,
+        weakest_edge_soundness: EdgeSoundness,
+        unresolved_call_site: CallSiteId,
+    },
     Unknown,
 }
 
@@ -87,8 +98,23 @@ pub fn rank_candidates<T: TaintOracle>(
                 Some(witness.clone()),
                 ReachabilityEvidence::Reachable {
                     distance: witness.distance,
+                    weakest_edge_soundness: witness.weakest_edge_soundness,
                 },
             ),
+            ReachabilityState::ReachabilityUnknown(witness) => {
+                match witness.terminal_unresolved_call.clone() {
+                    Some(unresolved_call_site) => (
+                        FindingTier::ReachabilityUnknown,
+                        Some(witness.clone()),
+                        ReachabilityEvidence::ReachabilityUnknown {
+                            distance: witness.distance,
+                            weakest_edge_soundness: witness.weakest_edge_soundness,
+                            unresolved_call_site,
+                        },
+                    ),
+                    None => (FindingTier::Unknown, None, ReachabilityEvidence::Unknown),
+                }
+            }
             ReachabilityState::Unreachable => (
                 FindingTier::Present,
                 None,
