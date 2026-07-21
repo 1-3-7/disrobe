@@ -1,9 +1,96 @@
-use std::collections::{BTreeMap, BTreeSet};
-
 use disrobe_pass_dotnet::devirt::{
-    Budget, ControlEffect, HandlerSummary, MicroOp, Reject, StateLocation,
-    cil_handler::{CilArgumentRole, CilHandlerProfile, CilLocalRole, summarize_cil_handler},
+    AbstractState, Budget, CanonicalEffect, ControlEffect, Expr, HandlerSummary, MicroOp,
+    OperandRange, PrimitiveEffect, Reject, StateLocation,
+    cil_handler::{
+        CilHandlerProfile, CilOperandAccess, CilSlot, CilSlotBinding, CilSlotRole, CilStackAccess,
+        KOIVM_SHAPED_CIL_HANDLER_PROFILE, summarize_cil_handler,
+    },
 };
+
+static ADD_BINDINGS: [CilSlotBinding; 2] = [
+    CilSlotBinding::new(CilSlot::Argument(0), CilSlotRole::StackPointer),
+    CilSlotBinding::new(CilSlot::Argument(3), CilSlotRole::InstructionPointer),
+];
+static ADD_POP_OFFSETS: [CilStackAccess; 2] =
+    [CilStackAccess::new(0, 0), CilStackAccess::new(-8, 1)];
+static ADD_PUSH_OFFSETS: [CilStackAccess; 1] = [CilStackAccess::new(0, 0)];
+static ADD_PROFILE: CilHandlerProfile =
+    CilHandlerProfile::new(&ADD_BINDINGS, &ADD_POP_OFFSETS, &ADD_PUSH_OFFSETS, &[]);
+
+static MISSING_BINDINGS: [CilSlotBinding; 2] = [
+    CilSlotBinding::new(CilSlot::Argument(0), CilSlotRole::StackPointer),
+    CilSlotBinding::new(CilSlot::Argument(3), CilSlotRole::InstructionPointer),
+];
+static MISSING_PROFILE: CilHandlerProfile =
+    CilHandlerProfile::new(&MISSING_BINDINGS, &[], &[], &[]);
+
+static AMBIGUOUS_BINDINGS: [CilSlotBinding; 3] = [
+    CilSlotBinding::new(CilSlot::Argument(0), CilSlotRole::StackPointer),
+    CilSlotBinding::new(CilSlot::Argument(1), CilSlotRole::StackPointer),
+    CilSlotBinding::new(CilSlot::Argument(3), CilSlotRole::InstructionPointer),
+];
+static AMBIGUOUS_PROFILE: CilHandlerProfile = CilHandlerProfile::new(
+    &AMBIGUOUS_BINDINGS,
+    &ADD_POP_OFFSETS,
+    &ADD_PUSH_OFFSETS,
+    &[],
+);
+
+static STORE_LOCAL_BINDINGS: [CilSlotBinding; 3] = [
+    CilSlotBinding::new(CilSlot::Argument(0), CilSlotRole::StackPointer),
+    CilSlotBinding::new(CilSlot::Argument(3), CilSlotRole::InstructionPointer),
+    CilSlotBinding::new(CilSlot::Local(2), CilSlotRole::Local(4)),
+];
+static STORE_ARGUMENT_BINDINGS: [CilSlotBinding; 3] = [
+    CilSlotBinding::new(CilSlot::Argument(0), CilSlotRole::StackPointer),
+    CilSlotBinding::new(CilSlot::Argument(3), CilSlotRole::InstructionPointer),
+    CilSlotBinding::new(CilSlot::Local(2), CilSlotRole::Argument(7)),
+];
+static STORE_POP_OFFSETS: [CilStackAccess; 1] = [CilStackAccess::new(0, 0)];
+static STORE_LOCAL_PROFILE: CilHandlerProfile =
+    CilHandlerProfile::new(&STORE_LOCAL_BINDINGS, &STORE_POP_OFFSETS, &[], &[]);
+static STORE_ARGUMENT_PROFILE: CilHandlerProfile =
+    CilHandlerProfile::new(&STORE_ARGUMENT_BINDINGS, &STORE_POP_OFFSETS, &[], &[]);
+
+static IP_OPERAND_BINDINGS: [CilSlotBinding; 2] = [
+    CilSlotBinding::new(CilSlot::Argument(0), CilSlotRole::StackPointer),
+    CilSlotBinding::new(CilSlot::Local(0), CilSlotRole::InstructionPointer),
+];
+static IP_OPERAND_PUSH_OFFSETS: [CilStackAccess; 1] = [CilStackAccess::new(0, 0)];
+static IP_OPERAND_ACCESSES: [CilOperandAccess; 1] =
+    [CilOperandAccess::new(1, OperandRange::new(0, 8))];
+static IP_OPERAND_PROFILE: CilHandlerProfile = CilHandlerProfile::new(
+    &IP_OPERAND_BINDINGS,
+    &[],
+    &IP_OPERAND_PUSH_OFFSETS,
+    &IP_OPERAND_ACCESSES,
+);
+
+static IP_ADD_BINDINGS: [CilSlotBinding; 2] = [
+    CilSlotBinding::new(CilSlot::Argument(0), CilSlotRole::StackPointer),
+    CilSlotBinding::new(CilSlot::Local(0), CilSlotRole::InstructionPointer),
+];
+static IP_ADD_PROFILE: CilHandlerProfile =
+    CilHandlerProfile::new(&IP_ADD_BINDINGS, &ADD_POP_OFFSETS, &ADD_PUSH_OFFSETS, &[]);
+
+static LOAD_BINDINGS: [CilSlotBinding; 4] = [
+    CilSlotBinding::new(CilSlot::Argument(0), CilSlotRole::StackPointer),
+    CilSlotBinding::new(CilSlot::Argument(1), CilSlotRole::Argument(1)),
+    CilSlotBinding::new(CilSlot::Argument(3), CilSlotRole::InstructionPointer),
+    CilSlotBinding::new(CilSlot::Local(2), CilSlotRole::Local(2)),
+];
+static LOAD_PUSH_OFFSETS: [CilStackAccess; 1] = [CilStackAccess::new(0, 0)];
+static LOAD_PROFILE: CilHandlerProfile =
+    CilHandlerProfile::new(&LOAD_BINDINGS, &[], &LOAD_PUSH_OFFSETS, &[]);
+
+static CONTROL_BINDINGS: [CilSlotBinding; 2] = [
+    CilSlotBinding::new(CilSlot::Argument(0), CilSlotRole::StackPointer),
+    CilSlotBinding::new(CilSlot::Argument(3), CilSlotRole::InstructionPointer),
+];
+static CONTROL_POP_OFFSETS: [CilStackAccess; 1] = [CilStackAccess::new(0, 0)];
+static CONTROL_PROFILE: CilHandlerProfile =
+    CilHandlerProfile::new(&CONTROL_BINDINGS, &CONTROL_POP_OFFSETS, &[], &[])
+        .with_terminal_control(true, true);
 
 fn tiny_method(code: &[u8]) -> Vec<u8> {
     let code_size: u8 = match u8::try_from(code.len()) {
@@ -33,56 +120,53 @@ fn fat_method(code: &[u8]) -> Vec<u8> {
     body
 }
 
-fn profile(
-    reads: &[(u32, u16)],
-    writes: &[u32],
-    controls: &[u32],
-    returns: &[u32],
-) -> CilHandlerProfile {
-    let virtual_stack_reads: BTreeMap<u32, u16> = reads.iter().copied().collect();
-    let virtual_stack_writes: BTreeSet<u32> = writes.iter().copied().collect();
-    let virtual_control_offsets: BTreeSet<u32> = controls.iter().copied().collect();
-    let virtual_return_offsets: BTreeSet<u32> = returns.iter().copied().collect();
-    CilHandlerProfile::new(
-        BTreeMap::from([
-            (0, CilArgumentRole::VirtualStackPointer),
-            (1, CilArgumentRole::VirtualArgument(1)),
-            (2, CilArgumentRole::VirtualArgument(2)),
-        ]),
-        BTreeMap::from([(2, CilLocalRole::VirtualLocal(2))]),
-        virtual_stack_reads,
-        virtual_stack_writes,
-        virtual_control_offsets,
-        virtual_return_offsets,
-    )
-}
-
-fn summarize(body: &[u8], handler_profile: &CilHandlerProfile) -> Result<HandlerSummary, Reject> {
+fn summarize(body: &[u8], profile: &CilHandlerProfile) -> Result<HandlerSummary, Reject> {
     let mut budget: Budget = Budget::new(10_000);
-    summarize_cil_handler(body, handler_profile, &mut budget)
+    summarize_cil_handler(body, profile, &mut budget)
 }
 
-fn output_summary(op: MicroOp, stack_delta: i16, reads: Vec<StateLocation>) -> HandlerSummary {
+const fn unknown_summary() -> HandlerSummary {
     HandlerSummary {
-        stack_delta,
-        reads,
-        writes: vec![StateLocation::Stack],
-        control_effect: ControlEffect::Fallthrough,
-        canonical_op: Some(op),
+        stack_delta: 0,
+        reads: Vec::new(),
+        writes: Vec::new(),
+        control_effect: ControlEffect::Unknown,
+        canonical_op: None,
     }
 }
 
+fn add_body() -> Vec<u8> {
+    tiny_method(&[0x02, 0x25, 0x4d, 0x02, 0x1e, 0x59, 0x4d, 0x58, 0xdf, 0x2a])
+}
+
 fn binary_body(opcode: &[u8]) -> Vec<u8> {
-    let mut code: Vec<u8> = vec![0x02, 0x25, 0x4c, 0x02, 0x4c];
+    let mut code: Vec<u8> = vec![0x02, 0x25, 0x4d, 0x02, 0x1e, 0x59, 0x4d];
     code.extend_from_slice(opcode);
-    code.extend_from_slice(&[0x55, 0x2a]);
+    code.extend_from_slice(&[0xdf, 0x2a]);
     tiny_method(&code)
 }
 
 #[test]
-fn recovers_profiled_cil_binary_handlers_through_virtual_stack_indirection() {
-    let cases: [(&[u8], MicroOp); 9] = [
-        (&[0x58], MicroOp::Add),
+fn lowers_profiled_add_handler_from_relative_virtual_stack_slots() {
+    let body: Vec<u8> = add_body();
+    let expected: HandlerSummary = HandlerSummary {
+        stack_delta: -1,
+        reads: vec![StateLocation::Stack],
+        writes: vec![StateLocation::Stack],
+        control_effect: ControlEffect::Fallthrough,
+        canonical_op: Some(MicroOp::Add),
+    };
+
+    assert_eq!(summarize(&body, &ADD_PROFILE), Ok(expected.clone()));
+    assert_eq!(
+        summarize(&body, &KOIVM_SHAPED_CIL_HANDLER_PROFILE),
+        Ok(expected)
+    );
+}
+
+#[test]
+fn retains_profiled_cil_binary_handler_lowering() {
+    let cases: [(&[u8], MicroOp); 8] = [
         (&[0x59], MicroOp::Sub),
         (&[0x5a], MicroOp::Mul),
         (&[0x5f], MicroOp::And),
@@ -92,113 +176,62 @@ fn recovers_profiled_cil_binary_handlers_through_virtual_stack_indirection() {
         (&[0xfe, 0x04], MicroOp::Clt),
         (&[0xfe, 0x02], MicroOp::Cgt),
     ];
-    let expected_reads: Vec<StateLocation> = vec![StateLocation::Stack];
+    let reads: Vec<StateLocation> = vec![StateLocation::Stack];
 
     for (opcode, op) in cases {
-        let write_offset: u32 = if opcode.len() == 1 { 6 } else { 7 };
-        let handler_profile: CilHandlerProfile =
-            profile(&[(2, 0), (4, 1)], &[write_offset], &[], &[]);
-        let actual: Result<HandlerSummary, Reject> =
-            summarize(&binary_body(opcode), &handler_profile);
-        let expected: HandlerSummary = output_summary(op, -1, expected_reads.clone());
-        assert_eq!(actual, Ok(expected));
+        let expected: HandlerSummary = HandlerSummary {
+            stack_delta: -1,
+            reads: reads.clone(),
+            writes: vec![StateLocation::Stack],
+            control_effect: ControlEffect::Fallthrough,
+            canonical_op: Some(op),
+        };
+
+        assert_eq!(summarize(&binary_body(opcode), &ADD_PROFILE), Ok(expected));
     }
 }
 
 #[test]
-fn recovers_profiled_cil_local_load_with_temporary_dup_and_pop() {
-    let body: Vec<u8> = tiny_method(&[0x02, 0x08, 0x25, 0x26, 0x55, 0x2a]);
-    let handler_profile: CilHandlerProfile = profile(&[], &[4], &[], &[]);
-    let actual: Result<HandlerSummary, Reject> = summarize(&body, &handler_profile);
-    let expected: HandlerSummary =
-        output_summary(MicroOp::Ldloc(2), 1, vec![StateLocation::Local(2)]);
-
-    assert_eq!(actual, Ok(expected));
-}
-
-#[test]
-fn recovers_profiled_cil_argument_and_integer_constant_loads() {
-    let argument_body: Vec<u8> = tiny_method(&[0x02, 0x03, 0x55, 0x2a]);
-    let short_constant_body: Vec<u8> = tiny_method(&[0x02, 0x1f, 0xfb, 0x55, 0x2a]);
-    let mut i8_code: Vec<u8> = vec![0x02, 0x21];
-    i8_code.extend_from_slice(&(-9_i64).to_le_bytes());
-    i8_code.extend_from_slice(&[0x55, 0x2a]);
-    let i8_constant_body: Vec<u8> = tiny_method(&i8_code);
-    let argument_profile: CilHandlerProfile = profile(&[], &[2], &[], &[]);
-    let short_constant_profile: CilHandlerProfile = profile(&[], &[3], &[], &[]);
-    let i8_constant_profile: CilHandlerProfile = profile(&[], &[10], &[], &[]);
-    let argument: Result<HandlerSummary, Reject> = summarize(&argument_body, &argument_profile);
-    let short_constant: Result<HandlerSummary, Reject> =
-        summarize(&short_constant_body, &short_constant_profile);
-    let i8_constant: Result<HandlerSummary, Reject> =
-        summarize(&i8_constant_body, &i8_constant_profile);
-
-    assert_eq!(
-        argument,
-        Ok(output_summary(
-            MicroOp::Ldarg(1),
-            1,
-            vec![StateLocation::Argument(1)],
-        ))
-    );
-    assert_eq!(
-        short_constant,
-        Ok(output_summary(MicroOp::Ldc(-5), 1, Vec::new()))
-    );
-    assert_eq!(
-        i8_constant,
-        Ok(output_summary(MicroOp::Ldc(-9), 1, Vec::new()))
-    );
-}
-
-#[test]
-fn recovers_profiled_cil_store_handlers() {
-    let store_local_body: Vec<u8> = tiny_method(&[0x02, 0x4c, 0x0c, 0x2a]);
-    let store_argument_body: Vec<u8> = tiny_method(&[0x02, 0x4c, 0x10, 0x02, 0x2a]);
-    let handler_profile: CilHandlerProfile = profile(&[(1, 0)], &[], &[], &[]);
-    let store_local: Result<HandlerSummary, Reject> =
-        summarize(&store_local_body, &handler_profile);
-    let store_argument: Result<HandlerSummary, Reject> =
-        summarize(&store_argument_body, &handler_profile);
-
-    assert_eq!(
-        store_local,
-        Ok(HandlerSummary {
-            stack_delta: -1,
-            reads: vec![StateLocation::Stack],
-            writes: vec![StateLocation::Local(2)],
-            control_effect: ControlEffect::Fallthrough,
-            canonical_op: Some(MicroOp::Stloc(2)),
-        })
-    );
-    assert_eq!(
-        store_argument,
-        Ok(HandlerSummary {
-            stack_delta: -1,
-            reads: vec![StateLocation::Stack],
-            writes: vec![StateLocation::Argument(2)],
-            control_effect: ControlEffect::Fallthrough,
-            canonical_op: Some(MicroOp::Starg(2)),
-        })
-    );
-}
-
-#[test]
-fn recovers_profiled_cil_control_handlers() {
+fn retains_profiled_cil_load_and_control_handler_lowering() {
+    let local_body: Vec<u8> = tiny_method(&[0x02, 0x08, 0xdf, 0x2a]);
+    let argument_body: Vec<u8> = tiny_method(&[0x02, 0x03, 0xdf, 0x2a]);
+    let constant_body: Vec<u8> = tiny_method(&[0x02, 0x1f, 0xfb, 0xdf, 0x2a]);
     let branch_body: Vec<u8> = tiny_method(&[0x2b, 0x00, 0x2a]);
-    let true_body: Vec<u8> = tiny_method(&[0x02, 0x4c, 0x2d, 0x00, 0x2a]);
-    let false_body: Vec<u8> = tiny_method(&[0x02, 0x4c, 0x2c, 0x00, 0x2a]);
-    let return_body: Vec<u8> = tiny_method(&[0x02, 0x4c, 0x2a]);
-    let branch_profile: CilHandlerProfile = profile(&[], &[], &[0], &[]);
-    let conditional_profile: CilHandlerProfile = profile(&[(1, 0)], &[], &[2], &[]);
-    let return_profile: CilHandlerProfile = profile(&[(1, 0)], &[], &[], &[2]);
-    let branch: Result<HandlerSummary, Reject> = summarize(&branch_body, &branch_profile);
-    let branch_true: Result<HandlerSummary, Reject> = summarize(&true_body, &conditional_profile);
-    let branch_false: Result<HandlerSummary, Reject> = summarize(&false_body, &conditional_profile);
-    let returned: Result<HandlerSummary, Reject> = summarize(&return_body, &return_profile);
+    let branch_true_body: Vec<u8> = tiny_method(&[0x02, 0x4d, 0x2d, 0x00, 0x2a]);
+    let return_body: Vec<u8> = tiny_method(&[0x02, 0x4d, 0x2a]);
 
     assert_eq!(
-        branch,
+        summarize(&local_body, &LOAD_PROFILE),
+        Ok(HandlerSummary {
+            stack_delta: 1,
+            reads: vec![StateLocation::Local(2)],
+            writes: vec![StateLocation::Stack],
+            control_effect: ControlEffect::Fallthrough,
+            canonical_op: Some(MicroOp::Ldloc(2)),
+        })
+    );
+    assert_eq!(
+        summarize(&argument_body, &LOAD_PROFILE),
+        Ok(HandlerSummary {
+            stack_delta: 1,
+            reads: vec![StateLocation::Argument(1)],
+            writes: vec![StateLocation::Stack],
+            control_effect: ControlEffect::Fallthrough,
+            canonical_op: Some(MicroOp::Ldarg(1)),
+        })
+    );
+    assert_eq!(
+        summarize(&constant_body, &LOAD_PROFILE),
+        Ok(HandlerSummary {
+            stack_delta: 1,
+            reads: Vec::new(),
+            writes: vec![StateLocation::Stack],
+            control_effect: ControlEffect::Fallthrough,
+            canonical_op: Some(MicroOp::Ldc(-5)),
+        })
+    );
+    assert_eq!(
+        summarize(&branch_body, &CONTROL_PROFILE),
         Ok(HandlerSummary {
             stack_delta: 0,
             reads: Vec::new(),
@@ -208,7 +241,7 @@ fn recovers_profiled_cil_control_handlers() {
         })
     );
     assert_eq!(
-        branch_true,
+        summarize(&branch_true_body, &CONTROL_PROFILE),
         Ok(HandlerSummary {
             stack_delta: -1,
             reads: vec![StateLocation::Stack],
@@ -218,17 +251,7 @@ fn recovers_profiled_cil_control_handlers() {
         })
     );
     assert_eq!(
-        branch_false,
-        Ok(HandlerSummary {
-            stack_delta: -1,
-            reads: vec![StateLocation::Stack],
-            writes: vec![StateLocation::Ip],
-            control_effect: ControlEffect::BrFalse,
-            canonical_op: Some(MicroOp::BrFalse),
-        })
-    );
-    assert_eq!(
-        returned,
+        summarize(&return_body, &CONTROL_PROFILE),
         Ok(HandlerSummary {
             stack_delta: -1,
             reads: vec![StateLocation::Stack],
@@ -240,88 +263,125 @@ fn recovers_profiled_cil_control_handlers() {
 }
 
 #[test]
-fn missing_abi_binding_returns_unknown_without_fabricating_a_handler_effect() {
-    let body: Vec<u8> = binary_body(&[0x58]);
-    let missing_profile: CilHandlerProfile = profile(&[(2, 0)], &[6], &[], &[]);
-    let reversed_profile: CilHandlerProfile = profile(&[(2, 1), (4, 0)], &[6], &[], &[]);
-    let missing: Result<HandlerSummary, Reject> = summarize(&body, &missing_profile);
-    let reversed: Result<HandlerSummary, Reject> = summarize(&body, &reversed_profile);
-    let expected: HandlerSummary = HandlerSummary {
-        stack_delta: 0,
-        reads: Vec::new(),
-        writes: Vec::new(),
-        control_effect: ControlEffect::Unknown,
-        canonical_op: None,
-    };
+fn unmodeled_or_ambiguous_abi_access_returns_unknown() {
+    let unmodeled_body: Vec<u8> = tiny_method(&[0x07, 0x2a]);
+    let add: Vec<u8> = add_body();
 
-    assert_eq!(missing, Ok(expected.clone()));
-    assert_eq!(reversed, Ok(expected));
+    assert_eq!(
+        summarize(&unmodeled_body, &MISSING_PROFILE),
+        Ok(unknown_summary())
+    );
+    assert_eq!(summarize(&add, &AMBIGUOUS_PROFILE), Ok(unknown_summary()));
 }
 
 #[test]
-fn unknown_and_unlowered_cil_opcodes_do_not_fabricate_handler_effects() {
+fn unknown_and_unlowered_cil_opcodes_return_unknown() {
     let unknown_body: Vec<u8> = tiny_method(&[0x24]);
     let unlowered_body: Vec<u8> = tiny_method(&[0x65, 0x2a]);
-    let handler_profile: CilHandlerProfile = profile(&[], &[], &[], &[]);
-    let unknown: Result<HandlerSummary, Reject> = summarize(&unknown_body, &handler_profile);
-    let unlowered: Result<HandlerSummary, Reject> = summarize(&unlowered_body, &handler_profile);
-    let expected: HandlerSummary = HandlerSummary {
-        stack_delta: 0,
-        reads: Vec::new(),
-        writes: Vec::new(),
-        control_effect: ControlEffect::Unknown,
-        canonical_op: None,
+
+    assert_eq!(
+        summarize(&unknown_body, &MISSING_PROFILE),
+        Ok(unknown_summary())
+    );
+    assert_eq!(
+        summarize(&unlowered_body, &MISSING_PROFILE),
+        Ok(unknown_summary())
+    );
+}
+
+#[test]
+fn profile_slot_bindings_change_the_same_cil_body_interpretation() {
+    let body: Vec<u8> = tiny_method(&[0x02, 0x4d, 0x0c, 0x2a]);
+    let local: HandlerSummary = HandlerSummary {
+        stack_delta: -1,
+        reads: vec![StateLocation::Stack],
+        writes: vec![StateLocation::Local(4)],
+        control_effect: ControlEffect::Fallthrough,
+        canonical_op: Some(MicroOp::Stloc(4)),
+    };
+    let argument: HandlerSummary = HandlerSummary {
+        stack_delta: -1,
+        reads: vec![StateLocation::Stack],
+        writes: vec![StateLocation::Argument(7)],
+        control_effect: ControlEffect::Fallthrough,
+        canonical_op: Some(MicroOp::Starg(7)),
     };
 
-    assert_eq!(unknown, Ok(expected.clone()));
-    assert_eq!(unlowered, Ok(expected));
+    assert_eq!(summarize(&body, &STORE_LOCAL_PROFILE), Ok(local));
+    assert_eq!(summarize(&body, &STORE_ARGUMENT_PROFILE), Ok(argument));
 }
 
 #[test]
-fn rejects_empty_cil_handler_bodies() {
-    let tiny_body: Vec<u8> = tiny_method(&[]);
-    let handler_profile: CilHandlerProfile = profile(&[], &[], &[], &[]);
-    let mut direct_budget: Budget = Budget::new(10_000);
-    let direct: Result<HandlerSummary, Reject> =
-        summarize_cil_handler(&[], &handler_profile, &mut direct_budget);
-    let tiny: Result<HandlerSummary, Reject> = summarize(&tiny_body, &handler_profile);
-    let direct_reason: Option<&str> = direct
-        .as_ref()
-        .err()
-        .map(|reject: &Reject| reject.reason.as_str());
-    let tiny_reason: Option<&str> = tiny
-        .as_ref()
-        .err()
-        .map(|reject: &Reject| reject.reason.as_str());
+fn profiles_instruction_pointer_updates_and_ip_relative_operand_reads() {
+    let operand_body: Vec<u8> = tiny_method(&[0x02, 0x06, 0x17, 0x58, 0x4c, 0x55, 0x2a]);
+    let ip_add_body: Vec<u8> = tiny_method(&[
+        0x06, 0x17, 0x58, 0x0a, 0x02, 0x25, 0x4d, 0x02, 0x1e, 0x59, 0x4d, 0x58, 0xdf, 0x2a,
+    ]);
+    let operand: HandlerSummary = HandlerSummary {
+        stack_delta: 1,
+        reads: vec![StateLocation::OperandBytes(OperandRange::new(0, 8))],
+        writes: vec![StateLocation::Stack],
+        control_effect: ControlEffect::Fallthrough,
+        canonical_op: Some(MicroOp::LdcOperand),
+    };
+    let ip_add: HandlerSummary = HandlerSummary {
+        stack_delta: -1,
+        reads: vec![StateLocation::Stack],
+        writes: vec![StateLocation::Stack, StateLocation::Ip],
+        control_effect: ControlEffect::Fallthrough,
+        canonical_op: Some(MicroOp::Add),
+    };
 
-    assert!(direct_reason.is_some_and(|value: &str| value.contains("empty")));
-    assert!(tiny_reason.is_some_and(|value: &str| value.contains("empty")));
+    assert_eq!(summarize(&operand_body, &IP_OPERAND_PROFILE), Ok(operand));
+    assert_eq!(summarize(&ip_add_body, &IP_ADD_PROFILE), Ok(ip_add));
 }
 
 #[test]
-fn rejects_cil_evaluation_stack_underflow() {
-    let body: Vec<u8> = tiny_method(&[0x26, 0x2a]);
-    let handler_profile: CilHandlerProfile = profile(&[], &[], &[], &[]);
-    let actual: Result<HandlerSummary, Reject> = summarize(&body, &handler_profile);
-    let reason: Option<&str> = actual
-        .as_ref()
-        .err()
-        .map(|reject: &Reject| reject.reason.as_str());
+fn canonical_effect_preserves_instruction_pointer_delta() -> Result<(), Reject> {
+    let mut budget: Budget = Budget::new(10_000);
+    let mut first: AbstractState = AbstractState::new();
+    let mut second: AbstractState = AbstractState::new();
+    first.apply(&PrimitiveEffect::AdvanceIp(1), &mut budget)?;
+    second.apply(&PrimitiveEffect::AdvanceIp(8), &mut budget)?;
+    let first_effect: Option<CanonicalEffect> = first.canonical_effect(&mut budget)?;
+    let second_effect: Option<CanonicalEffect> = second.canonical_effect(&mut budget)?;
 
-    assert!(reason.is_some_and(|value: &str| value.contains("underflow")));
+    assert_eq!(
+        first_effect.map(|effect: CanonicalEffect| effect.instruction_pointer_write),
+        Some(Some(Expr::IpDelta(1)))
+    );
+    assert_eq!(
+        second_effect.map(|effect: CanonicalEffect| effect.instruction_pointer_write),
+        Some(Some(Expr::IpDelta(8)))
+    );
+    Ok(())
 }
 
 #[test]
-fn rejects_budget_exhaustion_before_large_handler_parse() {
+fn budget_aborts_before_pathological_handler_parse() {
     let body: Vec<u8> = fat_method(&[0x00; 128]);
-    let handler_profile: CilHandlerProfile = profile(&[], &[], &[], &[]);
     let mut budget: Budget = Budget::new(8);
     let actual: Result<HandlerSummary, Reject> =
-        summarize_cil_handler(&body, &handler_profile, &mut budget);
+        summarize_cil_handler(&body, &MISSING_PROFILE, &mut budget);
     let reason: Option<&str> = actual
         .as_ref()
         .err()
         .map(|reject: &Reject| reject.reason.as_str());
 
     assert!(reason.is_some_and(|value: &str| value.contains("budget")));
+}
+
+#[test]
+fn empty_and_underflowing_handlers_reject_without_panicking() {
+    let tiny_empty: Vec<u8> = tiny_method(&[]);
+    let underflow: Vec<u8> = tiny_method(&[0x26, 0x2a]);
+    let mut direct_budget: Budget = Budget::new(10_000);
+    let direct: Result<HandlerSummary, Reject> =
+        summarize_cil_handler(&[], &MISSING_PROFILE, &mut direct_budget);
+    let tiny: Result<HandlerSummary, Reject> = summarize(&tiny_empty, &MISSING_PROFILE);
+    let stack: Result<HandlerSummary, Reject> = summarize(&underflow, &MISSING_PROFILE);
+
+    assert!(direct.is_err());
+    assert!(tiny.is_err());
+    assert!(stack.is_err());
 }

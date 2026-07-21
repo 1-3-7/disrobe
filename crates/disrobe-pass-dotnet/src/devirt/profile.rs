@@ -2,9 +2,198 @@ use std::collections::BTreeMap;
 
 use super::Reject;
 use super::budget::Budget;
-use super::state::PrimitiveEffect;
+use super::state::{OperandRange, PrimitiveEffect};
 
 pub const MAX_OPERAND_BYTES: usize = 8;
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum CilSlot {
+    Argument(u16),
+    Local(u16),
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum CilSlotRole {
+    StackPointer,
+    InstructionPointer,
+    Argument(u16),
+    Local(u16),
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct CilSlotBinding {
+    pub slot: CilSlot,
+    pub role: CilSlotRole,
+}
+
+impl CilSlotBinding {
+    #[must_use]
+    pub const fn new(slot: CilSlot, role: CilSlotRole) -> Self {
+        Self { slot, role }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct CilStackAccess {
+    pub byte_offset: i32,
+    pub virtual_slot: u16,
+}
+
+impl CilStackAccess {
+    #[must_use]
+    pub const fn new(byte_offset: i32, virtual_slot: u16) -> Self {
+        Self {
+            byte_offset,
+            virtual_slot,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct CilOperandAccess {
+    pub instruction_pointer_offset: i32,
+    pub operand_range: OperandRange,
+}
+
+impl CilOperandAccess {
+    #[must_use]
+    pub const fn new(instruction_pointer_offset: i32, operand_range: OperandRange) -> Self {
+        Self {
+            instruction_pointer_offset,
+            operand_range,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CilHandlerProfile {
+    slot_bindings: &'static [CilSlotBinding],
+    stack_pop_offsets: &'static [CilStackAccess],
+    stack_push_offsets: &'static [CilStackAccess],
+    operand_accesses: &'static [CilOperandAccess],
+    terminal_branches: bool,
+    virtual_returns: bool,
+}
+
+impl CilHandlerProfile {
+    #[must_use]
+    pub const fn new(
+        slot_bindings: &'static [CilSlotBinding],
+        stack_pop_offsets: &'static [CilStackAccess],
+        stack_push_offsets: &'static [CilStackAccess],
+        operand_accesses: &'static [CilOperandAccess],
+    ) -> Self {
+        Self {
+            slot_bindings,
+            stack_pop_offsets,
+            stack_push_offsets,
+            operand_accesses,
+            terminal_branches: false,
+            virtual_returns: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_terminal_control(
+        mut self,
+        terminal_branches: bool,
+        virtual_returns: bool,
+    ) -> Self {
+        self.terminal_branches = terminal_branches;
+        self.virtual_returns = virtual_returns;
+        self
+    }
+
+    pub(crate) fn has_unambiguous_core_bindings(&self) -> bool {
+        self.count_role(CilSlotRole::StackPointer) == 1
+            && self.count_role(CilSlotRole::InstructionPointer) == 1
+            && self.slot_bindings.iter().all(|binding: &CilSlotBinding| {
+                self.count_slot(binding.slot) == 1 && self.count_role(binding.role) == 1
+            })
+    }
+
+    pub(crate) fn role_for_slot(&self, slot: CilSlot) -> Option<CilSlotRole> {
+        if !self.has_unambiguous_core_bindings() || self.count_slot(slot) != 1 {
+            return None;
+        }
+        self.slot_bindings
+            .iter()
+            .find_map(|binding: &CilSlotBinding| (binding.slot == slot).then_some(binding.role))
+    }
+
+    pub(crate) fn stack_pop_at(&self, byte_offset: i32) -> Option<u16> {
+        Self::single_stack_slot(self.stack_pop_offsets, byte_offset)
+    }
+
+    pub(crate) fn stack_push_at(&self, byte_offset: i32) -> Option<u16> {
+        Self::single_stack_slot(self.stack_push_offsets, byte_offset)
+    }
+
+    pub(crate) fn operand_at(&self, instruction_pointer_offset: i32) -> Option<OperandRange> {
+        let mut found: Option<OperandRange> = None;
+        for access in self.operand_accesses {
+            if access.instruction_pointer_offset == instruction_pointer_offset {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(access.operand_range);
+            }
+        }
+        found
+    }
+
+    pub(crate) const fn allows_terminal_branches(&self) -> bool {
+        self.terminal_branches
+    }
+
+    pub(crate) const fn allows_virtual_returns(&self) -> bool {
+        self.virtual_returns
+    }
+
+    fn count_slot(&self, slot: CilSlot) -> usize {
+        self.slot_bindings
+            .iter()
+            .filter(|binding: &&CilSlotBinding| binding.slot == slot)
+            .count()
+    }
+
+    fn count_role(&self, role: CilSlotRole) -> usize {
+        self.slot_bindings
+            .iter()
+            .filter(|binding: &&CilSlotBinding| binding.role == role)
+            .count()
+    }
+
+    fn single_stack_slot(accesses: &[CilStackAccess], byte_offset: i32) -> Option<u16> {
+        let mut found: Option<u16> = None;
+        for access in accesses {
+            if access.byte_offset == byte_offset {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(access.virtual_slot);
+            }
+        }
+        found
+    }
+}
+
+const KOIVM_SHAPED_CIL_SLOT_BINDINGS: [CilSlotBinding; 2] = [
+    CilSlotBinding::new(CilSlot::Argument(0), CilSlotRole::StackPointer),
+    CilSlotBinding::new(CilSlot::Local(0), CilSlotRole::InstructionPointer),
+];
+const KOIVM_SHAPED_CIL_STACK_POPS: [CilStackAccess; 2] =
+    [CilStackAccess::new(0, 0), CilStackAccess::new(-8, 1)];
+const KOIVM_SHAPED_CIL_STACK_PUSHES: [CilStackAccess; 1] = [CilStackAccess::new(0, 0)];
+const KOIVM_SHAPED_CIL_OPERANDS: [CilOperandAccess; 1] =
+    [CilOperandAccess::new(1, OperandRange::new(0, 8))];
+
+pub static KOIVM_SHAPED_CIL_HANDLER_PROFILE: CilHandlerProfile = CilHandlerProfile::new(
+    &KOIVM_SHAPED_CIL_SLOT_BINDINGS,
+    &KOIVM_SHAPED_CIL_STACK_POPS,
+    &KOIVM_SHAPED_CIL_STACK_PUSHES,
+    &KOIVM_SHAPED_CIL_OPERANDS,
+);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VmFlavor {
