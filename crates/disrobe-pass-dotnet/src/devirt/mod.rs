@@ -1,4 +1,5 @@
 mod budget;
+pub mod emit;
 mod handlers;
 mod ir;
 mod lift;
