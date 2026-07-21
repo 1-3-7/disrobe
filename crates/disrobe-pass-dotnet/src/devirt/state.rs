@@ -69,7 +69,7 @@ impl Expr {
         }
     }
 
-    fn binary(op: BinOp, left: Self, right: Self) -> Result<Self, Reject> {
+    pub(crate) fn binary(op: BinOp, left: Self, right: Self) -> Result<Self, Reject> {
         if !left.fits_depth(0) || !right.fits_depth(0) {
             return Err(Reject::new(
                 "symbolic expression depth exceeds cap",

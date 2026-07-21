@@ -1,4 +1,5 @@
 mod budget;
+pub mod cil_handler;
 pub mod emit;
 mod handlers;
 mod ir;
