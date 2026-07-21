@@ -1,5 +1,6 @@
 mod bitmask;
 mod decode;
+pub mod lift;
 mod mcinst;
 
 pub use bitmask::{BitMasks, decode_bit_masks};
