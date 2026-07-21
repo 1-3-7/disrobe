@@ -6,6 +6,7 @@ mod lift;
 mod microop;
 mod profile;
 mod state;
+pub mod structure;
 
 pub use budget::{Budget, BudgetError};
 pub use handlers::HandlerSummary;

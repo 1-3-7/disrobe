@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{BasicBlock, BinOp, BlockId, CilType, DvIr, IrInstruction, Terminator, ValueId};
+use super::{
+    BasicBlock, BinOp, BlockId, Budget, CilType, DvIr, IrInstruction, Terminator, ValueId,
+    structure::{StructuredAst, StructuredNode, structure},
+};
 
 struct RenderPlan<'a> {
     ir: &'a DvIr,
@@ -26,6 +29,24 @@ pub fn emit_pseudo_csharp(ir: &DvIr) -> String {
     plan.map_or_else(unrecovered, |value: RenderPlan<'_>| {
         render_pseudo_csharp(&value)
     })
+}
+
+pub fn emit_structured_pseudo_csharp(ir: &DvIr, budget: &mut Budget) -> String {
+    let plan: Result<RenderPlan<'_>, String> = RenderPlan::new(ir);
+    let plan: RenderPlan<'_> = match plan {
+        Ok(value) => value,
+        Err(reason) => return unrecovered(reason),
+    };
+    let ast: StructuredAst = structure(ir, budget);
+    match ast {
+        StructuredAst::Structured(nodes) => render_structured_pseudo_csharp(&plan, &nodes),
+        StructuredAst::Fallback { reason } => {
+            format!(
+                "structured fallback: {reason}\n{}",
+                render_pseudo_csharp(&plan)
+            )
+        }
+    }
 }
 
 pub fn emit_normalized_cil(ir: &DvIr) -> String {
@@ -245,6 +266,255 @@ fn render_pseudo_csharp(plan: &RenderPlan<'_>) -> String {
     }
     output.push_str("}\n");
     output
+}
+
+fn render_structured_pseudo_csharp(plan: &RenderPlan<'_>, nodes: &[StructuredNode]) -> String {
+    let return_type: &str = match csharp_type_name(plan.return_type) {
+        Ok(value) => value,
+        Err(reason) => return unrecovered(reason),
+    };
+    let arguments: String = csharp_arguments(plan.ir.argument_count);
+    let mut output: String = format!("{return_type} recovered({arguments})\n{{\n");
+    append_csharp_locals(&mut output, plan.ir.local_count);
+    if let Err(reason) = append_structured_nodes(&mut output, plan, nodes, 1, None, None) {
+        return unrecovered(reason);
+    }
+    output.push_str("}\n");
+    output
+}
+
+fn append_structured_nodes(
+    output: &mut String,
+    plan: &RenderPlan<'_>,
+    nodes: &[StructuredNode],
+    depth: usize,
+    forced_assignment: Option<ValueId>,
+    continue_assignments: Option<&[IrInstruction]>,
+) -> Result<(), String> {
+    for node in nodes {
+        match node {
+            StructuredNode::Instructions(instructions) => {
+                for instruction in instructions {
+                    let declaration: bool =
+                        instruction_destination(instruction) != forced_assignment;
+                    append_structured_instruction(
+                        output,
+                        plan.ir,
+                        instruction,
+                        depth,
+                        declaration,
+                    )?;
+                }
+            }
+            StructuredNode::Assignments(instructions) => {
+                for instruction in instructions {
+                    append_structured_instruction(output, plan.ir, instruction, depth, false)?;
+                }
+            }
+            StructuredNode::Return(Some(value)) => {
+                append_indented(output, depth, &format!("return v{};", value.get()));
+            }
+            StructuredNode::Return(None) => append_indented(output, depth, "return;"),
+            StructuredNode::If {
+                condition,
+                when_true,
+                when_false,
+            } => {
+                append_indented(
+                    output,
+                    depth,
+                    &format!("if ({})", condition_text(*condition, true)),
+                );
+                append_indented(output, depth, "{");
+                append_structured_nodes(
+                    output,
+                    plan,
+                    when_true,
+                    depth.saturating_add(1),
+                    forced_assignment,
+                    continue_assignments,
+                )?;
+                append_indented(output, depth, "}");
+                if !when_false.is_empty() {
+                    append_indented(output, depth, "else");
+                    append_indented(output, depth, "{");
+                    append_structured_nodes(
+                        output,
+                        plan,
+                        when_false,
+                        depth.saturating_add(1),
+                        forced_assignment,
+                        continue_assignments,
+                    )?;
+                    append_indented(output, depth, "}");
+                }
+            }
+            StructuredNode::While {
+                condition,
+                continues_when_true,
+                header,
+                body,
+            } => {
+                for instruction in header {
+                    append_structured_instruction(output, plan.ir, instruction, depth, true)?;
+                }
+                append_indented(
+                    output,
+                    depth,
+                    &format!(
+                        "while ({})",
+                        condition_text(*condition, *continues_when_true)
+                    ),
+                );
+                append_indented(output, depth, "{");
+                append_structured_nodes(
+                    output,
+                    plan,
+                    body,
+                    depth.saturating_add(1),
+                    forced_assignment,
+                    Some(header),
+                )?;
+                append_indented(output, depth, "}");
+            }
+            StructuredNode::DoWhile {
+                condition,
+                continues_when_true,
+                body,
+            } => {
+                append_value_declaration(output, plan.ir, *condition, depth)?;
+                append_indented(output, depth, "do");
+                append_indented(output, depth, "{");
+                append_structured_nodes(
+                    output,
+                    plan,
+                    body,
+                    depth.saturating_add(1),
+                    Some(*condition),
+                    None,
+                )?;
+                append_indented(
+                    output,
+                    depth,
+                    &format!(
+                        "}} while ({});",
+                        condition_text(*condition, *continues_when_true)
+                    ),
+                );
+            }
+            StructuredNode::Break => append_indented(output, depth, "break;"),
+            StructuredNode::Continue => {
+                if let Some(instructions) = continue_assignments {
+                    for instruction in instructions {
+                        append_structured_instruction(output, plan.ir, instruction, depth, false)?;
+                    }
+                }
+                append_indented(output, depth, "continue;");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn append_structured_instruction(
+    output: &mut String,
+    ir: &DvIr,
+    instruction: &IrInstruction,
+    depth: usize,
+    declaration: bool,
+) -> Result<(), String> {
+    let line: String = csharp_instruction_line(ir, instruction, declaration)?;
+    append_indented(output, depth, &line);
+    Ok(())
+}
+
+fn csharp_instruction_line(
+    ir: &DvIr,
+    instruction: &IrInstruction,
+    declaration: bool,
+) -> Result<String, String> {
+    let line: String = match instruction {
+        IrInstruction::Const { destination, value } => {
+            let expression: String = csharp_i64(*value);
+            csharp_assignment(ir, *destination, &expression, declaration)?
+        }
+        IrInstruction::LoadArgument { destination, index } => {
+            csharp_assignment(ir, *destination, &format!("arg{index}"), declaration)?
+        }
+        IrInstruction::StoreArgument { index, value } => format!("arg{index} = v{};", value.get()),
+        IrInstruction::LoadLocal { destination, index } => {
+            csharp_assignment(ir, *destination, &format!("local{index}"), declaration)?
+        }
+        IrInstruction::StoreLocal { index, value } => format!("local{index} = v{};", value.get()),
+        IrInstruction::Binary {
+            destination,
+            op,
+            left,
+            right,
+        } => {
+            let expression: String = if op.is_comparison() {
+                format!(
+                    "(v{} {} v{}) ? 1 : 0",
+                    left.get(),
+                    csharp_binary_operator(*op),
+                    right.get()
+                )
+            } else {
+                format!(
+                    "v{} {} v{}",
+                    left.get(),
+                    csharp_binary_operator(*op),
+                    right.get()
+                )
+            };
+            csharp_assignment(ir, *destination, &expression, declaration)?
+        }
+    };
+    Ok(line)
+}
+
+const fn instruction_destination(instruction: &IrInstruction) -> Option<ValueId> {
+    match instruction {
+        IrInstruction::Const { destination, .. }
+        | IrInstruction::LoadArgument { destination, .. }
+        | IrInstruction::LoadLocal { destination, .. }
+        | IrInstruction::Binary { destination, .. } => Some(*destination),
+        IrInstruction::StoreArgument { .. } | IrInstruction::StoreLocal { .. } => None,
+    }
+}
+
+fn csharp_assignment(
+    ir: &DvIr,
+    destination: ValueId,
+    expression: &str,
+    declaration: bool,
+) -> Result<String, String> {
+    if declaration {
+        let value_type: &str = csharp_type_name(value_type(ir, destination)?)?;
+        return Ok(format!(
+            "{value_type} v{} = {expression};",
+            destination.get()
+        ));
+    }
+    Ok(format!("v{} = {expression};", destination.get()))
+}
+
+fn append_value_declaration(
+    output: &mut String,
+    ir: &DvIr,
+    value: ValueId,
+    depth: usize,
+) -> Result<(), String> {
+    let value_type: &str = csharp_type_name(value_type(ir, value)?)?;
+    append_indented(output, depth, &format!("{value_type} v{};", value.get()));
+    Ok(())
+}
+
+fn condition_text(condition: ValueId, continues_when_true: bool) -> String {
+    if continues_when_true {
+        return format!("v{} != 0", condition.get());
+    }
+    format!("v{} == 0", condition.get())
 }
 
 fn render_normalized_cil(plan: &RenderPlan<'_>) -> String {
