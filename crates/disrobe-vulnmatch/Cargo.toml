@@ -1,0 +1,27 @@
+[package]
+name = "disrobe-vulnmatch"
+description = "Reachability-aware vulnerability matching: binds data-driven vulnerable-pattern rules to resolved sink call sites, proves each is reachable from a program entry point over the recovered call graph, and composes taint to rank findings on a present/reachable/confirmed ladder where a tier never rises without a stored witness."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+default = []
+chain = ["disrobe-core/chain"]
+
+[dev-dependencies]

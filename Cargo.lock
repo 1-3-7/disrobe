@@ -2935,6 +2935,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "disrobe-vulnmatch"
+version = "0.10.4"
+dependencies = [
+ "disrobe-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "disrobe-wasm"
 version = "0.10.4"
 dependencies = [
