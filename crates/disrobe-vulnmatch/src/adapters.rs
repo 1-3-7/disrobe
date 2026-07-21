@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::rules::SourceClass;
@@ -76,12 +78,49 @@ impl DirectCall {
             arguments,
         }
     }
+
+    pub fn direct_edge(&self) -> CallGraphEdge {
+        CallGraphEdge {
+            id: self.id.clone(),
+            caller: self.caller.clone(),
+            kind: EdgeKind::Direct {
+                callee: self.callee_function.clone(),
+            },
+        }
+    }
+}
+
+pub const MAX_RESOLVED_INDIRECT_CALLEES_PER_SITE: usize = 16;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum EdgeKind {
+    Direct { callee: Option<FunctionId> },
+    ResolvedIndirect { candidates: BTreeSet<FunctionId> },
+    UnresolvedIndirect,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct CallGraphEdge {
+    pub id: CallSiteId,
+    pub caller: FunctionId,
+    pub kind: EdgeKind,
 }
 
 pub trait CallGraphView {
     fn functions(&self) -> Vec<FunctionId>;
 
     fn direct_calls(&self) -> Vec<DirectCall>;
+
+    fn call_edges(&self) -> Vec<CallGraphEdge> {
+        let mut edges: Vec<CallGraphEdge> = self
+            .direct_calls()
+            .into_iter()
+            .map(|call: DirectCall| call.direct_edge())
+            .collect();
+        edges.sort();
+        edges
+    }
 
     fn entry_points(&self) -> Vec<FunctionId>;
 }

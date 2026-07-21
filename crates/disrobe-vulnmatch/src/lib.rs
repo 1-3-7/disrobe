@@ -8,12 +8,14 @@ mod report;
 mod rules;
 
 pub use adapters::{
-    AbstractArgument, CallGraphView, CallSiteId, DirectCall, FunctionId, ResolvedCallee,
-    TaintOracle, TaintStatus,
+    AbstractArgument, CallGraphEdge, CallGraphView, CallSiteId, DirectCall, EdgeKind, FunctionId,
+    MAX_RESOLVED_INDIRECT_CALLEES_PER_SITE, ResolvedCallee, TaintOracle, TaintStatus,
 };
 pub use matcher::{CandidateSink, MatchOutput, SinkMatcher};
 pub use rank::{FindingEvidence, FindingTier, ReachabilityEvidence};
-pub use reach::{Budget, PathWitness, ReachabilityEngine, ReachabilityResult, ReachabilityState};
+pub use reach::{
+    Budget, EdgeSoundness, PathWitness, ReachabilityEngine, ReachabilityResult, ReachabilityState,
+};
 pub use report::{Finding, FindingId, Report, Reporter};
 pub use rules::{
     ArgPredicate, Rule, RuleStore, RuleStoreError, Severity, SinkSignature, SourceClass,

@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
-use crate::adapters::{CallGraphView, DirectCall, FunctionId};
+use crate::adapters::{
+    CallGraphEdge, CallGraphView, CallSiteId, EdgeKind, FunctionId,
+    MAX_RESOLVED_INDIRECT_CALLEES_PER_SITE,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Budget {
@@ -83,10 +86,20 @@ impl Budget {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeSoundness {
+    Unknown,
+    Medium,
+    High,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PathWitness {
     pub functions: Vec<FunctionId>,
     pub distance: usize,
+    pub weakest_edge_soundness: EdgeSoundness,
+    pub terminal_unresolved_call: Option<CallSiteId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,6 +107,7 @@ pub struct PathWitness {
 pub enum ReachabilityState {
     Reachable(PathWitness),
     Unreachable,
+    ReachabilityUnknown(PathWitness),
     Unknown,
 }
 
@@ -107,8 +121,9 @@ impl ReachabilityResult {
     pub fn state(&self, function: &FunctionId) -> ReachabilityState {
         self.states
             .get(function)
-            .cloned()
-            .unwrap_or(ReachabilityState::Unknown)
+            .map_or(ReachabilityState::Unknown, |state: &ReachabilityState| {
+                state.clone()
+            })
     }
 }
 
@@ -119,30 +134,54 @@ impl ReachabilityEngine {
     pub fn analyze<C: CallGraphView>(call_graph: &C, budget: &mut Budget) -> ReachabilityResult {
         let all_functions: BTreeSet<FunctionId> = call_graph.functions().into_iter().collect();
         let selected_functions: BTreeSet<FunctionId> = Self::select_prefix(&all_functions, budget);
-        let mut complete: bool = selected_functions.len() == all_functions.len();
+        let mut traversal_complete: bool = selected_functions.len() == all_functions.len();
         let mut adjacency: BTreeMap<FunctionId, BTreeSet<FunctionId>> = selected_functions
             .iter()
             .cloned()
             .map(|function: FunctionId| (function, BTreeSet::new()))
             .collect();
-        let mut calls: Vec<DirectCall> = call_graph.direct_calls();
-        calls.sort();
-        for call in calls {
+        let mut witness_adjacency: BTreeMap<FunctionId, BTreeMap<FunctionId, EdgeSoundness>> =
+            selected_functions
+                .iter()
+                .cloned()
+                .map(|function: FunctionId| (function, BTreeMap::new()))
+                .collect();
+        let mut unresolved_by_caller: BTreeMap<FunctionId, BTreeSet<CallSiteId>> = BTreeMap::new();
+        let mut edges: Vec<CallGraphEdge> = call_graph.call_edges();
+        edges.sort();
+        for edge in edges {
             if !budget.consume_step() {
-                complete = false;
+                traversal_complete = false;
                 break;
             }
-            let Some(callee) = call.callee_function else {
+            if !selected_functions.contains(&edge.caller) {
                 continue;
-            };
-            if selected_functions.contains(&call.caller) && selected_functions.contains(&callee) {
-                if let Some(neighbors) = adjacency.get_mut(&call.caller) {
-                    neighbors.insert(callee);
-                } else {
-                    complete = false;
+            }
+            match normalize_edge_kind(&edge.kind) {
+                NormalizedEdgeKind::Known { callees, soundness } => {
+                    for callee in callees {
+                        if !selected_functions.contains(&callee) {
+                            traversal_complete = false;
+                            continue;
+                        }
+                        if !insert_known_edge(
+                            &mut adjacency,
+                            &mut witness_adjacency,
+                            &edge.caller,
+                            callee,
+                            soundness,
+                        ) {
+                            traversal_complete = false;
+                        }
+                    }
                 }
-            } else if selected_functions.contains(&call.caller) {
-                complete = false;
+                NormalizedEdgeKind::UnresolvedIndirect => {
+                    unresolved_by_caller
+                        .entry(edge.caller)
+                        .or_default()
+                        .insert(edge.id);
+                }
+                NormalizedEdgeKind::Ignored => {}
             }
         }
         let entries: BTreeSet<FunctionId> = call_graph.entry_points().into_iter().collect();
@@ -152,7 +191,7 @@ impl ReachabilityEngine {
             .cloned()
             .collect();
         if selected_entries.len() != entries.len() {
-            complete = false;
+            traversal_complete = false;
         }
         let Some(components) = tarjan_components(&adjacency, &selected_functions, budget) else {
             return Self::incomplete_result(&all_functions, &selected_entries);
@@ -164,29 +203,44 @@ impl ReachabilityEngine {
             .iter()
             .filter_map(|entry: &FunctionId| condensation.component_of.get(entry).cloned())
             .collect();
-        let component_paths: BfsResult = breadth_first(
+        let component_paths: NodeBfsResult = breadth_first_nodes(
             &condensation.adjacency,
             &component_entries,
             budget.max_depth(),
             budget,
         );
-        let function_paths: BfsResult =
-            breadth_first(&adjacency, &selected_entries, budget.max_depth(), budget);
-        complete = complete && component_paths.complete && function_paths.complete;
-        let reachable_components: BTreeSet<FunctionId> =
-            component_paths.nodes.keys().cloned().collect();
+        let function_paths: WitnessBfsResult = breadth_first_witnesses(
+            &witness_adjacency,
+            &selected_entries,
+            budget.max_depth(),
+            budget,
+        );
+        traversal_complete =
+            traversal_complete && component_paths.complete && function_paths.complete;
+        let unresolved_paths: UnresolvedWitnessResult = unresolved_witness(
+            &unresolved_by_caller,
+            &function_paths.nodes,
+            budget.max_depth(),
+        );
+        if !unresolved_paths.complete {
+            budget.mark_depth_limit_reached();
+            traversal_complete = false;
+        }
+        let unresolved_witness: Option<PathWitness> = unresolved_paths.witness;
         let mut states: BTreeMap<FunctionId, ReachabilityState> = BTreeMap::new();
         for function in all_functions {
             let state: ReachabilityState = if !selected_functions.contains(&function) {
                 ReachabilityState::Unknown
             } else if let Some(witness) = reconstruct_witness(&function, &function_paths.nodes) {
                 ReachabilityState::Reachable(witness)
-            } else if !complete {
+            } else if !traversal_complete {
                 ReachabilityState::Unknown
+            } else if let Some(witness) = &unresolved_witness {
+                ReachabilityState::ReachabilityUnknown(witness.clone())
             } else if condensation
                 .component_of
                 .get(&function)
-                .is_some_and(|component: &FunctionId| !reachable_components.contains(component))
+                .is_some_and(|component: &FunctionId| !component_paths.nodes.contains(component))
             {
                 ReachabilityState::Unreachable
             } else {
@@ -194,7 +248,10 @@ impl ReachabilityEngine {
             };
             states.insert(function, state);
         }
-        ReachabilityResult { states, complete }
+        ReachabilityResult {
+            states,
+            complete: traversal_complete && unresolved_witness.is_none(),
+        }
     }
 
     fn select_prefix(
@@ -221,6 +278,8 @@ impl ReachabilityEngine {
                 ReachabilityState::Reachable(PathWitness {
                     functions: vec![function.clone()],
                     distance: 0,
+                    weakest_edge_soundness: EdgeSoundness::High,
+                    terminal_unresolved_call: None,
                 })
             } else {
                 ReachabilityState::Unknown
@@ -230,6 +289,62 @@ impl ReachabilityEngine {
         ReachabilityResult {
             states,
             complete: false,
+        }
+    }
+}
+
+#[derive(Debug)]
+enum NormalizedEdgeKind {
+    Known {
+        callees: BTreeSet<FunctionId>,
+        soundness: EdgeSoundness,
+    },
+    UnresolvedIndirect,
+    Ignored,
+}
+
+fn normalize_edge_kind(kind: &EdgeKind) -> NormalizedEdgeKind {
+    match kind {
+        EdgeKind::Direct {
+            callee: Some(callee),
+        } => NormalizedEdgeKind::Known {
+            callees: BTreeSet::from([callee.clone()]),
+            soundness: EdgeSoundness::High,
+        },
+        EdgeKind::Direct { callee: None } => NormalizedEdgeKind::Ignored,
+        EdgeKind::ResolvedIndirect { candidates }
+            if candidates.is_empty()
+                || candidates.len() > MAX_RESOLVED_INDIRECT_CALLEES_PER_SITE =>
+        {
+            NormalizedEdgeKind::UnresolvedIndirect
+        }
+        EdgeKind::ResolvedIndirect { candidates } => NormalizedEdgeKind::Known {
+            callees: candidates.clone(),
+            soundness: EdgeSoundness::Medium,
+        },
+        EdgeKind::UnresolvedIndirect => NormalizedEdgeKind::UnresolvedIndirect,
+    }
+}
+
+fn insert_known_edge(
+    adjacency: &mut BTreeMap<FunctionId, BTreeSet<FunctionId>>,
+    witness_adjacency: &mut BTreeMap<FunctionId, BTreeMap<FunctionId, EdgeSoundness>>,
+    caller: &FunctionId,
+    callee: FunctionId,
+    soundness: EdgeSoundness,
+) -> bool {
+    let Some(neighbors) = adjacency.get_mut(caller) else {
+        return false;
+    };
+    neighbors.insert(callee.clone());
+    let Some(witness_neighbors) = witness_adjacency.get_mut(caller) else {
+        return false;
+    };
+    match witness_neighbors.get(&callee) {
+        Some(existing) if *existing >= soundness => true,
+        _ => {
+            witness_neighbors.insert(callee, soundness);
+            true
         }
     }
 }
@@ -401,54 +516,41 @@ fn visit_tarjan_node(
 }
 
 #[derive(Debug)]
-struct BfsNode {
-    predecessor: Option<FunctionId>,
-    depth: usize,
-}
-
-#[derive(Debug)]
-struct BfsResult {
-    nodes: BTreeMap<FunctionId, BfsNode>,
+struct NodeBfsResult {
+    nodes: BTreeSet<FunctionId>,
     complete: bool,
 }
 
-fn breadth_first(
+fn breadth_first_nodes(
     adjacency: &BTreeMap<FunctionId, BTreeSet<FunctionId>>,
     roots: &BTreeSet<FunctionId>,
     max_depth: usize,
     budget: &mut Budget,
-) -> BfsResult {
-    let mut nodes: BTreeMap<FunctionId, BfsNode> = BTreeMap::new();
+) -> NodeBfsResult {
+    let mut nodes: BTreeMap<FunctionId, usize> = BTreeMap::new();
     let mut queue: VecDeque<FunctionId> = VecDeque::new();
     for root in roots {
-        nodes.insert(
-            root.clone(),
-            BfsNode {
-                predecessor: None,
-                depth: 0,
-            },
-        );
+        nodes.insert(root.clone(), 0);
         queue.push_back(root.clone());
     }
     while let Some(node) = queue.pop_front() {
-        let Some(current) = nodes.get(&node) else {
-            return BfsResult {
-                nodes,
+        let Some(depth) = nodes.get(&node).copied() else {
+            return NodeBfsResult {
+                nodes: nodes.keys().cloned().collect(),
                 complete: false,
             };
         };
-        let depth: usize = current.depth;
         let Some(neighbors) = adjacency.get(&node) else {
-            return BfsResult {
-                nodes,
+            return NodeBfsResult {
+                nodes: nodes.keys().cloned().collect(),
                 complete: false,
             };
         };
         if depth >= max_depth {
             if !neighbors.is_empty() {
                 budget.mark_depth_limit_reached();
-                return BfsResult {
-                    nodes,
+                return NodeBfsResult {
+                    nodes: nodes.keys().cloned().collect(),
                     complete: false,
                 };
             }
@@ -456,24 +558,110 @@ fn breadth_first(
         }
         for neighbor in neighbors {
             if !budget.consume_step() {
-                return BfsResult {
-                    nodes,
+                return NodeBfsResult {
+                    nodes: nodes.keys().cloned().collect(),
                     complete: false,
                 };
             }
             if !nodes.contains_key(neighbor) {
-                nodes.insert(
-                    neighbor.clone(),
-                    BfsNode {
-                        predecessor: Some(node.clone()),
-                        depth: depth.saturating_add(1),
-                    },
-                );
+                nodes.insert(neighbor.clone(), depth.saturating_add(1));
                 queue.push_back(neighbor.clone());
             }
         }
     }
-    BfsResult {
+    NodeBfsResult {
+        nodes: nodes.keys().cloned().collect(),
+        complete: true,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct BfsKey {
+    function: FunctionId,
+    soundness: EdgeSoundness,
+}
+
+#[derive(Debug)]
+struct WitnessBfsNode {
+    predecessor: Option<BfsKey>,
+    depth: usize,
+}
+
+#[derive(Debug)]
+struct WitnessBfsResult {
+    nodes: BTreeMap<BfsKey, WitnessBfsNode>,
+    complete: bool,
+}
+
+fn breadth_first_witnesses(
+    adjacency: &BTreeMap<FunctionId, BTreeMap<FunctionId, EdgeSoundness>>,
+    roots: &BTreeSet<FunctionId>,
+    max_depth: usize,
+    budget: &mut Budget,
+) -> WitnessBfsResult {
+    let mut nodes: BTreeMap<BfsKey, WitnessBfsNode> = BTreeMap::new();
+    let mut queue: VecDeque<BfsKey> = VecDeque::new();
+    for root in roots {
+        let key: BfsKey = BfsKey {
+            function: root.clone(),
+            soundness: EdgeSoundness::High,
+        };
+        nodes.insert(
+            key.clone(),
+            WitnessBfsNode {
+                predecessor: None,
+                depth: 0,
+            },
+        );
+        queue.push_back(key);
+    }
+    while let Some(key) = queue.pop_front() {
+        let Some(depth) = nodes.get(&key).map(|node: &WitnessBfsNode| node.depth) else {
+            return WitnessBfsResult {
+                nodes,
+                complete: false,
+            };
+        };
+        let Some(neighbors) = adjacency.get(&key.function) else {
+            return WitnessBfsResult {
+                nodes,
+                complete: false,
+            };
+        };
+        if depth >= max_depth {
+            if !neighbors.is_empty() {
+                budget.mark_depth_limit_reached();
+                return WitnessBfsResult {
+                    nodes,
+                    complete: false,
+                };
+            }
+            continue;
+        }
+        for (neighbor, edge_soundness) in neighbors {
+            if !budget.consume_step() {
+                return WitnessBfsResult {
+                    nodes,
+                    complete: false,
+                };
+            }
+            let next: BfsKey = BfsKey {
+                function: neighbor.clone(),
+                soundness: key.soundness.min(*edge_soundness),
+            };
+            if !nodes.contains_key(&next) {
+                nodes.insert(
+                    next.clone(),
+                    WitnessBfsNode {
+                        predecessor: Some(key.clone()),
+                        depth: depth.saturating_add(1),
+                    },
+                );
+                queue.push_back(next);
+            }
+        }
+    }
+    WitnessBfsResult {
         nodes,
         complete: true,
     }
@@ -481,14 +669,15 @@ fn breadth_first(
 
 fn reconstruct_witness(
     destination: &FunctionId,
-    nodes: &BTreeMap<FunctionId, BfsNode>,
+    nodes: &BTreeMap<BfsKey, WitnessBfsNode>,
 ) -> Option<PathWitness> {
-    let destination_node: &BfsNode = nodes.get(destination)?;
+    let destination_key: BfsKey = strongest_witness_key(destination, nodes)?;
+    let destination_node: &WitnessBfsNode = nodes.get(&destination_key)?;
     let mut reverse_path: Vec<FunctionId> = Vec::new();
-    let mut cursor: FunctionId = destination.clone();
+    let mut cursor: BfsKey = destination_key.clone();
     loop {
-        reverse_path.push(cursor.clone());
-        let node: &BfsNode = nodes.get(&cursor)?;
+        reverse_path.push(cursor.function.clone());
+        let node: &WitnessBfsNode = nodes.get(&cursor)?;
         let Some(predecessor) = &node.predecessor else {
             break;
         };
@@ -498,5 +687,64 @@ fn reconstruct_witness(
     Some(PathWitness {
         functions: reverse_path,
         distance: destination_node.depth,
+        weakest_edge_soundness: destination_key.soundness,
+        terminal_unresolved_call: None,
     })
+}
+
+fn strongest_witness_key(
+    destination: &FunctionId,
+    nodes: &BTreeMap<BfsKey, WitnessBfsNode>,
+) -> Option<BfsKey> {
+    let high: BfsKey = BfsKey {
+        function: destination.clone(),
+        soundness: EdgeSoundness::High,
+    };
+    if nodes.contains_key(&high) {
+        return Some(high);
+    }
+    let medium: BfsKey = BfsKey {
+        function: destination.clone(),
+        soundness: EdgeSoundness::Medium,
+    };
+    if nodes.contains_key(&medium) {
+        return Some(medium);
+    }
+    None
+}
+
+#[derive(Debug)]
+struct UnresolvedWitnessResult {
+    witness: Option<PathWitness>,
+    complete: bool,
+}
+
+fn unresolved_witness(
+    unresolved_by_caller: &BTreeMap<FunctionId, BTreeSet<CallSiteId>>,
+    nodes: &BTreeMap<BfsKey, WitnessBfsNode>,
+    max_depth: usize,
+) -> UnresolvedWitnessResult {
+    let mut witness: Option<PathWitness> = None;
+    let mut complete: bool = true;
+    for (caller, call_sites) in unresolved_by_caller {
+        let Some(source_witness) = reconstruct_witness(caller, nodes) else {
+            continue;
+        };
+        if source_witness.distance >= max_depth {
+            complete = false;
+            continue;
+        }
+        let Some(call_site) = call_sites.first() else {
+            continue;
+        };
+        if witness.is_none() {
+            witness = Some(PathWitness {
+                functions: source_witness.functions,
+                distance: source_witness.distance.saturating_add(1),
+                weakest_edge_soundness: EdgeSoundness::Unknown,
+                terminal_unresolved_call: Some(call_site.clone()),
+            });
+        }
+    }
+    UnresolvedWitnessResult { witness, complete }
 }
