@@ -176,6 +176,7 @@ pub enum PrimitiveEffect {
     PushConst(i64),
     PushOperandI64,
     Binary(BinOp),
+    AdvanceIp(i32),
     Branch,
     BranchIfTrue,
     BranchIfFalse,
@@ -210,6 +211,7 @@ pub struct CanonicalEffect {
     pub argument_writes: BTreeMap<u16, Expr>,
     pub local_writes: BTreeMap<u16, Expr>,
     pub register_writes: BTreeMap<u16, Expr>,
+    pub instruction_pointer_write: Option<Expr>,
     pub reads: Vec<StateLocation>,
     pub writes: Vec<StateLocation>,
     pub control: ControlEffect,
@@ -231,6 +233,7 @@ pub struct AbstractState {
     argument_writes: BTreeMap<u16, Expr>,
     local_writes: BTreeMap<u16, Expr>,
     register_writes: BTreeMap<u16, Expr>,
+    instruction_pointer_write: Option<Expr>,
     reads: BTreeSet<StateLocation>,
     writes: BTreeSet<StateLocation>,
     control: ControlEffect,
@@ -247,6 +250,7 @@ impl AbstractState {
             argument_writes: BTreeMap::new(),
             local_writes: BTreeMap::new(),
             register_writes: BTreeMap::new(),
+            instruction_pointer_write: None,
             reads: BTreeSet::new(),
             writes: BTreeSet::new(),
             control: ControlEffect::Fallthrough,
@@ -288,6 +292,7 @@ impl AbstractState {
                 let value: Expr = Expr::binary(*op, left, right)?;
                 self.push(value)?;
             }
+            PrimitiveEffect::AdvanceIp(delta) => self.advance_ip(*delta),
             PrimitiveEffect::Branch => self.set_control(ControlEffect::Br),
             PrimitiveEffect::BranchIfTrue => {
                 let condition: Expr = self.pop()?;
@@ -367,6 +372,10 @@ impl AbstractState {
             let canonical: Expr = value.canonicalize(budget)?;
             register_writes.insert(*index, canonical);
         }
+        let instruction_pointer_write: Option<Expr> = match &self.instruction_pointer_write {
+            Some(value) => Some(value.canonicalize(budget)?),
+            None => None,
+        };
         let return_value: Option<Expr> = match &self.return_value {
             Some(value) => Some(value.canonicalize(budget)?),
             None => None,
@@ -377,6 +386,7 @@ impl AbstractState {
             argument_writes,
             local_writes,
             register_writes,
+            instruction_pointer_write,
             reads: self.reads.iter().cloned().collect(),
             writes: self.writes.iter().cloned().collect(),
             control: self.control,
@@ -431,6 +441,30 @@ impl AbstractState {
             .ok_or_else(|| Reject::new("handler symbolic stack input overflowed", Vec::new()))?;
         self.reads.insert(StateLocation::Stack);
         Ok(input)
+    }
+
+    fn advance_ip(&mut self, delta: i32) {
+        let next: Option<Expr> = match self.instruction_pointer_write.take() {
+            None => Some(Expr::IpDelta(delta)),
+            Some(Expr::IpDelta(current)) => current.checked_add(delta).map(Expr::IpDelta),
+            Some(
+                Expr::VStackTop
+                | Expr::VStackAt(_)
+                | Expr::VReg(_)
+                | Expr::Local(_)
+                | Expr::Argument(_)
+                | Expr::OperandBytes(_)
+                | Expr::Const(_)
+                | Expr::Binary { .. },
+            ) => None,
+        };
+        let Some(value): Option<Expr> = next else {
+            self.unknown = true;
+            self.control = ControlEffect::Unknown;
+            return;
+        };
+        self.instruction_pointer_write = Some(value);
+        self.writes.insert(StateLocation::Ip);
     }
 
     fn set_control(&mut self, control: ControlEffect) {

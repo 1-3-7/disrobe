@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use crate::cil::{self, Instruction, MethodBody, OperandValue};
 use crate::error::Error;
@@ -7,7 +7,12 @@ use super::Reject;
 use super::budget::Budget;
 use super::handlers::{HandlerSummary, summarize};
 use super::ir::BinOp;
-use super::state::{ControlEffect, Expr, PrimitiveEffect};
+use super::state::{ControlEffect, Expr, OperandRange, PrimitiveEffect};
+
+pub use super::profile::{
+    CilHandlerProfile, CilOperandAccess, CilSlot, CilSlotBinding, CilSlotRole, CilStackAccess,
+    KOIVM_SHAPED_CIL_HANDLER_PROFILE,
+};
 
 pub const MAX_CIL_HANDLER_BODY_BYTES: usize = 4_096;
 
@@ -18,79 +23,29 @@ const MAX_CIL_EXPRESSION_NODES: u8 = 64;
 const MAX_LOWERED_EFFECTS: usize = 1_024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CilArgumentRole {
-    VirtualStackPointer,
-    VirtualArgument(u16),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CilLocalRole {
-    VirtualLocal(u16),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CilHandlerProfile {
-    argument_roles: BTreeMap<u16, CilArgumentRole>,
-    local_roles: BTreeMap<u16, CilLocalRole>,
-    virtual_stack_reads: BTreeMap<u32, u16>,
-    virtual_stack_writes: BTreeSet<u32>,
-    virtual_control_offsets: BTreeSet<u32>,
-    virtual_return_offsets: BTreeSet<u32>,
-}
-
-impl CilHandlerProfile {
-    #[must_use]
-    pub const fn new(
-        argument_roles: BTreeMap<u16, CilArgumentRole>,
-        local_roles: BTreeMap<u16, CilLocalRole>,
-        virtual_stack_reads: BTreeMap<u32, u16>,
-        virtual_stack_writes: BTreeSet<u32>,
-        virtual_control_offsets: BTreeSet<u32>,
-        virtual_return_offsets: BTreeSet<u32>,
-    ) -> Self {
-        Self {
-            argument_roles,
-            local_roles,
-            virtual_stack_reads,
-            virtual_stack_writes,
-            virtual_control_offsets,
-            virtual_return_offsets,
-        }
-    }
-
-    fn argument_value(&self, index: u16) -> Option<CilValue> {
-        match self.argument_roles.get(&index) {
-            Some(CilArgumentRole::VirtualStackPointer) => Some(CilValue::StackPointer),
-            Some(CilArgumentRole::VirtualArgument(value)) => {
-                Some(CilValue::expression(Expr::Argument(*value)))
-            }
-            None => None,
-        }
-    }
-
-    fn virtual_argument(&self, index: u16) -> Option<u16> {
-        match self.argument_roles.get(&index) {
-            Some(CilArgumentRole::VirtualArgument(value)) => Some(*value),
-            Some(CilArgumentRole::VirtualStackPointer) | None => None,
-        }
-    }
-
-    fn virtual_local(&self, index: u16) -> Option<u16> {
-        self.local_roles
-            .get(&index)
-            .map(|value: &CilLocalRole| match value {
-                CilLocalRole::VirtualLocal(index) => *index,
-            })
-    }
+enum CilAddressBase {
+    VirtualStack,
+    VirtualInstructionPointer,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CilValue {
-    StackPointer,
-    Expression { value: Expr, depth: u8, nodes: u8 },
+    Address {
+        base: CilAddressBase,
+        byte_offset: i32,
+    },
+    Expression {
+        value: Expr,
+        depth: u8,
+        nodes: u8,
+    },
 }
 
 impl CilValue {
+    const fn address(base: CilAddressBase, byte_offset: i32) -> Self {
+        Self::Address { base, byte_offset }
+    }
+
     const fn expression(value: Expr) -> Self {
         Self::Expression {
             value,
@@ -101,21 +56,21 @@ impl CilValue {
 
     const fn depth(&self) -> u8 {
         match self {
-            Self::StackPointer => 0,
+            Self::Address { .. } => 0,
             Self::Expression { depth, .. } => *depth,
         }
     }
 
     const fn nodes(&self) -> u8 {
         match self {
-            Self::StackPointer => 1,
+            Self::Address { .. } => 1,
             Self::Expression { nodes, .. } => *nodes,
         }
     }
 
     const fn expression_value(&self) -> Option<&Expr> {
         match self {
-            Self::StackPointer => None,
+            Self::Address { .. } => None,
             Self::Expression { value, .. } => Some(value),
         }
     }
@@ -138,6 +93,9 @@ impl CilValue {
     }
 
     fn binary(op: BinOp, left: Self, right: Self) -> Result<Option<Self>, Reject> {
+        if left.address_data().is_some() || right.address_data().is_some() {
+            return Ok(Self::address_binary(op, &left, &right));
+        }
         let child_depth: u8 = left.depth().max(right.depth());
         let depth: u8 = match child_depth.checked_add(1) {
             Some(value) => value,
@@ -169,6 +127,62 @@ impl CilValue {
             depth,
             nodes,
         }))
+    }
+
+    const fn address_data(&self) -> Option<(CilAddressBase, i32)> {
+        match self {
+            Self::Address { base, byte_offset } => Some((*base, *byte_offset)),
+            Self::Expression { .. } => None,
+        }
+    }
+
+    const fn constant(&self) -> Option<i64> {
+        match self {
+            Self::Expression {
+                value: Expr::Const(value),
+                ..
+            } => Some(*value),
+            Self::Address { .. }
+            | Self::Expression {
+                value:
+                    Expr::VStackTop
+                    | Expr::VStackAt(_)
+                    | Expr::VReg(_)
+                    | Expr::Local(_)
+                    | Expr::Argument(_)
+                    | Expr::OperandBytes(_)
+                    | Expr::IpDelta(_)
+                    | Expr::Binary { .. },
+                ..
+            } => None,
+        }
+    }
+
+    fn address_binary(op: BinOp, left: &Self, right: &Self) -> Option<Self> {
+        let left_address: Option<(CilAddressBase, i32)> = left.address_data();
+        let right_address: Option<(CilAddressBase, i32)> = right.address_data();
+        let left_constant: Option<i64> = left.constant();
+        let right_constant: Option<i64> = right.constant();
+        match (
+            op,
+            left_address,
+            right_address,
+            left_constant,
+            right_constant,
+        ) {
+            (BinOp::Add, Some((base, offset)), None, None, Some(delta))
+            | (BinOp::Add, None, Some((base, offset)), Some(delta), None) => {
+                let delta: i32 = i32::try_from(delta).ok()?;
+                let byte_offset: i32 = offset.checked_add(delta)?;
+                Some(Self::address(base, byte_offset))
+            }
+            (BinOp::Sub, Some((base, offset)), None, None, Some(delta)) => {
+                let delta: i32 = i32::try_from(delta).ok()?;
+                let byte_offset: i32 = offset.checked_sub(delta)?;
+                Some(Self::address(base, byte_offset))
+            }
+            _ => None,
+        }
     }
 
     fn contains_stack_input(&self, depth: u8) -> bool {
@@ -242,6 +256,9 @@ fn lower_handler(
     profile: &CilHandlerProfile,
     budget: &mut Budget,
 ) -> Result<Option<Vec<PrimitiveEffect>>, Reject> {
+    if !profile.has_unambiguous_core_bindings() {
+        return Ok(None);
+    }
     let mut state: LoweringState = LoweringState::default();
     for (index, instruction) in method.instructions.iter().enumerate() {
         budget.spend(1).map_err(Reject::from_budget_error)?;
@@ -283,28 +300,65 @@ fn lower_instruction(
     let returned: &mut bool = &mut state.returned;
     match instruction.name.as_str() {
         "nop" => Ok(Some(())),
-        "ldarg.0" => load_argument(profile, cil_stack, 0),
-        "ldarg.1" => load_argument(profile, cil_stack, 1),
-        "ldarg.2" => load_argument(profile, cil_stack, 2),
-        "ldarg.3" => load_argument(profile, cil_stack, 3),
+        "ldarg.0" => load_slot(profile, cil_stack, CilSlot::Argument(0)),
+        "ldarg.1" => load_slot(profile, cil_stack, CilSlot::Argument(1)),
+        "ldarg.2" => load_slot(profile, cil_stack, CilSlot::Argument(2)),
+        "ldarg.3" => load_slot(profile, cil_stack, CilSlot::Argument(3)),
         "ldarg.s" | "ldarg" => variable_operand(instruction).map_or(Ok(None), |value: u16| {
-            load_argument(profile, cil_stack, value)
+            load_slot(profile, cil_stack, CilSlot::Argument(value))
         }),
         "starg.s" | "starg" => variable_operand(instruction).map_or(Ok(None), |value: u16| {
-            store_argument(profile, cil_stack, effects, consumed_inputs, value)
+            store_slot(
+                profile,
+                cil_stack,
+                effects,
+                consumed_inputs,
+                CilSlot::Argument(value),
+            )
         }),
-        "ldloc.0" => load_local(profile, cil_stack, 0),
-        "ldloc.1" => load_local(profile, cil_stack, 1),
-        "ldloc.2" => load_local(profile, cil_stack, 2),
-        "ldloc.3" => load_local(profile, cil_stack, 3),
-        "ldloc.s" | "ldloc" => variable_operand(instruction)
-            .map_or(Ok(None), |value: u16| load_local(profile, cil_stack, value)),
-        "stloc.0" => store_local(profile, cil_stack, effects, consumed_inputs, 0),
-        "stloc.1" => store_local(profile, cil_stack, effects, consumed_inputs, 1),
-        "stloc.2" => store_local(profile, cil_stack, effects, consumed_inputs, 2),
-        "stloc.3" => store_local(profile, cil_stack, effects, consumed_inputs, 3),
+        "ldloc.0" => load_slot(profile, cil_stack, CilSlot::Local(0)),
+        "ldloc.1" => load_slot(profile, cil_stack, CilSlot::Local(1)),
+        "ldloc.2" => load_slot(profile, cil_stack, CilSlot::Local(2)),
+        "ldloc.3" => load_slot(profile, cil_stack, CilSlot::Local(3)),
+        "ldloc.s" | "ldloc" => variable_operand(instruction).map_or(Ok(None), |value: u16| {
+            load_slot(profile, cil_stack, CilSlot::Local(value))
+        }),
+        "stloc.0" => store_slot(
+            profile,
+            cil_stack,
+            effects,
+            consumed_inputs,
+            CilSlot::Local(0),
+        ),
+        "stloc.1" => store_slot(
+            profile,
+            cil_stack,
+            effects,
+            consumed_inputs,
+            CilSlot::Local(1),
+        ),
+        "stloc.2" => store_slot(
+            profile,
+            cil_stack,
+            effects,
+            consumed_inputs,
+            CilSlot::Local(2),
+        ),
+        "stloc.3" => store_slot(
+            profile,
+            cil_stack,
+            effects,
+            consumed_inputs,
+            CilSlot::Local(3),
+        ),
         "stloc.s" | "stloc" => variable_operand(instruction).map_or(Ok(None), |value: u16| {
-            store_local(profile, cil_stack, effects, consumed_inputs, value)
+            store_slot(
+                profile,
+                cil_stack,
+                effects,
+                consumed_inputs,
+                CilSlot::Local(value),
+            )
         }),
         "ldc.i4.m1" => push_cil_value(cil_stack, CilValue::expression(Expr::Const(-1))).map(Some),
         "ldc.i4.0" => push_cil_value(cil_stack, CilValue::expression(Expr::Const(0))).map(Some),
@@ -336,43 +390,20 @@ fn lower_instruction(
         "dup" => duplicate_cil_value(cil_stack).map(Some),
         "pop" => discard_cil_value(cil_stack).map(Some),
         "ldind.i4" | "ldind.i8" | "ldind.i" => {
-            let address: CilValue = pop_cil_value(cil_stack)?;
-            if address != CilValue::StackPointer {
-                return Ok(None);
-            }
-            let Some(input): Option<&u16> = profile.virtual_stack_reads.get(&instruction.offset)
-            else {
-                return Ok(None);
-            };
-            if *input != *next_stack_input {
-                return Ok(None);
-            }
-            *next_stack_input = match next_stack_input.checked_add(1) {
-                Some(value) => value,
-                None => return Ok(None),
-            };
-            push_cil_value(cil_stack, CilValue::expression(Expr::VStackAt(*input))).map(Some)
+            load_indirect(profile, instruction, cil_stack, next_stack_input)
         }
         "stind.i4" | "stind.i8" | "stind.i" => {
-            let value: CilValue = pop_cil_value(cil_stack)?;
-            let address: CilValue = pop_cil_value(cil_stack)?;
-            if address != CilValue::StackPointer
-                || !profile.virtual_stack_writes.contains(&instruction.offset)
-                || !append_output_value(&value, effects, consumed_inputs, 0)?
-            {
-                return Ok(None);
-            }
-            Ok(Some(()))
+            store_indirect(profile, cil_stack, effects, consumed_inputs)
         }
-        "add" => combine_binary(cil_stack, BinOp::Add).map(Some),
-        "sub" => combine_binary(cil_stack, BinOp::Sub).map(Some),
-        "mul" => combine_binary(cil_stack, BinOp::Mul).map(Some),
-        "and" => combine_binary(cil_stack, BinOp::And).map(Some),
-        "or" => combine_binary(cil_stack, BinOp::Or).map(Some),
-        "xor" => combine_binary(cil_stack, BinOp::Xor).map(Some),
-        "ceq" => combine_binary(cil_stack, BinOp::Ceq).map(Some),
-        "clt" => combine_binary(cil_stack, BinOp::Clt).map(Some),
-        "cgt" => combine_binary(cil_stack, BinOp::Cgt).map(Some),
+        "add" => combine_binary(cil_stack, BinOp::Add),
+        "sub" => combine_binary(cil_stack, BinOp::Sub),
+        "mul" => combine_binary(cil_stack, BinOp::Mul),
+        "and" => combine_binary(cil_stack, BinOp::And),
+        "or" => combine_binary(cil_stack, BinOp::Or),
+        "xor" => combine_binary(cil_stack, BinOp::Xor),
+        "ceq" => combine_binary(cil_stack, BinOp::Ceq),
+        "clt" => combine_binary(cil_stack, BinOp::Clt),
+        "cgt" => combine_binary(cil_stack, BinOp::Cgt),
         "br.s" | "br" => lower_branch(
             method,
             profile,
@@ -403,73 +434,125 @@ fn lower_instruction(
             consumed_inputs,
             PrimitiveEffect::BranchIfFalse,
         ),
-        "ret" => lower_return(
-            profile,
-            instruction,
-            cil_stack,
-            effects,
-            consumed_inputs,
-            returned,
-        ),
+        "ret" => lower_return(profile, cil_stack, effects, consumed_inputs, returned),
         _ => Ok(None),
     }
 }
 
-fn load_argument(
+fn load_slot(
     profile: &CilHandlerProfile,
     stack: &mut Vec<CilValue>,
-    index: u16,
+    slot: CilSlot,
 ) -> Result<Option<()>, Reject> {
-    let Some(value): Option<CilValue> = profile.argument_value(index) else {
+    let Some(role): Option<CilSlotRole> = profile.role_for_slot(slot) else {
         return Ok(None);
+    };
+    let value: CilValue = match role {
+        CilSlotRole::StackPointer => CilValue::address(CilAddressBase::VirtualStack, 0),
+        CilSlotRole::InstructionPointer => {
+            CilValue::address(CilAddressBase::VirtualInstructionPointer, 0)
+        }
+        CilSlotRole::Argument(index) => CilValue::expression(Expr::Argument(index)),
+        CilSlotRole::Local(index) => CilValue::expression(Expr::Local(index)),
     };
     push_cil_value(stack, value).map(Some)
 }
 
-fn store_argument(
+fn store_slot(
     profile: &CilHandlerProfile,
     stack: &mut Vec<CilValue>,
     effects: &mut Vec<PrimitiveEffect>,
     consumed_inputs: &mut BTreeSet<u16>,
-    index: u16,
+    slot: CilSlot,
 ) -> Result<Option<()>, Reject> {
-    let Some(virtual_index): Option<u16> = profile.virtual_argument(index) else {
+    let Some(role): Option<CilSlotRole> = profile.role_for_slot(slot) else {
         return Ok(None);
     };
     let stored: CilValue = pop_cil_value(stack)?;
-    if !append_consumed_value(&stored, effects, consumed_inputs, 0)? {
-        return Ok(None);
+    match role {
+        CilSlotRole::StackPointer => Ok(None),
+        CilSlotRole::InstructionPointer => {
+            let Some((CilAddressBase::VirtualInstructionPointer, delta)): Option<(
+                CilAddressBase,
+                i32,
+            )> = stored.address_data() else {
+                return Ok(None);
+            };
+            push_effect(effects, PrimitiveEffect::AdvanceIp(delta))?;
+            Ok(Some(()))
+        }
+        CilSlotRole::Argument(index) => {
+            if !append_consumed_value(&stored, effects, consumed_inputs, 0)? {
+                return Ok(None);
+            }
+            push_effect(effects, PrimitiveEffect::StoreArgument(index))?;
+            Ok(Some(()))
+        }
+        CilSlotRole::Local(index) => {
+            if !append_consumed_value(&stored, effects, consumed_inputs, 0)? {
+                return Ok(None);
+            }
+            push_effect(effects, PrimitiveEffect::StoreLocal(index))?;
+            Ok(Some(()))
+        }
     }
-    push_effect(effects, PrimitiveEffect::StoreArgument(virtual_index))?;
-    Ok(Some(()))
 }
 
-fn load_local(
+fn load_indirect(
     profile: &CilHandlerProfile,
+    instruction: &Instruction,
     stack: &mut Vec<CilValue>,
-    index: u16,
+    next_stack_input: &mut u16,
 ) -> Result<Option<()>, Reject> {
-    let Some(virtual_index): Option<u16> = profile.virtual_local(index) else {
+    let address: CilValue = pop_cil_value(stack)?;
+    let Some((base, byte_offset)): Option<(CilAddressBase, i32)> = address.address_data() else {
         return Ok(None);
     };
-    push_cil_value(stack, CilValue::expression(Expr::Local(virtual_index))).map(Some)
+    match base {
+        CilAddressBase::VirtualStack => {
+            let Some(input): Option<u16> = profile.stack_pop_at(byte_offset) else {
+                return Ok(None);
+            };
+            if input != *next_stack_input {
+                return Ok(None);
+            }
+            *next_stack_input = match next_stack_input.checked_add(1) {
+                Some(value) => value,
+                None => return Ok(None),
+            };
+            push_cil_value(stack, CilValue::expression(Expr::VStackAt(input))).map(Some)
+        }
+        CilAddressBase::VirtualInstructionPointer => {
+            if instruction.name != "ldind.i8" {
+                return Ok(None);
+            }
+            let Some(range): Option<OperandRange> = profile.operand_at(byte_offset) else {
+                return Ok(None);
+            };
+            push_cil_value(stack, CilValue::expression(Expr::OperandBytes(range))).map(Some)
+        }
+    }
 }
 
-fn store_local(
+fn store_indirect(
     profile: &CilHandlerProfile,
     stack: &mut Vec<CilValue>,
     effects: &mut Vec<PrimitiveEffect>,
     consumed_inputs: &mut BTreeSet<u16>,
-    index: u16,
 ) -> Result<Option<()>, Reject> {
-    let Some(virtual_index): Option<u16> = profile.virtual_local(index) else {
+    let value: CilValue = pop_cil_value(stack)?;
+    let address: CilValue = pop_cil_value(stack)?;
+    let Some((CilAddressBase::VirtualStack, byte_offset)): Option<(CilAddressBase, i32)> =
+        address.address_data()
+    else {
         return Ok(None);
     };
-    let stored: CilValue = pop_cil_value(stack)?;
-    if !append_consumed_value(&stored, effects, consumed_inputs, 0)? {
+    let Some(output): Option<u16> = profile.stack_push_at(byte_offset) else {
+        return Ok(None);
+    };
+    if output != 0 || !append_output_value(&value, effects, consumed_inputs, 0)? {
         return Ok(None);
     }
-    push_effect(effects, PrimitiveEffect::StoreLocal(virtual_index))?;
     Ok(Some(()))
 }
 
@@ -530,19 +613,13 @@ fn discard_cil_value(stack: &mut Vec<CilValue>) -> Result<(), Reject> {
     Ok(())
 }
 
-fn combine_binary(stack: &mut Vec<CilValue>, op: BinOp) -> Result<(), Reject> {
+fn combine_binary(stack: &mut Vec<CilValue>, op: BinOp) -> Result<Option<()>, Reject> {
     let right: CilValue = pop_cil_value(stack)?;
     let left: CilValue = pop_cil_value(stack)?;
     let Some(value): Option<CilValue> = CilValue::binary(op, left, right)? else {
-        return Err(Reject::new(
-            "CIL symbolic expression exceeds configured cap",
-            vec![
-                MAX_CIL_EXPRESSION_DEPTH.to_string(),
-                MAX_CIL_EXPRESSION_NODES.to_string(),
-            ],
-        ));
+        return Ok(None);
     };
-    push_cil_value(stack, value)
+    push_cil_value(stack, value).map(Some)
 }
 
 fn append_output_value(
@@ -579,11 +656,14 @@ fn append_output_expression(
             push_effect(effects, PrimitiveEffect::PushConst(*value))?;
             Ok(true)
         }
-        Expr::VStackTop
-        | Expr::VStackAt(_)
-        | Expr::VReg(_)
-        | Expr::OperandBytes(_)
-        | Expr::IpDelta(_) => Ok(false),
+        Expr::OperandBytes(range) => {
+            if *range != OperandRange::new(0, 8) {
+                return Ok(false);
+            }
+            push_effect(effects, PrimitiveEffect::PushOperandI64)?;
+            Ok(true)
+        }
+        Expr::VStackTop | Expr::VStackAt(_) | Expr::VReg(_) | Expr::IpDelta(_) => Ok(false),
         Expr::Binary { op, left, right } => {
             let next_depth: u8 = match depth.checked_add(1) {
                 Some(value) => value,
@@ -675,11 +755,7 @@ fn lower_branch(
     consumed_inputs: &mut BTreeSet<u16>,
     effect: PrimitiveEffect,
 ) -> Result<Option<()>, Reject> {
-    if !profile
-        .virtual_control_offsets
-        .contains(&instruction.offset)
-        || !branches_to_next_return(method, index, instruction)
-    {
+    if !profile.allows_terminal_branches() || !branches_to_next_return(method, index, instruction) {
         return Ok(None);
     }
     match &effect {
@@ -704,6 +780,7 @@ fn lower_branch(
         | PrimitiveEffect::PushConst(_)
         | PrimitiveEffect::PushOperandI64
         | PrimitiveEffect::Binary(_)
+        | PrimitiveEffect::AdvanceIp(_)
         | PrimitiveEffect::Return
         | PrimitiveEffect::Opaque => return Ok(None),
     }
@@ -713,7 +790,6 @@ fn lower_branch(
 
 fn lower_return(
     profile: &CilHandlerProfile,
-    instruction: &Instruction,
     cil_stack: &mut Vec<CilValue>,
     effects: &mut Vec<PrimitiveEffect>,
     consumed_inputs: &mut BTreeSet<u16>,
@@ -725,7 +801,7 @@ fn lower_return(
             Ok(Some(()))
         }
         1 => {
-            if !profile.virtual_return_offsets.contains(&instruction.offset) {
+            if !profile.allows_virtual_returns() {
                 return Ok(None);
             }
             let value: CilValue = pop_cil_value(cil_stack)?;
