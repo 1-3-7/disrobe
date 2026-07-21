@@ -11,6 +11,7 @@ pub mod cil_emulator;
 pub mod closure_reverse;
 pub(crate) mod debug;
 pub mod decompile;
+pub mod devirt;
 pub mod error;
 pub mod format_wire;
 pub mod iterator_reverse;
