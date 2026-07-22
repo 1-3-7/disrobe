@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use disrobe_bytes::{ByteReadError, ByteReader};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -102,65 +103,45 @@ impl ArscResources {
     }
 }
 
-struct Reader<'a> {
-    bytes: &'a [u8],
-    pos: usize,
+fn arsc_truncated(_: ByteReadError) -> Error {
+    Error::ArscTruncated
 }
 
-impl<'a> Reader<'a> {
-    const fn new(bytes: &'a [u8], pos: usize) -> Self {
-        Self { bytes, pos }
-    }
-
-    fn u8(&mut self) -> Result<u8> {
-        let b: u8 = *self.bytes.get(self.pos).ok_or(Error::ArscTruncated)?;
-        self.pos += 1;
-        Ok(b)
-    }
-
-    fn u16(&mut self) -> Result<u16> {
-        let end: usize = self.pos.checked_add(2).ok_or(Error::ArscTruncated)?;
-        let slice: &[u8] = self.bytes.get(self.pos..end).ok_or(Error::ArscTruncated)?;
-        self.pos = end;
-        Ok(u16::from_le_bytes([slice[0], slice[1]]))
-    }
-
-    fn u32(&mut self) -> Result<u32> {
-        let end: usize = self.pos.checked_add(4).ok_or(Error::ArscTruncated)?;
-        let slice: &[u8] = self.bytes.get(self.pos..end).ok_or(Error::ArscTruncated)?;
-        self.pos = end;
-        Ok(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
-    }
+fn read_chunk_header(reader: &mut ByteReader<'_>) -> Result<(u16, u16, u32)> {
+    let chunk_type: u16 = reader.read_u16_le().map_err(arsc_truncated)?;
+    let header_size: u16 = reader.read_u16_le().map_err(arsc_truncated)?;
+    let chunk_size: u32 = reader.read_u32_le().map_err(arsc_truncated)?;
+    Ok((chunk_type, header_size, chunk_size))
 }
 
 fn parse_string_pool(bytes: &[u8], chunk_off: usize) -> Result<Vec<String>> {
-    let mut r: Reader<'_> = Reader::new(bytes, chunk_off);
-    let chunk_type: u16 = r.u16()?;
+    let mut r: ByteReader<'_> = ByteReader::new(bytes);
+    r.seek(chunk_off).map_err(arsc_truncated)?;
+    let (chunk_type, header_size, chunk_size): (u16, u16, u32) = read_chunk_header(&mut r)?;
     if chunk_type != CHUNK_STRING_POOL {
         return Err(Error::ArscBadStringPool);
     }
-    let header_size: u16 = r.u16()?;
-    let chunk_size: u32 = r.u32()?;
     let chunk_end: usize = chunk_off
         .checked_add(chunk_size as usize)
         .filter(|end: &usize| *end <= bytes.len())
         .ok_or(Error::ArscTruncated)?;
-    let string_count: u32 = r.u32()?;
+    let string_count: u32 = r.read_u32_le().map_err(arsc_truncated)?;
     if string_count > MAX_POOL_STRINGS {
         return Err(Error::ArscTruncated);
     }
-    let _style_count: u32 = r.u32()?;
-    let flags: u32 = r.u32()?;
-    let strings_start: u32 = r.u32()?;
-    let _styles_start: u32 = r.u32()?;
+    let _style_count: u32 = r.read_u32_le().map_err(arsc_truncated)?;
+    let flags: u32 = r.read_u32_le().map_err(arsc_truncated)?;
+    let strings_start: u32 = r.read_u32_le().map_err(arsc_truncated)?;
+    let _styles_start: u32 = r.read_u32_le().map_err(arsc_truncated)?;
     let is_utf8: bool = flags & FLAG_UTF8 != 0;
 
     let offsets_base: usize = chunk_off + header_size as usize;
     let available_slots: usize = bytes.len().saturating_sub(offsets_base) / 4;
-    let mut off_reader: Reader<'_> = Reader::new(bytes, offsets_base);
+    let mut off_reader: ByteReader<'_> = ByteReader::new(bytes);
+    off_reader.seek(offsets_base).map_err(arsc_truncated)?;
     let mut offsets: Vec<u32> = Vec::with_capacity((string_count as usize).min(available_slots));
     for _ in 0..string_count {
-        offsets.push(off_reader.u32()?);
+        offsets.push(off_reader.read_u32_le().map_err(arsc_truncated)?);
     }
 
     let data_base: usize = chunk_off + strings_start as usize;
@@ -237,14 +218,12 @@ fn decode_utf16_string(bytes: &[u8], pos: usize, end: usize) -> Result<String> {
 }
 
 pub fn parse(bytes: &[u8]) -> Result<ArscResources> {
-    let mut r: Reader<'_> = Reader::new(bytes, 0);
-    let chunk_type: u16 = r.u16()?;
+    let mut r: ByteReader<'_> = ByteReader::new(bytes);
+    let (chunk_type, header_size, _table_size): (u16, u16, u32) = read_chunk_header(&mut r)?;
     if chunk_type != CHUNK_TABLE {
         return Err(Error::ArscBadMagic);
     }
-    let header_size: u16 = r.u16()?;
-    let _table_size: u32 = r.u32()?;
-    let _package_count: u32 = r.u32()?;
+    let _package_count: u32 = r.read_u32_le().map_err(arsc_truncated)?;
 
     let mut value_strings: Vec<String> = Vec::new();
     let mut packages: Vec<ArscPackageSummary> = Vec::new();
@@ -252,10 +231,9 @@ pub fn parse(bytes: &[u8]) -> Result<ArscResources> {
     let mut off: usize = header_size as usize;
     let mut first_pool: bool = true;
     while off + 8 <= bytes.len() {
-        let mut hr: Reader<'_> = Reader::new(bytes, off);
-        let ctype: u16 = hr.u16()?;
-        let _chsize_hdr: u16 = hr.u16()?;
-        let csize: u32 = hr.u32()?;
+        let mut hr: ByteReader<'_> = ByteReader::new(bytes);
+        hr.seek(off).map_err(arsc_truncated)?;
+        let (ctype, _chunk_header_size, csize): (u16, u16, u32) = read_chunk_header(&mut hr)?;
         if csize < 8 {
             return Err(Error::ArscTruncated);
         }
@@ -289,14 +267,16 @@ fn parse_package(
     chunk_end: usize,
     value_strings: &[String],
 ) -> Result<ArscPackageSummary> {
-    let mut r: Reader<'_> = Reader::new(bytes, chunk_off + 8);
-    let id: u32 = r.u32()?;
-    let name: String = read_package_name(bytes, r.pos)?;
-    r.pos += PACKAGE_NAME_UNITS * 2;
-    let type_strings_off: u32 = r.u32()?;
-    let _last_public_type: u32 = r.u32()?;
-    let key_strings_off: u32 = r.u32()?;
-    let _last_public_key: u32 = r.u32()?;
+    let mut r: ByteReader<'_> = ByteReader::new(bytes);
+    r.seek(chunk_off).map_err(arsc_truncated)?;
+    let (_, header_size, _): (u16, u16, u32) = read_chunk_header(&mut r)?;
+    let id: u32 = r.read_u32_le().map_err(arsc_truncated)?;
+    let name: String = read_package_name(bytes, r.position())?;
+    r.skip(PACKAGE_NAME_UNITS * 2).map_err(arsc_truncated)?;
+    let type_strings_off: u32 = r.read_u32_le().map_err(arsc_truncated)?;
+    let _last_public_type: u32 = r.read_u32_le().map_err(arsc_truncated)?;
+    let key_strings_off: u32 = r.read_u32_le().map_err(arsc_truncated)?;
+    let _last_public_key: u32 = r.read_u32_le().map_err(arsc_truncated)?;
 
     let type_names: Vec<String> =
         parse_declared_package_string_pool(bytes, chunk_off, chunk_end, type_strings_off)?;
@@ -305,16 +285,11 @@ fn parse_package(
     let key_count: usize = key_names.len();
 
     let mut entries: BTreeMap<(u32, String), ArscEntry> = BTreeMap::new();
-    let header_size: u16 = u16::from_le_bytes([
-        *bytes.get(chunk_off + 2).ok_or(Error::ArscTruncated)?,
-        *bytes.get(chunk_off + 3).ok_or(Error::ArscTruncated)?,
-    ]);
     let mut off: usize = chunk_off + header_size as usize;
     while off + 8 <= chunk_end {
-        let mut hr: Reader<'_> = Reader::new(bytes, off);
-        let ctype: u16 = hr.u16()?;
-        let _chsize_hdr: u16 = hr.u16()?;
-        let csize: u32 = hr.u32()?;
+        let mut hr: ByteReader<'_> = ByteReader::new(bytes);
+        hr.seek(off).map_err(arsc_truncated)?;
+        let (ctype, _chsize_hdr, csize): (u16, u16, u32) = read_chunk_header(&mut hr)?;
         if csize < 8 {
             return Err(Error::ArscTruncated);
         }
@@ -367,10 +342,9 @@ fn parse_declared_package_string_pool(
                 .is_some_and(|end: usize| end <= package_end)
         })
         .ok_or(Error::ArscTruncated)?;
-    let mut r: Reader<'_> = Reader::new(bytes, pool_off);
-    let _chunk_type: u16 = r.u16()?;
-    let _header_size: u16 = r.u16()?;
-    let chunk_size: u32 = r.u32()?;
+    let mut r: ByteReader<'_> = ByteReader::new(bytes);
+    r.seek(pool_off).map_err(arsc_truncated)?;
+    let (_, _, chunk_size): (u16, u16, u32) = read_chunk_header(&mut r)?;
     pool_off
         .checked_add(chunk_size as usize)
         .filter(|end: &usize| *end <= package_end)
@@ -389,15 +363,14 @@ fn parse_type_chunk(
     value_strings: &[String],
     out: &mut BTreeMap<(u32, String), ArscEntry>,
 ) -> Result<()> {
-    let mut r: Reader<'_> = Reader::new(bytes, chunk_off);
-    let _ctype: u16 = r.u16()?;
-    let header_size: u16 = r.u16()?;
-    let _csize: u32 = r.u32()?;
-    let type_id: u8 = r.u8()?;
-    let _res0: u8 = r.u8()?;
-    let _res1: u16 = r.u16()?;
-    let entry_count: u32 = r.u32()?;
-    let entries_start: u32 = r.u32()?;
+    let mut r: ByteReader<'_> = ByteReader::new(bytes);
+    r.seek(chunk_off).map_err(arsc_truncated)?;
+    let (_, header_size, _): (u16, u16, u32) = read_chunk_header(&mut r)?;
+    let type_id: u8 = r.read_u8().map_err(arsc_truncated)?;
+    let _res0: u8 = r.read_u8().map_err(arsc_truncated)?;
+    let _res1: u16 = r.read_u16_le().map_err(arsc_truncated)?;
+    let entry_count: u32 = r.read_u32_le().map_err(arsc_truncated)?;
+    let entries_start: u32 = r.read_u32_le().map_err(arsc_truncated)?;
     if entry_count > MAX_TYPE_ENTRIES {
         return Err(Error::ArscTruncated);
     }
@@ -405,7 +378,7 @@ fn parse_type_chunk(
         return Ok(());
     }
 
-    let config: String = read_config_qualifier(bytes, r.pos, chunk_end);
+    let config: String = read_config_qualifier(bytes, r.position(), chunk_end);
 
     let type_name: String = type_names
         .get((type_id - 1) as usize)
@@ -427,9 +400,10 @@ fn parse_type_chunk(
     let body_capacity: usize = (chunk_end - data_base) / 8;
     let mut emitted: usize = 0;
 
-    let mut index_reader: Reader<'_> = Reader::new(bytes, index_base);
+    let mut index_reader: ByteReader<'_> = ByteReader::new(bytes);
+    index_reader.seek(index_base).map_err(arsc_truncated)?;
     for entry_index in 0..entry_count {
-        let entry_off: u32 = index_reader.u32()?;
+        let entry_off: u32 = index_reader.read_u32_le().map_err(arsc_truncated)?;
         if entry_off == NO_ENTRY {
             continue;
         }
@@ -437,10 +411,11 @@ fn parse_type_chunk(
             .checked_add(entry_off as usize)
             .filter(|p: &usize| *p + 8 <= chunk_end)
             .ok_or(Error::ArscTruncated)?;
-        let mut er: Reader<'_> = Reader::new(bytes, entry_pos);
-        let _entry_size: u16 = er.u16()?;
-        let entry_flags: u16 = er.u16()?;
-        let key_idx: u32 = er.u32()?;
+        let mut er: ByteReader<'_> = ByteReader::new(bytes);
+        er.seek(entry_pos).map_err(arsc_truncated)?;
+        let _entry_size: u16 = er.read_u16_le().map_err(arsc_truncated)?;
+        let entry_flags: u16 = er.read_u16_le().map_err(arsc_truncated)?;
+        let key_idx: u32 = er.read_u32_le().map_err(arsc_truncated)?;
         let is_complex: bool = entry_flags & ENTRY_FLAG_COMPLEX != 0;
 
         let key_name: String = key_names
@@ -451,7 +426,7 @@ fn parse_type_chunk(
         let (value, value_type, raw_data): (Option<String>, u8, u32) = if is_complex {
             (None, TYPE_NULL, 0)
         } else {
-            read_res_value(bytes, er.pos, chunk_end, value_strings)
+            read_res_value(bytes, er.position(), chunk_end, value_strings)
                 .map(|(s, t, d): (String, u8, u32)| (Some(s), t, d))
                 .unwrap_or((None, TYPE_NULL, 0))
         };
@@ -530,11 +505,12 @@ fn read_res_value(
     if pos + 8 > end {
         return Err(Error::ArscTruncated);
     }
-    let mut r: Reader<'_> = Reader::new(bytes, pos);
-    let _size: u16 = r.u16()?;
-    let _res0: u8 = r.u8()?;
-    let data_type: u8 = r.u8()?;
-    let data: u32 = r.u32()?;
+    let mut r: ByteReader<'_> = ByteReader::new(bytes);
+    r.seek(pos).map_err(arsc_truncated)?;
+    let _size: u16 = r.read_u16_le().map_err(arsc_truncated)?;
+    let _res0: u8 = r.read_u8().map_err(arsc_truncated)?;
+    let data_type: u8 = r.read_u8().map_err(arsc_truncated)?;
+    let data: u32 = r.read_u32_le().map_err(arsc_truncated)?;
     Ok((
         format_arsc_value(data_type, data, value_strings),
         data_type,
@@ -606,12 +582,27 @@ fn read_package_name(bytes: &[u8], pos: usize) -> Result<String> {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
+    use disrobe_bytes::ByteReader;
+
     use super::*;
 
     #[test]
     fn rejects_non_arsc() {
         let err: Error = parse(b"not a resource table").expect_err("must reject");
         assert!(matches!(err, Error::ArscBadMagic | Error::ArscTruncated));
+    }
+
+    #[test]
+    fn chunk_header_reads_little_endian_and_preserves_position_on_error() {
+        let bytes: [u8; 8] = [0x01, 0x00, 0x08, 0x00, 0x78, 0x56, 0x34, 0x12];
+        let mut reader: ByteReader<'_> = ByteReader::new(&bytes);
+        let header: (u16, u16, u32) = read_chunk_header(&mut reader).expect("header reads");
+        assert_eq!(header, (0x0001, 0x0008, 0x1234_5678));
+
+        let mut truncated_reader: ByteReader<'_> = ByteReader::new(&bytes[..7]);
+        let error: Error = read_chunk_header(&mut truncated_reader).expect_err("header truncates");
+        assert!(matches!(error, Error::ArscTruncated));
+        assert_eq!(truncated_reader.position(), 4);
     }
 
     #[test]
