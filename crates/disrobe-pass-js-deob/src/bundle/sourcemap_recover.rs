@@ -831,36 +831,9 @@ pub fn decode_data_url_json(url: &str) -> Result<String> {
             .map_err(|e: base64::DecodeError| Error::OxcParse(e.to_string()))?;
         String::from_utf8(bytes).map_err(|_| Error::Utf8)
     } else {
-        Ok(percent_decode(payload))
-    }
-}
-
-fn percent_decode(s: &str) -> String {
-    let bytes: &[u8] = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i: usize = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hi: Option<u8> = hex_val(bytes[i + 1]);
-            let lo: Option<u8> = hex_val(bytes[i + 2]);
-            if let (Some(h), Some(l)) = (hi, lo) {
-                out.push((h << 4) | l);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-const fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
+        let decoded: Vec<u8> =
+            disrobe_core::codec::web_escape::percent_decode_lenient(payload.as_bytes(), false);
+        Ok(String::from_utf8_lossy(&decoded).into_owned())
     }
 }
 
