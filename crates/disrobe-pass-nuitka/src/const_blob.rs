@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use disrobe_bytes::read_uleb128_at;
 use serde::{Deserialize, Serialize};
 
 use disrobe_core::debug::DebugLog;
@@ -175,19 +176,9 @@ impl<'a> Reader<'a> {
     }
 
     fn varint(&mut self) -> Option<u64> {
-        let mut value: u64 = 0;
-        let mut shift: u32 = 0;
-        loop {
-            if shift >= 64 {
-                return None;
-            }
-            let byte: u8 = self.u8()?;
-            value |= u64::from(byte & 0x7F) << shift;
-            if byte & 0x80 == 0 {
-                return Some(value);
-            }
-            shift += 7;
-        }
+        let (value, consumed): (u64, usize) = read_uleb128_at(self.buf, self.pos).ok()?;
+        self.pos = self.pos.checked_add(consumed)?;
+        Some(value)
     }
 
     fn i32(&mut self) -> Option<i32> {
@@ -1142,6 +1133,14 @@ mod tests {
         let encoded: Vec<u8> = varint_bytes(300);
         let mut reader: Reader<'_> = Reader::new(&encoded, 0, ChunkValueLayout::ModernVarint);
         assert_eq!(reader.varint(), Some(300));
+    }
+
+    #[test]
+    fn varint_rejects_overflowing_tenth_byte_without_advancing() {
+        let encoded: [u8; 10] = [0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02];
+        let mut reader: Reader<'_> = Reader::new(&encoded, 0, ChunkValueLayout::ModernVarint);
+        assert_eq!(reader.varint(), None);
+        assert_eq!(reader.pos, 0);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use disrobe_bytes::read_uleb128_at;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -420,21 +421,9 @@ fn checked_span(start: usize, len: u64) -> Option<usize> {
 
 #[inline]
 fn read_varint(bytes: &[u8], start: usize) -> Option<(u64, usize)> {
-    let mut value: u64 = 0u64;
-    let mut shift: u32 = 0u32;
-    let mut cursor: usize = start;
-    loop {
-        let &byte: &u8 = bytes.get(cursor)?;
-        cursor += 1;
-        if shift >= 64 {
-            return None;
-        }
-        value |= u64::from(byte & 0x7F) << shift;
-        if byte & 0x80 == 0 {
-            return Some((value, cursor));
-        }
-        shift += 7;
-    }
+    let (value, consumed): (u64, usize) = read_uleb128_at(bytes, start).ok()?;
+    let end: usize = start.checked_add(consumed)?;
+    Some((value, end))
 }
 
 #[inline]
@@ -561,6 +550,18 @@ mod tests {
         let (value, end): (u64, usize) = read_varint(&encoded, 0).expect("varint");
         assert_eq!(value, 300);
         assert_eq!(end, encoded.len());
+    }
+
+    #[test]
+    fn varint_nonzero_offset_returns_absolute_end() {
+        let encoded: [u8; 4] = [0x00, 0x00, 0xAC, 0x02];
+        assert_eq!(read_varint(&encoded, 2), Some((300, 4)));
+    }
+
+    #[test]
+    fn varint_rejects_overflowing_tenth_byte() {
+        let encoded: [u8; 10] = [0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02];
+        assert!(read_varint(&encoded, 0).is_none());
     }
 
     #[test]
