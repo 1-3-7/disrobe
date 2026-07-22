@@ -203,13 +203,18 @@ fn decode_b64_payload(region: &[u8], family: &'static str) -> Result<Vec<u8>> {
             reason: "base64 payload region too short",
         });
     }
-    B64_STD
-        .decode(&compact)
-        .map_err(|e: base64::DecodeError| Error::ContainerLayerDecode {
+    disrobe_core::codec::base64_decode(
+        &compact,
+        disrobe_core::codec::Base64Alphabet::Standard,
+        disrobe_core::codec::Base64Padding::Required,
+    )
+    .map_err(
+        |e: disrobe_core::codec::DecodeError| Error::ContainerLayerDecode {
             family,
             layer: StaticLayer::Base64.label(),
             reason: e.to_string(),
-        })
+        },
+    )
 }
 
 fn body_after_marker_line(
