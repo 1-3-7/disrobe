@@ -4,7 +4,7 @@ use disrobe_vulnmatch::{
     AbstractArgument, ArgPredicate, Budget, CallGraphEdge, CallGraphView, CallSiteId, DirectCall,
     EdgeKind, EdgeSoundness, FindingTier, FunctionId, MAX_RESOLVED_INDIRECT_CALLEES_PER_SITE,
     ReachabilityEngine, ReachabilityEvidence, ReachabilityState, ResolvedCallee, RuleStore,
-    Severity, TaintOracle, TaintStatus, TaintWitness, analyze,
+    Severity, TaintOracle, TaintStatus, TaintWitness, TaintWitnessStep, analyze,
 };
 
 #[derive(Debug, Clone)]
@@ -828,8 +828,12 @@ fn present_taint_witness_confirms_a_reachable_source_required_finding() {
     let graph: MockCallGraph = sample_graph();
     let rules: RuleStore = RuleStore::embedded();
     let witness: Result<TaintWitness, disrobe_vulnmatch::TaintWitnessError> =
-        TaintWitness::new("argument-0-from-request");
-    assert!(witness.is_ok(), "nonempty taint witness must be valid");
+        TaintWitness::from_steps(vec![TaintWitnessStep::new(
+            0x100,
+            "argument-0-from-request",
+            "source",
+        )]);
+    assert!(witness.is_ok(), "nonempty taint witness path must be valid");
     let Ok(witness) = witness else {
         return;
     };
@@ -861,14 +865,15 @@ fn present_taint_witness_confirms_a_reachable_source_required_finding() {
 
 #[test]
 fn empty_taint_witness_is_rejected() {
-    let witness: Result<TaintWitness, disrobe_vulnmatch::TaintWitnessError> = TaintWitness::new("");
+    let witness: Result<TaintWitness, disrobe_vulnmatch::TaintWitnessError> =
+        TaintWitness::from_steps(Vec::new());
 
     assert!(witness.is_err());
 }
 
 #[test]
 fn whitespace_taint_witness_deserialization_is_rejected() {
-    let witness: Result<TaintWitness, serde_json::Error> = serde_json::from_str("\"   \"");
+    let witness: Result<TaintWitness, serde_json::Error> = serde_json::from_str("[]");
 
     assert!(witness.is_err());
 }

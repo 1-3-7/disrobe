@@ -14,11 +14,12 @@ pub mod rank;
 mod reach;
 mod report;
 mod rules;
+mod taint_report;
 
 pub use adapters::{
     AbstractArgument, CallGraphEdge, CallGraphView, CallSiteId, DirectCall, EdgeKind, FunctionId,
     MAX_RESOLVED_INDIRECT_CALLEES_PER_SITE, ResolvedCallee, TaintOracle, TaintStatus, TaintWitness,
-    TaintWitnessError,
+    TaintWitnessError, TaintWitnessStep,
 };
 pub use matcher::{CandidateSink, MatchOutput, SinkMatcher};
 pub use query_call_graph::QueryCallGraphView;
@@ -29,6 +30,9 @@ pub use reach::{
 pub use report::{Finding, FindingId, Report, Reporter};
 pub use rules::{
     ArgPredicate, Rule, RuleStore, RuleStoreError, Severity, SinkSignature, SourceClass,
+};
+pub use taint_report::{
+    TaintReportOracle, analyze_with_taint, source_symbols, taint_config_for_rules,
 };
 
 pub fn analyze<C: CallGraphView, T: TaintOracle>(
