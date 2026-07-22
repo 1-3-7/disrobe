@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use disrobe_core::codec::{Base64Alphabet, Base64Padding, base64_decode};
+
 struct ArithParser<'a> {
     bytes: &'a [u8],
     pos: usize,
@@ -737,36 +739,12 @@ fn std_base64_value(c: u8) -> Option<u8> {
 
 #[must_use]
 pub fn decode_base64_standard(input: &str) -> Option<Vec<u8>> {
-    let mut out: Vec<u8> = Vec::with_capacity(input.len() * 3 / 4 + 3);
-    let mut acc: u32 = 0;
-    let mut count: u32 = 0;
-    let mut pad: u32 = 0;
-    for ch in input.bytes() {
-        if ch == b'=' {
-            acc = acc.checked_shl(6)?;
-            pad += 1;
-        } else {
-            let v: u8 = std_base64_value(ch)?;
-            acc = (acc << 6) | u32::from(v);
-        }
-        count += 1;
-        if count == 4 {
-            out.push(((acc >> 16) & 0xFF) as u8);
-            if pad < 2 {
-                out.push(((acc >> 8) & 0xFF) as u8);
-            }
-            if pad < 1 {
-                out.push((acc & 0xFF) as u8);
-            }
-            acc = 0;
-            count = 0;
-            pad = 0;
-        }
-    }
-    if count != 0 && count != 4 {
-        return None;
-    }
-    Some(out)
+    base64_decode(
+        input.as_bytes(),
+        Base64Alphabet::Standard,
+        Base64Padding::Required,
+    )
+    .ok()
 }
 
 #[must_use]
