@@ -16,7 +16,6 @@
     clippy::redundant_else
 )]
 
-pub mod aarch64;
 pub mod api_hash;
 pub mod arch;
 pub mod authenticode;
