@@ -8,6 +8,11 @@ use crate::debug::{dbg_enabled, dbg_kv, dbg_line};
 use crate::envelope::{PyeCodePayload, PyeEnvelope};
 use crate::error::{Error, Result};
 
+const MAX_MARSHAL_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
+const MAX_NESTED_CODE_DEPTH: usize = 32;
+const MAX_CODE_OBJECT_SUMMARIES: usize = 4096;
+const MAX_MARSHAL_TRAVERSAL_OBJECTS: usize = 131_072;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceRecoverOpts {
     pub marshal_version: PyVersion,
@@ -80,6 +85,7 @@ pub fn parse_array_envelope(bytes: &[u8]) -> Result<ParsedPyeArrayEnvelope> {
     let mut cursor: std::io::Cursor<&[u8]> = std::io::Cursor::new(bytes);
     let value: rmpv::Value = rmpv::decode::read_value(&mut cursor)
         .map_err(|e: rmpv::decode::Error| Error::Msgpack(format!("array decode failed: {e}")))?;
+    ensure_msgpack_consumed(cursor.position(), bytes.len())?;
     let rmpv::Value::Array(items) = value else {
         return Err(Error::Msgpack("expected msgpack array envelope".to_owned()));
     };
@@ -111,6 +117,17 @@ pub fn parse_array_envelope(bytes: &[u8]) -> Result<ParsedPyeArrayEnvelope> {
     })
 }
 
+fn ensure_msgpack_consumed(position: u64, input_len: usize) -> Result<()> {
+    let expected: u64 = u64::try_from(input_len)
+        .map_err(|_| Error::Msgpack("input length exceeds u64".to_owned()))?;
+    if position != expected {
+        return Err(Error::Msgpack(
+            "trailing bytes after msgpack value".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 pub fn decrypt_pye_to_source(
     bytes: &[u8],
     filename: &str,
@@ -132,6 +149,7 @@ pub fn recover_from_plaintext(
     if let Some(envelope) = map_envelope
         && let PyeCodePayload::Source(s) = &envelope.original_code
     {
+        ensure_marshal_payload_limit(s.len(), "inline source")?;
         dbg_kv("inline-source", || {
             format!("free-version source string, {} bytes", s.len())
         });
@@ -161,7 +179,10 @@ fn extract_marshal_from_envelope(
 ) -> Result<(Vec<u8>, Option<String>, Option<i64>)> {
     if let Some(envelope) = map_envelope {
         return match &envelope.original_code {
-            PyeCodePayload::MarshalledBytes(b) => Ok((b.clone(), None, envelope.eol)),
+            PyeCodePayload::MarshalledBytes(b) => {
+                ensure_marshal_payload_limit(b.len(), "map marshal payload")?;
+                Ok((b.clone(), None, envelope.eol))
+            }
             PyeCodePayload::Source(_) => Err(Error::Msgpack(
                 "inline source payload is not a marshal stream; recover it as source directly"
                     .to_owned(),
@@ -182,6 +203,7 @@ fn finalize_from_marshal(
     mtime: Option<i64>,
     opts: SourceRecoverOpts,
 ) -> Result<SourceRecoverOutput> {
+    ensure_marshal_payload_limit(marshal_payload.len(), "marshal payload")?;
     let marshal_size: usize = marshal_payload.len();
     dbg_kv("marshal-load", || {
         format!("{marshal_size} bytes, version {:?}", opts.marshal_version)
@@ -189,11 +211,20 @@ fn finalize_from_marshal(
     let root_obj: Object = marshal_load(marshal_payload, opts.marshal_version)
         .map_err(|e: disrobe_py_marshal::Error| Error::Msgpack(format!("marshal: {e}")))?;
     let mut summaries: Vec<CodeObjectSummary> = Vec::new();
-    let mut top_code: Option<CodeObject> = None;
+    let mut top_code: Option<&CodeObject> = None;
     if opts.recurse_nested {
-        collect_code_objects(&root_obj, &mut Vec::new(), &mut summaries, &mut top_code, 0);
+        let mut path: Vec<usize> = Vec::new();
+        let mut traversal: MarshalTraversal = MarshalTraversal::default();
+        collect_code_objects_with_budget(
+            &root_obj,
+            &mut path,
+            &mut summaries,
+            &mut top_code,
+            0,
+            &mut traversal,
+        )?;
     } else if let Object::Code(co) = &root_obj {
-        top_code = Some((**co).clone());
+        top_code = Some(co.as_ref());
         summaries.push(summarize_code(co.as_ref(), &[]));
     }
     dbg_kv("code-objects-recovered", || summaries.len().to_string());
@@ -212,9 +243,8 @@ fn finalize_from_marshal(
         }
     }
 
-    let recovered_source: Option<String> = top_code
-        .as_ref()
-        .and_then(|co: &CodeObject| decompile_code_object(co, opts.marshal_version));
+    let recovered_source: Option<String> =
+        top_code.and_then(|co: &CodeObject| decompile_code_object(co, opts.marshal_version));
     dbg_kv("source-decompiled", || {
         recovered_source.as_ref().map_or_else(
             || "none".to_owned(),
@@ -222,7 +252,6 @@ fn finalize_from_marshal(
         )
     });
     let disasm: String = top_code
-        .as_ref()
         .map(|co: &CodeObject| render_dis(&disassemble(co, opts.marshal_version)))
         .unwrap_or_default();
 
@@ -236,33 +265,92 @@ fn finalize_from_marshal(
     })
 }
 
+const fn ensure_marshal_payload_limit(input_len: usize, surface: &'static str) -> Result<()> {
+    if input_len > MAX_MARSHAL_PAYLOAD_BYTES {
+        return Err(Error::InputLimit {
+            surface,
+            observed: input_len,
+            limit: MAX_MARSHAL_PAYLOAD_BYTES,
+        });
+    }
+    Ok(())
+}
+
 fn decompile_code_object(code: &CodeObject, marshal_version: PyVersion) -> Option<String> {
     let decompile_version: DecompileVersion = marshal_to_decompile(marshal_version).ok()?;
     build_real_source(code, &decompile_version, marshal_version).ok()
 }
 
-const MAX_NESTED_CODE_DEPTH: usize = 32;
+#[derive(Debug, Default)]
+struct MarshalTraversal {
+    visited: usize,
+}
 
-fn collect_code_objects(
-    obj: &Object,
+impl MarshalTraversal {
+    fn visit(&mut self) -> Result<()> {
+        self.visited = self.visited.checked_add(1).ok_or(Error::InputLimit {
+            surface: "marshal object traversal",
+            observed: usize::MAX,
+            limit: MAX_MARSHAL_TRAVERSAL_OBJECTS,
+        })?;
+        if self.visited > MAX_MARSHAL_TRAVERSAL_OBJECTS {
+            return Err(Error::InputLimit {
+                surface: "marshal object traversal",
+                observed: self.visited,
+                limit: MAX_MARSHAL_TRAVERSAL_OBJECTS,
+            });
+        }
+        Ok(())
+    }
+}
+
+fn collect_code_objects<'a>(
+    obj: &'a Object,
     path: &mut Vec<usize>,
     summaries: &mut Vec<CodeObjectSummary>,
-    top: &mut Option<CodeObject>,
+    top: &mut Option<&'a CodeObject>,
     depth: usize,
-) {
+) -> Result<()> {
     if depth > MAX_NESTED_CODE_DEPTH {
-        return;
+        return Err(Error::NestingLimit {
+            surface: "marshal code objects",
+            limit: MAX_NESTED_CODE_DEPTH,
+        });
     }
+    let mut traversal: MarshalTraversal = MarshalTraversal::default();
+    collect_code_objects_with_budget(obj, path, summaries, top, depth, &mut traversal)
+}
+
+fn collect_code_objects_with_budget<'a>(
+    obj: &'a Object,
+    path: &mut Vec<usize>,
+    summaries: &mut Vec<CodeObjectSummary>,
+    top: &mut Option<&'a CodeObject>,
+    depth: usize,
+    traversal: &mut MarshalTraversal,
+) -> Result<()> {
+    if depth > MAX_NESTED_CODE_DEPTH {
+        return Err(Error::NestingLimit {
+            surface: "marshal code objects",
+            limit: MAX_NESTED_CODE_DEPTH,
+        });
+    }
+    traversal.visit()?;
     match obj {
         Object::Code(co) => {
             if top.is_none() {
-                *top = Some((**co).clone());
+                *top = Some(co.as_ref());
+            }
+            if summaries.len() >= MAX_CODE_OBJECT_SUMMARIES {
+                return Err(Error::InputLimit {
+                    surface: "marshal code summaries",
+                    observed: summaries.len().saturating_add(1),
+                    limit: MAX_CODE_OBJECT_SUMMARIES,
+                });
             }
             summaries.push(summarize_code(co.as_ref(), path));
             for (idx, c) in co.consts.iter().enumerate() {
-                path.push(idx);
-                collect_code_objects(c, path, summaries, top, depth + 1);
-                path.pop();
+                collect_code_object_child(c, idx, path, summaries, top, depth, traversal)?;
             }
         }
         Object::Tuple(items)
@@ -270,20 +358,57 @@ fn collect_code_objects(
         | Object::Set(items)
         | Object::FrozenSet(items) => {
             for (idx, c) in items.iter().enumerate() {
-                path.push(idx);
-                collect_code_objects(c, path, summaries, top, depth + 1);
-                path.pop();
+                collect_code_object_child(c, idx, path, summaries, top, depth, traversal)?;
             }
         }
         Object::Dict(d) | Object::FrozenDict(d) => {
-            for (idx, (_, v)) in d.iter().enumerate() {
-                path.push(idx);
-                collect_code_objects(v, path, summaries, top, depth + 1);
-                path.pop();
+            for (idx, (key, value)) in d.iter().enumerate() {
+                let key_index: usize = idx
+                    .checked_mul(2)
+                    .ok_or_else(|| Error::Msgpack("marshal dictionary path overflow".to_owned()))?;
+                let value_index: usize = key_index
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Msgpack("marshal dictionary path overflow".to_owned()))?;
+                collect_code_object_child(key, key_index, path, summaries, top, depth, traversal)?;
+                collect_code_object_child(
+                    value,
+                    value_index,
+                    path,
+                    summaries,
+                    top,
+                    depth,
+                    traversal,
+                )?;
             }
+        }
+        Object::Slice { lower, upper, step } => {
+            collect_code_object_child(lower, 0, path, summaries, top, depth, traversal)?;
+            collect_code_object_child(upper, 1, path, summaries, top, depth, traversal)?;
+            collect_code_object_child(step, 2, path, summaries, top, depth, traversal)?;
         }
         _ => {}
     }
+    Ok(())
+}
+
+fn collect_code_object_child<'a>(
+    child: &'a Object,
+    index: usize,
+    path: &mut Vec<usize>,
+    summaries: &mut Vec<CodeObjectSummary>,
+    top: &mut Option<&'a CodeObject>,
+    depth: usize,
+    traversal: &mut MarshalTraversal,
+) -> Result<()> {
+    let next_depth: usize = depth.checked_add(1).ok_or(Error::NestingLimit {
+        surface: "marshal code objects",
+        limit: MAX_NESTED_CODE_DEPTH,
+    })?;
+    path.push(index);
+    let outcome: Result<()> =
+        collect_code_objects_with_budget(child, path, summaries, top, next_depth, traversal);
+    let _: Option<usize> = path.pop();
+    outcome
 }
 
 fn summarize_code(co: &CodeObject, path: &[usize]) -> CodeObjectSummary {
@@ -308,17 +433,17 @@ fn object_to_string(obj: &Object) -> String {
     match obj {
         Object::String { value, .. } | Object::ShortAscii { value, .. } => value.clone(),
         Object::None => String::new(),
-        other => format!("{other:?}"),
+        _ => "<non-string-code-field>".to_owned(),
     }
 }
 
 #[allow(dead_code)]
 fn _disasm_first_code_object(root: &Object, py_version: PyVersion) -> Option<Vec<Instruction>> {
-    let mut top: Option<CodeObject> = None;
+    let mut top: Option<&CodeObject> = None;
     let mut path: Vec<usize> = Vec::new();
     let mut summaries: Vec<CodeObjectSummary> = Vec::new();
-    collect_code_objects(root, &mut path, &mut summaries, &mut top, 0);
-    top.map(|co: CodeObject| disassemble(&co, py_version))
+    collect_code_objects(root, &mut path, &mut summaries, &mut top, 0).ok()?;
+    top.map(|co: &CodeObject| disassemble(co, py_version))
 }
 
 #[cfg(test)]
@@ -414,6 +539,26 @@ mod tests {
         assert!(names.iter().any(|n: &String| n == "root_with_helpers"));
         assert!(names.iter().any(|n: &String| n == "helper_a"));
         assert!(names.iter().any(|n: &String| n == "helper_b"));
+    }
+
+    #[test]
+    fn recover_from_marshal_bytes_walks_code_objects_in_slices() {
+        let nested: CodeObject = build_synthetic_code("slice_nested", Vec::new());
+        let root: Object = Object::Slice {
+            lower: Box::new(Object::Code(Box::new(nested))),
+            upper: Box::new(Object::None),
+            step: Box::new(Object::None),
+        };
+        let marshal_bytes: Vec<u8> = marshal_dump(&root, PyVersion::PY311).expect("dump");
+        let output: SourceRecoverOutput =
+            recover_from_marshal_bytes(&marshal_bytes, None, None, SourceRecoverOpts::default())
+                .expect("recover slice");
+        assert!(
+            output
+                .code_object_summary
+                .iter()
+                .any(|summary: &CodeObjectSummary| summary.name == "slice_nested")
+        );
     }
 
     #[test]

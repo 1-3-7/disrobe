@@ -4,7 +4,7 @@ use ctr::cipher::{KeyIvInit, StreamCipher};
 
 use crate::codec::{basename_of, decode_armored_line, hex_encode, strip_extension};
 use crate::error::{Error, Result};
-use crate::kdf::{AES_IV_LEN, AES_KEY_LEN, DerivedKey, derive_aes_key};
+use crate::kdf::{AES_IV_LEN, AES_KEY_LEN, DerivedKey, derive_aes_key, validate_filename};
 
 pub const PYE_BEGIN_MARKER: &str = "BEGIN SOURCEDEFENDER FILE";
 pub const PYE_END_MARKER: &str = "END SOURCEDEFENDER FILE";
@@ -12,6 +12,7 @@ pub(crate) const PYE_ALT_BEGIN_MARKER: &str = "BEGIN PYE FILE";
 pub(crate) const PYE_ALT_END_MARKER: &str = "END PYE FILE";
 const MAX_PYE_FRAME_LINES: usize = 32_768;
 const MAX_PYE_ARMORED_CIPHERTEXT_CHARS: usize = 96 * 1024 * 1024;
+const MAX_PYE_FRAME_TEXT_BYTES: usize = MAX_PYE_ARMORED_CIPHERTEXT_CHARS + 64 * 1024;
 const MAX_MSGPACK_ENVELOPE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_MSGPACK_CONTAINER_ITEMS: usize = 4096;
 const MAX_MSGPACK_STRING_BYTES: usize = 32 * 1024 * 1024;
@@ -52,6 +53,7 @@ pub fn decrypt_pye(input: &[u8], filename: &str) -> Result<DecryptedPye> {
     if filename.is_empty() {
         return Err(Error::EmptyFilename);
     }
+    validate_filename(filename)?;
     let basename: &str = strip_extension(basename_of(filename));
     let key: DerivedKey = derive_aes_key(basename)?;
     let text: &str = core::str::from_utf8(input).map_err(|_| Error::NotUtf8)?;
@@ -68,6 +70,7 @@ pub fn decrypt_pye_with_key(
     if filename.is_empty() {
         return Err(Error::EmptyFilename);
     }
+    validate_filename(filename)?;
     let text: &str = core::str::from_utf8(input).map_err(|_| Error::NotUtf8)?;
     let frame: PyeFrame = parse_pye_frame(text)?;
     Ok(decrypt_frame(&frame, key, filename))
@@ -101,6 +104,13 @@ fn line_has_marker(line: &str, primary: &str, alternate: &str) -> bool {
 
 #[inline]
 pub fn parse_pye_frame(text: &str) -> Result<PyeFrame> {
+    if text.len() > MAX_PYE_FRAME_TEXT_BYTES {
+        return Err(Error::InputLimit {
+            surface: "pye frame text",
+            observed: text.len(),
+            limit: MAX_PYE_FRAME_TEXT_BYTES,
+        });
+    }
     let mut lines = text.lines().map(str::trim).filter(|l: &&str| !l.is_empty());
     let Some(first): Option<&str> = lines.next() else {
         return Err(Error::NotPye);
@@ -179,6 +189,7 @@ pub fn parse_msgpack_envelope(bytes: &[u8]) -> Result<PyeEnvelope> {
     let mut cursor: std::io::Cursor<&[u8]> = std::io::Cursor::new(bytes);
     let value: rmpv::Value = rmpv::decode::read_value(&mut cursor)
         .map_err(|e| Error::Msgpack(format!("decode failed: {e}")))?;
+    ensure_msgpack_consumed(cursor.position(), bytes.len())?;
     let rmpv::Value::Map(map) = value else {
         return Err(Error::Msgpack("root is not a map".to_owned()));
     };
@@ -204,7 +215,9 @@ pub fn parse_msgpack_envelope(bytes: &[u8]) -> Result<PyeEnvelope> {
             },
             Some(name @ ("deadline" | "eol")) => {
                 if let rmpv::Value::Integer(i) = v {
-                    let v_i64: i64 = i.as_i64().unwrap_or(0);
+                    let Some(v_i64): Option<i64> = i.as_i64() else {
+                        return Err(Error::Msgpack(format!("{name} does not fit i64")));
+                    };
                     if name == "deadline" {
                         deadline = Some(v_i64);
                     } else {
@@ -243,7 +256,24 @@ pub(crate) fn validate_msgpack_bounds(bytes: &[u8]) -> Result<()> {
         )));
     }
     let mut cursor: MsgpackBoundsCursor<'_> = MsgpackBoundsCursor { bytes, pos: 0 };
-    cursor.value(0)
+    cursor.value(0)?;
+    if cursor.pos != bytes.len() {
+        return Err(Error::Msgpack(
+            "trailing bytes after msgpack value".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_msgpack_consumed(position: u64, input_len: usize) -> Result<()> {
+    let expected: u64 = u64::try_from(input_len)
+        .map_err(|_| Error::Msgpack("input length exceeds u64".to_owned()))?;
+    if position != expected {
+        return Err(Error::Msgpack(
+            "trailing bytes after msgpack value".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -336,17 +366,23 @@ impl MsgpackBoundsCursor<'_> {
 
     fn array(&mut self, count: usize, depth: usize) -> Result<()> {
         Self::check_container_count(count)?;
+        let next_depth: usize = depth
+            .checked_add(1)
+            .ok_or_else(|| Error::Msgpack("msgpack nesting depth overflow".to_owned()))?;
         for _ in 0..count {
-            self.value(depth + 1)?;
+            self.value(next_depth)?;
         }
         Ok(())
     }
 
     fn map(&mut self, count: usize, depth: usize) -> Result<()> {
         Self::check_container_count(count)?;
+        let next_depth: usize = depth
+            .checked_add(1)
+            .ok_or_else(|| Error::Msgpack("msgpack nesting depth overflow".to_owned()))?;
         for _ in 0..count {
-            self.value(depth + 1)?;
-            self.value(depth + 1)?;
+            self.value(next_depth)?;
+            self.value(next_depth)?;
         }
         Ok(())
     }
@@ -406,18 +442,27 @@ impl MsgpackBoundsCursor<'_> {
         let Some(value): Option<&u8> = self.bytes.get(self.pos) else {
             return Err(Error::Msgpack("truncated msgpack envelope".to_owned()));
         };
-        self.pos += 1;
+        self.pos = self
+            .pos
+            .checked_add(1)
+            .ok_or_else(|| Error::Msgpack("msgpack position overflow".to_owned()))?;
         Ok(*value)
     }
 
     fn take_u16(&mut self) -> Result<u16> {
-        let raw: &[u8] = self.take_exact(2)?;
-        Ok(u16::from_be_bytes([raw[0], raw[1]]))
+        let raw: [u8; 2] = self
+            .take_exact(2)?
+            .try_into()
+            .map_err(|_| Error::Msgpack("invalid msgpack u16 length".to_owned()))?;
+        Ok(u16::from_be_bytes(raw))
     }
 
     fn take_u32_as_usize(&mut self) -> Result<usize> {
-        let raw: &[u8] = self.take_exact(4)?;
-        let value: u32 = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]);
+        let raw: [u8; 4] = self
+            .take_exact(4)?
+            .try_into()
+            .map_err(|_| Error::Msgpack("invalid msgpack u32 length".to_owned()))?;
+        let value: u32 = u32::from_be_bytes(raw);
         usize::try_from(value).map_err(|_| Error::Msgpack("u32 length exceeds usize".to_owned()))
     }
 

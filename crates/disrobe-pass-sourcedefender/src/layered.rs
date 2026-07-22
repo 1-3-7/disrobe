@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::codec::{basename_of, hex_decode, strip_extension};
+use crate::codec::{MAX_HEX_INPUT_BYTES, basename_of, hex_decode, strip_extension};
 use crate::debug::{dbg_hex, dbg_kv, dbg_line};
 use crate::envelope::{
     DecryptedPye, PYE_BEGIN_MARKER, PYE_END_MARKER, PyeCodePayload, decrypt_pye,
@@ -15,6 +15,8 @@ pub const LEGACY_BEGIN_MARKER: &str = PYE_BEGIN_MARKER;
 pub const LEGACY_END_MARKER: &str = PYE_END_MARKER;
 pub const MODERN_BEGIN_MARKER: &str = "BEGIN PYE FILE";
 pub const MODERN_END_MARKER: &str = "END PYE FILE";
+const MAX_CONTAINER_INPUT_BYTES: usize = MAX_HEX_INPUT_BYTES + 64 * 1024;
+const MAX_MODERN_BODY_LINES: usize = 32_768;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -137,6 +139,7 @@ pub fn classify_container(input: &[u8]) -> Option<ContainerVariant> {
 }
 
 pub fn recover_layered(input: &[u8], filename: &str) -> Result<LayeredRecovery> {
+    ensure_container_input_limit(input.len())?;
     match classify_container(input) {
         Some(ContainerVariant::LegacyArmored) => recover_legacy(input, filename),
         Some(ContainerVariant::ModernHex) => recover_modern(input, None),
@@ -149,11 +152,23 @@ pub fn recover_layered_with_modern_key(
     filename: &str,
     modern_aes_key: &[u8; 32],
 ) -> Result<LayeredRecovery> {
+    ensure_container_input_limit(input.len())?;
     match classify_container(input) {
         Some(ContainerVariant::LegacyArmored) => recover_legacy(input, filename),
         Some(ContainerVariant::ModernHex) => recover_modern(input, Some(modern_aes_key)),
         None => Err(Error::NotPye),
     }
+}
+
+const fn ensure_container_input_limit(input_len: usize) -> Result<()> {
+    if input_len > MAX_CONTAINER_INPUT_BYTES {
+        return Err(Error::InputLimit {
+            surface: "layered container input",
+            observed: input_len,
+            limit: MAX_CONTAINER_INPUT_BYTES,
+        });
+    }
+    Ok(())
 }
 
 fn recover_legacy(input: &[u8], filename: &str) -> Result<LayeredRecovery> {
@@ -316,24 +331,60 @@ fn recover_modern(input: &[u8], modern_aes_key: Option<&[u8; 32]>) -> Result<Lay
 }
 
 fn parse_modern_hex_body(input: &[u8]) -> Result<Vec<u8>> {
+    ensure_container_input_limit(input.len())?;
     let text: &str = core::str::from_utf8(input).map_err(|_| Error::NotUtf8)?;
-    let lines: Vec<&str> = text
+    let mut lines = text
         .lines()
         .map(str::trim)
-        .filter(|l: &&str| !l.is_empty())
-        .collect();
-    if lines.len() < 3 {
+        .filter(|line: &&str| !line.is_empty());
+    let Some(first): Option<&str> = lines.next() else {
+        return Err(Error::NotPye);
+    };
+    if !first.contains(MODERN_BEGIN_MARKER) {
         return Err(Error::NotPye);
     }
-    let first: &str = lines.first().copied().unwrap_or_default();
-    let last: &str = lines.last().copied().unwrap_or_default();
-    if !first.contains(MODERN_BEGIN_MARKER) || !last.contains(MODERN_END_MARKER) {
-        return Err(Error::NotPye);
+    let mut line_count: usize = 1;
+    let mut pending: Option<&str> = None;
+    let mut joined: String = String::new();
+    for line in lines {
+        line_count = line_count.checked_add(1).ok_or(Error::InputLimit {
+            surface: "modern hex body lines",
+            observed: usize::MAX,
+            limit: MAX_MODERN_BODY_LINES,
+        })?;
+        if line_count > MAX_MODERN_BODY_LINES {
+            return Err(Error::InputLimit {
+                surface: "modern hex body lines",
+                observed: line_count,
+                limit: MAX_MODERN_BODY_LINES,
+            });
+        }
+        let previous_pending: Option<&str> = pending.replace(line);
+        if let Some(previous) = previous_pending {
+            let next_len: usize =
+                joined
+                    .len()
+                    .checked_add(previous.len())
+                    .ok_or(Error::InputLimit {
+                        surface: "modern hex body",
+                        observed: usize::MAX,
+                        limit: MAX_HEX_INPUT_BYTES,
+                    })?;
+            if next_len > MAX_HEX_INPUT_BYTES {
+                return Err(Error::InputLimit {
+                    surface: "modern hex body",
+                    observed: next_len,
+                    limit: MAX_HEX_INPUT_BYTES,
+                });
+            }
+            joined.push_str(previous);
+        }
     }
-    let body_lines: &[&str] = &lines[1..lines.len() - 1];
-    let mut joined: String = String::with_capacity(body_lines.iter().map(|s| s.len()).sum());
-    for line in body_lines {
-        joined.push_str(line);
+    let Some(last): Option<&str> = pending else {
+        return Err(Error::NotPye);
+    };
+    if !last.contains(MODERN_END_MARKER) || joined.is_empty() {
+        return Err(Error::NotPye);
     }
     hex_decode(joined.as_bytes()).map_err(|e: Error| match e {
         Error::Base85 { message, .. } => Error::Base85 {

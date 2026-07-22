@@ -11,6 +11,7 @@ pub const AES_KEY_LEN: usize = 32;
 pub const AES_IV_LEN: usize = 16;
 const KDF_KEY_BYTES: usize = 64;
 const KDF_SALT_BYTES: usize = 16;
+pub(crate) const MAX_FILENAME_BYTES: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DerivedKey(pub [u8; AES_KEY_LEN]);
@@ -25,11 +26,23 @@ impl DerivedKey {
 
 #[inline]
 pub fn derive_aes_key(basename: &str) -> Result<DerivedKey> {
+    validate_filename(basename)?;
     let bytes: &[u8] = basename.as_bytes();
     let key64: Vec<u8> = blake2b_var(bytes, KDF_KEY_BYTES)?;
     let salt16: Vec<u8> = blake2b_var(bytes, KDF_SALT_BYTES)?;
     let derived: [u8; AES_KEY_LEN] = blake2b_keyed_salted(&key64, &salt16)?;
     Ok(DerivedKey(derived))
+}
+
+pub(crate) const fn validate_filename(filename: &str) -> Result<()> {
+    if filename.len() > MAX_FILENAME_BYTES {
+        return Err(Error::InputLimit {
+            surface: "filename",
+            observed: filename.len(),
+            limit: MAX_FILENAME_BYTES,
+        });
+    }
+    Ok(())
 }
 
 #[inline]
