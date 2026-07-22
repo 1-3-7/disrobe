@@ -16,6 +16,7 @@ workspace = true
 
 [dependencies]
 disrobe-core = { workspace = true }
+disrobe-query = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

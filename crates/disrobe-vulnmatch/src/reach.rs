@@ -190,6 +190,7 @@ impl ReachabilityEngine {
             }
         }
         let entries: BTreeSet<FunctionId> = call_graph.entry_points().into_iter().collect();
+        let entry_points_complete: bool = call_graph.entry_points_complete();
         let selected_entries: BTreeSet<FunctionId> = entries
             .iter()
             .filter(|entry: &&FunctionId| selected_functions.contains(*entry))
@@ -242,6 +243,8 @@ impl ReachabilityEngine {
                 ReachabilityState::Unknown
             } else if let Some(witness) = &unresolved_witness {
                 ReachabilityState::ReachabilityUnknown(witness.clone())
+            } else if !entry_points_complete {
+                ReachabilityState::Unknown
             } else if condensation
                 .component_of
                 .get(&function)
@@ -255,7 +258,7 @@ impl ReachabilityEngine {
         }
         ReachabilityResult {
             states,
-            complete: traversal_complete && unresolved_witness.is_none(),
+            complete: traversal_complete && entry_points_complete && unresolved_witness.is_none(),
         }
     }
 

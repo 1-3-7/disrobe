@@ -9,6 +9,7 @@ pub(crate) enum PredicateEvaluation {
 
 mod adapters;
 mod matcher;
+mod query_call_graph;
 pub mod rank;
 mod reach;
 mod report;
@@ -20,6 +21,7 @@ pub use adapters::{
     TaintWitnessError,
 };
 pub use matcher::{CandidateSink, MatchOutput, SinkMatcher};
+pub use query_call_graph::QueryCallGraphView;
 pub use rank::{FindingEvidence, FindingTier, ReachabilityEvidence};
 pub use reach::{
     Budget, EdgeSoundness, PathWitness, ReachabilityEngine, ReachabilityResult, ReachabilityState,
