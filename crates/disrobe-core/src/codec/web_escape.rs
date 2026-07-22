@@ -41,6 +41,30 @@ pub fn percent_decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
 }
 
 #[must_use]
+pub fn percent_decode_lenient(input: &[u8], plus_is_space: bool) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::with_capacity(input.len());
+    let mut i: usize = 0;
+    while i < input.len() {
+        let byte: u8 = input[i];
+        if byte == b'%'
+            && i + 2 < input.len()
+            && let (Some(hi), Some(lo)) = (hex_value(input[i + 1]), hex_value(input[i + 2]))
+        {
+            out.push((hi << 4) | lo);
+            i += 3;
+            continue;
+        }
+        if plus_is_space && byte == b'+' {
+            out.push(b' ');
+        } else {
+            out.push(byte);
+        }
+        i += 1;
+    }
+    out
+}
+
+#[must_use]
 pub fn percent_encode(input: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut out: Vec<u8> = Vec::with_capacity(input.len() * 3);
@@ -243,6 +267,15 @@ mod tests {
     fn percent_known_vector_and_plus() {
         assert_eq!(percent_decode(b"%2Fpath%20here").unwrap(), b"/path here");
         assert_eq!(percent_decode(b"a+b").unwrap(), b"a b");
+    }
+
+    #[test]
+    fn percent_lenient_toggle_and_passthrough() {
+        assert_eq!(percent_decode_lenient(b"%2Fa+b", true), b"/a b");
+        assert_eq!(percent_decode_lenient(b"%2Fa+b", false), b"/a+b");
+        assert_eq!(percent_decode_lenient(b"1e+5", false), b"1e+5");
+        assert_eq!(percent_decode_lenient(b"%zz%2", false), b"%zz%2");
+        assert_eq!(percent_decode_lenient(b"tail%2", false), b"tail%2");
     }
 
     #[test]
