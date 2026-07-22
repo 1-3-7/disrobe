@@ -97,6 +97,10 @@ const NON_PARSER_ALLOWLIST: &[NonParserCrate] = &[
         rationale: "dataflow analysis over the already-lifted Mir-rung IR, downstream of the format parsers",
     },
     NonParserCrate {
+        package_name: "disrobe-vulnmatch",
+        rationale: "reachability and rule-match analysis over the already-recovered call graph and taint via read-only adapters, not a raw-input parser",
+    },
+    NonParserCrate {
         package_name: "disrobe-transcode",
         rationale: "rewrites disrobe's own already-parsed .dr envelope, not the original untrusted input",
     },
