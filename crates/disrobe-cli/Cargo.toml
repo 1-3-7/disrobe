@@ -153,6 +153,7 @@ disrobe-nir-lift = { workspace = true, optional = true }
 disrobe-mba = { workspace = true, optional = true }
 disrobe-typerec = { workspace = true }
 disrobe-taint = { workspace = true }
+disrobe-vulnmatch = { workspace = true }
 disrobe-query = { workspace = true }
 disrobe-llm-metadata = { workspace = true }
 disrobe-mcp = { workspace = true }
