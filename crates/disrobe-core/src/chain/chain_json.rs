@@ -250,15 +250,7 @@ impl From<&Node> for NodeDoc {
     }
 }
 
-fn hex32(bytes: &[u8; 32]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut s: String = String::with_capacity(64);
-    for b in bytes {
-        s.push(HEX[(b >> 4) as usize] as char);
-        s.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    s
-}
+use crate::codec::hex::encode as hex32;
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
