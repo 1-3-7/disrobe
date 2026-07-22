@@ -1,4 +1,5 @@
 mod budget;
+pub mod byte_stack;
 pub mod cil_handler;
 pub mod emit;
 mod handlers;
@@ -17,7 +18,7 @@ pub use ir::{
 pub use microop::{MicroOp, match_canonical_effect};
 pub use profile::{
     DecodedOperand, MAX_OPERAND_BYTES, OperandEncoding, ProtectorProfile, SyntheticHandler,
-    SyntheticStackProfile, SyntheticVmModel, VInstr, VmFlavor,
+    SyntheticStackProfile, SyntheticVmModel, VInstr, VmDispatch, VmFlavor,
 };
 pub use state::{
     AbstractState, CanonicalEffect, ControlEffect, Expr, OperandRange, PrimitiveEffect,
