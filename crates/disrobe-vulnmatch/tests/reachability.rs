@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 
 use disrobe_vulnmatch::{
-    AbstractArgument, Budget, CallGraphEdge, CallGraphView, CallSiteId, DirectCall, EdgeKind,
-    EdgeSoundness, FindingTier, FunctionId, MAX_RESOLVED_INDIRECT_CALLEES_PER_SITE,
+    AbstractArgument, ArgPredicate, Budget, CallGraphEdge, CallGraphView, CallSiteId, DirectCall,
+    EdgeKind, EdgeSoundness, FindingTier, FunctionId, MAX_RESOLVED_INDIRECT_CALLEES_PER_SITE,
     ReachabilityEngine, ReachabilityEvidence, ReachabilityState, ResolvedCallee, RuleStore,
-    TaintOracle, TaintStatus, analyze,
+    Severity, TaintOracle, TaintStatus, TaintWitness, analyze,
 };
 
 #[derive(Debug, Clone)]
@@ -62,6 +62,21 @@ impl TaintOracle for UnknownTaint {
         _site: &DirectCall,
     ) -> TaintStatus {
         TaintStatus::Unknown
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FixedTaint {
+    status: TaintStatus,
+}
+
+impl TaintOracle for FixedTaint {
+    fn taint_status(
+        &self,
+        _source: &disrobe_vulnmatch::SourceClass,
+        _site: &DirectCall,
+    ) -> TaintStatus {
+        self.status.clone()
     }
 }
 
@@ -421,16 +436,13 @@ fn depth_exhaustion_reports_unknown_instead_of_unreachable() {
 }
 
 #[test]
-fn unresolved_call_sites_do_not_match_resolved_sink_rules() {
+fn unresolved_target_makes_downstream_sink_reachability_unknown() {
     let graph: MockCallGraph = MockCallGraph {
-        functions: vec![function("main")],
-        calls: vec![call(
-            "unresolved-strcpy",
-            "main",
-            None,
-            None,
-            vec![AbstractArgument::NonConstant, AbstractArgument::NonConstant],
-        )],
+        functions: vec![function("main"), function("sink")],
+        calls: vec![
+            call("main-dispatch", "main", None, None, Vec::new()),
+            sink_call("sink-strcpy", "sink"),
+        ],
         entries: vec![function("main")],
     };
     let rules: RuleStore = RuleStore::embedded();
@@ -438,9 +450,14 @@ fn unresolved_call_sites_do_not_match_resolved_sink_rules() {
     let mut budget: Budget = Budget::new(128, 16);
 
     let report: disrobe_vulnmatch::Report = analyze(&graph, &taint, &rules, &mut budget);
+    let finding: Option<&disrobe_vulnmatch::Finding> = indirect_finding(&report);
 
-    assert!(report.findings.is_empty());
-    assert!(report.complete);
+    assert!(finding.is_some(), "downstream sink finding must exist");
+    let Some(finding) = finding else {
+        return;
+    };
+    assert_eq!(finding.tier, FindingTier::ReachabilityUnknown);
+    assert!(!report.complete);
 }
 
 #[test]
@@ -642,4 +659,222 @@ fn unresolved_indirect_edge_respects_the_depth_limit() {
     assert!(finding.witness_path.is_none());
     assert!(budget.depth_limit_reached());
     assert!(!report.complete);
+}
+
+#[test]
+fn source_required_finding_with_absent_taint_remains_present_with_reachability_evidence() {
+    let graph: MockCallGraph = sample_graph();
+    let rules: RuleStore = RuleStore::embedded();
+    let taint: FixedTaint = FixedTaint {
+        status: TaintStatus::Absent,
+    };
+    let mut budget: Budget = Budget::new(128, 16);
+
+    let report: disrobe_vulnmatch::Report = analyze(&graph, &taint, &rules, &mut budget);
+    let finding: Option<&disrobe_vulnmatch::Finding> =
+        report
+            .findings
+            .iter()
+            .find(|candidate: &&disrobe_vulnmatch::Finding| {
+                candidate.sink_site.id == CallSiteId::new("main-printf")
+            });
+
+    assert!(finding.is_some(), "source-required finding must exist");
+    let Some(finding) = finding else {
+        return;
+    };
+    assert_eq!(finding.tier, FindingTier::Present);
+    assert!(finding.witness_path.is_some());
+    assert_eq!(finding.evidence.taint_status, Some(TaintStatus::Absent));
+    assert_eq!(
+        finding.evidence.reachability,
+        ReachabilityEvidence::Reachable {
+            distance: 0,
+            weakest_edge_soundness: EdgeSoundness::High,
+        }
+    );
+}
+
+#[test]
+fn indeterminate_arguments_keep_possible_findings_and_mark_the_report_incomplete() {
+    let graph: MockCallGraph = MockCallGraph {
+        functions: vec![function("main")],
+        calls: vec![
+            call(
+                "unknown-strcpy",
+                "main",
+                None,
+                Some("strcpy"),
+                vec![AbstractArgument::NonConstant, AbstractArgument::Unknown],
+            ),
+            call("missing-strcpy", "main", None, Some("strcpy"), Vec::new()),
+            call(
+                "constant-strcpy",
+                "main",
+                None,
+                Some("strcpy"),
+                vec![AbstractArgument::NonConstant, AbstractArgument::Constant],
+            ),
+        ],
+        entries: vec![function("main")],
+    };
+    let rules: RuleStore = RuleStore::embedded();
+    let taint: UnknownTaint = UnknownTaint;
+    let mut budget: Budget = Budget::new(128, 16);
+
+    let report: disrobe_vulnmatch::Report = analyze(&graph, &taint, &rules, &mut budget);
+    let matched_sites: BTreeSet<CallSiteId> = report
+        .findings
+        .iter()
+        .map(|finding: &disrobe_vulnmatch::Finding| finding.sink_site.id.clone())
+        .collect();
+
+    assert_eq!(
+        matched_sites,
+        BTreeSet::from([
+            CallSiteId::new("missing-strcpy"),
+            CallSiteId::new("unknown-strcpy"),
+        ])
+    );
+    assert!(!report.complete);
+    let unknown_finding: Option<&disrobe_vulnmatch::Finding> =
+        report
+            .findings
+            .iter()
+            .find(|finding: &&disrobe_vulnmatch::Finding| {
+                finding.sink_site.id == CallSiteId::new("unknown-strcpy")
+            });
+    assert!(
+        unknown_finding.is_some(),
+        "indeterminate finding must exist"
+    );
+    let Some(unknown_finding) = unknown_finding else {
+        return;
+    };
+    assert_eq!(unknown_finding.tier, FindingTier::Unknown);
+    assert!(unknown_finding.witness_path.is_some());
+    assert!(unknown_finding.evidence.matched_constraints.is_empty());
+    assert_eq!(
+        unknown_finding.evidence.indeterminate_constraints,
+        vec![ArgPredicate::IsNotConstant(1)]
+    );
+}
+
+#[test]
+fn duplicate_direct_calls_produce_one_stable_finding() {
+    let sink: DirectCall = sink_call("main-strcpy", "main");
+    let graph: MockCallGraph = MockCallGraph {
+        functions: vec![function("main")],
+        calls: vec![sink.clone(), sink],
+        entries: vec![function("main")],
+    };
+    let rules: RuleStore = RuleStore::embedded();
+    let taint: UnknownTaint = UnknownTaint;
+    let mut budget: Budget = Budget::new(128, 16);
+
+    let report: disrobe_vulnmatch::Report = analyze(&graph, &taint, &rules, &mut budget);
+    let ids: BTreeSet<disrobe_vulnmatch::FindingId> = report
+        .findings
+        .iter()
+        .map(|finding: &disrobe_vulnmatch::Finding| finding.id.clone())
+        .collect();
+
+    assert_eq!(report.findings.len(), 1);
+    assert_eq!(ids.len(), report.findings.len());
+}
+
+#[test]
+fn edge_from_unknown_caller_marks_reachability_incomplete() {
+    let graph: IndirectMockCallGraph = IndirectMockCallGraph {
+        direct_graph: MockCallGraph {
+            functions: vec![function("main"), function("sink")],
+            calls: vec![sink_call("sink-strcpy", "sink")],
+            entries: vec![function("main")],
+        },
+        edges: vec![edge(
+            "phantom-dispatch",
+            "phantom",
+            EdgeKind::UnresolvedIndirect,
+        )],
+    };
+    let mut budget: Budget = Budget::new(128, 16);
+
+    let result: disrobe_vulnmatch::ReachabilityResult =
+        ReachabilityEngine::analyze(&graph, &mut budget);
+
+    assert!(!result.complete);
+    assert_eq!(result.state(&function("sink")), ReachabilityState::Unknown);
+}
+
+#[test]
+fn duplicate_call_edges_do_not_consume_extra_reachability_budget() {
+    let call: DirectCall = call("main-external", "main", None, Some("external"), Vec::new());
+    let graph: MockCallGraph = MockCallGraph {
+        functions: vec![function("main")],
+        calls: vec![call.clone(), call],
+        entries: vec![function("main")],
+    };
+    let mut budget: Budget = Budget::with_step_limit(128, 16, 2);
+
+    let result: disrobe_vulnmatch::ReachabilityResult =
+        ReachabilityEngine::analyze(&graph, &mut budget);
+
+    assert!(result.complete);
+    assert!(!budget.step_limit_reached());
+}
+
+#[test]
+fn present_taint_witness_confirms_a_reachable_source_required_finding() {
+    let graph: MockCallGraph = sample_graph();
+    let rules: RuleStore = RuleStore::embedded();
+    let witness: Result<TaintWitness, disrobe_vulnmatch::TaintWitnessError> =
+        TaintWitness::new("argument-0-from-request");
+    assert!(witness.is_ok(), "nonempty taint witness must be valid");
+    let Ok(witness) = witness else {
+        return;
+    };
+    let taint: FixedTaint = FixedTaint {
+        status: TaintStatus::Present(witness.clone()),
+    };
+    let mut budget: Budget = Budget::new(128, 16);
+
+    let report: disrobe_vulnmatch::Report = analyze(&graph, &taint, &rules, &mut budget);
+    let finding: Option<&disrobe_vulnmatch::Finding> =
+        report
+            .findings
+            .iter()
+            .find(|candidate: &&disrobe_vulnmatch::Finding| {
+                candidate.sink_site.id == CallSiteId::new("main-printf")
+            });
+
+    assert!(finding.is_some(), "source-required finding must exist");
+    let Some(finding) = finding else {
+        return;
+    };
+    assert_eq!(finding.tier, FindingTier::Confirmed);
+    assert_eq!(
+        finding.evidence.taint_status,
+        Some(TaintStatus::Present(witness))
+    );
+    assert!(finding.witness_path.is_some());
+}
+
+#[test]
+fn empty_taint_witness_is_rejected() {
+    let witness: Result<TaintWitness, disrobe_vulnmatch::TaintWitnessError> = TaintWitness::new("");
+
+    assert!(witness.is_err());
+}
+
+#[test]
+fn whitespace_taint_witness_deserialization_is_rejected() {
+    let witness: Result<TaintWitness, serde_json::Error> = serde_json::from_str("\"   \"");
+
+    assert!(witness.is_err());
+}
+
+#[test]
+fn severity_and_finding_tier_order_follow_increasing_precedence() {
+    assert!(Severity::Critical > Severity::Low);
+    assert!(FindingTier::Confirmed > FindingTier::Reachable);
 }

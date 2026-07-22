@@ -149,10 +149,15 @@ impl ReachabilityEngine {
         let mut unresolved_by_caller: BTreeMap<FunctionId, BTreeSet<CallSiteId>> = BTreeMap::new();
         let mut edges: Vec<CallGraphEdge> = call_graph.call_edges();
         edges.sort();
+        edges.dedup();
         for edge in edges {
             if !budget.consume_step() {
                 traversal_complete = false;
                 break;
+            }
+            if !all_functions.contains(&edge.caller) {
+                traversal_complete = false;
+                continue;
             }
             if !selected_functions.contains(&edge.caller) {
                 continue;

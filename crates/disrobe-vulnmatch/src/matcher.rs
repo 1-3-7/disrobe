@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::PredicateEvaluation;
 use crate::adapters::{CallGraphView, DirectCall};
 use crate::reach::Budget;
 use crate::rules::{ArgPredicate, RuleStore, Severity, SourceClass};
@@ -11,6 +12,7 @@ pub struct CandidateSink {
     pub severity: Severity,
     pub requires_source: Option<SourceClass>,
     pub matched_constraints: Vec<ArgPredicate>,
+    pub indeterminate_constraints: Vec<ArgPredicate>,
     pub sink_site: DirectCall,
 }
 
@@ -31,6 +33,7 @@ impl SinkMatcher {
     ) -> MatchOutput {
         let mut calls: Vec<DirectCall> = call_graph.direct_calls();
         calls.sort();
+        calls.dedup();
         let mut candidates: Vec<CandidateSink> = Vec::new();
         let mut complete: bool = true;
         'calls: for call in calls {
@@ -46,21 +49,41 @@ impl SinkMatcher {
                     complete = false;
                     break 'calls;
                 }
-                if rule.sink.matches(callee)
-                    && rule
-                        .arg_constraints
-                        .iter()
-                        .all(|predicate: &ArgPredicate| predicate.matches(&call))
-                {
-                    candidates.push(CandidateSink {
-                        rule_id: rule.id.clone(),
-                        cwe: rule.cwe.clone(),
-                        severity: rule.severity,
-                        requires_source: rule.requires_source.clone(),
-                        matched_constraints: rule.arg_constraints.clone(),
-                        sink_site: call.clone(),
-                    });
+                if !rule.sink.matches(callee) {
+                    continue;
                 }
+                let mut rejected: bool = false;
+                let mut matched_constraints: Vec<ArgPredicate> = Vec::new();
+                let mut indeterminate_constraints: Vec<ArgPredicate> = Vec::new();
+                for predicate in &rule.arg_constraints {
+                    match predicate.evaluate(&call) {
+                        PredicateEvaluation::Match => {
+                            matched_constraints.push(predicate.clone());
+                        }
+                        PredicateEvaluation::NoMatch => {
+                            rejected = true;
+                            break;
+                        }
+                        PredicateEvaluation::Indeterminate => {
+                            indeterminate_constraints.push(predicate.clone());
+                        }
+                    }
+                }
+                if rejected {
+                    continue;
+                }
+                if !indeterminate_constraints.is_empty() {
+                    complete = false;
+                }
+                candidates.push(CandidateSink {
+                    rule_id: rule.id.clone(),
+                    cwe: rule.cwe.clone(),
+                    severity: rule.severity,
+                    requires_source: rule.requires_source.clone(),
+                    matched_constraints,
+                    indeterminate_constraints,
+                    sink_site: call.clone(),
+                });
             }
         }
         candidates.sort_by(|left: &CandidateSink, right: &CandidateSink| {
