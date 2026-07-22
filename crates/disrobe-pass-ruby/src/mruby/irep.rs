@@ -1,3 +1,4 @@
+use disrobe_bytes::{ByteReadError, ByteReader};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, RubyError};
@@ -65,77 +66,23 @@ pub(crate) const fn version_layout(format_version: [u8; 4]) -> RiteVersion {
     }
 }
 
-struct Cursor<'a> {
-    bytes: &'a [u8],
-    pos: usize,
+const fn mruby_irep_truncated(error: ByteReadError) -> RubyError {
+    RubyError::MrubyIrepTruncated { at: error.offset }
 }
 
-impl<'a> Cursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, pos: 0 }
-    }
-
-    fn u8(&mut self) -> Result<u8> {
-        let b: u8 = *self
-            .bytes
-            .get(self.pos)
-            .ok_or(RubyError::MrubyIrepTruncated { at: self.pos })?;
-        self.pos += 1;
-        Ok(b)
-    }
-
-    fn u16(&mut self) -> Result<u16> {
-        let slice: &[u8] = self
-            .bytes
-            .get(self.pos..self.pos.saturating_add(2))
-            .ok_or(RubyError::MrubyIrepTruncated { at: self.pos })?;
-        let arr: [u8; 2] = slice
-            .try_into()
-            .map_err(|_| RubyError::MrubyIrepTruncated { at: self.pos })?;
-        self.pos += 2;
-        Ok(u16::from_be_bytes(arr))
-    }
-
-    fn u32(&mut self) -> Result<u32> {
-        let slice: &[u8] = self
-            .bytes
-            .get(self.pos..self.pos.saturating_add(4))
-            .ok_or(RubyError::MrubyIrepTruncated { at: self.pos })?;
-        let arr: [u8; 4] = slice
-            .try_into()
-            .map_err(|_| RubyError::MrubyIrepTruncated { at: self.pos })?;
-        self.pos += 4;
-        Ok(u32::from_be_bytes(arr))
-    }
-
-    fn f64_be(&mut self) -> Result<f64> {
-        let slice: &[u8] = self
-            .bytes
-            .get(self.pos..self.pos.saturating_add(8))
-            .ok_or(RubyError::MrubyIrepTruncated { at: self.pos })?;
-        let arr: [u8; 8] = slice
-            .try_into()
-            .map_err(|_| RubyError::MrubyIrepTruncated { at: self.pos })?;
-        self.pos += 8;
-        Ok(f64::from_be_bytes(arr))
-    }
-
-    fn take(&mut self, n: usize) -> Result<&'a [u8]> {
-        let slice: &[u8] = self
-            .bytes
-            .get(self.pos..self.pos.saturating_add(n))
-            .ok_or(RubyError::MrubyIrepTruncated { at: self.pos })?;
-        self.pos += n;
-        Ok(slice)
-    }
+fn read_f64_be(reader: &mut ByteReader<'_>) -> Result<f64> {
+    let bits: u64 = reader.read_u64_be().map_err(mruby_irep_truncated)?;
+    Ok(f64::from_bits(bits))
 }
 
-fn read_pool_entry(cur: &mut Cursor<'_>) -> Result<PoolEntry> {
-    let tag: u8 = cur.u8()?;
+fn read_pool_entry(cur: &mut ByteReader<'_>) -> Result<PoolEntry> {
+    let tag: u8 = cur.read_u8().map_err(mruby_irep_truncated)?;
     match tag {
         0x00 | 0x02 => {
-            let len: u16 = cur.u16()?;
-            let bytes: &[u8] = cur.take(usize::from(len).saturating_add(1))?;
+            let len: u16 = cur.read_u16_be().map_err(mruby_irep_truncated)?;
+            let bytes: &[u8] = cur
+                .read_bytes(usize::from(len).saturating_add(1))
+                .map_err(mruby_irep_truncated)?;
             let text: &[u8] = &bytes[..usize::from(len)];
             Ok(PoolEntry {
                 kind: PoolKind::String,
@@ -143,15 +90,15 @@ fn read_pool_entry(cur: &mut Cursor<'_>) -> Result<PoolEntry> {
             })
         }
         0x01 => {
-            let v: i32 = cur.u32()? as i32;
+            let v: i32 = cur.read_u32_be().map_err(mruby_irep_truncated)? as i32;
             Ok(PoolEntry {
                 kind: PoolKind::Int32,
                 value: Some(v.to_string()),
             })
         }
         0x03 => {
-            let hi: u64 = u64::from(cur.u32()?);
-            let lo: u64 = u64::from(cur.u32()?);
+            let hi: u64 = u64::from(cur.read_u32_be().map_err(mruby_irep_truncated)?);
+            let lo: u64 = u64::from(cur.read_u32_be().map_err(mruby_irep_truncated)?);
             let v: i64 = ((hi << 32) | lo) as i64;
             Ok(PoolEntry {
                 kind: PoolKind::Int64,
@@ -159,21 +106,23 @@ fn read_pool_entry(cur: &mut Cursor<'_>) -> Result<PoolEntry> {
             })
         }
         0x05 => {
-            let v: f64 = cur.f64_be()?;
+            let v: f64 = read_f64_be(cur)?;
             Ok(PoolEntry {
                 kind: PoolKind::Float,
                 value: Some(format_float(v)),
             })
         }
         0x07 => {
-            let len: u8 = cur.u8()?;
-            let _data: &[u8] = cur.take(usize::from(len).saturating_add(2))?;
+            let len: u8 = cur.read_u8().map_err(mruby_irep_truncated)?;
+            let _data: &[u8] = cur
+                .read_bytes(usize::from(len).saturating_add(2))
+                .map_err(mruby_irep_truncated)?;
             Ok(PoolEntry {
                 kind: PoolKind::BigInt,
                 value: None,
             })
         }
-        _ => Err(RubyError::MrubyIrepTruncated { at: cur.pos }),
+        _ => Err(RubyError::MrubyIrepTruncated { at: cur.position() }),
     }
 }
 
@@ -185,18 +134,20 @@ fn format_float(v: f64) -> String {
     }
 }
 
-fn read_symbol(cur: &mut Cursor<'_>) -> Result<Option<String>> {
-    let len: u16 = cur.u16()?;
+fn read_symbol(cur: &mut ByteReader<'_>) -> Result<Option<String>> {
+    let len: u16 = cur.read_u16_be().map_err(mruby_irep_truncated)?;
     if len == u16::MAX {
         return Ok(None);
     }
-    let bytes: &[u8] = cur.take(usize::from(len).saturating_add(1))?;
+    let bytes: &[u8] = cur
+        .read_bytes(usize::from(len).saturating_add(1))
+        .map_err(mruby_irep_truncated)?;
     let name: &[u8] = &bytes[..usize::from(len)];
     Ok(Some(String::from_utf8_lossy(name).into_owned()))
 }
 
 fn read_record(
-    cur: &mut Cursor<'_>,
+    cur: &mut ByteReader<'_>,
     ver: RiteVersion,
     depth: u32,
     out: &mut Vec<IrepRecord>,
@@ -207,34 +158,34 @@ fn read_record(
     if out.len() as u32 >= IREP_MAX_RECORDS {
         return Err(RubyError::MrubyIrepTooManyRecords);
     }
-    let _record_size: u32 = cur.u32()?;
-    let nlocals: u16 = cur.u16()?;
-    let nregs: u16 = cur.u16()?;
-    let child_count: u16 = cur.u16()?;
+    let _record_size: u32 = cur.read_u32_be().map_err(mruby_irep_truncated)?;
+    let nlocals: u16 = cur.read_u16_be().map_err(mruby_irep_truncated)?;
+    let nregs: u16 = cur.read_u16_be().map_err(mruby_irep_truncated)?;
+    let child_count: u16 = cur.read_u16_be().map_err(mruby_irep_truncated)?;
     let catch_count: u16 = if ver.catch_field_present {
-        cur.u16()?
+        cur.read_u16_be().map_err(mruby_irep_truncated)?
     } else {
         0
     };
-    let insn_len: u32 = cur.u32()?;
-    let insn_len_usize: usize =
-        usize::try_from(insn_len).map_err(|_| RubyError::MrubyIrepTruncated { at: cur.pos })?;
+    let insn_len: u32 = cur.read_u32_be().map_err(mruby_irep_truncated)?;
+    let insn_len_usize: usize = usize::try_from(insn_len)
+        .map_err(|_| RubyError::MrubyIrepTruncated { at: cur.position() })?;
     let catch_bytes: usize = CATCH_HANDLER_SIZE
         .checked_mul(usize::from(catch_count))
-        .ok_or(RubyError::MrubyIrepTruncated { at: cur.pos })?;
+        .ok_or_else(|| RubyError::MrubyIrepTruncated { at: cur.position() })?;
     let iseq_bytes: usize = insn_len_usize
         .checked_add(catch_bytes)
-        .ok_or(RubyError::MrubyIrepTruncated { at: cur.pos })?;
-    let iseq_full: &[u8] = cur.take(iseq_bytes)?;
+        .ok_or_else(|| RubyError::MrubyIrepTruncated { at: cur.position() })?;
+    let iseq_full: &[u8] = cur.read_bytes(iseq_bytes).map_err(mruby_irep_truncated)?;
     let iseq: Vec<u8> = iseq_full[..insn_len_usize].to_vec();
 
-    let pool_len: u32 = u32::from(cur.u16()?);
+    let pool_len: u32 = u32::from(cur.read_u16_be().map_err(mruby_irep_truncated)?);
     let mut pool: Vec<PoolEntry> = Vec::with_capacity((pool_len as usize).min(POOL_PREALLOC_CAP));
     for _ in 0..pool_len {
         pool.push(read_pool_entry(cur)?);
     }
 
-    let sym_len: u32 = u32::from(cur.u16()?);
+    let sym_len: u32 = u32::from(cur.read_u16_be().map_err(mruby_irep_truncated)?);
     let mut symbols: Vec<String> = Vec::with_capacity((sym_len as usize).min(POOL_PREALLOC_CAP));
     for _ in 0..sym_len {
         match read_symbol(cur)? {
@@ -271,10 +222,11 @@ fn read_record(
 
 pub(crate) fn parse_irep(section_body: &[u8], format_version: [u8; 4]) -> Result<IrepTree> {
     let ver: RiteVersion = version_layout(format_version);
-    let mut cur: Cursor<'_> = Cursor::new(section_body);
+    let mut cur: ByteReader<'_> = ByteReader::new(section_body);
 
     if section_body.len() > IREP_SECTION_SUBHEADER {
-        cur.pos = IREP_SECTION_SUBHEADER;
+        cur.skip(IREP_SECTION_SUBHEADER)
+            .map_err(mruby_irep_truncated)?;
     }
 
     let mut records: Vec<IrepRecord> = Vec::new();

@@ -1,5 +1,6 @@
 use std::io::Write;
 
+use disrobe_bytes::ByteReader;
 use disrobe_core::byte_search::find;
 use serde::{Deserialize, Serialize};
 
@@ -65,8 +66,8 @@ pub struct WrapperExtract {
 
 #[must_use]
 pub(crate) fn looks_like_ocra_opcode_stream(bytes: &[u8]) -> bool {
-    let mut cursor: Cursor<'_> = Cursor::new(bytes);
-    let Some(first): Option<u32> = cursor.u32() else {
+    let mut cursor: ByteReader<'_> = ByteReader::new(bytes);
+    let Some(first): Option<u32> = cursor.read_u32_le().ok() else {
         return false;
     };
     if first >= OP_MAX {
@@ -123,8 +124,8 @@ fn extract_ocra(bytes: &[u8]) -> Result<WrapperExtract> {
 fn locate_ocra_stream(bytes: &[u8]) -> Result<(usize, usize)> {
     let len: usize = bytes.len();
     if len >= 8 && &bytes[len - 4..] == crate::detect::OCRA_SIGNATURE.as_slice() {
-        let mut cursor: Cursor<'_> = Cursor::new(&bytes[len - 8..len - 4]);
-        if let Some(offset) = cursor.u32() {
+        let mut cursor: ByteReader<'_> = ByteReader::new(&bytes[len - 8..len - 4]);
+        if let Ok(offset) = cursor.read_u32_le() {
             let offset: usize = offset as usize;
             if offset < len {
                 return Ok((offset, len - 4));
@@ -135,8 +136,8 @@ fn locate_ocra_stream(bytes: &[u8]) -> Result<(usize, usize)> {
     }
     if let Some(sig) = find(bytes, crate::detect::OCRA_SIGNATURE.as_slice()) {
         if sig >= 4 {
-            let mut cursor: Cursor<'_> = Cursor::new(&bytes[sig - 4..sig]);
-            if let Some(offset) = cursor.u32() {
+            let mut cursor: ByteReader<'_> = ByteReader::new(&bytes[sig - 4..sig]);
+            if let Ok(offset) = cursor.read_u32_le() {
                 let offset: usize = offset as usize;
                 if offset < len {
                     return Ok((offset, sig));
@@ -153,71 +154,65 @@ fn parse_opcode_stream(stream: &[u8], image: &mut OcraImage, depth: u8) -> Resul
     if depth > OCRA_MAX_LZMA_DEPTH {
         return Err(RubyError::OcraOpcodeStreamTruncated { at: 0 });
     }
-    let mut cursor: Cursor<'_> = Cursor::new(stream);
+    let mut cursor: ByteReader<'_> = ByteReader::new(stream);
     let mut executed: usize = 0;
     loop {
         if executed > OCRA_MAX_OPCODES {
             return Err(RubyError::OcraTooManyOpcodes);
         }
         executed += 1;
-        let at: usize = cursor.pos;
-        if cursor.at_end() {
+        let at: usize = cursor.position();
+        if cursor.remaining() == 0 {
             return Ok(());
         }
-        let Some(opcode): Option<u32> = cursor.u32() else {
+        let Some(opcode): Option<u32> = cursor.read_u32_le().ok() else {
             return Err(RubyError::OcraOpcodeStreamTruncated { at });
         };
         match opcode {
             OP_END => return Ok(()),
             OP_CREATE_INST_DIRECTORY => {
                 let _debug_extract: u32 = cursor
-                    .u32()
-                    .ok_or(RubyError::OcraOpcodeStreamTruncated { at })?;
+                    .read_u32_le()
+                    .map_err(|_| RubyError::OcraOpcodeStreamTruncated { at })?;
                 let _delete_after: u32 = cursor
-                    .u32()
-                    .ok_or(RubyError::OcraOpcodeStreamTruncated { at })?;
+                    .read_u32_le()
+                    .map_err(|_| RubyError::OcraOpcodeStreamTruncated { at })?;
                 let _chdir: u32 = cursor
-                    .u32()
-                    .ok_or(RubyError::OcraOpcodeStreamTruncated { at })?;
+                    .read_u32_le()
+                    .map_err(|_| RubyError::OcraOpcodeStreamTruncated { at })?;
             }
             OP_ENABLE_DEBUG_MODE => {
                 image.debug_mode = true;
             }
             OP_CREATE_DIRECTORY => {
-                let name: String = cursor
-                    .ascii_z()
-                    .ok_or(RubyError::OcraOpcodeStreamTruncated { at })?;
+                let name: String =
+                    read_ascii_z(&mut cursor).ok_or(RubyError::OcraOpcodeStreamTruncated { at })?;
                 image.directories.push(name);
             }
             OP_CREATE_FILE => {
-                let path: String = cursor
-                    .ascii_z()
-                    .ok_or(RubyError::OcraOpcodeStreamTruncated { at })?;
+                let path: String =
+                    read_ascii_z(&mut cursor).ok_or(RubyError::OcraOpcodeStreamTruncated { at })?;
                 let size: u32 = cursor
-                    .u32()
-                    .ok_or(RubyError::OcraOpcodeStreamTruncated { at })?;
+                    .read_u32_le()
+                    .map_err(|_| RubyError::OcraOpcodeStreamTruncated { at })?;
                 let data: Vec<u8> = cursor
-                    .take(size as usize)
-                    .ok_or(RubyError::OcraOpcodeStreamTruncated { at })?
+                    .read_bytes(size as usize)
+                    .map_err(|_| RubyError::OcraOpcodeStreamTruncated { at })?
                     .to_vec();
                 image.files.push(OcraFile { path, size, data });
             }
             OP_SETENV => {
-                let name: String = cursor
-                    .ascii_z()
-                    .ok_or(RubyError::OcraOpcodeStreamTruncated { at })?;
-                let value: String = cursor
-                    .ascii_z()
-                    .ok_or(RubyError::OcraOpcodeStreamTruncated { at })?;
+                let name: String =
+                    read_ascii_z(&mut cursor).ok_or(RubyError::OcraOpcodeStreamTruncated { at })?;
+                let value: String =
+                    read_ascii_z(&mut cursor).ok_or(RubyError::OcraOpcodeStreamTruncated { at })?;
                 image.env.push((name, value));
             }
             OP_CREATE_PROCESS | OP_POST_CREATE_PROCESS => {
-                let cmd_image: String = cursor
-                    .ascii_z()
-                    .ok_or(RubyError::OcraOpcodeStreamTruncated { at })?;
-                let command_line: String = cursor
-                    .ascii_z()
-                    .ok_or(RubyError::OcraOpcodeStreamTruncated { at })?;
+                let cmd_image: String =
+                    read_ascii_z(&mut cursor).ok_or(RubyError::OcraOpcodeStreamTruncated { at })?;
+                let command_line: String =
+                    read_ascii_z(&mut cursor).ok_or(RubyError::OcraOpcodeStreamTruncated { at })?;
                 image.processes.push(OcraProcess {
                     image: cmd_image,
                     command_line,
@@ -231,11 +226,11 @@ fn parse_opcode_stream(stream: &[u8], image: &mut OcraImage, depth: u8) -> Resul
                     )));
                 }
                 let size: u32 = cursor
-                    .u32()
-                    .ok_or(RubyError::OcraOpcodeStreamTruncated { at })?;
+                    .read_u32_le()
+                    .map_err(|_| RubyError::OcraOpcodeStreamTruncated { at })?;
                 let blob: &[u8] = cursor
-                    .take(size as usize)
-                    .ok_or(RubyError::OcraOpcodeStreamTruncated { at })?;
+                    .read_bytes(size as usize)
+                    .map_err(|_| RubyError::OcraOpcodeStreamTruncated { at })?;
                 image.lzma_chunks = image.lzma_chunks.saturating_add(1);
                 let inner: Vec<u8> = decompress_lzma_alone(blob, OCRA_DECOMPRESS_CAP)?;
                 parse_opcode_stream(&inner, image, depth + 1)?;
@@ -329,46 +324,12 @@ fn clamp_u32(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
 
-struct Cursor<'a> {
-    bytes: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Cursor<'a> {
-    #[inline]
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, pos: 0 }
-    }
-
-    #[inline]
-    const fn at_end(&self) -> bool {
-        self.pos >= self.bytes.len()
-    }
-
-    #[inline]
-    fn u32(&mut self) -> Option<u32> {
-        let slice: &[u8] = self.bytes.get(self.pos..self.pos + 4)?;
-        let value: u32 = u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]);
-        self.pos += 4;
-        Some(value)
-    }
-
-    #[inline]
-    fn take(&mut self, count: usize) -> Option<&'a [u8]> {
-        let end: usize = self.pos.checked_add(count)?;
-        let slice: &[u8] = self.bytes.get(self.pos..end)?;
-        self.pos = end;
-        Some(slice)
-    }
-
-    #[inline]
-    fn ascii_z(&mut self) -> Option<String> {
-        let rest: &[u8] = self.bytes.get(self.pos..)?;
-        let nul: usize = rest.iter().position(|&b: &u8| b == 0)?;
-        let raw: &[u8] = &rest[..nul];
-        self.pos += nul + 1;
-        Some(String::from_utf8_lossy(raw).into_owned())
-    }
+fn read_ascii_z(reader: &mut ByteReader<'_>) -> Option<String> {
+    let rest: &[u8] = reader.peek_bytes(reader.remaining()).ok()?;
+    let nul: usize = rest.iter().position(|&byte: &u8| byte == 0)?;
+    let raw: &[u8] = reader.read_bytes(nul).ok()?;
+    reader.skip(1).ok()?;
+    Some(String::from_utf8_lossy(raw).into_owned())
 }
 
 #[cfg(test)]
