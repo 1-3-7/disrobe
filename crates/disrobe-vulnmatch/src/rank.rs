@@ -8,11 +8,11 @@ use crate::rules::{ArgPredicate, Severity, SourceClass};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FindingTier {
-    Confirmed,
-    Reachable,
-    ReachabilityUnknown,
-    Present,
     Unknown,
+    Present,
+    ReachabilityUnknown,
+    Reachable,
+    Confirmed,
 }
 
 impl FindingTier {
@@ -42,6 +42,7 @@ pub struct FindingEvidence {
     pub cwe: String,
     pub severity: Severity,
     pub matched_constraints: Vec<ArgPredicate>,
+    pub indeterminate_constraints: Vec<ArgPredicate>,
     pub required_source: Option<SourceClass>,
     pub taint_status: Option<TaintStatus>,
     pub reachability: ReachabilityEvidence,
@@ -88,7 +89,9 @@ pub fn rank_candidates<T: TaintOracle>(
                 }
                 _ => None,
             };
-        let (tier, witness_path, reachability_evidence): (
+        let reachability_is_reachable: bool =
+            matches!(&reachability_state, ReachabilityState::Reachable(_));
+        let (mut tier, witness_path, reachability_evidence): (
             FindingTier,
             Option<PathWitness>,
             ReachabilityEvidence,
@@ -124,6 +127,20 @@ pub fn rank_candidates<T: TaintOracle>(
                 (FindingTier::Unknown, None, ReachabilityEvidence::Unknown)
             }
         };
+        if reachability_is_reachable && candidate.requires_source.is_some() {
+            match &taint_status {
+                Some(TaintStatus::Absent) => {
+                    tier = FindingTier::Present;
+                }
+                Some(TaintStatus::Present(_)) => {
+                    tier = FindingTier::Confirmed;
+                }
+                Some(TaintStatus::Unknown) | None => {}
+            }
+        }
+        if !candidate.indeterminate_constraints.is_empty() {
+            tier = FindingTier::Unknown;
+        }
         let distance: Option<usize> = witness_path
             .as_ref()
             .map(|path: &PathWitness| path.distance);
@@ -138,6 +155,7 @@ pub fn rank_candidates<T: TaintOracle>(
                 cwe: candidate.cwe.clone(),
                 severity: candidate.severity,
                 matched_constraints: candidate.matched_constraints.clone(),
+                indeterminate_constraints: candidate.indeterminate_constraints.clone(),
                 required_source: candidate.requires_source.clone(),
                 taint_status,
                 reachability: reachability_evidence,

@@ -1,5 +1,12 @@
 #![forbid(unsafe_code)]
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PredicateEvaluation {
+    Match,
+    NoMatch,
+    Indeterminate,
+}
+
 mod adapters;
 mod matcher;
 pub mod rank;
@@ -9,7 +16,8 @@ mod rules;
 
 pub use adapters::{
     AbstractArgument, CallGraphEdge, CallGraphView, CallSiteId, DirectCall, EdgeKind, FunctionId,
-    MAX_RESOLVED_INDIRECT_CALLEES_PER_SITE, ResolvedCallee, TaintOracle, TaintStatus,
+    MAX_RESOLVED_INDIRECT_CALLEES_PER_SITE, ResolvedCallee, TaintOracle, TaintStatus, TaintWitness,
+    TaintWitnessError,
 };
 pub use matcher::{CandidateSink, MatchOutput, SinkMatcher};
 pub use rank::{FindingEvidence, FindingTier, ReachabilityEvidence};

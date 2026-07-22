@@ -3,15 +3,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::PredicateEvaluation;
 use crate::adapters::{AbstractArgument, DirectCall, ResolvedCallee};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
-    Critical,
-    High,
-    Medium,
     Low,
+    Medium,
+    High,
+    Critical,
 }
 
 impl Severity {
@@ -65,12 +66,18 @@ pub enum ArgPredicate {
 }
 
 impl ArgPredicate {
-    pub(crate) fn matches(&self, site: &DirectCall) -> bool {
-        matches!(
-            (self, site.arguments.get(self.index())),
+    pub(crate) fn evaluate(&self, site: &DirectCall) -> PredicateEvaluation {
+        match (self, site.arguments.get(self.index())) {
             (Self::IsConstant(_), Some(AbstractArgument::Constant))
-                | (Self::IsNotConstant(_), Some(AbstractArgument::NonConstant))
-        )
+            | (Self::IsNotConstant(_), Some(AbstractArgument::NonConstant)) => {
+                PredicateEvaluation::Match
+            }
+            (Self::IsConstant(_), Some(AbstractArgument::NonConstant))
+            | (Self::IsNotConstant(_), Some(AbstractArgument::Constant)) => {
+                PredicateEvaluation::NoMatch
+            }
+            (_, Some(AbstractArgument::Unknown) | None) => PredicateEvaluation::Indeterminate,
+        }
     }
 
     const fn index(&self) -> usize {
