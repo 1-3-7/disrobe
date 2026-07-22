@@ -6,6 +6,7 @@ mod handlers;
 mod ir;
 mod lift;
 mod microop;
+pub mod oracle;
 mod profile;
 mod state;
 pub mod structure;
