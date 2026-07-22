@@ -1,3 +1,4 @@
+use disrobe_bytes::{ByteReadError, ByteReader};
 use indexmap::IndexMap;
 
 use crate::error::{Error, Result};
@@ -221,7 +222,7 @@ pub fn load_with_reftable(data: &[u8], version: PyVersion) -> Result<(Object, Re
     let mut r: Reader<'_> = Reader::new(data, version, true);
     let obj: Object = r.read_object(0)?;
     let mut dump: RefTableDump = r.dump.take().unwrap_or_else(RefTableDump::empty);
-    dump.finalize(r.pos);
+    dump.finalize(r.cursor.position());
     Ok((obj, dump))
 }
 
@@ -231,10 +232,15 @@ enum RefSlot {
     Ready(Object),
 }
 
+const fn byte_read_error_to_eof(error: ByteReadError) -> Error {
+    Error::Eof {
+        offset: error.offset,
+    }
+}
+
 #[derive(Debug)]
 struct Reader<'a> {
-    buf: &'a [u8],
-    pos: usize,
+    cursor: ByteReader<'a>,
     refs: Vec<RefSlot>,
     interned_strings: Vec<String>,
     version: PyVersion,
@@ -246,8 +252,7 @@ struct Reader<'a> {
 impl<'a> Reader<'a> {
     const fn new(buf: &'a [u8], version: PyVersion, trace: bool) -> Self {
         Self {
-            buf,
-            pos: 0,
+            cursor: ByteReader::new(buf),
             refs: Vec::new(),
             interned_strings: Vec::new(),
             version,
@@ -271,59 +276,42 @@ impl<'a> Reader<'a> {
     }
 
     fn read_byte(&mut self) -> Result<u8> {
-        let b: u8 = *self
-            .buf
-            .get(self.pos)
-            .ok_or(Error::Eof { offset: self.pos })?;
-        self.pos += 1;
-        Ok(b)
+        self.cursor.read_u8().map_err(byte_read_error_to_eof)
     }
 
     #[inline]
     const fn remaining(&self) -> usize {
-        self.buf.len().saturating_sub(self.pos)
+        self.cursor.remaining()
     }
 
     fn read_bytes(&mut self, n: usize) -> Result<&'a [u8]> {
-        let end: usize = self
-            .pos
-            .checked_add(n)
-            .ok_or(Error::Eof { offset: self.pos })?;
-        if end > self.buf.len() {
-            return Err(Error::Eof { offset: self.pos });
-        }
-        let slice: &'a [u8] = &self.buf[self.pos..end];
-        self.pos = end;
-        Ok(slice)
+        self.cursor.read_bytes(n).map_err(byte_read_error_to_eof)
     }
 
     fn read_i16(&mut self) -> Result<i32> {
-        let b: &'a [u8] = self.read_bytes(2)?;
-        Ok(i32::from(i16::from_le_bytes([b[0], b[1]])))
+        self.cursor
+            .read_i16_le()
+            .map(i32::from)
+            .map_err(byte_read_error_to_eof)
     }
 
     fn read_i32(&mut self) -> Result<i32> {
-        let b: &'a [u8] = self.read_bytes(4)?;
-        Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        self.cursor.read_i32_le().map_err(byte_read_error_to_eof)
     }
 
     fn read_u32(&mut self) -> Result<u32> {
-        let b: &'a [u8] = self.read_bytes(4)?;
-        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        self.cursor.read_u32_le().map_err(byte_read_error_to_eof)
     }
 
     fn read_i64(&mut self) -> Result<i64> {
-        let b: &'a [u8] = self.read_bytes(8)?;
-        Ok(i64::from_le_bytes([
-            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-        ]))
+        self.cursor.read_i64_le().map_err(byte_read_error_to_eof)
     }
 
     fn read_f64(&mut self) -> Result<f64> {
-        let b: &'a [u8] = self.read_bytes(8)?;
-        Ok(f64::from_le_bytes([
-            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-        ]))
+        self.cursor
+            .read_u64_le()
+            .map(f64::from_bits)
+            .map_err(byte_read_error_to_eof)
     }
 
     fn alloc_ref(&mut self, definition_offset: usize) -> Result<u32> {
@@ -363,7 +351,7 @@ impl<'a> Reader<'a> {
         if depth >= MAX_DEPTH {
             return Err(Error::DepthLimit(MAX_DEPTH));
         }
-        let start: usize = self.pos;
+        let start: usize = self.cursor.position();
         let head: u8 = self.read_byte()?;
         let tag: u8 = head & TAG_MASK;
         let has_ref: bool = head & FLAG_REF != 0;
@@ -413,7 +401,7 @@ impl<'a> Reader<'a> {
         let Some(slot): Option<usize> = entry_slot else {
             return;
         };
-        let pos: usize = self.pos;
+        let pos: usize = self.cursor.position();
         let Some(dump): Option<&mut RefTableDump> = self.dump.as_mut() else {
             return;
         };
@@ -478,7 +466,7 @@ impl<'a> Reader<'a> {
             b'R' => self.decode_string_ref(ref_override),
             _ => Err(Error::UnknownTag {
                 tag,
-                offset: self.pos - 1,
+                offset: self.cursor.position() - 1,
             }),
         }
     }
@@ -516,7 +504,7 @@ impl<'a> Reader<'a> {
 
     fn read_ascii_float(&mut self) -> Result<f64> {
         let len: usize = self.read_byte()? as usize;
-        let offset: usize = self.pos;
+        let offset: usize = self.cursor.position();
         let bytes: &'a [u8] = self.read_bytes(len)?;
         let s: &str =
             core::str::from_utf8(bytes).map_err(|source| Error::InvalidUtf8 { offset, source })?;
@@ -601,7 +589,7 @@ impl<'a> Reader<'a> {
     }
 
     fn decode_back_ref(&mut self, ref_override: &mut Option<u32>) -> Result<Object> {
-        let reference_offset: usize = self.pos.saturating_sub(1);
+        let reference_offset: usize = self.cursor.position().saturating_sub(1);
         let idx: u32 = self.read_u32()?;
         let already_nodes: u64 = self.materialized_nodes;
         let already_bytes: u64 = self.materialized_bytes;
@@ -658,8 +646,8 @@ impl<'a> Reader<'a> {
         let capacity: usize = (digit_count as usize).min(self.remaining() / 2);
         let mut digits: Vec<u16> = Vec::with_capacity(capacity);
         for _ in 0..digit_count {
-            let b: &'a [u8] = self.read_bytes(2)?;
-            digits.push(u16::from_le_bytes([b[0], b[1]]));
+            let digit: u16 = self.cursor.read_u16_le().map_err(byte_read_error_to_eof)?;
+            digits.push(digit);
         }
         Ok(Object::Long(BigInt { sign, digits }))
     }
@@ -801,15 +789,7 @@ impl<'a> Reader<'a> {
         if extra_len == 0 {
             return Ok(Vec::new());
         }
-        let end: usize = self
-            .pos
-            .checked_add(extra_len)
-            .ok_or(Error::Eof { offset: self.pos })?;
-        if end > self.buf.len() {
-            return Err(Error::Eof { offset: self.pos });
-        }
-        let bytes: Vec<u8> = self.buf[self.pos..end].to_vec();
-        self.pos = end;
+        let bytes: Vec<u8> = self.read_bytes(extra_len)?.to_vec();
         Ok(bytes)
     }
 
@@ -1090,6 +1070,23 @@ mod tests {
         let data: Vec<u8> = b"i".iter().copied().chain(42i32.to_le_bytes()).collect();
         let obj: Object = load(&data, PyVersion::PY312).unwrap();
         assert_eq!(obj, Object::Int(42));
+    }
+
+    #[test]
+    fn binary_float_is_little_endian() {
+        let data: &[u8] = &[b'g', 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x3f];
+        let obj: Object = load(data, PyVersion::PY312).unwrap();
+        let Object::Float(value) = obj else {
+            panic!("expected binary float");
+        };
+        assert_eq!(value.to_bits(), 0x3ff0_0000_0000_0001);
+    }
+
+    #[test]
+    fn truncated_binary_float_preserves_payload_eof_offset() {
+        let data: &[u8] = &[b'g', 0x00, 0x00, 0x00, 0x00];
+        let err: Error = load(data, PyVersion::PY312).unwrap_err();
+        assert!(matches!(err, Error::Eof { offset: 1 }));
     }
 
     fn string_tag_payload(text: &[u8]) -> Vec<u8> {
