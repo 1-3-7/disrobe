@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use disrobe_bytes::ByteReader;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -257,155 +258,83 @@ impl ClassFile {
     }
 }
 
-pub(crate) struct Reader<'a> {
-    bytes: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Reader<'a> {
-    #[inline]
-    pub(crate) const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, pos: 0 }
-    }
-
-    #[inline]
-    pub(crate) const fn remaining(&self) -> usize {
-        self.bytes.len().saturating_sub(self.pos)
-    }
-
-    #[inline]
-    const fn end_for(&self, n: usize) -> Result<usize> {
-        let Some(end): Option<usize> = self.pos.checked_add(n) else {
-            return Err(Error::Truncated {
-                offset: self.pos,
-                needed: n,
-                had: self.remaining(),
-            });
-        };
-        if end > self.bytes.len() {
-            return Err(Error::Truncated {
-                offset: self.pos,
-                needed: n,
-                had: self.remaining(),
-            });
-        }
-        Ok(end)
-    }
-
-    #[inline]
-    pub(crate) fn u8(&mut self) -> Result<u8> {
-        let raw: &'a [u8] = self.take(1)?;
-        let v: u8 = raw[0];
-        Ok(v)
-    }
-
-    #[inline]
-    pub(crate) fn u16(&mut self) -> Result<u16> {
-        let raw: &'a [u8] = self.take(2)?;
-        let v: u16 = u16::from_be_bytes([raw[0], raw[1]]);
-        Ok(v)
-    }
-
-    #[inline]
-    fn u32(&mut self) -> Result<u32> {
-        let raw: &'a [u8] = self.take(4)?;
-        let v: u32 = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]);
-        Ok(v)
-    }
-
-    #[inline]
-    fn u64(&mut self) -> Result<u64> {
-        let hi: u32 = self.u32()?;
-        let lo: u32 = self.u32()?;
-        Ok((u64::from(hi) << 32) | u64::from(lo))
-    }
-
-    #[inline]
-    fn take(&mut self, n: usize) -> Result<&'a [u8]> {
-        let end: usize = self.end_for(n)?;
-        let out: &'a [u8] = &self.bytes[self.pos..end];
-        self.pos = end;
-        Ok(out)
-    }
-}
-
 #[inline]
 fn bounded_capacity(count: u16, remaining: usize) -> usize {
     usize::from(count).min(remaining)
 }
 
 pub fn parse(bytes: &[u8]) -> Result<ClassFile> {
-    let mut r: Reader<'_> = Reader::new(bytes);
-    let magic: u32 = r.u32()?;
+    let mut r: ByteReader<'_> = ByteReader::new(bytes);
+    let magic: u32 = r.read_u32_be()?;
     if magic != CLASS_MAGIC && !disrobe_binfmt::structural::validate_java_class(bytes) {
         return Err(Error::BadMagic(magic));
     }
-    let minor_version: u16 = r.u16()?;
-    let major_version: u16 = r.u16()?;
+    let minor_version: u16 = r.read_u16_be()?;
+    let major_version: u16 = r.read_u16_be()?;
     if !(MIN_MAJOR..=MAX_MAJOR).contains(&major_version) {
         return Err(Error::UnsupportedClassVersion {
             major: major_version,
         });
     }
-    let cp_count: u16 = r.u16()?;
+    let cp_count: u16 = r.read_u16_be()?;
     let mut cp: Vec<ConstantPoolEntry> =
         Vec::with_capacity(bounded_capacity(cp_count, r.remaining()));
     cp.push(ConstantPoolEntry::Placeholder);
     let mut i: usize = 1;
     while i < usize::from(cp_count) {
-        let tag: u8 = r.u8()?;
+        let tag: u8 = r.read_u8()?;
         let entry: ConstantPoolEntry = match tag {
             1 => {
-                let len: u16 = r.u16()?;
-                let raw: &[u8] = r.take(usize::from(len))?;
+                let len: u16 = r.read_u16_be()?;
+                let raw: &[u8] = r.read_bytes(usize::from(len))?;
                 ConstantPoolEntry::Utf8(decode_modified_utf8(raw)?)
             }
-            3 => ConstantPoolEntry::Integer(r.u32()? as i32),
-            4 => ConstantPoolEntry::Float(r.u32()?),
-            5 => ConstantPoolEntry::Long(r.u64()? as i64),
-            6 => ConstantPoolEntry::Double(r.u64()?),
+            3 => ConstantPoolEntry::Integer(r.read_u32_be()? as i32),
+            4 => ConstantPoolEntry::Float(r.read_u32_be()?),
+            5 => ConstantPoolEntry::Long(r.read_u64_be()? as i64),
+            6 => ConstantPoolEntry::Double(r.read_u64_be()?),
             7 => ConstantPoolEntry::Class {
-                name_index: r.u16()?,
+                name_index: r.read_u16_be()?,
             },
             8 => ConstantPoolEntry::String {
-                utf8_index: r.u16()?,
+                utf8_index: r.read_u16_be()?,
             },
             9 => ConstantPoolEntry::Fieldref {
-                class_index: r.u16()?,
-                name_and_type_index: r.u16()?,
+                class_index: r.read_u16_be()?,
+                name_and_type_index: r.read_u16_be()?,
             },
             10 => ConstantPoolEntry::Methodref {
-                class_index: r.u16()?,
-                name_and_type_index: r.u16()?,
+                class_index: r.read_u16_be()?,
+                name_and_type_index: r.read_u16_be()?,
             },
             11 => ConstantPoolEntry::InterfaceMethodref {
-                class_index: r.u16()?,
-                name_and_type_index: r.u16()?,
+                class_index: r.read_u16_be()?,
+                name_and_type_index: r.read_u16_be()?,
             },
             12 => ConstantPoolEntry::NameAndType {
-                name_index: r.u16()?,
-                descriptor_index: r.u16()?,
+                name_index: r.read_u16_be()?,
+                descriptor_index: r.read_u16_be()?,
             },
             15 => ConstantPoolEntry::MethodHandle {
-                reference_kind: r.u8()?,
-                reference_index: r.u16()?,
+                reference_kind: r.read_u8()?,
+                reference_index: r.read_u16_be()?,
             },
             16 => ConstantPoolEntry::MethodType {
-                descriptor_index: r.u16()?,
+                descriptor_index: r.read_u16_be()?,
             },
             17 => ConstantPoolEntry::Dynamic {
-                bootstrap_method_attr_index: r.u16()?,
-                name_and_type_index: r.u16()?,
+                bootstrap_method_attr_index: r.read_u16_be()?,
+                name_and_type_index: r.read_u16_be()?,
             },
             18 => ConstantPoolEntry::InvokeDynamic {
-                bootstrap_method_attr_index: r.u16()?,
-                name_and_type_index: r.u16()?,
+                bootstrap_method_attr_index: r.read_u16_be()?,
+                name_and_type_index: r.read_u16_be()?,
             },
             19 => ConstantPoolEntry::Module {
-                name_index: r.u16()?,
+                name_index: r.read_u16_be()?,
             },
             20 => ConstantPoolEntry::Package {
-                name_index: r.u16()?,
+                name_index: r.read_u16_be()?,
             },
             other => return Err(Error::UnknownConstantTag(other, i)),
         };
@@ -421,28 +350,28 @@ pub fn parse(bytes: &[u8]) -> Result<ClassFile> {
             i += 1;
         }
     }
-    let access_flags: u16 = r.u16()?;
-    let this_class: u16 = r.u16()?;
-    let super_class: u16 = r.u16()?;
-    let interfaces_count: u16 = r.u16()?;
+    let access_flags: u16 = r.read_u16_be()?;
+    let this_class: u16 = r.read_u16_be()?;
+    let super_class: u16 = r.read_u16_be()?;
+    let interfaces_count: u16 = r.read_u16_be()?;
     let mut interfaces: Vec<u16> =
         Vec::with_capacity(bounded_capacity(interfaces_count, r.remaining()));
     for _ in 0..interfaces_count {
-        interfaces.push(r.u16()?);
+        interfaces.push(r.read_u16_be()?);
     }
-    let fields_count: u16 = r.u16()?;
+    let fields_count: u16 = r.read_u16_be()?;
     let mut fields: Vec<FieldInfo> =
         Vec::with_capacity(bounded_capacity(fields_count, r.remaining()));
     for _ in 0..fields_count {
         fields.push(parse_field(&mut r)?);
     }
-    let methods_count: u16 = r.u16()?;
+    let methods_count: u16 = r.read_u16_be()?;
     let mut methods: Vec<MethodInfo> =
         Vec::with_capacity(bounded_capacity(methods_count, r.remaining()));
     for _ in 0..methods_count {
         methods.push(parse_method(&mut r)?);
     }
-    let attrs_count: u16 = r.u16()?;
+    let attrs_count: u16 = r.read_u16_be()?;
     let mut attributes: Vec<Attribute> =
         Vec::with_capacity(bounded_capacity(attrs_count, r.remaining()));
     for _ in 0..attrs_count {
@@ -462,11 +391,11 @@ pub fn parse(bytes: &[u8]) -> Result<ClassFile> {
     })
 }
 
-fn parse_field(r: &mut Reader<'_>) -> Result<FieldInfo> {
-    let access_flags: u16 = r.u16()?;
-    let name_index: u16 = r.u16()?;
-    let descriptor_index: u16 = r.u16()?;
-    let attrs_count: u16 = r.u16()?;
+fn parse_field(r: &mut ByteReader<'_>) -> Result<FieldInfo> {
+    let access_flags: u16 = r.read_u16_be()?;
+    let name_index: u16 = r.read_u16_be()?;
+    let descriptor_index: u16 = r.read_u16_be()?;
+    let attrs_count: u16 = r.read_u16_be()?;
     let mut attributes: Vec<Attribute> =
         Vec::with_capacity(bounded_capacity(attrs_count, r.remaining()));
     for _ in 0..attrs_count {
@@ -480,11 +409,11 @@ fn parse_field(r: &mut Reader<'_>) -> Result<FieldInfo> {
     })
 }
 
-fn parse_method(r: &mut Reader<'_>) -> Result<MethodInfo> {
-    let access_flags: u16 = r.u16()?;
-    let name_index: u16 = r.u16()?;
-    let descriptor_index: u16 = r.u16()?;
-    let attrs_count: u16 = r.u16()?;
+fn parse_method(r: &mut ByteReader<'_>) -> Result<MethodInfo> {
+    let access_flags: u16 = r.read_u16_be()?;
+    let name_index: u16 = r.read_u16_be()?;
+    let descriptor_index: u16 = r.read_u16_be()?;
+    let attrs_count: u16 = r.read_u16_be()?;
     let mut attributes: Vec<Attribute> =
         Vec::with_capacity(bounded_capacity(attrs_count, r.remaining()));
     for _ in 0..attrs_count {
@@ -498,15 +427,15 @@ fn parse_method(r: &mut Reader<'_>) -> Result<MethodInfo> {
     })
 }
 
-fn parse_attribute(r: &mut Reader<'_>) -> Result<Attribute> {
-    let name_index: u16 = r.u16()?;
-    let length: u32 = r.u32()?;
+fn parse_attribute(r: &mut ByteReader<'_>) -> Result<Attribute> {
+    let name_index: u16 = r.read_u16_be()?;
+    let length: u32 = r.read_u32_be()?;
     let length_usize: usize = usize::try_from(length).map_err(|_| Error::Truncated {
-        offset: r.pos,
+        offset: r.position(),
         needed: usize::MAX,
         had: r.remaining(),
     })?;
-    let info: Vec<u8> = r.take(length_usize)?.to_vec();
+    let info: Vec<u8> = r.read_bytes(length_usize)?.to_vec();
     Ok(Attribute { name_index, info })
 }
 
@@ -605,36 +534,21 @@ mod tests {
     }
 
     #[test]
-    fn reader_take_rejects_offset_overflow() {
-        let mut r: Reader<'_> = Reader {
-            bytes: &[],
-            pos: usize::MAX - 1,
-        };
-        let err: Error = r.take(2).expect_err("overflowing cursor must fail");
-        assert!(matches!(
-            err,
-            Error::Truncated {
-                offset,
-                needed: 2,
-                ..
-            } if offset == usize::MAX - 1
-        ));
-    }
+    fn reader_uses_big_endian_byte_reader_and_preserves_eof_error() {
+        let mut reader: ByteReader<'_> = ByteReader::new(&[0x12, 0x34, 0x56]);
+        assert_eq!(reader.read_u16_be().expect("u16 read"), 0x1234);
 
-    #[test]
-    fn reader_u32_rejects_offset_overflow() {
-        let mut r: Reader<'_> = Reader {
-            bytes: &[0, 0, 0, 0],
-            pos: usize::MAX - 2,
-        };
-        let err: Error = r.u32().expect_err("overflowing u32 cursor must fail");
+        let error: Error = reader
+            .read_u16_be()
+            .map_err(Error::from)
+            .expect_err("truncated u16 read");
         assert!(matches!(
-            err,
+            error,
             Error::Truncated {
-                offset,
-                needed: 4,
-                ..
-            } if offset == usize::MAX - 2
+                offset: 2,
+                needed: 2,
+                had: 1,
+            }
         ));
     }
 
