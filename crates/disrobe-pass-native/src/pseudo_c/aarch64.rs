@@ -9,6 +9,9 @@ use super::{
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[path = "aarch64_cfg.rs"]
+mod aarch64_cfg;
+
 const MAX_INSTRUCTIONS: usize = 4096;
 const ITEM_STRIDE: u64 = 16;
 const MAX_FRAME_BYTES: i64 = 1 << 20;
@@ -96,6 +99,7 @@ pub(super) fn recover_with_calls(
     let mut items: Vec<Item> = Vec::new();
     let mut return_width: Width = Width::W64;
     let mut flags: Option<TrackedFlags> = None;
+    let mut flag_definitions: BTreeMap<usize, TrackedFlags> = BTreeMap::new();
     let frame: FrameAnalysis = frame_analysis(&insns)?;
     let outgoing: BTreeMap<usize, Vec<OutgoingSlot>> = outgoing_stores(&insns, calls)?;
     for (index, insn) in insns.iter().enumerate() {
@@ -113,14 +117,6 @@ pub(super) fn recover_with_calls(
         }
         if has_unsupported_register_class(&insn.operands) {
             return Err(reject_at(insn, "unsupported instruction"));
-        }
-        let sets_flags: bool = matches!(
-            insn.mnemonic.as_str(),
-            "adds" | "subs" | "cmp" | "cmn" | "tst"
-        );
-        let consumes_flags: bool = insn.mnemonic.starts_with("b.");
-        if !sets_flags && !consumes_flags {
-            flags = None;
         }
         if operand_is_vector(insn) {
             let stmts: Vec<Stmt> = lower_vector(insn)?;
@@ -144,7 +140,10 @@ pub(super) fn recover_with_calls(
                 };
                 push_stmts(&mut items, base, index, stmts)?;
                 if matches!(insn.mnemonic.as_str(), "subs" | "adds") {
-                    flags = new_flags;
+                    flags.clone_from(&new_flags);
+                }
+                if let Some(definition) = new_flags {
+                    flag_definitions.insert(index, definition);
                 }
                 if dest.reg == Reg::Rax {
                     return_width = dest.width;
@@ -185,7 +184,8 @@ pub(super) fn recover_with_calls(
             "cmp" | "cmn" | "tst" => {
                 let (stmts, new_flags): (Vec<Stmt>, TrackedFlags) = lower_flag_setter(insn)?;
                 push_stmts(&mut items, base, index, stmts)?;
-                flags = Some(new_flags);
+                flags = Some(new_flags.clone());
+                flag_definitions.insert(index, new_flags);
             }
             "cbz" | "cbnz" => {
                 let operands: Vec<&str> = split_operands(&insn.operands);
@@ -300,17 +300,35 @@ pub(super) fn recover_with_calls(
     }
     resolve_vector_types(&mut items)?;
     let vec_abi: VectorAbi = scan_vector_abi(&items)?;
-    finish(&insns, &items, return_width, calls, &vec_abi)
+    finish(
+        &insns,
+        &items,
+        base,
+        &flag_definitions,
+        return_width,
+        calls,
+        &vec_abi,
+    )
 }
 
 fn finish(
     insns: &[DisasmInsn],
     items: &[Item],
+    base: u64,
+    flag_definitions: &BTreeMap<usize, TrackedFlags>,
     return_width: Width,
     calls: &[ResolvedCall],
     vec_abi: &VectorAbi,
 ) -> Result<LeafRecovery> {
-    let mut structured: Structured = structure_items(items)?;
+    let mut structured: Structured =
+        match aarch64_cfg::structure(items, insns, base, flag_definitions) {
+            aarch64_cfg::Attempt::Structured(structured) => structured,
+            aarch64_cfg::Attempt::NotCandidate => structure_items(items)?,
+            aarch64_cfg::Attempt::RejectedNzcv => {
+                let _: Structured = structure_items(items)?;
+                return Err(reject("conditional branch lacks live nzcv state"));
+            }
+        };
     if !calls.is_empty() {
         let call_map = calls
             .iter()
