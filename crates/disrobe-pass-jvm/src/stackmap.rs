@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use disrobe_bytes::ByteReader;
 use serde::{Deserialize, Serialize};
 
 use crate::bytecode::{Instruction, Operands};
@@ -84,78 +85,41 @@ pub struct StackMapReport {
     pub note: String,
 }
 
-struct Reader<'a> {
-    bytes: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Reader<'a> {
-    const fn new(bytes: &'a [u8], pos: usize) -> Self {
-        Self { bytes, pos }
-    }
-
-    fn u8(&mut self) -> Option<u8> {
-        let s: &'a [u8] = self.take(1)?;
-        let b: u8 = s[0];
-        Some(b)
-    }
-
-    fn u16(&mut self) -> Option<u16> {
-        let s: &'a [u8] = self.take(2)?;
-        Some(u16::from_be_bytes([s[0], s[1]]))
-    }
-
-    fn u32(&mut self) -> Option<u32> {
-        let s: &'a [u8] = self.take(4)?;
-        Some(u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
-    }
-
-    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
-        let end: usize = self.end_for(n)?;
-        let out: &'a [u8] = &self.bytes[self.pos..end];
-        self.pos = end;
-        Some(out)
-    }
-
-    fn end_for(&self, n: usize) -> Option<usize> {
-        let end: usize = self.pos.checked_add(n)?;
-        (end <= self.bytes.len()).then_some(end)
-    }
-}
-
 fn find_stack_map_table<'a>(
     info: &'a [u8],
     code_length: usize,
     utf8_lookup: &dyn Fn(u16) -> Option<String>,
 ) -> Option<&'a [u8]> {
     let exc_count_off: usize = 8usize.checked_add(code_length)?;
-    let mut r: Reader<'a> = Reader::new(info, exc_count_off);
-    let exc_count: u16 = r.u16()?;
+    let mut r: ByteReader<'a> = ByteReader::new(info);
+    r.seek(exc_count_off).ok()?;
+    let exc_count: u16 = r.read_u16_be().ok()?;
     let exc_bytes: usize = usize::from(exc_count).checked_mul(8)?;
-    r.pos = r.pos.checked_add(exc_bytes)?;
-    let attr_count: u16 = r.u16()?;
+    let exception_end: usize = r.position().checked_add(exc_bytes)?;
+    r.seek(exception_end).ok()?;
+    let attr_count: u16 = r.read_u16_be().ok()?;
     for _ in 0..attr_count {
-        let name_index: u16 = r.u16()?;
-        let attr_len: u32 = r.u32()?;
-        let body_start: usize = r.pos;
+        let name_index: u16 = r.read_u16_be().ok()?;
+        let attr_len: u32 = r.read_u32_be().ok()?;
+        let body_start: usize = r.position();
         let attr_len_usize: usize = usize::try_from(attr_len).ok()?;
         let body_end: usize = body_start.checked_add(attr_len_usize)?;
         let body: &'a [u8] = info.get(body_start..body_end)?;
         if utf8_lookup(name_index).as_deref() == Some("StackMapTable") {
             return Some(body);
         }
-        r.pos = body_end;
+        r.seek(body_end).ok()?;
     }
     None
 }
 
 fn parse_declared_offsets(table: &[u8]) -> Option<Vec<u32>> {
-    let mut r: Reader<'_> = Reader::new(table, 0);
-    let count: u16 = r.u16()?;
+    let mut r: ByteReader<'_> = ByteReader::new(table);
+    let count: u16 = r.read_u16_be().ok()?;
     let mut offsets: Vec<u32> = Vec::with_capacity(usize::from(count));
     let mut current: i64 = -1;
     for _ in 0..count {
-        let frame_type: u8 = r.u8()?;
+        let frame_type: u8 = r.read_u8().ok()?;
         let delta: u16 = match frame_type {
             0..=SAME_FRAME_MAX => u16::from(frame_type),
             SAME_LOCALS_1_STACK_MIN..=SAME_LOCALS_1_STACK_MAX => {
@@ -163,13 +127,13 @@ fn parse_declared_offsets(table: &[u8]) -> Option<Vec<u32>> {
                 u16::from(frame_type - SAME_LOCALS_1_STACK_MIN)
             }
             SAME_LOCALS_1_STACK_EXTENDED => {
-                let d: u16 = r.u16()?;
+                let d: u16 = r.read_u16_be().ok()?;
                 skip_verification_type(&mut r)?;
                 d
             }
-            CHOP_MIN..=CHOP_MAX | SAME_FRAME_EXTENDED => r.u16()?,
+            CHOP_MIN..=CHOP_MAX | SAME_FRAME_EXTENDED => r.read_u16_be().ok()?,
             APPEND_MIN..=APPEND_MAX => {
-                let d: u16 = r.u16()?;
+                let d: u16 = r.read_u16_be().ok()?;
                 let added: u8 = frame_type - (APPEND_MIN - 1);
                 for _ in 0..added {
                     skip_verification_type(&mut r)?;
@@ -177,12 +141,12 @@ fn parse_declared_offsets(table: &[u8]) -> Option<Vec<u32>> {
                 d
             }
             FULL_FRAME => {
-                let d: u16 = r.u16()?;
-                let locals: u16 = r.u16()?;
+                let d: u16 = r.read_u16_be().ok()?;
+                let locals: u16 = r.read_u16_be().ok()?;
                 for _ in 0..locals {
                     skip_verification_type(&mut r)?;
                 }
-                let stack: u16 = r.u16()?;
+                let stack: u16 = r.read_u16_be().ok()?;
                 for _ in 0..stack {
                     skip_verification_type(&mut r)?;
                 }
@@ -200,10 +164,10 @@ fn parse_declared_offsets(table: &[u8]) -> Option<Vec<u32>> {
     Some(offsets)
 }
 
-fn skip_verification_type(r: &mut Reader<'_>) -> Option<()> {
-    let tag: u8 = r.u8()?;
+fn skip_verification_type(r: &mut ByteReader<'_>) -> Option<()> {
+    let tag: u8 = r.read_u8().ok()?;
     if tag == ITEM_OBJECT || tag == ITEM_UNINITIALIZED {
-        r.u16()?;
+        r.read_u16_be().ok()?;
     }
     Some(())
 }
@@ -488,9 +452,9 @@ mod tests {
     }
 
     #[test]
-    fn reader_rejects_offset_overflow() {
-        let mut r: Reader<'_> = Reader::new(&[], usize::MAX - 1);
-        assert_eq!(r.u16(), None);
+    fn stack_map_lookup_rejects_offset_overflow() {
+        let lookup: fn(u16) -> Option<String> = |_| None;
+        assert_eq!(find_stack_map_table(&[], usize::MAX, &lookup), None);
     }
 
     fn build_code_info(code: &[u8], attributes: &[(u16, &[u8])]) -> Vec<u8> {

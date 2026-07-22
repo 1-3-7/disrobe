@@ -1,6 +1,8 @@
 use miette::Diagnostic;
 use thiserror::Error;
 
+use disrobe_bytes::ByteReadError;
+
 pub type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Debug, Error, Diagnostic)]
@@ -139,4 +141,14 @@ pub enum Error {
 
     #[error("DR-JVM-0033: resource string index {idx} out of range (size {size})")]
     BadArscStringIndex { idx: usize, size: usize },
+}
+
+impl From<ByteReadError> for Error {
+    fn from(error: ByteReadError) -> Self {
+        Self::Truncated {
+            offset: error.offset,
+            needed: error.needed,
+            had: error.available,
+        }
+    }
 }

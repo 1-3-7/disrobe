@@ -1,10 +1,11 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
+use disrobe_bytes::ByteReader;
 use serde::{Deserialize, Serialize};
 
 use crate::bytecode::escape_java_string;
-use crate::classfile::{Attribute, ClassFile, ConstantPoolEntry, MethodInfo, Reader};
+use crate::classfile::{Attribute, ClassFile, ConstantPoolEntry, MethodInfo};
 use crate::descriptor::{self, JavaType};
 
 const MAX_ANNOTATION_INPUT_BYTES: usize = 4 * 1024 * 1024;
@@ -188,8 +189,8 @@ pub(crate) fn parse_inner_classes(cf: &ClassFile) -> InnerClassesAttribute {
     let Some(attr): Option<&Attribute> = found else {
         return InnerClassesAttribute::Absent;
     };
-    let mut reader: Reader<'_> = Reader::new(&attr.info);
-    let Some(count): Option<u16> = reader.u16().ok() else {
+    let mut reader: ByteReader<'_> = ByteReader::new(&attr.info);
+    let Some(count): Option<u16> = reader.read_u16_be().ok() else {
         return InnerClassesAttribute::Rejected;
     };
     let Some(expected_bytes): Option<usize> = usize::from(count).checked_mul(8) else {
@@ -206,16 +207,16 @@ pub(crate) fn parse_inner_classes(cf: &ClassFile) -> InnerClassesAttribute {
     let mut seen_indices: BTreeSet<u16> = BTreeSet::new();
     let mut text_bytes_remaining: usize = MAX_ANNOTATION_TEXT_BYTES;
     for _ in 0..count {
-        let Some(inner_index): Option<u16> = reader.u16().ok() else {
+        let Some(inner_index): Option<u16> = reader.read_u16_be().ok() else {
             return InnerClassesAttribute::Rejected;
         };
-        let Some(outer_index): Option<u16> = reader.u16().ok() else {
+        let Some(outer_index): Option<u16> = reader.read_u16_be().ok() else {
             return InnerClassesAttribute::Rejected;
         };
-        let Some(name_index): Option<u16> = reader.u16().ok() else {
+        let Some(name_index): Option<u16> = reader.read_u16_be().ok() else {
             return InnerClassesAttribute::Rejected;
         };
-        let Some(flags): Option<u16> = reader.u16().ok() else {
+        let Some(flags): Option<u16> = reader.read_u16_be().ok() else {
             return InnerClassesAttribute::Rejected;
         };
         if inner_index == 0
@@ -640,12 +641,12 @@ impl DeclarationAnnotationRenderer {
     }
 }
 
-fn read_u8(reader: &mut Reader<'_>, reason: &'static str) -> AnnotationResult<u8> {
-    reader.u8().map_err(|_| AnnotationError(reason))
+fn read_u8(reader: &mut ByteReader<'_>, reason: &'static str) -> AnnotationResult<u8> {
+    reader.read_u8().map_err(|_| AnnotationError(reason))
 }
 
-fn read_u16(reader: &mut Reader<'_>, reason: &'static str) -> AnnotationResult<u16> {
-    reader.u16().map_err(|_| AnnotationError(reason))
+fn read_u16(reader: &mut ByteReader<'_>, reason: &'static str) -> AnnotationResult<u16> {
+    reader.read_u16_be().map_err(|_| AnnotationError(reason))
 }
 
 fn reserve<T>(values: &mut Vec<T>, additional: usize) -> AnnotationResult<()> {
@@ -688,7 +689,7 @@ fn integer_constant(cf: &ClassFile, index: u16) -> AnnotationResult<i32> {
 
 fn parse_annotation(
     cf: &ClassFile,
-    reader: &mut Reader<'_>,
+    reader: &mut ByteReader<'_>,
     depth: usize,
     budget: &mut AnnotationParseBudget,
 ) -> AnnotationResult<Annotation> {
@@ -743,7 +744,7 @@ fn parse_annotation(
 
 fn parse_annotation_value(
     cf: &ClassFile,
-    reader: &mut Reader<'_>,
+    reader: &mut ByteReader<'_>,
     depth: usize,
     budget: &mut AnnotationParseBudget,
 ) -> AnnotationResult<AnnotationValue> {
@@ -875,7 +876,7 @@ fn parse_annotation_attribute(
     attr: &Attribute,
     budget: &mut AnnotationParseBudget,
 ) -> AnnotationResult<Vec<Annotation>> {
-    let mut reader: Reader<'_> = Reader::new(&attr.info);
+    let mut reader: ByteReader<'_> = ByteReader::new(&attr.info);
     let count: usize = usize::from(read_u16(
         &mut reader,
         "truncated declaration annotation count",
@@ -1061,7 +1062,7 @@ pub(crate) fn render_annotation_defaults(cf: &ClassFile) -> BTreeMap<usize, Stri
             defaults.insert(method_index, UNRESOLVED_ANNOTATION_VALUE.to_string());
             continue;
         }
-        let mut reader: Reader<'_> = Reader::new(&attr.info);
+        let mut reader: ByteReader<'_> = ByteReader::new(&attr.info);
         let value: AnnotationValue =
             match parse_annotation_value(cf, &mut reader, 0, &mut parse_budget) {
                 Ok(value) if reader.remaining() == 0 => value,
