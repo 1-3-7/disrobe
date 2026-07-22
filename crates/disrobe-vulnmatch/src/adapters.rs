@@ -118,6 +118,10 @@ pub trait CallGraphView {
 
     fn direct_calls(&self) -> Vec<DirectCall>;
 
+    fn entry_points_complete(&self) -> bool {
+        true
+    }
+
     fn call_edges(&self) -> Vec<CallGraphEdge> {
         let mut edges: Vec<CallGraphEdge> = self
             .direct_calls()
