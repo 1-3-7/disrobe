@@ -121,6 +121,13 @@ pub struct StubInput {
     pub char_array_args: Vec<Vec<u16>>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ExecCapture {
+    pub(crate) output: Result<StubOutput, EmulationError>,
+    pub(crate) arg_arrays_final: Vec<Vec<u8>>,
+    pub(crate) locals_final: Vec<i64>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct FieldInitEnv {
     pub field_data: std::collections::BTreeMap<u32, Vec<u8>>,
@@ -786,6 +793,126 @@ pub(crate) fn emulate_stub_with_init_prevalidated(
     }
     let mut vm: Vm<'_> = Vm::with_env(body, args, heap, heap_bytes, env.clone());
     vm.run()
+}
+
+pub(crate) fn emulate_capture(body: &MethodBody, input: &StubInput) -> ExecCapture {
+    let initial_arrays: Vec<Vec<u8>> = input_array_bytes(input);
+    if let Err(error) = validate_stub_body(body) {
+        return ExecCapture {
+            output: Err(error),
+            arg_arrays_final: initial_arrays,
+            locals_final: Vec::new(),
+        };
+    }
+    let mut heap: Vec<HeapArray> = Vec::new();
+    let mut args: Vec<Value> = Vec::new();
+    let mut heap_bytes: usize = 0;
+    for &integer in &input.int_args {
+        args.push(Value::I64(integer));
+    }
+    for bytes in &input.byte_array_args {
+        heap_bytes = match heap_bytes.checked_add(bytes.len()) {
+            Some(total) if total <= MAX_HEAP_BYTES => total,
+            Some(_) | None => {
+                return ExecCapture {
+                    output: Err(EmulationError::OutOfBounds),
+                    arg_arrays_final: initial_arrays,
+                    locals_final: Vec::new(),
+                };
+            }
+        };
+        if bytes.len() > MAX_ARRAY || heap.len() >= MAX_HEAP {
+            return ExecCapture {
+                output: Err(EmulationError::OutOfBounds),
+                arg_arrays_final: initial_arrays,
+                locals_final: Vec::new(),
+            };
+        }
+        let mut array: HeapArray = HeapArray::new(bytes.len(), 1, HeapKind::ByteArray);
+        array.bytes.copy_from_slice(bytes);
+        heap.push(array);
+        args.push(Value::Array(Some(heap.len() - 1)));
+    }
+    for chars in &input.char_array_args {
+        let bytes_len: usize = match chars.len().checked_mul(2) {
+            Some(value) => value,
+            None => {
+                return ExecCapture {
+                    output: Err(EmulationError::OutOfBounds),
+                    arg_arrays_final: initial_arrays,
+                    locals_final: Vec::new(),
+                };
+            }
+        };
+        heap_bytes = match heap_bytes.checked_add(bytes_len) {
+            Some(total) if total <= MAX_HEAP_BYTES => total,
+            Some(_) | None => {
+                return ExecCapture {
+                    output: Err(EmulationError::OutOfBounds),
+                    arg_arrays_final: initial_arrays,
+                    locals_final: Vec::new(),
+                };
+            }
+        };
+        if bytes_len > MAX_ARRAY || heap.len() >= MAX_HEAP {
+            return ExecCapture {
+                output: Err(EmulationError::OutOfBounds),
+                arg_arrays_final: initial_arrays,
+                locals_final: Vec::new(),
+            };
+        }
+        let mut array: HeapArray = HeapArray::new(chars.len(), 2, HeapKind::CharArray);
+        for (index, unit) in chars.iter().enumerate() {
+            let offset: usize = index * 2;
+            let bytes: [u8; 2] = unit.to_le_bytes();
+            array.bytes[offset] = bytes[0];
+            array.bytes[offset + 1] = bytes[1];
+        }
+        heap.push(array);
+        args.push(Value::Array(Some(heap.len() - 1)));
+    }
+    let mut vm: Vm<'_> = Vm::with_env(body, args, heap, heap_bytes, FieldInitEnv::default());
+    let output: Result<StubOutput, EmulationError> = vm.run();
+    let array_count: usize = input
+        .byte_array_args
+        .len()
+        .saturating_add(input.char_array_args.len());
+    let arg_arrays_final: Vec<Vec<u8>> = vm
+        .heap
+        .iter()
+        .take(array_count)
+        .map(|array: &HeapArray| array.bytes.clone())
+        .collect();
+    let locals_final: Vec<i64> = vm
+        .locals
+        .iter()
+        .map(|value: &Value| captured_local(*value))
+        .collect();
+    ExecCapture {
+        output,
+        arg_arrays_final,
+        locals_final,
+    }
+}
+
+fn input_array_bytes(input: &StubInput) -> Vec<Vec<u8>> {
+    let mut arrays: Vec<Vec<u8>> = input.byte_array_args.clone();
+    for chars in &input.char_array_args {
+        let mut bytes: Vec<u8> = Vec::with_capacity(chars.len().saturating_mul(2));
+        for unit in chars {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        arrays.push(bytes);
+    }
+    arrays
+}
+
+fn captured_local(value: Value) -> i64 {
+    match value {
+        Value::I32(value) => i64::from(value),
+        Value::I64(value) => value,
+        Value::Array(_) | Value::String(_) => 0,
+    }
 }
 
 #[cfg(test)]
