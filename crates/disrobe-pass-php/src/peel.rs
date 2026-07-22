@@ -188,8 +188,14 @@ fn peel_eval_chain(buf: &[u8], depth: u32) -> Result<Option<(PeelLayer, Vec<u8>)
             let translated: Vec<u8> = strtr_bytes(&body, &from, &to);
             Ok(Some((PeelLayer::Strtr, translated)))
         }
-        EvalKind::UrlDecode => Ok(Some((PeelLayer::UrlDecode, url_decode(&body, true)))),
-        EvalKind::RawUrlDecode => Ok(Some((PeelLayer::RawUrlDecode, url_decode(&body, false)))),
+        EvalKind::UrlDecode => Ok(Some((
+            PeelLayer::UrlDecode,
+            disrobe_core::codec::web_escape::percent_decode_lenient(&body, true),
+        ))),
+        EvalKind::RawUrlDecode => Ok(Some((
+            PeelLayer::RawUrlDecode,
+            disrobe_core::codec::web_escape::percent_decode_lenient(&body, false),
+        ))),
         EvalKind::HexEscape => Ok(Some((PeelLayer::HexEscape, decode_hex_escapes(&body)))),
         EvalKind::PackHex => {
             let unpacked: Vec<u8> = decode_hex_stream(&body)
@@ -532,8 +538,12 @@ fn apply_transform(kind: EvalKind, body: Vec<u8>, depth: u32) -> Option<Vec<u8>>
         EvalKind::StrRev => Some(body.iter().copied().rev().collect()),
         EvalKind::StrReplace { from, to } => str_replace_bytes(&body, &from, &to).ok(),
         EvalKind::Strtr { from, to } => Some(strtr_bytes(&body, &from, &to)),
-        EvalKind::UrlDecode => Some(url_decode(&body, true)),
-        EvalKind::RawUrlDecode => Some(url_decode(&body, false)),
+        EvalKind::UrlDecode => Some(disrobe_core::codec::web_escape::percent_decode_lenient(
+            &body, true,
+        )),
+        EvalKind::RawUrlDecode => Some(disrobe_core::codec::web_escape::percent_decode_lenient(
+            &body, false,
+        )),
         EvalKind::HexEscape => Some(decode_hex_escapes(&body)),
         EvalKind::PackHex | EvalKind::Hex2Bin => decode_hex_stream(&body),
         EvalKind::Uudecode => Some(uudecode(&body)),
@@ -777,33 +787,6 @@ fn inflate_zlib(body: &[u8], depth: u32) -> Result<Vec<u8>> {
 
 fn gunzip(body: &[u8], depth: u32) -> Result<Vec<u8>> {
     inflate_bounded(flate2::read::GzDecoder::new(body), depth)
-}
-
-fn url_decode(buf: &[u8], plus_is_space: bool) -> Vec<u8> {
-    let mut out: Vec<u8> = Vec::with_capacity(buf.len());
-    let mut i: usize = 0;
-    while i < buf.len() {
-        match buf[i] {
-            b'%' if i + 2 < buf.len() => {
-                if let (Some(hi), Some(lo)) = (hex_nibble(buf[i + 1]), hex_nibble(buf[i + 2])) {
-                    out.push((hi << 4) | lo);
-                    i += 3;
-                } else {
-                    out.push(b'%');
-                    i += 1;
-                }
-            }
-            b'+' if plus_is_space => {
-                out.push(b' ');
-                i += 1;
-            }
-            other => {
-                out.push(other);
-                i += 1;
-            }
-        }
-    }
-    out
 }
 
 fn decode_hex_escapes(buf: &[u8]) -> Vec<u8> {

@@ -1194,8 +1194,12 @@ fn apply_string_fn(fname: &[u8], args: &[Expr], env: &Env, depth: u32) -> Option
         b"str_rot13" => Some(Value::Str(first?.iter().copied().map(rot13_byte).collect())),
         b"strrev" => Some(Value::Str(first?.iter().copied().rev().collect())),
         b"convert_uudecode" => Some(Value::Str(uudecode(&first?))),
-        b"urldecode" => Some(Value::Str(url_decode(&first?, true))),
-        b"rawurldecode" => Some(Value::Str(url_decode(&first?, false))),
+        b"urldecode" => Some(Value::Str(
+            disrobe_core::codec::web_escape::percent_decode_lenient(&first?, true),
+        )),
+        b"rawurldecode" => Some(Value::Str(
+            disrobe_core::codec::web_escape::percent_decode_lenient(&first?, false),
+        )),
         b"hex2bin" => decode_hex_stream(&first?).map(Value::Str),
         b"bin2hex" => Some(Value::Str(bin2hex(&first?))),
         b"strtolower" => Some(Value::Str(first?.to_ascii_lowercase())),
@@ -1296,33 +1300,6 @@ const fn rot13_byte(b: u8) -> u8 {
         b'N'..=b'Z' | b'n'..=b'z' => b - 13,
         other => other,
     }
-}
-
-fn url_decode(buf: &[u8], plus_is_space: bool) -> Vec<u8> {
-    let mut out: Vec<u8> = Vec::with_capacity(buf.len());
-    let mut i: usize = 0;
-    while i < buf.len() {
-        match buf[i] {
-            b'%' if i + 2 < buf.len() => {
-                if let (Some(hi), Some(lo)) = (hex_nibble(buf[i + 1]), hex_nibble(buf[i + 2])) {
-                    out.push((hi << 4) | lo);
-                    i += 3;
-                } else {
-                    out.push(b'%');
-                    i += 1;
-                }
-            }
-            b'+' if plus_is_space => {
-                out.push(b' ');
-                i += 1;
-            }
-            other => {
-                out.push(other);
-                i += 1;
-            }
-        }
-    }
-    out
 }
 
 fn decode_hex_stream(buf: &[u8]) -> Option<Vec<u8>> {
