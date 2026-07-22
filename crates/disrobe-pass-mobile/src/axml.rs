@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Arguments;
 
+use disrobe_bytes::{ByteReadError, ByteReader};
 use serde::{Deserialize, Serialize};
 
 use crate::android_attrs::framework_attr_name;
@@ -212,33 +213,15 @@ fn qualified_name(prefix: Option<&str>, local: &str) -> String {
     }
 }
 
-struct Reader<'a> {
-    bytes: &'a [u8],
-    pos: usize,
+fn axml_truncated(_: ByteReadError) -> Error {
+    Error::AxmlTruncated
 }
 
-impl<'a> Reader<'a> {
-    const fn new(bytes: &'a [u8], pos: usize) -> Self {
-        Self { bytes, pos }
-    }
-
-    fn u16(&mut self) -> Result<u16> {
-        let end: usize = self.pos.checked_add(2).ok_or(Error::AxmlTruncated)?;
-        let slice: &[u8] = self.bytes.get(self.pos..end).ok_or(Error::AxmlTruncated)?;
-        self.pos = end;
-        Ok(u16::from_le_bytes([slice[0], slice[1]]))
-    }
-
-    fn u32(&mut self) -> Result<u32> {
-        let end: usize = self.pos.checked_add(4).ok_or(Error::AxmlTruncated)?;
-        let slice: &[u8] = self.bytes.get(self.pos..end).ok_or(Error::AxmlTruncated)?;
-        self.pos = end;
-        Ok(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
-    }
-
-    fn i32(&mut self) -> Result<i32> {
-        Ok(self.u32()? as i32)
-    }
+fn read_chunk_header(reader: &mut ByteReader<'_>) -> Result<(u16, u16, u32)> {
+    let chunk_type: u16 = reader.read_u16_le().map_err(axml_truncated)?;
+    let header_size: u16 = reader.read_u16_le().map_err(axml_truncated)?;
+    let chunk_size: u32 = reader.read_u32_le().map_err(axml_truncated)?;
+    Ok((chunk_type, header_size, chunk_size))
 }
 
 #[derive(Debug)]
@@ -273,29 +256,29 @@ impl StringPool {
 }
 
 fn parse_string_pool(bytes: &[u8], chunk_off: usize) -> Result<StringPool> {
-    let mut r: Reader<'_> = Reader::new(bytes, chunk_off);
-    let chunk_type: u16 = r.u16()?;
+    let mut r: ByteReader<'_> = ByteReader::new(bytes);
+    r.seek(chunk_off).map_err(axml_truncated)?;
+    let (chunk_type, header_size, chunk_size): (u16, u16, u32) = read_chunk_header(&mut r)?;
     if chunk_type != CHUNK_STRING_POOL {
         return Err(Error::AxmlBadStringPool);
     }
-    let header_size: u16 = r.u16()?;
-    let chunk_size: u32 = r.u32()?;
     let chunk_end: usize = chunk_off
         .checked_add(chunk_size as usize)
         .filter(|end: &usize| *end <= bytes.len())
         .ok_or(Error::AxmlTruncated)?;
-    let string_count: u32 = r.u32()?;
-    let _style_count: u32 = r.u32()?;
-    let flags: u32 = r.u32()?;
-    let strings_start: u32 = r.u32()?;
-    let _styles_start: u32 = r.u32()?;
+    let string_count: u32 = r.read_u32_le().map_err(axml_truncated)?;
+    let _style_count: u32 = r.read_u32_le().map_err(axml_truncated)?;
+    let flags: u32 = r.read_u32_le().map_err(axml_truncated)?;
+    let strings_start: u32 = r.read_u32_le().map_err(axml_truncated)?;
+    let _styles_start: u32 = r.read_u32_le().map_err(axml_truncated)?;
     let is_utf8: bool = flags & FLAG_UTF8 != 0;
 
     let offsets_base: usize = chunk_off + header_size as usize;
     let mut offsets: Vec<u32> = Vec::with_capacity(string_count.min(1 << 20) as usize);
-    let mut off_reader: Reader<'_> = Reader::new(bytes, offsets_base);
+    let mut off_reader: ByteReader<'_> = ByteReader::new(bytes);
+    off_reader.seek(offsets_base).map_err(axml_truncated)?;
     for _ in 0..string_count {
-        offsets.push(off_reader.u32()?);
+        offsets.push(off_reader.read_u32_le().map_err(axml_truncated)?);
     }
 
     let data_base: usize = chunk_off + strings_start as usize;
@@ -451,13 +434,11 @@ fn format_typed_value(
 }
 
 pub fn parse(bytes: &[u8]) -> Result<AxmlDocument> {
-    let mut r: Reader<'_> = Reader::new(bytes, 0);
-    let chunk_type: u16 = r.u16()?;
+    let mut r: ByteReader<'_> = ByteReader::new(bytes);
+    let (chunk_type, header_size, _file_size): (u16, u16, u32) = read_chunk_header(&mut r)?;
     if chunk_type != CHUNK_XML {
         return Err(Error::AxmlBadMagic);
     }
-    let header_size: u16 = r.u16()?;
-    let _file_size: u32 = r.u32()?;
     let mut off: usize = header_size as usize;
 
     let mut pool: Option<StringPool> = None;
@@ -468,10 +449,9 @@ pub fn parse(bytes: &[u8]) -> Result<AxmlDocument> {
     let mut namespaces: Vec<NamespaceBinding> = Vec::new();
 
     while off + 8 <= bytes.len() {
-        let mut hr: Reader<'_> = Reader::new(bytes, off);
-        let ctype: u16 = hr.u16()?;
-        let chsize_hdr: u16 = hr.u16()?;
-        let csize: u32 = hr.u32()?;
+        let mut hr: ByteReader<'_> = ByteReader::new(bytes);
+        hr.seek(off).map_err(axml_truncated)?;
+        let (ctype, chunk_header_size, csize): (u16, u16, u32) = read_chunk_header(&mut hr)?;
         if csize < 8 {
             return Err(Error::AxmlTruncated);
         }
@@ -486,15 +466,17 @@ pub fn parse(bytes: &[u8]) -> Result<AxmlDocument> {
             }
             CHUNK_XML_RESOURCE_MAP => {
                 let count: usize = (csize as usize - 8) / 4;
-                let mut mr: Reader<'_> = Reader::new(bytes, off + 8);
+                let mut mr: ByteReader<'_> = ByteReader::new(bytes);
+                mr.seek(off + 8).map_err(axml_truncated)?;
                 resource_ids = Vec::with_capacity(count);
                 for _ in 0..count {
-                    resource_ids.push(mr.u32()?);
+                    resource_ids.push(mr.read_u32_le().map_err(axml_truncated)?);
                 }
             }
             CHUNK_XML_START_NAMESPACE => {
                 let p: &StringPool = pool.as_ref().ok_or(Error::AxmlBadStringPool)?;
-                let (prefix, uri): (String, String) = parse_namespace(bytes, off, chsize_hdr, p)?;
+                let (prefix, uri): (String, String) =
+                    parse_namespace(bytes, off, chunk_header_size, p)?;
                 if !uri.is_empty() && !ns_uri_to_prefix.contains_key(&uri) {
                     ns_uri_to_prefix.insert(uri.clone(), prefix.clone());
                     namespaces.push(NamespaceBinding { prefix, uri });
@@ -506,7 +488,7 @@ pub fn parse(bytes: &[u8]) -> Result<AxmlDocument> {
                 let element: AxmlElement = parse_start_element(
                     bytes,
                     off,
-                    chsize_hdr,
+                    chunk_header_size,
                     p,
                     &resource_ids,
                     &ns_uri_to_prefix,
@@ -525,7 +507,7 @@ pub fn parse(bytes: &[u8]) -> Result<AxmlDocument> {
             }
             CHUNK_XML_CDATA => {
                 let p: &StringPool = pool.as_ref().ok_or(Error::AxmlBadStringPool)?;
-                if let Some(text) = parse_cdata(bytes, off, chsize_hdr, p)?
+                if let Some(text) = parse_cdata(bytes, off, chunk_header_size, p)?
                     && let Some(parent) = element_stack.last_mut()
                 {
                     parent.cdata.push(text);
@@ -547,9 +529,10 @@ fn parse_namespace(
     pool: &StringPool,
 ) -> Result<(String, String)> {
     let body: usize = chunk_off + header_size as usize;
-    let mut r: Reader<'_> = Reader::new(bytes, body);
-    let prefix_idx: i32 = r.i32()?;
-    let uri_idx: i32 = r.i32()?;
+    let mut r: ByteReader<'_> = ByteReader::new(bytes);
+    r.seek(body).map_err(axml_truncated)?;
+    let prefix_idx: i32 = r.read_i32_le().map_err(axml_truncated)?;
+    let uri_idx: i32 = r.read_i32_le().map_err(axml_truncated)?;
     let prefix: String = pool.optional(prefix_idx)?.unwrap_or("").to_owned();
     let uri: String = pool.required_i32(uri_idx)?.to_owned();
     Ok((prefix, uri))
@@ -562,8 +545,9 @@ fn parse_cdata(
     pool: &StringPool,
 ) -> Result<Option<String>> {
     let body: usize = chunk_off + header_size as usize;
-    let mut r: Reader<'_> = Reader::new(bytes, body);
-    let data_idx: i32 = r.i32()?;
+    let mut r: ByteReader<'_> = ByteReader::new(bytes);
+    r.seek(body).map_err(axml_truncated)?;
+    let data_idx: i32 = r.read_i32_le().map_err(axml_truncated)?;
     Ok(pool
         .optional(data_idx)?
         .map(str::to_owned)
@@ -579,15 +563,16 @@ fn parse_start_element(
     ns_uri_to_prefix: &BTreeMap<String, String>,
 ) -> Result<AxmlElement> {
     let body: usize = chunk_off + header_size as usize;
-    let mut r: Reader<'_> = Reader::new(bytes, body);
-    let ns_idx: i32 = r.i32()?;
-    let name_idx: i32 = r.i32()?;
-    let _attr_start: u16 = r.u16()?;
-    let _attr_size: u16 = r.u16()?;
-    let attr_count: u16 = r.u16()?;
-    let _id_index: u16 = r.u16()?;
-    let _class_index: u16 = r.u16()?;
-    let _style_index: u16 = r.u16()?;
+    let mut r: ByteReader<'_> = ByteReader::new(bytes);
+    r.seek(body).map_err(axml_truncated)?;
+    let ns_idx: i32 = r.read_i32_le().map_err(axml_truncated)?;
+    let name_idx: i32 = r.read_i32_le().map_err(axml_truncated)?;
+    let _attr_start: u16 = r.read_u16_le().map_err(axml_truncated)?;
+    let _attr_size: u16 = r.read_u16_le().map_err(axml_truncated)?;
+    let attr_count: u16 = r.read_u16_le().map_err(axml_truncated)?;
+    let _id_index: u16 = r.read_u16_le().map_err(axml_truncated)?;
+    let _class_index: u16 = r.read_u16_le().map_err(axml_truncated)?;
+    let _style_index: u16 = r.read_u16_le().map_err(axml_truncated)?;
 
     let name: String = pool.required_i32(name_idx)?.to_owned();
     let el_namespace: Option<String> = pool.optional(ns_idx)?.map(str::to_owned);
@@ -597,15 +582,13 @@ fn parse_start_element(
 
     let mut attributes: Vec<AxmlAttribute> = Vec::with_capacity(attr_count as usize);
     for _ in 0..attr_count {
-        let attr_ns_idx: i32 = r.i32()?;
-        let attr_name_idx: i32 = r.i32()?;
-        let raw_value_idx: i32 = r.i32()?;
-        let _value_size: u16 = r.u16()?;
-        let _res0: u8 = bytes.get(r.pos).copied().ok_or(Error::AxmlTruncated)?;
-        r.pos += 1;
-        let data_type: u8 = bytes.get(r.pos).copied().ok_or(Error::AxmlTruncated)?;
-        r.pos += 1;
-        let data: u32 = r.u32()?;
+        let attr_ns_idx: i32 = r.read_i32_le().map_err(axml_truncated)?;
+        let attr_name_idx: i32 = r.read_i32_le().map_err(axml_truncated)?;
+        let raw_value_idx: i32 = r.read_i32_le().map_err(axml_truncated)?;
+        let _value_size: u16 = r.read_u16_le().map_err(axml_truncated)?;
+        let _res0: u8 = r.read_u8().map_err(axml_truncated)?;
+        let data_type: u8 = r.read_u8().map_err(axml_truncated)?;
+        let data: u32 = r.read_u32_le().map_err(axml_truncated)?;
 
         let attr_id: Option<u32> = if attr_name_idx >= 0 {
             resource_ids.get(attr_name_idx as usize).copied()
@@ -855,12 +838,27 @@ fn parse_bool(value: &str) -> bool {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
+    use disrobe_bytes::ByteReader;
+
     use super::*;
 
     #[test]
     fn rejects_non_axml() {
         let err: Error = parse(b"not axml at all").expect_err("must reject");
         assert!(matches!(err, Error::AxmlBadMagic | Error::AxmlTruncated));
+    }
+
+    #[test]
+    fn chunk_header_reads_little_endian_and_preserves_position_on_error() {
+        let bytes: [u8; 8] = [0x03, 0x00, 0x08, 0x00, 0x78, 0x56, 0x34, 0x12];
+        let mut reader: ByteReader<'_> = ByteReader::new(&bytes);
+        let header: (u16, u16, u32) = read_chunk_header(&mut reader).expect("header reads");
+        assert_eq!(header, (0x0003, 0x0008, 0x1234_5678));
+
+        let mut truncated_reader: ByteReader<'_> = ByteReader::new(&bytes[..7]);
+        let error: Error = read_chunk_header(&mut truncated_reader).expect_err("header truncates");
+        assert!(matches!(error, Error::AxmlTruncated));
+        assert_eq!(truncated_reader.position(), 4);
     }
 
     #[test]
