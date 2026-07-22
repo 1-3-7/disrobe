@@ -33,6 +33,10 @@ const NON_PARSER_ALLOWLIST: &[NonParserCrate] = &[
         rationale: "rule engine evaluated over already-lifted disasm IR, does not parse raw untrusted bytes",
     },
     NonParserCrate {
+        package_name: "disrobe-cfg",
+        rationale: "target-agnostic control-flow-graph structuring core over already-lifted CFGs, does not parse raw untrusted bytes",
+    },
+    NonParserCrate {
         package_name: "disrobe-cli",
         rationale: "command-line entry point; dispatches into the parser crates rather than parsing formats itself",
     },

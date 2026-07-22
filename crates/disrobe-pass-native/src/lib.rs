@@ -64,8 +64,7 @@ mod simd_devirt;
 pub mod stack_frame;
 pub mod stack_string;
 pub mod stream_disasm;
-#[allow(clippy::redundant_pub_crate)]
-mod structuring;
+pub(crate) use disrobe_cfg as structuring;
 pub mod stub_emu;
 #[cfg(test)]
 #[allow(clippy::redundant_pub_crate)]

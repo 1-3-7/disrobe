@@ -1898,6 +1898,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "disrobe-cfg"
+version = "0.10.3"
+dependencies = [
+ "disrobe-core",
+ "rand 0.10.1",
+]
+
+[[package]]
 name = "disrobe-cli"
 version = "0.10.4"
 dependencies = [
@@ -2339,6 +2347,7 @@ dependencies = [
  "der",
  "disrobe-binfmt",
  "disrobe-bytes",
+ "disrobe-cfg",
  "disrobe-core",
  "disrobe-emit",
  "disrobe-ir",

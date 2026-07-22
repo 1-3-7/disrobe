@@ -2,13 +2,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use disrobe_core::{AdjGraph, DiGraph, Dominators, immediate_post_dominators};
 
-pub(crate) type NodeId = u32;
-pub(crate) type RegionId = u32;
-pub(crate) type Atom = u32;
-pub(crate) type CondId = u32;
+pub type NodeId = u32;
+pub type RegionId = u32;
+pub type Atom = u32;
+pub type CondId = u32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Terminator {
+pub enum Terminator {
     Return,
     #[allow(dead_code)]
     Unreachable,
@@ -27,26 +27,26 @@ pub(crate) enum Terminator {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CfgNode {
-    pub(crate) term: Terminator,
-    pub(crate) pure: bool,
+pub struct CfgNode {
+    pub term: Terminator,
+    pub pure: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum CfgError {
+pub enum CfgError {
     EmptyGraph,
     EntryOutOfRange,
     TargetOutOfRange,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Cfg {
+pub struct Cfg {
     entry: NodeId,
     nodes: Vec<CfgNode>,
 }
 
 impl Cfg {
-    pub(crate) fn new(entry: NodeId, nodes: Vec<CfgNode>) -> Result<Self, CfgError> {
+    pub fn new(entry: NodeId, nodes: Vec<CfgNode>) -> Result<Self, CfgError> {
         if nodes.is_empty() {
             return Err(CfgError::EmptyGraph);
         }
@@ -73,8 +73,12 @@ impl Cfg {
         Ok(Self { entry, nodes })
     }
 
-    pub(crate) fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.nodes.len()
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
     }
 
     fn successors(&self, node: NodeId) -> Vec<NodeId> {
@@ -132,19 +136,19 @@ impl DiGraph for CfgGraph<'_> {
     }
 }
 
-pub(crate) fn dominators(cfg: &Cfg) -> Dominators {
+pub fn dominators(cfg: &Cfg) -> Dominators {
     let graph: CfgGraph<'_> = CfgGraph { cfg };
     Dominators::compute(&graph)
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct PostDominators {
+pub struct PostDominators {
     ipdom: Vec<Option<NodeId>>,
     exit: NodeId,
 }
 
 impl PostDominators {
-    pub(crate) fn compute(cfg: &Cfg) -> Self {
+    pub fn compute(cfg: &Cfg) -> Self {
         let count: usize = cfg.len();
         let exit: NodeId = count as NodeId;
         let report = |node: u32, visit: &mut dyn FnMut(u32)| match &cfg.nodes[node as usize].term {
@@ -159,15 +163,15 @@ impl PostDominators {
         Self { ipdom, exit }
     }
 
-    pub(crate) fn immediate_post_dominator(&self, node: NodeId) -> Option<NodeId> {
+    pub fn immediate_post_dominator(&self, node: NodeId) -> Option<NodeId> {
         self.ipdom.get(node as usize).copied().flatten()
     }
 
-    pub(crate) fn exit(&self) -> NodeId {
+    pub const fn exit(&self) -> NodeId {
         self.exit
     }
 
-    pub(crate) fn post_dominates(&self, a: NodeId, b: NodeId) -> bool {
+    pub fn post_dominates(&self, a: NodeId, b: NodeId) -> bool {
         if a == b {
             return true;
         }
@@ -185,17 +189,17 @@ impl PostDominators {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct NaturalLoop {
-    pub(crate) header: NodeId,
-    pub(crate) latches: Vec<NodeId>,
-    pub(crate) body: BTreeSet<NodeId>,
-    pub(crate) parent: Option<usize>,
+pub struct NaturalLoop {
+    pub header: NodeId,
+    pub latches: Vec<NodeId>,
+    pub body: BTreeSet<NodeId>,
+    pub parent: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct LoopForest {
-    pub(crate) loops: Vec<NaturalLoop>,
-    pub(crate) irreducible: bool,
+pub struct LoopForest {
+    pub loops: Vec<NaturalLoop>,
+    pub irreducible: bool,
 }
 
 fn reachable(cfg: &Cfg) -> Vec<bool> {
@@ -243,7 +247,7 @@ fn dfs_intervals(cfg: &Cfg) -> (Vec<u32>, Vec<u32>) {
     (discover, finish)
 }
 
-pub(crate) fn loop_forest(cfg: &Cfg) -> LoopForest {
+pub fn loop_forest(cfg: &Cfg) -> LoopForest {
     let dom: Dominators = dominators(cfg);
     let reach: Vec<bool> = reachable(cfg);
     let (discover, finish): (Vec<u32>, Vec<u32>) = dfs_intervals(cfg);
@@ -335,7 +339,7 @@ fn predecessors(cfg: &Cfg) -> Vec<Vec<NodeId>> {
     preds
 }
 
-pub(crate) fn strongly_connected_components(cfg: &Cfg) -> Vec<Vec<NodeId>> {
+pub fn strongly_connected_components(cfg: &Cfg) -> Vec<Vec<NodeId>> {
     let count: usize = cfg.len();
     let reach: Vec<bool> = reachable(cfg);
     let mut index_of: Vec<u32> = vec![u32::MAX; count];
@@ -400,13 +404,13 @@ pub(crate) fn strongly_connected_components(cfg: &Cfg) -> Vec<Vec<NodeId>> {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct IrreducibleEntry {
-    pub(crate) members: BTreeSet<NodeId>,
-    pub(crate) entries: Vec<NodeId>,
-    pub(crate) external_edges: Vec<(NodeId, NodeId)>,
+pub struct IrreducibleEntry {
+    pub members: BTreeSet<NodeId>,
+    pub entries: Vec<NodeId>,
+    pub external_edges: Vec<(NodeId, NodeId)>,
 }
 
-pub(crate) fn multi_entry_irreducible_sccs(cfg: &Cfg) -> Vec<IrreducibleEntry> {
+pub fn multi_entry_irreducible_sccs(cfg: &Cfg) -> Vec<IrreducibleEntry> {
     if !loop_forest(cfg).irreducible {
         return Vec::new();
     }
@@ -445,7 +449,7 @@ pub(crate) fn multi_entry_irreducible_sccs(cfg: &Cfg) -> Vec<IrreducibleEntry> {
     out
 }
 
-pub(crate) fn relowered_matches_original(
+pub fn relowered_matches_original(
     original: &Cfg,
     rendered: &Cfg,
     residual: &BTreeMap<NodeId, NodeId>,
@@ -484,7 +488,7 @@ pub(crate) fn relowered_matches_original(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(crate) enum Cond {
+pub enum Cond {
     Leaf(Atom),
     NotLeaf(Atom),
     And(CondId, CondId),
@@ -492,7 +496,7 @@ pub(crate) enum Cond {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct CondPool {
+pub struct CondPool {
     nodes: Vec<Cond>,
     index: BTreeMap<Cond, CondId>,
 }
@@ -537,13 +541,13 @@ impl CondPool {
         self.intern(Cond::Or(x, y))
     }
 
-    pub(crate) fn nodes(&self) -> &[Cond] {
+    pub fn nodes(&self) -> &[Cond] {
         &self.nodes
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RegionKind {
+pub enum RegionKind {
     Block,
     IfThen,
     IfThenElse,
@@ -557,30 +561,30 @@ pub(crate) enum RegionKind {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Region {
-    pub(crate) kind: RegionKind,
-    pub(crate) entry: NodeId,
-    pub(crate) cond: Option<CondId>,
-    pub(crate) scrutinee: Option<Atom>,
-    pub(crate) children: Vec<RegionId>,
-    pub(crate) exits: Vec<NodeId>,
-    pub(crate) head: Option<RegionId>,
+pub struct Region {
+    pub kind: RegionKind,
+    pub entry: NodeId,
+    pub cond: Option<CondId>,
+    pub scrutinee: Option<Atom>,
+    pub children: Vec<RegionId>,
+    pub exits: Vec<NodeId>,
+    pub head: Option<RegionId>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct StructureResult {
-    pub(crate) root: Option<RegionId>,
-    pub(crate) regions: Vec<Region>,
-    pub(crate) conds: CondPool,
-    pub(crate) irreducible: bool,
+pub struct StructureResult {
+    pub root: Option<RegionId>,
+    pub regions: Vec<Region>,
+    pub conds: CondPool,
+    pub irreducible: bool,
 }
 
 impl StructureResult {
-    pub(crate) fn is_complete(&self) -> bool {
+    pub const fn is_complete(&self) -> bool {
         self.root.is_some() && !self.irreducible
     }
 
-    pub(crate) fn root_kind(&self) -> Option<RegionKind> {
+    pub fn root_kind(&self) -> Option<RegionKind> {
         self.root.map(|r: RegionId| self.regions[r as usize].kind)
     }
 }
@@ -612,7 +616,7 @@ struct Collapse {
     irreducible: bool,
 }
 
-pub(crate) fn structure(cfg: &Cfg) -> StructureResult {
+pub fn structure(cfg: &Cfg) -> StructureResult {
     let forest: LoopForest = loop_forest(cfg);
     let mut collapse: Collapse = Collapse::new(cfg);
     collapse.run();
