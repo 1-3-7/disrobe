@@ -42,9 +42,7 @@ pub enum Error {
         had: usize,
     },
 
-    #[error(
-        "DR-AS3-0012: ABC variable-length u32 is malformed (5th byte sets bits above 32): {0:#010X}"
-    )]
+    #[error("DR-AS3-0012: ABC variable-length u30/u32 exceeds its width: {0:#010X}")]
     AbcU30Overflow(u32),
 
     #[error("DR-AS3-0013: ABC constant-pool index {idx} out of range (size {size}) in pool {pool}")]

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use disrobe_bytes::{ByteReadError, ByteReader, LebError, read_uleb128_at};
 use serde::{Deserialize, Serialize};
 
 use crate::debug::{dbg_kv, dbg_line, dbg_section};
@@ -9,6 +10,9 @@ pub const ABC_MINOR: u16 = 16;
 pub const ABC_MAJOR: u16 = 46;
 
 const MULTINAME_RENDER_BUDGET: u32 = 4096;
+const AVM2_ULEB128_MAX_BYTES: usize = 5;
+const AVM2_U30_MAX: u64 = 0x3FFF_FFFF;
+const AVM2_U32_MAX: u64 = 0xFFFF_FFFF;
 
 pub const NS_KIND_PRIVATE: u8 = 0x05;
 pub const NS_KIND_NAMESPACE: u8 = 0x08;
@@ -345,19 +349,62 @@ impl AbcFile {
 }
 
 struct Reader<'a> {
-    bytes: &'a [u8],
-    pos: usize,
+    cursor: ByteReader<'a>,
 }
 
 impl<'a> Reader<'a> {
     #[inline]
     fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, pos: 0 }
+        let cursor: ByteReader<'a> = ByteReader::new(bytes);
+        Self { cursor }
+    }
+
+    #[inline]
+    fn position(&self) -> usize {
+        self.cursor.position()
     }
 
     #[inline]
     fn remaining(&self) -> usize {
-        self.bytes.len().saturating_sub(self.pos)
+        self.cursor.remaining()
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.cursor.is_empty()
+    }
+
+    fn map_byte_read_error(error: ByteReadError) -> Error {
+        Error::AbcTruncated {
+            offset: error.offset,
+            needed: error.needed,
+            had: error.available,
+        }
+    }
+
+    fn map_leb_error(start: usize, error: LebError) -> Error {
+        match error {
+            LebError::OutOfBounds(error) => Error::AbcTruncated {
+                offset: start.saturating_add(error.offset),
+                needed: error.needed,
+                had: error.available,
+            },
+            LebError::Overflow { .. } => Error::AbcU30Overflow(u32::MAX),
+        }
+    }
+
+    fn uleb128_error_value(value: u64) -> u32 {
+        let bytes: [u8; 8] = value.to_le_bytes();
+        u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+    }
+
+    fn capped_uleb128_value(window: &[u8]) -> Result<u32> {
+        let mut capped: [u8; AVM2_ULEB128_MAX_BYTES] = [0u8; AVM2_ULEB128_MAX_BYTES];
+        capped.copy_from_slice(window);
+        capped[AVM2_ULEB128_MAX_BYTES - 1] &= 0x7F;
+        let (value, _consumed): (u64, usize) =
+            read_uleb128_at(&capped, 0).map_err(|error: LebError| Self::map_leb_error(0, error))?;
+        Ok(Self::uleb128_error_value(value))
     }
 
     #[inline]
@@ -392,76 +439,56 @@ impl<'a> Reader<'a> {
     }
 
     #[inline]
-    fn end_for(&self, n: usize) -> Result<usize> {
-        let Some(end): Option<usize> = self.pos.checked_add(n) else {
-            return Err(Error::AbcTruncated {
-                offset: self.pos,
-                needed: n,
-                had: self.bytes.len().saturating_sub(self.pos),
-            });
-        };
-        if end > self.bytes.len() {
-            return Err(Error::AbcTruncated {
-                offset: self.pos,
-                needed: n,
-                had: self.bytes.len().saturating_sub(self.pos),
-            });
-        }
-        Ok(end)
-    }
-
-    #[inline]
     fn take(&mut self, n: usize) -> Result<&'a [u8]> {
-        let start: usize = self.pos;
-        let end: usize = self.end_for(n)?;
-        self.pos = end;
-        Ok(&self.bytes[start..end])
+        self.cursor.read_bytes(n).map_err(Self::map_byte_read_error)
     }
 
     fn u8(&mut self) -> Result<u8> {
-        let raw: &[u8] = self.take(1)?;
-        let v: u8 = raw[0];
-        Ok(v)
+        self.cursor.read_u8().map_err(Self::map_byte_read_error)
     }
 
     fn u16(&mut self) -> Result<u16> {
-        let raw: &[u8] = self.take(2)?;
-        let v: u16 = u16::from_le_bytes([raw[0], raw[1]]);
-        Ok(v)
+        self.cursor.read_u16_le().map_err(Self::map_byte_read_error)
     }
 
     fn s24(&mut self) -> Result<i32> {
-        let bytes: &[u8] = self.take(3)?;
-        let raw: u32 =
-            u32::from(bytes[0]) | (u32::from(bytes[1]) << 8) | (u32::from(bytes[2]) << 16);
-        let sign_extended: i32 = if (raw & 0x0080_0000) != 0 {
-            (raw | 0xFF00_0000).cast_signed()
-        } else {
-            raw.cast_signed()
-        };
-        Ok(sign_extended)
+        self.cursor.read_i24_le().map_err(Self::map_byte_read_error)
+    }
+
+    fn uleb128(&mut self, max_value: u64) -> Result<u32> {
+        let start: usize = self.position();
+        let window_len: usize = self.remaining().min(AVM2_ULEB128_MAX_BYTES);
+        let window: &[u8] = self
+            .cursor
+            .peek_bytes(window_len)
+            .map_err(Self::map_byte_read_error)?;
+        match read_uleb128_at(window, 0) {
+            Ok((value, consumed)) => {
+                if value > max_value {
+                    return Err(Error::AbcU30Overflow(Self::uleb128_error_value(value)));
+                }
+                let decoded: u32 = u32::try_from(value)
+                    .map_err(|_| Error::AbcU30Overflow(Self::uleb128_error_value(value)))?;
+                self.cursor
+                    .skip(consumed)
+                    .map_err(Self::map_byte_read_error)?;
+                Ok(decoded)
+            }
+            Err(LebError::OutOfBounds(_)) if window.len() == AVM2_ULEB128_MAX_BYTES => {
+                let value: u32 = Self::capped_uleb128_value(window)?;
+                Err(Error::AbcU30Overflow(value))
+            }
+            Err(error) => Err(Self::map_leb_error(start, error)),
+        }
     }
 
     fn u32_var(&mut self) -> Result<u32> {
-        let mut acc: u32 = 0;
-        let mut shift: u32 = 0;
-        for i in 0..5 {
-            let byte: u8 = self.u8()?;
-            acc |= u32::from(byte & 0x7F) << shift;
-            if (byte & 0x80) == 0 {
-                return Ok(acc);
-            }
-            shift += 7;
-            if i == 4 && (byte & 0xF0) != 0 {
-                return Err(Error::AbcU30Overflow(acc));
-            }
-        }
-        Ok(acc)
+        self.uleb128(AVM2_U32_MAX)
     }
 
     #[inline]
     fn u30(&mut self) -> Result<u32> {
-        self.u32_var()
+        self.uleb128(AVM2_U30_MAX)
     }
 
     fn s32_var(&mut self) -> Result<i32> {
@@ -469,16 +496,17 @@ impl<'a> Reader<'a> {
     }
 
     fn f64_le(&mut self) -> Result<f64> {
-        let raw: &[u8] = self.take(8)?;
-        let mut buf: [u8; 8] = [0u8; 8];
-        buf.copy_from_slice(raw);
-        Ok(f64::from_le_bytes(buf))
+        let bits: u64 = self
+            .cursor
+            .read_u64_le()
+            .map_err(Self::map_byte_read_error)?;
+        Ok(f64::from_bits(bits))
     }
 
     fn string(&mut self) -> Result<String> {
         let len_u32: u32 = self.u30()?;
         let len: usize = usize::try_from(len_u32).map_err(|_| Error::AbcTruncated {
-            offset: self.pos,
+            offset: self.position(),
             needed: usize::MAX,
             had: self.remaining(),
         })?;
@@ -1083,8 +1111,8 @@ fn opcode_u30_operand_count(op: u8) -> u8 {
 pub fn disasm(code: &[u8]) -> Result<Vec<DisasmLine>> {
     let mut r: Reader<'_> = Reader::new(code);
     let mut out: Vec<DisasmLine> = Vec::new();
-    while r.pos < code.len() {
-        let offset: usize = r.pos;
+    while !r.is_empty() {
+        let offset: usize = r.position();
         let op: u8 = r.u8()?;
         let mnemonic: &'static str = opcode_mnemonic(op);
         let mut operands: Vec<i64> = Vec::new();
@@ -1364,31 +1392,70 @@ mod tests {
             .u30()
             .expect_err("non-terminating 5-byte varint must reject");
         assert!(matches!(err, Error::AbcU30Overflow(_)));
+        assert_eq!(r.position(), 0);
     }
 
     #[test]
-    fn full_u32_index_value_accepted() {
+    fn full_u32_value_accepted() {
         let mut r: Reader<'_> = Reader::new(&[0xFF, 0xFF, 0xFF, 0xFF, 0x0F]);
-        let v: u32 = r.u30().expect("full 32-bit varint must decode, not reject");
+        let v: u32 = r
+            .u32_var()
+            .expect("full 32-bit varint must decode, not reject");
         assert_eq!(v, 0xFFFF_FFFF);
     }
 
     #[test]
-    fn reader_take_rejects_offset_overflow() {
-        let mut r: Reader<'_> = Reader {
-            bytes: &[],
-            pos: usize::MAX - 1,
-        };
+    fn u32_value_above_32_bits_rejected_without_advancing() {
+        let mut r: Reader<'_> = Reader::new(&[0x80, 0x80, 0x80, 0x80, 0x10]);
         let err: Error = r
-            .take(2)
-            .expect_err("overflowing reader offset must reject");
+            .u32_var()
+            .expect_err("u32 value above 32 bits must reject");
+        assert!(matches!(err, Error::AbcU30Overflow(0)));
+        assert_eq!(r.position(), 0);
+    }
+
+    #[test]
+    fn u30_value_above_30_bits_rejected_without_advancing() {
+        let mut r: Reader<'_> = Reader::new(&[0x80, 0x80, 0x80, 0x80, 0x04]);
+        let err: Error = r.u30().expect_err("u30 value above 30 bits must reject");
+        assert!(matches!(err, Error::AbcU30Overflow(0x4000_0000)));
+        assert_eq!(r.position(), 0);
+    }
+
+    #[test]
+    fn u30_max_value_accepted() {
+        let mut r: Reader<'_> = Reader::new(&[0xFF, 0xFF, 0xFF, 0xFF, 0x03]);
+        let value: u32 = r.u30().expect("maximum u30 value must decode");
+        assert_eq!(value, 0x3FFF_FFFF);
+        assert_eq!(r.position(), 5);
+    }
+
+    #[test]
+    fn truncated_u30_does_not_advance() {
+        let mut r: Reader<'_> = Reader::new(&[0x80]);
+        let err: Error = r.u30().expect_err("truncated u30 must reject");
+        assert!(matches!(
+            err,
+            Error::AbcTruncated {
+                offset: 1,
+                needed: 1,
+                had: 0,
+            }
+        ));
+        assert_eq!(r.position(), 0);
+    }
+
+    #[test]
+    fn reader_take_rejects_truncated_input() {
+        let mut r: Reader<'_> = Reader::new(&[]);
+        let err: Error = r.take(2).expect_err("truncated reader input must reject");
         assert!(matches!(
             err,
             Error::AbcTruncated {
                 offset,
                 needed: 2,
                 ..
-            } if offset == usize::MAX - 1
+            } if offset == 0
         ));
     }
 

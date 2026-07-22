@@ -28,7 +28,7 @@ fn abc_header_with_empty_cpool() -> Vec<u8> {
 fn method_param_count_far_exceeding_input_is_rejected_not_allocated() {
     let mut b: Vec<u8> = abc_header_with_empty_cpool();
     u30(2, &mut b);
-    u30(0xFFFF_FFFF, &mut b);
+    u30(0x3FFF_FFFF, &mut b);
     u30(0, &mut b);
     let err: Error = parse(&b).expect_err("absurd param_count must be rejected before allocation");
     assert!(
@@ -51,7 +51,7 @@ fn multiname_typename_param_count_overflow_is_bounded() {
     u30(2, &mut b);
     b.push(0x1D);
     u30(0, &mut b);
-    u30(0xFFFF_FFFF, &mut b);
+    u30(0x3FFF_FFFF, &mut b);
     let err: Error = parse(&b).expect_err("absurd typename param count must be rejected");
     assert!(
         matches!(err, Error::AbcPoolCountTooLarge { pool, .. } if pool == "typename_param"),
@@ -76,7 +76,7 @@ fn method_body_code_length_past_remaining_buffer_is_rejected() {
     u30(1, &mut b);
     u30(0, &mut b);
     u30(1, &mut b);
-    u30(0xFFFF_FFFF, &mut b);
+    u30(0x3FFF_FFFF, &mut b);
     let err: Error = parse(&b).expect_err("absurd method body code length must reject");
     assert!(
         matches!(err, Error::AbcBadCodeLen(_)),
