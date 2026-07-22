@@ -2455,6 +2455,7 @@ name = "disrobe-pass-pickle"
 version = "0.10.4"
 dependencies = [
  "base64",
+ "disrobe-bytes",
  "disrobe-core",
  "miette",
  "serde",
@@ -2611,6 +2612,7 @@ dependencies = [
 name = "disrobe-pass-scriptlang"
 version = "0.10.4"
 dependencies = [
+ "disrobe-bytes",
  "disrobe-core",
  "flate2",
  "miette",
@@ -2795,6 +2797,7 @@ dependencies = [
 name = "disrobe-py-marshal"
 version = "0.10.4"
 dependencies = [
+ "disrobe-bytes",
  "divan",
  "indexmap 2.14.0",
  "miette",
