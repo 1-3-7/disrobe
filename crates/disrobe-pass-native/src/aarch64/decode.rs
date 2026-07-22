@@ -1,6 +1,7 @@
 use super::bitmask::decode_bit_masks;
 use super::mcinst::{
-    A64Opcode, DecodeClass, DecodeError, ExtendKind, IndexMode, MCInst, Operand, RegView, ShiftKind,
+    A64Opcode, BtiTarget, DecodeClass, DecodeError, ExtendKind, IndexMode, MCInst, Operand,
+    RegView, ShiftKind,
 };
 
 const TOP_LEVEL: [DecodeClass; 16] = [
@@ -45,8 +46,317 @@ pub fn decode(bytes: &[u8], va: u64) -> Result<MCInst, DecodeError> {
         DecodeClass::BranchesAndSystem => decode_branches_and_system(word, va),
         DecodeClass::LoadsAndStores => decode_loads_and_stores(word, va),
         DecodeClass::DataProcessingRegister => decode_data_processing_register(word, va),
-        DecodeClass::SimdFloatingPoint | DecodeClass::ScalableVector => unmodeled(class, va),
+        DecodeClass::SimdFloatingPoint => decode_scalar_floating_point(word, va),
+        DecodeClass::ScalableVector => unmodeled(class, va),
     })
+}
+
+fn decode_scalar_floating_point(word: u32, va: u64) -> MCInst {
+    let binary_opcode: Option<A64Opcode> = match word & 0xffa0_fc00 {
+        0x1e20_0800 => Some(A64Opcode::Fmul),
+        0x1e20_1800 => Some(A64Opcode::Fdiv),
+        0x1e20_2800 => Some(A64Opcode::Fadd),
+        0x1e20_3800 => Some(A64Opcode::Fsub),
+        _ => None,
+    };
+    if let Some(opcode) = binary_opcode {
+        return decode_scalar_binary(word, va, opcode);
+    }
+    match word & 0xffff_fc00 {
+        0x1e62_4000 => return decode_fp_convert(word, va, RegView::S, RegView::D),
+        0x1e22_c000 => return decode_fp_convert(word, va, RegView::D, RegView::S),
+        0x1e22_0000 => {
+            return decode_integer_to_fp(word, va, A64Opcode::Scvtf, RegView::S, RegView::W);
+        }
+        0x9e62_0000 => {
+            return decode_integer_to_fp(word, va, A64Opcode::Scvtf, RegView::D, RegView::X);
+        }
+        0x1e23_0000 => {
+            return decode_integer_to_fp(word, va, A64Opcode::Ucvtf, RegView::S, RegView::W);
+        }
+        0x9e63_0000 => {
+            return decode_integer_to_fp(word, va, A64Opcode::Ucvtf, RegView::D, RegView::X);
+        }
+        0x1e38_0000 => {
+            return decode_fp_to_integer(word, va, A64Opcode::Fcvtzs, RegView::W, RegView::S);
+        }
+        0x9e78_0000 => {
+            return decode_fp_to_integer(word, va, A64Opcode::Fcvtzs, RegView::X, RegView::D);
+        }
+        0x1e39_0000 => {
+            return decode_fp_to_integer(word, va, A64Opcode::Fcvtzu, RegView::W, RegView::S);
+        }
+        0x9e79_0000 => {
+            return decode_fp_to_integer(word, va, A64Opcode::Fcvtzu, RegView::X, RegView::D);
+        }
+        0x1e20_4000 => return decode_fp_register_move(word, va, RegView::S),
+        0x1e60_4000 => return decode_fp_register_move(word, va, RegView::D),
+        0x9e66_0000 => return decode_gpr_from_fp_move(word, va, RegView::X, RegView::D),
+        0x9e67_0000 => return decode_fp_from_gpr_move(word, va, RegView::D, RegView::X),
+        0x1e26_0000 => return decode_gpr_from_fp_move(word, va, RegView::W, RegView::S),
+        0x1e27_0000 => return decode_fp_from_gpr_move(word, va, RegView::S, RegView::W),
+        _ => {}
+    }
+    if word & 0xff20_1fe0 == 0x1e20_1000 {
+        return decode_fp_immediate_move(word, va);
+    }
+    match word & 0xffbf_fc1f {
+        0x1e20_2008 => return decode_fp_compare_zero(word, va, A64Opcode::Fcmp),
+        0x1e20_2018 => return decode_fp_compare_zero(word, va, A64Opcode::Fcmpe),
+        _ => {}
+    }
+    match word & 0xffa0_fc1f {
+        0x1e20_2000 => return decode_fp_compare_register(word, va, A64Opcode::Fcmp),
+        0x1e20_2010 => return decode_fp_compare_register(word, va, A64Opcode::Fcmpe),
+        _ => {}
+    }
+    if word & 0xffa0_0c00 == 0x1e20_0c00 {
+        return decode_fp_conditional_select(word, va);
+    }
+    if word & 0xffa0_fc00 == 0x1e20_2000 {
+        return unallocated(va);
+    }
+    unmodeled(DecodeClass::SimdFloatingPoint, va)
+}
+
+fn decode_scalar_binary(word: u32, va: u64, opcode: A64Opcode) -> MCInst {
+    let (rd, rn, rm): (u8, u8, u8) = match (
+        field_u8(word, 0, 5),
+        field_u8(word, 5, 5),
+        field_u8(word, 16, 5),
+    ) {
+        (Some(destination), Some(first), Some(second)) => (destination, first, second),
+        _ => return unallocated(va),
+    };
+    let view: RegView = match scalar_fp_view(word) {
+        Some(value) => value,
+        None => return unmodeled(DecodeClass::SimdFloatingPoint, va),
+    };
+    instruction(
+        opcode,
+        vec![
+            fp_register(rd, view),
+            fp_register(rn, view),
+            fp_register(rm, view),
+        ],
+        false,
+        va,
+    )
+}
+
+fn decode_fp_convert(
+    word: u32,
+    va: u64,
+    destination_view: RegView,
+    source_view: RegView,
+) -> MCInst {
+    let (rd, rn): (u8, u8) = match (field_u8(word, 0, 5), field_u8(word, 5, 5)) {
+        (Some(destination), Some(source)) => (destination, source),
+        _ => return unallocated(va),
+    };
+    instruction(
+        A64Opcode::Fcvt,
+        vec![
+            fp_register(rd, destination_view),
+            fp_register(rn, source_view),
+        ],
+        false,
+        va,
+    )
+}
+
+fn decode_integer_to_fp(
+    word: u32,
+    va: u64,
+    opcode: A64Opcode,
+    destination_view: RegView,
+    source_view: RegView,
+) -> MCInst {
+    let (rd, rn): (u8, u8) = match (field_u8(word, 0, 5), field_u8(word, 5, 5)) {
+        (Some(destination), Some(source)) => (destination, source),
+        _ => return unallocated(va),
+    };
+    instruction(
+        opcode,
+        vec![
+            fp_register(rd, destination_view),
+            data_register(rn, source_view),
+        ],
+        false,
+        va,
+    )
+}
+
+fn decode_fp_to_integer(
+    word: u32,
+    va: u64,
+    opcode: A64Opcode,
+    destination_view: RegView,
+    source_view: RegView,
+) -> MCInst {
+    let (rd, rn): (u8, u8) = match (field_u8(word, 0, 5), field_u8(word, 5, 5)) {
+        (Some(destination), Some(source)) => (destination, source),
+        _ => return unallocated(va),
+    };
+    instruction(
+        opcode,
+        vec![
+            data_register(rd, destination_view),
+            fp_register(rn, source_view),
+        ],
+        false,
+        va,
+    )
+}
+
+fn decode_fp_register_move(word: u32, va: u64, view: RegView) -> MCInst {
+    let (rd, rn): (u8, u8) = match (field_u8(word, 0, 5), field_u8(word, 5, 5)) {
+        (Some(destination), Some(source)) => (destination, source),
+        _ => return unallocated(va),
+    };
+    instruction(
+        A64Opcode::Fmov,
+        vec![fp_register(rd, view), fp_register(rn, view)],
+        false,
+        va,
+    )
+}
+
+fn decode_fp_immediate_move(word: u32, va: u64) -> MCInst {
+    let (rd, immediate): (u8, u8) = match (field_u8(word, 0, 5), field_u8(word, 13, 8)) {
+        (Some(destination), Some(value)) => (destination, value),
+        _ => return unallocated(va),
+    };
+    let view: RegView = match scalar_fp_view(word) {
+        Some(value) => value,
+        None => return unmodeled(DecodeClass::SimdFloatingPoint, va),
+    };
+    instruction(
+        A64Opcode::Fmov,
+        vec![fp_register(rd, view), Operand::FpImm(immediate)],
+        false,
+        va,
+    )
+}
+
+fn decode_gpr_from_fp_move(
+    word: u32,
+    va: u64,
+    destination_view: RegView,
+    source_view: RegView,
+) -> MCInst {
+    let (rd, rn): (u8, u8) = match (field_u8(word, 0, 5), field_u8(word, 5, 5)) {
+        (Some(destination), Some(source)) => (destination, source),
+        _ => return unallocated(va),
+    };
+    instruction(
+        A64Opcode::Fmov,
+        vec![
+            data_register(rd, destination_view),
+            fp_register(rn, source_view),
+        ],
+        false,
+        va,
+    )
+}
+
+fn decode_fp_from_gpr_move(
+    word: u32,
+    va: u64,
+    destination_view: RegView,
+    source_view: RegView,
+) -> MCInst {
+    let (rd, rn): (u8, u8) = match (field_u8(word, 0, 5), field_u8(word, 5, 5)) {
+        (Some(destination), Some(source)) => (destination, source),
+        _ => return unallocated(va),
+    };
+    instruction(
+        A64Opcode::Fmov,
+        vec![
+            fp_register(rd, destination_view),
+            data_register(rn, source_view),
+        ],
+        false,
+        va,
+    )
+}
+
+fn decode_fp_compare_zero(word: u32, va: u64, opcode: A64Opcode) -> MCInst {
+    let rn: u8 = match field_u8(word, 5, 5) {
+        Some(source) => source,
+        None => return unallocated(va),
+    };
+    let view: RegView = match scalar_fp_view(word) {
+        Some(value) => value,
+        None => return unmodeled(DecodeClass::SimdFloatingPoint, va),
+    };
+    instruction(
+        opcode,
+        vec![fp_register(rn, view), Operand::FpImm(0)],
+        true,
+        va,
+    )
+}
+
+fn decode_fp_compare_register(word: u32, va: u64, opcode: A64Opcode) -> MCInst {
+    let (rn, rm): (u8, u8) = match (field_u8(word, 5, 5), field_u8(word, 16, 5)) {
+        (Some(first), Some(second)) => (first, second),
+        _ => return unallocated(va),
+    };
+    let view: RegView = match scalar_fp_view(word) {
+        Some(value) => value,
+        None => return unmodeled(DecodeClass::SimdFloatingPoint, va),
+    };
+    instruction(
+        opcode,
+        vec![fp_register(rn, view), fp_register(rm, view)],
+        true,
+        va,
+    )
+}
+
+fn decode_fp_conditional_select(word: u32, va: u64) -> MCInst {
+    let (rd, rn, rm, condition): (u8, u8, u8, u8) = match (
+        field_u8(word, 0, 5),
+        field_u8(word, 5, 5),
+        field_u8(word, 16, 5),
+        field_u8(word, 12, 4),
+    ) {
+        (Some(destination), Some(first), Some(second), Some(code)) => {
+            (destination, first, second, code)
+        }
+        _ => return unallocated(va),
+    };
+    if condition == 15 {
+        return unallocated(va);
+    }
+    let view: RegView = match scalar_fp_view(word) {
+        Some(value) => value,
+        None => return unmodeled(DecodeClass::SimdFloatingPoint, va),
+    };
+    instruction(
+        A64Opcode::Fcsel,
+        vec![
+            fp_register(rd, view),
+            fp_register(rn, view),
+            fp_register(rm, view),
+            Operand::CondCode(condition),
+        ],
+        false,
+        va,
+    )
+}
+
+fn scalar_fp_view(word: u32) -> Option<RegView> {
+    match field_u8(word, 22, 2) {
+        Some(0) => Some(RegView::S),
+        Some(1) => Some(RegView::D),
+        _ => None,
+    }
+}
+
+fn fp_register(n: u8, view: RegView) -> Operand {
+    register_with_view(n, view)
 }
 
 fn decode_data_processing_immediate(word: u32, va: u64) -> MCInst {
@@ -253,6 +563,47 @@ fn decode_bitfield(word: u32, va: u64) -> MCInst {
 }
 
 fn decode_branches_and_system(word: u32, va: u64) -> MCInst {
+    match word {
+        0xd503_233f => return instruction(A64Opcode::Paciasp, Vec::new(), false, va),
+        0xd503_237f => return instruction(A64Opcode::Pacibsp, Vec::new(), false, va),
+        0xd503_23bf => return instruction(A64Opcode::Autiasp, Vec::new(), false, va),
+        0xd503_23ff => return instruction(A64Opcode::Autibsp, Vec::new(), false, va),
+        0xd65f_0bff => return instruction(A64Opcode::Retaa, Vec::new(), false, va),
+        0xd65f_0fff => return instruction(A64Opcode::Retab, Vec::new(), false, va),
+        0xd503_241f => return instruction(A64Opcode::Bti, Vec::new(), false, va),
+        0xd503_245f => {
+            return instruction(
+                A64Opcode::Bti,
+                vec![Operand::BtiTarget(BtiTarget::C)],
+                false,
+                va,
+            );
+        }
+        0xd503_249f => {
+            return instruction(
+                A64Opcode::Bti,
+                vec![Operand::BtiTarget(BtiTarget::J)],
+                false,
+                va,
+            );
+        }
+        0xd503_24df => {
+            return instruction(
+                A64Opcode::Bti,
+                vec![Operand::BtiTarget(BtiTarget::Jc)],
+                false,
+                va,
+            );
+        }
+        _ => {}
+    }
+    if word & 0xffff_fc00 == 0xd71f_0800
+        || word & 0xffff_fc00 == 0xd71f_0c00
+        || word & 0xffff_fc00 == 0xd73f_0800
+        || word & 0xffff_fc00 == 0xd73f_0c00
+    {
+        return decode_authenticated_register_branch(word, va);
+    }
     if word & 0x7c00_0000 == 0x1400_0000 {
         return decode_unconditional_branch(word, va);
     }
@@ -275,6 +626,26 @@ fn decode_branches_and_system(word: u32, va: u64) -> MCInst {
         return decode_register_branch(word, va, A64Opcode::Ret);
     }
     unmodeled(DecodeClass::BranchesAndSystem, va)
+}
+
+fn decode_authenticated_register_branch(word: u32, va: u64) -> MCInst {
+    let (opcode, rn, rm): (A64Opcode, u8, u8) = match (
+        word & 0xffff_fc00,
+        field_u8(word, 5, 5),
+        field_u8(word, 0, 5),
+    ) {
+        (0xd71f_0800, Some(target), Some(modifier)) => (A64Opcode::Braa, target, modifier),
+        (0xd71f_0c00, Some(target), Some(modifier)) => (A64Opcode::Brab, target, modifier),
+        (0xd73f_0800, Some(target), Some(modifier)) => (A64Opcode::Blraa, target, modifier),
+        (0xd73f_0c00, Some(target), Some(modifier)) => (A64Opcode::Blrab, target, modifier),
+        _ => return unallocated(va),
+    };
+    instruction(
+        opcode,
+        vec![register_zr(rn, true), register_sp(rm, true)],
+        false,
+        va,
+    )
 }
 
 fn decode_unconditional_branch(word: u32, va: u64) -> MCInst {
@@ -395,6 +766,27 @@ fn decode_register_branch(word: u32, va: u64, opcode: A64Opcode) -> MCInst {
 }
 
 fn decode_loads_and_stores(word: u32, va: u64) -> MCInst {
+    if word & 0xbfff_fc00 == 0x885f_7c00 {
+        return decode_exclusive_load(word, va, A64Opcode::Ldxr);
+    }
+    if word & 0xbfff_fc00 == 0x885f_fc00 {
+        return decode_exclusive_load(word, va, A64Opcode::Ldaxr);
+    }
+    if word & 0xbfe0_fc00 == 0x8800_7c00 {
+        return decode_exclusive_store(word, va, A64Opcode::Stxr);
+    }
+    if word & 0xbfe0_fc00 == 0x8800_fc00 {
+        return decode_exclusive_store(word, va, A64Opcode::Stlxr);
+    }
+    if word & 0x3f20_0c00 == 0x3820_0000 {
+        return decode_atomic_rmw(word, va);
+    }
+    if word & 0xbfa0_7c00 == 0x88a0_7c00 {
+        return decode_atomic_cas(word, va);
+    }
+    if word & 0xff20_0c00 == 0xf820_0400 {
+        return decode_authenticated_load(word, va);
+    }
     if word & 0x3b00_0000 == 0x1800_0000 {
         return decode_literal_load(word, va);
     }
@@ -411,6 +803,176 @@ fn decode_loads_and_stores(word: u32, va: u64) -> MCInst {
         return decode_signed_immediate(word, va);
     }
     unmodeled(DecodeClass::LoadsAndStores, va)
+}
+
+fn decode_exclusive_load(word: u32, va: u64, opcode: A64Opcode) -> MCInst {
+    let (rt, rn): (u8, u8) = match (field_u8(word, 0, 5), field_u8(word, 5, 5)) {
+        (Some(value), Some(base)) => (value, base),
+        _ => return unallocated(va),
+    };
+    instruction(
+        opcode,
+        vec![
+            data_register(rt, width_view(bit(word, 30))),
+            atomic_memory(rn),
+        ],
+        false,
+        va,
+    )
+}
+
+fn decode_exclusive_store(word: u32, va: u64, opcode: A64Opcode) -> MCInst {
+    let (rs, rt, rn): (u8, u8, u8) = match (
+        field_u8(word, 16, 5),
+        field_u8(word, 0, 5),
+        field_u8(word, 5, 5),
+    ) {
+        (Some(status), Some(value), Some(base)) => (status, value, base),
+        _ => return unallocated(va),
+    };
+    instruction(
+        opcode,
+        vec![
+            data_register(rs, RegView::W),
+            data_register(rt, width_view(bit(word, 30))),
+            atomic_memory(rn),
+        ],
+        false,
+        va,
+    )
+}
+
+fn decode_atomic_rmw(word: u32, va: u64) -> MCInst {
+    let size: u8 = match field_u8(word, 30, 2) {
+        Some(value) => value,
+        None => return unallocated(va),
+    };
+    let view: RegView = match size {
+        2 => RegView::W,
+        3 => RegView::X,
+        _ => return unmodeled(DecodeClass::LoadsAndStores, va),
+    };
+    let operation: u8 = match field_u8(word, 12, 4) {
+        Some(value) => value,
+        None => return unallocated(va),
+    };
+    let opcode: A64Opcode = match atomic_rmw_opcode(operation, bit(word, 23), bit(word, 22)) {
+        Some(value) => value,
+        None => return unmodeled(DecodeClass::LoadsAndStores, va),
+    };
+    let (rs, rt, rn): (u8, u8, u8) = match (
+        field_u8(word, 16, 5),
+        field_u8(word, 0, 5),
+        field_u8(word, 5, 5),
+    ) {
+        (Some(source), Some(destination), Some(base)) => (source, destination, base),
+        _ => return unallocated(va),
+    };
+    instruction(
+        opcode,
+        vec![
+            data_register(rs, view),
+            data_register(rt, view),
+            atomic_memory(rn),
+        ],
+        false,
+        va,
+    )
+}
+
+fn decode_atomic_cas(word: u32, va: u64) -> MCInst {
+    let opcode: A64Opcode = match (bit(word, 22), bit(word, 15)) {
+        (false, false) => A64Opcode::Cas,
+        (true, false) => A64Opcode::Casa,
+        (false, true) => A64Opcode::Casl,
+        (true, true) => A64Opcode::Casal,
+    };
+    let (rs, rt, rn): (u8, u8, u8) = match (
+        field_u8(word, 16, 5),
+        field_u8(word, 0, 5),
+        field_u8(word, 5, 5),
+    ) {
+        (Some(compare), Some(value), Some(base)) => (compare, value, base),
+        _ => return unallocated(va),
+    };
+    let view: RegView = width_view(bit(word, 30));
+    instruction(
+        opcode,
+        vec![
+            data_register(rs, view),
+            data_register(rt, view),
+            atomic_memory(rn),
+        ],
+        false,
+        va,
+    )
+}
+
+fn decode_authenticated_load(word: u32, va: u64) -> MCInst {
+    let (rt, rn): (u8, u8) = match (field_u8(word, 0, 5), field_u8(word, 5, 5)) {
+        (Some(value), Some(base)) => (value, base),
+        _ => return unallocated(va),
+    };
+    let offset_bits: u32 = field_u32(word, 12, 9) | if bit(word, 22) { 512 } else { 0 };
+    let offset: i64 = match sign_extend(u64::from(offset_bits), 10) {
+        Some(value) => match value.checked_mul(8) {
+            Some(scaled) => scaled,
+            None => return unallocated(va),
+        },
+        None => return unallocated(va),
+    };
+    let opcode: A64Opcode = if bit(word, 23) {
+        A64Opcode::Ldrab
+    } else {
+        A64Opcode::Ldraa
+    };
+    instruction(
+        opcode,
+        vec![
+            data_register(rt, RegView::X),
+            Operand::MemBaseImm {
+                base: rn,
+                off: offset,
+                mode: IndexMode::Offset,
+            },
+        ],
+        false,
+        va,
+    )
+}
+
+fn atomic_rmw_opcode(operation: u8, acquire: bool, release: bool) -> Option<A64Opcode> {
+    match (operation, acquire, release) {
+        (0, false, false) => Some(A64Opcode::Ldadd),
+        (0, true, false) => Some(A64Opcode::Ldadda),
+        (0, false, true) => Some(A64Opcode::Ldaddl),
+        (0, true, true) => Some(A64Opcode::Ldaddal),
+        (1, false, false) => Some(A64Opcode::Ldclr),
+        (1, true, false) => Some(A64Opcode::Ldclra),
+        (1, false, true) => Some(A64Opcode::Ldclrl),
+        (1, true, true) => Some(A64Opcode::Ldclral),
+        (2, false, false) => Some(A64Opcode::Ldeor),
+        (2, true, false) => Some(A64Opcode::Ldeora),
+        (2, false, true) => Some(A64Opcode::Ldeorl),
+        (2, true, true) => Some(A64Opcode::Ldeoral),
+        (3, false, false) => Some(A64Opcode::Ldset),
+        (3, true, false) => Some(A64Opcode::Ldseta),
+        (3, false, true) => Some(A64Opcode::Ldsetl),
+        (3, true, true) => Some(A64Opcode::Ldsetal),
+        (8, false, false) => Some(A64Opcode::Swp),
+        (8, true, false) => Some(A64Opcode::Swpa),
+        (8, false, true) => Some(A64Opcode::Swpl),
+        (8, true, true) => Some(A64Opcode::Swpal),
+        _ => None,
+    }
+}
+
+fn atomic_memory(base: u8) -> Operand {
+    Operand::MemBaseImm {
+        base,
+        off: 0,
+        mode: IndexMode::Offset,
+    }
 }
 
 fn decode_literal_load(word: u32, va: u64) -> MCInst {

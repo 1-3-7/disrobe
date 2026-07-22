@@ -1189,7 +1189,7 @@ fn operand_width(operand: &Operand) -> Option<Width> {
         | Operand::ExtendedReg { view, .. } => match view {
             RegView::W => Some(Width::W32),
             RegView::X | RegView::Sp => Some(Width::W64),
-            RegView::Zr => None,
+            RegView::Zr | RegView::S | RegView::D => None,
         },
         _ => None,
     }
@@ -1241,6 +1241,8 @@ fn read_operand(operand: &Operand, width: Width) -> Option<Expr> {
         }
         Operand::PcRelLabel { target } => Some(Expr::Constant(*target)),
         Operand::CondCode(_)
+        | Operand::BtiTarget(_)
+        | Operand::FpImm(_)
         | Operand::SysReg(_)
         | Operand::MemBaseImm { .. }
         | Operand::MemBaseReg { .. } => None,

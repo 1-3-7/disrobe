@@ -1,6 +1,6 @@
 use disrobe_pass_native::aarch64::{
-    A64Opcode, BitMasks, DecodeError, ExtendKind, IndexMode, MCInst, Operand, RegView, ShiftKind,
-    decode, decode_bit_masks,
+    A64Opcode, BitMasks, BtiTarget, DecodeClass, DecodeError, ExtendKind, IndexMode, MCInst,
+    Operand, RegView, ShiftKind, decode, decode_bit_masks,
 };
 
 fn decoded(word: u32, va: u64) -> Result<MCInst, DecodeError> {
@@ -59,6 +59,10 @@ const fn mem_reg(base: u8, index: u8, extend: ExtendKind, scale: u8) -> Operand 
 
 const fn label(target: u64) -> Operand {
     Operand::PcRelLabel { target }
+}
+
+const fn fp_imm(value: u8) -> Operand {
+    Operand::FpImm(value)
 }
 
 #[test]
@@ -1015,6 +1019,547 @@ fn decoder_rejects_short_input_and_marks_unallocated_words() {
             Vec::new(),
             false,
             0x5024
+        ))
+    );
+}
+
+#[test]
+fn pointer_authentication_forms_preserve_distinct_markers_and_operands() {
+    assert_eq!(
+        decoded(0xd503_233f, 0x3000),
+        Ok(instruction(A64Opcode::Paciasp, Vec::new(), false, 0x3000,))
+    );
+    assert_eq!(
+        decoded(0xd503_237f, 0x3004),
+        Ok(instruction(A64Opcode::Pacibsp, Vec::new(), false, 0x3004,))
+    );
+    assert_eq!(
+        decoded(0xd503_23bf, 0x3008),
+        Ok(instruction(A64Opcode::Autiasp, Vec::new(), false, 0x3008,))
+    );
+    assert_eq!(
+        decoded(0xd503_23ff, 0x300c),
+        Ok(instruction(A64Opcode::Autibsp, Vec::new(), false, 0x300c,))
+    );
+    assert_eq!(
+        decoded(0xd65f_0bff, 0x3010),
+        Ok(instruction(A64Opcode::Retaa, Vec::new(), false, 0x3010,))
+    );
+    assert_eq!(
+        decoded(0xd65f_0fff, 0x3014),
+        Ok(instruction(A64Opcode::Retab, Vec::new(), false, 0x3014,))
+    );
+    assert_eq!(
+        decoded(0xd71f_0822, 0x3018),
+        Ok(instruction(
+            A64Opcode::Braa,
+            vec![reg(1, RegView::X), reg(2, RegView::X)],
+            false,
+            0x3018,
+        ))
+    );
+    assert_eq!(
+        decoded(0xd71f_083f, 0x301a),
+        Ok(instruction(
+            A64Opcode::Braa,
+            vec![reg(1, RegView::X), reg(31, RegView::Sp)],
+            false,
+            0x301a,
+        ))
+    );
+    assert_eq!(
+        decoded(0xd71f_0c64, 0x301c),
+        Ok(instruction(
+            A64Opcode::Brab,
+            vec![reg(3, RegView::X), reg(4, RegView::X)],
+            false,
+            0x301c,
+        ))
+    );
+    assert_eq!(
+        decoded(0xd73f_08a6, 0x3020),
+        Ok(instruction(
+            A64Opcode::Blraa,
+            vec![reg(5, RegView::X), reg(6, RegView::X)],
+            false,
+            0x3020,
+        ))
+    );
+    assert_eq!(
+        decoded(0xd73f_0ce8, 0x3024),
+        Ok(instruction(
+            A64Opcode::Blrab,
+            vec![reg(7, RegView::X), reg(8, RegView::X)],
+            false,
+            0x3024,
+        ))
+    );
+    assert_eq!(
+        decoded(0xf820_0549, 0x3028),
+        Ok(instruction(
+            A64Opcode::Ldraa,
+            vec![reg(9, RegView::X), mem_imm(10, 0, IndexMode::Offset)],
+            false,
+            0x3028,
+        ))
+    );
+    assert_eq!(
+        decoded(0xf8a0_158b, 0x302c),
+        Ok(instruction(
+            A64Opcode::Ldrab,
+            vec![reg(11, RegView::X), mem_imm(12, 8, IndexMode::Offset)],
+            false,
+            0x302c,
+        ))
+    );
+}
+
+#[test]
+fn branch_target_identification_preserves_target_kind() {
+    assert_eq!(
+        decoded(0xd503_241f, 0x30fc),
+        Ok(instruction(A64Opcode::Bti, Vec::new(), false, 0x30fc,))
+    );
+    assert_eq!(
+        decoded(0xd503_245f, 0x3100),
+        Ok(instruction(
+            A64Opcode::Bti,
+            vec![Operand::BtiTarget(BtiTarget::C)],
+            false,
+            0x3100,
+        ))
+    );
+    assert_eq!(
+        decoded(0xd503_249f, 0x3104),
+        Ok(instruction(
+            A64Opcode::Bti,
+            vec![Operand::BtiTarget(BtiTarget::J)],
+            false,
+            0x3104,
+        ))
+    );
+    assert_eq!(
+        decoded(0xd503_24df, 0x3108),
+        Ok(instruction(
+            A64Opcode::Bti,
+            vec![Operand::BtiTarget(BtiTarget::Jc)],
+            false,
+            0x3108,
+        ))
+    );
+}
+
+#[test]
+fn scalar_floating_point_forms_preserve_bank_width_and_immediates() {
+    assert_eq!(
+        decoded(0x1e62_2820, 0x3200),
+        Ok(instruction(
+            A64Opcode::Fadd,
+            vec![reg(0, RegView::D), reg(1, RegView::D), reg(2, RegView::D),],
+            false,
+            0x3200,
+        ))
+    );
+    assert_eq!(
+        decoded(0x1e25_3883, 0x3204),
+        Ok(instruction(
+            A64Opcode::Fsub,
+            vec![reg(3, RegView::S), reg(4, RegView::S), reg(5, RegView::S),],
+            false,
+            0x3204,
+        ))
+    );
+    assert_eq!(
+        decoded(0x1e68_08e6, 0x3208),
+        Ok(instruction(
+            A64Opcode::Fmul,
+            vec![reg(6, RegView::D), reg(7, RegView::D), reg(8, RegView::D),],
+            false,
+            0x3208,
+        ))
+    );
+    assert_eq!(
+        decoded(0x1e2b_1949, 0x320c),
+        Ok(instruction(
+            A64Opcode::Fdiv,
+            vec![reg(9, RegView::S), reg(10, RegView::S), reg(11, RegView::S),],
+            false,
+            0x320c,
+        ))
+    );
+    assert_eq!(
+        decoded(0x1e62_41ac, 0x3210),
+        Ok(instruction(
+            A64Opcode::Fcvt,
+            vec![reg(12, RegView::S), reg(13, RegView::D)],
+            false,
+            0x3210,
+        ))
+    );
+    assert_eq!(
+        decoded(0x1e22_c1ee, 0x3214),
+        Ok(instruction(
+            A64Opcode::Fcvt,
+            vec![reg(14, RegView::D), reg(15, RegView::S)],
+            false,
+            0x3214,
+        ))
+    );
+    assert_eq!(
+        decoded(0x9e62_0230, 0x3218),
+        Ok(instruction(
+            A64Opcode::Scvtf,
+            vec![reg(16, RegView::D), reg(17, RegView::X)],
+            false,
+            0x3218,
+        ))
+    );
+    assert_eq!(
+        decoded(0x1e23_0272, 0x321c),
+        Ok(instruction(
+            A64Opcode::Ucvtf,
+            vec![reg(18, RegView::S), reg(19, RegView::W)],
+            false,
+            0x321c,
+        ))
+    );
+    assert_eq!(
+        decoded(0x9e78_02b4, 0x3220),
+        Ok(instruction(
+            A64Opcode::Fcvtzs,
+            vec![reg(20, RegView::X), reg(21, RegView::D)],
+            false,
+            0x3220,
+        ))
+    );
+    assert_eq!(
+        decoded(0x1e39_02f6, 0x3224),
+        Ok(instruction(
+            A64Opcode::Fcvtzu,
+            vec![reg(22, RegView::W), reg(23, RegView::S)],
+            false,
+            0x3224,
+        ))
+    );
+    assert_eq!(
+        decoded(0x1e60_4338, 0x3228),
+        Ok(instruction(
+            A64Opcode::Fmov,
+            vec![reg(24, RegView::D), reg(25, RegView::D)],
+            false,
+            0x3228,
+        ))
+    );
+    assert_eq!(
+        decoded(0x1e6e_101a, 0x322c),
+        Ok(instruction(
+            A64Opcode::Fmov,
+            vec![reg(26, RegView::D), fp_imm(0x70)],
+            false,
+            0x322c,
+        ))
+    );
+    assert_eq!(
+        decoded(0x9e66_039b, 0x3230),
+        Ok(instruction(
+            A64Opcode::Fmov,
+            vec![reg(27, RegView::X), reg(28, RegView::D)],
+            false,
+            0x3230,
+        ))
+    );
+    assert_eq!(
+        decoded(0x9e67_03dd, 0x3234),
+        Ok(instruction(
+            A64Opcode::Fmov,
+            vec![reg(29, RegView::D), reg(30, RegView::X)],
+            false,
+            0x3234,
+        ))
+    );
+    assert_eq!(
+        decoded(0x1e26_0020, 0x3238),
+        Ok(instruction(
+            A64Opcode::Fmov,
+            vec![reg(0, RegView::W), reg(1, RegView::S)],
+            false,
+            0x3238,
+        ))
+    );
+    assert_eq!(
+        decoded(0x1e27_0062, 0x323c),
+        Ok(instruction(
+            A64Opcode::Fmov,
+            vec![reg(2, RegView::S), reg(3, RegView::W)],
+            false,
+            0x323c,
+        ))
+    );
+    assert_eq!(
+        decoded(0x1e25_2080, 0x3240),
+        Ok(instruction(
+            A64Opcode::Fcmp,
+            vec![reg(4, RegView::S), reg(5, RegView::S)],
+            true,
+            0x3240,
+        ))
+    );
+    assert_eq!(
+        decoded(0x1e60_20d8, 0x3244),
+        Ok(instruction(
+            A64Opcode::Fcmpe,
+            vec![reg(6, RegView::D), fp_imm(0)],
+            true,
+            0x3244,
+        ))
+    );
+    assert_eq!(
+        decoded(0x1e69_0d07, 0x3248),
+        Ok(instruction(
+            A64Opcode::Fcsel,
+            vec![
+                reg(7, RegView::D),
+                reg(8, RegView::D),
+                reg(9, RegView::D),
+                Operand::CondCode(0),
+            ],
+            false,
+            0x3248,
+        ))
+    );
+}
+
+#[test]
+fn atomic_forms_preserve_access_width_ordering_and_memory_operands() {
+    assert_eq!(
+        decoded(0x885f_7c41, 0x3300),
+        Ok(instruction(
+            A64Opcode::Ldxr,
+            vec![reg(1, RegView::W), mem_imm(2, 0, IndexMode::Offset)],
+            false,
+            0x3300,
+        ))
+    );
+    assert_eq!(
+        decoded(0xc85f_ffe3, 0x3304),
+        Ok(instruction(
+            A64Opcode::Ldaxr,
+            vec![reg(3, RegView::X), mem_imm(31, 0, IndexMode::Offset)],
+            false,
+            0x3304,
+        ))
+    );
+    assert_eq!(
+        decoded(0x8804_7cc5, 0x3308),
+        Ok(instruction(
+            A64Opcode::Stxr,
+            vec![
+                reg(4, RegView::W),
+                reg(5, RegView::W),
+                mem_imm(6, 0, IndexMode::Offset),
+            ],
+            false,
+            0x3308,
+        ))
+    );
+    assert_eq!(
+        decoded(0xc807_ffe8, 0x330c),
+        Ok(instruction(
+            A64Opcode::Stlxr,
+            vec![
+                reg(7, RegView::W),
+                reg(8, RegView::X),
+                mem_imm(31, 0, IndexMode::Offset),
+            ],
+            false,
+            0x330c,
+        ))
+    );
+    assert_eq!(
+        decoded(0xb829_016a, 0x3310),
+        Ok(instruction(
+            A64Opcode::Ldadd,
+            vec![
+                reg(9, RegView::W),
+                reg(10, RegView::W),
+                mem_imm(11, 0, IndexMode::Offset),
+            ],
+            false,
+            0x3310,
+        ))
+    );
+    assert_eq!(
+        decoded(0xf8ac_01cd, 0x3314),
+        Ok(instruction(
+            A64Opcode::Ldadda,
+            vec![
+                reg(12, RegView::X),
+                reg(13, RegView::X),
+                mem_imm(14, 0, IndexMode::Offset),
+            ],
+            false,
+            0x3314,
+        ))
+    );
+    assert_eq!(
+        decoded(0xb86f_0230, 0x3318),
+        Ok(instruction(
+            A64Opcode::Ldaddl,
+            vec![
+                reg(15, RegView::W),
+                reg(16, RegView::W),
+                mem_imm(17, 0, IndexMode::Offset),
+            ],
+            false,
+            0x3318,
+        ))
+    );
+    assert_eq!(
+        decoded(0xf8f2_0293, 0x331c),
+        Ok(instruction(
+            A64Opcode::Ldaddal,
+            vec![
+                reg(18, RegView::X),
+                reg(19, RegView::X),
+                mem_imm(20, 0, IndexMode::Offset),
+            ],
+            false,
+            0x331c,
+        ))
+    );
+    assert_eq!(
+        decoded(0xb835_12f6, 0x3320),
+        Ok(instruction(
+            A64Opcode::Ldclr,
+            vec![
+                reg(21, RegView::W),
+                reg(22, RegView::W),
+                mem_imm(23, 0, IndexMode::Offset),
+            ],
+            false,
+            0x3320,
+        ))
+    );
+    assert_eq!(
+        decoded(0xf8b8_2359, 0x3324),
+        Ok(instruction(
+            A64Opcode::Ldeora,
+            vec![
+                reg(24, RegView::X),
+                reg(25, RegView::X),
+                mem_imm(26, 0, IndexMode::Offset),
+            ],
+            false,
+            0x3324,
+        ))
+    );
+    assert_eq!(
+        decoded(0xb87b_33bc, 0x3328),
+        Ok(instruction(
+            A64Opcode::Ldsetl,
+            vec![
+                reg(27, RegView::W),
+                reg(28, RegView::W),
+                mem_imm(29, 0, IndexMode::Offset),
+            ],
+            false,
+            0x3328,
+        ))
+    );
+    assert_eq!(
+        decoded(0xf8e0_8041, 0x332c),
+        Ok(instruction(
+            A64Opcode::Swpal,
+            vec![
+                reg(0, RegView::X),
+                reg(1, RegView::X),
+                mem_imm(2, 0, IndexMode::Offset),
+            ],
+            false,
+            0x332c,
+        ))
+    );
+    assert_eq!(
+        decoded(0xc8a3_7ca4, 0x3330),
+        Ok(instruction(
+            A64Opcode::Cas,
+            vec![
+                reg(3, RegView::X),
+                reg(4, RegView::X),
+                mem_imm(5, 0, IndexMode::Offset),
+            ],
+            false,
+            0x3330,
+        ))
+    );
+    assert_eq!(
+        decoded(0x88e6_7d07, 0x3334),
+        Ok(instruction(
+            A64Opcode::Casa,
+            vec![
+                reg(6, RegView::W),
+                reg(7, RegView::W),
+                mem_imm(8, 0, IndexMode::Offset),
+            ],
+            false,
+            0x3334,
+        ))
+    );
+    assert_eq!(
+        decoded(0xc8a9_fd6a, 0x3338),
+        Ok(instruction(
+            A64Opcode::Casl,
+            vec![
+                reg(9, RegView::X),
+                reg(10, RegView::X),
+                mem_imm(11, 0, IndexMode::Offset),
+            ],
+            false,
+            0x3338,
+        ))
+    );
+    assert_eq!(
+        decoded(0x88ec_fdcd, 0x333c),
+        Ok(instruction(
+            A64Opcode::Casal,
+            vec![
+                reg(12, RegView::W),
+                reg(13, RegView::W),
+                mem_imm(14, 0, IndexMode::Offset),
+            ],
+            false,
+            0x333c,
+        ))
+    );
+}
+
+#[test]
+fn unsupported_and_reserved_words_never_panic_or_guess_an_opcode() {
+    assert_eq!(
+        decoded(0x2518_e3e0, 0x3400),
+        Ok(instruction(
+            A64Opcode::Unmodeled(DecodeClass::ScalableVector),
+            Vec::new(),
+            false,
+            0x3400,
+        ))
+    );
+    assert_eq!(
+        decoded(0, 0x3404),
+        Ok(instruction(
+            A64Opcode::Unallocated,
+            Vec::new(),
+            false,
+            0x3404,
+        ))
+    );
+    assert_eq!(
+        decoded(0x1e25_2081, 0x3408),
+        Ok(instruction(
+            A64Opcode::Unallocated,
+            Vec::new(),
+            false,
+            0x3408,
         ))
     );
 }
