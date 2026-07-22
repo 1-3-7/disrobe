@@ -1,8 +1,9 @@
 mod lower;
+mod model_ref;
 
 pub use lower::dvir_to_method_body;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cil::MethodBody;
 use crate::cil_emulator::{
@@ -21,6 +22,10 @@ pub enum SkipCause {
     UnsupportedOp,
     I8Arithmetic,
     ReferenceUnavailable,
+    OpaqueEffect,
+    ModelReferenceUnavailable,
+    NonterminatingUnderBudget,
+    BranchCoverageUnavailable,
 }
 
 #[derive(Clone, Debug)]
@@ -29,6 +34,7 @@ pub enum Outcome {
     Rejected(Reject),
     Skipped(SkipCause),
     Failed(Divergence),
+    FailedHalting(HaltingAsymmetry),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -60,6 +66,14 @@ pub struct Divergence {
 }
 
 #[derive(Clone, Debug)]
+pub struct HaltingAsymmetry {
+    pub input: StubInput,
+    pub seed: u64,
+    pub recovered_exhausted: bool,
+    pub model_exhausted: bool,
+}
+
+#[derive(Clone, Debug)]
 pub struct OracleReport {
     pub outcome: Outcome,
     pub equivalent: u64,
@@ -86,6 +100,18 @@ struct InputCase {
     seed: u64,
 }
 
+#[derive(Clone, Debug)]
+struct ModelSample {
+    case: InputCase,
+    run: model_ref::ModelRun,
+}
+
+#[derive(Clone, Debug)]
+enum ModelSchedule {
+    Samples(Vec<ModelSample>),
+    Skipped(SkipCause),
+}
+
 #[derive(Clone, Copy, Debug)]
 enum InputSource {
     Argument(u16),
@@ -107,6 +133,37 @@ pub fn check_against_reference(
         Err(reject) => return rejected_report(reject),
     };
     check_bodies(&recovered_body, reference_body, inputs)
+}
+
+pub fn check_against_model(model: &SyntheticVmModel, budget: &mut Budget) -> OracleReport {
+    if model_ref::contains_opaque_effect(model) {
+        return skipped_report(SkipCause::OpaqueEffect);
+    }
+    let ir: DvIr = match devirtualize(model, budget) {
+        Ok(value) => value,
+        Err(reject) => return rejected_report(reject),
+    };
+    let recovered_body: MethodBody = dvir_to_method_body(&ir);
+    check_lowered_against_model(model, &recovered_body, budget)
+}
+
+pub fn check_lowered_against_model(
+    model: &SyntheticVmModel,
+    recovered_body: &MethodBody,
+    budget: &mut Budget,
+) -> OracleReport {
+    if model_ref::contains_opaque_effect(model) {
+        return skipped_report(SkipCause::OpaqueEffect);
+    }
+    let schedule: ModelSchedule = match model_input_schedule(model, budget) {
+        Ok(value) => value,
+        Err(reject) => return rejected_report(reject),
+    };
+    let samples: Vec<ModelSample> = match schedule {
+        ModelSchedule::Samples(samples) => samples,
+        ModelSchedule::Skipped(cause) => return skipped_report(cause),
+    };
+    check_body_against_model(recovered_body, samples)
 }
 
 pub fn check_lowered_against_reference(
@@ -170,6 +227,80 @@ fn check_bodies(
         return failed_report(divergence);
     }
     equivalent_report(samples)
+}
+
+fn check_body_against_model(
+    recovered_body: &MethodBody,
+    samples: Vec<ModelSample>,
+) -> OracleReport {
+    if validate_stub_body(recovered_body).is_err() {
+        return skipped_report(SkipCause::ReferenceUnavailable);
+    }
+    let sample_count: usize = samples.len();
+    let mut first_divergence: Option<Divergence> = None;
+    let mut first_skip: Option<SkipCause> = None;
+    let mut both_exhausted: bool = false;
+    for sample in samples {
+        let recovered: Result<Observable, EmulationError> =
+            observable(emulate_capture(recovered_body, &sample.case.input));
+        match (recovered, sample.run) {
+            (Ok(recovered), model_ref::ModelRun::Returned(reference)) => {
+                if recovered.return_value != reference.value && first_divergence.is_none() {
+                    first_divergence = Some(Divergence {
+                        input: sample.case.input,
+                        seed: sample.case.seed,
+                        recovered,
+                        reference: return_observable(reference.value),
+                        first_diff: FirstDiff::ReturnValue,
+                    });
+                }
+            }
+            (Err(EmulationError::StepLimitExceeded), model_ref::ModelRun::StepLimit) => {
+                both_exhausted = true;
+            }
+            (Err(EmulationError::StepLimitExceeded), model_ref::ModelRun::Returned(_)) => {
+                return failed_halting_report(HaltingAsymmetry {
+                    input: sample.case.input,
+                    seed: sample.case.seed,
+                    recovered_exhausted: true,
+                    model_exhausted: false,
+                });
+            }
+            (Ok(_), model_ref::ModelRun::StepLimit) => {
+                return failed_halting_report(HaltingAsymmetry {
+                    input: sample.case.input,
+                    seed: sample.case.seed,
+                    recovered_exhausted: false,
+                    model_exhausted: true,
+                });
+            }
+            (Err(error), model_ref::ModelRun::Returned(_) | model_ref::ModelRun::StepLimit) => {
+                record_skip(&mut first_skip, error);
+            }
+            (_, model_ref::ModelRun::Skipped(cause)) => {
+                if first_skip.is_none() {
+                    first_skip = Some(cause);
+                }
+            }
+        }
+    }
+    if let Some(cause) = first_skip {
+        return skipped_report(cause);
+    }
+    if both_exhausted {
+        return skipped_report(SkipCause::NonterminatingUnderBudget);
+    }
+    if let Some(divergence) = first_divergence {
+        return failed_report(divergence);
+    }
+    equivalent_report(sample_count)
+}
+
+const fn return_observable(return_value: StubOutput) -> Observable {
+    Observable {
+        return_value,
+        arg_arrays_final: Vec::new(),
+    }
 }
 
 fn observable(capture: ExecCapture) -> Result<Observable, EmulationError> {
@@ -260,11 +391,144 @@ fn input_schedule(
     Ok(inputs)
 }
 
+fn model_input_schedule(
+    model: &SyntheticVmModel,
+    budget: &mut Budget,
+) -> Result<ModelSchedule, Reject> {
+    let mut inputs: Vec<InputCase> = input_schedule(model, None, budget)?;
+    append_argument_separation_case(&mut inputs, model, budget)?;
+    append_operator_separating_cases(&mut inputs, model, budget)?;
+    append_targeted_edge_cases(&mut inputs, model, budget)?;
+    let mut branch_outcomes: BTreeMap<usize, BTreeSet<bool>> = BTreeMap::new();
+    let mut samples: Vec<ModelSample> = Vec::with_capacity(inputs.len());
+    for case in inputs {
+        let run: model_ref::ModelRun = model_ref::run(model, &case.input, budget)?;
+        match &run {
+            model_ref::ModelRun::Returned(reference) => {
+                merge_branch_outcomes(&mut branch_outcomes, &reference.branch_outcomes);
+            }
+            model_ref::ModelRun::StepLimit => {}
+            model_ref::ModelRun::Skipped(cause) => {
+                return Ok(ModelSchedule::Skipped(*cause));
+            }
+        }
+        samples.push(ModelSample { case, run });
+    }
+    if branch_outcomes
+        .values()
+        .any(|outcomes: &BTreeSet<bool>| outcomes.len() != 2)
+    {
+        return Ok(ModelSchedule::Skipped(SkipCause::BranchCoverageUnavailable));
+    }
+    Ok(ModelSchedule::Samples(samples))
+}
+
+fn append_argument_separation_case(
+    inputs: &mut Vec<InputCase>,
+    model: &SyntheticVmModel,
+    budget: &mut Budget,
+) -> Result<(), Reject> {
+    let mut values: Vec<i64> = Vec::with_capacity(usize::from(model.argument_count));
+    for argument in 0..usize::from(model.argument_count) {
+        let offset: i64 = match i64::try_from(argument) {
+            Ok(value) => value,
+            Err(_) => {
+                return Err(Reject::new(
+                    "argument index cannot be represented by the input schedule",
+                    Vec::new(),
+                ));
+            }
+        };
+        let value: i64 = match i64::from(i32::MIN).checked_add(offset) {
+            Some(value) => value,
+            None => {
+                return Err(Reject::new(
+                    "argument-separation input overflows the scalar range",
+                    Vec::new(),
+                ));
+            }
+        };
+        values.push(value);
+    }
+    append_input_values(inputs, values, budget)
+}
+
+fn append_operator_separating_cases(
+    inputs: &mut Vec<InputCase>,
+    model: &SyntheticVmModel,
+    budget: &mut Budget,
+) -> Result<(), Reject> {
+    let patterns: [[i64; 2]; 4] = [
+        [3, 5],
+        [5, 3],
+        [i64::from(i32::MIN), 1],
+        [i64::from(i32::MAX), -1],
+    ];
+    for pattern in patterns {
+        let mut values: Vec<i64> = Vec::with_capacity(usize::from(model.argument_count));
+        for argument in 0..usize::from(model.argument_count) {
+            values.push(pattern[argument % pattern.len()]);
+        }
+        append_input_values(inputs, values, budget)?;
+    }
+    Ok(())
+}
+
+fn append_targeted_edge_cases(
+    inputs: &mut Vec<InputCase>,
+    model: &SyntheticVmModel,
+    budget: &mut Budget,
+) -> Result<(), Reject> {
+    let edge_scalars: [i64; 5] = [0, 1, -1, i64::from(i32::MIN), i64::from(i32::MAX)];
+    for argument in 0..model.argument_count {
+        for scalar in edge_scalars {
+            let mut values: Vec<i64> = vec![0; usize::from(model.argument_count)];
+            if let Some(slot) = values.get_mut(usize::from(argument)) {
+                *slot = scalar;
+            }
+            append_input_values(inputs, values, budget)?;
+        }
+    }
+    Ok(())
+}
+
+fn merge_branch_outcomes(
+    all_outcomes: &mut BTreeMap<usize, BTreeSet<bool>>,
+    sample_outcomes: &BTreeMap<usize, BTreeSet<bool>>,
+) {
+    for (pc, outcomes) in sample_outcomes {
+        all_outcomes
+            .entry(*pc)
+            .or_default()
+            .extend(outcomes.iter().copied());
+    }
+}
+
 fn append_input_case(
     inputs: &mut Vec<InputCase>,
     model: &SyntheticVmModel,
     targeted_argument: Option<u16>,
     scalar: i64,
+    budget: &mut Budget,
+) -> Result<(), Reject> {
+    if inputs.len() >= MAX_SAMPLES {
+        return Ok(());
+    }
+    let mut int_args: Vec<i64> = match targeted_argument {
+        Some(_) => vec![0; usize::from(model.argument_count)],
+        None => vec![scalar; usize::from(model.argument_count)],
+    };
+    if let Some(argument) = targeted_argument
+        && let Some(slot) = int_args.get_mut(usize::from(argument))
+    {
+        *slot = scalar;
+    }
+    append_input_values(inputs, int_args, budget)
+}
+
+fn append_input_values(
+    inputs: &mut Vec<InputCase>,
+    int_args: Vec<i64>,
     budget: &mut Budget,
 ) -> Result<(), Reject> {
     if inputs.len() >= MAX_SAMPLES {
@@ -281,15 +545,6 @@ fn append_input_case(
         }
     };
     let seed: u64 = FIXED_SEED.wrapping_add(index);
-    let mut int_args: Vec<i64> = match targeted_argument {
-        Some(_) => vec![0; usize::from(model.argument_count)],
-        None => vec![scalar; usize::from(model.argument_count)],
-    };
-    if let Some(argument) = targeted_argument
-        && let Some(slot) = int_args.get_mut(usize::from(argument))
-    {
-        *slot = scalar;
-    }
     inputs.push(InputCase {
         input: StubInput {
             int_args,
@@ -441,6 +696,16 @@ const fn skipped_report(cause: SkipCause) -> OracleReport {
 const fn failed_report(divergence: Divergence) -> OracleReport {
     OracleReport {
         outcome: Outcome::Failed(divergence),
+        equivalent: 0,
+        failed: 1,
+        skipped: 0,
+        rejected: 0,
+    }
+}
+
+const fn failed_halting_report(asymmetry: HaltingAsymmetry) -> OracleReport {
+    OracleReport {
+        outcome: Outcome::FailedHalting(asymmetry),
         equivalent: 0,
         failed: 1,
         skipped: 0,
