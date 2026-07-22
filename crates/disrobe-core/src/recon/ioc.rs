@@ -1175,13 +1175,8 @@ mod tests {
 
     #[test]
     fn recurses_one_level_through_hex() {
-        const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
         let inner: &str = "really-evil-domain.top";
-        let mut encoded: String = String::with_capacity(inner.len() * 2);
-        for b in inner.bytes() {
-            encoded.push(LOWER_HEX[(b >> 4) as usize] as char);
-            encoded.push(LOWER_HEX[(b & 0x0f) as usize] as char);
-        }
+        let encoded: String = crate::codec::hex::encode(inner.as_bytes());
         let ind: Vec<Indicator> = extract(encoded.as_bytes());
         assert!(
             ind.iter().any(|i: &Indicator| i.kind == IocKind::Domain

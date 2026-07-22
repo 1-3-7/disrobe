@@ -5,6 +5,7 @@ pub mod cipher;
 pub mod crc32;
 pub mod crypto_wall;
 pub mod framed;
+pub mod hex;
 pub mod web_escape;
 
 use thiserror::Error;
@@ -15,6 +16,7 @@ pub use base64::{Base64Alphabet, Base64Padding, base64_decode};
 pub use cipher::{StreamCipher, TeaVariant};
 pub use crc32::crc32_ieee;
 pub use crypto_wall::{CryptoWall, CryptoWallKind, classify as classify_crypto_wall};
+pub use hex::{decode as hex_decode, encode as hex_encode};
 
 const MIN_CASCADE_INPUT: usize = 8;
 const VALIDATE_PRINTABLE_RATIO: f64 = 0.90;

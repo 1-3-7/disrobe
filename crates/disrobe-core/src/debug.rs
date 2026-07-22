@@ -1,20 +1,7 @@
 use std::io::IsTerminal as _;
 use std::sync::OnceLock;
 
-const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
-
-fn push_lower_hex_byte(out: &mut String, byte: u8) {
-    out.push(LOWER_HEX[(byte >> 4) as usize] as char);
-    out.push(LOWER_HEX[(byte & 0x0f) as usize] as char);
-}
-
-fn push_lower_hex_fixed(out: &mut String, code: u32, digits: usize) {
-    for nibble in (0..digits).rev() {
-        let shift: usize = nibble * 4;
-        let index: usize = ((code >> shift) & 0x0f) as usize;
-        out.push(LOWER_HEX[index] as char);
-    }
-}
+use crate::codec::hex::{push_byte as push_lower_hex_byte, push_fixed as push_lower_hex_fixed};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {

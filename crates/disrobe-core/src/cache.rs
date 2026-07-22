@@ -9,12 +9,7 @@ const ENTRY_MAGIC: &[u8; 8] = b"DRCACHE\0";
 const ENTRY_HEADER_SIZE: usize = 8 + 32;
 const MAX_CACHE_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_CACHE_ENTRY_PREALLOC: usize = 8 * 1024 * 1024;
-const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
-
-fn push_lower_hex_byte(out: &mut String, byte: u8) {
-    out.push(LOWER_HEX[(byte >> 4) as usize] as char);
-    out.push(LOWER_HEX[(byte & 0x0f) as usize] as char);
-}
+use crate::codec::hex::push_byte as push_lower_hex_byte;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CacheKey {
