@@ -651,6 +651,49 @@ fn register_forms_preserve_aliases_shifts_extensions_and_conditions() {
 }
 
 #[test]
+fn add_sub_shifted_register_rejects_ror_encoding() {
+    assert_eq!(
+        decoded(0x8bc2_1020, 0x2064),
+        Ok(instruction(
+            A64Opcode::Unallocated,
+            Vec::new(),
+            false,
+            0x2064,
+        ))
+    );
+}
+
+#[test]
+fn add_sub_extended_register_preserves_width_for_uxtx() {
+    assert_eq!(
+        decoded(0x0b22_6020, 0x2068),
+        Ok(instruction(
+            A64Opcode::Add,
+            vec![
+                reg(0, RegView::W),
+                reg(1, RegView::W),
+                extended(2, RegView::W, ExtendKind::Uxtx, 0),
+            ],
+            false,
+            0x2068,
+        ))
+    );
+    assert_eq!(
+        decoded(0x8b22_6020, 0x206c),
+        Ok(instruction(
+            A64Opcode::Add,
+            vec![
+                reg(0, RegView::X),
+                reg(1, RegView::X),
+                extended(2, RegView::X, ExtendKind::Uxtx, 0),
+            ],
+            false,
+            0x206c,
+        ))
+    );
+}
+
+#[test]
 fn load_store_forms_keep_addressing_modes_and_extensions() {
     assert_eq!(
         decoded(0xf900_0be0, 0x3000),
@@ -824,6 +867,19 @@ fn load_store_forms_keep_addressing_modes_and_extensions() {
             ],
             false,
             0x3044,
+        ))
+    );
+}
+
+#[test]
+fn non_temporal_pair_encoding_is_unmodeled() {
+    assert_eq!(
+        decoded(0x2800_0440, 0x3048),
+        Ok(instruction(
+            A64Opcode::Unmodeled(DecodeClass::LoadsAndStores),
+            Vec::new(),
+            false,
+            0x3048,
         ))
     );
 }
