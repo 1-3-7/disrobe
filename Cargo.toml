@@ -172,6 +172,7 @@ disrobe-nir-lift = { path = "crates/disrobe-nir-lift", version = "0.10.3" }
 disrobe-semdiff = { path = "crates/disrobe-semdiff", version = "0.10.3" }
 disrobe-taint = { path = "crates/disrobe-taint", version = "0.10.3" }
 disrobe-typerec = { path = "crates/disrobe-typerec", version = "0.10.3" }
+disrobe-vulnmatch = { path = "crates/disrobe-vulnmatch", version = "0.10.3" }
 disrobe-irsummary = { path = "crates/disrobe-irsummary", version = "0.10.3" }
 disrobe-pass-as3 = { path = "crates/disrobe-pass-as3", version = "0.10.3" }
 disrobe-pass-beam = { path = "crates/disrobe-pass-beam", version = "0.10.3" }

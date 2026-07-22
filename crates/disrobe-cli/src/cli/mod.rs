@@ -101,6 +101,7 @@ pub(crate) mod strings;
 pub(crate) mod swift;
 pub(crate) mod taint;
 pub(crate) mod util;
+pub(crate) mod vulnmatch;
 #[cfg(feature = "wasm")]
 pub(crate) mod wasm;
 pub(crate) mod wasm_cmd;

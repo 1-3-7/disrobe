@@ -101,6 +101,7 @@ use cli::strings as strings_cmd;
 use cli::swift::{self, SwiftCmd};
 use cli::taint;
 use cli::util::init_tracing;
+use cli::vulnmatch;
 use cli::wasm_cmd::WasmCmd;
 use cli::webview;
 use cli::yara::{self, YaraCmd};
@@ -779,6 +780,16 @@ enum Cmd {
             help = "treat calls to SYMBOL as a taint sink; repeatable; replaces the built-in sink set when supplied"
         )]
         sink: Vec<String>,
+    },
+    #[command(
+        about = "match reachability-aware vulnerability rules against a native binary or a Disasm- or Mir-rung .dr envelope, preserving reachable, reachability-unknown, present, and confirmed findings"
+    )]
+    Vulnmatch {
+        #[arg(
+            value_name = "INPUT",
+            help = "native binary (PE/ELF/Mach-O/COFF) or a Disasm- or Mir-rung .dr envelope"
+        )]
+        input: PathBuf,
     },
     #[cfg(feature = "chain")]
     #[command(
@@ -1716,6 +1727,7 @@ fn main() -> miette::Result<()> {
             source,
             sink,
         } => taint::run(input, source, sink, fmt),
+        Cmd::Vulnmatch { input } => vulnmatch::run(input, fmt),
         #[cfg(feature = "chain")]
         Cmd::Auto {
             input,

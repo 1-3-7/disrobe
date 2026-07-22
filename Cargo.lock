@@ -1950,6 +1950,7 @@ dependencies = [
  "disrobe-query",
  "disrobe-taint",
  "disrobe-typerec",
+ "disrobe-vulnmatch",
  "human-panic",
  "iced-x86",
  "indicatif",
@@ -2939,6 +2940,9 @@ name = "disrobe-vulnmatch"
 version = "0.10.4"
 dependencies = [
  "disrobe-core",
+ "disrobe-nir",
+ "disrobe-query",
+ "disrobe-taint",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
