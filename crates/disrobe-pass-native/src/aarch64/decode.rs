@@ -1023,6 +1023,7 @@ fn decode_pair(word: u32, va: u64) -> MCInst {
         _ => return unallocated(va),
     };
     let index_mode: IndexMode = match mode {
+        0 => return unmodeled(DecodeClass::LoadsAndStores, va),
         1 => IndexMode::PostIndex,
         2 => IndexMode::Offset,
         3 => IndexMode::PreIndex,
@@ -1349,7 +1350,7 @@ fn decode_add_sub_shifted_register(word: u32, va: u64) -> MCInst {
         0 => ShiftKind::Lsl,
         1 => ShiftKind::Lsr,
         2 => ShiftKind::Asr,
-        3 => ShiftKind::Ror,
+        3 => return unallocated(va),
         _ => return unallocated(va),
     };
     let subtract: bool = bit(word, 30);
@@ -1393,7 +1394,7 @@ fn decode_add_sub_extended_register(word: u32, va: u64) -> MCInst {
         _ => return unallocated(va),
     };
     let sf: bool = bit(word, 31);
-    if amount > 4 || (!sf && (option == 3 || option == 7)) {
+    if amount > 4 {
         return unallocated(va);
     }
     let extend: ExtendKind = match extend_kind(option) {
@@ -1417,7 +1418,7 @@ fn decode_add_sub_extended_register(word: u32, va: u64) -> MCInst {
     operands.push(register_sp(rn, sf));
     operands.push(Operand::ExtendedReg {
         n: rm,
-        view: extended_register_view(rm, extend),
+        view: extended_register_view(rm, sf, extend),
         extend,
         amount,
     });
@@ -1639,24 +1640,19 @@ fn extend_kind(option: u8) -> Option<ExtendKind> {
     }
 }
 
-fn extend_view(extend: ExtendKind) -> RegView {
-    match extend {
-        ExtendKind::Uxtx | ExtendKind::Sxtx => RegView::X,
-        ExtendKind::Uxtb
-        | ExtendKind::Uxth
-        | ExtendKind::Uxtw
-        | ExtendKind::Sxtb
-        | ExtendKind::Sxth
-        | ExtendKind::Sxtw
-        | ExtendKind::Lsl => RegView::W,
+fn extend_view(sf: bool, extend: ExtendKind) -> RegView {
+    if sf && matches!(extend, ExtendKind::Uxtx | ExtendKind::Sxtx) {
+        RegView::X
+    } else {
+        RegView::W
     }
 }
 
-fn extended_register_view(n: u8, extend: ExtendKind) -> RegView {
+fn extended_register_view(n: u8, sf: bool, extend: ExtendKind) -> RegView {
     if n == 31 {
         return RegView::Zr;
     }
-    extend_view(extend)
+    extend_view(sf, extend)
 }
 
 fn field_u8(word: u32, shift: u8, width: u8) -> Option<u8> {
