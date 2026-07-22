@@ -136,36 +136,52 @@ pub trait CallGraphView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct TaintWitness(String);
+pub struct TaintWitnessStep {
+    pub address: u64,
+    pub symbol: String,
+    pub kind: String,
+}
+
+impl TaintWitnessStep {
+    pub fn new(address: u64, symbol: impl Into<String>, kind: impl Into<String>) -> Self {
+        Self {
+            address,
+            symbol: symbol.into(),
+            kind: kind.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "Vec<TaintWitnessStep>", into = "Vec<TaintWitnessStep>")]
+pub struct TaintWitness(Vec<TaintWitnessStep>);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-#[error("taint witness is empty or whitespace")]
+#[error("taint witness path is empty")]
 pub struct TaintWitnessError;
 
 impl TaintWitness {
-    pub fn new(source: impl Into<String>) -> Result<Self, TaintWitnessError> {
-        let source: String = source.into();
-        Self::try_from(source)
+    pub fn from_steps(steps: Vec<TaintWitnessStep>) -> Result<Self, TaintWitnessError> {
+        Self::try_from(steps)
     }
 
-    pub fn as_str(&self) -> &str {
+    pub fn steps(&self) -> &[TaintWitnessStep] {
         &self.0
     }
 }
 
-impl TryFrom<String> for TaintWitness {
+impl TryFrom<Vec<TaintWitnessStep>> for TaintWitness {
     type Error = TaintWitnessError;
 
-    fn try_from(source: String) -> Result<Self, Self::Error> {
-        if source.trim().is_empty() {
+    fn try_from(steps: Vec<TaintWitnessStep>) -> Result<Self, Self::Error> {
+        if steps.is_empty() {
             return Err(TaintWitnessError);
         }
-        Ok(Self(source))
+        Ok(Self(steps))
     }
 }
 
-impl From<TaintWitness> for String {
+impl From<TaintWitness> for Vec<TaintWitnessStep> {
     fn from(witness: TaintWitness) -> Self {
         witness.0
     }
