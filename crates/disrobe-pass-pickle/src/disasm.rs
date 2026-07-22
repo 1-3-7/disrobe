@@ -1,3 +1,4 @@
+use disrobe_bytes::{ByteReadError, ByteReader};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -40,8 +41,7 @@ pub struct Disassembly {
 
 #[derive(Debug)]
 struct Cursor<'a> {
-    bytes: &'a [u8],
-    pos: usize,
+    reader: ByteReader<'a>,
     long_budget: usize,
 }
 
@@ -49,10 +49,14 @@ impl<'a> Cursor<'a> {
     #[inline]
     const fn new(bytes: &'a [u8]) -> Self {
         Self {
-            bytes,
-            pos: 0,
+            reader: ByteReader::new(bytes),
             long_budget: LONG_BODY_BUDGET,
         }
+    }
+
+    #[inline]
+    const fn position(&self) -> usize {
+        self.reader.position()
     }
 
     fn charge_long(&mut self, n: usize) -> Result<()> {
@@ -60,7 +64,7 @@ impl<'a> Cursor<'a> {
             return Err(Error::LongTooLong {
                 declared: n,
                 limit: MAX_LONG_BODY,
-                offset: self.pos,
+                offset: self.position(),
             });
         }
         self.long_budget = self.long_budget.checked_sub(n).ok_or(Error::LongBudget {
@@ -71,35 +75,76 @@ impl<'a> Cursor<'a> {
 
     #[inline]
     const fn remaining(&self) -> usize {
-        self.bytes.len().saturating_sub(self.pos)
+        self.reader.remaining()
     }
 
     fn take(&mut self, n: usize, what: &'static str) -> Result<&'a [u8]> {
-        if self.remaining() < n {
-            return Err(Error::Truncated {
-                what,
-                offset: self.pos,
-                needed: n,
-                had: self.remaining(),
-            });
+        self.reader
+            .read_bytes(n)
+            .map_err(|error: ByteReadError| Self::truncated(error, what))
+    }
+
+    fn read_u8(&mut self, what: &'static str) -> Result<u8> {
+        self.reader
+            .read_u8()
+            .map_err(|error: ByteReadError| Self::truncated(error, what))
+    }
+
+    fn read_u16_le(&mut self, what: &'static str) -> Result<u16> {
+        self.reader
+            .read_u16_le()
+            .map_err(|error: ByteReadError| Self::truncated(error, what))
+    }
+
+    fn read_u32_le(&mut self, what: &'static str) -> Result<u32> {
+        self.reader
+            .read_u32_le()
+            .map_err(|error: ByteReadError| Self::truncated(error, what))
+    }
+
+    fn read_i32_le(&mut self, what: &'static str) -> Result<i32> {
+        self.reader
+            .read_i32_le()
+            .map_err(|error: ByteReadError| Self::truncated(error, what))
+    }
+
+    fn read_u64_le(&mut self, what: &'static str) -> Result<u64> {
+        self.reader
+            .read_u64_le()
+            .map_err(|error: ByteReadError| Self::truncated(error, what))
+    }
+
+    fn read_u64_be(&mut self, what: &'static str) -> Result<u64> {
+        self.reader
+            .read_u64_be()
+            .map_err(|error: ByteReadError| Self::truncated(error, what))
+    }
+
+    const fn truncated(error: ByteReadError, what: &'static str) -> Error {
+        Error::Truncated {
+            what,
+            offset: error.offset,
+            needed: error.needed,
+            had: error.available,
         }
-        let slice: &[u8] = &self.bytes[self.pos..self.pos + n];
-        self.pos += n;
-        Ok(slice)
     }
 
     fn read_line(&mut self, what: &'static str) -> Result<&'a [u8]> {
-        let start: usize = self.pos;
-        let rel: usize = self.bytes[start..]
-            .iter()
-            .position(|&b: &u8| b == b'\n')
-            .ok_or(Error::MissingNewline {
-                what,
-                offset: start,
-            })?;
-        let line: &[u8] = &self.bytes[start..start + rel];
-        self.pos = start + rel + 1;
-        Ok(line)
+        let start: usize = self.position();
+        let remaining: &[u8] = self
+            .reader
+            .peek_bytes(self.remaining())
+            .map_err(|error: ByteReadError| Self::truncated(error, what))?;
+        let rel: usize =
+            remaining
+                .iter()
+                .position(|&b: &u8| b == b'\n')
+                .ok_or(Error::MissingNewline {
+                    what,
+                    offset: start,
+                })?;
+        let line_and_newline: &[u8] = self.take(rel + 1, what)?;
+        Ok(&line_and_newline[..rel])
     }
 }
 
@@ -161,115 +206,93 @@ fn big_int_decimal(slice: &[u8]) -> String {
 fn decode_arg(cur: &mut Cursor<'_>, info: &OpInfo) -> Result<DecodedArg> {
     match info.arg {
         ArgKind::None => Ok(DecodedArg::None),
-        ArgKind::Uint1 => Ok(DecodedArg::Int(i64::from(cur.take(1, "uint1")?[0]))),
-        ArgKind::Uint2 => {
-            let b: &[u8] = cur.take(2, "uint2")?;
-            Ok(DecodedArg::Int(i64::from(u16::from_le_bytes([b[0], b[1]]))))
-        }
-        ArgKind::Uint4 => {
-            let b: &[u8] = cur.take(4, "uint4")?;
-            Ok(DecodedArg::Int(i64::from(u32::from_le_bytes([
-                b[0], b[1], b[2], b[3],
-            ]))))
-        }
-        ArgKind::Int4 => {
-            let b: &[u8] = cur.take(4, "int4")?;
-            Ok(DecodedArg::Int(i64::from(i32::from_le_bytes([
-                b[0], b[1], b[2], b[3],
-            ]))))
-        }
+        ArgKind::Uint1 => Ok(DecodedArg::Int(i64::from(cur.read_u8("uint1")?))),
+        ArgKind::Uint2 => Ok(DecodedArg::Int(i64::from(cur.read_u16_le("uint2")?))),
+        ArgKind::Uint4 => Ok(DecodedArg::Int(i64::from(cur.read_u32_le("uint4")?))),
+        ArgKind::Int4 => Ok(DecodedArg::Int(i64::from(cur.read_i32_le("int4")?))),
         ArgKind::Uint8 => {
-            let b: &[u8] = cur.take(8, "uint8")?;
-            let v: u64 = u64::from_le_bytes(b.try_into().unwrap_or([0; 8]));
+            let v: u64 = cur.read_u64_le("uint8")?;
             match i64::try_from(v) {
                 Ok(n) => Ok(DecodedArg::Int(n)),
                 Err(_) => Ok(DecodedArg::BigInt(v.to_string())),
             }
         }
         ArgKind::Long1 => {
-            let n: usize = cur.take(1, "long1-len")?[0] as usize;
+            let n: usize = usize::from(cur.read_u8("long1-len")?);
             cur.charge_long(n)?;
             let body: &[u8] = cur.take(n, "long1-body")?;
             Ok(long_arg(body))
         }
         ArgKind::Long4 => {
-            let lb: &[u8] = cur.take(4, "long4-len")?;
-            let n: usize = u32::from_le_bytes([lb[0], lb[1], lb[2], lb[3]]) as usize;
+            let n: usize = cur.read_u32_le("long4-len")? as usize;
             cur.charge_long(n)?;
             let body: &[u8] = cur.take(n, "long4-body")?;
             Ok(long_arg(body))
         }
         ArgKind::Float8 => {
-            let b: &[u8] = cur.take(8, "float8")?;
-            Ok(DecodedArg::Float(f64::from_be_bytes(
-                b.try_into().unwrap_or([0; 8]),
-            )))
+            let bits: u64 = cur.read_u64_be("float8")?;
+            Ok(DecodedArg::Float(f64::from_bits(bits)))
         }
         ArgKind::FloatNl => {
             let line: &[u8] = cur.read_line("floatnl")?;
             let s: &str = std::str::from_utf8(line).map_err(|_| Error::BadUtf8 {
                 what: "floatnl",
-                offset: cur.pos,
+                offset: cur.position(),
             })?;
             s.trim()
                 .parse::<f64>()
                 .map(DecodedArg::Float)
                 .map_err(|e| Error::BadLiteral {
                     what: "float",
-                    offset: cur.pos,
+                    offset: cur.position(),
                     detail: e.to_string(),
                 })
         }
         ArgKind::DecimalNlShort => {
             let line: &[u8] = cur.read_line("decimalnl_short")?;
-            decode_int_line(line, cur.pos)
+            decode_int_line(line, cur.position())
         }
         ArgKind::DecimalNlLong => {
             let line: &[u8] = cur.read_line("decimalnl_long")?;
             let trimmed: &[u8] = line.strip_suffix(b"L").unwrap_or(line);
-            decode_int_line(trimmed, cur.pos)
+            decode_int_line(trimmed, cur.position())
         }
         ArgKind::String1 => {
-            let n: usize = cur.take(1, "len1")?[0] as usize;
+            let n: usize = usize::from(cur.read_u8("len1")?);
             Ok(DecodedArg::Str(decode_latin1(cur.take(n, "body1")?)))
         }
         ArgKind::Bytes1 => {
-            let n: usize = cur.take(1, "len1")?[0] as usize;
+            let n: usize = usize::from(cur.read_u8("len1")?);
             Ok(DecodedArg::Bytes(cur.take(n, "body1")?.to_vec()))
         }
         ArgKind::String4 => {
-            let lb: &[u8] = cur.take(4, "len4")?;
-            let n: u32 = u32::from_le_bytes([lb[0], lb[1], lb[2], lb[3]]);
+            let n: u32 = cur.read_u32_le("len4")?;
             guard_len(cur, u64::from(n), "body4")?;
             Ok(DecodedArg::Str(decode_latin1(
                 cur.take(n as usize, "body4")?,
             )))
         }
         ArgKind::Bytes4 => {
-            let lb: &[u8] = cur.take(4, "len4")?;
-            let n: u32 = u32::from_le_bytes([lb[0], lb[1], lb[2], lb[3]]);
+            let n: u32 = cur.read_u32_le("len4")?;
             guard_len(cur, u64::from(n), "body4")?;
             Ok(DecodedArg::Bytes(cur.take(n as usize, "body4")?.to_vec()))
         }
         ArgKind::Bytes8 | ArgKind::ByteArray8 => {
-            let lb: &[u8] = cur.take(8, "len8")?;
-            let n: u64 = u64::from_le_bytes(lb.try_into().unwrap_or([0; 8]));
+            let n: u64 = cur.read_u64_le("len8")?;
             guard_len(cur, n, "body8")?;
             Ok(DecodedArg::Bytes(cur.take(n as usize, "body8")?.to_vec()))
         }
         ArgKind::UnicodeString1 => {
-            let n: usize = cur.take(1, "ulen1")?[0] as usize;
+            let n: usize = usize::from(cur.read_u8("ulen1")?);
             Ok(unicode_arg(cur.take(n, "ubody1")?))
         }
         ArgKind::UnicodeString4 => {
-            let lb: &[u8] = cur.take(4, "ulen4")?;
-            let n: u32 = u32::from_le_bytes([lb[0], lb[1], lb[2], lb[3]]);
+            let n: u32 = cur.read_u32_le("ulen4")?;
             guard_len(cur, u64::from(n), "ubody4")?;
             Ok(unicode_arg(cur.take(n as usize, "ubody4")?))
         }
         ArgKind::UnicodeString8 => {
-            let lb: &[u8] = cur.take(8, "ulen8")?;
-            let n: u64 = u64::from_le_bytes(lb.try_into().unwrap_or([0; 8]));
+            let n: u64 = cur.read_u64_le("ulen8")?;
             guard_len(cur, n, "ubody8")?;
             Ok(unicode_arg(cur.take(n as usize, "ubody8")?))
         }
@@ -511,15 +534,15 @@ pub fn disassemble(bytes: &[u8]) -> Result<Disassembly> {
     loop {
         if cur.remaining() == 0 {
             crate::debug::dbg_kv("decode-fault", || {
-                format!("ran out of bytes at offset {} before STOP", cur.pos)
+                format!("ran out of bytes at offset {} before STOP", cur.position())
             });
             return Err(Error::NoStop);
         }
         budget = budget.checked_sub(1).ok_or(Error::OpcodeBudget {
             limit: OPCODE_BUDGET,
         })?;
-        let offset: usize = cur.pos;
-        let opcode: u8 = cur.take(1, "opcode")?[0];
+        let offset: usize = cur.position();
+        let opcode: u8 = cur.read_u8("opcode")?;
         let Some(info): Option<&OpInfo> = lookup(opcode) else {
             crate::debug::dbg_kv("decode-fault", || {
                 format!("unknown opcode 0x{opcode:02x} at offset {offset}")
@@ -669,6 +692,31 @@ mod tests {
     #[test]
     fn empty_is_error() {
         assert!(matches!(disassemble(&[]), Err(Error::Empty)));
+    }
+
+    #[test]
+    fn cursor_preserves_reader_endianness_and_truncation_context() {
+        let integer_bytes: [u8; 4] = [0x01, 0x02, 0x03, 0x04];
+        let mut cur: Cursor<'_> = Cursor::new(&integer_bytes);
+
+        assert_eq!(cur.reader.position(), 0);
+        assert_eq!(cur.read_u16_le("uint2").expect("read uint2"), 0x0201);
+        assert_eq!(cur.position(), 2);
+        assert_eq!(cur.read_u16_le("uint2").expect("read second uint2"), 0x0403);
+        let error: Error = cur.read_u8("opcode").expect_err("read past input");
+        let float_bytes: [u8; 8] = 1.0f64.to_be_bytes();
+        let mut float_cur: Cursor<'_> = Cursor::new(&float_bytes);
+        let float_bits: u64 = float_cur.read_u64_be("float8").expect("read float8");
+        assert_eq!(float_bits, 1.0f64.to_bits());
+        assert!(matches!(
+            error,
+            Error::Truncated {
+                what: "opcode",
+                offset: 4,
+                needed: 1,
+                had: 0,
+            }
+        ));
     }
 
     #[test]
