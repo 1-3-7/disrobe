@@ -15,6 +15,7 @@ workspace = true
 
 [dependencies]
 base64 = { workspace = true }
+disrobe-bytes = { workspace = true }
 disrobe-core = { workspace = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
