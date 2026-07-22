@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use crate::codec::{basename_of, strip_extension};
 use crate::envelope::{DecryptedPye, decrypt_pye_with_key};
 use crate::error::Result;
-use crate::kdf::{DerivedKey, derive_aes_key};
+use crate::kdf::{DerivedKey, derive_aes_key, validate_filename};
 
 #[derive(Debug, Default)]
 pub struct KeyCache {
@@ -28,14 +28,15 @@ impl KeyCache {
 
     #[inline]
     pub fn get_or_derive(&mut self, filename: &str) -> Result<DerivedKey> {
-        let basename: String = strip_extension(basename_of(filename)).to_owned();
-        if let Some(key) = self.inner.get(&basename) {
+        let basename: &str = strip_extension(basename_of(filename));
+        validate_filename(basename)?;
+        if let Some(key) = self.inner.get(basename) {
             self.hits += 1;
             return Ok(*key);
         }
         self.misses += 1;
-        let key: DerivedKey = derive_aes_key(&basename)?;
-        self.inner.insert(basename, key);
+        let key: DerivedKey = derive_aes_key(basename)?;
+        self.inner.insert(basename.to_owned(), key);
         Ok(key)
     }
 

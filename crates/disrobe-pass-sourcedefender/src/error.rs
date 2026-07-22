@@ -32,6 +32,16 @@ pub enum Error {
 
     #[error("DR-SDEF-0010: inlined extractor found {0} blocks with no decryptable payload")]
     InlinedNoDecrypt(usize),
+
+    #[error("DR-SDEF-0011: input limit exceeded for {surface}: {observed} bytes > {limit} bytes")]
+    InputLimit {
+        surface: &'static str,
+        observed: usize,
+        limit: usize,
+    },
+
+    #[error("DR-SDEF-0012: nesting limit exceeded for {surface}: limit {limit}")]
+    NestingLimit { surface: &'static str, limit: usize },
 }
 
 pub type Result<T> = core::result::Result<T, Error>;

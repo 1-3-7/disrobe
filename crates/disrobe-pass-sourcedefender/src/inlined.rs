@@ -1,11 +1,15 @@
 use core::ops::Range;
 
 use crate::cache::KeyCache;
-use crate::codec::{basename_of, strip_extension};
+use crate::codec::{MAX_ARMORED_INPUT_BYTES, basename_of, strip_extension};
 use crate::envelope::{
     DecryptedPye, PYE_BEGIN_MARKER, PYE_END_MARKER, decrypt_pye, decrypt_pye_with_key,
 };
 use crate::error::{Error, Result};
+use crate::kdf::validate_filename;
+
+const MAX_INLINED_SOURCE_BYTES: usize = MAX_ARMORED_INPUT_BYTES;
+const MAX_INLINED_BLOCKS: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InlinedBlock {
@@ -71,6 +75,8 @@ pub fn extract_inlined(
     host_filename: &str,
     options: InlinedExtractOptions,
 ) -> Result<InlinedExtraction> {
+    validate_inlined_input(source)?;
+    validate_filename(host_filename)?;
     let blocks: Vec<InlinedBlock> = locate_inlined_blocks(source);
     let mut decrypted: Vec<DecryptedPye> = Vec::with_capacity(blocks.len());
     let mut failures: Vec<InlinedFailure> = Vec::new();
@@ -113,6 +119,76 @@ pub fn extract_inlined(
         decrypted,
         failures,
     })
+}
+
+fn validate_inlined_input(source: &str) -> Result<()> {
+    if source.len() > MAX_INLINED_SOURCE_BYTES {
+        return Err(Error::InputLimit {
+            surface: "inlined source",
+            observed: source.len(),
+            limit: MAX_INLINED_SOURCE_BYTES,
+        });
+    }
+    let bytes: &[u8] = source.as_bytes();
+    let begin: &[u8] = PYE_BEGIN_MARKER.as_bytes();
+    let end: &[u8] = PYE_END_MARKER.as_bytes();
+    let mut cursor: usize = 0;
+    let mut completed_blocks: usize = 0;
+    loop {
+        let Some(remaining): Option<&[u8]> = bytes.get(cursor..) else {
+            return Ok(());
+        };
+        let Some(begin_off): Option<usize> = find_subslice(remaining, begin) else {
+            return Ok(());
+        };
+        let Some(absolute_begin): Option<usize> = cursor.checked_add(begin_off) else {
+            return Err(Error::InputLimit {
+                surface: "inlined block offset",
+                observed: usize::MAX,
+                limit: MAX_INLINED_SOURCE_BYTES,
+            });
+        };
+        let Some(after_begin): Option<usize> = absolute_begin.checked_add(begin.len()) else {
+            return Err(Error::InputLimit {
+                surface: "inlined block offset",
+                observed: usize::MAX,
+                limit: MAX_INLINED_SOURCE_BYTES,
+            });
+        };
+        let Some(after_begin_bytes): Option<&[u8]> = bytes.get(after_begin..) else {
+            return Ok(());
+        };
+        let Some(end_rel): Option<usize> = find_subslice(after_begin_bytes, end) else {
+            return Ok(());
+        };
+        let Some(end_marker_start): Option<usize> = after_begin.checked_add(end_rel) else {
+            return Err(Error::InputLimit {
+                surface: "inlined block offset",
+                observed: usize::MAX,
+                limit: MAX_INLINED_SOURCE_BYTES,
+            });
+        };
+        let Some(after_end): Option<usize> = end_marker_start.checked_add(end.len()) else {
+            return Err(Error::InputLimit {
+                surface: "inlined block offset",
+                observed: usize::MAX,
+                limit: MAX_INLINED_SOURCE_BYTES,
+            });
+        };
+        completed_blocks = completed_blocks.checked_add(1).ok_or(Error::InputLimit {
+            surface: "inlined block count",
+            observed: usize::MAX,
+            limit: MAX_INLINED_BLOCKS,
+        })?;
+        if completed_blocks > MAX_INLINED_BLOCKS {
+            return Err(Error::InputLimit {
+                surface: "inlined block count",
+                observed: completed_blocks,
+                limit: MAX_INLINED_BLOCKS,
+            });
+        }
+        cursor = scan_line_end(source, after_end);
+    }
 }
 
 #[inline]

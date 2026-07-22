@@ -1,5 +1,6 @@
 use serde::Serialize;
 
+use crate::codec::MAX_HEX_INPUT_BYTES;
 use crate::error::{Error, Result};
 
 pub const GCM_TAG_LEN: usize = 16;
@@ -8,6 +9,7 @@ pub const KDF_SALT_LEN: usize = 16;
 
 const MIN_GCM_BODY_LEN: usize = GCM_NONCE_LEN + GCM_TAG_LEN;
 const MIN_SALTED_GCM_BODY_LEN: usize = KDF_SALT_LEN + GCM_NONCE_LEN + GCM_TAG_LEN;
+const MAX_MODERN_GCM_BODY_BYTES: usize = MAX_HEX_INPUT_BYTES / 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -59,29 +61,40 @@ pub fn frame_modern_gcm_body(body: &[u8]) -> ModernGcmFraming {
         };
     }
     if body_len >= MIN_SALTED_GCM_BODY_LEN {
-        let salt: Vec<u8> = body[..KDF_SALT_LEN].to_vec();
-        let nonce: Vec<u8> = body[KDF_SALT_LEN..KDF_SALT_LEN + GCM_NONCE_LEN].to_vec();
+        let salt: Vec<u8> = body
+            .get(..KDF_SALT_LEN)
+            .map_or_else(Vec::new, ToOwned::to_owned);
+        let nonce_end: usize = KDF_SALT_LEN.saturating_add(GCM_NONCE_LEN);
+        let nonce: Vec<u8> = body
+            .get(KDF_SALT_LEN..nonce_end)
+            .map_or_else(Vec::new, ToOwned::to_owned);
         let ct_start: usize = KDF_SALT_LEN + GCM_NONCE_LEN;
         let tag_start: usize = body_len - GCM_TAG_LEN;
-        let tag: Vec<u8> = body[tag_start..].to_vec();
+        let tag: Vec<u8> = body
+            .get(tag_start..)
+            .map_or_else(Vec::new, ToOwned::to_owned);
         return ModernGcmFraming {
             shape: GcmFramingShape::SaltNonceCiphertextTag,
             body_len,
             salt: Some(salt),
             nonce: Some(nonce),
-            ciphertext_len: tag_start - ct_start,
+            ciphertext_len: tag_start.saturating_sub(ct_start),
             tag: Some(tag),
         };
     }
-    let nonce: Vec<u8> = body[..GCM_NONCE_LEN].to_vec();
+    let nonce: Vec<u8> = body
+        .get(..GCM_NONCE_LEN)
+        .map_or_else(Vec::new, ToOwned::to_owned);
     let tag_start: usize = body_len - GCM_TAG_LEN;
-    let tag: Vec<u8> = body[tag_start..].to_vec();
+    let tag: Vec<u8> = body
+        .get(tag_start..)
+        .map_or_else(Vec::new, ToOwned::to_owned);
     ModernGcmFraming {
         shape: GcmFramingShape::NonceCiphertextTag,
         body_len,
         salt: None,
         nonce: Some(nonce),
-        ciphertext_len: tag_start - GCM_NONCE_LEN,
+        ciphertext_len: tag_start.saturating_sub(GCM_NONCE_LEN),
         tag: Some(tag),
     }
 }
@@ -95,12 +108,25 @@ pub fn decrypt_modern_gcm_with_key(
     use ctr::Ctr32BE;
     use ctr::cipher::{KeyIvInit, StreamCipher};
 
-    let Some(nonce) = framing.nonce.as_ref() else {
+    if body.len() > MAX_MODERN_GCM_BODY_BYTES {
+        return Err(Error::InputLimit {
+            surface: "modern gcm body",
+            observed: body.len(),
+            limit: MAX_MODERN_GCM_BODY_BYTES,
+        });
+    }
+    let canonical: ModernGcmFraming = frame_modern_gcm_body(body);
+    if framing != &canonical {
+        return Err(Error::Msgpack(
+            "modern gcm framing does not match body".to_owned(),
+        ));
+    }
+    let Some(nonce) = canonical.nonce.as_ref() else {
         return Err(Error::Msgpack(
             "modern body too short to carry a gcm nonce".to_owned(),
         ));
     };
-    let Some(tag) = framing.tag.as_ref() else {
+    let Some(tag) = canonical.tag.as_ref() else {
         return Err(Error::Msgpack(
             "modern body too short to carry a gcm tag".to_owned(),
         ));
@@ -110,7 +136,7 @@ pub fn decrypt_modern_gcm_with_key(
             "modern gcm nonce/tag lengths are not the documented 12/16".to_owned(),
         ));
     }
-    let ct_start: usize = match framing.shape {
+    let ct_start: usize = match canonical.shape {
         GcmFramingShape::SaltNonceCiphertextTag => KDF_SALT_LEN + GCM_NONCE_LEN,
         GcmFramingShape::NonceCiphertextTag => GCM_NONCE_LEN,
         GcmFramingShape::Undersized => {
@@ -125,10 +151,23 @@ pub fn decrypt_modern_gcm_with_key(
     }
 
     let mut counter_block: [u8; 16] = [0u8; 16];
-    counter_block[..GCM_NONCE_LEN].copy_from_slice(nonce);
-    counter_block[15] = 2;
+    let Some(nonce_slot): Option<&mut [u8]> = counter_block.get_mut(..GCM_NONCE_LEN) else {
+        return Err(Error::Msgpack(
+            "modern gcm nonce slot is unavailable".to_owned(),
+        ));
+    };
+    nonce_slot.copy_from_slice(nonce);
+    let Some(counter_last): Option<&mut u8> = counter_block.get_mut(15) else {
+        return Err(Error::Msgpack(
+            "modern gcm counter slot is unavailable".to_owned(),
+        ));
+    };
+    *counter_last = 2;
 
-    let mut plaintext: Vec<u8> = body[ct_start..tag_start].to_vec();
+    let ciphertext: &[u8] = body
+        .get(ct_start..tag_start)
+        .ok_or_else(|| Error::Msgpack("modern gcm ciphertext slice is invalid".to_owned()))?;
+    let mut plaintext: Vec<u8> = ciphertext.to_vec();
     let mut cipher: Ctr32BE<Aes256> =
         Ctr32BE::<Aes256>::new(aes_key.into(), (&counter_block).into());
     cipher.apply_keystream(&mut plaintext);

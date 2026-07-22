@@ -19,19 +19,61 @@ const fn build_base85_lookup() -> [u8; 256] {
 }
 
 const BASE85_LOOKUP: [u8; 256] = build_base85_lookup();
+pub(crate) const MAX_ARMORED_INPUT_BYTES: usize = 96 * 1024 * 1024;
+pub(crate) const MAX_HEX_INPUT_BYTES: usize = 96 * 1024 * 1024;
+const MAX_ARMORED_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
+
+const fn check_input_limit(input_len: usize, limit: usize, surface: &'static str) -> Result<()> {
+    if input_len > limit {
+        return Err(Error::InputLimit {
+            surface,
+            observed: input_len,
+            limit,
+        });
+    }
+    Ok(())
+}
+
+fn extend_bounded(out: &mut Vec<u8>, bytes: &[u8], surface: &'static str) -> Result<()> {
+    let next_len: usize = out
+        .len()
+        .checked_add(bytes.len())
+        .ok_or(Error::InputLimit {
+            surface,
+            observed: usize::MAX,
+            limit: MAX_ARMORED_OUTPUT_BYTES,
+        })?;
+    if next_len > MAX_ARMORED_OUTPUT_BYTES {
+        return Err(Error::InputLimit {
+            surface,
+            observed: next_len,
+            limit: MAX_ARMORED_OUTPUT_BYTES,
+        });
+    }
+    out.extend_from_slice(bytes);
+    Ok(())
+}
 
 #[inline]
 pub fn base85_decode_rfc1924(input: &[u8]) -> Result<Vec<u8>> {
-    let mut out: Vec<u8> = Vec::with_capacity(base85_output_capacity(input.len()));
+    check_input_limit(input.len(), MAX_ARMORED_INPUT_BYTES, "base85 input")?;
+    let prealloc: usize = base85_output_capacity(input.len()).min(MAX_ARMORED_OUTPUT_BYTES);
+    let mut out: Vec<u8> = Vec::with_capacity(prealloc);
     let mut group: [u8; 5] = [0u8; 5];
     let mut count: usize = 0;
     for &b in input {
         if !b.is_ascii_whitespace() {
-            group[count] = b;
+            let Some(slot): Option<&mut u8> = group.get_mut(count) else {
+                return Err(Error::Base85 {
+                    field: "chunk".to_owned(),
+                    message: "base85 chunk length exceeds five characters".to_owned(),
+                });
+            };
+            *slot = b;
             count += 1;
             if count == 5 {
                 let acc: u32 = decode_chunk(&group)?;
-                out.extend_from_slice(&acc.to_be_bytes());
+                extend_bounded(&mut out, &acc.to_be_bytes(), "base85 decoded output")?;
                 count = 0;
             }
         }
@@ -43,25 +85,38 @@ pub fn base85_decode_rfc1924(input: &[u8]) -> Result<Vec<u8>> {
         });
     }
     if count > 0 {
-        group[count..].fill(b'~');
+        for slot in group.iter_mut().skip(count) {
+            *slot = b'~';
+        }
         let acc: u32 = decode_chunk(&group)?;
         let bytes_to_take: usize = count - 1;
         let chunk_bytes: [u8; 4] = acc.to_be_bytes();
-        out.extend_from_slice(&chunk_bytes[..bytes_to_take]);
+        let chunk: &[u8] = chunk_bytes
+            .get(..bytes_to_take)
+            .ok_or_else(|| Error::Base85 {
+                field: "chunk".to_owned(),
+                message: "base85 trailing chunk length is invalid".to_owned(),
+            })?;
+        extend_bounded(&mut out, chunk, "base85 decoded output")?;
     }
     Ok(out)
 }
 
 const fn base85_output_capacity(input_len: usize) -> usize {
     let groups: usize = input_len / 5;
-    groups * 4 + 4
+    groups.saturating_mul(4).saturating_add(4)
 }
 
 #[inline]
 fn decode_chunk(chunk: &[u8]) -> Result<u32> {
     let mut acc: u64 = 0;
     for &c in chunk {
-        let v: u8 = BASE85_LOOKUP[c as usize];
+        let Some(v): Option<u8> = BASE85_LOOKUP.get(usize::from(c)).copied() else {
+            return Err(Error::Base85 {
+                field: "chunk".to_owned(),
+                message: "base85 character is out of range".to_owned(),
+            });
+        };
         if v == u8::MAX {
             return Err(Error::Base85 {
                 field: "chunk".to_owned(),
@@ -84,7 +139,9 @@ fn decode_chunk(chunk: &[u8]) -> Result<u32> {
 
 #[inline]
 pub fn ascii85_decode(input: &[u8]) -> Result<Vec<u8>> {
-    let mut out: Vec<u8> = Vec::with_capacity(base85_output_capacity(input.len()));
+    check_input_limit(input.len(), MAX_ARMORED_INPUT_BYTES, "ascii85 input")?;
+    let prealloc: usize = base85_output_capacity(input.len()).min(MAX_ARMORED_OUTPUT_BYTES);
+    let mut out: Vec<u8> = Vec::with_capacity(prealloc);
     let mut group: [u32; 5] = [0u32; 5];
     let mut count: usize = 0;
     for &b in input {
@@ -92,7 +149,7 @@ pub fn ascii85_decode(input: &[u8]) -> Result<Vec<u8>> {
             continue;
         }
         if b == b'z' && count == 0 {
-            out.extend_from_slice(&[0u8; 4]);
+            extend_bounded(&mut out, &[0u8; 4], "ascii85 decoded output")?;
             continue;
         }
         if !(0x21..=0x75).contains(&b) {
@@ -101,11 +158,17 @@ pub fn ascii85_decode(input: &[u8]) -> Result<Vec<u8>> {
                 message: format!("invalid ascii85 char 0x{b:02x}"),
             });
         }
-        group[count] = u32::from(b - 0x21);
+        let Some(slot): Option<&mut u32> = group.get_mut(count) else {
+            return Err(Error::Base85 {
+                field: "ascii85".to_owned(),
+                message: "ascii85 chunk length exceeds five characters".to_owned(),
+            });
+        };
+        *slot = u32::from(b - 0x21);
         count += 1;
         if count == 5 {
             let acc: u32 = pack_ascii85_group(&group, 5)?;
-            out.extend_from_slice(&acc.to_be_bytes());
+            extend_bounded(&mut out, &acc.to_be_bytes(), "ascii85 decoded output")?;
             count = 0;
         }
     }
@@ -121,7 +184,14 @@ pub fn ascii85_decode(input: &[u8]) -> Result<Vec<u8>> {
         }
         let acc: u32 = pack_ascii85_group(&group, count)?;
         let acc_bytes: [u8; 4] = acc.to_be_bytes();
-        out.extend_from_slice(&acc_bytes[..count - 1]);
+        let bytes_to_take: usize = count - 1;
+        let chunk: &[u8] = acc_bytes
+            .get(..bytes_to_take)
+            .ok_or_else(|| Error::Base85 {
+                field: "ascii85".to_owned(),
+                message: "ascii85 trailing chunk length is invalid".to_owned(),
+            })?;
+        extend_bounded(&mut out, chunk, "ascii85 decoded output")?;
     }
     Ok(out)
 }
@@ -178,6 +248,12 @@ fn zlib_inflate_bounded(data: &[u8], cap: usize) -> Result<Vec<u8>> {
 
 #[inline]
 pub fn decode_armored_line(input: &[u8]) -> Result<Vec<u8>> {
+    if input.is_empty() {
+        return Err(Error::Base85 {
+            field: "armor".to_owned(),
+            message: "armored input is empty".to_owned(),
+        });
+    }
     if let Ok(raw) = base85_decode_rfc1924(input) {
         dbg_kv("armor-decode", || {
             format!("rfc1924-base85 -> {} bytes", raw.len())
@@ -193,7 +269,9 @@ pub fn decode_armored_line(input: &[u8]) -> Result<Vec<u8>> {
 
 #[inline]
 pub fn hex_decode(input: &[u8]) -> Result<Vec<u8>> {
-    let mut nibbles: Vec<u8> = Vec::with_capacity(input.len());
+    check_input_limit(input.len(), MAX_HEX_INPUT_BYTES, "hex input")?;
+    let mut out: Vec<u8> = Vec::with_capacity(input.len() / 2);
+    let mut high_nibble: Option<u8> = None;
     for &b in input {
         if b.is_ascii_whitespace() {
             continue;
@@ -209,17 +287,18 @@ pub fn hex_decode(input: &[u8]) -> Result<Vec<u8>> {
                 });
             }
         };
-        nibbles.push(v);
+        let pending: Option<u8> = high_nibble.take();
+        if let Some(high) = pending {
+            out.push((high << 4) | v);
+        } else {
+            high_nibble = Some(v);
+        }
     }
-    if !nibbles.len().is_multiple_of(2) {
+    if high_nibble.is_some() {
         return Err(Error::Base85 {
             field: "hex".to_owned(),
             message: "odd number of hex digits".to_owned(),
         });
-    }
-    let mut out: Vec<u8> = Vec::with_capacity(nibbles.len() / 2);
-    for pair in nibbles.chunks_exact(2) {
-        out.push((pair[0] << 4) | pair[1]);
     }
     Ok(out)
 }
