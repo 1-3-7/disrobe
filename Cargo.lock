@@ -2191,6 +2191,7 @@ dependencies = [
 name = "disrobe-pass-as3"
 version = "0.10.4"
 dependencies = [
+ "disrobe-bytes",
  "disrobe-core",
  "flate2",
  "liblzma",
@@ -2204,6 +2205,7 @@ dependencies = [
 name = "disrobe-pass-beam"
 version = "0.10.4"
 dependencies = [
+ "disrobe-bytes",
  "disrobe-core",
  "flate2",
  "miette",
@@ -2412,6 +2414,7 @@ version = "0.10.4"
 dependencies = [
  "blake3",
  "bytes",
+ "disrobe-bytes",
  "disrobe-core",
  "disrobe-pass-native",
  "disrobe-pass-pickle",
@@ -2595,6 +2598,7 @@ name = "disrobe-pass-ruby"
 version = "0.10.4"
 dependencies = [
  "blake3",
+ "disrobe-bytes",
  "disrobe-core",
  "lzma-rs",
  "miette",
