@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+use disrobe_bytes::{ByteReadError, ByteReader};
+
 use crate::error::{Error, Result};
 use crate::lang::perl::{PerlOp, PerlOpTree, PerlSub};
 
@@ -77,8 +79,7 @@ fn find_magic(bytes: &[u8]) -> Option<(usize, ByteOrder)> {
 }
 
 struct Cursor<'a> {
-    bytes: &'a [u8],
-    pos: usize,
+    reader: ByteReader<'a>,
     order: ByteOrder,
     ivsize: u32,
     ptrsize: u32,
@@ -86,70 +87,56 @@ struct Cursor<'a> {
 }
 
 impl<'a> Cursor<'a> {
-    const fn new(bytes: &'a [u8], pos: usize, order: ByteOrder) -> Self {
-        Self {
-            bytes,
-            pos,
+    fn new(bytes: &'a [u8], pos: usize, order: ByteOrder) -> Result<Self> {
+        let mut reader: ByteReader<'a> = ByteReader::new(bytes);
+        reader.seek(pos).map_err(Self::truncated)?;
+        Ok(Self {
+            reader,
             order,
             ivsize: DEFAULT_IVSIZE,
             ptrsize: DEFAULT_PTRSIZE,
             intsize: DEFAULT_INTSIZE,
-        }
+        })
+    }
+
+    fn truncated(error: ByteReadError) -> Error {
+        Error::PerlBytecodeTruncated(error.offset)
     }
 
     fn u8(&mut self) -> Result<u8> {
-        let b: u8 = *self
-            .bytes
-            .get(self.pos)
-            .ok_or(Error::PerlBytecodeTruncated(self.pos))?;
-        self.pos += 1;
-        Ok(b)
+        self.reader.read_u8().map_err(Self::truncated)
     }
 
     fn u16(&mut self) -> Result<u16> {
-        let raw: [u8; 2] = self
-            .bytes
-            .get(self.pos..self.pos + 2)
-            .ok_or(Error::PerlBytecodeTruncated(self.pos))?
-            .try_into()
-            .map_err(|_| Error::PerlBytecodeTruncated(self.pos))?;
-        self.pos += 2;
-        Ok(match self.order {
-            ByteOrder::Little => u16::from_le_bytes(raw),
-            ByteOrder::Big => u16::from_be_bytes(raw),
-        })
+        match self.order {
+            ByteOrder::Little => self.reader.read_u16_le(),
+            ByteOrder::Big => self.reader.read_u16_be(),
+        }
+        .map_err(Self::truncated)
     }
 
     fn u32(&mut self) -> Result<u32> {
-        let raw: [u8; 4] = self
-            .bytes
-            .get(self.pos..self.pos + 4)
-            .ok_or(Error::PerlBytecodeTruncated(self.pos))?
-            .try_into()
-            .map_err(|_| Error::PerlBytecodeTruncated(self.pos))?;
-        self.pos += 4;
-        Ok(match self.order {
-            ByteOrder::Little => u32::from_le_bytes(raw),
-            ByteOrder::Big => u32::from_be_bytes(raw),
-        })
+        match self.order {
+            ByteOrder::Little => self.reader.read_u32_le(),
+            ByteOrder::Big => self.reader.read_u32_be(),
+        }
+        .map_err(Self::truncated)
     }
 
     fn i32(&mut self) -> Result<i32> {
-        Ok(self.u32()? as i32)
+        match self.order {
+            ByteOrder::Little => self.reader.read_i32_le(),
+            ByteOrder::Big => self.reader.read_i32_be(),
+        }
+        .map_err(Self::truncated)
     }
 
     fn u64_val(&mut self) -> Result<u64> {
-        let raw: [u8; 8] = self
-            .bytes
-            .get(self.pos..self.pos + 8)
-            .ok_or(Error::PerlBytecodeTruncated(self.pos))?
-            .try_into()
-            .map_err(|_| Error::PerlBytecodeTruncated(self.pos))?;
-        self.pos += 8;
-        Ok(match self.order {
-            ByteOrder::Little => u64::from_le_bytes(raw),
-            ByteOrder::Big => u64::from_be_bytes(raw),
-        })
+        match self.order {
+            ByteOrder::Little => self.reader.read_u64_le(),
+            ByteOrder::Big => self.reader.read_u64_be(),
+        }
+        .map_err(Self::truncated)
     }
 
     fn uptr(&mut self) -> Result<u64> {
@@ -169,15 +156,7 @@ impl<'a> Cursor<'a> {
     }
 
     fn skip(&mut self, n: usize) -> Result<()> {
-        let end: usize = self
-            .pos
-            .checked_add(n)
-            .ok_or(Error::PerlBytecodeTruncated(self.pos))?;
-        if end > self.bytes.len() {
-            return Err(Error::PerlBytecodeTruncated(self.pos));
-        }
-        self.pos = end;
-        Ok(())
+        self.reader.skip(n).map_err(Self::truncated)
     }
 
     fn pv(&mut self) -> Result<Vec<u8>> {
@@ -195,36 +174,41 @@ impl<'a> Cursor<'a> {
                 max: MAX_BYTECODE_TEXT_BYTES,
             });
         }
-        let end: usize = self
-            .pos
-            .checked_add(len)
-            .ok_or(Error::PerlBytecodeTruncated(self.pos))?;
-        let slice: &[u8] = self
-            .bytes
-            .get(self.pos..end)
-            .ok_or(Error::PerlBytecodeTruncated(self.pos))?;
-        let out: Vec<u8> = slice.to_vec();
-        self.pos = end;
+        let out: Vec<u8> = self
+            .reader
+            .read_bytes(len)
+            .map_err(Self::truncated)?
+            .to_vec();
         Ok(out)
     }
 
     fn asciiz(&mut self) -> Result<String> {
-        let start: usize = self.pos;
-        while self.pos < self.bytes.len() && self.bytes[self.pos] != 0 {
-            if self.pos.saturating_sub(start) >= MAX_BYTECODE_TEXT_BYTES {
+        let start: usize = self.reader.position();
+        let remaining: usize = self.reader.remaining();
+        let scan_len: usize = remaining.min(MAX_BYTECODE_TEXT_BYTES.saturating_add(1usize));
+        let bytes: &[u8] = self.reader.peek_bytes(scan_len).map_err(Self::truncated)?;
+        let delimiter: Option<usize> = bytes.iter().position(|byte: &u8| *byte == 0u8);
+        let len: usize = match delimiter {
+            Some(value) if value <= MAX_BYTECODE_TEXT_BYTES => value,
+            Some(_) => {
                 return Err(Error::PerlBytecodeValueTooLarge {
                     field: "asciiz",
-                    len: self.pos.saturating_sub(start).saturating_add(1usize),
+                    len: MAX_BYTECODE_TEXT_BYTES.saturating_add(1usize),
                     max: MAX_BYTECODE_TEXT_BYTES,
                 });
             }
-            self.pos += 1;
-        }
-        if self.pos >= self.bytes.len() {
-            return Err(Error::PerlBytecodeTruncated(start));
-        }
-        let s: String = String::from_utf8_lossy(&self.bytes[start..self.pos]).into_owned();
-        self.pos += 1;
+            None if bytes.len() > MAX_BYTECODE_TEXT_BYTES => {
+                return Err(Error::PerlBytecodeValueTooLarge {
+                    field: "asciiz",
+                    len: MAX_BYTECODE_TEXT_BYTES.saturating_add(1usize),
+                    max: MAX_BYTECODE_TEXT_BYTES,
+                });
+            }
+            None => return Err(Error::PerlBytecodeTruncated(start)),
+        };
+        let raw: &[u8] = self.reader.read_bytes(len).map_err(Self::truncated)?;
+        let s: String = String::from_utf8_lossy(raw).into_owned();
+        self.reader.skip(1usize).map_err(Self::truncated)?;
         Ok(s)
     }
 
@@ -233,20 +217,22 @@ impl<'a> Cursor<'a> {
     }
 
     fn comment(&mut self) -> Result<String> {
-        let start: usize = self.pos;
-        while self.pos < self.bytes.len() && self.bytes[self.pos] != b'\n' {
-            if self.pos.saturating_sub(start) >= MAX_BYTECODE_TEXT_BYTES {
-                return Err(Error::PerlBytecodeValueTooLarge {
-                    field: "comment",
-                    len: self.pos.saturating_sub(start).saturating_add(1usize),
-                    max: MAX_BYTECODE_TEXT_BYTES,
-                });
-            }
-            self.pos += 1;
+        let remaining: usize = self.reader.remaining();
+        let scan_len: usize = remaining.min(MAX_BYTECODE_TEXT_BYTES.saturating_add(1usize));
+        let bytes: &[u8] = self.reader.peek_bytes(scan_len).map_err(Self::truncated)?;
+        let delimiter: Option<usize> = bytes.iter().position(|byte: &u8| *byte == b'\n');
+        let len: usize = delimiter.unwrap_or(bytes.len());
+        if len > MAX_BYTECODE_TEXT_BYTES {
+            return Err(Error::PerlBytecodeValueTooLarge {
+                field: "comment",
+                len: MAX_BYTECODE_TEXT_BYTES.saturating_add(1usize),
+                max: MAX_BYTECODE_TEXT_BYTES,
+            });
         }
-        let s: String = String::from_utf8_lossy(&self.bytes[start..self.pos]).into_owned();
-        if self.pos < self.bytes.len() {
-            self.pos += 1;
+        let raw: &[u8] = self.reader.read_bytes(len).map_err(Self::truncated)?;
+        let s: String = String::from_utf8_lossy(raw).into_owned();
+        if delimiter.is_some() {
+            self.reader.skip(1usize).map_err(Self::truncated)?;
         }
         Ok(s)
     }
@@ -256,8 +242,8 @@ impl<'a> Cursor<'a> {
         self.skip(usize::from(len) * 2)
     }
 
-    const fn remaining(&self) -> usize {
-        self.bytes.len().saturating_sub(self.pos)
+    fn remaining(&self) -> usize {
+        self.reader.remaining()
     }
 }
 
@@ -427,7 +413,7 @@ const fn insn_info(opcode: u8) -> Option<(&'static str, ArgType)> {
 
 pub fn read_bytecode(bytes: &[u8]) -> Result<PerlOpTree> {
     let (magic_off, order): (usize, ByteOrder) = find_magic(bytes).ok_or(Error::NotPerlBytecode)?;
-    let mut c: Cursor<'_> = Cursor::new(bytes, magic_off, order);
+    let mut c: Cursor<'_> = Cursor::new(bytes, magic_off, order)?;
     let magic: u32 = c.u32()?;
     if magic != MAGIC_NATIVE && magic.swap_bytes() != MAGIC_NATIVE {
         return Err(Error::NotPerlBytecode);

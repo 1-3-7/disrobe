@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Arguments;
 
+use disrobe_bytes::{ByteReadError, ByteReader};
 use serde::Serialize;
 use thiserror::Error;
 
@@ -325,36 +326,33 @@ pub struct HlSummary {
 }
 
 struct Reader<'a> {
-    data: &'a [u8],
-    pos: usize,
+    reader: ByteReader<'a>,
 }
 
 impl<'a> Reader<'a> {
+    fn new(data: &'a [u8], pos: usize) -> HlResult<Self> {
+        let mut reader: ByteReader<'a> = ByteReader::new(data);
+        reader.seek(pos).map_err(Self::truncated)?;
+        Ok(Self { reader })
+    }
+
+    fn truncated(error: ByteReadError) -> HlError {
+        HlError::Truncated {
+            offset: error.offset,
+        }
+    }
+
     fn read_byte(&mut self) -> HlResult<u8> {
-        let value: u8 = *self
-            .data
-            .get(self.pos)
-            .ok_or(HlError::Truncated { offset: self.pos })?;
-        self.pos += 1;
-        Ok(value)
+        self.reader.read_u8().map_err(Self::truncated)
     }
 
     fn read_bytes(&mut self, count: usize) -> HlResult<&'a [u8]> {
-        let data: &'a [u8] = self.data;
-        let end: usize = self
-            .pos
-            .checked_add(count)
-            .ok_or(HlError::Truncated { offset: self.pos })?;
-        let slice: &'a [u8] = data
-            .get(self.pos..end)
-            .ok_or(HlError::Truncated { offset: self.pos })?;
-        self.pos = end;
-        Ok(slice)
+        self.reader.read_bytes(count).map_err(Self::truncated)
     }
 
     #[inline]
     fn remaining(&self) -> usize {
-        self.data.len().saturating_sub(self.pos)
+        self.reader.remaining()
     }
 
     #[inline]
@@ -364,15 +362,12 @@ impl<'a> Reader<'a> {
     }
 
     fn read_i32(&mut self) -> HlResult<i32> {
-        let slice: &[u8] = self.read_bytes(4)?;
-        Ok(i32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+        self.reader.read_i32_le().map_err(Self::truncated)
     }
 
     fn read_f64(&mut self) -> HlResult<f64> {
-        let slice: &[u8] = self.read_bytes(8)?;
-        Ok(f64::from_le_bytes([
-            slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
-        ]))
+        let bits: u64 = self.reader.read_u64_le().map_err(Self::truncated)?;
+        Ok(f64::from_bits(bits))
     }
 
     fn read_index(&mut self) -> HlResult<i32> {
@@ -398,7 +393,9 @@ impl<'a> Reader<'a> {
 
     fn read_uindex(&mut self) -> HlResult<usize> {
         let value: i32 = self.read_index()?;
-        usize::try_from(value).map_err(|_| HlError::NegativeIndex { offset: self.pos })
+        usize::try_from(value).map_err(|_| HlError::NegativeIndex {
+            offset: self.reader.position(),
+        })
     }
 
     fn read_type_ref(&mut self, ntypes: usize) -> HlResult<usize> {
@@ -694,7 +691,9 @@ impl<'a> Reader<'a> {
                 let count: i32 = (c >> 2) & 15;
                 for _ in 0..count {
                     if i >= nops {
-                        return Err(HlError::Truncated { offset: self.pos });
+                        return Err(HlError::Truncated {
+                            offset: self.reader.position(),
+                        });
                     }
                     out[i] = (curfile, curline);
                     i += 1;
@@ -720,7 +719,7 @@ pub fn read_code(data: &[u8]) -> HlResult<HlCode> {
     if data.len() < 4 || &data[0..3] != HL_MAGIC {
         return Err(HlError::BadMagic);
     }
-    let mut r: Reader<'_> = Reader { data, pos: 3 };
+    let mut r: Reader<'_> = Reader::new(data, 3)?;
     let version: u8 = r.read_byte()?;
     if !(HL_MIN_VERSION..=HL_MAX_VERSION).contains(&version) {
         return Err(HlError::UnsupportedVersion(version));
@@ -843,7 +842,7 @@ pub fn read_code(data: &[u8]) -> HlResult<HlCode> {
         functions,
         constants,
         entrypoint,
-        bytes_consumed: r.pos,
+        bytes_consumed: r.reader.position(),
         total_len: data.len(),
     })
 }
@@ -1336,28 +1335,19 @@ mod tests {
 
     #[test]
     fn read_index_single_byte_is_seven_bit() {
-        let mut r: Reader<'_> = Reader {
-            data: &[0x2e],
-            pos: 0,
-        };
+        let mut r: Reader<'_> = Reader::new(&[0x2e], 0).unwrap();
         assert_eq!(r.read_index().unwrap(), 46);
     }
 
     #[test]
     fn read_index_two_byte_positive() {
-        let mut r: Reader<'_> = Reader {
-            data: &[0x81, 0x7e],
-            pos: 0,
-        };
+        let mut r: Reader<'_> = Reader::new(&[0x81, 0x7e], 0).unwrap();
         assert_eq!(r.read_index().unwrap(), 0x17e);
     }
 
     #[test]
     fn read_index_two_byte_negative() {
-        let mut r: Reader<'_> = Reader {
-            data: &[0xa1, 0x00],
-            pos: 0,
-        };
+        let mut r: Reader<'_> = Reader::new(&[0xa1, 0x00], 0).unwrap();
         assert_eq!(r.read_index().unwrap(), -0x100);
     }
 
@@ -1389,6 +1379,14 @@ mod tests {
         assert_eq!(
             read_code(b"not hl bytecode").unwrap_err(),
             HlError::BadMagic
+        );
+    }
+
+    #[test]
+    fn truncated_header_reports_offset_after_version() {
+        assert_eq!(
+            read_code(b"HLB\x02").unwrap_err(),
+            HlError::Truncated { offset: 4 }
         );
     }
 

@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+use disrobe_bytes::{ByteReadError, ByteReader};
+
 use crate::error::{Error, Result};
 
 const MAX_DEPTH: usize = 256usize;
@@ -181,39 +183,27 @@ fn detect_encoding(bytes: &[u8]) -> Option<RdsEncoding> {
 }
 
 struct XdrReader<'a> {
-    bytes: &'a [u8],
-    pos: usize,
+    reader: ByteReader<'a>,
 }
 
 impl<'a> XdrReader<'a> {
-    const fn new(bytes: &'a [u8], pos: usize) -> Self {
-        Self { bytes, pos }
+    fn new(bytes: &'a [u8], pos: usize) -> Result<Self> {
+        let mut reader: ByteReader<'a> = ByteReader::new(bytes);
+        reader.seek(pos).map_err(Self::truncated)?;
+        Ok(Self { reader })
     }
 
-    fn truncated(&self, needed: usize) -> Error {
+    fn truncated(error: ByteReadError) -> Error {
         Error::RdsTruncated {
-            offset: self.pos,
-            needed,
-            had: self.bytes.len().saturating_sub(self.pos),
+            offset: error.offset,
+            needed: error.needed,
+            had: error.available,
         }
-    }
-
-    fn end(&self, n: usize) -> Result<usize> {
-        let end: usize = self.pos.checked_add(n).ok_or_else(|| self.truncated(n))?;
-        if end > self.bytes.len() {
-            return Err(self.truncated(n));
-        }
-        Ok(end)
-    }
-
-    fn need(&self, n: usize) -> Result<()> {
-        let _end: usize = self.end(n)?;
-        Ok(())
     }
 
     #[inline]
     fn remaining(&self) -> usize {
-        self.bytes.len().saturating_sub(self.pos)
+        self.reader.remaining()
     }
 
     #[inline]
@@ -223,45 +213,30 @@ impl<'a> XdrReader<'a> {
     }
 
     fn i32(&mut self) -> Result<i32> {
-        self.need(4)?;
-        let v: i32 = i32::from_be_bytes([
-            self.bytes[self.pos],
-            self.bytes[self.pos + 1],
-            self.bytes[self.pos + 2],
-            self.bytes[self.pos + 3],
-        ]);
-        self.pos += 4;
-        Ok(v)
+        self.reader.read_i32_be().map_err(Self::truncated)
     }
 
     fn u32(&mut self) -> Result<u32> {
-        Ok(self.i32()? as u32)
+        self.reader.read_u32_be().map_err(Self::truncated)
     }
 
     fn f64(&mut self) -> Result<f64> {
-        let end: usize = self.end(8)?;
-        let mut buf: [u8; 8] = [0u8; 8];
-        buf.copy_from_slice(&self.bytes[self.pos..end]);
-        self.pos = end;
-        Ok(f64::from_be_bytes(buf))
+        let bits: u64 = self.reader.read_u64_be().map_err(Self::truncated)?;
+        Ok(f64::from_bits(bits))
     }
 
     fn skip(&mut self, n: usize) -> Result<()> {
-        self.pos = self.end(n)?;
-        Ok(())
+        self.reader.skip(n).map_err(Self::truncated)
     }
 
     fn raw_bytes(&mut self, n: usize) -> Result<Vec<u8>> {
-        let end: usize = self.end(n)?;
-        let out: Vec<u8> = self.bytes[self.pos..end].to_vec();
-        self.pos = end;
+        let out: Vec<u8> = self.reader.read_bytes(n).map_err(Self::truncated)?.to_vec();
         Ok(out)
     }
 
     fn string(&mut self, len: usize) -> Result<String> {
-        let end: usize = self.end(len)?;
-        let s: String = String::from_utf8_lossy(&self.bytes[self.pos..end]).into_owned();
-        self.pos = end;
+        let raw: &[u8] = self.reader.read_bytes(len).map_err(Self::truncated)?;
+        let s: String = String::from_utf8_lossy(raw).into_owned();
         Ok(s)
     }
 }
@@ -316,7 +291,7 @@ pub fn read_rds(bytes: &[u8]) -> Result<RdsObject> {
     if encoding != RdsEncoding::Xdr {
         return Err(Error::RdsFormat(bytes[0]));
     }
-    let mut r: XdrReader<'_> = XdrReader::new(bytes, 2);
+    let mut r: XdrReader<'_> = XdrReader::new(bytes, 2)?;
     let version: u32 = r.u32()?;
     let writer_version: String = decode_version(r.u32()?);
     let min_reader_version: String = decode_version(r.u32()?);
@@ -1476,6 +1451,18 @@ mod tests {
     }
 
     #[test]
+    fn xdr_truncation_reports_cursor_offset_and_width() {
+        assert!(matches!(
+            read_rds(b"X\n"),
+            Err(Error::RdsTruncated {
+                offset: 2,
+                needed: 4,
+                had: 0,
+            })
+        ));
+    }
+
+    #[test]
     fn parses_header_version() {
         let bytes: Vec<u8> = xdr_string_vector(&[], &["x"]);
         let obj: RdsObject = read_rds(&bytes).expect("parse");
@@ -1516,7 +1503,7 @@ mod tests {
     #[test]
     fn bounded_capacity_caps_untrusted_length_to_buffer() {
         let buffer: [u8; 16] = [0u8; 16];
-        let reader: XdrReader<'_> = XdrReader::new(&buffer, 0);
+        let reader: XdrReader<'_> = XdrReader::new(&buffer, 0).unwrap();
         let bounded_f64: usize = reader.bounded_capacity(i32::MAX as usize, 8);
         let bounded_i32: usize = reader.bounded_capacity(i32::MAX as usize, 4);
         let bounded_str: usize = reader.bounded_capacity(i32::MAX as usize, 8);
@@ -1529,16 +1516,16 @@ mod tests {
     #[test]
     fn bounded_capacity_preserves_legitimate_length() {
         let buffer: [u8; 4096] = [0u8; 4096];
-        let reader: XdrReader<'_> = XdrReader::new(&buffer, 0);
+        let reader: XdrReader<'_> = XdrReader::new(&buffer, 0).unwrap();
         assert_eq!(reader.bounded_capacity(3, 8), 3);
         assert_eq!(reader.bounded_capacity(0, 8), 0);
     }
 
     #[test]
-    fn need_rejects_overflowing_cursor_position() {
+    fn skip_rejects_overflowing_count() {
         let buffer: [u8; 0] = [];
-        let reader: XdrReader<'_> = XdrReader::new(&buffer, usize::MAX - 1usize);
-        assert!(reader.need(8usize).is_err());
+        let mut reader: XdrReader<'_> = XdrReader::new(&buffer, 0).unwrap();
+        assert!(reader.skip(usize::MAX).is_err());
     }
 
     fn closure_with_oversized_vector(sxp: u32) -> Vec<u8> {
