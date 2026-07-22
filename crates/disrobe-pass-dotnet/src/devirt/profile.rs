@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use super::Reject;
 use super::budget::Budget;
+use super::handlers::{HandlerSummary, summarize};
 use super::state::{OperandRange, PrimitiveEffect};
 
 pub const MAX_OPERAND_BYTES: usize = 8;
@@ -195,10 +196,32 @@ pub static KOIVM_SHAPED_CIL_HANDLER_PROFILE: CilHandlerProfile = CilHandlerProfi
     &KOIVM_SHAPED_CIL_OPERANDS,
 );
 
+const BYTE_STACK_CIL_SLOT_BINDINGS: [CilSlotBinding; 2] = [
+    CilSlotBinding::new(CilSlot::Local(0), CilSlotRole::StackPointer),
+    CilSlotBinding::new(CilSlot::Local(1), CilSlotRole::InstructionPointer),
+];
+const BYTE_STACK_CIL_STACK_POPS: [CilStackAccess; 2] =
+    [CilStackAccess::new(0, 0), CilStackAccess::new(-8, 1)];
+const BYTE_STACK_CIL_STACK_PUSHES: [CilStackAccess; 1] = [CilStackAccess::new(0, 0)];
+
+pub static BYTE_STACK_CIL_HANDLER_PROFILE: CilHandlerProfile = CilHandlerProfile::new(
+    &BYTE_STACK_CIL_SLOT_BINDINGS,
+    &BYTE_STACK_CIL_STACK_POPS,
+    &BYTE_STACK_CIL_STACK_PUSHES,
+    &[],
+)
+.with_terminal_control(true, true);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VmFlavor {
     Stack,
     Register,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VmDispatch {
+    HandlerTable,
+    OpcodeByte,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -212,6 +235,7 @@ pub enum OperandEncoding {
 pub struct SyntheticHandler {
     pub effects: Vec<PrimitiveEffect>,
     pub operand_encoding: OperandEncoding,
+    cil_handler_body: Option<Vec<u8>>,
 }
 
 impl SyntheticHandler {
@@ -220,7 +244,24 @@ impl SyntheticHandler {
         Self {
             effects,
             operand_encoding,
+            cil_handler_body: None,
         }
+    }
+
+    #[must_use]
+    pub const fn from_cil_handler(
+        cil_handler_body: Vec<u8>,
+        operand_encoding: OperandEncoding,
+    ) -> Self {
+        Self {
+            effects: Vec::new(),
+            operand_encoding,
+            cil_handler_body: Some(cil_handler_body),
+        }
+    }
+
+    pub(crate) fn cil_handler_body(&self) -> Option<&[u8]> {
+        self.cil_handler_body.as_deref()
     }
 }
 
@@ -243,6 +284,7 @@ impl VInstr {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SyntheticVmModel {
     pub flavor: VmFlavor,
+    pub dispatch: VmDispatch,
     pub argument_count: u16,
     pub local_count: u16,
     pub handlers: BTreeMap<u16, SyntheticHandler>,
@@ -260,6 +302,24 @@ impl SyntheticVmModel {
     ) -> Self {
         Self {
             flavor,
+            dispatch: VmDispatch::HandlerTable,
+            argument_count,
+            local_count,
+            handlers,
+            instructions,
+        }
+    }
+
+    #[must_use]
+    pub const fn byte_dispatched(
+        argument_count: u16,
+        local_count: u16,
+        handlers: BTreeMap<u16, SyntheticHandler>,
+        instructions: Vec<VInstr>,
+    ) -> Self {
+        Self {
+            flavor: VmFlavor::Stack,
+            dispatch: VmDispatch::OpcodeByte,
             argument_count,
             local_count,
             handlers,
@@ -276,10 +336,26 @@ pub enum DecodedOperand {
 }
 
 pub trait ProtectorProfile: std::fmt::Debug {
+    fn validate_model(
+        &self,
+        _model: &SyntheticVmModel,
+        _budget: &mut Budget,
+    ) -> Result<(), Reject> {
+        Ok(())
+    }
+
     fn discover_handler_table<'a>(
         &self,
         model: &'a SyntheticVmModel,
     ) -> Result<&'a BTreeMap<u16, SyntheticHandler>, Reject>;
+
+    fn summarize_handler(
+        &self,
+        handler: &SyntheticHandler,
+        budget: &mut Budget,
+    ) -> Result<HandlerSummary, Reject> {
+        summarize(&handler.effects, budget)
+    }
 
     fn decode_operand(
         &self,
@@ -295,6 +371,16 @@ pub trait ProtectorProfile: std::fmt::Debug {
 pub struct SyntheticStackProfile;
 
 impl ProtectorProfile for SyntheticStackProfile {
+    fn validate_model(&self, model: &SyntheticVmModel, _budget: &mut Budget) -> Result<(), Reject> {
+        if model.dispatch != VmDispatch::HandlerTable {
+            return Err(Reject::new(
+                "VM shape is unsupported by the selected profile",
+                Vec::new(),
+            ));
+        }
+        Ok(())
+    }
+
     fn discover_handler_table<'a>(
         &self,
         model: &'a SyntheticVmModel,
@@ -314,62 +400,70 @@ impl ProtectorProfile for SyntheticStackProfile {
         operand: &[u8],
         budget: &mut Budget,
     ) -> Result<DecodedOperand, Reject> {
-        if operand.len() > MAX_OPERAND_BYTES {
-            return Err(Reject::new(
-                "operand exceeds configured byte cap",
-                vec![operand.len().to_string(), MAX_OPERAND_BYTES.to_string()],
-            ));
-        }
-        let operand_cost: u64 = match u64::try_from(operand.len()) {
-            Ok(value) => value.max(1),
-            Err(_) => {
-                return Err(Reject::new(
-                    "operand length cannot be represented for budgeting",
-                    Vec::new(),
-                ));
-            }
-        };
-        budget
-            .spend(operand_cost)
-            .map_err(Reject::from_budget_error)?;
-        match handler.operand_encoding {
-            OperandEncoding::None => {
-                if !operand.is_empty() {
-                    return Err(Reject::new(
-                        "handler does not accept an operand",
-                        vec![operand.len().to_string()],
-                    ));
-                }
-                Ok(DecodedOperand::None)
-            }
-            OperandEncoding::I64 => {
-                let bytes: [u8; 8] = match operand.try_into() {
-                    Ok(value) => value,
-                    Err(_) => {
-                        return Err(Reject::new(
-                            "I64 operand has an invalid width",
-                            vec![operand.len().to_string()],
-                        ));
-                    }
-                };
-                Ok(DecodedOperand::I64(i64::from_le_bytes(bytes)))
-            }
-            OperandEncoding::Target => {
-                let bytes: [u8; 4] = match operand.try_into() {
-                    Ok(value) => value,
-                    Err(_) => {
-                        return Err(Reject::new(
-                            "branch target operand has an invalid width",
-                            vec![operand.len().to_string()],
-                        ));
-                    }
-                };
-                Ok(DecodedOperand::Target(u32::from_le_bytes(bytes)))
-            }
-        }
+        decode_standard_operand(handler, operand, budget)
     }
 
     fn flavor(&self) -> VmFlavor {
         VmFlavor::Stack
+    }
+}
+
+pub(crate) fn decode_standard_operand(
+    handler: &SyntheticHandler,
+    operand: &[u8],
+    budget: &mut Budget,
+) -> Result<DecodedOperand, Reject> {
+    if operand.len() > MAX_OPERAND_BYTES {
+        return Err(Reject::new(
+            "operand exceeds configured byte cap",
+            vec![operand.len().to_string(), MAX_OPERAND_BYTES.to_string()],
+        ));
+    }
+    let operand_cost: u64 = match u64::try_from(operand.len()) {
+        Ok(value) => value.max(1),
+        Err(_) => {
+            return Err(Reject::new(
+                "operand length cannot be represented for budgeting",
+                Vec::new(),
+            ));
+        }
+    };
+    budget
+        .spend(operand_cost)
+        .map_err(Reject::from_budget_error)?;
+    match handler.operand_encoding {
+        OperandEncoding::None => {
+            if !operand.is_empty() {
+                return Err(Reject::new(
+                    "handler does not accept an operand",
+                    vec![operand.len().to_string()],
+                ));
+            }
+            Ok(DecodedOperand::None)
+        }
+        OperandEncoding::I64 => {
+            let bytes: [u8; 8] = match operand.try_into() {
+                Ok(value) => value,
+                Err(_) => {
+                    return Err(Reject::new(
+                        "I64 operand has an invalid width",
+                        vec![operand.len().to_string()],
+                    ));
+                }
+            };
+            Ok(DecodedOperand::I64(i64::from_le_bytes(bytes)))
+        }
+        OperandEncoding::Target => {
+            let bytes: [u8; 4] = match operand.try_into() {
+                Ok(value) => value,
+                Err(_) => {
+                    return Err(Reject::new(
+                        "branch target operand has an invalid width",
+                        vec![operand.len().to_string()],
+                    ));
+                }
+            };
+            Ok(DecodedOperand::Target(u32::from_le_bytes(bytes)))
+        }
     }
 }

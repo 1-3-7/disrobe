@@ -10,8 +10,8 @@ use super::ir::BinOp;
 use super::state::{ControlEffect, Expr, OperandRange, PrimitiveEffect};
 
 pub use super::profile::{
-    CilHandlerProfile, CilOperandAccess, CilSlot, CilSlotBinding, CilSlotRole, CilStackAccess,
-    KOIVM_SHAPED_CIL_HANDLER_PROFILE,
+    BYTE_STACK_CIL_HANDLER_PROFILE, CilHandlerProfile, CilOperandAccess, CilSlot, CilSlotBinding,
+    CilSlotRole, CilStackAccess, KOIVM_SHAPED_CIL_HANDLER_PROFILE,
 };
 
 pub const MAX_CIL_HANDLER_BODY_BYTES: usize = 4_096;

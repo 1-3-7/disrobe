@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque, btree_map::Entry};
 
 use super::Reject;
 use super::budget::Budget;
-use super::handlers::{HandlerSummary, summarize};
+use super::handlers::HandlerSummary;
 use super::ir::{BasicBlock, BinOp, BlockId, DvIr, IrInstruction, Terminator, ValueId};
 use super::microop::MicroOp;
 use super::profile::{DecodedOperand, ProtectorProfile, SyntheticHandler, SyntheticVmModel};
@@ -169,6 +169,7 @@ fn decode_program(
     if model.instructions.is_empty() {
         return Err(Reject::new("virtual program is empty", Vec::new()));
     }
+    profile.validate_model(model, budget)?;
     let handler_table: &BTreeMap<u16, SyntheticHandler> = profile.discover_handler_table(model)?;
     let mut summaries: BTreeMap<u16, HandlerSummary> = BTreeMap::new();
     let mut decoded: Vec<DecodedInstruction> = Vec::with_capacity(model.instructions.len());
@@ -184,7 +185,7 @@ fn decode_program(
         let summary: HandlerSummary = match summaries.entry(instruction.handler_id) {
             Entry::Occupied(entry) => entry.get().clone(),
             Entry::Vacant(entry) => {
-                let computed: HandlerSummary = summarize(&handler.effects, budget)?;
+                let computed: HandlerSummary = profile.summarize_handler(handler, budget)?;
                 entry.insert(computed.clone());
                 computed
             }
