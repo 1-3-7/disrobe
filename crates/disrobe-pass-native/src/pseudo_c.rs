@@ -605,6 +605,9 @@ enum VecBinOp {
     Sub,
     Mul,
     Div,
+    And,
+    Or,
+    Xor,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11541,6 +11544,9 @@ fn vec_stmt_cstmt(cx: &mut Cx<'_>, vec: &VecStmt) -> CStmt {
                 VecBinOp::Sub => "-",
                 VecBinOp::Mul => "*",
                 VecBinOp::Div => "/",
+                VecBinOp::And => "&",
+                VecBinOp::Or => "|",
+                VecBinOp::Xor => "^",
             };
             let body: String = format!("{} {op_sym} {}", vec_var(*lhs), vec_var(*rhs));
             assign_cstmt(cx, &vec_var(*dest), &body)
