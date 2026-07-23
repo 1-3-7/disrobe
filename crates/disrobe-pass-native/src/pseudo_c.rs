@@ -373,6 +373,8 @@ enum BinOp {
     Sar,
     Sdiv,
     Udiv,
+    Umull,
+    Smull,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6356,7 +6358,9 @@ const fn flag_effect_bin(op: BinOp) -> FlagEffect {
         | BinOp::Shl
         | BinOp::Shr
         | BinOp::Sar => FlagEffect::Sign,
-        BinOp::Imul | BinOp::Sdiv | BinOp::Udiv => FlagEffect::Clobber,
+        BinOp::Imul | BinOp::Sdiv | BinOp::Udiv | BinOp::Umull | BinOp::Smull => {
+            FlagEffect::Clobber
+        }
     }
 }
 
@@ -12310,6 +12314,24 @@ fn bin_expr(op: BinOp, lhs: &str, rhs: &str, width: Width) -> String {
                 c_cast(cx, "uint64_t", c_bin(BinaryOp::Div, l, r))
             })
         }
+        BinOp::Umull => c_render(|cx| {
+            let lv: CExpr = cx.var(lhs);
+            let l32: CExpr = c_cast(cx, "uint32_t", lv);
+            let l: CExpr = c_cast(cx, "uint64_t", l32);
+            let rv: CExpr = c_opaque(cx, rhs);
+            let r32: CExpr = c_cast(cx, "uint32_t", rv);
+            let r: CExpr = c_cast(cx, "uint64_t", r32);
+            c_bin(BinaryOp::Mul, l, r)
+        }),
+        BinOp::Smull => c_render(|cx| {
+            let lv: CExpr = cx.var(lhs);
+            let l32: CExpr = c_cast(cx, "int32_t", lv);
+            let l: CExpr = c_cast(cx, "int64_t", l32);
+            let rv: CExpr = c_opaque(cx, rhs);
+            let r32: CExpr = c_cast(cx, "int32_t", rv);
+            let r: CExpr = c_cast(cx, "int64_t", r32);
+            c_cast(cx, "uint64_t", c_bin(BinaryOp::Mul, l, r))
+        }),
     }
 }
 
@@ -13717,6 +13739,12 @@ fn rs_bin_expr(op: BinOp, lhs: &str, rhs: &str, width: Width) -> String {
                 }
                 _ => format!("((({lhs}) as {uty}).wrapping_div(({rhs}) as {uty}) as u64)"),
             }
+        }
+        BinOp::Umull => {
+            format!("(({lhs}) as u32 as u64).wrapping_mul(({rhs}) as u32 as u64)")
+        }
+        BinOp::Smull => {
+            format!("((({lhs}) as i32 as i64).wrapping_mul(({rhs}) as i32 as i64) as u64)")
         }
     }
 }

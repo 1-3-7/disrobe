@@ -469,6 +469,30 @@ fn aarch64_real_clang_stp_stores_a_vector_register_pair_to_adjacent_offsets() {
 }
 
 #[test]
+fn aarch64_real_clang_umull_recovers_as_unsigned_widening_multiply() {
+    let bytes: [u8; 8] = [0x20, 0x7c, 0xa0, 0x9b, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("umull x0,w1,w0");
+    assert!(
+        r.source
+            .contains("(uint64_t)(uint32_t)r_a64_tmp * (uint64_t)(uint32_t)(r_rax)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_clang_smull_recovers_as_signed_widening_multiply() {
+    let bytes: [u8; 8] = [0x20, 0x7c, 0x20, 0x9b, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("smull x0,w1,w0");
+    assert!(
+        r.source
+            .contains("(int64_t)(int32_t)r_a64_tmp * (int64_t)(int32_t)(r_rax)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
 fn aarch64_real_clang_sdiv_recovers_as_signed_division() {
     let bytes: [u8; 8] = [0x00, 0x0c, 0xc1, 0x1a, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("sdiv w0,w0,w1");
