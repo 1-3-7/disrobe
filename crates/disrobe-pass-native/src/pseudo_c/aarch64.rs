@@ -607,68 +607,149 @@ fn recover_with_calls_and_image<'image>(
                 let live_flags: TrackedFlags = flags
                     .clone()
                     .ok_or_else(|| reject_at(insn, "conditional select lacks live nzcv state"))?;
-                if (live_flags.nz_only && !kind.sign_zero_only())
-                    || !condition_is_sound(kind, &live_flags.value)
-                {
-                    return Err(reject_at(
-                        insn,
-                        "condition is undefined for the tracked nzcv source",
-                    ));
-                }
-                let stmts: Vec<Stmt> = if m_reg == Some(dest.reg) {
-                    vec![Stmt::Cond {
-                        dest,
-                        src: n_src,
-                        kind,
-                        flags: live_flags.value,
-                    }]
-                } else if n_reg == Some(dest.reg) {
-                    vec![Stmt::Cond {
-                        dest,
-                        src: m_src,
-                        kind: kind.negate(),
-                        flags: live_flags.value,
-                    }]
-                } else if flags_reference_reg(&live_flags.value, dest.reg) {
-                    let var: u32 = next_sel;
-                    next_sel += 1;
-                    vec![
-                        Stmt::FlagSnapshot {
-                            var,
-                            kind,
-                            flags: live_flags.value,
-                        },
-                        Stmt::Assign { dest, src: m_src },
-                        Stmt::Cond {
-                            dest,
-                            src: n_src,
-                            kind: CondKind::Ne,
-                            flags: Flags::Snapshot { var },
-                        },
-                    ]
-                } else {
-                    vec![
-                        Stmt::Assign { dest, src: m_src },
-                        Stmt::Cond {
-                            dest,
-                            src: n_src,
-                            kind,
-                            flags: live_flags.value,
-                        },
-                    ]
-                };
+                let stmts: Vec<Stmt> = build_select_stmts(
+                    dest,
+                    n_reg,
+                    n_src,
+                    m_reg,
+                    m_src,
+                    kind,
+                    &live_flags,
+                    &mut next_sel,
+                )?;
                 push_stmts(&mut items, base, index, stmts)?;
                 if dest.reg == Reg::Rax {
                     return_width = dest.width;
                 }
             }
-            "cset" => {
+            mnemonic @ ("csinc" | "csinv" | "csneg") => {
+                let operands: Vec<&str> = split_operands(&insn.operands);
+                if operands.len() != 4 {
+                    return Err(reject_at(insn, "malformed conditional select"));
+                }
+                let dest: RegRef = parse_reg(operands[0])?;
+                let (n_reg, n_src, n_width): (Option<Reg>, Source, Width) =
+                    select_operand(operands[1])?;
+                let (m_reg, m_src, m_width): (Option<Reg>, Source, Width) =
+                    select_operand(operands[2])?;
+                if dest.width != n_width || dest.width != m_width {
+                    return Err(reject_at(insn, "mixed-width conditional select"));
+                }
+                let kind: CondKind = parse_condition(operands[3])?;
+                let live_flags: TrackedFlags = flags
+                    .clone()
+                    .ok_or_else(|| reject_at(insn, "conditional select lacks live nzcv state"))?;
+                let scratch: RegRef = RegRef {
+                    reg: Reg::A64Tmp2,
+                    width: dest.width,
+                };
+                if m_reg == Some(scratch.reg) || n_reg == Some(scratch.reg) {
+                    return Err(reject_at(
+                        insn,
+                        "conditional select aliases the scratch register",
+                    ));
+                }
+                let mut stmts: Vec<Stmt> = vec![Stmt::Assign {
+                    dest: scratch,
+                    src: m_src,
+                }];
+                match mnemonic {
+                    "csinc" => stmts.push(Stmt::BinAssign {
+                        dest: scratch,
+                        op: BinOp::Add,
+                        src: Source::Imm(1),
+                    }),
+                    "csinv" => stmts.push(Stmt::UnAssign {
+                        dest: scratch,
+                        op: UnOp::Not,
+                    }),
+                    _ => stmts.push(Stmt::UnAssign {
+                        dest: scratch,
+                        op: UnOp::Neg,
+                    }),
+                }
+                stmts.extend(build_select_stmts(
+                    dest,
+                    n_reg,
+                    n_src,
+                    Some(scratch.reg),
+                    Source::Reg(scratch),
+                    kind,
+                    &live_flags,
+                    &mut next_sel,
+                )?);
+                push_stmts(&mut items, base, index, stmts)?;
+                if dest.reg == Reg::Rax {
+                    return_width = dest.width;
+                }
+            }
+            mnemonic @ ("cinc" | "cinv" | "cneg") => {
+                let operands: Vec<&str> = split_operands(&insn.operands);
+                if operands.len() != 3 {
+                    return Err(reject_at(insn, "malformed conditional select"));
+                }
+                let dest: RegRef = parse_reg(operands[0])?;
+                let (n_reg, n_src, n_width): (Option<Reg>, Source, Width) =
+                    select_operand(operands[1])?;
+                if dest.width != n_width {
+                    return Err(reject_at(insn, "mixed-width conditional select"));
+                }
+                let kind: CondKind = parse_condition(operands[2])?;
+                let live_flags: TrackedFlags = flags
+                    .clone()
+                    .ok_or_else(|| reject_at(insn, "conditional select lacks live nzcv state"))?;
+                let scratch: RegRef = RegRef {
+                    reg: Reg::A64Tmp2,
+                    width: dest.width,
+                };
+                if n_reg == Some(scratch.reg) {
+                    return Err(reject_at(
+                        insn,
+                        "conditional select aliases the scratch register",
+                    ));
+                }
+                let mut stmts: Vec<Stmt> = vec![Stmt::Assign {
+                    dest: scratch,
+                    src: n_src.clone(),
+                }];
+                match mnemonic {
+                    "cinc" => stmts.push(Stmt::BinAssign {
+                        dest: scratch,
+                        op: BinOp::Add,
+                        src: Source::Imm(1),
+                    }),
+                    "cinv" => stmts.push(Stmt::UnAssign {
+                        dest: scratch,
+                        op: UnOp::Not,
+                    }),
+                    _ => stmts.push(Stmt::UnAssign {
+                        dest: scratch,
+                        op: UnOp::Neg,
+                    }),
+                }
+                stmts.extend(build_select_stmts(
+                    dest,
+                    Some(scratch.reg),
+                    Source::Reg(scratch),
+                    n_reg,
+                    n_src,
+                    kind,
+                    &live_flags,
+                    &mut next_sel,
+                )?);
+                push_stmts(&mut items, base, index, stmts)?;
+                if dest.reg == Reg::Rax {
+                    return_width = dest.width;
+                }
+            }
+            "cset" | "csetm" => {
                 let operands: Vec<&str> = split_operands(&insn.operands);
                 if operands.len() != 2 {
                     return Err(reject_at(insn, "malformed conditional set"));
                 }
                 let dest: RegRef = parse_reg(operands[0])?;
                 let kind: CondKind = parse_condition(operands[1])?;
+                let true_value: i64 = if insn.mnemonic == "csetm" { -1 } else { 1 };
                 let live_flags: TrackedFlags = flags
                     .clone()
                     .ok_or_else(|| reject_at(insn, "conditional set lacks live nzcv state"))?;
@@ -695,7 +776,7 @@ fn recover_with_calls_and_image<'image>(
                         },
                         Stmt::Cond {
                             dest,
-                            src: Source::Imm(1),
+                            src: Source::Imm(true_value),
                             kind: CondKind::Ne,
                             flags: Flags::Snapshot { var },
                         },
@@ -708,7 +789,7 @@ fn recover_with_calls_and_image<'image>(
                         },
                         Stmt::Cond {
                             dest,
-                            src: Source::Imm(1),
+                            src: Source::Imm(true_value),
                             kind,
                             flags: live_flags.value,
                         },
@@ -3019,6 +3100,67 @@ fn flags_reference_reg(flags: &Flags, reg: Reg) -> bool {
         Flags::Sign { result } => result.reg == reg,
         Flags::CmpMem { .. } | Flags::FpCmp { .. } | Flags::Snapshot { .. } => true,
     }
+}
+
+fn build_select_stmts(
+    dest: RegRef,
+    n_reg: Option<Reg>,
+    n_src: Source,
+    m_reg: Option<Reg>,
+    m_src: Source,
+    kind: CondKind,
+    live_flags: &TrackedFlags,
+    next_sel: &mut u32,
+) -> Result<Vec<Stmt>> {
+    if (live_flags.nz_only && !kind.sign_zero_only())
+        || !condition_is_sound(kind, &live_flags.value)
+    {
+        return Err(reject("condition is undefined for the tracked nzcv source"));
+    }
+    let flags_value: Flags = live_flags.value.clone();
+    let stmts: Vec<Stmt> = if m_reg == Some(dest.reg) {
+        vec![Stmt::Cond {
+            dest,
+            src: n_src,
+            kind,
+            flags: flags_value,
+        }]
+    } else if n_reg == Some(dest.reg) {
+        vec![Stmt::Cond {
+            dest,
+            src: m_src,
+            kind: kind.negate(),
+            flags: flags_value,
+        }]
+    } else if flags_reference_reg(&flags_value, dest.reg) {
+        let var: u32 = *next_sel;
+        *next_sel += 1;
+        vec![
+            Stmt::FlagSnapshot {
+                var,
+                kind,
+                flags: flags_value,
+            },
+            Stmt::Assign { dest, src: m_src },
+            Stmt::Cond {
+                dest,
+                src: n_src,
+                kind: CondKind::Ne,
+                flags: Flags::Snapshot { var },
+            },
+        ]
+    } else {
+        vec![
+            Stmt::Assign { dest, src: m_src },
+            Stmt::Cond {
+                dest,
+                src: n_src,
+                kind,
+                flags: flags_value,
+            },
+        ]
+    };
+    Ok(stmts)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
