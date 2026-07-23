@@ -336,6 +336,7 @@ fn recover_with_calls_and_image<'image>(
     let mut items: Vec<Item> = Vec::new();
     let mut return_width: Width = Width::W64;
     let mut flags: Option<TrackedFlags> = None;
+    let mut next_sel: u32 = 0;
     let mut flag_definitions: BTreeMap<usize, TrackedFlags> = BTreeMap::new();
     let frame: FrameAnalysis = frame_analysis(&insns)?;
     let outgoing: BTreeMap<usize, Vec<OutgoingSlot>> = outgoing_stores(&insns, calls)?;
@@ -628,13 +629,24 @@ fn recover_with_calls_and_image<'image>(
                         kind: kind.negate(),
                         flags: live_flags.value,
                     }]
+                } else if flags_reference_reg(&live_flags.value, dest.reg) {
+                    let var: u32 = next_sel;
+                    next_sel += 1;
+                    vec![
+                        Stmt::FlagSnapshot {
+                            var,
+                            kind,
+                            flags: live_flags.value,
+                        },
+                        Stmt::Assign { dest, src: m_src },
+                        Stmt::Cond {
+                            dest,
+                            src: n_src,
+                            kind: CondKind::Ne,
+                            flags: Flags::Snapshot { var },
+                        },
+                    ]
                 } else {
-                    if flags_reference_reg(&live_flags.value, dest.reg) {
-                        return Err(reject_at(
-                            insn,
-                            "conditional select destination aliases a live flag operand",
-                        ));
-                    }
                     vec![
                         Stmt::Assign { dest, src: m_src },
                         Stmt::Cond {
@@ -668,16 +680,27 @@ fn recover_with_calls_and_image<'image>(
                         "condition is undefined for the tracked nzcv source",
                     ));
                 }
-                if flags_reference_reg(&live_flags.value, dest.reg) {
-                    return Err(reject_at(
-                        insn,
-                        "conditional set destination aliases a live flag operand",
-                    ));
-                }
-                push_stmts(
-                    &mut items,
-                    base,
-                    index,
+                let stmts: Vec<Stmt> = if flags_reference_reg(&live_flags.value, dest.reg) {
+                    let var: u32 = next_sel;
+                    next_sel += 1;
+                    vec![
+                        Stmt::FlagSnapshot {
+                            var,
+                            kind,
+                            flags: live_flags.value,
+                        },
+                        Stmt::Assign {
+                            dest,
+                            src: Source::Imm(0),
+                        },
+                        Stmt::Cond {
+                            dest,
+                            src: Source::Imm(1),
+                            kind: CondKind::Ne,
+                            flags: Flags::Snapshot { var },
+                        },
+                    ]
+                } else {
                     vec![
                         Stmt::Assign {
                             dest,
@@ -689,8 +712,9 @@ fn recover_with_calls_and_image<'image>(
                             kind,
                             flags: live_flags.value,
                         },
-                    ],
-                )?;
+                    ]
+                };
+                push_stmts(&mut items, base, index, stmts)?;
                 if dest.reg == Reg::Rax {
                     return_width = dest.width;
                 }
