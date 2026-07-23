@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use disrobe_bytes::ByteReader;
 
 const RAR5_SIGNATURE: &[u8; 8] = &[0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00];
 const RAR4_SIGNATURE: &[u8; 7] = &[0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00];
@@ -62,48 +63,19 @@ pub struct RarArchive {
     pub entries: Vec<RarEntry>,
 }
 
-struct Cursor<'a> {
-    bytes: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Cursor<'a> {
-    const fn new(bytes: &'a [u8], pos: usize) -> Self {
-        Self { bytes, pos }
-    }
-
-    fn read_u8(&mut self) -> Option<u8> {
-        let b: u8 = *self.bytes.get(self.pos)?;
-        self.pos += 1;
-        Some(b)
-    }
-
-    fn read_vint(&mut self) -> Option<u64> {
-        let mut value: u64 = 0;
-        let mut shift: u32 = 0;
-        loop {
-            let byte: u8 = self.read_u8()?;
-            value |= u64::from(byte & 0x7F) << shift;
-            if byte & 0x80 == 0 {
-                return Some(value);
-            }
-            shift += 7;
-            if shift >= 64 {
-                return None;
-            }
+fn read_rar5_vint(reader: &mut ByteReader<'_>) -> Option<u64> {
+    let mut value: u64 = 0;
+    let mut shift: u32 = 0;
+    loop {
+        let byte: u8 = reader.read_u8().ok()?;
+        value |= u64::from(byte & 0x7F) << shift;
+        if byte & 0x80 == 0 {
+            return Some(value);
         }
-    }
-
-    fn read_u32_le(&mut self) -> Option<u32> {
-        let slice: &[u8] = self.bytes.get(self.pos..self.pos + 4)?;
-        self.pos += 4;
-        Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
-    }
-
-    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
-        let slice: &[u8] = self.bytes.get(self.pos..self.pos + n)?;
-        self.pos += n;
-        Some(slice)
+        shift += 7;
+        if shift >= 64 {
+            return None;
+        }
     }
 }
 
@@ -142,32 +114,35 @@ pub fn parse_rar5(bytes: &[u8]) -> Result<RarArchive> {
             ));
         }
         let block_start: usize = pos;
-        let mut cur: Cursor<'_> = Cursor::new(bytes, pos);
-        let Some(_crc): Option<u32> = cur.read_u32_le() else {
+        let mut cur: ByteReader<'_> = ByteReader::new(bytes);
+        if cur.seek(pos).is_err() {
+            break;
+        }
+        let Some(_crc): Option<u32> = cur.read_u32_le().ok() else {
             break;
         };
-        let Some(header_size): Option<u64> = cur.read_vint() else {
+        let Some(header_size): Option<u64> = read_rar5_vint(&mut cur) else {
             break;
         };
-        let header_body_start: usize = cur.pos;
+        let header_body_start: usize = cur.position();
         let header_end: usize = match header_body_start.checked_add(header_size as usize) {
             Some(e) if e <= bytes.len() => e,
             _ => break,
         };
-        let Some(header_type): Option<u64> = cur.read_vint() else {
+        let Some(header_type): Option<u64> = read_rar5_vint(&mut cur) else {
             break;
         };
-        let Some(header_flags): Option<u64> = cur.read_vint() else {
+        let Some(header_flags): Option<u64> = read_rar5_vint(&mut cur) else {
             break;
         };
 
         if header_flags & HEADER_FLAG_EXTRA != 0 {
-            let Some(_extra): Option<u64> = cur.read_vint() else {
+            let Some(_extra): Option<u64> = read_rar5_vint(&mut cur) else {
                 break;
             };
         }
         let data_size: u64 = if header_flags & HEADER_FLAG_DATA != 0 {
-            match cur.read_vint() {
+            match read_rar5_vint(&mut cur) {
                 Some(v) => v,
                 None => break,
             }
@@ -199,23 +174,23 @@ pub fn parse_rar5(bytes: &[u8]) -> Result<RarArchive> {
 }
 
 fn parse_rar5_file_block(
-    cur: &mut Cursor<'_>,
+    cur: &mut ByteReader<'_>,
     header_end: usize,
     data_size: u64,
 ) -> Option<RarEntry> {
-    let file_flags: u64 = cur.read_vint()?;
-    let unpacked_size: u64 = cur.read_vint()?;
-    let _attributes: u64 = cur.read_vint()?;
+    let file_flags: u64 = read_rar5_vint(cur)?;
+    let unpacked_size: u64 = read_rar5_vint(cur)?;
+    let _attributes: u64 = read_rar5_vint(cur)?;
     if file_flags & 0x0002 != 0 {
-        let _mtime: u32 = cur.read_u32_le()?;
+        let _mtime: u32 = cur.read_u32_le().ok()?;
     }
     if file_flags & 0x0004 != 0 {
-        let _data_crc: u32 = cur.read_u32_le()?;
+        let _data_crc: u32 = cur.read_u32_le().ok()?;
     }
-    let compression_info: u64 = cur.read_vint()?;
-    let _host_os: u64 = cur.read_vint()?;
-    let name_length: u64 = cur.read_vint()?;
-    let name_bytes: &[u8] = cur.take(name_length as usize)?;
+    let compression_info: u64 = read_rar5_vint(cur)?;
+    let _host_os: u64 = read_rar5_vint(cur)?;
+    let name_length: u64 = read_rar5_vint(cur)?;
+    let name_bytes: &[u8] = cur.read_bytes(name_length as usize).ok()?;
     let name: String = String::from_utf8_lossy(name_bytes).replace('\\', "/");
 
     let is_dir: bool = file_flags & FILE_FLAG_DIRECTORY != 0;

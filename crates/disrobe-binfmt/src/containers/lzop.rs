@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use disrobe_bytes::{ByteReadError, ByteReader};
 
 pub const LZOP_MAGIC: &[u8; 9] = &[0x89, b'L', b'Z', b'O', 0x00, 0x0d, 0x0a, 0x1a, 0x0a];
 
@@ -21,54 +22,15 @@ pub fn detect_lzop(bytes: &[u8]) -> bool {
     bytes.starts_with(LZOP_MAGIC)
 }
 
-struct Reader<'a> {
-    bytes: &'a [u8],
-    pos: usize,
+fn lzop_truncated(field: &'static str) -> Error {
+    Error::Lzop(format!("lzop: truncated {field}"))
 }
 
-impl<'a> Reader<'a> {
-    const fn new(bytes: &'a [u8], pos: usize) -> Self {
-        Self { bytes, pos }
-    }
-
-    fn u8(&mut self) -> Result<u8> {
-        let v: u8 = *self
-            .bytes
-            .get(self.pos)
-            .ok_or_else(|| Error::Lzop("lzop: truncated u8".to_owned()))?;
-        self.pos += 1;
-        Ok(v)
-    }
-
-    fn u16(&mut self) -> Result<u16> {
-        let s: &[u8] = self
-            .bytes
-            .get(self.pos..self.pos + 2)
-            .ok_or_else(|| Error::Lzop("lzop: truncated u16".to_owned()))?;
-        self.pos += 2;
-        Ok(u16::from_be_bytes([s[0], s[1]]))
-    }
-
-    fn u32(&mut self) -> Result<u32> {
-        let s: &[u8] = self
-            .bytes
-            .get(self.pos..self.pos + 4)
-            .ok_or_else(|| Error::Lzop("lzop: truncated u32".to_owned()))?;
-        self.pos += 4;
-        Ok(u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
-    }
-
-    fn take(&mut self, len: usize) -> Result<&'a [u8]> {
-        let end: usize = self
-            .pos
-            .checked_add(len)
-            .ok_or_else(|| Error::Lzop("lzop: length overflow".to_owned()))?;
-        let s: &[u8] = self
-            .bytes
-            .get(self.pos..end)
-            .ok_or_else(|| Error::Lzop("lzop: truncated data run".to_owned()))?;
-        self.pos = end;
-        Ok(s)
+fn lzop_data_run_error(error: ByteReadError) -> Error {
+    if error.offset.checked_add(error.needed).is_none() {
+        Error::Lzop("lzop: length overflow".to_owned())
+    } else {
+        lzop_truncated("data run")
     }
 }
 
@@ -76,31 +38,33 @@ pub fn parse_lzop(bytes: &[u8], max_total: u64) -> Result<LzopFile> {
     if !detect_lzop(bytes) {
         return Err(Error::Lzop("lzop: missing magic".to_owned()));
     }
-    let mut r: Reader<'_> = Reader::new(bytes, LZOP_MAGIC.len());
-    let _version: u16 = r.u16()?;
-    let _lib_version: u16 = r.u16()?;
-    let version_needed: u16 = r.u16()?;
+    let mut r: ByteReader<'_> = ByteReader::new(bytes);
+    r.skip(LZOP_MAGIC.len())
+        .map_err(|_| Error::Lzop("lzop: missing magic".to_owned()))?;
+    let _version: u16 = r.read_u16_be().map_err(|_| lzop_truncated("u16"))?;
+    let _lib_version: u16 = r.read_u16_be().map_err(|_| lzop_truncated("u16"))?;
+    let version_needed: u16 = r.read_u16_be().map_err(|_| lzop_truncated("u16"))?;
     if version_needed > 0x0940 {
         return Err(Error::Lzop(format!(
             "lzop: version-needed 0x{version_needed:04x} newer than supported 0x0940"
         )));
     }
-    let method: u8 = r.u8()?;
-    let level: u8 = r.u8()?;
-    let flags: u32 = r.u32()?;
+    let method: u8 = r.read_u8().map_err(|_| lzop_truncated("u8"))?;
+    let level: u8 = r.read_u8().map_err(|_| lzop_truncated("u8"))?;
+    let flags: u32 = r.read_u32_be().map_err(|_| lzop_truncated("u32"))?;
     if flags & F_H_FILTER != 0 {
-        let _filter: u32 = r.u32()?;
+        let _filter: u32 = r.read_u32_be().map_err(|_| lzop_truncated("u32"))?;
     }
-    let _mode: u32 = r.u32()?;
-    let _mtime_low: u32 = r.u32()?;
-    let _mtime_high: u32 = r.u32()?;
-    let name_len: usize = usize::from(r.u8()?);
+    let _mode: u32 = r.read_u32_be().map_err(|_| lzop_truncated("u32"))?;
+    let _mtime_low: u32 = r.read_u32_be().map_err(|_| lzop_truncated("u32"))?;
+    let _mtime_high: u32 = r.read_u32_be().map_err(|_| lzop_truncated("u32"))?;
+    let name_len: usize = usize::from(r.read_u8().map_err(|_| lzop_truncated("u8"))?);
     let name: String = if name_len > 0 {
-        String::from_utf8_lossy(r.take(name_len)?).into_owned()
+        String::from_utf8_lossy(r.read_bytes(name_len).map_err(lzop_data_run_error)?).into_owned()
     } else {
         String::new()
     };
-    let _header_checksum: u32 = r.u32()?;
+    let _header_checksum: u32 = r.read_u32_be().map_err(|_| lzop_truncated("u32"))?;
 
     let has_dest_check: bool = flags & (F_ADLER32_D | F_CRC32_D) != 0;
     let has_src_check: bool = flags & (F_ADLER32_C | F_CRC32_C) != 0;
@@ -108,23 +72,25 @@ pub fn parse_lzop(bytes: &[u8], max_total: u64) -> Result<LzopFile> {
     let mut out: Vec<u8> = Vec::new();
     let mut total: u64 = 0;
     loop {
-        let dst_len: u32 = r.u32()?;
+        let dst_len: u32 = r.read_u32_be().map_err(|_| lzop_truncated("u32"))?;
         if dst_len == 0 {
             break;
         }
-        let src_len: u32 = r.u32()?;
+        let src_len: u32 = r.read_u32_be().map_err(|_| lzop_truncated("u32"))?;
         if src_len == 0 || src_len > dst_len {
             return Err(Error::Lzop(format!(
                 "lzop: implausible block lengths dst={dst_len} src={src_len}"
             )));
         }
         if has_dest_check {
-            let _dst_check: u32 = r.u32()?;
+            let _dst_check: u32 = r.read_u32_be().map_err(|_| lzop_truncated("u32"))?;
         }
         if has_src_check && src_len < dst_len {
-            let _src_check: u32 = r.u32()?;
+            let _src_check: u32 = r.read_u32_be().map_err(|_| lzop_truncated("u32"))?;
         }
-        let block: &[u8] = r.take(src_len as usize)?;
+        let block: &[u8] = r
+            .read_bytes(src_len as usize)
+            .map_err(lzop_data_run_error)?;
         total = total.saturating_add(u64::from(dst_len));
         if total > max_total {
             return Err(Error::Lzop(format!(

@@ -4,6 +4,7 @@ use disrobe_core::codec::crc32_ieee;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use disrobe_bytes::ByteReader;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InnosetupExternalHint {
@@ -204,23 +205,23 @@ fn decode_loader_table(table: &[u8]) -> Option<SetupLoaderOffsets> {
     if !magic_ok {
         return None;
     }
-    let mut cur: Cursor<'_> = Cursor::new(table);
-    cur.skip(12)?;
-    let revision: u32 = cur.u32()?;
+    let mut cur: ByteReader<'_> = ByteReader::new(table);
+    cur.skip(12).ok()?;
+    let revision: u32 = cur.read_u32_le().ok()?;
     let exe_offset: u64;
     let exe_compressed_size: u64;
     let exe_uncompressed_size: u64;
     let header_offset: u64;
     let data_offset: u64;
     if revision >= 2 {
-        exe_offset = cur.u64()?;
-        exe_compressed_size = cur.u64()?;
-        exe_uncompressed_size = u64::from(cur.u32()?);
-        let exe_checksum: u32 = cur.u32()?;
-        header_offset = cur.u64()?;
-        data_offset = cur.u64()?;
-        cur.skip(4)?;
-        let table_crc: u32 = cur.u32()?;
+        exe_offset = cur.read_u64_le().ok()?;
+        exe_compressed_size = cur.read_u64_le().ok()?;
+        exe_uncompressed_size = u64::from(cur.read_u32_le().ok()?);
+        let exe_checksum: u32 = cur.read_u32_le().ok()?;
+        header_offset = cur.read_u64_le().ok()?;
+        data_offset = cur.read_u64_le().ok()?;
+        cur.skip(4).ok()?;
+        let table_crc: u32 = cur.read_u32_le().ok()?;
         let table_crc_valid: bool = crc32(&table[..60]) == table_crc;
         return Some(SetupLoaderOffsets {
             revision,
@@ -234,14 +235,14 @@ fn decode_loader_table(table: &[u8]) -> Option<SetupLoaderOffsets> {
         });
     }
     if revision >= 1 {
-        cur.skip(4)?;
-        exe_offset = u64::from(cur.u32()?);
-        exe_compressed_size = u64::from(cur.u32()?);
-        exe_uncompressed_size = u64::from(cur.u32()?);
-        let exe_checksum: u32 = cur.u32()?;
-        header_offset = u64::from(cur.u32()?);
-        data_offset = u64::from(cur.u32()?);
-        let table_crc: u32 = cur.u32()?;
+        cur.skip(4).ok()?;
+        exe_offset = u64::from(cur.read_u32_le().ok()?);
+        exe_compressed_size = u64::from(cur.read_u32_le().ok()?);
+        exe_uncompressed_size = u64::from(cur.read_u32_le().ok()?);
+        let exe_checksum: u32 = cur.read_u32_le().ok()?;
+        header_offset = u64::from(cur.read_u32_le().ok()?);
+        data_offset = u64::from(cur.read_u32_le().ok()?);
+        let table_crc: u32 = cur.read_u32_le().ok()?;
         let consumed: usize = cur.position();
         let table_crc_valid: bool = consumed >= 4 && crc32(&table[..consumed - 4]) == table_crc;
         return Some(SetupLoaderOffsets {
@@ -255,13 +256,13 @@ fn decode_loader_table(table: &[u8]) -> Option<SetupLoaderOffsets> {
             table_crc_valid,
         });
     }
-    exe_offset = u64::from(cur.u32()?);
-    exe_compressed_size = u64::from(cur.u32()?);
-    exe_uncompressed_size = u64::from(cur.u32()?);
-    let exe_checksum: u32 = cur.u32()?;
-    cur.skip(4)?;
-    header_offset = u64::from(cur.u32()?);
-    data_offset = u64::from(cur.u32()?);
+    exe_offset = u64::from(cur.read_u32_le().ok()?);
+    exe_compressed_size = u64::from(cur.read_u32_le().ok()?);
+    exe_uncompressed_size = u64::from(cur.read_u32_le().ok()?);
+    let exe_checksum: u32 = cur.read_u32_le().ok()?;
+    cur.skip(4).ok()?;
+    header_offset = u64::from(cur.read_u32_le().ok()?);
+    data_offset = u64::from(cur.read_u32_le().ok()?);
     Some(SetupLoaderOffsets {
         revision,
         exe_offset,
@@ -372,38 +373,6 @@ fn resource_dir_first_entry(bytes: &[u8], dir_off: usize) -> Option<u32> {
     Some(u32::from_le_bytes(
         bytes.get(eo + 4..eo + 8)?.try_into().ok()?,
     ))
-}
-
-struct Cursor<'a> {
-    data: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Cursor<'a> {
-    const fn new(data: &'a [u8]) -> Self {
-        Self { data, pos: 0 }
-    }
-
-    const fn position(&self) -> usize {
-        self.pos
-    }
-
-    fn skip(&mut self, n: usize) -> Option<()> {
-        let next: usize = self.pos.checked_add(n)?;
-        (next <= self.data.len()).then(|| self.pos = next)
-    }
-
-    fn u32(&mut self) -> Option<u32> {
-        let slice: &[u8] = self.data.get(self.pos..self.pos + 4)?;
-        self.pos += 4;
-        Some(u32::from_le_bytes(slice.try_into().ok()?))
-    }
-
-    fn u64(&mut self) -> Option<u64> {
-        let slice: &[u8] = self.data.get(self.pos..self.pos + 8)?;
-        self.pos += 8;
-        Some(u64::from_le_bytes(slice.try_into().ok()?))
-    }
 }
 
 pub fn extract_inno_block_stream(bytes: &[u8], info: &InnoSetupInfo) -> Result<Vec<u8>> {
