@@ -407,7 +407,7 @@ mod tests {
         }
         let left: Expr = random_expr(state, depth - 1);
         let right: Expr = random_expr(state, depth - 1);
-        match xorshift(state) % 10 {
+        match xorshift(state) % 11 {
             0 => Expr::add(left, right),
             1 => Expr::sub(left, right),
             2 => Expr::mul(left, right),
@@ -417,7 +417,8 @@ mod tests {
             6 => Expr::neg(left),
             7 => Expr::not(left),
             8 => Expr::shl(left, Expr::konst(xorshift(state) % 300)),
-            _ => Expr::shr(left, Expr::konst(xorshift(state) % 300)),
+            9 => Expr::shr(left, Expr::konst(xorshift(state) % 300)),
+            _ => Expr::ite(left, right, random_expr(state, depth - 1)),
         }
     }
 
