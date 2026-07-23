@@ -695,6 +695,36 @@ fn recover_with_calls_and_image<'image>(
                     return_width = dest.width;
                 }
             }
+            "adr" | "adrp" => {
+                let operands: Vec<&str> = split_operands(&insn.operands);
+                if operands.is_empty() {
+                    return Err(reject_at(insn, "malformed pc-relative address"));
+                }
+                let dest: RegRef = parse_reg(operands[0])?;
+                if dest.width != Width::W64 {
+                    return Err(reject_at(insn, "pc-relative address is not an x register"));
+                }
+                let word: u32 = aarch64_instruction_word(insn)
+                    .ok_or_else(|| reject_at(insn, "malformed pc-relative address"))?;
+                let target: u64 = if insn.mnemonic == "adr" {
+                    aarch64_adr_target(insn.address, word)
+                } else {
+                    aarch64_adrp_target(insn.address, word)
+                }
+                .ok_or_else(|| reject_at(insn, "pc-relative address overflow"))?;
+                push_stmts(
+                    &mut items,
+                    base,
+                    index,
+                    vec![Stmt::Assign {
+                        dest,
+                        src: Source::Imm(i64::from_ne_bytes(target.to_ne_bytes())),
+                    }],
+                )?;
+                if dest.reg == Reg::Rax {
+                    return_width = dest.width;
+                }
+            }
             _ => return Err(reject_at(insn, "unsupported instruction")),
         }
     }
