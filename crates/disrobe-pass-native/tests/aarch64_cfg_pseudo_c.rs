@@ -324,7 +324,7 @@ fn loop_with_distinct_mid_body_exit_targets_falls_back_from_cfg_structuring() {
 }
 
 #[test]
-fn multi_entry_loop_falls_back_from_cfg_structuring() {
+fn multi_entry_loop_structures_without_goto_via_cns() {
     let bytes: [u8; 20] = [
         0x40, 0x00, 0x00, 0xb4, 0x02, 0x00, 0x00, 0x14, 0xff, 0xff, 0xff, 0x17, 0xe0, 0xff, 0xff,
         0xb5, 0xc0, 0x03, 0x5f, 0xd6,
@@ -332,7 +332,12 @@ fn multi_entry_loop_falls_back_from_cfg_structuring() {
 
     let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("multi-entry loop");
 
-    assert!(recovered.source.contains("goto"), "{}", recovered.source);
+    assert!(
+        recovered.source.contains("while (1)"),
+        "{}",
+        recovered.source
+    );
+    assert!(!recovered.source.contains("goto"), "{}", recovered.source);
     assert!(!recovered.source.contains("do {"), "{}", recovered.source);
 }
 

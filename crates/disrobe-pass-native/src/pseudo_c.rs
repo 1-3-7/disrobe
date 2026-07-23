@@ -4490,6 +4490,7 @@ fn split_tail_regions(
 
 struct RegionRenderer<'a> {
     blocks: &'a [CfgBlock],
+    original_blocks: &'a [CfgBlock],
     result: &'a structuring::StructureResult,
     labels: &'a std::collections::BTreeMap<usize, SinkLabel>,
     forest: &'a structuring::LoopForest,
@@ -4499,10 +4500,23 @@ struct RegionRenderer<'a> {
 }
 
 impl RegionRenderer<'_> {
-    fn render_sink(&self, entry: usize, out: &mut Block) {
+    fn original_entry(&self, entry: usize) -> Option<usize> {
+        let mapped: u32 = match self.result.clone_map.get(&(entry as u32)) {
+            Some(&origin) => origin,
+            None => entry as u32,
+        };
+        let original: usize = mapped as usize;
+        if original < self.original_blocks.len() {
+            Some(original)
+        } else {
+            None
+        }
+    }
+
+    fn render_sink(&self, original_entry: usize, out: &mut Block) {
         match self
             .labels
-            .get(&entry)
+            .get(&original_entry)
             .copied()
             .unwrap_or(SinkLabel::Return)
         {
@@ -4607,15 +4621,19 @@ impl RegionRenderer<'_> {
         sub_labels.insert(brk_idx, SinkLabel::Break);
         for &node in &order {
             if matches!(self.blocks[node].term, BlockTerm::Ret)
-                && let Some(&label) = self.labels.get(&node)
+                && let Some(original) = self.original_entry(node)
+                && let Some(&label) = self.labels.get(&original)
             {
                 sub_labels.insert(sub_of[&node], label);
             }
         }
         let mut sub_targets: std::collections::BTreeMap<usize, u32> =
             std::collections::BTreeMap::new();
-        for (&node, &label) in self.label_targets {
-            if let Some(&idx) = sub_of.get(&node) {
+        for (&node, &idx) in &sub_of {
+            let Some(original): Option<usize> = self.original_entry(node) else {
+                return false;
+            };
+            if let Some(&label) = self.label_targets.get(&original) {
                 sub_targets.insert(idx, label);
             }
         }
@@ -4646,14 +4664,17 @@ impl RegionRenderer<'_> {
                 if entry >= self.blocks.len() || !self.consumed.insert(entry) {
                     return false;
                 }
-                if let Some(&label) = self.label_targets.get(&entry) {
+                let Some(original): Option<usize> = self.original_entry(entry) else {
+                    return false;
+                };
+                if let Some(&label) = self.label_targets.get(&original) {
                     out.push(Node::Label(label));
                 }
-                for stmt in &self.blocks[entry].stmts {
+                for stmt in &self.original_blocks[original].stmts {
                     out.push(Node::Stmt(stmt.clone()));
                 }
                 if matches!(self.blocks[entry].term, BlockTerm::Ret) {
-                    self.render_sink(entry, out);
+                    self.render_sink(original, out);
                 }
                 true
             }
@@ -4797,6 +4818,88 @@ fn region_structuring_is_sound(
         .all(|block: &usize| pdom.immediate_post_dominator(*block as u32).is_some())
 }
 
+fn materialize_cns_blocks(
+    original_blocks: &[CfgBlock],
+    transformed: &structuring::Cfg,
+    clone_map: &structuring::CloneMap,
+) -> Option<Vec<CfgBlock>> {
+    let mut blocks: Vec<CfgBlock> = Vec::with_capacity(transformed.len());
+    for node in 0..transformed.len() as u32 {
+        let origin: u32 = match clone_map.get(&node) {
+            Some(&mapped) => mapped,
+            None => node,
+        };
+        let source: &CfgBlock = original_blocks.get(origin as usize)?;
+        let transformed_node: &structuring::CfgNode = transformed.node(node)?;
+        let term: BlockTerm = match (&source.term, &transformed_node.term) {
+            (BlockTerm::Ret, structuring::Terminator::Return) => BlockTerm::Ret,
+            (BlockTerm::Jump(_), structuring::Terminator::Goto(target)) => {
+                BlockTerm::Jump(*target as usize)
+            }
+            (BlockTerm::Fall(_), structuring::Terminator::Goto(target)) => {
+                BlockTerm::Fall(*target as usize)
+            }
+            (
+                BlockTerm::Branch { kind, flags, .. },
+                structuring::Terminator::Branch {
+                    atom,
+                    taken,
+                    not_taken,
+                },
+            ) if *atom == origin => BlockTerm::Branch {
+                kind: *kind,
+                flags: flags.clone(),
+                taken: *taken as usize,
+                fallthrough: *not_taken as usize,
+            },
+            _ => return None,
+        };
+        blocks.push(CfgBlock {
+            stmts: source.stmts.clone(),
+            term,
+        });
+    }
+    Some(blocks)
+}
+
+fn render_cfg_blocks_via_cns(
+    blocks: &[CfgBlock],
+    labels: &std::collections::BTreeMap<usize, SinkLabel>,
+    allow_loops: bool,
+    label_targets: &std::collections::BTreeMap<usize, u32>,
+) -> Option<Block> {
+    let original_cfg: structuring::Cfg = cfg_from_leaf_blocks(blocks)?;
+    let budget: structuring::CnsBudget = structuring::CnsBudget::tight_for(&original_cfg);
+    let outcome: structuring::CnsOutcome = structuring::structure_with_cns(&original_cfg, budget)?;
+    if outcome.result.clone_map.is_empty() {
+        return None;
+    }
+    let transformed_blocks: Vec<CfgBlock> =
+        materialize_cns_blocks(blocks, &outcome.cfg, &outcome.result.clone_map)?;
+    if !region_structuring_is_sound(&transformed_blocks, &outcome.cfg, &outcome.result) {
+        return None;
+    }
+    let forest: structuring::LoopForest = structuring::loop_forest(&outcome.cfg);
+    let root: structuring::RegionId = outcome.result.root?;
+    let mut renderer: RegionRenderer<'_> = RegionRenderer {
+        blocks: &transformed_blocks,
+        original_blocks: blocks,
+        result: &outcome.result,
+        labels,
+        forest: &forest,
+        allow_loops,
+        label_targets,
+        consumed: std::collections::BTreeSet::new(),
+    };
+    let mut body: Block = Vec::new();
+    if !renderer.render(root, &mut body)
+        || renderer.consumed != reachable_blocks(&transformed_blocks)
+    {
+        return None;
+    }
+    Some(body)
+}
+
 fn render_cfg_blocks_once(
     blocks: &[CfgBlock],
     labels: &std::collections::BTreeMap<usize, SinkLabel>,
@@ -4825,6 +4928,7 @@ fn render_cfg_blocks_once(
     let root: structuring::RegionId = result.root?;
     let mut renderer: RegionRenderer<'_> = RegionRenderer {
         blocks,
+        original_blocks: blocks,
         result: &result,
         labels,
         forest: &forest,
@@ -4858,6 +4962,12 @@ fn render_cfg_blocks(
         &no_residual,
     ) {
         return Some(body);
+    }
+    let original_cfg: structuring::Cfg = cfg_from_leaf_blocks(blocks)?;
+    let has_multi_entry_irreducible: bool =
+        !structuring::multi_entry_irreducible_sccs(&original_cfg).is_empty();
+    if has_multi_entry_irreducible {
+        return render_cfg_blocks_via_cns(blocks, labels, allow_loops, label_targets);
     }
     if let Some((eblocks, elabels)) = split_tail_regions(blocks.to_vec(), labels.clone())
         && eblocks.len() != blocks.len()
@@ -14566,7 +14676,7 @@ mod tests {
     }
 
     #[test]
-    fn two_entry_irreducible_scc_structures_via_label_and_goto() {
+    fn two_entry_irreducible_scc_structures_without_goto_via_cns() {
         let guard = |reg: Reg| -> Flags {
             Flags::Test {
                 operand: RegRef {
@@ -14614,37 +14724,21 @@ mod tests {
         );
 
         let empty_labels: BTreeMap<usize, SinkLabel> = BTreeMap::new();
-        let candidates: Vec<IrreduciblePlan> =
-            irreducible_lowering_candidates(&blocks, &empty_labels);
-        assert!(!candidates.is_empty(), "a residual-goto plan must exist");
-        let plan: &IrreduciblePlan = &candidates[0];
-        let rendered_cfg: structuring::Cfg =
-            cfg_from_leaf_blocks(&plan.blocks).expect("rendered cfg");
-        let residual: BTreeMap<u32, u32> = plan
-            .residual
-            .iter()
-            .map(|(stub, target): (&usize, &usize)| (*stub as u32, *target as u32))
-            .collect();
-        assert!(
-            structuring::relowered_matches_original(&cfg, &rendered_cfg, &residual),
-            "the bisimulation guard must accept the residual-goto lowering"
-        );
-
         let empty_targets: BTreeMap<usize, u32> = BTreeMap::new();
         let body: Block = render_cfg_blocks(&blocks, &empty_labels, true, &empty_targets)
-            .expect("two-entry irreducible scc must structure via label+goto");
+            .expect("two-entry irreducible scc must structure through CNS");
         assert!(
             body_has(&body, &|node: &Node| matches!(node, Node::While { .. })),
             "expected a while loop on the elected header: {body:?}"
         );
-        assert!(
-            body_has(&body, &|node: &Node| matches!(node, Node::Label(_))),
-            "expected a label at the secondary entry: {body:?}"
-        );
-        assert!(
-            body_has(&body, &|node: &Node| matches!(node, Node::Goto(_))),
-            "expected a goto mirroring the secondary entry edge: {body:?}"
-        );
+        assert!(!body_has(&body, &|node: &Node| matches!(
+            node,
+            Node::Label(_)
+        )));
+        assert!(!body_has(&body, &|node: &Node| matches!(
+            node,
+            Node::Goto(_)
+        )));
     }
 
     #[test]

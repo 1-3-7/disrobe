@@ -81,6 +81,14 @@ impl Cfg {
         self.nodes.is_empty()
     }
 
+    pub const fn entry(&self) -> NodeId {
+        self.entry
+    }
+
+    pub fn node(&self, node: NodeId) -> Option<&CfgNode> {
+        self.nodes.get(node as usize)
+    }
+
     fn successors(&self, node: NodeId) -> Vec<NodeId> {
         term_successors(&self.nodes[node as usize].term)
     }
@@ -410,6 +418,30 @@ pub struct IrreducibleEntry {
     pub external_edges: Vec<(NodeId, NodeId)>,
 }
 
+pub type CloneMap = BTreeMap<NodeId, NodeId>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CnsBudget {
+    pub max_cloned_blocks: usize,
+    pub max_iterations: usize,
+}
+
+impl CnsBudget {
+    pub fn tight_for(cfg: &Cfg) -> Self {
+        let regions: Vec<IrreducibleEntry> = multi_entry_irreducible_sccs(cfg);
+        let mut members: BTreeSet<NodeId> = BTreeSet::new();
+        let mut secondary_entries: usize = 0;
+        for region in regions {
+            members.extend(region.members);
+            secondary_entries += region.entries.len().saturating_sub(1);
+        }
+        Self {
+            max_cloned_blocks: members.len().min(64),
+            max_iterations: secondary_entries.saturating_add(4),
+        }
+    }
+}
+
 pub fn multi_entry_irreducible_sccs(cfg: &Cfg) -> Vec<IrreducibleEntry> {
     if !loop_forest(cfg).irreducible {
         return Vec::new();
@@ -447,6 +479,437 @@ pub fn multi_entry_irreducible_sccs(cfg: &Cfg) -> Vec<IrreducibleEntry> {
         }
     }
     out
+}
+
+fn is_dfs_ancestor(discover: &[u32], finish: &[u32], ancestor: NodeId, node: NodeId) -> bool {
+    discover[ancestor as usize] != u32::MAX
+        && discover[node as usize] != u32::MAX
+        && discover[ancestor as usize] <= discover[node as usize]
+        && finish[node as usize] <= finish[ancestor as usize]
+}
+
+fn choose_primary_header(cfg: &Cfg, region: &IrreducibleEntry) -> Option<NodeId> {
+    let dom: Dominators = dominators(cfg);
+    let (discover, finish): (Vec<u32>, Vec<u32>) = dfs_intervals(cfg);
+    let mut chosen: Option<(NodeId, usize, usize)> = None;
+    for &entry in &region.entries {
+        let mut targets_retreating_edge: bool = false;
+        for &source in &region.members {
+            for target in cfg.successors(source) {
+                if target == entry
+                    && (is_dfs_ancestor(&discover, &finish, entry, source)
+                        || dom.dominates(entry, source))
+                {
+                    targets_retreating_edge = true;
+                }
+            }
+        }
+        if !targets_retreating_edge {
+            continue;
+        }
+        let external_predecessors: usize = region
+            .external_edges
+            .iter()
+            .filter(|(_, target): &&(NodeId, NodeId)| *target == entry)
+            .count();
+        let dominated_members: usize = region
+            .members
+            .iter()
+            .filter(|member: &&NodeId| dom.dominates(entry, **member))
+            .count();
+        let replace: bool = match chosen {
+            None => true,
+            Some((best, best_external, best_dominated)) => {
+                external_predecessors > best_external
+                    || (external_predecessors == best_external
+                        && (dominated_members > best_dominated
+                            || (dominated_members == best_dominated && entry < best)))
+            }
+        };
+        if replace {
+            chosen = Some((entry, external_predecessors, dominated_members));
+        }
+    }
+    chosen.map(|(entry, _, _): (NodeId, usize, usize)| entry)
+}
+
+fn clone_reachable_without_header(
+    cfg: &Cfg,
+    members: &BTreeSet<NodeId>,
+    entry: NodeId,
+    primary: NodeId,
+) -> BTreeSet<NodeId> {
+    let mut clones: BTreeSet<NodeId> = BTreeSet::new();
+    let mut stack: Vec<NodeId> = vec![entry];
+    while let Some(node) = stack.pop() {
+        if node == primary || !members.contains(&node) || !clones.insert(node) {
+            continue;
+        }
+        for successor in cfg.successors(node) {
+            if successor != primary && members.contains(&successor) && !clones.contains(&successor)
+            {
+                stack.push(successor);
+            }
+        }
+    }
+    clones
+}
+
+fn retarget_terminator(term: &mut Terminator, from: NodeId, to: NodeId) {
+    match term {
+        Terminator::Return | Terminator::Unreachable => {}
+        Terminator::Goto(target) => {
+            if *target == from {
+                *target = to;
+            }
+        }
+        Terminator::Branch {
+            taken, not_taken, ..
+        } => {
+            if *taken == from {
+                *taken = to;
+            }
+            if *not_taken == from {
+                *not_taken = to;
+            }
+        }
+        Terminator::Switch { cases, default, .. } => {
+            for (_, target) in cases {
+                if *target == from {
+                    *target = to;
+                }
+            }
+            if *default == Some(from) {
+                *default = Some(to);
+            }
+        }
+    }
+}
+
+fn clone_secondary_entry(
+    cfg: &mut Cfg,
+    members: &BTreeSet<NodeId>,
+    entry: NodeId,
+    primary: NodeId,
+    clone_map: &mut CloneMap,
+    cloned_blocks: &mut usize,
+    budget: CnsBudget,
+) -> bool {
+    let clone_set: BTreeSet<NodeId> = clone_reachable_without_header(cfg, members, entry, primary);
+    if clone_set.is_empty()
+        || clone_set.len() > budget.max_cloned_blocks.saturating_sub(*cloned_blocks)
+    {
+        return false;
+    }
+    let base: NodeId = cfg.nodes.len() as NodeId;
+    let mut remap: BTreeMap<NodeId, NodeId> = BTreeMap::new();
+    for (offset, node) in clone_set.iter().copied().enumerate() {
+        remap.insert(node, base + offset as NodeId);
+    }
+    let Some(&clone_entry): Option<&NodeId> = remap.get(&entry) else {
+        return false;
+    };
+    let mut new_nodes: Vec<CfgNode> = Vec::with_capacity(clone_set.len());
+    for node in clone_set.iter().copied() {
+        let mut cloned: CfgNode = cfg.nodes[node as usize].clone();
+        for (&from, &to) in &remap {
+            retarget_terminator(&mut cloned.term, from, to);
+        }
+        let origin: NodeId = match clone_map.get(&node) {
+            Some(&mapped) => mapped,
+            None => node,
+        };
+        let Some(&clone): Option<&NodeId> = remap.get(&node) else {
+            return false;
+        };
+        clone_map.insert(clone, origin);
+        new_nodes.push(cloned);
+    }
+    let preds: Vec<Vec<NodeId>> = predecessors(cfg);
+    let external_predecessors: Vec<NodeId> = preds[entry as usize]
+        .iter()
+        .copied()
+        .filter(|pred: &NodeId| !members.contains(pred))
+        .collect();
+    cfg.nodes.extend(new_nodes);
+    for predecessor in external_predecessors {
+        retarget_terminator(
+            &mut cfg.nodes[predecessor as usize].term,
+            entry,
+            clone_entry,
+        );
+    }
+    if cfg.entry == entry {
+        cfg.entry = clone_entry;
+    }
+    *cloned_blocks += clone_set.len();
+    true
+}
+
+pub fn make_reducible(cfg: &Cfg, budget: CnsBudget) -> Option<(Cfg, CloneMap)> {
+    let mut transformed: Cfg = cfg.clone();
+    let mut clone_map: CloneMap = BTreeMap::new();
+    let mut cloned_blocks: usize = 0;
+    let mut iterations: usize = 0;
+    while iterations < budget.max_iterations {
+        let regions: Vec<IrreducibleEntry> = multi_entry_irreducible_sccs(&transformed);
+        if regions.is_empty() {
+            return Some((transformed, clone_map));
+        }
+        let region: Option<&IrreducibleEntry> = regions
+            .iter()
+            .min_by_key(|candidate: &&IrreducibleEntry| candidate.members.iter().next().copied());
+        let region: &IrreducibleEntry = region?;
+        let primary: NodeId = choose_primary_header(&transformed, region)?;
+        let secondary_entries: Vec<NodeId> = region
+            .entries
+            .iter()
+            .copied()
+            .filter(|entry: &NodeId| *entry != primary)
+            .collect();
+        if secondary_entries.is_empty() {
+            return None;
+        }
+        for entry in secondary_entries {
+            if !clone_secondary_entry(
+                &mut transformed,
+                &region.members,
+                entry,
+                primary,
+                &mut clone_map,
+                &mut cloned_blocks,
+                budget,
+            ) {
+                return None;
+            }
+        }
+        iterations += 1;
+    }
+    if multi_entry_irreducible_sccs(&transformed).is_empty() {
+        Some((transformed, clone_map))
+    } else {
+        None
+    }
+}
+
+fn mapped_clone_origin(
+    node: NodeId,
+    original_len: usize,
+    transformed_len: usize,
+    clone_map: &CloneMap,
+    residual: &BTreeMap<NodeId, NodeId>,
+) -> Option<NodeId> {
+    let mut current: NodeId = node;
+    let mut hops: usize = 0;
+    while let Some(&target) = residual.get(&current) {
+        current = target;
+        hops += 1;
+        if hops > transformed_len {
+            return None;
+        }
+    }
+    if (current as usize) < original_len {
+        if clone_map.contains_key(&current) {
+            return None;
+        }
+        return Some(current);
+    }
+    let origin: NodeId = clone_map.get(&current).copied()?;
+    if (origin as usize) >= original_len {
+        return None;
+    }
+    Some(origin)
+}
+
+fn terminator_matches_original_under_quotient(
+    original: &Terminator,
+    transformed: &Terminator,
+    original_len: usize,
+    transformed_len: usize,
+    clone_map: &CloneMap,
+    residual: &BTreeMap<NodeId, NodeId>,
+) -> bool {
+    let mapped = |target: NodeId| -> Option<NodeId> {
+        mapped_clone_origin(target, original_len, transformed_len, clone_map, residual)
+    };
+    match (original, transformed) {
+        (Terminator::Return, Terminator::Return)
+        | (Terminator::Unreachable, Terminator::Unreachable) => true,
+        (Terminator::Goto(expected), Terminator::Goto(actual)) => {
+            mapped(*actual) == Some(*expected)
+        }
+        (
+            Terminator::Branch {
+                atom: expected_atom,
+                taken: expected_taken,
+                not_taken: expected_not_taken,
+            },
+            Terminator::Branch {
+                atom: actual_atom,
+                taken: actual_taken,
+                not_taken: actual_not_taken,
+            },
+        ) => {
+            let taken_matches: bool = mapped(*actual_taken)
+                .is_some_and(|mapped_taken: NodeId| mapped_taken == *expected_taken);
+            let not_taken_matches: bool = mapped(*actual_not_taken)
+                .is_some_and(|mapped_not_taken: NodeId| mapped_not_taken == *expected_not_taken);
+            expected_atom == actual_atom && taken_matches && not_taken_matches
+        }
+        (
+            Terminator::Switch {
+                atom: expected_atom,
+                cases: expected_cases,
+                default: expected_default,
+            },
+            Terminator::Switch {
+                atom: actual_atom,
+                cases: actual_cases,
+                default: actual_default,
+            },
+        ) => {
+            expected_atom == actual_atom
+                && expected_cases.len() == actual_cases.len()
+                && expected_cases.iter().zip(actual_cases).all(
+                    |((expected_value, expected_target), (actual_value, actual_target)): (
+                        &(i64, NodeId),
+                        &(i64, NodeId),
+                    )| {
+                        let target_matches: bool = mapped(*actual_target)
+                            .is_some_and(|mapped_target: NodeId| mapped_target == *expected_target);
+                        expected_value == actual_value && target_matches
+                    },
+                )
+                && match (expected_default, actual_default) {
+                    (None, None) => true,
+                    (Some(expected), Some(actual)) => mapped(*actual) == Some(*expected),
+                    _ => false,
+                }
+        }
+        _ => false,
+    }
+}
+
+pub fn relowered_matches_original_modulo_clones(
+    original: &Cfg,
+    transformed: &Cfg,
+    clone_map: &CloneMap,
+    residual: &BTreeMap<NodeId, NodeId>,
+) -> bool {
+    let original_len: usize = original.len();
+    let transformed_len: usize = transformed.len();
+    if transformed_len < original_len {
+        return false;
+    }
+    for (&clone, &origin) in clone_map {
+        if (clone as usize) < original_len
+            || (clone as usize) >= transformed_len
+            || (origin as usize) >= original_len
+        {
+            return false;
+        }
+    }
+    let transformed_reachable: Vec<bool> = reachable(transformed);
+    let original_reachable: Vec<bool> = reachable(original);
+    if mapped_clone_origin(
+        transformed.entry,
+        original_len,
+        transformed_len,
+        clone_map,
+        residual,
+    ) != Some(original.entry)
+    {
+        return false;
+    }
+    let mut transformed_origins: BTreeSet<NodeId> = BTreeSet::new();
+    let mut realized_edges: BTreeSet<(NodeId, NodeId)> = BTreeSet::new();
+    for node in 0..transformed_len as NodeId {
+        if !transformed_reachable[node as usize] {
+            continue;
+        }
+        if residual.contains_key(&node) {
+            continue;
+        }
+        let Some(origin): Option<NodeId> =
+            mapped_clone_origin(node, original_len, transformed_len, clone_map, residual)
+        else {
+            return false;
+        };
+        transformed_origins.insert(origin);
+        let Some(original_node): Option<&CfgNode> = original.nodes.get(origin as usize) else {
+            return false;
+        };
+        let Some(transformed_node): Option<&CfgNode> = transformed.nodes.get(node as usize) else {
+            return false;
+        };
+        if original_node.pure != transformed_node.pure
+            || !terminator_matches_original_under_quotient(
+                &original_node.term,
+                &transformed_node.term,
+                original_len,
+                transformed_len,
+                clone_map,
+                residual,
+            )
+        {
+            return false;
+        }
+        for successor in transformed.successors(node) {
+            let Some(mapped_successor): Option<NodeId> = mapped_clone_origin(
+                successor,
+                original_len,
+                transformed_len,
+                clone_map,
+                residual,
+            ) else {
+                return false;
+            };
+            if !original.successors(origin).contains(&mapped_successor) {
+                return false;
+            }
+            realized_edges.insert((origin, mapped_successor));
+        }
+    }
+    for node in 0..original_len as NodeId {
+        if original_reachable[node as usize] && !transformed_origins.contains(&node) {
+            return false;
+        }
+        if original_reachable[node as usize] {
+            for successor in original.successors(node) {
+                if !realized_edges.contains(&(node, successor)) {
+                    return false;
+                }
+            }
+        }
+    }
+    for region in multi_entry_irreducible_sccs(original) {
+        let Some(primary): Option<NodeId> = choose_primary_header(original, &region) else {
+            return false;
+        };
+        for (predecessor, secondary) in region.external_edges {
+            if secondary == primary {
+                continue;
+            }
+            let Some(transformed_node): Option<&CfgNode> =
+                transformed.nodes.get(predecessor as usize)
+            else {
+                return false;
+            };
+            if !term_successors(&transformed_node.term)
+                .into_iter()
+                .any(|target: NodeId| clone_map.get(&target).copied() == Some(secondary))
+            {
+                return false;
+            }
+        }
+        if original.entry != primary
+            && region.entries.contains(&original.entry)
+            && clone_map.get(&transformed.entry).copied() != Some(original.entry)
+        {
+            return false;
+        }
+    }
+    true
 }
 
 pub fn relowered_matches_original(
@@ -577,6 +1040,7 @@ pub struct StructureResult {
     pub regions: Vec<Region>,
     pub conds: CondPool,
     pub irreducible: bool,
+    pub clone_map: CloneMap,
 }
 
 impl StructureResult {
@@ -587,6 +1051,12 @@ impl StructureResult {
     pub fn root_kind(&self) -> Option<RegionKind> {
         self.root.map(|r: RegionId| self.regions[r as usize].kind)
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct CnsOutcome {
+    pub cfg: Cfg,
+    pub result: StructureResult,
 }
 
 #[derive(Debug, Clone)]
@@ -625,6 +1095,33 @@ pub fn structure(cfg: &Cfg) -> StructureResult {
         result.irreducible = true;
     }
     result
+}
+
+pub fn structure_with_cns(cfg: &Cfg, budget: CnsBudget) -> Option<CnsOutcome> {
+    let unchanged: StructureResult = structure(cfg);
+    if unchanged.is_complete() {
+        return Some(CnsOutcome {
+            cfg: cfg.clone(),
+            result: unchanged,
+        });
+    }
+    let (transformed, clone_map): (Cfg, CloneMap) = make_reducible(cfg, budget)?;
+    let mut result: StructureResult = structure(&transformed);
+    if !result.is_complete()
+        || !relowered_matches_original_modulo_clones(
+            cfg,
+            &transformed,
+            &clone_map,
+            &BTreeMap::new(),
+        )
+    {
+        return None;
+    }
+    result.clone_map = clone_map;
+    Some(CnsOutcome {
+        cfg: transformed,
+        result,
+    })
 }
 
 impl Collapse {
@@ -1474,6 +1971,7 @@ impl Collapse {
                 regions: self.regions,
                 conds: self.conds,
                 irreducible: true,
+                clone_map: BTreeMap::new(),
             };
         }
         let root: RegionId = self.region_of[live[0] as usize];
@@ -1482,6 +1980,7 @@ impl Collapse {
             regions: self.regions,
             conds: self.conds,
             irreducible: false,
+            clone_map: BTreeMap::new(),
         }
     }
 }
@@ -1905,5 +2404,106 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn cns_two_entry_cfg() -> Cfg {
+        Cfg::new(0, vec![br(0, 1, 2), goto(2), br(1, 1, 3), ret()]).unwrap()
+    }
+
+    #[test]
+    fn cns_two_entry_scc_becomes_reducible_and_structures() {
+        let original: Cfg = cns_two_entry_cfg();
+        let budget: CnsBudget = CnsBudget::tight_for(&original);
+        let (reduced, clones): (Cfg, CloneMap) =
+            make_reducible(&original, budget).expect("two-entry CNS result");
+        assert!(!loop_forest(&reduced).irreducible, "{reduced:?}");
+        assert!(relowered_matches_original_modulo_clones(
+            &original,
+            &reduced,
+            &clones,
+            &BTreeMap::new()
+        ));
+        let structured: CnsOutcome =
+            structure_with_cns(&original, budget).expect("two-entry CNS structure");
+        assert!(structured.result.is_complete(), "{structured:?}");
+        assert_eq!(structured.result.clone_map, clones);
+    }
+
+    #[test]
+    fn cns_three_entry_scc_abstains_when_clones_exceed_policy_cap() {
+        let cfg: Cfg = Cfg::new(
+            0,
+            vec![
+                br(0, 1, 4),
+                br(1, 2, 3),
+                br(2, 3, 1),
+                br(3, 2, 1),
+                br(4, 2, 3),
+                ret(),
+            ],
+        )
+        .unwrap();
+        let budget: CnsBudget = CnsBudget::tight_for(&cfg);
+        assert_eq!(budget.max_cloned_blocks, 3);
+        assert!(make_reducible(&cfg, budget).is_none());
+    }
+
+    #[test]
+    fn clone_quotient_guard_rejects_nonidentical_clone_mapping() {
+        let original: Cfg = cns_two_entry_cfg();
+        let budget: CnsBudget = CnsBudget::tight_for(&original);
+        let (reduced, mut clones): (Cfg, CloneMap) =
+            make_reducible(&original, budget).expect("CNS result");
+        let clone: NodeId = *clones.keys().next().expect("clone id");
+        clones.insert(clone, 1);
+        assert!(!relowered_matches_original_modulo_clones(
+            &original,
+            &reduced,
+            &clones,
+            &BTreeMap::new()
+        ));
+    }
+
+    #[test]
+    fn clone_quotient_guard_rejects_dropped_original_edge() {
+        let original: Cfg = cns_two_entry_cfg();
+        let budget: CnsBudget = CnsBudget::tight_for(&original);
+        let (mut reduced, clones): (Cfg, CloneMap) =
+            make_reducible(&original, budget).expect("CNS result");
+        reduced.nodes[0].term = Terminator::Goto(1);
+        assert!(!relowered_matches_original_modulo_clones(
+            &original,
+            &reduced,
+            &clones,
+            &BTreeMap::new()
+        ));
+    }
+
+    #[test]
+    fn clone_quotient_guard_rejects_tampered_clone_body() {
+        let original: Cfg = cns_two_entry_cfg();
+        let budget: CnsBudget = CnsBudget::tight_for(&original);
+        let (mut reduced, clones): (Cfg, CloneMap) =
+            make_reducible(&original, budget).expect("CNS result");
+        let clone: NodeId = *clones.keys().next().expect("clone id");
+        reduced.nodes[clone as usize].pure = false;
+        assert!(!relowered_matches_original_modulo_clones(
+            &original,
+            &reduced,
+            &clones,
+            &BTreeMap::new()
+        ));
+    }
+
+    #[test]
+    fn cns_reducible_cfg_preserves_structure_result_bytes() {
+        let cfg: Cfg = Cfg::new(0, vec![goto(1), br(0, 2, 3), goto(1), ret()]).unwrap();
+        let before: String = format!("{:?}", structure(&cfg));
+        let budget: CnsBudget = CnsBudget::tight_for(&cfg);
+        let outcome: CnsOutcome = structure_with_cns(&cfg, budget).expect("reducible outcome");
+        let after: String = format!("{:?}", outcome.result);
+        assert_eq!(after, before);
+        assert!(outcome.result.clone_map.is_empty());
+        assert_eq!(outcome.cfg.nodes, cfg.nodes);
     }
 }
