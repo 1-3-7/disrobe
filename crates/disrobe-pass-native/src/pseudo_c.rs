@@ -626,6 +626,7 @@ enum VecBinOp {
     And,
     Or,
     Xor,
+    AndNot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11874,16 +11875,18 @@ fn vec_stmt_cstmt(cx: &mut Cx<'_>, vec: &VecStmt) -> CStmt {
         VecStmt::Bin {
             dest, lhs, rhs, op, ..
         } => {
-            let op_sym: &str = match op {
-                VecBinOp::Add => "+",
-                VecBinOp::Sub => "-",
-                VecBinOp::Mul => "*",
-                VecBinOp::Div => "/",
-                VecBinOp::And => "&",
-                VecBinOp::Or => "|",
-                VecBinOp::Xor => "^",
+            let l: String = vec_var(*lhs);
+            let r: String = vec_var(*rhs);
+            let body: String = match op {
+                VecBinOp::Add => format!("{l} + {r}"),
+                VecBinOp::Sub => format!("{l} - {r}"),
+                VecBinOp::Mul => format!("{l} * {r}"),
+                VecBinOp::Div => format!("{l} / {r}"),
+                VecBinOp::And => format!("{l} & {r}"),
+                VecBinOp::Or => format!("{l} | {r}"),
+                VecBinOp::Xor => format!("{l} ^ {r}"),
+                VecBinOp::AndNot => format!("{l} & ~{r}"),
             };
-            let body: String = format!("{} {op_sym} {}", vec_var(*lhs), vec_var(*rhs));
             assign_cstmt(cx, &vec_var(*dest), &body)
         }
         VecStmt::Compare { dest, lhs, rhs, .. } => {
