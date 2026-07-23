@@ -2828,27 +2828,59 @@ fn parse_memory(token: &str, width: Width) -> Result<(MemRef, bool)> {
         .and_then(|rest: &str| rest.strip_suffix(']'))
         .ok_or_else(|| reject("memory operand is not bracketed"))?;
     let terms: Vec<&str> = body.split(',').map(str::trim).collect();
-    if terms.is_empty() || terms.len() > 2 {
+    if terms.is_empty() || terms.len() > 3 {
         return Err(reject("memory operand uses unsupported addressing"));
     }
     let base: RegRef = parse_reg(terms[0])?;
     if base.width != Width::W64 {
         return Err(reject("memory base is not a 64-bit register"));
     }
-    let disp: i64 = terms
-        .get(1)
-        .map(|value: &&str| parse_immediate(value))
-        .transpose()?
-        .unwrap_or(0);
+    let (index, disp): (Option<(Reg, u8)>, i64) = match terms.get(1) {
+        None => (None, 0),
+        Some(term) if term.starts_with('#') => {
+            if terms.len() != 2 {
+                return Err(reject("memory operand uses unsupported addressing"));
+            }
+            (None, parse_immediate(term)?)
+        }
+        Some(term) => {
+            let idx: RegRef = parse_reg(term)?;
+            if idx.width != Width::W64 {
+                return Err(reject("32-bit or extended index register is unsupported"));
+            }
+            let scale: u8 = match terms.get(2) {
+                None => 1,
+                Some(modifier) => parse_index_scale(modifier)?,
+            };
+            (Some((idx.reg, scale)), 0)
+        }
+    };
     Ok((
         MemRef {
             base: Some(base.reg),
-            index: None,
+            index,
             disp,
             width,
         },
         pre_index,
     ))
+}
+
+fn parse_index_scale(token: &str) -> Result<u8> {
+    let rest: &str = token
+        .trim()
+        .strip_prefix("lsl")
+        .ok_or_else(|| reject("memory index uses an unsupported extend or shift"))?;
+    let amount: u32 = rest
+        .trim()
+        .strip_prefix('#')
+        .ok_or_else(|| reject("memory index shift lacks an amount"))?
+        .parse::<u32>()
+        .map_err(|_| reject("malformed memory index shift amount"))?;
+    if amount > 4 {
+        return Err(reject("memory index shift amount is out of range"));
+    }
+    Ok(1u8 << amount)
 }
 
 fn is_frame_management(insn: &DisasmInsn) -> bool {
