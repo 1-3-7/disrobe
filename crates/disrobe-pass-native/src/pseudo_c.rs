@@ -581,6 +581,15 @@ impl VecElem {
             Self::F64 => "double",
         }
     }
+
+    const fn c_unsigned_scalar(self) -> &'static str {
+        match self {
+            Self::I8 => "uint8_t",
+            Self::I16 => "uint16_t",
+            Self::I32 | Self::F32 => "uint32_t",
+            Self::I64 | Self::F64 => "uint64_t",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -592,6 +601,13 @@ struct VecArrangement {
 impl VecArrangement {
     const fn total_bits(self) -> u32 {
         self.lanes as u32 * self.elem.bits()
+    }
+
+    const fn whole_register(elem: VecElem) -> Self {
+        Self {
+            lanes: (128 / elem.bits()) as u8,
+            elem,
+        }
     }
 
     fn type_name(self) -> String {
@@ -608,6 +624,17 @@ enum VecBinOp {
     And,
     Or,
     Xor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReduceOp {
+    Add,
+    Saddl,
+    Uaddl,
+    Smax,
+    Smin,
+    Umax,
+    Umin,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -644,6 +671,17 @@ enum VecStmt {
         dest: u8,
         imm: i64,
         arr: VecArrangement,
+    },
+    Reduce {
+        reg: u8,
+        op: ReduceOp,
+        src: VecArrangement,
+        dest: VecElem,
+    },
+    ExtractToGpr {
+        dest: RegRef,
+        src: u8,
+        elem: VecElem,
     },
 }
 
@@ -6876,7 +6914,13 @@ fn scan_stmt_params(
                 read_addr(addr, written, acc, note);
             }
             VecStmt::Dup { src, .. } => note(src.reg, written, acc),
-            VecStmt::Bin { .. } | VecStmt::Compare { .. } | VecStmt::MoveImm { .. } => {}
+            VecStmt::ExtractToGpr { dest, .. } => {
+                written.insert(dest.reg, true);
+            }
+            VecStmt::Bin { .. }
+            | VecStmt::Compare { .. }
+            | VecStmt::MoveImm { .. }
+            | VecStmt::Reduce { .. } => {}
         },
         Stmt::FlagSnapshot { flags, .. } => {
             read_flags(flags, written, acc, note);
@@ -9682,7 +9726,11 @@ impl FrameScan {
                     self.note_mem(addr, slots, misuse);
                 }
                 VecStmt::Dup { src, .. } => self.note_reg(src.reg, misuse),
-                VecStmt::Bin { .. } | VecStmt::Compare { .. } | VecStmt::MoveImm { .. } => {}
+                VecStmt::Bin { .. }
+                | VecStmt::Compare { .. }
+                | VecStmt::MoveImm { .. }
+                | VecStmt::Reduce { .. }
+                | VecStmt::ExtractToGpr { .. } => {}
             },
             Stmt::FpConvert { .. }
             | Stmt::BlockMove { .. }
@@ -10034,7 +10082,11 @@ fn stmt_value_reads(stmt: &Stmt, acc: &mut Vec<Reg>) {
         Stmt::Vector(vec) => match vec {
             VecStmt::Load { addr, .. } | VecStmt::Store { addr, .. } => mem_regs(addr, acc),
             VecStmt::Dup { src, .. } => acc.push(src.reg),
-            VecStmt::Bin { .. } | VecStmt::Compare { .. } | VecStmt::MoveImm { .. } => {}
+            VecStmt::Bin { .. }
+            | VecStmt::Compare { .. }
+            | VecStmt::MoveImm { .. }
+            | VecStmt::Reduce { .. }
+            | VecStmt::ExtractToGpr { .. } => {}
         },
         Stmt::FlagSnapshot { flags, .. } => acc.extend(flag_operand_regs(flags)),
     }
@@ -10558,7 +10610,11 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
                         push_addr(addr, acc);
                     }
                     VecStmt::Dup { src, .. } => push(src.reg, acc),
-                    VecStmt::Bin { .. } | VecStmt::Compare { .. } | VecStmt::MoveImm { .. } => {}
+                    VecStmt::ExtractToGpr { dest, .. } => push(dest.reg, acc),
+                    VecStmt::Bin { .. }
+                    | VecStmt::Compare { .. }
+                    | VecStmt::MoveImm { .. }
+                    | VecStmt::Reduce { .. } => {}
                 },
                 Stmt::FlagSnapshot { flags, .. } => push_flags(flags, acc),
                 Stmt::Call { args, .. } => {
@@ -10852,6 +10908,14 @@ fn resolve_block_vec_types(body: &Block) -> BTreeMap<u8, VecArrangement> {
         VecStmt::MoveImm { dest, arr, .. } => {
             types.entry(*dest).or_insert(*arr);
         }
+        VecStmt::Reduce { reg, src, .. } => {
+            types.entry(*reg).or_insert(*src);
+        }
+        VecStmt::ExtractToGpr { src, elem, .. } => {
+            types
+                .entry(*src)
+                .or_insert_with(|| VecArrangement::whole_register(*elem));
+        }
     });
     types
 }
@@ -10868,6 +10932,13 @@ fn collect_block_vec_arrangements(body: &Block, acc: &mut BTreeSet<VecArrangemen
         | VecStmt::Compare { arr, .. }
         | VecStmt::MoveImm { arr, .. } => {
             acc.insert(*arr);
+        }
+        VecStmt::Reduce { src, dest, .. } => {
+            acc.insert(*src);
+            acc.insert(VecArrangement::whole_register(*dest));
+        }
+        VecStmt::ExtractToGpr { elem, .. } => {
+            acc.insert(VecArrangement::whole_register(*elem));
         }
     });
 }
@@ -11553,6 +11624,98 @@ fn vec_deref_expr(arr: VecArrangement, addr: &MemRef) -> String {
     )
 }
 
+fn whole_reg_literal(arr: VecArrangement, first: &str) -> String {
+    let mut items: Vec<String> = Vec::with_capacity(usize::from(arr.lanes));
+    items.push(first.to_owned());
+    for _ in 1..arr.lanes {
+        items.push("0".to_owned());
+    }
+    format!("({}){{{}}}", arr.type_name(), items.join(", "))
+}
+
+fn reduce_cstmt(
+    cx: &mut Cx<'_>,
+    reg: u8,
+    op: ReduceOp,
+    src: VecArrangement,
+    dest: VecElem,
+) -> CStmt {
+    let var: String = vec_var(reg);
+    let dest_arr: VecArrangement = VecArrangement::whole_register(dest);
+    let lanes: usize = usize::from(src.lanes);
+    match op {
+        ReduceOp::Add | ReduceOp::Saddl | ReduceOp::Uaddl => {
+            let acc_ty: &str = dest.c_unsigned_scalar();
+            let terms: Vec<String> = (0..lanes)
+                .map(|index: usize| {
+                    let lane: String = format!("{var}[{index}]");
+                    match op {
+                        ReduceOp::Saddl => format!("({acc_ty})({}){lane}", dest.c_scalar()),
+                        ReduceOp::Uaddl => {
+                            format!("({acc_ty})({}){lane}", src.elem.c_unsigned_scalar())
+                        }
+                        _ => format!("({acc_ty}){lane}"),
+                    }
+                })
+                .collect();
+            let first: String = format!("({})({})", dest.c_scalar(), terms.join(" + "));
+            let literal: String = whole_reg_literal(dest_arr, &first);
+            let rhs: String = if src == dest_arr {
+                literal
+            } else {
+                format!("({}){literal}", src.type_name())
+            };
+            assign_cstmt(cx, &var, &rhs)
+        }
+        ReduceOp::Smax | ReduceOp::Smin | ReduceOp::Umax | ReduceOp::Umin => {
+            let signed: bool = matches!(op, ReduceOp::Smax | ReduceOp::Smin);
+            let cmp: &str = if matches!(op, ReduceOp::Smax | ReduceOp::Umax) {
+                ">"
+            } else {
+                "<"
+            };
+            let lane_ty: &str = if signed {
+                dest.c_scalar()
+            } else {
+                dest.c_unsigned_scalar()
+            };
+            let lane = |index: usize| -> String {
+                if signed {
+                    format!("{var}[{index}]")
+                } else {
+                    format!("({lane_ty}){var}[{index}]")
+                }
+            };
+            let acc: &str = "reduce_acc";
+            let mut stmts: Vec<CStmt> = Vec::with_capacity(lanes + 1);
+            let init_expr: CExpr = cx.var(&lane(0));
+            stmts.push(decl_with_init(cx, lane_ty, acc, init_expr));
+            for index in 1..lanes {
+                let li: String = lane(index);
+                let body: String = format!("{li} {cmp} {acc} ? {li} : {acc}");
+                stmts.push(assign_cstmt(cx, acc, &body));
+            }
+            let first: String = format!("({}){acc}", dest.c_scalar());
+            let literal: String = whole_reg_literal(dest_arr, &first);
+            stmts.push(assign_cstmt(cx, &var, &literal));
+            CStmt::Block(stmts)
+        }
+    }
+}
+
+fn extract_to_gpr_cstmt(cx: &mut Cx<'_>, dest: RegRef, src: u8, elem: VecElem) -> CStmt {
+    let view: VecArrangement = VecArrangement::whole_register(elem);
+    let bits: String = format!(
+        "({})(({}){})[0]",
+        elem.c_unsigned_scalar(),
+        view.type_name(),
+        vec_var(src)
+    );
+    let var: &'static str = reg_var(dest.reg);
+    let rhs: String = reg_write_rhs(var, dest.width, &bits);
+    assign_cstmt(cx, var, &rhs)
+}
+
 fn vec_stmt_cstmt(cx: &mut Cx<'_>, vec: &VecStmt) -> CStmt {
     match vec {
         VecStmt::Load { dest, arr, addr } => {
@@ -11599,6 +11762,8 @@ fn vec_stmt_cstmt(cx: &mut Cx<'_>, vec: &VecStmt) -> CStmt {
             let init: String = format!("({}){{{}}}", arr.type_name(), lanes.join(", "));
             assign_cstmt(cx, &vec_var(*dest), &init)
         }
+        VecStmt::Reduce { reg, op, src, dest } => reduce_cstmt(cx, *reg, *op, *src, *dest),
+        VecStmt::ExtractToGpr { dest, src, elem } => extract_to_gpr_cstmt(cx, *dest, *src, *elem),
     }
 }
 

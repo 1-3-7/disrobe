@@ -1,8 +1,8 @@
 use super::{
     Abi, AggregatePlan, BinOp, CondKind, Error, ExtSource, Flags, FnReturn, FnSignature,
-    FrameShape, Item, ItemKind, LeafRecovery, MemRef, Node, Reg, RegRef, ResolvedCall, Result,
-    ScalarType, Source, SretPlan, SretReturn, Stmt, Structured, UnOp, VecArrangement, VecBinOp,
-    VecElem, VecStmt, Width, annotate_calls_block_with_order, collect_call_targets,
+    FrameShape, Item, ItemKind, LeafRecovery, MemRef, Node, ReduceOp, Reg, RegRef, ResolvedCall,
+    Result, ScalarType, Source, SretPlan, SretReturn, Stmt, Structured, UnOp, VecArrangement,
+    VecBinOp, VecElem, VecStmt, Width, annotate_calls_block_with_order, collect_call_targets,
     condition_is_sound, detect_sret, emit_c, emit_rust, infer_aggregate_plan, infer_params,
     plan_frame, stmt_writes_rax_int, structure_items,
 };
@@ -374,6 +374,10 @@ fn recover_with_calls_and_image<'image>(
                 insn,
                 "stack-frame instruction is outside a recognized prologue or epilogue",
             ));
+        }
+        if let Some(stmts) = try_lower_scalar_simd(insn)? {
+            push_stmts(&mut items, base, index, stmts)?;
+            continue;
         }
         if has_unsupported_register_class(&insn.operands) {
             return Err(reject_at(insn, "unsupported instruction"));
@@ -3291,6 +3295,131 @@ fn is_qreg_token(token: &str) -> bool {
     chars.next() == Some('q') && chars.next().is_some_and(|ch: char| ch.is_ascii_digit())
 }
 
+fn parse_scalar_simd(token: &str) -> Result<(u8, VecElem)> {
+    let token: &str = token.trim();
+    if token.contains('.') || token.contains('[') {
+        return Err(reject("operand is not a plain scalar SIMD register"));
+    }
+    let (letter, digits): (&str, &str) = token.split_at(1);
+    let elem: VecElem = match letter {
+        "b" => VecElem::I8,
+        "h" => VecElem::I16,
+        "s" => VecElem::I32,
+        "d" => VecElem::I64,
+        _ => return Err(reject("operand is not a scalar SIMD register")),
+    };
+    let index: u8 = digits
+        .parse::<u8>()
+        .ok()
+        .filter(|value: &u8| *value < 32)
+        .ok_or_else(|| reject("scalar SIMD register is outside v0..v31"))?;
+    Ok((index, elem))
+}
+
+fn try_lower_scalar_simd(insn: &DisasmInsn) -> Result<Option<Vec<Stmt>>> {
+    let operands: Vec<&str> = split_operands(&insn.operands);
+    match insn.mnemonic.as_str() {
+        "addv" | "smaxv" | "sminv" | "umaxv" | "uminv" | "saddlv" | "uaddlv" | "addp" => {
+            let Some(first): Option<&&str> = operands.first() else {
+                return Ok(None);
+            };
+            if parse_scalar_simd(first).is_err() {
+                return Ok(None);
+            }
+            Ok(Some(lower_reduce(insn, &operands)?))
+        }
+        "fmov" => lower_scalar_fmov(&operands),
+        _ => Ok(None),
+    }
+}
+
+fn lower_reduce(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
+    if operands.len() != 2 {
+        return Err(reject_at(insn, "malformed SIMD reduction"));
+    }
+    let (dest_reg, dest_elem): (u8, VecElem) = parse_scalar_simd(operands[0])?;
+    let (src, src_arr): (u8, VecArrangement) = parse_vector_operand(operands[1], false)?;
+    if dest_reg != src {
+        return Err(reject_at(
+            insn,
+            "SIMD reduction destination and source must be the same register",
+        ));
+    }
+    if src_arr.total_bits() != 128 {
+        return Err(reject_at(
+            insn,
+            "SIMD reduction source is not a 128-bit arrangement",
+        ));
+    }
+    let op: ReduceOp = match insn.mnemonic.as_str() {
+        "addv" | "smaxv" | "sminv" | "umaxv" | "uminv" => {
+            if dest_elem != src_arr.elem {
+                return Err(reject_at(insn, "SIMD reduction changes element width"));
+            }
+            match insn.mnemonic.as_str() {
+                "smaxv" => ReduceOp::Smax,
+                "sminv" => ReduceOp::Smin,
+                "umaxv" => ReduceOp::Umax,
+                "uminv" => ReduceOp::Umin,
+                _ => ReduceOp::Add,
+            }
+        }
+        "saddlv" | "uaddlv" => {
+            if dest_elem.bits() != src_arr.elem.bits() * 2 {
+                return Err(reject_at(
+                    insn,
+                    "widening reduction has an unexpected destination width",
+                ));
+            }
+            if insn.mnemonic == "saddlv" {
+                ReduceOp::Saddl
+            } else {
+                ReduceOp::Uaddl
+            }
+        }
+        "addp" => {
+            if src_arr.elem != VecElem::I64 || src_arr.lanes != 2 || dest_elem != VecElem::I64 {
+                return Err(reject_at(
+                    insn,
+                    "scalar addp is only the 2d pairwise-sum form",
+                ));
+            }
+            ReduceOp::Add
+        }
+        _ => return Err(reject_at(insn, "unsupported SIMD reduction")),
+    };
+    Ok(vec![Stmt::Vector(VecStmt::Reduce {
+        reg: src,
+        op,
+        src: src_arr,
+        dest: dest_elem,
+    })])
+}
+
+fn lower_scalar_fmov(operands: &[&str]) -> Result<Option<Vec<Stmt>>> {
+    if operands.len() != 2 {
+        return Ok(None);
+    }
+    let Ok(dest): Result<RegRef> = parse_reg(operands[0]) else {
+        return Ok(None);
+    };
+    let Ok((src, elem)): Result<(u8, VecElem)> = parse_scalar_simd(operands[1]) else {
+        return Ok(None);
+    };
+    let matched: bool = matches!(
+        (dest.width, elem),
+        (Width::W32, VecElem::I32) | (Width::W64, VecElem::I64)
+    );
+    if !matched {
+        return Ok(None);
+    }
+    Ok(Some(vec![Stmt::Vector(VecStmt::ExtractToGpr {
+        dest,
+        src,
+        elem,
+    })]))
+}
+
 fn lower_vector(insn: &DisasmInsn) -> Result<Vec<Stmt>> {
     let operands: Vec<&str> = split_operands(&insn.operands);
     match insn.mnemonic.as_str() {
@@ -3542,6 +3671,12 @@ fn resolve_vector_types(items: &mut [Item]) -> Result<()> {
                 ..
             } => note_vector_type(&mut types, *src, *arr)?,
             VecStmt::Load { arr: None, .. } | VecStmt::Store { arr: None, .. } => {}
+            VecStmt::Reduce { reg, src, .. } => note_vector_type(&mut types, *reg, *src)?,
+            VecStmt::ExtractToGpr { src, elem, .. } => {
+                types
+                    .entry(*src)
+                    .or_insert_with(|| VecArrangement::whole_register(*elem));
+            }
         }
     }
     for item in items.iter_mut() {
@@ -3558,7 +3693,9 @@ fn resolve_vector_types(items: &mut [Item]) -> Result<()> {
             VecStmt::Bin { .. }
             | VecStmt::Dup { .. }
             | VecStmt::Compare { .. }
-            | VecStmt::MoveImm { .. } => {}
+            | VecStmt::MoveImm { .. }
+            | VecStmt::Reduce { .. }
+            | VecStmt::ExtractToGpr { .. } => {}
         }
     }
     Ok(())
@@ -3629,6 +3766,14 @@ fn scan_vector_abi(items: &[Item]) -> Result<VectorAbi> {
                     && *src == SIMD_RETURN_REG
                 {
                     return_stored = true;
+                }
+                if let VecStmt::ExtractToGpr { dest, src, .. } = vec {
+                    if *src == SIMD_RETURN_REG {
+                        return_defined = false;
+                    }
+                    if dest.reg == Reg::Rax {
+                        wrote_int_result = true;
+                    }
                 }
             }
             ItemKind::Stmt(stmt) => {
@@ -3704,6 +3849,14 @@ fn record_vector_types(types: &mut BTreeMap<u8, VecArrangement>, vec: &VecStmt) 
                 types.entry(*src).or_insert(*arrangement);
             }
         }
+        VecStmt::Reduce { reg, src, .. } => {
+            types.entry(*reg).or_insert(*src);
+        }
+        VecStmt::ExtractToGpr { src, elem, .. } => {
+            types
+                .entry(*src)
+                .or_insert_with(|| VecArrangement::whole_register(*elem));
+        }
     }
 }
 
@@ -3734,6 +3887,10 @@ fn vector_reads(vec: &VecStmt) -> Vec<(u8, VecArrangement)> {
                 elem: VecElem::I8,
             },
         )],
+        VecStmt::Reduce { reg, src, .. } => vec![(*reg, *src)],
+        VecStmt::ExtractToGpr { src, elem, .. } => {
+            vec![(*src, VecArrangement::whole_register(*elem))]
+        }
         VecStmt::Load { .. } | VecStmt::Dup { .. } | VecStmt::MoveImm { .. } => Vec::new(),
     }
 }
@@ -3745,7 +3902,8 @@ fn vector_write(vec: &VecStmt) -> Option<u8> {
         | VecStmt::Load { dest, .. }
         | VecStmt::Compare { dest, .. }
         | VecStmt::MoveImm { dest, .. } => Some(*dest),
-        VecStmt::Store { .. } => None,
+        VecStmt::Reduce { reg, .. } => Some(*reg),
+        VecStmt::Store { .. } | VecStmt::ExtractToGpr { .. } => None,
     }
 }
 

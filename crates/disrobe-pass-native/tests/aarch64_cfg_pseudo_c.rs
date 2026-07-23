@@ -100,6 +100,163 @@ fn aarch64_real_clang_vector_movi_broadcasts_a_zero_doubleword() {
 }
 
 #[test]
+fn aarch64_real_clang_addv_reduces_four_lanes_and_fmov_returns_the_sum() {
+    let bytes: [u8; 12] = [
+        0x00, 0xb8, 0xb1, 0x4e, 0x00, 0x00, 0x26, 0x1e, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("addv + fmov");
+    assert!(
+        r.source
+            .contains("(uint32_t)v0[0] + (uint32_t)v0[1] + (uint32_t)v0[2] + (uint32_t)v0[3]"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source.contains("(uint32_t)((recovered_i32x4)v0)[0]"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_clang_smaxv_folds_a_signed_horizontal_max() {
+    let bytes: [u8; 12] = [
+        0x00, 0xa8, 0xb0, 0x4e, 0x00, 0x00, 0x26, 0x1e, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("smaxv");
+    assert!(
+        r.source.contains("int32_t reduce_acc = v0[0]"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source.contains("v0[1] > reduce_acc ? v0[1] : reduce_acc"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_clang_sminv_folds_a_signed_horizontal_min() {
+    let bytes: [u8; 12] = [
+        0x00, 0xa8, 0xb1, 0x4e, 0x00, 0x00, 0x26, 0x1e, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("sminv");
+    assert!(
+        r.source.contains("v0[1] < reduce_acc ? v0[1] : reduce_acc"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_clang_umaxv_folds_an_unsigned_horizontal_max() {
+    let bytes: [u8; 12] = [
+        0x00, 0xa8, 0xb0, 0x6e, 0x00, 0x00, 0x26, 0x1e, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("umaxv");
+    assert!(
+        r.source.contains("uint32_t reduce_acc = (uint32_t)v0[0]"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source
+            .contains("(uint32_t)v0[1] > reduce_acc ? (uint32_t)v0[1] : reduce_acc"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_clang_uminv_folds_an_unsigned_horizontal_min() {
+    let bytes: [u8; 12] = [
+        0x00, 0xa8, 0xb1, 0x6e, 0x00, 0x00, 0x26, 0x1e, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("uminv");
+    assert!(
+        r.source
+            .contains("(uint32_t)v0[1] < reduce_acc ? (uint32_t)v0[1] : reduce_acc"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_clang_saddlv_widens_eight_signed_halfwords_into_the_sum() {
+    let bytes: [u8; 12] = [
+        0x00, 0x38, 0x70, 0x4e, 0x00, 0x00, 0x26, 0x1e, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("saddlv");
+    assert!(
+        r.source.contains("(recovered_i16x8)(recovered_i32x4){"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source
+            .contains("(uint32_t)(int32_t)v0[0] + (uint32_t)(int32_t)v0[1]"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source.contains("(uint32_t)(int32_t)v0[7]"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_clang_uaddlv_widens_eight_unsigned_halfwords_into_the_sum() {
+    let bytes: [u8; 12] = [
+        0x00, 0x38, 0x70, 0x6e, 0x00, 0x00, 0x26, 0x1e, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("uaddlv");
+    assert!(
+        r.source
+            .contains("(uint32_t)(uint16_t)v0[0] + (uint32_t)(uint16_t)v0[1]"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source.contains("(uint32_t)(uint16_t)v0[7]"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_clang_addp_2d_sums_two_doublewords_and_fmov_x_returns_it() {
+    let bytes: [u8; 12] = [
+        0x00, 0xb8, 0xf1, 0x5e, 0x00, 0x00, 0x66, 0x9e, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("addp 2d + fmov x0,d0");
+    assert!(
+        r.source
+            .contains("(recovered_i64x2){(int64_t)((uint64_t)v0[0] + (uint64_t)v0[1]), 0}"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source.contains("(uint64_t)((recovered_i64x2)v0)[0]"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_clang_fmov_extracts_the_low_lane_into_a_general_register() {
+    let bytes: [u8; 8] = [0x00, 0x00, 0x26, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("fmov w0,s0 alone");
+    assert!(r.source.contains("recovered_i32x4 a0"), "{}", r.source);
+    assert!(
+        r.source.contains("(uint32_t)((recovered_i32x4)v0)[0]"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
 fn aarch64_real_clang_vector_and_recovers_as_elementwise_and() {
     let bytes: [u8; 8] = [0x20, 0x1c, 0x20, 0x4e, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("vector and");
