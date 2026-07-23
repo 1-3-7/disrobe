@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use disrobe_core::{AdjGraph, Dominators};
+use disrobe_core::{AdjGraph, Dominators, immediate_post_dominators};
 use walrus::ir::{Instr, InstrSeqId, InstrSeqType, LoadKind, StoreKind, Value};
 use walrus::{LocalFunction, LocalId};
 
@@ -831,71 +831,41 @@ fn dominators(graph: &Graph) -> Option<BTreeMap<i32, i32>> {
 }
 
 fn post_dominators(graph: &Graph, order: &[i32]) -> BTreeMap<NodeRef, NodeRef> {
-    let mut refs: Vec<NodeRef> = order.iter().map(|&s| NodeRef::State(s)).collect();
-    refs.push(NodeRef::Exit);
-    let mut pd: BTreeMap<NodeRef, BTreeSet<NodeRef>> = BTreeMap::new();
-    let all: BTreeSet<NodeRef> = refs.iter().copied().collect();
-    for &r in &refs {
-        if r == NodeRef::Exit {
-            let mut set: BTreeSet<NodeRef> = BTreeSet::new();
-            set.insert(NodeRef::Exit);
-            pd.insert(r, set);
-        } else {
-            pd.insert(r, all.clone());
-        }
-    }
-    let mut changed: bool = true;
-    let mut guard: usize = 0;
-    while changed {
-        changed = false;
-        guard += 1;
-        if guard > NODE_LIMIT * 4 {
-            break;
-        }
-        for &r in &refs {
-            if r == NodeRef::Exit {
-                continue;
-            }
-            let NodeRef::State(state) = r else {
-                continue;
+    let index: BTreeMap<i32, u32> = order
+        .iter()
+        .enumerate()
+        .map(|(i, &state): (usize, &i32)| (state, i as u32))
+        .collect();
+    let node_count: usize = order.len();
+    let virtual_exit: u32 = node_count as u32;
+    let ipdom: Vec<Option<u32>> =
+        immediate_post_dominators(node_count, |from: u32, emit: &mut dyn FnMut(u32)| {
+            let Some(&state) = order.get(from as usize) else {
+                return;
             };
-            let succs: Vec<NodeRef> = successors(graph, state);
-            let mut inter: Option<BTreeSet<NodeRef>> = None;
-            for s in succs {
-                let set: &BTreeSet<NodeRef> = pd.get(&s).unwrap_or(&all);
-                inter = Some(inter.map_or_else(
-                    || set.clone(),
-                    |cur| cur.intersection(set).copied().collect(),
-                ));
+            for succ in successors(graph, state) {
+                match succ {
+                    NodeRef::State(next) => emit(index.get(&next).copied().unwrap_or(virtual_exit)),
+                    NodeRef::Exit => emit(virtual_exit),
+                }
             }
-            let mut new_set: BTreeSet<NodeRef> = inter.unwrap_or_default();
-            new_set.insert(r);
-            if pd.get(&r) != Some(&new_set) {
-                pd.insert(r, new_set);
-                changed = true;
-            }
-        }
-    }
-    immediate_from_sets(&pd)
-}
-
-fn immediate_from_sets(pd: &BTreeMap<NodeRef, BTreeSet<NodeRef>>) -> BTreeMap<NodeRef, NodeRef> {
+        });
     let mut out: BTreeMap<NodeRef, NodeRef> = BTreeMap::new();
-    for (&node, set) in pd {
-        let strict: Vec<NodeRef> = set.iter().copied().filter(|&p| p != node).collect();
-        for &cand in &strict {
-            let cand_set: &BTreeSet<NodeRef> = match pd.get(&cand) {
-                Some(s) => s,
-                None => continue,
-            };
-            let is_immediate: bool = strict
-                .iter()
-                .all(|&other| other == cand || cand_set.contains(&other));
-            if is_immediate {
-                out.insert(node, cand);
-                break;
-            }
-        }
+    for (dense, entry) in ipdom.into_iter().enumerate() {
+        let Some(target_dense) = entry else {
+            continue;
+        };
+        let Some(&node) = order.get(dense) else {
+            continue;
+        };
+        let target: NodeRef = if target_dense == virtual_exit {
+            NodeRef::Exit
+        } else if let Some(&target_state) = order.get(target_dense as usize) {
+            NodeRef::State(target_state)
+        } else {
+            continue;
+        };
+        out.insert(NodeRef::State(node), target);
     }
     out
 }
