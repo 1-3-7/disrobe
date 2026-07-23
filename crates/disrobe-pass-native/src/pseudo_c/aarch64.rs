@@ -3433,6 +3433,7 @@ fn lower_vector(insn: &DisasmInsn) -> Result<Vec<Stmt>> {
         "ldr" => vector_load_store(insn, &operands, true),
         "str" => vector_load_store(insn, &operands, false),
         "ldp" => vector_load_pair(insn, &operands),
+        "stp" => vector_store_pair(insn, &operands),
         "sshll" | "sshll2" | "ushll" | "ushll2" => vector_widen_extend(insn, &operands),
         "saddl" | "saddl2" | "uaddl" | "uaddl2" => vector_widen_add(insn, &operands),
         "dup" => vector_dup(insn, &operands),
@@ -3646,6 +3647,58 @@ fn vector_load_pair(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
     }));
     stmts.push(Stmt::Vector(VecStmt::Load {
         dest: reg2,
+        arr: None,
+        addr: second,
+    }));
+    if let Some(delta) = post_delta {
+        if mem.disp != 0 {
+            return Err(reject_at(
+                insn,
+                "post-indexed vector address has an inline displacement",
+            ));
+        }
+        stmts.push(base_update(mem.base, delta)?);
+    }
+    Ok(stmts)
+}
+
+fn vector_store_pair(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
+    if !(3..=4).contains(&operands.len()) {
+        return Err(reject_at(insn, "malformed vector store pair"));
+    }
+    let reg1: u8 = parse_qreg(operands[0])
+        .ok_or_else(|| reject_at(insn, "vector store pair requires q registers"))?;
+    let reg2: u8 = parse_qreg(operands[1])
+        .ok_or_else(|| reject_at(insn, "vector store pair requires q registers"))?;
+    let (mut mem, pre_index): (MemRef, bool) = parse_memory(operands[2], Width::W64)?;
+    let post_delta: Option<i64> = operands
+        .get(3)
+        .map(|token: &&str| parse_immediate(token))
+        .transpose()?;
+    if pre_index && post_delta.is_some() {
+        return Err(reject_at(
+            insn,
+            "vector address cannot be both pre-indexed and post-indexed",
+        ));
+    }
+    let mut stmts: Vec<Stmt> = Vec::new();
+    if pre_index {
+        let delta: i64 = mem.disp;
+        mem.disp = 0;
+        stmts.push(base_update(mem.base, delta)?);
+    }
+    let first: MemRef = mem;
+    let second: MemRef = MemRef {
+        disp: mem.disp + 16,
+        ..mem
+    };
+    stmts.push(Stmt::Vector(VecStmt::Store {
+        src: reg1,
+        arr: None,
+        addr: first,
+    }));
+    stmts.push(Stmt::Vector(VecStmt::Store {
+        src: reg2,
         arr: None,
         addr: second,
     }));

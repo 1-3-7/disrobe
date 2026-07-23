@@ -452,6 +452,23 @@ fn aarch64_widening_across_control_flow_abstains_rather_than_misversioning() {
 }
 
 #[test]
+fn aarch64_real_clang_stp_stores_a_vector_register_pair_to_adjacent_offsets() {
+    let bytes: [u8; 8] = [0x00, 0x00, 0x00, 0xad, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("stp q0,q0");
+    assert!(
+        r.source.contains("*(recovered_i8x16*)(r_rax) = v0"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source
+            .contains("*(recovered_i8x16*)(r_rax + (uint64_t)(int64_t)16LL) = v0"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
 fn aarch64_real_clang_sdiv_recovers_as_signed_division() {
     let bytes: [u8; 8] = [0x00, 0x0c, 0xc1, 0x1a, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("sdiv w0,w0,w1");
