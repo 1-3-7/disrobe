@@ -371,6 +371,8 @@ enum BinOp {
     Shl,
     Shr,
     Sar,
+    Sdiv,
+    Udiv,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6353,7 +6355,7 @@ const fn flag_effect_bin(op: BinOp) -> FlagEffect {
         | BinOp::Shl
         | BinOp::Shr
         | BinOp::Sar => FlagEffect::Sign,
-        BinOp::Imul => FlagEffect::Clobber,
+        BinOp::Imul | BinOp::Sdiv | BinOp::Udiv => FlagEffect::Clobber,
     }
 }
 
@@ -12285,6 +12287,26 @@ fn bin_expr(op: BinOp, lhs: &str, rhs: &str, width: Width) -> String {
                 c_cast(cx, "uint64_t", shifted)
             })
         }
+        BinOp::Sdiv => {
+            let bits: u32 = width.bits();
+            c_render(|cx| {
+                let lv: CExpr = cx.var(lhs);
+                let l: CExpr = c_cast(cx, &format!("int{bits}_t"), lv);
+                let rv: CExpr = c_opaque(cx, rhs);
+                let r: CExpr = c_cast(cx, &format!("int{bits}_t"), rv);
+                c_cast(cx, "uint64_t", c_bin(BinaryOp::Div, l, r))
+            })
+        }
+        BinOp::Udiv => {
+            let bits: u32 = width.bits();
+            c_render(|cx| {
+                let lv: CExpr = cx.var(lhs);
+                let l: CExpr = c_cast(cx, &format!("uint{bits}_t"), lv);
+                let rv: CExpr = c_opaque(cx, rhs);
+                let r: CExpr = c_cast(cx, &format!("uint{bits}_t"), rv);
+                c_cast(cx, "uint64_t", c_bin(BinaryOp::Div, l, r))
+            })
+        }
     }
 }
 
@@ -13667,6 +13689,30 @@ fn rs_bin_expr(op: BinOp, lhs: &str, rhs: &str, width: Width) -> String {
                 _ => format!(
                     "(((({lhs}) as {ity}) as i64).wrapping_shr((({rhs}) & {shift_mask}u64) as u32) as u64)"
                 ),
+            }
+        }
+        BinOp::Sdiv => {
+            let ity: &str = rs_int_ty(width);
+            match (parsed_lhs, parsed_rhs) {
+                (Some(l), Some(r)) => {
+                    let ls: RustExpr = rcast(l, rtype_path(ity));
+                    let rs: RustExpr = rcast(r, rtype_path(ity));
+                    let q: RustExpr = method_call(ls, "wrapping_div", vec![rs]);
+                    render_rust_expr(&rcast(q, rtype_path("u64")))
+                }
+                _ => format!("((({lhs}) as {ity}).wrapping_div(({rhs}) as {ity}) as u64)"),
+            }
+        }
+        BinOp::Udiv => {
+            let uty: String = format!("u{}", width.bits());
+            match (parsed_lhs, parsed_rhs) {
+                (Some(l), Some(r)) => {
+                    let ls: RustExpr = rcast(l, rtype_path(&uty));
+                    let rs: RustExpr = rcast(r, rtype_path(&uty));
+                    let q: RustExpr = method_call(ls, "wrapping_div", vec![rs]);
+                    render_rust_expr(&rcast(q, rtype_path("u64")))
+                }
+                _ => format!("((({lhs}) as {uty}).wrapping_div(({rhs}) as {uty}) as u64)"),
             }
         }
     }
