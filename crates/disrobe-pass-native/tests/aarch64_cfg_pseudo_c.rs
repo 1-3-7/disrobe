@@ -504,6 +504,38 @@ fn aarch64_real_clang_zero_extended_word_index_load_recovers_with_unsigned_widen
 }
 
 #[test]
+fn aarch64_extended_word_index_never_recovers_as_a_raw_register_array_subscript() {
+    let bytes: [u8; 16] = [
+        0x08, 0xd8, 0x61, 0xb8, 0x09, 0xd8, 0x62, 0xb8, 0x20, 0x01, 0x08, 0x0b, 0xc0, 0x03, 0x5f,
+        0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("arr[i] + arr[j], int index");
+    assert!(
+        r.source.contains("(int32_t)(uint32_t)r_a64_x1")
+            && r.source.contains("(int32_t)(uint32_t)r_a64_x2"),
+        "{}",
+        r.source
+    );
+    assert!(
+        !r.source.contains("[r_a64_x1]") && !r.source.contains("[r_a64_x2]"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_clang_unscaled_sign_extended_word_index_byte_load_recovers() {
+    let bytes: [u8; 8] = [0x00, 0xc8, 0x61, 0x38, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ldrb w0,[x0,w1,sxtw]");
+    assert!(
+        r.source
+            .contains("(uint64_t)(int64_t)(int32_t)(uint32_t)r_a64_x1"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
 fn aarch64_real_clang_large_bitmask_immediate_recovers_as_a_reinterpreted_mask() {
     let bytes: [u8; 8] = [0x00, 0xf0, 0x7d, 0x92, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("and x0,x0,#-8 mask");

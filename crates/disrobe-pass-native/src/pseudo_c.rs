@@ -9014,12 +9014,13 @@ impl AggregatePlan {
                 let IndexOperand {
                     reg: index,
                     scale: access_scale,
-                    ..
+                    extend,
                 }: IndexOperand = mem.index?;
                 if scalar != AggregateScalar::Integer(mem.width)
                     || mem.disp != 0
                     || access_scale != *scale
                     || mem.width != *width
+                    || extend != IndexExtend::Full
                 {
                     return None;
                 }
@@ -9319,7 +9320,9 @@ fn aggregate_classify_regs(
                 let mem: MemRef = observation.mem;
                 mem.disp != 0
                     || mem.width != first.width
-                    || mem.index.is_none_or(|idx: IndexOperand| idx.scale != scale)
+                    || mem.index.is_none_or(|idx: IndexOperand| {
+                        idx.scale != scale || idx.extend != IndexExtend::Full
+                    })
             })
         {
             return None;
