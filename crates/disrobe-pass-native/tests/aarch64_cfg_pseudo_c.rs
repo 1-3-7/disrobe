@@ -379,6 +379,79 @@ fn aarch64_real_clang_gp_pair_ldp_loads_two_doublewords_and_adds_them() {
 }
 
 #[test]
+fn aarch64_real_clang_signed_widening_byte_sum_versions_the_register_through_i8_i16_i32() {
+    let bytes: [u8; 32] = [
+        0x01, 0xa4, 0x08, 0x4f, 0x00, 0xa4, 0x08, 0x0f, 0x02, 0x00, 0x61, 0x4e, 0x00, 0x00, 0x61,
+        0x0e, 0x00, 0x84, 0xa2, 0x4e, 0x00, 0xb8, 0xb1, 0x4e, 0x00, 0x00, 0x26, 0x1e, 0xc0, 0x03,
+        0x5f, 0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("signed widening byte sum");
+    assert!(r.source.contains("recovered_i8x16 a0"), "{}", r.source);
+    assert!(
+        r.source
+            .contains("vw0 = (recovered_i16x8){(int16_t)((recovered_i8x16)v0)[0]"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source.contains("(int16_t)((recovered_i8x16)v0)[8]"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source
+            .contains("vw1 = (recovered_i32x4){(int32_t)((recovered_i16x8)vw0)[0]"),
+        "{}",
+        r.source
+    );
+    assert!(!r.source.contains("goto"), "{}", r.source);
+}
+
+#[test]
+fn aarch64_real_clang_unsigned_widening_byte_sum_zero_extends_each_lane() {
+    let bytes: [u8; 32] = [
+        0x01, 0xa4, 0x08, 0x6f, 0x00, 0xa4, 0x08, 0x2f, 0x02, 0x00, 0x61, 0x6e, 0x00, 0x00, 0x61,
+        0x2e, 0x00, 0x84, 0xa2, 0x4e, 0x00, 0xb8, 0xb1, 0x4e, 0x00, 0x00, 0x26, 0x1e, 0xc0, 0x03,
+        0x5f, 0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("unsigned widening byte sum");
+    assert!(
+        r.source
+            .contains("(int16_t)(uint8_t)((recovered_i8x16)v0)[0]"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source
+            .contains("(int32_t)(uint16_t)((recovered_i16x8)vw0)[0]"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_widening_that_returns_the_vector_abstains_rather_than_misemitting() {
+    let vmovl: [u8; 8] = [0x00, 0xa4, 0x08, 0x0f, 0xc0, 0x03, 0x5f, 0xd6];
+    let error: Error = recover_aarch64_function(&vmovl, 0).expect_err("vmovl must abstain");
+    assert!(
+        format!("{error:?}").contains("widening-long chain without a scalar result"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn aarch64_widening_across_control_flow_abstains_rather_than_misversioning() {
+    let branchy: [u8; 12] = [
+        0x40, 0x00, 0x00, 0x34, 0x00, 0xa4, 0x08, 0x0f, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let error: Error = recover_aarch64_function(&branchy, 0).expect_err("branchy widen abstains");
+    assert!(
+        format!("{error:?}").contains("widening-long register versioning across control flow"),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn aarch64_real_clang_vector_and_recovers_as_elementwise_and() {
     let bytes: [u8; 8] = [0x20, 0x1c, 0x20, 0x4e, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("vector and");

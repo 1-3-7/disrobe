@@ -931,6 +931,7 @@ fn recover_with_calls_and_image<'image>(
             _ => return Err(reject_at(insn, "unsupported instruction")),
         }
     }
+    version_widened_registers(&mut items)?;
     resolve_vector_types(&mut items)?;
     let vec_abi: VectorAbi = scan_vector_abi(&items)?;
     finish(
@@ -3430,6 +3431,8 @@ fn lower_vector(insn: &DisasmInsn) -> Result<Vec<Stmt>> {
         "ldr" => vector_load_store(insn, &operands, true),
         "str" => vector_load_store(insn, &operands, false),
         "ldp" => vector_load_pair(insn, &operands),
+        "sshll" | "sshll2" | "ushll" | "ushll2" => vector_widen_extend(insn, &operands),
+        "saddl" | "saddl2" | "uaddl" | "uaddl2" => vector_widen_add(insn, &operands),
         "dup" => vector_dup(insn, &operands),
         _ => Err(reject_at(insn, "unsupported instruction")),
     }
@@ -3547,6 +3550,61 @@ fn vector_load_store(insn: &DisasmInsn, operands: &[&str], is_load: bool) -> Res
         stmts.push(base_update(mem.base, delta)?);
     }
     Ok(stmts)
+}
+
+fn vector_widen_extend(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
+    if operands.len() != 3 {
+        return Err(reject_at(insn, "malformed widening shift-left-long"));
+    }
+    let (dest, dest_arr): (u8, VecArrangement) = parse_vector_operand(operands[0], false)?;
+    let (src, src_arr): (u8, VecArrangement) = parse_vector_operand(operands[1], false)?;
+    if dest_arr.total_bits() != 128 || dest_arr.elem.bits() != src_arr.elem.bits() * 2 {
+        return Err(reject_at(
+            insn,
+            "widening shift-left-long is not a 2x extend",
+        ));
+    }
+    let shift: i64 = parse_immediate(operands[2])?;
+    if shift < 0 || shift >= i64::from(src_arr.elem.bits()) {
+        return Err(reject_at(insn, "widening shift amount is out of range"));
+    }
+    let signed: bool = insn.mnemonic.starts_with('s');
+    let high: bool = insn.mnemonic.ends_with('2');
+    Ok(vec![Stmt::Vector(VecStmt::WidenExtend {
+        dest,
+        src,
+        src_elem: src_arr.elem,
+        dest_elem: dest_arr.elem,
+        signed,
+        high,
+        shift: shift as u8,
+    })])
+}
+
+fn vector_widen_add(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
+    if operands.len() != 3 {
+        return Err(reject_at(insn, "malformed widening add-long"));
+    }
+    let (dest, dest_arr): (u8, VecArrangement) = parse_vector_operand(operands[0], false)?;
+    let (src1, s1_arr): (u8, VecArrangement) = parse_vector_operand(operands[1], false)?;
+    let (src2, s2_arr): (u8, VecArrangement) = parse_vector_operand(operands[2], false)?;
+    if s1_arr.elem != s2_arr.elem {
+        return Err(reject_at(insn, "widening add-long has mixed source widths"));
+    }
+    if dest_arr.total_bits() != 128 || dest_arr.elem.bits() != s1_arr.elem.bits() * 2 {
+        return Err(reject_at(insn, "widening add-long is not a 2x extend"));
+    }
+    let signed: bool = insn.mnemonic.starts_with('s');
+    let high: bool = insn.mnemonic.ends_with('2');
+    Ok(vec![Stmt::Vector(VecStmt::WidenAdd {
+        dest,
+        src1,
+        src2,
+        src_elem: s1_arr.elem,
+        dest_elem: dest_arr.elem,
+        signed,
+        high,
+    })])
 }
 
 fn vector_load_pair(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
@@ -3681,6 +3739,151 @@ fn parse_arrangement(suffix: &str, float: bool) -> Result<VecArrangement> {
     Ok(arrangement)
 }
 
+fn read_remap(
+    reg: &mut u8,
+    arr: VecArrangement,
+    live: &[u8; 32],
+    arr_at: &mut BTreeMap<u8, VecArrangement>,
+) {
+    let phys: u8 = *reg;
+    if phys < 32 {
+        let idx: u8 = live[usize::from(phys)];
+        arr_at.entry(idx).or_insert(arr);
+        *reg = idx;
+    }
+}
+
+fn write_remap(
+    reg: &mut u8,
+    new_arr: VecArrangement,
+    live: &mut [u8; 32],
+    arr_at: &mut BTreeMap<u8, VecArrangement>,
+    next_syn: &mut u8,
+) -> Result<()> {
+    let phys: u8 = *reg;
+    if phys >= 32 {
+        return Ok(());
+    }
+    let cur: u8 = live[usize::from(phys)];
+    if arr_at
+        .get(&cur)
+        .is_some_and(|existing: &VecArrangement| *existing != new_arr)
+    {
+        let syn: u8 = *next_syn;
+        *next_syn = next_syn
+            .checked_add(1)
+            .ok_or_else(|| reject("too many widened vector register versions"))?;
+        live[usize::from(phys)] = syn;
+        arr_at.insert(syn, new_arr);
+        *reg = syn;
+    } else {
+        arr_at.insert(cur, new_arr);
+        *reg = cur;
+    }
+    Ok(())
+}
+
+fn remap_vec_stmt(
+    vec: &mut VecStmt,
+    live: &mut [u8; 32],
+    arr_at: &mut BTreeMap<u8, VecArrangement>,
+    next_syn: &mut u8,
+) -> Result<()> {
+    match vec {
+        VecStmt::Bin {
+            dest,
+            lhs,
+            rhs,
+            arr,
+            ..
+        } => {
+            read_remap(lhs, *arr, live, arr_at);
+            read_remap(rhs, *arr, live, arr_at);
+            write_remap(dest, *arr, live, arr_at, next_syn)?;
+        }
+        VecStmt::Compare {
+            dest,
+            lhs,
+            rhs,
+            arr,
+        } => {
+            read_remap(lhs, *arr, live, arr_at);
+            if let Some(rhs) = rhs {
+                read_remap(rhs, *arr, live, arr_at);
+            }
+            write_remap(dest, *arr, live, arr_at, next_syn)?;
+        }
+        VecStmt::Dup { dest, arr, .. } | VecStmt::MoveImm { dest, arr, .. } => {
+            write_remap(dest, *arr, live, arr_at, next_syn)?;
+        }
+        VecStmt::Load { dest, .. } => {
+            if *dest < 32 {
+                *dest = live[usize::from(*dest)];
+            }
+        }
+        VecStmt::Store { src, .. } => {
+            if *src < 32 {
+                *src = live[usize::from(*src)];
+            }
+        }
+        VecStmt::Reduce { reg, src, .. } => {
+            read_remap(reg, *src, live, arr_at);
+        }
+        VecStmt::ExtractToGpr { src, elem, .. } => {
+            read_remap(src, VecArrangement::whole_register(*elem), live, arr_at);
+        }
+        VecStmt::WidenExtend {
+            dest,
+            src,
+            src_elem,
+            dest_elem,
+            ..
+        } => {
+            read_remap(src, VecArrangement::whole_register(*src_elem), live, arr_at);
+            write_remap(
+                dest,
+                VecArrangement::whole_register(*dest_elem),
+                live,
+                arr_at,
+                next_syn,
+            )?;
+        }
+        VecStmt::WidenAdd {
+            dest,
+            src1,
+            src2,
+            src_elem,
+            dest_elem,
+            ..
+        } => {
+            let src_arr: VecArrangement = VecArrangement::whole_register(*src_elem);
+            read_remap(src1, src_arr, live, arr_at);
+            read_remap(src2, src_arr, live, arr_at);
+            write_remap(
+                dest,
+                VecArrangement::whole_register(*dest_elem),
+                live,
+                arr_at,
+                next_syn,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn version_widened_registers(items: &mut [Item]) -> Result<()> {
+    let mut live: [u8; 32] = core::array::from_fn(|index: usize| index as u8);
+    let mut arr_at: BTreeMap<u8, VecArrangement> = BTreeMap::new();
+    let mut next_syn: u8 = 32;
+    for item in items.iter_mut() {
+        let ItemKind::Stmt(Stmt::Vector(vec)) = &mut item.kind else {
+            continue;
+        };
+        remap_vec_stmt(vec, &mut live, &mut arr_at, &mut next_syn)?;
+    }
+    Ok(())
+}
+
 fn resolve_vector_types(items: &mut [Item]) -> Result<()> {
     let mut types: BTreeMap<u8, VecArrangement> = BTreeMap::new();
     for item in items.iter() {
@@ -3730,6 +3933,36 @@ fn resolve_vector_types(items: &mut [Item]) -> Result<()> {
                     .entry(*src)
                     .or_insert_with(|| VecArrangement::whole_register(*elem));
             }
+            VecStmt::WidenExtend {
+                dest,
+                src,
+                src_elem,
+                dest_elem,
+                ..
+            } => {
+                note_vector_type(
+                    &mut types,
+                    *dest,
+                    VecArrangement::whole_register(*dest_elem),
+                )?;
+                note_vector_type(&mut types, *src, VecArrangement::whole_register(*src_elem))?;
+            }
+            VecStmt::WidenAdd {
+                dest,
+                src1,
+                src2,
+                src_elem,
+                dest_elem,
+                ..
+            } => {
+                note_vector_type(
+                    &mut types,
+                    *dest,
+                    VecArrangement::whole_register(*dest_elem),
+                )?;
+                note_vector_type(&mut types, *src1, VecArrangement::whole_register(*src_elem))?;
+                note_vector_type(&mut types, *src2, VecArrangement::whole_register(*src_elem))?;
+            }
         }
     }
     for item in items.iter_mut() {
@@ -3748,7 +3981,9 @@ fn resolve_vector_types(items: &mut [Item]) -> Result<()> {
             | VecStmt::Compare { .. }
             | VecStmt::MoveImm { .. }
             | VecStmt::Reduce { .. }
-            | VecStmt::ExtractToGpr { .. } => {}
+            | VecStmt::ExtractToGpr { .. }
+            | VecStmt::WidenExtend { .. }
+            | VecStmt::WidenAdd { .. } => {}
         }
     }
     Ok(())
@@ -3798,17 +4033,25 @@ fn scan_vector_abi(items: &[Item]) -> Result<VectorAbi> {
     let mut wrote_int_result: bool = false;
     let mut return_defined: bool = false;
     let mut return_stored: bool = false;
+    let mut widened: bool = false;
+    let mut has_control_flow: bool = false;
     for item in items {
         match &item.kind {
             ItemKind::Stmt(Stmt::Vector(vec)) => {
                 has_vector = true;
                 record_vector_types(&mut types, vec);
                 for (reg, arr) in vector_reads(vec) {
+                    if reg >= 32 {
+                        widened = true;
+                    }
                     if !written.contains(&reg) && !params.iter().any(|(r, _)| *r == reg) {
                         params.push((reg, arr));
                     }
                 }
                 if let Some(dest) = vector_write(vec) {
+                    if dest >= 32 {
+                        widened = true;
+                    }
                     if dest == SIMD_RETURN_REG {
                         return_defined = true;
                         return_stored = false;
@@ -3834,11 +4077,21 @@ fn scan_vector_abi(items: &[Item]) -> Result<VectorAbi> {
                     wrote_int_result = true;
                 }
             }
-            ItemKind::Branch { .. }
-            | ItemKind::Jmp { .. }
-            | ItemKind::Switch { .. }
-            | ItemKind::Ret => {}
+            ItemKind::Branch { .. } | ItemKind::Jmp { .. } | ItemKind::Switch { .. } => {
+                has_control_flow = true;
+            }
+            ItemKind::Ret => {}
         }
+    }
+    if widened && has_control_flow {
+        return Err(reject(
+            "widening-long register versioning across control flow is unsupported",
+        ));
+    }
+    if widened && !wrote_int_result {
+        return Err(reject(
+            "widening-long chain without a scalar result is unsupported",
+        ));
     }
     params.sort_by_key(|(reg, _): &(u8, VecArrangement)| *reg);
     for (position, (reg, _)) in params.iter().enumerate() {
@@ -3910,6 +4163,38 @@ fn record_vector_types(types: &mut BTreeMap<u8, VecArrangement>, vec: &VecStmt) 
                 .entry(*src)
                 .or_insert_with(|| VecArrangement::whole_register(*elem));
         }
+        VecStmt::WidenExtend {
+            dest,
+            src,
+            src_elem,
+            dest_elem,
+            ..
+        } => {
+            types
+                .entry(*dest)
+                .or_insert_with(|| VecArrangement::whole_register(*dest_elem));
+            types
+                .entry(*src)
+                .or_insert_with(|| VecArrangement::whole_register(*src_elem));
+        }
+        VecStmt::WidenAdd {
+            dest,
+            src1,
+            src2,
+            src_elem,
+            dest_elem,
+            ..
+        } => {
+            types
+                .entry(*dest)
+                .or_insert_with(|| VecArrangement::whole_register(*dest_elem));
+            types
+                .entry(*src1)
+                .or_insert_with(|| VecArrangement::whole_register(*src_elem));
+            types
+                .entry(*src2)
+                .or_insert_with(|| VecArrangement::whole_register(*src_elem));
+        }
     }
 }
 
@@ -3944,6 +4229,18 @@ fn vector_reads(vec: &VecStmt) -> Vec<(u8, VecArrangement)> {
         VecStmt::ExtractToGpr { src, elem, .. } => {
             vec![(*src, VecArrangement::whole_register(*elem))]
         }
+        VecStmt::WidenExtend { src, src_elem, .. } => {
+            vec![(*src, VecArrangement::whole_register(*src_elem))]
+        }
+        VecStmt::WidenAdd {
+            src1,
+            src2,
+            src_elem,
+            ..
+        } => {
+            let arr: VecArrangement = VecArrangement::whole_register(*src_elem);
+            vec![(*src1, arr), (*src2, arr)]
+        }
         VecStmt::Load { .. } | VecStmt::Dup { .. } | VecStmt::MoveImm { .. } => Vec::new(),
     }
 }
@@ -3956,6 +4253,7 @@ fn vector_write(vec: &VecStmt) -> Option<u8> {
         | VecStmt::Compare { dest, .. }
         | VecStmt::MoveImm { dest, .. } => Some(*dest),
         VecStmt::Reduce { reg, .. } => Some(*reg),
+        VecStmt::WidenExtend { dest, .. } | VecStmt::WidenAdd { dest, .. } => Some(*dest),
         VecStmt::Store { .. } | VecStmt::ExtractToGpr { .. } => None,
     }
 }
