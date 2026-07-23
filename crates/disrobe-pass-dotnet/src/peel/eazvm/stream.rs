@@ -1,3 +1,5 @@
+use disrobe_bytes::ByteReader;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EazMethodInfo {
     pub name: String,
@@ -17,19 +19,18 @@ pub enum StreamError {
 }
 
 struct Reader<'a> {
-    data: &'a [u8],
-    pos: usize,
+    reader: ByteReader<'a>,
 }
 
 impl<'a> Reader<'a> {
     const fn new(data: &'a [u8]) -> Self {
-        Self { data, pos: 0 }
+        Self {
+            reader: ByteReader::new(data),
+        }
     }
 
     fn u8(&mut self) -> Result<u8, StreamError> {
-        let b: u8 = *self.data.get(self.pos).ok_or(StreamError::Truncated)?;
-        self.pos += 1;
-        Ok(b)
+        self.reader.read_u8().map_err(|_| StreamError::Truncated)
     }
 
     fn bool(&mut self) -> Result<bool, StreamError> {
@@ -37,51 +38,46 @@ impl<'a> Reader<'a> {
     }
 
     fn i16(&mut self) -> Result<i16, StreamError> {
-        let end: usize = self.pos.checked_add(2).ok_or(StreamError::Truncated)?;
-        let slice: &[u8] = self.data.get(self.pos..end).ok_or(StreamError::Truncated)?;
-        self.pos = end;
-        Ok(i16::from_le_bytes([slice[0], slice[1]]))
+        self.reader
+            .read_i16_le()
+            .map_err(|_| StreamError::Truncated)
     }
 
     fn i32(&mut self) -> Result<i32, StreamError> {
-        let end: usize = self.pos.checked_add(4).ok_or(StreamError::Truncated)?;
-        let slice: &[u8] = self.data.get(self.pos..end).ok_or(StreamError::Truncated)?;
-        self.pos = end;
-        Ok(i32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+        self.reader
+            .read_i32_le()
+            .map_err(|_| StreamError::Truncated)
     }
 
     fn seven_bit_len(&mut self) -> Result<usize, StreamError> {
-        let mut value: usize = 0;
-        let mut shift: u32 = 0;
-        loop {
-            let b: u8 = self.u8()?;
-            value |= usize::from(b & 0x7F) << shift;
-            if b & 0x80 == 0 {
-                break;
-            }
-            shift += 7;
-            if shift > 35 {
+        const MAX_SEVEN_BIT_LENGTH_BYTES: usize = 6;
+        if self.reader.remaining() >= MAX_SEVEN_BIT_LENGTH_BYTES {
+            let prefix: &[u8] = self
+                .reader
+                .peek_bytes(MAX_SEVEN_BIT_LENGTH_BYTES)
+                .map_err(|_| StreamError::Truncated)?;
+            if prefix.iter().all(|byte: &u8| *byte & 0x80 != 0) {
                 return Err(StreamError::BadString);
             }
         }
-        Ok(value)
+        let value: u64 = self
+            .reader
+            .read_uleb128()
+            .map_err(|_| StreamError::Truncated)?;
+        usize::try_from(value).map_err(|_| StreamError::BadString)
     }
 
     fn dotnet_string(&mut self) -> Result<String, StreamError> {
         let len: usize = self.seven_bit_len()?;
-        let end: usize = self.pos.checked_add(len).ok_or(StreamError::Truncated)?;
-        let slice: &[u8] = self.data.get(self.pos..end).ok_or(StreamError::Truncated)?;
-        self.pos = end;
+        let slice: &[u8] = self
+            .reader
+            .read_bytes(len)
+            .map_err(|_| StreamError::Truncated)?;
         Ok(String::from_utf8_lossy(slice).into_owned())
     }
 
     fn skip(&mut self, n: usize) -> Result<(), StreamError> {
-        let end: usize = self.pos.checked_add(n).ok_or(StreamError::Truncated)?;
-        if end > self.data.len() {
-            return Err(StreamError::Truncated);
-        }
-        self.pos = end;
-        Ok(())
+        self.reader.skip(n).map_err(|_| StreamError::Truncated)
     }
 }
 
@@ -113,10 +109,10 @@ pub fn parse_method_info(region: &[u8]) -> Result<EazMethodInfo, StreamError> {
 
     let code_size: i32 = r.i32()?;
     let size: usize = usize::try_from(code_size.max(0)).unwrap_or(0);
-    let end: usize = r.pos.checked_add(size).ok_or(StreamError::Truncated)?;
-    let code: Vec<u8> = region
-        .get(r.pos..end)
-        .ok_or(StreamError::Truncated)?
+    let code: Vec<u8> = r
+        .reader
+        .read_bytes(size)
+        .map_err(|_| StreamError::Truncated)?
         .to_vec();
 
     Ok(EazMethodInfo {
@@ -133,7 +129,29 @@ pub fn parse_method_info(region: &[u8]) -> Result<EazMethodInfo, StreamError> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::{EazMethodInfo, parse_method_info};
+    use super::{EazMethodInfo, Reader, StreamError, parse_method_info};
+
+    #[test]
+    fn short_string_length_ignores_later_continuation_byte() {
+        let data: [u8; 6] = [0x01, 0x00, 0x00, 0x00, 0x00, 0x80];
+        let mut reader: Reader<'_> = Reader::new(&data);
+
+        assert_eq!(reader.seven_bit_len(), Ok(1));
+    }
+
+    #[test]
+    fn six_continuation_bytes_in_string_length_are_bad_string() {
+        let mut region: Vec<u8> = Vec::new();
+        region.push(0);
+        region.extend_from_slice(&0i16.to_le_bytes());
+        region.extend_from_slice(&0i32.to_le_bytes());
+        region.push(0);
+        region.extend_from_slice(&0i32.to_le_bytes());
+        region.extend_from_slice(&0i16.to_le_bytes());
+        region.extend_from_slice(&[0x80; 6]);
+
+        assert_eq!(parse_method_info(&region), Err(StreamError::BadString));
+    }
 
     #[test]
     fn non_utf8_method_name_preserves_surrounding_method_info() {

@@ -1,3 +1,4 @@
+use disrobe_bytes::ByteReadError;
 use miette::Diagnostic;
 use thiserror::Error;
 
@@ -102,4 +103,14 @@ pub enum Error {
 
     #[error("DR-DOTNET-0028: signature node count exceeds maximum {0}")]
     SignatureTooManyNodes(usize),
+}
+
+impl From<ByteReadError> for Error {
+    fn from(error: ByteReadError) -> Self {
+        Self::Truncated {
+            offset: error.offset,
+            needed: error.needed,
+            had: error.available,
+        }
+    }
 }
