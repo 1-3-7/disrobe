@@ -557,6 +557,112 @@ fn recover_with_calls_and_image<'image>(
                     kind: ItemKind::Ret,
                 });
             }
+            "csel" => {
+                let operands: Vec<&str> = split_operands(&insn.operands);
+                if operands.len() != 4 {
+                    return Err(reject_at(insn, "malformed conditional select"));
+                }
+                let dest: RegRef = parse_reg(operands[0])?;
+                let (n_reg, n_src, n_width): (Option<Reg>, Source, Width) =
+                    select_operand(operands[1])?;
+                let (m_reg, m_src, m_width): (Option<Reg>, Source, Width) =
+                    select_operand(operands[2])?;
+                if dest.width != n_width || dest.width != m_width {
+                    return Err(reject_at(insn, "mixed-width conditional select"));
+                }
+                let kind: CondKind = parse_condition(operands[3])?;
+                let live_flags: TrackedFlags = flags
+                    .clone()
+                    .ok_or_else(|| reject_at(insn, "conditional select lacks live nzcv state"))?;
+                if (live_flags.nz_only && !kind.sign_zero_only())
+                    || !condition_is_sound(kind, &live_flags.value)
+                {
+                    return Err(reject_at(
+                        insn,
+                        "condition is undefined for the tracked nzcv source",
+                    ));
+                }
+                let stmts: Vec<Stmt> = if m_reg == Some(dest.reg) {
+                    vec![Stmt::Cond {
+                        dest,
+                        src: n_src,
+                        kind,
+                        flags: live_flags.value,
+                    }]
+                } else if n_reg == Some(dest.reg) {
+                    vec![Stmt::Cond {
+                        dest,
+                        src: m_src,
+                        kind: kind.negate(),
+                        flags: live_flags.value,
+                    }]
+                } else {
+                    if flags_reference_reg(&live_flags.value, dest.reg) {
+                        return Err(reject_at(
+                            insn,
+                            "conditional select destination aliases a live flag operand",
+                        ));
+                    }
+                    vec![
+                        Stmt::Assign { dest, src: m_src },
+                        Stmt::Cond {
+                            dest,
+                            src: n_src,
+                            kind,
+                            flags: live_flags.value,
+                        },
+                    ]
+                };
+                push_stmts(&mut items, base, index, stmts)?;
+                if dest.reg == Reg::Rax {
+                    return_width = dest.width;
+                }
+            }
+            "cset" => {
+                let operands: Vec<&str> = split_operands(&insn.operands);
+                if operands.len() != 2 {
+                    return Err(reject_at(insn, "malformed conditional set"));
+                }
+                let dest: RegRef = parse_reg(operands[0])?;
+                let kind: CondKind = parse_condition(operands[1])?;
+                let live_flags: TrackedFlags = flags
+                    .clone()
+                    .ok_or_else(|| reject_at(insn, "conditional set lacks live nzcv state"))?;
+                if (live_flags.nz_only && !kind.sign_zero_only())
+                    || !condition_is_sound(kind, &live_flags.value)
+                {
+                    return Err(reject_at(
+                        insn,
+                        "condition is undefined for the tracked nzcv source",
+                    ));
+                }
+                if flags_reference_reg(&live_flags.value, dest.reg) {
+                    return Err(reject_at(
+                        insn,
+                        "conditional set destination aliases a live flag operand",
+                    ));
+                }
+                push_stmts(
+                    &mut items,
+                    base,
+                    index,
+                    vec![
+                        Stmt::Assign {
+                            dest,
+                            src: Source::Imm(0),
+                        },
+                        Stmt::Cond {
+                            dest,
+                            src: Source::Imm(1),
+                            kind,
+                            flags: live_flags.value,
+                        },
+                    ],
+                )?;
+                if dest.reg == Reg::Rax {
+                    return_width = dest.width;
+                }
+            }
             _ => return Err(reject_at(insn, "unsupported instruction")),
         }
     }
@@ -2776,6 +2882,28 @@ fn parse_reg(token: &str) -> Result<RegRef> {
         _ => return Err(reject("register is outside the current bounded set")),
     };
     Ok(RegRef { reg, width })
+}
+
+fn select_operand(token: &str) -> Result<(Option<Reg>, Source, Width)> {
+    match token.trim() {
+        "wzr" => Ok((None, Source::Imm(0), Width::W32)),
+        "xzr" => Ok((None, Source::Imm(0), Width::W64)),
+        other => {
+            let reg: RegRef = parse_reg(other)?;
+            Ok((Some(reg.reg), Source::Reg(reg), reg.width))
+        }
+    }
+}
+
+fn flags_reference_reg(flags: &Flags, reg: Reg) -> bool {
+    match flags {
+        Flags::Cmp { lhs, rhs } => {
+            lhs.reg == reg || matches!(rhs, Source::Reg(source) if source.reg == reg)
+        }
+        Flags::Test { operand } | Flags::TestImm { operand, .. } => operand.reg == reg,
+        Flags::Sign { result } => result.reg == reg,
+        Flags::CmpMem { .. } | Flags::FpCmp { .. } | Flags::Snapshot { .. } => true,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
