@@ -283,8 +283,8 @@ fn resolve_target(
     }
     let arg: u32 = ins.arg?;
     let arg_units: usize = arg as usize;
-    let delta: usize = arg_units.saturating_mul(BYTECODE_UNIT_BYTES);
-    let next_offset: usize = next_offset_of(ins, instructions, offset_to_index);
+    let delta: usize = arg_units.checked_mul(BYTECODE_UNIT_BYTES)?;
+    let next_offset: usize = next_offset_of(ins, instructions, offset_to_index)?;
     match class {
         JumpClass::UnconditionalForward | JumpClass::ConditionalForward => {
             next_offset.checked_add(delta)
@@ -301,13 +301,13 @@ fn next_offset_of(
     ins: &Instruction,
     instructions: &[Instruction],
     offset_to_index: &BTreeMap<usize, usize>,
-) -> usize {
+) -> Option<usize> {
     if let Some(&idx) = offset_to_index.get(&ins.offset)
         && let Some(next) = instructions.get(idx + 1)
     {
-        return next.offset;
+        return Some(next.offset);
     }
-    ins.offset + BYTECODE_UNIT_BYTES
+    ins.offset.checked_add(BYTECODE_UNIT_BYTES)
 }
 
 #[must_use]

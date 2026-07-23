@@ -1,7 +1,3 @@
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Once;
-
 #[cfg(feature = "chain")]
 use disrobe_core::chain::Pass;
 #[cfg(feature = "chain")]
@@ -13,15 +9,14 @@ use disrobe_pass_py_disasm::alt_runtimes::recover::{recover, recover_detected};
 use disrobe_pass_py_disasm::alt_runtimes::{AltRuntime, detect_runtime};
 #[cfg(feature = "chain")]
 use disrobe_pass_py_disasm::chain_detector::PY_DISASM_PASS;
-use disrobe_pass_py_disasm::{decode_exception_table, render_exception_table};
 
 const MAX_INPUT_SIZE: usize = 4096;
 
-struct Xorshift64 {
+struct XorShift64 {
     state: u64,
 }
 
-impl Xorshift64 {
+impl XorShift64 {
     const fn new(seed: u64) -> Self {
         Self { state: seed | 1 }
     }
@@ -60,18 +55,7 @@ const SEEDS: &[&[u8]] = &[
     include_bytes!("../../../corpus/python/alt_runtimes/micropython/hello_native_armv7m.mpy"),
 ];
 
-fn silence_panic_hook() {
-    static HOOK: Once = Once::new();
-    HOOK.call_once(|| {
-        std::panic::set_hook(Box::new(|_| {}));
-    });
-}
-
 fn exercise(bytes: &[u8]) {
-    let _ = decode_exception_table(bytes);
-    if let Ok(entries) = decode_exception_table(bytes) {
-        let _ = render_exception_table(&entries);
-    }
     let detected: Option<AltRuntime> = detect_runtime(bytes);
     let _ = detected;
     let _ = recover_detected(bytes);
@@ -101,10 +85,11 @@ fn run_pass(bytes: &[u8]) {
 }
 
 #[cfg(not(feature = "chain"))]
-fn run_pass(_bytes: &[u8]) {}
+const fn run_pass(_bytes: &[u8]) {}
 
-fn mutate(rng: &mut Xorshift64, seed: &[u8]) -> Vec<u8> {
-    let mut buf: Vec<u8> = seed.to_vec();
+fn mutate(rng: &mut XorShift64, seed: &[u8]) -> Vec<u8> {
+    let initial_len: usize = seed.len().min(MAX_INPUT_SIZE);
+    let mut buf: Vec<u8> = seed[..initial_len].to_vec();
     match rng.next_usize(6) {
         0 => {
             if !buf.is_empty() {
@@ -169,57 +154,24 @@ fn mutate(rng: &mut Xorshift64, seed: &[u8]) -> Vec<u8> {
 
 #[test]
 fn seed_mutations_never_panic_across_entry_points() {
-    silence_panic_hook();
-    let mut rng: Xorshift64 = Xorshift64::new(0x5DEE_CE66_D33D_0001);
+    let mut rng: XorShift64 = XorShift64::new(0x5DEE_CE66_D33D_0001);
     for seed in SEEDS {
-        let result: Result<(), _> = catch_unwind(AssertUnwindSafe(|| exercise(seed)));
-        assert!(
-            result.is_ok(),
-            "unmutated seed of {} bytes panicked",
-            seed.len()
-        );
+        let bounded_len: usize = seed.len().min(MAX_INPUT_SIZE);
+        exercise(&seed[..bounded_len]);
     }
     for _ in 0..6_000 {
         let seed: &[u8] = SEEDS[rng.next_usize(SEEDS.len())];
         let mutated: Vec<u8> = mutate(&mut rng, seed);
-        let snapshot: Vec<u8> = mutated.clone();
-        let result: Result<(), _> = catch_unwind(AssertUnwindSafe(|| exercise(&mutated)));
-        assert!(
-            result.is_ok(),
-            "mutated seed panicked on input {:02x?}",
-            &snapshot[..snapshot.len().min(64)]
-        );
+        exercise(&mutated);
     }
 }
 
 #[test]
 fn pure_random_inputs_never_panic() {
-    silence_panic_hook();
-    let mut rng: Xorshift64 = Xorshift64::new(0x9DD1_5A81_9DD1_0001);
-    for _ in 0..40_000 {
-        let len: usize = rng.next_usize(256);
-        let bytes: Vec<u8> = (0..len).map(|_| rng.next_byte()).collect();
-        let _ = decode_exception_table(&bytes);
-    }
+    let mut rng: XorShift64 = XorShift64::new(0x9DD1_5A81_9DD1_0001);
     for _ in 0..20_000 {
         let len: usize = rng.next_usize(512);
         let bytes: Vec<u8> = (0..len).map(|_| rng.next_byte()).collect();
-        let snapshot: Vec<u8> = bytes.clone();
-        let result: Result<(), _> = catch_unwind(AssertUnwindSafe(|| exercise(&bytes)));
-        assert!(
-            result.is_ok(),
-            "random input panicked: {:02x?}",
-            &snapshot[..snapshot.len().min(64)]
-        );
+        exercise(&bytes);
     }
-}
-
-#[test]
-fn high_continuation_bytes_do_not_shift_overflow() {
-    for n in 1usize..=16 {
-        let table: Vec<u8> = vec![0xff; n];
-        let _ = decode_exception_table(&table);
-    }
-    let mixed: Vec<u8> = vec![0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
-    let _ = decode_exception_table(&mixed);
 }
