@@ -94,19 +94,30 @@ pub fn scan_native_images(blob: &[u8]) -> Vec<EmbeddedNativeImage> {
             i += 1;
             continue;
         };
-        let next_magic: usize = next_magic_offset(blob, i + 1);
+        let Some(next_start): Option<usize> = i.checked_add(1) else {
+            break;
+        };
+        let next_magic: usize = next_magic_offset(blob, next_start);
         let header_extent: Option<usize> = image_extent(blob, i, format);
         let length: usize =
             header_extent.map_or(next_magic - i, |extent: usize| extent.min(next_magic - i));
-        let end: usize = i + length;
+        let Some(end): Option<usize> = i.checked_add(length) else {
+            break;
+        };
+        let Some(bytes): Option<&[u8]> = blob.get(i..end) else {
+            break;
+        };
         images.push(EmbeddedNativeImage {
             format,
             offset: i,
             length,
             route_pass_id: NATIVE_ROUTE_PASS_ID,
-            bytes: blob[i..end].to_vec(),
+            bytes: bytes.to_vec(),
         });
-        i = end.max(i + 4);
+        let Some(min_advance): Option<usize> = i.checked_add(4) else {
+            break;
+        };
+        i = end.max(min_advance);
     }
     images
 }
@@ -137,7 +148,8 @@ fn image_extent(blob: &[u8], offset: usize, format: NativeImageFormat) -> Option
 }
 
 fn read_u16(image: &[u8], at: usize, le: bool) -> Option<u64> {
-    let b: &[u8; 2] = image.get(at..at + 2)?.try_into().ok()?;
+    let end: usize = at.checked_add(2)?;
+    let b: &[u8; 2] = image.get(at..end)?.try_into().ok()?;
     Some(u64::from(if le {
         u16::from_le_bytes(*b)
     } else {
@@ -146,7 +158,8 @@ fn read_u16(image: &[u8], at: usize, le: bool) -> Option<u64> {
 }
 
 fn read_u32(image: &[u8], at: usize, le: bool) -> Option<u64> {
-    let b: &[u8; 4] = image.get(at..at + 4)?.try_into().ok()?;
+    let end: usize = at.checked_add(4)?;
+    let b: &[u8; 4] = image.get(at..end)?.try_into().ok()?;
     Some(u64::from(if le {
         u32::from_le_bytes(*b)
     } else {
@@ -155,7 +168,8 @@ fn read_u32(image: &[u8], at: usize, le: bool) -> Option<u64> {
 }
 
 fn read_u64(image: &[u8], at: usize, le: bool) -> Option<u64> {
-    let b: &[u8; 8] = image.get(at..at + 8)?.try_into().ok()?;
+    let end: usize = at.checked_add(8)?;
+    let b: &[u8; 8] = image.get(at..end)?.try_into().ok()?;
     Some(if le {
         u64::from_le_bytes(*b)
     } else {
@@ -206,19 +220,22 @@ fn elf_file_extent(image: &[u8]) -> Option<usize> {
     let sh_type_off: usize = 0x4;
     for idx in 0..shnum {
         let entry: usize = usize::try_from(shoff.checked_add(idx.checked_mul(shentsize)?)?).ok()?;
-        let sh_type: u64 = read_u32(image, entry + sh_type_off, le)?;
+        let sh_type_at: usize = entry.checked_add(sh_type_off)?;
+        let sh_type: u64 = read_u32(image, sh_type_at, le)?;
         if sh_type == SHT_NOBITS {
             continue;
         }
+        let sh_offset_at: usize = entry.checked_add(sh_offset_off)?;
         let s_off: u64 = if is64 {
-            read_u64(image, entry + sh_offset_off, le)?
+            read_u64(image, sh_offset_at, le)?
         } else {
-            read_u32(image, entry + sh_offset_off, le)?
+            read_u32(image, sh_offset_at, le)?
         };
+        let sh_size_at: usize = entry.checked_add(sh_size_off)?;
         let s_size: u64 = if is64 {
-            read_u64(image, entry + sh_size_off, le)?
+            read_u64(image, sh_size_at, le)?
         } else {
-            read_u32(image, entry + sh_size_off, le)?
+            read_u32(image, sh_size_at, le)?
         };
         extent = extent.max(s_off.checked_add(s_size)?);
     }
@@ -227,15 +244,22 @@ fn elf_file_extent(image: &[u8]) -> Option<usize> {
 
 fn pe_file_extent(image: &[u8]) -> Option<usize> {
     let lfanew: usize = usize::try_from(read_u32(image, 0x3c, true)?).ok()?;
-    let coff: usize = lfanew + 4;
-    let num_sections: u64 = read_u16(image, coff + 2, true)?;
-    let opt_header_size: u64 = read_u16(image, coff + 16, true)?;
-    let section_table: usize = coff + 20 + usize::try_from(opt_header_size).ok()?;
+    let coff: usize = lfanew.checked_add(4)?;
+    let num_sections_at: usize = coff.checked_add(2)?;
+    let num_sections: u64 = read_u16(image, num_sections_at, true)?;
+    let opt_header_size_at: usize = coff.checked_add(16)?;
+    let opt_header_size: u64 = read_u16(image, opt_header_size_at, true)?;
+    let section_table_base: usize = coff.checked_add(20)?;
+    let section_table: usize =
+        section_table_base.checked_add(usize::try_from(opt_header_size).ok()?)?;
     let mut extent: u64 = u64::try_from(section_table).ok()?;
     for idx in 0..num_sections {
-        let entry: usize = section_table + usize::try_from(idx.checked_mul(40)?).ok()?;
-        let raw_size: u64 = read_u32(image, entry + 16, true)?;
-        let raw_ptr: u64 = read_u32(image, entry + 20, true)?;
+        let offset: usize = usize::try_from(idx.checked_mul(40)?).ok()?;
+        let entry: usize = section_table.checked_add(offset)?;
+        let raw_size_at: usize = entry.checked_add(16)?;
+        let raw_size: u64 = read_u32(image, raw_size_at, true)?;
+        let raw_ptr_at: usize = entry.checked_add(20)?;
+        let raw_ptr: u64 = read_u32(image, raw_ptr_at, true)?;
         extent = extent.max(raw_ptr.checked_add(raw_size)?);
     }
     usize::try_from(extent).ok()
@@ -262,25 +286,34 @@ fn is_pe_at(blob: &[u8], i: usize) -> bool {
     if !has_at(blob, i, &PE_MAGIC) {
         return false;
     }
-    let lfanew_pos: usize = i + 0x3c;
-    if lfanew_pos + 4 > blob.len() {
+    let Some(lfanew_pos): Option<usize> = i.checked_add(0x3c) else {
         return false;
-    }
-    let lfanew: usize = u32::from_le_bytes([
-        blob[lfanew_pos],
-        blob[lfanew_pos + 1],
-        blob[lfanew_pos + 2],
-        blob[lfanew_pos + 3],
-    ]) as usize;
+    };
+    let Some(lfanew_end): Option<usize> = lfanew_pos.checked_add(4) else {
+        return false;
+    };
+    let Some(raw_lfanew): Option<&[u8]> = blob.get(lfanew_pos..lfanew_end) else {
+        return false;
+    };
+    let Ok(raw_lfanew): core::result::Result<&[u8; 4], _> = raw_lfanew.try_into() else {
+        return false;
+    };
+    let lfanew: usize = u32::from_le_bytes(*raw_lfanew) as usize;
     if lfanew < PE_LFANEW_MIN {
         return false;
     }
-    has_at(blob, i + lfanew, &PE_NT_SIGNATURE)
+    let Some(nt_signature): Option<usize> = i.checked_add(lfanew) else {
+        return false;
+    };
+    has_at(blob, nt_signature, &PE_NT_SIGNATURE)
 }
 
 #[inline]
 fn has_at(blob: &[u8], i: usize, magic: &[u8]) -> bool {
-    blob.len() >= i + magic.len() && &blob[i..i + magic.len()] == magic
+    let Some(end): Option<usize> = i.checked_add(magic.len()) else {
+        return false;
+    };
+    blob.get(i..end).is_some_and(|bytes: &[u8]| bytes == magic)
 }
 
 #[must_use]
