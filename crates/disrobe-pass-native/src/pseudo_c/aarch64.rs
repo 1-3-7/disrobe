@@ -830,6 +830,33 @@ fn recover_with_calls_and_image<'image>(
                     return_width = dest.width;
                 }
             }
+            "neg" => {
+                let operands: Vec<&str> = split_operands(&insn.operands);
+                if operands.len() != 2 {
+                    return Err(reject_at(insn, "malformed negate"));
+                }
+                let dest: RegRef = parse_reg(operands[0])?;
+                let (_, m_src, m_width): (Option<Reg>, Source, Width) =
+                    select_operand(operands[1])?;
+                if dest.width != m_width {
+                    return Err(reject_at(insn, "mixed-width negate"));
+                }
+                push_stmts(
+                    &mut items,
+                    base,
+                    index,
+                    vec![
+                        Stmt::Assign { dest, src: m_src },
+                        Stmt::UnAssign {
+                            dest,
+                            op: UnOp::Neg,
+                        },
+                    ],
+                )?;
+                if dest.reg == Reg::Rax {
+                    return_width = dest.width;
+                }
+            }
             _ => return Err(reject_at(insn, "unsupported instruction")),
         }
     }

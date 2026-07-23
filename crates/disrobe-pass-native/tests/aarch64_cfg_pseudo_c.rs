@@ -35,6 +35,23 @@ fn aarch64_real_clang_adrp_materializes_a_page_address_for_a_global_load() {
 }
 
 #[test]
+fn aarch64_real_clang_neg_negates() {
+    let bytes: [u8; 8] = [0xe0, 0x03, 0x00, 0x4b, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("neg");
+    assert!(r.source.contains("-(int64_t)r_rax"), "{}", r.source);
+}
+
+#[test]
+fn aarch64_real_clang_cneg_recovers_absolute_value() {
+    let bytes: [u8; 12] = [
+        0x1f, 0x00, 0x00, 0x71, 0x00, 0x54, 0x80, 0x5a, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("cneg absval");
+    assert!(r.source.contains("-(int64_t)r_a64_tmp2"), "{}", r.source);
+    assert!(r.source.contains("< 0 ? (r_a64_tmp2)"), "{}", r.source);
+}
+
+#[test]
 fn aarch64_real_clang_cinc_conditionally_increments() {
     let bytes: [u8; 12] = [
         0x1f, 0x00, 0x01, 0x6b, 0x40, 0xc4, 0x82, 0x1a, 0xc0, 0x03, 0x5f, 0xd6,
