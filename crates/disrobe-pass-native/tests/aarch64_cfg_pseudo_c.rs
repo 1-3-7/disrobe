@@ -3,6 +3,55 @@
 use disrobe_pass_native::{Error, LeafRecovery, recover_aarch64_function};
 
 #[test]
+fn aarch64_real_clang_bic_is_and_not() {
+    let bytes: [u8; 8] = [0x00, 0x00, 0x21, 0x0a, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("bic");
+    assert!(r.source.contains("~r_a64_tmp2"), "{}", r.source);
+    assert!(
+        r.source.contains("r_a64_tmp & (r_a64_tmp2)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_clang_orn_is_or_not() {
+    let bytes: [u8; 8] = [0x00, 0x00, 0x21, 0x2a, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("orn");
+    assert!(r.source.contains("~r_a64_tmp2"), "{}", r.source);
+    assert!(
+        r.source.contains("r_a64_tmp | (r_a64_tmp2)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_clang_eon_is_xor_not() {
+    let bytes: [u8; 8] = [0x00, 0x00, 0x21, 0x4a, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("eon");
+    assert!(r.source.contains("~r_a64_tmp2"), "{}", r.source);
+    assert!(
+        r.source.contains("r_a64_tmp ^ (r_a64_tmp2)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_clang_bic_with_asr_shift_recovers_clamp_to_zero() {
+    let bytes: [u8; 8] = [0x00, 0x7c, 0xa0, 0x0a, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("bic asr");
+    assert!(r.source.contains("~r_a64_tmp2"), "{}", r.source);
+    assert!(r.source.contains(">>"), "{}", r.source);
+    assert!(
+        r.source.contains("r_a64_tmp & (r_a64_tmp2)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
 fn aarch64_real_clang_ldrb_zero_extends_a_byte() {
     let bytes: [u8; 8] = [0x00, 0x00, 0x40, 0x39, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ldrb");
