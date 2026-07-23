@@ -634,6 +634,12 @@ enum VecStmt {
         src: RegRef,
         arr: VecArrangement,
     },
+    Compare {
+        dest: u8,
+        lhs: u8,
+        rhs: Option<u8>,
+        arr: VecArrangement,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6865,7 +6871,7 @@ fn scan_stmt_params(
                 read_addr(addr, written, acc, note);
             }
             VecStmt::Dup { src, .. } => note(src.reg, written, acc),
-            VecStmt::Bin { .. } => {}
+            VecStmt::Bin { .. } | VecStmt::Compare { .. } => {}
         },
         Stmt::FlagSnapshot { flags, .. } => {
             read_flags(flags, written, acc, note);
@@ -9671,7 +9677,7 @@ impl FrameScan {
                     self.note_mem(addr, slots, misuse);
                 }
                 VecStmt::Dup { src, .. } => self.note_reg(src.reg, misuse),
-                VecStmt::Bin { .. } => {}
+                VecStmt::Bin { .. } | VecStmt::Compare { .. } => {}
             },
             Stmt::FpConvert { .. }
             | Stmt::BlockMove { .. }
@@ -10023,7 +10029,7 @@ fn stmt_value_reads(stmt: &Stmt, acc: &mut Vec<Reg>) {
         Stmt::Vector(vec) => match vec {
             VecStmt::Load { addr, .. } | VecStmt::Store { addr, .. } => mem_regs(addr, acc),
             VecStmt::Dup { src, .. } => acc.push(src.reg),
-            VecStmt::Bin { .. } => {}
+            VecStmt::Bin { .. } | VecStmt::Compare { .. } => {}
         },
         Stmt::FlagSnapshot { flags, .. } => acc.extend(flag_operand_regs(flags)),
     }
@@ -10547,7 +10553,7 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
                         push_addr(addr, acc);
                     }
                     VecStmt::Dup { src, .. } => push(src.reg, acc),
-                    VecStmt::Bin { .. } => {}
+                    VecStmt::Bin { .. } | VecStmt::Compare { .. } => {}
                 },
                 Stmt::FlagSnapshot { flags, .. } => push_flags(flags, acc),
                 Stmt::Call { args, .. } => {
@@ -10826,6 +10832,18 @@ fn resolve_block_vec_types(body: &Block) -> BTreeMap<u8, VecArrangement> {
         VecStmt::Dup { dest, arr, .. } => {
             types.entry(*dest).or_insert(*arr);
         }
+        VecStmt::Compare {
+            dest,
+            lhs,
+            rhs,
+            arr,
+        } => {
+            types.entry(*dest).or_insert(*arr);
+            types.entry(*lhs).or_insert(*arr);
+            if let Some(rhs) = rhs {
+                types.entry(*rhs).or_insert(*arr);
+            }
+        }
     });
     types
 }
@@ -10837,7 +10855,7 @@ fn collect_block_vec_arrangements(body: &Block, acc: &mut BTreeSet<VecArrangemen
                 acc.insert(*arrangement);
             }
         }
-        VecStmt::Bin { arr, .. } | VecStmt::Dup { arr, .. } => {
+        VecStmt::Bin { arr, .. } | VecStmt::Dup { arr, .. } | VecStmt::Compare { arr, .. } => {
             acc.insert(*arr);
         }
     });
@@ -11549,6 +11567,13 @@ fn vec_stmt_cstmt(cx: &mut Cx<'_>, vec: &VecStmt) -> CStmt {
                 VecBinOp::Xor => "^",
             };
             let body: String = format!("{} {op_sym} {}", vec_var(*lhs), vec_var(*rhs));
+            assign_cstmt(cx, &vec_var(*dest), &body)
+        }
+        VecStmt::Compare { dest, lhs, rhs, .. } => {
+            let body: String = rhs.as_ref().map_or_else(
+                || format!("{} == 0", vec_var(*lhs)),
+                |rhs: &u8| format!("{} == {}", vec_var(*lhs), vec_var(*rhs)),
+            );
             assign_cstmt(cx, &vec_var(*dest), &body)
         }
         VecStmt::Dup { dest, src, arr } => {
