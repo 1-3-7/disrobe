@@ -857,6 +857,73 @@ fn recover_with_calls_and_image<'image>(
                     return_width = dest.width;
                 }
             }
+            "ror" => {
+                let operands: Vec<&str> = split_operands(&insn.operands);
+                if operands.len() != 3 {
+                    return Err(reject_at(insn, "malformed rotate"));
+                }
+                let dest: RegRef = parse_reg(operands[0])?;
+                let (_, n_src, n_width): (Option<Reg>, Source, Width) =
+                    select_operand(operands[1])?;
+                if dest.width != n_width {
+                    return Err(reject_at(insn, "mixed-width rotate"));
+                }
+                let amount: Source = parse_source(operands[2], dest.width)?;
+                let width_bits: i64 = i64::from(dest.width.bits());
+                let left_amount: RegRef = RegRef {
+                    reg: Reg::A64Tmp2,
+                    width: dest.width,
+                };
+                let left_value: RegRef = RegRef {
+                    reg: Reg::A64Tmp,
+                    width: dest.width,
+                };
+                push_stmts(
+                    &mut items,
+                    base,
+                    index,
+                    vec![
+                        Stmt::Assign {
+                            dest: left_amount,
+                            src: Source::Imm(width_bits),
+                        },
+                        Stmt::BinAssign {
+                            dest: left_amount,
+                            op: BinOp::Sub,
+                            src: amount.clone(),
+                        },
+                        Stmt::Assign {
+                            dest: left_value,
+                            src: n_src.clone(),
+                        },
+                        Stmt::BinAssign {
+                            dest: left_value,
+                            op: BinOp::Shl,
+                            src: Source::Reg(left_amount),
+                        },
+                        Stmt::Assign { dest, src: n_src },
+                        Stmt::BinAssign {
+                            dest,
+                            op: BinOp::Shr,
+                            src: amount,
+                        },
+                        Stmt::BinAssign {
+                            dest,
+                            op: BinOp::Or,
+                            src: Source::Reg(left_value),
+                        },
+                    ],
+                )?;
+                if flags.as_ref().is_some_and(|tracked: &TrackedFlags| {
+                    flags_reference_reg(&tracked.value, Reg::A64Tmp)
+                        || flags_reference_reg(&tracked.value, Reg::A64Tmp2)
+                }) {
+                    flags = None;
+                }
+                if dest.reg == Reg::Rax {
+                    return_width = dest.width;
+                }
+            }
             _ => return Err(reject_at(insn, "unsupported instruction")),
         }
     }
