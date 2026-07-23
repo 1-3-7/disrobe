@@ -77,6 +77,29 @@ fn aarch64_real_clang_vector_compare_registers_recovers_as_elementwise_eq() {
 }
 
 #[test]
+fn aarch64_real_clang_vector_movi_broadcasts_a_word_immediate() {
+    let bytes: [u8; 8] = [0x20, 0x04, 0x00, 0x4f, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("vector movi word");
+    assert!(
+        r.source
+            .contains("{(int32_t)1, (int32_t)1, (int32_t)1, (int32_t)1}"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_clang_vector_movi_broadcasts_a_zero_doubleword() {
+    let bytes: [u8; 8] = [0x00, 0xe4, 0x00, 0x6f, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("vector movi zero");
+    assert!(
+        r.source.contains("{(int64_t)0, (int64_t)0}"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
 fn aarch64_real_clang_vector_and_recovers_as_elementwise_and() {
     let bytes: [u8; 8] = [0x20, 0x1c, 0x20, 0x4e, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("vector and");
