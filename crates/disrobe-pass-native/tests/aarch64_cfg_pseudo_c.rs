@@ -469,6 +469,18 @@ fn aarch64_real_clang_stp_stores_a_vector_register_pair_to_adjacent_offsets() {
 }
 
 #[test]
+fn aarch64_real_clang_scaled_register_index_load_recovers_as_array_access() {
+    let bytes: [u8; 8] = [0x00, 0x78, 0x61, 0xb8, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ldr w0,[x0,x1,lsl #2]");
+    assert!(
+        r.source
+            .contains("*(uint32_t*)(uintptr_t)(r_rax + r_a64_x1 * 4ULL)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
 fn aarch64_real_clang_large_bitmask_immediate_recovers_as_a_reinterpreted_mask() {
     let bytes: [u8; 8] = [0x00, 0xf0, 0x7d, 0x92, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("and x0,x0,#-8 mask");
