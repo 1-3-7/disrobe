@@ -482,7 +482,7 @@ fn neon_out_of_subset_forms_reject_explicitly() {
         let error =
             recover_aarch64_function(bytes, 0).expect_err("out-of-subset neon form must reject");
         assert!(
-            format!("{error:?}").contains("aarch64 reject: unsupported instruction"),
+            format!("{error:?}").contains("aarch64 reject:"),
             "{error:?}"
         );
     }

@@ -683,6 +683,24 @@ enum VecStmt {
         src: u8,
         elem: VecElem,
     },
+    WidenExtend {
+        dest: u8,
+        src: u8,
+        src_elem: VecElem,
+        dest_elem: VecElem,
+        signed: bool,
+        high: bool,
+        shift: u8,
+    },
+    WidenAdd {
+        dest: u8,
+        src1: u8,
+        src2: u8,
+        src_elem: VecElem,
+        dest_elem: VecElem,
+        signed: bool,
+        high: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6920,7 +6938,9 @@ fn scan_stmt_params(
             VecStmt::Bin { .. }
             | VecStmt::Compare { .. }
             | VecStmt::MoveImm { .. }
-            | VecStmt::Reduce { .. } => {}
+            | VecStmt::Reduce { .. }
+            | VecStmt::WidenExtend { .. }
+            | VecStmt::WidenAdd { .. } => {}
         },
         Stmt::FlagSnapshot { flags, .. } => {
             read_flags(flags, written, acc, note);
@@ -9730,7 +9750,9 @@ impl FrameScan {
                 | VecStmt::Compare { .. }
                 | VecStmt::MoveImm { .. }
                 | VecStmt::Reduce { .. }
-                | VecStmt::ExtractToGpr { .. } => {}
+                | VecStmt::ExtractToGpr { .. }
+                | VecStmt::WidenExtend { .. }
+                | VecStmt::WidenAdd { .. } => {}
             },
             Stmt::FpConvert { .. }
             | Stmt::BlockMove { .. }
@@ -10086,7 +10108,9 @@ fn stmt_value_reads(stmt: &Stmt, acc: &mut Vec<Reg>) {
             | VecStmt::Compare { .. }
             | VecStmt::MoveImm { .. }
             | VecStmt::Reduce { .. }
-            | VecStmt::ExtractToGpr { .. } => {}
+            | VecStmt::ExtractToGpr { .. }
+            | VecStmt::WidenExtend { .. }
+            | VecStmt::WidenAdd { .. } => {}
         },
         Stmt::FlagSnapshot { flags, .. } => acc.extend(flag_operand_regs(flags)),
     }
@@ -10614,7 +10638,9 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
                     VecStmt::Bin { .. }
                     | VecStmt::Compare { .. }
                     | VecStmt::MoveImm { .. }
-                    | VecStmt::Reduce { .. } => {}
+                    | VecStmt::Reduce { .. }
+                    | VecStmt::WidenExtend { .. }
+                    | VecStmt::WidenAdd { .. } => {}
                 },
                 Stmt::FlagSnapshot { flags, .. } => push_flags(flags, acc),
                 Stmt::Call { args, .. } => {
@@ -10916,6 +10942,38 @@ fn resolve_block_vec_types(body: &Block) -> BTreeMap<u8, VecArrangement> {
                 .entry(*src)
                 .or_insert_with(|| VecArrangement::whole_register(*elem));
         }
+        VecStmt::WidenExtend {
+            dest,
+            src,
+            src_elem,
+            dest_elem,
+            ..
+        } => {
+            types
+                .entry(*dest)
+                .or_insert_with(|| VecArrangement::whole_register(*dest_elem));
+            types
+                .entry(*src)
+                .or_insert_with(|| VecArrangement::whole_register(*src_elem));
+        }
+        VecStmt::WidenAdd {
+            dest,
+            src1,
+            src2,
+            src_elem,
+            dest_elem,
+            ..
+        } => {
+            types
+                .entry(*dest)
+                .or_insert_with(|| VecArrangement::whole_register(*dest_elem));
+            types
+                .entry(*src1)
+                .or_insert_with(|| VecArrangement::whole_register(*src_elem));
+            types
+                .entry(*src2)
+                .or_insert_with(|| VecArrangement::whole_register(*src_elem));
+        }
     });
     types
 }
@@ -10939,6 +10997,19 @@ fn collect_block_vec_arrangements(body: &Block, acc: &mut BTreeSet<VecArrangemen
         }
         VecStmt::ExtractToGpr { elem, .. } => {
             acc.insert(VecArrangement::whole_register(*elem));
+        }
+        VecStmt::WidenExtend {
+            src_elem,
+            dest_elem,
+            ..
+        }
+        | VecStmt::WidenAdd {
+            src_elem,
+            dest_elem,
+            ..
+        } => {
+            acc.insert(VecArrangement::whole_register(*src_elem));
+            acc.insert(VecArrangement::whole_register(*dest_elem));
         }
     });
 }
@@ -11606,7 +11677,11 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
 }
 
 fn vec_var(reg: u8) -> String {
-    format!("v{reg}")
+    if reg < 32 {
+        format!("v{reg}")
+    } else {
+        format!("vw{}", reg - 32)
+    }
 }
 
 fn vec_resolved_arr(arr: Option<VecArrangement>) -> VecArrangement {
@@ -11703,6 +11778,72 @@ fn reduce_cstmt(
     }
 }
 
+fn widen_lane_read(src: u8, src_elem: VecElem, signed: bool, index: usize) -> String {
+    let src_view: String = VecArrangement::whole_register(src_elem).type_name();
+    let lane: String = format!("(({src_view}){})[{index}]", vec_var(src));
+    if signed {
+        lane
+    } else {
+        format!("({}){lane}", src_elem.c_unsigned_scalar())
+    }
+}
+
+fn widen_extend_cstmt(
+    cx: &mut Cx<'_>,
+    dest: u8,
+    src: u8,
+    src_elem: VecElem,
+    dest_elem: VecElem,
+    signed: bool,
+    high: bool,
+    shift: u8,
+) -> CStmt {
+    let dest_arr: VecArrangement = VecArrangement::whole_register(dest_elem);
+    let lanes: usize = usize::from(dest_arr.lanes);
+    let offset: usize = if high { lanes } else { 0 };
+    let dest_scalar: &str = dest_elem.c_scalar();
+    let terms: Vec<String> = (0..lanes)
+        .map(|index: usize| {
+            let read: String = widen_lane_read(src, src_elem, signed, offset + index);
+            if shift == 0 {
+                format!("({dest_scalar}){read}")
+            } else {
+                format!(
+                    "({dest_scalar})(({}){read} << {shift})",
+                    dest_elem.c_unsigned_scalar()
+                )
+            }
+        })
+        .collect();
+    let init: String = format!("({}){{{}}}", dest_arr.type_name(), terms.join(", "));
+    assign_cstmt(cx, &vec_var(dest), &init)
+}
+
+fn widen_add_cstmt(
+    cx: &mut Cx<'_>,
+    dest: u8,
+    src1: u8,
+    src2: u8,
+    src_elem: VecElem,
+    dest_elem: VecElem,
+    signed: bool,
+    high: bool,
+) -> CStmt {
+    let dest_arr: VecArrangement = VecArrangement::whole_register(dest_elem);
+    let lanes: usize = usize::from(dest_arr.lanes);
+    let offset: usize = if high { lanes } else { 0 };
+    let dest_scalar: &str = dest_elem.c_scalar();
+    let terms: Vec<String> = (0..lanes)
+        .map(|index: usize| {
+            let a: String = widen_lane_read(src1, src_elem, signed, offset + index);
+            let b: String = widen_lane_read(src2, src_elem, signed, offset + index);
+            format!("({dest_scalar}){a} + ({dest_scalar}){b}")
+        })
+        .collect();
+    let init: String = format!("({}){{{}}}", dest_arr.type_name(), terms.join(", "));
+    assign_cstmt(cx, &vec_var(dest), &init)
+}
+
 fn extract_to_gpr_cstmt(cx: &mut Cx<'_>, dest: RegRef, src: u8, elem: VecElem) -> CStmt {
     let view: VecArrangement = VecArrangement::whole_register(elem);
     let bits: String = format!(
@@ -11764,6 +11905,28 @@ fn vec_stmt_cstmt(cx: &mut Cx<'_>, vec: &VecStmt) -> CStmt {
         }
         VecStmt::Reduce { reg, op, src, dest } => reduce_cstmt(cx, *reg, *op, *src, *dest),
         VecStmt::ExtractToGpr { dest, src, elem } => extract_to_gpr_cstmt(cx, *dest, *src, *elem),
+        VecStmt::WidenExtend {
+            dest,
+            src,
+            src_elem,
+            dest_elem,
+            signed,
+            high,
+            shift,
+        } => widen_extend_cstmt(
+            cx, *dest, *src, *src_elem, *dest_elem, *signed, *high, *shift,
+        ),
+        VecStmt::WidenAdd {
+            dest,
+            src1,
+            src2,
+            src_elem,
+            dest_elem,
+            signed,
+            high,
+        } => widen_add_cstmt(
+            cx, *dest, *src1, *src2, *src_elem, *dest_elem, *signed, *high,
+        ),
     }
 }
 
