@@ -45,7 +45,7 @@ fn distributive_cancellation_recovers_x_at_narrow_and_wide() {
     assert!(wide.changed());
     assert_eq!(
         wide.verification,
-        Verification::PolynomialNormalForm(Width::W64),
+        Verification::PolynomialIdentity(Width::W64),
         "wide-width polynomial reduction proves by the mod-2^n normal form, got {:?}",
         wide.verification
     );
@@ -130,7 +130,7 @@ fn degree_three_product_cancels_to_variable_wide() {
     assert!(wide.changed());
     assert_eq!(
         wide.verification,
-        Verification::PolynomialNormalForm(Width::W64)
+        Verification::PolynomialIdentity(Width::W64)
     );
     assert!(eval_points_agree(
         &obfuscated,

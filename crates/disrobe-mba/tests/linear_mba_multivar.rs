@@ -222,7 +222,7 @@ fn affine_like_terms_collapse_over_nonlinear_atom_at_wide_width() {
     let obfuscated: Expr = Expr::add(product.clone(), product.clone());
     let result: Simplification = simplify(&obfuscated, Width::W64);
     assert!(
-        result.changed() && result.verification == Verification::AlgebraicIdentity,
+        result.changed() && result.verification == Verification::PolynomialIdentity(Width::W64),
         "t + t over a nonlinear atom t=x*y must collapse to 2*t by algebraic identity at 64-bit, got {result:?}"
     );
     assert_eq!(
@@ -239,7 +239,10 @@ fn affine_like_terms_cancel_nonlinear_atom_to_zero_at_wide_width() {
     let product: Expr = Expr::mul(var(0), var(1));
     let obfuscated: Expr = Expr::sub(product.clone(), product);
     let result: Simplification = simplify(&obfuscated, Width::W64);
-    assert_eq!(result.verification, Verification::AlgebraicIdentity);
+    assert_eq!(
+        result.verification,
+        Verification::PolynomialIdentity(Width::W64)
+    );
     assert_eq!(result.simplified, Expr::konst(0));
 }
 

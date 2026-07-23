@@ -18,6 +18,7 @@ pub enum Verification {
     ExhaustiveAtWidth(Width),
     LinearLiftedFrom(Width),
     LinearColumnIdentity(Width),
+    PolynomialIdentity(Width),
     AlgebraicIdentity,
     PolynomialNormalForm(Width),
     MixedNormalForm(Width),
@@ -819,7 +820,8 @@ const fn prefer_proof(verified: Verification, fallback: Verification) -> Verific
     match verified {
         Verification::ExhaustiveAtWidth(_)
         | Verification::LinearColumnIdentity(_)
-        | Verification::LinearLiftedFrom(_) => verified,
+        | Verification::LinearLiftedFrom(_)
+        | Verification::PolynomialIdentity(_) => verified,
         #[cfg(feature = "smt-verify")]
         Verification::SmtProvenAtWidth(_) => verified,
         other => {
@@ -859,6 +861,9 @@ fn verify_equivalent(
     #[cfg(feature = "smt-verify")]
     if crate::verify::verify_equivalent(original, candidate, width).is_proven() {
         return Verification::SmtProvenAtWidth(width);
+    }
+    if crate::poly_oracle::polynomial_identity_proves(original, candidate, width) {
+        return Verification::PolynomialIdentity(width);
     }
     Verification::Unverified
 }
@@ -1247,7 +1252,10 @@ mod tests {
             result.changed(),
             "x*y - y*x must collapse to 0 by structural identity even at 64-bit width"
         );
-        assert_eq!(result.verification, Verification::AlgebraicIdentity);
+        assert_eq!(
+            result.verification,
+            Verification::PolynomialIdentity(Width::W64)
+        );
         assert_eq!(result.simplified, Expr::konst(0));
     }
 
@@ -1259,7 +1267,10 @@ mod tests {
         );
         let result: Simplification = simplify(&obfuscated, Width::W64);
         assert!(result.changed());
-        assert_eq!(result.verification, Verification::AlgebraicIdentity);
+        assert_eq!(
+            result.verification,
+            Verification::PolynomialIdentity(Width::W64)
+        );
         assert_eq!(
             result.simplified,
             Expr::mul(Expr::var(0), Expr::var(1)),
