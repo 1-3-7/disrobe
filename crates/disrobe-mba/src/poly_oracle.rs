@@ -136,10 +136,11 @@ fn normalize(expr: &Expr, width: Width, atoms: &mut AtomTable) -> Option<Poly> {
                 return Some(poly_atom(atoms.intern(expr)?));
             };
             let left_poly: Poly = normalize(left, width, atoms)?;
-            let factor: u64 = if *shift >= u64::from(width.bits()) {
+            let amount: u64 = *shift & mask;
+            let factor: u64 = if amount >= u64::from(width.bits()) {
                 0
             } else {
-                (1u64 << *shift) & mask
+                (1u64 << amount) & mask
             };
             Some(scale(&left_poly, factor, mask))
         }
@@ -296,6 +297,18 @@ mod tests {
     }
 
     #[test]
+    fn oversized_constant_shift_uses_the_width_masked_amount() {
+        let atom: Expr = Expr::mem(var(0), Width::W8);
+        let shifted: Expr = Expr::shl(atom.clone(), Expr::konst(256));
+        assert!(!polynomial_identity_proves(
+            &shifted,
+            &Expr::konst(0),
+            Width::W8
+        ));
+        assert!(polynomial_identity_proves(&shifted, &atom, Width::W8));
+    }
+
+    #[test]
     fn rejects_a_non_equivalent_product() {
         let original: Expr = Expr::mul(var(0), var(1));
         let candidate: Expr = Expr::add(var(0), var(1));
@@ -403,8 +416,8 @@ mod tests {
             5 => Expr::or(left, right),
             6 => Expr::neg(left),
             7 => Expr::not(left),
-            8 => Expr::shl(left, Expr::konst(xorshift(state) % 5)),
-            _ => Expr::shr(left, Expr::konst(xorshift(state) % 5)),
+            8 => Expr::shl(left, Expr::konst(xorshift(state) % 300)),
+            _ => Expr::shr(left, Expr::konst(xorshift(state) % 300)),
         }
     }
 
