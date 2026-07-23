@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
+use disrobe_bytes::ByteReader;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::pe::{ClrHeader, PeImage, Reader};
+use crate::pe::{ClrHeader, PeImage};
 
 pub const METADATA_SIGNATURE: u32 = 0x424A_5342;
 
@@ -98,24 +99,24 @@ pub fn parse_metadata_root(image: &[u8], pe: &PeImage, clr: &ClrHeader) -> Resul
     } else {
         pe.slice_at_rva(image, clr.metadata.rva, clr.metadata.size as usize)?
     };
-    let mut r: Reader<'_> = Reader::new(slice);
-    let signature: u32 = r.u32_le()?;
+    let mut r: ByteReader<'_> = ByteReader::new(slice);
+    let signature: u32 = r.read_u32_le()?;
     if signature != METADATA_SIGNATURE {
         return Err(Error::BadMetadataSignature(signature));
     }
-    let major: u16 = r.u16_le()?;
-    let minor: u16 = r.u16_le()?;
-    let _reserved: u32 = r.u32_le()?;
-    let length: u32 = r.u32_le()?;
-    let raw: &[u8] = r.take(length as usize)?;
+    let major: u16 = r.read_u16_le()?;
+    let minor: u16 = r.read_u16_le()?;
+    let _reserved: u32 = r.read_u32_le()?;
+    let length: u32 = r.read_u32_le()?;
+    let raw: &[u8] = r.read_bytes(length as usize)?;
     let version: String =
         String::from_utf8_lossy(raw.split(|b: &u8| *b == 0).next().unwrap_or(raw)).into_owned();
-    let _flags_padding: u16 = r.u16_le()?;
-    let stream_count: u16 = r.u16_le()?;
+    let _flags_padding: u16 = r.read_u16_le()?;
+    let stream_count: u16 = r.read_u16_le()?;
     let mut streams: BTreeMap<String, StreamHeader> = BTreeMap::new();
     for _ in 0..stream_count {
-        let offset: u32 = r.u32_le()?;
-        let size: u32 = r.u32_le()?;
+        let offset: u32 = r.read_u32_le()?;
+        let size: u32 = r.read_u32_le()?;
         let name: String = read_aligned_cstring(&mut r)?;
         streams.insert(name, StreamHeader { offset, size });
     }
@@ -129,11 +130,11 @@ pub fn parse_metadata_root(image: &[u8], pe: &PeImage, clr: &ClrHeader) -> Resul
     })
 }
 
-fn read_aligned_cstring(r: &mut Reader<'_>) -> Result<String> {
-    let start: usize = r.pos;
+fn read_aligned_cstring(r: &mut ByteReader<'_>) -> Result<String> {
+    let start: usize = r.position();
     let mut bytes: Vec<u8> = Vec::with_capacity(16);
     loop {
-        let b: u8 = r.u8()?;
+        let b: u8 = r.read_u8()?;
         if b == 0 {
             break;
         }
@@ -144,7 +145,7 @@ fn read_aligned_cstring(r: &mut Reader<'_>) -> Result<String> {
             ));
         }
     }
-    let length: usize = r.pos - start;
+    let length: usize = r.position() - start;
     let padding: usize = (4 - (length % 4)) % 4;
     r.skip(padding)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
@@ -168,18 +169,18 @@ pub fn parse_table_stream(metadata_bytes: &[u8], header: StreamHeader) -> Result
             had: metadata_bytes.len().saturating_sub(off),
         });
     }
-    let mut r: Reader<'_> = Reader::new(&metadata_bytes[off..end]);
-    let _reserved: u32 = r.u32_le()?;
-    let _major: u8 = r.u8()?;
-    let _minor: u8 = r.u8()?;
-    let heap_sizes: u8 = r.u8()?;
-    let _padding: u8 = r.u8()?;
-    let valid: u64 = r.u64_le()?;
-    let sorted: u64 = r.u64_le()?;
+    let mut r: ByteReader<'_> = ByteReader::new(&metadata_bytes[off..end]);
+    let _reserved: u32 = r.read_u32_le()?;
+    let _major: u8 = r.read_u8()?;
+    let _minor: u8 = r.read_u8()?;
+    let heap_sizes: u8 = r.read_u8()?;
+    let _padding: u8 = r.read_u8()?;
+    let valid: u64 = r.read_u64_le()?;
+    let sorted: u64 = r.read_u64_le()?;
     let mut row_counts: BTreeMap<u8, u32> = BTreeMap::new();
     for i in 0u8..64u8 {
         if (valid >> i) & 1 == 1 {
-            let count: u32 = r.u32_le()?;
+            let count: u32 = r.read_u32_le()?;
             row_counts.insert(i, count);
         }
     }

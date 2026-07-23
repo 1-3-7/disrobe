@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use disrobe_bytes::ByteReader;
+
 pub const KOI_HEADER_MAGIC: u32 = 0x6873_6966;
 
 #[derive(Debug, Clone)]
@@ -78,64 +80,58 @@ pub enum KoiStreamError {
 }
 
 struct Cursor<'a> {
-    data: &'a [u8],
-    pos: usize,
+    reader: ByteReader<'a>,
 }
 
 impl<'a> Cursor<'a> {
     const fn new(data: &'a [u8]) -> Self {
-        Self { data, pos: 0 }
+        Self {
+            reader: ByteReader::new(data),
+        }
     }
 
     fn u8(&mut self) -> Result<u8, KoiStreamError> {
-        let b: u8 = *self.data.get(self.pos).ok_or(KoiStreamError::Truncated)?;
-        self.pos += 1;
-        Ok(b)
+        self.reader.read_u8().map_err(|_| KoiStreamError::Truncated)
     }
 
     const fn remaining(&self) -> usize {
-        self.data.len().saturating_sub(self.pos)
+        self.reader.remaining()
     }
 
     fn u32_le(&mut self) -> Result<u32, KoiStreamError> {
-        let end: usize = self.pos.checked_add(4).ok_or(KoiStreamError::Truncated)?;
-        let slice: &[u8] = self
-            .data
-            .get(self.pos..end)
-            .ok_or(KoiStreamError::Truncated)?;
-        let value: u32 = u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]);
-        self.pos = end;
-        Ok(value)
+        self.reader
+            .read_u32_le()
+            .map_err(|_| KoiStreamError::Truncated)
     }
 
     fn i32_le(&mut self) -> Result<i32, KoiStreamError> {
-        Ok(self.u32_le()?.cast_signed())
+        self.reader
+            .read_i32_le()
+            .map_err(|_| KoiStreamError::Truncated)
     }
 
     fn compressed_uint(&mut self) -> Result<u32, KoiStreamError> {
-        let mut value: u32 = 0;
-        let mut shift: u32 = 0;
-        loop {
-            let b: u8 = self.u8()?;
-            value |= u32::from(b & 0x7F) << shift;
-            if b & 0x80 == 0 {
-                break;
-            }
-            shift += 7;
-            if shift > 28 {
-                return Err(KoiStreamError::Truncated);
-            }
+        let start: usize = self.reader.position();
+        let value: u64 = self
+            .reader
+            .read_uleb128()
+            .map_err(|_| KoiStreamError::Truncated)?;
+        let consumed: usize = self.reader.position().saturating_sub(start);
+        if consumed > 5 {
+            return Err(KoiStreamError::Truncated);
         }
-        Ok(value)
+        u32::try_from(value).map_err(|_| KoiStreamError::Truncated)
     }
 
     fn utf16(&mut self, char_count: u32) -> Result<String, KoiStreamError> {
         let mut units: Vec<u16> =
             Vec::with_capacity(bounded_capacity(char_count, self.remaining(), 2));
         for _ in 0..char_count {
-            let lo: u8 = self.u8()?;
-            let hi: u8 = self.u8()?;
-            units.push(u16::from_le_bytes([lo, hi]));
+            let unit: u16 = self
+                .reader
+                .read_u16_le()
+                .map_err(|_| KoiStreamError::Truncated)?;
+            units.push(unit);
         }
         Ok(String::from_utf16_lossy(&units))
     }

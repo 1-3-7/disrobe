@@ -17,6 +17,7 @@ workspace = true
 [dependencies]
 disrobe-core = { workspace = true }
 disrobe-binfmt = { workspace = true }
+disrobe-bytes = { workspace = true }
 disrobe-pass-native = { workspace = true }
 object = { workspace = true }
 miette = { workspace = true }

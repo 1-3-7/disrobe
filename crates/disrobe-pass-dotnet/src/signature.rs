@@ -1,3 +1,4 @@
+use disrobe_bytes::ByteReader;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -276,8 +277,7 @@ const MAX_SIG_DEPTH: usize = 256;
 const MAX_SIGNATURE_NODES: usize = 4096;
 
 struct SigReader<'a> {
-    bytes: &'a [u8],
-    pos: usize,
+    reader: ByteReader<'a>,
     depth: usize,
     nodes: usize,
     reject_custom_modifiers: bool,
@@ -287,8 +287,7 @@ impl<'a> SigReader<'a> {
     #[inline]
     const fn new(bytes: &'a [u8]) -> Self {
         Self {
-            bytes,
-            pos: 0,
+            reader: ByteReader::new(bytes),
             depth: 0,
             nodes: 0,
             reject_custom_modifiers: false,
@@ -298,8 +297,7 @@ impl<'a> SigReader<'a> {
     #[inline]
     const fn new_strict(bytes: &'a [u8]) -> Self {
         Self {
-            bytes,
-            pos: 0,
+            reader: ByteReader::new(bytes),
             depth: 0,
             nodes: 0,
             reject_custom_modifiers: true,
@@ -308,22 +306,20 @@ impl<'a> SigReader<'a> {
 
     #[inline]
     fn byte(&mut self) -> Result<u8> {
-        let b: u8 = *self
-            .bytes
-            .get(self.pos)
-            .ok_or(Error::BadCompressedUint(self.pos))?;
-        self.pos += 1;
-        Ok(b)
+        let position: usize = self.reader.position();
+        self.reader
+            .read_u8()
+            .map_err(|_| Error::BadCompressedUint(position))
     }
 
     #[inline]
     fn peek(&self) -> Option<u8> {
-        self.bytes.get(self.pos).copied()
+        self.reader.peek_u8().ok()
     }
 
     #[inline]
     const fn remaining(&self) -> usize {
-        self.bytes.len().saturating_sub(self.pos)
+        self.reader.remaining()
     }
 
     fn signature_capacity(&self, count: u32) -> Result<usize> {
@@ -346,9 +342,16 @@ impl<'a> SigReader<'a> {
 
     #[inline]
     fn compressed(&mut self) -> Result<u32> {
+        let position: usize = self.reader.position();
+        let bytes: &[u8] = self
+            .reader
+            .peek_bytes(self.reader.remaining())
+            .map_err(|_| Error::BadCompressedUint(position))?;
         let (v, n): (u32, usize) =
-            decompress_uint(&self.bytes[self.pos..]).ok_or(Error::BadCompressedUint(self.pos))?;
-        self.pos += n;
+            decompress_uint(bytes).ok_or(Error::BadCompressedUint(position))?;
+        self.reader
+            .skip(n)
+            .map_err(|_| Error::BadCompressedUint(position))?;
         Ok(v)
     }
 
@@ -357,13 +360,13 @@ impl<'a> SigReader<'a> {
         let tag: u32 = coded & 0x03;
         let rid: u32 = coded >> 2;
         if rid == 0 || rid > 0x00FF_FFFF {
-            return Err(Error::BadCompressedUint(self.pos));
+            return Err(Error::BadCompressedUint(self.reader.position()));
         }
         let table: u32 = match tag {
             0 => 0x02,
             1 => 0x01,
             2 => 0x1B,
-            _ => return Err(Error::BadCompressedUint(self.pos)),
+            _ => return Err(Error::BadCompressedUint(self.reader.position())),
         };
         Ok((table << 24) | rid)
     }
@@ -386,13 +389,13 @@ impl<'a> SigReader<'a> {
             match self.peek() {
                 Some(et::CMOD_REQD | et::CMOD_OPT) => {
                     if self.reject_custom_modifiers {
-                        return Err(Error::BadCompressedUint(self.pos));
+                        return Err(Error::BadCompressedUint(self.reader.position()));
                     }
-                    self.pos += 1;
+                    let _: u8 = self.byte()?;
                     let _ = self.type_def_or_ref()?;
                 }
                 Some(et::PINNED) => {
-                    self.pos += 1;
+                    let _: u8 = self.byte()?;
                     let inner: TypeSig = self.type_sig()?;
                     return Ok(TypeSig::Pinned(Box::new(inner)));
                 }
@@ -466,7 +469,9 @@ impl<'a> SigReader<'a> {
                 TypeSig::FnPtr
             }
             _ if self.reject_custom_modifiers => {
-                return Err(Error::BadCompressedUint(self.pos.saturating_sub(1)));
+                return Err(Error::BadCompressedUint(
+                    self.reader.position().saturating_sub(1),
+                ));
             }
             _ => TypeSig::Unknown,
         })
@@ -491,7 +496,7 @@ impl<'a> SigReader<'a> {
         let mut params: Vec<TypeSig> = Vec::with_capacity(capacity);
         for _ in 0..param_count {
             if self.peek().is_none() {
-                return Err(Error::BadCompressedUint(self.pos));
+                return Err(Error::BadCompressedUint(self.reader.position()));
             }
             params.push(self.type_sig()?);
         }
@@ -509,7 +514,7 @@ impl<'a> SigReader<'a> {
 fn parse_method_sig_with_reader(mut reader: SigReader<'_>) -> Result<MethodSig> {
     let signature: MethodSig = reader.parse_method_inner()?;
     if reader.remaining() != 0 {
-        return Err(Error::BadCompressedUint(reader.pos));
+        return Err(Error::BadCompressedUint(reader.reader.position()));
     }
     Ok(signature)
 }
@@ -538,12 +543,12 @@ fn parse_method_spec_sig_with_reader(mut r: SigReader<'_>) -> Result<Vec<TypeSig
     let mut args: Vec<TypeSig> = Vec::with_capacity(capacity);
     for _ in 0..count {
         if r.peek().is_none() {
-            return Err(Error::BadCompressedUint(r.pos));
+            return Err(Error::BadCompressedUint(r.reader.position()));
         }
         args.push(r.type_sig()?);
     }
     if r.remaining() != 0 {
-        return Err(Error::BadCompressedUint(r.pos));
+        return Err(Error::BadCompressedUint(r.reader.position()));
     }
     Ok(args)
 }
@@ -563,7 +568,7 @@ fn parse_field_sig_with_reader(mut r: SigReader<'_>) -> Result<TypeSig> {
     }
     let signature: TypeSig = r.type_sig()?;
     if r.remaining() != 0 {
-        return Err(Error::BadCompressedUint(r.pos));
+        return Err(Error::BadCompressedUint(r.reader.position()));
     }
     Ok(signature)
 }
@@ -586,25 +591,27 @@ fn parse_local_sig_with_reader(mut r: SigReader<'_>) -> Result<Vec<TypeSig>> {
     let mut locals: Vec<TypeSig> = Vec::with_capacity(capacity);
     for _ in 0..count {
         if r.peek().is_none() {
-            return Err(Error::BadCompressedUint(r.pos));
+            return Err(Error::BadCompressedUint(r.reader.position()));
         }
         if r.peek() == Some(element_type::TYPEDBYREF) {
             r.consume_node()?;
             let marker: u8 = r.byte()?;
             if marker != element_type::TYPEDBYREF {
-                return Err(Error::BadCompressedUint(r.pos.saturating_sub(1)));
+                return Err(Error::BadCompressedUint(
+                    r.reader.position().saturating_sub(1),
+                ));
             }
             locals.push(TypeSig::TypedByRef);
             continue;
         }
         let local: TypeSig = r.type_sig()?;
         if r.reject_custom_modifiers && !valid_strict_local_type(&local) {
-            return Err(Error::BadCompressedUint(r.pos));
+            return Err(Error::BadCompressedUint(r.reader.position()));
         }
         locals.push(local);
     }
     if r.remaining() != 0 {
-        return Err(Error::BadCompressedUint(r.pos));
+        return Err(Error::BadCompressedUint(r.reader.position()));
     }
     Ok(locals)
 }
