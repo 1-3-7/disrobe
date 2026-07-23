@@ -16,6 +16,7 @@ const MAX_INSTRUCTIONS: usize = 4096;
 const ITEM_STRIDE: u64 = 16;
 const MAX_FRAME_BYTES: i64 = 1 << 20;
 const MAX_SWITCH_CASES: usize = 4096;
+const MAX_SWITCH_TABLE_BYTES: usize = MAX_SWITCH_CASES * 8;
 const MAX_SWITCH_SLICE_INSTRUCTIONS: usize = 16;
 
 const CALL_ARG_ORDER: [Reg; 16] = [
@@ -63,7 +64,7 @@ struct TrackedFlags {
 
 struct ImageContext<'resolver, 'image> {
     image: &'resolver dyn Fn(u64) -> Option<&'image [u8]>,
-    _relocations: &'resolver dyn Fn(u64) -> Option<u64>,
+    relocations: &'resolver dyn Fn(u64) -> Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -75,7 +76,53 @@ struct SwitchDispatch {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum RelativeByteSwitchInsn {
+enum RelativeLoadKind {
+    ByteUnsigned,
+    ByteSigned,
+    HalfwordUnsigned,
+    HalfwordSigned,
+    WordSigned,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SwitchAddExtend {
+    ByteUnsigned,
+    ByteSigned,
+    HalfwordUnsigned,
+    HalfwordSigned,
+    WordUnsigned,
+    WordSigned,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SwitchTableEncoding {
+    Relative(RelativeLoadKind),
+    Absolute64,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SwitchTargetMode {
+    Relative {
+        anchor: u64,
+        element_size: usize,
+        signed: bool,
+        scale: u8,
+    },
+    Absolute64,
+}
+
+#[derive(Debug)]
+struct SwitchSetup {
+    table_base: u8,
+    index: u8,
+    table_va: u64,
+    target_mode: SwitchTargetMode,
+    relative_aliases: Option<(u8, u8)>,
+    required_indices: BTreeSet<usize>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SwitchInsn {
     Other,
     Nop,
     CmpImmediate {
@@ -98,39 +145,89 @@ enum RelativeByteSwitchInsn {
         lhs: u8,
         immediate: u16,
     },
-    LoadByteIndexed {
+    IndexedLoad {
         dest: u8,
         base: u8,
         index: u8,
+        encoding: SwitchTableEncoding,
     },
     Adr {
         dest: u8,
         target: u64,
     },
-    AddSignedByteScaled {
+    AddExtended {
         dest: u8,
         anchor: u8,
         offset: u8,
+        extension: SwitchAddExtend,
+        scale: u8,
     },
     IndirectBranch {
         target: u8,
     },
-    SubImmediate {
+    SelectorAdjustment {
         dest: u8,
         source: u8,
-        immediate: u16,
+        case_minimum: i64,
     },
 }
 
-impl RelativeByteSwitchInsn {
+impl RelativeLoadKind {
+    fn resolve(self, extension: SwitchAddExtend) -> Option<(usize, bool)> {
+        match self {
+            Self::ByteUnsigned => match extension {
+                SwitchAddExtend::ByteUnsigned => Some((1, false)),
+                SwitchAddExtend::ByteSigned => Some((1, true)),
+                SwitchAddExtend::HalfwordUnsigned
+                | SwitchAddExtend::HalfwordSigned
+                | SwitchAddExtend::WordUnsigned
+                | SwitchAddExtend::WordSigned => None,
+            },
+            Self::ByteSigned => match extension {
+                SwitchAddExtend::ByteSigned => Some((1, true)),
+                SwitchAddExtend::ByteUnsigned
+                | SwitchAddExtend::HalfwordUnsigned
+                | SwitchAddExtend::HalfwordSigned
+                | SwitchAddExtend::WordUnsigned
+                | SwitchAddExtend::WordSigned => None,
+            },
+            Self::HalfwordUnsigned => match extension {
+                SwitchAddExtend::HalfwordUnsigned => Some((2, false)),
+                SwitchAddExtend::HalfwordSigned => Some((2, true)),
+                SwitchAddExtend::ByteUnsigned
+                | SwitchAddExtend::ByteSigned
+                | SwitchAddExtend::WordUnsigned
+                | SwitchAddExtend::WordSigned => None,
+            },
+            Self::HalfwordSigned => match extension {
+                SwitchAddExtend::HalfwordSigned => Some((2, true)),
+                SwitchAddExtend::ByteUnsigned
+                | SwitchAddExtend::ByteSigned
+                | SwitchAddExtend::HalfwordUnsigned
+                | SwitchAddExtend::WordUnsigned
+                | SwitchAddExtend::WordSigned => None,
+            },
+            Self::WordSigned => match extension {
+                SwitchAddExtend::WordSigned => Some((4, true)),
+                SwitchAddExtend::ByteUnsigned
+                | SwitchAddExtend::ByteSigned
+                | SwitchAddExtend::HalfwordUnsigned
+                | SwitchAddExtend::HalfwordSigned
+                | SwitchAddExtend::WordUnsigned => None,
+            },
+        }
+    }
+}
+
+impl SwitchInsn {
     fn defines(self, register: u8) -> bool {
         match self {
             Self::Adrp { dest, .. }
             | Self::AddImmediate { dest, .. }
-            | Self::LoadByteIndexed { dest, .. }
+            | Self::IndexedLoad { dest, .. }
             | Self::Adr { dest, .. }
-            | Self::AddSignedByteScaled { dest, .. }
-            | Self::SubImmediate { dest, .. } => dest == register,
+            | Self::AddExtended { dest, .. }
+            | Self::SelectorAdjustment { dest, .. } => dest == register,
             Self::Other
             | Self::Nop
             | Self::CmpImmediate { .. }
@@ -207,12 +304,9 @@ fn recover_with_calls_and_image<'image>(
     if insns.is_empty() || insns.len() > MAX_INSTRUCTIONS {
         return Err(reject("instruction count is outside the bounded lift"));
     }
-    let image_context: ImageContext<'_, 'image> = ImageContext {
-        image,
-        _relocations: relocations,
-    };
+    let image_context: ImageContext<'_, 'image> = ImageContext { image, relocations };
     let switches: BTreeMap<usize, SwitchDispatch> =
-        recover_relative_byte_switches(&insns, base, machine_code.len(), &image_context);
+        recover_aarch64_switches(&insns, base, machine_code.len(), &image_context);
     let mut ignored_instructions: BTreeSet<usize> = BTreeSet::new();
     for dispatch in switches.values() {
         ignored_instructions.extend(dispatch.ignored_instructions.iter().copied());
@@ -454,20 +548,17 @@ fn recover_with_calls_and_image<'image>(
     )
 }
 
-fn recover_relative_byte_switches(
+fn recover_aarch64_switches(
     insns: &[DisasmInsn],
     base: u64,
     machine_code_len: usize,
     image: &ImageContext<'_, '_>,
 ) -> BTreeMap<usize, SwitchDispatch> {
-    let decoded: Vec<RelativeByteSwitchInsn> = insns
-        .iter()
-        .map(decode_relative_byte_switch_instruction)
-        .collect();
+    let decoded: Vec<SwitchInsn> = insns.iter().map(decode_switch_instruction).collect();
     let mut switches: BTreeMap<usize, SwitchDispatch> = BTreeMap::new();
     for index in 0..decoded.len() {
         let Some(dispatch): Option<SwitchDispatch> =
-            recover_relative_byte_switch(&decoded, insns, base, machine_code_len, index, image)
+            recover_aarch64_switch(&decoded, insns, base, machine_code_len, index, image)
         else {
             continue;
         };
@@ -476,138 +567,170 @@ fn recover_relative_byte_switches(
     switches
 }
 
-fn recover_relative_byte_switch(
-    decoded: &[RelativeByteSwitchInsn],
+fn recover_aarch64_switch(
+    decoded: &[SwitchInsn],
     insns: &[DisasmInsn],
     base: u64,
     machine_code_len: usize,
     branch_index: usize,
     image: &ImageContext<'_, '_>,
 ) -> Option<SwitchDispatch> {
-    let RelativeByteSwitchInsn::IndirectBranch { target } = *decoded.get(branch_index)? else {
+    let SwitchInsn::IndirectBranch { target } = *decoded.get(branch_index)? else {
         return None;
     };
-    let (target_add_index, target_add): (usize, RelativeByteSwitchInsn) =
+    let (target_definition_index, target_definition): (usize, SwitchInsn) =
         single_definition(decoded, branch_index, target)?;
-    let RelativeByteSwitchInsn::AddSignedByteScaled {
-        dest,
-        anchor,
-        offset,
-    } = target_add
-    else {
-        return None;
-    };
-    if dest != target {
-        return None;
-    }
-    let (offset_load_index, offset_load): (usize, RelativeByteSwitchInsn) =
-        single_definition(decoded, target_add_index, offset)?;
-    let RelativeByteSwitchInsn::LoadByteIndexed {
-        dest: load_dest,
-        base: table_base,
-        index,
-    } = offset_load
-    else {
-        return None;
-    };
-    if load_dest != offset {
-        return None;
-    }
-    if target == index || anchor == index || offset == index || table_base == index {
-        return None;
-    }
-    let (anchor_definition_index, anchor_definition): (usize, RelativeByteSwitchInsn) =
-        single_definition(decoded, target_add_index, anchor)?;
-    let (table_add_index, table_add): (usize, RelativeByteSwitchInsn) =
-        single_definition(decoded, offset_load_index, table_base)?;
-    let RelativeByteSwitchInsn::AddImmediate {
-        dest: table_add_dest,
-        lhs: table_page,
-        immediate,
-    } = table_add
-    else {
-        return None;
-    };
-    if table_add_dest != table_base || table_page != table_base {
-        return None;
-    }
-    if table_page == index {
-        return None;
-    }
-    let (table_page_index, table_page_definition): (usize, RelativeByteSwitchInsn) =
-        single_definition(decoded, table_add_index, table_page)?;
-    let RelativeByteSwitchInsn::Adrp {
-        dest: table_page_dest,
-        target: table_page_va,
-    } = table_page_definition
-    else {
-        return None;
-    };
-    if table_page_dest != table_page {
-        return None;
-    }
-    let table_va: u64 = table_page_va.checked_add(u64::from(immediate))?;
-    let (anchor_index, anchor_va): (usize, u64) = match anchor_definition {
-        RelativeByteSwitchInsn::Adr {
-            dest: anchor_dest,
-            target: anchor_va,
-        } if anchor_dest == anchor => (anchor_definition_index, anchor_va),
-        RelativeByteSwitchInsn::AddImmediate { dest, .. }
-            if anchor == table_base
-                && dest == table_base
-                && anchor_definition_index == table_add_index =>
-        {
-            (table_add_index, table_va)
+    let setup: SwitchSetup = match target_definition {
+        SwitchInsn::AddExtended {
+            dest,
+            anchor,
+            offset,
+            extension,
+            scale,
+        } if dest == target => {
+            let (offset_load_index, offset_load): (usize, SwitchInsn) =
+                single_definition(decoded, target_definition_index, offset)?;
+            let SwitchInsn::IndexedLoad {
+                dest: load_dest,
+                base: table_base,
+                index,
+                encoding: SwitchTableEncoding::Relative(load_kind),
+            } = offset_load
+            else {
+                return None;
+            };
+            if load_dest != offset
+                || target == index
+                || anchor == index
+                || offset == index
+                || table_base == index
+            {
+                return None;
+            }
+            let (element_size, signed): (usize, bool) = load_kind.resolve(extension)?;
+            let (anchor_definition_index, anchor_definition): (usize, SwitchInsn) =
+                single_definition(decoded, target_definition_index, anchor)?;
+            let (table_page_index, table_add_index, table_va): (usize, usize, u64) =
+                switch_table_address(decoded, offset_load_index, table_base)?;
+            let (anchor_index, anchor_va): (usize, u64) = match anchor_definition {
+                SwitchInsn::Adr {
+                    dest: anchor_dest,
+                    target: anchor_va,
+                } if anchor_dest == anchor => (anchor_definition_index, anchor_va),
+                SwitchInsn::AddImmediate { dest, .. }
+                    if anchor == table_base
+                        && dest == table_base
+                        && anchor_definition_index == table_add_index =>
+                {
+                    (table_add_index, table_va)
+                }
+                SwitchInsn::Other
+                | SwitchInsn::Nop
+                | SwitchInsn::CmpImmediate { .. }
+                | SwitchInsn::ConditionalBranch { .. }
+                | SwitchInsn::DirectBranch { .. }
+                | SwitchInsn::Adrp { .. }
+                | SwitchInsn::Adr { .. }
+                | SwitchInsn::IndexedLoad { .. }
+                | SwitchInsn::AddExtended { .. }
+                | SwitchInsn::IndirectBranch { .. }
+                | SwitchInsn::SelectorAdjustment { .. }
+                | SwitchInsn::AddImmediate { .. } => return None,
+            };
+            let required: BTreeSet<usize> = BTreeSet::from([
+                table_page_index,
+                table_add_index,
+                offset_load_index,
+                anchor_index,
+                target_definition_index,
+            ]);
+            SwitchSetup {
+                table_base,
+                index,
+                table_va,
+                target_mode: SwitchTargetMode::Relative {
+                    anchor: anchor_va,
+                    element_size,
+                    signed,
+                    scale,
+                },
+                relative_aliases: Some((anchor, offset)),
+                required_indices: required,
+            }
         }
-        RelativeByteSwitchInsn::Other
-        | RelativeByteSwitchInsn::Nop
-        | RelativeByteSwitchInsn::CmpImmediate { .. }
-        | RelativeByteSwitchInsn::ConditionalBranch { .. }
-        | RelativeByteSwitchInsn::DirectBranch { .. }
-        | RelativeByteSwitchInsn::Adrp { .. }
-        | RelativeByteSwitchInsn::Adr { .. }
-        | RelativeByteSwitchInsn::LoadByteIndexed { .. }
-        | RelativeByteSwitchInsn::AddSignedByteScaled { .. }
-        | RelativeByteSwitchInsn::IndirectBranch { .. }
-        | RelativeByteSwitchInsn::SubImmediate { .. }
-        | RelativeByteSwitchInsn::AddImmediate { .. } => return None,
+        SwitchInsn::IndexedLoad {
+            dest,
+            base: table_base,
+            index,
+            encoding: SwitchTableEncoding::Absolute64,
+        } if dest == target => {
+            if target == index || table_base == index {
+                return None;
+            }
+            let (table_page_index, table_add_index, table_va): (usize, usize, u64) =
+                switch_table_address(decoded, target_definition_index, table_base)?;
+            let required: BTreeSet<usize> =
+                BTreeSet::from([table_page_index, table_add_index, target_definition_index]);
+            SwitchSetup {
+                table_base,
+                index,
+                table_va,
+                target_mode: SwitchTargetMode::Absolute64,
+                relative_aliases: None,
+                required_indices: required,
+            }
+        }
+        SwitchInsn::Other
+        | SwitchInsn::Nop
+        | SwitchInsn::CmpImmediate { .. }
+        | SwitchInsn::ConditionalBranch { .. }
+        | SwitchInsn::DirectBranch { .. }
+        | SwitchInsn::Adrp { .. }
+        | SwitchInsn::AddImmediate { .. }
+        | SwitchInsn::IndexedLoad { .. }
+        | SwitchInsn::Adr { .. }
+        | SwitchInsn::AddExtended { .. }
+        | SwitchInsn::IndirectBranch { .. }
+        | SwitchInsn::SelectorAdjustment { .. } => return None,
     };
+    let SwitchSetup {
+        table_base,
+        index,
+        table_va,
+        target_mode,
+        relative_aliases,
+        mut required_indices,
+    } = setup;
     let (guard_index, limit, default_va, exclusive): (usize, u16, u64, bool) =
         matching_switch_guard(decoded, branch_index, index)?;
+    if !switch_guard_target_is_outside_dispatch(insns, guard_index, branch_index, default_va) {
+        return None;
+    }
     let cmp_index: usize = guard_index.checked_sub(1)?;
     let (case_min, disc, selector_index, normalizer_index): (i64, RegRef, u8, Option<usize>) =
         switch_case_minimum(decoded, cmp_index, index)?;
     if target == selector_index
-        || anchor == selector_index
-        || offset == selector_index
         || table_base == selector_index
-        || table_page == selector_index
+        || relative_aliases.is_some_and(|(anchor, offset): (u8, u8)| {
+            anchor == selector_index || offset == selector_index
+        })
+        || matches!(target_mode, SwitchTargetMode::Absolute64) && normalizer_index.is_none()
     {
         return None;
     }
-    let mut required_indices: BTreeSet<usize> = BTreeSet::from([
-        cmp_index,
-        guard_index,
-        table_page_index,
-        table_add_index,
-        offset_load_index,
-        anchor_index,
-        target_add_index,
-        branch_index,
-    ]);
+    if required_indices
+        .iter()
+        .any(|instruction: &usize| *instruction <= guard_index)
+    {
+        return None;
+    }
+    required_indices.insert(cmp_index);
+    required_indices.insert(guard_index);
+    required_indices.insert(branch_index);
     if let Some(normalizer_index) = normalizer_index {
         required_indices.insert(normalizer_index);
     }
-    if [
-        table_page_index,
-        table_add_index,
-        offset_load_index,
-        anchor_index,
-        target_add_index,
-    ]
-    .into_iter()
-    .any(|instruction: usize| instruction <= guard_index)
-        || !switch_slice_is_safe(decoded, guard_index, branch_index, &required_indices)
+    if !switch_slice_is_safe(decoded, guard_index, branch_index, &required_indices)
         || has_alternate_dispatch_entry(decoded, insns, guard_index, branch_index)
     {
         return None;
@@ -620,27 +743,18 @@ fn recover_relative_byte_switch(
     if count == 0 || count > MAX_SWITCH_CASES {
         return None;
     }
-    let table_bytes: usize = count.checked_mul(1)?;
-    let table_end: u64 = table_va.checked_add(u64::try_from(table_bytes).ok()?)?;
-    if table_end < table_va {
-        return None;
-    }
-    let readable: &[u8] = (image.image)(table_va)?;
-    if readable.len() < table_bytes {
-        return None;
-    }
-    let function_end: u64 = base.checked_add(u64::try_from(machine_code_len).ok()?)?;
-    if !valid_switch_target(insns, base, function_end, default_va) {
-        return None;
-    }
+    let targets: Vec<u64> = resolve_switch_targets(
+        image,
+        insns,
+        base,
+        machine_code_len,
+        table_va,
+        count,
+        default_va,
+        target_mode,
+    )?;
     let mut cases: Vec<(i64, u64)> = Vec::with_capacity(count);
-    for (entry, byte) in readable.iter().copied().take(table_bytes).enumerate() {
-        let offset: i64 = i64::from(i8::from_ne_bytes([byte]));
-        let displacement: i64 = offset.checked_mul(4)?;
-        let target_va: u64 = anchor_va.checked_add_signed(displacement)?;
-        if !valid_switch_target(insns, base, function_end, target_va) {
-            return None;
-        }
+    for (entry, target_va) in targets.into_iter().enumerate() {
         let case_value: i64 = case_min.checked_add(i64::try_from(entry).ok()?)?;
         cases.push((case_value, target_va));
     }
@@ -652,18 +766,152 @@ fn recover_relative_byte_switch(
     })
 }
 
+fn switch_table_address(
+    decoded: &[SwitchInsn],
+    load_index: usize,
+    table_base: u8,
+) -> Option<(usize, usize, u64)> {
+    let (table_add_index, table_add): (usize, SwitchInsn) =
+        single_definition(decoded, load_index, table_base)?;
+    let SwitchInsn::AddImmediate {
+        dest: table_add_dest,
+        lhs: table_page,
+        immediate,
+    } = table_add
+    else {
+        return None;
+    };
+    if table_add_dest != table_base || table_page != table_base {
+        return None;
+    }
+    let (table_page_index, table_page_definition): (usize, SwitchInsn) =
+        single_definition(decoded, table_add_index, table_page)?;
+    let SwitchInsn::Adrp {
+        dest: table_page_dest,
+        target: table_page_va,
+    } = table_page_definition
+    else {
+        return None;
+    };
+    if table_page_dest != table_page {
+        return None;
+    }
+    let table_va: u64 = table_page_va.checked_add(u64::from(immediate))?;
+    Some((table_page_index, table_add_index, table_va))
+}
+
+fn resolve_switch_targets(
+    image: &ImageContext<'_, '_>,
+    insns: &[DisasmInsn],
+    base: u64,
+    machine_code_len: usize,
+    table_va: u64,
+    count: usize,
+    default_va: u64,
+    target_mode: SwitchTargetMode,
+) -> Option<Vec<u64>> {
+    let element_size: usize = match target_mode {
+        SwitchTargetMode::Relative { element_size, .. } => element_size,
+        SwitchTargetMode::Absolute64 => 8,
+    };
+    let readable: &[u8] = readable_switch_table(image, table_va, count, element_size)?;
+    let function_end: u64 = base.checked_add(u64::try_from(machine_code_len).ok()?)?;
+    if !valid_switch_target(insns, base, function_end, default_va) {
+        return None;
+    }
+    let mut targets: Vec<u64> = Vec::with_capacity(count);
+    for entry in 0..count {
+        let offset: usize = entry.checked_mul(element_size)?;
+        let target_va: u64 = match target_mode {
+            SwitchTargetMode::Relative {
+                anchor,
+                element_size,
+                signed,
+                scale,
+            } => {
+                let entry_value: i64 =
+                    relative_switch_entry(readable, offset, element_size, signed)?;
+                let multiplier: i64 = 1_i64.checked_shl(u32::from(scale))?;
+                let displacement: i64 = entry_value.checked_mul(multiplier)?;
+                anchor.checked_add_signed(displacement)?
+            }
+            SwitchTargetMode::Absolute64 => {
+                let entry_end: usize = offset.checked_add(8)?;
+                let entry_bytes: [u8; 8] = readable.get(offset..entry_end)?.try_into().ok()?;
+                let file_target: u64 = u64::from_le_bytes(entry_bytes);
+                let entry_va: u64 = table_va.checked_add(u64::try_from(offset).ok()?)?;
+                (image.relocations)(entry_va)
+                    .or_else(|| (file_target != 0).then_some(file_target))?
+            }
+        };
+        if !valid_switch_target(insns, base, function_end, target_va) {
+            return None;
+        }
+        targets.push(target_va);
+    }
+    Some(targets)
+}
+
+fn readable_switch_table<'image>(
+    image: &ImageContext<'_, 'image>,
+    table_va: u64,
+    count: usize,
+    element_size: usize,
+) -> Option<&'image [u8]> {
+    let table_bytes: usize = count.checked_mul(element_size)?;
+    if table_bytes > MAX_SWITCH_TABLE_BYTES {
+        return None;
+    }
+    let _table_end: u64 = table_va.checked_add(u64::try_from(table_bytes).ok()?)?;
+    let readable: &'image [u8] = (image.image)(table_va)?;
+    readable.get(..table_bytes)
+}
+
+fn relative_switch_entry(
+    readable: &[u8],
+    offset: usize,
+    element_size: usize,
+    signed: bool,
+) -> Option<i64> {
+    match (element_size, signed) {
+        (1, true) => Some(i64::from(i8::from_ne_bytes([*readable.get(offset)?]))),
+        (1, false) => Some(i64::from(*readable.get(offset)?)),
+        (2, true) => {
+            let end: usize = offset.checked_add(2)?;
+            let bytes: [u8; 2] = readable.get(offset..end)?.try_into().ok()?;
+            Some(i64::from(i16::from_le_bytes(bytes)))
+        }
+        (2, false) => {
+            let end: usize = offset.checked_add(2)?;
+            let bytes: [u8; 2] = readable.get(offset..end)?.try_into().ok()?;
+            Some(i64::from(u16::from_le_bytes(bytes)))
+        }
+        (4, true) => {
+            let end: usize = offset.checked_add(4)?;
+            let bytes: [u8; 4] = readable.get(offset..end)?.try_into().ok()?;
+            Some(i64::from(i32::from_le_bytes(bytes)))
+        }
+        (4, false) => {
+            let end: usize = offset.checked_add(4)?;
+            let bytes: [u8; 4] = readable.get(offset..end)?.try_into().ok()?;
+            Some(i64::from(u32::from_le_bytes(bytes)))
+        }
+        (0 | 3 | 5.., _) => None,
+    }
+}
+
 fn single_definition(
-    decoded: &[RelativeByteSwitchInsn],
+    decoded: &[SwitchInsn],
     before: usize,
     register: u8,
-) -> Option<(usize, RelativeByteSwitchInsn)> {
+) -> Option<(usize, SwitchInsn)> {
     let start: usize = before.saturating_sub(MAX_SWITCH_SLICE_INSTRUCTIONS);
     for index in (start..before).rev() {
-        let instruction: RelativeByteSwitchInsn = *decoded.get(index)?;
+        let instruction: SwitchInsn = *decoded.get(index)?;
         if instruction.defines(register) {
             return Some((index, instruction));
         }
-        if matches!(instruction, RelativeByteSwitchInsn::Other) {
+        if matches!(instruction, SwitchInsn::Other) {
             return None;
         }
     }
@@ -671,15 +919,13 @@ fn single_definition(
 }
 
 fn matching_switch_guard(
-    decoded: &[RelativeByteSwitchInsn],
+    decoded: &[SwitchInsn],
     branch_index: usize,
     index: u8,
 ) -> Option<(usize, u16, u64, bool)> {
     let start: usize = branch_index.saturating_sub(MAX_SWITCH_SLICE_INSTRUCTIONS);
     for guard_index in (start..branch_index).rev() {
-        let RelativeByteSwitchInsn::ConditionalBranch { condition, target } =
-            *decoded.get(guard_index)?
-        else {
+        let SwitchInsn::ConditionalBranch { condition, target } = *decoded.get(guard_index)? else {
             continue;
         };
         let exclusive: bool = match condition {
@@ -687,7 +933,7 @@ fn matching_switch_guard(
             2 => true,
             _ => continue,
         };
-        let Some(RelativeByteSwitchInsn::CmpImmediate {
+        let Some(SwitchInsn::CmpImmediate {
             index: cmp_index,
             limit,
         }) = guard_index
@@ -704,7 +950,7 @@ fn matching_switch_guard(
 }
 
 fn switch_slice_is_safe(
-    decoded: &[RelativeByteSwitchInsn],
+    decoded: &[SwitchInsn],
     guard_index: usize,
     branch_index: usize,
     required: &BTreeSet<usize>,
@@ -713,9 +959,7 @@ fn switch_slice_is_safe(
         return false;
     };
     for index in start..branch_index {
-        if required.contains(&index)
-            || matches!(decoded.get(index), Some(RelativeByteSwitchInsn::Nop))
-        {
+        if required.contains(&index) || matches!(decoded.get(index), Some(SwitchInsn::Nop)) {
             continue;
         }
         return false;
@@ -724,7 +968,7 @@ fn switch_slice_is_safe(
 }
 
 fn has_alternate_dispatch_entry(
-    decoded: &[RelativeByteSwitchInsn],
+    decoded: &[SwitchInsn],
     insns: &[DisasmInsn],
     guard_index: usize,
     branch_index: usize,
@@ -742,8 +986,9 @@ fn has_alternate_dispatch_entry(
     };
     for (index, instruction) in decoded.iter().enumerate() {
         let target: Option<u64> = match instruction {
-            RelativeByteSwitchInsn::ConditionalBranch { target, .. }
-            | RelativeByteSwitchInsn::DirectBranch { target } => Some(*target),
+            SwitchInsn::ConditionalBranch { target, .. } | SwitchInsn::DirectBranch { target } => {
+                Some(*target)
+            }
             _ => None,
         };
         if index != guard_index
@@ -756,39 +1001,61 @@ fn has_alternate_dispatch_entry(
     false
 }
 
+fn switch_guard_target_is_outside_dispatch(
+    insns: &[DisasmInsn],
+    guard_index: usize,
+    branch_index: usize,
+    target: u64,
+) -> bool {
+    let Some(dispatch_index): Option<usize> = guard_index.checked_add(1) else {
+        return false;
+    };
+    let Some(dispatch_start): Option<u64> = insns
+        .get(dispatch_index)
+        .map(|insn: &DisasmInsn| insn.address)
+    else {
+        return false;
+    };
+    let Some(dispatch_end): Option<u64> = insns
+        .get(branch_index)
+        .map(|insn: &DisasmInsn| insn.address)
+    else {
+        return false;
+    };
+    target < dispatch_start || target > dispatch_end
+}
+
 fn switch_case_minimum(
-    decoded: &[RelativeByteSwitchInsn],
+    decoded: &[SwitchInsn],
     cmp_index: usize,
     normalized_index: u8,
 ) -> Option<(i64, RegRef, u8, Option<usize>)> {
     let disc: RegRef = aarch64_switch_register(normalized_index)?;
-    let Some((definition_index, definition)): Option<(usize, RelativeByteSwitchInsn)> =
+    let Some((definition_index, definition)): Option<(usize, SwitchInsn)> =
         single_definition(decoded, cmp_index, normalized_index)
     else {
         return Some((0, disc, normalized_index, None));
     };
-    let RelativeByteSwitchInsn::SubImmediate {
+    let SwitchInsn::SelectorAdjustment {
         dest,
         source,
-        immediate,
+        case_minimum,
     } = definition
     else {
         return Some((0, disc, normalized_index, None));
     };
-    if dest != normalized_index || source == normalized_index {
+    if dest != normalized_index {
         return None;
     }
     if !decoded
         .get(definition_index.checked_add(1)?..cmp_index)?
         .iter()
-        .all(|instruction: &RelativeByteSwitchInsn| {
-            matches!(instruction, RelativeByteSwitchInsn::Nop)
-        })
+        .all(|instruction: &SwitchInsn| matches!(instruction, SwitchInsn::Nop))
     {
         return None;
     }
     Some((
-        i64::from(immediate),
+        case_minimum,
         aarch64_switch_register(source)?,
         source,
         Some(definition_index),
@@ -811,98 +1078,161 @@ fn normalized_switch_target(insns: &[DisasmInsn], base: u64, target: u64) -> Res
     item_address(base, index, 0)
 }
 
-fn decode_relative_byte_switch_instruction(insn: &DisasmInsn) -> RelativeByteSwitchInsn {
+fn decode_switch_instruction(insn: &DisasmInsn) -> SwitchInsn {
     let Some(word): Option<u32> = aarch64_instruction_word(insn) else {
-        return RelativeByteSwitchInsn::Other;
+        return SwitchInsn::Other;
     };
     if word == 0xd503_201f {
-        return RelativeByteSwitchInsn::Nop;
+        return SwitchInsn::Nop;
     }
     if word & 0xffc0_001f == 0x7100_001f {
-        return RelativeByteSwitchInsn::CmpImmediate {
+        return SwitchInsn::CmpImmediate {
             index: register_field(word, 5),
             limit: immediate_field(word, 10, 12) as u16,
         };
     }
     if word & 0xff00_0010 == 0x5400_0000 {
         let Some(target): Option<u64> = aarch64_relative_target(insn.address, word, 5, 19) else {
-            return RelativeByteSwitchInsn::Other;
+            return SwitchInsn::Other;
         };
-        return RelativeByteSwitchInsn::ConditionalBranch {
+        return SwitchInsn::ConditionalBranch {
             condition: (word & 0xf) as u8,
             target,
         };
     }
     if word & 0xfc00_0000 == 0x1400_0000 {
         let Some(target): Option<u64> = aarch64_relative_target(insn.address, word, 0, 26) else {
-            return RelativeByteSwitchInsn::Other;
+            return SwitchInsn::Other;
         };
-        return RelativeByteSwitchInsn::DirectBranch { target };
+        return SwitchInsn::DirectBranch { target };
     }
     if word & 0x7e00_0000 == 0x3400_0000 {
         let Some(target): Option<u64> = aarch64_relative_target(insn.address, word, 5, 19) else {
-            return RelativeByteSwitchInsn::Other;
+            return SwitchInsn::Other;
         };
-        return RelativeByteSwitchInsn::DirectBranch { target };
+        return SwitchInsn::DirectBranch { target };
     }
     if word & 0x7e00_0000 == 0x3600_0000 {
         let Some(target): Option<u64> = aarch64_relative_target(insn.address, word, 5, 14) else {
-            return RelativeByteSwitchInsn::Other;
+            return SwitchInsn::Other;
         };
-        return RelativeByteSwitchInsn::DirectBranch { target };
+        return SwitchInsn::DirectBranch { target };
     }
     if word & 0x9f00_0000 == 0x9000_0000 {
         let Some(target): Option<u64> = aarch64_adrp_target(insn.address, word) else {
-            return RelativeByteSwitchInsn::Other;
+            return SwitchInsn::Other;
         };
-        return RelativeByteSwitchInsn::Adrp {
+        return SwitchInsn::Adrp {
             dest: register_field(word, 0),
             target,
         };
     }
     if word & 0xffc0_0000 == 0x9100_0000 {
-        return RelativeByteSwitchInsn::AddImmediate {
+        return SwitchInsn::AddImmediate {
             dest: register_field(word, 0),
             lhs: register_field(word, 5),
             immediate: immediate_field(word, 10, 12) as u16,
         };
     }
     if word & 0xffe0_fc00 == 0x3860_4800 {
-        return RelativeByteSwitchInsn::LoadByteIndexed {
+        return SwitchInsn::IndexedLoad {
             dest: register_field(word, 0),
             base: register_field(word, 5),
             index: register_field(word, 16),
+            encoding: SwitchTableEncoding::Relative(RelativeLoadKind::ByteUnsigned),
+        };
+    }
+    if word & 0xffe0_fc00 == 0x38e0_4800 {
+        return SwitchInsn::IndexedLoad {
+            dest: register_field(word, 0),
+            base: register_field(word, 5),
+            index: register_field(word, 16),
+            encoding: SwitchTableEncoding::Relative(RelativeLoadKind::ByteSigned),
+        };
+    }
+    if word & 0xffe0_fc00 == 0x7860_5800 {
+        return SwitchInsn::IndexedLoad {
+            dest: register_field(word, 0),
+            base: register_field(word, 5),
+            index: register_field(word, 16),
+            encoding: SwitchTableEncoding::Relative(RelativeLoadKind::HalfwordUnsigned),
+        };
+    }
+    if word & 0xffe0_fc00 == 0x78e0_5800 {
+        return SwitchInsn::IndexedLoad {
+            dest: register_field(word, 0),
+            base: register_field(word, 5),
+            index: register_field(word, 16),
+            encoding: SwitchTableEncoding::Relative(RelativeLoadKind::HalfwordSigned),
+        };
+    }
+    if word & 0xffe0_fc00 == 0xb8a0_5800 {
+        return SwitchInsn::IndexedLoad {
+            dest: register_field(word, 0),
+            base: register_field(word, 5),
+            index: register_field(word, 16),
+            encoding: SwitchTableEncoding::Relative(RelativeLoadKind::WordSigned),
+        };
+    }
+    if word & 0xffe0_fc00 == 0xf860_7800 {
+        return SwitchInsn::IndexedLoad {
+            dest: register_field(word, 0),
+            base: register_field(word, 5),
+            index: register_field(word, 16),
+            encoding: SwitchTableEncoding::Absolute64,
         };
     }
     if word & 0x9f00_0000 == 0x1000_0000 {
         let Some(target): Option<u64> = aarch64_adr_target(insn.address, word) else {
-            return RelativeByteSwitchInsn::Other;
+            return SwitchInsn::Other;
         };
-        return RelativeByteSwitchInsn::Adr {
+        return SwitchInsn::Adr {
             dest: register_field(word, 0),
             target,
         };
     }
-    if word & 0xffe0_fc00 == 0x8b20_8800 {
-        return RelativeByteSwitchInsn::AddSignedByteScaled {
+    let extension: Option<SwitchAddExtend> = match word & 0xffe0_e000 {
+        0x8b20_0000 => Some(SwitchAddExtend::ByteUnsigned),
+        0x8b20_2000 => Some(SwitchAddExtend::HalfwordUnsigned),
+        0x8b20_4000 => Some(SwitchAddExtend::WordUnsigned),
+        0x8b20_8000 => Some(SwitchAddExtend::ByteSigned),
+        0x8b20_a000 => Some(SwitchAddExtend::HalfwordSigned),
+        0x8b20_c000 => Some(SwitchAddExtend::WordSigned),
+        _ => None,
+    };
+    if let Some(extension) = extension {
+        let scale: u8 = immediate_field(word, 10, 3) as u8;
+        if scale > 4 {
+            return SwitchInsn::Other;
+        }
+        return SwitchInsn::AddExtended {
             dest: register_field(word, 0),
             anchor: register_field(word, 5),
             offset: register_field(word, 16),
+            extension,
+            scale,
         };
     }
     if word & 0xffff_fc1f == 0xd61f_0000 {
-        return RelativeByteSwitchInsn::IndirectBranch {
+        return SwitchInsn::IndirectBranch {
             target: register_field(word, 5),
         };
     }
-    if word & 0xffc0_0000 == 0x5100_0000 {
-        return RelativeByteSwitchInsn::SubImmediate {
+    if word & 0x8000_0000 == 0 && word & 0x5fc0_0000 == 0x1100_0000 {
+        return SwitchInsn::SelectorAdjustment {
             dest: register_field(word, 0),
             source: register_field(word, 5),
-            immediate: immediate_field(word, 10, 12) as u16,
+            case_minimum: -i64::from(immediate_field(word, 10, 12)),
         };
     }
-    RelativeByteSwitchInsn::Other
+    if word & 0x8000_0000 == 0 && word & 0x5fc0_0000 == 0x5100_0000 {
+        return SwitchInsn::SelectorAdjustment {
+            dest: register_field(word, 0),
+            source: register_field(word, 5),
+            case_minimum: i64::from(immediate_field(word, 10, 12)),
+        };
+    }
+    SwitchInsn::Other
 }
 
 fn aarch64_instruction_word(insn: &DisasmInsn) -> Option<u32> {
