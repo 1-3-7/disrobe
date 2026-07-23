@@ -162,6 +162,12 @@ enum SwitchInsn {
         extension: SwitchAddExtend,
         scale: u8,
     },
+    ShiftedAdd {
+        dest: u8,
+        anchor: u8,
+        offset: u8,
+        scale: u8,
+    },
     IndirectBranch {
         target: u8,
     },
@@ -170,9 +176,23 @@ enum SwitchInsn {
         source: u8,
         case_minimum: i64,
     },
+    RegisterCopy {
+        dest: u8,
+        source: u8,
+    },
 }
 
 impl RelativeLoadKind {
+    fn natural(self) -> (usize, bool) {
+        match self {
+            Self::ByteUnsigned => (1, false),
+            Self::ByteSigned => (1, true),
+            Self::HalfwordUnsigned => (2, false),
+            Self::HalfwordSigned => (2, true),
+            Self::WordSigned => (4, true),
+        }
+    }
+
     fn resolve(self, extension: SwitchAddExtend) -> Option<(usize, bool)> {
         match self {
             Self::ByteUnsigned => match extension {
@@ -227,7 +247,9 @@ impl SwitchInsn {
             | Self::IndexedLoad { dest, .. }
             | Self::Adr { dest, .. }
             | Self::AddExtended { dest, .. }
-            | Self::SelectorAdjustment { dest, .. } => dest == register,
+            | Self::ShiftedAdd { dest, .. }
+            | Self::SelectorAdjustment { dest, .. }
+            | Self::RegisterCopy { dest, .. } => dest == register,
             Self::Other
             | Self::Nop
             | Self::CmpImmediate { .. }
@@ -636,8 +658,88 @@ fn recover_aarch64_switch(
                 | SwitchInsn::Adr { .. }
                 | SwitchInsn::IndexedLoad { .. }
                 | SwitchInsn::AddExtended { .. }
+                | SwitchInsn::ShiftedAdd { .. }
                 | SwitchInsn::IndirectBranch { .. }
                 | SwitchInsn::SelectorAdjustment { .. }
+                | SwitchInsn::RegisterCopy { .. }
+                | SwitchInsn::AddImmediate { .. } => return None,
+            };
+            let required: BTreeSet<usize> = BTreeSet::from([
+                table_page_index,
+                table_add_index,
+                offset_load_index,
+                anchor_index,
+                target_definition_index,
+            ]);
+            SwitchSetup {
+                table_base,
+                index,
+                table_va,
+                target_mode: SwitchTargetMode::Relative {
+                    anchor: anchor_va,
+                    element_size,
+                    signed,
+                    scale,
+                },
+                relative_aliases: Some((anchor, offset)),
+                required_indices: required,
+            }
+        }
+        SwitchInsn::ShiftedAdd {
+            dest,
+            anchor,
+            offset,
+            scale,
+        } if dest == target => {
+            let (offset_load_index, offset_load): (usize, SwitchInsn) =
+                single_definition(decoded, target_definition_index, offset)?;
+            let SwitchInsn::IndexedLoad {
+                dest: load_dest,
+                base: table_base,
+                index,
+                encoding: SwitchTableEncoding::Relative(load_kind),
+            } = offset_load
+            else {
+                return None;
+            };
+            if load_dest != offset
+                || target == index
+                || anchor == index
+                || offset == index
+                || table_base == index
+            {
+                return None;
+            }
+            let (element_size, signed): (usize, bool) = load_kind.natural();
+            let (anchor_definition_index, anchor_definition): (usize, SwitchInsn) =
+                single_definition(decoded, target_definition_index, anchor)?;
+            let (table_page_index, table_add_index, table_va): (usize, usize, u64) =
+                switch_table_address(decoded, offset_load_index, table_base)?;
+            let (anchor_index, anchor_va): (usize, u64) = match anchor_definition {
+                SwitchInsn::Adr {
+                    dest: anchor_dest,
+                    target: anchor_va,
+                } if anchor_dest == anchor => (anchor_definition_index, anchor_va),
+                SwitchInsn::AddImmediate { dest, .. }
+                    if anchor == table_base
+                        && dest == table_base
+                        && anchor_definition_index == table_add_index =>
+                {
+                    (table_add_index, table_va)
+                }
+                SwitchInsn::Other
+                | SwitchInsn::Nop
+                | SwitchInsn::CmpImmediate { .. }
+                | SwitchInsn::ConditionalBranch { .. }
+                | SwitchInsn::DirectBranch { .. }
+                | SwitchInsn::Adrp { .. }
+                | SwitchInsn::Adr { .. }
+                | SwitchInsn::IndexedLoad { .. }
+                | SwitchInsn::AddExtended { .. }
+                | SwitchInsn::ShiftedAdd { .. }
+                | SwitchInsn::IndirectBranch { .. }
+                | SwitchInsn::SelectorAdjustment { .. }
+                | SwitchInsn::RegisterCopy { .. }
                 | SwitchInsn::AddImmediate { .. } => return None,
             };
             let required: BTreeSet<usize> = BTreeSet::from([
@@ -693,8 +795,10 @@ fn recover_aarch64_switch(
         | SwitchInsn::IndexedLoad { .. }
         | SwitchInsn::Adr { .. }
         | SwitchInsn::AddExtended { .. }
+        | SwitchInsn::ShiftedAdd { .. }
         | SwitchInsn::IndirectBranch { .. }
-        | SwitchInsn::SelectorAdjustment { .. } => return None,
+        | SwitchInsn::SelectorAdjustment { .. }
+        | SwitchInsn::RegisterCopy { .. } => return None,
     };
     let SwitchSetup {
         table_base,
@@ -704,14 +808,26 @@ fn recover_aarch64_switch(
         relative_aliases,
         mut required_indices,
     } = setup;
+    let (selector_source, selector_copy_index): (u8, Option<usize>) =
+        match single_definition(decoded, branch_index, index) {
+            Some((copy_index, SwitchInsn::RegisterCopy { dest, source })) if dest == index => {
+                (source, Some(copy_index))
+            }
+            _ => (index, None),
+        };
     let (guard_index, limit, default_va, exclusive): (usize, u16, u64, bool) =
-        matching_switch_guard(decoded, branch_index, index)?;
+        matching_switch_guard(decoded, branch_index, selector_source)?;
     if !switch_guard_target_is_outside_dispatch(insns, guard_index, branch_index, default_va) {
+        return None;
+    }
+    if let Some(copy_index) = selector_copy_index
+        && copy_index <= guard_index
+    {
         return None;
     }
     let cmp_index: usize = guard_index.checked_sub(1)?;
     let (case_min, disc, selector_index, normalizer_index): (i64, RegRef, u8, Option<usize>) =
-        switch_case_minimum(decoded, cmp_index, index)?;
+        switch_case_minimum(decoded, cmp_index, selector_source)?;
     if target == selector_index
         || table_base == selector_index
         || relative_aliases.is_some_and(|(anchor, offset): (u8, u8)| {
@@ -732,6 +848,9 @@ fn recover_aarch64_switch(
     required_indices.insert(branch_index);
     if let Some(normalizer_index) = normalizer_index {
         required_indices.insert(normalizer_index);
+    }
+    if let Some(selector_copy_index) = selector_copy_index {
+        required_indices.insert(selector_copy_index);
     }
     if !switch_slice_is_safe(decoded, guard_index, branch_index, &required_indices)
         || has_alternate_dispatch_entry(decoded, insns, guard_index, branch_index)
@@ -774,33 +893,34 @@ fn switch_table_address(
     load_index: usize,
     table_base: u8,
 ) -> Option<(usize, usize, u64)> {
-    let (table_add_index, table_add): (usize, SwitchInsn) =
+    let (table_definition_index, table_definition): (usize, SwitchInsn) =
         single_definition(decoded, load_index, table_base)?;
-    let SwitchInsn::AddImmediate {
-        dest: table_add_dest,
-        lhs: table_page,
-        immediate,
-    } = table_add
-    else {
-        return None;
-    };
-    if table_add_dest != table_base || table_page != table_base {
-        return None;
+    match table_definition {
+        SwitchInsn::Adr { dest, target } if dest == table_base => {
+            Some((table_definition_index, table_definition_index, target))
+        }
+        SwitchInsn::AddImmediate {
+            dest: table_add_dest,
+            lhs: table_page,
+            immediate,
+        } if table_add_dest == table_base && table_page == table_base => {
+            let (table_page_index, table_page_definition): (usize, SwitchInsn) =
+                single_definition(decoded, table_definition_index, table_page)?;
+            let SwitchInsn::Adrp {
+                dest: table_page_dest,
+                target: table_page_va,
+            } = table_page_definition
+            else {
+                return None;
+            };
+            if table_page_dest != table_page {
+                return None;
+            }
+            let table_va: u64 = table_page_va.checked_add(u64::from(immediate))?;
+            Some((table_page_index, table_definition_index, table_va))
+        }
+        _ => None,
     }
-    let (table_page_index, table_page_definition): (usize, SwitchInsn) =
-        single_definition(decoded, table_add_index, table_page)?;
-    let SwitchInsn::Adrp {
-        dest: table_page_dest,
-        target: table_page_va,
-    } = table_page_definition
-    else {
-        return None;
-    };
-    if table_page_dest != table_page {
-        return None;
-    }
-    let table_va: u64 = table_page_va.checked_add(u64::from(immediate))?;
-    Some((table_page_index, table_add_index, table_va))
 }
 
 fn resolve_switch_targets(
@@ -1137,7 +1257,7 @@ fn decode_switch_instruction(insn: &DisasmInsn) -> SwitchInsn {
             immediate: immediate_field(word, 10, 12) as u16,
         };
     }
-    if word & 0xffe0_fc00 == 0x3860_4800 {
+    if word & 0xffe0_dc00 == 0x3860_4800 {
         return SwitchInsn::IndexedLoad {
             dest: register_field(word, 0),
             base: register_field(word, 5),
@@ -1145,7 +1265,7 @@ fn decode_switch_instruction(insn: &DisasmInsn) -> SwitchInsn {
             encoding: SwitchTableEncoding::Relative(RelativeLoadKind::ByteUnsigned),
         };
     }
-    if word & 0xffe0_fc00 == 0x38e0_4800 {
+    if word & 0xffe0_dc00 == 0x38e0_4800 {
         return SwitchInsn::IndexedLoad {
             dest: register_field(word, 0),
             base: register_field(word, 5),
@@ -1153,7 +1273,7 @@ fn decode_switch_instruction(insn: &DisasmInsn) -> SwitchInsn {
             encoding: SwitchTableEncoding::Relative(RelativeLoadKind::ByteSigned),
         };
     }
-    if word & 0xffe0_fc00 == 0x7860_5800 {
+    if word & 0xffe0_dc00 == 0x7860_5800 {
         return SwitchInsn::IndexedLoad {
             dest: register_field(word, 0),
             base: register_field(word, 5),
@@ -1161,7 +1281,7 @@ fn decode_switch_instruction(insn: &DisasmInsn) -> SwitchInsn {
             encoding: SwitchTableEncoding::Relative(RelativeLoadKind::HalfwordUnsigned),
         };
     }
-    if word & 0xffe0_fc00 == 0x78e0_5800 {
+    if word & 0xffe0_dc00 == 0x78e0_5800 {
         return SwitchInsn::IndexedLoad {
             dest: register_field(word, 0),
             base: register_field(word, 5),
@@ -1169,7 +1289,7 @@ fn decode_switch_instruction(insn: &DisasmInsn) -> SwitchInsn {
             encoding: SwitchTableEncoding::Relative(RelativeLoadKind::HalfwordSigned),
         };
     }
-    if word & 0xffe0_fc00 == 0xb8a0_5800 {
+    if word & 0xffe0_dc00 == 0xb8a0_5800 {
         return SwitchInsn::IndexedLoad {
             dest: register_field(word, 0),
             base: register_field(word, 5),
@@ -1216,6 +1336,18 @@ fn decode_switch_instruction(insn: &DisasmInsn) -> SwitchInsn {
             scale,
         };
     }
+    if word & 0xffe0_0000 == 0x8b00_0000 {
+        let scale: u8 = immediate_field(word, 10, 6) as u8;
+        if scale > 4 {
+            return SwitchInsn::Other;
+        }
+        return SwitchInsn::ShiftedAdd {
+            dest: register_field(word, 0),
+            anchor: register_field(word, 5),
+            offset: register_field(word, 16),
+            scale,
+        };
+    }
     if word & 0xffff_fc1f == 0xd61f_0000 {
         return SwitchInsn::IndirectBranch {
             target: register_field(word, 5),
@@ -1233,6 +1365,12 @@ fn decode_switch_instruction(insn: &DisasmInsn) -> SwitchInsn {
             dest: register_field(word, 0),
             source: register_field(word, 5),
             case_minimum: i64::from(immediate_field(word, 10, 12)),
+        };
+    }
+    if word & 0x7fe0_ffe0 == 0x2a00_03e0 {
+        return SwitchInsn::RegisterCopy {
+            dest: register_field(word, 0),
+            source: register_field(word, 16),
         };
     }
     SwitchInsn::Other
