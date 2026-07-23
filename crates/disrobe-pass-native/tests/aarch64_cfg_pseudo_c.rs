@@ -63,6 +63,20 @@ fn aarch64_real_clang_paired_struct_load_recovers_two_fields() {
 }
 
 #[test]
+fn aarch64_real_clang_vector_compare_to_zero_recovers_as_elementwise_eq() {
+    let bytes: [u8; 8] = [0x00, 0x98, 0xa0, 0x4e, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("vector cmeq zero");
+    assert!(r.source.contains("v0 = v0 == 0"), "{}", r.source);
+}
+
+#[test]
+fn aarch64_real_clang_vector_compare_registers_recovers_as_elementwise_eq() {
+    let bytes: [u8; 8] = [0x00, 0x8c, 0xa1, 0x6e, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("vector cmeq reg");
+    assert!(r.source.contains("v0 = v0 == v1"), "{}", r.source);
+}
+
+#[test]
 fn aarch64_real_clang_vector_and_recovers_as_elementwise_and() {
     let bytes: [u8; 8] = [0x20, 0x1c, 0x20, 0x4e, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("vector and");

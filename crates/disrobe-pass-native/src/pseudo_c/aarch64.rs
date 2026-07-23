@@ -3296,6 +3296,7 @@ fn lower_vector(insn: &DisasmInsn) -> Result<Vec<Stmt>> {
     match insn.mnemonic.as_str() {
         "add" | "sub" | "mul" | "and" | "orr" | "eor" => vector_bin(insn, &operands, false),
         "fadd" | "fsub" | "fmul" | "fdiv" => vector_bin(insn, &operands, true),
+        "cmeq" => vector_compare(insn, &operands),
         "ldr" => vector_load_store(insn, &operands, true),
         "str" => vector_load_store(insn, &operands, false),
         "dup" => vector_dup(insn, &operands),
@@ -3328,6 +3329,32 @@ fn vector_bin(insn: &DisasmInsn, operands: &[&str], float: bool) -> Result<Vec<S
         lhs,
         rhs,
         op,
+        arr: dest_arr,
+    })])
+}
+
+fn vector_compare(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
+    if operands.len() != 3 {
+        return Err(reject_at(insn, "malformed vector compare instruction"));
+    }
+    let (dest, dest_arr): (u8, VecArrangement) = parse_vector_operand(operands[0], false)?;
+    let (lhs, lhs_arr): (u8, VecArrangement) = parse_vector_operand(operands[1], false)?;
+    if dest_arr != lhs_arr {
+        return Err(reject_at(insn, "mixed-arrangement vector compare"));
+    }
+    let rhs: Option<u8> = if matches!(operands[2], "#0" | "#0x0" | "#0.0") {
+        None
+    } else {
+        let (reg, rhs_arr): (u8, VecArrangement) = parse_vector_operand(operands[2], false)?;
+        if rhs_arr != dest_arr {
+            return Err(reject_at(insn, "mixed-arrangement vector compare"));
+        }
+        Some(reg)
+    };
+    Ok(vec![Stmt::Vector(VecStmt::Compare {
+        dest,
+        lhs,
+        rhs,
         arr: dest_arr,
     })])
 }
@@ -3480,6 +3507,18 @@ fn resolve_vector_types(items: &mut [Item]) -> Result<()> {
                 note_vector_type(&mut types, *lhs, *arr)?;
                 note_vector_type(&mut types, *rhs, *arr)?;
             }
+            VecStmt::Compare {
+                dest,
+                lhs,
+                rhs,
+                arr,
+            } => {
+                note_vector_type(&mut types, *dest, *arr)?;
+                note_vector_type(&mut types, *lhs, *arr)?;
+                if let Some(rhs) = rhs {
+                    note_vector_type(&mut types, *rhs, *arr)?;
+                }
+            }
             VecStmt::Dup { dest, arr, .. } => note_vector_type(&mut types, *dest, *arr)?,
             VecStmt::Load {
                 dest,
@@ -3505,7 +3544,7 @@ fn resolve_vector_types(items: &mut [Item]) -> Result<()> {
             VecStmt::Store { src, arr, .. } => {
                 *arr = Some(resolved_wide_arrangement(&types, *src)?);
             }
-            VecStmt::Bin { .. } | VecStmt::Dup { .. } => {}
+            VecStmt::Bin { .. } | VecStmt::Dup { .. } | VecStmt::Compare { .. } => {}
         }
     }
     Ok(())
@@ -3623,6 +3662,18 @@ fn record_vector_types(types: &mut BTreeMap<u8, VecArrangement>, vec: &VecStmt) 
             types.entry(*lhs).or_insert(*arr);
             types.entry(*rhs).or_insert(*arr);
         }
+        VecStmt::Compare {
+            dest,
+            lhs,
+            rhs,
+            arr,
+        } => {
+            types.entry(*dest).or_insert(*arr);
+            types.entry(*lhs).or_insert(*arr);
+            if let Some(rhs) = rhs {
+                types.entry(*rhs).or_insert(*arr);
+            }
+        }
         VecStmt::Dup { dest, arr, .. } => {
             types.entry(*dest).or_insert(*arr);
         }
@@ -3642,6 +3693,18 @@ fn record_vector_types(types: &mut BTreeMap<u8, VecArrangement>, vec: &VecStmt) 
 fn vector_reads(vec: &VecStmt) -> Vec<(u8, VecArrangement)> {
     match vec {
         VecStmt::Bin { lhs, rhs, arr, .. } => vec![(*lhs, *arr), (*rhs, *arr)],
+        VecStmt::Compare {
+            lhs,
+            rhs: Some(rhs),
+            arr,
+            ..
+        } => vec![(*lhs, *arr), (*rhs, *arr)],
+        VecStmt::Compare {
+            lhs,
+            rhs: None,
+            arr,
+            ..
+        } => vec![(*lhs, *arr)],
         VecStmt::Store {
             src,
             arr: Some(arr),
@@ -3660,9 +3723,10 @@ fn vector_reads(vec: &VecStmt) -> Vec<(u8, VecArrangement)> {
 
 fn vector_write(vec: &VecStmt) -> Option<u8> {
     match vec {
-        VecStmt::Bin { dest, .. } | VecStmt::Dup { dest, .. } | VecStmt::Load { dest, .. } => {
-            Some(*dest)
-        }
+        VecStmt::Bin { dest, .. }
+        | VecStmt::Dup { dest, .. }
+        | VecStmt::Load { dest, .. }
+        | VecStmt::Compare { dest, .. } => Some(*dest),
         VecStmt::Store { .. } => None,
     }
 }
