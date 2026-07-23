@@ -3,6 +3,22 @@
 use disrobe_pass_native::{Error, LeafRecovery, recover_aarch64_function};
 
 #[test]
+fn aarch64_real_clang_unscaled_load_recovers_as_a_load() {
+    let bytes: [u8; 8] = [0x00, 0xc0, 0x5f, 0xb8, 0xc0, 0x03, 0x5f, 0xd6];
+    let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ldur");
+    let expected: &str = "#include <stdint.h>\nuint64_t recovered(uint64_t a0) {\n    uint64_t r_rax = a0;\n    r_rax = ((uint64_t)(*(uint32_t*)(uintptr_t)(r_rax + (uint64_t)(int64_t)-4LL))) & 0xffffffffULL;\n    return (r_rax) & 0xffffffffULL;\n}\n";
+    assert_eq!(recovered.source, expected);
+}
+
+#[test]
+fn aarch64_real_clang_unscaled_store_recovers_as_a_store() {
+    let bytes: [u8; 8] = [0x01, 0xc0, 0x1f, 0xb8, 0xc0, 0x03, 0x5f, 0xd6];
+    let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("stur");
+    let expected: &str = "#include <stdint.h>\nuint64_t recovered(uint64_t a0, uint64_t a1) {\n    uint64_t r_rax = a0;\n    uint64_t r_a64_x1 = a1;\n    (*(uint32_t*)(uintptr_t)(r_rax + (uint64_t)(int64_t)-4LL)) = (r_a64_x1) & 0xffffffffULL;\n    return r_rax;\n}\n";
+    assert_eq!(recovered.source, expected);
+}
+
+#[test]
 fn aarch64_real_clang_csel_max_recovers_as_ternary() {
     let bytes: [u8; 12] = [
         0x1f, 0x00, 0x01, 0x6b, 0x00, 0xc0, 0x81, 0x1a, 0xc0, 0x03, 0x5f, 0xd6,

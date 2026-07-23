@@ -425,7 +425,7 @@ fn recover_with_calls_and_image<'image>(
                     return_width = dest.width;
                 }
             }
-            "ldr" | "str" => {
+            "ldr" | "str" | "ldur" | "stur" => {
                 let (dest, stmts): (Option<RegRef>, Vec<Stmt>) =
                     lower_memory(insn, frame.info, outgoing_slots)?;
                 push_stmts(&mut items, base, index, stmts)?;
@@ -2001,17 +2001,18 @@ fn lower_memory(
     if !(2..=3).contains(&operands.len()) {
         return Err(reject_at(insn, "malformed load or store"));
     }
-    let (value, source, width): (Option<RegRef>, Source, Width) = if insn.mnemonic == "ldr" {
-        let dest: RegRef = parse_reg(operands[0])?;
-        (Some(dest), Source::Imm(0), dest.width)
-    } else if operands[0] == "xzr" {
-        (None, Source::Imm(0), Width::W64)
-    } else if operands[0] == "wzr" {
-        (None, Source::Imm(0), Width::W32)
-    } else {
-        let src: RegRef = parse_reg(operands[0])?;
-        (None, Source::Reg(src), src.width)
-    };
+    let (value, source, width): (Option<RegRef>, Source, Width) =
+        if matches!(insn.mnemonic.as_str(), "ldr" | "ldur") {
+            let dest: RegRef = parse_reg(operands[0])?;
+            (Some(dest), Source::Imm(0), dest.width)
+        } else if operands[0] == "xzr" {
+            (None, Source::Imm(0), Width::W64)
+        } else if operands[0] == "wzr" {
+            (None, Source::Imm(0), Width::W32)
+        } else {
+            let src: RegRef = parse_reg(operands[0])?;
+            (None, Source::Reg(src), src.width)
+        };
     let (mut mem, pre_index): (MemRef, bool) = parse_memory(operands[1], width)?;
     let post_delta: Option<i64> = operands
         .get(2)
@@ -2033,7 +2034,7 @@ fn lower_memory(
         .iter()
         .find(|entry: &&OutgoingSlot| entry.memory_index == 0)
         .map(|entry: &OutgoingSlot| entry.slot);
-    let memory_stmt: Stmt = if insn.mnemonic == "ldr" {
+    let memory_stmt: Stmt = if matches!(insn.mnemonic.as_str(), "ldr" | "ldur") {
         Stmt::Assign {
             dest: value.ok_or_else(|| reject_at(insn, "load destination is missing"))?,
             src: if !pre_index && post_delta.is_none() {
