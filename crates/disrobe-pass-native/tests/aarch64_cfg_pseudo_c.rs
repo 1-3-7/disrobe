@@ -35,6 +35,66 @@ fn aarch64_real_clang_adrp_materializes_a_page_address_for_a_global_load() {
 }
 
 #[test]
+fn aarch64_real_clang_cinc_conditionally_increments() {
+    let bytes: [u8; 12] = [
+        0x1f, 0x00, 0x01, 0x6b, 0x40, 0xc4, 0x82, 0x1a, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("cinc");
+    assert!(
+        r.source.contains("r_a64_tmp2 + ((uint64_t)(int64_t)1LL)"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source.contains("sel_cc_0 != 0 ? (r_a64_tmp2)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_clang_cinv_conditionally_inverts() {
+    let bytes: [u8; 12] = [
+        0x1f, 0x00, 0x01, 0x6b, 0x40, 0xc0, 0x82, 0x5a, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("cinv");
+    assert!(r.source.contains("(~r_a64_tmp2)"), "{}", r.source);
+    assert!(
+        r.source.contains("sel_cc_0 != 0 ? (r_a64_tmp2)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_clang_cneg_conditionally_negates() {
+    let bytes: [u8; 12] = [
+        0x1f, 0x00, 0x01, 0x6b, 0x40, 0xc4, 0x82, 0x5a, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("cneg");
+    assert!(r.source.contains("-(int64_t)r_a64_tmp2"), "{}", r.source);
+    assert!(
+        r.source.contains("sel_cc_0 != 0 ? (r_a64_tmp2)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_clang_csetm_sets_all_ones_or_zero() {
+    let bytes: [u8; 12] = [
+        0x1f, 0x00, 0x01, 0x6b, 0xe0, 0xd3, 0x9f, 0x5a, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("csetm");
+    assert!(
+        r.source
+            .contains("sel_cc_0 != 0 ? ((uint64_t)(int64_t)-1LL)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
 fn aarch64_real_clang_bic_is_and_not() {
     let bytes: [u8; 8] = [0x00, 0x00, 0x21, 0x0a, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("bic");
