@@ -257,6 +257,26 @@ fn aarch64_real_clang_fmov_extracts_the_low_lane_into_a_general_register() {
 }
 
 #[test]
+fn aarch64_real_clang_ldp_loads_a_vector_register_pair_from_adjacent_offsets() {
+    let bytes: [u8; 12] = [
+        0x00, 0x04, 0x40, 0xad, 0x20, 0x84, 0xe0, 0x4e, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ldp q0,q1 + add");
+    assert!(
+        r.source.contains("v0 = *(recovered_i64x2*)(r_rax)"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source
+            .contains("v1 = *(recovered_i64x2*)(r_rax + (uint64_t)(int64_t)16LL)"),
+        "{}",
+        r.source
+    );
+    assert!(r.source.contains("v0 = v1 + v0"), "{}", r.source);
+}
+
+#[test]
 fn aarch64_real_clang_vector_and_recovers_as_elementwise_and() {
     let bytes: [u8; 8] = [0x20, 0x1c, 0x20, 0x4e, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("vector and");
