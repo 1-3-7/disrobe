@@ -2224,6 +2224,7 @@ dependencies = [
  "cbc",
  "des",
  "disrobe-binfmt",
+ "disrobe-bytes",
  "disrobe-core",
  "disrobe-llm-metadata",
  "disrobe-pass-native",
