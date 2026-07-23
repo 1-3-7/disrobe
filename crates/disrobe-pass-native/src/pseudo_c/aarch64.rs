@@ -1,10 +1,10 @@
 use super::{
     Abi, AggregatePlan, BinOp, CondKind, Error, ExtSource, Flags, FnReturn, FnSignature,
-    FrameShape, Item, ItemKind, LeafRecovery, MemRef, Node, ReduceOp, Reg, RegRef, ResolvedCall,
-    Result, ScalarType, Source, SretPlan, SretReturn, Stmt, Structured, UnOp, VecArrangement,
-    VecBinOp, VecElem, VecStmt, Width, annotate_calls_block_with_order, collect_call_targets,
-    condition_is_sound, detect_sret, emit_c, emit_rust, infer_aggregate_plan, infer_params,
-    plan_frame, stmt_writes_rax_int, structure_items,
+    FrameShape, IndexExtend, IndexOperand, Item, ItemKind, LeafRecovery, MemRef, Node, ReduceOp,
+    Reg, RegRef, ResolvedCall, Result, ScalarType, Source, SretPlan, SretReturn, Stmt, Structured,
+    UnOp, VecArrangement, VecBinOp, VecElem, VecStmt, Width, annotate_calls_block_with_order,
+    collect_call_targets, condition_is_sound, detect_sret, emit_c, emit_rust, infer_aggregate_plan,
+    infer_params, plan_frame, stmt_writes_rax_int, structure_items,
 };
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use std::collections::{BTreeMap, BTreeSet};
@@ -2835,7 +2835,7 @@ fn parse_memory(token: &str, width: Width) -> Result<(MemRef, bool)> {
     if base.width != Width::W64 {
         return Err(reject("memory base is not a 64-bit register"));
     }
-    let (index, disp): (Option<(Reg, u8)>, i64) = match terms.get(1) {
+    let (index, disp): (Option<IndexOperand>, i64) = match terms.get(1) {
         None => (None, 0),
         Some(term) if term.starts_with('#') => {
             if terms.len() != 2 {
@@ -2845,14 +2845,23 @@ fn parse_memory(token: &str, width: Width) -> Result<(MemRef, bool)> {
         }
         Some(term) => {
             let idx: RegRef = parse_reg(term)?;
-            if idx.width != Width::W64 {
-                return Err(reject("32-bit or extended index register is unsupported"));
-            }
-            let scale: u8 = match terms.get(2) {
-                None => 1,
-                Some(modifier) => parse_index_scale(modifier)?,
+            let (scale, extend): (u8, IndexExtend) = match terms.get(2) {
+                None => {
+                    if idx.width != Width::W64 {
+                        return Err(reject("32-bit or extended index register is unsupported"));
+                    }
+                    (1, IndexExtend::Full)
+                }
+                Some(modifier) => parse_index_modifier(modifier, idx.width)?,
             };
-            (Some((idx.reg, scale)), 0)
+            (
+                Some(IndexOperand {
+                    reg: idx.reg,
+                    scale,
+                    extend,
+                }),
+                0,
+            )
         }
     };
     Ok((
@@ -2866,21 +2875,46 @@ fn parse_memory(token: &str, width: Width) -> Result<(MemRef, bool)> {
     ))
 }
 
-fn parse_index_scale(token: &str) -> Result<u8> {
-    let rest: &str = token
-        .trim()
-        .strip_prefix("lsl")
-        .ok_or_else(|| reject("memory index uses an unsupported extend or shift"))?;
-    let amount: u32 = rest
-        .trim()
-        .strip_prefix('#')
-        .ok_or_else(|| reject("memory index shift lacks an amount"))?
-        .parse::<u32>()
-        .map_err(|_| reject("malformed memory index shift amount"))?;
+fn parse_index_modifier(token: &str, index_width: Width) -> Result<(u8, IndexExtend)> {
+    let trimmed: &str = token.trim();
+    let (op, rest): (&str, &str) = trimmed
+        .split_once(char::is_whitespace)
+        .map_or((trimmed, ""), |(op, rest): (&str, &str)| {
+            (op.trim(), rest.trim())
+        });
+    let amount: u32 = match rest.strip_prefix('#') {
+        Some(value) => value
+            .parse::<u32>()
+            .map_err(|_| reject("malformed memory index shift amount"))?,
+        None if rest.is_empty() => 0,
+        None => return Err(reject("malformed memory index shift amount")),
+    };
     if amount > 4 {
         return Err(reject("memory index shift amount is out of range"));
     }
-    Ok(1u8 << amount)
+    let scale: u8 = 1u8 << amount;
+    let extend: IndexExtend = match op {
+        "lsl" => {
+            if index_width != Width::W64 {
+                return Err(reject("lsl index requires a 64-bit register"));
+            }
+            IndexExtend::Full
+        }
+        "sxtw" => {
+            if index_width != Width::W32 {
+                return Err(reject("sxtw index requires a 32-bit register"));
+            }
+            IndexExtend::SignExtendWord
+        }
+        "uxtw" => {
+            if index_width != Width::W32 {
+                return Err(reject("uxtw index requires a 32-bit register"));
+            }
+            IndexExtend::ZeroExtendWord
+        }
+        _ => return Err(reject("memory index uses an unsupported extend or shift")),
+    };
+    Ok((scale, extend))
 }
 
 fn is_frame_management(insn: &DisasmInsn) -> bool {
