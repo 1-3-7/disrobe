@@ -877,7 +877,21 @@ pub fn recover_leaf_function(machine_code: &[u8], base: u64) -> Result<LeafRecov
 }
 
 pub fn recover_aarch64_function(machine_code: &[u8], base: u64) -> Result<LeafRecovery> {
-    aarch64::recover(machine_code, base)
+    recover_aarch64_function_with_image(
+        machine_code,
+        base,
+        &no_aarch64_image,
+        &no_aarch64_relocation,
+    )
+}
+
+pub fn recover_aarch64_function_with_image<'image>(
+    machine_code: &[u8],
+    base: u64,
+    image: &dyn Fn(u64) -> Option<&'image [u8]>,
+    relocations: &dyn Fn(u64) -> Option<u64>,
+) -> Result<LeafRecovery> {
+    aarch64::recover_with_image(machine_code, base, image, relocations)
 }
 
 pub fn recover_aarch64_function_with_calls(
@@ -886,6 +900,14 @@ pub fn recover_aarch64_function_with_calls(
     calls: &[ResolvedCall],
 ) -> Result<LeafRecovery> {
     aarch64::recover_with_calls(machine_code, base, calls)
+}
+
+fn no_aarch64_image(_: u64) -> Option<&'static [u8]> {
+    None
+}
+
+fn no_aarch64_relocation(_: u64) -> Option<u64> {
+    None
 }
 
 pub fn recover_leaf_function_abi(machine_code: &[u8], base: u64, abi: Abi) -> Result<LeafRecovery> {
@@ -4185,6 +4207,11 @@ enum ItemKind {
     Jmp {
         target: u64,
     },
+    Switch {
+        disc: RegRef,
+        cases: Vec<(i64, u64)>,
+        default: u64,
+    },
     Ret,
 }
 
@@ -5318,6 +5345,7 @@ fn build_blocks(items: &[Item]) -> Option<Vec<CfgBlock>> {
                 }
             }
             ItemKind::Stmt(_) => {}
+            ItemKind::Switch { .. } => return None,
         }
     }
 
@@ -5368,6 +5396,7 @@ fn build_blocks(items: &[Item]) -> Option<Vec<CfgBlock>> {
                         fallthrough,
                     });
                 }
+                ItemKind::Switch { .. } => return None,
             }
         }
         let term: BlockTerm = term.unwrap_or_else(|| BlockTerm::Fall(b + 1));
@@ -6105,6 +6134,9 @@ fn structure_range(items: &[Item], lo: usize, hi: usize) -> Result<Block> {
             }
             ItemKind::Ret => {
                 return Err(Error::LlvmIr("unexpected interior ret".to_owned()));
+            }
+            ItemKind::Switch { .. } => {
+                return Err(Error::LlvmIr("switch requires cfg structuring".to_owned()));
             }
         }
     }

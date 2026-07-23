@@ -1,6 +1,6 @@
 use super::super::{
-    Cond, CondKind, Flags, Item, ItemKind, LoopCond, Node, Reg, Stmt, Structured, VecStmt,
-    condition_is_sound, flag_operand_regs, stmt_dest_regs,
+    Cond, CondKind, Flags, Item, ItemKind, LoopCond, Node, Reg, RegRef, Stmt, Structured,
+    SwitchCase, VecStmt, condition_is_sound, flag_operand_regs, stmt_dest_regs,
 };
 use super::{ITEM_STRIDE, TrackedFlags};
 use crate::arch::DisasmInsn;
@@ -29,6 +29,11 @@ enum RawTerm {
         flags: Flags,
         target: usize,
     },
+    Switch {
+        disc: RegRef,
+        cases: Vec<(i64, usize)>,
+        default: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -40,6 +45,11 @@ enum Aarch64Term {
         flags: Flags,
         taken: usize,
         not_taken: usize,
+    },
+    Switch {
+        disc: RegRef,
+        cases: Vec<(i64, usize)>,
+        default: usize,
     },
 }
 
@@ -68,11 +78,16 @@ pub(super) fn structure(
     let Some(mut blocks): Option<Vec<Aarch64Block>> = blocks else {
         return Attempt::NotCandidate;
     };
-    let branch_count: usize = blocks
+    let control_flow_count: usize = blocks
         .iter()
-        .filter(|block: &&Aarch64Block| matches!(&block.term, Aarch64Term::Branch { .. }))
+        .filter(|block: &&Aarch64Block| {
+            matches!(
+                &block.term,
+                Aarch64Term::Branch { .. } | Aarch64Term::Switch { .. }
+            )
+        })
         .count();
-    if branch_count == 0 {
+    if control_flow_count == 0 {
         return Attempt::NotCandidate;
     }
     if !synthesize_nzcv_conditions(&mut blocks, insns, flag_definitions) {
@@ -94,6 +109,7 @@ pub(super) fn structure(
                     | structuring::RegionKind::IfThenElse
                     | structuring::RegionKind::While
                     | structuring::RegionKind::DoWhile
+                    | structuring::RegionKind::Switch
                     | structuring::RegionKind::NaturalLoop
                     | structuring::RegionKind::SelfLoop
             )
@@ -115,7 +131,11 @@ pub(super) fn structure(
                 | structuring::RegionKind::SelfLoop
         )
     });
-    if !has_loop_region {
+    let has_switch_region: bool = result
+        .regions
+        .iter()
+        .any(|region: &structuring::Region| region.kind == structuring::RegionKind::Switch);
+    if !has_loop_region && !has_switch_region {
         let if_then_else_count: usize = result
             .regions
             .iter()
@@ -195,6 +215,26 @@ fn build_blocks(items: &[Item], insns: &[DisasmInsn], base: u64) -> Option<Vec<A
                 let target: usize = target_instruction_index(base, *target, insns.len())?;
                 terms[instruction] = Some(RawTerm::Goto(target));
             }
+            ItemKind::Switch {
+                disc,
+                cases,
+                default,
+            } => {
+                if terms[instruction].is_some() {
+                    return None;
+                }
+                let mut resolved_cases: Vec<(i64, usize)> = Vec::with_capacity(cases.len());
+                for (value, target) in cases {
+                    let target: usize = target_instruction_index(base, *target, insns.len())?;
+                    resolved_cases.push((*value, target));
+                }
+                let default: usize = target_instruction_index(base, *default, insns.len())?;
+                terms[instruction] = Some(RawTerm::Switch {
+                    disc: *disc,
+                    cases: resolved_cases,
+                    default,
+                });
+            }
             ItemKind::Branch {
                 kind,
                 flags,
@@ -225,6 +265,12 @@ fn build_blocks(items: &[Item], insns: &[DisasmInsn], base: u64) -> Option<Vec<A
                 leaders[*target] = true;
                 if index + 1 < insns.len() {
                     leaders[index + 1] = true;
+                }
+            }
+            Some(RawTerm::Switch { cases, default, .. }) => {
+                leaders[*default] = true;
+                for (_, target) in cases {
+                    leaders[*target] = true;
                 }
             }
             None => {}
@@ -273,6 +319,21 @@ fn build_blocks(items: &[Item], insns: &[DisasmInsn], base: u64) -> Option<Vec<A
                     flags: flags.clone(),
                     taken: instruction_blocks[*target],
                     not_taken,
+                }
+            }
+            Some(RawTerm::Switch {
+                disc,
+                cases,
+                default,
+            }) => {
+                let mut block_cases: Vec<(i64, usize)> = Vec::with_capacity(cases.len());
+                for (value, target) in cases {
+                    block_cases.push((*value, instruction_blocks[*target]));
+                }
+                Aarch64Term::Switch {
+                    disc: *disc,
+                    cases: block_cases,
+                    default: instruction_blocks[*default],
                 }
             }
             None => {
@@ -370,7 +431,9 @@ fn synthesize_nzcv_conditions(
         };
         let condition_kind: CondKind = match &blocks[index].term {
             Aarch64Term::Branch { kind, .. } => *kind,
-            Aarch64Term::Return | Aarch64Term::Goto(_) => return false,
+            Aarch64Term::Return | Aarch64Term::Goto(_) | Aarch64Term::Switch { .. } => {
+                return false;
+            }
         };
         if (definition.nz_only && !condition_kind.sign_zero_only())
             || !condition_is_sound(condition_kind, &definition.value)
@@ -382,7 +445,9 @@ fn synthesize_nzcv_conditions(
                 *kind = condition_kind;
                 *flags = definition.value.clone();
             }
-            Aarch64Term::Return | Aarch64Term::Goto(_) => return false,
+            Aarch64Term::Return | Aarch64Term::Goto(_) | Aarch64Term::Switch { .. } => {
+                return false;
+            }
         }
     }
     true
@@ -498,6 +563,23 @@ fn cfg_from_blocks_with_entry(blocks: &[Aarch64Block], entry: usize) -> Option<s
                     not_taken: u32::try_from(*not_taken).ok()?,
                 }
             }
+            Aarch64Term::Switch { cases, default, .. } => {
+                if *default >= count {
+                    return None;
+                }
+                let mut switch_cases: Vec<(i64, u32)> = Vec::with_capacity(cases.len());
+                for (value, target) in cases {
+                    if *target >= count {
+                        return None;
+                    }
+                    switch_cases.push((*value, u32::try_from(*target).ok()?));
+                }
+                structuring::Terminator::Switch {
+                    atom: node_id,
+                    cases: switch_cases,
+                    default: Some(u32::try_from(*default).ok()?),
+                }
+            }
         };
         let pure: bool = block_is_pure(block);
         nodes.push(structuring::CfgNode { term, pure });
@@ -527,6 +609,20 @@ fn relowered_cfg_from_blocks(
                 taken: relowered_edge(*taken, original_count, &mut edge_targets)?,
                 not_taken: relowered_edge(*not_taken, original_count, &mut edge_targets)?,
             },
+            Aarch64Term::Switch { cases, default, .. } => {
+                let mut switch_cases: Vec<(i64, u32)> = Vec::with_capacity(cases.len());
+                for (value, target) in cases {
+                    switch_cases.push((
+                        *value,
+                        relowered_edge(*target, original_count, &mut edge_targets)?,
+                    ));
+                }
+                structuring::Terminator::Switch {
+                    atom: node_id,
+                    cases: switch_cases,
+                    default: Some(relowered_edge(*default, original_count, &mut edge_targets)?),
+                }
+            }
         };
         terms.push(term);
     }
@@ -657,6 +753,18 @@ impl Aarch64Block {
             Aarch64Term::Branch {
                 taken, not_taken, ..
             } => vec![*taken, *not_taken],
+            Aarch64Term::Switch { cases, default, .. } => {
+                let mut successors: Vec<usize> = Vec::new();
+                for (_, target) in cases {
+                    if !successors.contains(target) {
+                        successors.push(*target);
+                    }
+                }
+                if !successors.contains(default) {
+                    successors.push(*default);
+                }
+                successors
+            }
         }
     }
 }
@@ -664,7 +772,7 @@ impl Aarch64Block {
 fn atom_branch(blocks: &[Aarch64Block], atom: structuring::Atom) -> Option<(CondKind, Flags)> {
     match &blocks.get(atom as usize)?.term {
         Aarch64Term::Branch { kind, flags, .. } => Some((*kind, flags.clone())),
-        Aarch64Term::Return | Aarch64Term::Goto(_) => None,
+        Aarch64Term::Return | Aarch64Term::Goto(_) | Aarch64Term::Switch { .. } => None,
     }
 }
 
@@ -822,7 +930,7 @@ impl Renderer<'_> {
                 out.push(Node::Return);
                 true
             }
-            Aarch64Term::Goto(_) | Aarch64Term::Branch { .. } => false,
+            Aarch64Term::Goto(_) | Aarch64Term::Branch { .. } | Aarch64Term::Switch { .. } => false,
         }
     }
 
@@ -915,7 +1023,10 @@ impl Renderer<'_> {
             } if *not_taken == repeat_target && *taken == exit_target => {
                 condition = negate_condition(condition);
             }
-            Aarch64Term::Return | Aarch64Term::Goto(_) | Aarch64Term::Branch { .. } => {
+            Aarch64Term::Return
+            | Aarch64Term::Goto(_)
+            | Aarch64Term::Branch { .. }
+            | Aarch64Term::Switch { .. } => {
                 return None;
             }
         }
@@ -948,7 +1059,9 @@ impl Renderer<'_> {
             Aarch64Term::Branch {
                 taken, not_taken, ..
             } => (*taken, *not_taken),
-            Aarch64Term::Return | Aarch64Term::Goto(_) => return None,
+            Aarch64Term::Return | Aarch64Term::Goto(_) | Aarch64Term::Switch { .. } => {
+                return None;
+            }
         };
         let body_entry: usize = if body.contains(&taken) && not_taken == follow {
             taken
@@ -1002,7 +1115,9 @@ impl Renderer<'_> {
         }
         let body_entry: usize = match &header_block.term {
             Aarch64Term::Goto(target) => *target,
-            Aarch64Term::Return | Aarch64Term::Branch { .. } => return None,
+            Aarch64Term::Return | Aarch64Term::Branch { .. } | Aarch64Term::Switch { .. } => {
+                return None;
+            }
         };
         if body_entry == header {
             return None;
@@ -1131,6 +1246,7 @@ impl Renderer<'_> {
                         }
                     }
                 }
+                Aarch64Term::Switch { .. } => return None,
             }
         }
         let total_blocks: usize = order.len().checked_add(special_sinks.len())?;
@@ -1193,6 +1309,7 @@ impl Renderer<'_> {
                             not_taken,
                         }
                     }
+                    Aarch64Term::Switch { .. } => return None,
                 }
             };
             blocks.push(Aarch64Block {
@@ -1375,7 +1492,10 @@ impl Renderer<'_> {
             } if *not_taken == repeat_target && *taken == exit => {
                 condition = negate_condition(condition);
             }
-            Aarch64Term::Return | Aarch64Term::Goto(_) | Aarch64Term::Branch { .. } => {
+            Aarch64Term::Return
+            | Aarch64Term::Goto(_)
+            | Aarch64Term::Branch { .. }
+            | Aarch64Term::Switch { .. } => {
                 return None;
             }
         }
@@ -1439,6 +1559,101 @@ impl Renderer<'_> {
         out.push(Node::DoWhile {
             body,
             cond: condition,
+        });
+        true
+    }
+
+    fn render_switch(&mut self, region: &structuring::Region, out: &mut Vec<Node>) -> bool {
+        let (head, body_regions): (structuring::RegionId, &[structuring::RegionId]) =
+            match region.children.split_first() {
+                Some((head, body_regions)) => (*head, body_regions),
+                None => return false,
+            };
+        let entry: usize = region.entry as usize;
+        let (disc, cases, default): (RegRef, Vec<(i64, usize)>, usize) = match self
+            .blocks
+            .get(entry)
+            .map(|block: &Aarch64Block| &block.term)
+        {
+            Some(Aarch64Term::Switch {
+                disc,
+                cases,
+                default,
+            }) => (*disc, cases.clone(), *default),
+            Some(Aarch64Term::Return | Aarch64Term::Goto(_) | Aarch64Term::Branch { .. })
+            | None => return false,
+        };
+        if !self.render(head, out) {
+            return false;
+        }
+        let mut child_for_target: BTreeMap<usize, structuring::RegionId> = BTreeMap::new();
+        for child in body_regions {
+            let target: usize = match self.region_entry(*child) {
+                Some(target) => target,
+                None => return false,
+            };
+            if child_for_target.insert(target, *child).is_some() {
+                return false;
+            }
+        }
+        let mut targets: BTreeSet<usize> = BTreeSet::new();
+        for (_, target) in &cases {
+            targets.insert(*target);
+        }
+        targets.insert(default);
+        if child_for_target.len() != targets.len()
+            || !targets
+                .iter()
+                .all(|target: &usize| child_for_target.contains_key(target))
+        {
+            return false;
+        }
+        let mut bodies: BTreeMap<usize, Vec<Node>> = BTreeMap::new();
+        for target in targets {
+            let child: structuring::RegionId = match child_for_target.get(&target) {
+                Some(child) => *child,
+                None => return false,
+            };
+            let mut body: Vec<Node> = Vec::new();
+            if !self.render(child, &mut body) {
+                return false;
+            }
+            bodies.insert(target, body);
+        }
+        let mut values_by_target: BTreeMap<usize, Vec<i64>> = BTreeMap::new();
+        let mut target_order: Vec<usize> = Vec::new();
+        for (value, target) in cases {
+            if let Some(values) = values_by_target.get_mut(&target) {
+                values.push(value);
+            } else {
+                values_by_target.insert(target, vec![value]);
+                target_order.push(target);
+            }
+        }
+        let mut rendered_cases: Vec<SwitchCase> = Vec::with_capacity(target_order.len());
+        for target in target_order {
+            let values: Vec<i64> = match values_by_target.remove(&target) {
+                Some(values) => values,
+                None => return false,
+            };
+            let body: Vec<Node> = match bodies.get(&target) {
+                Some(body) => body.clone(),
+                None => return false,
+            };
+            rendered_cases.push(SwitchCase {
+                values,
+                body,
+                fallthrough: false,
+            });
+        }
+        let default_body: Vec<Node> = match bodies.get(&default) {
+            Some(body) => body.clone(),
+            None => return false,
+        };
+        out.push(Node::Switch {
+            disc,
+            cases: rendered_cases,
+            default: default_body,
         });
         true
     }
@@ -1541,8 +1756,8 @@ impl Renderer<'_> {
             structuring::RegionKind::While => self.render_while(region, out),
             structuring::RegionKind::DoWhile => self.render_do_while(region, out),
             structuring::RegionKind::NaturalLoop => self.render_natural_loop(region, out),
-            structuring::RegionKind::Switch
-            | structuring::RegionKind::SelfLoop
+            structuring::RegionKind::Switch => self.render_switch(region, out),
+            structuring::RegionKind::SelfLoop
             | structuring::RegionKind::Proper
             | structuring::RegionKind::Irreducible => false,
         }
