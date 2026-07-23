@@ -392,7 +392,7 @@ fn recover_with_calls_and_image<'image>(
         }
         match insn.mnemonic.as_str() {
             "add" | "adds" | "sub" | "subs" | "and" | "orr" | "eor" | "bic" | "orn" | "eon"
-            | "lsl" | "lsr" | "asr" | "mul" => {
+            | "lsl" | "lsr" | "asr" | "mul" | "sdiv" | "udiv" => {
                 let (dest, mut stmts): (RegRef, Vec<Stmt>) = lower_alu(insn)?;
                 let new_flags: Option<TrackedFlags> = if insn.mnemonic == "subs" {
                     let (mut snapshots, value): (Vec<Stmt>, Flags) = subtract_flags(insn)?;
@@ -1974,6 +1974,8 @@ fn lower_alu(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
         "lsr" => (BinOp::Shr, false),
         "asr" => (BinOp::Sar, false),
         "mul" => (BinOp::Imul, false),
+        "sdiv" => (BinOp::Sdiv, false),
+        "udiv" => (BinOp::Udiv, false),
         _ => return Err(reject_at(insn, "unsupported integer alu instruction")),
     };
     let mut prefix: Vec<Stmt> = Vec::new();

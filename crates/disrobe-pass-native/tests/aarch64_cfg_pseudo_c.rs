@@ -452,6 +452,42 @@ fn aarch64_widening_across_control_flow_abstains_rather_than_misversioning() {
 }
 
 #[test]
+fn aarch64_real_clang_sdiv_recovers_as_signed_division() {
+    let bytes: [u8; 8] = [0x00, 0x0c, 0xc1, 0x1a, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("sdiv w0,w0,w1");
+    assert!(
+        r.source
+            .contains("(int32_t)r_a64_tmp / (int32_t)(r_a64_x1)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_clang_udiv_recovers_as_unsigned_division() {
+    let bytes: [u8; 8] = [0x00, 0x08, 0xc1, 0x1a, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("udiv w0,w0,w1");
+    assert!(
+        r.source
+            .contains("(uint32_t)r_a64_tmp / (uint32_t)(r_a64_x1)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_clang_sdiv64_recovers_as_signed_doubleword_division() {
+    let bytes: [u8; 8] = [0x00, 0x0c, 0xc1, 0x9a, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("sdiv x0,x0,x1");
+    assert!(
+        r.source
+            .contains("(int64_t)r_a64_tmp / (int64_t)(r_a64_x1)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
 fn aarch64_real_clang_vector_and_recovers_as_elementwise_and() {
     let bytes: [u8; 8] = [0x20, 0x1c, 0x20, 0x4e, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("vector and");
