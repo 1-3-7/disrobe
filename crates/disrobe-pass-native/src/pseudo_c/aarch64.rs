@@ -1,10 +1,10 @@
 use super::{
     Abi, AggregatePlan, BinOp, CondKind, Error, ExtSource, Flags, FnReturn, FnSignature,
     FrameShape, Item, ItemKind, LeafRecovery, MemRef, Node, Reg, RegRef, ResolvedCall, Result,
-    ScalarType, Source, SretPlan, SretReturn, Stmt, Structured, VecArrangement, VecBinOp, VecElem,
-    VecStmt, Width, annotate_calls_block_with_order, collect_call_targets, condition_is_sound,
-    detect_sret, emit_c, emit_rust, infer_aggregate_plan, infer_params, plan_frame,
-    stmt_writes_rax_int, structure_items,
+    ScalarType, Source, SretPlan, SretReturn, Stmt, Structured, UnOp, VecArrangement, VecBinOp,
+    VecElem, VecStmt, Width, annotate_calls_block_with_order, collect_call_targets,
+    condition_is_sound, detect_sret, emit_c, emit_rust, infer_aggregate_plan, infer_params,
+    plan_frame, stmt_writes_rax_int, structure_items,
 };
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use std::collections::{BTreeMap, BTreeSet};
@@ -386,8 +386,8 @@ fn recover_with_calls_and_image<'image>(
             continue;
         }
         match insn.mnemonic.as_str() {
-            "add" | "adds" | "sub" | "subs" | "and" | "orr" | "eor" | "lsl" | "lsr" | "asr"
-            | "mul" => {
+            "add" | "adds" | "sub" | "subs" | "and" | "orr" | "eor" | "bic" | "orn" | "eon"
+            | "lsl" | "lsr" | "asr" | "mul" => {
                 let (dest, mut stmts): (RegRef, Vec<Stmt>) = lower_alu(insn)?;
                 let new_flags: Option<TrackedFlags> = if insn.mnemonic == "subs" {
                     let (mut snapshots, value): (Vec<Stmt>, Flags) = subtract_flags(insn)?;
@@ -1727,16 +1727,19 @@ fn lower_alu(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
     if dest.width != lhs.width {
         return Err(reject_at(insn, "mixed-width integer alu instruction"));
     }
-    let op: BinOp = match insn.mnemonic.as_str() {
-        "add" | "adds" => BinOp::Add,
-        "sub" | "subs" => BinOp::Sub,
-        "and" => BinOp::And,
-        "orr" => BinOp::Or,
-        "eor" => BinOp::Xor,
-        "lsl" => BinOp::Shl,
-        "lsr" => BinOp::Shr,
-        "asr" => BinOp::Sar,
-        "mul" => BinOp::Imul,
+    let (op, negate_rhs): (BinOp, bool) = match insn.mnemonic.as_str() {
+        "add" | "adds" => (BinOp::Add, false),
+        "sub" | "subs" => (BinOp::Sub, false),
+        "and" => (BinOp::And, false),
+        "orr" => (BinOp::Or, false),
+        "eor" => (BinOp::Xor, false),
+        "bic" => (BinOp::And, true),
+        "orn" => (BinOp::Or, true),
+        "eon" => (BinOp::Xor, true),
+        "lsl" => (BinOp::Shl, false),
+        "lsr" => (BinOp::Shr, false),
+        "asr" => (BinOp::Sar, false),
+        "mul" => (BinOp::Imul, false),
         _ => return Err(reject_at(insn, "unsupported integer alu instruction")),
     };
     let mut prefix: Vec<Stmt> = Vec::new();
@@ -1765,6 +1768,31 @@ fn lower_alu(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
             src: Source::Imm(amount),
         });
         rhs = Source::Reg(shifted);
+    }
+    if negate_rhs {
+        rhs = match rhs {
+            Source::Imm(value) => Source::Imm(!value),
+            Source::Reg(reg) => {
+                let scratch: RegRef = RegRef {
+                    reg: Reg::A64Tmp2,
+                    width: dest.width,
+                };
+                if reg.reg != Reg::A64Tmp2 {
+                    prefix.push(Stmt::Assign {
+                        dest: scratch,
+                        src: Source::Reg(reg),
+                    });
+                }
+                prefix.push(Stmt::UnAssign {
+                    dest: scratch,
+                    op: UnOp::Not,
+                });
+                Source::Reg(scratch)
+            }
+            Source::Lea { .. } | Source::Mem(_) => {
+                return Err(reject_at(insn, "unsupported bit-clear source"));
+            }
+        };
     }
     prefix.extend(bin_from(dest, lhs, op, rhs));
     Ok((dest, prefix))
