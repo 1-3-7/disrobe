@@ -164,6 +164,73 @@ fn post_tested_counting_loop_uses_cfg_do_while_without_goto() {
 }
 
 #[test]
+fn post_tested_loop_header_back_edge_falls_back_from_cfg_structuring() {
+    let bytes: [u8; 32] = [
+        0x01, 0x00, 0x00, 0x14, 0x00, 0x04, 0x00, 0x91, 0x1f, 0x00, 0x02, 0xeb, 0xa0, 0xff, 0xff,
+        0x54, 0x00, 0x04, 0x00, 0x91, 0x1f, 0x00, 0x01, 0xeb, 0x4b, 0xff, 0xff, 0x54, 0xc0, 0x03,
+        0x5f, 0xd6,
+    ];
+
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("header-edge fallback");
+
+    assert!(
+        recovered.source.contains("while (1)"),
+        "{}",
+        recovered.source
+    );
+    assert!(!recovered.source.contains("do {"), "{}", recovered.source);
+}
+
+#[test]
+fn post_tested_loop_mid_body_exit_emits_break_without_goto() {
+    let bytes: [u8; 36] = [
+        0x01, 0x00, 0x00, 0x14, 0x00, 0x04, 0x00, 0x91, 0x1f, 0x00, 0x02, 0xeb, 0xa0, 0x00, 0x00,
+        0x54, 0x00, 0x04, 0x00, 0x91, 0x01, 0x00, 0x00, 0x14, 0x1f, 0x00, 0x01, 0xeb, 0x2b, 0xff,
+        0xff, 0x54, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+
+    let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("post-tested break");
+    let condition: &str = "} while ((int64_t)(int64_t)(r_rax) < (int64_t)(int64_t)(r_a64_x1));";
+    let break_condition: &str = "if ((int64_t)(int64_t)(r_rax) == (int64_t)(int64_t)(r_a64_x2)) {";
+
+    assert!(recovered.source.contains("do {"), "{}", recovered.source);
+    assert!(recovered.source.contains(condition), "{}", recovered.source);
+    assert!(
+        recovered.source.contains(break_condition),
+        "{}",
+        recovered.source
+    );
+    assert!(recovered.source.contains("break;"), "{}", recovered.source);
+    assert!(!recovered.source.contains("goto"), "{}", recovered.source);
+    let rust_source: &str = recovered
+        .rust_source
+        .as_deref()
+        .expect("post-tested break rust source");
+
+    assert!(!rust_source.contains("continue;"), "{rust_source}");
+}
+
+#[test]
+fn post_tested_loop_mid_body_latch_edge_falls_back_from_cfg_structuring() {
+    let bytes: [u8; 36] = [
+        0x01, 0x00, 0x00, 0x14, 0x00, 0x04, 0x00, 0x91, 0x1f, 0x00, 0x02, 0xeb, 0x60, 0x00, 0x00,
+        0x54, 0x00, 0x04, 0x00, 0x91, 0x01, 0x00, 0x00, 0x14, 0x1f, 0x00, 0x01, 0xeb, 0x2b, 0xff,
+        0xff, 0x54, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("post-tested fallback");
+
+    assert!(
+        recovered.source.contains("while (1)"),
+        "{}",
+        recovered.source
+    );
+    assert!(!recovered.source.contains("do {"), "{}", recovered.source);
+}
+
+#[test]
 fn nested_pre_tested_loops_render_innermost_first_without_goto() {
     let bytes: [u8; 28] = [
         0x1f, 0x00, 0x01, 0xeb, 0xaa, 0x00, 0x00, 0x54, 0x5f, 0x00, 0x03, 0xeb, 0xaa, 0xff, 0xff,
@@ -184,6 +251,76 @@ fn nested_pre_tested_loops_render_innermost_first_without_goto() {
     );
     assert!(outer_index < inner_index, "{}", recovered.source);
     assert!(!recovered.source.contains("goto"), "{}", recovered.source);
+}
+
+#[test]
+fn pre_tested_loop_mid_body_exit_emits_break_without_goto() {
+    let bytes: [u8; 32] = [
+        0x1f, 0x00, 0x01, 0xeb, 0xca, 0x00, 0x00, 0x54, 0x00, 0x04, 0x00, 0x91, 0x1f, 0x00, 0x02,
+        0xeb, 0x60, 0x00, 0x00, 0x54, 0x00, 0x04, 0x00, 0x91, 0xfa, 0xff, 0xff, 0x17, 0xc0, 0x03,
+        0x5f, 0xd6,
+    ];
+
+    let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("mid-body break");
+    let loop_condition: &str = "while ((int64_t)(int64_t)(r_rax) < (int64_t)(int64_t)(r_a64_x1)) {";
+    let break_condition: &str = "if ((int64_t)(int64_t)(r_rax) == (int64_t)(int64_t)(r_a64_x2)) {";
+
+    assert!(
+        recovered.source.contains(loop_condition),
+        "{}",
+        recovered.source
+    );
+    assert!(
+        recovered.source.contains(break_condition),
+        "{}",
+        recovered.source
+    );
+    assert!(recovered.source.contains("break;"), "{}", recovered.source);
+    assert!(!recovered.source.contains("goto"), "{}", recovered.source);
+}
+
+#[test]
+fn pre_tested_loop_mid_body_back_edge_emits_continue_without_goto() {
+    let bytes: [u8; 32] = [
+        0x1f, 0x00, 0x01, 0xeb, 0xca, 0x00, 0x00, 0x54, 0x00, 0x04, 0x00, 0x91, 0x1f, 0x00, 0x02,
+        0xeb, 0x80, 0xff, 0xff, 0x54, 0x00, 0x04, 0x00, 0x91, 0xfa, 0xff, 0xff, 0x17, 0xc0, 0x03,
+        0x5f, 0xd6,
+    ];
+
+    let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("mid-body continue");
+    let loop_condition: &str = "while ((int64_t)(int64_t)(r_rax) < (int64_t)(int64_t)(r_a64_x1)) {";
+    let continue_condition: &str =
+        "if ((int64_t)(int64_t)(r_rax) == (int64_t)(int64_t)(r_a64_x2)) {";
+
+    assert!(
+        recovered.source.contains(loop_condition),
+        "{}",
+        recovered.source
+    );
+    assert!(
+        recovered.source.contains(continue_condition),
+        "{}",
+        recovered.source
+    );
+    assert!(
+        recovered.source.contains("continue;"),
+        "{}",
+        recovered.source
+    );
+    assert!(!recovered.source.contains("goto"), "{}", recovered.source);
+}
+
+#[test]
+fn loop_with_distinct_mid_body_exit_targets_falls_back_from_cfg_structuring() {
+    let bytes: [u8; 36] = [
+        0x1f, 0x00, 0x01, 0xeb, 0xea, 0x00, 0x00, 0x54, 0x00, 0x04, 0x00, 0x91, 0x1f, 0x00, 0x02,
+        0xeb, 0x60, 0x00, 0x00, 0x54, 0x00, 0x04, 0x00, 0x91, 0xfa, 0xff, 0xff, 0x17, 0xc0, 0x03,
+        0x5f, 0xd6, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+
+    let result: Result<LeafRecovery, Error> = recover_aarch64_function(&bytes, 0);
+
+    assert!(result.is_err(), "distinct exits must fall back");
 }
 
 #[test]
