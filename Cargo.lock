@@ -2319,6 +2319,7 @@ version = "0.10.4"
 dependencies = [
  "blake3",
  "boa_engine",
+ "disrobe-bytes",
  "disrobe-core",
  "disrobe-nir",
  "miette",
