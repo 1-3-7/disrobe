@@ -360,6 +360,9 @@ fn recover_with_calls_and_image<'image>(
             push_stmts(&mut items, base, index, stmts)?;
             continue;
         }
+        if insn.mnemonic == "nop" {
+            continue;
+        }
         match insn.mnemonic.as_str() {
             "add" | "adds" | "sub" | "subs" | "and" | "orr" | "eor" | "lsl" | "lsr" | "asr"
             | "mul" => {
