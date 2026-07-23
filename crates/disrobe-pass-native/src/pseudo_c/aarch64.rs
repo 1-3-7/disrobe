@@ -1,10 +1,10 @@
 use super::{
-    Abi, AggregatePlan, BinOp, CondKind, Error, Flags, FnReturn, FnSignature, FrameShape, Item,
-    ItemKind, LeafRecovery, MemRef, Node, Reg, RegRef, ResolvedCall, Result, ScalarType, Source,
-    SretPlan, SretReturn, Stmt, Structured, VecArrangement, VecBinOp, VecElem, VecStmt, Width,
-    annotate_calls_block_with_order, collect_call_targets, condition_is_sound, detect_sret, emit_c,
-    emit_rust, infer_aggregate_plan, infer_params, plan_frame, stmt_writes_rax_int,
-    structure_items,
+    Abi, AggregatePlan, BinOp, CondKind, Error, ExtSource, Flags, FnReturn, FnSignature,
+    FrameShape, Item, ItemKind, LeafRecovery, MemRef, Node, Reg, RegRef, ResolvedCall, Result,
+    ScalarType, Source, SretPlan, SretReturn, Stmt, Structured, VecArrangement, VecBinOp, VecElem,
+    VecStmt, Width, annotate_calls_block_with_order, collect_call_targets, condition_is_sound,
+    detect_sret, emit_c, emit_rust, infer_aggregate_plan, infer_params, plan_frame,
+    stmt_writes_rax_int, structure_items,
 };
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use std::collections::{BTreeMap, BTreeSet};
@@ -432,6 +432,38 @@ fn recover_with_calls_and_image<'image>(
                 if let Some(dest) = dest
                     && dest.reg == Reg::Rax
                 {
+                    return_width = dest.width;
+                }
+            }
+            mnemonic @ ("ldrb" | "ldrh" | "ldrsb" | "ldrsh" | "ldrsw" | "ldurb" | "ldurh"
+            | "ldursb" | "ldursh" | "ldursw") => {
+                let (load_width, signed): (Width, bool) = match mnemonic {
+                    "ldrb" | "ldurb" => (Width::W8, false),
+                    "ldrh" | "ldurh" => (Width::W16, false),
+                    "ldrsb" | "ldursb" => (Width::W8, true),
+                    "ldrsh" | "ldursh" => (Width::W16, true),
+                    _ => (Width::W32, true),
+                };
+                let operands: Vec<&str> = split_operands(&insn.operands);
+                if operands.len() != 2 {
+                    return Err(reject_at(insn, "malformed sized load"));
+                }
+                let dest: RegRef = parse_reg(operands[0])?;
+                let (mem, pre_index): (MemRef, bool) = parse_memory(operands[1], load_width)?;
+                if pre_index {
+                    return Err(reject_at(insn, "pre-indexed sized load is unsupported"));
+                }
+                push_stmts(
+                    &mut items,
+                    base,
+                    index,
+                    vec![Stmt::Extend {
+                        dest,
+                        src: ExtSource::Mem(mem),
+                        signed,
+                    }],
+                )?;
+                if dest.reg == Reg::Rax {
                     return_width = dest.width;
                 }
             }

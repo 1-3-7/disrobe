@@ -3,6 +3,39 @@
 use disrobe_pass_native::{Error, LeafRecovery, recover_aarch64_function};
 
 #[test]
+fn aarch64_real_clang_ldrb_zero_extends_a_byte() {
+    let bytes: [u8; 8] = [0x00, 0x00, 0x40, 0x39, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ldrb");
+    assert!(r.source.contains("*(uint8_t*)"), "{}", r.source);
+    assert!(r.source.contains("(uint8_t)"), "{}", r.source);
+    assert!(!r.source.contains("(int8_t)"), "{}", r.source);
+}
+
+#[test]
+fn aarch64_real_clang_ldrsb_sign_extends_a_byte() {
+    let bytes: [u8; 8] = [0x00, 0x00, 0xc0, 0x39, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ldrsb");
+    assert!(r.source.contains("*(uint8_t*)"), "{}", r.source);
+    assert!(r.source.contains("(int8_t)"), "{}", r.source);
+}
+
+#[test]
+fn aarch64_real_clang_ldrh_zero_extends_a_halfword() {
+    let bytes: [u8; 8] = [0x00, 0x00, 0x40, 0x79, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ldrh");
+    assert!(r.source.contains("*(uint16_t*)"), "{}", r.source);
+    assert!(r.source.contains("(uint16_t)"), "{}", r.source);
+}
+
+#[test]
+fn aarch64_real_clang_ldrsw_sign_extends_a_word_to_64_bits() {
+    let bytes: [u8; 8] = [0x00, 0x00, 0x80, 0xb9, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ldrsw");
+    assert!(r.source.contains("*(uint32_t*)"), "{}", r.source);
+    assert!(r.source.contains("(int64_t)(int32_t)"), "{}", r.source);
+}
+
+#[test]
 fn aarch64_real_clang_unscaled_load_recovers_as_a_load() {
     let bytes: [u8; 8] = [0x00, 0xc0, 0x5f, 0xb8, 0xc0, 0x03, 0x5f, 0xd6];
     let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ldur");
