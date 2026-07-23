@@ -48,6 +48,24 @@ static RAND_PLAIN: LazyLock<Regex> = LazyLock::new(|| crate::regex_util::safe_re
 static VAR_REF: LazyLock<Regex> =
     LazyLock::new(|| crate::regex_util::safe_regex(r"%(?P<name>[A-Za-z_][A-Za-z0-9_]*)%"));
 
+const MAX_REVERSE_ADDED_BYTES: usize = expand::MAX_EXPANSION_OUTPUT;
+
+fn reserve_expansion_bytes(
+    added_bytes: &mut usize,
+    matched_len: usize,
+    replacement_len: usize,
+) -> bool {
+    let additional: usize = replacement_len.saturating_sub(matched_len);
+    let Some(next): Option<usize> = added_bytes.checked_add(additional) else {
+        return false;
+    };
+    if next > MAX_REVERSE_ADDED_BYTES {
+        return false;
+    }
+    *added_bytes = next;
+    true
+}
+
 #[must_use]
 pub fn reverse_batch(input: &str) -> BatchReport {
     let mut env: BTreeMap<String, String> = BTreeMap::new();
@@ -63,13 +81,18 @@ pub fn reverse_batch(input: &str) -> BatchReport {
     }
     let mut current: String = input.to_owned();
     let mut rand_subs: usize = 0;
+    let mut added_bytes: usize = 0;
     current = RAND_RANGE
         .replace_all(&current, |c: &regex::Captures<'_>| {
-            rand_subs += 1;
+            let matched: &str = c.get(0).map_or("", |m: regex::Match<'_>| m.as_str());
             let len: usize = c
                 .get(2)
                 .and_then(|m: regex::Match<'_>| m.as_str().parse::<usize>().ok())
                 .unwrap_or(1);
+            if !reserve_expansion_bytes(&mut added_bytes, matched.len(), len) {
+                return matched.to_owned();
+            }
+            rand_subs += 1;
             "0".repeat(len)
         })
         .into_owned();
@@ -96,6 +119,10 @@ pub fn reverse_batch(input: &str) -> BatchReport {
                             .map_or(String::new(), |m: regex::Match<'_>| m.as_str().to_owned())
                     },
                     |v: &String| {
+                        let matched: &str = c.get(0).map_or("", |m: regex::Match<'_>| m.as_str());
+                        if !reserve_expansion_bytes(&mut added_bytes, matched.len(), v.len()) {
+                            return matched.to_owned();
+                        }
                         hit = true;
                         set_subs += 1;
                         v.clone()
