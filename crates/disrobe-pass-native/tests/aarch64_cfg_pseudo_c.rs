@@ -277,6 +277,108 @@ fn aarch64_real_clang_ldp_loads_a_vector_register_pair_from_adjacent_offsets() {
 }
 
 #[test]
+fn aarch64_real_clang_autovectorized_sum4_recovers_load_reduce_return() {
+    let bytes: [u8; 16] = [
+        0x00, 0x00, 0xc0, 0x3d, 0x00, 0xb8, 0xb1, 0x4e, 0x00, 0x00, 0x26, 0x1e, 0xc0, 0x03, 0x5f,
+        0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("sum4 ldr q + addv + fmov");
+    assert!(
+        r.source.contains("v0 = *(recovered_i32x4*)(r_rax)"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source
+            .contains("(uint32_t)v0[0] + (uint32_t)v0[1] + (uint32_t)v0[2] + (uint32_t)v0[3]"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source.contains("(uint32_t)((recovered_i32x4)v0)[0]"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_clang_autovectorized_dot4_recovers_two_loads_mul_reduce() {
+    let bytes: [u8; 24] = [
+        0x00, 0x00, 0xc0, 0x3d, 0x21, 0x00, 0xc0, 0x3d, 0x20, 0x9c, 0xa0, 0x4e, 0x00, 0xb8, 0xb1,
+        0x4e, 0x00, 0x00, 0x26, 0x1e, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("dot4");
+    assert!(
+        r.source.contains("v0 = *(recovered_i32x4*)(r_rax)"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source.contains("v1 = *(recovered_i32x4*)(r_a64_x1)"),
+        "{}",
+        r.source
+    );
+    assert!(r.source.contains("v0 = v1 * v0"), "{}", r.source);
+    assert!(
+        r.source
+            .contains("(uint32_t)v0[0] + (uint32_t)v0[1] + (uint32_t)v0[2] + (uint32_t)v0[3]"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_clang_autovectorized_sumall_recovers_dispatch_vectorloop_reduction_and_tail() {
+    let bytes: [u8; 140] = [
+        0x3f, 0x04, 0x00, 0x71, 0xeb, 0x00, 0x00, 0x54, 0x3f, 0x10, 0x00, 0x71, 0xe9, 0x03, 0x01,
+        0x2a, 0xe2, 0x00, 0x00, 0x54, 0xea, 0x03, 0x1f, 0xaa, 0xe8, 0x03, 0x1f, 0xaa, 0x14, 0x00,
+        0x00, 0x14, 0xe8, 0x03, 0x1f, 0xaa, 0xe0, 0x03, 0x08, 0xaa, 0xc0, 0x03, 0x5f, 0xd6, 0x00,
+        0xe4, 0x00, 0x6f, 0x01, 0xe4, 0x00, 0x6f, 0x2a, 0x71, 0x7e, 0x92, 0x08, 0x40, 0x00, 0x91,
+        0xeb, 0x03, 0x0a, 0xaa, 0x02, 0x8d, 0x7f, 0xad, 0x6b, 0x11, 0x00, 0xf1, 0x08, 0x81, 0x00,
+        0x91, 0x40, 0x84, 0xe0, 0x4e, 0x61, 0x84, 0xe1, 0x4e, 0x61, 0xff, 0xff, 0x54, 0x20, 0x84,
+        0xe0, 0x4e, 0x5f, 0x01, 0x09, 0xeb, 0x00, 0xb8, 0xf1, 0x5e, 0x08, 0x00, 0x66, 0x9e, 0xe0,
+        0x00, 0x00, 0x54, 0x0b, 0x0c, 0x0a, 0x8b, 0x29, 0x01, 0x0a, 0xcb, 0x6a, 0x85, 0x40, 0xf8,
+        0x29, 0x05, 0x00, 0xf1, 0x48, 0x01, 0x08, 0x8b, 0xa1, 0xff, 0xff, 0x54, 0xe0, 0x03, 0x08,
+        0xaa, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("autovectorized sumall");
+    assert!(!r.source.contains("goto"), "{}", r.source);
+    assert!(
+        r.source
+            .contains("v2 = *(recovered_i64x2*)(r_a64_x8 + (uint64_t)(int64_t)-16LL)"),
+        "{}",
+        r.source
+    );
+    assert!(r.source.contains("v0 = v2 + v0"), "{}", r.source);
+    assert!(
+        r.source
+            .contains("(recovered_i64x2){(int64_t)((uint64_t)v0[0] + (uint64_t)v0[1]), 0}"),
+        "{}",
+        r.source
+    );
+    assert_eq!(r.source.matches("while (1)").count(), 2, "{}", r.source);
+}
+
+#[test]
+fn aarch64_real_clang_gp_pair_ldp_loads_two_doublewords_and_adds_them() {
+    let bytes: [u8; 12] = [
+        0x08, 0x24, 0x40, 0xa9, 0x20, 0x01, 0x08, 0x8b, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("gp ldp x8,x9 + add");
+    assert!(
+        r.source.contains("*(uint64_t*)(uintptr_t)(r_rax)"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source
+            .contains("*(uint64_t*)(uintptr_t)(r_rax + (uint64_t)(int64_t)8LL)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
 fn aarch64_real_clang_vector_and_recovers_as_elementwise_and() {
     let bytes: [u8; 8] = [0x20, 0x1c, 0x20, 0x4e, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("vector and");
