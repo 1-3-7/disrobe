@@ -147,6 +147,28 @@ fn normalize(expr: &Expr, width: Width, atoms: &mut AtomTable) -> Option<Poly> {
         Expr::Binary(BinOp::And | BinOp::Or, left, right) if left == right => {
             normalize(left, width, atoms)
         }
+        Expr::Binary(BinOp::Xor, left, right) => {
+            let left_poly: Poly = normalize(left, width, atoms)?;
+            let right_poly: Poly = normalize(right, width, atoms)?;
+            let conjunction: u32 = atoms.intern(&Expr::and((**left).clone(), (**right).clone()))?;
+            let sum: Poly = add(&left_poly, &right_poly, mask);
+            Some(add(
+                &sum,
+                &negate(&scale(&poly_atom(conjunction), 2, mask), mask),
+                mask,
+            ))
+        }
+        Expr::Binary(BinOp::Or, left, right) => {
+            let left_poly: Poly = normalize(left, width, atoms)?;
+            let right_poly: Poly = normalize(right, width, atoms)?;
+            let conjunction: u32 = atoms.intern(&Expr::and((**left).clone(), (**right).clone()))?;
+            let sum: Poly = add(&left_poly, &right_poly, mask);
+            Some(add(&sum, &negate(&poly_atom(conjunction), mask), mask))
+        }
+        Expr::Unary(UnOp::Not, inner) => {
+            let inner_poly: Poly = normalize(inner, width, atoms)?;
+            Some(add(&poly_constant(mask), &negate(&inner_poly, mask), mask))
+        }
         _ => Some(poly_atom(atoms.intern(expr)?)),
     }
 }
@@ -307,6 +329,51 @@ mod tests {
             &original,
             &candidate,
             Width::W64
+        ));
+    }
+
+    #[test]
+    fn xor_plus_twice_and_recovers_addition_at_w64() {
+        let obfuscated: Expr = Expr::add(
+            Expr::xor(var(0), var(1)),
+            Expr::mul(Expr::konst(2), Expr::and(var(0), var(1))),
+        );
+        let clean: Expr = Expr::add(var(0), var(1));
+        assert!(polynomial_identity_proves(&obfuscated, &clean, Width::W64));
+    }
+
+    #[test]
+    fn or_plus_and_recovers_addition_at_w64() {
+        let obfuscated: Expr = Expr::add(Expr::or(var(0), var(1)), Expr::and(var(0), var(1)));
+        let clean: Expr = Expr::add(var(0), var(1));
+        assert!(polynomial_identity_proves(&obfuscated, &clean, Width::W64));
+    }
+
+    #[test]
+    fn or_minus_xor_recovers_and_at_w32() {
+        let obfuscated: Expr = Expr::sub(Expr::or(var(0), var(1)), Expr::xor(var(0), var(1)));
+        let clean: Expr = Expr::and(var(0), var(1));
+        assert!(polynomial_identity_proves(&obfuscated, &clean, Width::W32));
+    }
+
+    #[test]
+    fn complement_plus_self_is_all_ones_at_w32() {
+        let obfuscated: Expr = Expr::add(Expr::not(var(0)), var(0));
+        assert!(polynomial_identity_proves(
+            &obfuscated,
+            &Expr::konst(0xFFFF_FFFF),
+            Width::W32
+        ));
+    }
+
+    #[test]
+    fn does_not_falsely_equate_or_with_and_at_w32() {
+        let disjunction: Expr = Expr::or(var(0), var(1));
+        let conjunction: Expr = Expr::and(var(0), var(1));
+        assert!(!polynomial_identity_proves(
+            &disjunction,
+            &conjunction,
+            Width::W32
         ));
     }
 
