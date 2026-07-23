@@ -3294,7 +3294,7 @@ fn is_qreg_token(token: &str) -> bool {
 fn lower_vector(insn: &DisasmInsn) -> Result<Vec<Stmt>> {
     let operands: Vec<&str> = split_operands(&insn.operands);
     match insn.mnemonic.as_str() {
-        "add" | "sub" | "mul" => vector_bin(insn, &operands, false),
+        "add" | "sub" | "mul" | "and" | "orr" | "eor" => vector_bin(insn, &operands, false),
         "fadd" | "fsub" | "fmul" | "fdiv" => vector_bin(insn, &operands, true),
         "ldr" => vector_load_store(insn, &operands, true),
         "str" => vector_load_store(insn, &operands, false),
@@ -3318,6 +3318,9 @@ fn vector_bin(insn: &DisasmInsn, operands: &[&str], float: bool) -> Result<Vec<S
         "sub" | "fsub" => VecBinOp::Sub,
         "mul" | "fmul" => VecBinOp::Mul,
         "fdiv" => VecBinOp::Div,
+        "and" => VecBinOp::And,
+        "orr" => VecBinOp::Or,
+        "eor" => VecBinOp::Xor,
         _ => return Err(reject_at(insn, "unsupported vector arithmetic")),
     };
     Ok(vec![Stmt::Vector(VecStmt::Bin {
