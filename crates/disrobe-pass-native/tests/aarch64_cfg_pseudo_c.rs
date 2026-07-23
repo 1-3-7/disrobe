@@ -25,6 +25,16 @@ fn aarch64_real_clang_framed_loop_function_recovers_end_to_end() {
 }
 
 #[test]
+fn aarch64_real_clang_adrp_materializes_a_page_address_for_a_global_load() {
+    let bytes: [u8; 12] = [
+        0x08, 0x00, 0x00, 0x90, 0x00, 0x01, 0x40, 0xb9, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0x0021_0000).expect("adrp global load");
+    assert!(r.source.contains("2162688LL"), "{}", r.source);
+    assert!(r.source.contains("*(uint32_t*)"), "{}", r.source);
+}
+
+#[test]
 fn aarch64_real_clang_bic_is_and_not() {
     let bytes: [u8; 8] = [0x00, 0x00, 0x21, 0x0a, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("bic");
