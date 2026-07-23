@@ -3,6 +3,7 @@ use std::io::Write;
 
 use crate::error::{Error, Result};
 use crate::quota::bounded_prealloc;
+use disrobe_bytes::ByteReader;
 
 pub const UNITYFS_MAGIC: &[u8; 8] = b"UnityFS\x00";
 
@@ -96,98 +97,53 @@ pub fn detect_unityfs(bytes: &[u8]) -> bool {
     bytes.starts_with(UNITYFS_MAGIC)
 }
 
-struct BeReader<'a> {
-    bytes: &'a [u8],
-    pos: usize,
+fn unityfs_truncated(field: &'static str) -> Error {
+    Error::Decompression(format!("unityfs: truncated {field}"))
 }
 
-impl<'a> BeReader<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, pos: 0 }
-    }
-
-    const fn with_pos(bytes: &'a [u8], pos: usize) -> Self {
-        Self { bytes, pos }
-    }
-
-    fn read_u16(&mut self) -> Result<u16> {
-        let slice: &[u8] = self
-            .bytes
-            .get(self.pos..self.pos + 2)
-            .ok_or_else(|| Error::Decompression("unityfs: truncated u16".to_owned()))?;
-        self.pos += 2;
-        Ok(u16::from_be_bytes([slice[0], slice[1]]))
-    }
-
-    fn read_u32(&mut self) -> Result<u32> {
-        let slice: &[u8] = self
-            .bytes
-            .get(self.pos..self.pos + 4)
-            .ok_or_else(|| Error::Decompression("unityfs: truncated u32".to_owned()))?;
-        self.pos += 4;
-        Ok(u32::from_be_bytes([slice[0], slice[1], slice[2], slice[3]]))
-    }
-
-    fn read_i32(&mut self) -> Result<i32> {
-        Ok(self.read_u32()? as i32)
-    }
-
-    fn read_i64(&mut self) -> Result<i64> {
-        let slice: &[u8] = self
-            .bytes
-            .get(self.pos..self.pos + 8)
-            .ok_or_else(|| Error::Decompression("unityfs: truncated i64".to_owned()))?;
-        self.pos += 8;
-        Ok(i64::from_be_bytes([
-            slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
-        ]))
-    }
-
-    fn read_cstring(&mut self) -> Result<String> {
-        let start: usize = self.pos;
-        let limit: usize = (start + MAX_STRING_SCAN).min(self.bytes.len());
-        let mut end: usize = start;
-        while end < limit {
-            if self.bytes[end] == 0 {
-                let text: String = String::from_utf8_lossy(&self.bytes[start..end]).into_owned();
-                self.pos = end + 1;
-                return Ok(text);
-            }
-            end += 1;
-        }
-        Err(Error::Decompression(
+fn read_unityfs_cstring(reader: &mut ByteReader<'_>) -> Result<String> {
+    let scan_len: usize = reader.remaining().min(MAX_STRING_SCAN);
+    let scan: &[u8] = reader
+        .peek_bytes(scan_len)
+        .map_err(|_| unityfs_truncated("byte run"))?;
+    let Some(nul_index): Option<usize> = scan.iter().position(|&byte: &u8| byte == 0) else {
+        return Err(Error::Decompression(
             "unityfs: unterminated c-string in header".to_owned(),
-        ))
-    }
-
-    fn read_exact(&mut self, len: usize) -> Result<&'a [u8]> {
-        let slice: &[u8] = self
-            .bytes
-            .get(self.pos..self.pos + len)
-            .ok_or_else(|| Error::Decompression("unityfs: truncated byte run".to_owned()))?;
-        self.pos += len;
-        Ok(slice)
-    }
+        ));
+    };
+    let text: String = String::from_utf8_lossy(
+        reader
+            .read_bytes(nul_index)
+            .map_err(|_| unityfs_truncated("byte run"))?,
+    )
+    .into_owned();
+    reader.skip(1).map_err(|_| unityfs_truncated("byte run"))?;
+    Ok(text)
 }
 
 pub fn parse_header(bytes: &[u8]) -> Result<UnityFsHeader> {
-    let mut r: BeReader<'_> = BeReader::new(bytes);
-    let magic: &[u8] = r.read_exact(UNITYFS_MAGIC.len())?;
+    let mut r: ByteReader<'_> = ByteReader::new(bytes);
+    let magic: &[u8] = r
+        .read_bytes(UNITYFS_MAGIC.len())
+        .map_err(|_| unityfs_truncated("byte run"))?;
     if magic != UNITYFS_MAGIC {
         return Err(Error::Decompression(
             "unityfs: missing `UnityFS` signature".to_owned(),
         ));
     }
-    let version: u32 = r.read_u32()?;
-    let unity_version: String = r.read_cstring()?;
-    let unity_revision: String = r.read_cstring()?;
-    let size: i64 = r.read_i64()?;
-    let compressed_blocks_info_size: u32 = r.read_u32()?;
-    let uncompressed_blocks_info_size: u32 = r.read_u32()?;
-    let flags: u32 = r.read_u32()?;
-    if version >= 7 {
-        r.pos = align_up(r.pos, 16);
-    }
+    let version: u32 = r.read_u32_be().map_err(|_| unityfs_truncated("u32"))?;
+    let unity_version: String = read_unityfs_cstring(&mut r)?;
+    let unity_revision: String = read_unityfs_cstring(&mut r)?;
+    let size: i64 = r.read_i64_be().map_err(|_| unityfs_truncated("i64"))?;
+    let compressed_blocks_info_size: u32 = r.read_u32_be().map_err(|_| unityfs_truncated("u32"))?;
+    let uncompressed_blocks_info_size: u32 =
+        r.read_u32_be().map_err(|_| unityfs_truncated("u32"))?;
+    let flags: u32 = r.read_u32_be().map_err(|_| unityfs_truncated("u32"))?;
+    let header_end: usize = if version >= 7 {
+        align_up(r.position(), 16)
+    } else {
+        r.position()
+    };
     let blocks_info_compression: UnityCompression =
         UnityCompression::from_code(flags & FLAG_COMPRESSION_MASK);
     let blocks_info_at_end: bool = flags & FLAG_BLOCKS_INFO_AT_END != 0;
@@ -201,7 +157,7 @@ pub fn parse_header(bytes: &[u8]) -> Result<UnityFsHeader> {
         flags,
         blocks_info_compression,
         blocks_info_at_end,
-        header_end: r.pos,
+        header_end,
     })
 }
 
@@ -322,9 +278,11 @@ pub fn parse(bytes: &[u8]) -> Result<UnityFsArchive> {
         header.uncompressed_blocks_info_size as usize,
     )?;
 
-    let mut r: BeReader<'_> = BeReader::with_pos(&info, 0);
-    let _hash: &[u8] = r.read_exact(BLOCKS_INFO_HASH_LEN)?;
-    let block_count_raw: i32 = r.read_i32()?;
+    let mut r: ByteReader<'_> = ByteReader::new(&info);
+    let _hash: &[u8] = r
+        .read_bytes(BLOCKS_INFO_HASH_LEN)
+        .map_err(|_| unityfs_truncated("byte run"))?;
+    let block_count_raw: i32 = r.read_i32_be().map_err(|_| unityfs_truncated("u32"))?;
     let block_count: usize =
         usize::try_from(block_count_raw).map_err(|_: std::num::TryFromIntError| {
             Error::Decompression("unityfs: negative block count".to_owned())
@@ -336,9 +294,9 @@ pub fn parse(bytes: &[u8]) -> Result<UnityFsArchive> {
     }
     let mut blocks: Vec<UnityBlockInfo> = Vec::with_capacity(block_count.min(1024));
     for _ in 0..block_count {
-        let uncompressed_size: u32 = r.read_u32()?;
-        let compressed_size: u32 = r.read_u32()?;
-        let block_flags: u16 = r.read_u16()?;
+        let uncompressed_size: u32 = r.read_u32_be().map_err(|_| unityfs_truncated("u32"))?;
+        let compressed_size: u32 = r.read_u32_be().map_err(|_| unityfs_truncated("u32"))?;
+        let block_flags: u16 = r.read_u16_be().map_err(|_| unityfs_truncated("u16"))?;
         let compression: UnityCompression =
             UnityCompression::from_code(u32::from(block_flags & BLOCK_FLAG_COMPRESSION_MASK));
         blocks.push(UnityBlockInfo {
@@ -348,7 +306,7 @@ pub fn parse(bytes: &[u8]) -> Result<UnityFsArchive> {
         });
     }
 
-    let node_count_raw: i32 = r.read_i32()?;
+    let node_count_raw: i32 = r.read_i32_be().map_err(|_| unityfs_truncated("u32"))?;
     let node_count: usize =
         usize::try_from(node_count_raw).map_err(|_: std::num::TryFromIntError| {
             Error::Decompression("unityfs: negative node count".to_owned())
@@ -360,10 +318,10 @@ pub fn parse(bytes: &[u8]) -> Result<UnityFsArchive> {
     }
     let mut nodes: Vec<UnityNode> = Vec::with_capacity(node_count.min(1024));
     for _ in 0..node_count {
-        let offset: i64 = r.read_i64()?;
-        let size: i64 = r.read_i64()?;
-        let flags: u32 = r.read_u32()?;
-        let path: String = r.read_cstring()?;
+        let offset: i64 = r.read_i64_be().map_err(|_| unityfs_truncated("i64"))?;
+        let size: i64 = r.read_i64_be().map_err(|_| unityfs_truncated("i64"))?;
+        let flags: u32 = r.read_u32_be().map_err(|_| unityfs_truncated("u32"))?;
+        let path: String = read_unityfs_cstring(&mut r)?;
         nodes.push(UnityNode {
             offset,
             size,
