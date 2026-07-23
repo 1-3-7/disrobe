@@ -522,12 +522,36 @@ enum DividendHigh {
     Zeroed,
 }
 
-type AddrTerms = (Option<Reg>, Option<(Reg, u8)>, i64);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IndexExtend {
+    Full,
+    SignExtendWord,
+    ZeroExtendWord,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IndexOperand {
+    reg: Reg,
+    scale: u8,
+    extend: IndexExtend,
+}
+
+impl IndexOperand {
+    const fn full(reg: Reg, scale: u8) -> Self {
+        Self {
+            reg,
+            scale,
+            extend: IndexExtend::Full,
+        }
+    }
+}
+
+type AddrTerms = (Option<Reg>, Option<IndexOperand>, i64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MemRef {
     base: Option<Reg>,
-    index: Option<(Reg, u8)>,
+    index: Option<IndexOperand>,
     disp: i64,
     width: Width,
 }
@@ -538,7 +562,7 @@ enum Source {
     Imm(i64),
     Lea {
         base: Option<Reg>,
-        index: Option<(Reg, u8)>,
+        index: Option<IndexOperand>,
         disp: i64,
     },
     Mem(MemRef),
@@ -3042,7 +3066,11 @@ fn parse_value_table_load(insn: &DisasmInsn, tbl_reg: Reg, disc_reg: Reg) -> Opt
     match insn.mnemonic.as_str() {
         "mov" => {
             let mem: MemRef = parse_mem_access(rhs.trim(), Some(dest.width))?;
-            let (index_reg, scale): (Reg, u8) = mem.index?;
+            let IndexOperand {
+                reg: index_reg,
+                scale,
+                ..
+            }: IndexOperand = mem.index?;
             if mem.base != Some(tbl_reg) || index_reg != disc_reg || mem.disp != 0 {
                 return None;
             }
@@ -3060,7 +3088,11 @@ fn parse_value_table_load(insn: &DisasmInsn, tbl_reg: Reg, disc_reg: Reg) -> Opt
             if mem.width != Width::W32 {
                 return None;
             }
-            let (index_reg, scale): (Reg, u8) = mem.index?;
+            let IndexOperand {
+                reg: index_reg,
+                scale,
+                ..
+            }: IndexOperand = mem.index?;
             if mem.base != Some(tbl_reg) || index_reg != disc_reg || mem.disp != 0 || scale != 4 {
                 return None;
             }
@@ -3357,7 +3389,11 @@ fn parse_scaled_index_lea(insn: &DisasmInsn) -> Option<(Reg, Reg, u8)> {
     if base.is_some() || disp != 0 {
         return None;
     }
-    let (index_reg, scale): (Reg, u8) = index?;
+    let IndexOperand {
+        reg: index_reg,
+        scale,
+        ..
+    }: IndexOperand = index?;
     Some((dest.reg, index_reg, scale))
 }
 
@@ -3375,7 +3411,11 @@ fn parse_o0_table_load(insn: &DisasmInsn, scale_reg: Reg, tbl_reg: Reg) -> Optio
         return None;
     }
     let base: Reg = mem.base?;
-    let (index_reg, index_scale): (Reg, u8) = mem.index?;
+    let IndexOperand {
+        reg: index_reg,
+        scale: index_scale,
+        ..
+    }: IndexOperand = mem.index?;
     if index_scale != 1 || scale_reg == tbl_reg {
         return None;
     }
@@ -3447,7 +3487,11 @@ fn parse_movsxd_table_load(insn: &DisasmInsn, base_reg: Reg) -> Option<(Reg, Reg
     if mem.width != Width::W32 {
         return None;
     }
-    let (index_reg, scale): (Reg, u8) = mem.index?;
+    let IndexOperand {
+        reg: index_reg,
+        scale,
+        ..
+    }: IndexOperand = mem.index?;
     if scale != 4 {
         return None;
     }
@@ -5207,8 +5251,8 @@ fn source_regs(src: &Source, acc: &mut Vec<Reg>) {
             if let Some(b) = base {
                 acc.push(*b);
             }
-            if let Some((i, _)) = index {
-                acc.push(*i);
+            if let Some(idx) = index {
+                acc.push(idx.reg);
             }
         }
         Source::Mem(mem) => mem_regs(mem, acc),
@@ -5219,8 +5263,8 @@ fn mem_regs(mem: &MemRef, acc: &mut Vec<Reg>) {
     if let Some(b) = mem.base {
         acc.push(b);
     }
-    if let Some((i, _)) = mem.index {
-        acc.push(i);
+    if let Some(idx) = mem.index {
+        acc.push(idx.reg);
     }
 }
 
@@ -6992,8 +7036,8 @@ fn read_addr(
     if let Some(b) = addr.base {
         note(b, written, acc);
     }
-    if let Some((i, _)) = addr.index {
-        note(i, written, acc);
+    if let Some(idx) = addr.index {
+        note(idx.reg, written, acc);
     }
 }
 
@@ -7010,8 +7054,8 @@ fn read_sources(
             if let Some(b) = base {
                 note(*b, written, acc);
             }
-            if let Some((i, _)) = index {
-                note(*i, written, acc);
+            if let Some(idx) = index {
+                note(idx.reg, written, acc);
             }
         }
         Source::Mem(mem) => read_addr(mem, written, acc, note),
@@ -8155,7 +8199,7 @@ fn parse_addr_terms(bracketed: &str) -> Option<AddrTerms> {
         .strip_suffix(']')?
         .trim();
     let mut base: Option<Reg> = None;
-    let mut index: Option<(Reg, u8)> = None;
+    let mut index: Option<IndexOperand> = None;
     let mut disp: i64 = 0;
     let mut rest: String = inner.replace('-', "+-");
     if rest.starts_with("+-") {
@@ -8175,7 +8219,7 @@ fn parse_addr_terms(bracketed: &str) -> Option<AddrTerms> {
             if !matches!(scale, 1 | 2 | 4 | 8) {
                 return None;
             }
-            index = Some((reg.reg, scale));
+            index = Some(IndexOperand::full(reg.reg, scale));
             continue;
         }
         if let Some(reg) = parse_reg(term) {
@@ -8185,7 +8229,7 @@ fn parse_addr_terms(bracketed: &str) -> Option<AddrTerms> {
             if base.is_none() {
                 base = Some(reg.reg);
             } else if index.is_none() {
-                index = Some((reg.reg, 1));
+                index = Some(IndexOperand::full(reg.reg, 1));
             } else {
                 return None;
             }
@@ -8525,22 +8569,40 @@ fn reg_write_rhs(dest_var: &str, width: Width, body: &str) -> String {
     }
 }
 
-fn addr_expr(base: Option<Reg>, index: Option<(Reg, u8)>, disp: i64) -> String {
+fn apply_index_extend(cx: &mut Cx<'_>, expr: CExpr, extend: IndexExtend) -> CExpr {
+    match extend {
+        IndexExtend::Full => expr,
+        IndexExtend::SignExtendWord => {
+            let truncated: CExpr = c_cast(cx, "uint32_t", expr);
+            let signed: CExpr = c_cast(cx, "int32_t", truncated);
+            let widened: CExpr = c_cast(cx, "int64_t", signed);
+            c_cast(cx, "uint64_t", widened)
+        }
+        IndexExtend::ZeroExtendWord => {
+            let truncated: CExpr = c_cast(cx, "uint32_t", expr);
+            c_cast(cx, "uint64_t", truncated)
+        }
+    }
+}
+
+fn addr_expr(base: Option<Reg>, index: Option<IndexOperand>, disp: i64) -> String {
     c_render(|cx| {
         let mut terms: Vec<CExpr> = Vec::new();
         if let Some(b) = base {
             terms.push(cx.var(reg_var(b)));
         }
-        if let Some((i, scale)) = index {
+        if let Some(idx) = index {
             let scaled: CExpr = CExpr::Int {
-                value: u64::from(scale),
+                value: u64::from(idx.scale),
                 radix: Radix::Dec,
                 suffix: IntSuffix {
                     unsigned: true,
                     long: LongSuffix::LongLong,
                 },
             };
-            terms.push(c_bin(BinaryOp::Mul, cx.var(reg_var(i)), scaled));
+            let index_expr: CExpr = cx.var(reg_var(idx.reg));
+            let index_var: CExpr = apply_index_extend(cx, index_expr, idx.extend);
+            terms.push(c_bin(BinaryOp::Mul, index_var, scaled));
         }
         if disp != 0 || terms.is_empty() {
             let signed: CExpr = c_cast(cx, "int64_t", c_i64_literal(disp));
@@ -8949,7 +9011,11 @@ impl AggregatePlan {
                 })
             }
             AggregateShape::Array { width, scale } => {
-                let (index, access_scale): (Reg, u8) = mem.index?;
+                let IndexOperand {
+                    reg: index,
+                    scale: access_scale,
+                    ..
+                }: IndexOperand = mem.index?;
                 if scalar != AggregateScalar::Integer(mem.width)
                     || mem.disp != 0
                     || access_scale != *scale
@@ -9215,7 +9281,7 @@ fn aggregate_classify_regs(
             observation
                 .mem
                 .index
-                .is_some_and(|(index, _): (Reg, u8)| regs.contains(&index))
+                .is_some_and(|idx: IndexOperand| regs.contains(&idx.reg))
         })
     {
         return None;
@@ -9242,7 +9308,7 @@ fn aggregate_classify_regs(
             return None;
         }
         let first: MemRef = observations.first()?.mem;
-        let (_, scale): (Reg, u8) = first.index?;
+        let IndexOperand { scale, .. }: IndexOperand = first.index?;
         let bytes: u32 = first.width.bits() / 8;
         if !matches!(scale, 1 | 2 | 4 | 8) || u32::from(scale) != bytes {
             return None;
@@ -9253,9 +9319,7 @@ fn aggregate_classify_regs(
                 let mem: MemRef = observation.mem;
                 mem.disp != 0
                     || mem.width != first.width
-                    || mem
-                        .index
-                        .is_none_or(|(_, access_scale): (Reg, u8)| access_scale != scale)
+                    || mem.index.is_none_or(|idx: IndexOperand| idx.scale != scale)
             })
         {
             return None;
@@ -9348,10 +9412,11 @@ fn aggregate_root_exclusive(statements: &[&Stmt], reg: Reg, definition: usize) -
             }
             continue;
         }
-        if local_scan.mems.iter().any(|mem: &MemRef| {
-            mem.index
-                .is_some_and(|(candidate, _): (Reg, u8)| candidate == reg)
-        }) || read_count != base_count
+        if local_scan
+            .mems
+            .iter()
+            .any(|mem: &MemRef| mem.index.is_some_and(|idx: IndexOperand| idx.reg == reg))
+            || read_count != base_count
         {
             return false;
         }
@@ -9625,8 +9690,8 @@ impl FrameScan {
     }
 
     fn note_mem(self, mem: &MemRef, slots: &mut Vec<(i64, Width)>, misuse: &mut bool) {
-        if let Some((idx, _)) = mem.index
-            && self.is_stack_reg(idx)
+        if let Some(idx) = mem.index
+            && self.is_stack_reg(idx.reg)
         {
             *misuse = true;
         }
@@ -9649,7 +9714,7 @@ impl FrameScan {
             Source::Imm(_) => {}
             Source::Lea { base, index, .. } => {
                 if base.is_some_and(|b: Reg| self.is_stack_reg(b))
-                    || index.is_some_and(|(i, _): (Reg, u8)| self.is_stack_reg(i))
+                    || index.is_some_and(|idx: IndexOperand| self.is_stack_reg(idx.reg))
                 {
                     *misuse = true;
                 }
@@ -10013,7 +10078,7 @@ fn mem_reads_alias(mem: &MemRef, alias: &std::collections::BTreeSet<Reg>) -> boo
     mem.base.is_some_and(|b: Reg| alias.contains(&b))
         || mem
             .index
-            .is_some_and(|(i, _): (Reg, u8)| alias.contains(&i))
+            .is_some_and(|idx: IndexOperand| alias.contains(&idx.reg))
 }
 
 fn source_reads_alias(src: &Source, alias: &std::collections::BTreeSet<Reg>) -> bool {
@@ -10022,7 +10087,7 @@ fn source_reads_alias(src: &Source, alias: &std::collections::BTreeSet<Reg>) -> 
         Source::Imm(_) => false,
         Source::Lea { base, index, .. } => {
             base.is_some_and(|b: Reg| alias.contains(&b))
-                || index.is_some_and(|(i, _): (Reg, u8)| alias.contains(&i))
+                || index.is_some_and(|idx: IndexOperand| alias.contains(&idx.reg))
         }
         Source::Mem(mem) => mem_reads_alias(mem, alias),
     }
@@ -10497,8 +10562,8 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
         if let Some(b) = mem.base {
             push(b, acc);
         }
-        if let Some((i, _)) = mem.index {
-            push(i, acc);
+        if let Some(idx) = mem.index {
+            push(idx.reg, acc);
         }
     };
     let push_src = |src: &Source, acc: &mut Vec<Reg>| match src {
@@ -10508,8 +10573,8 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
             if let Some(b) = base {
                 push(*b, acc);
             }
-            if let Some((i, _)) = index {
-                push(*i, acc);
+            if let Some(idx) = index {
+                push(idx.reg, acc);
             }
         }
         Source::Imm(_) => {}
@@ -13549,16 +13614,33 @@ fn rs_unop_expr(op: UnOp, text: &str) -> String {
     }
 }
 
-fn rs_addr_expr(base: Option<Reg>, index: Option<(Reg, u8)>, disp: i64) -> String {
+fn rs_index_extend(reg: RustExpr, extend: IndexExtend) -> RustExpr {
+    match extend {
+        IndexExtend::Full => reg,
+        IndexExtend::SignExtendWord => {
+            let truncated: RustExpr = rcast(reg, rtype_path("u32"));
+            let signed: RustExpr = rcast(truncated, rtype_path("i32"));
+            let widened: RustExpr = rcast(signed, rtype_path("i64"));
+            rcast(widened, rtype_path("u64"))
+        }
+        IndexExtend::ZeroExtendWord => {
+            let truncated: RustExpr = rcast(reg, rtype_path("u32"));
+            rcast(truncated, rtype_path("u64"))
+        }
+    }
+}
+
+fn rs_addr_expr(base: Option<Reg>, index: Option<IndexOperand>, disp: i64) -> String {
     let mut parts: Vec<RustExpr> = Vec::new();
     if let Some(b) = base {
         parts.push(rvar(reg_var(b)));
     }
-    if let Some((i, scale)) = index {
+    if let Some(idx) = index {
+        let extended: RustExpr = rs_index_extend(rvar(reg_var(idx.reg)), idx.extend);
         let scaled: RustExpr = method_call(
-            rvar(reg_var(i)),
+            extended,
             "wrapping_mul",
-            vec![int_dec(u128::from(scale), "u64")],
+            vec![int_dec(u128::from(idx.scale), "u64")],
         );
         parts.push(scaled);
     }
@@ -14012,7 +14094,7 @@ mod tests {
             src,
             Source::Lea {
                 base: Some(Reg::Rax),
-                index: Some((Reg::Rax, 2)),
+                index: Some(IndexOperand::full(Reg::Rax, 2)),
                 disp: 0,
             }
         );
@@ -14250,7 +14332,7 @@ mod tests {
         let mismatched_array: [AggregateObservation; 1] = [AggregateObservation {
             mem: MemRef {
                 base: Some(Reg::Rcx),
-                index: Some((Reg::Rdx, 4)),
+                index: Some(IndexOperand::full(Reg::Rdx, 4)),
                 disp: 0,
                 width: Width::W64,
             },
@@ -14280,7 +14362,7 @@ mod tests {
             AggregateObservation {
                 mem: MemRef {
                     base: Some(Reg::Rdx),
-                    index: Some((Reg::Rcx, 8)),
+                    index: Some(IndexOperand::full(Reg::Rcx, 8)),
                     disp: 0,
                     width: Width::W64,
                 },
@@ -14311,7 +14393,7 @@ mod tests {
             AggregateObservation {
                 mem: MemRef {
                     base: Some(Reg::Rcx),
-                    index: Some((Reg::Rdx, 8)),
+                    index: Some(IndexOperand::full(Reg::Rdx, 8)),
                     disp: 0,
                     width: Width::W64,
                 },

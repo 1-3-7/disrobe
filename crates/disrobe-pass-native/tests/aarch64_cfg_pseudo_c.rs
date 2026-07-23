@@ -481,6 +481,29 @@ fn aarch64_real_clang_scaled_register_index_load_recovers_as_array_access() {
 }
 
 #[test]
+fn aarch64_real_clang_sign_extended_word_index_load_recovers_with_signed_widening() {
+    let bytes: [u8; 8] = [0x00, 0xd8, 0x61, 0xb8, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ldr w0,[x0,w1,sxtw #2]");
+    assert!(
+        r.source
+            .contains("(uint64_t)(int64_t)(int32_t)(uint32_t)r_a64_x1 * 4ULL"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_clang_zero_extended_word_index_load_recovers_with_unsigned_widening() {
+    let bytes: [u8; 8] = [0x00, 0x58, 0x61, 0xb8, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ldr w0,[x0,w1,uxtw #2]");
+    assert!(
+        r.source.contains("(uint64_t)(uint32_t)r_a64_x1 * 4ULL"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
 fn aarch64_real_clang_large_bitmask_immediate_recovers_as_a_reinterpreted_mask() {
     let bytes: [u8; 8] = [0x00, 0xf0, 0x7d, 0x92, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("and x0,x0,#-8 mask");
