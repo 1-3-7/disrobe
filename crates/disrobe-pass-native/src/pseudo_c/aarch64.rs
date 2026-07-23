@@ -3297,6 +3297,7 @@ fn lower_vector(insn: &DisasmInsn) -> Result<Vec<Stmt>> {
         "add" | "sub" | "mul" | "and" | "orr" | "eor" => vector_bin(insn, &operands, false),
         "fadd" | "fsub" | "fmul" | "fdiv" => vector_bin(insn, &operands, true),
         "cmeq" => vector_compare(insn, &operands),
+        "movi" => vector_moveimm(insn, &operands),
         "ldr" => vector_load_store(insn, &operands, true),
         "str" => vector_load_store(insn, &operands, false),
         "dup" => vector_dup(insn, &operands),
@@ -3357,6 +3358,15 @@ fn vector_compare(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
         rhs,
         arr: dest_arr,
     })])
+}
+
+fn vector_moveimm(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
+    if operands.len() != 2 {
+        return Err(reject_at(insn, "malformed vector move-immediate"));
+    }
+    let (dest, arr): (u8, VecArrangement) = parse_vector_operand(operands[0], false)?;
+    let imm: i64 = parse_immediate(operands[1])?;
+    Ok(vec![Stmt::Vector(VecStmt::MoveImm { dest, imm, arr })])
 }
 
 fn vector_load_store(insn: &DisasmInsn, operands: &[&str], is_load: bool) -> Result<Vec<Stmt>> {
@@ -3520,6 +3530,7 @@ fn resolve_vector_types(items: &mut [Item]) -> Result<()> {
                 }
             }
             VecStmt::Dup { dest, arr, .. } => note_vector_type(&mut types, *dest, *arr)?,
+            VecStmt::MoveImm { dest, arr, .. } => note_vector_type(&mut types, *dest, *arr)?,
             VecStmt::Load {
                 dest,
                 arr: Some(arr),
@@ -3544,7 +3555,10 @@ fn resolve_vector_types(items: &mut [Item]) -> Result<()> {
             VecStmt::Store { src, arr, .. } => {
                 *arr = Some(resolved_wide_arrangement(&types, *src)?);
             }
-            VecStmt::Bin { .. } | VecStmt::Dup { .. } | VecStmt::Compare { .. } => {}
+            VecStmt::Bin { .. }
+            | VecStmt::Dup { .. }
+            | VecStmt::Compare { .. }
+            | VecStmt::MoveImm { .. } => {}
         }
     }
     Ok(())
@@ -3677,6 +3691,9 @@ fn record_vector_types(types: &mut BTreeMap<u8, VecArrangement>, vec: &VecStmt) 
         VecStmt::Dup { dest, arr, .. } => {
             types.entry(*dest).or_insert(*arr);
         }
+        VecStmt::MoveImm { dest, arr, .. } => {
+            types.entry(*dest).or_insert(*arr);
+        }
         VecStmt::Load { dest, arr, .. } => {
             if let Some(arrangement) = arr {
                 types.entry(*dest).or_insert(*arrangement);
@@ -3717,7 +3734,7 @@ fn vector_reads(vec: &VecStmt) -> Vec<(u8, VecArrangement)> {
                 elem: VecElem::I8,
             },
         )],
-        VecStmt::Load { .. } | VecStmt::Dup { .. } => Vec::new(),
+        VecStmt::Load { .. } | VecStmt::Dup { .. } | VecStmt::MoveImm { .. } => Vec::new(),
     }
 }
 
@@ -3726,7 +3743,8 @@ fn vector_write(vec: &VecStmt) -> Option<u8> {
         VecStmt::Bin { dest, .. }
         | VecStmt::Dup { dest, .. }
         | VecStmt::Load { dest, .. }
-        | VecStmt::Compare { dest, .. } => Some(*dest),
+        | VecStmt::Compare { dest, .. }
+        | VecStmt::MoveImm { dest, .. } => Some(*dest),
         VecStmt::Store { .. } => None,
     }
 }
