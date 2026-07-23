@@ -465,3 +465,20 @@ fn aarch64_real_clang_single_adr_table_with_post_guard_selector_copy_recovers() 
 
     assert_switch_cases(&recovered, &(0..20).collect::<Vec<i64>>());
 }
+
+#[test]
+fn aarch64_signed_subword_shifted_add_switch_abstains() {
+    let mut bytes: [u8; 212] = REAL_CLANG_PICK_BYTES;
+    bytes[26] = 0xe8;
+    let result: Result<LeafRecovery, Error> = recover_aarch64_function_with_image(
+        &bytes,
+        REAL_CLANG_PICK_BASE,
+        &|address: u64| {
+            (address == REAL_CLANG_PICK_TABLE_VA).then_some(REAL_CLANG_PICK_TABLE.as_slice())
+        },
+        &|_: u64| None,
+    );
+    if let Ok(recovered) = result {
+        assert!(!recovered.lifted_switch, "{}", recovered.source);
+    }
+}
