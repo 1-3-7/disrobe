@@ -158,7 +158,7 @@ pub(crate) const fn supported() -> bool {
         target_os = "windows",
         target_os = "linux",
         target_os = "macos"
-    )) && cfg!(any(target_arch = "x86_64", target_arch = "x86"))
+    )) && cfg!(target_arch = "x86_64")
 }
 
 pub(crate) fn write_abs_jmp(buf: &mut [u8], target: usize) -> Result<()> {
@@ -195,6 +195,9 @@ mod tests {
     };
     use pyo3::ffi::PyObject;
 
+    #[cfg(target_arch = "x86")]
+    const _: () = assert!(!supported());
+
     extern "C" fn probe(_a: *mut PyObject, _b: *mut PyObject, _c: *mut PyObject) -> *mut PyObject {
         core::ptr::null_mut()
     }
@@ -204,6 +207,7 @@ mod tests {
         assert_eq!(ABS_JMP_LEN, 14);
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn write_abs_jmp_encodes_ff25_followed_by_zero_disp_and_target() {
         let mut buf: [u8; 14] = [0u8; 14];
@@ -219,16 +223,13 @@ mod tests {
     }
 
     #[test]
-    fn supported_on_known_platforms() {
-        let s: bool = supported();
-        if cfg!(any(
+    fn supported_matches_platform_and_absolute_jump_width() {
+        let expected: bool = cfg!(any(
             target_os = "windows",
             target_os = "linux",
             target_os = "macos"
-        )) && cfg!(any(target_arch = "x86_64", target_arch = "x86"))
-        {
-            assert!(s);
-        }
+        )) && usize::BITS == 64;
+        assert_eq!(supported(), expected);
     }
 
     #[test]
