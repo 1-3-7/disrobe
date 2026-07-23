@@ -16,6 +16,7 @@ pub mod mixed_mba;
 pub mod opaque;
 pub mod perm_poly;
 pub mod poly_mba;
+pub mod poly_oracle;
 pub mod rewrite;
 pub mod rules;
 pub mod simplify;
