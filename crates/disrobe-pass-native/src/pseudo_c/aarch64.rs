@@ -392,7 +392,7 @@ fn recover_with_calls_and_image<'image>(
         }
         match insn.mnemonic.as_str() {
             "add" | "adds" | "sub" | "subs" | "and" | "orr" | "eor" | "bic" | "orn" | "eon"
-            | "lsl" | "lsr" | "asr" | "mul" | "sdiv" | "udiv" => {
+            | "lsl" | "lsr" | "asr" | "mul" | "sdiv" | "udiv" | "umull" | "smull" => {
                 let (dest, mut stmts): (RegRef, Vec<Stmt>) = lower_alu(insn)?;
                 let new_flags: Option<TrackedFlags> = if insn.mnemonic == "subs" {
                     let (mut snapshots, value): (Vec<Stmt>, Flags) = subtract_flags(insn)?;
@@ -1958,7 +1958,12 @@ fn lower_alu(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
     }
     let dest: RegRef = parse_reg(operands[0])?;
     let lhs: RegRef = parse_reg(operands[1])?;
-    if dest.width != lhs.width {
+    let is_widening_mul: bool = matches!(insn.mnemonic.as_str(), "umull" | "smull");
+    if is_widening_mul {
+        if dest.width != Width::W64 || lhs.width != Width::W32 {
+            return Err(reject_at(insn, "widening multiply is not w32 into x64"));
+        }
+    } else if dest.width != lhs.width {
         return Err(reject_at(insn, "mixed-width integer alu instruction"));
     }
     let (op, negate_rhs): (BinOp, bool) = match insn.mnemonic.as_str() {
@@ -1976,12 +1981,19 @@ fn lower_alu(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
         "mul" => (BinOp::Imul, false),
         "sdiv" => (BinOp::Sdiv, false),
         "udiv" => (BinOp::Udiv, false),
+        "umull" => (BinOp::Umull, false),
+        "smull" => (BinOp::Smull, false),
         _ => return Err(reject_at(insn, "unsupported integer alu instruction")),
     };
     let mut prefix: Vec<Stmt> = Vec::new();
-    let mut rhs: Source = parse_source(operands[2], dest.width)?;
+    let rhs_width: Width = if is_widening_mul {
+        Width::W32
+    } else {
+        dest.width
+    };
+    let mut rhs: Source = parse_source(operands[2], rhs_width)?;
     if let Source::Reg(reg) = rhs
-        && reg.width != dest.width
+        && reg.width != rhs_width
     {
         return Err(reject_at(insn, "mixed-width integer alu source"));
     }
