@@ -21,6 +21,87 @@ fn signed_nzcv_join_diamond_passes_cfg_edge_guard_without_goto() {
         .rfind("return r_rax;")
         .expect("joined return");
     assert!(else_index < return_index, "{}", recovered.source);
+    let expected: &str = "#include <stdint.h>\nuint64_t recovered(uint64_t a0, uint64_t a1) {\n    uint64_t r_rax = a0;\n    uint64_t r_a64_x1 = a1;\n    if ((int64_t)(int64_t)(r_rax) > (int64_t)(int64_t)(r_a64_x1)) {\n        r_rax = (uint64_t)(int64_t)2LL;\n    } else {\n        r_rax = (uint64_t)(int64_t)1LL;\n    }\n    return r_rax;\n}\n";
+    assert_eq!(recovered.source, expected);
+}
+
+#[test]
+fn pure_short_circuit_and_emits_fused_nzcv_condition_without_goto() {
+    let bytes: [u8; 32] = [
+        0x1f, 0x00, 0x01, 0xeb, 0xad, 0x00, 0x00, 0x54, 0x5f, 0x00, 0x03, 0xeb, 0x6a, 0x00, 0x00,
+        0x54, 0x20, 0x00, 0x80, 0xd2, 0x02, 0x00, 0x00, 0x14, 0x40, 0x00, 0x80, 0xd2, 0xc0, 0x03,
+        0x5f, 0xd6,
+    ];
+
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("pure short-circuit and");
+
+    let condition: &str = "if (((int64_t)(int64_t)(r_rax) > (int64_t)(int64_t)(r_a64_x1)) && ((int64_t)(int64_t)(r_a64_x2) < (int64_t)(int64_t)(r_a64_x3))) {";
+
+    assert!(recovered.source.contains(condition), "{}", recovered.source);
+    assert!(!recovered.source.contains("goto"), "{}", recovered.source);
+}
+
+#[test]
+fn pure_short_circuit_or_emits_fused_nzcv_condition_without_goto() {
+    let bytes: [u8; 36] = [
+        0x1f, 0x00, 0x01, 0xeb, 0x8c, 0x00, 0x00, 0x54, 0x5f, 0x00, 0x03, 0xeb, 0x4b, 0x00, 0x00,
+        0x54, 0x03, 0x00, 0x00, 0x14, 0x20, 0x00, 0x80, 0xd2, 0x02, 0x00, 0x00, 0x14, 0x40, 0x00,
+        0x80, 0xd2, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("pure short-circuit or");
+
+    let condition: &str = "if (((int64_t)(int64_t)(r_rax) > (int64_t)(int64_t)(r_a64_x1)) || ((int64_t)(int64_t)(r_a64_x2) < (int64_t)(int64_t)(r_a64_x3))) {";
+
+    assert!(recovered.source.contains(condition), "{}", recovered.source);
+    assert!(!recovered.source.contains("goto"), "{}", recovered.source);
+}
+
+#[test]
+fn impure_second_predicate_does_not_emit_a_fused_short_circuit_if() {
+    let bytes: [u8; 36] = [
+        0x1f, 0x00, 0x01, 0xeb, 0xcd, 0x00, 0x00, 0x54, 0x20, 0x00, 0x00, 0xf9, 0x5f, 0x00, 0x03,
+        0xeb, 0x6a, 0x00, 0x00, 0x54, 0x20, 0x00, 0x80, 0xd2, 0x02, 0x00, 0x00, 0x14, 0x40, 0x00,
+        0x80, 0xd2, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("impure second predicate");
+    let if_count: usize = recovered.source.match_indices("if (").count();
+
+    assert_ne!(if_count, 1, "{}", recovered.source);
+    assert!(!recovered.source.contains("&&"), "{}", recovered.source);
+    assert!(!recovered.source.contains("||"), "{}", recovered.source);
+}
+
+#[test]
+fn assigned_second_predicate_does_not_emit_a_fused_short_circuit_if() {
+    let bytes: [u8; 36] = [
+        0x1f, 0x00, 0x01, 0xeb, 0xcd, 0x00, 0x00, 0x54, 0xe4, 0x03, 0x00, 0xaa, 0x5f, 0x00, 0x03,
+        0xeb, 0x6a, 0x00, 0x00, 0x54, 0x20, 0x00, 0x80, 0xd2, 0x02, 0x00, 0x00, 0x14, 0x40, 0x00,
+        0x80, 0xd2, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("assigned second predicate");
+    let if_count: usize = recovered.source.match_indices("if (").count();
+
+    assert_ne!(if_count, 1, "{}", recovered.source);
+    assert!(!recovered.source.contains("&&"), "{}", recovered.source);
+    assert!(!recovered.source.contains("||"), "{}", recovered.source);
+    let first_condition: &str = "if ((int64_t)(int64_t)(r_rax) > (int64_t)(int64_t)(r_a64_x1)) {";
+    let condition_index: usize = recovered
+        .source
+        .find(first_condition)
+        .expect("first predicate guard");
+    let assignment_index: usize = recovered
+        .source
+        .find("r_a64_x4 = r_rax;")
+        .expect("second predicate assignment");
+
+    assert!(condition_index < assignment_index, "{}", recovered.source);
 }
 
 #[test]
