@@ -1,5 +1,5 @@
 use super::super::{
-    Cond, CondKind, Flags, Item, ItemKind, Node, Reg, Stmt, Structured, VecStmt,
+    Cond, CondKind, Flags, Item, ItemKind, LoopCond, Node, Reg, Stmt, Structured, VecStmt,
     condition_is_sound, flag_operand_regs, stmt_dest_regs,
 };
 use super::{ITEM_STRIDE, TrackedFlags};
@@ -91,6 +91,10 @@ pub(super) fn structure(
                 structuring::RegionKind::Block
                     | structuring::RegionKind::IfThen
                     | structuring::RegionKind::IfThenElse
+                    | structuring::RegionKind::While
+                    | structuring::RegionKind::DoWhile
+                    | structuring::RegionKind::NaturalLoop
+                    | structuring::RegionKind::SelfLoop
             )
         })
         || !result
@@ -101,23 +105,36 @@ pub(super) fn structure(
     {
         return Attempt::NotCandidate;
     }
-    let if_then_else_count: usize = result
-        .regions
-        .iter()
-        .filter(|region: &&structuring::Region| region.kind == structuring::RegionKind::IfThenElse)
-        .count();
-    if if_then_else_count != 1 {
-        return Attempt::NotCandidate;
-    }
-    let if_then_else: Option<&structuring::Region> = result
-        .regions
-        .iter()
-        .find(|region: &&structuring::Region| region.kind == structuring::RegionKind::IfThenElse);
-    let Some(if_then_else): Option<&structuring::Region> = if_then_else else {
-        return Attempt::NotCandidate;
-    };
-    if if_then_else.exits.len() != 1 {
-        return Attempt::NotCandidate;
+    let has_loop_region: bool = result.regions.iter().any(|region: &structuring::Region| {
+        matches!(
+            region.kind,
+            structuring::RegionKind::While
+                | structuring::RegionKind::DoWhile
+                | structuring::RegionKind::NaturalLoop
+                | structuring::RegionKind::SelfLoop
+        )
+    });
+    if !has_loop_region {
+        let if_then_else_count: usize = result
+            .regions
+            .iter()
+            .filter(|region: &&structuring::Region| {
+                region.kind == structuring::RegionKind::IfThenElse
+            })
+            .count();
+        if if_then_else_count != 1 {
+            return Attempt::NotCandidate;
+        }
+        let if_then_else: Option<&structuring::Region> =
+            result.regions.iter().find(|region: &&structuring::Region| {
+                region.kind == structuring::RegionKind::IfThenElse
+            });
+        let Some(if_then_else): Option<&structuring::Region> = if_then_else else {
+            return Attempt::NotCandidate;
+        };
+        if if_then_else.exits.len() != 1 {
+            return Attempt::NotCandidate;
+        }
     }
     let relowered: Option<(structuring::Cfg, BTreeMap<u32, u32>)> =
         relowered_cfg_from_blocks(&blocks);
@@ -138,13 +155,16 @@ pub(super) fn structure(
         consumed: BTreeSet::new(),
     };
     let mut body: Vec<Node> = Vec::new();
-    if !renderer.render(root, &mut body) || renderer.consumed != reachable_blocks(&blocks) {
+    if !renderer.render(root, &mut body)
+        || renderer.consumed != reachable_blocks(&blocks)
+        || block_contains_goto(&body)
+    {
         return Attempt::NotCandidate;
     }
     Attempt::Structured(Structured {
         body,
         lifted_split_return: false,
-        lifted_loop: false,
+        lifted_loop: has_loop_region,
     })
 }
 
@@ -699,6 +719,37 @@ fn non_strict_condition_count(condition: &Cond) -> usize {
     }
 }
 
+fn loop_cond_from_region(condition: Cond) -> Option<LoopCond> {
+    let Cond::Leaf { kind, flags } = condition else {
+        return None;
+    };
+    Some(LoopCond::Direct { cond: kind, flags })
+}
+
+fn block_contains_goto(body: &[Node]) -> bool {
+    body.iter().any(|node: &Node| match node {
+        Node::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            block_contains_goto(then_body)
+                || else_body
+                    .as_ref()
+                    .is_some_and(|else_body: &Vec<Node>| block_contains_goto(else_body))
+        }
+        Node::DoWhile { body, .. } | Node::While { body, .. } => block_contains_goto(body),
+        Node::Goto(_) => true,
+        Node::Stmt(_)
+        | Node::CondSnapshot { .. }
+        | Node::Switch { .. }
+        | Node::Break
+        | Node::Continue
+        | Node::Return
+        | Node::Label(_) => false,
+    })
+}
+
 struct Renderer<'a> {
     blocks: &'a [Aarch64Block],
     result: &'a structuring::StructureResult,
@@ -714,6 +765,134 @@ impl Renderer<'_> {
             }
             Aarch64Term::Goto(_) | Aarch64Term::Branch { .. } => false,
         }
+    }
+
+    fn region_entry(&self, id: structuring::RegionId) -> Option<usize> {
+        Some(self.result.regions.get(id as usize)?.entry as usize)
+    }
+
+    fn is_leaf_block(&self, id: structuring::RegionId, entry: usize) -> bool {
+        let Some(region): Option<&structuring::Region> = self.result.regions.get(id as usize)
+        else {
+            return false;
+        };
+        region.kind == structuring::RegionKind::Block
+            && region.children.is_empty()
+            && region.entry as usize == entry
+    }
+
+    fn consume_empty_branch_header(&mut self, id: structuring::RegionId, entry: usize) -> bool {
+        if !self.is_leaf_block(id, entry)
+            || !self.blocks[entry].stmts.is_empty()
+            || !matches!(&self.blocks[entry].term, Aarch64Term::Branch { .. })
+        {
+            return false;
+        }
+        self.consumed.insert(entry)
+    }
+
+    fn consume_empty_goto_header(
+        &mut self,
+        id: structuring::RegionId,
+        entry: usize,
+        target: usize,
+    ) -> bool {
+        if !self.is_leaf_block(id, entry)
+            || !self.blocks[entry].stmts.is_empty()
+            || !matches!(&self.blocks[entry].term, Aarch64Term::Goto(actual) if *actual == target)
+        {
+            return false;
+        }
+        self.consumed.insert(entry)
+    }
+
+    fn loop_condition(
+        &self,
+        region: &structuring::Region,
+        branch_entry: usize,
+        repeat_target: usize,
+    ) -> Option<LoopCond> {
+        let exit: usize = *region.exits.as_slice().first()? as usize;
+        if region.exits.len() != 1 {
+            return None;
+        }
+        let cond_id: structuring::CondId = region.cond?;
+        let mut condition: Cond = cond_from_region(self.blocks, &self.result.conds, cond_id)?;
+        match &self.blocks.get(branch_entry)?.term {
+            Aarch64Term::Branch {
+                taken, not_taken, ..
+            } if *taken == repeat_target && *not_taken == exit => {}
+            Aarch64Term::Branch {
+                taken, not_taken, ..
+            } if *not_taken == repeat_target && *taken == exit => {
+                condition = negate_condition(condition);
+            }
+            Aarch64Term::Return | Aarch64Term::Goto(_) | Aarch64Term::Branch { .. } => {
+                return None;
+            }
+        }
+        loop_cond_from_region(condition)
+    }
+
+    fn render_while(&mut self, region: &structuring::Region, out: &mut Vec<Node>) -> bool {
+        let (head, body_id): (structuring::RegionId, structuring::RegionId) =
+            match region.children.as_slice() {
+                [head, body] => (*head, *body),
+                _ => return false,
+            };
+        let header_entry: usize = region.entry as usize;
+        let body_entry: usize = match self.region_entry(body_id) {
+            Some(entry) => entry,
+            None => return false,
+        };
+        let condition: LoopCond = match self.loop_condition(region, header_entry, body_entry) {
+            Some(condition) => condition,
+            None => return false,
+        };
+        if !self.consume_empty_branch_header(head, header_entry) {
+            return false;
+        }
+        let mut body: Vec<Node> = Vec::new();
+        if !self.render(body_id, &mut body) {
+            return false;
+        }
+        out.push(Node::While {
+            body,
+            cond: Some(condition),
+        });
+        true
+    }
+
+    fn render_do_while(&mut self, region: &structuring::Region, out: &mut Vec<Node>) -> bool {
+        let (head, latch): (structuring::RegionId, structuring::RegionId) =
+            match region.children.as_slice() {
+                [head, latch] => (*head, *latch),
+                _ => return false,
+            };
+        let header_entry: usize = region.entry as usize;
+        let latch_entry: usize = match self.region_entry(latch) {
+            Some(entry) => entry,
+            None => return false,
+        };
+        if !self.is_leaf_block(latch, latch_entry) {
+            return false;
+        }
+        let condition: LoopCond = match self.loop_condition(region, latch_entry, header_entry) {
+            Some(condition) => condition,
+            None => return false,
+        };
+        if !self.consume_empty_goto_header(head, header_entry, latch_entry) {
+            return false;
+        }
+        let mut body: Vec<Node> = Vec::new();
+        if !self.render(latch, &mut body) {
+            return false;
+        }
+        out.push(Node::DoWhile {
+            body,
+            cond: condition,
+        });
+        true
     }
 
     fn render(&mut self, id: structuring::RegionId, out: &mut Vec<Node>) -> bool {
@@ -811,9 +990,9 @@ impl Renderer<'_> {
                 });
                 true
             }
-            structuring::RegionKind::While
-            | structuring::RegionKind::DoWhile
-            | structuring::RegionKind::Switch
+            structuring::RegionKind::While => self.render_while(region, out),
+            structuring::RegionKind::DoWhile => self.render_do_while(region, out),
+            structuring::RegionKind::Switch
             | structuring::RegionKind::NaturalLoop
             | structuring::RegionKind::SelfLoop
             | structuring::RegionKind::Proper

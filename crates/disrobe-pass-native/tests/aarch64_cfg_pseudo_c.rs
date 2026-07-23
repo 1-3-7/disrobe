@@ -36,10 +36,9 @@ fn pure_short_circuit_and_emits_fused_nzcv_condition_without_goto() {
     let recovered: LeafRecovery =
         recover_aarch64_function(&bytes, 0).expect("pure short-circuit and");
 
-    let condition: &str = "if (((int64_t)(int64_t)(r_rax) > (int64_t)(int64_t)(r_a64_x1)) && ((int64_t)(int64_t)(r_a64_x2) < (int64_t)(int64_t)(r_a64_x3))) {";
+    let expected: &str = "#include <stdint.h>\nuint64_t recovered(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) {\n    uint64_t r_rax = a0;\n    uint64_t r_a64_x1 = a1;\n    uint64_t r_a64_x2 = a2;\n    uint64_t r_a64_x3 = a3;\n    if (((int64_t)(int64_t)(r_rax) > (int64_t)(int64_t)(r_a64_x1)) && ((int64_t)(int64_t)(r_a64_x2) < (int64_t)(int64_t)(r_a64_x3))) {\n        r_rax = (uint64_t)(int64_t)1LL;\n    } else {\n        r_rax = (uint64_t)(int64_t)2LL;\n    }\n    return r_rax;\n}\n";
 
-    assert!(recovered.source.contains(condition), "{}", recovered.source);
-    assert!(!recovered.source.contains("goto"), "{}", recovered.source);
+    assert_eq!(recovered.source, expected);
 }
 
 #[test]
@@ -53,10 +52,9 @@ fn pure_short_circuit_or_emits_fused_nzcv_condition_without_goto() {
     let recovered: LeafRecovery =
         recover_aarch64_function(&bytes, 0).expect("pure short-circuit or");
 
-    let condition: &str = "if (((int64_t)(int64_t)(r_rax) > (int64_t)(int64_t)(r_a64_x1)) || ((int64_t)(int64_t)(r_a64_x2) < (int64_t)(int64_t)(r_a64_x3))) {";
+    let expected: &str = "#include <stdint.h>\nuint64_t recovered(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) {\n    uint64_t r_rax = a0;\n    uint64_t r_a64_x1 = a1;\n    uint64_t r_a64_x2 = a2;\n    uint64_t r_a64_x3 = a3;\n    if (((int64_t)(int64_t)(r_rax) > (int64_t)(int64_t)(r_a64_x1)) || ((int64_t)(int64_t)(r_a64_x2) < (int64_t)(int64_t)(r_a64_x3))) {\n        r_rax = (uint64_t)(int64_t)1LL;\n    } else {\n        r_rax = (uint64_t)(int64_t)2LL;\n    }\n    return r_rax;\n}\n";
 
-    assert!(recovered.source.contains(condition), "{}", recovered.source);
-    assert!(!recovered.source.contains("goto"), "{}", recovered.source);
+    assert_eq!(recovered.source, expected);
 }
 
 #[test]
@@ -114,6 +112,91 @@ fn branchless_add_keeps_the_pre_cfg_c_output() {
     let expected: &str = "#include <stdint.h>\nuint64_t recovered(uint64_t a0, uint64_t a1, uint64_t a2) {\n    uint64_t r_rax = a0;\n    uint64_t r_a64_x1 = a1;\n    uint64_t r_a64_x2 = a2;\n    uint64_t r_a64_tmp = 0;\n    uint64_t r_a64_x8 = 0;\n    r_a64_tmp = r_a64_x1;\n    r_a64_tmp = r_a64_tmp + (r_rax);\n    r_a64_x8 = r_a64_tmp;\n    r_a64_tmp = r_a64_x8;\n    r_a64_tmp = r_a64_tmp + (r_a64_x2);\n    r_rax = r_a64_tmp;\n    return r_rax;\n}\n";
 
     assert_eq!(recovered.source, expected);
+}
+
+#[test]
+fn pre_tested_counting_loop_uses_cfg_while_without_goto() {
+    let bytes: [u8; 20] = [
+        0x1f, 0x00, 0x01, 0xeb, 0x6a, 0x00, 0x00, 0x54, 0x00, 0x04, 0x00, 0x91, 0xfd, 0xff, 0xff,
+        0x17, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+
+    let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("pre-tested loop");
+    let condition: &str = "while ((int64_t)(int64_t)(r_rax) < (int64_t)(int64_t)(r_a64_x1)) {";
+
+    assert!(recovered.source.contains(condition), "{}", recovered.source);
+    assert!(!recovered.source.contains("goto"), "{}", recovered.source);
+}
+
+#[test]
+fn pre_tested_loop_header_operands_remain_parameters_after_body_overwrite() {
+    let bytes: [u8; 20] = [
+        0x1f, 0x00, 0x01, 0xeb, 0x6a, 0x00, 0x00, 0x54, 0x20, 0x00, 0x80, 0xd2, 0xfd, 0xff, 0xff,
+        0x17, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("header parameter ordering");
+
+    assert_eq!(recovered.params.len(), 2, "{:?}", recovered.params);
+    assert!(
+        recovered
+            .source
+            .contains("uint64_t recovered(uint64_t a0, uint64_t a1)"),
+        "{}",
+        recovered.source
+    );
+}
+
+#[test]
+fn post_tested_counting_loop_uses_cfg_do_while_without_goto() {
+    let bytes: [u8; 20] = [
+        0x01, 0x00, 0x00, 0x14, 0x00, 0x04, 0x00, 0x91, 0x1f, 0x00, 0x01, 0xeb, 0xab, 0xff, 0xff,
+        0x54, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+
+    let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("post-tested loop");
+    let condition: &str = "} while ((int64_t)(int64_t)(r_rax) < (int64_t)(int64_t)(r_a64_x1));";
+
+    assert!(recovered.source.contains("do {"), "{}", recovered.source);
+    assert!(recovered.source.contains(condition), "{}", recovered.source);
+    assert!(!recovered.source.contains("goto"), "{}", recovered.source);
+}
+
+#[test]
+fn nested_pre_tested_loops_render_innermost_first_without_goto() {
+    let bytes: [u8; 28] = [
+        0x1f, 0x00, 0x01, 0xeb, 0xaa, 0x00, 0x00, 0x54, 0x5f, 0x00, 0x03, 0xeb, 0xaa, 0xff, 0xff,
+        0x54, 0x42, 0x04, 0x00, 0x91, 0xfd, 0xff, 0xff, 0x17, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+
+    let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("nested loops");
+    let outer: &str = "while ((int64_t)(int64_t)(r_rax) < (int64_t)(int64_t)(r_a64_x1)) {";
+    let inner: &str = "while ((int64_t)(int64_t)(r_a64_x2) < (int64_t)(int64_t)(r_a64_x3)) {";
+    let outer_index: usize = recovered.source.find(outer).expect("outer while");
+    let inner_index: usize = recovered.source.find(inner).expect("inner while");
+
+    assert_eq!(
+        recovered.source.match_indices("while (").count(),
+        2,
+        "{}",
+        recovered.source
+    );
+    assert!(outer_index < inner_index, "{}", recovered.source);
+    assert!(!recovered.source.contains("goto"), "{}", recovered.source);
+}
+
+#[test]
+fn multi_entry_loop_falls_back_from_cfg_structuring() {
+    let bytes: [u8; 20] = [
+        0x40, 0x00, 0x00, 0xb4, 0x02, 0x00, 0x00, 0x14, 0xff, 0xff, 0xff, 0x17, 0xe0, 0xff, 0xff,
+        0xb5, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+
+    let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("multi-entry loop");
+
+    assert!(recovered.source.contains("goto"), "{}", recovered.source);
+    assert!(!recovered.source.contains("do {"), "{}", recovered.source);
 }
 
 #[test]
