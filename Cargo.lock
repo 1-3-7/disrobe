@@ -2910,6 +2910,7 @@ dependencies = [
 name = "disrobe-taint"
 version = "0.10.4"
 dependencies = [
+ "disrobe-core",
  "disrobe-nir",
  "disrobe-nir-lift",
  "serde",

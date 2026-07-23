@@ -14,6 +14,7 @@ pub mod debug;
 pub mod dominators;
 pub mod error;
 pub mod format;
+pub mod graph;
 pub mod pass;
 pub mod progress;
 pub mod provenance;
