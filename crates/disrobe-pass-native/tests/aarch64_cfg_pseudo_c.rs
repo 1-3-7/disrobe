@@ -3,6 +3,36 @@
 use disrobe_pass_native::{Error, LeafRecovery, recover_aarch64_function};
 
 #[test]
+fn aarch64_real_clang_csel_max_recovers_as_ternary() {
+    let bytes: [u8; 12] = [
+        0x1f, 0x00, 0x01, 0x6b, 0x00, 0xc0, 0x81, 0x1a, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("csel max");
+    let expected: &str = "#include <stdint.h>\nuint64_t recovered(uint64_t a0, uint64_t a1) {\n    uint64_t r_rax = a0;\n    uint64_t r_a64_x1 = a1;\n    r_rax = (int64_t)(int32_t)(r_rax) <= (int64_t)(int32_t)(r_a64_x1) ? (r_a64_x1) & 0xffffffffULL : r_rax;\n    return (r_rax) & 0xffffffffULL;\n}\n";
+    assert_eq!(recovered.source, expected);
+}
+
+#[test]
+fn aarch64_real_clang_three_register_csel_recovers_as_ternary() {
+    let bytes: [u8; 16] = [
+        0x1f, 0x00, 0x01, 0x6b, 0x48, 0xc0, 0x83, 0x1a, 0x00, 0x01, 0x04, 0x0b, 0xc0, 0x03, 0x5f,
+        0xd6,
+    ];
+    let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("three-register csel");
+    let expected: &str = "#include <stdint.h>\nuint64_t recovered(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4) {\n    uint64_t r_rax = a0;\n    uint64_t r_a64_x1 = a1;\n    uint64_t r_a64_x2 = a2;\n    uint64_t r_a64_x3 = a3;\n    uint64_t r_a64_x4 = a4;\n    uint64_t r_a64_x8 = 0;\n    uint64_t r_a64_tmp = 0;\n    r_a64_x8 = (r_a64_x3) & 0xffffffffULL;\n    r_a64_x8 = (int64_t)(int32_t)(r_rax) > (int64_t)(int32_t)(r_a64_x1) ? (r_a64_x2) & 0xffffffffULL : r_a64_x8;\n    r_a64_tmp = (r_a64_x8) & 0xffffffffULL;\n    r_a64_tmp = (r_a64_tmp + (r_a64_x4)) & 0xffffffffULL;\n    r_rax = (r_a64_tmp) & 0xffffffffULL;\n    return (r_rax) & 0xffffffffULL;\n}\n";
+    assert_eq!(recovered.source, expected);
+}
+
+#[test]
+fn aarch64_conditional_select_abstains_when_destination_is_a_flag_operand() {
+    let bytes: [u8; 12] = [
+        0x1f, 0x00, 0x01, 0x6b, 0xe0, 0x17, 0x9f, 0x1a, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let result: Result<LeafRecovery, Error> = recover_aarch64_function(&bytes, 0);
+    assert!(result.is_err(), "{result:?}");
+}
+
+#[test]
 fn signed_nzcv_join_diamond_passes_cfg_edge_guard_without_goto() {
     let bytes: [u8; 24] = [
         0x1f, 0x00, 0x01, 0xeb, 0x6c, 0x00, 0x00, 0x54, 0x20, 0x00, 0x80, 0xd2, 0x02, 0x00, 0x00,
