@@ -797,6 +797,7 @@ enum Node {
     },
     While {
         body: Block,
+        cond: Option<LoopCond>,
     },
     CondSnapshot {
         var: u32,
@@ -3752,7 +3753,7 @@ fn folded_int_return_width(nodes: &[Node], incoming: Width) -> Width {
                     .map_or(cur, |e: &Block| folded_int_return_width(e, cur));
                 cur = then_w.max(else_w);
             }
-            Node::While { body } | Node::DoWhile { body, .. } => {
+            Node::While { body, .. } | Node::DoWhile { body, .. } => {
                 cur = cur.max(folded_int_return_width(body, cur));
             }
             Node::Switch { cases, default, .. } => {
@@ -3970,7 +3971,7 @@ fn annotate_calls_block_with_order(
                     annotate_calls_block_with_order(else_b, map, arg_order);
                 }
             }
-            Node::DoWhile { body, .. } | Node::While { body } => {
+            Node::DoWhile { body, .. } | Node::While { body, .. } => {
                 annotate_calls_block_with_order(body, map, arg_order);
             }
             Node::Switch { cases, default, .. } => {
@@ -4004,7 +4005,9 @@ fn collect_call_targets(body: &Block, acc: &mut Vec<u64>) {
                     collect_call_targets(else_b, acc);
                 }
             }
-            Node::DoWhile { body, .. } | Node::While { body } => collect_call_targets(body, acc),
+            Node::DoWhile { body, .. } | Node::While { body, .. } => {
+                collect_call_targets(body, acc);
+            }
             Node::Switch { cases, default, .. } => {
                 for case in cases {
                     collect_call_targets(&case.body, acc);
@@ -4594,7 +4597,10 @@ impl RegionRenderer<'_> {
         else {
             return false;
         };
-        out.push(Node::While { body: loop_body });
+        out.push(Node::While {
+            body: loop_body,
+            cond: None,
+        });
         for node in body {
             self.consumed.insert(node);
         }
@@ -5712,7 +5718,7 @@ fn structure_reducible_cfg(items: &[Item]) -> Result<Option<Block>> {
 fn loop_count(body: &Block) -> usize {
     body.iter()
         .map(|node: &Node| match node {
-            Node::While { body } => 1 + loop_count(body),
+            Node::While { body, .. } => 1 + loop_count(body),
             Node::DoWhile { body, .. } => loop_count(body),
             Node::If {
                 then_body,
@@ -5763,7 +5769,10 @@ fn emit_region(
             let mut loop_body: Block = Vec::new();
             let entry_stop: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
             emit_loop_body(ctx, &child_stack, &entry_stop, visited, &mut loop_body)?;
-            out.push(Node::While { body: loop_body });
+            out.push(Node::While {
+                body: loop_body,
+                cond: None,
+            });
             current = ctx.loops[child].follow;
             continue;
         }
@@ -6461,7 +6470,10 @@ fn scan_fp_params(body: &Block, written: &mut BTreeMap<Xmm, bool>, acc: &mut Vec
                     scan_fp_flags(flags, &loop_written, acc);
                 }
             }
-            Node::While { body } => {
+            Node::While { body, cond } => {
+                if let Some(LoopCond::Direct { flags, .. }) = cond {
+                    scan_fp_flags(flags, written, acc);
+                }
                 let mut loop_written: BTreeMap<Xmm, bool> = written.clone();
                 scan_fp_params(body, &mut loop_written, acc);
             }
@@ -6533,7 +6545,10 @@ fn scan_block_params(
                     read_flags(flags, &loop_written, acc, note);
                 }
             }
-            Node::While { body } => {
+            Node::While { body, cond } => {
+                if let Some(LoopCond::Direct { flags, .. }) = cond {
+                    read_flags(flags, written, acc, note);
+                }
                 let mut loop_written: BTreeMap<Reg, bool> = written.clone();
                 scan_block_params(body, &mut loop_written, acc, note);
             }
@@ -8098,7 +8113,7 @@ fn collect_sel_vars(body: &Block, acc: &mut Vec<u32>) {
                     collect_sel_vars(else_b, acc);
                 }
             }
-            Node::DoWhile { body, .. } | Node::While { body } => collect_sel_vars(body, acc),
+            Node::DoWhile { body, .. } | Node::While { body, .. } => collect_sel_vars(body, acc),
             Node::Switch { cases, default, .. } => {
                 for case in cases {
                     collect_sel_vars(&case.body, acc);
@@ -8134,7 +8149,9 @@ fn collect_snapshot_vars(body: &Block, acc: &mut Vec<u32>) {
                     collect_snapshot_vars(else_b, acc);
                 }
             }
-            Node::DoWhile { body, .. } | Node::While { body } => collect_snapshot_vars(body, acc),
+            Node::DoWhile { body, .. } | Node::While { body, .. } => {
+                collect_snapshot_vars(body, acc);
+            }
             Node::Switch { cases, default, .. } => {
                 for case in cases {
                     collect_snapshot_vars(&case.body, acc);
@@ -8469,7 +8486,7 @@ fn collect_call_decls(body: &Block, acc: &mut Vec<CallDecl>) {
                     collect_call_decls(else_b, acc);
                 }
             }
-            Node::DoWhile { body, .. } | Node::While { body } => collect_call_decls(body, acc),
+            Node::DoWhile { body, .. } | Node::While { body, .. } => collect_call_decls(body, acc),
             Node::Switch { cases, default, .. } => {
                 for case in cases {
                     collect_call_decls(&case.body, acc);
@@ -8907,7 +8924,12 @@ fn aggregate_scan_block(scan: &mut AggregateScan, body: &Block, depth: usize) {
                 }
                 aggregate_scan_block(scan, body, depth + 1);
             }
-            Node::While { body } => aggregate_scan_block(scan, body, depth + 1),
+            Node::While { body, cond } => {
+                if let Some(LoopCond::Direct { flags, .. }) = cond {
+                    aggregate_note_flags(scan, flags);
+                }
+                aggregate_scan_block(scan, body, depth + 1);
+            }
             Node::CondSnapshot { flags, .. } => aggregate_note_flags(scan, flags),
             Node::Switch { cases, default, .. } => {
                 for case in cases {
@@ -9542,7 +9564,12 @@ fn scan_frame_block(
                     ctx.note_flags(flags, slots, misuse);
                 }
             }
-            Node::While { body } => scan_frame_block(ctx, body, slots, misuse),
+            Node::While { body, cond } => {
+                scan_frame_block(ctx, body, slots, misuse);
+                if let Some(LoopCond::Direct { flags, .. }) = cond {
+                    ctx.note_flags(flags, slots, misuse);
+                }
+            }
             Node::Switch {
                 disc,
                 cases,
@@ -10205,7 +10232,7 @@ fn block_string_ops_present(body: &Block) -> bool {
                     .as_ref()
                     .is_some_and(|b: &Block| block_string_ops_present(b))
         }
-        Node::DoWhile { body, .. } | Node::While { body } => block_string_ops_present(body),
+        Node::DoWhile { body, .. } | Node::While { body, .. } => block_string_ops_present(body),
         Node::Switch { cases, default, .. } => {
             cases
                 .iter()
@@ -10402,7 +10429,12 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
                     push_flags(flags, acc);
                 }
             }
-            Node::While { body } => collect_block_regs(body, acc),
+            Node::While { body, cond } => {
+                collect_block_regs(body, acc);
+                if let Some(LoopCond::Direct { flags, .. }) = cond {
+                    push_flags(flags, acc);
+                }
+            }
             Node::Switch {
                 disc,
                 cases,
@@ -10505,7 +10537,12 @@ fn collect_block_xmm(body: &Block, acc: &mut Vec<Xmm>) {
                     push_flags(flags, acc);
                 }
             }
-            Node::While { body } => collect_block_xmm(body, acc),
+            Node::While { body, cond } => {
+                collect_block_xmm(body, acc);
+                if let Some(LoopCond::Direct { flags, .. }) = cond {
+                    push_flags(flags, acc);
+                }
+            }
             Node::Switch { cases, default, .. } => {
                 for case in cases {
                     collect_block_xmm(&case.body, acc);
@@ -10560,7 +10597,7 @@ fn collect_block_packed_xmm(body: &Block, acc: &mut Vec<Xmm>) {
                     collect_block_packed_xmm(else_b, acc);
                 }
             }
-            Node::DoWhile { body, .. } | Node::While { body } => {
+            Node::DoWhile { body, .. } | Node::While { body, .. } => {
                 collect_block_packed_xmm(body, acc);
             }
             Node::Switch { cases, default, .. } => {
@@ -10600,7 +10637,7 @@ fn for_each_vec_stmt(body: &Block, visit: &mut impl FnMut(&VecStmt)) {
                     for_each_vec_stmt(else_b, visit);
                 }
             }
-            Node::DoWhile { body, .. } | Node::While { body } => for_each_vec_stmt(body, visit),
+            Node::DoWhile { body, .. } | Node::While { body, .. } => for_each_vec_stmt(body, visit),
             Node::Switch { cases, default, .. } => {
                 for case in cases {
                     for_each_vec_stmt(&case.body, visit);
@@ -10779,10 +10816,20 @@ fn node_to_cstmt(
                 cond: cx.var(&cond_text),
             }
         }
-        Node::While { body } => CStmt::While {
-            cond: CExpr::int(1),
-            body: Box::new(braced_block(cx, body, ret_expr, aggregates)),
-        },
+        Node::While { body, cond } => {
+            let condition: CExpr = match cond {
+                Some(LoopCond::Direct { cond, flags }) => {
+                    let cond_text: String = cond_expr(*cond, flags, aggregates);
+                    cx.var(&cond_text)
+                }
+                Some(LoopCond::Snapshot { var }) => cx.var(&loop_cond_var(*var)),
+                None => CExpr::int(1),
+            };
+            CStmt::While {
+                cond: condition,
+                body: Box::new(braced_block(cx, body, ret_expr, aggregates)),
+            }
+        }
         Node::Switch {
             disc,
             cases,
@@ -12201,8 +12248,17 @@ fn rs_emit_block(
                 let _ = writeln!(out, "{inner}if !({cond_text}) {{ break; }}");
                 let _ = writeln!(out, "{indent}}}");
             }
-            Node::While { body } => {
-                let _ = writeln!(out, "{indent}loop {{");
+            Node::While { body, cond } => {
+                let header: String = match cond {
+                    Some(LoopCond::Direct { cond, flags }) => {
+                        format!("while {}", rs_cond_expr(*cond, flags, aggregates)?)
+                    }
+                    Some(LoopCond::Snapshot { var }) => {
+                        format!("while {} != 0", loop_cond_var(*var))
+                    }
+                    None => "loop".to_owned(),
+                };
+                let _ = writeln!(out, "{indent}{header} {{");
                 rs_emit_block(out, body, depth + 1, ret_expr, aggregates)?;
                 let _ = writeln!(out, "{indent}}}");
             }
@@ -14467,7 +14523,7 @@ mod tests {
                                 .as_ref()
                                 .is_some_and(|b: &Block| body_has(b, want))
                     }
-                    Node::While { body } | Node::DoWhile { body, .. } => body_has(body, want),
+                    Node::While { body, .. } | Node::DoWhile { body, .. } => body_has(body, want),
                     Node::Switch { cases, default, .. } => {
                         cases.iter().any(|c: &SwitchCase| body_has(&c.body, want))
                             || body_has(default, want)
