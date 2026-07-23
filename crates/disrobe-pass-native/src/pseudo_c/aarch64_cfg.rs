@@ -82,6 +82,7 @@ pub(super) fn structure(
     let Some(cfg): Option<structuring::Cfg> = cfg else {
         return Attempt::NotCandidate;
     };
+    let forest: structuring::LoopForest = structuring::loop_forest(&cfg);
     let result: structuring::StructureResult = structuring::structure(&cfg);
     if !result.is_complete()
         || !structuring::multi_entry_irreducible_sccs(&cfg).is_empty()
@@ -149,9 +150,12 @@ pub(super) fn structure(
     let Some(root): Option<structuring::RegionId> = root else {
         return Attempt::NotCandidate;
     };
+    let sinks: BTreeMap<usize, LoopSink> = BTreeMap::new();
     let mut renderer: Renderer<'_> = Renderer {
         blocks: &blocks,
         result: &result,
+        forest: &forest,
+        sinks: &sinks,
         consumed: BTreeSet::new(),
     };
     let mut body: Vec<Node> = Vec::new();
@@ -463,7 +467,14 @@ fn flag_operands_are_written(
 }
 
 fn cfg_from_blocks(blocks: &[Aarch64Block]) -> Option<structuring::Cfg> {
+    cfg_from_blocks_with_entry(blocks, 0)
+}
+
+fn cfg_from_blocks_with_entry(blocks: &[Aarch64Block], entry: usize) -> Option<structuring::Cfg> {
     let count: usize = blocks.len();
+    if entry >= count {
+        return None;
+    }
     let mut nodes: Vec<structuring::CfgNode> = Vec::with_capacity(count);
     for (index, block) in blocks.iter().enumerate() {
         let node_id: u32 = u32::try_from(index).ok()?;
@@ -491,7 +502,7 @@ fn cfg_from_blocks(blocks: &[Aarch64Block]) -> Option<structuring::Cfg> {
         let pure: bool = block_is_pure(block);
         nodes.push(structuring::CfgNode { term, pure });
     }
-    structuring::Cfg::new(0, nodes).ok()
+    structuring::Cfg::new(u32::try_from(entry).ok()?, nodes).ok()
 }
 
 fn relowered_cfg_from_blocks(
@@ -619,8 +630,15 @@ fn block_predecessors(blocks: &[Aarch64Block]) -> Vec<Vec<usize>> {
 }
 
 fn reachable_blocks(blocks: &[Aarch64Block]) -> BTreeSet<usize> {
-    let mut seen: BTreeSet<usize> = BTreeSet::from([0]);
-    let mut pending: Vec<usize> = vec![0];
+    reachable_blocks_from(blocks, 0)
+}
+
+fn reachable_blocks_from(blocks: &[Aarch64Block], entry: usize) -> BTreeSet<usize> {
+    if entry >= blocks.len() {
+        return BTreeSet::new();
+    }
+    let mut seen: BTreeSet<usize> = BTreeSet::from([entry]);
+    let mut pending: Vec<usize> = vec![entry];
     while let Some(block) = pending.pop() {
         for successor in blocks[block].successors() {
             if successor < blocks.len() && seen.insert(successor) {
@@ -750,14 +768,55 @@ fn block_contains_goto(body: &[Node]) -> bool {
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoopSink {
+    Break,
+    Continue,
+    Fallthrough,
+}
+
+#[derive(Debug, Clone)]
+enum LoopForm {
+    While(LoopCond),
+    DoWhile(LoopCond),
+}
+
+#[derive(Debug, Clone)]
+struct LoopPlan {
+    form: LoopForm,
+    entry: usize,
+    continue_targets: BTreeSet<usize>,
+    canonical_continue_sources: BTreeSet<usize>,
+    fallthrough_targets: BTreeSet<usize>,
+    canonical_fallthrough_sources: BTreeSet<usize>,
+    terminal_latch: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct LoopBody {
+    blocks: Vec<Aarch64Block>,
+    entry: usize,
+    sinks: BTreeMap<usize, LoopSink>,
+}
+
 struct Renderer<'a> {
     blocks: &'a [Aarch64Block],
     result: &'a structuring::StructureResult,
+    forest: &'a structuring::LoopForest,
+    sinks: &'a BTreeMap<usize, LoopSink>,
     consumed: BTreeSet<usize>,
 }
 
 impl Renderer<'_> {
     fn render_sink(&self, entry: usize, out: &mut Vec<Node>) -> bool {
+        if let Some(sink) = self.sinks.get(&entry) {
+            match sink {
+                LoopSink::Break => out.push(Node::Break),
+                LoopSink::Continue => out.push(Node::Continue),
+                LoopSink::Fallthrough => {}
+            }
+            return true;
+        }
         match &self.blocks[entry].term {
             Aarch64Term::Return => {
                 out.push(Node::Return);
@@ -765,6 +824,495 @@ impl Renderer<'_> {
             }
             Aarch64Term::Goto(_) | Aarch64Term::Branch { .. } => false,
         }
+    }
+
+    fn natural_loop(&self, header: usize) -> Option<structuring::NaturalLoop> {
+        let header_id: u32 = u32::try_from(header).ok()?;
+        self.forest
+            .loops
+            .iter()
+            .find(|loop_info: &&structuring::NaturalLoop| loop_info.header == header_id)
+            .cloned()
+    }
+
+    fn natural_loop_body(natural: &structuring::NaturalLoop) -> BTreeSet<usize> {
+        natural
+            .body
+            .iter()
+            .map(|node: &u32| *node as usize)
+            .collect()
+    }
+
+    fn has_nested_loop(&self, natural: &structuring::NaturalLoop) -> bool {
+        self.forest
+            .loops
+            .iter()
+            .any(|candidate: &structuring::NaturalLoop| {
+                candidate.header != natural.header && candidate.body.is_subset(&natural.body)
+            })
+    }
+
+    fn loop_follow(&self, body: &BTreeSet<usize>) -> Option<usize> {
+        let mut follow: Option<usize> = None;
+        for node in body {
+            let block: &Aarch64Block = self.blocks.get(*node)?;
+            for successor in block.successors() {
+                if body.contains(&successor) {
+                    continue;
+                }
+                match follow {
+                    None => follow = Some(successor),
+                    Some(existing) if existing == successor => {}
+                    Some(_) => return None,
+                }
+            }
+        }
+        follow
+    }
+
+    fn loop_exit_is_current_level(
+        &self,
+        natural: &structuring::NaturalLoop,
+        follow: usize,
+    ) -> bool {
+        let Some(parent_index): Option<usize> = natural.parent else {
+            return true;
+        };
+        let Some(parent): Option<&structuring::NaturalLoop> = self.forest.loops.get(parent_index)
+        else {
+            return false;
+        };
+        let Some(follow_id): Option<u32> = u32::try_from(follow).ok() else {
+            return false;
+        };
+        parent.body.contains(&follow_id)
+            && follow_id != parent.header
+            && !parent.latches.contains(&follow_id)
+    }
+
+    fn condition_from_branch(&self, entry: usize) -> Option<Cond> {
+        let block: &Aarch64Block = self.blocks.get(entry)?;
+        let Aarch64Term::Branch { kind, flags, .. } = &block.term else {
+            return None;
+        };
+        Some(Cond::leaf(*kind, flags.clone()))
+    }
+
+    fn loop_condition_for_edge(
+        &self,
+        entry: usize,
+        repeat_target: usize,
+        exit_target: usize,
+    ) -> Option<LoopCond> {
+        let block: &Aarch64Block = self.blocks.get(entry)?;
+        let mut condition: Cond = self.condition_from_branch(entry)?;
+        match &block.term {
+            Aarch64Term::Branch {
+                taken, not_taken, ..
+            } if *taken == repeat_target && *not_taken == exit_target => {}
+            Aarch64Term::Branch {
+                taken, not_taken, ..
+            } if *not_taken == repeat_target && *taken == exit_target => {
+                condition = negate_condition(condition);
+            }
+            Aarch64Term::Return | Aarch64Term::Goto(_) | Aarch64Term::Branch { .. } => {
+                return None;
+            }
+        }
+        loop_cond_from_region(condition)
+    }
+
+    fn latch_is_empty_continue_target(&self, latch: usize, header: usize) -> bool {
+        matches!(
+            self.blocks.get(latch),
+            Some(Aarch64Block {
+                stmts,
+                term: Aarch64Term::Goto(target),
+                ..
+            }) if stmts.is_empty() && *target == header
+        )
+    }
+
+    fn pretested_loop_plan(
+        &self,
+        natural: &structuring::NaturalLoop,
+        body: &BTreeSet<usize>,
+        follow: usize,
+    ) -> Option<LoopPlan> {
+        let header: usize = natural.header as usize;
+        let header_block: &Aarch64Block = self.blocks.get(header)?;
+        if !header_block.stmts.is_empty() {
+            return None;
+        }
+        let (taken, not_taken): (usize, usize) = match &header_block.term {
+            Aarch64Term::Branch {
+                taken, not_taken, ..
+            } => (*taken, *not_taken),
+            Aarch64Term::Return | Aarch64Term::Goto(_) => return None,
+        };
+        let body_entry: usize = if body.contains(&taken) && not_taken == follow {
+            taken
+        } else if body.contains(&not_taken) && taken == follow {
+            not_taken
+        } else {
+            return None;
+        };
+        if body_entry == header {
+            return None;
+        }
+        let condition: LoopCond = self.loop_condition_for_edge(header, body_entry, follow)?;
+        let mut continue_targets: BTreeSet<usize> = BTreeSet::from([header]);
+        let mut canonical_continue_sources: BTreeSet<usize> = BTreeSet::new();
+        for latch_id in &natural.latches {
+            let latch: usize = *latch_id as usize;
+            if matches!(
+                self.blocks.get(latch),
+                Some(Aarch64Block {
+                    term: Aarch64Term::Goto(target),
+                    ..
+                }) if *target == header
+            ) {
+                canonical_continue_sources.insert(latch);
+            }
+            if self.latch_is_empty_continue_target(latch, header) {
+                continue_targets.insert(latch);
+            }
+        }
+        Some(LoopPlan {
+            form: LoopForm::While(condition),
+            entry: body_entry,
+            continue_targets,
+            canonical_continue_sources,
+            fallthrough_targets: BTreeSet::new(),
+            canonical_fallthrough_sources: BTreeSet::new(),
+            terminal_latch: None,
+        })
+    }
+
+    fn posttested_loop_plan(
+        &self,
+        natural: &structuring::NaturalLoop,
+        body: &BTreeSet<usize>,
+        follow: usize,
+    ) -> Option<LoopPlan> {
+        let header: usize = natural.header as usize;
+        let header_block: &Aarch64Block = self.blocks.get(header)?;
+        if !header_block.stmts.is_empty() {
+            return None;
+        }
+        let body_entry: usize = match &header_block.term {
+            Aarch64Term::Goto(target) => *target,
+            Aarch64Term::Return | Aarch64Term::Branch { .. } => return None,
+        };
+        if body_entry == header {
+            return None;
+        }
+        let mut chosen: Option<(usize, LoopCond)> = None;
+        for latch_id in &natural.latches {
+            let latch: usize = *latch_id as usize;
+            let condition: Option<LoopCond> = self.loop_condition_for_edge(latch, header, follow);
+            let Some(condition): Option<LoopCond> = condition else {
+                continue;
+            };
+            if chosen.is_some() {
+                return None;
+            }
+            chosen = Some((latch, condition));
+        }
+        let (latch, condition): (usize, LoopCond) = chosen?;
+        let continue_targets: BTreeSet<usize> = BTreeSet::new();
+        let mut fallthrough_targets: BTreeSet<usize> = BTreeSet::new();
+        let mut canonical_fallthrough_sources: BTreeSet<usize> = BTreeSet::new();
+        if self
+            .blocks
+            .get(latch)
+            .is_some_and(|block: &Aarch64Block| block.stmts.is_empty())
+        {
+            fallthrough_targets.insert(latch);
+            for node in body {
+                if matches!(
+                    self.blocks.get(*node),
+                    Some(Aarch64Block {
+                        term: Aarch64Term::Goto(target),
+                        ..
+                    }) if *target == latch
+                ) {
+                    canonical_fallthrough_sources.insert(*node);
+                }
+            }
+        }
+        Some(LoopPlan {
+            form: LoopForm::DoWhile(condition),
+            entry: body_entry,
+            continue_targets,
+            canonical_continue_sources: BTreeSet::new(),
+            fallthrough_targets,
+            canonical_fallthrough_sources,
+            terminal_latch: Some(latch),
+        })
+    }
+
+    fn build_loop_body(
+        &self,
+        natural: &structuring::NaturalLoop,
+        body: &BTreeSet<usize>,
+        follow: usize,
+        plan: &LoopPlan,
+    ) -> Option<LoopBody> {
+        let header: usize = natural.header as usize;
+        let order: Vec<usize> = body
+            .iter()
+            .copied()
+            .filter(|node: &usize| *node != header)
+            .collect();
+        let sub_of: BTreeMap<usize, usize> = order
+            .iter()
+            .enumerate()
+            .map(|(index, node): (usize, &usize)| (*node, index))
+            .collect();
+        let entry: usize = sub_of.get(&plan.entry).copied()?;
+        let sink_for_target = |target: usize| -> Option<LoopSink> {
+            if plan.continue_targets.contains(&target) {
+                Some(LoopSink::Continue)
+            } else if plan.fallthrough_targets.contains(&target) {
+                Some(LoopSink::Fallthrough)
+            } else if target == follow {
+                Some(LoopSink::Break)
+            } else {
+                None
+            }
+        };
+        let mut special_sinks: BTreeMap<(usize, u8), LoopSink> = BTreeMap::new();
+        for node in &order {
+            let source: &Aarch64Block = self.blocks.get(*node)?;
+            if plan.terminal_latch == Some(*node) {
+                special_sinks.insert((*node, 0), LoopSink::Fallthrough);
+                continue;
+            }
+            match &source.term {
+                Aarch64Term::Return => {}
+                Aarch64Term::Goto(target) => match sink_for_target(*target) {
+                    Some(LoopSink::Continue) if plan.canonical_continue_sources.contains(node) => {
+                        special_sinks.insert((*node, 0), LoopSink::Continue);
+                    }
+                    Some(LoopSink::Fallthrough)
+                        if plan.canonical_fallthrough_sources.contains(node) =>
+                    {
+                        special_sinks.insert((*node, 0), LoopSink::Fallthrough);
+                    }
+                    Some(LoopSink::Break | LoopSink::Continue | LoopSink::Fallthrough) => {
+                        return None;
+                    }
+                    None => {
+                        sub_of.get(target)?;
+                    }
+                },
+                Aarch64Term::Branch {
+                    taken, not_taken, ..
+                } => {
+                    let taken_sink: Option<LoopSink> = sink_for_target(*taken);
+                    let not_taken_sink: Option<LoopSink> = sink_for_target(*not_taken);
+                    match (taken_sink, not_taken_sink) {
+                        (Some(LoopSink::Fallthrough), _) | (_, Some(LoopSink::Fallthrough)) => {
+                            return None;
+                        }
+                        (Some(_), Some(_)) => return None,
+                        (Some(sink), None) => {
+                            sub_of.get(not_taken)?;
+                            special_sinks.insert((*node, 1), sink);
+                        }
+                        (None, Some(sink)) => {
+                            sub_of.get(taken)?;
+                            special_sinks.insert((*node, 2), sink);
+                        }
+                        (None, None) => {
+                            sub_of.get(taken)?;
+                            sub_of.get(not_taken)?;
+                        }
+                    }
+                }
+            }
+        }
+        let total_blocks: usize = order.len().checked_add(special_sinks.len())?;
+        let mut blocks: Vec<Aarch64Block> = Vec::with_capacity(total_blocks);
+        let mut sink_indices: BTreeMap<(usize, u8), usize> = BTreeMap::new();
+        let mut sinks: BTreeMap<usize, LoopSink> = BTreeMap::new();
+        for (offset, (edge, sink)) in special_sinks.iter().enumerate() {
+            let index: usize = order.len().checked_add(offset)?;
+            sink_indices.insert(*edge, index);
+            sinks.insert(index, *sink);
+        }
+        let sink_index =
+            |node: usize, arm: u8| -> Option<usize> { sink_indices.get(&(node, arm)).copied() };
+        for node in &order {
+            let source: &Aarch64Block = self.blocks.get(*node)?;
+            let term: Aarch64Term = if plan.terminal_latch == Some(*node) {
+                Aarch64Term::Goto(sink_index(*node, 0)?)
+            } else {
+                match &source.term {
+                    Aarch64Term::Return => Aarch64Term::Return,
+                    Aarch64Term::Goto(target) => {
+                        let target: usize = match sink_for_target(*target) {
+                            Some(LoopSink::Continue)
+                                if plan.canonical_continue_sources.contains(node) =>
+                            {
+                                sink_index(*node, 0)?
+                            }
+                            Some(LoopSink::Fallthrough)
+                                if plan.canonical_fallthrough_sources.contains(node) =>
+                            {
+                                sink_index(*node, 0)?
+                            }
+                            Some(LoopSink::Break | LoopSink::Continue | LoopSink::Fallthrough) => {
+                                return None;
+                            }
+                            None => sub_of.get(target).copied()?,
+                        };
+                        Aarch64Term::Goto(target)
+                    }
+                    Aarch64Term::Branch {
+                        kind,
+                        flags,
+                        taken,
+                        not_taken,
+                    } => {
+                        let taken: usize = match sink_for_target(*taken) {
+                            Some(LoopSink::Break | LoopSink::Continue) => sink_index(*node, 1)?,
+                            Some(LoopSink::Fallthrough) => return None,
+                            None => sub_of.get(taken).copied()?,
+                        };
+                        let not_taken: usize = match sink_for_target(*not_taken) {
+                            Some(LoopSink::Break | LoopSink::Continue) => sink_index(*node, 2)?,
+                            Some(LoopSink::Fallthrough) => return None,
+                            None => sub_of.get(not_taken).copied()?,
+                        };
+                        Aarch64Term::Branch {
+                            kind: *kind,
+                            flags: flags.clone(),
+                            taken,
+                            not_taken,
+                        }
+                    }
+                }
+            };
+            blocks.push(Aarch64Block {
+                start: source.start,
+                end: source.end,
+                stmts: source.stmts.clone(),
+                term,
+            });
+        }
+        for _ in &special_sinks {
+            blocks.push(Aarch64Block {
+                start: 0,
+                end: 0,
+                stmts: Vec::new(),
+                term: Aarch64Term::Return,
+            });
+        }
+        Some(LoopBody {
+            blocks,
+            entry,
+            sinks,
+        })
+    }
+
+    fn render_natural_loop(&mut self, region: &structuring::Region, out: &mut Vec<Node>) -> bool {
+        let header: usize = region.entry as usize;
+        let natural: structuring::NaturalLoop = match self.natural_loop(header) {
+            Some(natural) => natural,
+            None => return false,
+        };
+        if self.has_nested_loop(&natural) {
+            return false;
+        }
+        let body: BTreeSet<usize> = Self::natural_loop_body(&natural);
+        let follow: usize = match self.loop_follow(&body) {
+            Some(follow) => follow,
+            None => return false,
+        };
+        if !self.loop_exit_is_current_level(&natural, follow) {
+            return false;
+        }
+        let plan: LoopPlan = match self.pretested_loop_plan(&natural, &body, follow) {
+            Some(plan) => plan,
+            None => match self.posttested_loop_plan(&natural, &body, follow) {
+                Some(plan) => plan,
+                None => return false,
+            },
+        };
+        let loop_body: LoopBody = match self.build_loop_body(&natural, &body, follow, &plan) {
+            Some(loop_body) => loop_body,
+            None => return false,
+        };
+        let rendered: bool = {
+            let cfg: structuring::Cfg =
+                match cfg_from_blocks_with_entry(&loop_body.blocks, loop_body.entry) {
+                    Some(cfg) => cfg,
+                    None => return false,
+                };
+            let result: structuring::StructureResult = structuring::structure(&cfg);
+            if !result.is_complete()
+                || !structuring::multi_entry_irreducible_sccs(&cfg).is_empty()
+                || !result.regions.iter().all(|nested: &structuring::Region| {
+                    matches!(
+                        nested.kind,
+                        structuring::RegionKind::Block
+                            | structuring::RegionKind::IfThen
+                            | structuring::RegionKind::IfThenElse
+                    )
+                })
+                || !result
+                    .regions
+                    .iter()
+                    .filter_map(|nested: &structuring::Region| nested.cond)
+                    .all(|cond: structuring::CondId| {
+                        condition_is_supported(&loop_body.blocks, &result.conds, cond)
+                    })
+            {
+                return false;
+            }
+            let root: structuring::RegionId = match result.root {
+                Some(root) => root,
+                None => return false,
+            };
+            let forest: structuring::LoopForest = structuring::loop_forest(&cfg);
+            let mut nested_renderer: Renderer<'_> = Renderer {
+                blocks: &loop_body.blocks,
+                result: &result,
+                forest: &forest,
+                sinks: &loop_body.sinks,
+                consumed: BTreeSet::new(),
+            };
+            let mut loop_nodes: Vec<Node> = Vec::new();
+            if !nested_renderer.render(root, &mut loop_nodes)
+                || nested_renderer.consumed
+                    != reachable_blocks_from(&loop_body.blocks, loop_body.entry)
+                || block_contains_goto(&loop_nodes)
+            {
+                return false;
+            }
+            match &plan.form {
+                LoopForm::While(condition) => out.push(Node::While {
+                    body: loop_nodes,
+                    cond: Some(condition.clone()),
+                }),
+                LoopForm::DoWhile(condition) => out.push(Node::DoWhile {
+                    body: loop_nodes,
+                    cond: condition.clone(),
+                }),
+            }
+            true
+        };
+        if !rendered {
+            return false;
+        }
+        for node in body {
+            if !self.consumed.insert(node) {
+                return false;
+            }
+        }
+        true
     }
 
     fn region_entry(&self, id: structuring::RegionId) -> Option<usize> {
@@ -992,8 +1540,8 @@ impl Renderer<'_> {
             }
             structuring::RegionKind::While => self.render_while(region, out),
             structuring::RegionKind::DoWhile => self.render_do_while(region, out),
+            structuring::RegionKind::NaturalLoop => self.render_natural_loop(region, out),
             structuring::RegionKind::Switch
-            | structuring::RegionKind::NaturalLoop
             | structuring::RegionKind::SelfLoop
             | structuring::RegionKind::Proper
             | structuring::RegionKind::Irreducible => false,
