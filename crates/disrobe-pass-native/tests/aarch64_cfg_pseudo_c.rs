@@ -154,12 +154,23 @@ fn aarch64_real_clang_three_register_csel_recovers_as_ternary() {
 }
 
 #[test]
-fn aarch64_conditional_select_abstains_when_destination_is_a_flag_operand() {
+fn aarch64_flag_dest_cset_snapshots_the_condition_before_the_clobber() {
     let bytes: [u8; 12] = [
         0x1f, 0x00, 0x01, 0x6b, 0xe0, 0x17, 0x9f, 0x1a, 0xc0, 0x03, 0x5f, 0xd6,
     ];
-    let result: Result<LeafRecovery, Error> = recover_aarch64_function(&bytes, 0);
-    assert!(result.is_err(), "{result:?}");
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("flag-dest cset");
+    let expected: &str = "#include <stdint.h>\nuint64_t recovered(uint64_t a0, uint64_t a1) {\n    uint64_t r_rax = a0;\n    uint64_t r_a64_x1 = a1;\n    uint64_t sel_cc_0 = 0;\n    sel_cc_0 = (int64_t)(int32_t)(r_rax) == (int64_t)(int32_t)(r_a64_x1);\n    r_rax = ((uint64_t)(int64_t)0LL) & 0xffffffffULL;\n    r_rax = sel_cc_0 != 0 ? ((uint64_t)(int64_t)1LL) & 0xffffffffULL : r_rax;\n    return (r_rax) & 0xffffffffULL;\n}\n";
+    assert_eq!(r.source, expected);
+}
+
+#[test]
+fn aarch64_flag_dest_three_register_csel_snapshots_the_condition() {
+    let bytes: [u8; 12] = [
+        0x1f, 0x00, 0x01, 0x6b, 0x40, 0xc0, 0x83, 0x1a, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("flag-dest csel");
+    let expected: &str = "#include <stdint.h>\nuint64_t recovered(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) {\n    uint64_t r_rax = a0;\n    uint64_t r_a64_x1 = a1;\n    uint64_t r_a64_x2 = a2;\n    uint64_t r_a64_x3 = a3;\n    uint64_t sel_cc_0 = 0;\n    sel_cc_0 = (int64_t)(int32_t)(r_rax) > (int64_t)(int32_t)(r_a64_x1);\n    r_rax = (r_a64_x3) & 0xffffffffULL;\n    r_rax = sel_cc_0 != 0 ? (r_a64_x2) & 0xffffffffULL : r_rax;\n    return (r_rax) & 0xffffffffULL;\n}\n";
+    assert_eq!(r.source, expected);
 }
 
 #[test]
