@@ -173,12 +173,9 @@ impl<'a> ByteCursor<'a> {
     #[inline]
     #[must_use]
     pub fn bounded_capacity<T>(&self, count: u64, elem_bytes: usize) -> usize {
-        let max_by_buffer: usize = self.remaining() / elem_bytes.max(1) + 1;
         let in_memory_bytes: usize = std::mem::size_of::<T>().max(1);
         let max_by_memory: usize = MAX_RESERVE_BYTES / in_memory_bytes;
-        usize::try_from(count)
-            .unwrap_or(usize::MAX)
-            .min(max_by_buffer)
+        disrobe_bytes::bounded_element_capacity(count, elem_bytes, self.remaining())
             .min(max_by_memory)
     }
 }

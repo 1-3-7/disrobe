@@ -357,8 +357,7 @@ impl<'a> Reader<'a> {
 
     #[inline]
     fn bounded_capacity(&self, count: usize, elem_bytes: usize) -> usize {
-        let max_by_buffer: usize = self.remaining() / elem_bytes.max(1) + 1;
-        count.min(max_by_buffer)
+        disrobe_bytes::bounded_element_capacity(count as u64, elem_bytes, self.remaining())
     }
 
     fn read_i32(&mut self) -> HlResult<i32> {

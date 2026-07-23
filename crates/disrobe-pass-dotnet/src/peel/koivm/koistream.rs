@@ -138,11 +138,7 @@ impl<'a> Cursor<'a> {
 }
 
 fn bounded_capacity(declared: u32, remaining: usize, min_record_bytes: usize) -> usize {
-    let ceiling: usize = remaining
-        .checked_div(min_record_bytes.max(1))
-        .unwrap_or(0)
-        .saturating_add(1);
-    (declared as usize).min(ceiling)
+    disrobe_bytes::bounded_element_capacity(u64::from(declared), min_record_bytes, remaining)
 }
 
 pub fn parse_koistream(data: &[u8]) -> Result<KoiStream, KoiStreamError> {
