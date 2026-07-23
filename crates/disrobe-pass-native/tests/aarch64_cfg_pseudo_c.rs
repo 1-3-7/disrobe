@@ -45,6 +45,24 @@ fn aarch64_real_clang_ror_recovers_as_a_shift_or_rotate() {
 }
 
 #[test]
+fn aarch64_real_clang_paired_struct_load_recovers_two_fields() {
+    let bytes: [u8; 12] = [
+        0x08, 0x24, 0x40, 0x29, 0x20, 0x01, 0x08, 0x0b, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("paired struct load");
+    assert!(
+        r.source.contains("*(uint32_t*)(uintptr_t)(r_rax)"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source.contains("(r_rax + (uint64_t)(int64_t)4LL)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
 fn aarch64_real_clang_neg_negates() {
     let bytes: [u8; 8] = [0xe0, 0x03, 0x00, 0x4b, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("neg");
