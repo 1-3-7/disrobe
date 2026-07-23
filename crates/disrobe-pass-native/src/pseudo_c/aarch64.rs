@@ -115,6 +115,7 @@ enum SwitchTargetMode {
 struct SwitchSetup {
     table_base: u8,
     index: u8,
+    load_index: usize,
     table_va: u64,
     target_mode: SwitchTargetMode,
     relative_aliases: Option<(u8, u8)>,
@@ -183,13 +184,12 @@ enum SwitchInsn {
 }
 
 impl RelativeLoadKind {
-    fn natural(self) -> (usize, bool) {
+    fn natural(self) -> Option<(usize, bool)> {
         match self {
-            Self::ByteUnsigned => (1, false),
-            Self::ByteSigned => (1, true),
-            Self::HalfwordUnsigned => (2, false),
-            Self::HalfwordSigned => (2, true),
-            Self::WordSigned => (4, true),
+            Self::ByteUnsigned => Some((1, false)),
+            Self::HalfwordUnsigned => Some((2, false)),
+            Self::WordSigned => Some((4, true)),
+            Self::ByteSigned | Self::HalfwordSigned => None,
         }
     }
 
@@ -674,6 +674,7 @@ fn recover_aarch64_switch(
             SwitchSetup {
                 table_base,
                 index,
+                load_index: offset_load_index,
                 table_va,
                 target_mode: SwitchTargetMode::Relative {
                     anchor: anchor_va,
@@ -710,7 +711,7 @@ fn recover_aarch64_switch(
             {
                 return None;
             }
-            let (element_size, signed): (usize, bool) = load_kind.natural();
+            let (element_size, signed): (usize, bool) = load_kind.natural()?;
             let (anchor_definition_index, anchor_definition): (usize, SwitchInsn) =
                 single_definition(decoded, target_definition_index, anchor)?;
             let (table_page_index, table_add_index, table_va): (usize, usize, u64) =
@@ -752,6 +753,7 @@ fn recover_aarch64_switch(
             SwitchSetup {
                 table_base,
                 index,
+                load_index: offset_load_index,
                 table_va,
                 target_mode: SwitchTargetMode::Relative {
                     anchor: anchor_va,
@@ -779,6 +781,7 @@ fn recover_aarch64_switch(
             SwitchSetup {
                 table_base,
                 index,
+                load_index: target_definition_index,
                 table_va,
                 target_mode: SwitchTargetMode::Absolute64,
                 relative_aliases: None,
@@ -803,13 +806,14 @@ fn recover_aarch64_switch(
     let SwitchSetup {
         table_base,
         index,
+        load_index,
         table_va,
         target_mode,
         relative_aliases,
         mut required_indices,
     } = setup;
     let (selector_source, selector_copy_index): (u8, Option<usize>) =
-        match single_definition(decoded, branch_index, index) {
+        match single_definition(decoded, load_index, index) {
             Some((copy_index, SwitchInsn::RegisterCopy { dest, source })) if dest == index => {
                 (source, Some(copy_index))
             }
