@@ -3046,7 +3046,7 @@ fn parse_immediate(token: &str) -> Result<i64> {
             .and_then(i64::checked_neg)
             .ok_or_else(|| reject("negative immediate overflow"))
     } else {
-        i64::try_from(magnitude).map_err(|_| reject("immediate exceeds signed ir range"))
+        Ok(i64::from_ne_bytes(magnitude.to_ne_bytes()))
     }
 }
 
