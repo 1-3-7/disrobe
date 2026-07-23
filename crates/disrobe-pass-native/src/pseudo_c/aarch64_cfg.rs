@@ -78,9 +78,6 @@ pub(super) fn structure(
     if !synthesize_nzcv_conditions(&mut blocks, insns, flag_definitions) {
         return Attempt::RejectedNzcv;
     }
-    if branch_count != 1 {
-        return Attempt::NotCandidate;
-    }
     let cfg: Option<structuring::Cfg> = cfg_from_blocks(&blocks);
     let Some(cfg): Option<structuring::Cfg> = cfg else {
         return Attempt::NotCandidate;
@@ -96,6 +93,11 @@ pub(super) fn structure(
                     | structuring::RegionKind::IfThenElse
             )
         })
+        || !result
+            .regions
+            .iter()
+            .filter_map(|region: &structuring::Region| region.cond)
+            .all(|cond: structuring::CondId| condition_is_supported(&blocks, &result.conds, cond))
     {
         return Attempt::NotCandidate;
     }
@@ -466,10 +468,7 @@ fn cfg_from_blocks(blocks: &[Aarch64Block]) -> Option<structuring::Cfg> {
                 }
             }
         };
-        let pure: bool = !block
-            .stmts
-            .iter()
-            .any(|statement: &IndexedStmt| statement_has_side_effect(&statement.stmt));
+        let pure: bool = block_is_pure(block);
         nodes.push(structuring::CfgNode { term, pure });
     }
     structuring::Cfg::new(0, nodes).ok()
@@ -503,10 +502,7 @@ fn relowered_cfg_from_blocks(
     let mut nodes: Vec<structuring::CfgNode> =
         Vec::with_capacity(blocks.len().checked_add(edge_targets.len())?);
     for (index, term) in terms.into_iter().enumerate() {
-        let pure: bool = !blocks[index]
-            .stmts
-            .iter()
-            .any(|statement: &IndexedStmt| statement_has_side_effect(&statement.stmt));
+        let pure: bool = block_is_pure(&blocks[index]);
         nodes.push(structuring::CfgNode { term, pure });
     }
     let mut residual: BTreeMap<u32, u32> = BTreeMap::new();
@@ -532,6 +528,48 @@ fn relowered_edge(
     let stub_id: u32 = original_count.checked_add(offset)?;
     edge_targets.push(target);
     Some(stub_id)
+}
+
+fn condition_is_supported(
+    blocks: &[Aarch64Block],
+    conds: &structuring::CondPool,
+    id: structuring::CondId,
+) -> bool {
+    let require_empty_blocks: bool = matches!(
+        conds.nodes().get(id as usize),
+        Some(structuring::Cond::And(_, _) | structuring::Cond::Or(_, _))
+    );
+    condition_is_supported_inner(blocks, conds, id, require_empty_blocks)
+}
+
+fn condition_is_supported_inner(
+    blocks: &[Aarch64Block],
+    conds: &structuring::CondPool,
+    id: structuring::CondId,
+    require_empty_blocks: bool,
+) -> bool {
+    match conds.nodes().get(id as usize) {
+        Some(structuring::Cond::Leaf(atom) | structuring::Cond::NotLeaf(atom)) => {
+            let block: &Aarch64Block = match blocks.get(*atom as usize) {
+                Some(block) => block,
+                None => return false,
+            };
+            matches!(&block.term, Aarch64Term::Branch { .. })
+                && (!require_empty_blocks || block.stmts.is_empty())
+        }
+        Some(structuring::Cond::And(left, right) | structuring::Cond::Or(left, right)) => {
+            condition_is_supported_inner(blocks, conds, *left, true)
+                && condition_is_supported_inner(blocks, conds, *right, true)
+        }
+        None => false,
+    }
+}
+
+fn block_is_pure(block: &Aarch64Block) -> bool {
+    !block
+        .stmts
+        .iter()
+        .any(|statement: &IndexedStmt| statement_has_side_effect(&statement.stmt))
 }
 
 fn statement_has_side_effect(statement: &Stmt) -> bool {
@@ -615,6 +653,48 @@ fn cond_from_region(
             let lhs: Cond = cond_from_region(blocks, conds, *left)?;
             let rhs: Cond = cond_from_region(blocks, conds, *right)?;
             Some(Cond::Or(Box::new(lhs), Box::new(rhs)))
+        }
+    }
+}
+
+fn normalize_compound_condition(
+    condition: Cond,
+    taken: structuring::RegionId,
+    not_taken: structuring::RegionId,
+) -> (Cond, structuring::RegionId, structuring::RegionId) {
+    if !matches!(&condition, Cond::And(_, _) | Cond::Or(_, _)) {
+        return (condition, taken, not_taken);
+    }
+    let negated: Cond = negate_condition(condition.clone());
+    if non_strict_condition_count(&negated) < non_strict_condition_count(&condition) {
+        (negated, not_taken, taken)
+    } else {
+        (condition, taken, not_taken)
+    }
+}
+
+fn negate_condition(condition: Cond) -> Cond {
+    match condition {
+        Cond::Leaf { kind, flags } => Cond::leaf(kind.negate(), flags),
+        Cond::And(left, right) => Cond::Or(
+            Box::new(negate_condition(*left)),
+            Box::new(negate_condition(*right)),
+        ),
+        Cond::Or(left, right) => Cond::And(
+            Box::new(negate_condition(*left)),
+            Box::new(negate_condition(*right)),
+        ),
+    }
+}
+
+fn non_strict_condition_count(condition: &Cond) -> usize {
+    match condition {
+        Cond::Leaf { kind, .. } => usize::from(matches!(
+            kind,
+            CondKind::Ge | CondKind::Le | CondKind::Ae | CondKind::Be
+        )),
+        Cond::And(left, right) | Cond::Or(left, right) => {
+            non_strict_condition_count(left) + non_strict_condition_count(right)
         }
     }
 }
@@ -711,16 +791,21 @@ impl Renderer<'_> {
                 let Some(cond): Option<Cond> = cond else {
                     return false;
                 };
+                let (guard, then_id, else_id): (
+                    Cond,
+                    structuring::RegionId,
+                    structuring::RegionId,
+                ) = normalize_compound_condition(cond, taken, not_taken);
                 let mut then_body: Vec<Node> = Vec::new();
-                if !self.render(taken, &mut then_body) {
+                if !self.render(then_id, &mut then_body) {
                     return false;
                 }
                 let mut else_body: Vec<Node> = Vec::new();
-                if !self.render(not_taken, &mut else_body) {
+                if !self.render(else_id, &mut else_body) {
                     return false;
                 }
                 out.push(Node::If {
-                    cond,
+                    cond: guard,
                     then_body,
                     else_body: Some(else_body),
                 });
