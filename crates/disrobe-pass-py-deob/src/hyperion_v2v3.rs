@@ -1,16 +1,11 @@
+use disrobe_core::codec::DecodeError;
+use disrobe_core::codec::hex::encode as bytes_to_hex;
 use disrobe_pass_py_disasm::{Instruction, disassemble, render_dis};
 use disrobe_py_marshal::{CodeObject, Object, PyVersion, load as marshal_load};
 use liblzma::read::XzDecoder;
 use serde::Serialize;
 
 use crate::error::{Error, Result};
-
-const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
-
-fn push_lower_hex_byte(out: &mut String, byte: u8) {
-    out.push(LOWER_HEX[(byte >> 4) as usize] as char);
-    out.push(LOWER_HEX[(byte & 0x0f) as usize] as char);
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum HyperionVariant {
@@ -541,30 +536,7 @@ fn apply_xor(data: &[u8], key: &[u8]) -> Vec<u8> {
 }
 
 fn hex_decode(s: &str) -> Result<Vec<u8>> {
-    let bytes: &[u8] = s.as_bytes();
-    if !bytes.len().is_multiple_of(2) {
-        return Err(Error::XorKey("odd-length hex".to_owned()));
-    }
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len() / 2);
-    let mut i: usize = 0;
-    while i < bytes.len() {
-        let hi: u8 = hex_nibble(bytes[i])
-            .ok_or_else(|| Error::XorKey(format!("invalid hex char 0x{c:02x}", c = bytes[i])))?;
-        let lo: u8 = hex_nibble(bytes[i + 1]).ok_or_else(|| {
-            Error::XorKey(format!("invalid hex char 0x{c:02x}", c = bytes[i + 1]))
-        })?;
-        out.push((hi << 4) | lo);
-        i += 2;
-    }
-    Ok(out)
-}
-
-fn bytes_to_hex(bytes: &[u8]) -> String {
-    let mut s: String = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        push_lower_hex_byte(&mut s, *b);
-    }
-    s
+    disrobe_core::codec::hex::decode(s).map_err(|err: DecodeError| Error::XorKey(err.to_string()))
 }
 
 fn extract_largest_bytes_literal(text: &str) -> Result<Vec<u8>> {
@@ -711,6 +683,7 @@ fn preview_of(bytes: &[u8]) -> String {
 mod tests {
     use std::io::Write;
 
+    use disrobe_core::codec::hex::push_byte as push_lower_hex_byte;
     use disrobe_py_marshal::{CodeEra, CodeObject, Object, dump as marshal_dump};
     use liblzma::write::XzEncoder;
 

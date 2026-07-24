@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use aes::Aes256;
 use cbc::Decryptor;
 use cipher::{BlockDecryptMut, KeyIvInit, block_padding::Pkcs7};
+use disrobe_core::codec::hex::push_byte as push_lower_hex_byte;
 use disrobe_pass_py_decompile::bytecode::version::PyVersion as DecompileVersion;
 use disrobe_pass_py_decompile::engine::{build_real_source, marshal_to_decompile};
 use disrobe_pass_py_disasm::{Instruction, disassemble, render_dis};
@@ -19,12 +20,6 @@ type Aes256CbcDec = Decryptor<Aes256>;
 
 const OBFUXTREME_MARSHAL_VERSION: PyVersion = PyVersion::PY314;
 const MAX_NESTED_CODE_DEPTH: usize = 32;
-const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
-
-fn push_lower_hex_byte(out: &mut String, byte: u8) {
-    out.push(LOWER_HEX[(byte >> 4) as usize] as char);
-    out.push(LOWER_HEX[(byte & 0x0f) as usize] as char);
-}
 
 #[derive(Debug, Clone, Copy)]
 pub struct ObfuXtremePass;
