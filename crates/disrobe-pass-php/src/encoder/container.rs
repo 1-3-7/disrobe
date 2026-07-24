@@ -7,7 +7,7 @@ use flate2::read::ZlibDecoder;
 use memchr::memmem;
 use serde::{Deserialize, Serialize};
 
-pub const INFLATE_OUTPUT_CAP: usize = 64 * 1024 * 1024;
+pub const CONTAINER_INFLATE_OUTPUT_CAP: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum StaticLayer {
@@ -70,11 +70,11 @@ fn inflate_with<R: std::io::Read>(
         if n == 0 {
             break;
         }
-        if out.len().saturating_add(n) > INFLATE_OUTPUT_CAP {
+        if out.len().saturating_add(n) > CONTAINER_INFLATE_OUTPUT_CAP {
             return Err(Error::ContainerInflateBomb {
                 family,
                 layer,
-                cap: INFLATE_OUTPUT_CAP,
+                cap: CONTAINER_INFLATE_OUTPUT_CAP,
             });
         }
         out.extend_from_slice(&chunk[..n]);
