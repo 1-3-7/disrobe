@@ -41,20 +41,44 @@ pub struct InlinedExtractOptions {
 #[inline]
 #[must_use]
 pub fn locate_inlined_blocks(source: &str) -> Vec<InlinedBlock> {
+    if source.len() > MAX_INLINED_SOURCE_BYTES {
+        return Vec::new();
+    }
     let bytes: &[u8] = source.as_bytes();
     let begin: &[u8] = PYE_BEGIN_MARKER.as_bytes();
     let end: &[u8] = PYE_END_MARKER.as_bytes();
     let mut blocks: Vec<InlinedBlock> = Vec::new();
     let mut cursor: usize = 0usize;
-    while let Some(begin_off) = find_subslice(&bytes[cursor..], begin) {
-        let absolute_begin: usize = cursor + begin_off;
+    while blocks.len() < MAX_INLINED_BLOCKS {
+        let Some(remaining): Option<&[u8]> = bytes.get(cursor..) else {
+            break;
+        };
+        let Some(begin_off): Option<usize> = find_subslice(remaining, begin) else {
+            break;
+        };
+        let Some(absolute_begin): Option<usize> = cursor.checked_add(begin_off) else {
+            break;
+        };
         let block_start: usize = scan_line_start(source, absolute_begin);
-        let after_begin: usize = absolute_begin + begin.len();
-        if let Some(end_rel) = find_subslice(&bytes[after_begin..], end) {
-            let end_marker_start: usize = after_begin + end_rel;
-            let block_end: usize = scan_line_end(source, end_marker_start + end.len());
+        let Some(after_begin): Option<usize> = absolute_begin.checked_add(begin.len()) else {
+            break;
+        };
+        let Some(after_begin_bytes): Option<&[u8]> = bytes.get(after_begin..) else {
+            break;
+        };
+        if let Some(end_rel) = find_subslice(after_begin_bytes, end) {
+            let Some(end_marker_start): Option<usize> = after_begin.checked_add(end_rel) else {
+                break;
+            };
+            let Some(after_end_marker): Option<usize> = end_marker_start.checked_add(end.len())
+            else {
+                break;
+            };
+            let block_end: usize = scan_line_end(source, after_end_marker);
             let span: Range<usize> = block_start..block_end;
-            let raw: String = source[span.clone()].to_owned();
+            let Some(raw): Option<String> = source.get(span.clone()).map(ToOwned::to_owned) else {
+                break;
+            };
             let filename_hint: Option<String> = scan_filename_hint(source, block_start);
             blocks.push(InlinedBlock {
                 span,
@@ -355,6 +379,18 @@ mod tests {
         let src: &str = "--BEGIN SOURCEDEFENDER FILE---\nABCDE\nno end marker\n";
         let blocks: Vec<InlinedBlock> = locate_inlined_blocks(src);
         assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn locating_blocks_stops_at_the_block_budget() {
+        let mut source: String = String::new();
+        for _ in 0..=MAX_INLINED_BLOCKS {
+            source.push_str("--BEGIN SOURCEDEFENDER FILE---\n");
+            source.push_str("x\n");
+            source.push_str("---END SOURCEDEFENDER FILE----\n");
+        }
+        let blocks: Vec<InlinedBlock> = locate_inlined_blocks(&source);
+        assert_eq!(blocks.len(), MAX_INLINED_BLOCKS);
     }
 
     #[test]
