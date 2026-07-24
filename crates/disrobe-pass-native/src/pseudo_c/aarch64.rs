@@ -402,6 +402,14 @@ fn recover_with_calls_and_image<'image>(
                         value,
                         nz_only: false,
                     })
+                } else if insn.mnemonic == "adds" {
+                    let (mut snapshots, value): (Vec<Stmt>, Flags) = add_flags(insn)?;
+                    snapshots.append(&mut stmts);
+                    stmts = snapshots;
+                    Some(TrackedFlags {
+                        value,
+                        nz_only: false,
+                    })
                 } else {
                     None
                 };
@@ -2167,12 +2175,12 @@ fn lower_alu(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
     Ok((dest, prefix))
 }
 
-fn subtract_flags(insn: &DisasmInsn) -> Result<(Vec<Stmt>, Flags)> {
+fn flag_arithmetic_operands(insn: &DisasmInsn) -> Result<(Vec<Stmt>, RegRef, Source)> {
     let operands: Vec<&str> = split_operands(&insn.operands);
     if operands.len() != 3 {
         return Err(reject_at(
             insn,
-            "flag-setting subtract has an unsupported modifier",
+            "flag-setting arithmetic has an unsupported modifier",
         ));
     }
     let lhs: RegRef = parse_reg(operands[1])?;
@@ -2185,22 +2193,27 @@ fn subtract_flags(insn: &DisasmInsn) -> Result<(Vec<Stmt>, Flags)> {
         reg: Reg::A64FlagRhs,
         width: lhs.width,
     };
-    Ok((
-        vec![
-            Stmt::Assign {
-                dest: flag_lhs,
-                src: Source::Reg(lhs),
-            },
-            Stmt::Assign {
-                dest: flag_rhs,
-                src: rhs,
-            },
-        ],
-        Flags::Cmp {
-            lhs: flag_lhs,
-            rhs: Source::Reg(flag_rhs),
+    let snapshots: Vec<Stmt> = vec![
+        Stmt::Assign {
+            dest: flag_lhs,
+            src: Source::Reg(lhs),
         },
-    ))
+        Stmt::Assign {
+            dest: flag_rhs,
+            src: rhs,
+        },
+    ];
+    Ok((snapshots, flag_lhs, Source::Reg(flag_rhs)))
+}
+
+fn subtract_flags(insn: &DisasmInsn) -> Result<(Vec<Stmt>, Flags)> {
+    let (snapshots, lhs, rhs): (Vec<Stmt>, RegRef, Source) = flag_arithmetic_operands(insn)?;
+    Ok((snapshots, Flags::Cmp { lhs, rhs }))
+}
+
+fn add_flags(insn: &DisasmInsn) -> Result<(Vec<Stmt>, Flags)> {
+    let (snapshots, lhs, rhs): (Vec<Stmt>, RegRef, Source) = flag_arithmetic_operands(insn)?;
+    Ok((snapshots, Flags::Add { lhs, rhs }))
 }
 
 fn lower_flag_setter(insn: &DisasmInsn) -> Result<(Vec<Stmt>, TrackedFlags)> {
@@ -3305,6 +3318,8 @@ fn parse_condition(suffix: &str) -> Result<CondKind> {
         "ls" => Ok(CondKind::Be),
         "mi" => Ok(CondKind::S),
         "pl" => Ok(CondKind::Ns),
+        "vs" => Ok(CondKind::Vs),
+        "vc" => Ok(CondKind::Vc),
         _ => Err(reject("unsupported aarch64 condition code")),
     }
 }
@@ -3490,7 +3505,7 @@ fn select_operand(token: &str) -> Result<(Option<Reg>, Source, Width)> {
 
 fn flags_reference_reg(flags: &Flags, reg: Reg) -> bool {
     match flags {
-        Flags::Cmp { lhs, rhs } => {
+        Flags::Cmp { lhs, rhs } | Flags::Add { lhs, rhs } => {
             lhs.reg == reg || matches!(rhs, Source::Reg(source) if source.reg == reg)
         }
         Flags::Test { operand } | Flags::TestImm { operand, .. } => operand.reg == reg,
