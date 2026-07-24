@@ -678,15 +678,27 @@ fn incomplete_and_negative_stack_epilogues_reject() {
 }
 
 #[test]
-fn intervening_write_invalidates_tracked_nzcv_operands() {
+fn intervening_write_never_compares_the_overwritten_nzcv_operand() {
     let bytes: [u8; 28] = [
         0x1f, 0x00, 0x01, 0xeb, 0xe0, 0x03, 0x02, 0xaa, 0x6c, 0x00, 0x00, 0x54, 0x00, 0x00, 0x80,
         0xd2, 0xc0, 0x03, 0x5f, 0xd6, 0x20, 0x00, 0x80, 0xd2, 0xc0, 0x03, 0x5f, 0xd6,
     ];
-    let error = recover_aarch64_function(&bytes, 0).expect_err("stale nzcv operands");
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("clobbered compare operand recovers");
+    let overwrite: usize = recovered
+        .source
+        .find("r_rax = r_a64_x2;")
+        .unwrap_or_else(|| panic!("{}", recovered.source));
     assert!(
-        format!("{error:?}").contains("conditional branch lacks live nzcv state"),
-        "{error:?}"
+        recovered.source[..overwrite]
+            .contains("sel_cc_0 = (int64_t)(int64_t)(r_rax) > (int64_t)(int64_t)(r_a64_x1);"),
+        "{}",
+        recovered.source
+    );
+    assert!(
+        !recovered.source[overwrite..].contains("r_a64_x1"),
+        "{}",
+        recovered.source
     );
 }
 
