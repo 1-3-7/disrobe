@@ -2,6 +2,7 @@ use std::io::{Read, Write};
 
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD as B64_STANDARD, URL_SAFE_NO_PAD as B64_URLSAFE};
+use disrobe_core::codec::hex::push_byte as push_lower_hex_byte;
 use flate2::Compression;
 use flate2::read::{GzDecoder, ZlibDecoder};
 use flate2::write::ZlibEncoder;
@@ -11,13 +12,9 @@ use liblzma::write::XzEncoder;
 
 use crate::error::{Error, Result};
 
-pub(crate) const DECOMPRESS_CEILING: u64 = 512 * 1024 * 1024;
-const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
+pub(crate) use disrobe_core::codec::hex::encode as bytes_to_hex;
 
-fn push_lower_hex_byte(out: &mut String, byte: u8) {
-    out.push(LOWER_HEX[(byte >> 4) as usize] as char);
-    out.push(LOWER_HEX[(byte & 0x0f) as usize] as char);
-}
+pub(crate) const DECOMPRESS_CEILING: u64 = 512 * 1024 * 1024;
 
 pub(crate) fn bounded_read_to_end<R: Read>(reader: R) -> std::io::Result<Option<Vec<u8>>> {
     bounded_read_to_end_with(reader, DECOMPRESS_CEILING)
@@ -338,14 +335,6 @@ const fn hex_nibble(c: u8) -> Option<u8> {
         b'A'..=b'F' => Some(c - b'A' + 10),
         _ => None,
     }
-}
-
-pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
-    let mut s: String = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        push_lower_hex_byte(&mut s, *b);
-    }
-    s
 }
 
 pub(crate) fn b16_decode(input: &[u8]) -> Result<Vec<u8>> {

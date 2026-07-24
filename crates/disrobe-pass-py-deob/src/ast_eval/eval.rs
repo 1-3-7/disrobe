@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use disrobe_core::codec::hex::push_fixed as push_lower_hex_fixed;
 use ruff_python_ast::{
     BoolOp, CmpOp, Comprehension, Expr, ExprAttribute, ExprBinOp, ExprBoolOp, ExprBooleanLiteral,
     ExprBytesLiteral, ExprCall, ExprCompare, ExprDict, ExprGenerator, ExprIf, ExprLambda, ExprList,
@@ -9,16 +10,6 @@ use ruff_python_ast::{
 
 use super::methods::call_method;
 use super::value::{Key, Value};
-
-const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
-
-fn push_lower_hex_fixed(out: &mut String, code: u32, digits: usize) {
-    for nibble in (0..digits).rev() {
-        let shift: usize = nibble * 4;
-        let index: usize = ((code >> shift) & 0x0f) as usize;
-        out.push(LOWER_HEX[index] as char);
-    }
-}
 
 #[derive(Debug)]
 pub(crate) struct Scope {

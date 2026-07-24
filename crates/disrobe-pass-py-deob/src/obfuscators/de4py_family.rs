@@ -265,6 +265,8 @@ pub(crate) fn extract_hex_blob_from_pyc(source: &[u8]) -> Option<&[u8]> {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
+    use disrobe_core::codec::hex::encode as hex_encode;
+
     use super::*;
 
     #[test]
@@ -331,17 +333,7 @@ mod tests {
             let pre_rotate: char = ring_rotate_backward(ch);
             let codepoint: u32 = pre_rotate as u32 + shift;
             let encoded: char = char::from_u32(codepoint).expect("valid codepoint");
-            let token: String = encoded.to_string().into_bytes().iter().fold(
-                String::new(),
-                |mut acc: String, b: &u8| {
-                    const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
-                    let byte: u8 = *b;
-                    acc.push(LOWER_HEX[(byte >> 4) as usize] as char);
-                    acc.push(LOWER_HEX[(byte & 0x0f) as usize] as char);
-                    acc
-                },
-            );
-            tokens.push(token);
+            tokens.push(hex_encode(encoded.to_string().as_bytes()));
         }
         tokens.join("/")
     }

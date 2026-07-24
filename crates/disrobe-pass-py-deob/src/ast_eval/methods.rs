@@ -1,12 +1,7 @@
+use disrobe_core::codec::hex::push_byte as push_lower_hex_byte;
+
 use super::eval::{EvalError, EvalResult};
 use super::value::{Key, Value};
-
-const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
-
-fn push_lower_hex_byte(out: &mut String, byte: u8) {
-    out.push(LOWER_HEX[(byte >> 4) as usize] as char);
-    out.push(LOWER_HEX[(byte & 0x0f) as usize] as char);
-}
 
 pub(crate) fn call_method(receiver: &Value, name: &str, args: &[Value]) -> EvalResult {
     match receiver {

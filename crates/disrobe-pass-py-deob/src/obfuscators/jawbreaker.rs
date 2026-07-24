@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use disrobe_core::codec::hex::decode as hex_decode;
+
 use crate::codec::{
     b85_decode, b85_encode, decode_python_bytes_literal, extract_largest_python_bytes_literal,
     python_bytes_literal, xor_apply, zlib_compress, zlib_decompress,
@@ -253,31 +255,6 @@ fn extract_outer_hex_payload(text: &str) -> Option<&str> {
         return None;
     }
     text.get(best.0..best.1)
-}
-
-fn hex_decode(s: &str) -> std::result::Result<Vec<u8>, ()> {
-    if !s.len().is_multiple_of(2) {
-        return Err(());
-    }
-    let mut out: Vec<u8> = Vec::with_capacity(s.len() / 2);
-    let bytes: &[u8] = s.as_bytes();
-    let mut i: usize = 0;
-    while i < bytes.len() {
-        let hi: u8 = hex_val(bytes[i]).ok_or(())?;
-        let lo: u8 = hex_val(bytes[i + 1]).ok_or(())?;
-        out.push((hi << 4) | lo);
-        i += 2;
-    }
-    Ok(out)
-}
-
-const fn hex_val(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        _ => None,
-    }
 }
 
 fn b32_decode(input: &[u8]) -> std::result::Result<Vec<u8>, ()> {

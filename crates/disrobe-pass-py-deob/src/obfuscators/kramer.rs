@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use disrobe_core::byte_search::contains as contains_subsequence;
 use disrobe_py_marshal::{CodeEra, CodeObject, Object, PyVersion, dump as marshal_dump};
 
 use crate::codec::{
@@ -130,10 +131,6 @@ fn is_pyc_with_kramer_signature(source: &[u8]) -> bool {
     contains_subsequence(source, b"Kramer")
         || contains_subsequence(source, b"_sparkle")
         || contains_subsequence(source, b"__decode__")
-}
-
-fn contains_subsequence(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|w: &[u8]| w == needle)
 }
 
 fn peel_pyc_blob(id: Obfuscator, source: &[u8]) -> PeelOutcome {

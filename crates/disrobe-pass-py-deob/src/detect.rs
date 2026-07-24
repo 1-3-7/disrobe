@@ -1,5 +1,6 @@
 use std::sync::LazyLock;
 
+use disrobe_core::byte_search;
 use regex::Regex;
 use serde::Serialize;
 
@@ -46,7 +47,7 @@ pub fn detect(source: &[u8]) -> Detection {
         confidence = 0.7;
         markers.push("hyperion-author".to_owned());
     } else if source.len() > 16
-        && find_subslice(&source[..16.min(source.len())], KRAMER_BINARY_MARKER).is_some()
+        && byte_search::contains(&source[..16.min(source.len())], KRAMER_BINARY_MARKER)
     {
         family = Family::KramerSpecterBerserker;
         confidence = 0.85;
@@ -114,11 +115,6 @@ fn extract_dropper_modules(text: &str) -> Vec<String> {
     mods
 }
 
-#[inline]
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,5 +177,21 @@ mod tests {
         src[0..3].copy_from_slice(b"\r\r\n");
         let det: Detection = detect(&src);
         assert_eq!(det.family, Family::KramerSpecterBerserker);
+    }
+
+    #[test]
+    fn empty_needle_search_is_defined_instead_of_panicking() {
+        assert_eq!(byte_search::find(b"\r\r\npayload", b""), None);
+        assert!(!byte_search::contains(b"\r\r\npayload", b""));
+        assert_eq!(byte_search::find(b"", b""), None);
+        assert!(!byte_search::contains(b"", b""));
+    }
+
+    #[test]
+    fn detect_survives_degenerate_inputs() {
+        for src in [b"".as_slice(), b"\r".as_slice(), b"\r\r\n".as_slice()] {
+            let det: Detection = detect(src);
+            assert_eq!(det.family, Family::Unknown);
+        }
     }
 }
