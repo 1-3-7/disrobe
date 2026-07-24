@@ -3806,6 +3806,9 @@ fn vector_mov(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
     if operands.len() != 2 {
         return Err(reject_at(insn, "unsupported instruction"));
     }
+    if operands[0].contains('[') {
+        return vector_lane_insert(insn, operands);
+    }
     let (dest, dest_arr): (u8, VecArrangement) = parse_vector_operand(operands[0], false)?;
     let (src, src_arr): (u8, VecArrangement) = parse_vector_operand(operands[1], false)?;
     if dest_arr.elem != VecElem::I8 || dest_arr != src_arr {
@@ -3818,6 +3821,79 @@ fn vector_mov(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
         op: VecBinOp::Or,
         arr: dest_arr,
     })])
+}
+
+fn vector_lane_insert(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
+    let (dest, lane, elem): (u8, u8, VecElem) = parse_vector_lane_operand(operands[0])?;
+    if operands[1].contains('.') || operands[1].contains('[') {
+        return Err(reject_at(
+            insn,
+            "vector lane-to-lane element move is outside the supported subset",
+        ));
+    }
+    let src: RegRef = parse_reg(operands[1])
+        .map_err(|_| reject_at(insn, "vector lane insert source is not a general register"))?;
+    let expected: Width = if elem == VecElem::I64 {
+        Width::W64
+    } else {
+        Width::W32
+    };
+    if src.width != expected {
+        return Err(reject_at(
+            insn,
+            "vector lane insert source width does not match the element form",
+        ));
+    }
+    let arr: VecArrangement = VecArrangement::whole_register(elem);
+    if u16::from(lane) >= u16::from(arr.lanes) {
+        return Err(reject_at(
+            insn,
+            "vector lane index is outside the arrangement",
+        ));
+    }
+    Ok(vec![Stmt::Vector(VecStmt::LaneInsert {
+        dest,
+        lane,
+        src,
+        arr,
+    })])
+}
+
+fn parse_vector_lane_operand(token: &str) -> Result<(u8, u8, VecElem)> {
+    let (register, suffix): (&str, &str) = token
+        .trim()
+        .split_once('.')
+        .ok_or_else(|| reject("vector lane operand lacks an arrangement suffix"))?;
+    let number: &str = register
+        .strip_prefix('v')
+        .ok_or_else(|| reject("vector lane operand is not a v register"))?;
+    let reg: u8 = number
+        .parse::<u8>()
+        .ok()
+        .filter(|value: &u8| *value < 32)
+        .ok_or_else(|| reject("vector register is outside v0..v31"))?;
+    let (letter, rest): (&str, &str) = suffix
+        .split_once('[')
+        .ok_or_else(|| reject("vector lane operand lacks a lane index"))?;
+    let index_text: &str = rest
+        .strip_suffix(']')
+        .ok_or_else(|| reject("vector lane operand lane index is malformed"))?;
+    let lane: u8 = index_text
+        .trim()
+        .parse::<u8>()
+        .map_err(|_| reject("vector lane index is not a small integer"))?;
+    let elem: VecElem = match letter.trim() {
+        "b" => VecElem::I8,
+        "h" => VecElem::I16,
+        "s" => VecElem::I32,
+        "d" => VecElem::I64,
+        _ => {
+            return Err(reject(
+                "vector lane element type is outside the supported subset",
+            ));
+        }
+    };
+    Ok((reg, lane, elem))
 }
 
 fn vector_bin(insn: &DisasmInsn, operands: &[&str], float: bool) -> Result<Vec<Stmt>> {
@@ -4269,6 +4345,10 @@ fn remap_vec_stmt(
         VecStmt::Dup { dest, arr, .. } => {
             write_remap(dest, *arr, live, arr_at, next_syn)?;
         }
+        VecStmt::LaneInsert { dest, arr, .. } => {
+            read_remap(dest, *arr, live, arr_at);
+            write_remap(dest, *arr, live, arr_at, next_syn)?;
+        }
         VecStmt::MoveImm { dest, imm, .. } if *imm == 0 => {
             remap_current(dest, live);
         }
@@ -4386,6 +4466,7 @@ fn resolve_vector_types(items: &mut [Item]) -> Result<()> {
                 }
             }
             VecStmt::Dup { dest, arr, .. } => note_vec_exact(&mut exact, *dest, *arr)?,
+            VecStmt::LaneInsert { dest, arr, .. } => note_vec_exact(&mut exact, *dest, *arr)?,
             VecStmt::MoveImm { dest, imm, arr, .. } if *imm == 0 => {
                 note_vec_width(&mut width, *dest, *arr)?;
             }
@@ -4479,6 +4560,7 @@ fn resolve_vector_types(items: &mut [Item]) -> Result<()> {
             }
             VecStmt::Bin { .. }
             | VecStmt::Dup { .. }
+            | VecStmt::LaneInsert { .. }
             | VecStmt::Compare { .. }
             | VecStmt::MoveImm { .. }
             | VecStmt::Reduce { .. }
@@ -4685,7 +4767,7 @@ fn record_vector_types(types: &mut BTreeMap<u8, VecArrangement>, vec: &VecStmt) 
                 types.entry(*rhs).or_insert(*arr);
             }
         }
-        VecStmt::Dup { dest, arr, .. } => {
+        VecStmt::Dup { dest, arr, .. } | VecStmt::LaneInsert { dest, arr, .. } => {
             types.entry(*dest).or_insert(*arr);
         }
         VecStmt::MoveImm { dest, arr, .. } => {
@@ -4787,6 +4869,7 @@ fn vector_reads(vec: &VecStmt) -> Vec<(u8, VecArrangement)> {
             let arr: VecArrangement = VecArrangement::whole_register(*src_elem);
             vec![(*src1, arr), (*src2, arr)]
         }
+        VecStmt::LaneInsert { dest, arr, .. } => vec![(*dest, *arr)],
         VecStmt::Load { .. } | VecStmt::Dup { .. } | VecStmt::MoveImm { .. } => Vec::new(),
     }
 }
@@ -4795,6 +4878,7 @@ fn vector_write(vec: &VecStmt) -> Option<u8> {
     match vec {
         VecStmt::Bin { dest, .. }
         | VecStmt::Dup { dest, .. }
+        | VecStmt::LaneInsert { dest, .. }
         | VecStmt::Load { dest, .. }
         | VecStmt::Compare { dest, .. }
         | VecStmt::MoveImm { dest, .. } => Some(*dest),
