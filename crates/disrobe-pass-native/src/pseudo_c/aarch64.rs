@@ -1,10 +1,12 @@
 use super::{
-    Abi, AggregatePlan, BinOp, CondKind, Error, ExtSource, Flags, FnReturn, FnSignature,
-    FrameShape, IndexExtend, IndexOperand, Item, ItemKind, LeafRecovery, MemRef, Node, ReduceOp,
-    Reg, RegRef, ResolvedCall, Result, ScalarType, Source, SretPlan, SretReturn, Stmt, Structured,
-    UnOp, VecArrangement, VecBinOp, VecElem, VecStmt, Width, annotate_calls_block_with_order,
-    collect_call_targets, condition_is_sound, detect_sret, emit_c, emit_rust, infer_aggregate_plan,
-    infer_params, plan_frame, stmt_writes_rax_int, structure_items,
+    Abi, AggregatePlan, BinOp, Block, CondKind, Error, ExtSource, FP_ARG_ORDER, Flags, FnReturn,
+    FnSignature, FpOperand, FpWidth, FrameShape, IndexExtend, IndexOperand, Item, ItemKind,
+    LeafRecovery, MemRef, Node, ReduceOp, Reg, RegRef, ResolvedCall, Result, ScalarType, Source,
+    SretPlan, SretReturn, Stmt, Structured, UnOp, VecArrangement, VecBinOp, VecElem, VecStmt,
+    Width, Xmm, annotate_calls_block_with_order, collect_block_xmm, collect_call_targets,
+    condition_is_sound, detect_sret, emit_c, emit_rust, fp_stmt_result_xmm, infer_aggregate_plan,
+    infer_fp_params, infer_params, plan_frame, rax_write_width, stmt_writes_rax_int,
+    structure_items,
 };
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use std::collections::{BTreeMap, BTreeSet};
@@ -36,6 +38,25 @@ const CALL_ARG_ORDER: [Reg; 16] = [
     Reg::A64Outgoing5,
     Reg::A64Outgoing6,
     Reg::A64Outgoing7,
+];
+
+const AARCH64_FP_REGISTERS: [Xmm; 16] = [
+    Xmm::Xmm0,
+    Xmm::Xmm1,
+    Xmm::Xmm2,
+    Xmm::Xmm3,
+    Xmm::Xmm4,
+    Xmm::Xmm5,
+    Xmm::Xmm6,
+    Xmm::Xmm7,
+    Xmm::Xmm8,
+    Xmm::Xmm9,
+    Xmm::Xmm10,
+    Xmm::Xmm11,
+    Xmm::Xmm12,
+    Xmm::Xmm13,
+    Xmm::Xmm14,
+    Xmm::Xmm15,
 ];
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -326,6 +347,11 @@ fn recover_with_calls_and_image<'image>(
     if insns.is_empty() || insns.len() > MAX_INSTRUCTIONS {
         return Err(reject("instruction count is outside the bounded lift"));
     }
+    if has_bulk_q_spill(&insns) {
+        return Err(reject(
+            "bulk q0..q7 stack spill is outside scalar floating-point increment 1",
+        ));
+    }
     let image_context: ImageContext<'_, 'image> = ImageContext { image, relocations };
     let switches: BTreeMap<usize, SwitchDispatch> =
         recover_aarch64_switches(&insns, base, machine_code.len(), &image_context);
@@ -340,6 +366,7 @@ fn recover_with_calls_and_image<'image>(
     let mut flag_definitions: BTreeMap<usize, TrackedFlags> = BTreeMap::new();
     let frame: FrameAnalysis = frame_analysis(&insns)?;
     let outgoing: BTreeMap<usize, Vec<OutgoingSlot>> = outgoing_stores(&insns, calls)?;
+    let vector_context: bool = insns.iter().any(instruction_has_vector_syntax);
     for (index, insn) in insns.iter().enumerate() {
         let address: u64 = item_address(base, index, 0)?;
         if let Some(dispatch) = switches.get(&index) {
@@ -375,12 +402,17 @@ fn recover_with_calls_and_image<'image>(
                 "stack-frame instruction is outside a recognized prologue or epilogue",
             ));
         }
+        if let Some(stmts) = try_lower_scalar_fp(insn, frame.info, vector_context)? {
+            push_stmts(&mut items, base, index, stmts)?;
+            continue;
+        }
         if let Some(stmts) = try_lower_scalar_simd(insn)? {
             push_stmts(&mut items, base, index, stmts)?;
             continue;
         }
         if matches!(insn.mnemonic.as_str(), "ldr" | "str")
             && first_operand_is_scalar_dreg(&insn.operands)
+            && (vector_context || is_dreg_post_indexed(&insn.operands))
         {
             let operands: Vec<&str> = split_operands(&insn.operands);
             let stmts: Vec<Stmt> = vector_load_store(insn, &operands, insn.mnemonic == "ldr")?;
@@ -1109,6 +1141,25 @@ fn recover_with_calls_and_image<'image>(
             }
             _ => return Err(reject_at(insn, "unsupported instruction")),
         }
+    }
+    if items
+        .iter()
+        .all(|item: &Item| matches!(&item.kind, ItemKind::Ret))
+    {
+        return Err(reject(
+            "result-free return is ambiguous across integer, floating-point, and void signatures",
+        ));
+    }
+    let has_scalar_fp: bool = items
+        .iter()
+        .any(|item: &Item| matches!(&item.kind, ItemKind::Stmt(stmt) if stmt_is_scalar_fp(stmt)));
+    let has_vector: bool = items
+        .iter()
+        .any(|item: &Item| matches!(item.kind, ItemKind::Stmt(Stmt::Vector(_))));
+    if has_scalar_fp && has_vector {
+        return Err(reject(
+            "mixed scalar floating-point and vector register use is outside increment 1",
+        ));
     }
     version_widened_registers(&mut items)?;
     resolve_vector_types(&mut items)?;
@@ -2038,6 +2089,278 @@ fn block_contains_switch(body: &[Node]) -> bool {
     })
 }
 
+fn stmt_is_scalar_fp(stmt: &Stmt) -> bool {
+    matches!(
+        stmt,
+        Stmt::FpBin { .. }
+            | Stmt::FpMov { .. }
+            | Stmt::FpStore { .. }
+            | Stmt::IntToFp { .. }
+            | Stmt::FpToInt { .. }
+            | Stmt::FpConvert { .. }
+            | Stmt::FpMinMax { .. }
+            | Stmt::FpSqrt { .. }
+            | Stmt::FpRound { .. }
+            | Stmt::GprToXmm { .. }
+            | Stmt::XmmToGpr { .. }
+    )
+}
+
+fn aarch64_fp_params(body: &Block) -> Result<Vec<(Xmm, FpWidth)>> {
+    let mut touched: Vec<Xmm> = Vec::new();
+    collect_block_xmm(body, &mut touched);
+    if touched.iter().any(|register: &Xmm| register.index() >= 8) {
+        return Err(reject(
+            "scalar floating-point access uses v8..v15, which is outside increment 1",
+        ));
+    }
+    let inferred: Vec<(Xmm, FpWidth)> = infer_fp_params(body)?;
+    let Some(highest): Option<usize> = inferred
+        .iter()
+        .map(|(register, _): &(Xmm, FpWidth)| usize::from(register.index()))
+        .max()
+    else {
+        return Ok(Vec::new());
+    };
+    let mut params: Vec<(Xmm, FpWidth)> = Vec::with_capacity(highest + 1);
+    for register in FP_ARG_ORDER.iter().copied().take(highest + 1) {
+        let width: FpWidth = inferred
+            .iter()
+            .find(|(candidate, _): &&(Xmm, FpWidth)| *candidate == register)
+            .map_or(FpWidth::F64, |(_, width): &(Xmm, FpWidth)| *width);
+        params.push((register, width));
+    }
+    Ok(params)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScalarReturnPath {
+    int: Option<Width>,
+    fp: Option<FpWidth>,
+    fp_stored: bool,
+    observable: bool,
+}
+
+impl ScalarReturnPath {
+    const fn entry() -> Self {
+        Self {
+            int: None,
+            fp: None,
+            fp_stored: false,
+            observable: false,
+        }
+    }
+
+    fn apply(&mut self, stmt: &Stmt) {
+        if let Some(width) = rax_write_width(stmt) {
+            self.int = Some(width);
+        }
+        if let Some((dest, width)) = fp_stmt_result_xmm(stmt)
+            && dest == Xmm::Xmm0
+        {
+            self.fp = Some(width);
+            self.fp_stored = false;
+        }
+        if let Stmt::FpStore { src, .. } = stmt
+            && *src == Xmm::Xmm0
+            && self.fp.is_some()
+        {
+            self.fp_stored = true;
+        }
+        if stmt_has_observable_effect(stmt) {
+            self.observable = true;
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct ScalarReturnFlow {
+    next: Vec<ScalarReturnPath>,
+    breaks: Vec<ScalarReturnPath>,
+    continues: Vec<ScalarReturnPath>,
+    returns: Vec<ScalarReturnPath>,
+}
+
+fn stmt_has_observable_effect(stmt: &Stmt) -> bool {
+    matches!(
+        stmt,
+        Stmt::Store { .. }
+            | Stmt::MemRmw { .. }
+            | Stmt::FpStore { .. }
+            | Stmt::BlockMove { .. }
+            | Stmt::BlockFill { .. }
+            | Stmt::Call { .. }
+            | Stmt::Vector(VecStmt::Store { .. })
+    )
+}
+
+fn extend_unique_paths(target: &mut Vec<ScalarReturnPath>, source: Vec<ScalarReturnPath>) {
+    for state in source {
+        if !target.contains(&state) {
+            target.push(state);
+        }
+    }
+}
+
+fn merge_scalar_flow(target: &mut ScalarReturnFlow, source: ScalarReturnFlow) {
+    extend_unique_paths(&mut target.next, source.next);
+    extend_unique_paths(&mut target.breaks, source.breaks);
+    extend_unique_paths(&mut target.continues, source.continues);
+    extend_unique_paths(&mut target.returns, source.returns);
+}
+
+fn scan_scalar_return_loop(
+    body: &[Node],
+    incoming: Vec<ScalarReturnPath>,
+    executes_once: bool,
+) -> Result<ScalarReturnFlow> {
+    let mut result: ScalarReturnFlow = ScalarReturnFlow::default();
+    if !executes_once {
+        extend_unique_paths(&mut result.next, incoming.clone());
+    }
+    let mut pending: Vec<ScalarReturnPath> = incoming;
+    let mut visited: Vec<ScalarReturnPath> = Vec::new();
+    while let Some(state) = pending.pop() {
+        if visited.contains(&state) {
+            continue;
+        }
+        visited.push(state);
+        let iteration: ScalarReturnFlow = scan_scalar_return_block(body, vec![state])?;
+        extend_unique_paths(&mut result.returns, iteration.returns);
+        extend_unique_paths(&mut result.next, iteration.breaks);
+        let mut post_condition: Vec<ScalarReturnPath> = iteration.next;
+        extend_unique_paths(&mut post_condition, iteration.continues);
+        extend_unique_paths(&mut result.next, post_condition.clone());
+        for next_state in post_condition {
+            if !visited.contains(&next_state) && !pending.contains(&next_state) {
+                pending.push(next_state);
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn scan_scalar_return_block(
+    body: &[Node],
+    incoming: Vec<ScalarReturnPath>,
+) -> Result<ScalarReturnFlow> {
+    let mut active: Vec<ScalarReturnPath> = incoming;
+    let mut result: ScalarReturnFlow = ScalarReturnFlow::default();
+    for node in body {
+        match node {
+            Node::Stmt(stmt) => {
+                for state in &mut active {
+                    state.apply(stmt);
+                }
+            }
+            Node::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                let then_flow: ScalarReturnFlow =
+                    scan_scalar_return_block(then_body, active.clone())?;
+                let else_flow: ScalarReturnFlow = match else_body {
+                    Some(else_body) => scan_scalar_return_block(else_body, active.clone())?,
+                    None => ScalarReturnFlow {
+                        next: active.clone(),
+                        ..ScalarReturnFlow::default()
+                    },
+                };
+                let mut branch_flow: ScalarReturnFlow = ScalarReturnFlow::default();
+                merge_scalar_flow(&mut branch_flow, then_flow);
+                merge_scalar_flow(&mut branch_flow, else_flow);
+                active = core::mem::take(&mut branch_flow.next);
+                extend_unique_paths(&mut result.breaks, branch_flow.breaks);
+                extend_unique_paths(&mut result.continues, branch_flow.continues);
+                extend_unique_paths(&mut result.returns, branch_flow.returns);
+            }
+            Node::While { body, .. } => {
+                let mut loop_flow: ScalarReturnFlow = scan_scalar_return_loop(body, active, false)?;
+                active = core::mem::take(&mut loop_flow.next);
+                extend_unique_paths(&mut result.returns, loop_flow.returns);
+            }
+            Node::DoWhile { body, .. } => {
+                let mut loop_flow: ScalarReturnFlow = scan_scalar_return_loop(body, active, true)?;
+                active = core::mem::take(&mut loop_flow.next);
+                extend_unique_paths(&mut result.returns, loop_flow.returns);
+            }
+            Node::Switch { cases, default, .. } => {
+                let mut switch_flow: ScalarReturnFlow = ScalarReturnFlow::default();
+                for case in cases {
+                    let case_flow: ScalarReturnFlow =
+                        scan_scalar_return_block(&case.body, active.clone())?;
+                    merge_scalar_flow(&mut switch_flow, case_flow);
+                }
+                let default_flow: ScalarReturnFlow =
+                    scan_scalar_return_block(default, active.clone())?;
+                merge_scalar_flow(&mut switch_flow, default_flow);
+                active = core::mem::take(&mut switch_flow.next);
+                extend_unique_paths(&mut active, switch_flow.breaks);
+                extend_unique_paths(&mut result.continues, switch_flow.continues);
+                extend_unique_paths(&mut result.returns, switch_flow.returns);
+            }
+            Node::Return => {
+                extend_unique_paths(&mut result.returns, core::mem::take(&mut active));
+            }
+            Node::Break => {
+                extend_unique_paths(&mut result.breaks, core::mem::take(&mut active));
+            }
+            Node::Continue => {
+                extend_unique_paths(&mut result.continues, core::mem::take(&mut active));
+            }
+            Node::CondSnapshot { .. } | Node::Label(_) => {}
+            Node::Goto(_) => {
+                return Err(reject(
+                    "scalar floating-point return inference does not accept unstructured goto",
+                ));
+            }
+        }
+    }
+    result.next = active;
+    Ok(result)
+}
+
+fn classify_scalar_return_path(path: ScalarReturnPath) -> Result<FnReturn> {
+    let fp: Option<FpWidth> = if path.fp_stored { None } else { path.fp };
+    match (path.int, fp) {
+        (Some(_), Some(_)) => Err(reject(
+            "x0 and v0 both hold result-shaped values at a return",
+        )),
+        (Some(width), None) => Ok(FnReturn::Int(width)),
+        (None, Some(width)) => Ok(FnReturn::Fp(width)),
+        (None, None) if path.observable => Ok(FnReturn::Void),
+        (None, None) => Err(reject(
+            "return has no result write or observable void effect",
+        )),
+    }
+}
+
+fn infer_aarch64_scalar_return(body: &[Node]) -> Result<FnReturn> {
+    let mut flow: ScalarReturnFlow =
+        scan_scalar_return_block(body, vec![ScalarReturnPath::entry()])?;
+    if !flow.breaks.is_empty() || !flow.continues.is_empty() {
+        return Err(reject(
+            "scalar floating-point control flow does not terminate at every path",
+        ));
+    }
+    extend_unique_paths(&mut flow.returns, core::mem::take(&mut flow.next));
+    let mut unified: Option<FnReturn> = None;
+    for path in flow.returns {
+        let candidate: FnReturn = classify_scalar_return_path(path)?;
+        match unified {
+            Some(existing) if existing != candidate => {
+                return Err(reject(
+                    "scalar return class or width differs across return paths",
+                ));
+            }
+            Some(_) => {}
+            None => unified = Some(candidate),
+        }
+    }
+    unified.ok_or_else(|| reject("scalar floating-point function has no reachable return"))
+}
+
 fn finish(
     insns: &[DisasmInsn],
     items: &mut Vec<Item>,
@@ -2048,6 +2371,9 @@ fn finish(
     vec_abi: &VectorAbi,
     next_sel: &mut u32,
 ) -> Result<LeafRecovery> {
+    let has_scalar_fp: bool = items
+        .iter()
+        .any(|item: &Item| matches!(&item.kind, ItemKind::Stmt(stmt) if stmt_is_scalar_fp(stmt)));
     let mut structured: Structured =
         match aarch64_cfg::structure(items, insns, base, flag_definitions, next_sel) {
             aarch64_cfg::Attempt::Structured(structured) => structured,
@@ -2065,10 +2391,19 @@ fn finish(
         annotate_calls_block_with_order(&mut structured.body, &call_map, &CALL_ARG_ORDER);
     }
     let lifted_switch: bool = block_contains_switch(&structured.body);
-    let ret: FnReturn = match vec_abi.ret {
-        VectorRet::Vector(arr) => FnReturn::Vec(arr),
-        VectorRet::Void => FnReturn::Void,
-        VectorRet::None => FnReturn::Int(return_width),
+    let fp_args: Vec<(Xmm, FpWidth)> = if has_scalar_fp {
+        aarch64_fp_params(&structured.body)?
+    } else {
+        Vec::new()
+    };
+    let ret: FnReturn = if has_scalar_fp {
+        infer_aarch64_scalar_return(&structured.body)?
+    } else {
+        match vec_abi.ret {
+            VectorRet::Vector(arr) => FnReturn::Vec(arr),
+            VectorRet::Void => FnReturn::Void,
+            VectorRet::None => FnReturn::Int(return_width),
+        }
     };
     let sret_plan: Option<SretPlan> = match ret {
         FnReturn::Int(_) => detect_sret(&structured.body, Abi::Aapcs64),
@@ -2079,10 +2414,15 @@ fn finish(
         params.retain(|reg: &Reg| *reg != plan.ptr);
     }
     let signature: FnSignature = FnSignature {
-        fp: Vec::new(),
+        fp: fp_args,
         int: params.clone(),
         vec: vec_abi.params.clone(),
         ret,
+    };
+    let fp_params: Vec<ScalarType> = if has_scalar_fp {
+        signature.ordered_param_types()
+    } else {
+        Vec::new()
     };
     let frame_shape: FrameShape = classify_frame(insns);
     let frame = plan_frame(&structured.body, frame_shape)?;
@@ -2108,15 +2448,22 @@ fn finish(
     let return_width_bits: u32 = match ret {
         FnReturn::Vec(arr) => arr.total_bits(),
         FnReturn::Void => 0,
-        FnReturn::Int(_) | FnReturn::Fp(_) => return_width.bits(),
+        FnReturn::Int(width) => width.bits(),
+        FnReturn::Fp(FpWidth::F32) => 32,
+        FnReturn::Fp(FpWidth::F64) => 64,
+    };
+    let returns_fp: Option<ScalarType> = match ret {
+        FnReturn::Fp(FpWidth::F32) => Some(ScalarType::Float),
+        FnReturn::Fp(FpWidth::F64) => Some(ScalarType::Double),
+        FnReturn::Int(_) | FnReturn::Void | FnReturn::Vec(_) => None,
     };
     Ok(LeafRecovery {
         source,
         rust_source,
         return_width_bits,
         params,
-        fp_params: Vec::<ScalarType>::new(),
-        returns_fp: None,
+        fp_params,
+        returns_fp,
         lifted_split_return: structured.lifted_split_return,
         lifted_loop: structured.lifted_loop,
         lifted_switch,
@@ -2527,6 +2874,381 @@ fn lower_move(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
         _ => return Err(reject_at(insn, "unsupported wide move")),
     };
     Ok((dest, stmts))
+}
+
+fn parse_fp_register(token: &str) -> Result<Option<(Xmm, FpWidth)>> {
+    let name: &str = token.trim();
+    let parsed: Option<(&str, FpWidth)> = name
+        .strip_prefix('s')
+        .map(|digits: &str| (digits, FpWidth::F32))
+        .or_else(|| {
+            name.strip_prefix('d')
+                .map(|digits: &str| (digits, FpWidth::F64))
+        });
+    if let Some((digits, width)) = parsed {
+        let index: u8 = digits
+            .parse::<u8>()
+            .map_err(|_| reject("malformed scalar floating-point register"))?;
+        let register: Xmm = *AARCH64_FP_REGISTERS
+            .get(usize::from(index))
+            .ok_or_else(|| reject("scalar floating-point register is outside v0..v15"))?;
+        return Ok(Some((register, width)));
+    }
+    let unsupported: bool = ['h', 'q', 'v'].iter().any(|prefix: &char| {
+        name.strip_prefix(*prefix)
+            .is_some_and(|suffix: &str| suffix.starts_with(|ch: char| ch.is_ascii_digit()))
+    });
+    if unsupported {
+        return Err(reject(
+            "half-precision and vector registers are outside scalar floating-point increment 1",
+        ));
+    }
+    Ok(None)
+}
+
+fn fp_memory_register(token: &str) -> Result<Option<(Xmm, FpWidth)>> {
+    let name: &str = token.trim();
+    if name.starts_with('s') || name.starts_with('d') || name.starts_with('h') {
+        return parse_fp_register(name);
+    }
+    Ok(None)
+}
+
+const fn fp_storage_width(width: FpWidth) -> Width {
+    match width {
+        FpWidth::F32 => Width::W32,
+        FpWidth::F64 => Width::W64,
+    }
+}
+
+fn vfp_expand_imm_bits(imm8: u8, width: FpWidth) -> u64 {
+    let (exponent_bits, fraction_bits): (u32, u32) = match width {
+        FpWidth::F32 => (8, 23),
+        FpWidth::F64 => (11, 52),
+    };
+    let sign: u64 = u64::from(imm8 >> 7);
+    let repeated: u64 = u64::from((imm8 >> 6) & 1);
+    let exponent_tail: u64 = u64::from((imm8 >> 4) & 3);
+    let repeated_count: u32 = exponent_bits - 3;
+    let repeated_mask: u64 = if repeated == 0 {
+        0
+    } else {
+        (1_u64 << repeated_count) - 1
+    };
+    let exponent: u64 =
+        ((1 - repeated) << (exponent_bits - 1)) | (repeated_mask << 2) | exponent_tail;
+    let fraction: u64 = u64::from(imm8 & 15) << (fraction_bits - 4);
+    (sign << (exponent_bits + fraction_bits)) | (exponent << fraction_bits) | fraction
+}
+
+fn fp_immediate_operand(insn: &DisasmInsn, token: &str, width: FpWidth) -> Result<FpOperand> {
+    let text: &str = token
+        .trim()
+        .strip_prefix('#')
+        .ok_or_else(|| reject_at(insn, "floating-point immediate lacks a number marker"))?;
+    let parsed: f64 = text
+        .parse::<f64>()
+        .map_err(|_| reject_at(insn, "floating-point immediate is not a decimal value"))?;
+    if !parsed.is_finite() {
+        return Err(reject_at(insn, "floating-point immediate is not finite"));
+    }
+    let parsed_bits: u64 = match width {
+        FpWidth::F32 => {
+            let narrowed: f32 = parsed as f32;
+            if f64::from(narrowed).to_bits() != parsed.to_bits() {
+                return Err(reject_at(
+                    insn,
+                    "single-precision immediate is not exactly representable",
+                ));
+            }
+            u64::from(narrowed.to_bits())
+        }
+        FpWidth::F64 => parsed.to_bits(),
+    };
+    let word: u32 = aarch64_instruction_word(insn)
+        .ok_or_else(|| reject_at(insn, "floating-point immediate lacks raw instruction bits"))?;
+    let imm8: u8 = u8::try_from((word >> 13) & 0xff)
+        .map_err(|_| reject_at(insn, "floating-point imm8 extraction overflow"))?;
+    let expanded_bits: u64 = vfp_expand_imm_bits(imm8, width);
+    if parsed_bits != expanded_bits {
+        return Err(reject_at(
+            insn,
+            "floating-point immediate does not exactly match VFPExpandImm",
+        ));
+    }
+    Ok(FpOperand::Const {
+        bits: parsed_bits,
+        width,
+    })
+}
+
+fn lower_fp_fmov(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
+    if operands.len() != 2 {
+        return Err(reject_at(insn, "malformed scalar floating-point move"));
+    }
+    let dest_fp: Option<(Xmm, FpWidth)> = parse_fp_register(operands[0])?;
+    let src_fp: Option<(Xmm, FpWidth)> = parse_fp_register(operands[1])?;
+    match (dest_fp, src_fp) {
+        (Some((dest, dest_width)), Some((src, src_width))) => {
+            if dest_width != src_width {
+                return Err(reject_at(
+                    insn,
+                    "scalar floating-point move changes precision",
+                ));
+            }
+            Ok(vec![Stmt::FpMov {
+                dest,
+                src: FpOperand::Xmm(src),
+                width: dest_width,
+            }])
+        }
+        (Some((dest, width)), None) if operands[1].trim().starts_with('#') => {
+            let src: FpOperand = fp_immediate_operand(insn, operands[1], width)?;
+            Ok(vec![Stmt::FpMov { dest, src, width }])
+        }
+        (Some((dest, width)), None) => {
+            let expected: Width = fp_storage_width(width);
+            let src: RegRef = parse_reg(operands[1]).map_err(|_| {
+                reject_at(insn, "fmov source is not a width-matched general register")
+            })?;
+            if src.width != expected {
+                return Err(reject_at(
+                    insn,
+                    "fmov source general register has the wrong width",
+                ));
+            }
+            Ok(vec![Stmt::GprToXmm { dest, src, width }])
+        }
+        (None, Some((src, width))) => {
+            let expected: Width = fp_storage_width(width);
+            let dest: RegRef = parse_reg(operands[0]).map_err(|_| {
+                reject_at(
+                    insn,
+                    "fmov destination is not a width-matched general register",
+                )
+            })?;
+            if dest.width != expected {
+                return Err(reject_at(
+                    insn,
+                    "fmov destination general register has the wrong width",
+                ));
+            }
+            Ok(vec![Stmt::XmmToGpr { dest, src, width }])
+        }
+        (None, None) => Err(reject_at(
+            insn,
+            "fmov does not use a supported scalar floating-point register",
+        )),
+    }
+}
+
+fn reject_incoming_fp_stack_load(mem: MemRef, frame: FrameInfo, insn: &DisasmInsn) -> Result<()> {
+    let threshold: Option<i64> = match mem.base {
+        Some(Reg::Rsp) => Some(frame.sp_to_entry),
+        Some(Reg::Rbp) => frame.fp_to_entry,
+        _ => None,
+    };
+    if threshold.is_some_and(|boundary: i64| mem.disp >= boundary) {
+        return Err(reject_at(
+            insn,
+            "floating-point load reads an incoming stack argument",
+        ));
+    }
+    Ok(())
+}
+
+fn lower_fp_memory(
+    insn: &DisasmInsn,
+    operands: &[&str],
+    register: Xmm,
+    width: FpWidth,
+    frame: FrameInfo,
+) -> Result<Vec<Stmt>> {
+    if !(2..=3).contains(&operands.len()) {
+        return Err(reject_at(
+            insn,
+            "malformed scalar floating-point load or store",
+        ));
+    }
+    let is_load: bool = matches!(insn.mnemonic.as_str(), "ldr" | "ldur");
+    let storage_width: Width = fp_storage_width(width);
+    let (mut mem, pre_index): (MemRef, bool) = parse_memory(operands[1], storage_width)?;
+    let post_delta: Option<i64> = operands
+        .get(2)
+        .map(|token: &&str| parse_immediate(token))
+        .transpose()?;
+    if pre_index && post_delta.is_some() {
+        return Err(reject_at(
+            insn,
+            "scalar floating-point address cannot use two writeback modes",
+        ));
+    }
+    if is_load {
+        reject_incoming_fp_stack_load(mem, frame, insn)?;
+    }
+    let mut stmts: Vec<Stmt> = Vec::new();
+    if pre_index {
+        let delta: i64 = mem.disp;
+        mem.disp = 0;
+        stmts.push(base_update(mem.base, delta)?);
+    }
+    if is_load {
+        stmts.push(Stmt::FpMov {
+            dest: register,
+            src: FpOperand::Mem(mem),
+            width,
+        });
+    } else {
+        stmts.push(Stmt::FpStore {
+            addr: mem,
+            src: register,
+            width,
+        });
+    }
+    if let Some(delta) = post_delta {
+        if mem.disp != 0 {
+            return Err(reject_at(
+                insn,
+                "post-indexed scalar floating-point address has an inline displacement",
+            ));
+        }
+        stmts.push(base_update(mem.base, delta)?);
+    }
+    Ok(stmts)
+}
+
+fn lower_fp_pair_memory(
+    insn: &DisasmInsn,
+    operands: &[&str],
+    first: (Xmm, FpWidth),
+    second: (Xmm, FpWidth),
+    frame: FrameInfo,
+) -> Result<Vec<Stmt>> {
+    if !(3..=4).contains(&operands.len()) {
+        return Err(reject_at(
+            insn,
+            "malformed scalar floating-point pair load or store",
+        ));
+    }
+    if first.1 != second.1 {
+        return Err(reject_at(
+            insn,
+            "scalar floating-point pair uses mixed precision",
+        ));
+    }
+    let is_load: bool = insn.mnemonic == "ldp";
+    let storage_width: Width = fp_storage_width(first.1);
+    let (mut first_mem, pre_index): (MemRef, bool) = parse_memory(operands[2], storage_width)?;
+    let post_delta: Option<i64> = operands
+        .get(3)
+        .map(|token: &&str| parse_immediate(token))
+        .transpose()?;
+    if pre_index && post_delta.is_some() {
+        return Err(reject_at(
+            insn,
+            "scalar floating-point pair address cannot use two writeback modes",
+        ));
+    }
+    let width_bytes: i64 = i64::from(storage_width.bits() / 8);
+    let second_disp: i64 = first_mem
+        .disp
+        .checked_add(width_bytes)
+        .ok_or_else(|| reject_at(insn, "scalar floating-point pair address overflow"))?;
+    let mut second_mem: MemRef = MemRef {
+        disp: second_disp,
+        ..first_mem
+    };
+    if is_load {
+        reject_incoming_fp_stack_load(first_mem, frame, insn)?;
+        reject_incoming_fp_stack_load(second_mem, frame, insn)?;
+    }
+    let mut stmts: Vec<Stmt> = Vec::new();
+    if pre_index {
+        let delta: i64 = first_mem.disp;
+        first_mem.disp = 0;
+        second_mem.disp = width_bytes;
+        stmts.push(base_update(first_mem.base, delta)?);
+    }
+    if is_load {
+        stmts.push(Stmt::FpMov {
+            dest: first.0,
+            src: FpOperand::Mem(first_mem),
+            width: first.1,
+        });
+        stmts.push(Stmt::FpMov {
+            dest: second.0,
+            src: FpOperand::Mem(second_mem),
+            width: second.1,
+        });
+    } else {
+        stmts.push(Stmt::FpStore {
+            addr: first_mem,
+            src: first.0,
+            width: first.1,
+        });
+        stmts.push(Stmt::FpStore {
+            addr: second_mem,
+            src: second.0,
+            width: second.1,
+        });
+    }
+    if let Some(delta) = post_delta {
+        if first_mem.disp != 0 {
+            return Err(reject_at(
+                insn,
+                "post-indexed scalar floating-point pair has an inline displacement",
+            ));
+        }
+        stmts.push(base_update(first_mem.base, delta)?);
+    }
+    Ok(stmts)
+}
+
+fn try_lower_scalar_fp(
+    insn: &DisasmInsn,
+    frame: FrameInfo,
+    vector_context: bool,
+) -> Result<Option<Vec<Stmt>>> {
+    let operands: Vec<&str> = split_operands(&insn.operands);
+    match insn.mnemonic.as_str() {
+        "fmov" if vector_context => Ok(None),
+        "fmov" => lower_fp_fmov(insn, &operands).map(Some),
+        "ldr" | "str" | "ldur" | "stur" => {
+            let Some(token): Option<&&str> = operands.first() else {
+                return Ok(None);
+            };
+            if matches!(insn.mnemonic.as_str(), "ldr" | "str")
+                && parse_dreg(token).is_some()
+                && (vector_context || is_dreg_post_indexed(&insn.operands))
+            {
+                return Ok(None);
+            }
+            let Some((register, width)): Option<(Xmm, FpWidth)> = fp_memory_register(token)? else {
+                return Ok(None);
+            };
+            lower_fp_memory(insn, &operands, register, width, frame).map(Some)
+        }
+        "ldp" | "stp" => {
+            let (Some(first_token), Some(second_token)): (Option<&&str>, Option<&&str>) =
+                (operands.first(), operands.get(1))
+            else {
+                return Ok(None);
+            };
+            let first: Option<(Xmm, FpWidth)> = fp_memory_register(first_token)?;
+            let second: Option<(Xmm, FpWidth)> = fp_memory_register(second_token)?;
+            match (first, second) {
+                (Some(first), Some(second)) => {
+                    lower_fp_pair_memory(insn, &operands, first, second, frame).map(Some)
+                }
+                (Some(_), None) | (None, Some(_)) => Err(reject_at(
+                    insn,
+                    "scalar floating-point pair has a non-floating transfer register",
+                )),
+                (None, None) => Ok(None),
+            }
+        }
+        _ => Ok(None),
+    }
 }
 
 fn lower_memory(
@@ -3794,6 +4516,43 @@ fn operand_is_vector(insn: &DisasmInsn) -> bool {
     token.starts_with('{') || is_vector_register_token(token) || is_qreg_token(token)
 }
 
+fn instruction_has_vector_syntax(insn: &DisasmInsn) -> bool {
+    split_operands(&insn.operands).iter().any(|operand: &&str| {
+        let token: &str = operand.trim().trim_start_matches('{');
+        is_vector_register_token(token) || is_qreg_token(token)
+    })
+}
+
+fn has_bulk_q_spill(insns: &[DisasmInsn]) -> bool {
+    let mut stored: usize = 0;
+    for insn in insns {
+        let operands: Vec<&str> = split_operands(&insn.operands);
+        let count: usize = match insn.mnemonic.as_str() {
+            "str"
+                if operands.len() == 2
+                    && operands[1].trim().starts_with("[sp")
+                    && parse_qreg(operands[0]).is_some_and(|register: u8| register <= 7) =>
+            {
+                1
+            }
+            "stp"
+                if operands.len() == 3
+                    && operands[2].trim().starts_with("[sp")
+                    && parse_qreg(operands[0]).is_some_and(|register: u8| register <= 7)
+                    && parse_qreg(operands[1]).is_some_and(|register: u8| register <= 7) =>
+            {
+                2
+            }
+            _ => 0,
+        };
+        stored = stored.saturating_add(count);
+        if stored >= 2 {
+            return true;
+        }
+    }
+    false
+}
+
 fn is_vector_register_token(token: &str) -> bool {
     let mut chars = token.trim().chars();
     chars.next() == Some('v') && chars.next().is_some_and(|ch: char| ch.is_ascii_digit())
@@ -4364,6 +5123,18 @@ fn first_operand_is_scalar_dreg(operands: &str) -> bool {
         .first()
         .and_then(|token: &&str| parse_dreg(token))
         .is_some()
+}
+
+fn is_dreg_post_indexed(operands: &str) -> bool {
+    let tokens: Vec<&str> = split_operands(operands);
+    tokens.len() == 3
+        && tokens
+            .first()
+            .and_then(|token: &&str| parse_dreg(token))
+            .is_some()
+        && tokens
+            .get(2)
+            .is_some_and(|token: &&str| token.trim().starts_with('#'))
 }
 
 fn parse_vector_operand(token: &str, float: bool) -> Result<(u8, VecArrangement)> {

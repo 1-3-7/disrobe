@@ -2011,7 +2011,7 @@ fn recover_leaf_function_calls_impl(
     if let Some(plan) = &sret_plan {
         params.retain(|r: &Reg| *r != plan.ptr);
     }
-    let fp_args: Vec<(Xmm, FpWidth)> = infer_fp_params(&structured.body);
+    let fp_args: Vec<(Xmm, FpWidth)> = infer_fp_params(&structured.body)?;
     let returns_fp: Option<ScalarType> = fp_return.map(scalar_of_fp);
     let ret: FnReturn = fp_return.map_or(FnReturn::Int(return_width), FnReturn::Fp);
     let signature: FnSignature = FnSignature {
@@ -2348,7 +2348,7 @@ fn build_switch_recovery(
     let mut call_targets: Vec<u64> = Vec::new();
     collect_call_targets(&body, &mut call_targets);
     let params: Vec<Reg> = infer_params(&body, abi);
-    let fp_args: Vec<(Xmm, FpWidth)> = infer_fp_params(&body);
+    let fp_args: Vec<(Xmm, FpWidth)> = infer_fp_params(&body)?;
     let signature: FnSignature = FnSignature {
         fp: fp_args,
         int: params.clone(),
@@ -6806,12 +6806,12 @@ const FP_ARG_ORDER: [Xmm; 8] = [
     Xmm::Xmm7,
 ];
 
-fn infer_fp_params(body: &Block) -> Vec<(Xmm, FpWidth)> {
+fn infer_fp_params(body: &Block) -> Result<Vec<(Xmm, FpWidth)>> {
     let mut written: BTreeMap<Xmm, bool> = BTreeMap::new();
     let mut read_before_write: Vec<(Xmm, FpWidth)> = Vec::new();
-    scan_fp_params(body, &mut written, &mut read_before_write);
+    scan_fp_params(body, &mut written, &mut read_before_write)?;
     read_before_write.sort_by_key(|(x, _): &(Xmm, FpWidth)| x.index());
-    read_before_write
+    Ok(read_before_write)
 }
 
 fn note_fp_read(
@@ -6819,13 +6819,24 @@ fn note_fp_read(
     width: FpWidth,
     written: &BTreeMap<Xmm, bool>,
     acc: &mut Vec<(Xmm, FpWidth)>,
-) {
-    if FP_ARG_ORDER.contains(&xmm)
-        && !written.get(&xmm).copied().unwrap_or(false)
-        && !acc.iter().any(|(x, _): &(Xmm, FpWidth)| *x == xmm)
-    {
-        acc.push((xmm, width));
+) -> Result<()> {
+    if !FP_ARG_ORDER.contains(&xmm) || written.get(&xmm).copied().unwrap_or(false) {
+        return Ok(());
     }
+    if let Some((_, seen_width)) = acc
+        .iter()
+        .find(|(seen_xmm, _): &&(Xmm, FpWidth)| *seen_xmm == xmm)
+    {
+        if *seen_width != width {
+            return Err(Error::LlvmIr(format!(
+                "floating parameter register {} is read at conflicting widths before a full write",
+                xmm.index()
+            )));
+        }
+        return Ok(());
+    }
+    acc.push((xmm, width));
+    Ok(())
 }
 
 fn scan_fp_operand(
@@ -6833,122 +6844,169 @@ fn scan_fp_operand(
     width: FpWidth,
     written: &BTreeMap<Xmm, bool>,
     acc: &mut Vec<(Xmm, FpWidth)>,
-) {
+) -> Result<()> {
     if let FpOperand::Xmm(x) = operand {
-        note_fp_read(*x, width, written, acc);
+        note_fp_read(*x, width, written, acc)?;
     }
+    Ok(())
 }
 
-fn scan_fp_stmt(stmt: &Stmt, written: &mut BTreeMap<Xmm, bool>, acc: &mut Vec<(Xmm, FpWidth)>) {
+fn scan_fp_stmt(
+    stmt: &Stmt,
+    written: &mut BTreeMap<Xmm, bool>,
+    acc: &mut Vec<(Xmm, FpWidth)>,
+) -> Result<()> {
     match stmt {
         Stmt::FpBin {
             dest, rhs, width, ..
         } => {
-            note_fp_read(*dest, *width, written, acc);
-            scan_fp_operand(rhs, *width, written, acc);
+            note_fp_read(*dest, *width, written, acc)?;
+            scan_fp_operand(rhs, *width, written, acc)?;
             written.insert(*dest, true);
         }
         Stmt::FpMov { dest, src, width } => {
-            scan_fp_operand(src, *width, written, acc);
+            scan_fp_operand(src, *width, written, acc)?;
             written.insert(*dest, true);
         }
         Stmt::FpStore { src, width, .. } => {
-            note_fp_read(*src, *width, written, acc);
+            note_fp_read(*src, *width, written, acc)?;
         }
         Stmt::IntToFp { dest, .. } => {
             written.insert(*dest, true);
         }
         Stmt::FpToInt { src, width, .. } => {
-            note_fp_read(*src, *width, written, acc);
+            note_fp_read(*src, *width, written, acc)?;
         }
         Stmt::FpConvert {
             dest, src, from, ..
         } => {
-            note_fp_read(*src, *from, written, acc);
+            note_fp_read(*src, *from, written, acc)?;
             written.insert(*dest, true);
         }
         Stmt::FpMinMax {
             dest, rhs, width, ..
         } => {
-            note_fp_read(*dest, *width, written, acc);
-            scan_fp_operand(rhs, *width, written, acc);
+            note_fp_read(*dest, *width, written, acc)?;
+            scan_fp_operand(rhs, *width, written, acc)?;
             written.insert(*dest, true);
         }
         Stmt::FpSqrt { dest, src, width } => {
-            scan_fp_operand(src, *width, written, acc);
+            scan_fp_operand(src, *width, written, acc)?;
             written.insert(*dest, true);
         }
         Stmt::FpRound {
             dest, src, width, ..
         } => {
-            scan_fp_operand(src, *width, written, acc);
+            scan_fp_operand(src, *width, written, acc)?;
             written.insert(*dest, true);
         }
         Stmt::GprToXmm { dest, .. } => {
             written.insert(*dest, true);
         }
         Stmt::XmmToGpr { src, width, .. } => {
-            note_fp_read(*src, *width, written, acc);
+            note_fp_read(*src, *width, written, acc)?;
         }
         Stmt::Cond { flags, .. } | Stmt::SetCc { flags, .. } => {
-            scan_fp_flags(flags, written, acc);
+            scan_fp_flags(flags, written, acc)?;
         }
         _ => {}
     }
+    Ok(())
 }
 
-fn scan_fp_flags(flags: &Flags, written: &BTreeMap<Xmm, bool>, acc: &mut Vec<(Xmm, FpWidth)>) {
+fn scan_fp_flags(
+    flags: &Flags,
+    written: &BTreeMap<Xmm, bool>,
+    acc: &mut Vec<(Xmm, FpWidth)>,
+) -> Result<()> {
     if let Flags::FpCmp { lhs, rhs, width } = flags {
-        note_fp_read(*lhs, *width, written, acc);
-        scan_fp_operand(rhs, *width, written, acc);
+        note_fp_read(*lhs, *width, written, acc)?;
+        scan_fp_operand(rhs, *width, written, acc)?;
+    }
+    Ok(())
+}
+
+fn merge_fp_writes(written: &mut BTreeMap<Xmm, bool>, branches: &[BTreeMap<Xmm, bool>]) {
+    let mut registers: BTreeSet<Xmm> = BTreeSet::new();
+    for branch in branches {
+        registers.extend(branch.keys().copied());
+    }
+    written.clear();
+    for register in registers {
+        if branches
+            .iter()
+            .all(|branch: &BTreeMap<Xmm, bool>| branch.get(&register).copied().unwrap_or(false))
+        {
+            written.insert(register, true);
+        }
     }
 }
 
-fn scan_fp_params(body: &Block, written: &mut BTreeMap<Xmm, bool>, acc: &mut Vec<(Xmm, FpWidth)>) {
+fn scan_fp_params(
+    body: &Block,
+    written: &mut BTreeMap<Xmm, bool>,
+    acc: &mut Vec<(Xmm, FpWidth)>,
+) -> Result<()> {
     for node in body {
         match node {
-            Node::Stmt(stmt) => scan_fp_stmt(stmt, written, acc),
+            Node::Stmt(stmt) => scan_fp_stmt(stmt, written, acc)?,
             Node::If {
                 cond,
                 then_body,
                 else_body,
             } => {
+                let mut condition_error: Option<Error> = None;
                 cond.visit_leaves(&mut |_: CondKind, flags: &Flags| {
-                    scan_fp_flags(flags, written, acc);
+                    if condition_error.is_none() {
+                        condition_error = scan_fp_flags(flags, written, acc).err();
+                    }
                 });
+                if let Some(error) = condition_error {
+                    return Err(error);
+                }
                 let mut then_written: BTreeMap<Xmm, bool> = written.clone();
-                scan_fp_params(then_body, &mut then_written, acc);
+                scan_fp_params(then_body, &mut then_written, acc)?;
+                let mut branches: Vec<BTreeMap<Xmm, bool>> = vec![then_written];
                 if let Some(else_b) = else_body {
                     let mut else_written: BTreeMap<Xmm, bool> = written.clone();
-                    scan_fp_params(else_b, &mut else_written, acc);
+                    scan_fp_params(else_b, &mut else_written, acc)?;
+                    branches.push(else_written);
+                } else {
+                    branches.push(written.clone());
                 }
+                merge_fp_writes(written, &branches);
             }
             Node::DoWhile { body, cond } => {
                 let mut loop_written: BTreeMap<Xmm, bool> = written.clone();
-                scan_fp_params(body, &mut loop_written, acc);
+                scan_fp_params(body, &mut loop_written, acc)?;
                 if let LoopCond::Direct { flags, .. } = cond {
-                    scan_fp_flags(flags, &loop_written, acc);
+                    scan_fp_flags(flags, &loop_written, acc)?;
                 }
             }
             Node::While { body, cond } => {
                 if let Some(LoopCond::Direct { flags, .. }) = cond {
-                    scan_fp_flags(flags, written, acc);
+                    scan_fp_flags(flags, written, acc)?;
                 }
                 let mut loop_written: BTreeMap<Xmm, bool> = written.clone();
-                scan_fp_params(body, &mut loop_written, acc);
+                scan_fp_params(body, &mut loop_written, acc)?;
             }
             Node::Switch { cases, default, .. } => {
+                let mut branches: Vec<BTreeMap<Xmm, bool>> = Vec::with_capacity(cases.len() + 1);
                 for case in cases {
                     let mut case_written: BTreeMap<Xmm, bool> = written.clone();
-                    scan_fp_params(&case.body, &mut case_written, acc);
+                    scan_fp_params(&case.body, &mut case_written, acc)?;
+                    branches.push(case_written);
                 }
                 let mut default_written: BTreeMap<Xmm, bool> = written.clone();
-                scan_fp_params(default, &mut default_written, acc);
+                scan_fp_params(default, &mut default_written, acc)?;
+                branches.push(default_written);
+                merge_fp_writes(written, &branches);
             }
-            Node::CondSnapshot { flags, .. } => scan_fp_flags(flags, written, acc),
+            Node::CondSnapshot { flags, .. } => scan_fp_flags(flags, written, acc)?,
             Node::Break | Node::Continue | Node::Return | Node::Label(_) | Node::Goto(_) => {}
         }
     }
+    Ok(())
 }
 
 fn node_terminates(node: &Node) -> bool {
