@@ -1081,7 +1081,7 @@ fn recover_with_calls_and_image<'image>(
                     return_width = dest.width;
                 }
             }
-            "rev" | "clz" => {
+            "rev" | "clz" | "rbit" => {
                 let operands: Vec<&str> = split_operands(&insn.operands);
                 if operands.len() != 2 {
                     return Err(reject_at(insn, "malformed unary data-processing"));
@@ -1092,10 +1092,10 @@ fn recover_with_calls_and_image<'image>(
                 if dest.width != src_width {
                     return Err(reject_at(insn, "mixed-width unary data-processing"));
                 }
-                let op: UnOp = if insn.mnemonic == "rev" {
-                    UnOp::Bswap
-                } else {
-                    UnOp::Clz
+                let op: UnOp = match insn.mnemonic.as_str() {
+                    "rev" => UnOp::Bswap,
+                    "clz" => UnOp::Clz,
+                    _ => UnOp::Rbit,
                 };
                 push_stmts(
                     &mut items,
@@ -2175,6 +2175,8 @@ fn lower_alu(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
     };
     let extend: Option<(bool, Width, i64)> = if operands.len() == 4 {
         parse_extend_modifier(operands[3])
+    } else if operands.len() == 3 && dest.width == Width::W64 {
+        elided_extended_register(insn, operands[2])
     } else {
         None
     };
@@ -3447,6 +3449,7 @@ fn parse_extend_modifier(token: &str) -> Option<(bool, Width, i64)> {
     };
     let (signed, src_width): (bool, Width) = match kind {
         "sxtw" => (true, Width::W32),
+        "uxtw" => (false, Width::W32),
         _ => return None,
     };
     let shift: i64 = match rest {
@@ -3460,6 +3463,31 @@ fn parse_extend_modifier(token: &str) -> Option<(bool, Width, i64)> {
         }
     };
     Some((signed, src_width, shift))
+}
+
+fn elided_extended_register(insn: &DisasmInsn, rhs_token: &str) -> Option<(bool, Width, i64)> {
+    if !matches!(insn.mnemonic.as_str(), "add" | "adds" | "sub" | "subs") {
+        return None;
+    }
+    let rhs: RegRef = parse_reg(rhs_token).ok()?;
+    if rhs.width != Width::W32 {
+        return None;
+    }
+    let word: u32 = aarch64_instruction_word(insn)?;
+    if (word >> 24) & 0b1_1111 != 0b0_1011 || (word >> 21) & 1 != 1 {
+        return None;
+    }
+    let option: u32 = (word >> 13) & 0b111;
+    let imm3: u32 = (word >> 10) & 0b111;
+    if imm3 > 4 {
+        return None;
+    }
+    let (signed, src_width): (bool, Width) = match option {
+        0b010 => (false, Width::W32),
+        0b110 => (true, Width::W32),
+        _ => return None,
+    };
+    Some((signed, src_width, i64::from(imm3)))
 }
 
 fn parse_condition(suffix: &str) -> Result<CondKind> {
