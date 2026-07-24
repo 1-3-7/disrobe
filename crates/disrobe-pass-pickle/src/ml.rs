@@ -1,5 +1,6 @@
 use std::io::{Cursor, Read};
 
+use disrobe_core::byte_search;
 use serde::{Deserialize, Serialize};
 use zip::ZipArchive;
 
@@ -260,15 +261,11 @@ fn find_stop(bytes: &[u8]) -> Option<usize> {
 
 const NPY_HEADER_SCAN: usize = 256;
 
-fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
-    needle.len() <= haystack.len() && haystack.windows(needle.len()).any(|w: &[u8]| w == needle)
-}
-
 fn is_npy_object_array(bytes: &[u8]) -> bool {
     let header: &[u8] = &bytes[..bytes.len().min(NPY_HEADER_SCAN)];
-    contains_subslice(header, b"'O'")
-        || contains_subslice(header, b"|O")
-        || contains_subslice(header, b"dtype('O')")
+    byte_search::contains(header, b"'O'")
+        || byte_search::contains(header, b"|O")
+        || byte_search::contains(header, b"dtype('O')")
 }
 
 fn numpy_npy_embedded(bytes: &[u8]) -> Vec<EmbeddedPickle> {
@@ -430,6 +427,16 @@ mod tests {
             "object-array .npy yielded no embedded pickle"
         );
         assert_eq!(report.embedded[0].protocol, Some(4));
+    }
+
+    #[test]
+    fn npy_header_probe_is_defined_for_empty_needle_and_empty_input() {
+        let header: &[u8] = b"\x93NUMPY\x01\x00{'descr': '|O', 'shape': (1,), }";
+        assert!(!byte_search::contains(header, b""));
+        assert!(!byte_search::contains(b"", b""));
+        assert_eq!(byte_search::find(header, b""), None);
+        assert!(!is_npy_object_array(b""));
+        assert!(is_npy_object_array(header));
     }
 
     #[test]
