@@ -1,3 +1,4 @@
+use disrobe_core::byte_search;
 use serde::{Deserialize, Serialize};
 
 const PKG_PRELUDE_MARKER: &[u8] = b"PAYLOAD_POSITION";
@@ -58,16 +59,10 @@ pub fn detect_pkg_payload(bytes: &[u8]) -> Option<PkgLocation> {
 }
 
 fn find_marker(bytes: &[u8]) -> Option<(usize, bool)> {
-    if let Some(i) = find_subslice(bytes, PKG_LEGACY_MARKER) {
+    if let Some(i) = byte_search::find(bytes, PKG_LEGACY_MARKER) {
         return Some((i, true));
     }
-    find_subslice(bytes, PKG_PRELUDE_MARKER).map(|i: usize| (i, false))
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|w: &[u8]| w == needle)
+    byte_search::find(bytes, PKG_PRELUDE_MARKER).map(|i: usize| (i, false))
 }
 
 #[cfg(test)]

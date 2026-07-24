@@ -13,6 +13,8 @@ mod error;
 #[allow(clippy::redundant_pub_crate)]
 mod esoteric;
 pub mod format_wire;
+#[allow(clippy::redundant_pub_crate)]
+mod js_string;
 mod jsconfuser;
 mod jscrambler;
 mod jsobfu;

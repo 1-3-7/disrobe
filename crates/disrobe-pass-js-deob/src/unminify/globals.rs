@@ -2,6 +2,8 @@ use base64::Engine as _;
 use regex::{Captures, Regex};
 use serde::Serialize;
 
+use crate::js_string::unescape_string_literal;
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize)]
 pub(super) struct GlobalsEvalStats {
     pub(super) call_sites: usize,
@@ -26,7 +28,7 @@ pub(super) fn evaluate_globals(source: &str) -> (String, GlobalsEvalStats) {
     let after_single: std::borrow::Cow<'_, str> =
         single.replace_all(&current, |caps: &Captures<'_>| {
             stats.call_sites += 1;
-            apply_global(&caps[1], &js_unescape(&caps[2])).map_or_else(
+            apply_global(&caps[1], &unescape_string_literal(&caps[2])).map_or_else(
                 || {
                     stats.failed += 1;
                     caps[0].to_owned()
@@ -41,7 +43,7 @@ pub(super) fn evaluate_globals(source: &str) -> (String, GlobalsEvalStats) {
     let after_double: std::borrow::Cow<'_, str> =
         double.replace_all(&intermediate, |caps: &Captures<'_>| {
             stats.call_sites += 1;
-            apply_global(&caps[1], &js_unescape(&caps[2])).map_or_else(
+            apply_global(&caps[1], &unescape_string_literal(&caps[2])).map_or_else(
                 || {
                     stats.failed += 1;
                     caps[0].to_owned()
@@ -146,38 +148,6 @@ const fn hex_digit_u32(b: u8) -> Option<u32> {
         Some(v) => Some(v as u32),
         None => None,
     }
-}
-
-fn js_unescape(s: &str) -> String {
-    let mut out: String = String::with_capacity(s.len());
-    let mut iter: std::str::Chars<'_> = s.chars();
-    while let Some(c) = iter.next() {
-        if c == '\\' {
-            match iter.next() {
-                Some('n') => out.push('\n'),
-                Some('t') => out.push('\t'),
-                Some('r') => out.push('\r'),
-                Some('\\') | None => out.push('\\'),
-                Some('\'') => out.push('\''),
-                Some('"') => out.push('"'),
-                Some('0') => out.push('\0'),
-                Some('x') => {
-                    let hi: Option<char> = iter.next();
-                    let lo: Option<char> = iter.next();
-                    if let (Some(h), Some(l)) = (hi, lo)
-                        && let (Some(a), Some(b)) = (h.to_digit(16), l.to_digit(16))
-                        && let Ok(byte) = u8::try_from((a << 4) | b)
-                    {
-                        out.push(byte as char);
-                    }
-                }
-                Some(other) => out.push(other),
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 fn js_quote(s: &str) -> String {

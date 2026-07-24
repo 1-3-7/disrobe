@@ -1,3 +1,4 @@
+use disrobe_core::byte_search;
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     Argument, AssignmentOperator, AssignmentTarget, Expression, Function, FunctionBody, Program,
@@ -698,11 +699,8 @@ fn is_context_member(expr: &Expression<'_>, context_name: &str, props: &[&str]) 
 fn references_context(stmt_src: &str, context_name: &str) -> bool {
     let bytes: &[u8] = stmt_src.as_bytes();
     let needle: &[u8] = context_name.as_bytes();
-    if needle.is_empty() {
-        return false;
-    }
     let mut i: usize = 0;
-    while let Some(found) = find_subslice(&bytes[i..], needle) {
+    while let Some(found) = byte_search::find(&bytes[i..], needle) {
         let start: usize = i + found;
         let end: usize = start + needle.len();
         let before_ok: bool = start == 0 || !is_word_byte(bytes[start - 1]);
@@ -713,15 +711,6 @@ fn references_context(stmt_src: &str, context_name: &str) -> bool {
         i = start + 1;
     }
     false
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.len() > haystack.len() {
-        return None;
-    }
-    haystack
-        .windows(needle.len())
-        .position(|window: &[u8]| window == needle)
 }
 
 const fn is_word_byte(b: u8) -> bool {
@@ -864,5 +853,23 @@ function tricky() {
         assert_eq!(stats.generators_restored, 0);
         assert_eq!(stats.async_functions_restored, 0);
         assert_eq!(out, src);
+    }
+
+    #[test]
+    fn empty_context_name_is_not_found_instead_of_panicking() {
+        assert!(!super::references_context("_context.n = 1;", ""));
+        assert!(!super::references_context("", ""));
+    }
+
+    #[test]
+    fn context_name_matches_only_on_word_boundaries() {
+        assert!(super::references_context(
+            "return _context.a(2);",
+            "_context"
+        ));
+        assert!(!super::references_context(
+            "return _contextual.a(2);",
+            "_context"
+        ));
     }
 }
