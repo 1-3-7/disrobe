@@ -503,6 +503,12 @@ enum Flags {
     Snapshot {
         var: u32,
     },
+    CondCmp {
+        prior: Box<Self>,
+        precond: CondKind,
+        taken: Box<Self>,
+        nzcv: u8,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5359,6 +5365,7 @@ fn flags_are_comparison(flags: &Flags) -> bool {
             | Flags::CmpMem { .. }
             | Flags::Test { .. }
             | Flags::TestImm { .. }
+            | Flags::CondCmp { .. }
     )
 }
 
@@ -5385,6 +5392,11 @@ fn flag_operand_regs(flags: &Flags) -> Vec<Reg> {
             regs
         }
         Flags::Snapshot { .. } => Vec::new(),
+        Flags::CondCmp { prior, taken, .. } => {
+            let mut regs: Vec<Reg> = flag_operand_regs(prior);
+            regs.extend(flag_operand_regs(taken));
+            regs
+        }
     }
 }
 
@@ -6718,6 +6730,35 @@ fn condition_is_sound(kind: CondKind, flags: &Flags) -> bool {
             kind.is_unsigned_order() || matches!(kind, CondKind::E | CondKind::Ne)
         }
         Flags::Snapshot { .. } => true,
+        Flags::CondCmp {
+            prior,
+            precond,
+            taken,
+            ..
+        } => condition_is_sound(kind, taken) && condition_is_sound(*precond, prior),
+    }
+}
+
+fn nzcv_condition_holds(kind: CondKind, nzcv: u8) -> bool {
+    let n: bool = nzcv & 0b1000 != 0;
+    let z: bool = nzcv & 0b0100 != 0;
+    let c: bool = nzcv & 0b0010 != 0;
+    let v: bool = nzcv & 0b0001 != 0;
+    match kind {
+        CondKind::E => z,
+        CondKind::Ne => !z,
+        CondKind::Ae => c,
+        CondKind::B => !c,
+        CondKind::S => n,
+        CondKind::Ns => !n,
+        CondKind::Vs => v,
+        CondKind::Vc => !v,
+        CondKind::A => c && !z,
+        CondKind::Be => !c || z,
+        CondKind::Ge => n == v,
+        CondKind::L => n != v,
+        CondKind::G => !z && (n == v),
+        CondKind::Le => z || n != v,
     }
 }
 
@@ -7170,6 +7211,10 @@ fn read_flags(
             }
         }
         Flags::Snapshot { .. } => {}
+        Flags::CondCmp { prior, taken, .. } => {
+            read_flags(prior, written, acc, &mut *note);
+            read_flags(taken, written, acc, note);
+        }
     }
 }
 
@@ -9262,6 +9307,10 @@ fn aggregate_note_flags(scan: &mut AggregateScan, flags: &Flags) {
             aggregate_note_source(scan, rhs);
         }
         Flags::FpCmp { rhs, width, .. } => aggregate_note_fp_operand(scan, rhs, *width),
+        Flags::CondCmp { prior, taken, .. } => {
+            aggregate_note_flags(scan, prior);
+            aggregate_note_flags(scan, taken);
+        }
         Flags::Test { .. }
         | Flags::TestImm { .. }
         | Flags::Sign { .. }
@@ -9895,6 +9944,10 @@ impl FrameScan {
             Flags::Sign { result } => self.note_reg(result.reg, misuse),
             Flags::FpCmp { rhs, .. } => self.note_fp(rhs, slots, misuse),
             Flags::Snapshot { .. } => {}
+            Flags::CondCmp { prior, taken, .. } => {
+                self.note_flags(prior, slots, misuse);
+                self.note_flags(taken, slots, misuse);
+            }
         }
     }
 
@@ -10746,6 +10799,11 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
             }
         }
         Flags::Snapshot { .. } => {}
+        Flags::CondCmp { .. } => {
+            for reg in flag_operand_regs(flags) {
+                push(reg, acc);
+            }
+        }
     };
     for node in body {
         match node {
@@ -12761,6 +12819,22 @@ fn cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Strin
             let sv: String = sel_var(*var);
             c_render(|cx| c_bin(cmp, cx.var(&sv), CExpr::int(0)))
         }
+        Flags::CondCmp {
+            prior,
+            precond,
+            taken,
+            nzcv,
+        } => {
+            let precond_expr: String = cond_expr(*precond, prior, aggregates);
+            let taken_expr: String = cond_expr(kind, taken, aggregates);
+            let else_holds: bool = nzcv_condition_holds(kind, *nzcv);
+            let ternary: String = c_render(|cx| CExpr::Ternary {
+                cond: Box::new(c_opaque(cx, &precond_expr)),
+                then: Box::new(c_opaque(cx, &taken_expr)),
+                els: Box::new(CExpr::int(u64::from(else_holds))),
+            });
+            format!("({ternary})")
+        }
     }
 }
 
@@ -14389,6 +14463,19 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Op
                 (RBinOp::Ne, "!=")
             };
             Some(rs_binary_text(&sel_var(*var), "0", op, op_text))
+        }
+        Flags::CondCmp {
+            prior,
+            precond,
+            taken,
+            nzcv,
+        } => {
+            let precond_expr: String = rs_cond_expr(*precond, prior, aggregates)?;
+            let taken_expr: String = rs_cond_expr(kind, taken, aggregates)?;
+            let else_holds: bool = nzcv_condition_holds(kind, *nzcv);
+            Some(format!(
+                "(if {precond_expr} {{ {taken_expr} }} else {{ {else_holds} }})"
+            ))
         }
     }
 }

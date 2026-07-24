@@ -897,6 +897,51 @@ fn recover_with_calls_and_image<'image>(
                     return_width = dest.width;
                 }
             }
+            "ccmp" | "ccmn" => {
+                let operands: Vec<&str> = split_operands(&insn.operands);
+                if operands.len() != 4 {
+                    return Err(reject_at(insn, "malformed conditional compare"));
+                }
+                let lhs: RegRef = parse_reg(operands[0])?;
+                let rhs: Source = parse_source(operands[1], lhs.width)?;
+                let nzcv_imm: i64 = parse_immediate(operands[2])?;
+                if !(0..=15).contains(&nzcv_imm) {
+                    return Err(reject_at(
+                        insn,
+                        "conditional compare nzcv immediate is outside the four-bit range",
+                    ));
+                }
+                let nzcv: u8 = u8::try_from(nzcv_imm)
+                    .map_err(|_| reject_at(insn, "conditional compare nzcv conversion overflow"))?;
+                let precond: CondKind = parse_condition(operands[3])?;
+                let live_flags: TrackedFlags = flags
+                    .clone()
+                    .ok_or_else(|| reject_at(insn, "conditional compare lacks live nzcv state"))?;
+                if (live_flags.nz_only && !precond.sign_zero_only())
+                    || !condition_is_sound(precond, &live_flags.value)
+                {
+                    return Err(reject_at(
+                        insn,
+                        "conditional compare precondition is undefined for the tracked nzcv source",
+                    ));
+                }
+                let taken: Flags = if insn.mnemonic == "ccmn" {
+                    Flags::Add { lhs, rhs }
+                } else {
+                    Flags::Cmp { lhs, rhs }
+                };
+                let definition: TrackedFlags = TrackedFlags {
+                    value: Flags::CondCmp {
+                        prior: Box::new(live_flags.value),
+                        precond,
+                        taken: Box::new(taken),
+                        nzcv,
+                    },
+                    nz_only: false,
+                };
+                flags = Some(definition.clone());
+                flag_definitions.insert(index, definition);
+            }
             "adr" | "adrp" => {
                 let operands: Vec<&str> = split_operands(&insn.operands);
                 if operands.is_empty() {
@@ -3510,6 +3555,9 @@ fn flags_reference_reg(flags: &Flags, reg: Reg) -> bool {
         }
         Flags::Test { operand } | Flags::TestImm { operand, .. } => operand.reg == reg,
         Flags::Sign { result } => result.reg == reg,
+        Flags::CondCmp { prior, taken, .. } => {
+            flags_reference_reg(prior, reg) || flags_reference_reg(taken, reg)
+        }
         Flags::CmpMem { .. } | Flags::FpCmp { .. } | Flags::Snapshot { .. } => true,
     }
 }
