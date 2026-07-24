@@ -655,6 +655,12 @@ enum VecBinOp {
     AndNot,
 }
 
+impl VecBinOp {
+    const fn is_bitwise(self) -> bool {
+        matches!(self, Self::And | Self::Or | Self::Xor | Self::AndNot)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReduceOp {
     Add,
