@@ -379,6 +379,14 @@ fn recover_with_calls_and_image<'image>(
             push_stmts(&mut items, base, index, stmts)?;
             continue;
         }
+        if matches!(insn.mnemonic.as_str(), "ldr" | "str")
+            && first_operand_is_scalar_dreg(&insn.operands)
+        {
+            let operands: Vec<&str> = split_operands(&insn.operands);
+            let stmts: Vec<Stmt> = vector_load_store(insn, &operands, insn.mnemonic == "ldr")?;
+            push_stmts(&mut items, base, index, stmts)?;
+            continue;
+        }
         if has_unsupported_register_class(&insn.operands) {
             return Err(reject_at(insn, "unsupported instruction"));
         }
@@ -3969,8 +3977,17 @@ fn vector_load_store(insn: &DisasmInsn, operands: &[&str], is_load: bool) -> Res
     if !(2..=3).contains(&operands.len()) {
         return Err(reject_at(insn, "malformed vector load or store"));
     }
-    let reg: u8 = parse_qreg(operands[0])
-        .ok_or_else(|| reject_at(insn, "vector load or store requires a q register"))?;
+    let (reg, access_arr): (u8, Option<VecArrangement>) =
+        if let Some(index) = parse_qreg(operands[0]) {
+            (index, None)
+        } else if let Some(index) = parse_dreg(operands[0]) {
+            (index, Some(VEC_DOUBLEWORD_BYTES))
+        } else {
+            return Err(reject_at(
+                insn,
+                "vector load or store requires a q or d register",
+            ));
+        };
     let (mut mem, pre_index): (MemRef, bool) = parse_memory(operands[1], Width::W64)?;
     let post_delta: Option<i64> = operands
         .get(2)
@@ -3992,13 +4009,13 @@ fn vector_load_store(insn: &DisasmInsn, operands: &[&str], is_load: bool) -> Res
     let memory_stmt: Stmt = if is_load {
         Stmt::Vector(VecStmt::Load {
             dest: reg,
-            arr: None,
+            arr: access_arr,
             addr: access,
         })
     } else {
         Stmt::Vector(VecStmt::Store {
             src: reg,
-            arr: None,
+            arr: access_arr,
             addr: access,
         })
     };
@@ -4195,6 +4212,19 @@ fn parse_qreg(token: &str) -> Option<u8> {
     let number: &str = token.trim().strip_prefix('q')?;
     let index: u8 = number.parse::<u8>().ok()?;
     (index < 32).then_some(index)
+}
+
+fn parse_dreg(token: &str) -> Option<u8> {
+    let number: &str = token.trim().strip_prefix('d')?;
+    let index: u8 = number.parse::<u8>().ok()?;
+    (index < 32).then_some(index)
+}
+
+fn first_operand_is_scalar_dreg(operands: &str) -> bool {
+    split_operands(operands)
+        .first()
+        .and_then(|token: &&str| parse_dreg(token))
+        .is_some()
 }
 
 fn parse_vector_operand(token: &str, float: bool) -> Result<(u8, VecArrangement)> {
@@ -4475,6 +4505,16 @@ fn resolve_vector_types(items: &mut [Item]) -> Result<()> {
                 dest,
                 arr: Some(arr),
                 ..
+            } if arr.total_bits() == 64 => note_vec_width(&mut width, *dest, VEC_WHOLE_BYTES)?,
+            VecStmt::Store {
+                src,
+                arr: Some(arr),
+                ..
+            } if arr.total_bits() == 64 => note_vec_width(&mut width, *src, VEC_WHOLE_BYTES)?,
+            VecStmt::Load {
+                dest,
+                arr: Some(arr),
+                ..
             } => note_vec_exact(&mut exact, *dest, *arr)?,
             VecStmt::Store {
                 src,
@@ -4541,10 +4581,14 @@ fn resolve_vector_types(items: &mut [Item]) -> Result<()> {
         };
         match vec {
             VecStmt::Load { dest, arr, .. } => {
-                *arr = Some(resolved_wide_arrangement(&resolved, *dest)?);
+                if !arr.is_some_and(|current: VecArrangement| current.total_bits() == 64) {
+                    *arr = Some(resolved_wide_arrangement(&resolved, *dest)?);
+                }
             }
             VecStmt::Store { src, arr, .. } => {
-                *arr = Some(resolved_wide_arrangement(&resolved, *src)?);
+                if !arr.is_some_and(|current: VecArrangement| current.total_bits() == 64) {
+                    *arr = Some(resolved_wide_arrangement(&resolved, *src)?);
+                }
             }
             VecStmt::Bin {
                 dest,
@@ -4574,6 +4618,11 @@ fn resolve_vector_types(items: &mut [Item]) -> Result<()> {
 
 const VEC_WHOLE_BYTES: VecArrangement = VecArrangement {
     lanes: 16,
+    elem: VecElem::I8,
+};
+
+const VEC_DOUBLEWORD_BYTES: VecArrangement = VecArrangement {
+    lanes: 8,
     elem: VecElem::I8,
 };
 

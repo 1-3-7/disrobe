@@ -10575,6 +10575,9 @@ fn emit_c(
     };
     let mut vec_types: BTreeSet<VecArrangement> = BTreeSet::new();
     collect_block_vec_arrangements(body, &mut vec_types);
+    for arr in resolve_block_vec_types(body).values() {
+        vec_types.insert(*arr);
+    }
     for (_, arr) in &signature.vec {
         vec_types.insert(*arr);
     }
@@ -11184,17 +11187,28 @@ fn block_has_vector(body: &Block) -> bool {
     found
 }
 
+fn merge_max_vec_width(map: &mut BTreeMap<u8, VecArrangement>, reg: u8, arr: VecArrangement) {
+    map.entry(reg)
+        .and_modify(|existing: &mut VecArrangement| {
+            if arr.total_bits() > existing.total_bits() {
+                *existing = arr;
+            }
+        })
+        .or_insert(arr);
+}
+
 fn resolve_block_vec_types(body: &Block) -> BTreeMap<u8, VecArrangement> {
     let mut types: BTreeMap<u8, VecArrangement> = BTreeMap::new();
+    let mut mem_types: BTreeMap<u8, VecArrangement> = BTreeMap::new();
     for_each_vec_stmt(body, &mut |vec: &VecStmt| match vec {
         VecStmt::Load { dest, arr, .. } => {
             if let Some(arrangement) = arr {
-                types.entry(*dest).or_insert(*arrangement);
+                merge_max_vec_width(&mut mem_types, *dest, *arrangement);
             }
         }
         VecStmt::Store { src, arr, .. } => {
             if let Some(arrangement) = arr {
-                types.entry(*src).or_insert(*arrangement);
+                merge_max_vec_width(&mut mem_types, *src, *arrangement);
             }
         }
         VecStmt::Bin {
@@ -11267,13 +11281,18 @@ fn resolve_block_vec_types(body: &Block) -> BTreeMap<u8, VecArrangement> {
                 .or_insert_with(|| VecArrangement::whole_register(*src_elem));
         }
     });
+    for (reg, arr) in mem_types {
+        types.entry(reg).or_insert(arr);
+    }
     types
 }
 
 fn collect_block_vec_arrangements(body: &Block, acc: &mut BTreeSet<VecArrangement>) {
     for_each_vec_stmt(body, &mut |vec: &VecStmt| match vec {
         VecStmt::Load { arr, .. } | VecStmt::Store { arr, .. } => {
-            if let Some(arrangement) = arr {
+            if let Some(arrangement) = arr
+                && arrangement.total_bits() == 128
+            {
                 acc.insert(*arrangement);
             }
         }
@@ -11992,6 +12011,28 @@ fn vec_deref_expr(arr: VecArrangement, addr: &MemRef) -> String {
     )
 }
 
+fn vec_low64_lvalue(reg: u8) -> String {
+    format!("*(uint64_t *)(&{})", vec_var(reg))
+}
+
+fn vec_low64_mem(addr: &MemRef) -> String {
+    format!(
+        "*(uint64_t *)({})",
+        addr_expr(addr.base, addr.index, addr.disp)
+    )
+}
+
+fn vec_low64_load_cstmt(cx: &mut Cx<'_>, dest: u8, addr: &MemRef) -> CStmt {
+    let var: String = vec_var(dest);
+    let zero: CStmt = assign_cstmt(cx, &var, &format!("(__typeof__({var})){{0}}"));
+    let write: CStmt = assign_cstmt(cx, &vec_low64_lvalue(dest), &vec_low64_mem(addr));
+    CStmt::Block(vec![zero, write])
+}
+
+fn vec_low64_store_cstmt(cx: &mut Cx<'_>, src: u8, addr: &MemRef) -> CStmt {
+    assign_cstmt(cx, &vec_low64_mem(addr), &vec_low64_lvalue(src))
+}
+
 fn whole_reg_literal(arr: VecArrangement, first: &str) -> String {
     let mut items: Vec<String> = Vec::with_capacity(usize::from(arr.lanes));
     items.push(first.to_owned());
@@ -12197,11 +12238,17 @@ fn lane_insert_cstmt(
 fn vec_stmt_cstmt(cx: &mut Cx<'_>, vec: &VecStmt) -> CStmt {
     match vec {
         VecStmt::Load { dest, arr, addr } => {
+            if arr.is_some_and(|a: VecArrangement| a.total_bits() == 64) {
+                return vec_low64_load_cstmt(cx, *dest, addr);
+            }
             let arrangement: VecArrangement = vec_resolved_arr(*arr);
             let rhs: String = vec_deref_expr(arrangement, addr);
             assign_cstmt(cx, &vec_var(*dest), &rhs)
         }
         VecStmt::Store { src, arr, addr } => {
+            if arr.is_some_and(|a: VecArrangement| a.total_bits() == 64) {
+                return vec_low64_store_cstmt(cx, *src, addr);
+            }
             let arrangement: VecArrangement = vec_resolved_arr(*arr);
             let target: String = vec_deref_expr(arrangement, addr);
             assign_cstmt(cx, &target, &vec_var(*src))
