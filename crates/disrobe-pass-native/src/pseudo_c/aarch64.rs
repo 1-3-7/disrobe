@@ -496,6 +496,60 @@ fn recover_with_calls_and_image<'image>(
                     return_width = dest.width;
                 }
             }
+            mnemonic @ ("strb" | "strh" | "sturb" | "sturh") => {
+                let store_width: Width = match mnemonic {
+                    "strb" | "sturb" => Width::W8,
+                    _ => Width::W16,
+                };
+                let operands: Vec<&str> = split_operands(&insn.operands);
+                if !(2..=3).contains(&operands.len()) {
+                    return Err(reject_at(insn, "malformed sized store"));
+                }
+                let source: Source = if matches!(operands[0], "wzr" | "xzr") {
+                    Source::Imm(0)
+                } else {
+                    Source::Reg(parse_reg(operands[0])?)
+                };
+                let (mut mem, pre_index): (MemRef, bool) = parse_memory(operands[1], store_width)?;
+                let post_delta: Option<i64> = operands
+                    .get(2)
+                    .map(|token: &&str| parse_immediate(token))
+                    .transpose()?;
+                if pre_index && post_delta.is_some() {
+                    return Err(reject_at(
+                        insn,
+                        "address cannot be both pre-indexed and post-indexed",
+                    ));
+                }
+                if let (true, Source::Reg(value)) = (pre_index || post_delta.is_some(), &source)
+                    && mem.base == Some(value.reg)
+                {
+                    return Err(reject_at(
+                        insn,
+                        "sized store writes back to its own transfer register",
+                    ));
+                }
+                let mut stmts: Vec<Stmt> = Vec::new();
+                if pre_index {
+                    let delta: i64 = mem.disp;
+                    mem.disp = 0;
+                    stmts.push(base_update(mem.base, delta)?);
+                }
+                stmts.push(Stmt::Store {
+                    addr: mem,
+                    src: source,
+                });
+                if let Some(delta) = post_delta {
+                    if mem.disp != 0 {
+                        return Err(reject_at(
+                            insn,
+                            "post-indexed address has an inline displacement",
+                        ));
+                    }
+                    stmts.push(base_update(mem.base, delta)?);
+                }
+                push_stmts(&mut items, base, index, stmts)?;
+            }
             "ldp" | "stp" => {
                 let (dest, stmts): (Option<RegRef>, Vec<Stmt>) =
                     lower_pair_memory(insn, frame.info, outgoing_slots)?;
