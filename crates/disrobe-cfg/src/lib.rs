@@ -347,6 +347,216 @@ fn predecessors(cfg: &Cfg) -> Vec<Vec<NodeId>> {
     preds
 }
 
+const RETURN_TAIL_NODE_CAP: usize = 64;
+
+trait FlowView {
+    fn flow_node_count(&self) -> usize;
+    fn flow_is_live(&self, node: NodeId) -> bool;
+    fn flow_successors(&self, node: NodeId) -> Vec<NodeId>;
+    fn flow_returns(&self, node: NodeId) -> bool;
+}
+
+struct CfgFlow<'a> {
+    cfg: &'a Cfg,
+    live: Vec<bool>,
+}
+
+impl FlowView for CfgFlow<'_> {
+    fn flow_node_count(&self) -> usize {
+        self.cfg.len()
+    }
+
+    fn flow_is_live(&self, node: NodeId) -> bool {
+        self.live.get(node as usize).copied().unwrap_or(false)
+    }
+
+    fn flow_successors(&self, node: NodeId) -> Vec<NodeId> {
+        self.cfg.successors(node)
+    }
+
+    fn flow_returns(&self, node: NodeId) -> bool {
+        matches!(
+            self.cfg.nodes.get(node as usize).map(|n: &CfgNode| &n.term),
+            Some(Terminator::Return)
+        )
+    }
+}
+
+fn flow_predecessors<V: FlowView>(view: &V) -> Vec<Vec<NodeId>> {
+    let count: usize = view.flow_node_count();
+    let mut preds: Vec<Vec<NodeId>> = vec![Vec::new(); count];
+    for from in 0..count as NodeId {
+        if !view.flow_is_live(from) {
+            continue;
+        }
+        for successor in view.flow_successors(from) {
+            let Some(slot): Option<&mut Vec<NodeId>> = preds.get_mut(successor as usize) else {
+                continue;
+            };
+            if !slot.contains(&from) {
+                slot.push(from);
+            }
+        }
+    }
+    preds
+}
+
+fn flow_exit_targets<V: FlowView>(view: &V, body: &BTreeSet<NodeId>) -> Vec<NodeId> {
+    let mut targets: Vec<NodeId> = Vec::new();
+    for node in body {
+        for successor in view.flow_successors(*node) {
+            if !body.contains(&successor) && !targets.contains(&successor) {
+                targets.push(successor);
+            }
+        }
+    }
+    targets
+}
+
+fn tail_is_acyclic<V: FlowView>(view: &V, tail: &BTreeSet<NodeId>) -> bool {
+    let mut indegree: BTreeMap<NodeId, usize> =
+        tail.iter().map(|node: &NodeId| (*node, 0usize)).collect();
+    for node in tail {
+        for successor in view.flow_successors(*node) {
+            if let Some(degree) = indegree.get_mut(&successor) {
+                *degree += 1;
+            }
+        }
+    }
+    let mut ready: Vec<NodeId> = indegree
+        .iter()
+        .filter(|(_, degree): &(&NodeId, &usize)| **degree == 0)
+        .map(|(node, _): (&NodeId, &usize)| *node)
+        .collect();
+    let mut removed: usize = 0;
+    while let Some(node) = ready.pop() {
+        removed += 1;
+        for successor in view.flow_successors(node) {
+            if let Some(degree) = indegree.get_mut(&successor) {
+                *degree = degree.saturating_sub(1);
+                if *degree == 0 {
+                    ready.push(successor);
+                }
+            }
+        }
+    }
+    removed == tail.len()
+}
+
+fn private_return_tail<V: FlowView>(
+    view: &V,
+    body: &BTreeSet<NodeId>,
+    preds: &[Vec<NodeId>],
+    seed: NodeId,
+) -> Option<BTreeSet<NodeId>> {
+    let mut tail: BTreeSet<NodeId> = BTreeSet::new();
+    let mut pending: Vec<NodeId> = vec![seed];
+    let mut returns: bool = false;
+    while let Some(node) = pending.pop() {
+        if body.contains(&node) || !view.flow_is_live(node) {
+            return None;
+        }
+        if !tail.insert(node) {
+            continue;
+        }
+        if tail.len() > RETURN_TAIL_NODE_CAP {
+            return None;
+        }
+        let successors: Vec<NodeId> = view.flow_successors(node);
+        if successors.is_empty() {
+            if !view.flow_returns(node) {
+                return None;
+            }
+            returns = true;
+            continue;
+        }
+        pending.extend(successors);
+    }
+    if !returns {
+        return None;
+    }
+    for node in &tail {
+        let entering: &[NodeId] = preds.get(*node as usize).map_or(&[], Vec::as_slice);
+        if entering
+            .iter()
+            .any(|pred: &NodeId| !body.contains(pred) && !tail.contains(pred))
+        {
+            return None;
+        }
+    }
+    tail_is_acyclic(view, &tail).then_some(tail)
+}
+
+fn preferred_follow<V: FlowView>(
+    view: &V,
+    header: NodeId,
+    body: &BTreeSet<NodeId>,
+    targets: &[NodeId],
+) -> Option<NodeId> {
+    let latch_exit: Option<NodeId> = body
+        .iter()
+        .filter(|node: &&NodeId| view.flow_successors(**node).contains(&header))
+        .flat_map(|node: &NodeId| view.flow_successors(*node))
+        .find(|successor: &NodeId| targets.contains(successor));
+    latch_exit
+        .or_else(|| {
+            view.flow_successors(header)
+                .into_iter()
+                .find(|successor: &NodeId| targets.contains(successor))
+        })
+        .or_else(|| targets.iter().copied().min())
+}
+
+fn body_absorbing_return_tails<V: FlowView>(
+    view: &V,
+    header: NodeId,
+    body: &BTreeSet<NodeId>,
+) -> Option<BTreeSet<NodeId>> {
+    let targets: Vec<NodeId> = flow_exit_targets(view, body);
+    if targets.len() < 2 {
+        return None;
+    }
+    let preds: Vec<Vec<NodeId>> = flow_predecessors(view);
+    let tails: Vec<(NodeId, Option<BTreeSet<NodeId>>)> = targets
+        .iter()
+        .map(|target: &NodeId| (*target, private_return_tail(view, body, &preds, *target)))
+        .collect();
+    let blocked: Vec<NodeId> = tails
+        .iter()
+        .filter(|(_, tail): &&(NodeId, Option<BTreeSet<NodeId>>)| tail.is_none())
+        .map(|(target, _): &(NodeId, Option<BTreeSet<NodeId>>)| *target)
+        .collect();
+    let keep: NodeId = match blocked.as_slice() {
+        [] => preferred_follow(view, header, body, &targets)?,
+        [single] => *single,
+        _ => return None,
+    };
+    let mut extended: BTreeSet<NodeId> = body.clone();
+    for (target, tail) in &tails {
+        if *target == keep {
+            continue;
+        }
+        let tail: &BTreeSet<NodeId> = tail.as_ref()?;
+        extended.extend(tail.iter().copied());
+    }
+    if extended.len() == body.len() || extended.contains(&keep) {
+        return None;
+    }
+    (flow_exit_targets(view, &extended) == vec![keep]).then_some(extended)
+}
+
+pub fn loop_body_absorbing_return_tails(
+    cfg: &Cfg,
+    header: NodeId,
+    body: &BTreeSet<NodeId>,
+) -> Option<BTreeSet<NodeId>> {
+    let view: CfgFlow<'_> = CfgFlow {
+        cfg,
+        live: reachable(cfg),
+    };
+    body_absorbing_return_tails(&view, header, body)
+}
+
 pub fn strongly_connected_components(cfg: &Cfg) -> Vec<Vec<NodeId>> {
     let count: usize = cfg.len();
     let reach: Vec<bool> = reachable(cfg);
@@ -1079,11 +1289,30 @@ struct Collapse {
     region_of: Vec<RegionId>,
     flow: Vec<AbFlow>,
     pure: Vec<bool>,
+    returns: Vec<bool>,
     alive: Vec<bool>,
     entry: NodeId,
     regions: Vec<Region>,
     conds: CondPool,
     irreducible: bool,
+}
+
+impl FlowView for Collapse {
+    fn flow_node_count(&self) -> usize {
+        self.flow.len()
+    }
+
+    fn flow_is_live(&self, node: NodeId) -> bool {
+        self.alive.get(node as usize).copied().unwrap_or(false)
+    }
+
+    fn flow_successors(&self, node: NodeId) -> Vec<NodeId> {
+        self.successors(node)
+    }
+
+    fn flow_returns(&self, node: NodeId) -> bool {
+        self.is_exit_sink(node) && self.returns.get(node as usize).copied().unwrap_or(false)
+    }
 }
 
 pub fn structure(cfg: &Cfg) -> StructureResult {
@@ -1133,6 +1362,11 @@ impl Collapse {
         let mut region_of: Vec<RegionId> = vec![0; count];
         let mut flow: Vec<AbFlow> = Vec::with_capacity(count);
         let pure: Vec<bool> = cfg.nodes.iter().map(|n: &CfgNode| n.pure).collect();
+        let returns: Vec<bool> = cfg
+            .nodes
+            .iter()
+            .map(|n: &CfgNode| !matches!(n.term, Terminator::Unreachable))
+            .collect();
         for (idx, node) in cfg.nodes.iter().enumerate() {
             let (kind_flow, exits): (AbFlow, Vec<NodeId>) = match &node.term {
                 Terminator::Return | Terminator::Unreachable => (AbFlow::Seq(None), Vec::new()),
@@ -1181,6 +1415,7 @@ impl Collapse {
             region_of,
             flow,
             pure,
+            returns,
             alive: reach,
             entry: cfg.entry,
             regions,
@@ -1231,6 +1466,10 @@ impl Collapse {
     fn is_exit_sink(&self, node: NodeId) -> bool {
         matches!(&self.flow[node as usize], AbFlow::Seq(None))
             || matches!(&self.flow[node as usize], AbFlow::Region(v) if v.is_empty())
+    }
+
+    fn absorb_returns(&mut self, node: NodeId, folded: NodeId) {
+        self.returns[node as usize] = self.returns[node as usize] && self.returns[folded as usize];
     }
 
     fn alive_nodes(&self) -> Vec<NodeId> {
@@ -1357,6 +1596,7 @@ impl Collapse {
         });
         self.flow[node as usize] = self.flow[succ as usize].clone();
         self.pure[node as usize] = self.pure[node as usize] && self.pure[succ as usize];
+        self.returns[node as usize] = self.returns[succ as usize];
         self.region_of[node as usize] = region;
         self.alive[succ as usize] = false;
         true
@@ -1434,6 +1674,8 @@ impl Collapse {
             head: Some(head),
         });
         self.flow[node as usize] = AbFlow::Seq(join);
+        self.absorb_returns(node, taken);
+        self.absorb_returns(node, not_taken);
         self.region_of[node as usize] = region;
         self.alive[taken as usize] = false;
         self.alive[not_taken as usize] = false;
@@ -1464,12 +1706,14 @@ impl Collapse {
         {
             self.region_of[node as usize] = region;
             self.flow[node as usize] = AbFlow::Seq(Some(not_taken));
+            self.absorb_returns(node, taken);
             self.alive[taken as usize] = false;
             return true;
         }
         if let Some(region) = self.if_then_arm(node, cond, not_taken, taken, true, preds, headers) {
             self.region_of[node as usize] = region;
             self.flow[node as usize] = AbFlow::Seq(Some(taken));
+            self.absorb_returns(node, not_taken);
             self.alive[not_taken as usize] = false;
             return true;
         }
@@ -1590,6 +1834,7 @@ impl Collapse {
         });
         self.region_of[node as usize] = region;
         self.pure[node as usize] = self.pure[node as usize] && self.pure[second as usize];
+        self.absorb_returns(node, second);
         self.flow[node as usize] = AbFlow::Cond {
             cond: fused,
             taken,
@@ -1672,6 +1917,7 @@ impl Collapse {
         self.flow[node as usize] = AbFlow::Seq(join);
         self.region_of[node as usize] = region;
         for &b in &bodies {
+            self.absorb_returns(node, b);
             self.alive[b as usize] = false;
         }
         true
@@ -1777,6 +2023,8 @@ impl Collapse {
             self.irreducible = true;
             return false;
         };
+        let body: BTreeSet<NodeId> =
+            body_absorbing_return_tails(self, header, &body).unwrap_or(body);
         let component: Vec<NodeId> = body.into_iter().collect();
         self.collapse_loop(&component, header);
         true
@@ -1816,6 +2064,7 @@ impl Collapse {
         self.region_of[header as usize] = region;
         for &node in component {
             if node != header {
+                self.absorb_returns(header, node);
                 self.alive[node as usize] = false;
             }
         }
@@ -1901,6 +2150,7 @@ impl Collapse {
         self.region_of[self.entry as usize] = region;
         for &node in &live {
             if node != self.entry {
+                self.absorb_returns(self.entry, node);
                 self.alive[node as usize] = false;
             }
         }

@@ -4646,6 +4646,44 @@ impl RegionRenderer<'_> {
         }
     }
 
+    fn absorbable_sink(&self, node: usize) -> bool {
+        let Some(original): Option<usize> = self.original_entry(node) else {
+            return false;
+        };
+        !self.label_targets.contains_key(&original)
+            && matches!(
+                self.labels.get(&original).copied(),
+                None | Some(SinkLabel::Return)
+            )
+    }
+
+    fn loop_body_with_return_tails(
+        &self,
+        header: usize,
+        body: &std::collections::BTreeSet<usize>,
+    ) -> Option<std::collections::BTreeSet<usize>> {
+        let cfg: structuring::Cfg = cfg_from_leaf_blocks(self.blocks)?;
+        let mut nodes: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+        for node in body {
+            nodes.insert(u32::try_from(*node).ok()?);
+        }
+        let extended: std::collections::BTreeSet<u32> =
+            structuring::loop_body_absorbing_return_tails(
+                &cfg,
+                u32::try_from(header).ok()?,
+                &nodes,
+            )?;
+        let mut absorbed: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        for node in &extended {
+            let index: usize = *node as usize;
+            if !nodes.contains(node) && !self.absorbable_sink(index) {
+                return None;
+            }
+            absorbed.insert(index);
+        }
+        Some(absorbed)
+    }
+
     fn render_loop(&mut self, header: usize, out: &mut Block) -> bool {
         if !self.allow_loops {
             return false;
@@ -4658,8 +4696,11 @@ impl RegionRenderer<'_> {
         else {
             return false;
         };
-        let body: std::collections::BTreeSet<usize> =
+        let mut body: std::collections::BTreeSet<usize> =
             natural.body.iter().map(|n: &u32| *n as usize).collect();
+        if let Some(extended) = self.loop_body_with_return_tails(header, &body) {
+            body = extended;
+        }
         let mut follow: Option<usize> = None;
         for &node in &body {
             for succ in self.blocks[node].successors() {
