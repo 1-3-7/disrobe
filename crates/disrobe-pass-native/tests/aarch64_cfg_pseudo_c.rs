@@ -536,6 +536,19 @@ fn aarch64_real_clang_unscaled_sign_extended_word_index_byte_load_recovers() {
 }
 
 #[test]
+fn aarch64_real_clang_post_index_byte_load_lifts_the_access_before_the_base_update() {
+    let bytes: [u8; 8] = [0x29, 0x14, 0x40, 0x38, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ldrb w9,[x1],#1");
+    let load_at: usize = r.source.find("uint8_t").expect(&r.source);
+    let update_at: usize = r
+        .source
+        .rfind("r_a64_x1 = r_a64_x1 +")
+        .or_else(|| r.source.rfind("r_a64_x1 +"))
+        .expect(&r.source);
+    assert!(load_at < update_at, "{}", r.source);
+}
+
+#[test]
 fn aarch64_real_clang_large_bitmask_immediate_recovers_as_a_reinterpreted_mask() {
     let bytes: [u8; 8] = [0x00, 0xf0, 0x7d, 0x92, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("and x0,x0,#-8 mask");
