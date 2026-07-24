@@ -1565,3 +1565,24 @@ fn aarch64_full_register_mov_recovers_as_a_lane_typed_copy() {
     assert!(r.source.contains("v0 = v0 + v1;"), "{}", r.source);
     assert!(!r.source.contains("recovered_i8x16"), "{}", r.source);
 }
+
+#[test]
+fn aarch64_real_clang_conditional_compare_lifts_a_short_circuit_ternary() {
+    let bytes: [u8; 32] = [
+        0x5f, 0x00, 0x03, 0x6b, 0x48, 0x00, 0x80, 0x52, 0x04, 0x10, 0x41, 0x7a, 0x08, 0x05, 0x88,
+        0x1a, 0x5f, 0x00, 0x03, 0x6b, 0x04, 0xb0, 0x41, 0x7a, 0x00, 0xd5, 0x9f, 0x1a, 0xc0, 0x03,
+        0x5f, 0xd6,
+    ];
+    let r: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("ccmp short-circuit condition recovers");
+    assert!(r.source.contains(" ? "), "{}", r.source);
+    assert!(r.source.contains(") ? ("), "{}", r.source);
+    assert!(r.source.contains(": 0)"), "{}", r.source);
+    assert!(r.source.contains(": 1)"), "{}", r.source);
+    assert!(
+        r.source
+            .contains("(int32_t)(r_a64_x2) != (int64_t)(int32_t)(r_a64_x3)"),
+        "{}",
+        r.source
+    );
+}
