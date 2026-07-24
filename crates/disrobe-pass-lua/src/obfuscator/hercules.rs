@@ -64,7 +64,7 @@ struct HexSubtractLoader {
 fn find_hex_subtract_loader(src: &[u8]) -> Option<HexSubtractLoader> {
     let mut quote_open: usize = 0;
     while quote_open < src.len() {
-        let rel: usize = find_subslice(&src[quote_open..], b"\"")?;
+        let rel: usize = disrobe_core::byte_search::find(&src[quote_open..], b"\"")?;
         let here: usize = quote_open + rel;
         let hex_start: usize = here + 1;
         let mut cursor: usize = hex_start;
@@ -111,12 +111,6 @@ fn parse_trailing_key(after_quote: &[u8]) -> Option<u16> {
     core::str::from_utf8(&after_quote[digits_start..idx])
         .ok()
         .and_then(|s: &str| s.parse::<u16>().ok())
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|w: &[u8]| w == needle)
 }
 
 fn decode_hex_subtract(loader: &HexSubtractLoader) -> Option<Vec<u8>> {
@@ -252,4 +246,31 @@ fn render_recovered(inner_layer: &str) -> Vec<u8> {
     out.push_str(inner_layer);
     out.push_str("\n]==]\n");
     out.into_bytes()
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::{ObfuscatorDetection, detect, find_hex_subtract_loader};
+
+    #[test]
+    fn quote_scan_survives_degenerate_input() {
+        assert!(find_hex_subtract_loader(b"").is_none());
+        assert!(find_hex_subtract_loader(b"\"").is_none());
+        assert!(find_hex_subtract_loader(b"local a = \"\"").is_none());
+        assert!(find_hex_subtract_loader(b"local a = \"deadbeef\"").is_none());
+        assert_eq!(
+            disrobe_core::byte_search::find(b"local a = \"\"", b""),
+            None
+        );
+    }
+
+    #[test]
+    fn watermark_only_source_detects_without_loader() {
+        let detection: ObfuscatorDetection =
+            detect(b"-- Obfuscated by Hercules\nprint(1)\n").expect("detection");
+        assert_eq!(detection.variant.as_deref(), Some("watermark-only"));
+        assert_eq!(detection.confidence, 90);
+        assert!(detect(b"print(1)\n").is_none());
+    }
 }

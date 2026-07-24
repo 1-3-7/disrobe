@@ -526,7 +526,7 @@ pub fn parse_constarray_rotation(text: &str) -> Option<Vec<(usize, usize)>> {
     let bytes: &[u8] = text.as_bytes();
     let head: &[u8] = b" in ipairs({{";
     let mut search: usize = 0;
-    while let Some(rel) = find_subslice(&bytes[search..], head) {
+    while let Some(rel) = disrobe_core::byte_search::find(&bytes[search..], head) {
         let open: usize = search + rel + head.len() - 1;
         let rest: &str = &text[open..];
         if let Some(end) = match_outer_brace(rest) {
@@ -562,16 +562,6 @@ fn parse_pair_groups(body: &str) -> Option<Vec<(usize, usize)>> {
         pairs.push((a as usize, b as usize));
     }
     if pairs.is_empty() { None } else { Some(pairs) }
-}
-
-#[must_use]
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return None;
-    }
-    haystack
-        .windows(needle.len())
-        .position(|w: &[u8]| w == needle)
 }
 
 pub fn apply_segment_reversals<T>(pool: &mut [T], pairs: &[(usize, usize)]) {
@@ -727,16 +717,6 @@ pub fn xor_decode_repeating(encoded: &[u8], key: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-const STD_BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-#[must_use]
-fn std_base64_value(c: u8) -> Option<u8> {
-    STD_BASE64
-        .iter()
-        .position(|&a: &u8| a == c)
-        .map(|p: usize| p as u8)
-}
-
 #[must_use]
 pub fn decode_base64_standard(input: &str) -> Option<Vec<u8>> {
     base64_decode(
@@ -807,7 +787,7 @@ fn is_base64ish(s: &str) -> bool {
         match c {
             b'=' => seen_pad = true,
             _ if seen_pad => return false,
-            _ if std_base64_value(c).is_some() => {}
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/' => {}
             _ => return false,
         }
     }
@@ -1018,6 +998,9 @@ pub fn looks_like_lua(plain: &[u8]) -> bool {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    const STD_BASE64: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
     #[test]
     fn eval_simple_addition() {
@@ -1305,6 +1288,23 @@ mod tests {
         let plain: &[u8] = b"return print(1)";
         let cipher: Vec<u8> = xor_decode_repeating(plain, key);
         assert_eq!(xor_decode_repeating(&cipher, key), plain.to_vec());
+    }
+
+    #[test]
+    fn shared_subslice_search_defines_empty_needle_as_not_found() {
+        assert_eq!(disrobe_core::byte_search::find(b"local v={}", b""), None);
+        assert_eq!(disrobe_core::byte_search::find(b"", b""), None);
+        assert!(!disrobe_core::byte_search::contains(b"local v={}", b""));
+    }
+
+    #[test]
+    fn constarray_rotation_scan_survives_degenerate_input() {
+        assert_eq!(parse_constarray_rotation(""), None);
+        assert_eq!(parse_constarray_rotation(" in ipairs({{"), None);
+        assert_eq!(
+            parse_constarray_rotation("for i,v in ipairs({{}})do end"),
+            None
+        );
     }
 
     #[test]

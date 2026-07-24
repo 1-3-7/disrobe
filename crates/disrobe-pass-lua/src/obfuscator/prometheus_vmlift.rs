@@ -798,7 +798,7 @@ fn find_state_loop(src: &str) -> Option<(char, usize)> {
     let bytes: &[u8] = src.as_bytes();
     let needle: &[u8] = b"while ";
     let mut pos: usize = 0;
-    while let Some(rel) = find_subslice(&bytes[pos..], needle) {
+    while let Some(rel) = disrobe_core::byte_search::find(&bytes[pos..], needle) {
         let kw: usize = pos + rel;
         let mut i: usize = kw + needle.len();
         while i < bytes.len() && bytes[i] == b' ' {
@@ -1090,20 +1090,18 @@ fn constant_literals(seg: &str) -> Vec<i64> {
     targets
 }
 
-#[inline]
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return None;
-    }
-    haystack
-        .windows(needle.len())
-        .position(|w: &[u8]| w == needle)
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn state_loop_scan_survives_degenerate_input() {
+        assert_eq!(find_state_loop(""), None);
+        assert_eq!(find_state_loop("while "), None);
+        assert_eq!(find_state_loop("while while while"), None);
+        assert_eq!(disrobe_core::byte_search::find(b"while ", b""), None);
+    }
 
     #[test]
     fn folds_lua_integer_arithmetic_with_floor_modulo() {
