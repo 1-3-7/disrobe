@@ -13,10 +13,17 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use disrobe_pass_native::{LeafRecovery, recover_aarch64_function};
+use disrobe_pass_native::{LeafRecovery, PseudoScalarType as ScalarType, recover_aarch64_function};
 use wait_timeout::ChildExt as _;
 
 const CASES: &[(&str, &str, &[u8])] = &include!("aarch64_recovery_corpus.inc");
+const ORACLE_FLAGS: &[&str] = &[
+    "-O1",
+    "-funsigned-char",
+    "-fno-stack-protector",
+    "-fno-strict-aliasing",
+    "-ffp-contract=off",
+];
 
 const GROUND_TRUTH_C: &str = r"
 typedef unsigned int u32;
@@ -193,6 +200,15 @@ int sat_sub(int a, int b) {
     if (s < -2147483648LL) return -2147483648;
     return (int)s;
 }
+
+float fp_id_f(float x) { return x; }
+double fp_id_d(double x) { return x; }
+double fp_second(double a, double b) { return b; }
+float fp_get(const float *a, int i) { return a[i]; }
+double fp_get_d(const double *a, int i) { return a[i]; }
+void fp_put(float *a, int i, float v) { a[i] = v; }
+float fp_bits_gpr(unsigned x) { float f; __builtin_memcpy(&f, &x, 4); return f; }
+double fp_pick3(double a, double b, double c) { return c; }
 ";
 
 const EXTERNS: &str = r"struct Pt { int x; int y; };
@@ -248,6 +264,14 @@ extern unsigned long long hi_mul_u(unsigned long long a, unsigned long long b);
 extern unsigned avg_floor_u(unsigned a, unsigned b);
 extern int select4(int a, int b, int c, int d);
 extern int sat_sub(int a, int b);
+extern float fp_id_f(float x);
+extern double fp_id_d(double x);
+extern double fp_second(double a, double b);
+extern float fp_get(const float *a, int i);
+extern double fp_get_d(const double *a, int i);
+extern void fp_put(float *a, int i, float v);
+extern float fp_bits_gpr(unsigned x);
+extern double fp_pick3(double a, double b, double c);
 ";
 
 fn cc() -> Option<String> {
@@ -261,6 +285,51 @@ fn cc() -> Option<String> {
         }
     }
     None
+}
+
+#[derive(Clone, Copy)]
+struct FpExpectation {
+    params: &'static [ScalarType],
+    returns: Option<ScalarType>,
+}
+
+fn fp_expectation(name: &str) -> Option<FpExpectation> {
+    let expectation: FpExpectation = match name {
+        "fp_id_f" => FpExpectation {
+            params: &[ScalarType::Float],
+            returns: Some(ScalarType::Float),
+        },
+        "fp_id_d" => FpExpectation {
+            params: &[ScalarType::Double],
+            returns: Some(ScalarType::Double),
+        },
+        "fp_second" => FpExpectation {
+            params: &[ScalarType::Double, ScalarType::Double],
+            returns: Some(ScalarType::Double),
+        },
+        "fp_get" => FpExpectation {
+            params: &[ScalarType::Int, ScalarType::Int],
+            returns: Some(ScalarType::Float),
+        },
+        "fp_get_d" => FpExpectation {
+            params: &[ScalarType::Int, ScalarType::Int],
+            returns: Some(ScalarType::Double),
+        },
+        "fp_put" => FpExpectation {
+            params: &[ScalarType::Float, ScalarType::Int, ScalarType::Int],
+            returns: None,
+        },
+        "fp_bits_gpr" => FpExpectation {
+            params: &[ScalarType::Int],
+            returns: Some(ScalarType::Float),
+        },
+        "fp_pick3" => FpExpectation {
+            params: &[ScalarType::Double, ScalarType::Double, ScalarType::Double],
+            returns: Some(ScalarType::Double),
+        },
+        _ => return None,
+    };
+    Some(expectation)
 }
 
 fn expected_arity(name: &str) -> Option<usize> {
@@ -410,6 +479,124 @@ const LONG_FILL: &str = "(long long)((int)(xs(&s) % 200001) - 100000)";
 const CHAR_FILL: &str = "(char)(xs(&s) & 0xff)";
 const U64_FILL: &str = "(unsigned long long)xs(&s)";
 
+const FP_DRIVER_HELPERS: &str = r"
+static inline double fp_d_from_bits(uint64_t b) { double v; __builtin_memcpy(&v, &b, 8); return v; }
+static inline uint64_t fp_d_to_bits(double v) { uint64_t b; __builtin_memcpy(&b, &v, 8); return b; }
+static inline float fp_f_from_bits(uint32_t b) { float v; __builtin_memcpy(&v, &b, 4); return v; }
+static inline uint32_t fp_f_to_bits(float v) { uint32_t b; __builtin_memcpy(&b, &v, 4); return b; }
+static const uint32_t fp32_specials[] = {
+    0x00000000U, 0x80000000U, 0x7f800000U, 0xff800000U,
+    0x7fc00001U, 0xffc00001U, 0x7f800001U, 0xff800001U,
+    0x00000001U, 0x007fffffU, 0x00800000U, 0x7f7fffffU,
+    0x80800000U, 0xff7fffffU
+};
+static const uint64_t fp64_specials[] = {
+    0x0000000000000000ULL, 0x8000000000000000ULL,
+    0x7ff0000000000000ULL, 0xfff0000000000000ULL,
+    0x7ff8000000000001ULL, 0xfff8000000000001ULL,
+    0x7ff0000000000001ULL, 0xfff0000000000001ULL,
+    0x0000000000000001ULL, 0x000fffffffffffffULL,
+    0x0010000000000000ULL, 0x7fefffffffffffffULL,
+    0x8010000000000000ULL, 0xffefffffffffffffULL
+};
+static uint32_t fp32_input(uint64_t *state, int iteration, int lane) {
+    int count = (int)(sizeof(fp32_specials) / sizeof(fp32_specials[0]));
+    if (iteration < count) return fp32_specials[(iteration + lane) % count];
+    return (uint32_t)xs(state);
+}
+static uint64_t fp64_input(uint64_t *state, int iteration, int lane) {
+    int count = (int)(sizeof(fp64_specials) / sizeof(fp64_specials[0]));
+    if (iteration < count) return fp64_specials[(iteration + lane) % count];
+    return xs(state);
+}
+";
+
+const FP_ID_F_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           uint32_t bits = fp32_input(&s, it, 0); float x = fp_f_from_bits(bits);\n\
+     \x20           uint32_t w = fp_f_to_bits(fp_id_f(x)); uint32_t g = fp_f_to_bits($REC(x));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_ID_D_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           uint64_t bits = fp64_input(&s, it, 0); double x = fp_d_from_bits(bits);\n\
+     \x20           uint64_t w = fp_d_to_bits(fp_id_d(x)); uint64_t g = fp_d_to_bits($REC(x));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_SECOND_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           double a = fp_d_from_bits(fp64_input(&s, it, 0)); double b = fp_d_from_bits(fp64_input(&s, it, 5));\n\
+     \x20           uint64_t w = fp_d_to_bits(fp_second(a, b)); uint64_t g = fp_d_to_bits($REC(a, b));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_PICK3_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           double a = fp_d_from_bits(fp64_input(&s, it, 0)); double b = fp_d_from_bits(fp64_input(&s, it, 5)); double c = fp_d_from_bits(fp64_input(&s, it, 9));\n\
+     \x20           uint64_t w = fp_d_to_bits(fp_pick3(a, b, c)); uint64_t g = fp_d_to_bits($REC(a, b, c));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_GET_F_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           float buf[BUFN];\n\
+     \x20           for (int b = 0; b < BUFN; b++) { uint32_t bits = fp32_input(&s, it, b); __builtin_memcpy(&buf[b], &bits, 4); }\n\
+     \x20           int i = (int)(xs(&s) % BUFN);\n\
+     \x20           uint32_t w = fp_f_to_bits(fp_get(buf, i)); uint32_t g = fp_f_to_bits($REC((uint64_t)(uintptr_t)buf, (uint64_t)(uint32_t)i));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d i=%d w=%08x g=%08x\\n\", it, i, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_GET_D_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           double buf[BUFN];\n\
+     \x20           for (int b = 0; b < BUFN; b++) { uint64_t bits = fp64_input(&s, it, b); __builtin_memcpy(&buf[b], &bits, 8); }\n\
+     \x20           int i = (int)(xs(&s) % BUFN);\n\
+     \x20           uint64_t w = fp_d_to_bits(fp_get_d(buf, i)); uint64_t g = fp_d_to_bits($REC((uint64_t)(uintptr_t)buf, (uint64_t)(uint32_t)i));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d i=%d w=%llx g=%llx\\n\", it, i, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_PUT_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           float o[BUFN]; float r[BUFN];\n\
+     \x20           for (int b = 0; b < BUFN; b++) { uint32_t bits = fp32_input(&s, it, b); __builtin_memcpy(&o[b], &bits, 4); __builtin_memcpy(&r[b], &bits, 4); }\n\
+     \x20           int i = (int)(xs(&s) % BUFN); float v = fp_f_from_bits(fp32_input(&s, it, BUFN + 1));\n\
+     \x20           fp_put(o, i, v); $REC(v, (uint64_t)(uintptr_t)r, (uint64_t)(uint32_t)i);\n\
+     \x20           if (memcmp(o, r, sizeof(o)) != 0) { printf(\"FAIL $OPT $NAME it=%d i=%d\\n\", it, i); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_BITS_GPR_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           uint32_t bits = fp32_input(&s, it, 0);\n\
+     \x20           uint32_t w = fp_f_to_bits(fp_bits_gpr(bits)); uint32_t g = fp_f_to_bits($REC((uint64_t)bits));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
 const IDX_STORE_TMPL: &str = "    {\n\
      \x20       uint64_t s = $SEED; int ok = 1;\n\
      \x20       for (int it = 0; it < ITER; it++) {\n\
@@ -549,6 +736,14 @@ const NESTED_SUM_TMPL: &str = "    {\n\
 
 fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Option<String> {
     let block: String = match name {
+        "fp_id_f" => fill_template(FP_ID_F_TMPL, opt, name, rec, seed),
+        "fp_id_d" => fill_template(FP_ID_D_TMPL, opt, name, rec, seed),
+        "fp_second" => fill_template(FP_SECOND_TMPL, opt, name, rec, seed),
+        "fp_pick3" => fill_template(FP_PICK3_TMPL, opt, name, rec, seed),
+        "fp_get" => fill_template(FP_GET_F_TMPL, opt, name, rec, seed),
+        "fp_get_d" => fill_template(FP_GET_D_TMPL, opt, name, rec, seed),
+        "fp_put" => fill_template(FP_PUT_TMPL, opt, name, rec, seed),
+        "fp_bits_gpr" => fill_template(FP_BITS_GPR_TMPL, opt, name, rec, seed),
         "abs_diff" => scalar_block(
             opt,
             name,
@@ -941,10 +1136,16 @@ fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Option<String> 
 fn rename_recovered(source: &str, rec: &str) -> String {
     source
         .lines()
-        .filter(|line: &&str| !line.starts_with("#include"))
+        .filter(|line: &&str| {
+            !line.starts_with("#include")
+                && !line.starts_with("static inline double fp_d_from_bits")
+                && !line.starts_with("static inline uint64_t fp_d_to_bits")
+                && !line.starts_with("static inline float fp_f_from_bits")
+                && !line.starts_with("static inline uint32_t fp_f_to_bits")
+        })
         .collect::<Vec<&str>>()
         .join("\n")
-        .replacen("uint64_t recovered(", &format!("uint64_t {rec}("), 1)
+        .replacen(" recovered(", &format!(" {rec}("), 1)
 }
 
 #[test]
@@ -956,20 +1157,20 @@ fn corpus_grade_report() {
         );
         return;
     };
+    assert!(
+        !ORACLE_FLAGS
+            .iter()
+            .any(|flag: &&str| matches!(*flag, "-ffast-math" | "-Ofast")),
+        "oracle flags must preserve strict floating-point behavior"
+    );
 
     let dir: tempfile::TempDir = tempfile::tempdir().expect("scratch dir");
     let battery_c: PathBuf = dir.path().join("gt_battery.c");
     std::fs::write(&battery_c, GROUND_TRUTH_C.as_bytes()).expect("write ground-truth battery");
     let battery_o: PathBuf = dir.path().join("gt_battery.o");
     let compile_battery: std::process::Output = Command::new(&compiler)
-        .args([
-            "-O1",
-            "-funsigned-char",
-            "-fno-stack-protector",
-            "-fno-strict-aliasing",
-            "-c",
-            "-o",
-        ])
+        .args(ORACLE_FLAGS)
+        .args(["-c", "-o"])
         .arg(&battery_o)
         .arg(&battery_c)
         .output()
@@ -985,6 +1186,8 @@ fn corpus_grade_report() {
     let mut attempted: usize = 0;
     let mut recovered: usize = 0;
     let mut driven: usize = 0;
+    let mut fp_recovered: usize = 0;
+    let mut fp_driven: usize = 0;
     let mut skips: Vec<(String, String, String)> = Vec::new();
     let mut decls: String = String::new();
     let mut blocks: String = String::new();
@@ -997,32 +1200,57 @@ fn corpus_grade_report() {
         };
         recovered += 1;
 
-        let Some(expected): Option<usize> = expected_arity(name) else {
-            skips.push((
-                (*opt).to_owned(),
-                (*name).to_owned(),
-                "no driver descriptor".to_owned(),
-            ));
-            continue;
-        };
-        if recovery.returns_fp.is_some() || !recovery.fp_params.is_empty() {
-            skips.push((
-                (*opt).to_owned(),
-                (*name).to_owned(),
-                "unexpected floating-point signature".to_owned(),
-            ));
-            continue;
-        }
-        if recovery.params.len() != expected {
-            skips.push((
-                (*opt).to_owned(),
-                (*name).to_owned(),
-                format!(
-                    "arity mismatch (recovered {}, expected {expected})",
-                    recovery.params.len()
-                ),
-            ));
-            continue;
+        let expected_fp: Option<FpExpectation> = fp_expectation(name);
+        if let Some(expectation) = expected_fp {
+            fp_recovered += 1;
+            let void_mismatch: bool =
+                expectation.returns.is_none() && recovery.return_width_bits != 0;
+            if recovery.fp_params.as_slice() != expectation.params
+                || recovery.returns_fp != expectation.returns
+                || void_mismatch
+            {
+                skips.push((
+                    (*opt).to_owned(),
+                    (*name).to_owned(),
+                    format!(
+                        "fp signature mismatch (recovered {:?} -> {:?}/{} bits, expected {:?} -> {:?})",
+                        recovery.fp_params,
+                        recovery.returns_fp,
+                        recovery.return_width_bits,
+                        expectation.params,
+                        expectation.returns
+                    ),
+                ));
+                continue;
+            }
+        } else {
+            let Some(expected): Option<usize> = expected_arity(name) else {
+                skips.push((
+                    (*opt).to_owned(),
+                    (*name).to_owned(),
+                    "no driver descriptor".to_owned(),
+                ));
+                continue;
+            };
+            if recovery.returns_fp.is_some() || !recovery.fp_params.is_empty() {
+                skips.push((
+                    (*opt).to_owned(),
+                    (*name).to_owned(),
+                    "unexpected floating-point signature".to_owned(),
+                ));
+                continue;
+            }
+            if recovery.params.len() != expected {
+                skips.push((
+                    (*opt).to_owned(),
+                    (*name).to_owned(),
+                    format!(
+                        "arity mismatch (recovered {}, expected {expected})",
+                        recovery.params.len()
+                    ),
+                ));
+                continue;
+            }
         }
 
         let rec_symbol: String = format!("rec_{opt}_{name}");
@@ -1048,18 +1276,22 @@ fn corpus_grade_report() {
         decls.push('\n');
         blocks.push_str(&block);
         driven += 1;
+        if expected_fp.is_some() {
+            fp_driven += 1;
+        }
     }
 
-    if driven == 0 {
-        eprintln!("SKIP corpus grade: no recovered case had a runnable driver descriptor");
-        return;
-    }
+    assert!(
+        driven != 0,
+        "corpus grade produced no recovered case with a runnable driver descriptor"
+    );
 
     let driver: String = format!(
         "#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n#include <stddef.h>\n\
          #define BUFN 16\n#define ITER 400\n\
          {EXTERNS}\n\
          static uint64_t xs(uint64_t *st) {{ uint64_t x = *st; x ^= x << 13; x ^= x >> 7; x ^= x << 17; *st = x; return x; }}\n\
+         {FP_DRIVER_HELPERS}\n\
          static long long passed = 0;\n\
          static long long fails = 0;\n\
          {decls}\n\
@@ -1076,13 +1308,8 @@ fn corpus_grade_report() {
         .path()
         .join(if cfg!(windows) { "grade.exe" } else { "grade" });
     let link: std::process::Output = Command::new(&compiler)
-        .args([
-            "-O1",
-            "-funsigned-char",
-            "-fno-strict-aliasing",
-            "-fno-stack-protector",
-            "-o",
-        ])
+        .args(ORACLE_FLAGS)
+        .args(["-o"])
         .arg(&harness_exe)
         .arg(&driver_c)
         .arg(&battery_o)
@@ -1148,8 +1375,10 @@ fn corpus_grade_report() {
     eprintln!("attempted            {attempted}");
     eprintln!("recovered            {recovered}   (non-rejection; NOT a correctness claim)");
     eprintln!("driven (graded)      {driven}");
+    eprintln!("fp recovered         {fp_recovered}");
+    eprintln!("fp driven (graded)   {fp_driven}");
     eprintln!(
-        "graded-equivalent    {graded_equivalent}   (recompiled + behaviorally matched on 400 random inputs)"
+        "graded-equivalent    {graded_equivalent}   (recompiled + behaviorally matched on directed and random inputs)"
     );
     eprintln!(
         "recovered-but-wrong  {driver_fails}   (recovered, driven, diverged from ground truth)"
@@ -1185,5 +1414,13 @@ fn corpus_grade_report() {
         driver_fails as usize,
         wrong.len(),
         "driver fail count must match the enumerated recovered-but-wrong list"
+    );
+    assert_eq!(
+        driver_fails, 0,
+        "every driven recovery must be behaviorally equivalent"
+    );
+    assert!(
+        skips.is_empty(),
+        "every recovered case must have a runnable, signature-matched driver"
     );
 }

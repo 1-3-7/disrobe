@@ -172,3 +172,12 @@ int sat_sub(int a, int b) {
     if (s < -2147483648LL) return -2147483648;
     return (int)s;
 }
+
+float fp_id_f(float x) { return x; }
+double fp_id_d(double x) { return x; }
+double fp_second(double a, double b) { return b; }
+float fp_get(const float *a, int i) { return a[i]; }
+double fp_get_d(const double *a, int i) { return a[i]; }
+void fp_put(float *a, int i, float v) { a[i] = v; }
+float fp_bits_gpr(unsigned x) { float f; __builtin_memcpy(&f, &x, 4); return f; }
+double fp_pick3(double a, double b, double c) { return c; }

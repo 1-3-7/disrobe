@@ -309,12 +309,12 @@ fn aarch64_real_clang_addp_2d_sums_two_doublewords_and_fmov_x_returns_it() {
 }
 
 #[test]
-fn aarch64_real_clang_fmov_extracts_the_low_lane_into_a_general_register() {
+fn aarch64_real_clang_fmov_moves_a_scalar_float_parameter_into_a_general_register() {
     let bytes: [u8; 8] = [0x00, 0x00, 0x26, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("fmov w0,s0 alone");
-    assert!(r.source.contains("recovered_i32x4 a0"), "{}", r.source);
+    assert!(r.source.contains("recovered(float a0)"), "{}", r.source);
     assert!(
-        r.source.contains("(uint32_t)((recovered_i32x4)v0)[0]"),
+        r.source.contains("fp_f_to_bits((float)(a0))"),
         "{}",
         r.source
     );
