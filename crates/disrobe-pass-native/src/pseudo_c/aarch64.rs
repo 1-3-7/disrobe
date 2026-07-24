@@ -936,12 +936,13 @@ fn recover_with_calls_and_image<'image>(
     let vec_abi: VectorAbi = scan_vector_abi(&items)?;
     finish(
         &insns,
-        &items,
+        &mut items,
         base,
         &flag_definitions,
         return_width,
         calls,
         &vec_abi,
+        &mut next_sel,
     )
 }
 
@@ -1860,15 +1861,16 @@ fn block_contains_switch(body: &[Node]) -> bool {
 
 fn finish(
     insns: &[DisasmInsn],
-    items: &[Item],
+    items: &mut Vec<Item>,
     base: u64,
     flag_definitions: &BTreeMap<usize, TrackedFlags>,
     return_width: Width,
     calls: &[ResolvedCall],
     vec_abi: &VectorAbi,
+    next_sel: &mut u32,
 ) -> Result<LeafRecovery> {
     let mut structured: Structured =
-        match aarch64_cfg::structure(items, insns, base, flag_definitions) {
+        match aarch64_cfg::structure(items, insns, base, flag_definitions, next_sel) {
             aarch64_cfg::Attempt::Structured(structured) => structured,
             aarch64_cfg::Attempt::NotCandidate => structure_items(items)?,
             aarch64_cfg::Attempt::RejectedNzcv => {

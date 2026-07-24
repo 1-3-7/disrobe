@@ -1202,3 +1202,73 @@ fn conflicting_nzcv_definitions_fall_back_without_structuring() {
         other => panic!("unexpected error: {other:?}"),
     }
 }
+
+#[test]
+fn real_clang_o1_popcount_loop_snapshots_the_condition_before_the_latch_copy() {
+    let bytes: [u8; 40] = [
+        0x20, 0x01, 0x00, 0x34, 0xe8, 0x03, 0x00, 0x2a, 0xe0, 0x03, 0x1f, 0x2a, 0x09, 0x7d, 0x01,
+        0x53, 0x0a, 0x01, 0x00, 0x12, 0x1f, 0x05, 0x00, 0x71, 0x00, 0x00, 0x0a, 0x0b, 0xe8, 0x03,
+        0x09, 0x2a, 0x68, 0xff, 0xff, 0x54, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("clobbered loop condition recovers");
+
+    let snapshot: Option<usize> = recovered
+        .source
+        .find("sel_cc_0 = (uint64_t)((r_a64_x8) & 0xffffffffULL) > ");
+    let latch_copy: Option<usize> = recovered.source.find("r_a64_x8 = (r_a64_x9)");
+    let (snapshot, latch_copy): (usize, usize) = (
+        snapshot.unwrap_or_else(|| panic!("{}", recovered.source)),
+        latch_copy.unwrap_or_else(|| panic!("{}", recovered.source)),
+    );
+    assert!(snapshot < latch_copy, "{}", recovered.source);
+    assert!(
+        recovered.source.contains("} while (sel_cc_0 != 0);"),
+        "{}",
+        recovered.source
+    );
+    assert!(!recovered.source.contains("goto"), "{}", recovered.source);
+    assert!(recovered.lifted_loop, "{}", recovered.source);
+}
+
+#[test]
+fn clang_assembler_unclobbered_compare_keeps_the_direct_predicate() {
+    let bytes: [u8; 28] = [
+        0x1f, 0x00, 0x01, 0xeb, 0xe3, 0x03, 0x02, 0xaa, 0x6c, 0x00, 0x00, 0x54, 0x00, 0x00, 0x80,
+        0xd2, 0xc0, 0x03, 0x5f, 0xd6, 0x20, 0x00, 0x80, 0xd2, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("unclobbered compare recovers");
+
+    assert!(
+        recovered
+            .source
+            .contains("if ((int64_t)(int64_t)(r_rax) <= (int64_t)(int64_t)(r_a64_x1)) {"),
+        "{}",
+        recovered.source
+    );
+    assert!(!recovered.source.contains("sel_cc"), "{}", recovered.source);
+}
+
+#[test]
+fn clobbered_compare_with_two_conditional_consumers_still_rejects() {
+    let bytes: [u8; 40] = [
+        0x1f, 0x00, 0x01, 0xeb, 0xe0, 0x03, 0x02, 0xaa, 0x8c, 0x00, 0x00, 0x54, 0xab, 0x00, 0x00,
+        0x54, 0x00, 0x00, 0x80, 0xd2, 0xc0, 0x03, 0x5f, 0xd6, 0x20, 0x00, 0x80, 0xd2, 0xc0, 0x03,
+        0x5f, 0xd6, 0x40, 0x00, 0x80, 0xd2, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+
+    let result: Result<LeafRecovery, Error> = recover_aarch64_function(&bytes, 0);
+    let error: Error = result.expect_err("two consumers of a clobbered compare must reject");
+    match error {
+        Error::LlvmIr(message) => {
+            assert_eq!(
+                message,
+                "aarch64 reject: conditional branch lacks live nzcv state"
+            );
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}

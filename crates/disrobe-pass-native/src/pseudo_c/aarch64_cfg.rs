@@ -2,7 +2,7 @@ use super::super::{
     Cond, CondKind, Flags, Item, ItemKind, LoopCond, Node, Reg, RegRef, Stmt, Structured,
     SwitchCase, VecStmt, condition_is_sound, flag_operand_regs, stmt_dest_regs,
 };
-use super::{ITEM_STRIDE, TrackedFlags};
+use super::{ITEM_STRIDE, TrackedFlags, item_address};
 use crate::arch::DisasmInsn;
 use disrobe_cfg as structuring;
 use std::collections::{BTreeMap, BTreeSet};
@@ -64,15 +64,33 @@ struct Aarch64Block {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlagState {
     None,
-    One(usize),
+    One { definition: usize, clobbered: bool },
     Many,
 }
 
+#[derive(Debug, Clone)]
+struct FlagRepair {
+    producer: usize,
+    consumer: usize,
+    var: u32,
+    kind: CondKind,
+    flags: Flags,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FlagConsumer {
+    block: usize,
+    definition: usize,
+    clobbered: bool,
+    kind: CondKind,
+}
+
 pub(super) fn structure(
-    items: &[Item],
+    items: &mut Vec<Item>,
     insns: &[DisasmInsn],
     base: u64,
     flag_definitions: &BTreeMap<usize, TrackedFlags>,
+    next_sel: &mut u32,
 ) -> Attempt {
     let blocks: Option<Vec<Aarch64Block>> = build_blocks(items, insns, base);
     let Some(mut blocks): Option<Vec<Aarch64Block>> = blocks else {
@@ -90,7 +108,12 @@ pub(super) fn structure(
     if control_flow_count == 0 {
         return Attempt::NotCandidate;
     }
-    if !synthesize_nzcv_conditions(&mut blocks, insns, flag_definitions) {
+    let repairs: Option<Vec<FlagRepair>> =
+        synthesize_nzcv_conditions(&mut blocks, insns, flag_definitions, next_sel);
+    let Some(repairs): Option<Vec<FlagRepair>> = repairs else {
+        return Attempt::RejectedNzcv;
+    };
+    if !apply_flag_repairs(items, base, insns.len(), &repairs) {
         return Attempt::RejectedNzcv;
     }
     let cfg: Option<structuring::Cfg> = cfg_from_blocks(&blocks);
@@ -383,22 +406,17 @@ fn synthesize_nzcv_conditions(
     blocks: &mut [Aarch64Block],
     insns: &[DisasmInsn],
     flag_definitions: &BTreeMap<usize, TrackedFlags>,
-) -> bool {
+    next_sel: &mut u32,
+) -> Option<Vec<FlagRepair>> {
     let predecessors: Vec<Vec<usize>> = block_predecessors(blocks);
     let mut entries: Vec<FlagState> = vec![FlagState::None; blocks.len()];
     let mut exits: Vec<FlagState> = vec![FlagState::None; blocks.len()];
-    let pass_limit: Option<usize> = blocks
-        .len()
-        .checked_mul(2)
-        .and_then(|n: usize| n.checked_add(1));
-    let Some(pass_limit): Option<usize> = pass_limit else {
-        return false;
-    };
+    let pass_limit: usize = blocks.len().checked_mul(4)?.checked_add(1)?;
     let mut changed: bool = true;
     let mut pass: usize = 0;
     while changed {
         if pass == pass_limit {
-            return false;
+            return None;
         }
         changed = false;
         pass += 1;
@@ -416,40 +434,176 @@ fn synthesize_nzcv_conditions(
             }
         }
     }
+    let mut consumers: Vec<FlagConsumer> = Vec::new();
+    let mut consumer_counts: BTreeMap<usize, usize> = BTreeMap::new();
     for index in 0..blocks.len() {
         let mnemonic: &str = insns[blocks[index].end - 1].mnemonic.as_str();
         if !mnemonic.starts_with("b.") {
             continue;
         }
-        let definition_index: usize = match exits[index] {
-            FlagState::One(value) => value,
-            FlagState::None | FlagState::Many => return false,
+        let FlagState::One {
+            definition,
+            clobbered,
+        } = exits[index]
+        else {
+            return None;
         };
-        let definition: Option<&TrackedFlags> = flag_definitions.get(&definition_index);
-        let Some(definition): Option<&TrackedFlags> = definition else {
-            return false;
-        };
+        let tracked: &TrackedFlags = flag_definitions.get(&definition)?;
         let condition_kind: CondKind = match &blocks[index].term {
             Aarch64Term::Branch { kind, .. } => *kind,
             Aarch64Term::Return | Aarch64Term::Goto(_) | Aarch64Term::Switch { .. } => {
-                return false;
+                return None;
             }
         };
-        if (definition.nz_only && !condition_kind.sign_zero_only())
-            || !condition_is_sound(condition_kind, &definition.value)
+        if (tracked.nz_only && !condition_kind.sign_zero_only())
+            || !condition_is_sound(condition_kind, &tracked.value)
         {
-            return false;
+            return None;
         }
-        match &mut blocks[index].term {
-            Aarch64Term::Branch { kind, flags, .. } => {
-                *kind = condition_kind;
-                *flags = definition.value.clone();
+        consumers.push(FlagConsumer {
+            block: index,
+            definition,
+            clobbered,
+            kind: condition_kind,
+        });
+        *consumer_counts.entry(definition).or_default() += 1;
+    }
+    let mut repairs: Vec<FlagRepair> = Vec::new();
+    for consumer in consumers {
+        let tracked: &TrackedFlags = flag_definitions.get(&consumer.definition)?;
+        let (kind, flags): (CondKind, Flags) = if consumer.clobbered {
+            if consumer_counts.get(&consumer.definition).copied() != Some(1) {
+                return None;
+            }
+            let var: u32 = *next_sel;
+            *next_sel = next_sel.checked_add(1)?;
+            let snapshot: Stmt = Stmt::FlagSnapshot {
+                var,
+                kind: consumer.kind,
+                flags: tracked.value.clone(),
+            };
+            if !insert_block_snapshot(blocks, consumer.definition, snapshot) {
+                return None;
+            }
+            repairs.push(FlagRepair {
+                producer: consumer.definition,
+                consumer: blocks[consumer.block].end.checked_sub(1)?,
+                var,
+                kind: consumer.kind,
+                flags: tracked.value.clone(),
+            });
+            (CondKind::Ne, Flags::Snapshot { var })
+        } else {
+            (consumer.kind, tracked.value.clone())
+        };
+        match &mut blocks[consumer.block].term {
+            Aarch64Term::Branch {
+                kind: branch_kind,
+                flags: branch_flags,
+                ..
+            } => {
+                *branch_kind = kind;
+                *branch_flags = flags;
             }
             Aarch64Term::Return | Aarch64Term::Goto(_) | Aarch64Term::Switch { .. } => {
-                return false;
+                return None;
             }
         }
     }
+    Some(repairs)
+}
+
+fn insert_block_snapshot(blocks: &mut [Aarch64Block], producer: usize, snapshot: Stmt) -> bool {
+    let block: Option<&mut Aarch64Block> = blocks
+        .iter_mut()
+        .find(|block: &&mut Aarch64Block| producer >= block.start && producer < block.end);
+    let Some(block): Option<&mut Aarch64Block> = block else {
+        return false;
+    };
+    let position: usize = block
+        .stmts
+        .iter()
+        .position(|statement: &IndexedStmt| statement.instruction > producer)
+        .unwrap_or(block.stmts.len());
+    block.stmts.insert(
+        position,
+        IndexedStmt {
+            instruction: producer,
+            stmt: snapshot,
+        },
+    );
+    true
+}
+
+fn apply_flag_repairs(
+    items: &mut Vec<Item>,
+    base: u64,
+    count: usize,
+    repairs: &[FlagRepair],
+) -> bool {
+    for repair in repairs {
+        if !rewrite_branch_item(items, base, count, repair)
+            || !insert_snapshot_item(items, base, count, repair)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn rewrite_branch_item(items: &mut [Item], base: u64, count: usize, repair: &FlagRepair) -> bool {
+    for item in items.iter_mut() {
+        if item_instruction_index(base, item.address, count) != Some(repair.consumer) {
+            continue;
+        }
+        let ItemKind::Branch { kind, flags, .. } = &mut item.kind else {
+            continue;
+        };
+        *kind = CondKind::Ne;
+        *flags = Flags::Snapshot { var: repair.var };
+        return true;
+    }
+    false
+}
+
+fn insert_snapshot_item(
+    items: &mut Vec<Item>,
+    base: u64,
+    count: usize,
+    repair: &FlagRepair,
+) -> bool {
+    let mut slot: usize = 0;
+    let mut position: usize = items.len();
+    for (index, item) in items.iter().enumerate() {
+        let Some(instruction): Option<usize> = item_instruction_index(base, item.address, count)
+        else {
+            return false;
+        };
+        if instruction == repair.producer {
+            slot += 1;
+        }
+        if instruction > repair.producer {
+            position = index;
+            break;
+        }
+    }
+    if slot >= ITEM_STRIDE as usize {
+        return false;
+    }
+    let Some(address): Option<u64> = item_address(base, repair.producer, slot).ok() else {
+        return false;
+    };
+    items.insert(
+        position,
+        Item {
+            address,
+            kind: ItemKind::Stmt(Stmt::FlagSnapshot {
+                var: repair.var,
+                kind: repair.kind,
+                flags: repair.flags.clone(),
+            }),
+        },
+    );
     true
 }
 
@@ -475,9 +629,21 @@ fn merge_flag_states(left: FlagState, right: FlagState) -> FlagState {
     match (left, right) {
         (FlagState::Many, _) | (_, FlagState::Many) => FlagState::Many,
         (FlagState::None, FlagState::None) => FlagState::None,
-        (FlagState::One(left), FlagState::One(right)) if left == right => FlagState::One(left),
-        (FlagState::None | FlagState::One(_), FlagState::One(_))
-        | (FlagState::One(_), FlagState::None) => FlagState::Many,
+        (
+            FlagState::One {
+                definition: left,
+                clobbered: left_clobbered,
+            },
+            FlagState::One {
+                definition: right,
+                clobbered: right_clobbered,
+            },
+        ) if left == right => FlagState::One {
+            definition: left,
+            clobbered: left_clobbered || right_clobbered,
+        },
+        (FlagState::None | FlagState::One { .. }, FlagState::One { .. })
+        | (FlagState::One { .. }, FlagState::None) => FlagState::Many,
     }
 }
 
@@ -490,12 +656,32 @@ fn transfer_flag_state(
     let mut state: FlagState = entry;
     for (instruction, insn) in insns.iter().enumerate().take(block.end).skip(block.start) {
         if flag_definitions.contains_key(&instruction) {
-            state = FlagState::One(instruction);
-        } else if sets_nzcv(insn)
-            || insn.mnemonic == "bl"
-            || flag_operands_are_written(state, block, instruction, flag_definitions)
-        {
+            state = FlagState::One {
+                definition: instruction,
+                clobbered: false,
+            };
+            continue;
+        }
+        if sets_nzcv(insn) || insn.mnemonic == "bl" {
             state = FlagState::None;
+            continue;
+        }
+        let FlagState::One {
+            definition,
+            clobbered: false,
+        } = state
+        else {
+            continue;
+        };
+        let Some(tracked): Option<&TrackedFlags> = flag_definitions.get(&definition) else {
+            state = FlagState::None;
+            continue;
+        };
+        if flag_operands_are_written(tracked, block, instruction) {
+            state = FlagState::One {
+                definition,
+                clobbered: true,
+            };
         }
     }
     state
@@ -509,19 +695,10 @@ fn sets_nzcv(insn: &DisasmInsn) -> bool {
 }
 
 fn flag_operands_are_written(
-    state: FlagState,
+    flags: &TrackedFlags,
     block: &Aarch64Block,
     instruction: usize,
-    flag_definitions: &BTreeMap<usize, TrackedFlags>,
 ) -> bool {
-    let definition: usize = match state {
-        FlagState::One(definition) => definition,
-        FlagState::None | FlagState::Many => return false,
-    };
-    let flags: Option<&TrackedFlags> = flag_definitions.get(&definition);
-    let Some(flags): Option<&TrackedFlags> = flags else {
-        return true;
-    };
     let operands: Vec<Reg> = flag_operand_regs(&flags.value);
     block
         .stmts
