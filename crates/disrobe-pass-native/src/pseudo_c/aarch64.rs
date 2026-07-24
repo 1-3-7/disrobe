@@ -558,6 +558,13 @@ fn recover_with_calls_and_image<'image>(
                     return_width = dest.width;
                 }
             }
+            "ubfiz" | "ubfx" | "sbfiz" | "sbfx" => {
+                let (dest, stmts): (RegRef, Vec<Stmt>) = lower_bitfield(insn)?;
+                push_stmts(&mut items, base, index, stmts)?;
+                if dest.reg == Reg::Rax {
+                    return_width = dest.width;
+                }
+            }
             "cmp" | "cmn" | "tst" => {
                 let (stmts, new_flags): (Vec<Stmt>, TrackedFlags) = lower_flag_setter(insn)?;
                 push_stmts(&mut items, base, index, stmts)?;
@@ -2456,6 +2463,80 @@ fn lower_memory(
         stmts.push(base_update(mem.base, delta)?);
     }
     Ok((value, stmts))
+}
+
+fn lower_bitfield(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
+    let operands: Vec<&str> = split_operands(&insn.operands);
+    if operands.len() != 4 {
+        return Err(reject_at(insn, "malformed bitfield move"));
+    }
+    if matches!(insn.mnemonic.as_str(), "sbfiz" | "sbfx") {
+        return Err(reject_at(insn, "signed bitfield move is unsupported"));
+    }
+    let dest: RegRef = parse_reg(operands[0])?;
+    let source: RegRef = parse_reg(operands[1])?;
+    if dest.width != source.width {
+        return Err(reject_at(insn, "mixed-width bitfield move"));
+    }
+    let datasize: i64 = match dest.width {
+        Width::W64 => 64,
+        Width::W32 => 32,
+        _ => return Err(reject_at(insn, "bitfield move on a sub-register")),
+    };
+    let lsb: i64 = parse_immediate(operands[2])?;
+    let width: i64 = parse_immediate(operands[3])?;
+    if lsb < 0 || width <= 0 || lsb >= datasize || width > datasize || lsb + width > datasize {
+        return Err(reject_at(insn, "bitfield range is out of bounds"));
+    }
+    let mask: i64 = if width >= 64 {
+        -1
+    } else {
+        ((1u64 << width) - 1) as i64
+    };
+    let tmp: RegRef = RegRef {
+        reg: Reg::A64Tmp2,
+        width: dest.width,
+    };
+    let mut stmts: Vec<Stmt> = vec![Stmt::Assign {
+        dest: tmp,
+        src: Source::Reg(source),
+    }];
+    if insn.mnemonic == "ubfiz" {
+        if width < datasize {
+            stmts.push(Stmt::BinAssign {
+                dest: tmp,
+                op: BinOp::And,
+                src: Source::Imm(mask),
+            });
+        }
+        if lsb > 0 {
+            stmts.push(Stmt::BinAssign {
+                dest: tmp,
+                op: BinOp::Shl,
+                src: Source::Imm(lsb),
+            });
+        }
+    } else {
+        if lsb > 0 {
+            stmts.push(Stmt::BinAssign {
+                dest: tmp,
+                op: BinOp::Shr,
+                src: Source::Imm(lsb),
+            });
+        }
+        if lsb + width < datasize {
+            stmts.push(Stmt::BinAssign {
+                dest: tmp,
+                op: BinOp::And,
+                src: Source::Imm(mask),
+            });
+        }
+    }
+    stmts.push(Stmt::Assign {
+        dest,
+        src: Source::Reg(tmp),
+    });
+    Ok((dest, stmts))
 }
 
 fn lower_pair_memory(
