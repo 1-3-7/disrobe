@@ -7,6 +7,8 @@ use oxc_span::SourceType;
 use regex::{Captures, Regex};
 use serde::Serialize;
 
+use crate::js_string::unescape_string_literal;
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct EvalIndirectionStats {
     pub eval_calls_seen: usize,
@@ -152,7 +154,7 @@ fn fold_eval_string_literal(source: &str, stats: &mut EvalIndirectionStats) -> S
         match raw {
             Some(payload) => {
                 stats.constant_folded += 1;
-                format!("/* dr-eval-folded */ {}", unescape_js_literal(payload))
+                format!("/* dr-eval-folded */ {}", unescape_string_literal(payload))
             }
             None => caps[0].to_owned(),
         }
@@ -171,7 +173,7 @@ fn fold_new_function_invocation(source: &str, stats: &mut EvalIndirectionStats) 
         match raw {
             Some(payload) => {
                 stats.constant_folded += 1;
-                format!("/* dr-newfn-folded */ {}", unescape_js_literal(payload))
+                format!("/* dr-newfn-folded */ {}", unescape_string_literal(payload))
             }
             None => caps[0].to_owned(),
         }
@@ -190,7 +192,7 @@ fn fold_function_invocation(source: &str, stats: &mut EvalIndirectionStats) -> S
         match raw {
             Some(payload) => {
                 stats.constant_folded += 1;
-                format!("/* dr-fn-folded */ {}", unescape_js_literal(payload))
+                format!("/* dr-fn-folded */ {}", unescape_string_literal(payload))
             }
             None => caps[0].to_owned(),
         }
@@ -212,56 +214,6 @@ fn add_detect_only_markers(source: &str, stats: &mut EvalIndirectionStats) -> St
         .saturating_sub(source.matches("/* dr-newfn-folded */").count());
     stats.detect_only_markers = pending_eval + pending_fn;
     source.to_owned()
-}
-
-fn unescape_js_literal(input: &str) -> String {
-    let mut out: String = String::with_capacity(input.len());
-    let mut iter: std::str::Chars<'_> = input.chars();
-    while let Some(ch) = iter.next() {
-        if ch != '\\' {
-            out.push(ch);
-            continue;
-        }
-        match iter.next() {
-            Some('n') => out.push('\n'),
-            Some('t') => out.push('\t'),
-            Some('r') => out.push('\r'),
-            Some('\'') => out.push('\''),
-            Some('"') => out.push('"'),
-            Some('0') => out.push('\0'),
-            Some('/') => out.push('/'),
-            Some('b') => out.push('\u{0008}'),
-            Some('f') => out.push('\u{000C}'),
-            Some('\\') | None => out.push('\\'),
-            Some('x') => {
-                let hi: Option<char> = iter.next();
-                let lo: Option<char> = iter.next();
-                if let (Some(h), Some(l)) = (hi, lo)
-                    && let (Some(a), Some(b)) = (h.to_digit(16), l.to_digit(16))
-                    && let Some(byte) = char::from_u32((a << 4) | b)
-                {
-                    out.push(byte);
-                }
-            }
-            Some('u') => {
-                let mut code: u32 = 0;
-                for _ in 0..4 {
-                    let Some(c): Option<char> = iter.next() else {
-                        break;
-                    };
-                    let Some(d): Option<u32> = c.to_digit(16) else {
-                        break;
-                    };
-                    code = (code << 4) | d;
-                }
-                if let Some(ch) = char::from_u32(code) {
-                    out.push(ch);
-                }
-            }
-            Some(other) => out.push(other),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

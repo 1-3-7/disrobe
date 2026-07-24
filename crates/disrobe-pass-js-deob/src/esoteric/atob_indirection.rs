@@ -4,6 +4,8 @@ use base64::Engine as _;
 use regex::{Captures, Regex};
 use serde::Serialize;
 
+use crate::js_string::unescape_string_literal;
+
 const MAX_RECURSIVE_DEPTH: usize = 6;
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -117,7 +119,7 @@ fn fold_atob(source: &str, stats: &mut AtobIndirectionStats, payloads: &mut Vec<
         let Some(payload): Option<&str> = raw else {
             return caps[0].to_owned();
         };
-        let unescaped: String = unescape_js_literal(payload);
+        let unescaped: String = unescape_string_literal(payload);
         decode_base64(&unescaped).map_or_else(
             || {
                 stats.failed_decodes += 1;
@@ -144,7 +146,7 @@ fn fold_btoa(source: &str, stats: &mut AtobIndirectionStats) -> String {
         let Some(payload): Option<&str> = raw else {
             return caps[0].to_owned();
         };
-        let unescaped: String = unescape_js_literal(payload);
+        let unescaped: String = unescape_string_literal(payload);
         let encoded: String =
             base64::engine::general_purpose::STANDARD.encode(unescaped.as_bytes());
         stats.btoa_calls_folded += 1;
@@ -206,29 +208,6 @@ fn js_quote(input: &str) -> String {
         }
     }
     out.push('"');
-    out
-}
-
-fn unescape_js_literal(input: &str) -> String {
-    let mut out: String = String::with_capacity(input.len());
-    let mut iter: std::str::Chars<'_> = input.chars();
-    while let Some(ch) = iter.next() {
-        if ch != '\\' {
-            out.push(ch);
-            continue;
-        }
-        match iter.next() {
-            Some('n') => out.push('\n'),
-            Some('t') => out.push('\t'),
-            Some('r') => out.push('\r'),
-            Some('\'') => out.push('\''),
-            Some('"') => out.push('"'),
-            Some('0') => out.push('\0'),
-            Some('/') => out.push('/'),
-            Some('\\') | None => out.push('\\'),
-            Some(other) => out.push(other),
-        }
-    }
     out
 }
 

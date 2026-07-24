@@ -1,3 +1,4 @@
+use disrobe_core::byte_search;
 use serde::{Deserialize, Serialize};
 
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
@@ -39,9 +40,9 @@ pub fn classify_tauri_binary(bytes: &[u8]) -> TauriBinaryClass {
     let kind: NativeBinaryKind = classify_native_kind(bytes);
     TauriBinaryClass {
         kind,
-        has_wry_marker: contains_subslice(bytes, WRY_MARKER),
-        has_webview2_marker: contains_subslice(bytes, WEBVIEW2_MARKER),
-        has_tauri_builder_marker: contains_subslice(bytes, TAURI_MARKER),
+        has_wry_marker: byte_search::contains(bytes, WRY_MARKER),
+        has_webview2_marker: byte_search::contains(bytes, WEBVIEW2_MARKER),
+        has_tauri_builder_marker: byte_search::contains(bytes, TAURI_MARKER),
     }
 }
 
@@ -60,10 +61,6 @@ fn classify_native_kind(bytes: &[u8]) -> NativeBinaryKind {
         return NativeBinaryKind::MachO;
     }
     NativeBinaryKind::Unknown
-}
-
-fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|w: &[u8]| w == needle)
 }
 
 #[cfg(test)]

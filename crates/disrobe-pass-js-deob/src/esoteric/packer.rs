@@ -1,6 +1,8 @@
 use regex::Regex;
 use serde::Serialize;
 
+use crate::js_string::unescape_string_literal;
+
 const PACKER_SIGNATURE: &str = "function(p,a,c,k,e,";
 const MAX_PEEL_LAYERS: usize = 32;
 
@@ -140,9 +142,9 @@ fn extract_args(source: &str) -> Option<PackerArgs> {
         .map(char::from)?;
     let (sep_raw, _rest): (String, &str) =
         consume_string_literal(&after_paren[sep_quote_off..], sep_quote)?;
-    let payload: String = unescape_js(&payload_raw);
-    let sep: String = unescape_js(&sep_raw);
-    let words_decoded: String = unescape_js(&words_raw);
+    let payload: String = unescape_string_literal(&payload_raw);
+    let sep: String = unescape_string_literal(&sep_raw);
+    let words_decoded: String = unescape_string_literal(&words_raw);
     let words: Vec<String> = if sep.is_empty() {
         vec![words_decoded]
     } else {
@@ -235,56 +237,6 @@ fn digit_value(ch: char, base: u32) -> Option<u32> {
         _ => return None,
     };
     if value < base { Some(value) } else { None }
-}
-
-fn unescape_js(input: &str) -> String {
-    let mut out: String = String::with_capacity(input.len());
-    let mut iter: std::str::Chars<'_> = input.chars();
-    while let Some(ch) = iter.next() {
-        if ch != '\\' {
-            out.push(ch);
-            continue;
-        }
-        match iter.next() {
-            Some('n') => out.push('\n'),
-            Some('t') => out.push('\t'),
-            Some('r') => out.push('\r'),
-            Some('\'') => out.push('\''),
-            Some('"') => out.push('"'),
-            Some('0') => out.push('\0'),
-            Some('/') => out.push('/'),
-            Some('b') => out.push('\u{0008}'),
-            Some('f') => out.push('\u{000C}'),
-            Some('\\') | None => out.push('\\'),
-            Some('x') => {
-                let hi: Option<char> = iter.next();
-                let lo: Option<char> = iter.next();
-                if let (Some(h), Some(l)) = (hi, lo)
-                    && let (Some(a), Some(b)) = (h.to_digit(16), l.to_digit(16))
-                    && let Some(byte) = char::from_u32((a << 4) | b)
-                {
-                    out.push(byte);
-                }
-            }
-            Some('u') => {
-                let mut code: u32 = 0;
-                for _ in 0..4 {
-                    let Some(c): Option<char> = iter.next() else {
-                        break;
-                    };
-                    let Some(d): Option<u32> = c.to_digit(16) else {
-                        break;
-                    };
-                    code = (code << 4) | d;
-                }
-                if let Some(ch) = char::from_u32(code) {
-                    out.push(ch);
-                }
-            }
-            Some(other) => out.push(other),
-        }
-    }
-    out
 }
 
 #[cfg(test)]
