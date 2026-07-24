@@ -338,6 +338,95 @@ fn clang_assembler_pre_and_post_index_writeback_lift() {
 }
 
 #[test]
+fn clang_d_register_post_index_copy_loop_lifts() {
+    let bytes: [u8; 32] = [
+        0x5f, 0x04, 0x00, 0x71, 0xcb, 0x00, 0x00, 0x54, 0xe8, 0x03, 0x02, 0x2a, 0x20, 0x84, 0x40,
+        0xfc, 0x08, 0x05, 0x00, 0xf1, 0x00, 0x84, 0x00, 0xfc, 0xa1, 0xff, 0xff, 0x54, 0xc0, 0x03,
+        0x5f, 0xd6,
+    ];
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("d-register post-index copy loop");
+    assert!(
+        recovered.source.contains("recovered_i8x8"),
+        "{}",
+        recovered.source
+    );
+    assert!(
+        recovered.source.contains("(__typeof__(v0)){0}"),
+        "{}",
+        recovered.source
+    );
+    assert!(
+        recovered
+            .source
+            .contains("*(uint64_t *)(&v0) = *(uint64_t *)(r_a64_x1)"),
+        "{}",
+        recovered.source
+    );
+    assert!(
+        recovered
+            .source
+            .contains("*(uint64_t *)(r_rax) = *(uint64_t *)(&v0)"),
+        "{}",
+        recovered.source
+    );
+
+    let Some(compiler): Option<PathBuf> =
+        find_program("cc").or_else(|| find_program("gcc").or_else(|| find_program("clang")))
+    else {
+        eprintln!("skipping d-register behavioral check: no host C compiler");
+        return;
+    };
+    let scratch: tempfile::TempDir =
+        tempfile::tempdir().expect("create d-register scratch directory");
+    let source_path: PathBuf = scratch.path().join("dreg_recovered.c");
+    let driver_path: PathBuf = scratch.path().join("dreg_driver.c");
+    let exe_path: PathBuf = scratch.path().join(if cfg!(windows) {
+        "dreg_driver.exe"
+    } else {
+        "dreg_driver"
+    });
+    let renamed: String =
+        recovered
+            .source
+            .replacen("uint64_t recovered(", "uint64_t dreg_recovered(", 1);
+    std::fs::write(&source_path, renamed).expect("write recovered d-register source");
+    std::fs::write(
+        &driver_path,
+        "#include <stdint.h>\n#include <string.h>\n\
+         extern uint64_t dreg_recovered(uint64_t d, uint64_t s, uint64_t n);\n\
+         int main(void) {\n\
+         \x20   uint64_t src[7]; uint64_t dst[7];\n\
+         \x20   for (int i = 0; i < 7; i++) { src[i] = 0x1111111100000000ULL * (i + 1) + i; dst[i] = 0; }\n\
+         \x20   dreg_recovered((uint64_t)(uintptr_t)dst, (uint64_t)(uintptr_t)src, 7);\n\
+         \x20   return memcmp(dst, src, sizeof(src)) == 0 ? 0 : 1;\n\
+         }\n",
+    )
+    .expect("write d-register driver");
+    run_tool(
+        &compiler,
+        vec![
+            "-O1".into(),
+            "-fno-strict-aliasing".into(),
+            source_path.as_os_str().to_owned(),
+            driver_path.as_os_str().to_owned(),
+            "-o".into(),
+            exe_path.as_os_str().to_owned(),
+        ],
+    );
+    let no_args: [OsString; 0] = [];
+    let outcome: CapturedOutput =
+        run_captured(&exe_path, &no_args, Duration::from_secs(30), 1 << 20)
+            .expect("spawn d-register driver")
+            .expect("d-register driver timeout");
+    assert_eq!(
+        outcome.exit_code,
+        Some(0),
+        "recovered d-register copy diverged from the reference buffer"
+    );
+}
+
+#[test]
 fn atomics_and_out_of_subset_integer_ops_reject_explicitly() {
     let atomics: [u8; 12] = [
         0x01, 0x7c, 0x5f, 0xc8, 0x01, 0x7c, 0x02, 0xc8, 0xc0, 0x03, 0x5f, 0xd6,
