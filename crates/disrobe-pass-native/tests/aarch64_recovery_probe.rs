@@ -17,7 +17,13 @@ fn aarch64_recovery_corpus_meets_the_floor() {
             Err(error) => {
                 let message: String = format!("{error:?}");
                 let tail: &str = message.split("aarch64 reject: ").nth(1).unwrap_or(&message);
-                let bucket: String = tail.split(" `").next().unwrap_or(tail).chars().take(64).collect();
+                let bucket: String = tail
+                    .split(" `")
+                    .next()
+                    .unwrap_or(tail)
+                    .chars()
+                    .take(64)
+                    .collect();
                 *rejects.entry(bucket).or_default() += 1;
                 let reason: String = tail.chars().take(90).collect();
                 eprintln!("REJECT {opt} {name}: {reason}");
