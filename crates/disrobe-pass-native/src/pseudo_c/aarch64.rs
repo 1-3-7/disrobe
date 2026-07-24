@@ -2147,6 +2147,12 @@ fn lower_alu(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
     } else if dest.width != lhs.width {
         return Err(reject_at(insn, "mixed-width integer alu instruction"));
     }
+    if insn.mnemonic == "umulh" && dest.width != Width::W64 {
+        return Err(reject_at(
+            insn,
+            "high-half multiply requires 64-bit operands",
+        ));
+    }
     let (op, negate_rhs): (BinOp, bool) = match insn.mnemonic.as_str() {
         "add" | "adds" => (BinOp::Add, false),
         "sub" | "subs" => (BinOp::Sub, false),
