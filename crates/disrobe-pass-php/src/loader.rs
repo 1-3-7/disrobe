@@ -1200,7 +1200,7 @@ fn apply_string_fn(fname: &[u8], args: &[Expr], env: &Env, depth: u32) -> Option
         b"rawurldecode" => Some(Value::Str(
             disrobe_core::codec::web_escape::percent_decode_lenient(&first?, false),
         )),
-        b"hex2bin" => decode_hex_stream(&first?).map(Value::Str),
+        b"hex2bin" => decode_hex_stream_skip_ws(&first?).map(Value::Str),
         b"bin2hex" => Some(Value::Str(bin2hex(&first?))),
         b"strtolower" => Some(Value::Str(first?.to_ascii_lowercase())),
         b"strtoupper" => Some(Value::Str(first?.to_ascii_uppercase())),
@@ -1253,7 +1253,7 @@ fn apply_string_fn(fname: &[u8], args: &[Expr], env: &Env, depth: u32) -> Option
                 return None;
             }
             let hex: Vec<u8> = string_arg(args.get(1)?, env, depth)?;
-            decode_hex_stream(&hex).map(Value::Str)
+            decode_hex_stream_skip_ws(&hex).map(Value::Str)
         }
         b"strtr" => {
             let subject: Vec<u8> = first?;
@@ -1302,7 +1302,7 @@ const fn rot13_byte(b: u8) -> u8 {
     }
 }
 
-fn decode_hex_stream(buf: &[u8]) -> Option<Vec<u8>> {
+fn decode_hex_stream_skip_ws(buf: &[u8]) -> Option<Vec<u8>> {
     let clean: Vec<u8> = buf
         .iter()
         .copied()
@@ -1818,7 +1818,7 @@ mod tests {
         let raw: &[u8] = b"\x00\xff hello";
         let hex: Vec<u8> = bin2hex(raw);
         assert_eq!(hex, b"00ff2068656c6c6f");
-        assert_eq!(decode_hex_stream(&hex).unwrap(), raw);
+        assert_eq!(decode_hex_stream_skip_ws(&hex).unwrap(), raw);
     }
 
     #[test]

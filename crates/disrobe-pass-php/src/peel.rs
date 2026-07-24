@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 pub const DEFAULT_MAX_DEPTH: u32 = 32;
 
-pub const INFLATE_OUTPUT_CAP: usize = 256 * 1024 * 1024;
+pub const EVAL_CHAIN_INFLATE_OUTPUT_CAP: usize = 256 * 1024 * 1024;
 
 const INFLATE_INITIAL_CAP: usize = 64 * 1024;
 
@@ -198,12 +198,12 @@ fn peel_eval_chain(buf: &[u8], depth: u32) -> Result<Option<(PeelLayer, Vec<u8>)
         ))),
         EvalKind::HexEscape => Ok(Some((PeelLayer::HexEscape, decode_hex_escapes(&body)))),
         EvalKind::PackHex => {
-            let unpacked: Vec<u8> = decode_hex_stream(&body)
+            let unpacked: Vec<u8> = decode_hex_stream_strict(&body)
                 .ok_or(Error::FopoPeel("pack('H*') payload is not valid hex"))?;
             Ok(Some((PeelLayer::PackHex, unpacked)))
         }
         EvalKind::Hex2Bin => {
-            let unpacked: Vec<u8> = decode_hex_stream(&body)
+            let unpacked: Vec<u8> = decode_hex_stream_strict(&body)
                 .ok_or(Error::FopoPeel("hex2bin payload is not valid hex"))?;
             Ok(Some((PeelLayer::Hex2Bin, unpacked)))
         }
@@ -545,7 +545,7 @@ fn apply_transform(kind: EvalKind, body: Vec<u8>, depth: u32) -> Option<Vec<u8>>
             &body, false,
         )),
         EvalKind::HexEscape => Some(decode_hex_escapes(&body)),
-        EvalKind::PackHex | EvalKind::Hex2Bin => decode_hex_stream(&body),
+        EvalKind::PackHex | EvalKind::Hex2Bin => decode_hex_stream_strict(&body),
         EvalKind::Uudecode => Some(uudecode(&body)),
         EvalKind::SingleKeyXor { key } => Some(xor_repeating(&body, &key)),
         EvalKind::ChrConcat | EvalKind::CreateFunction | EvalKind::Plain => Some(body),
@@ -759,7 +759,7 @@ fn join_string_literal_concat(arg: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn inflate_bounded<R: std::io::Read>(mut dec: R, depth: u32) -> Result<Vec<u8>> {
-    let cap_plus_one: u64 = INFLATE_OUTPUT_CAP as u64 + 1;
+    let cap_plus_one: u64 = EVAL_CHAIN_INFLATE_OUTPUT_CAP as u64 + 1;
     let mut out: Vec<u8> = Vec::with_capacity(INFLATE_INITIAL_CAP);
     let read: u64 = std::io::Read::take(&mut dec, cap_plus_one)
         .read_to_end(&mut out)
@@ -768,10 +768,10 @@ fn inflate_bounded<R: std::io::Read>(mut dec: R, depth: u32) -> Result<Vec<u8>> 
             depth,
             reason: e.to_string(),
         })?;
-    if read > INFLATE_OUTPUT_CAP as u64 {
+    if read > EVAL_CHAIN_INFLATE_OUTPUT_CAP as u64 {
         return Err(Error::GzInflateBomb {
             depth,
-            cap: INFLATE_OUTPUT_CAP,
+            cap: EVAL_CHAIN_INFLATE_OUTPUT_CAP,
         });
     }
     Ok(out)
@@ -838,7 +838,7 @@ fn decode_hex_escapes(buf: &[u8]) -> Vec<u8> {
     out
 }
 
-fn decode_hex_stream(buf: &[u8]) -> Option<Vec<u8>> {
+fn decode_hex_stream_strict(buf: &[u8]) -> Option<Vec<u8>> {
     if buf.is_empty() || !buf.len().is_multiple_of(2) {
         return None;
     }
@@ -989,7 +989,7 @@ fn strtr_bytes(subject: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-const STR_REPLACE_OUTPUT_CAP: usize = INFLATE_OUTPUT_CAP;
+const STR_REPLACE_OUTPUT_CAP: usize = EVAL_CHAIN_INFLATE_OUTPUT_CAP;
 
 fn str_replace_bytes(buf: &[u8], from: &[u8], to: &[u8]) -> Result<Vec<u8>> {
     str_replace_bytes_with_cap(buf, from, to, STR_REPLACE_OUTPUT_CAP)
