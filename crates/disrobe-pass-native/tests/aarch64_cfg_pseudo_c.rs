@@ -12,6 +12,22 @@ fn aarch64_real_clang_sign_extended_register_add_lifts_the_extend_and_shift() {
 }
 
 #[test]
+fn aarch64_real_clang_signed_add_overflow_select_lifts_the_v_flag() {
+    let bytes: [u8; 20] = [
+        0x08, 0x00, 0x01, 0x2b, 0x09, 0x7d, 0x1f, 0x13, 0x29, 0x01, 0x01, 0x52, 0x20, 0x61, 0x88,
+        0x1a, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("adds + csel vs saturating");
+    assert!(r.source.contains("r_a64_flag_lhs"), "{}", r.source);
+    assert!(r.source.contains('?'), "{}", r.source);
+    assert!(
+        r.source.contains("(int32_t)") && r.source.contains(" ^ ") && r.source.contains("< 0"),
+        "signed-overflow V formula must render an xor-based sign test: {}",
+        r.source
+    );
+}
+
+#[test]
 fn aarch64_real_clang_vector_signed_lane_max_recovers_as_a_per_lane_conditional() {
     let bytes: [u8; 8] = [0x00, 0x64, 0xa1, 0x4e, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("smax v0.4s,v0.4s,v1.4s");

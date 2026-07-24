@@ -412,6 +412,8 @@ enum CondKind {
     Be,
     S,
     Ns,
+    Vs,
+    Vc,
 }
 
 impl CondKind {
@@ -445,6 +447,10 @@ impl CondKind {
         matches!(self, Self::S | Self::Ns | Self::E | Self::Ne)
     }
 
+    const fn is_overflow(self) -> bool {
+        matches!(self, Self::Vs | Self::Vc)
+    }
+
     const fn negate(self) -> Self {
         match self {
             Self::E => Self::Ne,
@@ -459,6 +465,8 @@ impl CondKind {
             Self::Be => Self::A,
             Self::S => Self::Ns,
             Self::Ns => Self::S,
+            Self::Vs => Self::Vc,
+            Self::Vc => Self::Vs,
         }
     }
 }
@@ -466,6 +474,10 @@ impl CondKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Flags {
     Cmp {
+        lhs: RegRef,
+        rhs: Source,
+    },
+    Add {
         lhs: RegRef,
         rhs: Source,
     },
@@ -5342,13 +5354,17 @@ fn structure_via_regions(items: &[Item], allow_loops: bool) -> Option<Structured
 fn flags_are_comparison(flags: &Flags) -> bool {
     matches!(
         flags,
-        Flags::Cmp { .. } | Flags::CmpMem { .. } | Flags::Test { .. } | Flags::TestImm { .. }
+        Flags::Cmp { .. }
+            | Flags::Add { .. }
+            | Flags::CmpMem { .. }
+            | Flags::Test { .. }
+            | Flags::TestImm { .. }
     )
 }
 
 fn flag_operand_regs(flags: &Flags) -> Vec<Reg> {
     match flags {
-        Flags::Cmp { lhs, rhs } => {
+        Flags::Cmp { lhs, rhs } | Flags::Add { lhs, rhs } => {
             let mut regs: Vec<Reg> = vec![lhs.reg];
             source_regs(rhs, &mut regs);
             regs
@@ -6695,6 +6711,7 @@ fn resolve_conditional_flags(
 fn condition_is_sound(kind: CondKind, flags: &Flags) -> bool {
     match flags {
         Flags::Cmp { .. } | Flags::CmpMem { .. } | Flags::Test { .. } => true,
+        Flags::Add { .. } => kind.sign_zero_only() || kind.is_overflow(),
         Flags::TestImm { .. } => matches!(kind, CondKind::E | CondKind::Ne),
         Flags::Sign { .. } => kind.sign_zero_only(),
         Flags::FpCmp { .. } => {
@@ -7135,7 +7152,7 @@ fn read_flags(
     note: &mut impl FnMut(Reg, &BTreeMap<Reg, bool>, &mut Vec<Reg>),
 ) {
     match flags {
-        Flags::Cmp { lhs, rhs } => {
+        Flags::Cmp { lhs, rhs } | Flags::Add { lhs, rhs } => {
             note(lhs.reg, written, acc);
             read_sources(rhs, written, acc, note);
         }
@@ -9239,7 +9256,7 @@ fn aggregate_note_fp_operand(scan: &mut AggregateScan, operand: &FpOperand, widt
 
 fn aggregate_note_flags(scan: &mut AggregateScan, flags: &Flags) {
     match flags {
-        Flags::Cmp { rhs, .. } => aggregate_note_source(scan, rhs),
+        Flags::Cmp { rhs, .. } | Flags::Add { rhs, .. } => aggregate_note_source(scan, rhs),
         Flags::CmpMem { lhs, rhs } => {
             scan.note_mem(*lhs);
             aggregate_note_source(scan, rhs);
@@ -9864,7 +9881,7 @@ impl FrameScan {
 
     fn note_flags(self, flags: &Flags, slots: &mut Vec<(i64, Width)>, misuse: &mut bool) {
         match flags {
-            Flags::Cmp { lhs, rhs } => {
+            Flags::Cmp { lhs, rhs } | Flags::Add { lhs, rhs } => {
                 self.note_reg(lhs.reg, misuse);
                 self.note_source(rhs, slots, misuse);
             }
@@ -10713,7 +10730,7 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
         Source::Imm(_) => {}
     };
     let push_flags = |flags: &Flags, acc: &mut Vec<Reg>| match flags {
-        Flags::Cmp { lhs, rhs } => {
+        Flags::Cmp { lhs, rhs } | Flags::Add { lhs, rhs } => {
             push(lhs.reg, acc);
             push_src(rhs, acc);
         }
@@ -12610,6 +12627,14 @@ fn compare_expr(kind: CondKind, lhs_expr: &str, rhs_expr: &str, width: Width) ->
             _ => unreachable!(),
         };
         c_render(|cx| c_bin(op, cx.var(&a), cx.var(&b)))
+    } else if kind.is_overflow() {
+        overflow_expr_c(
+            lhs_expr,
+            rhs_expr,
+            width,
+            false,
+            matches!(kind, CondKind::Vs),
+        )
     } else {
         let a: String = signed_operand(lhs_expr, width);
         let b: String = signed_operand(rhs_expr, width);
@@ -12653,6 +12678,12 @@ fn cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Strin
             let rhs_expr: String = source_expr(rhs, width, aggregates);
             compare_expr(kind, lhs_expr, &rhs_expr, width)
         }
+        Flags::Add { lhs, rhs } => {
+            let width: Width = lhs.width;
+            let lhs_expr: &'static str = reg_var(lhs.reg);
+            let rhs_expr: String = source_expr(rhs, width, aggregates);
+            add_cond_expr(kind, lhs_expr, &rhs_expr, width)
+        }
         Flags::CmpMem { lhs, rhs } => {
             let width: Width = lhs.width;
             let lhs_expr: String = deref_expr(lhs, aggregates);
@@ -12692,8 +12723,8 @@ fn cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Strin
                     c_render(|cx| c_bin(BinaryOp::Lt, cx.var(&sop), CExpr::int(0)))
                 }
                 CondKind::Le => c_render(|cx| c_bin(BinaryOp::Le, cx.var(&sop), CExpr::int(0))),
-                CondKind::Ae => "1".to_owned(),
-                CondKind::B => "0".to_owned(),
+                CondKind::Ae | CondKind::Vc => "1".to_owned(),
+                CondKind::B | CondKind::Vs => "0".to_owned(),
             }
         }
         Flags::Sign { result } => {
@@ -12741,6 +12772,78 @@ fn sign_truncated_diff(lhs: &str, rhs: &str, width: Width) -> String {
         let diff: CExpr = c_bin(BinaryOp::Sub, cx.var(&a), cx.var(&b));
         c_cast(cx, &format!("int{bits}_t"), diff)
     })
+}
+
+fn sign_truncated_sum(lhs: &str, rhs: &str, width: Width) -> String {
+    let a: String = unsigned_operand(lhs, width);
+    let b: String = unsigned_operand(rhs, width);
+    let bits: u32 = width.bits();
+    c_render(|cx| {
+        let sum: CExpr = c_bin(BinaryOp::Add, cx.var(&a), cx.var(&b));
+        c_cast(cx, &format!("int{bits}_t"), sum)
+    })
+}
+
+fn overflow_expr_c(
+    lhs_expr: &str,
+    rhs_expr: &str,
+    width: Width,
+    is_add: bool,
+    set: bool,
+) -> String {
+    let bits: u32 = width.bits();
+    let uty: String = format!("uint{bits}_t");
+    let ity: String = format!("int{bits}_t");
+    let op: BinaryOp = if is_add { BinaryOp::Add } else { BinaryOp::Sub };
+    let cmp: BinaryOp = if set { BinaryOp::Lt } else { BinaryOp::Ge };
+    c_render(|cx: &mut Cx<'_>| {
+        let ua = |cx: &mut Cx<'_>| -> CExpr {
+            let opaque: CExpr = c_opaque(cx, lhs_expr);
+            c_cast(cx, &uty, opaque)
+        };
+        let ub = |cx: &mut Cx<'_>| -> CExpr {
+            let opaque: CExpr = c_opaque(cx, rhs_expr);
+            c_cast(cx, &uty, opaque)
+        };
+        let result = |cx: &mut Cx<'_>| -> CExpr {
+            let a: CExpr = ua(cx);
+            let b: CExpr = ub(cx);
+            let combined: CExpr = c_bin(op, a, b);
+            c_cast(cx, &uty, combined)
+        };
+        let inner: CExpr = if is_add {
+            let left: CExpr = c_bin(BinaryOp::BitXor, ua(cx), result(cx));
+            let right: CExpr = c_bin(BinaryOp::BitXor, ub(cx), result(cx));
+            c_bin(BinaryOp::BitAnd, left, right)
+        } else {
+            let left: CExpr = c_bin(BinaryOp::BitXor, ua(cx), ub(cx));
+            let right: CExpr = c_bin(BinaryOp::BitXor, ua(cx), result(cx));
+            c_bin(BinaryOp::BitAnd, left, right)
+        };
+        let signed: CExpr = c_cast(cx, &ity, inner);
+        c_bin(cmp, signed, CExpr::int(0))
+    })
+}
+
+fn add_cond_expr(kind: CondKind, lhs_expr: &str, rhs_expr: &str, width: Width) -> String {
+    if kind.is_overflow() {
+        return overflow_expr_c(
+            lhs_expr,
+            rhs_expr,
+            width,
+            true,
+            matches!(kind, CondKind::Vs),
+        );
+    }
+    let sum: String = sign_truncated_sum(lhs_expr, rhs_expr, width);
+    let op: BinaryOp = match kind {
+        CondKind::E => BinaryOp::Eq,
+        CondKind::Ne => BinaryOp::Ne,
+        CondKind::S => BinaryOp::Lt,
+        CondKind::Ns => BinaryOp::Ge,
+        _ => unreachable!(),
+    };
+    c_render(|cx| c_bin(op, cx.var(&sum), CExpr::int(0)))
 }
 
 const fn rs_int_ty(width: Width) -> &'static str {
@@ -14092,6 +14195,14 @@ fn rs_compare_expr(kind: CondKind, lhs_expr: &str, rhs_expr: &str, width: Width)
             _ => unreachable!(),
         };
         rs_binary_text(&a, &b, op, op_text)
+    } else if kind.is_overflow() {
+        rs_overflow_expr(
+            lhs_expr,
+            rhs_expr,
+            width,
+            false,
+            matches!(kind, CondKind::Vs),
+        )
     } else {
         let a: String = rs_signed_operand(lhs_expr, width);
         let b: String = rs_signed_operand(rhs_expr, width);
@@ -14123,6 +14234,59 @@ fn rs_sign_truncated_diff(lhs: &str, rhs: &str, width: Width) -> String {
     }
 }
 
+fn rs_sign_truncated_sum(lhs: &str, rhs: &str, width: Width) -> String {
+    let a: String = rs_unsigned_operand(lhs, width);
+    let b: String = rs_unsigned_operand(rhs, width);
+    match (parse_expr(&a), parse_expr(&b)) {
+        (Some(l), Some(r)) => {
+            let sum: RustExpr = method_call(l, "wrapping_add", vec![r]);
+            render_rust_expr(&rcast(sum, rtype_path(rs_int_ty(width))))
+        }
+        _ => format!("(({a}).wrapping_add({b}) as {ity})", ity = rs_int_ty(width)),
+    }
+}
+
+fn rs_overflow_expr(lhs: &str, rhs: &str, width: Width, is_add: bool, set: bool) -> String {
+    let uty: &str = rs_uint_ty(width);
+    let ity: &str = rs_int_ty(width);
+    let a: String = format!("(({lhs}) as {uty})");
+    let b: String = format!("(({rhs}) as {uty})");
+    let combine: &str = if is_add {
+        "wrapping_add"
+    } else {
+        "wrapping_sub"
+    };
+    let result: String = format!("({a}.{combine}({b}))");
+    let inner: String = if is_add {
+        format!("(({a} ^ {result}) & ({b} ^ {result}))")
+    } else {
+        format!("(({a} ^ {b}) & ({a} ^ {result}))")
+    };
+    let cmp: &str = if set { "<" } else { ">=" };
+    format!("((({inner}) as {ity}) {cmp} 0)")
+}
+
+fn rs_add_cond_expr(kind: CondKind, lhs: &str, rhs: &str, width: Width) -> Option<String> {
+    if kind.is_overflow() {
+        return Some(rs_overflow_expr(
+            lhs,
+            rhs,
+            width,
+            true,
+            matches!(kind, CondKind::Vs),
+        ));
+    }
+    let sum: String = rs_sign_truncated_sum(lhs, rhs, width);
+    let (op, op_text): (RBinOp, &str) = match kind {
+        CondKind::E => (RBinOp::Eq, "=="),
+        CondKind::Ne => (RBinOp::Ne, "!="),
+        CondKind::S => (RBinOp::Lt, "<"),
+        CondKind::Ns => (RBinOp::Ge, ">="),
+        _ => return None,
+    };
+    Some(rs_binary_text(&sum, "0", op, op_text))
+}
+
 fn rs_if_cond_expr(cond: &Cond, aggregates: &AggregatePlan) -> Option<String> {
     match cond {
         Cond::Leaf { kind, flags } => rs_cond_expr(*kind, flags, aggregates),
@@ -14147,6 +14311,12 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Op
             let lhs_expr: &'static str = reg_var(lhs.reg);
             let rhs_expr: String = rs_source_expr(rhs, width, aggregates)?;
             Some(rs_compare_expr(kind, lhs_expr, &rhs_expr, width))
+        }
+        Flags::Add { lhs, rhs } => {
+            let width: Width = lhs.width;
+            let lhs_expr: &'static str = reg_var(lhs.reg);
+            let rhs_expr: String = rs_source_expr(rhs, width, aggregates)?;
+            rs_add_cond_expr(kind, lhs_expr, &rhs_expr, width)
         }
         Flags::CmpMem { lhs, rhs } => {
             let width: Width = lhs.width;
@@ -14182,8 +14352,8 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Op
                 CondKind::Ge | CondKind::Ns => rs_binary_text(&var, "0", RBinOp::Ge, ">="),
                 CondKind::L | CondKind::S => rs_binary_text(&var, "0", RBinOp::Lt, "<"),
                 CondKind::Le => rs_binary_text(&var, "0", RBinOp::Le, "<="),
-                CondKind::Ae => "true".to_owned(),
-                CondKind::B => "false".to_owned(),
+                CondKind::Ae | CondKind::Vc => "true".to_owned(),
+                CondKind::B | CondKind::Vs => "false".to_owned(),
             };
             Some(expr)
         }
@@ -14603,6 +14773,8 @@ mod tests {
             CondKind::Be,
             CondKind::S,
             CondKind::Ns,
+            CondKind::Vs,
+            CondKind::Vc,
         ] {
             assert_eq!(kind.negate().negate(), kind);
             assert_ne!(kind.negate(), kind);
