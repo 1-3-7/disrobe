@@ -1,3 +1,4 @@
+use disrobe_core::byte_search;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,13 +141,13 @@ struct ModeFlags {
 }
 
 fn detect_bootstrap_import(wrapper_bytes: &[u8]) -> BootstrapImport {
-    if find_subslice(wrapper_bytes, MINI_NAMESPACED_IMPORT).is_some() {
+    if byte_search::contains(wrapper_bytes, MINI_NAMESPACED_IMPORT) {
         return BootstrapImport::MiniNamespaced;
     }
-    if find_subslice(wrapper_bytes, MINI_LEGACY_IMPORT).is_some() {
+    if byte_search::contains(wrapper_bytes, MINI_LEGACY_IMPORT) {
         return BootstrapImport::MiniLegacy;
     }
-    if find_subslice(wrapper_bytes, RUNTIME_PACKAGE_IMPORT).is_some() {
+    if byte_search::contains(wrapper_bytes, RUNTIME_PACKAGE_IMPORT) {
         return BootstrapImport::RuntimePackage;
     }
     if has_prefixed_runtime_package_import(wrapper_bytes) {
@@ -158,12 +159,10 @@ fn detect_bootstrap_import(wrapper_bytes: &[u8]) -> BootstrapImport {
 const RUNTIME_PACKAGE_IMPORT_NESTED_NEEDLE: &str = ".pyarmor_runtime_";
 
 fn has_prefixed_runtime_package_import(wrapper_bytes: &[u8]) -> bool {
-    if find_subslice(
+    if !byte_search::contains(
         wrapper_bytes,
         RUNTIME_PACKAGE_IMPORT_NESTED_NEEDLE.as_bytes(),
-    )
-    .is_none()
-    {
+    ) {
         return false;
     }
     let Ok(text): core::result::Result<&str, core::str::Utf8Error> =
@@ -191,8 +190,8 @@ fn any_marker_present(
 ) -> bool {
     let mut found: bool = false;
     for needle in needles {
-        let in_wrapper: bool = find_subslice(wrapper_bytes, needle).is_some();
-        let in_payload: bool = find_subslice(head, needle).is_some();
+        let in_wrapper: bool = byte_search::contains(wrapper_bytes, needle);
+        let in_payload: bool = byte_search::contains(head, needle);
         if (in_wrapper || in_payload)
             && let Ok(s) = core::str::from_utf8(needle)
         {
@@ -280,15 +279,6 @@ fn build_notes(
         );
     }
     notes
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return None;
-    }
-    haystack
-        .windows(needle.len())
-        .position(|w: &[u8]| w == needle)
 }
 
 #[cfg(test)]

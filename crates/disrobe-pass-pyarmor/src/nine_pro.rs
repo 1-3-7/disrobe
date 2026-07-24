@@ -1,3 +1,4 @@
+use disrobe_core::byte_search;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,20 +147,13 @@ fn scan_pro_markers(payload: &[u8]) -> Vec<String> {
     let head_window_end: usize = payload.len().min(64 * 1024);
     let head: &[u8] = &payload[..head_window_end];
     for marker in PRO_MARKER_STRINGS {
-        if find_subslice(head, marker).is_some()
+        if byte_search::contains(head, marker)
             && let Ok(s) = core::str::from_utf8(marker)
         {
             found.push(s.to_owned());
         }
     }
     found
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return None;
-    }
-    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 #[cfg(test)]

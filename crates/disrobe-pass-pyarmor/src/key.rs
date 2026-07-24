@@ -1,3 +1,4 @@
+use disrobe_core::byte_search;
 use iced_x86::{Code, Decoder, DecoderOptions, OpKind, Register};
 use md5::{Digest, Md5};
 use object::{Object, ObjectSection};
@@ -59,8 +60,8 @@ pub(crate) fn extract_runtime_key(runtime_bytes: &[u8]) -> Result<RuntimeKeyMate
     let read_len: usize = runtime_bytes.len().min(MAX_READ);
     let head: &[u8] = &runtime_bytes[..read_len];
 
-    let anchor: usize = find_subslice(head, PYARMOR_VAX).ok_or_else(|| {
-        if find_subslice(head, b"UPX!").is_some() && find_subslice(head, b"UPX0").is_some() {
+    let anchor: usize = byte_search::find(head, PYARMOR_VAX).ok_or_else(|| {
+        if byte_search::contains(head, b"UPX!") && byte_search::contains(head, b"UPX0") {
             Error::KeyExtraction("runtime is UPX-packed; unpack with `upx -d` first".to_owned())
         } else {
             Error::KeyExtraction(
@@ -246,8 +247,8 @@ struct SectionView<'a> {
 }
 
 fn scan_rdata_adjacent_to_constants(rdata: &[u8]) -> Option<V6V7StaticKey> {
-    let rcon_pos: Option<usize> = find_subslice(rdata, &AES_RCON);
-    let sbox_pos: Option<usize> = find_subslice(rdata, &AES_SBOX_PREFIX);
+    let rcon_pos: Option<usize> = byte_search::find(rdata, &AES_RCON);
+    let sbox_pos: Option<usize> = byte_search::find(rdata, &AES_SBOX_PREFIX);
 
     if let Some(rp) = rcon_pos
         && let Some(key) = harvest_aligned_key_near(rdata, rp, AES_RCON.len())
@@ -434,10 +435,6 @@ fn va_to_offset(va: u64, section: SectionView<'_>) -> Option<usize> {
     usize::try_from(delta).ok()
 }
 
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
 fn sub(buf: &[u8], offset: usize, len: usize) -> Result<&[u8]> {
     buf.get(offset..offset + len).ok_or_else(|| {
         Error::KeyExtraction(format!(
@@ -496,6 +493,22 @@ mod tests {
         let err: Error = extract_runtime_key(&data).unwrap_err();
         let s: String = format!("{err}");
         assert!(s.contains("UPX"));
+    }
+
+    #[test]
+    fn empty_needle_search_is_defined_instead_of_panicking() {
+        let head: &[u8] = b"prefix-pyarmor-vax-suffix";
+        assert_eq!(byte_search::find(head, b""), None);
+        assert_eq!(byte_search::find(b"", b""), None);
+        assert!(!byte_search::contains(head, b""));
+        assert!(!byte_search::contains(b"", b""));
+        assert_eq!(byte_search::find(head, PYARMOR_VAX), Some(7));
+    }
+
+    #[test]
+    fn empty_runtime_bytes_error_instead_of_panicking() {
+        let err: Error = extract_runtime_key(&[]).unwrap_err();
+        assert!(format!("{err}").contains("pyarmor-vax"));
     }
 
     #[test]
