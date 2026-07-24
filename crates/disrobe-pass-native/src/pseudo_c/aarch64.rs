@@ -450,24 +450,48 @@ fn recover_with_calls_and_image<'image>(
                     _ => (Width::W32, true),
                 };
                 let operands: Vec<&str> = split_operands(&insn.operands);
-                if operands.len() != 2 {
+                if !(2..=3).contains(&operands.len()) {
                     return Err(reject_at(insn, "malformed sized load"));
                 }
                 let dest: RegRef = parse_reg(operands[0])?;
-                let (mem, pre_index): (MemRef, bool) = parse_memory(operands[1], load_width)?;
-                if pre_index {
-                    return Err(reject_at(insn, "pre-indexed sized load is unsupported"));
+                let (mut mem, pre_index): (MemRef, bool) = parse_memory(operands[1], load_width)?;
+                let post_delta: Option<i64> = operands
+                    .get(2)
+                    .map(|token: &&str| parse_immediate(token))
+                    .transpose()?;
+                if pre_index && post_delta.is_some() {
+                    return Err(reject_at(
+                        insn,
+                        "address cannot be both pre-indexed and post-indexed",
+                    ));
                 }
-                push_stmts(
-                    &mut items,
-                    base,
-                    index,
-                    vec![Stmt::Extend {
-                        dest,
-                        src: ExtSource::Mem(mem),
-                        signed,
-                    }],
-                )?;
+                if (pre_index || post_delta.is_some()) && mem.base == Some(dest.reg) {
+                    return Err(reject_at(
+                        insn,
+                        "sized load writes back to its own transfer register",
+                    ));
+                }
+                let mut stmts: Vec<Stmt> = Vec::new();
+                if pre_index {
+                    let delta: i64 = mem.disp;
+                    mem.disp = 0;
+                    stmts.push(base_update(mem.base, delta)?);
+                }
+                stmts.push(Stmt::Extend {
+                    dest,
+                    src: ExtSource::Mem(mem),
+                    signed,
+                });
+                if let Some(delta) = post_delta {
+                    if mem.disp != 0 {
+                        return Err(reject_at(
+                            insn,
+                            "post-indexed address has an inline displacement",
+                        ));
+                    }
+                    stmts.push(base_update(mem.base, delta)?);
+                }
+                push_stmts(&mut items, base, index, stmts)?;
                 if dest.reg == Reg::Rax {
                     return_width = dest.width;
                 }
