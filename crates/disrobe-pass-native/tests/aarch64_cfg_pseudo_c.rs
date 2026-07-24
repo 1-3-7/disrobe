@@ -148,6 +148,22 @@ fn aarch64_real_clang_vector_movi_broadcasts_a_zero_doubleword() {
 }
 
 #[test]
+fn aarch64_real_clang_vector_lane_insert_writes_one_lane_and_preserves_the_others() {
+    let bytes: [u8; 20] = [
+        0x00, 0xe4, 0x00, 0x6f, 0x00, 0x1c, 0x04, 0x4e, 0x00, 0xb8, 0xb1, 0x4e, 0x00, 0x00, 0x26,
+        0x1e, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let r: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("movi + mov v0.s[0],w0 + addv + fmov");
+    assert!(
+        r.source
+            .contains("(recovered_i32x4){(int32_t)r_rax, v0[1], v0[2], v0[3]}"),
+        "lane insert must set lane 0 to the truncated register and keep the other lanes: {}",
+        r.source
+    );
+}
+
+#[test]
 fn aarch64_real_clang_addv_reduces_four_lanes_and_fmov_returns_the_sum() {
     let bytes: [u8; 12] = [
         0x00, 0xb8, 0xb1, 0x4e, 0x00, 0x00, 0x26, 0x1e, 0xc0, 0x03, 0x5f, 0xd6,

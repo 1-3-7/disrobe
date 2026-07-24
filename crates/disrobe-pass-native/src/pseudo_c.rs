@@ -796,6 +796,12 @@ enum VecStmt {
         src: RegRef,
         arr: VecArrangement,
     },
+    LaneInsert {
+        dest: u8,
+        lane: u8,
+        src: RegRef,
+        arr: VecArrangement,
+    },
     Compare {
         dest: u8,
         lhs: u8,
@@ -7169,7 +7175,9 @@ fn scan_stmt_params(
             VecStmt::Load { addr, .. } | VecStmt::Store { addr, .. } => {
                 read_addr(addr, written, acc, note);
             }
-            VecStmt::Dup { src, .. } => note(src.reg, written, acc),
+            VecStmt::Dup { src, .. } | VecStmt::LaneInsert { src, .. } => {
+                note(src.reg, written, acc);
+            }
             VecStmt::ExtractToGpr { dest, .. } => {
                 written.insert(dest.reg, true);
             }
@@ -10020,7 +10028,9 @@ impl FrameScan {
                 VecStmt::Load { addr, .. } | VecStmt::Store { addr, .. } => {
                     self.note_mem(addr, slots, misuse);
                 }
-                VecStmt::Dup { src, .. } => self.note_reg(src.reg, misuse),
+                VecStmt::Dup { src, .. } | VecStmt::LaneInsert { src, .. } => {
+                    self.note_reg(src.reg, misuse);
+                }
                 VecStmt::Bin { .. }
                 | VecStmt::Compare { .. }
                 | VecStmt::MoveImm { .. }
@@ -10378,7 +10388,7 @@ fn stmt_value_reads(stmt: &Stmt, acc: &mut Vec<Reg>) {
         Stmt::PackedToGpr { .. } => {}
         Stmt::Vector(vec) => match vec {
             VecStmt::Load { addr, .. } | VecStmt::Store { addr, .. } => mem_regs(addr, acc),
-            VecStmt::Dup { src, .. } => acc.push(src.reg),
+            VecStmt::Dup { src, .. } | VecStmt::LaneInsert { src, .. } => acc.push(src.reg),
             VecStmt::Bin { .. }
             | VecStmt::Compare { .. }
             | VecStmt::MoveImm { .. }
@@ -10913,7 +10923,9 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
                     VecStmt::Load { addr, .. } | VecStmt::Store { addr, .. } => {
                         push_addr(addr, acc);
                     }
-                    VecStmt::Dup { src, .. } => push(src.reg, acc),
+                    VecStmt::Dup { src, .. } | VecStmt::LaneInsert { src, .. } => {
+                        push(src.reg, acc);
+                    }
                     VecStmt::ExtractToGpr { dest, .. } => push(dest.reg, acc),
                     VecStmt::Bin { .. }
                     | VecStmt::Compare { .. }
@@ -11196,7 +11208,7 @@ fn resolve_block_vec_types(body: &Block) -> BTreeMap<u8, VecArrangement> {
             types.entry(*lhs).or_insert(*arr);
             types.entry(*rhs).or_insert(*arr);
         }
-        VecStmt::Dup { dest, arr, .. } => {
+        VecStmt::Dup { dest, arr, .. } | VecStmt::LaneInsert { dest, arr, .. } => {
             types.entry(*dest).or_insert(*arr);
         }
         VecStmt::Compare {
@@ -11267,6 +11279,7 @@ fn collect_block_vec_arrangements(body: &Block, acc: &mut BTreeSet<VecArrangemen
         }
         VecStmt::Bin { arr, .. }
         | VecStmt::Dup { arr, .. }
+        | VecStmt::LaneInsert { arr, .. }
         | VecStmt::Compare { arr, .. }
         | VecStmt::MoveImm { arr, .. } => {
             acc.insert(*arr);
@@ -12159,6 +12172,28 @@ fn extract_to_gpr_cstmt(cx: &mut Cx<'_>, dest: RegRef, src: u8, elem: VecElem) -
     assign_cstmt(cx, var, &rhs)
 }
 
+fn lane_insert_cstmt(
+    cx: &mut Cx<'_>,
+    dest: u8,
+    lane: u8,
+    src: RegRef,
+    arr: VecArrangement,
+) -> CStmt {
+    let var: String = vec_var(dest);
+    let inserted: String = format!("({}){}", arr.elem.c_scalar(), reg_var(src.reg));
+    let lanes: Vec<String> = (0..arr.lanes)
+        .map(|index: u8| -> String {
+            if index == lane {
+                inserted.clone()
+            } else {
+                format!("{var}[{index}]")
+            }
+        })
+        .collect();
+    let init: String = format!("({}){{{}}}", arr.type_name(), lanes.join(", "));
+    assign_cstmt(cx, &var, &init)
+}
+
 fn vec_stmt_cstmt(cx: &mut Cx<'_>, vec: &VecStmt) -> CStmt {
     match vec {
         VecStmt::Load { dest, arr, addr } => {
@@ -12208,6 +12243,12 @@ fn vec_stmt_cstmt(cx: &mut Cx<'_>, vec: &VecStmt) -> CStmt {
             let init: String = format!("({}){{{}}}", arr.type_name(), lanes.join(", "));
             assign_cstmt(cx, &vec_var(*dest), &init)
         }
+        VecStmt::LaneInsert {
+            dest,
+            lane,
+            src,
+            arr,
+        } => lane_insert_cstmt(cx, *dest, *lane, *src, *arr),
         VecStmt::MoveImm { dest, imm, arr } => {
             let scalar: String = format!("({}){imm}", arr.elem.c_scalar());
             let lanes: Vec<String> = std::iter::repeat_n(scalar, usize::from(arr.lanes)).collect();
