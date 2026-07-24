@@ -86,7 +86,7 @@ pub fn extract_onefile(image: &[u8], payload_offset: usize) -> Result<OnefilePay
     } else {
         None
     };
-    let stream: &[u8] = decompressed.as_deref().unwrap_or(body);
+    let stream: &[u8] = decompressed.as_deref().map_or(body, |stream: &[u8]| stream);
     crate::util::dbg_line(&format!("extract_onefile: stream_len={}", stream.len()));
     crate::util::dbg_hex("extract_onefile: stream head", stream, 256);
 
