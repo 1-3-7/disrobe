@@ -3665,7 +3665,8 @@ fn lower_scalar_fmov(operands: &[&str]) -> Result<Option<Vec<Stmt>>> {
 fn lower_vector(insn: &DisasmInsn) -> Result<Vec<Stmt>> {
     let operands: Vec<&str> = split_operands(&insn.operands);
     match insn.mnemonic.as_str() {
-        "add" | "sub" | "mul" | "and" | "orr" | "eor" | "bic" => vector_bin(insn, &operands, false),
+        "add" | "sub" | "mul" | "and" | "orr" | "eor" | "bic" | "smax" | "smin" | "umax"
+        | "umin" => vector_bin(insn, &operands, false),
         "fadd" | "fsub" | "fmul" | "fdiv" => vector_bin(insn, &operands, true),
         "cmeq" => vector_compare(insn, &operands),
         "movi" => vector_moveimm(insn, &operands),
@@ -3718,6 +3719,10 @@ fn vector_bin(insn: &DisasmInsn, operands: &[&str], float: bool) -> Result<Vec<S
         "orr" => VecBinOp::Or,
         "eor" => VecBinOp::Xor,
         "bic" => VecBinOp::AndNot,
+        "smax" => VecBinOp::Smax,
+        "smin" => VecBinOp::Smin,
+        "umax" => VecBinOp::Umax,
+        "umin" => VecBinOp::Umin,
         _ => return Err(reject_at(insn, "unsupported vector arithmetic")),
     };
     Ok(vec![Stmt::Vector(VecStmt::Bin {

@@ -644,6 +644,38 @@ impl VecArrangement {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MinMax {
+    is_max: bool,
+    signed: bool,
+}
+
+impl MinMax {
+    const fn cmp(self) -> &'static str {
+        if self.is_max { ">" } else { "<" }
+    }
+}
+
+fn minmax_lane_ty(elem: VecElem, signed: bool) -> &'static str {
+    if signed {
+        elem.c_scalar()
+    } else {
+        elem.c_unsigned_scalar()
+    }
+}
+
+fn minmax_lane_operand(elem: VecElem, signed: bool, base: &str) -> String {
+    if signed {
+        base.to_owned()
+    } else {
+        format!("({}){base}", elem.c_unsigned_scalar())
+    }
+}
+
+fn minmax_select_expr(cmp: &str, a: &str, b: &str) -> String {
+    format!("{a} {cmp} {b} ? {a} : {b}")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VecBinOp {
     Add,
     Sub,
@@ -653,11 +685,37 @@ enum VecBinOp {
     Or,
     Xor,
     AndNot,
+    Smax,
+    Smin,
+    Umax,
+    Umin,
 }
 
 impl VecBinOp {
     const fn is_bitwise(self) -> bool {
         matches!(self, Self::And | Self::Or | Self::Xor | Self::AndNot)
+    }
+
+    const fn minmax(self) -> Option<MinMax> {
+        match self {
+            Self::Smax => Some(MinMax {
+                is_max: true,
+                signed: true,
+            }),
+            Self::Smin => Some(MinMax {
+                is_max: false,
+                signed: true,
+            }),
+            Self::Umax => Some(MinMax {
+                is_max: true,
+                signed: false,
+            }),
+            Self::Umin => Some(MinMax {
+                is_max: false,
+                signed: false,
+            }),
+            _ => None,
+        }
     }
 }
 
@@ -670,6 +728,30 @@ enum ReduceOp {
     Smin,
     Umax,
     Umin,
+}
+
+impl ReduceOp {
+    const fn minmax(self) -> Option<MinMax> {
+        match self {
+            Self::Smax => Some(MinMax {
+                is_max: true,
+                signed: true,
+            }),
+            Self::Smin => Some(MinMax {
+                is_max: false,
+                signed: true,
+            }),
+            Self::Umax => Some(MinMax {
+                is_max: true,
+                signed: false,
+            }),
+            Self::Umin => Some(MinMax {
+                is_max: false,
+                signed: false,
+            }),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7227,6 +7309,7 @@ fn stmt_dest_regs(stmt: &Stmt) -> Vec<Reg> {
         | Stmt::FpToInt { dest, .. }
         | Stmt::XmmToGpr { dest, .. }
         | Stmt::PackedToGpr { dest, .. } => vec![dest.reg],
+        Stmt::Vector(VecStmt::ExtractToGpr { dest, .. }) => vec![dest.reg],
         Stmt::WideMul { .. } | Stmt::Divide { .. } => vec![Reg::Rax, Reg::Rdx],
         Stmt::Call { .. } => vec![Reg::Rax],
         _ => Vec::new(),
@@ -11865,23 +11948,14 @@ fn reduce_cstmt(
             assign_cstmt(cx, &var, &rhs)
         }
         ReduceOp::Smax | ReduceOp::Smin | ReduceOp::Umax | ReduceOp::Umin => {
-            let signed: bool = matches!(op, ReduceOp::Smax | ReduceOp::Smin);
-            let cmp: &str = if matches!(op, ReduceOp::Smax | ReduceOp::Umax) {
-                ">"
-            } else {
-                "<"
+            let Some(mm): Option<MinMax> = op.minmax() else {
+                return CStmt::Block(Vec::new());
             };
-            let lane_ty: &str = if signed {
-                dest.c_scalar()
-            } else {
-                dest.c_unsigned_scalar()
-            };
+            let signed: bool = mm.signed;
+            let cmp: &str = mm.cmp();
+            let lane_ty: &str = minmax_lane_ty(dest, signed);
             let lane = |index: usize| -> String {
-                if signed {
-                    format!("{var}[{index}]")
-                } else {
-                    format!("({lane_ty}){var}[{index}]")
-                }
+                minmax_lane_operand(dest, signed, &format!("{var}[{index}]"))
             };
             let acc: &str = "reduce_acc";
             let mut stmts: Vec<CStmt> = Vec::with_capacity(lanes + 1);
@@ -11889,7 +11963,7 @@ fn reduce_cstmt(
             stmts.push(decl_with_init(cx, lane_ty, acc, init_expr));
             for index in 1..lanes {
                 let li: String = lane(index);
-                let body: String = format!("{li} {cmp} {acc} ? {li} : {acc}");
+                let body: String = minmax_select_expr(cmp, &li, acc);
                 stmts.push(assign_cstmt(cx, acc, &body));
             }
             let first: String = format!("({}){acc}", dest.c_scalar());
@@ -11898,6 +11972,37 @@ fn reduce_cstmt(
             CStmt::Block(stmts)
         }
     }
+}
+
+fn minmax_bin_cstmt(
+    cx: &mut Cx<'_>,
+    dest: u8,
+    lhs: &str,
+    rhs: &str,
+    op: VecBinOp,
+    arr: VecArrangement,
+) -> CStmt {
+    let Some(mm): Option<MinMax> = op.minmax() else {
+        return CStmt::Block(Vec::new());
+    };
+    let signed: bool = mm.signed;
+    let cmp: &str = mm.cmp();
+    let lanes: usize = usize::from(arr.lanes);
+    let dest_scalar: &str = arr.elem.c_scalar();
+    let elems: Vec<String> = (0..lanes)
+        .map(|index: usize| -> String {
+            let a: String = minmax_lane_operand(arr.elem, signed, &format!("{lhs}[{index}]"));
+            let b: String = minmax_lane_operand(arr.elem, signed, &format!("{rhs}[{index}]"));
+            let sel: String = minmax_select_expr(cmp, &a, &b);
+            if signed {
+                format!("({sel})")
+            } else {
+                format!("({dest_scalar})({sel})")
+            }
+        })
+        .collect();
+    let literal: String = format!("({}){{{}}}", arr.type_name(), elems.join(", "));
+    assign_cstmt(cx, &vec_var(dest), &literal)
 }
 
 fn widen_lane_read(src: u8, src_elem: VecElem, signed: bool, index: usize) -> String {
@@ -11992,7 +12097,11 @@ fn vec_stmt_cstmt(cx: &mut Cx<'_>, vec: &VecStmt) -> CStmt {
             assign_cstmt(cx, &target, &vec_var(*src))
         }
         VecStmt::Bin {
-            dest, lhs, rhs, op, ..
+            dest,
+            lhs,
+            rhs,
+            op,
+            arr,
         } => {
             let l: String = vec_var(*lhs);
             let r: String = vec_var(*rhs);
@@ -12005,6 +12114,9 @@ fn vec_stmt_cstmt(cx: &mut Cx<'_>, vec: &VecStmt) -> CStmt {
                 VecBinOp::Or => format!("{l} | {r}"),
                 VecBinOp::Xor => format!("{l} ^ {r}"),
                 VecBinOp::AndNot => format!("{l} & ~{r}"),
+                VecBinOp::Smax | VecBinOp::Smin | VecBinOp::Umax | VecBinOp::Umin => {
+                    return minmax_bin_cstmt(cx, *dest, &l, &r, *op, *arr);
+                }
             };
             assign_cstmt(cx, &vec_var(*dest), &body)
         }

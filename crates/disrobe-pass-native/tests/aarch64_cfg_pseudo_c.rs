@@ -3,6 +3,29 @@
 use disrobe_pass_native::{Error, LeafRecovery, recover_aarch64_function};
 
 #[test]
+fn aarch64_real_clang_vector_signed_lane_max_recovers_as_a_per_lane_conditional() {
+    let bytes: [u8; 8] = [0x00, 0x64, 0xa1, 0x4e, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("smax v0.4s,v0.4s,v1.4s");
+    assert!(
+        r.source.contains("v0[0] > v1[0] ? v0[0] : v1[0]"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_clang_vector_unsigned_lane_min_recovers_as_a_per_lane_conditional() {
+    let bytes: [u8; 8] = [0x00, 0x6c, 0xa1, 0x6e, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("umin v0.4s,v0.4s,v1.4s");
+    assert!(
+        r.source.contains("(uint32_t)v0[0] < (uint32_t)v1[0]")
+            || r.source.contains("v0[0] < v1[0] ? v0[0] : v1[0]"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
 fn aarch64_real_clang_framed_loop_function_recovers_end_to_end() {
     let bytes: [u8; 108] = [
         0xfd, 0x7b, 0xbd, 0xa9, 0xf6, 0x57, 0x01, 0xa9, 0xf4, 0x4f, 0x02, 0xa9, 0xfd, 0x03, 0x00,
