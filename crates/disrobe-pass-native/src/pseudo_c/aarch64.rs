@@ -2078,32 +2078,66 @@ fn lower_alu(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
     } else {
         dest.width
     };
-    let mut rhs: Source = parse_source(operands[2], rhs_width)?;
-    if let Source::Reg(reg) = rhs
-        && reg.width != rhs_width
-    {
-        return Err(reject_at(insn, "mixed-width integer alu source"));
-    }
-    if operands.len() == 4 {
-        let Source::Reg(reg): Source = rhs else {
-            return Err(reject_at(insn, "shift modifier requires a register source"));
-        };
-        let (shift_op, amount): (BinOp, i64) = parse_shift_modifier(operands[3], dest.width)?;
-        let shifted: RegRef = RegRef {
+    let extend: Option<(bool, Width, i64)> = if operands.len() == 4 {
+        parse_extend_modifier(operands[3])
+    } else {
+        None
+    };
+    let mut rhs: Source = if let Some((signed, src_width, shift)) = extend {
+        let src_reg: RegRef = parse_reg(operands[2])?;
+        if src_reg.width != src_width {
+            return Err(reject_at(
+                insn,
+                "extended register operand has an unexpected width",
+            ));
+        }
+        let extended: RegRef = RegRef {
             reg: Reg::A64Tmp2,
             width: dest.width,
         };
-        prefix.push(Stmt::Assign {
-            dest: shifted,
-            src: Source::Reg(reg),
+        prefix.push(Stmt::Extend {
+            dest: extended,
+            src: ExtSource::Reg(src_reg),
+            signed,
         });
-        prefix.push(Stmt::BinAssign {
-            dest: shifted,
-            op: shift_op,
-            src: Source::Imm(amount),
-        });
-        rhs = Source::Reg(shifted);
-    }
+        if shift > 0 {
+            prefix.push(Stmt::BinAssign {
+                dest: extended,
+                op: BinOp::Shl,
+                src: Source::Imm(shift),
+            });
+        }
+        Source::Reg(extended)
+    } else {
+        let parsed: Source = parse_source(operands[2], rhs_width)?;
+        if let Source::Reg(reg) = parsed
+            && reg.width != rhs_width
+        {
+            return Err(reject_at(insn, "mixed-width integer alu source"));
+        }
+        if operands.len() == 4 {
+            let Source::Reg(reg): Source = parsed else {
+                return Err(reject_at(insn, "shift modifier requires a register source"));
+            };
+            let (shift_op, amount): (BinOp, i64) = parse_shift_modifier(operands[3], dest.width)?;
+            let shifted: RegRef = RegRef {
+                reg: Reg::A64Tmp2,
+                width: dest.width,
+            };
+            prefix.push(Stmt::Assign {
+                dest: shifted,
+                src: Source::Reg(reg),
+            });
+            prefix.push(Stmt::BinAssign {
+                dest: shifted,
+                op: shift_op,
+                src: Source::Imm(amount),
+            });
+            Source::Reg(shifted)
+        } else {
+            parsed
+        }
+    };
     if negate_rhs {
         rhs = match rhs {
             Source::Imm(value) => Source::Imm(!value),
@@ -3232,6 +3266,29 @@ fn parse_shift_modifier(token: &str, width: Width) -> Result<(BinOp, i64)> {
         return Err(reject("shift amount is outside the register width"));
     }
     Ok((op, amount))
+}
+
+fn parse_extend_modifier(token: &str) -> Option<(bool, Width, i64)> {
+    let trimmed: &str = token.trim();
+    let (kind, rest): (&str, Option<&str>) = match trimmed.split_once(char::is_whitespace) {
+        Some((name, tail)) => (name, Some(tail)),
+        None => (trimmed, None),
+    };
+    let (signed, src_width): (bool, Width) = match kind {
+        "sxtw" => (true, Width::W32),
+        _ => return None,
+    };
+    let shift: i64 = match rest {
+        None => 0,
+        Some(tail) => {
+            let value: i64 = parse_immediate(tail).ok()?;
+            if !(0..=4).contains(&value) {
+                return None;
+            }
+            value
+        }
+    };
+    Some((signed, src_width, shift))
 }
 
 fn parse_condition(suffix: &str) -> Result<CondKind> {

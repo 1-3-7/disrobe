@@ -3,6 +3,15 @@
 use disrobe_pass_native::{Error, LeafRecovery, recover_aarch64_function};
 
 #[test]
+fn aarch64_real_clang_sign_extended_register_add_lifts_the_extend_and_shift() {
+    let bytes: [u8; 8] = [0x00, 0xcc, 0x21, 0x8b, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("add x0,x0,w1,sxtw #3");
+    assert!(r.source.contains("(int32_t)"), "{}", r.source);
+    assert!(r.source.contains("(r_a64_x1)"), "{}", r.source);
+    assert!(r.source.contains("<< ((("), "{}", r.source);
+}
+
+#[test]
 fn aarch64_real_clang_vector_signed_lane_max_recovers_as_a_per_lane_conditional() {
     let bytes: [u8; 8] = [0x00, 0x64, 0xa1, 0x4e, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("smax v0.4s,v0.4s,v1.4s");
