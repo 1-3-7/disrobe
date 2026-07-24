@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 const CASES: &[(&str, &str, &[u8])] = &include!("aarch64_recovery_corpus.inc");
 
-const RECOVERY_FLOOR: usize = 249;
+const RECOVERY_FLOOR: usize = 258;
 
 #[test]
 fn aarch64_recovery_corpus_meets_the_floor() {
