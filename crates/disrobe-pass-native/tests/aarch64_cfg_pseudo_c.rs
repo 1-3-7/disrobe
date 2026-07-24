@@ -558,6 +558,26 @@ fn aarch64_real_clang_post_index_byte_store_lifts_the_store_before_the_base_upda
 }
 
 #[test]
+fn aarch64_real_clang_ubfiz_recovers_as_a_masked_left_shift() {
+    let bytes: [u8; 8] = [0x00, 0x7c, 0x7e, 0xd3, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ubfiz x0,x0,#2,#32");
+    assert!(r.source.contains("4294967295"), "{}", r.source);
+    assert!(r.source.contains("<< ((("), "{}", r.source);
+    let mask_at: usize = r.source.find("4294967295").expect(&r.source);
+    let shift_at: usize = r.source.find("<< (((").expect(&r.source);
+    assert!(mask_at < shift_at, "{}", r.source);
+}
+
+#[test]
+fn aarch64_real_clang_ubfx_recovers_as_a_right_shift_then_mask() {
+    let bytes: [u8; 8] = [0x00, 0x2c, 0x04, 0x53, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ubfx w0,w0,#4,#8");
+    let shift_at: usize = r.source.find(">> (((").expect(&r.source);
+    let mask_at: usize = r.source.find("255").expect(&r.source);
+    assert!(shift_at < mask_at, "{}", r.source);
+}
+
+#[test]
 fn aarch64_real_clang_large_bitmask_immediate_recovers_as_a_reinterpreted_mask() {
     let bytes: [u8; 8] = [0x00, 0xf0, 0x7d, 0x92, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("and x0,x0,#-8 mask");
