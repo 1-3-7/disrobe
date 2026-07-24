@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use disrobe_core::codec::hex;
 use disrobe_py_marshal::{Object, PyVersion, PycFile, PycHeader, load, write_pyc};
 
 use crate::bcc_lift::{BccLiftOutput, lift_bcc_native};
@@ -984,8 +985,8 @@ fn finalize(
     UnpackOutput {
         detection: detection.clone(),
         runtime_path: runtime.path.clone(),
-        key_hex: hex_encode(key),
-        iv_hex: hex_encode(iv),
+        key_hex: hex::encode(key),
+        iv_hex: hex::encode(iv),
         plaintext,
         pyc: outcome.pyc_bytes,
         wrap_stripped: outcome.wrap_stripped,
@@ -1025,16 +1026,6 @@ fn locate_marshal_start(plaintext: &[u8]) -> usize {
     0x20.min(plaintext.len())
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
-    let mut s: String = String::with_capacity(bytes.len() * 2);
-    for byte in bytes.iter().copied() {
-        s.push(char::from(HEX_LOWER[usize::from(byte >> 4)]));
-        s.push(char::from(HEX_LOWER[usize::from(byte & 0x0f)]));
-    }
-    s
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -1042,7 +1033,7 @@ mod tests {
 
     #[test]
     fn hex_encode_basic() {
-        assert_eq!(hex_encode(&[0x00, 0xff, 0xab]), "00ffab");
+        assert_eq!(hex::encode(&[0x00, 0xff, 0xab]), "00ffab");
     }
 
     #[test]

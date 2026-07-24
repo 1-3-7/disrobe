@@ -1,6 +1,7 @@
 use aes::Aes128;
 use ctr::Ctr128BE;
 use ctr::cipher::{KeyIvInit, StreamCipher};
+use disrobe_core::codec::hex;
 use disrobe_py_marshal::{CodeObject, Object, PyVersion};
 
 use crate::descriptor_cache::{CacheKey, CachedDescriptor, DescriptorCache};
@@ -213,7 +214,7 @@ fn decrypt_code_object(
     if co.flags & CO_PYARMOR_OBFUSCATED != 0 && !co.pyarmor_trailer.is_empty() {
         metrics.objects_with_trailer += 1;
         if metrics.first_trailer_hex.is_none() {
-            metrics.first_trailer_hex = Some(hex_encode(&co.pyarmor_trailer));
+            metrics.first_trailer_hex = Some(hex::encode(&co.pyarmor_trailer));
         }
         if let Some(trailer) = PyarmorTrailer::parse(&co.pyarmor_trailer) {
             if trailer.nine_pro_stage_2 {
@@ -411,16 +412,6 @@ fn apply_descriptor(
         }
         metrics.copy_prologue_applied += 1;
     }
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded: String = String::with_capacity(bytes.len() * 2);
-    for byte in bytes.iter().copied() {
-        encoded.push(char::from(HEX_LOWER[usize::from(byte >> 4)]));
-        encoded.push(char::from(HEX_LOWER[usize::from(byte & 0x0f)]));
-    }
-    encoded
 }
 
 const fn nop_opcode(version: PyVersion) -> u8 {

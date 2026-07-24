@@ -9,6 +9,7 @@ use disrobe_core::chain::{
     CatalogEntry, DetectContext, DetectVerdict, Detector, DetectorOutput,
     FAMILY_OBFUSCATOR_WRAPPER, ObfuscatorCatalog, OutputKind, Pass, SupportQuality,
 };
+use disrobe_core::codec::hex;
 use disrobe_core::error::{CoreError, Result as CoreResult};
 use disrobe_core::pass::PassId;
 
@@ -159,15 +160,6 @@ fn extract_payload(bytes: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
-    let mut out: String = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push(char::from_digit(u32::from(b >> 4), 16).unwrap_or('0'));
-        out.push(char::from_digit(u32::from(b & 0x0f), 16).unwrap_or('0'));
-    }
-    out
-}
-
 const fn confidence_label(c: DetectionConfidence) -> &'static str {
     match c {
         DetectionConfidence::High => "High",
@@ -246,7 +238,7 @@ fn render_manifest(out: &StaticUnpackOutput, payload: &[u8]) -> Vec<u8> {
         .header_metadata
         .nonce
         .as_ref()
-        .map(|n: &[u8; 12]| hex_encode(n));
+        .map(|n: &[u8; 12]| hex::encode(n));
     let runtime_key_class: Option<String> = out
         .key_classification
         .as_ref()

@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use disrobe_core::byte_search;
+use disrobe_core::codec::hex;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,28 +68,28 @@ pub fn detect_sourcedefender_cross(
     }
 
     let wrapper_bytes: &[u8] = wrapper_text.as_bytes();
-    if let Some(offset) = find_subslice(wrapper_bytes, PYE_FILE_MAGIC) {
+    if let Some(offset) = byte_search::find(wrapper_bytes, PYE_FILE_MAGIC) {
         findings.push(CrossoverFinding {
             kind: SourcedefenderCrossKind::PyeMagic,
             offset: Some(offset),
             evidence: "@__SOURCE_DEFENDER__ magic in wrapper text".to_owned(),
         });
     }
-    if let Some(offset) = find_subslice(payload, PYE_FILE_MAGIC) {
+    if let Some(offset) = byte_search::find(payload, PYE_FILE_MAGIC) {
         findings.push(CrossoverFinding {
             kind: SourcedefenderCrossKind::PyeMagic,
             offset: Some(offset),
             evidence: "@__SOURCE_DEFENDER__ magic inside PyArmor payload".to_owned(),
         });
     }
-    if let Some(offset) = find_subslice(wrapper_bytes, BOTWOOD_HEADER) {
+    if let Some(offset) = byte_search::find(wrapper_bytes, BOTWOOD_HEADER) {
         findings.push(CrossoverFinding {
             kind: SourcedefenderCrossKind::BotwoodHeader,
             offset: Some(offset),
             evidence: "SourceDefender header string in wrapper text".to_owned(),
         });
     }
-    if let Some(offset) = find_subslice(payload, BOTWOOD_HEADER) {
+    if let Some(offset) = byte_search::find(payload, BOTWOOD_HEADER) {
         findings.push(CrossoverFinding {
             kind: SourcedefenderCrossKind::BotwoodHeader,
             offset: Some(offset),
@@ -96,7 +98,7 @@ pub fn detect_sourcedefender_cross(
     }
 
     for marker in LOADER_IMPORT_STRINGS {
-        if let Some(offset) = find_subslice(wrapper_bytes, marker) {
+        if let Some(offset) = byte_search::find(wrapper_bytes, marker) {
             findings.push(CrossoverFinding {
                 kind: SourcedefenderCrossKind::LoaderImport,
                 offset: Some(offset),
@@ -106,7 +108,7 @@ pub fn detect_sourcedefender_cross(
     }
 
     for marker in DECORATOR_STRINGS {
-        if let Some(offset) = find_subslice(wrapper_bytes, marker) {
+        if let Some(offset) = byte_search::find(wrapper_bytes, marker) {
             findings.push(CrossoverFinding {
                 kind: SourcedefenderCrossKind::DecoratorMarker,
                 offset: Some(offset),
@@ -116,7 +118,7 @@ pub fn detect_sourcedefender_cross(
     }
 
     for marker in INLINED_ENVELOPE_STRINGS {
-        if let Some(offset) = find_subslice(payload, marker) {
+        if let Some(offset) = byte_search::find(payload, marker) {
             findings.push(CrossoverFinding {
                 kind: SourcedefenderCrossKind::InlinedEnvelope,
                 offset: Some(offset),
@@ -134,26 +136,8 @@ fn has_pye_extension(path: &Path) -> bool {
         .is_some_and(|s| s.eq_ignore_ascii_case("pye"))
 }
 
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return None;
-    }
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
 fn utf8_or_hex(bytes: &[u8]) -> String {
-    core::str::from_utf8(bytes).map_or_else(
-        |_| {
-            const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
-            let mut encoded: String = String::with_capacity(bytes.len() * 2);
-            for byte in bytes.iter().copied() {
-                encoded.push(char::from(HEX_LOWER[usize::from(byte >> 4)]));
-                encoded.push(char::from(HEX_LOWER[usize::from(byte & 0x0f)]));
-            }
-            encoded
-        },
-        str::to_owned,
-    )
+    core::str::from_utf8(bytes).map_or_else(|_| hex::encode(bytes), str::to_owned)
 }
 
 #[cfg(test)]
