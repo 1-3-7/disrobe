@@ -3676,8 +3676,27 @@ fn lower_vector(insn: &DisasmInsn) -> Result<Vec<Stmt>> {
         "sshll" | "sshll2" | "ushll" | "ushll2" => vector_widen_extend(insn, &operands),
         "saddl" | "saddl2" | "uaddl" | "uaddl2" => vector_widen_add(insn, &operands),
         "dup" => vector_dup(insn, &operands),
+        "mov" => vector_mov(insn, &operands),
         _ => Err(reject_at(insn, "unsupported instruction")),
     }
+}
+
+fn vector_mov(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
+    if operands.len() != 2 {
+        return Err(reject_at(insn, "unsupported instruction"));
+    }
+    let (dest, dest_arr): (u8, VecArrangement) = parse_vector_operand(operands[0], false)?;
+    let (src, src_arr): (u8, VecArrangement) = parse_vector_operand(operands[1], false)?;
+    if dest_arr.elem != VecElem::I8 || dest_arr != src_arr {
+        return Err(reject_at(insn, "unsupported instruction"));
+    }
+    Ok(vec![Stmt::Vector(VecStmt::Bin {
+        dest,
+        lhs: src,
+        rhs: src,
+        op: VecBinOp::Or,
+        arr: dest_arr,
+    })])
 }
 
 fn vector_bin(insn: &DisasmInsn, operands: &[&str], float: bool) -> Result<Vec<Stmt>> {
@@ -4048,6 +4067,13 @@ fn read_remap(
     }
 }
 
+fn remap_current(reg: &mut u8, live: &[u8; 32]) {
+    let phys: u8 = *reg;
+    if phys < 32 {
+        *reg = live[usize::from(phys)];
+    }
+}
+
 fn write_remap(
     reg: &mut u8,
     new_arr: VecArrangement,
@@ -4086,6 +4112,13 @@ fn remap_vec_stmt(
 ) -> Result<()> {
     match vec {
         VecStmt::Bin {
+            dest, lhs, rhs, op, ..
+        } if op.is_bitwise() => {
+            remap_current(lhs, live);
+            remap_current(rhs, live);
+            remap_current(dest, live);
+        }
+        VecStmt::Bin {
             dest,
             lhs,
             rhs,
@@ -4108,7 +4141,13 @@ fn remap_vec_stmt(
             }
             write_remap(dest, *arr, live, arr_at, next_syn)?;
         }
-        VecStmt::Dup { dest, arr, .. } | VecStmt::MoveImm { dest, arr, .. } => {
+        VecStmt::Dup { dest, arr, .. } => {
+            write_remap(dest, *arr, live, arr_at, next_syn)?;
+        }
+        VecStmt::MoveImm { dest, imm, .. } if *imm == 0 => {
+            remap_current(dest, live);
+        }
+        VecStmt::MoveImm { dest, arr, .. } => {
             write_remap(dest, *arr, live, arr_at, next_syn)?;
         }
         VecStmt::Load { dest, .. } => {
@@ -4180,7 +4219,8 @@ fn version_widened_registers(items: &mut [Item]) -> Result<()> {
 }
 
 fn resolve_vector_types(items: &mut [Item]) -> Result<()> {
-    let mut types: BTreeMap<u8, VecArrangement> = BTreeMap::new();
+    let mut exact: BTreeMap<u8, VecArrangement> = BTreeMap::new();
+    let mut width: BTreeMap<u8, VecArrangement> = BTreeMap::new();
     for item in items.iter() {
         let ItemKind::Stmt(Stmt::Vector(vec)) = &item.kind else {
             continue;
@@ -4190,12 +4230,23 @@ fn resolve_vector_types(items: &mut [Item]) -> Result<()> {
                 dest,
                 lhs,
                 rhs,
+                op,
+                arr,
+            } if op.is_bitwise() => {
+                note_vec_width(&mut width, *dest, *arr)?;
+                note_vec_width(&mut width, *lhs, *arr)?;
+                note_vec_width(&mut width, *rhs, *arr)?;
+            }
+            VecStmt::Bin {
+                dest,
+                lhs,
+                rhs,
                 arr,
                 ..
             } => {
-                note_vector_type(&mut types, *dest, *arr)?;
-                note_vector_type(&mut types, *lhs, *arr)?;
-                note_vector_type(&mut types, *rhs, *arr)?;
+                note_vec_exact(&mut exact, *dest, *arr)?;
+                note_vec_exact(&mut exact, *lhs, *arr)?;
+                note_vec_exact(&mut exact, *rhs, *arr)?;
             }
             VecStmt::Compare {
                 dest,
@@ -4203,31 +4254,35 @@ fn resolve_vector_types(items: &mut [Item]) -> Result<()> {
                 rhs,
                 arr,
             } => {
-                note_vector_type(&mut types, *dest, *arr)?;
-                note_vector_type(&mut types, *lhs, *arr)?;
+                note_vec_exact(&mut exact, *dest, *arr)?;
+                note_vec_exact(&mut exact, *lhs, *arr)?;
                 if let Some(rhs) = rhs {
-                    note_vector_type(&mut types, *rhs, *arr)?;
+                    note_vec_exact(&mut exact, *rhs, *arr)?;
                 }
             }
-            VecStmt::Dup { dest, arr, .. } => note_vector_type(&mut types, *dest, *arr)?,
-            VecStmt::MoveImm { dest, arr, .. } => note_vector_type(&mut types, *dest, *arr)?,
+            VecStmt::Dup { dest, arr, .. } => note_vec_exact(&mut exact, *dest, *arr)?,
+            VecStmt::MoveImm { dest, imm, arr, .. } if *imm == 0 => {
+                note_vec_width(&mut width, *dest, *arr)?;
+            }
+            VecStmt::MoveImm { dest, arr, .. } => note_vec_exact(&mut exact, *dest, *arr)?,
             VecStmt::Load {
                 dest,
                 arr: Some(arr),
                 ..
-            } => note_vector_type(&mut types, *dest, *arr)?,
+            } => note_vec_exact(&mut exact, *dest, *arr)?,
             VecStmt::Store {
                 src,
                 arr: Some(arr),
                 ..
-            } => note_vector_type(&mut types, *src, *arr)?,
-            VecStmt::Load { arr: None, .. } | VecStmt::Store { arr: None, .. } => {}
-            VecStmt::Reduce { reg, src, .. } => note_vector_type(&mut types, *reg, *src)?,
-            VecStmt::ExtractToGpr { src, elem, .. } => {
-                types
-                    .entry(*src)
-                    .or_insert_with(|| VecArrangement::whole_register(*elem));
+            } => note_vec_exact(&mut exact, *src, *arr)?,
+            VecStmt::Load {
+                dest, arr: None, ..
+            } => note_vec_width(&mut width, *dest, VEC_WHOLE_BYTES)?,
+            VecStmt::Store { src, arr: None, .. } => {
+                note_vec_width(&mut width, *src, VEC_WHOLE_BYTES)?;
             }
+            VecStmt::Reduce { reg, src, .. } => note_vec_exact(&mut exact, *reg, *src)?,
+            VecStmt::ExtractToGpr { .. } => {}
             VecStmt::WidenExtend {
                 dest,
                 src,
@@ -4235,12 +4290,12 @@ fn resolve_vector_types(items: &mut [Item]) -> Result<()> {
                 dest_elem,
                 ..
             } => {
-                note_vector_type(
-                    &mut types,
+                note_vec_exact(
+                    &mut exact,
                     *dest,
                     VecArrangement::whole_register(*dest_elem),
                 )?;
-                note_vector_type(&mut types, *src, VecArrangement::whole_register(*src_elem))?;
+                note_vec_exact(&mut exact, *src, VecArrangement::whole_register(*src_elem))?;
             }
             VecStmt::WidenAdd {
                 dest,
@@ -4250,15 +4305,29 @@ fn resolve_vector_types(items: &mut [Item]) -> Result<()> {
                 dest_elem,
                 ..
             } => {
-                note_vector_type(
-                    &mut types,
+                note_vec_exact(
+                    &mut exact,
                     *dest,
                     VecArrangement::whole_register(*dest_elem),
                 )?;
-                note_vector_type(&mut types, *src1, VecArrangement::whole_register(*src_elem))?;
-                note_vector_type(&mut types, *src2, VecArrangement::whole_register(*src_elem))?;
+                note_vec_exact(&mut exact, *src1, VecArrangement::whole_register(*src_elem))?;
+                note_vec_exact(&mut exact, *src2, VecArrangement::whole_register(*src_elem))?;
             }
         }
+    }
+    let mut resolved: BTreeMap<u8, VecArrangement> = BTreeMap::new();
+    for (reg, arr) in &exact {
+        if let Some(only) = width.get(reg)
+            && only.total_bits() != arr.total_bits()
+        {
+            return Err(reject(
+                "vector register mixes a bitwise width with a lane-typed width",
+            ));
+        }
+        resolved.insert(*reg, *arr);
+    }
+    for (reg, arr) in &width {
+        resolved.entry(*reg).or_insert(*arr);
     }
     for item in items.iter_mut() {
         let ItemKind::Stmt(Stmt::Vector(vec)) = &mut item.kind else {
@@ -4266,10 +4335,22 @@ fn resolve_vector_types(items: &mut [Item]) -> Result<()> {
         };
         match vec {
             VecStmt::Load { dest, arr, .. } => {
-                *arr = Some(resolved_wide_arrangement(&types, *dest)?);
+                *arr = Some(resolved_wide_arrangement(&resolved, *dest)?);
             }
             VecStmt::Store { src, arr, .. } => {
-                *arr = Some(resolved_wide_arrangement(&types, *src)?);
+                *arr = Some(resolved_wide_arrangement(&resolved, *src)?);
+            }
+            VecStmt::Bin {
+                dest,
+                lhs,
+                rhs,
+                op,
+                arr,
+            } if op.is_bitwise() => {
+                *arr = resolved_uniform_arrangement(&resolved, &[*dest, *lhs, *rhs])?;
+            }
+            VecStmt::MoveImm { dest, imm, arr } if *imm == 0 => {
+                *arr = resolved_arrangement(&resolved, *dest);
             }
             VecStmt::Bin { .. }
             | VecStmt::Dup { .. }
@@ -4284,20 +4365,65 @@ fn resolve_vector_types(items: &mut [Item]) -> Result<()> {
     Ok(())
 }
 
-fn note_vector_type(
-    types: &mut BTreeMap<u8, VecArrangement>,
+const VEC_WHOLE_BYTES: VecArrangement = VecArrangement {
+    lanes: 16,
+    elem: VecElem::I8,
+};
+
+fn note_vec_exact(
+    exact: &mut BTreeMap<u8, VecArrangement>,
     reg: u8,
     arr: VecArrangement,
 ) -> Result<()> {
-    match types.get(&reg) {
+    match exact.get(&reg) {
         Some(existing) if *existing != arr => Err(reject(
             "vector register is used with conflicting arrangements",
         )),
         _ => {
-            types.insert(reg, arr);
+            exact.insert(reg, arr);
             Ok(())
         }
     }
+}
+
+fn note_vec_width(
+    width: &mut BTreeMap<u8, VecArrangement>,
+    reg: u8,
+    arr: VecArrangement,
+) -> Result<()> {
+    match width.get(&reg) {
+        Some(existing) if existing.total_bits() != arr.total_bits() => Err(reject(
+            "vector register mixes 64-bit and 128-bit width-only uses",
+        )),
+        Some(_) => Ok(()),
+        None => {
+            width.insert(reg, arr);
+            Ok(())
+        }
+    }
+}
+
+fn resolved_arrangement(resolved: &BTreeMap<u8, VecArrangement>, reg: u8) -> VecArrangement {
+    resolved.get(&reg).copied().unwrap_or(VEC_WHOLE_BYTES)
+}
+
+fn resolved_uniform_arrangement(
+    resolved: &BTreeMap<u8, VecArrangement>,
+    regs: &[u8],
+) -> Result<VecArrangement> {
+    let mut chosen: Option<VecArrangement> = None;
+    for reg in regs {
+        let arr: VecArrangement = resolved_arrangement(resolved, *reg);
+        match chosen {
+            Some(existing) if existing != arr => {
+                return Err(reject(
+                    "bitwise vector operation mixes registers of different arrangements",
+                ));
+            }
+            _ => chosen = Some(arr),
+        }
+    }
+    chosen.ok_or_else(|| reject("bitwise vector operation has no registers"))
 }
 
 fn resolved_wide_arrangement(
