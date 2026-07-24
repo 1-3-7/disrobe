@@ -1174,16 +1174,39 @@ fn pre_tested_loop_mid_body_back_edge_emits_continue_without_goto() {
 }
 
 #[test]
-fn loop_with_distinct_mid_body_exit_targets_falls_back_from_cfg_structuring() {
+fn loop_with_distinct_mid_body_exit_targets_keeps_one_break_and_one_return() {
     let bytes: [u8; 36] = [
         0x1f, 0x00, 0x01, 0xeb, 0xea, 0x00, 0x00, 0x54, 0x00, 0x04, 0x00, 0x91, 0x1f, 0x00, 0x02,
         0xeb, 0x60, 0x00, 0x00, 0x54, 0x00, 0x04, 0x00, 0x91, 0xfa, 0xff, 0xff, 0x17, 0xc0, 0x03,
         0x5f, 0xd6, 0xc0, 0x03, 0x5f, 0xd6,
     ];
 
-    let result: Result<LeafRecovery, Error> = recover_aarch64_function(&bytes, 0);
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("two distinct loop exits recover");
 
-    assert!(result.is_err(), "distinct exits must fall back");
+    let (body, tail): (String, String) = split_around_loop(&recovered.source);
+    assert!(
+        body.contains("if ((int64_t)(int64_t)(r_rax) < (int64_t)(int64_t)(r_a64_x1)) {"),
+        "{}",
+        recovered.source
+    );
+    assert!(
+        body.contains("if ((int64_t)(int64_t)(r_rax) != (int64_t)(int64_t)(r_a64_x2)) {"),
+        "{}",
+        recovered.source
+    );
+    assert!(body.contains("return r_rax;"), "{}", recovered.source);
+    assert!(body.contains("break;"), "{}", recovered.source);
+    assert!(body.contains("continue;"), "{}", recovered.source);
+    assert_eq!(
+        body.matches("r_a64_tmp = r_a64_tmp + ((uint64_t)(int64_t)1LL);")
+            .count(),
+        2,
+        "{}",
+        recovered.source
+    );
+    assert!(tail.contains("return r_rax;"), "{}", recovered.source);
+    assert!(!recovered.source.contains("goto"), "{}", recovered.source);
 }
 
 #[test]
@@ -1293,4 +1316,106 @@ fn clobbered_compare_with_two_conditional_consumers_still_rejects() {
         }
         other => panic!("unexpected error: {other:?}"),
     }
+}
+
+fn split_around_loop(source: &str) -> (String, String) {
+    let start: usize = source.find("    while (1) {").expect("a recovered loop");
+    let end: usize = source[start..]
+        .find("\n    }\n")
+        .map(|offset: usize| start + offset)
+        .expect("a closing brace for the recovered loop");
+    (source[start..end].to_owned(), source[end..].to_owned())
+}
+
+#[test]
+fn aarch64_real_clang_early_return_inside_a_loop_stays_a_return() {
+    let bytes: [u8; 52] = [
+        0x3f, 0x04, 0x00, 0x71, 0x4b, 0x01, 0x00, 0x54, 0xe8, 0x03, 0x00, 0xaa, 0xe0, 0x03, 0x1f,
+        0xaa, 0xe9, 0x03, 0x01, 0x2a, 0x0a, 0x79, 0x60, 0xb8, 0x5f, 0x01, 0x02, 0x6b, 0xa0, 0x00,
+        0x00, 0x54, 0x00, 0x04, 0x00, 0x91, 0x3f, 0x01, 0x00, 0xeb, 0x61, 0xff, 0xff, 0x54, 0x00,
+        0x00, 0x80, 0x12, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("a linear search with an early return recovers");
+    let (body, tail): (String, String) = split_around_loop(&recovered.source);
+    assert!(
+        body.contains("return (r_rax) & 0xffffffffULL;"),
+        "the match arm must return from inside the loop: {}",
+        recovered.source
+    );
+    assert!(body.contains("break;"), "{}", recovered.source);
+    assert!(body.contains("continue;"), "{}", recovered.source);
+    assert!(
+        !body.contains("4294967295LL"),
+        "the not-found value must not be produced inside the loop: {}",
+        recovered.source
+    );
+    assert!(
+        tail.contains("4294967295LL"),
+        "the not-found value must be returned after the loop: {}",
+        recovered.source
+    );
+    assert!(!recovered.source.contains("goto"), "{}", recovered.source);
+    let rust_source: String = recovered.rust_source.expect("a rust rendering");
+    assert!(rust_source.contains("loop {"), "{rust_source}");
+    assert!(rust_source.contains("return r_rax"), "{rust_source}");
+}
+
+#[test]
+fn aarch64_real_clang_tail_merged_epilogue_returns_a_value_per_path() {
+    let bytes: [u8; 40] = [
+        0x3f, 0x04, 0x00, 0x71, 0xcb, 0x00, 0x00, 0x54, 0xe9, 0x03, 0x01, 0x2a, 0x08, 0x44, 0x40,
+        0xb8, 0x88, 0x00, 0xf8, 0x37, 0x29, 0x05, 0x00, 0xf1, 0xa1, 0xff, 0xff, 0x54, 0xe8, 0x03,
+        0x1f, 0x2a, 0xe0, 0x03, 0x08, 0x2a, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0)
+        .expect("a scan returning the first negative element recovers");
+    let (body, tail): (String, String) = split_around_loop(&recovered.source);
+    assert!(
+        body.contains("r_rax = (r_a64_x8) & 0xffffffffULL;")
+            && body.contains("return (r_rax) & 0xffffffffULL;"),
+        "the negative element must be returned from inside the loop: {}",
+        recovered.source
+    );
+    assert!(
+        tail.contains("r_a64_x8 = ((uint64_t)(int64_t)0LL) & 0xffffffffULL;"),
+        "the zero result must be produced after the loop: {}",
+        recovered.source
+    );
+    assert!(!recovered.source.contains("goto"), "{}", recovered.source);
+}
+
+#[test]
+fn aarch64_real_clang_unoptimized_early_return_loop_recovers() {
+    let bytes: [u8; 128] = [
+        0xff, 0x83, 0x00, 0xd1, 0xe0, 0x0b, 0x00, 0xf9, 0xe1, 0x0f, 0x00, 0xb9, 0xe2, 0x0b, 0x00,
+        0xb9, 0xff, 0x07, 0x00, 0xb9, 0x01, 0x00, 0x00, 0x14, 0xe8, 0x07, 0x40, 0xb9, 0xe9, 0x0f,
+        0x40, 0xb9, 0x08, 0x01, 0x09, 0x6b, 0x2a, 0x02, 0x00, 0x54, 0x01, 0x00, 0x00, 0x14, 0xe8,
+        0x0b, 0x40, 0xf9, 0xe9, 0x07, 0x80, 0xb9, 0x08, 0x79, 0x69, 0xb8, 0xe9, 0x0b, 0x40, 0xb9,
+        0x08, 0x01, 0x09, 0x6b, 0xa1, 0x00, 0x00, 0x54, 0x01, 0x00, 0x00, 0x14, 0xe8, 0x07, 0x40,
+        0xb9, 0xe8, 0x1f, 0x00, 0xb9, 0x09, 0x00, 0x00, 0x14, 0x01, 0x00, 0x00, 0x14, 0xe8, 0x07,
+        0x40, 0xb9, 0x08, 0x05, 0x00, 0x11, 0xe8, 0x07, 0x00, 0xb9, 0xed, 0xff, 0xff, 0x17, 0x08,
+        0x00, 0x80, 0x12, 0xe8, 0x1f, 0x00, 0xb9, 0x01, 0x00, 0x00, 0x14, 0xe0, 0x1f, 0x40, 0xb9,
+        0xff, 0x83, 0x00, 0x91, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0)
+        .expect("an unoptimized linear search with an early return recovers");
+    let (body, tail): (String, String) = split_around_loop(&recovered.source);
+    assert!(
+        body.contains("return (r_rax) & 0xffffffffULL;"),
+        "the match arm must return from inside the loop: {}",
+        recovered.source
+    );
+    assert!(body.contains("break;"), "{}", recovered.source);
+    assert!(
+        !body.contains("4294967295LL"),
+        "the not-found value must not be produced inside the loop: {}",
+        recovered.source
+    );
+    assert!(
+        tail.contains("4294967295LL"),
+        "the not-found value must be returned after the loop: {}",
+        recovered.source
+    );
+    assert!(!recovered.source.contains("goto"), "{}", recovered.source);
 }
