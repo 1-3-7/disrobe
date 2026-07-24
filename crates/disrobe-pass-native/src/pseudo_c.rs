@@ -375,12 +375,15 @@ enum BinOp {
     Udiv,
     Umull,
     Smull,
+    Umulh,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UnOp {
     Neg,
     Not,
+    Bswap,
+    Clz,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1892,7 +1895,7 @@ fn build_leaf_items(
             Stmt::UnAssign { dest, op } => {
                 flags = match op {
                     UnOp::Neg => Some(Flags::Sign { result: *dest }),
-                    UnOp::Not => flags,
+                    UnOp::Not | UnOp::Bswap | UnOp::Clz => flags,
                 };
             }
             Stmt::Cond { .. } => {}
@@ -3825,7 +3828,7 @@ impl<'a> StraightLifter<'a> {
             Stmt::UnAssign { dest, op } => {
                 self.flags = match op {
                     UnOp::Neg => Some(Flags::Sign { result: *dest }),
-                    UnOp::Not => self.flags.take(),
+                    UnOp::Not | UnOp::Bswap | UnOp::Clz => self.flags.take(),
                 };
             }
             Stmt::MulImm { .. } | Stmt::WideMul { .. } | Stmt::DoubleShift { .. } => {
@@ -6565,7 +6568,7 @@ const fn flag_effect_bin(op: BinOp) -> FlagEffect {
         | BinOp::Shl
         | BinOp::Shr
         | BinOp::Sar => FlagEffect::Sign,
-        BinOp::Imul | BinOp::Sdiv | BinOp::Udiv | BinOp::Umull | BinOp::Smull => {
+        BinOp::Imul | BinOp::Sdiv | BinOp::Udiv | BinOp::Umull | BinOp::Smull | BinOp::Umulh => {
             FlagEffect::Clobber
         }
     }
@@ -8736,6 +8739,23 @@ fn width_mask(out: &mut String, width: Width, body: &str) {
                 c_render(|cx| c_bin(BinaryOp::BitAnd, c_opaque(cx, body), c_hex_mask(mask)));
             let _ = write!(out, "{rendered}");
         }
+    }
+}
+
+fn c_bswap_expr(operand: &str, width: Width) -> String {
+    let bits: u32 = width.bits().max(16);
+    format!("__builtin_bswap{bits}((uint{bits}_t)({operand}))")
+}
+
+fn c_clz_expr(operand: &str, width: Width) -> String {
+    if width.bits() >= 64 {
+        format!(
+            "((uint64_t)({operand}) == 0 ? 64ull : (uint64_t)__builtin_clzll((uint64_t)({operand})))"
+        )
+    } else {
+        format!(
+            "((uint32_t)({operand}) == 0 ? 32u : (uint32_t)__builtin_clz((uint32_t)({operand})))"
+        )
     }
 }
 
@@ -11699,6 +11719,8 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
                     op: UnaryOp::BitNot,
                     operand: Box::new(cx.var(var)),
                 }),
+                UnOp::Bswap => c_bswap_expr(var, dest.width),
+                UnOp::Clz => c_clz_expr(var, dest.width),
             };
             let rhs: String = reg_write_rhs(var, dest.width, &body);
             assign_cstmt(cx, var, &rhs)
@@ -11776,6 +11798,8 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
                     op: UnaryOp::BitNot,
                     operand: Box::new(cx.var(&current)),
                 }),
+                MemRmwOp::Un(UnOp::Bswap) => c_bswap_expr(&current, addr.width),
+                MemRmwOp::Un(UnOp::Clz) => c_clz_expr(&current, addr.width),
             };
             let mut masked: String = String::new();
             width_mask(&mut masked, addr.width, &body);
@@ -12722,6 +12746,11 @@ fn bin_expr(op: BinOp, lhs: &str, rhs: &str, width: Width) -> String {
             let r: CExpr = c_cast(cx, "int64_t", r32);
             c_cast(cx, "uint64_t", c_bin(BinaryOp::Mul, l, r))
         }),
+        BinOp::Umulh => {
+            format!(
+                "(uint64_t)(((unsigned __int128)(uint64_t)({lhs}) * (unsigned __int128)(uint64_t)({rhs})) >> 64)"
+            )
+        }
     }
 }
 
@@ -13631,7 +13660,7 @@ fn rs_mem_rmw_stmt(
             let rhs: String = rs_source_expr(src, addr.width, aggregates)?;
             rs_bin_expr(*op, &current, &rhs, addr.width)
         }
-        MemRmwOp::Un(un_op) => rs_unop_expr(*un_op, &current),
+        MemRmwOp::Un(un_op) => rs_unop_expr(*un_op, &current, addr.width),
     };
     rs_emit_store(out, addr, &body, indent, aggregates);
     Some(())
@@ -13656,7 +13685,7 @@ fn rs_emit_stmt(
         }
         Stmt::UnAssign { dest, op } => {
             let var: &'static str = reg_var(dest.reg);
-            let body: String = rs_unop_expr(*op, var);
+            let body: String = rs_unop_expr(*op, var, dest.width);
             rs_emit_reg_assign(out, *dest, &body, indent);
         }
         Stmt::Cond {
@@ -14028,15 +14057,20 @@ fn rs_emit_divide(out: &mut String, divisor: RegRef, signed: bool, indent: &str)
 }
 
 #[allow(clippy::option_if_let_else)]
-fn rs_unop_expr(op: UnOp, text: &str) -> String {
+fn rs_unop_expr(op: UnOp, text: &str, width: Width) -> String {
+    let bits: u32 = width.bits();
     match parse_expr(text) {
         Some(operand) => match op {
             UnOp::Neg => render_rust_expr(&method_call(operand, "wrapping_neg", Vec::new())),
             UnOp::Not => render_rust_expr(&runary(RUnOp::Not, operand)),
+            UnOp::Bswap => format!("(({text}) as u{bits}).swap_bytes() as u64"),
+            UnOp::Clz => format!("(({text}) as u{bits}).leading_zeros() as u64"),
         },
         None => match op {
             UnOp::Neg => format!("({text}).wrapping_neg()"),
             UnOp::Not => format!("(!({text}))"),
+            UnOp::Bswap => format!("(({text}) as u{bits}).swap_bytes() as u64"),
+            UnOp::Clz => format!("(({text}) as u{bits}).leading_zeros() as u64"),
         },
     }
 }
@@ -14254,6 +14288,9 @@ fn rs_bin_expr(op: BinOp, lhs: &str, rhs: &str, width: Width) -> String {
         }
         BinOp::Smull => {
             format!("((({lhs}) as i32 as i64).wrapping_mul(({rhs}) as i32 as i64) as u64)")
+        }
+        BinOp::Umulh => {
+            format!("((({lhs}) as u128).wrapping_mul(({rhs}) as u128) >> 64) as u64")
         }
     }
 }

@@ -400,7 +400,7 @@ fn recover_with_calls_and_image<'image>(
         }
         match insn.mnemonic.as_str() {
             "add" | "adds" | "sub" | "subs" | "and" | "orr" | "eor" | "bic" | "orn" | "eon"
-            | "lsl" | "lsr" | "asr" | "mul" | "sdiv" | "udiv" | "umull" | "smull" => {
+            | "lsl" | "lsr" | "asr" | "mul" | "sdiv" | "udiv" | "umull" | "smull" | "umulh" => {
                 let (dest, mut stmts): (RegRef, Vec<Stmt>) = lower_alu(insn)?;
                 let new_flags: Option<TrackedFlags> = if insn.mnemonic == "subs" {
                     let (mut snapshots, value): (Vec<Stmt>, Flags) = subtract_flags(insn)?;
@@ -571,6 +571,13 @@ fn recover_with_calls_and_image<'image>(
                     lower_pair_memory(insn, frame.info, outgoing_slots)?;
                 push_stmts(&mut items, base, index, stmts)?;
                 if let Some(dest) = dest {
+                    return_width = dest.width;
+                }
+            }
+            "bfi" => {
+                let (dest, stmts): (RegRef, Vec<Stmt>) = lower_bfi(insn)?;
+                push_stmts(&mut items, base, index, stmts)?;
+                if dest.reg == Reg::Rax {
                     return_width = dest.width;
                 }
             }
@@ -1070,6 +1077,32 @@ fn recover_with_calls_and_image<'image>(
                 }) {
                     flags = None;
                 }
+                if dest.reg == Reg::Rax {
+                    return_width = dest.width;
+                }
+            }
+            "rev" | "clz" => {
+                let operands: Vec<&str> = split_operands(&insn.operands);
+                if operands.len() != 2 {
+                    return Err(reject_at(insn, "malformed unary data-processing"));
+                }
+                let dest: RegRef = parse_reg(operands[0])?;
+                let (_, src, src_width): (Option<Reg>, Source, Width) =
+                    select_operand(operands[1])?;
+                if dest.width != src_width {
+                    return Err(reject_at(insn, "mixed-width unary data-processing"));
+                }
+                let op: UnOp = if insn.mnemonic == "rev" {
+                    UnOp::Bswap
+                } else {
+                    UnOp::Clz
+                };
+                push_stmts(
+                    &mut items,
+                    base,
+                    index,
+                    vec![Stmt::Assign { dest, src }, Stmt::UnAssign { dest, op }],
+                )?;
                 if dest.reg == Reg::Rax {
                     return_width = dest.width;
                 }
@@ -2131,6 +2164,7 @@ fn lower_alu(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
         "udiv" => (BinOp::Udiv, false),
         "umull" => (BinOp::Umull, false),
         "smull" => (BinOp::Smull, false),
+        "umulh" => (BinOp::Umulh, false),
         _ => return Err(reject_at(insn, "unsupported integer alu instruction")),
     };
     let mut prefix: Vec<Stmt> = Vec::new();
@@ -2634,6 +2668,77 @@ fn lower_bitfield(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
     }
     stmts.push(Stmt::Assign {
         dest,
+        src: Source::Reg(tmp),
+    });
+    Ok((dest, stmts))
+}
+
+fn lower_bfi(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
+    let operands: Vec<&str> = split_operands(&insn.operands);
+    if operands.len() != 4 {
+        return Err(reject_at(insn, "malformed bitfield insert"));
+    }
+    let dest: RegRef = parse_reg(operands[0])?;
+    let source: RegRef = parse_reg(operands[1])?;
+    if dest.width != source.width {
+        return Err(reject_at(insn, "mixed-width bitfield insert"));
+    }
+    let datasize: u32 = match dest.width {
+        Width::W64 => 64,
+        Width::W32 => 32,
+        _ => return Err(reject_at(insn, "bitfield insert on a sub-register")),
+    };
+    let lsb: i64 = parse_immediate(operands[2])?;
+    let width: i64 = parse_immediate(operands[3])?;
+    let datasize_bits: i64 = i64::from(datasize);
+    if lsb < 0
+        || width <= 0
+        || lsb >= datasize_bits
+        || width > datasize_bits
+        || lsb + width > datasize_bits
+    {
+        return Err(reject_at(insn, "bitfield insert range is out of bounds"));
+    }
+    let datasize_mask: u64 = if datasize >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << datasize) - 1
+    };
+    let field_mask: u64 = if width >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << (width as u32)) - 1
+    };
+    let positioned_mask: u64 = (field_mask << (lsb as u32)) & datasize_mask;
+    let clear_mask: u64 = !positioned_mask & datasize_mask;
+    let tmp: RegRef = RegRef {
+        reg: Reg::A64Tmp2,
+        width: dest.width,
+    };
+    let mut stmts: Vec<Stmt> = vec![Stmt::Assign {
+        dest: tmp,
+        src: Source::Reg(source),
+    }];
+    if lsb > 0 {
+        stmts.push(Stmt::BinAssign {
+            dest: tmp,
+            op: BinOp::Shl,
+            src: Source::Imm(lsb),
+        });
+    }
+    stmts.push(Stmt::BinAssign {
+        dest: tmp,
+        op: BinOp::And,
+        src: Source::Imm(i64::from_ne_bytes(positioned_mask.to_ne_bytes())),
+    });
+    stmts.push(Stmt::BinAssign {
+        dest,
+        op: BinOp::And,
+        src: Source::Imm(i64::from_ne_bytes(clear_mask.to_ne_bytes())),
+    });
+    stmts.push(Stmt::BinAssign {
+        dest,
+        op: BinOp::Or,
         src: Source::Reg(tmp),
     });
     Ok((dest, stmts))

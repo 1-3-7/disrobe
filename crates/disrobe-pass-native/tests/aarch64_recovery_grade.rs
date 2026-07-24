@@ -173,6 +173,26 @@ int saturating_add(int a, int b) {
     if (s < -2147483648LL) return -2147483648;
     return (int)s;
 }
+
+u32 clz32(u32 x) { return x == 0 ? 32u : (u32)__builtin_clz(x); }
+u32 ctz32(u32 x) { return x == 0 ? 32u : (u32)__builtin_ctz(x); }
+u32 bswap32(u32 x) { return __builtin_bswap32(x); }
+u64 bswap64(u64 x) { return __builtin_bswap64(x); }
+int abs_i32(int x) { return x < 0 ? -x : x; }
+u32 bfx(u32 x) { return (x >> 5) & 0x3fu; }
+u32 bfi_merge(u32 x, u32 y) { return (x & ~0xff0u) | ((y << 4) & 0xff0u); }
+unsigned max_u(unsigned a, unsigned b) { return a > b ? a : b; }
+unsigned clamp_u(unsigned x, unsigned hi) { return x > hi ? hi : x; }
+int neg_if(int x, int c) { return c ? -x : x; }
+u64 hi_mul_u(u64 a, u64 b) { return (u64)(((unsigned __int128)a * (unsigned __int128)b) >> 64); }
+unsigned avg_floor_u(unsigned a, unsigned b) { return (a & b) + ((a ^ b) >> 1); }
+int select4(int a, int b, int c, int d) { int m = a > b ? a : b; int n = c > d ? c : d; return m > n ? m : n; }
+int sat_sub(int a, int b) {
+    long long s = (long long)a - (long long)b;
+    if (s > 2147483647LL) return 2147483647;
+    if (s < -2147483648LL) return -2147483648;
+    return (int)s;
+}
 ";
 
 const EXTERNS: &str = r"struct Pt { int x; int y; };
@@ -214,6 +234,20 @@ extern unsigned rotate_left(unsigned x, unsigned n);
 extern int sign_of(int x);
 extern unsigned long long accum_u64(const unsigned long long *a, int n);
 extern int saturating_add(int a, int b);
+extern unsigned clz32(unsigned x);
+extern unsigned ctz32(unsigned x);
+extern unsigned bswap32(unsigned x);
+extern unsigned long long bswap64(unsigned long long x);
+extern int abs_i32(int x);
+extern unsigned bfx(unsigned x);
+extern unsigned bfi_merge(unsigned x, unsigned y);
+extern unsigned max_u(unsigned a, unsigned b);
+extern unsigned clamp_u(unsigned x, unsigned hi);
+extern int neg_if(int x, int c);
+extern unsigned long long hi_mul_u(unsigned long long a, unsigned long long b);
+extern unsigned avg_floor_u(unsigned a, unsigned b);
+extern int select4(int a, int b, int c, int d);
+extern int sat_sub(int a, int b);
 ";
 
 fn cc() -> Option<String> {
@@ -232,13 +266,15 @@ fn cc() -> Option<String> {
 fn expected_arity(name: &str) -> Option<usize> {
     let arity: usize = match name {
         "popcount_loop" | "bitmix" | "mask_hi" | "str_len_manual" | "sw_small" | "sw_sparse"
-        | "do_while_sum" | "ld_st_pair" | "sign_of" => 1,
+        | "do_while_sum" | "ld_st_pair" | "sign_of" | "clz32" | "ctz32" | "bswap32" | "bswap64"
+        | "abs_i32" | "bfx" => 1,
         "idx_int" | "idx_uint" | "idx_long8" | "idx_byte" | "sum_int_idx" | "find_early"
         | "abs_diff" | "mul_widen" | "mul_widen_s" | "div_s" | "div_u" | "mod_s" | "shifts"
         | "str_cmp_manual" | "arr_max" | "even_count" | "pt_dot" | "pt_arr" | "rotate_left"
-        | "accum_u64" | "saturating_add" => 2,
+        | "accum_u64" | "saturating_add" | "bfi_merge" | "max_u" | "clamp_u" | "neg_if"
+        | "hi_mul_u" | "avg_floor_u" | "sat_sub" => 2,
         "idx_two" | "idx_store" | "find_key" | "mem_copy_manual" | "nested_sum" | "min3" => 3,
-        "clamp_sel" | "and_or_cond" => 4,
+        "clamp_sel" | "and_or_cond" | "select4" => 4,
         _ => return None,
     };
     Some(arity)
@@ -531,7 +567,7 @@ fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Option<String> 
             false,
             None,
         ),
-        "clamp_sel" => scalar_block(
+        "clamp_sel" | "select4" => scalar_block(
             opt,
             name,
             rec,
@@ -617,7 +653,7 @@ fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Option<String> 
             false,
             None,
         ),
-        "saturating_add" => scalar_block(
+        "saturating_add" | "sat_sub" => scalar_block(
             opt,
             name,
             rec,
@@ -671,7 +707,7 @@ fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Option<String> 
             false,
             None,
         ),
-        "popcount_loop" | "bitmix" => scalar_block(
+        "popcount_loop" | "bitmix" | "bswap32" | "clz32" | "bfx" | "ctz32" => scalar_block(
             opt,
             name,
             rec,
@@ -683,7 +719,7 @@ fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Option<String> 
             false,
             None,
         ),
-        "mask_hi" => scalar_block(
+        "mask_hi" | "bswap64" => scalar_block(
             opt,
             name,
             rec,
@@ -831,6 +867,72 @@ fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Option<String> 
         "str_len_manual" => fill_template(STR_LEN_TMPL, opt, name, rec, seed),
         "str_cmp_manual" => fill_template(STR_CMP_TMPL, opt, name, rec, seed),
         "pt_dot" => fill_template(PT_DOT_TMPL, opt, name, rec, seed),
+        "abs_i32" => scalar_block(
+            opt,
+            name,
+            rec,
+            seed,
+            &[Arg {
+                draw: "(uint64_t)(uint32_t)((int)(xs(&s) % 200001) - 100000)",
+                ocast: "int",
+            }],
+            false,
+            None,
+        ),
+        "bfi_merge" | "max_u" | "clamp_u" | "avg_floor_u" => scalar_block(
+            opt,
+            name,
+            rec,
+            seed,
+            &[
+                Arg {
+                    draw: "(uint64_t)(uint32_t)xs(&s)",
+                    ocast: "unsigned",
+                },
+                Arg {
+                    draw: "(uint64_t)(uint32_t)xs(&s)",
+                    ocast: "unsigned",
+                },
+            ],
+            false,
+            None,
+        ),
+        "neg_if" => scalar_block(
+            opt,
+            name,
+            rec,
+            seed,
+            &[
+                Arg {
+                    draw: "(uint64_t)(uint32_t)((int)(xs(&s) % 200001) - 100000)",
+                    ocast: "int",
+                },
+                Arg {
+                    draw: "(uint64_t)(uint32_t)((int)(xs(&s) % 4) - 2)",
+                    ocast: "int",
+                },
+            ],
+            false,
+            None,
+        ),
+        "hi_mul_u" => scalar_block(
+            opt,
+            name,
+            rec,
+            seed,
+            &[
+                Arg {
+                    draw: "xs(&s)",
+                    ocast: "unsigned long long",
+                },
+                Arg {
+                    draw: "xs(&s)",
+                    ocast: "unsigned long long",
+                },
+            ],
+            true,
+            None,
+        ),
         _ => return None,
     };
     Some(block)

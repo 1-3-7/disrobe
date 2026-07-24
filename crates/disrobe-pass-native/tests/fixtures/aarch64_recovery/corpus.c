@@ -152,3 +152,23 @@ int saturating_add(int a, int b) {
     if (s < -2147483648LL) return -2147483648;
     return (int)s;
 }
+
+u32 clz32(u32 x) { return x == 0 ? 32u : (u32)__builtin_clz(x); }
+u32 ctz32(u32 x) { return x == 0 ? 32u : (u32)__builtin_ctz(x); }
+u32 bswap32(u32 x) { return __builtin_bswap32(x); }
+u64 bswap64(u64 x) { return __builtin_bswap64(x); }
+int abs_i32(int x) { return x < 0 ? -x : x; }
+u32 bfx(u32 x) { return (x >> 5) & 0x3fu; }
+u32 bfi_merge(u32 x, u32 y) { return (x & ~0xff0u) | ((y << 4) & 0xff0u); }
+unsigned max_u(unsigned a, unsigned b) { return a > b ? a : b; }
+unsigned clamp_u(unsigned x, unsigned hi) { return x > hi ? hi : x; }
+int neg_if(int x, int c) { return c ? -x : x; }
+u64 hi_mul_u(u64 a, u64 b) { return (u64)(((unsigned __int128)a * (unsigned __int128)b) >> 64); }
+unsigned avg_floor_u(unsigned a, unsigned b) { return (a & b) + ((a ^ b) >> 1); }
+int select4(int a, int b, int c, int d) { int m = a > b ? a : b; int n = c > d ? c : d; return m > n ? m : n; }
+int sat_sub(int a, int b) {
+    long long s = (long long)a - (long long)b;
+    if (s > 2147483647LL) return 2147483647;
+    if (s < -2147483648LL) return -2147483648;
+    return (int)s;
+}
