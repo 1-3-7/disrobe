@@ -3544,6 +3544,47 @@ fn lower_fp_unary(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
     }])
 }
 
+fn lower_fp_binary_then_unary(
+    insn: &DisasmInsn,
+    operands: &[&str],
+    binary: FpOp,
+    unary: FpUnaryOp,
+) -> Result<Vec<Stmt>> {
+    if operands.len() != 3 {
+        return Err(reject_at(
+            insn,
+            "malformed three-operand scalar floating-point operation",
+        ));
+    }
+    let dest: (Xmm, FpWidth) = parse_fp_register(operands[0])?
+        .ok_or_else(|| reject_at(insn, "scalar floating-point destination is not scalar"))?;
+    let lhs: (Xmm, FpWidth) = parse_fp_register(operands[1])?
+        .ok_or_else(|| reject_at(insn, "scalar floating-point lhs is not scalar"))?;
+    let rhs: (Xmm, FpWidth) = parse_fp_register(operands[2])?
+        .ok_or_else(|| reject_at(insn, "scalar floating-point rhs is not scalar"))?;
+    if dest.1 != lhs.1 || dest.1 != rhs.1 {
+        return Err(reject_at(
+            insn,
+            "scalar floating-point operation uses mixed precision",
+        ));
+    }
+    Ok(vec![
+        Stmt::FpBin {
+            dest: dest.0,
+            lhs: FpOperand::Xmm(lhs.0),
+            rhs: FpOperand::Xmm(rhs.0),
+            op: binary,
+            width: dest.1,
+        },
+        Stmt::FpUnary {
+            dest: dest.0,
+            src: FpOperand::Xmm(dest.0),
+            op: unary,
+            width: dest.1,
+        },
+    ])
+}
+
 fn reject_fixed_point_conversion(insn: &DisasmInsn, operands: &[&str]) -> Result<()> {
     if operands.len() == 3 && operands[2].trim().starts_with('#') {
         return Err(reject_at(
@@ -3857,6 +3898,12 @@ fn try_lower_scalar_fp(
         "fneg" | "fabs" if has_scalar_fp_destination(&operands) => {
             lower_fp_unary(insn, &operands).map(Some)
         }
+        "fabd" if has_scalar_fp_destination(&operands) => {
+            lower_fp_binary_then_unary(insn, &operands, FpOp::Sub, FpUnaryOp::Abs).map(Some)
+        }
+        "fnmul" if has_scalar_fp_destination(&operands) => {
+            lower_fp_binary_then_unary(insn, &operands, FpOp::Mul, FpUnaryOp::Neg).map(Some)
+        }
         "scvtf" if has_scalar_fp_destination(&operands) => {
             lower_int_to_fp(insn, &operands, true).map(Some)
         }
@@ -3884,10 +3931,10 @@ fn try_lower_scalar_fp(
             lower_fp_round(insn, &operands, mode).map(Some)
         }
         "fadd" | "fsub" | "fmul" | "fdiv" | "fmaxnm" | "fminnm" | "fmadd" | "fmsub" | "fnmadd"
-        | "fnmsub" | "fneg" | "fabs" | "scvtf" | "ucvtf" | "fcvtzs" | "fcvtzu" | "fcvtms"
-        | "fcvtmu" | "fcvtps" | "fcvtpu" | "fcvtas" | "fcvtau" | "fcvt" | "frintm" | "frintp"
-        | "frintz" | "frintn" | "frinta" | "frintx" | "frinti" => Ok(None),
-        "movi" => lower_movi_scalar_zero(&operands),
+        | "fnmsub" | "fabd" | "fnmul" | "fneg" | "fabs" | "scvtf" | "ucvtf" | "fcvtzs"
+        | "fcvtzu" | "fcvtms" | "fcvtmu" | "fcvtps" | "fcvtpu" | "fcvtas" | "fcvtau" | "fcvt"
+        | "frintm" | "frintp" | "frintz" | "frintn" | "frinta" | "frintx" | "frinti" => Ok(None),
+        "movi" if !vector_context => lower_movi_scalar_zero(&operands),
         "fmov" if vector_context => Ok(None),
         "fmov" => lower_fp_fmov(insn, &operands).map(Some),
         "ldr" | "str" | "ldur" | "stur" => {
