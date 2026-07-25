@@ -821,7 +821,10 @@ fn recover_with_calls_and_image<'image>(
                     reg: Reg::A64Tmp2,
                     width: dest.width,
                 };
-                if m_reg == Some(scratch.reg) || n_reg == Some(scratch.reg) {
+                if m_reg == Some(scratch.reg)
+                    || n_reg == Some(scratch.reg)
+                    || flags_reference_reg(&live_flags.value, scratch.reg)
+                {
                     return Err(reject_at(
                         insn,
                         "conditional select aliases the scratch register",
@@ -892,7 +895,9 @@ fn recover_with_calls_and_image<'image>(
                     reg: Reg::A64Tmp2,
                     width: dest.width,
                 };
-                if n_reg == Some(scratch.reg) {
+                if n_reg == Some(scratch.reg)
+                    || flags_reference_reg(&live_flags.value, scratch.reg)
+                {
                     return Err(reject_at(
                         insn,
                         "conditional select aliases the scratch register",
@@ -5266,7 +5271,10 @@ fn resolve_aarch64_flags(
             .any(|reg: &Reg| gpr_deps.contains(reg))
             || (!fp_deps.is_empty() && super::stmt_clobbers_flag_fp(stmt, &fp_deps))
     });
-    if !clobbered || !condition_is_sound(kind, &live.value) {
+    if !clobbered
+        || (live.nz_only && !kind.sign_zero_only())
+        || !condition_is_sound(kind, &live.value)
+    {
         return (kind, live.value.clone());
     }
     let var: u32 = *next_sel;
