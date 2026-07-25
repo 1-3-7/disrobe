@@ -36,7 +36,7 @@ const INCREMENT_TWO_FP_FUNCTIONS: &[&str] = &[
 const CORPUS_OPTIMIZATION_LEVELS: &[&str] = &["O0", "O1", "O2", "O3", "Os"];
 const INCREMENT_TWO_EXPECTED_CASES: usize = 70;
 const INCREMENT_ONE_EXPECTED_FP_CASES: usize = 32;
-const EXPECTED_INTEGER_CASES: usize = 268;
+const EXPECTED_INTEGER_CASES: usize = 278;
 const ORACLE_FLAGS: &[&str] = &[
     "-O1",
     "-funsigned-char",
@@ -316,6 +316,8 @@ float fu_abs_f(float x) { return __builtin_fabsf(x); }
 double fu_abs_d(double x) { return __builtin_fabs(x); }
 float fu_nabs_f(float x) { return -__builtin_fabsf(x); }
 double fu_nabs_d(double x) { return -__builtin_fabs(x); }
+unsigned rev16_w(unsigned x) { return ((x & 0xff00ff00u) >> 8) | ((x & 0x00ff00ffu) << 8); }
+u64 rev16_x(u64 x) { return ((x & 0xff00ff00ff00ff00ull) >> 8) | ((x & 0x00ff00ff00ff00ffull) << 8); }
 ";
 
 const EXTERNS: &str = r"struct Pt { int x; int y; };
@@ -458,6 +460,8 @@ extern float fu_abs_f(float x);
 extern double fu_abs_d(double x);
 extern float fu_nabs_f(float x);
 extern double fu_nabs_d(double x);
+extern unsigned rev16_w(unsigned x);
+extern unsigned long long rev16_x(unsigned long long x);
 ";
 
 fn cc() -> Option<String> {
@@ -734,7 +738,7 @@ fn expected_arity(name: &str) -> Option<usize> {
     let arity: usize = match name {
         "popcount_loop" | "bitmix" | "mask_hi" | "str_len_manual" | "sw_small" | "sw_sparse"
         | "do_while_sum" | "ld_st_pair" | "sign_of" | "clz32" | "ctz32" | "bswap32" | "bswap64"
-        | "abs_i32" | "bfx" => 1,
+        | "abs_i32" | "bfx" | "rev16_w" | "rev16_x" => 1,
         "idx_int" | "idx_uint" | "idx_long8" | "idx_byte" | "sum_int_idx" | "find_early"
         | "abs_diff" | "mul_widen" | "mul_widen_s" | "div_s" | "div_u" | "mod_s" | "shifts"
         | "str_cmp_manual" | "arr_max" | "even_count" | "pt_dot" | "pt_arr" | "rotate_left"
@@ -1702,19 +1706,21 @@ fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Option<String> 
             false,
             None,
         ),
-        "popcount_loop" | "bitmix" | "bswap32" | "clz32" | "bfx" | "ctz32" => scalar_block(
-            opt,
-            name,
-            rec,
-            seed,
-            &[Arg {
-                draw: "(uint64_t)(uint32_t)xs(&s)",
-                ocast: "unsigned",
-            }],
-            false,
-            None,
-        ),
-        "mask_hi" | "bswap64" => scalar_block(
+        "popcount_loop" | "bitmix" | "bswap32" | "clz32" | "bfx" | "ctz32" | "rev16_w" => {
+            scalar_block(
+                opt,
+                name,
+                rec,
+                seed,
+                &[Arg {
+                    draw: "(uint64_t)(uint32_t)xs(&s)",
+                    ocast: "unsigned",
+                }],
+                false,
+                None,
+            )
+        }
+        "mask_hi" | "bswap64" | "rev16_x" => scalar_block(
             opt,
             name,
             rec,

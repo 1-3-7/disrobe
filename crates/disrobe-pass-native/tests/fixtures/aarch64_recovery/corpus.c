@@ -273,3 +273,5 @@ float fu_abs_f(float x) { return __builtin_fabsf(x); }
 double fu_abs_d(double x) { return __builtin_fabs(x); }
 float fu_nabs_f(float x) { return -__builtin_fabsf(x); }
 double fu_nabs_d(double x) { return -__builtin_fabs(x); }
+unsigned rev16_w(unsigned x) { return ((x & 0xff00ff00u) >> 8) | ((x & 0x00ff00ffu) << 8); }
+u64 rev16_x(u64 x) { return ((x & 0xff00ff00ff00ff00ull) >> 8) | ((x & 0x00ff00ff00ff00ffull) << 8); }
