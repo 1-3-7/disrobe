@@ -989,6 +989,14 @@ enum Stmt {
         kind: FpFmaKind,
         width: FpWidth,
     },
+    FpCsel {
+        dest: Xmm,
+        if_true: FpOperand,
+        if_false: FpOperand,
+        kind: CondKind,
+        flags: Flags,
+        width: FpWidth,
+    },
     FpSqrt {
         dest: Xmm,
         src: FpOperand,
@@ -1974,6 +1982,7 @@ fn build_leaf_items(
             | Stmt::FpConvert { .. }
             | Stmt::FpMinMax { .. }
             | Stmt::FpFma { .. }
+            | Stmt::FpCsel { .. }
             | Stmt::FpSqrt { .. }
             | Stmt::FpRound { .. }
             | Stmt::GprToXmm { .. }
@@ -3805,6 +3814,7 @@ impl<'a> StraightLifter<'a> {
                     insn.address
                 ))
             })?;
+            let kind: CondKind = canonicalize_x86_fp_condition(kind, &live_flags);
             if !condition_is_sound(kind, &live_flags) {
                 return Err(Error::LlvmIr(format!(
                     "condition `{}` not sound against tracked flags at {:#x}",
@@ -3846,6 +3856,7 @@ impl<'a> StraightLifter<'a> {
                     insn.address
                 ))
             })?;
+            let kind: CondKind = canonicalize_x86_fp_condition(kind, &live_flags);
             if !condition_is_sound(kind, &live_flags) {
                 return Err(Error::LlvmIr(format!(
                     "condition `{}` not sound against tracked flags at {:#x}",
@@ -4241,6 +4252,7 @@ fn update_return_width(stmt: &Stmt, return_width: &mut Width) {
         | Stmt::FpConvert { .. }
         | Stmt::FpMinMax { .. }
         | Stmt::FpFma { .. }
+        | Stmt::FpCsel { .. }
         | Stmt::FpSqrt { .. }
         | Stmt::FpRound { .. }
         | Stmt::GprToXmm { .. }
@@ -6755,6 +6767,7 @@ fn resolve_conditional_flags(
     next_sel: &mut u32,
     addr: u64,
 ) -> Result<(CondKind, Flags)> {
+    let kind: CondKind = canonicalize_x86_fp_condition(kind, &live_flags);
     if flags_are_comparison(&live_flags)
         && condition_is_sound(kind, &live_flags)
         && comparison_operand_clobbered(items, flags_mark, &live_flags)
@@ -6787,15 +6800,26 @@ fn resolve_conditional_flags(
     )))
 }
 
+fn canonicalize_x86_fp_condition(kind: CondKind, flags: &Flags) -> CondKind {
+    if !matches!(flags, Flags::FpCmp { .. }) {
+        return kind;
+    }
+    match kind {
+        CondKind::A => CondKind::G,
+        CondKind::Ae => CondKind::Ge,
+        CondKind::B => CondKind::L,
+        CondKind::Be => CondKind::Le,
+        other => other,
+    }
+}
+
 fn condition_is_sound(kind: CondKind, flags: &Flags) -> bool {
     match flags {
         Flags::Cmp { .. } | Flags::CmpMem { .. } | Flags::Test { .. } => true,
         Flags::Add { .. } => kind.sign_zero_only() || kind.is_overflow(),
         Flags::TestImm { .. } => matches!(kind, CondKind::E | CondKind::Ne),
         Flags::Sign { .. } => kind.sign_zero_only(),
-        Flags::FpCmp { .. } => {
-            kind.is_unsigned_order() || matches!(kind, CondKind::E | CondKind::Ne)
-        }
+        Flags::FpCmp { .. } => true,
         Flags::Snapshot { .. } => true,
         Flags::CondCmp {
             prior,
@@ -6968,6 +6992,19 @@ fn scan_fp_stmt(
             scan_fp_operand(addend, *width, written, acc)?;
             written.insert(*dest, true);
         }
+        Stmt::FpCsel {
+            dest,
+            if_true,
+            if_false,
+            flags,
+            width,
+            ..
+        } => {
+            scan_fp_operand(if_true, *width, written, acc)?;
+            scan_fp_operand(if_false, *width, written, acc)?;
+            scan_fp_flags(flags, written, acc)?;
+            written.insert(*dest, true);
+        }
         Stmt::FpSqrt { dest, src, width } => {
             scan_fp_operand(src, *width, written, acc)?;
             written.insert(*dest, true);
@@ -6984,7 +7021,7 @@ fn scan_fp_stmt(
         Stmt::XmmToGpr { src, width, .. } => {
             note_fp_read(*src, *width, written, acc)?;
         }
-        Stmt::Cond { flags, .. } | Stmt::SetCc { flags, .. } => {
+        Stmt::Cond { flags, .. } | Stmt::SetCc { flags, .. } | Stmt::FlagSnapshot { flags, .. } => {
             scan_fp_flags(flags, written, acc)?;
         }
         _ => {}
@@ -6997,9 +7034,16 @@ fn scan_fp_flags(
     written: &BTreeMap<Xmm, bool>,
     acc: &mut Vec<(Xmm, FpWidth)>,
 ) -> Result<()> {
-    if let Flags::FpCmp { lhs, rhs, width } = flags {
-        note_fp_read(*lhs, *width, written, acc)?;
-        scan_fp_operand(rhs, *width, written, acc)?;
+    match flags {
+        Flags::FpCmp { lhs, rhs, width } => {
+            note_fp_read(*lhs, *width, written, acc)?;
+            scan_fp_operand(rhs, *width, written, acc)?;
+        }
+        Flags::CondCmp { prior, taken, .. } => {
+            scan_fp_flags(prior, written, acc)?;
+            scan_fp_flags(taken, written, acc)?;
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -7199,6 +7243,19 @@ fn scan_stmt_params(
             read_flags(flags, written, acc, note);
             note(dest.reg, written, acc);
             written.insert(dest.reg, true);
+        }
+        Stmt::FpCsel {
+            if_true,
+            if_false,
+            flags,
+            ..
+        } => {
+            read_flags(flags, written, acc, note);
+            for operand in [if_true, if_false] {
+                if let FpOperand::Mem(mem) = operand {
+                    read_addr(mem, written, acc, note);
+                }
+            }
         }
         Stmt::Store { addr, src } => {
             read_addr(addr, written, acc, note);
@@ -7641,9 +7698,9 @@ fn fp_stmt_result_xmm(stmt: &Stmt) -> Option<(Xmm, FpWidth)> {
         Stmt::FpBin { dest, width, .. } | Stmt::FpMov { dest, width, .. } => Some((*dest, *width)),
         Stmt::IntToFp { dest, width, .. } => Some((*dest, *width)),
         Stmt::FpConvert { dest, to, .. } => Some((*dest, *to)),
-        Stmt::FpMinMax { dest, width, .. } | Stmt::FpFma { dest, width, .. } => {
-            Some((*dest, *width))
-        }
+        Stmt::FpMinMax { dest, width, .. }
+        | Stmt::FpFma { dest, width, .. }
+        | Stmt::FpCsel { dest, width, .. } => Some((*dest, *width)),
         Stmt::FpSqrt { dest, width, .. }
         | Stmt::FpRound { dest, width, .. }
         | Stmt::GprToXmm { dest, width, .. } => Some((*dest, *width)),
@@ -7674,6 +7731,7 @@ fn stmt_writes_rax_int(stmt: &Stmt) -> bool {
         | Stmt::FpConvert { .. }
         | Stmt::FpMinMax { .. }
         | Stmt::FpFma { .. }
+        | Stmt::FpCsel { .. }
         | Stmt::FpSqrt { .. }
         | Stmt::FpRound { .. }
         | Stmt::GprToXmm { .. }
@@ -9590,6 +9648,17 @@ fn aggregate_note_stmt(scan: &mut AggregateScan, stmt: &Stmt) {
             aggregate_note_fp_operand(scan, mul_rhs, *width);
             aggregate_note_fp_operand(scan, addend, *width);
         }
+        Stmt::FpCsel {
+            if_true,
+            if_false,
+            flags,
+            width,
+            ..
+        } => {
+            aggregate_note_fp_operand(scan, if_true, *width);
+            aggregate_note_fp_operand(scan, if_false, *width);
+            aggregate_note_flags(scan, flags);
+        }
         Stmt::FpMov { src, width, .. }
         | Stmt::FpSqrt { src, width, .. }
         | Stmt::FpRound { src, width, .. } => {
@@ -10265,6 +10334,16 @@ impl FrameScan {
                 self.note_fp(mul_rhs, slots, misuse);
                 self.note_fp(addend, slots, misuse);
             }
+            Stmt::FpCsel {
+                if_true,
+                if_false,
+                flags,
+                ..
+            } => {
+                self.note_fp(if_true, slots, misuse);
+                self.note_fp(if_false, slots, misuse);
+                self.note_flags(flags, slots, misuse);
+            }
             Stmt::FpStore { addr, .. } => self.note_mem(addr, slots, misuse),
             Stmt::FlagSnapshot { flags, .. } => self.note_flags(flags, slots, misuse),
             Stmt::Packed { op, .. } => {
@@ -10634,6 +10713,19 @@ fn stmt_value_reads(stmt: &Stmt, acc: &mut Vec<Reg>) {
                     mem_regs(mem, acc);
                 }
             }
+        }
+        Stmt::FpCsel {
+            if_true,
+            if_false,
+            flags,
+            ..
+        } => {
+            for operand in [if_true, if_false] {
+                if let FpOperand::Mem(mem) = operand {
+                    mem_regs(mem, acc);
+                }
+            }
+            acc.extend(flag_operand_regs(flags));
         }
         Stmt::FpMov { src, .. } | Stmt::FpSqrt { src, .. } | Stmt::FpRound { src, .. } => {
             if let FpOperand::Mem(mem) = src {
@@ -11193,6 +11285,19 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
                         }
                     }
                 }
+                Stmt::FpCsel {
+                    if_true,
+                    if_false,
+                    flags,
+                    ..
+                } => {
+                    for operand in [if_true, if_false] {
+                        if let FpOperand::Mem(mem) = operand {
+                            push_addr(mem, acc);
+                        }
+                    }
+                    push_flags(flags, acc);
+                }
                 Stmt::FpSqrt { src, .. } => {
                     if let FpOperand::Mem(mem) = src {
                         push_addr(mem, acc);
@@ -11327,6 +11432,18 @@ fn collect_block_xmm(body: &Block, acc: &mut Vec<Xmm>) {
                     push_operand(mul_lhs, acc);
                     push_operand(mul_rhs, acc);
                     push_operand(addend, acc);
+                }
+                Stmt::FpCsel {
+                    dest,
+                    if_true,
+                    if_false,
+                    flags,
+                    ..
+                } => {
+                    push(*dest, acc);
+                    push_operand(if_true, acc);
+                    push_operand(if_false, acc);
+                    push_flags(flags, acc);
                 }
                 Stmt::FpSqrt { dest, src, .. } => {
                     push(*dest, acc);
@@ -12311,6 +12428,24 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             });
             assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&computed, *width))
         }
+        Stmt::FpCsel {
+            dest,
+            if_true,
+            if_false,
+            kind,
+            flags,
+            width,
+        } => {
+            let cond: String = cond_expr(*kind, flags, aggregates);
+            let taken: String = fp_load(if_true, *width, aggregates);
+            let untaken: String = fp_load(if_false, *width, aggregates);
+            let computed: String = c_render(|cx| CExpr::Ternary {
+                cond: Box::new(c_opaque(cx, &cond)),
+                then: Box::new(c_opaque(cx, &taken)),
+                els: Box::new(c_opaque(cx, &untaken)),
+            });
+            assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&computed, *width))
+        }
         Stmt::FpSqrt { dest, src, width } => {
             let value: String = fp_load(src, *width, aggregates);
             let name: &str = match width {
@@ -13276,16 +13411,8 @@ fn cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Strin
         Flags::FpCmp { lhs, rhs, width } => {
             let a: String = fp_load(&FpOperand::Xmm(*lhs), *width, aggregates);
             let b: String = fp_load(rhs, *width, aggregates);
-            let cmp: BinaryOp = match kind {
-                CondKind::B => BinaryOp::Lt,
-                CondKind::Be => BinaryOp::Le,
-                CondKind::A => BinaryOp::Gt,
-                CondKind::Ae => BinaryOp::Ge,
-                CondKind::E => BinaryOp::Eq,
-                CondKind::Ne => BinaryOp::Ne,
-                _ => unreachable!(),
-            };
-            c_render(|cx| c_bin(cmp, c_opaque(cx, &a), c_opaque(cx, &b)))
+            let same: bool = matches!(rhs, FpOperand::Xmm(operand) if operand == lhs);
+            fp_compare_c(kind, &a, &b, same)
         }
         Flags::Snapshot { var } => {
             let cmp: BinaryOp = if matches!(kind, CondKind::E) {
@@ -13313,6 +13440,53 @@ fn cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Strin
             format!("({ternary})")
         }
     }
+}
+
+fn fp_compare_c(kind: CondKind, a: &str, b: &str, same_operand: bool) -> String {
+    let ordered =
+        |op: BinaryOp| -> String { c_render(|cx| c_bin(op, c_opaque(cx, a), c_opaque(cx, b))) };
+    let unordered_of = |op: BinaryOp| -> String {
+        c_render(|cx| CExpr::Unary {
+            op: UnaryOp::Not,
+            operand: Box::new(c_bin(op, c_opaque(cx, a), c_opaque(cx, b))),
+        })
+    };
+    match kind {
+        CondKind::E => ordered(BinaryOp::Eq),
+        CondKind::Ne => ordered(BinaryOp::Ne),
+        CondKind::S | CondKind::B => ordered(BinaryOp::Lt),
+        CondKind::Ns | CondKind::Ae => unordered_of(BinaryOp::Lt),
+        CondKind::Be => ordered(BinaryOp::Le),
+        CondKind::A => unordered_of(BinaryOp::Le),
+        CondKind::Ge => ordered(BinaryOp::Ge),
+        CondKind::L => unordered_of(BinaryOp::Ge),
+        CondKind::G => ordered(BinaryOp::Gt),
+        CondKind::Le => unordered_of(BinaryOp::Gt),
+        CondKind::Vs => fp_nan_test_c(a, b, same_operand, true),
+        CondKind::Vc => fp_nan_test_c(a, b, same_operand, false),
+    }
+}
+
+fn fp_nan_test_c(a: &str, b: &str, same_operand: bool, unordered: bool) -> String {
+    let self_op: BinaryOp = if unordered {
+        BinaryOp::Ne
+    } else {
+        BinaryOp::Eq
+    };
+    let combine: BinaryOp = if unordered {
+        BinaryOp::LogOr
+    } else {
+        BinaryOp::LogAnd
+    };
+    c_render(|cx| {
+        let a_nan: CExpr = c_bin(self_op, c_opaque(cx, a), c_opaque(cx, a));
+        if same_operand {
+            a_nan
+        } else {
+            let b_nan: CExpr = c_bin(self_op, c_opaque(cx, b), c_opaque(cx, b));
+            c_bin(combine, a_nan, b_nan)
+        }
+    })
 }
 
 fn sign_truncated_diff(lhs: &str, rhs: &str, width: Width) -> String {
@@ -14170,6 +14344,20 @@ fn rs_emit_stmt(
             let computed: String = format!("({lhs_expr}.mul_add({rhs_val}, {addend_expr}))");
             rs_emit_xmm_store(out, *dest, &computed, *width, indent);
         }
+        Stmt::FpCsel {
+            dest,
+            if_true,
+            if_false,
+            kind,
+            flags,
+            width,
+        } => {
+            let cond: String = rs_cond_expr(*kind, flags, aggregates)?;
+            let taken: String = rs_fp_load(if_true, *width, aggregates)?;
+            let untaken: String = rs_fp_load(if_false, *width, aggregates)?;
+            let computed: String = format!("(if {cond} {{ {taken} }} else {{ {untaken} }})");
+            rs_emit_xmm_store(out, *dest, &computed, *width, indent);
+        }
         Stmt::FpSqrt { dest, src, width } => {
             rs_fp_sqrt_stmt(out, *dest, src, *width, indent, aggregates)?;
         }
@@ -14783,6 +14971,40 @@ fn rs_binary_text(a: &str, b: &str, op: RBinOp, op_text: &str) -> String {
     }
 }
 
+fn fp_compare_rust(kind: CondKind, a: &str, b: &str, same_operand: bool) -> String {
+    match kind {
+        CondKind::E => rs_binary_text(a, b, RBinOp::Eq, "=="),
+        CondKind::Ne => rs_binary_text(a, b, RBinOp::Ne, "!="),
+        CondKind::S | CondKind::B => rs_binary_text(a, b, RBinOp::Lt, "<"),
+        CondKind::Ns | CondKind::Ae => format!("!({})", rs_binary_text(a, b, RBinOp::Lt, "<")),
+        CondKind::Be => rs_binary_text(a, b, RBinOp::Le, "<="),
+        CondKind::A => format!("!({})", rs_binary_text(a, b, RBinOp::Le, "<=")),
+        CondKind::Ge => rs_binary_text(a, b, RBinOp::Ge, ">="),
+        CondKind::L => format!("!({})", rs_binary_text(a, b, RBinOp::Ge, ">=")),
+        CondKind::G => rs_binary_text(a, b, RBinOp::Gt, ">"),
+        CondKind::Le => format!("!({})", rs_binary_text(a, b, RBinOp::Gt, ">")),
+        CondKind::Vs => fp_nan_test_rust(a, b, same_operand, true),
+        CondKind::Vc => fp_nan_test_rust(a, b, same_operand, false),
+    }
+}
+
+fn fp_nan_test_rust(a: &str, b: &str, same_operand: bool, unordered: bool) -> String {
+    let one = |x: &str| -> String {
+        if unordered {
+            format!("({x}).is_nan()")
+        } else {
+            format!("!({x}).is_nan()")
+        }
+    };
+    if same_operand {
+        one(a)
+    } else if unordered {
+        format!("{} || {}", one(a), one(b))
+    } else {
+        format!("{} && {}", one(a), one(b))
+    }
+}
+
 fn rs_compare_expr(kind: CondKind, lhs_expr: &str, rhs_expr: &str, width: Width) -> String {
     if kind.is_unsigned_order() {
         let a: String = rs_unsigned_operand(lhs_expr, width);
@@ -14982,16 +15204,8 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Op
         Flags::FpCmp { lhs, rhs, width } => {
             let a: String = rs_fp_load_xmm(*lhs, *width);
             let b: String = rs_fp_load(rhs, *width, aggregates)?;
-            let (op, op_text): (RBinOp, &str) = match kind {
-                CondKind::B => (RBinOp::Lt, "<"),
-                CondKind::Be => (RBinOp::Le, "<="),
-                CondKind::A => (RBinOp::Gt, ">"),
-                CondKind::Ae => (RBinOp::Ge, ">="),
-                CondKind::E => (RBinOp::Eq, "=="),
-                CondKind::Ne => (RBinOp::Ne, "!="),
-                _ => return None,
-            };
-            Some(rs_binary_text(&a, &b, op, op_text))
+            let same: bool = matches!(rhs, FpOperand::Xmm(operand) if operand == lhs);
+            Some(fp_compare_rust(kind, &a, &b, same))
         }
         Flags::Snapshot { var } => {
             let (op, op_text): (RBinOp, &str) = if matches!(kind, CondKind::E) {

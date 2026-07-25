@@ -525,6 +525,70 @@ fn aarch64_scalar_fma_recovers_with_correct_input_negations() {
 }
 
 #[test]
+fn aarch64_scalar_fp_compare_recovers_ordered_unordered_and_select() {
+    let ret: [u8; 4] = [0xc0, 0x03, 0x5f, 0xd6];
+    let ordered_lt: [u8; 8] = [0x00, 0x20, 0x21, 0x1e, 0xe0, 0x57, 0x9f, 0x1a];
+    let unordered_nlt: [u8; 8] = [0x00, 0x20, 0x21, 0x1e, 0xe0, 0x47, 0x9f, 0x1a];
+    let is_nan: [u8; 8] = [0x00, 0x20, 0x20, 0x1e, 0xe0, 0x77, 0x9f, 0x1a];
+    let select_min: [u8; 8] = [0x00, 0x20, 0x21, 0x1e, 0x00, 0x4c, 0x21, 0x1e];
+
+    let mut lt_bytes: Vec<u8> = ordered_lt.to_vec();
+    lt_bytes.extend_from_slice(&ret);
+    let lt: LeafRecovery = recover_aarch64_function(&lt_bytes, 0).expect("fcmp + cset mi");
+    assert!(
+        lt.source.contains('<') && !lt.source.contains("!("),
+        "fcmp + cset mi must recover an ordered less-than: {}",
+        lt.source
+    );
+
+    let mut nlt_bytes: Vec<u8> = unordered_nlt.to_vec();
+    nlt_bytes.extend_from_slice(&ret);
+    let nlt: LeafRecovery = recover_aarch64_function(&nlt_bytes, 0).expect("fcmp + cset pl");
+    assert!(
+        nlt.source.contains("!("),
+        "fcmp + cset pl must recover the unordered complement of less-than: {}",
+        nlt.source
+    );
+
+    let mut nan_bytes: Vec<u8> = is_nan.to_vec();
+    nan_bytes.extend_from_slice(&ret);
+    let nan: LeafRecovery = recover_aarch64_function(&nan_bytes, 0).expect("fcmp x,x + cset vs");
+    assert!(
+        nan.source.contains("!="),
+        "fcmp of a register with itself + cset vs must recover an unordered test: {}",
+        nan.source
+    );
+
+    let mut sel_bytes: Vec<u8> = select_min.to_vec();
+    sel_bytes.extend_from_slice(&ret);
+    let sel: LeafRecovery = recover_aarch64_function(&sel_bytes, 0).expect("fcmp + fcsel mi");
+    assert!(
+        sel.source.contains('?') && sel.source.contains('<'),
+        "fcmp + fcsel mi must recover a conditional select on an ordered less-than: {}",
+        sel.source
+    );
+    assert_eq!(sel.fp_params.len(), 2);
+    assert!(sel.returns_fp.is_some());
+    assert_eq!(sel.return_width_bits, 32);
+}
+
+#[test]
+fn aarch64_fp_return_survives_an_incidental_fp_compare_side_effect() {
+    let bytes: [u8; 20] = [
+        0x00, 0x28, 0x21, 0x1e, 0x08, 0x20, 0x20, 0x1e, 0xe8, 0x57, 0x9f, 0x1a, 0x08, 0x00, 0x00,
+        0xb9, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("fp add with a compare stored to a pointer");
+    assert!(
+        recovered.returns_fp.is_some(),
+        "a function that returns its fp sum must not be reclassified as int just because it materializes an fp comparison into a stored flag: {}",
+        recovered.source
+    );
+    assert_eq!(recovered.return_width_bits, 32);
+}
+
+#[test]
 fn atomics_and_out_of_subset_integer_ops_reject_explicitly() {
     let atomics: [u8; 12] = [
         0x01, 0x7c, 0x5f, 0xc8, 0x01, 0x7c, 0x02, 0xc8, 0xc0, 0x03, 0x5f, 0xd6,

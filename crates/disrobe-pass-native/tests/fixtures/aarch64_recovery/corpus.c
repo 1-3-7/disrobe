@@ -235,3 +235,35 @@ float fma_mixed_f(float a, float b, float c) { return __builtin_fmaf(a, b, c) + 
 double fma_mixed_d(double a, double b, double c) { return __builtin_fma(a, b, c) + a * b; }
 float fma_chained_f(float a, float b, float c) { return __builtin_fmaf(a, a, __builtin_fmaf(b, c, a)); }
 double fma_chained_d(double a, double b, double c) { return __builtin_fma(a, a, __builtin_fma(b, c, a)); }
+
+int fc_lt_f(float a, float b) { return a < b; }
+int fc_le_f(float a, float b) { return a <= b; }
+int fc_gt_f(float a, float b) { return a > b; }
+int fc_ge_f(float a, float b) { return a >= b; }
+int fc_eq_f(float a, float b) { return a == b; }
+int fc_ne_f(float a, float b) { return a != b; }
+int fc_nlt_f(float a, float b) { return !(a < b); }
+int fc_nle_f(float a, float b) { return !(a <= b); }
+int fc_ngt_f(float a, float b) { return !(a > b); }
+int fc_nge_f(float a, float b) { return !(a >= b); }
+int fc_isnan_f(float x) { return x != x; }
+int fc_lt_d(double a, double b) { return a < b; }
+int fc_le_d(double a, double b) { return a <= b; }
+int fc_gt_d(double a, double b) { return a > b; }
+int fc_ge_d(double a, double b) { return a >= b; }
+int fc_eq_d(double a, double b) { return a == b; }
+int fc_ne_d(double a, double b) { return a != b; }
+int fc_nlt_d(double a, double b) { return !(a < b); }
+int fc_nle_d(double a, double b) { return !(a <= b); }
+int fc_ngt_d(double a, double b) { return !(a > b); }
+int fc_nge_d(double a, double b) { return !(a >= b); }
+int fc_isnan_d(double x) { return x != x; }
+float fc_sel_f(float a, float b, float x, float y) { return a < b ? x : y; }
+float fc_tmin_f(float a, float b) { return a < b ? a : b; }
+float fc_tmax_f(float a, float b) { return a > b ? a : b; }
+float fc_pickeq_f(float a, float b) { return a == b ? a : b; }
+double fc_sel_d(double a, double b, double x, double y) { return a < b ? x : y; }
+double fc_tmin_d(double a, double b) { return a < b ? a : b; }
+double fc_tmax_d(double a, double b) { return a > b ? a : b; }
+double fc_pickeq_d(double a, double b) { return a == b ? a : b; }
+float fc_seland_f(float a, float b, float c, float d, float x, float y) { return (a < b && c < d) ? x : y; }
