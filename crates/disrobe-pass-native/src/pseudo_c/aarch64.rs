@@ -81,6 +81,7 @@ struct OutgoingSlot {
 struct TrackedFlags {
     value: Flags,
     nz_only: bool,
+    mark: usize,
 }
 
 struct ImageContext<'resolver, 'image> {
@@ -446,6 +447,7 @@ fn recover_with_calls_and_image<'image>(
                     Some(TrackedFlags {
                         value,
                         nz_only: false,
+                        mark: 0,
                     })
                 } else if insn.mnemonic == "adds" {
                     let (mut snapshots, value): (Vec<Stmt>, Flags) = add_flags(insn)?;
@@ -454,11 +456,17 @@ fn recover_with_calls_and_image<'image>(
                     Some(TrackedFlags {
                         value,
                         nz_only: false,
+                        mark: 0,
                     })
                 } else {
                     None
                 };
                 push_stmts(&mut items, base, index, stmts)?;
+                let new_flags: Option<TrackedFlags> =
+                    new_flags.map(|mut definition: TrackedFlags| {
+                        definition.mark = items.len();
+                        definition
+                    });
                 if matches!(insn.mnemonic.as_str(), "subs" | "adds") {
                     flags.clone_from(&new_flags);
                 }
@@ -626,8 +634,9 @@ fn recover_with_calls_and_image<'image>(
                 }
             }
             "cmp" | "cmn" | "tst" => {
-                let (stmts, new_flags): (Vec<Stmt>, TrackedFlags) = lower_flag_setter(insn)?;
+                let (stmts, mut new_flags): (Vec<Stmt>, TrackedFlags) = lower_flag_setter(insn)?;
                 push_stmts(&mut items, base, index, stmts)?;
+                new_flags.mark = items.len();
                 flags = Some(new_flags.clone());
                 flag_definitions.insert(index, new_flags);
             }
@@ -982,14 +991,22 @@ fn recover_with_calls_and_image<'image>(
                 } else {
                     Flags::Cmp { lhs, rhs }
                 };
+                let (resolved_precond, resolved_prior): (CondKind, Flags) = resolve_aarch64_flags(
+                    &mut items,
+                    &live_flags,
+                    precond,
+                    &mut next_sel,
+                    insn.address,
+                );
                 let definition: TrackedFlags = TrackedFlags {
                     value: Flags::CondCmp {
-                        prior: Box::new(live_flags.value),
-                        precond,
+                        prior: Box::new(resolved_prior),
+                        precond: resolved_precond,
                         taken: Box::new(taken),
                         nzcv,
                     },
                     nz_only: false,
+                    mark: items.len(),
                 };
                 flags = Some(definition.clone());
                 flag_definitions.insert(index, definition);
@@ -1005,6 +1022,7 @@ fn recover_with_calls_and_image<'image>(
                 let definition: TrackedFlags = TrackedFlags {
                     value: Flags::FpCmp { lhs, rhs, width },
                     nz_only: false,
+                    mark: items.len(),
                 };
                 flags = Some(definition.clone());
                 flag_definitions.insert(index, definition);
@@ -1055,10 +1073,17 @@ fn recover_with_calls_and_image<'image>(
                         "floating-point conditional compare precondition is undefined for the tracked nzcv source",
                     ));
                 }
+                let (resolved_precond, resolved_prior): (CondKind, Flags) = resolve_aarch64_flags(
+                    &mut items,
+                    &live_flags,
+                    precond,
+                    &mut next_sel,
+                    insn.address,
+                );
                 let definition: TrackedFlags = TrackedFlags {
                     value: Flags::CondCmp {
-                        prior: Box::new(live_flags.value),
-                        precond,
+                        prior: Box::new(resolved_prior),
+                        precond: resolved_precond,
                         taken: Box::new(Flags::FpCmp {
                             lhs,
                             rhs: FpOperand::Xmm(rhs_reg),
@@ -1067,6 +1092,7 @@ fn recover_with_calls_and_image<'image>(
                         nzcv,
                     },
                     nz_only: false,
+                    mark: items.len(),
                 };
                 flags = Some(definition.clone());
                 flag_definitions.insert(index, definition);
@@ -1121,12 +1147,19 @@ fn recover_with_calls_and_image<'image>(
                         "floating-point conditional select condition is undefined for the tracked nzcv source",
                     ));
                 }
+                let (kind, resolved): (CondKind, Flags) = resolve_aarch64_flags(
+                    &mut items,
+                    &live_flags,
+                    kind,
+                    &mut next_sel,
+                    insn.address,
+                );
                 let stmt: Stmt = Stmt::FpCsel {
                     dest,
                     if_true: FpOperand::Xmm(if_true),
                     if_false: FpOperand::Xmm(if_false),
                     kind,
-                    flags: live_flags.value,
+                    flags: resolved,
                     width,
                 };
                 push_stmts(&mut items, base, index, vec![stmt])?;
@@ -2962,6 +2995,7 @@ fn lower_flag_setter(insn: &DisasmInsn) -> Result<(Vec<Stmt>, TrackedFlags)> {
             TrackedFlags {
                 value: Flags::Cmp { lhs, rhs },
                 nz_only: false,
+                mark: 0,
             },
         ));
     }
@@ -2988,6 +3022,7 @@ fn lower_flag_setter(insn: &DisasmInsn) -> Result<(Vec<Stmt>, TrackedFlags)> {
         TrackedFlags {
             value: Flags::Test { operand: temp },
             nz_only: true,
+            mark: 0,
         },
     ))
 }
@@ -5151,8 +5186,114 @@ fn flags_reference_reg(flags: &Flags, reg: Reg) -> bool {
         Flags::CondCmp { prior, taken, .. } => {
             flags_reference_reg(prior, reg) || flags_reference_reg(taken, reg)
         }
-        Flags::CmpMem { .. } | Flags::FpCmp { .. } | Flags::Snapshot { .. } => true,
+        Flags::CmpMem { lhs, rhs } => {
+            let mut regs: Vec<Reg> = Vec::new();
+            super::mem_regs(lhs, &mut regs);
+            super::source_regs(rhs, &mut regs);
+            regs.contains(&reg)
+        }
+        Flags::FpCmp { .. } | Flags::Snapshot { .. } => false,
     }
+}
+
+fn flag_operand_xmms(flags: &Flags) -> Vec<Xmm> {
+    match flags {
+        Flags::FpCmp { lhs, rhs, .. } => {
+            let mut regs: Vec<Xmm> = vec![*lhs];
+            if let FpOperand::Xmm(x) = rhs {
+                regs.push(*x);
+            }
+            regs
+        }
+        Flags::CondCmp { prior, taken, .. } => {
+            let mut regs: Vec<Xmm> = flag_operand_xmms(prior);
+            regs.extend(flag_operand_xmms(taken));
+            regs
+        }
+        Flags::Cmp { .. }
+        | Flags::Add { .. }
+        | Flags::Test { .. }
+        | Flags::TestImm { .. }
+        | Flags::Sign { .. }
+        | Flags::CmpMem { .. }
+        | Flags::Snapshot { .. } => Vec::new(),
+    }
+}
+
+fn stmt_clobbers_flag_fp(stmt: &Stmt, deps: &[Xmm]) -> bool {
+    match stmt {
+        Stmt::FpBin { dest, .. }
+        | Stmt::FpMov { dest, .. }
+        | Stmt::IntToFp { dest, .. }
+        | Stmt::FpConvert { dest, .. }
+        | Stmt::FpMinMax { dest, .. }
+        | Stmt::FpFma { dest, .. }
+        | Stmt::FpCsel { dest, .. }
+        | Stmt::FpSqrt { dest, .. }
+        | Stmt::FpUnary { dest, .. }
+        | Stmt::FpRound { dest, .. }
+        | Stmt::GprToXmm { dest, .. } => deps.contains(dest),
+        Stmt::Vector(_) | Stmt::Packed { .. } => true,
+        Stmt::Assign { .. }
+        | Stmt::BinAssign { .. }
+        | Stmt::UnAssign { .. }
+        | Stmt::Cond { .. }
+        | Stmt::SetCc { .. }
+        | Stmt::Store { .. }
+        | Stmt::MemRmw { .. }
+        | Stmt::Extend { .. }
+        | Stmt::MulImm { .. }
+        | Stmt::WideMul { .. }
+        | Stmt::Divide { .. }
+        | Stmt::FpStore { .. }
+        | Stmt::FpToInt { .. }
+        | Stmt::XmmToGpr { .. }
+        | Stmt::DoubleShift { .. }
+        | Stmt::BlockMove { .. }
+        | Stmt::BlockFill { .. }
+        | Stmt::Call { .. }
+        | Stmt::FlagSnapshot { .. }
+        | Stmt::PackedToGpr { .. } => false,
+    }
+}
+
+fn resolve_aarch64_flags(
+    items: &mut Vec<Item>,
+    live: &TrackedFlags,
+    kind: CondKind,
+    next_sel: &mut u32,
+    addr: u64,
+) -> (CondKind, Flags) {
+    let gpr_deps: Vec<Reg> = super::flag_operand_regs(&live.value);
+    let fp_deps: Vec<Xmm> = flag_operand_xmms(&live.value);
+    let start: usize = live.mark.min(items.len());
+    let clobbered: bool = items[start..].iter().any(|item: &Item| {
+        let ItemKind::Stmt(stmt) = &item.kind else {
+            return false;
+        };
+        super::stmt_dest_regs(stmt)
+            .iter()
+            .any(|reg: &Reg| gpr_deps.contains(reg))
+            || (!fp_deps.is_empty() && stmt_clobbers_flag_fp(stmt, &fp_deps))
+    });
+    if !clobbered {
+        return (kind, live.value.clone());
+    }
+    let var: u32 = *next_sel;
+    *next_sel += 1;
+    let snapshot_addr: u64 = items.get(start).map_or(addr, |item: &Item| item.address);
+    items.insert(
+        start,
+        Item {
+            address: snapshot_addr,
+            kind: ItemKind::Stmt(Stmt::FlagSnapshot {
+                var,
+                kind,
+                flags: live.value.clone(),
+            }),
+        },
+    );
+    (CondKind::Ne, Flags::Snapshot { var })
 }
 
 fn build_select_stmts(
