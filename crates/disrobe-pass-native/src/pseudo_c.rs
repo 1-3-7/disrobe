@@ -530,6 +530,12 @@ impl CondKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FpUnorderedModel {
+    UnorderedIsEqual,
+    UnorderedIsUnequal,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Flags {
     Cmp {
@@ -558,6 +564,7 @@ enum Flags {
         lhs: Xmm,
         rhs: FpOperand,
         width: FpWidth,
+        model: FpUnorderedModel,
     },
     Snapshot {
         var: u32,
@@ -7331,7 +7338,9 @@ fn scan_fp_flags(
     acc: &mut Vec<(Xmm, FpWidth)>,
 ) -> Result<()> {
     match flags {
-        Flags::FpCmp { lhs, rhs, width } => {
+        Flags::FpCmp {
+            lhs, rhs, width, ..
+        } => {
             note_fp_read(*lhs, *width, written, acc)?;
             scan_fp_operand(rhs, *width, written, acc)?;
         }
@@ -8408,6 +8417,7 @@ fn lift_fp_compare(
         lhs: lhs_xmm,
         rhs: rhs_operand,
         width,
+        model: FpUnorderedModel::UnorderedIsEqual,
     }))
 }
 
@@ -13770,11 +13780,16 @@ fn cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Strin
                 _ => unreachable!(),
             }
         }
-        Flags::FpCmp { lhs, rhs, width } => {
+        Flags::FpCmp {
+            lhs,
+            rhs,
+            width,
+            model,
+        } => {
             let a: String = fp_load(&FpOperand::Xmm(*lhs), *width, aggregates);
             let b: String = fp_load(rhs, *width, aggregates);
             let same: bool = matches!(rhs, FpOperand::Xmm(operand) if operand == lhs);
-            fp_compare_c(kind, &a, &b, same)
+            fp_compare_c(kind, &a, &b, same, *model)
         }
         Flags::Snapshot { var } => {
             let cmp: BinaryOp = if matches!(kind, CondKind::E) {
@@ -13804,7 +13819,13 @@ fn cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Strin
     }
 }
 
-fn fp_compare_c(kind: CondKind, a: &str, b: &str, same_operand: bool) -> String {
+fn fp_compare_c(
+    kind: CondKind,
+    a: &str,
+    b: &str,
+    same_operand: bool,
+    model: FpUnorderedModel,
+) -> String {
     let ordered =
         |op: BinaryOp| -> String { c_render(|cx| c_bin(op, c_opaque(cx, a), c_opaque(cx, b))) };
     let unordered_of = |op: BinaryOp| -> String {
@@ -13813,9 +13834,37 @@ fn fp_compare_c(kind: CondKind, a: &str, b: &str, same_operand: bool) -> String 
             operand: Box::new(c_bin(op, c_opaque(cx, a), c_opaque(cx, b))),
         })
     };
+    let equal_or_unordered = || -> String {
+        c_render(|cx| {
+            let not_lt: CExpr = CExpr::Unary {
+                op: UnaryOp::Not,
+                operand: Box::new(c_bin(BinaryOp::Lt, c_opaque(cx, a), c_opaque(cx, b))),
+            };
+            let not_gt: CExpr = CExpr::Unary {
+                op: UnaryOp::Not,
+                operand: Box::new(c_bin(BinaryOp::Gt, c_opaque(cx, a), c_opaque(cx, b))),
+            };
+            c_bin(BinaryOp::LogAnd, not_lt, not_gt)
+        })
+    };
+    let ordered_unequal = || -> String {
+        c_render(|cx| {
+            c_bin(
+                BinaryOp::LogOr,
+                c_bin(BinaryOp::Lt, c_opaque(cx, a), c_opaque(cx, b)),
+                c_bin(BinaryOp::Gt, c_opaque(cx, a), c_opaque(cx, b)),
+            )
+        })
+    };
     match kind {
-        CondKind::E => ordered(BinaryOp::Eq),
-        CondKind::Ne => ordered(BinaryOp::Ne),
+        CondKind::E => match model {
+            FpUnorderedModel::UnorderedIsUnequal => ordered(BinaryOp::Eq),
+            FpUnorderedModel::UnorderedIsEqual => equal_or_unordered(),
+        },
+        CondKind::Ne => match model {
+            FpUnorderedModel::UnorderedIsUnequal => ordered(BinaryOp::Ne),
+            FpUnorderedModel::UnorderedIsEqual => ordered_unequal(),
+        },
         CondKind::S | CondKind::B => ordered(BinaryOp::Lt),
         CondKind::Ns | CondKind::Ae => unordered_of(BinaryOp::Lt),
         CondKind::Be => ordered(BinaryOp::Le),
@@ -15366,10 +15415,30 @@ fn rs_binary_text(a: &str, b: &str, op: RBinOp, op_text: &str) -> String {
     }
 }
 
-fn fp_compare_rust(kind: CondKind, a: &str, b: &str, same_operand: bool) -> String {
+fn fp_compare_rust(
+    kind: CondKind,
+    a: &str,
+    b: &str,
+    same_operand: bool,
+    model: FpUnorderedModel,
+) -> String {
     match kind {
-        CondKind::E => rs_binary_text(a, b, RBinOp::Eq, "=="),
-        CondKind::Ne => rs_binary_text(a, b, RBinOp::Ne, "!="),
+        CondKind::E => match model {
+            FpUnorderedModel::UnorderedIsUnequal => rs_binary_text(a, b, RBinOp::Eq, "=="),
+            FpUnorderedModel::UnorderedIsEqual => format!(
+                "!({}) && !({})",
+                rs_binary_text(a, b, RBinOp::Lt, "<"),
+                rs_binary_text(a, b, RBinOp::Gt, ">")
+            ),
+        },
+        CondKind::Ne => match model {
+            FpUnorderedModel::UnorderedIsUnequal => rs_binary_text(a, b, RBinOp::Ne, "!="),
+            FpUnorderedModel::UnorderedIsEqual => format!(
+                "({}) || ({})",
+                rs_binary_text(a, b, RBinOp::Lt, "<"),
+                rs_binary_text(a, b, RBinOp::Gt, ">")
+            ),
+        },
         CondKind::S | CondKind::B => rs_binary_text(a, b, RBinOp::Lt, "<"),
         CondKind::Ns | CondKind::Ae => format!("!({})", rs_binary_text(a, b, RBinOp::Lt, "<")),
         CondKind::Be => rs_binary_text(a, b, RBinOp::Le, "<="),
@@ -15596,11 +15665,16 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Op
                 _ => None,
             }
         }
-        Flags::FpCmp { lhs, rhs, width } => {
+        Flags::FpCmp {
+            lhs,
+            rhs,
+            width,
+            model,
+        } => {
             let a: String = rs_fp_load_xmm(*lhs, *width);
             let b: String = rs_fp_load(rhs, *width, aggregates)?;
             let same: bool = matches!(rhs, FpOperand::Xmm(operand) if operand == lhs);
-            Some(fp_compare_rust(kind, &a, &b, same))
+            Some(fp_compare_rust(kind, &a, &b, same, *model))
         }
         Flags::Snapshot { var } => {
             let (op, op_text): (RBinOp, &str) = if matches!(kind, CondKind::E) {
@@ -17626,6 +17700,43 @@ mod tests {
         assert!(
             lift_stmt_range(&different_base, 0, different_base.len(), &[]).is_err(),
             "a store through a different base register may alias the compared cell and must conservatively reject"
+        );
+    }
+
+    #[test]
+    fn fp_equality_rendering_follows_the_unordered_model() {
+        let x86: FpUnorderedModel = FpUnorderedModel::UnorderedIsEqual;
+        let a64: FpUnorderedModel = FpUnorderedModel::UnorderedIsUnequal;
+
+        assert_eq!(
+            fp_compare_c(CondKind::E, "x", "y", false, x86),
+            "!((x) < (y)) && !((x) > (y))"
+        );
+        assert_eq!(
+            fp_compare_c(CondKind::Ne, "x", "y", false, x86),
+            "(x) < (y) || (x) > (y)"
+        );
+        assert_eq!(
+            fp_compare_c(CondKind::E, "x", "y", false, a64),
+            "(x) == (y)"
+        );
+        assert_eq!(
+            fp_compare_c(CondKind::Ne, "x", "y", false, a64),
+            "(x) != (y)"
+        );
+
+        assert_eq!(
+            fp_compare_rust(CondKind::E, "x", "y", false, x86),
+            "!(x < y) && !(x > y)"
+        );
+        assert_eq!(
+            fp_compare_rust(CondKind::Ne, "x", "y", false, x86),
+            "(x < y) || (x > y)"
+        );
+        assert_eq!(fp_compare_rust(CondKind::E, "x", "y", false, a64), "x == y");
+        assert_eq!(
+            fp_compare_rust(CondKind::Ne, "x", "y", false, a64),
+            "x != y"
         );
     }
 }

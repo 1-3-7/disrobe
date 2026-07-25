@@ -1,12 +1,13 @@
 use super::{
     Abi, AggregatePlan, BinOp, Block, CondKind, Error, ExtSource, FP_ARG_ORDER, Flags, FnReturn,
-    FnSignature, FpFmaKind, FpMinMaxKind, FpOp, FpOperand, FpToIntRound, FpUnaryOp, FpWidth,
-    FrameShape, IndexExtend, IndexOperand, Item, ItemKind, LeafRecovery, MemRef, Node, ReduceOp,
-    Reg, RegRef, ResolvedCall, Result, RoundMode, ScalarType, Source, SretPlan, SretReturn, Stmt,
-    Structured, UnOp, VecArrangement, VecBinOp, VecElem, VecStmt, Width, Xmm,
-    annotate_calls_block_with_order, collect_block_xmm, collect_call_targets, condition_is_sound,
-    detect_sret, emit_c, emit_rust, fp_stmt_result_xmm, infer_aggregate_plan, infer_fp_params,
-    infer_params, plan_frame, rax_write_width, stmt_writes_rax_int, structure_items,
+    FnSignature, FpFmaKind, FpMinMaxKind, FpOp, FpOperand, FpToIntRound, FpUnaryOp,
+    FpUnorderedModel, FpWidth, FrameShape, IndexExtend, IndexOperand, Item, ItemKind, LeafRecovery,
+    MemRef, Node, ReduceOp, Reg, RegRef, ResolvedCall, Result, RoundMode, ScalarType, Source,
+    SretPlan, SretReturn, Stmt, Structured, UnOp, VecArrangement, VecBinOp, VecElem, VecStmt,
+    Width, Xmm, annotate_calls_block_with_order, collect_block_xmm, collect_call_targets,
+    condition_is_sound, detect_sret, emit_c, emit_rust, fp_stmt_result_xmm, infer_aggregate_plan,
+    infer_fp_params, infer_params, plan_frame, rax_write_width, stmt_writes_rax_int,
+    structure_items,
 };
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1075,7 +1076,12 @@ fn recover_with_calls_and_image<'image>(
                     .ok_or_else(|| reject_at(insn, "floating-point compare lhs is not scalar"))?;
                 let rhs: FpOperand = parse_fp_compare_operand(operands[1], width, insn)?;
                 let definition: TrackedFlags = TrackedFlags {
-                    value: Flags::FpCmp { lhs, rhs, width },
+                    value: Flags::FpCmp {
+                        lhs,
+                        rhs,
+                        width,
+                        model: FpUnorderedModel::UnorderedIsUnequal,
+                    },
                     nz_only: false,
                     mark: items.len(),
                 };
@@ -1143,6 +1149,7 @@ fn recover_with_calls_and_image<'image>(
                             lhs,
                             rhs: FpOperand::Xmm(rhs_reg),
                             width,
+                            model: FpUnorderedModel::UnorderedIsUnequal,
                         }),
                         nzcv,
                     },
