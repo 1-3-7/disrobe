@@ -36,7 +36,7 @@ const INCREMENT_TWO_FP_FUNCTIONS: &[&str] = &[
 const CORPUS_OPTIMIZATION_LEVELS: &[&str] = &["O0", "O1", "O2", "O3", "Os"];
 const INCREMENT_TWO_EXPECTED_CASES: usize = 70;
 const INCREMENT_ONE_EXPECTED_FP_CASES: usize = 32;
-const EXPECTED_INTEGER_CASES: usize = 278;
+const EXPECTED_INTEGER_CASES: usize = 283;
 const ORACLE_FLAGS: &[&str] = &[
     "-O1",
     "-funsigned-char",
@@ -326,6 +326,7 @@ float fs_sqrt_scaled_f(float x, float k) { return k * __builtin_sqrtf(x); }
 double fs_sqrt_diff_d(double a, double b) { return __builtin_sqrt(a) - b; }
 unsigned rev16_w(unsigned x) { return ((x & 0xff00ff00u) >> 8) | ((x & 0x00ff00ffu) << 8); }
 u64 rev16_x(u64 x) { return ((x & 0xff00ff00ff00ff00ull) >> 8) | ((x & 0x00ff00ff00ff00ffull) << 8); }
+u64 rev32_x(u64 x) { return ((u64)__builtin_bswap32((unsigned)(x >> 32)) << 32) | (u64)__builtin_bswap32((unsigned)x); }
 float tsel_f(float x) { return x < 2.0f ? 3.0f : 4.0f; }
 double tsel_d(double x) { return x < 2.0 ? 3.0 : 4.0; }
 float tsel2_f(float x) { return x > 5.0f ? 1.0f : 2.0f; }
@@ -530,6 +531,7 @@ extern float fs_sqrt_scaled_f(float x, float k);
 extern double fs_sqrt_diff_d(double a, double b);
 extern unsigned rev16_w(unsigned x);
 extern unsigned long long rev16_x(unsigned long long x);
+extern unsigned long long rev32_x(unsigned long long x);
 extern float tsel_f(float x);
 extern double tsel_d(double x);
 extern float tsel2_f(float x);
@@ -985,7 +987,7 @@ fn expected_arity(name: &str) -> Option<usize> {
     let arity: usize = match name {
         "popcount_loop" | "bitmix" | "mask_hi" | "str_len_manual" | "sw_small" | "sw_sparse"
         | "do_while_sum" | "ld_st_pair" | "sign_of" | "clz32" | "ctz32" | "bswap32" | "bswap64"
-        | "abs_i32" | "bfx" | "rev16_w" | "rev16_x" => 1,
+        | "abs_i32" | "bfx" | "rev16_w" | "rev16_x" | "rev32_x" => 1,
         "idx_int" | "idx_uint" | "idx_long8" | "idx_byte" | "sum_int_idx" | "find_early"
         | "abs_diff" | "mul_widen" | "mul_widen_s" | "div_s" | "div_u" | "mod_s" | "shifts"
         | "str_cmp_manual" | "arr_max" | "even_count" | "pt_dot" | "pt_arr" | "rotate_left"
@@ -2004,7 +2006,7 @@ fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Option<String> 
                 None,
             )
         }
-        "mask_hi" | "bswap64" | "rev16_x" => scalar_block(
+        "mask_hi" | "bswap64" | "rev16_x" | "rev32_x" => scalar_block(
             opt,
             name,
             rec,

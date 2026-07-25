@@ -334,6 +334,7 @@ float fu_nabs_f(float x) { return -__builtin_fabsf(x); }
 double fu_nabs_d(double x) { return -__builtin_fabs(x); }
 unsigned rev16_w(unsigned x) { return ((x & 0xff00ff00u) >> 8) | ((x & 0x00ff00ffu) << 8); }
 u64 rev16_x(u64 x) { return ((x & 0xff00ff00ff00ff00ull) >> 8) | ((x & 0x00ff00ff00ff00ffull) << 8); }
+u64 rev32_x(u64 x) { return ((u64)__builtin_bswap32((unsigned)(x >> 32)) << 32) | (u64)__builtin_bswap32((unsigned)x); }
 float fs_sqrt_f(float x) { return __builtin_sqrtf(x); }
 double fs_sqrt_d(double x) { return __builtin_sqrt(x); }
 float fs_hypot_f(float a, float b) { return __builtin_sqrtf(a * a + b * b); }
