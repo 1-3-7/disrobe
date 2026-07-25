@@ -334,3 +334,11 @@ float fu_nabs_f(float x) { return -__builtin_fabsf(x); }
 double fu_nabs_d(double x) { return -__builtin_fabs(x); }
 unsigned rev16_w(unsigned x) { return ((x & 0xff00ff00u) >> 8) | ((x & 0x00ff00ffu) << 8); }
 u64 rev16_x(u64 x) { return ((x & 0xff00ff00ff00ff00ull) >> 8) | ((x & 0x00ff00ff00ff00ffull) << 8); }
+float fs_sqrt_f(float x) { return __builtin_sqrtf(x); }
+double fs_sqrt_d(double x) { return __builtin_sqrt(x); }
+float fs_hypot_f(float a, float b) { return __builtin_sqrtf(a * a + b * b); }
+double fs_norm3_d(double a, double b, double c) { return __builtin_sqrt(a * a + b * b + c * c); }
+float fs_rsqrt_f(float x) { return 1.0f / __builtin_sqrtf(x); }
+double fs_sqrt_sum_d(double a, double b) { return __builtin_sqrt(a) + __builtin_sqrt(b); }
+float fs_sqrt_scaled_f(float x, float k) { return k * __builtin_sqrtf(x); }
+double fs_sqrt_diff_d(double a, double b) { return __builtin_sqrt(a) - b; }
