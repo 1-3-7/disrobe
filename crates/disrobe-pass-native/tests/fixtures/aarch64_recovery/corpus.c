@@ -199,6 +199,15 @@ float fp_from_uint(unsigned x) { return (float)(u64)x; }
 double fp_widen(float x) { return (double)x; }
 float fp_narrow(double x) { return (float)x; }
 
+float kadd_f(float x) { return x + 2.5f; }
+double kadd_d(double x) { return x + 2.5; }
+float kmul_f(float x) { return x * 0.5f; }
+double kmul_d(double x) { return x * 0.5; }
+float kmadd_f(float x) { return x * 4.0f + 2.0f; }
+double kmadd_d(double x) { return x * 4.0 + 2.0; }
+float ksub_f(float x) { return 1.5f - x; }
+double ksub_d(double x) { return 1.5 - x; }
+
 float fabsdiff_f(float a, float b) { return __builtin_fabsf(a - b); }
 double fabsdiff_d(double a, double b) { return __builtin_fabs(a - b); }
 float fnegmul_f(float a, float b) { return -(a * b); }
