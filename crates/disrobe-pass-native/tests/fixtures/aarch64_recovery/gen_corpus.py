@@ -24,6 +24,18 @@ FUSED_REQUIRED: dict[str, str] = {
     "fma_nmsub_f": "fnmsub",
     "fma_nmsub_d": "fnmsub",
 }
+SQRT_REQUIRED: frozenset[str] = frozenset(
+    {
+        "fs_sqrt_f",
+        "fs_sqrt_d",
+        "fs_hypot_f",
+        "fs_norm3_d",
+        "fs_rsqrt_f",
+        "fs_sqrt_sum_d",
+        "fs_sqrt_scaled_f",
+        "fs_sqrt_diff_d",
+    }
+)
 UNFUSED_REQUIRED: dict[str, frozenset[str]] = {
     "mul_add_unfused_f": frozenset({"fmul", "fadd"}),
     "mul_add_unfused_d": frozenset({"fmul", "fadd"}),
@@ -41,6 +53,7 @@ def disassemble(
         "--target=aarch64-linux-gnu",
         f"-{level}",
         "-fno-builtin",
+        "-fno-math-errno",
         "-fomit-frame-pointer",
         "-c",
         str(SRC),
@@ -89,6 +102,12 @@ def gate(level: str, mnemonics: dict[str, set[str]], /) -> None:
         if "fneg" in seen:
             raise SystemExit(
                 f"corpus gate {level}: {name} must fold the negation into {required}, saw a separate fneg"
+            )
+    for name in sorted(SQRT_REQUIRED):
+        seen = mnemonics.get(name, set())
+        if "fsqrt" not in seen:
+            raise SystemExit(
+                f"corpus gate {level}: {name} must contain fsqrt, saw {sorted(seen)}"
             )
     for name, required_set in UNFUSED_REQUIRED.items():
         seen = mnemonics.get(name, set())

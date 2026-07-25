@@ -316,6 +316,14 @@ float fu_abs_f(float x) { return __builtin_fabsf(x); }
 double fu_abs_d(double x) { return __builtin_fabs(x); }
 float fu_nabs_f(float x) { return -__builtin_fabsf(x); }
 double fu_nabs_d(double x) { return -__builtin_fabs(x); }
+float fs_sqrt_f(float x) { return __builtin_sqrtf(x); }
+double fs_sqrt_d(double x) { return __builtin_sqrt(x); }
+float fs_hypot_f(float a, float b) { return __builtin_sqrtf(a * a + b * b); }
+double fs_norm3_d(double a, double b, double c) { return __builtin_sqrt(a * a + b * b + c * c); }
+float fs_rsqrt_f(float x) { return 1.0f / __builtin_sqrtf(x); }
+double fs_sqrt_sum_d(double a, double b) { return __builtin_sqrt(a) + __builtin_sqrt(b); }
+float fs_sqrt_scaled_f(float x, float k) { return k * __builtin_sqrtf(x); }
+double fs_sqrt_diff_d(double a, double b) { return __builtin_sqrt(a) - b; }
 unsigned rev16_w(unsigned x) { return ((x & 0xff00ff00u) >> 8) | ((x & 0x00ff00ffu) << 8); }
 u64 rev16_x(u64 x) { return ((x & 0xff00ff00ff00ff00ull) >> 8) | ((x & 0x00ff00ff00ff00ffull) << 8); }
 float tsel_f(float x) { return x < 2.0f ? 3.0f : 4.0f; }
@@ -512,6 +520,14 @@ extern float fu_abs_f(float x);
 extern double fu_abs_d(double x);
 extern float fu_nabs_f(float x);
 extern double fu_nabs_d(double x);
+extern float fs_sqrt_f(float x);
+extern double fs_sqrt_d(double x);
+extern float fs_hypot_f(float a, float b);
+extern double fs_norm3_d(double a, double b, double c);
+extern float fs_rsqrt_f(float x);
+extern double fs_sqrt_sum_d(double a, double b);
+extern float fs_sqrt_scaled_f(float x, float k);
+extern double fs_sqrt_diff_d(double a, double b);
 extern unsigned rev16_w(unsigned x);
 extern unsigned long long rev16_x(unsigned long long x);
 extern float tsel_f(float x);
@@ -592,24 +608,23 @@ fn fp_expectation(name: &str) -> Option<FpExpectation> {
     let expectation: FpExpectation = match name {
         "fp_id_f" | "fp_ceil_f" | "fu_neg_f" | "fu_abs_f" | "fu_nabs_f" | "fz_relu_f"
         | "fz_nrelu_f" | "fz_mulz_f" | "fz_zsub_f" | "fz_addz_f" | "kadd_f" | "kmul_f"
-        | "kmadd_f" | "ksub_f" | "tclamp0_f" | "tclamp1_f" | "tsel_f" | "tsel2_f" => {
-            FpExpectation {
-                params: &[ScalarType::Float],
-                returns: Some(ScalarType::Float),
-                return_width_bits: 32,
-            }
-        }
+        | "kmadd_f" | "ksub_f" | "tclamp0_f" | "tclamp1_f" | "tsel_f" | "tsel2_f" | "fs_sqrt_f"
+        | "fs_rsqrt_f" => FpExpectation {
+            params: &[ScalarType::Float],
+            returns: Some(ScalarType::Float),
+            return_width_bits: 32,
+        },
         "fp_id_d" | "fp_floor_d" | "fp_trunc_d" | "fp_round_d" | "fp_rint_d" | "fu_neg_d"
         | "fu_abs_d" | "fu_nabs_d" | "fz_relu_d" | "fz_nrelu_d" | "fz_mulz_d" | "fz_zsub_d"
         | "fz_addz_d" | "kadd_d" | "kmul_d" | "kmadd_d" | "ksub_d" | "tclamp0_d" | "tclamp1_d"
-        | "tsel_d" | "tsel2_d" => FpExpectation {
+        | "tsel_d" | "tsel2_d" | "fs_sqrt_d" => FpExpectation {
             params: &[ScalarType::Double],
             returns: Some(ScalarType::Double),
             return_width_bits: 64,
         },
         "fp_second" | "fp_sub_d" | "fp_mul_d" | "fp_div_d" | "fp_max_d" | "fp_min_d"
         | "fc_tmin_d" | "fc_tmax_d" | "fc_pickeq_d" | "fabsdiff_d" | "fnegmul_d"
-        | "fnabsdiff_d" => FpExpectation {
+        | "fnabsdiff_d" | "fs_sqrt_sum_d" | "fs_sqrt_diff_d" => FpExpectation {
             params: &[ScalarType::Double, ScalarType::Double],
             returns: Some(ScalarType::Double),
             return_width_bits: 64,
@@ -635,15 +650,15 @@ fn fp_expectation(name: &str) -> Option<FpExpectation> {
             return_width_bits: 32,
         },
         "fp_pick3" | "fma_madd_d" | "fma_msub_d" | "fma_nmadd_d" | "fma_nmsub_d"
-        | "mul_add_unfused_d" | "sub_mul_unfused_d" | "fma_mixed_d" | "fma_chained_d" => {
-            FpExpectation {
-                params: &[ScalarType::Double, ScalarType::Double, ScalarType::Double],
-                returns: Some(ScalarType::Double),
-                return_width_bits: 64,
-            }
-        }
+        | "mul_add_unfused_d" | "sub_mul_unfused_d" | "fma_mixed_d" | "fma_chained_d"
+        | "fs_norm3_d" => FpExpectation {
+            params: &[ScalarType::Double, ScalarType::Double, ScalarType::Double],
+            returns: Some(ScalarType::Double),
+            return_width_bits: 64,
+        },
         "fp_add_f" | "fp_div_f" | "fp_max_f" | "fp_min_f" | "fc_tmin_f" | "fc_tmax_f"
-        | "fc_pickeq_f" | "fabsdiff_f" | "fnegmul_f" | "fnabsdiff_f" => FpExpectation {
+        | "fc_pickeq_f" | "fabsdiff_f" | "fnegmul_f" | "fnabsdiff_f" | "fs_hypot_f"
+        | "fs_sqrt_scaled_f" => FpExpectation {
             params: &[ScalarType::Float, ScalarType::Float],
             returns: Some(ScalarType::Float),
             return_width_bits: 32,
@@ -948,6 +963,22 @@ const INCREMENT_FIFTEEN_EXPECTED_CASES: usize = 20;
 
 fn is_increment_fifteen_fp(name: &str) -> bool {
     INCREMENT_FIFTEEN_FP_FUNCTIONS.contains(&name)
+}
+
+const INCREMENT_SIXTEEN_FP_FUNCTIONS: &[&str] = &[
+    "fs_sqrt_f",
+    "fs_sqrt_d",
+    "fs_hypot_f",
+    "fs_norm3_d",
+    "fs_rsqrt_f",
+    "fs_sqrt_sum_d",
+    "fs_sqrt_scaled_f",
+    "fs_sqrt_diff_d",
+];
+const INCREMENT_SIXTEEN_EXPECTED_CASES: usize = 40;
+
+fn is_increment_sixteen_fp(name: &str) -> bool {
+    INCREMENT_SIXTEEN_FP_FUNCTIONS.contains(&name)
 }
 
 fn expected_arity(name: &str) -> Option<usize> {
@@ -1731,16 +1762,20 @@ const NESTED_SUM_TMPL: &str = "    {\n\
 fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Option<String> {
     let block: String = match name {
         "fp_add_f" | "fp_div_f" | "fp_max_f" | "fp_min_f" | "fabsdiff_f" | "fnegmul_f"
-        | "fnabsdiff_f" => fill_template(FP_BIN_F_TMPL, opt, name, rec, seed),
+        | "fnabsdiff_f" | "fs_hypot_f" | "fs_sqrt_scaled_f" => {
+            fill_template(FP_BIN_F_TMPL, opt, name, rec, seed)
+        }
         "fp_sub_d" | "fp_mul_d" | "fp_div_d" | "fp_max_d" | "fp_min_d" | "fabsdiff_d"
-        | "fnegmul_d" | "fnabsdiff_d" => fill_template(FP_BIN_D_TMPL, opt, name, rec, seed),
+        | "fnegmul_d" | "fnabsdiff_d" | "fs_sqrt_sum_d" | "fs_sqrt_diff_d" => {
+            fill_template(FP_BIN_D_TMPL, opt, name, rec, seed)
+        }
         "fp_axpy" | "fp_clamp_f" => fill_template(FP_AXPY_TMPL, opt, name, rec, seed),
         "fma_madd_f" | "fma_msub_f" | "fma_nmadd_f" | "fma_nmsub_f" | "mul_add_unfused_f"
         | "sub_mul_unfused_f" | "fma_mixed_f" | "fma_chained_f" => {
             fill_template(FP_FMA_F_TMPL, opt, name, rec, seed)
         }
         "fma_madd_d" | "fma_msub_d" | "fma_nmadd_d" | "fma_nmsub_d" | "mul_add_unfused_d"
-        | "sub_mul_unfused_d" | "fma_mixed_d" | "fma_chained_d" => {
+        | "sub_mul_unfused_d" | "fma_mixed_d" | "fma_chained_d" | "fs_norm3_d" => {
             fill_template(FP_FMA_D_TMPL, opt, name, rec, seed)
         }
         "fc_lt_f" | "fc_le_f" | "fc_gt_f" | "fc_ge_f" | "fc_eq_f" | "fc_ne_f" | "fc_nlt_f"
@@ -1785,10 +1820,10 @@ fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Option<String> 
         "fp_floor_d" | "fp_trunc_d" | "fp_round_d" | "fp_rint_d" | "fu_neg_d" | "fu_abs_d"
         | "fu_nabs_d" | "fz_relu_d" | "fz_nrelu_d" | "fz_mulz_d" | "fz_zsub_d" | "fz_addz_d"
         | "kadd_d" | "kmul_d" | "kmadd_d" | "ksub_d" | "tclamp0_d" | "tclamp1_d" | "tsel_d"
-        | "tsel2_d" => fill_template(FP_UNARY_D_TMPL, opt, name, rec, seed),
+        | "tsel2_d" | "fs_sqrt_d" => fill_template(FP_UNARY_D_TMPL, opt, name, rec, seed),
         "fp_ceil_f" | "fu_neg_f" | "fu_abs_f" | "fu_nabs_f" | "fz_relu_f" | "fz_nrelu_f"
         | "fz_mulz_f" | "fz_zsub_f" | "fz_addz_f" | "kadd_f" | "kmul_f" | "kmadd_f" | "ksub_f"
-        | "tclamp0_f" | "tclamp1_f" | "tsel_f" | "tsel2_f" => {
+        | "tclamp0_f" | "tclamp1_f" | "tsel_f" | "tsel2_f" | "fs_sqrt_f" | "fs_rsqrt_f" => {
             fill_template(FP_UNARY_F_TMPL, opt, name, rec, seed)
         }
         "fp_second" => fill_template(FP_SECOND_TMPL, opt, name, rec, seed),
@@ -2474,6 +2509,24 @@ fn corpus_grade_report() {
             );
         }
     }
+    let increment_sixteen_corpus_cases: usize = CASES
+        .iter()
+        .filter(|(_, name, _): &&(&str, &str, &[u8])| is_increment_sixteen_fp(name))
+        .count();
+    assert_eq!(
+        increment_sixteen_corpus_cases, INCREMENT_SIXTEEN_EXPECTED_CASES,
+        "the generated corpus must contain exactly five rows per increment-16 function"
+    );
+    for required_name in INCREMENT_SIXTEEN_FP_FUNCTIONS {
+        for required_opt in CORPUS_OPTIMIZATION_LEVELS {
+            assert!(
+                CASES.iter().any(|(opt, name, _): &(&str, &str, &[u8])| {
+                    opt == required_opt && name == required_name
+                }),
+                "required increment-16 case `{required_opt} {required_name}` is absent from the generated corpus"
+            );
+        }
+    }
 
     let dir: tempfile::TempDir = tempfile::tempdir().expect("scratch dir");
     let battery_c: PathBuf = dir.path().join("gt_battery.c");
@@ -2527,6 +2580,8 @@ fn corpus_grade_report() {
     let mut increment_fourteen_driven: usize = 0;
     let mut increment_fifteen_recovered: usize = 0;
     let mut increment_fifteen_driven: usize = 0;
+    let mut increment_sixteen_recovered: usize = 0;
+    let mut increment_sixteen_driven: usize = 0;
     let mut skips: Vec<(String, String, String)> = Vec::new();
     let mut decls: String = String::new();
     let mut blocks: String = String::new();
@@ -2547,6 +2602,7 @@ fn corpus_grade_report() {
         let required_increment_thirteen: bool = is_increment_thirteen_fp(name);
         let required_increment_fourteen: bool = is_increment_fourteen_fp(name);
         let required_increment_fifteen: bool = is_increment_fifteen_fp(name);
+        let required_increment_sixteen: bool = is_increment_sixteen_fp(name);
         let recovery: LeafRecovery = match recover_aarch64_function(bytes, 0) {
             Ok(value) => value,
             Err(error) => {
@@ -2602,6 +2658,9 @@ fn corpus_grade_report() {
         }
         if required_increment_fifteen {
             increment_fifteen_recovered += 1;
+        }
+        if required_increment_sixteen {
+            increment_sixteen_recovered += 1;
         }
 
         let expected_fp: Option<FpExpectation> = fp_expectation(name);
@@ -2724,6 +2783,9 @@ fn corpus_grade_report() {
         if required_increment_fifteen {
             increment_fifteen_driven += 1;
         }
+        if required_increment_sixteen {
+            increment_sixteen_driven += 1;
+        }
     }
 
     assert!(
@@ -2831,6 +2893,7 @@ fn corpus_grade_report() {
         .and_then(|value: usize| value.checked_sub(increment_thirteen_recovered))
         .and_then(|value: usize| value.checked_sub(increment_fourteen_recovered))
         .and_then(|value: usize| value.checked_sub(increment_fifteen_recovered))
+        .and_then(|value: usize| value.checked_sub(increment_sixteen_recovered))
         .expect("later-increment fp recovery counts cannot exceed the fp total");
     let increment_one_fp_driven: usize = fp_driven
         .checked_sub(increment_two_driven)
@@ -2847,6 +2910,7 @@ fn corpus_grade_report() {
         .and_then(|value: usize| value.checked_sub(increment_thirteen_driven))
         .and_then(|value: usize| value.checked_sub(increment_fourteen_driven))
         .and_then(|value: usize| value.checked_sub(increment_fifteen_driven))
+        .and_then(|value: usize| value.checked_sub(increment_sixteen_driven))
         .expect("later-increment fp driven counts cannot exceed the fp total");
     let integer_recovered: usize = recovered
         .checked_sub(fp_recovered)
@@ -2907,6 +2971,12 @@ fn corpus_grade_report() {
     );
     eprintln!(
         "increment-15 graded    {increment_fifteen_driven}/{INCREMENT_FIFTEEN_EXPECTED_CASES}"
+    );
+    eprintln!(
+        "increment-16 recovered {increment_sixteen_recovered}/{INCREMENT_SIXTEEN_EXPECTED_CASES}"
+    );
+    eprintln!(
+        "increment-16 graded    {increment_sixteen_driven}/{INCREMENT_SIXTEEN_EXPECTED_CASES}"
     );
     eprintln!(
         "graded-equivalent    {graded_equivalent}   (recompiled + behaviorally matched on directed and random inputs)"
@@ -3077,6 +3147,14 @@ fn corpus_grade_report() {
     assert_eq!(
         increment_fifteen_driven, INCREMENT_FIFTEEN_EXPECTED_CASES,
         "every increment-15 corpus case must be graded"
+    );
+    assert_eq!(
+        increment_sixteen_recovered, INCREMENT_SIXTEEN_EXPECTED_CASES,
+        "every increment-16 corpus case must recover"
+    );
+    assert_eq!(
+        increment_sixteen_driven, INCREMENT_SIXTEEN_EXPECTED_CASES,
+        "every increment-16 corpus case must be graded"
     );
     assert!(
         skips.is_empty(),

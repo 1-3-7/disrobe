@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 const CASES: &[(&str, &str, &[u8])] = &include!("aarch64_recovery_corpus.inc");
 
-const RECOVERY_FLOOR: usize = 955;
+const RECOVERY_FLOOR: usize = 995;
 
 type ConversionCase = (
     u32,
@@ -138,7 +138,7 @@ fn scalar_fp_increment_one_boundaries_reject() {
             "conflicting widths",
         ),
         (
-            &[0x00, 0xc0, 0x61, 0x1e, 0xc0, 0x03, 0x5f, 0xd6],
+            &[0x00, 0x48, 0x61, 0x1e, 0xc0, 0x03, 0x5f, 0xd6],
             "unsupported instruction",
         ),
         (

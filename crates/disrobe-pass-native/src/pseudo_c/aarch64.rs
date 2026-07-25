@@ -3641,6 +3641,30 @@ fn lower_fp_unary(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
     }])
 }
 
+fn lower_fp_sqrt(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
+    if operands.len() != 2 {
+        return Err(reject_at(
+            insn,
+            "malformed scalar floating-point square root",
+        ));
+    }
+    let dest: (Xmm, FpWidth) = parse_fp_register(operands[0])?
+        .ok_or_else(|| reject_at(insn, "floating-point square root destination is not scalar"))?;
+    let src: (Xmm, FpWidth) = parse_fp_register(operands[1])?
+        .ok_or_else(|| reject_at(insn, "floating-point square root source is not scalar"))?;
+    if dest.1 != src.1 {
+        return Err(reject_at(
+            insn,
+            "scalar floating-point square root changes precision",
+        ));
+    }
+    Ok(vec![Stmt::FpSqrt {
+        dest: dest.0,
+        src: FpOperand::Xmm(src.0),
+        width: dest.1,
+    }])
+}
+
 fn lower_fp_binary_then_unary(
     insn: &DisasmInsn,
     operands: &[&str],
@@ -3995,6 +4019,7 @@ fn try_lower_scalar_fp(
         "fneg" | "fabs" if has_scalar_fp_destination(&operands) => {
             lower_fp_unary(insn, &operands).map(Some)
         }
+        "fsqrt" if has_scalar_fp_destination(&operands) => lower_fp_sqrt(insn, &operands).map(Some),
         "fabd" if has_scalar_fp_destination(&operands) => {
             lower_fp_binary_then_unary(insn, &operands, FpOp::Sub, FpUnaryOp::Abs).map(Some)
         }
