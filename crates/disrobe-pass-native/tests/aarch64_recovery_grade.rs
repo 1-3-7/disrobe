@@ -36,7 +36,7 @@ const INCREMENT_TWO_FP_FUNCTIONS: &[&str] = &[
 const CORPUS_OPTIMIZATION_LEVELS: &[&str] = &["O0", "O1", "O2", "O3", "Os"];
 const INCREMENT_TWO_EXPECTED_CASES: usize = 70;
 const INCREMENT_ONE_EXPECTED_FP_CASES: usize = 32;
-const EXPECTED_INTEGER_CASES: usize = 263;
+const EXPECTED_INTEGER_CASES: usize = 268;
 const ORACLE_FLAGS: &[&str] = &[
     "-O1",
     "-funsigned-char",
@@ -215,6 +215,7 @@ unsigned clamp_u(unsigned x, unsigned hi) { return x > hi ? hi : x; }
 int neg_if(int x, int c) { return c ? -x : x; }
 u64 hi_mul_u(u64 a, u64 b) { return (u64)(((unsigned __int128)a * (unsigned __int128)b) >> 64); }
 i64 hi_mul_s(i64 a, i64 b) { return (i64)(((__int128)a * (__int128)b) >> 64); }
+u64 funnel_shift(u64 a, u64 b) { return (a << 40) | (b >> 24); }
 unsigned avg_floor_u(unsigned a, unsigned b) { return (a & b) + ((a ^ b) >> 1); }
 int select4(int a, int b, int c, int d) { int m = a > b ? a : b; int n = c > d ? c : d; return m > n ? m : n; }
 int sat_sub(int a, int b) {
@@ -310,6 +311,7 @@ extern unsigned clamp_u(unsigned x, unsigned hi);
 extern int neg_if(int x, int c);
 extern unsigned long long hi_mul_u(unsigned long long a, unsigned long long b);
 extern long long hi_mul_s(long long a, long long b);
+extern unsigned long long funnel_shift(unsigned long long a, unsigned long long b);
 extern unsigned avg_floor_u(unsigned a, unsigned b);
 extern int select4(int a, int b, int c, int d);
 extern int sat_sub(int a, int b);
@@ -470,7 +472,7 @@ fn expected_arity(name: &str) -> Option<usize> {
         | "abs_diff" | "mul_widen" | "mul_widen_s" | "div_s" | "div_u" | "mod_s" | "shifts"
         | "str_cmp_manual" | "arr_max" | "even_count" | "pt_dot" | "pt_arr" | "rotate_left"
         | "accum_u64" | "saturating_add" | "bfi_merge" | "max_u" | "clamp_u" | "neg_if"
-        | "hi_mul_u" | "hi_mul_s" | "avg_floor_u" | "sat_sub" => 2,
+        | "hi_mul_u" | "hi_mul_s" | "funnel_shift" | "avg_floor_u" | "sat_sub" => 2,
         "idx_two" | "idx_store" | "find_key" | "mem_copy_manual" | "nested_sum" | "min3" => 3,
         "clamp_sel" | "and_or_cond" | "select4" => 4,
         _ => return None,
@@ -1393,7 +1395,7 @@ fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Option<String> 
             false,
             None,
         ),
-        "hi_mul_u" => scalar_block(
+        "hi_mul_u" | "funnel_shift" => scalar_block(
             opt,
             name,
             rec,

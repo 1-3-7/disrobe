@@ -1114,6 +1114,65 @@ fn recover_with_calls_and_image<'image>(
                     return_width = dest.width;
                 }
             }
+            "extr" => {
+                let operands: Vec<&str> = split_operands(&insn.operands);
+                if operands.len() != 4 {
+                    return Err(reject_at(insn, "malformed extract"));
+                }
+                let dest: RegRef = parse_reg(operands[0])?;
+                let high: RegRef = parse_reg(operands[1])?;
+                let low: RegRef = parse_reg(operands[2])?;
+                if dest.width != high.width || dest.width != low.width {
+                    return Err(reject_at(insn, "mixed-width extract"));
+                }
+                let lsb: i64 = parse_immediate(operands[3])?;
+                let width_bits: i64 = i64::from(dest.width.bits());
+                if lsb <= 0 || lsb >= width_bits {
+                    return Err(reject_at(insn, "extract shift is outside the funnel range"));
+                }
+                let high_part: RegRef = RegRef {
+                    reg: Reg::A64Tmp,
+                    width: dest.width,
+                };
+                push_stmts(
+                    &mut items,
+                    base,
+                    index,
+                    vec![
+                        Stmt::Assign {
+                            dest: high_part,
+                            src: Source::Reg(high),
+                        },
+                        Stmt::BinAssign {
+                            dest: high_part,
+                            op: BinOp::Shl,
+                            src: Source::Imm(width_bits - lsb),
+                        },
+                        Stmt::Assign {
+                            dest,
+                            src: Source::Reg(low),
+                        },
+                        Stmt::BinAssign {
+                            dest,
+                            op: BinOp::Shr,
+                            src: Source::Imm(lsb),
+                        },
+                        Stmt::BinAssign {
+                            dest,
+                            op: BinOp::Or,
+                            src: Source::Reg(high_part),
+                        },
+                    ],
+                )?;
+                if flags.as_ref().is_some_and(|tracked: &TrackedFlags| {
+                    flags_reference_reg(&tracked.value, Reg::A64Tmp)
+                }) {
+                    flags = None;
+                }
+                if dest.reg == Reg::Rax {
+                    return_width = dest.width;
+                }
+            }
             "rev" | "clz" | "rbit" => {
                 let operands: Vec<&str> = split_operands(&insn.operands);
                 if operands.len() != 2 {
