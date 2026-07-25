@@ -199,6 +199,11 @@ float fp_from_uint(unsigned x) { return (float)(u64)x; }
 double fp_widen(float x) { return (double)x; }
 float fp_narrow(double x) { return (float)x; }
 
+float tclamp0_f(float x) { return x < 0.0f ? 0.0f : x; }
+double tclamp0_d(double x) { return x < 0.0 ? 0.0 : x; }
+float tclamp1_f(float x) { return x > 1.0f ? 1.0f : x; }
+double tclamp1_d(double x) { return x > 1.0 ? 1.0 : x; }
+
 float ret1_f(void) { return 1.0f; }
 float ret2_f(void) { return 2.0f; }
 float ret25_f(void) { return 2.5f; }
