@@ -269,6 +269,12 @@ impl FpFmaKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FpUnaryOp {
+    Neg,
+    Abs,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FpOperand {
     Xmm(Xmm),
     Mem(MemRef),
@@ -1000,6 +1006,12 @@ enum Stmt {
     FpSqrt {
         dest: Xmm,
         src: FpOperand,
+        width: FpWidth,
+    },
+    FpUnary {
+        dest: Xmm,
+        src: FpOperand,
+        op: FpUnaryOp,
         width: FpWidth,
     },
     FpRound {
@@ -1984,6 +1996,7 @@ fn build_leaf_items(
             | Stmt::FpFma { .. }
             | Stmt::FpCsel { .. }
             | Stmt::FpSqrt { .. }
+            | Stmt::FpUnary { .. }
             | Stmt::FpRound { .. }
             | Stmt::GprToXmm { .. }
             | Stmt::XmmToGpr { .. } => {
@@ -4254,6 +4267,7 @@ fn update_return_width(stmt: &Stmt, return_width: &mut Width) {
         | Stmt::FpFma { .. }
         | Stmt::FpCsel { .. }
         | Stmt::FpSqrt { .. }
+        | Stmt::FpUnary { .. }
         | Stmt::FpRound { .. }
         | Stmt::GprToXmm { .. }
         | Stmt::BlockMove { .. }
@@ -7005,7 +7019,10 @@ fn scan_fp_stmt(
             scan_fp_flags(flags, written, acc)?;
             written.insert(*dest, true);
         }
-        Stmt::FpSqrt { dest, src, width } => {
+        Stmt::FpSqrt { dest, src, width }
+        | Stmt::FpUnary {
+            dest, src, width, ..
+        } => {
             scan_fp_operand(src, *width, written, acc)?;
             written.insert(*dest, true);
         }
@@ -7361,7 +7378,7 @@ fn scan_stmt_params(
                 }
             }
         }
-        Stmt::FpSqrt { src, .. } => {
+        Stmt::FpSqrt { src, .. } | Stmt::FpUnary { src, .. } => {
             if let FpOperand::Mem(mem) = src {
                 read_addr(mem, written, acc, note);
             }
@@ -7702,6 +7719,7 @@ fn fp_stmt_result_xmm(stmt: &Stmt) -> Option<(Xmm, FpWidth)> {
         | Stmt::FpFma { dest, width, .. }
         | Stmt::FpCsel { dest, width, .. } => Some((*dest, *width)),
         Stmt::FpSqrt { dest, width, .. }
+        | Stmt::FpUnary { dest, width, .. }
         | Stmt::FpRound { dest, width, .. }
         | Stmt::GprToXmm { dest, width, .. } => Some((*dest, *width)),
         _ => None,
@@ -7733,6 +7751,7 @@ fn stmt_writes_rax_int(stmt: &Stmt) -> bool {
         | Stmt::FpFma { .. }
         | Stmt::FpCsel { .. }
         | Stmt::FpSqrt { .. }
+        | Stmt::FpUnary { .. }
         | Stmt::FpRound { .. }
         | Stmt::GprToXmm { .. }
         | Stmt::BlockMove { .. }
@@ -9661,6 +9680,7 @@ fn aggregate_note_stmt(scan: &mut AggregateScan, stmt: &Stmt) {
         }
         Stmt::FpMov { src, width, .. }
         | Stmt::FpSqrt { src, width, .. }
+        | Stmt::FpUnary { src, width, .. }
         | Stmt::FpRound { src, width, .. } => {
             aggregate_note_fp_operand(scan, src, *width);
         }
@@ -10318,7 +10338,9 @@ impl FrameScan {
                 self.note_fp(rhs, slots, misuse);
             }
             Stmt::FpMov { src, .. } => self.note_fp(src, slots, misuse),
-            Stmt::FpSqrt { src, .. } => self.note_fp(src, slots, misuse),
+            Stmt::FpSqrt { src, .. } | Stmt::FpUnary { src, .. } => {
+                self.note_fp(src, slots, misuse);
+            }
             Stmt::FpRound { src, .. } => self.note_fp(src, slots, misuse),
             Stmt::FpMinMax { lhs, rhs, .. } => {
                 self.note_fp(lhs, slots, misuse);
@@ -10727,7 +10749,10 @@ fn stmt_value_reads(stmt: &Stmt, acc: &mut Vec<Reg>) {
             }
             acc.extend(flag_operand_regs(flags));
         }
-        Stmt::FpMov { src, .. } | Stmt::FpSqrt { src, .. } | Stmt::FpRound { src, .. } => {
+        Stmt::FpMov { src, .. }
+        | Stmt::FpSqrt { src, .. }
+        | Stmt::FpUnary { src, .. }
+        | Stmt::FpRound { src, .. } => {
             if let FpOperand::Mem(mem) = src {
                 mem_regs(mem, acc);
             }
@@ -11298,7 +11323,7 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
                     }
                     push_flags(flags, acc);
                 }
-                Stmt::FpSqrt { src, .. } => {
+                Stmt::FpSqrt { src, .. } | Stmt::FpUnary { src, .. } => {
                     if let FpOperand::Mem(mem) = src {
                         push_addr(mem, acc);
                     }
@@ -11445,7 +11470,7 @@ fn collect_block_xmm(body: &Block, acc: &mut Vec<Xmm>) {
                     push_operand(if_false, acc);
                     push_flags(flags, acc);
                 }
-                Stmt::FpSqrt { dest, src, .. } => {
+                Stmt::FpSqrt { dest, src, .. } | Stmt::FpUnary { dest, src, .. } => {
                     push(*dest, acc);
                     push_operand(src, acc);
                 }
@@ -12457,6 +12482,31 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
                 cx.call(name, vec![arg])
             });
             assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&call, *width))
+        }
+        Stmt::FpUnary {
+            dest,
+            src,
+            op,
+            width,
+        } => {
+            let value: String = fp_load(src, *width, aggregates);
+            let computed: String = match op {
+                FpUnaryOp::Neg => c_render(|cx| CExpr::Unary {
+                    op: UnaryOp::Neg,
+                    operand: Box::new(cx.var(&value)),
+                }),
+                FpUnaryOp::Abs => {
+                    let name: &str = match width {
+                        FpWidth::F64 => "__builtin_fabs",
+                        FpWidth::F32 => "__builtin_fabsf",
+                    };
+                    c_render(|cx| {
+                        let arg: CExpr = cx.var(&value);
+                        cx.call(name, vec![arg])
+                    })
+                }
+            };
+            assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&computed, *width))
         }
         Stmt::FpRound {
             dest,
@@ -14360,6 +14410,19 @@ fn rs_emit_stmt(
         }
         Stmt::FpSqrt { dest, src, width } => {
             rs_fp_sqrt_stmt(out, *dest, src, *width, indent, aggregates)?;
+        }
+        Stmt::FpUnary {
+            dest,
+            src,
+            op,
+            width,
+        } => {
+            let value: String = rs_fp_load(src, *width, aggregates)?;
+            let computed: String = match op {
+                FpUnaryOp::Neg => format!("(-({value}))"),
+                FpUnaryOp::Abs => format!("({value}).abs()"),
+            };
+            rs_emit_xmm_store(out, *dest, &computed, *width, indent);
         }
         Stmt::FpRound {
             dest,
