@@ -901,6 +901,7 @@ enum Stmt {
     },
     FpBin {
         dest: Xmm,
+        lhs: FpOperand,
         rhs: FpOperand,
         op: FpOp,
         width: FpWidth,
@@ -925,6 +926,7 @@ enum Stmt {
         dest: RegRef,
         src: Xmm,
         width: FpWidth,
+        signed: bool,
     },
     FpConvert {
         dest: Xmm,
@@ -6858,9 +6860,13 @@ fn scan_fp_stmt(
 ) -> Result<()> {
     match stmt {
         Stmt::FpBin {
-            dest, rhs, width, ..
+            dest,
+            lhs,
+            rhs,
+            width,
+            ..
         } => {
-            note_fp_read(*dest, *width, written, acc)?;
+            scan_fp_operand(lhs, *width, written, acc)?;
             scan_fp_operand(rhs, *width, written, acc)?;
             written.insert(*dest, true);
         }
@@ -7190,7 +7196,10 @@ fn scan_stmt_params(
         Stmt::FpToInt { dest, .. } => {
             written.insert(dest.reg, true);
         }
-        Stmt::FpBin { rhs, .. } => {
+        Stmt::FpBin { lhs, rhs, .. } => {
+            if let FpOperand::Mem(mem) = lhs {
+                read_addr(mem, written, acc, note);
+            }
             if let FpOperand::Mem(mem) = rhs {
                 read_addr(mem, written, acc, note);
             }
@@ -7996,6 +8005,7 @@ fn lift_fp(
         let rhs_operand: FpOperand = parse_fp_operand(rhs.trim(), width, site, consts)?;
         return Ok(Some(Stmt::FpBin {
             dest,
+            lhs: FpOperand::Xmm(dest),
             rhs: rhs_operand,
             op,
             width,
@@ -8107,7 +8117,12 @@ fn lift_fp(
             }
             let src: Xmm = parse_xmm(rhs.trim())
                 .ok_or_else(|| Error::LlvmIr(format!("`{mnemonic}` source not an xmm register")))?;
-            Ok(Some(Stmt::FpToInt { dest, src, width }))
+            Ok(Some(Stmt::FpToInt {
+                dest,
+                src,
+                width,
+                signed: true,
+            }))
         }
         "cvtsd2ss" | "cvtss2sd" => {
             let (from, to): (FpWidth, FpWidth) = if mnemonic == "cvtsd2ss" {
@@ -9456,7 +9471,13 @@ fn aggregate_note_stmt(scan: &mut AggregateScan, stmt: &Stmt) {
         Stmt::Extend { src, .. } | Stmt::MulImm { src, .. } => {
             aggregate_note_ext_source(scan, src);
         }
-        Stmt::FpBin { rhs, width, .. } | Stmt::FpMinMax { rhs, width, .. } => {
+        Stmt::FpBin {
+            lhs, rhs, width, ..
+        } => {
+            aggregate_note_fp_operand(scan, lhs, *width);
+            aggregate_note_fp_operand(scan, rhs, *width);
+        }
+        Stmt::FpMinMax { rhs, width, .. } => {
             aggregate_note_fp_operand(scan, rhs, *width);
         }
         Stmt::FpMov { src, width, .. }
@@ -10113,7 +10134,10 @@ impl FrameScan {
             Stmt::FpToInt { dest, .. } => self.note_reg(dest.reg, misuse),
             Stmt::GprToXmm { src, .. } => self.note_reg(src.reg, misuse),
             Stmt::XmmToGpr { dest, .. } => self.note_reg(dest.reg, misuse),
-            Stmt::FpBin { rhs, .. } => self.note_fp(rhs, slots, misuse),
+            Stmt::FpBin { lhs, rhs, .. } => {
+                self.note_fp(lhs, slots, misuse);
+                self.note_fp(rhs, slots, misuse);
+            }
             Stmt::FpMov { src, .. } => self.note_fp(src, slots, misuse),
             Stmt::FpSqrt { src, .. } => self.note_fp(src, slots, misuse),
             Stmt::FpRound { src, .. } => self.note_fp(src, slots, misuse),
@@ -10460,7 +10484,15 @@ fn stmt_value_reads(stmt: &Stmt, acc: &mut Vec<Reg>) {
         }
         Stmt::IntToFp { src, .. } | Stmt::GprToXmm { src, .. } => acc.push(src.reg),
         Stmt::FpToInt { .. } | Stmt::XmmToGpr { .. } | Stmt::FpConvert { .. } => {}
-        Stmt::FpBin { rhs, .. } | Stmt::FpMinMax { rhs, .. } => {
+        Stmt::FpBin { lhs, rhs, .. } => {
+            if let FpOperand::Mem(mem) = lhs {
+                mem_regs(mem, acc);
+            }
+            if let FpOperand::Mem(mem) = rhs {
+                mem_regs(mem, acc);
+            }
+        }
+        Stmt::FpMinMax { rhs, .. } => {
             if let FpOperand::Mem(mem) = rhs {
                 mem_regs(mem, acc);
             }
@@ -10989,7 +11021,10 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
                 }
                 Stmt::IntToFp { src, .. } => push(src.reg, acc),
                 Stmt::FpToInt { dest, .. } => push(dest.reg, acc),
-                Stmt::FpBin { rhs, .. } => {
+                Stmt::FpBin { lhs, rhs, .. } => {
+                    if let FpOperand::Mem(mem) = lhs {
+                        push_addr(mem, acc);
+                    }
                     if let FpOperand::Mem(mem) = rhs {
                         push_addr(mem, acc);
                     }
@@ -11107,8 +11142,9 @@ fn collect_block_xmm(body: &Block, acc: &mut Vec<Xmm>) {
     for node in body {
         match node {
             Node::Stmt(stmt) => match stmt {
-                Stmt::FpBin { dest, rhs, .. } => {
+                Stmt::FpBin { dest, lhs, rhs, .. } => {
                     push(*dest, acc);
+                    push_operand(lhs, acc);
                     push_operand(rhs, acc);
                 }
                 Stmt::FpMov { dest, src, .. } => {
@@ -11954,11 +11990,12 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
         Stmt::Call { target, args, name } => call_cstmt(cx, *target, args, name.as_deref()),
         Stmt::FpBin {
             dest,
+            lhs,
             rhs,
             op,
             width,
         } => {
-            let lhs_val: String = fp_load(&FpOperand::Xmm(*dest), *width, aggregates);
+            let lhs_val: String = fp_load(lhs, *width, aggregates);
             let rhs_val: String = fp_load(rhs, *width, aggregates);
             let bin_op: BinaryOp = fp_binary_op(*op);
             let computed: String = c_render(|cx| c_bin(bin_op, cx.var(&lhs_val), cx.var(&rhs_val)));
@@ -12003,13 +12040,27 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             });
             assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&int_expr, *width))
         }
-        Stmt::FpToInt { dest, src, width } => {
+        Stmt::FpToInt {
+            dest,
+            src,
+            width,
+            signed,
+        } => {
             let value: String = fp_load(&FpOperand::Xmm(*src), *width, aggregates);
             let bits: u32 = dest.width.bits();
             let truncated: String = c_render(|cx| {
                 let opaque: CExpr = c_opaque(cx, &value);
-                let signed: CExpr = c_cast(cx, &format!("int{bits}_t"), opaque);
-                c_cast(cx, &format!("uint{bits}_t"), signed)
+                let converted_type: String = if *signed {
+                    format!("int{bits}_t")
+                } else {
+                    format!("uint{bits}_t")
+                };
+                let converted: CExpr = c_cast(cx, &converted_type, opaque);
+                if *signed {
+                    c_cast(cx, &format!("uint{bits}_t"), converted)
+                } else {
+                    converted
+                }
             });
             let var: &'static str = reg_var(dest.reg);
             let rhs: String = reg_write_rhs(var, dest.width, &truncated);
@@ -13592,13 +13643,14 @@ fn rs_call_stmt(out: &mut String, target: u64, args: &[Reg], name: Option<&str>,
 fn rs_fp_bin_stmt(
     out: &mut String,
     dest: Xmm,
+    lhs: &FpOperand,
     rhs: &FpOperand,
     op: FpOp,
     width: FpWidth,
     indent: &str,
     aggregates: &AggregatePlan,
 ) -> Option<()> {
-    let lhs_val: String = rs_fp_load_xmm(dest, width);
+    let lhs_val: String = rs_fp_load(lhs, width, aggregates)?;
     let rhs_val: String = rs_fp_load(rhs, width, aggregates)?;
     let opstr: &str = match op {
         FpOp::Add => "+",
@@ -13645,11 +13697,22 @@ fn rs_int_to_fp_stmt(
     rs_emit_xmm_store(out, dest, &int_expr, width, indent);
 }
 
-fn rs_fp_to_int_stmt(out: &mut String, dest: RegRef, src: Xmm, width: FpWidth, indent: &str) {
+fn rs_fp_to_int_stmt(
+    out: &mut String,
+    dest: RegRef,
+    src: Xmm,
+    width: FpWidth,
+    signed: bool,
+    indent: &str,
+) {
     let value: String = rs_fp_load_xmm(src, width);
     let ity: &str = rs_int_ty(dest.width);
     let uty: &str = rs_uint_ty(dest.width);
-    let truncated: String = format!("((({value}) as {ity}) as {uty} as u64)");
+    let truncated: String = if signed {
+        format!("((({value}) as {ity}) as {uty} as u64)")
+    } else {
+        format!("((({value}) as {uty}) as u64)")
+    };
     rs_emit_reg_assign(out, dest, &truncated, indent);
 }
 
@@ -13823,10 +13886,11 @@ fn rs_emit_stmt(
         }
         Stmt::FpBin {
             dest,
+            lhs,
             rhs,
             op,
             width,
-        } => rs_fp_bin_stmt(out, *dest, rhs, *op, *width, indent, aggregates)?,
+        } => rs_fp_bin_stmt(out, *dest, lhs, rhs, *op, *width, indent, aggregates)?,
         Stmt::FpMov { dest, src, width } => {
             rs_fp_mov_stmt(out, *dest, src, *width, indent, aggregates)?;
         }
@@ -13836,7 +13900,12 @@ fn rs_emit_stmt(
             signed,
             width,
         } => rs_int_to_fp_stmt(out, *dest, *src, *signed, *width, indent),
-        Stmt::FpToInt { dest, src, width } => rs_fp_to_int_stmt(out, *dest, *src, *width, indent),
+        Stmt::FpToInt {
+            dest,
+            src,
+            width,
+            signed,
+        } => rs_fp_to_int_stmt(out, *dest, *src, *width, *signed, indent),
         Stmt::FpConvert {
             dest,
             src,

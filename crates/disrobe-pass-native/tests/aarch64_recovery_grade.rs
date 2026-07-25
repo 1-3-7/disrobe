@@ -17,6 +17,26 @@ use disrobe_pass_native::{LeafRecovery, PseudoScalarType as ScalarType, recover_
 use wait_timeout::ChildExt as _;
 
 const CASES: &[(&str, &str, &[u8])] = &include!("aarch64_recovery_corpus.inc");
+const INCREMENT_TWO_FP_FUNCTIONS: &[&str] = &[
+    "fp_add_f",
+    "fp_sub_d",
+    "fp_mul_d",
+    "fp_div_d",
+    "fp_div_f",
+    "fp_axpy",
+    "fp_to_int_s",
+    "fp_to_uint_s",
+    "fp_to_ulong_d",
+    "fp_from_int",
+    "fp_from_uint",
+    "fp_widen",
+    "fp_narrow",
+    "fp_iavg",
+];
+const CORPUS_OPTIMIZATION_LEVELS: &[&str] = &["O0", "O1", "O2", "O3", "Os"];
+const INCREMENT_TWO_EXPECTED_CASES: usize = 70;
+const INCREMENT_ONE_EXPECTED_FP_CASES: usize = 32;
+const EXPECTED_INTEGER_CASES: usize = 258;
 const ORACLE_FLAGS: &[&str] = &[
     "-O1",
     "-funsigned-char",
@@ -30,6 +50,8 @@ typedef unsigned int u32;
 typedef unsigned long long u64;
 typedef signed int i32;
 typedef signed long long i64;
+
+#pragma clang fp contract(off)
 
 int idx_int(int *a, int i) { return a[i]; }
 unsigned idx_uint(unsigned *a, unsigned i) { return a[i]; }
@@ -209,6 +231,26 @@ double fp_get_d(const double *a, int i) { return a[i]; }
 void fp_put(float *a, int i, float v) { a[i] = v; }
 float fp_bits_gpr(unsigned x) { float f; __builtin_memcpy(&f, &x, 4); return f; }
 double fp_pick3(double a, double b, double c) { return c; }
+float fp_add_f(float a, float b) { return a + b; }
+double fp_sub_d(double a, double b) { return a - b; }
+double fp_mul_d(double a, double b) { return a * b; }
+double fp_div_d(double a, double b) { return a / b; }
+float fp_div_f(float a, float b) { return a / b; }
+float fp_axpy(float a, float x, float y) { return a * x + y; }
+int fp_to_int_s(float x) { return (int)x; }
+unsigned fp_to_uint_s(float x) { return (unsigned)x; }
+u64 fp_to_ulong_d(double x) { return (u64)x; }
+double fp_from_int(int x) { return (double)x; }
+float fp_from_uint(unsigned x) { return (float)(u64)x; }
+double fp_widen(float x) { return (double)x; }
+float fp_narrow(double x) { return (float)x; }
+double fp_iavg(const int *a, int n) {
+    volatile double zero = (double)n;
+    double s = zero - zero;
+#pragma clang loop vectorize(disable) interleave(disable)
+    for (int i = n; i > 0; i--) s += (double)a[i - 1];
+    return s / (double)(n ? n : 1);
+}
 ";
 
 const EXTERNS: &str = r"struct Pt { int x; int y; };
@@ -272,6 +314,20 @@ extern double fp_get_d(const double *a, int i);
 extern void fp_put(float *a, int i, float v);
 extern float fp_bits_gpr(unsigned x);
 extern double fp_pick3(double a, double b, double c);
+extern float fp_add_f(float a, float b);
+extern double fp_sub_d(double a, double b);
+extern double fp_mul_d(double a, double b);
+extern double fp_div_d(double a, double b);
+extern float fp_div_f(float a, float b);
+extern float fp_axpy(float a, float x, float y);
+extern int fp_to_int_s(float x);
+extern unsigned fp_to_uint_s(float x);
+extern unsigned long long fp_to_ulong_d(double x);
+extern double fp_from_int(int x);
+extern float fp_from_uint(unsigned x);
+extern double fp_widen(float x);
+extern float fp_narrow(double x);
+extern double fp_iavg(const int *a, int n);
 ";
 
 fn cc() -> Option<String> {
@@ -291,6 +347,7 @@ fn cc() -> Option<String> {
 struct FpExpectation {
     params: &'static [ScalarType],
     returns: Option<ScalarType>,
+    return_width_bits: u32,
 }
 
 fn fp_expectation(name: &str) -> Option<FpExpectation> {
@@ -298,38 +355,85 @@ fn fp_expectation(name: &str) -> Option<FpExpectation> {
         "fp_id_f" => FpExpectation {
             params: &[ScalarType::Float],
             returns: Some(ScalarType::Float),
+            return_width_bits: 32,
         },
         "fp_id_d" => FpExpectation {
             params: &[ScalarType::Double],
             returns: Some(ScalarType::Double),
+            return_width_bits: 64,
         },
-        "fp_second" => FpExpectation {
+        "fp_second" | "fp_sub_d" | "fp_mul_d" | "fp_div_d" => FpExpectation {
             params: &[ScalarType::Double, ScalarType::Double],
             returns: Some(ScalarType::Double),
+            return_width_bits: 64,
         },
         "fp_get" => FpExpectation {
             params: &[ScalarType::Int, ScalarType::Int],
             returns: Some(ScalarType::Float),
+            return_width_bits: 32,
         },
-        "fp_get_d" => FpExpectation {
+        "fp_get_d" | "fp_iavg" => FpExpectation {
             params: &[ScalarType::Int, ScalarType::Int],
             returns: Some(ScalarType::Double),
+            return_width_bits: 64,
         },
         "fp_put" => FpExpectation {
             params: &[ScalarType::Float, ScalarType::Int, ScalarType::Int],
             returns: None,
+            return_width_bits: 0,
         },
-        "fp_bits_gpr" => FpExpectation {
+        "fp_bits_gpr" | "fp_from_uint" => FpExpectation {
             params: &[ScalarType::Int],
             returns: Some(ScalarType::Float),
+            return_width_bits: 32,
         },
         "fp_pick3" => FpExpectation {
             params: &[ScalarType::Double, ScalarType::Double, ScalarType::Double],
             returns: Some(ScalarType::Double),
+            return_width_bits: 64,
+        },
+        "fp_add_f" | "fp_div_f" => FpExpectation {
+            params: &[ScalarType::Float, ScalarType::Float],
+            returns: Some(ScalarType::Float),
+            return_width_bits: 32,
+        },
+        "fp_axpy" => FpExpectation {
+            params: &[ScalarType::Float, ScalarType::Float, ScalarType::Float],
+            returns: Some(ScalarType::Float),
+            return_width_bits: 32,
+        },
+        "fp_to_int_s" | "fp_to_uint_s" => FpExpectation {
+            params: &[ScalarType::Float],
+            returns: None,
+            return_width_bits: 32,
+        },
+        "fp_to_ulong_d" => FpExpectation {
+            params: &[ScalarType::Double],
+            returns: None,
+            return_width_bits: 64,
+        },
+        "fp_from_int" => FpExpectation {
+            params: &[ScalarType::Int],
+            returns: Some(ScalarType::Double),
+            return_width_bits: 64,
+        },
+        "fp_widen" => FpExpectation {
+            params: &[ScalarType::Float],
+            returns: Some(ScalarType::Double),
+            return_width_bits: 64,
+        },
+        "fp_narrow" => FpExpectation {
+            params: &[ScalarType::Double],
+            returns: Some(ScalarType::Float),
+            return_width_bits: 32,
         },
         _ => return None,
     };
     Some(expectation)
+}
+
+fn is_increment_two_fp(name: &str) -> bool {
+    INCREMENT_TWO_FP_FUNCTIONS.contains(&name)
 }
 
 fn expected_arity(name: &str) -> Option<usize> {
@@ -499,6 +603,14 @@ static const uint64_t fp64_specials[] = {
     0x0010000000000000ULL, 0x7fefffffffffffffULL,
     0x8010000000000000ULL, 0xffefffffffffffffULL
 };
+static const uint64_t fp64_narrow_rounding[] = {
+    0x3ff000000fffffffULL, 0x3ff0000010000000ULL,
+    0x3ff0000010000001ULL, 0xbff000000fffffffULL,
+    0xbff0000010000000ULL, 0xbff0000010000001ULL,
+    0x3690000000000000ULL, 0x3690000000000001ULL,
+    0x36a0000000000000ULL, 0x47efffffe0000000ULL,
+    0x47efffffe0000001ULL
+};
 static uint32_t fp32_input(uint64_t *state, int iteration, int lane) {
     int count = (int)(sizeof(fp32_specials) / sizeof(fp32_specials[0]));
     if (iteration < count) return fp32_specials[(iteration + lane) % count];
@@ -507,6 +619,14 @@ static uint32_t fp32_input(uint64_t *state, int iteration, int lane) {
 static uint64_t fp64_input(uint64_t *state, int iteration, int lane) {
     int count = (int)(sizeof(fp64_specials) / sizeof(fp64_specials[0]));
     if (iteration < count) return fp64_specials[(iteration + lane) % count];
+    return xs(state);
+}
+static uint64_t fp64_narrow_input(uint64_t *state, int iteration) {
+    int general = (int)(sizeof(fp64_specials) / sizeof(fp64_specials[0]));
+    if (iteration < general) return fp64_specials[iteration];
+    int narrowed = iteration - general;
+    int count = (int)(sizeof(fp64_narrow_rounding) / sizeof(fp64_narrow_rounding[0]));
+    if (narrowed < count) return fp64_narrow_rounding[narrowed];
     return xs(state);
 }
 ";
@@ -593,6 +713,110 @@ const FP_BITS_GPR_TMPL: &str = "    {\n\
      \x20           uint32_t bits = fp32_input(&s, it, 0);\n\
      \x20           uint32_t w = fp_f_to_bits(fp_bits_gpr(bits)); uint32_t g = fp_f_to_bits($REC((uint64_t)bits));\n\
      \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_BIN_F_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           float a = fp_f_from_bits(fp32_input(&s, it, 0)); float b = fp_f_from_bits(fp32_input(&s, it, 5));\n\
+     \x20           uint32_t w = fp_f_to_bits($NAME(a, b)); uint32_t g = fp_f_to_bits($REC(a, b));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_BIN_D_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           double a = fp_d_from_bits(fp64_input(&s, it, 0)); double b = fp_d_from_bits(fp64_input(&s, it, 5));\n\
+     \x20           uint64_t w = fp_d_to_bits($NAME(a, b)); uint64_t g = fp_d_to_bits($REC(a, b));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_AXPY_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           float a = fp_f_from_bits(fp32_input(&s, it, 0)); float x = fp_f_from_bits(fp32_input(&s, it, 5)); float y = fp_f_from_bits(fp32_input(&s, it, 9));\n\
+     \x20           uint32_t w = fp_f_to_bits(fp_axpy(a, x, y)); uint32_t g = fp_f_to_bits($REC(a, x, y));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_TO_I32_F_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           float x = fp_f_from_bits(fp32_input(&s, it, 0));\n\
+     \x20           uint32_t w = (uint32_t)$NAME(x); uint32_t g = (uint32_t)$REC(x);\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_TO_U64_D_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           double x = fp_d_from_bits(fp64_input(&s, it, 0));\n\
+     \x20           uint64_t w = (uint64_t)fp_to_ulong_d(x); uint64_t g = (uint64_t)$REC(x);\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_FROM_I32_D_TMPL: &str = "    {\n\
+     \x20       static const int directed[] = { (-2147483647 - 1), 0, 2147483647, 16777215, 16777216, 16777217, -16777215, -16777216, -16777217 };\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           int count = (int)(sizeof(directed) / sizeof(directed[0])); int x = it < count ? directed[it] : (int)(uint32_t)xs(&s);\n\
+     \x20           uint64_t w = fp_d_to_bits(fp_from_int(x)); uint64_t g = fp_d_to_bits($REC((uint64_t)(uint32_t)x));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d x=%d w=%llx g=%llx\\n\", it, x, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_FROM_U32_F_TMPL: &str = "    {\n\
+     \x20       static const uint32_t directed[] = { 0U, 0xffffffffU, 0x7fffffffU, 0x80000000U, 16777215U, 16777216U, 16777217U, 33554431U, 33554432U, 33554433U };\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           int count = (int)(sizeof(directed) / sizeof(directed[0])); uint32_t x = it < count ? directed[it] : (uint32_t)xs(&s);\n\
+     \x20           uint32_t w = fp_f_to_bits(fp_from_uint(x)); uint32_t g = fp_f_to_bits($REC((uint64_t)x));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d x=%u w=%08x g=%08x\\n\", it, x, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_WIDEN_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           float x = fp_f_from_bits(fp32_input(&s, it, 0));\n\
+     \x20           uint64_t w = fp_d_to_bits(fp_widen(x)); uint64_t g = fp_d_to_bits($REC(x));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_NARROW_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           double x = fp_d_from_bits(fp64_narrow_input(&s, it));\n\
+     \x20           uint32_t w = fp_f_to_bits(fp_narrow(x)); uint32_t g = fp_f_to_bits($REC(x));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_IAVG_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           int buf[BUFN];\n\
+     \x20           for (int b = 0; b < BUFN; b++) buf[b] = (int)(uint32_t)xs(&s);\n\
+     \x20           int n = it <= BUFN ? it : (int)(xs(&s) % (BUFN + 1));\n\
+     \x20           uint64_t w = fp_d_to_bits(fp_iavg(buf, n)); uint64_t g = fp_d_to_bits($REC((uint64_t)(uintptr_t)buf, (uint64_t)(uint32_t)n));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d n=%d w=%llx g=%llx\\n\", it, n, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -736,6 +960,16 @@ const NESTED_SUM_TMPL: &str = "    {\n\
 
 fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Option<String> {
     let block: String = match name {
+        "fp_add_f" | "fp_div_f" => fill_template(FP_BIN_F_TMPL, opt, name, rec, seed),
+        "fp_sub_d" | "fp_mul_d" | "fp_div_d" => fill_template(FP_BIN_D_TMPL, opt, name, rec, seed),
+        "fp_axpy" => fill_template(FP_AXPY_TMPL, opt, name, rec, seed),
+        "fp_to_int_s" | "fp_to_uint_s" => fill_template(FP_TO_I32_F_TMPL, opt, name, rec, seed),
+        "fp_to_ulong_d" => fill_template(FP_TO_U64_D_TMPL, opt, name, rec, seed),
+        "fp_from_int" => fill_template(FP_FROM_I32_D_TMPL, opt, name, rec, seed),
+        "fp_from_uint" => fill_template(FP_FROM_U32_F_TMPL, opt, name, rec, seed),
+        "fp_widen" => fill_template(FP_WIDEN_TMPL, opt, name, rec, seed),
+        "fp_narrow" => fill_template(FP_NARROW_TMPL, opt, name, rec, seed),
+        "fp_iavg" => fill_template(FP_IAVG_TMPL, opt, name, rec, seed),
         "fp_id_f" => fill_template(FP_ID_F_TMPL, opt, name, rec, seed),
         "fp_id_d" => fill_template(FP_ID_D_TMPL, opt, name, rec, seed),
         "fp_second" => fill_template(FP_SECOND_TMPL, opt, name, rec, seed),
@@ -1163,6 +1397,28 @@ fn corpus_grade_report() {
             .any(|flag: &&str| matches!(*flag, "-ffast-math" | "-Ofast")),
         "oracle flags must preserve strict floating-point behavior"
     );
+    assert!(
+        ORACLE_FLAGS.contains(&"-ffp-contract=off"),
+        "oracle flags must keep multiply and add as two rounded operations"
+    );
+    let increment_two_corpus_cases: usize = CASES
+        .iter()
+        .filter(|(_, name, _): &&(&str, &str, &[u8])| is_increment_two_fp(name))
+        .count();
+    assert_eq!(
+        increment_two_corpus_cases, INCREMENT_TWO_EXPECTED_CASES,
+        "the generated corpus must contain exactly five rows per increment-2 function"
+    );
+    for required_name in INCREMENT_TWO_FP_FUNCTIONS {
+        for required_opt in CORPUS_OPTIMIZATION_LEVELS {
+            assert!(
+                CASES.iter().any(|(opt, name, _): &(&str, &str, &[u8])| {
+                    opt == required_opt && name == required_name
+                }),
+                "required increment-2 case `{required_opt} {required_name}` is absent from the generated corpus"
+            );
+        }
+    }
 
     let dir: tempfile::TempDir = tempfile::tempdir().expect("scratch dir");
     let battery_c: PathBuf = dir.path().join("gt_battery.c");
@@ -1188,37 +1444,51 @@ fn corpus_grade_report() {
     let mut driven: usize = 0;
     let mut fp_recovered: usize = 0;
     let mut fp_driven: usize = 0;
+    let mut increment_two_recovered: usize = 0;
+    let mut increment_two_driven: usize = 0;
     let mut skips: Vec<(String, String, String)> = Vec::new();
     let mut decls: String = String::new();
     let mut blocks: String = String::new();
 
     for (index, (opt, name, bytes)) in CASES.iter().enumerate() {
         attempted += 1;
+        let required_increment_two: bool = is_increment_two_fp(name);
         let recovery: LeafRecovery = match recover_aarch64_function(bytes, 0) {
             Ok(value) => value,
-            Err(_) => continue,
+            Err(error) => {
+                if required_increment_two {
+                    skips.push((
+                        (*opt).to_owned(),
+                        (*name).to_owned(),
+                        format!("required increment-2 recovery rejected: {error}"),
+                    ));
+                }
+                continue;
+            }
         };
         recovered += 1;
+        if required_increment_two {
+            increment_two_recovered += 1;
+        }
 
         let expected_fp: Option<FpExpectation> = fp_expectation(name);
         if let Some(expectation) = expected_fp {
             fp_recovered += 1;
-            let void_mismatch: bool =
-                expectation.returns.is_none() && recovery.return_width_bits != 0;
             if recovery.fp_params.as_slice() != expectation.params
                 || recovery.returns_fp != expectation.returns
-                || void_mismatch
+                || recovery.return_width_bits != expectation.return_width_bits
             {
                 skips.push((
                     (*opt).to_owned(),
                     (*name).to_owned(),
                     format!(
-                        "fp signature mismatch (recovered {:?} -> {:?}/{} bits, expected {:?} -> {:?})",
+                        "fp signature mismatch (recovered {:?} -> {:?}/{} bits, expected {:?} -> {:?}/{} bits)",
                         recovery.fp_params,
                         recovery.returns_fp,
                         recovery.return_width_bits,
                         expectation.params,
-                        expectation.returns
+                        expectation.returns,
+                        expectation.return_width_bits
                     ),
                 ));
                 continue;
@@ -1278,6 +1548,9 @@ fn corpus_grade_report() {
         driven += 1;
         if expected_fp.is_some() {
             fp_driven += 1;
+        }
+        if required_increment_two {
+            increment_two_driven += 1;
         }
     }
 
@@ -1371,12 +1644,30 @@ fn corpus_grade_report() {
     };
 
     let graded_equivalent: i64 = passed;
+    let increment_one_fp_recovered: usize = fp_recovered
+        .checked_sub(increment_two_recovered)
+        .expect("increment-2 fp recovery count cannot exceed the fp total");
+    let increment_one_fp_driven: usize = fp_driven
+        .checked_sub(increment_two_driven)
+        .expect("increment-2 fp driven count cannot exceed the fp total");
+    let integer_recovered: usize = recovered
+        .checked_sub(fp_recovered)
+        .expect("fp recovery count cannot exceed the total");
+    let integer_driven: usize = driven
+        .checked_sub(fp_driven)
+        .expect("fp driven count cannot exceed the total");
     eprintln!("================ AARCH64 CORPUS GRADE ================");
     eprintln!("attempted            {attempted}");
     eprintln!("recovered            {recovered}   (non-rejection; NOT a correctness claim)");
     eprintln!("driven (graded)      {driven}");
     eprintln!("fp recovered         {fp_recovered}");
     eprintln!("fp driven (graded)   {fp_driven}");
+    eprintln!("increment-1 fp recovered {increment_one_fp_recovered}");
+    eprintln!("increment-1 fp graded    {increment_one_fp_driven}");
+    eprintln!("integer recovered    {integer_recovered}");
+    eprintln!("integer graded       {integer_driven}");
+    eprintln!("increment-2 recovered {increment_two_recovered}/{INCREMENT_TWO_EXPECTED_CASES}");
+    eprintln!("increment-2 graded    {increment_two_driven}/{INCREMENT_TWO_EXPECTED_CASES}");
     eprintln!(
         "graded-equivalent    {graded_equivalent}   (recompiled + behaviorally matched on directed and random inputs)"
     );
@@ -1418,6 +1709,30 @@ fn corpus_grade_report() {
     assert_eq!(
         driver_fails, 0,
         "every driven recovery must be behaviorally equivalent"
+    );
+    assert_eq!(
+        increment_one_fp_recovered, INCREMENT_ONE_EXPECTED_FP_CASES,
+        "all increment-1 fp cases must remain recovered"
+    );
+    assert_eq!(
+        increment_one_fp_driven, INCREMENT_ONE_EXPECTED_FP_CASES,
+        "all increment-1 fp cases must remain graded"
+    );
+    assert_eq!(
+        integer_recovered, EXPECTED_INTEGER_CASES,
+        "all previously recovered integer cases must remain recovered"
+    );
+    assert_eq!(
+        integer_driven, EXPECTED_INTEGER_CASES,
+        "all previously graded integer cases must remain graded"
+    );
+    assert_eq!(
+        increment_two_recovered, INCREMENT_TWO_EXPECTED_CASES,
+        "every increment-2 corpus case must recover"
+    );
+    assert_eq!(
+        increment_two_driven, INCREMENT_TWO_EXPECTED_CASES,
+        "every increment-2 corpus case must be graded"
     );
     assert!(
         skips.is_empty(),

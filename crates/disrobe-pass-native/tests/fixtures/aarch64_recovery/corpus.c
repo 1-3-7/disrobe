@@ -3,6 +3,8 @@ typedef unsigned long long u64;
 typedef signed int i32;
 typedef signed long long i64;
 
+#pragma clang fp contract(off)
+
 int idx_int(int *a, int i) { return a[i]; }
 unsigned idx_uint(unsigned *a, unsigned i) { return a[i]; }
 long idx_long8(long *a, int i) { return a[i]; }
@@ -181,3 +183,24 @@ double fp_get_d(const double *a, int i) { return a[i]; }
 void fp_put(float *a, int i, float v) { a[i] = v; }
 float fp_bits_gpr(unsigned x) { float f; __builtin_memcpy(&f, &x, 4); return f; }
 double fp_pick3(double a, double b, double c) { return c; }
+float fp_add_f(float a, float b) { return a + b; }
+double fp_sub_d(double a, double b) { return a - b; }
+double fp_mul_d(double a, double b) { return a * b; }
+double fp_div_d(double a, double b) { return a / b; }
+float fp_div_f(float a, float b) { return a / b; }
+float fp_axpy(float a, float x, float y) { return a * x + y; }
+int fp_to_int_s(float x) { return (int)x; }
+unsigned fp_to_uint_s(float x) { return (unsigned)x; }
+u64 fp_to_ulong_d(double x) { return (u64)x; }
+double fp_from_int(int x) { return (double)x; }
+float fp_from_uint(unsigned x) { return (float)(u64)x; }
+double fp_widen(float x) { return (double)x; }
+float fp_narrow(double x) { return (float)x; }
+
+double fp_iavg(const int *a, int n) {
+    volatile double zero = (double)n;
+    double s = zero - zero;
+#pragma clang loop vectorize(disable) interleave(disable)
+    for (int i = n; i > 0; i--) s += (double)a[i - 1];
+    return s / (double)(n ? n : 1);
+}
