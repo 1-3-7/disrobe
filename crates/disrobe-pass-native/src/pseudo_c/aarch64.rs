@@ -1,12 +1,12 @@
 use super::{
     Abi, AggregatePlan, BinOp, Block, CondKind, Error, ExtSource, FP_ARG_ORDER, Flags, FnReturn,
-    FnSignature, FpFmaKind, FpMinMaxKind, FpOp, FpOperand, FpUnaryOp, FpWidth, FrameShape,
-    IndexExtend, IndexOperand, Item, ItemKind, LeafRecovery, MemRef, Node, ReduceOp, Reg, RegRef,
-    ResolvedCall, Result, RoundMode, ScalarType, Source, SretPlan, SretReturn, Stmt, Structured,
-    UnOp, VecArrangement, VecBinOp, VecElem, VecStmt, Width, Xmm, annotate_calls_block_with_order,
-    collect_block_xmm, collect_call_targets, condition_is_sound, detect_sret, emit_c, emit_rust,
-    fp_stmt_result_xmm, infer_aggregate_plan, infer_fp_params, infer_params, plan_frame,
-    rax_write_width, stmt_writes_rax_int, structure_items,
+    FnSignature, FpFmaKind, FpMinMaxKind, FpOp, FpOperand, FpToIntRound, FpUnaryOp, FpWidth,
+    FrameShape, IndexExtend, IndexOperand, Item, ItemKind, LeafRecovery, MemRef, Node, ReduceOp,
+    Reg, RegRef, ResolvedCall, Result, RoundMode, ScalarType, Source, SretPlan, SretReturn, Stmt,
+    Structured, UnOp, VecArrangement, VecBinOp, VecElem, VecStmt, Width, Xmm,
+    annotate_calls_block_with_order, collect_block_xmm, collect_call_targets, condition_is_sound,
+    detect_sret, emit_c, emit_rust, fp_stmt_result_xmm, infer_aggregate_plan, infer_fp_params,
+    infer_params, plan_frame, rax_write_width, stmt_writes_rax_int, structure_items,
 };
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use std::collections::{BTreeMap, BTreeSet};
@@ -3541,7 +3541,7 @@ fn lower_int_to_fp(insn: &DisasmInsn, operands: &[&str], signed: bool) -> Result
     }])
 }
 
-fn lower_fp_to_int(insn: &DisasmInsn, operands: &[&str], signed: bool) -> Result<Vec<Stmt>> {
+fn lower_fp_to_int(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
     reject_fixed_point_conversion(insn, operands)?;
     if operands.len() != 2 {
         return Err(reject_at(
@@ -3549,6 +3549,22 @@ fn lower_fp_to_int(insn: &DisasmInsn, operands: &[&str], signed: bool) -> Result
             "malformed floating-point-to-integer conversion",
         ));
     }
+    let (signed, round): (bool, FpToIntRound) = match insn.mnemonic.as_str() {
+        "fcvtzs" => (true, FpToIntRound::Zero),
+        "fcvtzu" => (false, FpToIntRound::Zero),
+        "fcvtms" => (true, FpToIntRound::Floor),
+        "fcvtmu" => (false, FpToIntRound::Floor),
+        "fcvtps" => (true, FpToIntRound::Ceil),
+        "fcvtpu" => (false, FpToIntRound::Ceil),
+        "fcvtas" => (true, FpToIntRound::Away),
+        "fcvtau" => (false, FpToIntRound::Away),
+        _ => {
+            return Err(reject_at(
+                insn,
+                "unsupported floating-point-to-integer conversion",
+            ));
+        }
+    };
     let dest: RegRef = parse_reg(operands[0])
         .map_err(|_| reject_at(insn, "floating-point-to-integer destination is not w or x"))?;
     let (src, width): (Xmm, FpWidth) = parse_fp_register(operands[1])?
@@ -3558,6 +3574,7 @@ fn lower_fp_to_int(insn: &DisasmInsn, operands: &[&str], signed: bool) -> Result
         src,
         width,
         signed,
+        round,
     }])
 }
 
@@ -3813,11 +3830,10 @@ fn try_lower_scalar_fp(
         "ucvtf" if has_scalar_fp_destination(&operands) => {
             lower_int_to_fp(insn, &operands, false).map(Some)
         }
-        "fcvtzs" if has_scalar_gpr_destination(&operands) => {
-            lower_fp_to_int(insn, &operands, true).map(Some)
-        }
-        "fcvtzu" if has_scalar_gpr_destination(&operands) => {
-            lower_fp_to_int(insn, &operands, false).map(Some)
+        "fcvtzs" | "fcvtzu" | "fcvtms" | "fcvtmu" | "fcvtps" | "fcvtpu" | "fcvtas" | "fcvtau"
+            if has_scalar_gpr_destination(&operands) =>
+        {
+            lower_fp_to_int(insn, &operands).map(Some)
         }
         "fcvt" if has_scalar_fp_destination(&operands) => {
             lower_fp_convert(insn, &operands).map(Some)
@@ -3835,8 +3851,9 @@ fn try_lower_scalar_fp(
             lower_fp_round(insn, &operands, mode).map(Some)
         }
         "fadd" | "fsub" | "fmul" | "fdiv" | "fmaxnm" | "fminnm" | "fmadd" | "fmsub" | "fnmadd"
-        | "fnmsub" | "fneg" | "fabs" | "scvtf" | "ucvtf" | "fcvtzs" | "fcvtzu" | "fcvt"
-        | "frintm" | "frintp" | "frintz" | "frintn" | "frinta" | "frintx" | "frinti" => Ok(None),
+        | "fnmsub" | "fneg" | "fabs" | "scvtf" | "ucvtf" | "fcvtzs" | "fcvtzu" | "fcvtms"
+        | "fcvtmu" | "fcvtps" | "fcvtpu" | "fcvtas" | "fcvtau" | "fcvt" | "frintm" | "frintp"
+        | "frintz" | "frintn" | "frinta" | "frintx" | "frinti" => Ok(None),
         "fmov" if vector_context => Ok(None),
         "fmov" => lower_fp_fmov(insn, &operands).map(Some),
         "ldr" | "str" | "ldur" | "stur" => {

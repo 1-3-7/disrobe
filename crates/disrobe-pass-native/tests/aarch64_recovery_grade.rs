@@ -318,6 +318,16 @@ float fu_nabs_f(float x) { return -__builtin_fabsf(x); }
 double fu_nabs_d(double x) { return -__builtin_fabs(x); }
 unsigned rev16_w(unsigned x) { return ((x & 0xff00ff00u) >> 8) | ((x & 0x00ff00ffu) << 8); }
 u64 rev16_x(u64 x) { return ((x & 0xff00ff00ff00ff00ull) >> 8) | ((x & 0x00ff00ff00ff00ffull) << 8); }
+i32 fcvt_floor_s(float x) { return (i32)__builtin_floorf(x); }
+i32 fcvt_ceil_s(float x) { return (i32)__builtin_ceilf(x); }
+i32 fcvt_away_s(float x) { return (i32)__builtin_roundf(x); }
+u32 fcvt_floor_us(float x) { return (u32)__builtin_floorf(x); }
+u32 fcvt_ceil_us(float x) { return (u32)__builtin_ceilf(x); }
+u32 fcvt_away_us(float x) { return (u32)__builtin_roundf(x); }
+i64 fcvt_floor_d(double x) { return (i64)__builtin_floor(x); }
+i64 fcvt_ceil_d(double x) { return (i64)__builtin_ceil(x); }
+i64 fcvt_away_d(double x) { return (i64)__builtin_round(x); }
+u64 fcvt_floor_ud(double x) { return (u64)__builtin_floor(x); }
 ";
 
 const EXTERNS: &str = r"struct Pt { int x; int y; };
@@ -462,6 +472,16 @@ extern float fu_nabs_f(float x);
 extern double fu_nabs_d(double x);
 extern unsigned rev16_w(unsigned x);
 extern unsigned long long rev16_x(unsigned long long x);
+extern int fcvt_floor_s(float x);
+extern int fcvt_ceil_s(float x);
+extern int fcvt_away_s(float x);
+extern unsigned fcvt_floor_us(float x);
+extern unsigned fcvt_ceil_us(float x);
+extern unsigned fcvt_away_us(float x);
+extern long long fcvt_floor_d(double x);
+extern long long fcvt_ceil_d(double x);
+extern long long fcvt_away_d(double x);
+extern unsigned long long fcvt_floor_ud(double x);
 ";
 
 fn cc() -> Option<String> {
@@ -545,16 +565,19 @@ fn fp_expectation(name: &str) -> Option<FpExpectation> {
                 return_width_bits: 32,
             }
         }
-        "fp_to_int_s" | "fp_to_uint_s" | "fc_isnan_f" => FpExpectation {
+        "fp_to_int_s" | "fp_to_uint_s" | "fc_isnan_f" | "fcvt_floor_s" | "fcvt_ceil_s"
+        | "fcvt_away_s" | "fcvt_floor_us" | "fcvt_ceil_us" | "fcvt_away_us" => FpExpectation {
             params: &[ScalarType::Float],
             returns: None,
             return_width_bits: 32,
         },
-        "fp_to_ulong_d" => FpExpectation {
-            params: &[ScalarType::Double],
-            returns: None,
-            return_width_bits: 64,
-        },
+        "fp_to_ulong_d" | "fcvt_floor_d" | "fcvt_ceil_d" | "fcvt_away_d" | "fcvt_floor_ud" => {
+            FpExpectation {
+                params: &[ScalarType::Double],
+                returns: None,
+                return_width_bits: 64,
+            }
+        }
         "fp_from_int" => FpExpectation {
             params: &[ScalarType::Int],
             returns: Some(ScalarType::Double),
@@ -732,6 +755,24 @@ const INCREMENT_EIGHT_EXPECTED_CASES: usize = 30;
 
 fn is_increment_eight_fp(name: &str) -> bool {
     INCREMENT_EIGHT_FP_FUNCTIONS.contains(&name)
+}
+
+const INCREMENT_NINE_FP_FUNCTIONS: &[&str] = &[
+    "fcvt_floor_s",
+    "fcvt_ceil_s",
+    "fcvt_away_s",
+    "fcvt_floor_us",
+    "fcvt_ceil_us",
+    "fcvt_away_us",
+    "fcvt_floor_d",
+    "fcvt_ceil_d",
+    "fcvt_away_d",
+    "fcvt_floor_ud",
+];
+const INCREMENT_NINE_EXPECTED_CASES: usize = 50;
+
+fn is_increment_nine_fp(name: &str) -> bool {
+    INCREMENT_NINE_FP_FUNCTIONS.contains(&name)
 }
 
 fn expected_arity(name: &str) -> Option<usize> {
@@ -1295,7 +1336,7 @@ const FP_TO_U64_D_TMPL: &str = "    {\n\
      \x20       uint64_t s = $SEED; int ok = 1;\n\
      \x20       for (int it = 0; it < ITER; it++) {\n\
      \x20           double x = fp_d_from_bits(fp64_input(&s, it, 0));\n\
-     \x20           uint64_t w = (uint64_t)fp_to_ulong_d(x); uint64_t g = (uint64_t)$REC(x);\n\
+     \x20           uint64_t w = (uint64_t)$NAME(x); uint64_t g = (uint64_t)$REC(x);\n\
      \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
@@ -1528,8 +1569,13 @@ fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Option<String> 
             fill_template(FP_SEL2_D_TMPL, opt, name, rec, seed)
         }
         "fc_seland_f" => fill_template(FP_SEL6_F_TMPL, opt, name, rec, seed),
-        "fp_to_int_s" | "fp_to_uint_s" => fill_template(FP_TO_I32_F_TMPL, opt, name, rec, seed),
-        "fp_to_ulong_d" => fill_template(FP_TO_U64_D_TMPL, opt, name, rec, seed),
+        "fp_to_int_s" | "fp_to_uint_s" | "fcvt_floor_s" | "fcvt_ceil_s" | "fcvt_away_s"
+        | "fcvt_floor_us" | "fcvt_ceil_us" | "fcvt_away_us" => {
+            fill_template(FP_TO_I32_F_TMPL, opt, name, rec, seed)
+        }
+        "fp_to_ulong_d" | "fcvt_floor_d" | "fcvt_ceil_d" | "fcvt_away_d" | "fcvt_floor_ud" => {
+            fill_template(FP_TO_U64_D_TMPL, opt, name, rec, seed)
+        }
         "fp_from_int" => fill_template(FP_FROM_I32_D_TMPL, opt, name, rec, seed),
         "fp_from_uint" => fill_template(FP_FROM_U32_F_TMPL, opt, name, rec, seed),
         "fp_widen" => fill_template(FP_WIDEN_TMPL, opt, name, rec, seed),
@@ -2099,6 +2145,24 @@ fn corpus_grade_report() {
             );
         }
     }
+    let increment_nine_corpus_cases: usize = CASES
+        .iter()
+        .filter(|(_, name, _): &&(&str, &str, &[u8])| is_increment_nine_fp(name))
+        .count();
+    assert_eq!(
+        increment_nine_corpus_cases, INCREMENT_NINE_EXPECTED_CASES,
+        "the generated corpus must contain exactly five rows per increment-9 function"
+    );
+    for required_name in INCREMENT_NINE_FP_FUNCTIONS {
+        for required_opt in CORPUS_OPTIMIZATION_LEVELS {
+            assert!(
+                CASES.iter().any(|(opt, name, _): &(&str, &str, &[u8])| {
+                    opt == required_opt && name == required_name
+                }),
+                "required increment-9 case `{required_opt} {required_name}` is absent from the generated corpus"
+            );
+        }
+    }
 
     let dir: tempfile::TempDir = tempfile::tempdir().expect("scratch dir");
     let battery_c: PathBuf = dir.path().join("gt_battery.c");
@@ -2138,6 +2202,8 @@ fn corpus_grade_report() {
     let mut increment_seven_driven: usize = 0;
     let mut increment_eight_recovered: usize = 0;
     let mut increment_eight_driven: usize = 0;
+    let mut increment_nine_recovered: usize = 0;
+    let mut increment_nine_driven: usize = 0;
     let mut skips: Vec<(String, String, String)> = Vec::new();
     let mut decls: String = String::new();
     let mut blocks: String = String::new();
@@ -2151,6 +2217,7 @@ fn corpus_grade_report() {
         let required_increment_six: bool = is_increment_six_fp(name);
         let required_increment_seven: bool = is_increment_seven_fp(name);
         let required_increment_eight: bool = is_increment_eight_fp(name);
+        let required_increment_nine: bool = is_increment_nine_fp(name);
         let recovery: LeafRecovery = match recover_aarch64_function(bytes, 0) {
             Ok(value) => value,
             Err(error) => {
@@ -2185,6 +2252,9 @@ fn corpus_grade_report() {
         }
         if required_increment_eight {
             increment_eight_recovered += 1;
+        }
+        if required_increment_nine {
+            increment_nine_recovered += 1;
         }
 
         let expected_fp: Option<FpExpectation> = fp_expectation(name);
@@ -2286,6 +2356,9 @@ fn corpus_grade_report() {
         if required_increment_eight {
             increment_eight_driven += 1;
         }
+        if required_increment_nine {
+            increment_nine_driven += 1;
+        }
     }
 
     assert!(
@@ -2386,6 +2459,7 @@ fn corpus_grade_report() {
         .and_then(|value: usize| value.checked_sub(increment_six_recovered))
         .and_then(|value: usize| value.checked_sub(increment_seven_recovered))
         .and_then(|value: usize| value.checked_sub(increment_eight_recovered))
+        .and_then(|value: usize| value.checked_sub(increment_nine_recovered))
         .expect("later-increment fp recovery counts cannot exceed the fp total");
     let increment_one_fp_driven: usize = fp_driven
         .checked_sub(increment_two_driven)
@@ -2395,6 +2469,7 @@ fn corpus_grade_report() {
         .and_then(|value: usize| value.checked_sub(increment_six_driven))
         .and_then(|value: usize| value.checked_sub(increment_seven_driven))
         .and_then(|value: usize| value.checked_sub(increment_eight_driven))
+        .and_then(|value: usize| value.checked_sub(increment_nine_driven))
         .expect("later-increment fp driven counts cannot exceed the fp total");
     let integer_recovered: usize = recovered
         .checked_sub(fp_recovered)
@@ -2426,6 +2501,8 @@ fn corpus_grade_report() {
     eprintln!("increment-7 graded    {increment_seven_driven}/{INCREMENT_SEVEN_EXPECTED_CASES}");
     eprintln!("increment-8 recovered {increment_eight_recovered}/{INCREMENT_EIGHT_EXPECTED_CASES}");
     eprintln!("increment-8 graded    {increment_eight_driven}/{INCREMENT_EIGHT_EXPECTED_CASES}");
+    eprintln!("increment-9 recovered {increment_nine_recovered}/{INCREMENT_NINE_EXPECTED_CASES}");
+    eprintln!("increment-9 graded    {increment_nine_driven}/{INCREMENT_NINE_EXPECTED_CASES}");
     eprintln!(
         "graded-equivalent    {graded_equivalent}   (recompiled + behaviorally matched on directed and random inputs)"
     );
@@ -2539,6 +2616,14 @@ fn corpus_grade_report() {
     assert_eq!(
         increment_eight_driven, INCREMENT_EIGHT_EXPECTED_CASES,
         "every increment-8 corpus case must be graded"
+    );
+    assert_eq!(
+        increment_nine_recovered, INCREMENT_NINE_EXPECTED_CASES,
+        "every increment-9 corpus case must recover"
+    );
+    assert_eq!(
+        increment_nine_driven, INCREMENT_NINE_EXPECTED_CASES,
+        "every increment-9 corpus case must be graded"
     );
     assert!(
         skips.is_empty(),

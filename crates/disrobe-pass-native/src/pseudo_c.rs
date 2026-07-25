@@ -275,6 +275,14 @@ enum FpUnaryOp {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FpToIntRound {
+    Zero,
+    Floor,
+    Ceil,
+    Away,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FpOperand {
     Xmm(Xmm),
     Mem(MemRef),
@@ -974,6 +982,7 @@ enum Stmt {
         src: Xmm,
         width: FpWidth,
         signed: bool,
+        round: FpToIntRound,
     },
     FpConvert {
         dest: Xmm,
@@ -8298,6 +8307,7 @@ fn lift_fp(
                 src,
                 width,
                 signed: true,
+                round: FpToIntRound::Zero,
             }))
         }
         "cvtsd2ss" | "cvtss2sd" => {
@@ -12129,6 +12139,17 @@ fn packed_shldq_exprs(imm: u8, lo: &str, hi: &str) -> (String, String) {
     ("0ULL".to_owned(), format!("({lo} << {})", bits - 64))
 }
 
+fn c_fp_round_builtin(base: &str, value: &str, width: FpWidth) -> String {
+    let name: String = match width {
+        FpWidth::F64 => format!("__builtin_{base}"),
+        FpWidth::F32 => format!("__builtin_{base}f"),
+    };
+    c_render(|cx| {
+        let arg: CExpr = cx.var(value);
+        cx.call(&name, vec![arg])
+    })
+}
+
 fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CStmt {
     match stmt {
         Stmt::Assign { dest, src } => {
@@ -12366,11 +12387,18 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             src,
             width,
             signed,
+            round,
         } => {
             let value: String = fp_load(&FpOperand::Xmm(*src), *width, aggregates);
+            let rounded: String = match round {
+                FpToIntRound::Zero => value,
+                FpToIntRound::Floor => c_fp_round_builtin("floor", &value, *width),
+                FpToIntRound::Ceil => c_fp_round_builtin("ceil", &value, *width),
+                FpToIntRound::Away => c_fp_round_builtin("round", &value, *width),
+            };
             let bits: u32 = dest.width.bits();
             let truncated: String = c_render(|cx| {
-                let opaque: CExpr = c_opaque(cx, &value);
+                let opaque: CExpr = c_opaque(cx, &rounded);
                 let converted_type: String = if *signed {
                     format!("int{bits}_t")
                 } else {
@@ -14165,15 +14193,22 @@ fn rs_fp_to_int_stmt(
     src: Xmm,
     width: FpWidth,
     signed: bool,
+    round: FpToIntRound,
     indent: &str,
 ) {
     let value: String = rs_fp_load_xmm(src, width);
+    let rounded: String = match round {
+        FpToIntRound::Zero => value,
+        FpToIntRound::Floor => format!("({value}).floor()"),
+        FpToIntRound::Ceil => format!("({value}).ceil()"),
+        FpToIntRound::Away => format!("({value}).round()"),
+    };
     let ity: &str = rs_int_ty(dest.width);
     let uty: &str = rs_uint_ty(dest.width);
     let truncated: String = if signed {
-        format!("((({value}) as {ity}) as {uty} as u64)")
+        format!("((({rounded}) as {ity}) as {uty} as u64)")
     } else {
-        format!("((({value}) as {uty}) as u64)")
+        format!("((({rounded}) as {uty}) as u64)")
     };
     rs_emit_reg_assign(out, dest, &truncated, indent);
 }
@@ -14373,7 +14408,8 @@ fn rs_emit_stmt(
             src,
             width,
             signed,
-        } => rs_fp_to_int_stmt(out, *dest, *src, *width, *signed, indent),
+            round,
+        } => rs_fp_to_int_stmt(out, *dest, *src, *width, *signed, *round, indent),
         Stmt::FpConvert {
             dest,
             src,
