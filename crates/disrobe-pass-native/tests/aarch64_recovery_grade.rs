@@ -275,6 +275,10 @@ float mul_add_unfused_f(float a, float b, float c) { return a * b + c; }
 double mul_add_unfused_d(double a, double b, double c) { return a * b + c; }
 float sub_mul_unfused_f(float a, float b, float c) { return c - a * b; }
 double sub_mul_unfused_d(double a, double b, double c) { return c - a * b; }
+float fma_mixed_f(float a, float b, float c) { return __builtin_fmaf(a, b, c) + a * b; }
+double fma_mixed_d(double a, double b, double c) { return __builtin_fma(a, b, c) + a * b; }
+float fma_chained_f(float a, float b, float c) { return __builtin_fmaf(a, a, __builtin_fmaf(b, c, a)); }
+double fma_chained_d(double a, double b, double c) { return __builtin_fma(a, a, __builtin_fma(b, c, a)); }
 ";
 
 const EXTERNS: &str = r"struct Pt { int x; int y; };
@@ -376,6 +380,10 @@ extern float mul_add_unfused_f(float a, float b, float c);
 extern double mul_add_unfused_d(double a, double b, double c);
 extern float sub_mul_unfused_f(float a, float b, float c);
 extern double sub_mul_unfused_d(double a, double b, double c);
+extern float fma_mixed_f(float a, float b, float c);
+extern double fma_mixed_d(double a, double b, double c);
+extern float fma_chained_f(float a, float b, float c);
+extern double fma_chained_d(double a, double b, double c);
 ";
 
 fn cc() -> Option<String> {
@@ -438,22 +446,26 @@ fn fp_expectation(name: &str) -> Option<FpExpectation> {
             return_width_bits: 32,
         },
         "fp_pick3" | "fma_madd_d" | "fma_msub_d" | "fma_nmadd_d" | "fma_nmsub_d"
-        | "mul_add_unfused_d" | "sub_mul_unfused_d" => FpExpectation {
-            params: &[ScalarType::Double, ScalarType::Double, ScalarType::Double],
-            returns: Some(ScalarType::Double),
-            return_width_bits: 64,
-        },
+        | "mul_add_unfused_d" | "sub_mul_unfused_d" | "fma_mixed_d" | "fma_chained_d" => {
+            FpExpectation {
+                params: &[ScalarType::Double, ScalarType::Double, ScalarType::Double],
+                returns: Some(ScalarType::Double),
+                return_width_bits: 64,
+            }
+        }
         "fp_add_f" | "fp_div_f" | "fp_max_f" | "fp_min_f" => FpExpectation {
             params: &[ScalarType::Float, ScalarType::Float],
             returns: Some(ScalarType::Float),
             return_width_bits: 32,
         },
         "fp_axpy" | "fp_clamp_f" | "fma_madd_f" | "fma_msub_f" | "fma_nmadd_f" | "fma_nmsub_f"
-        | "mul_add_unfused_f" | "sub_mul_unfused_f" => FpExpectation {
-            params: &[ScalarType::Float, ScalarType::Float, ScalarType::Float],
-            returns: Some(ScalarType::Float),
-            return_width_bits: 32,
-        },
+        | "mul_add_unfused_f" | "sub_mul_unfused_f" | "fma_mixed_f" | "fma_chained_f" => {
+            FpExpectation {
+                params: &[ScalarType::Float, ScalarType::Float, ScalarType::Float],
+                returns: Some(ScalarType::Float),
+                return_width_bits: 32,
+            }
+        }
         "fp_to_int_s" | "fp_to_uint_s" => FpExpectation {
             params: &[ScalarType::Float],
             returns: None,
@@ -527,6 +539,18 @@ const INCREMENT_FIVE_EXPECTED_CASES: usize = 60;
 
 fn is_increment_five_fp(name: &str) -> bool {
     INCREMENT_FIVE_FP_FUNCTIONS.contains(&name)
+}
+
+const INCREMENT_SIX_FP_FUNCTIONS: &[&str] = &[
+    "fma_mixed_f",
+    "fma_mixed_d",
+    "fma_chained_f",
+    "fma_chained_d",
+];
+const INCREMENT_SIX_EXPECTED_CASES: usize = 20;
+
+fn is_increment_six_fp(name: &str) -> bool {
+    INCREMENT_SIX_FP_FUNCTIONS.contains(&name)
 }
 
 fn expected_arity(name: &str) -> Option<usize> {
@@ -1139,9 +1163,13 @@ fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Option<String> 
         }
         "fp_axpy" | "fp_clamp_f" => fill_template(FP_AXPY_TMPL, opt, name, rec, seed),
         "fma_madd_f" | "fma_msub_f" | "fma_nmadd_f" | "fma_nmsub_f" | "mul_add_unfused_f"
-        | "sub_mul_unfused_f" => fill_template(FP_FMA_F_TMPL, opt, name, rec, seed),
+        | "sub_mul_unfused_f" | "fma_mixed_f" | "fma_chained_f" => {
+            fill_template(FP_FMA_F_TMPL, opt, name, rec, seed)
+        }
         "fma_madd_d" | "fma_msub_d" | "fma_nmadd_d" | "fma_nmsub_d" | "mul_add_unfused_d"
-        | "sub_mul_unfused_d" => fill_template(FP_FMA_D_TMPL, opt, name, rec, seed),
+        | "sub_mul_unfused_d" | "fma_mixed_d" | "fma_chained_d" => {
+            fill_template(FP_FMA_D_TMPL, opt, name, rec, seed)
+        }
         "fp_to_int_s" | "fp_to_uint_s" => fill_template(FP_TO_I32_F_TMPL, opt, name, rec, seed),
         "fp_to_ulong_d" => fill_template(FP_TO_U64_D_TMPL, opt, name, rec, seed),
         "fp_from_int" => fill_template(FP_FROM_I32_D_TMPL, opt, name, rec, seed),
@@ -1656,6 +1684,24 @@ fn corpus_grade_report() {
             );
         }
     }
+    let increment_six_corpus_cases: usize = CASES
+        .iter()
+        .filter(|(_, name, _): &&(&str, &str, &[u8])| is_increment_six_fp(name))
+        .count();
+    assert_eq!(
+        increment_six_corpus_cases, INCREMENT_SIX_EXPECTED_CASES,
+        "the generated corpus must contain exactly five rows per increment-6 function"
+    );
+    for required_name in INCREMENT_SIX_FP_FUNCTIONS {
+        for required_opt in CORPUS_OPTIMIZATION_LEVELS {
+            assert!(
+                CASES.iter().any(|(opt, name, _): &(&str, &str, &[u8])| {
+                    opt == required_opt && name == required_name
+                }),
+                "required increment-6 case `{required_opt} {required_name}` is absent from the generated corpus"
+            );
+        }
+    }
 
     let dir: tempfile::TempDir = tempfile::tempdir().expect("scratch dir");
     let battery_c: PathBuf = dir.path().join("gt_battery.c");
@@ -1689,6 +1735,8 @@ fn corpus_grade_report() {
     let mut increment_four_driven: usize = 0;
     let mut increment_five_recovered: usize = 0;
     let mut increment_five_driven: usize = 0;
+    let mut increment_six_recovered: usize = 0;
+    let mut increment_six_driven: usize = 0;
     let mut skips: Vec<(String, String, String)> = Vec::new();
     let mut decls: String = String::new();
     let mut blocks: String = String::new();
@@ -1699,6 +1747,7 @@ fn corpus_grade_report() {
         let required_increment_three: bool = is_increment_three_fp(name);
         let required_increment_four: bool = is_increment_four_fp(name);
         let required_increment_five: bool = is_increment_five_fp(name);
+        let required_increment_six: bool = is_increment_six_fp(name);
         let recovery: LeafRecovery = match recover_aarch64_function(bytes, 0) {
             Ok(value) => value,
             Err(error) => {
@@ -1724,6 +1773,9 @@ fn corpus_grade_report() {
         }
         if required_increment_five {
             increment_five_recovered += 1;
+        }
+        if required_increment_six {
+            increment_six_recovered += 1;
         }
 
         let expected_fp: Option<FpExpectation> = fp_expectation(name);
@@ -1815,6 +1867,9 @@ fn corpus_grade_report() {
         }
         if required_increment_five {
             increment_five_driven += 1;
+        }
+        if required_increment_six {
+            increment_six_driven += 1;
         }
     }
 
@@ -1913,12 +1968,14 @@ fn corpus_grade_report() {
         .and_then(|value: usize| value.checked_sub(increment_three_recovered))
         .and_then(|value: usize| value.checked_sub(increment_four_recovered))
         .and_then(|value: usize| value.checked_sub(increment_five_recovered))
+        .and_then(|value: usize| value.checked_sub(increment_six_recovered))
         .expect("later-increment fp recovery counts cannot exceed the fp total");
     let increment_one_fp_driven: usize = fp_driven
         .checked_sub(increment_two_driven)
         .and_then(|value: usize| value.checked_sub(increment_three_driven))
         .and_then(|value: usize| value.checked_sub(increment_four_driven))
         .and_then(|value: usize| value.checked_sub(increment_five_driven))
+        .and_then(|value: usize| value.checked_sub(increment_six_driven))
         .expect("later-increment fp driven counts cannot exceed the fp total");
     let integer_recovered: usize = recovered
         .checked_sub(fp_recovered)
@@ -1944,6 +2001,8 @@ fn corpus_grade_report() {
     eprintln!("increment-4 graded    {increment_four_driven}/{INCREMENT_FOUR_EXPECTED_CASES}");
     eprintln!("increment-5 recovered {increment_five_recovered}/{INCREMENT_FIVE_EXPECTED_CASES}");
     eprintln!("increment-5 graded    {increment_five_driven}/{INCREMENT_FIVE_EXPECTED_CASES}");
+    eprintln!("increment-6 recovered {increment_six_recovered}/{INCREMENT_SIX_EXPECTED_CASES}");
+    eprintln!("increment-6 graded    {increment_six_driven}/{INCREMENT_SIX_EXPECTED_CASES}");
     eprintln!(
         "graded-equivalent    {graded_equivalent}   (recompiled + behaviorally matched on directed and random inputs)"
     );
@@ -2033,6 +2092,14 @@ fn corpus_grade_report() {
     assert_eq!(
         increment_five_driven, INCREMENT_FIVE_EXPECTED_CASES,
         "every increment-5 corpus case must be graded"
+    );
+    assert_eq!(
+        increment_six_recovered, INCREMENT_SIX_EXPECTED_CASES,
+        "every increment-6 corpus case must recover"
+    );
+    assert_eq!(
+        increment_six_driven, INCREMENT_SIX_EXPECTED_CASES,
+        "every increment-6 corpus case must be graded"
     );
     assert!(
         skips.is_empty(),
