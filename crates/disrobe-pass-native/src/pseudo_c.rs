@@ -2042,6 +2042,7 @@ fn build_leaf_items(
             "no ret found; not a single-exit leaf".to_owned(),
         ));
     }
+    fuse_parity_equality_idioms(&mut items, &insns);
     Ok(LeafItems {
         insns,
         items,
@@ -7096,6 +7097,147 @@ fn resolve_conditional_flags(
     Err(Error::LlvmIr(format!(
         "condition not sound against tracked flags at {addr:#x}"
     )))
+}
+
+fn item_branch_targets(items: &[Item]) -> BTreeSet<u64> {
+    let mut targets: BTreeSet<u64> = BTreeSet::new();
+    for item in items {
+        match &item.kind {
+            ItemKind::Branch { target, .. } | ItemKind::Jmp { target } => {
+                targets.insert(*target);
+            }
+            ItemKind::Switch { cases, default, .. } => {
+                targets.insert(*default);
+                targets.extend(cases.iter().map(|(_, target): &(i64, u64)| *target));
+            }
+            ItemKind::Stmt(_) | ItemKind::Ret => {}
+        }
+    }
+    targets
+}
+
+fn fp_cmp_address_regs(rhs: &FpOperand) -> Vec<Reg> {
+    let mut regs: Vec<Reg> = Vec::new();
+    if let FpOperand::Mem(mem) = rhs {
+        mem_regs(mem, &mut regs);
+    }
+    regs
+}
+
+fn parity_fused_kind(op: BinOp, first: CondKind, second: CondKind) -> Option<CondKind> {
+    let pair: (CondKind, CondKind) = (first, second);
+    match op {
+        BinOp::And
+            if matches!(
+                pair,
+                (CondKind::E, CondKind::Np) | (CondKind::Np, CondKind::E)
+            ) =>
+        {
+            Some(CondKind::E)
+        }
+        BinOp::Or
+            if matches!(
+                pair,
+                (CondKind::Ne, CondKind::P) | (CondKind::P, CondKind::Ne)
+            ) =>
+        {
+            Some(CondKind::Ne)
+        }
+        _ => None,
+    }
+}
+
+fn fuse_parity_equality_idioms(items: &mut [Item], insns: &[DisasmInsn]) {
+    if items.len() < 3 {
+        return;
+    }
+    let targets: BTreeSet<u64> = item_branch_targets(items);
+    let insn_index: BTreeMap<u64, usize> = insns
+        .iter()
+        .enumerate()
+        .map(|(index, insn): (usize, &DisasmInsn)| (insn.address, index))
+        .collect();
+    for k in 2..items.len() {
+        let ItemKind::Stmt(Stmt::BinAssign {
+            dest,
+            op: op @ (BinOp::And | BinOp::Or),
+            src: Source::Reg(src),
+        }) = &items[k].kind
+        else {
+            continue;
+        };
+        let (dest, src, op): (RegRef, RegRef, BinOp) = (*dest, *src, *op);
+        if dest.width != Width::W8 || src.width != Width::W8 || dest.reg == src.reg {
+            continue;
+        }
+        let (
+            ItemKind::Stmt(Stmt::SetCc {
+                dest: first_dest,
+                kind: first_kind,
+                flags: first_flags,
+            }),
+            ItemKind::Stmt(Stmt::SetCc {
+                dest: second_dest,
+                kind: second_kind,
+                flags: second_flags,
+            }),
+        ) = (&items[k - 2].kind, &items[k - 1].kind)
+        else {
+            continue;
+        };
+        let defined: BTreeSet<Reg> = BTreeSet::from([first_dest.reg, second_dest.reg]);
+        if defined != BTreeSet::from([dest.reg, src.reg]) {
+            continue;
+        }
+        let Some(fused_kind): Option<CondKind> = parity_fused_kind(op, *first_kind, *second_kind)
+        else {
+            continue;
+        };
+        if first_flags != second_flags {
+            continue;
+        }
+        let Flags::FpCmp {
+            lhs,
+            rhs,
+            width,
+            model: FpUnorderedModel::UnorderedIsEqual,
+        } = first_flags
+        else {
+            continue;
+        };
+        let address_regs: Vec<Reg> = fp_cmp_address_regs(rhs);
+        if address_regs.contains(&dest.reg) || address_regs.contains(&src.reg) {
+            continue;
+        }
+        if targets.contains(&items[k - 1].address) || targets.contains(&items[k].address) {
+            continue;
+        }
+        let (Some(first_index), Some(second_index), Some(third_index)): (
+            Option<&usize>,
+            Option<&usize>,
+            Option<&usize>,
+        ) = (
+            insn_index.get(&items[k - 2].address),
+            insn_index.get(&items[k - 1].address),
+            insn_index.get(&items[k].address),
+        ) else {
+            continue;
+        };
+        if *second_index != first_index + 1 || *third_index != second_index + 1 {
+            continue;
+        }
+        let fused_flags: Flags = Flags::FpCmp {
+            lhs: *lhs,
+            rhs: *rhs,
+            width: *width,
+            model: FpUnorderedModel::UnorderedIsUnequal,
+        };
+        items[k].kind = ItemKind::Stmt(Stmt::SetCc {
+            dest,
+            kind: fused_kind,
+            flags: fused_flags,
+        });
+    }
 }
 
 fn canonicalize_x86_fp_condition(kind: CondKind, flags: &Flags) -> Option<CondKind> {
@@ -17802,6 +17944,64 @@ mod tests {
                 }]
             ),
             "setp over ucomisd must lift to a parity SetCc: {lifted:?}"
+        );
+    }
+
+    #[test]
+    fn parity_guarded_equality_fuses_to_an_ordered_compare() {
+        const CROSS_EQ: &str = "(fp_d_from_bits(x_xmm0)) == (fp_d_from_bits(x_xmm1))";
+        const CROSS_NE: &str = "(fp_d_from_bits(x_xmm0)) != (fp_d_from_bits(x_xmm1))";
+        const UNORDERED_EQ: &str = "!((fp_d_from_bits(x_xmm0)) < (fp_d_from_bits(x_xmm1)))";
+
+        let and_form: [u8; 13] = [
+            0x66, 0x0f, 0x2e, 0xc1, 0x0f, 0x94, 0xc0, 0x0f, 0x9b, 0xc1, 0x20, 0xc8, 0xc3,
+        ];
+        let rec: LeafRecovery = recover_leaf_function_abi(&and_form, 0xe100, Abi::SysV)
+            .expect("the parity-guarded equality idiom recovers");
+        assert!(
+            rec.source.contains(CROSS_EQ),
+            "sete + setnp + and must fold to an ordered equality of the two compared operands: {}",
+            rec.source
+        );
+
+        let or_form: [u8; 13] = [
+            0x66, 0x0f, 0x2e, 0xc1, 0x0f, 0x95, 0xc0, 0x0f, 0x9a, 0xc1, 0x08, 0xc8, 0xc3,
+        ];
+        let rec_or: LeafRecovery = recover_leaf_function_abi(&or_form, 0xe200, Abi::SysV)
+            .expect("the parity-guarded inequality idiom recovers");
+        assert!(
+            rec_or.source.contains(CROSS_NE),
+            "setne + setp + or must fold to an ordered inequality of the two compared operands: {}",
+            rec_or.source
+        );
+
+        let same_register: [u8; 13] = [
+            0x66, 0x0f, 0x2e, 0xc1, 0x0f, 0x94, 0xc0, 0x0f, 0x9b, 0xc0, 0x20, 0xc0, 0xc3,
+        ];
+        let rec_same: LeafRecovery = recover_leaf_function_abi(&same_register, 0xe300, Abi::SysV)
+            .expect("the degenerate same-register sequence still recovers unfused");
+        assert!(
+            !rec_same.source.contains(CROSS_EQ) && rec_same.source.contains(UNORDERED_EQ),
+            "sete al; setnp al; and al,al leaves al holding only the parity byte, so it must keep the unordered form and never fold to an equality: {}",
+            rec_same.source
+        );
+
+        let mismatched_kinds: [u8; 13] = [
+            0x66, 0x0f, 0x2e, 0xc1, 0x0f, 0x94, 0xc0, 0x0f, 0x94, 0xc1, 0x20, 0xc8, 0xc3,
+        ];
+        let rec_mismatch: LeafRecovery =
+            recover_leaf_function_abi(&mismatched_kinds, 0xe400, Abi::SysV)
+                .expect("two equality setcc feeding an and still recover unfused");
+        assert!(
+            !rec_mismatch.source.contains(CROSS_EQ),
+            "a sete + sete pair is not the parity-guard idiom and must not fold to an ordered equality: {}",
+            rec_mismatch.source
+        );
+
+        assert!(
+            rec.source.matches("x_xmm1").count() >= 2,
+            "the fused recovery must still read both compared operands: {}",
+            rec.source
         );
     }
 }
