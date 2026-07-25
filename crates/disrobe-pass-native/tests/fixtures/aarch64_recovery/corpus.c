@@ -166,6 +166,7 @@ unsigned max_u(unsigned a, unsigned b) { return a > b ? a : b; }
 unsigned clamp_u(unsigned x, unsigned hi) { return x > hi ? hi : x; }
 int neg_if(int x, int c) { return c ? -x : x; }
 u64 hi_mul_u(u64 a, u64 b) { return (u64)(((unsigned __int128)a * (unsigned __int128)b) >> 64); }
+i64 hi_mul_s(i64 a, i64 b) { return (i64)(((__int128)a * (__int128)b) >> 64); }
 unsigned avg_floor_u(unsigned a, unsigned b) { return (a & b) + ((a ^ b) >> 1); }
 int select4(int a, int b, int c, int d) { int m = a > b ? a : b; int n = c > d ? c : d; return m > n ? m : n; }
 int sat_sub(int a, int b) {

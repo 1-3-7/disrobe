@@ -379,6 +379,7 @@ enum BinOp {
     Umull,
     Smull,
     Umulh,
+    Smulh,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6574,9 +6575,13 @@ const fn flag_effect_bin(op: BinOp) -> FlagEffect {
         | BinOp::Shl
         | BinOp::Shr
         | BinOp::Sar => FlagEffect::Sign,
-        BinOp::Imul | BinOp::Sdiv | BinOp::Udiv | BinOp::Umull | BinOp::Smull | BinOp::Umulh => {
-            FlagEffect::Clobber
-        }
+        BinOp::Imul
+        | BinOp::Sdiv
+        | BinOp::Udiv
+        | BinOp::Umull
+        | BinOp::Smull
+        | BinOp::Umulh
+        | BinOp::Smulh => FlagEffect::Clobber,
     }
 }
 
@@ -12889,6 +12894,11 @@ fn bin_expr(op: BinOp, lhs: &str, rhs: &str, width: Width) -> String {
                 "(uint64_t)(((unsigned __int128)(uint64_t)({lhs}) * (unsigned __int128)(uint64_t)({rhs})) >> 64)"
             )
         }
+        BinOp::Smulh => {
+            format!(
+                "(uint64_t)(int64_t)(((__int128)(int64_t)({lhs}) * (__int128)(int64_t)({rhs})) >> 64)"
+            )
+        }
     }
 }
 
@@ -14450,6 +14460,11 @@ fn rs_bin_expr(op: BinOp, lhs: &str, rhs: &str, width: Width) -> String {
         }
         BinOp::Umulh => {
             format!("((({lhs}) as u128).wrapping_mul(({rhs}) as u128) >> 64) as u64")
+        }
+        BinOp::Smulh => {
+            format!(
+                "((({lhs}) as i64 as i128).wrapping_mul(({rhs}) as i64 as i128) >> 64) as i64 as u64"
+            )
         }
     }
 }

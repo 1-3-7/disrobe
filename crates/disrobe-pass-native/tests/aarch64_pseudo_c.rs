@@ -431,8 +431,8 @@ fn atomics_and_out_of_subset_integer_ops_reject_explicitly() {
     let atomics: [u8; 12] = [
         0x01, 0x7c, 0x5f, 0xc8, 0x01, 0x7c, 0x02, 0xc8, 0xc0, 0x03, 0x5f, 0xd6,
     ];
-    let signed_high_multiply: [u8; 8] = [0x09, 0x7d, 0x49, 0x9b, 0xc0, 0x03, 0x5f, 0xd6];
-    for bytes in [&atomics[..], &signed_high_multiply[..]] {
+    let widening_multiply_accumulate: [u8; 8] = [0x20, 0x08, 0x20, 0x9b, 0xc0, 0x03, 0x5f, 0xd6];
+    for bytes in [&atomics[..], &widening_multiply_accumulate[..]] {
         let error = recover_aarch64_function(bytes, 0).expect_err("unsupported aarch64 class");
         assert!(
             format!("{error:?}").contains("aarch64 reject: unsupported instruction"),
