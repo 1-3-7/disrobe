@@ -1709,6 +1709,7 @@ fn build_leaf_items(
             lift_fp_compare(&insn.mnemonic, &insn.operands, insn.address, consts)?
         {
             flags = Some(fp_flags);
+            flags_mark = items.len();
             continue;
         }
         if let Some(fp_stmt) = lift_fp(&insn.mnemonic, &insn.operands, insn.address, consts)? {
