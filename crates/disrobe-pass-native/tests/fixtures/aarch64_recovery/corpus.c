@@ -199,6 +199,17 @@ float fp_from_uint(unsigned x) { return (float)(u64)x; }
 double fp_widen(float x) { return (double)x; }
 float fp_narrow(double x) { return (float)x; }
 
+float ret1_f(void) { return 1.0f; }
+float ret2_f(void) { return 2.0f; }
+float ret25_f(void) { return 2.5f; }
+float rethalf_f(void) { return 0.5f; }
+float retn1_f(void) { return -1.0f; }
+double ret1_d(void) { return 1.0; }
+double ret25_d(void) { return 2.5; }
+double rethalf_d(void) { return 0.5; }
+double retn3_d(void) { return -3.0; }
+double retn1_d(void) { return -1.0; }
+
 float kadd_f(float x) { return x + 2.5f; }
 double kadd_d(double x) { return x + 2.5; }
 float kmul_f(float x) { return x * 0.5f; }
