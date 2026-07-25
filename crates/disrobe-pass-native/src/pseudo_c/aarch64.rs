@@ -1314,7 +1314,7 @@ fn recover_with_calls_and_image<'image>(
                     return_width = dest.width;
                 }
             }
-            "rev" | "clz" | "rbit" => {
+            "rev" | "rev16" | "clz" | "rbit" => {
                 let operands: Vec<&str> = split_operands(&insn.operands);
                 if operands.len() != 2 {
                     return Err(reject_at(insn, "malformed unary data-processing"));
@@ -1327,6 +1327,7 @@ fn recover_with_calls_and_image<'image>(
                 }
                 let op: UnOp = match insn.mnemonic.as_str() {
                     "rev" => UnOp::Bswap,
+                    "rev16" => UnOp::Rev16,
                     "clz" => UnOp::Clz,
                     _ => UnOp::Rbit,
                 };
