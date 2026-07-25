@@ -895,8 +895,7 @@ fn recover_with_calls_and_image<'image>(
                     reg: Reg::A64Tmp2,
                     width: dest.width,
                 };
-                if n_reg == Some(scratch.reg)
-                    || flags_reference_reg(&live_flags.value, scratch.reg)
+                if n_reg == Some(scratch.reg) || flags_reference_reg(&live_flags.value, scratch.reg)
                 {
                     return Err(reject_at(
                         insn,
