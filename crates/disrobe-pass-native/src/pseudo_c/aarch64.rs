@@ -1,9 +1,9 @@
 use super::{
     Abi, AggregatePlan, BinOp, Block, CondKind, Error, ExtSource, FP_ARG_ORDER, Flags, FnReturn,
-    FnSignature, FpFmaKind, FpMinMaxKind, FpOp, FpOperand, FpWidth, FrameShape, IndexExtend,
-    IndexOperand, Item, ItemKind, LeafRecovery, MemRef, Node, ReduceOp, Reg, RegRef, ResolvedCall,
-    Result, RoundMode, ScalarType, Source, SretPlan, SretReturn, Stmt, Structured, UnOp,
-    VecArrangement, VecBinOp, VecElem, VecStmt, Width, Xmm, annotate_calls_block_with_order,
+    FnSignature, FpFmaKind, FpMinMaxKind, FpOp, FpOperand, FpUnaryOp, FpWidth, FrameShape,
+    IndexExtend, IndexOperand, Item, ItemKind, LeafRecovery, MemRef, Node, ReduceOp, Reg, RegRef,
+    ResolvedCall, Result, RoundMode, ScalarType, Source, SretPlan, SretReturn, Stmt, Structured,
+    UnOp, VecArrangement, VecBinOp, VecElem, VecStmt, Width, Xmm, annotate_calls_block_with_order,
     collect_block_xmm, collect_call_targets, condition_is_sound, detect_sret, emit_c, emit_rust,
     fp_stmt_result_xmm, infer_aggregate_plan, infer_fp_params, infer_params, plan_frame,
     rax_write_width, stmt_writes_rax_int, structure_items,
@@ -2303,6 +2303,7 @@ fn stmt_is_scalar_fp(stmt: &Stmt) -> bool {
             | Stmt::FpFma { .. }
             | Stmt::FpCsel { .. }
             | Stmt::FpSqrt { .. }
+            | Stmt::FpUnary { .. }
             | Stmt::FpRound { .. }
             | Stmt::GprToXmm { .. }
             | Stmt::XmmToGpr { .. }
@@ -3474,6 +3475,41 @@ fn lower_fp_fma(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
     }])
 }
 
+fn lower_fp_unary(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
+    if operands.len() != 2 {
+        return Err(reject_at(
+            insn,
+            "malformed scalar floating-point unary operation",
+        ));
+    }
+    let op: FpUnaryOp = match insn.mnemonic.as_str() {
+        "fneg" => FpUnaryOp::Neg,
+        "fabs" => FpUnaryOp::Abs,
+        _ => {
+            return Err(reject_at(
+                insn,
+                "unsupported scalar floating-point unary operation",
+            ));
+        }
+    };
+    let dest: (Xmm, FpWidth) = parse_fp_register(operands[0])?
+        .ok_or_else(|| reject_at(insn, "floating-point unary destination is not scalar"))?;
+    let src: (Xmm, FpWidth) = parse_fp_register(operands[1])?
+        .ok_or_else(|| reject_at(insn, "floating-point unary source is not scalar"))?;
+    if dest.1 != src.1 {
+        return Err(reject_at(
+            insn,
+            "scalar floating-point unary operation changes precision",
+        ));
+    }
+    Ok(vec![Stmt::FpUnary {
+        dest: dest.0,
+        src: FpOperand::Xmm(src.0),
+        op,
+        width: dest.1,
+    }])
+}
+
 fn reject_fixed_point_conversion(insn: &DisasmInsn, operands: &[&str]) -> Result<()> {
     if operands.len() == 3 && operands[2].trim().starts_with('#') {
         return Err(reject_at(
@@ -3767,6 +3803,9 @@ fn try_lower_scalar_fp(
         "fmadd" | "fmsub" | "fnmadd" | "fnmsub" if has_scalar_fp_destination(&operands) => {
             lower_fp_fma(insn, &operands).map(Some)
         }
+        "fneg" | "fabs" if has_scalar_fp_destination(&operands) => {
+            lower_fp_unary(insn, &operands).map(Some)
+        }
         "scvtf" if has_scalar_fp_destination(&operands) => {
             lower_int_to_fp(insn, &operands, true).map(Some)
         }
@@ -3795,8 +3834,8 @@ fn try_lower_scalar_fp(
             lower_fp_round(insn, &operands, mode).map(Some)
         }
         "fadd" | "fsub" | "fmul" | "fdiv" | "fmaxnm" | "fminnm" | "fmadd" | "fmsub" | "fnmadd"
-        | "fnmsub" | "scvtf" | "ucvtf" | "fcvtzs" | "fcvtzu" | "fcvt" | "frintm" | "frintp"
-        | "frintz" | "frintn" | "frinta" | "frintx" | "frinti" => Ok(None),
+        | "fnmsub" | "fneg" | "fabs" | "scvtf" | "ucvtf" | "fcvtzs" | "fcvtzu" | "fcvt"
+        | "frintm" | "frintp" | "frintz" | "frintn" | "frinta" | "frintx" | "frinti" => Ok(None),
         "fmov" if vector_context => Ok(None),
         "fmov" => lower_fp_fmov(insn, &operands).map(Some),
         "ldr" | "str" | "ldur" | "stur" => {

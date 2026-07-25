@@ -267,3 +267,9 @@ double fc_tmin_d(double a, double b) { return a < b ? a : b; }
 double fc_tmax_d(double a, double b) { return a > b ? a : b; }
 double fc_pickeq_d(double a, double b) { return a == b ? a : b; }
 float fc_seland_f(float a, float b, float c, float d, float x, float y) { return (a < b && c < d) ? x : y; }
+float fu_neg_f(float x) { return -x; }
+double fu_neg_d(double x) { return -x; }
+float fu_abs_f(float x) { return __builtin_fabsf(x); }
+double fu_abs_d(double x) { return __builtin_fabs(x); }
+float fu_nabs_f(float x) { return -__builtin_fabsf(x); }
+double fu_nabs_d(double x) { return -__builtin_fabs(x); }
