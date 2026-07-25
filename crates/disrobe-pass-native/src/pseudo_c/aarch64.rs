@@ -1,6 +1,6 @@
 use super::{
     Abi, AggregatePlan, BinOp, Block, CondKind, Error, ExtSource, FP_ARG_ORDER, Flags, FnReturn,
-    FnSignature, FpOperand, FpWidth, FrameShape, IndexExtend, IndexOperand, Item, ItemKind,
+    FnSignature, FpOp, FpOperand, FpWidth, FrameShape, IndexExtend, IndexOperand, Item, ItemKind,
     LeafRecovery, MemRef, Node, ReduceOp, Reg, RegRef, ResolvedCall, Result, ScalarType, Source,
     SretPlan, SretReturn, Stmt, Structured, UnOp, VecArrangement, VecBinOp, VecElem, VecStmt,
     Width, Xmm, annotate_calls_block_with_order, collect_block_xmm, collect_call_targets,
@@ -2155,11 +2155,26 @@ impl ScalarReturnPath {
         if let Some(width) = rax_write_width(stmt) {
             self.int = Some(width);
         }
+        if matches!(
+            stmt,
+            Stmt::FpToInt { dest, src, .. }
+                if dest.reg == Reg::Rax && *src == Xmm::Xmm0
+        ) {
+            self.fp = None;
+            self.fp_stored = false;
+        }
         if let Some((dest, width)) = fp_stmt_result_xmm(stmt)
             && dest == Xmm::Xmm0
         {
             self.fp = Some(width);
             self.fp_stored = false;
+        }
+        if matches!(
+            stmt,
+            Stmt::IntToFp { dest, src, .. }
+                if *dest == Xmm::Xmm0 && src.reg == Reg::Rax
+        ) {
+            self.int = None;
         }
         if let Stmt::FpStore { src, .. } = stmt
             && *src == Xmm::Xmm0
@@ -2526,13 +2541,18 @@ fn lower_alu(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
     } else {
         dest.width
     };
-    let extend: Option<(bool, Width, i64)> = if operands.len() == 4 {
-        parse_extend_modifier(operands[3])
-    } else if operands.len() == 3 && dest.width == Width::W64 {
-        elided_extended_register(insn, operands[2])
+    let encoded_extend: Option<(bool, Width, i64)> = if dest.width == Width::W64 {
+        encoded_extended_register(insn, operands[2])
     } else {
         None
     };
+    let extend: Option<(bool, Width, i64)> = encoded_extend.or_else(|| {
+        if operands.len() == 4 {
+            parse_extend_modifier(operands[3])
+        } else {
+            None
+        }
+    });
     let mut rhs: Source = if let Some((signed, src_width, shift)) = extend {
         let src_reg: RegRef = parse_reg(operands[2])?;
         if src_reg.width != src_width {
@@ -2894,13 +2914,21 @@ fn parse_fp_register(token: &str) -> Result<Option<(Xmm, FpWidth)>> {
             .ok_or_else(|| reject("scalar floating-point register is outside v0..v15"))?;
         return Ok(Some((register, width)));
     }
-    let unsupported: bool = ['h', 'q', 'v'].iter().any(|prefix: &char| {
+    let half_precision: bool = name
+        .strip_prefix('h')
+        .is_some_and(|suffix: &str| suffix.starts_with(|ch: char| ch.is_ascii_digit()));
+    if half_precision {
+        return Err(reject(
+            "F16 scalar floating-point registers are unsupported",
+        ));
+    }
+    let unsupported: bool = ['q', 'v'].iter().any(|prefix: &char| {
         name.strip_prefix(*prefix)
             .is_some_and(|suffix: &str| suffix.starts_with(|ch: char| ch.is_ascii_digit()))
     });
     if unsupported {
         return Err(reject(
-            "half-precision and vector registers are outside scalar floating-point increment 1",
+            "vector registers are outside scalar floating-point recovery",
         ));
     }
     Ok(None)
@@ -3040,6 +3068,121 @@ fn lower_fp_fmov(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
             "fmov does not use a supported scalar floating-point register",
         )),
     }
+}
+
+fn lower_fp_binary(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
+    if operands.len() != 3 {
+        return Err(reject_at(
+            insn,
+            "malformed three-operand scalar floating-point arithmetic",
+        ));
+    }
+    let op: FpOp = match insn.mnemonic.as_str() {
+        "fadd" => FpOp::Add,
+        "fsub" => FpOp::Sub,
+        "fmul" => FpOp::Mul,
+        "fdiv" => FpOp::Div,
+        _ => {
+            return Err(reject_at(
+                insn,
+                "unsupported scalar floating-point arithmetic",
+            ));
+        }
+    };
+    let dest: (Xmm, FpWidth) = parse_fp_register(operands[0])?
+        .ok_or_else(|| reject_at(insn, "floating-point arithmetic destination is not scalar"))?;
+    let lhs: (Xmm, FpWidth) = parse_fp_register(operands[1])?
+        .ok_or_else(|| reject_at(insn, "floating-point arithmetic lhs is not scalar"))?;
+    let rhs: (Xmm, FpWidth) = parse_fp_register(operands[2])?
+        .ok_or_else(|| reject_at(insn, "floating-point arithmetic rhs is not scalar"))?;
+    if dest.1 != lhs.1 || dest.1 != rhs.1 {
+        return Err(reject_at(
+            insn,
+            "scalar floating-point arithmetic uses mixed precision",
+        ));
+    }
+    Ok(vec![Stmt::FpBin {
+        dest: dest.0,
+        lhs: FpOperand::Xmm(lhs.0),
+        rhs: FpOperand::Xmm(rhs.0),
+        op,
+        width: dest.1,
+    }])
+}
+
+fn reject_fixed_point_conversion(insn: &DisasmInsn, operands: &[&str]) -> Result<()> {
+    if operands.len() == 3 && operands[2].trim().starts_with('#') {
+        return Err(reject_at(
+            insn,
+            "fixed-point floating-point conversion is unsupported",
+        ));
+    }
+    Ok(())
+}
+
+fn lower_int_to_fp(insn: &DisasmInsn, operands: &[&str], signed: bool) -> Result<Vec<Stmt>> {
+    reject_fixed_point_conversion(insn, operands)?;
+    if operands.len() != 2 {
+        return Err(reject_at(
+            insn,
+            "malformed integer-to-floating-point conversion",
+        ));
+    }
+    let (dest, width): (Xmm, FpWidth) = parse_fp_register(operands[0])?
+        .ok_or_else(|| reject_at(insn, "integer-to-floating-point destination is not scalar"))?;
+    let src: RegRef = parse_reg(operands[1])
+        .map_err(|_| reject_at(insn, "integer-to-floating-point source is not w or x"))?;
+    Ok(vec![Stmt::IntToFp {
+        dest,
+        src,
+        signed,
+        width,
+    }])
+}
+
+fn lower_fp_to_int(insn: &DisasmInsn, operands: &[&str], signed: bool) -> Result<Vec<Stmt>> {
+    reject_fixed_point_conversion(insn, operands)?;
+    if operands.len() != 2 {
+        return Err(reject_at(
+            insn,
+            "malformed floating-point-to-integer conversion",
+        ));
+    }
+    let dest: RegRef = parse_reg(operands[0])
+        .map_err(|_| reject_at(insn, "floating-point-to-integer destination is not w or x"))?;
+    let (src, width): (Xmm, FpWidth) = parse_fp_register(operands[1])?
+        .ok_or_else(|| reject_at(insn, "floating-point-to-integer source is not scalar"))?;
+    Ok(vec![Stmt::FpToInt {
+        dest,
+        src,
+        width,
+        signed,
+    }])
+}
+
+fn lower_fp_convert(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
+    if operands.len() != 2 {
+        return Err(reject_at(
+            insn,
+            "malformed floating-point precision conversion",
+        ));
+    }
+    let (dest, to): (Xmm, FpWidth) = parse_fp_register(operands[0])?
+        .ok_or_else(|| reject_at(insn, "floating-point conversion destination is not scalar"))?;
+    let (src, from): (Xmm, FpWidth) = parse_fp_register(operands[1])?
+        .ok_or_else(|| reject_at(insn, "floating-point conversion source is not scalar"))?;
+    if from == to {
+        return Err(reject_at(
+            insn,
+            "floating-point conversion does not change precision",
+        ));
+    }
+    Ok(vec![Stmt::FpConvert {
+        dest,
+        src,
+        from,
+        to,
+    }])
 }
 
 fn reject_incoming_fp_stack_load(mem: MemRef, frame: FrameInfo, insn: &DisasmInsn) -> Result<()> {
@@ -3204,6 +3347,24 @@ fn lower_fp_pair_memory(
     Ok(stmts)
 }
 
+fn has_scalar_fp_destination(operands: &[&str]) -> bool {
+    let Some(dest): Option<&&str> = operands.first() else {
+        return false;
+    };
+    let name: &str = dest.trim();
+    ['s', 'd', 'h'].iter().any(|prefix: &char| {
+        name.strip_prefix(*prefix)
+            .is_some_and(|suffix: &str| suffix.starts_with(|ch: char| ch.is_ascii_digit()))
+    })
+}
+
+fn has_scalar_gpr_destination(operands: &[&str]) -> bool {
+    let Some(dest): Option<&&str> = operands.first() else {
+        return false;
+    };
+    parse_reg(dest).is_ok()
+}
+
 fn try_lower_scalar_fp(
     insn: &DisasmInsn,
     frame: FrameInfo,
@@ -3211,6 +3372,27 @@ fn try_lower_scalar_fp(
 ) -> Result<Option<Vec<Stmt>>> {
     let operands: Vec<&str> = split_operands(&insn.operands);
     match insn.mnemonic.as_str() {
+        "fadd" | "fsub" | "fmul" | "fdiv" if has_scalar_fp_destination(&operands) => {
+            lower_fp_binary(insn, &operands).map(Some)
+        }
+        "scvtf" if has_scalar_fp_destination(&operands) => {
+            lower_int_to_fp(insn, &operands, true).map(Some)
+        }
+        "ucvtf" if has_scalar_fp_destination(&operands) => {
+            lower_int_to_fp(insn, &operands, false).map(Some)
+        }
+        "fcvtzs" if has_scalar_gpr_destination(&operands) => {
+            lower_fp_to_int(insn, &operands, true).map(Some)
+        }
+        "fcvtzu" if has_scalar_gpr_destination(&operands) => {
+            lower_fp_to_int(insn, &operands, false).map(Some)
+        }
+        "fcvt" if has_scalar_fp_destination(&operands) => {
+            lower_fp_convert(insn, &operands).map(Some)
+        }
+        "fadd" | "fsub" | "fmul" | "fdiv" | "scvtf" | "ucvtf" | "fcvtzs" | "fcvtzu" | "fcvt" => {
+            Ok(None)
+        }
         "fmov" if vector_context => Ok(None),
         "fmov" => lower_fp_fmov(insn, &operands).map(Some),
         "ldr" | "str" | "ldur" | "stur" => {
@@ -4193,7 +4375,7 @@ fn parse_extend_modifier(token: &str) -> Option<(bool, Width, i64)> {
     Some((signed, src_width, shift))
 }
 
-fn elided_extended_register(insn: &DisasmInsn, rhs_token: &str) -> Option<(bool, Width, i64)> {
+fn encoded_extended_register(insn: &DisasmInsn, rhs_token: &str) -> Option<(bool, Width, i64)> {
     if !matches!(insn.mnemonic.as_str(), "add" | "adds" | "sub" | "subs") {
         return None;
     }

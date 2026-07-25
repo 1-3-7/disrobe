@@ -1,11 +1,22 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
-use disrobe_pass_native::{LeafRecovery, PseudoScalarType as ScalarType, recover_aarch64_function};
+use disrobe_pass_native::{
+    Arch, DisasmInsn, LeafRecovery, PseudoScalarType as ScalarType, disassemble,
+    recover_aarch64_function,
+};
 use std::collections::BTreeMap;
 
 const CASES: &[(&str, &str, &[u8])] = &include!("aarch64_recovery_corpus.inc");
 
-const RECOVERY_FLOOR: usize = 290;
+const RECOVERY_FLOOR: usize = 360;
+
+type ConversionCase = (
+    u32,
+    &'static [ScalarType],
+    Option<ScalarType>,
+    u32,
+    &'static str,
+);
 
 #[test]
 fn aarch64_recovery_corpus_meets_the_floor() {
@@ -127,7 +138,7 @@ fn scalar_fp_increment_one_boundaries_reject() {
             "conflicting widths",
         ),
         (
-            &[0x00, 0x28, 0x61, 0x1e, 0xc0, 0x03, 0x5f, 0xd6],
+            &[0x00, 0x40, 0x61, 0x1e, 0xc0, 0x03, 0x5f, 0xd6],
             "unsupported instruction",
         ),
         (
@@ -144,5 +155,269 @@ fn scalar_fp_increment_one_boundaries_reject() {
             error.contains(expected),
             "unexpected rejection for {bytes:02x?}: {error}"
         );
+    }
+}
+
+#[test]
+fn yaxpeax_scalar_fp_increment_two_rendering_is_faithful() {
+    let words: [u32; 19] = [
+        0x1e22_2820,
+        0x1e65_3883,
+        0x1e28_08e6,
+        0x1e6b_1949,
+        0x1e60_3820,
+        0x1e22_0020,
+        0x9e62_0062,
+        0x1e23_00a4,
+        0x9e63_00e6,
+        0x1e38_0128,
+        0x9e78_016a,
+        0x1e39_01ac,
+        0x9e79_01ee,
+        0x1e22_c020,
+        0x1e62_4062,
+        0x1e42_e4a4,
+        0x1e18_f4e6,
+        0x1e23_c020,
+        0x1ee2_4062,
+    ];
+    let bytes: Vec<u8> = words
+        .iter()
+        .flat_map(|word: &u32| word.to_le_bytes())
+        .collect();
+    let instructions: Vec<DisasmInsn> =
+        disassemble(Arch::Aarch64, 0, &bytes).expect("known scalar fp encodings");
+    for insn in &instructions {
+        eprintln!("{} {}", insn.mnemonic, insn.operands);
+    }
+    let rendered: Vec<(&str, &str)> = instructions
+        .iter()
+        .map(|insn: &DisasmInsn| (insn.mnemonic.as_str(), insn.operands.as_str()))
+        .collect();
+    let expected: [(&str, &str); 19] = [
+        ("fadd", "s0, s1, s2"),
+        ("fsub", "d3, d4, d5"),
+        ("fmul", "s6, s7, s8"),
+        ("fdiv", "d9, d10, d11"),
+        ("fsub", "d0, d1, d0"),
+        ("scvtf", "s0, w1"),
+        ("scvtf", "d2, x3"),
+        ("ucvtf", "s4, w5"),
+        ("ucvtf", "d6, x7"),
+        ("fcvtzs", "w8, s9"),
+        ("fcvtzs", "x10, d11"),
+        ("fcvtzu", "w12, s13"),
+        ("fcvtzu", "x14, d15"),
+        ("fcvt", "d0, s1"),
+        ("fcvt", "s2, d3"),
+        ("scvtf", "d4, w5, #0x7"),
+        ("fcvtzs", "w6, s7, #0x3"),
+        ("fcvt", "h0, s1"),
+        ("fcvt", "s2, h3"),
+    ];
+    assert_eq!(rendered, expected);
+}
+
+#[test]
+fn scalar_fp_increment_two_arithmetic_recovers_three_operands() {
+    let cases: [(u32, &str, ScalarType); 4] = [
+        (
+            0x1e21_2800,
+            "(fp_f_from_bits((uint32_t)x_xmm0) + fp_f_from_bits((uint32_t)x_xmm1))",
+            ScalarType::Float,
+        ),
+        (
+            0x1e60_3820,
+            "(fp_d_from_bits(x_xmm1) - fp_d_from_bits(x_xmm0))",
+            ScalarType::Double,
+        ),
+        (
+            0x1e61_0800,
+            "(fp_d_from_bits(x_xmm0) * fp_d_from_bits(x_xmm1))",
+            ScalarType::Double,
+        ),
+        (
+            0x1e61_1800,
+            "(fp_d_from_bits(x_xmm0) / fp_d_from_bits(x_xmm1))",
+            ScalarType::Double,
+        ),
+    ];
+    for (word, expression, scalar_type) in cases {
+        let mut code: Vec<u8> = word.to_le_bytes().to_vec();
+        code.extend_from_slice(&[0xc0, 0x03, 0x5f, 0xd6]);
+        let recovery: LeafRecovery =
+            recover_aarch64_function(&code, 0).expect("scalar fp arithmetic");
+        assert_eq!(
+            recovery.fp_params,
+            vec![scalar_type, scalar_type],
+            "{expression}: {}",
+            recovery.source
+        );
+        assert_eq!(recovery.returns_fp, Some(scalar_type));
+        assert!(
+            recovery.source.contains(expression),
+            "missing `{expression}` in {}",
+            recovery.source
+        );
+    }
+}
+
+#[test]
+fn scalar_fp_increment_two_conversions_recover_signedness_and_widths() {
+    let conversions: [ConversionCase; 10] = [
+        (
+            0x1e62_0000,
+            &[ScalarType::Int],
+            Some(ScalarType::Double),
+            64,
+            "(double)((int32_t)r_rax)",
+        ),
+        (
+            0x1e23_0000,
+            &[ScalarType::Int],
+            Some(ScalarType::Float),
+            32,
+            "(float)((uint32_t)r_rax)",
+        ),
+        (
+            0x9e62_0000,
+            &[ScalarType::Int],
+            Some(ScalarType::Double),
+            64,
+            "(double)((int64_t)r_rax)",
+        ),
+        (
+            0x9e63_0000,
+            &[ScalarType::Int],
+            Some(ScalarType::Double),
+            64,
+            "(double)((uint64_t)r_rax)",
+        ),
+        (
+            0x1e38_0000,
+            &[ScalarType::Float],
+            None,
+            32,
+            "(int32_t)(fp_f_from_bits((uint32_t)x_xmm0))",
+        ),
+        (
+            0x1e39_0000,
+            &[ScalarType::Float],
+            None,
+            32,
+            "(uint32_t)(fp_f_from_bits((uint32_t)x_xmm0))",
+        ),
+        (
+            0x9e78_0000,
+            &[ScalarType::Double],
+            None,
+            64,
+            "(int64_t)(fp_d_from_bits(x_xmm0))",
+        ),
+        (
+            0x9e79_0000,
+            &[ScalarType::Double],
+            None,
+            64,
+            "(uint64_t)(fp_d_from_bits(x_xmm0))",
+        ),
+        (
+            0x1e22_c000,
+            &[ScalarType::Float],
+            Some(ScalarType::Double),
+            64,
+            "(double)(fp_f_from_bits((uint32_t)x_xmm0))",
+        ),
+        (
+            0x1e62_4000,
+            &[ScalarType::Double],
+            Some(ScalarType::Float),
+            32,
+            "(float)(fp_d_from_bits(x_xmm0))",
+        ),
+    ];
+    for (word, params, returns_fp, return_width_bits, expression) in conversions {
+        let mut code: Vec<u8> = word.to_le_bytes().to_vec();
+        code.extend_from_slice(&[0xc0, 0x03, 0x5f, 0xd6]);
+        let recovery: LeafRecovery =
+            recover_aarch64_function(&code, 0).expect("scalar fp conversion");
+        assert_eq!(recovery.fp_params, params, "{}", recovery.source);
+        assert_eq!(recovery.returns_fp, returns_fp, "{}", recovery.source);
+        assert_eq!(
+            recovery.return_width_bits, return_width_bits,
+            "{}",
+            recovery.source
+        );
+        assert!(
+            recovery.source.contains(expression),
+            "missing `{expression}` in {}",
+            recovery.source
+        );
+    }
+}
+
+#[test]
+fn scalar_fp_increment_two_o0_cross_class_returns_recover() {
+    let cases: [(&str, u32); 3] = [
+        ("fp_to_int_s", 32),
+        ("fp_to_uint_s", 32),
+        ("fp_to_ulong_d", 64),
+    ];
+    for (name, return_width_bits) in cases {
+        let case: &(&str, &str, &[u8]) = CASES
+            .iter()
+            .find(|(opt, candidate, _): &&(&str, &str, &[u8])| *opt == "O0" && *candidate == name)
+            .expect("generated O0 scalar fp conversion");
+        let recovery: LeafRecovery =
+            recover_aarch64_function(case.2, 0).expect("O0 scalar fp conversion");
+        assert_eq!(recovery.returns_fp, None, "{}", recovery.source);
+        assert_eq!(
+            recovery.return_width_bits, return_width_bits,
+            "{}",
+            recovery.source
+        );
+    }
+}
+
+#[test]
+fn scalar_fp_increment_two_fixed_point_and_half_forms_reject() {
+    let cases: [(u32, &str); 6] = [
+        (0x1e42_e400, "fixed-point"),
+        (0x1e03_ec00, "fixed-point"),
+        (0x1e18_f400, "fixed-point"),
+        (0x9e59_dc00, "fixed-point"),
+        (0x1e23_c000, "F16"),
+        (0x1ee2_4000, "F16"),
+    ];
+    for (word, reason) in cases {
+        let mut code: Vec<u8> = word.to_le_bytes().to_vec();
+        code.extend_from_slice(&[0xc0, 0x03, 0x5f, 0xd6]);
+        let error: String = format!(
+            "{:?}",
+            recover_aarch64_function(&code, 0).expect_err("form must sound-reject")
+        );
+        assert!(
+            error.contains(reason),
+            "missing `{reason}` in rejection: {error}"
+        );
+    }
+}
+
+#[test]
+fn scalar_fp_increment_two_optimized_average_recovers() {
+    let optimization_levels: [&str; 4] = ["O1", "O2", "O3", "Os"];
+    for opt in optimization_levels {
+        let case: &(&str, &str, &[u8]) = CASES
+            .iter()
+            .find(
+                |(candidate_opt, candidate_name, _): &&(&str, &str, &[u8])| {
+                    *candidate_opt == opt && *candidate_name == "fp_iavg"
+                },
+            )
+            .expect("generated optimized fp_iavg");
+        let recovery: LeafRecovery =
+            recover_aarch64_function(case.2, 0).expect("optimized fp_iavg");
+        assert_eq!(recovery.returns_fp, Some(ScalarType::Double));
+        assert_eq!(recovery.return_width_bits, 64);
     }
 }
