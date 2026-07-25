@@ -1,12 +1,12 @@
 use super::{
     Abi, AggregatePlan, BinOp, Block, CondKind, Error, ExtSource, FP_ARG_ORDER, Flags, FnReturn,
-    FnSignature, FpOp, FpOperand, FpWidth, FrameShape, IndexExtend, IndexOperand, Item, ItemKind,
-    LeafRecovery, MemRef, Node, ReduceOp, Reg, RegRef, ResolvedCall, Result, RoundMode, ScalarType,
-    Source, SretPlan, SretReturn, Stmt, Structured, UnOp, VecArrangement, VecBinOp, VecElem,
-    VecStmt, Width, Xmm, annotate_calls_block_with_order, collect_block_xmm, collect_call_targets,
-    condition_is_sound, detect_sret, emit_c, emit_rust, fp_stmt_result_xmm, infer_aggregate_plan,
-    infer_fp_params, infer_params, plan_frame, rax_write_width, stmt_writes_rax_int,
-    structure_items,
+    FnSignature, FpMinMaxKind, FpOp, FpOperand, FpWidth, FrameShape, IndexExtend, IndexOperand,
+    Item, ItemKind, LeafRecovery, MemRef, Node, ReduceOp, Reg, RegRef, ResolvedCall, Result,
+    RoundMode, ScalarType, Source, SretPlan, SretReturn, Stmt, Structured, UnOp, VecArrangement,
+    VecBinOp, VecElem, VecStmt, Width, Xmm, annotate_calls_block_with_order, collect_block_xmm,
+    collect_call_targets, condition_is_sound, detect_sret, emit_c, emit_rust, fp_stmt_result_xmm,
+    infer_aggregate_plan, infer_fp_params, infer_params, plan_frame, rax_write_width,
+    stmt_writes_rax_int, structure_items,
 };
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use std::collections::{BTreeMap, BTreeSet};
@@ -3171,6 +3171,53 @@ fn lower_fp_binary(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
     }])
 }
 
+fn lower_fp_minmax(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
+    if operands.len() != 3 {
+        return Err(reject_at(
+            insn,
+            "malformed three-operand scalar floating-point minimum or maximum",
+        ));
+    }
+    let is_max: bool = match insn.mnemonic.as_str() {
+        "fmaxnm" => true,
+        "fminnm" => false,
+        _ => {
+            return Err(reject_at(
+                insn,
+                "unsupported scalar floating-point minimum or maximum",
+            ));
+        }
+    };
+    let dest: (Xmm, FpWidth) = parse_fp_register(operands[0])?.ok_or_else(|| {
+        reject_at(
+            insn,
+            "floating-point minimum or maximum destination is not scalar",
+        )
+    })?;
+    let lhs: (Xmm, FpWidth) = parse_fp_register(operands[1])?
+        .ok_or_else(|| reject_at(insn, "floating-point minimum or maximum lhs is not scalar"))?;
+    let rhs: (Xmm, FpWidth) = parse_fp_register(operands[2])?
+        .ok_or_else(|| reject_at(insn, "floating-point minimum or maximum rhs is not scalar"))?;
+    if dest.1 != lhs.1 || dest.1 != rhs.1 {
+        return Err(reject_at(
+            insn,
+            "scalar floating-point minimum or maximum uses mixed precision",
+        ));
+    }
+    let kind: FpMinMaxKind = if is_max {
+        FpMinMaxKind::IeeeMax
+    } else {
+        FpMinMaxKind::IeeeMin
+    };
+    Ok(vec![Stmt::FpMinMax {
+        dest: dest.0,
+        lhs: FpOperand::Xmm(lhs.0),
+        rhs: FpOperand::Xmm(rhs.0),
+        kind,
+        width: dest.1,
+    }])
+}
+
 fn reject_fixed_point_conversion(insn: &DisasmInsn, operands: &[&str]) -> Result<()> {
     if operands.len() == 3 && operands[2].trim().starts_with('#') {
         return Err(reject_at(
@@ -3458,6 +3505,9 @@ fn try_lower_scalar_fp(
         "fadd" | "fsub" | "fmul" | "fdiv" if has_scalar_fp_destination(&operands) => {
             lower_fp_binary(insn, &operands).map(Some)
         }
+        "fmaxnm" | "fminnm" if has_scalar_fp_destination(&operands) => {
+            lower_fp_minmax(insn, &operands).map(Some)
+        }
         "scvtf" if has_scalar_fp_destination(&operands) => {
             lower_int_to_fp(insn, &operands, true).map(Some)
         }
@@ -3485,8 +3535,9 @@ fn try_lower_scalar_fp(
             };
             lower_fp_round(insn, &operands, mode).map(Some)
         }
-        "fadd" | "fsub" | "fmul" | "fdiv" | "scvtf" | "ucvtf" | "fcvtzs" | "fcvtzu" | "fcvt"
-        | "frintm" | "frintp" | "frintz" | "frintn" | "frinta" | "frintx" | "frinti" => Ok(None),
+        "fadd" | "fsub" | "fmul" | "fdiv" | "fmaxnm" | "fminnm" | "scvtf" | "ucvtf" | "fcvtzs"
+        | "fcvtzu" | "fcvt" | "frintm" | "frintp" | "frintz" | "frintn" | "frinta" | "frintx"
+        | "frinti" => Ok(None),
         "fmov" if vector_context => Ok(None),
         "fmov" => lower_fp_fmov(insn, &operands).map(Some),
         "ldr" | "str" | "ldur" | "stur" => {

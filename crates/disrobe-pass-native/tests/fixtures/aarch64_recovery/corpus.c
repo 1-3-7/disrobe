@@ -212,3 +212,9 @@ float fp_ceil_f(float x) { return __builtin_ceilf(x); }
 double fp_trunc_d(double x) { return __builtin_trunc(x); }
 double fp_round_d(double x) { return __builtin_round(x); }
 double fp_rint_d(double x) { return __builtin_rint(x); }
+
+float fp_max_f(float a, float b) { return __builtin_fmaxf(a, b); }
+float fp_min_f(float a, float b) { return __builtin_fminf(a, b); }
+double fp_max_d(double a, double b) { return __builtin_fmax(a, b); }
+double fp_min_d(double a, double b) { return __builtin_fmin(a, b); }
+float fp_clamp_f(float x, float lo, float hi) { return __builtin_fminf(__builtin_fmaxf(x, lo), hi); }

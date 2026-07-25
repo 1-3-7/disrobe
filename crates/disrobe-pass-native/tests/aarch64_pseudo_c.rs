@@ -441,6 +441,30 @@ fn aarch64_cross_width_fmov_zero_extends_the_low_lane() {
 }
 
 #[test]
+fn aarch64_scalar_fmaxnm_and_fminnm_recover_as_ieee_num_builtins() {
+    let max_single: [u8; 8] = [0x00, 0x68, 0x21, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
+    let min_double: [u8; 8] = [0x00, 0x78, 0x61, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
+    let single: LeafRecovery =
+        recover_aarch64_function(&max_single, 0).expect("aarch64 fmaxnm single");
+    assert!(
+        single.source.contains("__builtin_fmaxf"),
+        "single-precision fmaxnm must recover as the ieee maxnum builtin: {}",
+        single.source
+    );
+    assert_eq!(single.fp_params.len(), 2);
+    assert_eq!(single.return_width_bits, 32);
+    let double: LeafRecovery =
+        recover_aarch64_function(&min_double, 0).expect("aarch64 fminnm double");
+    assert!(
+        double.source.contains("__builtin_fmin("),
+        "double-precision fminnm must recover as the ieee minnum builtin: {}",
+        double.source
+    );
+    assert_eq!(double.fp_params.len(), 2);
+    assert_eq!(double.return_width_bits, 64);
+}
+
+#[test]
 fn atomics_and_out_of_subset_integer_ops_reject_explicitly() {
     let atomics: [u8; 12] = [
         0x01, 0x7c, 0x5f, 0xc8, 0x01, 0x7c, 0x02, 0xc8, 0xc0, 0x03, 0x5f, 0xd6,
