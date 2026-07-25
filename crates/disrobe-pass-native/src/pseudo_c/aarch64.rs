@@ -1,12 +1,12 @@
 use super::{
     Abi, AggregatePlan, BinOp, Block, CondKind, Error, ExtSource, FP_ARG_ORDER, Flags, FnReturn,
-    FnSignature, FpMinMaxKind, FpOp, FpOperand, FpWidth, FrameShape, IndexExtend, IndexOperand,
-    Item, ItemKind, LeafRecovery, MemRef, Node, ReduceOp, Reg, RegRef, ResolvedCall, Result,
-    RoundMode, ScalarType, Source, SretPlan, SretReturn, Stmt, Structured, UnOp, VecArrangement,
-    VecBinOp, VecElem, VecStmt, Width, Xmm, annotate_calls_block_with_order, collect_block_xmm,
-    collect_call_targets, condition_is_sound, detect_sret, emit_c, emit_rust, fp_stmt_result_xmm,
-    infer_aggregate_plan, infer_fp_params, infer_params, plan_frame, rax_write_width,
-    stmt_writes_rax_int, structure_items,
+    FnSignature, FpFmaKind, FpMinMaxKind, FpOp, FpOperand, FpWidth, FrameShape, IndexExtend,
+    IndexOperand, Item, ItemKind, LeafRecovery, MemRef, Node, ReduceOp, Reg, RegRef, ResolvedCall,
+    Result, RoundMode, ScalarType, Source, SretPlan, SretReturn, Stmt, Structured, UnOp,
+    VecArrangement, VecBinOp, VecElem, VecStmt, Width, Xmm, annotate_calls_block_with_order,
+    collect_block_xmm, collect_call_targets, condition_is_sound, detect_sret, emit_c, emit_rust,
+    fp_stmt_result_xmm, infer_aggregate_plan, infer_fp_params, infer_params, plan_frame,
+    rax_write_width, stmt_writes_rax_int, structure_items,
 };
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use std::collections::{BTreeMap, BTreeSet};
@@ -2159,6 +2159,7 @@ fn stmt_is_scalar_fp(stmt: &Stmt) -> bool {
             | Stmt::FpToInt { .. }
             | Stmt::FpConvert { .. }
             | Stmt::FpMinMax { .. }
+            | Stmt::FpFma { .. }
             | Stmt::FpSqrt { .. }
             | Stmt::FpRound { .. }
             | Stmt::GprToXmm { .. }
@@ -3218,6 +3219,46 @@ fn lower_fp_minmax(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
     }])
 }
 
+fn lower_fp_fma(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
+    if operands.len() != 4 {
+        return Err(reject_at(
+            insn,
+            "malformed four-operand scalar fused multiply-add",
+        ));
+    }
+    let kind: FpFmaKind = match insn.mnemonic.as_str() {
+        "fmadd" => FpFmaKind::Madd,
+        "fmsub" => FpFmaKind::Msub,
+        "fnmadd" => FpFmaKind::Nmadd,
+        "fnmsub" => FpFmaKind::Nmsub,
+        _ => {
+            return Err(reject_at(insn, "unsupported scalar fused multiply-add"));
+        }
+    };
+    let dest: (Xmm, FpWidth) = parse_fp_register(operands[0])?
+        .ok_or_else(|| reject_at(insn, "fused multiply-add destination is not scalar"))?;
+    let mul_lhs: (Xmm, FpWidth) = parse_fp_register(operands[1])?
+        .ok_or_else(|| reject_at(insn, "fused multiply-add multiplicand is not scalar"))?;
+    let mul_rhs: (Xmm, FpWidth) = parse_fp_register(operands[2])?
+        .ok_or_else(|| reject_at(insn, "fused multiply-add multiplier is not scalar"))?;
+    let addend: (Xmm, FpWidth) = parse_fp_register(operands[3])?
+        .ok_or_else(|| reject_at(insn, "fused multiply-add addend is not scalar"))?;
+    if dest.1 != mul_lhs.1 || dest.1 != mul_rhs.1 || dest.1 != addend.1 {
+        return Err(reject_at(
+            insn,
+            "scalar fused multiply-add uses mixed precision",
+        ));
+    }
+    Ok(vec![Stmt::FpFma {
+        dest: dest.0,
+        mul_lhs: FpOperand::Xmm(mul_lhs.0),
+        mul_rhs: FpOperand::Xmm(mul_rhs.0),
+        addend: FpOperand::Xmm(addend.0),
+        kind,
+        width: dest.1,
+    }])
+}
+
 fn reject_fixed_point_conversion(insn: &DisasmInsn, operands: &[&str]) -> Result<()> {
     if operands.len() == 3 && operands[2].trim().starts_with('#') {
         return Err(reject_at(
@@ -3508,6 +3549,9 @@ fn try_lower_scalar_fp(
         "fmaxnm" | "fminnm" if has_scalar_fp_destination(&operands) => {
             lower_fp_minmax(insn, &operands).map(Some)
         }
+        "fmadd" | "fmsub" | "fnmadd" | "fnmsub" if has_scalar_fp_destination(&operands) => {
+            lower_fp_fma(insn, &operands).map(Some)
+        }
         "scvtf" if has_scalar_fp_destination(&operands) => {
             lower_int_to_fp(insn, &operands, true).map(Some)
         }
@@ -3535,9 +3579,9 @@ fn try_lower_scalar_fp(
             };
             lower_fp_round(insn, &operands, mode).map(Some)
         }
-        "fadd" | "fsub" | "fmul" | "fdiv" | "fmaxnm" | "fminnm" | "scvtf" | "ucvtf" | "fcvtzs"
-        | "fcvtzu" | "fcvt" | "frintm" | "frintp" | "frintz" | "frintn" | "frinta" | "frintx"
-        | "frinti" => Ok(None),
+        "fadd" | "fsub" | "fmul" | "fdiv" | "fmaxnm" | "fminnm" | "fmadd" | "fmsub" | "fnmadd"
+        | "fnmsub" | "scvtf" | "ucvtf" | "fcvtzs" | "fcvtzu" | "fcvt" | "frintm" | "frintp"
+        | "frintz" | "frintn" | "frinta" | "frintx" | "frinti" => Ok(None),
         "fmov" if vector_context => Ok(None),
         "fmov" => lower_fp_fmov(insn, &operands).map(Some),
         "ldr" | "str" | "ldur" | "stur" => {

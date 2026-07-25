@@ -263,6 +263,18 @@ float fp_min_f(float a, float b) { return __builtin_fminf(a, b); }
 double fp_max_d(double a, double b) { return __builtin_fmax(a, b); }
 double fp_min_d(double a, double b) { return __builtin_fmin(a, b); }
 float fp_clamp_f(float x, float lo, float hi) { return __builtin_fminf(__builtin_fmaxf(x, lo), hi); }
+float fma_madd_f(float a, float b, float c) { return __builtin_fmaf(a, b, c); }
+float fma_msub_f(float a, float b, float c) { return __builtin_fmaf(-a, b, c); }
+float fma_nmadd_f(float a, float b, float c) { return __builtin_fmaf(-a, b, -c); }
+float fma_nmsub_f(float a, float b, float c) { return __builtin_fmaf(a, b, -c); }
+double fma_madd_d(double a, double b, double c) { return __builtin_fma(a, b, c); }
+double fma_msub_d(double a, double b, double c) { return __builtin_fma(-a, b, c); }
+double fma_nmadd_d(double a, double b, double c) { return __builtin_fma(-a, b, -c); }
+double fma_nmsub_d(double a, double b, double c) { return __builtin_fma(a, b, -c); }
+float mul_add_unfused_f(float a, float b, float c) { return a * b + c; }
+double mul_add_unfused_d(double a, double b, double c) { return a * b + c; }
+float sub_mul_unfused_f(float a, float b, float c) { return c - a * b; }
+double sub_mul_unfused_d(double a, double b, double c) { return c - a * b; }
 ";
 
 const EXTERNS: &str = r"struct Pt { int x; int y; };
@@ -352,6 +364,18 @@ extern float fp_min_f(float a, float b);
 extern double fp_max_d(double a, double b);
 extern double fp_min_d(double a, double b);
 extern float fp_clamp_f(float x, float lo, float hi);
+extern float fma_madd_f(float a, float b, float c);
+extern float fma_msub_f(float a, float b, float c);
+extern float fma_nmadd_f(float a, float b, float c);
+extern float fma_nmsub_f(float a, float b, float c);
+extern double fma_madd_d(double a, double b, double c);
+extern double fma_msub_d(double a, double b, double c);
+extern double fma_nmadd_d(double a, double b, double c);
+extern double fma_nmsub_d(double a, double b, double c);
+extern float mul_add_unfused_f(float a, float b, float c);
+extern double mul_add_unfused_d(double a, double b, double c);
+extern float sub_mul_unfused_f(float a, float b, float c);
+extern double sub_mul_unfused_d(double a, double b, double c);
 ";
 
 fn cc() -> Option<String> {
@@ -413,7 +437,8 @@ fn fp_expectation(name: &str) -> Option<FpExpectation> {
             returns: Some(ScalarType::Float),
             return_width_bits: 32,
         },
-        "fp_pick3" => FpExpectation {
+        "fp_pick3" | "fma_madd_d" | "fma_msub_d" | "fma_nmadd_d" | "fma_nmsub_d"
+        | "mul_add_unfused_d" | "sub_mul_unfused_d" => FpExpectation {
             params: &[ScalarType::Double, ScalarType::Double, ScalarType::Double],
             returns: Some(ScalarType::Double),
             return_width_bits: 64,
@@ -423,7 +448,8 @@ fn fp_expectation(name: &str) -> Option<FpExpectation> {
             returns: Some(ScalarType::Float),
             return_width_bits: 32,
         },
-        "fp_axpy" | "fp_clamp_f" => FpExpectation {
+        "fp_axpy" | "fp_clamp_f" | "fma_madd_f" | "fma_msub_f" | "fma_nmadd_f" | "fma_nmsub_f"
+        | "mul_add_unfused_f" | "sub_mul_unfused_f" => FpExpectation {
             params: &[ScalarType::Float, ScalarType::Float, ScalarType::Float],
             returns: Some(ScalarType::Float),
             return_width_bits: 32,
@@ -481,6 +507,26 @@ const INCREMENT_FOUR_EXPECTED_CASES: usize = 25;
 
 fn is_increment_four_fp(name: &str) -> bool {
     INCREMENT_FOUR_FP_FUNCTIONS.contains(&name)
+}
+
+const INCREMENT_FIVE_FP_FUNCTIONS: &[&str] = &[
+    "fma_madd_f",
+    "fma_msub_f",
+    "fma_nmadd_f",
+    "fma_nmsub_f",
+    "fma_madd_d",
+    "fma_msub_d",
+    "fma_nmadd_d",
+    "fma_nmsub_d",
+    "mul_add_unfused_f",
+    "mul_add_unfused_d",
+    "sub_mul_unfused_f",
+    "sub_mul_unfused_d",
+];
+const INCREMENT_FIVE_EXPECTED_CASES: usize = 60;
+
+fn is_increment_five_fp(name: &str) -> bool {
+    INCREMENT_FIVE_FP_FUNCTIONS.contains(&name)
 }
 
 fn expected_arity(name: &str) -> Option<usize> {
@@ -814,6 +860,64 @@ const FP_AXPY_TMPL: &str = "    {\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
 
+const FP_FMA_F_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       static const uint32_t fma_f_triples[][3] = {\n\
+     \x20           {0x45800800U,0x45800800U,0xcb801000U}, {0x7f7fffffU,0x40000000U,0xff7fffffU},\n\
+     \x20           {0x40000000U,0x40400000U,0x40a00000U}, {0x7f800000U,0x40000000U,0xff800000U},\n\
+     \x20           {0x7fc00000U,0x3f800000U,0x3f800000U}, {0x3f800000U,0x7fc00000U,0x3f800000U},\n\
+     \x20           {0x3f800000U,0x3f800000U,0x7fc00000U}, {0x7f800001U,0x3f800000U,0x3f800000U},\n\
+     \x20           {0x3f800000U,0x7f800001U,0x3f800000U}, {0x3f800000U,0x3f800000U,0x7f800001U},\n\
+     \x20           {0x3f800000U,0x00000000U,0x80000000U}, {0x3f800000U,0x80000000U,0x00000000U},\n\
+     \x20           {0x3f800000U,0x00000000U,0x00000000U}, {0x3f800000U,0x80000000U,0x80000000U},\n\
+     \x20           {0x40000000U,0x40400000U,0xc0c00000U}, {0x40000000U,0x40400000U,0x40c00000U}\n\
+     \x20       };\n\
+     \x20       int ntf = (int)(sizeof(fma_f_triples) / sizeof(fma_f_triples[0]));\n\
+     \x20       for (int t = 0; t < ntf; t++) {\n\
+     \x20           float a = fp_f_from_bits(fma_f_triples[t][0]); float b = fp_f_from_bits(fma_f_triples[t][1]); float c = fp_f_from_bits(fma_f_triples[t][2]);\n\
+     \x20           uint32_t w = fp_f_to_bits($NAME(a, b, c)); uint32_t g = fp_f_to_bits($REC(a, b, c));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME triple=%d w=%08x g=%08x\\n\", t, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       for (int it = 0; ok && it < ITER; it++) {\n\
+     \x20           uint32_t ba = fp32_input(&s, it, 0); uint32_t bb = fp32_input(&s, it, 5); uint32_t bc = fp32_input(&s, it, 9);\n\
+     \x20           int nn = (((ba & 0x7f800000U) == 0x7f800000U) && (ba & 0x7fffffU) ? 1 : 0) + (((bb & 0x7f800000U) == 0x7f800000U) && (bb & 0x7fffffU) ? 1 : 0) + (((bc & 0x7f800000U) == 0x7f800000U) && (bc & 0x7fffffU) ? 1 : 0);\n\
+     \x20           if (nn > 1) continue;\n\
+     \x20           float a = fp_f_from_bits(ba); float b = fp_f_from_bits(bb); float c = fp_f_from_bits(bc);\n\
+     \x20           uint32_t w = fp_f_to_bits($NAME(a, b, c)); uint32_t g = fp_f_to_bits($REC(a, b, c));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_FMA_D_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       static const uint64_t fma_d_triples[][3] = {\n\
+     \x20           {0x41a0000002000000ULL,0x41a0000002000000ULL,0xc350000004000000ULL}, {0x7fefffffffffffffULL,0x4000000000000000ULL,0xffefffffffffffffULL},\n\
+     \x20           {0x4000000000000000ULL,0x4008000000000000ULL,0x4014000000000000ULL}, {0x7ff0000000000000ULL,0x4000000000000000ULL,0xfff0000000000000ULL},\n\
+     \x20           {0x7ff8000000000000ULL,0x3ff0000000000000ULL,0x3ff0000000000000ULL}, {0x3ff0000000000000ULL,0x7ff8000000000000ULL,0x3ff0000000000000ULL},\n\
+     \x20           {0x3ff0000000000000ULL,0x3ff0000000000000ULL,0x7ff8000000000000ULL}, {0x7ff0000000000001ULL,0x3ff0000000000000ULL,0x3ff0000000000000ULL},\n\
+     \x20           {0x3ff0000000000000ULL,0x7ff0000000000001ULL,0x3ff0000000000000ULL}, {0x3ff0000000000000ULL,0x3ff0000000000000ULL,0x7ff0000000000001ULL},\n\
+     \x20           {0x3ff0000000000000ULL,0x0000000000000000ULL,0x8000000000000000ULL}, {0x3ff0000000000000ULL,0x8000000000000000ULL,0x0000000000000000ULL},\n\
+     \x20           {0x3ff0000000000000ULL,0x0000000000000000ULL,0x0000000000000000ULL}, {0x3ff0000000000000ULL,0x8000000000000000ULL,0x8000000000000000ULL},\n\
+     \x20           {0x4000000000000000ULL,0x4008000000000000ULL,0xc018000000000000ULL}, {0x4000000000000000ULL,0x4008000000000000ULL,0x4018000000000000ULL}\n\
+     \x20       };\n\
+     \x20       int ntd = (int)(sizeof(fma_d_triples) / sizeof(fma_d_triples[0]));\n\
+     \x20       for (int t = 0; t < ntd; t++) {\n\
+     \x20           double a = fp_d_from_bits(fma_d_triples[t][0]); double b = fp_d_from_bits(fma_d_triples[t][1]); double c = fp_d_from_bits(fma_d_triples[t][2]);\n\
+     \x20           uint64_t w = fp_d_to_bits($NAME(a, b, c)); uint64_t g = fp_d_to_bits($REC(a, b, c));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME triple=%d w=%llx g=%llx\\n\", t, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       for (int it = 0; ok && it < ITER; it++) {\n\
+     \x20           uint64_t ba = fp64_input(&s, it, 0); uint64_t bb = fp64_input(&s, it, 5); uint64_t bc = fp64_input(&s, it, 9);\n\
+     \x20           int nn = (((ba & 0x7ff0000000000000ULL) == 0x7ff0000000000000ULL) && (ba & 0xfffffffffffffULL) ? 1 : 0) + (((bb & 0x7ff0000000000000ULL) == 0x7ff0000000000000ULL) && (bb & 0xfffffffffffffULL) ? 1 : 0) + (((bc & 0x7ff0000000000000ULL) == 0x7ff0000000000000ULL) && (bc & 0xfffffffffffffULL) ? 1 : 0);\n\
+     \x20           if (nn > 1) continue;\n\
+     \x20           double a = fp_d_from_bits(ba); double b = fp_d_from_bits(bb); double c = fp_d_from_bits(bc);\n\
+     \x20           uint64_t w = fp_d_to_bits($NAME(a, b, c)); uint64_t g = fp_d_to_bits($REC(a, b, c));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
 const FP_TO_I32_F_TMPL: &str = "    {\n\
      \x20       uint64_t s = $SEED; int ok = 1;\n\
      \x20       for (int it = 0; it < ITER; it++) {\n\
@@ -1034,6 +1138,10 @@ fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Option<String> 
             fill_template(FP_BIN_D_TMPL, opt, name, rec, seed)
         }
         "fp_axpy" | "fp_clamp_f" => fill_template(FP_AXPY_TMPL, opt, name, rec, seed),
+        "fma_madd_f" | "fma_msub_f" | "fma_nmadd_f" | "fma_nmsub_f" | "mul_add_unfused_f"
+        | "sub_mul_unfused_f" => fill_template(FP_FMA_F_TMPL, opt, name, rec, seed),
+        "fma_madd_d" | "fma_msub_d" | "fma_nmadd_d" | "fma_nmsub_d" | "mul_add_unfused_d"
+        | "sub_mul_unfused_d" => fill_template(FP_FMA_D_TMPL, opt, name, rec, seed),
         "fp_to_int_s" | "fp_to_uint_s" => fill_template(FP_TO_I32_F_TMPL, opt, name, rec, seed),
         "fp_to_ulong_d" => fill_template(FP_TO_U64_D_TMPL, opt, name, rec, seed),
         "fp_from_int" => fill_template(FP_FROM_I32_D_TMPL, opt, name, rec, seed),
@@ -1530,6 +1638,24 @@ fn corpus_grade_report() {
             );
         }
     }
+    let increment_five_corpus_cases: usize = CASES
+        .iter()
+        .filter(|(_, name, _): &&(&str, &str, &[u8])| is_increment_five_fp(name))
+        .count();
+    assert_eq!(
+        increment_five_corpus_cases, INCREMENT_FIVE_EXPECTED_CASES,
+        "the generated corpus must contain exactly five rows per increment-5 function"
+    );
+    for required_name in INCREMENT_FIVE_FP_FUNCTIONS {
+        for required_opt in CORPUS_OPTIMIZATION_LEVELS {
+            assert!(
+                CASES.iter().any(|(opt, name, _): &(&str, &str, &[u8])| {
+                    opt == required_opt && name == required_name
+                }),
+                "required increment-5 case `{required_opt} {required_name}` is absent from the generated corpus"
+            );
+        }
+    }
 
     let dir: tempfile::TempDir = tempfile::tempdir().expect("scratch dir");
     let battery_c: PathBuf = dir.path().join("gt_battery.c");
@@ -1561,6 +1687,8 @@ fn corpus_grade_report() {
     let mut increment_three_driven: usize = 0;
     let mut increment_four_recovered: usize = 0;
     let mut increment_four_driven: usize = 0;
+    let mut increment_five_recovered: usize = 0;
+    let mut increment_five_driven: usize = 0;
     let mut skips: Vec<(String, String, String)> = Vec::new();
     let mut decls: String = String::new();
     let mut blocks: String = String::new();
@@ -1570,6 +1698,7 @@ fn corpus_grade_report() {
         let required_increment_two: bool = is_increment_two_fp(name);
         let required_increment_three: bool = is_increment_three_fp(name);
         let required_increment_four: bool = is_increment_four_fp(name);
+        let required_increment_five: bool = is_increment_five_fp(name);
         let recovery: LeafRecovery = match recover_aarch64_function(bytes, 0) {
             Ok(value) => value,
             Err(error) => {
@@ -1592,6 +1721,9 @@ fn corpus_grade_report() {
         }
         if required_increment_four {
             increment_four_recovered += 1;
+        }
+        if required_increment_five {
+            increment_five_recovered += 1;
         }
 
         let expected_fp: Option<FpExpectation> = fp_expectation(name);
@@ -1680,6 +1812,9 @@ fn corpus_grade_report() {
         }
         if required_increment_four {
             increment_four_driven += 1;
+        }
+        if required_increment_five {
+            increment_five_driven += 1;
         }
     }
 
@@ -1777,11 +1912,13 @@ fn corpus_grade_report() {
         .checked_sub(increment_two_recovered)
         .and_then(|value: usize| value.checked_sub(increment_three_recovered))
         .and_then(|value: usize| value.checked_sub(increment_four_recovered))
+        .and_then(|value: usize| value.checked_sub(increment_five_recovered))
         .expect("later-increment fp recovery counts cannot exceed the fp total");
     let increment_one_fp_driven: usize = fp_driven
         .checked_sub(increment_two_driven)
         .and_then(|value: usize| value.checked_sub(increment_three_driven))
         .and_then(|value: usize| value.checked_sub(increment_four_driven))
+        .and_then(|value: usize| value.checked_sub(increment_five_driven))
         .expect("later-increment fp driven counts cannot exceed the fp total");
     let integer_recovered: usize = recovered
         .checked_sub(fp_recovered)
@@ -1805,6 +1942,8 @@ fn corpus_grade_report() {
     eprintln!("increment-3 graded    {increment_three_driven}/{INCREMENT_THREE_EXPECTED_CASES}");
     eprintln!("increment-4 recovered {increment_four_recovered}/{INCREMENT_FOUR_EXPECTED_CASES}");
     eprintln!("increment-4 graded    {increment_four_driven}/{INCREMENT_FOUR_EXPECTED_CASES}");
+    eprintln!("increment-5 recovered {increment_five_recovered}/{INCREMENT_FIVE_EXPECTED_CASES}");
+    eprintln!("increment-5 graded    {increment_five_driven}/{INCREMENT_FIVE_EXPECTED_CASES}");
     eprintln!(
         "graded-equivalent    {graded_equivalent}   (recompiled + behaviorally matched on directed and random inputs)"
     );
@@ -1886,6 +2025,14 @@ fn corpus_grade_report() {
     assert_eq!(
         increment_four_driven, INCREMENT_FOUR_EXPECTED_CASES,
         "every increment-4 corpus case must be graded"
+    );
+    assert_eq!(
+        increment_five_recovered, INCREMENT_FIVE_EXPECTED_CASES,
+        "every increment-5 corpus case must recover"
+    );
+    assert_eq!(
+        increment_five_driven, INCREMENT_FIVE_EXPECTED_CASES,
+        "every increment-5 corpus case must be graded"
     );
     assert!(
         skips.is_empty(),

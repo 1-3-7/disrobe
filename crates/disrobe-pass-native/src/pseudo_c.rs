@@ -251,6 +251,24 @@ impl FpMinMaxKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FpFmaKind {
+    Madd,
+    Msub,
+    Nmadd,
+    Nmsub,
+}
+
+impl FpFmaKind {
+    const fn negates_multiplicand(self) -> bool {
+        matches!(self, Self::Msub | Self::Nmadd)
+    }
+
+    const fn negates_addend(self) -> bool {
+        matches!(self, Self::Nmadd | Self::Nmsub)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FpOperand {
     Xmm(Xmm),
     Mem(MemRef),
@@ -961,6 +979,14 @@ enum Stmt {
         lhs: FpOperand,
         rhs: FpOperand,
         kind: FpMinMaxKind,
+        width: FpWidth,
+    },
+    FpFma {
+        dest: Xmm,
+        mul_lhs: FpOperand,
+        mul_rhs: FpOperand,
+        addend: FpOperand,
+        kind: FpFmaKind,
         width: FpWidth,
     },
     FpSqrt {
@@ -1947,6 +1973,7 @@ fn build_leaf_items(
             | Stmt::FpToInt { .. }
             | Stmt::FpConvert { .. }
             | Stmt::FpMinMax { .. }
+            | Stmt::FpFma { .. }
             | Stmt::FpSqrt { .. }
             | Stmt::FpRound { .. }
             | Stmt::GprToXmm { .. }
@@ -4213,6 +4240,7 @@ fn update_return_width(stmt: &Stmt, return_width: &mut Width) {
         | Stmt::IntToFp { .. }
         | Stmt::FpConvert { .. }
         | Stmt::FpMinMax { .. }
+        | Stmt::FpFma { .. }
         | Stmt::FpSqrt { .. }
         | Stmt::FpRound { .. }
         | Stmt::GprToXmm { .. }
@@ -6927,6 +6955,19 @@ fn scan_fp_stmt(
             scan_fp_operand(rhs, *width, written, acc)?;
             written.insert(*dest, true);
         }
+        Stmt::FpFma {
+            dest,
+            mul_lhs,
+            mul_rhs,
+            addend,
+            width,
+            ..
+        } => {
+            scan_fp_operand(mul_lhs, *width, written, acc)?;
+            scan_fp_operand(mul_rhs, *width, written, acc)?;
+            scan_fp_operand(addend, *width, written, acc)?;
+            written.insert(*dest, true);
+        }
         Stmt::FpSqrt { dest, src, width } => {
             scan_fp_operand(src, *width, written, acc)?;
             written.insert(*dest, true);
@@ -7249,6 +7290,18 @@ fn scan_stmt_params(
             }
             if let FpOperand::Mem(mem) = rhs {
                 read_addr(mem, written, acc, note);
+            }
+        }
+        Stmt::FpFma {
+            mul_lhs,
+            mul_rhs,
+            addend,
+            ..
+        } => {
+            for operand in [mul_lhs, mul_rhs, addend] {
+                if let FpOperand::Mem(mem) = operand {
+                    read_addr(mem, written, acc, note);
+                }
             }
         }
         Stmt::FpSqrt { src, .. } => {
@@ -7588,7 +7641,9 @@ fn fp_stmt_result_xmm(stmt: &Stmt) -> Option<(Xmm, FpWidth)> {
         Stmt::FpBin { dest, width, .. } | Stmt::FpMov { dest, width, .. } => Some((*dest, *width)),
         Stmt::IntToFp { dest, width, .. } => Some((*dest, *width)),
         Stmt::FpConvert { dest, to, .. } => Some((*dest, *to)),
-        Stmt::FpMinMax { dest, width, .. } => Some((*dest, *width)),
+        Stmt::FpMinMax { dest, width, .. } | Stmt::FpFma { dest, width, .. } => {
+            Some((*dest, *width))
+        }
         Stmt::FpSqrt { dest, width, .. }
         | Stmt::FpRound { dest, width, .. }
         | Stmt::GprToXmm { dest, width, .. } => Some((*dest, *width)),
@@ -7618,6 +7673,7 @@ fn stmt_writes_rax_int(stmt: &Stmt) -> bool {
         | Stmt::IntToFp { .. }
         | Stmt::FpConvert { .. }
         | Stmt::FpMinMax { .. }
+        | Stmt::FpFma { .. }
         | Stmt::FpSqrt { .. }
         | Stmt::FpRound { .. }
         | Stmt::GprToXmm { .. }
@@ -9523,6 +9579,17 @@ fn aggregate_note_stmt(scan: &mut AggregateScan, stmt: &Stmt) {
             aggregate_note_fp_operand(scan, lhs, *width);
             aggregate_note_fp_operand(scan, rhs, *width);
         }
+        Stmt::FpFma {
+            mul_lhs,
+            mul_rhs,
+            addend,
+            width,
+            ..
+        } => {
+            aggregate_note_fp_operand(scan, mul_lhs, *width);
+            aggregate_note_fp_operand(scan, mul_rhs, *width);
+            aggregate_note_fp_operand(scan, addend, *width);
+        }
         Stmt::FpMov { src, width, .. }
         | Stmt::FpSqrt { src, width, .. }
         | Stmt::FpRound { src, width, .. } => {
@@ -10188,6 +10255,16 @@ impl FrameScan {
                 self.note_fp(lhs, slots, misuse);
                 self.note_fp(rhs, slots, misuse);
             }
+            Stmt::FpFma {
+                mul_lhs,
+                mul_rhs,
+                addend,
+                ..
+            } => {
+                self.note_fp(mul_lhs, slots, misuse);
+                self.note_fp(mul_rhs, slots, misuse);
+                self.note_fp(addend, slots, misuse);
+            }
             Stmt::FpStore { addr, .. } => self.note_mem(addr, slots, misuse),
             Stmt::FlagSnapshot { flags, .. } => self.note_flags(flags, slots, misuse),
             Stmt::Packed { op, .. } => {
@@ -10544,6 +10621,18 @@ fn stmt_value_reads(stmt: &Stmt, acc: &mut Vec<Reg>) {
             }
             if let FpOperand::Mem(mem) = rhs {
                 mem_regs(mem, acc);
+            }
+        }
+        Stmt::FpFma {
+            mul_lhs,
+            mul_rhs,
+            addend,
+            ..
+        } => {
+            for operand in [mul_lhs, mul_rhs, addend] {
+                if let FpOperand::Mem(mem) = operand {
+                    mem_regs(mem, acc);
+                }
             }
         }
         Stmt::FpMov { src, .. } | Stmt::FpSqrt { src, .. } | Stmt::FpRound { src, .. } => {
@@ -11092,6 +11181,18 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
                         push_addr(mem, acc);
                     }
                 }
+                Stmt::FpFma {
+                    mul_lhs,
+                    mul_rhs,
+                    addend,
+                    ..
+                } => {
+                    for operand in [mul_lhs, mul_rhs, addend] {
+                        if let FpOperand::Mem(mem) = operand {
+                            push_addr(mem, acc);
+                        }
+                    }
+                }
                 Stmt::FpSqrt { src, .. } => {
                     if let FpOperand::Mem(mem) = src {
                         push_addr(mem, acc);
@@ -11214,6 +11315,18 @@ fn collect_block_xmm(body: &Block, acc: &mut Vec<Xmm>) {
                     push(*dest, acc);
                     push_operand(lhs, acc);
                     push_operand(rhs, acc);
+                }
+                Stmt::FpFma {
+                    dest,
+                    mul_lhs,
+                    mul_rhs,
+                    addend,
+                    ..
+                } => {
+                    push(*dest, acc);
+                    push_operand(mul_lhs, acc);
+                    push_operand(mul_rhs, acc);
+                    push_operand(addend, acc);
                 }
                 Stmt::FpSqrt { dest, src, .. } => {
                     push(*dest, acc);
@@ -12157,6 +12270,45 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
                     els: Box::new(cx.var(&rhs_val)),
                 })
             };
+            assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&computed, *width))
+        }
+        Stmt::FpFma {
+            dest,
+            mul_lhs,
+            mul_rhs,
+            addend,
+            kind,
+            width,
+        } => {
+            let lhs_val: String = fp_load(mul_lhs, *width, aggregates);
+            let rhs_val: String = fp_load(mul_rhs, *width, aggregates);
+            let addend_val: String = fp_load(addend, *width, aggregates);
+            let name: &str = match width {
+                FpWidth::F64 => "__builtin_fma",
+                FpWidth::F32 => "__builtin_fmaf",
+            };
+            let neg_mul: bool = kind.negates_multiplicand();
+            let neg_add: bool = kind.negates_addend();
+            let computed: String = c_render(|cx| {
+                let arg0: CExpr = if neg_mul {
+                    CExpr::Unary {
+                        op: UnaryOp::Neg,
+                        operand: Box::new(cx.var(&lhs_val)),
+                    }
+                } else {
+                    cx.var(&lhs_val)
+                };
+                let arg1: CExpr = cx.var(&rhs_val);
+                let arg2: CExpr = if neg_add {
+                    CExpr::Unary {
+                        op: UnaryOp::Neg,
+                        operand: Box::new(cx.var(&addend_val)),
+                    }
+                } else {
+                    cx.var(&addend_val)
+                };
+                cx.call(name, vec![arg0, arg1, arg2])
+            });
             assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&computed, *width))
         }
         Stmt::FpSqrt { dest, src, width } => {
@@ -13994,6 +14146,30 @@ fn rs_emit_stmt(
             kind,
             width,
         } => rs_fp_minmax_stmt(out, *dest, lhs, rhs, *kind, *width, indent, aggregates)?,
+        Stmt::FpFma {
+            dest,
+            mul_lhs,
+            mul_rhs,
+            addend,
+            kind,
+            width,
+        } => {
+            let lhs_val: String = rs_fp_load(mul_lhs, *width, aggregates)?;
+            let rhs_val: String = rs_fp_load(mul_rhs, *width, aggregates)?;
+            let addend_val: String = rs_fp_load(addend, *width, aggregates)?;
+            let lhs_expr: String = if kind.negates_multiplicand() {
+                format!("(-{lhs_val})")
+            } else {
+                format!("({lhs_val})")
+            };
+            let addend_expr: String = if kind.negates_addend() {
+                format!("(-{addend_val})")
+            } else {
+                format!("({addend_val})")
+            };
+            let computed: String = format!("({lhs_expr}.mul_add({rhs_val}, {addend_expr}))");
+            rs_emit_xmm_store(out, *dest, &computed, *width, indent);
+        }
         Stmt::FpSqrt { dest, src, width } => {
             rs_fp_sqrt_stmt(out, *dest, src, *width, indent, aggregates)?;
         }

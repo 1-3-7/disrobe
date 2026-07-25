@@ -465,6 +465,66 @@ fn aarch64_scalar_fmaxnm_and_fminnm_recover_as_ieee_num_builtins() {
 }
 
 #[test]
+fn aarch64_scalar_fma_recovers_with_correct_input_negations() {
+    let ret: [u8; 4] = [0xc0, 0x03, 0x5f, 0xd6];
+    let cases: [(u32, &str, bool, bool); 5] = [
+        (0x1f01_0800, "__builtin_fmaf(", false, false),
+        (0x1f01_8800, "__builtin_fmaf(", true, false),
+        (0x1f21_0800, "__builtin_fmaf(", true, true),
+        (0x1f21_8800, "__builtin_fmaf(", false, true),
+        (0x1f41_0800, "__builtin_fma(", false, false),
+    ];
+    for (word, builtin, neg_mul_lhs, neg_addend) in cases {
+        let mut bytes: Vec<u8> = word.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&ret);
+        let recovered: LeafRecovery =
+            recover_aarch64_function(&bytes, 0).expect("aarch64 fused multiply-add");
+        assert_eq!(recovered.fp_params.len(), 3, "{builtin}");
+        let call: &str = recovered
+            .source
+            .split(builtin)
+            .nth(1)
+            .unwrap_or_else(|| panic!("missing {builtin} in {}", recovered.source));
+        let mut depth: i32 = 1;
+        let mut parts: Vec<String> = vec![String::new()];
+        for ch in call.chars() {
+            match ch {
+                '(' => {
+                    depth += 1;
+                    parts.last_mut().expect("current arg").push(ch);
+                }
+                ')' if depth == 1 => break,
+                ')' => {
+                    depth -= 1;
+                    parts.last_mut().expect("current arg").push(ch);
+                }
+                ',' if depth == 1 => parts.push(String::new()),
+                _ => parts.last_mut().expect("current arg").push(ch),
+            }
+        }
+        let parts: Vec<&str> = parts.iter().map(|part: &String| part.trim()).collect();
+        assert_eq!(parts.len(), 3, "three fma arguments in `{call}`");
+        assert_eq!(
+            parts[0].starts_with('-'),
+            neg_mul_lhs,
+            "multiplicand negation for {word:#010x} in `{}`",
+            parts.join(" | ")
+        );
+        assert_eq!(
+            parts[2].starts_with('-'),
+            neg_addend,
+            "addend negation for {word:#010x} in `{}`",
+            parts.join(" | ")
+        );
+        assert!(
+            !parts[1].starts_with('-'),
+            "the multiplier must never be negated for {word:#010x} in `{}`",
+            parts.join(" | ")
+        );
+    }
+}
+
+#[test]
 fn atomics_and_out_of_subset_integer_ops_reject_explicitly() {
     let atomics: [u8; 12] = [
         0x01, 0x7c, 0x5f, 0xc8, 0x01, 0x7c, 0x02, 0xc8, 0xc0, 0x03, 0x5f, 0xd6,

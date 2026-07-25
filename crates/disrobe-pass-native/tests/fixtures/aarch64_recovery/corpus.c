@@ -218,3 +218,16 @@ float fp_min_f(float a, float b) { return __builtin_fminf(a, b); }
 double fp_max_d(double a, double b) { return __builtin_fmax(a, b); }
 double fp_min_d(double a, double b) { return __builtin_fmin(a, b); }
 float fp_clamp_f(float x, float lo, float hi) { return __builtin_fminf(__builtin_fmaxf(x, lo), hi); }
+
+float fma_madd_f(float a, float b, float c) { return __builtin_fmaf(a, b, c); }
+float fma_msub_f(float a, float b, float c) { return __builtin_fmaf(-a, b, c); }
+float fma_nmadd_f(float a, float b, float c) { return __builtin_fmaf(-a, b, -c); }
+float fma_nmsub_f(float a, float b, float c) { return __builtin_fmaf(a, b, -c); }
+double fma_madd_d(double a, double b, double c) { return __builtin_fma(a, b, c); }
+double fma_msub_d(double a, double b, double c) { return __builtin_fma(-a, b, c); }
+double fma_nmadd_d(double a, double b, double c) { return __builtin_fma(-a, b, -c); }
+double fma_nmsub_d(double a, double b, double c) { return __builtin_fma(a, b, -c); }
+float mul_add_unfused_f(float a, float b, float c) { return a * b + c; }
+double mul_add_unfused_d(double a, double b, double c) { return a * b + c; }
+float sub_mul_unfused_f(float a, float b, float c) { return c - a * b; }
+double sub_mul_unfused_d(double a, double b, double c) { return c - a * b; }
