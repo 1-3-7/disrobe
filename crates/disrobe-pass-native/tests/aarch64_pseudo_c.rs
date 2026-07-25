@@ -427,6 +427,20 @@ fn clang_d_register_post_index_copy_loop_lifts() {
 }
 
 #[test]
+fn aarch64_cross_width_fmov_zero_extends_the_low_lane() {
+    let bytes: [u8; 16] = [
+        0x01, 0x00, 0x67, 0x9e, 0x22, 0x40, 0x20, 0x1e, 0x40, 0x40, 0x60, 0x1e, 0xc0, 0x03, 0x5f,
+        0xd6,
+    ];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("cross-width fmov sequence");
+    assert!(
+        r.source.contains("& 0xffffffffULL") || r.source.contains("(uint32_t)"),
+        "the single-precision fmov must zero-extend the low 32 bits, not copy the full register: {}",
+        r.source
+    );
+}
+
+#[test]
 fn atomics_and_out_of_subset_integer_ops_reject_explicitly() {
     let atomics: [u8; 12] = [
         0x01, 0x7c, 0x5f, 0xc8, 0x01, 0x7c, 0x02, 0xc8, 0xc0, 0x03, 0x5f, 0xd6,

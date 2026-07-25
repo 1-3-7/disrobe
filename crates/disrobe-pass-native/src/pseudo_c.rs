@@ -12010,12 +12010,8 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&computed, *width))
         }
         Stmt::FpMov { dest, src, width } => {
-            if let FpOperand::Xmm(sx) = src {
-                assign_cstmt(cx, xmm_var(*dest), xmm_var(*sx))
-            } else {
-                let value: String = fp_load(src, *width, aggregates);
-                assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&value, *width))
-            }
+            let value: String = fp_load(src, *width, aggregates);
+            assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&value, *width))
         }
         Stmt::FpStore { addr, src, width } => {
             if let Some((target, _)) =
@@ -13684,12 +13680,8 @@ fn rs_fp_mov_stmt(
     indent: &str,
     aggregates: &AggregatePlan,
 ) -> Option<()> {
-    if let FpOperand::Xmm(sx) = src {
-        let _ = writeln!(out, "{indent}{} = {};", xmm_var(dest), xmm_var(*sx));
-    } else {
-        let value: String = rs_fp_load(src, width, aggregates)?;
-        rs_emit_xmm_store(out, dest, &value, width, indent);
-    }
+    let value: String = rs_fp_load(src, width, aggregates)?;
+    rs_emit_xmm_store(out, dest, &value, width, indent);
     Some(())
 }
 
