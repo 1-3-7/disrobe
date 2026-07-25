@@ -5466,6 +5466,7 @@ fn flags_are_comparison(flags: &Flags) -> bool {
             | Flags::CmpMem { .. }
             | Flags::Test { .. }
             | Flags::TestImm { .. }
+            | Flags::FpCmp { .. }
             | Flags::CondCmp { .. }
     )
 }
@@ -5498,6 +5499,67 @@ fn flag_operand_regs(flags: &Flags) -> Vec<Reg> {
             regs.extend(flag_operand_regs(taken));
             regs
         }
+    }
+}
+
+fn flag_operand_xmms(flags: &Flags) -> Vec<Xmm> {
+    match flags {
+        Flags::FpCmp { lhs, rhs, .. } => {
+            let mut regs: Vec<Xmm> = vec![*lhs];
+            if let FpOperand::Xmm(x) = rhs {
+                regs.push(*x);
+            }
+            regs
+        }
+        Flags::CondCmp { prior, taken, .. } => {
+            let mut regs: Vec<Xmm> = flag_operand_xmms(prior);
+            regs.extend(flag_operand_xmms(taken));
+            regs
+        }
+        Flags::Cmp { .. }
+        | Flags::Add { .. }
+        | Flags::Test { .. }
+        | Flags::TestImm { .. }
+        | Flags::Sign { .. }
+        | Flags::CmpMem { .. }
+        | Flags::Snapshot { .. } => Vec::new(),
+    }
+}
+
+fn stmt_clobbers_flag_fp(stmt: &Stmt, deps: &[Xmm]) -> bool {
+    match stmt {
+        Stmt::FpBin { dest, .. }
+        | Stmt::FpMov { dest, .. }
+        | Stmt::IntToFp { dest, .. }
+        | Stmt::FpConvert { dest, .. }
+        | Stmt::FpMinMax { dest, .. }
+        | Stmt::FpFma { dest, .. }
+        | Stmt::FpCsel { dest, .. }
+        | Stmt::FpSqrt { dest, .. }
+        | Stmt::FpUnary { dest, .. }
+        | Stmt::FpRound { dest, .. }
+        | Stmt::GprToXmm { dest, .. } => deps.contains(dest),
+        Stmt::Vector(_) | Stmt::Packed { .. } => true,
+        Stmt::Assign { .. }
+        | Stmt::BinAssign { .. }
+        | Stmt::UnAssign { .. }
+        | Stmt::Cond { .. }
+        | Stmt::SetCc { .. }
+        | Stmt::Store { .. }
+        | Stmt::MemRmw { .. }
+        | Stmt::Extend { .. }
+        | Stmt::MulImm { .. }
+        | Stmt::WideMul { .. }
+        | Stmt::Divide { .. }
+        | Stmt::FpStore { .. }
+        | Stmt::FpToInt { .. }
+        | Stmt::XmmToGpr { .. }
+        | Stmt::DoubleShift { .. }
+        | Stmt::BlockMove { .. }
+        | Stmt::BlockFill { .. }
+        | Stmt::Call { .. }
+        | Stmt::FlagSnapshot { .. }
+        | Stmt::PackedToGpr { .. } => false,
     }
 }
 
@@ -6771,7 +6833,8 @@ fn snapshot_repair(
 
 fn comparison_operand_clobbered(items: &[Item], mark: usize, flags: &Flags) -> bool {
     let deps: Vec<Reg> = flag_operand_regs(flags);
-    if deps.is_empty() {
+    let fp_deps: Vec<Xmm> = flag_operand_xmms(flags);
+    if deps.is_empty() && fp_deps.is_empty() {
         return false;
     }
     let start: usize = mark.min(items.len());
@@ -6782,6 +6845,7 @@ fn comparison_operand_clobbered(items: &[Item], mark: usize, flags: &Flags) -> b
         stmt_dest_regs(stmt)
             .iter()
             .any(|reg: &Reg| deps.contains(reg))
+            || (!fp_deps.is_empty() && stmt_clobbers_flag_fp(stmt, &fp_deps))
     })
 }
 
