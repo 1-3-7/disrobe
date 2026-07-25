@@ -765,14 +765,34 @@ fn recover_with_calls_and_image<'image>(
                 let live_flags: TrackedFlags = flags
                     .clone()
                     .ok_or_else(|| reject_at(insn, "conditional select lacks live nzcv state"))?;
+                if (live_flags.nz_only && !kind.sign_zero_only())
+                    || !condition_is_sound(kind, &live_flags.value)
+                {
+                    return Err(reject_at(
+                        insn,
+                        "conditional select condition is undefined for the tracked nzcv source",
+                    ));
+                }
+                let (resolved_kind, resolved_value): (CondKind, Flags) = resolve_aarch64_flags(
+                    &mut items,
+                    &live_flags,
+                    kind,
+                    &mut next_sel,
+                    insn.address,
+                );
+                let resolved_flags: TrackedFlags = TrackedFlags {
+                    value: resolved_value,
+                    nz_only: live_flags.nz_only,
+                    mark: live_flags.mark,
+                };
                 let stmts: Vec<Stmt> = build_select_stmts(
                     dest,
                     n_reg,
                     n_src,
                     m_reg,
                     m_src,
-                    kind,
-                    &live_flags,
+                    resolved_kind,
+                    &resolved_flags,
                     &mut next_sel,
                 )?;
                 push_stmts(&mut items, base, index, stmts)?;
@@ -826,14 +846,26 @@ fn recover_with_calls_and_image<'image>(
                         op: UnOp::Neg,
                     }),
                 }
+                let (resolved_kind, resolved_value): (CondKind, Flags) = resolve_aarch64_flags(
+                    &mut items,
+                    &live_flags,
+                    kind,
+                    &mut next_sel,
+                    insn.address,
+                );
+                let resolved_flags: TrackedFlags = TrackedFlags {
+                    value: resolved_value,
+                    nz_only: live_flags.nz_only,
+                    mark: live_flags.mark,
+                };
                 stmts.extend(build_select_stmts(
                     dest,
                     n_reg,
                     n_src,
                     Some(scratch.reg),
                     Source::Reg(scratch),
-                    kind,
-                    &live_flags,
+                    resolved_kind,
+                    &resolved_flags,
                     &mut next_sel,
                 )?);
                 push_stmts(&mut items, base, index, stmts)?;
@@ -885,14 +917,26 @@ fn recover_with_calls_and_image<'image>(
                         op: UnOp::Neg,
                     }),
                 }
+                let (resolved_kind, resolved_value): (CondKind, Flags) = resolve_aarch64_flags(
+                    &mut items,
+                    &live_flags,
+                    kind,
+                    &mut next_sel,
+                    insn.address,
+                );
+                let resolved_flags: TrackedFlags = TrackedFlags {
+                    value: resolved_value,
+                    nz_only: live_flags.nz_only,
+                    mark: live_flags.mark,
+                };
                 stmts.extend(build_select_stmts(
                     dest,
                     Some(scratch.reg),
                     Source::Reg(scratch),
                     n_reg,
                     n_src,
-                    kind,
-                    &live_flags,
+                    resolved_kind,
+                    &resolved_flags,
                     &mut next_sel,
                 )?);
                 push_stmts(&mut items, base, index, stmts)?;
@@ -919,14 +963,21 @@ fn recover_with_calls_and_image<'image>(
                         "condition is undefined for the tracked nzcv source",
                     ));
                 }
-                let stmts: Vec<Stmt> = if flags_reference_reg(&live_flags.value, dest.reg) {
+                let (resolved_kind, resolved_value): (CondKind, Flags) = resolve_aarch64_flags(
+                    &mut items,
+                    &live_flags,
+                    kind,
+                    &mut next_sel,
+                    insn.address,
+                );
+                let stmts: Vec<Stmt> = if flags_reference_reg(&resolved_value, dest.reg) {
                     let var: u32 = next_sel;
                     next_sel += 1;
                     vec![
                         Stmt::FlagSnapshot {
                             var,
-                            kind,
-                            flags: live_flags.value,
+                            kind: resolved_kind,
+                            flags: resolved_value,
                         },
                         Stmt::Assign {
                             dest,
@@ -948,8 +999,8 @@ fn recover_with_calls_and_image<'image>(
                         Stmt::Cond {
                             dest,
                             src: Source::Imm(true_value),
-                            kind,
-                            flags: live_flags.value,
+                            kind: resolved_kind,
+                            flags: resolved_value,
                         },
                     ]
                 };
@@ -5276,7 +5327,7 @@ fn resolve_aarch64_flags(
             .any(|reg: &Reg| gpr_deps.contains(reg))
             || (!fp_deps.is_empty() && stmt_clobbers_flag_fp(stmt, &fp_deps))
     });
-    if !clobbered {
+    if !clobbered || !condition_is_sound(kind, &live.value) {
         return (kind, live.value.clone());
     }
     let var: u32 = *next_sel;
