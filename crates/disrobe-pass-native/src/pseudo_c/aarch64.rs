@@ -1,9 +1,9 @@
 use super::{
     Abi, AggregatePlan, BinOp, Block, CondKind, Error, ExtSource, FP_ARG_ORDER, Flags, FnReturn,
     FnSignature, FpOp, FpOperand, FpWidth, FrameShape, IndexExtend, IndexOperand, Item, ItemKind,
-    LeafRecovery, MemRef, Node, ReduceOp, Reg, RegRef, ResolvedCall, Result, ScalarType, Source,
-    SretPlan, SretReturn, Stmt, Structured, UnOp, VecArrangement, VecBinOp, VecElem, VecStmt,
-    Width, Xmm, annotate_calls_block_with_order, collect_block_xmm, collect_call_targets,
+    LeafRecovery, MemRef, Node, ReduceOp, Reg, RegRef, ResolvedCall, Result, RoundMode, ScalarType,
+    Source, SretPlan, SretReturn, Stmt, Structured, UnOp, VecArrangement, VecBinOp, VecElem,
+    VecStmt, Width, Xmm, annotate_calls_block_with_order, collect_block_xmm, collect_call_targets,
     condition_is_sound, detect_sret, emit_c, emit_rust, fp_stmt_result_xmm, infer_aggregate_plan,
     infer_fp_params, infer_params, plan_frame, rax_write_width, stmt_writes_rax_int,
     structure_items,
@@ -3185,6 +3185,28 @@ fn lower_fp_convert(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
     }])
 }
 
+fn lower_fp_round(insn: &DisasmInsn, operands: &[&str], mode: RoundMode) -> Result<Vec<Stmt>> {
+    if operands.len() != 2 {
+        return Err(reject_at(
+            insn,
+            "malformed scalar floating-point round to integral",
+        ));
+    }
+    let (dest, width): (Xmm, FpWidth) = parse_fp_register(operands[0])?
+        .ok_or_else(|| reject_at(insn, "round destination is not scalar"))?;
+    let (src, src_width): (Xmm, FpWidth) = parse_fp_register(operands[1])?
+        .ok_or_else(|| reject_at(insn, "round source is not scalar"))?;
+    if width != src_width {
+        return Err(reject_at(insn, "round to integral uses mixed precision"));
+    }
+    Ok(vec![Stmt::FpRound {
+        dest,
+        src: FpOperand::Xmm(src),
+        width,
+        mode,
+    }])
+}
+
 fn reject_incoming_fp_stack_load(mem: MemRef, frame: FrameInfo, insn: &DisasmInsn) -> Result<()> {
     let threshold: Option<i64> = match mem.base {
         Some(Reg::Rsp) => Some(frame.sp_to_entry),
@@ -3390,9 +3412,20 @@ fn try_lower_scalar_fp(
         "fcvt" if has_scalar_fp_destination(&operands) => {
             lower_fp_convert(insn, &operands).map(Some)
         }
-        "fadd" | "fsub" | "fmul" | "fdiv" | "scvtf" | "ucvtf" | "fcvtzs" | "fcvtzu" | "fcvt" => {
-            Ok(None)
+        "frintm" | "frintp" | "frintz" | "frintn" | "frinta" | "frintx" | "frinti"
+            if has_scalar_fp_destination(&operands) =>
+        {
+            let mode: RoundMode = match insn.mnemonic.as_str() {
+                "frintm" => RoundMode::Floor,
+                "frintp" => RoundMode::Ceil,
+                "frintz" => RoundMode::Trunc,
+                "frinta" => RoundMode::TiesAway,
+                _ => RoundMode::Nearest,
+            };
+            lower_fp_round(insn, &operands, mode).map(Some)
         }
+        "fadd" | "fsub" | "fmul" | "fdiv" | "scvtf" | "ucvtf" | "fcvtzs" | "fcvtzu" | "fcvt"
+        | "frintm" | "frintp" | "frintz" | "frintn" | "frinta" | "frintx" | "frinti" => Ok(None),
         "fmov" if vector_context => Ok(None),
         "fmov" => lower_fp_fmov(insn, &operands).map(Some),
         "ldr" | "str" | "ldur" | "stur" => {

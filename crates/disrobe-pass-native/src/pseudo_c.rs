@@ -192,6 +192,7 @@ enum RoundMode {
     Floor,
     Ceil,
     Trunc,
+    TiesAway,
 }
 
 impl RoundMode {
@@ -217,6 +218,8 @@ impl RoundMode {
             (Self::Floor, FpWidth::F32) => "__builtin_floorf",
             (Self::Ceil, FpWidth::F32) => "__builtin_ceilf",
             (Self::Trunc, FpWidth::F32) => "__builtin_truncf",
+            (Self::TiesAway, FpWidth::F64) => "__builtin_round",
+            (Self::TiesAway, FpWidth::F32) => "__builtin_roundf",
         }
     }
 }
@@ -13775,6 +13778,7 @@ fn rs_fp_round_stmt(
         RoundMode::Floor => "floor",
         RoundMode::Ceil => "ceil",
         RoundMode::Trunc => "trunc",
+        RoundMode::TiesAway => "round",
     };
     let call: String = format!("({value}).{method}()");
     rs_emit_xmm_store(out, dest, &call, width, indent);
