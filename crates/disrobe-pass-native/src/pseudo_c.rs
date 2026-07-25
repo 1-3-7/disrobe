@@ -473,6 +473,8 @@ enum CondKind {
     Ns,
     Vs,
     Vc,
+    P,
+    Np,
 }
 
 impl CondKind {
@@ -490,6 +492,8 @@ impl CondKind {
             "be" | "na" => Some(Self::Be),
             "s" => Some(Self::S),
             "ns" => Some(Self::Ns),
+            "p" | "pe" => Some(Self::P),
+            "np" | "po" => Some(Self::Np),
             _ => None,
         }
     }
@@ -526,6 +530,8 @@ impl CondKind {
             Self::Ns => Self::S,
             Self::Vs => Self::Vc,
             Self::Vc => Self::Vs,
+            Self::P => Self::Np,
+            Self::Np => Self::P,
         }
     }
 }
@@ -7101,7 +7107,7 @@ fn canonicalize_x86_fp_condition(kind: CondKind, flags: &Flags) -> Option<CondKi
         CondKind::Ae => Some(CondKind::Ge),
         CondKind::B => Some(CondKind::L),
         CondKind::Be => Some(CondKind::Le),
-        CondKind::E | CondKind::Ne => Some(kind),
+        CondKind::E | CondKind::Ne | CondKind::P | CondKind::Np => Some(kind),
         CondKind::G
         | CondKind::Ge
         | CondKind::L
@@ -7114,6 +7120,9 @@ fn canonicalize_x86_fp_condition(kind: CondKind, flags: &Flags) -> Option<CondKi
 }
 
 fn condition_is_sound(kind: CondKind, flags: &Flags) -> bool {
+    if matches!(kind, CondKind::P | CondKind::Np) {
+        return matches!(flags, Flags::FpCmp { .. });
+    }
     match flags {
         Flags::Cmp { .. } | Flags::CmpMem { .. } | Flags::Test { .. } => true,
         Flags::Add { .. } => kind.sign_zero_only() || kind.is_overflow(),
@@ -7150,6 +7159,8 @@ fn nzcv_condition_holds(kind: CondKind, nzcv: u8) -> bool {
         CondKind::L => n != v,
         CondKind::G => !z && (n == v),
         CondKind::Le => z || n != v,
+        CondKind::P => v,
+        CondKind::Np => !v,
     }
 }
 
@@ -13767,6 +13778,9 @@ fn cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Strin
                 CondKind::Le => c_render(|cx| c_bin(BinaryOp::Le, cx.var(&sop), CExpr::int(0))),
                 CondKind::Ae | CondKind::Vc => "1".to_owned(),
                 CondKind::B | CondKind::Vs => "0".to_owned(),
+                CondKind::P | CondKind::Np => {
+                    unreachable!("parity has no sound rendering over an integer test")
+                }
             }
         }
         Flags::Sign { result } => {
@@ -13873,8 +13887,8 @@ fn fp_compare_c(
         CondKind::L => unordered_of(BinaryOp::Ge),
         CondKind::G => ordered(BinaryOp::Gt),
         CondKind::Le => unordered_of(BinaryOp::Gt),
-        CondKind::Vs => fp_nan_test_c(a, b, same_operand, true),
-        CondKind::Vc => fp_nan_test_c(a, b, same_operand, false),
+        CondKind::Vs | CondKind::P => fp_nan_test_c(a, b, same_operand, true),
+        CondKind::Vc | CondKind::Np => fp_nan_test_c(a, b, same_operand, false),
     }
 }
 
@@ -15447,8 +15461,8 @@ fn fp_compare_rust(
         CondKind::L => format!("!({})", rs_binary_text(a, b, RBinOp::Ge, ">=")),
         CondKind::G => rs_binary_text(a, b, RBinOp::Gt, ">"),
         CondKind::Le => format!("!({})", rs_binary_text(a, b, RBinOp::Gt, ">")),
-        CondKind::Vs => fp_nan_test_rust(a, b, same_operand, true),
-        CondKind::Vc => fp_nan_test_rust(a, b, same_operand, false),
+        CondKind::Vs | CondKind::P => fp_nan_test_rust(a, b, same_operand, true),
+        CondKind::Vc | CondKind::Np => fp_nan_test_rust(a, b, same_operand, false),
     }
 }
 
@@ -15651,6 +15665,9 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Op
                 CondKind::Le => rs_binary_text(&var, "0", RBinOp::Le, "<="),
                 CondKind::Ae | CondKind::Vc => "true".to_owned(),
                 CondKind::B | CondKind::Vs => "false".to_owned(),
+                CondKind::P | CondKind::Np => {
+                    unreachable!("parity has no sound rendering over an integer test")
+                }
             };
             Some(expr)
         }
@@ -16082,6 +16099,8 @@ mod tests {
             CondKind::Ns,
             CondKind::Vs,
             CondKind::Vc,
+            CondKind::P,
+            CondKind::Np,
         ] {
             assert_eq!(kind.negate().negate(), kind);
             assert_ne!(kind.negate(), kind);
@@ -17737,6 +17756,52 @@ mod tests {
         assert_eq!(
             fp_compare_rust(CondKind::Ne, "x", "y", false, a64),
             "x != y"
+        );
+    }
+
+    #[test]
+    fn parity_setcc_over_fp_recovers_the_unordered_isnan_test() {
+        assert_eq!(CondKind::parse("p"), Some(CondKind::P));
+        assert_eq!(CondKind::parse("np"), Some(CondKind::Np));
+        assert_eq!(CondKind::parse("pe"), Some(CondKind::P));
+        assert_eq!(CondKind::parse("po"), Some(CondKind::Np));
+        assert_eq!(CondKind::P.negate(), CondKind::Np);
+        assert_eq!(CondKind::Np.negate(), CondKind::P);
+
+        let m: FpUnorderedModel = FpUnorderedModel::UnorderedIsEqual;
+        assert_eq!(
+            fp_compare_rust(CondKind::P, "x", "y", false, m),
+            "(x).is_nan() || (y).is_nan()"
+        );
+        assert_eq!(
+            fp_compare_rust(CondKind::Np, "x", "y", false, m),
+            "!(x).is_nan() && !(y).is_nan()"
+        );
+        assert_eq!(
+            fp_compare_c(CondKind::P, "x", "y", false, m),
+            fp_compare_c(CondKind::Vs, "x", "y", false, m)
+        );
+
+        let di = |address: u64, mnemonic: &str, operands: &str| -> DisasmInsn {
+            DisasmInsn {
+                address,
+                bytes: Vec::new(),
+                mnemonic: mnemonic.to_owned(),
+                operands: operands.to_owned(),
+            }
+        };
+        let unordered: [DisasmInsn; 2] = [di(0, "ucomisd", "xmm0, xmm1"), di(1, "setp", "al")];
+        let lifted: Vec<Stmt> = lift_stmt_range(&unordered, 0, unordered.len(), &[])
+            .expect("setp over an fp compare recovers the unordered test");
+        assert!(
+            matches!(
+                lifted.as_slice(),
+                [Stmt::SetCc {
+                    kind: CondKind::P,
+                    ..
+                }]
+            ),
+            "setp over ucomisd must lift to a parity SetCc: {lifted:?}"
         );
     }
 }
