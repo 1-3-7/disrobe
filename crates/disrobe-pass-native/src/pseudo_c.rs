@@ -3967,6 +3967,10 @@ fn flags_after_clobber(flags: Option<Flags>, stmt: &Stmt) -> Option<Flags> {
         {
             return None;
         }
+        let mems: Vec<MemRef> = flag_operand_mems(live);
+        if !mems.is_empty() && stmt_writes_aliasing_mem(stmt, &mems) {
+            return None;
+        }
     }
     flags
 }
@@ -5540,6 +5544,114 @@ fn flag_operand_regs(flags: &Flags) -> Vec<Reg> {
     }
 }
 
+fn flag_operand_mems(flags: &Flags) -> Vec<MemRef> {
+    let mut mems: Vec<MemRef> = Vec::new();
+    collect_flag_mems(flags, &mut mems);
+    mems
+}
+
+fn collect_flag_mems(flags: &Flags, out: &mut Vec<MemRef>) {
+    match flags {
+        Flags::Cmp { rhs, .. } | Flags::Add { rhs, .. } => {
+            if let Source::Mem(mem) = rhs {
+                out.push(*mem);
+            }
+        }
+        Flags::CmpMem { lhs, rhs } => {
+            out.push(*lhs);
+            if let Source::Mem(mem) = rhs {
+                out.push(*mem);
+            }
+        }
+        Flags::FpCmp { rhs, .. } => {
+            if let FpOperand::Mem(mem) = rhs {
+                out.push(*mem);
+            }
+        }
+        Flags::CondCmp { prior, taken, .. } => {
+            collect_flag_mems(prior, out);
+            collect_flag_mems(taken, out);
+        }
+        Flags::Test { .. }
+        | Flags::TestImm { .. }
+        | Flags::Sign { .. }
+        | Flags::Snapshot { .. } => {}
+    }
+}
+
+fn stmt_writes_aliasing_mem(stmt: &Stmt, mems: &[MemRef]) -> bool {
+    match stmt {
+        Stmt::Store { addr, .. } | Stmt::MemRmw { addr, .. } => mems
+            .iter()
+            .any(|compared: &MemRef| may_alias(addr, compared)),
+        Stmt::FpStore { .. }
+        | Stmt::Vector(VecStmt::Store { .. })
+        | Stmt::BlockMove { .. }
+        | Stmt::BlockFill { .. }
+        | Stmt::Call { .. } => true,
+        Stmt::Vector(
+            VecStmt::Load { .. }
+            | VecStmt::Bin { .. }
+            | VecStmt::Dup { .. }
+            | VecStmt::LaneInsert { .. }
+            | VecStmt::Compare { .. }
+            | VecStmt::MoveImm { .. }
+            | VecStmt::Reduce { .. }
+            | VecStmt::ExtractToGpr { .. }
+            | VecStmt::WidenExtend { .. }
+            | VecStmt::WidenAdd { .. },
+        )
+        | Stmt::Assign { .. }
+        | Stmt::BinAssign { .. }
+        | Stmt::UnAssign { .. }
+        | Stmt::Cond { .. }
+        | Stmt::SetCc { .. }
+        | Stmt::Extend { .. }
+        | Stmt::MulImm { .. }
+        | Stmt::WideMul { .. }
+        | Stmt::Divide { .. }
+        | Stmt::FpBin { .. }
+        | Stmt::FpMov { .. }
+        | Stmt::IntToFp { .. }
+        | Stmt::FpToInt { .. }
+        | Stmt::FpConvert { .. }
+        | Stmt::FpMinMax { .. }
+        | Stmt::FpFma { .. }
+        | Stmt::FpCsel { .. }
+        | Stmt::FpSqrt { .. }
+        | Stmt::FpUnary { .. }
+        | Stmt::FpRound { .. }
+        | Stmt::GprToXmm { .. }
+        | Stmt::XmmToGpr { .. }
+        | Stmt::DoubleShift { .. }
+        | Stmt::FlagSnapshot { .. }
+        | Stmt::Packed { .. }
+        | Stmt::PackedToGpr { .. } => false,
+    }
+}
+
+fn may_alias(store: &MemRef, compared: &MemRef) -> bool {
+    let store_const: bool = store.base.is_none() && store.index.is_none();
+    let compared_const: bool = compared.base.is_none() && compared.index.is_none();
+    if store_const != compared_const {
+        return true;
+    }
+    if !store_const && (store.base != compared.base || store.index != compared.index) {
+        return true;
+    }
+    mem_ranges_overlap(store.disp, store.width, compared.disp, compared.width)
+}
+
+fn mem_ranges_overlap(disp_a: i64, width_a: Width, disp_b: i64, width_b: Width) -> bool {
+    let (Some(end_a), Some(end_b)): (Option<i64>, Option<i64>) = (
+        disp_a.checked_add(i64::from(width_a.bits() / 8)),
+        disp_b.checked_add(i64::from(width_b.bits() / 8)),
+    ) else {
+        return true;
+    };
+    end_a > disp_b && end_b > disp_a
+}
+
 fn flag_operand_xmms(flags: &Flags) -> Vec<Xmm> {
     match flags {
         Flags::FpCmp { lhs, rhs, .. } => {
@@ -6911,7 +7023,8 @@ fn snapshot_repair(
 fn comparison_operand_clobbered(items: &[Item], mark: usize, flags: &Flags) -> bool {
     let deps: Vec<Reg> = flag_operand_regs(flags);
     let fp_deps: Vec<Xmm> = flag_operand_xmms(flags);
-    if deps.is_empty() && fp_deps.is_empty() {
+    let mems: Vec<MemRef> = flag_operand_mems(flags);
+    if deps.is_empty() && fp_deps.is_empty() && mems.is_empty() {
         return false;
     }
     let start: usize = mark.min(items.len());
@@ -6923,6 +7036,7 @@ fn comparison_operand_clobbered(items: &[Item], mark: usize, flags: &Flags) -> b
             .iter()
             .any(|reg: &Reg| deps.contains(reg))
             || (!fp_deps.is_empty() && stmt_clobbers_flag_fp(stmt, &fp_deps))
+            || (!mems.is_empty() && stmt_writes_aliasing_mem(stmt, &mems))
     })
 }
 
@@ -17467,6 +17581,51 @@ mod tests {
                 .iter()
                 .any(|s: &Stmt| matches!(s, Stmt::SetCc { .. })),
             "an ignorable nop between the compare and the setl must leave the setl folding: {nop_folds:?}"
+        );
+    }
+
+    #[test]
+    fn switch_body_store_aliasing_a_memory_compare_rejects() {
+        let di = |address: u64, mnemonic: &str, operands: &str| -> DisasmInsn {
+            DisasmInsn {
+                address,
+                bytes: Vec::new(),
+                mnemonic: mnemonic.to_owned(),
+                operands: operands.to_owned(),
+            }
+        };
+
+        let aliased: [DisasmInsn; 3] = [
+            di(0, "cmp", "[rdi], eax"),
+            di(1, "mov", "[rdi], ebx"),
+            di(2, "setl", "bl"),
+        ];
+        assert!(
+            lift_stmt_range(&aliased, 0, aliased.len(), &[]).is_err(),
+            "a store overwriting the compared memory cell must reject rather than fold the pre-store value"
+        );
+
+        let disjoint_slot: [DisasmInsn; 3] = [
+            di(0, "cmp", "[rsp+8], eax"),
+            di(1, "mov", "[rsp+16], ebx"),
+            di(2, "setl", "bl"),
+        ];
+        let folds: Vec<Stmt> = lift_stmt_range(&disjoint_slot, 0, disjoint_slot.len(), &[]).expect(
+            "a store to a provably disjoint same-base slot keeps the tracked memory compare",
+        );
+        assert!(
+            folds.iter().any(|s: &Stmt| matches!(s, Stmt::SetCc { .. })),
+            "a store to a disjoint stack slot must leave the memory compare folding: {folds:?}"
+        );
+
+        let different_base: [DisasmInsn; 3] = [
+            di(0, "cmp", "[rdi], eax"),
+            di(1, "mov", "[rsi], ebx"),
+            di(2, "setl", "bl"),
+        ];
+        assert!(
+            lift_stmt_range(&different_base, 0, different_base.len(), &[]).is_err(),
+            "a store through a different base register may alias the compared cell and must conservatively reject"
         );
     }
 }
