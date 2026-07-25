@@ -251,6 +251,11 @@ double fp_iavg(const int *a, int n) {
     for (int i = n; i > 0; i--) s += (double)a[i - 1];
     return s / (double)(n ? n : 1);
 }
+double fp_floor_d(double x) { return __builtin_floor(x); }
+float fp_ceil_f(float x) { return __builtin_ceilf(x); }
+double fp_trunc_d(double x) { return __builtin_trunc(x); }
+double fp_round_d(double x) { return __builtin_round(x); }
+double fp_rint_d(double x) { return __builtin_rint(x); }
 ";
 
 const EXTERNS: &str = r"struct Pt { int x; int y; };
@@ -328,6 +333,11 @@ extern float fp_from_uint(unsigned x);
 extern double fp_widen(float x);
 extern float fp_narrow(double x);
 extern double fp_iavg(const int *a, int n);
+extern double fp_floor_d(double x);
+extern float fp_ceil_f(float x);
+extern double fp_trunc_d(double x);
+extern double fp_round_d(double x);
+extern double fp_rint_d(double x);
 ";
 
 fn cc() -> Option<String> {
@@ -352,12 +362,12 @@ struct FpExpectation {
 
 fn fp_expectation(name: &str) -> Option<FpExpectation> {
     let expectation: FpExpectation = match name {
-        "fp_id_f" => FpExpectation {
+        "fp_id_f" | "fp_ceil_f" => FpExpectation {
             params: &[ScalarType::Float],
             returns: Some(ScalarType::Float),
             return_width_bits: 32,
         },
-        "fp_id_d" => FpExpectation {
+        "fp_id_d" | "fp_floor_d" | "fp_trunc_d" | "fp_round_d" | "fp_rint_d" => FpExpectation {
             params: &[ScalarType::Double],
             returns: Some(ScalarType::Double),
             return_width_bits: 64,
@@ -434,6 +444,19 @@ fn fp_expectation(name: &str) -> Option<FpExpectation> {
 
 fn is_increment_two_fp(name: &str) -> bool {
     INCREMENT_TWO_FP_FUNCTIONS.contains(&name)
+}
+
+const INCREMENT_THREE_FP_FUNCTIONS: &[&str] = &[
+    "fp_floor_d",
+    "fp_ceil_f",
+    "fp_trunc_d",
+    "fp_round_d",
+    "fp_rint_d",
+];
+const INCREMENT_THREE_EXPECTED_CASES: usize = 25;
+
+fn is_increment_three_fp(name: &str) -> bool {
+    INCREMENT_THREE_FP_FUNCTIONS.contains(&name)
 }
 
 fn expected_arity(name: &str) -> Option<usize> {
@@ -647,6 +670,26 @@ const FP_ID_D_TMPL: &str = "    {\n\
      \x20           uint64_t bits = fp64_input(&s, it, 0); double x = fp_d_from_bits(bits);\n\
      \x20           uint64_t w = fp_d_to_bits(fp_id_d(x)); uint64_t g = fp_d_to_bits($REC(x));\n\
      \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_UNARY_D_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           uint64_t bits = fp64_input(&s, it, 0); double x = fp_d_from_bits(bits);\n\
+     \x20           uint64_t w = fp_d_to_bits($NAME(x)); uint64_t g = fp_d_to_bits($REC(x));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_UNARY_F_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           uint32_t bits = fp32_input(&s, it, 0); float x = fp_f_from_bits(bits);\n\
+     \x20           uint32_t w = fp_f_to_bits($NAME(x)); uint32_t g = fp_f_to_bits($REC(x));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -972,6 +1015,10 @@ fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Option<String> 
         "fp_iavg" => fill_template(FP_IAVG_TMPL, opt, name, rec, seed),
         "fp_id_f" => fill_template(FP_ID_F_TMPL, opt, name, rec, seed),
         "fp_id_d" => fill_template(FP_ID_D_TMPL, opt, name, rec, seed),
+        "fp_floor_d" | "fp_trunc_d" | "fp_round_d" | "fp_rint_d" => {
+            fill_template(FP_UNARY_D_TMPL, opt, name, rec, seed)
+        }
+        "fp_ceil_f" => fill_template(FP_UNARY_F_TMPL, opt, name, rec, seed),
         "fp_second" => fill_template(FP_SECOND_TMPL, opt, name, rec, seed),
         "fp_pick3" => fill_template(FP_PICK3_TMPL, opt, name, rec, seed),
         "fp_get" => fill_template(FP_GET_F_TMPL, opt, name, rec, seed),
@@ -1446,6 +1493,8 @@ fn corpus_grade_report() {
     let mut fp_driven: usize = 0;
     let mut increment_two_recovered: usize = 0;
     let mut increment_two_driven: usize = 0;
+    let mut increment_three_recovered: usize = 0;
+    let mut increment_three_driven: usize = 0;
     let mut skips: Vec<(String, String, String)> = Vec::new();
     let mut decls: String = String::new();
     let mut blocks: String = String::new();
@@ -1453,6 +1502,7 @@ fn corpus_grade_report() {
     for (index, (opt, name, bytes)) in CASES.iter().enumerate() {
         attempted += 1;
         let required_increment_two: bool = is_increment_two_fp(name);
+        let required_increment_three: bool = is_increment_three_fp(name);
         let recovery: LeafRecovery = match recover_aarch64_function(bytes, 0) {
             Ok(value) => value,
             Err(error) => {
@@ -1469,6 +1519,9 @@ fn corpus_grade_report() {
         recovered += 1;
         if required_increment_two {
             increment_two_recovered += 1;
+        }
+        if required_increment_three {
+            increment_three_recovered += 1;
         }
 
         let expected_fp: Option<FpExpectation> = fp_expectation(name);
@@ -1551,6 +1604,9 @@ fn corpus_grade_report() {
         }
         if required_increment_two {
             increment_two_driven += 1;
+        }
+        if required_increment_three {
+            increment_three_driven += 1;
         }
     }
 
@@ -1646,10 +1702,12 @@ fn corpus_grade_report() {
     let graded_equivalent: i64 = passed;
     let increment_one_fp_recovered: usize = fp_recovered
         .checked_sub(increment_two_recovered)
-        .expect("increment-2 fp recovery count cannot exceed the fp total");
+        .and_then(|value: usize| value.checked_sub(increment_three_recovered))
+        .expect("increment-2 and increment-3 fp recovery counts cannot exceed the fp total");
     let increment_one_fp_driven: usize = fp_driven
         .checked_sub(increment_two_driven)
-        .expect("increment-2 fp driven count cannot exceed the fp total");
+        .and_then(|value: usize| value.checked_sub(increment_three_driven))
+        .expect("increment-2 and increment-3 fp driven counts cannot exceed the fp total");
     let integer_recovered: usize = recovered
         .checked_sub(fp_recovered)
         .expect("fp recovery count cannot exceed the total");
@@ -1729,6 +1787,14 @@ fn corpus_grade_report() {
     assert_eq!(
         increment_two_recovered, INCREMENT_TWO_EXPECTED_CASES,
         "every increment-2 corpus case must recover"
+    );
+    assert_eq!(
+        increment_three_recovered, INCREMENT_THREE_EXPECTED_CASES,
+        "every increment-3 corpus case must recover"
+    );
+    assert_eq!(
+        increment_three_driven, INCREMENT_THREE_EXPECTED_CASES,
+        "every increment-3 corpus case must be graded"
     );
     assert_eq!(
         increment_two_driven, INCREMENT_TWO_EXPECTED_CASES,

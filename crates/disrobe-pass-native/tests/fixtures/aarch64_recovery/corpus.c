@@ -204,3 +204,9 @@ double fp_iavg(const int *a, int n) {
     for (int i = n; i > 0; i--) s += (double)a[i - 1];
     return s / (double)(n ? n : 1);
 }
+
+double fp_floor_d(double x) { return __builtin_floor(x); }
+float fp_ceil_f(float x) { return __builtin_ceilf(x); }
+double fp_trunc_d(double x) { return __builtin_trunc(x); }
+double fp_round_d(double x) { return __builtin_round(x); }
+double fp_rint_d(double x) { return __builtin_rint(x); }
