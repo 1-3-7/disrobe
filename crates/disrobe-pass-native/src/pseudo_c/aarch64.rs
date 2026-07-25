@@ -432,7 +432,8 @@ fn recover_with_calls_and_image<'image>(
         }
         match insn.mnemonic.as_str() {
             "add" | "adds" | "sub" | "subs" | "and" | "orr" | "eor" | "bic" | "orn" | "eon"
-            | "lsl" | "lsr" | "asr" | "mul" | "sdiv" | "udiv" | "umull" | "smull" | "umulh" => {
+            | "lsl" | "lsr" | "asr" | "mul" | "sdiv" | "udiv" | "umull" | "smull" | "umulh"
+            | "smulh" => {
                 let (dest, mut stmts): (RegRef, Vec<Stmt>) = lower_alu(insn)?;
                 let new_flags: Option<TrackedFlags> = if insn.mnemonic == "subs" {
                     let (mut snapshots, value): (Vec<Stmt>, Flags) = subtract_flags(insn)?;
@@ -2509,7 +2510,7 @@ fn lower_alu(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
     } else if dest.width != lhs.width {
         return Err(reject_at(insn, "mixed-width integer alu instruction"));
     }
-    if insn.mnemonic == "umulh" && dest.width != Width::W64 {
+    if matches!(insn.mnemonic.as_str(), "umulh" | "smulh") && dest.width != Width::W64 {
         return Err(reject_at(
             insn,
             "high-half multiply requires 64-bit operands",
@@ -2533,6 +2534,7 @@ fn lower_alu(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
         "umull" => (BinOp::Umull, false),
         "smull" => (BinOp::Smull, false),
         "umulh" => (BinOp::Umulh, false),
+        "smulh" => (BinOp::Smulh, false),
         _ => return Err(reject_at(insn, "unsupported integer alu instruction")),
     };
     let mut prefix: Vec<Stmt> = Vec::new();
