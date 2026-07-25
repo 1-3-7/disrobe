@@ -419,7 +419,11 @@ fn recover_with_calls_and_image<'image>(
             push_stmts(&mut items, base, index, stmts)?;
             continue;
         }
-        if has_unsupported_register_class(&insn.operands) {
+        if !matches!(
+            insn.mnemonic.as_str(),
+            "fcmp" | "fcmpe" | "fccmp" | "fccmpe" | "fcsel"
+        ) && has_unsupported_register_class(&insn.operands)
+        {
             return Err(reject_at(insn, "unsupported instruction"));
         }
         if operand_is_vector(insn) {
@@ -989,6 +993,143 @@ fn recover_with_calls_and_image<'image>(
                 };
                 flags = Some(definition.clone());
                 flag_definitions.insert(index, definition);
+            }
+            "fcmp" | "fcmpe" => {
+                let operands: Vec<&str> = split_operands(&insn.operands);
+                if operands.len() != 2 {
+                    return Err(reject_at(insn, "malformed scalar floating-point compare"));
+                }
+                let (lhs, width): (Xmm, FpWidth) = parse_fp_register(operands[0])?
+                    .ok_or_else(|| reject_at(insn, "floating-point compare lhs is not scalar"))?;
+                let rhs: FpOperand = parse_fp_compare_operand(operands[1], width, insn)?;
+                let definition: TrackedFlags = TrackedFlags {
+                    value: Flags::FpCmp { lhs, rhs, width },
+                    nz_only: false,
+                };
+                flags = Some(definition.clone());
+                flag_definitions.insert(index, definition);
+            }
+            "fccmp" | "fccmpe" => {
+                let operands: Vec<&str> = split_operands(&insn.operands);
+                if operands.len() != 4 {
+                    return Err(reject_at(
+                        insn,
+                        "malformed scalar floating-point conditional compare",
+                    ));
+                }
+                let (lhs, width): (Xmm, FpWidth) =
+                    parse_fp_register(operands[0])?.ok_or_else(|| {
+                        reject_at(insn, "floating-point conditional compare lhs is not scalar")
+                    })?;
+                let (rhs_reg, rhs_width): (Xmm, FpWidth) = parse_fp_register(operands[1])?
+                    .ok_or_else(|| {
+                        reject_at(insn, "floating-point conditional compare rhs is not scalar")
+                    })?;
+                if rhs_width != width {
+                    return Err(reject_at(
+                        insn,
+                        "floating-point conditional compare uses mixed precision",
+                    ));
+                }
+                let nzcv_imm: i64 = parse_immediate(operands[2])?;
+                if !(0..=15).contains(&nzcv_imm) {
+                    return Err(reject_at(
+                        insn,
+                        "conditional compare nzcv immediate is outside the four-bit range",
+                    ));
+                }
+                let nzcv: u8 = u8::try_from(nzcv_imm)
+                    .map_err(|_| reject_at(insn, "conditional compare nzcv conversion overflow"))?;
+                let precond: CondKind = parse_condition(operands[3])?;
+                let live_flags: TrackedFlags = flags.clone().ok_or_else(|| {
+                    reject_at(
+                        insn,
+                        "floating-point conditional compare lacks live nzcv state",
+                    )
+                })?;
+                if (live_flags.nz_only && !precond.sign_zero_only())
+                    || !condition_is_sound(precond, &live_flags.value)
+                {
+                    return Err(reject_at(
+                        insn,
+                        "floating-point conditional compare precondition is undefined for the tracked nzcv source",
+                    ));
+                }
+                let definition: TrackedFlags = TrackedFlags {
+                    value: Flags::CondCmp {
+                        prior: Box::new(live_flags.value),
+                        precond,
+                        taken: Box::new(Flags::FpCmp {
+                            lhs,
+                            rhs: FpOperand::Xmm(rhs_reg),
+                            width,
+                        }),
+                        nzcv,
+                    },
+                    nz_only: false,
+                };
+                flags = Some(definition.clone());
+                flag_definitions.insert(index, definition);
+            }
+            "fcsel" => {
+                let operands: Vec<&str> = split_operands(&insn.operands);
+                if operands.len() != 4 {
+                    return Err(reject_at(
+                        insn,
+                        "malformed scalar floating-point conditional select",
+                    ));
+                }
+                let (dest, width): (Xmm, FpWidth) =
+                    parse_fp_register(operands[0])?.ok_or_else(|| {
+                        reject_at(
+                            insn,
+                            "floating-point conditional select destination is not scalar",
+                        )
+                    })?;
+                let (if_true, true_width): (Xmm, FpWidth) = parse_fp_register(operands[1])?
+                    .ok_or_else(|| {
+                        reject_at(
+                            insn,
+                            "floating-point conditional select true operand is not scalar",
+                        )
+                    })?;
+                let (if_false, false_width): (Xmm, FpWidth) = parse_fp_register(operands[2])?
+                    .ok_or_else(|| {
+                        reject_at(
+                            insn,
+                            "floating-point conditional select false operand is not scalar",
+                        )
+                    })?;
+                if width != true_width || width != false_width {
+                    return Err(reject_at(
+                        insn,
+                        "scalar floating-point conditional select uses mixed precision",
+                    ));
+                }
+                let kind: CondKind = parse_condition(operands[3])?;
+                let live_flags: TrackedFlags = flags.clone().ok_or_else(|| {
+                    reject_at(
+                        insn,
+                        "floating-point conditional select lacks live nzcv state",
+                    )
+                })?;
+                if (live_flags.nz_only && !kind.sign_zero_only())
+                    || !condition_is_sound(kind, &live_flags.value)
+                {
+                    return Err(reject_at(
+                        insn,
+                        "floating-point conditional select condition is undefined for the tracked nzcv source",
+                    ));
+                }
+                let stmt: Stmt = Stmt::FpCsel {
+                    dest,
+                    if_true: FpOperand::Xmm(if_true),
+                    if_false: FpOperand::Xmm(if_false),
+                    kind,
+                    flags: live_flags.value,
+                    width,
+                };
+                push_stmts(&mut items, base, index, vec![stmt])?;
             }
             "adr" | "adrp" => {
                 let operands: Vec<&str> = split_operands(&insn.operands);
@@ -2150,7 +2291,7 @@ fn block_contains_switch(body: &[Node]) -> bool {
 }
 
 fn stmt_is_scalar_fp(stmt: &Stmt) -> bool {
-    matches!(
+    if matches!(
         stmt,
         Stmt::FpBin { .. }
             | Stmt::FpMov { .. }
@@ -2160,10 +2301,20 @@ fn stmt_is_scalar_fp(stmt: &Stmt) -> bool {
             | Stmt::FpConvert { .. }
             | Stmt::FpMinMax { .. }
             | Stmt::FpFma { .. }
+            | Stmt::FpCsel { .. }
             | Stmt::FpSqrt { .. }
             | Stmt::FpRound { .. }
             | Stmt::GprToXmm { .. }
             | Stmt::XmmToGpr { .. }
+    ) {
+        return true;
+    }
+    matches!(
+        stmt,
+        Stmt::Cond { flags, .. }
+            | Stmt::SetCc { flags, .. }
+            | Stmt::FlagSnapshot { flags, .. }
+        if flags_read_fp_compare(flags)
     )
 }
 
@@ -2200,6 +2351,7 @@ struct ScalarReturnPath {
     fp: Option<FpWidth>,
     fp_stored: bool,
     observable: bool,
+    fp_compare_snapshot: Option<u32>,
 }
 
 impl ScalarReturnPath {
@@ -2209,7 +2361,22 @@ impl ScalarReturnPath {
             fp: None,
             fp_stored: false,
             observable: false,
+            fp_compare_snapshot: None,
         }
+    }
+
+    fn materializes_fp_compare_into_return(&self, stmt: &Stmt) -> bool {
+        let (dest, flags): (Reg, &Flags) = match stmt {
+            Stmt::Cond { dest, flags, .. } | Stmt::SetCc { dest, flags, .. } => (dest.reg, flags),
+            _ => return false,
+        };
+        if dest != Reg::Rax {
+            return false;
+        }
+        if flags_read_fp_compare(flags) {
+            return true;
+        }
+        matches!(flags, Flags::Snapshot { var } if self.fp_compare_snapshot == Some(*var))
     }
 
     fn apply(&mut self, stmt: &Stmt) {
@@ -2228,6 +2395,15 @@ impl ScalarReturnPath {
             && dest == Xmm::Xmm0
         {
             self.fp = Some(width);
+            self.fp_stored = false;
+        }
+        if let Stmt::FlagSnapshot { var, flags, .. } = stmt
+            && flags_read_fp_compare(flags)
+        {
+            self.fp_compare_snapshot = Some(*var);
+        }
+        if self.materializes_fp_compare_into_return(stmt) {
+            self.fp = None;
             self.fp_stored = false;
         }
         if matches!(
@@ -2268,6 +2444,16 @@ fn stmt_has_observable_effect(stmt: &Stmt) -> bool {
             | Stmt::Call { .. }
             | Stmt::Vector(VecStmt::Store { .. })
     )
+}
+
+fn flags_read_fp_compare(flags: &Flags) -> bool {
+    match flags {
+        Flags::FpCmp { .. } => true,
+        Flags::CondCmp { prior, taken, .. } => {
+            flags_read_fp_compare(prior) || flags_read_fp_compare(taken)
+        }
+        _ => false,
+    }
 }
 
 fn extend_unique_paths(target: &mut Vec<ScalarReturnPath>, source: Vec<ScalarReturnPath>) {
@@ -2994,6 +3180,35 @@ fn parse_fp_register(token: &str) -> Result<Option<(Xmm, FpWidth)>> {
         ));
     }
     Ok(None)
+}
+
+fn is_fp_zero_immediate(token: &str) -> bool {
+    token
+        .trim()
+        .strip_prefix('#')
+        .and_then(|body: &str| body.parse::<f64>().ok())
+        .is_some_and(|value: f64| value == 0.0)
+}
+
+fn parse_fp_compare_operand(token: &str, width: FpWidth, insn: &DisasmInsn) -> Result<FpOperand> {
+    if token.trim().starts_with('#') {
+        if is_fp_zero_immediate(token) {
+            return Ok(FpOperand::Const { bits: 0, width });
+        }
+        return Err(reject_at(
+            insn,
+            "floating-point compare immediate other than zero is unsupported",
+        ));
+    }
+    let (register, register_width): (Xmm, FpWidth) = parse_fp_register(token)?
+        .ok_or_else(|| reject_at(insn, "floating-point compare operand is not scalar"))?;
+    if register_width != width {
+        return Err(reject_at(
+            insn,
+            "floating-point compare uses mixed precision",
+        ));
+    }
+    Ok(FpOperand::Xmm(register))
 }
 
 fn fp_memory_register(token: &str) -> Result<Option<(Xmm, FpWidth)>> {

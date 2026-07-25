@@ -279,6 +279,37 @@ float fma_mixed_f(float a, float b, float c) { return __builtin_fmaf(a, b, c) + 
 double fma_mixed_d(double a, double b, double c) { return __builtin_fma(a, b, c) + a * b; }
 float fma_chained_f(float a, float b, float c) { return __builtin_fmaf(a, a, __builtin_fmaf(b, c, a)); }
 double fma_chained_d(double a, double b, double c) { return __builtin_fma(a, a, __builtin_fma(b, c, a)); }
+int fc_lt_f(float a, float b) { return a < b; }
+int fc_le_f(float a, float b) { return a <= b; }
+int fc_gt_f(float a, float b) { return a > b; }
+int fc_ge_f(float a, float b) { return a >= b; }
+int fc_eq_f(float a, float b) { return a == b; }
+int fc_ne_f(float a, float b) { return a != b; }
+int fc_nlt_f(float a, float b) { return !(a < b); }
+int fc_nle_f(float a, float b) { return !(a <= b); }
+int fc_ngt_f(float a, float b) { return !(a > b); }
+int fc_nge_f(float a, float b) { return !(a >= b); }
+int fc_isnan_f(float x) { return x != x; }
+int fc_lt_d(double a, double b) { return a < b; }
+int fc_le_d(double a, double b) { return a <= b; }
+int fc_gt_d(double a, double b) { return a > b; }
+int fc_ge_d(double a, double b) { return a >= b; }
+int fc_eq_d(double a, double b) { return a == b; }
+int fc_ne_d(double a, double b) { return a != b; }
+int fc_nlt_d(double a, double b) { return !(a < b); }
+int fc_nle_d(double a, double b) { return !(a <= b); }
+int fc_ngt_d(double a, double b) { return !(a > b); }
+int fc_nge_d(double a, double b) { return !(a >= b); }
+int fc_isnan_d(double x) { return x != x; }
+float fc_sel_f(float a, float b, float x, float y) { return a < b ? x : y; }
+float fc_tmin_f(float a, float b) { return a < b ? a : b; }
+float fc_tmax_f(float a, float b) { return a > b ? a : b; }
+float fc_pickeq_f(float a, float b) { return a == b ? a : b; }
+double fc_sel_d(double a, double b, double x, double y) { return a < b ? x : y; }
+double fc_tmin_d(double a, double b) { return a < b ? a : b; }
+double fc_tmax_d(double a, double b) { return a > b ? a : b; }
+double fc_pickeq_d(double a, double b) { return a == b ? a : b; }
+float fc_seland_f(float a, float b, float c, float d, float x, float y) { return (a < b && c < d) ? x : y; }
 ";
 
 const EXTERNS: &str = r"struct Pt { int x; int y; };
@@ -384,6 +415,37 @@ extern float fma_mixed_f(float a, float b, float c);
 extern double fma_mixed_d(double a, double b, double c);
 extern float fma_chained_f(float a, float b, float c);
 extern double fma_chained_d(double a, double b, double c);
+extern int fc_lt_f(float a, float b);
+extern int fc_le_f(float a, float b);
+extern int fc_gt_f(float a, float b);
+extern int fc_ge_f(float a, float b);
+extern int fc_eq_f(float a, float b);
+extern int fc_ne_f(float a, float b);
+extern int fc_nlt_f(float a, float b);
+extern int fc_nle_f(float a, float b);
+extern int fc_ngt_f(float a, float b);
+extern int fc_nge_f(float a, float b);
+extern int fc_isnan_f(float x);
+extern int fc_lt_d(double a, double b);
+extern int fc_le_d(double a, double b);
+extern int fc_gt_d(double a, double b);
+extern int fc_ge_d(double a, double b);
+extern int fc_eq_d(double a, double b);
+extern int fc_ne_d(double a, double b);
+extern int fc_nlt_d(double a, double b);
+extern int fc_nle_d(double a, double b);
+extern int fc_ngt_d(double a, double b);
+extern int fc_nge_d(double a, double b);
+extern int fc_isnan_d(double x);
+extern float fc_sel_f(float a, float b, float x, float y);
+extern float fc_tmin_f(float a, float b);
+extern float fc_tmax_f(float a, float b);
+extern float fc_pickeq_f(float a, float b);
+extern double fc_sel_d(double a, double b, double x, double y);
+extern double fc_tmin_d(double a, double b);
+extern double fc_tmax_d(double a, double b);
+extern double fc_pickeq_d(double a, double b);
+extern float fc_seland_f(float a, float b, float c, float d, float x, float y);
 ";
 
 fn cc() -> Option<String> {
@@ -418,13 +480,12 @@ fn fp_expectation(name: &str) -> Option<FpExpectation> {
             returns: Some(ScalarType::Double),
             return_width_bits: 64,
         },
-        "fp_second" | "fp_sub_d" | "fp_mul_d" | "fp_div_d" | "fp_max_d" | "fp_min_d" => {
-            FpExpectation {
-                params: &[ScalarType::Double, ScalarType::Double],
-                returns: Some(ScalarType::Double),
-                return_width_bits: 64,
-            }
-        }
+        "fp_second" | "fp_sub_d" | "fp_mul_d" | "fp_div_d" | "fp_max_d" | "fp_min_d"
+        | "fc_tmin_d" | "fc_tmax_d" | "fc_pickeq_d" => FpExpectation {
+            params: &[ScalarType::Double, ScalarType::Double],
+            returns: Some(ScalarType::Double),
+            return_width_bits: 64,
+        },
         "fp_get" => FpExpectation {
             params: &[ScalarType::Int, ScalarType::Int],
             returns: Some(ScalarType::Float),
@@ -453,7 +514,8 @@ fn fp_expectation(name: &str) -> Option<FpExpectation> {
                 return_width_bits: 64,
             }
         }
-        "fp_add_f" | "fp_div_f" | "fp_max_f" | "fp_min_f" => FpExpectation {
+        "fp_add_f" | "fp_div_f" | "fp_max_f" | "fp_min_f" | "fc_tmin_f" | "fc_tmax_f"
+        | "fc_pickeq_f" => FpExpectation {
             params: &[ScalarType::Float, ScalarType::Float],
             returns: Some(ScalarType::Float),
             return_width_bits: 32,
@@ -466,7 +528,7 @@ fn fp_expectation(name: &str) -> Option<FpExpectation> {
                 return_width_bits: 32,
             }
         }
-        "fp_to_int_s" | "fp_to_uint_s" => FpExpectation {
+        "fp_to_int_s" | "fp_to_uint_s" | "fc_isnan_f" => FpExpectation {
             params: &[ScalarType::Float],
             returns: None,
             return_width_bits: 32,
@@ -488,6 +550,55 @@ fn fp_expectation(name: &str) -> Option<FpExpectation> {
         },
         "fp_narrow" => FpExpectation {
             params: &[ScalarType::Double],
+            returns: Some(ScalarType::Float),
+            return_width_bits: 32,
+        },
+        "fc_lt_f" | "fc_le_f" | "fc_gt_f" | "fc_ge_f" | "fc_eq_f" | "fc_ne_f" | "fc_nlt_f"
+        | "fc_nle_f" | "fc_ngt_f" | "fc_nge_f" => FpExpectation {
+            params: &[ScalarType::Float, ScalarType::Float],
+            returns: None,
+            return_width_bits: 32,
+        },
+        "fc_lt_d" | "fc_le_d" | "fc_gt_d" | "fc_ge_d" | "fc_eq_d" | "fc_ne_d" | "fc_nlt_d"
+        | "fc_nle_d" | "fc_ngt_d" | "fc_nge_d" => FpExpectation {
+            params: &[ScalarType::Double, ScalarType::Double],
+            returns: None,
+            return_width_bits: 32,
+        },
+        "fc_isnan_d" => FpExpectation {
+            params: &[ScalarType::Double],
+            returns: None,
+            return_width_bits: 32,
+        },
+        "fc_sel_f" => FpExpectation {
+            params: &[
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+            ],
+            returns: Some(ScalarType::Float),
+            return_width_bits: 32,
+        },
+        "fc_sel_d" => FpExpectation {
+            params: &[
+                ScalarType::Double,
+                ScalarType::Double,
+                ScalarType::Double,
+                ScalarType::Double,
+            ],
+            returns: Some(ScalarType::Double),
+            return_width_bits: 64,
+        },
+        "fc_seland_f" => FpExpectation {
+            params: &[
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+            ],
             returns: Some(ScalarType::Float),
             return_width_bits: 32,
         },
@@ -551,6 +662,45 @@ const INCREMENT_SIX_EXPECTED_CASES: usize = 20;
 
 fn is_increment_six_fp(name: &str) -> bool {
     INCREMENT_SIX_FP_FUNCTIONS.contains(&name)
+}
+
+const INCREMENT_SEVEN_FP_FUNCTIONS: &[&str] = &[
+    "fc_lt_f",
+    "fc_le_f",
+    "fc_gt_f",
+    "fc_ge_f",
+    "fc_eq_f",
+    "fc_ne_f",
+    "fc_nlt_f",
+    "fc_nle_f",
+    "fc_ngt_f",
+    "fc_nge_f",
+    "fc_isnan_f",
+    "fc_lt_d",
+    "fc_le_d",
+    "fc_gt_d",
+    "fc_ge_d",
+    "fc_eq_d",
+    "fc_ne_d",
+    "fc_nlt_d",
+    "fc_nle_d",
+    "fc_ngt_d",
+    "fc_nge_d",
+    "fc_isnan_d",
+    "fc_sel_f",
+    "fc_tmin_f",
+    "fc_tmax_f",
+    "fc_pickeq_f",
+    "fc_sel_d",
+    "fc_tmin_d",
+    "fc_tmax_d",
+    "fc_pickeq_d",
+    "fc_seland_f",
+];
+const INCREMENT_SEVEN_EXPECTED_CASES: usize = 155;
+
+fn is_increment_seven_fp(name: &str) -> bool {
+    INCREMENT_SEVEN_FP_FUNCTIONS.contains(&name)
 }
 
 fn expected_arity(name: &str) -> Option<usize> {
@@ -746,6 +896,24 @@ static uint64_t fp64_narrow_input(uint64_t *state, int iteration) {
     if (narrowed < count) return fp64_narrow_rounding[narrowed];
     return xs(state);
 }
+static const uint32_t fp32_pairs[][2] = {
+    {0x3f800000U, 0x40000000U}, {0x40000000U, 0x3f800000U}, {0x3f800000U, 0x3f800000U},
+    {0x00000000U, 0x80000000U}, {0x80000000U, 0x00000000U},
+    {0x7fc00000U, 0x3f800000U}, {0x3f800000U, 0x7fc00000U},
+    {0x7f800001U, 0x3f800000U}, {0x3f800000U, 0x7f800001U},
+    {0x7f800000U, 0x7f800000U}, {0x7f800000U, 0xff800000U}, {0xff800000U, 0x7f800000U},
+    {0x3f800000U, 0x7f800000U}, {0x00000001U, 0x80000001U}
+};
+static const uint64_t fp64_pairs[][2] = {
+    {0x3ff0000000000000ULL, 0x4000000000000000ULL}, {0x4000000000000000ULL, 0x3ff0000000000000ULL},
+    {0x3ff0000000000000ULL, 0x3ff0000000000000ULL},
+    {0x0000000000000000ULL, 0x8000000000000000ULL}, {0x8000000000000000ULL, 0x0000000000000000ULL},
+    {0x7ff8000000000000ULL, 0x3ff0000000000000ULL}, {0x3ff0000000000000ULL, 0x7ff8000000000000ULL},
+    {0x7ff0000000000001ULL, 0x3ff0000000000000ULL}, {0x3ff0000000000000ULL, 0x7ff0000000000001ULL},
+    {0x7ff0000000000000ULL, 0x7ff0000000000000ULL}, {0x7ff0000000000000ULL, 0xfff0000000000000ULL},
+    {0xfff0000000000000ULL, 0x7ff0000000000000ULL},
+    {0x3ff0000000000000ULL, 0x7ff0000000000000ULL}, {0x0000000000000001ULL, 0x8000000000000001ULL}
+};
 ";
 
 const FP_ID_F_TMPL: &str = "    {\n\
@@ -938,6 +1106,146 @@ const FP_FMA_D_TMPL: &str = "    {\n\
      \x20           double a = fp_d_from_bits(ba); double b = fp_d_from_bits(bb); double c = fp_d_from_bits(bc);\n\
      \x20           uint64_t w = fp_d_to_bits($NAME(a, b, c)); uint64_t g = fp_d_to_bits($REC(a, b, c));\n\
      \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_PRED2_F_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       int np = (int)(sizeof(fp32_pairs) / sizeof(fp32_pairs[0]));\n\
+     \x20       for (int t = 0; t < np; t++) {\n\
+     \x20           float a = fp_f_from_bits(fp32_pairs[t][0]); float b = fp_f_from_bits(fp32_pairs[t][1]);\n\
+     \x20           int w = $NAME(a, b); int g = $REC(a, b);\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME pair=%d w=%d g=%d\\n\", t, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       for (int it = 0; ok && it < ITER; it++) {\n\
+     \x20           float a = fp_f_from_bits(fp32_input(&s, it, 0)); float b = fp_f_from_bits(fp32_input(&s, it, 5));\n\
+     \x20           int w = $NAME(a, b); int g = $REC(a, b);\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%d g=%d\\n\", it, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_PRED2_D_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       int np = (int)(sizeof(fp64_pairs) / sizeof(fp64_pairs[0]));\n\
+     \x20       for (int t = 0; t < np; t++) {\n\
+     \x20           double a = fp_d_from_bits(fp64_pairs[t][0]); double b = fp_d_from_bits(fp64_pairs[t][1]);\n\
+     \x20           int w = $NAME(a, b); int g = $REC(a, b);\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME pair=%d w=%d g=%d\\n\", t, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       for (int it = 0; ok && it < ITER; it++) {\n\
+     \x20           double a = fp_d_from_bits(fp64_input(&s, it, 0)); double b = fp_d_from_bits(fp64_input(&s, it, 5));\n\
+     \x20           int w = $NAME(a, b); int g = $REC(a, b);\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%d g=%d\\n\", it, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_PRED1_F_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           float x = fp_f_from_bits(fp32_input(&s, it, 0));\n\
+     \x20           int w = $NAME(x); int g = $REC(x);\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%d g=%d\\n\", it, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_PRED1_D_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           double x = fp_d_from_bits(fp64_input(&s, it, 0));\n\
+     \x20           int w = $NAME(x); int g = $REC(x);\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%d g=%d\\n\", it, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_SEL2_F_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       int np = (int)(sizeof(fp32_pairs) / sizeof(fp32_pairs[0]));\n\
+     \x20       for (int t = 0; t < np; t++) {\n\
+     \x20           float a = fp_f_from_bits(fp32_pairs[t][0]); float b = fp_f_from_bits(fp32_pairs[t][1]);\n\
+     \x20           uint32_t w = fp_f_to_bits($NAME(a, b)); uint32_t g = fp_f_to_bits($REC(a, b));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME pair=%d w=%08x g=%08x\\n\", t, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       for (int it = 0; ok && it < ITER; it++) {\n\
+     \x20           float a = fp_f_from_bits(fp32_input(&s, it, 0)); float b = fp_f_from_bits(fp32_input(&s, it, 5));\n\
+     \x20           uint32_t w = fp_f_to_bits($NAME(a, b)); uint32_t g = fp_f_to_bits($REC(a, b));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_SEL2_D_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       int np = (int)(sizeof(fp64_pairs) / sizeof(fp64_pairs[0]));\n\
+     \x20       for (int t = 0; t < np; t++) {\n\
+     \x20           double a = fp_d_from_bits(fp64_pairs[t][0]); double b = fp_d_from_bits(fp64_pairs[t][1]);\n\
+     \x20           uint64_t w = fp_d_to_bits($NAME(a, b)); uint64_t g = fp_d_to_bits($REC(a, b));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME pair=%d w=%llx g=%llx\\n\", t, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       for (int it = 0; ok && it < ITER; it++) {\n\
+     \x20           double a = fp_d_from_bits(fp64_input(&s, it, 0)); double b = fp_d_from_bits(fp64_input(&s, it, 5));\n\
+     \x20           uint64_t w = fp_d_to_bits($NAME(a, b)); uint64_t g = fp_d_to_bits($REC(a, b));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_SEL4_F_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       int np = (int)(sizeof(fp32_pairs) / sizeof(fp32_pairs[0]));\n\
+     \x20       for (int t = 0; t < np; t++) {\n\
+     \x20           float a = fp_f_from_bits(fp32_pairs[t][0]); float b = fp_f_from_bits(fp32_pairs[t][1]);\n\
+     \x20           float x = fp_f_from_bits(0x00000000U); float y = fp_f_from_bits(0x80000000U);\n\
+     \x20           uint32_t w = fp_f_to_bits($NAME(a, b, x, y)); uint32_t g = fp_f_to_bits($REC(a, b, x, y));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME pair=%d w=%08x g=%08x\\n\", t, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       for (int it = 0; ok && it < ITER; it++) {\n\
+     \x20           float a = fp_f_from_bits(fp32_input(&s, it, 0)); float b = fp_f_from_bits(fp32_input(&s, it, 5));\n\
+     \x20           float x = fp_f_from_bits(fp32_input(&s, it, 9)); float y = fp_f_from_bits(fp32_input(&s, it, 2));\n\
+     \x20           uint32_t w = fp_f_to_bits($NAME(a, b, x, y)); uint32_t g = fp_f_to_bits($REC(a, b, x, y));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_SEL4_D_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       int np = (int)(sizeof(fp64_pairs) / sizeof(fp64_pairs[0]));\n\
+     \x20       for (int t = 0; t < np; t++) {\n\
+     \x20           double a = fp_d_from_bits(fp64_pairs[t][0]); double b = fp_d_from_bits(fp64_pairs[t][1]);\n\
+     \x20           double x = fp_d_from_bits(0x0000000000000000ULL); double y = fp_d_from_bits(0x8000000000000000ULL);\n\
+     \x20           uint64_t w = fp_d_to_bits($NAME(a, b, x, y)); uint64_t g = fp_d_to_bits($REC(a, b, x, y));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME pair=%d w=%llx g=%llx\\n\", t, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       for (int it = 0; ok && it < ITER; it++) {\n\
+     \x20           double a = fp_d_from_bits(fp64_input(&s, it, 0)); double b = fp_d_from_bits(fp64_input(&s, it, 5));\n\
+     \x20           double x = fp_d_from_bits(fp64_input(&s, it, 9)); double y = fp_d_from_bits(fp64_input(&s, it, 2));\n\
+     \x20           uint64_t w = fp_d_to_bits($NAME(a, b, x, y)); uint64_t g = fp_d_to_bits($REC(a, b, x, y));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_SEL6_F_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       int np = (int)(sizeof(fp32_pairs) / sizeof(fp32_pairs[0]));\n\
+     \x20       for (int t = 0; t < np; t++) {\n\
+     \x20           float a = fp_f_from_bits(fp32_pairs[t][0]); float b = fp_f_from_bits(fp32_pairs[t][1]);\n\
+     \x20           float c = fp_f_from_bits(fp32_pairs[(t + 3) % np][0]); float d = fp_f_from_bits(fp32_pairs[(t + 3) % np][1]);\n\
+     \x20           float x = fp_f_from_bits(0x00000000U); float y = fp_f_from_bits(0x80000000U);\n\
+     \x20           uint32_t w = fp_f_to_bits($NAME(a, b, c, d, x, y)); uint32_t g = fp_f_to_bits($REC(a, b, c, d, x, y));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME pair=%d w=%08x g=%08x\\n\", t, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       for (int it = 0; ok && it < ITER; it++) {\n\
+     \x20           float a = fp_f_from_bits(fp32_input(&s, it, 0)); float b = fp_f_from_bits(fp32_input(&s, it, 5));\n\
+     \x20           float c = fp_f_from_bits(fp32_input(&s, it, 9)); float d = fp_f_from_bits(fp32_input(&s, it, 2));\n\
+     \x20           float x = fp_f_from_bits(fp32_input(&s, it, 7)); float y = fp_f_from_bits(fp32_input(&s, it, 11));\n\
+     \x20           uint32_t w = fp_f_to_bits($NAME(a, b, c, d, x, y)); uint32_t g = fp_f_to_bits($REC(a, b, c, d, x, y));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1170,6 +1478,25 @@ fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Option<String> 
         | "sub_mul_unfused_d" | "fma_mixed_d" | "fma_chained_d" => {
             fill_template(FP_FMA_D_TMPL, opt, name, rec, seed)
         }
+        "fc_lt_f" | "fc_le_f" | "fc_gt_f" | "fc_ge_f" | "fc_eq_f" | "fc_ne_f" | "fc_nlt_f"
+        | "fc_nle_f" | "fc_ngt_f" | "fc_nge_f" => {
+            fill_template(FP_PRED2_F_TMPL, opt, name, rec, seed)
+        }
+        "fc_lt_d" | "fc_le_d" | "fc_gt_d" | "fc_ge_d" | "fc_eq_d" | "fc_ne_d" | "fc_nlt_d"
+        | "fc_nle_d" | "fc_ngt_d" | "fc_nge_d" => {
+            fill_template(FP_PRED2_D_TMPL, opt, name, rec, seed)
+        }
+        "fc_isnan_f" => fill_template(FP_PRED1_F_TMPL, opt, name, rec, seed),
+        "fc_isnan_d" => fill_template(FP_PRED1_D_TMPL, opt, name, rec, seed),
+        "fc_sel_f" => fill_template(FP_SEL4_F_TMPL, opt, name, rec, seed),
+        "fc_sel_d" => fill_template(FP_SEL4_D_TMPL, opt, name, rec, seed),
+        "fc_tmin_f" | "fc_tmax_f" | "fc_pickeq_f" => {
+            fill_template(FP_SEL2_F_TMPL, opt, name, rec, seed)
+        }
+        "fc_tmin_d" | "fc_tmax_d" | "fc_pickeq_d" => {
+            fill_template(FP_SEL2_D_TMPL, opt, name, rec, seed)
+        }
+        "fc_seland_f" => fill_template(FP_SEL6_F_TMPL, opt, name, rec, seed),
         "fp_to_int_s" | "fp_to_uint_s" => fill_template(FP_TO_I32_F_TMPL, opt, name, rec, seed),
         "fp_to_ulong_d" => fill_template(FP_TO_U64_D_TMPL, opt, name, rec, seed),
         "fp_from_int" => fill_template(FP_FROM_I32_D_TMPL, opt, name, rec, seed),
@@ -1702,6 +2029,24 @@ fn corpus_grade_report() {
             );
         }
     }
+    let increment_seven_corpus_cases: usize = CASES
+        .iter()
+        .filter(|(_, name, _): &&(&str, &str, &[u8])| is_increment_seven_fp(name))
+        .count();
+    assert_eq!(
+        increment_seven_corpus_cases, INCREMENT_SEVEN_EXPECTED_CASES,
+        "the generated corpus must contain exactly five rows per increment-7 function"
+    );
+    for required_name in INCREMENT_SEVEN_FP_FUNCTIONS {
+        for required_opt in CORPUS_OPTIMIZATION_LEVELS {
+            assert!(
+                CASES.iter().any(|(opt, name, _): &(&str, &str, &[u8])| {
+                    opt == required_opt && name == required_name
+                }),
+                "required increment-7 case `{required_opt} {required_name}` is absent from the generated corpus"
+            );
+        }
+    }
 
     let dir: tempfile::TempDir = tempfile::tempdir().expect("scratch dir");
     let battery_c: PathBuf = dir.path().join("gt_battery.c");
@@ -1737,6 +2082,8 @@ fn corpus_grade_report() {
     let mut increment_five_driven: usize = 0;
     let mut increment_six_recovered: usize = 0;
     let mut increment_six_driven: usize = 0;
+    let mut increment_seven_recovered: usize = 0;
+    let mut increment_seven_driven: usize = 0;
     let mut skips: Vec<(String, String, String)> = Vec::new();
     let mut decls: String = String::new();
     let mut blocks: String = String::new();
@@ -1748,6 +2095,7 @@ fn corpus_grade_report() {
         let required_increment_four: bool = is_increment_four_fp(name);
         let required_increment_five: bool = is_increment_five_fp(name);
         let required_increment_six: bool = is_increment_six_fp(name);
+        let required_increment_seven: bool = is_increment_seven_fp(name);
         let recovery: LeafRecovery = match recover_aarch64_function(bytes, 0) {
             Ok(value) => value,
             Err(error) => {
@@ -1776,6 +2124,9 @@ fn corpus_grade_report() {
         }
         if required_increment_six {
             increment_six_recovered += 1;
+        }
+        if required_increment_seven {
+            increment_seven_recovered += 1;
         }
 
         let expected_fp: Option<FpExpectation> = fp_expectation(name);
@@ -1870,6 +2221,9 @@ fn corpus_grade_report() {
         }
         if required_increment_six {
             increment_six_driven += 1;
+        }
+        if required_increment_seven {
+            increment_seven_driven += 1;
         }
     }
 
@@ -1969,6 +2323,7 @@ fn corpus_grade_report() {
         .and_then(|value: usize| value.checked_sub(increment_four_recovered))
         .and_then(|value: usize| value.checked_sub(increment_five_recovered))
         .and_then(|value: usize| value.checked_sub(increment_six_recovered))
+        .and_then(|value: usize| value.checked_sub(increment_seven_recovered))
         .expect("later-increment fp recovery counts cannot exceed the fp total");
     let increment_one_fp_driven: usize = fp_driven
         .checked_sub(increment_two_driven)
@@ -1976,6 +2331,7 @@ fn corpus_grade_report() {
         .and_then(|value: usize| value.checked_sub(increment_four_driven))
         .and_then(|value: usize| value.checked_sub(increment_five_driven))
         .and_then(|value: usize| value.checked_sub(increment_six_driven))
+        .and_then(|value: usize| value.checked_sub(increment_seven_driven))
         .expect("later-increment fp driven counts cannot exceed the fp total");
     let integer_recovered: usize = recovered
         .checked_sub(fp_recovered)
@@ -2003,6 +2359,8 @@ fn corpus_grade_report() {
     eprintln!("increment-5 graded    {increment_five_driven}/{INCREMENT_FIVE_EXPECTED_CASES}");
     eprintln!("increment-6 recovered {increment_six_recovered}/{INCREMENT_SIX_EXPECTED_CASES}");
     eprintln!("increment-6 graded    {increment_six_driven}/{INCREMENT_SIX_EXPECTED_CASES}");
+    eprintln!("increment-7 recovered {increment_seven_recovered}/{INCREMENT_SEVEN_EXPECTED_CASES}");
+    eprintln!("increment-7 graded    {increment_seven_driven}/{INCREMENT_SEVEN_EXPECTED_CASES}");
     eprintln!(
         "graded-equivalent    {graded_equivalent}   (recompiled + behaviorally matched on directed and random inputs)"
     );
@@ -2100,6 +2458,14 @@ fn corpus_grade_report() {
     assert_eq!(
         increment_six_driven, INCREMENT_SIX_EXPECTED_CASES,
         "every increment-6 corpus case must be graded"
+    );
+    assert_eq!(
+        increment_seven_recovered, INCREMENT_SEVEN_EXPECTED_CASES,
+        "every increment-7 corpus case must recover"
+    );
+    assert_eq!(
+        increment_seven_driven, INCREMENT_SEVEN_EXPECTED_CASES,
+        "every increment-7 corpus case must be graded"
     );
     assert!(
         skips.is_empty(),
