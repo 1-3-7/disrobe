@@ -199,6 +199,17 @@ float fp_from_uint(unsigned x) { return (float)(u64)x; }
 double fp_widen(float x) { return (double)x; }
 float fp_narrow(double x) { return (float)x; }
 
+float fz_relu_f(float x) { return __builtin_fmaxf(x, 0.0f); }
+double fz_relu_d(double x) { return __builtin_fmax(x, 0.0); }
+float fz_nrelu_f(float x) { return __builtin_fminf(x, 0.0f); }
+double fz_nrelu_d(double x) { return __builtin_fmin(x, 0.0); }
+float fz_mulz_f(float x) { return x * 0.0f; }
+double fz_mulz_d(double x) { return x * 0.0; }
+float fz_zsub_f(float x) { return 0.0f - x; }
+double fz_zsub_d(double x) { return 0.0 - x; }
+float fz_addz_f(float x) { return x + 0.0f; }
+double fz_addz_d(double x) { return x + 0.0; }
+
 i32 fcvt_floor_s(float x) { return (i32)__builtin_floorf(x); }
 i32 fcvt_ceil_s(float x) { return (i32)__builtin_ceilf(x); }
 i32 fcvt_away_s(float x) { return (i32)__builtin_roundf(x); }

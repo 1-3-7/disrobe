@@ -3192,6 +3192,39 @@ fn is_fp_zero_immediate(token: &str) -> bool {
         .is_some_and(|value: f64| value == 0.0)
 }
 
+fn movi_immediate_is_zero(token: &str) -> bool {
+    let trimmed: &str = token.trim();
+    let body: &str = trimmed.strip_prefix('#').unwrap_or(trimmed);
+    let digits: &str = body
+        .strip_prefix("0x")
+        .or_else(|| body.strip_prefix("0X"))
+        .unwrap_or(body);
+    !digits.is_empty() && digits.bytes().all(|byte: u8| byte == b'0')
+}
+
+fn lower_movi_scalar_zero(operands: &[&str]) -> Result<Option<Vec<Stmt>>> {
+    if operands.len() != 2 {
+        return Ok(None);
+    }
+    let Some(index): Option<u8> = parse_dreg(operands[0]) else {
+        return Ok(None);
+    };
+    if !movi_immediate_is_zero(operands[1]) {
+        return Ok(None);
+    }
+    let Some(register): Option<&Xmm> = AARCH64_FP_REGISTERS.get(usize::from(index)) else {
+        return Ok(None);
+    };
+    Ok(Some(vec![Stmt::FpMov {
+        dest: *register,
+        src: FpOperand::Const {
+            bits: 0,
+            width: FpWidth::F64,
+        },
+        width: FpWidth::F64,
+    }]))
+}
+
 fn parse_fp_compare_operand(token: &str, width: FpWidth, insn: &DisasmInsn) -> Result<FpOperand> {
     if token.trim().starts_with('#') {
         if is_fp_zero_immediate(token) {
@@ -3854,6 +3887,7 @@ fn try_lower_scalar_fp(
         | "fnmsub" | "fneg" | "fabs" | "scvtf" | "ucvtf" | "fcvtzs" | "fcvtzu" | "fcvtms"
         | "fcvtmu" | "fcvtps" | "fcvtpu" | "fcvtas" | "fcvtau" | "fcvt" | "frintm" | "frintp"
         | "frintz" | "frintn" | "frinta" | "frintx" | "frinti" => Ok(None),
+        "movi" => lower_movi_scalar_zero(&operands),
         "fmov" if vector_context => Ok(None),
         "fmov" => lower_fp_fmov(insn, &operands).map(Some),
         "ldr" | "str" | "ldur" | "stur" => {
