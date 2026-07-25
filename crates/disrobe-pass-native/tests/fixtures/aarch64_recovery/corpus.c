@@ -199,6 +199,17 @@ float fp_from_uint(unsigned x) { return (float)(u64)x; }
 double fp_widen(float x) { return (double)x; }
 float fp_narrow(double x) { return (float)x; }
 
+i32 fcvt_floor_s(float x) { return (i32)__builtin_floorf(x); }
+i32 fcvt_ceil_s(float x) { return (i32)__builtin_ceilf(x); }
+i32 fcvt_away_s(float x) { return (i32)__builtin_roundf(x); }
+u32 fcvt_floor_us(float x) { return (u32)__builtin_floorf(x); }
+u32 fcvt_ceil_us(float x) { return (u32)__builtin_ceilf(x); }
+u32 fcvt_away_us(float x) { return (u32)__builtin_roundf(x); }
+i64 fcvt_floor_d(double x) { return (i64)__builtin_floor(x); }
+i64 fcvt_ceil_d(double x) { return (i64)__builtin_ceil(x); }
+i64 fcvt_away_d(double x) { return (i64)__builtin_round(x); }
+u64 fcvt_floor_ud(double x) { return (u64)__builtin_floor(x); }
+
 double fp_iavg(const int *a, int n) {
     volatile double zero = (double)n;
     double s = zero - zero;
