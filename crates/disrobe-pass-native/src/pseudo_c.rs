@@ -3787,6 +3787,9 @@ impl<'a> StraightLifter<'a> {
 
     fn feed(&mut self, insn: &DisasmInsn) -> Result<StraightOutcome> {
         if is_ignorable(insn) {
+            if x86_mnemonic_writes_flags(&insn.mnemonic) {
+                self.flags = None;
+            }
             return Ok(StraightOutcome::Ignorable);
         }
         if let Some(fp_flags) =
@@ -3838,7 +3841,13 @@ impl<'a> StraightLifter<'a> {
                     insn.address
                 ))
             })?;
-            let kind: CondKind = canonicalize_x86_fp_condition(kind, &live_flags);
+            let Some(kind): Option<CondKind> = canonicalize_x86_fp_condition(kind, &live_flags)
+            else {
+                return Err(Error::LlvmIr(format!(
+                    "condition `{}` not sound against tracked flags at {:#x}",
+                    insn.mnemonic, insn.address
+                )));
+            };
             if !condition_is_sound(kind, &live_flags) {
                 return Err(Error::LlvmIr(format!(
                     "condition `{}` not sound against tracked flags at {:#x}",
@@ -3882,7 +3891,13 @@ impl<'a> StraightLifter<'a> {
                     insn.address
                 ))
             })?;
-            let kind: CondKind = canonicalize_x86_fp_condition(kind, &live_flags);
+            let Some(kind): Option<CondKind> = canonicalize_x86_fp_condition(kind, &live_flags)
+            else {
+                return Err(Error::LlvmIr(format!(
+                    "condition `{}` not sound against tracked flags at {:#x}",
+                    insn.mnemonic, insn.address
+                )));
+            };
             if !condition_is_sound(kind, &live_flags) {
                 return Err(Error::LlvmIr(format!(
                     "condition `{}` not sound against tracked flags at {:#x}",
@@ -3932,7 +3947,11 @@ impl<'a> StraightLifter<'a> {
                 self.flags = None;
             }
             _ => {
-                self.flags = flags_after_clobber(self.flags.take(), &stmt);
+                self.flags = if x86_mnemonic_writes_flags(&insn.mnemonic) {
+                    None
+                } else {
+                    flags_after_clobber(self.flags.take(), &stmt)
+                };
             }
         }
         Ok(StraightOutcome::Emit(stmt))
@@ -6751,6 +6770,45 @@ const fn flag_effect_bin(op: BinOp) -> FlagEffect {
     }
 }
 
+fn x86_mnemonic_writes_flags(mnemonic: &str) -> bool {
+    matches!(
+        mnemonic,
+        "add"
+            | "sub"
+            | "adc"
+            | "sbb"
+            | "and"
+            | "or"
+            | "xor"
+            | "neg"
+            | "inc"
+            | "dec"
+            | "cmp"
+            | "test"
+            | "shl"
+            | "sal"
+            | "shr"
+            | "sar"
+            | "rol"
+            | "ror"
+            | "rcl"
+            | "rcr"
+            | "mul"
+            | "imul"
+            | "div"
+            | "idiv"
+            | "bt"
+            | "bts"
+            | "btr"
+            | "btc"
+            | "bsf"
+            | "bsr"
+            | "lzcnt"
+            | "tzcnt"
+            | "popcnt"
+    )
+}
+
 fn lift_flag_setter(mnemonic: &str, operands: &str) -> Option<Flags> {
     match mnemonic {
         "cmp" => {
@@ -6876,7 +6934,11 @@ fn resolve_conditional_flags(
     next_sel: &mut u32,
     addr: u64,
 ) -> Result<(CondKind, Flags)> {
-    let kind: CondKind = canonicalize_x86_fp_condition(kind, &live_flags);
+    let Some(kind): Option<CondKind> = canonicalize_x86_fp_condition(kind, &live_flags) else {
+        return Err(Error::LlvmIr(format!(
+            "condition not sound against tracked flags at {addr:#x}"
+        )));
+    };
     if flags_are_comparison(&live_flags)
         && condition_is_sound(kind, &live_flags)
         && comparison_operand_clobbered(items, flags_mark, &live_flags)
@@ -6909,16 +6971,24 @@ fn resolve_conditional_flags(
     )))
 }
 
-fn canonicalize_x86_fp_condition(kind: CondKind, flags: &Flags) -> CondKind {
+fn canonicalize_x86_fp_condition(kind: CondKind, flags: &Flags) -> Option<CondKind> {
     if !matches!(flags, Flags::FpCmp { .. }) {
-        return kind;
+        return Some(kind);
     }
     match kind {
-        CondKind::A => CondKind::G,
-        CondKind::Ae => CondKind::Ge,
-        CondKind::B => CondKind::L,
-        CondKind::Be => CondKind::Le,
-        other => other,
+        CondKind::A => Some(CondKind::G),
+        CondKind::Ae => Some(CondKind::Ge),
+        CondKind::B => Some(CondKind::L),
+        CondKind::Be => Some(CondKind::Le),
+        CondKind::E | CondKind::Ne => Some(kind),
+        CondKind::G
+        | CondKind::Ge
+        | CondKind::L
+        | CondKind::Le
+        | CondKind::S
+        | CondKind::Ns
+        | CondKind::Vs
+        | CondKind::Vc => None,
     }
 }
 
@@ -17329,6 +17399,74 @@ mod tests {
             rec.sret.is_none(),
             "a 16-byte fill is SysV register class, not a hidden-pointer sret: {}",
             rec.source
+        );
+    }
+
+    #[test]
+    fn switch_body_flags_writer_between_compare_and_setcc_rejects() {
+        let di = |address: u64, mnemonic: &str, operands: &str| -> DisasmInsn {
+            DisasmInsn {
+                address,
+                bytes: Vec::new(),
+                mnemonic: mnemonic.to_owned(),
+                operands: operands.to_owned(),
+            }
+        };
+
+        let baseline: [DisasmInsn; 2] = [di(0, "cmp", "rcx, rdx"), di(1, "setl", "bl")];
+        let folded: Vec<Stmt> = lift_stmt_range(&baseline, 0, baseline.len(), &[])
+            .expect("a compare then setl folds the comparison");
+        assert!(
+            matches!(folded.as_slice(), [Stmt::SetCc { .. }]),
+            "baseline cmp then setl must fold to a SetCc: {folded:?}"
+        );
+
+        let clobbered: [DisasmInsn; 3] = [
+            di(0, "cmp", "rcx, rdx"),
+            di(1, "xor", "eax, eax"),
+            di(2, "setl", "bl"),
+        ];
+        assert!(
+            lift_stmt_range(&clobbered, 0, clobbered.len(), &[]).is_err(),
+            "a flags-writing xor zero-idiom between the compare and the setl overwrites the flags register, so the setl must reject rather than fold the stale comparison"
+        );
+
+        let unrelated: [DisasmInsn; 3] = [
+            di(0, "cmp", "rcx, rdx"),
+            di(1, "mov", "eax, esi"),
+            di(2, "setl", "bl"),
+        ];
+        let still_folds: Vec<Stmt> = lift_stmt_range(&unrelated, 0, unrelated.len(), &[])
+            .expect("a non-flag-writing mov to an unrelated register keeps the tracked comparison");
+        assert!(
+            still_folds
+                .iter()
+                .any(|s: &Stmt| matches!(s, Stmt::SetCc { .. })),
+            "a mov that writes neither the flags register nor a compare operand must leave the setl folding: {still_folds:?}"
+        );
+
+        let stack_adjust: [DisasmInsn; 3] = [
+            di(0, "cmp", "rcx, rdx"),
+            di(1, "sub", "rsp, 8"),
+            di(2, "setl", "bl"),
+        ];
+        assert!(
+            lift_stmt_range(&stack_adjust, 0, stack_adjust.len(), &[]).is_err(),
+            "a stack adjustment takes the ignorable path but still writes the flags register, so the setl must reject rather than fold the stale comparison"
+        );
+
+        let padding: [DisasmInsn; 3] = [
+            di(0, "cmp", "rcx, rdx"),
+            di(1, "nop", ""),
+            di(2, "setl", "bl"),
+        ];
+        let nop_folds: Vec<Stmt> = lift_stmt_range(&padding, 0, padding.len(), &[])
+            .expect("an ignorable nop that writes no flags keeps the tracked comparison");
+        assert!(
+            nop_folds
+                .iter()
+                .any(|s: &Stmt| matches!(s, Stmt::SetCc { .. })),
+            "an ignorable nop between the compare and the setl must leave the setl folding: {nop_folds:?}"
         );
     }
 }
