@@ -5247,67 +5247,6 @@ fn flags_reference_reg(flags: &Flags, reg: Reg) -> bool {
     }
 }
 
-fn flag_operand_xmms(flags: &Flags) -> Vec<Xmm> {
-    match flags {
-        Flags::FpCmp { lhs, rhs, .. } => {
-            let mut regs: Vec<Xmm> = vec![*lhs];
-            if let FpOperand::Xmm(x) = rhs {
-                regs.push(*x);
-            }
-            regs
-        }
-        Flags::CondCmp { prior, taken, .. } => {
-            let mut regs: Vec<Xmm> = flag_operand_xmms(prior);
-            regs.extend(flag_operand_xmms(taken));
-            regs
-        }
-        Flags::Cmp { .. }
-        | Flags::Add { .. }
-        | Flags::Test { .. }
-        | Flags::TestImm { .. }
-        | Flags::Sign { .. }
-        | Flags::CmpMem { .. }
-        | Flags::Snapshot { .. } => Vec::new(),
-    }
-}
-
-fn stmt_clobbers_flag_fp(stmt: &Stmt, deps: &[Xmm]) -> bool {
-    match stmt {
-        Stmt::FpBin { dest, .. }
-        | Stmt::FpMov { dest, .. }
-        | Stmt::IntToFp { dest, .. }
-        | Stmt::FpConvert { dest, .. }
-        | Stmt::FpMinMax { dest, .. }
-        | Stmt::FpFma { dest, .. }
-        | Stmt::FpCsel { dest, .. }
-        | Stmt::FpSqrt { dest, .. }
-        | Stmt::FpUnary { dest, .. }
-        | Stmt::FpRound { dest, .. }
-        | Stmt::GprToXmm { dest, .. } => deps.contains(dest),
-        Stmt::Vector(_) | Stmt::Packed { .. } => true,
-        Stmt::Assign { .. }
-        | Stmt::BinAssign { .. }
-        | Stmt::UnAssign { .. }
-        | Stmt::Cond { .. }
-        | Stmt::SetCc { .. }
-        | Stmt::Store { .. }
-        | Stmt::MemRmw { .. }
-        | Stmt::Extend { .. }
-        | Stmt::MulImm { .. }
-        | Stmt::WideMul { .. }
-        | Stmt::Divide { .. }
-        | Stmt::FpStore { .. }
-        | Stmt::FpToInt { .. }
-        | Stmt::XmmToGpr { .. }
-        | Stmt::DoubleShift { .. }
-        | Stmt::BlockMove { .. }
-        | Stmt::BlockFill { .. }
-        | Stmt::Call { .. }
-        | Stmt::FlagSnapshot { .. }
-        | Stmt::PackedToGpr { .. } => false,
-    }
-}
-
 fn resolve_aarch64_flags(
     items: &mut Vec<Item>,
     live: &TrackedFlags,
@@ -5316,7 +5255,7 @@ fn resolve_aarch64_flags(
     addr: u64,
 ) -> (CondKind, Flags) {
     let gpr_deps: Vec<Reg> = super::flag_operand_regs(&live.value);
-    let fp_deps: Vec<Xmm> = flag_operand_xmms(&live.value);
+    let fp_deps: Vec<Xmm> = super::flag_operand_xmms(&live.value);
     let start: usize = live.mark.min(items.len());
     let clobbered: bool = items[start..].iter().any(|item: &Item| {
         let ItemKind::Stmt(stmt) = &item.kind else {
@@ -5325,7 +5264,7 @@ fn resolve_aarch64_flags(
         super::stmt_dest_regs(stmt)
             .iter()
             .any(|reg: &Reg| gpr_deps.contains(reg))
-            || (!fp_deps.is_empty() && stmt_clobbers_flag_fp(stmt, &fp_deps))
+            || (!fp_deps.is_empty() && super::stmt_clobbers_flag_fp(stmt, &fp_deps))
     });
     if !clobbered || !condition_is_sound(kind, &live.value) {
         return (kind, live.value.clone());
