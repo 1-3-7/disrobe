@@ -3855,12 +3855,14 @@ impl<'a> StraightLifter<'a> {
             let src: Source = parse_source(rhs.trim()).ok_or_else(|| {
                 Error::LlvmIr(format!("cmov src unsupported at {:#x}", insn.address))
             })?;
-            return Ok(StraightOutcome::Emit(Stmt::Cond {
+            let stmt: Stmt = Stmt::Cond {
                 dest,
                 src,
                 kind,
                 flags: live_flags,
-            }));
+            };
+            self.flags = flags_after_clobber(self.flags.take(), &stmt);
+            return Ok(StraightOutcome::Emit(stmt));
         }
         if let Some(suffix) = insn.mnemonic.strip_prefix("set")
             && let Some(kind) = CondKind::parse(suffix)
@@ -3887,11 +3889,13 @@ impl<'a> StraightLifter<'a> {
                     insn.mnemonic, insn.address
                 )));
             }
-            return Ok(StraightOutcome::Emit(Stmt::SetCc {
+            let stmt: Stmt = Stmt::SetCc {
                 dest,
                 kind,
                 flags: live_flags,
-            }));
+            };
+            self.flags = flags_after_clobber(self.flags.take(), &stmt);
+            return Ok(StraightOutcome::Emit(stmt));
         }
         let stmt: Stmt = lift_straight_stmt(insn).ok_or_else(|| {
             Error::LlvmIr(format!(
@@ -3917,7 +3921,7 @@ impl<'a> StraightLifter<'a> {
                 self.flags = match op {
                     UnOp::Neg => Some(Flags::Sign { result: *dest }),
                     UnOp::Not | UnOp::Bswap | UnOp::Clz | UnOp::Rbit | UnOp::Rev16 => {
-                        self.flags.take()
+                        flags_after_clobber(self.flags.take(), &stmt)
                     }
                 };
             }
@@ -3927,11 +3931,25 @@ impl<'a> StraightLifter<'a> {
             Stmt::MemRmw { .. } => {
                 self.flags = None;
             }
-            Stmt::Assign { .. } | Stmt::Store { .. } | Stmt::Extend { .. } => {}
-            _ => {}
+            _ => {
+                self.flags = flags_after_clobber(self.flags.take(), &stmt);
+            }
         }
         Ok(StraightOutcome::Emit(stmt))
     }
+}
+
+fn flags_after_clobber(flags: Option<Flags>, stmt: &Stmt) -> Option<Flags> {
+    if let Some(live) = &flags {
+        let deps: Vec<Reg> = flag_operand_regs(live);
+        if stmt_dest_regs(stmt)
+            .iter()
+            .any(|reg: &Reg| deps.contains(reg))
+        {
+            return None;
+        }
+    }
+    flags
 }
 
 fn lift_switch_body(
