@@ -1409,7 +1409,7 @@ fn recover_with_calls_and_image<'image>(
                     return_width = dest.width;
                 }
             }
-            "rev" | "rev16" | "clz" | "rbit" => {
+            "rev" | "rev16" | "rev32" | "clz" | "rbit" => {
                 let operands: Vec<&str> = split_operands(&insn.operands);
                 if operands.len() != 2 {
                     return Err(reject_at(insn, "malformed unary data-processing"));
@@ -1423,9 +1423,13 @@ fn recover_with_calls_and_image<'image>(
                 let op: UnOp = match insn.mnemonic.as_str() {
                     "rev" => UnOp::Bswap,
                     "rev16" => UnOp::Rev16,
+                    "rev32" => UnOp::Rev32,
                     "clz" => UnOp::Clz,
                     _ => UnOp::Rbit,
                 };
+                if matches!(op, UnOp::Rev32) && dest.width != Width::W64 {
+                    return Err(reject_at(insn, "rev32 outside a 64-bit register"));
+                }
                 push_stmts(
                     &mut items,
                     base,

@@ -440,6 +440,7 @@ enum UnOp {
     Clz,
     Rbit,
     Rev16,
+    Rev32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1991,7 +1992,12 @@ fn build_leaf_items(
             Stmt::UnAssign { dest, op } => {
                 flags = match op {
                     UnOp::Neg => Some(Flags::Sign { result: *dest }),
-                    UnOp::Not | UnOp::Bswap | UnOp::Clz | UnOp::Rbit | UnOp::Rev16 => flags,
+                    UnOp::Not
+                    | UnOp::Bswap
+                    | UnOp::Clz
+                    | UnOp::Rbit
+                    | UnOp::Rev16
+                    | UnOp::Rev32 => flags,
                 };
             }
             Stmt::Cond { .. } => {}
@@ -3949,9 +3955,12 @@ impl<'a> StraightLifter<'a> {
             Stmt::UnAssign { dest, op } => {
                 self.flags = match op {
                     UnOp::Neg => Some(Flags::Sign { result: *dest }),
-                    UnOp::Not | UnOp::Bswap | UnOp::Clz | UnOp::Rbit | UnOp::Rev16 => {
-                        flags_after_clobber(self.flags.take(), &stmt)
-                    }
+                    UnOp::Not
+                    | UnOp::Bswap
+                    | UnOp::Clz
+                    | UnOp::Rbit
+                    | UnOp::Rev16
+                    | UnOp::Rev32 => flags_after_clobber(self.flags.take(), &stmt),
                 };
             }
             Stmt::MulImm { .. } | Stmt::WideMul { .. } | Stmt::DoubleShift { .. } => {
@@ -9437,6 +9446,12 @@ fn c_bswap_expr(operand: &str, width: Width) -> String {
     format!("__builtin_bswap{bits}((uint{bits}_t)({operand}))")
 }
 
+fn c_rev32_expr(operand: &str) -> String {
+    format!(
+        "((((uint64_t)({operand}) & 0x000000ff000000ffull) << 24) | (((uint64_t)({operand}) & 0x0000ff000000ff00ull) << 8) | (((uint64_t)({operand}) & 0x00ff000000ff0000ull) >> 8) | (((uint64_t)({operand}) & 0xff000000ff000000ull) >> 24))"
+    )
+}
+
 fn c_rev16_expr(operand: &str, width: Width) -> String {
     let bits: u32 = width.bits().max(32);
     let (hi, lo): (&str, &str) = if bits >= 64 {
@@ -12615,6 +12630,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
                 UnOp::Clz => c_clz_expr(var, dest.width),
                 UnOp::Rbit => c_rbit_expr(var, dest.width),
                 UnOp::Rev16 => c_rev16_expr(var, dest.width),
+                UnOp::Rev32 => c_rev32_expr(var),
             };
             let rhs: String = reg_write_rhs(var, dest.width, &body);
             assign_cstmt(cx, var, &rhs)
@@ -12696,6 +12712,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
                 MemRmwOp::Un(UnOp::Clz) => c_clz_expr(&current, addr.width),
                 MemRmwOp::Un(UnOp::Rbit) => c_rbit_expr(&current, addr.width),
                 MemRmwOp::Un(UnOp::Rev16) => c_rev16_expr(&current, addr.width),
+                MemRmwOp::Un(UnOp::Rev32) => c_rev32_expr(&current),
             };
             let mut masked: String = String::new();
             width_mask(&mut masked, addr.width, &body);
@@ -15237,6 +15254,12 @@ fn rs_emit_divide(out: &mut String, divisor: RegRef, signed: bool, indent: &str)
     let _ = writeln!(out, "{indent}}}");
 }
 
+fn rs_rev32_expr(text: &str) -> String {
+    format!(
+        "(((({text}) as u64 & 0x000000ff000000ffu64) << 24) | ((({text}) as u64 & 0x0000ff000000ff00u64) << 8) | ((({text}) as u64 & 0x00ff000000ff0000u64) >> 8) | ((({text}) as u64 & 0xff000000ff000000u64) >> 24))"
+    )
+}
+
 fn rs_rev16_expr(text: &str, width_bits: u32) -> String {
     let bits: u32 = width_bits.max(32);
     let (hi, lo): (&str, &str) = if bits >= 64 {
@@ -15258,6 +15281,7 @@ fn rs_unop_expr(op: UnOp, text: &str, width: Width) -> String {
             UnOp::Clz => format!("(({text}) as u{bits}).leading_zeros() as u64"),
             UnOp::Rbit => format!("(({text}) as u{bits}).reverse_bits() as u64"),
             UnOp::Rev16 => rs_rev16_expr(text, bits),
+            UnOp::Rev32 => rs_rev32_expr(text),
         },
         None => match op {
             UnOp::Neg => format!("({text}).wrapping_neg()"),
@@ -15266,6 +15290,7 @@ fn rs_unop_expr(op: UnOp, text: &str, width: Width) -> String {
             UnOp::Clz => format!("(({text}) as u{bits}).leading_zeros() as u64"),
             UnOp::Rbit => format!("(({text}) as u{bits}).reverse_bits() as u64"),
             UnOp::Rev16 => rs_rev16_expr(text, bits),
+            UnOp::Rev32 => rs_rev32_expr(text),
         },
     }
 }
