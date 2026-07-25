@@ -231,3 +231,7 @@ float mul_add_unfused_f(float a, float b, float c) { return a * b + c; }
 double mul_add_unfused_d(double a, double b, double c) { return a * b + c; }
 float sub_mul_unfused_f(float a, float b, float c) { return c - a * b; }
 double sub_mul_unfused_d(double a, double b, double c) { return c - a * b; }
+float fma_mixed_f(float a, float b, float c) { return __builtin_fmaf(a, b, c) + a * b; }
+double fma_mixed_d(double a, double b, double c) { return __builtin_fma(a, b, c) + a * b; }
+float fma_chained_f(float a, float b, float c) { return __builtin_fmaf(a, a, __builtin_fmaf(b, c, a)); }
+double fma_chained_d(double a, double b, double c) { return __builtin_fma(a, a, __builtin_fma(b, c, a)); }
