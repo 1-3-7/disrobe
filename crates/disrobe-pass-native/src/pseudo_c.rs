@@ -233,6 +233,24 @@ enum FpOp {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FpMinMaxKind {
+    SelectMax,
+    SelectMin,
+    IeeeMax,
+    IeeeMin,
+}
+
+impl FpMinMaxKind {
+    const fn is_max(self) -> bool {
+        matches!(self, Self::SelectMax | Self::IeeeMax)
+    }
+
+    const fn is_ieee_num(self) -> bool {
+        matches!(self, Self::IeeeMax | Self::IeeeMin)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FpOperand {
     Xmm(Xmm),
     Mem(MemRef),
@@ -940,8 +958,9 @@ enum Stmt {
     },
     FpMinMax {
         dest: Xmm,
+        lhs: FpOperand,
         rhs: FpOperand,
-        is_max: bool,
+        kind: FpMinMaxKind,
         width: FpWidth,
     },
     FpSqrt {
@@ -6898,9 +6917,13 @@ fn scan_fp_stmt(
             written.insert(*dest, true);
         }
         Stmt::FpMinMax {
-            dest, rhs, width, ..
+            dest,
+            lhs,
+            rhs,
+            width,
+            ..
         } => {
-            note_fp_read(*dest, *width, written, acc)?;
+            scan_fp_operand(lhs, *width, written, acc)?;
             scan_fp_operand(rhs, *width, written, acc)?;
             written.insert(*dest, true);
         }
@@ -7220,7 +7243,10 @@ fn scan_stmt_params(
         Stmt::FpStore { addr, .. } => {
             read_addr(addr, written, acc, note);
         }
-        Stmt::FpMinMax { rhs, .. } => {
+        Stmt::FpMinMax { lhs, rhs, .. } => {
+            if let FpOperand::Mem(mem) = lhs {
+                read_addr(mem, written, acc, note);
+            }
             if let FpOperand::Mem(mem) = rhs {
                 read_addr(mem, written, acc, note);
             }
@@ -8026,10 +8052,16 @@ fn lift_fp(
         let dest: Xmm = parse_xmm(lhs.trim())
             .ok_or_else(|| Error::LlvmIr(format!("`{mnemonic}` dest is not an xmm register")))?;
         let rhs_operand: FpOperand = parse_fp_operand(rhs.trim(), width, site, consts)?;
+        let kind: FpMinMaxKind = if is_max {
+            FpMinMaxKind::SelectMax
+        } else {
+            FpMinMaxKind::SelectMin
+        };
         return Ok(Some(Stmt::FpMinMax {
             dest,
+            lhs: FpOperand::Xmm(dest),
             rhs: rhs_operand,
-            is_max,
+            kind,
             width,
         }));
     }
@@ -9485,7 +9517,10 @@ fn aggregate_note_stmt(scan: &mut AggregateScan, stmt: &Stmt) {
             aggregate_note_fp_operand(scan, lhs, *width);
             aggregate_note_fp_operand(scan, rhs, *width);
         }
-        Stmt::FpMinMax { rhs, width, .. } => {
+        Stmt::FpMinMax {
+            lhs, rhs, width, ..
+        } => {
+            aggregate_note_fp_operand(scan, lhs, *width);
             aggregate_note_fp_operand(scan, rhs, *width);
         }
         Stmt::FpMov { src, width, .. }
@@ -10149,7 +10184,10 @@ impl FrameScan {
             Stmt::FpMov { src, .. } => self.note_fp(src, slots, misuse),
             Stmt::FpSqrt { src, .. } => self.note_fp(src, slots, misuse),
             Stmt::FpRound { src, .. } => self.note_fp(src, slots, misuse),
-            Stmt::FpMinMax { rhs, .. } => self.note_fp(rhs, slots, misuse),
+            Stmt::FpMinMax { lhs, rhs, .. } => {
+                self.note_fp(lhs, slots, misuse);
+                self.note_fp(rhs, slots, misuse);
+            }
             Stmt::FpStore { addr, .. } => self.note_mem(addr, slots, misuse),
             Stmt::FlagSnapshot { flags, .. } => self.note_flags(flags, slots, misuse),
             Stmt::Packed { op, .. } => {
@@ -10500,7 +10538,10 @@ fn stmt_value_reads(stmt: &Stmt, acc: &mut Vec<Reg>) {
                 mem_regs(mem, acc);
             }
         }
-        Stmt::FpMinMax { rhs, .. } => {
+        Stmt::FpMinMax { lhs, rhs, .. } => {
+            if let FpOperand::Mem(mem) = lhs {
+                mem_regs(mem, acc);
+            }
             if let FpOperand::Mem(mem) = rhs {
                 mem_regs(mem, acc);
             }
@@ -11043,7 +11084,10 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
                     }
                 }
                 Stmt::FpStore { addr, .. } => push_addr(addr, acc),
-                Stmt::FpMinMax { rhs, .. } => {
+                Stmt::FpMinMax { lhs, rhs, .. } => {
+                    if let FpOperand::Mem(mem) = lhs {
+                        push_addr(mem, acc);
+                    }
                     if let FpOperand::Mem(mem) = rhs {
                         push_addr(mem, acc);
                     }
@@ -11166,8 +11210,9 @@ fn collect_block_xmm(body: &Block, acc: &mut Vec<Xmm>) {
                     push(*dest, acc);
                     push(*src, acc);
                 }
-                Stmt::FpMinMax { dest, rhs, .. } => {
+                Stmt::FpMinMax { dest, lhs, rhs, .. } => {
                     push(*dest, acc);
+                    push_operand(lhs, acc);
                     push_operand(rhs, acc);
                 }
                 Stmt::FpSqrt { dest, src, .. } => {
@@ -12081,18 +12126,37 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
         }
         Stmt::FpMinMax {
             dest,
+            lhs,
             rhs,
-            is_max,
+            kind,
             width,
         } => {
-            let lhs_val: String = fp_load(&FpOperand::Xmm(*dest), *width, aggregates);
+            let lhs_val: String = fp_load(lhs, *width, aggregates);
             let rhs_val: String = fp_load(rhs, *width, aggregates);
-            let cmp_op: BinaryOp = if *is_max { BinaryOp::Gt } else { BinaryOp::Lt };
-            let computed: String = c_render(|cx| CExpr::Ternary {
-                cond: Box::new(c_bin(cmp_op, cx.var(&lhs_val), cx.var(&rhs_val))),
-                then: Box::new(cx.var(&lhs_val)),
-                els: Box::new(cx.var(&rhs_val)),
-            });
+            let computed: String = if kind.is_ieee_num() {
+                let name: &str = match (kind.is_max(), *width) {
+                    (true, FpWidth::F64) => "__builtin_fmax",
+                    (true, FpWidth::F32) => "__builtin_fmaxf",
+                    (false, FpWidth::F64) => "__builtin_fmin",
+                    (false, FpWidth::F32) => "__builtin_fminf",
+                };
+                c_render(|cx| {
+                    let lhs_arg: CExpr = cx.var(&lhs_val);
+                    let rhs_arg: CExpr = cx.var(&rhs_val);
+                    cx.call(name, vec![lhs_arg, rhs_arg])
+                })
+            } else {
+                let cmp_op: BinaryOp = if kind.is_max() {
+                    BinaryOp::Gt
+                } else {
+                    BinaryOp::Lt
+                };
+                c_render(|cx| CExpr::Ternary {
+                    cond: Box::new(c_bin(cmp_op, cx.var(&lhs_val), cx.var(&rhs_val))),
+                    then: Box::new(cx.var(&lhs_val)),
+                    els: Box::new(cx.var(&rhs_val)),
+                })
+            };
             assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&computed, *width))
         }
         Stmt::FpSqrt { dest, src, width } => {
@@ -13736,17 +13800,22 @@ fn rs_fp_convert_stmt(
 fn rs_fp_minmax_stmt(
     out: &mut String,
     dest: Xmm,
+    lhs: &FpOperand,
     rhs: &FpOperand,
-    is_max: bool,
+    kind: FpMinMaxKind,
     width: FpWidth,
     indent: &str,
     aggregates: &AggregatePlan,
 ) -> Option<()> {
-    let lhs_val: String = rs_fp_load_xmm(dest, width);
+    let lhs_val: String = rs_fp_load(lhs, width, aggregates)?;
     let rhs_val: String = rs_fp_load(rhs, width, aggregates)?;
-    let opstr: &str = if is_max { ">" } else { "<" };
-    let computed: String =
-        format!("(if {lhs_val} {opstr} {rhs_val} {{ {lhs_val} }} else {{ {rhs_val} }})");
+    let computed: String = if kind.is_ieee_num() {
+        let method: &str = if kind.is_max() { "max" } else { "min" };
+        format!("(({lhs_val}).{method}({rhs_val}))")
+    } else {
+        let opstr: &str = if kind.is_max() { ">" } else { "<" };
+        format!("(if {lhs_val} {opstr} {rhs_val} {{ {lhs_val} }} else {{ {rhs_val} }})")
+    };
     rs_emit_xmm_store(out, dest, &computed, width, indent);
     Some(())
 }
@@ -13920,10 +13989,11 @@ fn rs_emit_stmt(
         } => rs_fp_convert_stmt(out, *dest, *src, *from, *to, indent),
         Stmt::FpMinMax {
             dest,
+            lhs,
             rhs,
-            is_max,
+            kind,
             width,
-        } => rs_fp_minmax_stmt(out, *dest, rhs, *is_max, *width, indent, aggregates)?,
+        } => rs_fp_minmax_stmt(out, *dest, lhs, rhs, *kind, *width, indent, aggregates)?,
         Stmt::FpSqrt { dest, src, width } => {
             rs_fp_sqrt_stmt(out, *dest, src, *width, indent, aggregates)?;
         }
