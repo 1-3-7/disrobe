@@ -318,6 +318,10 @@ float fu_nabs_f(float x) { return -__builtin_fabsf(x); }
 double fu_nabs_d(double x) { return -__builtin_fabs(x); }
 unsigned rev16_w(unsigned x) { return ((x & 0xff00ff00u) >> 8) | ((x & 0x00ff00ffu) << 8); }
 u64 rev16_x(u64 x) { return ((x & 0xff00ff00ff00ff00ull) >> 8) | ((x & 0x00ff00ff00ff00ffull) << 8); }
+float tclamp0_f(float x) { return x < 0.0f ? 0.0f : x; }
+double tclamp0_d(double x) { return x < 0.0 ? 0.0 : x; }
+float tclamp1_f(float x) { return x > 1.0f ? 1.0f : x; }
+double tclamp1_d(double x) { return x > 1.0 ? 1.0 : x; }
 float ret1_f(void) { return 1.0f; }
 float ret2_f(void) { return 2.0f; }
 float ret25_f(void) { return 2.5f; }
@@ -506,6 +510,10 @@ extern float fu_nabs_f(float x);
 extern double fu_nabs_d(double x);
 extern unsigned rev16_w(unsigned x);
 extern unsigned long long rev16_x(unsigned long long x);
+extern float tclamp0_f(float x);
+extern double tclamp0_d(double x);
+extern float tclamp1_f(float x);
+extern double tclamp1_d(double x);
 extern float ret1_f(void);
 extern float ret2_f(void);
 extern float ret25_f(void);
@@ -573,159 +581,160 @@ struct FpExpectation {
 }
 
 fn fp_expectation(name: &str) -> Option<FpExpectation> {
-    let expectation: FpExpectation = match name {
-        "fp_id_f" | "fp_ceil_f" | "fu_neg_f" | "fu_abs_f" | "fu_nabs_f" | "fz_relu_f"
-        | "fz_nrelu_f" | "fz_mulz_f" | "fz_zsub_f" | "fz_addz_f" | "kadd_f" | "kmul_f"
-        | "kmadd_f" | "ksub_f" => FpExpectation {
-            params: &[ScalarType::Float],
-            returns: Some(ScalarType::Float),
-            return_width_bits: 32,
-        },
-        "fp_id_d" | "fp_floor_d" | "fp_trunc_d" | "fp_round_d" | "fp_rint_d" | "fu_neg_d"
-        | "fu_abs_d" | "fu_nabs_d" | "fz_relu_d" | "fz_nrelu_d" | "fz_mulz_d" | "fz_zsub_d"
-        | "fz_addz_d" | "kadd_d" | "kmul_d" | "kmadd_d" | "ksub_d" => FpExpectation {
-            params: &[ScalarType::Double],
-            returns: Some(ScalarType::Double),
-            return_width_bits: 64,
-        },
-        "fp_second" | "fp_sub_d" | "fp_mul_d" | "fp_div_d" | "fp_max_d" | "fp_min_d"
-        | "fc_tmin_d" | "fc_tmax_d" | "fc_pickeq_d" | "fabsdiff_d" | "fnegmul_d"
-        | "fnabsdiff_d" => FpExpectation {
-            params: &[ScalarType::Double, ScalarType::Double],
-            returns: Some(ScalarType::Double),
-            return_width_bits: 64,
-        },
-        "fp_get" => FpExpectation {
-            params: &[ScalarType::Int, ScalarType::Int],
-            returns: Some(ScalarType::Float),
-            return_width_bits: 32,
-        },
-        "fp_get_d" | "fp_iavg" => FpExpectation {
-            params: &[ScalarType::Int, ScalarType::Int],
-            returns: Some(ScalarType::Double),
-            return_width_bits: 64,
-        },
-        "fp_put" => FpExpectation {
-            params: &[ScalarType::Float, ScalarType::Int, ScalarType::Int],
-            returns: None,
-            return_width_bits: 0,
-        },
-        "fp_bits_gpr" | "fp_from_uint" => FpExpectation {
-            params: &[ScalarType::Int],
-            returns: Some(ScalarType::Float),
-            return_width_bits: 32,
-        },
-        "fp_pick3" | "fma_madd_d" | "fma_msub_d" | "fma_nmadd_d" | "fma_nmsub_d"
-        | "mul_add_unfused_d" | "sub_mul_unfused_d" | "fma_mixed_d" | "fma_chained_d" => {
-            FpExpectation {
-                params: &[ScalarType::Double, ScalarType::Double, ScalarType::Double],
+    let expectation: FpExpectation =
+        match name {
+            "fp_id_f" | "fp_ceil_f" | "fu_neg_f" | "fu_abs_f" | "fu_nabs_f" | "fz_relu_f"
+            | "fz_nrelu_f" | "fz_mulz_f" | "fz_zsub_f" | "fz_addz_f" | "kadd_f" | "kmul_f"
+            | "kmadd_f" | "ksub_f" | "tclamp0_f" | "tclamp1_f" => FpExpectation {
+                params: &[ScalarType::Float],
+                returns: Some(ScalarType::Float),
+                return_width_bits: 32,
+            },
+            "fp_id_d" | "fp_floor_d" | "fp_trunc_d" | "fp_round_d" | "fp_rint_d" | "fu_neg_d"
+            | "fu_abs_d" | "fu_nabs_d" | "fz_relu_d" | "fz_nrelu_d" | "fz_mulz_d" | "fz_zsub_d"
+            | "fz_addz_d" | "kadd_d" | "kmul_d" | "kmadd_d" | "ksub_d" | "tclamp0_d"
+            | "tclamp1_d" => FpExpectation {
+                params: &[ScalarType::Double],
                 returns: Some(ScalarType::Double),
                 return_width_bits: 64,
+            },
+            "fp_second" | "fp_sub_d" | "fp_mul_d" | "fp_div_d" | "fp_max_d" | "fp_min_d"
+            | "fc_tmin_d" | "fc_tmax_d" | "fc_pickeq_d" | "fabsdiff_d" | "fnegmul_d"
+            | "fnabsdiff_d" => FpExpectation {
+                params: &[ScalarType::Double, ScalarType::Double],
+                returns: Some(ScalarType::Double),
+                return_width_bits: 64,
+            },
+            "fp_get" => FpExpectation {
+                params: &[ScalarType::Int, ScalarType::Int],
+                returns: Some(ScalarType::Float),
+                return_width_bits: 32,
+            },
+            "fp_get_d" | "fp_iavg" => FpExpectation {
+                params: &[ScalarType::Int, ScalarType::Int],
+                returns: Some(ScalarType::Double),
+                return_width_bits: 64,
+            },
+            "fp_put" => FpExpectation {
+                params: &[ScalarType::Float, ScalarType::Int, ScalarType::Int],
+                returns: None,
+                return_width_bits: 0,
+            },
+            "fp_bits_gpr" | "fp_from_uint" => FpExpectation {
+                params: &[ScalarType::Int],
+                returns: Some(ScalarType::Float),
+                return_width_bits: 32,
+            },
+            "fp_pick3" | "fma_madd_d" | "fma_msub_d" | "fma_nmadd_d" | "fma_nmsub_d"
+            | "mul_add_unfused_d" | "sub_mul_unfused_d" | "fma_mixed_d" | "fma_chained_d" => {
+                FpExpectation {
+                    params: &[ScalarType::Double, ScalarType::Double, ScalarType::Double],
+                    returns: Some(ScalarType::Double),
+                    return_width_bits: 64,
+                }
             }
-        }
-        "fp_add_f" | "fp_div_f" | "fp_max_f" | "fp_min_f" | "fc_tmin_f" | "fc_tmax_f"
-        | "fc_pickeq_f" | "fabsdiff_f" | "fnegmul_f" | "fnabsdiff_f" => FpExpectation {
-            params: &[ScalarType::Float, ScalarType::Float],
-            returns: Some(ScalarType::Float),
-            return_width_bits: 32,
-        },
-        "fp_axpy" | "fp_clamp_f" | "fma_madd_f" | "fma_msub_f" | "fma_nmadd_f" | "fma_nmsub_f"
-        | "mul_add_unfused_f" | "sub_mul_unfused_f" | "fma_mixed_f" | "fma_chained_f" => {
-            FpExpectation {
+            "fp_add_f" | "fp_div_f" | "fp_max_f" | "fp_min_f" | "fc_tmin_f" | "fc_tmax_f"
+            | "fc_pickeq_f" | "fabsdiff_f" | "fnegmul_f" | "fnabsdiff_f" => FpExpectation {
+                params: &[ScalarType::Float, ScalarType::Float],
+                returns: Some(ScalarType::Float),
+                return_width_bits: 32,
+            },
+            "fp_axpy" | "fp_clamp_f" | "fma_madd_f" | "fma_msub_f" | "fma_nmadd_f"
+            | "fma_nmsub_f" | "mul_add_unfused_f" | "sub_mul_unfused_f" | "fma_mixed_f"
+            | "fma_chained_f" => FpExpectation {
                 params: &[ScalarType::Float, ScalarType::Float, ScalarType::Float],
                 returns: Some(ScalarType::Float),
                 return_width_bits: 32,
+            },
+            "fp_to_int_s" | "fp_to_uint_s" | "fc_isnan_f" | "fcvt_floor_s" | "fcvt_ceil_s"
+            | "fcvt_away_s" | "fcvt_floor_us" | "fcvt_ceil_us" | "fcvt_away_us" => FpExpectation {
+                params: &[ScalarType::Float],
+                returns: None,
+                return_width_bits: 32,
+            },
+            "fp_to_ulong_d" | "fcvt_floor_d" | "fcvt_ceil_d" | "fcvt_away_d" | "fcvt_floor_ud" => {
+                FpExpectation {
+                    params: &[ScalarType::Double],
+                    returns: None,
+                    return_width_bits: 64,
+                }
             }
-        }
-        "fp_to_int_s" | "fp_to_uint_s" | "fc_isnan_f" | "fcvt_floor_s" | "fcvt_ceil_s"
-        | "fcvt_away_s" | "fcvt_floor_us" | "fcvt_ceil_us" | "fcvt_away_us" => FpExpectation {
-            params: &[ScalarType::Float],
-            returns: None,
-            return_width_bits: 32,
-        },
-        "fp_to_ulong_d" | "fcvt_floor_d" | "fcvt_ceil_d" | "fcvt_away_d" | "fcvt_floor_ud" => {
-            FpExpectation {
+            "fp_from_int" => FpExpectation {
+                params: &[ScalarType::Int],
+                returns: Some(ScalarType::Double),
+                return_width_bits: 64,
+            },
+            "fp_widen" => FpExpectation {
+                params: &[ScalarType::Float],
+                returns: Some(ScalarType::Double),
+                return_width_bits: 64,
+            },
+            "fp_narrow" => FpExpectation {
+                params: &[ScalarType::Double],
+                returns: Some(ScalarType::Float),
+                return_width_bits: 32,
+            },
+            "fc_lt_f" | "fc_le_f" | "fc_gt_f" | "fc_ge_f" | "fc_eq_f" | "fc_ne_f" | "fc_nlt_f"
+            | "fc_nle_f" | "fc_ngt_f" | "fc_nge_f" => FpExpectation {
+                params: &[ScalarType::Float, ScalarType::Float],
+                returns: None,
+                return_width_bits: 32,
+            },
+            "fc_lt_d" | "fc_le_d" | "fc_gt_d" | "fc_ge_d" | "fc_eq_d" | "fc_ne_d" | "fc_nlt_d"
+            | "fc_nle_d" | "fc_ngt_d" | "fc_nge_d" => FpExpectation {
+                params: &[ScalarType::Double, ScalarType::Double],
+                returns: None,
+                return_width_bits: 32,
+            },
+            "fc_isnan_d" => FpExpectation {
                 params: &[ScalarType::Double],
                 returns: None,
+                return_width_bits: 32,
+            },
+            "fc_sel_f" => FpExpectation {
+                params: &[
+                    ScalarType::Float,
+                    ScalarType::Float,
+                    ScalarType::Float,
+                    ScalarType::Float,
+                ],
+                returns: Some(ScalarType::Float),
+                return_width_bits: 32,
+            },
+            "fc_sel_d" => FpExpectation {
+                params: &[
+                    ScalarType::Double,
+                    ScalarType::Double,
+                    ScalarType::Double,
+                    ScalarType::Double,
+                ],
+                returns: Some(ScalarType::Double),
                 return_width_bits: 64,
-            }
-        }
-        "fp_from_int" => FpExpectation {
-            params: &[ScalarType::Int],
-            returns: Some(ScalarType::Double),
-            return_width_bits: 64,
-        },
-        "fp_widen" => FpExpectation {
-            params: &[ScalarType::Float],
-            returns: Some(ScalarType::Double),
-            return_width_bits: 64,
-        },
-        "fp_narrow" => FpExpectation {
-            params: &[ScalarType::Double],
-            returns: Some(ScalarType::Float),
-            return_width_bits: 32,
-        },
-        "fc_lt_f" | "fc_le_f" | "fc_gt_f" | "fc_ge_f" | "fc_eq_f" | "fc_ne_f" | "fc_nlt_f"
-        | "fc_nle_f" | "fc_ngt_f" | "fc_nge_f" => FpExpectation {
-            params: &[ScalarType::Float, ScalarType::Float],
-            returns: None,
-            return_width_bits: 32,
-        },
-        "fc_lt_d" | "fc_le_d" | "fc_gt_d" | "fc_ge_d" | "fc_eq_d" | "fc_ne_d" | "fc_nlt_d"
-        | "fc_nle_d" | "fc_ngt_d" | "fc_nge_d" => FpExpectation {
-            params: &[ScalarType::Double, ScalarType::Double],
-            returns: None,
-            return_width_bits: 32,
-        },
-        "fc_isnan_d" => FpExpectation {
-            params: &[ScalarType::Double],
-            returns: None,
-            return_width_bits: 32,
-        },
-        "fc_sel_f" => FpExpectation {
-            params: &[
-                ScalarType::Float,
-                ScalarType::Float,
-                ScalarType::Float,
-                ScalarType::Float,
-            ],
-            returns: Some(ScalarType::Float),
-            return_width_bits: 32,
-        },
-        "fc_sel_d" => FpExpectation {
-            params: &[
-                ScalarType::Double,
-                ScalarType::Double,
-                ScalarType::Double,
-                ScalarType::Double,
-            ],
-            returns: Some(ScalarType::Double),
-            return_width_bits: 64,
-        },
-        "fc_seland_f" => FpExpectation {
-            params: &[
-                ScalarType::Float,
-                ScalarType::Float,
-                ScalarType::Float,
-                ScalarType::Float,
-                ScalarType::Float,
-                ScalarType::Float,
-            ],
-            returns: Some(ScalarType::Float),
-            return_width_bits: 32,
-        },
-        "ret1_f" | "ret2_f" | "ret25_f" | "rethalf_f" | "retn1_f" => FpExpectation {
-            params: &[],
-            returns: Some(ScalarType::Float),
-            return_width_bits: 32,
-        },
-        "ret1_d" | "ret25_d" | "rethalf_d" | "retn3_d" | "retn1_d" => FpExpectation {
-            params: &[],
-            returns: Some(ScalarType::Double),
-            return_width_bits: 64,
-        },
-        _ => return None,
-    };
+            },
+            "fc_seland_f" => FpExpectation {
+                params: &[
+                    ScalarType::Float,
+                    ScalarType::Float,
+                    ScalarType::Float,
+                    ScalarType::Float,
+                    ScalarType::Float,
+                    ScalarType::Float,
+                ],
+                returns: Some(ScalarType::Float),
+                return_width_bits: 32,
+            },
+            "ret1_f" | "ret2_f" | "ret25_f" | "rethalf_f" | "retn1_f" => FpExpectation {
+                params: &[],
+                returns: Some(ScalarType::Float),
+                return_width_bits: 32,
+            },
+            "ret1_d" | "ret25_d" | "rethalf_d" | "retn3_d" | "retn1_d" => FpExpectation {
+                params: &[],
+                returns: Some(ScalarType::Double),
+                return_width_bits: 64,
+            },
+            _ => return None,
+        };
     Some(expectation)
 }
 
@@ -914,6 +923,14 @@ const INCREMENT_THIRTEEN_EXPECTED_CASES: usize = 50;
 
 fn is_increment_thirteen_fp(name: &str) -> bool {
     INCREMENT_THIRTEEN_FP_FUNCTIONS.contains(&name)
+}
+
+const INCREMENT_FOURTEEN_FP_FUNCTIONS: &[&str] =
+    &["tclamp0_f", "tclamp0_d", "tclamp1_f", "tclamp1_d"];
+const INCREMENT_FOURTEEN_EXPECTED_CASES: usize = 20;
+
+fn is_increment_fourteen_fp(name: &str) -> bool {
+    INCREMENT_FOURTEEN_FP_FUNCTIONS.contains(&name)
 }
 
 fn expected_arity(name: &str) -> Option<usize> {
@@ -1746,13 +1763,12 @@ fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Option<String> 
         }
         "fp_floor_d" | "fp_trunc_d" | "fp_round_d" | "fp_rint_d" | "fu_neg_d" | "fu_abs_d"
         | "fu_nabs_d" | "fz_relu_d" | "fz_nrelu_d" | "fz_mulz_d" | "fz_zsub_d" | "fz_addz_d"
-        | "kadd_d" | "kmul_d" | "kmadd_d" | "ksub_d" => {
+        | "kadd_d" | "kmul_d" | "kmadd_d" | "ksub_d" | "tclamp0_d" | "tclamp1_d" => {
             fill_template(FP_UNARY_D_TMPL, opt, name, rec, seed)
         }
         "fp_ceil_f" | "fu_neg_f" | "fu_abs_f" | "fu_nabs_f" | "fz_relu_f" | "fz_nrelu_f"
-        | "fz_mulz_f" | "fz_zsub_f" | "fz_addz_f" | "kadd_f" | "kmul_f" | "kmadd_f" | "ksub_f" => {
-            fill_template(FP_UNARY_F_TMPL, opt, name, rec, seed)
-        }
+        | "fz_mulz_f" | "fz_zsub_f" | "fz_addz_f" | "kadd_f" | "kmul_f" | "kmadd_f" | "ksub_f"
+        | "tclamp0_f" | "tclamp1_f" => fill_template(FP_UNARY_F_TMPL, opt, name, rec, seed),
         "fp_second" => fill_template(FP_SECOND_TMPL, opt, name, rec, seed),
         "fp_pick3" => fill_template(FP_PICK3_TMPL, opt, name, rec, seed),
         "fp_get" => fill_template(FP_GET_F_TMPL, opt, name, rec, seed),
@@ -2400,6 +2416,24 @@ fn corpus_grade_report() {
             );
         }
     }
+    let increment_fourteen_corpus_cases: usize = CASES
+        .iter()
+        .filter(|(_, name, _): &&(&str, &str, &[u8])| is_increment_fourteen_fp(name))
+        .count();
+    assert_eq!(
+        increment_fourteen_corpus_cases, INCREMENT_FOURTEEN_EXPECTED_CASES,
+        "the generated corpus must contain exactly five rows per increment-14 function"
+    );
+    for required_name in INCREMENT_FOURTEEN_FP_FUNCTIONS {
+        for required_opt in CORPUS_OPTIMIZATION_LEVELS {
+            assert!(
+                CASES.iter().any(|(opt, name, _): &(&str, &str, &[u8])| {
+                    opt == required_opt && name == required_name
+                }),
+                "required increment-14 case `{required_opt} {required_name}` is absent from the generated corpus"
+            );
+        }
+    }
 
     let dir: tempfile::TempDir = tempfile::tempdir().expect("scratch dir");
     let battery_c: PathBuf = dir.path().join("gt_battery.c");
@@ -2449,6 +2483,8 @@ fn corpus_grade_report() {
     let mut increment_twelve_driven: usize = 0;
     let mut increment_thirteen_recovered: usize = 0;
     let mut increment_thirteen_driven: usize = 0;
+    let mut increment_fourteen_recovered: usize = 0;
+    let mut increment_fourteen_driven: usize = 0;
     let mut skips: Vec<(String, String, String)> = Vec::new();
     let mut decls: String = String::new();
     let mut blocks: String = String::new();
@@ -2467,6 +2503,7 @@ fn corpus_grade_report() {
         let required_increment_eleven: bool = is_increment_eleven_fp(name);
         let required_increment_twelve: bool = is_increment_twelve_fp(name);
         let required_increment_thirteen: bool = is_increment_thirteen_fp(name);
+        let required_increment_fourteen: bool = is_increment_fourteen_fp(name);
         let recovery: LeafRecovery = match recover_aarch64_function(bytes, 0) {
             Ok(value) => value,
             Err(error) => {
@@ -2516,6 +2553,9 @@ fn corpus_grade_report() {
         }
         if required_increment_thirteen {
             increment_thirteen_recovered += 1;
+        }
+        if required_increment_fourteen {
+            increment_fourteen_recovered += 1;
         }
 
         let expected_fp: Option<FpExpectation> = fp_expectation(name);
@@ -2632,6 +2672,9 @@ fn corpus_grade_report() {
         if required_increment_thirteen {
             increment_thirteen_driven += 1;
         }
+        if required_increment_fourteen {
+            increment_fourteen_driven += 1;
+        }
     }
 
     assert!(
@@ -2737,6 +2780,7 @@ fn corpus_grade_report() {
         .and_then(|value: usize| value.checked_sub(increment_eleven_recovered))
         .and_then(|value: usize| value.checked_sub(increment_twelve_recovered))
         .and_then(|value: usize| value.checked_sub(increment_thirteen_recovered))
+        .and_then(|value: usize| value.checked_sub(increment_fourteen_recovered))
         .expect("later-increment fp recovery counts cannot exceed the fp total");
     let increment_one_fp_driven: usize = fp_driven
         .checked_sub(increment_two_driven)
@@ -2751,6 +2795,7 @@ fn corpus_grade_report() {
         .and_then(|value: usize| value.checked_sub(increment_eleven_driven))
         .and_then(|value: usize| value.checked_sub(increment_twelve_driven))
         .and_then(|value: usize| value.checked_sub(increment_thirteen_driven))
+        .and_then(|value: usize| value.checked_sub(increment_fourteen_driven))
         .expect("later-increment fp driven counts cannot exceed the fp total");
     let integer_recovered: usize = recovered
         .checked_sub(fp_recovered)
@@ -2799,6 +2844,12 @@ fn corpus_grade_report() {
     );
     eprintln!(
         "increment-13 graded    {increment_thirteen_driven}/{INCREMENT_THIRTEEN_EXPECTED_CASES}"
+    );
+    eprintln!(
+        "increment-14 recovered {increment_fourteen_recovered}/{INCREMENT_FOURTEEN_EXPECTED_CASES}"
+    );
+    eprintln!(
+        "increment-14 graded    {increment_fourteen_driven}/{INCREMENT_FOURTEEN_EXPECTED_CASES}"
     );
     eprintln!(
         "graded-equivalent    {graded_equivalent}   (recompiled + behaviorally matched on directed and random inputs)"
@@ -2953,6 +3004,14 @@ fn corpus_grade_report() {
     assert_eq!(
         increment_thirteen_driven, INCREMENT_THIRTEEN_EXPECTED_CASES,
         "every increment-13 corpus case must be graded"
+    );
+    assert_eq!(
+        increment_fourteen_recovered, INCREMENT_FOURTEEN_EXPECTED_CASES,
+        "every increment-14 corpus case must recover"
+    );
+    assert_eq!(
+        increment_fourteen_driven, INCREMENT_FOURTEEN_EXPECTED_CASES,
+        "every increment-14 corpus case must be graded"
     );
     assert!(
         skips.is_empty(),
