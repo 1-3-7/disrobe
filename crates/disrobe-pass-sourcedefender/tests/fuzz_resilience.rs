@@ -431,7 +431,32 @@ fn read_batch(path: &Path) -> std::io::Result<Vec<Vec<u8>>> {
     Ok(cases)
 }
 
-fn run_batch(path: &Path, batch_index: usize, remaining_budget: Duration) -> std::io::Result<()> {
+fn confirm_batch_ran(path: &Path, batch_index: usize, expected: usize) -> std::io::Result<()> {
+    let marker: PathBuf = path.with_extension("done");
+    let recorded: String = std::fs::read_to_string(&marker).map_err(|error: std::io::Error| {
+        std::io::Error::other(format!(
+            "fuzz batch {batch_index} exited cleanly without recording a completion marker, so the worker never ran its cases: {error}"
+        ))
+    })?;
+    let processed: usize = recorded.trim().parse().map_err(|_| {
+        std::io::Error::other(format!(
+            "fuzz batch {batch_index} recorded an unreadable case count `{recorded}`"
+        ))
+    })?;
+    if processed != expected {
+        return Err(std::io::Error::other(format!(
+            "fuzz batch {batch_index} processed {processed} cases but the batch held {expected}"
+        )));
+    }
+    Ok(())
+}
+
+fn run_batch(
+    path: &Path,
+    batch_index: usize,
+    expected: usize,
+    remaining_budget: Duration,
+) -> std::io::Result<()> {
     let executable: PathBuf = std::env::current_exe()?;
     let batch_budget: Duration = BATCH_BUDGET.min(remaining_budget);
     let mut child: std::process::Child = Command::new(executable)
@@ -444,7 +469,7 @@ fn run_batch(path: &Path, batch_index: usize, remaining_budget: Duration) -> std
     loop {
         if let Some(status) = child.try_wait()? {
             if status.success() {
-                return Ok(());
+                return confirm_batch_ran(path, batch_index, expected);
             }
             return Err(std::io::Error::other(format!(
                 "fuzz batch {batch_index} exited with {status}"
@@ -483,6 +508,10 @@ fn fuzz_resilience_worker() -> std::io::Result<()> {
         let mut rng: Xorshift64 = Xorshift64::new(0x5344_465A_0001_0002 ^ index);
         exercise_entrypoints(bytes, &mut rng);
     }
+    std::fs::write(
+        Path::new(&batch_path).with_extension("done"),
+        cases.len().to_string(),
+    )?;
     Ok(())
 }
 
@@ -517,7 +546,7 @@ fn bounded_public_parse_entrypoints_finish_without_panicking() -> std::io::Resul
             })?;
         let batch_path: PathBuf = workspace.path.join(format!("batch-{batch_index}.bin"));
         write_batch(&batch_path, batch)?;
-        run_batch(&batch_path, batch_index, remaining_budget)?;
+        run_batch(&batch_path, batch_index, batch.len(), remaining_budget)?;
     }
     let elapsed: Duration = started.elapsed();
     assert!(
