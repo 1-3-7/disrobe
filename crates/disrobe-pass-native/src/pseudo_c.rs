@@ -1885,14 +1885,16 @@ fn build_leaf_items(
             if dest.reg == Reg::Rax {
                 return_width = dest.width;
             }
+            let stmt: Stmt = Stmt::Cond {
+                dest,
+                src,
+                kind: cond_kind,
+                flags: used_flags,
+            };
+            fp_return = fp_return_after(fp_return, &stmt);
             items.push(Item {
                 address: insn.address,
-                kind: ItemKind::Stmt(Stmt::Cond {
-                    dest,
-                    src,
-                    kind: cond_kind,
-                    flags: used_flags,
-                }),
+                kind: ItemKind::Stmt(stmt),
             });
             continue;
         }
@@ -1926,13 +1928,15 @@ fn build_leaf_items(
                 return_width = dest.width;
                 fp_return = None;
             }
+            let setcc: Stmt = Stmt::SetCc {
+                dest,
+                kind: cond_kind,
+                flags: used_flags,
+            };
+            fp_return = fp_return_after(fp_return, &setcc);
             items.push(Item {
                 address: insn.address,
-                kind: ItemKind::Stmt(Stmt::SetCc {
-                    dest,
-                    kind: cond_kind,
-                    flags: used_flags,
-                }),
+                kind: ItemKind::Stmt(setcc),
             });
             continue;
         }
@@ -1980,6 +1984,7 @@ fn build_leaf_items(
             return_width = Width::W64;
             fp_return = None;
         }
+        fp_return = fp_return_after(fp_return, &stmt);
         dividend_high = track_dividend_high(dividend_high, &stmt);
         match &stmt {
             Stmt::Assign { .. } => {
@@ -18394,6 +18399,60 @@ mod tests {
         assert!(
             source.contains("? (r_rdx) & 0xffffffffULL : r_rax"),
             "the conditional move must survive as a select when the compare is re-executed: {source}"
+        );
+    }
+
+    #[test]
+    fn a_returned_value_that_is_also_compared_stays_floating_point() {
+        let fmax2: [u8; 50] = [
+            0x55, 0x48, 0x89, 0xe5, 0xf2, 0x0f, 0x11, 0x45, 0x10, 0xf2, 0x0f, 0x11, 0x4d, 0x18,
+            0xf2, 0x0f, 0x10, 0x45, 0x10, 0x66, 0x0f, 0x2f, 0x45, 0x18, 0x76, 0x07, 0xf2, 0x0f,
+            0x10, 0x45, 0x10, 0xeb, 0x05, 0xf2, 0x0f, 0x10, 0x45, 0x18, 0x66, 0x48, 0x0f, 0x7e,
+            0xc0, 0x66, 0x48, 0x0f, 0x6e, 0xc0, 0x5d, 0xc3,
+        ];
+        if let Ok(rec) = recover_leaf_function_abi(&fmax2, 0x9600, Abi::MsX64) {
+            assert!(
+                rec.returns_fp.is_some() || !rec.source.contains("return"),
+                "a maximum that returns one of the two compared operands must keep a floating-point return: {}",
+                rec.source
+            );
+        }
+    }
+
+    #[test]
+    fn floating_point_scratch_consumed_by_a_conversion_returns_an_integer() {
+        let trunc_ll: [u8; 21] = [
+            0x55, 0x48, 0x89, 0xe5, 0xf2, 0x0f, 0x11, 0x45, 0x10, 0xf2, 0x0f, 0x10, 0x45, 0x10,
+            0xf2, 0x48, 0x0f, 0x2c, 0xc0, 0x5d, 0xc3,
+        ];
+        let rec: LeafRecovery = recover_leaf_function_abi(&trunc_ll, 0x9700, Abi::MsX64)
+            .expect("a truncating conversion recovers");
+        assert!(
+            rec.returns_fp.is_none(),
+            "the reloaded operand is consumed by a conversion into rax, so the return is an integer: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn a_reloaded_compare_operand_does_not_make_the_return_floating_point() {
+        let spilled: [u8; 50] = [
+            0x55, 0x48, 0x89, 0xe5, 0xf2, 0x0f, 0x11, 0x45, 0x10, 0xf2, 0x0f, 0x11, 0x4d, 0x18,
+            0xf2, 0x0f, 0x10, 0x45, 0x10, 0x66, 0x0f, 0x2e, 0x45, 0x18, 0x0f, 0x9b, 0xc0, 0xba,
+            0x00, 0x00, 0x00, 0x00, 0xf2, 0x0f, 0x10, 0x45, 0x10, 0x66, 0x0f, 0x2e, 0x45, 0x18,
+            0x0f, 0x45, 0xc2, 0x0f, 0xb6, 0xc0, 0x5d, 0xc3,
+        ];
+        let rec: LeafRecovery = recover_leaf_function_abi(&spilled, 0x9400, Abi::MsX64)
+            .expect("the spilled compare sequence recovers");
+        assert!(
+            rec.returns_fp.is_none(),
+            "xmm0 is only reloaded as a compare operand and the result is produced into rax, so the return type must not be floating point: {}",
+            rec.source
+        );
+        assert!(
+            !rec.source.contains("double recovered("),
+            "the recovered signature must not claim a floating-point return: {}",
+            rec.source
         );
     }
 
