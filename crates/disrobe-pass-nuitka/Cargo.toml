@@ -39,4 +39,5 @@ chain = ["disrobe-core/chain"]
 [dev-dependencies]
 serde_json = { workspace = true }
 disrobe-pass-pickle = { workspace = true }
+disrobe-testkit = { workspace = true }
 blake3 = { workspace = true }

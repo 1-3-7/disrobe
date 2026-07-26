@@ -45,12 +45,12 @@ impl XorShift64 {
         }
     }
 
-    pub(crate) fn below_usize(&mut self, bound: usize) -> usize {
+    pub fn below_usize(&mut self, bound: usize) -> usize {
         let widened: u64 = u64::try_from(bound).unwrap_or(u64::MAX);
         usize::try_from(self.below(widened)).unwrap_or(0)
     }
 
-    pub(crate) const fn next_byte(&mut self) -> u8 {
+    pub const fn next_byte(&mut self) -> u8 {
         self.next_u64().to_le_bytes()[0]
     }
 }
@@ -115,6 +115,36 @@ mod tests {
         for _ in 0..1024 {
             assert_eq!(left.next_u64(), right.next_u64());
         }
+    }
+
+    #[test]
+    fn below_usize_stays_inside_its_bound_and_collapses_a_zero_bound() {
+        let mut rng: XorShift64 = XorShift64::new(0x0BAD_C0DE_0BAD_C0DE);
+        assert_eq!(rng.below_usize(0), 0);
+        assert_eq!(rng.below_usize(1), 0);
+        for bound in [2usize, 17, 4096, usize::MAX] {
+            for _ in 0..512 {
+                assert!(rng.below_usize(bound) < bound);
+            }
+        }
+    }
+
+    #[test]
+    fn next_byte_takes_the_low_octet_of_the_stream_and_covers_the_range() {
+        let mut reference: XorShift64 = XorShift64::new(0x1357_9BDF_0246_8ACE);
+        let mut bytes: XorShift64 = XorShift64::new(0x1357_9BDF_0246_8ACE);
+        for _ in 0..256 {
+            assert_eq!(bytes.next_byte(), reference.next_u64().to_le_bytes()[0]);
+        }
+        let mut low: bool = false;
+        let mut high: bool = false;
+        for _ in 0..4096 {
+            match bytes.next_byte() {
+                0..=127 => low = true,
+                128..=255 => high = true,
+            }
+        }
+        assert!(low && high);
     }
 
     #[test]
