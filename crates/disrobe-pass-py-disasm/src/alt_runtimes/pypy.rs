@@ -2,7 +2,7 @@ use disrobe_py_marshal::{CodeObject, Object, PyVersion, load};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use crate::alt_runtimes::{AltRuntimeError, Result};
+use crate::alt_runtimes::{AltRuntimeError, Result, validate_input_size};
 use crate::{Instruction, disassemble, opname, render_dis};
 
 const PYPY_MAGIC_27: u32 = 0xC0DE_F517;
@@ -16,6 +16,7 @@ const OP_LOAD_REVDB_VAR: u8 = 205;
 const OP_LOOKUP_METHOD: u8 = 201;
 const OP_CALL_METHOD: u8 = 202;
 const OP_CALL_METHOD_KW: u8 = 206;
+const MAX_CODE_UNITS: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PyPyVariant {
@@ -54,6 +55,7 @@ pub struct OpInsn {
 }
 
 pub fn parse(bytes: &[u8]) -> Result<PyPyModule> {
+    validate_input_size(bytes, "pypy")?;
     if bytes.len() < 4 {
         return Err(AltRuntimeError::Truncated {
             offset: 0,
@@ -290,18 +292,29 @@ fn disassemble_code_tree(
     depth: usize,
     out: &mut Vec<PyPyCodeUnit>,
 ) {
-    let instructions: Vec<Instruction> = disassemble(code, version);
-    out.push(PyPyCodeUnit {
-        qualified_name: qualified_name.to_owned(),
-        depth,
-        instructions,
-        raw_listing: Vec::new(),
-    });
-    for konst in &code.consts {
-        if let Object::Code(inner) = konst {
-            let inner_ref: &CodeObject = inner.as_ref();
-            let child_name: String = format!("{qualified_name}.{}", code_object_name(inner_ref));
-            disassemble_code_tree(inner_ref, &child_name, version, depth + 1, out);
+    let mut pending: Vec<(&CodeObject, String, usize)> =
+        vec![(code, qualified_name.to_owned(), depth)];
+    while let Some((current, current_name, current_depth)) = pending.pop() {
+        if out.len() == MAX_CODE_UNITS {
+            break;
+        }
+        let instructions: Vec<Instruction> = disassemble(current, version);
+        out.push(PyPyCodeUnit {
+            qualified_name: current_name.clone(),
+            depth: current_depth,
+            instructions,
+            raw_listing: Vec::new(),
+        });
+        for konst in current.consts.iter().rev() {
+            if pending.len().saturating_add(out.len()) == MAX_CODE_UNITS {
+                break;
+            }
+            if let Object::Code(inner) = konst {
+                let inner_ref: &CodeObject = inner.as_ref();
+                let child_name: String = format!("{current_name}.{}", code_object_name(inner_ref));
+                let child_depth: usize = current_depth.saturating_add(1usize);
+                pending.push((inner_ref, child_name, child_depth));
+            }
         }
     }
 }
@@ -405,6 +418,13 @@ mod tests {
         let insns: Vec<OpInsn> = module.opcodes().collect();
         assert_eq!(insns.len(), 1);
         assert!(insns[0].is_private);
+    }
+
+    #[test]
+    fn rejects_input_above_parse_cap() {
+        let mut bytes: Vec<u8> = build_pypy_image(PYPY_MAGIC_37, 16, &[]);
+        bytes.resize(16 * 1024 * 1024 + 17, 0u8);
+        assert!(parse(&bytes).is_err());
     }
 
     #[test]

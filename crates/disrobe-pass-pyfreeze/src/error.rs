@@ -98,6 +98,15 @@ pub enum Error {
 
     #[error("DR-PYFRZ-0026: PyOxidizer packed-resources module index malformed: {0}")]
     PyOxidizerResourceIndex(String),
+
+    #[error(
+        "DR-PYFRZ-0027: JSON manifest `{resource}` has {bytes} bytes, above the {max_bytes}-byte cap"
+    )]
+    JsonManifestTooLarge {
+        resource: &'static str,
+        bytes: usize,
+        max_bytes: usize,
+    },
 }
 
 impl From<disrobe_binfmt::Error> for Error {

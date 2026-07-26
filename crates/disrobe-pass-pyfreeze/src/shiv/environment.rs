@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::common::parse_json_manifest;
 use crate::error::Result;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,8 +22,7 @@ pub struct ShivEnvironment {
 }
 
 pub fn parse(bytes: &[u8]) -> Result<ShivEnvironment> {
-    let env: ShivEnvironment = serde_json::from_slice(bytes)?;
-    Ok(env)
+    parse_json_manifest(bytes, "shiv environment")
 }
 
 #[cfg(test)]
@@ -37,5 +37,13 @@ mod tests {
         assert_eq!(env.entry_point.as_deref(), Some("pkg.main:main"));
         assert_eq!(env.shiv_version.as_deref(), Some("1.0.4"));
         assert!(env.compile_pyc.is_none());
+    }
+
+    #[test]
+    fn rejects_oversized_manifest_before_deserialization() {
+        let mut raw: Vec<u8> = b"{\"entry_point\":\"".to_vec();
+        raw.extend(std::iter::repeat_n(b'a', 16 * 1024 * 1024 + 1));
+        raw.extend_from_slice(b"\"}");
+        assert!(parse(&raw).is_err());
     }
 }

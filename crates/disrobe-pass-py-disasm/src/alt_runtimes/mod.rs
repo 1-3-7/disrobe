@@ -16,6 +16,19 @@ use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, AltRuntimeError>;
 
+pub(crate) const MAX_ALT_RUNTIME_INPUT_BYTES: usize = 16 * 1024 * 1024;
+
+pub(crate) const fn validate_input_size(bytes: &[u8], runtime: &'static str) -> Result<()> {
+    if bytes.len() > MAX_ALT_RUNTIME_INPUT_BYTES {
+        return Err(AltRuntimeError::InputTooLarge {
+            runtime,
+            bytes: bytes.len(),
+            max_bytes: MAX_ALT_RUNTIME_INPUT_BYTES,
+        });
+    }
+    Ok(())
+}
+
 #[derive(Debug, Error, Diagnostic)]
 pub enum AltRuntimeError {
     #[error("DR-PYALT-0001: truncated payload at offset {offset} (needed {needed}, had {had})")]
@@ -42,6 +55,13 @@ pub enum AltRuntimeError {
 
     #[error("DR-PYALT-0006: invalid {field} encoding at offset {offset}")]
     BadEncoding { field: &'static str, offset: usize },
+
+    #[error("DR-PYALT-0007: {runtime} input has {bytes} bytes, above the {max_bytes}-byte cap")]
+    InputTooLarge {
+        runtime: &'static str,
+        bytes: usize,
+        max_bytes: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
