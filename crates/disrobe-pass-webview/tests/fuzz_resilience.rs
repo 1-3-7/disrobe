@@ -323,7 +323,12 @@ fn run_batch(
     let executable: PathBuf = std::env::current_exe()?;
     let batch_budget: Duration = BATCH_BUDGET.min(remaining_budget);
     let mut child: std::process::Child = Command::new(executable)
-        .args(["--exact", "fuzz_resilience_worker", "--nocapture"])
+        .args([
+            "--ignored",
+            "--exact",
+            "fuzz_resilience_worker",
+            "--nocapture",
+        ])
         .env(BATCH_PATH_ENV, path)
         .env(BATCH_INDEX_ENV, batch_index.to_string())
         .stdout(Stdio::null())
@@ -355,6 +360,7 @@ fn run_batch(
 }
 
 #[test]
+#[ignore = "runs only through the parent fuzz protocol"]
 fn fuzz_resilience_worker() -> std::io::Result<()> {
     let Some(batch_path): Option<std::ffi::OsString> = std::env::var_os(BATCH_PATH_ENV) else {
         return Ok(());
