@@ -9,7 +9,7 @@ use crate::types::{
     ValueOp,
 };
 
-const MAX_REGION_DEPTH: usize = 4096;
+const MAX_REGION_DEPTH: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -111,6 +111,89 @@ pub enum HirStmt {
         blocks: Vec<HirDispatchCase>,
     },
     Empty,
+}
+
+impl HirExpr {
+    fn unlink_children(&mut self, pending: &mut Vec<Self>) {
+        match self {
+            Self::Unary { operand, .. } => {
+                let operand: Self = std::mem::replace(
+                    operand.as_mut(),
+                    Self::Unknown {
+                        text: String::new(),
+                    },
+                );
+                pending.push(operand);
+            }
+            Self::Binary { lhs, rhs, .. } => {
+                let lhs: Self = std::mem::replace(
+                    lhs.as_mut(),
+                    Self::Unknown {
+                        text: String::new(),
+                    },
+                );
+                let rhs: Self = std::mem::replace(
+                    rhs.as_mut(),
+                    Self::Unknown {
+                        text: String::new(),
+                    },
+                );
+                pending.push(lhs);
+                pending.push(rhs);
+            }
+            Self::Call { args, .. } => pending.extend(std::mem::take(args)),
+            Self::Const { .. } | Self::Var { .. } | Self::Mem { .. } | Self::Unknown { .. } => {}
+        }
+    }
+}
+
+impl Drop for HirExpr {
+    fn drop(&mut self) {
+        let mut pending: Vec<Self> = Vec::new();
+        self.unlink_children(&mut pending);
+        while let Some(mut expression) = pending.pop() {
+            expression.unlink_children(&mut pending);
+        }
+    }
+}
+
+impl HirStmt {
+    fn unlink_children(&mut self, pending: &mut Vec<Self>) {
+        match self {
+            Self::Seq { body } => pending.extend(std::mem::take(body)),
+            Self::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                let then_branch: Self = std::mem::replace(then_branch.as_mut(), Self::Empty);
+                let else_branch: Self = std::mem::replace(else_branch.as_mut(), Self::Empty);
+                pending.push(then_branch);
+                pending.push(else_branch);
+            }
+            Self::Loop { body, .. } => {
+                let body: Self = std::mem::replace(body.as_mut(), Self::Empty);
+                pending.push(body);
+            }
+            Self::Leaf { .. }
+            | Self::Break { .. }
+            | Self::Continue { .. }
+            | Self::Return { .. }
+            | Self::Dispatch { .. }
+            | Self::GotoGraph { .. }
+            | Self::Empty => {}
+        }
+    }
+}
+
+impl Drop for HirStmt {
+    fn drop(&mut self) {
+        let mut pending: Vec<Self> = Vec::new();
+        self.unlink_children(&mut pending);
+        while let Some(mut statement) = pending.pop() {
+            statement.unlink_children(&mut pending);
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -225,10 +308,8 @@ pub fn structurize_function(function: &NirFunction) -> HirFunction {
     let structured: bool = structurer.structured && structurer.placed == reachable.len();
     let body: HirStmt = if structured {
         append_unreachable_blocks(body, &index, &reachable, lang)
-    } else if uses_goto_fallback(function) {
-        goto_graph_all(&index, lang)
     } else {
-        dispatch_all(&index, lang)
+        fallback_from_index(function, &index)
     };
     HirFunction {
         name: function.name.clone(),
@@ -238,6 +319,23 @@ pub fn structurize_function(function: &NirFunction) -> HirFunction {
         body,
         structured,
         source: function.source.clone(),
+    }
+}
+
+pub(crate) fn complete_fallback_body(function: &NirFunction) -> HirStmt {
+    let blocks: Vec<NirBlock> = basic_blocks(function);
+    if blocks.is_empty() {
+        return HirStmt::Empty;
+    }
+    let index: BlockIndex<'_> = BlockIndex::build(&blocks);
+    fallback_from_index(function, &index)
+}
+
+fn fallback_from_index(function: &NirFunction, index: &BlockIndex<'_>) -> HirStmt {
+    if uses_goto_fallback(function) {
+        goto_graph_all(index, function.source.lang)
+    } else {
+        dispatch_all(index, function.source.lang)
     }
 }
 
@@ -1160,11 +1258,11 @@ fn is_constant_literal(operand: &str) -> bool {
 
 fn sequence(parts: Vec<HirStmt>) -> HirStmt {
     let mut flat: Vec<HirStmt> = Vec::with_capacity(parts.len());
-    for part in parts {
-        match part {
+    for mut part in parts {
+        match &mut part {
             HirStmt::Empty => {}
-            HirStmt::Seq { body } => flat.extend(body),
-            other => flat.push(other),
+            HirStmt::Seq { body } => flat.extend(std::mem::take(body)),
+            _ => flat.push(part),
         }
     }
     match flat.len() {
@@ -1175,38 +1273,37 @@ fn sequence(parts: Vec<HirStmt>) -> HirStmt {
 }
 
 fn collect_block_starts(stmt: &HirStmt, out: &mut BTreeSet<u64>) {
-    match stmt {
-        HirStmt::Leaf { block_start, .. } => {
-            out.insert(*block_start);
-        }
-        HirStmt::Seq { body } => {
-            for child in body {
-                collect_block_starts(child, out);
+    let mut pending: Vec<&HirStmt> = vec![stmt];
+    while let Some(current) = pending.pop() {
+        match current {
+            HirStmt::Leaf { block_start, .. } => {
+                out.insert(*block_start);
             }
-        }
-        HirStmt::If {
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            collect_block_starts(then_branch, out);
-            collect_block_starts(else_branch, out);
-        }
-        HirStmt::Loop { body, .. } => collect_block_starts(body, out),
-        HirStmt::Dispatch { cases, .. } => {
-            for case in cases {
-                out.insert(case.block_start);
+            HirStmt::Seq { body } => pending.extend(body),
+            HirStmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                pending.push(then_branch);
+                pending.push(else_branch);
             }
-        }
-        HirStmt::GotoGraph { blocks, .. } => {
-            for block in blocks {
-                out.insert(block.block_start);
+            HirStmt::Loop { body, .. } => pending.push(body),
+            HirStmt::Dispatch { cases, .. } => {
+                for case in cases {
+                    out.insert(case.block_start);
+                }
             }
+            HirStmt::GotoGraph { blocks, .. } => {
+                for block in blocks {
+                    out.insert(block.block_start);
+                }
+            }
+            HirStmt::Break { .. }
+            | HirStmt::Continue { .. }
+            | HirStmt::Return { .. }
+            | HirStmt::Empty => {}
         }
-        HirStmt::Break { .. }
-        | HirStmt::Continue { .. }
-        | HirStmt::Return { .. }
-        | HirStmt::Empty => {}
     }
 }
 
@@ -1219,44 +1316,43 @@ fn collect_instruction_addresses(stmt: &HirStmt, out: &mut BTreeSet<u64>) {
 }
 
 fn collect_instructions(stmt: &HirStmt, out: &mut Vec<NirInstr>) {
-    match stmt {
-        HirStmt::Leaf { stmts, .. } => {
-            for leaf in stmts {
-                out.push(leaf.instr.clone());
-            }
-        }
-        HirStmt::Seq { body } => {
-            for child in body {
-                collect_instructions(child, out);
-            }
-        }
-        HirStmt::If {
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            collect_instructions(then_branch, out);
-            collect_instructions(else_branch, out);
-        }
-        HirStmt::Loop { body, .. } => collect_instructions(body, out),
-        HirStmt::Dispatch { cases, .. } => {
-            for case in cases {
-                for leaf in &case.stmts {
+    let mut pending: Vec<&HirStmt> = vec![stmt];
+    while let Some(current) = pending.pop() {
+        match current {
+            HirStmt::Leaf { stmts, .. } => {
+                for leaf in stmts {
                     out.push(leaf.instr.clone());
                 }
             }
-        }
-        HirStmt::GotoGraph { blocks, .. } => {
-            for block in blocks {
-                for leaf in &block.stmts {
-                    out.push(leaf.instr.clone());
+            HirStmt::Seq { body } => pending.extend(body),
+            HirStmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                pending.push(then_branch);
+                pending.push(else_branch);
+            }
+            HirStmt::Loop { body, .. } => pending.push(body),
+            HirStmt::Dispatch { cases, .. } => {
+                for case in cases {
+                    for leaf in &case.stmts {
+                        out.push(leaf.instr.clone());
+                    }
                 }
             }
+            HirStmt::GotoGraph { blocks, .. } => {
+                for block in blocks {
+                    for leaf in &block.stmts {
+                        out.push(leaf.instr.clone());
+                    }
+                }
+            }
+            HirStmt::Break { .. }
+            | HirStmt::Continue { .. }
+            | HirStmt::Return { .. }
+            | HirStmt::Empty => {}
         }
-        HirStmt::Break { .. }
-        | HirStmt::Continue { .. }
-        | HirStmt::Return { .. }
-        | HirStmt::Empty => {}
     }
 }
 
@@ -1529,7 +1625,7 @@ mod tests {
         assert!(matches!(
             lowered,
             HirInstrStmt::Effect {
-                expr: HirExpr::Unknown { text }
+                expr: HirExpr::Unknown { ref text }
             } if text == "legacy_nop"
         ));
     }
@@ -1584,5 +1680,85 @@ mod tests {
             BTreeSet::from([0, 2, 4, 6]),
             "no instruction may be dropped by the degradation path"
         );
+    }
+
+    fn branch_chain(depth: usize) -> NirFunction {
+        let mut instructions: Vec<NirInstr> = Vec::with_capacity(depth + 1);
+        for index in 0..depth {
+            let address: u64 = u64::try_from(index).expect("chain address");
+            let target: u64 = address + 1;
+            let target_text: String = target.to_string();
+            instructions.push(instr(
+                address,
+                NirOp::Branch {
+                    target: Some(target),
+                },
+                "jmp",
+                &[&target_text],
+            ));
+        }
+        let end: u64 = u64::try_from(depth).expect("chain end");
+        instructions.push(instr(end, NirOp::Return, "ret", &[]));
+        function(instructions, end + 1)
+    }
+
+    #[test]
+    fn region_past_bound_uses_complete_graph_fallback() {
+        let input: NirFunction = branch_chain(MAX_REGION_DEPTH);
+        let expected: BTreeSet<u64> = input
+            .instructions
+            .iter()
+            .map(|instruction: &NirInstr| instruction.address)
+            .collect();
+        let hir: HirFunction = structurize_function(&input);
+        assert!(!hir.structured);
+        assert!(matches!(hir.body, HirStmt::GotoGraph { entry: 0, .. }));
+        assert_eq!(hir.instruction_addresses(), expected);
+    }
+
+    #[test]
+    fn maximum_bounded_region_builds_successfully() {
+        let input: NirFunction = branch_chain(MAX_REGION_DEPTH - 1);
+        let hir: HirFunction = structurize_function(&input);
+        assert!(hir.structured);
+        assert_eq!(hir.instruction_addresses().len(), 128);
+    }
+
+    #[test]
+    fn deep_hir_expression_drop_does_not_use_tree_depth_as_call_depth() {
+        let handle: std::thread::JoinHandle<()> = std::thread::Builder::new()
+            .stack_size(1_048_576)
+            .spawn(|| {
+                let mut expression: HirExpr = HirExpr::Const {
+                    text: "1".to_owned(),
+                };
+                for _index in 0..100_000 {
+                    expression = HirExpr::Unary {
+                        op: BinaryOp::Neg,
+                        operand: Box::new(expression),
+                    };
+                }
+                std::hint::black_box(&expression);
+            })
+            .expect("spawn hir expression drop thread");
+        handle.join().expect("hir expression drop thread");
+    }
+
+    #[test]
+    fn deep_hir_region_drop_does_not_use_tree_depth_as_call_depth() {
+        let handle: std::thread::JoinHandle<()> = std::thread::Builder::new()
+            .stack_size(1_048_576)
+            .spawn(|| {
+                let mut statement: HirStmt = HirStmt::Empty;
+                for index in 0..100_000 {
+                    statement = HirStmt::Loop {
+                        label: u64::try_from(index).expect("loop label"),
+                        body: Box::new(statement),
+                    };
+                }
+                std::hint::black_box(&statement);
+            })
+            .expect("spawn hir region drop thread");
+        handle.join().expect("hir region drop thread");
     }
 }
