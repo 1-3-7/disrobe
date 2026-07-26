@@ -51,6 +51,7 @@ pub(super) struct LiftError;
 type LiftResult<T> = std::result::Result<T, LiftError>;
 
 const MAX_LIFT_DEPTH: usize = 64;
+const MAX_STORE_TARGET_NESTING: usize = 64;
 
 struct Lifter<'a> {
     code: &'a [Instruction],
@@ -63,6 +64,12 @@ struct Lifter<'a> {
 struct LoopContext {
     header: usize,
     exit: usize,
+}
+
+struct StoreTargetFrame {
+    elements: Vec<AssignTarget>,
+    remaining: usize,
+    cursor: usize,
 }
 
 pub(super) fn lift_function(doc: &AbyssDoc, func: &AbyssFunction) -> LiftResult<Vec<PyStmt>> {
@@ -302,8 +309,8 @@ impl Lifter<'_> {
     ) -> LiftResult<usize> {
         let for_inst: &Instruction = self.code.get(for_iter_ip).ok_or(LiftError)?;
         let exit: usize = jump_arg(for_inst).ok_or(LiftError)?;
-        let target: AssignTarget = self.read_store_target(for_iter_ip + 1)?;
-        let store_len: usize = self.store_len(for_iter_ip + 1)?;
+        let target_ip: usize = for_iter_ip.checked_add(1).ok_or(LiftError)?;
+        let (target, store_len): (AssignTarget, usize) = self.parse_store_target(target_ip)?;
         let body_start: usize = for_iter_ip + 1 + store_len;
         let back_jump: usize = exit.saturating_sub(1);
         let jump_inst: &Instruction = self.code.get(back_jump).ok_or(LiftError)?;
@@ -346,8 +353,8 @@ impl Lifter<'_> {
             return Err(LiftError);
         }
         let exit: usize = jump_arg(for_inst).ok_or(LiftError)?;
-        let target: AssignTarget = self.read_store_target(for_iter_ip + 1)?;
-        let store_len: usize = self.store_len(for_iter_ip + 1)?;
+        let target_ip: usize = for_iter_ip.checked_add(1).ok_or(LiftError)?;
+        let (target, store_len): (AssignTarget, usize) = self.parse_store_target(target_ip)?;
         let mut cursor: usize = for_iter_ip + 1 + store_len;
         let mut conditions: Vec<PyExpr> = Vec::new();
         let mut cond_stack: Vec<PyExpr> = Vec::new();
@@ -401,8 +408,9 @@ impl Lifter<'_> {
             return Err(LiftError);
         }
         let comp: PyExpr = PyExpr::ListComp(Box::new(elt), target, Box::new(iter_expr), conditions);
-        let assign_target: AssignTarget = self.read_store_target(exit + 1)?;
-        let store_len_final: usize = self.store_len(exit + 1)?;
+        let target_ip: usize = exit.checked_add(1).ok_or(LiftError)?;
+        let (assign_target, store_len_final): (AssignTarget, usize) =
+            self.parse_store_target(target_ip)?;
         stmts.push(PyStmt::Assign(vec![assign_target], comp));
         Ok(exit + 1 + store_len_final)
     }
@@ -413,8 +421,7 @@ impl Lifter<'_> {
         stack: &mut Vec<PyExpr>,
         stmts: &mut Vec<PyStmt>,
     ) -> LiftResult<usize> {
-        let target: AssignTarget = self.read_store_target(ip)?;
-        let store_len: usize = self.store_len(ip)?;
+        let (target, store_len): (AssignTarget, usize) = self.parse_store_target(ip)?;
         let value: PyExpr = stack.pop().ok_or(LiftError)?;
         if !stack.is_empty() {
             return Err(LiftError);
@@ -423,46 +430,56 @@ impl Lifter<'_> {
         Ok(ip + store_len)
     }
 
-    fn read_store_target(&self, ip: usize) -> LiftResult<AssignTarget> {
-        let inst: &Instruction = self.code.get(ip).ok_or(LiftError)?;
-        match inst.op {
-            Op::Store => Ok(AssignTarget::Name(arg_str(inst, 0)?)),
-            Op::Unpack => {
-                let count: usize = arg_usize(inst, 0)?;
-                if count > self.code.len().saturating_sub(ip + 1) {
-                    return Err(LiftError);
+    fn parse_store_target(&self, ip: usize) -> LiftResult<(AssignTarget, usize)> {
+        let mut frames: Vec<StoreTargetFrame> = Vec::new();
+        let mut cursor: usize = ip;
+        loop {
+            let inst: &Instruction = self.code.get(cursor).ok_or(LiftError)?;
+            let mut target: AssignTarget = match inst.op {
+                Op::Store => {
+                    cursor = cursor.checked_add(1).ok_or(LiftError)?;
+                    AssignTarget::Name(arg_str(inst, 0)?)
                 }
-                let mut elts: Vec<AssignTarget> = Vec::with_capacity(count);
-                let mut cursor: usize = ip + 1;
-                for _ in 0..count {
-                    elts.push(self.read_store_target(cursor)?);
-                    cursor += self.store_len(cursor)?;
+                Op::Unpack => {
+                    let count: usize = arg_usize(inst, 0)?;
+                    let next_ip: usize = cursor.checked_add(1).ok_or(LiftError)?;
+                    if count > self.code.len().saturating_sub(next_ip) {
+                        return Err(LiftError);
+                    }
+                    if count == 0 {
+                        cursor = next_ip;
+                        AssignTarget::Tuple(Vec::new())
+                    } else {
+                        if frames.len() >= MAX_STORE_TARGET_NESTING {
+                            return Err(LiftError);
+                        }
+                        frames.push(StoreTargetFrame {
+                            elements: Vec::with_capacity(count),
+                            remaining: count,
+                            cursor: next_ip,
+                        });
+                        cursor = next_ip;
+                        continue;
+                    }
                 }
-                Ok(AssignTarget::Tuple(elts))
+                _ => return Err(LiftError),
+            };
+            loop {
+                let Some(frame): Option<&mut StoreTargetFrame> = frames.last_mut() else {
+                    let length: usize = cursor.checked_sub(ip).ok_or(LiftError)?;
+                    return Ok((target, length));
+                };
+                frame.elements.push(target);
+                frame.remaining = frame.remaining.checked_sub(1).ok_or(LiftError)?;
+                frame.cursor = cursor;
+                if frame.remaining > 0 {
+                    cursor = frame.cursor;
+                    break;
+                }
+                let completed: StoreTargetFrame = frames.pop().ok_or(LiftError)?;
+                target = AssignTarget::Tuple(completed.elements);
+                cursor = completed.cursor;
             }
-            _ => Err(LiftError),
-        }
-    }
-
-    fn store_len(&self, ip: usize) -> LiftResult<usize> {
-        let inst: &Instruction = self.code.get(ip).ok_or(LiftError)?;
-        match inst.op {
-            Op::Store => Ok(1),
-            Op::Unpack => {
-                let count: usize = arg_usize(inst, 0)?;
-                if count > self.code.len().saturating_sub(ip + 1) {
-                    return Err(LiftError);
-                }
-                let mut total: usize = 1;
-                let mut cursor: usize = ip + 1;
-                for _ in 0..count {
-                    let len: usize = self.store_len(cursor)?;
-                    cursor += len;
-                    total += len;
-                }
-                Ok(total)
-            }
-            _ => Err(LiftError),
         }
     }
 
@@ -813,8 +830,8 @@ mod tests {
     use serde_json::Value as Json;
 
     use super::{
-        AbyssDoc, AbyssFunction, AssignTarget, Instruction, LiftResult, Lifter, Op, PyStmt,
-        lift_function,
+        AbyssDoc, AbyssFunction, AssignTarget, Instruction, LiftError, LiftResult, Lifter, Op,
+        PyStmt, lift_function,
     };
 
     const HUGE: u64 = 4_000_000_000;
@@ -912,8 +929,8 @@ mod tests {
             loop_stack: Vec::new(),
             depth: 0,
         };
-        assert!(lifter.read_store_target(0).is_err());
-        assert!(lifter.store_len(0).is_err());
+        let parsed: LiftResult<(AssignTarget, usize)> = lifter.parse_store_target(0);
+        assert!(matches!(parsed, Err(LiftError)));
     }
 
     #[test]
@@ -930,11 +947,70 @@ mod tests {
             loop_stack: Vec::new(),
             depth: 0,
         };
+        let parsed: LiftResult<(AssignTarget, usize)> = lifter.parse_store_target(0);
+        assert!(matches!(parsed, Ok((AssignTarget::Tuple(_), 3))));
+    }
+
+    fn singly_nested_unpack_code(levels: usize) -> Vec<Instruction> {
+        let mut code: Vec<Instruction> = Vec::with_capacity(levels.saturating_add(1));
+        for _ in 0..levels {
+            code.push(inst(Op::Unpack, vec![Json::from(1_u64)]));
+        }
+        code.push(inst(Op::Store, vec![Json::from("value")]));
+        code
+    }
+
+    #[test]
+    fn nesting_at_the_store_target_bound_is_accepted() {
+        let levels: usize = super::MAX_STORE_TARGET_NESTING;
+        let code: Vec<Instruction> = singly_nested_unpack_code(levels);
+        let func: AbyssFunction = empty_func();
+        let lifter: Lifter<'_> = Lifter {
+            code: &code,
+            func: &func,
+            loop_stack: Vec::new(),
+            depth: 0,
+        };
+        let parsed: LiftResult<(AssignTarget, usize)> = lifter.parse_store_target(0);
         assert!(matches!(
-            lifter.read_store_target(0),
-            Ok(AssignTarget::Tuple(_))
+            parsed,
+            Ok((AssignTarget::Tuple(_), actual)) if actual == levels + 1
         ));
-        assert_eq!(lifter.store_len(0).expect("unpack length"), 3);
+    }
+
+    #[test]
+    fn nesting_past_the_store_target_bound_is_rejected_without_exhausting_the_stack() {
+        let levels: usize = 200_000;
+        let code: Vec<Instruction> = singly_nested_unpack_code(levels);
+        let func: AbyssFunction = empty_func();
+        let lifter: Lifter<'_> = Lifter {
+            code: &code,
+            func: &func,
+            loop_stack: Vec::new(),
+            depth: 0,
+        };
+        let parsed: LiftResult<(AssignTarget, usize)> = lifter.parse_store_target(0);
+        assert!(
+            matches!(parsed, Err(LiftError)),
+            "a target nested past the bound must be refused before a tuple deep enough to overflow the stack on drop is built"
+        );
+    }
+
+    #[test]
+    fn truncated_nested_unpack_target_returns_lift_error() {
+        let code: Vec<Instruction> = vec![
+            inst(Op::Unpack, vec![Json::from(1_u64)]),
+            inst(Op::Unpack, vec![Json::from(1_u64)]),
+        ];
+        let func: AbyssFunction = empty_func();
+        let lifter: Lifter<'_> = Lifter {
+            code: &code,
+            func: &func,
+            loop_stack: Vec::new(),
+            depth: 0,
+        };
+        let parsed: LiftResult<(AssignTarget, usize)> = lifter.parse_store_target(0);
+        assert!(matches!(parsed, Err(LiftError)));
     }
 
     #[test]
