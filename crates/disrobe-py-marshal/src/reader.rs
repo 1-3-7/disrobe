@@ -12,6 +12,8 @@ const MAX_DEPTH: usize = 256;
 const MAX_LONG_DIGITS: u32 = 1 << 24;
 const MAX_LEN: u32 = 1 << 28;
 const MAX_REFS: usize = 1 << 20;
+const MAX_INTERNED_STRINGS: usize = 1 << 16;
+const MAX_TRACE_ENTRIES: usize = 1 << 16;
 const MAX_DICT_ENTRIES: usize = 1 << 20;
 const MAX_COLLECTION_ITEMS: usize = 1 << 20;
 const MAX_OBJECT_PREALLOC: usize = 1024;
@@ -360,7 +362,7 @@ impl<'a> Reader<'a> {
         } else {
             None
         };
-        let entry_slot: Option<usize> = self.open_trace(ref_idx, start, depth, tag);
+        let entry_slot: Option<usize> = self.open_trace(ref_idx, start, depth, tag)?;
         let mut ref_preview_override: Option<u32> = None;
         let obj: Object = self.decode_tag(tag, depth, &mut ref_preview_override)?;
         if let Some(idx) = ref_idx {
@@ -377,8 +379,15 @@ impl<'a> Reader<'a> {
         start: usize,
         depth: usize,
         tag: u8,
-    ) -> Option<usize> {
-        let dump: &mut RefTableDump = self.dump.as_mut()?;
+    ) -> Result<Option<usize>> {
+        let Some(dump): Option<&mut RefTableDump> = self.dump.as_mut() else {
+            return Ok(None);
+        };
+        if dump.entries.len() >= MAX_TRACE_ENTRIES {
+            return Err(Error::LengthOverflow(u32_saturating_from_usize(
+                MAX_TRACE_ENTRIES,
+            )));
+        }
         dump.entries.push(RefEntry {
             index: ref_idx.map_or(u32::MAX, |index: u32| index),
             byte_offset: start,
@@ -388,7 +397,7 @@ impl<'a> Reader<'a> {
             kind: RefKind::from_tag(tag),
             preview: String::new(),
         });
-        Some(dump.entries.len() - 1)
+        Ok(Some(dump.entries.len() - 1))
     }
 
     fn close_trace(
@@ -553,7 +562,7 @@ impl<'a> Reader<'a> {
         let value: String = String::from_utf8_lossy(bytes).into_owned();
         let interned: bool = matches!(tag, b't' | b'A');
         if interned {
-            self.interned_strings.push(value.clone());
+            self.push_interned_string(value.clone())?;
         }
         let is_unicode: bool = tag == b'u' || (tag == b't' && self.version.major >= 3);
         if is_unicode {
@@ -568,7 +577,7 @@ impl<'a> Reader<'a> {
         let value: String = String::from_utf8_lossy(bytes).into_owned();
         let interned: bool = tag == b'Z';
         if interned {
-            self.interned_strings.push(value.clone());
+            self.push_interned_string(value.clone())?;
         }
         Ok(Object::ShortAscii { value, interned })
     }
@@ -615,11 +624,22 @@ impl<'a> Reader<'a> {
         Ok(v)
     }
 
+    fn push_interned_string(&mut self, value: String) -> Result<()> {
+        if self.interned_strings.len() >= MAX_INTERNED_STRINGS {
+            return Err(Error::LengthOverflow(u32_saturating_from_usize(
+                MAX_INTERNED_STRINGS,
+            )));
+        }
+        self.interned_strings.push(value);
+        Ok(())
+    }
+
     fn read_dict(&mut self, depth: usize) -> Result<IndexMap<Object, Object>> {
         let mut map: IndexMap<Object, Object> = IndexMap::new();
+        let mut entry_count: usize = 0;
         loop {
-            if map.len() >= MAX_DICT_ENTRIES {
-                let truncated: u32 = u32_saturating_from_usize(map.len());
+            if entry_count >= MAX_DICT_ENTRIES {
+                let truncated: u32 = u32_saturating_from_usize(entry_count);
                 return Err(Error::LengthOverflow(truncated));
             }
             let key: Object = self.read_object(depth)?;
@@ -628,6 +648,7 @@ impl<'a> Reader<'a> {
             }
             let val: Object = self.read_object(depth)?;
             map.insert(key, val);
+            entry_count = entry_count.saturating_add(1);
         }
         Ok(map)
     }
@@ -900,12 +921,13 @@ fn preview_str(s: &str) -> String {
 }
 
 fn code_preview(co: &CodeObject) -> String {
-    let name: String = match &co.name {
-        Object::ShortAscii { value, .. } | Object::String { value, .. } => value.clone(),
-        _ => String::from("<anon>"),
+    let name: &str = match &co.name {
+        Object::ShortAscii { value, .. } | Object::String { value, .. } => value,
+        _ => "<anon>",
     };
     format!(
-        "name={name} consts={} names={} code={}b",
+        "name={} consts={} names={} code={}b",
+        preview_str(name),
         co.consts.len(),
         co.names.len(),
         co.code.len()
@@ -979,6 +1001,63 @@ mod tests {
         data.push(b'N');
         let err: Error = load(&data, PyVersion::PY312).unwrap_err();
         assert!(matches!(err, Error::LengthOverflow(_)));
+    }
+
+    #[test]
+    fn interned_string_table_rejects_more_than_the_reference_limit() {
+        let count: usize = MAX_INTERNED_STRINGS.saturating_add(1);
+        let mut data: Vec<u8> = Vec::with_capacity(count.saturating_add(5));
+        data.push(b'(');
+        data.extend((count as u32).to_le_bytes());
+        for _ in 0..count {
+            data.push(b't');
+            data.extend(0u32.to_le_bytes());
+        }
+
+        let err: Error = load(&data, PyVersion::PY312).unwrap_err();
+
+        assert!(
+            matches!(err, Error::LengthOverflow(limit) if limit == MAX_INTERNED_STRINGS as u32)
+        );
+    }
+
+    #[test]
+    fn ref_table_trace_rejects_more_entries_than_the_reference_limit() {
+        let mut data: Vec<u8> = Vec::with_capacity(MAX_TRACE_ENTRIES.saturating_add(5));
+        data.push(b'(');
+        data.extend((MAX_TRACE_ENTRIES as u32).to_le_bytes());
+        data.extend(core::iter::repeat_n(b'N', MAX_TRACE_ENTRIES));
+
+        let err: Error = load_with_reftable(&data, PyVersion::PY312).unwrap_err();
+
+        assert!(matches!(err, Error::LengthOverflow(limit) if limit == MAX_TRACE_ENTRIES as u32));
+    }
+
+    #[test]
+    fn dict_rejects_repeated_keys_after_the_entry_limit() {
+        let mut data: Vec<u8> = Vec::with_capacity(MAX_DICT_ENTRIES.saturating_mul(4));
+        data.push(b'{');
+        for _ in 0..MAX_DICT_ENTRIES {
+            data.extend([b'z', 1, b'k', b'N']);
+        }
+        data.extend([b'z', 1, b'k', b'N', b'0']);
+
+        let err: Error = load(&data, PyVersion::PY312).unwrap_err();
+
+        assert!(matches!(err, Error::LengthOverflow(limit) if limit == MAX_DICT_ENTRIES as u32));
+    }
+
+    #[test]
+    fn code_preview_truncates_the_code_name() {
+        let mut code: CodeObject = CodeObject::new(CodeEra::Py311Plus);
+        code.name = Object::ShortAscii {
+            value: "a".repeat(64),
+            interned: false,
+        };
+
+        let preview: String = code_preview(&code);
+
+        assert!(preview.starts_with("name=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa..."));
     }
 
     #[test]
