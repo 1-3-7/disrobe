@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_pyarmor::{
     BccArch, BccBlob, BccLinkOutput, FunctionRecord, LinkConfidence, NameStatus, UnpackOptions,
     link_bcc_from_unpack, link_bcc_module, unpack_wrapper_text_with_options,
@@ -100,14 +101,14 @@ print(json.dumps(out))
 ";
 
 fn authored_facts(py: &str, authored: &Path) -> Vec<AuthoredFact> {
-    let script: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_bcc_truth_{}_{}.py",
-        std::process::id(),
-        authored.file_stem().and_then(|s| s.to_str()).unwrap_or("x")
-    ));
-    std::fs::write(&script, GROUND_TRUTH_SCRIPT).expect("write ground-truth script");
+    let (guard, mut handle): (ScratchFile, std::fs::File) =
+        ScratchFile::create("pyarmor-bcc-ground-truth", "py").expect("scratch script");
+    std::io::Write::write_all(&mut handle, GROUND_TRUTH_SCRIPT.as_bytes())
+        .expect("write ground-truth script");
+    std::io::Write::flush(&mut handle).expect("flush ground-truth script");
+    drop(handle);
     let output: std::process::Output = Command::new(py)
-        .arg(&script)
+        .arg(guard.path())
         .arg(authored)
         .output()
         .expect("run ground-truth compiler");
@@ -116,7 +117,6 @@ fn authored_facts(py: &str, authored: &Path) -> Vec<AuthoredFact> {
         "ground-truth compile failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let _: std::io::Result<()> = std::fs::remove_file(&script);
     let value: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("parse ground-truth json");
     let array: &Vec<serde_json::Value> = value.as_array().expect("ground truth is an array");

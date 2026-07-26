@@ -6,10 +6,10 @@
     clippy::print_stderr
 )]
 
-use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_py_decompile::engine::{NativeDecompile, decompile_pyc};
 use disrobe_pass_py_decompile::roundtrip::{Verdict, semantic_equiv};
 use disrobe_py_marshal::{
@@ -104,8 +104,9 @@ fn tstring_leading_literal_controlflow_3_14() {
         eprintln!("skip tstring_leading_literal_controlflow_3_14: no 3.14 interpreter");
         return;
     };
-    let tmp: PathBuf = env::temp_dir().join("disrobe_tstr_lead_cf");
-    std::fs::create_dir_all(&tmp).expect("mk tmp");
+    let scratch: ScratchDir =
+        ScratchDir::create("py-decompile-tstring-leading-literal").expect("scratch");
+    let tmp: &Path = scratch.path();
 
     for (label, src) in LEADING_LITERAL_CF_CASES {
         let py: PathBuf = tmp.join(format!("{label}.py"));

@@ -6,11 +6,9 @@
 )]
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 
+use disrobe_core::scratch::{ScratchDir, scratch_root};
 use disrobe_pass_pyarmor::{UnpackOptions, UnpackOutput, unpack_wrapper_text_with_options};
-
-static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn workspace_root() -> PathBuf {
     let mut dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -27,15 +25,8 @@ fn sample_dir(rel: &str) -> Option<PathBuf> {
     dir.join("known_plaintext.py").is_file().then_some(dir)
 }
 
-fn make_tmp(name: &str) -> PathBuf {
-    let seq: u64 = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-pyarmor-cpyexec-{name}-{}-{seq}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    dir
+fn make_scratch(name: &str) -> ScratchDir {
+    ScratchDir::create(&format!("pyarmor-cpyexec-{name}")).expect("scratch dir")
 }
 
 fn python_for_minor(minor: u8) -> Option<String> {
@@ -143,7 +134,8 @@ fn run_cpython_oracle(rel: &str) {
         return;
     };
 
-    let tmp: PathBuf = make_tmp(rel.replace(['/', '\\'], "_").as_str());
+    let scratch: ScratchDir = make_scratch(rel.replace(['/', '\\'], "_").as_str());
+    let tmp: &Path = scratch.path();
     let pyc_path: PathBuf = tmp.join("recovered.pyc");
     let probe_path: PathBuf = tmp.join("probe.py");
     std::fs::write(&pyc_path, &pyc).expect("write pyc");
@@ -164,7 +156,6 @@ fn run_cpython_oracle(rel: &str) {
 
     let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&output.stdout);
     let stderr: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&output.stderr);
-    let _ = std::fs::remove_dir_all(&tmp);
 
     assert!(
         output.status.success(),
@@ -226,13 +217,12 @@ fn magic_is_real_cpython_pyc_header() {
     );
 }
 
-fn assert_probe_dir_is_tmp(p: &Path) {
-    assert!(p.starts_with(std::env::temp_dir()));
-}
-
 #[test]
-fn tmp_dirs_live_under_system_temp() {
-    let d: PathBuf = make_tmp("selfcheck");
-    assert_probe_dir_is_tmp(&d);
-    let _ = std::fs::remove_dir_all(&d);
+fn probe_directories_live_under_the_namespaced_scratch_root() {
+    let scratch: ScratchDir = make_scratch("selfcheck");
+    assert!(
+        scratch.path().starts_with(scratch_root()),
+        "a probe directory must sit under the namespaced scratch root, not loose in the temp root: {}",
+        scratch.path().display()
+    );
 }

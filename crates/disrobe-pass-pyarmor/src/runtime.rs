@@ -146,10 +146,12 @@ mod tests {
     use super::*;
     use std::fs;
 
+    use disrobe_core::scratch::ScratchDir;
+
     #[test]
     fn locate_v8v9_runtime_layout() {
-        let tmp: PathBuf = std::env::temp_dir().join("disrobe-test-runtime-v8");
-        let _ = fs::remove_dir_all(&tmp);
+        let scratch: ScratchDir = ScratchDir::create("pyarmor-runtime-v8").expect("scratch");
+        let tmp: &Path = scratch.path();
         let runtime_dir: PathBuf = tmp.join("pyarmor_runtime_000000");
         fs::create_dir_all(&runtime_dir).expect("mkdir");
         let lib: PathBuf = runtime_dir.join("pyarmor_runtime.pyd");
@@ -159,14 +161,12 @@ mod tests {
 
         let loc: RuntimeLocation = locate_runtime(&wrapper, Some("000000")).expect("locate");
         assert_eq!(loc.path, lib);
-
-        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn locate_v6v7_pytransform_layout() {
-        let tmp: PathBuf = std::env::temp_dir().join("disrobe-test-runtime-v6");
-        let _ = fs::remove_dir_all(&tmp);
+        let scratch: ScratchDir = ScratchDir::create("pyarmor-runtime-v6").expect("scratch");
+        let tmp: &Path = scratch.path();
         let runtime_dir: PathBuf = tmp.join("pytransform");
         fs::create_dir_all(&runtime_dir).expect("mkdir");
         let lib: PathBuf = runtime_dir.join("_pytransform.dll");
@@ -176,27 +176,23 @@ mod tests {
 
         let loc: RuntimeLocation = locate_runtime(&wrapper, None).expect("locate");
         assert_eq!(loc.path, lib);
-
-        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn numbered_runtime_scan_caps_entries() {
-        let tmp: PathBuf = std::env::temp_dir().join("disrobe-test-runtime-cap");
-        let _ = fs::remove_dir_all(&tmp);
-        fs::create_dir_all(&tmp).expect("mkdir");
+        let scratch: ScratchDir = ScratchDir::create("pyarmor-runtime-cap").expect("scratch");
+        let tmp: &Path = scratch.path();
         fs::write(tmp.join("a"), b"a").expect("write marker");
         fs::write(tmp.join("b"), b"b").expect("write marker");
         let mut searched: Vec<String> = Vec::new();
-        let err: Error = locate_numbered_runtime_dir(&tmp, &mut searched, 1).unwrap_err();
+        let err: Error = locate_numbered_runtime_dir(tmp, &mut searched, 1).unwrap_err();
         assert!(matches!(err, Error::Io(_)));
-        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn locate_prefixed_runtime_layout() {
-        let tmp: PathBuf = std::env::temp_dir().join("disrobe-test-runtime-prefixed");
-        let _ = fs::remove_dir_all(&tmp);
+        let scratch: ScratchDir = ScratchDir::create("pyarmor-runtime-prefixed").expect("scratch");
+        let tmp: &Path = scratch.path();
         let runtime_dir: PathBuf = tmp.join("paypal_runtime").join("pyarmor_runtime_000000");
         fs::create_dir_all(&runtime_dir).expect("mkdir");
         let lib: PathBuf = runtime_dir.join("pyarmor_runtime.pyd");
@@ -207,14 +203,13 @@ mod tests {
         let loc: RuntimeLocation = locate_runtime(&wrapper, Some("000000"))
             .expect("a --prefix-nested runtime package must resolve");
         assert_eq!(loc.path, lib);
-
-        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn locate_prefixed_runtime_layout_wrong_serial_falls_through_to_not_found() {
-        let tmp: PathBuf = std::env::temp_dir().join("disrobe-test-runtime-prefixed-wrong-serial");
-        let _ = fs::remove_dir_all(&tmp);
+        let scratch: ScratchDir =
+            ScratchDir::create("pyarmor-runtime-wrong-serial").expect("scratch");
+        let tmp: &Path = scratch.path();
         let runtime_dir: PathBuf = tmp.join("paypal_runtime").join("pyarmor_runtime_000000");
         fs::create_dir_all(&runtime_dir).expect("mkdir");
         fs::write(runtime_dir.join("pyarmor_runtime.pyd"), b"FAKE PE").expect("write lib");
@@ -223,20 +218,17 @@ mod tests {
 
         let err: Error = locate_runtime(&wrapper, Some("999999")).unwrap_err();
         assert!(matches!(err, Error::RuntimeNotFound { .. }));
-
-        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn locate_prefixed_runtime_dir_caps_entries() {
-        let tmp: PathBuf = std::env::temp_dir().join("disrobe-test-runtime-prefixed-cap");
-        let _ = fs::remove_dir_all(&tmp);
-        fs::create_dir_all(&tmp).expect("mkdir");
+        let scratch: ScratchDir =
+            ScratchDir::create("pyarmor-runtime-prefixed-cap").expect("scratch");
+        let tmp: &Path = scratch.path();
         fs::create_dir_all(tmp.join("a")).expect("mkdir a");
         fs::create_dir_all(tmp.join("b")).expect("mkdir b");
         let mut searched: Vec<String> = Vec::new();
-        let err: Error = locate_prefixed_runtime_dir(&tmp, "000000", &mut searched, 1).unwrap_err();
+        let err: Error = locate_prefixed_runtime_dir(tmp, "000000", &mut searched, 1).unwrap_err();
         assert!(matches!(err, Error::Io(_)));
-        let _ = fs::remove_dir_all(&tmp);
     }
 }

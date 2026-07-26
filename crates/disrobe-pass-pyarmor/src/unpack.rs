@@ -688,6 +688,7 @@ fn is_runtime_module(co_filename: &str) -> bool {
         || lower.contains("\\disrobe_")
         || lower.contains("/disrobe_")
         || lower.contains(".disrobe_v6v7_helper")
+        || lower.contains("v6v7_dynamic_hook")
         || lower.contains("\\runpy.py")
         || lower.contains("/runpy.py")
 }
@@ -1051,6 +1052,10 @@ mod tests {
         assert!(is_runtime_module("/home/u/pytransform/__init__.py"));
         assert!(is_runtime_module("/lib/python3.9/runpy.py"));
         assert!(is_runtime_module("C:/Users/-/disrobe_v6v7_helper.py"));
+        assert!(is_runtime_module(&format!(
+            "{}/v6v7_dynamic_hook-4321-0123456789abcdef.py",
+            disrobe_core::scratch::scratch_root().display()
+        )));
         assert!(!is_runtime_module("/home/u/myapp/main.py"));
         assert!(!is_runtime_module("<frozen hello>"));
     }
@@ -1065,15 +1070,9 @@ mod tests {
 
     #[test]
     fn classify_candidates_scores_cextract_highest() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static N: AtomicU64 = AtomicU64::new(0);
-        let seq: u64 = N.fetch_add(1, Ordering::Relaxed);
-        let dir: PathBuf = std::env::temp_dir().join(format!(
-            "disrobe_unpack_score_{}_{}",
-            std::process::id(),
-            seq
-        ));
-        let _: std::io::Result<()> = std::fs::create_dir_all(&dir);
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("pyarmor-unpack-score").expect("scratch");
+        let dir: &Path = scratch.path();
 
         let placeholder_body: [u8; 16] = [0u8; 16];
         let names: [&str; 3] = ["trace.pyc", "cextract.pyc", "pytrace.pyc"];
@@ -1120,7 +1119,7 @@ mod tests {
             ),
         ];
         let py_version: PyVersion = PyVersion::new(3, 11);
-        let candidates: Vec<UserCodeCandidate> = classify_candidates(&dir, &entries, py_version);
+        let candidates: Vec<UserCodeCandidate> = classify_candidates(dir, &entries, py_version);
         let cext_score: u32 = candidates
             .iter()
             .find(|c| matches!(c.source, CaptureSource::Cextract))
@@ -1141,6 +1140,5 @@ mod tests {
             pyt_score > trace_score,
             "pytrace {pyt_score} should beat trace {trace_score}"
         );
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&dir);
     }
 }

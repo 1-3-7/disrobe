@@ -151,34 +151,29 @@ pub use v8v9::{BccArch, BccBlob};
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
-    static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+    use disrobe_core::scratch::ScratchFile;
 
-    fn temp_file(name: &str) -> std::path::PathBuf {
-        let seq: u64 = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "disrobe_pyarmor_{name}_{}_{}",
-            std::process::id(),
-            seq
-        ))
+    fn scratch_holding(body: &[u8]) -> (ScratchFile, std::path::PathBuf) {
+        let (guard, mut handle): (ScratchFile, std::fs::File) =
+            ScratchFile::create("pyarmor-bounded-read", "bin").expect("scratch file");
+        std::io::Write::write_all(&mut handle, body).expect("write scratch file");
+        std::io::Write::flush(&mut handle).expect("flush scratch file");
+        let path: std::path::PathBuf = guard.path().to_path_buf();
+        (guard, path)
     }
 
     #[test]
     fn bounded_file_read_accepts_file_within_cap() {
-        let path: std::path::PathBuf = temp_file("within_cap");
-        std::fs::write(&path, b"abcd").expect("write temp file");
+        let (_guard, path): (ScratchFile, std::path::PathBuf) = scratch_holding(b"abcd");
         let bytes: Vec<u8> = read_file_bounded(&path, 4).expect("read under cap");
         assert_eq!(bytes, b"abcd");
-        std::fs::remove_file(&path).expect("remove temp file");
     }
 
     #[test]
     fn bounded_file_read_rejects_file_over_cap() {
-        let path: std::path::PathBuf = temp_file("over_cap");
-        std::fs::write(&path, b"abcd").expect("write temp file");
+        let (_guard, path): (ScratchFile, std::path::PathBuf) = scratch_holding(b"abcd");
         let err: Error = read_file_bounded(&path, 3).unwrap_err();
         assert!(matches!(err, Error::Io(_)));
-        std::fs::remove_file(&path).expect("remove temp file");
     }
 }

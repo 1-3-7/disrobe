@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_pyarmor::{
     BccArch, MapCallResolver, PyAbi, RecoverOptions, RecoveredBody, UnpackOptions,
     link_bcc_from_unpack, recover_from_code, unpack_wrapper_text_with_options,
@@ -41,11 +42,8 @@ fn python() -> Option<String> {
     None
 }
 
-fn scratch_dir() -> PathBuf {
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-bcc-recover-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+fn scratch_dir() -> ScratchDir {
+    ScratchDir::create("pyarmor-bcc-recover").expect("scratch dir")
 }
 
 const fn host_abi() -> PyAbi {
@@ -254,10 +252,11 @@ fn recovered_python_matches_ground_truth_over_fuzzed_inputs() {
         eprintln!("skipping: no python interpreter on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: &Path = scratch.path();
     let mut recovered_count: usize = 0;
     for case in BATTERY {
-        let object_bytes: Vec<u8> = compile_object(&compiler, &dir, case);
+        let object_bytes: Vec<u8> = compile_object(&compiler, dir, case);
         let body: RecoveredBody = recover_case(&object_bytes, case);
         let Some(recovered_def): Option<String> = body.recovered_python.clone() else {
             eprintln!(
@@ -280,7 +279,7 @@ fn recovered_python_matches_ground_truth_over_fuzzed_inputs() {
             recovered_def.trim(),
             expected_line
         );
-        behavioral_check(&py, &dir, case, &recovered_def);
+        behavioral_check(&py, dir, case, &recovered_def);
         recovered_count += 1;
         println!("{}: recovered `{}`", case.name, recovered_def.trim());
     }

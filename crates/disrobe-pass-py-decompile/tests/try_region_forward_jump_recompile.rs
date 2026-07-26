@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_py_decompile::bytecode::version::PyVersion as DecompileVersion;
 use disrobe_pass_py_decompile::engine::{build_real_source, marshal_to_decompile};
 use disrobe_pass_py_decompile::roundtrip::{
@@ -185,8 +186,8 @@ fn close_stdin_forward_jumps_land_on_try_body_entry() {
         eprintln!("skip: no CPython 3.14 interpreter found");
         return;
     };
-    let tmp: PathBuf = std::env::temp_dir().join("disrobe_try_region_forward_jump_shape");
-    std::fs::create_dir_all(&tmp).unwrap();
+    let scratch: ScratchDir = ScratchDir::create("py-decompile-try-region-shape").expect("scratch");
+    let tmp: &Path = scratch.path();
 
     let src: PathBuf = tmp.join("close_stdin.py");
     let pyc: PathBuf = tmp.join("close_stdin.orig.pyc");
@@ -219,19 +220,19 @@ fn try_region_functions_recompile_equivalent() {
         eprintln!("skip: no CPython 3.14 interpreter found");
         return;
     };
-    let tmp: PathBuf = std::env::temp_dir().join("disrobe_try_region_forward_jump_equiv");
-    std::fs::create_dir_all(&tmp).unwrap();
+    let scratch: ScratchDir = ScratchDir::create("py-decompile-try-region-equiv").expect("scratch");
+    let tmp: &Path = scratch.path();
     decompile_recompile_equiv(
         &interpreter,
-        &tmp,
+        tmp,
         "close_stdin",
         CLOSE_STDIN,
         "_close_stdin",
     );
-    decompile_recompile_equiv(&interpreter, &tmp, "guard_try", GUARD_TRY, "guard_try");
+    decompile_recompile_equiv(&interpreter, tmp, "guard_try", GUARD_TRY, "guard_try");
     decompile_recompile_equiv(
         &interpreter,
-        &tmp,
+        tmp,
         "try_tail_return",
         TRY_TAIL_RETURN,
         "try_tail_return",

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_py_marshal::{CodeObject, Object, PyVersion as MarshalVersion, PycFile, read_pyc};
 
 use crate::bytecode::version::PyVersion as DecompileVersion;
@@ -167,14 +167,14 @@ fn py_path_literal(path: &Path) -> String {
     format!("'{escaped}'")
 }
 
-static ROUNDTRIP_SEQ: AtomicU64 = AtomicU64::new(0);
+const ROUNDTRIP_SCRATCH_PURPOSE: &str = "py-decompile-roundtrip";
+const ROUNDTRIP_SOURCE_STEM: &str = "recovered";
 
 fn recompile_via_interpreter(interpreter: &Path, source: &str) -> Result<CodeObject, String> {
-    let tmp_root: PathBuf = std::env::temp_dir();
-    let pid: u32 = std::process::id();
-    let seq: u64 = ROUNDTRIP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let src_path: PathBuf = tmp_root.join(format!("disrobe-rt-{pid}-{seq}.py"));
-    let pyc_path: PathBuf = tmp_root.join(format!("disrobe-rt-{pid}-{seq}.pyc"));
+    let scratch: ScratchDir = ScratchDir::create(ROUNDTRIP_SCRATCH_PURPOSE)
+        .map_err(|e: std::io::Error| format!("create scratch directory: {e}"))?;
+    let src_path: PathBuf = scratch.path().join(format!("{ROUNDTRIP_SOURCE_STEM}.py"));
+    let pyc_path: PathBuf = scratch.path().join(format!("{ROUNDTRIP_SOURCE_STEM}.pyc"));
     std::fs::write(&src_path, source.as_bytes()).map_err(|e| format!("write temp source: {e}"))?;
     let src_lit: String = py_path_literal(&src_path);
     let pyc_lit: String = py_path_literal(&pyc_path);
@@ -194,9 +194,7 @@ except Exception as e:\n    sys.stderr.write(str(e));sys.exit(2)\n"
         .ok_or_else(|| {
             format!("interpreter timed out after {RECOMPILE_TIMEOUT_SECS}s and was killed")
         })?;
-    let _: std::io::Result<()> = std::fs::remove_file(&src_path);
     if captured.exit_code != Some(0) {
-        let _: std::io::Result<()> = std::fs::remove_file(&pyc_path);
         let stderr: String = String::from_utf8_lossy(&captured.stderr).trim().to_owned();
         return Err(if stderr.is_empty() {
             format!("py_compile exit {:?}", captured.exit_code)
@@ -205,11 +203,83 @@ except Exception as e:\n    sys.stderr.write(str(e));sys.exit(2)\n"
         });
     }
     let bytes: Vec<u8> = std::fs::read(&pyc_path).map_err(|e| format!("read pyc: {e}"))?;
-    let _: std::io::Result<()> = std::fs::remove_file(&pyc_path);
     let pyc: PycFile =
         read_pyc(&bytes).map_err(|e: disrobe_py_marshal::Error| format!("parse pyc: {e}"))?;
     match pyc.code {
         Object::Code(boxed) => Ok(*boxed),
         other => Err(format!("recompiled pyc lacks code object: {other:?}")),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    use disrobe_core::scratch::scratch_root;
+
+    fn entries_named(root: &Path, prefix: &str) -> Vec<PathBuf> {
+        let Ok(entries): std::io::Result<std::fs::ReadDir> = std::fs::read_dir(root) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .map(|entry: std::fs::DirEntry| entry.path())
+            .filter(|path: &PathBuf| {
+                path.file_name()
+                    .and_then(|name: &std::ffi::OsStr| name.to_str())
+                    .is_some_and(|name: &str| name.starts_with(prefix))
+            })
+            .collect()
+    }
+
+    fn roundtrip_scratch_leftovers() -> Vec<PathBuf> {
+        let prefix: String = format!("{ROUNDTRIP_SCRATCH_PURPOSE}-{}-", std::process::id());
+        entries_named(&scratch_root(), &prefix)
+    }
+
+    fn temp_root_names() -> std::collections::BTreeSet<String> {
+        let Ok(entries): std::io::Result<std::fs::ReadDir> =
+            std::fs::read_dir(std::env::temp_dir())
+        else {
+            return std::collections::BTreeSet::new();
+        };
+        let pid: String = std::process::id().to_string();
+        entries
+            .flatten()
+            .filter_map(|entry: std::fs::DirEntry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .filter(|name: &&str| name.contains("disrobe") && name.contains(&pid))
+                    .map(str::to_owned)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_interpreter_that_cannot_be_spawned_leaves_no_recovered_source_behind() {
+        let recovered: &str = "SAMPLE_SECRET_IDENTIFIER = 'recovered from the operator sample'\n";
+        let unspawnable: PathBuf = scratch_root().join("py-decompile-absent-interpreter");
+        let temp_before: std::collections::BTreeSet<String> = temp_root_names();
+
+        let error: String = recompile_via_interpreter(&unspawnable, recovered)
+            .expect_err("an interpreter path that does not exist cannot be spawned");
+        assert!(
+            error.starts_with("spawn interpreter:"),
+            "the spawn failure path must be the one exercised, got: {error}"
+        );
+
+        let scratch_left: Vec<PathBuf> = roundtrip_scratch_leftovers();
+        assert!(
+            scratch_left.is_empty(),
+            "the guard must remove its directory when the interpreter never starts, found: {scratch_left:?}"
+        );
+        let temp_after: std::collections::BTreeSet<String> = temp_root_names();
+        let gained: Vec<&String> = temp_after.difference(&temp_before).collect();
+        assert!(
+            gained.is_empty(),
+            "recovered source must never be written loose in the shared temp root, gained: {gained:?}"
+        );
     }
 }

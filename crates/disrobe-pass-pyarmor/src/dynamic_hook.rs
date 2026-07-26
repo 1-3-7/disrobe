@@ -1,13 +1,16 @@
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use disrobe_core::scratch::ScratchFile;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::{MAX_JSON_FILE_BYTES, read_file_bounded};
 
 const HELPER_SCRIPT: &str = include_str!("v6v7_dynamic_hook.py");
+const HELPER_SCRATCH_PURPOSE: &str = "v6v7_dynamic_hook";
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const PROBE_TIMEOUT_SECS: u64 = 10;
 const MIN_PYTHON: (u8, u8, u8) = (3, 9, 7);
@@ -156,11 +159,15 @@ pub fn run_dynamic_hook_with_target(
         });
     }
 
-    let helper_path: PathBuf = out_dir.join(".disrobe_v6v7_helper.py");
-    std::fs::write(&helper_path, HELPER_SCRIPT)?;
-    let helper_abs: PathBuf = helper_path
+    let (helper_guard, mut helper_handle): (ScratchFile, std::fs::File) =
+        ScratchFile::create(HELPER_SCRATCH_PURPOSE, "py")?;
+    helper_handle.write_all(HELPER_SCRIPT.as_bytes())?;
+    helper_handle.flush()?;
+    drop(helper_handle);
+    let helper_abs: PathBuf = helper_guard
+        .path()
         .canonicalize()
-        .unwrap_or_else(|_| helper_path.clone());
+        .unwrap_or_else(|_| helper_guard.path().to_path_buf());
 
     tracing::warn!(
         "--allow-dynamic executes the obfuscated PyArmor wrapper in a subprocess to capture marshal streams; only enable on trusted samples or sandbox externally"
@@ -488,12 +495,10 @@ mod tests {
 
     #[test]
     fn probe_capped_metacharacter_argv_passes_through_literally() {
-        let dir: PathBuf =
-            std::env::temp_dir().join(format!("disrobe-pyarmor-metachar-{}", std::process::id()));
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir metachar dir");
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("pyarmor-metachar").expect("scratch dir");
         let weird_name: &str = "disrobe-metachar-'; & $HOME `id` (test) !bang %VAR% done.txt";
-        let weird_path: PathBuf = dir.join(weird_name);
+        let weird_path: PathBuf = scratch.path().join(weird_name);
         std::fs::write(&weird_path, b"payload").expect("write metachar file");
 
         let mut cmd: Command = mock_cmd(&["echo-args", &weird_path.to_string_lossy()]);
@@ -514,7 +519,79 @@ mod tests {
             weird_path.to_string_lossy(),
             "the child must receive the metacharacter-laden path as a single literal argv element"
         );
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&dir);
+    }
+
+    fn helper_scratch_leftovers() -> Vec<PathBuf> {
+        let prefix: String = format!("{HELPER_SCRATCH_PURPOSE}-{}-", std::process::id());
+        let Ok(entries): std::io::Result<std::fs::ReadDir> =
+            std::fs::read_dir(disrobe_core::scratch::scratch_root())
+        else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .map(|entry: std::fs::DirEntry| entry.path())
+            .filter(|path: &PathBuf| {
+                path.file_name()
+                    .and_then(|name: &std::ffi::OsStr| name.to_str())
+                    .is_some_and(|name: &str| name.starts_with(&prefix))
+            })
+            .collect()
+    }
+
+    fn directory_names(dir: &Path) -> Vec<String> {
+        let Ok(entries): std::io::Result<std::fs::ReadDir> = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter_map(|entry: std::fs::DirEntry| entry.file_name().to_str().map(str::to_owned))
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_dynamic_hook_that_fails_leaves_the_output_directory_holding_only_the_operators_output() {
+        let operator_workspace: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("pyarmor-hook-operator")
+                .expect("scratch dir");
+        let out_dir: PathBuf = operator_workspace.path().join("recovered");
+        std::fs::create_dir_all(&out_dir).expect("mkdir out dir");
+        let absent_wrapper: PathBuf = out_dir.join("no_such_wrapper.py");
+        let options: DynamicHookOptions = DynamicHookOptions {
+            allow_dynamic: true,
+            timeout: Duration::from_secs(5),
+            disable_pytrace: true,
+            disable_cextract: true,
+        };
+
+        let error: Error = run_dynamic_hook_with_target(&absent_wrapper, &out_dir, options, None)
+            .expect_err("a wrapper that does not exist cannot be canonicalized");
+        if matches!(
+            error,
+            Error::DynamicHookNoPython { .. } | Error::DynamicHookPythonTooOld { .. }
+        ) {
+            eprintln!(
+                "[skip] no python 3.9.7 or newer on PATH, so the helper is never written here"
+            );
+            return;
+        }
+        assert!(
+            matches!(error, Error::Io(_)),
+            "the missing wrapper must fail after the helper exists, got: {error:?}"
+        );
+
+        let remaining: Vec<String> = directory_names(&out_dir);
+        let leftovers: Vec<PathBuf> = helper_scratch_leftovers();
+        assert!(
+            remaining.is_empty(),
+            "the output directory must hold only what the operator asked for, found: {remaining:?}"
+        );
+        assert!(
+            leftovers.is_empty(),
+            "the guard must remove the helper when the run fails, found: {leftovers:?}"
+        );
     }
 
     #[test]

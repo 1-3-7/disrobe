@@ -9,6 +9,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_pyarmor::{
     BccArch, PyAbi, RecoverOptions, RecoveredBody, UnpackOptions, link_bcc_from_unpack,
     recover_bcc_arith, unpack_wrapper_text_with_options,
@@ -217,12 +218,9 @@ fn behavioral_check(py: &str, name: &str, arity: usize, reference_body: &str, re
          \x20       print('MISMATCH', combo, want, got); sys.exit(1)\n\
          print('OK')\n",
     );
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-bcc-dispatch-{}-{name}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).expect("scratch");
-    let script_path: PathBuf = dir.join(format!("check_{name}.py"));
+    let scratch: ScratchDir =
+        ScratchDir::create(&format!("pyarmor-bcc-dispatch-{name}")).expect("scratch");
+    let script_path: PathBuf = scratch.path().join(format!("check_{name}.py"));
     std::fs::write(&script_path, script).expect("write");
     let out: std::process::Output = Command::new(py)
         .arg(&script_path)
