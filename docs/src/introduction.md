@@ -40,7 +40,7 @@ Every figure below is produced by a committed test gate or a local measurement h
 |---|---|---|
 | Python bytecode | <!-- m:py_stdlib_full_pct -->92.43%<!-- /m --> per-code-object equivalence on the full CPython 3.14 stdlib (<!-- m:py_stdlib_full_count -->16880 of 18262<!-- /m -->); <!-- m:py_stdlib_pinned_pct -->96.29%<!-- /m --> on the pinned 200-module corpus (<!-- m:py_stdlib_pinned_count -->6053 of 6286<!-- /m -->) | recompile on CPython 3.14.5, opcode diff |
 | CPython legacy 1.0-3.7 | 150 of 191 proven-correct (CI floor); 166 of 191 measured locally | recompile-equivalence or structural token-match |
-| WebAssembly | 98.4% op-coverage on the 36 parseable corpus modules (124 of 126); 50 of 50 execution-eligible functions equivalent | execution differential under wasmtime |
+| WebAssembly | 133 of 133 corpus functions op-covered across the 38 parseable modules; 57 of 57 execution-eligible functions equivalent | execution differential under wasmtime |
 | JVM classfile | 131 of 131 methods recompile error-free | real `javac` |
 | Android (Dalvik) | <!-- m:dalvik_verifier_pct -->99%<!-- /m --> of verifiable classes pass the JVM verifier (102 of 103) | `-Xverify:all` over assembled jar |
 | Ruby YARV | greeter <!-- m:ruby_greeter_pct -->100%<!-- /m -->, megafile <!-- m:ruby_megafile_pct -->98%<!-- /m --> opcode-multiset equivalence | recompile on MRI |

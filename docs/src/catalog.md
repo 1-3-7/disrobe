@@ -8,7 +8,7 @@ disrobe catalog native
 disrobe catalog python --json
 ```
 
-Three words describe how far recovery goes, the same vocabulary the README uses:
+Three words describe how far recovery goes:
 
 - **Recover**: real recovered output (source, bytes, or structure), measured against an independent oracle where one exists.
 - **Detect + carve**: the layer is identified and any intact parts are extracted, without full reversal.
