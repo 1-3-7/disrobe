@@ -4,7 +4,10 @@ use super::exprs::{
     is_chain_cond_jump, local_name_at, local_target, name_at,
 };
 use super::function_meta::load_const;
-use super::loops::{for_cold_handler_exit_epilogue, non_empty};
+use super::loops::{
+    find_for_with_cold_handler, find_loop, for_cold_handler_exit_epilogue, non_empty,
+    try_enclosed_by_loop,
+};
 use super::postprocess::is_implicit_none_return;
 use super::stmts::{
     append_handler_loop_jump, detect_inline_comprehension, first_significant,
@@ -740,6 +743,20 @@ pub(super) fn try_structure_cold_sibling_try(
     else {
         return Ok(None);
     };
+    let protected_body_enclosed_by_for: bool =
+        find_loop(stream, lo, hi).is_some_and(|loop_region: LoopRegion| {
+            let raw_exit: Option<usize> =
+                resolve_jump_target(stream, loop_region.header, &stream.ops[loop_region.header])
+                    .filter(|exit: &usize| loop_region.header < *exit && *exit <= hi);
+            matches!(loop_region.kind, LoopKind::For)
+                && loop_region.body_start <= region.try_start
+                && region.try_start < region.protected_end()
+                && raw_exit.is_some_and(|exit: usize| region.protected_end() <= exit)
+                && hi <= region.handler_start
+        });
+    if protected_body_enclosed_by_for {
+        return Ok(None);
+    }
     let Some(body_start): Option<usize> = first_significant(stream, lo, hi) else {
         return Ok(None);
     };
@@ -752,6 +769,25 @@ pub(super) fn try_structure_cold_sibling_try(
                 .copied()
                 .is_some_and(|off: u32| is_handler_target(stream, off))
     });
+    let protected_body_owned_by_active_loop: bool =
+        loop_continue_target().is_some_and(|header: usize| {
+            header < region.try_start
+                && region.try_start < region.protected_end()
+                && region.protected_end() <= hi
+                && hi <= region.handler_start
+        });
+    let later_nested_for_has_cold_handler: bool =
+        find_for_with_cold_handler(stream, hi, region.handler_start, outer_hi)
+            .and_then(|later: LoopRegion| {
+                let later_exit: usize =
+                    resolve_jump_target(stream, later.header, &stream.ops[later.header]).filter(
+                        |exit: &usize| later.header < *exit && *exit <= region.handler_start,
+                    )?;
+                find_for_with_cold_handler(stream, later.body_start, later_exit, outer_hi)
+            })
+            .is_some();
+    let handler_context_valid: bool = intervening_sibling_handler
+        || (protected_body_owned_by_active_loop && (cap != 0 || later_nested_for_has_cold_handler));
     if region.is_with
         || region.is_finally
         || head_end > region.try_start
@@ -760,7 +796,7 @@ pub(super) fn try_structure_cold_sibling_try(
         || region.handler_start < hi
         || region.protected_end <= region.try_start
         || region.protected_end > hi
-        || !intervening_sibling_handler
+        || !handler_context_valid
     {
         return Ok(None);
     }
@@ -2275,6 +2311,7 @@ pub(super) fn try_structure_else_try(
         || region.try_start >= join
         || region.handler_start < join
         || region.protected_end > join + 1
+        || try_enclosed_by_loop(stream, lo, hi, &region)
     {
         return Ok(None);
     }
