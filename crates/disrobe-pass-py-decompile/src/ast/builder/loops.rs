@@ -18,8 +18,8 @@ use super::try_with::{
 };
 use super::{
     DecodedStream, LoopFrame, MAX_SYNTH_OPERANDS, PY_CO_FLAG_FUNCTION_SCOPE, ScDesc,
-    loop_frame_has_header, negate_cond_expr, none_jump_test, pop_loop_frame, push_loop_frame,
-    with_boolop_context,
+    StructureHiCapGuard, loop_frame_has_header, negate_cond_expr, none_jump_test, pop_loop_frame,
+    push_loop_frame, with_boolop_context,
 };
 use crate::ast::node::{ConstValue, Expr, ExprCtx, Stmt};
 use crate::bytecode::opcode::CanonicalOp;
@@ -1014,6 +1014,81 @@ fn first_cold_for_handler(
         .min()
 }
 
+fn find_for_loop(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    comp_envelopes: &[(usize, usize)],
+) -> Option<LoopRegion> {
+    for header in lo..hi {
+        if !matches!(
+            stream.ops[header],
+            CanonicalOp::ForIter(_) | CanonicalOp::ForLoopLegacy(_)
+        ) || in_any_envelope(comp_envelopes, header)
+        {
+            continue;
+        }
+        let Some(raw_exit): Option<usize> =
+            resolve_jump_target(stream, header, &stream.ops[header])
+                .filter(|target: &usize| *target > header)
+        else {
+            continue;
+        };
+        let back_edge: usize = (header + 1..hi)
+            .filter(|&candidate: &usize| is_back_edge(&stream.ops[candidate]))
+            .find(|&candidate: &usize| {
+                resolve_jump_target(stream, candidate, &stream.ops[candidate])
+                    .is_some_and(|target: usize| target <= header)
+            })
+            .unwrap_or_else(|| raw_exit.min(hi).saturating_sub(1).max(header + 1));
+        let exit_via_foriter: usize = raw_exit.min(hi).max((back_edge + 1).min(hi));
+        let body_start: usize = (header + 1).min(hi);
+        let absorbed_end: usize =
+            for_body_end_absorbing_cold_handlers(stream, body_start, raw_exit, hi);
+        let body_end: usize = exit_via_foriter.max(absorbed_end);
+        let region: LoopRegion = LoopRegion {
+            kind: LoopKind::For,
+            header,
+            body_start,
+            body_end,
+            back_edge,
+            exit: body_end,
+            infinite: false,
+        };
+        if loop_enclosed_by_guard(stream, lo, &region)
+            && (has_earlier_while_back_edge(stream, lo, header)
+                || for_enclosed_by_later_while_back_edge(stream, lo, hi, &region))
+        {
+            continue;
+        }
+        return Some(region);
+    }
+    None
+}
+
+pub(super) fn find_for_with_cold_handler(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    handler_cap: usize,
+) -> Option<LoopRegion> {
+    let comp_envelopes: Vec<(usize, usize)> = inline_comp_envelopes(stream, lo, hi);
+    let mut next_header: usize = lo;
+    while next_header < hi {
+        let region: LoopRegion = find_for_loop(stream, next_header, hi, &comp_envelopes)?;
+        let raw_exit: Option<usize> =
+            resolve_jump_target(stream, region.header, &stream.ops[region.header])
+                .filter(|exit: &usize| region.header < *exit && *exit <= hi);
+        if raw_exit.is_some_and(|exit: usize| {
+            first_cold_for_handler(stream, region.body_start, exit, handler_cap).is_some()
+        }) {
+            return Some(region);
+        }
+        next_header = region.header.saturating_add(1);
+    }
+    None
+}
+
 pub(super) fn for_cold_handler_exit_epilogue(
     stream: &DecodedStream,
     body_start: usize,
@@ -1049,6 +1124,7 @@ fn lift_cold_handler_exit_epilogue(
     region: &LoopRegion,
     body_start: usize,
     body: &mut Vec<Stmt>,
+    body_bounded_at_raw_exit: bool,
 ) -> Result<Vec<Stmt>> {
     let raw_exit: Option<usize> =
         resolve_jump_target(stream, region.header, &stream.ops[region.header])
@@ -1072,6 +1148,17 @@ fn lift_cold_handler_exit_epilogue(
                 CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
             ) && resolve_jump_target(stream, k, &stream.ops[k]) == Some(stmt_start)
         });
+    if body_bounded_at_raw_exit {
+        if body_breaks_to_epilogue
+            && !matches!(
+                body.last(),
+                Some(Stmt::Break | Stmt::Continue | Stmt::Return(_) | Stmt::Raise { .. })
+            )
+        {
+            body.push(Stmt::Break);
+        }
+        return Ok(tail);
+    }
     if tail.len() <= body.len() {
         let split: usize = body.len() - tail.len();
         if body[split..] == tail[..] {
@@ -1091,6 +1178,46 @@ fn lift_cold_handler_exit_epilogue(
         return Ok(tail);
     }
     Ok(Vec::new())
+}
+
+fn structure_for_body(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &LoopRegion,
+    body_start: usize,
+) -> Result<(Vec<Stmt>, Vec<Stmt>)> {
+    let raw_exit: usize = resolve_jump_target(stream, region.header, &stream.ops[region.header])
+        .filter(|target: &usize| *target > region.header)
+        .map_or(region.body_end, |target: usize| target.min(region.body_end));
+    let has_cold_extension: bool = region.body_end > raw_exit;
+    let nested_for_has_cold_handler: bool =
+        find_for_with_cold_handler(stream, body_start, raw_exit, region.body_end).is_some();
+    let body_bounded_at_raw_exit: bool = has_cold_extension && nested_for_has_cold_handler;
+    let _handler_cap: Option<StructureHiCapGuard> =
+        body_bounded_at_raw_exit.then(|| StructureHiCapGuard::enter(region.body_end));
+    let except_continue: Option<(Vec<Stmt>, Vec<Stmt>)> =
+        match structure_for_bare_except_continue_epilogue(code, stream, region, body_start)? {
+            Some(value) => Some(value),
+            None => structure_for_typed_except_continue_epilogue(code, stream, region, body_start)?,
+        };
+    if let Some(result) = except_continue {
+        return Ok(result);
+    }
+    let body_end: usize = if body_bounded_at_raw_exit {
+        raw_exit
+    } else {
+        region.body_end
+    };
+    let mut body: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
+    let epilogue: Vec<Stmt> = lift_cold_handler_exit_epilogue(
+        code,
+        stream,
+        region,
+        body_start,
+        &mut body,
+        body_bounded_at_raw_exit,
+    )?;
+    Ok((body, epilogue))
 }
 
 fn for_body_end_absorbing_cold_handlers(
@@ -1237,46 +1364,11 @@ pub(super) fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<
         return Some(region);
     }
     let comp_envelopes: Vec<(usize, usize)> = inline_comp_envelopes(stream, lo, hi);
-    let mut best: Option<LoopRegion> = None;
-    for i in lo..hi {
-        if matches!(
-            stream.ops[i],
-            CanonicalOp::ForIter(_) | CanonicalOp::ForLoopLegacy(_)
-        ) {
-            if in_any_envelope(&comp_envelopes, i) {
-                continue;
-            }
-            let raw_exit: usize =
-                resolve_jump_target(stream, i, &stream.ops[i]).filter(|t: &usize| *t > i)?;
-            let back_edge: usize = (i + 1..hi)
-                .filter(|&j: &usize| is_back_edge(&stream.ops[j]))
-                .find(|&j: &usize| {
-                    resolve_jump_target(stream, j, &stream.ops[j]).is_some_and(|t: usize| t <= i)
-                })
-                .unwrap_or_else(|| raw_exit.min(hi).saturating_sub(1).max(i + 1));
-            let exit_via_foriter: usize = raw_exit.min(hi).max((back_edge + 1).min(hi));
-            let body_start: usize = (i + 1).min(hi);
-            let absorbed_end: usize =
-                for_body_end_absorbing_cold_handlers(stream, body_start, raw_exit, hi);
-            let body_end: usize = exit_via_foriter.max(absorbed_end);
-            let region: LoopRegion = LoopRegion {
-                kind: LoopKind::For,
-                header: i,
-                body_start,
-                body_end,
-                back_edge,
-                exit: body_end,
-                infinite: false,
-            };
-            if loop_enclosed_by_guard(stream, lo, &region)
-                && (has_earlier_while_back_edge(stream, lo, i)
-                    || for_enclosed_by_later_while_back_edge(stream, lo, hi, &region))
-            {
-                continue;
-            }
-            return Some(region);
-        }
+    let for_region: Option<LoopRegion> = find_for_loop(stream, lo, hi, &comp_envelopes);
+    if for_region.is_some() {
+        return for_region;
     }
+    let mut best: Option<LoopRegion> = None;
     for j in lo..hi {
         if in_any_envelope(&comp_envelopes, j) {
             continue;
@@ -1821,26 +1913,9 @@ pub(super) fn structure_loop(
                 let iter: Expr = recover_for_iter(code, stream, region, lo);
                 let (target, body_start): (Expr, usize) = recover_for_target(code, stream, region)
                     .unwrap_or_else(|| (placeholder_target(), region.body_start));
-                let except_continue: Option<(Vec<Stmt>, Vec<Stmt>)> =
-                    match structure_for_bare_except_continue_epilogue(
-                        code, stream, region, body_start,
-                    )? {
-                        Some(v) => Some(v),
-                        None => structure_for_typed_except_continue_epilogue(
-                            code, stream, region, body_start,
-                        )?,
-                    };
-                let body: Vec<Stmt> = if let Some((loop_body, epilogue)) = except_continue {
-                    cold_handler_exit_tail = epilogue;
-                    loop_body
-                } else {
-                    let mut body: Vec<Stmt> =
-                        structure_stmts(code, stream, body_start, region.body_end)?;
-                    cold_handler_exit_tail = lift_cold_handler_exit_epilogue(
-                        code, stream, region, body_start, &mut body,
-                    )?;
-                    body
-                };
+                let (body, epilogue): (Vec<Stmt>, Vec<Stmt>) =
+                    structure_for_body(code, stream, region, body_start)?;
+                cold_handler_exit_tail = epilogue;
                 let orelse: Vec<Stmt> = loop_orelse(code, stream, region, hi)?;
                 Stmt::For {
                     target,
@@ -1949,22 +2024,9 @@ pub(super) fn structure_for_loop_with_iter(
     let result: Result<Stmt> = (|| -> Result<Stmt> {
         let (target, body_start): (Expr, usize) = recover_for_target(code, stream, &region)
             .unwrap_or_else(|| (placeholder_target(), region.body_start));
-        let except_continue: Option<(Vec<Stmt>, Vec<Stmt>)> =
-            match structure_for_bare_except_continue_epilogue(code, stream, &region, body_start)? {
-                Some(v) => Some(v),
-                None => {
-                    structure_for_typed_except_continue_epilogue(code, stream, &region, body_start)?
-                }
-            };
-        let body: Vec<Stmt> = if let Some((loop_body, epilogue)) = except_continue {
-            cold_handler_exit_tail = epilogue;
-            loop_body
-        } else {
-            let mut body: Vec<Stmt> = structure_stmts(code, stream, body_start, region.body_end)?;
-            cold_handler_exit_tail =
-                lift_cold_handler_exit_epilogue(code, stream, &region, body_start, &mut body)?;
-            body
-        };
+        let (body, epilogue): (Vec<Stmt>, Vec<Stmt>) =
+            structure_for_body(code, stream, &region, body_start)?;
+        cold_handler_exit_tail = epilogue;
         let orelse: Vec<Stmt> = loop_orelse(code, stream, &region, hi)?;
         Ok(Stmt::For {
             target,
