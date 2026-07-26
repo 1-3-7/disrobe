@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use disrobe_nir::{
     BinaryOp, NirFunction, NirInstr, NirModule, NirOp, NirSymbol, SourceLang, SourceRef, SymbolKind,
@@ -56,7 +56,7 @@ fn build_module(source: &[u8], abcs: &[AbcFile]) -> Result<NirModule> {
     let source_hash: [u8; 32] = *blake3::hash(source).as_bytes();
     let mut module: NirModule = NirModule::new(source_hash, SourceLang::Avm2);
 
-    let entries: Vec<MethodEntry> = enumerate_methods(abcs);
+    let entries: Vec<MethodEntry> = enumerate_methods(abcs)?;
     if entries.is_empty() {
         return Err(LiftError::Empty);
     }
@@ -68,7 +68,7 @@ fn build_module(source: &[u8], abcs: &[AbcFile]) -> Result<NirModule> {
         register_method_symbol(entry, method_index, &mut module);
         let abc: &AbcFile = &abcs[entry.abc_index];
         let body: &MethodBody = &abc.method_bodies[entry.body_pos];
-        let function: NirFunction = lift_body(entry, method_index, abc, body, &mut imports);
+        let function: NirFunction = lift_body(entry, method_index, abc, body, &mut imports)?;
         module.functions.push(function);
     }
 
@@ -83,12 +83,24 @@ fn build_module(source: &[u8], abcs: &[AbcFile]) -> Result<NirModule> {
     Ok(module)
 }
 
-fn enumerate_methods(abcs: &[AbcFile]) -> Vec<MethodEntry> {
+fn enumerate_methods(abcs: &[AbcFile]) -> Result<Vec<MethodEntry>> {
     let mut entries: Vec<MethodEntry> = Vec::new();
     for (abc_index, abc) in abcs.iter().enumerate() {
         let names: BTreeMap<u32, String> = method_names(abc);
         let exported: BTreeMap<u32, bool> = exported_methods(abc);
         for (body_pos, body) in abc.method_bodies.iter().enumerate() {
+            let owner: usize = usize::try_from(body.method).map_err(|_| {
+                LiftError::Source(format!(
+                    "avm2 abc {abc_index} method body {body_pos} owner {} is out of range",
+                    body.method
+                ))
+            })?;
+            if owner >= abc.methods.len() {
+                return Err(LiftError::Source(format!(
+                    "avm2 abc {abc_index} method body {body_pos} owner {} is out of range",
+                    body.method
+                )));
+            }
             let name: String = names
                 .get(&body.method)
                 .cloned()
@@ -104,7 +116,7 @@ fn enumerate_methods(abcs: &[AbcFile]) -> Vec<MethodEntry> {
             });
         }
     }
-    entries
+    Ok(entries)
 }
 
 fn method_names(abc: &AbcFile) -> BTreeMap<u32, String> {
@@ -238,17 +250,34 @@ fn lift_body(
     abc: &AbcFile,
     body: &MethodBody,
     imports: &mut ImportTable,
-) -> NirFunction {
+) -> Result<NirFunction> {
     let base: u64 = function_address(method_index);
-    let lines: Vec<DisasmLine> = abc::disasm(&body.code).unwrap_or_else(|_| Vec::with_capacity(0));
+    let lines: Vec<DisasmLine> =
+        abc::disasm(&body.code).map_err(|error: disrobe_pass_as3::Error| {
+            LiftError::Source(format!(
+                "avm2 abc {} method {} disassembly: {error}",
+                entry.abc_index, entry.name
+            ))
+        })?;
+    let unknown_opcode: Result<()> = lines
+        .iter()
+        .find(|line: &&DisasmLine| line.mnemonic == "<unknown>")
+        .map_or(Ok(()), |line: &DisasmLine| {
+            Err(LiftError::Source(format!(
+                "avm2 abc {} method {} unknown opcode 0x{:02x} at byte {}",
+                entry.abc_index, entry.name, line.opcode, line.offset
+            )))
+        });
+    unknown_opcode?;
     let sizes: Vec<usize> = instruction_sizes(&lines, body.code.len());
+    validate_body_semantics(entry, abc, body, &lines, &sizes)?;
 
     let mut instructions: Vec<NirInstr> = Vec::with_capacity(lines.len());
     for (ordinal, line) in lines.iter().enumerate() {
         let address: u64 = base.saturating_add(line.offset as u64);
         let end_offset: usize = line.offset.saturating_add(sizes[ordinal]);
         let (op, operand_list): (NirOp, Vec<String>) =
-            classify(line, base, end_offset, abc, imports);
+            classify(entry, line, base, end_offset, abc, imports)?;
         let (reads_memory, writes_memory): (bool, bool) = memory_facets(line.opcode);
         let byte_width: bool = false;
         let mnemonic: String = match &op {
@@ -268,7 +297,7 @@ fn lift_body(
     }
 
     let end: u64 = base.saturating_add(body.code.len() as u64);
-    NirFunction {
+    Ok(NirFunction {
         name: entry.name.clone(),
         address: base,
         end,
@@ -279,7 +308,7 @@ fn lift_body(
             base,
             format!("locals={}", body.local_count),
         ),
-    }
+    })
 }
 
 fn instruction_sizes(lines: &[DisasmLine], code_len: usize) -> Vec<usize> {
@@ -293,105 +322,410 @@ fn instruction_sizes(lines: &[DisasmLine], code_len: usize) -> Vec<usize> {
     sizes
 }
 
+fn body_semantic_error(entry: &MethodEntry, line: &DisasmLine, reason: &str) -> LiftError {
+    LiftError::Source(format!(
+        "avm2 abc {} method {} {} at byte {}",
+        entry.abc_index, entry.name, reason, line.offset
+    ))
+}
+
+fn required_operand(
+    entry: &MethodEntry,
+    line: &DisasmLine,
+    position: usize,
+    label: &str,
+) -> Result<u32> {
+    let Some(value): Option<&i64> = line.operands.get(position) else {
+        return Err(body_semantic_error(
+            entry,
+            line,
+            &format!("missing {label}"),
+        ));
+    };
+    u32::try_from(*value).map_err(|_| body_semantic_error(entry, line, &format!("invalid {label}")))
+}
+
+fn require_zero_based_index(
+    entry: &MethodEntry,
+    line: &DisasmLine,
+    position: usize,
+    pool_len: usize,
+    label: &str,
+) -> Result<u32> {
+    let index: u32 = required_operand(entry, line, position, label)?;
+    let index_usize: usize = usize::try_from(index)
+        .map_err(|_| body_semantic_error(entry, line, &format!("invalid {label}")))?;
+    if index_usize >= pool_len {
+        return Err(body_semantic_error(
+            entry,
+            line,
+            &format!("{label} is out of range"),
+        ));
+    }
+    Ok(index)
+}
+
+fn require_local_index(
+    entry: &MethodEntry,
+    line: &DisasmLine,
+    position: usize,
+    local_count: u32,
+) -> Result<u32> {
+    let index: u32 = required_operand(entry, line, position, "local register index")?;
+    if index >= local_count {
+        return Err(body_semantic_error(
+            entry,
+            line,
+            "local register index is out of range",
+        ));
+    }
+    Ok(index)
+}
+
+fn checked_relative_target(origin: usize, relative: i64) -> Option<usize> {
+    let origin: i64 = i64::try_from(origin).ok()?;
+    let target: i64 = origin.checked_add(relative)?;
+    usize::try_from(target).ok()
+}
+
+fn require_target(
+    entry: &MethodEntry,
+    line: &DisasmLine,
+    origin: usize,
+    relative: i64,
+    boundaries: &BTreeSet<usize>,
+) -> Result<()> {
+    let Some(target): Option<usize> = checked_relative_target(origin, relative) else {
+        return Err(body_semantic_error(
+            entry,
+            line,
+            "control-flow target is out of range",
+        ));
+    };
+    if !boundaries.contains(&target) {
+        return Err(body_semantic_error(
+            entry,
+            line,
+            "control-flow target is not an instruction boundary",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_body_semantics(
+    entry: &MethodEntry,
+    abc: &AbcFile,
+    body: &MethodBody,
+    lines: &[DisasmLine],
+    sizes: &[usize],
+) -> Result<()> {
+    let boundaries: BTreeSet<usize> = lines.iter().map(|line: &DisasmLine| line.offset).collect();
+    for (ordinal, line) in lines.iter().enumerate() {
+        let end_offset: usize = line.offset.saturating_add(sizes[ordinal]);
+        match line.opcode {
+            0x0C..=0x1A => {
+                let Some(relative): Option<i64> = line.operands.first().copied() else {
+                    return Err(body_semantic_error(entry, line, "missing branch target"));
+                };
+                require_target(entry, line, end_offset, relative, &boundaries)?;
+            }
+            0x1B => {
+                let Some(default_relative): Option<i64> = line.operands.first().copied() else {
+                    return Err(body_semantic_error(
+                        entry,
+                        line,
+                        "missing switch default target",
+                    ));
+                };
+                require_target(entry, line, line.offset, default_relative, &boundaries)?;
+                for relative in line.operands.iter().skip(2) {
+                    require_target(entry, line, line.offset, *relative, &boundaries)?;
+                }
+            }
+            0x06 | 0x2C | 0xF1 => {
+                let index: u32 = required_operand(entry, line, 0, "string index")?;
+                abc.cpool.string_at(index).map_err(|error| {
+                    body_semantic_error(entry, line, &format!("invalid string index: {error}"))
+                })?;
+            }
+            0xEF => {
+                let index: u32 = required_operand(entry, line, 1, "debug string index")?;
+                abc.cpool.string_at(index).map_err(|error| {
+                    body_semantic_error(
+                        entry,
+                        line,
+                        &format!("invalid debug string index: {error}"),
+                    )
+                })?;
+                let debug_register: u32 =
+                    required_operand(entry, line, 2, "debug local register index")?;
+                if debug_register >= body.local_count {
+                    return Err(body_semantic_error(
+                        entry,
+                        line,
+                        "debug local register index is out of range",
+                    ));
+                }
+            }
+            0x08 | 0x62 | 0x63 | 0x92 | 0x94 | 0xC2 | 0xC3 => {
+                let _: u32 = require_local_index(entry, line, 0, body.local_count)?;
+            }
+            0x32 => {
+                let _: u32 = require_local_index(entry, line, 0, body.local_count)?;
+                let _: u32 = require_local_index(entry, line, 1, body.local_count)?;
+            }
+            0xD0..=0xD3 => {
+                let index: u32 = u32::from(line.opcode - 0xD0);
+                if index >= body.local_count {
+                    return Err(body_semantic_error(
+                        entry,
+                        line,
+                        "implicit local register index is out of range",
+                    ));
+                }
+            }
+            0xD4..=0xD7 => {
+                let index: u32 = u32::from(line.opcode - 0xD4);
+                if index >= body.local_count {
+                    return Err(body_semantic_error(
+                        entry,
+                        line,
+                        "implicit local register index is out of range",
+                    ));
+                }
+            }
+            0x2D => {
+                let _: u32 = require_zero_based_index(
+                    entry,
+                    line,
+                    0,
+                    abc.cpool.integers.len(),
+                    "integer index",
+                )?;
+            }
+            0x2E => {
+                let _: u32 = require_zero_based_index(
+                    entry,
+                    line,
+                    0,
+                    abc.cpool.uintegers.len(),
+                    "unsigned integer index",
+                )?;
+            }
+            0x2F => {
+                let _: u32 = require_zero_based_index(
+                    entry,
+                    line,
+                    0,
+                    abc.cpool.doubles.len(),
+                    "double index",
+                )?;
+            }
+            0x31 => {
+                let _: u32 = require_zero_based_index(
+                    entry,
+                    line,
+                    0,
+                    abc.cpool.namespaces.len(),
+                    "namespace index",
+                )?;
+            }
+            0x40 | 0x44 => {
+                let _: u32 =
+                    require_zero_based_index(entry, line, 0, abc.methods.len(), "method index")?;
+            }
+            0x58 => {
+                let _: u32 =
+                    require_zero_based_index(entry, line, 0, abc.classes.len(), "class index")?;
+            }
+            0x5A => {
+                let _: u32 = require_zero_based_index(
+                    entry,
+                    line,
+                    0,
+                    body.exceptions.len(),
+                    "exception index",
+                )?;
+            }
+            0x04
+            | 0x05
+            | 0x45
+            | 0x46
+            | 0x4A
+            | 0x4C
+            | 0x4E
+            | 0x4F
+            | 0x59
+            | 0x5D..=0x61
+            | 0x66
+            | 0x68
+            | 0x6A
+            | 0x80
+            | 0x86
+            | 0xB2 => {
+                let index: u32 = required_operand(entry, line, 0, "multiname index")?;
+                let _: String = abc.cpool.render_multiname(index).map_err(|error| {
+                    body_semantic_error(entry, line, &format!("invalid multiname index: {error}"))
+                })?;
+            }
+            _ => {}
+        }
+    }
+    for exception in &body.exceptions {
+        let from: usize = usize::try_from(exception.from).map_err(|_| {
+            LiftError::Source(format!(
+                "avm2 abc {} method {} exception start is out of range",
+                entry.abc_index, entry.name
+            ))
+        })?;
+        let to: usize = usize::try_from(exception.to).map_err(|_| {
+            LiftError::Source(format!(
+                "avm2 abc {} method {} exception end is out of range",
+                entry.abc_index, entry.name
+            ))
+        })?;
+        let target: usize = usize::try_from(exception.target).map_err(|_| {
+            LiftError::Source(format!(
+                "avm2 abc {} method {} exception target is out of range",
+                entry.abc_index, entry.name
+            ))
+        })?;
+        let valid_end: bool = to == body.code.len() || boundaries.contains(&to);
+        if from >= to || !boundaries.contains(&from) || !valid_end || !boundaries.contains(&target)
+        {
+            return Err(LiftError::Source(format!(
+                "avm2 abc {} method {} exception range is invalid",
+                entry.abc_index, entry.name
+            )));
+        }
+        let _: String = abc
+            .cpool
+            .render_multiname(exception.exc_type)
+            .map_err(|error| {
+                LiftError::Source(format!(
+                    "avm2 abc {} method {} exception type is invalid: {error}",
+                    entry.abc_index, entry.name
+                ))
+            })?;
+        let _: String = abc
+            .cpool
+            .render_multiname(exception.var_name)
+            .map_err(|error| {
+                LiftError::Source(format!(
+                    "avm2 abc {} method {} exception name is invalid: {error}",
+                    entry.abc_index, entry.name
+                ))
+            })?;
+    }
+    Ok(())
+}
+
 fn classify(
+    entry: &MethodEntry,
     line: &DisasmLine,
     base: u64,
     end_offset: usize,
     abc: &AbcFile,
     imports: &mut ImportTable,
-) -> (NirOp, Vec<String>) {
+) -> Result<(NirOp, Vec<String>)> {
     if let Some(binary_op) = binary_op(line.opcode) {
-        return (NirOp::BinOp { op: binary_op }, Vec::new());
+        return Ok((NirOp::BinOp { op: binary_op }, Vec::new()));
     }
-    match line.opcode {
+    let classified: (NirOp, Vec<String>) = match line.opcode {
         0x47 | 0x48 => (NirOp::Return, Vec::new()),
         0x03 => (NirOp::Interrupt, Vec::new()),
         0x10 => {
-            let target: Option<u64> =
-                branch_target(line, end_offset).map(|t: usize| base.saturating_add(t as u64));
+            let target_offset: usize = branch_target(entry, line, end_offset)?;
+            let target: Option<u64> = Some(base.saturating_add(target_offset as u64));
             (NirOp::Branch { target }, Vec::new())
         }
         0x0C..=0x0F | 0x11..=0x1A => {
-            let target: Option<u64> =
-                branch_target(line, end_offset).map(|t: usize| base.saturating_add(t as u64));
+            let target_offset: usize = branch_target(entry, line, end_offset)?;
+            let target: Option<u64> = Some(base.saturating_add(target_offset as u64));
             (NirOp::CondBranch { target }, Vec::new())
         }
         0x1B => (NirOp::CondBranch { target: None }, Vec::new()),
-        0x2C => (NirOp::Const, vec![string_operand(line, abc)]),
+        0x2C => (NirOp::Const, vec![string_operand(entry, line, abc)?]),
         0x24 | 0x25 | 0x2D | 0x2E | 0x2F | 0x20 | 0x21 | 0x26 | 0x27 | 0x28 => {
-            (NirOp::Const, const_operand(line, abc))
+            (NirOp::Const, const_operand(entry, line, abc)?)
         }
         0xD0..=0xD3 | 0x62 | 0x60 | 0x5D | 0x5E | 0x64 | 0x65 | 0x66 | 0x6C => {
-            (NirOp::Load, access_operand(line, abc))
+            (NirOp::Load, access_operand(entry, line, abc)?)
         }
-        0xD4..=0xD7 | 0x63 | 0x61 | 0x68 | 0x6D => (NirOp::Store, access_operand(line, abc)),
+        0xD4..=0xD7 | 0x63 | 0x61 | 0x68 | 0x6D => {
+            (NirOp::Store, access_operand(entry, line, abc)?)
+        }
         0x41 | 0x42 | 0x43 | 0x44 | 0x45 | 0x46 | 0x49 | 0x4A | 0x4C | 0x4E | 0x4F | 0x40 => {
-            classify_call(line, abc, imports)
+            classify_call(entry, line, abc, imports)?
         }
         _ => (NirOp::Nop, Vec::new()),
-    }
+    };
+    Ok(classified)
 }
 
 fn classify_call(
+    entry: &MethodEntry,
     line: &DisasmLine,
     abc: &AbcFile,
     imports: &mut ImportTable,
-) -> (NirOp, Vec<String>) {
+) -> Result<(NirOp, Vec<String>)> {
     let symbol: String = match line.opcode {
-        0x46 | 0x4F | 0x4C | 0x4A | 0x45 | 0x4E => multiname_operand(line, abc),
-        0x40 => method_index_name(line, abc, "function"),
-        0x43 => method_index_name(line, abc, "method"),
-        0x44 => method_index_name(line, abc, "static"),
+        0x46 | 0x4F | 0x4C | 0x4A | 0x45 | 0x4E => multiname_operand(entry, line, abc)?,
+        0x40 => method_index_name(entry, line, abc, "function")?,
+        0x43 => {
+            let dispatch_id: u32 = required_operand(entry, line, 0, "dispatch id")?;
+            format!("method#{dispatch_id}")
+        }
+        0x44 => method_index_name(entry, line, abc, "static")?,
         _ => abc::opcode_mnemonic(line.opcode).to_owned(),
     };
     if symbol.is_empty() {
-        return (NirOp::IndirectCall, Vec::new());
+        return Ok((NirOp::IndirectCall, Vec::new()));
     }
     let address: u64 = imports.address_of(&symbol);
-    (
+    Ok((
         NirOp::Call {
             target: Some(address),
         },
         vec![symbol],
-    )
+    ))
 }
 
-fn branch_target(line: &DisasmLine, end_offset: usize) -> Option<usize> {
-    let rel: i64 = *line.operands.first()?;
-    let absolute: i64 = i64::try_from(end_offset).ok()? + rel;
-    usize::try_from(absolute).ok()
-}
-
-fn string_operand(line: &DisasmLine, abc: &AbcFile) -> String {
-    let Some(idx) = line
-        .operands
-        .first()
-        .and_then(|v: &i64| u32::try_from(*v).ok())
-    else {
-        return String::new();
+fn branch_target(entry: &MethodEntry, line: &DisasmLine, end_offset: usize) -> Result<usize> {
+    let Some(relative): Option<i64> = line.operands.first().copied() else {
+        return Err(body_semantic_error(entry, line, "missing branch target"));
     };
-    abc.cpool
-        .string_at(idx)
-        .map_or("", |value: &str| value)
-        .to_owned()
+    checked_relative_target(end_offset, relative)
+        .ok_or_else(|| body_semantic_error(entry, line, "branch target is out of range"))
 }
 
-fn const_operand(line: &DisasmLine, abc: &AbcFile) -> Vec<String> {
-    match line.opcode {
+fn string_operand(entry: &MethodEntry, line: &DisasmLine, abc: &AbcFile) -> Result<String> {
+    let index: u32 = required_operand(entry, line, 0, "string index")?;
+    abc.cpool
+        .string_at(index)
+        .map(str::to_owned)
+        .map_err(|error| {
+            body_semantic_error(entry, line, &format!("invalid string index: {error}"))
+        })
+}
+
+fn const_operand(entry: &MethodEntry, line: &DisasmLine, abc: &AbcFile) -> Result<Vec<String>> {
+    let operands: Vec<String> = match line.opcode {
         0x24 | 0x25 => line
             .operands
             .first()
             .map_or_else(Vec::new, |v: &i64| vec![v.to_string()]),
-        0x2D => pool_value(line, abc, PoolKind::Int),
-        0x2E => pool_value(line, abc, PoolKind::Uint),
-        0x2F => pool_value(line, abc, PoolKind::Double),
+        0x2D => pool_value(entry, line, abc, PoolKind::Int)?,
+        0x2E => pool_value(entry, line, abc, PoolKind::Uint)?,
+        0x2F => pool_value(entry, line, abc, PoolKind::Double)?,
         0x20 => vec!["null".to_owned()],
         0x21 => vec!["undefined".to_owned()],
         0x26 => vec!["true".to_owned()],
         0x27 => vec!["false".to_owned()],
         0x28 => vec!["NaN".to_owned()],
         _ => Vec::new(),
-    }
+    };
+    Ok(operands)
 }
 
 enum PoolKind {
@@ -400,24 +734,27 @@ enum PoolKind {
     Double,
 }
 
-fn pool_value(line: &DisasmLine, abc: &AbcFile, kind: PoolKind) -> Vec<String> {
-    let Some(idx) = line
-        .operands
-        .first()
-        .and_then(|v: &i64| usize::try_from(*v).ok())
-    else {
-        return Vec::new();
-    };
+fn pool_value(
+    entry: &MethodEntry,
+    line: &DisasmLine,
+    abc: &AbcFile,
+    kind: PoolKind,
+) -> Result<Vec<String>> {
+    let raw_index: u32 = required_operand(entry, line, 0, "constant pool index")?;
+    let index: usize = usize::try_from(raw_index)
+        .map_err(|_| body_semantic_error(entry, line, "constant pool index is out of range"))?;
     let value: Option<String> = match kind {
-        PoolKind::Int => abc.cpool.integers.get(idx).map(i32::to_string),
-        PoolKind::Uint => abc.cpool.uintegers.get(idx).map(u32::to_string),
-        PoolKind::Double => abc.cpool.doubles.get(idx).map(f64::to_string),
+        PoolKind::Int => abc.cpool.integers.get(index).map(i32::to_string),
+        PoolKind::Uint => abc.cpool.uintegers.get(index).map(u32::to_string),
+        PoolKind::Double => abc.cpool.doubles.get(index).map(f64::to_string),
     };
-    value.map_or_else(Vec::new, |v: String| vec![v])
+    value
+        .map(|value: String| vec![value])
+        .ok_or_else(|| body_semantic_error(entry, line, "constant pool index is out of range"))
 }
 
-fn access_operand(line: &DisasmLine, abc: &AbcFile) -> Vec<String> {
-    match line.opcode {
+fn access_operand(entry: &MethodEntry, line: &DisasmLine, abc: &AbcFile) -> Result<Vec<String>> {
+    let operands: Vec<String> = match line.opcode {
         0xD0..=0xD3 => vec![format!("local{}", line.opcode - 0xD0)],
         0xD4..=0xD7 => vec![format!("local{}", line.opcode - 0xD4)],
         0x62 | 0x63 => line
@@ -434,47 +771,49 @@ fn access_operand(line: &DisasmLine, abc: &AbcFile) -> Vec<String> {
             .first()
             .map_or_else(Vec::new, |v: &i64| vec![format!("scope{v}")]),
         _ => {
-            let name: String = multiname_operand(line, abc);
+            let name: String = multiname_operand(entry, line, abc)?;
             if name.is_empty() {
                 Vec::new()
             } else {
                 vec![name]
             }
         }
-    }
+    };
+    Ok(operands)
 }
 
-fn multiname_operand(line: &DisasmLine, abc: &AbcFile) -> String {
-    let Some(idx) = line
-        .operands
-        .first()
-        .and_then(|v: &i64| u32::try_from(*v).ok())
-    else {
-        return String::new();
-    };
-    abc.cpool
-        .render_multiname_property(idx)
-        .unwrap_or_else(|_| String::with_capacity(0))
+fn multiname_operand(entry: &MethodEntry, line: &DisasmLine, abc: &AbcFile) -> Result<String> {
+    let index: u32 = required_operand(entry, line, 0, "multiname index")?;
+    abc.cpool.render_multiname_property(index).map_err(|error| {
+        body_semantic_error(entry, line, &format!("invalid multiname index: {error}"))
+    })
 }
 
-fn method_index_name(line: &DisasmLine, abc: &AbcFile, prefix: &str) -> String {
-    let Some(idx) = line
-        .operands
-        .first()
-        .and_then(|v: &i64| u32::try_from(*v).ok())
-    else {
-        return format!("{prefix}#?");
+fn method_index_name(
+    entry: &MethodEntry,
+    line: &DisasmLine,
+    abc: &AbcFile,
+    prefix: &str,
+) -> Result<String> {
+    let index: u32 = required_operand(entry, line, 0, "method index")?;
+    let index_usize: usize = usize::try_from(index)
+        .map_err(|_| body_semantic_error(entry, line, "method index is out of range"))?;
+    let Some(info): Option<&MethodInfo> = abc.methods.get(index_usize) else {
+        return Err(body_semantic_error(
+            entry,
+            line,
+            "method index is out of range",
+        ));
     };
-    if let Some(info) = abc.methods.get(idx as usize) {
-        let info: &MethodInfo = info;
-        if info.name_index != 0
-            && let Ok(name) = abc.cpool.string_at(info.name_index)
-            && !name.is_empty()
-        {
-            return name.to_owned();
+    if info.name_index != 0 {
+        let name: &str = abc.cpool.string_at(info.name_index).map_err(|error| {
+            body_semantic_error(entry, line, &format!("invalid method name index: {error}"))
+        })?;
+        if !name.is_empty() {
+            return Ok(name.to_owned());
         }
     }
-    format!("{prefix}#{idx}")
+    Ok(format!("{prefix}#{index}"))
 }
 
 const fn binary_op(opcode: u8) -> Option<BinaryOp> {

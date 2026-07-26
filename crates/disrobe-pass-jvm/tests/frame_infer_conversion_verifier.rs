@@ -57,6 +57,7 @@ fn inferred_join_frame() -> (FrameState, u16) {
         code,
         exception_table: Vec::new(),
         dropped_exception_entries: 0,
+        nested_attribute_name_indices: Vec::new(),
     };
     let cfg: Cfg = build_cfg(&insns, &attr, |_| None).expect("build cfg");
     let desc: MethodDescriptor = conv_descriptor();

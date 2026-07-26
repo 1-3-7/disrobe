@@ -5,8 +5,8 @@ use disrobe_nir::{
 };
 use disrobe_pass_jvm::{
     Attribute, ClassFile, CodeAttribute, ConstantPoolEntry, Instruction, MethodInfo, Operands,
-    branch_target, class_internal_name_at, disassemble, method_name_descriptor_at, parse_classfile,
-    parse_code_attribute,
+    branch_target, class_internal_name_at, method_name_descriptor_at, parse_classfile,
+    parse_code_attribute, parse_method_descriptor, validate_code_attribute,
 };
 
 use crate::error::{LiftError, Result};
@@ -16,18 +16,24 @@ use crate::usize_to_u32_saturating;
 const FUNCTION_STRIDE: u64 = 1 << 20;
 const IMPORT_BASE: u64 = 1 << 40;
 const ACC_PUBLIC: u16 = 0x0001;
+const ACC_NATIVE: u16 = 0x0100;
+const ACC_ABSTRACT: u16 = 0x0400;
 
 pub fn lift_classfile(bytes: &[u8]) -> Result<NirModule> {
     let class: ClassFile = parse_classfile(bytes)
         .map_err(|e: disrobe_pass_jvm::Error| LiftError::Source(format!("classfile parse: {e}")))?;
-    let this_class: String = class
-        .this_class_name()
-        .map_or_else(|_| String::with_capacity(0), str::to_owned);
+    let this_class: String =
+        class
+            .this_class_name()
+            .map(str::to_owned)
+            .map_err(|error: disrobe_pass_jvm::Error| {
+                LiftError::Source(format!("classfile class name: {error}"))
+            })?;
 
     let source_hash: [u8; 32] = *blake3::hash(bytes).as_bytes();
     let mut module: NirModule = NirModule::new(source_hash, SourceLang::Jvm);
 
-    let methods: Vec<MethodEntry> = enumerate_methods(&class);
+    let methods: Vec<MethodEntry> = enumerate_methods(&class)?;
     let internal_by_key: BTreeMap<(String, String), u64> = methods
         .iter()
         .map(|m: &MethodEntry| {
@@ -42,7 +48,7 @@ pub fn lift_classfile(bytes: &[u8]) -> Result<NirModule> {
 
     for method in &methods {
         register_method_symbol(method, &mut module);
-        let maybe_code: Option<CodeAttribute> = method.code(&class);
+        let maybe_code: Option<CodeAttribute> = method.code(&class)?;
         if let Some(code) = maybe_code {
             let function: NirFunction = lift_method(
                 method,
@@ -85,15 +91,59 @@ struct MethodEntry {
 }
 
 impl MethodEntry {
-    fn code(&self, class: &ClassFile) -> Option<CodeAttribute> {
-        let info: &MethodInfo = class.methods.get(self.index as usize)?;
+    fn code(&self, class: &ClassFile) -> Result<Option<CodeAttribute>> {
+        let Some(info): Option<&MethodInfo> = class.methods.get(self.index as usize) else {
+            return Err(LiftError::Source(format!(
+                "classfile method {} index {} is absent",
+                self.name, self.index
+            )));
+        };
+        let mut code: Option<CodeAttribute> = None;
         for attribute in &info.attributes {
             let attribute: &Attribute = attribute;
-            if class.utf8_at(attribute.name_index).ok() == Some("Code") {
-                return parse_code_attribute(&attribute.info).ok();
+            let attribute_name: &str =
+                class
+                    .utf8_at(attribute.name_index)
+                    .map_err(|error: disrobe_pass_jvm::Error| {
+                        LiftError::Source(format!(
+                            "classfile method {} attribute name: {error}",
+                            self.name
+                        ))
+                    })?;
+            if attribute_name == "Code" {
+                if self.access_flags & (ACC_NATIVE | ACC_ABSTRACT) != 0 {
+                    return Err(LiftError::Source(format!(
+                        "classfile method {} bodyless declaration has Code",
+                        self.name
+                    )));
+                }
+                if code.is_some() {
+                    return Err(LiftError::Source(format!(
+                        "classfile method {} has duplicate Code attributes",
+                        self.name
+                    )));
+                }
+                let parsed: CodeAttribute = parse_code_attribute(&attribute.info).map_err(
+                    |error: disrobe_pass_jvm::Error| {
+                        LiftError::Source(format!(
+                            "classfile method {} Code parse: {error}",
+                            self.name
+                        ))
+                    },
+                )?;
+                code = Some(parsed);
             }
         }
-        None
+        if self.access_flags & (ACC_NATIVE | ACC_ABSTRACT) != 0 {
+            Ok(None)
+        } else if let Some(code) = code {
+            Ok(Some(code))
+        } else {
+            Err(LiftError::Source(format!(
+                "classfile method {} Code is absent",
+                self.name
+            )))
+        }
     }
 
     const fn is_public(&self) -> bool {
@@ -101,25 +151,37 @@ impl MethodEntry {
     }
 }
 
-fn enumerate_methods(class: &ClassFile) -> Vec<MethodEntry> {
+fn enumerate_methods(class: &ClassFile) -> Result<Vec<MethodEntry>> {
     class
         .methods
         .iter()
         .enumerate()
-        .map(|(index, info): (usize, &MethodInfo)| {
-            let name: String = class
-                .utf8_at(info.name_index)
-                .map_or_else(|_| format!("method_{index}"), str::to_owned);
-            let descriptor: String = class
-                .utf8_at(info.descriptor_index)
-                .map_or_else(|_| String::with_capacity(0), str::to_owned);
-            MethodEntry {
-                index: usize_to_u32_saturating(index),
-                name,
-                descriptor,
-                access_flags: info.access_flags,
-            }
-        })
+        .map(
+            |(index, info): (usize, &MethodInfo)| -> Result<MethodEntry> {
+                let name: String = class.utf8_at(info.name_index).map(str::to_owned).map_err(
+                    |error: disrobe_pass_jvm::Error| {
+                        LiftError::Source(format!("classfile method {index} name: {error}"))
+                    },
+                )?;
+                let descriptor: String = class
+                    .utf8_at(info.descriptor_index)
+                    .map(str::to_owned)
+                    .map_err(|error: disrobe_pass_jvm::Error| {
+                        LiftError::Source(format!("classfile method {name} descriptor: {error}"))
+                    })?;
+                if parse_method_descriptor(&descriptor).is_none() {
+                    return Err(LiftError::Source(format!(
+                        "classfile method {name} has invalid descriptor {descriptor}"
+                    )));
+                }
+                Ok(MethodEntry {
+                    index: usize_to_u32_saturating(index),
+                    name,
+                    descriptor,
+                    access_flags: info.access_flags,
+                })
+            },
+        )
         .collect()
 }
 
@@ -175,8 +237,13 @@ fn lift_method(
     imports: &mut ImportTable,
 ) -> Result<NirFunction> {
     let base: u64 = function_address(method.index);
-    let insns: Vec<Instruction> = disassemble(&code.code)
-        .map_err(|e: disrobe_pass_jvm::Error| LiftError::Source(format!("disassemble: {e}")))?;
+    let insns: Vec<Instruction> =
+        validate_code_attribute(class, code).map_err(|error: disrobe_pass_jvm::Error| {
+            LiftError::Source(format!(
+                "classfile method {} Code validation: {error}",
+                method.name
+            ))
+        })?;
 
     let byte_arith: Vec<bool> = byte_arith_flags(&insns);
 

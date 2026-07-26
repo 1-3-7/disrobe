@@ -15,6 +15,8 @@ const EDGECASES_DEX: &[u8] = include_bytes!("../../../corpus/jvm/dex/EdgeCases.d
 fn code_items() -> Vec<CodeItem> {
     let dex = parse_dex(EDGECASES_DEX).expect("parse edgecases.dex");
     parse_code_items(&dex, EDGECASES_DEX)
+        .into_complete()
+        .expect("fixture code items")
 }
 
 fn structure_method(item: &CodeItem) -> (Region, bool) {

@@ -9,6 +9,7 @@ fn code_attr(body: Vec<u8>) -> CodeAttribute {
         code: body,
         exception_table: Vec::new(),
         dropped_exception_entries: 0,
+        nested_attribute_name_indices: Vec::new(),
     }
 }
 
@@ -157,6 +158,7 @@ fn class_level_aggregate_counts_one_flattened_method() {
     info.extend_from_slice(&8u16.to_be_bytes());
     info.extend_from_slice(&(body.len() as u32).to_be_bytes());
     info.extend_from_slice(&body);
+    info.extend_from_slice(&0u16.to_be_bytes());
     info.extend_from_slice(&0u16.to_be_bytes());
     let cf: ClassFile = ClassFile {
         minor_version: 0,

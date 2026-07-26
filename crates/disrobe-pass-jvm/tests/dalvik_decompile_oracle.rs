@@ -422,8 +422,9 @@ fn class_side_edgecases_methods_with_code() -> usize {
 #[test]
 fn two_front_ends_agree_on_edgecases_method_count() {
     let dex: DexFile = parse_dex(EDGECASES_DEX).expect("parse dex");
-    let items = parse_code_items(&dex, EDGECASES_DEX);
+    let items: disrobe_pass_jvm::CodeItemsReport = parse_code_items(&dex, EDGECASES_DEX);
     let dex_side: usize = items
+        .decoded()
         .iter()
         .filter(|it| binary_to_source(&it.class) == "EdgeCases")
         .count();

@@ -77,6 +77,10 @@ pub struct CallSiteRecovery {
 pub struct GenericStringRecovery {
     pub candidates_found: usize,
     pub call_sites: Vec<CallSiteRecovery>,
+    #[serde(default)]
+    pub code_scan_complete: bool,
+    #[serde(default)]
+    pub decode_error_count: usize,
 }
 
 impl GenericStringRecovery {
@@ -104,7 +108,10 @@ struct CandidateInfo {
 
 #[must_use]
 pub fn recover(dex: &DexFile, dex_bytes: &[u8]) -> GenericStringRecovery {
-    let code_items: Vec<CodeItem> = crate::dex::parse_code_items(dex, dex_bytes);
+    let code_report: crate::dex::CodeItemsReport = crate::dex::parse_code_items(dex, dex_bytes);
+    let code_scan_complete: bool = code_report.is_fully_decoded();
+    let decode_error_count: usize = code_report.error_count();
+    let code_items: Vec<CodeItem> = code_report.into_partial_decoded();
     let method_by_sig: BTreeMap<(String, String, String), &MethodId> = dex
         .method_ids
         .iter()
@@ -169,6 +176,8 @@ pub fn recover(dex: &DexFile, dex_bytes: &[u8]) -> GenericStringRecovery {
     GenericStringRecovery {
         candidates_found,
         call_sites,
+        code_scan_complete,
+        decode_error_count,
     }
 }
 

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bytecode::{
     self, CodeAttribute, Instruction, Operands, branch_target, disassemble, parse_code_attribute,
+    validate_code_attribute,
 };
 use crate::classfile::{ClassFile, ConstantPoolEntry, FieldInfo, MethodInfo};
 use crate::decompile_struct::{
@@ -13,7 +14,7 @@ use crate::decompile_struct::{
     Structurer, SwitchKey, build_cfg, compute_dominators, find_natural_loops,
 };
 use crate::descriptor::{self, JavaType, MethodDescriptor};
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 pub const ACC_PUBLIC: u16 = 0x0001;
 pub const ACC_PRIVATE: u16 = 0x0002;
@@ -39,6 +40,12 @@ pub struct DecompiledClass {
     pub field_count: usize,
     pub fully_lifted_methods: usize,
     pub fallback_methods: usize,
+    pub decode_error_count: usize,
+}
+
+struct FieldMetadata {
+    name: String,
+    ty: JavaType,
 }
 
 #[must_use]
@@ -93,7 +100,21 @@ pub fn member_access_keywords(flags: u16) -> String {
 #[must_use]
 pub fn decompile_class(cf: &ClassFile) -> DecompiledClass {
     let mut source: String = String::with_capacity(2048);
-    let raw_name: &str = cf.this_class_name().unwrap_or("UnknownClass");
+    let raw_name: &str = match cf.this_class_name() {
+        Ok(name) => name,
+        Err(error) => {
+            crate::debug::dbg_kv("class-metadata-reject", || error.to_string());
+            return DecompiledClass {
+                source: "public class UnknownClass {\n    // <decompile: malformed bytecode>\n}\n"
+                    .to_owned(),
+                method_count: cf.methods.len(),
+                field_count: cf.fields.len(),
+                fully_lifted_methods: 0,
+                fallback_methods: cf.methods.len(),
+                decode_error_count: 1,
+            };
+        }
+    };
     let this_name: String = crate::name_disambig::rewrite_active(raw_name);
     let simple: &str = this_name.rsplit('/').next().unwrap_or(&this_name);
     let package: Option<&str> = this_name.rfind('/').map(|p| &this_name[..p]);
@@ -207,28 +228,48 @@ pub fn decompile_class(cf: &ClassFile) -> DecompiledClass {
     }
     let _ = writeln!(source, " {{");
 
+    let field_metadata: Vec<Result<FieldMetadata>> = cf
+        .fields
+        .iter()
+        .map(|field: &FieldInfo| decode_field_metadata(cf, field))
+        .collect();
+    let mut decode_error_count: usize = field_metadata
+        .iter()
+        .filter(|metadata: &&Result<FieldMetadata>| metadata.is_err())
+        .count();
     let mut field_count: usize = 0;
     if is_enum {
-        if enum_constants_recoverable(cf, &structure) {
-            let enum_fields: Vec<&FieldInfo> = cf
+        let enum_metadata_complete: bool =
+            cf.fields
+                .iter()
+                .enumerate()
+                .all(|(index, field): (usize, &FieldInfo)| {
+                    field.access_flags & ACC_ENUM == 0 || field_metadata[index].is_ok()
+                });
+        if enum_metadata_complete && enum_constants_recoverable(cf, &structure) {
+            let enum_fields: Vec<(usize, &FieldInfo)> = cf
                 .fields
                 .iter()
-                .filter(|field: &&FieldInfo| field.access_flags & ACC_ENUM != 0)
+                .enumerate()
+                .filter(|(_, field): &(usize, &FieldInfo)| field.access_flags & ACC_ENUM != 0)
                 .collect();
-            for (index, field) in enum_fields.iter().enumerate() {
-                let name: &str = cf.utf8_at(field.name_index).unwrap_or("unresolved");
+            for (ordinal, (field_index, field)) in enum_fields.iter().enumerate() {
+                let metadata: &FieldMetadata = match &field_metadata[*field_index] {
+                    Ok(metadata) => metadata,
+                    Err(_) => continue,
+                };
                 source.push_str(&render_member_annotations(
                     &mut annotation_renderer,
                     cf,
                     &field.attributes,
                     "    ",
                 ));
-                let separator: char = if index + 1 == enum_fields.len() {
+                let separator: char = if ordinal + 1 == enum_fields.len() {
                     ';'
                 } else {
                     ','
                 };
-                let _ = writeln!(source, "    {name}{separator}");
+                let _ = writeln!(source, "    {}{separator}", metadata.name);
                 field_count += 1;
             }
             if enum_fields.is_empty() {
@@ -238,15 +279,21 @@ pub fn decompile_class(cf: &ClassFile) -> DecompiledClass {
             let _ = writeln!(source, "    <unresolved-enum-constants>;");
         }
     }
-    for field in &cf.fields {
-        let field_name: Option<&str> = cf.utf8_at(field.name_index).ok();
-        if is_enum
-            && (field.access_flags & ACC_ENUM != 0
-                || field_name.is_some_and(|name| name == "$VALUES"))
-        {
+    for (field_index, field) in cf.fields.iter().enumerate() {
+        let metadata: &FieldMetadata = match &field_metadata[field_index] {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                crate::debug::dbg_kv("field-metadata-reject", || error.to_string());
+                let _ = writeln!(source, "    // <decompile: malformed field metadata>");
+                field_count += 1;
+                continue;
+            }
+        };
+        if is_enum && (field.access_flags & ACC_ENUM != 0 || metadata.name == "$VALUES") {
             continue;
         }
-        if let Some(line) = render_field(cf, field, generic_class.as_ref()) {
+        if let Some(line_value) = render_field(cf, field, metadata, generic_class.as_ref()) {
+            let line: String = line_value;
             source.push_str(&render_member_annotations(
                 &mut annotation_renderer,
                 cf,
@@ -313,8 +360,11 @@ pub fn decompile_class(cf: &ClassFile) -> DecompiledClass {
         method_count += 1;
         if rendered.fully_lifted {
             fully_lifted += 1;
-        } else if rendered.has_body {
+        } else if rendered.has_body || rendered.refused {
             fallback += 1;
+        }
+        if rendered.refused {
+            decode_error_count += 1;
         }
     }
 
@@ -326,6 +376,7 @@ pub fn decompile_class(cf: &ClassFile) -> DecompiledClass {
         field_count,
         fully_lifted_methods: fully_lifted,
         fallback_methods: fallback,
+        decode_error_count,
     }
 }
 
@@ -338,40 +389,47 @@ fn render_member_annotations(
     renderer.render(cf, attributes, indent)
 }
 
-fn is_assertions_disabled_field(cf: &ClassFile, field: &FieldInfo) -> bool {
+fn decode_field_metadata(cf: &ClassFile, field: &FieldInfo) -> Result<FieldMetadata> {
+    let name: String = cf.utf8_at(field.name_index)?.to_owned();
+    let descriptor: &str = cf.utf8_at(field.descriptor_index)?;
+    let ty: JavaType = descriptor::parse_field(descriptor).ok_or_else(|| Error::BadBytecode {
+        offset: usize::from(field.descriptor_index),
+        reason: "field descriptor is invalid",
+    })?;
+    Ok(FieldMetadata { name, ty })
+}
+
+fn is_assertions_disabled_field(field: &FieldInfo, metadata: &FieldMetadata) -> bool {
     field.access_flags & (ACC_STATIC | ACC_FINAL | ACC_SYNTHETIC)
         == (ACC_STATIC | ACC_FINAL | ACC_SYNTHETIC)
-        && cf
-            .utf8_at(field.name_index)
-            .is_ok_and(|n: &str| n == "$assertionsDisabled")
-        && cf
-            .utf8_at(field.descriptor_index)
-            .is_ok_and(|d: &str| d == "Z")
+        && metadata.name == "$assertionsDisabled"
+        && matches!(metadata.ty, JavaType::Boolean)
 }
 
 fn render_field(
     cf: &ClassFile,
     field: &FieldInfo,
+    metadata: &FieldMetadata,
     class_signature: Option<&crate::signature::RecoveredClassSignature>,
 ) -> Option<String> {
-    if is_assertions_disabled_field(cf, field) {
+    if is_assertions_disabled_field(field, metadata) {
         return None;
     }
-    let name: &str = cf.utf8_at(field.name_index).ok()?;
-    let desc: &str = cf.utf8_at(field.descriptor_index).ok()?;
-    let ty: JavaType = descriptor::parse_field(desc)?;
-    let rendered_type: String =
-        crate::signature::recover_field(cf, field, class_signature).unwrap_or_else(|| ty.render());
+    let rendered_type: String = crate::signature::recover_field(cf, field, class_signature)
+        .unwrap_or_else(|| metadata.ty.render());
     let kw: String = member_access_keywords(field.access_flags);
-    let constant: Option<String> = constant_value_initializer(cf, field, &ty);
+    let constant: Option<String> = constant_value_initializer(cf, field, &metadata.ty);
     let prefix: String = if kw.is_empty() {
         String::new()
     } else {
         format!("{kw} ")
     };
     match constant {
-        Some(value) => Some(format!("{prefix}{rendered_type} {name} = {value};")),
-        None => Some(format!("{prefix}{rendered_type} {name};")),
+        Some(value) => Some(format!(
+            "{prefix}{rendered_type} {} = {value};",
+            metadata.name
+        )),
+        None => Some(format!("{prefix}{rendered_type} {};", metadata.name)),
     }
 }
 
@@ -527,7 +585,7 @@ fn enum_constructor_is_implicit(cf: &ClassFile, constructor: &MethodInfo) -> boo
         });
         return false;
     }
-    let Some(code): Option<CodeAttribute> = find_code(cf, constructor) else {
+    let MethodCode::Decoded(code): MethodCode = find_code(cf, constructor) else {
         crate::debug::dbg_kv("enum-constructor-reject", || "Code is absent".to_string());
         return false;
     };
@@ -590,7 +648,7 @@ fn enum_clinit_has_user_effects(cf: &ClassFile) -> bool {
     }) else {
         return true;
     };
-    let Some(code): Option<CodeAttribute> = find_code(cf, clinit) else {
+    let MethodCode::Decoded(code): MethodCode = find_code(cf, clinit) else {
         return true;
     };
     let Ok(instructions): Result<Vec<Instruction>> = disassemble(&code.code) else {
@@ -650,6 +708,7 @@ struct RenderedMethod {
     text: String,
     fully_lifted: bool,
     has_body: bool,
+    refused: bool,
 }
 
 const RECOMPILE_SAFE_LAMBDA_PREFIX: &str = "synthLambda$";
@@ -659,6 +718,16 @@ fn recompile_safe_method_name(name: &str) -> String {
         || name.to_string(),
         |rest: &str| format!("{RECOMPILE_SAFE_LAMBDA_PREFIX}{rest}"),
     )
+}
+
+fn refused_metadata_signature(name: &str, class_simple: &str) -> String {
+    if name == "<init>" {
+        format!("    {class_simple}()")
+    } else if name == "<clinit>" {
+        "    static".to_owned()
+    } else {
+        format!("    void {}()", recompile_safe_method_name(name))
+    }
 }
 
 fn render_method(
@@ -689,9 +758,29 @@ fn render_method_mode(
     class_signature: Option<&crate::signature::RecoveredClassSignature>,
     allow_generic_signature: bool,
 ) -> RenderedMethod {
-    let name: &str = cf.utf8_at(method.name_index).unwrap_or("?");
-    let desc: &str = cf.utf8_at(method.descriptor_index).unwrap_or("()V");
-    let parsed: Option<MethodDescriptor> = descriptor::parse_method(desc);
+    let name: &str = match cf.utf8_at(method.name_index) {
+        Ok(name) => name,
+        Err(error) => {
+            let fallback_name: String = format!("malformedMethod{}", method.name_index);
+            let signature: String = format!("    void {fallback_name}()");
+            let reason: String = format!("method name: {error}");
+            return render_refused_method(signature, cf, &fallback_name, &reason);
+        }
+    };
+    let desc: &str = match cf.utf8_at(method.descriptor_index) {
+        Ok(descriptor) => descriptor,
+        Err(error) => {
+            let signature: String = refused_metadata_signature(name, class_simple);
+            let reason: String = format!("method descriptor: {error}");
+            return render_refused_method(signature, cf, name, &reason);
+        }
+    };
+    let Some(parsed_method): Option<MethodDescriptor> = descriptor::parse_method(desc) else {
+        let signature: String = refused_metadata_signature(name, class_simple);
+        return render_refused_method(signature, cf, name, "invalid method descriptor");
+    };
+    let parsed: Option<MethodDescriptor> = Some(parsed_method);
+    let method_code: MethodCode = find_code(cf, method);
     let generic_signature: Option<crate::signature::RecoveredMethodSignature> =
         allow_generic_signature
             .then(|| crate::signature::recover_method(cf, method, class_signature))
@@ -700,14 +789,10 @@ fn render_method_mode(
     let mut kw: String = member_access_keywords(method_flags);
     let is_static: bool = method.access_flags & ACC_STATIC != 0;
     let is_varargs: bool = method.access_flags & ACC_VARARGS != 0;
-    let is_abstract: bool = method.access_flags & (ACC_ABSTRACT | ACC_NATIVE) != 0;
+    let is_bodyless: bool = method.access_flags & (ACC_ABSTRACT | ACC_NATIVE) != 0;
     let is_private: bool = method.access_flags & ACC_PRIVATE != 0;
-    let needs_default: bool = is_interface
-        && !is_abstract
-        && !is_static
-        && !is_private
-        && has_code(cf, method)
-        && name != "<clinit>";
+    let needs_default: bool =
+        is_interface && !is_bodyless && !is_static && !is_private && name != "<clinit>";
     if needs_default {
         kw = if kw.is_empty() {
             "default".to_string()
@@ -787,7 +872,7 @@ fn render_method_mode(
             }
         });
     if name == "<init>" {
-        let _ = write!(
+        let _: std::fmt::Result = write!(
             signature,
             "{generic_prefix}{class_simple}({params}){throws_clause}"
         );
@@ -803,39 +888,51 @@ fn render_method_mode(
             |generic: &crate::signature::RecoveredMethodSignature| generic.result.clone(),
         );
         let emit_name: String = recompile_safe_method_name(name);
-        let _ = write!(
+        let _: std::fmt::Result = write!(
             signature,
             "{generic_prefix}{ret} {emit_name}({params}){throws_clause}"
         );
     }
 
-    if annotation_default.is_some() || is_abstract || is_interface && !has_code(cf, method) {
-        if let Some(value) = annotation_default {
-            let _ = write!(signature, " default {value}");
-        }
-        let _ = write!(signature, ";");
-        return RenderedMethod {
-            text: signature,
-            fully_lifted: false,
-            has_body: false,
+    let _: Option<()> = annotation_default.map(|value: &str| {
+        let _: std::fmt::Result = write!(signature, " default {value}");
+    });
+    if annotation_default.is_some() || is_bodyless {
+        return match method_code {
+            MethodCode::Absent => RenderedMethod {
+                text: format!("{signature};"),
+                fully_lifted: false,
+                has_body: false,
+                refused: false,
+            },
+            MethodCode::Decoded(_) => render_refused_declaration(
+                signature,
+                cf,
+                name,
+                "Code is present on a bodyless declaration",
+            ),
+            MethodCode::Refused(error) => {
+                let reason: String = error.to_string();
+                render_refused_declaration(signature, cf, name, &reason)
+            }
         };
     }
-
-    let code_attr: Option<CodeAttribute> = find_code(cf, method);
-    let Some(code) = code_attr else {
-        let _ = write!(signature, " {{\n    }}");
-        return RenderedMethod {
-            text: signature,
-            fully_lifted: true,
-            has_body: true,
-        };
+    let code: CodeAttribute = match method_code {
+        MethodCode::Decoded(code) => code,
+        MethodCode::Absent => {
+            return render_refused_method(signature, cf, name, "Code is absent");
+        }
+        MethodCode::Refused(error) => {
+            let reason: String = error.to_string();
+            return render_refused_method(signature, cf, name, &reason);
+        }
     };
 
     let has_this: bool = !is_static && name != "<clinit>";
     let bool_return: bool = parsed
         .as_ref()
         .is_some_and(|md: &MethodDescriptor| matches!(md.returns, JavaType::Boolean));
-    let body: MethodBody = lift_method_body(
+    let body: MethodBody = match lift_method_body(
         cf,
         &code,
         &param_names,
@@ -843,7 +940,13 @@ fn render_method_mode(
         &boolean_params,
         has_this,
         bool_return,
-    );
+    ) {
+        Ok(body) => body,
+        Err(error) => {
+            let reason: String = error.to_string();
+            return render_refused_method(signature, cf, name, &reason);
+        }
+    };
     let stackmap_note: String =
         stackmap_resilience_note(cf, method, &code, parsed.as_ref(), is_static, name);
     let mut body_text: String = if name == "<clinit>" {
@@ -896,6 +999,7 @@ fn render_method_mode(
         text,
         fully_lifted: body.fully_lifted,
         has_body: true,
+        refused: false,
     }
 }
 
@@ -1330,21 +1434,86 @@ const fn is_bridge_method(method: &MethodInfo) -> bool {
     method.access_flags & ACC_BRIDGE != 0 && method.access_flags & ACC_SYNTHETIC != 0
 }
 
-fn has_code(cf: &ClassFile, method: &MethodInfo) -> bool {
-    method.attributes.iter().any(|a| {
-        cf.utf8_at(a.name_index)
-            .map(|n| n == "Code")
-            .unwrap_or(false)
-    })
+enum MethodCode {
+    Absent,
+    Decoded(CodeAttribute),
+    Refused(Error),
 }
 
-fn find_code(cf: &ClassFile, method: &MethodInfo) -> Option<CodeAttribute> {
+fn find_code(cf: &ClassFile, method: &MethodInfo) -> MethodCode {
+    let mut code: Option<CodeAttribute> = None;
     for attr in &method.attributes {
-        if cf.utf8_at(attr.name_index).ok()? == "Code" {
-            return parse_code_attribute(&attr.info).ok();
+        let attribute_name: &str = match cf.utf8_at(attr.name_index) {
+            Ok(name) => name,
+            Err(error) => return MethodCode::Refused(error),
+        };
+        if attribute_name == "Code" {
+            if code.is_some() {
+                return MethodCode::Refused(Error::BadBytecode {
+                    offset: 0,
+                    reason: "duplicate Code attribute",
+                });
+            }
+            let parsed: CodeAttribute = match parse_code_attribute(&attr.info) {
+                Ok(parsed) => parsed,
+                Err(error) => return MethodCode::Refused(error),
+            };
+            code = Some(parsed);
         }
     }
-    None
+    code.map_or(MethodCode::Absent, MethodCode::Decoded)
+}
+
+fn render_refused_method(
+    mut signature: String,
+    cf: &ClassFile,
+    name: &str,
+    reason: &str,
+) -> RenderedMethod {
+    crate::debug::dbg_kv("method-code-reject", || {
+        format!(
+            "{} method {name}: {reason}",
+            cf.this_class_name().unwrap_or("<unknown>")
+        )
+    });
+    if name == "<clinit>" {
+        let _: std::fmt::Result = write!(
+            signature,
+            " {{\n        // <decompile: malformed bytecode>\n    }}"
+        );
+    } else {
+        let _: std::fmt::Result = write!(
+            signature,
+            " {{\n        // <decompile: malformed bytecode>\n        throw new UnsupportedOperationException(\"malformed bytecode\");\n    }}"
+        );
+    }
+    RenderedMethod {
+        text: signature,
+        fully_lifted: false,
+        has_body: true,
+        refused: true,
+    }
+}
+
+fn render_refused_declaration(
+    mut signature: String,
+    cf: &ClassFile,
+    name: &str,
+    reason: &str,
+) -> RenderedMethod {
+    crate::debug::dbg_kv("method-code-reject", || {
+        format!(
+            "{} method {name}: {reason}",
+            cf.this_class_name().unwrap_or("<unknown>")
+        )
+    });
+    let _: std::fmt::Result = write!(signature, "; // <decompile: malformed bytecode>");
+    RenderedMethod {
+        text: signature,
+        fully_lifted: false,
+        has_body: false,
+        refused: true,
+    }
 }
 
 fn method_throws_clause(cf: &ClassFile, method: &MethodInfo) -> String {
@@ -1668,16 +1837,8 @@ fn lift_method_body(
     boolean_params: &BTreeSet<String>,
     has_this: bool,
     bool_return: bool,
-) -> MethodBody {
-    let raw_insns: Vec<Instruction> = match disassemble(&code.code) {
-        Ok(v) => v,
-        Err(_) => {
-            return MethodBody {
-                text: "        // <decompile: malformed bytecode>\n".to_string(),
-                fully_lifted: false,
-            };
-        }
-    };
+) -> Result<MethodBody> {
+    let raw_insns: Vec<Instruction> = validate_code_attribute(cf, code)?;
     let mut insns: Vec<Instruction> = if crate::jsr_inline::contains_jsr(&raw_insns) {
         let (inlined, report): (Vec<Instruction>, crate::jsr_inline::JsrInlineReport) =
             crate::jsr_inline::inline_jsr_subroutines(&raw_insns);
@@ -1687,10 +1848,10 @@ fn lift_method_body(
     };
     split_reused_primitive_ranges(&mut insns, code.max_locals);
     if insns.is_empty() {
-        return MethodBody {
+        return Ok(MethodBody {
             text: String::new(),
             fully_lifted: true,
-        };
+        });
     }
     let bootstraps: Vec<crate::attributes::BootstrapMethod> =
         crate::attributes::analyze(cf).bootstrap_methods;
@@ -1744,7 +1905,7 @@ fn lift_method_body(
     }
     let array_casts: BTreeMap<String, String> =
         object_local_array_casts(cf, &insns, params, &object_locals);
-    with_object_locals(object_locals, boolean_locals, array_casts, || {
+    let body: MethodBody = with_object_locals(object_locals, boolean_locals, array_casts, || {
         if let Some(body) = lift_structured(
             cf,
             code,
@@ -1764,7 +1925,8 @@ fn lift_method_body(
             "structured lift declined; falling back to flat linear lift".to_owned()
         });
         lift_method_body_flat(cf, &insns, params, &bootstraps, has_this, bool_return)
-    })
+    });
+    Ok(body)
 }
 
 fn lift_method_body_flat(
@@ -7441,7 +7603,7 @@ fn switchmap_inversions(cf: &ClassFile) -> BTreeMap<String, BTreeMap<i32, String
     }) else {
         return out;
     };
-    let Some(code): Option<CodeAttribute> = find_code(cf, clinit) else {
+    let MethodCode::Decoded(code): MethodCode = find_code(cf, clinit) else {
         return out;
     };
     let Ok(insns): Result<Vec<Instruction>> = disassemble(&code.code) else {
@@ -9138,11 +9300,11 @@ fn render_inner_method_stub(
     let parsed: MethodDescriptor = descriptor::parse_method(desc)?;
     let generic_signature: Option<crate::signature::RecoveredMethodSignature> =
         crate::signature::recover_method(inner_cf, method, class_signature);
-    let is_abstract: bool = method.access_flags & (ACC_ABSTRACT | ACC_NATIVE) != 0 && !is_enum;
+    let is_bodyless: bool = method.access_flags & (ACC_ABSTRACT | ACC_NATIVE) != 0 && !is_enum;
     let is_static: bool = method.access_flags & ACC_STATIC != 0;
     let is_varargs: bool = method.access_flags & ACC_VARARGS != 0;
     let mut kw_flags: u16 = method.access_flags & !(ACC_VOLATILE | ACC_TRANSIENT | ACC_BRIDGE);
-    if !is_abstract {
+    if !is_bodyless {
         kw_flags &= !ACC_ABSTRACT;
     }
     let kw: String = member_access_keywords(kw_flags);
@@ -9170,7 +9332,7 @@ fn render_inner_method_stub(
     } else {
         format!("{kw} ")
     };
-    let default_kw: &str = if is_interface && !is_abstract && !is_static {
+    let default_kw: &str = if is_interface && !is_bodyless && !is_static {
         "default "
     } else {
         ""
@@ -9207,7 +9369,7 @@ fn render_inner_method_stub(
             "{prefix}{kw_str}{default_kw}{type_parameters}{ret} {emit_name}({params}){throws_clause}"
         )
     };
-    let declaration: String = if is_abstract || annotation_default.is_some() {
+    let declaration: String = if is_bodyless || annotation_default.is_some() {
         let default_value: String =
             annotation_default.map_or_else(String::new, |value: &str| format!(" default {value}"));
         format!("{sig}{default_value};")
@@ -9291,7 +9453,7 @@ fn anon_capture_field_order(anon_cf: &ClassFile) -> Vec<String> {
     }) else {
         return Vec::new();
     };
-    let Some(code): Option<CodeAttribute> = find_code(anon_cf, ctor) else {
+    let MethodCode::Decoded(code): MethodCode = find_code(anon_cf, ctor) else {
         return Vec::new();
     };
     let Ok(insns): Result<Vec<Instruction>> = disassemble(&code.code) else {
@@ -9827,6 +9989,354 @@ mod tests {
         ConstantPoolEntry::Utf8(s.to_string())
     }
 
+    fn code_info(
+        code: &[u8],
+        exceptions: &[(u16, u16, u16, u16)],
+        nested_attribute_names: &[u16],
+    ) -> Vec<u8> {
+        let mut info: Vec<u8> = Vec::new();
+        info.extend_from_slice(&1u16.to_be_bytes());
+        info.extend_from_slice(&1u16.to_be_bytes());
+        info.extend_from_slice(&(code.len() as u32).to_be_bytes());
+        info.extend_from_slice(code);
+        info.extend_from_slice(&(exceptions.len() as u16).to_be_bytes());
+        for (start, end, handler, catch_type) in exceptions {
+            info.extend_from_slice(&start.to_be_bytes());
+            info.extend_from_slice(&end.to_be_bytes());
+            info.extend_from_slice(&handler.to_be_bytes());
+            info.extend_from_slice(&catch_type.to_be_bytes());
+        }
+        info.extend_from_slice(&(nested_attribute_names.len() as u16).to_be_bytes());
+        for name_index in nested_attribute_names {
+            info.extend_from_slice(&name_index.to_be_bytes());
+            info.extend_from_slice(&0u32.to_be_bytes());
+        }
+        info
+    }
+
+    fn lookup_switch_code(default: i32, keys: [i32; 2]) -> Vec<u8> {
+        let mut code: Vec<u8> = vec![0xAB, 0x00, 0x00, 0x00];
+        code.extend_from_slice(&default.to_be_bytes());
+        code.extend_from_slice(&2i32.to_be_bytes());
+        for key in keys {
+            code.extend_from_slice(&key.to_be_bytes());
+            code.extend_from_slice(&28i32.to_be_bytes());
+        }
+        code.push(0xB1);
+        code
+    }
+
+    fn class_with_method_code(code_info: Option<Vec<u8>>, access_flags: u16) -> ClassFile {
+        let constant_pool: Vec<ConstantPoolEntry> = vec![
+            ConstantPoolEntry::Placeholder,
+            cp_utf8("DecodeStates"),
+            ConstantPoolEntry::Class { name_index: 1 },
+            cp_utf8("java/lang/Object"),
+            ConstantPoolEntry::Class { name_index: 3 },
+            cp_utf8("body"),
+            cp_utf8("()V"),
+            cp_utf8("Code"),
+        ];
+        let attributes: Vec<Attribute> = code_info.map_or_else(Vec::new, |info: Vec<u8>| {
+            vec![Attribute {
+                name_index: 7,
+                info,
+            }]
+        });
+        ClassFile {
+            minor_version: 0,
+            major_version: 52,
+            constant_pool,
+            access_flags: ACC_PUBLIC | (access_flags & ACC_ABSTRACT),
+            this_class: 2,
+            super_class: 4,
+            interfaces: Vec::new(),
+            fields: Vec::new(),
+            methods: vec![MethodInfo {
+                access_flags,
+                name_index: 5,
+                descriptor_index: 6,
+                attributes,
+            }],
+            attributes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn malformed_code_attribute_is_reported_as_fallback() {
+        let malformed_info: Vec<u8> = vec![0; 7];
+        assert!(parse_code_attribute(&malformed_info).is_err());
+        let class: ClassFile =
+            class_with_method_code(Some(malformed_info), ACC_PUBLIC | ACC_STATIC);
+        assert!(matches!(
+            find_code(&class, &class.methods[0]),
+            MethodCode::Refused(_)
+        ));
+        let decompiled: DecompiledClass = decompile_class(&class);
+        assert_eq!(decompiled.method_count, 1);
+        assert_eq!(decompiled.fully_lifted_methods, 0);
+        assert_eq!(decompiled.fallback_methods, 1);
+        assert!(
+            decompiled
+                .source
+                .contains("<decompile: malformed bytecode>")
+        );
+    }
+
+    #[test]
+    fn invalid_class_metadata_refuses_every_method() {
+        let mut class: ClassFile =
+            class_with_method_code(Some(code_info(&[0xB1], &[], &[])), ACC_PUBLIC | ACC_STATIC);
+        class.this_class = 1;
+
+        let decompiled: DecompiledClass = decompile_class(&class);
+        assert_eq!(decompiled.method_count, 1);
+        assert_eq!(decompiled.fully_lifted_methods, 0);
+        assert_eq!(decompiled.fallback_methods, 1);
+        assert!(
+            decompiled
+                .source
+                .contains("<decompile: malformed bytecode>")
+        );
+    }
+
+    #[test]
+    fn malformed_code_on_abstract_method_is_reported_as_fallback() {
+        let malformed_info: Vec<u8> = vec![0; 7];
+        assert!(parse_code_attribute(&malformed_info).is_err());
+        let class: ClassFile =
+            class_with_method_code(Some(malformed_info), ACC_PUBLIC | ACC_ABSTRACT);
+        let decompiled: DecompiledClass = decompile_class(&class);
+
+        assert_eq!(decompiled.fully_lifted_methods, 0);
+        assert_eq!(decompiled.fallback_methods, 1);
+        assert!(
+            decompiled
+                .source
+                .contains("<decompile: malformed bytecode>")
+        );
+    }
+
+    #[test]
+    fn absent_decoded_noop_and_zero_length_code_are_distinct() {
+        let absent: DecompiledClass =
+            decompile_class(&class_with_method_code(None, ACC_PUBLIC | ACC_ABSTRACT));
+        let noop: DecompiledClass = decompile_class(&class_with_method_code(
+            Some(code_info(&[0xB1], &[], &[])),
+            ACC_PUBLIC | ACC_STATIC,
+        ));
+        let zero_length_info: Vec<u8> = vec![0; 12];
+        assert!(parse_code_attribute(&zero_length_info).is_err());
+        let zero_length: DecompiledClass = decompile_class(&class_with_method_code(
+            Some(zero_length_info),
+            ACC_PUBLIC | ACC_STATIC,
+        ));
+
+        assert_eq!(absent.fully_lifted_methods, 0);
+        assert_eq!(absent.fallback_methods, 0);
+        assert!(absent.source.contains("public abstract void body();"));
+        assert_eq!(noop.fully_lifted_methods, 1);
+        assert_eq!(noop.fallback_methods, 0);
+        assert!(noop.source.contains("public static void body() {"));
+        assert_eq!(zero_length.fully_lifted_methods, 0);
+        assert_eq!(zero_length.fallback_methods, 1);
+        assert!(
+            zero_length
+                .source
+                .contains("<decompile: malformed bytecode>")
+        );
+    }
+
+    #[test]
+    fn malformed_field_metadata_is_reported_in_source() {
+        let constant_pool: Vec<ConstantPoolEntry> = vec![
+            ConstantPoolEntry::Placeholder,
+            cp_utf8("MalformedField"),
+            ConstantPoolEntry::Class { name_index: 1 },
+            cp_utf8("java/lang/Object"),
+            ConstantPoolEntry::Class { name_index: 3 },
+            cp_utf8("field"),
+            cp_utf8("I"),
+        ];
+        let mut class: ClassFile = ClassFile {
+            minor_version: 0,
+            major_version: 52,
+            constant_pool,
+            access_flags: ACC_PUBLIC,
+            this_class: 2,
+            super_class: 4,
+            interfaces: Vec::new(),
+            fields: vec![FieldInfo {
+                access_flags: ACC_PUBLIC,
+                name_index: 5,
+                descriptor_index: 6,
+                attributes: Vec::new(),
+            }],
+            methods: Vec::new(),
+            attributes: Vec::new(),
+        };
+        class.fields[0].descriptor_index = 5;
+
+        let decompiled: DecompiledClass = decompile_class(&class);
+        assert_eq!(decompiled.field_count, 1);
+        assert_eq!(decompiled.decode_error_count, 1);
+        assert!(
+            decompiled
+                .source
+                .contains("<decompile: malformed field metadata>")
+        );
+    }
+
+    #[test]
+    fn concrete_method_without_code_is_reported_as_fallback() {
+        let decompiled: DecompiledClass =
+            decompile_class(&class_with_method_code(None, ACC_PUBLIC | ACC_STATIC));
+        assert_eq!(decompiled.fully_lifted_methods, 0);
+        assert_eq!(decompiled.fallback_methods, 1);
+        assert!(
+            decompiled
+                .source
+                .contains("<decompile: malformed bytecode>")
+        );
+        assert!(
+            decompiled
+                .source
+                .contains("throw new UnsupportedOperationException(\"malformed bytecode\");")
+        );
+    }
+
+    #[test]
+    fn concrete_interface_method_without_code_is_reported_as_fallback() {
+        let mut class: ClassFile = class_with_method_code(None, ACC_PUBLIC);
+        class.access_flags = ACC_PUBLIC | ACC_INTERFACE | ACC_ABSTRACT;
+        let decompiled: DecompiledClass = decompile_class(&class);
+
+        assert_eq!(decompiled.fully_lifted_methods, 0);
+        assert_eq!(decompiled.fallback_methods, 1);
+        assert!(decompiled.source.contains("public default void body() {"));
+        assert!(
+            decompiled
+                .source
+                .contains("throw new UnsupportedOperationException(\"malformed bytecode\");")
+        );
+    }
+
+    #[test]
+    fn invalid_attribute_name_before_code_is_reported_as_fallback() {
+        let mut class: ClassFile =
+            class_with_method_code(Some(code_info(&[0xB1], &[], &[])), ACC_PUBLIC | ACC_STATIC);
+        class.methods[0].attributes.insert(
+            0,
+            Attribute {
+                name_index: u16::MAX,
+                info: Vec::new(),
+            },
+        );
+        let decompiled: DecompiledClass = decompile_class(&class);
+
+        assert_eq!(decompiled.fully_lifted_methods, 0);
+        assert_eq!(decompiled.fallback_methods, 1);
+        assert!(
+            decompiled
+                .source
+                .contains("<decompile: malformed bytecode>")
+        );
+    }
+
+    #[test]
+    fn duplicate_code_attributes_are_reported_as_fallback() {
+        let mut class: ClassFile =
+            class_with_method_code(Some(code_info(&[0xB1], &[], &[])), ACC_PUBLIC | ACC_STATIC);
+        let duplicate: Attribute = Attribute {
+            name_index: 7,
+            info: code_info(&[0xB1], &[], &[]),
+        };
+        class.methods[0].attributes.push(duplicate);
+        let decompiled: DecompiledClass = decompile_class(&class);
+
+        assert_eq!(decompiled.fully_lifted_methods, 0);
+        assert_eq!(decompiled.fallback_methods, 1);
+        assert!(
+            decompiled
+                .source
+                .contains("<decompile: malformed bytecode>")
+        );
+    }
+
+    #[test]
+    fn invalid_code_semantics_are_reported_as_fallback() {
+        let cases: [Vec<u8>; 10] = [
+            code_info(&[0x10, 0x01, 0xB1], &[(1, 2, 2, 0)], &[]),
+            code_info(&[0xB1], &[(0, 1, 0, 1)], &[]),
+            code_info(&[0xB1], &[], &[u16::MAX]),
+            code_info(&[0xCA], &[], &[]),
+            code_info(&[0xC4, 0xB1, 0x00, 0x00], &[], &[]),
+            code_info(&[0xA7, 0x00, 0x01, 0xB1], &[], &[]),
+            code_info(&lookup_switch_code(28, [2, 1]), &[], &[]),
+            code_info(&lookup_switch_code(1, [1, 2]), &[], &[]),
+            code_info(&[0x12, 0xFF, 0xB0], &[], &[]),
+            code_info(&[0xB8, 0x00, 0x01, 0xB1], &[], &[]),
+        ];
+        for info in cases {
+            let class: ClassFile = class_with_method_code(Some(info), ACC_PUBLIC | ACC_STATIC);
+            let decompiled: DecompiledClass = decompile_class(&class);
+            assert_eq!(decompiled.fully_lifted_methods, 0);
+            assert_eq!(decompiled.fallback_methods, 1);
+            assert!(
+                decompiled
+                    .source
+                    .contains("<decompile: malformed bytecode>")
+            );
+        }
+    }
+
+    #[test]
+    fn missing_bootstrap_method_is_reported_as_fallback() {
+        let mut class: ClassFile = class_with_method_code(
+            Some(code_info(&[0xBA, 0x00, 0x0A, 0x00, 0x00, 0xB1], &[], &[])),
+            ACC_PUBLIC | ACC_STATIC,
+        );
+        class.constant_pool.push(cp_utf8("dynamicCall"));
+        class.constant_pool.push(ConstantPoolEntry::NameAndType {
+            name_index: 8,
+            descriptor_index: 6,
+        });
+        class.constant_pool.push(ConstantPoolEntry::InvokeDynamic {
+            bootstrap_method_attr_index: 0,
+            name_and_type_index: 9,
+        });
+
+        let decompiled: DecompiledClass = decompile_class(&class);
+        assert_eq!(decompiled.fully_lifted_methods, 0);
+        assert_eq!(decompiled.fallback_methods, 1);
+        assert_eq!(decompiled.decode_error_count, 1);
+        assert!(
+            decompiled
+                .source
+                .contains("<decompile: malformed bytecode>")
+        );
+    }
+
+    #[test]
+    fn invalid_method_metadata_is_reported_as_fallback() {
+        let mut invalid_name: ClassFile =
+            class_with_method_code(Some(code_info(&[0xB1], &[], &[])), ACC_PUBLIC | ACC_STATIC);
+        invalid_name.methods[0].name_index = u16::MAX;
+        let mut invalid_descriptor: ClassFile =
+            class_with_method_code(Some(code_info(&[0xB1], &[], &[])), ACC_PUBLIC | ACC_STATIC);
+        invalid_descriptor.methods[0].descriptor_index = 5;
+        for class in [invalid_name, invalid_descriptor] {
+            let decompiled: DecompiledClass = decompile_class(&class);
+            assert_eq!(decompiled.fully_lifted_methods, 0);
+            assert_eq!(decompiled.fallback_methods, 1);
+            assert!(
+                decompiled
+                    .source
+                    .contains("<decompile: malformed bytecode>")
+            );
+        }
+    }
+
     #[test]
     fn generic_cast_rewrite_skips_literals_and_comments() {
         let source: &str = "x = ((Object) var1); s = \"((Object) var1)\"; // ((Object) var1)\ny = ((Object) var1);";
@@ -10058,7 +10568,7 @@ mod tests {
             cp_utf8("RuntimeVisibleAnnotations"),
             cp_utf8("LMark;"),
         ];
-        let code_info: Vec<u8> = vec![0, 0, 0, 0, 0, 0, 0, 1, 0xB1, 0, 0];
+        let code_info: Vec<u8> = vec![0, 0, 0, 0, 0, 0, 0, 1, 0xB1, 0, 0, 0, 0];
         let annotation_info: Vec<u8> = vec![0, 1, 0, 9, 0, 0];
         let cf: ClassFile = ClassFile {
             minor_version: 0,
@@ -10107,6 +10617,7 @@ mod tests {
         info.extend_from_slice(&1u16.to_be_bytes());
         info.extend_from_slice(&(code_body.len() as u32).to_be_bytes());
         info.extend_from_slice(&code_body);
+        info.extend_from_slice(&0u16.to_be_bytes());
         info.extend_from_slice(&0u16.to_be_bytes());
         let cf: ClassFile = ClassFile {
             minor_version: 0,
@@ -10159,6 +10670,7 @@ mod tests {
         info.extend_from_slice(&1u16.to_be_bytes());
         info.extend_from_slice(&(code_body.len() as u32).to_be_bytes());
         info.extend_from_slice(&code_body);
+        info.extend_from_slice(&0u16.to_be_bytes());
         info.extend_from_slice(&0u16.to_be_bytes());
         let cf: ClassFile = ClassFile {
             minor_version: 0,
@@ -10213,6 +10725,7 @@ mod tests {
         info.extend_from_slice(&0u16.to_be_bytes());
         info.extend_from_slice(&(code_body.len() as u32).to_be_bytes());
         info.extend_from_slice(&code_body);
+        info.extend_from_slice(&0u16.to_be_bytes());
         info.extend_from_slice(&0u16.to_be_bytes());
         let cf: ClassFile = ClassFile {
             minor_version: 0,

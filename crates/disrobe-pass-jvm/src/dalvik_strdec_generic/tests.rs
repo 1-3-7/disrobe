@@ -20,6 +20,22 @@ fn recovered_strings(report: &GenericStringRecovery) -> Vec<String> {
 }
 
 #[test]
+fn recovery_report_preserves_partial_code_failure() {
+    let (dex, bytes): (DexFile, Vec<u8>) = crate::dex::partial_code_failure_fixture();
+    let report: GenericStringRecovery = recover(&dex, &bytes);
+    assert!(!report.code_scan_complete);
+    assert_eq!(report.decode_error_count, 1);
+}
+
+#[test]
+fn legacy_recovery_report_defaults_to_incomplete_code_scan() {
+    let json: &str = r#"{"candidates_found":0,"call_sites":[]}"#;
+    let report: GenericStringRecovery = serde_json::from_str(json).expect("legacy recovery report");
+    assert!(!report.code_scan_complete);
+    assert_eq!(report.decode_error_count, 0);
+}
+
+#[test]
 fn recovers_multiple_distinct_byte_array_xor_call_sites_from_a_real_dex() {
     let pairs: [(&str, u8); 3] = [
         ("https://api.example.com/v2/session", 0x37),

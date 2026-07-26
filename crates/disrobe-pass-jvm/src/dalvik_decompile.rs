@@ -14,7 +14,10 @@ use crate::decompile_struct::{
     compute_dominators, find_natural_loops,
 };
 use crate::descriptor::{self, MethodDescriptor};
-use crate::dex::{CodeItem, DexFile, parse_code_items};
+use crate::dex::{
+    ACC_ABSTRACT, ACC_NATIVE, ACC_STATIC, CodeItem, CodeItemsReport, DexCodeState, DexFile,
+    DexMethodCode, parse_code_items,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecompiledDex {
@@ -23,19 +26,27 @@ pub struct DecompiledDex {
     pub method_count: usize,
     pub fully_lifted_methods: usize,
     pub fallback_methods: usize,
+    pub code_scan_complete: bool,
+    pub decode_error_count: usize,
 }
 
 const MAX_RENDER_BYTES: usize = 4 * 1024 * 1024;
 
 #[must_use]
 pub fn decompile_dex(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
-    let items: Vec<CodeItem> = parse_code_items(dex, bytes);
-    let mut by_class: BTreeMap<String, Vec<CodeItem>> = BTreeMap::new();
+    let code_report: CodeItemsReport = parse_code_items(dex, bytes);
+    let code_scan_complete: bool = code_report.is_fully_decoded();
+    let decode_error_count: usize = code_report.error_count();
+    let items: Vec<CodeItem> = code_report.decoded().to_vec();
+    let mut by_class: BTreeMap<String, Vec<&DexMethodCode>> = BTreeMap::new();
     for descriptor_name in &dex.class_descriptors {
         by_class.entry(descriptor_name.clone()).or_default();
     }
-    for item in items.iter().cloned() {
-        by_class.entry(item.class.clone()).or_default().push(item);
+    for method in code_report.methods() {
+        by_class
+            .entry(method.class.clone())
+            .or_default()
+            .push(method);
     }
 
     let string_recovery: BTreeMap<String, crate::dalvik_strdec::DexStringRecovery> =
@@ -85,6 +96,7 @@ pub fn decompile_dex(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
             dex,
             class_descriptor,
             methods,
+            &items,
             recovery,
             &cff_by_method,
             &generic_by_method,
@@ -96,6 +108,14 @@ pub fn decompile_dex(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
         fully_lifted += rendered.fully_lifted;
         fallback += rendered.fallback;
     }
+    let _: Option<()> = code_report
+        .unrecovered_tail()
+        .map(|tail: &crate::dex::DexCodeTail| {
+            crate::debug::dbg_kv("dex-code-walk-incomplete", || {
+                format!("{}: {}", tail.class, tail.error)
+            });
+            source.push_str("// <decompile: malformed bytecode>\n");
+        });
 
     DecompiledDex {
         source,
@@ -103,6 +123,8 @@ pub fn decompile_dex(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
         method_count,
         fully_lifted_methods: fully_lifted,
         fallback_methods: fallback,
+        code_scan_complete,
+        decode_error_count,
     }
 }
 
@@ -116,7 +138,8 @@ struct RenderedClass {
 fn render_class(
     dex: &DexFile,
     class_descriptor: &str,
-    methods: &[CodeItem],
+    methods: &[&DexMethodCode],
+    decoded: &[CodeItem],
     recovery: Option<&crate::dalvik_strdec::DexStringRecovery>,
     cff_by_method: &BTreeMap<(String, String, String), crate::dalvik_dexguard::DalvikMethodCff>,
     generic_by_method: &BTreeMap<
@@ -135,7 +158,15 @@ fn render_class(
         let _ = writeln!(text, "package {pkg};");
         let _ = writeln!(text);
     }
-    let _ = writeln!(text, "public class {simple} {{");
+    let class_is_abstract: bool = methods
+        .iter()
+        .any(|method: &&DexMethodCode| method.access_flags & ACC_ABSTRACT != 0);
+    let class_declaration: &str = if class_is_abstract {
+        "public abstract class"
+    } else {
+        "public class"
+    };
+    let _: std::fmt::Result = writeln!(text, "{class_declaration} {simple} {{");
 
     if let Some(rec) = recovery {
         text.push_str(&recovered_strings_annotation(rec));
@@ -144,20 +175,52 @@ fn render_class(
     let mut method_count: usize = 0;
     let mut fully_lifted: usize = 0;
     let mut fallback: usize = 0;
-    for item in methods {
+    for method in methods {
+        let item: Option<&CodeItem> = match &method.state {
+            DexCodeState::Decoded(index) => decoded.get(*index),
+            DexCodeState::Absent | DexCodeState::Refused(_) => None,
+        };
         let cff: Option<&crate::dalvik_dexguard::DalvikMethodCff> = cff_by_method.get(&(
-            item.class.clone(),
-            item.method_name.clone(),
-            item.method_descriptor.clone(),
+            method.class.clone(),
+            method.method_name.clone(),
+            method.method_descriptor.clone(),
         ));
         let generic_sites: Option<&Vec<&crate::dalvik_strdec_generic::CallSiteRecovery>> =
-            generic_by_method.get(&(item.class.clone(), item.method_name.clone()));
-        let rendered: RenderedMethod = render_method(dex, simple, item, cff, generic_sites);
+            generic_by_method.get(&(method.class.clone(), method.method_name.clone()));
+        let rendered: RenderedMethod = match (&method.state, item) {
+            (DexCodeState::Decoded(_), Some(_))
+                if method.access_flags & (ACC_NATIVE | ACC_ABSTRACT) != 0 =>
+            {
+                render_unavailable_method(
+                    simple,
+                    method,
+                    Some("code item is present on a bodyless declaration"),
+                )
+            }
+            (DexCodeState::Decoded(_), Some(item)) => {
+                render_method(dex, simple, item, cff, generic_sites)
+            }
+            (DexCodeState::Decoded(_), None) => {
+                render_unavailable_method(simple, method, Some("decoded body is absent"))
+            }
+            (DexCodeState::Absent, _) => {
+                let expected_absence: bool = method.access_flags & (ACC_NATIVE | ACC_ABSTRACT) != 0;
+                if expected_absence {
+                    render_unavailable_method(simple, method, None)
+                } else {
+                    render_unavailable_method(simple, method, Some("code item is absent"))
+                }
+            }
+            (DexCodeState::Refused(error), _) => {
+                let reason: String = error.to_string();
+                render_unavailable_method(simple, method, Some(&reason))
+            }
+        };
         let _ = writeln!(text, "{}", rendered.text);
         method_count += 1;
         if rendered.fully_lifted {
             fully_lifted += 1;
-        } else {
+        } else if rendered.has_body || rendered.refused {
             fallback += 1;
         }
     }
@@ -235,6 +298,89 @@ fn generic_call_site_annotation(
 struct RenderedMethod {
     text: String,
     fully_lifted: bool,
+    has_body: bool,
+    refused: bool,
+}
+
+fn render_unavailable_method(
+    class_simple: &str,
+    method: &DexMethodCode,
+    refusal: Option<&str>,
+) -> RenderedMethod {
+    let parsed: Option<MethodDescriptor> = descriptor::parse_method(&method.method_descriptor);
+    let is_constructor: bool = method.method_name == "<init>";
+    let is_clinit: bool = method.method_name == "<clinit>";
+    let is_static: bool = method.access_flags & ACC_STATIC != 0;
+    let mut modifiers: Vec<&str> = vec!["public"];
+    if is_static && !is_clinit {
+        modifiers.push("static");
+    }
+    if method.access_flags & ACC_ABSTRACT != 0 {
+        modifiers.push("abstract");
+    }
+    if method.access_flags & ACC_NATIVE != 0 {
+        modifiers.push("native");
+    }
+    let modifier: String = modifiers.join(" ");
+    let params: String = parsed.as_ref().map_or_else(String::new, |descriptor| {
+        descriptor
+            .params
+            .iter()
+            .enumerate()
+            .map(
+                |(index, parameter): (usize, &crate::descriptor::JavaType)| {
+                    format!("{} arg{index}", parameter.render())
+                },
+            )
+            .collect::<Vec<String>>()
+            .join(", ")
+    });
+    let mut signature: String = if is_constructor {
+        format!("    {modifier} {class_simple}({params})")
+    } else if is_clinit {
+        "    static".to_string()
+    } else {
+        let result: String = parsed.as_ref().map_or_else(
+            || "void".to_string(),
+            |descriptor| descriptor.returns.render(),
+        );
+        format!("    {modifier} {result} {}({params})", method.method_name)
+    };
+    let Some(reason): Option<&str> = refusal else {
+        signature.push(';');
+        return RenderedMethod {
+            text: signature,
+            fully_lifted: false,
+            has_body: false,
+            refused: false,
+        };
+    };
+    crate::debug::dbg_kv("dex-method-code-reject", || {
+        format!(
+            "{}->{}{}: {reason}",
+            method.class, method.method_name, method.method_descriptor
+        )
+    });
+    let bodyless: bool = method.access_flags & (ACC_NATIVE | ACC_ABSTRACT) != 0;
+    if bodyless {
+        let _: std::fmt::Result = write!(signature, "; // <decompile: malformed bytecode>");
+    } else if is_clinit {
+        let _: std::fmt::Result = write!(
+            signature,
+            " {{\n        // <decompile: malformed bytecode>\n    }}"
+        );
+    } else {
+        let _: std::fmt::Result = write!(
+            signature,
+            " {{\n        // <decompile: malformed bytecode>\n        throw new UnsupportedOperationException(\"malformed bytecode\");\n    }}"
+        );
+    }
+    RenderedMethod {
+        text: signature,
+        fully_lifted: false,
+        has_body: !bodyless,
+        refused: true,
+    }
 }
 
 fn render_method(
@@ -315,6 +461,8 @@ fn render_method(
     RenderedMethod {
         text,
         fully_lifted: body.fully_lifted,
+        has_body: true,
+        refused: false,
     }
 }
 

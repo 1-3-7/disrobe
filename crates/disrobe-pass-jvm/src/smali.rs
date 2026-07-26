@@ -201,6 +201,8 @@ mod tests {
             proto_ids: Vec::new(),
             field_ids: Vec::new(),
             method_ids: Vec::new(),
+            call_site_ids_size: 0,
+            method_handles_size: 0,
         }
     }
 

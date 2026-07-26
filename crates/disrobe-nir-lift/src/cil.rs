@@ -1,11 +1,12 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use disrobe_nir::{
     BinaryOp, NirFunction, NirInstr, NirModule, NirOp, NirSymbol, SourceLang, SourceRef, SymbolKind,
 };
 use disrobe_pass_dotnet::{
-    ClrHeader, FlowControl, Instruction, MetadataRoot, MethodBody, OperandValue, PeImage, Resolver,
-    parse as parse_pe, parse_clr_header, parse_metadata_root, parse_method_body,
+    ClrHeader, ExceptionClause, ExceptionClauseKind, FlowControl, Instruction, MetadataRoot,
+    MethodBody, OperandValue, PeImage, Resolver, parse as parse_pe, parse_clr_header,
+    parse_metadata_root, parse_method_body,
 };
 
 use crate::error::{LiftError, Result};
@@ -17,6 +18,12 @@ const IMPORT_BASE: u64 = 1 << 40;
 const METHOD_STATIC: u16 = 0x0010;
 const METHOD_ACCESS_PUBLIC: u16 = 0x0006;
 const METHOD_ACCESS_MASK: u16 = 0x0007;
+const METHOD_ABSTRACT: u16 = 0x0400;
+const METHOD_PINVOKE_IMPL: u16 = 0x2000;
+const METHOD_IMPL_CODE_TYPE_MASK: u16 = 0x0003;
+const METHOD_IMPL_UNMANAGED: u16 = 0x0004;
+const METHOD_IMPL_FORWARD_REF: u16 = 0x0010;
+const METHOD_IMPL_INTERNAL_CALL: u16 = 0x1000;
 
 pub fn lift_pe(bytes: &[u8]) -> Result<NirModule> {
     let pe: PeImage =
@@ -45,16 +52,19 @@ pub fn lift_pe(bytes: &[u8]) -> Result<NirModule> {
     for (index, method) in methods.iter().enumerate() {
         let method_index: u32 = usize_to_u32_saturating(index);
         register_method_symbol(method, method_index, &mut module);
-        if method.rva == 0 {
+        if !method.has_managed_body()? {
             continue;
         }
         let body_slice: &[u8] = pe
             .slice_at_rva_to_end(bytes, method.rva)
             .map_err(|e| LiftError::Source(format!("dotnet method rva: {e}")))?;
-        let body: MethodBody = match parse_method_body(body_slice) {
-            Ok(body) => body,
-            Err(_) => continue,
-        };
+        let body: MethodBody =
+            parse_method_body(body_slice).map_err(|error: disrobe_pass_dotnet::Error| {
+                LiftError::Source(format!(
+                    "dotnet method {} token {:#x} rva {:#x} body decode: {error}",
+                    method.name, method.token, method.rva
+                ))
+            })?;
         let function: NirFunction = lift_method(
             method,
             method_index,
@@ -62,7 +72,7 @@ pub fn lift_pe(bytes: &[u8]) -> Result<NirModule> {
             &resolver,
             &internal_by_token,
             &mut imports,
-        );
+        )?;
         module.functions.push(function);
     }
 
@@ -92,6 +102,7 @@ struct MethodEntry {
     name: String,
     rva: u32,
     flags: u16,
+    impl_flags: u16,
 }
 
 impl MethodEntry {
@@ -101,6 +112,31 @@ impl MethodEntry {
 
     const fn is_public(&self) -> bool {
         self.flags & METHOD_ACCESS_MASK == METHOD_ACCESS_PUBLIC
+    }
+
+    const fn is_managed_il(&self) -> bool {
+        self.flags & (METHOD_ABSTRACT | METHOD_PINVOKE_IMPL) == 0
+            && self.impl_flags
+                & (METHOD_IMPL_CODE_TYPE_MASK
+                    | METHOD_IMPL_UNMANAGED
+                    | METHOD_IMPL_FORWARD_REF
+                    | METHOD_IMPL_INTERNAL_CALL)
+                == 0
+    }
+
+    fn has_managed_body(&self) -> Result<bool> {
+        match (self.rva == 0, self.is_managed_il()) {
+            (true, true) => Err(LiftError::Source(format!(
+                "dotnet method {} token {:#x} has no managed IL body",
+                self.name, self.token
+            ))),
+            (true, false) => Ok(false),
+            (false, true) => Ok(true),
+            (false, false) => Err(LiftError::Source(format!(
+                "dotnet method {} token {:#x} has an unsupported non-IL body at rva {:#x}",
+                self.name, self.token, self.rva
+            ))),
+        }
     }
 }
 
@@ -115,6 +151,7 @@ fn enumerate_methods(resolver: &Resolver) -> Vec<MethodEntry> {
             name: m.name.clone(),
             rva: m.rva,
             flags: m.flags,
+            impl_flags: m.impl_flags,
         })
         .collect()
 }
@@ -169,9 +206,10 @@ fn lift_method(
     resolver: &Resolver,
     internal_by_token: &BTreeMap<u32, u64>,
     imports: &mut ImportTable,
-) -> NirFunction {
+) -> Result<NirFunction> {
     let base: u64 = function_address(method_index);
     let insns: &[Instruction] = &body.instructions;
+    validate_method_control_flow(method, body)?;
     let byte_arith: Vec<bool> = byte_arith_flags(insns);
 
     let mut instructions: Vec<NirInstr> = Vec::with_capacity(insns.len());
@@ -201,7 +239,7 @@ fn lift_method(
     }
 
     let end: u64 = base.saturating_add(u64::from(body.code_size));
-    NirFunction {
+    Ok(NirFunction {
         name: method.name.clone(),
         address: base,
         end,
@@ -216,7 +254,7 @@ fn lift_method(
                 "instance".to_owned()
             },
         ),
-    }
+    })
 }
 
 fn classify(
@@ -317,8 +355,8 @@ fn branch_target(insn: &Instruction) -> Option<u32> {
     let OperandValue::BrTarget(rel) = insn.operand else {
         return None;
     };
-    let next: i64 = i64::from(insn.offset).saturating_add(i64::from(instruction_size(insn)));
-    let absolute: i64 = next.saturating_add(i64::from(rel));
+    let next: i64 = i64::from(insn.offset).checked_add(i64::from(instruction_size(insn)))?;
+    let absolute: i64 = next.checked_add(i64::from(rel))?;
     u32::try_from(absolute).ok()
 }
 
@@ -348,6 +386,201 @@ fn instruction_size(insn: &Instruction) -> u32 {
         OperandValue::Switch(targets) => switch_operand_bytes(targets.len()),
     };
     opcode_bytes.saturating_add(operand_bytes)
+}
+
+fn control_flow_error(method: &MethodEntry, insn: &Instruction, reason: &str) -> LiftError {
+    LiftError::Source(format!(
+        "dotnet method {} token {:#x} invalid control flow at IL_{:04x}: {reason}",
+        method.name, method.token, insn.offset
+    ))
+}
+
+fn validate_relative_target(
+    method: &MethodEntry,
+    insn: &Instruction,
+    next_offset: u32,
+    relative: i32,
+    offsets: &BTreeSet<u32>,
+) -> Result<()> {
+    let target: i64 = i64::from(next_offset)
+        .checked_add(i64::from(relative))
+        .ok_or_else(|| control_flow_error(method, insn, "target arithmetic overflow"))?;
+    let target: u32 = u32::try_from(target)
+        .map_err(|_| control_flow_error(method, insn, "target is out of range"))?;
+    if !offsets.contains(&target) {
+        return Err(control_flow_error(
+            method,
+            insn,
+            "target is not an instruction boundary",
+        ));
+    }
+    Ok(())
+}
+
+fn exception_region_error(method: &MethodEntry, label: &str, reason: &str) -> LiftError {
+    LiftError::Source(format!(
+        "dotnet method {} token {:#x} invalid {label}: {reason}",
+        method.name, method.token
+    ))
+}
+
+fn validate_exception_region(
+    method: &MethodEntry,
+    label: &str,
+    offset: u32,
+    length: u32,
+    code_size: u32,
+    offsets: &BTreeSet<u32>,
+) -> Result<()> {
+    if length == 0 {
+        return Err(exception_region_error(method, label, "length is zero"));
+    }
+    if offset >= code_size || !offsets.contains(&offset) {
+        return Err(exception_region_error(
+            method,
+            label,
+            "start is not an instruction boundary",
+        ));
+    }
+    let end: u32 = offset
+        .checked_add(length)
+        .ok_or_else(|| exception_region_error(method, label, "end offset overflows"))?;
+    if end > code_size || end != code_size && !offsets.contains(&end) {
+        return Err(exception_region_error(
+            method,
+            label,
+            "end is not an instruction boundary or method end",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_exception_clause(
+    method: &MethodEntry,
+    clause: &ExceptionClause,
+    body: &MethodBody,
+    offsets: &BTreeSet<u32>,
+) -> Result<()> {
+    validate_exception_region(
+        method,
+        "exception try region",
+        clause.try_offset,
+        clause.try_length,
+        body.code_size,
+        offsets,
+    )?;
+    validate_exception_region(
+        method,
+        "exception handler region",
+        clause.handler_offset,
+        clause.handler_length,
+        body.code_size,
+        offsets,
+    )?;
+    match clause.kind {
+        ExceptionClauseKind::Filter => {
+            let filter_offset: u32 = clause.class_token_or_filter;
+            if filter_offset >= clause.handler_offset
+                || !offsets.contains(&filter_offset)
+                || filter_offset >= body.code_size
+            {
+                return Err(exception_region_error(
+                    method,
+                    "exception filter",
+                    "offset is not a valid instruction boundary before its handler",
+                ));
+            }
+        }
+        ExceptionClauseKind::Catch => {
+            let table: u8 = (clause.class_token_or_filter >> 24) as u8;
+            let row: u32 = clause.class_token_or_filter & 0x00FF_FFFF;
+            if row == 0 || !matches!(table, 0x01 | 0x02 | 0x1B) {
+                return Err(exception_region_error(
+                    method,
+                    "exception catch type",
+                    "token is not a TypeDef, TypeRef, or TypeSpec",
+                ));
+            }
+        }
+        ExceptionClauseKind::Finally | ExceptionClauseKind::Fault => {
+            if clause.class_token_or_filter != 0 {
+                return Err(exception_region_error(
+                    method,
+                    "exception handler",
+                    "reserved token is nonzero",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_method_control_flow(method: &MethodEntry, body: &MethodBody) -> Result<()> {
+    let offsets: BTreeSet<u32> = body
+        .instructions
+        .iter()
+        .map(|insn: &Instruction| insn.offset)
+        .collect();
+    if offsets.len() != body.instructions.len() {
+        return Err(LiftError::Source(format!(
+            "dotnet method {} token {:#x} has duplicate instruction offsets",
+            method.name, method.token
+        )));
+    }
+    for (index, insn) in body.instructions.iter().enumerate() {
+        let declared_next_offset: u32 = index
+            .checked_add(1)
+            .and_then(|next: usize| body.instructions.get(next))
+            .map_or(body.code_size, |next: &Instruction| next.offset);
+        let next_offset: u32 = insn
+            .offset
+            .checked_add(instruction_size(insn))
+            .ok_or_else(|| control_flow_error(method, insn, "instruction end overflows"))?;
+        if insn.offset >= body.code_size {
+            return Err(control_flow_error(
+                method,
+                insn,
+                "instruction starts beyond the method code size",
+            ));
+        }
+        if next_offset != declared_next_offset {
+            return Err(control_flow_error(
+                method,
+                insn,
+                "instruction layout does not match the method code size",
+            ));
+        }
+        match insn.flow {
+            FlowControl::Branch if insn.name == "jmp" => {}
+            FlowControl::Branch | FlowControl::CondBranch => match &insn.operand {
+                OperandValue::BrTarget(relative) => {
+                    validate_relative_target(method, insn, next_offset, *relative, &offsets)?;
+                }
+                OperandValue::Switch(relatives) => {
+                    for relative in relatives {
+                        validate_relative_target(method, insn, next_offset, *relative, &offsets)?;
+                    }
+                }
+                _ => {
+                    return Err(control_flow_error(
+                        method,
+                        insn,
+                        "branch operand is missing",
+                    ));
+                }
+            },
+            FlowControl::Next
+            | FlowControl::Call
+            | FlowControl::Return
+            | FlowControl::Throw
+            | FlowControl::Meta
+            | FlowControl::Break => {}
+        }
+    }
+    for clause in &body.exception_clauses {
+        validate_exception_clause(method, clause, body, &offsets)?;
+    }
+    Ok(())
 }
 
 fn is_short_branch(insn: &Instruction) -> bool {
@@ -470,14 +703,165 @@ fn memory_facets(insn: &Instruction) -> (bool, bool, bool) {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    fn method(rva: u32, flags: u16, impl_flags: u16) -> MethodEntry {
+        MethodEntry {
+            token: 0x0600_0001,
+            name: "Probe".to_owned(),
+            rva,
+            flags,
+            impl_flags,
+        }
+    }
+
+    #[test]
+    fn body_state_distinguishes_absent_empty_and_invalid_methods() {
+        let absent: MethodEntry = method(0, METHOD_ABSTRACT, 0);
+        assert!(!absent.has_managed_body().expect("abstract body state"));
+
+        let empty_bytes: [u8; 1] = [0x02];
+        let empty: MethodBody = parse_method_body(&empty_bytes).expect("empty managed body");
+        let decoded: MethodEntry = method(1, 0, 0);
+        assert!(decoded.has_managed_body().expect("managed body state"));
+        assert!(empty.instructions.is_empty());
+
+        let invalid: MethodEntry = method(0, 0, 0);
+        assert!(invalid.has_managed_body().is_err());
+    }
+
+    #[test]
+    fn non_il_body_is_refused_instead_of_decoded_as_managed_il() {
+        let native: MethodEntry = method(1, 0, 1);
+        assert!(native.has_managed_body().is_err());
+    }
 
     #[test]
     fn switch_operand_size_saturates() {
         assert_eq!(switch_operand_bytes(0), 4);
         assert_eq!(switch_operand_bytes(1), 8);
         assert_eq!(switch_operand_bytes(usize::MAX), u32::MAX);
+    }
+
+    #[test]
+    fn invalid_branch_and_switch_targets_are_refused() {
+        let branch_body: MethodBody = MethodBody {
+            max_stack: 1,
+            code_size: 3,
+            local_var_sig_tok: 0,
+            init_locals: false,
+            instructions: vec![
+                Instruction {
+                    offset: 0,
+                    opcode: 0x2B,
+                    name: "br.s".to_owned(),
+                    operand: OperandValue::BrTarget(-1),
+                    flow: FlowControl::Branch,
+                },
+                Instruction {
+                    offset: 2,
+                    opcode: 0x2A,
+                    name: "ret".to_owned(),
+                    operand: OperandValue::None,
+                    flow: FlowControl::Return,
+                },
+            ],
+            exception_clauses: Vec::new(),
+        };
+        let switch_body: MethodBody = MethodBody {
+            max_stack: 1,
+            code_size: 10,
+            local_var_sig_tok: 0,
+            init_locals: false,
+            instructions: vec![
+                Instruction {
+                    offset: 0,
+                    opcode: 0x45,
+                    name: "switch".to_owned(),
+                    operand: OperandValue::Switch(vec![-1]),
+                    flow: FlowControl::CondBranch,
+                },
+                Instruction {
+                    offset: 9,
+                    opcode: 0x2A,
+                    name: "ret".to_owned(),
+                    operand: OperandValue::None,
+                    flow: FlowControl::Return,
+                },
+            ],
+            exception_clauses: Vec::new(),
+        };
+        let entry: MethodEntry = method(1, 0, 0);
+        assert!(validate_method_control_flow(&entry, &branch_body).is_err());
+        assert!(validate_method_control_flow(&entry, &switch_body).is_err());
+    }
+
+    #[test]
+    fn invalid_exception_regions_are_refused() {
+        let instructions: Vec<Instruction> = vec![
+            Instruction {
+                offset: 0,
+                opcode: 0x00,
+                name: "nop".to_owned(),
+                operand: OperandValue::None,
+                flow: FlowControl::Next,
+            },
+            Instruction {
+                offset: 1,
+                opcode: 0x2A,
+                name: "ret".to_owned(),
+                operand: OperandValue::None,
+                flow: FlowControl::Return,
+            },
+        ];
+        let cases: [ExceptionClause; 4] = [
+            ExceptionClause {
+                kind: ExceptionClauseKind::Catch,
+                try_offset: 0,
+                try_length: 3,
+                handler_offset: 1,
+                handler_length: 1,
+                class_token_or_filter: 0x0100_0001,
+            },
+            ExceptionClause {
+                kind: ExceptionClauseKind::Catch,
+                try_offset: 0,
+                try_length: 1,
+                handler_offset: 2,
+                handler_length: 0,
+                class_token_or_filter: 0x0100_0001,
+            },
+            ExceptionClause {
+                kind: ExceptionClauseKind::Finally,
+                try_offset: 0,
+                try_length: 1,
+                handler_offset: 1,
+                handler_length: 0,
+                class_token_or_filter: 0,
+            },
+            ExceptionClause {
+                kind: ExceptionClauseKind::Filter,
+                try_offset: 0,
+                try_length: 1,
+                handler_offset: 1,
+                handler_length: 1,
+                class_token_or_filter: 2,
+            },
+        ];
+        let entry: MethodEntry = method(1, 0, 0);
+        for clause in cases {
+            let body: MethodBody = MethodBody {
+                max_stack: 1,
+                code_size: 2,
+                local_var_sig_tok: 0,
+                init_locals: false,
+                instructions: instructions.clone(),
+                exception_clauses: vec![clause],
+            };
+            assert!(validate_method_control_flow(&entry, &body).is_err());
+        }
     }
 
     #[test]

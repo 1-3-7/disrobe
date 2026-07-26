@@ -53,6 +53,8 @@ pub struct JniSurfaceReport {
     pub resolved_statically: usize,
     pub dynamic_only: usize,
     pub registered_natives: Vec<RegisteredNative>,
+    pub code_scan_complete: bool,
+    pub decode_error_count: usize,
 }
 
 fn abi_from_path(path: &str) -> Option<String> {
@@ -109,8 +111,17 @@ pub fn analyze(
     native_libs: &[(&str, &[u8])],
 ) -> JniSurfaceReport {
     let mut native_methods: Vec<NativeMethod> = Vec::new();
+    let mut code_scan_complete: bool = true;
+    let mut decode_error_count: usize = 0;
     for (_name, dex, bytes) in dexes {
-        native_methods.extend(extract_native_methods(dex, bytes));
+        match extract_native_methods(dex, bytes) {
+            Ok(methods) => native_methods.extend(methods),
+            Err(error) => {
+                crate::debug::dbg_kv("jni-native-method-scan-reject", || error.to_string());
+                code_scan_complete = false;
+                decode_error_count += 1;
+            }
+        }
     }
 
     let mut libraries: Vec<NativeLibrary> = Vec::new();
@@ -166,6 +177,8 @@ pub fn analyze(
         resolved_statically,
         dynamic_only,
         registered_natives,
+        code_scan_complete,
+        decode_error_count,
     }
 }
 
@@ -471,15 +484,14 @@ fn consume_field_type(bytes: &[u8], mut index: usize) -> Option<usize> {
     }
 }
 
-#[must_use]
 pub fn extract_static_int_keys(
     dex: &DexFile,
     dex_bytes: &[u8],
     native_libs: &[(&str, &[u8])],
-) -> Vec<NativeIntKey> {
-    let native_methods: Vec<NativeMethod> = extract_native_methods(dex, dex_bytes);
+) -> crate::error::Result<Vec<NativeIntKey>> {
+    let native_methods: Vec<NativeMethod> = extract_native_methods(dex, dex_bytes)?;
     if native_methods.is_empty() || native_libs.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let mut short_counts: BTreeMap<&str, usize> = BTreeMap::new();
     for method in &native_methods {
@@ -499,7 +511,7 @@ pub fn extract_static_int_keys(
         }
     }
     if exports.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let mut keys: Vec<NativeIntKey> = Vec::new();
     for method in &native_methods {
@@ -531,7 +543,7 @@ pub fn extract_static_int_keys(
             }
         }
     }
-    keys
+    Ok(keys)
 }
 
 fn constant_int_exports(bytes: &[u8]) -> Vec<(String, i64)> {

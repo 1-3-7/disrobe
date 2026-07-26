@@ -1,4 +1,8 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::{Deserialize, Serialize};
+
+use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DalvikOp {
@@ -293,23 +297,203 @@ fn payload_width(code: &[u16], i: usize, op: u8) -> Option<usize> {
         0x00 => match unit >> 8 {
             0x01 => {
                 let size: usize = usize::from(*code.get(i + 1)?);
-                Some(size * 2 + 4)
+                size.checked_mul(2)?.checked_add(4)
             }
             0x02 => {
                 let size: usize = usize::from(*code.get(i + 1)?);
-                Some(size * 4 + 2)
+                size.checked_mul(4)?.checked_add(2)
             }
             0x03 => {
                 let element_width: usize = usize::from(*code.get(i + 1)?);
                 let count: usize =
                     usize::from(*code.get(i + 2)?) | (usize::from(*code.get(i + 3)?) << 16);
-                let bytes: usize = element_width * count;
-                Some(4 + bytes.div_ceil(2))
+                let bytes: usize = element_width.checked_mul(count)?;
+                4usize.checked_add(bytes.div_ceil(2))
             }
             _ => Some(1),
         },
         _ => None,
     }
+}
+
+pub(crate) fn validate_method(code: &[u16], byte_offset: usize) -> Result<()> {
+    let mut unit_offset: usize = 0;
+    let mut payloads: BTreeMap<usize, u16> = BTreeMap::new();
+    let mut references: Vec<(usize, u16, usize)> = Vec::new();
+    let mut instruction_boundaries: BTreeSet<usize> = BTreeSet::new();
+    let mut branch_targets: Vec<(usize, i32)> = Vec::new();
+    while unit_offset < code.len() {
+        let unit: u16 = code[unit_offset];
+        let op: u8 = (unit & 0xFF) as u8;
+        let payload_identifier: u16 = unit >> 8;
+        let width: usize = if op == 0x00 && payload_identifier != 0 {
+            if !matches!(payload_identifier, 0x01..=0x03) {
+                return Err(Error::BadBytecode {
+                    offset: byte_offset.saturating_add(unit_offset.saturating_mul(2)),
+                    reason: "unknown DEX payload identifier",
+                });
+            }
+            if !unit_offset.is_multiple_of(2) {
+                return Err(Error::BadBytecode {
+                    offset: byte_offset.saturating_add(unit_offset.saturating_mul(2)),
+                    reason: "unaligned DEX payload",
+                });
+            }
+            if payload_identifier == 0x03 {
+                let element_width: u16 =
+                    code.get(unit_offset + 1)
+                        .copied()
+                        .ok_or_else(|| Error::BadBytecode {
+                            offset: byte_offset.saturating_add(unit_offset.saturating_mul(2)),
+                            reason: "truncated DEX payload",
+                        })?;
+                if !matches!(element_width, 1 | 2 | 4 | 8) {
+                    return Err(Error::BadBytecode {
+                        offset: byte_offset.saturating_add(unit_offset.saturating_mul(2)),
+                        reason: "invalid DEX array payload element width",
+                    });
+                }
+            }
+            payloads.insert(unit_offset, payload_identifier);
+            payload_width(code, unit_offset, op).ok_or_else(|| Error::BadBytecode {
+                offset: byte_offset.saturating_add(unit_offset.saturating_mul(2)),
+                reason: "truncated DEX payload",
+            })?
+        } else {
+            instruction_boundaries.insert(unit_offset);
+            let decoded: DalvikOp = opcode(op);
+            if decoded.mnemonic == "unused" {
+                return Err(Error::BadBytecode {
+                    offset: byte_offset.saturating_add(unit_offset.saturating_mul(2)),
+                    reason: "reserved DEX opcode",
+                });
+            }
+            usize::from(decoded.units)
+        };
+        let end: usize = unit_offset
+            .checked_add(width)
+            .ok_or_else(|| Error::BadBytecode {
+                offset: byte_offset.saturating_add(unit_offset.saturating_mul(2)),
+                reason: "DEX instruction width overflow",
+            })?;
+        if end > code.len() {
+            return Err(Error::BadBytecode {
+                offset: byte_offset.saturating_add(unit_offset.saturating_mul(2)),
+                reason: "truncated DEX instruction",
+            });
+        }
+        let expected_payload: Option<u16> = match op {
+            0x26 => Some(0x03),
+            0x2B => Some(0x01),
+            0x2C => Some(0x02),
+            _ => None,
+        };
+        let payload_validation: Result<()> = expected_payload.map_or(Ok(()), |expected: u16| {
+            let low: u16 = code[unit_offset + 1];
+            let high: u16 = code[unit_offset + 2];
+            let relative: i32 = (u32::from(low) | (u32::from(high) << 16)) as i32;
+            let base: i64 = i64::try_from(unit_offset).map_err(|_| Error::BadBytecode {
+                offset: byte_offset,
+                reason: "DEX payload reference offset is out of range",
+            })?;
+            let target: i64 =
+                base.checked_add(i64::from(relative))
+                    .ok_or_else(|| Error::BadBytecode {
+                        offset: byte_offset.saturating_add(unit_offset.saturating_mul(2)),
+                        reason: "DEX payload reference overflow",
+                    })?;
+            let target_offset: usize = usize::try_from(target).map_err(|_| Error::BadBytecode {
+                offset: byte_offset.saturating_add(unit_offset.saturating_mul(2)),
+                reason: "DEX payload reference is out of range",
+            })?;
+            references.push((target_offset, expected, unit_offset));
+            Ok(())
+        });
+        payload_validation?;
+        let branch_relative: Option<i32> = match op {
+            0x28 => Some(i32::from((unit >> 8) as u8 as i8)),
+            0x29 | 0x32..=0x3D => Some(i32::from(code[unit_offset + 1] as i16)),
+            0x2A => Some(
+                (u32::from(code[unit_offset + 1]) | (u32::from(code[unit_offset + 2]) << 16))
+                    as i32,
+            ),
+            _ => None,
+        };
+        let _: Option<()> = branch_relative.map(|relative: i32| {
+            branch_targets.push((unit_offset, relative));
+        });
+        unit_offset = end;
+    }
+    for (source, relative) in branch_targets {
+        validate_branch_target(source, relative, &instruction_boundaries, byte_offset)?;
+    }
+    for (target, expected, source) in references {
+        if payloads.get(&target) != Some(&expected) {
+            return Err(Error::BadBytecode {
+                offset: byte_offset.saturating_add(source.saturating_mul(2)),
+                reason: "DEX payload reference is invalid",
+            });
+        }
+        if expected == 0x01 {
+            let size: usize = usize::from(code[target + 1]);
+            let targets_start: usize = target + 4;
+            for index in 0..size {
+                let relative: i32 = dalvik_i32(code, targets_start + index * 2);
+                validate_branch_target(source, relative, &instruction_boundaries, byte_offset)?;
+            }
+        } else if expected == 0x02 {
+            let size: usize = usize::from(code[target + 1]);
+            let keys_start: usize = target + 2;
+            let targets_start: usize = keys_start + size * 2;
+            let mut previous_key: Option<i32> = None;
+            for index in 0..size {
+                let key: i32 = dalvik_i32(code, keys_start + index * 2);
+                if previous_key.is_some_and(|previous: i32| previous >= key) {
+                    return Err(Error::BadBytecode {
+                        offset: byte_offset.saturating_add(target.saturating_mul(2)),
+                        reason: "DEX sparse-switch keys are not strictly increasing",
+                    });
+                }
+                previous_key = Some(key);
+                let relative: i32 = dalvik_i32(code, targets_start + index * 2);
+                validate_branch_target(source, relative, &instruction_boundaries, byte_offset)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn dalvik_i32(code: &[u16], offset: usize) -> i32 {
+    (u32::from(code[offset]) | (u32::from(code[offset + 1]) << 16)) as i32
+}
+
+fn validate_branch_target(
+    source: usize,
+    relative: i32,
+    instruction_boundaries: &BTreeSet<usize>,
+    byte_offset: usize,
+) -> Result<()> {
+    let source_signed: i64 = i64::try_from(source).map_err(|_| Error::BadBytecode {
+        offset: byte_offset,
+        reason: "DEX branch source is out of range",
+    })?;
+    let target: i64 = source_signed
+        .checked_add(i64::from(relative))
+        .ok_or_else(|| Error::BadBytecode {
+            offset: byte_offset.saturating_add(source.saturating_mul(2)),
+            reason: "DEX branch target overflow",
+        })?;
+    let target_offset: usize = usize::try_from(target).map_err(|_| Error::BadBytecode {
+        offset: byte_offset.saturating_add(source.saturating_mul(2)),
+        reason: "DEX branch target is out of range",
+    })?;
+    if !instruction_boundaries.contains(&target_offset) {
+        return Err(Error::BadBytecode {
+            offset: byte_offset.saturating_add(source.saturating_mul(2)),
+            reason: "DEX branch target is not an instruction boundary",
+        });
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

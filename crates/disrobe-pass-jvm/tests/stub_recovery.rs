@@ -33,6 +33,7 @@ fn code_attribute(code: &[u8]) -> Vec<u8> {
     info.extend_from_slice(&(code.len() as u32).to_be_bytes());
     info.extend_from_slice(code);
     info.extend_from_slice(&0u16.to_be_bytes());
+    info.extend_from_slice(&0u16.to_be_bytes());
     info
 }
 
