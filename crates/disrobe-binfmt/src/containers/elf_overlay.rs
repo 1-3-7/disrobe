@@ -102,7 +102,7 @@ fn segment_extents(bytes: &[u8], shape: &ElfShape) -> u64 {
     for i in 0..shape.phnum as usize {
         let base: usize = match usize::try_from(shape.phoff).ok().and_then(|o: usize| {
             let start: usize = o.checked_add(i.checked_mul(entry)?)?;
-            (start + entry <= bytes.len()).then_some(start)
+            (start.checked_add(entry)? <= bytes.len()).then_some(start)
         }) {
             Some(b) => b,
             None => continue,

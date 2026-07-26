@@ -188,11 +188,11 @@ pub fn extract_to_with_quota(
         ContainerKind::UnixCompress => {
             extract_bare_single_stream(ContainerKind::UnixCompress, bytes, out_dir, quota)
         }
-        ContainerKind::Vhd => extract_vhd_summary(bytes, out_dir),
-        ContainerKind::Vhdx => extract_vhdx_summary(bytes, out_dir),
-        ContainerKind::Wim => extract_wim(bytes, out_dir),
-        ContainerKind::Gpt => extract_gpt_summary(bytes, out_dir),
-        ContainerKind::Mbr => extract_mbr_summary(bytes, out_dir),
+        ContainerKind::Vhd => extract_vhd_disk(bytes, out_dir, 0, quota),
+        ContainerKind::Vhdx => extract_vhdx_disk(bytes, out_dir, 0, quota),
+        ContainerKind::Wim => extract_wim(bytes, out_dir, quota),
+        ContainerKind::Gpt => carve_gpt(bytes, bytes, out_dir, 0, quota),
+        ContainerKind::Mbr => carve_mbr(bytes, bytes, out_dir, 0, quota),
         ContainerKind::Fat => extract_fat(bytes, out_dir, quota),
         ContainerKind::BunStandalone => extract_bun(bytes, out_dir, quota),
         ContainerKind::UnityFs => extract_unityfs(bytes, out_dir, quota),
@@ -1387,15 +1387,7 @@ fn extract_msi_cab(
     let cursor: Cursor<&[u8]> = Cursor::new(cab.bytes.as_slice());
     let mut cabinet: cab::Cabinet<Cursor<&[u8]>> = cab::Cabinet::new(cursor)
         .map_err(|e| Error::Msi(format!("embedded cab `{}`: {e}", cab.stream_name)))?;
-    let names: Vec<String> = cabinet
-        .folder_entries()
-        .flat_map(|folder| {
-            folder
-                .file_entries()
-                .map(|file| file.name().to_owned())
-                .collect::<Vec<String>>()
-        })
-        .collect();
+    let names: Vec<String> = cab_backed_file_names(&cabinet, violations);
     for raw_name in names {
         let mapped: &str = long_names
             .get(&raw_name)
@@ -2592,15 +2584,7 @@ fn extract_cab(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
     let mut entries_out: Vec<ExtractedEntry> = Vec::new();
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
     let mut violations: Vec<String> = Vec::new();
-    let names: Vec<String> = cabinet
-        .folder_entries()
-        .flat_map(|folder| {
-            folder
-                .file_entries()
-                .map(|file| file.name().to_owned())
-                .collect::<Vec<String>>()
-        })
-        .collect();
+    let names: Vec<String> = cab_backed_file_names(&cabinet, &mut violations);
     for raw_name in names {
         let safe_name: String = match sanitize_entry_path(&raw_name) {
             Ok(s) => s,
@@ -4215,6 +4199,12 @@ fn carve_partition_to_disk(
         compression: EntryCompression::Stored,
         is_executable: false,
     });
+    if start == 0 {
+        sink.violations.push(format!(
+            "partition-overlap `{safe_name}`: range {start}..{end} starts at the partition table itself, so it is not descended into"
+        ));
+        return Ok(());
+    }
     recurse_into_filesystem(&safe_name, slice, ctx, sink);
     Ok(())
 }
@@ -4684,10 +4674,6 @@ fn carve_partitions_over_view(
     })
 }
 
-fn extract_vhd_summary(bytes: &[u8], out_dir: &Path) -> Result<ExtractionResult> {
-    extract_vhd_disk(bytes, out_dir, 0, ExtractionQuota::default_safe())
-}
-
 #[must_use]
 const fn logical_disk_materialization_cap(quota: ExtractionQuota) -> u64 {
     if quota.max_total_uncompressed < quota.max_per_entry_uncompressed {
@@ -4723,10 +4709,6 @@ fn extract_vhd_disk(
     )
 }
 
-fn extract_vhdx_summary(bytes: &[u8], out_dir: &Path) -> Result<ExtractionResult> {
-    extract_vhdx_disk(bytes, out_dir, 0, ExtractionQuota::default_safe())
-}
-
 fn extract_vhdx_disk(
     bytes: &[u8],
     out_dir: &Path,
@@ -4753,7 +4735,32 @@ fn extract_vhdx_disk(
     )
 }
 
-fn extract_wim(bytes: &[u8], out_dir: &Path) -> Result<ExtractionResult> {
+fn cab_backed_file_names<R: std::io::Read + std::io::Seek>(
+    cabinet: &cab::Cabinet<R>,
+    violations: &mut Vec<String>,
+) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for folder in cabinet.folder_entries() {
+        let blocks: u16 = folder.num_data_blocks();
+        for file in folder.file_entries() {
+            if blocks == 0 {
+                violations.push(format!(
+                    "cab-folder `{}`: the folder declares no data blocks, so the file has no backing data",
+                    file.name()
+                ));
+                continue;
+            }
+            names.push(file.name().to_owned());
+        }
+    }
+    names
+}
+
+fn extract_wim(
+    bytes: &[u8],
+    out_dir: &Path,
+    requested_quota: ExtractionQuota,
+) -> Result<ExtractionResult> {
     let archive: crate::containers::WimArchive = crate::containers::parse_wim(bytes)?;
     std::fs::create_dir_all(out_dir)?;
     let json: String =
@@ -4769,7 +4776,7 @@ fn extract_wim(bytes: &[u8], out_dir: &Path) -> Result<ExtractionResult> {
         &mut encoding,
     )?;
 
-    let base_quota: ExtractionQuota = ExtractionQuota::default_safe();
+    let base_quota: ExtractionQuota = requested_quota;
     let quota: ExtractionQuota = ExtractionQuota {
         max_per_entry_ratio: base_quota.max_per_entry_ratio.max(1000),
         max_aggregate_ratio: base_quota.max_aggregate_ratio.max(1000),
@@ -4968,14 +4975,6 @@ fn extract_wim_image_files(
             is_executable: false,
         });
     }
-}
-
-fn extract_gpt_summary(bytes: &[u8], out_dir: &Path) -> Result<ExtractionResult> {
-    carve_gpt(bytes, bytes, out_dir, 0, ExtractionQuota::default_safe())
-}
-
-fn extract_mbr_summary(bytes: &[u8], out_dir: &Path) -> Result<ExtractionResult> {
-    carve_mbr(bytes, bytes, out_dir, 0, ExtractionQuota::default_safe())
 }
 
 #[cfg(test)]
