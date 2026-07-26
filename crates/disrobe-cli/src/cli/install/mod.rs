@@ -1,7 +1,7 @@
 #![allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
 use std::collections::BTreeMap;
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -407,6 +407,8 @@ fn tail(s: &str, max_bytes: usize) -> String {
     s[cut..].to_owned()
 }
 
+const MAX_INSTALL_LOG_ENTRIES: usize = 500;
+
 pub(crate) fn log_install_attempt(report: &InstallReport) -> std::io::Result<()> {
     let dir: PathBuf = disrobe_state_dir();
     std::fs::create_dir_all(&dir)?;
@@ -418,7 +420,25 @@ pub(crate) fn log_install_attempt(report: &InstallReport) -> std::io::Result<()>
         .append(true)
         .open(&log)?;
     f.write_all(json.as_bytes())?;
-    f.write_all(b"\n")
+    f.write_all(b"\n")?;
+    drop(f);
+    trim_install_log(&log)
+}
+
+fn trim_install_log(log: &Path) -> std::io::Result<()> {
+    let existing: String = match std::fs::read_to_string(log) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let lines: Vec<&str> = existing.lines().collect();
+    if lines.len() <= MAX_INSTALL_LOG_ENTRIES {
+        return Ok(());
+    }
+    let keep: &[&str] = &lines[lines.len() - MAX_INSTALL_LOG_ENTRIES..];
+    let mut trimmed: String = keep.join("\n");
+    trimmed.push('\n');
+    std::fs::write(log, trimmed)
 }
 
 fn epoch_seconds() -> u64 {
