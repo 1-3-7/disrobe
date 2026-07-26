@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 const CASES: &[(&str, &str, &[u8])] = &include!("aarch64_recovery_corpus.inc");
 
-const RECOVERY_FLOOR: usize = 1135;
+const RECOVERY_FLOOR: usize = 1215;
 
 type ConversionCase = (
     u32,
@@ -380,15 +380,8 @@ fn scalar_fp_increment_two_o0_cross_class_returns_recover() {
 }
 
 #[test]
-fn scalar_fp_increment_two_fixed_point_and_half_forms_reject() {
-    let cases: [(u32, &str); 6] = [
-        (0x1e42_e400, "fixed-point"),
-        (0x1e03_ec00, "fixed-point"),
-        (0x1e18_f400, "fixed-point"),
-        (0x9e59_dc00, "fixed-point"),
-        (0x1e23_c000, "F16"),
-        (0x1ee2_4000, "F16"),
-    ];
+fn scalar_fp_half_precision_forms_reject() {
+    let cases: [(u32, &str); 2] = [(0x1e23_c000, "F16"), (0x1ee2_4000, "F16")];
     for (word, reason) in cases {
         let mut code: Vec<u8> = word.to_le_bytes().to_vec();
         code.extend_from_slice(&[0xc0, 0x03, 0x5f, 0xd6]);
@@ -399,6 +392,52 @@ fn scalar_fp_increment_two_fixed_point_and_half_forms_reject() {
         assert!(
             error.contains(reason),
             "missing `{reason}` in rejection: {error}"
+        );
+    }
+}
+
+#[test]
+fn scalar_fp_fixed_point_forms_recover_with_their_scale() {
+    let cases: [(u32, &str); 4] = [
+        (0x1e42_e400, "(double)((double)(int32_t)r_rax / 0x1p7)"),
+        (0x1e03_ec00, "(float)((float)(uint32_t)r_rax / 0x1p5f)"),
+        (
+            0x1e18_f400,
+            "(int32_t)(fp_f_from_bits((uint32_t)x_xmm0) * 0x1p3f)",
+        ),
+        (0x9e59_dc00, "(uint64_t)(fp_d_from_bits(x_xmm0) * 0x1p9)"),
+    ];
+    for (word, expected) in cases {
+        let mut code: Vec<u8> = word.to_le_bytes().to_vec();
+        code.extend_from_slice(&[0xc0, 0x03, 0x5f, 0xd6]);
+        let recovery: LeafRecovery =
+            recover_aarch64_function(&code, 0).expect("fixed-point conversion must recover");
+        assert!(
+            recovery.source.contains(expected),
+            "missing `{expected}` in recovered source:\n{}",
+            recovery.source
+        );
+    }
+}
+
+#[test]
+fn vector_fixed_point_conversion_forms_reject() {
+    let cases: [(u32, &str); 4] = [
+        (0x4f39_e420, "unsupported instruction"),
+        (0x6f39_e420, "unsupported instruction"),
+        (0x5f39_e420, "source is not w or x"),
+        (0x7f39_e420, "source is not w or x"),
+    ];
+    for (word, reason) in cases {
+        let mut code: Vec<u8> = word.to_le_bytes().to_vec();
+        code.extend_from_slice(&[0xc0, 0x03, 0x5f, 0xd6]);
+        let error: String = format!(
+            "{:?}",
+            recover_aarch64_function(&code, 0).expect_err("vector form must sound-reject")
+        );
+        assert!(
+            error.contains(reason),
+            "missing `{reason}` in rejection of {word:#010x}: {error}"
         );
     }
 }

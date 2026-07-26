@@ -505,6 +505,23 @@ i64 fcvt_floor_d(double x) { return (i64)__builtin_floor(x); }
 i64 fcvt_ceil_d(double x) { return (i64)__builtin_ceil(x); }
 i64 fcvt_away_d(double x) { return (i64)__builtin_round(x); }
 u64 fcvt_floor_ud(double x) { return (u64)__builtin_floor(x); }
+
+float fx_scvtf_f_w(int a, int b) { return (float)(a + b) / 65536.0f; }
+double fx_scvtf_d_w(int a, int b) { return (double)(a + b) / 4294967296.0; }
+float fx_scvtf_f_x(long long a, long long b) { return (float)(a + b) / 18446744073709551616.0f; }
+double fx_scvtf_d_x(long long a, long long b) { return (double)(a + b) / 65536.0; }
+float fx_ucvtf_f_w(unsigned a, unsigned b) { return (float)(a + b) / 65536.0f; }
+double fx_ucvtf_d_w(unsigned a, unsigned b) { return (double)(a + b) / 2.0; }
+float fx_ucvtf_f_x(u64 a, u64 b) { return (float)(a + b) / 65536.0f; }
+double fx_ucvtf_d_x(u64 a, u64 b) { return (double)(a + b) / 4294967296.0; }
+i32 fx_fcvtzs_w_f(float x) { return (i32)(x * 65536.0f); }
+i32 fx_fcvtzs_w_d(double x) { return (i32)(x * 16.0); }
+i64 fx_fcvtzs_x_f(float x) { return (i64)(x * 4294967296.0f); }
+i64 fx_fcvtzs_x_d(double x) { return (i64)(x * 18446744073709551616.0); }
+u32 fx_fcvtzu_w_f(float x) { return (u32)(x * 4294967296.0f); }
+u32 fx_fcvtzu_w_d(double x) { return (u32)(x * 16.0); }
+u64 fx_fcvtzu_x_f(float x) { return (u64)(x * 65536.0f); }
+u64 fx_fcvtzu_x_d(double x) { return (u64)(x * 18446744073709551616.0); }
 ";
 
 const EXTERNS: &str = r"struct Pt { int x; int y; };
@@ -737,6 +754,22 @@ extern long long fcvt_away_d(double x);
 extern unsigned long long fcvt_floor_ud(double x);
 extern int vol_four_slots(int a);
 extern int vol_two_guards(int a, int b, int c);
+extern float fx_scvtf_f_w(int a, int b);
+extern double fx_scvtf_d_w(int a, int b);
+extern float fx_scvtf_f_x(long long a, long long b);
+extern double fx_scvtf_d_x(long long a, long long b);
+extern float fx_ucvtf_f_w(unsigned a, unsigned b);
+extern double fx_ucvtf_d_w(unsigned a, unsigned b);
+extern float fx_ucvtf_f_x(unsigned long long a, unsigned long long b);
+extern double fx_ucvtf_d_x(unsigned long long a, unsigned long long b);
+extern int fx_fcvtzs_w_f(float x);
+extern int fx_fcvtzs_w_d(double x);
+extern long long fx_fcvtzs_x_f(float x);
+extern long long fx_fcvtzs_x_d(double x);
+extern unsigned fx_fcvtzu_w_f(float x);
+extern unsigned fx_fcvtzu_w_d(double x);
+extern unsigned long long fx_fcvtzu_x_f(float x);
+extern unsigned long long fx_fcvtzu_x_d(double x);
 ";
 
 fn cc() -> Option<String> {
@@ -784,12 +817,15 @@ fn fp_expectation(name: &str) -> Option<FpExpectation> {
             returns: Some(ScalarType::Double),
             return_width_bits: 64,
         },
-        "fp_get" => FpExpectation {
-            params: &[ScalarType::Int, ScalarType::Int],
-            returns: Some(ScalarType::Float),
-            return_width_bits: 32,
-        },
-        "fp_get_d" | "fp_iavg" => FpExpectation {
+        "fp_get" | "fx_scvtf_f_w" | "fx_scvtf_f_x" | "fx_ucvtf_f_w" | "fx_ucvtf_f_x" => {
+            FpExpectation {
+                params: &[ScalarType::Int, ScalarType::Int],
+                returns: Some(ScalarType::Float),
+                return_width_bits: 32,
+            }
+        }
+        "fp_get_d" | "fp_iavg" | "fx_scvtf_d_w" | "fx_scvtf_d_x" | "fx_ucvtf_d_w"
+        | "fx_ucvtf_d_x" => FpExpectation {
             params: &[ScalarType::Int, ScalarType::Int],
             returns: Some(ScalarType::Double),
             return_width_bits: 64,
@@ -827,18 +863,18 @@ fn fp_expectation(name: &str) -> Option<FpExpectation> {
             }
         }
         "fp_to_int_s" | "fp_to_uint_s" | "fc_isnan_f" | "fcvt_floor_s" | "fcvt_ceil_s"
-        | "fcvt_away_s" | "fcvt_floor_us" | "fcvt_ceil_us" | "fcvt_away_us" => FpExpectation {
+        | "fcvt_away_s" | "fcvt_floor_us" | "fcvt_ceil_us" | "fcvt_away_us" | "fx_fcvtzs_w_f"
+        | "fx_fcvtzu_w_f" => FpExpectation {
             params: &[ScalarType::Float],
             returns: None,
             return_width_bits: 32,
         },
-        "fp_to_ulong_d" | "fcvt_floor_d" | "fcvt_ceil_d" | "fcvt_away_d" | "fcvt_floor_ud" => {
-            FpExpectation {
-                params: &[ScalarType::Double],
-                returns: None,
-                return_width_bits: 64,
-            }
-        }
+        "fp_to_ulong_d" | "fcvt_floor_d" | "fcvt_ceil_d" | "fcvt_away_d" | "fcvt_floor_ud"
+        | "fx_fcvtzs_x_d" | "fx_fcvtzu_x_d" => FpExpectation {
+            params: &[ScalarType::Double],
+            returns: None,
+            return_width_bits: 64,
+        },
         "fp_from_int" => FpExpectation {
             params: &[ScalarType::Int],
             returns: Some(ScalarType::Double),
@@ -866,7 +902,7 @@ fn fp_expectation(name: &str) -> Option<FpExpectation> {
             returns: None,
             return_width_bits: 32,
         },
-        "fc_isnan_d" => FpExpectation {
+        "fc_isnan_d" | "fx_fcvtzs_w_d" | "fx_fcvtzu_w_d" => FpExpectation {
             params: &[ScalarType::Double],
             returns: None,
             return_width_bits: 32,
@@ -930,6 +966,11 @@ fn fp_expectation(name: &str) -> Option<FpExpectation> {
             ],
             returns: Some(ScalarType::Float),
             return_width_bits: 32,
+        },
+        "fx_fcvtzs_x_f" | "fx_fcvtzu_x_f" => FpExpectation {
+            params: &[ScalarType::Float],
+            returns: None,
+            return_width_bits: 64,
         },
         "ret1_f" | "ret2_f" | "ret25_f" | "rethalf_f" | "retn1_f" => FpExpectation {
             params: &[],
@@ -1204,6 +1245,30 @@ fn is_increment_eighteen(name: &str) -> bool {
     INCREMENT_EIGHTEEN_FUNCTIONS.contains(&name)
 }
 
+const INCREMENT_NINETEEN_FP_FUNCTIONS: &[&str] = &[
+    "fx_scvtf_f_w",
+    "fx_scvtf_d_w",
+    "fx_scvtf_f_x",
+    "fx_scvtf_d_x",
+    "fx_ucvtf_f_w",
+    "fx_ucvtf_d_w",
+    "fx_ucvtf_f_x",
+    "fx_ucvtf_d_x",
+    "fx_fcvtzs_w_f",
+    "fx_fcvtzs_w_d",
+    "fx_fcvtzs_x_f",
+    "fx_fcvtzs_x_d",
+    "fx_fcvtzu_w_f",
+    "fx_fcvtzu_w_d",
+    "fx_fcvtzu_x_f",
+    "fx_fcvtzu_x_d",
+];
+const INCREMENT_NINETEEN_EXPECTED_CASES: usize = 80;
+
+fn is_increment_nineteen_fp(name: &str) -> bool {
+    INCREMENT_NINETEEN_FP_FUNCTIONS.contains(&name)
+}
+
 fn expected_arity(name: &str) -> Option<usize> {
     let arity: usize = match name {
         "popcount_loop" | "bitmix" | "mask_hi" | "str_len_manual" | "sw_small" | "sw_sparse"
@@ -1268,6 +1333,100 @@ fn scalar_block(
          \x20           {want_expr}\n\
          \x20           uint64_t g = {rec}({rec_args}){got_mask};\n\
          \x20           if (w != g) {{ printf(\"FAIL {opt} {name} it=%d w=%llu g=%llu\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }}\n\
+         \x20       }}\n\
+         \x20       if (ok) passed++; else fails++;\n\
+         \x20   }}\n"
+    )
+}
+
+fn fixed_int_to_fp_block(
+    opt: &str,
+    name: &str,
+    rec: &str,
+    seed: u64,
+    param_ty: &str,
+    double_result: bool,
+) -> String {
+    let wide: bool = param_ty.contains("long");
+    let arg_cast: &str = if wide {
+        "(uint64_t)"
+    } else {
+        "(uint64_t)(uint32_t)"
+    };
+    let to_bits: &str = if double_result {
+        "fp_d_to_bits"
+    } else {
+        "fp_f_to_bits"
+    };
+    format!(
+        "    {{\n\
+         \x20       uint64_t s = 0x{seed:x}ULL; int ok = 1;\n\
+         \x20       for (int it = 0; it < ITER; it++) {{\n\
+         \x20           uint64_t raw = fixed_int_input(&s, it);\n\
+         \x20           {param_ty} t = ({param_ty})raw;\n\
+         \x20           {param_ty} a = t / 2;\n\
+         \x20           {param_ty} b = ({param_ty})(t - a);\n\
+         \x20           unsigned long long w = (unsigned long long){to_bits}({name}(a, b));\n\
+         \x20           unsigned long long g = (unsigned long long){to_bits}({rec}({arg_cast}a, {arg_cast}b));\n\
+         \x20           if (w != g) {{ printf(\"FAIL {opt} {name} it=%d raw=%llx w=%llx g=%llx\\n\", it, (unsigned long long)raw, w, g); ok = 0; break; }}\n\
+         \x20       }}\n\
+         \x20       if (ok) passed++; else fails++;\n\
+         \x20   }}\n"
+    )
+}
+
+fn fixed_fp_to_int_block(
+    opt: &str,
+    name: &str,
+    rec: &str,
+    seed: u64,
+    double_source: bool,
+    dest_bits: u32,
+    signed_dest: bool,
+    scale: u32,
+) -> String {
+    let source_ty: &str = if double_source { "double" } else { "float" };
+    let suffix: &str = if double_source { "" } else { "f" };
+    let to_bits: &str = if double_source {
+        "fp_d_to_bits"
+    } else {
+        "fp_f_to_bits"
+    };
+    let from_bits: &str = if double_source {
+        "fp_d_from_bits"
+    } else {
+        "fp_f_from_bits"
+    };
+    let bit_ty: &str = if double_source {
+        "uint64_t"
+    } else {
+        "uint32_t"
+    };
+    let step: &str = if double_source { "1ULL" } else { "1u" };
+    let pool: &str = if double_source {
+        "fp64_input"
+    } else {
+        "fp32_input"
+    };
+    let dest_ty: String = format!("uint{dest_bits}_t");
+    let saturation_exponent: i32 = i32::try_from(dest_bits).unwrap_or(0)
+        - i32::from(signed_dest)
+        - i32::try_from(scale).unwrap_or(0);
+    format!(
+        "    {{\n\
+         \x20       uint64_t s = 0x{seed:x}ULL; int ok = 1;\n\
+         \x20       {source_ty} edge = 0x1p{saturation_exponent}{suffix};\n\
+         \x20       {source_ty} below = {from_bits}(({bit_ty})({to_bits}(edge) - {step}));\n\
+         \x20       {source_ty} above = {from_bits}(({bit_ty})({to_bits}(edge) + {step}));\n\
+         \x20       {source_ty} directed[] = {{ 0.0{suffix}, -0.0{suffix}, 1.0{suffix}, -1.0{suffix},\n\
+         \x20           edge, -edge, below, -below, above, -above, edge * 0.5{suffix}, -edge * 0.5{suffix},\n\
+         \x20           edge * 2.0{suffix}, -edge * 2.0{suffix} }};\n\
+         \x20       int dcount = (int)(sizeof(directed) / sizeof(directed[0]));\n\
+         \x20       for (int it = 0; it < ITER; it++) {{\n\
+         \x20           {source_ty} x = it < dcount ? directed[it] : {from_bits}({pool}(&s, it - dcount, 0));\n\
+         \x20           unsigned long long w = (unsigned long long)({dest_ty}){name}(x);\n\
+         \x20           unsigned long long g = (unsigned long long)({dest_ty}){rec}(x);\n\
+         \x20           if (w != g) {{ printf(\"FAIL {opt} {name} it=%d w=%llx g=%llx\\n\", it, w, g); ok = 0; break; }}\n\
          \x20       }}\n\
          \x20       if (ok) passed++; else fails++;\n\
          \x20   }}\n"
@@ -1400,6 +1559,20 @@ static uint64_t fp64_narrow_input(uint64_t *state, int iteration) {
     int narrowed = iteration - general;
     int count = (int)(sizeof(fp64_narrow_rounding) / sizeof(fp64_narrow_rounding[0]));
     if (narrowed < count) return fp64_narrow_rounding[narrowed];
+    return xs(state);
+}
+static const uint64_t fixed_int_specials[] = {
+    0x0000000000000000ULL, 0x0000000000000001ULL, 0xffffffffffffffffULL,
+    0x0000000080000000ULL, 0x000000007fffffffULL, 0x0000000080000001ULL,
+    0x00000000fffffffeULL, 0x0000000000ffffffULL, 0x0000000001000000ULL,
+    0x0000000001000001ULL, 0x8000000000000000ULL, 0x7fffffffffffffffULL,
+    0x001fffffffffffffULL, 0x0020000000000000ULL, 0x0020000000000001ULL,
+    0xffe0000000000000ULL, 0x0000000100000000ULL, 0x00000000ffffffffULL,
+    0xffff800000000000ULL, 0x0000800000000000ULL
+};
+static uint64_t fixed_int_input(uint64_t *state, int iteration) {
+    int count = (int)(sizeof(fixed_int_specials) / sizeof(fixed_int_specials[0]));
+    if (iteration < count) return fixed_int_specials[iteration];
     return xs(state);
 }
 static const uint32_t fp32_pairs[][2] = {
@@ -2080,6 +2253,22 @@ fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Option<String> 
         "fp_to_ulong_d" | "fcvt_floor_d" | "fcvt_ceil_d" | "fcvt_away_d" | "fcvt_floor_ud" => {
             fill_template(FP_TO_U64_D_TMPL, opt, name, rec, seed)
         }
+        "fx_scvtf_f_w" => fixed_int_to_fp_block(opt, name, rec, seed, "int", false),
+        "fx_scvtf_d_w" => fixed_int_to_fp_block(opt, name, rec, seed, "int", true),
+        "fx_scvtf_f_x" => fixed_int_to_fp_block(opt, name, rec, seed, "long long", false),
+        "fx_scvtf_d_x" => fixed_int_to_fp_block(opt, name, rec, seed, "long long", true),
+        "fx_ucvtf_f_w" => fixed_int_to_fp_block(opt, name, rec, seed, "unsigned", false),
+        "fx_ucvtf_d_w" => fixed_int_to_fp_block(opt, name, rec, seed, "unsigned", true),
+        "fx_ucvtf_f_x" => fixed_int_to_fp_block(opt, name, rec, seed, "unsigned long long", false),
+        "fx_ucvtf_d_x" => fixed_int_to_fp_block(opt, name, rec, seed, "unsigned long long", true),
+        "fx_fcvtzs_w_f" => fixed_fp_to_int_block(opt, name, rec, seed, false, 32, true, 16),
+        "fx_fcvtzs_w_d" => fixed_fp_to_int_block(opt, name, rec, seed, true, 32, true, 4),
+        "fx_fcvtzs_x_f" => fixed_fp_to_int_block(opt, name, rec, seed, false, 64, true, 32),
+        "fx_fcvtzs_x_d" => fixed_fp_to_int_block(opt, name, rec, seed, true, 64, true, 64),
+        "fx_fcvtzu_w_f" => fixed_fp_to_int_block(opt, name, rec, seed, false, 32, false, 32),
+        "fx_fcvtzu_w_d" => fixed_fp_to_int_block(opt, name, rec, seed, true, 32, false, 4),
+        "fx_fcvtzu_x_f" => fixed_fp_to_int_block(opt, name, rec, seed, false, 64, false, 16),
+        "fx_fcvtzu_x_d" => fixed_fp_to_int_block(opt, name, rec, seed, true, 64, false, 64),
         "fp_from_int" => fill_template(FP_FROM_I32_D_TMPL, opt, name, rec, seed),
         "fp_from_uint" => fill_template(FP_FROM_U32_F_TMPL, opt, name, rec, seed),
         "fp_widen" => fill_template(FP_WIDEN_TMPL, opt, name, rec, seed),
@@ -2852,6 +3041,25 @@ fn corpus_grade_report() {
         }
     }
 
+    let increment_nineteen_corpus_cases: usize = CASES
+        .iter()
+        .filter(|(_, name, _): &&(&str, &str, &[u8])| is_increment_nineteen_fp(name))
+        .count();
+    assert_eq!(
+        increment_nineteen_corpus_cases, INCREMENT_NINETEEN_EXPECTED_CASES,
+        "the generated corpus must contain exactly five rows per increment-19 function"
+    );
+    for required_name in INCREMENT_NINETEEN_FP_FUNCTIONS {
+        for required_opt in CORPUS_OPTIMIZATION_LEVELS {
+            assert!(
+                CASES.iter().any(|(opt, name, _): &(&str, &str, &[u8])| {
+                    opt == required_opt && name == required_name
+                }),
+                "required increment-19 case `{required_opt} {required_name}` is absent from the generated corpus"
+            );
+        }
+    }
+
     let dir: tempfile::TempDir = tempfile::tempdir().expect("scratch dir");
     let battery_c: PathBuf = dir.path().join("gt_battery.c");
     std::fs::write(&battery_c, GROUND_TRUTH_C.as_bytes()).expect("write ground-truth battery");
@@ -2910,6 +3118,8 @@ fn corpus_grade_report() {
     let mut increment_seventeen_driven: usize = 0;
     let mut increment_eighteen_recovered: usize = 0;
     let mut increment_eighteen_driven: usize = 0;
+    let mut increment_nineteen_recovered: usize = 0;
+    let mut increment_nineteen_driven: usize = 0;
     let mut skips: Vec<(String, String, String)> = Vec::new();
     let mut decls: String = String::new();
     let mut blocks: String = String::new();
@@ -2933,6 +3143,7 @@ fn corpus_grade_report() {
         let required_increment_sixteen: bool = is_increment_sixteen_fp(name);
         let required_increment_seventeen: bool = is_increment_seventeen_fp(name);
         let required_increment_eighteen: bool = is_increment_eighteen(name);
+        let required_increment_nineteen: bool = is_increment_nineteen_fp(name);
         let recovery: LeafRecovery = match recover_aarch64_function(bytes, 0) {
             Ok(value) => value,
             Err(error) => {
@@ -2997,6 +3208,9 @@ fn corpus_grade_report() {
         }
         if required_increment_eighteen {
             increment_eighteen_recovered += 1;
+        }
+        if required_increment_nineteen {
+            increment_nineteen_recovered += 1;
         }
 
         let expected_fp: Option<FpExpectation> = fp_expectation(name);
@@ -3128,6 +3342,9 @@ fn corpus_grade_report() {
         if required_increment_eighteen {
             increment_eighteen_driven += 1;
         }
+        if required_increment_nineteen {
+            increment_nineteen_driven += 1;
+        }
     }
 
     assert!(
@@ -3237,6 +3454,7 @@ fn corpus_grade_report() {
         .and_then(|value: usize| value.checked_sub(increment_fifteen_recovered))
         .and_then(|value: usize| value.checked_sub(increment_sixteen_recovered))
         .and_then(|value: usize| value.checked_sub(increment_seventeen_recovered))
+        .and_then(|value: usize| value.checked_sub(increment_nineteen_recovered))
         .expect("later-increment fp recovery counts cannot exceed the fp total");
     let increment_one_fp_driven: usize = fp_driven
         .checked_sub(increment_two_driven)
@@ -3255,6 +3473,7 @@ fn corpus_grade_report() {
         .and_then(|value: usize| value.checked_sub(increment_fifteen_driven))
         .and_then(|value: usize| value.checked_sub(increment_sixteen_driven))
         .and_then(|value: usize| value.checked_sub(increment_seventeen_driven))
+        .and_then(|value: usize| value.checked_sub(increment_nineteen_driven))
         .expect("later-increment fp driven counts cannot exceed the fp total");
     let integer_recovered: usize = recovered
         .checked_sub(fp_recovered)
@@ -3333,6 +3552,12 @@ fn corpus_grade_report() {
     );
     eprintln!(
         "increment-18 graded    {increment_eighteen_driven}/{INCREMENT_EIGHTEEN_EXPECTED_CASES}"
+    );
+    eprintln!(
+        "increment-19 recovered {increment_nineteen_recovered}/{INCREMENT_NINETEEN_EXPECTED_CASES}"
+    );
+    eprintln!(
+        "increment-19 graded    {increment_nineteen_driven}/{INCREMENT_NINETEEN_EXPECTED_CASES}"
     );
     eprintln!(
         "graded-equivalent    {graded_equivalent}   (recompiled + behaviorally matched on directed and random inputs)"
@@ -3527,6 +3752,14 @@ fn corpus_grade_report() {
     assert_eq!(
         increment_sixteen_driven, INCREMENT_SIXTEEN_EXPECTED_CASES,
         "every increment-16 corpus case must be graded"
+    );
+    assert_eq!(
+        increment_nineteen_recovered, INCREMENT_NINETEEN_EXPECTED_CASES,
+        "every increment-19 corpus case must recover"
+    );
+    assert_eq!(
+        increment_nineteen_driven, INCREMENT_NINETEEN_EXPECTED_CASES,
+        "every increment-19 corpus case must be graded"
     );
     assert!(
         skips.is_empty(),

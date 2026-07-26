@@ -11,7 +11,7 @@ SRC: Path = HERE / "corpus.c"
 OUT: Path = HERE.parent.parent / "aarch64_recovery_corpus.inc"
 LEVELS: tuple[str, ...] = ("O0", "O1", "O2", "O3", "Os")
 FUNC_RE: re.Pattern[str] = re.compile(r"^[0-9a-f]+ <([A-Za-z_][A-Za-z0-9_]*)>:\s*$")
-INSN_RE: re.Pattern[str] = re.compile(r"^\s*[0-9a-f]+:\s+([0-9a-f]{8})\s+(\S+)")
+INSN_RE: re.Pattern[str] = re.compile(r"^\s*[0-9a-f]+:\s+([0-9a-f]{8})\s+(\S+)(.*)$")
 
 FUSED: frozenset[str] = frozenset({"fmadd", "fmsub", "fnmadd", "fnmsub"})
 FUSED_REQUIRED: dict[str, str] = {
@@ -42,11 +42,33 @@ UNFUSED_REQUIRED: dict[str, frozenset[str]] = {
     "sub_mul_unfused_f": frozenset({"fmul", "fsub"}),
     "sub_mul_unfused_d": frozenset({"fmul", "fsub"}),
 }
+FIXED_POINT_REQUIRED: dict[str, tuple[str, str]] = {
+    "fx_scvtf_f_w": ("scvtf", "fdiv"),
+    "fx_scvtf_d_w": ("scvtf", "fdiv"),
+    "fx_scvtf_f_x": ("scvtf", "fdiv"),
+    "fx_scvtf_d_x": ("scvtf", "fdiv"),
+    "fx_ucvtf_f_w": ("ucvtf", "fdiv"),
+    "fx_ucvtf_d_w": ("ucvtf", "fdiv"),
+    "fx_ucvtf_f_x": ("ucvtf", "fdiv"),
+    "fx_ucvtf_d_x": ("ucvtf", "fdiv"),
+    "fx_fcvtzs_w_f": ("fcvtzs", "fmul"),
+    "fx_fcvtzs_w_d": ("fcvtzs", "fmul"),
+    "fx_fcvtzs_x_f": ("fcvtzs", "fmul"),
+    "fx_fcvtzs_x_d": ("fcvtzs", "fmul"),
+    "fx_fcvtzu_w_f": ("fcvtzu", "fmul"),
+    "fx_fcvtzu_w_d": ("fcvtzu", "fmul"),
+    "fx_fcvtzu_x_f": ("fcvtzu", "fmul"),
+    "fx_fcvtzu_x_d": ("fcvtzu", "fmul"),
+}
+FIXED_POINT_FUSED_LEVELS: frozenset[str] = frozenset({"O1", "O2", "O3", "Os"})
+FIXED_POINT_TAIL_RE: re.Pattern[str] = re.compile(
+    r"^\s*[a-z][0-9]+,\s*[a-z][0-9]+,\s*#(?:0x)?[0-9a-f]+$"
+)
 
 
 def disassemble(
     level: str, out_dir: Path, /
-) -> tuple[dict[str, list[int]], dict[str, set[str]]]:
+) -> tuple[dict[str, list[int]], dict[str, set[str]], dict[str, set[tuple[str, str]]]]:
     obj: Path = out_dir / f"corpus_{level}.o"
     compile_cmd: list[str] = [
         "clang",
@@ -69,6 +91,7 @@ def disassemble(
     )
     out: dict[str, list[int]] = {}
     mnemonics: dict[str, set[str]] = {}
+    encodings: dict[str, set[tuple[str, str]]] = {}
     current: str | None = None
     for line in dumped.stdout.splitlines():
         matched_func: re.Match[str] | None = FUNC_RE.match(line)
@@ -77,6 +100,7 @@ def disassemble(
             current = name
             out[name] = []
             mnemonics[name] = set()
+            encodings[name] = set()
             continue
         if current is None:
             continue
@@ -86,10 +110,60 @@ def disassemble(
         word: int = int(matched_insn.group(1), 16)
         out[current].extend(word.to_bytes(4, "little"))
         mnemonics[current].add(matched_insn.group(2))
+        encodings[current].add(
+            (matched_insn.group(2), matched_insn.group(3).split("//")[0].strip())
+        )
     bodies: dict[str, list[int]] = {
         name: body for name, body in out.items() if body
     }
-    return bodies, {name: mnemonics[name] for name in bodies}
+    return (
+        bodies,
+        {name: mnemonics[name] for name in bodies},
+        {name: encodings[name] for name in bodies},
+    )
+
+
+def gate_fixed_point(
+    level: str,
+    mnemonics: dict[str, set[str]],
+    encodings: dict[str, set[tuple[str, str]]],
+    /,
+) -> None:
+    fused_level: bool = level in FIXED_POINT_FUSED_LEVELS
+    for name, (mnemonic, split_op) in FIXED_POINT_REQUIRED.items():
+        seen: set[str] = mnemonics.get(name, set())
+        tails: set[str] = {
+            operands
+            for opcode, operands in encodings.get(name, set())
+            if opcode == mnemonic
+        }
+        fused: set[str] = {tail for tail in tails if FIXED_POINT_TAIL_RE.match(tail)}
+        if mnemonic not in seen:
+            raise SystemExit(
+                f"corpus gate {level}: {name} must contain {mnemonic}, saw {sorted(seen)}"
+            )
+        if fused_level:
+            if not fused:
+                raise SystemExit(
+                    f"corpus gate {level}: {name} must fuse the fractional immediate into"
+                    f" {mnemonic}, saw operand tails {sorted(tails)}"
+                )
+            if split_op in seen:
+                raise SystemExit(
+                    f"corpus gate {level}: {name} must fold the scaling into {mnemonic},"
+                    f" saw a separate {split_op}"
+                )
+            continue
+        if fused:
+            raise SystemExit(
+                f"corpus gate {level}: {name} is not expected to fuse at {level},"
+                f" saw operand tails {sorted(fused)}"
+            )
+        if split_op not in seen:
+            raise SystemExit(
+                f"corpus gate {level}: {name} must keep a separate {split_op} at {level},"
+                f" saw {sorted(seen)}"
+            )
 
 
 def gate(level: str, mnemonics: dict[str, set[str]], /) -> None:
@@ -129,8 +203,9 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         out_dir: Path = Path(tmp)
         for level in LEVELS:
-            functions, mnemonics = disassemble(level, out_dir)
+            functions, mnemonics, encodings = disassemble(level, out_dir)
             gate(level, mnemonics)
+            gate_fixed_point(level, mnemonics, encodings)
             per_level[level] = len(functions)
             for name in sorted(functions):
                 body: list[int] = functions[name]
