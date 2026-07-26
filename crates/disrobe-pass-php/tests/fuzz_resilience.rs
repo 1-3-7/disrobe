@@ -17,6 +17,7 @@ use disrobe_pass_php::{
 use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, XorShift64};
 
 const RANDOM_SPAN_BYTES: usize = 4096;
+const ENTROPY_SPAN_SEED: u64 = 0x5048_5000_0001_0003;
 const CASES_PER_INPUT: usize = 96;
 const BATCH_SIZE: usize = 320;
 const CASE_BUDGET: Duration = Duration::from_millis(40);
@@ -57,6 +58,15 @@ fn bcg_seed() -> Vec<u8> {
     bytes
 }
 
+fn entropy_span(len: usize) -> Vec<u8> {
+    let mut rng: XorShift64 = XorShift64::new(ENTROPY_SPAN_SEED);
+    let mut out: Vec<u8> = Vec::with_capacity(len);
+    for _ in 0..len {
+        out.push(rng.next_byte());
+    }
+    out
+}
+
 fn corpus() -> Vec<CorpusEntry> {
     vec![
         CorpusEntry::new("empty", Vec::<u8>::new()),
@@ -84,6 +94,7 @@ fn corpus() -> Vec<CorpusEntry> {
             b"<?php @Zend;\n3\x00Zk3yZk3ypayload".to_vec(),
         ),
         CorpusEntry::new("random-span", vec![0u8; RANDOM_SPAN_BYTES]),
+        CorpusEntry::new("entropy-span", entropy_span(RANDOM_SPAN_BYTES)),
     ]
 }
 

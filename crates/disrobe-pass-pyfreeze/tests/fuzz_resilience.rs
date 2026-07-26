@@ -33,6 +33,7 @@ use disrobe_pass_pyfreeze::{ExtractionQuota, detect_bytes as exported_detect_byt
 use disrobe_testkit::{BATCH_ENV, CorpusEntry, StressCase, StressConfig, XorShift64};
 
 const RANDOM_SPAN_BYTES: usize = 4096;
+const ENTROPY_SPAN_SEED: u64 = 0x5046_5A00_0001_0003;
 const READ_BOUND_BYTES: u64 = 4096;
 const CASES_PER_INPUT: usize = 64;
 const BATCH_SIZE: usize = 256;
@@ -280,6 +281,15 @@ fn zipapp_seed() -> Vec<u8> {
     stored_zip(&[("__main__.py", b"print('zipapp')\n")])
 }
 
+fn entropy_span(len: usize) -> Vec<u8> {
+    let mut rng: XorShift64 = XorShift64::new(ENTROPY_SPAN_SEED);
+    let mut out: Vec<u8> = Vec::with_capacity(len);
+    for _ in 0..len {
+        out.push(rng.next_byte());
+    }
+    out
+}
+
 fn corpus() -> Vec<CorpusEntry> {
     vec![
         CorpusEntry::new("empty", Vec::<u8>::new()),
@@ -292,6 +302,7 @@ fn corpus() -> Vec<CorpusEntry> {
         CorpusEntry::new("shiv-zip", shiv_seed()),
         CorpusEntry::new("zipapp-zip", zipapp_seed()),
         CorpusEntry::new("random-span", vec![0u8; RANDOM_SPAN_BYTES]),
+        CorpusEntry::new("entropy-span", entropy_span(RANDOM_SPAN_BYTES)),
     ]
 }
 

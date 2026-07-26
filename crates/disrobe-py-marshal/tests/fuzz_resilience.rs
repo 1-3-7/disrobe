@@ -17,6 +17,7 @@ const VERSIONS: [PyVersion; 4] = [
 ];
 
 const RANDOM_SPAN_BYTES: usize = 1024;
+const ENTROPY_SPAN_SEED: u64 = 0x5041_5253_0001_0003;
 const CASES_PER_INPUT: usize = 10_000;
 const BATCH_SIZE: usize = 3_000;
 const CASE_BUDGET: Duration = Duration::from_millis(5);
@@ -86,11 +87,21 @@ fn check(case: &StressCase<'_>) {
     probe(&retag_collections(case.bytes(), case.case_seed()));
 }
 
+fn entropy_span(len: usize) -> Vec<u8> {
+    let mut rng: XorShift64 = XorShift64::new(ENTROPY_SPAN_SEED);
+    let mut out: Vec<u8> = Vec::with_capacity(len);
+    for _ in 0..len {
+        out.push(rng.next_byte());
+    }
+    out
+}
+
 fn corpus() -> Vec<CorpusEntry> {
     vec![
         CorpusEntry::new("marshal-tuple", marshal_seed()),
         CorpusEntry::new("pyc-header", pyc_seed()),
         CorpusEntry::new("random-span", vec![0u8; RANDOM_SPAN_BYTES]),
+        CorpusEntry::new("entropy-span", entropy_span(RANDOM_SPAN_BYTES)),
     ]
 }
 
