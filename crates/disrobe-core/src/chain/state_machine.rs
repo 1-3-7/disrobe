@@ -55,6 +55,7 @@ pub struct ChainConfig {
     pub stream_extracted: bool,
     pub max_cumulative_output_bytes: u64,
     pub selection_policy: SelectionPolicy,
+    pub i_have_authorization: bool,
 }
 
 impl Default for ChainConfig {
@@ -66,6 +67,7 @@ impl Default for ChainConfig {
             stream_extracted: false,
             max_cumulative_output_bytes: DEFAULT_MAX_CUMULATIVE_OUTPUT_BYTES,
             selection_policy: SelectionPolicy::default(),
+            i_have_authorization: false,
         }
     }
 }
