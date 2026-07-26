@@ -166,7 +166,7 @@ fn legal_stance_is_amber_leaning_green() {
     assert_eq!(JSDEFENDER_LEGAL, JSDEFENDER_FAMILY.legal_stance());
     assert!(JSDEFENDER_LEGAL.allows_bypass_with_authorization());
     assert_eq!(
-        JSDEFENDER_LEGAL.stance_doc(),
+        JSDEFENDER_FAMILY.stance_doc(),
         "docs/legal/jsdefender-stance.md"
     );
 }

@@ -132,7 +132,7 @@ pub fn deobfuscate(source: &str, opts: &ProtectorOptions) -> Result<ProtectorOut
         bytes_out,
         family: FAMILY,
         legal_stance: LEGAL,
-        stance_doc: LEGAL.stance_doc(),
+        stance_doc: FAMILY.stance_doc(),
         detection,
         stats,
     })
@@ -147,7 +147,7 @@ mod tests {
     fn legal_stance_const_matches_family() {
         assert_eq!(LEGAL, FAMILY.legal_stance());
         assert!(LEGAL.allows_bypass_with_authorization());
-        assert_eq!(LEGAL.stance_doc(), "docs/legal/jsdefender-stance.md");
+        assert_eq!(FAMILY.stance_doc(), "docs/legal/jsdefender-stance.md");
     }
 
     #[test]

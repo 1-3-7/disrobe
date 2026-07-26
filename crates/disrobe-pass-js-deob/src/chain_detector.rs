@@ -8,7 +8,7 @@ use disrobe_core::chain::{
     FAMILY_OBFUSCATOR_WRAPPER, ObfuscatorCatalog, OutputKind, Pass, SupportQuality,
 };
 use disrobe_core::error::{CoreError, Result as CoreResult};
-use disrobe_core::pass::PassId;
+use disrobe_core::pass::{PassContext, PassId};
 
 use crate::bundle::{BundlerKind, UnbundleResult, auto_unbundle, unbundle as unbundle_source};
 use crate::detect::{Detection, JsObfuscator, detect as detect_obfuscator};
@@ -173,6 +173,14 @@ impl Pass for JsObfPass {
     }
 
     fn run(&self, artifact: &Artifact) -> CoreResult<Artifact> {
+        self.run_with_context(artifact, PassContext::default())
+    }
+
+    fn run_with_context(
+        &self,
+        artifact: &Artifact,
+        context: PassContext<'_>,
+    ) -> CoreResult<Artifact> {
         let bytes: &[u8] = artifact.envelope.as_slice();
         if crate::v8::sea::detect_node_sea_blob(bytes).is_some() {
             return run_node_sea(bytes, artifact);
@@ -181,7 +189,7 @@ impl Pass for JsObfPass {
             return run_bytenode(bytes, artifact);
         }
         if let Ok(text) = std::str::from_utf8(bytes) {
-            if let Some(out) = run_protector(text, artifact)? {
+            if let Some(out) = run_protector(text, artifact, context.i_have_authorization)? {
                 return Ok(out);
             }
             let eso: EsotericClassification = classify_esoteric(text);
@@ -447,99 +455,75 @@ fn verdict_from_obfuscator(det: &Detection) -> Option<DetectVerdict> {
     ))
 }
 
-fn verdict_from_protector(text: &str) -> Option<DetectVerdict> {
-    let pace_det: Option<ProtectorDetection> = detect_pace(text);
-    if let Some(d) = pace_det {
-        return Some(DetectVerdict::new(
-            PASS_ID,
-            TAG_PACE,
-            FAMILY_OBFUSCATOR_WRAPPER,
-            d.confidence,
-            PROTECTOR_SPECIFICITY,
-            vec!["js-pace-marker"],
-            format!(
-                "pace js (stance={stance}) markers={n}",
-                stance = d.stance_doc,
-                n = d.markers.len(),
-            ),
-        ));
-    }
-    let jsd_det: Option<ProtectorDetection> = detect_jsdefender(text);
-    if let Some(d) = jsd_det {
-        return Some(DetectVerdict::new(
-            PASS_ID,
-            TAG_JSDEFENDER,
-            FAMILY_OBFUSCATOR_WRAPPER,
-            d.confidence,
-            PROTECTOR_SPECIFICITY,
-            vec!["js-jsdefender-marker"],
-            format!(
-                "jsdefender (stance={stance}) markers={n}",
-                stance = d.stance_doc,
-                n = d.markers.len(),
-            ),
-        ));
-    }
-    let arx_det: Option<ProtectorDetection> = detect_arxan(text);
-    if let Some(d) = arx_det {
-        return Some(DetectVerdict::new(
-            PASS_ID,
-            TAG_ARXAN,
-            FAMILY_OBFUSCATOR_WRAPPER,
-            d.confidence,
-            PROTECTOR_SPECIFICITY,
-            vec!["js-arxan-marker"],
-            format!(
-                "arxan (stance={stance}) markers={n}",
-                stance = d.stance_doc,
-                n = d.markers.len(),
-            ),
-        ));
-    }
-    None
+fn detect_protector(text: &str) -> Option<ProtectorDetection> {
+    detect_pace(text)
+        .or_else(|| detect_jsdefender(text))
+        .or_else(|| detect_arxan(text))
 }
 
-fn run_protector(text: &str, artifact: &Artifact) -> CoreResult<Option<Artifact>> {
-    if detect_pace(text).is_some() {
-        let opts: ProtectorOptions = ProtectorOptions {
-            i_have_authorization: true,
-        };
-        let out: ProtectorOutput = pace_deobfuscate(text, &opts)
-            .map_err(|e| CoreError::PassFailure(format!("DR-JS-0910: pace deob: {e}")))?;
-        debug_assert!(matches!(out.family, ProtectorFamily::Pace));
-        return Ok(Some(Artifact::new(
-            Rung::Surface,
-            out.source.into_bytes(),
-            artifact.root_hash,
+const fn protector_verdict_shape(
+    family: ProtectorFamily,
+) -> (&'static str, &'static str, &'static str) {
+    match family {
+        ProtectorFamily::Pace => (TAG_PACE, "js-pace-marker", "pace js"),
+        ProtectorFamily::JsDefender => (TAG_JSDEFENDER, "js-jsdefender-marker", "jsdefender"),
+        ProtectorFamily::Arxan => (TAG_ARXAN, "js-arxan-marker", "arxan"),
+    }
+}
+
+fn verdict_from_protector(text: &str) -> Option<DetectVerdict> {
+    let detection: ProtectorDetection = detect_protector(text)?;
+    let (format_tag, marker, label): (&'static str, &'static str, &'static str) =
+        protector_verdict_shape(detection.family);
+    Some(DetectVerdict::new(
+        PASS_ID,
+        format_tag,
+        FAMILY_OBFUSCATOR_WRAPPER,
+        detection.confidence,
+        PROTECTOR_SPECIFICITY,
+        vec![marker],
+        format!(
+            "{label} (stance={stance}) markers={n}",
+            stance = detection.stance_doc,
+            n = detection.markers.len(),
+        ),
+    ))
+}
+
+fn run_protector(
+    text: &str,
+    artifact: &Artifact,
+    i_have_authorization: bool,
+) -> CoreResult<Option<Artifact>> {
+    let Some(detection): Option<ProtectorDetection> = detect_protector(text) else {
+        return Ok(None);
+    };
+    let family: ProtectorFamily = detection.family;
+    if !i_have_authorization {
+        return Err(CoreError::PassFailure(format!(
+            "DR-JS-0920: js.deob: {name} detected; its static-marker strip runs only when the \
+             operator asserts --i-have-authorization, so the input was left unmodified; see {doc}",
+            name = family.display_name(),
+            doc = detection.stance_doc,
         )));
     }
-    if detect_jsdefender(text).is_some() {
-        let opts: ProtectorOptions = ProtectorOptions {
-            i_have_authorization: true,
-        };
-        let out: ProtectorOutput = jsdefender_deobfuscate(text, &opts)
-            .map_err(|e| CoreError::PassFailure(format!("DR-JS-0911: jsdefender deob: {e}")))?;
-        debug_assert!(matches!(out.family, ProtectorFamily::JsDefender));
-        return Ok(Some(Artifact::new(
-            Rung::Surface,
-            out.source.into_bytes(),
-            artifact.root_hash,
-        )));
-    }
-    if detect_arxan(text).is_some() {
-        let opts: ProtectorOptions = ProtectorOptions {
-            i_have_authorization: true,
-        };
-        let out: ProtectorOutput = arxan_deobfuscate(text, &opts)
-            .map_err(|e| CoreError::PassFailure(format!("DR-JS-0912: arxan deob: {e}")))?;
-        debug_assert!(matches!(out.family, ProtectorFamily::Arxan));
-        return Ok(Some(Artifact::new(
-            Rung::Surface,
-            out.source.into_bytes(),
-            artifact.root_hash,
-        )));
-    }
-    Ok(None)
+    let opts: ProtectorOptions = ProtectorOptions {
+        i_have_authorization,
+    };
+    let out: ProtectorOutput = match family {
+        ProtectorFamily::Pace => pace_deobfuscate(text, &opts)
+            .map_err(|e| CoreError::PassFailure(format!("DR-JS-0910: pace deob: {e}")))?,
+        ProtectorFamily::JsDefender => jsdefender_deobfuscate(text, &opts)
+            .map_err(|e| CoreError::PassFailure(format!("DR-JS-0911: jsdefender deob: {e}")))?,
+        ProtectorFamily::Arxan => arxan_deobfuscate(text, &opts)
+            .map_err(|e| CoreError::PassFailure(format!("DR-JS-0912: arxan deob: {e}")))?,
+    };
+    debug_assert_eq!(out.family, family);
+    Ok(Some(Artifact::new(
+        Rung::Surface,
+        out.source.into_bytes(),
+        artifact.root_hash,
+    )))
 }
 
 fn run_esoteric(eso: &EsotericClassification, bytes: &[u8]) -> Option<String> {
@@ -579,7 +563,7 @@ fn run_javascript_obfuscator(bytes: &[u8], artifact: &Artifact) -> CoreResult<Ar
     let out: ObfuscatorIoOutput = obfuscator_io_deob(text, ObfPreset::High)
         .map_err(|e| CoreError::PassFailure(format!("DR-JS-0903: obfuscator.io deob: {e}")))?;
     let body: Vec<u8> = serde_json::to_vec_pretty(&out)
-        .map_err(|e| CoreError::PassFailure(format!("DR-JS-0910: obfuscator.io serialize: {e}")))?;
+        .map_err(|e| CoreError::PassFailure(format!("DR-JS-0921: obfuscator.io serialize: {e}")))?;
     Ok(Artifact::new(Rung::Surface, body, artifact.root_hash))
 }
 

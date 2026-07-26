@@ -11,7 +11,6 @@ use crate::error::{Error, Result};
 
 pub const FAMILY: ProtectorFamily = ProtectorFamily::Pace;
 pub const LEGAL: LegalStance = LegalStance::AmberDetectOnly;
-pub const STANCE_DOC: &str = "docs/legal/pace-js-stance.md";
 
 const MARKERS: &[(&str, &str)] = &[
     (r"(?i)pace\s+anti[\s-]piracy", "pace-anti-piracy-banner"),
@@ -86,13 +85,11 @@ pub fn detect(source: &str) -> Option<ProtectorDetection> {
     }
     let confidence_clamped: f32 = confidence.min(0.99_f32);
     let markers_vec: Vec<String> = markers.into_iter().collect();
-    Some(ProtectorDetection {
-        family: FAMILY,
-        legal_stance: LEGAL,
-        stance_doc: STANCE_DOC,
-        confidence: confidence_clamped,
-        markers: markers_vec,
-    })
+    Some(ProtectorDetection::new(
+        FAMILY,
+        confidence_clamped,
+        markers_vec,
+    ))
 }
 
 fn splice_blank(source: &str, ranges: &mut [Range<usize>]) -> (String, usize) {
@@ -145,7 +142,7 @@ pub fn deobfuscate(source: &str, opts: &ProtectorOptions) -> Result<ProtectorOut
     }
     if stats.reversed == 0usize {
         return Err(Error::PaceUnsupportedPattern {
-            stance_doc: STANCE_DOC,
+            stance_doc: FAMILY.stance_doc(),
         });
     }
     let bytes_out: usize = current.len();
@@ -155,7 +152,7 @@ pub fn deobfuscate(source: &str, opts: &ProtectorOptions) -> Result<ProtectorOut
         bytes_out,
         family: FAMILY,
         legal_stance: LEGAL,
-        stance_doc: STANCE_DOC,
+        stance_doc: FAMILY.stance_doc(),
         detection,
         stats,
     })
@@ -180,7 +177,7 @@ pub fn detect_only_report(source: &str) -> ProtectorOutput {
         bytes_out: bytes_in,
         family: FAMILY,
         legal_stance: LEGAL,
-        stance_doc: STANCE_DOC,
+        stance_doc: FAMILY.stance_doc(),
         detection,
         stats,
     }
@@ -195,7 +192,7 @@ mod tests {
     fn legal_stance_const_matches_family() {
         assert_eq!(LEGAL, FAMILY.legal_stance());
         assert!(LEGAL.allows_bypass_with_authorization());
-        assert_eq!(STANCE_DOC, "docs/legal/pace-js-stance.md");
+        assert_eq!(FAMILY.stance_doc(), "docs/legal/pace-js-stance.md");
     }
 
     #[test]
