@@ -11730,7 +11730,7 @@ fn plan_frame(body: &Block, shape: FrameShape) -> Result<Option<FramePlan>> {
     let ctx: FrameScan = FrameScan {
         frame_base: shape.base,
         rbp_is_frame: shape.rbp_is_frame,
-        indexed_modelable: !block_has_unstructured_edge(body),
+        indexed_modelable: shape.red_zone && !block_has_unstructured_edge(body),
     };
     let mut state: FrameScanState = FrameScanState::default();
     scan_frame_block(ctx, body, &mut state);
@@ -18840,6 +18840,31 @@ mod tests {
     }
 
     #[test]
+    fn an_indexed_region_over_a_fixed_read_of_the_return_address_is_rejected() {
+        const RSP_CONSTANT_INDEXED_OVER_RETURN_ADDRESS: &[u8] = &[
+            0x48, 0x83, 0xec, 0x18, 0x48, 0x89, 0x3c, 0x24, 0x48, 0x89, 0x74, 0x24, 0x08, 0x48,
+            0x89, 0x54, 0x24, 0x10, 0x4c, 0x8b, 0x44, 0x24, 0x18, 0x83, 0xe1, 0x03, 0x48, 0x8b,
+            0x04, 0xcc, 0x48, 0x83, 0xc4, 0x18, 0xc3,
+        ];
+        let text: String = disasm_text(RSP_CONSTANT_INDEXED_OVER_RETURN_ADDRESS, 0x8600);
+        assert!(
+            text.contains("sub rsp,18h")
+                && text.contains("[rsp+18h]")
+                && text.contains("and ecx,3"),
+            "the probe must allocate a frame, read the slot holding the return address and mask the index: {text}"
+        );
+        let outcome: Result<LeafRecovery> =
+            recover_leaf_function_abi(RSP_CONSTANT_INDEXED_OVER_RETURN_ADDRESS, 0x8600, Abi::SysV);
+        match outcome {
+            Err(_) => {}
+            Ok(rec) => panic!(
+                "an indexed region may not span a fixed access that reads the return address, because the recovery would read an unwritten local where the machine reads the live return address: {}",
+                rec.source
+            ),
+        }
+    }
+
+    #[test]
     fn a_mask_bounded_indexed_red_zone_array_models_a_local_frame() {
         let text: String = disasm_text(&INDEXED_ARRAY_LOAD, 0x8500);
         assert!(
@@ -18945,7 +18970,10 @@ mod tests {
         );
         let err: Error = recover_leaf_function_abi(&code, 0x8540, Abi::SysV)
             .expect_err("a stride that disagrees with the element width is not an array");
-        assert!(matches!(err, Error::LlvmIr(_)));
+        assert!(
+            format!("{err}").contains("escapes a fixed-offset slot access"),
+            "the shape must be refused as an unmodelable frame access, got {err}"
+        );
     }
 
     #[test]
@@ -18976,7 +19004,10 @@ mod tests {
         );
         let err: Error = recover_leaf_function_abi(&code, 0x8560, Abi::SysV)
             .expect_err("a bound established after the access does not hold at the access");
-        assert!(matches!(err, Error::LlvmIr(_)));
+        assert!(
+            format!("{err}").contains("escapes a fixed-offset slot access"),
+            "the shape must be refused as an unmodelable frame access, got {err}"
+        );
     }
 
     #[test]
@@ -19006,7 +19037,10 @@ mod tests {
         );
         let err: Error = recover_leaf_function_abi(&code, 0x8580, Abi::SysV)
             .expect_err("65536 elements is past the modelable element cap");
-        assert!(matches!(err, Error::LlvmIr(_)));
+        assert!(
+            format!("{err}").contains("escapes a fixed-offset slot access"),
+            "the shape must be refused as an unmodelable frame access, got {err}"
+        );
     }
 
     #[test]
@@ -19020,7 +19054,10 @@ mod tests {
         );
         let err: Error = recover_leaf_function_abi(&code, 0x8590, Abi::SysV)
             .expect_err("a leaked indexed frame address is not a modelable region");
-        assert!(matches!(err, Error::LlvmIr(_)));
+        assert!(
+            format!("{err}").contains("escapes a fixed-offset slot access"),
+            "the shape must be refused as an unmodelable frame access, got {err}"
+        );
     }
 
     #[test]
