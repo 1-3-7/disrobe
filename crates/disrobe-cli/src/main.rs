@@ -1063,6 +1063,11 @@ enum Cmd {
             help = "output format: text, json, markdown, or html (self-contained, offline; redirect to a .html file)"
         )]
         format: ReportFormat,
+        #[arg(
+            long,
+            help = "directory to hold the run this report derives from; defaults to ./out under the working directory"
+        )]
+        out: Option<PathBuf>,
     },
     #[command(about = "rebuild a `.disrobe/annotations/<stem>.annot.json` symbol annotation file")]
     Annot {
@@ -1877,7 +1882,11 @@ fn main() -> miette::Result<()> {
         Cmd::Context { out } => context::run(out, fmt),
         Cmd::Config { action } => config::run(action, config_explicit.as_deref(), fmt),
         #[cfg(feature = "chain")]
-        Cmd::Report { target, format } => report::run(target, format, fmt),
+        Cmd::Report {
+            target,
+            format,
+            out,
+        } => report::run(target, format, fmt, out),
         Cmd::Annot { action } => annot::run(action, fmt),
         Cmd::Rename { old, new, note } => rename::run(old, new, note, fmt),
         Cmd::BugReport { out } => bug_report::run(out),

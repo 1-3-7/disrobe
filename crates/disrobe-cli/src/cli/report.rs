@@ -288,25 +288,31 @@ fn read_manifest(dir: &Path) -> miette::Result<BatchManifest> {
     })
 }
 
-fn derived_out_dir(input: &Path) -> PathBuf {
+fn derived_out_dir(input: &Path, base: Option<&Path>) -> PathBuf {
     let stem: &str = input
         .file_stem()
         .and_then(|s: &std::ffi::OsStr| s.to_str())
         .filter(|s: &&str| !s.is_empty())
         .unwrap_or("report");
-    PathBuf::from(format!("./out/{stem}-auto"))
+    base.map_or_else(
+        || PathBuf::from(format!("./out/{stem}-auto")),
+        |root: &Path| root.join(format!("{stem}-auto")),
+    )
 }
 
-fn derived_batch_dir(input: &Path) -> PathBuf {
+fn derived_batch_dir(input: &Path, base: Option<&Path>) -> PathBuf {
     let stem: &str = input
         .file_name()
         .and_then(|s: &std::ffi::OsStr| s.to_str())
         .filter(|s: &&str| !s.is_empty())
         .unwrap_or("batch");
-    PathBuf::from(format!("./out/{stem}-batch"))
+    base.map_or_else(
+        || PathBuf::from(format!("./out/{stem}-batch")),
+        |root: &Path| root.join(format!("{stem}-batch")),
+    )
 }
 
-fn resolve_document(target: &Path) -> miette::Result<ReportDocument> {
+fn resolve_document(target: &Path, base: Option<&Path>) -> miette::Result<ReportDocument> {
     if target.is_dir() {
         if target.join("manifest.json").is_file() {
             let manifest: BatchManifest = read_manifest(target)?;
@@ -323,7 +329,7 @@ fn resolve_document(target: &Path) -> miette::Result<ReportDocument> {
                 Some(target),
             ))));
         }
-        let out_dir: PathBuf = derived_batch_dir(target);
+        let out_dir: PathBuf = derived_batch_dir(target, base);
         let opts: BatchOptions = BatchOptions {
             out_root: out_dir.clone(),
             chain_arg: "auto:8".to_string(),
@@ -340,7 +346,7 @@ fn resolve_document(target: &Path) -> miette::Result<ReportDocument> {
         ))));
     }
     if target.is_file() {
-        let out_dir: PathBuf = derived_out_dir(target);
+        let out_dir: PathBuf = derived_out_dir(target, base);
         let bytes: Vec<u8> = std::fs::read(target).map_err(|e| {
             miette::miette!(
                 "DR-CLI-0358: cannot read report input {}: {e}",
@@ -557,8 +563,13 @@ fn render_markdown_batch(r: &BatchReport, out: &mut String) {
     }
 }
 
-pub(crate) fn run(target: PathBuf, format: ReportFormat, fmt: OutputFormat) -> miette::Result<()> {
-    let document: ReportDocument = resolve_document(&target)?;
+pub(crate) fn run(
+    target: PathBuf,
+    format: ReportFormat,
+    fmt: OutputFormat,
+    out: Option<PathBuf>,
+) -> miette::Result<()> {
+    let document: ReportDocument = resolve_document(&target, out.as_deref())?;
     let effective: ReportFormat = if fmt.is_machine() {
         ReportFormat::Json
     } else {
@@ -734,7 +745,7 @@ mod tests {
     #[test]
     fn resolves_single_out_dir() {
         let dir: PathBuf = seed_single_dir("single");
-        let doc: ReportDocument = resolve_document(&dir).expect("resolve single");
+        let doc: ReportDocument = resolve_document(&dir, None).expect("resolve single");
         match doc {
             ReportDocument::Single(s) => {
                 assert_eq!(s.input.path.as_deref(), Some("app.pyc"));
@@ -753,7 +764,7 @@ mod tests {
     #[test]
     fn text_render_contains_key_fields() {
         let dir: PathBuf = seed_single_dir("text");
-        let doc: ReportDocument = resolve_document(&dir).expect("resolve");
+        let doc: ReportDocument = resolve_document(&dir, None).expect("resolve");
         let ReportDocument::Single(s) = doc else {
             panic!("single");
         };
@@ -768,7 +779,7 @@ mod tests {
     #[test]
     fn markdown_render_is_tabular() {
         let dir: PathBuf = seed_single_dir("md");
-        let doc: ReportDocument = resolve_document(&dir).expect("resolve");
+        let doc: ReportDocument = resolve_document(&dir, None).expect("resolve");
         let ReportDocument::Single(s) = doc else {
             panic!("single");
         };
@@ -783,7 +794,7 @@ mod tests {
     #[test]
     fn json_document_round_trips_as_value() {
         let dir: PathBuf = seed_single_dir("json");
-        let doc: ReportDocument = resolve_document(&dir).expect("resolve");
+        let doc: ReportDocument = resolve_document(&dir, None).expect("resolve");
         let value: serde_json::Value = serde_json::to_value(&doc).expect("to value");
         assert_eq!(value["report_kind"], serde_json::json!("single"));
         assert_eq!(value["input"]["size"], serde_json::json!(128));
@@ -817,7 +828,7 @@ mod tests {
           ]
         }"#;
         std::fs::write(dir.join("manifest.json"), manifest).expect("w manifest");
-        let doc: ReportDocument = resolve_document(&dir).expect("resolve batch");
+        let doc: ReportDocument = resolve_document(&dir, None).expect("resolve batch");
         let ReportDocument::Batch(b) = doc else {
             panic!("expected batch report");
         };
@@ -835,7 +846,29 @@ mod tests {
     #[test]
     fn missing_target_is_error() {
         let missing: PathBuf = tmp_dir("missing").join("nope");
-        let err: miette::Report = resolve_document(&missing).expect_err("must error");
+        let err: miette::Report = resolve_document(&missing, None).expect_err("must error");
         assert!(format!("{err}").contains("DR-CLI-0350"));
+    }
+
+    #[test]
+    fn without_a_chosen_root_the_derived_run_lands_under_the_working_directory() {
+        let single: PathBuf = derived_out_dir(Path::new("sample.bin"), None);
+        assert_eq!(single, PathBuf::from("./out/sample-auto"));
+        let batch: PathBuf = derived_batch_dir(Path::new("corpus"), None);
+        assert_eq!(batch, PathBuf::from("./out/corpus-batch"));
+    }
+
+    #[test]
+    fn a_chosen_root_takes_the_derived_run_out_of_the_working_directory() {
+        let root: PathBuf = tmp_dir("chosen-root");
+        let single: PathBuf = derived_out_dir(Path::new("sample.bin"), Some(&root));
+        assert_eq!(single, root.join("sample-auto"));
+        assert!(
+            !single.starts_with("./out"),
+            "a chosen root must not still write beside the working directory: {}",
+            single.display()
+        );
+        let batch: PathBuf = derived_batch_dir(Path::new("corpus"), Some(&root));
+        assert_eq!(batch, root.join("corpus-batch"));
     }
 }
