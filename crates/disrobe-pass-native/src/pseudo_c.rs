@@ -7709,8 +7709,14 @@ fn note_fp_read(
     written: &BTreeMap<Xmm, bool>,
     acc: &mut Vec<(Xmm, FpWidth)>,
 ) -> Result<()> {
-    if !FP_ARG_ORDER.contains(&xmm) || written.get(&xmm).copied().unwrap_or(false) {
+    if written.get(&xmm).copied().unwrap_or(false) {
         return Ok(());
+    }
+    if !FP_ARG_ORDER.contains(&xmm) {
+        return Err(Error::LlvmIr(format!(
+            "floating register {} is read before any write and cannot hold an incoming argument, so its entry value is not recoverable",
+            xmm.index()
+        )));
     }
     if let Some((_, seen_width)) = acc
         .iter()
@@ -18472,6 +18478,20 @@ mod tests {
                 "a widening move produces the integer result, so an earlier floating-point multiply must not type the function: {}",
                 rec.source
             );
+        }
+    }
+
+    #[test]
+    fn reading_an_unwritten_scratch_xmm_is_rejected_rather_than_zeroed() {
+        let reads_xmm8: [u8; 6] = [0xf2, 0x41, 0x0f, 0x58, 0xc0, 0xc3];
+        let outcome: Result<LeafRecovery> =
+            recover_leaf_function_abi(&reads_xmm8, 0x9a00, Abi::SysV);
+        match outcome {
+            Err(_) => {}
+            Ok(rec) => panic!(
+                "xmm8 is read before any write and is not a parameter register, so its value is uninitialized at entry and the recovery must reject instead of inventing a defined value: {}",
+                rec.source
+            ),
         }
     }
 
