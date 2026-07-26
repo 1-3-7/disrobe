@@ -700,7 +700,7 @@ fn extract_android_sparse(
     out_dir: &Path,
     quota: ExtractionQuota,
 ) -> Result<ExtractionResult> {
-    let raw: Vec<u8> = crate::containers::unsparse(bytes)?;
+    let raw: Vec<u8> = crate::containers::unsparse(bytes, quota.max_total_uncompressed)?;
     std::fs::create_dir_all(out_dir)?;
     let mut guard: QuotaGuard = QuotaGuard::new(ExtractionQuota {
         max_aggregate_ratio: quota.max_aggregate_ratio.max(1000),
