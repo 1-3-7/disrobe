@@ -900,7 +900,7 @@ fn stack_adjustment_outside_frame_edges_rejects() {
     ];
     let error = recover_aarch64_function(&bytes, 0).expect_err("mid-body stack adjustment");
     assert!(
-        format!("{error:?}").contains("outside a recognized prologue or epilogue"),
+        format!("{error:?}").contains("stack pointer leaves the bounded aligned frame"),
         "{error:?}"
     );
 }
@@ -921,8 +921,8 @@ fn incomplete_and_negative_stack_epilogues_reject() {
     for bytes in [&missing[..], &under_restored[..], &negative[..]] {
         let error = recover_aarch64_function(bytes, 0).expect_err("invalid stack epilogue");
         assert!(
-            format!("{error:?}").contains("stack epilogue")
-                || format!("{error:?}").contains("stack restoration"),
+            format!("{error:?}")
+                .contains("stack pointer does not return to its entry value before the return"),
             "{error:?}"
         );
     }

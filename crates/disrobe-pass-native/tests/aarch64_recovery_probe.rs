@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 const CASES: &[(&str, &str, &[u8])] = &include!("aarch64_recovery_corpus.inc");
 
-const RECOVERY_FLOOR: usize = 1115;
+const RECOVERY_FLOOR: usize = 1125;
 
 type ConversionCase = (
     u32,
@@ -419,5 +419,108 @@ fn scalar_fp_increment_two_optimized_average_recovers() {
             recover_aarch64_function(case.2, 0).expect("optimized fp_iavg");
         assert_eq!(recovery.returns_fp, Some(ScalarType::Double));
         assert_eq!(recovery.return_width_bits, 64);
+    }
+}
+
+const FRAMELESS_POST_INDEX_RELEASE: &[u8] = &[
+    0xff, 0x43, 0x00, 0xd1, 0xe0, 0x0f, 0x00, 0xb9, 0xe1, 0x03, 0x00, 0xb9, 0xe2, 0x0f, 0x40, 0xb9,
+    0xe0, 0x07, 0x41, 0xb8, 0x00, 0x00, 0x02, 0x0b, 0xc0, 0x03, 0x5f, 0xd6,
+];
+const TWO_EPILOGUES: &[u8] = &[
+    0xff, 0x43, 0x00, 0xd1, 0xe0, 0x0f, 0x00, 0xb9, 0x1f, 0x00, 0x01, 0x6b, 0xad, 0x00, 0x00, 0x54,
+    0xe1, 0x0f, 0x00, 0xb9, 0xe0, 0x0f, 0x40, 0xb9, 0xff, 0x43, 0x00, 0x91, 0xc0, 0x03, 0x5f, 0xd6,
+    0xe0, 0x0f, 0x40, 0xb9, 0xff, 0x43, 0x00, 0x91, 0xc0, 0x03, 0x5f, 0xd6,
+];
+const SAVED_REGISTER_ROUND_TRIP: &[u8] = &[
+    0xff, 0x83, 0x00, 0xd1, 0xf3, 0x0b, 0x00, 0xf9, 0xe0, 0x0f, 0x00, 0xb9, 0xf3, 0x03, 0x00, 0x2a,
+    0x60, 0x06, 0x00, 0x11, 0xe0, 0x0f, 0x00, 0xb9, 0xe0, 0x0f, 0x40, 0xb9, 0xf3, 0x0b, 0x40, 0xf9,
+    0xff, 0x83, 0x00, 0x91, 0xc0, 0x03, 0x5f, 0xd6,
+];
+const DYNAMIC_ALLOCATION: &[u8] = &[
+    0xff, 0x63, 0x20, 0xcb, 0xe1, 0x0f, 0x00, 0xb9, 0xe0, 0x0f, 0x40, 0xb9, 0xff, 0x63, 0x20, 0x8b,
+    0xc0, 0x03, 0x5f, 0xd6,
+];
+const UNINITIALIZED_SLOT_READ: &[u8] = &[
+    0xff, 0x43, 0x00, 0xd1, 0xe0, 0x0f, 0x40, 0xb9, 0xff, 0x43, 0x00, 0x91, 0xc0, 0x03, 0x5f, 0xd6,
+];
+const ESCAPING_FRAME_ADDRESS: &[u8] = &[
+    0xff, 0x43, 0x00, 0xd1, 0xe8, 0x03, 0x00, 0x91, 0x00, 0x01, 0x00, 0xb9, 0xe0, 0x03, 0x40, 0xb9,
+    0xff, 0x43, 0x00, 0x91, 0xc0, 0x03, 0x5f, 0xd6,
+];
+const UNBALANCED_RELEASE: &[u8] = &[
+    0xff, 0x83, 0x00, 0xd1, 0xe0, 0x0f, 0x00, 0xb9, 0xe0, 0x0f, 0x40, 0xb9, 0xff, 0x43, 0x00, 0x91,
+    0xc0, 0x03, 0x5f, 0xd6,
+];
+const CLOBBERED_LINK_REGISTER: &[u8] = &[
+    0xff, 0x43, 0x00, 0xd1, 0xe0, 0x0f, 0x00, 0xb9, 0xfe, 0x03, 0x00, 0xaa, 0xe0, 0x0f, 0x40, 0xb9,
+    0xff, 0x43, 0x00, 0x91, 0xc0, 0x03, 0x5f, 0xd6,
+];
+
+#[test]
+fn balanced_frames_without_a_prologue_template_recover() {
+    let released: LeafRecovery = recover_aarch64_function(FRAMELESS_POST_INDEX_RELEASE, 0)
+        .expect("a post-indexed load may release the frame");
+    assert!(
+        released.source.contains("unsigned char stack_frame[16]"),
+        "the released frame must still back the slot as a local: {}",
+        released.source
+    );
+    assert!(
+        !released.source.contains("r_rsp = r_rsp"),
+        "the absorbed writeback must not mutate the modelled frame base: {}",
+        released.source
+    );
+
+    let split: LeafRecovery =
+        recover_aarch64_function(TWO_EPILOGUES, 0).expect("both exits release the same frame");
+    assert!(
+        split.source.contains("unsigned char stack_frame[16]"),
+        "a two-exit frame must still back its slot as a local: {}",
+        split.source
+    );
+
+    let saved: LeafRecovery = recover_aarch64_function(SAVED_REGISTER_ROUND_TRIP, 0)
+        .expect("a mid-body callee-saved round trip is frame management");
+    assert!(
+        saved.source.contains("unsigned char stack_frame[16]")
+            && !saved.source.contains("*(uint64_t*)(uintptr_t)(r_rsp"),
+        "a proven callee-saved round trip must be skipped, not modelled as a slot: {}",
+        saved.source
+    );
+}
+
+#[test]
+fn untrackable_frames_still_reject() {
+    let cases: [(&[u8], &str); 5] = [
+        (
+            DYNAMIC_ALLOCATION,
+            "stack pointer is used outside a modelled frame adjustment",
+        ),
+        (
+            UNINITIALIZED_SLOT_READ,
+            "a stack slot is read before every path has written it",
+        ),
+        (
+            ESCAPING_FRAME_ADDRESS,
+            "stack pointer is used outside a modelled frame adjustment",
+        ),
+        (
+            UNBALANCED_RELEASE,
+            "stack pointer does not return to its entry value before the return",
+        ),
+        (
+            CLOBBERED_LINK_REGISTER,
+            "a callee-saved register is not provably restored at the return",
+        ),
+    ];
+    for (bytes, expected) in cases {
+        let error: String = format!(
+            "{:?}",
+            recover_aarch64_function(bytes, 0).expect_err("form must sound-reject")
+        );
+        assert!(
+            error.contains(expected),
+            "missing `{expected}` in rejection: {error}"
+        );
     }
 }

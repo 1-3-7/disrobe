@@ -446,3 +446,16 @@ float fb_and3_f(float a, float b, float c, float d, float e, float f, float x, f
     if (a < b && c < d && e < f) r = x;
     return r;
 }
+int vol_four_slots(int a) {
+    volatile int p = a;
+    volatile int q = a + 1;
+    volatile int r = a + 2;
+    volatile int s = a + 3;
+    return p + q + r + s;
+}
+int vol_two_guards(int a, int b, int c) {
+    volatile int t = a;
+    if (a > b) t = b;
+    if (b > c) t = c;
+    return t;
+}

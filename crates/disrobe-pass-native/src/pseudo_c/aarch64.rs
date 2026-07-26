@@ -15,6 +15,9 @@ use std::collections::{BTreeMap, BTreeSet};
 #[path = "aarch64_cfg.rs"]
 mod aarch64_cfg;
 
+#[path = "aarch64_frame.rs"]
+mod aarch64_frame;
+
 const MAX_INSTRUCTIONS: usize = 4096;
 const ITEM_STRIDE: u64 = 16;
 const MAX_FRAME_BYTES: i64 = 1 << 20;
@@ -64,12 +67,23 @@ const AARCH64_FP_REGISTERS: [Xmm; 16] = [
 struct FrameInfo {
     sp_to_entry: i64,
     fp_to_entry: Option<i64>,
+    sp_writeback_absorbed: bool,
 }
 
 #[derive(Debug, Clone)]
 struct FrameAnalysis {
     info: FrameInfo,
     management: BTreeSet<usize>,
+    absorbed: BTreeSet<usize>,
+}
+
+impl FrameAnalysis {
+    fn info_at(&self, index: usize) -> FrameInfo {
+        FrameInfo {
+            sp_writeback_absorbed: self.absorbed.contains(&index),
+            ..self.info
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -366,7 +380,7 @@ fn recover_with_calls_and_image<'image>(
     let mut flags: Option<TrackedFlags> = None;
     let mut next_sel: u32 = 0;
     let mut flag_definitions: BTreeMap<usize, TrackedFlags> = BTreeMap::new();
-    let frame: FrameAnalysis = frame_analysis(&insns)?;
+    let frame: FrameAnalysis = aarch64_frame::analyze(&insns, &switches)?;
     let outgoing: BTreeMap<usize, Vec<OutgoingSlot>> = outgoing_stores(&insns, calls)?;
     let vector_context: bool = insns.iter().any(instruction_has_vector_syntax);
     for (index, insn) in insns.iter().enumerate() {
@@ -404,7 +418,7 @@ fn recover_with_calls_and_image<'image>(
                 "stack-frame instruction is outside a recognized prologue or epilogue",
             ));
         }
-        if let Some(stmts) = try_lower_scalar_fp(insn, frame.info, vector_context)? {
+        if let Some(stmts) = try_lower_scalar_fp(insn, frame.info_at(index), vector_context)? {
             push_stmts(&mut items, base, index, stmts)?;
             continue;
         }
@@ -417,7 +431,12 @@ fn recover_with_calls_and_image<'image>(
             && (vector_context || is_dreg_post_indexed(&insn.operands))
         {
             let operands: Vec<&str> = split_operands(&insn.operands);
-            let stmts: Vec<Stmt> = vector_load_store(insn, &operands, insn.mnemonic == "ldr")?;
+            let stmts: Vec<Stmt> = vector_load_store(
+                insn,
+                &operands,
+                insn.mnemonic == "ldr",
+                frame.info_at(index),
+            )?;
             push_stmts(&mut items, base, index, stmts)?;
             continue;
         }
@@ -429,7 +448,7 @@ fn recover_with_calls_and_image<'image>(
             return Err(reject_at(insn, "unsupported instruction"));
         }
         if operand_is_vector(insn) {
-            let stmts: Vec<Stmt> = lower_vector(insn)?;
+            let stmts: Vec<Stmt> = lower_vector(insn, frame.info_at(index))?;
             push_stmts(&mut items, base, index, stmts)?;
             continue;
         }
@@ -494,7 +513,7 @@ fn recover_with_calls_and_image<'image>(
             }
             "ldr" | "str" | "ldur" | "stur" => {
                 let (dest, stmts): (Option<RegRef>, Vec<Stmt>) =
-                    lower_memory(insn, frame.info, outgoing_slots)?;
+                    lower_memory(insn, frame.info_at(index), outgoing_slots)?;
                 push_stmts(&mut items, base, index, stmts)?;
                 if let Some(dest) = dest
                     && dest.reg == Reg::Rax
@@ -537,7 +556,7 @@ fn recover_with_calls_and_image<'image>(
                 if pre_index {
                     let delta: i64 = mem.disp;
                     mem.disp = 0;
-                    stmts.push(base_update(mem.base, delta)?);
+                    stmts.extend(frame_writeback(frame.info_at(index), mem.base, delta)?);
                 }
                 stmts.push(Stmt::Extend {
                     dest,
@@ -551,7 +570,7 @@ fn recover_with_calls_and_image<'image>(
                             "post-indexed address has an inline displacement",
                         ));
                     }
-                    stmts.push(base_update(mem.base, delta)?);
+                    stmts.extend(frame_writeback(frame.info_at(index), mem.base, delta)?);
                 }
                 push_stmts(&mut items, base, index, stmts)?;
                 if dest.reg == Reg::Rax {
@@ -595,7 +614,7 @@ fn recover_with_calls_and_image<'image>(
                 if pre_index {
                     let delta: i64 = mem.disp;
                     mem.disp = 0;
-                    stmts.push(base_update(mem.base, delta)?);
+                    stmts.extend(frame_writeback(frame.info_at(index), mem.base, delta)?);
                 }
                 stmts.push(Stmt::Store {
                     addr: mem,
@@ -608,13 +627,13 @@ fn recover_with_calls_and_image<'image>(
                             "post-indexed address has an inline displacement",
                         ));
                     }
-                    stmts.push(base_update(mem.base, delta)?);
+                    stmts.extend(frame_writeback(frame.info_at(index), mem.base, delta)?);
                 }
                 push_stmts(&mut items, base, index, stmts)?;
             }
             "ldp" | "stp" => {
                 let (dest, stmts): (Option<RegRef>, Vec<Stmt>) =
-                    lower_pair_memory(insn, frame.info, outgoing_slots)?;
+                    lower_pair_memory(insn, frame.info_at(index), outgoing_slots)?;
                 push_stmts(&mut items, base, index, stmts)?;
                 if let Some(dest) = dest {
                     return_width = dest.width;
@@ -3872,7 +3891,7 @@ fn lower_fp_memory(
     if pre_index {
         let delta: i64 = mem.disp;
         mem.disp = 0;
-        stmts.push(base_update(mem.base, delta)?);
+        stmts.extend(frame_writeback(frame, mem.base, delta)?);
     }
     if is_load {
         stmts.push(Stmt::FpMov {
@@ -3894,7 +3913,7 @@ fn lower_fp_memory(
                 "post-indexed scalar floating-point address has an inline displacement",
             ));
         }
-        stmts.push(base_update(mem.base, delta)?);
+        stmts.extend(frame_writeback(frame, mem.base, delta)?);
     }
     Ok(stmts)
 }
@@ -3949,7 +3968,7 @@ fn lower_fp_pair_memory(
         let delta: i64 = first_mem.disp;
         first_mem.disp = 0;
         second_mem.disp = width_bytes;
-        stmts.push(base_update(first_mem.base, delta)?);
+        stmts.extend(frame_writeback(frame, first_mem.base, delta)?);
     }
     if is_load {
         stmts.push(Stmt::FpMov {
@@ -3981,7 +4000,7 @@ fn lower_fp_pair_memory(
                 "post-indexed scalar floating-point pair has an inline displacement",
             ));
         }
-        stmts.push(base_update(first_mem.base, delta)?);
+        stmts.extend(frame_writeback(frame, first_mem.base, delta)?);
     }
     Ok(stmts)
 }
@@ -4137,7 +4156,7 @@ fn lower_memory(
     if pre_index {
         let delta: i64 = mem.disp;
         mem.disp = 0;
-        stmts.push(base_update(mem.base, delta)?);
+        stmts.extend(frame_writeback(frame, mem.base, delta)?);
     }
     let outgoing_slot: Option<usize> = outgoing
         .iter()
@@ -4174,7 +4193,7 @@ fn lower_memory(
                 "post-indexed address has an inline displacement",
             ));
         }
-        stmts.push(base_update(mem.base, delta)?);
+        stmts.extend(frame_writeback(frame, mem.base, delta)?);
     }
     Ok((value, stmts))
 }
@@ -4353,7 +4372,7 @@ fn lower_pair_memory(
     if pre_index {
         let delta: i64 = first_mem.disp;
         first_mem.disp = 0;
-        stmts.push(base_update(first_mem.base, delta)?);
+        stmts.extend(frame_writeback(frame, first_mem.base, delta)?);
     }
     let width_bytes: i64 = i64::from(first.width.bits() / 8);
     let second_disp: i64 = first_mem
@@ -4410,7 +4429,7 @@ fn lower_pair_memory(
                 "post-indexed pair has an inline displacement",
             ));
         }
-        stmts.push(base_update(first_mem.base, delta)?);
+        stmts.extend(frame_writeback(frame, first_mem.base, delta)?);
     }
     let dest: Option<RegRef> = if insn.mnemonic == "ldp" {
         [first, second]
@@ -4462,176 +4481,6 @@ fn load_source(mem: MemRef, frame: FrameInfo) -> Result<Source> {
         reg,
         width: mem.width,
     }))
-}
-
-fn frame_analysis(insns: &[DisasmInsn]) -> Result<FrameAnalysis> {
-    let mut frame: FrameInfo = FrameInfo::default();
-    let mut management: BTreeSet<usize> = BTreeSet::new();
-    for (index, insn) in insns.iter().enumerate() {
-        let operands: Vec<&str> = split_operands(&insn.operands);
-        if insn.mnemonic == "sub"
-            && operands.len() == 3
-            && operands[0] == "sp"
-            && operands[1] == "sp"
-        {
-            let allocation: i64 = parse_immediate(operands[2])?;
-            frame.sp_to_entry = add_frame_allocation(frame.sp_to_entry, allocation, insn)?;
-            management.insert(index);
-        } else if insn.mnemonic == "stp"
-            && operands.len() >= 3
-            && operands[0] == "x29"
-            && operands[1] == "x30"
-        {
-            let (mem, pre_index): (MemRef, bool) = parse_memory(operands[2], Width::W64)?;
-            if pre_index {
-                let allocation: i64 = mem
-                    .disp
-                    .checked_neg()
-                    .ok_or_else(|| reject_at(insn, "stack allocation overflow"))?;
-                frame.sp_to_entry = add_frame_allocation(frame.sp_to_entry, allocation, insn)?;
-            }
-            management.insert(index);
-        } else if insn.mnemonic == "mov" && operands.as_slice() == ["x29", "sp"] {
-            frame.fp_to_entry = Some(frame.sp_to_entry);
-            management.insert(index);
-        } else if insn.mnemonic == "add"
-            && operands.len() == 3
-            && operands[0] == "x29"
-            && operands[1] == "sp"
-        {
-            let adjustment: i64 = parse_immediate(operands[2])?;
-            let fp_to_entry: i64 = frame
-                .sp_to_entry
-                .checked_sub(adjustment)
-                .ok_or_else(|| reject_at(insn, "frame pointer adjustment overflow"))?;
-            if !(0..=MAX_FRAME_BYTES).contains(&fp_to_entry) {
-                return Err(reject_at(
-                    insn,
-                    "frame pointer is outside the bounded frame",
-                ));
-            }
-            frame.fp_to_entry = Some(fp_to_entry);
-            management.insert(index);
-        } else if is_preserved_register_store(insn) {
-            let allocation: i64 = preserved_register_store_allocation(insn)?;
-            if allocation != 0 {
-                frame.sp_to_entry = add_frame_allocation(frame.sp_to_entry, allocation, insn)?;
-            }
-            management.insert(index);
-        } else {
-            break;
-        }
-    }
-    let mut saw_return: bool = false;
-    let mut restored: i64 = 0;
-    for (index, insn) in insns.iter().enumerate().rev() {
-        if !saw_return {
-            if insn.mnemonic == "ret" && insn.operands.trim().is_empty() {
-                saw_return = true;
-                continue;
-            }
-            break;
-        }
-        if let Some(delta) = epilogue_restore(insn, frame)? {
-            if delta < 0 || delta % 16 != 0 {
-                return Err(reject_at(
-                    insn,
-                    "stack restoration is outside the bounded aligned frame",
-                ));
-            }
-            let next_restored: i64 = restored
-                .checked_add(delta)
-                .ok_or_else(|| reject_at(insn, "stack restoration overflow"))?;
-            if next_restored > frame.sp_to_entry {
-                break;
-            }
-            restored = next_restored;
-            management.insert(index);
-        } else {
-            break;
-        }
-    }
-    if frame.sp_to_entry != 0 && (!saw_return || restored != frame.sp_to_entry) {
-        return Err(reject(
-            "stack epilogue does not exactly restore the bounded frame",
-        ));
-    }
-    Ok(FrameAnalysis {
-        info: frame,
-        management,
-    })
-}
-
-fn preserved_register_store_allocation(insn: &DisasmInsn) -> Result<i64> {
-    let operands: Vec<&str> = split_operands(&insn.operands);
-    let register_count: usize = if insn.mnemonic == "str" { 1 } else { 2 };
-    let memory_operand: &str = operands
-        .get(register_count)
-        .ok_or_else(|| reject_at(insn, "preserved-register store lacks an address"))?;
-    let (mem, pre_index): (MemRef, bool) = parse_memory(memory_operand, Width::W64)?;
-    if !pre_index {
-        return Ok(0);
-    }
-    mem.disp
-        .checked_neg()
-        .ok_or_else(|| reject_at(insn, "preserved-register allocation overflow"))
-}
-
-fn add_frame_allocation(current: i64, allocation: i64, insn: &DisasmInsn) -> Result<i64> {
-    if allocation <= 0 || allocation % 16 != 0 {
-        return Err(reject_at(
-            insn,
-            "stack allocation is outside the bounded aligned frame",
-        ));
-    }
-    let total: i64 = current
-        .checked_add(allocation)
-        .ok_or_else(|| reject_at(insn, "stack allocation overflow"))?;
-    if total > MAX_FRAME_BYTES {
-        return Err(reject_at(
-            insn,
-            "stack allocation is outside the bounded aligned frame",
-        ));
-    }
-    Ok(total)
-}
-
-fn epilogue_restore(insn: &DisasmInsn, frame: FrameInfo) -> Result<Option<i64>> {
-    let operands: Vec<&str> = split_operands(&insn.operands);
-    if insn.mnemonic == "add" && operands.len() == 3 && operands[0] == "sp" && operands[1] == "sp" {
-        return parse_immediate(operands[2]).map(Some);
-    }
-    if insn.mnemonic == "mov" && operands.as_slice() == ["sp", "x29"] {
-        let fp_to_entry: i64 = frame
-            .fp_to_entry
-            .ok_or_else(|| reject_at(insn, "epilogue frame pointer was not established"))?;
-        return frame
-            .sp_to_entry
-            .checked_sub(fp_to_entry)
-            .map(Some)
-            .ok_or_else(|| reject_at(insn, "epilogue frame pointer offset overflow"));
-    }
-    if (insn.mnemonic == "ldp"
-        && operands.len() >= 3
-        && operands[0] == "x29"
-        && operands[1] == "x30")
-        || is_preserved_register_load(insn)
-    {
-        let register_count: usize = if insn.mnemonic == "ldr" { 1 } else { 2 };
-        let memory_operand: &str = operands
-            .get(register_count)
-            .ok_or_else(|| reject_at(insn, "preserved-register load lacks an address"))?;
-        let (mem, pre_index): (MemRef, bool) = parse_memory(memory_operand, Width::W64)?;
-        if pre_index {
-            return Ok(Some(mem.disp));
-        }
-        return operands
-            .get(register_count + 1)
-            .map(|operand: &&str| parse_immediate(operand))
-            .transpose()
-            .map(|value: Option<i64>| Some(value.unwrap_or(0)));
-    }
-    Ok(None)
 }
 
 fn outgoing_stores(
@@ -4750,6 +4599,13 @@ fn is_control_flow(insn: &DisasmInsn) -> bool {
         insn.mnemonic.as_str(),
         "b" | "bl" | "ret" | "cbz" | "cbnz" | "tbz" | "tbnz"
     ) || insn.mnemonic.starts_with("b.")
+}
+
+fn frame_writeback(frame: FrameInfo, base: Option<Reg>, delta: i64) -> Result<Option<Stmt>> {
+    if frame.sp_writeback_absorbed && base == Some(Reg::Rsp) {
+        return Ok(None);
+    }
+    base_update(base, delta).map(Some)
 }
 
 fn base_update(base: Option<Reg>, delta: i64) -> Result<Stmt> {
@@ -4881,42 +4737,6 @@ fn is_frame_management(insn: &DisasmInsn) -> bool {
         }
         _ => false,
     }
-}
-
-fn is_preserved_register_store(insn: &DisasmInsn) -> bool {
-    if !matches!(insn.mnemonic.as_str(), "str" | "stp") {
-        return false;
-    }
-    let operands: Vec<&str> = split_operands(&insn.operands);
-    let register_count: usize = if insn.mnemonic == "str" { 1 } else { 2 };
-    if operands.len() != register_count + 1 || !operands[register_count].trim().starts_with("[sp") {
-        return false;
-    }
-    operands[..register_count].iter().all(|operand: &&str| {
-        operand
-            .strip_prefix('x')
-            .and_then(|value: &str| value.parse::<u8>().ok())
-            .is_some_and(|number: u8| (19..=28).contains(&number) || number == 30)
-    })
-}
-
-fn is_preserved_register_load(insn: &DisasmInsn) -> bool {
-    if !matches!(insn.mnemonic.as_str(), "ldr" | "ldp") {
-        return false;
-    }
-    let operands: Vec<&str> = split_operands(&insn.operands);
-    let register_count: usize = if insn.mnemonic == "ldr" { 1 } else { 2 };
-    if !(register_count + 1..=register_count + 2).contains(&operands.len())
-        || !operands[register_count].trim().starts_with("[sp")
-    {
-        return false;
-    }
-    operands[..register_count].iter().all(|operand: &&str| {
-        operand
-            .strip_prefix('x')
-            .and_then(|value: &str| value.parse::<u8>().ok())
-            .is_some_and(|number: u8| (19..=28).contains(&number) || number == 30)
-    })
 }
 
 fn has_unsupported_register_class(operands: &str) -> bool {
@@ -5586,7 +5406,7 @@ fn lower_scalar_fmov(operands: &[&str]) -> Result<Option<Vec<Stmt>>> {
     })]))
 }
 
-fn lower_vector(insn: &DisasmInsn) -> Result<Vec<Stmt>> {
+fn lower_vector(insn: &DisasmInsn, frame: FrameInfo) -> Result<Vec<Stmt>> {
     let operands: Vec<&str> = split_operands(&insn.operands);
     match insn.mnemonic.as_str() {
         "add" | "sub" | "mul" | "and" | "orr" | "eor" | "bic" | "smax" | "smin" | "umax"
@@ -5594,8 +5414,8 @@ fn lower_vector(insn: &DisasmInsn) -> Result<Vec<Stmt>> {
         "fadd" | "fsub" | "fmul" | "fdiv" => vector_bin(insn, &operands, true),
         "cmeq" => vector_compare(insn, &operands),
         "movi" => vector_moveimm(insn, &operands),
-        "ldr" => vector_load_store(insn, &operands, true),
-        "str" => vector_load_store(insn, &operands, false),
+        "ldr" => vector_load_store(insn, &operands, true, frame),
+        "str" => vector_load_store(insn, &operands, false, frame),
         "ldp" => vector_load_pair(insn, &operands),
         "stp" => vector_store_pair(insn, &operands),
         "sshll" | "sshll2" | "ushll" | "ushll2" => vector_widen_extend(insn, &operands),
@@ -5769,7 +5589,12 @@ fn vector_moveimm(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
     Ok(vec![Stmt::Vector(VecStmt::MoveImm { dest, imm, arr })])
 }
 
-fn vector_load_store(insn: &DisasmInsn, operands: &[&str], is_load: bool) -> Result<Vec<Stmt>> {
+fn vector_load_store(
+    insn: &DisasmInsn,
+    operands: &[&str],
+    is_load: bool,
+    frame: FrameInfo,
+) -> Result<Vec<Stmt>> {
     if !(2..=3).contains(&operands.len()) {
         return Err(reject_at(insn, "malformed vector load or store"));
     }
@@ -5799,7 +5624,7 @@ fn vector_load_store(insn: &DisasmInsn, operands: &[&str], is_load: bool) -> Res
     if pre_index {
         let delta: i64 = mem.disp;
         mem.disp = 0;
-        stmts.push(base_update(mem.base, delta)?);
+        stmts.extend(frame_writeback(frame, mem.base, delta)?);
     }
     let access: MemRef = mem;
     let memory_stmt: Stmt = if is_load {
@@ -5823,7 +5648,7 @@ fn vector_load_store(insn: &DisasmInsn, operands: &[&str], is_load: bool) -> Res
                 "post-indexed vector address has an inline displacement",
             ));
         }
-        stmts.push(base_update(mem.base, delta)?);
+        stmts.extend(frame_writeback(frame, mem.base, delta)?);
     }
     Ok(stmts)
 }
