@@ -44,4 +44,12 @@ pub trait Pass: Debug + Send + Sync {
     fn extract_children(&self, _input: &Artifact) -> CoreResult<Vec<ChildArtifact>> {
         Ok(Vec::new())
     }
+
+    fn extract_children_with_context(
+        &self,
+        input: &Artifact,
+        _context: PassContext<'_>,
+    ) -> CoreResult<Vec<ChildArtifact>> {
+        self.extract_children(input)
+    }
 }

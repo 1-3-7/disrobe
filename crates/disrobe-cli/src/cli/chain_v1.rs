@@ -60,14 +60,14 @@ impl PassRunner for ChainPassRunner<'_> {
         let (kind, children): (OutputKind, Vec<Vec<u8>>) = if initial_kind.is_mixed() {
             let extracted: Vec<ChildArtifact> = pick
                 .pass
-                .extract_children(&artifact)
+                .extract_children_with_context(&artifact, context)
                 .map_err(|e: disrobe_core::error::CoreError| format!("{e}"))?;
             extend_anti_metadata(pick.verdict.pass_id, &extracted, &mut metadata);
             OutputKind::mixed_from_children(extracted)
         } else {
             if pick.verdict.pass_id == "wasm.deob"
                 && out_artifact.rung == Rung::Surface
-                && let Ok(extracted) = pick.pass.extract_children(&artifact)
+                && let Ok(extracted) = pick.pass.extract_children_with_context(&artifact, context)
             {
                 extend_anti_metadata(pick.verdict.pass_id, &extracted, &mut metadata);
             }
