@@ -271,16 +271,15 @@ mod tests {
         image.extend(std::iter::repeat_n(0u8, 60));
         image.extend_from_slice(&stream);
 
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-qnx-e2e-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("binfmt-qnx-e2e")
+                .expect("create scratch dir");
         let result: crate::extract::ExtractionResult =
-            crate::extract::extract_to(crate::container::ContainerKind::Qnx, &image, &dir)
+            crate::extract::extract_to(crate::container::ContainerKind::Qnx, &image, dir.path())
                 .expect("qnx extract");
         assert_eq!(result.kind, crate::container::ContainerKind::Qnx);
-        let written: Vec<u8> = std::fs::read(dir.join("qnx-ifs.img")).expect("ifs image");
+        let written: Vec<u8> = std::fs::read(dir.path().join("qnx-ifs.img")).expect("ifs image");
         assert_eq!(written, payload);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn gzip_compress(input: &[u8]) -> Vec<u8> {
@@ -335,15 +334,14 @@ mod tests {
         let inflated: Vec<u8> = inflate_startup_zlib(&image, &header, 1 << 24).expect("inflate");
         assert_eq!(inflated, payload);
 
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-qnx-zlib-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("binfmt-qnx-zlib")
+                .expect("create scratch dir");
         let result: crate::extract::ExtractionResult =
-            crate::extract::extract_to(crate::container::ContainerKind::Qnx, &image, &dir)
+            crate::extract::extract_to(crate::container::ContainerKind::Qnx, &image, dir.path())
                 .expect("qnx zlib extract");
         assert_eq!(result.kind, crate::container::ContainerKind::Qnx);
-        let written: Vec<u8> = std::fs::read(dir.join("qnx-ifs.img")).expect("ifs image");
+        let written: Vec<u8> = std::fs::read(dir.path().join("qnx-ifs.img")).expect("ifs image");
         assert_eq!(written, payload);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

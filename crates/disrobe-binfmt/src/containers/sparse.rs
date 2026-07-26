@@ -309,16 +309,18 @@ mod tests {
         let mut img: Vec<u8> = Vec::new();
         write_sparse_header(&mut img, 4, 1);
         chunk_raw(&mut img, 4, &raw);
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-sparse-e2e-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let result: crate::extract::ExtractionResult =
-            crate::extract::extract_to(crate::container::ContainerKind::AndroidSparse, &img, &dir)
-                .expect("sparse extract");
+        let dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("binfmt-sparse-e2e")
+                .expect("create scratch dir");
+        let result: crate::extract::ExtractionResult = crate::extract::extract_to(
+            crate::container::ContainerKind::AndroidSparse,
+            &img,
+            dir.path(),
+        )
+        .expect("sparse extract");
         assert_eq!(result.kind, crate::container::ContainerKind::AndroidSparse);
-        let written: Vec<u8> = std::fs::read(dir.join("unsparse.img")).expect("raw image");
+        let written: Vec<u8> = std::fs::read(dir.path().join("unsparse.img")).expect("raw image");
         assert_eq!(written, raw);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

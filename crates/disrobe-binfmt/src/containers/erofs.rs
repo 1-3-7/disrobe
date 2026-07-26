@@ -770,18 +770,17 @@ mod tests {
     fn extract_to_writes_erofs_files() {
         let (image, body_plain, _, _): (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) =
             build_reference_erofs();
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-erofs-e2e-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("binfmt-erofs-e2e")
+                .expect("create scratch dir");
         let result: crate::extract::ExtractionResult =
-            crate::extract::extract_to(crate::container::ContainerKind::Erofs, &image, &dir)
+            crate::extract::extract_to(crate::container::ContainerKind::Erofs, &image, dir.path())
                 .expect("erofs extract");
         assert_eq!(result.kind, crate::container::ContainerKind::Erofs);
         assert_eq!(
-            std::fs::read(dir.join("plain.bin")).expect("plain"),
+            std::fs::read(dir.path().join("plain.bin")).expect("plain"),
             body_plain
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn lz4_literal_block(input: &[u8]) -> Vec<u8> {

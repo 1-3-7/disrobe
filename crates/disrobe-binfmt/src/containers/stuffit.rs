@@ -207,15 +207,20 @@ mod tests {
     fn extract_to_writes_stored_data_forks() {
         let payload: &[u8] = b"stuffit classic stored data fork written to disk by extract_to";
         let archive: Vec<u8> = build_archive(&[("doc.txt", payload)]);
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-sit-e2e-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let result: crate::extract::ExtractionResult =
-            crate::extract::extract_to(crate::container::ContainerKind::StuffIt, &archive, &dir)
-                .expect("sit extract");
+        let dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("binfmt-stuffit-e2e")
+                .expect("create scratch dir");
+        let result: crate::extract::ExtractionResult = crate::extract::extract_to(
+            crate::container::ContainerKind::StuffIt,
+            &archive,
+            dir.path(),
+        )
+        .expect("sit extract");
         assert_eq!(result.kind, crate::container::ContainerKind::StuffIt);
-        assert_eq!(std::fs::read(dir.join("doc.txt")).expect("doc"), payload);
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            std::fs::read(dir.path().join("doc.txt")).expect("doc"),
+            payload
+        );
     }
 
     #[test]

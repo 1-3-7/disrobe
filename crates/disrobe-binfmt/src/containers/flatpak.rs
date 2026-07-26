@@ -1049,17 +1049,14 @@ mod tests {
         let meta_array: Vec<u8> = gv_array(&meta_entries, 8, false);
         let superblock: Vec<u8> = build_superblock(&meta_array, &commit, &commit_csum);
 
-        let repo: std::path::PathBuf = std::env::temp_dir().join(format!(
-            "disrobe-flatpak-delta-{}-{}",
-            std::process::id(),
-            line!()
-        ));
-        let _ = std::fs::remove_dir_all(&repo);
-        let delta_dir: std::path::PathBuf = repo.join("deltas").join("ab");
+        let repo: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("binfmt-flatpak-delta")
+                .expect("create scratch dir");
+        let delta_dir: std::path::PathBuf = repo.path().join("deltas").join("ab");
         std::fs::create_dir_all(&delta_dir).unwrap();
-        std::fs::create_dir_all(repo.join("objects")).unwrap();
-        std::fs::write(repo.join("config"), b"[core]\nmode=archive-z2\n").unwrap();
-        let heads: std::path::PathBuf = repo.join("refs").join("heads");
+        std::fs::create_dir_all(repo.path().join("objects")).unwrap();
+        std::fs::write(repo.path().join("config"), b"[core]\nmode=archive-z2\n").unwrap();
+        let heads: std::path::PathBuf = repo.path().join("refs").join("heads");
         std::fs::create_dir_all(&heads).unwrap();
         std::fs::write(heads.join("app"), hex_lower(&commit_csum)).unwrap();
         let target: std::path::PathBuf = delta_dir.join("cdef");
@@ -1069,7 +1066,8 @@ mod tests {
             std::fs::write(target.join(index.to_string()), blob).unwrap();
         }
 
-        let extraction: FlatpakExtraction = extract_flatpak_repo(&repo).expect("extract repo");
+        let extraction: FlatpakExtraction =
+            extract_flatpak_repo(repo.path()).expect("extract repo");
         assert_eq!(
             extraction.files.len(),
             1,
@@ -1079,6 +1077,5 @@ mod tests {
         assert_eq!(extraction.files[0].path, "entrypoint.sh");
         assert_eq!(extraction.files[0].content, content);
         assert_eq!(extraction.files[0].mode, 0o100_755);
-        let _ = std::fs::remove_dir_all(&repo);
     }
 }

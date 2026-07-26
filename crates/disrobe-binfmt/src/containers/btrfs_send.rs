@@ -563,17 +563,19 @@ mod tests {
     #[test]
     fn extract_to_writes_replayed_files() {
         let stream: Vec<u8> = build_reference_stream();
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-btrfs-send-e2e-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let result: crate::extract::ExtractionResult =
-            crate::extract::extract_to(crate::container::ContainerKind::BtrfsSend, &stream, &dir)
-                .expect("btrfs send extract");
+        let dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("binfmt-btrfs-send-e2e")
+                .expect("create scratch dir");
+        let result: crate::extract::ExtractionResult = crate::extract::extract_to(
+            crate::container::ContainerKind::BtrfsSend,
+            &stream,
+            dir.path(),
+        )
+        .expect("btrfs send extract");
         assert_eq!(result.kind, crate::container::ContainerKind::BtrfsSend);
         assert_eq!(
-            std::fs::read(dir.join("dir/hello.txt")).expect("hello"),
+            std::fs::read(dir.path().join("dir/hello.txt")).expect("hello"),
             b"btrfs send replay byte-exact content 01234567"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

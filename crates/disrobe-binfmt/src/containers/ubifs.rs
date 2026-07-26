@@ -582,14 +582,13 @@ mod tests {
         let mut b: UbiBuilder = UbiBuilder::new(PEB);
         b.add_leb(0, 0, UBI_VID_DYNAMIC, &leb0);
         let img: Vec<u8> = b.finish();
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-ubi-e2e-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("binfmt-ubifs-e2e")
+                .expect("create scratch dir");
         let result: crate::extract::ExtractionResult =
-            crate::extract::extract_to(crate::container::ContainerKind::Ubifs, &img, &dir)
+            crate::extract::extract_to(crate::container::ContainerKind::Ubifs, &img, dir.path())
                 .expect("ubi extract");
         assert_eq!(result.kind, crate::container::ContainerKind::Ubifs);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn ch(node_type: u8, body_len: usize) -> Vec<u8> {

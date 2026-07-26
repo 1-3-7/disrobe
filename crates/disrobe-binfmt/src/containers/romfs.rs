@@ -394,21 +394,20 @@ mod tests {
     #[test]
     fn extract_to_writes_romfs_files() {
         let image: Vec<u8> = build_real_romfs_two_files();
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-romfs-e2e-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("binfmt-romfs-e2e")
+                .expect("create scratch dir");
         let result: crate::extract::ExtractionResult =
-            crate::extract::extract_to(crate::container::ContainerKind::Romfs, &image, &dir)
+            crate::extract::extract_to(crate::container::ContainerKind::Romfs, &image, dir.path())
                 .expect("romfs extract");
         assert_eq!(result.kind, crate::container::ContainerKind::Romfs);
         assert_eq!(
-            std::fs::read(dir.join("first.txt")).expect("first"),
+            std::fs::read(dir.path().join("first.txt")).expect("first"),
             b"first romfs file byte-exact payload ".repeat(4)
         );
         assert_eq!(
-            std::fs::read(dir.join("second.bin")).expect("second"),
+            std::fs::read(dir.path().join("second.bin")).expect("second"),
             b"SECOND".repeat(10)
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

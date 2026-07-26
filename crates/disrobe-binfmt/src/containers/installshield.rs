@@ -327,17 +327,19 @@ mod tests {
     fn extract_to_writes_installshield_file() {
         let body: &[u8] = b"installshield end to end payload 0xFEEDFACE";
         let image: Vec<u8> = build_test_installshield("bin/tool.dll", body);
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-is-e2e-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("binfmt-installshield-e2e")
+                .expect("create scratch dir");
         let result: crate::extract::ExtractionResult = crate::extract::extract_to(
             crate::container::ContainerKind::InstallShield,
             &image,
-            &dir,
+            dir.path(),
         )
         .expect("installshield extract");
         assert_eq!(result.kind, crate::container::ContainerKind::InstallShield);
-        assert_eq!(std::fs::read(dir.join("bin/tool.dll")).expect("file"), body);
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            std::fs::read(dir.path().join("bin/tool.dll")).expect("file"),
+            body
+        );
     }
 }

@@ -489,14 +489,16 @@ mod tests {
     #[test]
     fn extract_to_writes_yaffs2_files() {
         let (image, body_a, _): (Vec<u8>, Vec<u8>, Vec<u8>) = build_image(Yaffs2Endian::Little);
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-yaffs2-e2e-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("binfmt-yaffs2-e2e")
+                .expect("create scratch dir");
         let result: crate::extract::ExtractionResult =
-            crate::extract::extract_to(crate::container::ContainerKind::Yaffs2, &image, &dir)
+            crate::extract::extract_to(crate::container::ContainerKind::Yaffs2, &image, dir.path())
                 .expect("yaffs2 extract");
         assert_eq!(result.kind, crate::container::ContainerKind::Yaffs2);
-        assert_eq!(std::fs::read(dir.join("small.txt")).expect("small"), body_a);
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            std::fs::read(dir.path().join("small.txt")).expect("small"),
+            body_a
+        );
     }
 }

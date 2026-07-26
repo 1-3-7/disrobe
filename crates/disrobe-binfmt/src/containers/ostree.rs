@@ -1272,26 +1272,20 @@ mod tests {
 
     #[test]
     fn bounded_file_read_rejects_over_cap() {
-        let path: std::path::PathBuf = std::env::temp_dir().join(format!(
-            "disrobe-ostree-bound-{}-{}",
-            std::process::id(),
-            line!()
-        ));
+        let dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("binfmt-ostree-bound")
+                .expect("create scratch dir");
+        let path: std::path::PathBuf = dir.path().join("bounded.bin");
         std::fs::write(&path, b"abcdef").expect("write bounded file");
         let err: Error = read_file_bounded(&path, 5).expect_err("reject over cap");
         assert!(matches!(err, Error::Flatpak(_)));
-        std::fs::remove_file(&path).expect("remove bounded file");
     }
 
     #[test]
     fn full_repo_directory_walk_recovers_files() {
-        let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
-            "disrobe-ostree-walk-{}-{}",
-            std::process::id(),
-            line!()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir repo");
+        let dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("binfmt-ostree-walk")
+                .expect("create scratch dir");
 
         let dirmeta_bytes: Vec<u8> = build_dirmeta(0, 0, 0o040_755);
         let dirmeta_csum: String = sha256_hex(&dirmeta_bytes);
@@ -1324,14 +1318,14 @@ mod tests {
         );
         let commit_csum: String = sha256_hex(&commit);
 
-        write_object(&dir, &commit_csum, "commit", &commit);
-        write_object(&dir, &root_dirtree_csum, "dirtree", &root_dirtree);
-        write_object(&dir, &sub_dirtree_csum, "dirtree", &sub_dirtree);
-        write_object(&dir, &dirmeta_csum, "dirmeta", &dirmeta_bytes);
-        write_object(&dir, &hello_csum, "filez", &hello_filez);
-        write_object(&dir, &nested_csum, "filez", &nested_filez);
+        write_object(dir.path(), &commit_csum, "commit", &commit);
+        write_object(dir.path(), &root_dirtree_csum, "dirtree", &root_dirtree);
+        write_object(dir.path(), &sub_dirtree_csum, "dirtree", &sub_dirtree);
+        write_object(dir.path(), &dirmeta_csum, "dirmeta", &dirmeta_bytes);
+        write_object(dir.path(), &hello_csum, "filez", &hello_filez);
+        write_object(dir.path(), &nested_csum, "filez", &nested_filez);
 
-        let store: DiskStore<'_> = DiskStore::new(&dir);
+        let store: DiskStore<'_> = DiskStore::new(dir.path());
         let files: Vec<OstreeFile> = extract_commit(&store, &commit_csum).expect("walk commit");
         assert_eq!(files.len(), 2, "two regular files");
 
@@ -1348,8 +1342,6 @@ mod tests {
             .expect("subdir/nested.txt");
         assert_eq!(nested.content, nested_body);
         assert_eq!(nested.uid, 1000);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn hex_to_array(hex: &str) -> [u8; 32] {
