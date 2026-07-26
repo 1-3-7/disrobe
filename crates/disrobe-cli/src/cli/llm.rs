@@ -155,7 +155,7 @@ pub(crate) struct LlmFlags {
     #[arg(
         long = "i-have-authorization",
         global = true,
-        help = "unlocks the decryption_keys category"
+        help = "acknowledge authorization: unlocks the decryption_keys category and the gated commercial protector transforms"
     )]
     pub(crate) i_have_authorization: bool,
 

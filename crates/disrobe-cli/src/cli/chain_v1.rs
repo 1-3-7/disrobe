@@ -360,6 +360,19 @@ pub(crate) struct ChainRunOptions {
     pub(crate) write_to_disk: bool,
     pub(crate) capture_stages: bool,
     pub(crate) emit_recovery: bool,
+    pub(crate) i_have_authorization: bool,
+}
+
+impl ChainRunOptions {
+    fn chain_config(self, stream_extracted: bool) -> ChainConfig {
+        ChainConfig {
+            capture_stage_bytes: self.capture_stages && self.write_to_disk,
+            persist_children: self.write_to_disk,
+            stream_extracted,
+            i_have_authorization: self.i_have_authorization,
+            ..ChainConfig::default()
+        }
+    }
 }
 
 pub(crate) fn run_with_disk(
@@ -374,6 +387,7 @@ pub(crate) fn run_with_disk(
         write_to_disk,
         capture_stages,
         emit_recovery,
+        ..
     } = options;
     let spec_raw: String = match pin_arg {
         None => chain_arg,
@@ -405,12 +419,7 @@ pub(crate) fn run_with_disk(
     } else {
         None
     };
-    let config: ChainConfig = ChainConfig {
-        capture_stage_bytes: capture_stages && write_to_disk,
-        persist_children: write_to_disk,
-        stream_extracted: stream_out_dir.is_some(),
-        ..ChainConfig::default()
-    };
+    let config: ChainConfig = options.chain_config(stream_out_dir.is_some());
     let driver: ChainDriver<'_, ChainPassRunner<'_>> = ChainDriver::new(&registry, &runner, config);
     let mut streamed: Vec<String> = Vec::new();
     let mut seen_paths: BTreeSet<PathBuf> = BTreeSet::new();
@@ -668,6 +677,7 @@ pub(crate) fn run_chain_to_dir(
     out_dir: &Path,
     chain_arg: &str,
     capture_stages: bool,
+    i_have_authorization: bool,
 ) -> miette::Result<ChainOutcome> {
     let spec: ChainSpec = ChainSpec::parse(chain_arg)
         .map_err(|e| miette::miette!("DR-CLI-0291: --chain parse error: {e}"))?;
@@ -675,11 +685,13 @@ pub(crate) fn run_chain_to_dir(
     validate_explicit_passes(&spec, &registry)?;
     let progress: ChainProgress = ChainProgress::noop();
     let runner: ChainPassRunner<'_> = ChainPassRunner::new(&progress);
-    let config: ChainConfig = ChainConfig {
-        capture_stage_bytes: capture_stages,
-        persist_children: true,
-        ..ChainConfig::default()
-    };
+    let config: ChainConfig = ChainRunOptions {
+        write_to_disk: true,
+        capture_stages,
+        emit_recovery: false,
+        i_have_authorization,
+    }
+    .chain_config(false);
     let driver: ChainDriver<'_, ChainPassRunner<'_>> = ChainDriver::new(&registry, &runner, config);
     let seed_for_scan: Vec<u8> = bytes.clone();
     let plan: ChainPlan = driver.run(bytes, &spec, Some(input_label.to_string()));
@@ -820,6 +832,123 @@ fn combine_chain_and_pin_owned(chain_arg: String, pin_arg: &str) -> miette::Resu
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use disrobe_core::chain::detection::{DetectContext, DetectVerdict};
+    use disrobe_core::chain::{Detector, Pass};
+    use disrobe_core::error::Result as CoreResult;
+    use disrobe_core::pass::PassId;
+    use std::sync::atomic::AtomicBool;
+
+    static OBSERVED_AUTHORIZATION: AtomicBool = AtomicBool::new(false);
+
+    #[derive(Debug)]
+    struct AuthorizationProbeDetector;
+
+    impl Detector for AuthorizationProbeDetector {
+        fn id(&self) -> PassId {
+            "test.authorization-probe"
+        }
+
+        fn detect(&self, _ctx: &DetectContext<'_>) -> Option<DetectVerdict> {
+            None
+        }
+    }
+
+    static AUTHORIZATION_PROBE_DETECTOR: AuthorizationProbeDetector = AuthorizationProbeDetector;
+
+    #[derive(Debug)]
+    struct AuthorizationProbePass;
+
+    impl Pass for AuthorizationProbePass {
+        fn id(&self) -> PassId {
+            "test.authorization-probe"
+        }
+
+        fn detector(&self) -> &'static dyn Detector {
+            &AUTHORIZATION_PROBE_DETECTOR
+        }
+
+        fn output_kind(&self, _output: &Artifact) -> OutputKind {
+            OutputKind::Bytes {
+                format_tag: "test.probe",
+                family: "test",
+            }
+        }
+
+        fn run(&self, artifact: &Artifact) -> CoreResult<Artifact> {
+            Ok(Artifact::new(
+                Rung::Raw,
+                artifact.envelope.clone(),
+                artifact.root_hash,
+            ))
+        }
+
+        fn run_with_context(
+            &self,
+            artifact: &Artifact,
+            context: PassContext<'_>,
+        ) -> CoreResult<Artifact> {
+            OBSERVED_AUTHORIZATION.store(context.i_have_authorization, Ordering::SeqCst);
+            self.run(artifact)
+        }
+    }
+
+    static AUTHORIZATION_PROBE_PASS: AuthorizationProbePass = AuthorizationProbePass;
+
+    fn options_asserting(i_have_authorization: bool) -> ChainRunOptions {
+        ChainRunOptions {
+            write_to_disk: true,
+            capture_stages: false,
+            emit_recovery: false,
+            i_have_authorization,
+        }
+    }
+
+    fn authorization_seen_by_pass(i_have_authorization: bool) -> bool {
+        OBSERVED_AUTHORIZATION.store(!i_have_authorization, Ordering::SeqCst);
+        let progress: ChainProgress = ChainProgress::noop();
+        let runner: ChainPassRunner<'_> = ChainPassRunner::new(&progress);
+        let pick: DetectorPick = DetectorPick {
+            pass: &AUTHORIZATION_PROBE_PASS,
+            verdict: DetectVerdict::new(
+                "test.authorization-probe",
+                "test.probe",
+                "test",
+                1.0,
+                1,
+                Vec::new(),
+                String::new(),
+            ),
+        };
+        let config: ChainConfig = options_asserting(i_have_authorization).chain_config(false);
+        let _outcome: PassRunOutcome = runner
+            .run(&pick, b"probe".to_vec(), &config, None)
+            .expect("probe pass runs");
+        OBSERVED_AUTHORIZATION.load(Ordering::SeqCst)
+    }
+
+    #[test]
+    fn chain_config_leaves_authorization_unasserted_by_default() {
+        let config: ChainConfig = options_asserting(false).chain_config(false);
+        assert!(!config.i_have_authorization);
+    }
+
+    #[test]
+    fn chain_config_carries_an_asserted_authorization() {
+        let config: ChainConfig = options_asserting(true).chain_config(false);
+        assert!(config.i_have_authorization);
+    }
+
+    #[test]
+    fn a_pass_observes_the_operator_authorization_it_was_given() {
+        assert!(
+            !authorization_seen_by_pass(false),
+            "a pass must not see an assertion the operator never made"
+        );
+        assert!(
+            authorization_seen_by_pass(true),
+            "a pass must see the assertion the operator made"
+        );
+    }
 
     #[test]
     fn pin_combines_with_auto_default() {

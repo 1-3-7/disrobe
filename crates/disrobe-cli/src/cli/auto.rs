@@ -15,16 +15,27 @@ pub(crate) struct BatchArgs {
     pub(crate) jobs: usize,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct AutoOptions {
+    pub(crate) dry_run: bool,
+    pub(crate) capture_stages: bool,
+    pub(crate) i_have_authorization: bool,
+}
+
 pub(crate) fn run(
     input: PathBuf,
     out: Option<PathBuf>,
     max_depth: Option<u8>,
     emit_kinds: Vec<String>,
-    dry_run: bool,
     fmt: OutputFormat,
-    capture_stages: bool,
+    options: AutoOptions,
     batch_args: BatchArgs,
 ) -> miette::Result<()> {
+    let AutoOptions {
+        dry_run,
+        capture_stages,
+        i_have_authorization,
+    } = options;
     let emit_spec: EmitSpec = EmitSpec::parse(&emit_kinds)?;
     let emit_recovery: bool = emit_spec.contains(EmitKind::Recovery);
     let other_kinds: bool = emit_spec.iter().any(|k: EmitKind| k != EmitKind::Recovery);
@@ -50,6 +61,7 @@ pub(crate) fn run(
             exclude: batch_args.exclude,
             jobs: batch_args.jobs.max(1),
             capture_stages,
+            i_have_authorization,
         };
         return batch::run_dir(input, opts, fmt);
     }
@@ -69,6 +81,7 @@ pub(crate) fn run(
             write_to_disk: !dry_run,
             capture_stages,
             emit_recovery,
+            i_have_authorization,
         },
     )
 }
