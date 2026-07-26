@@ -547,6 +547,16 @@ fn make_table(
 }
 
 pub fn decode(method: DynMethod, src: &[u8], original_size: u64) -> Result<Vec<u8>> {
+    let max_output: u64 = u64::try_from(crate::quota::MAX_ENTRY_PREALLOC).map_err(
+        |_e: std::num::TryFromIntError| {
+            Error::Decompression("lha: output limit conversion failed".to_owned())
+        },
+    )?;
+    if original_size > max_output {
+        return Err(Error::Decompression(format!(
+            "lha: declared output exceeds {max_output}-byte limit"
+        )));
+    }
     let origsize: usize = usize::try_from(original_size)
         .map_err(|_e: std::num::TryFromIntError| Error::Decompression("lha: size".to_owned()))?;
     let mut reader: BitReader<'_> = BitReader::new(src);
@@ -753,6 +763,15 @@ fn decode_p_st0(tree: &StaticTree, reader: &mut BitReader<'_>) -> usize {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_declared_output_above_preallocation_bound() {
+        let declared: u64 = u64::MAX;
+        let outcome: std::thread::Result<Result<Vec<u8>>> =
+            std::panic::catch_unwind(|| decode(DynMethod::Lh3, &[0u8; 1], declared));
+        let result: Result<Vec<u8>> = outcome.expect("oversized declaration must not panic");
+        assert!(result.is_err());
+    }
 
     fn lha_crc16(data: &[u8]) -> u16 {
         let mut crc: u16 = 0;
