@@ -5,6 +5,9 @@ use disrobe_bytes::{ByteReadError, ByteReader};
 use crate::error::{Error, Result};
 
 const MAX_DEPTH: usize = 256usize;
+const MAX_NODES: usize = 65_536usize;
+const MAX_STRING_BYTES: usize = 64 * 1024;
+const MAX_RVALUE_VECTOR_ENTRIES: usize = 4096usize;
 const RAW_VECTOR_CAP: usize = 4096usize;
 const COMPLEX_VECTOR_CAP: usize = 1024usize;
 
@@ -234,6 +237,13 @@ impl<'a> XdrReader<'a> {
     }
 
     fn string(&mut self, len: usize) -> Result<String> {
+        if len > MAX_STRING_BYTES {
+            return Err(Error::RdsValueTooLarge {
+                kind: "string",
+                len,
+                max: MAX_STRING_BYTES,
+            });
+        }
         let raw: &[u8] = self.reader.read_bytes(len).map_err(Self::truncated)?;
         let s: String = String::from_utf8_lossy(raw).into_owned();
         Ok(s)
@@ -278,6 +288,29 @@ impl Walk {
             node_count: 0usize,
         }
     }
+}
+
+fn count_node(w: &mut Walk) -> Result<()> {
+    let node_count: usize = w
+        .node_count
+        .checked_add(1usize)
+        .ok_or(Error::RdsNodeLimitExceeded(MAX_NODES))?;
+    if node_count > MAX_NODES {
+        return Err(Error::RdsNodeLimitExceeded(MAX_NODES));
+    }
+    w.node_count = node_count;
+    Ok(())
+}
+
+fn require_rvalue_vector_length(kind: &'static str, count: usize) -> Result<()> {
+    if count > MAX_RVALUE_VECTOR_ENTRIES {
+        return Err(Error::RdsValueTooLarge {
+            kind,
+            len: count,
+            max: MAX_RVALUE_VECTOR_ENTRIES,
+        });
+    }
+    Ok(())
 }
 
 pub fn read_rds(bytes: &[u8]) -> Result<RdsObject> {
@@ -356,7 +389,7 @@ fn walk_item_body(
     if depth > MAX_DEPTH {
         return Err(Error::RdsDepthExceeded(MAX_DEPTH));
     }
-    w.node_count += 1;
+    count_node(w)?;
     let sxp: u32 = flags & 0xFFu32;
     let has_attr: bool = (flags & HAS_ATTR_BIT) != 0;
     let has_tag: bool = (flags & HAS_TAG_BIT) != 0;
@@ -946,7 +979,7 @@ fn read_rvalue_with_flags(
     if depth > MAX_DEPTH {
         return Err(Error::RdsDepthExceeded(MAX_DEPTH));
     }
-    w.node_count += 1;
+    count_node(w)?;
     let sxp: u32 = flags & 0xFFu32;
     let has_attr: bool = (flags & HAS_ATTR_BIT) != 0;
     let has_tag: bool = (flags & HAS_TAG_BIT) != 0;
@@ -1021,6 +1054,7 @@ fn read_rvalue_with_flags(
         STRSXP => {
             let n: i32 = r.i32()?;
             let count: usize = n.max(0) as usize;
+            require_rvalue_vector_length("string vector", count)?;
             let mut out: Vec<String> = Vec::with_capacity(r.bounded_capacity(count, 8));
             for _ in 0..count {
                 if let RValue::StringVec(mut v) = read_rvalue(r, w, depth + 1)? {
@@ -1032,6 +1066,7 @@ fn read_rvalue_with_flags(
         REALSXP => {
             let n: i32 = r.i32()?;
             let count: usize = n.max(0) as usize;
+            require_rvalue_vector_length("real vector", count)?;
             let mut out: Vec<f64> = Vec::with_capacity(r.bounded_capacity(count, 8));
             for _ in 0..count {
                 out.push(r.f64()?);
@@ -1041,6 +1076,7 @@ fn read_rvalue_with_flags(
         LGLSXP | INTSXP => {
             let n: i32 = r.i32()?;
             let count: usize = n.max(0) as usize;
+            require_rvalue_vector_length("integer vector", count)?;
             let mut out: Vec<i64> = Vec::with_capacity(r.bounded_capacity(count, 4));
             for _ in 0..count {
                 out.push(i64::from(r.i32()?));
@@ -1082,11 +1118,13 @@ fn read_rvalue_with_flags(
             let mut tmp: Walk = Walk {
                 ref_table: std::mem::take(&mut w.ref_table),
                 bc_reps: w.bc_reps,
+                node_count: w.node_count,
                 ..Walk::empty()
             };
             rewind_and_walk(r, &mut tmp, flags, sxp, has_attr, has_tag, depth)?;
             w.ref_table = tmp.ref_table;
             w.bc_reps = tmp.bc_reps;
+            w.node_count = tmp.node_count;
             w.symbols.append(&mut tmp.symbols);
             w.string_values.append(&mut tmp.string_values);
             w.closures.append(&mut tmp.closures);
@@ -1187,6 +1225,7 @@ fn read_in_stringvec(r: &mut XdrReader<'_>, w: &mut Walk) -> Result<Vec<String>>
     let _leading: i32 = r.i32()?;
     let n: i32 = r.i32()?;
     let count: usize = n.max(0) as usize;
+    require_rvalue_vector_length("string vector", count)?;
     let mut out: Vec<String> = Vec::with_capacity(r.bounded_capacity(count, 8));
     for _ in 0..count {
         let flags: u32 = r.u32()?;
@@ -1447,6 +1486,72 @@ mod tests {
     #[test]
     fn rejects_non_rds() {
         assert!(!is_rds(b"PK\x03\x04not an rds"));
+    }
+
+    #[test]
+    fn rejects_string_payload_above_materialization_cap() {
+        let payload: Vec<u8> = vec![b'a'; 65_537usize];
+        let mut bytes: Vec<u8> = xdr_header();
+        bytes.extend_from_slice(&CHARSXP.to_be_bytes());
+        bytes.extend_from_slice(&(payload.len() as i32).to_be_bytes());
+        bytes.extend_from_slice(&payload);
+
+        let result: Result<RdsObject> = read_rds(&bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_rvalue_vector_above_materialization_cap() {
+        let count: usize = 4_097usize;
+        let mut bytes: Vec<u8> = Vec::with_capacity(8usize.saturating_add(count * 8usize));
+        bytes.extend_from_slice(&REALSXP.to_be_bytes());
+        bytes.extend_from_slice(&(count as i32).to_be_bytes());
+        for _ in 0..count {
+            bytes.extend_from_slice(&0f64.to_bits().to_be_bytes());
+        }
+        let mut reader: XdrReader<'_> = XdrReader::new(&bytes, 0usize).expect("reader");
+        let mut walk: Walk = Walk::empty();
+
+        let result: Result<RValue> = read_rvalue(&mut reader, &mut walk, 0usize);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_node_count_above_cap() {
+        const NODE_CAP: usize = 65_536;
+        let payload_bytes: usize = NODE_CAP.saturating_mul(4usize);
+        let mut bytes: Vec<u8> = Vec::with_capacity(22usize.saturating_add(payload_bytes));
+        bytes.extend_from_slice(b"X\n");
+        bytes.extend_from_slice(&2u32.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&VECSXP.to_be_bytes());
+        let declared_nodes: i32 = i32::try_from(NODE_CAP).expect("cap fits i32");
+        bytes.extend_from_slice(&declared_nodes.to_be_bytes());
+        let nodes: Vec<u8> = NILSXP.to_be_bytes().repeat(NODE_CAP);
+        bytes.extend_from_slice(&nodes);
+
+        let result: Result<RdsObject> = read_rds(&bytes);
+        assert!(matches!(result, Err(Error::RdsNodeLimitExceeded(limit)) if limit == NODE_CAP));
+    }
+
+    #[test]
+    fn accepts_node_count_at_cap() {
+        let child_count: usize = MAX_NODES.saturating_sub(1usize);
+        let payload_bytes: usize = child_count.saturating_mul(4usize);
+        let mut bytes: Vec<u8> = Vec::with_capacity(22usize.saturating_add(payload_bytes));
+        bytes.extend_from_slice(b"X\n");
+        bytes.extend_from_slice(&2u32.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&VECSXP.to_be_bytes());
+        let declared_nodes: i32 = i32::try_from(child_count).expect("cap fits i32");
+        bytes.extend_from_slice(&declared_nodes.to_be_bytes());
+        let nodes: Vec<u8> = NILSXP.to_be_bytes().repeat(child_count);
+        bytes.extend_from_slice(&nodes);
+
+        let result: Result<RdsObject> = read_rds(&bytes);
+        assert!(matches!(result, Ok(RdsObject { node_count, .. }) if node_count == MAX_NODES));
     }
 
     #[test]

@@ -1,5 +1,12 @@
 use serde::Serialize;
 
+const MAX_TOKEN_COUNT: usize = 65_536usize;
+const MAX_TOKEN_TEXT_BYTES: usize = 65_536usize;
+const MAX_TOKEN_SOURCE_BYTES: usize = MAX_TOKEN_TEXT_BYTES / 3usize;
+const MAX_TOTAL_TOKEN_TEXT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_LEXER_INPUT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_SUBSTITUTION_DEPTH: usize = 256usize;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum BashTokenKind {
     Word,
@@ -21,6 +28,7 @@ pub enum BashTokenKind {
     Whitespace,
     Comment,
     Backslash,
+    Truncated,
     Eof,
 }
 
@@ -34,19 +42,29 @@ pub struct BashToken {
 
 #[must_use]
 pub fn tokenize_bash(src: &[u8]) -> Vec<BashToken> {
-    let mut out: Vec<BashToken> = Vec::with_capacity(src.len() / 4 + 4);
+    let source_len: usize = src.len();
+    let visible_len: usize = source_len.min(MAX_LEXER_INPUT_BYTES);
+    let src: &[u8] = &src[..visible_len];
+    let initial_capacity: usize = (src.len() / 4usize)
+        .saturating_add(4usize)
+        .min(MAX_TOKEN_COUNT.saturating_add(1usize));
+    let mut out: Vec<BashToken> = Vec::with_capacity(initial_capacity);
     let mut pos: usize = 0;
-    while pos < src.len() {
+    let mut text_budget: usize = MAX_TOTAL_TOKEN_TEXT_BYTES;
+    let mut truncation: Option<(usize, usize)> =
+        (visible_len < source_len).then_some((visible_len, source_len));
+    while pos < src.len() && out.len() < MAX_TOKEN_COUNT {
         let start: usize = pos;
         let b: u8 = src[pos];
-        let tok: BashToken = match b {
+        let mut nesting_truncated: bool = false;
+        let mut tok: BashToken = match b {
             b' ' | b'\t' => consume_run(src, &mut pos, BashTokenKind::Whitespace, |c: u8| {
                 c == b' ' || c == b'\t'
             }),
             b'\n' => single(src, &mut pos, BashTokenKind::Newline),
             b'\r' => single(src, &mut pos, BashTokenKind::Whitespace),
             b'#' => consume_until(src, &mut pos, BashTokenKind::Comment, b'\n'),
-            b'$' => consume_variable(src, &mut pos),
+            b'$' => consume_variable(src, &mut pos, &mut nesting_truncated),
             b'"' => consume_string(src, &mut pos, b'"', BashTokenKind::StringDq),
             b'\'' => consume_string(src, &mut pos, b'\'', BashTokenKind::StringSq),
             b'(' => single(src, &mut pos, BashTokenKind::LParen),
@@ -56,7 +74,7 @@ pub fn tokenize_bash(src: &[u8]) -> Vec<BashToken> {
             b'|' => {
                 if src.get(pos + 1) == Some(&b'|') {
                     let end: usize = pos + 2;
-                    let text: String = String::from_utf8_lossy(&src[pos..end]).into_owned();
+                    let text: String = token_text(src, pos, end);
                     pos = end;
                     BashToken {
                         kind: BashTokenKind::PipePipe,
@@ -71,7 +89,7 @@ pub fn tokenize_bash(src: &[u8]) -> Vec<BashToken> {
             b'&' => {
                 if src.get(pos + 1) == Some(&b'&') {
                     let end: usize = pos + 2;
-                    let text: String = String::from_utf8_lossy(&src[pos..end]).into_owned();
+                    let text: String = token_text(src, pos, end);
                     pos = end;
                     BashToken {
                         kind: BashTokenKind::AmpAmp,
@@ -88,13 +106,35 @@ pub fn tokenize_bash(src: &[u8]) -> Vec<BashToken> {
             b'\\' => single(src, &mut pos, BashTokenKind::Backslash),
             _ => consume_word(src, &mut pos),
         };
+        let source_limit_exceeded: bool =
+            tok.end.saturating_sub(tok.start) > MAX_TOKEN_SOURCE_BYTES;
+        let text_budget_exceeded: bool = truncate_token_text(&mut tok.text, &mut text_budget);
+        let token_truncated: bool =
+            nesting_truncated || source_limit_exceeded || text_budget_exceeded;
+        if token_truncated && truncation.is_none() {
+            truncation = Some((tok.start, source_len));
+        }
         out.push(tok);
+        if token_truncated {
+            break;
+        }
+    }
+    if pos < src.len() && truncation.is_none() {
+        truncation = Some((pos, src.len()));
+    }
+    if let Some((start, end)) = truncation {
+        out.push(BashToken {
+            kind: BashTokenKind::Truncated,
+            text: String::new(),
+            start,
+            end,
+        });
     }
     out.push(BashToken {
         kind: BashTokenKind::Eof,
         text: String::new(),
-        start: pos,
-        end: pos,
+        start: source_len,
+        end: source_len,
     });
     out
 }
@@ -102,7 +142,7 @@ pub fn tokenize_bash(src: &[u8]) -> Vec<BashToken> {
 fn single(src: &[u8], pos: &mut usize, kind: BashTokenKind) -> BashToken {
     let start: usize = *pos;
     let end: usize = start + 1;
-    let text: String = String::from_utf8_lossy(&src[start..end]).into_owned();
+    let text: String = token_text(src, start, end);
     *pos = end;
     BashToken {
         kind,
@@ -121,7 +161,7 @@ where
     while end < src.len() && pred(src[end]) {
         end += 1;
     }
-    let text: String = String::from_utf8_lossy(&src[start..end]).into_owned();
+    let text: String = token_text(src, start, end);
     *pos = end;
     BashToken {
         kind,
@@ -137,7 +177,7 @@ fn consume_until(src: &[u8], pos: &mut usize, kind: BashTokenKind, stop: u8) -> 
     while end < src.len() && src[end] != stop {
         end += 1;
     }
-    let text: String = String::from_utf8_lossy(&src[start..end]).into_owned();
+    let text: String = token_text(src, start, end);
     *pos = end;
     BashToken {
         kind,
@@ -147,7 +187,7 @@ fn consume_until(src: &[u8], pos: &mut usize, kind: BashTokenKind, stop: u8) -> 
     }
 }
 
-fn consume_variable(src: &[u8], pos: &mut usize) -> BashToken {
+fn consume_variable(src: &[u8], pos: &mut usize, nesting_truncated: &mut bool) -> BashToken {
     let start: usize = *pos;
     let mut end: usize = start + 1;
     if end < src.len() && src[end] == b'{' {
@@ -161,9 +201,21 @@ fn consume_variable(src: &[u8], pos: &mut usize) -> BashToken {
         let mut depth: usize = 0;
         while end < src.len() {
             if src[end] == b'(' {
-                depth += 1;
+                let Some(next_depth): Option<usize> = depth.checked_add(1usize) else {
+                    *nesting_truncated = true;
+                    break;
+                };
+                if next_depth > MAX_SUBSTITUTION_DEPTH {
+                    *nesting_truncated = true;
+                    break;
+                }
+                depth = next_depth;
             } else if src[end] == b')' {
-                depth -= 1;
+                let Some(next_depth): Option<usize> = depth.checked_sub(1usize) else {
+                    *nesting_truncated = true;
+                    break;
+                };
+                depth = next_depth;
                 if depth == 0 {
                     end += 1;
                     break;
@@ -171,7 +223,7 @@ fn consume_variable(src: &[u8], pos: &mut usize) -> BashToken {
             }
             end += 1;
         }
-        let text: String = String::from_utf8_lossy(&src[start..end]).into_owned();
+        let text: String = token_text(src, start, end);
         *pos = end;
         return BashToken {
             kind: BashTokenKind::Subst,
@@ -189,7 +241,7 @@ fn consume_variable(src: &[u8], pos: &mut usize) -> BashToken {
             end += 1;
         }
     }
-    let text: String = String::from_utf8_lossy(&src[start..end]).into_owned();
+    let text: String = token_text(src, start, end);
     *pos = end;
     BashToken {
         kind: BashTokenKind::Variable,
@@ -214,7 +266,7 @@ fn consume_string(src: &[u8], pos: &mut usize, q: u8, kind: BashTokenKind) -> Ba
         }
         end += 1;
     }
-    let text: String = String::from_utf8_lossy(&src[start..end]).into_owned();
+    let text: String = token_text(src, start, end);
     *pos = end;
     BashToken {
         kind,
@@ -256,7 +308,7 @@ fn consume_word(src: &[u8], pos: &mut usize) -> BashToken {
     if end == start {
         end += 1;
     }
-    let text: String = String::from_utf8_lossy(&src[start..end]).into_owned();
+    let text: String = token_text(src, start, end);
     *pos = end;
     BashToken {
         kind: BashTokenKind::Word,
@@ -264,6 +316,29 @@ fn consume_word(src: &[u8], pos: &mut usize) -> BashToken {
         start,
         end,
     }
+}
+
+fn token_text(src: &[u8], start: usize, end: usize) -> String {
+    let bounded_start: usize = start.min(src.len());
+    let bounded_end: usize = end.min(src.len()).max(bounded_start);
+    let capped_end: usize = bounded_end.min(bounded_start.saturating_add(MAX_TOKEN_SOURCE_BYTES));
+    let decoded: String = String::from_utf8_lossy(&src[bounded_start..capped_end]).into_owned();
+    decoded.into_boxed_str().into()
+}
+
+fn truncate_token_text(text: &mut String, budget: &mut usize) -> bool {
+    if text.len() <= *budget {
+        *budget = budget.saturating_sub(text.len());
+        return false;
+    }
+    let mut end: usize = (*budget).min(text.len());
+    while end > 0usize && !text.is_char_boundary(end) {
+        end = end.saturating_sub(1usize);
+    }
+    let retained: String = text[..end].to_owned();
+    *text = retained;
+    *budget = 0usize;
+    true
 }
 
 #[cfg(test)]

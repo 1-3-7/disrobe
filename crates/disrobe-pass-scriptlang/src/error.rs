@@ -61,6 +61,16 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    #[error("DR-SCRIPT-0306: RDS node count exceeded limit {0}")]
+    RdsNodeLimitExceeded(usize),
+
+    #[error("DR-SCRIPT-0307: RDS {kind} value exceeds limit {max}: {len}")]
+    RdsValueTooLarge {
+        kind: &'static str,
+        len: usize,
+        max: usize,
+    },
+
     #[error("DR-SCRIPT-0400: not a Tcl starkit/tclkit container")]
     NotStarkit,
 

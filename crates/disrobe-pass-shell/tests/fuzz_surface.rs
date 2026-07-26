@@ -266,6 +266,48 @@ fn run_one(bytes: &[u8]) {
     }
 }
 
+fn exercise_truncated_prefixes(bytes: &[u8]) {
+    let mut end: usize = 0usize;
+    while end <= bytes.len() {
+        run_one(&bytes[..end]);
+        let Some(next): Option<usize> = end.checked_add(1usize) else {
+            break;
+        };
+        end = next;
+    }
+}
+
+#[test]
+fn required_malformed_boundaries_never_panic() {
+    const LONG_LINE_BYTES: usize = 96 * 1024;
+    let valid: &[u8] = b"@echo off\nset payload=whoami\ncall %payload%\n";
+    exercise_truncated_prefixes(valid);
+
+    let mut nested: Vec<u8> = b"echo ".to_vec();
+    nested.extend(b"$(".repeat(512usize));
+    nested.push(b'x');
+    nested.extend(b")".repeat(512usize));
+    let mut long_line: Vec<u8> = b"powershell -Command ".to_vec();
+    long_line.extend(std::iter::repeat_n(b'A', LONG_LINE_BYTES));
+    let cases: Vec<Vec<u8>> = vec![
+        Vec::new(),
+        vec![0u8],
+        vec![0xffu8],
+        vec![0u8; 4096usize],
+        vec![0xffu8; 4096usize],
+        nested,
+        b"'\"`{[<(})]>\"'`".to_vec(),
+        b"\xff\xfe\x00\xd8\x00\x00\xff\xff".to_vec(),
+        long_line,
+    ];
+    let mut index: usize = 0usize;
+    while index < cases.len() {
+        let case: &Vec<u8> = &cases[index];
+        run_one(case);
+        index = index.saturating_add(1usize);
+    }
+}
+
 #[test]
 fn random_inputs_never_panic() {
     let mut rng: Xorshift64 = Xorshift64::new(0x5348_4C17_F00D_BEEF);
