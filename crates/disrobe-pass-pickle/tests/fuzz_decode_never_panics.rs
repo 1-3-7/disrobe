@@ -1,3 +1,4 @@
+#![cfg(feature = "chain")]
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
