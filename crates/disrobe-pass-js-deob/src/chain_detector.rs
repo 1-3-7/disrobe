@@ -32,7 +32,7 @@ use crate::protectors::{
     pace::{deobfuscate as pace_deobfuscate, detect as detect_pace},
 };
 use crate::string_array::{StringArrayRecovery, recover as recover_string_array};
-use crate::unminify::{AstUnminifyStats, UnminifyStats, unminify, unminify_ast};
+use crate::unminify::{AstUnminifyStats, UnminifyStats, try_unminify_ast, unminify};
 use crate::v8::{
     BytenodeCacheBody, Disassembly, NodeVersion, RecoveredBytecodeArray, SeaBlob,
     carve_sea_main_code, disassemble, parse_bytenode_full, parse_code_serializer_graph,
@@ -747,7 +747,8 @@ fn run_unminify(bytes: &[u8], artifact: &Artifact) -> CoreResult<Artifact> {
     let source: &str = std::str::from_utf8(bytes)
         .map_err(|e| CoreError::PassFailure(format!("DR-JS-0909: input not utf-8: {e}")))?;
     let (peeled, _peephole_stats): (String, UnminifyStats) = unminify(source);
-    let (beautified, _ast_stats): (String, AstUnminifyStats) = unminify_ast(&peeled);
+    let (beautified, _ast_stats): (String, AstUnminifyStats) = try_unminify_ast(&peeled)
+        .map_err(|error: crate::error::Error| CoreError::PassFailure(error.to_string()))?;
     if beautified == source || beautified.matches('\n').count() <= source.matches('\n').count() {
         return Err(CoreError::PassFailure(
             "DR-JS-0917: js.deob: minified input produced no structural transform (already formatted, or no peephole/ast rule applied)"

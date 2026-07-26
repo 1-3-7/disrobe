@@ -709,15 +709,23 @@ impl AstPipeline {
 
     #[must_use]
     pub fn run(&self, source: &str) -> (String, AstUnminifyStats) {
+        match self.try_run(source) {
+            Ok(output) => output,
+            Err(_error) => (source.to_owned(), AstUnminifyStats::default()),
+        }
+    }
+
+    pub fn try_run(&self, source: &str) -> crate::error::Result<(String, AstUnminifyStats)> {
         let mut stats: AstUnminifyStats = AstUnminifyStats::default();
         crate::debug::dbg_section("unminify ast pipeline");
         crate::debug::dbg_kv("input-bytes", || source.len().to_string());
-        if !crate::sandbox_guard::nesting_is_safe(source) {
+        let input_limit: crate::error::Result<()> = syntax_limit_error(source).map_or(Ok(()), Err);
+        if let Err(error) = &input_limit {
             crate::debug::dbg_kv("pipeline-rejected", || {
-                "reason=nesting-depth-exceeds-safety-bound".to_owned()
+                format!("reason={}", syntax_limit_reason(error))
             });
-            return (source.to_owned(), stats);
         }
+        input_limit?;
         let mut current: String = source.to_owned();
         for rule in self.ordered() {
             let (outcome, rule_stats): (RuleOutcome, RuleStats) = apply_rule(rule.id, &current);
@@ -731,15 +739,18 @@ impl AstPipeline {
                 });
                 continue;
             };
-            if !crate::sandbox_guard::nesting_is_safe(&next) {
+            let output_limit: crate::error::Result<()> =
+                syntax_limit_error(&next).map_or(Ok(()), Err);
+            if let Err(error) = &output_limit {
                 crate::debug::dbg_kv("rule-rejected", || {
                     format!(
-                        "{:?} reason=nesting-depth-exceeds-safety-bound edits={edit_count}",
-                        rule.id
+                        "{:?} reason={} edits={edit_count}",
+                        rule.id,
+                        syntax_limit_reason(error)
                     )
                 });
-                continue;
             }
+            output_limit?;
             if !reparses(&next) {
                 crate::debug::dbg_kv("rule-rejected", || {
                     format!("{:?} reason=reparse-failed edits={edit_count}", rule.id)
@@ -752,7 +763,34 @@ impl AstPipeline {
             current = next;
             merge_stats(&mut stats, &rule_stats);
         }
-        (current, stats)
+        Ok((current, stats))
+    }
+}
+
+fn syntax_limit_error(source: &str) -> Option<crate::error::Error> {
+    let nesting: usize = crate::sandbox_guard::max_bracket_nesting(source);
+    if nesting > crate::sandbox_guard::MAX_SYNTACTIC_NESTING_DEPTH {
+        return Some(crate::error::Error::SyntaxLimit {
+            kind: "nesting-depth",
+            observed: nesting,
+            maximum: crate::sandbox_guard::MAX_SYNTACTIC_NESTING_DEPTH,
+        });
+    }
+    let chain: usize = crate::sandbox_guard::max_operator_chain(source);
+    if chain > crate::sandbox_guard::MAX_OPERATOR_CHAIN {
+        return Some(crate::error::Error::SyntaxLimit {
+            kind: "operator-chain",
+            observed: chain,
+            maximum: crate::sandbox_guard::MAX_OPERATOR_CHAIN,
+        });
+    }
+    None
+}
+
+const fn syntax_limit_reason(error: &crate::error::Error) -> &'static str {
+    match error {
+        crate::error::Error::SyntaxLimit { kind, .. } => kind,
+        _ => "unknown-syntax-limit",
     }
 }
 
@@ -1245,8 +1283,12 @@ pub fn unminify_ast(source: &str) -> (String, AstUnminifyStats) {
     AstPipeline::default().run(source)
 }
 
+pub fn try_unminify_ast(source: &str) -> crate::error::Result<(String, AstUnminifyStats)> {
+    AstPipeline::default().try_run(source)
+}
+
 #[cfg(test)]
-#[allow(clippy::panic)]
+#[allow(clippy::panic, clippy::expect_used)]
 mod tests {
     use super::{AstPipeline, AstRuleId, AstUnminifyStats};
 
@@ -1295,6 +1337,25 @@ Rect.prototype.area = function() { return this.w * this.h; };
             "input past the nesting safety bound must be left untransformed, never a crash"
         );
         assert_eq!(stats.classes_reconstructed, 0);
+    }
+
+    #[test]
+    fn deeply_nested_input_returns_typed_error() {
+        let depth: usize = crate::sandbox_guard::MAX_SYNTACTIC_NESTING_DEPTH + 1;
+        let source: String = "(".repeat(depth);
+        let pipeline: AstPipeline = AstPipeline::default();
+
+        let error: crate::error::Error = pipeline
+            .try_run(&source)
+            .expect_err("nesting beyond the parser bound must return an error");
+        assert!(matches!(
+            error,
+            crate::error::Error::SyntaxLimit {
+                kind: "nesting-depth",
+                observed,
+                maximum: crate::sandbox_guard::MAX_SYNTACTIC_NESTING_DEPTH,
+            } if observed == depth
+        ));
     }
 
     #[test]

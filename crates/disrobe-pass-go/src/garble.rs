@@ -1123,11 +1123,13 @@ mod tests {
                     name: ".rdata".to_owned(),
                     address: 0x1000,
                     data: first_data,
+                    mapped_len: u64::try_from(first_data.len()).expect("fixture size fits u64"),
                 },
                 crate::binary::Section {
                     name: ".rdata".to_owned(),
                     address: 0x2000,
                     data: second_data,
+                    mapped_len: u64::try_from(second_data.len()).expect("fixture size fits u64"),
                 },
             ],
             raw: b"",

@@ -7,7 +7,7 @@ mod protection;
 mod self_defending;
 mod string_split;
 
-pub use ast::{AstPipeline, AstRuleId, AstUnminifyStats, unminify_ast};
+pub use ast::{AstPipeline, AstRuleId, AstUnminifyStats, try_unminify_ast, unminify_ast};
 
 use serde::Serialize;
 

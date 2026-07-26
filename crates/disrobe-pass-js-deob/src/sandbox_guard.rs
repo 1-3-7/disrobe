@@ -19,21 +19,41 @@ pub(crate) fn max_bracket_nesting(script: &str) -> usize {
     let mut max_depth: usize = 0;
     let mut escaped: bool = false;
     let mut prev: u8 = 0;
+    let mut template_depths: Vec<usize> = Vec::new();
     let bytes: &[u8] = script.as_bytes();
     let mut i: usize = 0;
     while i < bytes.len() {
         let b: u8 = bytes[i];
         match mode {
-            Mode::SingleQuote | Mode::DoubleQuote | Mode::Template => {
+            Mode::SingleQuote | Mode::DoubleQuote => {
                 if escaped {
                     escaped = false;
                 } else if b == b'\\' {
                     escaped = true;
                 } else if (mode == Mode::SingleQuote && b == b'\'')
                     || (mode == Mode::DoubleQuote && b == b'"')
-                    || (mode == Mode::Template && b == b'`')
                 {
                     mode = Mode::Code;
+                }
+            }
+            Mode::Template => {
+                if escaped {
+                    escaped = false;
+                } else if b == b'\\' {
+                    escaped = true;
+                } else if b == b'`' {
+                    mode = Mode::Code;
+                } else if b == b'$' && bytes.get(i + 1) == Some(&b'{') {
+                    depth = depth.saturating_add(1);
+                    if depth > max_depth {
+                        max_depth = depth;
+                        if max_depth > MAX_SYNTACTIC_NESTING_DEPTH {
+                            return max_depth;
+                        }
+                    }
+                    template_depths.push(depth);
+                    mode = Mode::Code;
+                    i = i.saturating_add(1);
                 }
             }
             Mode::LineComment => {
@@ -61,7 +81,15 @@ pub(crate) fn max_bracket_nesting(script: &str) -> usize {
                         }
                     }
                 }
-                b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+                b')' | b']' => depth = depth.saturating_sub(1),
+                b'}' => {
+                    depth = depth.saturating_sub(1);
+                    let template_depth: Option<usize> = template_depths.last().copied();
+                    if template_depth.is_some_and(|open: usize| open.saturating_sub(1) == depth) {
+                        template_depths.pop();
+                        mode = Mode::Template;
+                    }
+                }
                 _ => {}
             },
         }
@@ -78,21 +106,36 @@ pub(crate) fn max_operator_chain(script: &str) -> usize {
     let mut max_run: usize = 0;
     let mut escaped: bool = false;
     let mut prev: u8 = 0;
+    let mut brace_depth: usize = 0;
+    let mut template_depths: Vec<usize> = Vec::new();
     let bytes: &[u8] = script.as_bytes();
     let mut i: usize = 0;
     while i < bytes.len() {
         let b: u8 = bytes[i];
         match mode {
-            Mode::SingleQuote | Mode::DoubleQuote | Mode::Template => {
+            Mode::SingleQuote | Mode::DoubleQuote => {
                 if escaped {
                     escaped = false;
                 } else if b == b'\\' {
                     escaped = true;
                 } else if (mode == Mode::SingleQuote && b == b'\'')
                     || (mode == Mode::DoubleQuote && b == b'"')
-                    || (mode == Mode::Template && b == b'`')
                 {
                     mode = Mode::Code;
+                }
+            }
+            Mode::Template => {
+                if escaped {
+                    escaped = false;
+                } else if b == b'\\' {
+                    escaped = true;
+                } else if b == b'`' {
+                    mode = Mode::Code;
+                } else if b == b'$' && bytes.get(i + 1) == Some(&b'{') {
+                    brace_depth = brace_depth.saturating_add(1);
+                    template_depths.push(brace_depth);
+                    mode = Mode::Code;
+                    i = i.saturating_add(1);
                 }
             }
             Mode::LineComment => {
@@ -120,7 +163,22 @@ pub(crate) fn max_operator_chain(script: &str) -> usize {
                         }
                     }
                 }
-                b';' | b'(' | b')' | b'[' | b']' | b'{' | b'}' | b',' => run = 0,
+                b'{' => {
+                    brace_depth = brace_depth.saturating_add(1);
+                    run = 0;
+                }
+                b'}' => {
+                    brace_depth = brace_depth.saturating_sub(1);
+                    let template_depth: Option<usize> = template_depths.last().copied();
+                    if template_depth
+                        .is_some_and(|open: usize| open.saturating_sub(1) == brace_depth)
+                    {
+                        template_depths.pop();
+                        mode = Mode::Template;
+                    }
+                    run = 0;
+                }
+                b';' | b'(' | b')' | b'[' | b']' | b',' => run = 0,
                 _ => {}
             },
         }
@@ -172,6 +230,13 @@ mod tests {
     #[test]
     fn ignores_brackets_in_template_literals() {
         assert_eq!(max_bracket_nesting("`((((`"), 0);
+    }
+
+    #[test]
+    fn counts_brackets_in_template_substitutions() {
+        let nested: String = format!("`${{{}}}`", "(".repeat(MAX_SYNTACTIC_NESTING_DEPTH + 1));
+        assert!(max_bracket_nesting(&nested) > MAX_SYNTACTIC_NESTING_DEPTH);
+        assert!(!nesting_is_safe(&nested));
     }
 
     #[test]

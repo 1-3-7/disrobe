@@ -27,6 +27,7 @@ pub struct Section<'a> {
     pub name: String,
     pub address: u64,
     pub data: &'a [u8],
+    pub mapped_len: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -72,10 +73,13 @@ impl<'a> GoImage<'a> {
         for sec in file.sections() {
             let name: String = sec.name().unwrap_or("").to_owned();
             let data: &'a [u8] = sec.data().unwrap_or(b"");
+            let mapped_len: u64 = section_mapped_len(kind, data, sec.size(), sec.align())
+                .ok_or_else(|| Error::ContainerParse("invalid mapped section span".to_owned()))?;
             sections.push(Section {
                 name,
                 address: sec.address(),
                 data,
+                mapped_len,
             });
         }
         let mut symbol_addrs: Vec<(String, u64, u64)> = Vec::new();
@@ -101,7 +105,7 @@ impl<'a> GoImage<'a> {
     fn parse_flat(bytes: &'a [u8]) -> Result<Self> {
         dbg_section("go.flat-image");
         dbg_line(|| "no container header (MZ/PE/ELF/MachO): trying headerless go image".to_owned());
-        let provisional: Self = Self::flat_with_base(bytes, FLAT_IMAGE_BASE, 8);
+        let provisional: Self = Self::flat_with_base(bytes, FLAT_IMAGE_BASE, 8)?;
         let located_off: Option<(usize, u8)> = locate_flat_pclntab_offset(&provisional);
         let (pclntab_off, ptr_size): (Option<usize>, u8) = if let Some((off, ps)) = located_off {
             dbg_line(|| format!("flat pclntab at file-offset {off:#x} ptr_size={ps}"));
@@ -122,16 +126,20 @@ impl<'a> GoImage<'a> {
             .and_then(|off: usize| infer_flat_base(bytes, off))
             .unwrap_or(FLAT_IMAGE_BASE);
         dbg_kv("flat_base", || format!("{address:#x}"));
-        Ok(Self::flat_with_base(bytes, address, ptr_size))
+        Self::flat_with_base(bytes, address, ptr_size)
     }
 
-    fn flat_with_base(bytes: &'a [u8], address: u64, ptr_size: u8) -> Self {
+    fn flat_with_base(bytes: &'a [u8], address: u64, ptr_size: u8) -> Result<Self> {
+        let mapped_len: u64 = u64::try_from(bytes.len()).map_err(|_| {
+            Error::ContainerParse("flat image exceeds virtual address range".to_owned())
+        })?;
         let section: Section<'a> = Section {
             name: ".rdata".to_owned(),
             address,
             data: bytes,
+            mapped_len,
         };
-        Self {
+        Ok(Self {
             kind: ImageKind::Pe,
             endian: Endian::Little,
             ptr_size,
@@ -139,7 +147,7 @@ impl<'a> GoImage<'a> {
             raw: bytes,
             symbol_addrs: Vec::new(),
             flat: true,
-        }
+        })
     }
 
     #[must_use]
@@ -176,9 +184,60 @@ impl<'a> GoImage<'a> {
     }
 
     #[must_use]
+    pub fn remaining_at_va(&self, va: u64, required: usize) -> Option<usize> {
+        let mut current: Option<&Section<'a>> = None;
+        for sec in &self.sections {
+            let end: u64 = section_end(sec)?;
+            if va >= sec.address && va < end {
+                if current.is_some() {
+                    return None;
+                }
+                current = Some(sec);
+            }
+        }
+        let mut current: &Section<'a> = current?;
+        let mut current_start: u64 = current.address;
+        let mut current_end: u64 = section_end(current)?;
+        let offset: usize = usize::try_from(va.checked_sub(current_start)?).ok()?;
+        let current_len: usize = usize::try_from(current.mapped_len).ok()?;
+        let mut available: usize = current_len.checked_sub(offset)?;
+        loop {
+            for sec in &self.sections {
+                if std::ptr::eq(sec, current) || sec.mapped_len == 0 {
+                    continue;
+                }
+                let end: u64 = section_end(sec)?;
+                if sec.address < current_end && end > current_start {
+                    return None;
+                }
+            }
+            if available >= required {
+                return Some(available);
+            }
+            let mut next: Option<&Section<'a>> = None;
+            for sec in &self.sections {
+                if sec.address != current_end || sec.mapped_len == 0 {
+                    continue;
+                }
+                if next.is_some() {
+                    return None;
+                }
+                next = Some(sec);
+            }
+            let Some(next_section): Option<&Section<'a>> = next else {
+                return Some(available);
+            };
+            let next_len: usize = usize::try_from(next_section.mapped_len).ok()?;
+            available = available.checked_add(next_len)?;
+            current = next_section;
+            current_start = current.address;
+            current_end = section_end(current)?;
+        }
+    }
+
+    #[must_use]
     pub fn read_u32(&self, va: u64) -> Option<u32> {
-        let buf: &[u8] = self.data_at_va(va, 4)?;
-        let arr: [u8; 4] = buf.try_into().ok()?;
+        let arr: [u8; 4] = self.mapped_array_at_va(va)?;
         Some(match self.endian {
             Endian::Little => u32::from_le_bytes(arr),
             Endian::Big => u32::from_be_bytes(arr),
@@ -187,8 +246,7 @@ impl<'a> GoImage<'a> {
 
     #[must_use]
     pub fn read_u64(&self, va: u64) -> Option<u64> {
-        let buf: &[u8] = self.data_at_va(va, 8)?;
-        let arr: [u8; 8] = buf.try_into().ok()?;
+        let arr: [u8; 8] = self.mapped_array_at_va(va)?;
         Some(match self.endian {
             Endian::Little => u64::from_le_bytes(arr),
             Endian::Big => u64::from_be_bytes(arr),
@@ -202,6 +260,49 @@ impl<'a> GoImage<'a> {
             _ => None,
         }
     }
+
+    fn mapped_array_at_va<const N: usize>(&self, va: u64) -> Option<[u8; N]> {
+        let mut bytes: [u8; N] = [0; N];
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            let offset: u64 = u64::try_from(index).ok()?;
+            let byte_va: u64 = va.checked_add(offset)?;
+            *byte = self.mapped_byte_at_va(byte_va)?;
+        }
+        Some(bytes)
+    }
+
+    fn mapped_byte_at_va(&self, va: u64) -> Option<u8> {
+        let mut value: Option<u8> = None;
+        for sec in &self.sections {
+            let end: u64 = section_end(sec)?;
+            if va < sec.address || va >= end {
+                continue;
+            }
+            if value.is_some() {
+                return None;
+            }
+            let offset: usize = usize::try_from(va.checked_sub(sec.address)?).ok()?;
+            value = Some(sec.data.get(offset).copied().map_or(0, |byte: u8| byte));
+        }
+        value
+    }
+}
+
+const fn section_end(section: &Section<'_>) -> Option<u64> {
+    section.address.checked_add(section.mapped_len)
+}
+
+fn section_mapped_len(kind: ImageKind, data: &[u8], virtual_len: u64, align: u64) -> Option<u64> {
+    let data_len: u64 = u64::try_from(data.len()).ok()?;
+    let size: u64 = data_len.max(virtual_len);
+    if kind != ImageKind::Pe || align == 0 {
+        return Some(size);
+    }
+    let remainder: u64 = size % align;
+    if remainder == 0 {
+        return Some(size);
+    }
+    size.checked_add(align.checked_sub(remainder)?)
 }
 
 fn normalize_symbol_name(kind: ImageKind, raw: &str) -> String {

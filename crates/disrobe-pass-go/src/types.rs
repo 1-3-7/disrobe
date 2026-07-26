@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::binary::GoImage;
 use crate::debug::dbg_line;
+use crate::error::{Error, Result};
 use crate::moduledata::Moduledata;
 use crate::pclntab::PclntabVersion;
 
@@ -107,23 +108,58 @@ const ITABLINKS_WALK_CAP: usize = 1 << 14;
 
 #[must_use]
 pub fn extract_typemeta(image: &GoImage<'_>, md: &Moduledata) -> GoTypeMeta {
-    extract_typemeta_versioned(image, md, infer_layout(md, image.ptr_size))
+    match try_extract_typemeta(image, md) {
+        Ok(metadata) => metadata,
+        Err(_error) => GoTypeMeta {
+            types: Vec::new(),
+            itabs: Vec::new(),
+            strings: Vec::new(),
+            generics: Vec::new(),
+        },
+    }
+}
+
+pub fn try_extract_typemeta(image: &GoImage<'_>, md: &Moduledata) -> Result<GoTypeMeta> {
+    let typelinks_len: usize = bounded_table_len(
+        image,
+        "typelinks",
+        md.typelinks_va,
+        md.typelinks_len,
+        4,
+        TYPELINKS_WALK_CAP,
+    )?;
+    let itablinks_len: usize = bounded_table_len(
+        image,
+        "itablinks",
+        md.itablinks_va,
+        md.itablinks_len,
+        usize::from(image.ptr_size),
+        ITABLINKS_WALK_CAP,
+    )?;
+    Ok(extract_typemeta_versioned(
+        image,
+        md,
+        infer_layout(md, image.ptr_size),
+        typelinks_len,
+        itablinks_len,
+    ))
 }
 
 fn extract_typemeta_versioned(
     image: &GoImage<'_>,
     md: &Moduledata,
     layout: AbiTypeLayout,
+    typelinks_len: usize,
+    itablinks_len: usize,
 ) -> GoTypeMeta {
     let mut types: Vec<GoTypeRef> = Vec::new();
     let mut itabs: Vec<GoItab> = Vec::new();
     let mut strings: BTreeSet<String> = BTreeSet::new();
 
-    if md.typelinks_va != 0 && md.typelinks_len != 0 && md.types_va != 0 {
-        let n: usize = usize::try_from(md.typelinks_len).unwrap_or(0);
-        types.reserve(n.min(TYPELINKS_WALK_CAP));
+    if md.typelinks_va != 0 && typelinks_len != 0 && md.types_va != 0 {
+        types.reserve(typelinks_len);
         let mut seen: BTreeSet<u64> = BTreeSet::new();
-        for i in 0..n.min(TYPELINKS_WALK_CAP) {
+        for i in 0..typelinks_len {
             let Ok(index): core::result::Result<u64, _> = u64::try_from(i) else {
                 break;
             };
@@ -173,11 +209,10 @@ fn extract_typemeta_versioned(
         }
     }
 
-    if md.itablinks_va != 0 && md.itablinks_len != 0 {
-        let n: usize = usize::try_from(md.itablinks_len).unwrap_or(0);
-        itabs.reserve(n.min(ITABLINKS_WALK_CAP));
+    if md.itablinks_va != 0 && itablinks_len != 0 {
+        itabs.reserve(itablinks_len);
         let ps: u64 = u64::from(image.ptr_size);
-        for i in 0..n.min(ITABLINKS_WALK_CAP) {
+        for i in 0..itablinks_len {
             let Ok(index): core::result::Result<u64, _> = u64::try_from(i) else {
                 break;
             };
@@ -236,6 +271,57 @@ fn extract_typemeta_versioned(
         strings: strings.into_iter().collect(),
         generics,
     }
+}
+
+fn bounded_table_len(
+    image: &GoImage<'_>,
+    table: &'static str,
+    va: u64,
+    declared: u64,
+    entry_size: usize,
+    walk_cap: usize,
+) -> Result<usize> {
+    if va == 0 || declared == 0 {
+        return Ok(0);
+    }
+    let declared_entries: usize =
+        usize::try_from(declared).map_err(|_| Error::TypeMetadataSliceBounds {
+            table,
+            declared,
+            available: 0,
+        })?;
+    let required_bytes: usize =
+        declared_entries
+            .checked_mul(entry_size)
+            .ok_or(Error::TypeMetadataSliceBounds {
+                table,
+                declared,
+                available: 0,
+            })?;
+    let available_bytes: usize =
+        image
+            .remaining_at_va(va, required_bytes)
+            .ok_or(Error::TypeMetadataSliceBounds {
+                table,
+                declared,
+                available: 0,
+            })?;
+    let available_entries: usize =
+        available_bytes
+            .checked_div(entry_size)
+            .ok_or(Error::TypeMetadataSliceBounds {
+                table,
+                declared,
+                available: 0,
+            })?;
+    if declared_entries > available_entries {
+        return Err(Error::TypeMetadataSliceBounds {
+            table,
+            declared,
+            available: available_entries,
+        });
+    }
+    Ok(declared_entries.min(walk_cap))
 }
 
 fn recover_type_ref(
@@ -1042,11 +1128,21 @@ fn read_type_methods(
     let Some(methods_base): Option<u64> = uncommon.checked_add(u64::from(moff)) else {
         return Vec::new();
     };
+    let method_count: usize = usize::from(mcount);
+    let Some(method_span): Option<usize> = method_count.checked_mul(16usize) else {
+        return Vec::new();
+    };
+    let Some(available): Option<usize> = image.remaining_at_va(methods_base, method_span) else {
+        return Vec::new();
+    };
+    if method_span > available {
+        return Vec::new();
+    }
     let types_blob_len: Option<u64> = md
         .etypes_va
         .checked_sub(md.types_va)
         .filter(|len: &u64| *len != 0);
-    let mut out: Vec<GoMethod> = Vec::with_capacity(usize::from(mcount));
+    let mut out: Vec<GoMethod> = Vec::with_capacity(method_count);
     for i in 0..mcount {
         let Some(entry_va): Option<u64> =
             methods_base.checked_add(u64::from(i) * METHOD_ENTRY_SIZE)
@@ -1832,6 +1928,7 @@ mod tests {
                 name: ".rdata".to_owned(),
                 address: base,
                 data: &bytes,
+                mapped_len: u64::try_from(bytes.len()).expect("fixture size fits u64"),
             }],
             raw: &bytes,
             symbol_addrs: Vec::new(),
@@ -1879,6 +1976,7 @@ mod tests {
                 name: ".rdata".to_owned(),
                 address: base,
                 data: &bytes,
+                mapped_len: u64::try_from(bytes.len()).expect("fixture size fits u64"),
             }],
             raw: &bytes,
             symbol_addrs: Vec::new(),
@@ -1927,6 +2025,7 @@ mod tests {
                 name: ".rdata".to_owned(),
                 address: base,
                 data: &bytes,
+                mapped_len: u64::try_from(bytes.len()).expect("fixture size fits u64"),
             }],
             raw: &bytes,
             symbol_addrs: Vec::new(),
@@ -1956,5 +2055,236 @@ mod tests {
         );
         assert!(recovered.fields.is_empty());
         assert!(recovered.fields_rejected);
+    }
+
+    #[test]
+    fn typelinks_declared_past_backing_section_returns_typed_error() {
+        let base: u64 = 0x1000;
+        let bytes: Vec<u8> = vec![0u8; 16];
+        let image: GoImage<'_> = GoImage {
+            kind: crate::binary::ImageKind::Pe,
+            endian: crate::binary::Endian::Little,
+            ptr_size: 8,
+            sections: vec![crate::binary::Section {
+                name: ".rdata".to_owned(),
+                address: base,
+                data: &bytes,
+                mapped_len: u64::try_from(bytes.len()).expect("fixture size fits u64"),
+            }],
+            raw: &bytes,
+            symbol_addrs: Vec::new(),
+            flat: true,
+        };
+        let md: Moduledata = Moduledata {
+            pclntab_va: 0,
+            typelinks_va: base,
+            typelinks_len: u64::MAX,
+            itablinks_va: 0,
+            itablinks_len: 0,
+            types_va: base,
+            etypes_va: base + u64::try_from(bytes.len()).expect("fixture size fits u64"),
+            text_va: 0,
+            etext_va: 0,
+            modulename: None,
+            buildversion: None,
+            build_info: None,
+            via: crate::moduledata::ModuledataSource::None,
+        };
+
+        let error: crate::error::Error = try_extract_typemeta(&image, &md)
+            .expect_err("declared typelinks past section must fail");
+        assert!(matches!(
+            error,
+            crate::error::Error::TypeMetadataSliceBounds {
+                table: "typelinks",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn table_span_across_contiguous_sections_is_accepted() {
+        let base: u64 = 0x1000;
+        let first: Vec<u8> = vec![0u8; 4];
+        let second: Vec<u8> = vec![0u8; 4];
+        let image: GoImage<'_> = GoImage {
+            kind: crate::binary::ImageKind::Pe,
+            endian: crate::binary::Endian::Little,
+            ptr_size: 8,
+            sections: vec![
+                crate::binary::Section {
+                    name: ".rdata".to_owned(),
+                    address: base,
+                    data: &first,
+                    mapped_len: u64::try_from(first.len()).expect("fixture size fits u64"),
+                },
+                crate::binary::Section {
+                    name: ".data".to_owned(),
+                    address: base + 4,
+                    data: &second,
+                    mapped_len: u64::try_from(second.len()).expect("fixture size fits u64"),
+                },
+            ],
+            raw: &first,
+            symbol_addrs: Vec::new(),
+            flat: true,
+        };
+
+        let length: usize = bounded_table_len(&image, "typelinks", base, 2, 4, 2)
+            .expect("a contiguous two-section span must be accepted");
+        assert_eq!(length, 2);
+    }
+
+    #[test]
+    fn table_span_across_contiguous_mapped_padding_is_accepted() {
+        let base: u64 = 0x1000;
+        let first: Vec<u8> = vec![0u8; 4];
+        let second: Vec<u8> = vec![0u8; 4];
+        let image: GoImage<'_> = GoImage {
+            kind: crate::binary::ImageKind::Pe,
+            endian: crate::binary::Endian::Little,
+            ptr_size: 8,
+            sections: vec![
+                crate::binary::Section {
+                    name: ".rdata".to_owned(),
+                    address: base,
+                    data: &first,
+                    mapped_len: 8,
+                },
+                crate::binary::Section {
+                    name: ".data".to_owned(),
+                    address: base + 8,
+                    data: &second,
+                    mapped_len: 4,
+                },
+            ],
+            raw: &first,
+            symbol_addrs: Vec::new(),
+            flat: true,
+        };
+
+        let length: usize = bounded_table_len(&image, "typelinks", base, 3, 4, 3)
+            .expect("a contiguous mapped span must be accepted");
+        assert_eq!(length, 3);
+    }
+
+    #[test]
+    fn table_span_across_zero_filled_mapped_section_is_accepted() {
+        let base: u64 = 0x1000;
+        let first: Vec<u8> = vec![0u8; 4];
+        let second: Vec<u8> = vec![0u8; 4];
+        let empty: [u8; 0] = [];
+        let image: GoImage<'_> = GoImage {
+            kind: crate::binary::ImageKind::Pe,
+            endian: crate::binary::Endian::Little,
+            ptr_size: 8,
+            sections: vec![
+                crate::binary::Section {
+                    name: ".rdata".to_owned(),
+                    address: base,
+                    data: &first,
+                    mapped_len: 4,
+                },
+                crate::binary::Section {
+                    name: ".bss".to_owned(),
+                    address: base + 4,
+                    data: &empty,
+                    mapped_len: 4,
+                },
+                crate::binary::Section {
+                    name: ".data".to_owned(),
+                    address: base + 8,
+                    data: &second,
+                    mapped_len: 4,
+                },
+            ],
+            raw: &first,
+            symbol_addrs: Vec::new(),
+            flat: true,
+        };
+
+        let length: usize = bounded_table_len(&image, "typelinks", base, 3, 4, 3)
+            .expect("a zero-filled mapped span must be accepted");
+        assert_eq!(length, 3);
+    }
+
+    #[test]
+    fn table_span_into_a_gap_returns_typed_bounds_error() {
+        let base: u64 = 0x1000;
+        let first: Vec<u8> = vec![0u8; 4];
+        let second: Vec<u8> = vec![0u8; 4];
+        let image: GoImage<'_> = GoImage {
+            kind: crate::binary::ImageKind::Pe,
+            endian: crate::binary::Endian::Little,
+            ptr_size: 8,
+            sections: vec![
+                crate::binary::Section {
+                    name: ".rdata".to_owned(),
+                    address: base,
+                    data: &first,
+                    mapped_len: u64::try_from(first.len()).expect("fixture size fits u64"),
+                },
+                crate::binary::Section {
+                    name: ".data".to_owned(),
+                    address: base + 8,
+                    data: &second,
+                    mapped_len: u64::try_from(second.len()).expect("fixture size fits u64"),
+                },
+            ],
+            raw: &first,
+            symbol_addrs: Vec::new(),
+            flat: true,
+        };
+
+        let error: crate::error::Error = bounded_table_len(&image, "typelinks", base, 2, 4, 2)
+            .expect_err("a span that enters a gap must be rejected");
+        assert!(matches!(
+            error,
+            crate::error::Error::TypeMetadataSliceBounds {
+                table: "typelinks",
+                declared: 2,
+                available: 1,
+            }
+        ));
+    }
+
+    #[test]
+    fn table_span_past_contiguous_sections_returns_typed_bounds_error() {
+        let base: u64 = 0x1000;
+        let first: Vec<u8> = vec![0u8; 4];
+        let second: Vec<u8> = vec![0u8; 4];
+        let image: GoImage<'_> = GoImage {
+            kind: crate::binary::ImageKind::Pe,
+            endian: crate::binary::Endian::Little,
+            ptr_size: 8,
+            sections: vec![
+                crate::binary::Section {
+                    name: ".rdata".to_owned(),
+                    address: base,
+                    data: &first,
+                    mapped_len: u64::try_from(first.len()).expect("fixture size fits u64"),
+                },
+                crate::binary::Section {
+                    name: ".data".to_owned(),
+                    address: base + 4,
+                    data: &second,
+                    mapped_len: u64::try_from(second.len()).expect("fixture size fits u64"),
+                },
+            ],
+            raw: &first,
+            symbol_addrs: Vec::new(),
+            flat: true,
+        };
+
+        let error: crate::error::Error = bounded_table_len(&image, "typelinks", base, 3, 4, 3)
+            .expect_err("a span past the mapped end must be rejected");
+        assert!(matches!(
+            error,
+            crate::error::Error::TypeMetadataSliceBounds {
+                table: "typelinks",
+                declared: 3,
+                available: 2,
+            }
+        ));
     }
 }

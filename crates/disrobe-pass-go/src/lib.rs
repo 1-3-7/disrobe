@@ -52,7 +52,8 @@ pub use symbols::{
 pub use types::{
     GoGenericInstantiation, GoInterfaceMethod, GoItab, GoItabSlot, GoMethod, GoStructField,
     GoTypeMeta, GoTypeRef, disambiguate_generics, extract_typemeta, harvest_concrete_args,
-    link_method_functions, parse_generic_name, parse_generic_type_info, type_kind_label,
+    link_method_functions, parse_generic_name, parse_generic_type_info, try_extract_typemeta,
+    type_kind_label,
 };
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -155,7 +156,7 @@ pub fn analyze(bytes: &[u8]) -> Result<GoAnalysis> {
                     .count()
                     .to_string()
             });
-            let mut typemeta: GoTypeMeta = extract_typemeta(&image, &moduledata);
+            let mut typemeta: GoTypeMeta = try_extract_typemeta(&image, &moduledata)?;
             let func_vas: Vec<(u64, &str)> = symbols
                 .funcs
                 .iter()

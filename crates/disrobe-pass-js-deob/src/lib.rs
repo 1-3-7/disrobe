@@ -97,6 +97,7 @@ pub use jscrambler::{
 pub use jsobfu::{
     CharFoldStats, JsObfuDetection, JsObfuRecovery, JsObfuRewriteStats, detect_jsobfu,
     fold_char_constructors, recover as recover_jsobfu, rewrite_bracket_access,
+    try_recover as try_recover_jsobfu,
 };
 pub use mangled_names::{
     Confidence as MangledNameConfidence, Context as MangledNameContext, ContextNameSource,
@@ -143,7 +144,8 @@ pub use typescript::{
     undo_closure_advanced, undo_preset_env,
 };
 pub use unminify::{
-    AstPipeline, AstRuleId, AstUnminifyStats, UnminifyStats, unminify, unminify_ast,
+    AstPipeline, AstRuleId, AstUnminifyStats, UnminifyStats, try_unminify_ast, unminify,
+    unminify_ast,
 };
 
 #[cfg(feature = "llm-metadata")]

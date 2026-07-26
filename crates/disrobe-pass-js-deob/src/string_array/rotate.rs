@@ -8,18 +8,19 @@ pub(super) fn simulate(
     if strings.is_empty() {
         return (strings.to_vec(), 0);
     }
-    let mut current: Vec<String> = strings.to_vec();
     for k in 0..=MAX_ROTATIONS {
-        if matches_pivot(&current, pivot_value) {
+        let index: usize = usize::try_from(k).map_or(0, |value: usize| value % strings.len());
+        if matches_pivot_at(strings, index, pivot_value) {
+            let mut current: Vec<String> = strings.to_vec();
+            current.rotate_left(index);
             return (current, k);
         }
-        current.rotate_left(1);
     }
     (strings.to_vec(), 0)
 }
 
-fn matches_pivot(strings: &[String], pivot: i64) -> bool {
-    let Some(first): Option<&String> = strings.first() else {
+fn matches_pivot_at(strings: &[String], index: usize, pivot: i64) -> bool {
+    let Some(first): Option<&String> = strings.get(index) else {
         return false;
     };
     if let Ok(n) = first.parse::<i64>() {
