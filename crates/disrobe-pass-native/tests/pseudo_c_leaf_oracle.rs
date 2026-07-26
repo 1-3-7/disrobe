@@ -11916,6 +11916,295 @@ fn sysv_scalar_float_stack_spill_recompile_to_behavioral_equivalence() {
     );
 }
 
+const RED_ZONE_BATTERY: &[Case] = &[
+    Case {
+        name: "rz_slot",
+        arity: 2,
+        c_source: "long long rz_slot(long long a, long long b){ volatile long long v = a + b; return v * 3; }",
+    },
+    Case {
+        name: "rz_pair",
+        arity: 2,
+        c_source: "long long rz_pair(long long a, long long b){ volatile long long x = a; volatile long long y = b; return x * y + x - y; }",
+    },
+    Case {
+        name: "rz_triple",
+        arity: 3,
+        c_source: "long long rz_triple(long long a, long long b, long long c){ volatile long long p = a; volatile long long q = b; volatile long long r = c; return p + q * 3 + r * 5; }",
+    },
+    Case {
+        name: "rz_reuse",
+        arity: 2,
+        c_source: "long long rz_reuse(long long a, long long b){ volatile long long t = a; t = t + b; t = t * 3; return t - a; }",
+    },
+    Case {
+        name: "rz_dword",
+        arity: 2,
+        c_source: "long long rz_dword(long long a, long long b){ volatile int v = (int)(a - b); return (long long)v * 3; }",
+    },
+    Case {
+        name: "rz_word",
+        arity: 2,
+        c_source: "long long rz_word(long long a, long long b){ volatile short v = (short)(a ^ b); return (long long)v + 1; }",
+    },
+    Case {
+        name: "rz_byte",
+        arity: 2,
+        c_source: "long long rz_byte(long long a, long long b){ volatile unsigned char c = (unsigned char)(a | b); return (long long)c * 7; }",
+    },
+    Case {
+        name: "rz_widths",
+        arity: 2,
+        c_source: "long long rz_widths(long long a, long long b){ volatile unsigned char c = (unsigned char)a; volatile short s = (short)b; volatile int i = (int)(a + b); volatile long long q = a * b; return (long long)c + (long long)s * 3 + (long long)i * 5 + q * 7; }",
+    },
+    Case {
+        name: "rz_branch",
+        arity: 2,
+        c_source: "long long rz_branch(long long a, long long b){ volatile long long v; if (a > b) v = a - b; else v = b - a; return v * 2; }",
+    },
+    Case {
+        name: "rz_absx",
+        arity: 2,
+        c_source: "long long rz_absx(long long a, long long b){ volatile long long v = a; if (v < 0) v = -v; return v + b; }",
+    },
+    Case {
+        name: "rz_shift",
+        arity: 2,
+        c_source: "long long rz_shift(long long a, long long b){ volatile unsigned long long v = ((unsigned long long)a >> 3) | ((unsigned long long)b << 5); return (long long)v; }",
+    },
+    Case {
+        name: "rz_negnot",
+        arity: 2,
+        c_source: "long long rz_negnot(long long a, long long b){ volatile long long v = -(a + b); return ~v; }",
+    },
+    Case {
+        name: "rz_quad",
+        arity: 2,
+        c_source: "long long rz_quad(long long a, long long b){ volatile long long w = a; volatile long long x = b; volatile long long y = a ^ b; volatile long long z = a - b; return w + x * 3 + y * 5 + z * 7; }",
+    },
+    Case {
+        name: "rz_wide16",
+        arity: 2,
+        c_source: "long long rz_wide16(long long a, long long b){ volatile long long v0 = a + 1, v1 = a + 2, v2 = a + 3, v3 = a + 4; volatile long long v4 = b + 1, v5 = b + 2, v6 = b + 3, v7 = b + 4; volatile long long v8 = a ^ 1, v9 = a ^ 2, v10 = a ^ 3, v11 = a ^ 4; volatile long long v12 = b ^ 1, v13 = b ^ 2, v14 = b ^ 3, v15 = b ^ 4; return v0 + v1 * 3 + v2 * 5 + v3 * 7 + v4 * 9 + v5 * 11 + v6 * 13 + v7 * 15 + v8 * 17 + v9 * 19 + v10 * 21 + v11 * 23 + v12 * 25 + v13 * 27 + v14 * 29 + v15 * 31; }",
+    },
+];
+
+struct RedZoneShape {
+    slots: Vec<i64>,
+    adjusts_stack: bool,
+}
+
+fn rsp_negative_displacements(operands: &str) -> Vec<i64> {
+    let mut out: Vec<i64> = Vec::new();
+    let mut rest: &str = operands;
+    while let Some(at) = rest.find("[rsp-") {
+        let tail: &str = rest.get(at + 5..).unwrap_or_default();
+        let end: usize = tail.find(']').unwrap_or(tail.len());
+        let token: &str = tail.get(..end).unwrap_or_default();
+        let (digits, radix): (&str, u32) = token
+            .strip_suffix('h')
+            .map_or((token, 10), |hex: &str| (hex, 16));
+        if let Ok(value) = i64::from_str_radix(digits, radix) {
+            out.push(-value);
+        }
+        rest = tail.get(end..).unwrap_or_default();
+    }
+    out
+}
+
+fn red_zone_shape(insns: &[DisasmInsn]) -> RedZoneShape {
+    let mut slots: Vec<i64> = Vec::new();
+    let mut adjusts_stack: bool = false;
+    for insn in insns {
+        if matches!(
+            insn.mnemonic.as_str(),
+            "push" | "pop" | "leave" | "enter" | "call"
+        ) || insn
+            .operands
+            .split_once(',')
+            .is_some_and(|(lhs, _): (&str, &str)| lhs.trim() == "rsp")
+        {
+            adjusts_stack = true;
+        }
+        slots.extend(rsp_negative_displacements(&insn.operands));
+    }
+    slots.sort_unstable();
+    slots.dedup();
+    RedZoneShape {
+        slots,
+        adjusts_stack,
+    }
+}
+
+fn assert_red_zone_encoding(object_bytes: &[u8], name: &str) -> Vec<i64> {
+    let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(object_bytes, name) else {
+        panic!("red-zone row {name}: symbol not located");
+    };
+    let insns: Vec<DisasmInsn> =
+        disassemble(Arch::X86_64, base, &code).expect("disassemble red-zone row");
+    let shape: RedZoneShape = red_zone_shape(&insns);
+    assert!(
+        !shape.adjusts_stack,
+        "red-zone row {name} must not adjust the stack pointer, so its below-rsp slots really are the red zone: {insns:?}"
+    );
+    assert!(
+        !shape.slots.is_empty(),
+        "red-zone row {name} must store below the unadjusted stack pointer: {insns:?}"
+    );
+    shape.slots
+}
+
+fn build_red_zone_driver(recovered_decls: &str, driver_body: &str) -> String {
+    format!(
+        "#include <stdint.h>\n#include <stdio.h>\n#include <stddef.h>\n{recovered_decls}\n\
+         int main(void) {{\n\
+         \x20   long long inputs[][3] = {{\n\
+         \x20       {{0,0,0}},{{-1,-1,-1}},{{1,-1,0}},{{-1,0,1}},\n\
+         \x20       {{0x0123456789abcdefLL,0x1032547698badcfeLL,0x7f7e7d7c7b7a7978LL}},\n\
+         \x20       {{(long long)0xfedcba9876543210ULL,(long long)0x89abcdef01234567ULL,0x3141592653589793LL}},\n\
+         \x20       {{1,2,3}},{{3,1,2}},{{2,3,1}},{{3,2,1}},\n\
+         \x20       {{0x7fffffffffffffffLL,(long long)0x8000000000000000ULL,-1}},\n\
+         \x20       {{(long long)0x8000000000000000ULL,0x7fffffffffffffffLL,1}},\n\
+         \x20       {{0x7fffffffLL,-2147483648LL,0x80000000LL}},\n\
+         \x20       {{0xffLL,0xff00LL,0xffff0000LL}},{{0x100LL,0x10000LL,0x1000000LL}},\n\
+         \x20       {{0x80LL,0x8000LL,(long long)0x80000000LL}},\n\
+         \x20       {{(long long)0xffffffffffffff80ULL,(long long)0xffffffffffff8000ULL,-128LL}},\n\
+         \x20       {{0x5555555555555555LL,(long long)0xaaaaaaaaaaaaaaaaULL,0x3333333333333333LL}},\n\
+         \x20       {{-2,-3,-5}},{{123456789LL,-987654321LL,55555LL}}\n\
+         \x20   }};\n\
+         \x20   size_t n_inputs = sizeof(inputs)/sizeof(inputs[0]);\n\
+         {driver_body}\
+         \x20   printf(\"OK\\n\");\n\
+         \x20   return 0;\n\
+         }}\n"
+    )
+}
+
+#[test]
+fn sysv_red_zone_leaf_functions_recompile_to_behavioral_equivalence() {
+    if !sysv_host_can_run() {
+        return;
+    }
+    let Some(objs): Option<SysvCrossObjects> =
+        compile_sysv_cross("rz", &battery_source(RED_ZONE_BATTERY))
+    else {
+        return;
+    };
+
+    let mut recovered_decls: String = String::new();
+    let mut driver_body: String = String::new();
+    let mut deepest: i64 = 0;
+    for case in RED_ZONE_BATTERY {
+        let slots: Vec<i64> = assert_red_zone_encoding(&objs.sysv_object, case.name);
+        deepest = deepest.min(slots.first().copied().unwrap_or(0));
+        println!("red-zone row {} uses rsp slots {slots:?}", case.name);
+        let Some((code, base)): Option<(Vec<u8>, u64)> =
+            function_code(&objs.sysv_object, case.name)
+        else {
+            panic!("red-zone row {}: symbol not located", case.name);
+        };
+        let recovery: LeafRecovery = recover_leaf_function_abi(&code, base, PseudoAbi::SysV)
+            .unwrap_or_else(|e: disrobe_pass_native::Error| {
+                panic!("red-zone row {} must recover, got: {e}", case.name)
+            });
+        assert!(
+            recovery
+                .source
+                .contains("r_rsp = (uint64_t)(uintptr_t)(stack_frame +"),
+            "red-zone row {} must model its below-rsp slots as a local frame:\n{}",
+            case.name,
+            recovery.source
+        );
+        let Some(lifted): Option<Lifted> = process_case(case, &objs.sysv_object, PseudoAbi::SysV)
+        else {
+            panic!(
+                "red-zone row {} must lift into the graded driver",
+                case.name
+            );
+        };
+        recovered_decls.push_str(&lifted.decls);
+        driver_body.push_str(&lifted.driver_snippet);
+    }
+    assert!(
+        deepest <= -64,
+        "the red-zone battery must reach deep into the 128-byte zone, deepest slot observed was {deepest}"
+    );
+
+    let driver: String = build_red_zone_driver(&recovered_decls, &driver_body);
+    let stdout: String = link_and_run_sysv("rz", &driver, &objs.host_object, 30);
+    assert!(
+        stdout.contains("OK"),
+        "SysV red-zone behavioral differential FAILED ({} cases): {stdout}",
+        RED_ZONE_BATTERY.len()
+    );
+    println!(
+        "SysV red-zone behavioral differential PASSED for {} leaf functions with no stack adjustment, deepest slot {deepest} (SysV ABI)",
+        RED_ZONE_BATTERY.len()
+    );
+}
+
+const FP_RED_ZONE_BATTERY: &[FpCase] = &[
+    FpCase {
+        name: "rzf_dslot",
+        args: &[FpArg::Double, FpArg::Double],
+        ret: FpRet::Double,
+        c_source: "double rzf_dslot(double a, double b){ volatile double v = a * b; return v + a - b; }",
+    },
+    FpCase {
+        name: "rzf_fslot",
+        args: &[FpArg::Float, FpArg::Float],
+        ret: FpRet::Float,
+        c_source: "float rzf_fslot(float a, float b){ volatile float v = a * b; return v + b; }",
+    },
+    FpCase {
+        name: "rzf_dpair",
+        args: &[FpArg::Double, FpArg::Double],
+        ret: FpRet::Double,
+        c_source: "double rzf_dpair(double a, double b){ volatile double x = a + b; volatile double y = a - b; return x * y; }",
+    },
+];
+
+#[test]
+fn sysv_red_zone_scalar_float_leaf_functions_recompile_to_behavioral_equivalence() {
+    if !sysv_host_can_run() {
+        return;
+    }
+    let Some(objs): Option<SysvCrossObjects> =
+        compile_sysv_cross("rzf", &fp_battery_source(FP_RED_ZONE_BATTERY))
+    else {
+        return;
+    };
+
+    let mut recovered_decls: String = String::new();
+    let mut driver_body: String = String::new();
+    for case in FP_RED_ZONE_BATTERY {
+        let slots: Vec<i64> = assert_red_zone_encoding(&objs.sysv_object, case.name);
+        println!("red-zone fp row {} uses rsp slots {slots:?}", case.name);
+        let Some((_, renamed, recovered_name)): Option<(LeafRecovery, String, String)> =
+            fp_lift(case, &objs.sysv_object, PseudoAbi::SysV)
+        else {
+            panic!("red-zone fp row {} must recover", case.name);
+        };
+        recovered_decls.push_str(&renamed);
+        recovered_decls.push('\n');
+        recovered_decls.push_str(&fp_extern_decl(case));
+        recovered_decls.push('\n');
+        driver_body.push_str(&fp_driver_snippet(case, &recovered_name));
+    }
+
+    let driver: String = build_fp_driver(&recovered_decls, &driver_body);
+    let stdout: String = link_and_run_sysv("rzf", &driver, &objs.host_object, 30);
+    assert!(
+        stdout.contains("OK"),
+        "SysV red-zone scalar float differential FAILED ({} cases): {stdout}",
+        FP_RED_ZONE_BATTERY.len()
+    );
+    println!(
+        "SysV red-zone scalar float differential PASSED for {} leaf functions (SysV ABI)",
+        FP_RED_ZONE_BATTERY.len()
+    );
+}
+
 struct SretCase {
     name: &'static str,
     typedef: &'static str,

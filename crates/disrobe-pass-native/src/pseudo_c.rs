@@ -2163,7 +2163,7 @@ fn recover_leaf_function_calls_impl(
         ret,
     };
     let fp_params: Vec<ScalarType> = signature.ordered_param_types();
-    let frame_plan: Option<FramePlan> = plan_frame(&structured.body, classify_frame(&insns))?;
+    let frame_plan: Option<FramePlan> = plan_frame(&structured.body, classify_frame(&insns, abi))?;
     let mut aggregate_plan: AggregatePlan =
         infer_aggregate_plan(&structured.body, &params, frame_plan.as_ref());
     let (frame_base, frame_slots): (Option<Reg>, BTreeMap<i64, SlotCType>) =
@@ -2501,7 +2501,7 @@ fn build_switch_recovery(
         FnReturn::Fp(width) => Some(scalar_of_fp(width)),
         FnReturn::Int(_) | FnReturn::Void | FnReturn::Vec(_) => None,
     };
-    let frame_plan: Option<FramePlan> = plan_frame(&body, classify_frame(insns))?;
+    let frame_plan: Option<FramePlan> = plan_frame(&body, classify_frame(insns, abi))?;
     let aggregate_plan: AggregatePlan = infer_aggregate_plan(&body, &params, frame_plan.as_ref());
     let source: String = emit_c(
         &body,
@@ -4519,9 +4519,12 @@ fn rsp_delta_imm(mnemonic: &str, operands: &str) -> Option<i64> {
 struct FrameShape {
     base: Option<Reg>,
     rbp_is_frame: bool,
+    red_zone: bool,
 }
 
-fn classify_frame(insns: &[DisasmInsn]) -> FrameShape {
+const SYSV_RED_ZONE_BYTES: i64 = 128;
+
+fn classify_frame(insns: &[DisasmInsn], abi: Abi) -> FrameShape {
     let real: Vec<&DisasmInsn> = insns
         .iter()
         .filter(|i: &&DisasmInsn| !matches!(i.mnemonic.as_str(), "nop" | "endbr64"))
@@ -4534,18 +4537,135 @@ fn classify_frame(insns: &[DisasmInsn]) -> FrameShape {
         return FrameShape {
             base: Some(Reg::Rbp),
             rbp_is_frame: true,
+            red_zone: false,
         };
     }
     if rsp_frame_is_constant(&real) {
         return FrameShape {
             base: Some(Reg::Rsp),
             rbp_is_frame: false,
+            red_zone: false,
+        };
+    }
+    if abi == Abi::SysV && sysv_red_zone_frame(insns) {
+        return FrameShape {
+            base: Some(Reg::Rsp),
+            rbp_is_frame: false,
+            red_zone: true,
         };
     }
     FrameShape {
         base: None,
         rbp_is_frame: false,
+        red_zone: false,
     }
+}
+
+const fn stack_depth_changing_mnemonic(mnemonic: &str) -> bool {
+    matches!(
+        mnemonic.as_bytes(),
+        b"push"
+            | b"pusha"
+            | b"pushad"
+            | b"pushf"
+            | b"pushfd"
+            | b"pushfq"
+            | b"pop"
+            | b"popa"
+            | b"popad"
+            | b"popf"
+            | b"popfd"
+            | b"popfq"
+            | b"leave"
+            | b"enter"
+            | b"call"
+            | b"int"
+            | b"int1"
+            | b"int3"
+            | b"into"
+            | b"iret"
+            | b"iretd"
+            | b"iretq"
+            | b"syscall"
+            | b"sysenter"
+            | b"sysexit"
+            | b"sysexitq"
+            | b"sysret"
+            | b"sysretq"
+    )
+}
+
+fn first_operand_is_rsp(operands: &str) -> bool {
+    operands
+        .split_once(',')
+        .map_or(operands, |(lhs, _): (&str, &str)| lhs)
+        .trim()
+        == "rsp"
+}
+
+fn red_zone_rsp_uses_are_contained(operands: &str) -> bool {
+    let mut rest: &str = operands;
+    let mut outside: String = String::new();
+    loop {
+        let Some(open): Option<usize> = rest.find('[') else {
+            outside.push_str(rest);
+            return !outside.contains("rsp");
+        };
+        outside.push_str(rest.get(..open).unwrap_or_default());
+        let tail: &str = rest.get(open..).unwrap_or_default();
+        let Some(close): Option<usize> = tail.find(']') else {
+            return false;
+        };
+        let bracketed: &str = tail.get(..=close).unwrap_or_default();
+        if bracketed.contains("rsp") {
+            let Some((base, index, disp)): Option<AddrTerms> = parse_addr_terms(bracketed) else {
+                return false;
+            };
+            if base != Some(Reg::Rsp)
+                || index.is_some()
+                || !(-SYSV_RED_ZONE_BYTES..0).contains(&disp)
+            {
+                return false;
+            }
+        }
+        rest = tail.get(close + 1..).unwrap_or_default();
+    }
+}
+
+fn sysv_red_zone_frame(insns: &[DisasmInsn]) -> bool {
+    let Some(first): Option<&DisasmInsn> = insns.first() else {
+        return false;
+    };
+    let Some(last): Option<&DisasmInsn> = insns.last() else {
+        return false;
+    };
+    let start: u64 = first.address;
+    let end: u64 = last
+        .address
+        .saturating_add(u64::try_from(last.bytes.len()).unwrap_or(u64::MAX));
+    let mut saw_slot: bool = false;
+    for (idx, insn) in insns.iter().enumerate() {
+        if stack_depth_changing_mnemonic(&insn.mnemonic) || first_operand_is_rsp(&insn.operands) {
+            return false;
+        }
+        if insn.mnemonic == "jmp" {
+            let Some(target): Option<u64> = parse_branch_target(&insn.operands) else {
+                return false;
+            };
+            if !(start..end).contains(&target)
+                || insns
+                    .get(idx + 1)
+                    .is_some_and(|next: &DisasmInsn| next.address == target)
+            {
+                return false;
+            }
+        }
+        if !red_zone_rsp_uses_are_contained(&insn.operands) {
+            return false;
+        }
+        saw_slot = saw_slot || insn.operands.contains("rsp");
+    }
+    saw_slot
 }
 
 fn rsp_frame_is_constant(real: &[&DisasmInsn]) -> bool {
@@ -8344,7 +8464,8 @@ fn lift_width_extension(mnemonic: &str, operands: &str) -> Option<Stmt> {
     let dest: RegRef = parse_reg(lhs.trim())?;
     let rhs_tok: &str = rhs.trim();
     if is_mem_token(rhs_tok) {
-        let mem: MemRef = parse_mem_access(rhs_tok, None)?;
+        let implied: Option<Width> = (mnemonic == "movsxd").then_some(Width::W32);
+        let mem: MemRef = parse_mem_access(rhs_tok, implied)?;
         if mem.width >= dest.width {
             return None;
         }
@@ -11316,6 +11437,17 @@ fn plan_frame(body: &Block, shape: FrameShape) -> Result<Option<FramePlan>> {
             "stack slots referenced without a provably constant frame base".to_owned(),
         ));
     };
+    if shape.red_zone {
+        let escaping: Option<&(i64, Width)> = slots.iter().find(|(disp, width): &&(i64, Width)| {
+            *disp < -SYSV_RED_ZONE_BYTES || disp + i64::from(width.bits() / 8) > 0
+        });
+        if let Some((disp, width)) = escaping {
+            return Err(Error::LlvmIr(format!(
+                "a {}-byte slot at {disp} leaves the {SYSV_RED_ZONE_BYTES}-byte System V red zone below the entry stack pointer",
+                width.bits() / 8
+            )));
+        }
+    }
     if base == Reg::Rbp
         && slots
             .iter()
@@ -18113,6 +18245,263 @@ mod tests {
         let err: Error = recover_leaf_function_abi(&code, 0x8300, Abi::SysV)
             .expect_err("using rbp as a value escapes the frame model");
         assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    const RED_ZONE_SLOT: [u8; 11] = [
+        0x48, 0x89, 0x7c, 0x24, 0xf8, 0x48, 0x8b, 0x44, 0x24, 0xf8, 0xc3,
+    ];
+
+    #[test]
+    fn sysv_red_zone_slot_below_the_entry_stack_pointer_models_a_local_frame() {
+        let rec: LeafRecovery = recover_leaf_function_abi(&RED_ZONE_SLOT, 0x8400, Abi::SysV)
+            .expect("a leaf that spills into the System V red zone must lift");
+        assert_eq!(rec.params, vec![Reg::Rdi]);
+        assert!(
+            rec.source.contains("unsigned char stack_frame[8];"),
+            "the red zone must back exactly the eight bytes the slot occupies: {}",
+            rec.source
+        );
+        assert!(
+            rec.source
+                .contains("r_rsp = (uint64_t)(uintptr_t)(stack_frame + 8)"),
+            "the entry stack pointer must be aimed at the top of the red-zone frame: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn microsoft_x64_has_no_red_zone_so_the_same_slot_is_rejected() {
+        let err: Error = recover_leaf_function_abi(&RED_ZONE_SLOT, 0x8410, Abi::MsX64).expect_err(
+            "the Microsoft x64 ABI reserves nothing below rsp, so the slot is not a private frame",
+        );
+        let Error::LlvmIr(message) = err else {
+            panic!("expected a lifter rejection");
+        };
+        assert!(
+            message.contains("escapes a fixed-offset slot access"),
+            "the MS x64 store below rsp must fall through to the unchanged frame rejection: {message}"
+        );
+    }
+
+    #[test]
+    fn a_call_clobbers_the_red_zone_so_a_below_stack_pointer_slot_is_rejected() {
+        let code: [u8; 16] = [
+            0x48, 0x89, 0x7c, 0x24, 0xf8, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8b, 0x44, 0x24,
+            0xf8, 0xc3,
+        ];
+        let err: Error = recover_leaf_function_abi(&code, 0x8420, Abi::SysV)
+            .expect_err("a call clobbers the red zone, so the slot cannot be a private frame");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn a_tail_jump_out_of_the_function_disqualifies_the_red_zone() {
+        let code: [u8; 15] = [
+            0x48, 0x89, 0x7c, 0x24, 0xf8, 0x48, 0x8b, 0x44, 0x24, 0xf8, 0xe9, 0x20, 0x00, 0x00,
+            0x00,
+        ];
+        let err: Error = recover_leaf_function_abi(&code, 0x8430, Abi::SysV)
+            .expect_err("a tail jump reaches a callee that clobbers the red zone");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn the_red_zone_frame_shape_enforces_every_precondition_at_its_own_site() {
+        let cases: [(&str, bool, &[u8]); 9] = [
+            (
+                "a plain below-rsp spill and reload is the red zone",
+                true,
+                &[
+                    0x48, 0x89, 0x7c, 0x24, 0xf8, 0x48, 0x8b, 0x44, 0x24, 0xf8, 0xc3,
+                ],
+            ),
+            (
+                "an in-function forward jump keeps the red-zone shape",
+                true,
+                &[
+                    0x48, 0x89, 0x7c, 0x24, 0xf8, 0xeb, 0x05, 0x48, 0x8b, 0x44, 0x24, 0xf8, 0x48,
+                    0x8b, 0x44, 0x24, 0xf8, 0xc3,
+                ],
+            ),
+            (
+                "a direct call clobbers the red zone",
+                false,
+                &[
+                    0x48, 0x89, 0x7c, 0x24, 0xf8, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8b, 0x44,
+                    0x24, 0xf8, 0xc3,
+                ],
+            ),
+            (
+                "a tail jump past the function end reaches a clobbering callee",
+                false,
+                &[
+                    0x48, 0x89, 0x7c, 0x24, 0xf8, 0x48, 0x8b, 0x44, 0x24, 0xf8, 0xe9, 0x20, 0x00,
+                    0x00, 0x00,
+                ],
+            ),
+            (
+                "a relocated tail jump onto the following address is a call in disguise",
+                false,
+                &[
+                    0x48, 0x89, 0x7c, 0x24, 0xf8, 0x48, 0x8b, 0x44, 0x24, 0xf8, 0xe9, 0x00, 0x00,
+                    0x00, 0x00,
+                ],
+            ),
+            (
+                "an indirect jump has no provable target",
+                false,
+                &[
+                    0x48, 0x89, 0x7c, 0x24, 0xf8, 0x48, 0x8b, 0x44, 0x24, 0xf8, 0xff, 0xe0,
+                ],
+            ),
+            (
+                "a push moves rsp away from its entry value",
+                false,
+                &[
+                    0x55, 0x48, 0x89, 0x7c, 0x24, 0xf8, 0x48, 0x8b, 0x44, 0x24, 0xf8, 0x5d, 0xc3,
+                ],
+            ),
+            (
+                "an access above the entry rsp is an incoming argument",
+                false,
+                &[0x48, 0x8b, 0x44, 0x24, 0x08, 0xc3],
+            ),
+            (
+                "an access past -128 is outside the red zone",
+                false,
+                &[
+                    0x48, 0x89, 0xbc, 0x24, 0x78, 0xff, 0xff, 0xff, 0x48, 0x8b, 0x84, 0x24, 0x78,
+                    0xff, 0xff, 0xff, 0xc3,
+                ],
+            ),
+        ];
+        for (what, expected, code) in cases {
+            let insns: Vec<DisasmInsn> =
+                disassemble(Arch::X86_64, 0x9000, code).expect("disassemble red-zone probe");
+            assert_eq!(
+                sysv_red_zone_frame(&insns),
+                expected,
+                "{what}: {}",
+                insns
+                    .iter()
+                    .map(|i: &DisasmInsn| format!("{} {}", i.mnemonic, i.operands))
+                    .collect::<Vec<String>>()
+                    .join("; ")
+            );
+        }
+    }
+
+    #[test]
+    fn the_microsoft_x64_frame_classifier_never_reports_a_red_zone() {
+        let code: [u8; 11] = [
+            0x48, 0x89, 0x7c, 0x24, 0xf8, 0x48, 0x8b, 0x44, 0x24, 0xf8, 0xc3,
+        ];
+        let insns: Vec<DisasmInsn> =
+            disassemble(Arch::X86_64, 0x9100, &code).expect("disassemble red-zone probe");
+        assert!(sysv_red_zone_frame(&insns));
+        assert_eq!(
+            classify_frame(&insns, Abi::SysV),
+            FrameShape {
+                base: Some(Reg::Rsp),
+                rbp_is_frame: false,
+                red_zone: true,
+            }
+        );
+        for abi in [Abi::MsX64, Abi::Aapcs64] {
+            assert_eq!(
+                classify_frame(&insns, abi),
+                FrameShape {
+                    base: None,
+                    rbp_is_frame: false,
+                    red_zone: false,
+                },
+                "{abi:?} reserves nothing below the stack pointer"
+            );
+        }
+    }
+
+    #[test]
+    fn a_red_zone_slot_at_the_exact_128_byte_boundary_is_modeled() {
+        let code: [u8; 11] = [
+            0x48, 0x89, 0x7c, 0x24, 0x80, 0x48, 0x8b, 0x44, 0x24, 0x80, 0xc3,
+        ];
+        let rec: LeafRecovery = recover_leaf_function_abi(&code, 0x8440, Abi::SysV)
+            .expect("a slot at -128 is the last byte the red zone covers");
+        assert!(
+            rec.source.contains("unsigned char stack_frame[128];"),
+            "the deepest legal red-zone slot must back the full 128 bytes: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn an_access_past_the_128_byte_red_zone_is_rejected() {
+        let code: [u8; 17] = [
+            0x48, 0x89, 0xbc, 0x24, 0x78, 0xff, 0xff, 0xff, 0x48, 0x8b, 0x84, 0x24, 0x78, 0xff,
+            0xff, 0xff, 0xc3,
+        ];
+        let err: Error = recover_leaf_function_abi(&code, 0x8450, Abi::SysV)
+            .expect_err("a slot at -136 is past the 128 bytes the red zone covers");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn a_red_zone_slot_whose_width_crosses_the_entry_stack_pointer_is_rejected() {
+        let code: [u8; 11] = [
+            0x48, 0x89, 0x7c, 0x24, 0xfc, 0x48, 0x8b, 0x44, 0x24, 0xfc, 0xc3,
+        ];
+        let err: Error = recover_leaf_function_abi(&code, 0x8460, Abi::SysV)
+            .expect_err("an eight-byte slot at -4 overruns the return address at the entry rsp");
+        let Error::LlvmIr(message) = err else {
+            panic!("expected a lifter rejection");
+        };
+        assert!(
+            message.contains("leaves the 128-byte System V red zone"),
+            "the containment check must name the red zone it left: {message}"
+        );
+    }
+
+    #[test]
+    fn an_incoming_stack_argument_above_the_entry_stack_pointer_is_not_a_red_zone_slot() {
+        let code: [u8; 6] = [0x48, 0x8b, 0x44, 0x24, 0x08, 0xc3];
+        let err: Error = recover_leaf_function_abi(&code, 0x8470, Abi::SysV)
+            .expect_err("a load above the entry rsp reads an incoming argument, not a local slot");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn a_push_before_a_below_stack_pointer_store_disqualifies_the_red_zone() {
+        let code: [u8; 13] = [
+            0x55, 0x48, 0x89, 0x7c, 0x24, 0xf8, 0x48, 0x8b, 0x44, 0x24, 0xf8, 0x5d, 0xc3,
+        ];
+        let err: Error = recover_leaf_function_abi(&code, 0x8480, Abi::SysV)
+            .expect_err("a push moves rsp, so the slot is not at a fixed entry-relative offset");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn taking_the_address_of_a_red_zone_slot_is_rejected() {
+        let code: [u8; 9] = [0x48, 0x8d, 0x44, 0x24, 0xf8, 0x48, 0x8b, 0x00, 0xc3];
+        let err: Error = recover_leaf_function_abi(&code, 0x8490, Abi::SysV)
+            .expect_err("a leaked red-zone address is not a modelable fixed slot");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn movsxd_sign_extends_a_dword_red_zone_slot() {
+        let code: [u8; 10] = [0x89, 0x7c, 0x24, 0xfc, 0x48, 0x63, 0x44, 0x24, 0xfc, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function_abi(&code, 0x84a0, Abi::SysV)
+            .expect("movsxd from a red-zone dword slot must lift");
+        assert!(
+            rec.source.contains("unsigned char stack_frame[4];"),
+            "a dword slot at -4 must back exactly four red-zone bytes: {}",
+            rec.source
+        );
+        assert!(
+            rec.source.contains("(int64_t)(int32_t)"),
+            "movsxd must sign-extend the reloaded dword: {}",
+            rec.source
+        );
     }
 
     const SYSV_MK3_SRET: [u8; 29] = [
