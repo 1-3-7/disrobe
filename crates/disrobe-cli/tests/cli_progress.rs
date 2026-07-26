@@ -243,13 +243,21 @@ fn locate_python() -> Option<PathBuf> {
         for dir in std::env::split_paths(&path_var) {
             for variant in [name.to_owned(), format!("{name}.exe")] {
                 let p: PathBuf = dir.join(&variant);
-                if p.is_file() {
+                if p.is_file() && interpreter_runs(&p) {
                     return Some(p);
                 }
             }
         }
     }
     None
+}
+
+fn interpreter_runs(candidate: &std::path::Path) -> bool {
+    std::process::Command::new(candidate)
+        .arg("-c")
+        .arg("pass")
+        .output()
+        .is_ok_and(|out: std::process::Output| out.status.success())
 }
 
 fn compile_pyc(python: &std::path::Path, src: &std::path::Path, dst: &std::path::Path) -> bool {
