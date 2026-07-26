@@ -170,77 +170,48 @@ enum Expr {
     Raw(String),
 }
 
+const MAX_EXPR_DEPTH: usize = 256;
+const UNRECOVERED_EXPRESSION: &str = "__unrecovered_expression";
+
 impl Expr {
     fn render(&self, lang: TargetLang, names: &NameTable) -> String {
+        render_expr(RenderAction::Expr(self), lang, names)
+    }
+
+    fn unlink_children(&mut self, pending: &mut Vec<Self>) {
         match self {
-            Self::Const(c) | Self::Field(c) | Self::Raw(c) => c.clone(),
-            Self::Local(n) => NameTable::local_name(*n),
-            Self::Arg(n) => names.arg_name(*n),
-            Self::Unary(op, e) => format!("{}{}", map_unary_op(op, lang), paren(e, lang, names)),
-            Self::Binary(op, a, b) => {
-                format!(
-                    "{} {} {}",
-                    paren(a, lang, names),
-                    map_binary_op(op, lang),
-                    paren(b, lang, names)
-                )
+            Self::Unary(_, child)
+            | Self::Cast(_, child)
+            | Self::IsInst(_, child)
+            | Self::LoadLen(child)
+            | Self::NewArr(_, child)
+            | Self::AddressOf(child)
+            | Self::Deref(child) => {
+                let child: Self = std::mem::replace(child.as_mut(), Self::Raw(String::new()));
+                pending.push(child);
             }
-            Self::Call { target, args } => format!("{target}({})", render_args(args, lang, names)),
-            Self::NewObj { ctor, args } => match lang {
-                TargetLang::CSharp => format!("new {ctor}({})", render_args(args, lang, names)),
-                TargetLang::FSharp => format!("{ctor}({})", render_args(args, lang, names)),
-                TargetLang::VbNet => format!("New {ctor}({})", render_args(args, lang, names)),
-            },
-            Self::Tuple(elems) => format!("({})", render_args(elems, lang, names)),
-            Self::Coalesce(a, b) => {
-                let lhs: String = paren(a, lang, names);
-                let rhs: String = paren(b, lang, names);
-                match lang {
-                    TargetLang::CSharp => format!("{lhs} ?? {rhs}"),
-                    TargetLang::FSharp => {
-                        format!("(if {lhs} <> null then {lhs} else {rhs})")
-                    }
-                    TargetLang::VbNet => format!("If({lhs}, {rhs})"),
+            Self::Binary(_, lhs, rhs) | Self::Coalesce(lhs, rhs) | Self::LoadElem(lhs, rhs) => {
+                let lhs: Self = std::mem::replace(lhs.as_mut(), Self::Raw(String::new()));
+                let rhs: Self = std::mem::replace(rhs.as_mut(), Self::Raw(String::new()));
+                pending.push(lhs);
+                pending.push(rhs);
+            }
+            Self::Call { args, .. } | Self::NewObj { args, .. } | Self::Tuple(args) => {
+                pending.extend(std::mem::take(args));
+            }
+            Self::MethodPtr { receiver, .. } => {
+                if let Some(child) = receiver.take() {
+                    pending.push(*child);
                 }
             }
-            Self::Cast(ty, e) => match lang {
-                TargetLang::CSharp => format!("({ty}){}", paren(e, lang, names)),
-                TargetLang::FSharp => format!("({} :?> {ty})", e.render(lang, names)),
-                TargetLang::VbNet => format!("CType({}, {ty})", e.render(lang, names)),
-            },
-            Self::IsInst(ty, e) => match lang {
-                TargetLang::CSharp => format!("{} as {ty}", paren(e, lang, names)),
-                TargetLang::FSharp => format!("({} :?> {ty})", e.render(lang, names)),
-                TargetLang::VbNet => format!("TryCast({}, {ty})", e.render(lang, names)),
-            },
-            Self::LoadElem(arr, idx) => {
-                format!("{}[{}]", paren(arr, lang, names), idx.render(lang, names))
-            }
-            Self::LoadLen(arr) => format!("{}.Length", paren(arr, lang, names)),
-            Self::NewArr(ty, len) => format!("new {ty}[{}]", len.render(lang, names)),
-            Self::AddressOf(e) => match lang {
-                TargetLang::CSharp | TargetLang::FSharp => format!("&{}", paren(e, lang, names)),
-                TargetLang::VbNet => e.render(lang, names),
-            },
-            Self::Deref(e) => match lang {
-                TargetLang::CSharp if is_managed_byref_expr(e, names) => e.render(lang, names),
-                TargetLang::CSharp => format!("*{}", paren(e, lang, names)),
-                TargetLang::FSharp => format!("{}.Value", paren(e, lang, names)),
-                TargetLang::VbNet => e.render(lang, names),
-            },
-            Self::StringLit(s) => format!("\"{}\"", escape(s)),
-            Self::Null => match lang {
-                TargetLang::CSharp | TargetLang::FSharp => "null".to_owned(),
-                TargetLang::VbNet => "Nothing".to_owned(),
-            },
-            Self::This => match lang {
-                TargetLang::CSharp | TargetLang::FSharp => "this".to_owned(),
-                TargetLang::VbNet => "Me".to_owned(),
-            },
-            Self::MethodPtr { receiver, method } => receiver.as_deref().map_or_else(
-                || short(method),
-                |r: &Self| format!("{}.{}", paren(r, lang, names), short(method)),
-            ),
+            Self::Const(_)
+            | Self::Local(_)
+            | Self::Arg(_)
+            | Self::Field(_)
+            | Self::StringLit(_)
+            | Self::Null
+            | Self::This
+            | Self::Raw(_) => {}
         }
     }
 
@@ -265,12 +236,290 @@ impl Expr {
     }
 }
 
-fn paren(e: &Expr, lang: TargetLang, names: &NameTable) -> String {
-    if e.is_atom() {
-        e.render(lang, names)
-    } else {
-        format!("({})", e.render(lang, names))
+impl Drop for Expr {
+    fn drop(&mut self) {
+        let mut pending: Vec<Self> = Vec::new();
+        self.unlink_children(&mut pending);
+        while let Some(mut expression) = pending.pop() {
+            expression.unlink_children(&mut pending);
+        }
     }
+}
+
+fn expression_depth(expression: &Expr) -> usize {
+    let mut maximum: usize = 0;
+    let mut pending: Vec<(&Expr, usize)> = vec![(expression, 1)];
+    loop {
+        let next: Option<(&Expr, usize)> = pending.pop();
+        let Some((current, depth)) = next else {
+            break;
+        };
+        maximum = maximum.max(depth);
+        if maximum > MAX_EXPR_DEPTH {
+            return maximum;
+        }
+        let child_depth: usize = depth.saturating_add(1);
+        match current {
+            Expr::Unary(_, child)
+            | Expr::Cast(_, child)
+            | Expr::IsInst(_, child)
+            | Expr::LoadLen(child)
+            | Expr::NewArr(_, child)
+            | Expr::AddressOf(child)
+            | Expr::Deref(child)
+            | Expr::MethodPtr {
+                receiver: Some(child),
+                ..
+            } => pending.push((child, child_depth)),
+            Expr::Binary(_, lhs, rhs) | Expr::Coalesce(lhs, rhs) | Expr::LoadElem(lhs, rhs) => {
+                pending.push((lhs, child_depth));
+                pending.push((rhs, child_depth));
+            }
+            Expr::Call { args, .. } | Expr::NewObj { args, .. } | Expr::Tuple(args) => {
+                for child in args {
+                    pending.push((child, child_depth));
+                }
+            }
+            Expr::Const(_)
+            | Expr::Local(_)
+            | Expr::Arg(_)
+            | Expr::Field(_)
+            | Expr::StringLit(_)
+            | Expr::Null
+            | Expr::This
+            | Expr::MethodPtr { receiver: None, .. }
+            | Expr::Raw(_) => {}
+        }
+    }
+    maximum
+}
+
+fn bounded_expression(expression: Expr, depth: usize) -> (Expr, usize) {
+    if depth > MAX_EXPR_DEPTH {
+        (Expr::Raw(UNRECOVERED_EXPRESSION.to_owned()), 1)
+    } else {
+        (expression, depth)
+    }
+}
+
+fn render_bounded_expression(expression: Expr, lang: TargetLang, names: &NameTable) -> String {
+    let depth: usize = expression_depth(&expression);
+    let (expression, _): (Expr, usize) = bounded_expression(expression, depth);
+    expression.render(lang, names)
+}
+
+enum RenderAction<'a> {
+    Expr(&'a Expr),
+    Paren(&'a Expr),
+    Args(&'a [Expr], usize),
+    Text(&'a str),
+    Short(&'a str),
+}
+
+fn render_expr(initial: RenderAction<'_>, lang: TargetLang, names: &NameTable) -> String {
+    let mut output: String = String::new();
+    let mut pending: Vec<RenderAction<'_>> = vec![initial];
+    while let Some(action) = pending.pop() {
+        match action {
+            RenderAction::Text(text) => output.push_str(text),
+            RenderAction::Short(text) => output.push_str(&short(text)),
+            RenderAction::Paren(expression) => {
+                if expression.is_atom() {
+                    pending.push(RenderAction::Expr(expression));
+                } else {
+                    pending.push(RenderAction::Text(")"));
+                    pending.push(RenderAction::Expr(expression));
+                    pending.push(RenderAction::Text("("));
+                }
+            }
+            RenderAction::Args(args, index) => {
+                if let Some(expression) = args.get(index) {
+                    if index + 1 < args.len() {
+                        pending.push(RenderAction::Args(args, index + 1));
+                        pending.push(RenderAction::Text(", "));
+                    }
+                    pending.push(RenderAction::Expr(expression));
+                }
+            }
+            RenderAction::Expr(expression) => match expression {
+                Expr::Const(text) | Expr::Field(text) | Expr::Raw(text) => {
+                    output.push_str(text);
+                }
+                Expr::Local(index) => output.push_str(&NameTable::local_name(*index)),
+                Expr::Arg(index) => output.push_str(&names.arg_name(*index)),
+                Expr::Unary(op, operand) => {
+                    output.push_str(map_unary_op(op, lang));
+                    pending.push(RenderAction::Paren(operand));
+                }
+                Expr::Binary(op, lhs, rhs) => {
+                    pending.push(RenderAction::Paren(rhs));
+                    pending.push(RenderAction::Text(" "));
+                    pending.push(RenderAction::Text(map_binary_op(op, lang)));
+                    pending.push(RenderAction::Text(" "));
+                    pending.push(RenderAction::Paren(lhs));
+                }
+                Expr::Call { target, args } => {
+                    output.push_str(target);
+                    output.push('(');
+                    pending.push(RenderAction::Text(")"));
+                    pending.push(RenderAction::Args(args, 0));
+                }
+                Expr::NewObj { ctor, args } => {
+                    if lang == TargetLang::CSharp {
+                        output.push_str("new ");
+                    } else if lang == TargetLang::VbNet {
+                        output.push_str("New ");
+                    }
+                    output.push_str(ctor);
+                    output.push('(');
+                    pending.push(RenderAction::Text(")"));
+                    pending.push(RenderAction::Args(args, 0));
+                }
+                Expr::Tuple(elements) => {
+                    output.push('(');
+                    pending.push(RenderAction::Text(")"));
+                    pending.push(RenderAction::Args(elements, 0));
+                }
+                Expr::Coalesce(lhs, rhs) => match lang {
+                    TargetLang::CSharp => {
+                        pending.push(RenderAction::Paren(rhs));
+                        pending.push(RenderAction::Text(" ?? "));
+                        pending.push(RenderAction::Paren(lhs));
+                    }
+                    TargetLang::FSharp => {
+                        pending.push(RenderAction::Text(")"));
+                        pending.push(RenderAction::Paren(rhs));
+                        pending.push(RenderAction::Text(" else "));
+                        pending.push(RenderAction::Paren(lhs));
+                        pending.push(RenderAction::Text(" then "));
+                        pending.push(RenderAction::Text(" <> null"));
+                        pending.push(RenderAction::Paren(lhs));
+                        pending.push(RenderAction::Text("(if "));
+                    }
+                    TargetLang::VbNet => {
+                        pending.push(RenderAction::Text(")"));
+                        pending.push(RenderAction::Paren(rhs));
+                        pending.push(RenderAction::Text(", "));
+                        pending.push(RenderAction::Paren(lhs));
+                        pending.push(RenderAction::Text("If("));
+                    }
+                },
+                Expr::Cast(ty, operand) => match lang {
+                    TargetLang::CSharp => {
+                        output.push('(');
+                        output.push_str(ty);
+                        output.push(')');
+                        pending.push(RenderAction::Paren(operand));
+                    }
+                    TargetLang::FSharp => {
+                        pending.push(RenderAction::Text(")"));
+                        pending.push(RenderAction::Text(ty));
+                        pending.push(RenderAction::Text(" :?> "));
+                        pending.push(RenderAction::Expr(operand));
+                        pending.push(RenderAction::Text("("));
+                    }
+                    TargetLang::VbNet => {
+                        pending.push(RenderAction::Text(")"));
+                        pending.push(RenderAction::Text(ty));
+                        pending.push(RenderAction::Text(", "));
+                        pending.push(RenderAction::Expr(operand));
+                        pending.push(RenderAction::Text("CType("));
+                    }
+                },
+                Expr::IsInst(ty, operand) => match lang {
+                    TargetLang::CSharp => {
+                        pending.push(RenderAction::Text(ty));
+                        pending.push(RenderAction::Text(" as "));
+                        pending.push(RenderAction::Paren(operand));
+                    }
+                    TargetLang::FSharp => {
+                        pending.push(RenderAction::Text(")"));
+                        pending.push(RenderAction::Text(ty));
+                        pending.push(RenderAction::Text(" :?> "));
+                        pending.push(RenderAction::Expr(operand));
+                        pending.push(RenderAction::Text("("));
+                    }
+                    TargetLang::VbNet => {
+                        pending.push(RenderAction::Text(")"));
+                        pending.push(RenderAction::Text(ty));
+                        pending.push(RenderAction::Text(", "));
+                        pending.push(RenderAction::Expr(operand));
+                        pending.push(RenderAction::Text("TryCast("));
+                    }
+                },
+                Expr::LoadElem(array, index) => {
+                    pending.push(RenderAction::Text("]"));
+                    pending.push(RenderAction::Expr(index));
+                    pending.push(RenderAction::Text("["));
+                    pending.push(RenderAction::Paren(array));
+                }
+                Expr::LoadLen(array) => {
+                    pending.push(RenderAction::Text(".Length"));
+                    pending.push(RenderAction::Paren(array));
+                }
+                Expr::NewArr(ty, length) => {
+                    output.push_str("new ");
+                    output.push_str(ty);
+                    output.push('[');
+                    pending.push(RenderAction::Text("]"));
+                    pending.push(RenderAction::Expr(length));
+                }
+                Expr::AddressOf(operand) => match lang {
+                    TargetLang::CSharp | TargetLang::FSharp => {
+                        output.push('&');
+                        pending.push(RenderAction::Paren(operand));
+                    }
+                    TargetLang::VbNet => pending.push(RenderAction::Expr(operand)),
+                },
+                Expr::Deref(operand) => match lang {
+                    TargetLang::CSharp if is_managed_byref_expr(operand, names) => {
+                        pending.push(RenderAction::Expr(operand));
+                    }
+                    TargetLang::CSharp => {
+                        output.push('*');
+                        pending.push(RenderAction::Paren(operand));
+                    }
+                    TargetLang::FSharp => {
+                        pending.push(RenderAction::Text(".Value"));
+                        pending.push(RenderAction::Paren(operand));
+                    }
+                    TargetLang::VbNet => pending.push(RenderAction::Expr(operand)),
+                },
+                Expr::StringLit(text) => {
+                    output.push('"');
+                    output.push_str(&escape(text));
+                    output.push('"');
+                }
+                Expr::Null => {
+                    output.push_str(if lang == TargetLang::VbNet {
+                        "Nothing"
+                    } else {
+                        "null"
+                    });
+                }
+                Expr::This => {
+                    output.push_str(if lang == TargetLang::VbNet {
+                        "Me"
+                    } else {
+                        "this"
+                    });
+                }
+                Expr::MethodPtr { receiver, method } => match receiver {
+                    Some(receiver) => {
+                        pending.push(RenderAction::Short(method));
+                        pending.push(RenderAction::Text("."));
+                        pending.push(RenderAction::Paren(receiver));
+                    }
+                    None => output.push_str(&short(method)),
+                },
+            },
+        }
+    }
+    output
+}
+
+fn paren(e: &Expr, lang: TargetLang, names: &NameTable) -> String {
+    render_expr(RenderAction::Paren(e), lang, names)
 }
 
 fn call_receiver(e: &Expr, lang: TargetLang, names: &NameTable) -> String {
@@ -301,13 +550,6 @@ fn is_managed_byref_expr(e: &Expr, names: &NameTable) -> bool {
 fn is_singleton_field(name: &str) -> bool {
     let short: &str = name.rsplit("::").next().unwrap_or(name);
     short == "<>9" || short.starts_with("<>9__")
-}
-
-fn render_args(args: &[Expr], lang: TargetLang, names: &NameTable) -> String {
-    args.iter()
-        .map(|e: &Expr| e.render(lang, names))
-        .collect::<Vec<String>>()
-        .join(", ")
 }
 
 fn is_value_tuple_ctor(ctor: &str) -> bool {
@@ -601,6 +843,7 @@ struct Lifter<'a, N: TokenNamer> {
     names: &'a NameTable,
     lang: TargetLang,
     stack: Vec<Expr>,
+    stack_depths: Vec<usize>,
     stmts: Vec<Stmt>,
     locals_used: BTreeSet<u32>,
     locals_assigned: BTreeSet<u32>,
@@ -614,6 +857,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             names,
             lang,
             stack: Vec::new(),
+            stack_depths: Vec::new(),
             stmts: Vec::new(),
             locals_used: BTreeSet::new(),
             locals_assigned: BTreeSet::new(),
@@ -623,14 +867,35 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
 
     #[inline]
     fn push(&mut self, e: Expr) {
-        self.stack.push(e);
+        let depth: usize = expression_depth(&e);
+        self.push_with_depth(e, depth);
+    }
+
+    #[inline]
+    fn push_with_depth(&mut self, expression: Expr, depth: usize) {
+        let (expression, depth): (Expr, usize) = bounded_expression(expression, depth);
+        self.stack.push(expression);
+        self.stack_depths.push(depth);
     }
 
     #[inline]
     fn pop(&mut self) -> Expr {
-        self.stack
+        self.pop_with_depth().0
+    }
+
+    #[inline]
+    fn pop_with_depth(&mut self) -> (Expr, usize) {
+        let expression: Expr = self
+            .stack
             .pop()
-            .unwrap_or_else(|| Expr::Raw("__stack_underflow".to_owned()))
+            .unwrap_or_else(|| Expr::Raw("__stack_underflow".to_owned()));
+        let depth: usize = self.stack_depths.pop().unwrap_or(1);
+        (expression, depth)
+    }
+
+    fn clear_stack(&mut self) {
+        self.stack.clear();
+        self.stack_depths.clear();
     }
 
     fn pop_n(&mut self, n: usize) -> Vec<Expr> {
@@ -643,14 +908,16 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
     }
 
     fn binary(&mut self, op: &'static str) {
-        let b: Expr = self.pop();
-        let a: Expr = self.pop();
-        self.push(Expr::Binary(op, Box::new(a), Box::new(b)));
+        let (b, b_depth): (Expr, usize) = self.pop_with_depth();
+        let (a, a_depth): (Expr, usize) = self.pop_with_depth();
+        let depth: usize = a_depth.max(b_depth).saturating_add(1);
+        self.push_with_depth(Expr::Binary(op, Box::new(a), Box::new(b)), depth);
     }
 
     fn unary(&mut self, op: &'static str) {
-        let a: Expr = self.pop();
-        self.push(Expr::Unary(op, Box::new(a)));
+        let (a, a_depth): (Expr, usize) = self.pop_with_depth();
+        let depth: usize = a_depth.saturating_add(1);
+        self.push_with_depth(Expr::Unary(op, Box::new(a)), depth);
     }
 
     fn emit_conv(&mut self, name: &str) {
@@ -664,10 +931,10 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         let operand_is_const: bool = matches!(e, Expr::Const(_));
         let cast: Expr = Expr::Cast(ty.to_owned(), Box::new(e));
         if is_checked {
-            let rendered: String = cast.render(self.lang, self.names);
+            let rendered: String = render_bounded_expression(cast, self.lang, self.names);
             self.push(Expr::Raw(format!("checked({rendered})")));
         } else if operand_is_const {
-            let rendered: String = cast.render(self.lang, self.names);
+            let rendered: String = render_bounded_expression(cast, self.lang, self.names);
             self.push(Expr::Raw(format!("unchecked({rendered})")));
         } else {
             self.push(cast);
@@ -791,8 +1058,9 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             if returns_value {
                 self.push(folded);
             } else {
-                self.stmts
-                    .push(Stmt::Expr(folded.render(self.lang, self.names)));
+                self.stmts.push(Stmt::Expr(render_bounded_expression(
+                    folded, self.lang, self.names,
+                )));
             }
             return;
         }
@@ -805,8 +1073,9 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             if returns_value {
                 self.push(folded);
             } else {
-                self.stmts
-                    .push(Stmt::Expr(folded.render(self.lang, self.names)));
+                self.stmts.push(Stmt::Expr(render_bounded_expression(
+                    folded, self.lang, self.names,
+                )));
             }
             return;
         }
@@ -888,8 +1157,9 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             }
         };
         if is_ctor || !returns_value {
-            self.stmts
-                .push(Stmt::Expr(call.render(self.lang, self.names)));
+            self.stmts.push(Stmt::Expr(render_bounded_expression(
+                call, self.lang, self.names,
+            )));
         } else {
             self.push(call);
         }
@@ -898,7 +1168,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
     fn cmp_cond(&mut self, op: &'static str, lang: TargetLang) -> String {
         let b: Expr = self.pop();
         let a: Expr = self.pop();
-        Expr::Binary(op, Box::new(a), Box::new(b)).render(lang, self.names)
+        render_bounded_expression(Expr::Binary(op, Box::new(a), Box::new(b)), lang, self.names)
     }
 
     fn arg_slot(&self, idx: u32) -> u32 {
@@ -1242,7 +1512,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 });
             }
             "br" | "br.s" | "leave" | "leave.s" => {
-                self.stack.clear();
+                self.clear_stack();
             }
             "brtrue" | "brtrue.s" | "brfalse" | "brfalse.s" => {
                 let _: Expr = self.pop();
@@ -1256,7 +1526,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             "switch" => {
                 let _: Expr = self.pop();
             }
-            "endfinally" | "endfilter" => self.stack.clear(),
+            "endfinally" | "endfilter" => self.clear_stack(),
             "ckfinite" | "unaligned." => {}
             "jmp" => {
                 let raw: String = self.token_name(ins);
@@ -1281,7 +1551,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let addr: Expr = self.pop();
                 self.push(Expr::Raw(format!(
                     "__makeref({})",
-                    Expr::Deref(Box::new(addr)).render(self.lang, self.names)
+                    render_bounded_expression(Expr::Deref(Box::new(addr)), self.lang, self.names)
                 )));
             }
             "refanyval" => {
@@ -1434,7 +1704,11 @@ fn reconstruct_conjuncts<N: TokenNamer>(
             if branch_target(ins) == false_sink {
                 let b: Expr = lifter.pop();
                 let a: Expr = lifter.pop();
-                conjuncts.push(Expr::Binary(op, Box::new(a), Box::new(b)).render(lang, names));
+                conjuncts.push(render_bounded_expression(
+                    Expr::Binary(op, Box::new(a), Box::new(b)),
+                    lang,
+                    names,
+                ));
             } else {
                 let _: Expr = lifter.pop();
                 let _: Expr = lifter.pop();
@@ -1447,7 +1721,11 @@ fn reconstruct_conjuncts<N: TokenNamer>(
             }
             "brtrue" | "brtrue.s" if branch_target(ins) == false_sink => {
                 let e: Expr = lifter.pop();
-                conjuncts.push(Expr::Unary("!", Box::new(e)).render(lang, names));
+                conjuncts.push(render_bounded_expression(
+                    Expr::Unary("!", Box::new(e)),
+                    lang,
+                    names,
+                ));
             }
             "isinst" | "castclass" => {
                 let _: Expr = lifter.pop();
@@ -1612,14 +1890,22 @@ fn branch_condition(e: Expr, brtrue: bool, lang: TargetLang, names: &NameTable) 
     };
     match kind {
         CondKind::Bool if brtrue => e.render(lang, names),
-        CondKind::Bool => Expr::Unary("!", Box::new(e)).render(lang, names),
+        CondKind::Bool => render_bounded_expression(Expr::Unary("!", Box::new(e)), lang, names),
         CondKind::Reference => {
             let op: &'static str = if brtrue { "!=" } else { "==" };
-            Expr::Binary(op, Box::new(e), Box::new(Expr::Null)).render(lang, names)
+            render_bounded_expression(
+                Expr::Binary(op, Box::new(e), Box::new(Expr::Null)),
+                lang,
+                names,
+            )
         }
         CondKind::Integral => {
             let op: &'static str = if brtrue { "!=" } else { "==" };
-            Expr::Binary(op, Box::new(e), Box::new(Expr::Const("0".to_owned()))).render(lang, names)
+            render_bounded_expression(
+                Expr::Binary(op, Box::new(e), Box::new(Expr::Const("0".to_owned()))),
+                lang,
+                names,
+            )
         }
     }
 }
@@ -2639,5 +2925,97 @@ mod tests {
             pinf.contains("return float.PositiveInfinity;"),
             "got:\n{pinf}"
         );
+    }
+
+    #[test]
+    fn binary_expression_past_bound_is_marked_unrecovered() {
+        let mut code: Vec<u8> = Vec::with_capacity(3 * MAX_EXPR_DEPTH + 2);
+        code.push(0x16);
+        for _index in 0..MAX_EXPR_DEPTH {
+            code.extend_from_slice(&[0x17, 0x58]);
+        }
+        code.push(0x2A);
+        let body: MethodBody = body_from(&code);
+        let output: StructuredMethod = decompile_method("int Deep()", &body, &HexNamer);
+        assert!(output.body.contains("unrecovered"), "got:\n{}", output.body);
+    }
+
+    #[test]
+    fn unary_expression_past_bound_is_marked_unrecovered() {
+        let mut code: Vec<u8> = Vec::with_capacity(MAX_EXPR_DEPTH + 2);
+        code.push(0x17);
+        code.extend(std::iter::repeat_n(0x65, MAX_EXPR_DEPTH));
+        code.push(0x2A);
+        let body: MethodBody = body_from(&code);
+        let output: StructuredMethod = decompile_method("int Deep()", &body, &HexNamer);
+        assert!(output.body.contains("unrecovered"), "got:\n{}", output.body);
+    }
+
+    #[test]
+    fn maximum_bounded_expression_builds_without_a_marker() {
+        let mut code: Vec<u8> = Vec::with_capacity(MAX_EXPR_DEPTH + 1);
+        code.push(0x17);
+        code.extend(std::iter::repeat_n(0x65, MAX_EXPR_DEPTH - 1));
+        code.push(0x2A);
+        let body: MethodBody = body_from(&code);
+        let output: StructuredMethod = decompile_method("int Deep()", &body, &HexNamer);
+        assert!(
+            !output.body.contains("unrecovered"),
+            "got:\n{}",
+            output.body
+        );
+        assert!(output.body.contains('1'));
+    }
+
+    #[test]
+    fn maximum_bounded_expression_renders() {
+        let mut expression: Expr = Expr::Const("1".to_owned());
+        for _index in 1..256 {
+            expression = Expr::Unary("-", Box::new(expression));
+        }
+        let rendered: String = expression.render(TargetLang::CSharp, &NameTable::default());
+        assert!(rendered.contains('1'));
+    }
+
+    #[test]
+    fn fsharp_coalesce_renderer_keeps_the_null_predicate() {
+        let expression: Expr = Expr::Coalesce(
+            Box::new(Expr::Local(0)),
+            Box::new(Expr::Const("fallback".to_owned())),
+        );
+        let rendered: String = expression.render(TargetLang::FSharp, &NameTable::default());
+        assert_eq!(rendered, "(if local0 <> null then local0 else fallback)");
+    }
+
+    #[test]
+    fn expression_renderer_does_not_use_tree_depth_as_call_depth() {
+        let handle: std::thread::JoinHandle<()> = std::thread::Builder::new()
+            .stack_size(1_048_576)
+            .spawn(|| {
+                let mut expression: Expr = Expr::Const("1".to_owned());
+                for _index in 0..10_000 {
+                    expression = Expr::Unary("-", Box::new(expression));
+                }
+                let rendered: String = expression.render(TargetLang::CSharp, &NameTable::default());
+                assert!(rendered.contains('1'));
+                std::mem::forget(expression);
+            })
+            .expect("spawn render thread");
+        handle.join().expect("render thread");
+    }
+
+    #[test]
+    fn deep_expression_drop_does_not_use_tree_depth_as_call_depth() {
+        let handle: std::thread::JoinHandle<()> = std::thread::Builder::new()
+            .stack_size(1_048_576)
+            .spawn(|| {
+                let mut expression: Expr = Expr::Const("1".to_owned());
+                for _index in 0..100_000 {
+                    expression = Expr::Unary("-", Box::new(expression));
+                }
+                std::hint::black_box(&expression);
+            })
+            .expect("spawn drop thread");
+        handle.join().expect("drop thread");
     }
 }
