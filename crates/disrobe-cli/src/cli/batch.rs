@@ -22,6 +22,7 @@ pub(crate) struct BatchOptions {
     pub(crate) exclude: Vec<String>,
     pub(crate) jobs: usize,
     pub(crate) capture_stages: bool,
+    pub(crate) i_have_authorization: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -194,6 +195,7 @@ fn process_one(path: &Path, relative: &Path, opts: &BatchOptions) -> ManifestEnt
         &out_dir,
         &opts.chain_arg,
         opts.capture_stages,
+        opts.i_have_authorization,
     ) {
         Ok(ChainOutcome { doc, report, anti }) => ManifestEntry {
             input: path.display().to_string(),
@@ -374,6 +376,7 @@ mod tests {
             exclude: Vec::new(),
             jobs: 1,
             capture_stages: false,
+            i_have_authorization: false,
         }
     }
 

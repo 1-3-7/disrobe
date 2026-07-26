@@ -332,6 +332,7 @@ fn resolve_document(target: &Path) -> miette::Result<ReportDocument> {
             exclude: Vec::new(),
             jobs: 1,
             capture_stages: false,
+            i_have_authorization: false,
         };
         let manifest: BatchManifest = batch::compute_manifest(target, &opts)?;
         return Ok(ReportDocument::Batch(Box::new(build_batch(
@@ -351,6 +352,7 @@ fn resolve_document(target: &Path) -> miette::Result<ReportDocument> {
             bytes,
             &out_dir,
             "auto:8",
+            false,
             false,
         )?;
         return Ok(ReportDocument::Single(Box::new(build_single(

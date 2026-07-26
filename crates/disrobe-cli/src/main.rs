@@ -1775,9 +1775,12 @@ fn main() -> miette::Result<()> {
                 eff_out,
                 Some(eff_depth),
                 eff_emit,
-                dry_run || global_dry_run,
                 fmt,
-                capture_stages,
+                auto::AutoOptions {
+                    dry_run: dry_run || global_dry_run,
+                    capture_stages,
+                    i_have_authorization: llm_flags.i_have_authorization,
+                },
                 auto::BatchArgs {
                     max_depth: batch_max_depth,
                     include,
@@ -1803,6 +1806,7 @@ fn main() -> miette::Result<()> {
                 write_to_disk: true,
                 capture_stages,
                 emit_recovery: false,
+                i_have_authorization: llm_flags.i_have_authorization,
             },
         ),
         #[cfg(feature = "chain")]
