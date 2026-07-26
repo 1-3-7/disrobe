@@ -1,6 +1,6 @@
 # ActionScript 3 / Flash
 
-**disrobe** parses SWF files, disassembles their embedded ActionScript 3 bytecode (AVM2), and lifts method bodies back to readable AS3 pseudocode via operand-stack abstract interpretation.
+`disrobe` parses SWF files, disassembles their embedded ActionScript 3 bytecode (AVM2), and lifts method bodies back to readable AS3 pseudocode via operand-stack abstract interpretation.
 
 ## Commands
 
@@ -33,8 +33,8 @@ The source lifter reconstructs class skeletons with property access, calls, arit
 
 ## Obfuscation detection
 
-**disrobe** fingerprints commercial AS3 obfuscators (secureSWF, DoSWF, Kindi, Irrfuscator, swfLock) and flags techniques: string encryption, name mangling, control-flow flattening, register and stack shuffle, string-pool-rebuild candidates. Each finding carries a confidence score. This is detection only: no decryption, pool rebuild, or unflattening is performed.
+`disrobe` fingerprints commercial AS3 obfuscators (secureSWF, DoSWF, Kindi, Irrfuscator, swfLock) and flags techniques: string encryption, name mangling, control-flow flattening, register and stack shuffle, string-pool-rebuild candidates. Each finding carries a confidence score. This is detection only: no decryption, pool rebuild, or unflattening is performed.
 
 ## Limits
 
-ABC erases local variable names (non-parameter slots surface as `loc{n}`) and the compiler erases generics before ABC; both are hard ceilings. FFDec is the mature full Flash decompiler and goes further on source-level recovery; **disrobe** covers SWF parsing and AVM2 disassembly as part of its chain pass, not as a Flash-decompiler replacement.
+ABC erases local variable names (non-parameter slots surface as `loc{n}`) and the compiler erases generics before ABC; both are hard ceilings. FFDec is the mature full Flash decompiler and goes further on source-level recovery; `disrobe` covers SWF parsing and AVM2 disassembly as part of its chain pass, not as a Flash-decompiler replacement.

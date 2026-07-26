@@ -1,6 +1,6 @@
 # Containers and archives
 
-Before **disrobe** can decompile anything, it often has to get inside a container. The `disrobe-binfmt` layer detects <!-- m:containers_formats -->98<!-- /m --> archive, installer, filesystem, and firmware formats and writes member bytes in-tree for all <!-- m:containers_formats -->98<!-- /m -->, with auto-detection, recursive chaining through nested layers, and shared zip-slip and decompression-bomb guards.
+Before `disrobe` can decompile anything, it often has to get inside a container. The `disrobe-binfmt` layer detects <!-- m:containers_formats -->98<!-- /m --> archive, installer, filesystem, and firmware formats and writes member bytes in-tree for all <!-- m:containers_formats -->98<!-- /m -->, with auto-detection, recursive chaining through nested layers, and shared zip-slip and decompression-bomb guards.
 
 A recursive carve-everything engine scans for every known magic, models chunked payloads, recurses by depth, and uses entropy to separate code from padding.
 

@@ -1,6 +1,6 @@
 # Python
 
-Python is **disrobe**'s most contested and most developed ecosystem. It ships an **in-house Rust decompiler** as the product, never a wrapper around pycdc, pylingual, decompyle3, or uncompyle6. Those tools are benchmark competitors, not selectable fallbacks in the shipped Python decompile command.
+Python is `disrobe`'s most contested and most developed ecosystem. It ships an **in-house Rust decompiler** as the product, never a wrapper around pycdc, pylingual, decompyle3, or uncompyle6. Those tools are benchmark competitors, not selectable fallbacks in the shipped Python decompile command.
 
 ## At a glance
 

@@ -100,7 +100,7 @@ AST whose parenthesization and C declarator grouping are computed once from the 
 recompile-execute-differential oracle that links the recovered function against the original
 object and refuses any input it cannot soundly lift.
 
-.NET deobfuscation and devirtualization. de4dot cleans a wide range of .NET protectors, and
+.NET deobfuscation and devirtualization. de4dot cleans many .NET protectors, and
 separate community work has devirtualized KoiVM and ConfuserEx. Section 3 differs in the
 oracle rather than the target set: EazVM recovery is graded instruction by instruction against
 CIL that a C# compiler emitted into a separate clean assembly the recovery code never reads,
@@ -1037,7 +1037,7 @@ opcode tables spanning `v1_0` through `v3_15`, plus the dedicated PyPy tables, a
 `map_for` (`src/bytecode/opcode/mod.rs:307-343`) as 30 concrete release adapters plus the PyPy overlay,
 each exercised by the corpus that resolves through them.
 
-Three properties of the evaluation deserve emphasis for a skeptical reader. The corpus is pinned and
+The corpus is pinned and
 version-stable, passed as an explicit module list so the same code objects are measured on every
 machine (`tests/harness/py_arbitrary_measure.py:9-13`). The gate measures the real built CLI binary,
 not an in-process shortcut, and refuses to run without it (`tests/arbitrary_recompile_gate.rs:170-177`).
@@ -1045,8 +1045,6 @@ And the grader is the independent Python reimplementation of the normalization, 
 the Rust oracle and the Python harness is itself corroboration rather than a single point of trust.
 
 ### 1.6 Limitations
-
-The code marks its own edges, and they are worth stating plainly.
 
 Recovery is not total; it degrades to disassembly. When structuring or emission of a code object
 throws, the pass emits an annotated disassembly listing and flags `recovered_directly = false`
@@ -1423,7 +1421,7 @@ to a `Stmt`. One idiom: `xor reg, reg` and `sub reg, reg` are recognized as a
 zeroing and lowered to `Assign { dest, src: Imm(0) }` (`pseudo_c.rs:5599`) rather than to a
 literal self-subtraction, matching what the compiler meant.
 
-Width extension is the part the reader specifically cares about, and it is handled by
+Width extension is handled by
 `lift_width_extension` (`pseudo_c.rs:4807`):
 
 ```rust
@@ -1508,7 +1506,7 @@ which is the typed printer of Sections 2.2 and 2.3. The Rust emitter (`emit_rust
 returning `None` for constructs it does not model as safe Rust (struct returns and block
 string operations), which is how the two targets stay independent while sharing one lift.
 
-One honest implementation detail belongs in the record. The emitter is a hybrid: statement
+The emitter is a hybrid: statement
 and top-level expression nodes are typed AST values, but some composite subexpression
 fragments are assembled as rendered strings and reinserted as opaque operands through
 `c_opaque` (`pseudo_c.rs:5945`), which wraps the fragment in explicit parentheses
@@ -1702,7 +1700,7 @@ disrobe devirtualizes two managed VMs, and their machine models and encodings di
 that each gets its own decode-and-lift pipeline: EazVM is a stack machine whose bodies live in
 an encrypted embedded resource, and KoiVM is a register machine whose bodies live in a `#Koi`
 metadata stream permuted by a per-build seed. ConfuserEx2's remaining non-VM protections are
-recovered by a third, static path. The three subsections below give each in turn.
+recovered by a third, static path.
 
 #### 3.2.1 Eazfuscator.NET (EazVM)
 
@@ -2301,7 +2299,7 @@ Where a measurement varies with compiler version or optimization but has a prova
 - `crates/disrobe-pass-beam/tests/erlc_recompile_equivalence.rs:320` sets `EQUIVALENCE_FLOOR = 18`, and `crates/disrobe-pass-lua/tests/reexec_diff_oracle.rs:252` sets `REEXEC_FLOOR_NUM = 27` for the Lua re-execution differential.
 - `crates/disrobe-pass-py-decompile/tests/roundtrip_metric.rs:641` sets `WHOLE_MODULE_FLOOR_PCT = 51.0` for whole-module recovery measured on the edge_cases monolith corpus (`roundtrip_metric.rs:635`), which is a distinct corpus from the 200-module pinned stdlib behind the 54.5% figure and must not be conflated with it, alongside the UPX content floors of 96.0% and 98.0% shown in section 4.2.4.
 
-Each floor is a promise of the form "at least this much recovery is reproducible anywhere the matrix runs." It is deliberately weaker than the best local number and deliberately stronger than zero, because the honest claim is a guaranteed lower bound, not a lucky maximum. The recovery-execute-diff oracles that do run, such as the leaf behavioral differential and the Eazfuscator re-injection, are exact rather than floored, because behavioral equivalence over a shared input battery either holds or does not; there is no honest partial credit for a program that computes the wrong answer.
+Each floor is a promise of the form "at least this much recovery is reproducible anywhere the matrix runs." It is deliberately weaker than the best local number and deliberately stronger than zero, because the honest claim is a guaranteed lower bound, not a lucky maximum. The recompile-execute-diff oracles that do run, such as the leaf behavioral differential and the Eazfuscator re-injection, are exact rather than floored, because behavioral equivalence over a shared input battery either holds or does not; there is no honest partial credit for a program that computes the wrong answer.
 
 ### 4.5 Summary
 

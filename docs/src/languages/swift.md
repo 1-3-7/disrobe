@@ -1,6 +1,6 @@
 # Swift / Objective-C
 
-Swift and Objective-C compile to native machine code; function bodies are gone at compile time. What survives in the binary is the type metadata the Objective-C and Swift runtimes need at run time. **disrobe** extracts that metadata, demangles it, and reverses the two dominant rename obfuscators so a dump of a shielded binary reads with its original names.
+Swift and Objective-C compile to native machine code; function bodies are gone at compile time. What survives in the binary is the type metadata the Objective-C and Swift runtimes need at run time. `disrobe` extracts that metadata, demangles it, and reverses the two dominant rename obfuscators so a dump of a shielded binary reads with its original names.
 
 ## Commands
 
@@ -40,7 +40,7 @@ swift classdump: OK
 
 ## Rename-undo
 
-`shield-undo` reverses a SwiftShield run. SwiftShield renames symbols to high-entropy identifiers and emits an `obf ==> original` mapping in the `.dSYM`. **disrobe** parses that mapping and builds the undo lookup, so a subsequent class-dump of the shielded binary reads with the original names.
+`shield-undo` reverses a SwiftShield run. SwiftShield renames symbols to high-entropy identifiers and emits an `obf ==> original` mapping in the `.dSYM`. `disrobe` parses that mapping and builds the undo lookup, so a subsequent class-dump of the shielded binary reads with the original names.
 
 `confidential-decrypt` recovers plaintext strings from a SwiftConfidential XOR-obfuscated blob given its single-byte key (`--key`, default `0x55`).
 

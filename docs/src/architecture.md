@@ -1,6 +1,6 @@
 # Architecture overview
 
-**disrobe** is a workspace of focused Rust crates orchestrated by one CLI. Every recovery flows through the same shape: bytes in, a chain of **passes** that each transform the artifact up the **IR ladder**, an optional **`.dr` envelope** for content-addressed caching, and a final emit.
+`disrobe` is a workspace of focused Rust crates orchestrated by one CLI. Every recovery flows through the same shape: bytes in, a chain of **passes** that each transform the artifact up the **IR ladder**, an optional **`.dr` envelope** for content-addressed caching, and a final emit.
 
 For the full design rationale, including the determinism argument and the oracle-grading methodology, read the [architecture whitepaper](./architecture/whitepaper.md).
 
@@ -32,7 +32,7 @@ The workspace splits into a small set of shared cores and one crate per ecosyste
 | `disrobe-pass-*` | One crate per ecosystem (py-decompile, py-disasm, py-deob, pyarmor, pyinstaller, pyfreeze, nuitka, js-deob, wasm-deob, jvm, dotnet, native, nativelang, go, lua, php, ruby, beam, pickle, swift-objc, as3, mobile, shell, scriptlang, sourcedefender). The native pass adds the iced-backed disassembler, symbol-independent function discovery, call graph and basic-block CFG, instruction re-encode/relocate, C++ RTTI/vtable recovery, and emulation-driven string recovery. |
 | `disrobe-query` | Queryable-IR layer over the disassembled native code: functions, calls-to, xrefs, string-decoders, complexity, capability sites, behind `disrobe query`. |
 | `disrobe-capabilities` | Capability rule engine over the queryable IR, mapping matched behaviors to MITRE ATT&CK and MBC, behind `disrobe capabilities`. |
-| `disrobe-cli` | The **disrobe** binary: argument parsing, output formats, the chain runner, the daemon. |
+| `disrobe-cli` | The `disrobe` binary: argument parsing, output formats, the chain runner, the daemon. |
 | `disrobe-validator` | Walks a corpus and validates every fixture round-trips, used in CI. |
 
 ## The `Pass` trait
@@ -43,8 +43,6 @@ Each pass also exposes a standardized set of emits (`source`, `disasm`, `ast`, `
 
 ## The four pillars
 
-The rest of this section expands each pillar:
-
 1. [The five-rung IR ladder](./ir-ladder.md): the common intermediate representation every artifact climbs.
 2. [Passes and pass selection](./passes.md): what each pass registers and how the chain runner picks between them.
 3. [The chain runner](./chain.md): auto-detection, stage mirrors, depth and cycle caps.
@@ -52,6 +50,6 @@ The rest of this section expands each pillar:
 
 ## Determinism is a design constraint, not a feature
 
-The entire architecture exists to make output reproducible. There is no model in the decompile path. RNG-backed backends take an explicit `--seed`. Timing tokens are scrubbed from golden outputs so that two runs hash identically. The `.dr` envelope is content-addressed (BLAKE3) rather than timestamp-addressed, so a cache hit is provably the same bytes. This is what makes **disrobe** output usable as a forensic baseline and as a `disrobe diff` input across versions.
+The entire architecture exists to make output reproducible. There is no model in the decompile path. RNG-backed backends take an explicit `--seed`. Timing tokens are scrubbed from golden outputs so that two runs hash identically. The `.dr` envelope is content-addressed (BLAKE3) rather than timestamp-addressed, so a cache hit is provably the same bytes. This is what makes `disrobe` output usable as a forensic baseline and as a `disrobe diff` input across versions.
 
 This is proven across real machines, not just within one process: each of the `test` job's three OS legs (Linux, macOS, Windows) runs the real CLI against the same corpus fixtures, and the downstream `determinism-cross-platform` job hashes the real recovered output with BLAKE3 and fails the build if any two operating systems disagree. A companion check on a single leg runs the same fixtures through `disrobe auto`'s batch runner, the one code path in the CLI that actually spreads work across a multi-worker thread pool, at `--jobs 1` and `--jobs 4`, and confirms the recovered bytes are identical either way. See `crates/disrobe-cli/tests/determinism_cross_platform.rs` and the `determinism-cross-platform` job in `.github/workflows/ci.yml`.

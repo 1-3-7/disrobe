@@ -1,6 +1,6 @@
 # Responsible use
 
-This document is **not legal advice**. It states the project's posture, its intended use, and the procedure for legal-adjacent contact. If your use of `disrobe` may implicate copyright, computer-misuse, or contract law in your jurisdiction, you are responsible for obtaining your own legal counsel.
+This document states the project's posture, its intended use, and the procedure for legal-adjacent contact. If your use of `disrobe` may implicate copyright, computer-misuse, or contract law in your jurisdiction, obtain your own legal counsel.
 
 ## Intended use
 

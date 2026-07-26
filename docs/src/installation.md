@@ -1,6 +1,6 @@
 # Installation
 
-**disrobe** is distributed two ways: **prebuilt binaries** from the GitHub Releases tab, and **build from source** with a single Rust toolchain. There is intentionally no PyPI/npm/Homebrew/crates.io/Docker channel for the binary itself; GitHub Releases is the canonical distribution point.
+`disrobe` is distributed two ways: **prebuilt binaries** from the GitHub Releases tab, and **build from source** with a single Rust toolchain. There is intentionally no PyPI/npm/Homebrew/crates.io/Docker channel for the binary itself; GitHub Releases is the canonical distribution point.
 
 ## Prebuilt binaries (recommended)
 
@@ -29,7 +29,7 @@ Each tagged release attaches prebuilt, statically-linkable binaries for the comm
      disrobe-<version>-<target>.tar.zst
    ```
 
-4. Extract and place **disrobe** (`disrobe.exe` on Windows) anywhere on your `PATH`.
+4. Extract and place `disrobe` (`disrobe.exe` on Windows) anywhere on your `PATH`.
 
 ## Build from source
 
@@ -55,7 +55,7 @@ disrobe <pass> --help      # drill into any pass, e.g. `disrobe py --help`
 
 ## Optional external backends
 
-**disrobe**'s in-house passes run with zero external dependencies. A subset of capabilities, however, wrap mature external tools headlessly: Ghidra for native decompilation; CFR / Vineflower / Procyon / jadx for the JVM and Android; ILSpy / dnSpy / de4dot for .NET; Rizin and friends elsewhere. These are never the product for bytecode languages (**disrobe** ships its own in-house decompilers there) and are always optional.
+`disrobe`'s in-house passes run with zero external dependencies. A subset of capabilities, however, wrap mature external tools headlessly: Ghidra for native decompilation; CFR / Vineflower / Procyon / jadx for the JVM and Android; ILSpy / dnSpy / de4dot for .NET; Rizin and friends elsewhere. These are never the product for bytecode languages (`disrobe` ships its own in-house decompilers there) and are always optional.
 
 Probe what is installed and what is missing:
 
@@ -64,7 +64,7 @@ disrobe doctor                 # probe ~50 optional external tools
 disrobe doctor --auto-install  # install every missing tool with a known action
 ```
 
-Install a single tool through your platform's native package manager (`winget` / `brew` / `apt` / `dnf` / `pacman` / `apk`). **disrobe** never installs itself this way; it only fetches the optional backends:
+Install a single tool through your platform's native package manager (`winget` / `brew` / `apt` / `dnf` / `pacman` / `apk`). `disrobe` never installs itself this way; it only fetches the optional backends:
 
 ```sh
 disrobe install --list         # list every known tool + per-platform package name

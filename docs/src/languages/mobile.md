@@ -1,6 +1,6 @@
 # Mobile (Hermes / Flutter)
 
-**disrobe** detects the runtime inside a mobile package, extracts React Native and other bundles, lifts Hermes bytecode to a JavaScript surface, and recovers Dart source or disassembles the ARM64 AOT snapshot from Flutter artifacts.
+`disrobe` detects the runtime inside a mobile package, extracts React Native and other bundles, lifts Hermes bytecode to a JavaScript surface, and recovers Dart source or disassembles the ARM64 AOT snapshot from Flutter artifacts.
 
 ## Runtime detection and extraction
 
@@ -53,7 +53,7 @@ disrobe flutter map obfuscation_map.json --out map.json
 
 Two distinct recovery paths cover two distinct Flutter artifacts.
 
-**Dart kernel (`.dill` / `kernel_blob.bin`).** A kernel is the serialized Dart AST. **disrobe** parses the kernel binary format (magic `0x90abcdef`): the footer component index, the string table, per-library class and procedure offset tables, and the embedded `UriSource` table. From the source table it recovers byte-exact original Dart bodies, sliced per procedure by the kernel file offsets. The recovered `.dart` source file is always written beside the JSON without needing `--emit-source`.
+**Dart kernel (`.dill` / `kernel_blob.bin`).** A kernel is the serialized Dart AST. `disrobe` parses the kernel binary format (magic `0x90abcdef`): the footer component index, the string table, per-library class and procedure offset tables, and the embedded `UriSource` table. From the source table it recovers byte-exact original Dart bodies, sliced per procedure by the kernel file offsets. The recovered `.dart` source file is always written beside the JSON without needing `--emit-source`.
 
 Output shape (illustrative):
 
@@ -71,7 +71,7 @@ flutter kernel: OK
   dart source:  ./out/app-dart-kernel.recovered.dart
 ```
 
-**ARM64 AOT snapshot (`libapp.so`).** The AOT snapshot is ordinary AArch64 machine code. **disrobe** locates the four `_kDart*Snapshot*` symbols, recovers class and method names from the isolate-data string table, scans frame prologues to bound functions, and disassembles each body to readable instructions with resolved direct-call and branch targets. `flutter decompile` also recovers the class table estimate, library URIs, and a string pool from the isolate image.
+**ARM64 AOT snapshot (`libapp.so`).** The AOT snapshot is ordinary AArch64 machine code. `disrobe` locates the four `_kDart*Snapshot*` symbols, recovers class and method names from the isolate-data string table, scans frame prologues to bound functions, and disassembles each body to readable instructions with resolved direct-call and branch targets. `flutter decompile` also recovers the class table estimate, library URIs, and a string pool from the isolate image.
 
 `flutter dump` reports the four Dart snapshot sections and their sizes. `flutter map` parses a Flutter `obfuscation_map.json` into a typed original-to-obfuscated lookup.
 

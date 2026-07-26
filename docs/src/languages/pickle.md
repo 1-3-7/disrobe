@@ -1,6 +1,6 @@
 # Python pickle
 
-Pickle is a code-execution format wearing a data format's clothes. Unpickling a crafted stream runs arbitrary code through `__reduce__` / `REDUCE`, which makes weaponized `.pkl` and `.pt` files a recurring ML supply-chain vector. **disrobe** analyzes pickles statically: it never unpickles, never calls `__reduce__`, never executes a `REDUCE` opcode. You can audit what a stream would do on load before it ever touches a real interpreter.
+Pickle is a code-execution format wearing a data format's clothes. Unpickling a crafted stream runs arbitrary code through `__reduce__` / `REDUCE`, which makes weaponized `.pkl` and `.pt` files a recurring ML supply-chain vector. `disrobe` analyzes pickles statically: it never unpickles, never calls `__reduce__`, never executes a `REDUCE` opcode. You can audit what a stream would do on load before it ever touches a real interpreter.
 
 ## Commands
 

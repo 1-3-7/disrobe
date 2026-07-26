@@ -27,7 +27,7 @@ Use `--capture-stages` to mirror every executed pass's byte-exact output under `
 
 ## Per-language one-liners
 
-Every one of these is real and backed by an in-tree fixture and integration test:
+Each command below is backed by an in-tree fixture and an integration test:
 
 ```sh
 # Python

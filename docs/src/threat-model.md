@@ -1,6 +1,6 @@
 # Threat model
 
-This page is the explicit trust-boundary analysis for **disrobe**. It states what the tool treats as untrusted, where the boundaries are drawn, what each boundary defends against, and what is deliberately out of scope. It complements the operational [Security policy](./security.md) and the [Forensics and malware-safety posture](./forensics-safety.md): the security policy says *how to report* a problem and *what is in scope for a report*; this page says *what the design assumes an attacker can do and where the walls are*.
+This page is the explicit trust-boundary analysis for `disrobe`. It states what the tool treats as untrusted, where the boundaries are drawn, what each boundary defends against, and what is deliberately out of scope. It complements the operational [Security policy](./security.md) and the [Forensics and malware-safety posture](./forensics-safety.md): the security policy says *how to report* a problem and *what is in scope for a report*; this page says *what the design assumes an attacker can do and where the walls are*.
 
 The single load-bearing assumption is this: **the input is hostile.** `disrobe` exists to parse protector output, packed executables, obfuscated bytecode, and exotic encoders. Every byte of every sample is treated as attacker-controlled. The analyst running `disrobe` is trusted; the artifact they point it at is not.
 
