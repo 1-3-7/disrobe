@@ -310,23 +310,28 @@ fn resource_loader_table(bytes: &[u8]) -> Option<Vec<u8>> {
     let rva_to_off = |rva: u32| -> Option<usize> {
         sections.iter().find_map(|&(vrva, vsize, rraw, rsize)| {
             let span: u32 = vsize.max(rsize);
-            (rva >= vrva && rva < vrva.saturating_add(span)).then(|| (rraw + (rva - vrva)) as usize)
+            if rva < vrva || rva >= vrva.saturating_add(span) {
+                return None;
+            }
+            rraw.checked_add(rva.saturating_sub(vrva))
+                .map(|offset: u32| offset as usize)
         })
     };
     let res_base: usize = rva_to_off(resource_rva)?;
     let rcdata_dir: usize = resource_dir_subdir(bytes, res_base, res_base, 10)?;
     let id_dir: usize = resource_dir_subdir(bytes, res_base, rcdata_dir, SETUP_LOADER_RESOURCE_ID)?;
     let lang_entry: u32 = resource_dir_first_entry(bytes, id_dir)?;
-    let data_entry_off: usize = res_base + (lang_entry & 0x7FFF_FFFF) as usize;
+    let data_entry_off: usize = res_base.checked_add((lang_entry & 0x7FFF_FFFF) as usize)?;
     let data_rva: u32 = u32::from_le_bytes(
         bytes
-            .get(data_entry_off..data_entry_off + 4)?
+            .get(data_entry_off..data_entry_off.checked_add(4)?)?
             .try_into()
             .ok()?,
     );
+    let size_off: usize = data_entry_off.checked_add(4)?;
     let data_size: usize = u32::from_le_bytes(
         bytes
-            .get(data_entry_off + 4..data_entry_off + 8)?
+            .get(size_off..size_off.checked_add(4)?)?
             .try_into()
             .ok()?,
     ) as usize;
@@ -335,7 +340,7 @@ fn resource_loader_table(bytes: &[u8]) -> Option<Vec<u8>> {
     }
     let data_off: usize = rva_to_off(data_rva)?;
     bytes
-        .get(data_off..data_off + data_size)
+        .get(data_off..data_off.checked_add(data_size)?)
         .map(<[u8]>::to_vec)
 }
 

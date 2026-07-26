@@ -174,11 +174,16 @@ pub fn reconstruct_image(bytes: &[u8]) -> Result<(Vec<u8>, DmgSummary)> {
         .ok_or_else(|| Error::Decompression("dmg xml plist out of bounds".to_owned()))?;
 
     let blocks: Vec<Vec<u8>> = blkx_data_values(xml)?;
-    let image_len: u64 = (koly.sector_count.saturating_mul(SECTOR)).min(MAX_IMAGE_BYTES);
+    let image_len: u64 = koly.sector_count.saturating_mul(SECTOR);
     if image_len == 0 {
         return Err(Error::Decompression(
             "dmg declares a zero-length image".to_owned(),
         ));
+    }
+    if image_len > MAX_IMAGE_BYTES {
+        return Err(Error::Decompression(format!(
+            "dmg declares a {image_len} byte image, past the {MAX_IMAGE_BYTES} byte limit"
+        )));
     }
     let mut image: Vec<u8> = vec![0u8; image_len as usize];
 
@@ -196,12 +201,23 @@ pub fn reconstruct_image(bytes: &[u8]) -> Result<(Vec<u8>, DmgSummary)> {
                 .and_then(|s: u64| s.checked_mul(SECTOR))
                 .ok_or_else(|| Error::Decompression("dmg chunk destination overflow".to_owned()))?;
             let dest: usize = dest as usize;
-            let out_len: usize =
-                (chunk.sector_count.saturating_mul(SECTOR)).min(MAX_IMAGE_BYTES) as usize;
+            let declared: u64 = chunk.sector_count.saturating_mul(SECTOR);
+            if declared > MAX_IMAGE_BYTES {
+                return Err(Error::Decompression(format!(
+                    "dmg chunk declares {declared} bytes, past the {MAX_IMAGE_BYTES} byte limit"
+                )));
+            }
+            let out_len: usize = declared as usize;
             let src_start: usize = (koly.data_fork_offset + chunk.compressed_offset) as usize;
             let src_end: usize = src_start.saturating_add(chunk.compressed_length as usize);
             let decoded: Vec<u8> = match chunk.entry_type {
-                TYPE_ZERO | TYPE_IGNORE => vec![0u8; out_len],
+                TYPE_ZERO | TYPE_IGNORE => {
+                    let span: usize = out_len.min(image.len().saturating_sub(dest));
+                    if let Some(window) = image.get_mut(dest..dest.saturating_add(span)) {
+                        window.fill(0);
+                    }
+                    continue;
+                }
                 TYPE_RAW => bytes
                     .get(src_start..src_end.min(bytes.len()))
                     .map_or(&[] as &[u8], |value: &[u8]| value)

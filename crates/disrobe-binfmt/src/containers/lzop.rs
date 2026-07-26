@@ -100,6 +100,12 @@ pub fn parse_lzop(bytes: &[u8], max_total: u64) -> Result<LzopFile> {
         if src_len == dst_len {
             out.extend_from_slice(block);
         } else {
+            if dst_len as usize > crate::quota::MAX_ENTRY_PREALLOC {
+                return Err(Error::Lzop(format!(
+                    "lzop: block declares {dst_len} bytes, past the {} byte block limit",
+                    crate::quota::MAX_ENTRY_PREALLOC
+                )));
+            }
             let mut dst: Vec<u8> = vec![0u8; dst_len as usize];
             let written: usize =
                 lzokay::decompress::decompress(block, &mut dst).map_err(|e: lzokay::Error| {

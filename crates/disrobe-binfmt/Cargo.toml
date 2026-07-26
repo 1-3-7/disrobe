@@ -64,3 +64,4 @@ name = "gen_container_fixture"
 path = "tests/fixtures/gen_container.rs"
 
 [dev-dependencies]
+disrobe-testkit = { workspace = true }
