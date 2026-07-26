@@ -260,6 +260,65 @@ fn mutate(rng: &mut XorShift64, base: &[u8], out: &mut Vec<u8>) {
     }
 }
 
+fn exercise_truncated_prefixes(bytes: &[u8]) {
+    let mut end: usize = 0usize;
+    while end <= bytes.len() {
+        parse_entry_points(&bytes[..end]);
+        let Some(next): Option<usize> = end.checked_add(1usize) else {
+            break;
+        };
+        end = next;
+    }
+}
+
+fn nested_rds_pairlist(depth: usize) -> Vec<u8> {
+    let mut bytes: Vec<u8> =
+        Vec::with_capacity(22usize.saturating_add(depth.saturating_mul(8usize)));
+    bytes.extend_from_slice(b"X\n");
+    bytes.extend_from_slice(&2u32.to_be_bytes());
+    bytes.extend_from_slice(&0u32.to_be_bytes());
+    bytes.extend_from_slice(&0u32.to_be_bytes());
+    bytes.extend_from_slice(&2u32.to_be_bytes());
+    let mut level: usize = 0usize;
+    while level < depth {
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        if level.saturating_add(1usize) == depth {
+            bytes.extend_from_slice(&0u32.to_be_bytes());
+        } else {
+            bytes.extend_from_slice(&2u32.to_be_bytes());
+        }
+        level = level.saturating_add(1usize);
+    }
+    bytes
+}
+
+#[test]
+fn fuzz_parser_required_malformed_boundaries_return_normally() {
+    const LONG_LINE_BYTES: usize = 96 * 1024;
+    let valid: &[u8] = b"fixture.pl syntax OK\nmain program:\n1 <;> nextstate(main 1 fixture.pl:1) v ->2\n2 <1> leavesub[1 ref] K/REFC,1 ->(end)\n";
+    exercise_truncated_prefixes(valid);
+
+    let mut long_line: Vec<u8> = b"powershell -Command ".to_vec();
+    long_line.extend(std::iter::repeat_n(b'A', LONG_LINE_BYTES));
+    let cases: Vec<Vec<u8>> = vec![
+        Vec::new(),
+        vec![0u8],
+        vec![0xffu8],
+        vec![0u8; 4096usize],
+        vec![0xffu8; 4096usize],
+        nested_rds_pairlist(320usize),
+        b"(((((((((((((({{{{{{{{{{{{[[[[[[[[[[[[\"'`".to_vec(),
+        b"\xff\xfe\x00\xd8\x00\x00\xff\xff".to_vec(),
+        long_line,
+    ];
+    let mut index: usize = 0usize;
+    while index < cases.len() {
+        let case: &Vec<u8> = &cases[index];
+        parse_entry_points(case);
+        index = index.saturating_add(1usize);
+    }
+}
+
 #[test]
 fn fuzz_winscript_entry_points_return_normally() {
     const MAX_INPUT: usize = 8 * 1024;

@@ -1,5 +1,11 @@
 use serde::Serialize;
 
+const MAX_TOKEN_COUNT: usize = 65_536usize;
+const MAX_TOKEN_TEXT_BYTES: usize = 65_536usize;
+const MAX_TOKEN_SOURCE_BYTES: usize = MAX_TOKEN_TEXT_BYTES / 3usize;
+const MAX_TOTAL_TOKEN_TEXT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_LEXER_INPUT_BYTES: usize = 8 * 1024 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum TokenKind {
     Identifier,
@@ -29,6 +35,7 @@ pub enum TokenKind {
     Newline,
     Whitespace,
     Comment,
+    Truncated,
     Eof,
     Unknown,
 }
@@ -45,30 +52,76 @@ pub struct Token {
 pub struct Lexer<'a> {
     src: &'a [u8],
     pos: usize,
+    scan_end: usize,
 }
 
 impl<'a> Lexer<'a> {
     #[inline]
     #[must_use]
     pub const fn new(src: &'a [u8]) -> Self {
-        Self { src, pos: 0 }
+        let scan_end: usize = if src.len() > MAX_LEXER_INPUT_BYTES {
+            MAX_LEXER_INPUT_BYTES
+        } else {
+            src.len()
+        };
+        Self {
+            src,
+            pos: 0,
+            scan_end,
+        }
     }
 
     #[must_use]
     pub fn tokenize(mut self) -> Vec<Token> {
-        let mut out: Vec<Token> = Vec::with_capacity(self.src.len() / 4 + 8);
-        while let Some(tok) = self.next_token() {
+        let source_len: usize = self.src.len();
+        let initial_capacity: usize = (self.scan_end / 4usize)
+            .saturating_add(8usize)
+            .min(MAX_TOKEN_COUNT.saturating_add(1usize));
+        let mut out: Vec<Token> = Vec::with_capacity(initial_capacity);
+        let mut text_budget: usize = MAX_TOTAL_TOKEN_TEXT_BYTES;
+        let mut truncation: Option<(usize, usize)> =
+            (self.scan_end < source_len).then_some((self.scan_end, source_len));
+        while out.len() < MAX_TOKEN_COUNT {
+            let Some(mut tok): Option<Token> = self.next_token() else {
+                break;
+            };
             if tok.kind == TokenKind::Eof {
-                out.push(tok);
                 break;
             }
+            let source_limit_exceeded: bool =
+                tok.end.saturating_sub(tok.start) > MAX_TOKEN_SOURCE_BYTES;
+            let text_budget_exceeded: bool = truncate_token_text(&mut tok.text, &mut text_budget);
+            let token_truncated: bool = source_limit_exceeded || text_budget_exceeded;
+            if token_truncated && truncation.is_none() {
+                truncation = Some((tok.start, source_len));
+            }
             out.push(tok);
+            if token_truncated {
+                break;
+            }
         }
+        if self.pos < self.scan_end && truncation.is_none() {
+            truncation = Some((self.pos, source_len));
+        }
+        if let Some((start, end)) = truncation {
+            out.push(Token {
+                kind: TokenKind::Truncated,
+                text: String::new(),
+                start,
+                end,
+            });
+        }
+        out.push(Token {
+            kind: TokenKind::Eof,
+            text: String::new(),
+            start: source_len,
+            end: source_len,
+        });
         out
     }
 
     fn next_token(&mut self) -> Option<Token> {
-        if self.pos >= self.src.len() {
+        if self.pos >= self.scan_end {
             return Some(Token {
                 kind: TokenKind::Eof,
                 text: String::new(),
@@ -112,7 +165,7 @@ impl<'a> Lexer<'a> {
 
     fn consume_single(&mut self, start: usize, kind: TokenKind) -> Token {
         let end: usize = start + 1;
-        let text: String = String::from_utf8_lossy(&self.src[start..end]).into_owned();
+        let text: String = token_text(self.src, start, end);
         self.pos = end;
         Token {
             kind,
@@ -136,8 +189,8 @@ impl<'a> Lexer<'a> {
     }
 
     fn consume_backtick(&mut self, start: usize) -> Token {
-        let end: usize = (start + 2).min(self.src.len());
-        let text: String = String::from_utf8_lossy(&self.src[start..end]).into_owned();
+        let end: usize = (start + 2).min(self.scan_end);
+        let text: String = token_text(self.src, start, end);
         self.pos = end;
         Token {
             kind: TokenKind::Backtick,
@@ -149,7 +202,7 @@ impl<'a> Lexer<'a> {
 
     fn consume_whitespace(&mut self, start: usize) -> Token {
         let mut end: usize = start;
-        while end < self.src.len() {
+        while end < self.scan_end {
             let c: u8 = self.src[end];
             if c == b' ' || c == b'\t' || c == b'\r' {
                 end += 1;
@@ -157,7 +210,7 @@ impl<'a> Lexer<'a> {
                 break;
             }
         }
-        let text: String = String::from_utf8_lossy(&self.src[start..end]).into_owned();
+        let text: String = token_text(self.src, start, end);
         self.pos = end;
         Token {
             kind: TokenKind::Whitespace,
@@ -169,10 +222,10 @@ impl<'a> Lexer<'a> {
 
     fn consume_comment(&mut self, start: usize) -> Token {
         let mut end: usize = start;
-        while end < self.src.len() && self.src[end] != b'\n' {
+        while end < self.scan_end && self.src[end] != b'\n' {
             end += 1;
         }
-        let text: String = String::from_utf8_lossy(&self.src[start..end]).into_owned();
+        let text: String = token_text(self.src, start, end);
         self.pos = end;
         Token {
             kind: TokenKind::Comment,
@@ -184,20 +237,20 @@ impl<'a> Lexer<'a> {
 
     fn consume_variable(&mut self, start: usize) -> Token {
         let mut end: usize = start + 1;
-        if end < self.src.len() && self.src[end] == b'{' {
+        if end < self.scan_end && self.src[end] == b'{' {
             end += 1;
-            while end < self.src.len() && self.src[end] != b'}' {
+            while end < self.scan_end && self.src[end] != b'}' {
                 end += 1;
             }
-            if end < self.src.len() {
+            if end < self.scan_end {
                 end += 1;
             }
         } else {
-            while end < self.src.len() && is_ident_continue(self.src[end]) {
+            while end < self.scan_end && is_ident_continue(self.src[end]) {
                 end += 1;
             }
         }
-        let text: String = String::from_utf8_lossy(&self.src[start..end]).into_owned();
+        let text: String = token_text(self.src, start, end);
         self.pos = end;
         Token {
             kind: TokenKind::Variable,
@@ -209,9 +262,9 @@ impl<'a> Lexer<'a> {
 
     fn consume_string_dq(&mut self, start: usize) -> Token {
         let mut end: usize = start + 1;
-        while end < self.src.len() {
+        while end < self.scan_end {
             let c: u8 = self.src[end];
-            if c == b'`' && end + 1 < self.src.len() {
+            if c == b'`' && end + 1 < self.scan_end {
                 end += 2;
                 continue;
             }
@@ -221,7 +274,7 @@ impl<'a> Lexer<'a> {
             }
             end += 1;
         }
-        let text: String = String::from_utf8_lossy(&self.src[start..end]).into_owned();
+        let text: String = token_text(self.src, start, end);
         self.pos = end;
         Token {
             kind: TokenKind::StringDq,
@@ -233,10 +286,10 @@ impl<'a> Lexer<'a> {
 
     fn consume_string_sq(&mut self, start: usize) -> Token {
         let mut end: usize = start + 1;
-        while end < self.src.len() {
+        while end < self.scan_end {
             let c: u8 = self.src[end];
             if c == b'\'' {
-                if end + 1 < self.src.len() && self.src[end + 1] == b'\'' {
+                if end + 1 < self.scan_end && self.src[end + 1] == b'\'' {
                     end += 2;
                     continue;
                 }
@@ -245,7 +298,7 @@ impl<'a> Lexer<'a> {
             }
             end += 1;
         }
-        let text: String = String::from_utf8_lossy(&self.src[start..end]).into_owned();
+        let text: String = token_text(self.src, start, end);
         self.pos = end;
         Token {
             kind: TokenKind::StringSq,
@@ -257,10 +310,10 @@ impl<'a> Lexer<'a> {
 
     fn consume_number(&mut self, start: usize) -> Token {
         let mut end: usize = start;
-        while end < self.src.len() && self.src[end].is_ascii_digit() {
+        while end < self.scan_end && self.src[end].is_ascii_digit() {
             end += 1;
         }
-        let text: String = String::from_utf8_lossy(&self.src[start..end]).into_owned();
+        let text: String = token_text(self.src, start, end);
         self.pos = end;
         Token {
             kind: TokenKind::Number,
@@ -272,10 +325,10 @@ impl<'a> Lexer<'a> {
 
     fn consume_identifier(&mut self, start: usize) -> Token {
         let mut end: usize = start;
-        while end < self.src.len() && (is_ident_continue(self.src[end]) || self.src[end] == b'-') {
+        while end < self.scan_end && (is_ident_continue(self.src[end]) || self.src[end] == b'-') {
             end += 1;
         }
-        let text: String = String::from_utf8_lossy(&self.src[start..end]).into_owned();
+        let text: String = token_text(self.src, start, end);
         self.pos = end;
         Token {
             kind: TokenKind::Identifier,
@@ -287,8 +340,35 @@ impl<'a> Lexer<'a> {
 
     #[inline]
     fn peek(&self, off: usize) -> Option<u8> {
-        self.src.get(self.pos + off).copied()
+        let index: usize = self.pos.checked_add(off)?;
+        if index >= self.scan_end {
+            return None;
+        }
+        self.src.get(index).copied()
     }
+}
+
+fn token_text(src: &[u8], start: usize, end: usize) -> String {
+    let bounded_start: usize = start.min(src.len());
+    let bounded_end: usize = end.min(src.len()).max(bounded_start);
+    let capped_end: usize = bounded_end.min(bounded_start.saturating_add(MAX_TOKEN_SOURCE_BYTES));
+    let decoded: String = String::from_utf8_lossy(&src[bounded_start..capped_end]).into_owned();
+    decoded.into_boxed_str().into()
+}
+
+fn truncate_token_text(text: &mut String, budget: &mut usize) -> bool {
+    if text.len() <= *budget {
+        *budget = budget.saturating_sub(text.len());
+        return false;
+    }
+    let mut end: usize = (*budget).min(text.len());
+    while end > 0usize && !text.is_char_boundary(end) {
+        end = end.saturating_sub(1usize);
+    }
+    let retained: String = text[..end].to_owned();
+    *text = retained;
+    *budget = 0usize;
+    true
 }
 
 #[inline]
