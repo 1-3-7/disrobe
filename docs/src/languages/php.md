@@ -1,6 +1,6 @@
 # PHP
 
-The commercial PHP encoder market has no maintained FOSS competition offline. **disrobe** decodes all three dominant encoders fully offline: nothing is uploaded anywhere. It also peels stacked eval-chain obfuscation and walks Phar archives.
+The commercial PHP encoder market has no maintained FOSS competition offline. `disrobe` decodes all three dominant encoders fully offline: nothing is uploaded anywhere. It also peels stacked eval-chain obfuscation and walks Phar archives.
 
 ## At a glance
 

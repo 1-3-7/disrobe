@@ -1,6 +1,6 @@
 # Ruby
 
-**disrobe** is the only active Ruby bytecode decompiler with a measured fidelity grade. It analyzes every major Ruby artifact format and decompiles YARV and mruby bytecode toward source, verified by a recompile-equivalence oracle on a real MRI interpreter.
+`disrobe` is the only active Ruby bytecode decompiler with a measured fidelity grade. It analyzes every major Ruby artifact format and decompiles YARV and mruby bytecode toward source, verified by a recompile-equivalence oracle on a real MRI interpreter.
 
 ## At a glance
 

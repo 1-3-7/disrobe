@@ -1,6 +1,6 @@
 # Lua
 
-**disrobe** decompiles compiled Lua chunks across every common dialect, peels the major Lua obfuscators, and devirtualizes custom-VM wrappers back to runnable Lua source.
+`disrobe` decompiles compiled Lua chunks across every common dialect, peels the major Lua obfuscators, and devirtualizes custom-VM wrappers back to runnable Lua source.
 
 ## At a glance
 
@@ -61,7 +61,7 @@ The report lists every pass that ran, recovered string constants, a `fully peele
 
 ## VM devirtualization
 
-IronBrew2 and MoonSec ship their payload behind a custom register-VM: a permuted opcode-handler table and an embedded constant pool that a stock decompiler cannot read. The permutation is not stored in the loader; it is computed at load time inside the obfuscated bootstrap, then used to dispatch handlers and key the constant decryptor. **disrobe** reconstructs it the same way the loader does.
+IronBrew2 and MoonSec ship their payload behind a custom register-VM: a permuted opcode-handler table and an embedded constant pool that a stock decompiler cannot read. The permutation is not stored in the loader; it is computed at load time inside the obfuscated bootstrap, then used to dispatch handlers and key the constant decryptor. `disrobe` reconstructs it the same way the loader does.
 
 For IronBrew2 2.7.0, the devirtualizer parses the bootstrap's dispatch chain to derive the `encoded -> canonical` permutation and the XOR key, decodes the constant pool, and lifts the VM bytecode back to runnable Lua. The committed `corpus/lua/ironbrew2` set carries real obfuscated bootstraps for five programs in both standard and MAX mode; each must produce byte-identical output to the original under a real `lua` binary (`tests/ironbrew2_real_oracle.rs`).
 
@@ -69,4 +69,4 @@ MAX mode adds three layers on top of standard: a control-flow-flattened dispatch
 
 The MoonSec `emulate_perm_builder` path interprets a bootstrap table-builder over its seed and is unit-tested on a realistic synthetic bootstrap of our own design whose permutation is derived at runtime. End-to-end validation against a real captured MoonSec dump is pending: no live sample is publicly available.
 
-Runtime-key and anti-tamper variants (MoonSec v3 with an encrypted constant pool keyed at runtime) are the wall: the key is not present statically, so **disrobe** returns `fully_recovered: false` with a `runtime keys` residual marker.
+Runtime-key and anti-tamper variants (MoonSec v3 with an encrypted constant pool keyed at runtime) are the wall: the key is not present statically, so `disrobe` returns `fully_recovered: false` with a `runtime keys` residual marker.

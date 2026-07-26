@@ -1,6 +1,6 @@
 # Metadata sidecar and provenance
 
-**disrobe** can emit a structured metadata bundle beside recovered output. The bundle carries call graph, types, control flow, capability surface, decompile provenance, and round-trip verdicts in one schema-conforming sidecar. It is deterministic data derived from the same pass results as the human output; no model runs in the recovery path.
+`disrobe` can emit a structured metadata bundle beside recovered output. The bundle carries call graph, types, control flow, capability surface, decompile provenance, and round-trip verdicts in one schema-conforming sidecar. It is deterministic data derived from the same pass results as the human output; no model runs in the recovery path.
 
 ## Turning it on
 
@@ -49,8 +49,8 @@ The `decryption-keys` category exposes recovered keys and IVs and is gated: pass
 
 Independently of the metadata bundle, a chain run writes two provenance artifacts:
 
-- **`recovery.json`**: per-pass status, confidence-tier histogram, and timings. Summarize with `disrobe context --out <dir>`.
-- **`provenance/<file>.map.json`**: a line-level map from each recovered source line to `(pass, source_offset, opcode_range, confidence)`. This is what lets a reviewer trace any line of recovered source back to the exact bytes it came from and how confident the recovery is.
+- `recovery.json`: per-pass status, confidence-tier histogram, and timings. Summarize with `disrobe context --out <dir>`.
+- `provenance/<file>.map.json`: a line-level map from each recovered source line to `(pass, source_offset, opcode_range, confidence)`. A reviewer traces any line of recovered source back to the exact bytes it came from, and to the confidence of that recovery.
 
 ## The `.disrobe/` workspace
 

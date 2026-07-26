@@ -1,6 +1,6 @@
 # JavaScript / TypeScript
 
-**disrobe** deobfuscates obfuscated JS/TS, splits bundled output back into per-module sources, and inspects packaged JS runtimes, all behind a deterministic codegen.
+`disrobe` deobfuscates obfuscated JS/TS, splits bundled output back into per-module sources, and inspects packaged JS runtimes, all behind a deterministic codegen.
 
 ## At a glance
 
@@ -39,7 +39,7 @@ disrobe js v8 app.jsc
 disrobe js v8 app.asar --json-out report.json
 ```
 
-Classifies the artifact and prints real detection: bytenode header layout and Node version for `.jsc`, SEA flags and code length, nexe/nw.js payload geometry, or the `.asar` entry listing. For `.jsc`, **disrobe** is the self-contained, static, offline option: it recovers the user-string layer plus structure and detects the serializer version across Node 18-24, with no patched V8 binary (View8), Ghidra (ghidra_nodejs), or online service (jscdecompiler.com) required. The boundary is that internalized identifiers (most variable and property names, for example `console` and `log`) are serialized as references into V8's read-only snapshot heap, not as inline bytes in the `.jsc`; resolving them needs the exact V8 binary's RO heap. **disrobe** reports that as a lossy-internalized-roots boundary rather than fabricating past it. For V8 snapshots it reports a `SnapshotDeserializeWall`: the format prevents full bytecode recovery, so **disrobe** scrapes the string pool (tunable via `--scrape-min`) and states the boundary rather than fabricating past it.
+Classifies the artifact and prints real detection: bytenode header layout and Node version for `.jsc`, SEA flags and code length, nexe/nw.js payload geometry, or the `.asar` entry listing. For `.jsc`, `disrobe` is the self-contained, static, offline option: it recovers the user-string layer plus structure and detects the serializer version across Node 18-24, with no patched V8 binary (View8), Ghidra (ghidra_nodejs), or online service (jscdecompiler.com) required. The boundary is that internalized identifiers (most variable and property names, for example `console` and `log`) are serialized as references into V8's read-only snapshot heap, not as inline bytes in the `.jsc`; resolving them needs the exact V8 binary's RO heap. `disrobe` reports that as a lossy-internalized-roots boundary rather than fabricating past it. For V8 snapshots it reports a `SnapshotDeserializeWall`: the format prevents full bytecode recovery, so `disrobe` scrapes the string pool (tunable via `--scrape-min`) and states the boundary rather than fabricating past it.
 
 ## Chaining
 

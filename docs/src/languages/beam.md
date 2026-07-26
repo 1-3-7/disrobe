@@ -1,6 +1,6 @@
 # BEAM (Erlang / Elixir)
 
-**disrobe** parses BEAM IFF files, recovers Erlang or Elixir source when debug chunks survive, lifts to Core Erlang otherwise, and disassembles the Code chunk per instruction. A flat text disassembly listing lands beside the JSON automatically.
+`disrobe` parses BEAM IFF files, recovers Erlang or Elixir source when debug chunks survive, lifts to Core Erlang otherwise, and disassembles the Code chunk per instruction. A flat text disassembly listing lands beside the JSON automatically.
 
 ## At a glance
 

@@ -4,7 +4,7 @@ Contributions are welcome; see the [contributing guide](https://github.com/1-3-7
 
 ## Building and testing
 
-**disrobe** builds with a single stable Rust 1.95+ toolchain:
+`disrobe` builds with a single stable Rust 1.95+ toolchain:
 
 ```sh
 cargo build --release

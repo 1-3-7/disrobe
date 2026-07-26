@@ -1,6 +1,6 @@
 # Diff and guard tooling
 
-**disrobe** treats recovered artifacts as a forensic baseline you can diff across versions and protect against tampering. Two command families support this: `disrobe diff` and `disrobe guard`.
+`disrobe` treats recovered artifacts as a forensic baseline you can diff across versions and protect against tampering. Two command families support this: `disrobe diff` and `disrobe guard`.
 
 ## `disrobe diff`: structural chain diff
 
@@ -10,7 +10,7 @@ disrobe diff left/chain.json right/chain.json
 
 Structurally diffs two `chain.json` documents, the topology descriptors written by `disrobe auto` / `disrobe chain`. It compares the passes that ran, each stage's BLAKE3 output hash, byte sizes, and per-stage verdicts. This is how you answer "did upgrading the PyArmor pass change what we recover from this sample?" without eyeballing two output trees.
 
-There is also a parallel `disrobe envelope diff` for two `.dr` envelopes directly, which compares version, rung, flags, root hash, producer, capability set, and provenance.
+A parallel `disrobe envelope diff` works on two `.dr` envelopes directly. It compares version, rung, flags, root hash, producer, capability set, and provenance.
 
 ## `disrobe guard`: ground-truth protection
 

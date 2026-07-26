@@ -1,6 +1,6 @@
 # Python bindings
 
-**disrobe** ships a typed Python library that mirrors the full CLI surface. The
+`disrobe` ships a typed Python library that mirrors the full CLI surface. The
 importable `disrobe` module is built from `crates/disrobe-python` with pyo3
 (abi3, Python 3.9+) and wraps the same Rust library the CLI uses. Bytes go in;
 a concrete typed report object comes out. Output is deterministic: the same
@@ -1132,7 +1132,7 @@ function_count: int | None = detection.function_count
 
 Detects <!-- m:js_bundlers -->11<!-- /m --> bundlers. The explicit target hint accepts `auto`, `webpack4`,
 `webpack5`/`webpack`, `vite`, `rollup`, `esbuild`, `turbopack`, and `bun`.
-An unrecognised hint string raises `DisrobeError`.
+An unrecognized hint string raises `DisrobeError`.
 
 ```python
 import disrobe

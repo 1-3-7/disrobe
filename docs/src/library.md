@@ -1,6 +1,6 @@
 # Use it as a library
 
-**disrobe** is built to be embedded, not just run from a shell. The CLI is a thin layer over the same crates, so a TUI, an IDE plugin, a web service, or a batch engine can drive the full pass set directly. There are three ways in: the Rust crates, the Python bindings, and the daemon.
+`disrobe` embeds as well as it runs from a shell. The CLI is a thin layer over the same crates, so a TUI, an IDE plugin, a web service, or a batch engine can drive the full pass set directly. There are three ways in: the Rust crates, the Python bindings, and the daemon.
 
 ## Rust
 

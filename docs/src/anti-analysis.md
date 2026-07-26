@@ -1,6 +1,6 @@
 # Anti-analysis defeat
 
-**disrobe** is a static, deterministic analyzer that never runs the sample on the default path. It recognizes the standard anti-static-analysis arsenal and recovers what is statically recoverable, stating a wall where the data is genuinely absent rather than fabricating past it.
+`disrobe` is a static, deterministic analyzer that never runs the sample on the default path. It recognizes the standard anti-static-analysis arsenal and recovers what is statically recoverable, stating a wall where the data is genuinely absent rather than fabricating past it.
 
 ## Signature defeat
 
@@ -21,7 +21,7 @@ Malware often ships with a broken, expired, self-signed, or mismatched Authentic
 
 ## String and data encryption
 
-| Scheme | What **disrobe** does |
+| Scheme | What `disrobe` does |
 |---|---|
 | Single-byte XOR stack strings | Recovers them with English-likeness key detection, on native via the in-house x86 emulator driving each decoder-shaped function. |
 | Per-family keyed strings | Mirai, Dridex, and Trickbot keyed-string schemes decoded from their known transforms. |

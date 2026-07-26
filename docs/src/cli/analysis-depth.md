@@ -60,10 +60,10 @@ disrobe ioc malware.exe --format sarif      # GitHub code-scanning ingest
 
 `disrobe ioc` scans the target's bytes and any UTF-16 / ASCII text inside it for:
 
-- **Network**: URLs (`http`/`https`/`ftp`/`ftps`/`smb`/`file`), bare domains, IPv4, IPv6, email addresses.
-- **Host artifacts**: Windows file paths, registry keys (`HKLM\...`, `HKEY_CURRENT_USER\...`), Unix paths under well-known roots (`/etc`, `/usr`, `/var`, `/Users`, ...).
-- **Crypto wallets**: Bitcoin (legacy `1`/`3` and bech32 `bc1`), Ethereum (`0x...40`), Monero (`4...`).
-- **Crypto constants**: AES S-box and inverse S-box, MD5 / SHA-1 / SHA-256 / SHA-512 init vectors, ChaCha20 sigma/tau, and the standard/URL base64 alphabets.
+- Network: URLs (`http`/`https`/`ftp`/`ftps`/`smb`/`file`), bare domains, IPv4, IPv6, email addresses.
+- Host artifacts: Windows file paths, registry keys (`HKLM\...`, `HKEY_CURRENT_USER\...`), Unix paths under well-known roots (`/etc`, `/usr`, `/var`, `/Users`, ...).
+- Crypto wallets: Bitcoin (legacy `1`/`3` and bech32 `bc1`), Ethereum (`0x...40`), Monero (`4...`).
+- Crypto constants: AES S-box and inverse S-box, MD5 / SHA-1 / SHA-256 / SHA-512 init vectors, ChaCha20 sigma/tau, and the standard/URL base64 alphabets.
 
 When the input is a native PE/ELF/Mach-O binary, the import table (`library!symbol`) is folded into the scan so DLL- and symbol-borne indicators surface too.
 
@@ -181,9 +181,9 @@ disrobe behavior sample.exe --json
 
 Signals come from three sources, each tagged in the evidence list:
 
-- **`import`**: the native import table (PE/ELF/Mach-O), parsed when the input is a binary.
-- **`string`**: API / symbol names found in the extracted strings (including XOR/base64-recovered ones), so signals survive light obfuscation.
-- **`ioc`**: network/host/crypto indicators from the [IOC extractor](#ioc-extraction).
+- `import`: the native import table (PE/ELF/Mach-O), parsed when the input is a binary.
+- `string`: API / symbol names found in the extracted strings (including XOR/base64-recovered ones), so signals survive light obfuscation.
+- `ioc`: network/host/crypto indicators from the [IOC extractor](#ioc-extraction).
 
 ### MITRE ATT&CK mapping
 

@@ -1,6 +1,6 @@
 # Shell / PowerShell
 
-**disrobe** deobfuscates PowerShell, Bash, Batch, VBScript, and VBA. It reverses every major PowerShell obfuscator family and Bashfuscator, recovers VBA source from Office documents, decompiles VBA p-code with stomp detection, and recovers Excel 4.0 (XLM) macro formulas.
+`disrobe` deobfuscates PowerShell, Bash, Batch, VBScript, and VBA. It reverses every major PowerShell obfuscator family and Bashfuscator, recovers VBA source from Office documents, decompiles VBA p-code with stomp detection, and recovers Excel 4.0 (XLM) macro formulas.
 
 ## Commands
 
@@ -35,7 +35,7 @@ shell deob: OK
 
 ## VBA source and p-code
 
-From a `.docm` / `.xlsm` / `.bin` Office container, **disrobe** parses the `dir` stream (MS-OVBA), maps each module to its stream and `TextOffset`, and MS-OVBA-decompresses the `CompressedSourceCode` at that offset to emit the original `.bas` / `.cls` text per module (multi-chunk compression and CopyToken bit-count edges handled). Validated against real Word and Excel documents authored via COM, byte-for-byte against the known module text.
+From a `.docm` / `.xlsm` / `.bin` Office container, `disrobe` parses the `dir` stream (MS-OVBA), maps each module to its stream and `TextOffset`, and MS-OVBA-decompresses the `CompressedSourceCode` at that offset to emit the original `.bas` / `.cls` text per module (multi-chunk compression and CopyToken bit-count edges handled). Validated against real Word and Excel documents authored via COM, byte-for-byte against the known module text.
 
 The p-code path lifts a 264-opcode table across VBA3 / VBA5 / VBA6 / VBA7 (32-bit and 64-bit) with identifier resolution. VBA-stomping detection runs a p-code-vs-source classifier that flags modules whose compiled p-code diverges from the stored source and recovers the stomped behavior from the p-code.
 
