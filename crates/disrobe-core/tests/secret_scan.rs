@@ -945,3 +945,32 @@ fn github_flipped_content_invalidates_stale_checksum() {
         Confidence::Speculative
     );
 }
+
+#[test]
+fn credential_uri_with_unresolvable_offset_is_dropped_not_anchored_at_zero() {
+    const HEAD_RUN: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuv";
+    let mut input: Vec<u8> = HEAD_RUN.to_vec();
+    input.extend_from_slice(b"\nmongodb://user:\xff@db.internal:27017/app\n");
+    assert!(
+        std::str::from_utf8(&input).is_err(),
+        "the fixture must be non-utf8 so the match carries a replacement character"
+    );
+
+    let findings: Vec<Finding> = scan_bytes(&input, None);
+    assert!(
+        !has_kind(&findings, SecretKind::MongoDbUri),
+        "a credential whose byte offset cannot be resolved must be dropped: {findings:?}"
+    );
+    assert!(
+        findings
+            .iter()
+            .all(|f: &Finding| f.offset != 0 || f.kind == SecretKind::HighEntropyGeneric),
+        "no finding may be anchored at byte 0 by an unresolved offset: {findings:?}"
+    );
+    let entropy: &Finding =
+        first_of(&findings, SecretKind::HighEntropyGeneric).expect("head entropy run");
+    assert_eq!(
+        entropy.offset, 0,
+        "the head entropy run must not be suppressed by a claim at byte 0: {findings:?}"
+    );
+}

@@ -11,6 +11,7 @@ const BASE92_ALPHABET: &[u8; 91] =
     b"!#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_abcdefghijklmnopqrstuvwxyz{|}";
 
 const MAX_RADIX_INPUT: usize = 1 << 24;
+const MAX_BIGNUM_RADIX_INPUT: usize = 1 << 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Base58Variant {
@@ -33,7 +34,7 @@ fn decode_baseradix(input: &[u8], alphabet: &[u8], radix: u16) -> Result<Vec<u8>
     if input.is_empty() {
         return Ok(Vec::new());
     }
-    if input.len() > MAX_RADIX_INPUT {
+    if input.len() > MAX_BIGNUM_RADIX_INPUT {
         return Err(DecodeError::TooLarge { len: input.len() });
     }
     let table: [i16; 256] = invert(alphabet, alphabet.len());
@@ -52,7 +53,7 @@ fn decode_baseradix(input: &[u8], alphabet: &[u8], radix: u16) -> Result<Vec<u8>
         .checked_div(1000)
         .unwrap_or(input.len())
         .saturating_add(1);
-    let mut buffer: Vec<u8> = Vec::with_capacity(cap.min(MAX_RADIX_INPUT));
+    let mut buffer: Vec<u8> = Vec::with_capacity(cap.min(MAX_BIGNUM_RADIX_INPUT));
     for &symbol in &input[leading_zeros..] {
         let digit: i16 = table[symbol as usize];
         if digit < 0 {
@@ -501,6 +502,29 @@ mod tests {
             base58_decode(&huge, Base58Variant::Bitcoin),
             Err(DecodeError::TooLarge { .. })
         ));
+        assert!(matches!(
+            base91_decode(&huge),
+            Err(DecodeError::TooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn bignum_radix_decoders_bound_input_at_the_quadratic_cap() {
+        let over: Vec<u8> = vec![b'2'; MAX_BIGNUM_RADIX_INPUT + 1];
+        assert!(matches!(
+            base58_decode(&over, Base58Variant::Bitcoin),
+            Err(DecodeError::TooLarge { .. })
+        ));
+        assert!(matches!(
+            base62_decode(&over),
+            Err(DecodeError::TooLarge { .. })
+        ));
+        let at_cap: Vec<u8> = vec![b'0'; MAX_BIGNUM_RADIX_INPUT];
+        assert_eq!(
+            base62_decode(&at_cap).expect("input at the cap decodes"),
+            vec![0u8; MAX_BIGNUM_RADIX_INPUT]
+        );
+        assert!(base91_decode(&over).is_ok());
     }
 
     #[test]

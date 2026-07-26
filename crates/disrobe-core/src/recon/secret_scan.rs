@@ -1078,7 +1078,11 @@ pub fn scan_bytes(bytes: &[u8], uri: Option<&str>) -> Vec<Finding> {
             let offset: usize = if valid_utf8 {
                 m.start()
             } else {
-                byte_offset_of(bytes, matched.as_bytes(), &claimed)
+                let Some(at): Option<usize> = byte_offset_of(bytes, matched.as_bytes(), &claimed)
+                else {
+                    continue;
+                };
+                at
             };
             let preview: String = redact(matched);
             claimed.push((offset, offset + matched.len()));
@@ -1290,12 +1294,33 @@ fn scan_solana_keypair(
     }
 }
 
+fn merge_claims(claimed: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut sorted: Vec<(usize, usize)> = claimed.to_vec();
+    sorted.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(sorted.len());
+    for (start, end) in sorted {
+        match merged.last_mut() {
+            Some(last) if start < last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+    merged
+}
+
+fn claim_overlaps(merged: &[(usize, usize)], start: usize, end: usize) -> bool {
+    let next: usize = merged.partition_point(|&(_s, e): &(usize, usize)| e <= start);
+    merged
+        .get(next)
+        .is_some_and(|&(s, _e): &(usize, usize)| s < end)
+}
+
 fn scan_entropy(
     bytes: &[u8],
     uri: Option<&str>,
     claimed: &[(usize, usize)],
     findings: &mut Vec<Finding>,
 ) {
+    let merged: Vec<(usize, usize)> = merge_claims(claimed);
     let mut i: usize = 0;
     let n: usize = bytes.len();
     while i < n {
@@ -1311,10 +1336,7 @@ fn scan_entropy(
         if run.len() < ENTROPY_MIN_RUN {
             continue;
         }
-        if claimed
-            .iter()
-            .any(|&(s, e): &(usize, usize)| run_start < e && s < i)
-        {
+        if claim_overlaps(&merged, run_start, i) {
             continue;
         }
         if crate::entropy::shannon_entropy_bits(run) < ENTROPY_THRESHOLD {
@@ -1333,16 +1355,16 @@ fn scan_entropy(
     }
 }
 
-fn byte_offset_of(haystack: &[u8], needle: &[u8], claimed: &[(usize, usize)]) -> usize {
+fn byte_offset_of(haystack: &[u8], needle: &[u8], claimed: &[(usize, usize)]) -> Option<usize> {
     let mut start: usize = 0;
     while let Some(rel) = crate::byte_search::find(&haystack[start..], needle) {
         let at: usize = start + rel;
         if !claimed.iter().any(|&(s, _e): &(usize, usize)| s == at) {
-            return at;
+            return Some(at);
         }
         start = at + 1;
     }
-    0
+    None
 }
 
 #[must_use]
@@ -1363,5 +1385,71 @@ pub fn scan_report(bytes: &[u8], uri: Option<&str>) -> SecretScanReport {
         uri: uri.map(str::to_owned),
         byte_len: bytes.len(),
         findings: scan_bytes(bytes, uri),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{byte_offset_of, claim_overlaps, merge_claims};
+
+    fn claim_overlap_linear_reference(
+        claimed: &[(usize, usize)],
+        start: usize,
+        end: usize,
+    ) -> bool {
+        claimed
+            .iter()
+            .any(|&(s, e): &(usize, usize)| start < e && s < end)
+    }
+
+    const CLAIM_CASES: &[&[(usize, usize)]] = &[
+        &[],
+        &[(0, 4)],
+        &[(10, 20), (5, 8), (30, 30), (18, 25), (100, 140)],
+        &[(0, 0), (0, 1), (7, 7)],
+        &[(3, 9), (9, 12), (12, 40)],
+        &[(50, 60), (50, 60), (50, 55)],
+    ];
+
+    #[test]
+    fn claim_overlap_matches_the_linear_reference() {
+        for &claimed in CLAIM_CASES {
+            let merged: Vec<(usize, usize)> = merge_claims(claimed);
+            for start in 0..150usize {
+                for len in 0..14usize {
+                    let end: usize = start + len;
+                    assert_eq!(
+                        claim_overlaps(&merged, start, end),
+                        claim_overlap_linear_reference(claimed, start, end),
+                        "claim overlap mismatch on {claimed:?} for {start}..{end}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn merged_claims_are_disjoint_and_ascending() {
+        for &claimed in CLAIM_CASES {
+            let merged: Vec<(usize, usize)> = merge_claims(claimed);
+            for pair in merged.windows(2) {
+                let [(_, first_end), (second_start, _)] = pair else {
+                    continue;
+                };
+                assert!(
+                    first_end <= second_start,
+                    "merged claims must stay disjoint and ascending: {merged:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn byte_offset_of_reports_absence_instead_of_zero() {
+        let haystack: &[u8] = b"alpha beta gamma";
+        assert_eq!(byte_offset_of(haystack, b"beta", &[]), Some(6));
+        assert_eq!(byte_offset_of(haystack, b"alpha", &[]), Some(0));
+        assert_eq!(byte_offset_of(haystack, b"delta", &[]), None);
+        assert_eq!(byte_offset_of(haystack, b"alpha", &[(0, 5)]), None);
     }
 }
