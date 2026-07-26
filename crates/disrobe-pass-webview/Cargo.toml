@@ -25,5 +25,6 @@ thiserror = { workspace = true }
 miette = { workspace = true }
 
 [dev-dependencies]
+disrobe-testkit = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

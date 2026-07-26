@@ -1,9 +1,8 @@
-use std::io::{Cursor, Read as _};
+#![allow(clippy::expect_used)]
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use disrobe_pass_pyfreeze::bbfreeze;
 use disrobe_pass_pyfreeze::briefcase;
@@ -31,49 +30,81 @@ use disrobe_pass_pyfreeze::recover::{
 use disrobe_pass_pyfreeze::shiv;
 use disrobe_pass_pyfreeze::zipapp;
 use disrobe_pass_pyfreeze::{ExtractionQuota, detect_bytes as exported_detect_bytes};
+use disrobe_testkit::{BATCH_ENV, CorpusEntry, StressCase, StressConfig, XorShift64};
 
-const MAX_INPUT_BYTES: usize = 4096;
-const MAX_INPUT_BYTES_U64: u64 = 4096;
-const RANDOM_CASES: usize = 96;
-const MUTATIONS_PER_SEED: usize = 32;
-const CASES_PER_BATCH: usize = 16;
-const MAX_BATCH_BYTES: usize = CASES_PER_BATCH * (MAX_INPUT_BYTES + 4);
-const MAX_BATCH_BYTES_U64: u64 = MAX_BATCH_BYTES as u64;
-const BATCH_BUDGET: Duration = Duration::from_secs(5);
-const TEST_BUDGET: Duration = Duration::from_mins(1);
-const BATCH_PATH_ENV: &str = "DISROBE_PYFREEZE_FUZZ_BATCH";
-const WORKSPACE_PATH_ENV: &str = "DISROBE_PYFREEZE_FUZZ_WORKSPACE";
+const RANDOM_SPAN_BYTES: usize = 4096;
+const READ_BOUND_BYTES: u64 = 4096;
+const CASES_PER_INPUT: usize = 64;
+const BATCH_SIZE: usize = 256;
+const CASE_BUDGET: Duration = Duration::from_millis(60);
+const SUITE_BUDGET: Duration = Duration::from_mins(3);
 
-struct Xorshift64 {
-    state: u64,
+const PROBE_DOMAIN: u64 = 0x5046_5A17_0001_0001;
+const SATURATION_DOMAIN: u64 = 0x5046_5A17_0001_0002;
+const SATURATION_PATTERNS: [(u8, u32); 2] = [(u8::MAX, 2), (0, 3)];
+const MAX_SCATTERED_OVERWRITES: usize = 32;
+const MAJOR_SPAN: u8 = 4;
+const MINOR_SPAN: u8 = 16;
+const OLDEST_MAJOR: u8 = 2;
+const PY2EXE_RECOVER_ABI: (u8, u8) = (3, 12);
+const SCRATCH_DIRECTORY: &str = "pyfreeze-file-entrypoints";
+const SCRATCH_INPUT: &str = "input.bin";
+const SCRATCH_OUT: &str = "out";
+const WORKER_SCRATCH_TAG: &str = "worker";
+const UNMUTATED_SCRATCH_TAG: &str = "unmutated-seeds";
+const CONSTRUCTED_SCRATCH_TAG: &str = "constructed-zips";
+const PYC_NAME: &str = "fuzz.pyc";
+const MARSHAL_NAME: &str = "fuzz.marshal";
+const NATIVE_NAME: &str = "fuzz.pyd";
+
+#[derive(Debug)]
+struct Scratch {
+    directory: PathBuf,
+    input: PathBuf,
+    out: PathBuf,
 }
 
-impl Xorshift64 {
-    const fn new(seed: u64) -> Self {
-        Self { state: seed | 1 }
-    }
-
-    const fn next_u64(&mut self) -> u64 {
-        let mut value: u64 = self.state;
-        value ^= value << 13;
-        value ^= value >> 7;
-        value ^= value << 17;
-        self.state = value;
-        value
-    }
-
-    fn next_usize(&mut self, bound: usize) -> usize {
-        if bound == 0 {
-            return 0;
+impl Scratch {
+    fn create(base: &Path, tag: &str) -> Self {
+        let directory: PathBuf =
+            base.join(format!("{SCRATCH_DIRECTORY}-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&directory)
+            .expect("the stress worker can create its scratch directory");
+        Self {
+            input: directory.join(SCRATCH_INPUT),
+            out: directory.join(SCRATCH_OUT),
+            directory,
         }
-        let bound_u64: u64 = u64::try_from(bound).map_or(u64::MAX, |value: u64| value);
-        let value: u64 = self.next_u64() % bound_u64;
-        usize::try_from(value).map_or(0, |value: usize| value)
     }
 
-    const fn next_byte(&mut self) -> u8 {
-        self.next_u64().to_le_bytes()[0]
+    fn fresh_out_dir(&self) -> &Path {
+        if self.out.exists() {
+            std::fs::remove_dir_all(&self.out)
+                .expect("the stress worker can clear its scratch output directory");
+        }
+        std::fs::create_dir_all(&self.out)
+            .expect("the stress worker can create its scratch output directory");
+        &self.out
     }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _: std::io::Result<()> = std::fs::remove_dir_all(&self.directory);
+    }
+}
+
+fn batch_workspace() -> PathBuf {
+    let batch: Option<PathBuf> = std::env::var_os(BATCH_ENV).map(PathBuf::from);
+    batch
+        .as_deref()
+        .and_then(Path::parent)
+        .map_or_else(std::env::temp_dir, Path::to_path_buf)
+}
+
+fn worker_scratch() -> &'static Scratch {
+    static SCRATCH: OnceLock<Scratch> = OnceLock::new();
+    SCRATCH.get_or_init(|| Scratch::create(&batch_workspace(), WORKER_SCRATCH_TAG))
 }
 
 const fn test_quota() -> ExtractionQuota {
@@ -103,15 +134,12 @@ fn stored_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
     let mut central: Vec<u8> = Vec::new();
     for (name, body) in entries {
         let name_bytes: &[u8] = name.as_bytes();
-        let Some(local_offset): Option<u32> = u32::try_from(out.len()).ok() else {
-            return Vec::new();
-        };
-        let Some(compressed_size): Option<u32> = u32::try_from(body.len()).ok() else {
-            return Vec::new();
-        };
-        let Some(name_len): Option<u16> = u16::try_from(name_bytes.len()).ok() else {
-            return Vec::new();
-        };
+        let local_offset: u32 = u32::try_from(out.len())
+            .expect("a constructed stored zip stays far inside the 32-bit offset range");
+        let compressed_size: u32 = u32::try_from(body.len())
+            .expect("a constructed stored zip entry stays far inside the 32-bit size range");
+        let name_len: u16 =
+            u16::try_from(name_bytes.len()).expect("a constructed zip entry name is short");
         let crc: u32 = crc32(body);
 
         out.extend_from_slice(b"PK\x03\x04");
@@ -147,15 +175,12 @@ fn stored_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
         central.extend_from_slice(&local_offset.to_le_bytes());
         central.extend_from_slice(name_bytes);
     }
-    let Some(central_offset): Option<u32> = u32::try_from(out.len()).ok() else {
-        return Vec::new();
-    };
-    let Some(central_size): Option<u32> = u32::try_from(central.len()).ok() else {
-        return Vec::new();
-    };
-    let Some(entry_count): Option<u16> = u16::try_from(entries.len()).ok() else {
-        return Vec::new();
-    };
+    let central_offset: u32 = u32::try_from(out.len())
+        .expect("a constructed stored zip stays far inside the 32-bit offset range");
+    let central_size: u32 = u32::try_from(central.len())
+        .expect("a constructed central directory stays far inside the 32-bit size range");
+    let entry_count: u16 =
+        u16::try_from(entries.len()).expect("a constructed stored zip holds a handful of entries");
     out.extend_from_slice(&central);
     out.extend_from_slice(b"PK\x05\x06");
     out.extend_from_slice(&0u16.to_le_bytes());
@@ -233,104 +258,78 @@ fn malformed_zip_seed() -> Vec<u8> {
     bytes
 }
 
-fn structured_seeds() -> Vec<Vec<u8>> {
-    let pex: Vec<u8> = stored_zip(&[
+fn pex_seed() -> Vec<u8> {
+    stored_zip(&[
         ("PEX-INFO", br#"{"entry_point":"app:main"}"#),
         ("app.py", b"print('pex')\n"),
-    ]);
-    let shiv: Vec<u8> = stored_zip(&[
+    ])
+}
+
+fn shiv_seed() -> Vec<u8> {
+    stored_zip(&[
         (
             "_bootstrap/environment.json",
             br#"{"entry_point":"app:main"}"#,
         ),
         ("_bootstrap/_bootstrap.py", b"pass\n"),
         ("app.py", b"print('shiv')\n"),
-    ]);
-    let zipapp: Vec<u8> = stored_zip(&[("__main__.py", b"print('zipapp')\n")]);
+    ])
+}
+
+fn zipapp_seed() -> Vec<u8> {
+    stored_zip(&[("__main__.py", b"print('zipapp')\n")])
+}
+
+fn corpus() -> Vec<CorpusEntry> {
     vec![
-        Vec::new(),
-        pyc_seed(),
-        py2exe_seed(),
-        pyoxidizer_malformed_seed(),
-        pyoxidizer_v3_seed(),
-        malformed_zip_seed(),
-        pex,
-        shiv,
-        zipapp,
+        CorpusEntry::new("empty", Vec::<u8>::new()),
+        CorpusEntry::new("bare-pyc", pyc_seed()),
+        CorpusEntry::new("py2exe-pe", py2exe_seed()),
+        CorpusEntry::new("pyoxidizer-malformed", pyoxidizer_malformed_seed()),
+        CorpusEntry::new("pyoxidizer-v3", pyoxidizer_v3_seed()),
+        CorpusEntry::new("malformed-zip", malformed_zip_seed()),
+        CorpusEntry::new("pex-zip", pex_seed()),
+        CorpusEntry::new("shiv-zip", shiv_seed()),
+        CorpusEntry::new("zipapp-zip", zipapp_seed()),
+        CorpusEntry::new("random-span", vec![0u8; RANDOM_SPAN_BYTES]),
     ]
 }
 
-fn mutate(seed: &[u8], rng: &mut Xorshift64) -> Vec<u8> {
-    let seed_len: usize = seed.len().min(MAX_INPUT_BYTES);
-    let mut out: Vec<u8> = seed[..seed_len].to_vec();
-    match rng.next_u64() % 7 {
-        0 => {
-            let index: usize = rng.next_usize(out.len());
+fn saturate(bytes: &[u8], case_seed: u64) -> Vec<u8> {
+    let mut rng: XorShift64 = XorShift64::new(case_seed ^ SATURATION_DOMAIN);
+    let mut out: Vec<u8> = bytes.to_vec();
+    let pick: usize = rng.below_usize(SATURATION_PATTERNS.len().saturating_add(1));
+    let Some(&(value, sparsity)): Option<&(u8, u32)> = SATURATION_PATTERNS.get(pick) else {
+        let changes: usize = rng.below_usize(MAX_SCATTERED_OVERWRITES);
+        for _ in 0..changes {
+            let index: usize = rng.below_usize(out.len());
             if let Some(byte) = out.get_mut(index) {
-                *byte ^= 1u8 << rng.next_usize(8);
+                *byte = rng.next_byte();
             }
         }
-        1 => {
-            let len: usize = rng.next_usize(out.len());
-            out.truncate(len);
-        }
-        2 => {
-            let changes: usize = rng.next_usize(32);
-            for _ in 0..changes {
-                let index: usize = rng.next_usize(out.len());
-                if let Some(byte) = out.get_mut(index) {
-                    *byte = rng.next_byte();
-                }
-            }
-        }
-        3 => {
-            for byte in &mut out {
-                if rng.next_u64().trailing_zeros() >= 2 {
-                    *byte = u8::MAX;
-                }
-            }
-        }
-        4 => {
-            let extra: usize = rng.next_usize(64);
-            for _ in 0..extra {
-                if out.len() == MAX_INPUT_BYTES {
-                    break;
-                }
-                out.push(rng.next_byte());
-            }
-        }
-        5 => {
-            for byte in &mut out {
-                if rng.next_u64().trailing_zeros() >= 3 {
-                    *byte = 0;
-                }
-            }
-        }
-        _ => {
-            let len: usize = rng.next_usize(MAX_INPUT_BYTES);
-            let mut random: Vec<u8> = Vec::with_capacity(len);
-            for _ in 0..len {
-                random.push(rng.next_byte());
-            }
-            out = random;
+        return out;
+    };
+    for byte in &mut out {
+        if rng.next_u64().trailing_zeros() >= sparsity {
+            *byte = value;
         }
     }
     out
 }
 
-fn exercise_byte_entrypoints(bytes: &[u8], rng: &mut Xorshift64) {
-    let major: u8 = 2u8.saturating_add(rng.next_byte() % 4);
-    let minor: u8 = rng.next_byte() % 16;
-    let declared_size: u64 = u64::try_from(bytes.len()).map_or(0, |value: u64| value);
+fn exercise_byte_entrypoints(bytes: &[u8], rng: &mut XorShift64) {
+    let major: u8 = OLDEST_MAJOR.saturating_add(rng.next_byte() % MAJOR_SPAN);
+    let minor: u8 = rng.next_byte() % MINOR_SPAN;
+    let declared_size: u64 = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
     let mut bounded: Cursor<&[u8]> = Cursor::new(bytes);
     let mut limited: Cursor<&[u8]> = Cursor::new(bytes);
 
     let _: Detection = detect_bytes(bytes, None);
     let _: Detection = exported_detect_bytes(bytes, None);
-    let _: Result<RecoveredModule> = recover_bytecode("fuzz.pyc", bytes);
-    let _: Result<RecoveredModule> = recover_raw_marshal("fuzz.marshal", bytes, major, minor);
+    let _: Result<RecoveredModule> = recover_bytecode(PYC_NAME, bytes);
+    let _: Result<RecoveredModule> = recover_raw_marshal(MARSHAL_NAME, bytes, major, minor);
     let _: Result<Vec<u8>> = synthesize_pyc(bytes, major, minor);
-    let _: Result<SurfacedNative> = surface_native("fuzz.pyd", bytes);
+    let _: Result<SurfacedNative> = surface_native(NATIVE_NAME, bytes);
     let _: Option<PycFingerprint> = fingerprint(bytes);
     let _: Option<(u8, u8)> = classify_bare_pyc(bytes);
     let _: Option<Shebang> = shebang::parse(bytes);
@@ -341,7 +340,7 @@ fn exercise_byte_entrypoints(bytes: &[u8], rng: &mut Xorshift64) {
     let _: usize = prealloc_for(declared_size);
     let _: std::io::Result<Vec<u8>> = read_to_vec_bounded(&mut bounded, declared_size);
     let _: std::io::Result<Vec<u8>> =
-        read_to_vec_limited(&mut limited, declared_size, MAX_INPUT_BYTES_U64);
+        read_to_vec_limited(&mut limited, declared_size, READ_BOUND_BYTES);
 
     let _: bool = py2exe::pe::looks_like_pe(bytes);
     let _: Option<(u8, u8)> = py2exe::pe::sniff_python_version(bytes);
@@ -366,8 +365,11 @@ fn exercise_byte_entrypoints(bytes: &[u8], rng: &mut Xorshift64) {
     let _: Result<shiv::environment::ShivEnvironment> = shiv::environment::parse(bytes);
 }
 
-fn exercise_file_entrypoints(bytes: &[u8], source: &Path, out_dir: &Path) -> std::io::Result<()> {
-    std::fs::write(source, bytes)?;
+fn exercise_file_entrypoints(bytes: &[u8], scratch: &Scratch) {
+    let out_dir: &Path = scratch.fresh_out_dir();
+    std::fs::write(&scratch.input, bytes)
+        .expect("the stress worker can write its scratch input file");
+    let source: &Path = scratch.input.as_path();
     let quota: ExtractionQuota = test_quota();
 
     let _: Result<Detection> = pass::detect(source);
@@ -396,7 +398,8 @@ fn exercise_file_entrypoints(bytes: &[u8], source: &Path, out_dir: &Path) -> std
     let py2exe_extraction: Result<py2exe::Py2exeExtraction> =
         py2exe::detect_and_extract(bytes, source, out_dir);
     if let Ok(extraction) = py2exe_extraction {
-        let _: Result<RecoveredModule> = extraction.recover_main(3, 12);
+        let _: Result<RecoveredModule> =
+            extraction.recover_main(PY2EXE_RECOVER_ABI.0, PY2EXE_RECOVER_ABI.1);
     }
     let _: Result<pyoxidizer::PyOxidizerExtraction> =
         pyoxidizer::detect_and_extract(bytes, source, out_dir);
@@ -409,9 +412,8 @@ fn exercise_file_entrypoints(bytes: &[u8], source: &Path, out_dir: &Path) -> std
     let _: Result<zipapp::ZipappExtraction> =
         zipapp::detect_and_extract_with_quota(bytes, source, out_dir, quota);
     let _: Result<zipapp::ZipappExtraction> = zipapp::detect_and_extract(bytes, source, out_dir);
-    let _: Result<RecoveredModule> = recover_bytecode_file("fuzz.pyc", source);
-    let _: Result<SurfacedNative> = surface_native_file("fuzz.pyd", source);
-    Ok(())
+    let _: Result<RecoveredModule> = recover_bytecode_file(PYC_NAME, source);
+    let _: Result<SurfacedNative> = surface_native_file(NATIVE_NAME, source);
 }
 
 #[cfg(feature = "chain")]
@@ -434,308 +436,128 @@ fn exercise_chain_entrypoints(bytes: &[u8]) {
         PyfreezePass.extract_children(&artifact);
 }
 
-static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-struct TempWorkspace {
-    path: PathBuf,
-}
-
-impl TempWorkspace {
-    fn create() -> std::io::Result<Self> {
-        for _ in 0..1024 {
-            let path: PathBuf = workspace_dir();
-            match std::fs::create_dir(&path) {
-                Ok(()) => return Ok(Self { path }),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error),
-            }
-        }
-        Err(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "unable to create unique pyfreeze fuzz workspace",
-        ))
-    }
-
-    fn child(&self, index: usize) -> std::io::Result<ChildWorkspace> {
-        let path: PathBuf = self.path.join(format!("worker-{index}"));
-        std::fs::create_dir(&path)?;
-        Ok(ChildWorkspace { path })
-    }
-}
-
-impl Drop for TempWorkspace {
-    fn drop(&mut self) {
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-struct ChildWorkspace {
-    path: PathBuf,
-}
-
-impl Drop for ChildWorkspace {
-    fn drop(&mut self) {
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-fn workspace_dir() -> PathBuf {
-    let sequence: u64 = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "disrobe-pyfreeze-fuzz-{}-{sequence}",
-        std::process::id()
-    ))
-}
-
-fn run_case(
-    bytes: &[u8],
-    rng: &mut Xorshift64,
-    source: &Path,
-    out_dir: &Path,
-) -> std::io::Result<()> {
-    if out_dir.exists() {
-        std::fs::remove_dir_all(out_dir)?;
-    }
-    std::fs::create_dir_all(out_dir)?;
+fn probe(bytes: &[u8], scratch: &Scratch, rng: &mut XorShift64) {
     exercise_byte_entrypoints(bytes, rng);
-    exercise_file_entrypoints(bytes, source, out_dir)?;
+    exercise_file_entrypoints(bytes, scratch);
     #[cfg(feature = "chain")]
     exercise_chain_entrypoints(bytes);
-    Ok(())
 }
 
-fn build_cases() -> Vec<Vec<u8>> {
-    let mut rng: Xorshift64 = Xorshift64::new(0x5046_5A17_0001_0002);
-    let mut cases: Vec<Vec<u8>> = Vec::new();
-    for _ in 0..RANDOM_CASES {
-        let len: usize = rng.next_usize(MAX_INPUT_BYTES);
-        let mut bytes: Vec<u8> = Vec::with_capacity(len);
-        for _ in 0..len {
-            bytes.push(rng.next_byte());
-        }
-        cases.push(bytes);
-    }
-    let seeds: Vec<Vec<u8>> = structured_seeds();
-    for seed in &seeds {
-        cases.push(seed.clone());
-    }
-    for seed in &seeds {
-        for _ in 0..MUTATIONS_PER_SEED {
-            cases.push(mutate(seed, &mut rng));
-        }
-    }
-    cases
+fn check(case: &StressCase<'_>) {
+    let scratch: &Scratch = worker_scratch();
+    let mut rng: XorShift64 = XorShift64::new(case.case_seed() ^ PROBE_DOMAIN);
+    probe(case.bytes(), scratch, &mut rng);
+    probe(&saturate(case.bytes(), case.case_seed()), scratch, &mut rng);
 }
 
-fn write_batch(path: &Path, cases: &[Vec<u8>]) -> std::io::Result<()> {
-    let mut bytes: Vec<u8> = Vec::new();
-    for case in cases {
-        let len: u32 = u32::try_from(case.len()).map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "fuzz case length does not fit u32",
-            )
-        })?;
-        bytes.extend_from_slice(&len.to_le_bytes());
-        bytes.extend_from_slice(case);
-    }
-    std::fs::write(path, bytes)
-}
-
-fn read_batch(path: &Path) -> std::io::Result<Vec<Vec<u8>>> {
-    let file: std::fs::File = std::fs::File::open(path)?;
-    let mut reader: std::io::Take<std::fs::File> = file.take(MAX_BATCH_BYTES_U64 + 1);
-    let mut bytes: Vec<u8> = Vec::with_capacity(MAX_BATCH_BYTES);
-    reader.read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_BATCH_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "fuzz batch exceeds byte limit",
-        ));
-    }
-    let mut cursor: usize = 0;
-    let mut cases: Vec<Vec<u8>> = Vec::with_capacity(CASES_PER_BATCH);
-    while cursor < bytes.len() {
-        if cases.len() == CASES_PER_BATCH {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "fuzz batch exceeds case limit",
-            ));
-        }
-        let length_end: usize = cursor.checked_add(4).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "fuzz batch length cursor overflow",
-            )
-        })?;
-        let length_bytes: [u8; 4] = bytes
-            .get(cursor..length_end)
-            .and_then(|slice: &[u8]| slice.try_into().ok())
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "truncated fuzz batch length",
-                )
-            })?;
-        let declared_len: u32 = u32::from_le_bytes(length_bytes);
-        let case_len: usize = usize::try_from(declared_len).map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "fuzz batch length does not fit usize",
-            )
-        })?;
-        if case_len > MAX_INPUT_BYTES {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "fuzz batch case exceeds input limit",
-            ));
-        }
-        let case_end: usize = length_end.checked_add(case_len).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "fuzz batch case end overflow",
-            )
-        })?;
-        let case: Vec<u8> = bytes
-            .get(length_end..case_end)
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "truncated fuzz batch case",
-                )
-            })?
-            .to_vec();
-        cases.push(case);
-        cursor = case_end;
-    }
-    Ok(cases)
-}
-
-fn confirm_batch_ran(path: &Path, batch_index: usize, expected: usize) -> std::io::Result<()> {
-    let marker: PathBuf = path.with_extension("done");
-    let recorded: String = std::fs::read_to_string(&marker).map_err(|error: std::io::Error| {
-        std::io::Error::other(format!(
-            "fuzz batch {batch_index} exited cleanly without recording a completion marker, so the worker never ran its cases: {error}"
-        ))
-    })?;
-    let processed: usize = recorded.trim().parse().map_err(|_| {
-        std::io::Error::other(format!(
-            "fuzz batch {batch_index} recorded an unreadable case count `{recorded}`"
-        ))
-    })?;
-    if processed != expected {
-        return Err(std::io::Error::other(format!(
-            "fuzz batch {batch_index} processed {processed} cases but the batch held {expected}"
-        )));
-    }
-    Ok(())
-}
-
-fn run_batch(
-    path: &Path,
-    workspace: &Path,
-    batch_index: usize,
-    expected: usize,
-    remaining_budget: Duration,
-) -> std::io::Result<()> {
-    let executable: PathBuf = std::env::current_exe()?;
-    let batch_budget: Duration = BATCH_BUDGET.min(remaining_budget);
-    let mut child: std::process::Child = Command::new(executable)
-        .args([
-            "--ignored",
-            "--exact",
-            "fuzz_resilience_worker",
-            "--nocapture",
-        ])
-        .env(BATCH_PATH_ENV, path)
-        .env(WORKSPACE_PATH_ENV, workspace)
-        .stdout(Stdio::null())
-        .spawn()?;
-    let started: Instant = Instant::now();
-    loop {
-        if let Some(status) = child.try_wait()? {
-            if status.success() {
-                return confirm_batch_ran(path, batch_index, expected);
-            }
-            return Err(std::io::Error::other(format!(
-                "fuzz batch {batch_index} exited with {status}"
-            )));
-        }
-        if started.elapsed() > batch_budget {
-            match child.kill() {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
-                Err(error) => return Err(error),
-            }
-            let _: ExitStatus = child.wait()?;
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("fuzz batch {batch_index} exceeded {batch_budget:?}"),
-            ));
-        }
-        thread::sleep(Duration::from_millis(10));
+fn config() -> StressConfig {
+    StressConfig {
+        cases_per_input: CASES_PER_INPUT,
+        batch_size: BATCH_SIZE,
+        case_budget: CASE_BUDGET,
+        suite_budget: SUITE_BUDGET,
+        ..StressConfig::default()
     }
 }
 
-#[test]
-#[ignore = "runs only through the parent fuzz protocol"]
-fn fuzz_resilience_worker() -> std::io::Result<()> {
-    let Some(batch_path): Option<std::ffi::OsString> = std::env::var_os(BATCH_PATH_ENV) else {
-        return Ok(());
-    };
-    let workspace: PathBuf = std::env::var_os(WORKSPACE_PATH_ENV)
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "missing fuzz worker workspace",
-            )
-        })?;
-    let cases: Vec<Vec<u8>> = read_batch(Path::new(&batch_path))?;
-    let source: PathBuf = workspace.join("input.bin");
-    let out_dir: PathBuf = workspace.join("out");
-    for (case_index, bytes) in cases.iter().enumerate() {
-        let seed: u64 = u64::try_from(case_index).map_or(0, |value: u64| value);
-        let mut rng: Xorshift64 = Xorshift64::new(0x5046_5A17_0001_0002 ^ seed);
-        run_case(bytes, &mut rng, &source, &out_dir)?;
-    }
-    std::fs::write(
-        Path::new(&batch_path).with_extension("done"),
-        cases.len().to_string(),
-    )?;
-    Ok(())
-}
-
-#[test]
-fn bounded_public_parse_entrypoints_accept_malformed_inputs_without_panicking()
--> std::io::Result<()> {
-    let started: Instant = Instant::now();
-    let workspace: TempWorkspace = TempWorkspace::create()?;
-    let cases: Vec<Vec<u8>> = build_cases();
-    for (batch_index, batch) in cases.chunks(CASES_PER_BATCH).enumerate() {
-        let elapsed: Duration = started.elapsed();
-        let remaining_budget: Duration = TEST_BUDGET.checked_sub(elapsed).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("fuzz suite exceeded {TEST_BUDGET:?}"),
-            )
-        })?;
-        let batch_path: PathBuf = workspace.path.join(format!("batch-{batch_index}.bin"));
-        let child_workspace: ChildWorkspace = workspace.child(batch_index)?;
-        write_batch(&batch_path, batch)?;
-        run_batch(
-            &batch_path,
-            &child_workspace.path,
-            batch_index,
-            batch.len(),
-            remaining_budget,
-        )?;
-    }
-
-    let elapsed: Duration = started.elapsed();
-    assert!(
-        elapsed <= TEST_BUDGET,
-        "bounded parser suite exceeded {TEST_BUDGET:?}: {elapsed:?}"
+mod resilience {
+    disrobe_testkit::stress_suite!(
+        check: super::check,
+        corpus: super::corpus,
+        config: super::config
     );
-    Ok(())
+}
+
+#[test]
+fn the_saturation_probe_rewrites_the_bytes_it_is_handed_and_replays_from_its_seed() {
+    const SAMPLE: usize = 512;
+    let original: Vec<u8> = vec![0x33u8; SAMPLE];
+    let mut untouched: usize = 0;
+    let mut distinct: Vec<Vec<u8>> = Vec::new();
+    for case_seed in 0..SAMPLE as u64 {
+        let probed: Vec<u8> = saturate(&original, case_seed);
+        assert_eq!(probed, saturate(&original, case_seed));
+        if probed == original {
+            untouched = untouched.saturating_add(1);
+        }
+        if !distinct.contains(&probed) {
+            distinct.push(probed);
+        }
+    }
+    assert!(
+        untouched < SAMPLE / 16,
+        "{untouched} of {SAMPLE} probe outputs came back unchanged"
+    );
+    assert!(
+        distinct.len() > SAMPLE / 2,
+        "only {} distinct probe outputs",
+        distinct.len()
+    );
+}
+
+#[test]
+fn every_unmutated_seed_finishes() {
+    let scratch: Scratch = Scratch::create(&std::env::temp_dir(), UNMUTATED_SCRATCH_TAG);
+    for entry in corpus() {
+        let mut rng: XorShift64 = XorShift64::new(PROBE_DOMAIN);
+        probe(entry.bytes(), &scratch, &mut rng);
+    }
+}
+
+#[test]
+fn the_constructed_stored_zips_extract_the_entries_the_seeds_claim() {
+    let scratch: Scratch = Scratch::create(&std::env::temp_dir(), CONSTRUCTED_SCRATCH_TAG);
+    let source: &Path = scratch.input.as_path();
+
+    let pex_bytes: Vec<u8> = pex_seed();
+    assert!(
+        zip_tail::is_likely_trailing_zip(&pex_bytes),
+        "a constructed stored zip must read as a zip, or every zip-shaped seed is silently inert"
+    );
+    let tail: ZipTailInfo =
+        zip_tail::locate(&pex_bytes).expect("the constructed pex zip has a locatable tail");
+    assert_eq!(tail.archive_start_offset, 0);
+    std::fs::write(source, &pex_bytes).expect("the scratch input file is writable");
+    let pex_extraction: pex::PexExtraction = pex::detect_and_extract_with_quota(
+        &pex_bytes,
+        source,
+        scratch.fresh_out_dir(),
+        test_quota(),
+    )
+    .expect("the constructed pex zip extracts");
+    assert_eq!(
+        pex_extraction.pex_info.entry_point.as_deref(),
+        Some("app:main")
+    );
+    assert!(!pex_extraction.extracted.is_empty());
+
+    let shiv_bytes: Vec<u8> = shiv_seed();
+    std::fs::write(source, &shiv_bytes).expect("the scratch input file is writable");
+    let shiv_extraction: shiv::ShivExtraction = shiv::detect_and_extract_with_quota(
+        &shiv_bytes,
+        source,
+        scratch.fresh_out_dir(),
+        test_quota(),
+    )
+    .expect("the constructed shiv zip extracts");
+    assert_eq!(
+        shiv_extraction.environment.entry_point.as_deref(),
+        Some("app:main")
+    );
+
+    let zipapp_bytes: Vec<u8> = zipapp_seed();
+    std::fs::write(source, &zipapp_bytes).expect("the scratch input file is writable");
+    let zipapp_extraction: zipapp::ZipappExtraction = zipapp::detect_and_extract_with_quota(
+        &zipapp_bytes,
+        source,
+        scratch.fresh_out_dir(),
+        test_quota(),
+    )
+    .expect("the constructed zipapp extracts");
+    assert!(
+        zipapp_extraction
+            .extracted
+            .iter()
+            .any(|entry: &zipapp::ExtractedEntry| entry.name == "__main__.py")
+    );
 }

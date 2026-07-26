@@ -44,5 +44,6 @@ ruff_python_codegen = { version = "0.0.0", git = "https://github.com/astral-sh/r
 ruff_text_size = { version = "0.0.0", git = "https://github.com/astral-sh/ruff", tag = "0.15.14" }
 
 [dev-dependencies]
+disrobe-testkit = { workspace = true }
 base64 = "0.22"
 ruff_python_parser = { version = "0.0.0", git = "https://github.com/astral-sh/ruff", tag = "0.15.14" }
