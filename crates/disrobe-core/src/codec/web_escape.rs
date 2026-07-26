@@ -9,6 +9,7 @@ const PUNY_INITIAL_BIAS: u32 = 72;
 const PUNY_INITIAL_N: u32 = 128;
 const MAX_WEB_INPUT: usize = 1 << 24;
 const MAX_PUNYCODE_LABEL_OUTPUT: usize = 1024;
+const MAX_ENTITY_NAME: usize = 32;
 
 pub fn percent_decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     if input.len() > MAX_WEB_INPUT {
@@ -87,6 +88,7 @@ pub fn html_entity_decode(input: &str) -> Result<String, DecodeError> {
     let bytes: &[u8] = input.as_bytes();
     let mut out: String = String::with_capacity(input.len());
     let mut i: usize = 0;
+    let mut next_terminator: Option<usize> = memchr::memchr(b';', bytes);
     while i < bytes.len() {
         if bytes[i] != b'&' {
             let ch: char = input[i..]
@@ -97,15 +99,21 @@ pub fn html_entity_decode(input: &str) -> Result<String, DecodeError> {
             i += ch.len_utf8();
             continue;
         }
-        let Some(semicolon) = bytes[i + 1..].iter().position(|&b: &u8| b == b';') else {
-            out.push('&');
-            i += 1;
-            continue;
+        while let Some(at) = next_terminator
+            && at <= i
+        {
+            next_terminator = memchr::memchr(b';', &bytes[at + 1..]).map(|rel: usize| at + 1 + rel);
+        }
+        let Some(terminator) = next_terminator else {
+            out.push_str(&input[i..]);
+            break;
         };
-        let entity: &str = &input[i + 1..i + 1 + semicolon];
-        if let Some(decoded) = decode_one_entity(entity) {
+        let entity: &str = &input[i + 1..terminator];
+        if entity.len() <= MAX_ENTITY_NAME
+            && let Some(decoded) = decode_one_entity(entity)
+        {
             out.push(decoded);
-            i += 1 + semicolon + 1;
+            i = terminator + 1;
         } else {
             out.push('&');
             i += 1;
@@ -301,6 +309,19 @@ mod tests {
             html_entity_decode("&unknown; stays").unwrap(),
             "&unknown; stays"
         );
+    }
+
+    #[test]
+    fn html_entity_scan_bounds_names_and_stops_at_an_unterminated_tail() {
+        assert_eq!(html_entity_decode("&amp; &&& tail").unwrap(), "& &&& tail");
+        assert_eq!(html_entity_decode("&amp;&lt;&x").unwrap(), "&<&x");
+        assert_eq!(html_entity_decode("a&b;c&#65;").unwrap(), "a&b;cA");
+        let long_name: String = format!("&{};", "a".repeat(MAX_ENTITY_NAME + 1));
+        assert_eq!(html_entity_decode(&long_name).unwrap(), long_name);
+        let padded_numeric: String = format!("&#{}65;", "0".repeat(MAX_ENTITY_NAME));
+        assert_eq!(html_entity_decode(&padded_numeric).unwrap(), padded_numeric);
+        let longest_named: String = format!("&{};", "a".repeat(MAX_ENTITY_NAME - 1));
+        assert_eq!(html_entity_decode(&longest_named).unwrap(), longest_named);
     }
 
     #[test]

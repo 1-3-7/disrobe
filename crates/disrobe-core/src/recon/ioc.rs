@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
 use base64::Engine as _;
@@ -707,18 +706,30 @@ fn collect_unix_paths(
     }
 }
 
-fn collect_domains(text: &str, encoding: Encoding, base_offset: usize, out: &mut Vec<Indicator>) {
-    let enclosing: BTreeSet<&str> = URL_RE
+fn match_spans(regex: &Regex, text: &str) -> Vec<(usize, usize)> {
+    regex
         .find_iter(text)
-        .chain(EMAIL_RE.find_iter(text))
-        .map(|m| m.as_str())
-        .collect();
+        .map(|m: regex::Match<'_>| (m.start(), m.end()))
+        .collect()
+}
+
+fn span_encloses(spans: &[(usize, usize)], start: usize, end: usize) -> bool {
+    let next: usize = spans.partition_point(|&(s, _e): &(usize, usize)| s <= start);
+    next > 0
+        && spans
+            .get(next - 1)
+            .is_some_and(|&(_s, e): &(usize, usize)| e >= end)
+}
+
+fn collect_domains(text: &str, encoding: Encoding, base_offset: usize, out: &mut Vec<Indicator>) {
+    let urls: Vec<(usize, usize)> = match_spans(&URL_RE, text);
+    let emails: Vec<(usize, usize)> = match_spans(&EMAIL_RE, text);
     for m in DOMAIN_RE.find_iter(text) {
         if out.len() >= MAX_INDICATORS {
             return;
         }
         let value: &str = m.as_str();
-        if enclosing.iter().any(|u: &&str| u.contains(value)) {
+        if span_encloses(&urls, m.start(), m.end()) || span_encloses(&emails, m.start(), m.end()) {
             continue;
         }
         out.push(Indicator {
