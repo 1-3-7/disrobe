@@ -2800,6 +2800,7 @@ name = "disrobe-py-marshal"
 version = "0.10.4"
 dependencies = [
  "disrobe-bytes",
+ "disrobe-testkit",
  "divan",
  "indexmap 2.14.0",
  "miette",
@@ -2916,6 +2917,10 @@ dependencies = [
  "serde",
  "wat",
 ]
+
+[[package]]
+name = "disrobe-testkit"
+version = "0.10.4"
 
 [[package]]
 name = "disrobe-transcode"

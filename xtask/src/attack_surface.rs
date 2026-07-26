@@ -101,6 +101,10 @@ const NON_PARSER_ALLOWLIST: &[NonParserCrate] = &[
         rationale: "dataflow analysis over the already-lifted Mir-rung IR, downstream of the format parsers",
     },
     NonParserCrate {
+        package_name: "disrobe-testkit",
+        rationale: "test-only stress harness consumed as a dev-dependency; the only format it reads is the batch wire record it wrote itself, and it is absent from every shipped target",
+    },
+    NonParserCrate {
         package_name: "disrobe-vulnmatch",
         rationale: "reachability and rule-match analysis over the already-recovered call graph and taint via read-only adapters, not a raw-input parser",
     },
