@@ -208,7 +208,14 @@ pub fn reconstruct_image(bytes: &[u8]) -> Result<(Vec<u8>, DmgSummary)> {
                 )));
             }
             let out_len: usize = declared as usize;
-            let src_start: usize = (koly.data_fork_offset + chunk.compressed_offset) as usize;
+            let src_start: u64 = koly
+                .data_fork_offset
+                .checked_add(chunk.compressed_offset)
+                .ok_or_else(|| {
+                    Error::Decompression("dmg chunk source offset overflow".to_owned())
+                })?;
+            let src_start: usize = usize::try_from(src_start)
+                .map_err(|_| Error::Decompression("dmg chunk source offset overflow".to_owned()))?;
             let src_end: usize = src_start.saturating_add(chunk.compressed_length as usize);
             let decoded: Vec<u8> = match chunk.entry_type {
                 TYPE_ZERO | TYPE_IGNORE => {
@@ -601,6 +608,31 @@ mod tests {
         assert_eq!(&out[1024..1536], &s2[..]);
         assert_eq!(summary.chunks, 3);
         assert!(summary.unsupported_chunk_types.is_empty());
+    }
+
+    #[test]
+    fn a_fork_offset_that_cannot_be_added_to_a_chunk_offset_is_refused() {
+        let s0: Vec<u8> = vec![0xAA; 512];
+        let s1: Vec<u8> = {
+            let mut v: Vec<u8> = b"ABCABCABC".to_vec();
+            v.resize(512, 0u8);
+            v
+        };
+        let s2: Vec<u8> = (0..512u16).map(|i: u16| (i & 0xff) as u8).collect();
+        let mut image: Vec<u8> = build_dmg(&s0, &s1, &s2);
+        let koly_at: usize = image.len() - KOLY_LEN;
+        image[koly_at + 24..koly_at + 32].copy_from_slice(&u64::MAX.to_be_bytes());
+        assert!(
+            detect_dmg(&image),
+            "the image must still parse as a dmg so the refusal comes from the arithmetic"
+        );
+        let error: Error =
+            reconstruct_image(&image).expect_err("a fork offset that cannot be added is refused");
+        let text: String = format!("{error}");
+        assert!(
+            text.contains("overflow"),
+            "the refusal must name the overflow rather than surfacing as a wrong image: {text}"
+        );
     }
 
     #[test]
