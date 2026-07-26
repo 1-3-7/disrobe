@@ -12143,6 +12143,301 @@ fn sysv_red_zone_leaf_functions_recompile_to_behavioral_equivalence() {
     );
 }
 
+const INDEXED_FRAME_BATTERY: &[Case] = &[
+    Case {
+        name: "sw_arr_add",
+        arity: 3,
+        c_source: "long long sw_arr_add(long long i, long long a, long long b){ long long v[4]; v[0]=a; v[1]=b; v[2]=a+b; v[3]=(a+b)+0x5a5a5a5a5a5a5a5aLL; return v[i & 3]; }",
+    },
+    Case {
+        name: "sw_arr_sub",
+        arity: 3,
+        c_source: "long long sw_arr_sub(long long i, long long a, long long b){ long long v[4]; v[0]=a; v[1]=b; v[2]=a-b; v[3]=(a-b)-0x5a5a5a5a5a5a5a5aLL; return v[i & 3]; }",
+    },
+    Case {
+        name: "sw_arr_mul",
+        arity: 3,
+        c_source: "long long sw_arr_mul(long long i, long long a, long long b){ long long v[4]; v[0]=a; v[1]=b; v[2]=a*b; v[3]=(a*b)*0x5a5a5a5a5a5a5a5aLL; return v[i & 3]; }",
+    },
+    Case {
+        name: "sw_arr_and",
+        arity: 3,
+        c_source: "long long sw_arr_and(long long i, long long a, long long b){ long long v[4]; v[0]=a; v[1]=b; v[2]=a&b; v[3]=(a&b)&0x5a5a5a5a5a5a5a5aLL; return v[i & 3]; }",
+    },
+    Case {
+        name: "sw_arr_or",
+        arity: 3,
+        c_source: "long long sw_arr_or(long long i, long long a, long long b){ long long v[4]; v[0]=a; v[1]=b; v[2]=a|b; v[3]=(a|b)|0x5a5a5a5a5a5a5a5aLL; return v[i & 3]; }",
+    },
+    Case {
+        name: "sw_arr_xor",
+        arity: 3,
+        c_source: "long long sw_arr_xor(long long i, long long a, long long b){ long long v[4]; v[0]=a; v[1]=b; v[2]=a^b; v[3]=(a^b)^0x5a5a5a5a5a5a5a5aLL; return v[i & 3]; }",
+    },
+    Case {
+        name: "sw_arr_store",
+        arity: 3,
+        c_source: "long long sw_arr_store(long long i, long long a, long long b){ long long v[4]; v[0]=a; v[1]=b; v[2]=a^b; v[3]=a+b; v[i & 3] = a*b+1; return v[0]+v[1]*3+v[2]*5+v[3]*7; }",
+    },
+    Case {
+        name: "sw_arr_u32",
+        arity: 3,
+        c_source: "long long sw_arr_u32(long long i, long long a, long long b){ unsigned int v[4]; v[0]=(unsigned)a; v[1]=(unsigned)b; v[2]=(unsigned)(a+b); v[3]=(unsigned)(a^b); return (long long)v[i & 3]; }",
+    },
+    Case {
+        name: "sw_arr_mask1",
+        arity: 3,
+        c_source: "long long sw_arr_mask1(long long i, long long a, long long b){ long long v[3]; v[0]=a; v[1]=b; v[2]=a+b; return v[i & 1] + v[2]; }",
+    },
+];
+
+struct IndexedFrameShape {
+    index: String,
+    scale: u8,
+    disp: i64,
+    elements: i64,
+}
+
+fn quad_name(dword: &str) -> Option<String> {
+    match dword {
+        "eax" => Some("rax".to_owned()),
+        "ebx" => Some("rbx".to_owned()),
+        "ecx" => Some("rcx".to_owned()),
+        "edx" => Some("rdx".to_owned()),
+        "esi" => Some("rsi".to_owned()),
+        "edi" => Some("rdi".to_owned()),
+        "ebp" => Some("rbp".to_owned()),
+        other => other
+            .strip_suffix('d')
+            .filter(|stem: &&str| stem.starts_with('r'))
+            .map(str::to_owned),
+    }
+}
+
+fn parse_masm_i64(token: &str) -> Option<i64> {
+    let (negative, body): (bool, &str) = token.strip_prefix('-').map_or_else(
+        || (false, token.strip_prefix('+').unwrap_or(token)),
+        |rest: &str| (true, rest),
+    );
+    let (digits, radix): (&str, u32) = body
+        .strip_suffix('h')
+        .map_or((body, 10), |hex: &str| (hex, 16));
+    let value: i64 = i64::from_str_radix(digits, radix).ok()?;
+    Some(if negative { -value } else { value })
+}
+
+fn indexed_rsp_accesses(operands: &str) -> Vec<(String, u8, i64)> {
+    let mut out: Vec<(String, u8, i64)> = Vec::new();
+    let mut rest: &str = operands;
+    while let Some(at) = rest.find("[rsp+") {
+        let tail: &str = rest.get(at + 5..).unwrap_or_default();
+        let Some(close): Option<usize> = tail.find(']') else {
+            break;
+        };
+        let inner: &str = tail.get(..close).unwrap_or_default();
+        rest = tail.get(close..).unwrap_or_default();
+        let Some((index, after)): Option<(&str, &str)> = inner.split_once('*') else {
+            continue;
+        };
+        let scale_digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+        let Ok(scale): Result<u8, _> = scale_digits.parse::<u8>() else {
+            continue;
+        };
+        let disp_token: &str = after.get(scale_digits.len()..).unwrap_or_default();
+        let disp: i64 = if disp_token.is_empty() {
+            0
+        } else {
+            match parse_masm_i64(disp_token) {
+                Some(value) => value,
+                None => continue,
+            }
+        };
+        out.push((index.to_owned(), scale, disp));
+    }
+    out
+}
+
+fn index_mask_bound(operands: &str) -> Option<(String, i64)> {
+    let (lhs, rhs): (&str, &str) = operands.split_once(',')?;
+    let bound: i64 = parse_masm_i64(rhs.trim())?;
+    quad_name(lhs.trim()).map(|reg: String| (reg, bound))
+}
+
+fn assert_indexed_frame_encoding(object_bytes: &[u8], name: &str) -> IndexedFrameShape {
+    let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(object_bytes, name) else {
+        panic!("indexed-frame row {name}: symbol not located");
+    };
+    let insns: Vec<DisasmInsn> =
+        disassemble(Arch::X86_64, base, &code).expect("disassemble indexed-frame row");
+    let shape: RedZoneShape = red_zone_shape(&insns);
+    assert!(
+        !shape.adjusts_stack,
+        "indexed-frame row {name} must not adjust the stack pointer, so its frame really is the red zone: {insns:?}"
+    );
+    let mut bounds: Vec<(String, i64)> = Vec::new();
+    let mut found: Option<IndexedFrameShape> = None;
+    for insn in &insns {
+        for (index, scale, disp) in indexed_rsp_accesses(&insn.operands) {
+            let Some((_, bound)): Option<&(String, i64)> = bounds
+                .iter()
+                .find(|(reg, _): &&(String, i64)| *reg == index)
+            else {
+                panic!(
+                    "indexed-frame row {name} indexes the frame with {index} before any mask bounds it: {} {}",
+                    insn.mnemonic, insn.operands
+                );
+            };
+            let elements: i64 = bound + 1;
+            let end: i64 = disp + elements * i64::from(scale);
+            assert!(
+                (-128..0).contains(&disp) && end <= 0,
+                "indexed-frame row {name} must keep its whole element range inside the red zone, got [{disp}, {end})"
+            );
+            assert!(
+                matches!(scale, 1 | 2 | 4 | 8),
+                "indexed-frame row {name} must use a machine element stride, got {scale}"
+            );
+            if found.is_none() {
+                found = Some(IndexedFrameShape {
+                    index: index.clone(),
+                    scale,
+                    disp,
+                    elements,
+                });
+            }
+        }
+        if insn.mnemonic == "and"
+            && let Some((reg, bound)) = index_mask_bound(&insn.operands)
+        {
+            bounds.retain(|(existing, _): &(String, i64)| *existing != reg);
+            bounds.push((reg, bound));
+        }
+    }
+    let Some(shape): Option<IndexedFrameShape> = found else {
+        panic!(
+            "indexed-frame row {name} must contain an indexed rsp frame access: {}",
+            insns
+                .iter()
+                .map(|i: &DisasmInsn| format!("{} {}", i.mnemonic, i.operands))
+                .collect::<Vec<String>>()
+                .join("; ")
+        );
+    };
+    shape
+}
+
+fn build_indexed_frame_driver(recovered_decls: &str, driver_body: &str) -> String {
+    format!(
+        "#include <stdint.h>\n#include <stdio.h>\n#include <stddef.h>\n{recovered_decls}\n\
+         int main(void) {{\n\
+         \x20   long long inputs[][3] = {{\n\
+         \x20       {{0,0x0123456789abcdefLL,0x1032547698badcfeLL}},\n\
+         \x20       {{1,0x0123456789abcdefLL,0x1032547698badcfeLL}},\n\
+         \x20       {{2,0x0123456789abcdefLL,0x1032547698badcfeLL}},\n\
+         \x20       {{3,0x0123456789abcdefLL,0x1032547698badcfeLL}},\n\
+         \x20       {{4,0x0123456789abcdefLL,0x1032547698badcfeLL}},\n\
+         \x20       {{5,0x0123456789abcdefLL,0x1032547698badcfeLL}},\n\
+         \x20       {{6,0x0123456789abcdefLL,0x1032547698badcfeLL}},\n\
+         \x20       {{7,0x0123456789abcdefLL,0x1032547698badcfeLL}},\n\
+         \x20       {{8,0x0123456789abcdefLL,0x1032547698badcfeLL}},\n\
+         \x20       {{-1,0x0123456789abcdefLL,0x1032547698badcfeLL}},\n\
+         \x20       {{-4,0x0123456789abcdefLL,0x1032547698badcfeLL}},\n\
+         \x20       {{0x7fffffffffffffffLL,0x0123456789abcdefLL,0x1032547698badcfeLL}},\n\
+         \x20       {{(long long)0x8000000000000000ULL,0x0123456789abcdefLL,0x1032547698badcfeLL}},\n\
+         \x20       {{0x100000003LL,0x0123456789abcdefLL,0x1032547698badcfeLL}},\n\
+         \x20       {{0x300000000LL,0x0123456789abcdefLL,0x1032547698badcfeLL}},\n\
+         \x20       {{0,0x5555555555555555LL,(long long)0xaaaaaaaaaaaaaaaaULL}},\n\
+         \x20       {{1,0x5555555555555555LL,(long long)0xaaaaaaaaaaaaaaaaULL}},\n\
+         \x20       {{2,0x5555555555555555LL,(long long)0xaaaaaaaaaaaaaaaaULL}},\n\
+         \x20       {{3,0x5555555555555555LL,(long long)0xaaaaaaaaaaaaaaaaULL}},\n\
+         \x20       {{0,-1,-1}},{{1,-1,0}},{{2,0,-1}},{{3,1,-1}},\n\
+         \x20       {{0,0xffLL,0xff00LL}},{{1,0x100LL,0x10000LL}},\n\
+         \x20       {{2,0x80LL,(long long)0x80000000LL}},{{3,123456789LL,-987654321LL}},\n\
+         \x20       {{0,0x7fffffffffffffffLL,(long long)0x8000000000000000ULL}},\n\
+         \x20       {{3,0x7fffffffffffffffLL,(long long)0x8000000000000000ULL}}\n\
+         \x20   }};\n\
+         \x20   size_t n_inputs = sizeof(inputs)/sizeof(inputs[0]);\n\
+         {driver_body}\
+         \x20   printf(\"OK\\n\");\n\
+         \x20   return 0;\n\
+         }}\n"
+    )
+}
+
+#[test]
+fn sysv_mask_bounded_indexed_frame_arrays_recompile_to_behavioral_equivalence() {
+    if !sysv_host_can_run() {
+        return;
+    }
+    let Some(objs): Option<SysvCrossObjects> =
+        compile_sysv_cross("ix", &battery_source(INDEXED_FRAME_BATTERY))
+    else {
+        return;
+    };
+
+    let mut recovered_decls: String = String::new();
+    let mut driver_body: String = String::new();
+    let mut widest: i64 = 0;
+    for case in INDEXED_FRAME_BATTERY {
+        let shape: IndexedFrameShape = assert_indexed_frame_encoding(&objs.sysv_object, case.name);
+        widest = widest.max(shape.elements);
+        println!(
+            "indexed-frame row {} accesses [rsp+{}*{}{:+}] over {} elements",
+            case.name, shape.index, shape.scale, shape.disp, shape.elements
+        );
+        let Some((code, base)): Option<(Vec<u8>, u64)> =
+            function_code(&objs.sysv_object, case.name)
+        else {
+            panic!("indexed-frame row {}: symbol not located", case.name);
+        };
+        let recovery: LeafRecovery = recover_leaf_function_abi(&code, base, PseudoAbi::SysV)
+            .unwrap_or_else(|e: disrobe_pass_native::Error| {
+                panic!("indexed-frame row {} must recover, got: {e}", case.name)
+            });
+        assert!(
+            recovery
+                .source
+                .contains("r_rsp = (uint64_t)(uintptr_t)(stack_frame +"),
+            "indexed-frame row {} must model its element array as a local frame:\n{}",
+            case.name,
+            recovery.source
+        );
+        assert!(
+            recovery
+                .source
+                .contains(&format!("r_{} * {}ULL", shape.index, shape.scale)),
+            "indexed-frame row {} must keep the runtime index and its stride:\n{}",
+            case.name,
+            recovery.source
+        );
+        let Some(lifted): Option<Lifted> = process_case(case, &objs.sysv_object, PseudoAbi::SysV)
+        else {
+            panic!(
+                "indexed-frame row {} must lift into the graded driver",
+                case.name
+            );
+        };
+        recovered_decls.push_str(&lifted.decls);
+        driver_body.push_str(&lifted.driver_snippet);
+    }
+    assert!(
+        widest >= 4,
+        "the indexed-frame battery must reach a four-element region, widest was {widest}"
+    );
+
+    let driver: String = build_indexed_frame_driver(&recovered_decls, &driver_body);
+    let stdout: String = link_and_run_sysv("ix", &driver, &objs.host_object, 30);
+    assert!(
+        stdout.contains("OK"),
+        "SysV indexed-frame behavioral differential FAILED ({} cases): {stdout}",
+        INDEXED_FRAME_BATTERY.len()
+    );
+    println!(
+        "SysV indexed-frame behavioral differential PASSED for {} mask-bounded runtime-index leaf functions (SysV ABI)",
+        INDEXED_FRAME_BATTERY.len()
+    );
+}
+
 const FP_RED_ZONE_BATTERY: &[FpCase] = &[
     FpCase {
         name: "rzf_dslot",

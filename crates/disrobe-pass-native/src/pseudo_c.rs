@@ -4628,7 +4628,7 @@ fn red_zone_rsp_uses_are_contained(operands: &str) -> bool {
                 return false;
             };
             if base != Some(Reg::Rsp)
-                || index.is_some()
+                || index.is_some_and(|idx: IndexOperand| idx.reg == Reg::Rsp)
                 || !(-SYSV_RED_ZONE_BYTES..0).contains(&disp)
             {
                 return false;
@@ -11274,10 +11274,114 @@ struct FramePlan {
     base_offset: usize,
 }
 
+const INDEXED_FRAME_MAX_ELEMENTS: u64 = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IndexedRegion {
+    disp: i64,
+    end: i64,
+    scale: u8,
+    width: Width,
+    elements: u64,
+}
+
+#[derive(Debug, Default)]
+struct FrameScanState {
+    slots: Vec<(i64, Width)>,
+    regions: Vec<IndexedRegion>,
+    bounds: BTreeMap<Reg, u64>,
+    misuse: bool,
+}
+
+const fn masked_index_bound(stmt: &Stmt) -> Option<(Reg, u64)> {
+    let Stmt::BinAssign {
+        dest,
+        op: BinOp::And,
+        src: Source::Imm(mask),
+    } = stmt
+    else {
+        return None;
+    };
+    match dest.width {
+        Width::W64 => Some((dest.reg, *mask as u64)),
+        Width::W32 => Some((dest.reg, (*mask as u64) & 0xffff_ffff)),
+        Width::W16 | Width::W8 => None,
+    }
+}
+
+fn forget_written_bounds(stmt: &Stmt, bounds: &mut BTreeMap<Reg, u64>) {
+    match enumerable_gpr_writes(stmt) {
+        None => bounds.clear(),
+        Some(writes) => {
+            for write in &writes {
+                bounds.remove(&write.reg);
+            }
+        }
+    }
+}
+
+fn forget_block_bounds(body: &Block, bounds: &mut BTreeMap<Reg, u64>) {
+    for node in body {
+        match node {
+            Node::Stmt(stmt) => forget_written_bounds(stmt, bounds),
+            Node::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                forget_block_bounds(then_body, bounds);
+                if let Some(else_b) = else_body {
+                    forget_block_bounds(else_b, bounds);
+                }
+            }
+            Node::DoWhile { body, .. } | Node::While { body, .. } => {
+                forget_block_bounds(body, bounds);
+            }
+            Node::Switch { cases, default, .. } => {
+                for case in cases {
+                    forget_block_bounds(&case.body, bounds);
+                }
+                forget_block_bounds(default, bounds);
+            }
+            Node::CondSnapshot { .. }
+            | Node::Break
+            | Node::Continue
+            | Node::Return
+            | Node::Label(_)
+            | Node::Goto(_) => {}
+        }
+    }
+}
+
+fn block_has_unstructured_edge(body: &Block) -> bool {
+    body.iter().any(|node: &Node| match node {
+        Node::Label(_) | Node::Goto(_) => true,
+        Node::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            block_has_unstructured_edge(then_body)
+                || else_body.as_ref().is_some_and(block_has_unstructured_edge)
+        }
+        Node::DoWhile { body, .. } | Node::While { body, .. } => block_has_unstructured_edge(body),
+        Node::Switch { cases, default, .. } => {
+            cases
+                .iter()
+                .any(|case: &SwitchCase| block_has_unstructured_edge(&case.body))
+                || block_has_unstructured_edge(default)
+        }
+        Node::Stmt(_) | Node::CondSnapshot { .. } | Node::Break | Node::Continue | Node::Return => {
+            false
+        }
+    })
+}
+
 #[derive(Debug, Clone, Copy)]
 struct FrameScan {
     frame_base: Option<Reg>,
     rbp_is_frame: bool,
+    indexed_modelable: bool,
 }
 
 impl FrameScan {
@@ -11285,139 +11389,167 @@ impl FrameScan {
         reg == Reg::Rsp || (self.rbp_is_frame && reg == Reg::Rbp)
     }
 
-    fn note_reg(self, reg: Reg, misuse: &mut bool) {
+    fn note_reg(self, reg: Reg, state: &mut FrameScanState) {
         if self.is_stack_reg(reg) {
-            *misuse = true;
+            state.misuse = true;
         }
     }
 
-    fn note_mem(self, mem: &MemRef, slots: &mut Vec<(i64, Width)>, misuse: &mut bool) {
+    fn indexed_region(
+        self,
+        mem: &MemRef,
+        idx: IndexOperand,
+        bounds: &BTreeMap<Reg, u64>,
+    ) -> Option<IndexedRegion> {
+        if !self.indexed_modelable
+            || idx.extend != IndexExtend::Full
+            || self.is_stack_reg(idx.reg)
+            || !matches!(idx.scale, 1 | 2 | 4 | 8)
+            || u32::from(idx.scale) != mem.width.bits() / 8
+        {
+            return None;
+        }
+        let elements: u64 = bounds.get(&idx.reg)?.checked_add(1)?;
+        if elements > INDEXED_FRAME_MAX_ELEMENTS {
+            return None;
+        }
+        let span: i64 = i64::try_from(elements.checked_mul(u64::from(idx.scale))?).ok()?;
+        Some(IndexedRegion {
+            disp: mem.disp,
+            end: mem.disp.checked_add(span)?,
+            scale: idx.scale,
+            width: mem.width,
+            elements,
+        })
+    }
+
+    fn note_mem(self, mem: &MemRef, state: &mut FrameScanState) {
         if let Some(idx) = mem.index
             && self.is_stack_reg(idx.reg)
         {
-            *misuse = true;
+            state.misuse = true;
         }
         match mem.base {
-            Some(b) if Some(b) == self.frame_base => {
-                if mem.index.is_some() {
-                    *misuse = true;
-                } else {
-                    slots.push((mem.disp, mem.width));
-                }
-            }
-            Some(b) if self.is_stack_reg(b) => *misuse = true,
+            Some(b) if Some(b) == self.frame_base => match mem.index {
+                None => state.slots.push((mem.disp, mem.width)),
+                Some(idx) => match self.indexed_region(mem, idx, &state.bounds) {
+                    Some(region) => state.regions.push(region),
+                    None => state.misuse = true,
+                },
+            },
+            Some(b) if self.is_stack_reg(b) => state.misuse = true,
             _ => {}
         }
     }
 
-    fn note_source(self, src: &Source, slots: &mut Vec<(i64, Width)>, misuse: &mut bool) {
+    fn note_source(self, src: &Source, state: &mut FrameScanState) {
         match src {
-            Source::Reg(r) => self.note_reg(r.reg, misuse),
+            Source::Reg(r) => self.note_reg(r.reg, state),
             Source::Imm(_) => {}
             Source::Lea { base, index, .. } => {
                 if base.is_some_and(|b: Reg| self.is_stack_reg(b))
                     || index.is_some_and(|idx: IndexOperand| self.is_stack_reg(idx.reg))
                 {
-                    *misuse = true;
+                    state.misuse = true;
                 }
             }
-            Source::Mem(mem) => self.note_mem(mem, slots, misuse),
+            Source::Mem(mem) => self.note_mem(mem, state),
         }
     }
 
-    fn note_fp(self, op: &FpOperand, slots: &mut Vec<(i64, Width)>, misuse: &mut bool) {
+    fn note_fp(self, op: &FpOperand, state: &mut FrameScanState) {
         if let FpOperand::Mem(mem) = op {
-            self.note_mem(mem, slots, misuse);
+            self.note_mem(mem, state);
         }
     }
 
-    fn note_flags(self, flags: &Flags, slots: &mut Vec<(i64, Width)>, misuse: &mut bool) {
+    fn note_flags(self, flags: &Flags, state: &mut FrameScanState) {
         match flags {
             Flags::Cmp { lhs, rhs } | Flags::Add { lhs, rhs } => {
-                self.note_reg(lhs.reg, misuse);
-                self.note_source(rhs, slots, misuse);
+                self.note_reg(lhs.reg, state);
+                self.note_source(rhs, state);
             }
             Flags::CmpMem { lhs, rhs } => {
-                self.note_mem(lhs, slots, misuse);
-                self.note_source(rhs, slots, misuse);
+                self.note_mem(lhs, state);
+                self.note_source(rhs, state);
             }
             Flags::Test { operand } | Flags::TestImm { operand, .. } => {
-                self.note_reg(operand.reg, misuse);
+                self.note_reg(operand.reg, state);
             }
-            Flags::Sign { result } => self.note_reg(result.reg, misuse),
-            Flags::FpCmp { rhs, .. } => self.note_fp(rhs, slots, misuse),
+            Flags::Sign { result } => self.note_reg(result.reg, state),
+            Flags::FpCmp { rhs, .. } => self.note_fp(rhs, state),
             Flags::Snapshot { .. } => {}
             Flags::CondCmp { prior, taken, .. } => {
-                self.note_flags(prior, slots, misuse);
-                self.note_flags(taken, slots, misuse);
+                self.note_flags(prior, state);
+                self.note_flags(taken, state);
             }
         }
     }
 
-    fn note_stmt(self, stmt: &Stmt, slots: &mut Vec<(i64, Width)>, misuse: &mut bool) {
+    fn note_stmt(self, stmt: &Stmt, state: &mut FrameScanState) {
         match stmt {
             Stmt::Assign { dest, src } | Stmt::BinAssign { dest, src, .. } => {
-                self.note_reg(dest.reg, misuse);
-                self.note_source(src, slots, misuse);
+                self.note_reg(dest.reg, state);
+                self.note_source(src, state);
             }
-            Stmt::UnAssign { dest, .. } => self.note_reg(dest.reg, misuse),
+            Stmt::UnAssign { dest, .. } => self.note_reg(dest.reg, state),
             Stmt::Cond {
                 dest, src, flags, ..
             } => {
-                self.note_reg(dest.reg, misuse);
-                self.note_source(src, slots, misuse);
-                self.note_flags(flags, slots, misuse);
+                self.note_reg(dest.reg, state);
+                self.note_source(src, state);
+                self.note_flags(flags, state);
             }
             Stmt::SetCc { dest, flags, .. } => {
-                self.note_reg(dest.reg, misuse);
-                self.note_flags(flags, slots, misuse);
+                self.note_reg(dest.reg, state);
+                self.note_flags(flags, state);
             }
             Stmt::Store { addr, src } => {
-                self.note_mem(addr, slots, misuse);
-                self.note_source(src, slots, misuse);
+                self.note_mem(addr, state);
+                self.note_source(src, state);
             }
             Stmt::MemRmw { addr, op } => {
-                self.note_mem(addr, slots, misuse);
+                self.note_mem(addr, state);
                 if let Some(src) = op.source() {
-                    self.note_source(src, slots, misuse);
+                    self.note_source(src, state);
                 }
             }
             Stmt::Extend { dest, src, .. } => {
-                self.note_reg(dest.reg, misuse);
+                self.note_reg(dest.reg, state);
                 match src {
-                    ExtSource::Reg(r) => self.note_reg(r.reg, misuse),
-                    ExtSource::Mem(mem) => self.note_mem(mem, slots, misuse),
+                    ExtSource::Reg(r) => self.note_reg(r.reg, state),
+                    ExtSource::Mem(mem) => self.note_mem(mem, state),
                 }
             }
             Stmt::MulImm { dest, src, .. } => {
-                self.note_reg(dest.reg, misuse);
+                self.note_reg(dest.reg, state);
                 match src {
-                    ExtSource::Reg(r) => self.note_reg(r.reg, misuse),
-                    ExtSource::Mem(mem) => self.note_mem(mem, slots, misuse),
+                    ExtSource::Reg(r) => self.note_reg(r.reg, state),
+                    ExtSource::Mem(mem) => self.note_mem(mem, state),
                 }
             }
-            Stmt::WideMul { src } => self.note_reg(src.reg, misuse),
-            Stmt::Divide { divisor, .. } => self.note_reg(divisor.reg, misuse),
+            Stmt::WideMul { src } => self.note_reg(src.reg, state),
+            Stmt::Divide { divisor, .. } => self.note_reg(divisor.reg, state),
             Stmt::DoubleShift { dest, src, .. } => {
-                self.note_reg(dest.reg, misuse);
-                self.note_reg(src.reg, misuse);
+                self.note_reg(dest.reg, state);
+                self.note_reg(src.reg, state);
             }
-            Stmt::IntToFp { src, .. } => self.note_reg(src.reg, misuse),
-            Stmt::FpToInt { dest, .. } => self.note_reg(dest.reg, misuse),
-            Stmt::GprToXmm { src, .. } => self.note_reg(src.reg, misuse),
-            Stmt::XmmToGpr { dest, .. } => self.note_reg(dest.reg, misuse),
+            Stmt::IntToFp { src, .. } => self.note_reg(src.reg, state),
+            Stmt::FpToInt { dest, .. } => self.note_reg(dest.reg, state),
+            Stmt::GprToXmm { src, .. } => self.note_reg(src.reg, state),
+            Stmt::XmmToGpr { dest, .. } => self.note_reg(dest.reg, state),
             Stmt::FpBin { lhs, rhs, .. } => {
-                self.note_fp(lhs, slots, misuse);
-                self.note_fp(rhs, slots, misuse);
+                self.note_fp(lhs, state);
+                self.note_fp(rhs, state);
             }
-            Stmt::FpMov { src, .. } => self.note_fp(src, slots, misuse),
+            Stmt::FpMov { src, .. } => self.note_fp(src, state),
             Stmt::FpSqrt { src, .. } | Stmt::FpUnary { src, .. } => {
-                self.note_fp(src, slots, misuse);
+                self.note_fp(src, state);
             }
-            Stmt::FpRound { src, .. } => self.note_fp(src, slots, misuse),
+            Stmt::FpRound { src, .. } => self.note_fp(src, state),
             Stmt::FpMinMax { lhs, rhs, .. } => {
-                self.note_fp(lhs, slots, misuse);
-                self.note_fp(rhs, slots, misuse);
+                self.note_fp(lhs, state);
+                self.note_fp(rhs, state);
             }
             Stmt::FpFma {
                 mul_lhs,
@@ -11425,9 +11557,9 @@ impl FrameScan {
                 addend,
                 ..
             } => {
-                self.note_fp(mul_lhs, slots, misuse);
-                self.note_fp(mul_rhs, slots, misuse);
-                self.note_fp(addend, slots, misuse);
+                self.note_fp(mul_lhs, state);
+                self.note_fp(mul_rhs, state);
+                self.note_fp(addend, state);
             }
             Stmt::FpCsel {
                 if_true,
@@ -11435,24 +11567,24 @@ impl FrameScan {
                 flags,
                 ..
             } => {
-                self.note_fp(if_true, slots, misuse);
-                self.note_fp(if_false, slots, misuse);
-                self.note_flags(flags, slots, misuse);
+                self.note_fp(if_true, state);
+                self.note_fp(if_false, state);
+                self.note_flags(flags, state);
             }
-            Stmt::FpStore { addr, .. } => self.note_mem(addr, slots, misuse),
-            Stmt::FlagSnapshot { flags, .. } => self.note_flags(flags, slots, misuse),
+            Stmt::FpStore { addr, .. } => self.note_mem(addr, state),
+            Stmt::FlagSnapshot { flags, .. } => self.note_flags(flags, state),
             Stmt::Packed { op, .. } => {
                 if let PackedOp::FromGpr { src } = op {
-                    self.note_reg(src.reg, misuse);
+                    self.note_reg(src.reg, state);
                 }
             }
-            Stmt::PackedToGpr { dest, .. } => self.note_reg(dest.reg, misuse),
+            Stmt::PackedToGpr { dest, .. } => self.note_reg(dest.reg, state),
             Stmt::Vector(vec) => match vec {
                 VecStmt::Load { addr, .. } | VecStmt::Store { addr, .. } => {
-                    self.note_mem(addr, slots, misuse);
+                    self.note_mem(addr, state);
                 }
                 VecStmt::Dup { src, .. } | VecStmt::LaneInsert { src, .. } => {
-                    self.note_reg(src.reg, misuse);
+                    self.note_reg(src.reg, state);
                 }
                 VecStmt::Bin { .. }
                 | VecStmt::Compare { .. }
@@ -11470,70 +11602,145 @@ impl FrameScan {
     }
 }
 
-fn scan_frame_block(
-    ctx: FrameScan,
-    body: &Block,
-    slots: &mut Vec<(i64, Width)>,
-    misuse: &mut bool,
-) {
+fn scan_frame_block(ctx: FrameScan, body: &Block, state: &mut FrameScanState) {
     for node in body {
         match node {
-            Node::Stmt(stmt) => ctx.note_stmt(stmt, slots, misuse),
+            Node::Stmt(stmt) => {
+                ctx.note_stmt(stmt, state);
+                forget_written_bounds(stmt, &mut state.bounds);
+                if let Some((reg, bound)) = masked_index_bound(stmt) {
+                    state.bounds.insert(reg, bound);
+                }
+            }
             Node::If {
                 cond,
                 then_body,
                 else_body,
             } => {
                 cond.visit_leaves(&mut |_: CondKind, flags: &Flags| {
-                    ctx.note_flags(flags, slots, misuse);
+                    ctx.note_flags(flags, state);
                 });
-                scan_frame_block(ctx, then_body, slots, misuse);
+                let entry: BTreeMap<Reg, u64> = state.bounds.clone();
+                scan_frame_block(ctx, then_body, state);
                 if let Some(else_b) = else_body {
-                    scan_frame_block(ctx, else_b, slots, misuse);
+                    state.bounds = entry.clone();
+                    scan_frame_block(ctx, else_b, state);
+                }
+                state.bounds = entry;
+                forget_block_bounds(then_body, &mut state.bounds);
+                if let Some(else_b) = else_body {
+                    forget_block_bounds(else_b, &mut state.bounds);
                 }
             }
             Node::DoWhile { body, cond } => {
-                scan_frame_block(ctx, body, slots, misuse);
+                forget_block_bounds(body, &mut state.bounds);
+                scan_frame_block(ctx, body, state);
                 if let LoopCond::Direct { flags, .. } = cond {
-                    ctx.note_flags(flags, slots, misuse);
+                    ctx.note_flags(flags, state);
                 }
+                forget_block_bounds(body, &mut state.bounds);
             }
             Node::While { body, cond } => {
-                scan_frame_block(ctx, body, slots, misuse);
+                forget_block_bounds(body, &mut state.bounds);
+                scan_frame_block(ctx, body, state);
                 if let Some(LoopCond::Direct { flags, .. }) = cond {
-                    ctx.note_flags(flags, slots, misuse);
+                    ctx.note_flags(flags, state);
                 }
+                forget_block_bounds(body, &mut state.bounds);
             }
             Node::Switch {
                 disc,
                 cases,
                 default,
             } => {
-                ctx.note_reg(disc.reg, misuse);
+                ctx.note_reg(disc.reg, state);
                 for case in cases {
-                    scan_frame_block(ctx, &case.body, slots, misuse);
+                    forget_block_bounds(&case.body, &mut state.bounds);
                 }
-                scan_frame_block(ctx, default, slots, misuse);
+                forget_block_bounds(default, &mut state.bounds);
+                let entry: BTreeMap<Reg, u64> = state.bounds.clone();
+                for case in cases {
+                    state.bounds = entry.clone();
+                    scan_frame_block(ctx, &case.body, state);
+                }
+                state.bounds = entry;
+                scan_frame_block(ctx, default, state);
             }
-            Node::CondSnapshot { flags, .. } => ctx.note_flags(flags, slots, misuse),
+            Node::CondSnapshot { flags, .. } => ctx.note_flags(flags, state),
             Node::Break | Node::Continue | Node::Return | Node::Label(_) | Node::Goto(_) => {}
         }
     }
+}
+
+fn merged_slot_extents(slots: &[(i64, Width)]) -> Vec<(i64, i64)> {
+    let mut spans: Vec<(i64, i64)> = slots
+        .iter()
+        .filter_map(|(disp, width): &(i64, Width)| {
+            Some((*disp, disp.checked_add(i64::from(width.bits() / 8))?))
+        })
+        .collect();
+    spans.sort_unstable();
+    let mut merged: Vec<(i64, i64)> = Vec::with_capacity(spans.len());
+    for (start, end) in spans {
+        match merged.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+    merged
+}
+
+fn check_indexed_regions(state: &FrameScanState) -> Result<()> {
+    for (position, region) in state.regions.iter().enumerate() {
+        for other in state.regions.iter().skip(position + 1) {
+            if region.disp < other.end
+                && other.disp < region.end
+                && (region.width != other.width
+                    || region.scale != other.scale
+                    || (region.disp - other.disp) % i64::from(region.scale) != 0)
+            {
+                return Err(Error::LlvmIr(format!(
+                    "two indexed frame accesses cover the same bytes with different element shapes ({}-byte stride {} at {} against {}-byte stride {} at {}); the region is not one array",
+                    region.width.bits() / 8,
+                    region.scale,
+                    region.disp,
+                    other.width.bits() / 8,
+                    other.scale,
+                    other.disp
+                )));
+            }
+        }
+    }
+    let extents: Vec<(i64, i64)> = merged_slot_extents(&state.slots);
+    for region in &state.regions {
+        if !extents
+            .iter()
+            .any(|(start, end): &(i64, i64)| *start <= region.disp && region.end <= *end)
+        {
+            return Err(Error::LlvmIr(format!(
+                "an indexed frame access of {} elements over [{}, {}) is not contained in the frame bytes the fixed-offset accesses prove; its extent cannot be bounded",
+                region.elements, region.disp, region.end
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn plan_frame(body: &Block, shape: FrameShape) -> Result<Option<FramePlan>> {
     let ctx: FrameScan = FrameScan {
         frame_base: shape.base,
         rbp_is_frame: shape.rbp_is_frame,
+        indexed_modelable: !block_has_unstructured_edge(body),
     };
-    let mut slots: Vec<(i64, Width)> = Vec::new();
-    let mut misuse: bool = false;
-    scan_frame_block(ctx, body, &mut slots, &mut misuse);
-    if misuse {
+    let mut state: FrameScanState = FrameScanState::default();
+    scan_frame_block(ctx, body, &mut state);
+    if state.misuse {
         return Err(Error::LlvmIr(
             "stack-frame register escapes a fixed-offset slot access (address-taken, dynamic, aliased, or used as a value); not a modelable spill frame".to_owned(),
         ));
     }
+    check_indexed_regions(&state)?;
+    let slots: Vec<(i64, Width)> = state.slots;
     if slots.is_empty() {
         return Ok(None);
     }
@@ -18424,7 +18631,7 @@ mod tests {
 
     #[test]
     fn the_red_zone_frame_shape_enforces_every_precondition_at_its_own_site() {
-        let cases: [(&str, bool, &[u8]); 9] = [
+        let cases: [(&str, bool, &[u8]); 11] = [
             (
                 "a plain below-rsp spill and reload is the red zone",
                 true,
@@ -18488,6 +18695,19 @@ mod tests {
                 false,
                 &[
                     0x48, 0x89, 0xbc, 0x24, 0x78, 0xff, 0xff, 0xff, 0x48, 0x8b, 0x84, 0x24, 0x78,
+                    0xff, 0xff, 0xff, 0xc3,
+                ],
+            ),
+            (
+                "an indexed access inside the red zone keeps the shape",
+                true,
+                &INDEXED_ARRAY_LOAD,
+            ),
+            (
+                "an indexed access whose base displacement is past -128 is outside the red zone",
+                false,
+                &[
+                    0x48, 0x89, 0x7c, 0x24, 0xf8, 0x83, 0xe7, 0x03, 0x48, 0x8b, 0x84, 0xfc, 0x78,
                     0xff, 0xff, 0xff, 0xc3,
                 ],
             ),
@@ -18602,6 +18822,255 @@ mod tests {
         let err: Error = recover_leaf_function_abi(&code, 0x8490, Abi::SysV)
             .expect_err("a leaked red-zone address is not a modelable fixed slot");
         assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    const INDEXED_ARRAY_LOAD: [u8; 45] = [
+        0x48, 0x89, 0x74, 0x24, 0xd8, 0x48, 0x89, 0x54, 0x24, 0xe0, 0x48, 0x01, 0xf2, 0x48, 0x89,
+        0x54, 0x24, 0xe8, 0x48, 0xb8, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x48, 0x01,
+        0xd0, 0x48, 0x89, 0x44, 0x24, 0xf0, 0x83, 0xe7, 0x03, 0x48, 0x8b, 0x44, 0xfc, 0xd8, 0xc3,
+    ];
+
+    fn disasm_text(code: &[u8], base: u64) -> String {
+        disassemble(Arch::X86_64, base, code)
+            .expect("disassemble indexed-frame probe")
+            .iter()
+            .map(|insn: &DisasmInsn| format!("{} {}", insn.mnemonic, insn.operands))
+            .collect::<Vec<String>>()
+            .join("; ")
+    }
+
+    #[test]
+    fn a_mask_bounded_indexed_red_zone_array_models_a_local_frame() {
+        let text: String = disasm_text(&INDEXED_ARRAY_LOAD, 0x8500);
+        assert!(
+            text.contains("and edi,3") && text.contains("[rsp+rdi*8-28h]"),
+            "the probe must carry a 32-bit mask on the index and an indexed rsp access: {text}"
+        );
+        let rec: LeafRecovery = recover_leaf_function_abi(&INDEXED_ARRAY_LOAD, 0x8500, Abi::SysV)
+            .expect("a mask-bounded indexed red-zone array must lift");
+        assert!(
+            rec.source.contains("unsigned char stack_frame[40];"),
+            "the four eight-byte elements must back exactly forty frame bytes: {}",
+            rec.source
+        );
+        assert!(
+            rec.source
+                .contains("r_rsp = (uint64_t)(uintptr_t)(stack_frame + 40)"),
+            "the entry stack pointer must aim at the top of the indexed frame: {}",
+            rec.source
+        );
+        assert!(
+            rec.source.contains("r_rdi * 8ULL"),
+            "the recovered load must keep the runtime index and its scale: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn an_indexed_frame_access_without_a_proven_index_bound_is_rejected() {
+        let code: [u8; 24] = [
+            0x48, 0x89, 0x74, 0x24, 0xe8, 0x48, 0x89, 0x54, 0x24, 0xf0, 0x48, 0x01, 0xf2, 0x48,
+            0x89, 0x54, 0x24, 0xf8, 0x48, 0x8b, 0x44, 0xfc, 0xe8, 0xc3,
+        ];
+        let text: String = disasm_text(&code, 0x8510);
+        assert!(
+            text.contains("[rsp+rdi*8-18h]") && !text.contains("and edi"),
+            "the probe must index the frame with an unmasked register: {text}"
+        );
+        let err: Error = recover_leaf_function_abi(&code, 0x8510, Abi::SysV)
+            .expect_err("an unbounded index can leave the array, so the frame is not modelable");
+        let Error::LlvmIr(message) = err else {
+            panic!("expected a lifter rejection");
+        };
+        assert!(
+            message.contains("escapes a fixed-offset slot access"),
+            "an index with no proven bound must fall through to the frame rejection: {message}"
+        );
+    }
+
+    #[test]
+    fn an_indexed_frame_region_that_overruns_the_proven_frame_bytes_is_rejected() {
+        let code: [u8; 19] = [
+            0x48, 0x89, 0x74, 0x24, 0xe8, 0x48, 0x89, 0x54, 0x24, 0xf0, 0x83, 0xe7, 0x03, 0x48,
+            0x8b, 0x44, 0xfc, 0xe8, 0xc3,
+        ];
+        let text: String = disasm_text(&code, 0x8520);
+        assert!(
+            text.contains("and edi,3") && text.contains("[rsp+rdi*8-18h]"),
+            "the probe must mask to four elements over only two proven slots: {text}"
+        );
+        let err: Error = recover_leaf_function_abi(&code, 0x8520, Abi::SysV).expect_err(
+            "four elements from -24 reach past the entry stack pointer into the return address",
+        );
+        let Error::LlvmIr(message) = err else {
+            panic!("expected a lifter rejection");
+        };
+        assert!(
+            message.contains("is not contained in the frame bytes"),
+            "the containment check must name the region it could not bound: {message}"
+        );
+    }
+
+    #[test]
+    fn two_indexed_accesses_to_one_region_at_different_element_widths_are_rejected() {
+        let code: [u8; 41] = [
+            0x48, 0x89, 0x74, 0x24, 0xd8, 0x48, 0x89, 0x54, 0x24, 0xe0, 0x48, 0x8d, 0x04, 0x32,
+            0x48, 0x89, 0x44, 0x24, 0xe8, 0x48, 0x31, 0xf2, 0x48, 0x89, 0x54, 0x24, 0xf0, 0x83,
+            0xe7, 0x03, 0x48, 0x63, 0x44, 0xbc, 0xd8, 0x48, 0x03, 0x44, 0xfc, 0xd8, 0xc3,
+        ];
+        let text: String = disasm_text(&code, 0x8530);
+        assert!(
+            text.contains("[rsp+rdi*4-28h]") && text.contains("[rsp+rdi*8-28h]"),
+            "the probe must read one region as four-byte and as eight-byte elements: {text}"
+        );
+        let err: Error = recover_leaf_function_abi(&code, 0x8530, Abi::SysV)
+            .expect_err("one region cannot have two element widths");
+        let Error::LlvmIr(message) = err else {
+            panic!("expected a lifter rejection");
+        };
+        assert!(
+            message.contains("different element shapes"),
+            "the element-shape check must name the conflict: {message}"
+        );
+    }
+
+    #[test]
+    fn an_index_scaled_against_the_element_width_is_rejected() {
+        let mut code: [u8; 45] = INDEXED_ARRAY_LOAD;
+        code[42] = 0xbc;
+        let text: String = disasm_text(&code, 0x8540);
+        assert!(
+            text.contains("mov rax,[rsp+rdi*4-28h]"),
+            "the probe must load eight bytes at a four-byte stride: {text}"
+        );
+        let err: Error = recover_leaf_function_abi(&code, 0x8540, Abi::SysV)
+            .expect_err("a stride that disagrees with the element width is not an array");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn a_sixteen_bit_mask_does_not_bound_the_index_register() {
+        let mut code: Vec<u8> = INDEXED_ARRAY_LOAD.to_vec();
+        code.insert(36, 0x66);
+        let text: String = disasm_text(&code, 0x8550);
+        assert!(
+            text.contains("and di,3") && text.contains("[rsp+rdi*8-28h]"),
+            "the probe must mask only the low sixteen bits of the index: {text}"
+        );
+        let err: Error = recover_leaf_function_abi(&code, 0x8550, Abi::SysV)
+            .expect_err("a 16-bit and keeps the upper 48 bits of the index");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn a_mask_after_the_indexed_access_does_not_bound_it() {
+        let mut code: Vec<u8> = Vec::with_capacity(INDEXED_ARRAY_LOAD.len());
+        code.extend_from_slice(&INDEXED_ARRAY_LOAD[..36]);
+        code.extend_from_slice(&INDEXED_ARRAY_LOAD[39..44]);
+        code.extend_from_slice(&INDEXED_ARRAY_LOAD[36..39]);
+        code.push(0xc3);
+        let text: String = disasm_text(&code, 0x8560);
+        assert!(
+            text.ends_with("and edi,3; ret "),
+            "the probe must mask the index only after the indexed access: {text}"
+        );
+        let err: Error = recover_leaf_function_abi(&code, 0x8560, Abi::SysV)
+            .expect_err("a bound established after the access does not hold at the access");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn a_write_to_the_index_register_after_the_mask_drops_the_bound() {
+        let mut code: Vec<u8> = INDEXED_ARRAY_LOAD.to_vec();
+        code.splice(39..39, [0x48, 0x01, 0xf7]);
+        let text: String = disasm_text(&code, 0x8570);
+        assert!(
+            text.contains("and edi,3; add rdi,rsi; mov rax,[rsp+rdi*8-28h]"),
+            "the probe must widen the index again between the mask and the access: {text}"
+        );
+        let err: Error = recover_leaf_function_abi(&code, 0x8570, Abi::SysV)
+            .expect_err("an add after the mask leaves the index unbounded again");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn a_masked_index_past_the_element_cap_is_rejected() {
+        let mut code: Vec<u8> = Vec::with_capacity(INDEXED_ARRAY_LOAD.len() + 3);
+        code.extend_from_slice(&INDEXED_ARRAY_LOAD[..36]);
+        code.extend_from_slice(&[0x81, 0xe7, 0xff, 0xff, 0x00, 0x00]);
+        code.extend_from_slice(&INDEXED_ARRAY_LOAD[39..]);
+        let text: String = disasm_text(&code, 0x8580);
+        assert!(
+            text.contains("and edi,0FFFFh") && text.contains("[rsp+rdi*8-28h]"),
+            "the probe must bound the index to 65536 elements: {text}"
+        );
+        let err: Error = recover_leaf_function_abi(&code, 0x8580, Abi::SysV)
+            .expect_err("65536 elements is past the modelable element cap");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn taking_the_address_of_an_indexed_frame_element_is_rejected() {
+        let mut code: Vec<u8> = INDEXED_ARRAY_LOAD.to_vec();
+        code.splice(39..44, [0x48, 0x8d, 0x44, 0xfc, 0xd8]);
+        let text: String = disasm_text(&code, 0x8590);
+        assert!(
+            text.contains("lea rax,[rsp+rdi*8-28h]"),
+            "the probe must take the address of an indexed frame element: {text}"
+        );
+        let err: Error = recover_leaf_function_abi(&code, 0x8590, Abi::SysV)
+            .expect_err("a leaked indexed frame address is not a modelable region");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn a_four_byte_indexed_red_zone_array_models_its_own_stride() {
+        let code: [u8; 29] = [
+            0x89, 0x74, 0x24, 0xe8, 0x89, 0x54, 0x24, 0xec, 0x8d, 0x04, 0x32, 0x89, 0x44, 0x24,
+            0xf0, 0x31, 0xf2, 0x89, 0x54, 0x24, 0xf4, 0x83, 0xe7, 0x03, 0x8b, 0x44, 0xbc, 0xe8,
+            0xc3,
+        ];
+        let text: String = disasm_text(&code, 0x85a0);
+        assert!(
+            text.contains("and edi,3") && text.contains("mov eax,[rsp+rdi*4-18h]"),
+            "the probe must index four-byte elements at a four-byte stride: {text}"
+        );
+        let rec: LeafRecovery = recover_leaf_function_abi(&code, 0x85a0, Abi::SysV)
+            .expect("a four-byte indexed red-zone array must lift");
+        assert!(
+            rec.source.contains("unsigned char stack_frame[24];"),
+            "four four-byte elements must back exactly twenty-four frame bytes: {}",
+            rec.source
+        );
+        assert!(
+            rec.source.contains("r_rdi * 4ULL"),
+            "the recovered load must keep the four-byte stride: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn an_indexed_store_into_a_mask_bounded_red_zone_array_models_a_local_frame() {
+        let code: [u8; 84] = [
+            0x48, 0x89, 0x74, 0x24, 0xd8, 0x48, 0x89, 0x54, 0x24, 0xe0, 0x48, 0x89, 0xd0, 0x48,
+            0x31, 0xf0, 0x48, 0x89, 0x44, 0x24, 0xe8, 0x48, 0x8d, 0x04, 0x32, 0x48, 0x89, 0x44,
+            0x24, 0xf0, 0x48, 0x0f, 0xaf, 0xd6, 0x48, 0xff, 0xc2, 0x83, 0xe7, 0x03, 0x48, 0x89,
+            0x54, 0xfc, 0xd8, 0x48, 0x8b, 0x44, 0x24, 0xe0, 0x48, 0x8b, 0x4c, 0x24, 0xe8, 0x48,
+            0x8d, 0x04, 0x40, 0x48, 0x03, 0x44, 0x24, 0xd8, 0x48, 0x8d, 0x0c, 0x89, 0x48, 0x01,
+            0xc1, 0x48, 0x8b, 0x54, 0x24, 0xf0, 0x48, 0x8d, 0x04, 0xd1, 0x48, 0x29, 0xd0, 0xc3,
+        ];
+        let text: String = disasm_text(&code, 0x85b0);
+        assert!(
+            text.contains("and edi,3") && text.contains("mov [rsp+rdi*8-28h],rdx"),
+            "the probe must store through the masked index: {text}"
+        );
+        let rec: LeafRecovery = recover_leaf_function_abi(&code, 0x85b0, Abi::SysV)
+            .expect("an indexed store into a mask-bounded red-zone array must lift");
+        assert!(
+            rec.source.contains("unsigned char stack_frame[40];"),
+            "the four eight-byte elements must back exactly forty frame bytes: {}",
+            rec.source
+        );
     }
 
     #[test]
