@@ -1,3 +1,4 @@
+pub use disrobe_core::entropy::shannon_entropy_bits;
 use serde::Serialize;
 
 pub const ENTROPY_WINDOW_4K: usize = 4096;
@@ -11,27 +12,6 @@ pub struct EntropyBlock {
     pub len: usize,
     pub entropy: f64,
     pub high: bool,
-}
-
-#[must_use]
-pub fn shannon_entropy_bits(window: &[u8]) -> f64 {
-    if window.is_empty() {
-        return 0.0;
-    }
-    let mut counts: [u32; 256] = [0u32; 256];
-    for &b in window {
-        counts[b as usize] += 1;
-    }
-    let total: f64 = usize_to_f64(window.len());
-    let mut h: f64 = 0.0;
-    for &c in &counts {
-        if c == 0 {
-            continue;
-        }
-        let p: f64 = f64::from(c) / total;
-        h = p.mul_add(-p.log2(), h);
-    }
-    h
 }
 
 #[must_use]
@@ -63,11 +43,6 @@ pub fn locate_high_entropy(bytes: &[u8], window: usize, threshold: f64) -> Vec<E
         .into_iter()
         .filter(|b: &EntropyBlock| b.entropy >= threshold)
         .collect()
-}
-
-#[allow(clippy::cast_precision_loss)]
-const fn usize_to_f64(n: usize) -> f64 {
-    n as f64
 }
 
 #[cfg(test)]

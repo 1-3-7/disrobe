@@ -732,26 +732,6 @@ fn redact_bytes(matched: &[u8]) -> String {
     format!("{head}\u{2026}{}", matched.len())
 }
 
-#[must_use]
-pub fn shannon_entropy(bytes: &[u8]) -> f64 {
-    if bytes.is_empty() {
-        return 0.0;
-    }
-    let mut counts: [u32; 256] = [0; 256];
-    for &b in bytes {
-        counts[b as usize] += 1;
-    }
-    let len: f64 = bytes.len() as f64;
-    counts
-        .iter()
-        .filter(|&&c: &&u32| c > 0)
-        .map(|&c: &u32| {
-            let p: f64 = f64::from(c) / len;
-            -p * p.log2()
-        })
-        .sum()
-}
-
 #[inline]
 const fn is_secretish_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'_' | b'-')
@@ -1337,7 +1317,7 @@ fn scan_entropy(
         {
             continue;
         }
-        if shannon_entropy(run) < ENTROPY_THRESHOLD {
+        if crate::entropy::shannon_entropy_bits(run) < ENTROPY_THRESHOLD {
             continue;
         }
         let preview: String = redact_bytes(run);

@@ -1,3 +1,4 @@
+use crate::entropy::shannon_entropy_bits;
 use serde::{Deserialize, Serialize};
 
 use crate::anti_analysis_sigs::{
@@ -2215,26 +2216,6 @@ fn dominant_byte_fraction(bytes: &[u8]) -> f64 {
     }
     let top: u32 = counts.iter().copied().max().unwrap_or(0);
     f64::from(top) / bytes.len() as f64
-}
-
-fn shannon_entropy_bits(bytes: &[u8]) -> f64 {
-    if bytes.is_empty() {
-        return 0.0;
-    }
-    let mut counts: [u32; 256] = [0u32; 256];
-    for &b in bytes {
-        counts[b as usize] += 1;
-    }
-    let total: f64 = bytes.len() as f64;
-    let mut entropy: f64 = 0.0;
-    for &c in &counts {
-        if c == 0 {
-            continue;
-        }
-        let p: f64 = f64::from(c) / total;
-        entropy = p.mul_add(-p.log2(), entropy);
-    }
-    entropy
 }
 
 fn has_single_byte_xor_string_block(bytes: &[u8]) -> bool {

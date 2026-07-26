@@ -12,6 +12,7 @@
     clippy::many_single_char_names
 )]
 
+use disrobe_core::entropy::shannon_entropy_bits as shannon_entropy;
 use std::collections::BTreeMap;
 
 use crate::error::{Error, Result};
@@ -773,24 +774,6 @@ pub fn unpack_yodas_protector_phase2(
         forced_rc4_replay,
         wall_note,
     })
-}
-
-fn shannon_entropy(data: &[u8]) -> f64 {
-    if data.is_empty() {
-        return 0.0;
-    }
-    let mut counts: [u64; 256] = [0u64; 256];
-    for b in data {
-        counts[*b as usize] += 1;
-    }
-    let len: f64 = data.len() as f64;
-    counts
-        .iter()
-        .filter(|c: &&u64| **c > 0)
-        .fold(0.0_f64, |acc: f64, c: &u64| -> f64 {
-            let p: f64 = *c as f64 / len;
-            p.mul_add(-p.log2(), acc)
-        })
 }
 
 fn forced_rc4_replay(

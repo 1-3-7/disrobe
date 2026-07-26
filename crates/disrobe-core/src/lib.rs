@@ -12,6 +12,8 @@ pub mod codec;
 pub mod complexity;
 pub mod debug;
 pub mod dominators;
+pub mod entropy;
+pub use entropy::{shannon_entropy_bits, shannon_entropy_bits as shannon_entropy};
 pub mod error;
 pub mod format;
 pub mod graph;
@@ -100,7 +102,7 @@ pub use rng::{SeededRng, os as rng_os, seeded as rng_seeded};
 pub use rung::Rung;
 pub use secret_scan::{
     Confidence, Finding, SCAN_SCHEMA, SecretKind, SecretScanReport, Severity, scan_bytes,
-    scan_report, scan_strings, shannon_entropy, validate as secret_validate,
+    scan_report, scan_strings, validate as secret_validate,
 };
 pub use strings::{
     DEFAULT_MIN_LEN as STRINGS_DEFAULT_MIN_LEN, ExtractedString, Options as StringsOptions,

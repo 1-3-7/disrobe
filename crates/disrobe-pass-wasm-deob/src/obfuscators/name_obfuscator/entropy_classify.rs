@@ -1,3 +1,4 @@
+use disrobe_core::entropy::shannon_entropy_bits;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -50,26 +51,6 @@ pub fn classify_export_strategy(names: &[String]) -> NameStrategy {
     }
 
     NameStrategy::Clean
-}
-
-fn shannon_entropy_bits(bytes: &[u8]) -> f64 {
-    if bytes.is_empty() {
-        return 0.0;
-    }
-    let mut counts: [u32; 256] = [0u32; 256];
-    for &b in bytes {
-        counts[b as usize] += 1;
-    }
-    let total: f64 = usize_to_f64(bytes.len());
-    let mut h: f64 = 0.0;
-    for &c in &counts {
-        if c == 0 {
-            continue;
-        }
-        let p: f64 = f64::from(c) / total;
-        h = p.mul_add(-p.log2(), h);
-    }
-    h
 }
 
 #[allow(clippy::cast_precision_loss)]
