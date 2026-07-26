@@ -17,6 +17,13 @@ pub enum Error {
     #[error("DR-JSDEOB-0004: invalid UTF-8 in JS source")]
     Utf8,
 
+    #[error("DR-JSDEOB-0005: {kind} {observed} exceeds parser limit {maximum}")]
+    SyntaxLimit {
+        kind: &'static str,
+        observed: usize,
+        maximum: usize,
+    },
+
     #[error(
         "DR-JSDEOB-0010: transform `{transform}` requires `--i-have-authorization`; \
         see LEGAL.md and docs/legal/jscrambler-stance.md before bypassing protector code locks or RASP guards"

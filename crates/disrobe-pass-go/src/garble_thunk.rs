@@ -1766,6 +1766,7 @@ mod tests {
                 name: ".rodata".to_owned(),
                 address: 0x40_0000,
                 data: &section_bytes,
+                mapped_len: u64::try_from(section_bytes.len()).expect("fixture size fits u64"),
             }],
             raw: &raw,
             symbol_addrs: Vec::new(),

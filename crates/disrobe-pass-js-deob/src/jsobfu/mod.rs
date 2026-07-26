@@ -8,7 +8,8 @@ pub use detect::{JsObfuDetection, detect_jsobfu};
 pub use fold_chars::{CharFoldStats, fold_char_constructors};
 pub use rewrite::{JsObfuRewriteStats, rewrite_bracket_access};
 
-use crate::unminify::{AstUnminifyStats, UnminifyStats, unminify, unminify_ast};
+use crate::error::Result;
+use crate::unminify::{AstUnminifyStats, UnminifyStats, try_unminify_ast, unminify};
 
 const MAX_RECOVER_PASSES: usize = 6;
 
@@ -22,6 +23,18 @@ pub struct JsObfuRecovery {
 
 #[must_use]
 pub fn recover(source: &str) -> JsObfuRecovery {
+    match try_recover(source) {
+        Ok(recovery) => recovery,
+        Err(_error) => JsObfuRecovery {
+            source: source.to_owned(),
+            char_fold: CharFoldStats::default(),
+            bracket_rewrite: JsObfuRewriteStats::default(),
+            passes_run: 0,
+        },
+    }
+}
+
+pub fn try_recover(source: &str) -> Result<JsObfuRecovery> {
     let mut current: String = source.to_owned();
     let mut recovery: JsObfuRecovery = JsObfuRecovery::default();
     for _ in 0..MAX_RECOVER_PASSES {
@@ -41,7 +54,7 @@ pub fn recover(source: &str) -> JsObfuRecovery {
         }
     }
     let (peeled, _peephole): (String, UnminifyStats) = unminify(&current);
-    let (beautified, _ast): (String, AstUnminifyStats) = unminify_ast(&peeled);
+    let (beautified, _ast): (String, AstUnminifyStats) = try_unminify_ast(&peeled)?;
     recovery.source = beautified;
-    recovery
+    Ok(recovery)
 }

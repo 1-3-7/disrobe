@@ -27,4 +27,13 @@ pub enum Error {
 
     #[error("DR-GO-0008: pclntab references invalid quantum/ptrsize ({0})")]
     PclntabInvariant(&'static str),
+
+    #[error(
+        "DR-GO-0009: {table} declares {declared} entries but only {available} fit in mapped memory"
+    )]
+    TypeMetadataSliceBounds {
+        table: &'static str,
+        declared: u64,
+        available: usize,
+    },
 }
