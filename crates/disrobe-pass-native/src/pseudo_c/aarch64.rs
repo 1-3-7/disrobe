@@ -4796,6 +4796,7 @@ fn classify_frame(insns: &[DisasmInsn]) -> FrameShape {
             base: Some(Reg::Rbp),
             rbp_is_frame: true,
             red_zone: false,
+            rsp_extent: None,
         }
     } else if insns
         .iter()
@@ -4805,12 +4806,14 @@ fn classify_frame(insns: &[DisasmInsn]) -> FrameShape {
             base: Some(Reg::Rsp),
             rbp_is_frame: false,
             red_zone: false,
+            rsp_extent: None,
         }
     } else {
         FrameShape {
             base: None,
             rbp_is_frame: false,
             red_zone: false,
+            rsp_extent: None,
         }
     }
 }

@@ -4522,13 +4522,58 @@ fn rsp_delta_imm(mnemonic: &str, operands: &str) -> Option<i64> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RspFrameExtent {
+    allocated: i64,
+    red_zone_below: i64,
+    home_above_return: i64,
+}
+
+impl RspFrameExtent {
+    fn return_address(self) -> i64 {
+        self.allocated
+    }
+
+    fn home_start(self) -> i64 {
+        self.allocated.saturating_add(RETURN_ADDRESS_BYTES)
+    }
+
+    fn home_end(self) -> i64 {
+        self.home_start().saturating_add(self.home_above_return)
+    }
+
+    fn owns(self, disp: i64, bytes: i64) -> bool {
+        let Some(end): Option<i64> = disp.checked_add(bytes) else {
+            return false;
+        };
+        (disp >= -self.red_zone_below && end <= self.allocated)
+            || (self.home_above_return > 0 && disp >= self.home_start() && end <= self.home_end())
+    }
+
+    fn describe(self) -> String {
+        let allocated: String = format!("[{}, {})", -self.red_zone_below, self.allocated);
+        if self.home_above_return == 0 {
+            allocated
+        } else {
+            format!(
+                "{allocated} and [{}, {})",
+                self.home_start(),
+                self.home_end()
+            )
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FrameShape {
     base: Option<Reg>,
     rbp_is_frame: bool,
     red_zone: bool,
+    rsp_extent: Option<RspFrameExtent>,
 }
 
 const SYSV_RED_ZONE_BYTES: i64 = 128;
+const MS_X64_HOME_BYTES: i64 = 32;
+const RETURN_ADDRESS_BYTES: i64 = 8;
 
 fn classify_frame(insns: &[DisasmInsn], abi: Abi) -> FrameShape {
     let real: Vec<&DisasmInsn> = insns
@@ -4544,13 +4589,30 @@ fn classify_frame(insns: &[DisasmInsn], abi: Abi) -> FrameShape {
             base: Some(Reg::Rbp),
             rbp_is_frame: true,
             red_zone: false,
+            rsp_extent: None,
         };
     }
-    if rsp_frame_is_constant(&real) {
+    if let Some(allocated) = rsp_frame_allocation(&real) {
+        let red_zone_below: i64 =
+            if abi == Abi::SysV && bytes_below_the_stack_pointer_stay_private(insns) {
+                SYSV_RED_ZONE_BYTES
+            } else {
+                0
+            };
+        let home_above_return: i64 = if abi == Abi::MsX64 {
+            MS_X64_HOME_BYTES
+        } else {
+            0
+        };
         return FrameShape {
             base: Some(Reg::Rsp),
             rbp_is_frame: false,
             red_zone: false,
+            rsp_extent: Some(RspFrameExtent {
+                allocated,
+                red_zone_below,
+                home_above_return,
+            }),
         };
     }
     if abi == Abi::SysV && sysv_red_zone_frame(insns) {
@@ -4558,12 +4620,14 @@ fn classify_frame(insns: &[DisasmInsn], abi: Abi) -> FrameShape {
             base: Some(Reg::Rsp),
             rbp_is_frame: false,
             red_zone: true,
+            rsp_extent: None,
         };
     }
     FrameShape {
         base: None,
         rbp_is_frame: false,
         red_zone: false,
+        rsp_extent: None,
     }
 }
 
@@ -4638,7 +4702,7 @@ fn red_zone_rsp_uses_are_contained(operands: &str) -> bool {
     }
 }
 
-fn sysv_red_zone_frame(insns: &[DisasmInsn]) -> bool {
+fn bytes_below_the_stack_pointer_stay_private(insns: &[DisasmInsn]) -> bool {
     let Some(first): Option<&DisasmInsn> = insns.first() else {
         return false;
     };
@@ -4649,9 +4713,8 @@ fn sysv_red_zone_frame(insns: &[DisasmInsn]) -> bool {
     let end: u64 = last
         .address
         .saturating_add(u64::try_from(last.bytes.len()).unwrap_or(u64::MAX));
-    let mut saw_slot: bool = false;
     for (idx, insn) in insns.iter().enumerate() {
-        if stack_depth_changing_mnemonic(&insn.mnemonic) || first_operand_is_rsp(&insn.operands) {
+        if stack_depth_changing_mnemonic(&insn.mnemonic) {
             return false;
         }
         if insn.mnemonic == "jmp" {
@@ -4666,7 +4729,18 @@ fn sysv_red_zone_frame(insns: &[DisasmInsn]) -> bool {
                 return false;
             }
         }
-        if !red_zone_rsp_uses_are_contained(&insn.operands) {
+    }
+    true
+}
+
+fn sysv_red_zone_frame(insns: &[DisasmInsn]) -> bool {
+    if !bytes_below_the_stack_pointer_stay_private(insns) {
+        return false;
+    }
+    let mut saw_slot: bool = false;
+    for insn in insns {
+        if first_operand_is_rsp(&insn.operands) || !red_zone_rsp_uses_are_contained(&insn.operands)
+        {
             return false;
         }
         saw_slot = saw_slot || insn.operands.contains("rsp");
@@ -4674,33 +4748,33 @@ fn sysv_red_zone_frame(insns: &[DisasmInsn]) -> bool {
     saw_slot
 }
 
-fn rsp_frame_is_constant(real: &[&DisasmInsn]) -> bool {
-    let Some(first): Option<&&DisasmInsn> = real.first() else {
-        return false;
-    };
+fn rsp_frame_allocation(real: &[&DisasmInsn]) -> Option<i64> {
+    let first: &&DisasmInsn = real.first()?;
     if first.mnemonic != "sub" {
-        return false;
+        return None;
     }
-    let Some(alloc): Option<i64> = rsp_delta_imm("sub", &first.operands) else {
-        return false;
-    };
-    real.iter().enumerate().all(
-        |(idx, insn): (usize, &&DisasmInsn)| match insn.mnemonic.as_str() {
-            "push" | "pop" | "leave" => false,
-            "mov" => insn
-                .operands
-                .split_once(',')
-                .is_none_or(|(lhs, _): (&str, &str)| lhs.trim() != "rsp"),
-            "sub" if rsp_delta_imm("sub", &insn.operands).is_some() => idx == 0,
-            "add" => rsp_delta_imm("add", &insn.operands).map_or(true, |delta: i64| {
-                delta == alloc
-                    && real
-                        .get(idx + 1)
-                        .is_some_and(|n: &&DisasmInsn| n.mnemonic == "ret")
-            }),
-            _ => true,
-        },
-    )
+    let alloc: i64 = rsp_delta_imm("sub", &first.operands)?;
+    let stack_pointer_stays_constant: bool =
+        real.iter()
+            .enumerate()
+            .all(
+                |(idx, insn): (usize, &&DisasmInsn)| match insn.mnemonic.as_str() {
+                    "push" | "pop" | "leave" => false,
+                    "mov" => insn
+                        .operands
+                        .split_once(',')
+                        .is_none_or(|(lhs, _): (&str, &str)| lhs.trim() != "rsp"),
+                    "sub" if rsp_delta_imm("sub", &insn.operands).is_some() => idx == 0,
+                    "add" => rsp_delta_imm("add", &insn.operands).map_or(true, |delta: i64| {
+                        delta == alloc
+                            && real
+                                .get(idx + 1)
+                                .is_some_and(|n: &&DisasmInsn| n.mnemonic == "ret")
+                    }),
+                    _ => true,
+                },
+            );
+    stack_pointer_stays_constant.then_some(alloc)
 }
 
 const fn is_bare_string_op(mnemonic: &str) -> bool {
@@ -11760,6 +11834,19 @@ fn plan_frame(body: &Block, shape: FrameShape) -> Result<Option<FramePlan>> {
             )));
         }
     }
+    if let Some(extent) = shape.rsp_extent {
+        let escaping: Option<&(i64, Width)> = slots
+            .iter()
+            .find(|(disp, width): &&(i64, Width)| !extent.owns(*disp, i64::from(width.bits() / 8)));
+        if let Some((disp, width)) = escaping {
+            return Err(Error::LlvmIr(format!(
+                "a {}-byte slot at {disp} is outside the {} bytes this frame owns; the return address sits at {} and the caller owns the frame above it",
+                width.bits() / 8,
+                extent.describe(),
+                extent.return_address()
+            )));
+        }
+    }
     if base == Reg::Rbp
         && slots
             .iter()
@@ -18555,6 +18642,240 @@ mod tests {
         );
     }
 
+    fn rsp_constant_frame_rejection(code: &[u8], base: u64, abi: Abi) -> String {
+        let err: Error = recover_leaf_function_abi(code, base, abi).map_or_else(
+            |e: Error| e,
+            |rec: LeafRecovery| {
+                panic!(
+                    "an access outside the bytes an allocated frame owns may not be modeled as a local: {}",
+                    rec.source
+                )
+            },
+        );
+        let Error::LlvmIr(message) = err else {
+            panic!("expected a lifter rejection");
+        };
+        assert!(
+            message.contains("bytes this frame owns"),
+            "the containment check must name the extent the slot left: {message}"
+        );
+        message
+    }
+
+    #[test]
+    fn an_rsp_constant_slot_at_the_allocation_reads_the_return_address_and_is_rejected() {
+        const CODE: [u8; 14] = [
+            0x48, 0x83, 0xec, 0x18, 0x48, 0x8b, 0x44, 0x24, 0x18, 0x48, 0x83, 0xc4, 0x18, 0xc3,
+        ];
+        let text: String = disasm_text(&CODE, 0x8a00);
+        assert_eq!(
+            text, "sub rsp,18h; mov rax,[rsp+18h]; add rsp,18h; ret ",
+            "the probe must allocate twenty-four bytes and read the slot at the entry stack pointer"
+        );
+        let message: String = rsp_constant_frame_rejection(&CODE, 0x8a00, Abi::SysV);
+        assert!(
+            message.contains("a 8-byte slot at 24 is outside the [-128, 24) bytes"),
+            "the rejection must name the eight-byte read of the return address: {message}"
+        );
+        let ms: String = rsp_constant_frame_rejection(&CODE, 0x8a00, Abi::MsX64);
+        assert!(
+            ms.contains("a 8-byte slot at 24 is outside the [0, 24) and [32, 64) bytes"),
+            "the return address stays caller-owned under the Microsoft x64 home area too: {ms}"
+        );
+    }
+
+    #[test]
+    fn an_rsp_constant_slot_above_the_allocation_reads_a_caller_byte_and_is_rejected() {
+        const CODE: [u8; 14] = [
+            0x48, 0x83, 0xec, 0x18, 0x48, 0x8b, 0x44, 0x24, 0x20, 0x48, 0x83, 0xc4, 0x18, 0xc3,
+        ];
+        const PAST_HOME: [u8; 14] = [
+            0x48, 0x83, 0xec, 0x18, 0x48, 0x8b, 0x44, 0x24, 0x40, 0x48, 0x83, 0xc4, 0x18, 0xc3,
+        ];
+        let message: String = rsp_constant_frame_rejection(&CODE, 0x8a10, Abi::SysV);
+        assert!(
+            message.contains("a 8-byte slot at 32 is outside the [-128, 24) bytes"),
+            "under System V a load past the return address reads an incoming stack argument: {message}"
+        );
+        let ms: String = rsp_constant_frame_rejection(&PAST_HOME, 0x8a18, Abi::MsX64);
+        assert!(
+            ms.contains("a 8-byte slot at 64 is outside the [0, 24) and [32, 64) bytes"),
+            "a load past the Microsoft x64 home area reads the fifth incoming argument: {ms}"
+        );
+    }
+
+    #[test]
+    fn an_rsp_constant_slot_whose_width_straddles_the_allocation_is_rejected() {
+        const EIGHT_BYTE: [u8; 14] = [
+            0x48, 0x83, 0xec, 0x18, 0x48, 0x8b, 0x44, 0x24, 0x14, 0x48, 0x83, 0xc4, 0x18, 0xc3,
+        ];
+        const FOUR_BYTE: [u8; 13] = [
+            0x48, 0x83, 0xec, 0x18, 0x8b, 0x44, 0x24, 0x16, 0x48, 0x83, 0xc4, 0x18, 0xc3,
+        ];
+        let message: String = rsp_constant_frame_rejection(&EIGHT_BYTE, 0x8a20, Abi::SysV);
+        assert!(
+            message.contains("a 8-byte slot at 20 is outside the [-128, 24) bytes"),
+            "an eight-byte read at twenty runs four bytes into the return address: {message}"
+        );
+        let narrow: String = rsp_constant_frame_rejection(&FOUR_BYTE, 0x8a30, Abi::SysV);
+        assert!(
+            narrow.contains("a 4-byte slot at 22 is outside the [-128, 24) bytes"),
+            "a four-byte read at twenty-two runs two bytes into the return address: {narrow}"
+        );
+    }
+
+    #[test]
+    fn an_rsp_constant_slot_below_the_red_zone_of_an_allocated_frame_is_rejected() {
+        const CODE: [u8; 21] = [
+            0x48, 0x83, 0xec, 0x18, 0x48, 0x89, 0xbc, 0x24, 0x78, 0xff, 0xff, 0xff, 0x48, 0x8b,
+            0x84, 0x24, 0x78, 0xff, 0xff, 0xff, 0xc3,
+        ];
+        let message: String = rsp_constant_frame_rejection(&CODE, 0x8a40, Abi::SysV);
+        assert!(
+            message.contains("a 8-byte slot at -136 is outside the [-128, 24) bytes"),
+            "the System V guarantee stops one hundred and twenty-eight bytes below the stack pointer: {message}"
+        );
+    }
+
+    #[test]
+    fn an_rsp_constant_slot_below_an_allocated_frame_without_a_red_zone_is_rejected() {
+        const CODE: [u8; 19] = [
+            0x48, 0x83, 0xec, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x80, 0x48, 0x8b, 0x44, 0x24, 0x80,
+            0x48, 0x83, 0xc4, 0x18, 0xc3,
+        ];
+        let ms: String = rsp_constant_frame_rejection(&CODE, 0x8a48, Abi::MsX64);
+        assert!(
+            ms.contains("a 8-byte slot at -128 is outside the [0, 24) and [32, 64) bytes"),
+            "the Microsoft x64 ABI reserves nothing below the stack pointer: {ms}"
+        );
+    }
+
+    #[test]
+    fn a_call_under_an_allocated_frame_takes_the_red_zone_out_of_the_frame() {
+        const CALLING: [u8; 24] = [
+            0x48, 0x83, 0xec, 0x18, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x89, 0x7c, 0x24, 0xf8,
+            0x48, 0x8b, 0x44, 0x24, 0xf8, 0x48, 0x83, 0xc4, 0x18, 0xc3,
+        ];
+        let insns: Vec<DisasmInsn> =
+            disassemble(Arch::X86_64, 0x8a4c, &CALLING).expect("disassemble calling probe");
+        assert_eq!(
+            classify_frame(&insns, Abi::SysV),
+            FrameShape {
+                base: Some(Reg::Rsp),
+                rbp_is_frame: false,
+                red_zone: false,
+                rsp_extent: Some(RspFrameExtent {
+                    allocated: 24,
+                    red_zone_below: 0,
+                    home_above_return: 0,
+                }),
+            },
+            "a callee clobbers the bytes below the stack pointer, so the red zone leaves the frame"
+        );
+    }
+
+    #[test]
+    fn rsp_constant_slots_inside_the_frame_still_model_a_local_frame() {
+        let cases: [(&str, Abi, usize, &[u8]); 5] = [
+            (
+                "an eight-byte slot at the top of the allocation",
+                Abi::SysV,
+                24,
+                &[
+                    0x48, 0x83, 0xec, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x10, 0x48, 0x8b, 0x44, 0x24,
+                    0x10, 0x48, 0x83, 0xc4, 0x18, 0xc3,
+                ],
+            ),
+            (
+                "a four-byte slot ending exactly at the allocation",
+                Abi::SysV,
+                24,
+                &[
+                    0x48, 0x83, 0xec, 0x18, 0x89, 0x7c, 0x24, 0x14, 0x8b, 0x44, 0x24, 0x14, 0x48,
+                    0x83, 0xc4, 0x18, 0xc3,
+                ],
+            ),
+            (
+                "a one-byte slot on the last allocated byte",
+                Abi::SysV,
+                24,
+                &[
+                    0x48, 0x83, 0xec, 0x18, 0x40, 0x88, 0x7c, 0x24, 0x17, 0x0f, 0xb6, 0x44, 0x24,
+                    0x17, 0x48, 0x83, 0xc4, 0x18, 0xc3,
+                ],
+            ),
+            (
+                "a call-free System V leaf reaching into the red zone below its allocation",
+                Abi::SysV,
+                128,
+                &[
+                    0x48, 0x83, 0xec, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x80, 0x48, 0x8b, 0x44, 0x24,
+                    0x80, 0x48, 0x83, 0xc4, 0x18, 0xc3,
+                ],
+            ),
+            (
+                "a Microsoft x64 spill into the caller-reserved register home area",
+                Abi::MsX64,
+                40,
+                &[
+                    0x48, 0x83, 0xec, 0x18, 0x48, 0x89, 0x4c, 0x24, 0x20, 0x48, 0x8b, 0x44, 0x24,
+                    0x20, 0x48, 0x83, 0xc4, 0x18, 0xc3,
+                ],
+            ),
+        ];
+        for (index, (what, abi, frame_bytes, code)) in cases.into_iter().enumerate() {
+            let base: u64 = 0x8a50 + (index as u64) * 0x20;
+            let rec: LeafRecovery = recover_leaf_function_abi(code, base, abi)
+                .unwrap_or_else(|e: Error| panic!("{what} is inside the frame: {e}"));
+            assert!(
+                rec.source
+                    .contains(&format!("unsigned char stack_frame[{frame_bytes}];")),
+                "{what} must back the bytes it touches: {}",
+                rec.source
+            );
+        }
+    }
+
+    #[test]
+    fn the_frame_classifier_reports_the_bytes_an_allocated_frame_owns() {
+        const CODE: [u8; 19] = [
+            0x48, 0x83, 0xec, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x10, 0x48, 0x8b, 0x44, 0x24, 0x10,
+            0x48, 0x83, 0xc4, 0x18, 0xc3,
+        ];
+        let insns: Vec<DisasmInsn> =
+            disassemble(Arch::X86_64, 0x8af0, &CODE).expect("disassemble rsp-constant probe");
+        let expected: [(Abi, RspFrameExtent); 2] = [
+            (
+                Abi::SysV,
+                RspFrameExtent {
+                    allocated: 24,
+                    red_zone_below: SYSV_RED_ZONE_BYTES,
+                    home_above_return: 0,
+                },
+            ),
+            (
+                Abi::MsX64,
+                RspFrameExtent {
+                    allocated: 24,
+                    red_zone_below: 0,
+                    home_above_return: MS_X64_HOME_BYTES,
+                },
+            ),
+        ];
+        for (abi, extent) in expected {
+            assert_eq!(
+                classify_frame(&insns, abi),
+                FrameShape {
+                    base: Some(Reg::Rsp),
+                    rbp_is_frame: false,
+                    red_zone: false,
+                    rsp_extent: Some(extent),
+                },
+                "{abi:?} bounds the frame to the bytes its ABI makes private"
+            );
+        }
+    }
+
     #[test]
     fn taking_the_address_of_a_stack_slot_is_soundly_rejected() {
         let code: [u8; 10] = [0x55, 0x48, 0x89, 0xe5, 0x48, 0x8d, 0x45, 0xf8, 0x5d, 0xc3];
@@ -18742,6 +19063,7 @@ mod tests {
                 base: Some(Reg::Rsp),
                 rbp_is_frame: false,
                 red_zone: true,
+                rsp_extent: None,
             }
         );
         for abi in [Abi::MsX64, Abi::Aapcs64] {
@@ -18751,6 +19073,7 @@ mod tests {
                     base: None,
                     rbp_is_frame: false,
                     red_zone: false,
+                    rsp_extent: None,
                 },
                 "{abi:?} reserves nothing below the stack pointer"
             );
