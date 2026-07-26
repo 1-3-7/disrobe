@@ -1,37 +1,10 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+use std::time::Duration;
+
 use disrobe_py_marshal::{
     Object, PyVersion, RefTableDump, dump_reftable, load, load_with_reftable, read_pyc,
 };
-
-struct Xorshift64 {
-    state: u64,
-}
-
-impl Xorshift64 {
-    const fn new(seed: u64) -> Self {
-        Self { state: seed | 1 }
-    }
-
-    const fn next_u64(&mut self) -> u64 {
-        let mut x: u64 = self.state;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.state = x;
-        x
-    }
-
-    const fn next_usize(&mut self, bound: usize) -> usize {
-        if bound == 0 {
-            return 0;
-        }
-        (self.next_u64() % bound as u64) as usize
-    }
-
-    const fn next_byte(&mut self) -> u8 {
-        (self.next_u64() & 0xff) as u8
-    }
-}
+use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, XorShift64};
 
 const VERSIONS: [PyVersion; 4] = [
     PyVersion::PY15,
@@ -42,6 +15,16 @@ const VERSIONS: [PyVersion; 4] = [
         minor: 11,
     },
 ];
+
+const RANDOM_SPAN_BYTES: usize = 1024;
+const CASES_PER_INPUT: usize = 10_000;
+const BATCH_SIZE: usize = 3_000;
+const CASE_BUDGET: Duration = Duration::from_millis(5);
+const SUITE_BUDGET: Duration = Duration::from_mins(3);
+
+const COLLECTION_TAGS: [u8; 6] = [b'(', b'[', b'{', b'<', b'>', b'c'];
+const RETAG_DOMAIN: u64 = 0x5265_5461_6721_0001;
+const RETAG_SPARSITY: u32 = 3;
 
 fn marshal_seed() -> Vec<u8> {
     let mut v: Vec<u8> = Vec::new();
@@ -74,55 +57,22 @@ fn nested_collection_bomb(depth: usize) -> Vec<u8> {
     v
 }
 
-fn mutate(seed: &[u8], rng: &mut Xorshift64) -> Vec<u8> {
-    let mut out: Vec<u8> = seed.to_vec();
-    let kind: u64 = rng.next_u64() % 6;
-    match kind {
-        0 => {
-            if !out.is_empty() {
-                let idx: usize = rng.next_usize(out.len());
-                out[idx] ^= 1u8 << rng.next_usize(8);
+fn retag_collections(bytes: &[u8], case_seed: u64) -> Vec<u8> {
+    let mut rng: XorShift64 = XorShift64::new(case_seed ^ RETAG_DOMAIN);
+    let mut out: Vec<u8> = bytes.to_vec();
+    let tags: u64 = COLLECTION_TAGS.len() as u64;
+    for byte in &mut out {
+        if rng.next_u64().trailing_zeros() >= RETAG_SPARSITY {
+            let pick: usize = usize::try_from(rng.below(tags)).unwrap_or(0);
+            if let Some(tag) = COLLECTION_TAGS.get(pick) {
+                *byte = *tag;
             }
-        }
-        1 => {
-            if !out.is_empty() {
-                let cut: usize = rng.next_usize(out.len());
-                out.truncate(cut);
-            }
-        }
-        2 => {
-            let count: usize = rng.next_usize(out.len().max(1));
-            for _ in 0..count {
-                let idx: usize = rng.next_usize(out.len().max(1));
-                if idx < out.len() {
-                    out[idx] = rng.next_byte();
-                }
-            }
-        }
-        3 => {
-            for b in &mut out {
-                if rng.next_u64().trailing_zeros() >= 2 {
-                    *b = 0xff;
-                }
-            }
-        }
-        4 => {
-            let collection_tags: [u8; 6] = [b'(', b'[', b'{', b'<', b'>', b'c'];
-            for b in &mut out {
-                if rng.next_u64().trailing_zeros() >= 3 {
-                    *b = collection_tags[rng.next_usize(collection_tags.len())];
-                }
-            }
-        }
-        _ => {
-            let len: usize = rng.next_usize(512);
-            out = (0..len).map(|_| rng.next_byte()).collect();
         }
     }
     out
 }
 
-fn exercise(bytes: &[u8]) {
+fn probe(bytes: &[u8]) {
     let _ = read_pyc(bytes);
     for version in VERSIONS {
         let _ = load(bytes, version);
@@ -131,26 +81,35 @@ fn exercise(bytes: &[u8]) {
     }
 }
 
-#[test]
-fn pure_random_inputs_never_panic() {
-    let mut rng: Xorshift64 = Xorshift64::new(0x4d59_5f72_6e64_0001);
-    for _ in 0..8_000 {
-        let len: usize = rng.next_usize(1024);
-        let bytes: Vec<u8> = (0..len).map(|_| rng.next_byte()).collect();
-        exercise(&bytes);
+fn check(case: &StressCase<'_>) {
+    probe(case.bytes());
+    probe(&retag_collections(case.bytes(), case.case_seed()));
+}
+
+fn corpus() -> Vec<CorpusEntry> {
+    vec![
+        CorpusEntry::new("marshal-tuple", marshal_seed()),
+        CorpusEntry::new("pyc-header", pyc_seed()),
+        CorpusEntry::new("random-span", vec![0u8; RANDOM_SPAN_BYTES]),
+    ]
+}
+
+fn config() -> StressConfig {
+    StressConfig {
+        cases_per_input: CASES_PER_INPUT,
+        batch_size: BATCH_SIZE,
+        case_budget: CASE_BUDGET,
+        suite_budget: SUITE_BUDGET,
+        ..StressConfig::default()
     }
 }
 
-#[test]
-fn mutated_seed_inputs_never_panic() {
-    let seeds: [Vec<u8>; 2] = [marshal_seed(), pyc_seed()];
-    let mut rng: Xorshift64 = Xorshift64::new(0x6d61_7273_6861_6c21);
-    for seed in &seeds {
-        for _ in 0..10_000 {
-            let mutated: Vec<u8> = mutate(seed, &mut rng);
-            exercise(&mutated);
-        }
-    }
+mod resilience {
+    disrobe_testkit::stress_suite!(
+        check: super::check,
+        corpus: super::corpus,
+        config: super::config
+    );
 }
 
 #[test]

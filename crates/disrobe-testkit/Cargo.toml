@@ -1,0 +1,16 @@
+[package]
+name = "disrobe-testkit"
+description = "Deterministic stress harness shared by the disrobe test suites: pure seeded mutation, child-process isolation with a wall-clock watchdog, and a token-sealed progress record so a batch that aborts, hangs, or runs nothing cannot report success."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["testing", "harness", "isolation", "determinism", "mutation"]
+categories.workspace = true
+publish = false
+
+[lints]
+workspace = true
