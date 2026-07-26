@@ -1793,7 +1793,18 @@ fn main() -> miette::Result<()> {
             chain,
             chain_pin,
             capture_stages,
-        } => chain_v1::run(input, out, chain, chain_pin, fmt, capture_stages),
+        } => chain_v1::run_with_disk(
+            input,
+            out,
+            chain,
+            chain_pin,
+            fmt,
+            chain_v1::ChainRunOptions {
+                write_to_disk: true,
+                capture_stages,
+                emit_recovery: false,
+            },
+        ),
         #[cfg(feature = "chain")]
         Cmd::Diff { left, right } => chain_compare::run_diff(left, right, fmt),
         #[cfg(feature = "chain")]

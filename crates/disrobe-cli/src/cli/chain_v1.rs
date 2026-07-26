@@ -355,24 +355,11 @@ fn build_registry() -> PassRegistry {
     r
 }
 
-pub(crate) fn run(
-    input: PathBuf,
-    out: Option<PathBuf>,
-    chain_arg: String,
-    pin_arg: Option<String>,
-    fmt: OutputFormat,
-    capture_stages: bool,
-) -> miette::Result<()> {
-    run_with_disk(
-        input,
-        out,
-        chain_arg,
-        pin_arg,
-        fmt,
-        true,
-        capture_stages,
-        false,
-    )
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ChainRunOptions {
+    pub(crate) write_to_disk: bool,
+    pub(crate) capture_stages: bool,
+    pub(crate) emit_recovery: bool,
 }
 
 pub(crate) fn run_with_disk(
@@ -381,10 +368,13 @@ pub(crate) fn run_with_disk(
     chain_arg: String,
     pin_arg: Option<String>,
     fmt: OutputFormat,
-    write_to_disk: bool,
-    capture_stages: bool,
-    emit_recovery: bool,
+    options: ChainRunOptions,
 ) -> miette::Result<()> {
+    let ChainRunOptions {
+        write_to_disk,
+        capture_stages,
+        emit_recovery,
+    } = options;
     let spec_raw: String = match pin_arg {
         None => chain_arg,
         Some(pin) => combine_chain_and_pin_owned(chain_arg, &pin)?,

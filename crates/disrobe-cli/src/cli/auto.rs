@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use super::batch::{self, BatchOptions};
-use super::chain_v1;
+use super::chain_v1::{self, ChainRunOptions};
 use super::emit::{EmitKind, EmitSpec};
 use super::output::OutputFormat;
 
@@ -65,9 +65,11 @@ pub(crate) fn run(
         chain_arg,
         None,
         fmt,
-        !dry_run,
-        capture_stages,
-        emit_recovery,
+        ChainRunOptions {
+            write_to_disk: !dry_run,
+            capture_stages,
+            emit_recovery,
+        },
     )
 }
 
