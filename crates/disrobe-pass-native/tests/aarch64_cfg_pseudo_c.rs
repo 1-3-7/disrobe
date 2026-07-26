@@ -1,6 +1,8 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
-use disrobe_pass_native::{Error, LeafRecovery, recover_aarch64_function};
+use disrobe_pass_native::{
+    Arch, DisasmInsn, Error, LeafRecovery, disassemble, recover_aarch64_function,
+};
 
 #[test]
 fn aarch64_real_clang_sign_extended_register_add_lifts_the_extend_and_shift() {
@@ -327,13 +329,13 @@ fn aarch64_real_clang_ldp_loads_a_vector_register_pair_from_adjacent_offsets() {
     ];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ldp q0,q1 + add");
     assert!(
-        r.source.contains("v0 = *(recovered_i64x2*)(r_rax)"),
+        r.source.contains("v0 = *(recovered_i64x2_mem*)(r_rax)"),
         "{}",
         r.source
     );
     assert!(
         r.source
-            .contains("v1 = *(recovered_i64x2*)(r_rax + (uint64_t)(int64_t)16LL)"),
+            .contains("v1 = *(recovered_i64x2_mem*)(r_rax + (uint64_t)(int64_t)16LL)"),
         "{}",
         r.source
     );
@@ -348,7 +350,7 @@ fn aarch64_real_clang_autovectorized_sum4_recovers_load_reduce_return() {
     ];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("sum4 ldr q + addv + fmov");
     assert!(
-        r.source.contains("v0 = *(recovered_i32x4*)(r_rax)"),
+        r.source.contains("v0 = *(recovered_i32x4_mem*)(r_rax)"),
         "{}",
         r.source
     );
@@ -373,12 +375,12 @@ fn aarch64_real_clang_autovectorized_dot4_recovers_two_loads_mul_reduce() {
     ];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("dot4");
     assert!(
-        r.source.contains("v0 = *(recovered_i32x4*)(r_rax)"),
+        r.source.contains("v0 = *(recovered_i32x4_mem*)(r_rax)"),
         "{}",
         r.source
     );
     assert!(
-        r.source.contains("v1 = *(recovered_i32x4*)(r_a64_x1)"),
+        r.source.contains("v1 = *(recovered_i32x4_mem*)(r_a64_x1)"),
         "{}",
         r.source
     );
@@ -409,7 +411,7 @@ fn aarch64_real_clang_autovectorized_sumall_recovers_dispatch_vectorloop_reducti
     assert!(!r.source.contains("goto"), "{}", r.source);
     assert!(
         r.source
-            .contains("v2 = *(recovered_i64x2*)(r_a64_x8 + (uint64_t)(int64_t)-16LL)"),
+            .contains("v2 = *(recovered_i64x2_mem*)(r_a64_x8 + (uint64_t)(int64_t)-16LL)"),
         "{}",
         r.source
     );
@@ -520,16 +522,143 @@ fn aarch64_real_clang_stp_stores_a_vector_register_pair_to_adjacent_offsets() {
     let bytes: [u8; 8] = [0x00, 0x00, 0x00, 0xad, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("stp q0,q0");
     assert!(
-        r.source.contains("*(recovered_i8x16*)(r_rax) = v0"),
+        r.source.contains("*(recovered_i8x16_mem*)(r_rax) = v0"),
         "{}",
         r.source
     );
     assert!(
         r.source
-            .contains("*(recovered_i8x16*)(r_rax + (uint64_t)(int64_t)16LL) = v0"),
+            .contains("*(recovered_i8x16_mem*)(r_rax + (uint64_t)(int64_t)16LL) = v0"),
         "{}",
         r.source
     );
+}
+
+#[test]
+fn aarch64_mem_copy_manual_at_o2_recovers_through_a_forward_join_label() {
+    const O2_MEM_COPY_MANUAL: &[u8] = &[
+        0x5f, 0x04, 0x00, 0x71, 0x8b, 0x05, 0x00, 0x54, 0xe9, 0x03, 0x1f, 0xaa, 0x5f, 0x20, 0x00,
+        0x71, 0xe8, 0x03, 0x02, 0x2a, 0x23, 0x04, 0x00, 0x54, 0x0a, 0x00, 0x01, 0xcb, 0x5f, 0x7d,
+        0x00, 0xf1, 0xc9, 0x03, 0x00, 0x54, 0x5f, 0x80, 0x00, 0x71, 0x62, 0x00, 0x00, 0x54, 0xe9,
+        0x03, 0x1f, 0xaa, 0x0f, 0x00, 0x00, 0x14, 0x09, 0x65, 0x7b, 0x92, 0x0a, 0x40, 0x00, 0x91,
+        0x2b, 0x40, 0x00, 0x91, 0xec, 0x03, 0x09, 0xaa, 0x60, 0x85, 0x7f, 0xad, 0x8c, 0x81, 0x00,
+        0xf1, 0x6b, 0x81, 0x00, 0x91, 0x40, 0x85, 0x3f, 0xad, 0x4a, 0x81, 0x00, 0x91, 0x61, 0xff,
+        0xff, 0x54, 0x3f, 0x01, 0x08, 0xeb, 0xa0, 0x02, 0x00, 0x54, 0x1f, 0x05, 0x7d, 0xf2, 0x80,
+        0x01, 0x00, 0x54, 0xec, 0x03, 0x09, 0xaa, 0x09, 0x6d, 0x7d, 0x92, 0x8a, 0x01, 0x09, 0xcb,
+        0x0b, 0x00, 0x0c, 0x8b, 0x2c, 0x00, 0x0c, 0x8b, 0x80, 0x85, 0x40, 0xfc, 0x4a, 0x21, 0x00,
+        0xb1, 0x60, 0x85, 0x00, 0xfc, 0xa1, 0xff, 0xff, 0x54, 0x3f, 0x01, 0x08, 0xeb, 0x00, 0x01,
+        0x00, 0x54, 0x0a, 0x00, 0x09, 0x8b, 0x2b, 0x00, 0x09, 0x8b, 0x08, 0x01, 0x09, 0xcb, 0x69,
+        0x15, 0x40, 0x38, 0x08, 0x05, 0x00, 0xf1, 0x49, 0x15, 0x00, 0x38, 0xa1, 0xff, 0xff, 0x54,
+        0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let r: LeafRecovery =
+        recover_aarch64_function(O2_MEM_COPY_MANUAL, 0).expect("vectorized byte copy recovers");
+    assert_eq!(
+        r.source.matches("recover_L").count(),
+        2,
+        "one forward-join label and one goto to it: {}",
+        r.source
+    );
+    assert_eq!(
+        r.source.matches("goto recover_L").count(),
+        1,
+        "the join must be entered by exactly one goto: {}",
+        r.source
+    );
+    assert!(
+        r.source.contains("*(recovered_i8x16_mem*)"),
+        "the thirty-two byte vector chunk copy must be recovered: {}",
+        r.source
+    );
+    assert!(
+        r.source.contains("*(recovered_u64_mem *)"),
+        "the eight byte tail copy must be recovered: {}",
+        r.source
+    );
+    assert_eq!(
+        r.source.matches("while (1) {").count(),
+        3,
+        "the vector, eight byte and single byte loops must all be recovered: {}",
+        r.source
+    );
+    assert!(r.lifted_loop, "{}", r.source);
+}
+
+#[test]
+fn aarch64_returns_that_disagree_on_the_result_class_still_reject() {
+    let fp_then_integer: [u8; 24] = [
+        0x1f, 0x00, 0x00, 0x71, 0x60, 0x00, 0x00, 0x54, 0x00, 0x10, 0x6e, 0x1e, 0xc0, 0x03, 0x5f,
+        0xd6, 0xe0, 0x00, 0x80, 0xd2, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let rendered: Vec<(String, String)> = disassemble(Arch::Aarch64, 0, &fp_then_integer)
+        .expect("aarch64 decode")
+        .iter()
+        .map(|insn: &DisasmInsn| (insn.mnemonic.clone(), insn.operands.clone()))
+        .collect();
+    let expected: [(&str, &str); 6] = [
+        ("cmp", "w0, #0x0"),
+        ("b.eq", "$+0xc"),
+        ("fmov", "d0, #1.0"),
+        ("ret", ""),
+        ("mov", "x0, #0x7"),
+        ("ret", ""),
+    ];
+    for (index, (mnemonic, operands)) in expected.iter().enumerate() {
+        assert_eq!(rendered[index].0, *mnemonic);
+        assert_eq!(rendered[index].1.trim(), *operands);
+    }
+    let error: Error = recover_aarch64_function(&fp_then_integer, 0)
+        .expect_err("a double return and an integer return cannot be reconciled");
+    assert!(
+        format!("{error:?}").contains("scalar return class or width differs across return paths"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn aarch64_vector_memory_access_never_asserts_pointer_alignment() {
+    let stp_q_pair: [u8; 8] = [0x00, 0x00, 0x00, 0xad, 0xc0, 0x03, 0x5f, 0xd6];
+    let ldp_q_pair: [u8; 12] = [
+        0x00, 0x04, 0x40, 0xad, 0x20, 0x84, 0xe0, 0x4e, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let post_indexed_d: [u8; 8] = [0x00, 0x84, 0x40, 0xfc, 0xc0, 0x03, 0x5f, 0xd6];
+    for bytes in [
+        stp_q_pair.as_slice(),
+        ldp_q_pair.as_slice(),
+        post_indexed_d.as_slice(),
+    ] {
+        let r: LeafRecovery =
+            recover_aarch64_function(bytes, 0).expect("vector memory form recovers");
+        for arrangement in ["i8x16", "i16x8", "i32x4", "i64x2", "i8x8", "i16x4", "i32x2"] {
+            assert!(
+                !r.source.contains(&format!("*(recovered_{arrangement}*)")),
+                "an aarch64 vector memory access must not require pointer alignment: {}",
+                r.source
+            );
+            if r.source.contains(&format!("recovered_{arrangement}_mem")) {
+                assert!(
+                    r.source.contains(&format!(
+                        "typedef recovered_{arrangement} recovered_{arrangement}_mem __attribute__((aligned(1)));"
+                    )),
+                    "the unaligned memory view must be declared: {}",
+                    r.source
+                );
+            }
+        }
+        if r.source.contains("recovered_u64_mem") {
+            assert!(
+                r.source
+                    .contains("typedef uint64_t recovered_u64_mem __attribute__((aligned(1)));"),
+                "the unaligned 64-bit memory view must be declared: {}",
+                r.source
+            );
+        }
+        assert!(
+            !r.source.contains("*(uint64_t *)(r_"),
+            "a 64-bit vector memory access must go through the unaligned view: {}",
+            r.source
+        );
+    }
 }
 
 #[test]

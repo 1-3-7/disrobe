@@ -36,7 +36,7 @@ const INCREMENT_TWO_FP_FUNCTIONS: &[&str] = &[
 const CORPUS_OPTIMIZATION_LEVELS: &[&str] = &["O0", "O1", "O2", "O3", "Os"];
 const INCREMENT_TWO_EXPECTED_CASES: usize = 70;
 const INCREMENT_ONE_EXPECTED_FP_CASES: usize = 32;
-const EXPECTED_INTEGER_CASES: usize = 293;
+const EXPECTED_INTEGER_CASES: usize = 295;
 const ORACLE_FLAGS: &[&str] = &[
     "-O1",
     "-funsigned-char",
@@ -2084,6 +2084,31 @@ const MEM_COPY_TMPL: &str = "    {\n\
      \x20           mem_copy_manual((char*)od, (const char*)src, n);\n\
      \x20           (void)$REC((uint64_t)(uintptr_t)rd, (uint64_t)(uintptr_t)src, (uint64_t)(uint32_t)n);\n\
      \x20           if (memcmp(od, rd, BUFN) != 0) { printf(\"FAIL $OPT $NAME it=%d n=%d\\n\", it, n); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       {\n\
+     \x20           static const int NS[] = { 0, -1, -3, -32, (-2147483647 - 1), 1, 2, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 96, 127, 160 };\n\
+     \x20           unsigned char lsrc[160]; unsigned char lod[160]; unsigned char lrd[160];\n\
+     \x20           for (int k = 0; ok && k < (int)(sizeof(NS) / sizeof(NS[0])); k++) {\n\
+     \x20               int n = NS[k];\n\
+     \x20               for (int b = 0; b < 160; b++) { lsrc[b] = (unsigned char)(xs(&s) & 0xff); unsigned char f = (unsigned char)(xs(&s) & 0xff); lod[b] = f; lrd[b] = f; }\n\
+     \x20               mem_copy_manual((char*)lod, (const char*)lsrc, n);\n\
+     \x20               (void)$REC((uint64_t)(uintptr_t)lrd, (uint64_t)(uintptr_t)lsrc, (uint64_t)(uint32_t)n);\n\
+     \x20               if (memcmp(lod, lrd, 160) != 0) { printf(\"FAIL $OPT $NAME directed n=%d\\n\", n); ok = 0; }\n\
+     \x20           }\n\
+     \x20       }\n\
+     \x20       {\n\
+     \x20           static const int OFFS[] = { 1, 2, 4, 8, 15, 16, 31, 32, 33, 40, 64, 96 };\n\
+     \x20           unsigned char ob[320]; unsigned char rb[320];\n\
+     \x20           for (int k = 0; ok && k < (int)(sizeof(OFFS) / sizeof(OFFS[0])); k++) {\n\
+     \x20               for (int dir = 0; ok && dir < 2; dir++) {\n\
+     \x20                   int off = OFFS[k];\n\
+     \x20                   int dst = dir ? off : 0; int from = dir ? 0 : off;\n\
+     \x20                   for (int b = 0; b < 320; b++) { unsigned char f = (unsigned char)(xs(&s) & 0xff); ob[b] = f; rb[b] = f; }\n\
+     \x20                   mem_copy_manual((char*)(ob + dst), (const char*)(ob + from), 128);\n\
+     \x20                   (void)$REC((uint64_t)(uintptr_t)(rb + dst), (uint64_t)(uintptr_t)(rb + from), (uint64_t)128);\n\
+     \x20                   if (memcmp(ob, rb, 320) != 0) { printf(\"FAIL $OPT $NAME overlap off=%d dir=%d\\n\", off, dir); ok = 0; }\n\
+     \x20               }\n\
+     \x20           }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";

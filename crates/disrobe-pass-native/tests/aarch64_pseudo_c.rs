@@ -359,14 +359,14 @@ fn clang_d_register_post_index_copy_loop_lifts() {
     assert!(
         recovered
             .source
-            .contains("*(uint64_t *)(&v0) = *(uint64_t *)(r_a64_x1)"),
+            .contains("*(uint64_t *)(&v0) = *(recovered_u64_mem *)(r_a64_x1)"),
         "{}",
         recovered.source
     );
     assert!(
         recovered
             .source
-            .contains("*(uint64_t *)(r_rax) = *(uint64_t *)(&v0)"),
+            .contains("*(recovered_u64_mem *)(r_rax) = *(uint64_t *)(&v0)"),
         "{}",
         recovered.source
     );
@@ -693,7 +693,10 @@ fn neon_vector_load_store_and_dup_lift() {
             .source
             .contains("void recovered(uint64_t a0, uint64_t a1, uint64_t a2)")
     );
-    assert_eq!(recovered.source.matches("*(recovered_f32x4*)").count(), 3);
+    assert_eq!(
+        recovered.source.matches("*(recovered_f32x4_mem*)").count(),
+        3
+    );
     assert!(recovered.source.contains("v0 = v0 + v1;"));
     assert!(recovered.source.contains("return;"));
     assert_eq!(recovered.return_width_bits, 0);
@@ -702,7 +705,7 @@ fn neon_vector_load_store_and_dup_lift() {
         0x20, 0x00, 0xc0, 0x3d, 0x00, 0x00, 0x80, 0x3d, 0xc0, 0x03, 0x5f, 0xd6,
     ];
     let copy: LeafRecovery = recover_aarch64_function(&copyq, 0).expect("neon copy");
-    assert_eq!(copy.source.matches("*(recovered_i8x16*)").count(), 2);
+    assert_eq!(copy.source.matches("*(recovered_i8x16_mem*)").count(), 2);
     assert!(copy.source.contains("void recovered("));
 
     let splat: [u8; 8] = [0x00, 0x0c, 0x04, 0x4e, 0xc0, 0x03, 0x5f, 0xd6];
