@@ -178,18 +178,21 @@ fn fixture_entry(rel: &str, name: &str) -> Vec<u8> {
     p.pop();
     p.pop();
     p.push(rel);
-    let Ok(bytes) = std::fs::read(&p) else {
-        return Vec::new();
-    };
+    let bytes: Vec<u8> = std::fs::read(&p)
+        .unwrap_or_else(|error| panic!("committed fixture {} is unreadable: {error}", p.display()));
     let cur: std::io::Cursor<Vec<u8>> = std::io::Cursor::new(bytes);
-    let Ok(mut z) = zip::ZipArchive::new(cur) else {
-        return Vec::new();
-    };
-    let Ok(mut f) = z.by_name(name) else {
-        return Vec::new();
-    };
+    let mut z: zip::ZipArchive<std::io::Cursor<Vec<u8>>> = zip::ZipArchive::new(cur)
+        .unwrap_or_else(|error| panic!("committed fixture {} is not a zip: {error}", p.display()));
+    let mut f: zip::read::ZipFile<'_> = z
+        .by_name(name)
+        .unwrap_or_else(|error| panic!("fixture {} has no entry {name}: {error}", p.display()));
     let mut out: Vec<u8> = Vec::new();
-    let _ = f.read_to_end(&mut out);
+    f.read_to_end(&mut out)
+        .unwrap_or_else(|error| panic!("fixture entry {name} is unreadable: {error}"));
+    assert!(
+        !out.is_empty(),
+        "fixture entry {name} is empty, so this seed would silently stop exercising real input"
+    );
     out
 }
 
