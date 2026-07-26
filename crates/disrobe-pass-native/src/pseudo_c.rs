@@ -753,7 +753,13 @@ impl VecArrangement {
     fn type_name(self) -> String {
         format!("recovered_{}x{}", self.elem.tag(), self.lanes)
     }
+
+    fn mem_type_name(self) -> String {
+        format!("recovered_{}x{}_mem", self.elem.tag(), self.lanes)
+    }
 }
+
+const UNALIGNED_U64_TYPE: &str = "recovered_u64_mem";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MinMax {
@@ -5558,14 +5564,19 @@ fn render_cfg_blocks(
     if has_multi_entry_irreducible {
         return render_cfg_blocks_via_cns(blocks, labels, allow_loops, label_targets);
     }
-    if let Some((eblocks, elabels)) = split_tail_regions(blocks.to_vec(), labels.clone())
-        && eblocks.len() != blocks.len()
+    let expanded: Option<(Vec<CfgBlock>, std::collections::BTreeMap<usize, SinkLabel>)> =
+        split_tail_regions(blocks.to_vec(), labels.clone()).filter(
+            |(eblocks, _): &(Vec<CfgBlock>, std::collections::BTreeMap<usize, SinkLabel>)| {
+                eblocks.len() != blocks.len()
+            },
+        );
+    if let Some((eblocks, elabels)) = expanded.as_ref()
         && let Some(body) = render_cfg_blocks_once(
-            &eblocks,
-            &elabels,
+            eblocks,
+            elabels,
             allow_loops,
             label_targets,
-            &eblocks,
+            eblocks,
             &no_residual,
         )
     {
@@ -5587,6 +5598,31 @@ fn render_cfg_blocks(
             &plan.residual,
         ) {
             return Some(body);
+        }
+    }
+    let mut sources: Vec<(&[CfgBlock], &std::collections::BTreeMap<usize, SinkLabel>)> =
+        vec![(blocks, labels)];
+    if let Some((eblocks, elabels)) = expanded.as_ref() {
+        sources.push((eblocks.as_slice(), elabels));
+    }
+    for (source, source_labels) in sources {
+        for plan in forward_join_lowering_candidates(source, source_labels) {
+            let mut merged: std::collections::BTreeMap<usize, u32> = label_targets.clone();
+            merged.extend(
+                plan.label_targets
+                    .iter()
+                    .map(|(k, v): (&usize, &u32)| (*k, *v)),
+            );
+            if let Some(body) = render_cfg_blocks_once(
+                &plan.blocks,
+                &plan.labels,
+                allow_loops,
+                &merged,
+                source,
+                &plan.residual,
+            ) {
+                return Some(body);
+            }
         }
     }
     None
@@ -5657,6 +5693,75 @@ fn irreducible_lowering_candidates(
                 blocks: tblocks,
                 labels: tlabels,
                 label_targets,
+                residual,
+            });
+        }
+    }
+    plans
+}
+
+const FORWARD_JOIN_PLAN_CAP: usize = 32;
+
+fn forward_join_lowering_candidates(
+    blocks: &[CfgBlock],
+    labels: &std::collections::BTreeMap<usize, SinkLabel>,
+) -> Vec<IrreduciblePlan> {
+    let Some(cfg): Option<structuring::Cfg> = cfg_from_leaf_blocks(blocks) else {
+        return Vec::new();
+    };
+    if !structuring::multi_entry_irreducible_sccs(&cfg).is_empty() {
+        return Vec::new();
+    }
+    let reachable: std::collections::BTreeSet<usize> = reachable_blocks(blocks);
+    let dominators: Vec<std::collections::BTreeSet<usize>> = dominator_sets(blocks);
+    let preds: Vec<Vec<usize>> = block_predecessors(blocks);
+    let mut plans: Vec<IrreduciblePlan> = Vec::new();
+    for join in reachable.iter().copied() {
+        if join == 0 || labels.contains_key(&join) || blocks[join].successors().is_empty() {
+            continue;
+        }
+        let entering: Vec<usize> = preds[join]
+            .iter()
+            .copied()
+            .filter(|pred: &usize| reachable.contains(pred))
+            .collect();
+        if entering.len() < 2
+            || entering
+                .iter()
+                .any(|pred: &usize| dominators[*pred].contains(&join))
+        {
+            continue;
+        }
+        let Ok(label): core::result::Result<u32, core::num::TryFromIntError> = u32::try_from(join)
+        else {
+            continue;
+        };
+        for keep in entering.iter().rev().copied() {
+            if plans.len() == FORWARD_JOIN_PLAN_CAP {
+                return plans;
+            }
+            let mut plan_blocks: Vec<CfgBlock> = blocks.to_vec();
+            let mut plan_labels: std::collections::BTreeMap<usize, SinkLabel> = labels.clone();
+            let mut residual: std::collections::BTreeMap<usize, usize> =
+                std::collections::BTreeMap::new();
+            for pred in entering
+                .iter()
+                .copied()
+                .filter(|pred: &usize| *pred != keep)
+            {
+                let stub: usize = plan_blocks.len();
+                plan_blocks.push(CfgBlock {
+                    stmts: Vec::new(),
+                    term: BlockTerm::Ret,
+                });
+                plan_labels.insert(stub, SinkLabel::Goto(label));
+                residual.insert(stub, join);
+                retarget_block(&mut plan_blocks[pred].term, join, stub);
+            }
+            plans.push(IrreduciblePlan {
+                blocks: plan_blocks,
+                labels: plan_labels,
+                label_targets: std::collections::BTreeMap::from([(join, label)]),
                 residual,
             });
         }
@@ -11960,6 +12065,18 @@ fn emit_c(
             arr.type_name(),
             arr.total_bits() / 8
         );
+        let _ = writeln!(
+            out,
+            "typedef {} {} __attribute__((aligned(1)));",
+            arr.type_name(),
+            arr.mem_type_name()
+        );
+    }
+    if !vec_types.is_empty() {
+        let _ = writeln!(
+            out,
+            "typedef uint64_t {UNALIGNED_U64_TYPE} __attribute__((aligned(1)));"
+        );
     }
     if let Some(plan) = sret {
         let _ = writeln!(out, "typedef struct {{");
@@ -13589,7 +13706,7 @@ fn vec_resolved_arr(arr: Option<VecArrangement>) -> VecArrangement {
 fn vec_deref_expr(arr: VecArrangement, addr: &MemRef) -> String {
     format!(
         "*({}*)({})",
-        arr.type_name(),
+        arr.mem_type_name(),
         addr_expr(addr.base, addr.index, addr.disp)
     )
 }
@@ -13600,7 +13717,7 @@ fn vec_low64_lvalue(reg: u8) -> String {
 
 fn vec_low64_mem(addr: &MemRef) -> String {
     format!(
-        "*(uint64_t *)({})",
+        "*({UNALIGNED_U64_TYPE} *)({})",
         addr_expr(addr.base, addr.index, addr.disp)
     )
 }
@@ -19533,6 +19650,270 @@ mod structuring_corpus {
             rs_if_cond_expr(&or, &AggregatePlan::default())
                 .is_some_and(|s: String| s.contains("||")),
             "fused OR must render `||` in rust"
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod forward_join_scope {
+    use super::{
+        BlockTerm, CfgBlock, CondKind, Flags, Reg, RegRef, SinkLabel, Source, Stmt, Width,
+        forward_join_lowering_candidates, render_cfg_blocks,
+    };
+    use std::collections::BTreeMap;
+
+    fn probe_flags() -> Flags {
+        Flags::Cmp {
+            lhs: RegRef {
+                reg: Reg::Rax,
+                width: Width::W64,
+            },
+            rhs: Source::Imm(0),
+        }
+    }
+
+    fn effect(tag: i64) -> Stmt {
+        Stmt::Assign {
+            dest: RegRef {
+                reg: Reg::Rbx,
+                width: Width::W64,
+            },
+            src: Source::Imm(tag),
+        }
+    }
+
+    fn branch(taken: usize, fallthrough: usize) -> CfgBlock {
+        CfgBlock {
+            stmts: vec![effect(1)],
+            term: BlockTerm::Branch {
+                kind: CondKind::E,
+                flags: probe_flags(),
+                taken,
+                fallthrough,
+            },
+        }
+    }
+
+    fn jump(target: usize) -> CfgBlock {
+        CfgBlock {
+            stmts: vec![effect(2)],
+            term: BlockTerm::Jump(target),
+        }
+    }
+
+    fn ret() -> CfgBlock {
+        CfgBlock {
+            stmts: Vec::new(),
+            term: BlockTerm::Ret,
+        }
+    }
+
+    fn no_labels() -> BTreeMap<usize, SinkLabel> {
+        BTreeMap::new()
+    }
+
+    fn contains_goto(body: &[super::Node]) -> bool {
+        body.iter().any(|node: &super::Node| match node {
+            super::Node::Goto(_) | super::Node::Label(_) => true,
+            super::Node::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                contains_goto(then_body)
+                    || else_body
+                        .as_ref()
+                        .is_some_and(|arm: &Vec<super::Node>| contains_goto(arm))
+            }
+            super::Node::While { body, .. } | super::Node::DoWhile { body, .. } => {
+                contains_goto(body)
+            }
+            super::Node::Switch { cases, default, .. } => {
+                cases
+                    .iter()
+                    .any(|case: &super::SwitchCase| contains_goto(&case.body))
+                    || contains_goto(default)
+            }
+            super::Node::Stmt(_)
+            | super::Node::CondSnapshot { .. }
+            | super::Node::Break
+            | super::Node::Continue
+            | super::Node::Return => false,
+        })
+    }
+
+    fn joins_lowered(plans: &[super::IrreduciblePlan]) -> Vec<usize> {
+        plans
+            .iter()
+            .flat_map(|plan: &super::IrreduciblePlan| plan.residual.values().copied())
+            .collect()
+    }
+
+    #[test]
+    fn a_forward_join_with_two_predecessors_is_lowered_once_per_kept_edge() {
+        let blocks: Vec<CfgBlock> = vec![branch(2, 1), jump(2), jump(3), ret()];
+        let plans: Vec<super::IrreduciblePlan> =
+            forward_join_lowering_candidates(&blocks, &no_labels());
+        assert_eq!(plans.len(), 2, "one plan per candidate kept edge");
+        assert!(
+            joins_lowered(&plans).iter().all(|join: &usize| *join == 2),
+            "only block 2 is a forward join"
+        );
+        for plan in &plans {
+            assert_eq!(
+                plan.blocks.len(),
+                blocks.len() + 1,
+                "exactly one predecessor edge is rerouted through a stub"
+            );
+            assert_eq!(plan.label_targets.get(&2).copied(), Some(2));
+            for stub in plan.residual.keys() {
+                assert_eq!(
+                    plan.labels.get(stub).copied(),
+                    Some(SinkLabel::Goto(2)),
+                    "each stub must carry the join's goto label"
+                );
+                assert!(matches!(plan.blocks[*stub].term, BlockTerm::Ret));
+                assert!(plan.blocks[*stub].stmts.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn a_loop_header_join_is_never_lowered_to_a_backward_goto() {
+        let latch_reaches_header: Vec<CfgBlock> = vec![branch(1, 3), branch(2, 3), jump(1), ret()];
+        let plans: Vec<super::IrreduciblePlan> =
+            forward_join_lowering_candidates(&latch_reaches_header, &no_labels());
+        assert!(
+            joins_lowered(&plans).iter().all(|join: &usize| *join != 1),
+            "block 1 dominates its own predecessor and must stay a loop header"
+        );
+    }
+
+    #[test]
+    fn a_multi_entry_irreducible_cfg_produces_no_forward_join_plan() {
+        let two_entries: Vec<CfgBlock> = vec![branch(2, 1), jump(2), branch(1, 3), ret()];
+        assert!(
+            forward_join_lowering_candidates(&two_entries, &no_labels()).is_empty(),
+            "a multi-entry irreducible scc must be left to the node-splitting path"
+        );
+    }
+
+    #[test]
+    fn the_entry_a_single_predecessor_and_a_sink_are_never_join_candidates() {
+        let chain: Vec<CfgBlock> = vec![branch(2, 1), jump(2), jump(3), ret()];
+        let joins: Vec<usize> =
+            joins_lowered(&forward_join_lowering_candidates(&chain, &no_labels()));
+        assert!(!joins.contains(&0), "the entry is never a join");
+        assert!(
+            !joins.contains(&1),
+            "a single-predecessor block is never a join"
+        );
+        assert!(!joins.contains(&3), "a successor-free sink is never a join");
+    }
+
+    #[test]
+    fn an_already_labelled_join_is_left_alone() {
+        let blocks: Vec<CfgBlock> = vec![branch(2, 1), jump(2), jump(3), ret()];
+        let mut labels: BTreeMap<usize, SinkLabel> = BTreeMap::new();
+        labels.insert(2, SinkLabel::Break);
+        assert!(
+            forward_join_lowering_candidates(&blocks, &labels).is_empty(),
+            "a block that already carries a sink label must not be relabelled"
+        );
+    }
+
+    fn mem_copy_shaped_blocks() -> Vec<CfgBlock> {
+        vec![
+            branch(14, 1),
+            branch(12, 2),
+            branch(12, 3),
+            branch(5, 4),
+            jump(9),
+            jump(6),
+            branch(6, 7),
+            branch(14, 8),
+            branch(12, 9),
+            jump(10),
+            branch(10, 11),
+            branch(14, 12),
+            jump(13),
+            branch(13, 14),
+            ret(),
+        ]
+    }
+
+    #[test]
+    fn the_kept_edge_is_the_latest_predecessor_and_every_other_edge_becomes_a_goto() {
+        let blocks: Vec<CfgBlock> = mem_copy_shaped_blocks();
+        let plans: Vec<super::IrreduciblePlan> =
+            forward_join_lowering_candidates(&blocks, &no_labels());
+        let first_for_twelve: &super::IrreduciblePlan = plans
+            .iter()
+            .find(|plan: &&super::IrreduciblePlan| {
+                plan.label_targets.contains_key(&12) && plan.residual.len() == 3
+            })
+            .expect("block 12 is a four-predecessor forward join");
+        assert!(
+            matches!(
+                first_for_twelve.blocks[11].term,
+                BlockTerm::Branch {
+                    fallthrough: 12,
+                    ..
+                }
+            ),
+            "the latest predecessor keeps its direct edge to the join"
+        );
+        for pred in [1_usize, 2, 8] {
+            let successors: Vec<usize> = first_for_twelve.blocks[pred].successors();
+            assert!(
+                !successors.contains(&12),
+                "predecessor {pred} must reach the join through a goto stub"
+            );
+        }
+    }
+
+    #[test]
+    fn an_accepted_lowering_is_edge_equivalent_and_the_check_has_teeth() {
+        let blocks: Vec<CfgBlock> = mem_copy_shaped_blocks();
+        let mut plan: super::IrreduciblePlan =
+            forward_join_lowering_candidates(&blocks, &no_labels())
+                .into_iter()
+                .find(|plan: &super::IrreduciblePlan| plan.residual.len() == 3)
+                .expect("a four-predecessor join yields a three-stub plan");
+        let original: crate::structuring::Cfg =
+            super::cfg_from_leaf_blocks(&blocks).expect("original cfg");
+        let lowered: crate::structuring::Cfg =
+            super::cfg_from_leaf_blocks(&plan.blocks).expect("lowered cfg");
+        let residual: BTreeMap<u32, u32> = plan
+            .residual
+            .iter()
+            .map(|(stub, target): (&usize, &usize)| (*stub as u32, *target as u32))
+            .collect();
+        assert!(
+            crate::structuring::relowered_matches_original(&original, &lowered, &residual),
+            "a goto stub must preserve every original edge"
+        );
+
+        super::retarget_block(&mut plan.blocks[1].term, 15, 3);
+        let corrupted_cfg: crate::structuring::Cfg =
+            super::cfg_from_leaf_blocks(&plan.blocks).expect("corrupted cfg");
+        assert!(
+            !crate::structuring::relowered_matches_original(&original, &corrupted_cfg, &residual),
+            "misrouting a stub edge must fail the equivalence check"
+        );
+    }
+
+    #[test]
+    fn the_lowering_only_runs_after_every_earlier_attempt_has_failed() {
+        let already_structurable: Vec<CfgBlock> = vec![branch(2, 1), jump(3), jump(3), ret()];
+        let targets: BTreeMap<usize, u32> = BTreeMap::new();
+        let body: Vec<super::Node> =
+            render_cfg_blocks(&already_structurable, &no_labels(), true, &targets)
+                .expect("a plain diamond structures without any lowering");
+        assert!(
+            !contains_goto(&body),
+            "a shape the earlier passes already handle must not gain a goto: {body:#?}"
         );
     }
 }
