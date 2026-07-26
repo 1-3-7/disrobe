@@ -661,7 +661,6 @@ fn gzip_exact_extent(bytes: &[u8]) -> Option<usize> {
     let body: &[u8] = bytes.get(body_start..)?;
     let mut decompressor: flate2::Decompress = flate2::Decompress::new(false);
     let mut scratch: [u8; 16 * 1024] = [0u8; 16 * 1024];
-    let mut produced: u64 = 0;
     loop {
         let in_before: u64 = decompressor.total_in();
         let consumed_so_far: usize = usize::try_from(in_before).ok()?;
@@ -669,7 +668,7 @@ fn gzip_exact_extent(bytes: &[u8]) -> Option<usize> {
         let status: flate2::Status = decompressor
             .decompress(remaining, &mut scratch, flate2::FlushDecompress::None)
             .ok()?;
-        produced = produced.saturating_add(decompressor.total_out());
+        let produced: u64 = decompressor.total_out();
         match status {
             flate2::Status::StreamEnd => break,
             flate2::Status::Ok | flate2::Status::BufError => {
@@ -905,6 +904,23 @@ mod tests {
             kind: ContainerKind::Gzip,
         };
         assert_eq!(validated_extent(&gz, &hit), Some(gz.len()));
+    }
+
+    #[test]
+    fn a_gzip_stream_far_below_the_decode_cap_is_still_measured() {
+        const PAYLOAD_LEN: usize = 16 * 1024 * 1024;
+        assert!(
+            u64::try_from(PAYLOAD_LEN).unwrap_or(u64::MAX) < STREAM_DECODE_CAP,
+            "the payload must sit well under the cap for this test to mean anything"
+        );
+        let payload: Vec<u8> = (0..PAYLOAD_LEN).map(|i: usize| (i % 251) as u8).collect();
+        let gz: Vec<u8> = gzip(&payload);
+        assert_eq!(
+            gzip_exact_extent(&gz),
+            Some(gz.len()),
+            "a stream whose output is {PAYLOAD_LEN} bytes is far below the {STREAM_DECODE_CAP} \
+             byte cap and must be measured rather than abandoned"
+        );
     }
 
     #[test]
