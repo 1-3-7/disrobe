@@ -43,3 +43,4 @@ yaxpeax-arch = { workspace = true }
 yaxpeax-arm = { workspace = true }
 
 [dev-dependencies]
+disrobe-testkit = { workspace = true }

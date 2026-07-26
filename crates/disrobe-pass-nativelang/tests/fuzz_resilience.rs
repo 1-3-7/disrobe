@@ -1,132 +1,189 @@
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#![allow(clippy::expect_used)]
+use std::time::Duration;
+
 use disrobe_pass_nativelang::{analyze, demangle_crystal, demangle_d, demangle_nim, demangle_zig};
+use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, XorShift64};
 
-struct Xorshift64 {
-    state: u64,
-}
+const RANDOM_SPAN_BYTES: usize = 1024;
+const CASES_PER_INPUT: usize = 13_000;
+const BATCH_SIZE: usize = 6_500;
+const CASE_BUDGET: Duration = Duration::from_millis(20);
+const SUITE_BUDGET: Duration = Duration::from_mins(3);
 
-impl Xorshift64 {
-    const fn new(seed: u64) -> Self {
-        Self { state: seed | 1 }
+const SATURATION_DOMAIN: u64 = 0x4E47_4C41_0001_0002;
+const SATURATION_PATTERNS: [(u8, u32); 1] = [(u8::MAX, 2)];
+const MANGLED_DOMAIN: u64 = 0x4E47_4C41_0001_0003;
+const MAX_MANGLED_BYTES: usize = 120;
+const MANGLED_ALPHABET: &[u8] =
+    b"_ZN0123456789abcdefghijklmnopqrstuvwxyzABCDEF$.@*<>,()[]\xc3\xa9\xf0\x9f\x98\x80";
+const MANGLED_ALPHABET_SPARSITY: u32 = 2;
+
+const MANGLED_SEED_TEXT: &[u8] = b"_ZN4test6methodEv\x00_D3std5stdio6printfFAyaZv\x00\
+nimMain__abc_1\x00Sample::Type#method:Int32\x00example.module.function\x00";
+
+const ENTROPY_SPAN_SEED: u64 = 0x4E47_4C41_0001_0004;
+
+fn entropy_span(len: usize) -> Vec<u8> {
+    let mut rng: XorShift64 = XorShift64::new(ENTROPY_SPAN_SEED);
+    let mut out: Vec<u8> = Vec::with_capacity(len);
+    for _ in 0..len {
+        out.push(rng.next_byte());
     }
-
-    const fn next_u64(&mut self) -> u64 {
-        let mut x: u64 = self.state;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.state = x;
-        x
-    }
-
-    const fn next_usize(&mut self, bound: usize) -> usize {
-        if bound == 0 {
-            return 0;
-        }
-        (self.next_u64() % bound as u64) as usize
-    }
-
-    const fn next_byte(&mut self) -> u8 {
-        (self.next_u64() & 0xff) as u8
-    }
+    out
 }
 
 fn elf64_seed() -> Vec<u8> {
-    let mut v: Vec<u8> = vec![0u8; 256];
-    v[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
-    v[4] = 2;
-    v[5] = 1;
-    v[6] = 1;
-    v[16..18].copy_from_slice(&2u16.to_le_bytes());
-    v[18..20].copy_from_slice(&0x3eu16.to_le_bytes());
-    v[20..24].copy_from_slice(&1u32.to_le_bytes());
-    v
+    let mut bytes: Vec<u8> = Vec::with_capacity(256);
+    bytes.extend_from_slice(&[0x7f, b'E', b'L', b'F', 2, 1, 1]);
+    bytes.resize(16, 0);
+    bytes.extend_from_slice(&2u16.to_le_bytes());
+    bytes.extend_from_slice(&0x3eu16.to_le_bytes());
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.resize(256, 0);
+    bytes
 }
 
-fn fuzz_mangled(rng: &mut Xorshift64) -> String {
-    let len: usize = rng.next_usize(120);
-    let alphabet: &[u8] =
-        b"_ZN0123456789abcdefghijklmnopqrstuvwxyzABCDEF$.@*<>,()[]\xc3\xa9\xf0\x9f\x98\x80";
-    let mut bytes: Vec<u8> = Vec::with_capacity(len);
-    for _ in 0..len {
-        if rng.next_u64().trailing_zeros() >= 2 {
-            bytes.push(rng.next_byte());
-        } else {
-            bytes.push(alphabet[rng.next_usize(alphabet.len())]);
-        }
-    }
-    String::from_utf8_lossy(&bytes).into_owned()
+fn corpus() -> Vec<CorpusEntry> {
+    vec![
+        CorpusEntry::new("empty", Vec::<u8>::new()),
+        CorpusEntry::new("elf64-header", elf64_seed()),
+        CorpusEntry::new("mangled-symbols", MANGLED_SEED_TEXT.to_vec()),
+        CorpusEntry::new("random-span", vec![0u8; RANDOM_SPAN_BYTES]),
+        CorpusEntry::new("entropy-span", entropy_span(RANDOM_SPAN_BYTES)),
+    ]
 }
 
-fn mutate(seed: &[u8], rng: &mut Xorshift64) -> Vec<u8> {
-    let mut out: Vec<u8> = seed.to_vec();
-    match rng.next_u64() % 5 {
-        0 => {
-            if !out.is_empty() {
-                let idx: usize = rng.next_usize(out.len());
-                out[idx] ^= 1u8 << rng.next_usize(8);
+fn saturate(bytes: &[u8], case_seed: u64) -> Vec<u8> {
+    let mut rng: XorShift64 = XorShift64::new(case_seed ^ SATURATION_DOMAIN);
+    let mut out: Vec<u8> = bytes.to_vec();
+    let pick: usize = rng.below_usize(SATURATION_PATTERNS.len().saturating_add(1));
+    let Some(&(value, sparsity)): Option<&(u8, u32)> = SATURATION_PATTERNS.get(pick) else {
+        let changes: usize = rng.below_usize(out.len().saturating_add(1));
+        for _ in 0..changes {
+            let index: usize = rng.below_usize(out.len());
+            if let Some(byte) = out.get_mut(index) {
+                *byte = rng.next_byte();
             }
         }
-        1 => {
-            if !out.is_empty() {
-                let cut: usize = rng.next_usize(out.len());
-                out.truncate(cut);
-            }
-        }
-        2 => {
-            let count: usize = rng.next_usize(out.len().max(1));
-            for _ in 0..count {
-                let idx: usize = rng.next_usize(out.len().max(1));
-                if idx < out.len() {
-                    out[idx] = rng.next_byte();
-                }
-            }
-        }
-        3 => {
-            for b in &mut out {
-                if rng.next_u64().trailing_zeros() >= 2 {
-                    *b = 0xff;
-                }
-            }
-        }
-        _ => {
-            let len: usize = rng.next_usize(512);
-            out = (0..len).map(|_| rng.next_byte()).collect();
+        return out;
+    };
+    for byte in &mut out {
+        if rng.next_u64().trailing_zeros() >= sparsity {
+            *byte = value;
         }
     }
     out
 }
 
-#[test]
-fn pure_random_images_never_panic() {
-    let mut rng: Xorshift64 = Xorshift64::new(0x4E47_0001_4E47_0001);
-    for _ in 0..4_000 {
-        let len: usize = rng.next_usize(1024);
-        let bytes: Vec<u8> = (0..len).map(|_| rng.next_byte()).collect();
-        let _ = analyze(&bytes);
-    }
-}
-
-#[test]
-fn mutated_elf_seeds_never_panic() {
-    let seeds: [Vec<u8>; 2] = [elf64_seed(), Vec::new()];
-    let mut rng: Xorshift64 = Xorshift64::new(0x4E47_0102_0304_0506);
-    for seed in &seeds {
-        for _ in 0..3_000 {
-            let mutated: Vec<u8> = mutate(seed, &mut rng);
-            let _ = analyze(&mutated);
+fn mangled_from_seed(case_seed: u64) -> String {
+    let mut rng: XorShift64 = XorShift64::new(case_seed ^ MANGLED_DOMAIN);
+    let len: usize = rng.below_usize(MAX_MANGLED_BYTES);
+    let mut bytes: Vec<u8> = Vec::with_capacity(len);
+    for _ in 0..len {
+        if rng.next_u64().trailing_zeros() >= MANGLED_ALPHABET_SPARSITY {
+            bytes.push(rng.next_byte());
+        } else {
+            let pick: usize = rng.below_usize(MANGLED_ALPHABET.len());
+            bytes.push(MANGLED_ALPHABET.get(pick).copied().unwrap_or(b'_'));
         }
     }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn probe_image(bytes: &[u8]) {
+    let _ = analyze(bytes);
+}
+
+fn probe_symbol(text: &str) {
+    let _ = demangle_nim(text);
+    let _ = demangle_zig(text);
+    let _ = demangle_crystal(text);
+    let _ = demangle_d(text);
+}
+
+fn check(case: &StressCase<'_>) {
+    probe_image(case.bytes());
+    probe_image(&saturate(case.bytes(), case.case_seed()));
+    probe_symbol(&String::from_utf8_lossy(case.bytes()));
+    probe_symbol(&mangled_from_seed(case.case_seed()));
+}
+
+fn config() -> StressConfig {
+    StressConfig {
+        cases_per_input: CASES_PER_INPUT,
+        batch_size: BATCH_SIZE,
+        case_budget: CASE_BUDGET,
+        suite_budget: SUITE_BUDGET,
+        ..StressConfig::default()
+    }
+}
+
+mod resilience {
+    disrobe_testkit::stress_suite!(
+        check: super::check,
+        corpus: super::corpus,
+        config: super::config
+    );
 }
 
 #[test]
-fn fuzzed_mangled_symbols_never_panic() {
-    let mut rng: Xorshift64 = Xorshift64::new(0x4E47_DECA_FF01_0203);
-    for _ in 0..40_000 {
-        let s: String = fuzz_mangled(&mut rng);
-        let _ = demangle_nim(&s);
-        let _ = demangle_zig(&s);
-        let _ = demangle_crystal(&s);
-        let _ = demangle_d(&s);
+fn the_saturation_probe_rewrites_the_bytes_it_is_handed_and_replays_from_its_seed() {
+    const SAMPLE: usize = 512;
+    let original: Vec<u8> = vec![0x33u8; SAMPLE];
+    let mut untouched: usize = 0;
+    let mut distinct: Vec<Vec<u8>> = Vec::new();
+    for case_seed in 0..SAMPLE as u64 {
+        let probed: Vec<u8> = saturate(&original, case_seed);
+        assert_eq!(probed, saturate(&original, case_seed));
+        if probed == original {
+            untouched = untouched.saturating_add(1);
+        }
+        if !distinct.contains(&probed) {
+            distinct.push(probed);
+        }
     }
+    assert!(
+        untouched < SAMPLE / 16,
+        "{untouched} of {SAMPLE} probe outputs came back unchanged"
+    );
+    assert!(
+        distinct.len() > SAMPLE / 2,
+        "only {} distinct probe outputs",
+        distinct.len()
+    );
+}
+
+#[test]
+fn the_mangled_symbol_probe_replays_from_its_seed_and_does_not_collapse() {
+    const SAMPLE: u64 = 512;
+    let mut distinct: Vec<String> = Vec::new();
+    for case_seed in 0..SAMPLE {
+        let text: String = mangled_from_seed(case_seed);
+        assert_eq!(text, mangled_from_seed(case_seed));
+        if !distinct.contains(&text) {
+            distinct.push(text);
+        }
+    }
+    assert!(
+        distinct.len() > usize::try_from(SAMPLE).unwrap_or(usize::MAX) / 2,
+        "only {} distinct mangled symbols",
+        distinct.len()
+    );
+}
+
+#[test]
+fn every_unmutated_seed_finishes() {
+    for entry in corpus() {
+        probe_image(entry.bytes());
+        probe_symbol(&String::from_utf8_lossy(entry.bytes()));
+    }
+}
+
+#[test]
+fn the_seeded_d_symbol_demangles_to_its_source_name() {
+    let recovered: disrobe_pass_nativelang::DemangledSymbol =
+        demangle_d("_D3std5stdio6printfFAyaZv")
+            .expect("the committed mangled seed must demangle, or every symbol case is inert");
+    assert_eq!(recovered.name, "printf");
+    assert_eq!(recovered.module.as_deref(), Some("std.stdio"));
 }

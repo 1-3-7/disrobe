@@ -29,6 +29,7 @@ default = []
 chain = ["disrobe-core/chain"]
 
 [dev-dependencies]
+disrobe-testkit = { workspace = true }
 flate2 = { workspace = true }
 zip = { workspace = true }
 wait-timeout = { workspace = true }
