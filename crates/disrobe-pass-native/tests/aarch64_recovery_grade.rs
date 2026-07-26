@@ -394,6 +394,16 @@ double fb_nge_d(double a, double b, double x, double y) {
     if (!(a >= b)) r = x;
     return r;
 }
+float fb_uno_f(float a, float b, float x, float y) {
+    volatile float r = y;
+    if (__builtin_isunordered(a, b)) r = x;
+    return r;
+}
+double fb_uno_d(double a, double b, double x, double y) {
+    volatile double r = y;
+    if (__builtin_isunordered(a, b)) r = x;
+    return r;
+}
 float fb_ord_f(float a, float b, float x, float y) {
     volatile float r = y;
     if (!__builtin_isunordered(a, b)) r = x;
@@ -652,6 +662,8 @@ extern float fb_nlt_f(float a, float b, float x, float y);
 extern float fb_nle_f(float a, float b, float x, float y);
 extern float fb_ngt_f(float a, float b, float x, float y);
 extern float fb_nge_f(float a, float b, float x, float y);
+extern float fb_uno_f(float a, float b, float x, float y);
+extern double fb_uno_d(double a, double b, double x, double y);
 extern float fb_ord_f(float a, float b, float x, float y);
 extern double fb_ge_d(double a, double b, double x, double y);
 extern double fb_le_d(double a, double b, double x, double y);
@@ -860,7 +872,7 @@ fn fp_expectation(name: &str) -> Option<FpExpectation> {
             return_width_bits: 32,
         },
         "fc_sel_f" | "fb_ge_f" | "fb_le_f" | "fb_ne_f" | "fb_nlt_f" | "fb_nle_f" | "fb_ngt_f"
-        | "fb_nge_f" | "fb_ord_f" => FpExpectation {
+        | "fb_nge_f" | "fb_ord_f" | "fb_uno_f" => FpExpectation {
             params: &[
                 ScalarType::Float,
                 ScalarType::Float,
@@ -871,7 +883,7 @@ fn fp_expectation(name: &str) -> Option<FpExpectation> {
             return_width_bits: 32,
         },
         "fc_sel_d" | "fb_ge_d" | "fb_le_d" | "fb_ne_d" | "fb_nlt_d" | "fb_nle_d" | "fb_ngt_d"
-        | "fb_nge_d" | "fb_ord_d" => FpExpectation {
+        | "fb_nge_d" | "fb_ord_d" | "fb_uno_d" => FpExpectation {
             params: &[
                 ScalarType::Double,
                 ScalarType::Double,
@@ -1169,6 +1181,8 @@ const INCREMENT_SEVENTEEN_FP_FUNCTIONS: &[&str] = &[
     "fb_nge_d",
     "fb_ord_f",
     "fb_ord_d",
+    "fb_uno_f",
+    "fb_uno_d",
     "fc_selor_f",
     "fc_selor_d",
     "fc_seland_d",
@@ -1177,7 +1191,7 @@ const INCREMENT_SEVENTEEN_FP_FUNCTIONS: &[&str] = &[
     "fc_seland3_mix_f",
     "fb_and3_f",
 ];
-const INCREMENT_SEVENTEEN_EXPECTED_CASES: usize = 115;
+const INCREMENT_SEVENTEEN_EXPECTED_CASES: usize = 125;
 
 fn is_increment_seventeen_fp(name: &str) -> bool {
     INCREMENT_SEVENTEEN_FP_FUNCTIONS.contains(&name)
@@ -2041,9 +2055,13 @@ fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Option<String> 
         "fc_isnan_f" => fill_template(FP_PRED1_F_TMPL, opt, name, rec, seed),
         "fc_isnan_d" => fill_template(FP_PRED1_D_TMPL, opt, name, rec, seed),
         "fc_sel_f" | "fb_ge_f" | "fb_le_f" | "fb_ne_f" | "fb_nlt_f" | "fb_nle_f" | "fb_ngt_f"
-        | "fb_nge_f" | "fb_ord_f" => fill_template(FP_SEL4_F_TMPL, opt, name, rec, seed),
+        | "fb_nge_f" | "fb_ord_f" | "fb_uno_f" => {
+            fill_template(FP_SEL4_F_TMPL, opt, name, rec, seed)
+        }
         "fc_sel_d" | "fb_ge_d" | "fb_le_d" | "fb_ne_d" | "fb_nlt_d" | "fb_nle_d" | "fb_ngt_d"
-        | "fb_nge_d" | "fb_ord_d" => fill_template(FP_SEL4_D_TMPL, opt, name, rec, seed),
+        | "fb_nge_d" | "fb_ord_d" | "fb_uno_d" => {
+            fill_template(FP_SEL4_D_TMPL, opt, name, rec, seed)
+        }
         "fc_selor_d" | "fc_seland_d" => fill_template(FP_SEL6_D_TMPL, opt, name, rec, seed),
         "fc_selor3_f" | "fc_seland3_f" | "fc_seland3_mix_f" | "fb_and3_f" => {
             fill_template(FP_SEL8_F_TMPL, opt, name, rec, seed)
