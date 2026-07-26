@@ -1765,9 +1765,11 @@ fn build_leaf_items(
             }
             flags = None;
             return_width = divisor.width;
+            let divide: Stmt = Stmt::Divide { divisor, signed };
+            fp_return = fp_return_after(fp_return, &divide);
             items.push(Item {
                 address: insn.address,
-                kind: ItemKind::Stmt(Stmt::Divide { divisor, signed }),
+                kind: ItemKind::Stmt(divide),
             });
             continue;
         }
@@ -1776,13 +1778,15 @@ fn build_leaf_items(
         {
             return_width = Width::W64;
             flags = None;
+            let call: Stmt = Stmt::Call {
+                target,
+                args: abi.arg_order().to_vec(),
+                name: None,
+            };
+            fp_return = fp_return_after(fp_return, &call);
             items.push(Item {
                 address: insn.address,
-                kind: ItemKind::Stmt(Stmt::Call {
-                    target,
-                    args: abi.arg_order().to_vec(),
-                    name: None,
-                }),
+                kind: ItemKind::Stmt(call),
             });
             continue;
         }
@@ -1952,6 +1956,7 @@ fn build_leaf_items(
             {
                 return_width = dest.width;
             }
+            fp_return = fp_return_after(fp_return, &stmt);
             items.push(Item {
                 address: insn.address,
                 kind: ItemKind::Stmt(stmt),
@@ -18410,13 +18415,19 @@ mod tests {
             0x10, 0x45, 0x10, 0xeb, 0x05, 0xf2, 0x0f, 0x10, 0x45, 0x18, 0x66, 0x48, 0x0f, 0x7e,
             0xc0, 0x66, 0x48, 0x0f, 0x6e, 0xc0, 0x5d, 0xc3,
         ];
-        if let Ok(rec) = recover_leaf_function_abi(&fmax2, 0x9600, Abi::MsX64) {
-            assert!(
-                rec.returns_fp.is_some() || !rec.source.contains("return"),
-                "a maximum that returns one of the two compared operands must keep a floating-point return: {}",
-                rec.source
-            );
-        }
+        let rec: LeafRecovery = recover_leaf_function_abi(&fmax2, 0x9600, Abi::MsX64)
+            .expect("the maximum select recovers");
+        assert_eq!(
+            rec.returns_fp,
+            Some(ScalarType::Double),
+            "a maximum that returns one of the two compared operands must keep a floating-point return: {}",
+            rec.source
+        );
+        assert!(
+            rec.source.contains("double recovered("),
+            "the recovered signature must still claim a floating-point return: {}",
+            rec.source
+        );
     }
 
     #[test]
@@ -18432,6 +18443,36 @@ mod tests {
             "the reloaded operand is consumed by a conversion into rax, so the return is an integer: {}",
             rec.source
         );
+    }
+
+    #[test]
+    fn a_call_result_does_not_inherit_an_earlier_floating_point_channel() {
+        let after_call: [u8; 15] = [
+            0x55, 0x48, 0x89, 0xe5, 0xf2, 0x0f, 0x59, 0xc0, 0xe8, 0x27, 0x02, 0x00, 0x00, 0x5d,
+            0xc3,
+        ];
+        if let Ok(rec) = recover_leaf_function_abi(&after_call, 0x9800, Abi::SysV) {
+            assert!(
+                rec.returns_fp.is_none(),
+                "the return value comes from the call's integer register, so an earlier floating-point computation must not type the function: {}",
+                rec.source
+            );
+        }
+    }
+
+    #[test]
+    fn a_widening_move_into_the_result_register_clears_the_floating_point_channel() {
+        let widened: [u8; 20] = [
+            0x55, 0x48, 0x89, 0xe5, 0xf2, 0x0f, 0x59, 0xc1, 0x66, 0x0f, 0x2e, 0xc2, 0x0f, 0x97,
+            0xc2, 0x0f, 0xb6, 0xc2, 0x5d, 0xc3,
+        ];
+        if let Ok(rec) = recover_leaf_function_abi(&widened, 0x9900, Abi::SysV) {
+            assert!(
+                rec.returns_fp.is_none(),
+                "a widening move produces the integer result, so an earlier floating-point multiply must not type the function: {}",
+                rec.source
+            );
+        }
     }
 
     #[test]
