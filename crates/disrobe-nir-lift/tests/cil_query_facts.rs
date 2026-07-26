@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use disrobe_nir::{NirModule, NirOp};
-use disrobe_nir_lift::lift_dotnet_pe;
+use disrobe_nir_lift::{LiftError, lift_dotnet_pe};
 use disrobe_pass_dotnet::{
     ClrHeader, FlowControl, Instruction, MetadataRoot, MethodBody, OperandValue, PeImage, Resolver,
     parse as parse_pe, parse_clr_header, parse_metadata_root, parse_method_body,
@@ -18,8 +18,36 @@ fn lifted_nir() -> NirModule {
     lift_dotnet_pe(CIL_PROBE).expect("lift .NET PE to NIR")
 }
 
+fn cil_with_malformed_method_body() -> Vec<u8> {
+    let mut bytes: Vec<u8> = CIL_PROBE.to_vec();
+    let pe: PeImage = parse_pe(&bytes).expect("pe");
+    let clr: ClrHeader = parse_clr_header(&bytes, &pe).expect("clr");
+    let root: MetadataRoot = parse_metadata_root(&bytes, &pe, &clr).expect("root");
+    let resolver: Resolver = Resolver::build(&bytes, &pe, &clr, &root).expect("resolver");
+    let methods: Vec<(u32, String, u32)> = resolver.methods_with_bodies();
+    let (_, _, rva): &(u32, String, u32) = methods.first().expect("method body");
+    let offset: usize = pe.rva_to_offset(*rva).expect("method body offset");
+    bytes[offset] = 0;
+    assert!(parse_method_body(&bytes[offset..]).is_err());
+    bytes
+}
+
 fn lifted_module() -> Module {
     Module::from_nir(&lifted_nir())
+}
+
+#[test]
+fn malformed_cil_body_refuses_the_lift() {
+    let bytes: Vec<u8> = cil_with_malformed_method_body();
+    let lifted: disrobe_nir_lift::Result<NirModule> = lift_dotnet_pe(&bytes);
+    assert!(
+        matches!(
+            lifted,
+            Err(LiftError::Source(message))
+                if message.contains("dotnet") && message.contains("method")
+        ),
+        "malformed CIL body must not be omitted from a recovered module"
+    );
 }
 
 fn function_names(module: &Module) -> Vec<String> {

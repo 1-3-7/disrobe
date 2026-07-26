@@ -877,9 +877,23 @@ pub struct DexStringRecovery {
     pub notes: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DexStringRecoveryReport {
+    pub recoveries: Vec<DexStringRecovery>,
+    #[serde(default)]
+    pub code_scan_complete: bool,
+    #[serde(default)]
+    pub decode_error_count: usize,
+}
+
 #[must_use]
 pub fn recover(dex: &DexFile, dex_bytes: &[u8]) -> Vec<DexStringRecovery> {
     recover_with_native_keys(dex, dex_bytes, &[])
+}
+
+#[must_use]
+pub fn recover_report(dex: &DexFile, dex_bytes: &[u8]) -> DexStringRecoveryReport {
+    recover_with_native_keys_report(dex, dex_bytes, &[])
 }
 
 #[must_use]
@@ -888,7 +902,32 @@ pub fn recover_with_native_keys(
     dex_bytes: &[u8],
     native_keys: &[NativeIntKey],
 ) -> Vec<DexStringRecovery> {
-    let code_items: Vec<CodeItem> = crate::dex::parse_code_items(dex, dex_bytes);
+    recover_with_native_keys_report(dex, dex_bytes, native_keys).recoveries
+}
+
+#[must_use]
+pub fn recover_with_native_keys_report(
+    dex: &DexFile,
+    dex_bytes: &[u8],
+    native_keys: &[NativeIntKey],
+) -> DexStringRecoveryReport {
+    let code_report: crate::dex::CodeItemsReport = crate::dex::parse_code_items(dex, dex_bytes);
+    let code_scan_complete: bool = code_report.is_fully_decoded();
+    let decode_error_count: usize = code_report.error_count();
+    let code_items: Vec<CodeItem> = code_report.into_partial_decoded();
+    let recoveries: Vec<DexStringRecovery> = recover_from_code_items(dex, &code_items, native_keys);
+    DexStringRecoveryReport {
+        recoveries,
+        code_scan_complete,
+        decode_error_count,
+    }
+}
+
+fn recover_from_code_items(
+    dex: &DexFile,
+    code_items: &[CodeItem],
+    native_keys: &[NativeIntKey],
+) -> Vec<DexStringRecovery> {
     let mut out: Vec<DexStringRecovery> = Vec::new();
     let key_map: BTreeMap<String, NativeIntKey> = native_keys
         .iter()
@@ -908,7 +947,8 @@ pub fn recover_with_native_keys(
     classes.dedup();
 
     for class in &classes {
-        if let Some(report) = recover_class(dex, &code_items, class, &key_map) {
+        if let Some(report_value) = recover_class(dex, code_items, class, &key_map) {
+            let report: DexStringRecovery = report_value;
             out.push(report);
         }
     }
@@ -1176,6 +1216,14 @@ mod tests {
         dexguard_name_keyed_sample, dexguard_native_key_sample, dexguard_reflect_sample,
         dexguard_seeded_random_sample,
     };
+
+    #[test]
+    fn recovery_report_preserves_partial_code_failure() {
+        let (dex, bytes): (DexFile, Vec<u8>) = crate::dex::partial_code_failure_fixture();
+        let report: DexStringRecoveryReport = recover_report(&dex, &bytes);
+        assert!(!report.code_scan_complete);
+        assert_eq!(report.decode_error_count, 1);
+    }
 
     #[test]
     fn dalvik_random_state_matches_jdk_oracle() {

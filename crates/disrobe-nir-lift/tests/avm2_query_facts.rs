@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use disrobe_nir::{NirModule, NirOp};
-use disrobe_nir_lift::{lift_abc, lift_swf_abc};
+use disrobe_nir_lift::{LiftError, lift_abc, lift_swf_abc};
 use disrobe_pass_as3::abc::{self, AbcFile, DisasmLine, MethodBody};
 use disrobe_query::{CallSiteMatch, FunctionMatch, Module, Query, QueryResult, XrefMatch, run};
 
@@ -125,7 +125,20 @@ fn emit_body(method: u32, max_stack: u32, local_count: u32, code: &[u8]) -> Vec<
 
 const PKG: u8 = 0x16;
 
-fn build_abc() -> Vec<u8> {
+#[derive(Clone, Copy)]
+enum GreetBody {
+    Absent,
+    Empty,
+    Full,
+    InvalidOwner,
+    InvalidSwitch,
+    InvalidExplicitLocal,
+    InvalidImplicitLocal,
+    InvalidLocalPair,
+    InvalidLocalArithmetic,
+}
+
+fn build_abc_with_greet_body(greet_body: GreetBody) -> Vec<u8> {
     let mut pool: Pool = Pool::new();
     let pkg_ns: u32 = pool.intern_ns(PKG, "");
     let class_mn: u32 = pool.intern_qname(pkg_ns, "Greeter");
@@ -218,14 +231,225 @@ fn build_abc() -> Vec<u8> {
     b.extend(u30(0));
     b.extend(u30(0));
 
-    b.extend(u30(2));
+    let body_count: u32 = if matches!(greet_body, GreetBody::Absent) {
+        1
+    } else {
+        2
+    };
+    b.extend(u30(body_count));
     b.extend(emit_body(0, 1, 1, &[0x47]));
-    b.extend(emit_body(1, 4, 2, &code));
+    match greet_body {
+        GreetBody::Absent => {}
+        GreetBody::Empty => b.extend(emit_body(1, 4, 2, &[])),
+        GreetBody::Full => b.extend(emit_body(1, 4, 2, &code)),
+        GreetBody::InvalidOwner => b.extend(emit_body(127, 4, 2, &code)),
+        GreetBody::InvalidSwitch => {
+            b.extend(emit_body(
+                1,
+                4,
+                2,
+                &[0x1B, 0x7F, 0x00, 0x00, 0x00, 0x7F, 0x00, 0x00],
+            ));
+        }
+        GreetBody::InvalidExplicitLocal => {
+            b.extend(emit_body(1, 1, 2, &[0x62, 0x02, 0x47]));
+        }
+        GreetBody::InvalidImplicitLocal => {
+            b.extend(emit_body(1, 1, 2, &[0xD3, 0x47]));
+        }
+        GreetBody::InvalidLocalPair => {
+            b.extend(emit_body(1, 1, 2, &[0x32, 0x00, 0x02, 0x47]));
+        }
+        GreetBody::InvalidLocalArithmetic => {
+            b.extend(emit_body(1, 1, 2, &[0x92, 0x02, 0x47]));
+        }
+    }
     b
+}
+
+fn build_abc() -> Vec<u8> {
+    build_abc_with_greet_body(GreetBody::Full)
+}
+
+fn push_swf_tag(body: &mut Vec<u8>, tag_code: u16, payload: &[u8]) {
+    let payload_len: u32 = u32::try_from(payload.len()).expect("SWF tag payload length");
+    let short_len: u16 = if payload_len < 0x3F {
+        payload_len as u16
+    } else {
+        0x3F
+    };
+    let header: u16 = (tag_code << 6) | short_len;
+    body.extend_from_slice(&header.to_le_bytes());
+    if short_len == 0x3F {
+        body.extend_from_slice(&payload_len.to_le_bytes());
+    }
+    body.extend_from_slice(payload);
+}
+
+fn build_swf(abc_bytes: &[u8]) -> Vec<u8> {
+    let mut do_abc: Vec<u8> = Vec::with_capacity(abc_bytes.len().saturating_add(8));
+    do_abc.extend_from_slice(&1_u32.to_le_bytes());
+    do_abc.extend_from_slice(b"NirTest\0");
+    do_abc.extend_from_slice(abc_bytes);
+
+    let mut body: Vec<u8> = vec![0x00];
+    body.extend_from_slice(&24_u16.to_le_bytes());
+    body.extend_from_slice(&1_u16.to_le_bytes());
+    push_swf_tag(&mut body, 69, &[0x08, 0x00, 0x00, 0x00]);
+    push_swf_tag(&mut body, 82, &do_abc);
+    push_swf_tag(&mut body, 0, &[]);
+
+    let file_len: u32 =
+        u32::try_from(body.len().saturating_add(8)).expect("synthetic SWF file length");
+    let capacity: usize = usize::try_from(file_len).expect("synthetic SWF capacity");
+    let mut swf: Vec<u8> = Vec::with_capacity(capacity);
+    swf.extend_from_slice(b"FWS");
+    swf.push(13);
+    swf.extend_from_slice(&file_len.to_le_bytes());
+    swf.extend_from_slice(&body);
+    swf
+}
+
+fn abc_with_malformed_method_body() -> Vec<u8> {
+    let mut bytes: Vec<u8> = build_abc();
+    let opcode_offset: usize = bytes.len().saturating_sub(3);
+    bytes[opcode_offset] = 0x24;
+    bytes
+}
+
+fn abc_with_unknown_opcode() -> Vec<u8> {
+    let mut bytes: Vec<u8> = build_abc();
+    let opcode_offset: usize = bytes.len().saturating_sub(3);
+    bytes[opcode_offset] = 0x00;
+    bytes
+}
+
+fn abc_with_invalid_pool_reference() -> Vec<u8> {
+    let mut bytes: Vec<u8> = build_abc();
+    let parsed: AbcFile = abc::parse(&bytes).expect("parse ABC container");
+    let body: &MethodBody = parsed.method_bodies.last().expect("method body");
+    let lines: Vec<DisasmLine> = abc::disasm(&body.code).expect("disassemble body");
+    let pushstring: &DisasmLine = lines
+        .iter()
+        .find(|line: &&DisasmLine| line.opcode == 0x2C)
+        .expect("pushstring");
+    let code_start: usize = bytes.len() - 2 - body.code.len();
+    bytes[code_start + pushstring.offset + 1] = 0x7F;
+    bytes
 }
 
 fn lifted_nir() -> NirModule {
     lift_abc(&build_abc()).expect("lift ABC to NIR")
+}
+
+#[test]
+fn malformed_avm2_body_refuses_the_lift() {
+    let bytes: Vec<u8> = abc_with_malformed_method_body();
+    let parsed: AbcFile = abc::parse(&bytes).expect("parse ABC container");
+    let body: &MethodBody = parsed.method_bodies.last().expect("method body");
+    assert!(abc::disasm(&body.code).is_err());
+
+    let lifted: disrobe_nir_lift::Result<NirModule> = lift_abc(&bytes);
+    assert!(
+        matches!(
+            lifted,
+            Err(LiftError::Source(message))
+                if message.contains("avm2") && message.contains("disassembl")
+        ),
+        "malformed AVM2 body must not become a recovered empty function"
+    );
+}
+
+#[test]
+fn unknown_avm2_opcode_refuses_the_lift() {
+    let bytes: Vec<u8> = abc_with_unknown_opcode();
+    let parsed: AbcFile = abc::parse(&bytes).expect("parse ABC container");
+    let body: &MethodBody = parsed.method_bodies.last().expect("method body");
+    let decoded: Vec<disrobe_pass_as3::abc::DisasmLine> =
+        abc::disasm(&body.code).expect("decoder exposes unknown opcode");
+    assert!(
+        decoded
+            .iter()
+            .any(|line: &disrobe_pass_as3::abc::DisasmLine| line.mnemonic == "<unknown>")
+    );
+
+    let lifted: disrobe_nir_lift::Result<NirModule> = lift_abc(&bytes);
+    assert!(
+        matches!(
+            lifted,
+            Err(LiftError::Source(message))
+                if message.contains("avm2") && message.contains("unknown opcode")
+        ),
+        "an unknown AVM2 opcode must not become a recovered instruction"
+    );
+}
+
+#[test]
+fn absent_and_decoded_empty_avm2_bodies_are_distinct() {
+    let absent: NirModule =
+        lift_abc(&build_abc_with_greet_body(GreetBody::Absent)).expect("absent body");
+    assert!(
+        absent
+            .functions
+            .iter()
+            .all(|function| function.name != "greet")
+    );
+
+    let empty: NirModule =
+        lift_abc(&build_abc_with_greet_body(GreetBody::Empty)).expect("empty body");
+    let greet: &disrobe_nir::NirFunction = empty
+        .functions
+        .iter()
+        .find(|function| function.name == "greet")
+        .expect("empty body function");
+    assert!(greet.instructions.is_empty());
+}
+
+#[test]
+fn invalid_avm2_owner_and_pool_references_refuse_the_lift() {
+    let invalid_owner: disrobe_nir_lift::Result<NirModule> =
+        lift_abc(&build_abc_with_greet_body(GreetBody::InvalidOwner));
+    assert!(matches!(invalid_owner, Err(LiftError::Source(_))));
+
+    let invalid_pool: disrobe_nir_lift::Result<NirModule> =
+        lift_abc(&abc_with_invalid_pool_reference());
+    assert!(matches!(invalid_pool, Err(LiftError::Source(_))));
+}
+
+#[test]
+fn invalid_avm2_branch_and_switch_targets_refuse_the_lift() {
+    let mut branch_bytes: Vec<u8> = build_abc();
+    let parsed: AbcFile = abc::parse(&branch_bytes).expect("parse ABC container");
+    let body: &MethodBody = parsed.method_bodies.last().expect("method body");
+    let lines: Vec<DisasmLine> = abc::disasm(&body.code).expect("disassemble body");
+    let branch: &DisasmLine = lines
+        .iter()
+        .find(|line: &&DisasmLine| line.opcode == 0x12)
+        .expect("conditional branch");
+    let code_start: usize = branch_bytes.len() - 2 - body.code.len();
+    branch_bytes[code_start + branch.offset + 1..code_start + branch.offset + 4]
+        .copy_from_slice(&s24(0x7F_FFFF));
+    let invalid_branch: disrobe_nir_lift::Result<NirModule> = lift_abc(&branch_bytes);
+    assert!(matches!(invalid_branch, Err(LiftError::Source(_))));
+
+    let invalid_switch: disrobe_nir_lift::Result<NirModule> =
+        lift_abc(&build_abc_with_greet_body(GreetBody::InvalidSwitch));
+    assert!(matches!(invalid_switch, Err(LiftError::Source(_))));
+}
+
+#[test]
+fn invalid_avm2_local_registers_refuse_the_lift() {
+    let cases: [GreetBody; 4] = [
+        GreetBody::InvalidExplicitLocal,
+        GreetBody::InvalidImplicitLocal,
+        GreetBody::InvalidLocalPair,
+        GreetBody::InvalidLocalArithmetic,
+    ];
+    for body in cases {
+        let lifted: disrobe_nir_lift::Result<NirModule> =
+            lift_abc(&build_abc_with_greet_body(body));
+        assert!(matches!(lifted, Err(LiftError::Source(_))));
+    }
 }
 
 struct OracleFacts {
@@ -515,17 +739,12 @@ fn calls_to_trace_resolve_through_a_call_edge() {
 
 #[test]
 fn swf_entry_routes_through_the_avm2_lifter() {
-    let bytes: Vec<u8> =
-        std::fs::read(swf_fixture_path()).unwrap_or_else(|_| Vec::with_capacity(0));
-    if bytes.is_empty() {
-        eprintln!("skip: committed synthetic SWF fixture not present");
-        return;
-    }
-    let nir: NirModule = lift_swf_abc(&bytes).expect("lift the synthetic Counter SWF");
+    let bytes: Vec<u8> = build_swf(&build_abc());
+    let nir: NirModule = lift_swf_abc(&bytes).expect("lift the synthetic Greeter SWF");
     assert_eq!(nir.lang, disrobe_nir::SourceLang::Avm2);
     assert!(
-        nir.functions.iter().any(|f| f.name == "sumTo"),
-        "the SWF DoABC sumTo method must lift: {:?}",
+        nir.functions.iter().any(|f| f.name == "greet"),
+        "the SWF DoABC greet method must lift: {:?}",
         nir.functions
             .iter()
             .map(|f| f.name.as_str())
@@ -537,7 +756,25 @@ fn swf_entry_routes_through_the_avm2_lifter() {
         .flat_map(|f| f.instructions.iter())
         .filter(|ins| matches!(ins.op, NirOp::Branch { .. } | NirOp::CondBranch { .. }))
         .count();
-    assert!(branches >= 2, "the sumTo loop has a jump and a back branch");
+    assert!(
+        branches >= 2,
+        "the greet body has a conditional and an unconditional branch"
+    );
+}
+
+#[test]
+fn committed_swf_with_out_of_range_local_is_refused() {
+    let bytes: Vec<u8> =
+        std::fs::read(swf_fixture_path()).expect("read committed synthetic Counter SWF");
+    let lifted: disrobe_nir_lift::Result<NirModule> = lift_swf_abc(&bytes);
+    assert!(
+        matches!(
+            lifted,
+            Err(LiftError::Source(message))
+                if message.contains("implicit local register index is out of range")
+        ),
+        "the committed SWF declares two locals but accesses local register two"
+    );
 }
 
 fn swf_fixture_path() -> std::path::PathBuf {

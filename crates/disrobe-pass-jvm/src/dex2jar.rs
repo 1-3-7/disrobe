@@ -63,10 +63,12 @@ pub struct Dex2JarResult {
     pub classes: Vec<TranslatedClass>,
     pub jar_entries: BTreeMap<String, Vec<u8>>,
     pub method_total: usize,
-
     pub bodies_recovered: usize,
-
     pub stubbed_body_count: usize,
+    #[serde(default)]
+    pub code_scan_complete: bool,
+    #[serde(default)]
+    pub decode_error_count: usize,
 }
 
 #[inline]
@@ -687,12 +689,9 @@ fn write_class_file(
     (out, recovered, stubbed)
 }
 
-fn code_items_by_class(
-    dex: &DexFile,
-    dex_bytes: &[u8],
-) -> BTreeMap<String, BTreeMap<MethodKey, CodeItem>> {
+fn code_items_by_class(items: Vec<CodeItem>) -> BTreeMap<String, BTreeMap<MethodKey, CodeItem>> {
     let mut out: BTreeMap<String, BTreeMap<MethodKey, CodeItem>> = BTreeMap::new();
-    for item in parse_code_items(dex, dex_bytes) {
+    for item in items {
         let class_internal: String = dex_type_to_internal(&item.class);
         let key: MethodKey = (item.method_name.clone(), item.method_descriptor.clone());
         out.entry(class_internal).or_default().insert(key, item);
@@ -702,8 +701,11 @@ fn code_items_by_class(
 
 pub fn translate(dex: &DexFile, dex_bytes: &[u8]) -> Dex2JarResult {
     let classes: Vec<TranslatedClass> = build_class_model(dex, dex_bytes);
+    let code_report: crate::dex::CodeItemsReport = parse_code_items(dex, dex_bytes);
+    let code_scan_complete: bool = code_report.is_fully_decoded();
+    let decode_error_count: usize = code_report.error_count();
     let code_by_class: BTreeMap<String, BTreeMap<MethodKey, CodeItem>> =
-        code_items_by_class(dex, dex_bytes);
+        code_items_by_class(code_report.into_partial_decoded());
     let empty: BTreeMap<MethodKey, CodeItem> = BTreeMap::new();
     let mut jar_entries: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut method_total: usize = 0;
@@ -725,6 +727,8 @@ pub fn translate(dex: &DexFile, dex_bytes: &[u8]) -> Dex2JarResult {
         method_total,
         bodies_recovered,
         stubbed_body_count,
+        code_scan_complete,
+        decode_error_count,
     }
 }
 
@@ -762,8 +766,8 @@ pub fn diagnose_dex_bytes(dex_bytes: &[u8]) -> Result<BTreeMap<String, usize>> {
     };
     let dex: DexFile = crate::dex::parse(dex_bytes)?;
     let classes: Vec<TranslatedClass> = build_class_model(&dex, dex_bytes);
-    let code_by_class: BTreeMap<String, BTreeMap<MethodKey, CodeItem>> =
-        code_items_by_class(&dex, dex_bytes);
+    let items: Vec<CodeItem> = parse_code_items(&dex, dex_bytes).into_complete()?;
+    let code_by_class: BTreeMap<String, BTreeMap<MethodKey, CodeItem>> = code_items_by_class(items);
     let empty: BTreeMap<MethodKey, CodeItem> = BTreeMap::new();
     let mut buckets: BTreeMap<String, usize> = BTreeMap::new();
     for class in &classes {
@@ -818,8 +822,8 @@ pub fn diagnose_dex_methods(dex_bytes: &[u8]) -> Result<Vec<(String, String, Str
     };
     let dex: DexFile = crate::dex::parse(dex_bytes)?;
     let classes: Vec<TranslatedClass> = build_class_model(&dex, dex_bytes);
-    let code_by_class: BTreeMap<String, BTreeMap<MethodKey, CodeItem>> =
-        code_items_by_class(&dex, dex_bytes);
+    let items: Vec<CodeItem> = parse_code_items(&dex, dex_bytes).into_complete()?;
+    let code_by_class: BTreeMap<String, BTreeMap<MethodKey, CodeItem>> = code_items_by_class(items);
     let empty: BTreeMap<MethodKey, CodeItem> = BTreeMap::new();
     let mut out: Vec<(String, String, String, String)> = Vec::new();
     for class in &classes {
@@ -946,6 +950,7 @@ fn classify_stub(
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::dex_builder::{ClassDef, DexBuilder, EncodedMethod, MethodRef, ProtoRef};
 
     #[test]
     fn dex_type_to_internal_strips_l_and_semicolon() {
@@ -962,5 +967,43 @@ mod tests {
             has_code: true,
         };
         assert_eq!(method_local_slots(&m), 4);
+    }
+
+    #[test]
+    fn translation_reports_incomplete_code_scan() {
+        let mut builder: DexBuilder = DexBuilder::new();
+        builder.add_class(ClassDef {
+            class: "Lcom/disrobe/Invalid;".to_owned(),
+            super_class: "Ljava/lang/Object;".to_owned(),
+            access_flags: 0x0001,
+            static_fields: Vec::new(),
+            static_values: Vec::new(),
+            direct_methods: Vec::new(),
+            virtual_methods: vec![EncodedMethod {
+                method: MethodRef {
+                    class: "Lcom/disrobe/Invalid;".to_owned(),
+                    proto: ProtoRef {
+                        return_type: "V".to_owned(),
+                        params: Vec::new(),
+                    },
+                    name: "body".to_owned(),
+                },
+                access_flags: 0x0001,
+                is_direct: false,
+                registers_size: 1,
+                ins_size: 0,
+                outs_size: 0,
+                insns: vec![0x0014],
+                relocations: Vec::new(),
+            }],
+        });
+        let bytes: Vec<u8> = builder.build();
+        let dex: DexFile = crate::dex::parse(&bytes).expect("built dex");
+        let result: Dex2JarResult = translate(&dex, &bytes);
+
+        assert!(!result.code_scan_complete);
+        assert_eq!(result.decode_error_count, 1);
+        assert_eq!(result.bodies_recovered, 0);
+        assert_eq!(result.stubbed_body_count, 1);
     }
 }

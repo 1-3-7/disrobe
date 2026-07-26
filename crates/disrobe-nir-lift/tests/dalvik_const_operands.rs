@@ -46,7 +46,9 @@ fn independent_operand(insn: &DalvikInsn, dex: &DexFile) -> Vec<String> {
 
 fn oracle_operands(bytes: &[u8]) -> BTreeMap<u64, Vec<String>> {
     let dex: DexFile = parse_dex(bytes).expect("parse dex");
-    let items: Vec<CodeItem> = parse_code_items(&dex, bytes);
+    let items: Vec<CodeItem> = parse_code_items(&dex, bytes)
+        .into_complete()
+        .expect("fixture code items");
     let mut out: BTreeMap<u64, Vec<String>> = BTreeMap::new();
     for (index, item) in items.iter().enumerate() {
         let method_index: u32 = u32::try_from(index).unwrap_or(u32::MAX);
@@ -105,7 +107,9 @@ fn dalvik_const_operand_range_is_covered() {
     let mut opcodes: BTreeSet<u8> = BTreeSet::new();
     for (_, bytes) in FIXTURES {
         let dex: DexFile = parse_dex(bytes).expect("parse dex");
-        let items: Vec<CodeItem> = parse_code_items(&dex, bytes);
+        let items: Vec<CodeItem> = parse_code_items(&dex, bytes)
+            .into_complete()
+            .expect("fixture code items");
         for item in &items {
             for insn in decode_method(&item.insns) {
                 let insn: DalvikInsn = insn;
@@ -153,7 +157,9 @@ fn known_floating_point_and_magic_constants_survive_the_lift() {
 fn dalvik_string_constants_are_resolved_through_the_pool() {
     let mut strings: BTreeSet<String> = BTreeSet::new();
     let dex: DexFile = parse_dex(EDGE_KT_DEX).expect("parse dex");
-    let items: Vec<CodeItem> = parse_code_items(&dex, EDGE_KT_DEX);
+    let items: Vec<CodeItem> = parse_code_items(&dex, EDGE_KT_DEX)
+        .into_complete()
+        .expect("fixture code items");
     for item in &items {
         for insn in decode_method(&item.insns) {
             let insn: DalvikInsn = insn;

@@ -39,6 +39,10 @@ pub struct JvmSummary {
 pub struct DexProtectorPeel {
     pub strings_recovered: usize,
     pub runtime_key_walled_classes: usize,
+    #[serde(default)]
+    pub code_scan_complete: bool,
+    #[serde(default)]
+    pub decode_error_count: usize,
     pub cff: DalvikCffReport,
     pub recovery: Vec<DexStringRecovery>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -59,13 +63,20 @@ fn peel_apk_dex_protectors(apk_bytes: &[u8]) -> Option<DexProtectorPeel> {
         if !(leaf.starts_with("classes") && leaf.ends_with(".dex")) {
             continue;
         }
-        let Ok(dex): Result<DexFile, _> = parse_dex(bytes) else {
-            continue;
-        };
-        let Some(part): Option<DexProtectorPeel> =
-            peel_dex_protectors_with_native_libs(&dex, bytes, &native_libs)
-        else {
-            continue;
+        let part: DexProtectorPeel = match parse_dex(bytes) {
+            Ok(dex) => {
+                let Some(part): Option<DexProtectorPeel> =
+                    peel_dex_protectors_with_native_libs(&dex, bytes, &native_libs)
+                else {
+                    continue;
+                };
+                part
+            }
+            Err(_) => DexProtectorPeel {
+                code_scan_complete: false,
+                decode_error_count: 1,
+                ..DexProtectorPeel::default()
+            },
         };
         match merged.as_mut() {
             Some(acc) => merge_dex_peel(acc, part),
@@ -78,6 +89,8 @@ fn peel_apk_dex_protectors(apk_bytes: &[u8]) -> Option<DexProtectorPeel> {
 fn merge_dex_peel(acc: &mut DexProtectorPeel, part: DexProtectorPeel) {
     acc.strings_recovered += part.strings_recovered;
     acc.runtime_key_walled_classes += part.runtime_key_walled_classes;
+    acc.code_scan_complete &= part.code_scan_complete;
+    acc.decode_error_count += part.decode_error_count;
     acc.cff.methods_scanned += part.cff.methods_scanned;
     acc.cff.flattened_methods += part.cff.flattened_methods;
     acc.cff.methods_unflattened += part.cff.methods_unflattened;
@@ -91,6 +104,8 @@ fn merge_dex_peel(acc: &mut DexProtectorPeel, part: DexProtectorPeel) {
     match (&mut acc.call_site_recovery, part.call_site_recovery) {
         (Some(existing), Some(more)) => {
             existing.candidates_found += more.candidates_found;
+            existing.code_scan_complete &= more.code_scan_complete;
+            existing.decode_error_count += more.decode_error_count;
             existing.call_sites.extend(more.call_sites);
         }
         (existing @ None, Some(more)) => *existing = Some(more),
@@ -109,14 +124,27 @@ fn peel_dex_protectors_with_native_libs(
     bytes: &[u8],
     native_libs: &[(&str, &[u8])],
 ) -> Option<DexProtectorPeel> {
+    let code_report: crate::dex::CodeItemsReport = parse_code_items(dex, bytes);
+    let mut code_scan_complete: bool = code_report.is_fully_decoded();
+    let mut decode_error_count: usize = code_report.error_count();
+    let items: Vec<CodeItem> = code_report.into_partial_decoded();
     let native_keys: Vec<crate::dalvik_strdec::NativeIntKey> =
-        crate::jni::extract_static_int_keys(dex, bytes, native_libs);
+        match crate::jni::extract_static_int_keys(dex, bytes, native_libs) {
+            Ok(keys) => keys,
+            Err(error) => {
+                crate::debug::dbg_kv("dex-native-key-scan-reject", || error.to_string());
+                if code_scan_complete {
+                    decode_error_count += 1;
+                }
+                code_scan_complete = false;
+                Vec::new()
+            }
+        };
     let recovery: Vec<DexStringRecovery> = if native_keys.is_empty() {
         recover_dex_strings(dex, bytes)
     } else {
         recover_dex_strings_with_native_keys(dex, bytes, &native_keys)
     };
-    let items: Vec<CodeItem> = parse_code_items(dex, bytes);
     let (cff, _per_method): (DalvikCffReport, _) = unflatten_dex_methods(&items);
     let strings_recovered: usize = recovery
         .iter()
@@ -138,12 +166,15 @@ fn peel_dex_protectors_with_native_libs(
         && cff.flattened_methods == 0
         && runtime_key_walled_classes == 0
         && generic_recovered == 0
+        && code_scan_complete
     {
         return None;
     }
     Some(DexProtectorPeel {
         strings_recovered,
         runtime_key_walled_classes,
+        code_scan_complete,
+        decode_error_count,
         cff,
         recovery,
         call_site_recovery: if generic.call_sites.is_empty() {
@@ -409,6 +440,76 @@ pub fn analyze(bytes: &[u8]) -> crate::error::Result<JvmSummary> {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use std::io::{Cursor, Write};
+
+    fn apk_with_dex_files(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let cursor: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+        let mut archive: zip::ZipWriter<Cursor<Vec<u8>>> = zip::ZipWriter::new(cursor);
+        let options: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for (path, bytes) in entries {
+            archive.start_file(*path, options).expect("start DEX entry");
+            archive.write_all(bytes).expect("write DEX entry");
+        }
+        let cursor: Cursor<Vec<u8>> = archive.finish().expect("finish APK");
+        cursor.into_inner()
+    }
+
+    #[test]
+    fn protector_peel_preserves_partial_code_failure() {
+        let (dex, bytes): (DexFile, Vec<u8>) = crate::dex::partial_code_failure_fixture();
+        let peel: DexProtectorPeel =
+            peel_dex_protectors(&dex, &bytes).expect("partial scan remains reportable");
+        assert!(!peel.code_scan_complete);
+        assert_eq!(peel.decode_error_count, 1);
+    }
+
+    #[test]
+    fn protector_peel_merge_preserves_partial_code_failure() {
+        let mut accumulated: DexProtectorPeel = DexProtectorPeel {
+            code_scan_complete: true,
+            decode_error_count: 2,
+            call_site_recovery: Some(GenericStringRecovery {
+                code_scan_complete: true,
+                decode_error_count: 3,
+                ..GenericStringRecovery::default()
+            }),
+            ..DexProtectorPeel::default()
+        };
+        let additional: DexProtectorPeel = DexProtectorPeel {
+            code_scan_complete: false,
+            decode_error_count: 5,
+            call_site_recovery: Some(GenericStringRecovery {
+                code_scan_complete: false,
+                decode_error_count: 7,
+                ..GenericStringRecovery::default()
+            }),
+            ..DexProtectorPeel::default()
+        };
+        merge_dex_peel(&mut accumulated, additional);
+
+        assert!(!accumulated.code_scan_complete);
+        assert_eq!(accumulated.decode_error_count, 7);
+        let merged_calls: &GenericStringRecovery = accumulated
+            .call_site_recovery
+            .as_ref()
+            .expect("merged call-site recovery");
+        assert!(!merged_calls.code_scan_complete);
+        assert_eq!(merged_calls.decode_error_count, 10);
+    }
+
+    #[test]
+    fn apk_peel_preserves_unparseable_dex_failure() {
+        let (_, partial): (DexFile, Vec<u8>) = crate::dex::partial_code_failure_fixture();
+        let apk: Vec<u8> = apk_with_dex_files(&[
+            ("classes.dex", partial.as_slice()),
+            ("classes2.dex", b"dex\n035\0broken"),
+        ]);
+        let peel: DexProtectorPeel =
+            peel_apk_dex_protectors(&apk).expect("partial APK scan remains reportable");
+        assert!(!peel.code_scan_complete);
+        assert_eq!(peel.decode_error_count, 2);
+    }
 
     fn minimal_classfile(major: u16) -> Vec<u8> {
         let mut buf: Vec<u8> = Vec::new();

@@ -90,7 +90,8 @@ fn build_jni_so(exports: &[&str]) -> Vec<u8> {
 fn dex_native_methods_extracted_with_correct_jni_mangling() {
     let dex_bytes: Vec<u8> = build_native_dex();
     let dex: DexFile = parse_dex(&dex_bytes).expect("parse synthetic dex");
-    let natives = extract_native_methods(&dex, &dex_bytes);
+    let natives: Vec<disrobe_pass_jvm::NativeMethod> =
+        extract_native_methods(&dex, &dex_bytes).expect("native method scan");
     assert_eq!(natives.len(), 5, "five native methods declared");
 
     let by_short: std::collections::BTreeMap<String, String> = natives

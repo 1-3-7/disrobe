@@ -29,6 +29,8 @@ pub struct VerificationSignals {
     pub embedded_signature_matched: bool,
     pub structural_parser_accepted: bool,
     pub existing_parser_succeeded: bool,
+    #[serde(default)]
+    pub code_items_fully_decoded: bool,
     pub sample_bytecode_decoded: bool,
     pub class_count: usize,
     pub method_count: usize,
@@ -44,6 +46,7 @@ impl VerificationSignals {
             && self.embedded_signature_matched
             && self.structural_parser_accepted
             && self.existing_parser_succeeded
+            && self.code_items_fully_decoded
             && self.class_count > 0
     }
 
@@ -67,6 +70,9 @@ impl VerificationSignals {
         }
         if !self.existing_parser_succeeded {
             failed.push("existing_parser_succeeded");
+        }
+        if !self.code_items_fully_decoded {
+            failed.push("code_items_fully_decoded");
         }
         if self.class_count == 0 {
             failed.push("class_count");
@@ -222,13 +228,15 @@ pub fn verify_recovered_dex(bytes: &[u8]) -> VerificationSignals {
                 d.strings.len(),
             )
         });
-    let sample_bytecode_decoded: bool = parsed.as_ref().is_some_and(|d: &DexFile| {
-        dex::parse_code_items(d, bytes)
-            .iter()
-            .any(|item: &dex::CodeItem| {
+    let (code_items_fully_decoded, sample_bytecode_decoded): (bool, bool) =
+        parsed.as_ref().map_or((false, false), |d: &DexFile| {
+            let code_report: dex::CodeItemsReport = dex::parse_code_items(d, bytes);
+            let complete: bool = code_report.is_fully_decoded();
+            let sample: bool = code_report.decoded().iter().any(|item: &dex::CodeItem| {
                 !item.insns.is_empty() && !crate::dalvik::disassemble_units(&item.insns).is_empty()
-            })
-    });
+            });
+            (complete, sample)
+        });
     VerificationSignals {
         magic_valid,
         header_self_consistent,
@@ -236,6 +244,7 @@ pub fn verify_recovered_dex(bytes: &[u8]) -> VerificationSignals {
         embedded_signature_matched,
         structural_parser_accepted,
         existing_parser_succeeded,
+        code_items_fully_decoded,
         sample_bytecode_decoded,
         class_count,
         method_count,
@@ -247,6 +256,7 @@ pub fn verify_recovered_dex(bytes: &[u8]) -> VerificationSignals {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::dex_builder::{ClassDef, DexBuilder, EncodedMethod, MethodRef, ProtoRef};
 
     #[test]
     fn empty_input_yields_no_candidates() {
@@ -261,5 +271,45 @@ mod tests {
         let signals: VerificationSignals = verify_recovered_dex(b"dex\n035\0garbage");
         assert!(!signals.all_required_signals_pass());
         assert!(!signals.failing_signal_names().is_empty());
+    }
+
+    #[test]
+    fn verification_rejects_a_structurally_valid_dex_with_malformed_bytecode() {
+        let mut builder: DexBuilder = DexBuilder::new();
+        builder.add_class(ClassDef {
+            class: "Lcom/disrobe/Invalid;".to_owned(),
+            super_class: "Ljava/lang/Object;".to_owned(),
+            access_flags: 0x0001,
+            static_fields: Vec::new(),
+            static_values: Vec::new(),
+            direct_methods: Vec::new(),
+            virtual_methods: vec![EncodedMethod {
+                method: MethodRef {
+                    class: "Lcom/disrobe/Invalid;".to_owned(),
+                    proto: ProtoRef {
+                        return_type: "V".to_owned(),
+                        params: Vec::new(),
+                    },
+                    name: "body".to_owned(),
+                },
+                access_flags: 0x0001,
+                is_direct: false,
+                registers_size: 1,
+                ins_size: 0,
+                outs_size: 0,
+                insns: vec![0x0014],
+                relocations: Vec::new(),
+            }],
+        });
+        let bytes: Vec<u8> = builder.build();
+        let signals: VerificationSignals = verify_recovered_dex(&bytes);
+
+        assert!(signals.magic_valid);
+        assert!(signals.header_self_consistent);
+        assert!(signals.embedded_checksum_matched);
+        assert!(signals.embedded_signature_matched);
+        assert!(signals.structural_parser_accepted);
+        assert!(signals.existing_parser_succeeded);
+        assert!(!signals.all_required_signals_pass());
     }
 }

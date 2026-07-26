@@ -88,7 +88,9 @@ fn utf8_decode_replaces_malformed_sequences() {
 fn filled_new_array_feeds_a_real_string_constructor_through_the_real_dex_parser() {
     let dex_bytes: Vec<u8> = filled_new_array_string_sample(*b"hi!");
     let dex: DexFile = parse_dex(&dex_bytes).expect("parses");
-    let items: Vec<CodeItem> = parse_code_items(&dex, &dex_bytes);
+    let items: Vec<CodeItem> = parse_code_items(&dex, &dex_bytes)
+        .into_complete()
+        .expect("fixture code items");
     let demo: &CodeItem = find_method(&items, "demo");
     let mut interp: Interp<'_> =
         Interp::new(&dex, "Lcom/disrobe/sample/GenericFilledNewArray;", &items);
@@ -105,7 +107,9 @@ fn filled_new_array_feeds_a_real_string_constructor_through_the_real_dex_parser(
 fn an_unconditional_backward_loop_terminates_via_a_typed_budget_skip_not_a_hang() {
     let bytes: Vec<u8> = infinite_loop_sample();
     let dex: DexFile = parse_dex(&bytes).expect("fixture parses");
-    let items: Vec<CodeItem> = parse_code_items(&dex, &bytes);
+    let items: Vec<CodeItem> = parse_code_items(&dex, &bytes)
+        .into_complete()
+        .expect("fixture code items");
     let spin: &CodeItem = find_method(&items, "spin");
     let mut interp: Interp<'_> =
         Interp::new(&dex, "Lcom/disrobe/sample/GenericInfiniteLoop;", &items);
@@ -117,7 +121,9 @@ fn an_unconditional_backward_loop_terminates_via_a_typed_budget_skip_not_a_hang(
 fn a_loop_that_allocates_forever_stops_at_the_heap_budget_not_a_hang_or_oom() {
     let bytes: Vec<u8> = heap_bomb_sample();
     let dex: DexFile = parse_dex(&bytes).expect("fixture parses");
-    let items: Vec<CodeItem> = parse_code_items(&dex, &bytes);
+    let items: Vec<CodeItem> = parse_code_items(&dex, &bytes)
+        .into_complete()
+        .expect("fixture code items");
     let bomb: &CodeItem = find_method(&items, "bomb");
     let mut interp: Interp<'_> = Interp::new(&dex, "Lcom/disrobe/sample/GenericHeapBomb;", &items);
     let regs: Vec<RegSlot> = vec![RegSlot::Undefined; usize::from(bomb.registers_size).max(1)];

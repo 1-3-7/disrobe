@@ -14,9 +14,11 @@ use disrobe_core::pass::PassId;
 use crate::classfile::{CLASS_MAGIC, ClassFile, JavaVersion, parse as parse_classfile};
 use crate::dalvik_decompile::{DecompiledDex, decompile_dex};
 use crate::dalvik_dexguard::{DalvikCffReport, unflatten_dex_methods};
-use crate::dalvik_strdec::{DexStringRecovery, recover as recover_dex_strings};
+use crate::dalvik_strdec::{DexStringRecovery, DexStringRecoveryReport, recover_report};
 use crate::decompile::{DecompiledClass, decompile_class};
-use crate::dex::{CodeItem, DEX_MAGIC_PREFIX, DexFile, parse as parse_dex, parse_code_items};
+use crate::dex::{
+    CodeItem, CodeItemsReport, DEX_MAGIC_PREFIX, DexFile, parse as parse_dex, parse_code_items,
+};
 use crate::obfuscators::Protector;
 use crate::protectors::{
     PeelStatus, PeeledClass, ProtectorPeelReport, detect_family as detect_protector_family,
@@ -197,11 +199,26 @@ fn classfile_children(bytes: &[u8]) -> CoreResult<Vec<ChildArtifact>> {
         .is_some()
         .then(|| peel_and_decompile(&cf))
         .flatten();
-    let source: String = match &peeled {
-        Some(p) => p.source.clone(),
+    let (source, fully_lifted_methods, fallback_methods, decode_error_count): (
+        String,
+        usize,
+        usize,
+        usize,
+    ) = match &peeled {
+        Some(p) => (
+            p.source.clone(),
+            p.fully_lifted_methods,
+            p.fallback_methods,
+            p.decode_error_count,
+        ),
         None => {
             let decompiled: DecompiledClass = decompile_class(&cf);
-            decompiled.source
+            (
+                decompiled.source,
+                decompiled.fully_lifted_methods,
+                decompiled.fallback_methods,
+                decompiled.decode_error_count,
+            )
         }
     };
     if !source.trim().is_empty() {
@@ -214,8 +231,20 @@ fn classfile_children(bytes: &[u8]) -> CoreResult<Vec<ChildArtifact>> {
         children.push(terminal_child("jvm-peel.json".to_string(), json));
     }
 
-    if let Ok(json) = serde_json::to_vec_pretty(&classfile_manifest(&cf, &this_class)) {
-        children.push(terminal_child("jvm-manifest.json".to_string(), json));
+    let manifest_json: Result<Vec<u8>, serde_json::Error> =
+        serde_json::to_vec_pretty(&classfile_manifest(
+            &cf,
+            &this_class,
+            fully_lifted_methods,
+            fallback_methods,
+            decode_error_count,
+        ));
+    match manifest_json {
+        Ok(json_value) => {
+            let json: Vec<u8> = json_value;
+            children.push(terminal_child("jvm-manifest.json".to_string(), json));
+        }
+        Err(_) => {}
     }
 
     reindex(&mut children);
@@ -227,8 +256,11 @@ fn dex_children(bytes: &[u8]) -> CoreResult<Vec<ChildArtifact>> {
         CoreError::PassFailure(format!("DR-JVM-0908: dex parse: {e}"))
     })?;
     let decompiled: DecompiledDex = decompile_dex(&dex, bytes);
-    let recovery: Vec<DexStringRecovery> = recover_dex_strings(&dex, bytes);
-    let items: Vec<CodeItem> = parse_code_items(&dex, bytes);
+    let recovery: DexStringRecoveryReport = recover_report(&dex, bytes);
+    let code_report: CodeItemsReport = parse_code_items(&dex, bytes);
+    let code_scan_complete: bool = code_report.is_fully_decoded();
+    let decode_error_count: usize = code_report.error_count();
+    let items: Vec<CodeItem> = code_report.into_partial_decoded();
     let (cff, _per_method): (DalvikCffReport, _) = unflatten_dex_methods(&items);
     let mut children: Vec<ChildArtifact> = Vec::new();
 
@@ -239,7 +271,7 @@ fn dex_children(bytes: &[u8]) -> CoreResult<Vec<ChildArtifact>> {
         ));
     }
 
-    if !recovery.is_empty()
+    if (!recovery.recoveries.is_empty() || !recovery.code_scan_complete)
         && let Ok(json) = serde_json::to_vec_pretty(&dex_reflection_sidecar(&recovery))
     {
         children.push(terminal_child(
@@ -248,8 +280,15 @@ fn dex_children(bytes: &[u8]) -> CoreResult<Vec<ChildArtifact>> {
         ));
     }
 
-    if let Ok(json) = serde_json::to_vec_pretty(&dex_manifest(&dex, &cff)) {
-        children.push(terminal_child("jvm-manifest.json".to_string(), json));
+    let manifest_json: Result<Vec<u8>, serde_json::Error> = serde_json::to_vec_pretty(
+        &dex_manifest(&dex, &cff, code_scan_complete, decode_error_count),
+    );
+    match manifest_json {
+        Ok(json_value) => {
+            let json: Vec<u8> = json_value;
+            children.push(terminal_child("jvm-manifest.json".to_string(), json));
+        }
+        Err(_) => {}
     }
 
     reindex(&mut children);
@@ -288,7 +327,13 @@ fn peel_sidecar(report: &ProtectorPeelReport) -> serde_json::Value {
     })
 }
 
-fn classfile_manifest(cf: &ClassFile, this_class: &str) -> serde_json::Value {
+fn classfile_manifest(
+    cf: &ClassFile,
+    this_class: &str,
+    fully_lifted_methods: usize,
+    fallback_methods: usize,
+    decode_error_count: usize,
+) -> serde_json::Value {
     let java_version: Option<&'static str> = cf.version().map(|v: JavaVersion| v.marketing_name());
     serde_json::json!({
         "schema": "disrobe.jvm.classify/v1",
@@ -299,20 +344,27 @@ fn classfile_manifest(cf: &ClassFile, this_class: &str) -> serde_json::Value {
         "java_version": java_version,
         "field_count": cf.fields.len(),
         "method_count": cf.methods.len(),
+        "fully_lifted_methods": fully_lifted_methods,
+        "fallback_methods": fallback_methods,
+        "code_scan_complete": decode_error_count == 0,
+        "decode_error_count": decode_error_count,
         "constant_pool_size": cf.constant_pool.len(),
     })
 }
 
-fn dex_reflection_sidecar(recovery: &[DexStringRecovery]) -> serde_json::Value {
-    let recovered_total: usize = recovery
+fn dex_reflection_sidecar(report: &DexStringRecoveryReport) -> serde_json::Value {
+    let recovered_total: usize = report
+        .recoveries
         .iter()
         .map(|r: &DexStringRecovery| r.recovered.len())
         .sum();
-    let reflective_total: usize = recovery
+    let reflective_total: usize = report
+        .recoveries
         .iter()
         .map(|r: &DexStringRecovery| r.reflective_call_sites.len())
         .sum();
-    let runtime_key_walled: bool = recovery
+    let runtime_key_walled: bool = report
+        .recoveries
         .iter()
         .any(|r: &DexStringRecovery| r.runtime_key_wall);
     serde_json::json!({
@@ -321,11 +373,18 @@ fn dex_reflection_sidecar(recovery: &[DexStringRecovery]) -> serde_json::Value {
         "strings_recovered": recovered_total,
         "reflection_call_sites_resolved": reflective_total,
         "runtime_key_walled": runtime_key_walled,
-        "classes": recovery,
+        "code_scan_complete": report.code_scan_complete,
+        "decode_error_count": report.decode_error_count,
+        "classes": report.recoveries,
     })
 }
 
-fn dex_manifest(dex: &DexFile, cff: &DalvikCffReport) -> serde_json::Value {
+fn dex_manifest(
+    dex: &DexFile,
+    cff: &DalvikCffReport,
+    code_scan_complete: bool,
+    decode_error_count: usize,
+) -> serde_json::Value {
     serde_json::json!({
         "schema": "disrobe.jvm.classify/v1",
         "format": "dex",
@@ -336,6 +395,8 @@ fn dex_manifest(dex: &DexFile, cff: &DalvikCffReport) -> serde_json::Value {
         "type_name_count": dex.type_names.len(),
         "method_count": dex.method_ids.len(),
         "field_count": dex.field_ids.len(),
+        "code_scan_complete": code_scan_complete,
+        "decode_error_count": decode_error_count,
         "cff_methods_scanned": cff.methods_scanned,
         "cff_flattened_methods": cff.flattened_methods,
         "cff_methods_unflattened": cff.methods_unflattened,
@@ -705,6 +766,87 @@ mod tests {
 
     fn parse_child(children: &[ChildArtifact], path: &str) -> serde_json::Value {
         serde_json::from_slice(&child(children, path).bytes).expect("sidecar child is valid JSON")
+    }
+
+    #[test]
+    fn dex_manifest_preserves_partial_code_failure() {
+        let (_, bytes): (DexFile, Vec<u8>) = crate::dex::partial_code_failure_fixture();
+        let children: Vec<ChildArtifact> = dex_children(&bytes).expect("DEX children");
+        let manifest: serde_json::Value = parse_child(&children, "jvm-manifest.json");
+        assert_eq!(manifest["code_scan_complete"], false);
+        assert_eq!(manifest["decode_error_count"], 1);
+        let recovery: serde_json::Value = parse_child(&children, "jvm-reflection-strings.json");
+        assert_eq!(recovery["code_scan_complete"], false);
+        assert_eq!(recovery["decode_error_count"], 1);
+    }
+
+    #[test]
+    fn classfile_manifest_preserves_partial_code_failure() {
+        let class: ClassFile = ClassFile {
+            minor_version: 0,
+            major_version: 52,
+            constant_pool: vec![
+                crate::classfile::ConstantPoolEntry::Placeholder,
+                crate::classfile::ConstantPoolEntry::Utf8("DecodeStates".to_owned()),
+                crate::classfile::ConstantPoolEntry::Class { name_index: 1 },
+                crate::classfile::ConstantPoolEntry::Utf8("java/lang/Object".to_owned()),
+                crate::classfile::ConstantPoolEntry::Class { name_index: 3 },
+                crate::classfile::ConstantPoolEntry::Utf8("body".to_owned()),
+                crate::classfile::ConstantPoolEntry::Utf8("()V".to_owned()),
+                crate::classfile::ConstantPoolEntry::Utf8("Code".to_owned()),
+            ],
+            access_flags: crate::decompile::ACC_PUBLIC,
+            this_class: 2,
+            super_class: 4,
+            interfaces: Vec::new(),
+            fields: Vec::new(),
+            methods: vec![crate::classfile::MethodInfo {
+                access_flags: crate::decompile::ACC_PUBLIC | crate::decompile::ACC_STATIC,
+                name_index: 5,
+                descriptor_index: 6,
+                attributes: vec![crate::classfile::Attribute {
+                    name_index: 7,
+                    info: vec![0; 7],
+                }],
+            }],
+            attributes: Vec::new(),
+        };
+        let decompiled: DecompiledClass = decompile_class(&class);
+        let manifest: serde_json::Value = classfile_manifest(
+            &class,
+            "DecodeStates",
+            decompiled.fully_lifted_methods,
+            decompiled.fallback_methods,
+            decompiled.decode_error_count,
+        );
+        assert_eq!(manifest["code_scan_complete"], false);
+        assert_eq!(manifest["decode_error_count"], 1);
+        assert_eq!(manifest["fully_lifted_methods"], 0);
+        assert_eq!(manifest["fallback_methods"], 1);
+    }
+
+    #[test]
+    fn classfile_manifest_separates_semantic_fallbacks_from_decode_errors() {
+        let class: ClassFile = ClassFile {
+            minor_version: 0,
+            major_version: 52,
+            constant_pool: vec![
+                crate::classfile::ConstantPoolEntry::Placeholder,
+                crate::classfile::ConstantPoolEntry::Utf8("Fallback".to_owned()),
+                crate::classfile::ConstantPoolEntry::Class { name_index: 1 },
+            ],
+            access_flags: crate::decompile::ACC_PUBLIC,
+            this_class: 2,
+            super_class: 0,
+            interfaces: Vec::new(),
+            fields: Vec::new(),
+            methods: Vec::new(),
+            attributes: Vec::new(),
+        };
+        let manifest: serde_json::Value = classfile_manifest(&class, "Fallback", 0, 1, 0);
+        assert_eq!(manifest["fallback_methods"], 1);
+        assert_eq!(manifest["code_scan_complete"], true);
+        assert_eq!(manifest["decode_error_count"], 0);
     }
 
     #[test]

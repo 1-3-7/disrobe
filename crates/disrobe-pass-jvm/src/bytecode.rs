@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::classfile::{ClassFile, ConstantPoolEntry};
@@ -243,9 +245,6 @@ pub const fn opcode_info(op: u8) -> Option<OpcodeInfo> {
         0xC7 => op!("ifnonnull", OperandShape::BranchShort),
         0xC8 => op!("goto_w", OperandShape::BranchWide),
         0xC9 => op!("jsr_w", OperandShape::BranchWide),
-        0xCA => op!("breakpoint", OperandShape::NoOperand),
-        0xFE => op!("impdep1", OperandShape::NoOperand),
-        0xFF => op!("impdep2", OperandShape::NoOperand),
         _ => None,
     }
 }
@@ -308,6 +307,8 @@ pub struct CodeAttribute {
     pub code: Vec<u8>,
     pub exception_table: Vec<ExceptionEntry>,
     pub dropped_exception_entries: usize,
+    #[serde(default)]
+    pub nested_attribute_name_indices: Vec<u16>,
 }
 
 #[inline]
@@ -348,6 +349,12 @@ pub fn parse_code_attribute(info: &[u8]) -> Result<CodeAttribute> {
         offset: 4,
         reason: "code_length overflow",
     })?;
+    if code_length == 0 || code_length > u16::MAX as usize {
+        return Err(Error::BadBytecode {
+            offset: 4,
+            reason: "Code attribute length must be between 1 and 65535 bytes",
+        });
+    }
     let code_start: usize = 8;
     let code_end: usize = code_start
         .checked_add(code_length)
@@ -367,9 +374,14 @@ pub fn parse_code_attribute(info: &[u8]) -> Result<CodeAttribute> {
     let exc_count_end: usize = end_for(info, pos, 2)?;
     let exc_count: usize = usize::from(be_u16(info, pos));
     pos = exc_count_end;
+    let exception_bytes: usize = exc_count.checked_mul(8).ok_or(Error::BadBytecode {
+        offset: pos,
+        reason: "exception table size overflow",
+    })?;
+    let _: usize = end_for(info, pos, exception_bytes)?;
     let mut exception_table: Vec<ExceptionEntry> = Vec::with_capacity(exc_count);
-    let mut dropped_exception_entries: usize = 0;
     for _ in 0..exc_count {
+        let entry_offset: usize = pos;
         let entry_end: usize = end_for(info, pos, 8)?;
         let entry: ExceptionEntry = ExceptionEntry {
             start_pc: be_u16(info, pos),
@@ -378,19 +390,557 @@ pub fn parse_code_attribute(info: &[u8]) -> Result<CodeAttribute> {
             catch_type: be_u16(info, pos + 6),
         };
         pos = entry_end;
-        if exception_entry_is_sane(&entry, code.len()) {
-            exception_table.push(entry);
-        } else {
-            dropped_exception_entries += 1;
+        if !exception_entry_is_sane(&entry, code.len()) {
+            return Err(Error::BadBytecode {
+                offset: entry_offset,
+                reason: "invalid exception table entry",
+            });
         }
+        exception_table.push(entry);
+    }
+    let attributes_count_end: usize = end_for(info, pos, 2)?;
+    let attributes_count: usize = usize::from(be_u16(info, pos));
+    pos = attributes_count_end;
+    let mut nested_attribute_name_indices: Vec<u16> = Vec::with_capacity(attributes_count);
+    for _ in 0..attributes_count {
+        let attribute_header_end: usize = end_for(info, pos, 6)?;
+        let attribute_name_index: u16 = be_u16(info, pos);
+        let attribute_length_raw: u32 =
+            u32::from_be_bytes([info[pos + 2], info[pos + 3], info[pos + 4], info[pos + 5]]);
+        let attribute_length: usize =
+            usize::try_from(attribute_length_raw).map_err(|_| Error::BadBytecode {
+                offset: pos + 2,
+                reason: "Code attribute length overflow",
+            })?;
+        nested_attribute_name_indices.push(attribute_name_index);
+        pos = end_for(info, attribute_header_end, attribute_length)?;
+    }
+    if pos != info.len() {
+        return Err(Error::BadBytecode {
+            offset: pos,
+            reason: "trailing bytes in Code attribute",
+        });
     }
     Ok(CodeAttribute {
         max_stack,
         max_locals,
         code,
         exception_table,
-        dropped_exception_entries,
+        dropped_exception_entries: 0,
+        nested_attribute_name_indices,
     })
+}
+
+pub fn validate_code_attribute(cf: &ClassFile, code: &CodeAttribute) -> Result<Vec<Instruction>> {
+    if code.code.is_empty() || code.code.len() > u16::MAX as usize {
+        return Err(Error::BadBytecode {
+            offset: code.code.len(),
+            reason: "Code attribute length must be between 1 and 65535 bytes",
+        });
+    }
+    let instructions: Vec<Instruction> = disassemble(&code.code)?;
+    let boundaries: BTreeSet<u32> = instructions
+        .iter()
+        .map(|instruction: &Instruction| instruction.pc)
+        .collect();
+    let code_length: u32 = u32::try_from(code.code.len()).map_err(|_| Error::BadBytecode {
+        offset: code.code.len(),
+        reason: "Code length is out of range",
+    })?;
+    for entry in &code.exception_table {
+        let start: u32 = u32::from(entry.start_pc);
+        let end: u32 = u32::from(entry.end_pc);
+        let handler: u32 = u32::from(entry.handler_pc);
+        if start >= end
+            || end > code_length
+            || handler >= code_length
+            || !boundaries.contains(&start)
+            || (end != code_length && !boundaries.contains(&end))
+            || !boundaries.contains(&handler)
+        {
+            return Err(Error::BadBytecode {
+                offset: usize::from(entry.start_pc),
+                reason: "exception table target is not an instruction boundary",
+            });
+        }
+        if entry.catch_type != 0 {
+            let _: &str = cf.class_name(entry.catch_type)?;
+        }
+    }
+    for name_index in &code.nested_attribute_name_indices {
+        let _: &str = cf.utf8_at(*name_index)?;
+    }
+    for instruction in &instructions {
+        validate_instruction_operands(cf, code, instruction)?;
+        match &instruction.operands {
+            Operands::Branch(offset) => {
+                validate_control_target(instruction.pc, *offset, &boundaries)?;
+            }
+            Operands::TableSwitch {
+                default, offsets, ..
+            } => {
+                validate_control_target(instruction.pc, *default, &boundaries)?;
+                for offset in offsets {
+                    validate_control_target(instruction.pc, *offset, &boundaries)?;
+                }
+            }
+            Operands::LookupSwitch { default, pairs } => {
+                if pairs
+                    .windows(2)
+                    .any(|pair: &[(i32, i32)]| pair[0].0 >= pair[1].0)
+                {
+                    return Err(Error::BadBytecode {
+                        offset: instruction.pc as usize,
+                        reason: "lookupswitch keys are not strictly increasing",
+                    });
+                }
+                validate_control_target(instruction.pc, *default, &boundaries)?;
+                for (_, offset) in pairs {
+                    validate_control_target(instruction.pc, *offset, &boundaries)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(instructions)
+}
+
+fn constant_pool_entry(cf: &ClassFile, index: u16, pc: u32) -> Result<&ConstantPoolEntry> {
+    let pool_index: usize = usize::from(index);
+    if pool_index == 0 {
+        return Err(Error::BadBytecode {
+            offset: pc as usize,
+            reason: "bytecode constant pool index is zero",
+        });
+    }
+    cf.constant_pool
+        .get(pool_index)
+        .ok_or(Error::BadConstantIndex {
+            idx: pool_index,
+            size: cf.constant_pool.len(),
+        })
+}
+
+fn name_and_type_descriptor(cf: &ClassFile, index: u16, method: bool, pc: u32) -> Result<&str> {
+    let entry: &ConstantPoolEntry = constant_pool_entry(cf, index, pc)?;
+    let ConstantPoolEntry::NameAndType {
+        name_index,
+        descriptor_index,
+    } = entry
+    else {
+        return Err(Error::BadBytecode {
+            offset: pc as usize,
+            reason: "member reference has an invalid name-and-type entry",
+        });
+    };
+    let _: &str = cf.utf8_at(*name_index)?;
+    let descriptor: &str = cf.utf8_at(*descriptor_index)?;
+    let descriptor_valid: bool = if method {
+        crate::descriptor::parse_method(descriptor).is_some()
+    } else {
+        crate::descriptor::parse_field(descriptor).is_some()
+    };
+    if !descriptor_valid {
+        return Err(Error::BadBytecode {
+            offset: pc as usize,
+            reason: "member reference has an invalid descriptor",
+        });
+    }
+    Ok(descriptor)
+}
+
+fn validate_field_reference(cf: &ClassFile, index: u16, pc: u32) -> Result<()> {
+    let entry: &ConstantPoolEntry = constant_pool_entry(cf, index, pc)?;
+    let ConstantPoolEntry::Fieldref {
+        class_index,
+        name_and_type_index,
+    } = entry
+    else {
+        return Err(Error::BadBytecode {
+            offset: pc as usize,
+            reason: "field opcode does not reference a field",
+        });
+    };
+    let _: &str = cf.class_name(*class_index)?;
+    let _: &str = name_and_type_descriptor(cf, *name_and_type_index, false, pc)?;
+    Ok(())
+}
+
+fn validate_method_reference(
+    cf: &ClassFile,
+    index: u16,
+    pc: u32,
+    allow_interface: bool,
+    require_interface: bool,
+) -> Result<crate::descriptor::MethodDescriptor> {
+    let entry: &ConstantPoolEntry = constant_pool_entry(cf, index, pc)?;
+    let (class_index, name_and_type_index, is_interface): (u16, u16, bool) = match entry {
+        ConstantPoolEntry::Methodref {
+            class_index,
+            name_and_type_index,
+        } => (*class_index, *name_and_type_index, false),
+        ConstantPoolEntry::InterfaceMethodref {
+            class_index,
+            name_and_type_index,
+        } => (*class_index, *name_and_type_index, true),
+        _ => {
+            return Err(Error::BadBytecode {
+                offset: pc as usize,
+                reason: "invoke opcode does not reference a method",
+            });
+        }
+    };
+    if is_interface && !allow_interface || require_interface && !is_interface {
+        return Err(Error::BadBytecode {
+            offset: pc as usize,
+            reason: "invoke opcode references the wrong method kind",
+        });
+    }
+    let _: &str = cf.class_name(class_index)?;
+    let descriptor: &str = name_and_type_descriptor(cf, name_and_type_index, true, pc)?;
+    crate::descriptor::parse_method(descriptor).ok_or(Error::BadBytecode {
+        offset: pc as usize,
+        reason: "invoke opcode has an invalid method descriptor",
+    })
+}
+
+fn validate_method_handle(cf: &ClassFile, reference_kind: u8, index: u16, pc: u32) -> Result<()> {
+    match reference_kind {
+        1..=4 => validate_field_reference(cf, index, pc),
+        5 | 8 => validate_method_reference(cf, index, pc, false, false).map(|_| ()),
+        6 | 7 => validate_method_reference(cf, index, pc, true, false).map(|_| ()),
+        9 => validate_method_reference(cf, index, pc, true, true).map(|_| ()),
+        _ => Err(Error::BadBytecode {
+            offset: pc as usize,
+            reason: "method handle has an invalid reference kind",
+        }),
+    }
+}
+
+fn bootstrap_method_count(cf: &ClassFile, pc: u32) -> Result<usize> {
+    let mut bootstrap_info: Option<&[u8]> = None;
+    for attribute in &cf.attributes {
+        let name: &str = cf.utf8_at(attribute.name_index)?;
+        if name != "BootstrapMethods" {
+            continue;
+        }
+        if bootstrap_info.is_some() {
+            return Err(Error::BadBytecode {
+                offset: pc as usize,
+                reason: "class has duplicate BootstrapMethods attributes",
+            });
+        }
+        bootstrap_info = Some(&attribute.info);
+    }
+    let Some(info): Option<&[u8]> = bootstrap_info else {
+        return Ok(0);
+    };
+    let count_bytes: &[u8] = info.get(0..2).ok_or(Error::BadBytecode {
+        offset: pc as usize,
+        reason: "BootstrapMethods attribute is truncated",
+    })?;
+    let count: usize = usize::from(u16::from_be_bytes([count_bytes[0], count_bytes[1]]));
+    let mut cursor: usize = 2;
+    for _ in 0..count {
+        let header: &[u8] = info.get(cursor..cursor + 4).ok_or(Error::BadBytecode {
+            offset: pc as usize,
+            reason: "BootstrapMethods entry is truncated",
+        })?;
+        let method_ref: u16 = u16::from_be_bytes([header[0], header[1]]);
+        let argument_count: usize = usize::from(u16::from_be_bytes([header[2], header[3]]));
+        let method_entry: &ConstantPoolEntry = constant_pool_entry(cf, method_ref, pc)?;
+        let ConstantPoolEntry::MethodHandle {
+            reference_kind,
+            reference_index,
+        } = method_entry
+        else {
+            return Err(Error::BadBytecode {
+                offset: pc as usize,
+                reason: "BootstrapMethods entry does not reference a method handle",
+            });
+        };
+        validate_method_handle(cf, *reference_kind, *reference_index, pc)?;
+        cursor = cursor.checked_add(4).ok_or(Error::BadBytecode {
+            offset: pc as usize,
+            reason: "BootstrapMethods offset overflow",
+        })?;
+        let arguments_size: usize = argument_count.checked_mul(2).ok_or(Error::BadBytecode {
+            offset: pc as usize,
+            reason: "BootstrapMethods argument count overflow",
+        })?;
+        let arguments_end: usize =
+            cursor
+                .checked_add(arguments_size)
+                .ok_or(Error::BadBytecode {
+                    offset: pc as usize,
+                    reason: "BootstrapMethods offset overflow",
+                })?;
+        let arguments: &[u8] = info.get(cursor..arguments_end).ok_or(Error::BadBytecode {
+            offset: pc as usize,
+            reason: "BootstrapMethods arguments are truncated",
+        })?;
+        for argument in arguments.chunks_exact(2) {
+            let argument_index: u16 = u16::from_be_bytes([argument[0], argument[1]]);
+            let entry: &ConstantPoolEntry = constant_pool_entry(cf, argument_index, pc)?;
+            if !matches!(
+                entry,
+                ConstantPoolEntry::Integer(_)
+                    | ConstantPoolEntry::Float(_)
+                    | ConstantPoolEntry::Long(_)
+                    | ConstantPoolEntry::Double(_)
+                    | ConstantPoolEntry::String { .. }
+                    | ConstantPoolEntry::Class { .. }
+                    | ConstantPoolEntry::MethodHandle { .. }
+                    | ConstantPoolEntry::MethodType { .. }
+                    | ConstantPoolEntry::Dynamic { .. }
+            ) {
+                return Err(Error::BadBytecode {
+                    offset: pc as usize,
+                    reason: "BootstrapMethods argument has an invalid constant kind",
+                });
+            }
+        }
+        cursor = arguments_end;
+    }
+    if cursor != info.len() {
+        return Err(Error::BadBytecode {
+            offset: pc as usize,
+            reason: "BootstrapMethods attribute has trailing bytes",
+        });
+    }
+    Ok(count)
+}
+
+fn validate_bootstrap_method_index(cf: &ClassFile, index: u16, pc: u32) -> Result<()> {
+    let count: usize = bootstrap_method_count(cf, pc)?;
+    if usize::from(index) >= count {
+        return Err(Error::BadBytecode {
+            offset: pc as usize,
+            reason: "dynamic constant bootstrap method index is out of range",
+        });
+    }
+    Ok(())
+}
+
+fn validate_dynamic_constant(
+    cf: &ClassFile,
+    bootstrap_method_attr_index: u16,
+    name_and_type_index: u16,
+    pc: u32,
+    category_two: bool,
+) -> Result<()> {
+    validate_bootstrap_method_index(cf, bootstrap_method_attr_index, pc)?;
+    let descriptor: &str = name_and_type_descriptor(cf, name_and_type_index, false, pc)?;
+    let value_type: crate::descriptor::JavaType = crate::descriptor::parse_field(descriptor)
+        .ok_or(Error::BadBytecode {
+            offset: pc as usize,
+            reason: "dynamic constant has an invalid descriptor",
+        })?;
+    if value_type.category_two() != category_two {
+        return Err(Error::BadBytecode {
+            offset: pc as usize,
+            reason: "dynamic constant has the wrong value category",
+        });
+    }
+    Ok(())
+}
+
+fn validate_ldc(cf: &ClassFile, index: u16, pc: u32, category_two: bool) -> Result<()> {
+    let entry: &ConstantPoolEntry = constant_pool_entry(cf, index, pc)?;
+    match (entry, category_two) {
+        (ConstantPoolEntry::Long(_) | ConstantPoolEntry::Double(_), true)
+        | (ConstantPoolEntry::Integer(_) | ConstantPoolEntry::Float(_), false) => Ok(()),
+        (ConstantPoolEntry::String { utf8_index }, false) => {
+            let _: &str = cf.utf8_at(*utf8_index)?;
+            Ok(())
+        }
+        (ConstantPoolEntry::Class { .. }, false) => {
+            let _: &str = cf.class_name(index)?;
+            Ok(())
+        }
+        (ConstantPoolEntry::MethodType { descriptor_index }, false) => {
+            let descriptor: &str = cf.utf8_at(*descriptor_index)?;
+            if crate::descriptor::parse_method(descriptor).is_none() {
+                return Err(Error::BadBytecode {
+                    offset: pc as usize,
+                    reason: "method type constant has an invalid descriptor",
+                });
+            }
+            Ok(())
+        }
+        (
+            ConstantPoolEntry::MethodHandle {
+                reference_kind,
+                reference_index,
+            },
+            false,
+        ) => validate_method_handle(cf, *reference_kind, *reference_index, pc),
+        (
+            ConstantPoolEntry::Dynamic {
+                bootstrap_method_attr_index,
+                name_and_type_index,
+            },
+            expected_category_two,
+        ) => validate_dynamic_constant(
+            cf,
+            *bootstrap_method_attr_index,
+            *name_and_type_index,
+            pc,
+            expected_category_two,
+        ),
+        _ => Err(Error::BadBytecode {
+            offset: pc as usize,
+            reason: "ldc opcode references an incompatible constant",
+        }),
+    }
+}
+
+fn validate_class_reference(
+    cf: &ClassFile,
+    index: u16,
+    pc: u32,
+    require_array: bool,
+    forbid_array: bool,
+) -> Result<&str> {
+    let class_name: &str = cf.class_name(index)?;
+    if require_array && !class_name.starts_with('[') || forbid_array && class_name.starts_with('[')
+    {
+        return Err(Error::BadBytecode {
+            offset: pc as usize,
+            reason: "class opcode references an incompatible class descriptor",
+        });
+    }
+    Ok(class_name)
+}
+
+fn validate_instruction_operands(
+    cf: &ClassFile,
+    code: &CodeAttribute,
+    instruction: &Instruction,
+) -> Result<()> {
+    match (&instruction.operands, instruction.opcode) {
+        (Operands::ConstPool(index), 0x12 | 0x13) => {
+            validate_ldc(cf, *index, instruction.pc, false)
+        }
+        (Operands::ConstPool(index), 0x14) => validate_ldc(cf, *index, instruction.pc, true),
+        (Operands::ConstPool(index), 0xB2..=0xB5) => {
+            validate_field_reference(cf, *index, instruction.pc)
+        }
+        (Operands::ConstPool(index), 0xB6) => {
+            validate_method_reference(cf, *index, instruction.pc, false, false).map(|_| ())
+        }
+        (Operands::ConstPool(index), 0xB7 | 0xB8) => {
+            validate_method_reference(cf, *index, instruction.pc, true, false).map(|_| ())
+        }
+        (Operands::ConstPool(index), 0xBB) => {
+            validate_class_reference(cf, *index, instruction.pc, false, true).map(|_| ())
+        }
+        (Operands::ConstPool(index), 0xBD | 0xC0 | 0xC1) => {
+            validate_class_reference(cf, *index, instruction.pc, false, false).map(|_| ())
+        }
+        (Operands::InvokeInterface { index, count }, 0xB9) => {
+            let descriptor: crate::descriptor::MethodDescriptor =
+                validate_method_reference(cf, *index, instruction.pc, true, true)?;
+            let expected_count: usize = descriptor
+                .params
+                .iter()
+                .map(
+                    |parameter: &crate::descriptor::JavaType| {
+                        if parameter.category_two() { 2 } else { 1 }
+                    },
+                )
+                .sum::<usize>()
+                .saturating_add(1);
+            let reserved_offset: usize = instruction.pc as usize + 4;
+            if usize::from(*count) != expected_count
+                || code.code.get(reserved_offset).copied() != Some(0)
+            {
+                return Err(Error::BadBytecode {
+                    offset: instruction.pc as usize,
+                    reason: "invokeinterface operands are invalid",
+                });
+            }
+            Ok(())
+        }
+        (Operands::InvokeDynamic(index), 0xBA) => {
+            let entry: &ConstantPoolEntry = constant_pool_entry(cf, *index, instruction.pc)?;
+            let ConstantPoolEntry::InvokeDynamic {
+                bootstrap_method_attr_index,
+                name_and_type_index,
+            } = entry
+            else {
+                return Err(Error::BadBytecode {
+                    offset: instruction.pc as usize,
+                    reason: "invokedynamic does not reference an invoke-dynamic constant",
+                });
+            };
+            validate_bootstrap_method_index(cf, *bootstrap_method_attr_index, instruction.pc)?;
+            let _: &str = name_and_type_descriptor(cf, *name_and_type_index, true, instruction.pc)?;
+            let first_reserved: usize = instruction.pc as usize + 3;
+            let second_reserved: usize = instruction.pc as usize + 4;
+            if code.code.get(first_reserved).copied() != Some(0)
+                || code.code.get(second_reserved).copied() != Some(0)
+            {
+                return Err(Error::BadBytecode {
+                    offset: instruction.pc as usize,
+                    reason: "invokedynamic reserved operands are nonzero",
+                });
+            }
+            Ok(())
+        }
+        (Operands::MultiANewArray { index, dimensions }, 0xC5) => {
+            let class_name: &str =
+                validate_class_reference(cf, *index, instruction.pc, true, false)?;
+            let available_dimensions: usize = class_name
+                .bytes()
+                .take_while(|byte: &u8| *byte == b'[')
+                .count();
+            if *dimensions == 0 || usize::from(*dimensions) > available_dimensions {
+                return Err(Error::BadBytecode {
+                    offset: instruction.pc as usize,
+                    reason: "multianewarray dimensions are invalid",
+                });
+            }
+            Ok(())
+        }
+        (Operands::NewArray(array_type), 0xBC) if !(4..=11).contains(array_type) => {
+            Err(Error::BadBytecode {
+                offset: instruction.pc as usize,
+                reason: "newarray has an invalid primitive type",
+            })
+        }
+        (
+            Operands::ConstPool(_)
+            | Operands::InvokeInterface { .. }
+            | Operands::InvokeDynamic(_)
+            | Operands::MultiANewArray { .. },
+            _,
+        ) => Err(Error::BadBytecode {
+            offset: instruction.pc as usize,
+            reason: "opcode has an incompatible operand form",
+        }),
+        _ => Ok(()),
+    }
+}
+
+fn validate_control_target(pc: u32, relative: i32, boundaries: &BTreeSet<u32>) -> Result<()> {
+    let target: i64 = i64::from(pc)
+        .checked_add(i64::from(relative))
+        .ok_or(Error::BadBytecode {
+            offset: pc as usize,
+            reason: "control-flow target overflow",
+        })?;
+    let target_pc: u32 = u32::try_from(target).map_err(|_| Error::BadBytecode {
+        offset: pc as usize,
+        reason: "control-flow target is out of range",
+    })?;
+    if !boundaries.contains(&target_pc) {
+        return Err(Error::BadBytecode {
+            offset: pc as usize,
+            reason: "control-flow target is not an instruction boundary",
+        });
+    }
+    Ok(())
 }
 
 pub fn disassemble(code: &[u8]) -> Result<Vec<Instruction>> {
@@ -536,9 +1086,14 @@ fn decode_wide(code: &[u8], i: usize) -> Result<(Operands, usize, bool)> {
             6,
             true,
         ))
-    } else {
+    } else if matches!(sub, 0x15..=0x19 | 0x36..=0x3A | 0xA9) {
         need(code, i + 2, 2)?;
         Ok((Operands::Local(be_u16(code, i + 2)), 4, true))
+    } else {
+        Err(Error::BadBytecode {
+            offset: i + 1,
+            reason: "illegal wide opcode",
+        })
     }
 }
 
@@ -868,7 +1423,7 @@ mod tests {
     }
 
     #[test]
-    fn exception_sanity_gate_drops_obfuscator_planted_entries() {
+    fn exception_sanity_gate_rejects_invalid_entries() {
         let code: [u8; 2] = [0x04, 0xAC];
         let mut info: Vec<u8> = Vec::new();
         info.extend_from_slice(&0u16.to_be_bytes());
@@ -886,10 +1441,29 @@ mod tests {
         info.extend_from_slice(&0u16.to_be_bytes());
         info.extend_from_slice(&0u16.to_be_bytes());
 
-        let parsed: CodeAttribute = parse_code_attribute(&info).expect("parse code attribute");
-        assert_eq!(parsed.exception_table.len(), 1);
-        assert_eq!(parsed.dropped_exception_entries, 1);
-        assert_eq!(parsed.exception_table[0].handler_pc, 0);
+        let parsed: Result<CodeAttribute> = parse_code_attribute(&info);
+        assert!(matches!(parsed, Err(Error::BadBytecode { .. })));
+    }
+
+    #[test]
+    fn code_attribute_requires_nested_attribute_count() {
+        let info: [u8; 11] = [0, 0, 0, 0, 0, 0, 0, 1, 0xB1, 0, 0];
+        let parsed: Result<CodeAttribute> = parse_code_attribute(&info);
+        assert!(matches!(parsed, Err(Error::Truncated { .. })));
+    }
+
+    #[test]
+    fn reserved_classfile_opcodes_are_refused() {
+        for opcode in [0xCA, 0xFE, 0xFF] {
+            let parsed: Result<Vec<Instruction>> = disassemble(&[opcode]);
+            assert!(matches!(parsed, Err(Error::UnknownOpcode(_, 0))));
+        }
+    }
+
+    #[test]
+    fn illegal_wide_opcode_is_refused() {
+        let parsed: Result<Vec<Instruction>> = disassemble(&[0xC4, 0xB1, 0x00, 0x00]);
+        assert!(matches!(parsed, Err(Error::BadBytecode { .. })));
     }
 
     #[test]

@@ -2964,7 +2964,9 @@ mod tests {
                 .iter()
                 .any(|c: &String| c == "Lcom/disrobe/sample/DexGuardReflectStrings;")
         );
-        let code_items: Vec<crate::dex::CodeItem> = crate::dex::parse_code_items(&parsed, &dex);
+        let code_items: Vec<crate::dex::CodeItem> = crate::dex::parse_code_items(&parsed, &dex)
+            .into_complete()
+            .expect("builder output must decode");
         assert!(
             code_items
                 .iter()

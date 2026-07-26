@@ -115,6 +115,7 @@ pub use bytecode::{
     CodeAttribute, ExceptionEntry, Instruction, OpcodeInfo, OperandShape, Operands, branch_target,
     class_internal_name_at, disassemble, escape_java_string, field_descriptor_at,
     method_name_descriptor_at, opcode_info, parse_code_attribute, resolve_ref,
+    validate_code_attribute,
 };
 pub use bytecode_eval::{
     CallerContext, CallerKeyedReport, DecryptMethod, EvalError, evaluate_decrypt,
@@ -149,9 +150,10 @@ pub use dalvik_pack_stub_loader::{
     StubLoaderKeystreamScheme, encode_container as encode_stub_loader_container,
 };
 pub use dalvik_strdec::{
-    DecryptedString, DexStringRecovery, NativeIntKey, ReflectiveCallSite,
-    recover as recover_dex_reflection_strings,
+    DecryptedString, DexStringRecovery, DexStringRecoveryReport, NativeIntKey, ReflectiveCallSite,
+    recover as recover_dex_reflection_strings, recover_report as recover_dex_reflection_report,
     recover_with_native_keys as recover_dex_reflection_strings_with_native_keys,
+    recover_with_native_keys_report as recover_dex_reflection_report_with_native_keys,
 };
 pub use dalvik_strdec_generic::{
     CallSiteOutcome, CallSiteRecovery, GenericStringRecovery, SkipReason as DexInterpSkipReason,
@@ -172,9 +174,10 @@ pub use descriptor::{
     parse_method as parse_method_descriptor,
 };
 pub use dex::{
-    ACC_NATIVE, CodeItem, DEX_ENDIAN_TAG, DEX_MAGIC_PREFIX, DexFile, DexHeader, DexVersion,
-    FieldId, MethodId, MultiDex, NativeMethod, ProtoId, TryItem, extract_native_methods,
-    parse as parse_dex, parse_code_items, parse_header as parse_dex_header, parse_multi_dex,
+    ACC_ABSTRACT, ACC_NATIVE, CodeItem, CodeItemsReport, DEX_ENDIAN_TAG, DEX_MAGIC_PREFIX,
+    DexCodeState, DexCodeTail, DexFile, DexHeader, DexMethodCode, DexVersion, FieldId, MethodId,
+    MultiDex, NativeMethod, ProtoId, TryItem, extract_native_methods, parse as parse_dex,
+    parse_code_items, parse_header as parse_dex_header, parse_multi_dex,
 };
 pub use dex2jar::{
     Dex2JarResult, TranslatedClass, TranslatedField, TranslatedMethod, assemble_jar,

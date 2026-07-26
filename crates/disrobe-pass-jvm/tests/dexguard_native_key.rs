@@ -52,6 +52,7 @@ fn apk_dexguard_native_key_recovery_uses_bundled_so() {
     let dex: Vec<u8> = dexguard_native_key_sample(&plaintexts, 0x4D);
     let parsed: disrobe_pass_jvm::DexFile = parse_dex(&dex).expect("parse dex");
     let native: NativeMethod = extract_native_methods(&parsed, &dex)
+        .expect("native method scan")
         .into_iter()
         .find(|method: &NativeMethod| method.method == "nativeKey")
         .expect("native key method");

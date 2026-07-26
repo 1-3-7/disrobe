@@ -109,6 +109,7 @@ fn flattened_class() -> ClassFile {
     info.extend_from_slice(&(code_body.len() as u32).to_be_bytes());
     info.extend_from_slice(&code_body);
     info.extend_from_slice(&0u16.to_be_bytes());
+    info.extend_from_slice(&0u16.to_be_bytes());
     ClassFile {
         minor_version: 0,
         major_version: 52,

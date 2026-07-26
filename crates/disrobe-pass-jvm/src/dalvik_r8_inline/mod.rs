@@ -58,6 +58,8 @@ pub struct Candidate {
 #[derive(Debug, Clone, Default)]
 pub struct InversionReport {
     pub candidates: Vec<Candidate>,
+    pub code_scan_complete: bool,
+    pub decode_error_count: usize,
 }
 
 impl InversionReport {
@@ -113,10 +115,26 @@ const fn is_static_invoke(op: u8) -> bool {
     matches!(op, 0x71 | 0x77)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inversion_report_preserves_partial_code_failure() {
+        let (dex, bytes): (DexFile, Vec<u8>) = crate::dex::partial_code_failure_fixture();
+        let report: InversionReport = invert(&dex, &bytes);
+        assert!(!report.code_scan_complete);
+        assert_eq!(report.decode_error_count, 1);
+    }
+}
+
 #[must_use]
 pub fn invert(dex: &DexFile, bytes: &[u8]) -> InversionReport {
     let dex_meta: DexMeta = meta::collect(dex, bytes);
-    let code_items: Vec<crate::dex::CodeItem> = parse_code_items(dex, bytes);
+    let code_report: crate::dex::CodeItemsReport = parse_code_items(dex, bytes);
+    let code_scan_complete: bool = code_report.is_fully_decoded();
+    let decode_error_count: usize = code_report.error_count();
+    let code_items: Vec<crate::dex::CodeItem> = code_report.into_partial_decoded();
 
     let mut body_by_triple: BTreeMap<TripleKey, RawCode> = BTreeMap::new();
     for item in &code_items {
@@ -152,7 +170,11 @@ pub fn invert(dex: &DexFile, bytes: &[u8]) -> InversionReport {
 
     let call_sites: BTreeMap<u32, Vec<CallSite>> = build_call_sites(&bodies);
 
-    let mut report: InversionReport = InversionReport::default();
+    let mut report: InversionReport = InversionReport {
+        candidates: Vec::new(),
+        code_scan_complete,
+        decode_error_count,
+    };
     detect_helpers(dex, &bodies, &call_sites, &mut report);
     detect_enums(dex, &dex_meta, &bodies, &mut report);
     report

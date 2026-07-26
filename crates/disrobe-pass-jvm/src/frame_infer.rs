@@ -782,6 +782,7 @@ mod tests {
             code,
             exception_table: Vec::new(),
             dropped_exception_entries: 0,
+            nested_attribute_name_indices: Vec::new(),
         }
     }
 

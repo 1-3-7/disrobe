@@ -5,8 +5,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use disrobe_nir::{NirFunction, NirInstr, NirModule, NirOp};
-use disrobe_nir_lift::{dalvik_function_address, lift_dex};
-use disrobe_pass_jvm::{CodeItem, DalvikInsn, DexFile, decode_method, parse_code_items, parse_dex};
+use disrobe_nir_lift::{LiftError, dalvik_function_address, lift_dex};
+use disrobe_pass_jvm::{
+    CodeItem, CodeItemsReport, DalvikInsn, DexCodeState, DexFile, DexMethodCode, decode_method,
+    parse_code_items, parse_dex,
+};
 
 const HELLO_DEX: &[u8] = include_bytes!("../../../corpus/jvm/dex/Hello.dex");
 const EDGE_DEX: &[u8] = include_bytes!("../../../corpus/jvm/dex/EdgeCases.dex");
@@ -44,7 +47,9 @@ fn tool_available(tool: &str) -> bool {
 
 fn raw_streams(bytes: &[u8]) -> BTreeMap<u64, Vec<DalvikInsn>> {
     let dex: DexFile = parse_dex(bytes).expect("parse dex");
-    let items: Vec<CodeItem> = parse_code_items(&dex, bytes);
+    let items: Vec<CodeItem> = parse_code_items(&dex, bytes)
+        .into_complete()
+        .expect("fixture code items");
     let mut out: BTreeMap<u64, Vec<DalvikInsn>> = BTreeMap::new();
     for (index, item) in items.iter().enumerate() {
         let method_index: u32 = u32::try_from(index).unwrap_or(u32::MAX);
@@ -52,6 +57,59 @@ fn raw_streams(bytes: &[u8]) -> BTreeMap<u64, Vec<DalvikInsn>> {
         out.insert(base, decode_method(&item.insns));
     }
     out
+}
+
+#[test]
+fn malformed_dex_body_refuses_the_lift() {
+    let mut bytes: Vec<u8> = HELLO_DEX.to_vec();
+    let dex: DexFile = parse_dex(&bytes).expect("parse dex");
+    let report: CodeItemsReport = parse_code_items(&dex, &bytes);
+    let method: &DexMethodCode = report
+        .methods()
+        .iter()
+        .find(|method: &&DexMethodCode| matches!(&method.state, DexCodeState::Decoded(_)))
+        .expect("decoded method");
+    let code_offset: usize = method.code_offset as usize;
+    bytes[code_offset + 12..code_offset + 16].copy_from_slice(&u32::MAX.to_le_bytes());
+
+    let lifted: disrobe_nir_lift::Result<NirModule> = lift_dex(&bytes);
+    assert!(
+        matches!(
+            lifted,
+            Err(LiftError::Source(message))
+                if message.contains("dex") && message.contains("decode")
+        ),
+        "malformed DEX body must not become a recovered module"
+    );
+}
+
+#[test]
+fn truncated_dalvik_instruction_refuses_the_lift() {
+    let mut bytes: Vec<u8> = HELLO_DEX.to_vec();
+    let dex: DexFile = parse_dex(&bytes).expect("parse dex");
+    let report: CodeItemsReport = parse_code_items(&dex, &bytes);
+    let method: &DexMethodCode = report
+        .methods()
+        .iter()
+        .find(|method: &&DexMethodCode| {
+            let code_offset: usize = method.code_offset as usize;
+            matches!(&method.state, DexCodeState::Decoded(_))
+                && bytes.get(code_offset + 6..code_offset + 8) == Some(&[0, 0])
+        })
+        .expect("decoded method without try items");
+    let code_offset: usize = method.code_offset as usize;
+    bytes[code_offset + 12..code_offset + 16].copy_from_slice(&1_u32.to_le_bytes());
+    bytes[code_offset + 16..code_offset + 18].copy_from_slice(&0x0014_u16.to_le_bytes());
+
+    let lifted: disrobe_nir_lift::Result<NirModule> = lift_dex(&bytes);
+    assert!(
+        matches!(
+            lifted,
+            Err(LiftError::Source(message))
+                if message.contains("dex") && message.contains("decode")
+        ),
+        "truncated Dalvik instruction must not become a recovered function"
+    );
 }
 
 fn nir_invariants(bytes: &[u8]) -> NirStats {

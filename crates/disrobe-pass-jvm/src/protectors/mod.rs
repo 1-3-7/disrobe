@@ -211,6 +211,9 @@ fn is_readable(s: &str) -> bool {
 pub struct PeeledClass {
     pub report: ProtectorPeelReport,
     pub source: String,
+    pub fully_lifted_methods: usize,
+    pub fallback_methods: usize,
+    pub decode_error_count: usize,
 }
 
 #[must_use]
@@ -313,5 +316,8 @@ pub fn peel_and_decompile(cf: &crate::classfile::ClassFile) -> Option<PeeledClas
     Some(PeeledClass {
         report,
         source: decompiled.source,
+        fully_lifted_methods: decompiled.fully_lifted_methods,
+        fallback_methods: decompiled.fallback_methods,
+        decode_error_count: decompiled.decode_error_count,
     })
 }

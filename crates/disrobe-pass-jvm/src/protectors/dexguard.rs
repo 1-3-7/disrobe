@@ -33,10 +33,9 @@ pub fn peel_with_native_libraries(
         return Err(Error::DexGuardNotDex);
     }
     let mut report: ProtectorPeelReport = ProtectorPeelReport::new(ProtectorFamily::DexGuard);
-
-    if let Ok(dex) = dex::parse(dex_bytes) {
-        apply_string_recovery(&dex, dex_bytes, native_libs, &mut report);
-    }
+    let dex: DexFile = dex::parse(dex_bytes)?;
+    let _: Vec<crate::dex::CodeItem> = dex::parse_code_items(&dex, dex_bytes).into_complete()?;
+    apply_string_recovery(&dex, dex_bytes, native_libs, &mut report)?;
 
     if report.strings_recovered.is_empty()
         && !report
@@ -61,13 +60,13 @@ fn apply_string_recovery(
     dex_bytes: &[u8],
     native_libs: &[(&str, &[u8])],
     report: &mut ProtectorPeelReport,
-) {
+) -> Result<()> {
     let native_keys: Vec<crate::dalvik_strdec::NativeIntKey> =
-        crate::jni::extract_static_int_keys(dex, dex_bytes, native_libs);
+        crate::jni::extract_static_int_keys(dex, dex_bytes, native_libs)?;
     let recoveries: Vec<DexStringRecovery> =
         dalvik_strdec::recover_with_native_keys(dex, dex_bytes, &native_keys);
     if recoveries.is_empty() {
-        return;
+        return Ok(());
     }
     let mut total_recovered: usize = 0;
     let mut total_sites: usize = 0;
@@ -116,6 +115,7 @@ fn apply_string_recovery(
             members.join(", ")
         ));
     }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,7 +141,8 @@ pub fn undo_cff(
         return Err(Error::DexGuardNotDex);
     }
     let dex: crate::dex::DexFile = crate::dex::parse(dex_bytes)?;
-    let items: Vec<crate::dex::CodeItem> = crate::dex::parse_code_items(&dex, dex_bytes);
+    let items: Vec<crate::dex::CodeItem> =
+        crate::dex::parse_code_items(&dex, dex_bytes).into_complete()?;
     let (report, _methods): (
         crate::dalvik_dexguard::DalvikCffReport,
         Vec<crate::dalvik_dexguard::DalvikMethodCff>,
@@ -271,6 +272,7 @@ pub fn scan_residual_encrypted_dex_strings(dex_bytes: &[u8]) -> usize {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::dex_builder::{ClassDef, DexBuilder, EncodedMethod, MethodRef, ProtoRef};
     use object::write::{Object, StandardSection, Symbol, SymbolSection};
     use object::{Architecture, BinaryFormat, Endianness, SymbolFlags, SymbolKind, SymbolScope};
 
@@ -296,6 +298,36 @@ mod tests {
         obj.write().expect("write elf .so")
     }
 
+    fn malformed_body_dex() -> Vec<u8> {
+        let mut builder: DexBuilder = DexBuilder::new();
+        builder.add_class(ClassDef {
+            class: "Lcom/disrobe/Invalid;".to_owned(),
+            super_class: "Ljava/lang/Object;".to_owned(),
+            access_flags: 0x0001,
+            static_fields: Vec::new(),
+            static_values: Vec::new(),
+            direct_methods: Vec::new(),
+            virtual_methods: vec![EncodedMethod {
+                method: MethodRef {
+                    class: "Lcom/disrobe/Invalid;".to_owned(),
+                    proto: ProtoRef {
+                        return_type: "V".to_owned(),
+                        params: Vec::new(),
+                    },
+                    name: "body".to_owned(),
+                },
+                access_flags: 0x0001,
+                is_direct: false,
+                registers_size: 1,
+                ins_size: 0,
+                outs_size: 0,
+                insns: vec![0x0014],
+                relocations: Vec::new(),
+            }],
+        });
+        builder.build()
+    }
+
     #[test]
     fn no_auth_yields_error() {
         let bytes: &[u8] = b"dex\n035\x00";
@@ -312,20 +344,21 @@ mod tests {
     }
 
     #[test]
-    fn minimal_dex_header_without_decryptor_notes_sourcing_gap() {
+    fn malformed_method_body_refuses_negative_conclusions() {
+        let bytes: Vec<u8> = malformed_body_dex();
+        let authorization: Option<DexGuardAuthorization> =
+            Some(DexGuardAuthorization::user_attested());
+        assert!(peel(&bytes, authorization).is_err());
+        assert!(undo_cff(&bytes, authorization).is_err());
+    }
+
+    #[test]
+    fn malformed_dex_header_is_refused_before_negative_conclusion() {
         let mut bytes: Vec<u8> = b"dex\n035\x00".to_vec();
         bytes.extend(std::iter::repeat_n(0u8, 0x80));
-        let report: ProtectorPeelReport =
-            peel(&bytes, Some(DexGuardAuthorization::user_attested())).expect("ok");
-        assert_eq!(report.family, ProtectorFamily::DexGuard);
-        assert_eq!(report.status, PeelStatus::DetectOnly);
-        assert!(report.strings_recovered.is_empty());
-        assert!(
-            report
-                .notes
-                .iter()
-                .any(|n: &String| n.contains("bundled library bytes"))
-        );
+        let error: Error = peel(&bytes, Some(DexGuardAuthorization::user_attested()))
+            .expect_err("malformed header");
+        assert!(matches!(error, Error::BadDexEndian(0)));
     }
 
     #[test]
@@ -405,6 +438,7 @@ mod tests {
         let dex: Vec<u8> = crate::dex_builder::dexguard_native_key_sample(&plaintexts, 0x4D);
         let parsed: DexFile = dex::parse(&dex).expect("parse native-key dex");
         let native: crate::dex::NativeMethod = crate::dex::extract_native_methods(&parsed, &dex)
+            .expect("native method scan")
             .into_iter()
             .find(|method: &crate::dex::NativeMethod| method.method == "nativeKey")
             .expect("native key method");

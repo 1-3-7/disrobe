@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 use disrobe_nir::{
     BinaryOp, NirFunction, NirInstr, NirModule, NirOp, NirSymbol, SourceLang, SourceRef, SymbolKind,
 };
-use disrobe_pass_jvm::{CodeItem, DalvikInsn, DexFile, decode_method, parse_code_items, parse_dex};
+use disrobe_pass_jvm::{
+    CodeItem, CodeItemsReport, DalvikInsn, DexFile, decode_method, parse_code_items, parse_dex,
+};
 
 use crate::error::{LiftError, Result};
 use crate::usize_to_u32_saturating;
@@ -14,7 +16,13 @@ const IMPORT_BASE: u64 = 1 << 40;
 pub fn lift_dex(bytes: &[u8]) -> Result<NirModule> {
     let dex: DexFile = parse_dex(bytes)
         .map_err(|e: disrobe_pass_jvm::Error| LiftError::Source(format!("dex parse: {e}")))?;
-    let items: Vec<CodeItem> = parse_code_items(&dex, bytes);
+    let code_report: CodeItemsReport = parse_code_items(&dex, bytes);
+    let items: Vec<CodeItem> =
+        code_report
+            .into_complete()
+            .map_err(|error: disrobe_pass_jvm::Error| {
+                LiftError::Source(format!("dex method body decode: {error}"))
+            })?;
     if items.is_empty() {
         return Err(LiftError::Empty);
     }

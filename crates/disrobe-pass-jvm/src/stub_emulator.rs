@@ -489,6 +489,7 @@ mod tests {
         info.extend_from_slice(&(stub.code.len() as u32).to_be_bytes());
         info.extend_from_slice(&stub.code);
         info.extend_from_slice(&0u16.to_be_bytes());
+        info.extend_from_slice(&0u16.to_be_bytes());
         let cf: ClassFile = ClassFile {
             minor_version: 0,
             major_version: 52,

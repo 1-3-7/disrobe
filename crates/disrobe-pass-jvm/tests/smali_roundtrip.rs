@@ -16,6 +16,8 @@ const EDGECASES_DEX: &[u8] = include_bytes!("../../../corpus/jvm/dex/EdgeCases.d
 fn hello_items() -> Vec<CodeItem> {
     let dex = parse_dex(HELLO_DEX).expect("parse hello.dex");
     parse_code_items(&dex, HELLO_DEX)
+        .into_complete()
+        .expect("fixture code items")
 }
 
 fn mnemonic_to_opcode(m: &str) -> Option<u8> {
@@ -170,7 +172,9 @@ fn independent_reg_insn_counts(b: &[u8]) -> Vec<(u16, u32)> {
 fn per_method_register_and_insn_counts_match_independent_dex_walk() {
     for (dex, label) in [(HELLO_DEX, "Hello"), (EDGECASES_DEX, "EdgeCases")] {
         let parsed = parse_dex(dex).expect("parse dex");
-        let items: Vec<CodeItem> = parse_code_items(&parsed, dex);
+        let items: Vec<CodeItem> = parse_code_items(&parsed, dex)
+            .into_complete()
+            .expect("fixture code items");
         let from_parser: Vec<(u16, u32)> = items
             .iter()
             .map(|i| (i.registers_size, i.insns.len() as u32))
