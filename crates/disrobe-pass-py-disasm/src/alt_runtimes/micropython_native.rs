@@ -2,8 +2,8 @@
 use disrobe_pass_native::{Arch as NativeArch_, DisasmInsn, disassemble};
 use serde::{Deserialize, Serialize};
 
-use crate::alt_runtimes::micropython::{MAX_TABLE_PREALLOC, bounded_table_count};
-use crate::alt_runtimes::{AltRuntimeError, Result};
+use crate::alt_runtimes::micropython::{MAX_TABLE_PREALLOC, bounded_table_count, usize_from_u64};
+use crate::alt_runtimes::{AltRuntimeError, Result, validate_input_size};
 
 #[cfg(target_arch = "wasm32")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,10 +173,30 @@ impl<'a> Reader<'a> {
     }
 
     fn uint(&mut self) -> Result<u64> {
+        let start: usize = self.pos;
         let mut value: u64 = 0;
+        let mut digits: usize = 0;
         loop {
+            if digits == 10usize {
+                return Err(AltRuntimeError::BadEncoding {
+                    field: "varuint",
+                    offset: start,
+                });
+            }
             let b: u8 = self.byte()?;
-            value = (value << 7) | u64::from(b & 0x7f);
+            value = value
+                .checked_mul(128u64)
+                .and_then(|current: u64| current.checked_add(u64::from(b & 0x7f)))
+                .ok_or(AltRuntimeError::BadEncoding {
+                    field: "varuint",
+                    offset: start,
+                })?;
+            digits = digits
+                .checked_add(1usize)
+                .ok_or(AltRuntimeError::BadEncoding {
+                    field: "varuint",
+                    offset: start,
+                })?;
             if b & 0x80 == 0 {
                 return Ok(value);
             }
@@ -204,6 +224,7 @@ impl<'a> Reader<'a> {
 }
 
 pub fn parse(bytes: &[u8]) -> Result<MicroPythonNativeModule> {
+    validate_input_size(bytes, "micropython-native")?;
     if bytes.len() < 6 {
         return Err(AltRuntimeError::Truncated {
             offset: 0,
@@ -274,18 +295,26 @@ fn read_raw_code(reader: &mut Reader<'_>, arch: NativeArch, depth: u8) -> Result
         });
     }
     let kind_len: u64 = reader.uint()?;
-    let kind: CodeKind = CodeKind::from_low_bits(u8::try_from(kind_len & 3).unwrap_or(0));
+    let low_bits: u8 = u8::try_from(kind_len & 3).map_err(|_| AltRuntimeError::BadEncoding {
+        field: "raw_code_kind",
+        offset: reader.pos,
+    })?;
+    let kind: CodeKind = CodeKind::from_low_bits(low_bits);
     let has_children: bool = (kind_len >> 2) & 1 == 1;
-    let fun_data_len: usize = usize::try_from(kind_len >> 3).unwrap_or(0);
+    let fun_data_len: usize = usize_from_u64(kind_len >> 3, "raw_code_length", reader.pos)?;
     let fun_data: Vec<u8> = reader.take(fun_data_len)?.to_vec();
     let mut prelude_offset: usize = 0;
     let mut scope_flags: u32 = 0;
     match kind {
         CodeKind::NativePy => {
-            prelude_offset = usize::try_from(reader.uint()?).unwrap_or(fun_data_len);
+            prelude_offset = usize_from_u64(reader.uint()?, "native_prelude_offset", reader.pos)?;
         }
         CodeKind::NativeViper | CodeKind::NativeAsm => {
-            scope_flags = u32::try_from(reader.uint()?).unwrap_or(0);
+            scope_flags =
+                u32::try_from(reader.uint()?).map_err(|_| AltRuntimeError::BadEncoding {
+                    field: "native_scope_flags",
+                    offset: reader.pos,
+                })?;
             if matches!(kind, CodeKind::NativeAsm) {
                 let _n_pos_args: u64 = reader.uint()?;
                 let _type_sig: u64 = reader.uint()?;
@@ -386,6 +415,14 @@ fn disasm_arm(code: &[u8], thumb: bool) -> (Vec<DisasmInsn>, Option<String>) {
                         u8,
                     >>::total_offset(&mut reader))
                     .unwrap_or(before);
+                if after <= before || after > code.len() {
+                    note = Some(format!(
+                        "{} decoder made no valid progress at offset {before}/{}",
+                        if thumb { "thumb" } else { "arm" },
+                        code.len()
+                    ));
+                    break;
+                }
                 let raw: Vec<u8> = code
                     .get(before..after)
                     .map(<[u8]>::to_vec)
@@ -425,7 +462,7 @@ fn read_qstr(reader: &mut Reader<'_>) -> Result<String> {
     if header & 1 == 1 {
         return Ok(format!("<static-qstr#{}>", header >> 1));
     }
-    let len: usize = usize::try_from(header >> 1).unwrap_or(0);
+    let len: usize = usize_from_u64(header >> 1, "qstr_length", reader.pos)?;
     let raw: &[u8] = reader.take(len)?;
     let text: String = String::from_utf8_lossy(raw).into_owned();
     reader.byte()?;
@@ -457,7 +494,7 @@ fn skip_obj(reader: &mut Reader<'_>, depth: u8) -> Result<()> {
     match obj_type {
         OBJ_FUN_TABLE | OBJ_NONE | OBJ_FALSE | OBJ_TRUE | OBJ_ELLIPSIS => Ok(()),
         OBJ_STR | OBJ_BYTES | OBJ_INT | OBJ_FLOAT | OBJ_COMPLEX => {
-            let len: usize = usize::try_from(reader.uint()?).unwrap_or(0);
+            let len: usize = usize_from_u64(reader.uint()?, "obj_length", reader.pos)?;
             reader.take(len)?;
             if matches!(obj_type, OBJ_STR | OBJ_BYTES) {
                 reader.byte()?;
@@ -465,8 +502,10 @@ fn skip_obj(reader: &mut Reader<'_>, depth: u8) -> Result<()> {
             Ok(())
         }
         OBJ_TUPLE => {
-            let len: u64 = reader.uint()?;
-            for _ in 0..len {
+            let declared: u64 = reader.uint()?;
+            let count: usize =
+                bounded_table_count(declared, reader.remaining(), "obj_tuple_items", reader.pos)?;
+            for _ in 0..count {
                 skip_obj(reader, depth.saturating_add(1))?;
             }
             Ok(())
@@ -743,5 +782,17 @@ mod tests {
                 }));
             assert!(result.is_ok(), "native parse unwound on probe {probe:?}");
         }
+    }
+
+    #[test]
+    fn overwide_varuint_returns_error_without_unwinding() {
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend(std::iter::repeat_n(0xffu8, 11));
+        bytes.push(0u8);
+        let mut reader: Reader<'_> = Reader::new(&bytes);
+        assert!(matches!(
+            reader.uint(),
+            Err(AltRuntimeError::BadEncoding { .. })
+        ));
     }
 }

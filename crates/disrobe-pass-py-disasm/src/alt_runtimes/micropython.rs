@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use crate::alt_runtimes::{AltRuntimeError, Result};
+use crate::alt_runtimes::{AltRuntimeError, Result, validate_input_size};
 
 const MPY_MAGIC: u8 = b'M';
 const MPY_MIN_VERSION: u8 = 0;
@@ -40,6 +40,7 @@ pub struct MpyInsn {
 }
 
 pub fn parse(bytes: &[u8]) -> Result<MicroPythonModule> {
+    validate_input_size(bytes, "micropython")?;
     if bytes.len() < 4 {
         return Err(AltRuntimeError::Truncated {
             offset: 0,
@@ -231,6 +232,7 @@ pub enum MpyArg {
 }
 
 pub fn parse_bytecode(bytes: &[u8]) -> Result<MpyBytecodeModule> {
+    validate_input_size(bytes, "micropython-bytecode")?;
     if bytes.len() < 4 {
         return Err(AltRuntimeError::Truncated {
             offset: 0,
@@ -290,6 +292,8 @@ pub fn parse_bytecode(bytes: &[u8]) -> Result<MpyBytecodeModule> {
 }
 
 pub(crate) const MAX_TABLE_PREALLOC: usize = 4096;
+const MAX_TABLE_ITEMS: usize = 65_536;
+const MAX_VARINT_BYTES: usize = 10;
 
 pub(crate) fn bounded_table_count(
     declared: u64,
@@ -298,13 +302,13 @@ pub(crate) fn bounded_table_count(
     offset: usize,
 ) -> Result<usize> {
     let count: usize = usize_from_u64(declared, field, offset)?;
-    if count > remaining {
+    if count > remaining || count > MAX_TABLE_ITEMS {
         return Err(AltRuntimeError::BadEncoding { field, offset });
     }
     Ok(count)
 }
 
-fn usize_from_u64(value: u64, field: &'static str, offset: usize) -> Result<usize> {
+pub(crate) fn usize_from_u64(value: u64, field: &'static str, offset: usize) -> Result<usize> {
     usize::try_from(value).map_err(|_| AltRuntimeError::BadEncoding { field, offset })
 }
 
@@ -336,7 +340,13 @@ fn read_function(cursor: &mut Cursor<'_>, qstrs: &[String], depth: u8) -> Result
     let mut children: Vec<MpyFunction> = Vec::new();
     if has_children {
         let n_children: u64 = cursor.uint()?;
-        for _ in 0..n_children {
+        let child_count: usize = bounded_table_count(
+            n_children,
+            cursor.remaining(),
+            "raw_code_children",
+            cursor.pos,
+        )?;
+        for _ in 0..child_count {
             children.push(read_function(cursor, qstrs, depth + 1)?);
         }
     }
@@ -471,7 +481,12 @@ fn next_byte(data: &[u8], ip: &mut usize) -> Result<u8> {
         needed: 1,
         had: 0,
     })?;
-    *ip += 1;
+    *ip = (*ip)
+        .checked_add(1usize)
+        .ok_or(AltRuntimeError::BadEncoding {
+            field: "decoder offset",
+            offset: *ip,
+        })?;
     Ok(b)
 }
 
@@ -485,10 +500,30 @@ fn shl_usize(value: usize, shift: u32, offset: usize) -> Result<usize> {
 }
 
 fn decode_uint(data: &[u8], ip: &mut usize) -> Result<u64> {
+    let start: usize = *ip;
     let mut value: u64 = 0;
+    let mut digits: usize = 0;
     loop {
+        if digits == MAX_VARINT_BYTES {
+            return Err(AltRuntimeError::BadEncoding {
+                field: "varuint",
+                offset: start,
+            });
+        }
         let b: u8 = next_byte(data, ip)?;
-        value = (value << 7) | u64::from(b & 0x7f);
+        value = value
+            .checked_mul(128u64)
+            .and_then(|current: u64| current.checked_add(u64::from(b & 0x7f)))
+            .ok_or(AltRuntimeError::BadEncoding {
+                field: "varuint",
+                offset: start,
+            })?;
+        digits = digits
+            .checked_add(1usize)
+            .ok_or(AltRuntimeError::BadEncoding {
+                field: "varuint",
+                offset: start,
+            })?;
         if b & 0x80 == 0 {
             return Ok(value);
         }
@@ -517,6 +552,7 @@ fn decode_slabel(data: &[u8], ip: &mut usize) -> Result<i32> {
 }
 
 fn decode_signed_int(data: &[u8], ip: &mut usize) -> Result<i64> {
+    let start: usize = *ip;
     let mut num: i64 = 0;
     let first: u8 = *data.get(*ip).ok_or(AltRuntimeError::Truncated {
         offset: *ip,
@@ -526,9 +562,28 @@ fn decode_signed_int(data: &[u8], ip: &mut usize) -> Result<i64> {
     if first & 0x40 != 0 {
         num = -1;
     }
+    let mut digits: usize = 0;
     loop {
+        if digits == MAX_VARINT_BYTES {
+            return Err(AltRuntimeError::BadEncoding {
+                field: "signed_varint",
+                offset: start,
+            });
+        }
         let b: u8 = next_byte(data, ip)?;
-        num = (num << 7) | i64::from(b & 0x7f);
+        num = num
+            .checked_mul(128i64)
+            .and_then(|current: i64| current.checked_add(i64::from(b & 0x7f)))
+            .ok_or(AltRuntimeError::BadEncoding {
+                field: "signed_varint",
+                offset: start,
+            })?;
+        digits = digits
+            .checked_add(1usize)
+            .ok_or(AltRuntimeError::BadEncoding {
+                field: "signed_varint",
+                offset: start,
+            })?;
         if b & 0x80 == 0 {
             return Ok(num);
         }
@@ -988,9 +1043,11 @@ fn read_obj(cursor: &mut Cursor<'_>, depth: u8) -> Result<MpyObject> {
             })
         }
         OBJ_TUPLE => {
-            let len: u64 = cursor.uint()?;
-            let mut parts: Vec<MpyObject> = Vec::new();
-            for _ in 0..len {
+            let declared: u64 = cursor.uint()?;
+            let count: usize =
+                bounded_table_count(declared, cursor.remaining(), "obj_tuple_items", cursor.pos)?;
+            let mut parts: Vec<MpyObject> = Vec::with_capacity(count.min(MAX_TABLE_PREALLOC));
+            for _ in 0..count {
                 parts.push(read_obj(cursor, depth.saturating_add(1))?);
             }
             Ok(MpyObject::Tuple(parts))
@@ -1085,6 +1142,13 @@ mod tests {
         let module: MicroPythonModule = parse(&bytes).expect("parse mpy v0");
         assert_eq!(module.version.raw(), 0);
         assert_eq!(module.raw_code, vec![1u8, 2u8, 3u8]);
+    }
+
+    #[test]
+    fn rejects_input_above_parse_cap() {
+        let mut bytes: Vec<u8> = build_header(6);
+        bytes.resize(16 * 1024 * 1024 + 1, 0u8);
+        assert!(parse(&bytes).is_err());
     }
 
     #[test]
@@ -1292,6 +1356,12 @@ mod tests {
     }
 
     #[test]
+    fn table_count_cap_rejects_before_element_allocation() {
+        let result: Result<usize> = bounded_table_count(65_537u64, 65_537usize, "table", 0);
+        assert!(matches!(result, Err(AltRuntimeError::BadEncoding { .. })));
+    }
+
+    #[test]
     fn valid_bytecode_still_parses_after_count_bound() {
         let module: MpyBytecodeModule =
             parse_bytecode(HELLO_BYTECODE).expect("valid bytecode still parses");
@@ -1361,5 +1431,34 @@ mod tests {
         let mut cursor: Cursor<'_> = Cursor::new(&payload);
         let err: AltRuntimeError = read_obj(&mut cursor, 0).expect_err("must bound recursion");
         assert!(matches!(err, AltRuntimeError::BadEncoding { .. }));
+    }
+
+    #[test]
+    fn overwide_varuint_returns_error_without_unwinding() {
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend(std::iter::repeat_n(0xffu8, 11));
+        bytes.push(0u8);
+        let mut cursor: Cursor<'_> = Cursor::new(&bytes);
+        assert!(matches!(
+            cursor.uint(),
+            Err(AltRuntimeError::BadEncoding { .. })
+        ));
+    }
+
+    #[test]
+    fn overwide_operand_varints_return_errors_without_unwinding() {
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend(std::iter::repeat_n(0xffu8, 11));
+        bytes.push(0u8);
+        let mut unsigned_offset: usize = 0;
+        let mut signed_offset: usize = 0;
+        assert!(matches!(
+            decode_uint(&bytes, &mut unsigned_offset),
+            Err(AltRuntimeError::BadEncoding { .. })
+        ));
+        assert!(matches!(
+            decode_signed_int(&bytes, &mut signed_offset),
+            Err(AltRuntimeError::BadEncoding { .. })
+        ));
     }
 }
