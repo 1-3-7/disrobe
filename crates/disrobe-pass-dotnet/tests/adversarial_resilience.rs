@@ -1,4 +1,5 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+use disrobe_pass_dotnet::Error;
 use disrobe_pass_dotnet::cil::{disassemble, parse_method_body};
 use disrobe_pass_dotnet::cil_emulator::{StubInput, emulate_stub};
 use disrobe_pass_dotnet::decompile::decompile_assembly;
@@ -56,6 +57,17 @@ fn parse_tables_rejects_giant_row_counts() {
 #[test]
 fn disassemble_rejects_truncated_two_byte_opcode() {
     assert!(disassemble(&[0xFE]).is_err());
+}
+
+#[test]
+fn disassemble_rejects_instruction_stream_past_budget() {
+    let code: Vec<u8> = vec![0x00; 65_537];
+    let err: Error =
+        disassemble(&code).expect_err("instruction budget must reject oversized stream");
+    assert!(matches!(
+        err,
+        Error::CilInstructionCountExceeded { cap } if cap == 65_536
+    ));
 }
 
 #[test]

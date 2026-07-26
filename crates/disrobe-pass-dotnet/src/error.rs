@@ -106,6 +106,17 @@ pub enum Error {
 
     #[error("DR-DOTNET-0029: metadata table rows {count} exceed parser limit {cap}")]
     TableRowCountTooLarge { count: u64, cap: u64 },
+
+    #[error("DR-DOTNET-0030: CIL instruction stream exceeded instruction limit {cap}")]
+    CilInstructionCountExceeded { cap: usize },
+
+    #[error("DR-DOTNET-0031: CIL decoder made no progress at offset {offset}")]
+    CilNoProgress { offset: usize },
+
+    #[error(
+        "DR-DOTNET-0032: CIL exception section at offset {offset} is smaller than its 4-byte header ({size} bytes)"
+    )]
+    CilSectionTooSmall { offset: usize, size: usize },
 }
 
 impl From<ByteReadError> for Error {

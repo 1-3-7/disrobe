@@ -9,6 +9,7 @@ const HEADER_MAGIC_MASK: u32 = 0x00FF_FFFF;
 const HEADER_MAGIC: u32 = 0x007D_7A7B;
 const STATIC_DEFLATE_MODE: u8 = 1;
 const MAX_PARTS: usize = 65_536;
+const DEFLATE_OUTPUT_CHUNK: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RecoveryBudget {
@@ -130,15 +131,7 @@ fn decode_static_resource(
     let mut cursor: usize = 4;
     let total: usize = read_positive_i32(data, &mut cursor, "total inflated length")?;
     budget.charge_output(total)?;
-    let reserve: usize = total
-        .checked_add(1)
-        .ok_or_else(|| "declared output length overflow".to_string())?;
     let mut output: Vec<u8> = Vec::new();
-    output
-        .try_reserve_exact(reserve)
-        .map_err(|_error: std::collections::TryReserveError| {
-            "declared output allocation failed".to_string()
-        })?;
     let mut part_count: usize = 0;
     while output.len() < total {
         budget.charge_part()?;
@@ -182,52 +175,80 @@ fn inflate_exact_part(
     output: &mut Vec<u8>,
 ) -> std::result::Result<(), String> {
     let output_start: usize = output.len();
-    let output_window_len: usize = expected_len
-        .checked_add(1)
-        .ok_or_else(|| format!("part {part_count} output window overflow"))?;
     let expected_end: usize = output_start
         .checked_add(expected_len)
         .ok_or_else(|| format!("part {part_count} output range overflow"))?;
-    let output_end: usize = output_start
-        .checked_add(output_window_len)
-        .ok_or_else(|| format!("part {part_count} output window range overflow"))?;
-    output.resize(output_end, 0);
     let mut decoder: Decompress = Decompress::new(false);
-    let status: Status = decoder
-        .decompress(
-            compressed,
-            &mut output[output_start..output_end],
-            FlushDecompress::Finish,
-        )
-        .map_err(|_error: flate2::DecompressError| {
-            format!("part {part_count} raw DEFLATE stream is invalid")
-        })?;
-    let consumed: usize =
-        usize::try_from(decoder.total_in()).map_err(|_error: std::num::TryFromIntError| {
-            format!("part {part_count} consumed-byte count overflow")
-        })?;
-    let produced: usize =
-        usize::try_from(decoder.total_out()).map_err(|_error: std::num::TryFromIntError| {
-            format!("part {part_count} output-byte count overflow")
-        })?;
-    if status != Status::StreamEnd {
-        return Err(format!(
-            "part {part_count} raw DEFLATE stream did not reach its end"
-        ));
+    let mut input_offset: usize = 0;
+    let mut buffer: Vec<u8> = vec![0; DEFLATE_OUTPUT_CHUNK];
+    loop {
+        let produced_total: usize = output
+            .len()
+            .checked_sub(output_start)
+            .ok_or_else(|| format!("part {part_count} output length underflow"))?;
+        let remaining: usize = expected_len.saturating_sub(produced_total);
+        let buffer_len: usize = if remaining == 0 {
+            1
+        } else {
+            remaining.min(DEFLATE_OUTPUT_CHUNK)
+        };
+        let input_before: u64 = decoder.total_in();
+        let output_before: u64 = decoder.total_out();
+        let status: Status = decoder
+            .decompress(
+                &compressed[input_offset..],
+                &mut buffer[..buffer_len],
+                FlushDecompress::Finish,
+            )
+            .map_err(|_error: flate2::DecompressError| {
+                format!("part {part_count} raw DEFLATE stream is invalid")
+            })?;
+        let consumed: usize = usize::try_from(decoder.total_in().saturating_sub(input_before))
+            .map_err(|_error: std::num::TryFromIntError| {
+                format!("part {part_count} consumed-byte count overflow")
+            })?;
+        let produced: usize = usize::try_from(decoder.total_out().saturating_sub(output_before))
+            .map_err(|_error: std::num::TryFromIntError| {
+                format!("part {part_count} output-byte count overflow")
+            })?;
+        if consumed == 0 && produced == 0 {
+            return Err(format!("part {part_count} decompressor made no progress"));
+        }
+        input_offset = input_offset
+            .checked_add(consumed)
+            .ok_or_else(|| format!("part {part_count} consumed-byte range overflow"))?;
+        if input_offset > compressed.len() {
+            return Err(format!(
+                "part {part_count} consumed-byte range exceeds input"
+            ));
+        }
+        if produced > remaining {
+            return Err(format!(
+                "part {part_count} produced more than its declared {expected_len} bytes"
+            ));
+        }
+        output.try_reserve_exact(produced).map_err(
+            |_error: std::collections::TryReserveError| {
+                format!("part {part_count} output allocation failed")
+            },
+        )?;
+        output.extend_from_slice(&buffer[..produced]);
+        if status == Status::StreamEnd {
+            if input_offset != compressed.len() {
+                return Err(format!(
+                    "part {part_count} consumed {input_offset} of {} compressed bytes",
+                    compressed.len()
+                ));
+            }
+            if output.len() != expected_end {
+                return Err(format!(
+                    "part {part_count} produced {} bytes instead of {expected_len}",
+                    output.len() - output_start
+                ));
+            }
+            return Ok(());
+        }
     }
-    if consumed != compressed.len() {
-        return Err(format!(
-            "part {part_count} consumed {consumed} of {} compressed bytes",
-            compressed.len()
-        ));
-    }
-    if produced != expected_len {
-        return Err(format!(
-            "part {part_count} produced {produced} bytes instead of {expected_len}"
-        ));
-    }
-    output.truncate(expected_end);
-    Ok(())
 }
 
 fn read_positive_i32(
@@ -363,6 +384,20 @@ mod tests {
         let mut limits: RecoveryBudget = RecoveryBudget::standard();
         let error: String = rejected(decode_static_resource(&data, &mut limits))?;
         assert!(error.contains("produced 7 bytes instead of 8"));
+        Ok(())
+    }
+
+    #[test]
+    fn streaming_decoder_preserves_payload_larger_than_one_chunk() -> TestResult {
+        let payload: Vec<u8> = (0..(DEFLATE_OUTPUT_CHUNK + 17))
+            .map(|index: usize| index.to_le_bytes()[0])
+            .collect();
+        let data: Vec<u8> = container(&payload)?;
+        let mut limits: RecoveryBudget = budget(data.len(), payload.len(), 1);
+        assert_eq!(
+            decoded(decode_static_resource(&data, &mut limits))?,
+            payload
+        );
         Ok(())
     }
 

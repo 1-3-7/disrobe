@@ -201,16 +201,15 @@ pub fn extract_entry(archive: &PharArchive, bytes: &[u8], name: &str) -> Result<
     });
     match entry.compression {
         PharCompression::None => Ok(stored.to_vec()),
-        PharCompression::Deflate => decompress_deflate(stored, name, entry.uncompressed_size),
-        PharCompression::Bzip2 => decompress_bzip2(stored, name, entry.uncompressed_size),
+        PharCompression::Deflate => decompress_deflate(stored, name),
+        PharCompression::Bzip2 => decompress_bzip2(stored, name),
     }
 }
 
-fn decompress_bzip2(stored: &[u8], name: &str, expected: u32) -> Result<Vec<u8>> {
-    let initial: usize =
-        (expected as usize).clamp(PHAR_DECOMPRESS_INITIAL_CAP, PHAR_DECOMPRESS_CAP);
+fn decompress_bzip2(stored: &[u8], name: &str) -> Result<Vec<u8>> {
+    let initial: usize = stored.len().min(PHAR_DECOMPRESS_INITIAL_CAP);
     let decoder: bzip2_rs::DecoderReader<&[u8]> = bzip2_rs::DecoderReader::new(stored);
-    try_bounded(decoder, initial, name)?.map_or_else(
+    try_bounded(decoder, initial, name, PHAR_DECOMPRESS_CAP)?.map_or_else(
         || {
             Err(Error::PharDecompressFailed {
                 name: name.to_string(),
@@ -221,15 +220,20 @@ fn decompress_bzip2(stored: &[u8], name: &str, expected: u32) -> Result<Vec<u8>>
     )
 }
 
-fn decompress_deflate(stored: &[u8], name: &str, expected: u32) -> Result<Vec<u8>> {
-    let initial: usize =
-        (expected as usize).clamp(PHAR_DECOMPRESS_INITIAL_CAP, PHAR_DECOMPRESS_CAP);
-    if let Some(out) = try_bounded(GzDecoder::new(stored), initial, name)?
+fn decompress_deflate(stored: &[u8], name: &str) -> Result<Vec<u8>> {
+    let initial: usize = stored.len().min(PHAR_DECOMPRESS_INITIAL_CAP);
+    if let Some(out) = try_bounded(GzDecoder::new(stored), initial, name, PHAR_DECOMPRESS_CAP)?
         && !out.is_empty()
     {
         return Ok(out);
     }
-    try_bounded(DeflateDecoder::new(stored), initial, name)?.map_or_else(
+    try_bounded(
+        DeflateDecoder::new(stored),
+        initial,
+        name,
+        PHAR_DECOMPRESS_CAP,
+    )?
+    .map_or_else(
         || {
             Err(Error::PharDecompressFailed {
                 name: name.to_string(),
@@ -240,16 +244,36 @@ fn decompress_deflate(stored: &[u8], name: &str, expected: u32) -> Result<Vec<u8
     )
 }
 
-fn try_bounded<R: Read>(mut dec: R, initial_cap: usize, name: &str) -> Result<Option<Vec<u8>>> {
-    let cap_plus_one: u64 = PHAR_DECOMPRESS_CAP as u64 + 1;
-    let mut out: Vec<u8> = Vec::with_capacity(initial_cap);
-    match Read::take(&mut dec, cap_plus_one).read_to_end(&mut out) {
-        Ok(read) if read as u64 > PHAR_DECOMPRESS_CAP as u64 => Err(Error::PharDecompressBomb {
-            name: name.to_string(),
-            cap: PHAR_DECOMPRESS_CAP,
-        }),
-        Ok(_) => Ok(Some(out)),
-        Err(_) => Ok(None),
+fn try_bounded<R: Read>(
+    mut dec: R,
+    initial_cap: usize,
+    name: &str,
+    cap: usize,
+) -> Result<Option<Vec<u8>>> {
+    let mut out: Vec<u8> = Vec::with_capacity(initial_cap.min(cap));
+    let mut buffer: [u8; 8192] = [0; 8192];
+    loop {
+        let remaining: usize = cap.saturating_sub(out.len());
+        let read_len: usize = if remaining == 0 {
+            1
+        } else {
+            remaining.min(buffer.len())
+        };
+        let read: usize = match dec.read(&mut buffer[..read_len]) {
+            Ok(0) => return Ok(Some(out)),
+            Ok(read) => read,
+            Err(_) => return Ok(None),
+        };
+        if read > remaining {
+            return Err(Error::PharDecompressBomb {
+                name: name.to_string(),
+                cap,
+            });
+        }
+        if out.try_reserve_exact(read).is_err() {
+            return Ok(None);
+        }
+        out.extend_from_slice(&buffer[..read]);
     }
 }
 
@@ -420,5 +444,22 @@ fn skip_until_after_halt(bytes: &[u8], cursor: &mut usize) {
     }
     if bytes.get(*cursor).copied() == Some(b'\n') {
         *cursor += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::{Error, try_bounded};
+
+    #[test]
+    fn bounded_reader_rejects_output_past_supplied_cap() {
+        let source: Cursor<&[u8]> = Cursor::new(b"abcd");
+        let result: Result<Option<Vec<u8>>, Error> = try_bounded(source, 2, "payload", 3);
+        assert!(matches!(
+            result,
+            Err(Error::PharDecompressBomb { name, cap }) if name == "payload" && cap == 3
+        ));
     }
 }

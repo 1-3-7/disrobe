@@ -39,6 +39,42 @@ fn extracts_uncompressed_payload_byte_perfect() {
 }
 
 #[test]
+fn forged_uncompressed_size_does_not_preallocate_from_metadata() {
+    let payload: &[u8] = b"<?php return 42;";
+    let compressed: Vec<u8> = common::deflate(payload);
+    let mut phar: Vec<u8> = common::build_tiny_phar(
+        &common::default_phar_stub(),
+        &[("bounded.php", compressed.as_slice())],
+    );
+    let manifest_offset: usize = common::default_phar_stub().len() + 1;
+    let manifest_body_start: usize = manifest_offset + 4;
+    let alias_len_offset: usize = manifest_body_start + 10;
+    let alias_len: usize = usize::try_from(u32::from_le_bytes(
+        phar[alias_len_offset..alias_len_offset + 4]
+            .try_into()
+            .expect("alias length"),
+    ))
+    .expect("alias length fits usize");
+    let metadata_len_offset: usize = alias_len_offset + 4 + alias_len;
+    let entry_start: usize = metadata_len_offset + 4;
+    let name_len: usize = usize::try_from(u32::from_le_bytes(
+        phar[entry_start..entry_start + 4]
+            .try_into()
+            .expect("entry name length"),
+    ))
+    .expect("entry name length fits usize");
+    let uncompressed_size_offset: usize = entry_start + 4 + name_len;
+    let flags_offset: usize = uncompressed_size_offset + 16;
+    phar[uncompressed_size_offset..uncompressed_size_offset + 4]
+        .copy_from_slice(&u32::MAX.to_le_bytes());
+    phar[flags_offset..flags_offset + 4].copy_from_slice(&0x0000_1000u32.to_le_bytes());
+    let archive: PharArchive = parse_phar(&phar).expect("parse forged size archive");
+    let extracted: Vec<u8> = extract_phar_entry(&archive, &phar, "bounded.php")
+        .expect("small compressed payload must extract");
+    assert_eq!(extracted, payload);
+}
+
+#[test]
 fn extract_from_post_parse_truncated_buffer_returns_payload_error() {
     let body: &[u8] = b"<?php echo 'safe';";
     let phar: Vec<u8> =
