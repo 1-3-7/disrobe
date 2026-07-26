@@ -611,10 +611,31 @@ fn read_batch(path: &Path) -> std::io::Result<Vec<Vec<u8>>> {
     Ok(cases)
 }
 
+fn confirm_batch_ran(path: &Path, batch_index: usize, expected: usize) -> std::io::Result<()> {
+    let marker: PathBuf = path.with_extension("done");
+    let recorded: String = std::fs::read_to_string(&marker).map_err(|error: std::io::Error| {
+        std::io::Error::other(format!(
+            "fuzz batch {batch_index} exited cleanly without recording a completion marker, so the worker never ran its cases: {error}"
+        ))
+    })?;
+    let processed: usize = recorded.trim().parse().map_err(|_| {
+        std::io::Error::other(format!(
+            "fuzz batch {batch_index} recorded an unreadable case count `{recorded}`"
+        ))
+    })?;
+    if processed != expected {
+        return Err(std::io::Error::other(format!(
+            "fuzz batch {batch_index} processed {processed} cases but the batch held {expected}"
+        )));
+    }
+    Ok(())
+}
+
 fn run_batch(
     path: &Path,
     workspace: &Path,
     batch_index: usize,
+    expected: usize,
     remaining_budget: Duration,
 ) -> std::io::Result<()> {
     let executable: PathBuf = std::env::current_exe()?;
@@ -629,7 +650,7 @@ fn run_batch(
     loop {
         if let Some(status) = child.try_wait()? {
             if status.success() {
-                return Ok(());
+                return confirm_batch_ran(path, batch_index, expected);
             }
             return Err(std::io::Error::other(format!(
                 "fuzz batch {batch_index} exited with {status}"
@@ -672,6 +693,10 @@ fn fuzz_resilience_worker() -> std::io::Result<()> {
         let mut rng: Xorshift64 = Xorshift64::new(0x5046_5A17_0001_0002 ^ seed);
         run_case(bytes, &mut rng, &source, &out_dir)?;
     }
+    std::fs::write(
+        Path::new(&batch_path).with_extension("done"),
+        cases.len().to_string(),
+    )?;
     Ok(())
 }
 
@@ -696,6 +721,7 @@ fn bounded_public_parse_entrypoints_accept_malformed_inputs_without_panicking()
             &batch_path,
             &child_workspace.path,
             batch_index,
+            batch.len(),
             remaining_budget,
         )?;
     }
