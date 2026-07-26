@@ -11,6 +11,7 @@ pub struct AotReport {
     pub modules_table_offset: Option<u32>,
     pub eager_class_constructors: u32,
     pub runtime_label: AotRuntime,
+    pub ready_to_run: Option<ReadyToRunHeader>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -20,6 +21,158 @@ pub enum AotRuntime {
     Net9,
     Net10,
     Unknown,
+}
+
+pub const READY_TO_RUN_SIGNATURE: u32 = 0x0052_5452;
+
+const MODULE_INFO_ROW_LEN: usize = 24;
+const READY_TO_RUN_ENTRY_TYPE: u8 = 1;
+const MAX_READY_TO_RUN_SECTIONS: u16 = 1024;
+const MAX_READY_TO_RUN_MAJOR: u16 = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AotSection {
+    pub id: i32,
+    pub flags: i32,
+    pub start_rva: u32,
+    pub end_rva: u32,
+}
+
+impl AotSection {
+    #[must_use]
+    pub const fn len(&self) -> u32 {
+        self.end_rva.saturating_sub(self.start_rva)
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadyToRunHeader {
+    pub file_offset: u32,
+    pub major_version: u16,
+    pub minor_version: u16,
+    pub flags: u32,
+    pub sections: Vec<AotSection>,
+}
+
+impl ReadyToRunHeader {
+    #[must_use]
+    pub fn section(&self, id: i32) -> Option<&AotSection> {
+        self.sections.iter().find(|s: &&AotSection| s.id == id)
+    }
+}
+
+#[must_use]
+pub fn locate_ready_to_run_header(image: &[u8]) -> Option<ReadyToRunHeader> {
+    let pe: crate::pe::PeImage = crate::pe::parse(image).ok()?;
+    let needle: [u8; 4] = READY_TO_RUN_SIGNATURE.to_le_bytes();
+    let mut cursor: usize = 0;
+    while let Some(found) = byte_search::find(image.get(cursor..)?, &needle) {
+        let candidate: usize = cursor.saturating_add(found);
+        if let Some(header) = read_ready_to_run_header(image, &pe, candidate) {
+            return Some(header);
+        }
+        cursor = candidate.checked_add(1)?;
+    }
+    None
+}
+
+fn read_ready_to_run_header(
+    image: &[u8],
+    pe: &crate::pe::PeImage,
+    at: usize,
+) -> Option<ReadyToRunHeader> {
+    let major_version: u16 = read_u16(image, at.checked_add(4)?)?;
+    let minor_version: u16 = read_u16(image, at.checked_add(6)?)?;
+    let flags: u32 = read_u32(image, at.checked_add(8)?)?;
+    let count: u16 = read_u16(image, at.checked_add(12)?)?;
+    let entry_size: u8 = *image.get(at.checked_add(14)?)?;
+    let entry_type: u8 = *image.get(at.checked_add(15)?)?;
+    if major_version == 0 || major_version > MAX_READY_TO_RUN_MAJOR {
+        return None;
+    }
+    if entry_type != READY_TO_RUN_ENTRY_TYPE || usize::from(entry_size) != MODULE_INFO_ROW_LEN {
+        return None;
+    }
+    if count == 0 || count > MAX_READY_TO_RUN_SECTIONS {
+        return None;
+    }
+    let table: usize = at.checked_add(16)?;
+    let mut sections: Vec<AotSection> = Vec::with_capacity(usize::from(count));
+    let mut spanned: bool = false;
+    for index in 0..usize::from(count) {
+        let row: usize = table.checked_add(index.checked_mul(MODULE_INFO_ROW_LEN)?)?;
+        let id: i32 = read_u32(image, row)? as i32;
+        let row_flags: i32 = read_u32(image, row.checked_add(4)?)? as i32;
+        let start: u64 = read_u64(image, row.checked_add(8)?)?;
+        let end: u64 = read_u64(image, row.checked_add(16)?)?;
+        let start_rva: u32 = virtual_address_to_rva(pe, start)?;
+        let end_rva: u32 = if end == 0 {
+            start_rva
+        } else {
+            virtual_address_to_rva(pe, end)?
+        };
+        if end_rva < start_rva {
+            return None;
+        }
+        if end_rva > start_rva {
+            spanned = true;
+        }
+        sections.push(AotSection {
+            id,
+            flags: row_flags,
+            start_rva,
+            end_rva,
+        });
+    }
+    if !spanned {
+        return None;
+    }
+    Some(ReadyToRunHeader {
+        file_offset: u32::try_from(at).ok()?,
+        major_version,
+        minor_version,
+        flags,
+        sections,
+    })
+}
+
+fn virtual_address_to_rva(pe: &crate::pe::PeImage, address: u64) -> Option<u32> {
+    let rva: u64 = address.checked_sub(pe.image_base)?;
+    let rva: u32 = u32::try_from(rva).ok()?;
+    let mapped: bool = pe
+        .sections
+        .iter()
+        .any(|section: &crate::pe::SectionHeader| {
+            let start: u32 = section.virtual_address;
+            let end: u32 = start.saturating_add(section.virtual_size.max(section.raw_size));
+            rva >= start && rva <= end
+        });
+    mapped.then_some(rva)
+}
+
+fn read_u16(image: &[u8], at: usize) -> Option<u16> {
+    let end: usize = at.checked_add(2)?;
+    let slice: &[u8] = image.get(at..end)?;
+    Some(u16::from_le_bytes([slice[0], slice[1]]))
+}
+
+fn read_u32(image: &[u8], at: usize) -> Option<u32> {
+    let end: usize = at.checked_add(4)?;
+    let slice: &[u8] = image.get(at..end)?;
+    Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+}
+
+fn read_u64(image: &[u8], at: usize) -> Option<u64> {
+    let end: usize = at.checked_add(8)?;
+    let slice: &[u8] = image.get(at..end)?;
+    let mut bytes: [u8; 8] = [0u8; 8];
+    bytes.copy_from_slice(slice);
+    Some(u64::from_le_bytes(bytes))
 }
 
 const AOT_NEEDLES: &[(&[u8], &str)] = &[
@@ -59,7 +212,9 @@ pub fn detect(image: &[u8]) -> AotReport {
         eager = eager.saturating_add(1);
         cursor += pos + eager_marker.len();
     }
-    let is_native_aot: bool = symbols.contains_key("aot_marker")
+    let ready_to_run: Option<ReadyToRunHeader> = locate_ready_to_run_header(image);
+    let is_native_aot: bool = ready_to_run.is_some()
+        || symbols.contains_key("aot_marker")
         || symbols.contains_key("modules_table")
         || symbols.contains_key("rhp_alloc")
         || symbols.contains_key("corelib_module");
@@ -70,6 +225,7 @@ pub fn detect(image: &[u8]) -> AotReport {
         modules_table_offset,
         eager_class_constructors: eager,
         runtime_label: runtime,
+        ready_to_run,
     }
 }
 
