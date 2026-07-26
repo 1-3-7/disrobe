@@ -7156,6 +7156,326 @@ fn parity_fused_kind(op: BinOp, first: CondKind, second: CondKind) -> Option<Con
     }
 }
 
+const fn is_x86_gpr(reg: Reg) -> bool {
+    matches!(
+        reg,
+        Reg::Rax
+            | Reg::Rbx
+            | Reg::Rcx
+            | Reg::Rdx
+            | Reg::Rsi
+            | Reg::Rdi
+            | Reg::Rbp
+            | Reg::Rsp
+            | Reg::R8
+            | Reg::R9
+            | Reg::R10
+            | Reg::R11
+            | Reg::R12
+            | Reg::R13
+            | Reg::R14
+            | Reg::R15
+    )
+}
+
+fn enumerable_gpr_writes(stmt: &Stmt) -> Option<Vec<RegRef>> {
+    match stmt {
+        Stmt::Assign { dest, .. }
+        | Stmt::BinAssign { dest, .. }
+        | Stmt::UnAssign { dest, .. }
+        | Stmt::Cond { dest, .. }
+        | Stmt::SetCc { dest, .. }
+        | Stmt::Extend { dest, .. }
+        | Stmt::MulImm { dest, .. }
+        | Stmt::DoubleShift { dest, .. }
+        | Stmt::FpToInt { dest, .. }
+        | Stmt::XmmToGpr { dest, .. }
+        | Stmt::PackedToGpr { dest, .. }
+        | Stmt::Vector(VecStmt::ExtractToGpr { dest, .. }) => Some(vec![*dest]),
+        Stmt::Store { .. }
+        | Stmt::MemRmw { .. }
+        | Stmt::FpBin { .. }
+        | Stmt::FpMov { .. }
+        | Stmt::FpStore { .. }
+        | Stmt::IntToFp { .. }
+        | Stmt::FpConvert { .. }
+        | Stmt::FpMinMax { .. }
+        | Stmt::FpFma { .. }
+        | Stmt::FpCsel { .. }
+        | Stmt::FpSqrt { .. }
+        | Stmt::FpUnary { .. }
+        | Stmt::FpRound { .. }
+        | Stmt::GprToXmm { .. }
+        | Stmt::FlagSnapshot { .. }
+        | Stmt::Packed { .. }
+        | Stmt::Vector(
+            VecStmt::Load { .. }
+            | VecStmt::Store { .. }
+            | VecStmt::Bin { .. }
+            | VecStmt::Dup { .. }
+            | VecStmt::LaneInsert { .. }
+            | VecStmt::Compare { .. }
+            | VecStmt::MoveImm { .. }
+            | VecStmt::Reduce { .. }
+            | VecStmt::WidenExtend { .. }
+            | VecStmt::WidenAdd { .. },
+        ) => Some(Vec::new()),
+        Stmt::WideMul { .. }
+        | Stmt::Divide { .. }
+        | Stmt::Call { .. }
+        | Stmt::BlockMove { .. }
+        | Stmt::BlockFill { .. } => None,
+    }
+}
+
+fn preceding_family_writer(
+    items: &[Item],
+    targets: &BTreeSet<u64>,
+    before: usize,
+    family: Reg,
+) -> Option<usize> {
+    for index in (0..before).rev() {
+        let item: &Item = &items[index];
+        if targets.contains(&item.address) {
+            return None;
+        }
+        let ItemKind::Stmt(stmt) = &item.kind else {
+            return None;
+        };
+        let writes: Vec<RegRef> = enumerable_gpr_writes(stmt)?;
+        if writes.iter().any(|write: &RegRef| write.reg == family) {
+            return Some(index);
+        }
+    }
+    None
+}
+
+fn zero_extending_zero_write(stmt: &Stmt, family: Reg) -> bool {
+    match stmt {
+        Stmt::Assign {
+            dest,
+            src: Source::Imm(0),
+        } => dest.reg == family && matches!(dest.width, Width::W32 | Width::W64),
+        Stmt::BinAssign {
+            dest,
+            op: BinOp::Xor,
+            src: Source::Reg(src),
+        } => {
+            dest.reg == family
+                && src.reg == family
+                && src.width == dest.width
+                && matches!(dest.width, Width::W32 | Width::W64)
+        }
+        _ => false,
+    }
+}
+
+fn upper_bits_proven_zero(
+    items: &[Item],
+    targets: &BTreeSet<u64>,
+    before: usize,
+    family: Reg,
+) -> bool {
+    let mut cursor: usize = before;
+    while let Some(index) = preceding_family_writer(items, targets, cursor, family) {
+        let ItemKind::Stmt(stmt) = &items[index].kind else {
+            return false;
+        };
+        let Some(writes): Option<Vec<RegRef>> = enumerable_gpr_writes(stmt) else {
+            return false;
+        };
+        if writes
+            .iter()
+            .any(|write: &RegRef| write.reg == family && write.width != Width::W8)
+        {
+            return zero_extending_zero_write(stmt, family);
+        }
+        cursor = index;
+    }
+    false
+}
+
+fn selected_constant_value(stmt: &Stmt, family: Reg) -> Option<i64> {
+    if zero_extending_zero_write(stmt, family) {
+        return Some(0);
+    }
+    let Stmt::Assign {
+        dest,
+        src: Source::Imm(value),
+    } = stmt
+    else {
+        return None;
+    };
+    (dest.reg == family && matches!(dest.width, Width::W32 | Width::W64)).then_some(*value)
+}
+
+const fn ordered_equality_fused_kind(predicate: CondKind, constant: i64) -> Option<CondKind> {
+    match (predicate, constant) {
+        (CondKind::Np, 0) => Some(CondKind::E),
+        (CondKind::P, 1) => Some(CondKind::Ne),
+        _ => None,
+    }
+}
+
+const fn flag_transparent(stmt: &Stmt) -> bool {
+    matches!(
+        stmt,
+        Stmt::Assign { .. } | Stmt::Extend { .. } | Stmt::SetCc { .. } | Stmt::Cond { .. }
+    )
+}
+
+fn same_flag_definition(
+    items: &[Item],
+    insn_index: &BTreeMap<u64, usize>,
+    targets: &BTreeSet<u64>,
+    span: (usize, usize),
+    address_regs: &[Reg],
+) -> bool {
+    let (predicate, select): (usize, usize) = span;
+    if predicate >= select {
+        return false;
+    }
+    let (Some(first), Some(last)): (Option<usize>, Option<usize>) = (
+        insn_index.get(&items[predicate].address).copied(),
+        insn_index.get(&items[select].address).copied(),
+    ) else {
+        return false;
+    };
+    if last.checked_sub(first) != Some(select - predicate) {
+        return false;
+    }
+    (1..select - predicate).all(|offset: usize| {
+        let item: &Item = &items[predicate + offset];
+        if insn_index.get(&item.address).copied() != Some(first + offset)
+            || targets.contains(&item.address)
+        {
+            return false;
+        }
+        let ItemKind::Stmt(stmt) = &item.kind else {
+            return false;
+        };
+        flag_transparent(stmt)
+            && enumerable_gpr_writes(stmt).is_some_and(|writes: Vec<RegRef>| {
+                !writes
+                    .iter()
+                    .any(|write: &RegRef| address_regs.contains(&write.reg))
+            })
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OrderedEqualitySelect {
+    dest: RegRef,
+    kind: CondKind,
+    flags: Flags,
+}
+
+fn ordered_equality_select(
+    items: &[Item],
+    insn_index: &BTreeMap<u64, usize>,
+    targets: &BTreeSet<u64>,
+    index: usize,
+) -> Option<OrderedEqualitySelect> {
+    let ItemKind::Stmt(Stmt::Cond {
+        dest,
+        src: Source::Reg(constant_reg),
+        kind: CondKind::Ne,
+        flags,
+    }) = &items[index].kind
+    else {
+        return None;
+    };
+    let Flags::FpCmp {
+        lhs,
+        rhs,
+        width,
+        model: FpUnorderedModel::UnorderedIsEqual,
+    } = flags
+    else {
+        return None;
+    };
+    let (dest, constant_reg): (RegRef, RegRef) = (*dest, *constant_reg);
+    if !matches!(dest.width, Width::W32 | Width::W64)
+        || dest.width != constant_reg.width
+        || !is_x86_gpr(dest.reg)
+        || !is_x86_gpr(constant_reg.reg)
+        || dest.reg == constant_reg.reg
+        || targets.contains(&items[index].address)
+    {
+        return None;
+    }
+    let widened: usize = preceding_family_writer(items, targets, index, dest.reg)?;
+    let (predicate_at, predicate_family): (usize, Reg) = match &items[widened].kind {
+        ItemKind::Stmt(Stmt::SetCc { dest: byte, .. }) if byte.width == Width::W8 => {
+            (widened, byte.reg)
+        }
+        ItemKind::Stmt(Stmt::Extend {
+            dest: wide,
+            src: ExtSource::Reg(byte),
+            signed: false,
+        }) if wide.width == Width::W32 && byte.width == Width::W8 && is_x86_gpr(byte.reg) => (
+            preceding_family_writer(items, targets, widened, byte.reg)?,
+            byte.reg,
+        ),
+        _ => return None,
+    };
+    let ItemKind::Stmt(Stmt::SetCc {
+        dest: predicate_byte,
+        kind: predicate_kind,
+        flags: predicate_flags,
+    }) = &items[predicate_at].kind
+    else {
+        return None;
+    };
+    if predicate_byte.width != Width::W8
+        || predicate_byte.reg != predicate_family
+        || predicate_flags != flags
+    {
+        return None;
+    }
+    if constant_reg.reg == predicate_family {
+        return None;
+    }
+    if predicate_at == widened && !upper_bits_proven_zero(items, targets, predicate_at, dest.reg) {
+        return None;
+    }
+    let constant_at: usize = preceding_family_writer(items, targets, index, constant_reg.reg)?;
+    let ItemKind::Stmt(constant_stmt) = &items[constant_at].kind else {
+        return None;
+    };
+    let constant: i64 = selected_constant_value(constant_stmt, constant_reg.reg)?;
+    let fused: CondKind = ordered_equality_fused_kind(*predicate_kind, constant)?;
+    let address_regs: Vec<Reg> = fp_cmp_address_regs(rhs);
+    if !same_flag_definition(
+        items,
+        insn_index,
+        targets,
+        (predicate_at, index),
+        &address_regs,
+    ) {
+        return None;
+    }
+    if address_regs.contains(&dest.reg)
+        || address_regs.contains(&constant_reg.reg)
+        || address_regs.contains(&predicate_family)
+    {
+        return None;
+    }
+    Some(OrderedEqualitySelect {
+        dest: RegRef {
+            reg: dest.reg,
+            width: Width::W8,
+        },
+        kind: fused,
+        flags: Flags::FpCmp {
+            lhs: *lhs,
+            rhs: *rhs,
+            width: *width,
+            model: FpUnorderedModel::UnorderedIsUnequal,
+        },
+    })
+}
+
 fn fuse_parity_equality_idioms(items: &mut [Item], insns: &[DisasmInsn]) {
     if items.len() < 3 {
         return;
@@ -7245,6 +7565,18 @@ fn fuse_parity_equality_idioms(items: &mut [Item], insns: &[DisasmInsn]) {
             dest,
             kind: fused_kind,
             flags: fused_flags,
+        });
+    }
+    for k in 0..items.len() {
+        let Some(select): Option<OrderedEqualitySelect> =
+            ordered_equality_select(items, &insn_index, &targets, k)
+        else {
+            continue;
+        };
+        items[k].kind = ItemKind::Stmt(Stmt::SetCc {
+            dest: select.dest,
+            kind: select.kind,
+            flags: select.flags,
         });
     }
 }
@@ -18028,6 +18360,165 @@ mod tests {
             "the fused recovery must still read both compared operands: {}",
             rec.source
         );
+    }
+
+    const ORDERED_SELECT_CROSS_EQ: &str = "(fp_d_from_bits(x_xmm0)) == (fp_d_from_bits(x_xmm1))";
+    const ORDERED_SELECT_CROSS_NE: &str = "(fp_d_from_bits(x_xmm0)) != (fp_d_from_bits(x_xmm1))";
+    const ORDERED_SELECT_UNFOLDED: &str = "? r_rdx : r_rax";
+
+    fn ordered_select_source(code: &[u8], base: u64) -> String {
+        recover_leaf_function_abi(code, base, Abi::SysV)
+            .expect("the parity-select sequence recovers")
+            .source
+    }
+
+    #[test]
+    fn parity_select_rejects_a_reexecuted_compare_over_spilled_operands() {
+        let respilled: [u8; 50] = [
+            0x55, 0x48, 0x89, 0xe5, 0xf2, 0x0f, 0x11, 0x45, 0x10, 0xf2, 0x0f, 0x11, 0x4d, 0x18,
+            0xf2, 0x0f, 0x10, 0x45, 0x10, 0x66, 0x0f, 0x2e, 0x45, 0x18, 0x0f, 0x9b, 0xc0, 0xba,
+            0x00, 0x00, 0x00, 0x00, 0xf2, 0x0f, 0x10, 0x45, 0x10, 0x66, 0x0f, 0x2e, 0x45, 0x18,
+            0x0f, 0x45, 0xc2, 0x0f, 0xb6, 0xc0, 0x5d, 0xc3,
+        ];
+        let source: String = recover_leaf_function_abi(&respilled, 0x9000, Abi::MsX64)
+            .expect("the spilled two-compare sequence recovers")
+            .source;
+        assert!(
+            !source.contains("(fp_d_from_bits(x_xmm0)) == ((*(double*)"),
+            "the predicate and the select consume two separate compare executions, so no cross-operand ordered equality may be synthesized: {source}"
+        );
+        assert!(
+            source.contains("? (r_rdx) & 0xffffffffULL : r_rax"),
+            "the conditional move must survive as a select when the compare is re-executed: {source}"
+        );
+    }
+
+    #[test]
+    fn parity_select_equality_folds_the_widened_predicate_shape() {
+        let widened: [u8; 20] = [
+            0x66, 0x0f, 0x2e, 0xc1, 0x0f, 0x9b, 0xc0, 0x0f, 0xb6, 0xc0, 0xba, 0x00, 0x00, 0x00,
+            0x00, 0x48, 0x0f, 0x45, 0xc2, 0xc3,
+        ];
+        let source: String = ordered_select_source(&widened, 0xf100);
+        assert!(
+            source.contains(ORDERED_SELECT_CROSS_EQ),
+            "setnp + movzx + zero constant + cmovne must fold to an ordered equality of the two compared operands: {source}"
+        );
+        assert!(
+            source.matches("x_xmm1").count() >= 2,
+            "the folded select must still read both compared operands: {source}"
+        );
+        assert!(
+            !source.contains(ORDERED_SELECT_UNFOLDED),
+            "the conditional move itself must be rewritten, not left beside the folded compare: {source}"
+        );
+    }
+
+    #[test]
+    fn parity_select_equality_folds_the_hoisted_prezero_shape() {
+        let prezero: [u8; 19] = [
+            0x31, 0xc0, 0xba, 0x00, 0x00, 0x00, 0x00, 0x66, 0x0f, 0x2e, 0xc1, 0x0f, 0x9b, 0xc0,
+            0x48, 0x0f, 0x45, 0xc2, 0xc3,
+        ];
+        let source: String = ordered_select_source(&prezero, 0xf200);
+        assert!(
+            source.contains(ORDERED_SELECT_CROSS_EQ),
+            "a hoisted xor prezero with no widening step must still fold to an ordered equality: {source}"
+        );
+        assert!(
+            !source.contains(ORDERED_SELECT_UNFOLDED),
+            "the conditional move itself must be rewritten in the prezero shape too: {source}"
+        );
+    }
+
+    #[test]
+    fn parity_select_inequality_folds_to_an_ordered_not_equal() {
+        let unequal: [u8; 20] = [
+            0x66, 0x0f, 0x2e, 0xc1, 0x0f, 0x9a, 0xc0, 0x0f, 0xb6, 0xc0, 0xba, 0x01, 0x00, 0x00,
+            0x00, 0x48, 0x0f, 0x45, 0xc2, 0xc3,
+        ];
+        let source: String = ordered_select_source(&unequal, 0xf300);
+        assert!(
+            source.contains(ORDERED_SELECT_CROSS_NE),
+            "setp + movzx + one constant + cmovne must fold to an ordered inequality: {source}"
+        );
+        assert!(
+            !source.contains(ORDERED_SELECT_UNFOLDED),
+            "the conditional move itself must be rewritten in the inequality pairing: {source}"
+        );
+    }
+
+    #[test]
+    fn parity_select_rejects_every_uncorroborated_variant() {
+        let equal_select: [u8; 20] = [
+            0x66, 0x0f, 0x2e, 0xc1, 0x0f, 0x9b, 0xc0, 0x0f, 0xb6, 0xc0, 0xba, 0x00, 0x00, 0x00,
+            0x00, 0x48, 0x0f, 0x44, 0xc2, 0xc3,
+        ];
+        let wrong_constant: [u8; 20] = [
+            0x66, 0x0f, 0x2e, 0xc1, 0x0f, 0x9b, 0xc0, 0x0f, 0xb6, 0xc0, 0xba, 0x02, 0x00, 0x00,
+            0x00, 0x48, 0x0f, 0x45, 0xc2, 0xc3,
+        ];
+        let ordered_with_one: [u8; 20] = [
+            0x66, 0x0f, 0x2e, 0xc1, 0x0f, 0x9b, 0xc0, 0x0f, 0xb6, 0xc0, 0xba, 0x01, 0x00, 0x00,
+            0x00, 0x48, 0x0f, 0x45, 0xc2, 0xc3,
+        ];
+        let unordered_with_zero: [u8; 20] = [
+            0x66, 0x0f, 0x2e, 0xc1, 0x0f, 0x9a, 0xc0, 0x0f, 0xb6, 0xc0, 0xba, 0x00, 0x00, 0x00,
+            0x00, 0x48, 0x0f, 0x45, 0xc2, 0xc3,
+        ];
+        let recompared: [u8; 24] = [
+            0x66, 0x0f, 0x2e, 0xc1, 0x0f, 0x9b, 0xc0, 0x0f, 0xb6, 0xc0, 0xba, 0x00, 0x00, 0x00,
+            0x00, 0x66, 0x0f, 0x2e, 0xc1, 0x48, 0x0f, 0x45, 0xc2, 0xc3,
+        ];
+        let narrow_constant: [u8; 19] = [
+            0x66, 0x0f, 0x2e, 0xc1, 0x0f, 0x9b, 0xc0, 0x0f, 0xb6, 0xc0, 0x66, 0xba, 0x00, 0x00,
+            0x48, 0x0f, 0x45, 0xc2, 0xc3,
+        ];
+        let narrow_prezero: [u8; 20] = [
+            0x66, 0x31, 0xc0, 0xba, 0x00, 0x00, 0x00, 0x00, 0x66, 0x0f, 0x2e, 0xc1, 0x0f, 0x9b,
+            0xc0, 0x48, 0x0f, 0x45, 0xc2, 0xc3,
+        ];
+
+        let rejected: [(&str, &[u8]); 7] = [
+            ("a cmove selects on the wrong flag polarity", &equal_select),
+            (
+                "a constant of two is neither the zero nor the one pairing",
+                &wrong_constant,
+            ),
+            (
+                "an ordered predicate paired with a one constant does not corroborate",
+                &ordered_with_one,
+            ),
+            (
+                "an unordered predicate paired with a zero constant does not corroborate",
+                &unordered_with_zero,
+            ),
+            (
+                "a second compare between the predicate and the select breaks flag provenance",
+                &recompared,
+            ),
+            (
+                "a sixteen bit constant leaves the upper half of the selected register unknown",
+                &narrow_constant,
+            ),
+            (
+                "a sixteen bit prezero leaves bits sixteen through thirty one unknown",
+                &narrow_prezero,
+            ),
+        ];
+        for (index, (reason, code)) in rejected.iter().enumerate() {
+            let base: u64 = 0xf400 + (index as u64) * 0x100;
+            let source: String = ordered_select_source(code, base);
+            assert!(
+                !source.contains(ORDERED_SELECT_CROSS_EQ)
+                    && !source.contains(ORDERED_SELECT_CROSS_NE),
+                "{reason}, so the select must stay unfolded: {source}"
+            );
+            assert!(
+                source.contains(ORDERED_SELECT_UNFOLDED),
+                "{reason}, so the conditional move must survive as a select: {source}"
+            );
+        }
     }
 }
 
