@@ -327,6 +327,14 @@ codegen-units = 16
 
 [profile.dev]
 opt-level = 1
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
 
 [profile.test]
 opt-level = 1
+debug = "line-tables-only"
+
+[profile.test.package."*"]
+debug = false
