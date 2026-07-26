@@ -1,7 +1,7 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use disrobe_pass_native::{
-    LeafRecovery, PseudoAbi, PseudoReg, ResolvedCall, recover_aarch64_function,
+    Error, LeafRecovery, PseudoAbi, PseudoReg, ResolvedCall, recover_aarch64_function,
     recover_aarch64_function_with_calls, recover_leaf_function_abi,
     recover_leaf_function_in_object,
 };
@@ -113,6 +113,189 @@ fn clang_o0_spill_frame_lifts_stack_slots() {
         recovered
             .source
             .contains("uint64_t recovered(uint64_t a0, uint64_t a1, uint64_t a2)")
+    );
+}
+
+#[test]
+fn clang_optimized_byte_stack_arguments_stay_outside_the_fixed_local_frame() {
+    const AT_ALLOCATION: [u8; 28] = [
+        0xff, 0x43, 0x00, 0xd1, 0xe0, 0x33, 0x00, 0x39, 0xe8, 0x43, 0x40, 0x39, 0xe9, 0x33, 0x40,
+        0x39, 0x20, 0x01, 0x08, 0x4a, 0xff, 0x43, 0x00, 0x91, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    const ABOVE_ALLOCATION: [u8; 28] = [
+        0xff, 0x43, 0x00, 0xd1, 0xe0, 0x33, 0x00, 0x39, 0xe8, 0x63, 0x40, 0x39, 0xe9, 0x33, 0x40,
+        0x39, 0x20, 0x01, 0x08, 0x4a, 0xff, 0x43, 0x00, 0x91, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let cases: [(&str, &[u8], i64); 2] = [
+        (
+            "ninth byte argument at the entry stack pointer",
+            &AT_ALLOCATION,
+            16,
+        ),
+        (
+            "tenth byte argument above the entry stack pointer",
+            &ABOVE_ALLOCATION,
+            24,
+        ),
+    ];
+    let mut wrong_recoveries: Vec<String> = Vec::with_capacity(cases.len());
+    let mut index: usize = 0;
+    while index < cases.len() {
+        let (name, bytes, displacement): (&str, &[u8], i64) = cases[index];
+        let result: core::result::Result<LeafRecovery, Error> = recover_aarch64_function(bytes, 0);
+        result.map_or_else(
+            |error: Error| {
+                let message: String = format!("{error:?}");
+                assert!(
+                    message.contains(&format!(
+                        "1-byte slot at {displacement} is outside the [0, 16) bytes this frame owns"
+                    )) && message.contains(
+                        "the entry stack pointer sits at 16 and incoming stack arguments begin there"
+                    ),
+                    "{name} rejected for the wrong reason: {message}"
+                );
+            },
+            |recovered: LeafRecovery| {
+                wrong_recoveries.push(format!("{name}: {}", recovered.source));
+            },
+        );
+        index += 1;
+    }
+    assert!(
+        wrong_recoveries.is_empty(),
+        "{} of {} incoming stack-argument reads recovered as fixed locals:\n{}",
+        wrong_recoveries.len(),
+        cases.len(),
+        wrong_recoveries.join("\n")
+    );
+}
+
+#[test]
+fn an_aarch64_slot_whose_width_straddles_the_entry_stack_pointer_is_rejected() {
+    const CODE: [u8; 16] = [
+        0xff, 0x83, 0x00, 0xd1, 0xe0, 0xf3, 0x41, 0x78, 0xff, 0x83, 0x00, 0x91, 0xc0, 0x03, 0x5f,
+        0xd6,
+    ];
+    let error: Error =
+        recover_aarch64_function(&CODE, 0).expect_err("a straddling slot must reject");
+    let message: String = format!("{error:?}");
+    assert!(
+        message.contains("stack access straddles the entry stack pointer"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_negative_aarch64_sp_displacement_below_the_allocation_is_rejected() {
+    const CODE: [u8; 16] = [
+        0xff, 0x83, 0x00, 0xd1, 0xe0, 0xf3, 0x5f, 0x38, 0xff, 0x83, 0x00, 0x91, 0xc0, 0x03, 0x5f,
+        0xd6,
+    ];
+    let error: Error =
+        recover_aarch64_function(&CODE, 0).expect_err("a below-frame slot must reject");
+    let message: String = format!("{error:?}");
+    assert!(
+        message.contains("stack access lands below the allocated frame"),
+        "{message}"
+    );
+}
+
+#[test]
+fn clang_optimized_local_slots_below_the_entry_stack_pointer_still_recover() {
+    const CODE: [u8; 32] = [
+        0xff, 0x43, 0x00, 0xd1, 0x08, 0x04, 0x00, 0x91, 0xe0, 0x07, 0x00, 0xf9, 0xe8, 0x03, 0x00,
+        0xf9, 0xe8, 0x07, 0x40, 0xf9, 0xe9, 0x07, 0x41, 0xf8, 0x20, 0x01, 0x08, 0x8b, 0xc0, 0x03,
+        0x5f, 0xd6,
+    ];
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&CODE, 0).expect("allocated local slots must recover");
+    assert!(
+        recovered.source.contains("unsigned char stack_frame[16]"),
+        "{}",
+        recovered.source
+    );
+}
+
+#[test]
+fn a_pre_indexed_frame_record_allocation_bounds_sp_relative_slots() {
+    const CODE: [u8; 24] = [
+        0xfd, 0x7b, 0xbe, 0xa9, 0xfd, 0x03, 0x00, 0x91, 0xe0, 0x43, 0x00, 0x39, 0xe0, 0x83, 0x40,
+        0x39, 0xfd, 0x7b, 0xc2, 0xa8, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let error: Error =
+        recover_aarch64_function(&CODE, 0).expect_err("the entry stack pointer is not a local");
+    let message: String = format!("{error:?}");
+    assert!(
+        message.contains("1-byte slot at 32 is outside the [0, 32) bytes this frame owns")
+            && message.contains(
+                "the entry stack pointer sits at 32 and incoming stack arguments begin there"
+            ),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_pre_indexed_frame_record_stays_inside_the_allocation() {
+    const CODE: [u8; 24] = [
+        0xfd, 0x7b, 0xbe, 0xa9, 0xfd, 0x03, 0x00, 0x91, 0xe0, 0x43, 0x00, 0x39, 0xe0, 0x43, 0x40,
+        0x39, 0xfd, 0x7b, 0xc2, 0xa8, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&CODE, 0).expect("a local above the frame record must recover");
+    assert!(
+        recovered.source.contains("unsigned char stack_frame[17]"),
+        "{}",
+        recovered.source
+    );
+}
+
+#[test]
+fn an_x29_relative_local_uses_frame_pointer_coordinates() {
+    const CODE: [u8; 32] = [
+        0xff, 0x83, 0x00, 0xd1, 0xfd, 0x7b, 0x01, 0xa9, 0xfd, 0x43, 0x00, 0x91, 0xa0, 0x83, 0x1f,
+        0xf8, 0xa0, 0x83, 0x5f, 0xf8, 0xfd, 0x7b, 0x41, 0xa9, 0xff, 0x83, 0x00, 0x91, 0xc0, 0x03,
+        0x5f, 0xd6,
+    ];
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&CODE, 0).expect("an x29-relative local must recover");
+    assert!(
+        recovered.source.contains("unsigned char stack_frame[8]"),
+        "{}",
+        recovered.source
+    );
+}
+
+#[test]
+fn an_x29_relative_incoming_byte_argument_stays_outside_the_fixed_local_frame() {
+    const CODE: [u8; 28] = [
+        0xff, 0x83, 0x00, 0xd1, 0xfd, 0x7b, 0x01, 0xa9, 0xfd, 0x43, 0x00, 0x91, 0xa0, 0x43, 0x40,
+        0x39, 0xfd, 0x7b, 0x41, 0xa9, 0xff, 0x83, 0x00, 0x91, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let error: Error =
+        recover_aarch64_function(&CODE, 0).expect_err("the entry stack pointer is not a local");
+    let message: String = format!("{error:?}");
+    assert!(
+        message.contains("1-byte slot at 16 is outside the [-16, 16) bytes this frame owns")
+            && message.contains(
+                "the entry stack pointer sits at 16 and incoming stack arguments begin there"
+            ),
+        "{message}"
+    );
+}
+
+#[test]
+fn an_x29_local_survives_a_later_shallower_sp_incoming_argument_load() {
+    const CODE: [u8; 44] = [
+        0xff, 0x83, 0x00, 0xd1, 0xfd, 0x7b, 0x01, 0xa9, 0xfd, 0x43, 0x00, 0x91, 0xa0, 0x83, 0x1f,
+        0xf8, 0xa0, 0x83, 0x5f, 0xf8, 0xff, 0x43, 0x00, 0x91, 0xe1, 0x0b, 0x40, 0xf9, 0x00, 0x00,
+        0x01, 0x8b, 0xfd, 0x7b, 0x40, 0xa9, 0xff, 0x43, 0x00, 0x91, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovered: LeafRecovery = recover_aarch64_function(&CODE, 0)
+        .expect("the maximum allocation must bound x29 coordinates");
+    assert!(
+        recovered.source.contains("unsigned char stack_frame[8]"),
+        "{}",
+        recovered.source
     );
 }
 

@@ -992,6 +992,7 @@ pub(super) fn analyze(
     Ok(FrameAnalysis {
         info: FrameInfo {
             sp_to_entry: canonical,
+            frame_bytes: frame_size,
             fp_to_entry: frame_pointer,
             sp_writeback_absorbed: false,
         },

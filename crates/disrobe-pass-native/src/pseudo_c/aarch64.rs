@@ -3,11 +3,11 @@ use super::{
     FnSignature, FpFmaKind, FpMinMaxKind, FpOp, FpOperand, FpToIntRound, FpUnaryOp,
     FpUnorderedModel, FpWidth, FrameShape, IndexExtend, IndexOperand, Item, ItemKind, LeafRecovery,
     MemRef, Node, ReduceOp, Reg, RegRef, ResolvedCall, Result, RoundMode, ScalarType, Source,
-    SretPlan, SretReturn, Stmt, Structured, UnOp, VecArrangement, VecBinOp, VecElem, VecStmt,
-    Width, Xmm, annotate_calls_block_with_order, collect_block_xmm, collect_call_targets,
-    condition_is_sound, detect_sret, emit_c, emit_rust, fp_stmt_result_xmm, infer_aggregate_plan,
-    infer_fp_params, infer_params, plan_frame, rax_write_width, stmt_writes_rax_int,
-    structure_items,
+    SretPlan, SretReturn, StackFrameExtent, Stmt, Structured, UnOp, VecArrangement, VecBinOp,
+    VecElem, VecStmt, Width, Xmm, annotate_calls_block_with_order, collect_block_xmm,
+    collect_call_targets, condition_is_sound, detect_sret, emit_c, emit_rust, fp_stmt_result_xmm,
+    infer_aggregate_plan, infer_fp_params, infer_params, plan_frame, rax_write_width,
+    stmt_writes_rax_int, structure_items,
 };
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use std::collections::{BTreeMap, BTreeSet};
@@ -67,6 +67,7 @@ const AARCH64_FP_REGISTERS: [Xmm; 16] = [
 #[derive(Debug, Clone, Copy, Default)]
 struct FrameInfo {
     sp_to_entry: i64,
+    frame_bytes: i64,
     fp_to_entry: Option<i64>,
     sp_writeback_absorbed: bool,
 }
@@ -76,6 +77,12 @@ struct FrameAnalysis {
     info: FrameInfo,
     management: BTreeSet<usize>,
     absorbed: BTreeSet<usize>,
+}
+
+struct FinishContext<'a> {
+    calls: &'a [ResolvedCall],
+    vec_abi: &'a VectorAbi,
+    frame_info: FrameInfo,
 }
 
 impl FrameAnalysis {
@@ -1485,14 +1492,18 @@ fn recover_with_calls_and_image<'image>(
     version_widened_registers(&mut items)?;
     resolve_vector_types(&mut items)?;
     let vec_abi: VectorAbi = scan_vector_abi(&items)?;
+    let finish_context: FinishContext<'_> = FinishContext {
+        calls,
+        vec_abi: &vec_abi,
+        frame_info: frame.info,
+    };
     finish(
         &insns,
         &mut items,
         base,
         &flag_definitions,
         return_width,
-        calls,
-        &vec_abi,
+        finish_context,
         &mut next_sel,
     )
 }
@@ -2750,8 +2761,7 @@ fn finish(
     base: u64,
     flag_definitions: &BTreeMap<usize, TrackedFlags>,
     return_width: Width,
-    calls: &[ResolvedCall],
-    vec_abi: &VectorAbi,
+    context: FinishContext<'_>,
     next_sel: &mut u32,
 ) -> Result<LeafRecovery> {
     let has_scalar_fp: bool = items
@@ -2766,8 +2776,9 @@ fn finish(
                 return Err(reject("conditional branch lacks live nzcv state"));
             }
         };
-    if !calls.is_empty() {
-        let call_map = calls
+    if !context.calls.is_empty() {
+        let call_map: BTreeMap<u64, &ResolvedCall> = context
+            .calls
             .iter()
             .map(|call: &ResolvedCall| (call.target, call))
             .collect();
@@ -2782,7 +2793,7 @@ fn finish(
     let ret: FnReturn = if has_scalar_fp {
         infer_aarch64_scalar_return(&structured.body)?
     } else {
-        match vec_abi.ret {
+        match context.vec_abi.ret {
             VectorRet::Vector(arr) => FnReturn::Vec(arr),
             VectorRet::Void => FnReturn::Void,
             VectorRet::None => FnReturn::Int(return_width),
@@ -2799,7 +2810,7 @@ fn finish(
     let signature: FnSignature = FnSignature {
         fp: fp_args,
         int: params.clone(),
-        vec: vec_abi.params.clone(),
+        vec: context.vec_abi.params.clone(),
         ret,
     };
     let fp_params: Vec<ScalarType> = if has_scalar_fp {
@@ -2807,7 +2818,7 @@ fn finish(
     } else {
         Vec::new()
     };
-    let frame_shape: FrameShape = classify_frame(insns);
+    let frame_shape: FrameShape = classify_frame(insns, context.frame_info)?;
     let frame = plan_frame(&structured.body, frame_shape)?;
     let aggregate_plan: AggregatePlan =
         infer_aggregate_plan(&structured.body, &params, frame.as_ref());
@@ -4787,34 +4798,47 @@ fn has_unsupported_register_class(operands: &str) -> bool {
     })
 }
 
-fn classify_frame(insns: &[DisasmInsn]) -> FrameShape {
+fn classify_frame(insns: &[DisasmInsn], frame_info: FrameInfo) -> Result<FrameShape> {
     let rbp_is_frame: bool = insns
         .iter()
         .any(|insn: &DisasmInsn| insn.operands.contains("[x29") && !is_frame_management(insn));
     if rbp_is_frame {
-        FrameShape {
+        let base_to_entry: i64 = frame_info
+            .fp_to_entry
+            .ok_or_else(|| {
+                reject(
+                    "frame-pointer-relative slots lack a proven coordinate relative to the entry stack pointer",
+                )
+            })?;
+        let stack_extent: StackFrameExtent =
+            StackFrameExtent::aarch64(frame_info.frame_bytes, base_to_entry)
+                .ok_or_else(|| reject("stack-frame extent coordinate overflow"))?;
+        Ok(FrameShape {
             base: Some(Reg::Rbp),
             rbp_is_frame: true,
             red_zone: false,
-            rsp_extent: None,
-        }
+            stack_extent: Some(stack_extent),
+        })
     } else if insns
         .iter()
         .any(|insn: &DisasmInsn| insn.operands.contains("[sp") || is_frame_management(insn))
     {
-        FrameShape {
+        let stack_extent: StackFrameExtent =
+            StackFrameExtent::aarch64(frame_info.sp_to_entry, frame_info.sp_to_entry)
+                .ok_or_else(|| reject("stack-frame extent coordinate overflow"))?;
+        Ok(FrameShape {
             base: Some(Reg::Rsp),
             rbp_is_frame: false,
             red_zone: false,
-            rsp_extent: None,
-        }
+            stack_extent: Some(stack_extent),
+        })
     } else {
-        FrameShape {
+        Ok(FrameShape {
             base: None,
             rbp_is_frame: false,
             red_zone: false,
-            rsp_extent: None,
-        }
+            stack_extent: None,
+        })
     }
 }
 
