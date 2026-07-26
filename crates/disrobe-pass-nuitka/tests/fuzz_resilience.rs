@@ -1,9 +1,7 @@
-use std::io::Read as _;
+#![allow(clippy::expect_used)]
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use disrobe_pass_nuitka::{
     NuitkaConstants, StreamedEntry, build_manifest, build_manifest_from_file, classify,
@@ -18,53 +16,65 @@ use disrobe_pass_nuitka::{
     recover_frozen_bytecode, scan_build_info, scan_c_source_markers, scan_constants_blob,
     scan_plugins, scan_symbols,
 };
+use disrobe_testkit::{BATCH_ENV, CorpusEntry, StressCase, StressConfig, XorShift64};
 
-const MAX_INPUT_BYTES: usize = 4096;
-const RANDOM_CASES: usize = 96;
-const MUTATIONS_PER_SEED: usize = 32;
-const CASES_PER_BATCH: usize = 16;
-const MAX_BATCH_BYTES: usize = CASES_PER_BATCH * (MAX_INPUT_BYTES + 4);
-const BATCH_BUDGET: Duration = Duration::from_secs(4);
-const TEST_BUDGET: Duration = Duration::from_secs(45);
-const BATCH_PATH_ENV: &str = "DISROBE_NUITKA_FUZZ_BATCH";
-const WORKSPACE_PATH_ENV: &str = "DISROBE_NUITKA_FUZZ_WORKSPACE";
-const WORKER_TOKEN_ENV: &str = "DISROBE_NUITKA_FUZZ_TOKEN";
-const WORKER_TOKEN_FILE: &str = "worker-token";
-const PROGRESS_FILE: &str = "case-progress";
-const COMPLETION_FILE: &str = "worker-complete";
+const RANDOM_SPAN_BYTES: usize = 4096;
+const CASES_PER_INPUT: usize = 128;
+const BATCH_SIZE: usize = 256;
+const CASE_BUDGET: Duration = Duration::from_millis(60);
+const SUITE_BUDGET: Duration = Duration::from_mins(3);
+
+const PROBE_DOMAIN: u64 = 0x4E75_6974_6B61_0001;
+const SATURATION_DOMAIN: u64 = 0x4E75_6974_6B61_0002;
+const SATURATION_PATTERNS: [(u8, u32); 2] = [(u8::MAX, 2), (0, 3)];
+const MAX_SCATTERED_OVERWRITES: usize = 32;
+const NAME_SAMPLE_LIMIT: usize = 64;
+const PYTHON_ABI: (u8, u8) = (3, 14);
+const SCRATCH_DIRECTORY: &str = "nuitka-file-entrypoints";
+const SCRATCH_INPUT: &str = "input.bin";
+const SCRATCH_DISASSEMBLY: &str = "native.asm";
+const MODULE_NAME: &str = "fuzz";
+const CONST_FILE_NAME: &str = "fuzz.const";
 
 type EntrySink = dyn for<'a> FnMut(&StreamedEntry<'a>) -> std::io::Result<()>;
 
-struct Xorshift64 {
-    state: u64,
+#[derive(Debug)]
+struct Scratch {
+    directory: PathBuf,
+    input: PathBuf,
+    disassembly: PathBuf,
 }
 
-impl Xorshift64 {
-    const fn new(seed: u64) -> Self {
-        Self { state: seed | 1 }
-    }
-
-    const fn next_u64(&mut self) -> u64 {
-        let mut value: u64 = self.state;
-        value ^= value << 13;
-        value ^= value >> 7;
-        value ^= value << 17;
-        self.state = value;
-        value
-    }
-
-    fn next_usize(&mut self, bound: usize) -> usize {
-        if bound == 0 {
-            return 0;
+impl Scratch {
+    fn create(base: &Path) -> Self {
+        let directory: PathBuf = base.join(format!("{SCRATCH_DIRECTORY}-{}", std::process::id()));
+        std::fs::create_dir_all(&directory)
+            .expect("the stress worker can create its scratch directory");
+        Self {
+            input: directory.join(SCRATCH_INPUT),
+            disassembly: directory.join(SCRATCH_DISASSEMBLY),
+            directory,
         }
-        let bound_u64: u64 = u64::try_from(bound).map_or(u64::MAX, |value: u64| value);
-        let value: u64 = self.next_u64() % bound_u64;
-        usize::try_from(value).map_or(0, |value: usize| value)
     }
+}
 
-    const fn next_byte(&mut self) -> u8 {
-        self.next_u64().to_le_bytes()[0]
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _: std::io::Result<()> = std::fs::remove_dir_all(&self.directory);
     }
+}
+
+fn batch_workspace() -> PathBuf {
+    let batch: Option<PathBuf> = std::env::var_os(BATCH_ENV).map(PathBuf::from);
+    batch
+        .as_deref()
+        .and_then(Path::parent)
+        .map_or_else(std::env::temp_dir, Path::to_path_buf)
+}
+
+fn worker_scratch() -> &'static Scratch {
+    static SCRATCH: OnceLock<Scratch> = OnceLock::new();
+    SCRATCH.get_or_init(|| Scratch::create(&batch_workspace()))
 }
 
 fn onefile_stored_seed() -> Vec<u8> {
@@ -134,88 +144,56 @@ fn deeply_nested_c_seed() -> Vec<u8> {
     bytes
 }
 
-fn structured_seeds() -> Vec<Vec<u8>> {
+fn corpus() -> Vec<CorpusEntry> {
     vec![
-        Vec::new(),
-        onefile_stored_seed(),
-        onefile_compressed_seed(),
-        pe_section_seed(),
-        elf_section_seed(),
-        constants_stream_seed(),
-        deeply_nested_c_seed(),
+        CorpusEntry::new("empty", Vec::<u8>::new()),
+        CorpusEntry::new("onefile-stored", onefile_stored_seed()),
+        CorpusEntry::new("onefile-compressed", onefile_compressed_seed()),
+        CorpusEntry::new("pe-section", pe_section_seed()),
+        CorpusEntry::new("elf-section", elf_section_seed()),
+        CorpusEntry::new("constants-stream", constants_stream_seed()),
+        CorpusEntry::new("deeply-nested-c", deeply_nested_c_seed()),
+        CorpusEntry::new("random-span", vec![0u8; RANDOM_SPAN_BYTES]),
     ]
 }
 
-fn mutate(seed: &[u8], rng: &mut Xorshift64) -> Vec<u8> {
-    let seed_len: usize = seed.len().min(MAX_INPUT_BYTES);
-    let mut out: Vec<u8> = seed[..seed_len].to_vec();
-    match rng.next_u64() % 7 {
-        0 => {
-            let index: usize = rng.next_usize(out.len());
+fn saturate(bytes: &[u8], case_seed: u64) -> Vec<u8> {
+    let mut rng: XorShift64 = XorShift64::new(case_seed ^ SATURATION_DOMAIN);
+    let mut out: Vec<u8> = bytes.to_vec();
+    let pick: usize = rng.below_usize(SATURATION_PATTERNS.len().saturating_add(1));
+    let Some(&(value, sparsity)): Option<&(u8, u32)> = SATURATION_PATTERNS.get(pick) else {
+        let changes: usize = rng.below_usize(MAX_SCATTERED_OVERWRITES);
+        for _ in 0..changes {
+            let index: usize = rng.below_usize(out.len());
             if let Some(byte) = out.get_mut(index) {
-                *byte ^= 1u8 << rng.next_usize(8);
+                *byte = rng.next_byte();
             }
         }
-        1 => {
-            let len: usize = rng.next_usize(out.len());
-            out.truncate(len);
-        }
-        2 => {
-            let changes: usize = rng.next_usize(32);
-            for _ in 0..changes {
-                let index: usize = rng.next_usize(out.len());
-                if let Some(byte) = out.get_mut(index) {
-                    *byte = rng.next_byte();
-                }
-            }
-        }
-        3 => {
-            for byte in &mut out {
-                if rng.next_u64().trailing_zeros() >= 2 {
-                    *byte = u8::MAX;
-                }
-            }
-        }
-        4 => {
-            let extra: usize = rng.next_usize(64);
-            for _ in 0..extra {
-                if out.len() == MAX_INPUT_BYTES {
-                    break;
-                }
-                out.push(rng.next_byte());
-            }
-        }
-        5 => {
-            for byte in &mut out {
-                if rng.next_u64().trailing_zeros() >= 3 {
-                    *byte = 0;
-                }
-            }
-        }
-        _ => {
-            let len: usize = rng.next_usize(MAX_INPUT_BYTES.saturating_add(1));
-            let mut random: Vec<u8> = Vec::with_capacity(len);
-            for _ in 0..len {
-                random.push(rng.next_byte());
-            }
-            out = random;
+        return out;
+    };
+    for byte in &mut out {
+        if rng.next_u64().trailing_zeros() >= sparsity {
+            *byte = value;
         }
     }
     out
 }
 
-fn exercise_byte_entrypoints(bytes: &[u8], rng: &mut Xorshift64) {
+fn exercise_byte_entrypoints(bytes: &[u8], rng: &mut XorShift64) {
     let constants: NuitkaConstants = parse_constants(bytes);
     let names: Vec<String> = constants
         .modules
         .iter()
         .flat_map(|module| module.strings.iter().cloned())
-        .take(64)
+        .take(NAME_SAMPLE_LIMIT)
         .collect();
     let source: String = String::from_utf8_lossy(bytes).into_owned();
-    let payload_offset: usize = rng.next_usize(bytes.len().saturating_add(8));
-    let constant_files: [(String, Vec<u8>, String); 1] =
-        [("fuzz.const".to_owned(), bytes.to_vec(), "fuzz".to_owned())];
+    let payload_offset: usize = rng.below_usize(bytes.len().saturating_add(8));
+    let constant_files: [(String, Vec<u8>, String); 1] = [(
+        CONST_FILE_NAME.to_owned(),
+        bytes.to_vec(),
+        MODULE_NAME.to_owned(),
+    )];
     let mut sink: Box<EntrySink> = Box::new(|_entry: &StreamedEntry<'_>| Ok(()));
 
     let _ = detect_in_bytes(bytes);
@@ -235,26 +213,26 @@ fn exercise_byte_entrypoints(bytes: &[u8], rng: &mut Xorshift64) {
     }
     let _ = extract_variant(bytes);
     let _ = build_manifest(bytes);
-    let _ = decode_const_file(bytes, "fuzz.const", "fuzz");
+    let _ = decode_const_file(bytes, CONST_FILE_NAME, MODULE_NAME);
     let _ = decode_build_constants(&constant_files);
     let _ = decode_bytecode_table(bytes, None);
     let _ = recover_frozen_bytecode(bytes, None);
-    let _ = disassemble_module_stats("fuzz", bytes);
-    let _ = disassemble_module_to_vec("fuzz", bytes);
+    let _ = disassemble_module_stats(MODULE_NAME, bytes);
+    let _ = disassemble_module_to_vec(MODULE_NAME, bytes);
     let _ = lift_native_bodies(bytes, &constants);
     let _ = reconstruct_skeleton(&constants);
-    let _ = map_names("fuzz", bytes, &names);
+    let _ = map_names(MODULE_NAME, bytes, &names);
     for name in &names {
         let _ = demangle_function(name);
     }
     let _ = decompile_bytes(bytes);
-    let _ = decompile_const_bytes(bytes, "fuzz.const", "fuzz");
+    let _ = decompile_const_bytes(bytes, CONST_FILE_NAME, MODULE_NAME);
     let _ = detect_nuitka_version(bytes, Some(bytes), None);
     let _ = parse_exact_version_from_constants_c(bytes);
     let _ = extract_onefile(bytes, payload_offset);
     let _ = extract_onefile_streaming(bytes, payload_offset, &mut sink);
     let _ = parse_c_module(&source);
-    let _ = parse_c_module_with_python_abi(&source, (3, 14));
+    let _ = parse_c_module_with_python_abi(&source, PYTHON_ABI);
     let _ = lift_body(
         &source,
         &names,
@@ -262,19 +240,15 @@ fn exercise_byte_entrypoints(bytes: &[u8], rng: &mut Xorshift64) {
     );
 }
 
-fn exercise_file_entrypoints(
-    bytes: &[u8],
-    input_path: &Path,
-    disassembly: &Path,
-) -> std::io::Result<()> {
-    std::fs::write(input_path, bytes)?;
-    let _ = detect_in_file(input_path);
-    let _ = parse_constant_manifest_from_file(input_path);
-    let _ = build_manifest_from_file(input_path);
-    let _ = classify_in_file(input_path);
-    let _ = decompile_binary(input_path);
-    let _ = disassemble_module_to_file("fuzz", bytes, disassembly);
-    Ok(())
+fn exercise_file_entrypoints(bytes: &[u8], scratch: &Scratch) {
+    std::fs::write(&scratch.input, bytes)
+        .expect("the stress worker can write its scratch input file");
+    let _ = detect_in_file(&scratch.input);
+    let _ = parse_constant_manifest_from_file(&scratch.input);
+    let _ = build_manifest_from_file(&scratch.input);
+    let _ = classify_in_file(&scratch.input);
+    let _ = decompile_binary(&scratch.input);
+    let _ = disassemble_module_to_file(MODULE_NAME, bytes, &scratch.disassembly);
 }
 
 #[cfg(feature = "chain")]
@@ -296,376 +270,70 @@ fn exercise_chain_entrypoints(bytes: &[u8]) {
     let _ = NuitkaPass.extract_children(&artifact);
 }
 
-static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-struct TempWorkspace {
-    path: PathBuf,
-    retain: bool,
-}
-
-impl TempWorkspace {
-    fn create() -> std::io::Result<Self> {
-        for _ in 0..256 {
-            let path: PathBuf = workspace_dir();
-            match std::fs::create_dir(&path) {
-                Ok(()) => {
-                    return Ok(Self {
-                        path,
-                        retain: false,
-                    });
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error),
-            }
-        }
-        Err(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "unable to create unique nuitka fuzz workspace",
-        ))
-    }
-
-    fn child(&self, index: usize) -> std::io::Result<ChildWorkspace> {
-        let path: PathBuf = self.path.join(format!("worker-{index}"));
-        std::fs::create_dir(&path)?;
-        let sequence: u64 = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let material: String = format!("{}-{index}-{sequence}", std::process::id());
-        let token: String = blake3::hash(material.as_bytes()).to_hex().to_string();
-        std::fs::write(path.join(WORKER_TOKEN_FILE), &token)?;
-        Ok(ChildWorkspace { path, token })
-    }
-
-    const fn retain(&mut self) {
-        self.retain = true;
-    }
-}
-
-impl Drop for TempWorkspace {
-    fn drop(&mut self) {
-        if !self.retain {
-            let _: std::io::Result<()> = std::fs::remove_dir_all(&self.path);
-        }
-    }
-}
-
-struct ChildWorkspace {
-    path: PathBuf,
-    token: String,
-}
-
-fn workspace_dir() -> PathBuf {
-    let sequence: u64 = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "disrobe-nuitka-fuzz-{}-{sequence}",
-        std::process::id()
-    ))
-}
-
-fn run_case(
-    bytes: &[u8],
-    rng: &mut Xorshift64,
-    input_path: &Path,
-    disassembly: &Path,
-) -> std::io::Result<()> {
+fn probe(bytes: &[u8], scratch: &Scratch, rng: &mut XorShift64) {
     exercise_byte_entrypoints(bytes, rng);
-    exercise_file_entrypoints(bytes, input_path, disassembly)?;
+    exercise_file_entrypoints(bytes, scratch);
     #[cfg(feature = "chain")]
     exercise_chain_entrypoints(bytes);
-    Ok(())
 }
 
-fn build_bounded_cases() -> Vec<Vec<u8>> {
-    let mut rng: Xorshift64 = Xorshift64::new(0x4e55_1714_0001_0002);
-    let mut cases: Vec<Vec<u8>> = Vec::new();
-    for _ in 0..RANDOM_CASES {
-        let len: usize = rng.next_usize(MAX_INPUT_BYTES.saturating_add(1));
-        let mut bytes: Vec<u8> = Vec::with_capacity(len);
-        for _ in 0..len {
-            bytes.push(rng.next_byte());
-        }
-        cases.push(bytes);
-    }
-    let seeds: Vec<Vec<u8>> = structured_seeds();
-    for seed in &seeds {
-        cases.push(seed.clone());
-    }
-    for seed in &seeds {
-        for _ in 0..MUTATIONS_PER_SEED {
-            cases.push(mutate(seed, &mut rng));
-        }
-    }
-    cases
+fn check(case: &StressCase<'_>) {
+    let scratch: &Scratch = worker_scratch();
+    let mut rng: XorShift64 = XorShift64::new(case.case_seed() ^ PROBE_DOMAIN);
+    probe(case.bytes(), scratch, &mut rng);
+    probe(&saturate(case.bytes(), case.case_seed()), scratch, &mut rng);
 }
 
-fn write_batch(path: &Path, cases: &[Vec<u8>]) -> std::io::Result<()> {
-    let mut bytes: Vec<u8> = Vec::new();
-    for case in cases {
-        let len: u32 = u32::try_from(case.len()).map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "fuzz case length does not fit u32",
-            )
-        })?;
-        bytes.extend_from_slice(&len.to_le_bytes());
-        bytes.extend_from_slice(case);
-    }
-    std::fs::write(path, bytes)
-}
-
-fn read_batch(path: &Path) -> std::io::Result<Vec<Vec<u8>>> {
-    let file: std::fs::File = std::fs::File::open(path)?;
-    let max_batch_bytes: u64 = u64::try_from(MAX_BATCH_BYTES).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "fuzz batch limit does not fit u64",
-        )
-    })?;
-    let mut reader: std::io::Take<std::fs::File> = file.take(max_batch_bytes.saturating_add(1));
-    let mut bytes: Vec<u8> = Vec::with_capacity(MAX_BATCH_BYTES);
-    reader.read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_BATCH_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "fuzz batch exceeds byte limit",
-        ));
-    }
-    let mut cursor: usize = 0;
-    let mut cases: Vec<Vec<u8>> = Vec::with_capacity(CASES_PER_BATCH);
-    while cursor < bytes.len() {
-        if cases.len() == CASES_PER_BATCH {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "fuzz batch exceeds case limit",
-            ));
-        }
-        let length_end: usize = cursor.checked_add(4).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "fuzz batch length cursor overflow",
-            )
-        })?;
-        let length_bytes: [u8; 4] = bytes
-            .get(cursor..length_end)
-            .and_then(|slice: &[u8]| slice.try_into().ok())
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "truncated fuzz batch length",
-                )
-            })?;
-        let declared_len: u32 = u32::from_le_bytes(length_bytes);
-        let case_len: usize = usize::try_from(declared_len).map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "fuzz batch length does not fit usize",
-            )
-        })?;
-        if case_len > MAX_INPUT_BYTES {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "fuzz batch case exceeds input limit",
-            ));
-        }
-        let case_end: usize = length_end.checked_add(case_len).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "fuzz batch case end overflow",
-            )
-        })?;
-        let case: Vec<u8> = bytes
-            .get(length_end..case_end)
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "truncated fuzz batch case",
-                )
-            })?
-            .to_vec();
-        cases.push(case);
-        cursor = case_end;
-    }
-    Ok(cases)
-}
-
-fn worker_progress(workspace: &Path) -> String {
-    let progress_path: PathBuf = workspace.join(PROGRESS_FILE);
-    match std::fs::read_to_string(progress_path) {
-        Ok(progress) if !progress.is_empty() => progress,
-        Ok(_) | Err(_) => "no case progress recorded".to_owned(),
+fn config() -> StressConfig {
+    StressConfig {
+        cases_per_input: CASES_PER_INPUT,
+        batch_size: BATCH_SIZE,
+        case_budget: CASE_BUDGET,
+        suite_budget: SUITE_BUDGET,
+        ..StressConfig::default()
     }
 }
 
-fn verify_worker_completion(
-    workspace: &ChildWorkspace,
-    expected_case_count: usize,
-) -> std::io::Result<()> {
-    let completion_path: PathBuf = workspace.path.join(COMPLETION_FILE);
-    let completion: String = std::fs::read_to_string(completion_path)?;
-    let expected: String = format!("{}\n{expected_case_count}", workspace.token);
-    if completion == expected {
-        return Ok(());
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::InvalidData,
-        "fuzz worker completion record did not match the batch",
-    ))
-}
-
-fn run_batch(
-    path: &Path,
-    workspace: &ChildWorkspace,
-    batch_index: usize,
-    expected_case_count: usize,
-    remaining_budget: Duration,
-) -> std::io::Result<()> {
-    let executable: PathBuf = std::env::current_exe()?;
-    let batch_budget: Duration = BATCH_BUDGET.min(remaining_budget);
-    let mut child: std::process::Child = Command::new(executable)
-        .args([
-            "--ignored",
-            "--exact",
-            "fuzz_resilience_worker",
-            "--nocapture",
-        ])
-        .env(BATCH_PATH_ENV, path)
-        .env(WORKSPACE_PATH_ENV, &workspace.path)
-        .env(WORKER_TOKEN_ENV, &workspace.token)
-        .env_remove("DISROBE_DEBUG")
-        .env_remove("DISROBE_DEBUG_FORMAT")
-        .env_remove("DISROBE_DEBUG_COLOR")
-        .env_remove("DISROBE_NUITKA_DEBUG")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    let started: Instant = Instant::now();
-    loop {
-        if let Some(status) = child.try_wait()? {
-            if status.success() {
-                verify_worker_completion(workspace, expected_case_count)?;
-                return Ok(());
-            }
-            let progress: String = worker_progress(&workspace.path);
-            return Err(std::io::Error::other(format!(
-                "fuzz batch {batch_index} exited with {status} after {progress}"
-            )));
-        }
-        if started.elapsed() > batch_budget {
-            match child.kill() {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
-                Err(error) => return Err(error),
-            }
-            let _: ExitStatus = child.wait()?;
-            let progress: String = worker_progress(&workspace.path);
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("fuzz batch {batch_index} exceeded {batch_budget:?} after {progress}"),
-            ));
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
-fn run_bounded_child_batches(cases: &[Vec<u8>]) -> std::io::Result<()> {
-    let started: Instant = Instant::now();
-    let mut workspace: TempWorkspace = TempWorkspace::create()?;
-    for (batch_index, batch) in cases.chunks(CASES_PER_BATCH).enumerate() {
-        let elapsed: Duration = started.elapsed();
-        let remaining_budget: Duration = TEST_BUDGET.checked_sub(elapsed).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("fuzz suite exceeded {TEST_BUDGET:?}"),
-            )
-        })?;
-        let batch_path: PathBuf = workspace.path.join(format!("batch-{batch_index}.bin"));
-        let child_workspace: ChildWorkspace = workspace.child(batch_index)?;
-        write_batch(&batch_path, batch)?;
-        let result: std::io::Result<()> = run_batch(
-            &batch_path,
-            &child_workspace,
-            batch_index,
-            batch.len(),
-            remaining_budget,
-        );
-        if let Err(error) = result {
-            let retained_path: PathBuf = workspace.path.clone();
-            workspace.retain();
-            return Err(std::io::Error::other(format!(
-                "fuzz batch {batch_index} retained at {}: {error}",
-                retained_path.display()
-            )));
-        }
-    }
-    let elapsed: Duration = started.elapsed();
-    if elapsed > TEST_BUDGET {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            format!("fuzz suite exceeded {TEST_BUDGET:?}: {elapsed:?}"),
-        ));
-    }
-    Ok(())
+mod resilience {
+    disrobe_testkit::stress_suite!(
+        check: super::check,
+        corpus: super::corpus,
+        config: super::config
+    );
 }
 
 #[test]
-#[ignore = "runs only through the parent fuzz protocol"]
-fn fuzz_resilience_worker() -> std::io::Result<()> {
-    let batch_path: PathBuf = std::env::var_os(BATCH_PATH_ENV)
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "missing fuzz worker batch path",
-            )
-        })?;
-    let workspace: PathBuf = std::env::var_os(WORKSPACE_PATH_ENV)
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "missing fuzz worker workspace",
-            )
-        })?;
-    let token: String = std::env::var(WORKER_TOKEN_ENV).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "missing fuzz worker token",
-        )
-    })?;
-    let token_path: PathBuf = workspace.join(WORKER_TOKEN_FILE);
-    let expected_token: String = std::fs::read_to_string(token_path)?;
-    if token != expected_token {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "fuzz worker token did not match its workspace",
-        ));
-    }
-    let cases: Vec<Vec<u8>> = read_batch(&batch_path)?;
-    let input_path: PathBuf = workspace.join("input.bin");
-    let disassembly: PathBuf = workspace.join("native.asm");
-    for (case_index, bytes) in cases.iter().enumerate() {
-        let fingerprint: String = blake3::hash(bytes).to_hex().to_string();
-        std::fs::write(
-            workspace.join(PROGRESS_FILE),
-            format!("case {case_index} ({fingerprint})"),
-        )?;
-        let seed: u64 = u64::try_from(case_index).map_or(0, |value: u64| value);
-        let mut rng: Xorshift64 = Xorshift64::new(0x4e55_1714_0001_0002 ^ seed);
-        let result: std::io::Result<()> = run_case(bytes, &mut rng, &input_path, &disassembly);
-        if let Err(error) = result {
-            return Err(std::io::Error::other(format!(
-                "fuzz case {case_index} ({fingerprint}) failed: {error}"
-            )));
+fn the_saturation_probe_rewrites_the_bytes_it_is_handed_and_replays_from_its_seed() {
+    const SAMPLE: usize = 512;
+    let original: Vec<u8> = vec![0x33u8; SAMPLE];
+    let mut untouched: usize = 0;
+    let mut distinct: Vec<Vec<u8>> = Vec::new();
+    for case_seed in 0..SAMPLE as u64 {
+        let probed: Vec<u8> = saturate(&original, case_seed);
+        assert_eq!(probed, saturate(&original, case_seed));
+        if probed == original {
+            untouched = untouched.saturating_add(1);
+        }
+        if !distinct.contains(&probed) {
+            distinct.push(probed);
         }
     }
-    std::fs::write(
-        workspace.join(COMPLETION_FILE),
-        format!("{token}\n{}", cases.len()),
-    )?;
-    Ok(())
+    assert!(
+        untouched < SAMPLE / 16,
+        "{untouched} of {SAMPLE} probe outputs came back unchanged"
+    );
+    assert!(
+        distinct.len() > SAMPLE / 2,
+        "only {} distinct probe outputs",
+        distinct.len()
+    );
 }
 
 #[test]
-fn bounded_public_nuitka_entrypoints_accept_malformed_inputs_without_panicking()
--> std::io::Result<()> {
-    let cases: Vec<Vec<u8>> = build_bounded_cases();
-    run_bounded_child_batches(&cases)
+fn every_unmutated_seed_including_the_deeply_nested_c_body_finishes() {
+    let scratch: Scratch = Scratch::create(&std::env::temp_dir());
+    for entry in corpus() {
+        let mut rng: XorShift64 = XorShift64::new(PROBE_DOMAIN);
+        probe(entry.bytes(), &scratch, &mut rng);
+    }
 }

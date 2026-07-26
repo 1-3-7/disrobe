@@ -1,9 +1,5 @@
-use std::io::{Read as _, Write as _};
-use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread;
-use std::time::{Duration, Instant};
+#![allow(clippy::expect_used)]
+use std::time::Duration;
 
 use disrobe_core::provenance::ProvenanceHeader;
 use disrobe_pass_sourcedefender::{
@@ -18,49 +14,24 @@ use disrobe_pass_sourcedefender::{
     recover_from_plaintext, recover_layered, recover_layered_with_modern_key,
     render_decoded_with_header, strip_extension, strip_sourcedefender_decorators,
 };
+use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, XorShift64};
 
-const MAX_INPUT_BYTES: usize = 4096;
-const RANDOM_CASES: usize = 96;
-const MUTATIONS_PER_SEED: usize = 32;
-const CASES_PER_BATCH: usize = 16;
-const MAX_BATCH_BYTES: usize = CASES_PER_BATCH * (MAX_INPUT_BYTES + 4);
-const MAX_BATCH_BYTES_U64: u64 = MAX_BATCH_BYTES as u64;
-const BATCH_BUDGET: Duration = Duration::from_secs(5);
-const TEST_BUDGET: Duration = Duration::from_mins(1);
-const BATCH_PATH_ENV: &str = "DISROBE_SOURCEDEFENDER_FUZZ_BATCH";
-const BATCH_INDEX_ENV: &str = "DISROBE_SOURCEDEFENDER_FUZZ_BATCH_INDEX";
+const RANDOM_SPAN_BYTES: usize = 4096;
+const CASES_PER_INPUT: usize = 4096;
+const BATCH_SIZE: usize = 2048;
+const CASE_BUDGET: Duration = Duration::from_millis(10);
+const SUITE_BUDGET: Duration = Duration::from_mins(3);
 
-struct Xorshift64 {
-    state: u64,
-}
-
-impl Xorshift64 {
-    const fn new(seed: u64) -> Self {
-        Self { state: seed | 1 }
-    }
-
-    const fn next_u64(&mut self) -> u64 {
-        let mut value: u64 = self.state;
-        value ^= value << 13;
-        value ^= value >> 7;
-        value ^= value << 17;
-        self.state = value;
-        value
-    }
-
-    fn next_usize(&mut self, bound: usize) -> usize {
-        if bound == 0 {
-            return 0;
-        }
-        let bound_u64: u64 = u64::try_from(bound).map_or(u64::MAX, |value: u64| value);
-        let value: u64 = self.next_u64() % bound_u64;
-        usize::try_from(value).map_or(0, |value: usize| value)
-    }
-
-    const fn next_byte(&mut self) -> u8 {
-        self.next_u64().to_le_bytes()[0]
-    }
-}
+const PROBE_DOMAIN: u64 = 0x5344_465A_0001_0001;
+const SATURATION_DOMAIN: u64 = 0x5344_465A_0001_0002;
+const SATURATION_PATTERNS: [(u8, u32); 1] = [(u8::MAX, 2)];
+const MAX_SCATTERED_OVERWRITES: usize = 32;
+const KEY_BYTES: usize = 32;
+const SOURCE_NAME: &str = "fuzz.pye";
+const INLINED_NAME: &str = "fuzz.py";
+const PYTHON_VERSION: &str = "3.14";
+const HEADER_ELAPSED: Duration = Duration::from_millis(1);
+const CONSTRUCTED_IV: [u8; 16] = [0xA5; 16];
 
 fn legacy_frame_seed() -> Vec<u8> {
     let mut bytes: Vec<u8> = Vec::new();
@@ -107,9 +78,8 @@ fn valid_msgpack_seed() -> Vec<u8> {
         rmpv::Value::String("value = 1\n".into()),
     )]);
     let mut bytes: Vec<u8> = Vec::new();
-    if rmpv::encode::write_value(&mut bytes, &value).is_err() {
-        return Vec::new();
-    }
+    rmpv::encode::write_value(&mut bytes, &value)
+        .expect("a one-entry msgpack map encodes, and an empty seed would silently drop coverage");
     bytes
 }
 
@@ -122,77 +92,44 @@ fn inlined_seed() -> Vec<u8> {
     bytes
 }
 
-fn structured_seeds() -> Vec<Vec<u8>> {
+fn corpus() -> Vec<CorpusEntry> {
     vec![
-        Vec::new(),
-        legacy_frame_seed(),
-        modern_frame_seed(),
-        msgpack_map_seed(),
-        msgpack_array_seed(),
-        msgpack_nesting_seed(),
-        valid_msgpack_seed(),
-        inlined_seed(),
+        CorpusEntry::new("empty", Vec::<u8>::new()),
+        CorpusEntry::new("legacy-frame", legacy_frame_seed()),
+        CorpusEntry::new("modern-frame", modern_frame_seed()),
+        CorpusEntry::new("msgpack-map", msgpack_map_seed()),
+        CorpusEntry::new("msgpack-array", msgpack_array_seed()),
+        CorpusEntry::new("msgpack-nesting", msgpack_nesting_seed()),
+        CorpusEntry::new("msgpack-valid", valid_msgpack_seed()),
+        CorpusEntry::new("inlined", inlined_seed()),
+        CorpusEntry::new("random-span", vec![0u8; RANDOM_SPAN_BYTES]),
     ]
 }
 
-fn mutate(seed: &[u8], rng: &mut Xorshift64) -> Vec<u8> {
-    let mut out: Vec<u8> = seed[..seed.len().min(MAX_INPUT_BYTES)].to_vec();
-    match rng.next_u64() % 7 {
-        0 => {
-            let index: usize = rng.next_usize(out.len());
+fn saturate(bytes: &[u8], case_seed: u64) -> Vec<u8> {
+    let mut rng: XorShift64 = XorShift64::new(case_seed ^ SATURATION_DOMAIN);
+    let mut out: Vec<u8> = bytes.to_vec();
+    let pick: usize = rng.below_usize(SATURATION_PATTERNS.len().saturating_add(1));
+    let Some(&(value, sparsity)): Option<&(u8, u32)> = SATURATION_PATTERNS.get(pick) else {
+        let changes: usize = rng.below_usize(MAX_SCATTERED_OVERWRITES);
+        for _ in 0..changes {
+            let index: usize = rng.below_usize(out.len());
             if let Some(byte) = out.get_mut(index) {
-                *byte ^= 1u8 << rng.next_usize(8);
+                *byte = rng.next_byte();
             }
         }
-        1 => {
-            out.truncate(rng.next_usize(out.len()));
-        }
-        2 => {
-            let changes: usize = rng.next_usize(32);
-            for _ in 0..changes {
-                let index: usize = rng.next_usize(out.len());
-                if let Some(byte) = out.get_mut(index) {
-                    *byte = rng.next_byte();
-                }
-            }
-        }
-        3 => {
-            for byte in &mut out {
-                if rng.next_u64().trailing_zeros() >= 2 {
-                    *byte = u8::MAX;
-                }
-            }
-        }
-        4 => {
-            let additions: usize = rng.next_usize(64);
-            for _ in 0..additions {
-                if out.len() == MAX_INPUT_BYTES {
-                    break;
-                }
-                out.push(rng.next_byte());
-            }
-        }
-        5 => {
-            for byte in &mut out {
-                if rng.next_u64().trailing_zeros() >= 3 {
-                    *byte = b'\n';
-                }
-            }
-        }
-        _ => {
-            let len: usize = rng.next_usize(MAX_INPUT_BYTES);
-            let mut random: Vec<u8> = Vec::with_capacity(len);
-            for _ in 0..len {
-                random.push(rng.next_byte());
-            }
-            out = random;
+        return out;
+    };
+    for byte in &mut out {
+        if rng.next_u64().trailing_zeros() >= sparsity {
+            *byte = value;
         }
     }
     out
 }
 
-fn exercise_byte_entrypoints(bytes: &[u8], rng: &mut Xorshift64) {
-    let mut key_bytes: [u8; 32] = [0u8; 32];
+fn exercise_byte_entrypoints(bytes: &[u8], rng: &mut XorShift64) {
+    let mut key_bytes: [u8; KEY_BYTES] = [0u8; KEY_BYTES];
     for key_byte in &mut key_bytes {
         *key_byte = rng.next_byte();
     }
@@ -211,13 +148,14 @@ fn exercise_byte_entrypoints(bytes: &[u8], rng: &mut Xorshift64) {
     let _: Result<PyeEnvelope> = parse_msgpack_envelope(bytes);
     let _: Result<ParsedPyeArrayEnvelope> = parse_array_envelope(bytes);
     let _: Option<ContainerVariant> = classify_container(bytes);
-    let _: Result<DecryptedPye> = decrypt_pye(bytes, "fuzz.pye");
-    let _: Result<DecryptedPye> = decrypt_pye_with_key(bytes, "fuzz.pye", &key);
+    let _: Result<DecryptedPye> = decrypt_pye(bytes, SOURCE_NAME);
+    let _: Result<DecryptedPye> = decrypt_pye_with_key(bytes, SOURCE_NAME, &key);
     let _: Result<Vec<u8>> = decrypt_modern_gcm_with_key(&framing, bytes, &key_bytes);
     let _: Result<Vec<u8>> = decrypt_modern_gcm_with_key(&framing, truncated, &key_bytes);
-    let _: Result<LayeredRecovery> = recover_layered(bytes, "fuzz.pye");
-    let _: Result<LayeredRecovery> = recover_layered_with_modern_key(bytes, "fuzz.pye", &key_bytes);
-    let _: Result<SourceRecoverOutput> = decrypt_pye_to_source(bytes, "fuzz.pye", options);
+    let _: Result<LayeredRecovery> = recover_layered(bytes, SOURCE_NAME);
+    let _: Result<LayeredRecovery> =
+        recover_layered_with_modern_key(bytes, SOURCE_NAME, &key_bytes);
+    let _: Result<SourceRecoverOutput> = decrypt_pye_to_source(bytes, SOURCE_NAME, options);
     let _: Result<SourceRecoverOutput> = recover_from_plaintext(bytes, None, options);
     let _: Result<SourceRecoverOutput> = recover_from_marshal_bytes(bytes, None, None, options);
 
@@ -225,10 +163,10 @@ fn exercise_byte_entrypoints(bytes: &[u8], rng: &mut Xorshift64) {
         let _: Result<disrobe_pass_sourcedefender::PyeFrame> = parse_pye_frame(text);
         let _: Result<Vec<InlinedBlock>> = locate_inlined_blocks(text);
         let _: Result<InlinedExtraction> =
-            extract_inlined(text, "fuzz.py", InlinedExtractOptions::default());
+            extract_inlined(text, INLINED_NAME, InlinedExtractOptions::default());
         let _: Result<InlinedExtraction> = extract_inlined(
             text,
-            "fuzz.py",
+            INLINED_NAME,
             InlinedExtractOptions {
                 require_known_basename: true,
             },
@@ -237,27 +175,9 @@ fn exercise_byte_entrypoints(bytes: &[u8], rng: &mut Xorshift64) {
         let _: &str = basename_of(text);
         let _: &str = strip_extension(text);
         let _: Result<DerivedKey> = derive_aes_key(text);
-        let _: String = render_decoded_with_header(text, Duration::from_millis(1), "3.14");
-        let _: ProvenanceHeader = python_decoded_header(Duration::from_millis(1), "3.14");
+        let _: String = render_decoded_with_header(text, HEADER_ELAPSED, PYTHON_VERSION);
+        let _: ProvenanceHeader = python_decoded_header(HEADER_ELAPSED, PYTHON_VERSION);
     }
-}
-
-fn exercise_constructed_decrypt_path() {
-    let Some(key): Option<DerivedKey> = derive_aes_key("fuzz").ok() else {
-        return;
-    };
-    let iv: [u8; 16] = [0xA5; 16];
-    let mut ciphertext: Vec<u8> = valid_msgpack_seed();
-    apply_aes_ctr(&mut ciphertext, key.as_bytes(), &iv);
-    let frame: PyeFrame = PyeFrame { iv, ciphertext };
-    let decrypted: DecryptedPye = decrypt_frame(&frame, &key, "fuzz.pye");
-    assert!(decrypted.envelope.is_some());
-    let recovered: Result<SourceRecoverOutput> = recover_from_plaintext(
-        &decrypted.plaintext_msgpack,
-        decrypted.envelope.as_ref(),
-        SourceRecoverOpts::default(),
-    );
-    assert!(recovered.is_ok());
 }
 
 #[cfg(feature = "chain")]
@@ -279,246 +199,72 @@ fn exercise_chain_entrypoints(bytes: &[u8]) {
     let _: Option<disrobe_core::chain::DetectVerdict> = SourceDefenderDetector.detect(&context);
     let _: disrobe_core::error::Result<Artifact> = SOURCEDEFENDER_PASS.run(&artifact);
     let _: disrobe_core::error::Result<Artifact> =
-        SOURCEDEFENDER_PASS.run_with_path(&artifact, Some("fuzz.pye"));
+        SOURCEDEFENDER_PASS.run_with_path(&artifact, Some(SOURCE_NAME));
 }
 
-fn exercise_entrypoints(bytes: &[u8], rng: &mut Xorshift64) {
+fn probe(bytes: &[u8], rng: &mut XorShift64) {
     exercise_byte_entrypoints(bytes, rng);
     #[cfg(feature = "chain")]
     exercise_chain_entrypoints(bytes);
 }
 
-static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-struct TempWorkspace {
-    path: PathBuf,
+fn check(case: &StressCase<'_>) {
+    let mut rng: XorShift64 = XorShift64::new(case.case_seed() ^ PROBE_DOMAIN);
+    probe(case.bytes(), &mut rng);
+    probe(&saturate(case.bytes(), case.case_seed()), &mut rng);
 }
 
-impl TempWorkspace {
-    fn create() -> std::io::Result<Self> {
-        for _ in 0..1024 {
-            let path: PathBuf = workspace_dir();
-            match std::fs::create_dir(&path) {
-                Ok(()) => return Ok(Self { path }),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error),
-            }
-        }
-        Err(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "unable to create unique sourcedefender fuzz workspace",
-        ))
+fn config() -> StressConfig {
+    StressConfig {
+        cases_per_input: CASES_PER_INPUT,
+        batch_size: BATCH_SIZE,
+        case_budget: CASE_BUDGET,
+        suite_budget: SUITE_BUDGET,
+        ..StressConfig::default()
     }
 }
 
-impl Drop for TempWorkspace {
-    fn drop(&mut self) {
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-fn workspace_dir() -> PathBuf {
-    let sequence: u64 = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "disrobe-sourcedefender-fuzz-{}-{sequence}",
-        std::process::id()
-    ))
-}
-
-fn build_cases() -> Vec<Vec<u8>> {
-    let mut rng: Xorshift64 = Xorshift64::new(0x5344_465A_0001_0002);
-    let mut cases: Vec<Vec<u8>> = Vec::new();
-    for _ in 0..RANDOM_CASES {
-        let len: usize = rng.next_usize(MAX_INPUT_BYTES);
-        let mut bytes: Vec<u8> = Vec::with_capacity(len);
-        for _ in 0..len {
-            bytes.push(rng.next_byte());
-        }
-        cases.push(bytes);
-    }
-    let seeds: Vec<Vec<u8>> = structured_seeds();
-    for seed in &seeds {
-        cases.push(seed.clone());
-    }
-    for seed in &seeds {
-        for _ in 0..MUTATIONS_PER_SEED {
-            cases.push(mutate(seed, &mut rng));
-        }
-    }
-    cases
-}
-
-fn write_batch(path: &Path, cases: &[Vec<u8>]) -> std::io::Result<()> {
-    let mut file: std::fs::File = std::fs::File::create(path)?;
-    for case in cases {
-        let len: u32 = u32::try_from(case.len()).map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "fuzz case length does not fit u32",
-            )
-        })?;
-        file.write_all(&len.to_le_bytes())?;
-        file.write_all(case)?;
-    }
-    Ok(())
-}
-
-fn read_batch(path: &Path) -> std::io::Result<Vec<Vec<u8>>> {
-    let file: std::fs::File = std::fs::File::open(path)?;
-    let mut reader: std::io::Take<std::fs::File> = file.take(MAX_BATCH_BYTES_U64 + 1);
-    let mut bytes: Vec<u8> = Vec::with_capacity(MAX_BATCH_BYTES);
-    reader.read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_BATCH_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "fuzz batch exceeds byte limit",
-        ));
-    }
-    let mut cursor: usize = 0;
-    let mut cases: Vec<Vec<u8>> = Vec::with_capacity(CASES_PER_BATCH);
-    while cursor < bytes.len() {
-        if cases.len() == CASES_PER_BATCH {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "fuzz batch exceeds case limit",
-            ));
-        }
-        let length_end: usize = cursor.checked_add(4).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "fuzz batch length cursor overflow",
-            )
-        })?;
-        let length_bytes: [u8; 4] = bytes
-            .get(cursor..length_end)
-            .and_then(|slice: &[u8]| slice.try_into().ok())
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "truncated fuzz batch length",
-                )
-            })?;
-        let case_len: usize = usize::try_from(u32::from_le_bytes(length_bytes)).map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "fuzz batch length does not fit usize",
-            )
-        })?;
-        if case_len > MAX_INPUT_BYTES {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "fuzz batch case exceeds input limit",
-            ));
-        }
-        let case_end: usize = length_end.checked_add(case_len).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "fuzz batch case end overflow",
-            )
-        })?;
-        let case: Vec<u8> = bytes
-            .get(length_end..case_end)
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "truncated fuzz batch case",
-                )
-            })?
-            .to_vec();
-        cases.push(case);
-        cursor = case_end;
-    }
-    Ok(cases)
-}
-
-fn confirm_batch_ran(path: &Path, batch_index: usize, expected: usize) -> std::io::Result<()> {
-    let marker: PathBuf = path.with_extension("done");
-    let recorded: String = std::fs::read_to_string(&marker).map_err(|error: std::io::Error| {
-        std::io::Error::other(format!(
-            "fuzz batch {batch_index} exited cleanly without recording a completion marker, so the worker never ran its cases: {error}"
-        ))
-    })?;
-    let processed: usize = recorded.trim().parse().map_err(|_| {
-        std::io::Error::other(format!(
-            "fuzz batch {batch_index} recorded an unreadable case count `{recorded}`"
-        ))
-    })?;
-    if processed != expected {
-        return Err(std::io::Error::other(format!(
-            "fuzz batch {batch_index} processed {processed} cases but the batch held {expected}"
-        )));
-    }
-    Ok(())
-}
-
-fn run_batch(
-    path: &Path,
-    batch_index: usize,
-    expected: usize,
-    remaining_budget: Duration,
-) -> std::io::Result<()> {
-    let executable: PathBuf = std::env::current_exe()?;
-    let batch_budget: Duration = BATCH_BUDGET.min(remaining_budget);
-    let mut child: std::process::Child = Command::new(executable)
-        .args([
-            "--ignored",
-            "--exact",
-            "fuzz_resilience_worker",
-            "--nocapture",
-        ])
-        .env(BATCH_PATH_ENV, path)
-        .env(BATCH_INDEX_ENV, batch_index.to_string())
-        .stdout(Stdio::null())
-        .spawn()?;
-    let started: Instant = Instant::now();
-    loop {
-        if let Some(status) = child.try_wait()? {
-            if status.success() {
-                return confirm_batch_ran(path, batch_index, expected);
-            }
-            return Err(std::io::Error::other(format!(
-                "fuzz batch {batch_index} exited with {status}"
-            )));
-        }
-        if started.elapsed() > batch_budget {
-            match child.kill() {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
-                Err(error) => return Err(error),
-            }
-            let _: ExitStatus = child.wait()?;
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("fuzz batch {batch_index} exceeded {batch_budget:?}"),
-            ));
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
+mod resilience {
+    disrobe_testkit::stress_suite!(
+        check: super::check,
+        corpus: super::corpus,
+        config: super::config
+    );
 }
 
 #[test]
-#[ignore = "runs only through the parent fuzz protocol"]
-fn fuzz_resilience_worker() -> std::io::Result<()> {
-    let Some(batch_path): Option<std::ffi::OsString> = std::env::var_os(BATCH_PATH_ENV) else {
-        return Ok(());
-    };
-    let cases: Vec<Vec<u8>> = read_batch(Path::new(&batch_path))?;
-    let batch_index: Option<usize> = std::env::var(BATCH_INDEX_ENV)
-        .ok()
-        .and_then(|value: String| value.parse().ok());
-    if batch_index == Some(0) {
-        exercise_constructed_decrypt_path();
+fn the_saturation_probe_rewrites_the_bytes_it_is_handed_and_replays_from_its_seed() {
+    const SAMPLE: usize = 512;
+    let original: Vec<u8> = vec![0x33u8; SAMPLE];
+    let mut untouched: usize = 0;
+    let mut distinct: Vec<Vec<u8>> = Vec::new();
+    for case_seed in 0..SAMPLE as u64 {
+        let probed: Vec<u8> = saturate(&original, case_seed);
+        assert_eq!(probed, saturate(&original, case_seed));
+        if probed == original {
+            untouched = untouched.saturating_add(1);
+        }
+        if !distinct.contains(&probed) {
+            distinct.push(probed);
+        }
     }
-    for (case_index, bytes) in cases.iter().enumerate() {
-        let index: u64 = u64::try_from(case_index).map_or(0, |value: u64| value);
-        let mut rng: Xorshift64 = Xorshift64::new(0x5344_465A_0001_0002 ^ index);
-        exercise_entrypoints(bytes, &mut rng);
+    assert!(
+        untouched < SAMPLE / 16,
+        "{untouched} of {SAMPLE} probe outputs came back unchanged"
+    );
+    assert!(
+        distinct.len() > SAMPLE / 2,
+        "only {} distinct probe outputs",
+        distinct.len()
+    );
+}
+
+#[test]
+fn every_unmutated_seed_finishes() {
+    for entry in corpus() {
+        let mut rng: XorShift64 = XorShift64::new(PROBE_DOMAIN);
+        probe(entry.bytes(), &mut rng);
     }
-    std::fs::write(
-        Path::new(&batch_path).with_extension("done"),
-        cases.len().to_string(),
-    )?;
-    Ok(())
 }
 
 #[test]
@@ -532,32 +278,26 @@ fn malformed_length_markers_return_errors() {
     assert!(parse_pye_frame("").is_err());
     assert!(parse_msgpack_envelope(&map).is_err());
     assert!(parse_array_envelope(&array).is_err());
-    assert!(decrypt_pye(&legacy, "fuzz.pye").is_err());
-    assert!(recover_layered(&legacy, "fuzz.pye").is_err());
+    assert!(decrypt_pye(&legacy, SOURCE_NAME).is_err());
+    assert!(recover_layered(&legacy, SOURCE_NAME).is_err());
     assert!(recover_from_marshal_bytes(&[], None, None, options).is_err());
 }
 
 #[test]
-fn bounded_public_parse_entrypoints_finish_without_panicking() -> std::io::Result<()> {
-    let started: Instant = Instant::now();
-    let workspace: TempWorkspace = TempWorkspace::create()?;
-    let cases: Vec<Vec<u8>> = build_cases();
-    for (batch_index, batch) in cases.chunks(CASES_PER_BATCH).enumerate() {
-        let remaining_budget: Duration =
-            TEST_BUDGET.checked_sub(started.elapsed()).ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    format!("fuzz suite exceeded {TEST_BUDGET:?}"),
-                )
-            })?;
-        let batch_path: PathBuf = workspace.path.join(format!("batch-{batch_index}.bin"));
-        write_batch(&batch_path, batch)?;
-        run_batch(&batch_path, batch_index, batch.len(), remaining_budget)?;
-    }
-    let elapsed: Duration = started.elapsed();
-    assert!(
-        elapsed <= TEST_BUDGET,
-        "bounded parser suite exceeded {TEST_BUDGET:?}: {elapsed:?}"
+fn a_constructed_pye_frame_decrypts_and_recovers_its_source() {
+    let key: DerivedKey = derive_aes_key("fuzz").expect("a passphrase derives an aes key");
+    let mut ciphertext: Vec<u8> = valid_msgpack_seed();
+    apply_aes_ctr(&mut ciphertext, key.as_bytes(), &CONSTRUCTED_IV);
+    let frame: PyeFrame = PyeFrame {
+        iv: CONSTRUCTED_IV,
+        ciphertext,
+    };
+    let decrypted: DecryptedPye = decrypt_frame(&frame, &key, SOURCE_NAME);
+    assert!(decrypted.envelope.is_some());
+    let recovered: Result<SourceRecoverOutput> = recover_from_plaintext(
+        &decrypted.plaintext_msgpack,
+        decrypted.envelope.as_ref(),
+        SourceRecoverOpts::default(),
     );
-    Ok(())
+    assert!(recovered.is_ok());
 }
