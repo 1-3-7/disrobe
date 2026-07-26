@@ -25,6 +25,7 @@ pub mod recon;
 pub mod recovery;
 pub mod rng;
 pub mod rung;
+pub mod scratch;
 pub mod strings;
 pub mod subprocess;
 pub mod time;
