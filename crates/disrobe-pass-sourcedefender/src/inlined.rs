@@ -39,20 +39,20 @@ pub struct InlinedExtractOptions {
 }
 
 #[inline]
-#[must_use]
-pub fn locate_inlined_blocks(source: &str) -> Vec<InlinedBlock> {
+pub fn locate_inlined_blocks(source: &str) -> Result<Vec<InlinedBlock>> {
     if source.len() > MAX_INLINED_SOURCE_BYTES {
-        return Vec::new();
+        return Err(Error::InputLimit {
+            surface: "inlined source",
+            observed: source.len(),
+            limit: MAX_INLINED_SOURCE_BYTES,
+        });
     }
     let bytes: &[u8] = source.as_bytes();
     let begin: &[u8] = PYE_BEGIN_MARKER.as_bytes();
     let end: &[u8] = PYE_END_MARKER.as_bytes();
     let mut blocks: Vec<InlinedBlock> = Vec::new();
     let mut cursor: usize = 0usize;
-    while blocks.len() < MAX_INLINED_BLOCKS {
-        let Some(remaining): Option<&[u8]> = bytes.get(cursor..) else {
-            break;
-        };
+    while let Some(remaining) = bytes.get(cursor..) {
         let Some(begin_off): Option<usize> = find_subslice(remaining, begin) else {
             break;
         };
@@ -66,31 +66,36 @@ pub fn locate_inlined_blocks(source: &str) -> Vec<InlinedBlock> {
         let Some(after_begin_bytes): Option<&[u8]> = bytes.get(after_begin..) else {
             break;
         };
-        if let Some(end_rel) = find_subslice(after_begin_bytes, end) {
-            let Some(end_marker_start): Option<usize> = after_begin.checked_add(end_rel) else {
-                break;
-            };
-            let Some(after_end_marker): Option<usize> = end_marker_start.checked_add(end.len())
-            else {
-                break;
-            };
-            let block_end: usize = scan_line_end(source, after_end_marker);
-            let span: Range<usize> = block_start..block_end;
-            let Some(raw): Option<String> = source.get(span.clone()).map(ToOwned::to_owned) else {
-                break;
-            };
-            let filename_hint: Option<String> = scan_filename_hint(source, block_start);
-            blocks.push(InlinedBlock {
-                span,
-                raw,
-                filename_hint,
-            });
-            cursor = block_end;
-        } else {
+        let Some(end_rel): Option<usize> = find_subslice(after_begin_bytes, end) else {
             break;
+        };
+        let Some(end_marker_start): Option<usize> = after_begin.checked_add(end_rel) else {
+            break;
+        };
+        let Some(after_end_marker): Option<usize> = end_marker_start.checked_add(end.len()) else {
+            break;
+        };
+        let block_end: usize = scan_line_end(source, after_end_marker);
+        let span: Range<usize> = block_start..block_end;
+        let Some(raw): Option<String> = source.get(span.clone()).map(ToOwned::to_owned) else {
+            break;
+        };
+        if blocks.len() >= MAX_INLINED_BLOCKS {
+            return Err(Error::InputLimit {
+                surface: "inlined block count",
+                observed: blocks.len().saturating_add(1),
+                limit: MAX_INLINED_BLOCKS,
+            });
         }
+        let filename_hint: Option<String> = scan_filename_hint(source, block_start);
+        blocks.push(InlinedBlock {
+            span,
+            raw,
+            filename_hint,
+        });
+        cursor = block_end;
     }
-    blocks
+    Ok(blocks)
 }
 
 #[inline]
@@ -99,9 +104,8 @@ pub fn extract_inlined(
     host_filename: &str,
     options: InlinedExtractOptions,
 ) -> Result<InlinedExtraction> {
-    validate_inlined_input(source)?;
+    let blocks: Vec<InlinedBlock> = locate_inlined_blocks(source)?;
     validate_filename(host_filename)?;
-    let blocks: Vec<InlinedBlock> = locate_inlined_blocks(source);
     let mut decrypted: Vec<DecryptedPye> = Vec::with_capacity(blocks.len());
     let mut failures: Vec<InlinedFailure> = Vec::new();
     let mut cache: KeyCache = KeyCache::new();
@@ -143,76 +147,6 @@ pub fn extract_inlined(
         decrypted,
         failures,
     })
-}
-
-fn validate_inlined_input(source: &str) -> Result<()> {
-    if source.len() > MAX_INLINED_SOURCE_BYTES {
-        return Err(Error::InputLimit {
-            surface: "inlined source",
-            observed: source.len(),
-            limit: MAX_INLINED_SOURCE_BYTES,
-        });
-    }
-    let bytes: &[u8] = source.as_bytes();
-    let begin: &[u8] = PYE_BEGIN_MARKER.as_bytes();
-    let end: &[u8] = PYE_END_MARKER.as_bytes();
-    let mut cursor: usize = 0;
-    let mut completed_blocks: usize = 0;
-    loop {
-        let Some(remaining): Option<&[u8]> = bytes.get(cursor..) else {
-            return Ok(());
-        };
-        let Some(begin_off): Option<usize> = find_subslice(remaining, begin) else {
-            return Ok(());
-        };
-        let Some(absolute_begin): Option<usize> = cursor.checked_add(begin_off) else {
-            return Err(Error::InputLimit {
-                surface: "inlined block offset",
-                observed: usize::MAX,
-                limit: MAX_INLINED_SOURCE_BYTES,
-            });
-        };
-        let Some(after_begin): Option<usize> = absolute_begin.checked_add(begin.len()) else {
-            return Err(Error::InputLimit {
-                surface: "inlined block offset",
-                observed: usize::MAX,
-                limit: MAX_INLINED_SOURCE_BYTES,
-            });
-        };
-        let Some(after_begin_bytes): Option<&[u8]> = bytes.get(after_begin..) else {
-            return Ok(());
-        };
-        let Some(end_rel): Option<usize> = find_subslice(after_begin_bytes, end) else {
-            return Ok(());
-        };
-        let Some(end_marker_start): Option<usize> = after_begin.checked_add(end_rel) else {
-            return Err(Error::InputLimit {
-                surface: "inlined block offset",
-                observed: usize::MAX,
-                limit: MAX_INLINED_SOURCE_BYTES,
-            });
-        };
-        let Some(after_end): Option<usize> = end_marker_start.checked_add(end.len()) else {
-            return Err(Error::InputLimit {
-                surface: "inlined block offset",
-                observed: usize::MAX,
-                limit: MAX_INLINED_SOURCE_BYTES,
-            });
-        };
-        completed_blocks = completed_blocks.checked_add(1).ok_or(Error::InputLimit {
-            surface: "inlined block count",
-            observed: usize::MAX,
-            limit: MAX_INLINED_BLOCKS,
-        })?;
-        if completed_blocks > MAX_INLINED_BLOCKS {
-            return Err(Error::InputLimit {
-                surface: "inlined block count",
-                observed: completed_blocks,
-                limit: MAX_INLINED_BLOCKS,
-            });
-        }
-        cursor = scan_line_end(source, after_end);
-    }
 }
 
 #[inline]
@@ -306,13 +240,15 @@ fn parse_string_literal(input: &str) -> Option<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 
     #[test]
     fn locates_zero_blocks_in_plain_source() {
         let src: &str = "def f():\n    return 1\n";
-        let blocks: Vec<InlinedBlock> = locate_inlined_blocks(src);
+        let blocks: Vec<InlinedBlock> =
+            locate_inlined_blocks(src).expect("a bounded fixture scans");
         assert!(blocks.is_empty());
     }
 
@@ -330,7 +266,8 @@ mod tests {
             "KLMNO\n",
             "---END SOURCEDEFENDER FILE----\n",
         );
-        let blocks: Vec<InlinedBlock> = locate_inlined_blocks(src);
+        let blocks: Vec<InlinedBlock> =
+            locate_inlined_blocks(src).expect("a bounded fixture scans");
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].filename_hint.as_deref(), Some("alpha"));
         assert_eq!(blocks[1].filename_hint.as_deref(), Some("beta"));
@@ -377,19 +314,44 @@ mod tests {
     #[test]
     fn unterminated_block_is_ignored() {
         let src: &str = "--BEGIN SOURCEDEFENDER FILE---\nABCDE\nno end marker\n";
-        let blocks: Vec<InlinedBlock> = locate_inlined_blocks(src);
+        let blocks: Vec<InlinedBlock> =
+            locate_inlined_blocks(src).expect("a bounded fixture scans");
         assert!(blocks.is_empty());
     }
 
     #[test]
-    fn locating_blocks_stops_at_the_block_budget() {
+    fn locating_blocks_reports_passing_the_block_budget() {
         let mut source: String = String::new();
         for _ in 0..=MAX_INLINED_BLOCKS {
             source.push_str("--BEGIN SOURCEDEFENDER FILE---\n");
             source.push_str("x\n");
             source.push_str("---END SOURCEDEFENDER FILE----\n");
         }
-        let blocks: Vec<InlinedBlock> = locate_inlined_blocks(&source);
+        let outcome: Result<Vec<InlinedBlock>> = locate_inlined_blocks(&source);
+        match outcome {
+            Err(Error::InputLimit {
+                surface,
+                observed,
+                limit,
+            }) => {
+                assert_eq!(surface, "inlined block count");
+                assert_eq!(limit, MAX_INLINED_BLOCKS);
+                assert_eq!(observed, MAX_INLINED_BLOCKS.saturating_add(1));
+            }
+            other => panic!("passing the block budget must be reported, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn locating_exactly_the_block_budget_is_accepted() {
+        let mut source: String = String::new();
+        for _ in 0..MAX_INLINED_BLOCKS {
+            source.push_str("--BEGIN SOURCEDEFENDER FILE---\n");
+            source.push_str("x\n");
+            source.push_str("---END SOURCEDEFENDER FILE----\n");
+        }
+        let blocks: Vec<InlinedBlock> =
+            locate_inlined_blocks(&source).expect("the budget itself is allowed");
         assert_eq!(blocks.len(), MAX_INLINED_BLOCKS);
     }
 
@@ -421,7 +383,8 @@ mod tests {
              path is exercised; got a boundary at {naive_scan_start}"
         );
 
-        let blocks: Vec<InlinedBlock> = locate_inlined_blocks(&src);
+        let blocks: Vec<InlinedBlock> =
+            locate_inlined_blocks(&src).expect("a bounded fixture scans");
         assert_eq!(blocks.len(), 1);
         assert_eq!(
             blocks[0].filename_hint.as_deref(),
