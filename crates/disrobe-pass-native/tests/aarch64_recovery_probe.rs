@@ -489,9 +489,14 @@ fn balanced_frames_without_a_prologue_template_recover() {
     );
 }
 
+const MULTI_DEPTH_INCOMING_READ: &[u8] = &[
+    0xff, 0x43, 0x00, 0xd1, 0xe0, 0x0b, 0x40, 0xf9, 0xff, 0x43, 0x00, 0xd1, 0xe1, 0x13, 0x40, 0xf9,
+    0xff, 0x83, 0x00, 0x91, 0xc0, 0x03, 0x5f, 0xd6,
+];
+
 #[test]
 fn untrackable_frames_still_reject() {
-    let cases: [(&[u8], &str); 5] = [
+    let cases: [(&[u8], &str); 6] = [
         (
             DYNAMIC_ALLOCATION,
             "stack pointer is used outside a modelled frame adjustment",
@@ -511,6 +516,10 @@ fn untrackable_frames_still_reject() {
         (
             CLOBBERED_LINK_REGISTER,
             "a callee-saved register is not provably restored at the return",
+        ),
+        (
+            MULTI_DEPTH_INCOMING_READ,
+            "stack slots are accessed at more than one stack-pointer offset",
         ),
     ];
     for (bytes, expected) in cases {
