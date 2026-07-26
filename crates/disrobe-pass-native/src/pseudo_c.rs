@@ -1982,7 +1982,11 @@ fn build_leaf_items(
         }
         dividend_high = track_dividend_high(dividend_high, &stmt);
         match &stmt {
-            Stmt::Assign { .. } => {}
+            Stmt::Assign { .. } => {
+                if x86_mnemonic_writes_flags(&insn.mnemonic) {
+                    flags = None;
+                }
+            }
             Stmt::BinAssign { dest, op, .. } => {
                 flags = match flag_effect_bin(*op) {
                     FlagEffect::Sign => Some(Flags::Sign { result: *dest }),
@@ -18391,6 +18395,26 @@ mod tests {
             source.contains("? (r_rdx) & 0xffffffffULL : r_rax"),
             "the conditional move must survive as a select when the compare is re-executed: {source}"
         );
+    }
+
+    #[test]
+    fn a_self_xor_between_the_predicate_and_the_select_invalidates_the_compare() {
+        let zeroed: [u8; 16] = [
+            0x66, 0x0f, 0x2e, 0xc1, 0x0f, 0x9b, 0xc0, 0x0f, 0xb6, 0xc0, 0x31, 0xd2, 0x48, 0x0f,
+            0x45, 0xc2,
+        ];
+        let mut body: Vec<u8> = zeroed.to_vec();
+        body.push(0xc3);
+        let recovered: Result<LeafRecovery> = recover_leaf_function_abi(&body, 0x9200, Abi::SysV);
+        match recovered {
+            Err(_) => {}
+            Ok(rec) => assert!(
+                !rec.source
+                    .contains("(fp_d_from_bits(x_xmm0)) == (fp_d_from_bits(x_xmm1))"),
+                "a self-xor overwrites the flags the compare established, so the select must not be folded into an ordered equality: {}",
+                rec.source
+            ),
+        }
     }
 
     #[test]
