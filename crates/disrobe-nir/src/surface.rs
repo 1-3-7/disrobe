@@ -7,7 +7,8 @@ use crate::hir::{
 };
 use crate::types::{BinaryOp, NirInstr, NirModule, NirSymbol, SourceLang, SourceRef};
 
-const MAX_SURFACE_DEPTH: usize = 4096;
+const MAX_SURFACE_DEPTH: usize = 128;
+const UNRECOVERED_EXPRESSION: &str = "__unrecovered_expression";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -64,21 +65,52 @@ pub enum SurfaceExpr {
 
 impl SurfaceExpr {
     fn referenced_locals(&self, out: &mut BTreeSet<String>) {
-        match self {
-            Self::Local { name } => {
-                out.insert(name.clone());
-            }
-            Self::Unary { operand, .. } => operand.referenced_locals(out),
-            Self::Binary { lhs, rhs, .. } => {
-                lhs.referenced_locals(out);
-                rhs.referenced_locals(out);
-            }
-            Self::Call { args, .. } => {
-                for arg in args {
-                    arg.referenced_locals(out);
+        let mut pending: Vec<&Self> = vec![self];
+        while let Some(expression) = pending.pop() {
+            match expression {
+                Self::Local { name } => {
+                    out.insert(name.clone());
                 }
+                Self::Unary { operand, .. } => pending.push(operand),
+                Self::Binary { lhs, rhs, .. } => {
+                    pending.push(lhs);
+                    pending.push(rhs);
+                }
+                Self::Call { args, .. } => pending.extend(args),
+                Self::Literal { .. } | Self::Field { .. } | Self::Raw { .. } => {}
             }
-            Self::Literal { .. } | Self::Field { .. } | Self::Raw { .. } => {}
+        }
+    }
+
+    fn unlink_children(&mut self, pending: &mut Vec<Self>) {
+        match self {
+            Self::Unary { operand, .. } => {
+                let operand: Self = std::mem::replace(
+                    operand.as_mut(),
+                    Self::Raw {
+                        text: String::new(),
+                    },
+                );
+                pending.push(operand);
+            }
+            Self::Binary { lhs, rhs, .. } => {
+                let lhs: Self = std::mem::replace(
+                    lhs.as_mut(),
+                    Self::Raw {
+                        text: String::new(),
+                    },
+                );
+                let rhs: Self = std::mem::replace(
+                    rhs.as_mut(),
+                    Self::Raw {
+                        text: String::new(),
+                    },
+                );
+                pending.push(lhs);
+                pending.push(rhs);
+            }
+            Self::Call { args, .. } => pending.extend(std::mem::take(args)),
+            Self::Literal { .. } | Self::Local { .. } | Self::Field { .. } | Self::Raw { .. } => {}
         }
     }
 
@@ -94,6 +126,16 @@ impl SurfaceExpr {
             | Self::Binary { .. }
             | Self::Call { .. }
             | Self::Raw { .. } => SurfaceType::Unknown,
+        }
+    }
+}
+
+impl Drop for SurfaceExpr {
+    fn drop(&mut self) {
+        let mut pending: Vec<Self> = Vec::new();
+        self.unlink_children(&mut pending);
+        while let Some(mut expression) = pending.pop() {
+            expression.unlink_children(&mut pending);
         }
     }
 }
@@ -172,6 +214,45 @@ pub enum SurfaceStmt {
         blocks: Vec<SurfaceCase>,
     },
     Nop,
+}
+
+impl SurfaceStmt {
+    fn unlink_children(&mut self, pending: &mut Vec<Self>) {
+        match self {
+            Self::Block { body } => pending.extend(std::mem::take(body)),
+            Self::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                let then_branch: Self = std::mem::replace(then_branch.as_mut(), Self::Nop);
+                let else_branch: Self = std::mem::replace(else_branch.as_mut(), Self::Nop);
+                pending.push(then_branch);
+                pending.push(else_branch);
+            }
+            Self::Loop { body, .. } => {
+                let body: Self = std::mem::replace(body.as_mut(), Self::Nop);
+                pending.push(body);
+            }
+            Self::Leaf { .. }
+            | Self::Break { .. }
+            | Self::Continue { .. }
+            | Self::Return { .. }
+            | Self::Switch { .. }
+            | Self::GotoGraph { .. }
+            | Self::Nop => {}
+        }
+    }
+}
+
+impl Drop for SurfaceStmt {
+    fn drop(&mut self) {
+        let mut pending: Vec<Self> = Vec::new();
+        self.unlink_children(&mut pending);
+        while let Some(mut statement) = pending.pop() {
+            statement.unlink_children(&mut pending);
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -353,8 +434,16 @@ pub fn surfacify_module(module: &HirModule) -> SurfaceModule {
 
 #[must_use]
 pub fn surfacify_function(function: &HirFunction) -> SurfaceFunction {
+    let exceeded: bool = hir_stmt_exceeds_depth(&function.body);
+    let fallback: Option<HirStmt> = if exceeded {
+        let nir: crate::types::NirFunction = function.to_nir_function();
+        Some(crate::hir::complete_fallback_body(&nir))
+    } else {
+        None
+    };
+    let input_body: &HirStmt = fallback.as_ref().unwrap_or(&function.body);
     let mut lifter: Lifter = Lifter::new();
-    let body: SurfaceStmt = lifter.lift(&function.body, 0);
+    let body: SurfaceStmt = lifter.lift(input_body, 0);
     let mut declared: BTreeMap<String, SurfaceType> = BTreeMap::new();
     collect_locals(&body, &mut declared);
     let locals: Vec<SurfaceLocal> = declared
@@ -373,9 +462,43 @@ pub fn surfacify_function(function: &HirFunction) -> SurfaceFunction {
         is_export: function.is_export,
         locals,
         body,
-        structured: function.structured && lifter.complete,
+        structured: function.structured && !exceeded && lifter.complete,
         source: function.source.clone(),
     }
+}
+
+fn hir_stmt_exceeds_depth(stmt: &HirStmt) -> bool {
+    let mut pending: Vec<(&HirStmt, usize)> = vec![(stmt, 0)];
+    while let Some((current, depth)) = pending.pop() {
+        if depth >= MAX_SURFACE_DEPTH {
+            return true;
+        }
+        let child_depth: usize = depth.saturating_add(1);
+        match current {
+            HirStmt::Seq { body } => {
+                for child in body {
+                    pending.push((child, child_depth));
+                }
+            }
+            HirStmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                pending.push((then_branch, child_depth));
+                pending.push((else_branch, child_depth));
+            }
+            HirStmt::Loop { body, .. } => pending.push((body, child_depth)),
+            HirStmt::Leaf { .. }
+            | HirStmt::Break { .. }
+            | HirStmt::Continue { .. }
+            | HirStmt::Return { .. }
+            | HirStmt::Dispatch { .. }
+            | HirStmt::GotoGraph { .. }
+            | HirStmt::Empty => {}
+        }
+    }
+    false
 }
 
 struct Lifter {
@@ -401,7 +524,7 @@ impl Lifter {
                     .collect();
                 block(lowered)
             }
-            HirStmt::Leaf { block_start, stmts } => leaf(*block_start, stmts),
+            HirStmt::Leaf { block_start, stmts } => self.lift_leaf(*block_start, stmts),
             HirStmt::If {
                 cond,
                 then_branch,
@@ -425,97 +548,131 @@ impl Lifter {
             HirStmt::Break { label } => SurfaceStmt::Break { label: *label },
             HirStmt::Continue { label } => SurfaceStmt::Continue { label: *label },
             HirStmt::Return { value } => SurfaceStmt::Return {
-                value: value.as_ref().map(lift_expr),
+                value: value
+                    .as_ref()
+                    .map(|expression: &HirExpr| self.lift_expr(expression, 0)),
             },
             HirStmt::Dispatch { entry, cases } => SurfaceStmt::Switch {
                 entry: *entry,
-                cases: cases.iter().map(lift_case).collect(),
+                cases: cases
+                    .iter()
+                    .map(|case: &HirDispatchCase| self.lift_case(case))
+                    .collect(),
             },
             HirStmt::GotoGraph { entry, blocks } => SurfaceStmt::GotoGraph {
                 entry: *entry,
-                blocks: blocks.iter().map(lift_case).collect(),
+                blocks: blocks
+                    .iter()
+                    .map(|case: &HirDispatchCase| self.lift_case(case))
+                    .collect(),
             },
+        }
+    }
+
+    fn lift_case(&mut self, case: &HirDispatchCase) -> SurfaceCase {
+        SurfaceCase {
+            block_start: case.block_start,
+            statements: case
+                .stmts
+                .iter()
+                .map(|leaf: &HirLeafStmt| self.lift_leaf_stmt(leaf))
+                .collect(),
+            successors: case.successors.clone(),
+        }
+    }
+
+    fn lift_leaf(&mut self, block_start: u64, stmts: &[HirLeafStmt]) -> SurfaceStmt {
+        SurfaceStmt::Leaf {
+            block_start,
+            statements: stmts
+                .iter()
+                .map(|leaf: &HirLeafStmt| self.lift_leaf_stmt(leaf))
+                .collect(),
+        }
+    }
+
+    fn lift_leaf_stmt(&mut self, leaf: &HirLeafStmt) -> SurfaceLeaf {
+        SurfaceLeaf {
+            instr: leaf.instr.clone(),
+            stmt: self.lift_statement(&leaf.stmt),
+        }
+    }
+
+    fn lift_statement(&mut self, stmt: &HirInstrStmt) -> SurfaceStatement {
+        match stmt {
+            HirInstrStmt::Assign { dst, value } => SurfaceStatement::Assign {
+                target: self.lift_expr(dst, 0),
+                value: self.lift_expr(value, 0),
+            },
+            HirInstrStmt::Store { cell, value } => SurfaceStatement::Store {
+                cell: self.lift_expr(cell, 0),
+                value: self.lift_expr(value, 0),
+            },
+            HirInstrStmt::Call { target, args } => {
+                let lowered: Vec<SurfaceExpr> = args
+                    .iter()
+                    .map(|expression: &HirExpr| self.lift_expr(expression, 0))
+                    .collect();
+                SurfaceStatement::Call {
+                    target: target.clone(),
+                    args: lowered,
+                }
+            }
+            HirInstrStmt::Effect { expr } => SurfaceStatement::Expr {
+                value: self.lift_expr(expr, 0),
+            },
+        }
+    }
+
+    fn lift_expr(&mut self, expr: &HirExpr, depth: usize) -> SurfaceExpr {
+        if depth >= MAX_SURFACE_DEPTH {
+            self.complete = false;
+            return SurfaceExpr::Raw {
+                text: UNRECOVERED_EXPRESSION.to_owned(),
+            };
+        }
+        let child_depth: usize = depth.saturating_add(1);
+        match expr {
+            HirExpr::Const { text } => SurfaceExpr::Literal { text: text.clone() },
+            HirExpr::Var { name } => SurfaceExpr::Local { name: name.clone() },
+            HirExpr::Mem { cell } => SurfaceExpr::Field { cell: cell.clone() },
+            HirExpr::Unary { op, operand } => SurfaceExpr::Unary {
+                op: *op,
+                operand: Box::new(self.lift_expr(operand, child_depth)),
+            },
+            HirExpr::Binary { op, lhs, rhs } => SurfaceExpr::Binary {
+                op: *op,
+                lhs: Box::new(self.lift_expr(lhs, child_depth)),
+                rhs: Box::new(self.lift_expr(rhs, child_depth)),
+            },
+            HirExpr::Call { target, args } => {
+                let lowered: Vec<SurfaceExpr> = args
+                    .iter()
+                    .map(|expression: &HirExpr| self.lift_expr(expression, child_depth))
+                    .collect();
+                SurfaceExpr::Call {
+                    target: target.clone(),
+                    args: lowered,
+                }
+            }
+            HirExpr::Unknown { text } => SurfaceExpr::Raw { text: text.clone() },
         }
     }
 }
 
 fn block(parts: Vec<SurfaceStmt>) -> SurfaceStmt {
     let mut flat: Vec<SurfaceStmt> = Vec::with_capacity(parts.len());
-    for part in parts {
-        match part {
+    for mut part in parts {
+        match &mut part {
             SurfaceStmt::Nop => {}
-            SurfaceStmt::Block { body } => flat.extend(body),
-            other => flat.push(other),
+            SurfaceStmt::Block { body } => flat.extend(std::mem::take(body)),
+            _ => flat.push(part),
         }
     }
     match flat.len() {
         0 => SurfaceStmt::Nop,
         1 => flat.into_iter().next().unwrap_or(SurfaceStmt::Nop),
         _ => SurfaceStmt::Block { body: flat },
-    }
-}
-
-fn leaf(block_start: u64, stmts: &[HirLeafStmt]) -> SurfaceStmt {
-    SurfaceStmt::Leaf {
-        block_start,
-        statements: stmts.iter().map(lift_leaf).collect(),
-    }
-}
-
-fn lift_case(case: &HirDispatchCase) -> SurfaceCase {
-    SurfaceCase {
-        block_start: case.block_start,
-        statements: case.stmts.iter().map(lift_leaf).collect(),
-        successors: case.successors.clone(),
-    }
-}
-
-fn lift_leaf(leaf: &HirLeafStmt) -> SurfaceLeaf {
-    SurfaceLeaf {
-        instr: leaf.instr.clone(),
-        stmt: lift_statement(&leaf.stmt),
-    }
-}
-
-fn lift_statement(stmt: &HirInstrStmt) -> SurfaceStatement {
-    match stmt {
-        HirInstrStmt::Assign { dst, value } => SurfaceStatement::Assign {
-            target: lift_expr(dst),
-            value: lift_expr(value),
-        },
-        HirInstrStmt::Store { cell, value } => SurfaceStatement::Store {
-            cell: lift_expr(cell),
-            value: lift_expr(value),
-        },
-        HirInstrStmt::Call { target, args } => SurfaceStatement::Call {
-            target: target.clone(),
-            args: args.iter().map(lift_expr).collect(),
-        },
-        HirInstrStmt::Effect { expr } => SurfaceStatement::Expr {
-            value: lift_expr(expr),
-        },
-    }
-}
-
-fn lift_expr(expr: &HirExpr) -> SurfaceExpr {
-    match expr {
-        HirExpr::Const { text } => SurfaceExpr::Literal { text: text.clone() },
-        HirExpr::Var { name } => SurfaceExpr::Local { name: name.clone() },
-        HirExpr::Mem { cell } => SurfaceExpr::Field { cell: cell.clone() },
-        HirExpr::Unary { op, operand } => SurfaceExpr::Unary {
-            op: *op,
-            operand: Box::new(lift_expr(operand)),
-        },
-        HirExpr::Binary { op, lhs, rhs } => SurfaceExpr::Binary {
-            op: *op,
-            lhs: Box::new(lift_expr(lhs)),
-            rhs: Box::new(lift_expr(rhs)),
-        },
-        HirExpr::Call { target, args } => SurfaceExpr::Call {
-            target: target.clone(),
-            args: args.iter().map(lift_expr).collect(),
-        },
-        HirExpr::Unknown { text } => SurfaceExpr::Raw { text: text.clone() },
     }
 }
 
@@ -723,6 +880,7 @@ fn collect_instructions(stmt: &SurfaceStmt, out: &mut Vec<NirInstr>) {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::emit::emit_pseudo_source;
     use crate::hir::structurize_function;
     use crate::types::{NirFunction, NirOp};
 
@@ -922,5 +1080,122 @@ mod tests {
         let first: SurfaceFunction = surfacify_function(&structurize_function(&f));
         let second: SurfaceFunction = surfacify_function(&structurize_function(&f));
         assert_eq!(first, second);
+    }
+
+    fn hir_function(body: HirStmt) -> HirFunction {
+        HirFunction {
+            name: "deep".to_owned(),
+            address: 0,
+            end: 1,
+            is_export: false,
+            body,
+            structured: true,
+            source: SourceRef::new(SourceLang::NativeX86, 0),
+        }
+    }
+
+    fn nested_hir_expression(depth: usize) -> HirExpr {
+        let mut expression: HirExpr = HirExpr::Const {
+            text: "1".to_owned(),
+        };
+        for _index in 0..depth {
+            expression = HirExpr::Unary {
+                op: BinaryOp::Neg,
+                operand: Box::new(expression),
+            };
+        }
+        expression
+    }
+
+    #[test]
+    fn expression_past_bound_is_marked_unrecovered() {
+        let hir: HirFunction = hir_function(HirStmt::Return {
+            value: Some(nested_hir_expression(MAX_SURFACE_DEPTH)),
+        });
+        let surface: SurfaceFunction = surfacify_function(&hir);
+        let source: String = emit_pseudo_source(&surface).expect("emit bounded expression");
+        assert!(!surface.structured);
+        assert!(source.contains("unrecovered"), "got:\n{source}");
+    }
+
+    #[test]
+    fn maximum_bounded_expression_surfacifies_successfully() {
+        let hir: HirFunction = hir_function(HirStmt::Return {
+            value: Some(nested_hir_expression(MAX_SURFACE_DEPTH - 1)),
+        });
+        let surface: SurfaceFunction = surfacify_function(&hir);
+        assert!(surface.structured);
+        let source: String = emit_pseudo_source(&surface).expect("emit bounded expression");
+        assert!(source.contains('1'));
+    }
+
+    #[test]
+    fn region_past_bound_uses_complete_surface_graph_fallback() {
+        let instruction: NirInstr = instr(0, NirOp::Const, "mov", &["eax", "1"]);
+        let mut body: HirStmt = HirStmt::Leaf {
+            block_start: 0,
+            stmts: vec![HirLeafStmt {
+                instr: instruction,
+                stmt: HirInstrStmt::Effect {
+                    expr: HirExpr::Unknown {
+                        text: "mov".to_owned(),
+                    },
+                },
+            }],
+        };
+        for index in 0..MAX_SURFACE_DEPTH {
+            body = HirStmt::Loop {
+                label: u64::try_from(index).expect("loop label"),
+                body: Box::new(body),
+            };
+        }
+        let hir: HirFunction = hir_function(body);
+        let surface: SurfaceFunction = surfacify_function(&hir);
+        assert!(!surface.structured);
+        assert!(matches!(
+            surface.body,
+            SurfaceStmt::GotoGraph { entry: 0, .. }
+        ));
+        assert_eq!(surface.instruction_addresses(), BTreeSet::from([0]));
+        let source: String = emit_pseudo_source(&surface).expect("emit graph fallback");
+        assert!(source.contains("unrecovered"), "got:\n{source}");
+    }
+
+    #[test]
+    fn deep_surface_expression_drop_does_not_use_tree_depth_as_call_depth() {
+        let handle: std::thread::JoinHandle<()> = std::thread::Builder::new()
+            .stack_size(1_048_576)
+            .spawn(|| {
+                let mut expression: SurfaceExpr = SurfaceExpr::Literal {
+                    text: "1".to_owned(),
+                };
+                for _index in 0..100_000 {
+                    expression = SurfaceExpr::Unary {
+                        op: BinaryOp::Neg,
+                        operand: Box::new(expression),
+                    };
+                }
+                std::hint::black_box(&expression);
+            })
+            .expect("spawn surface expression drop thread");
+        handle.join().expect("surface expression drop thread");
+    }
+
+    #[test]
+    fn deep_surface_region_drop_does_not_use_tree_depth_as_call_depth() {
+        let handle: std::thread::JoinHandle<()> = std::thread::Builder::new()
+            .stack_size(1_048_576)
+            .spawn(|| {
+                let mut statement: SurfaceStmt = SurfaceStmt::Nop;
+                for index in 0..100_000 {
+                    statement = SurfaceStmt::Loop {
+                        label: u64::try_from(index).expect("loop label"),
+                        body: Box::new(statement),
+                    };
+                }
+                std::hint::black_box(&statement);
+            })
+            .expect("spawn surface region drop thread");
+        handle.join().expect("surface region drop thread");
     }
 }
