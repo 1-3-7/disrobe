@@ -12,6 +12,7 @@ use super::globals;
 use super::output::{self, OutputFormat};
 use super::progress_ui::StageSpinner;
 use disrobe_binfmt::{import_graph_dot, parse_native};
+use disrobe_core::scratch::ScratchDir;
 
 const GHIDRA_DECOMPILE_TIMEOUT: Duration = Duration::from_mins(10);
 const MAX_CAPTURE_OUTPUT: usize = 4 * 1024 * 1024;
@@ -787,11 +788,14 @@ fn decompile_ghidra(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> 
     std::fs::create_dir_all(&out_dir)
         .map_err(|e| miette::miette!("DR-NATIVE-0002: cannot create out dir: {e}"))?;
 
-    let project_dir: PathBuf = out_dir.join("ghidra-project");
+    let workspace: ScratchDir = ScratchDir::create("ghidra-decompile")
+        .map_err(|e| miette::miette!("DR-NATIVE-0003: cannot create ghidra project dir: {e}"))?;
+
+    let project_dir: PathBuf = workspace.path().join("project");
     std::fs::create_dir_all(&project_dir)
         .map_err(|e| miette::miette!("DR-NATIVE-0003: cannot create ghidra project dir: {e}"))?;
 
-    let script_dir: PathBuf = out_dir.join("scripts");
+    let script_dir: PathBuf = workspace.path().join("scripts");
     std::fs::create_dir_all(&script_dir)
         .map_err(|e| miette::miette!("DR-NATIVE-0008: cannot create scripts dir: {e}"))?;
     let script_name: &str = "DisrobeDecompileScript.java";
