@@ -62,7 +62,29 @@ pub fn analyze(image: &[u8]) -> crate::error::Result<PassSummary> {
             pe.sections.len()
         )
     });
-    let clr: ClrHeader = parse_clr_header(image, &pe)?;
+    let clr: ClrHeader = match parse_clr_header(image, &pe) {
+        Ok(header) => header,
+        Err(managed_error) => {
+            let aot: AotReport = detect_aot(image);
+            if !aot.is_native_aot {
+                return Err(managed_error);
+            }
+            dbg_kv("native_aot_only", || {
+                aot.ready_to_run.as_ref().map_or_else(
+                    || "no ready-to-run header".to_owned(),
+                    |header: &crate::aot::ReadyToRunHeader| {
+                        format!(
+                            "ready-to-run {}.{} with {} section(s)",
+                            header.major_version,
+                            header.minor_version,
+                            header.sections.len()
+                        )
+                    },
+                )
+            });
+            return Ok(native_aot_summary(&pe, &aot));
+        }
+    };
     let root: MetadataRoot = parse_metadata_root(image, &pe, &clr)?;
     let runtime: RuntimeLabel = root.runtime_label();
     dbg_kv("runtime", || {
@@ -176,6 +198,27 @@ pub fn analyze(image: &[u8]) -> crate::error::Result<PassSummary> {
         control_flow_flattening,
         inlined_literals,
     })
+}
+
+fn native_aot_summary(pe: &PeImage, aot: &AotReport) -> PassSummary {
+    PassSummary {
+        pe_bitness: format!("{:?}", pe.bitness),
+        machine: pe.machine,
+        clr_runtime_version: String::new(),
+        runtime_label: RuntimeLabel::Unknown,
+        stream_names: Vec::new(),
+        r2r_present: false,
+        native_aot: aot.is_native_aot,
+        primary_protector: None,
+        protectors_detected: Vec::new(),
+        opcode_table_size: 0,
+        opcode_spec_coverage_pct: 0,
+        recovered_constants: Vec::new(),
+        koivm: None,
+        eazvm: None,
+        control_flow_flattening: None,
+        inlined_literals: Vec::new(),
+    }
 }
 
 fn analyze_koivm(image: &[u8], detection: &mut DetectionReport) -> Option<KoiVmSummary> {

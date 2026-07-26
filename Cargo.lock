@@ -1849,6 +1849,7 @@ dependencies = [
  "delharc",
  "disrobe-bytes",
  "disrobe-core",
+ "disrobe-testkit",
  "flate2",
  "liblzma",
  "lz4_flex",
