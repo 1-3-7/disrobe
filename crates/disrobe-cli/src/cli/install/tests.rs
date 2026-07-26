@@ -2,6 +2,37 @@
 use super::*;
 
 #[test]
+fn the_install_log_stops_growing_at_its_bound_and_keeps_the_newest_entries() {
+    let dir: PathBuf = disrobe_core::scratch::scratch_root().join("install-log-bound");
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let log: PathBuf = dir.join("doctor-log.jsonl");
+    let overflow: usize = MAX_INSTALL_LOG_ENTRIES + 250;
+    let mut seeded: String = String::with_capacity(overflow * 12);
+    for i in 0..overflow {
+        use std::fmt::Write as _;
+        writeln!(seeded, "{{\"n\":{i}}}").expect("seed line");
+    }
+    std::fs::write(&log, seeded).expect("seed log");
+
+    trim_install_log(&log).expect("trim");
+
+    let after: String = std::fs::read_to_string(&log).expect("read log");
+    let lines: Vec<&str> = after.lines().collect();
+    assert_eq!(
+        lines.len(),
+        MAX_INSTALL_LOG_ENTRIES,
+        "an append-only diagnostic log must stop at its bound rather than growing forever"
+    );
+    let newest: String = format!("{{\"n\":{}}}", overflow - 1);
+    assert_eq!(
+        lines.last().copied(),
+        Some(newest.as_str()),
+        "trimming must drop the oldest entries and keep the newest, which are the useful ones"
+    );
+    let _: std::io::Result<()> = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn map_has_minimum_coverage() {
     let m: BTreeMap<&'static str, InstallSpec> = install_action_map();
     assert!(m.len() >= 30, "expected >= 30 tools, got {}", m.len());
