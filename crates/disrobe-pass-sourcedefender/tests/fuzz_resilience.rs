@@ -223,7 +223,7 @@ fn exercise_byte_entrypoints(bytes: &[u8], rng: &mut Xorshift64) {
 
     if let Ok(text) = core::str::from_utf8(bytes) {
         let _: Result<disrobe_pass_sourcedefender::PyeFrame> = parse_pye_frame(text);
-        let _: Vec<InlinedBlock> = locate_inlined_blocks(text);
+        let _: Result<Vec<InlinedBlock>> = locate_inlined_blocks(text);
         let _: Result<InlinedExtraction> =
             extract_inlined(text, "fuzz.py", InlinedExtractOptions::default());
         let _: Result<InlinedExtraction> = extract_inlined(
