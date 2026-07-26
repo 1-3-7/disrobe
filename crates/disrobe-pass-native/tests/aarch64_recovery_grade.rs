@@ -36,7 +36,7 @@ const INCREMENT_TWO_FP_FUNCTIONS: &[&str] = &[
 const CORPUS_OPTIMIZATION_LEVELS: &[&str] = &["O0", "O1", "O2", "O3", "Os"];
 const INCREMENT_TWO_EXPECTED_CASES: usize = 70;
 const INCREMENT_ONE_EXPECTED_FP_CASES: usize = 32;
-const EXPECTED_INTEGER_CASES: usize = 283;
+const EXPECTED_INTEGER_CASES: usize = 293;
 const ORACLE_FLAGS: &[&str] = &[
     "-O1",
     "-funsigned-char",
@@ -478,6 +478,19 @@ i32 fcvt_away_s(float x) { return (i32)__builtin_roundf(x); }
 u32 fcvt_floor_us(float x) { return (u32)__builtin_floorf(x); }
 u32 fcvt_ceil_us(float x) { return (u32)__builtin_ceilf(x); }
 u32 fcvt_away_us(float x) { return (u32)__builtin_roundf(x); }
+int vol_four_slots(int a) {
+    volatile int p = a;
+    volatile int q = a + 1;
+    volatile int r = a + 2;
+    volatile int s = a + 3;
+    return p + q + r + s;
+}
+int vol_two_guards(int a, int b, int c) {
+    volatile int t = a;
+    if (a > b) t = b;
+    if (b > c) t = c;
+    return t;
+}
 i64 fcvt_floor_d(double x) { return (i64)__builtin_floor(x); }
 i64 fcvt_ceil_d(double x) { return (i64)__builtin_ceil(x); }
 i64 fcvt_away_d(double x) { return (i64)__builtin_round(x); }
@@ -710,6 +723,8 @@ extern long long fcvt_floor_d(double x);
 extern long long fcvt_ceil_d(double x);
 extern long long fcvt_away_d(double x);
 extern unsigned long long fcvt_floor_ud(double x);
+extern int vol_four_slots(int a);
+extern int vol_two_guards(int a, int b, int c);
 ";
 
 fn cc() -> Option<String> {
@@ -1168,17 +1183,25 @@ fn is_increment_seventeen_fp(name: &str) -> bool {
     INCREMENT_SEVENTEEN_FP_FUNCTIONS.contains(&name)
 }
 
+const INCREMENT_EIGHTEEN_FUNCTIONS: &[&str] = &["vol_four_slots", "vol_two_guards"];
+const INCREMENT_EIGHTEEN_EXPECTED_CASES: usize = 10;
+
+fn is_increment_eighteen(name: &str) -> bool {
+    INCREMENT_EIGHTEEN_FUNCTIONS.contains(&name)
+}
+
 fn expected_arity(name: &str) -> Option<usize> {
     let arity: usize = match name {
         "popcount_loop" | "bitmix" | "mask_hi" | "str_len_manual" | "sw_small" | "sw_sparse"
         | "do_while_sum" | "ld_st_pair" | "sign_of" | "clz32" | "ctz32" | "bswap32" | "bswap64"
-        | "abs_i32" | "bfx" | "rev16_w" | "rev16_x" | "rev32_x" => 1,
+        | "abs_i32" | "bfx" | "rev16_w" | "rev16_x" | "rev32_x" | "vol_four_slots" => 1,
         "idx_int" | "idx_uint" | "idx_long8" | "idx_byte" | "sum_int_idx" | "find_early"
         | "abs_diff" | "mul_widen" | "mul_widen_s" | "div_s" | "div_u" | "mod_s" | "shifts"
         | "str_cmp_manual" | "arr_max" | "even_count" | "pt_dot" | "pt_arr" | "rotate_left"
         | "accum_u64" | "saturating_add" | "bfi_merge" | "max_u" | "clamp_u" | "neg_if"
         | "hi_mul_u" | "hi_mul_s" | "funnel_shift" | "avg_floor_u" | "sat_sub" => 2,
-        "idx_two" | "idx_store" | "find_key" | "mem_copy_manual" | "nested_sum" | "min3" => 3,
+        "idx_two" | "idx_store" | "find_key" | "mem_copy_manual" | "nested_sum" | "min3"
+        | "vol_two_guards" => 3,
         "clamp_sel" | "and_or_cond" | "select4" => 4,
         _ => return None,
     };
@@ -2137,7 +2160,19 @@ fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Option<String> 
             false,
             None,
         ),
-        "min3" => scalar_block(
+        "vol_four_slots" => scalar_block(
+            opt,
+            name,
+            rec,
+            seed,
+            &[Arg {
+                draw: "(uint64_t)(uint32_t)((int)(xs(&s) % 100001) - 50000)",
+                ocast: "int",
+            }],
+            false,
+            None,
+        ),
+        "vol_two_guards" | "min3" => scalar_block(
             opt,
             name,
             rec,
@@ -2780,6 +2815,24 @@ fn corpus_grade_report() {
             );
         }
     }
+    let increment_eighteen_corpus_cases: usize = CASES
+        .iter()
+        .filter(|(_, name, _): &&(&str, &str, &[u8])| is_increment_eighteen(name))
+        .count();
+    assert_eq!(
+        increment_eighteen_corpus_cases, INCREMENT_EIGHTEEN_EXPECTED_CASES,
+        "the generated corpus must contain exactly five rows per increment-18 function"
+    );
+    for required_name in INCREMENT_EIGHTEEN_FUNCTIONS {
+        for required_opt in CORPUS_OPTIMIZATION_LEVELS {
+            assert!(
+                CASES.iter().any(|(opt, name, _): &(&str, &str, &[u8])| {
+                    opt == required_opt && name == required_name
+                }),
+                "required increment-18 case `{required_opt} {required_name}` is absent from the generated corpus"
+            );
+        }
+    }
 
     let dir: tempfile::TempDir = tempfile::tempdir().expect("scratch dir");
     let battery_c: PathBuf = dir.path().join("gt_battery.c");
@@ -2837,6 +2890,8 @@ fn corpus_grade_report() {
     let mut increment_sixteen_driven: usize = 0;
     let mut increment_seventeen_recovered: usize = 0;
     let mut increment_seventeen_driven: usize = 0;
+    let mut increment_eighteen_recovered: usize = 0;
+    let mut increment_eighteen_driven: usize = 0;
     let mut skips: Vec<(String, String, String)> = Vec::new();
     let mut decls: String = String::new();
     let mut blocks: String = String::new();
@@ -2859,6 +2914,7 @@ fn corpus_grade_report() {
         let required_increment_fifteen: bool = is_increment_fifteen_fp(name);
         let required_increment_sixteen: bool = is_increment_sixteen_fp(name);
         let required_increment_seventeen: bool = is_increment_seventeen_fp(name);
+        let required_increment_eighteen: bool = is_increment_eighteen(name);
         let recovery: LeafRecovery = match recover_aarch64_function(bytes, 0) {
             Ok(value) => value,
             Err(error) => {
@@ -2920,6 +2976,9 @@ fn corpus_grade_report() {
         }
         if required_increment_seventeen {
             increment_seventeen_recovered += 1;
+        }
+        if required_increment_eighteen {
+            increment_eighteen_recovered += 1;
         }
 
         let expected_fp: Option<FpExpectation> = fp_expectation(name);
@@ -3047,6 +3106,9 @@ fn corpus_grade_report() {
         }
         if required_increment_seventeen {
             increment_seventeen_driven += 1;
+        }
+        if required_increment_eighteen {
+            increment_eighteen_driven += 1;
         }
     }
 
@@ -3249,6 +3311,12 @@ fn corpus_grade_report() {
         "increment-17 graded    {increment_seventeen_driven}/{INCREMENT_SEVENTEEN_EXPECTED_CASES}"
     );
     eprintln!(
+        "increment-18 recovered {increment_eighteen_recovered}/{INCREMENT_EIGHTEEN_EXPECTED_CASES}"
+    );
+    eprintln!(
+        "increment-18 graded    {increment_eighteen_driven}/{INCREMENT_EIGHTEEN_EXPECTED_CASES}"
+    );
+    eprintln!(
         "graded-equivalent    {graded_equivalent}   (recompiled + behaviorally matched on directed and random inputs)"
     );
     eprintln!(
@@ -3429,6 +3497,14 @@ fn corpus_grade_report() {
     assert_eq!(
         increment_seventeen_driven, INCREMENT_SEVENTEEN_EXPECTED_CASES,
         "every increment-17 corpus case must be graded"
+    );
+    assert_eq!(
+        increment_eighteen_recovered, INCREMENT_EIGHTEEN_EXPECTED_CASES,
+        "every increment-18 corpus case must recover"
+    );
+    assert_eq!(
+        increment_eighteen_driven, INCREMENT_EIGHTEEN_EXPECTED_CASES,
+        "every increment-18 corpus case must be graded"
     );
     assert_eq!(
         increment_sixteen_driven, INCREMENT_SIXTEEN_EXPECTED_CASES,
