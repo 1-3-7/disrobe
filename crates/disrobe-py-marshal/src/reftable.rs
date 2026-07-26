@@ -101,6 +101,7 @@ impl RefKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefTableDump {
     pub entries: Vec<RefEntry>,
+    pub entries_omitted: usize,
     pub total_bytes: usize,
     pub max_depth_observed: u16,
     pub by_kind: BTreeMap<RefKind, u32>,
@@ -111,6 +112,7 @@ impl RefTableDump {
     pub const fn empty() -> Self {
         Self {
             entries: Vec::new(),
+            entries_omitted: 0,
             total_bytes: 0,
             max_depth_observed: 0,
             by_kind: BTreeMap::new(),

@@ -1,5 +1,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-use disrobe_py_marshal::{PyVersion, dump_reftable, load, load_with_reftable, read_pyc};
+use disrobe_py_marshal::{
+    Object, PyVersion, RefTableDump, dump_reftable, load, load_with_reftable, read_pyc,
+};
 
 struct Xorshift64 {
     state: u64,
@@ -160,4 +162,20 @@ fn deep_nesting_does_not_overflow_stack() {
         }
         let _ = read_pyc(&bomb);
     }
+}
+
+#[test]
+fn a_module_scale_object_count_still_traces_without_omissions() {
+    const OBJECTS: usize = 300_000;
+    let mut data: Vec<u8> = Vec::with_capacity(OBJECTS.saturating_add(5));
+    data.push(b'(');
+    data.extend(u32::try_from(OBJECTS).unwrap().to_le_bytes());
+    data.extend(core::iter::repeat_n(b'N', OBJECTS));
+
+    let (_, dump): (Object, RefTableDump) =
+        load_with_reftable(&data, PyVersion::PY312).expect("a real module scale parses");
+
+    assert_eq!(dump.entries.len(), OBJECTS.saturating_add(1));
+    assert_eq!(dump.entries_omitted, 0);
+    assert_eq!(dump.total_bytes, data.len());
 }
