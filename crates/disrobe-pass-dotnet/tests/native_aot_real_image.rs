@@ -1,4 +1,4 @@
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::panic)]
 use std::path::PathBuf;
 
 use disrobe_pass_dotnet::aot::{AotReport, AotSection, ReadyToRunHeader, detect};
@@ -68,6 +68,21 @@ fn a_real_native_aot_image_is_recognized_by_its_ready_to_run_header() {
         header.sections.len(),
         first_raw_hit
     );
+}
+
+#[test]
+fn the_pass_entry_point_reaches_a_verdict_on_a_real_native_aot_image() {
+    let Some(image): Option<Vec<u8>> = real_sample() else {
+        println!("SKIP: set DISROBE_AOT_SAMPLE to a native aot executable to run this");
+        return;
+    };
+    match disrobe_pass_dotnet::pass::analyze(&image) {
+        Ok(summary) => println!("pass reached a verdict: native_aot={}", summary.native_aot),
+        Err(error) => panic!(
+            "the pass refuses a real native aot image instead of reporting it: {error}. \
+             detection that no entry point can reach is not a capability"
+        ),
+    }
 }
 
 #[test]
