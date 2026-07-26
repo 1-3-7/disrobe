@@ -16,6 +16,7 @@ use disrobe_core::chain::{
     ChainConfig, ChainDocument, ChainDriver, ChainPlan, ChainRecoveryReport, ChainSpec,
     ChildArtifact, ChildHandle, DetectorPick, Node, OutputKind, PassRegistry, PassRunOutcome,
 };
+use disrobe_core::pass::PassContext;
 
 use super::output::{OutputFormat, emit};
 use super::path_ops::{self, LinkKind};
@@ -39,16 +40,20 @@ impl PassRunner for ChainPassRunner<'_> {
         &self,
         pick: &DetectorPick,
         bytes: Vec<u8>,
-        _config: &ChainConfig,
+        config: &ChainConfig,
         path_hint: Option<&str>,
     ) -> Result<PassRunOutcome, String> {
         self.progress.step(pick.verdict.pass_id);
         let hash: [u8; 32] = blake3_hash(&bytes);
         let artifact: Artifact = Artifact::new(Rung::Raw, bytes, hash);
         let started: Instant = Instant::now();
+        let context: PassContext<'_> = PassContext {
+            path_hint,
+            i_have_authorization: config.i_have_authorization,
+        };
         let out_artifact: Artifact = pick
             .pass
-            .run_with_path(&artifact, path_hint)
+            .run_with_context(&artifact, context)
             .map_err(|e: disrobe_core::error::CoreError| format!("{e}"))?;
         let initial_kind: OutputKind = pick.pass.output_kind(&out_artifact);
         let mut metadata: BTreeMap<String, String> = BTreeMap::new();
