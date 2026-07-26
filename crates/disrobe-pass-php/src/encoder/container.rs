@@ -222,14 +222,7 @@ fn body_after_marker_line(
     marker_offset: usize,
     family: &'static str,
 ) -> Result<usize> {
-    let line_end: usize = envelope[marker_offset..]
-        .iter()
-        .position(|&b: &u8| b == b'\n')
-        .map(|p: usize| marker_offset + p + 1)
-        .ok_or(Error::ContainerBadFraming {
-            family,
-            reason: "marker line has no terminating newline",
-        })?;
+    let line_end: usize = marker_line_end(envelope, marker_offset, family)?;
     let mut at: usize = line_end;
     while at < envelope.len() {
         let rest: &[u8] = &envelope[at..];
@@ -252,6 +245,30 @@ fn body_after_marker_line(
         });
     }
     Ok(at)
+}
+
+fn marker_line_end(envelope: &[u8], marker_offset: usize, family: &'static str) -> Result<usize> {
+    let marker: &[u8] = envelope
+        .get(marker_offset..)
+        .ok_or(Error::ContainerBadFraming {
+            family,
+            reason: "marker offset exceeds envelope length",
+        })?;
+    let line_offset: usize =
+        marker
+            .iter()
+            .position(|&b: &u8| b == b'\n')
+            .ok_or(Error::ContainerBadFraming {
+                family,
+                reason: "marker line has no terminating newline",
+            })?;
+    marker_offset
+        .checked_add(line_offset)
+        .and_then(|offset: usize| offset.checked_add(1))
+        .ok_or(Error::ContainerBadFraming {
+            family,
+            reason: "marker line end overflows the address space",
+        })
 }
 
 pub fn reverse_ioncube_container(
@@ -559,14 +576,7 @@ pub fn synthetic_transport_surface_ioncube(
     marker_offset: usize,
 ) -> Result<ContainerSurface> {
     const FAMILY: &str = "ionCube";
-    let line_end: usize = envelope[marker_offset..]
-        .iter()
-        .position(|&b: &u8| b == b'\n')
-        .map(|p: usize| marker_offset + p + 1)
-        .ok_or(Error::ContainerBadFraming {
-            family: FAMILY,
-            reason: "marker line has no terminating newline",
-        })?;
+    let line_end: usize = marker_line_end(envelope, marker_offset, FAMILY)?;
     let body: &[u8] = envelope.get(line_end..).ok_or(Error::ContainerBadFraming {
         family: FAMILY,
         reason: "no body after marker line",
