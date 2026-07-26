@@ -4,7 +4,7 @@
 
 One static Rust binary that decompiles, deobfuscates, and unpacks software across 20+ ecosystems and proves what it recovered against an independent oracle. Deterministic, no execution of the sample, no model. Built for malware analysis, CTFs, IP recovery, and security research.
 
-The differentiator is the pipeline, not any single pass: one deterministic chain runner carries every input end to end, and every recovered output is persisted as a content-addressed `.dr` envelope with its own provenance and oracle grade, so a result is never a bare score with no trail back to how it was produced.
+The pipeline matters more than any single pass. One deterministic chain runner carries every input end to end. It persists every recovered output as a content-addressed `.dr` envelope with its own provenance and oracle grade, so a result always traces back to how it was produced.
 
 [![CI](https://github.com/1-3-7/disrobe/actions/workflows/ci.yml/badge.svg)](https://github.com/1-3-7/disrobe/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/1-3-7/disrobe?sort=semver)](https://github.com/1-3-7/disrobe/releases)
@@ -12,9 +12,9 @@ The differentiator is the pipeline, not any single pass: one deterministic chain
 [![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-informational)](https://github.com/1-3-7/disrobe/releases)
 [![Docs](https://img.shields.io/badge/docs-1--3--7.github.io%2Fdisrobe-brightgreen)](https://1-3-7.github.io/disrobe/)
 
-`disrobe` never executes the sample on its default path, runs no model, and installs no JVM, Python, or Docker runtime. Recovered Python is recompiled and diffed opcode-for-opcode in CI; unpacked bytes are byte-compared to the original; recovered Android, WebAssembly, and Lua are re-run through the real JVM verifier, wasmtime, and `lua`. Identical input yields identical output on every machine.
+`disrobe` never executes the sample on its default path, runs no model, and installs no JVM, Python, or Docker runtime. CI recompiles recovered Python and diffs it opcode-for-opcode. It byte-compares unpacked bytes to the original. It re-runs recovered Android, WebAssembly, and Lua through the real JVM verifier, wasmtime, and `lua`. Identical input yields identical output on every machine.
 
-Try it in your browser: [`1-3-7.github.io/disrobe/playground`](https://1-3-7.github.io/disrobe/playground/). The analysis passes are compiled to WebAssembly and run client-side; nothing is uploaded.
+Try it in your browser: [`1-3-7.github.io/disrobe/playground`](https://1-3-7.github.io/disrobe/playground/). The analysis passes compile to WebAssembly and run client-side. Nothing is uploaded.
 
 ![demo](docs/src/demo/disrobe-demo.svg)
 
@@ -46,23 +46,23 @@ Try it in your browser: [`1-3-7.github.io/disrobe/playground`](https://1-3-7.git
 
 **Is:**
 
-- A static, deterministic Rust binary that decompiles, deobfuscates, and unpacks across 20+ ecosystems, with identical input yielding byte-identical output on every machine, proven by a CI job that hashes the same real recovered fixtures on Linux, macOS, and Windows and fails if any two disagree.
+- A static, deterministic Rust binary that decompiles, deobfuscates, and unpacks across 20+ ecosystems. Identical input yields byte-identical output on every machine, proven by a CI job that hashes the same real recovered fixtures on Linux, macOS, and Windows and fails if any two disagree.
 - Graded per recovery against an independent oracle (a real compiler, verifier, interpreter, or execution differential), never against its own output.
 - A CLI, a set of Rust library crates, Python bindings, and a daemon (`disrobe serve`, HTTP/gRPC/LSP/MCP), so the same passes drive automation and other tools.
 - A recon and IOC engine (`frisk`, `prowl`, `indicators`) alongside decompilation, for secrets, endpoints, and threat-intel enrichment.
-- Format-breadth-first: `disrobe identify`/`catalog` cover 20+ ecosystems, but the recovery depth per family ranges from full source recovery to detect-only; see [Capabilities by ecosystem](#capabilities-by-ecosystem) for the honest level per family.
+- Format-breadth-first: `disrobe identify`/`catalog` cover 20+ ecosystems, but the recovery depth per family ranges from full source recovery to detect-only. See [Capabilities by ecosystem](#capabilities-by-ecosystem) for the honest level per family.
 
 **Is not:**
 
 - Not a guaranteed full-recovery tool for every family: several catalog entries are Partial (structural peel or constants only, stated residual) or Detect-only (identification plus a stated absent-data reason).
-- Not a virtualizing-protector devirtualizer for VMProtect, Themida, Enigma, and comparable runtime-keyed VMs: those are detect and carve only, see [Limits and honest walls](#limits-and-honest-walls).
+- Not a virtualizing-protector devirtualizer for VMProtect, Themida, Enigma, and comparable runtime-keyed VMs: those are detect and carve only. See [Limits and honest walls](#limits-and-honest-walls).
 - Not a sample-execution sandbox: the default path never runs the sample; the only two code-execution paths (the PyArmor v6/v7 dynamic hook and the BCC native lift) sit behind explicit `--allow-dynamic`/`--allow-bcc` flags.
 - Not model-backed or heuristic-guessing: there is no LLM anywhere in the pipeline, and an absent runtime key is reported as a wall rather than guessed past.
-- Not a Ghidra/IDA replacement on large, deeply nested native binaries: `disrobe` unpacks, recovers symbols, and exports straight into them instead of competing there on that surface.
+- Not a Ghidra/IDA replacement on large, deeply nested native binaries: `disrobe` unpacks, recovers symbols, and exports straight into them instead of competing on that surface.
 
 ## Install
 
-A release build needs only Rust 1.95+ stable. `cargo build --release` produces one binary, and `disrobe` links or invokes no Python, Node, JVM, wasmtime, Lua, or external tool at run time. The oracles and competing tools used for [Benchmarks](#benchmarks) are a separate CI-validation dependency set, listed in [evidence/README.md](evidence/README.md).
+A release build needs only Rust 1.95+ stable. `cargo build --release` produces one binary. At run time, `disrobe` links or invokes no Python, Node, JVM, wasmtime, Lua, or external tool. The oracles and competing tools used for [Benchmarks](#benchmarks) are a separate CI-validation dependency set, listed in [evidence/README.md](evidence/README.md).
 
 | Category | What's in it | What breaks without it |
 |---|---|---|
@@ -108,7 +108,7 @@ cargo build -p disrobe-cli --release --no-default-features
 cargo build-slim
 ```
 
-Slim drops the optional language and format passes (JavaScript / TypeScript, WebAssembly, JVM / Android, .NET, Go, Lua, PHP, Ruby, BEAM, Swift, AS3, and more) and the multi-stage `auto` chain, and with them large dependency trees such as the embedded JavaScript engine and the WebAssembly toolchain. On a Windows release build that trims the binary from about 75 MB to 49 MB, roughly a third smaller; the exact figure varies by platform and toolchain. The `wasm` subcommand still parses in a slim binary and reports a clear message if you run it:
+Slim drops the optional language and format passes (JavaScript / TypeScript, WebAssembly, JVM / Android, .NET, Go, Lua, PHP, Ruby, BEAM, Swift, AS3, and more) and the multi-stage `auto` chain. Dropping them also drops large dependency trees such as the embedded JavaScript engine and the WebAssembly toolchain. On a Windows release build that trims the binary from about 75 MB to 49 MB, roughly a third smaller; the exact figure varies by platform and toolchain. The `wasm` subcommand still parses in a slim binary. If you run it, it reports why the pass is missing:
 
 ```text
 $ disrobe wasm decompile app.wasm
@@ -134,7 +134,7 @@ disrobe native unpack packed.exe --out unpacked.bin   # stub-emulator unpack, by
 
 `disrobe auto` fingerprints the input and composes the full pipeline in one call: `PE -> UPX -> demangle`, `APK -> dex -> Java`, `PyInstaller -> PyArmor -> .pyc decompile`. APK bundles (`.apkm`, `.xapk`, `.aab`) route by structure straight to the Android path. With `--capture-stages`, each stage lands in `out/01-*/`, `out/02-*/`, ..., `out/final/`.
 
-Discover the rest of the surface with `disrobe --help`, `disrobe <pass> --help` for any subcommand, `disrobe passes` to list passes, `disrobe catalog [ecosystem]` for every recognized family and recovery tier, and `disrobe explain <code>` to look up any `DR-` diagnostic code with its likely cause and fix.
+Discover the rest of the surface with `disrobe --help`, or `disrobe <pass> --help` for any subcommand. `disrobe passes` lists the passes, `disrobe catalog [ecosystem]` lists every recognized family and recovery tier, and `disrobe explain <code>` looks up any `DR-` diagnostic code with its likely cause and fix.
 
 For workspace and output: `disrobe init` scaffolds a `.disrobe/` workspace, `disrobe config init` writes a documented config template, `disrobe report <out> --format html` renders a self-contained offline forensic report, `disrobe envelope` creates, inspects, or verifies a `.dr`, and `disrobe completions` / `disrobe man` generate shell completions and man pages.
 
@@ -199,7 +199,7 @@ disrobe native entropy packed.exe --format svg         # sliding-window Shannon 
 disrobe native export packed.exe --format ghidra       # rebuild a loadable PE + Ghidra/IDA/JSON symbol sidecar
 ```
 
-`disrobe taint` lifts a native binary, a wasm module, a JVM `.class`, an Android `.dex`, or a Mir-rung `.dr` envelope and reports every source-to-sink flow over the normalized IR (input/recv/read sources reaching exec/system/write/connect sinks by default; `--source`/`--sink` override the symbol sets). The `native` family also carries `native signatures` (AES, SHA, MD5, and ChaCha20 constants), `native sbom` (CycloneDX 1.5 from cargo-auditable metadata), `native fingerprint` (crypto + FLIRT + string-xref sidecar), `native graph` (import/export DOT), and `native devirt`.
+`disrobe taint` lifts a native binary, a wasm module, a JVM `.class`, an Android `.dex`, or a Mir-rung `.dr` envelope. It then reports every source-to-sink flow over the normalized IR. By default it tracks input/recv/read sources reaching exec/system/write/connect sinks, and `--source`/`--sink` override the symbol sets. The `native` family also carries `native signatures` (AES, SHA, MD5, and ChaCha20 constants), `native sbom` (CycloneDX 1.5 from cargo-auditable metadata), `native fingerprint` (crypto + FLIRT + string-xref sidecar), `native graph` (import/export DOT), and `native devirt`.
 
 `disrobe query` verbs: `functions`, `calls-to <target>`, `xrefs-to <symbol>`, `string-decoders`, `complexity-over <N>`, `capability <network|crypto|filesystem|process>`. Add `--json` to any verb for scripting. The same IR feeds `disrobe capabilities` and the `--llm` metadata sidecar.
 
@@ -251,7 +251,7 @@ disrobe frisk app/ --baseline baseline.json   # report only new findings vs a sn
 
 It surfaces leaked secrets (cloud keys, SaaS/AI tokens, private keys), API endpoints and routes, cloud-storage buckets, Android manifest exposure, and IOCs (URLs, domains, IPs, emails, `.onion`, webhooks), each with file, line, and column.
 
-`disrobe prowl` is the network-side companion. It harvests URLs and IOCs from Wayback, Common Crawl, OTX, urlscan, crt.sh, URLhaus, ThreatFox, and VirusTotal with per-host rate limits, retry backoff, proxy support, source filters, and API-key resolution from flags, environment variables, a permissions-checked TOML file, or the OS keyring. It is the recon command that touches the network; every other default path is offline.
+`disrobe prowl` is the network-side companion. It harvests URLs and IOCs from Wayback, Common Crawl, OTX, urlscan, crt.sh, URLhaus, ThreatFox, and VirusTotal. It applies per-host rate limits, retry backoff, proxy support, and source filters, and resolves API keys from flags, environment variables, a permissions-checked TOML file, or the OS keyring. It is the recon command that touches the network; every other default path is offline.
 
 ```sh
 disrobe prowl example.com --subs --sources wayback,commoncrawl,urlscan --format json > prowl.json
@@ -295,7 +295,7 @@ The CLI is a thin layer over the same crates, so a TUI, an IDE plugin, a web ser
 - Rust: each pass is its own crate (`disrobe-pass-py-decompile`, `disrobe-pass-jvm`, `disrobe-pass-native`, ...) over shared `disrobe-core` and `disrobe-ir` types; depend on the ones you need.
 - Python: `import disrobe` (a pyo3 `abi3` module, Python 3.9+, ships `.pyi` and `py.typed`, built with `maturin`). Bytes in, typed report objects out; the bindings never touch the filesystem.
 - Daemon: `disrobe serve` speaks HTTP, gRPC, and LSP; `disrobe serve --mcp` exposes the same operations as Model Context Protocol tools for automation clients.
-- Plugins: third-party analysis passes ship as signed WebAssembly Components. `disrobe-plugin-loader` loads one only when its minisign signature verifies against a trusted key and its TOML manifest grants every imported WIT capability; `disrobe-plugin-host` runs it under a fuel budget, an epoch-deadline watchdog, and a linear-memory cap, with an empty linker that denies all ambient host imports.
+- Plugins: third-party analysis passes ship as signed WebAssembly Components. `disrobe-plugin-loader` loads a plugin only when its minisign signature verifies against a trusted key and its TOML manifest grants every imported WIT capability. `disrobe-plugin-host` then runs it under a fuel budget, an epoch-deadline watchdog, and a linear-memory cap, with an empty linker that denies all ambient host imports.
 
 ```python
 import disrobe
@@ -387,7 +387,7 @@ This section names the supported surface and its residual. Measured scores live 
 
 ### Containers, archives, filesystems, firmware
 
-Detects container/archive/filesystem/firmware formats and writes member bytes in-tree. The full format count and CI extraction gate are in Benchmarks.
+`disrobe` detects container/archive/filesystem/firmware formats and writes member bytes in-tree. The full format count and CI extraction gate are in Benchmarks.
 
 | Class | Formats |
 |---|---|
@@ -410,9 +410,9 @@ A recursive carve-everything engine (multi-magic scan, depth recursion, entropy 
 
 ## Anti-analysis defeat
 
-`disrobe` is static and deterministic, never runs the sample on the default path, recovers what is statically present, and states a wall where the data is genuinely absent rather than fabricating past it. Identification never trusts a single magic byte. A zeroed or flipped magic, renamed `UPX0`/`UPX1` sections, or a corrupt `UPX!` marker is re-identified from internal self-consistency: PE through `e_lfanew` to the COFF headers, ELF/Mach-O by header offsets that close against file length, ZIP by its end-of-central-directory anchor, DEX by section-offset consistency, classfile by a constant-pool walk, wasm by the LEB section stream. A real UPX executable with a flipped `MZ` and renamed sections still unpacks byte-identically.
+`disrobe` is static and deterministic, and never runs the sample on the default path. It recovers what is statically present and states a wall where the data is genuinely absent rather than fabricating past it. Identification never trusts a single magic byte. A zeroed or flipped magic, renamed `UPX0`/`UPX1` sections, or a corrupt `UPX!` marker is re-identified from internal self-consistency: PE through `e_lfanew` to the COFF headers, ELF/Mach-O by header offsets that close against file length, ZIP by its end-of-central-directory anchor, DEX by section-offset consistency, classfile by a constant-pool walk, wasm by the LEB section stream. A real UPX executable with a flipped `MZ` and renamed sections still unpacks byte-identically.
 
-Every Recover-level capability below is graded by an oracle that can reject a wrong answer (a compiler, a runtime, a verifier, exhaustive enumeration, or concrete re-execution), never the tool reading its own output; Partial and Detect-only rows state their residual.
+Every Recover-level capability below is graded by an oracle that can reject a wrong answer (a compiler, a runtime, a verifier, exhaustive enumeration, or concrete re-execution), never the tool reading its own output. Partial and Detect-only rows state their residual.
 
 | Capability | What it does | Grading oracle |
 |---|---|---|
@@ -431,15 +431,15 @@ Every Recover-level capability below is graded by an oracle that can reject a wr
 | noreturn propagation | Propagates non-returning calls so the disassembler stops decoding junk past a terminal call | `disrobe-pass-native` flow analysis on the disassembled call graph |
 | Generic VM devirt | Locates the interpreter, behaviorally fingerprints each handler through the x86 emulator, and lifts to re-executable IR plus pseudo-code | `crates/disrobe-pass-native/tests/vm_devirt_oracle.rs` (clang-compiled synthetic VM, recovered IR re-executes byte-identically from machine code alone); Lua IronBrew2 2.7.0 graded by a real-`lua` execution differential |
 
-Every SMT verdict the MBA and devirtualization engine relies on is independently checked before it is trusted: a SAT result is re-evaluated against the model the solver returned, and an UNSAT result is reconfirmed by BDD bit-blasting or, for multiply-heavy predicates the bit-blaster cannot settle, a finite-difference polynomial certificate. A verdict that fails its own check degrades to abstain, so a solver bug can cost a recovery but never turn one into a wrong answer.
+`disrobe` independently checks every SMT verdict the MBA and devirtualization engine relies on before trusting it. It re-evaluates a SAT result against the model the solver returned. It reconfirms an UNSAT result by BDD bit-blasting, or by a finite-difference polynomial certificate for multiply-heavy predicates the bit-blaster cannot settle. A verdict that fails its own check degrades to abstain, so a solver bug can cost a recovery but never turn one into a wrong answer.
 
-Runtime-keyed schemes (a key from a system property, the environment, the clock, a secure random, or a per-machine value assembled at run time) are flagged as walls, not guessed. The full treatment is in the [anti-analysis docs](docs/src/anti-analysis.md).
+`disrobe` flags runtime-keyed schemes as walls rather than guessing them: a key from a system property, the environment, the clock, a secure random, or a per-machine value assembled at run time. The full treatment is in the [anti-analysis docs](docs/src/anti-analysis.md).
 
-`disrobe` also flags the evasion a sample attempts so an analyst is warned before running anything: al-khaser / Pafish-class anti-debug, anti-VM, anti-sandbox, and timing checks are detected and surfaced through `disrobe behavior` and `disrobe capabilities` (mapped to MITRE ATT&CK / MBC), with a confidence grade per technique. Detection only; `disrobe` never executes the sample on its default path and never implements any of these techniques itself.
+`disrobe` also flags the evasion a sample attempts, so an analyst is warned before running anything. `disrobe behavior` and `disrobe capabilities` surface al-khaser / Pafish-class anti-debug, anti-VM, anti-sandbox, and timing checks, mapped to MITRE ATT&CK / MBC, with a confidence grade per technique. Detection only: `disrobe` never executes the sample on its default path and never implements any of these techniques itself.
 
 ### Layered payload recovery
 
-Obfuscated and packed payloads are unwrapped recursively, every step gated by a structural oracle (compression magic, a loadable marshal object, a valid parse, a validated crib) so a decode never advances on garbage, and every decompression is bomb-bounded.
+`disrobe` unwraps obfuscated and packed payloads recursively. A structural oracle gates every step (compression magic, a loadable marshal object, a valid parse, a validated crib), so a decode never advances on garbage. Every decompression is bomb-bounded.
 
 | Layer | What it reverses |
 |---|---|
@@ -453,7 +453,7 @@ Obfuscated and packed payloads are unwrapped recursively, every step gated by a 
 Most tools specialize in one layer. `disrobe` chains unpacking, bytecode and native recovery, recon, and verification in one static binary. The tables below separate proven same-input rows from rows that still need a pinned competitor run.
 
 <details>
-<summary>Proven Comparison</summary>
+<summary>Proven comparison</summary>
 
 Only committed input, pinned tools, a shared oracle, and a drift gate go here. The runner is [`benches/head-to-head/`](benches/head-to-head/); pinned tools live in [`evidence/competitors/`](evidence/competitors/).
 
@@ -468,7 +468,7 @@ Missing rows are not implied wins. They stay in the edge table until the same-in
 </details>
 
 <details>
-<summary>Edge Comparison</summary>
+<summary>Edge comparison</summary>
 
 | Surface | Current proof | Leading tool(s) | Next proof |
 |---|---|---|---|
@@ -513,7 +513,7 @@ Every number below is either graded by an oracle that can reject a wrong answer 
 - The three tables below are split by that oracle-strength tier, one table per tier; a row's `[CI]`/`[local]` tag is the separate, orthogonal reproducibility axis and still applies inside each table.
 - The [Capabilities by ecosystem](#capabilities-by-ecosystem) tables use a parallel tier per family: `Recover` (real output), `Partial` (structural peel or constants with a stated residual), `Detect-only` (identification plus a stated absent-data reason). Detect-only is a legitimate triage result, not a failure.
 
-Every measured number below links to a committed corpus or fixture, a runnable reproduce command, and a public CI log: the descriptors and rendered results live under [`evidence/`](evidence/), and [`.github/workflows/ci.yml`](.github/workflows/ci.yml) and [`.github/workflows/evidence.yml`](.github/workflows/evidence.yml) run the gates that produce them. The evidence harness in [`evidence/`](evidence/) renders this table from committed descriptors, `xtask/data/recovery.json`, and measured JSON.
+Every measured number below links to a committed corpus or fixture, a runnable reproduce command, and a public CI log. The descriptors and rendered results live under [`evidence/`](evidence/). [`.github/workflows/ci.yml`](.github/workflows/ci.yml) and [`.github/workflows/evidence.yml`](.github/workflows/evidence.yml) run the gates that produce them. The evidence harness in [`evidence/`](evidence/) renders this table from committed descriptors, `xtask/data/recovery.json`, and measured JSON.
 
 ### Strong
 
@@ -587,13 +587,13 @@ cargo test -p disrobe-pass-wasm-deob --test semantic_differential --features san
 cargo run  -p disrobe-bench-native-unpack                                 # native packer byte-recovery table
 ```
 
-The build/runtime dependency boundary and the offline-vs-network reproducibility tiers are documented in [evidence/README.md](evidence/README.md).
+[evidence/README.md](evidence/README.md) documents the build/runtime dependency boundary and the offline-vs-network reproducibility tiers.
 
 </details>
 
 ## Ecosystem maturity matrix
 
-The rows below are the families with a committed evidence descriptor under [`evidence/descriptors/`](evidence/descriptors/), so every column is read straight from that descriptor plus the matching row in [Benchmarks](#benchmarks) and [Capabilities by ecosystem](#capabilities-by-ecosystem), not asserted independently. Maturity is derived, not self-graded: `established` = a `[CI]`-gated descriptor at or near its stated floor; `developing` = the same family's strongest evidence is `[local]`-only or below its floor. A family not listed here still has a stated Recover/Partial/Detect-only level in [Capabilities by ecosystem](#capabilities-by-ecosystem); it just has no standalone evidence descriptor yet.
+The rows below are the families with a committed evidence descriptor under [`evidence/descriptors/`](evidence/descriptors/). Every column is read straight from that descriptor plus the matching row in [Benchmarks](#benchmarks) and [Capabilities by ecosystem](#capabilities-by-ecosystem), not asserted independently. Maturity is derived, not self-graded: `established` = a `[CI]`-gated descriptor at or near its stated floor; `developing` = the same family's strongest evidence is `[local]`-only or below its floor. A family not listed here still has a stated Recover/Partial/Detect-only level in [Capabilities by ecosystem](#capabilities-by-ecosystem); it just has no standalone evidence descriptor yet.
 
 | Family | Detect-only tier exists | Recover | Oracle strength | CI-covered | External backend | Maturity |
 |---|---|---|---|---|---|---|
@@ -619,7 +619,7 @@ The rows below are the families with a committed evidence descriptor under [`evi
 
 ![End-to-end recovery chains from packed, mobile, and frozen inputs to oracle-verified source](docs/assets/architecture.svg)
 
-`disrobe` is a chain runner over single-purpose passes that lower every artifact onto one shared intermediate-representation ladder. A result from any ecosystem is persisted through a common content-addressed `.dr` envelope. Detection fingerprints the input, the chain runner recursively unpacks and routes it, and each pass recovers what is statically present and reports the rest with a measured score.
+`disrobe` is a chain runner over single-purpose passes that lower every artifact onto one shared intermediate-representation ladder. A result from any ecosystem is persisted through a common content-addressed `.dr` envelope. Detection fingerprints the input. The chain runner recursively unpacks and routes it. Each pass recovers what is statically present and reports the rest with a measured score.
 
 ```text
    Raw  -->  Disasm  -->  MIR  -->  HIR  -->  Surface
@@ -653,13 +653,13 @@ Recovery is bounded by what the compiler or protector left in the artifact. `dis
 | One-way name hashing (seedless garble) | `base64(hmac-sha256(name, seed))` with the seed absent in `-trimpath` builds | Structure, types, and control flow recover regardless; names are canonicalized, not restored |
 | Vendor-firmware runtime key (Airoha OTP-AES) | The key is not present in the carved firmware image | Container and format detection, and the member carve |
 
-Two things that look like walls but are not: PyArmor BCC/super-mode bodies and Nuitka/Nim/Zig/Crystal native bodies are compiled machine code, which is present in the artifact, not absent, so `disrobe` carves and lifts them to pseudo-C / pseudo-Rust with its in-house x86-64 decompiler (leaf functions today, whole-function lifting in progress); for PyArmor BCC it also links each compiled function back to its source module, qualified name, class and arity, so you get a function-to-source map and a reconstructed `.py` skeleton, and its straight-line and guarded-conditional bodies reconstruct to runnable Python verified against CPython (loops still degrade to the skeleton); the surrounding metadata, symbols, and names still recover fully.
+Two things look like walls but are not. PyArmor BCC/super-mode bodies and Nuitka/Nim/Zig/Crystal native bodies are compiled machine code, present in the artifact rather than absent, so `disrobe` carves them and lifts them to pseudo-C / pseudo-Rust with its in-house x86-64 decompiler (leaf functions today, whole-function lifting in progress). For PyArmor BCC it also links each compiled function back to its source module, qualified name, class and arity, so you get a function-to-source map and a reconstructed `.py` skeleton. Its straight-line and guarded-conditional bodies reconstruct to runnable Python verified against CPython; loops still degrade to the skeleton. The surrounding metadata, symbols, and names still recover fully.
 
 Bytecode-to-source is structurally faithful but never byte-identical: `.class`, `.dex`, and CIL erase local names, generics, comments, and exact formatting.
 
 ## Documentation
 
-Full docs site: [`1-3-7.github.io/disrobe`](https://1-3-7.github.io/disrobe/), covering the architecture, the IR ladder, the chain runner, per-language guides, the Python-bindings reference, the complete CLI reference, and the safety posture. The book source is under [`docs/`](docs/). Why a foundational choice was made, not just what it is, lives in [architecture decisions](https://1-3-7.github.io/disrobe/latest/decisions.html); the per-protector legal posture behind a grey-zone recognizer escalating to a full peel lives in [per-protector stances](https://1-3-7.github.io/disrobe/latest/legal.html#per-protector-stances-on-file).
+Full docs site: [`1-3-7.github.io/disrobe`](https://1-3-7.github.io/disrobe/), covering the architecture, the IR ladder, the chain runner, per-language guides, the Python-bindings reference, the complete CLI reference, and the safety posture. The book source is under [`docs/`](docs/). [Architecture decisions](https://1-3-7.github.io/disrobe/latest/decisions.html) records why a foundational choice was made, not just what it is. [Per-protector stances](https://1-3-7.github.io/disrobe/latest/legal.html#per-protector-stances-on-file) records the legal posture behind a grey-zone recognizer escalating to a full peel.
 
 Integrations:
 
@@ -670,7 +670,7 @@ Integrations:
 
 ## Safety posture
 
-By default `disrobe` does not execute the sample; every default path is pure static analysis. The pickle suite is symbolic and never unpickles. The only code-execution paths, the PyArmor v6/v7 dynamic hook and the BCC native lift, sit behind explicit `--allow-dynamic` and `--allow-bcc` flags with a watchdog; run those inside a sandbox. The parsing surface is hardened against malformed and oversized input. See [Forensics and malware-safety posture](https://1-3-7.github.io/disrobe/latest/forensics-safety.html) and the [threat model](https://1-3-7.github.io/disrobe/latest/threat-model.html).
+By default `disrobe` does not execute the sample; every default path is pure static analysis. The pickle suite is symbolic and never unpickles. The only code-execution paths, the PyArmor v6/v7 dynamic hook and the BCC native lift, sit behind explicit `--allow-dynamic` and `--allow-bcc` flags with a watchdog. Run those inside a sandbox. The parsing surface is hardened against malformed and oversized input. See [Forensics and malware-safety posture](https://1-3-7.github.io/disrobe/latest/forensics-safety.html) and the [threat model](https://1-3-7.github.io/disrobe/latest/threat-model.html).
 
 ## Legal
 
@@ -692,7 +692,7 @@ Yes, the default path is pure static analysis and never executes the sample. The
 
 ### Is it deterministic? Does it use an LLM?
 
-Fully deterministic and static, with no model anywhere in the pipeline. Identical input yields byte-identical output on every machine, so a result can be cached, diffed, signed, and replayed. This is not just asserted: the `determinism-cross-platform` CI job runs the real CLI against the same fixtures on Linux, macOS, and Windows, BLAKE3-hashes the real recovered output, and fails the build if any OS disagrees; a companion check runs the same fixtures through `disrobe auto`'s batch runner (the one code path in the CLI that actually uses a multi-worker thread pool) at `--jobs 1` and `--jobs 4` and confirms the recovered bytes are identical either way. See `crates/disrobe-cli/tests/determinism_cross_platform.rs`.
+Fully deterministic and static, with no model anywhere in the pipeline. Identical input yields byte-identical output on every machine, so a result can be cached, diffed, signed, and replayed. This is not just asserted. The `determinism-cross-platform` CI job runs the real CLI against the same fixtures on Linux, macOS, and Windows, BLAKE3-hashes the real recovered output, and fails the build if any OS disagrees. A companion check runs the same fixtures through `disrobe auto`'s batch runner at `--jobs 1` and `--jobs 4` and confirms the recovered bytes are identical either way. That batch runner is the one code path in the CLI that actually uses a multi-worker thread pool. See `crates/disrobe-cli/tests/determinism_cross_platform.rs`.
 
 ### What does "recovery %" mean?
 

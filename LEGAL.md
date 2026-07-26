@@ -1,13 +1,13 @@
 # Responsible use
 
-This document is **not legal advice**. It states the project's posture, intended use, and procedures for legal-adjacent contact. Anyone using `disrobe` in a way that may implicate copyright, computer-misuse, or contract law in their jurisdiction is responsible for obtaining their own legal counsel.
+This document states the project's posture, its intended use, and the procedure for legal-adjacent contact. If your use of `disrobe` may implicate copyright, computer-misuse, or contract law in your jurisdiction, you are responsible for obtaining your own legal counsel.
 
 ## Intended use
 
 `disrobe` is intended for, and supports:
 
 - **Security research and malware analysis.** Reverse-engineering hostile binaries to understand their behavior, build detections, or publish findings.
-- **Interoperability research.** Reverse-engineering an artifact you lawfully possess in order to enable interoperation with an independently created program, when no information needed for that interoperation is otherwise readily available.
+- **Interoperability research.** Reverse-engineering an artifact you lawfully possess in order to enable interoperation with an independently created program. This applies when no information needed for that interoperation is otherwise readily available.
 - **Recovery of your own source.** Reconstructing software you authored and have lost the source for.
 - **Education, archaeology, and curation.** Studying program behavior, preserving historical bytecode, teaching reverse-engineering.
 
@@ -24,28 +24,28 @@ The line between research and infringement is jurisdiction- and fact-specific. W
 
 ### United States: DMCA §1201(f)
 
-17 U.S.C. §1201(f), the "interoperability" exemption from the anti-circumvention rule, permits the circumvention of technological protection measures and the development of tools for that purpose where the activity is undertaken solely for the purpose of identifying and analyzing elements of a program necessary to achieve interoperability with an independently created program, and where the information has not previously been readily available. `disrobe` is a tool of that kind. See: <https://www.law.cornell.edu/uscode/text/17/1201>.
+17 U.S.C. §1201(f) is the "interoperability" exemption from the anti-circumvention rule. It permits the circumvention of technological protection measures, and the development of tools for that purpose, under two conditions. The activity must be undertaken solely to identify and analyze the elements of a program necessary to achieve interoperability with an independently created program, and the information must not have previously been readily available. `disrobe` is a tool of that kind. See: <https://www.law.cornell.edu/uscode/text/17/1201>.
 
-`disrobe` also relies on the periodic anti-circumvention exemptions promulgated by the Librarian of Congress, including those covering security research (most recently renewed and expanded by the 2024 rulemaking).
+`disrobe` also relies on the periodic anti-circumvention exemptions promulgated by the Librarian of Congress. Those include the exemptions covering security research, most recently renewed and expanded by the 2024 rulemaking.
 
 ### European Union: Software Directive 2009/24/EC
 
-Article 6 of Directive 2009/24/EC ("the Software Directive") permits decompilation of a computer program where indispensable to obtain the information necessary to achieve the interoperability of an independently created program with other programs, provided the conditions of paragraphs (a)-(c) are met. `disrobe` is a tool that supports this analysis. See: <https://eur-lex.europa.eu/eli/dir/2009/24>.
+Article 6 of Directive 2009/24/EC ("the Software Directive") permits decompilation of a computer program where the decompilation is indispensable to obtain the information necessary to achieve the interoperability of an independently created program with other programs. The conditions of paragraphs (a)-(c) must be met. `disrobe` is a tool that supports this analysis. See: <https://eur-lex.europa.eu/eli/dir/2009/24>.
 
-Article 5(3) of the same Directive permits the lawful acquirer of a program to observe, study, or test the functioning of the program in order to determine the underlying ideas and principles, when performing acts of loading, displaying, running, transmitting, or storing the program which they are entitled to perform.
+Article 5(3) of the same Directive permits the lawful acquirer of a program to observe, study, or test the functioning of the program in order to determine the underlying ideas and principles. That right covers acts of loading, displaying, running, transmitting, or storing the program which the acquirer is entitled to perform.
 
 ### Other jurisdictions
 
-Comparable provisions exist in the United Kingdom (CDPA §50B/50BA), Canada (Copyright Act s.30.61), Australia (Copyright Act ss.47D-47F), Japan (Copyright Act Art. 47-3/47-6), and elsewhere. Users in those jurisdictions should consult local counsel; the project does not represent that its tools fit those frameworks identically.
+Comparable provisions exist in the United Kingdom (CDPA §50B/50BA), Canada (Copyright Act s.30.61), Australia (Copyright Act ss.47D-47F), Japan (Copyright Act Art. 47-3/47-6), and elsewhere. Users in those jurisdictions should consult local counsel. The project does not represent that its tools fit those frameworks identically.
 
 ## What `disrobe` does and does not ship
 
-- The repository **does not ship** third-party copyrighted obfuscated bytecode in its public test corpus. All test inputs are either (a) self-generated by `corpus/generate.{sh,ps1}` from sources the project authors or (b) referenced by hash only, with the bytes hosted elsewhere under the responsibility of whoever fetches them.
-- The repository **does ship** parsers, decoders, decompilers, and orchestrator wrappers (Ghidra / jadx / CFR / Vineflower / ILSpy / de4dot, headless) that, applied to a sample, can produce output that may be considered a derivative work of that sample under applicable copyright law. The lawfulness of producing that output is the user's responsibility.
+- The repository **does not ship** third-party copyrighted obfuscated bytecode in its public test corpus. Every test input is either (a) self-generated by `corpus/generate.{sh,ps1}` from sources the project authors or (b) referenced by hash only, with the bytes hosted elsewhere under the responsibility of whoever fetches them.
+- The repository **does ship** parsers, decoders, decompilers, and orchestrator wrappers (Ghidra / jadx / CFR / Vineflower / ILSpy / de4dot, headless). Applied to a sample, those can produce output that may be considered a derivative work of that sample under applicable copyright law. Producing that output lawfully is the user's responsibility.
 
 ## Responsible disclosure
 
-If you believe a release of `disrobe` is being used to infringe your rights, please contact the maintainer before pursuing public action. The project is operated in good faith and will respond to substantiated concerns.
+If you believe a release of `disrobe` is being used to infringe your rights, contact the maintainer before pursuing public action. The project is operated in good faith and responds to substantiated concerns.
 
 ## Takedown contact
 
