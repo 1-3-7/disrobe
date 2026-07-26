@@ -1,6 +1,8 @@
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 
+const MAX_TOKEN_COUNT: usize = 1_000_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TokKind {
     InlineHtml,
@@ -65,10 +67,21 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn tokens(mut self) -> Result<Vec<Token<'a>>> {
-        let mut out: Vec<Token<'a>> = Vec::with_capacity(self.src.len() / 6 + 4);
+        let mut out: Vec<Token<'a>> = Vec::new();
         while let Some(tok) = self.next_token()? {
             if matches!(tok.kind, TokKind::Eof) {
                 break;
+            }
+            if tok.end <= tok.start {
+                return Err(Error::TokenNoProgress { offset: tok.start });
+            }
+            if self.pos != tok.end {
+                return Err(Error::TokenNoProgress { offset: tok.start });
+            }
+            if out.len() >= MAX_TOKEN_COUNT {
+                return Err(Error::TokenCountExceeded {
+                    cap: MAX_TOKEN_COUNT,
+                });
             }
             out.push(tok);
         }
@@ -426,8 +439,15 @@ impl<'a> Lexer<'a> {
                 {
                     probe += 1;
                 }
-                if self.src.get(probe..probe + label.len()) == Some(label) {
-                    self.pos = probe + label.len();
+                let label_end: usize =
+                    probe
+                        .checked_add(label.len())
+                        .ok_or(Error::TokenTruncated {
+                            offset: probe,
+                            reason: "heredoc label range overflow",
+                        })?;
+                if self.src.get(probe..label_end) == Some(label) {
+                    self.pos = label_end;
                     let kind: TokKind = if nowdoc {
                         TokKind::Nowdoc
                     } else {
@@ -567,4 +587,18 @@ const fn is_ident_cont(b: u8) -> bool {
 
 pub fn tokenize(src: &[u8]) -> Result<Vec<Token<'_>>> {
     Lexer::new(src).tokens()
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn punctuation_flood_is_rejected_before_token_growth() {
+        let mut source: Vec<u8> = b"<?php ".to_vec();
+        source.extend(std::iter::repeat_n(b';', 1_000_001));
+
+        assert!(tokenize(&source).is_err());
+    }
 }

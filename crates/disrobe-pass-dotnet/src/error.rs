@@ -103,6 +103,9 @@ pub enum Error {
 
     #[error("DR-DOTNET-0028: signature node count exceeds maximum {0}")]
     SignatureTooManyNodes(usize),
+
+    #[error("DR-DOTNET-0029: metadata table rows {count} exceed parser limit {cap}")]
+    TableRowCountTooLarge { count: u64, cap: u64 },
 }
 
 impl From<ByteReadError> for Error {

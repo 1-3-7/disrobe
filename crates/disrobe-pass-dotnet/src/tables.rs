@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::metadata::{StreamHeader, TableStream};
 
+const MAX_TABLE_ROWS: u64 = 1_000_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum TableId {
@@ -586,6 +588,22 @@ pub fn parse_tables(metadata_bytes: &[u8], header: StreamHeader) -> Result<Table
     }
     let stream: &[u8] = &metadata_bytes[off..end];
     let ts: TableStream = crate::metadata::parse_table_stream(metadata_bytes, header)?;
+    let total_rows: u64 = ts
+        .row_counts
+        .values()
+        .try_fold(0u64, |total: u64, count: &u32| {
+            total.checked_add(u64::from(*count))
+        })
+        .ok_or(Error::TableRowCountTooLarge {
+            count: u64::MAX,
+            cap: MAX_TABLE_ROWS,
+        })?;
+    if total_rows > MAX_TABLE_ROWS {
+        return Err(Error::TableRowCountTooLarge {
+            count: total_rows,
+            cap: MAX_TABLE_ROWS,
+        });
+    }
     let heap: HeapWidths = HeapWidths::from_flags(ts.heap_sizes);
 
     let present: u32 = ts.row_counts.keys().filter(|&&k: &&u8| k < 64).count() as u32;
@@ -754,7 +772,6 @@ fn decode_table(
     };
     match id {
         TableId::Module => {
-            out.modules.reserve(count as usize);
             for k in 0..count as usize {
                 let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
                 let generation: u16 = c.u16()?;
@@ -768,7 +785,6 @@ fn decode_table(
             }
         }
         TableId::TypeRef => {
-            out.type_refs.reserve(count as usize);
             for k in 0..count as usize {
                 let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
                 let resolution_scope: Option<RowRef> = coded(&mut c, CodedIndex::ResolutionScope)?;
@@ -782,7 +798,6 @@ fn decode_table(
             }
         }
         TableId::TypeDef => {
-            out.type_defs.reserve(count as usize);
             for k in 0..count as usize {
                 let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
                 let flags: u32 = c.u32()?;
@@ -802,7 +817,6 @@ fn decode_table(
             }
         }
         TableId::Field => {
-            out.fields.reserve(count as usize);
             for k in 0..count as usize {
                 let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
                 let flags: u16 = c.u16()?;
@@ -816,7 +830,6 @@ fn decode_table(
             }
         }
         TableId::MethodDef => {
-            out.methods.reserve(count as usize);
             for k in 0..count as usize {
                 let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
                 let rva: u32 = c.u32()?;
@@ -836,7 +849,6 @@ fn decode_table(
             }
         }
         TableId::Param => {
-            out.params.reserve(count as usize);
             for k in 0..count as usize {
                 let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
                 let flags: u16 = c.u16()?;
@@ -850,7 +862,6 @@ fn decode_table(
             }
         }
         TableId::InterfaceImpl => {
-            out.interface_impls.reserve(count as usize);
             for k in 0..count as usize {
                 let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
                 let class_type: u32 = c.index(sz.simple_index(TableId::TypeDef))?;
@@ -862,7 +873,6 @@ fn decode_table(
             }
         }
         TableId::MemberRef => {
-            out.member_refs.reserve(count as usize);
             for k in 0..count as usize {
                 let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
                 let parent: Option<RowRef> = coded(&mut c, CodedIndex::MemberRefParent)?;
@@ -876,7 +886,6 @@ fn decode_table(
             }
         }
         TableId::CustomAttribute => {
-            out.custom_attributes.reserve(count as usize);
             for k in 0..count as usize {
                 let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
                 let parent: Option<RowRef> = coded(&mut c, CodedIndex::HasCustomAttribute)?;
@@ -890,7 +899,6 @@ fn decode_table(
             }
         }
         TableId::ModuleRef => {
-            out.module_refs.reserve(count as usize);
             for k in 0..count as usize {
                 let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
                 let name: u32 = c.index(sz.heap.strings)?;
@@ -898,7 +906,6 @@ fn decode_table(
             }
         }
         TableId::TypeSpec => {
-            out.type_specs.reserve(count as usize);
             for k in 0..count as usize {
                 let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
                 let signature: u32 = c.index(sz.heap.blob)?;
@@ -906,7 +913,6 @@ fn decode_table(
             }
         }
         TableId::MethodSpec => {
-            out.method_specs.reserve(count as usize);
             for k in 0..count as usize {
                 let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
                 let method: Option<RowRef> = coded(&mut c, CodedIndex::MethodDefOrRef)?;
@@ -918,7 +924,6 @@ fn decode_table(
             }
         }
         TableId::StandAloneSig => {
-            out.standalone_sigs.reserve(count as usize);
             for k in 0..count as usize {
                 let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
                 let signature: u32 = c.index(sz.heap.blob)?;
@@ -926,7 +931,6 @@ fn decode_table(
             }
         }
         TableId::MethodImpl => {
-            out.method_impls.reserve(count as usize);
             for k in 0..count as usize {
                 let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
                 let class_type: u32 = c.index(sz.simple_index(TableId::TypeDef))?;
@@ -963,7 +967,6 @@ fn decode_table(
             });
         }
         TableId::AssemblyRef => {
-            out.assembly_refs.reserve(count as usize);
             for k in 0..count as usize {
                 let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
                 let major: u16 = c.u16()?;
@@ -989,7 +992,6 @@ fn decode_table(
             }
         }
         TableId::NestedClass => {
-            out.nested_classes.reserve(count as usize);
             for k in 0..count as usize {
                 let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
                 let nested_class: u32 = c.index(sz.simple_index(TableId::TypeDef))?;
@@ -1001,7 +1003,6 @@ fn decode_table(
             }
         }
         TableId::GenericParam => {
-            out.generic_params.reserve(count as usize);
             for k in 0..count as usize {
                 let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
                 let number: u16 = c.u16()?;
@@ -1017,7 +1018,6 @@ fn decode_table(
             }
         }
         TableId::ClassLayout => {
-            out.class_layouts.reserve(count as usize);
             for k in 0..count as usize {
                 let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
                 let packing_size: u16 = c.u16()?;
@@ -1031,7 +1031,6 @@ fn decode_table(
             }
         }
         TableId::FieldRva => {
-            out.field_rvas.reserve(count as usize);
             for k in 0..count as usize {
                 let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
                 let rva: u32 = c.u32()?;
@@ -1040,7 +1039,6 @@ fn decode_table(
             }
         }
         TableId::ManifestResource => {
-            out.manifest_resources.reserve(count as usize);
             for k in 0..count as usize {
                 let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
                 let offset: u32 = c.u32()?;
@@ -1071,6 +1069,23 @@ mod tests {
         assert_eq!(w.strings, 2);
         assert_eq!(w.guid, 2);
         assert_eq!(w.blob, 2);
+    }
+
+    #[test]
+    fn table_rows_over_input_budget_are_rejected_before_decode() {
+        const COUNT: u32 = 1_000_001;
+        const MODULE_ROW_WIDTH: usize = 10;
+        let header_size: usize = 28;
+        let row_bytes: usize = MODULE_ROW_WIDTH * COUNT as usize;
+        let mut bytes: Vec<u8> = vec![0; header_size + row_bytes];
+        bytes[8] = 1;
+        bytes[24..28].copy_from_slice(&COUNT.to_le_bytes());
+        let header: StreamHeader = StreamHeader {
+            offset: 0,
+            size: u32::try_from(bytes.len()).expect("test metadata fits u32"),
+        };
+
+        assert!(parse_tables(&bytes, header).is_err());
     }
 
     #[test]
