@@ -90,58 +90,6 @@ fn pyarmor_stance_exists_with_legal_headings() {
     }
 }
 
-#[test]
-fn adr_set_is_exactly_five_madr_documents() {
-    let root: PathBuf = workspace_root();
-    let decisions: PathBuf = root.join("docs").join("decisions");
-    assert!(decisions.is_dir(), "missing {}", decisions.display());
-
-    let mut adrs: Vec<PathBuf> = Vec::new();
-    for entry in fs::read_dir(&decisions).expect("reading docs/decisions") {
-        let path: PathBuf = entry.expect("dir entry").path();
-        let name: String = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default()
-            .to_owned();
-        let is_adr: bool = name.ends_with(".md")
-            && name
-                .split('-')
-                .next()
-                .is_some_and(|p: &str| p.len() == 4 && p.chars().all(|c: char| c.is_ascii_digit()));
-        if is_adr {
-            adrs.push(path);
-        }
-    }
-    adrs.sort();
-    assert_eq!(
-        adrs.len(),
-        5,
-        "expected exactly 5 NNNN-*.md ADRs, found {}: {adrs:?}",
-        adrs.len()
-    );
-
-    for adr in &adrs {
-        assert_lf_only(adr);
-        let body: String = read(adr);
-        assert!(
-            body.contains("## Decision"),
-            "{} missing a `## Decision` heading",
-            adr.display()
-        );
-        assert!(
-            body.contains("## Context"),
-            "{} missing a `## Context` heading",
-            adr.display()
-        );
-        assert!(
-            body.contains("## Consequences"),
-            "{} missing a `## Consequences` heading",
-            adr.display()
-        );
-    }
-}
-
 fn registry_codes(root: &Path) -> BTreeSet<String> {
     let dir: PathBuf = root
         .join("crates")

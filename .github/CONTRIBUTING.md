@@ -1,6 +1,6 @@
 # Contributing
 
-`disrobe` is a deterministic multi-language deobfuscator and decompiler suite. The same input bytes produce the same output bytes on every machine and every run. Keep that one rule in mind and the rest of this document is detail.
+`disrobe` is a deterministic multi-language deobfuscator and decompiler suite. The same input bytes produce the same output bytes on every machine and every run. Every rule below follows from that one.
 
 ## Getting started
 
@@ -11,13 +11,15 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-`rust-toolchain.toml` pins the exact Rust version so your local `rustfmt` and `clippy` match CI byte-for-byte. Builds that touch the pyo3 bindings need a Python on `PATH`, and `PYO3_PYTHON` pins a specific one. Install the git hooks once with:
+`rust-toolchain.toml` pins the exact Rust version so your local `rustfmt` and `clippy` match CI byte-for-byte. Builds that touch the pyo3 bindings need a Python on `PATH`. Set `PYO3_PYTHON` to pin a specific one. Install the git hooks once with:
 
 ```
 cargo xtask setup-hooks
 ```
 
-That points git at `lefthook`, which runs the pre-commit checks and a pre-push pre-mortem (`cargo xtask prepush`). The pre-push gate is the single source of truth shared with CI: it formats every changed crate (`cargo fmt -p <crate> -- --check`), re-checks generated-artifact freshness when the change touches a generator or its inputs, and runs `cargo clippy --workspace --all-targets -- -D warnings`, failing fast and printing the exact fix for whatever drifted. Run `cargo xtask prepush --full` before a release to gate every crate unscoped. `LEFTHOOK=0 git push` or `git push --no-verify` skips it in an emergency.
+That points git at `lefthook`, which runs the pre-commit checks and a pre-push pre-mortem (`cargo xtask prepush`). The pre-push gate is the single source of truth shared with CI. It checks formatting on every changed crate (`cargo fmt -p <crate> -- --check`) and runs `cargo clippy --workspace --all-targets -- -D warnings`. When a change touches a generator or its inputs, the gate also re-checks generated-artifact freshness. The first failure stops the push and prints the exact fix for whatever drifted.
+
+Run `cargo xtask prepush --full` before a release to gate every crate unscoped. `LEFTHOOK=0 git push` or `git push --no-verify` skips it in an emergency.
 
 ## Workspace map
 
@@ -69,26 +71,26 @@ The workspace has 53 crates, layered core -> ir -> passes -> surfaces.
 
 ## Branch model
 
-`main` is always releasable. Work in feature branches, open a PR, and squash-merge when green. Branch names: short and descriptive, like `pass/<name>` or `<area>/<slug>`. Keep them short-lived.
+`main` is always releasable. Work in a feature branch and open a PR. Squash-merge when CI is green. Name the branch `pass/<name>` or `<area>/<slug>`, and keep it short-lived.
 
 ## Adding a new pass crate
 
-1. Decide which IR rung your pass targets (Raw=0 through Surface=4) and what `REQUIRES` / `PRODUCES` mean in the capability system; see `crates/disrobe-ir/src/lib.rs`.
-2. Create `crates/disrobe-pass-<name>/`. The minimum is a `Cargo.toml` with workspace dependency inheritance and a `lib.rs` that registers a `PassDescriptor`. Add a `chain` feature and a `chain_detector` module if it should join the auto-chain.
-3. Wire it into `disrobe-cli`: add the crate as an `optional = true` dependency, add a matching `<ecosystem>` feature under `[features]`, declare the CLI sub-module behind `#[cfg(feature = "...")]`, gate the `Cmd` variant and dispatch arm the same way, and register it in the chain registry (`cli/chain_v1.rs`) under that cfg. Document the new flag in the README and the relevant docs page.
+1. Decide which IR rung the pass targets (Raw=0 through Surface=4). Work out its `REQUIRES` / `PRODUCES` in the capability system; see `crates/disrobe-ir/src/lib.rs`.
+2. Create `crates/disrobe-pass-<name>/`. The minimum is a `Cargo.toml` with workspace dependency inheritance and a `lib.rs` that registers a `PassDescriptor`. If the pass should join the auto-chain, add a `chain` feature and a `chain_detector` module.
+3. Wire it into `disrobe-cli`. Add the crate as an `optional = true` dependency, plus a matching `<ecosystem>` feature under `[features]`. Declare the CLI sub-module behind `#[cfg(feature = "...")]`, and gate the `Cmd` variant and dispatch arm the same way. Register the pass in the chain registry (`cli/chain_v1.rs`) under that cfg. Document the new flag in the README and the relevant docs page.
 4. Emit at least `--emit source` and `--emit report`. Output must be deterministic: the same input bytes produce the same output bytes.
 5. Add a fixture under `corpus/` (next section) and a test that pins behavior against it.
 6. Benchmark with `cargo bench -p disrobe-pass-<name>` and note the baseline in the PR.
 
-**Grey-zone protectors** (commercial obfuscators with active legal programs: VMProtect, Themida, certain DRM stacks) require an issue first. A research review runs before any pass targeting one of these ships. This is not about discouraging the work; it documents the statutory basis before code lands.
+**Grey-zone protectors** (commercial obfuscators with active legal programs: VMProtect, Themida, certain DRM stacks) require an issue first. Any pass that targets one of them gets a research review before it ships. The review is not there to discourage the work; it documents the statutory basis before code lands.
 
 ## Adding a fixture
 
-Fixtures live under `corpus/<ecosystem>/`. Real-tool-generated artifacts are preferred over synthetic ones. When a fixture is heavy or platform-built it stays gitignored and a regeneration recipe ships instead.
+Fixtures live under `corpus/<ecosystem>/`. Prefer an artifact generated by the real tool over a synthetic one. If a fixture is heavy or platform-built, it stays gitignored and a regeneration recipe ships instead.
 
 1. Add a generator: extend `corpus/generate.sh` / `corpus/generate.ps1`.
-2. Record provenance in the ecosystem's `MANIFEST.toml`: `schema_version`, a `description`, and one `[[fixtures]]` block per artifact with `path`, `format`, `tool`, and `provenance`. Byte-identical reproducibility is the goal; note where a fixture cannot be reproduced cross-host.
-3. Small reproducible binaries may be committed (un-ignore with a `!` negation in `.gitignore`); large or non-reproducible ones stay ignored. Tests that depend on a gitignored fixture are marked `#[ignore]` with a regeneration hint in the message.
+2. Record provenance in the ecosystem's `MANIFEST.toml`: `schema_version`, a `description`, and one `[[fixtures]]` block per artifact with `path`, `format`, `tool`, and `provenance`. Aim for byte-identical reproducibility, and note where a fixture cannot be reproduced cross-host.
+3. Small reproducible binaries may be committed; un-ignore each with a `!` negation in `.gitignore`. Large or non-reproducible fixtures stay ignored. Mark any test that depends on a gitignored fixture `#[ignore]`, and put a regeneration hint in the message.
 
 ## The metadata sidecar protocol
 
@@ -97,11 +99,11 @@ Every pass can emit a versioned metadata sidecar alongside its normal output. Th
 - Packs: `--metadata-pack-1` (ast + disasm + symbols + strings) through `--metadata-pack-4` (pack-3 + confidence + opcode-coverage + pii-map + decryption-keys, auth-gated). `--llm` aliases pack-4.
 - Categories: granular toggles like `--ast`, `--disasm`, `--cfg`, `--dfg`, `--symbols`, `--strings`, `--types`, `--imports`, `--constants`, and `--signatures` compose with the packs.
 
-A pass implements `LlmMetadataEmitter::emit_metadata(&selection)`; the CLI writes the bundle next to the primary artifact with a per-pass `PipelineStep` provenance record (input hash, consumed and produced rungs, duration). The bundle is deterministic and never phones home.
+A pass implements `LlmMetadataEmitter::emit_metadata(&selection)`. The CLI writes the bundle next to the primary artifact, with a per-pass `PipelineStep` provenance record (input hash, consumed and produced rungs, duration). The bundle is deterministic and never phones home.
 
 ## Documentation and the wiki
 
-The docs live under `docs/src` and are the single source of truth, rendered by mdBook to the docs site. The GitHub wiki is generated from `docs/src` by `scripts/wiki_sync.py` and the `wiki-sync` workflow on every push to `main` that touches `docs/`. Do not edit wiki pages directly; they are overwritten on the next sync. Edit the matching file under `docs/src` instead, and regenerate locally to preview:
+The docs live under `docs/src` and are the single source of truth. mdBook renders them to the docs site. `scripts/wiki_sync.py` and the `wiki-sync` workflow generate the GitHub wiki from `docs/src` on every push to `main` that touches `docs/`. Do not edit wiki pages directly, because the next sync overwrites them. Edit the matching file under `docs/src`, then regenerate locally to preview:
 
 ```
 python scripts/wiki_sync.py --out ./.wiki-build       # build the wiki tree
@@ -128,15 +130,15 @@ Determinism rules the linter enforces:
 - `HashMap` and `HashSet` are banned from emit paths via `clippy.toml`. Use `IndexMap` / `IndexSet`, or `BTreeMap` / `BTreeSet` for sorted output.
 - No `SystemTime::now()` or unseeded randomness inside a pass. Route through `disrobe_core::time` and `disrobe_core::rng`.
 - No `.unwrap()` or `.expect()` in production library code. Tests may use them when they make the failing condition clearer than manual error plumbing.
-- The source carries no comments. Names and structure do the explaining; durable why and context lives in the crate's `INFORMATION.md`, not inline.
+- The source carries no comments. Names and structure do the explaining. Durable rationale and context live in the crate's `INFORMATION.md`, not inline.
 
 ## Security routing
 
-Found a vulnerability (a sandbox escape, a path traversal in an extractor, a pass that writes outside its declared output directory)? Do not open a public issue. Follow the private disclosure process in [SECURITY.md](../SECURITY.md). Include a minimal reproducer (input bytes, command line, expected versus observed behavior), the `disrobe --version` output, and the OS and architecture.
+If you find a vulnerability, do not open a public issue. Examples are a sandbox escape, a path traversal in an extractor, and a pass that writes outside its declared output directory. Follow the private disclosure process in [SECURITY.md](../SECURITY.md). Include a minimal reproducer (input bytes, command line, expected versus observed behavior), the `disrobe --version` output, and the OS and architecture.
 
 ## Commits
 
-Lowercase, specific, plain words. Say what changed, no `type:` prefixes. The body is optional and only for non-obvious motivation, never a restatement of the diff. Use a noreply email so your address stays private:
+Write the subject in lowercase with plain, specific words. Say what changed, and do not use `type:` prefixes. The body is optional and carries non-obvious motivation only, never a restatement of the diff. Use a noreply email so your address stays private:
 
 ```
 git -c user.email="<id>+<handle>@users.noreply.github.com" commit -m "add pyarmor v9 co_code reconstruction"
