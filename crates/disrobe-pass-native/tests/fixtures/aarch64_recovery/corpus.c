@@ -343,3 +343,106 @@ float fs_rsqrt_f(float x) { return 1.0f / __builtin_sqrtf(x); }
 double fs_sqrt_sum_d(double a, double b) { return __builtin_sqrt(a) + __builtin_sqrt(b); }
 float fs_sqrt_scaled_f(float x, float k) { return k * __builtin_sqrtf(x); }
 double fs_sqrt_diff_d(double a, double b) { return __builtin_sqrt(a) - b; }
+float fb_ge_f(float a, float b, float x, float y) {
+    volatile float r = y;
+    if (a >= b) r = x;
+    return r;
+}
+double fb_ge_d(double a, double b, double x, double y) {
+    volatile double r = y;
+    if (a >= b) r = x;
+    return r;
+}
+float fb_le_f(float a, float b, float x, float y) {
+    volatile float r = y;
+    if (a <= b) r = x;
+    return r;
+}
+double fb_le_d(double a, double b, double x, double y) {
+    volatile double r = y;
+    if (a <= b) r = x;
+    return r;
+}
+float fb_ne_f(float a, float b, float x, float y) {
+    volatile float r = y;
+    if (a != b) r = x;
+    return r;
+}
+double fb_ne_d(double a, double b, double x, double y) {
+    volatile double r = y;
+    if (a != b) r = x;
+    return r;
+}
+float fb_nlt_f(float a, float b, float x, float y) {
+    volatile float r = y;
+    if (!(a < b)) r = x;
+    return r;
+}
+double fb_nlt_d(double a, double b, double x, double y) {
+    volatile double r = y;
+    if (!(a < b)) r = x;
+    return r;
+}
+float fb_nle_f(float a, float b, float x, float y) {
+    volatile float r = y;
+    if (!(a <= b)) r = x;
+    return r;
+}
+double fb_nle_d(double a, double b, double x, double y) {
+    volatile double r = y;
+    if (!(a <= b)) r = x;
+    return r;
+}
+float fb_ngt_f(float a, float b, float x, float y) {
+    volatile float r = y;
+    if (!(a > b)) r = x;
+    return r;
+}
+double fb_ngt_d(double a, double b, double x, double y) {
+    volatile double r = y;
+    if (!(a > b)) r = x;
+    return r;
+}
+float fb_nge_f(float a, float b, float x, float y) {
+    volatile float r = y;
+    if (!(a >= b)) r = x;
+    return r;
+}
+double fb_nge_d(double a, double b, double x, double y) {
+    volatile double r = y;
+    if (!(a >= b)) r = x;
+    return r;
+}
+float fb_ord_f(float a, float b, float x, float y) {
+    volatile float r = y;
+    if (!__builtin_isunordered(a, b)) r = x;
+    return r;
+}
+double fb_ord_d(double a, double b, double x, double y) {
+    volatile double r = y;
+    if (!__builtin_isunordered(a, b)) r = x;
+    return r;
+}
+float fc_selor_f(float a, float b, float c, float d, float x, float y) {
+    return (a < b || c < d) ? x : y;
+}
+double fc_selor_d(double a, double b, double c, double d, double x, double y) {
+    return (a < b || c < d) ? x : y;
+}
+double fc_seland_d(double a, double b, double c, double d, double x, double y) {
+    return (a < b && c < d) ? x : y;
+}
+float fc_selor3_f(float a, float b, float c, float d, float e, float f, float x, float y) {
+    return (a < b || c < d || e < f) ? x : y;
+}
+float fc_seland3_f(float a, float b, float c, float d, float e, float f, float x, float y) {
+    return (a < b && c < d && e < f) ? x : y;
+}
+float fc_seland3_mix_f(float a, float b, float c, float d, float e, float f, float x, float y) {
+    return (a < b && c > d && e == f) ? x : y;
+}
+float fb_and3_f(float a, float b, float c, float d, float e, float f, float x, float y) {
+    volatile float r = y;
+    if (a < b && c < d && e < f) r = x;
+    return r;
+}
