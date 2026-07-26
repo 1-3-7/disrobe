@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
+use std::num::NonZeroU8;
 
 use disrobe_core::DiGraph;
 use disrobe_emit::Interner;
@@ -183,6 +184,26 @@ impl FpWidth {
             Self::F32 => "float",
             Self::F64 => "double",
         }
+    }
+
+    const fn rust_type(self) -> &'static str {
+        match self {
+            Self::F32 => "f32",
+            Self::F64 => "f64",
+        }
+    }
+
+    fn c_power_of_two(self, exponent: NonZeroU8) -> String {
+        let magnitude: u8 = exponent.get();
+        match self {
+            Self::F32 => format!("0x1p{magnitude}f"),
+            Self::F64 => format!("0x1p{magnitude}"),
+        }
+    }
+
+    fn rust_power_of_two(self, exponent: NonZeroU8) -> Option<String> {
+        let scale: u128 = 1u128.checked_shl(u32::from(exponent.get()))?;
+        Some(format!("{scale}{}", self.rust_type()))
     }
 }
 
@@ -990,6 +1011,7 @@ enum Stmt {
         src: RegRef,
         signed: bool,
         width: FpWidth,
+        fbits: Option<NonZeroU8>,
     },
     FpToInt {
         dest: RegRef,
@@ -997,6 +1019,7 @@ enum Stmt {
         width: FpWidth,
         signed: bool,
         round: FpToIntRound,
+        fbits: Option<NonZeroU8>,
     },
     FpConvert {
         dest: Xmm,
@@ -9072,6 +9095,7 @@ fn lift_fp(
                 src,
                 signed: true,
                 width,
+                fbits: None,
             }))
         }
         "cvttsd2si" | "cvttss2si" | "cvtsd2si" | "cvtss2si" => {
@@ -9099,6 +9123,7 @@ fn lift_fp(
                 width,
                 signed: true,
                 round: FpToIntRound::Zero,
+                fbits: None,
             }))
         }
         "cvtsd2ss" | "cvtss2sd" => {
@@ -13167,6 +13192,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             src,
             signed,
             width,
+            fbits,
         } => {
             let bits: u32 = src.width.bits();
             let rv: &'static str = reg_var(src.reg);
@@ -13177,7 +13203,15 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             };
             let int_expr: String = c_render(|cx| {
                 let inner: CExpr = cx.var(rv);
-                c_cast(cx, &ty, inner)
+                let converted: CExpr = c_cast(cx, &ty, inner);
+                match fbits {
+                    None => converted,
+                    Some(fraction) => {
+                        let widened: CExpr = c_cast(cx, width.c_type(), converted);
+                        let scale: CExpr = cx.var(&width.c_power_of_two(*fraction));
+                        c_bin(BinaryOp::Div, widened, scale)
+                    }
+                }
             });
             assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&int_expr, *width))
         }
@@ -13187,8 +13221,17 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             width,
             signed,
             round,
+            fbits,
         } => {
-            let value: String = fp_load(&FpOperand::Xmm(*src), *width, aggregates);
+            let loaded: String = fp_load(&FpOperand::Xmm(*src), *width, aggregates);
+            let value: String = match fbits {
+                None => loaded,
+                Some(fraction) => c_render(|cx| {
+                    let lhs: CExpr = cx.var(&loaded);
+                    let scale: CExpr = cx.var(&width.c_power_of_two(*fraction));
+                    c_bin(BinaryOp::Mul, lhs, scale)
+                }),
+            };
             let rounded: String = match round {
                 FpToIntRound::Zero => value,
                 FpToIntRound::Floor => c_fp_round_builtin("floor", &value, *width),
@@ -15017,15 +15060,24 @@ fn rs_int_to_fp_stmt(
     src: RegRef,
     signed: bool,
     width: FpWidth,
+    fbits: Option<NonZeroU8>,
     indent: &str,
-) {
+) -> Option<()> {
     let bits: u32 = src.width.bits();
     let int_expr: String = if signed {
         format!("({} as u{bits} as i{bits})", reg_var(src.reg))
     } else {
         format!("({} as u{bits})", reg_var(src.reg))
     };
-    rs_emit_xmm_store(out, dest, &int_expr, width, indent);
+    let value: String = match fbits {
+        None => int_expr,
+        Some(fraction) => {
+            let scale: String = width.rust_power_of_two(fraction)?;
+            format!("({int_expr} as {} / {scale})", width.rust_type())
+        }
+    };
+    rs_emit_xmm_store(out, dest, &value, width, indent);
+    Some(())
 }
 
 fn rs_fp_to_int_stmt(
@@ -15035,9 +15087,17 @@ fn rs_fp_to_int_stmt(
     width: FpWidth,
     signed: bool,
     round: FpToIntRound,
+    fbits: Option<NonZeroU8>,
     indent: &str,
-) {
-    let value: String = rs_fp_load_xmm(src, width);
+) -> Option<()> {
+    let loaded: String = rs_fp_load_xmm(src, width);
+    let value: String = match fbits {
+        None => loaded,
+        Some(fraction) => {
+            let scale: String = width.rust_power_of_two(fraction)?;
+            format!("({loaded} * {scale})")
+        }
+    };
     let rounded: String = match round {
         FpToIntRound::Zero => value,
         FpToIntRound::Floor => format!("({value}).floor()"),
@@ -15052,6 +15112,7 @@ fn rs_fp_to_int_stmt(
         format!("((({rounded}) as {uty}) as u64)")
     };
     rs_emit_reg_assign(out, dest, &truncated, indent);
+    Some(())
 }
 
 fn rs_fp_convert_stmt(
@@ -15243,14 +15304,16 @@ fn rs_emit_stmt(
             src,
             signed,
             width,
-        } => rs_int_to_fp_stmt(out, *dest, *src, *signed, *width, indent),
+            fbits,
+        } => rs_int_to_fp_stmt(out, *dest, *src, *signed, *width, *fbits, indent)?,
         Stmt::FpToInt {
             dest,
             src,
             width,
             signed,
             round,
-        } => rs_fp_to_int_stmt(out, *dest, *src, *width, *signed, *round, indent),
+            fbits,
+        } => rs_fp_to_int_stmt(out, *dest, *src, *width, *signed, *round, *fbits, indent)?,
         Stmt::FpConvert {
             dest,
             src,

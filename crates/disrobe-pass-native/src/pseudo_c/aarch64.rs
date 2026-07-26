@@ -11,6 +11,7 @@ use super::{
 };
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroU8;
 
 #[path = "aarch64_cfg.rs"]
 mod aarch64_cfg;
@@ -3729,19 +3730,46 @@ fn lower_fp_binary_then_unary(
     ])
 }
 
-fn reject_fixed_point_conversion(insn: &DisasmInsn, operands: &[&str]) -> Result<()> {
-    if operands.len() == 3 && operands[2].trim().starts_with('#') {
+fn parse_fixed_point_fraction(
+    insn: &DisasmInsn,
+    operands: &[&str],
+    integer_width: Width,
+) -> Result<Option<NonZeroU8>> {
+    let Some(token): Option<&&str> = operands.get(2) else {
+        return Ok(None);
+    };
+    if !token.trim().starts_with('#') {
         return Err(reject_at(
             insn,
-            "fixed-point floating-point conversion is unsupported",
+            "fixed-point conversion scale is not an immediate",
         ));
     }
-    Ok(())
+    let limit: i64 = match integer_width {
+        Width::W32 => 32,
+        Width::W64 => 64,
+        Width::W8 | Width::W16 => {
+            return Err(reject_at(
+                insn,
+                "fixed-point conversion uses a sub-word integer register",
+            ));
+        }
+    };
+    let requested: i64 = parse_immediate(token)?;
+    if requested < 1 || requested > limit {
+        return Err(reject_at(
+            insn,
+            "fixed-point conversion scale is outside the architectural range",
+        ));
+    }
+    let fraction: NonZeroU8 = u8::try_from(requested)
+        .ok()
+        .and_then(NonZeroU8::new)
+        .ok_or_else(|| reject_at(insn, "fixed-point conversion scale is not representable"))?;
+    Ok(Some(fraction))
 }
 
 fn lower_int_to_fp(insn: &DisasmInsn, operands: &[&str], signed: bool) -> Result<Vec<Stmt>> {
-    reject_fixed_point_conversion(insn, operands)?;
-    if operands.len() != 2 {
+    if !matches!(operands.len(), 2 | 3) {
         return Err(reject_at(
             insn,
             "malformed integer-to-floating-point conversion",
@@ -3751,17 +3779,18 @@ fn lower_int_to_fp(insn: &DisasmInsn, operands: &[&str], signed: bool) -> Result
         .ok_or_else(|| reject_at(insn, "integer-to-floating-point destination is not scalar"))?;
     let src: RegRef = parse_reg(operands[1])
         .map_err(|_| reject_at(insn, "integer-to-floating-point source is not w or x"))?;
+    let fbits: Option<NonZeroU8> = parse_fixed_point_fraction(insn, operands, src.width)?;
     Ok(vec![Stmt::IntToFp {
         dest,
         src,
         signed,
         width,
+        fbits,
     }])
 }
 
 fn lower_fp_to_int(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
-    reject_fixed_point_conversion(insn, operands)?;
-    if operands.len() != 2 {
+    if !matches!(operands.len(), 2 | 3) {
         return Err(reject_at(
             insn,
             "malformed floating-point-to-integer conversion",
@@ -3787,12 +3816,20 @@ fn lower_fp_to_int(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
         .map_err(|_| reject_at(insn, "floating-point-to-integer destination is not w or x"))?;
     let (src, width): (Xmm, FpWidth) = parse_fp_register(operands[1])?
         .ok_or_else(|| reject_at(insn, "floating-point-to-integer source is not scalar"))?;
+    let fbits: Option<NonZeroU8> = parse_fixed_point_fraction(insn, operands, dest.width)?;
+    if fbits.is_some() && !matches!(round, FpToIntRound::Zero) {
+        return Err(reject_at(
+            insn,
+            "fixed-point floating-point-to-integer conversion requires truncation toward zero",
+        ));
+    }
     Ok(vec![Stmt::FpToInt {
         dest,
         src,
         width,
         signed,
         round,
+        fbits,
     }])
 }
 
@@ -6579,4 +6616,110 @@ fn reject_at(insn: &DisasmInsn, message: &str) -> Error {
         "{message} `{} {}` at {:#x}",
         insn.mnemonic, insn.operands, insn.address
     ))
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::{DisasmInsn, Stmt, lower_fp_to_int, lower_int_to_fp, split_operands};
+    use crate::error::Result;
+
+    fn lower(mnemonic: &str, operands: &str) -> Result<Vec<Stmt>> {
+        let insn: DisasmInsn = DisasmInsn {
+            address: 0,
+            bytes: vec![0, 0, 0, 0],
+            mnemonic: mnemonic.to_owned(),
+            operands: operands.to_owned(),
+        };
+        let split: Vec<&str> = split_operands(&insn.operands);
+        if matches!(mnemonic, "scvtf" | "ucvtf") {
+            lower_int_to_fp(&insn, &split, mnemonic == "scvtf")
+        } else {
+            lower_fp_to_int(&insn, &split)
+        }
+    }
+
+    fn rejection(mnemonic: &str, operands: &str) -> String {
+        format!(
+            "{:?}",
+            lower(mnemonic, operands).expect_err("fixed-point form must reject")
+        )
+    }
+
+    #[test]
+    fn fixed_point_scale_recovers_only_for_the_four_conversion_mnemonics() {
+        for mnemonic in ["scvtf", "ucvtf"] {
+            assert!(lower(mnemonic, "s0, w0, #0x10").is_ok(), "{mnemonic}");
+        }
+        for mnemonic in ["fcvtzs", "fcvtzu"] {
+            assert!(lower(mnemonic, "w0, s0, #0x10").is_ok(), "{mnemonic}");
+        }
+        for mnemonic in ["fcvtms", "fcvtmu", "fcvtps", "fcvtpu", "fcvtas", "fcvtau"] {
+            let message: String = rejection(mnemonic, "w0, s0, #0x10");
+            assert!(
+                message.contains("truncation toward zero"),
+                "{mnemonic}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn fixed_point_scale_of_zero_rejects() {
+        for (mnemonic, operands) in [("scvtf", "s0, w0, #0x0"), ("fcvtzs", "w0, s0, #0")] {
+            let message: String = rejection(mnemonic, operands);
+            assert!(
+                message.contains("outside the architectural range"),
+                "{mnemonic}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn fixed_point_scale_beyond_the_integer_register_width_rejects() {
+        for (mnemonic, operands) in [
+            ("scvtf", "s0, w0, #0x21"),
+            ("ucvtf", "d0, w0, #0x40"),
+            ("fcvtzs", "w0, s0, #0x21"),
+            ("fcvtzu", "x0, d0, #0x41"),
+            ("scvtf", "d0, x0, #0x41"),
+        ] {
+            let message: String = rejection(mnemonic, operands);
+            assert!(
+                message.contains("outside the architectural range"),
+                "{mnemonic} {operands}: {message}"
+            );
+        }
+        assert!(lower("scvtf", "s0, w0, #0x20").is_ok());
+        assert!(lower("scvtf", "s0, x0, #0x40").is_ok());
+        assert!(lower("fcvtzu", "w0, d0, #0x20").is_ok());
+        assert!(lower("fcvtzu", "x0, s0, #0x40").is_ok());
+    }
+
+    #[test]
+    fn fixed_point_scale_that_is_not_an_immediate_rejects() {
+        let message: String = rejection("fcvtzs", "w0, s0, w1");
+        assert!(message.contains("not an immediate"), "{message}");
+        let source: String = rejection("scvtf", "s0, w0, w1");
+        assert!(source.contains("not an immediate"), "{source}");
+    }
+
+    #[test]
+    fn malformed_fixed_point_operand_lists_reject() {
+        let extra: String = rejection("scvtf", "s0, w0, #0x10, #0x10");
+        assert!(extra.contains("malformed"), "{extra}");
+        let short: String = rejection("fcvtzs", "w0");
+        assert!(short.contains("malformed"), "{short}");
+    }
+
+    #[test]
+    fn half_precision_and_vector_fixed_point_forms_reject() {
+        let half_source: String = rejection("scvtf", "h0, w0, #0x10");
+        assert!(half_source.contains("F16"), "{half_source}");
+        let half_dest: String = rejection("fcvtzs", "w0, h0, #0x10");
+        assert!(half_dest.contains("F16"), "{half_dest}");
+        let vector: String = rejection("scvtf", "v0.4s, v0.4s, #0x10");
+        assert!(vector.contains("vector registers"), "{vector}");
+        let scalar_simd: String = rejection("ucvtf", "s0, s0, #0x10");
+        assert!(scalar_simd.contains("not w or x"), "{scalar_simd}");
+    }
 }

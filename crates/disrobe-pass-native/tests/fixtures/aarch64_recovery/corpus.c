@@ -469,3 +469,20 @@ int vol_two_guards(int a, int b, int c) {
     if (b > c) t = c;
     return t;
 }
+
+float fx_scvtf_f_w(int a, int b) { return (float)(a + b) / 65536.0f; }
+double fx_scvtf_d_w(int a, int b) { return (double)(a + b) / 4294967296.0; }
+float fx_scvtf_f_x(long long a, long long b) { return (float)(a + b) / 18446744073709551616.0f; }
+double fx_scvtf_d_x(long long a, long long b) { return (double)(a + b) / 65536.0; }
+float fx_ucvtf_f_w(unsigned a, unsigned b) { return (float)(a + b) / 65536.0f; }
+double fx_ucvtf_d_w(unsigned a, unsigned b) { return (double)(a + b) / 2.0; }
+float fx_ucvtf_f_x(u64 a, u64 b) { return (float)(a + b) / 65536.0f; }
+double fx_ucvtf_d_x(u64 a, u64 b) { return (double)(a + b) / 4294967296.0; }
+i32 fx_fcvtzs_w_f(float x) { return (i32)(x * 65536.0f); }
+i32 fx_fcvtzs_w_d(double x) { return (i32)(x * 16.0); }
+i64 fx_fcvtzs_x_f(float x) { return (i64)(x * 4294967296.0f); }
+i64 fx_fcvtzs_x_d(double x) { return (i64)(x * 18446744073709551616.0); }
+u32 fx_fcvtzu_w_f(float x) { return (u32)(x * 4294967296.0f); }
+u32 fx_fcvtzu_w_d(double x) { return (u32)(x * 16.0); }
+u64 fx_fcvtzu_x_f(float x) { return (u64)(x * 65536.0f); }
+u64 fx_fcvtzu_x_d(double x) { return (u64)(x * 18446744073709551616.0); }
