@@ -15,7 +15,7 @@ const MAX_REFS: usize = 1 << 20;
 #[cfg(not(test))]
 const MAX_INTERNED_STRINGS: usize = 1 << 20;
 #[cfg(test)]
-const MAX_INTERNED_STRINGS: usize = 1 << 12;
+const MAX_INTERNED_STRINGS: usize = 1 << 13;
 #[cfg(not(test))]
 const MAX_TRACE_ENTRIES: usize = 1 << 20;
 #[cfg(test)]

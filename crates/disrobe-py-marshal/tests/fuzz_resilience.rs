@@ -165,6 +165,26 @@ fn deep_nesting_does_not_overflow_stack() {
 }
 
 #[test]
+fn a_module_scale_interned_string_count_is_accepted() {
+    const INTERNED: usize = 6_000;
+    let mut data: Vec<u8> = Vec::with_capacity(INTERNED * 5 + 5);
+    data.push(b'(');
+    data.extend(u32::try_from(INTERNED).unwrap().to_le_bytes());
+    for _ in 0..INTERNED {
+        data.push(b't');
+        data.extend(0u32.to_le_bytes());
+    }
+
+    let object: Object = load(&data, PyVersion::PY312)
+        .expect("a real module interns more strings than the test-mode limit allows");
+
+    match object {
+        Object::Tuple(items) => assert_eq!(items.len(), INTERNED),
+        other => panic!("expected a tuple, got {other:?}"),
+    }
+}
+
+#[test]
 fn a_module_scale_object_count_still_traces_without_omissions() {
     const OBJECTS: usize = 300_000;
     let mut data: Vec<u8> = Vec::with_capacity(OBJECTS.saturating_add(5));
