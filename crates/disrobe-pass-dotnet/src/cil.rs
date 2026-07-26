@@ -858,6 +858,7 @@ const COR_IL_METHOD_INIT_LOCALS: u16 = 0x10;
 const SECT_EH_TABLE: u8 = 0x01;
 const SECT_FAT_FORMAT: u8 = 0x40;
 const SECT_MORE_SECTS: u8 = 0x80;
+const MAX_CIL_INSTRUCTIONS: usize = 65_536;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MethodHeader {
@@ -1005,8 +1006,14 @@ fn exception_sections_end(bytes: &[u8], code_end: usize) -> Result<usize> {
         } else {
             usize::from(bytes[pos + 1])
         };
+        if data_size < 4 {
+            return Err(Error::CilSectionTooSmall {
+                offset: pos,
+                size: data_size,
+            });
+        }
         let section_end: usize = pos
-            .checked_add(data_size.max(4))
+            .checked_add(data_size)
             .ok_or(Error::CilTruncated(usize::MAX))?;
         if section_end > bytes.len() {
             return Err(Error::CilTruncated(section_end));
@@ -1039,8 +1046,14 @@ fn parse_exception_sections(bytes: &[u8], code_end: usize) -> Result<Vec<Excepti
         } else {
             usize::from(bytes[pos + 1])
         };
+        if data_size < 4 {
+            return Err(Error::CilSectionTooSmall {
+                offset: pos,
+                size: data_size,
+            });
+        }
         let section_end: usize = pos
-            .checked_add(data_size.max(4))
+            .checked_add(data_size)
             .ok_or(Error::CilTruncated(usize::MAX))?;
         if section_end > bytes.len() {
             return Err(Error::CilTruncated(section_end));
@@ -1114,9 +1127,15 @@ fn parse_eh_clauses(
 }
 
 pub fn disassemble(code: &[u8]) -> Result<Vec<Instruction>> {
-    let mut out: Vec<Instruction> = Vec::with_capacity(code.len() / 2);
+    let mut out: Vec<Instruction> = Vec::with_capacity(code.len().min(MAX_CIL_INSTRUCTIONS));
     let mut pos: usize = 0;
     while pos < code.len() {
+        if out.len() >= MAX_CIL_INSTRUCTIONS {
+            return Err(Error::CilInstructionCountExceeded {
+                cap: MAX_CIL_INSTRUCTIONS,
+            });
+        }
+        let instruction_start: usize = pos;
         let start: u32 = u32::try_from(pos).unwrap_or(u32::MAX);
         let b0: u8 = code[pos];
         let (op_code, op_size): (u16, usize) = if b0 == 0xFE {
@@ -1133,7 +1152,7 @@ pub fn disassemble(code: &[u8]) -> Result<Vec<Instruction>> {
         };
         pos += op_size;
         let (operand, consumed): (OperandValue, usize) = read_operand(def.operand, code, pos)?;
-        pos += consumed;
+        pos = advance_instruction_position(instruction_start, pos, consumed, code.len())?;
         out.push(Instruction {
             offset: start,
             opcode: op_code,
@@ -1143,6 +1162,26 @@ pub fn disassemble(code: &[u8]) -> Result<Vec<Instruction>> {
         });
     }
     Ok(out)
+}
+
+fn advance_instruction_position(
+    instruction_start: usize,
+    operand_start: usize,
+    consumed: usize,
+    code_len: usize,
+) -> Result<usize> {
+    let next: usize = operand_start
+        .checked_add(consumed)
+        .ok_or(Error::CilTruncated(usize::MAX))?;
+    if next <= instruction_start {
+        return Err(Error::CilNoProgress {
+            offset: instruction_start,
+        });
+    }
+    if next > code_len {
+        return Err(Error::CilTruncated(next));
+    }
+    Ok(next)
 }
 
 fn read_operand(kind: OperandKind, code: &[u8], pos: usize) -> Result<(OperandValue, usize)> {
@@ -1517,6 +1556,31 @@ mod tests {
         assert_eq!(body.instructions[0].name, "ldarg.0");
         assert_eq!(body.instructions[1].name, "ldarg.1");
         assert_eq!(body.instructions[2].name, "ret");
+    }
+
+    #[test]
+    fn decoder_rejects_nonadvancing_instruction_position() {
+        let err: Error = advance_instruction_position(0, 0, 0, 1).expect_err("no progress");
+        assert!(matches!(err, Error::CilNoProgress { offset: 0 }));
+    }
+
+    #[test]
+    fn method_body_rejects_section_smaller_than_header() {
+        let flags_size: u16 = (3u16 << 12) | COR_IL_METHOD_FAT as u16 | COR_IL_METHOD_MORE_SECTS;
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(&flags_size.to_le_bytes());
+        bytes.extend_from_slice(&8u16.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&[SECT_EH_TABLE | SECT_MORE_SECTS, 3, 0, 0]);
+        let err: Error = parse_method_body(&bytes).expect_err("undersized section");
+        assert!(matches!(
+            err,
+            Error::CilSectionTooSmall {
+                offset: 12,
+                size: 3
+            }
+        ));
     }
 
     #[test]
