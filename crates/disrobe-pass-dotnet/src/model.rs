@@ -114,9 +114,9 @@ impl MethodModel {
     pub fn param_name(&self, index: usize) -> String {
         self.parameters
             .iter()
-            .find(|pm: &&ParamModel| usize::from(pm.sequence) == index + 1)
+            .find(|pm: &&ParamModel| usize::from(pm.sequence) == index.saturating_add(1))
             .map_or_else(
-                || format!("arg{}", index + 1),
+                || format!("arg{}", index.saturating_add(1)),
                 |pm: &ParamModel| pm.name.clone(),
             )
     }
