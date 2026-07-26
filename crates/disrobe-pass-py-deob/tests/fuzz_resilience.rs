@@ -13,6 +13,7 @@ use disrobe_py_marshal::PyVersion;
 use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, StressError, XorShift64};
 
 const RANDOM_SPAN_BYTES: usize = 4096;
+const ENTROPY_SPAN_SEED: u64 = 0x5044_4542_0001_0003;
 const SEED_BYTE_LIMIT: usize = 4096;
 const CASES_PER_INPUT: usize = 24;
 const BATCH_SIZE: usize = 72;
@@ -78,6 +79,15 @@ fn pyc_header_seed() -> Vec<u8> {
     bytes
 }
 
+fn entropy_span(len: usize) -> Vec<u8> {
+    let mut rng: XorShift64 = XorShift64::new(ENTROPY_SPAN_SEED);
+    let mut out: Vec<u8> = Vec::with_capacity(len);
+    for _ in 0..len {
+        out.push(rng.next_byte());
+    }
+    out
+}
+
 fn corpus() -> Result<Vec<CorpusEntry>, StressError> {
     let mut entries: Vec<CorpusEntry> = vec![
         CorpusEntry::new("empty", Vec::<u8>::new()),
@@ -94,6 +104,10 @@ fn corpus() -> Result<Vec<CorpusEntry>, StressError> {
     entries.push(CorpusEntry::new(
         "random-span",
         vec![0u8; RANDOM_SPAN_BYTES],
+    ));
+    entries.push(CorpusEntry::new(
+        "entropy-span",
+        entropy_span(RANDOM_SPAN_BYTES),
     ));
     Ok(entries)
 }
