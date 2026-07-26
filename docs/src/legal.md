@@ -18,6 +18,8 @@ The same flag unlocks the `decryption-keys` category of the `--llm` sidecar; wit
 
 - [Digital.ai / Arxan (JS)](https://github.com/1-3-7/disrobe/blob/main/docs/legal/digital-ai-arxan-stance.md)
 - [PACE (JS)](https://github.com/1-3-7/disrobe/blob/main/docs/legal/pace-js-stance.md)
+- [Jscrambler](https://github.com/1-3-7/disrobe/blob/main/docs/legal/jscrambler-stance.md)
+- [PreEmptive JSDefender](https://github.com/1-3-7/disrobe/blob/main/docs/legal/jsdefender-stance.md)
 - [PyArmor](https://github.com/1-3-7/disrobe/blob/main/docs/legal/pyarmor-stance.md)
 
 ## License
