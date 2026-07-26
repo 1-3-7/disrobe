@@ -6,10 +6,10 @@
     clippy::print_stderr
 )]
 
-use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_py_decompile::ast::node::{ConstValue, Expr, FormatConversion, TStrItem};
 use disrobe_pass_py_decompile::bytecode::version::PyVersion;
 use disrobe_pass_py_decompile::codegen::tstring_emit::emit_tstring;
@@ -132,8 +132,9 @@ fn assert_case_spelling(basename: &str, source: &str) {
 }
 
 fn run_roundtrip_matrix(interp: &Path, tag: &str) {
-    let tmp: PathBuf = env::temp_dir().join(format!("disrobe_tstr_rt_{tag}"));
-    std::fs::create_dir_all(&tmp).expect("mk tmp");
+    let scratch: ScratchDir =
+        ScratchDir::create(&format!("py-decompile-tstring-roundtrip-{tag}")).expect("scratch");
+    let tmp: &Path = scratch.path();
 
     for basename in TSTRING_FIXTURES {
         let src_path: PathBuf = fixture_path(basename);

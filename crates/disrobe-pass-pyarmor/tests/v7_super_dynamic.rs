@@ -1,24 +1,15 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::fs;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::{Path, PathBuf};
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_pyarmor::{
     Detection, ProtectionKind, UnpackOptions, UnpackOutput, detect_from_wrapper,
     unpack_wrapper_text_with_options,
 };
 
-static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-
-fn make_tmp_dir(name: &str) -> PathBuf {
-    let seq: u64 = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-pyarmor-{name}-{}-{seq}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("mkdir");
-    dir
+fn make_scratch_dir(name: &str) -> ScratchDir {
+    ScratchDir::create(&format!("pyarmor-{name}")).expect("scratch dir")
 }
 
 fn escape_bytes(payload: &[u8]) -> String {
@@ -56,7 +47,8 @@ fn v7_super_detect_via_wrapper_call_form() {
 #[test]
 fn v7_super_without_allow_dynamic_returns_dynamic_required_error() {
     let (text, _): (String, Vec<u8>) = synth_v6v7_super_wrapper();
-    let tmp: PathBuf = make_tmp_dir("v7-super-no-dynamic");
+    let scratch: ScratchDir = make_scratch_dir("v7-super-no-dynamic");
+    let tmp: &Path = scratch.path();
     let wrapper: PathBuf = tmp.join("hello_v7_super.py");
     fs::write(&wrapper, &text).expect("write wrapper");
     let runtime_dir: PathBuf = tmp.join("pytransform");
@@ -71,7 +63,6 @@ fn v7_super_without_allow_dynamic_returns_dynamic_required_error() {
         msg.contains("DR-PYARM-0016") || msg.contains("allow-dynamic") || msg.contains("dynamic"),
         "expected dynamic-required error, got: {msg}"
     );
-    let _ = fs::remove_dir_all(&tmp);
 }
 
 #[test]

@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_pyarmor::{
     BccLinkOutput, FunctionRecord, UnpackOptions, link_bcc_from_unpack,
     unpack_wrapper_text_with_options,
@@ -189,10 +190,8 @@ fn behavioral_match(py: &str, dir: &Path, mix_body: &str, poly_body: &str, clamp
         poly = poly_body,
         clamp = clamp_body,
     );
-    let scratch: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-bcc-e2e-{}", std::process::id()));
-    std::fs::create_dir_all(&scratch).expect("scratch dir");
-    let script_path: PathBuf = scratch.join("check.py");
+    let scratch: ScratchDir = ScratchDir::create("pyarmor-bcc-e2e").expect("scratch dir");
+    let script_path: PathBuf = scratch.path().join("check.py");
     std::fs::write(&script_path, script).expect("write script");
     let out: std::process::Output = Command::new(py)
         .arg(&script_path)

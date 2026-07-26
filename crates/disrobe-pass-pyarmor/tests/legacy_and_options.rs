@@ -1,24 +1,15 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::fs;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::{Path, PathBuf};
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_pyarmor::{
     Detection, DetectionConfidence, ModeOverride, ProtectionKind, PyarmorVersion, TargetPyVersion,
     UnpackOptions, UnpackOutput, detect_from_wrapper, unpack_wrapper_text_with_options,
 };
 
-static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-
-fn make_tmp_dir(name: &str) -> PathBuf {
-    let seq: u64 = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-pyarmor-{name}-{}-{seq}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("mkdir");
-    dir
+fn make_scratch_dir(name: &str) -> ScratchDir {
+    ScratchDir::create(&format!("pyarmor-{name}")).expect("scratch dir")
 }
 
 fn escape_bytes(payload: &[u8]) -> String {
@@ -64,7 +55,8 @@ fn legacy_unpack_returns_detection_only_output_not_error() {
         "from pytransform import __pyarmor__\n__pyarmor__(__name__, __file__, b'{escaped}')\n"
     );
 
-    let tmp: PathBuf = make_tmp_dir("legacy-detect-only");
+    let scratch: ScratchDir = make_scratch_dir("legacy-detect-only");
+    let tmp: &Path = scratch.path();
     let wrapper: PathBuf = tmp.join("hello.py");
     fs::write(&wrapper, &text).expect("write wrapper");
 
@@ -74,7 +66,6 @@ fn legacy_unpack_returns_detection_only_output_not_error() {
     assert_eq!(result.detection.version, PyarmorVersion::V5);
     assert!(result.pyc.is_none());
     assert!(result.fallback_reason.is_some());
-    let _ = fs::remove_dir_all(&tmp);
 }
 
 #[test]
@@ -85,7 +76,8 @@ fn legacy_unpack_with_strict_returns_error() {
         "from pytransform import __pyarmor__\n__pyarmor__(__name__, __file__, b'{}')\n",
         escape_bytes(&payload)
     );
-    let tmp: PathBuf = make_tmp_dir("legacy-strict");
+    let scratch: ScratchDir = make_scratch_dir("legacy-strict");
+    let tmp: &Path = scratch.path();
     let wrapper: PathBuf = tmp.join("hello.py");
     fs::write(&wrapper, &text).expect("write wrapper");
 
@@ -98,7 +90,6 @@ fn legacy_unpack_with_strict_returns_error() {
         err.is_err(),
         "strict mode must fail-fast on legacy detect-only"
     );
-    let _ = fs::remove_dir_all(&tmp);
 }
 
 #[test]

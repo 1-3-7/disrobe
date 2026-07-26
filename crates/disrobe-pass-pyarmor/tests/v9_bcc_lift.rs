@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_pyarmor::{
     BccArch, PseudoCFunction, UnpackOptions, lift_bcc_code_region, lift_bcc_native,
     unpack_wrapper_text_with_options,
@@ -171,11 +172,8 @@ fn cc() -> Option<String> {
     None
 }
 
-fn scratch_dir() -> PathBuf {
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-bcc-equiv-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+fn scratch_dir() -> ScratchDir {
+    ScratchDir::create("pyarmor-bcc-equiv").expect("scratch dir")
 }
 
 fn function_code(object_bytes: &[u8], name: &str) -> Option<(Vec<u8>, u64)> {
@@ -336,8 +334,9 @@ fn bcc_lift_route_recompiles_to_behavioral_equivalence() {
         eprintln!("skipping: no C compiler (gcc/clang/cc) on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
-    let object_bytes: Vec<u8> = compile_battery(&compiler, &dir);
+    let scratch: ScratchDir = scratch_dir();
+    let dir: &Path = scratch.path();
+    let object_bytes: Vec<u8> = compile_battery(&compiler, dir);
 
     let mut recovered_decls: String = String::new();
     let mut driver_body: String = String::new();
@@ -407,8 +406,9 @@ fn bcc_lift_route_discovers_multiple_function_boundaries() {
         eprintln!("skipping: no C compiler on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
-    let object_bytes: Vec<u8> = compile_battery(&compiler, &dir);
+    let scratch: ScratchDir = scratch_dir();
+    let dir: &Path = scratch.path();
+    let object_bytes: Vec<u8> = compile_battery(&compiler, dir);
     let Ok(file): Result<object::File<'_>, object::Error> =
         object::File::parse(object_bytes.as_slice())
     else {

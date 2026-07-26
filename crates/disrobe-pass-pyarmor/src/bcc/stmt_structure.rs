@@ -1697,10 +1697,10 @@ mod tests {
              \x20       print('MISMATCH', combo, want, got); sys.exit(1)\n\
              print('OK')\n",
         );
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-bcc-structure-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("scratch dir");
-        let path: std::path::PathBuf = dir.join("check_clamp.py");
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("pyarmor-bcc-structure")
+                .expect("scratch dir");
+        let path: std::path::PathBuf = scratch.path().join("check_clamp.py");
         std::fs::write(&path, script).expect("write script");
         let output: std::process::Output = Command::new(python)
             .arg(&path)
