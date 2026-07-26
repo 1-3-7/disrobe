@@ -943,7 +943,7 @@ fn probe_container_parsers(bytes: &[u8]) -> Hits {
     hits.record(reconstruct_partclone(bytes, WALK_CAP));
     hits.record(qnx_parse_startup(bytes));
     hits.record(walk_romfs(bytes, WALK_CAP));
-    hits.record(unsparse(bytes));
+    hits.record(unsparse(bytes, u64::MAX));
     hits.record(locate_embedded_nupkg(bytes));
     hits.record(parse_squashfs_superblock(bytes, 0));
     hits.record(walk_squashfs(bytes, 0, WALK_CAP));

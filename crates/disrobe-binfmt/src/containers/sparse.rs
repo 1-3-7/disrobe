@@ -58,7 +58,7 @@ pub fn detect_sparse(bytes: &[u8]) -> Option<SparseHeader> {
     })
 }
 
-pub fn unsparse(bytes: &[u8]) -> Result<Vec<u8>> {
+pub fn unsparse(bytes: &[u8], max_total: u64) -> Result<Vec<u8>> {
     let header: SparseHeader = detect_sparse(bytes)
         .ok_or_else(|| Error::Sparse("android sparse magic 0xed26ff3a not found".to_owned()))?;
     let block_size: usize = usize::try_from(header.block_size)
@@ -69,9 +69,10 @@ pub fn unsparse(bytes: &[u8]) -> Result<Vec<u8>> {
         )));
     }
     let expected_total: u64 = u64::from(header.total_blocks) * u64::from(header.block_size);
-    if expected_total > MAX_RAW_IMAGE {
+    let ceiling: u64 = max_total.min(MAX_RAW_IMAGE);
+    if expected_total > ceiling {
         return Err(Error::Sparse(format!(
-            "raw image would be {expected_total} bytes, exceeds {MAX_RAW_IMAGE} cap"
+            "raw image would be {expected_total} bytes, exceeds the {ceiling} byte budget"
         )));
     }
     let declared_file_hdr_sz: usize = usize::from(header.file_hdr_sz);
@@ -181,6 +182,36 @@ mod tests {
 
     const BLOCK: usize = 4096;
 
+    #[test]
+    fn a_tiny_image_declaring_a_huge_total_is_refused_against_the_caller_budget() {
+        const DECLARED_BLOCKS: u32 = 262_144;
+        const CALLER_BUDGET: u64 = 64 * 1024 * 1024;
+        let declared_total: u64 = u64::from(DECLARED_BLOCKS) * BLOCK as u64;
+        assert!(
+            declared_total < MAX_RAW_IMAGE && declared_total > CALLER_BUDGET,
+            "the declared total must sit under the private cap and over the caller budget, \
+             otherwise the private cap alone would refuse it and this test proves nothing"
+        );
+        let mut img: Vec<u8> = Vec::new();
+        write_sparse_header(&mut img, DECLARED_BLOCKS, 1);
+        img.extend_from_slice(&CHUNK_TYPE_DONT_CARE.to_le_bytes());
+        img.extend_from_slice(&0u16.to_le_bytes());
+        img.extend_from_slice(&DECLARED_BLOCKS.to_le_bytes());
+        img.extend_from_slice(&(CHUNK_HEADER_LEN as u32).to_le_bytes());
+        assert!(
+            img.len() < 128,
+            "the point of this test is that a tiny input drives the allocation, got {}",
+            img.len()
+        );
+        let error: Error = unsparse(&img, 64 * 1024 * 1024)
+            .expect_err("a declared total past the caller budget must be refused");
+        let text: String = format!("{error}");
+        assert!(
+            text.contains("budget"),
+            "the refusal must name the budget it exceeded, got {text}"
+        );
+    }
+
     fn write_sparse_header(out: &mut Vec<u8>, total_blocks: u32, total_chunks: u32) {
         out.extend_from_slice(&SPARSE_MAGIC.to_le_bytes());
         out.extend_from_slice(&1u16.to_le_bytes());
@@ -253,7 +284,7 @@ mod tests {
         chunk_dont_care(&mut img, 1);
         chunk_raw(&mut img, 1, block3);
 
-        let recovered: Vec<u8> = unsparse(&img).expect("unsparse");
+        let recovered: Vec<u8> = unsparse(&img, u64::MAX).expect("unsparse");
         assert_eq!(recovered.len(), raw.len());
         assert_eq!(recovered, raw);
     }
@@ -266,7 +297,7 @@ mod tests {
         let mut img: Vec<u8> = Vec::new();
         write_sparse_header(&mut img, 2, 1);
         chunk_raw(&mut img, 2, &inner);
-        let recovered: Vec<u8> = unsparse(&img).expect("unsparse");
+        let recovered: Vec<u8> = unsparse(&img, u64::MAX).expect("unsparse");
         assert_eq!(recovered, inner);
         assert_eq!(recovered[0x438], 0x53);
         assert_eq!(recovered[0x439], 0xEF);
@@ -295,7 +326,8 @@ mod tests {
         let mut img: Vec<u8> = Vec::new();
         write_sparse_header(&mut img, 1, 1);
         chunk_dont_care(&mut img, 2);
-        let err: Error = unsparse(&img).expect_err("chunk output must not outrun total_blocks");
+        let err: Error =
+            unsparse(&img, u64::MAX).expect_err("chunk output must not outrun total_blocks");
         assert!(matches!(err, Error::Sparse(message) if message.contains("declared total")));
     }
 }
