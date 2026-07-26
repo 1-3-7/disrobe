@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use disrobe_core::byte_search;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,26 +41,19 @@ pub fn detect(image: &[u8]) -> AotReport {
     let mut modules_table_offset: Option<u32> = None;
     let mut eager: u32 = 0;
     for (needle, label) in AOT_NEEDLES {
-        let mut start: usize = 0;
-        while start < image.len() {
-            let Some(found): Option<usize> = window_find(&image[start..], needle) else {
-                break;
-            };
-            let absolute: u32 = u32::try_from(start + found).unwrap_or(u32::MAX);
-            symbols.insert((*label).to_owned(), absolute);
-            if *label == "modules_table" && modules_table_offset.is_none() {
-                modules_table_offset = Some(absolute);
-            }
-            start += found + 1;
-            if symbols.len() > 64 {
-                break;
-            }
+        let Some(found): Option<usize> = byte_search::find(image, needle) else {
+            continue;
+        };
+        let absolute: u32 = u32::try_from(found).unwrap_or(u32::MAX);
+        symbols.insert((*label).to_owned(), absolute);
+        if *label == "modules_table" {
+            modules_table_offset = Some(absolute);
         }
     }
     let eager_marker: &[u8] = b"EagerCctor";
     let mut cursor: usize = 0;
     while eager < EAGER_CCTOR_SCAN_CAP {
-        let Some(pos): Option<usize> = window_find(&image[cursor..], eager_marker) else {
+        let Some(pos): Option<usize> = byte_search::find(&image[cursor..], eager_marker) else {
             break;
         };
         eager = eager.saturating_add(1);
@@ -79,26 +74,17 @@ pub fn detect(image: &[u8]) -> AotReport {
 }
 
 fn classify_runtime(image: &[u8]) -> AotRuntime {
-    if window_find(image, b"net10.0").is_some() {
+    if byte_search::contains(image, b"net10.0") {
         AotRuntime::Net10
-    } else if window_find(image, b"net9.0").is_some() {
+    } else if byte_search::contains(image, b"net9.0") {
         AotRuntime::Net9
-    } else if window_find(image, b"net8.0").is_some() {
+    } else if byte_search::contains(image, b"net8.0") {
         AotRuntime::Net8
-    } else if window_find(image, b"net7.0").is_some() {
+    } else if byte_search::contains(image, b"net7.0") {
         AotRuntime::Net7
     } else {
         AotRuntime::Unknown
     }
-}
-
-fn window_find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return None;
-    }
-    haystack
-        .windows(needle.len())
-        .position(|w: &[u8]| w == needle)
 }
 
 #[cfg(test)]
@@ -120,6 +106,24 @@ mod tests {
         img.extend_from_slice(b"NativeAOT");
         let report: AotReport = detect(&img);
         assert_eq!(report.runtime_label, AotRuntime::Net8);
+    }
+
+    #[test]
+    fn repeated_marker_reports_one_consistent_position() {
+        let mut img: Vec<u8> = vec![0u8; 1024];
+        img[100..111].copy_from_slice(b"__modules_a");
+        img[500..511].copy_from_slice(b"__modules_a");
+        let report: AotReport = detect(&img);
+        assert_eq!(
+            report.recovered_symbols.get("modules_table").copied(),
+            report.modules_table_offset,
+            "the two fields describe the same marker and must not disagree about where it is"
+        );
+        assert_eq!(
+            report.modules_table_offset,
+            Some(100),
+            "a repeated marker is reported at its first position"
+        );
     }
 
     #[test]
