@@ -1,6 +1,6 @@
 use core::fmt;
 use std::fs::{File, OpenOptions};
-use std::io::{Read as _, Write as _};
+use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -17,7 +17,7 @@ use crate::wire::{
 };
 use crate::workspace::Workspace;
 
-pub const WORKER_FN_NAME: &str = "stress_worker";
+pub(crate) const WORKER_FN_NAME: &str = "stress_worker";
 pub const BATCH_ENV: &str = "DISROBE_STRESS_BATCH";
 
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -445,13 +445,18 @@ fn read_stderr_tail(path: &Path) -> String {
     let Ok(mut file): std::io::Result<File> = File::open(path) else {
         return String::new();
     };
-    let mut raw: Vec<u8> = Vec::new();
-    if file.read_to_end(&mut raw).is_err() {
+    let Ok(len): std::io::Result<u64> = file.seek(SeekFrom::End(0)) else {
+        return String::new();
+    };
+    let tail_len: u64 = len.min(STDERR_TAIL_BYTES as u64);
+    if file.seek(SeekFrom::End(-(tail_len as i64))).is_err() {
         return String::new();
     }
-    let start: usize = raw.len().saturating_sub(STDERR_TAIL_BYTES);
-    let tail: &[u8] = raw.get(start..).unwrap_or(&raw);
-    String::from_utf8_lossy(tail)
+    let mut raw: Vec<u8> = Vec::with_capacity(STDERR_TAIL_BYTES);
+    if file.take(tail_len).read_to_end(&mut raw).is_err() {
+        return String::new();
+    }
+    String::from_utf8_lossy(&raw)
         .lines()
         .map(str::trim)
         .filter(|line: &&str| !line.is_empty())
@@ -502,7 +507,12 @@ pub fn worker_main(module_path: &str, check: CheckFn) -> std::io::Result<()> {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use super::{WORKER_FN_NAME, WorkerTest, module_mismatch, worker_main};
+    use std::path::PathBuf;
+
+    use super::{
+        STDERR_TAIL_BYTES, WORKER_FN_NAME, WorkerTest, module_mismatch, read_stderr_tail,
+        worker_main,
+    };
     use crate::corpus::StressCase;
 
     fn ignores_every_case(_case: &StressCase<'_>) {}
@@ -568,5 +578,36 @@ mod tests {
             WorkerTest::from_module_path(module_path!()).filter(),
             "isolate::tests::stress_worker"
         );
+    }
+
+    #[test]
+    fn a_stderr_log_far_larger_than_the_tail_is_read_only_at_its_end() {
+        let dir: PathBuf = std::env::temp_dir().join("disrobe-testkit-stderr-tail-probe");
+        std::fs::create_dir_all(&dir).expect("create the probe directory");
+        let path: PathBuf = dir.join("worker-stderr.log");
+        let filler: String = "noise\n".repeat(STDERR_TAIL_BYTES * 8);
+        let mut contents: String = filler;
+        contents.push_str("the last line the parent must report\n");
+        std::fs::write(&path, contents.as_bytes()).expect("write the oversized log");
+        let written: u64 = std::fs::metadata(&path)
+            .expect("stat the oversized log")
+            .len();
+
+        let tail: String = read_stderr_tail(&path);
+
+        assert!(
+            written > 64 * 1024,
+            "the probe log must be far larger than the tail to be meaningful, got {written} bytes"
+        );
+        assert!(
+            tail.len() < STDERR_TAIL_BYTES * 2,
+            "the reported tail must stay bounded by the tail size rather than the log size, got {} bytes from a {written} byte log",
+            tail.len()
+        );
+        assert!(
+            tail.ends_with("the last line the parent must report"),
+            "the tail must be taken from the END of the log: {tail}"
+        );
+        std::fs::remove_dir_all(&dir).expect("remove the probe directory");
     }
 }

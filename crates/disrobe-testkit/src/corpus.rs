@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
-use std::path::Path;
 
-use crate::error::{StressError, io_error};
+use crate::error::StressError;
 use crate::mutate::MutationKind;
 use crate::wire::MAX_CORPUS_ENTRY_BYTES;
 
@@ -107,41 +106,6 @@ impl CorpusSource for Result<Vec<CorpusEntry>, StressError> {
     fn into_entries(self) -> Result<Vec<CorpusEntry>, StressError> {
         self
     }
-}
-
-pub fn read_corpus_dir(dir: &Path) -> Result<Vec<CorpusEntry>, StressError> {
-    let listing: std::fs::ReadDir = std::fs::read_dir(dir).map_err(|error: std::io::Error| {
-        io_error(format!("reading corpus directory {}", dir.display()), error)
-    })?;
-    let limit: u64 = u64::try_from(MAX_CORPUS_ENTRY_BYTES).unwrap_or(u64::MAX);
-    let mut entries: Vec<CorpusEntry> = Vec::new();
-    for item in listing {
-        let item: std::fs::DirEntry = item.map_err(|error: std::io::Error| {
-            io_error(format!("walking corpus directory {}", dir.display()), error)
-        })?;
-        let path: std::path::PathBuf = item.path();
-        let metadata: std::fs::Metadata =
-            path.symlink_metadata().map_err(|error: std::io::Error| {
-                io_error(format!("reading metadata of {}", path.display()), error)
-            })?;
-        if !metadata.is_file() {
-            continue;
-        }
-        let name: String = item.file_name().to_string_lossy().into_owned();
-        if metadata.len() > limit {
-            return Err(StressError::CorpusEntryTooLarge {
-                entry: name,
-                bytes: usize::try_from(metadata.len()).unwrap_or(usize::MAX),
-                limit: MAX_CORPUS_ENTRY_BYTES,
-            });
-        }
-        let bytes: Vec<u8> = std::fs::read(&path).map_err(|error: std::io::Error| {
-            io_error(format!("reading corpus entry {}", path.display()), error)
-        })?;
-        entries.push(CorpusEntry::new(name, bytes));
-    }
-    entries.sort_by(|left: &CorpusEntry, right: &CorpusEntry| left.name.cmp(&right.name));
-    Ok(entries)
 }
 
 pub(crate) fn validate_corpus(corpus: &[CorpusEntry]) -> Result<(), StressError> {
