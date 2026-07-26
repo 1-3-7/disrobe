@@ -36,6 +36,7 @@ default = []
 chain = ["disrobe-core/chain"]
 
 [dev-dependencies]
+disrobe-testkit = { workspace = true }
 base64 = "0.22"
 flate2 = { workspace = true }
 zip = { workspace = true }

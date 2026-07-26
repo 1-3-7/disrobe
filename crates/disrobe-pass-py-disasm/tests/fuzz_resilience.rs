@@ -1,3 +1,6 @@
+#![allow(clippy::expect_used)]
+use std::time::Duration;
+
 #[cfg(feature = "chain")]
 use disrobe_core::chain::Pass;
 #[cfg(feature = "chain")]
@@ -9,64 +12,149 @@ use disrobe_pass_py_disasm::alt_runtimes::recover::{recover, recover_detected};
 use disrobe_pass_py_disasm::alt_runtimes::{AltRuntime, detect_runtime};
 #[cfg(feature = "chain")]
 use disrobe_pass_py_disasm::chain_detector::PY_DISASM_PASS;
+use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, XorShift64};
 
-const MAX_INPUT_SIZE: usize = 4096;
+const MAX_INPUT_BYTES: usize = 4096;
+const RANDOM_SPAN_BYTES: usize = 1024;
+const CASES_PER_INPUT: usize = 10_240;
+const BATCH_SIZE: usize = 5_120;
+const CASE_BUDGET: Duration = Duration::from_millis(20);
+const SUITE_BUDGET: Duration = Duration::from_mins(3);
 
-struct XorShift64 {
-    state: u64,
-}
+const PERTURB_DOMAIN: u64 = 0x5044_4953_0001_0002;
+const PERTURB_ARMS: usize = 3;
+const MAX_SCATTERED_OVERWRITES: usize = 8;
+const MAX_SELF_CONCATENATIONS: usize = 4;
+const WORD_BYTES: usize = 4;
+const ENTROPY_SPAN_SEED: u64 = 0x5044_4953_0001_0003;
 
-impl XorShift64 {
-    const fn new(seed: u64) -> Self {
-        Self { state: seed | 1 }
-    }
+const MICROPYTHON_BYTECODE: &[u8] =
+    include_bytes!("../../../corpus/python/alt_runtimes/micropython/hello_bytecode.mpy");
+const PYPY_METHODS: &[u8] =
+    include_bytes!("../../../corpus/python/alt_runtimes/pypy/methods.pypy27.pyc");
 
-    const fn next_u64(&mut self) -> u64 {
-        let mut x: u64 = self.state;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.state = x;
-        x
-    }
-
-    const fn next_usize(&mut self, bound: usize) -> usize {
-        if bound == 0 {
-            return 0;
-        }
-        (self.next_u64() % bound as u64) as usize
-    }
-
-    const fn next_byte(&mut self) -> u8 {
-        (self.next_u64() & 0xff) as u8
-    }
-}
-
-const SEEDS: &[&[u8]] = &[
-    include_bytes!("../../../corpus/python/decompile/legacy/compiled/simple_const.3.11.pyc"),
-    include_bytes!("../../../corpus/python/decompile/legacy/compiled/simple_const.3.12.pyc"),
-    include_bytes!("../../../corpus/python/decompile/legacy/compiled/build_const_key_map.2.7.pyc"),
-    include_bytes!("../../../corpus/python/decompile/legacy/compiled/binary_ops.3.11.pyc"),
-    include_bytes!("../../../corpus/python/alt_runtimes/pypy/methods.pypy27.pyc"),
-    include_bytes!("../../../corpus/python/alt_runtimes/pypy/hello_pypy39_legacy.pypy39.pyc"),
-    include_bytes!("../../../corpus/python/alt_runtimes/micropython/hello_bytecode.mpy"),
-    include_bytes!("../../../corpus/python/alt_runtimes/micropython/control_flow.mpy"),
-    include_bytes!("../../../corpus/python/alt_runtimes/micropython/hello_native_x64.mpy"),
-    include_bytes!("../../../corpus/python/alt_runtimes/micropython/hello_native_armv7m.mpy"),
+const SEEDS: [(&str, &[u8]); 10] = [
+    (
+        "cpython-simple-const-3-11",
+        include_bytes!("../../../corpus/python/decompile/legacy/compiled/simple_const.3.11.pyc"),
+    ),
+    (
+        "cpython-simple-const-3-12",
+        include_bytes!("../../../corpus/python/decompile/legacy/compiled/simple_const.3.12.pyc"),
+    ),
+    (
+        "cpython-build-const-key-map-2-7",
+        include_bytes!(
+            "../../../corpus/python/decompile/legacy/compiled/build_const_key_map.2.7.pyc"
+        ),
+    ),
+    (
+        "cpython-binary-ops-3-11",
+        include_bytes!("../../../corpus/python/decompile/legacy/compiled/binary_ops.3.11.pyc"),
+    ),
+    ("pypy-methods-2-7", PYPY_METHODS),
+    (
+        "pypy-hello-3-9-legacy",
+        include_bytes!("../../../corpus/python/alt_runtimes/pypy/hello_pypy39_legacy.pypy39.pyc"),
+    ),
+    ("micropython-hello-bytecode", MICROPYTHON_BYTECODE),
+    (
+        "micropython-control-flow",
+        include_bytes!("../../../corpus/python/alt_runtimes/micropython/control_flow.mpy"),
+    ),
+    (
+        "micropython-native-x64",
+        include_bytes!("../../../corpus/python/alt_runtimes/micropython/hello_native_x64.mpy"),
+    ),
+    (
+        "micropython-native-armv7m",
+        include_bytes!("../../../corpus/python/alt_runtimes/micropython/hello_native_armv7m.mpy"),
+    ),
 ];
 
-fn exercise(bytes: &[u8]) {
-    let detected: Option<AltRuntime> = detect_runtime(bytes);
-    let _ = detected;
+const RUNTIMES: [AltRuntime; 6] = [
+    AltRuntime::PyPy,
+    AltRuntime::MicroPython,
+    AltRuntime::MicroPythonNative,
+    AltRuntime::Jython,
+    AltRuntime::IronPython,
+    AltRuntime::Brython,
+];
+
+fn entropy_span(len: usize) -> Vec<u8> {
+    let mut rng: XorShift64 = XorShift64::new(ENTROPY_SPAN_SEED);
+    let mut out: Vec<u8> = Vec::with_capacity(len);
+    for _ in 0..len {
+        out.push(rng.next_byte());
+    }
+    out
+}
+
+fn corpus() -> Vec<CorpusEntry> {
+    let mut entries: Vec<CorpusEntry> = Vec::with_capacity(SEEDS.len().saturating_add(2));
+    for (name, bytes) in SEEDS {
+        assert!(
+            !bytes.is_empty(),
+            "committed seed `{name}` is empty, so this entry would silently stop exercising real input"
+        );
+        let bounded: usize = bytes.len().min(MAX_INPUT_BYTES);
+        entries.push(CorpusEntry::new(
+            name,
+            bytes.get(..bounded).unwrap_or(bytes).to_vec(),
+        ));
+    }
+    entries.push(CorpusEntry::new(
+        "random-span",
+        vec![0u8; RANDOM_SPAN_BYTES],
+    ));
+    entries.push(CorpusEntry::new(
+        "entropy-span",
+        entropy_span(RANDOM_SPAN_BYTES),
+    ));
+    entries
+}
+
+fn perturb(bytes: &[u8], case_seed: u64) -> Vec<u8> {
+    let mut rng: XorShift64 = XorShift64::new(case_seed ^ PERTURB_DOMAIN);
+    let mut out: Vec<u8> = bytes.to_vec();
+    match rng.below_usize(PERTURB_ARMS) {
+        0 => {
+            let changes: usize = rng.below_usize(MAX_SCATTERED_OVERWRITES).saturating_add(1);
+            for _ in 0..changes {
+                let index: usize = rng.below_usize(out.len());
+                if let Some(byte) = out.get_mut(index) {
+                    *byte = rng.next_byte();
+                }
+            }
+        }
+        1 => {
+            let copies: usize = rng.below_usize(MAX_SELF_CONCATENATIONS).saturating_add(1);
+            let original: Vec<u8> = out.clone();
+            for _ in 1..copies {
+                if out.len().saturating_add(original.len()) > MAX_INPUT_BYTES {
+                    break;
+                }
+                out.extend_from_slice(&original);
+            }
+        }
+        _ => {
+            let start: usize = rng.below_usize(out.len().saturating_add(1));
+            let end: usize = start.saturating_add(WORD_BYTES);
+            if let Some(window) = out.get_mut(start..end) {
+                for slot in window {
+                    *slot = rng.next_byte();
+                }
+            }
+        }
+    }
+    out.truncate(MAX_INPUT_BYTES);
+    out
+}
+
+fn probe(bytes: &[u8]) {
+    let _: Option<AltRuntime> = detect_runtime(bytes);
     let _ = recover_detected(bytes);
-    for runtime in [
-        AltRuntime::PyPy,
-        AltRuntime::MicroPython,
-        AltRuntime::MicroPythonNative,
-        AltRuntime::Jython,
-        AltRuntime::IronPython,
-        AltRuntime::Brython,
-    ] {
+    for runtime in RUNTIMES {
         let _ = recover(bytes, runtime);
     }
     let _ = mpy_parse(bytes);
@@ -87,91 +175,76 @@ fn run_pass(bytes: &[u8]) {
 #[cfg(not(feature = "chain"))]
 const fn run_pass(_bytes: &[u8]) {}
 
-fn mutate(rng: &mut XorShift64, seed: &[u8]) -> Vec<u8> {
-    let initial_len: usize = seed.len().min(MAX_INPUT_SIZE);
-    let mut buf: Vec<u8> = seed[..initial_len].to_vec();
-    match rng.next_usize(6) {
-        0 => {
-            if !buf.is_empty() {
-                let truncate_to: usize = rng.next_usize(buf.len());
-                buf.truncate(truncate_to);
-            }
-        }
-        1 => {
-            let flips: usize = 1 + rng.next_usize(8);
-            for _ in 0..flips {
-                if buf.is_empty() {
-                    break;
-                }
-                let idx: usize = rng.next_usize(buf.len());
-                if let Some(slot) = buf.get_mut(idx) {
-                    *slot ^= 1u8 << (rng.next_usize(8));
-                }
-            }
-        }
-        2 => {
-            let sets: usize = 1 + rng.next_usize(8);
-            for _ in 0..sets {
-                if buf.is_empty() {
-                    break;
-                }
-                let idx: usize = rng.next_usize(buf.len());
-                if let Some(slot) = buf.get_mut(idx) {
-                    *slot = rng.next_byte();
-                }
-            }
-        }
-        3 => {
-            let extra: usize = rng.next_usize(MAX_INPUT_SIZE.saturating_sub(buf.len()).max(1));
-            for _ in 0..extra {
-                buf.push(rng.next_byte());
-            }
-        }
-        4 => {
-            let want: usize = 1 + rng.next_usize(4);
-            let original: Vec<u8> = buf.clone();
-            for _ in 1..want {
-                if buf.len() + original.len() > MAX_INPUT_SIZE {
-                    break;
-                }
-                buf.extend_from_slice(&original);
-            }
-        }
-        _ => {
-            if buf.len() >= 4 {
-                let idx: usize = rng.next_usize(buf.len() - 3);
-                for offset in 0..4usize {
-                    if let Some(slot) = buf.get_mut(idx + offset) {
-                        *slot = rng.next_byte();
-                    }
-                }
-            }
-        }
+fn check(case: &StressCase<'_>) {
+    probe(case.bytes());
+    probe(&perturb(case.bytes(), case.case_seed()));
+}
+
+fn config() -> StressConfig {
+    StressConfig {
+        cases_per_input: CASES_PER_INPUT,
+        batch_size: BATCH_SIZE,
+        case_budget: CASE_BUDGET,
+        suite_budget: SUITE_BUDGET,
+        ..StressConfig::default()
     }
-    buf.truncate(MAX_INPUT_SIZE);
-    buf
+}
+
+mod resilience {
+    disrobe_testkit::stress_suite!(
+        check: super::check,
+        corpus: super::corpus,
+        config: super::config
+    );
 }
 
 #[test]
-fn seed_mutations_never_panic_across_entry_points() {
-    let mut rng: XorShift64 = XorShift64::new(0x5DEE_CE66_D33D_0001);
-    for seed in SEEDS {
-        let bounded_len: usize = seed.len().min(MAX_INPUT_SIZE);
-        exercise(&seed[..bounded_len]);
+fn the_second_probe_rewrites_the_bytes_it_is_handed_and_replays_from_its_seed() {
+    const SAMPLE: usize = 512;
+    let original: Vec<u8> = vec![0x33u8; SAMPLE];
+    let mut untouched: usize = 0;
+    let mut distinct: Vec<Vec<u8>> = Vec::new();
+    for case_seed in 0..SAMPLE as u64 {
+        let probed: Vec<u8> = perturb(&original, case_seed);
+        assert_eq!(probed, perturb(&original, case_seed));
+        if probed == original {
+            untouched = untouched.saturating_add(1);
+        }
+        if !distinct.contains(&probed) {
+            distinct.push(probed);
+        }
     }
-    for _ in 0..6_000 {
-        let seed: &[u8] = SEEDS[rng.next_usize(SEEDS.len())];
-        let mutated: Vec<u8> = mutate(&mut rng, seed);
-        exercise(&mutated);
+    assert!(
+        untouched < SAMPLE / 4,
+        "{untouched} of {SAMPLE} probe outputs came back unchanged"
+    );
+    assert!(
+        distinct.len() > SAMPLE / 4,
+        "only {} distinct probe outputs",
+        distinct.len()
+    );
+}
+
+#[test]
+fn every_unmutated_seed_finishes() {
+    for entry in corpus() {
+        probe(entry.bytes());
     }
 }
 
 #[test]
-fn pure_random_inputs_never_panic() {
-    let mut rng: XorShift64 = XorShift64::new(0x9DD1_5A81_9DD1_0001);
-    for _ in 0..20_000 {
-        let len: usize = rng.next_usize(512);
-        let bytes: Vec<u8> = (0..len).map(|_| rng.next_byte()).collect();
-        exercise(&bytes);
-    }
+fn the_committed_alternate_runtime_seeds_are_detected_and_parse() {
+    assert_eq!(
+        detect_runtime(MICROPYTHON_BYTECODE),
+        Some(AltRuntime::MicroPython)
+    );
+    assert!(
+        mpy_parse(MICROPYTHON_BYTECODE).is_ok(),
+        "the committed micropython seed must parse, or every mpy case is inert"
+    );
+    assert_eq!(detect_runtime(PYPY_METHODS), Some(AltRuntime::PyPy));
+    assert!(
+        pypy_parse(PYPY_METHODS).is_ok(),
+        "the committed pypy seed must parse, or every pypy case is inert"
+    );
 }

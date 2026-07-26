@@ -34,6 +34,7 @@ default = []
 chain = ["disrobe-core/chain"]
 
 [dev-dependencies]
+disrobe-testkit = { workspace = true }
 boa_engine = { workspace = true }
 oxc_allocator = { workspace = true }
 oxc_parser = { workspace = true }

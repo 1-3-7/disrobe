@@ -38,6 +38,7 @@ default = []
 chain = ["disrobe-core/chain", "dep:disrobe-pass-native", "dep:disrobe-capabilities"]
 
 [dev-dependencies]
+disrobe-testkit = { workspace = true }
 divan = { workspace = true }
 disrobe-py-marshal = { workspace = true }
 

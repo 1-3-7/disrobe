@@ -1,100 +1,89 @@
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#![allow(clippy::expect_used, clippy::panic)]
+use std::time::Duration;
+
 use disrobe_pass_shell::{
     Lexer, analyze_stomp, deobfuscate_vbs, detect, disassemble_pcode, disassemble_pcode_real,
     extract_from_bytes, parse_ast, reverse_psobf, tokenize_bash, vba_project_bin_from_bytes,
 };
+use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, XorShift64};
 
-struct Xorshift64 {
-    state: u64,
-}
+const RANDOM_SPAN_BYTES: usize = 1024;
+const CASES_PER_INPUT: usize = 4_096;
+const BATCH_SIZE: usize = 4_096;
+const CASE_BUDGET: Duration = Duration::from_millis(30);
+const SUITE_BUDGET: Duration = Duration::from_mins(3);
 
-impl Xorshift64 {
-    const fn new(seed: u64) -> Self {
-        Self { state: seed | 1 }
+const SATURATION_DOMAIN: u64 = 0x5348_4C17_0001_0002;
+const SATURATION_PATTERNS: [(u8, u32); 1] = [(u8::MAX, 2)];
+
+const ENTROPY_SPAN_SEED: u64 = 0x5348_4C17_0001_0003;
+
+fn entropy_span(len: usize) -> Vec<u8> {
+    let mut rng: XorShift64 = XorShift64::new(ENTROPY_SPAN_SEED);
+    let mut out: Vec<u8> = Vec::with_capacity(len);
+    for _ in 0..len {
+        out.push(rng.next_byte());
     }
-
-    const fn next_u64(&mut self) -> u64 {
-        let mut x: u64 = self.state;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.state = x;
-        x
-    }
-
-    const fn next_usize(&mut self, bound: usize) -> usize {
-        if bound == 0 {
-            return 0;
-        }
-        (self.next_u64() % bound as u64) as usize
-    }
-
-    const fn next_byte(&mut self) -> u8 {
-        (self.next_u64() & 0xff) as u8
-    }
+    out
 }
 
 fn ole_seed() -> Vec<u8> {
-    let mut v: Vec<u8> = vec![0u8; 1024];
-    v[0..8].copy_from_slice(&[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
-    v[24..26].copy_from_slice(&0x003eu16.to_le_bytes());
-    v[26..28].copy_from_slice(&0x0003u16.to_le_bytes());
-    v[28..30].copy_from_slice(&0xfffeu16.to_le_bytes());
-    v[30..32].copy_from_slice(&9u16.to_le_bytes());
-    v[32..34].copy_from_slice(&6u16.to_le_bytes());
-    v[44..48].copy_from_slice(&1u32.to_le_bytes());
-    v
+    let mut bytes: Vec<u8> = Vec::with_capacity(1024);
+    bytes.extend_from_slice(&[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+    bytes.resize(24, 0);
+    bytes.extend_from_slice(&0x003eu16.to_le_bytes());
+    bytes.extend_from_slice(&0x0003u16.to_le_bytes());
+    bytes.extend_from_slice(&0xfffeu16.to_le_bytes());
+    bytes.extend_from_slice(&9u16.to_le_bytes());
+    bytes.extend_from_slice(&6u16.to_le_bytes());
+    bytes.resize(44, 0);
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.resize(1024, 0);
+    bytes
 }
 
 fn ooxml_seed() -> Vec<u8> {
-    let mut v: Vec<u8> = Vec::new();
-    v.extend_from_slice(b"PK\x03\x04");
-    v.extend_from_slice(&[0u8; 26]);
-    v.extend_from_slice(b"PK\x05\x06");
-    v.extend_from_slice(&[0u8; 18]);
-    v
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes.extend_from_slice(b"PK\x03\x04");
+    bytes.extend_from_slice(&[0u8; 26]);
+    bytes.extend_from_slice(b"PK\x05\x06");
+    bytes.extend_from_slice(&[0u8; 18]);
+    bytes
 }
 
-fn mutate(seed: &[u8], rng: &mut Xorshift64) -> Vec<u8> {
-    let mut out: Vec<u8> = seed.to_vec();
-    match rng.next_u64() % 5 {
-        0 => {
-            if !out.is_empty() {
-                let idx: usize = rng.next_usize(out.len());
-                out[idx] ^= 1u8 << rng.next_usize(8);
+fn corpus() -> Vec<CorpusEntry> {
+    vec![
+        CorpusEntry::new("empty", Vec::<u8>::new()),
+        CorpusEntry::new("ole-compound-file", ole_seed()),
+        CorpusEntry::new("ooxml-zip-shell", ooxml_seed()),
+        CorpusEntry::new("random-span", vec![0u8; RANDOM_SPAN_BYTES]),
+        CorpusEntry::new("entropy-span", entropy_span(RANDOM_SPAN_BYTES)),
+    ]
+}
+
+fn saturate(bytes: &[u8], case_seed: u64) -> Vec<u8> {
+    let mut rng: XorShift64 = XorShift64::new(case_seed ^ SATURATION_DOMAIN);
+    let mut out: Vec<u8> = bytes.to_vec();
+    let pick: usize = rng.below_usize(SATURATION_PATTERNS.len().saturating_add(1));
+    let Some(&(value, sparsity)): Option<&(u8, u32)> = SATURATION_PATTERNS.get(pick) else {
+        let changes: usize = rng.below_usize(out.len().saturating_add(1));
+        for _ in 0..changes {
+            let index: usize = rng.below_usize(out.len());
+            if let Some(byte) = out.get_mut(index) {
+                *byte = rng.next_byte();
             }
         }
-        1 => {
-            if !out.is_empty() {
-                let cut: usize = rng.next_usize(out.len());
-                out.truncate(cut);
-            }
-        }
-        2 => {
-            let count: usize = rng.next_usize(out.len().max(1));
-            for _ in 0..count {
-                let idx: usize = rng.next_usize(out.len().max(1));
-                if idx < out.len() {
-                    out[idx] = rng.next_byte();
-                }
-            }
-        }
-        3 => {
-            for b in &mut out {
-                if rng.next_u64().trailing_zeros() >= 2 {
-                    *b = 0xff;
-                }
-            }
-        }
-        _ => {
-            let len: usize = rng.next_usize(1024);
-            out = (0..len).map(|_| rng.next_byte()).collect();
+        return out;
+    };
+    for byte in &mut out {
+        if rng.next_u64().trailing_zeros() >= sparsity {
+            *byte = value;
         }
     }
     out
 }
 
-fn exercise(bytes: &[u8]) {
+fn probe(bytes: &[u8]) {
     let _ = detect(bytes);
     let _ = parse_ast(bytes);
     let _ = disassemble_pcode(bytes);
@@ -102,31 +91,78 @@ fn exercise(bytes: &[u8]) {
     let _ = analyze_stomp(bytes);
     let _ = extract_from_bytes(bytes);
     let _ = vba_project_bin_from_bytes(bytes);
-    if let Ok(s) = core::str::from_utf8(bytes) {
-        let _ = deobfuscate_vbs(s);
-        let _ = reverse_psobf(s);
+    let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(bytes);
+    let _ = deobfuscate_vbs(&text);
+    let _ = reverse_psobf(&text);
+}
+
+fn check(case: &StressCase<'_>) {
+    probe(case.bytes());
+    probe(&saturate(case.bytes(), case.case_seed()));
+}
+
+fn config() -> StressConfig {
+    StressConfig {
+        cases_per_input: CASES_PER_INPUT,
+        batch_size: BATCH_SIZE,
+        case_budget: CASE_BUDGET,
+        suite_budget: SUITE_BUDGET,
+        ..StressConfig::default()
     }
 }
 
-#[test]
-fn pure_random_inputs_never_panic() {
-    let mut rng: Xorshift64 = Xorshift64::new(0x5348_4C17_0001_0002);
-    for _ in 0..4_000 {
-        let len: usize = rng.next_usize(1024);
-        let bytes: Vec<u8> = (0..len).map(|_| rng.next_byte()).collect();
-        exercise(&bytes);
-    }
+mod resilience {
+    disrobe_testkit::stress_suite!(
+        check: super::check,
+        corpus: super::corpus,
+        config: super::config
+    );
 }
 
 #[test]
-fn mutated_ole_and_ooxml_seeds_never_panic() {
-    let seeds: [Vec<u8>; 3] = [ole_seed(), ooxml_seed(), Vec::new()];
-    let mut rng: Xorshift64 = Xorshift64::new(0x5348_9099_0304_0506);
-    for seed in &seeds {
-        for _ in 0..3_000 {
-            let mutated: Vec<u8> = mutate(seed, &mut rng);
-            exercise(&mutated);
+fn the_saturation_probe_rewrites_the_bytes_it_is_handed_and_replays_from_its_seed() {
+    const SAMPLE: usize = 512;
+    let original: Vec<u8> = vec![0x33u8; SAMPLE];
+    let mut untouched: usize = 0;
+    let mut distinct: Vec<Vec<u8>> = Vec::new();
+    for case_seed in 0..SAMPLE as u64 {
+        let probed: Vec<u8> = saturate(&original, case_seed);
+        assert_eq!(probed, saturate(&original, case_seed));
+        if probed == original {
+            untouched = untouched.saturating_add(1);
         }
+        if !distinct.contains(&probed) {
+            distinct.push(probed);
+        }
+    }
+    assert!(
+        untouched < SAMPLE / 16,
+        "{untouched} of {SAMPLE} probe outputs came back unchanged"
+    );
+    assert!(
+        distinct.len() > SAMPLE / 2,
+        "only {} distinct probe outputs",
+        distinct.len()
+    );
+}
+
+#[test]
+fn every_unmutated_seed_finishes() {
+    for entry in corpus() {
+        probe(entry.bytes());
+    }
+}
+
+#[test]
+fn the_constructed_ooxml_seed_reads_as_a_zip_container_carrying_no_vba_project() {
+    let outcome: disrobe_pass_shell::Result<Vec<u8>> = vba_project_bin_from_bytes(&ooxml_seed());
+    match outcome {
+        Err(disrobe_pass_shell::Error::VbaPcode { reason }) => {
+            assert!(reason.contains("no vbaProject.bin"), "{reason}");
+        }
+        other => panic!(
+            "the constructed zip must be walked as a container, or every ooxml case is inert: {other:?}"
+        ),
     }
 }
 
