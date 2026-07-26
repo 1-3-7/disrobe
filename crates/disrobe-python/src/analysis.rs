@@ -273,7 +273,7 @@ fn extract(data: &[u8], out_dir: &str) -> PyResult<PyExtractionResult> {
 #[pyo3(text_signature = "(data, *, source_label='inline', max_depth=8)")]
 fn extract_recursive(data: &[u8], source_label: &str, max_depth: u32) -> PyResult<PyOverlayReport> {
     let config: CarveConfig = CarveConfig::new(max_depth);
-    let report: CarveReport = carve_recursive(data, source_label, config);
+    let report: CarveReport = carve_recursive(data, source_label, config, None);
     PyOverlayReport::from_serialize(&report)
 }
 

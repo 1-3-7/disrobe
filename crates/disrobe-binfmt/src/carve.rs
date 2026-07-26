@@ -10,6 +10,7 @@ use disrobe_core::shannon_entropy;
 use crate::container::ContainerKind;
 use crate::extract::{ExtractionResult, extract_to_with_quota};
 use crate::quota::ExtractionQuota;
+use disrobe_core::scratch::ScratchDir;
 
 pub const DEFAULT_MAX_DEPTH: u32 = 10;
 
@@ -143,18 +144,29 @@ impl WorkBudget {
 }
 
 #[must_use]
-pub fn carve_recursive(bytes: &[u8], source: &str, config: CarveConfig) -> CarveReport {
+pub fn carve_recursive(
+    bytes: &[u8],
+    source: &str,
+    config: CarveConfig,
+    destination: Option<&Path>,
+) -> CarveReport {
     let mut budget: WorkBudget = WorkBudget::new();
     let mut nodes_visited: usize = 0;
     let mut chunks_total: usize = 0;
     let mut bytes_carved: u64 = 0;
-    let scratch: Option<tempfile::TempDir> = tempfile::tempdir().ok();
+    let scratch: Option<ScratchDir> = match destination {
+        Some(_) => None,
+        None => ScratchDir::create("carve").ok(),
+    };
+    let extraction_root: Option<&Path> =
+        destination.map_or_else(|| scratch.as_ref().map(ScratchDir::path), Some);
     let root: CarveNode = carve_node(
         bytes,
         source,
         0,
         config,
-        scratch.as_ref().map(tempfile::TempDir::path),
+        extraction_root,
+        destination.is_some(),
         &mut budget,
         &mut nodes_visited,
         &mut chunks_total,
@@ -177,6 +189,7 @@ fn carve_node(
     depth: u32,
     config: CarveConfig,
     scratch: Option<&Path>,
+    durable: bool,
     budget: &mut WorkBudget,
     nodes_visited: &mut usize,
     chunks_total: &mut usize,
@@ -232,7 +245,9 @@ fn carve_node(
             if let Some(dir) = scratch {
                 let carved_dir: PathBuf = dir.join(format!("d{depth}-c{index}"));
                 if let Some(written) = extract_chunk(kind, slice, &carved_dir, config.quota) {
-                    chunk.carved_path = Some(written.dir.clone());
+                    if durable {
+                        chunk.carved_path = Some(written.dir.clone());
+                    }
                     if !next_depth_ok {
                         notes.push(format!(
                             "max-depth {} reached: not recursing into {} chunk at offset {}",
@@ -257,6 +272,7 @@ fn carve_node(
                             depth + 1,
                             config,
                             scratch,
+                            durable,
                             budget,
                             nodes_visited,
                             chunks_total,
@@ -962,7 +978,7 @@ mod tests {
     fn carve_splits_padding_and_unknown() {
         let mut buf: Vec<u8> = vec![0u8; 32];
         buf.extend_from_slice(b"random non-magic content here 123456");
-        let report: CarveReport = carve_recursive(&buf, "test", CarveConfig::default());
+        let report: CarveReport = carve_recursive(&buf, "test", CarveConfig::default(), None);
         let padding: usize = report
             .root
             .chunks
