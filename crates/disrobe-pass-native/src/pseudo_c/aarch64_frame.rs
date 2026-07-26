@@ -750,7 +750,7 @@ fn definite_writes(
     while let Some(index) = worklist.pop() {
         steps += 1;
         if steps > MAX_FIXPOINT_STEPS {
-            break;
+            return vec![None; count];
         }
         let Some(entering): Option<ByteSpans> = incoming[index].clone() else {
             continue;
@@ -921,6 +921,9 @@ pub(super) fn analyze(
                         insn,
                         "a store lands in the incoming-argument area above the entry stack pointer",
                     ));
+                }
+                if access.base == Base::Sp && matches!(role, Role::Body | Role::AbsorbedWriteback) {
+                    slot_offsets.insert(anchor);
                 }
                 continue;
             }
