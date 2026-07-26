@@ -566,17 +566,16 @@ mod tests {
     fn extract_to_writes_ext4_file() {
         let body: &[u8] = b"ext4 end to end extraction payload 13371337";
         let image: Vec<u8> = build_real_ext4("payload.bin", body);
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-ext4-e2e-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("binfmt-ext4-e2e")
+                .expect("create scratch dir");
         let result: crate::extract::ExtractionResult =
-            crate::extract::extract_to(crate::container::ContainerKind::Ext4, &image, &dir)
+            crate::extract::extract_to(crate::container::ContainerKind::Ext4, &image, dir.path())
                 .expect("ext4 extract");
         assert_eq!(result.kind, crate::container::ContainerKind::Ext4);
         assert_eq!(
-            std::fs::read(dir.join("payload.bin")).expect("payload"),
+            std::fs::read(dir.path().join("payload.bin")).expect("payload"),
             body
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -4984,15 +4984,9 @@ mod tests {
 
     use super::*;
 
-    fn temp_dir(suffix: &str) -> PathBuf {
-        let base: PathBuf = std::env::temp_dir();
-        let pid: u32 = std::process::id();
-        let dir: PathBuf = base.join(format!("disrobe-binfmt-{pid}-{suffix}"));
-        if dir.exists() {
-            let _ = std::fs::remove_dir_all(&dir);
-        }
-        std::fs::create_dir_all(&dir).expect("mkdir tmp");
-        dir
+    fn temp_dir(suffix: &str) -> disrobe_core::scratch::ScratchDir {
+        let purpose: String = format!("binfmt-extract-{suffix}");
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
     }
 
     fn synth_zip(files: &[(&str, &[u8])]) -> Vec<u8> {
@@ -5079,7 +5073,8 @@ mod tests {
 
     #[test]
     fn unityfs_textasset_errors_are_reported_as_violations() {
-        let out: PathBuf = temp_dir("unityfs-textasset-violation");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("unityfs-textasset-violation");
+        let out: PathBuf = scratch.path().to_path_buf();
         let script: Vec<u8> = b"\x1bLua\x53 fake bytecode body".to_vec();
         let mut serialized: Vec<u8> =
             crate::containers::unityfs_build_serialized_textasset("payload", &script);
@@ -5116,7 +5111,8 @@ mod tests {
 
     #[test]
     fn extract_zip_writes_entries_and_records_them() {
-        let out: PathBuf = temp_dir("zip-ok");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("zip-ok");
+        let out: PathBuf = scratch.path().to_path_buf();
         let zip_bytes: Vec<u8> = synth_zip(&[("a.txt", b"alpha"), ("pkg/b.txt", b"bravo bravo")]);
         let result: ExtractionResult =
             extract_to(ContainerKind::Zip, &zip_bytes, &out).expect("extract");
@@ -5131,7 +5127,8 @@ mod tests {
 
     #[test]
     fn extract_zip_rejects_zip_slip() {
-        let out: PathBuf = temp_dir("zip-slip");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("zip-slip");
+        let out: PathBuf = scratch.path().to_path_buf();
         let bytes: Vec<u8> = synth_zip(&[("../escape.txt", b"x")]);
         let r: ExtractionResult =
             extract_to(ContainerKind::Zip, &bytes, &out).expect("must extract");
@@ -5148,7 +5145,8 @@ mod tests {
         let mut payload: Vec<u8> = Vec::with_capacity(1_000_000);
         payload.extend(std::iter::repeat_n(b'A', 1_000_000));
         let bytes: Vec<u8> = synth_zip(&[("bomb.bin", &payload)]);
-        let out: PathBuf = temp_dir("zip-bomb");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("zip-bomb");
+        let out: PathBuf = scratch.path().to_path_buf();
         let tight: ExtractionQuota = ExtractionQuota {
             max_per_entry_ratio: 2,
             ..ExtractionQuota::default_safe()
@@ -5161,7 +5159,8 @@ mod tests {
     #[test]
     fn extract_zip_rejects_raw_entry_count_over_quota() {
         let bytes: Vec<u8> = synth_zip(&[("../a.txt", b"a"), ("../b.txt", b"b")]);
-        let out: PathBuf = temp_dir("zip-count");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("zip-count");
+        let out: PathBuf = scratch.path().to_path_buf();
         let tight: ExtractionQuota = ExtractionQuota {
             max_entries: 1,
             ..ExtractionQuota::default_safe()
@@ -5176,7 +5175,8 @@ mod tests {
     #[test]
     fn extract_zip_recovers_reference_utf8_names_byte_identically() {
         let bytes: &[u8] = include_bytes!("../tests/fixtures/containers/utf8_names_zip.bin");
-        let out: PathBuf = temp_dir("zip-utf8-names");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("zip-utf8-names");
+        let out: PathBuf = scratch.path().to_path_buf();
         let result: ExtractionResult =
             extract_to(ContainerKind::Zip, bytes, &out).expect("extract reference zip");
         let cafe: &ExtractedEntry = result
@@ -5253,7 +5253,8 @@ mod tests {
     #[test]
     fn extract_sevenz_records_slip_violation_for_unsafe_entry() {
         let bytes: Vec<u8> = synth_sevenz(&[("ok/data.bin", b"good"), ("../evil.txt", b"bad")]);
-        let out: PathBuf = temp_dir("7z-slip");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("7z-slip");
+        let out: PathBuf = scratch.path().to_path_buf();
         let result: ExtractionResult =
             extract_to(ContainerKind::SevenZ, &bytes, &out).expect("extract 7z");
         assert!(
@@ -5285,7 +5286,8 @@ mod tests {
 
     #[test]
     fn extract_tar_writes_entries() {
-        let out: PathBuf = temp_dir("tar-ok");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("tar-ok");
+        let out: PathBuf = scratch.path().to_path_buf();
         let bytes: Vec<u8> = synth_tar(&[("a.txt", b"alpha"), ("b.txt", b"bravo")]);
         let result: ExtractionResult =
             extract_to(ContainerKind::Tar, &bytes, &out).expect("extract");
@@ -5295,7 +5297,8 @@ mod tests {
 
     #[test]
     fn extract_tar_gz_writes_entries() {
-        let out: PathBuf = temp_dir("targz-ok");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("targz-ok");
+        let out: PathBuf = scratch.path().to_path_buf();
         let bytes: Vec<u8> = synth_tar_gz(&[("dir/a.txt", b"alpha"), ("dir/b.txt", b"bravo")]);
         let result: ExtractionResult =
             extract_to(ContainerKind::TarGz, &bytes, &out).expect("extract");
@@ -5313,7 +5316,8 @@ mod tests {
             "highly-compressible bomb must stay small on disk: {} bytes",
             bytes.len()
         );
-        let out: PathBuf = temp_dir("targz-bomb");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("targz-bomb");
+        let out: PathBuf = scratch.path().to_path_buf();
         let tight: ExtractionQuota = ExtractionQuota {
             max_total_uncompressed: 1024 * 1024,
             ..ExtractionQuota::default_safe()
@@ -5356,7 +5360,8 @@ mod tests {
 
     #[test]
     fn extract_tar_rejects_zip_slip() {
-        let out: PathBuf = temp_dir("tar-slip");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("tar-slip");
+        let out: PathBuf = scratch.path().to_path_buf();
         let bytes: Vec<u8> = synth_tar_with_raw_name(b"../escape.txt", b"x");
         let r: ExtractionResult = extract_to(ContainerKind::Tar, &bytes, &out).expect("extract");
         assert!(
@@ -5369,7 +5374,8 @@ mod tests {
 
     #[test]
     fn extract_asar_writes_entries() {
-        let out: PathBuf = temp_dir("asar-ok");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("asar-ok");
+        let out: PathBuf = scratch.path().to_path_buf();
         let bytes: Vec<u8> = synth_asar(&[("a.txt", b"alpha"), ("b.txt", b"bravo")]);
         let r: ExtractionResult = extract_to(ContainerKind::Asar, &bytes, &out).expect("extract");
         assert_eq!(r.entries.len(), 2);
@@ -5379,7 +5385,8 @@ mod tests {
 
     #[test]
     fn unsupported_container_returns_error_for_none_kind() {
-        let out: PathBuf = temp_dir("unsupp");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("unsupp");
+        let out: PathBuf = scratch.path().to_path_buf();
         let err: Error = extract_to(ContainerKind::None, &[0u8; 16], &out).unwrap_err();
         assert!(matches!(err, Error::UnsupportedContainer(_)));
     }
@@ -5398,7 +5405,8 @@ mod tests {
     #[test]
     fn rar_extraction_falls_back_when_no_external_tool() {
         with_disabled_external(|| {
-            let out: PathBuf = temp_dir("rar");
+            let scratch: disrobe_core::scratch::ScratchDir = temp_dir("rar");
+            let out: PathBuf = scratch.path().to_path_buf();
             let err: Error = extract_to(ContainerKind::Rar, &[0u8; 16], &out).unwrap_err();
             assert!(matches!(err, Error::RarNotExtractable));
         });
@@ -5406,7 +5414,8 @@ mod tests {
 
     #[test]
     fn rar_extracts_stored_entries_in_tree() {
-        let out: PathBuf = temp_dir("rar-store");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("rar-store");
+        let out: PathBuf = scratch.path().to_path_buf();
         let body: &[u8] = b"stored rar5 payload recovered in-tree";
         let bytes: Vec<u8> = crate::containers::rar::build_test_rar5_store("dir/payload.bin", body);
         let r: ExtractionResult =
@@ -5422,28 +5431,32 @@ mod tests {
 
     #[test]
     fn pkg_extraction_errors_on_invalid_xar() {
-        let out: PathBuf = temp_dir("pkg-bad");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("pkg-bad");
+        let out: PathBuf = scratch.path().to_path_buf();
         let err: Error = extract_to(ContainerKind::Pkg, &[0u8; 16], &out).unwrap_err();
         assert!(matches!(err, Error::Decompression(_)));
     }
 
     #[test]
     fn dmg_extraction_errors_on_invalid_image() {
-        let out: PathBuf = temp_dir("dmg-bad");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("dmg-bad");
+        let out: PathBuf = scratch.path().to_path_buf();
         let err: Error = extract_to(ContainerKind::Dmg, &[0u8; 16], &out).unwrap_err();
         assert!(matches!(err, Error::Decompression(_)));
     }
 
     #[test]
     fn iso_extraction_errors_on_invalid_image() {
-        let out: PathBuf = temp_dir("iso-bad");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("iso-bad");
+        let out: PathBuf = scratch.path().to_path_buf();
         let err: Error = extract_to(ContainerKind::Iso, &[0u8; 16], &out).unwrap_err();
         assert!(matches!(err, Error::Decompression(_)));
     }
 
     #[test]
     fn jar_routed_through_zip_path() {
-        let out: PathBuf = temp_dir("jar-ok");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("jar-ok");
+        let out: PathBuf = scratch.path().to_path_buf();
         let bytes: Vec<u8> = synth_zip(&[("META-INF/MANIFEST.MF", b"Manifest-Version: 1.0\n")]);
         let r: ExtractionResult = extract_to(ContainerKind::Jar, &bytes, &out).expect("extract");
         assert_eq!(r.entries.len(), 1);
@@ -5478,7 +5491,8 @@ mod tests {
 
     #[test]
     fn extract_deb_writes_inner_data_tar_gz_entries() {
-        let out: PathBuf = temp_dir("deb-ok");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("deb-ok");
+        let out: PathBuf = scratch.path().to_path_buf();
         let inner: Vec<u8> = synth_tar_gz(&[
             ("usr/bin/example", b"#!/bin/sh\necho hi\n"),
             ("etc/example/config", b"key = value\n"),
@@ -5561,7 +5575,8 @@ mod tests {
 
     #[test]
     fn extract_msi_unpacks_embedded_cab_with_long_names() {
-        let out: PathBuf = temp_dir("msi-ok");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("msi-ok");
+        let out: PathBuf = scratch.path().to_path_buf();
         let cab_bytes: Vec<u8> =
             synth_cab(&[("app.exe", b"MZ\x90\x00 msi-packed application binary")]);
         let msi_bytes: Vec<u8> =
@@ -5578,7 +5593,8 @@ mod tests {
 
     #[test]
     fn extract_squirrel_unpacks_embedded_nupkg() {
-        let out: PathBuf = temp_dir("squirrel-ok");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("squirrel-ok");
+        let out: PathBuf = scratch.path().to_path_buf();
         let nupkg: Vec<u8> = synth_zip(&[
             ("Discord.nuspec", b"<package><metadata/></package>"),
             ("[Content_Types].xml", b"<Types/>"),
@@ -5601,7 +5617,8 @@ mod tests {
 
     #[test]
     fn extract_squirrel_without_embedded_nupkg_reports_sibling_packages() {
-        let out: PathBuf = temp_dir("squirrel-updater");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("squirrel-updater");
+        let out: PathBuf = scratch.path().to_path_buf();
         let mut stub: Vec<u8> = b"MZ".to_vec();
         stub.extend_from_slice(b" SquirrelAwareVersion NuGet ");
         stub.extend(std::iter::repeat_n(0u8, 4096));
@@ -5612,7 +5629,8 @@ mod tests {
 
     #[test]
     fn extract_nsis_writes_real_file_and_strips_var_prefix() {
-        let out: PathBuf = temp_dir("nsis-ok");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("nsis-ok");
+        let out: PathBuf = scratch.path().to_path_buf();
         let body: &[u8] = b"MZ\x90\x00 fake-but-distinctive nsis payload bytes payload payload";
         let bytes: Vec<u8> =
             crate::containers::nsis::build_test_nsis("$VAR4\\app\\hello.dll", body);

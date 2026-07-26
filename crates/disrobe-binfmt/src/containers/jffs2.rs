@@ -1021,14 +1021,16 @@ mod tests {
     #[test]
     fn extract_to_writes_jffs2_files() {
         let (image, body_a, _): (Vec<u8>, Vec<u8>, Vec<u8>) = build_image(Jffs2Endian::Little);
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-jffs2-e2e-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("binfmt-jffs2-e2e")
+                .expect("create scratch dir");
         let result: crate::extract::ExtractionResult =
-            crate::extract::extract_to(crate::container::ContainerKind::Jffs2, &image, &dir)
+            crate::extract::extract_to(crate::container::ContainerKind::Jffs2, &image, dir.path())
                 .expect("jffs2 extract");
         assert_eq!(result.kind, crate::container::ContainerKind::Jffs2);
-        assert_eq!(std::fs::read(dir.join("plain.txt")).expect("plain"), body_a);
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            std::fs::read(dir.path().join("plain.txt")).expect("plain"),
+            body_a
+        );
     }
 }

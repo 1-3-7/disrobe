@@ -690,15 +690,20 @@ mod tests {
         let body: Vec<u8> = b"minix end to end extract abcdef".to_vec();
         let files: [(&str, &[u8], bool); 1] = [("note.txt", &body, false)];
         let image: Vec<u8> = MinixBuilder::new(MinixVersion::V3).build(&files);
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-minix-e2e-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let result: crate::extract::ExtractionResult =
-            crate::extract::extract_to(crate::container::ContainerKind::MinixFs, &image, &dir)
-                .expect("minix extract");
+        let dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("binfmt-minix-e2e")
+                .expect("create scratch dir");
+        let result: crate::extract::ExtractionResult = crate::extract::extract_to(
+            crate::container::ContainerKind::MinixFs,
+            &image,
+            dir.path(),
+        )
+        .expect("minix extract");
         assert_eq!(result.kind, crate::container::ContainerKind::MinixFs);
-        assert_eq!(std::fs::read(dir.join("note.txt")).expect("note"), body);
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            std::fs::read(dir.path().join("note.txt")).expect("note"),
+            body
+        );
     }
 
     fn put_u16(img: &mut [u8], at: usize, v: u16) {

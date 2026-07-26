@@ -341,18 +341,20 @@ mod tests {
             (false, vec![]),
         ];
         let image: Vec<u8> = builder.build(&blocks);
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-partclone-e2e-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let result: crate::extract::ExtractionResult =
-            crate::extract::extract_to(crate::container::ContainerKind::Partclone, &image, &dir)
-                .expect("partclone extract");
+        let dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("binfmt-partclone-e2e")
+                .expect("create scratch dir");
+        let result: crate::extract::ExtractionResult = crate::extract::extract_to(
+            crate::container::ContainerKind::Partclone,
+            &image,
+            dir.path(),
+        )
+        .expect("partclone extract");
         assert_eq!(result.kind, crate::container::ContainerKind::Partclone);
-        let written: Vec<u8> = std::fs::read(dir.join("partclone.img")).expect("img");
+        let written: Vec<u8> = std::fs::read(dir.path().join("partclone.img")).expect("img");
         assert_eq!(&written[0..8], b"PARTCLON");
         assert_eq!(&written[8..16], &[0u8; 8]);
         assert_eq!(&written[16..24], b"E-IMAGE!");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

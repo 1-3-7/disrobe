@@ -885,17 +885,19 @@ mod tests {
     fn extract_to_writes_decoded_header_blob() {
         let blob: &[u8] = &b"inno end-to-end setup-data stream 0xCAFEBABE ".repeat(30);
         let image: Vec<u8> = build_test_inno("6.3.0", blob);
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-inno-e2e-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let result: crate::extract::ExtractionResult =
-            crate::extract::extract_to(crate::container::ContainerKind::InnoSetup, &image, &dir)
-                .expect("inno extract");
+        let dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("binfmt-inno-e2e")
+                .expect("create scratch dir");
+        let result: crate::extract::ExtractionResult = crate::extract::extract_to(
+            crate::container::ContainerKind::InnoSetup,
+            &image,
+            dir.path(),
+        )
+        .expect("inno extract");
         assert_eq!(result.kind, crate::container::ContainerKind::InnoSetup);
         assert_eq!(
-            std::fs::read(dir.join("setup-headers.bin")).expect("header blob"),
+            std::fs::read(dir.path().join("setup-headers.bin")).expect("header blob"),
             blob
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

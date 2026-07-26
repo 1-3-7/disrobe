@@ -213,9 +213,10 @@ fn extract_to_emits_carved_module_and_summary() {
         .to_owned();
     let dump: Vec<u8> = build_dump(image_base, size_of_image, &name, arch, &mapped);
 
-    let out_dir: std::path::PathBuf =
-        std::env::temp_dir().join(format!("disrobe-minidump-e2e-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&out_dir);
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("binfmt-minidump-e2e")
+            .expect("create scratch dir");
+    let out_dir: std::path::PathBuf = scratch.path().to_path_buf();
     let result: disrobe_binfmt::ExtractionResult =
         disrobe_binfmt::extract_to(ContainerKind::Minidump, &dump, &out_dir).expect("extract");
     assert_eq!(result.kind, ContainerKind::Minidump);
@@ -230,7 +231,6 @@ fn extract_to_emits_carved_module_and_summary() {
     let parsed: object::read::File<'_> =
         object::read::File::parse(&emitted[..]).expect("emitted image parses as an object");
     assert!(matches!(parsed.format(), object::BinaryFormat::Pe));
-    let _ = std::fs::remove_dir_all(&out_dir);
 }
 
 #[test]

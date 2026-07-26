@@ -340,15 +340,17 @@ mod tests {
     fn extract_to_writes_cramfs_file() {
         let body: &[u8] = b"cramfs end to end extraction 0123456789abcdef";
         let image: Vec<u8> = build_real_cramfs("note.txt", body);
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-cramfs-e2e-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("binfmt-cramfs-e2e")
+                .expect("create scratch dir");
         let result: crate::extract::ExtractionResult =
-            crate::extract::extract_to(crate::container::ContainerKind::Cramfs, &image, &dir)
+            crate::extract::extract_to(crate::container::ContainerKind::Cramfs, &image, dir.path())
                 .expect("cramfs extract");
         assert_eq!(result.kind, crate::container::ContainerKind::Cramfs);
-        assert_eq!(std::fs::read(dir.join("note.txt")).expect("note"), body);
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            std::fs::read(dir.path().join("note.txt")).expect("note"),
+            body
+        );
     }
 
     #[test]

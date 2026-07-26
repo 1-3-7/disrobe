@@ -1164,18 +1164,20 @@ mod tests {
     fn extract_to_writes_squashfs_file_to_disk() {
         let body: &[u8] = b"squashfs end-to-end extraction payload abcdefghijklmnop";
         let image: Vec<u8> = build_real_squashfs("readme.md", body);
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-squashfs-e2e-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let result: crate::extract::ExtractionResult =
-            crate::extract::extract_to(crate::container::ContainerKind::Squashfs, &image, &dir)
-                .expect("squashfs extract");
+        let dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("binfmt-squashfs-e2e")
+                .expect("create scratch dir");
+        let result: crate::extract::ExtractionResult = crate::extract::extract_to(
+            crate::container::ContainerKind::Squashfs,
+            &image,
+            dir.path(),
+        )
+        .expect("squashfs extract");
         assert_eq!(result.kind, crate::container::ContainerKind::Squashfs);
         assert_eq!(
-            std::fs::read(dir.join("readme.md")).expect("written file"),
+            std::fs::read(dir.path().join("readme.md")).expect("written file"),
             body
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn put_u16_e(out: &mut Vec<u8>, v: u16, endian: Endian) {
@@ -1378,16 +1380,21 @@ mod tests {
         image[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
         image[8..11].copy_from_slice(&[b'A', b'I', 0x02]);
         image.append(&mut sqfs);
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-appimage-e2e-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let result: crate::extract::ExtractionResult =
-            crate::extract::extract_to(crate::container::ContainerKind::AppImage, &image, &dir)
-                .expect("appimage extract");
+        let dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("binfmt-appimage-e2e")
+                .expect("create scratch dir");
+        let result: crate::extract::ExtractionResult = crate::extract::extract_to(
+            crate::container::ContainerKind::AppImage,
+            &image,
+            dir.path(),
+        )
+        .expect("appimage extract");
         assert_eq!(result.kind, crate::container::ContainerKind::AppImage);
-        assert_eq!(std::fs::read(dir.join("AppRun")).expect("AppRun"), body);
-        assert!(dir.join(".disrobe-appimage-layout.json").is_file());
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            std::fs::read(dir.path().join("AppRun")).expect("AppRun"),
+            body
+        );
+        assert!(dir.path().join(".disrobe-appimage-layout.json").is_file());
     }
 
     #[test]
