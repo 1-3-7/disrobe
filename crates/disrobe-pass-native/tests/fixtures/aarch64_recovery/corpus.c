@@ -413,6 +413,16 @@ double fb_nge_d(double a, double b, double x, double y) {
     if (!(a >= b)) r = x;
     return r;
 }
+float fb_uno_f(float a, float b, float x, float y) {
+    volatile float r = y;
+    if (__builtin_isunordered(a, b)) r = x;
+    return r;
+}
+double fb_uno_d(double a, double b, double x, double y) {
+    volatile double r = y;
+    if (__builtin_isunordered(a, b)) r = x;
+    return r;
+}
 float fb_ord_f(float a, float b, float x, float y) {
     volatile float r = y;
     if (!__builtin_isunordered(a, b)) r = x;
