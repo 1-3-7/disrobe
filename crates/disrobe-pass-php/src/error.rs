@@ -14,6 +14,12 @@ pub enum Error {
     #[error("DR-PHP-0011: PHP token stream had unterminated {kind} starting at offset {offset}")]
     UnterminatedToken { kind: &'static str, offset: usize },
 
+    #[error("DR-PHP-0012: PHP token stream exceeded token limit {cap}")]
+    TokenCountExceeded { cap: usize },
+
+    #[error("DR-PHP-0013: PHP lexer made no progress at offset {offset}")]
+    TokenNoProgress { offset: usize },
+
     #[error("DR-PHP-0020: phar archive too small ({0} bytes, need >=4)")]
     PharTooSmall(usize),
 
