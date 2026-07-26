@@ -156,13 +156,18 @@ fn gpt_header_crc32(header: &[u8], header_size: u32) -> u32 {
 }
 
 pub fn parse_gpt_header(bytes: &[u8], header_offset: usize) -> Result<GptHeader> {
+    let overflowed = || Error::Decompression("gpt header offset overflow".to_owned());
+    let size_field_start: usize = header_offset.checked_add(12).ok_or_else(overflowed)?;
+    let size_field_end: usize = header_offset.checked_add(16).ok_or_else(overflowed)?;
     let stored_size: u32 = bytes
-        .get(header_offset + 12..header_offset + 16)
+        .get(size_field_start..size_field_end)
         .map_or(92, |s: &[u8]| u32::from_le_bytes([s[0], s[1], s[2], s[3]]));
     let span: usize = (stored_size as usize).max(92);
+    let span_end: usize = header_offset.checked_add(span).ok_or_else(overflowed)?;
+    let minimum_end: usize = header_offset.checked_add(92).ok_or_else(overflowed)?;
     let header: &[u8] = bytes
-        .get(header_offset..header_offset + span)
-        .or_else(|| bytes.get(header_offset..header_offset + 92))
+        .get(header_offset..span_end)
+        .or_else(|| bytes.get(header_offset..minimum_end))
         .ok_or_else(|| Error::Decompression("gpt header truncated".to_owned()))?;
     if &header[0..8] != GPT_SIGNATURE {
         return Err(Error::Decompression("gpt signature mismatch".to_owned()));
