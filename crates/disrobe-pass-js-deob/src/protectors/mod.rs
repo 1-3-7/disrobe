@@ -14,14 +14,6 @@ pub enum LegalStance {
 
 impl LegalStance {
     #[must_use]
-    pub const fn stance_doc(self) -> &'static str {
-        match self {
-            Self::AmberLeaningGreen => "docs/legal/jsdefender-stance.md",
-            Self::AmberDetectOnly => "docs/legal/digital-ai-arxan-stance.md",
-        }
-    }
-
-    #[must_use]
     pub const fn allows_bypass_with_authorization(self) -> bool {
         matches!(self, Self::AmberLeaningGreen | Self::AmberDetectOnly)
     }
@@ -40,6 +32,15 @@ impl ProtectorFamily {
         match self {
             Self::JsDefender => LegalStance::AmberLeaningGreen,
             Self::Arxan | Self::Pace => LegalStance::AmberDetectOnly,
+        }
+    }
+
+    #[must_use]
+    pub const fn stance_doc(self) -> &'static str {
+        match self {
+            Self::JsDefender => "docs/legal/jsdefender-stance.md",
+            Self::Arxan => "docs/legal/digital-ai-arxan-stance.md",
+            Self::Pace => "docs/legal/pace-js-stance.md",
         }
     }
 
@@ -68,11 +69,10 @@ impl ProtectorDetection {
         confidence: f32,
         markers: Vec<String>,
     ) -> Self {
-        let legal_stance: LegalStance = family.legal_stance();
         Self {
             family,
-            legal_stance,
-            stance_doc: legal_stance.stance_doc(),
+            legal_stance: family.legal_stance(),
+            stance_doc: family.stance_doc(),
             confidence,
             markers,
         }

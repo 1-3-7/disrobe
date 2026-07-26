@@ -10,6 +10,8 @@
 use disrobe_core::chain::{
     DetectContext, DetectVerdict, Detector, FAMILY_OBFUSCATOR_WRAPPER, Pass,
 };
+use disrobe_core::error::CoreError;
+use disrobe_core::pass::PassContext;
 use disrobe_core::{Artifact, Rung};
 use disrobe_pass_js_deob::chain_detector::{JS_OBF_PASS, JsObfDetector, PASS_ID};
 
@@ -31,6 +33,26 @@ const fn ctx(bytes: &[u8]) -> DetectContext<'_> {
 
 fn artifact_from(bytes: &[u8]) -> Artifact {
     Artifact::new(Rung::Raw, bytes.to_vec(), [0_u8; 32])
+}
+
+const fn asserted() -> PassContext<'static> {
+    PassContext {
+        path_hint: None,
+        i_have_authorization: true,
+    }
+}
+
+fn run_asserted(fixture: &str) -> Artifact {
+    JS_OBF_PASS
+        .run_with_context(&artifact_from(fixture.as_bytes()), asserted())
+        .expect("an asserted-authorization chain run must peel the protector")
+}
+
+fn withheld_failure(fixture: &str) -> String {
+    let err: CoreError = JS_OBF_PASS
+        .run_with_context(&artifact_from(fixture.as_bytes()), PassContext::default())
+        .expect_err("a chain run without the operator's assertion must refuse the gated peel");
+    format!("{err}")
 }
 
 #[test]
@@ -84,8 +106,7 @@ fn detector_emits_arxan_verdict() {
 
 #[test]
 fn pace_runner_strips_static_guard_cfg() {
-    let art: Artifact = artifact_from(PACE_FIXTURE.as_bytes());
-    let out: Artifact = JS_OBF_PASS.run(&art).expect("pace run must succeed");
+    let out: Artifact = run_asserted(PACE_FIXTURE);
     assert_eq!(out.rung, Rung::Surface);
     let body: &str =
         std::str::from_utf8(out.envelope.as_slice()).expect("pace artifact must be utf-8");
@@ -106,8 +127,7 @@ fn pace_runner_strips_static_guard_cfg() {
 
 #[test]
 fn jsdefender_runner_emits_source_artifact() {
-    let art: Artifact = artifact_from(JSDEFENDER_FIXTURE.as_bytes());
-    let out: Artifact = JS_OBF_PASS.run(&art).expect("jsdefender run must succeed");
+    let out: Artifact = run_asserted(JSDEFENDER_FIXTURE);
     assert_eq!(out.rung, Rung::Surface);
     let body: &str =
         std::str::from_utf8(out.envelope.as_slice()).expect("jsdefender artifact must be utf-8");
@@ -116,8 +136,7 @@ fn jsdefender_runner_emits_source_artifact() {
 
 #[test]
 fn arxan_runner_strips_publicly_documented_patterns() {
-    let art: Artifact = artifact_from(ARXAN_FIXTURE.as_bytes());
-    let out: Artifact = JS_OBF_PASS.run(&art).expect("arxan run must succeed");
+    let out: Artifact = run_asserted(ARXAN_FIXTURE);
     assert_eq!(out.rung, Rung::Surface);
     let body: &str =
         std::str::from_utf8(out.envelope.as_slice()).expect("arxan artifact must be utf-8");
@@ -142,4 +161,88 @@ fn arxan_runner_strips_publicly_documented_patterns() {
 fn detector_misses_clean_javascript() {
     let bytes: &[u8] = b"const x = 1;\nfunction add(a, b) { return a + b; }";
     assert!(JsObfDetector.detect(&ctx(bytes)).is_none());
+}
+
+#[test]
+fn pace_peel_is_withheld_without_the_operator_assertion() {
+    let message: String = withheld_failure(PACE_FIXTURE);
+    assert!(message.contains("DR-JS-0920"), "message={message}");
+    assert!(message.contains("PACE JS / Fusion"), "message={message}");
+    assert!(
+        message.contains("--i-have-authorization"),
+        "message={message}"
+    );
+    assert!(
+        message.contains("docs/legal/pace-js-stance.md"),
+        "message={message}",
+    );
+}
+
+#[test]
+fn jsdefender_peel_is_withheld_without_the_operator_assertion() {
+    let message: String = withheld_failure(JSDEFENDER_FIXTURE);
+    assert!(message.contains("DR-JS-0920"), "message={message}");
+    assert!(
+        message.contains("PreEmptive JSDefender"),
+        "message={message}"
+    );
+    assert!(
+        message.contains("--i-have-authorization"),
+        "message={message}"
+    );
+    assert!(
+        message.contains("docs/legal/jsdefender-stance.md"),
+        "message={message}",
+    );
+}
+
+#[test]
+fn arxan_peel_is_withheld_without_the_operator_assertion() {
+    let message: String = withheld_failure(ARXAN_FIXTURE);
+    assert!(message.contains("DR-JS-0920"), "message={message}");
+    assert!(message.contains("Digital.ai Arxan"), "message={message}");
+    assert!(
+        message.contains("--i-have-authorization"),
+        "message={message}"
+    );
+    assert!(
+        message.contains("docs/legal/digital-ai-arxan-stance.md"),
+        "message={message}",
+    );
+}
+
+#[test]
+fn the_context_free_entry_points_never_assert_authorization_for_the_operator() {
+    for fixture in [PACE_FIXTURE, JSDEFENDER_FIXTURE, ARXAN_FIXTURE] {
+        let art: Artifact = artifact_from(fixture.as_bytes());
+        let plain: CoreError = JS_OBF_PASS
+            .run(&art)
+            .expect_err("the context-free run entry point carries no assertion");
+        assert!(format!("{plain}").contains("DR-JS-0920"), "{plain}");
+        let hinted: CoreError = JS_OBF_PASS
+            .run_with_path(&art, Some("bundle.js"))
+            .expect_err("a path hint alone is not an authorization assertion");
+        assert!(format!("{hinted}").contains("DR-JS-0920"), "{hinted}");
+    }
+}
+
+#[test]
+fn detection_needs_no_authorization_while_the_peel_does() {
+    let bytes: &[u8] = PACE_FIXTURE.as_bytes();
+    let verdict: DetectVerdict = JsObfDetector
+        .detect(&ctx(bytes))
+        .expect("detection must not depend on the operator's assertion");
+    assert_eq!(verdict.format_tag, "js-pace");
+    assert!(
+        PACE_FIXTURE.contains("__PACE__"),
+        "the fixture must carry the runtime token for the peel comparison to mean anything",
+    );
+    assert!(withheld_failure(PACE_FIXTURE).contains("DR-JS-0920"));
+    let peeled: Artifact = run_asserted(PACE_FIXTURE);
+    let recovered: &str =
+        std::str::from_utf8(peeled.envelope.as_slice()).expect("utf-8 recovered pace source");
+    assert!(
+        !recovered.contains("__PACE__"),
+        "the asserted run is the only path that may strip the guard: {recovered}",
+    );
 }
