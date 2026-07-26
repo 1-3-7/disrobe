@@ -159,9 +159,17 @@ impl Pass for JsObfPass {
     }
 
     fn extract_children(&self, input: &Artifact) -> CoreResult<Vec<ChildArtifact>> {
+        self.extract_children_with_context(input, PassContext::default())
+    }
+
+    fn extract_children_with_context(
+        &self,
+        input: &Artifact,
+        context: PassContext<'_>,
+    ) -> CoreResult<Vec<ChildArtifact>> {
         let mut children: Vec<ChildArtifact> = Vec::new();
         let detection: Detection = detect_obfuscator(input.envelope.as_slice());
-        if let Ok(recovered) = self.run(input)
+        if let Ok(recovered) = self.run_with_context(input, context)
             && recovered.envelope.as_slice() != input.envelope.as_slice()
             && !recovered.envelope.is_empty()
         {
