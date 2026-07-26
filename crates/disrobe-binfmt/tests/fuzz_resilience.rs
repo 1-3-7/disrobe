@@ -1001,7 +1001,7 @@ fn probe_carve(bytes: &[u8], source: &str) -> Hits {
         quota: test_quota(),
     };
     let mut hits: Hits = Hits::default();
-    let report: CarveReport = carve_recursive(bytes, source, config);
+    let report: CarveReport = carve_recursive(bytes, source, config, None);
     hits.record(report.chunks_total > 0);
     hits.record(is_skip_magic(bytes));
     consume(skip_magic_label(bytes));

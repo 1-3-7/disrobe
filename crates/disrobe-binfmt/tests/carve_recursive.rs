@@ -81,7 +81,8 @@ fn innermost_depth(node: &CarveNode) -> Option<u32> {
 #[test]
 fn recurses_zip_in_tar_in_gz_to_innermost_byte_exact() {
     let nested: Vec<u8> = build_nested_gz();
-    let report: CarveReport = carve_recursive(&nested, "nested.tar.gz", CarveConfig::default());
+    let report: CarveReport =
+        carve_recursive(&nested, "nested.tar.gz", CarveConfig::default(), None);
     assert!(
         find_innermost(&report.root),
         "engine must recurse gz -> tar -> zip and reach secret.txt; tree: {:#?}",
@@ -96,7 +97,7 @@ fn recurses_zip_in_tar_in_gz_to_innermost_byte_exact() {
 
 fn recover_innermost(nested: &[u8]) -> Vec<u8> {
     let scratch: tempfile::TempDir = tempfile::tempdir().expect("scratch");
-    let report: CarveReport = carve_recursive(nested, "nested", CarveConfig::default());
+    let report: CarveReport = carve_recursive(nested, "nested", CarveConfig::default(), None);
     let _ = report;
     let gz_dir: std::path::PathBuf = scratch.path().join("gz");
     let gz_result: disrobe_binfmt::ExtractionResult =
@@ -127,7 +128,7 @@ fn carves_unknown_gap_between_two_real_archives() {
     buf.extend_from_slice(UNKNOWN_GAP);
     buf.extend_from_slice(&gz_b);
 
-    let report: CarveReport = carve_recursive(&buf, "two-gzips", CarveConfig::default());
+    let report: CarveReport = carve_recursive(&buf, "two-gzips", CarveConfig::default(), None);
     let mut chunks: Vec<&CarvedChunk> = Vec::new();
     collect_chunks(&report.root, &mut chunks);
 
@@ -190,7 +191,7 @@ fn entropy_recorded_per_chunk_flags_compressed_region() {
     let gz: Vec<u8> = gzip(&b"highly compressible repeated text ".repeat(64));
     let mut buf: Vec<u8> = vec![b'A'; 64];
     buf.extend_from_slice(&gz);
-    let report: CarveReport = carve_recursive(&buf, "entropy", CarveConfig::default());
+    let report: CarveReport = carve_recursive(&buf, "entropy", CarveConfig::default(), None);
     let mut chunks: Vec<&CarvedChunk> = Vec::new();
     collect_chunks(&report.root, &mut chunks);
     let valid: &&CarvedChunk = chunks
@@ -216,7 +217,7 @@ fn entropy_recorded_per_chunk_flags_compressed_region() {
 #[test]
 fn max_depth_is_respected() {
     let nested: Vec<u8> = build_nested_gz();
-    let shallow: CarveReport = carve_recursive(&nested, "nested", CarveConfig::new(1));
+    let shallow: CarveReport = carve_recursive(&nested, "nested", CarveConfig::new(1), None);
     assert_eq!(
         max_observed_depth(&shallow.root),
         0,
@@ -232,7 +233,7 @@ fn max_depth_is_respected() {
     );
 
     let deep_max: u32 = 10;
-    let deep: CarveReport = carve_recursive(&nested, "nested", CarveConfig::new(deep_max));
+    let deep: CarveReport = carve_recursive(&nested, "nested", CarveConfig::new(deep_max), None);
     let observed: u32 = max_observed_depth(&deep.root);
     assert!(
         (2..deep_max).contains(&observed),
@@ -260,7 +261,7 @@ fn self_referential_gzip_bomb_terminates_within_work_bound() {
         buf.extend_from_slice(&payload);
     }
     let started: std::time::Instant = std::time::Instant::now();
-    let report: CarveReport = carve_recursive(&buf, "bomb", CarveConfig::default());
+    let report: CarveReport = carve_recursive(&buf, "bomb", CarveConfig::default(), None);
     let elapsed: std::time::Duration = started.elapsed();
     assert!(
         elapsed < std::time::Duration::from_secs(30),
@@ -280,7 +281,7 @@ fn deeply_nested_gzip_chain_terminates() {
         layer = gzip(&layer);
     }
     let started: std::time::Instant = std::time::Instant::now();
-    let report: CarveReport = carve_recursive(&layer, "deep-gz", CarveConfig::new(10));
+    let report: CarveReport = carve_recursive(&layer, "deep-gz", CarveConfig::new(10), None);
     let elapsed: std::time::Duration = started.elapsed();
     assert!(
         elapsed < std::time::Duration::from_secs(30),
@@ -299,7 +300,8 @@ fn committed_nested_fixture_round_trips() {
             "missing committed fixture corpus/binfmt/carve/nested.tar.gz (force-added; regenerate via the carve_recursive oracle)"
         );
     };
-    let report: CarveReport = carve_recursive(&bytes, "nested.tar.gz", CarveConfig::default());
+    let report: CarveReport =
+        carve_recursive(&bytes, "nested.tar.gz", CarveConfig::default(), None);
     assert!(
         find_innermost(&report.root),
         "committed nested fixture must recurse to secret.txt"
@@ -309,4 +311,63 @@ fn committed_nested_fixture_round_trips() {
         recovered, INNERMOST,
         "committed fixture innermost must be byte-exact"
     );
+}
+
+fn claimed_paths(node: &CarveNode, out: &mut Vec<std::path::PathBuf>) {
+    for chunk in &node.chunks {
+        if let Some(path) = chunk.carved_path.as_ref() {
+            out.push(path.clone());
+        }
+    }
+    for child in &node.children {
+        claimed_paths(child, out);
+    }
+}
+
+#[test]
+fn a_report_only_carve_claims_no_path_it_is_about_to_invalidate() {
+    let nested: Vec<u8> = build_nested_gz();
+    let report: CarveReport =
+        carve_recursive(&nested, "nested.tar.gz", CarveConfig::default(), None);
+    let mut claimed: Vec<std::path::PathBuf> = Vec::new();
+    claimed_paths(&report.root, &mut claimed);
+    assert!(
+        claimed.is_empty(),
+        "a carve with no destination owns the only copy and destroys it on return, \
+         so it must claim no on-disk path; claimed: {claimed:?}"
+    );
+    assert!(
+        find_innermost(&report.root),
+        "dropping the path claim must not cost the recursion"
+    );
+}
+
+#[test]
+fn every_path_a_destination_carve_claims_still_exists_afterwards() {
+    let nested: Vec<u8> = build_nested_gz();
+    let destination: tempfile::TempDir = tempfile::tempdir().expect("destination");
+    let report: CarveReport = carve_recursive(
+        &nested,
+        "nested.tar.gz",
+        CarveConfig::default(),
+        Some(destination.path()),
+    );
+    let mut claimed: Vec<std::path::PathBuf> = Vec::new();
+    claimed_paths(&report.root, &mut claimed);
+    assert!(
+        !claimed.is_empty(),
+        "a carve into a caller directory must record where it put the members"
+    );
+    for path in &claimed {
+        assert!(
+            path.exists(),
+            "the report hands back {} which does not exist, so the member was lost",
+            path.display()
+        );
+        assert!(
+            path.starts_with(destination.path()),
+            "a claimed path must live under the directory the caller chose, got {}",
+            path.display()
+        );
+    }
 }

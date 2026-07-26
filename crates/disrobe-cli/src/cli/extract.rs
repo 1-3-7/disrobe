@@ -219,7 +219,7 @@ fn run_recursive(
         &label,
         &format!("carving {} bytes (depth <= {max_depth})", bytes.len()),
     );
-    let report: CarveReport = carve_recursive(bytes, &label, config);
+    let report: CarveReport = carve_recursive(bytes, &label, config, Some(out_dir.as_path()));
     spinner.finish(&format!(
         "{} nodes, {} bytes carved",
         report.nodes_visited, report.bytes_carved
