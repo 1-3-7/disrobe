@@ -12,8 +12,14 @@ const MAX_DEPTH: usize = 256;
 const MAX_LONG_DIGITS: u32 = 1 << 24;
 const MAX_LEN: u32 = 1 << 28;
 const MAX_REFS: usize = 1 << 20;
-const MAX_INTERNED_STRINGS: usize = 1 << 16;
-const MAX_TRACE_ENTRIES: usize = 1 << 16;
+#[cfg(not(test))]
+const MAX_INTERNED_STRINGS: usize = 1 << 20;
+#[cfg(test)]
+const MAX_INTERNED_STRINGS: usize = 1 << 12;
+#[cfg(not(test))]
+const MAX_TRACE_ENTRIES: usize = 1 << 20;
+#[cfg(test)]
+const MAX_TRACE_ENTRIES: usize = 1 << 12;
 const MAX_DICT_ENTRIES: usize = 1 << 20;
 const MAX_COLLECTION_ITEMS: usize = 1 << 20;
 const MAX_OBJECT_PREALLOC: usize = 1024;
@@ -362,7 +368,7 @@ impl<'a> Reader<'a> {
         } else {
             None
         };
-        let entry_slot: Option<usize> = self.open_trace(ref_idx, start, depth, tag)?;
+        let entry_slot: Option<usize> = self.open_trace(ref_idx, start, depth, tag);
         let mut ref_preview_override: Option<u32> = None;
         let obj: Object = self.decode_tag(tag, depth, &mut ref_preview_override)?;
         if let Some(idx) = ref_idx {
@@ -379,14 +385,11 @@ impl<'a> Reader<'a> {
         start: usize,
         depth: usize,
         tag: u8,
-    ) -> Result<Option<usize>> {
-        let Some(dump): Option<&mut RefTableDump> = self.dump.as_mut() else {
-            return Ok(None);
-        };
+    ) -> Option<usize> {
+        let dump: &mut RefTableDump = self.dump.as_mut()?;
         if dump.entries.len() >= MAX_TRACE_ENTRIES {
-            return Err(Error::LengthOverflow(u32_saturating_from_usize(
-                MAX_TRACE_ENTRIES,
-            )));
+            dump.entries_omitted = dump.entries_omitted.saturating_add(1);
+            return None;
         }
         dump.entries.push(RefEntry {
             index: ref_idx.map_or(u32::MAX, |index: u32| index),
@@ -397,7 +400,7 @@ impl<'a> Reader<'a> {
             kind: RefKind::from_tag(tag),
             preview: String::new(),
         });
-        Ok(Some(dump.entries.len() - 1))
+        Some(dump.entries.len() - 1)
     }
 
     fn close_trace(
@@ -1022,15 +1025,19 @@ mod tests {
     }
 
     #[test]
-    fn ref_table_trace_rejects_more_entries_than_the_reference_limit() {
+    fn ref_table_trace_truncates_instead_of_failing_a_parse() {
         let mut data: Vec<u8> = Vec::with_capacity(MAX_TRACE_ENTRIES.saturating_add(5));
         data.push(b'(');
-        data.extend((MAX_TRACE_ENTRIES as u32).to_le_bytes());
+        data.extend(u32_saturating_from_usize(MAX_TRACE_ENTRIES).to_le_bytes());
         data.extend(core::iter::repeat_n(b'N', MAX_TRACE_ENTRIES));
 
-        let err: Error = load_with_reftable(&data, PyVersion::PY312).unwrap_err();
+        let (object, dump): (Object, RefTableDump) =
+            load_with_reftable(&data, PyVersion::PY312).expect("the trace bound is diagnostic");
 
-        assert!(matches!(err, Error::LengthOverflow(limit) if limit == MAX_TRACE_ENTRIES as u32));
+        assert!(matches!(object, Object::Tuple(_)));
+        assert_eq!(dump.entries.len(), MAX_TRACE_ENTRIES);
+        assert_eq!(dump.entries_omitted, 1);
+        assert_eq!(dump.total_bytes, data.len());
     }
 
     #[test]
