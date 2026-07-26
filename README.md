@@ -659,7 +659,7 @@ Bytecode-to-source is structurally faithful but never byte-identical: `.class`, 
 
 ## Documentation
 
-Full docs site: [`1-3-7.github.io/disrobe`](https://1-3-7.github.io/disrobe/), covering the architecture, the IR ladder, the chain runner, per-language guides, the Python-bindings reference, the complete CLI reference, and the safety posture. The book source is under [`docs/`](docs/). [Architecture decisions](https://1-3-7.github.io/disrobe/latest/decisions.html) records why a foundational choice was made, not just what it is. [Per-protector stances](https://1-3-7.github.io/disrobe/latest/legal.html#per-protector-stances-on-file) records the legal posture behind a grey-zone recognizer escalating to a full peel.
+Full docs site: [`1-3-7.github.io/disrobe`](https://1-3-7.github.io/disrobe/), covering the architecture, the IR ladder, the chain runner, per-language guides, the Python-bindings reference, the complete CLI reference, and the safety posture. The book source is under [`docs/`](docs/). [Per-protector stances](https://1-3-7.github.io/disrobe/latest/legal.html#per-protector-stances-on-file) records the legal posture behind a grey-zone recognizer escalating to a full peel.
 
 Integrations:
 
