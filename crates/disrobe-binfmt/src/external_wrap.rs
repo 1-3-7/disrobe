@@ -5,6 +5,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use disrobe_core::scratch::{ScratchDir, ScratchFile};
+
 use crate::container::ContainerKind;
 use crate::error::{Error, Result};
 use crate::extract::{EntryCompression, ExtractedEntry, ExtractionResult, QuotaSummary};
@@ -248,22 +250,24 @@ pub fn wrap_external_extract(
         tool: tool.binary_name(),
     })?;
     std::fs::create_dir_all(out_dir)?;
-    let staging: PathBuf = create_staging_dir(out_dir, bytes)?;
-    let tmp_input: PathBuf = stage_input_tempfile(bytes, tool)?;
+    let staging: ScratchDir = create_staging_dir(tool)?;
+    let tmp_input: ScratchFile = stage_input_tempfile(bytes, tool)?;
     let timeout: Duration = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
     let result: Result<()> = match tool {
-        ExternalTool::Unrar => invoke_unrar(&resolved, &tmp_input, &staging, timeout),
-        ExternalTool::SevenZip => invoke_sevenz(&resolved, &tmp_input, &staging, timeout),
-        ExternalTool::Pkgutil => invoke_pkgutil(&resolved, &tmp_input, &staging, timeout),
-        ExternalTool::Hdiutil => invoke_hdiutil(&resolved, &tmp_input, &staging, timeout),
-        ExternalTool::Bsdtar => invoke_bsdtar(&resolved, &tmp_input, &staging, timeout),
+        ExternalTool::Unrar => invoke_unrar(&resolved, tmp_input.path(), staging.path(), timeout),
+        ExternalTool::SevenZip => {
+            invoke_sevenz(&resolved, tmp_input.path(), staging.path(), timeout)
+        }
+        ExternalTool::Pkgutil => {
+            invoke_pkgutil(&resolved, tmp_input.path(), staging.path(), timeout)
+        }
+        ExternalTool::Hdiutil => {
+            invoke_hdiutil(&resolved, tmp_input.path(), staging.path(), timeout)
+        }
+        ExternalTool::Bsdtar => invoke_bsdtar(&resolved, tmp_input.path(), staging.path(), timeout),
     };
-    let input_cleanup: Result<()> = remove_file_if_exists(&tmp_input);
-    let contained: Result<()> = result.and_then(|()| contain_staging_into(&staging, out_dir));
-    let staging_cleanup: Result<()> = remove_dir_if_exists(&staging);
+    let contained: Result<()> = result.and_then(|()| contain_staging_into(staging.path(), out_dir));
     contained?;
-    input_cleanup?;
-    staging_cleanup?;
     let kind: ContainerKind = match tool {
         ExternalTool::Unrar => ContainerKind::Rar,
         ExternalTool::SevenZip => ContainerKind::Iso,
@@ -306,49 +310,24 @@ pub fn extract_via_tool(
     Err(Error::ExternalToolMissing { tool: kind_label })
 }
 
-fn stage_input_tempfile(bytes: &[u8], tool: ExternalTool) -> Result<PathBuf> {
-    let base: PathBuf = std::env::temp_dir();
-    let pid: u32 = std::process::id();
-    let nonce: u128 = nonce_from_bytes(bytes);
+fn stage_input_tempfile(bytes: &[u8], tool: ExternalTool) -> Result<ScratchFile> {
     let ext: &str = match tool {
         ExternalTool::Unrar => "rar",
         ExternalTool::SevenZip => "iso",
         ExternalTool::Pkgutil | ExternalTool::Bsdtar => "pkg",
         ExternalTool::Hdiutil => "dmg",
     };
-    let path: PathBuf = base.join(format!("disrobe-ext-{pid}-{nonce:032x}.{ext}"));
-    std::fs::write(&path, bytes)?;
-    Ok(path)
+    let purpose: String = format!("external-input-{}", tool.binary_name());
+    let (scratch, mut file): (ScratchFile, std::fs::File) = ScratchFile::create(&purpose, ext)?;
+    std::io::Write::write_all(&mut file, bytes)?;
+    drop(file);
+    Ok(scratch)
 }
 
-const fn nonce_from_bytes(bytes: &[u8]) -> u128 {
-    let mut acc: u128 = 0x517c_c1b7_2722_0a95_u128;
-    let len: usize = if bytes.len() < 16 { bytes.len() } else { 16 };
-    let mut i: usize = 0;
-    while i < len {
-        acc = acc
-            .wrapping_mul(0x0100_0000_01b3)
-            .wrapping_add(bytes[i] as u128);
-        i += 1;
-    }
-    acc ^ (bytes.len() as u128).wrapping_mul(0x9e37_79b9_7f4a_7c15_u128)
+fn create_staging_dir(tool: ExternalTool) -> Result<ScratchDir> {
+    let purpose: String = format!("external-stage-{}", tool.binary_name());
+    Ok(ScratchDir::create(&purpose)?)
 }
-
-fn create_staging_dir(out_dir: &Path, bytes: &[u8]) -> Result<PathBuf> {
-    let parent: &Path = out_dir.parent().map_or(out_dir, |value: &Path| value);
-    let pid: u32 = std::process::id();
-    let nonce: u128 = nonce_from_bytes(bytes);
-    let counter: u64 = STAGING_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let name: String = format!(".disrobe-stage-{pid}-{nonce:032x}-{counter}");
-    let staging: PathBuf = parent.join(name);
-    if staging.exists() {
-        std::fs::remove_dir_all(&staging)?;
-    }
-    std::fs::create_dir_all(&staging)?;
-    Ok(staging)
-}
-
-static STAGING_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn contain_staging_into(staging: &Path, out_dir: &Path) -> Result<()> {
     let staging_root: PathBuf = std::fs::canonicalize(staging).map_err(Error::Io)?;
@@ -579,19 +558,16 @@ fn walk_collect(
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::io::Write as _;
+
+    use disrobe_core::scratch::scratch_root;
 
     use super::*;
 
-    fn temp_dir(suffix: &str) -> PathBuf {
-        let base: PathBuf = std::env::temp_dir();
-        let pid: u32 = std::process::id();
-        let dir: PathBuf = base.join(format!("disrobe-extwrap-{pid}-{suffix}"));
-        if dir.exists() {
-            let _ = std::fs::remove_dir_all(&dir);
-        }
-        std::fs::create_dir_all(&dir).expect("mkdir tmp");
-        dir
+    fn temp_dir(suffix: &str) -> ScratchDir {
+        let purpose: String = format!("binfmt-external-wrap-{suffix}");
+        ScratchDir::create(&purpose).expect("create scratch dir")
     }
 
     fn mock_bin_path() -> PathBuf {
@@ -694,26 +670,80 @@ mod tests {
         set_overrides(o);
     }
 
+    fn paths_with_prefix(root: &Path, prefix: &str) -> BTreeSet<PathBuf> {
+        let entries: std::fs::ReadDir = match std::fs::read_dir(root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return BTreeSet::new();
+            }
+            Err(error) => panic!("read scratch root {}: {error}", root.display()),
+        };
+        let mut paths: BTreeSet<PathBuf> = BTreeSet::new();
+        for entry in entries {
+            let entry: std::fs::DirEntry = entry.expect("read scratch entry");
+            let name: std::ffi::OsString = entry.file_name();
+            let Some(name): Option<&str> = name.to_str() else {
+                continue;
+            };
+            if name.starts_with(prefix) {
+                paths.insert(entry.path());
+            }
+        }
+        paths
+    }
+
+    #[test]
+    fn failed_external_tool_uses_scratch_and_leaves_no_run_files() {
+        let _g: std::sync::MutexGuard<'_, ()> = super::lock_overrides();
+        let bin_dir: ScratchDir = temp_dir("failing-tool-bin");
+        let script: PathBuf = write_wrapper(bin_dir.path(), "failing_unrar", "unrar-fail");
+        install_path_override(ExternalTool::Unrar, &script);
+        let out: ScratchDir = temp_dir("failing-tool-out");
+        let bytes: &[u8] = b"Rar!\x1a\x07\x00failure";
+        let stage_prefix: &str = "external-stage-unrar-";
+        let scratch_input_prefix: &str = "external-input-unrar-";
+        let scratch_before_stage: BTreeSet<PathBuf> =
+            paths_with_prefix(&scratch_root(), stage_prefix);
+        let scratch_before_input: BTreeSet<PathBuf> =
+            paths_with_prefix(&scratch_root(), scratch_input_prefix);
+        let result: Result<ExtractionResult> =
+            wrap_external_extract(ExternalTool::Unrar, bytes, out.path());
+        clear_overrides();
+        let failed_as_expected: bool = matches!(
+            result,
+            Err(Error::ExternalToolFailed {
+                tool: "unrar",
+                exit: 2,
+                ..
+            })
+        );
+        let scratch_after_stage: BTreeSet<PathBuf> =
+            paths_with_prefix(&scratch_root(), stage_prefix);
+        let scratch_after_input: BTreeSet<PathBuf> =
+            paths_with_prefix(&scratch_root(), scratch_input_prefix);
+        assert!(failed_as_expected, "expected the external tool to fail");
+        assert_eq!(scratch_after_stage, scratch_before_stage);
+        assert_eq!(scratch_after_input, scratch_before_input);
+    }
+
     #[test]
     fn cleanup_file_helper_removes_existing_file_and_accepts_missing_file() {
-        let dir: PathBuf = temp_dir("cleanup-file");
-        let path: PathBuf = dir.join("temp.bin");
+        let dir: ScratchDir = temp_dir("cleanup-file");
+        let path: PathBuf = dir.path().join("temp.bin");
         remove_file_if_exists(&path).expect("missing file ok");
         std::fs::write(&path, b"x").expect("write file");
         remove_file_if_exists(&path).expect("remove file");
         assert!(!path.exists());
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn cleanup_dir_helper_removes_existing_dir_and_accepts_missing_dir() {
-        let dir: PathBuf = temp_dir("cleanup-dir");
-        let nested: PathBuf = dir.join("nested");
+        let dir: ScratchDir = temp_dir("cleanup-dir");
+        let nested: PathBuf = dir.path().join("nested");
         std::fs::create_dir_all(&nested).expect("make nested dir");
         remove_dir_if_exists(&nested).expect("remove nested dir");
         assert!(!nested.exists());
         remove_dir_if_exists(&nested).expect("missing dir ok");
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -737,9 +767,9 @@ mod tests {
             disable_all: true,
             paths: BTreeMap::new(),
         });
-        let out: PathBuf = temp_dir("rar-missing");
+        let out: ScratchDir = temp_dir("rar-missing");
         let bytes: &[u8] = b"Rar!\x1a\x07\x00garbage";
-        let r: Result<ExtractionResult> = extract_via_tool(ContainerKind::Rar, bytes, &out);
+        let r: Result<ExtractionResult> = extract_via_tool(ContainerKind::Rar, bytes, out.path());
         clear_overrides();
         match r {
             Err(Error::ExternalToolMissing { tool }) => assert_eq!(tool, "rar"),
@@ -751,13 +781,13 @@ mod tests {
     #[test]
     fn synthetic_rar_through_unrar_mock() {
         let _g: std::sync::MutexGuard<'_, ()> = super::lock_overrides();
-        let bin_dir: PathBuf = temp_dir("rar-mock-bin");
-        let script: PathBuf = write_mock_unrar(&bin_dir);
+        let bin_dir: ScratchDir = temp_dir("rar-mock-bin");
+        let script: PathBuf = write_mock_unrar(bin_dir.path());
         install_path_override(ExternalTool::Unrar, &script);
-        let out: PathBuf = temp_dir("rar-mock-out");
+        let out: ScratchDir = temp_dir("rar-mock-out");
         let bytes: &[u8] = b"Rar!\x1a\x07\x00fakecontent";
         let res: ExtractionResult =
-            wrap_external_extract(ExternalTool::Unrar, bytes, &out).expect("wrap unrar");
+            wrap_external_extract(ExternalTool::Unrar, bytes, out.path()).expect("wrap unrar");
         clear_overrides();
         assert_eq!(res.kind, ContainerKind::Rar);
         assert!(
@@ -770,13 +800,13 @@ mod tests {
     #[test]
     fn synthetic_iso_through_sevenz_mock() {
         let _g: std::sync::MutexGuard<'_, ()> = super::lock_overrides();
-        let bin_dir: PathBuf = temp_dir("iso-mock-bin");
-        let script: PathBuf = write_mock_sevenz(&bin_dir);
+        let bin_dir: ScratchDir = temp_dir("iso-mock-bin");
+        let script: PathBuf = write_mock_sevenz(bin_dir.path());
         install_path_override(ExternalTool::SevenZip, &script);
-        let out: PathBuf = temp_dir("iso-mock-out");
+        let out: ScratchDir = temp_dir("iso-mock-out");
         let bytes: &[u8] = b"CD001fakeiso";
         let res: ExtractionResult =
-            wrap_external_extract(ExternalTool::SevenZip, bytes, &out).expect("wrap 7z");
+            wrap_external_extract(ExternalTool::SevenZip, bytes, out.path()).expect("wrap 7z");
         clear_overrides();
         assert_eq!(res.kind, ContainerKind::Iso);
         assert!(
@@ -789,14 +819,15 @@ mod tests {
     #[test]
     fn external_extract_writes_into_out_dir() {
         let _g: std::sync::MutexGuard<'_, ()> = super::lock_overrides();
-        let bin_dir: PathBuf = temp_dir("write-mock-bin");
-        let script: PathBuf = write_mock_unrar(&bin_dir);
+        let bin_dir: ScratchDir = temp_dir("write-mock-bin");
+        let script: PathBuf = write_mock_unrar(bin_dir.path());
         install_path_override(ExternalTool::Unrar, &script);
-        let out: PathBuf = temp_dir("write-mock-out");
+        let out: ScratchDir = temp_dir("write-mock-out");
         let bytes: &[u8] = b"Rar!\x1a\x07\x00abc";
-        let _ = wrap_external_extract(ExternalTool::Unrar, bytes, &out).expect("wrap");
+        let _: ExtractionResult =
+            wrap_external_extract(ExternalTool::Unrar, bytes, out.path()).expect("wrap");
         clear_overrides();
-        let listing: Vec<PathBuf> = std::fs::read_dir(&out)
+        let listing: Vec<PathBuf> = std::fs::read_dir(out.path())
             .expect("readdir")
             .filter_map(|e: std::io::Result<std::fs::DirEntry>| {
                 e.ok().map(|d: std::fs::DirEntry| d.path())
@@ -819,37 +850,39 @@ mod tests {
 
     #[test]
     fn containment_accepts_normal_entries() {
-        let staging: PathBuf = temp_dir("contain-ok-stage");
-        let out: PathBuf = temp_dir("contain-ok-out");
-        std::fs::create_dir_all(staging.join("sub")).expect("mkdir sub");
-        std::fs::write(staging.join("top.txt"), b"top").expect("write top");
-        std::fs::write(staging.join("sub").join("nested.txt"), b"nested").expect("write nested");
-        contain_staging_into(&staging, &out).expect("containment must accept normal entries");
-        assert!(out.join("top.txt").is_file());
-        assert!(out.join("sub").join("nested.txt").is_file());
+        let staging: ScratchDir = temp_dir("contain-ok-stage");
+        let out: ScratchDir = temp_dir("contain-ok-out");
+        std::fs::create_dir_all(staging.path().join("sub")).expect("mkdir sub");
+        std::fs::write(staging.path().join("top.txt"), b"top").expect("write top");
+        std::fs::write(staging.path().join("sub").join("nested.txt"), b"nested")
+            .expect("write nested");
+        contain_staging_into(staging.path(), out.path())
+            .expect("containment must accept normal entries");
+        assert!(out.path().join("top.txt").is_file());
+        assert!(out.path().join("sub").join("nested.txt").is_file());
     }
 
     #[test]
     fn containment_rejects_symlink_escape() {
-        let staging: PathBuf = temp_dir("contain-escape-stage");
-        let out: PathBuf = temp_dir("contain-escape-out");
-        let outside: PathBuf = temp_dir("contain-escape-outside");
-        let secret: PathBuf = outside.join("secret.txt");
+        let staging: ScratchDir = temp_dir("contain-escape-stage");
+        let out: ScratchDir = temp_dir("contain-escape-out");
+        let outside: ScratchDir = temp_dir("contain-escape-outside");
+        let secret: PathBuf = outside.path().join("secret.txt");
         std::fs::write(&secret, b"top-secret").expect("write secret");
-        std::fs::write(staging.join("benign.txt"), b"benign").expect("write benign");
-        let link: PathBuf = staging.join("escape");
+        std::fs::write(staging.path().join("benign.txt"), b"benign").expect("write benign");
+        let link: PathBuf = staging.path().join("escape");
         let made: bool = make_symlink(&secret, &link);
         if !made {
             return;
         }
-        let r: Result<()> = contain_staging_into(&staging, &out);
+        let r: Result<()> = contain_staging_into(staging.path(), out.path());
         match r {
             Err(Error::UnsafeEntryPath(_)) => {}
             Err(other) => panic!("expected UnsafeEntryPath, got {other:?}"),
             Ok(()) => panic!("symlink escape was not rejected"),
         }
         assert!(
-            !out.join("escape").exists(),
+            !out.path().join("escape").exists(),
             "escaping symlink must not surface into out_dir"
         );
         assert!(secret.is_file(), "containment must not follow link out");

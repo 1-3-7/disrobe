@@ -18,6 +18,7 @@ fn main() -> ExitCode {
     let mode: &str = args[0].as_str();
     match mode {
         "unrar" => mock_unrar(&args[1..]),
+        "unrar-fail" => mock_unrar_fail(&args[1..]),
         "sevenz" => mock_sevenz(&args[1..]),
         "sleep" => mock_sleep(&args[1..]),
         other => {
@@ -35,6 +36,25 @@ fn mock_unrar(rest: &[String]) -> ExitCode {
     };
     let dest: PathBuf = PathBuf::from(last);
     write_marker(&dest, "mock.txt", b"extracted\n", "mock_unrar")
+}
+
+#[allow(clippy::print_stderr)]
+fn mock_unrar_fail(rest: &[String]) -> ExitCode {
+    let Some(archive): Option<&String> = rest.get(3) else {
+        eprintln!("mock_unrar_fail: missing archive");
+        return ExitCode::from(2);
+    };
+    let archive_path: &Path = Path::new(archive);
+    let parent_is_scratch: bool = archive_path
+        .parent()
+        .and_then(Path::file_name)
+        .is_some_and(|name: &std::ffi::OsStr| name == "disrobe-scratch");
+    if parent_is_scratch {
+        ExitCode::from(2)
+    } else {
+        eprintln!("mock_unrar_fail: archive was not staged under disrobe-scratch");
+        ExitCode::from(3)
+    }
 }
 
 #[allow(clippy::print_stderr)]
