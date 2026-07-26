@@ -324,6 +324,109 @@ float fs_rsqrt_f(float x) { return 1.0f / __builtin_sqrtf(x); }
 double fs_sqrt_sum_d(double a, double b) { return __builtin_sqrt(a) + __builtin_sqrt(b); }
 float fs_sqrt_scaled_f(float x, float k) { return k * __builtin_sqrtf(x); }
 double fs_sqrt_diff_d(double a, double b) { return __builtin_sqrt(a) - b; }
+float fb_ge_f(float a, float b, float x, float y) {
+    volatile float r = y;
+    if (a >= b) r = x;
+    return r;
+}
+double fb_ge_d(double a, double b, double x, double y) {
+    volatile double r = y;
+    if (a >= b) r = x;
+    return r;
+}
+float fb_le_f(float a, float b, float x, float y) {
+    volatile float r = y;
+    if (a <= b) r = x;
+    return r;
+}
+double fb_le_d(double a, double b, double x, double y) {
+    volatile double r = y;
+    if (a <= b) r = x;
+    return r;
+}
+float fb_ne_f(float a, float b, float x, float y) {
+    volatile float r = y;
+    if (a != b) r = x;
+    return r;
+}
+double fb_ne_d(double a, double b, double x, double y) {
+    volatile double r = y;
+    if (a != b) r = x;
+    return r;
+}
+float fb_nlt_f(float a, float b, float x, float y) {
+    volatile float r = y;
+    if (!(a < b)) r = x;
+    return r;
+}
+double fb_nlt_d(double a, double b, double x, double y) {
+    volatile double r = y;
+    if (!(a < b)) r = x;
+    return r;
+}
+float fb_nle_f(float a, float b, float x, float y) {
+    volatile float r = y;
+    if (!(a <= b)) r = x;
+    return r;
+}
+double fb_nle_d(double a, double b, double x, double y) {
+    volatile double r = y;
+    if (!(a <= b)) r = x;
+    return r;
+}
+float fb_ngt_f(float a, float b, float x, float y) {
+    volatile float r = y;
+    if (!(a > b)) r = x;
+    return r;
+}
+double fb_ngt_d(double a, double b, double x, double y) {
+    volatile double r = y;
+    if (!(a > b)) r = x;
+    return r;
+}
+float fb_nge_f(float a, float b, float x, float y) {
+    volatile float r = y;
+    if (!(a >= b)) r = x;
+    return r;
+}
+double fb_nge_d(double a, double b, double x, double y) {
+    volatile double r = y;
+    if (!(a >= b)) r = x;
+    return r;
+}
+float fb_ord_f(float a, float b, float x, float y) {
+    volatile float r = y;
+    if (!__builtin_isunordered(a, b)) r = x;
+    return r;
+}
+double fb_ord_d(double a, double b, double x, double y) {
+    volatile double r = y;
+    if (!__builtin_isunordered(a, b)) r = x;
+    return r;
+}
+float fc_selor_f(float a, float b, float c, float d, float x, float y) {
+    return (a < b || c < d) ? x : y;
+}
+double fc_selor_d(double a, double b, double c, double d, double x, double y) {
+    return (a < b || c < d) ? x : y;
+}
+double fc_seland_d(double a, double b, double c, double d, double x, double y) {
+    return (a < b && c < d) ? x : y;
+}
+float fc_selor3_f(float a, float b, float c, float d, float e, float f, float x, float y) {
+    return (a < b || c < d || e < f) ? x : y;
+}
+float fc_seland3_f(float a, float b, float c, float d, float e, float f, float x, float y) {
+    return (a < b && c < d && e < f) ? x : y;
+}
+float fc_seland3_mix_f(float a, float b, float c, float d, float e, float f, float x, float y) {
+    return (a < b && c > d && e == f) ? x : y;
+}
+float fb_and3_f(float a, float b, float c, float d, float e, float f, float x, float y) {
+    volatile float r = y;
+    if (a < b && c < d && e < f) r = x;
+    return r;
+}
 unsigned rev16_w(unsigned x) { return ((x & 0xff00ff00u) >> 8) | ((x & 0x00ff00ffu) << 8); }
 u64 rev16_x(u64 x) { return ((x & 0xff00ff00ff00ff00ull) >> 8) | ((x & 0x00ff00ff00ff00ffull) << 8); }
 u64 rev32_x(u64 x) { return ((u64)__builtin_bswap32((unsigned)(x >> 32)) << 32) | (u64)__builtin_bswap32((unsigned)x); }
@@ -529,6 +632,29 @@ extern float fs_rsqrt_f(float x);
 extern double fs_sqrt_sum_d(double a, double b);
 extern float fs_sqrt_scaled_f(float x, float k);
 extern double fs_sqrt_diff_d(double a, double b);
+extern float fb_ge_f(float a, float b, float x, float y);
+extern float fb_le_f(float a, float b, float x, float y);
+extern float fb_ne_f(float a, float b, float x, float y);
+extern float fb_nlt_f(float a, float b, float x, float y);
+extern float fb_nle_f(float a, float b, float x, float y);
+extern float fb_ngt_f(float a, float b, float x, float y);
+extern float fb_nge_f(float a, float b, float x, float y);
+extern float fb_ord_f(float a, float b, float x, float y);
+extern double fb_ge_d(double a, double b, double x, double y);
+extern double fb_le_d(double a, double b, double x, double y);
+extern double fb_ne_d(double a, double b, double x, double y);
+extern double fb_nlt_d(double a, double b, double x, double y);
+extern double fb_nle_d(double a, double b, double x, double y);
+extern double fb_ngt_d(double a, double b, double x, double y);
+extern double fb_nge_d(double a, double b, double x, double y);
+extern double fb_ord_d(double a, double b, double x, double y);
+extern float fc_selor_f(float a, float b, float c, float d, float x, float y);
+extern double fc_selor_d(double a, double b, double c, double d, double x, double y);
+extern double fc_seland_d(double a, double b, double c, double d, double x, double y);
+extern float fc_selor3_f(float a, float b, float c, float d, float e, float f, float x, float y);
+extern float fc_seland3_f(float a, float b, float c, float d, float e, float f, float x, float y);
+extern float fc_seland3_mix_f(float a, float b, float c, float d, float e, float f, float x, float y);
+extern float fb_and3_f(float a, float b, float c, float d, float e, float f, float x, float y);
 extern unsigned rev16_w(unsigned x);
 extern unsigned long long rev16_x(unsigned long long x);
 extern unsigned long long rev32_x(unsigned long long x);
@@ -718,7 +844,8 @@ fn fp_expectation(name: &str) -> Option<FpExpectation> {
             returns: None,
             return_width_bits: 32,
         },
-        "fc_sel_f" => FpExpectation {
+        "fc_sel_f" | "fb_ge_f" | "fb_le_f" | "fb_ne_f" | "fb_nlt_f" | "fb_nle_f" | "fb_ngt_f"
+        | "fb_nge_f" | "fb_ord_f" => FpExpectation {
             params: &[
                 ScalarType::Float,
                 ScalarType::Float,
@@ -728,7 +855,8 @@ fn fp_expectation(name: &str) -> Option<FpExpectation> {
             returns: Some(ScalarType::Float),
             return_width_bits: 32,
         },
-        "fc_sel_d" => FpExpectation {
+        "fc_sel_d" | "fb_ge_d" | "fb_le_d" | "fb_ne_d" | "fb_nlt_d" | "fb_nle_d" | "fb_ngt_d"
+        | "fb_nge_d" | "fb_ord_d" => FpExpectation {
             params: &[
                 ScalarType::Double,
                 ScalarType::Double,
@@ -738,8 +866,34 @@ fn fp_expectation(name: &str) -> Option<FpExpectation> {
             returns: Some(ScalarType::Double),
             return_width_bits: 64,
         },
-        "fc_seland_f" => FpExpectation {
+        "fc_seland_f" | "fc_selor_f" => FpExpectation {
             params: &[
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+            ],
+            returns: Some(ScalarType::Float),
+            return_width_bits: 32,
+        },
+        "fc_selor_d" | "fc_seland_d" => FpExpectation {
+            params: &[
+                ScalarType::Double,
+                ScalarType::Double,
+                ScalarType::Double,
+                ScalarType::Double,
+                ScalarType::Double,
+                ScalarType::Double,
+            ],
+            returns: Some(ScalarType::Double),
+            return_width_bits: 64,
+        },
+        "fc_selor3_f" | "fc_seland3_f" | "fc_seland3_mix_f" | "fb_and3_f" => FpExpectation {
+            params: &[
+                ScalarType::Float,
+                ScalarType::Float,
                 ScalarType::Float,
                 ScalarType::Float,
                 ScalarType::Float,
@@ -981,6 +1135,37 @@ const INCREMENT_SIXTEEN_EXPECTED_CASES: usize = 40;
 
 fn is_increment_sixteen_fp(name: &str) -> bool {
     INCREMENT_SIXTEEN_FP_FUNCTIONS.contains(&name)
+}
+
+const INCREMENT_SEVENTEEN_FP_FUNCTIONS: &[&str] = &[
+    "fb_ge_f",
+    "fb_ge_d",
+    "fb_le_f",
+    "fb_le_d",
+    "fb_ne_f",
+    "fb_ne_d",
+    "fb_nlt_f",
+    "fb_nlt_d",
+    "fb_nle_f",
+    "fb_nle_d",
+    "fb_ngt_f",
+    "fb_ngt_d",
+    "fb_nge_f",
+    "fb_nge_d",
+    "fb_ord_f",
+    "fb_ord_d",
+    "fc_selor_f",
+    "fc_selor_d",
+    "fc_seland_d",
+    "fc_selor3_f",
+    "fc_seland3_f",
+    "fc_seland3_mix_f",
+    "fb_and3_f",
+];
+const INCREMENT_SEVENTEEN_EXPECTED_CASES: usize = 115;
+
+fn is_increment_seventeen_fp(name: &str) -> bool {
+    INCREMENT_SEVENTEEN_FP_FUNCTIONS.contains(&name)
 }
 
 fn expected_arity(name: &str) -> Option<usize> {
@@ -1540,6 +1725,48 @@ const FP_SEL6_F_TMPL: &str = "    {\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
 
+const FP_SEL6_D_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       int np = (int)(sizeof(fp64_pairs) / sizeof(fp64_pairs[0]));\n\
+     \x20       for (int t = 0; t < np; t++) {\n\
+     \x20           double a = fp_d_from_bits(fp64_pairs[t][0]); double b = fp_d_from_bits(fp64_pairs[t][1]);\n\
+     \x20           double c = fp_d_from_bits(fp64_pairs[(t + 3) % np][0]); double d = fp_d_from_bits(fp64_pairs[(t + 3) % np][1]);\n\
+     \x20           double x = fp_d_from_bits(0x0000000000000000ULL); double y = fp_d_from_bits(0x8000000000000000ULL);\n\
+     \x20           uint64_t w = fp_d_to_bits($NAME(a, b, c, d, x, y)); uint64_t g = fp_d_to_bits($REC(a, b, c, d, x, y));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME pair=%d w=%llx g=%llx\\n\", t, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       for (int it = 0; ok && it < ITER; it++) {\n\
+     \x20           double a = fp_d_from_bits(fp64_input(&s, it, 0)); double b = fp_d_from_bits(fp64_input(&s, it, 5));\n\
+     \x20           double c = fp_d_from_bits(fp64_input(&s, it, 9)); double d = fp_d_from_bits(fp64_input(&s, it, 2));\n\
+     \x20           double x = fp_d_from_bits(fp64_input(&s, it, 7)); double y = fp_d_from_bits(fp64_input(&s, it, 11));\n\
+     \x20           uint64_t w = fp_d_to_bits($NAME(a, b, c, d, x, y)); uint64_t g = fp_d_to_bits($REC(a, b, c, d, x, y));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+const FP_SEL8_F_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       int np = (int)(sizeof(fp32_pairs) / sizeof(fp32_pairs[0]));\n\
+     \x20       for (int t = 0; t < np; t++) {\n\
+     \x20           float a = fp_f_from_bits(fp32_pairs[t][0]); float b = fp_f_from_bits(fp32_pairs[t][1]);\n\
+     \x20           float c = fp_f_from_bits(fp32_pairs[(t + 3) % np][0]); float d = fp_f_from_bits(fp32_pairs[(t + 3) % np][1]);\n\
+     \x20           float e = fp_f_from_bits(fp32_pairs[(t + 5) % np][0]); float f = fp_f_from_bits(fp32_pairs[(t + 5) % np][1]);\n\
+     \x20           float x = fp_f_from_bits(0x00000000U); float y = fp_f_from_bits(0x80000000U);\n\
+     \x20           uint32_t w = fp_f_to_bits($NAME(a, b, c, d, e, f, x, y)); uint32_t g = fp_f_to_bits($REC(a, b, c, d, e, f, x, y));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME pair=%d w=%08x g=%08x\\n\", t, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       for (int it = 0; ok && it < ITER; it++) {\n\
+     \x20           float a = fp_f_from_bits(fp32_input(&s, it, 0)); float b = fp_f_from_bits(fp32_input(&s, it, 5));\n\
+     \x20           float c = fp_f_from_bits(fp32_input(&s, it, 9)); float d = fp_f_from_bits(fp32_input(&s, it, 2));\n\
+     \x20           float e = fp_f_from_bits(fp32_input(&s, it, 7)); float f = fp_f_from_bits(fp32_input(&s, it, 11));\n\
+     \x20           float x = fp_f_from_bits(fp32_input(&s, it, 13)); float y = fp_f_from_bits(fp32_input(&s, it, 3));\n\
+     \x20           uint32_t w = fp_f_to_bits($NAME(a, b, c, d, e, f, x, y)); uint32_t g = fp_f_to_bits($REC(a, b, c, d, e, f, x, y));\n\
+     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
 const FP_TO_I32_F_TMPL: &str = "    {\n\
      \x20       uint64_t s = $SEED; int ok = 1;\n\
      \x20       for (int it = 0; it < ITER; it++) {\n\
@@ -1790,15 +2017,21 @@ fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Option<String> 
         }
         "fc_isnan_f" => fill_template(FP_PRED1_F_TMPL, opt, name, rec, seed),
         "fc_isnan_d" => fill_template(FP_PRED1_D_TMPL, opt, name, rec, seed),
-        "fc_sel_f" => fill_template(FP_SEL4_F_TMPL, opt, name, rec, seed),
-        "fc_sel_d" => fill_template(FP_SEL4_D_TMPL, opt, name, rec, seed),
+        "fc_sel_f" | "fb_ge_f" | "fb_le_f" | "fb_ne_f" | "fb_nlt_f" | "fb_nle_f" | "fb_ngt_f"
+        | "fb_nge_f" | "fb_ord_f" => fill_template(FP_SEL4_F_TMPL, opt, name, rec, seed),
+        "fc_sel_d" | "fb_ge_d" | "fb_le_d" | "fb_ne_d" | "fb_nlt_d" | "fb_nle_d" | "fb_ngt_d"
+        | "fb_nge_d" | "fb_ord_d" => fill_template(FP_SEL4_D_TMPL, opt, name, rec, seed),
+        "fc_selor_d" | "fc_seland_d" => fill_template(FP_SEL6_D_TMPL, opt, name, rec, seed),
+        "fc_selor3_f" | "fc_seland3_f" | "fc_seland3_mix_f" | "fb_and3_f" => {
+            fill_template(FP_SEL8_F_TMPL, opt, name, rec, seed)
+        }
         "fc_tmin_f" | "fc_tmax_f" | "fc_pickeq_f" => {
             fill_template(FP_SEL2_F_TMPL, opt, name, rec, seed)
         }
         "fc_tmin_d" | "fc_tmax_d" | "fc_pickeq_d" => {
             fill_template(FP_SEL2_D_TMPL, opt, name, rec, seed)
         }
-        "fc_seland_f" => fill_template(FP_SEL6_F_TMPL, opt, name, rec, seed),
+        "fc_seland_f" | "fc_selor_f" => fill_template(FP_SEL6_F_TMPL, opt, name, rec, seed),
         "fp_to_int_s" | "fp_to_uint_s" | "fcvt_floor_s" | "fcvt_ceil_s" | "fcvt_away_s"
         | "fcvt_floor_us" | "fcvt_ceil_us" | "fcvt_away_us" => {
             fill_template(FP_TO_I32_F_TMPL, opt, name, rec, seed)
@@ -2529,6 +2762,24 @@ fn corpus_grade_report() {
             );
         }
     }
+    let increment_seventeen_corpus_cases: usize = CASES
+        .iter()
+        .filter(|(_, name, _): &&(&str, &str, &[u8])| is_increment_seventeen_fp(name))
+        .count();
+    assert_eq!(
+        increment_seventeen_corpus_cases, INCREMENT_SEVENTEEN_EXPECTED_CASES,
+        "the generated corpus must contain exactly five rows per increment-17 function"
+    );
+    for required_name in INCREMENT_SEVENTEEN_FP_FUNCTIONS {
+        for required_opt in CORPUS_OPTIMIZATION_LEVELS {
+            assert!(
+                CASES.iter().any(|(opt, name, _): &(&str, &str, &[u8])| {
+                    opt == required_opt && name == required_name
+                }),
+                "required increment-17 case `{required_opt} {required_name}` is absent from the generated corpus"
+            );
+        }
+    }
 
     let dir: tempfile::TempDir = tempfile::tempdir().expect("scratch dir");
     let battery_c: PathBuf = dir.path().join("gt_battery.c");
@@ -2584,6 +2835,8 @@ fn corpus_grade_report() {
     let mut increment_fifteen_driven: usize = 0;
     let mut increment_sixteen_recovered: usize = 0;
     let mut increment_sixteen_driven: usize = 0;
+    let mut increment_seventeen_recovered: usize = 0;
+    let mut increment_seventeen_driven: usize = 0;
     let mut skips: Vec<(String, String, String)> = Vec::new();
     let mut decls: String = String::new();
     let mut blocks: String = String::new();
@@ -2605,6 +2858,7 @@ fn corpus_grade_report() {
         let required_increment_fourteen: bool = is_increment_fourteen_fp(name);
         let required_increment_fifteen: bool = is_increment_fifteen_fp(name);
         let required_increment_sixteen: bool = is_increment_sixteen_fp(name);
+        let required_increment_seventeen: bool = is_increment_seventeen_fp(name);
         let recovery: LeafRecovery = match recover_aarch64_function(bytes, 0) {
             Ok(value) => value,
             Err(error) => {
@@ -2663,6 +2917,9 @@ fn corpus_grade_report() {
         }
         if required_increment_sixteen {
             increment_sixteen_recovered += 1;
+        }
+        if required_increment_seventeen {
+            increment_seventeen_recovered += 1;
         }
 
         let expected_fp: Option<FpExpectation> = fp_expectation(name);
@@ -2788,6 +3045,9 @@ fn corpus_grade_report() {
         if required_increment_sixteen {
             increment_sixteen_driven += 1;
         }
+        if required_increment_seventeen {
+            increment_seventeen_driven += 1;
+        }
     }
 
     assert!(
@@ -2896,6 +3156,7 @@ fn corpus_grade_report() {
         .and_then(|value: usize| value.checked_sub(increment_fourteen_recovered))
         .and_then(|value: usize| value.checked_sub(increment_fifteen_recovered))
         .and_then(|value: usize| value.checked_sub(increment_sixteen_recovered))
+        .and_then(|value: usize| value.checked_sub(increment_seventeen_recovered))
         .expect("later-increment fp recovery counts cannot exceed the fp total");
     let increment_one_fp_driven: usize = fp_driven
         .checked_sub(increment_two_driven)
@@ -2913,6 +3174,7 @@ fn corpus_grade_report() {
         .and_then(|value: usize| value.checked_sub(increment_fourteen_driven))
         .and_then(|value: usize| value.checked_sub(increment_fifteen_driven))
         .and_then(|value: usize| value.checked_sub(increment_sixteen_driven))
+        .and_then(|value: usize| value.checked_sub(increment_seventeen_driven))
         .expect("later-increment fp driven counts cannot exceed the fp total");
     let integer_recovered: usize = recovered
         .checked_sub(fp_recovered)
@@ -2979,6 +3241,12 @@ fn corpus_grade_report() {
     );
     eprintln!(
         "increment-16 graded    {increment_sixteen_driven}/{INCREMENT_SIXTEEN_EXPECTED_CASES}"
+    );
+    eprintln!(
+        "increment-17 recovered {increment_seventeen_recovered}/{INCREMENT_SEVENTEEN_EXPECTED_CASES}"
+    );
+    eprintln!(
+        "increment-17 graded    {increment_seventeen_driven}/{INCREMENT_SEVENTEEN_EXPECTED_CASES}"
     );
     eprintln!(
         "graded-equivalent    {graded_equivalent}   (recompiled + behaviorally matched on directed and random inputs)"
@@ -3153,6 +3421,14 @@ fn corpus_grade_report() {
     assert_eq!(
         increment_sixteen_recovered, INCREMENT_SIXTEEN_EXPECTED_CASES,
         "every increment-16 corpus case must recover"
+    );
+    assert_eq!(
+        increment_seventeen_recovered, INCREMENT_SEVENTEEN_EXPECTED_CASES,
+        "every increment-17 corpus case must recover"
+    );
+    assert_eq!(
+        increment_seventeen_driven, INCREMENT_SEVENTEEN_EXPECTED_CASES,
+        "every increment-17 corpus case must be graded"
     );
     assert_eq!(
         increment_sixteen_driven, INCREMENT_SIXTEEN_EXPECTED_CASES,

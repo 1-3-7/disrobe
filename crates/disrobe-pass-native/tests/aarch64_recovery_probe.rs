@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 const CASES: &[(&str, &str, &[u8])] = &include!("aarch64_recovery_corpus.inc");
 
-const RECOVERY_FLOOR: usize = 1000;
+const RECOVERY_FLOOR: usize = 1115;
 
 type ConversionCase = (
     u32,
