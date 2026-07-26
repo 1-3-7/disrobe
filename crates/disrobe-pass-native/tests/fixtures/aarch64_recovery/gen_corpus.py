@@ -64,11 +64,75 @@ FIXED_POINT_FUSED_LEVELS: frozenset[str] = frozenset({"O1", "O2", "O3", "Os"})
 FIXED_POINT_TAIL_RE: re.Pattern[str] = re.compile(
     r"^\s*[a-z][0-9]+,\s*[a-z][0-9]+,\s*#(?:0x)?[0-9a-f]+$"
 )
+FP_COMPARES: frozenset[str] = frozenset({"fcmp", "fcmpe"})
+FP_SELECTS: frozenset[str] = frozenset(
+    {
+        "fccmp",
+        "fccmpe",
+        "ccmp",
+        "ccmn",
+        "fcsel",
+        "csel",
+        "csinc",
+        "csinv",
+        "csneg",
+        "cset",
+        "csetm",
+        "cinc",
+        "cinv",
+        "cneg",
+    }
+)
+CONDITIONAL_BRANCH_RE: re.Pattern[str] = re.compile(r"^b\.[a-z]{2}$")
+CONDITION_RE: re.Pattern[str] = re.compile(r"^[a-z]{2}$")
+FP_PREDICATE_OPTIMIZED_LEVELS: frozenset[str] = frozenset({"O1", "O2", "O3", "Os"})
+FP_PREDICATE_REQUIRED: dict[str, tuple[str, ...]] = {
+    "fb_ge_f": ("fcmp", "b.lt"),
+    "fb_ge_d": ("fcmp", "b.lt"),
+    "fb_le_f": ("fcmp", "b.hi"),
+    "fb_le_d": ("fcmp", "b.hi"),
+    "fb_ne_f": ("fcmp", "b.eq"),
+    "fb_ne_d": ("fcmp", "b.eq"),
+    "fb_nlt_f": ("fcmp", "b.mi"),
+    "fb_nlt_d": ("fcmp", "b.mi"),
+    "fb_nle_f": ("fcmp", "b.ls"),
+    "fb_nle_d": ("fcmp", "b.ls"),
+    "fb_ngt_f": ("fcmp", "b.gt"),
+    "fb_ngt_d": ("fcmp", "b.gt"),
+    "fb_nge_f": ("fcmp", "b.ge"),
+    "fb_nge_d": ("fcmp", "b.ge"),
+    "fb_ord_f": ("fcmp", "b.vs"),
+    "fb_ord_d": ("fcmp", "b.vs"),
+    "fb_uno_f": ("fcmp", "b.vc"),
+    "fb_uno_d": ("fcmp", "b.vc"),
+    "fb_and3_f": ("fcmp", "b.pl", "fcmp", "b.pl", "fcmp", "b.pl"),
+    "fc_selor_f": ("fcmp", "b.mi", "fcmp", "b.pl"),
+    "fc_selor_d": ("fcmp", "b.mi", "fcmp", "b.pl"),
+    "fc_seland_d": ("fcmp", "b.pl", "fcmp", "b.pl"),
+    "fc_selor3_f": ("fcmp", "b.mi", "fcmp", "b.mi", "fcmp", "b.pl"),
+    "fc_seland3_f": ("fcmp", "b.pl", "fcmp", "b.pl", "fcmp", "b.pl"),
+    "fc_seland3_mix_f": ("fcmp", "b.pl", "fcmp", "b.le", "fcmp", "b.ne"),
+}
+FP_PREDICATE_OPTIMIZED_REQUIRED: dict[str, tuple[str, ...]] = {
+    "fb_uno_f": ("fcmp", "b.vs"),
+    "fb_uno_d": ("fcmp", "b.vs"),
+    "fc_selor_f": ("fcmp", "fccmp.pl", "fcsel.mi"),
+    "fc_selor_d": ("fcmp", "fccmp.pl", "fcsel.mi"),
+    "fc_seland_d": ("fcmp", "fccmp.mi", "fcsel.mi"),
+    "fc_selor3_f": ("fcmp", "fccmp.pl", "fccmp.pl", "fcsel.mi"),
+    "fc_seland3_f": ("fcmp", "fccmp.mi", "cset.mi", "fcmp", "cset.mi", "fcsel.ne"),
+    "fc_seland3_mix_f": ("fcmp", "fccmp.gt", "cset.mi", "fcmp", "cset.eq", "fcsel.ne"),
+}
 
 
 def disassemble(
     level: str, out_dir: Path, /
-) -> tuple[dict[str, list[int]], dict[str, set[str]], dict[str, set[tuple[str, str]]]]:
+) -> tuple[
+    dict[str, list[int]],
+    dict[str, set[str]],
+    dict[str, set[tuple[str, str]]],
+    dict[str, list[tuple[str, str]]],
+]:
     obj: Path = out_dir / f"corpus_{level}.o"
     compile_cmd: list[str] = [
         "clang",
@@ -92,6 +156,7 @@ def disassemble(
     out: dict[str, list[int]] = {}
     mnemonics: dict[str, set[str]] = {}
     encodings: dict[str, set[tuple[str, str]]] = {}
+    order: dict[str, list[tuple[str, str]]] = {}
     current: str | None = None
     for line in dumped.stdout.splitlines():
         matched_func: re.Match[str] | None = FUNC_RE.match(line)
@@ -101,6 +166,7 @@ def disassemble(
             out[name] = []
             mnemonics[name] = set()
             encodings[name] = set()
+            order[name] = []
             continue
         if current is None:
             continue
@@ -108,11 +174,12 @@ def disassemble(
         if matched_insn is None:
             continue
         word: int = int(matched_insn.group(1), 16)
+        opcode: str = matched_insn.group(2)
+        operands: str = matched_insn.group(3).split("//")[0].strip()
         out[current].extend(word.to_bytes(4, "little"))
-        mnemonics[current].add(matched_insn.group(2))
-        encodings[current].add(
-            (matched_insn.group(2), matched_insn.group(3).split("//")[0].strip())
-        )
+        mnemonics[current].add(opcode)
+        encodings[current].add((opcode, operands))
+        order[current].append((opcode, operands))
     bodies: dict[str, list[int]] = {
         name: body for name, body in out.items() if body
     }
@@ -120,6 +187,7 @@ def disassemble(
         bodies,
         {name: mnemonics[name] for name in bodies},
         {name: encodings[name] for name in bodies},
+        {name: order[name] for name in bodies},
     )
 
 
@@ -166,6 +234,55 @@ def gate_fixed_point(
             )
 
 
+def fp_predicate_sequence(
+    level: str, name: str, body: list[tuple[str, str]], /
+) -> tuple[str, ...]:
+    sequence: list[str] = []
+    for opcode, operands in body:
+        if opcode in FP_COMPARES or CONDITIONAL_BRANCH_RE.match(opcode) is not None:
+            sequence.append(opcode)
+            continue
+        if opcode not in FP_SELECTS:
+            continue
+        condition: str = operands.rsplit(",", 1)[-1].strip()
+        if CONDITION_RE.match(condition) is None:
+            raise SystemExit(
+                f"corpus gate {level}: {name} emits {opcode} without a trailing"
+                f" condition code, saw operands {operands!r}"
+            )
+        sequence.append(f"{opcode}.{condition}")
+    return tuple(sequence)
+
+
+def gate_fp_predicate(
+    level: str,
+    mnemonics: dict[str, set[str]],
+    order: dict[str, list[tuple[str, str]]],
+    /,
+) -> None:
+    optimized: bool = level in FP_PREDICATE_OPTIMIZED_LEVELS
+    for name, baseline in FP_PREDICATE_REQUIRED.items():
+        seen: set[str] = mnemonics.get(name, set())
+        if not seen & FP_COMPARES:
+            raise SystemExit(
+                f"corpus gate {level}: {name} must contain a floating-point compare"
+                f" from {sorted(FP_COMPARES)}, saw {sorted(seen)}"
+            )
+        expected: tuple[str, ...] = (
+            FP_PREDICATE_OPTIMIZED_REQUIRED.get(name, baseline)
+            if optimized
+            else baseline
+        )
+        actual: tuple[str, ...] = fp_predicate_sequence(
+            level, name, order.get(name, [])
+        )
+        if actual != expected:
+            raise SystemExit(
+                f"corpus gate {level}: {name} must emit the compare, condition and"
+                f" select sequence {list(expected)}, saw {list(actual)}"
+            )
+
+
 def gate(level: str, mnemonics: dict[str, set[str]], /) -> None:
     for name, required in FUSED_REQUIRED.items():
         seen: set[str] = mnemonics.get(name, set())
@@ -203,9 +320,10 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         out_dir: Path = Path(tmp)
         for level in LEVELS:
-            functions, mnemonics, encodings = disassemble(level, out_dir)
+            functions, mnemonics, encodings, order = disassemble(level, out_dir)
             gate(level, mnemonics)
             gate_fixed_point(level, mnemonics, encodings)
+            gate_fp_predicate(level, mnemonics, order)
             per_level[level] = len(functions)
             for name in sorted(functions):
                 body: list[int] = functions[name]
