@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used)]
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -64,9 +65,9 @@ impl Xorshift64 {
 
 fn corpus_root() -> PathBuf {
     let manifest_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let Some(workspace_root): Option<&Path> = manifest_dir.parent().and_then(Path::parent) else {
-        return PathBuf::new();
-    };
+    let workspace_root: &Path = manifest_dir.parent().and_then(Path::parent).expect(
+        "the crate manifest directory has no workspace grandparent, so no corpus path exists",
+    );
     workspace_root.join("corpus").join("python").join("pyarmor")
 }
 
@@ -74,7 +75,12 @@ fn real_seed(path: &[&str]) -> std::io::Result<Vec<u8>> {
     let source_path: PathBuf = path
         .iter()
         .fold(corpus_root(), |root: PathBuf, part: &&str| root.join(part));
-    let mut bytes: Vec<u8> = std::fs::read(source_path)?;
+    let mut bytes: Vec<u8> = std::fs::read(&source_path)?;
+    assert!(
+        !bytes.is_empty(),
+        "committed sample {} is empty, so this seed would silently stop exercising real input",
+        source_path.display()
+    );
     bytes.truncate(MAX_INPUT_BYTES);
     Ok(bytes)
 }
