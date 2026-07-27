@@ -12,6 +12,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchFile;
 use disrobe_emit::c::Cx;
 use disrobe_emit::c::ast::{
     AggregateKind, BinaryOp, CBaseType, CDecl, CExpr, CField, CFile, CInit, CItem, CParam, CStmt,
@@ -111,17 +112,11 @@ fn cc() -> Option<String> {
     None
 }
 
-fn scratch_file() -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let dir: PathBuf = std::env::temp_dir().join(format!("disrobe-emit-cc-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    let unique: u64 = COUNTER.fetch_add(1, Ordering::Relaxed);
-    dir.join(format!("probe-{unique}.c"))
-}
-
 fn syntax_ok(compiler: &str, source: &str) -> Result<(), String> {
-    let path: PathBuf = scratch_file();
+    let (scratch, handle): (ScratchFile, std::fs::File) =
+        ScratchFile::create("disrobe-emit-cc", "c").expect("create scratch file");
+    drop(handle);
+    let path: PathBuf = scratch.path().to_path_buf();
     std::fs::write(&path, source).expect("write probe");
     let output: std::process::Output = Command::new(compiler)
         .args(["-fsyntax-only", "-w", "-std=c11"])

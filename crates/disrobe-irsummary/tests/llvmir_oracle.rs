@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_irsummary::{
     Location, NirSummary, emit_llvm_function, emit_optimized_llvm_function, llvm_int_ty,
     summarize_function,
@@ -702,8 +703,9 @@ fn emitted_module_assembles_and_runs_under_real_llvm_if_available() {
         module.function_name()
     );
 
-    let dir: PathBuf = std::env::temp_dir().join(format!("disrobe_llvmir_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let scratch: ScratchDir =
+        ScratchDir::create("disrobe_llvmir").expect("create scratch directory");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let ll_path: PathBuf = dir.join("module.ll");
     let bc_path: PathBuf = dir.join("module.bc");
     std::fs::write(&ll_path, harness.as_bytes()).expect("write ll");
@@ -729,8 +731,6 @@ fn emitted_module_assembles_and_runs_under_real_llvm_if_available() {
         "lli exit code must equal (a+b) low byte; stderr:\n{}",
         String::from_utf8_lossy(&executed.stderr)
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn summary_from(width: Width, seeds: &[(&str, u32)], output: Expr) -> NirSummary {

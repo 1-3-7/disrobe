@@ -17,3 +17,6 @@ workspace = true
 [dependencies]
 disrobe-sleigh = { path = "../disrobe-sleigh", version = "0.10.3" }
 iced-x86.workspace = true
+
+[dev-dependencies]
+disrobe-core = { workspace = true }
