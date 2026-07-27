@@ -49,6 +49,16 @@ Every figure below is produced by a committed test gate or a local measurement h
 
 The numbers that are not perfect are labelled `SEMANTIC`, `PARTIAL`, or `SKELETON`, and the information-theoretic walls (native-virtualized code, runtime-only keys, RSA-wrapped capsule keys) are reported as detect-only by design.
 
+## Refusal is a result
+
+`disrobe` refuses to emit a recovery it cannot justify from the input. A refusal names its reason and is a normal, expected outcome, not a failure of the run.
+
+The rule behind it: a wrong recovery costs more than no recovery. A reader who receives output assumes it describes the input, so output that merely looks plausible is worse than a refusal that says what was missing. Two consequences follow, and both are deliberate.
+
+Evidence that is only probable does not become a result. Where several readings of the same bytes are equally consistent with the input, `disrobe` reports the ambiguity instead of choosing the likeliest one. A native function compiled to a single return instruction, for example, cannot be distinguished from several different source signatures on its own bytes, so it is refused unless a caller in the same object proves which one applies.
+
+A refusal is scoped to the evidence, not to the problem. "Not recoverable from this input" is a claim about the bytes supplied; a wider input set can reopen it. Only a limit that survives that distinction, such as a key that exists solely at run time, is reported as a wall.
+
 ## Where to start
 
 - First run: [Installation](./installation.md), then [Quickstart](./quickstart.md).
