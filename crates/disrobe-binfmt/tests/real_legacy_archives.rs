@@ -2,22 +2,13 @@
 mod common;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use disrobe_binfmt::container::{ContainerKind, detect_container};
 use disrobe_binfmt::{ExtractionResult, extract_to};
 
-static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-
-fn temp_dir(tag: &str) -> PathBuf {
-    let seq: u64 = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-legacy-{}-{tag}-{seq}", std::process::id()));
-    if dir.exists() {
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    dir
+fn temp_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-legacy-{tag}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn expected(format_dir: &str, rel: &str) -> Vec<u8> {
@@ -36,7 +27,8 @@ fn run(format_dir: &str, fixture: &str, kind: ContainerKind, member: &str) {
         Some(kind),
         "{format_dir}/{fixture} must detect as {kind:?}"
     );
-    let out: PathBuf = temp_dir(format_dir);
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir(format_dir);
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(kind, &bytes, &out).unwrap_or_else(|e| panic!("extract {format_dir}: {e}"));
     assert_eq!(result.kind, kind);

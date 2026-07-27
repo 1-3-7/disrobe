@@ -1,7 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use disrobe_binfmt::containers::wim::{
     RESHDR_FLAG_COMPRESSED, WIM_FLAG_COMPRESS_LZX, WIM_FLAG_COMPRESSION, WIM_HEADER_LEN, WIM_MAGIC,
@@ -98,14 +97,9 @@ fn build_wim_with_boot_resource(plaintext: &[u8], body: &[u8]) -> Vec<u8> {
     image
 }
 
-static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-
-fn temp_out(tag: &str) -> PathBuf {
-    let pid: u32 = std::process::id();
-    let seq: u64 = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf = std::env::temp_dir().join(format!("disrobe-wim-lzx-{pid}-{tag}-{seq}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    dir
+fn temp_out(tag: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-wim-lzx-{tag}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn assert_lzx_resource_round_trips(len: usize, aligned: bool, tag: &str) {
@@ -141,7 +135,9 @@ fn assert_lzx_resource_round_trips(len: usize, aligned: bool, tag: &str) {
         "direct LZX resource decode is not byte-identical to the known plaintext (aligned={aligned})"
     );
 
-    let out_dir: PathBuf = temp_out(tag);
+    let scratch: disrobe_core::scratch::ScratchDir = temp_out(tag);
+
+    let out_dir: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(ContainerKind::Wim, &wim, &out_dir).expect("extract_to lzx wim");
     assert_eq!(result.kind, ContainerKind::Wim);

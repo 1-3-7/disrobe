@@ -2,7 +2,6 @@
 mod common;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use disrobe_binfmt::container::{ContainerKind, detect_container};
 use disrobe_binfmt::containers::xar::{XarArchive, parse_xar};
@@ -16,17 +15,9 @@ const MEMBERS: [&str; 4] = [
     "Scripts/preinstall",
 ];
 
-static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-
-fn temp_dir(name: &str) -> PathBuf {
-    let seq: u64 = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-realxar-{}-{name}-{seq}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    dir
+fn temp_dir(name: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-realxar-{name}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn expected_bytes(rel: &str) -> Vec<u8> {
@@ -51,7 +42,9 @@ fn assert_pkg_recovers(fixture: &str, tag: &str) {
         "xar toc must carry the nested Scripts/preinstall member"
     );
 
-    let out: PathBuf = temp_dir(tag);
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir(tag);
+
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult = extract_to_with_quota(
         ContainerKind::Pkg,
         &bytes,

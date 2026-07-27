@@ -120,8 +120,11 @@ fn real_msi_embedded_cab_round_trips() {
         eprintln!("skipping real_msi_embedded_cab_round_trips: WiX not installed");
         return;
     };
-    let seed_dir: PathBuf = std::env::temp_dir().join("disrobe_msi_seed");
-    let out_dir: PathBuf = std::env::temp_dir().join("disrobe_msi_build");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_msi_seed")
+            .expect("create scratch directory");
+    let seed_dir: PathBuf = scratch.path().join("seed");
+    let out_dir: PathBuf = scratch.path().join("build");
     let originals: Vec<(String, Vec<u8>)> = seed_files(&seed_dir);
     let Some(msi): Option<PathBuf> = build_msi(&wix, &seed_dir, &out_dir) else {
         panic!("wix failed to build msi");
@@ -133,9 +136,10 @@ fn real_msi_embedded_cab_round_trips() {
     assert!(summary.tables.iter().any(|t: &String| t == "File"));
     assert!(summary.tables.iter().any(|t: &String| t == "Media"));
 
-    let extract_out: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_msi_extract_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&extract_out);
+    let extract_scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_msi_extract")
+            .expect("create scratch directory");
+    let extract_out: PathBuf = extract_scratch.path().join("out");
     let result: ExtractionResult =
         extract_to(ContainerKind::Msi, &bytes, &extract_out).expect("extract msi");
     assert_eq!(result.kind, ContainerKind::Msi);
@@ -165,5 +169,4 @@ fn real_msi_embedded_cab_round_trips() {
             body.len()
         );
     }
-    let _ = std::fs::remove_dir_all(&extract_out);
 }

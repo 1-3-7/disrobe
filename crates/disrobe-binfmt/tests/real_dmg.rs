@@ -12,12 +12,9 @@ const FIXTURE: &str = "zlib-udif.dmg";
 const VARIANT_FIXTURES: [&str; 3] = ["zlib-udif.dmg", "bzip2-udif.dmg", "lzma-udif.dmg"];
 const MEMBERS: [&str; 3] = ["hello.txt", "payload.txt", "folder/note.txt"];
 
-fn temp_dir(name: &str) -> PathBuf {
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-realdmg-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    dir
+fn temp_dir(name: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-realdmg-{name}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn expected_bytes(rel: &str) -> Vec<u8> {
@@ -64,7 +61,9 @@ fn assert_dmg_recovers(fixture: &str, tag: &str) {
         summary.unsupported_chunk_types
     );
 
-    let out: PathBuf = temp_dir(tag);
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir(tag);
+
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult = extract_to_with_quota(
         ContainerKind::Dmg,
         &bytes,

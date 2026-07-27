@@ -10,14 +10,9 @@ use disrobe_binfmt::{ExtractionResult, extract_to};
 
 const SQUASHFS_MAGIC: [u8; 4] = [0x68, 0x73, 0x71, 0x73];
 
-fn temp_dir(name: &str) -> PathBuf {
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-firmware-{}-{name}", std::process::id()));
-    if dir.exists() {
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    dir
+fn temp_dir(name: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-firmware-{name}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn inner_plaintext(total_len: usize) -> Vec<u8> {
@@ -992,7 +987,9 @@ fn firmware_extract_to_writes_members_to_disk() {
     image[0x0c..0x0c + 16].copy_from_slice(&SHRS_IV);
     image.extend_from_slice(&ciphertext);
 
-    let out: PathBuf = temp_dir("shrs-e2e");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("shrs-e2e");
+
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(ContainerKind::FwDlinkShrs, &image, &out).expect("extract shrs");
     assert_eq!(result.kind, ContainerKind::FwDlinkShrs);

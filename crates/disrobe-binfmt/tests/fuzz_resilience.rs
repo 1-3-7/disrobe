@@ -1095,7 +1095,10 @@ fn the_configured_run_drives_every_seed_thousands_of_times() {
 
 #[test]
 fn every_shaped_seed_is_recognized_by_at_least_one_public_entry_point() {
-    let scratch: Scratch = Scratch::create(&std::env::temp_dir(), UNMUTATED_SCRATCH_TAG);
+    let guard: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("binfmt-extraction-entrypoints-unmutated-seeds")
+            .expect("create scratch directory");
+    let scratch: Scratch = Scratch::create(guard.path(), UNMUTATED_SCRATCH_TAG);
     for entry in corpus() {
         let hits: Hits = probe(entry.bytes(), 0, entry.name(), &scratch);
         assert!(
@@ -1246,7 +1249,11 @@ fn a_hostile_partition_table_honours_the_quota_the_caller_asked_for() {
         write_u64_le(&mut bytes, entry + 40, 1);
     }
 
-    let scratch: Scratch = Scratch::create(&std::env::temp_dir(), QUOTA_SCRATCH_TAG);
+    let guard: disrobe_core::scratch::ScratchDir = disrobe_core::scratch::ScratchDir::create(
+        "binfmt-extraction-entrypoints-hostile-partition-quota",
+    )
+    .expect("create scratch directory");
+    let scratch: Scratch = Scratch::create(guard.path(), QUOTA_SCRATCH_TAG);
     let quota: ExtractionQuota = test_quota();
     let result: ExtractionResult =
         extract_to_with_quota(ContainerKind::Gpt, &bytes, scratch.fresh_out_dir(), quota)
@@ -1267,7 +1274,11 @@ fn a_hostile_partition_table_honours_the_quota_the_caller_asked_for() {
 
 #[test]
 fn every_unmutated_seed_finishes() {
-    let scratch: Scratch = Scratch::create(&std::env::temp_dir(), FINISHES_SCRATCH_TAG);
+    let guard: disrobe_core::scratch::ScratchDir = disrobe_core::scratch::ScratchDir::create(
+        "binfmt-extraction-entrypoints-unmutated-finishes",
+    )
+    .expect("create scratch directory");
+    let scratch: Scratch = Scratch::create(guard.path(), FINISHES_SCRATCH_TAG);
     for entry in corpus() {
         consume(probe(entry.bytes(), 1, entry.name(), &scratch));
     }

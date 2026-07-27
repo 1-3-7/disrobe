@@ -1,6 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use disrobe_binfmt::container::{ContainerKind, detect_container};
 use disrobe_binfmt::containers::cpio::{NEWC_MAGIC, TRAILER_NAME};
@@ -15,17 +14,9 @@ use disrobe_binfmt::containers::wim::{
 };
 use disrobe_binfmt::{ExtractionResult, extract_to};
 
-static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-
-fn temp_dir(name: &str) -> PathBuf {
-    let seq: u64 = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-disk-{}-{name}-{seq}", std::process::id()));
-    if dir.exists() {
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    dir
+fn temp_dir(name: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-disk-{name}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn newc_header(name: &str, mode: u32, file_size: u32) -> Vec<u8> {
@@ -56,7 +47,9 @@ fn cpio_newc_detected_and_extracted_to_disk() {
 
     assert_eq!(detect_container(&archive), Some(ContainerKind::Cpio));
 
-    let out: PathBuf = temp_dir("cpio");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("cpio");
+
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(ContainerKind::Cpio, &archive, &out).expect("extract");
     assert_eq!(result.kind, ContainerKind::Cpio);
@@ -155,7 +148,8 @@ fn mbr_carves_partition_bytes_and_recovers_known_payload() {
     disk[part1_start..part1_start + marker1.len()].copy_from_slice(marker1);
 
     assert_eq!(detect_container(&disk), Some(ContainerKind::Mbr));
-    let out: PathBuf = temp_dir("mbr-carve");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("mbr-carve");
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult = extract_to(ContainerKind::Mbr, &disk, &out).expect("carve mbr");
     assert_eq!(result.kind, ContainerKind::Mbr);
 
@@ -183,7 +177,8 @@ fn vhd_fixed_carves_through_to_partition_payload() {
     image.extend_from_slice(&fixed_vhd_footer(logical_size));
 
     assert_eq!(detect_container(&image), Some(ContainerKind::Vhd));
-    let out: PathBuf = temp_dir("vhd-carve");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("vhd-carve");
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult = extract_to(ContainerKind::Vhd, &image, &out).expect("carve vhd");
     assert_eq!(result.kind, ContainerKind::Vhd);
     assert!(out.join(".disrobe-vhd-layout.json").is_file());
@@ -199,7 +194,8 @@ fn vhd_extraction_writes_layout_json() {
     let mut image: Vec<u8> = vec![0u8; 2048];
     let footer_start: usize = image.len() - VHD_FOOTER_LEN;
     image[footer_start..].copy_from_slice(&fixed_vhd_footer(logical_size));
-    let out: PathBuf = temp_dir("vhd");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("vhd");
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult = extract_to(ContainerKind::Vhd, &image, &out).expect("vhd");
 
     let layout_bytes: Vec<u8> =
@@ -284,7 +280,9 @@ fn gpt_carves_partition_bytes_with_valid_crc() {
     let disk: Vec<u8> = build_gpt_disk(&[(8, 11, marker)]);
     assert_eq!(detect_container(&disk), Some(ContainerKind::Gpt));
 
-    let out: PathBuf = temp_dir("gpt-carve");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("gpt-carve");
+
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult = extract_to(ContainerKind::Gpt, &disk, &out).expect("carve gpt");
     assert_eq!(result.kind, ContainerKind::Gpt);
     assert!(
@@ -360,7 +358,9 @@ fn mbr_partition_holding_nested_mbr_recurses() {
     let outer_part_off: usize = 4 * SECTOR;
     disk[outer_part_off..outer_part_off + inner.len()].copy_from_slice(&inner);
 
-    let out: PathBuf = temp_dir("mbr-nested");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("mbr-nested");
+
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult = extract_to(ContainerKind::Mbr, &disk, &out).expect("nested mbr");
     assert_eq!(result.kind, ContainerKind::Mbr);
     let nested: Vec<u8> = std::fs::read(out.join("partition00.05.img.d/partition00.83.img"))
@@ -386,7 +386,8 @@ fn wim_carves_uncompressed_resources_and_notes_absent_lookup_table() {
     image[header_len..].copy_from_slice(xml);
 
     assert_eq!(detect_container(&image), Some(ContainerKind::Wim));
-    let out: PathBuf = temp_dir("wim-carve");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("wim-carve");
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult = extract_to(ContainerKind::Wim, &image, &out).expect("wim carve");
     assert_eq!(result.kind, ContainerKind::Wim);
     let carved: Vec<u8> = std::fs::read(out.join(".disrobe-wim-xml.bin")).expect("xml resource");
@@ -471,7 +472,8 @@ fn wim_xpress_resource_decompresses_end_to_end_through_run_path() {
     image[resource_offset..].copy_from_slice(&MS_XCA_ALPHABET_COMPRESSED);
 
     assert_eq!(detect_container(&image), Some(ContainerKind::Wim));
-    let out: PathBuf = temp_dir("wim-xpress-e2e");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("wim-xpress-e2e");
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(ContainerKind::Wim, &image, &out).expect("wim xpress extract");
     assert_eq!(result.kind, ContainerKind::Wim);

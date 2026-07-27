@@ -10,14 +10,9 @@ use disrobe_binfmt::{ExtractionResult, extract_to};
 const FORMAT_DIR: &str = "par2";
 const FIXTURE_NAME: &str = "recovery.par2";
 
-fn temp_dir(tag: &str) -> PathBuf {
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-par2-{}-{tag}", std::process::id()));
-    if dir.exists() {
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    dir
+fn temp_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-par2-{tag}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 #[test]
@@ -50,7 +45,8 @@ fn par2_identifies_protected_files_and_recovery_slices() {
 #[test]
 fn par2_carves_recovery_set_and_summary() {
     let bytes: Vec<u8> = common::load_fixture(FORMAT_DIR, FIXTURE_NAME).unwrap();
-    let out: PathBuf = temp_dir("carve");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("carve");
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(ContainerKind::Par2, &bytes, &out).expect("extract par2");
     assert_eq!(result.kind, ContainerKind::Par2);

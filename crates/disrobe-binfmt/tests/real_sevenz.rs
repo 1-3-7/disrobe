@@ -94,11 +94,10 @@ fn build_archive(seven_zip: &Path, seed_dir: &Path, out: &Path, method: &str) ->
 }
 
 fn assert_round_trip(archive_bytes: &[u8], originals: &[(String, Vec<u8>)], label: &str) {
-    let out_dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_sevenz_extract_{label}_{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&out_dir);
+    let purpose: String = format!("disrobe_sevenz_extract_{label}");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory");
+    let out_dir: PathBuf = scratch.path().join("out");
     let result: ExtractionResult = extract_to_with_quota(
         ContainerKind::SevenZ,
         archive_bytes,
@@ -136,7 +135,6 @@ fn assert_round_trip(archive_bytes: &[u8], originals: &[(String, Vec<u8>)], labe
             "{label}: size metadata mismatch for {name}"
         );
     }
-    let _ = std::fs::remove_dir_all(&out_dir);
 }
 
 #[test]
@@ -145,7 +143,10 @@ fn real_sevenz_lzma2_round_trips() {
         eprintln!("skipping real_sevenz_lzma2_round_trips: 7-Zip not installed");
         return;
     };
-    let seed_dir: PathBuf = std::env::temp_dir().join("disrobe_sevenz_seed_lzma2");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_sevenz_seed_lzma2")
+            .expect("create scratch directory");
+    let seed_dir: PathBuf = scratch.path().join("seed");
     let originals: Vec<(String, Vec<u8>)> = seed_files(&seed_dir);
     let archive: PathBuf = seed_dir.join("out_lzma2.7z");
     if !build_archive(&seven_zip, &seed_dir, &archive, "LZMA2") {
@@ -162,7 +163,10 @@ fn real_sevenz_lzma_round_trips() {
         eprintln!("skipping real_sevenz_lzma_round_trips: 7-Zip not installed");
         return;
     };
-    let seed_dir: PathBuf = std::env::temp_dir().join("disrobe_sevenz_seed_lzma");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_sevenz_seed_lzma")
+            .expect("create scratch directory");
+    let seed_dir: PathBuf = scratch.path().join("seed");
     let originals: Vec<(String, Vec<u8>)> = seed_files(&seed_dir);
     let archive: PathBuf = seed_dir.join("out_lzma.7z");
     if !build_archive(&seven_zip, &seed_dir, &archive, "LZMA") {
@@ -179,7 +183,10 @@ fn real_sevenz_stored_round_trips() {
         eprintln!("skipping real_sevenz_stored_round_trips: 7-Zip not installed");
         return;
     };
-    let seed_dir: PathBuf = std::env::temp_dir().join("disrobe_sevenz_seed_copy");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_sevenz_seed_copy")
+            .expect("create scratch directory");
+    let seed_dir: PathBuf = scratch.path().join("seed");
     let originals: Vec<(String, Vec<u8>)> = seed_files(&seed_dir);
     let archive: PathBuf = seed_dir.join("out_copy.7z");
     if !build_archive(&seven_zip, &seed_dir, &archive, "Copy") {

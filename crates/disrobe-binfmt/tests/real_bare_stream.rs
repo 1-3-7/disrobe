@@ -2,26 +2,15 @@
 mod common;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use disrobe_binfmt::container::{ContainerKind, detect_container};
 use disrobe_binfmt::{ExtractionQuota, ExtractionResult, extract_to, extract_to_with_quota};
 
 const FORMAT_DIR: &str = "bare-stream";
 
-static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-
-fn temp_dir(name: &str) -> PathBuf {
-    let seq: u64 = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-barestream-{}-{name}-{seq}",
-        std::process::id()
-    ));
-    if dir.exists() {
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    dir
+fn temp_dir(name: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-barestream-{name}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn expected_payload() -> Vec<u8> {
@@ -56,7 +45,8 @@ fn single_output(result: &ExtractionResult, out: &Path) -> Vec<u8> {
 fn zlib_stream_round_trips_byte_exact() {
     let bytes: Vec<u8> = load("payload.zlib");
     assert_eq!(detect_container(&bytes), Some(ContainerKind::Zlib));
-    let out: PathBuf = temp_dir("zlib");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("zlib");
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(ContainerKind::Zlib, &bytes, &out).expect("extract zlib");
     assert_eq!(single_output(&result, &out), expected_payload());
@@ -66,7 +56,8 @@ fn zlib_stream_round_trips_byte_exact() {
 fn lzip_stream_round_trips_byte_exact() {
     let bytes: Vec<u8> = load("payload.lz");
     assert_eq!(detect_container(&bytes), Some(ContainerKind::Lzip));
-    let out: PathBuf = temp_dir("lzip");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("lzip");
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(ContainerKind::Lzip, &bytes, &out).expect("extract lzip");
     assert_eq!(single_output(&result, &out), expected_payload());
@@ -76,7 +67,8 @@ fn lzip_stream_round_trips_byte_exact() {
 fn lz4_frame_round_trips_byte_exact() {
     let bytes: Vec<u8> = load("payload.lz4");
     assert_eq!(detect_container(&bytes), Some(ContainerKind::Lz4));
-    let out: PathBuf = temp_dir("lz4");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("lz4");
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(ContainerKind::Lz4, &bytes, &out).expect("extract lz4");
     assert_eq!(single_output(&result, &out), expected_payload());
@@ -86,7 +78,8 @@ fn lz4_frame_round_trips_byte_exact() {
 fn lz4_skippable_frame_round_trips_byte_exact() {
     let bytes: Vec<u8> = load("payload-skippable.lz4");
     assert_eq!(detect_container(&bytes), Some(ContainerKind::Lz4));
-    let out: PathBuf = temp_dir("lz4skip");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("lz4skip");
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(ContainerKind::Lz4, &bytes, &out).expect("extract lz4 skippable");
     assert_eq!(single_output(&result, &out), expected_payload());
@@ -96,7 +89,8 @@ fn lz4_skippable_frame_round_trips_byte_exact() {
 fn lz4_legacy_frame_round_trips_byte_exact() {
     let bytes: Vec<u8> = load("payload-legacy.lz4");
     assert_eq!(detect_container(&bytes), Some(ContainerKind::Lz4));
-    let out: PathBuf = temp_dir("lz4legacy");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("lz4legacy");
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(ContainerKind::Lz4, &bytes, &out).expect("extract lz4 legacy");
     assert_eq!(single_output(&result, &out), expected_payload());
@@ -106,7 +100,8 @@ fn lz4_legacy_frame_round_trips_byte_exact() {
 fn bare_gzip_round_trips_byte_exact() {
     let bytes: Vec<u8> = load("payload.gz");
     assert_eq!(detect_container(&bytes), Some(ContainerKind::Gzip));
-    let out: PathBuf = temp_dir("gz");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("gz");
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(ContainerKind::Gzip, &bytes, &out).expect("extract gz");
     assert_eq!(single_output(&result, &out), expected_payload());
@@ -115,7 +110,8 @@ fn bare_gzip_round_trips_byte_exact() {
 #[test]
 fn bare_gzip_emits_embedded_original_filename() {
     let bytes: Vec<u8> = load("payload-named.gz");
-    let out: PathBuf = temp_dir("gznamed");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("gznamed");
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(ContainerKind::Gzip, &bytes, &out).expect("extract named gz");
     assert!(
@@ -130,7 +126,8 @@ fn bare_gzip_emits_embedded_original_filename() {
 #[test]
 fn bare_gzip_concatenated_members_all_recovered() {
     let bytes: Vec<u8> = load("payload-multi.gz");
-    let out: PathBuf = temp_dir("gzmulti");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("gzmulti");
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(ContainerKind::Gzip, &bytes, &out).expect("extract multi gz");
     assert_eq!(result.entries.len(), 2, "expected two concatenated members");
@@ -145,7 +142,8 @@ fn bare_gzip_concatenated_members_all_recovered() {
 fn bare_bzip2_round_trips_byte_exact() {
     let bytes: Vec<u8> = load("payload.bz2");
     assert_eq!(detect_container(&bytes), Some(ContainerKind::Bzip2));
-    let out: PathBuf = temp_dir("bz2");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("bz2");
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(ContainerKind::Bzip2, &bytes, &out).expect("extract bz2");
     assert_eq!(single_output(&result, &out), expected_payload());
@@ -155,7 +153,8 @@ fn bare_bzip2_round_trips_byte_exact() {
 fn bare_zstd_round_trips_byte_exact() {
     let bytes: Vec<u8> = load("payload.zst");
     assert_eq!(detect_container(&bytes), Some(ContainerKind::Zstd));
-    let out: PathBuf = temp_dir("zst");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("zst");
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(ContainerKind::Zstd, &bytes, &out).expect("extract zst");
     assert_eq!(single_output(&result, &out), expected_payload());
@@ -169,7 +168,8 @@ fn bare_lzma_alone_round_trips_byte_exact() {
         Some(std::path::Path::new("payload.lzma")),
     );
     assert_eq!(hinted, Some(ContainerKind::Lzma));
-    let out: PathBuf = temp_dir("lzma");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("lzma");
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(ContainerKind::Lzma, &bytes, &out).expect("extract lzma");
     assert_eq!(single_output(&result, &out), expected_payload());
@@ -179,7 +179,8 @@ fn bare_lzma_alone_round_trips_byte_exact() {
 fn unix_compress_round_trips_byte_exact() {
     let bytes: Vec<u8> = load("payload.Z");
     assert_eq!(detect_container(&bytes), Some(ContainerKind::UnixCompress));
-    let out: PathBuf = temp_dir("compress");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("compress");
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(ContainerKind::UnixCompress, &bytes, &out).expect("extract .Z");
     assert_eq!(single_output(&result, &out), expected_payload());
@@ -206,7 +207,9 @@ fn bomb_caps_reject_oversized_decode_per_format() {
     ];
     for (kind, fixture) in cases {
         let bytes: Vec<u8> = load(fixture);
-        let out: PathBuf = temp_dir(&format!("bomb-{}", kind.label()));
+        let scratch: disrobe_core::scratch::ScratchDir =
+            temp_dir(&format!("bomb-{}", kind.label()));
+        let out: PathBuf = scratch.path().to_path_buf();
         let result: Result<ExtractionResult, disrobe_binfmt::Error> =
             extract_to_with_quota(kind, &bytes, &out, tiny_cap_quota());
         assert!(
