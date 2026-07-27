@@ -1,7 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use disrobe_binfmt::containers::{WimArchive, WimCompression, parse_wim};
 use disrobe_binfmt::extract::ExtractionResult;
@@ -26,14 +25,9 @@ fn expected_bytes(rel: &str) -> Vec<u8> {
     std::fs::read(&path).unwrap_or_else(|e| panic!("read expected {}: {e}", path.display()))
 }
 
-static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-
-fn temp_out(tag: &str) -> PathBuf {
-    let pid: u32 = std::process::id();
-    let seq: u64 = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf = std::env::temp_dir().join(format!("disrobe-wim-files-{pid}-{tag}-{seq}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    dir
+fn temp_out(tag: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-wim-files-{tag}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 const MEMBERS: [&str; 4] = ["hello.txt", "readme.md", "large.txt", "sub/nested.bin"];
@@ -46,7 +40,9 @@ fn assert_wim_files_byte_exact(wim_name: &str, expect: WimCompression, tag: &str
         "{wim_name}: header compression mismatch"
     );
 
-    let out_dir: PathBuf = temp_out(tag);
+    let scratch: disrobe_core::scratch::ScratchDir = temp_out(tag);
+
+    let out_dir: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(ContainerKind::Wim, &wim, &out_dir).expect("extract_to wim");
     assert_eq!(result.kind, ContainerKind::Wim);

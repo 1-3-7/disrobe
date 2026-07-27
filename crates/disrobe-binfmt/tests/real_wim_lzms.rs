@@ -36,11 +36,9 @@ fn split_raw_fixture(blob: &[u8]) -> (usize, Vec<u8>, Vec<u8>) {
     (uncompressed_size, compressed, original)
 }
 
-fn temp_out(tag: &str) -> PathBuf {
-    let pid: u32 = std::process::id();
-    let dir: PathBuf = std::env::temp_dir().join(format!("disrobe-wim-lzms-{pid}-{tag}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    dir
+fn temp_out(tag: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-wim-lzms-{tag}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 #[test]
@@ -105,7 +103,8 @@ fn wim_lzms_resource_decodes_byte_exact() {
 fn assert_extract_to_writes_exact(wim_name: &str, tag: &str) {
     let wim: Vec<u8> = read_fixture(wim_name);
     let expected: Vec<u8> = read_fixture(&format!("{wim_name}.expected"));
-    let out_dir: PathBuf = temp_out(tag);
+    let scratch: disrobe_core::scratch::ScratchDir = temp_out(tag);
+    let out_dir: PathBuf = scratch.path().to_path_buf();
 
     let kind: ContainerKind = ContainerKind::Wim;
     let result: ExtractionResult = extract_to(kind, &wim, &out_dir).expect("extract_to wim");

@@ -120,11 +120,10 @@ fn assert_round_trip(cab_bytes: &[u8], originals: &[(String, Vec<u8>)], label: &
         Some(ContainerKind::Cab),
         "{label}: not detected as CAB"
     );
-    let out_dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_cab_extract_{label}_{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&out_dir);
+    let purpose: String = format!("disrobe_cab_extract_{label}");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory");
+    let out_dir: PathBuf = scratch.path().join("out");
     let result: ExtractionResult =
         extract_to_with_quota(ContainerKind::Cab, cab_bytes, &out_dir, bounded_quota())
             .expect("extract cab");
@@ -148,7 +147,6 @@ fn assert_round_trip(cab_bytes: &[u8], originals: &[(String, Vec<u8>)], label: &
             body.len()
         );
     }
-    let _ = std::fs::remove_dir_all(&out_dir);
 }
 
 #[test]
@@ -157,8 +155,11 @@ fn real_cab_mszip_round_trips() {
         eprintln!("skipping real_cab_mszip_round_trips: makecab not installed");
         return;
     };
-    let seed_dir: PathBuf = std::env::temp_dir().join("disrobe_cab_seed_mszip");
-    let out_dir: PathBuf = std::env::temp_dir().join("disrobe_cab_out_mszip");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_cab_seed_mszip")
+            .expect("create scratch directory");
+    let seed_dir: PathBuf = scratch.path().join("seed");
+    let out_dir: PathBuf = scratch.path().join("out");
     let originals: Vec<(String, Vec<u8>)> = seed_files(&seed_dir);
     let names: Vec<&str> = vec!["alpha.txt", "beta.txt", "gamma.bin"];
     let Some(cab): Option<PathBuf> = build_cab(
@@ -182,8 +183,11 @@ fn real_cab_stored_round_trips() {
         eprintln!("skipping real_cab_stored_round_trips: makecab not installed");
         return;
     };
-    let seed_dir: PathBuf = std::env::temp_dir().join("disrobe_cab_seed_store");
-    let out_dir: PathBuf = std::env::temp_dir().join("disrobe_cab_out_store");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_cab_seed_store")
+            .expect("create scratch directory");
+    let seed_dir: PathBuf = scratch.path().join("seed");
+    let out_dir: PathBuf = scratch.path().join("out");
     let originals: Vec<(String, Vec<u8>)> = seed_files(&seed_dir);
     let names: Vec<&str> = vec!["alpha.txt", "beta.txt", "gamma.bin"];
     let Some(cab): Option<PathBuf> = build_cab(
@@ -207,8 +211,11 @@ fn real_cab_lzx_round_trips_or_walls_honestly() {
         eprintln!("skipping real_cab_lzx_round_trips_or_walls_honestly: makecab not installed");
         return;
     };
-    let seed_dir: PathBuf = std::env::temp_dir().join("disrobe_cab_seed_lzx");
-    let out_dir: PathBuf = std::env::temp_dir().join("disrobe_cab_out_lzx");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_cab_seed_lzx")
+            .expect("create scratch directory");
+    let seed_dir: PathBuf = scratch.path().join("seed");
+    let out_dir: PathBuf = scratch.path().join("out");
     let originals: Vec<(String, Vec<u8>)> = seed_files(&seed_dir);
     let names: Vec<&str> = vec!["alpha.txt", "beta.txt", "gamma.bin"];
     let Some(cab): Option<PathBuf> = build_cab(
@@ -228,9 +235,10 @@ fn real_cab_lzx_round_trips_or_walls_honestly() {
         Some(ContainerKind::Cab),
         "lzx cab not detected"
     );
-    let extract_out: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_cab_lzx_out_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&extract_out);
+    let extract_scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_cab_lzx_out")
+            .expect("create scratch directory");
+    let extract_out: PathBuf = extract_scratch.path().join("out");
     let outcome: disrobe_binfmt::Result<ExtractionResult> =
         extract_to_with_quota(ContainerKind::Cab, &bytes, &extract_out, bounded_quota());
     match outcome {
@@ -257,5 +265,4 @@ fn real_cab_lzx_round_trips_or_walls_honestly() {
             }
         }
     }
-    let _ = std::fs::remove_dir_all(&extract_out);
 }

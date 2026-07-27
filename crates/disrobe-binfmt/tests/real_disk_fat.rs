@@ -2,24 +2,13 @@
 mod common;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use disrobe_binfmt::container::{ContainerKind, detect_container};
 use disrobe_binfmt::{ExtractionResult, extract_to};
 
-static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-
-fn temp_dir(name: &str) -> PathBuf {
-    let seq: u64 = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-realdisk-{}-{name}-{seq}",
-        std::process::id()
-    ));
-    if dir.exists() {
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    dir
+fn temp_dir(name: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-realdisk-{name}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn expected_payload() -> Vec<u8> {
@@ -73,7 +62,8 @@ fn assert_image_recovers_payload(format_dir: &str, fixture: &str, kind: Containe
         Some(kind),
         "{fixture} must be detected as {kind:?}"
     );
-    let out: PathBuf = temp_dir(tag);
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir(tag);
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult = extract_to(kind, &bytes, &out).expect("extract disk image");
     assert_eq!(result.kind, kind);
 

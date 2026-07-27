@@ -16,12 +16,9 @@ const MEMBERS: [&str; 4] = [
     "docs/a-fairly-long-joliet-name-1234567890.dat",
 ];
 
-fn temp_dir(name: &str) -> PathBuf {
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-realiso-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    dir
+fn temp_dir(name: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-realiso-{name}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn expected_bytes(rel: &str) -> Vec<u8> {
@@ -48,7 +45,9 @@ fn real_iso_joliet_rockridge_recovers_members_byte_exact() {
     );
     assert_eq!(image.volume_id, "DISROBE_TEST");
 
-    let out: PathBuf = temp_dir("joliet");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("joliet");
+
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult = extract_to_with_quota(
         ContainerKind::Iso,
         &bytes,

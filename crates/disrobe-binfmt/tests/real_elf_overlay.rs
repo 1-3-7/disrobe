@@ -9,14 +9,9 @@ use disrobe_binfmt::{ExtractionResult, extract_to};
 
 const FORMAT_DIR: &str = "elf-overlay";
 
-fn temp_dir(tag: &str) -> PathBuf {
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-elfoverlay-{}-{tag}", std::process::id()));
-    if dir.exists() {
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    dir
+fn temp_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-elfoverlay-{tag}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 #[test]
@@ -50,7 +45,9 @@ fn elf_overlay_cpio_extracts_member_byte_exact() {
     let start: usize = carve.overlay.overlay_start as usize;
     let overlay: &[u8] = &bytes[start..];
 
-    let out: PathBuf = temp_dir("cpio");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("cpio");
+
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(ContainerKind::Cpio, overlay, &out).expect("extract carved cpio");
     assert_eq!(result.kind, ContainerKind::Cpio);

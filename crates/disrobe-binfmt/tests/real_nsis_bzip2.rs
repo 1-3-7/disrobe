@@ -96,7 +96,10 @@ fn makensis_bzip2_non_solid_round_trips() {
         eprintln!("skipping: makensis not installed");
         return;
     };
-    let dir: PathBuf = std::env::temp_dir().join("disrobe_nsis_bz2_nonsolid");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_nsis_bz2_nonsolid")
+            .expect("create scratch directory");
+    let dir: PathBuf = scratch.path().join("work");
     let payloads: Vec<(&str, Vec<u8>)> = make_payloads();
     let refs: Vec<(&str, &[u8])> = payloads
         .iter()
@@ -124,7 +127,10 @@ fn makensis_bzip2_solid_round_trips() {
         eprintln!("skipping: makensis not installed");
         return;
     };
-    let dir: PathBuf = std::env::temp_dir().join("disrobe_nsis_bz2_solid");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_nsis_bz2_solid")
+            .expect("create scratch directory");
+    let dir: PathBuf = scratch.path().join("work");
     let payloads: Vec<(&str, Vec<u8>)> = make_payloads();
     let refs: Vec<(&str, &[u8])> = payloads
         .iter()

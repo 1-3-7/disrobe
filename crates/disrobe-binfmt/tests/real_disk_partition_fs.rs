@@ -3,7 +3,6 @@ mod common;
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use disrobe_binfmt::container::{ContainerKind, detect_container};
 use disrobe_binfmt::containers::partition::{
@@ -15,19 +14,9 @@ use disrobe_binfmt::{ExtractionResult, extract_to};
 const SECTOR: usize = 512;
 const FAT_FORMAT_DIR: &str = "fat";
 
-static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-
-fn temp_dir(name: &str) -> PathBuf {
-    let seq: u64 = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-diskfs-{}-{name}-{seq}",
-        std::process::id()
-    ));
-    if dir.exists() {
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    dir
+fn temp_dir(name: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-diskfs-{name}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn real_fat12_image() -> Vec<u8> {
@@ -143,7 +132,8 @@ fn assert_recovers_fat_members(kind: ContainerKind, disk: &[u8], tag: &str) {
         Some(kind),
         "{tag} disk must be detected as {kind:?}"
     );
-    let out: PathBuf = temp_dir(tag);
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir(tag);
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult = extract_to(kind, disk, &out).expect("extract disk image");
     assert_eq!(result.kind, kind);
 

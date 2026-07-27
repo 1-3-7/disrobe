@@ -15,9 +15,10 @@ fn auto_detect_classifies_a_real_edk2_built_firmware_volume_as_uefi_fv() {
 
 #[test]
 fn top_level_detect_and_extract_recovers_the_driver_pe_without_calling_uefi_fv_directly() {
-    let out_dir: std::path::PathBuf =
-        std::env::temp_dir().join(format!("disrobe-uefi-fv-dispatch-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&out_dir);
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe-uefi-fv-dispatch")
+            .expect("create scratch directory");
+    let out_dir: std::path::PathBuf = scratch.path().join("out");
 
     let result: ExtractionResult =
         detect_and_extract_with_hint(OUTER_FV, None, &out_dir).expect("detect and extract");
@@ -37,6 +38,4 @@ fn top_level_detect_and_extract_recovers_the_driver_pe_without_calling_uefi_fv_d
 
     let summary_path: std::path::PathBuf = out_dir.join(".disrobe-uefi-fv.json");
     assert!(summary_path.exists());
-
-    let _ = std::fs::remove_dir_all(&out_dir);
 }

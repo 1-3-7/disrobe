@@ -3,7 +3,6 @@ mod common;
 
 use std::io::Read as _;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use disrobe_binfmt::container::{ContainerKind, detect_container};
 use disrobe_binfmt::containers::fat::{FatKind, FatVolume, walk_fat};
@@ -11,19 +10,9 @@ use disrobe_binfmt::{ExtractionResult, extract_to};
 
 const FORMAT_DIR: &str = "fat";
 
-static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-
-fn temp_dir(name: &str) -> PathBuf {
-    let seq: u64 = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-realfat-{}-{name}-{seq}",
-        std::process::id()
-    ));
-    if dir.exists() {
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    dir
+fn temp_dir(name: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-realfat-{name}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn load_image(name: &str) -> Vec<u8> {
@@ -62,7 +51,9 @@ fn assert_fat_recovers_members(name: &str, want_kind: FatKind) {
         "{name} must be detected as a top-level FAT container"
     );
 
-    let out: PathBuf = temp_dir(name);
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir(name);
+
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(ContainerKind::Fat, &image, &out).expect("extract fat volume");
     assert_eq!(result.kind, ContainerKind::Fat);

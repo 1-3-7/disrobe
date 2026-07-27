@@ -63,9 +63,10 @@ fn squashfs_full_walk_recovers_members_from_committed_fixtures() {
         let mut image: Vec<u8> = Vec::new();
         decoder.read_to_end(&mut image).expect("inflate fixture");
 
-        let out: PathBuf =
-            std::env::temp_dir().join(format!("disrobe-fswalk-{}-{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&out);
+        let purpose: String = format!("disrobe-fswalk-{tag}");
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory");
+        let out: PathBuf = scratch.path().join("out");
         let result: disrobe_binfmt::ExtractionResult =
             extract_to(ContainerKind::Squashfs, &image, &out).expect("walk + extract squashfs");
         assert!(
@@ -78,6 +79,5 @@ fn squashfs_full_walk_recovers_members_from_committed_fixtures() {
         let expected: Vec<u8> =
             std::fs::read(corpus.join("expected/alpha.txt")).expect("read expected/alpha.txt");
         assert_eq!(alpha, expected, "{tag}: alpha.txt must be byte-exact");
-        let _ = std::fs::remove_dir_all(&out);
     }
 }

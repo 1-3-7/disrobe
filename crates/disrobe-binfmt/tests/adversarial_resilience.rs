@@ -220,9 +220,10 @@ fn detector_never_panics_on_hostile_byte_patterns() {
 
 #[test]
 fn extract_rejects_unsupported_or_garbage_without_panic() {
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-adv-extract-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe-adv-extract")
+            .expect("create scratch directory");
+    let dir: PathBuf = scratch.path().join("out");
     let garbage: Vec<u8> = vec![0x41u8; 4096];
     for kind in [
         ContainerKind::Zip,
@@ -237,5 +238,4 @@ fn extract_rejects_unsupported_or_garbage_without_panic() {
         let _ = extract_to(kind, &garbage, &dir);
         let _ = extract_to(kind, &[], &dir);
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }

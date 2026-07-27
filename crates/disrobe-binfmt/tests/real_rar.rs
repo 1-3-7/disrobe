@@ -2,7 +2,6 @@
 mod common;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use disrobe_binfmt::container::{ContainerKind, detect_container};
 use disrobe_binfmt::containers::rar::{RarArchive, parse_rar};
@@ -14,19 +13,9 @@ const EXPECTED: [(&str, &str); 3] = [
     ("docs/notes.txt", "docs/notes.txt"),
 ];
 
-static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-
-fn temp_dir(name: &str) -> PathBuf {
-    let seq: u64 = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-realrar-{}-{name}-{seq}",
-        std::process::id()
-    ));
-    if dir.exists() {
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    dir
+fn temp_dir(name: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-realrar-{name}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn expected_bytes(rel: &str) -> Vec<u8> {
@@ -47,7 +36,9 @@ fn assert_store_archive_recovers(fixture: &str, version: u8, tag: &str) {
     let archive: RarArchive = parse_rar(&bytes).expect("parse rar");
     assert_eq!(archive.version, version, "{fixture} version");
 
-    let out: PathBuf = temp_dir(tag);
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir(tag);
+
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(ContainerKind::Rar, &bytes, &out).expect("extract rar");
     assert_eq!(result.kind, ContainerKind::Rar);
@@ -75,7 +66,9 @@ fn assert_single_member_recovers(fixture: &str, member: &str, original: &str, ta
     let archive: RarArchive = parse_rar(&bytes).expect("parse rar5");
     assert_eq!(archive.version, 5, "{fixture} version");
 
-    let out: PathBuf = temp_dir(tag);
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir(tag);
+
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(ContainerKind::Rar, &bytes, &out).expect("extract rar5");
     assert!(

@@ -9,14 +9,9 @@ use disrobe_binfmt::{ExtractionResult, extract_to};
 const FORMAT_DIR: &str = "deb";
 const FIXTURE_NAME: &str = "lzma.deb";
 
-fn temp_dir(name: &str) -> PathBuf {
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-deblzma-{}-{name}", std::process::id()));
-    if dir.exists() {
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    dir
+fn temp_dir(name: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-deblzma-{name}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn expected_bytes(rel: &str) -> Vec<u8> {
@@ -33,7 +28,9 @@ fn deb_data_tar_lzma_recovers_members_byte_exact() {
         panic!("missing committed fixture corpus/binfmt/{FORMAT_DIR}/{FIXTURE_NAME}")
     });
 
-    let out: PathBuf = temp_dir("extract");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("extract");
+
+    let out: PathBuf = scratch.path().to_path_buf();
     let result: ExtractionResult =
         extract_to(ContainerKind::Deb, &bytes, &out).expect("extract deb with lzma data member");
     assert_eq!(result.kind, ContainerKind::Deb);
