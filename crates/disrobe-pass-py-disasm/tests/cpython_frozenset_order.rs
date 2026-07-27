@@ -280,9 +280,10 @@ fn frozenset_const_order_matches_reloaded_pyc_dis() {
         return;
     }
 
-    let work: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_frozenset_order_{}", std::process::id()));
-    std::fs::create_dir_all(&work).expect("create work dir");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_frozenset_order")
+            .expect("create work dir");
+    let work: PathBuf = scratch.path().to_path_buf();
     std::fs::write(work.join("dumper.py"), DUMPER).expect("write dumper");
 
     let mut failures: Vec<String> = Vec::new();
@@ -291,8 +292,6 @@ fn frozenset_const_order_matches_reloaded_pyc_dis() {
             failures.push(failure);
         }
     }
-    let _ = std::fs::remove_dir_all(&work);
-
     assert!(
         failures.is_empty(),
         "frozenset const ordering mismatches ({}):\n\n{}",
