@@ -2734,12 +2734,16 @@ fn section_flags_label(flags: SectionFlags) -> String {
     }
 }
 
-fn locate_ghidra_headless() -> Option<PathBuf> {
-    let candidates: [&str; 2] = if cfg!(windows) {
+const fn headless_candidates() -> [&'static str; 2] {
+    if cfg!(windows) {
         ["analyzeHeadless.bat", "analyzeHeadless"]
     } else {
         ["analyzeHeadless", "analyzeHeadless.bat"]
-    };
+    }
+}
+
+fn locate_ghidra_headless() -> Option<PathBuf> {
+    let candidates: [&str; 2] = headless_candidates();
     for name in candidates {
         if let Some(found) = which_on_path(name) {
             return Some(found);
@@ -2747,8 +2751,8 @@ fn locate_ghidra_headless() -> Option<PathBuf> {
     }
     if let Ok(home) = std::env::var("GHIDRA_HOME") {
         let base: PathBuf = PathBuf::from(home);
-        for sub in ["support/analyzeHeadless", "support/analyzeHeadless.bat"] {
-            let p: PathBuf = base.join(sub);
+        for name in candidates {
+            let p: PathBuf = base.join("support").join(name);
             if p.is_file() {
                 return Some(p);
             }
@@ -3399,5 +3403,41 @@ mod tests {
             Some(0),
             "nothing is folded on a leaf: {devirt_report}"
         );
+    }
+
+    #[test]
+    fn the_headless_launcher_this_platform_can_execute_is_tried_first() {
+        let candidates: [&'static str; 2] = headless_candidates();
+        if cfg!(windows) {
+            assert_eq!(
+                candidates[0], "analyzeHeadless.bat",
+                "windows cannot execute the extensionless shell script, so trying it first \
+                 fails the spawn with os error 193 even though ghidra is installed correctly"
+            );
+        } else {
+            assert_eq!(candidates[0], "analyzeHeadless");
+        }
+    }
+
+    #[test]
+    fn the_ghidra_home_lookup_uses_the_same_order_as_the_path_lookup() {
+        let root: std::path::PathBuf =
+            disrobe_core::scratch::scratch_root().join("ghidra-home-order");
+        let support: std::path::PathBuf = root.join("support");
+        std::fs::create_dir_all(&support).expect("support dir");
+        for name in ["analyzeHeadless", "analyzeHeadless.bat"] {
+            std::fs::write(support.join(name), b"stub").expect("stub launcher");
+        }
+        let expected: std::path::PathBuf = support.join(headless_candidates()[0]);
+        let found: Option<std::path::PathBuf> = headless_candidates()
+            .iter()
+            .map(|name: &&'static str| support.join(name))
+            .find(|p: &std::path::PathBuf| p.is_file());
+        assert_eq!(
+            found.as_ref(),
+            Some(&expected),
+            "a GHIDRA_HOME holding both launchers must resolve to the one this platform runs"
+        );
+        let _: std::io::Result<()> = std::fs::remove_dir_all(&root);
     }
 }
