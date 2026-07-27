@@ -633,9 +633,9 @@ fn disassembler_matches_cpython_dis_across_versions() {
          install one to run this cross-check"
     );
 
-    let work: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_dis_xcheck_{}", std::process::id()));
-    std::fs::create_dir_all(&work).expect("create work dir");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_dis_xcheck").expect("create work dir");
+    let work: PathBuf = scratch.path().to_path_buf();
     std::fs::write(work.join("dumper.py"), DUMPER).expect("write dumper");
     let corpus_py3: PathBuf = work.join("corpus_py3.py");
     let corpus_py2: PathBuf = work.join("corpus_py2.py");
@@ -671,8 +671,6 @@ fn disassembler_matches_cpython_dis_across_versions() {
         all_failures.extend(failures);
         checked.push(interp.version);
     }
-
-    let _ = std::fs::remove_dir_all(&work);
 
     assert!(
         all_failures.is_empty(),

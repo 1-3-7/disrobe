@@ -534,9 +534,9 @@ fn render_listing_matches_cpython_dis_text_across_versions() {
         "no CPython interpreters discovered for the dis-text listing oracle"
     );
 
-    let work: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_dis_listing_{}", std::process::id()));
-    std::fs::create_dir_all(&work).expect("create work dir");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_dis_listing").expect("create work dir");
+    let work: PathBuf = scratch.path().to_path_buf();
     std::fs::write(work.join("dumper.py"), DUMPER).expect("write dumper");
 
     let mut all_failures: Vec<String> = Vec::new();
@@ -545,8 +545,6 @@ fn render_listing_matches_cpython_dis_text_across_versions() {
         all_failures.extend(run_interpreter(interp, &work));
         checked.push(interp.version);
     }
-
-    let _ = std::fs::remove_dir_all(&work);
 
     assert!(
         all_failures.is_empty(),
