@@ -230,13 +230,8 @@ fn objdump(exe: &Path, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-fn unique_dir() -> PathBuf {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let ticket: u64 = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_jt_{}_{ticket}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
-    dir
+fn unique_dir() -> disrobe_core::scratch::ScratchDir {
+    disrobe_core::scratch::ScratchDir::create("disrobe_jt").expect("create scratch directory")
 }
 
 #[test]
@@ -249,7 +244,8 @@ fn gcc_o2_switch_resolves_against_objdump_ground_truth() {
         eprintln!("skip: gcc is not an x86_64 target");
         return;
     }
-    let dir: PathBuf = unique_dir();
+    let scratch: disrobe_core::scratch::ScratchDir = unique_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let source: PathBuf = dir.join("sw.c");
     let exe: PathBuf = dir.join("sw.exe");
     if std::fs::write(&source, SWITCH_SOURCE).is_err() {
@@ -265,7 +261,6 @@ fn gcc_o2_switch_resolves_against_objdump_ground_truth() {
         .is_ok_and(|out: std::process::Output| out.status.success());
     if !compiled {
         eprintln!("skip: gcc did not produce an executable");
-        let _ = std::fs::remove_dir_all(&dir);
         return;
     }
     let (Some(disasm_text), Some(rdata_text)): (Option<String>, Option<String>) = (
@@ -273,11 +268,8 @@ fn gcc_o2_switch_resolves_against_objdump_ground_truth() {
         objdump(&exe, &["-s", "-j", ".rdata"]),
     ) else {
         eprintln!("skip: objdump failed");
-        let _ = std::fs::remove_dir_all(&dir);
         return;
     };
-    let _ = std::fs::remove_dir_all(&dir);
-
     let disasm: Disasm = parse_disasm(&disasm_text);
     let Some(rdata): Option<SectionBytes> = parse_section_bytes(&rdata_text) else {
         eprintln!("skip: could not read .rdata");

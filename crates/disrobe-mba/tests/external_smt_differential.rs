@@ -73,12 +73,14 @@ fn parse_answer(text: &str) -> Answer {
 
 fn run_solver(solver: &Solver, script: &str) -> Answer {
     let unique: usize = QUERY_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mut path: PathBuf = std::env::temp_dir();
-    path.push(format!(
-        "disrobe_mba_smt_{}_{unique}.smt2",
-        std::process::id()
-    ));
-    std::fs::write(&path, script).expect("write smt2 query to a temp file");
+    let purpose: String = format!("disrobe_mba_smt_{}_{}", std::process::id(), unique);
+    let (scratch, mut file): (disrobe_core::scratch::ScratchFile, std::fs::File) =
+        disrobe_core::scratch::ScratchFile::create(&purpose, "smt2")
+            .expect("write smt2 query to a temp file");
+    let path: PathBuf = scratch.path().to_path_buf();
+    std::io::Write::write_all(&mut file, script.as_bytes())
+        .expect("write smt2 query to a temp file");
+    drop(file);
     let mut command: Command = Command::new(solver.program);
     match solver.kind {
         SolverKind::Z3 => {
@@ -89,7 +91,6 @@ fn run_solver(solver: &Solver, script: &str) -> Answer {
         }
     }
     let output: std::process::Output = command.output().expect("invoke the external solver");
-    let _ = std::fs::remove_file(&path);
     let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&output.stdout);
     parse_answer(&stdout)
 }
