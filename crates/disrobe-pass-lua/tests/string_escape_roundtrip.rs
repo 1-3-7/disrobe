@@ -55,14 +55,13 @@ fn find_luac(candidates: &[String]) -> Option<String> {
     None
 }
 
-fn scratch_dir(tag: &str) -> PathBuf {
+fn scratch_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
     let seq: u64 = SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf = std::env::temp_dir().join(format!(
+    let purpose: String = format!(
         "disrobe_lua_string_escape-{tag}-{}-{seq}",
         std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    );
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
 }
 
 fn compile(luac: &str, src: &Path, out: &Path) -> bool {
@@ -110,7 +109,8 @@ fn strip_main_wrapper(source: &str) -> String {
 }
 
 fn assert_string_constants_survive(luac: &str, tag: &str) {
-    let dir: PathBuf = scratch_dir(tag);
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir(tag);
+    let dir: PathBuf = scratch.path().to_path_buf();
     let src: PathBuf = dir.join("orig.lua");
     std::fs::write(&src, TRICKY_SOURCE).expect("write source");
     let original: PathBuf = dir.join("orig.luac");

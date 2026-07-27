@@ -55,12 +55,10 @@ fn lua_reports_54(lua: &str) -> bool {
     })
 }
 
-fn scratch_dir() -> PathBuf {
+fn scratch_dir() -> disrobe_core::scratch::ScratchDir {
     let seq: u64 = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_lua_prec-{}-{seq}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    let purpose: String = format!("disrobe_lua_prec-{}-{seq}", std::process::id());
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
 }
 
 fn compile(luac: &str, src: &Path, out: &Path) -> bool {
@@ -169,7 +167,8 @@ fn precedence_survives_recompile_and_reexec_lua_5_4() {
         eprintln!("skip: lua 5.4 toolchain (luac+lua) not found on box");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let mut failures: Vec<String> = Vec::new();
     for (name, source) in CASES {
         let src_path: PathBuf = dir.join(format!("{name}.src.lua"));

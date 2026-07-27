@@ -94,11 +94,13 @@ fn find_lua() -> Option<String> {
 
 fn run_lua(interp: &str, source: &str) -> Option<String> {
     let unique: u64 = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let tmp: PathBuf =
-        std::env::temp_dir().join(format!("ms1_loader_{}_{unique}.lua", std::process::id()));
+    let purpose: String = format!("ms1_loader_{}_{unique}", std::process::id());
+    let (scratch, file): (disrobe_core::scratch::ScratchFile, std::fs::File) =
+        disrobe_core::scratch::ScratchFile::create(&purpose, "lua").ok()?;
+    drop(file);
+    let tmp: PathBuf = scratch.path().to_path_buf();
     std::fs::write(&tmp, source).ok()?;
     let out = Command::new(interp).arg(&tmp).output().ok()?;
-    let _ = std::fs::remove_file(&tmp);
     if !out.status.success() {
         eprintln!("lua run failed: {}", String::from_utf8_lossy(&out.stderr));
         return None;

@@ -98,11 +98,10 @@ fn strip_main_wrapper(source: &str) -> String {
 
 fn assert_recompile_equivalent(luac: &str, name: &str, dialect_tag: &str) {
     let seq: u64 = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_lua_recompile_oracle-{}-{seq}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let purpose: String = format!("disrobe_lua_recompile_oracle-{}-{seq}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let original: PathBuf = dir.join(format!("{name}.{dialect_tag}.luac"));
     let src: PathBuf = src_path(name);
     assert!(
@@ -199,9 +198,10 @@ end
 
 fn run_lua_capture(interp: &str, source: &str) -> Option<String> {
     let seq: u64 = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_lua_runtime-{}-{seq}", std::process::id()));
-    std::fs::create_dir_all(&dir).ok()?;
+    let purpose: String = format!("disrobe_lua_runtime-{}-{seq}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).ok()?;
+    let dir: PathBuf = scratch.path().to_path_buf();
     let script: PathBuf = dir.join("run.lua");
     let full: String = format!(
         "{SERIALIZE_HARNESS}\nlocal make = (function()\n{source}\nend)()\nlocal a, b, c = make(\"probe\", 3)\nprint(ser(a))\nprint(ser(b))\nprint(ser(c))\n"
@@ -227,8 +227,10 @@ fn constructor_recovery_is_runtime_equivalent() {
         eprintln!("skip: no lua interpreter on box");
         return;
     };
-    let dir: PathBuf = std::env::temp_dir().join("disrobe_lua_ctor_runtime");
-    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_lua_ctor_runtime")
+            .expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let out: PathBuf = dir.join("ctor.luac");
     assert!(
         compile(&luac, &src_path("ctor"), &out),
@@ -266,8 +268,10 @@ fn decompiled_output_is_structured_not_goto_soup() {
         return;
     };
     for name in FIXTURES {
-        let dir: PathBuf = std::env::temp_dir().join("disrobe_lua_struct_check");
-        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("disrobe_lua_struct_check")
+                .expect("create scratch dir");
+        let dir: PathBuf = scratch.path().to_path_buf();
         let out: PathBuf = dir.join(format!("{name}.luac"));
         if !compile(&luac, &src_path(name), &out) {
             continue;

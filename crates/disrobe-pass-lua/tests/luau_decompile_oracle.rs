@@ -36,11 +36,13 @@ fn find_tool(names: &[&str]) -> Option<String> {
 
 fn run_luau(interp: &str, source: &str) -> Option<String> {
     let unique: u64 = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let tmp: PathBuf =
-        std::env::temp_dir().join(format!("luau_oracle_{}_{unique}.lua", std::process::id()));
+    let purpose: String = format!("luau_oracle_{}_{unique}", std::process::id());
+    let (scratch, file): (disrobe_core::scratch::ScratchFile, fs::File) =
+        disrobe_core::scratch::ScratchFile::create(&purpose, "lua").ok()?;
+    drop(file);
+    let tmp: PathBuf = scratch.path().to_path_buf();
     fs::write(&tmp, source).ok()?;
     let out = Command::new(interp).arg(&tmp).output().ok()?;
-    let _ = fs::remove_file(&tmp);
     if !out.status.success() {
         eprintln!("luau run failed: {}", String::from_utf8_lossy(&out.stderr));
         return None;
@@ -50,13 +52,18 @@ fn run_luau(interp: &str, source: &str) -> Option<String> {
 
 fn recompiles(compiler: &str, source: &str) -> bool {
     let unique: u64 = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let tmp: PathBuf =
-        std::env::temp_dir().join(format!("luau_recomp_{}_{unique}.lua", std::process::id()));
+    let purpose: String = format!("luau_recomp_{}_{unique}", std::process::id());
+    let Ok((scratch, file)): std::io::Result<(disrobe_core::scratch::ScratchFile, fs::File)> =
+        disrobe_core::scratch::ScratchFile::create(&purpose, "lua")
+    else {
+        return false;
+    };
+    drop(file);
+    let tmp: PathBuf = scratch.path().to_path_buf();
     if fs::write(&tmp, source).is_err() {
         return false;
     }
     let out = Command::new(compiler).arg("--binary").arg(&tmp).output();
-    let _ = fs::remove_file(&tmp);
     out.is_ok_and(|o| o.status.success() && !o.stdout.is_empty())
 }
 

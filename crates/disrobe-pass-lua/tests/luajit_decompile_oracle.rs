@@ -33,11 +33,13 @@ fn find_luajit() -> Option<String> {
 
 fn run_luajit(interp: &str, source: &str) -> Option<String> {
     let unique: u64 = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let tmp: PathBuf =
-        std::env::temp_dir().join(format!("lj_oracle_{}_{unique}.lua", std::process::id()));
+    let purpose: String = format!("lj_oracle_{}_{unique}", std::process::id());
+    let (scratch, file): (disrobe_core::scratch::ScratchFile, fs::File) =
+        disrobe_core::scratch::ScratchFile::create(&purpose, "lua").ok()?;
+    drop(file);
+    let tmp: PathBuf = scratch.path().to_path_buf();
     fs::write(&tmp, source).ok()?;
     let out = Command::new(interp).arg(&tmp).output().ok()?;
-    let _ = fs::remove_file(&tmp);
     if !out.status.success() {
         eprintln!(
             "luajit run failed: {}",
