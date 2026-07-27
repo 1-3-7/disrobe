@@ -92,11 +92,9 @@ fn obfuxtreme_recovery_is_cpython_structurally_equivalent_to_original_source() {
         eprintln!("skip: obfuxtreme equivalence oracle (python 3.14 absent)");
         return;
     };
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_obfux_equiv_{pid}",
-        pid = std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_obfux_equiv").expect("scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut tested: usize = 0;
     let mut equivalent: usize = 0;
@@ -115,7 +113,6 @@ fn obfuxtreme_recovery_is_cpython_structurally_equivalent_to_original_source() {
             mismatches.push((*slot).to_owned());
         }
     }
-    let _: std::io::Result<()> = std::fs::remove_dir_all(&dir);
 
     if tested == 0 {
         common::skip_absent_corpus(

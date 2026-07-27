@@ -246,19 +246,15 @@ fn find_python() -> Option<String> {
 }
 
 fn run_python_source(python: &str, source: &str) -> Option<String> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let unique: u64 = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir: std::path::PathBuf =
-        std::env::temp_dir().join(format!("disrobe_pw_oracle_{}_{unique}", std::process::id()));
-    std::fs::create_dir_all(&dir).ok()?;
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_pw_oracle").ok()?;
+    let dir: std::path::PathBuf = scratch.path().to_path_buf();
     let file: std::path::PathBuf = dir.join("candidate.py");
     std::fs::write(&file, source).ok()?;
     let output: std::process::Output = std::process::Command::new(python)
         .arg(&file)
         .output()
         .ok()?;
-    let _ = std::fs::remove_dir_all(&dir);
     if !output.status.success() {
         return None;
     }
