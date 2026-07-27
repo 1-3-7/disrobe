@@ -180,9 +180,9 @@ fn lifted_rust_simd_executes_equivalently_to_wasmtime() {
     };
 
     let src: String = lifted_rust_program(&bytes, &sigs, &exps);
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_simd_diff_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_simd_diff").expect("mkdir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let rs: PathBuf = dir.join("simd_diff.rs");
     std::fs::write(&rs, &src).expect("write rs");
     let exe: PathBuf = dir.join(if cfg!(windows) {

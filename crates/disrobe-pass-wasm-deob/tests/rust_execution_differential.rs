@@ -441,9 +441,9 @@ fn recovered_rust_executes_identically_to_original_under_wasmtime() {
     program.push_str("        _ => { eprintln!(\"unknown fn\"); }\n");
     program.push_str("    }\n}\n");
 
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_wasm_exec_diff_{}", std::process::id()));
-    fs::create_dir_all(&dir).expect("mkdir");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_wasm_exec_diff").expect("mkdir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let rs: PathBuf = dir.join("recovered.rs");
     fs::write(&rs, &program).expect("write rs");
     let bin: PathBuf = dir.join(if cfg!(windows) {

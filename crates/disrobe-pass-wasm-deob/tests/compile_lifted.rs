@@ -63,9 +63,9 @@ fn tool_on_path(tool: &str) -> Option<PathBuf> {
 #[test]
 fn lifted_rust_compiles_with_rustc() {
     let src: String = lift_all(LiftTarget::Rust);
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_wasm_lift_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_wasm_lift").expect("mkdir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let rs: PathBuf = dir.join("lifted.rs");
     std::fs::write(&rs, &src).expect("write rs");
 
@@ -122,9 +122,9 @@ fn lifted_c_compiles_when_compiler_available() {
         eprintln!("SKIP: no C compiler (cc/clang/gcc) on PATH");
         return;
     };
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_wasm_lift_c_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_wasm_lift_c").expect("mkdir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let c: PathBuf = dir.join("lifted.c");
     std::fs::write(&c, &src).expect("write c");
     let out: std::process::Output = Command::new(cc)
