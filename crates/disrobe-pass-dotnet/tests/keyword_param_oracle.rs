@@ -38,9 +38,9 @@ fn method_with_param_named(name: &str) -> MethodModel {
 
 fn compiles(header: &str, subdir: &str) -> (bool, String) {
     let source: String = format!("public class W\n{{\n    {header} {{ }}\n}}\n");
-    let tmp: PathBuf = std::env::temp_dir().join(subdir);
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).expect("mk tmp");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(subdir).expect("mk tmp");
+    let tmp: PathBuf = scratch.path().to_path_buf();
     std::fs::write(tmp.join("kwparamoracle.csproj"), CSPROJ).expect("write csproj");
     std::fs::write(tmp.join("Lib.cs"), &source).expect("write source");
     let out: std::process::Output = Command::new("dotnet")

@@ -180,9 +180,10 @@ fn cast_width_sign_recompiles_and_evaluates_to_matching_values() {
     }
     let cases: Vec<Case> = cases();
     let program: String = assemble_program(&cases);
-    let tmp: PathBuf = std::env::temp_dir().join("disrobe_cast_width_sign_oracle");
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).expect("mk tmp");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_cast_width_sign_oracle")
+            .expect("mk tmp");
+    let tmp: PathBuf = scratch.path().to_path_buf();
     std::fs::write(tmp.join("castoracle.csproj"), CSPROJ).expect("write csproj");
     std::fs::write(tmp.join("Program.cs"), &program).expect("write program");
 

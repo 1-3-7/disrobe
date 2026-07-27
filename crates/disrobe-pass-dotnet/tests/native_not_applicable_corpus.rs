@@ -9,8 +9,8 @@
 
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_dotnet::protectors::{DetectionReport, detect_all, is_dotnet_assembly};
 
 fn tool_available(tool: &str) -> bool {
@@ -26,15 +26,8 @@ fn first_c_compiler() -> Option<&'static str> {
         .find(|c: &&'static str| tool_available(c))
 }
 
-fn scratch_dir() -> PathBuf {
-    let stamp: u128 = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_nanos();
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-dn-corpus-{}-{stamp}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create scratch dir");
-    dir
+fn scratch_dir() -> ScratchDir {
+    ScratchDir::create("disrobe-dn-corpus").expect("create scratch dir")
 }
 
 fn exe_name(stem: &str) -> String {
@@ -56,7 +49,8 @@ fn native_benign_is_not_a_dotnet_assembly() {
         eprintln!("SKIP: no C compiler available");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let src: PathBuf = dir.join("nat.c");
     std::fs::write(&src, NATIVE_SRC).expect("write native source");
     let out: PathBuf = dir.join(exe_name("nat"));
@@ -69,7 +63,6 @@ fn native_benign_is_not_a_dotnet_assembly() {
         .is_ok_and(|s: std::process::ExitStatus| s.success());
     if !built {
         eprintln!("SKIP: {cc} build failed");
-        let _ = std::fs::remove_dir_all(&dir);
         return;
     }
     let bytes: Vec<u8> = std::fs::read(&out).expect("read native binary");
@@ -84,5 +77,4 @@ fn native_benign_is_not_a_dotnet_assembly() {
         "the .NET protector classifier must return not-applicable on a native benign; got {:?}",
         report.matches.keys().collect::<Vec<_>>()
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }

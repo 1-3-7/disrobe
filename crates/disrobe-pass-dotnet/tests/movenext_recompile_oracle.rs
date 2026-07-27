@@ -719,9 +719,10 @@ fn movenext_bodies_recompile_against_csc() {
     }
     let asm: DecompiledAssembly = decompile();
     let bodies: Vec<String> = move_next_bodies(&asm);
-    let tmp: PathBuf = std::env::temp_dir().join("disrobe_movenext_recompile_oracle");
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).expect("mk tmp");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_movenext_recompile_oracle")
+            .expect("mk tmp");
+    let tmp: PathBuf = scratch.path().to_path_buf();
     write_project(&tmp);
 
     let mut total: usize = 0;

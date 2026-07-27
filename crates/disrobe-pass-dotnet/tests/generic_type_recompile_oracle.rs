@@ -209,9 +209,10 @@ fn generic_type_methods_recompile_against_csc() {
         return;
     }
     let asm: DecompiledAssembly = decompile();
-    let tmp: PathBuf = std::env::temp_dir().join("disrobe_generic_type_recompile_oracle");
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).expect("mk tmp");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_generic_type_recompile_oracle")
+            .expect("mk tmp");
+    let tmp: PathBuf = scratch.path().to_path_buf();
     write_project(&tmp);
 
     let mut clean: usize = 0;

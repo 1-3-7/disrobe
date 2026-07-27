@@ -354,10 +354,10 @@ fn run_target(target: Target) -> Outcome {
         target.type_name
     );
 
-    let tmp: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_whole_type_il_oracle_{}", target.type_name));
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).expect("mk tmp");
+    let purpose: String = format!("disrobe_whole_type_il_oracle_{}", target.type_name);
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("mk tmp");
+    let tmp: PathBuf = scratch.path().to_path_buf();
     write_project(&tmp, target.type_name);
     let src: String = whole_type_source(&methods, target);
     let (compile_errors, produced): (Vec<String>, Option<PathBuf>) =
@@ -518,12 +518,10 @@ fn run_record_target(target: RecordTarget) -> Outcome {
         };
     };
 
-    let tmp: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_whole_type_il_oracle_record_{}",
-        target.type_name
-    ));
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).expect("mk tmp");
+    let purpose: String = format!("disrobe_whole_type_il_oracle_record_{}", target.type_name);
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("mk tmp");
+    let tmp: PathBuf = scratch.path().to_path_buf();
     write_project(&tmp, target.type_name);
     let src: String = record_source(&decl);
     let (compile_errors, produced): (Vec<String>, Option<PathBuf>) =
@@ -618,12 +616,10 @@ fn run_record_method_target(target: RecordMethodTarget) -> Outcome {
         target.class_type
     );
 
-    let tmp: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_whole_type_il_oracle_recmeth_{}",
-        target.class_type
-    ));
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).expect("mk tmp");
+    let purpose: String = format!("disrobe_whole_type_il_oracle_recmeth_{}", target.class_type);
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("mk tmp");
+    let tmp: PathBuf = scratch.path().to_path_buf();
     write_project(&tmp, target.class_type);
     let src: String = record_method_source(&record_decl, &methods, target.class_type);
     let (compile_errors, produced): (Vec<String>, Option<PathBuf>) =
