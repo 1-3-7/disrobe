@@ -138,9 +138,10 @@ fn realworld_apk_translated_classes_verify() {
     let result: Dex2JarResult = translate_dex_bytes(dex).expect("translate");
     let jar: Vec<u8> = disrobe_pass_jvm::assemble_jar(&result).expect("assemble jar");
 
-    let dir: PathBuf = std::env::temp_dir().join("disrobe_realworld_verify");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_realworld_verify")
+            .expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let jar_path: PathBuf = dir.join("translated.jar");
     std::fs::write(&jar_path, &jar).expect("write jar");
     let src_path: PathBuf = dir.join("V.java");

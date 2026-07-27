@@ -118,12 +118,10 @@ fn recovered_dalvik_bodies_pass_the_real_jvm_verifier() {
         return;
     };
 
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_dalvik_verifier_gate_{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir gate dir");
+    let purpose: String = format!("disrobe_dalvik_verifier_gate_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let src_path: PathBuf = dir.join("V.java");
     std::fs::write(&src_path, VERIFIER_SRC).expect("write verifier source");
 
@@ -194,8 +192,6 @@ fn recovered_dalvik_bodies_pass_the_real_jvm_verifier() {
     for e in &all_errors {
         eprintln!("  {e}");
     }
-    let _ = std::fs::remove_dir_all(&dir);
-
     assert!(
         total_clean >= VERIFY_CLEAN_CLASS_FLOOR,
         "verifier-clean classes {total_clean} fell below floor {VERIFY_CLEAN_CLASS_FLOOR}; \

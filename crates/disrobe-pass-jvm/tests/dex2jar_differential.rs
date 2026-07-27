@@ -91,9 +91,10 @@ fn real_jvm_javap_accepts_translated_classes() {
     let result: Dex2JarResult = translate_dex_bytes(&dex_bytes).expect("translate");
     let jar: Vec<u8> = assemble_jar(&result).expect("assemble jar");
 
-    let dir: PathBuf = std::env::temp_dir().join("disrobe_dex2jar_javap");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_dex2jar_javap")
+            .expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let jar_path: PathBuf = dir.join("translated.jar");
     std::fs::write(&jar_path, &jar).expect("write jar");
 

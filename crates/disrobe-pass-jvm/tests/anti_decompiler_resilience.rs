@@ -61,9 +61,9 @@ fn method_body(source: &str, signature_fragment: &str) -> String {
 fn recompile_and_run(simple_name: &str, source: &str, sub_dir: &str) -> Option<String> {
     let javac: PathBuf = find_on_path("javac")?;
     let java: PathBuf = find_on_path("java")?;
-    let dir: PathBuf = std::env::temp_dir().join(sub_dir);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(sub_dir).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let src_path: PathBuf = dir.join(format!("{simple_name}.java"));
     std::fs::write(&src_path, source).expect("write java");
     let compile: std::process::Output = Command::new(&javac)

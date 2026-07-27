@@ -46,10 +46,10 @@ fn noncanonical_nan_literal_round_trips_while_named_constant_does_not() {
         return;
     };
 
-    let root: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_nan_const_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).expect("mkdir root");
+    let purpose: String = format!("disrobe_nan_const_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let root: PathBuf = scratch.path().to_path_buf();
     let src_path: PathBuf = root.join("NanConst.java");
     std::fs::write(&src_path, SOURCE.as_bytes()).expect("write source");
 
@@ -112,6 +112,4 @@ fn noncanonical_nan_literal_round_trips_while_named_constant_does_not() {
         lines[2], lines[3],
         "emitting Double.NaN for a non-canonical NaN constant changes the observable value"
     );
-
-    let _ = std::fs::remove_dir_all(&root);
 }

@@ -155,10 +155,10 @@ fn expr_constructs_recompile_and_verify() {
         return;
     };
 
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_expr_construct_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let purpose: String = format!("disrobe_expr_construct_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let path: PathBuf = dir.join("ExprCases.java");
     std::fs::write(&path, &src).expect("write");
 

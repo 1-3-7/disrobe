@@ -116,11 +116,12 @@ fn precedence_parenthesization_recompiles_to_same_jvm_output() {
         return;
     };
 
-    let root: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_prec_recompile_{}", std::process::id()));
+    let purpose: String = format!("disrobe_prec_recompile_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let root: PathBuf = scratch.path().to_path_buf();
     let gold: PathBuf = root.join("gold");
     let recov: PathBuf = root.join("recov");
-    let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&gold).expect("mkdir gold");
     std::fs::create_dir_all(&recov).expect("mkdir recov");
 
@@ -187,6 +188,4 @@ fn precedence_parenthesization_recompiles_to_same_jvm_output() {
              missing or wrong parenthesization changed the evaluated value. recovered:\n{recovered}"
         );
     }
-
-    let _ = std::fs::remove_dir_all(&root);
 }

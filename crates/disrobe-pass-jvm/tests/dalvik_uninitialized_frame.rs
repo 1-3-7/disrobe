@@ -316,11 +316,12 @@ fn recovered_class_verifies_and_wrong_offset_is_rejected() {
         .expect("Foo.class present")
         .clone();
 
-    let root: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_uninit_frame_{}", std::process::id()));
+    let purpose: String = format!("disrobe_uninit_frame_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let root: PathBuf = scratch.path().to_path_buf();
     let ok_dir: PathBuf = root.join("ok");
     let bad_dir: PathBuf = root.join("bad");
-    let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&ok_dir).expect("mkdir ok");
     std::fs::create_dir_all(&bad_dir).expect("mkdir bad");
 
@@ -390,8 +391,6 @@ fn recovered_class_verifies_and_wrong_offset_is_rejected() {
         "the corrupted-offset class must be rejected by the JVM for the bad Uninitialized offset; \
          stderr was:\n{bad_err}"
     );
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 fn make_alias_dex() -> Vec<u8> {
@@ -614,12 +613,13 @@ fn aliased_uninitialized_ref_verifies_and_partial_init_is_rejected() {
         .expect("Foo.class present")
         .clone();
 
-    let root: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_uninit_alias_{}", std::process::id()));
+    let purpose: String = format!("disrobe_uninit_alias_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let root: PathBuf = scratch.path().to_path_buf();
     let ok_dir: PathBuf = root.join("ok");
     let bad_off_dir: PathBuf = root.join("bad_off");
     let bad_partial_dir: PathBuf = root.join("bad_partial");
-    let _ = std::fs::remove_dir_all(&root);
     for d in [&ok_dir, &bad_off_dir, &bad_partial_dir] {
         std::fs::create_dir_all(d).expect("mkdir alias dir");
     }
@@ -723,8 +723,6 @@ fn aliased_uninitialized_ref_verifies_and_partial_init_is_rejected() {
             || bad_partial_err.contains("bad type"),
         "the partial-init class must be rejected by the JVM verifier; stderr was:\n{bad_partial_err}"
     );
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 fn foo_last_field() -> FieldRef {
@@ -1012,11 +1010,12 @@ fn nondominated_merge_verifies_and_wrong_frame_is_rejected() {
         .expect("Foo.class present")
         .clone();
 
-    let root: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_twonews_{}", std::process::id()));
+    let purpose: String = format!("disrobe_twonews_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let root: PathBuf = scratch.path().to_path_buf();
     let ok_dir: PathBuf = root.join("ok");
     let bad_dir: PathBuf = root.join("bad");
-    let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&ok_dir).expect("mkdir ok");
     std::fs::create_dir_all(&bad_dir).expect("mkdir bad");
 
@@ -1087,6 +1086,4 @@ fn nondominated_merge_verifies_and_wrong_frame_is_rejected() {
             || bad_err.contains("stackmap"),
         "the corrupted merge frame must be rejected by the JVM verifier; stderr was:\n{bad_err}"
     );
-
-    let _ = std::fs::remove_dir_all(&root);
 }

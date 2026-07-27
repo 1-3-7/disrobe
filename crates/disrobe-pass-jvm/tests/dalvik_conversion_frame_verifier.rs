@@ -281,12 +281,10 @@ fn every_numeric_conversion_class_passes_xverify_all() {
     let result: Dex2JarResult =
         translate_dex_bytes(&make_conversion_dex()).expect("translate crafted conversion dex");
 
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_conv_frame_verifier_{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir gate dir");
+    let purpose: String = format!("disrobe_conv_frame_verifier_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     for (_op, class, _src, _ret) in CONVERSIONS {
         let entry: &Vec<u8> = result
@@ -342,8 +340,6 @@ fn every_numeric_conversion_class_passes_xverify_all() {
         .find_map(|t: &str| t.strip_prefix("conv_other="))
         .and_then(|v: &str| v.parse::<usize>().ok())
         .unwrap_or(usize::MAX);
-
-    let _ = std::fs::remove_dir_all(&dir);
 
     assert!(
         run.status.success() && out.contains("conv_clean="),

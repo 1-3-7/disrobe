@@ -179,11 +179,12 @@ fn boolean_array_elements_recompile_to_equivalent_bytecode() {
         );
         return;
     };
-    let root: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_bool_arr_{}", std::process::id()));
+    let purpose: String = format!("disrobe_bool_arr_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let root: PathBuf = scratch.path().to_path_buf();
     let gold: PathBuf = root.join("gold");
     let recov: PathBuf = root.join("recov");
-    let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&gold).expect("mkdir gold");
     std::fs::create_dir_all(&recov).expect("mkdir recov");
 

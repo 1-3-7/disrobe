@@ -272,10 +272,11 @@ fn inferred_conversion_frame_passes_the_real_jvm_verifier() {
     let local_tags: Vec<u8> = collapse_locals(&frame);
     let (class_bytes, tag_offsets): (Vec<u8>, Vec<usize>) = build_conv_class(&local_tags, l_off);
 
-    let root: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_conv_frame_{}", std::process::id()));
+    let purpose: String = format!("disrobe_conv_frame_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let root: PathBuf = scratch.path().to_path_buf();
     let ok_dir: PathBuf = root.join("ok");
-    let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&ok_dir).expect("mkdir ok");
 
     let probe_src: PathBuf = ok_dir.join("Probe.java");
@@ -354,6 +355,4 @@ fn inferred_conversion_frame_passes_the_real_jvm_verifier() {
             "the corrupted conversion frame must be rejected for a type/width mismatch; stderr:\n{bad_err}"
         );
     }
-
-    let _ = std::fs::remove_dir_all(&root);
 }

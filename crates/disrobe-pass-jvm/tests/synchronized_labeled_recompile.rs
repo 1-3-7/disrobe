@@ -36,11 +36,9 @@ fn tools() -> Option<Tools> {
     })
 }
 
-fn workdir(tag: &str) -> PathBuf {
-    let dir: PathBuf = std::env::temp_dir().join(format!("disrobe_jvm_regress_{tag}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    dir
+fn workdir(tag: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe_jvm_regress_{tag}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
 }
 
 fn compile(tools: &Tools, dir: &Path, sources: &[(&str, &str)]) {
@@ -112,7 +110,8 @@ fn synchronized_block_reconstructs_and_recompiles_behaviorally() {
         eprintln!("SKIP: javac/java not on PATH; synchronized recompile gate NOT enforced");
         return;
     };
-    let orig: PathBuf = workdir("sync_orig");
+    let orig_scratch: disrobe_core::scratch::ScratchDir = workdir("sync_orig");
+    let orig: PathBuf = orig_scratch.path().to_path_buf();
     compile(&tools, &orig, &[("Sm.java", SM), ("SmDrv.java", SM_DRV)]);
     let src: String = decompile_named(&orig, "Sm");
 
@@ -127,7 +126,8 @@ fn synchronized_block_reconstructs_and_recompiles_behaviorally() {
         "monitorenter/monitorexit must not leak as comments after reconstruction; got:\n{src}"
     );
 
-    let dec: PathBuf = workdir("sync_dec");
+    let dec_scratch: disrobe_core::scratch::ScratchDir = workdir("sync_dec");
+    let dec: PathBuf = dec_scratch.path().to_path_buf();
     compile(&tools, &dec, &[("Sm.java", &src), ("SmDrv.java", SM_DRV)]);
 
     let javap: PathBuf = find_on_path("javap").expect("javap on PATH next to javac");
@@ -204,7 +204,8 @@ fn labeled_break_continue_reconstructs_and_recompiles_behaviorally() {
         eprintln!("SKIP: javac/java not on PATH; labeled-break recompile gate NOT enforced");
         return;
     };
-    let orig: PathBuf = workdir("lab_orig");
+    let orig_scratch: disrobe_core::scratch::ScratchDir = workdir("lab_orig");
+    let orig: PathBuf = orig_scratch.path().to_path_buf();
     compile(
         &tools,
         &orig,
@@ -230,7 +231,8 @@ fn labeled_break_continue_reconstructs_and_recompiles_behaviorally() {
         "outer loops with labeled jumps must carry a label declaration; got:\n{src}"
     );
 
-    let dec: PathBuf = workdir("lab_dec");
+    let dec_scratch: disrobe_core::scratch::ScratchDir = workdir("lab_dec");
+    let dec: PathBuf = dec_scratch.path().to_path_buf();
     compile(
         &tools,
         &dec,
@@ -271,7 +273,8 @@ fn anewarray_of_array_preserves_sized_dimension() {
         eprintln!("SKIP: javac/java not on PATH; anewarray dimension gate NOT enforced");
         return;
     };
-    let orig: PathBuf = workdir("arr_orig");
+    let orig_scratch: disrobe_core::scratch::ScratchDir = workdir("arr_orig");
+    let orig: PathBuf = orig_scratch.path().to_path_buf();
     compile(
         &tools,
         &orig,
@@ -288,7 +291,8 @@ fn anewarray_of_array_preserves_sized_dimension() {
         "the sized dimension must not be appended after the element-type brackets; got:\n{src}"
     );
 
-    let dec: PathBuf = workdir("arr_dec");
+    let dec_scratch: disrobe_core::scratch::ScratchDir = workdir("arr_dec");
+    let dec: PathBuf = dec_scratch.path().to_path_buf();
     compile(
         &tools,
         &dec,
@@ -317,7 +321,8 @@ fn raw_generic_field_null_check_stays_reference_comparison() {
         eprintln!("SKIP: javac not on PATH; raw-generic null gate NOT enforced");
         return;
     };
-    let orig: PathBuf = workdir("raw_orig");
+    let orig_scratch: disrobe_core::scratch::ScratchDir = workdir("raw_orig");
+    let orig: PathBuf = orig_scratch.path().to_path_buf();
     compile(&tools, &orig, &[("Raw.java", RAW)]);
     let src: String = decompile_named(&orig, "Raw");
 

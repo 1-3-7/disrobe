@@ -273,8 +273,10 @@ fn char_short_fill_round_trips_runtime_values() {
     }
 
     let jar: Vec<u8> = assemble_jar(&result).expect("jar");
-    let dir: PathBuf = std::env::temp_dir().join(format!("disrobe_fill_cs_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let purpose: String = format!("disrobe_fill_cs_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let jar_path: PathBuf = dir.join("fill.jar");
     let mut f: std::fs::File = std::fs::File::create(&jar_path).expect("create jar");
     f.write_all(&jar).expect("write jar");
@@ -315,7 +317,6 @@ fn char_short_fill_round_trips_runtime_values() {
         .expect("java run");
     let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&run.stdout);
     let stderr: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&run.stderr);
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         run.status.success() && stdout.contains("VALUES_OK"),
         "jvm value check failed: stdout={stdout} stderr={stderr}"
@@ -351,8 +352,10 @@ fn verify_with_jvm(result: &Dex2JarResult) {
         return;
     };
     let jar: Vec<u8> = assemble_jar(result).expect("jar");
-    let dir: PathBuf = std::env::temp_dir().join(format!("disrobe_fill_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let purpose: String = format!("disrobe_fill_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let jar_path: PathBuf = dir.join("fill.jar");
     let mut f: std::fs::File = std::fs::File::create(&jar_path).expect("create jar");
     f.write_all(&jar).expect("write jar");
@@ -368,7 +371,6 @@ fn verify_with_jvm(result: &Dex2JarResult) {
     let javac: PathBuf = java.with_file_name(if cfg!(windows) { "javac.exe" } else { "javac" });
     if !javac.is_file() {
         eprintln!("skip jvm verify: no javac");
-        let _ = std::fs::remove_dir_all(&dir);
         return;
     }
     let compile: std::process::Output = Command::new(&javac)
@@ -393,7 +395,6 @@ fn verify_with_jvm(result: &Dex2JarResult) {
         .expect("java run");
     let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&run.stdout);
     let stderr: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&run.stderr);
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         run.status.success() && stdout.contains("VERIFY_OK"),
         "jvm verify failed: stdout={stdout} stderr={stderr}"
