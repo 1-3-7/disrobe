@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_native::deobf::{
     Bits, OpaqueResult, defeat_bogus_control_flow, defeat_bogus_control_flow_deep,
     locate_containing_block,
@@ -53,17 +54,13 @@ fn clang() -> Option<&'static str> {
         .map(|_| "clang")
 }
 
-fn scratch_dir() -> PathBuf {
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-opaque-ground-truth-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+fn scratch_dir() -> ScratchDir {
+    ScratchDir::create("disrobe-opaque-ground-truth").expect("create scratch directory")
 }
 
 fn compile_object(clang_bin: &str, opt_level: &str) -> Option<Vec<u8>> {
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let src_path: PathBuf = dir.join(format!("fixture_{opt_level}.c"));
     std::fs::write(&src_path, FIXTURE_SRC).expect("write fixture source");
     let obj_path: PathBuf = dir.join(format!("fixture_{opt_level}.o"));

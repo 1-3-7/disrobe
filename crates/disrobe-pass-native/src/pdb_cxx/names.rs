@@ -242,9 +242,10 @@ mod tests {
     }
 
     fn compiles_as_cxx(compiler: &str, std_flag: &str, source: &str, tag: &str) -> bool {
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-pdb-names-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("disrobe-pdb-names")
+                .expect("create scratch directory");
+        let dir: &std::path::Path = scratch.path();
         let src: std::path::PathBuf = dir.join(format!("names_{tag}.cpp"));
         std::fs::write(&src, source.as_bytes()).expect("write source");
         std::process::Command::new(compiler)

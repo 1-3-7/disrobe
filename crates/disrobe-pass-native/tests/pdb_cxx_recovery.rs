@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_core::subprocess::{self, CapturedOutput};
 use disrobe_pass_native::{
     EmittedBase, EmittedUdt, PdbCxxReconstruction, perturb_first_offset, reconstruct_pdb_cxx,
@@ -154,12 +155,9 @@ fn compile_tu(compiler: &Compiler, source: &Path, obj_out: &Path) -> CompileOutc
     }
 }
 
-fn scratch_dir(tag: &str) -> PathBuf {
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-pdb-cxx-{tag}-{}", std::process::id()));
-    let _: std::io::Result<()> = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create scratch dir");
-    dir
+fn scratch_dir(tag: &str) -> ScratchDir {
+    let purpose: String = format!("disrobe-pdb-cxx-{tag}");
+    ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 #[test]
@@ -356,7 +354,8 @@ fn real_compiler_confirms_size_and_offset_of_every_recovered_udt() {
     let tu_text: String = render_static_assert_tu(&rec.header_text, &rec.udts);
     eprintln!("[evidence] rendered validation tu:\n{tu_text}");
 
-    let dir: PathBuf = scratch_dir("main");
+    let scratch: ScratchDir = scratch_dir("main");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let tu_path: PathBuf = dir.join("validate.cpp");
     std::fs::write(&tu_path, &tu_text).expect("write validation tu");
 
@@ -407,7 +406,8 @@ fn perturbing_one_recovered_offset_makes_the_real_compiler_reject_it() {
         "the corrupted tu must actually differ from the real one"
     );
 
-    let dir: PathBuf = scratch_dir("perturb");
+    let scratch: ScratchDir = scratch_dir("perturb");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let tu_path: PathBuf = dir.join("corrupted.cpp");
     std::fs::write(&tu_path, &corrupted).expect("write corrupted tu");
 

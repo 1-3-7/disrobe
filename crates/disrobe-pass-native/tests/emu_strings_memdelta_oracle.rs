@@ -11,6 +11,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_native::{EmulatedString, emulate_string_decoders};
 
 const KEY: u8 = 0x5A;
@@ -28,11 +29,8 @@ fn has_tool(cmd: &str) -> bool {
         .is_ok_and(|o: std::process::Output| o.status.success())
 }
 
-fn scratch_dir() -> PathBuf {
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-emu-memdelta-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+fn scratch_dir() -> ScratchDir {
+    ScratchDir::create("disrobe-emu-memdelta").expect("create scratch directory")
 }
 
 fn c_array(name: &str, plain: &str) -> String {
@@ -192,7 +190,8 @@ fn gcc_dll_decoders_recovered_from_written_memory() {
         eprintln!("skipping: gcc not on PATH");
         return;
     }
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let src_path: PathBuf = dir.join("corpus.c");
     std::fs::write(&src_path, corpus_source().as_bytes()).expect("write corpus.c");
     let dll: PathBuf = dir.join("corpus_gcc.dll");
@@ -225,7 +224,8 @@ fn sysv_clang_decoders_recovered_from_written_memory() {
         eprintln!("skipping sysv: clang not on PATH");
         return;
     }
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let src_path: PathBuf = dir.join("corpus_sysv.c");
     std::fs::write(&src_path, corpus_source().as_bytes()).expect("write corpus_sysv.c");
     let so: PathBuf = dir.join("corpus_clang.so");

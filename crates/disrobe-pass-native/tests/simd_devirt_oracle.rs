@@ -11,6 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_native::{LeafRecovery, PseudoAbi as Abi, recover_vectorized_reduction};
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
@@ -93,11 +94,8 @@ const MAPS: &[MapKern] = &[
     },
 ];
 
-fn scratch_dir() -> PathBuf {
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-simd-devirt-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+fn scratch_dir() -> ScratchDir {
+    ScratchDir::create("disrobe-simd-devirt").expect("create scratch directory")
 }
 
 fn host_cc() -> Option<String> {
@@ -197,7 +195,8 @@ fn ret_mask(bits: u32) -> String {
 }
 
 fn run_differential(cc: &str, opt: &str) -> bool {
-    let dir: PathBuf = scratch_dir().join(cc.replace(['/', '\\', '.', ':'], "_"));
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().join(cc.replace(['/', '\\', '.', ':'], "_"));
     std::fs::create_dir_all(&dir).expect("per-compiler scratch dir");
     let Some(obj): Option<Vec<u8>> = compile_object(cc, &dir, opt) else {
         return false;
@@ -393,7 +392,8 @@ fn floating_point_vectorized_loops_sound_reject() {
         eprintln!("skipping: no C compiler on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let src: PathBuf = dir.join("fpkern.c");
     std::fs::write(&src, FP_KERN_C.as_bytes()).expect("write fpkern.c");
     let obj: PathBuf = dir.join("fpkern.o");

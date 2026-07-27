@@ -11,6 +11,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_native::{
     Arch, DisasmInsn, ProgramFunction, PseudoAbi, RecoveredFunction as LibRecoveredFunction,
     RecoveredProgram as LibRecoveredProgram, disassemble, recover_program as lib_recover_program,
@@ -311,11 +312,8 @@ fn clang() -> Option<String> {
         .then(|| "clang".to_owned())
 }
 
-fn scratch_dir() -> PathBuf {
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-pseudo-wp-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+fn scratch_dir() -> ScratchDir {
+    ScratchDir::create("disrobe-pseudo-wp").expect("create scratch directory")
 }
 
 fn function_code(object_bytes: &[u8], name: &str) -> Option<(Vec<u8>, u64)> {
@@ -402,7 +400,8 @@ fn compile_object_opt(
     source: &str,
     out: &Path,
 ) -> Option<Vec<u8>> {
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let src: PathBuf = dir.join(format!(
         "{}.c",
         out.file_stem().and_then(|s| s.to_str()).unwrap_or("unit")
@@ -539,7 +538,8 @@ fn link_and_run(
     tag: &str,
     secs: u64,
 ) -> Option<String> {
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let obj: PathBuf = dir.join(format!("{tag}_link.o"));
     std::fs::write(&obj, link_object).ok()?;
     let driver_c: PathBuf = dir.join(format!("{tag}_driver.c"));
@@ -585,7 +585,8 @@ fn whole_programs_recompile_to_behavioral_equivalence_hostabi() {
         );
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let mut recovered_count: usize = 0;
     let mut rejected_count: usize = 0;
     let mut chain_recovered: bool = false;
@@ -635,7 +636,8 @@ fn whole_programs_recompile_to_behavioral_equivalence_hostabi() {
 fn compile_dual(program: &WholeProgram) -> Option<(String, Vec<u8>, Vec<u8>)> {
     let host_cc: String = cc()?;
     let clang_cc: String = clang()?;
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let host_path: PathBuf = dir.join(format!("{}_gt.o", program.name));
     let host_obj: Vec<u8> = compile_object(&host_cc, &CC_FLAGS, program.c_source, &host_path)?;
     let sysv_path: PathBuf = dir.join(format!("{}_sysv.o", program.name));
@@ -1007,7 +1009,8 @@ fn shape_battery_recompile_to_behavioral_equivalence_hostabi() {
         eprintln!("skipping host shape oracle: gcc not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let battery: Vec<&WholeProgram> = full_battery();
     let mut total_equivalent: usize = 0;
     let mut total_slots: usize = 0;
@@ -1071,7 +1074,8 @@ fn shape_battery_recompile_to_behavioral_equivalence_sysv() {
         eprintln!("skipping sysv shape oracle: clang (needed for the SysV object) not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let battery: Vec<&WholeProgram> = full_battery();
     let mut total_equivalent: usize = 0;
     let mut total_slots: usize = 0;

@@ -16,6 +16,7 @@ use std::process::Command;
 use disrobe_core::Artifact;
 use disrobe_core::Rung;
 use disrobe_core::chain::{ChildArtifact, Pass};
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_native::chain_detector::PACKER_PASS;
 
 const KNOWN_MARKER: &[u8] = b"disrobe-auto-unpack-known-plaintext-marker-9f3a7c1e";
@@ -63,9 +64,9 @@ fn auto_surfaces_upx_unpacked_image_matching_upx_d_reference() {
         return;
     }
 
-    let tmp: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-auto-unpack-{}", std::process::id()));
-    std::fs::create_dir_all(&tmp).expect("create tmp dir");
+    let scratch: ScratchDir =
+        ScratchDir::create("disrobe-auto-unpack").expect("create scratch directory");
+    let tmp: &Path = scratch.path();
 
     let src: PathBuf = write_source(&tmp);
     let exe: PathBuf = tmp.join("known_plaintext.exe");

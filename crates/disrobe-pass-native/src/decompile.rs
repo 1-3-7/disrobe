@@ -281,13 +281,16 @@ mod tests {
 
     #[test]
     fn license_run_yields_license_required_error() {
-        let tmp: PathBuf = std::env::temp_dir();
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("disrobe-decompile-input")
+                .expect("create scratch directory");
+        let tmp: &std::path::Path = scratch.path();
         let dummy: PathBuf = tmp.join(format!(
             "disrobe-decompile-input-{}.bin",
             std::process::id()
         ));
         std::fs::write(&dummy, b"\x7FELF").expect("write dummy");
-        let res: Result<DecompileOutput> = run(DecompilerBackend::Ida, &dummy, &tmp);
+        let res: Result<DecompileOutput> = run(DecompilerBackend::Ida, &dummy, tmp);
         match res {
             Err(Error::LicenseRequired(label)) => assert_eq!(label, "ida"),
             other => panic!("expected LicenseRequired, got {other:?}"),
