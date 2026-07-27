@@ -417,9 +417,9 @@ const FEATURE_RICH_WAT: &str = r#"
 #[test]
 fn feature_rich_lift_compiles_with_rustc() {
     let src: String = lift_all_rust(FEATURE_RICH_WAT);
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_wasm_feat_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_wasm_feat").expect("mkdir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let rs: PathBuf = dir.join("feat.rs");
     std::fs::write(&rs, &src).expect("write rs");
     let Some(rustc): Option<PathBuf> = tool_on_path("rustc") else {

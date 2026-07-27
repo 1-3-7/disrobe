@@ -3,7 +3,6 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use disrobe_pass_wasm_deob::{
     CalleeNames, FunctionSig, LiftTarget, ModuleSignatures, extract_signatures, lift_function_body,
@@ -42,8 +41,6 @@ const LOOP_RESULT_LABEL: &str = r#"
     drop
     drop))
 "#;
-
-static TEMP_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
 fn first_body<'a>(bytes: &'a [u8]) -> Result<FunctionBody<'a>, String> {
     for payload in Parser::new(0).parse_all(bytes) {
@@ -119,16 +116,10 @@ const fn expected(selector: i32, value: i64) -> i64 {
 }
 
 fn compile_recovered_wasm(source: &str) -> Result<Vec<u8>, String> {
-    let sequence: usize = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_wasm_br_table_result_values_{}_{}",
-        std::process::id(),
-        sequence
-    ));
-    if dir.exists() {
-        fs::remove_dir_all(&dir).map_err(|error| error.to_string())?;
-    }
-    fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_wasm_br_table_result_values")
+            .map_err(|error: std::io::Error| error.to_string())?;
+    let dir: PathBuf = scratch.path().to_path_buf();
     let rust: PathBuf = dir.join("recovered.rs");
     let wasm: PathBuf = dir.join("recovered.wasm");
     let result: Result<Vec<u8>, String> = (|| {
@@ -159,7 +150,9 @@ fn compile_recovered_wasm(source: &str) -> Result<Vec<u8>, String> {
         }
         fs::read(&wasm).map_err(|error| error.to_string())
     })();
-    let cleanup: Result<(), String> = fs::remove_dir_all(&dir).map_err(|error| error.to_string());
+    let cleanup: Result<(), String> = scratch
+        .close()
+        .map_err(|error: std::io::Error| error.to_string());
     match (result, cleanup) {
         (Ok(bytes), Ok(())) => Ok(bytes),
         (Ok(_), Err(error)) => Err(format!("could not remove fixture directory: {error}")),

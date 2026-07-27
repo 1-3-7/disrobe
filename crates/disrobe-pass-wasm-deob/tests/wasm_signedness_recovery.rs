@@ -462,12 +462,13 @@ fn signedness_matches_clang_wasm() {
         eprintln!("clang unavailable; skipping compiled-C signedness grading");
         return;
     }
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_wasm_sign_{}", std::process::id()));
-    if std::fs::create_dir_all(&dir).is_err() {
+    let Ok(scratch): Result<disrobe_core::scratch::ScratchDir, std::io::Error> =
+        disrobe_core::scratch::ScratchDir::create("disrobe_wasm_sign")
+    else {
         eprintln!("cannot create temp dir; skipping compiled-C signedness grading");
         return;
-    }
+    };
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let all: Vec<Fixture> = fixtures();
     let Some(first) = all.first() else {
@@ -489,5 +490,4 @@ fn signedness_matches_clang_wasm() {
         graded += 1;
     }
     assert_eq!(graded, all.len(), "every fixture graded against clang");
-    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -3612,9 +3612,10 @@ mod merge_tests {
         program.push_str("\nfn main() { println!(\"{}\", sum_to(");
         program.push_str(&arg.to_string());
         program.push_str(")); }\n");
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe_merge_teeth_{}_{tag}", std::process::id()));
-        std::fs::create_dir_all(&dir).ok()?;
+        let purpose: String = format!("disrobe_merge_teeth_{tag}");
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create(&purpose).ok()?;
+        let dir: std::path::PathBuf = scratch.path().to_path_buf();
         let rs: std::path::PathBuf = dir.join("recovered.rs");
         std::fs::write(&rs, &program).ok()?;
         let bin: std::path::PathBuf = dir.join(if cfg!(windows) { "rec.exe" } else { "rec" });
