@@ -183,11 +183,13 @@ pub fn verify_recompile(table: &FrozenModules, interpreter: &std::path::Path) ->
         }
     };
 
-    let mut dir: std::path::PathBuf = std::env::temp_dir();
-    dir.push(format!("disrobe-frozen-{}", std::process::id()));
-    if std::fs::create_dir_all(&dir).is_err() {
-        return unchecked(0);
-    }
+    let purpose: String = format!("disrobe-frozen-{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        match disrobe_core::scratch::ScratchDir::create(&purpose) {
+            Ok(scratch) => scratch,
+            Err(_) => return unchecked(0),
+        };
+    let dir: std::path::PathBuf = scratch.path().to_path_buf();
 
     let mut manifest: Vec<(String, std::path::PathBuf)> = Vec::with_capacity(targets.len());
     for (index, module) in targets.iter().enumerate() {
@@ -206,7 +208,6 @@ pub fn verify_recompile(table: &FrozenModules, interpreter: &std::path::Path) ->
         manifest_text.push('\n');
     }
     if std::fs::write(&manifest_path, manifest_text.as_bytes()).is_err() {
-        let _ = std::fs::remove_dir_all(&dir);
         return unchecked(0);
     }
 
@@ -214,7 +215,6 @@ pub fn verify_recompile(table: &FrozenModules, interpreter: &std::path::Path) ->
     let checker: std::path::PathBuf = dir.join("_check.py");
     let script: &str = "import sys\nmanifest, out = sys.argv[1], sys.argv[2]\nfailed = []\nwith open(manifest, 'r', encoding='utf-8') as mf:\n    for line in mf:\n        name, _, path = line.rstrip('\\n').partition('\\t')\n        if not path:\n            continue\n        try:\n            with open(path, 'r', encoding='utf-8') as fh:\n                compile(fh.read(), path, 'exec')\n        except SyntaxError:\n            failed.append(name)\nwith open(out, 'w', encoding='utf-8') as of:\n    of.write('\\n'.join(failed))\n";
     if std::fs::write(&checker, script).is_err() {
-        let _ = std::fs::remove_dir_all(&dir);
         return unchecked(0);
     }
 
@@ -227,13 +227,11 @@ pub fn verify_recompile(table: &FrozenModules, interpreter: &std::path::Path) ->
         .stderr(std::process::Stdio::null())
         .spawn();
     let Ok(child): std::io::Result<std::process::Child> = spawned else {
-        let _ = std::fs::remove_dir_all(&dir);
         return unchecked(0);
     };
 
     let timeout: std::time::Duration = std::time::Duration::from_secs(RECOMPILE_TIMEOUT_SECS);
     if disrobe_core::subprocess::wait_with_output_timeout(child, timeout, 0).is_none() {
-        let _ = std::fs::remove_dir_all(&dir);
         dbg.line(|| "recompile interpreter exceeded timeout; killed".to_owned());
         return unchecked(manifest.len());
     }
@@ -245,8 +243,6 @@ pub fn verify_recompile(table: &FrozenModules, interpreter: &std::path::Path) ->
         .filter(|s: &&str| !s.is_empty())
         .map(str::to_owned)
         .collect();
-    let _ = std::fs::remove_dir_all(&dir);
-
     let checked: usize = manifest.len();
     let clean: usize = checked.saturating_sub(failed.len());
     dbg.kv("checked", || checked.to_string());

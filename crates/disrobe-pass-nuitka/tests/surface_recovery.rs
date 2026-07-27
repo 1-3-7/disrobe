@@ -230,9 +230,10 @@ fn emitted_python_compiles_and_ast_matches_pyi_on_cpython_314() {
     let surface: SurfaceModule = build();
     let source: String = emit_python(&surface);
 
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-surface-recovery-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let purpose: String = format!("disrobe-surface-recovery-{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let file: PathBuf = dir.join("recovered_hello.py");
     std::fs::write(&file, source.as_bytes()).expect("write temp .py");
 
@@ -269,6 +270,4 @@ fn emitted_python_compiles_and_ast_matches_pyi_on_cpython_314() {
         "ast ground-truth gate failed: {}",
         String::from_utf8_lossy(&ast_out.stderr)
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }

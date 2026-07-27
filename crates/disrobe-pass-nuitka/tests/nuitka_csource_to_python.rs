@@ -225,9 +225,10 @@ fn recovered_python_fib_matches_handwritten_reference_on_cpython() {
     let surface: SurfaceModule = build();
     let source: String = emit_python(&surface);
 
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-nuitka-csource2py-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let purpose: String = format!("disrobe-nuitka-csource2py-{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let file: PathBuf = dir.join("recovered_hello.py");
     std::fs::write(&file, source.as_bytes()).expect("write recovered.py");
 
@@ -276,6 +277,4 @@ fn recovered_python_fib_matches_handwritten_reference_on_cpython() {
         fib_reference(20).to_string(),
         "fib(20) from recovered module must equal hand-written reference"
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }

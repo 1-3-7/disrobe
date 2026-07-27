@@ -262,11 +262,10 @@ fn run_behavioral_oracle(module: &str) {
     }
 
     let recovered: String = emit_python(&surface);
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-nuitka-oracle-{module}-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let purpose: String = format!("disrobe-nuitka-oracle-{module}-{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let recov_path: PathBuf = dir.join(format!("recovered_{module}.py"));
     std::fs::write(&recov_path, recovered.as_bytes()).expect("write recovered");
 
@@ -286,7 +285,6 @@ fn run_behavioral_oracle(module: &str) {
         "oracle did not report a census for {module}: {stdout}"
     );
     println!("module {module}: {}", stdout.trim());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -381,9 +379,10 @@ fn advanced_body_faithful_subset_matches_original_on_cpython() {
         return;
     }
     let recovered: String = emit_python(&surface);
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-nuitka-adv-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let purpose: String = format!("disrobe-nuitka-adv-{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let recov_path: PathBuf = dir.join("recovered_advanced.py");
     std::fs::write(&recov_path, recovered.as_bytes()).expect("write recovered");
 
@@ -400,7 +399,6 @@ fn advanced_body_faithful_subset_matches_original_on_cpython() {
          match original on CPython:\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}\nRECOVERED:\n{recovered}"
     );
     println!("module advanced (body-faithful subset): {}", stdout.trim());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

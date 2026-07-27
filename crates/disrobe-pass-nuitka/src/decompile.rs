@@ -1560,11 +1560,10 @@ mod tests {
 
     #[test]
     fn only_extension_modules_strip_abi_tags_for_build_directory_lookup() {
-        let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
-            "disrobe-nuitka-extension-build-stem-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
+        let purpose: String = format!("disrobe-nuitka-extension-build-stem-{}", std::process::id());
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+        let dir: std::path::PathBuf = scratch.path().to_path_buf();
         let build_dir: std::path::PathBuf = dir.join("module.build");
         std::fs::create_dir_all(&build_dir).expect("create build directory");
 
@@ -1576,17 +1575,17 @@ mod tests {
             sibling_build_dir(&dir.join("module.cp314-win_amd64.exe")),
             None
         );
-
-        std::fs::remove_dir_all(&dir).expect("remove temporary directory");
     }
 
     #[test]
     fn sibling_discovery_accepts_case_insensitive_unversioned_extensions() {
-        let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
+        let purpose: String = format!(
             "disrobe-nuitka-upper-extension-sibling-{}",
             std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
+        );
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+        let dir: std::path::PathBuf = scratch.path().to_path_buf();
         std::fs::create_dir_all(dir.join("module.build")).expect("create build directory");
         let binary_path: std::path::PathBuf = dir.join("module.PYD");
         std::fs::write(&binary_path, b"__compiled__").expect("write extension module");
@@ -1597,17 +1596,14 @@ mod tests {
         assert_eq!(sibling.python_abi, None);
         assert_eq!(sibling.bytes, b"__compiled__");
         assert_eq!(sibling.skipped_bytes, None);
-
-        std::fs::remove_dir_all(&dir).expect("remove temporary directory");
     }
 
     #[test]
     fn oversized_versioned_sibling_preserves_filename_abi_without_payload() {
-        let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
-            "disrobe-nuitka-oversized-sibling-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
+        let purpose: String = format!("disrobe-nuitka-oversized-sibling-{}", std::process::id());
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+        let dir: std::path::PathBuf = scratch.path().to_path_buf();
         std::fs::create_dir_all(dir.join("module.build")).expect("create build directory");
         let binary_path: std::path::PathBuf = dir.join("module.cp314-win_amd64.PYD");
         std::fs::write(&binary_path, b"four").expect("write binary");
@@ -1624,16 +1620,14 @@ mod tests {
             Err(Error::CSourceTooLarge { bytes, max_bytes })
                 if bytes == 4usize && max_bytes == 3usize
         ));
-
-        std::fs::remove_dir_all(&dir).expect("remove temporary directory");
     }
 
     #[test]
     fn primary_binary_reader_rejects_before_reading_the_whole_artifact() {
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-nuitka-primary-cap-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create directory");
+        let purpose: String = format!("disrobe-nuitka-primary-cap-{}", std::process::id());
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+        let dir: std::path::PathBuf = scratch.path().to_path_buf();
         let binary_path: std::path::PathBuf = dir.join("oversized.exe");
         std::fs::write(&binary_path, b"four").expect("write binary");
 
@@ -1645,8 +1639,6 @@ mod tests {
                 max_bytes,
             }) if path == binary_path && bytes == 4u64 && max_bytes == 3u64
         ));
-
-        std::fs::remove_dir_all(&dir).expect("remove temporary directory");
     }
 
     #[test]
@@ -1675,12 +1667,10 @@ mod tests {
 
     #[test]
     fn bounded_constant_manifest_reader_rejects_before_reading() {
-        let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
-            "disrobe-nuitka-manifest-cap-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create directory");
+        let purpose: String = format!("disrobe-nuitka-manifest-cap-{}", std::process::id());
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+        let dir: std::path::PathBuf = scratch.path().to_path_buf();
         let manifest_path: std::path::PathBuf = dir.join("__constant.txt");
         std::fs::write(&manifest_path, b"four").expect("write manifest");
 
@@ -1692,16 +1682,14 @@ mod tests {
                 max_bytes,
             }) if path == manifest_path && bytes == 4u64 && max_bytes == 3u64
         ));
-
-        std::fs::remove_dir_all(&dir).expect("remove temporary directory");
     }
 
     #[test]
     fn bounded_constant_blob_reader_rejects_before_reading() {
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-nuitka-const-cap-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create build directory");
+        let purpose: String = format!("disrobe-nuitka-const-cap-{}", std::process::id());
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+        let dir: std::path::PathBuf = scratch.path().to_path_buf();
         let const_path: std::path::PathBuf = dir.join("module.oversized.const");
         std::fs::write(&const_path, b"four").expect("write const file");
 
@@ -1713,17 +1701,14 @@ mod tests {
                 max_bytes,
             }) if path == const_path && bytes == 4u64 && max_bytes == 3u64
         ));
-
-        std::fs::remove_dir_all(&dir).expect("remove temporary directory");
     }
 
     #[test]
     fn direct_versioned_extension_passes_filename_abi_to_its_build_directory() {
-        let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
-            "disrobe-nuitka-direct-extension-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
+        let purpose: String = format!("disrobe-nuitka-direct-extension-{}", std::process::id());
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+        let dir: std::path::PathBuf = scratch.path().to_path_buf();
         let build_dir: std::path::PathBuf = dir.join("hello.build");
         std::fs::create_dir_all(&build_dir).expect("create build directory");
         let fixture_dir: std::path::PathBuf = fixture("module/hello.build");
@@ -1745,18 +1730,14 @@ mod tests {
         assert_eq!(decompilation.source_kind, DecompSourceKind::BuildDir);
         assert_eq!(decompilation.version.python_abi, Some((3, 14)));
         assert!(decompilation.surface.is_some());
-
-        std::fs::remove_dir_all(&dir).expect("remove temporary directory");
     }
 
     #[test]
     fn bounded_build_constants_source_is_rejected_before_reading() {
-        let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
-            "disrobe-nuitka-oversized-constants-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create build directory");
+        let purpose: String = format!("disrobe-nuitka-oversized-constants-{}", std::process::id());
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+        let dir: std::path::PathBuf = scratch.path().to_path_buf();
         let c_path: std::path::PathBuf = dir.join("__constants.c");
         std::fs::write(&c_path, b"four").expect("write C source");
 
@@ -1765,18 +1746,14 @@ mod tests {
             Err(Error::CSourceTooLarge { bytes, max_bytes })
                 if bytes == 4usize && max_bytes == 3usize
         ));
-
-        std::fs::remove_dir_all(&dir).expect("remove temporary directory");
     }
 
     #[test]
     fn nonregular_build_constants_source_is_rejected_before_opening() {
-        let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
-            "disrobe-nuitka-nonregular-constants-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create build directory");
+        let purpose: String = format!("disrobe-nuitka-nonregular-constants-{}", std::process::id());
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+        let dir: std::path::PathBuf = scratch.path().to_path_buf();
         let c_path: std::path::PathBuf = dir.join("__constants.c");
         std::fs::create_dir(&c_path).expect("create nonregular C source");
 
@@ -1784,18 +1761,14 @@ mod tests {
             decompile_build_dir(&dir),
             Err(Error::NonRegularArtifact { path }) if path == c_path
         ));
-
-        std::fs::remove_dir_all(&dir).expect("remove temporary directory");
     }
 
     #[test]
     fn invalid_utf8_module_source_is_rejected_without_lossy_expansion() {
-        let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
-            "disrobe-nuitka-invalid-utf8-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create build directory");
+        let purpose: String = format!("disrobe-nuitka-invalid-utf8-{}", std::process::id());
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+        let dir: std::path::PathBuf = scratch.path().to_path_buf();
         std::fs::copy(
             fixture("module/hello.build/module.hello.const"),
             dir.join("module.hello.const"),
@@ -1807,8 +1780,6 @@ mod tests {
             decompile_build_dir(&dir),
             Err(Error::CSourceInvalidUtf8(_))
         ));
-
-        std::fs::remove_dir_all(&dir).expect("remove temporary directory");
     }
 
     #[test]

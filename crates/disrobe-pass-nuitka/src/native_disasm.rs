@@ -183,8 +183,11 @@ mod tests {
             return;
         }
         let image: Vec<u8> = std::fs::read(&path).expect("read corpus exe");
-        let out_path: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-nuitka-disasm-{}.asm", std::process::id()));
+        let purpose: String = format!("disrobe-nuitka-disasm-{}", std::process::id());
+        let (scratch, _file): (disrobe_core::scratch::ScratchFile, std::fs::File) =
+            disrobe_core::scratch::ScratchFile::create(&purpose, "asm")
+                .expect("create scratch file");
+        let out_path: std::path::PathBuf = scratch.path().to_path_buf();
         let disasm: NativeDisasm =
             disassemble_module_to_file("sample_app", &image, &out_path).expect("native disasm");
         assert!(
@@ -198,6 +201,5 @@ mod tests {
             .iter()
             .any(|m: &&str| asm.contains(*m));
         assert!(has_real_mnemonic, "asm must contain real x86 mnemonics");
-        let _ = std::fs::remove_file(&out_path);
     }
 }

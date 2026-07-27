@@ -330,12 +330,10 @@ mod tests {
 
     #[test]
     fn manifest_file_reader_rejects_a_bounded_read() {
-        let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
-            "disrobe-nuitka-manifest-reader-cap-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create temporary directory");
+        let purpose: String = format!("disrobe-nuitka-manifest-reader-cap-{}", std::process::id());
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+        let dir: std::path::PathBuf = scratch.path().to_path_buf();
         let path: std::path::PathBuf = dir.join("__constant.txt");
         std::fs::write(&path, b"four").expect("write manifest");
 
@@ -346,7 +344,5 @@ mod tests {
                     && bytes == 4u64
                     && max_bytes == 3u64
         ));
-
-        std::fs::remove_dir_all(&dir).expect("remove temporary directory");
     }
 }

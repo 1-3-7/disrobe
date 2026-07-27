@@ -200,9 +200,10 @@ fn recovered_gap_constructs_match_original_on_cpython() {
     }
 
     let recovered: String = emit_python(&surface);
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-era-oracle-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let purpose: String = format!("disrobe-era-oracle-{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let recov_path: PathBuf = dir.join("recovered_era_patterns.py");
     std::fs::write(&recov_path, recovered.as_bytes()).expect("write recovered");
 
@@ -223,7 +224,6 @@ fn recovered_gap_constructs_match_original_on_cpython() {
         "all 14 graded cases must match: {stdout}"
     );
     println!("era_patterns gap constructs: {}", stdout.trim());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const GENERATOR_PROBE: &str = r"
@@ -278,9 +278,10 @@ fn recovered_generator_yields_match_original_on_cpython() {
     }
 
     let recovered: String = emit_python(&surface);
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-era-gen-oracle-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let purpose: String = format!("disrobe-era-gen-oracle-{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let recov_path: PathBuf = dir.join("recovered_era_patterns.py");
     std::fs::write(&recov_path, recovered.as_bytes()).expect("write recovered");
 
@@ -301,5 +302,4 @@ fn recovered_generator_yields_match_original_on_cpython() {
         "all 7 generator materializations must match: {stdout}"
     );
     println!("era_patterns generator: {}", stdout.trim());
-    let _ = std::fs::remove_dir_all(&dir);
 }
