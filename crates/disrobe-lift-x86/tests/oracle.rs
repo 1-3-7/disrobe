@@ -7,8 +7,8 @@ use std::fmt::{self, Display, Formatter};
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU64, Ordering};
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_lift_x86::decode_block_x86;
 use disrobe_sleigh::lifter::DecodedBlock;
 use disrobe_sleigh::pcode::{DecodeStatus, PcodeInstr, PcodeOp, Space, Varnode};
@@ -19,8 +19,6 @@ const EXPECTED_CALLOTHER: usize = 58;
 const LEGACY_INSTRUCTIONS: usize = 95;
 const EXPECTED_ADDED_MODELED: usize = 130;
 const EXPECTED_ADDED_CALLOTHER: usize = 56;
-static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Boundary {
     address: u64,
@@ -138,7 +136,7 @@ fn live_gcc_text_matches_live_gnu_objdump() {
         eprintln!("x86-64 live GNU validation skipped because the toolchain is unavailable");
         return;
     };
-    let directory: PathBuf = temporary_directory();
+    let (scratch, directory): (ScratchDir, PathBuf) = temporary_directory();
     let create_result: std::io::Result<()> = fs::create_dir(&directory);
     assert!(create_result.is_ok(), "{create_result:?}");
     let object: PathBuf = directory.join("x86_64_oracle_o2.o");
@@ -192,12 +190,8 @@ fn live_gcc_text_matches_live_gnu_objdump() {
     });
     let expected: Vec<Boundary> = objdump_boundaries(&disassembly, bytes.len());
     let block: DecodedBlock = decode_block_x86(&bytes, 0, 64);
-    let remove_object: std::io::Result<()> = fs::remove_file(&object);
-    let remove_text: std::io::Result<()> = fs::remove_file(&text);
-    let remove_directory: std::io::Result<()> = fs::remove_dir(&directory);
-    assert!(remove_object.is_ok(), "{remove_object:?}");
-    assert!(remove_text.is_ok(), "{remove_text:?}");
-    assert!(remove_directory.is_ok(), "{remove_directory:?}");
+    let close_result: std::io::Result<()> = scratch.close();
+    assert!(close_result.is_ok(), "{close_result:?}");
     assert!(!expected.is_empty());
     assert_block_matches("live", &block, &expected, bytes.len());
 }
@@ -208,7 +202,7 @@ fn live_pypcode_reproduces_committed_effects() {
         eprintln!("x86-64 live pypcode validation skipped because pypcode 4.0.0 is unavailable");
         return;
     };
-    let directory: PathBuf = temporary_directory();
+    let (scratch, directory): (ScratchDir, PathBuf) = temporary_directory();
     let create_result: std::io::Result<()> = fs::create_dir(&directory);
     assert!(create_result.is_ok(), "{create_result:?}");
     let script: PathBuf = fixture_path("../pypcode_oracle.py");
@@ -226,11 +220,9 @@ fn live_pypcode_reproduces_committed_effects() {
         let committed: Vec<u8> = fs::read(corpus_path(name)).unwrap_or_default();
         assert!(!regenerated.is_empty(), "{name}");
         assert_eq!(regenerated, committed, "{name}");
-        let remove_result: std::io::Result<()> = fs::remove_file(directory.join(name));
-        assert!(remove_result.is_ok(), "{remove_result:?}");
     }
-    let remove_directory: std::io::Result<()> = fs::remove_dir(&directory);
-    assert!(remove_directory.is_ok(), "{remove_directory:?}");
+    let close_result: std::io::Result<()> = scratch.close();
+    assert!(close_result.is_ok(), "{close_result:?}");
 }
 
 #[test]
@@ -714,12 +706,12 @@ fn run(mut command: Command) -> Option<Output> {
     }
 }
 
-fn temporary_directory() -> PathBuf {
-    let sequence: u64 = TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    env::temp_dir().join(format!(
-        "disrobe-lift-x86-{}-{sequence}",
-        std::process::id()
-    ))
+#[allow(clippy::expect_used)]
+fn temporary_directory() -> (ScratchDir, PathBuf) {
+    let scratch: ScratchDir =
+        ScratchDir::create("disrobe-lift-x86").expect("create scratch directory");
+    let directory: PathBuf = scratch.path().join("payload");
+    (scratch, directory)
 }
 
 fn fixture_path(name: &str) -> PathBuf {

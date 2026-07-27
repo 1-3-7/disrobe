@@ -212,16 +212,15 @@ mod tests {
     use crate::payload::{RawPayload, encode_raw};
     use crate::sidecar::Sidecar;
     use disrobe_core::Capability;
+    use disrobe_core::scratch::ScratchDir;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
-    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    fn temp_path(stem: &str) -> PathBuf {
-        let id: u64 = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let pid: u32 = std::process::id();
-        std::env::temp_dir().join(format!("disrobe-ir-{stem}-{pid}-{id}.dr"))
+    fn temp_path(stem: &str) -> (ScratchDir, PathBuf) {
+        let purpose: String = format!("disrobe-ir-{stem}");
+        let scratch: ScratchDir = ScratchDir::create(&purpose).expect("create scratch directory");
+        let path: PathBuf = scratch.path().join("payload.dr");
+        (scratch, path)
     }
 
     fn sample_envelope() -> Envelope {
@@ -246,17 +245,16 @@ mod tests {
     #[test]
     fn write_then_read_round_trip() {
         let env: Envelope = sample_envelope();
-        let path: PathBuf = temp_path("write-read");
+        let (_scratch, path): (ScratchDir, PathBuf) = temp_path("write-read");
         env.write_to_path(&path).expect("write");
         let decoded: Envelope = Envelope::read_from_path(&path).expect("read");
         assert_eq!(env, decoded);
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn write_create_new_fails_if_exists() {
         let env: Envelope = sample_envelope();
-        let path: PathBuf = temp_path("collision");
+        let (_scratch, path): (ScratchDir, PathBuf) = temp_path("collision");
         env.write_to_path(&path).expect("first write");
         let err: EnvelopeError = env
             .write_to_path(&path)
@@ -264,22 +262,20 @@ mod tests {
         assert!(
             matches!(err, EnvelopeError::Io(ref e) if e.kind() == std::io::ErrorKind::AlreadyExists)
         );
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn write_overwrite_with_truncate_succeeds() {
         let env: Envelope = sample_envelope();
-        let path: PathBuf = temp_path("overwrite");
+        let (_scratch, path): (ScratchDir, PathBuf) = temp_path("overwrite");
         env.write_to_path_with(&path, false).expect("first");
         env.write_to_path_with(&path, false).expect("second");
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn mmap_view_round_trips() {
         let env: Envelope = sample_envelope();
-        let path: PathBuf = temp_path("mmap");
+        let (_scratch, path): (ScratchDir, PathBuf) = temp_path("mmap");
         env.write_to_path(&path).expect("write");
         let view: MmapView = mmap_envelope_view(&path).expect("mmap");
         assert_eq!(view.version, ENVELOPE_FORMAT_VERSION);
@@ -288,7 +284,6 @@ mod tests {
         assert_eq!(view.hot(), env.hot.as_slice());
         assert_eq!(view.cold(), env.cold.as_slice());
         drop(view);
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -297,7 +292,7 @@ mod tests {
         use rkyv::rancor::Error as RkyvError;
 
         let env: Envelope = sample_envelope();
-        let path: PathBuf = temp_path("mmap-rkyv");
+        let (_scratch, path): (ScratchDir, PathBuf) = temp_path("mmap-rkyv");
         env.write_to_path(&path).expect("write");
         let view: MmapView = mmap_envelope_view(&path).expect("mmap");
         let archived: &ArchivedRawPayload =
@@ -306,12 +301,11 @@ mod tests {
         assert_eq!(archived.source_path.as_str(), "x.wasm");
         assert_eq!(archived.source_bytes.as_slice(), &[1u8, 2, 3, 4, 5]);
         drop(view);
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn read_from_path_rejects_missing_file() {
-        let path: PathBuf = temp_path("missing-nonexistent");
+        let (_scratch, path): (ScratchDir, PathBuf) = temp_path("missing-nonexistent");
         let _ = std::fs::remove_file(&path);
         let err: EnvelopeError = Envelope::read_from_path(&path).expect_err("should fail");
         assert!(
@@ -324,7 +318,7 @@ mod tests {
         let env: Envelope = Envelope::new(Rung::Raw, vec![], vec![]);
         let mut bytes: Vec<u8> = env.encode().expect("encode");
         bytes[12..16].copy_from_slice(&1024u32.to_le_bytes());
-        let path: PathBuf = temp_path("read-truncated-payload");
+        let (_scratch, path): (ScratchDir, PathBuf) = temp_path("read-truncated-payload");
         std::fs::write(&path, bytes).expect("write");
         let err: EnvelopeError = Envelope::read_from_path(&path).expect_err("should fail");
         assert!(matches!(
@@ -334,7 +328,6 @@ mod tests {
                 got: HEADER_SIZE
             } if expected == HEADER_SIZE + 1024
         ));
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -344,7 +337,7 @@ mod tests {
         let declared: usize = MAX_DECODED_ENVELOPE_BYTES - HEADER_SIZE + 1;
         let hot_len: u32 = u32::try_from(declared).expect("cap fits u32");
         bytes[12..16].copy_from_slice(&hot_len.to_le_bytes());
-        let path: PathBuf = temp_path("read-over-cap");
+        let (_scratch, path): (ScratchDir, PathBuf) = temp_path("read-over-cap");
         std::fs::write(&path, bytes).expect("write");
         let err: EnvelopeError = Envelope::read_from_path(&path).expect_err("should fail");
         assert!(matches!(
@@ -354,7 +347,6 @@ mod tests {
                 max: MAX_DECODED_ENVELOPE_BYTES
             } if actual == MAX_DECODED_ENVELOPE_BYTES + 1
         ));
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -362,11 +354,10 @@ mod tests {
         let env: Envelope = sample_envelope();
         let mut bytes: Vec<u8> = env.encode().expect("encode");
         bytes.extend(std::iter::repeat_n(0xA5u8, READ_PREALLOC_CAP));
-        let path: PathBuf = temp_path("read-trailing");
+        let (_scratch, path): (ScratchDir, PathBuf) = temp_path("read-trailing");
         std::fs::write(&path, bytes).expect("write");
         let decoded: Envelope = Envelope::read_from_path(&path).expect("read");
         assert_eq!(decoded, env);
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -376,16 +367,15 @@ mod tests {
         bytes[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
         bytes[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
 
-        let path: PathBuf = temp_path("mmap-overflow");
+        let (_scratch, path): (ScratchDir, PathBuf) = temp_path("mmap-overflow");
         std::fs::write(&path, bytes).expect("write");
         let err: EnvelopeError = mmap_envelope_view(&path).expect_err("should fail");
         assert!(matches!(err, EnvelopeError::Truncated { .. }));
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn mmap_view_rejects_file_over_cap_before_mapping() {
-        let path: PathBuf = temp_path("mmap-file-over-cap");
+        let (_scratch, path): (ScratchDir, PathBuf) = temp_path("mmap-file-over-cap");
         let file: std::fs::File = std::fs::File::create(&path).expect("create");
         let oversized_len: u64 =
             u64::try_from(MAX_DECODED_ENVELOPE_BYTES).expect("cap fits u64") + 1;
@@ -400,6 +390,5 @@ mod tests {
                 max: MAX_DECODED_ENVELOPE_BYTES
             } if actual == MAX_DECODED_ENVELOPE_BYTES + 1
         ));
-        let _ = std::fs::remove_file(&path);
     }
 }

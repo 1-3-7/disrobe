@@ -23,4 +23,5 @@ proc-macro2.workspace = true
 prettyplease.workspace = true
 
 [dev-dependencies]
+disrobe-core = { workspace = true }
 proptest.workspace = true
