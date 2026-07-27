@@ -12,6 +12,7 @@ pub struct AotReport {
     pub eager_class_constructors: u32,
     pub runtime_label: AotRuntime,
     pub ready_to_run: Option<ReadyToRunHeader>,
+    pub recovered_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -175,6 +176,101 @@ fn read_u64(image: &[u8], at: usize) -> Option<u64> {
     Some(u64::from_le_bytes(bytes))
 }
 
+const MIN_NAME_LEN: usize = 2;
+const MAX_NAME_LEN: usize = 256;
+const MIN_NAME_RUN: usize = 4;
+const MAX_RECOVERED_NAMES: usize = 65536;
+
+#[must_use]
+pub fn decode_metadata_unsigned(bytes: &[u8], at: usize) -> Option<(u32, usize)> {
+    let first: u8 = *bytes.get(at)?;
+    if first & 1 == 0 {
+        return Some((u32::from(first >> 1), 1));
+    }
+    if first & 3 == 1 {
+        let second: u8 = *bytes.get(at.checked_add(1)?)?;
+        return Some((u32::from(first >> 2) | (u32::from(second) << 6), 2));
+    }
+    if first & 7 == 3 {
+        let second: u8 = *bytes.get(at.checked_add(1)?)?;
+        let third: u8 = *bytes.get(at.checked_add(2)?)?;
+        let value: u32 =
+            u32::from(first >> 3) | (u32::from(second) << 5) | (u32::from(third) << 13);
+        return Some((value, 3));
+    }
+    None
+}
+
+fn read_metadata_name(bytes: &[u8], at: usize) -> Option<(&str, usize)> {
+    let (length, width): (u32, usize) = decode_metadata_unsigned(bytes, at)?;
+    let length: usize = length as usize;
+    if !(MIN_NAME_LEN..=MAX_NAME_LEN).contains(&length) {
+        return None;
+    }
+    let begin: usize = at.checked_add(width)?;
+    let end: usize = begin.checked_add(length)?;
+    let slice: &[u8] = bytes.get(begin..end)?;
+    let text: &str = std::str::from_utf8(slice).ok()?;
+    if text
+        .chars()
+        .any(|c: char| c.is_control() || c == char::REPLACEMENT_CHARACTER)
+    {
+        return None;
+    }
+    Some((text, end))
+}
+
+fn recover_names_in(bytes: &[u8], out: &mut Vec<String>) {
+    let mut at: usize = 0;
+    while at < bytes.len() && out.len() < MAX_RECOVERED_NAMES {
+        let mut cursor: usize = at;
+        let mut run: Vec<&str> = Vec::new();
+        while let Some((text, next)) = read_metadata_name(bytes, cursor) {
+            run.push(text);
+            cursor = next;
+            if run.len() >= MAX_RECOVERED_NAMES {
+                break;
+            }
+        }
+        if run.len() >= MIN_NAME_RUN {
+            for text in run {
+                if out.len() >= MAX_RECOVERED_NAMES {
+                    break;
+                }
+                out.push(text.to_owned());
+            }
+            at = cursor;
+        } else {
+            at = at.saturating_add(1);
+        }
+    }
+}
+
+#[must_use]
+pub fn recover_metadata_names(image: &[u8], header: &ReadyToRunHeader) -> Vec<String> {
+    let Ok(pe): crate::error::Result<crate::pe::PeImage> = crate::pe::parse(image) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for section in &header.sections {
+        if section.is_empty() {
+            continue;
+        }
+        let Some(start) = pe.rva_to_offset(section.start_rva) else {
+            continue;
+        };
+        let span: usize = section.len() as usize;
+        let end: usize = start.saturating_add(span).min(image.len());
+        let Some(region) = image.get(start..end) else {
+            continue;
+        };
+        recover_names_in(region, &mut out);
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 const AOT_NEEDLES: &[(&[u8], &str)] = &[
     (b"__modules_a", "modules_table"),
     (b"NativeAOT", "aot_marker"),
@@ -213,6 +309,11 @@ pub fn detect(image: &[u8]) -> AotReport {
         cursor += pos + eager_marker.len();
     }
     let ready_to_run: Option<ReadyToRunHeader> = locate_ready_to_run_header(image);
+    let recovered_names: Vec<String> = ready_to_run
+        .as_ref()
+        .map_or_else(Vec::new, |header: &ReadyToRunHeader| {
+            recover_metadata_names(image, header)
+        });
     let is_native_aot: bool = ready_to_run.is_some()
         || symbols.contains_key("aot_marker")
         || symbols.contains_key("modules_table")
@@ -226,6 +327,7 @@ pub fn detect(image: &[u8]) -> AotReport {
         eager_class_constructors: eager,
         runtime_label: runtime,
         ready_to_run,
+        recovered_names,
     }
 }
 
