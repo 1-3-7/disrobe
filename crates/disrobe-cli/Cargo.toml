@@ -166,7 +166,6 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 miette = { workspace = true, features = ["fancy"] }
 color-eyre = { workspace = true }
-human-panic = { workspace = true }
 console = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
