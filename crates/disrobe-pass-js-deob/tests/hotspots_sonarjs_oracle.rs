@@ -218,13 +218,6 @@ fn eslint_available() -> bool {
         .is_ok_and(|o: std::process::Output| o.status.success())
 }
 
-fn unique_temp(ext: &str) -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let seq: u64 = COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("disrobe_hotspot_{}_{seq}{ext}", std::process::id()))
-}
-
 fn eslint_flagged_lines(fixture_source: &str) -> Option<BTreeSet<u32>> {
     let script: &str = r"
 const { Linter } = require('eslint');
@@ -248,18 +241,17 @@ const messages = linter.verify(code, {
 });
 process.stdout.write(JSON.stringify(messages.map((m) => m.line)));
 ";
-    let src_path: PathBuf = unique_temp(".js");
-    {
-        let mut f: fs::File = fs::File::create(&src_path).ok()?;
-        f.write_all(fixture_source.as_bytes()).ok()?;
-    }
+    let (scratch, mut f): (disrobe_core::scratch::ScratchFile, fs::File) =
+        disrobe_core::scratch::ScratchFile::create("disrobe_hotspot", "js").ok()?;
+    let src_path: PathBuf = scratch.path().to_path_buf();
+    f.write_all(fixture_source.as_bytes()).ok()?;
+    drop(f);
     let output: std::process::Output = Command::new("node")
         .arg("-e")
         .arg(script)
         .arg(&src_path)
         .output()
         .ok()?;
-    let _ = fs::remove_file(&src_path);
     if !output.status.success() {
         return None;
     }

@@ -13,16 +13,9 @@ const VITE_MULTICHUNK: &str = include_str!("../../../corpus/src/javascript/vite-
 const TURBOPACK_SAMPLE: &str = include_str!("../../../corpus/src/javascript/turbopack-sample.js");
 const BUN_SAMPLE: &str = include_str!("../../../corpus/src/javascript/bun-sample.js");
 
-fn unique_dir(label: &str) -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static C: AtomicU64 = AtomicU64::new(0);
-    let seq: u64 = C.fetch_add(1, Ordering::Relaxed);
-    let p: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-bundle-graph-{label}-{}-{seq}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&p);
-    p
+fn unique_dir(label: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-bundle-graph-{label}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 #[test]
@@ -118,7 +111,8 @@ fn bun_module_graph_collects_resolve_sync_imports() {
 
 #[test]
 fn write_graph_emits_files_and_json() {
-    let dir: PathBuf = unique_dir("write");
+    let scratch: disrobe_core::scratch::ScratchDir = unique_dir("write");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let result: UnbundleGraphResult =
         unbundle_with_graph(BundlerKind::Webpack5, WEBPACK5_SPLITCHUNKS).expect("unbundle");
     let written: std::collections::BTreeMap<String, PathBuf> =
@@ -127,5 +121,4 @@ fn write_graph_emits_files_and_json() {
     let graph_path: &PathBuf = written.get("__graph__").expect("graph");
     let raw: String = std::fs::read_to_string(graph_path).expect("read");
     assert!(raw.contains("\"main\""));
-    let _ = std::fs::remove_dir_all(&dir);
 }
