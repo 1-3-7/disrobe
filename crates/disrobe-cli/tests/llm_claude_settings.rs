@@ -8,7 +8,8 @@ use common::cli_binary;
 
 #[test]
 fn claude_settings_has_typed_hooks_and_pretool_deny() {
-    let work: PathBuf = common::temp_dir("llm-settings");
+    let work_scratch: disrobe_core::scratch::ScratchDir = common::temp_dir("llm-settings");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let bin: PathBuf = cli_binary();
     assert!(
         bin.exists(),

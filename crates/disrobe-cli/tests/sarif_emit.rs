@@ -1,11 +1,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
-
-static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const OS_SYSTEM_REDUCE: &[u8] = b"\x80\x04\x95\x17\x00\x00\x00\x00\x00\x00\x00\x8c\x02os\x8c\x06system\x93\x94\x8c\x02id\x85\x94R\x94.";
 
@@ -27,23 +24,24 @@ fn cli_binary() -> PathBuf {
     dir
 }
 
-fn temp_pickle(bytes: &[u8]) -> PathBuf {
-    let pid: u32 = std::process::id();
-    let seq: u64 = FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let path: PathBuf = std::env::temp_dir().join(format!("disrobe-sarif-emit-{pid}-{seq}.pkl"));
+fn temp_pickle(bytes: &[u8]) -> (disrobe_core::scratch::ScratchDir, PathBuf) {
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe-sarif-emit")
+            .expect("create scratch directory");
+    let path: PathBuf = scratch.path().join("payload.pkl");
     std::fs::write(&path, bytes).expect("write temp pickle");
-    path
+    (scratch, path)
 }
 
 #[test]
 fn pickle_safety_sarif_reaches_scanner() {
-    let path: PathBuf = temp_pickle(OS_SYSTEM_REDUCE);
+    let (_scratch, path): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_pickle(OS_SYSTEM_REDUCE);
     let out: std::process::Output = Command::new(cli_binary())
         .args(["pickle", "safety", "--sarif"])
         .arg(&path)
         .output()
         .expect("run disrobe pickle safety --sarif");
-    let _ = std::fs::remove_file(&path);
 
     assert!(
         out.status.success(),
@@ -82,13 +80,13 @@ fn pickle_safety_sarif_reaches_scanner() {
 
 #[test]
 fn benign_pickle_sarif_is_clean_log() {
-    let path: PathBuf = temp_pickle(b"\x80\x02K\x01.");
+    let (_scratch, path): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_pickle(b"\x80\x02K\x01.");
     let out: std::process::Output = Command::new(cli_binary())
         .args(["pickle", "safety", "--sarif"])
         .arg(&path)
         .output()
         .expect("run disrobe pickle safety --sarif on benign");
-    let _ = std::fs::remove_file(&path);
 
     assert!(out.status.success());
     let stdout: String = String::from_utf8(out.stdout).expect("utf8 stdout");

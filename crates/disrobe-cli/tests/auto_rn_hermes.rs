@@ -9,7 +9,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
 fn workspace_root() -> PathBuf {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -40,12 +39,9 @@ fn cargo_bin() -> PathBuf {
 }
 
 #[allow(clippy::disallowed_methods)]
-fn tmp_out(name: &str) -> PathBuf {
-    let stamp: u128 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_nanos();
-    std::env::temp_dir().join(format!("disrobe-chain-{name}-{stamp}"))
+fn tmp_out(name: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-chain-{name}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn run_chain_cli(input: &Path, out: &Path, chain_arg: &str) -> std::process::Output {
@@ -106,7 +102,9 @@ fn test_chain_rn_hermes_to_js() {
         &raw[..raw.len().min(8)]
     );
 
-    let chain_out: PathBuf = tmp_out("rn-hermes-chain");
+    let chain_out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("rn-hermes-chain");
+
+    let chain_out: PathBuf = chain_out_scratch.path().to_path_buf();
     let chain_proc: std::process::Output = run_chain_cli(&fixture, &chain_out, "auto:8");
     assert!(
         chain_proc.status.success(),
@@ -125,7 +123,9 @@ fn test_chain_rn_hermes_to_js() {
         prefix = &chain_json[..chain_json.len().min(800)]
     );
 
-    let herm_out: PathBuf = tmp_out("rn-hermes-decompile");
+    let herm_out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("rn-hermes-decompile");
+
+    let herm_out: PathBuf = herm_out_scratch.path().to_path_buf();
     let herm_proc: std::process::Output = run_hermes_decompile(&fixture, &herm_out);
     assert!(
         herm_proc.status.success(),

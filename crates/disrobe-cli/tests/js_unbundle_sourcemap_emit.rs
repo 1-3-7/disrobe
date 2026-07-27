@@ -41,9 +41,11 @@ fn js_unbundle_emit_sourcemap_writes_synthesized_and_embedded_maps() {
     let oracle_map_json: String = embedded_source_map_json();
     let bundle: String = webpack4_bundle_with_embedded_map(&oracle_map_json);
 
-    let input: PathBuf = temp_path("webpack4-sourcemap", "js");
+    let (_input_scratch, input): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("webpack4-sourcemap", "js");
     write_bytes(&input, bundle.as_bytes());
-    let out_dir: PathBuf = temp_dir("webpack4-sourcemap-out");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("webpack4-sourcemap-out");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
 
     let input_str: String = input.display().to_string();
     let out_str: String = out_dir.display().to_string();

@@ -7,9 +7,11 @@ use common::{Run, minimal_wasm, run_disrobe, temp_path, write_bytes};
 
 #[test]
 fn wasm_decompile_target_ts_smoke() {
-    let src: PathBuf = temp_path("wasm-ts", "wasm");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("wasm-ts", "wasm");
     write_bytes(&src, &minimal_wasm());
-    let out: PathBuf = temp_path("wasm-ts-out", "ts");
+    let (_out_scratch, out): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("wasm-ts-out", "ts");
     let r: Run = run_disrobe(&[
         "wasm",
         "decompile",

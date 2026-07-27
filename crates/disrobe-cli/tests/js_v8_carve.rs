@@ -145,7 +145,8 @@ fn read(path: &Path) -> Vec<u8> {
 
 #[test]
 fn v8_out_carves_asar_members_to_disk() {
-    let input: PathBuf = temp_path("asar", "asar");
+    let (_input_scratch, input): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("asar", "asar");
     let bytes: Vec<u8> = synth_asar(&[
         ("renderer.js", b"console.log('renderer')"),
         (
@@ -154,7 +155,8 @@ fn v8_out_carves_asar_members_to_disk() {
         ),
     ]);
     write_bytes(&input, &bytes);
-    let out: PathBuf = temp_dir("asar-out");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("asar-out");
+    let out: PathBuf = out_scratch.path().to_path_buf();
 
     let run: common::Run = run_disrobe(&[
         "js",
@@ -183,11 +185,13 @@ fn v8_out_carves_asar_members_to_disk() {
 
 #[test]
 fn v8_out_carves_nexe_payload_to_disk() {
-    let input: PathBuf = temp_path("nexe", "exe");
+    let (_input_scratch, input): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("nexe", "exe");
     let code: &[u8] = b"// nexe bundled entry\nmodule.exports = 1;\n";
     let resources: &[u8] = b"{\"asset\":true}";
     write_bytes(&input, &synth_nexe(code, resources));
-    let out: PathBuf = temp_dir("nexe-out");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("nexe-out");
+    let out: PathBuf = out_scratch.path().to_path_buf();
 
     let run: common::Run = run_disrobe(&[
         "js",
@@ -212,7 +216,8 @@ fn v8_out_carves_nexe_payload_to_disk() {
 
 #[test]
 fn v8_out_carves_nwjs_zip_members_to_disk() {
-    let input: PathBuf = temp_path("nwjs", "exe");
+    let (_input_scratch, input): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("nwjs", "exe");
     write_bytes(
         &input,
         &synth_nwjs_binary(&[
@@ -220,7 +225,8 @@ fn v8_out_carves_nwjs_zip_members_to_disk() {
             ("package.json", b"{\"main\":\"app.js\"}"),
         ]),
     );
-    let out: PathBuf = temp_dir("nwjs-out");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("nwjs-out");
+    let out: PathBuf = out_scratch.path().to_path_buf();
 
     let run: common::Run = run_disrobe(&[
         "js",
@@ -260,7 +266,8 @@ fn v8_out_carves_real_sea_main_code_to_disk() {
         );
         return;
     }
-    let out: PathBuf = temp_dir("sea-out");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("sea-out");
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let run: common::Run = run_disrobe(&[
         "js",
         "v8",

@@ -50,7 +50,8 @@ fn read(path: &Path) -> Vec<u8> {
 
 #[test]
 fn webview_carves_electron_asar_to_disk() {
-    let input: PathBuf = temp_path("webview-electron", "exe");
+    let (_input_scratch, input): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("webview-electron", "exe");
     let asar: Vec<u8> = synth_asar(&[
         ("index.html", b"<html><body>disrobe</body></html>"),
         ("assets/app.js", b"console.log('recovered');"),
@@ -58,7 +59,8 @@ fn webview_carves_electron_asar_to_disk() {
     let mut host: Vec<u8> = b"MZ\x00\x00fake-electron-host-stub\x00\x00".to_vec();
     host.extend_from_slice(&asar);
     write_bytes(&input, &host);
-    let out: PathBuf = temp_dir("webview-electron-out");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("webview-electron-out");
+    let out: PathBuf = out_scratch.path().to_path_buf();
 
     let run: common::Run = run_disrobe(&[
         "webview",
@@ -91,12 +93,14 @@ fn webview_carves_electron_asar_to_disk() {
 
 #[test]
 fn webview_json_summary_reports_family_and_per_asset_size() {
-    let input: PathBuf = temp_path("webview-electron-json", "exe");
+    let (_input_scratch, input): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("webview-electron-json", "exe");
     let asar: Vec<u8> = synth_asar(&[("main.js", b"module.exports = 42;")]);
     let mut host: Vec<u8> = b"MZ\x00\x00fake-electron-host-stub\x00\x00".to_vec();
     host.extend_from_slice(&asar);
     write_bytes(&input, &host);
-    let out: PathBuf = temp_dir("webview-electron-json-out");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("webview-electron-json-out");
+    let out: PathBuf = out_scratch.path().to_path_buf();
 
     let run: common::Run = run_disrobe(&[
         "--json",
@@ -124,9 +128,11 @@ fn webview_json_summary_reports_family_and_per_asset_size() {
 
 #[test]
 fn webview_rejects_input_with_no_recognized_frontend() {
-    let input: PathBuf = temp_path("webview-none", "bin");
+    let (_input_scratch, input): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("webview-none", "bin");
     write_bytes(&input, &[0u8; 512]);
-    let out: PathBuf = temp_dir("webview-none-out");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("webview-none-out");
+    let out: PathBuf = out_scratch.path().to_path_buf();
 
     let run: common::Run = run_disrobe(&[
         "webview",

@@ -1,9 +1,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn cli_binary() -> PathBuf {
     let mut p: PathBuf = env_target_dir();
@@ -28,17 +25,17 @@ fn env_target_dir() -> PathBuf {
     dir
 }
 
-fn temp_path(stem: &str, ext: &str) -> PathBuf {
-    let pid: u32 = std::process::id();
-    let seq: u64 = FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("disrobe-cli-e2e-{stem}-{pid}-{seq}.{ext}"))
+fn temp_path(stem: &str, ext: &str) -> (disrobe_core::scratch::ScratchDir, PathBuf) {
+    let purpose: String = format!("disrobe-cli-e2e-{stem}");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory");
+    let path: PathBuf = scratch.path().join(format!("payload.{ext}"));
+    (scratch, path)
 }
 
-fn temp_dir(stem: &str) -> PathBuf {
-    let p: PathBuf = temp_path(stem, "dir");
-    let _ = std::fs::remove_dir_all(&p);
-    std::fs::create_dir_all(&p).expect("create temp dir");
-    p
+fn temp_dir(stem: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-cli-e2e-{stem}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn write_bytes(path: &PathBuf, bytes: &[u8]) {
@@ -188,7 +185,8 @@ fn unknown_subcommand_exits_nonzero_with_helpful_error() {
 
 #[test]
 fn auto_subcommand_on_missing_input_surfaces_dr_cli_0090() {
-    let bogus: PathBuf = temp_path("auto-missing", "bin");
+    let (_bogus_scratch, bogus): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("auto-missing", "bin");
     let r: Run = run_disrobe(&["auto", bogus.to_str().unwrap()]);
     assert_ne!(r.code, 0);
     assert!(
@@ -235,8 +233,10 @@ fn explain_long_form_codes_are_case_insensitive() {
 
 #[test]
 fn auto_on_plain_python_produces_chain_and_out_dir() {
-    let src: PathBuf = temp_path("auto-plain-py", "py");
-    let out_dir: PathBuf = temp_dir("auto-plain-py-out");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("auto-plain-py", "py");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("auto-plain-py-out");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     write_bytes(&src, b"print('hello world')\n");
     let r: Run = run_disrobe(&[
         "auto",
@@ -261,10 +261,10 @@ fn auto_on_plain_python_produces_chain_and_out_dir() {
 
 #[test]
 fn auto_dry_run_emits_nothing_to_disk() {
-    let src: PathBuf = temp_path("auto-dry", "py");
-    let out_dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-cli-dry-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&out_dir);
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("auto-dry", "py");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("auto-dry");
+    let out_dir: PathBuf = out_scratch.path().to_path_buf();
     write_bytes(&src, b"print('dry run check')\n");
     let _r: Run = run_disrobe(&[
         "auto",
@@ -284,7 +284,8 @@ fn auto_dry_run_emits_nothing_to_disk() {
 
 #[test]
 fn status_in_empty_dir_reports_no_out() {
-    let work: PathBuf = temp_dir("status-empty");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("status-empty");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let bin: PathBuf = cli_binary();
     let out: std::process::Output = Command::new(&bin)
         .arg("status")
@@ -307,7 +308,8 @@ fn status_in_empty_dir_reports_no_out() {
 
 #[test]
 fn status_json_emits_valid_object() {
-    let work: PathBuf = temp_dir("status-empty-json");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("status-empty-json");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let bin: PathBuf = cli_binary();
     let out: std::process::Output = Command::new(&bin)
         .args(["--json", "status"])
@@ -354,7 +356,8 @@ fn doctor_json_includes_tools_array() {
 
 #[test]
 fn init_default_creates_dot_disrobe() {
-    let work: PathBuf = temp_dir("init-default");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("init-default");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let bin: PathBuf = cli_binary();
     let out: std::process::Output = Command::new(&bin)
         .arg("init")
@@ -375,7 +378,8 @@ fn init_default_creates_dot_disrobe() {
 
 #[test]
 fn init_claude_emits_settings_and_commands() {
-    let work: PathBuf = temp_dir("init-claude");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("init-claude");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let bin: PathBuf = cli_binary();
     let out: std::process::Output = Command::new(&bin)
         .args(["init", "--ide", "claude"])
@@ -398,7 +402,8 @@ fn init_claude_emits_settings_and_commands() {
 
 #[test]
 fn init_refuses_to_overwrite_existing_without_force() {
-    let work: PathBuf = temp_dir("init-already");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("init-already");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let _ = std::fs::create_dir_all(work.join(".disrobe"));
     let bin: PathBuf = cli_binary();
     let out: std::process::Output = Command::new(&bin)
@@ -414,7 +419,8 @@ fn init_refuses_to_overwrite_existing_without_force() {
 
 #[test]
 fn init_force_overwrites() {
-    let work: PathBuf = temp_dir("init-force");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("init-force");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let _ = std::fs::create_dir_all(work.join(".disrobe"));
     let bin: PathBuf = cli_binary();
     let out: std::process::Output = Command::new(&bin)
@@ -433,7 +439,8 @@ fn init_force_overwrites() {
 
 #[test]
 fn man_emits_pages_to_default_out_dir() {
-    let work: PathBuf = temp_dir("man-out");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("man-out");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let bin: PathBuf = cli_binary();
     let man_dir: PathBuf = work.join("custom-man");
     let out: std::process::Output = Command::new(&bin)
@@ -457,7 +464,8 @@ fn man_emits_pages_to_default_out_dir() {
 
 #[test]
 fn bug_report_writes_default_file() {
-    let work: PathBuf = temp_dir("bug-report");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("bug-report");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let out_path: PathBuf = work.join("report.md");
     let r: Run = run_disrobe(&["bug-report", "--out", out_path.to_str().unwrap()]);
     assert_eq!(r.code, 0, "stderr: {}", r.stderr);
@@ -496,7 +504,8 @@ fn self_update_json_emits_machine_format() {
 
 #[test]
 fn completions_install_appends_idempotently() {
-    let work: PathBuf = temp_dir("comp-install");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("comp-install");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let rc: PathBuf = work.join("custom.bashrc");
     std::fs::write(&rc, b"# existing\n").expect("seed rc");
     let r1: Run = run_disrobe(&[
@@ -529,7 +538,8 @@ fn passes_json_global_flag_does_not_break_text_subcommands() {
 
 #[test]
 fn pyinstaller_detect_rejects_non_pyinstaller_input() {
-    let bogus: PathBuf = temp_path("not-pyinstaller", "exe");
+    let (_bogus_scratch, bogus): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("not-pyinstaller", "exe");
     write_bytes(
         &bogus,
         b"MZ\x90\x00not really a pe just random bytes for the cookie scanner to fail on",
@@ -541,7 +551,8 @@ fn pyinstaller_detect_rejects_non_pyinstaller_input() {
 
 #[test]
 fn pyinstaller_detect_missing_input_surfaces_dr_cli_0011() {
-    let missing: PathBuf = temp_path("missing-pi", "exe");
+    let (_missing_scratch, missing): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("missing-pi", "exe");
     let _ = std::fs::remove_file(&missing);
     let r: Run = run_disrobe(&["pyinstaller", "detect", missing.to_str().unwrap()]);
     assert_ne!(r.code, 0);
@@ -554,7 +565,8 @@ fn pyinstaller_detect_missing_input_surfaces_dr_cli_0011() {
 
 #[test]
 fn pyfreeze_detect_rejects_random_blob() {
-    let blob: PathBuf = temp_path("not-pyfreeze", "bin");
+    let (_blob_scratch, blob): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("not-pyfreeze", "bin");
     write_bytes(&blob, &(0u8..=255u8).collect::<Vec<_>>());
     let r: Run = run_disrobe(&["pyfreeze", "detect", blob.to_str().unwrap()]);
     assert!(
@@ -568,7 +580,8 @@ fn pyfreeze_detect_rejects_random_blob() {
 
 #[test]
 fn nuitka_detect_classifies_plain_pe_as_not_nuitka() {
-    let blob: PathBuf = temp_path("plain-pe", "exe");
+    let (_blob_scratch, blob): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("plain-pe", "exe");
     let mut pe: Vec<u8> = Vec::with_capacity(256);
     pe.extend_from_slice(b"MZ");
     pe.resize(0x3c, 0);
@@ -589,7 +602,8 @@ fn nuitka_detect_classifies_plain_pe_as_not_nuitka() {
 
 #[test]
 fn nuitka_extract_on_non_onefile_returns_dr_cli_0017() {
-    let blob: PathBuf = temp_path("not-onefile", "bin");
+    let (_blob_scratch, blob): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("not-onefile", "bin");
     write_bytes(&blob, b"\0\0\0\0nothing onefile-like here whatsoever");
     let r: Run = run_disrobe(&["nuitka", "extract", blob.to_str().unwrap()]);
     assert_ne!(r.code, 0);
@@ -604,7 +618,8 @@ fn nuitka_extract_on_non_onefile_returns_dr_cli_0017() {
 
 #[test]
 fn py_disasm_rejects_non_pyc_blob() {
-    let blob: PathBuf = temp_path("not-pyc", "pyc");
+    let (_blob_scratch, blob): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("not-pyc", "pyc");
     write_bytes(&blob, b"not a pyc file");
     let r: Run = run_disrobe(&["py", "disasm", blob.to_str().unwrap()]);
     assert_ne!(r.code, 0);
@@ -613,8 +628,10 @@ fn py_disasm_rejects_non_pyc_blob() {
 
 #[test]
 fn py_deob_passes_through_clean_source() {
-    let src: PathBuf = temp_path("clean-py", "py");
-    let out_dir: PathBuf = temp_dir("py-deob-out");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("clean-py", "py");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("py-deob-out");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     let out_path: PathBuf = out_dir.join("clean-py.deobfuscated.py");
     write_bytes(&src, b"print('hello world')\n");
     let r: Run = run_disrobe(&[
@@ -639,8 +656,10 @@ fn py_deob_passes_through_clean_source() {
 
 #[test]
 fn py_deob_with_cleanup_flag_runs_extra_pass() {
-    let src: PathBuf = temp_path("cleanup-py", "py");
-    let out_dir: PathBuf = temp_dir("py-deob-cleanup-out");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("cleanup-py", "py");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("py-deob-cleanup-out");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     let out_path: PathBuf = out_dir.join("cleanup-py.deobfuscated.py");
     write_bytes(
         &src,
@@ -661,7 +680,8 @@ fn py_deob_with_cleanup_flag_runs_extra_pass() {
 
 #[test]
 fn py_sourcedefender_rejects_non_pye_blob() {
-    let blob: PathBuf = temp_path("not-pye", "pye");
+    let (_blob_scratch, blob): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("not-pye", "pye");
     write_bytes(&blob, b"this is not a sourcedefender envelope");
     let r: Run = run_disrobe(&["py", "sourcedefender", blob.to_str().unwrap()]);
     assert_ne!(r.code, 0);
@@ -670,8 +690,10 @@ fn py_sourcedefender_rejects_non_pye_blob() {
 
 #[test]
 fn js_deob_handles_minimal_string_array_obfuscator_pattern() {
-    let src: PathBuf = temp_path("js-strarr", "js");
-    let out_dir: PathBuf = temp_dir("js-deob-out");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("js-strarr", "js");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("js-deob-out");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     let out_path: PathBuf = out_dir.join("js-strarr.deobfuscated.js");
     write_bytes(
         &src,
@@ -695,8 +717,10 @@ console.log(_0x1234(0) + " " + _0x1234(1));
 
 #[test]
 fn js_deob_with_all_flags_runs_pipeline() {
-    let src: PathBuf = temp_path("js-pipeline", "js");
-    let out_dir: PathBuf = temp_dir("js-pipeline-out");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("js-pipeline", "js");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("js-pipeline-out");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     let out_path: PathBuf = out_dir.join("js-pipeline.deobfuscated.js");
     write_bytes(
         &src,
@@ -725,8 +749,10 @@ if(_0xv1){console.log(_0xdec(0));}
 
 #[test]
 fn js_deob_full_routes_jsconfuser_to_dedicated_pipeline() {
-    let src: PathBuf = temp_path("jsconfuser-full", "js");
-    let out_dir: PathBuf = temp_dir("jsconfuser-full-out");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("jsconfuser-full", "js");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("jsconfuser-full-out");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     let out_path: PathBuf = out_dir.join("jsconfuser-full.deobfuscated.js");
     write_bytes(
         &src,
@@ -763,7 +789,8 @@ fn auto_native_deobf_json_surfaces_copyprop_and_mba_on_unpacked_image() {
         );
         return;
     }
-    let out_dir: PathBuf = temp_dir("native-deobf-surface");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("native-deobf-surface");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     let r: Run = run_disrobe(&[
         "auto",
         packed.to_str().unwrap(),
@@ -827,8 +854,10 @@ fn auto_native_deobf_json_surfaces_copyprop_and_mba_on_unpacked_image() {
 
 #[test]
 fn js_deob_rejects_non_utf8_input() {
-    let src: PathBuf = temp_path("js-non-utf8", "js");
-    let out_dir: PathBuf = temp_dir("js-non-utf8-out");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("js-non-utf8", "js");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("js-non-utf8-out");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     let out_path: PathBuf = out_dir.join("out.js");
     write_bytes(&src, &[0xFF, 0xFE, 0xFD, 0xFC]);
     let r: Run = run_disrobe(&[
@@ -848,8 +877,10 @@ fn js_deob_rejects_non_utf8_input() {
 
 #[test]
 fn wasm_decompile_accepts_minimal_empty_module() {
-    let src: PathBuf = temp_path("wasm-empty", "wasm");
-    let out_dir: PathBuf = temp_dir("wasm-decompile-out");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("wasm-empty", "wasm");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("wasm-decompile-out");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     let out_path: PathBuf = out_dir.join("wasm-empty.summary.json");
     write_bytes(&src, b"\x00asm\x01\x00\x00\x00");
     let r: Run = run_disrobe(&[
@@ -865,8 +896,10 @@ fn wasm_decompile_accepts_minimal_empty_module() {
 
 #[test]
 fn wasm_decompile_rejects_non_wasm_blob() {
-    let src: PathBuf = temp_path("wasm-bad-magic", "wasm");
-    let out_dir: PathBuf = temp_dir("wasm-bad-out");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("wasm-bad-magic", "wasm");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("wasm-bad-out");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     let out_path: PathBuf = out_dir.join("bad.summary.json");
     write_bytes(&src, b"NOT-WASM-AT-ALL");
     let r: Run = run_disrobe(&[
@@ -881,8 +914,10 @@ fn wasm_decompile_rejects_non_wasm_blob() {
 
 #[test]
 fn pyarmor_unpack_rejects_non_wrapper_input() {
-    let src: PathBuf = temp_path("not-pyarmor", "py");
-    let out_dir: PathBuf = temp_dir("pyarmor-out");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("not-pyarmor", "py");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("pyarmor-out");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     write_bytes(
         &src,
         b"print('this is plain python, not a pyarmor wrapper')\n",
@@ -904,9 +939,11 @@ fn pyarmor_unpack_rejects_non_wrapper_input() {
 
 #[test]
 fn pyarmor_unpack_missing_input_surfaces_dr_cli_0001() {
-    let missing: PathBuf = temp_path("missing-pyarmor", "py");
+    let (_missing_scratch, missing): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("missing-pyarmor", "py");
     let _ = std::fs::remove_file(&missing);
-    let out_dir: PathBuf = temp_dir("pyarmor-missing-out");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("pyarmor-missing-out");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     let r: Run = run_disrobe(&[
         "pyarmor",
         "unpack",
@@ -1007,8 +1044,10 @@ fn wasm_decompile_help_documents_target_flag() {
 
 #[test]
 fn wasm_decompile_target_rust_emits_rs_file() {
-    let src: PathBuf = temp_path("wasm-lift-rust", "wasm");
-    let out_dir: PathBuf = temp_dir("wasm-lift-rust-out");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("wasm-lift-rust", "wasm");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("wasm-lift-rust-out");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     let out_path: PathBuf = out_dir.join("lifted.rs");
     write_bytes(&src, b"\x00asm\x01\x00\x00\x00");
     let r: Run = run_disrobe(&[
@@ -1031,8 +1070,10 @@ fn wasm_decompile_target_rust_emits_rs_file() {
 
 #[test]
 fn wasm_decompile_target_ts_emits_ts_file() {
-    let src: PathBuf = temp_path("wasm-lift-ts", "wasm");
-    let out_dir: PathBuf = temp_dir("wasm-lift-ts-out");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("wasm-lift-ts", "wasm");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("wasm-lift-ts-out");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     let out_path: PathBuf = out_dir.join("lifted.ts");
     write_bytes(&src, b"\x00asm\x01\x00\x00\x00");
     let r: Run = run_disrobe(&[
@@ -1050,8 +1091,10 @@ fn wasm_decompile_target_ts_emits_ts_file() {
 
 #[test]
 fn wasm_decompile_target_wat_emits_wat_file() {
-    let src: PathBuf = temp_path("wasm-lift-wat", "wasm");
-    let out_dir: PathBuf = temp_dir("wasm-lift-wat-out");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("wasm-lift-wat", "wasm");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("wasm-lift-wat-out");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     let out_path: PathBuf = out_dir.join("lifted.wat");
     write_bytes(&src, b"\x00asm\x01\x00\x00\x00");
     let r: Run = run_disrobe(&[
@@ -1069,8 +1112,10 @@ fn wasm_decompile_target_wat_emits_wat_file() {
 
 #[test]
 fn wasm_decompile_emit_writes_stub_files() {
-    let src: PathBuf = temp_path("wasm-emit", "wasm");
-    let out_dir: PathBuf = temp_dir("wasm-emit-out");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("wasm-emit", "wasm");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("wasm-emit-out");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     let out_path: PathBuf = out_dir.join("module.summary.json");
     write_bytes(&src, b"\x00asm\x01\x00\x00\x00");
     let r: Run = run_disrobe(&[
@@ -1117,7 +1162,8 @@ fn wasm_types_reachable_via_main_dispatch() {
 
 #[test]
 fn verify_top_level_alias_routes_to_envelope_verify() {
-    let bogus: PathBuf = temp_path("verify-bogus", "dr");
+    let (_bogus_scratch, bogus): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("verify-bogus", "dr");
     write_bytes(&bogus, b"not a real disrobe envelope at all");
     let r: Run = run_disrobe(&["verify", bogus.to_str().unwrap()]);
     assert_ne!(r.code, 0, "verify on garbage should fail");
@@ -1147,8 +1193,10 @@ fn chain_requires_passes_and_input() {
 
 #[test]
 fn chain_runs_py_deob_on_plain_input() {
-    let src: PathBuf = temp_path("chain-py", "py");
-    let out_dir: PathBuf = temp_dir("chain-py-out");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("chain-py", "py");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("chain-py-out");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     write_bytes(&src, b"print('chain hello')\n");
     let r: Run = run_disrobe(&[
         "chain",
@@ -1164,8 +1212,10 @@ fn chain_runs_py_deob_on_plain_input() {
 
 #[test]
 fn chain_rejects_unknown_pass_name() {
-    let src: PathBuf = temp_path("chain-bad", "py");
-    let out_dir: PathBuf = temp_dir("chain-bad-out");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("chain-bad", "py");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("chain-bad-out");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     write_bytes(&src, b"print('x')\n");
     let r: Run = run_disrobe(&[
         "chain",
@@ -1184,7 +1234,8 @@ fn chain_rejects_unknown_pass_name() {
 
 #[test]
 fn native_decompile_without_ghidra_surfaces_dr_native_0001() {
-    let bogus: PathBuf = temp_path("native-decomp", "bin");
+    let (_bogus_scratch, bogus): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("native-decomp", "bin");
     write_bytes(
         &bogus,
         b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00",
@@ -1204,8 +1255,10 @@ fn native_decompile_without_ghidra_surfaces_dr_native_0001() {
 
 #[test]
 fn native_symbols_on_minimal_elf_emits_json() {
-    let src: PathBuf = temp_path("native-syms", "bin");
-    let out_dir: PathBuf = temp_dir("native-syms-out");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("native-syms", "bin");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("native-syms-out");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     let out_path: PathBuf = out_dir.join("syms.json");
     let mut elf: Vec<u8> = Vec::with_capacity(64);
     elf.extend_from_slice(b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00");
@@ -1241,8 +1294,10 @@ fn native_symbols_on_minimal_elf_emits_json() {
 
 #[test]
 fn py_decompile_on_invalid_pyc_surfaces_dr_cli_error() {
-    let bogus: PathBuf = temp_path("py-decomp-bad", "pyc");
-    let out_dir: PathBuf = temp_dir("py-decomp-bad-out");
+    let (_bogus_scratch, bogus): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("py-decomp-bad", "pyc");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("py-decomp-bad-out");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     write_bytes(&bogus, b"definitely not a pyc");
     let r: Run = run_disrobe(&[
         "py",
@@ -1261,8 +1316,10 @@ fn py_decompile_on_invalid_pyc_surfaces_dr_cli_error() {
 
 #[test]
 fn py_extract_rejects_non_archive_blob() {
-    let bogus: PathBuf = temp_path("py-extract-bad", "bin");
-    let out_dir: PathBuf = temp_dir("py-extract-bad-out");
+    let (_bogus_scratch, bogus): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("py-extract-bad", "bin");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("py-extract-bad-out");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     write_bytes(&bogus, b"not an archive of any kind");
     let r: Run = run_disrobe(&[
         "py",
@@ -1281,8 +1338,10 @@ fn py_extract_rejects_non_archive_blob() {
 
 #[test]
 fn py_disasm_emit_writes_stub() {
-    let bogus: PathBuf = temp_path("py-disasm-emit-bad", "pyc");
-    let out_dir: PathBuf = temp_dir("py-disasm-emit-out");
+    let (_bogus_scratch, bogus): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("py-disasm-emit-bad", "pyc");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("py-disasm-emit-out");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     let out_path: PathBuf = out_dir.join("x.dis.txt");
     write_bytes(&bogus, b"not a pyc");
     let r: Run = run_disrobe(&[
@@ -1354,11 +1413,11 @@ const SEVERED_WASM_WAT: &str = r#"
       (else (call $system (i32.const 7))))))
 "#;
 
-fn write_wasm(stem: &str, wat: &str) -> PathBuf {
+fn write_wasm(stem: &str, wat: &str) -> (disrobe_core::scratch::ScratchDir, PathBuf) {
     let bytes: Vec<u8> = wat::parse_str(wat).expect("assemble wat fixture");
-    let path: PathBuf = temp_path(stem, "wasm");
+    let (scratch, path): (disrobe_core::scratch::ScratchDir, PathBuf) = temp_path(stem, "wasm");
     write_bytes(&path, &bytes);
-    path
+    (scratch, path)
 }
 
 fn corpus_path(rel: &str) -> PathBuf {
@@ -1491,7 +1550,8 @@ fn jvm_retrace_json_carries_the_retraced_frames() {
 
 #[test]
 fn wasm_lift_gc_emits_reconstructed_gc_struct_and_array_types() {
-    let src: PathBuf = write_wasm("wasm-lift-gc", GC_STRUCT_WAT);
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        write_wasm("wasm-lift-gc", GC_STRUCT_WAT);
     let r: Run = run_disrobe(&["wasm", "lift-gc", src.to_str().unwrap(), "--json"]);
     assert_eq!(r.code, 0, "stderr: {}", r.stderr);
     let parsed: serde_json::Value =
@@ -1579,7 +1639,8 @@ fn dotnet_recover_iterators_json_carries_yield_and_await_bodies() {
 
 #[test]
 fn taint_reports_recv_feeding_system_in_a_lifted_wasm_module() {
-    let src: PathBuf = write_wasm("taint-tainted", TAINTED_WASM_WAT);
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        write_wasm("taint-tainted", TAINTED_WASM_WAT);
     let r: Run = run_disrobe(&["taint", src.to_str().unwrap()]);
     assert_eq!(r.code, 0, "stderr: {}", r.stderr);
     assert!(
@@ -1596,7 +1657,8 @@ fn taint_reports_recv_feeding_system_in_a_lifted_wasm_module() {
 
 #[test]
 fn taint_finds_no_flow_when_source_and_sink_sit_on_opposite_branches() {
-    let src: PathBuf = write_wasm("taint-severed", SEVERED_WASM_WAT);
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        write_wasm("taint-severed", SEVERED_WASM_WAT);
     let r: Run = run_disrobe(&["taint", src.to_str().unwrap()]);
     assert_eq!(r.code, 0, "stderr: {}", r.stderr);
     assert!(
@@ -1608,7 +1670,8 @@ fn taint_finds_no_flow_when_source_and_sink_sit_on_opposite_branches() {
 
 #[test]
 fn taint_json_carries_the_source_to_sink_finding() {
-    let src: PathBuf = write_wasm("taint-json", TAINTED_WASM_WAT);
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        write_wasm("taint-json", TAINTED_WASM_WAT);
     let r: Run = run_disrobe(&[
         "taint",
         src.to_str().unwrap(),
@@ -1642,7 +1705,8 @@ fn js_recover_sources_reconstructs_the_deployed_tree_byte_identical() {
     if !bundle.is_file() {
         return;
     }
-    let out_dir: PathBuf = temp_dir("js-recover-sources");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("js-recover-sources");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     let r: Run = run_disrobe(&[
         "js",
         "deob",
@@ -1686,7 +1750,8 @@ fn sourcedefender_modern_body_decrypts_with_a_supplied_known_key() {
     if !pye.is_file() {
         return;
     }
-    let out_py: PathBuf = temp_path("sdef-modern", "py");
+    let (_out_py_scratch, out_py): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("sdef-modern", "py");
     let key_hex: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
     let r: Run = run_disrobe(&[
         "py",
@@ -1740,7 +1805,8 @@ fn go_recover_renders_build_info_matching_the_embedded_blob() {
     if !exe.is_file() {
         return;
     }
-    let out_json: PathBuf = temp_path("go-deps", "json");
+    let (_out_json_scratch, out_json): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("go-deps", "json");
     let r: Run = run_disrobe(&[
         "go",
         "recover",

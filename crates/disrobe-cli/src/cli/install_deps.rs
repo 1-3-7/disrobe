@@ -543,7 +543,8 @@ mod tests {
     #[test]
     fn extract_zip_to_with_limits_rejects_total_uncompressed_over_limit() {
         let archive: Vec<u8> = stored_zip(&[("a.bin", &[0x41; 6]), ("b.bin", &[0x42; 6])]);
-        let dest: PathBuf = temp_install_dir("total-cap");
+        let dest_scratch: disrobe_core::scratch::ScratchDir = temp_install_dir("total-cap");
+        let dest: PathBuf = dest_scratch.path().to_path_buf();
         let limits: InstallLimits = InstallLimits {
             download_bytes: 1024,
             archive_entries: 8,
@@ -555,7 +556,6 @@ mod tests {
         let msg: String = err.to_string();
         assert!(msg.contains("DR-CLI-0321"));
         assert!(!dest.join("b.bin").is_file());
-        let _: Result<(), std::io::Error> = std::fs::remove_dir_all(&dest);
     }
 
     fn stored_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
@@ -572,12 +572,8 @@ mod tests {
         out.into_inner()
     }
 
-    fn temp_install_dir(tag: &str) -> PathBuf {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let nonce: u64 = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "disrobe-install-deps-{tag}-{pid}-{nonce}",
-            pid = std::process::id()
-        ))
+    fn temp_install_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
+        let purpose: String = format!("disrobe-install-deps-{tag}");
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
     }
 }

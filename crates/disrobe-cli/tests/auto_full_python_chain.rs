@@ -9,7 +9,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
 const MEI_MAGIC: &[u8; 8] = b"MEI\x0C\x0B\x0A\x0B\x0E";
 
@@ -42,13 +41,9 @@ fn cargo_bin() -> PathBuf {
 }
 
 #[allow(clippy::disallowed_methods)]
-fn tmp_out(name: &str) -> PathBuf {
-    let stamp: u128 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_nanos();
-    let pid: u32 = std::process::id();
-    std::env::temp_dir().join(format!("disrobe-chain-{name}-{pid}-{stamp}"))
+fn tmp_out(name: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-chain-{name}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn run_chain_cli(input: &Path, out: &Path, chain_arg: &str) -> std::process::Output {
@@ -215,8 +210,10 @@ fn test_auto_full_python_chain_pyinstaller_pyc_decompile() {
     };
 
     let archive: Vec<u8> = synthesize_pyinstaller_archive(&pyc_body, "binary_ops", 11);
-    let out: PathBuf = tmp_out("full-python-pyc");
-    let input: PathBuf = tmp_out("full-python-pyc-input").with_extension("pkg");
+    let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("full-python-pyc");
+    let out: PathBuf = out_scratch.path().to_path_buf();
+    let input_scratch: disrobe_core::scratch::ScratchDir = tmp_out("full-python-pyc-input");
+    let input: PathBuf = input_scratch.path().join("payload.pkg");
     std::fs::write(&input, &archive)
         .unwrap_or_else(|e: std::io::Error| panic!("cannot write synthetic archive: {e}"));
 
@@ -279,8 +276,10 @@ fn test_auto_full_python_chain_pyinstaller_pyarmor_advances_to_pyarmor_stage() {
     };
 
     let archive: Vec<u8> = synthesize_pyinstaller_archive(&child, "chunk_00", 11);
-    let out: PathBuf = tmp_out("full-python-pyarmor");
-    let input: PathBuf = tmp_out("full-python-pyarmor-input").with_extension("pkg");
+    let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("full-python-pyarmor");
+    let out: PathBuf = out_scratch.path().to_path_buf();
+    let input_scratch: disrobe_core::scratch::ScratchDir = tmp_out("full-python-pyarmor-input");
+    let input: PathBuf = input_scratch.path().join("payload.pkg");
     std::fs::write(&input, &archive)
         .unwrap_or_else(|e: std::io::Error| panic!("cannot write synthetic archive: {e}"));
 

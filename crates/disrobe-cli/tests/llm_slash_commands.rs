@@ -1,9 +1,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use std::path::PathBuf;
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn cli_binary() -> PathBuf {
     let mut p: PathBuf = std::env::current_exe().expect("test exe path");
@@ -20,14 +17,9 @@ fn cli_binary() -> PathBuf {
     p
 }
 
-fn temp_dir(tag: &str) -> PathBuf {
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-slash-{tag}-{}-{}",
-        std::process::id(),
-        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).expect("mk temp");
-    dir
+fn temp_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-slash-{tag}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 struct ExpectedCommand {
@@ -61,7 +53,8 @@ const EXPECTED: &[ExpectedCommand] = &[
 
 #[test]
 fn init_claude_emits_typed_slash_commands_with_real_subcommands() {
-    let work: PathBuf = temp_dir("typed");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("typed");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let bin: PathBuf = cli_binary();
     let out: Output = Command::new(&bin)
         .args(["init", "--ide", "claude"])
@@ -110,7 +103,8 @@ fn init_claude_emits_typed_slash_commands_with_real_subcommands() {
 
 #[test]
 fn slash_command_count_is_exactly_four() {
-    let work: PathBuf = temp_dir("count");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("count");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let bin: PathBuf = cli_binary();
     let _: Output = Command::new(&bin)
         .args(["init", "--ide", "claude"])

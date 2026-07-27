@@ -1,11 +1,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use std::path::PathBuf;
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
-
-static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const AES_SBOX: &[u8; 256] = &[
     0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
@@ -44,10 +41,12 @@ fn cli_binary() -> PathBuf {
     dir
 }
 
-fn temp_path(suffix: &str) -> PathBuf {
-    let pid: u32 = std::process::id();
-    let seq: u64 = FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("disrobe-sig-native-{pid}-{seq}.{suffix}"))
+fn temp_path(suffix: &str) -> (disrobe_core::scratch::ScratchDir, PathBuf) {
+    let purpose: String = format!("disrobe-sig-native-{suffix}");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory");
+    let path: PathBuf = scratch.path().join("payload");
+    (scratch, path)
 }
 
 #[test]
@@ -56,8 +55,10 @@ fn native_signatures_flags_embedded_aes_sbox() {
     buf.extend_from_slice(AES_SBOX);
     buf.extend_from_slice(&[0u8; 32]);
 
-    let input_path: PathBuf = temp_path("bin");
-    let out_json: PathBuf = temp_path("json");
+    let (_input_path_scratch, input_path): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("bin");
+    let (_out_json_scratch, out_json): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("json");
     std::fs::write(&input_path, &buf).expect("write temp input");
 
     let out: Output = Command::new(cli_binary())

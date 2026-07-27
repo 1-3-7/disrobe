@@ -25,8 +25,9 @@ fn class_bytes(jar: &std::path::Path, entry: &str) -> Vec<u8> {
     buf
 }
 
-fn build_fixture_jar(entries: &[(&str, Vec<u8>)]) -> PathBuf {
-    let path: PathBuf = temp_path("jvm-jar-fixture", "jar");
+fn build_fixture_jar(entries: &[(&str, Vec<u8>)]) -> (disrobe_core::scratch::ScratchDir, PathBuf) {
+    let (scratch, path): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("jvm-jar-fixture", "jar");
     let file: std::fs::File = std::fs::File::create(&path).expect("create fixture jar");
     let mut writer: zip::ZipWriter<std::fs::File> = zip::ZipWriter::new(file);
     let options: zip::write::FileOptions<'_, ()> =
@@ -44,7 +45,7 @@ fn build_fixture_jar(entries: &[(&str, Vec<u8>)]) -> PathBuf {
         writer.write_all(bytes).expect("write class entry");
     }
     writer.finish().expect("finish fixture jar");
-    path
+    (scratch, path)
 }
 
 #[test]
@@ -61,12 +62,14 @@ fn native_jar_decompile_emits_real_source_per_class() {
 
     let main_class: Vec<u8> = class_bytes(&corpus, "EdgeCases.class");
     let vector_class: Vec<u8> = class_bytes(&corpus, "EdgeCases$Vector2D.class");
-    let jar: PathBuf = build_fixture_jar(&[
+    let (_jar_scratch, jar): (disrobe_core::scratch::ScratchDir, PathBuf) = build_fixture_jar(&[
         ("EdgeCases.class", main_class),
         ("EdgeCases$Vector2D.class", vector_class),
     ]);
 
-    let out: PathBuf = temp_dir("jvm-jar-native");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("jvm-jar-native");
+
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let run: common::Run = run_disrobe(&[
         "jvm",
         "decompile",
@@ -125,12 +128,14 @@ fn native_jar_decompile_survives_one_corrupt_class() {
 
     let good_class: Vec<u8> = class_bytes(&corpus, "EdgeCases$Vector2D.class");
     let corrupt_class: Vec<u8> = vec![0xCA, 0xFE, 0xBA, 0xBE, 0x00, 0x00, 0x00, 0x34, 0xFF, 0xFF];
-    let jar: PathBuf = build_fixture_jar(&[
+    let (_jar_scratch, jar): (disrobe_core::scratch::ScratchDir, PathBuf) = build_fixture_jar(&[
         ("EdgeCases$Vector2D.class", good_class),
         ("Broken.class", corrupt_class),
     ]);
 
-    let out: PathBuf = temp_dir("jvm-jar-corrupt");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("jvm-jar-corrupt");
+
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let run: common::Run = run_disrobe(&[
         "jvm",
         "decompile",

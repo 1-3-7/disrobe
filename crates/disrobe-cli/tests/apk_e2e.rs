@@ -97,12 +97,10 @@ fn apk_out_writes_decoded_manifest_xml_and_resource_table() {
         eprintln!("SKIP: binary or fixture missing");
         return;
     }
-    let out_dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-apk-out-{}-{}",
-        std::process::id(),
-        FIXTURE.replace('/', "_")
-    ));
-    let _: std::io::Result<()> = std::fs::remove_dir_all(&out_dir);
+    let purpose: String = format!("disrobe-apk-out-{}", FIXTURE.replace('/', "_"));
+    let out_scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory");
+    let out_dir: PathBuf = out_scratch.path().to_path_buf();
     let out_arg: String = out_dir.to_string_lossy().into_owned();
     let out: Output = run_apk(&["--out", &out_arg]);
     assert!(
@@ -141,8 +139,6 @@ fn apk_out_writes_decoded_manifest_xml_and_resource_table() {
             .is_some_and(|l: &str| l.starts_with("0x")),
         "resources.txt rows must lead with the hex resource id; got:\n{resources}"
     );
-
-    let _: std::io::Result<()> = std::fs::remove_dir_all(&out_dir);
 }
 
 #[test]

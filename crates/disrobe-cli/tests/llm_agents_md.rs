@@ -8,7 +8,8 @@ use common::cli_binary;
 
 #[test]
 fn agents_md_forensic_and_cross_ide_aliases() {
-    let work: PathBuf = common::temp_dir("llm-agents");
+    let work_scratch: disrobe_core::scratch::ScratchDir = common::temp_dir("llm-agents");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let bin: PathBuf = cli_binary();
     assert!(
         bin.exists(),

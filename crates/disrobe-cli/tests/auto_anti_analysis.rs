@@ -9,7 +9,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
 use disrobe_core::anti_analysis::{AntiAnalysisReport, DefeatStatus, Mechanism, Technique, scan};
 
@@ -42,13 +41,9 @@ fn cargo_bin() -> PathBuf {
 }
 
 #[allow(clippy::disallowed_methods)]
-fn tmp_out(name: &str) -> PathBuf {
-    let stamp: u128 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_nanos();
-    let pid: u32 = std::process::id();
-    std::env::temp_dir().join(format!("disrobe-anti-{name}-{pid}-{stamp}"))
+fn tmp_out(name: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-anti-{name}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn run_auto(input: &Path, out: &Path) -> std::process::Output {
@@ -88,7 +83,8 @@ fn auto_emits_anti_analysis_report_and_packing_overcome_on_real_upx() {
         eprintln!("SKIP: fixture missing: {packed:?}");
         return;
     }
-    let out: PathBuf = tmp_out("upx");
+    let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("upx");
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let proc: std::process::Output = run_auto(&packed, &out);
     let stdout: String = String::from_utf8_lossy(&proc.stdout).into_owned();
 

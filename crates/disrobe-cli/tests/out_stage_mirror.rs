@@ -1,9 +1,6 @@
 #![cfg(all(feature = "chain", feature = "shell"))]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn cli_binary() -> PathBuf {
     let exe: PathBuf = std::env::current_exe().expect("current exe");
@@ -23,10 +20,9 @@ fn cli_binary() -> PathBuf {
     dir
 }
 
-fn unique_tmp(stem: &str) -> PathBuf {
-    let pid: u32 = std::process::id();
-    let n: u64 = SEQ.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("disrobe-stage-mirror-{stem}-{pid}-{n}"))
+fn unique_tmp(stem: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-stage-mirror-{stem}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn numbered_step_dirs(out_dir: &Path) -> Vec<PathBuf> {
@@ -59,7 +55,9 @@ fn capture_stages_writes_flat_numbered_step_dirs_with_real_content() {
         bin.display()
     );
 
-    let root: PathBuf = unique_tmp("root");
+    let root_scratch: disrobe_core::scratch::ScratchDir = unique_tmp("root");
+
+    let root: PathBuf = root_scratch.path().to_path_buf();
     let out_dir: PathBuf = root.join("out");
     let input: PathBuf = root.join("script.sh");
     std::fs::create_dir_all(&root).expect("mk root");

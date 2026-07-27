@@ -169,10 +169,10 @@ mod tests {
             ("app.js", br#"console.log("app");"#),
         ];
         let bytes: Vec<u8> = build_genuine_asar(&files);
-        let scratch: PathBuf =
-            std::env::temp_dir().join(format!("disrobe-webview-cli-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&scratch);
-        std::fs::create_dir_all(&scratch).expect("mk scratch");
+        let scratch_dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("disrobe-webview-cli-test")
+                .expect("create scratch directory");
+        let scratch: PathBuf = scratch_dir.path().to_path_buf();
         let asar_path: PathBuf = scratch.join("app.asar");
         std::fs::write(&asar_path, &bytes).expect("write asar");
         let out_dir: PathBuf = scratch.join("out");
@@ -184,6 +184,5 @@ mod tests {
         assert!(html.contains("hi"), "recovered html must be byte-exact");
         let js: String = std::fs::read_to_string(out_dir.join("app.js")).expect("read app.js");
         assert!(js.contains("console.log"));
-        let _ = std::fs::remove_dir_all(&scratch);
     }
 }

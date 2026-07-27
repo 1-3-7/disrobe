@@ -7,9 +7,11 @@ use common::{Run, minimal_wasm, run_disrobe, temp_path, write_bytes};
 
 #[test]
 fn wasm_decompile_target_rust_smoke() {
-    let src: PathBuf = temp_path("wasm-rust", "wasm");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("wasm-rust", "wasm");
     write_bytes(&src, &minimal_wasm());
-    let out: PathBuf = temp_path("wasm-rust-out", "rs");
+    let (_out_scratch, out): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("wasm-rust-out", "rs");
     let r: Run = run_disrobe(&[
         "wasm",
         "decompile",

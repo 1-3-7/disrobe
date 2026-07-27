@@ -10,7 +10,6 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
 use disrobe_binfmt::asar::{AsarEntry, AsarLayout};
 
@@ -43,12 +42,9 @@ fn cargo_bin() -> PathBuf {
 }
 
 #[allow(clippy::disallowed_methods)]
-fn tmp_dir(name: &str) -> PathBuf {
-    let stamp: u128 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_nanos();
-    std::env::temp_dir().join(format!("disrobe-electron-{name}-{stamp}"))
+fn tmp_dir(name: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-electron-{name}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn run_chain_cli_capture(input: &Path, out: &Path) -> std::process::Output {
@@ -129,12 +125,16 @@ fn auto_electron_asar_unpack_then_js_deob_recovers_identifier() {
     let asar_bytes: Vec<u8> =
         synth_asar(&[(ENTRY_NAME, &index_js), ("package.json", package_json)]);
 
-    let asar_dir: PathBuf = tmp_dir("asar");
+    let asar_dir_scratch: disrobe_core::scratch::ScratchDir = tmp_dir("asar");
+
+    let asar_dir: PathBuf = asar_dir_scratch.path().to_path_buf();
     std::fs::create_dir_all(&asar_dir).expect("create asar tmp dir");
     let asar_path: PathBuf = asar_dir.join("hello.asar");
     std::fs::write(&asar_path, &asar_bytes).expect("write hello.asar");
 
-    let asar_out: PathBuf = tmp_dir("asar-out");
+    let asar_out_scratch: disrobe_core::scratch::ScratchDir = tmp_dir("asar-out");
+
+    let asar_out: PathBuf = asar_out_scratch.path().to_path_buf();
     let asar_proc: std::process::Output = run_chain_cli_capture(&asar_path, &asar_out);
     assert!(
         asar_proc.status.success(),
@@ -167,12 +167,16 @@ fn auto_electron_asar_unpack_then_js_deob_recovers_identifier() {
         "extracted index.js must be byte-identical to the bundled obfuscated source"
     );
 
-    let js_dir: PathBuf = tmp_dir("js");
+    let js_dir_scratch: disrobe_core::scratch::ScratchDir = tmp_dir("js");
+
+    let js_dir: PathBuf = js_dir_scratch.path().to_path_buf();
     std::fs::create_dir_all(&js_dir).expect("create js tmp dir");
     let js_path: PathBuf = js_dir.join(ENTRY_NAME);
     std::fs::write(&js_path, extracted).expect("write extracted index.js");
 
-    let js_out: PathBuf = tmp_dir("js-out");
+    let js_out_scratch: disrobe_core::scratch::ScratchDir = tmp_dir("js-out");
+
+    let js_out: PathBuf = js_out_scratch.path().to_path_buf();
     let js_proc: std::process::Output = run_chain_cli_capture(&js_path, &js_out);
     assert!(
         js_proc.status.success(),

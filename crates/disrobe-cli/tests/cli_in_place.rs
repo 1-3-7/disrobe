@@ -7,7 +7,8 @@ use common::{Run, run_disrobe, temp_path, write_bytes};
 
 #[test]
 fn in_place_rewrites_input_file_for_py_deob() {
-    let src: PathBuf = temp_path("inplace", "py");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("inplace", "py");
     let original: &[u8] = b"x = 1\n";
     write_bytes(&src, original);
     let original_len: u64 = std::fs::metadata(&src).expect("stat").len();
@@ -31,7 +32,8 @@ fn in_place_rewrites_input_file_for_py_deob() {
 
 #[test]
 fn without_in_place_writes_mirror_path() {
-    let src: PathBuf = temp_path("noninplace", "py");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("noninplace", "py");
     write_bytes(&src, b"y = 2\n");
     let original: Vec<u8> = std::fs::read(&src).expect("read");
 

@@ -185,14 +185,11 @@ fn recursive_copy(src: &Path, dst: &Path) -> miette::Result<()> {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use disrobe_core::scratch::ScratchDir;
 
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-
-    fn unique_tmp(stem: &str) -> std::path::PathBuf {
-        let pid: u32 = std::process::id();
-        let n: u64 = SEQ.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("disrobe-link-{stem}-{pid}-{n}"))
+    fn unique_tmp(stem: &str) -> ScratchDir {
+        let purpose: String = format!("disrobe-link-{stem}");
+        ScratchDir::create(&purpose).expect("create scratch directory")
     }
 
     #[test]
@@ -204,7 +201,8 @@ mod tests {
 
     #[test]
     fn link_final_creates_target_pointing_at_stage() {
-        let root: std::path::PathBuf = unique_tmp("root");
+        let root_scratch: ScratchDir = unique_tmp("root");
+        let root: std::path::PathBuf = root_scratch.path().to_path_buf();
         let stage: std::path::PathBuf = root.join("stage");
         let final_dir: std::path::PathBuf = root.join("final");
         std::fs::create_dir_all(&stage).expect("mk stage");
@@ -216,12 +214,12 @@ mod tests {
         ));
         let inside: std::path::PathBuf = final_dir.join("ok.txt");
         assert!(inside.exists(), "expected ok.txt visible via {kind:?}");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn link_final_replaces_existing_target() {
-        let root: std::path::PathBuf = unique_tmp("replace");
+        let root_scratch: ScratchDir = unique_tmp("replace");
+        let root: std::path::PathBuf = root_scratch.path().to_path_buf();
         let stage: std::path::PathBuf = root.join("stage");
         let final_dir: std::path::PathBuf = root.join("final");
         std::fs::create_dir_all(&stage).expect("mk stage");
@@ -230,6 +228,5 @@ mod tests {
         std::fs::write(stage.join("new.txt"), b"new").expect("write new");
         let _ = link_final(&stage, &final_dir).expect("link");
         assert!(final_dir.join("new.txt").exists());
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

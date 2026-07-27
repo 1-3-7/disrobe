@@ -1,9 +1,6 @@
 #![cfg(all(feature = "chain", feature = "shell"))]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn cli_binary() -> PathBuf {
     let exe: PathBuf = std::env::current_exe().expect("current exe");
@@ -23,10 +20,9 @@ fn cli_binary() -> PathBuf {
     dir
 }
 
-fn unique_tmp(stem: &str) -> PathBuf {
-    let pid: u32 = std::process::id();
-    let n: u64 = SEQ.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("disrobe-cli-final-{stem}-{pid}-{n}"))
+fn unique_tmp(stem: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-cli-final-{stem}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn read_output_bin(dir: &Path) -> Vec<u8> {
@@ -44,7 +40,9 @@ fn out_final_resolves_to_terminal_output_regardless_of_mechanism() {
         bin.display()
     );
 
-    let root: PathBuf = unique_tmp("root");
+    let root_scratch: disrobe_core::scratch::ScratchDir = unique_tmp("root");
+
+    let root: PathBuf = root_scratch.path().to_path_buf();
     let out_dir: PathBuf = root.join("out");
     let input: PathBuf = root.join("script.sh");
     std::fs::create_dir_all(&root).expect("mk root");
@@ -112,7 +110,8 @@ fn out_final_resolves_to_terminal_output_regardless_of_mechanism() {
 #[test]
 fn out_final_resolves_with_relative_out_and_cwd() {
     let bin: PathBuf = cli_binary();
-    let root: PathBuf = unique_tmp("relout");
+    let root_scratch: disrobe_core::scratch::ScratchDir = unique_tmp("relout");
+    let root: PathBuf = root_scratch.path().to_path_buf();
     std::fs::create_dir_all(&root).expect("mk root");
     let input: PathBuf = root.join("script.sh");
     std::fs::write(

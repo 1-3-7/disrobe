@@ -9,12 +9,9 @@
 
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use jsonschema::Validator;
 use serde_json::Value as Json;
-
-static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn cli_binary() -> PathBuf {
     let mut p: PathBuf = env_target_dir();
@@ -39,10 +36,12 @@ fn env_target_dir() -> PathBuf {
     dir
 }
 
-fn temp_path(stem: &str, ext: &str) -> PathBuf {
-    let pid: u32 = std::process::id();
-    let seq: u64 = FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("disrobe-llm-e2e-{stem}-{pid}-{seq}.{ext}"))
+fn temp_path(stem: &str, ext: &str) -> (disrobe_core::scratch::ScratchDir, PathBuf) {
+    let purpose: String = format!("disrobe-llm-e2e-{stem}");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory");
+    let path: PathBuf = scratch.path().join(format!("payload.{ext}"));
+    (scratch, path)
 }
 
 fn write_minimal_pyc(path: &PathBuf) {
@@ -133,9 +132,12 @@ fn decryption_keys_without_auth_errors_with_dr_cli_0420() {
 
 #[test]
 fn no_llm_flags_writes_no_bundle() {
-    let pyc: PathBuf = temp_path("noflag", "pyc");
+    let (_pyc_scratch, pyc): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("noflag", "pyc");
     write_minimal_pyc(&pyc);
-    let out_dir: PathBuf = temp_path("noflag-out", "dir");
+    let (_out_dir_scratch, out_dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("noflag-out", "dir");
+    let (_pyc_scratch, pyc): (disrobe_core::scratch::ScratchDir, PathBuf) = temp_path("llm", "pyc");
     let pyc_str: String = pyc.to_string_lossy().into_owned();
     let out_str: String = out_dir.to_string_lossy().into_owned();
     let (_code, _stdout, _stderr): (i32, String, String) =
@@ -149,10 +151,13 @@ fn no_llm_flags_writes_no_bundle() {
 
 #[test]
 fn llm_briefs_writes_agents_and_skill_markdown() {
-    let pyc: PathBuf = temp_path("briefs", "pyc");
+    let (_pyc_scratch, pyc): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("briefs", "pyc");
     write_minimal_pyc(&pyc);
-    let out_dir: PathBuf = temp_path("briefs-out", "dir");
-    let bundle_out: PathBuf = temp_path("briefs-bundle", "json");
+    let (_out_dir_scratch, out_dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("briefs-out", "dir");
+    let (_bundle_out_scratch, bundle_out): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("briefs-bundle", "json");
     let pyc_str: String = pyc.to_string_lossy().into_owned();
     let out_str: String = out_dir.to_string_lossy().into_owned();
     let bundle_str: String = bundle_out.to_string_lossy().into_owned();
@@ -217,10 +222,12 @@ fn llm_briefs_writes_agents_and_skill_markdown() {
 
 #[test]
 fn llm_flag_writes_schema_conforming_bundle() {
-    let pyc: PathBuf = temp_path("llm", "pyc");
+    let (_pyc_scratch, pyc): (disrobe_core::scratch::ScratchDir, PathBuf) = temp_path("llm", "pyc");
     write_minimal_pyc(&pyc);
-    let out_dir: PathBuf = temp_path("llm-out", "dir");
-    let bundle_out: PathBuf = temp_path("llm-bundle", "json");
+    let (_out_dir_scratch, out_dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("llm-out", "dir");
+    let (_bundle_out_scratch, bundle_out): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("llm-bundle", "json");
     let pyc_str: String = pyc.to_string_lossy().into_owned();
     let out_str: String = out_dir.to_string_lossy().into_owned();
     let bundle_str: String = bundle_out.to_string_lossy().into_owned();

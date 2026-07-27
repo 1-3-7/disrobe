@@ -14,7 +14,8 @@ fn write_config(dir: &std::path::Path, body: &str) -> PathBuf {
 
 #[test]
 fn config_show_reports_builtin_defaults_without_file() {
-    let dir: PathBuf = temp_dir("cfg-defaults");
+    let dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("cfg-defaults");
+    let dir: PathBuf = dir_scratch.path().to_path_buf();
     let bogus: PathBuf = dir.join("does-not-exist.toml");
     let r: Run = run_disrobe(&["config", "show", "--config", bogus.to_str().unwrap()]);
     assert_ne!(r.code, 0, "missing explicit --config must fail fast");
@@ -27,7 +28,8 @@ fn config_show_reports_builtin_defaults_without_file() {
 
 #[test]
 fn config_show_json_reflects_explicit_file() {
-    let dir: PathBuf = temp_dir("cfg-explicit");
+    let dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("cfg-explicit");
+    let dir: PathBuf = dir_scratch.path().to_path_buf();
     let cfg: PathBuf = write_config(
         &dir,
         "[output]\njson = true\n[execution]\nthreads = 5\nmax_depth = 12\n",
@@ -55,7 +57,8 @@ fn config_show_json_reflects_explicit_file() {
 
 #[test]
 fn malformed_config_fails_fast() {
-    let dir: PathBuf = temp_dir("cfg-malformed");
+    let dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("cfg-malformed");
+    let dir: PathBuf = dir_scratch.path().to_path_buf();
     let cfg: PathBuf = write_config(&dir, "[output]\nthis is not = = valid toml\n");
     let r: Run = run_disrobe(&["config", "show", "--config", cfg.to_str().unwrap()]);
     assert_ne!(r.code, 0, "malformed toml must fail");
@@ -68,7 +71,8 @@ fn malformed_config_fails_fast() {
 
 #[test]
 fn unknown_key_in_config_is_rejected() {
-    let dir: PathBuf = temp_dir("cfg-unknown");
+    let dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("cfg-unknown");
+    let dir: PathBuf = dir_scratch.path().to_path_buf();
     let cfg: PathBuf = write_config(&dir, "[output]\nnot_a_real_key = 1\n");
     let r: Run = run_disrobe(&["config", "show", "--config", cfg.to_str().unwrap()]);
     assert_ne!(r.code, 0, "unknown key must fail");
@@ -81,7 +85,8 @@ fn unknown_key_in_config_is_rejected() {
 
 #[test]
 fn config_drives_json_output_for_unrelated_command() {
-    let dir: PathBuf = temp_dir("cfg-drives-json");
+    let dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("cfg-drives-json");
+    let dir: PathBuf = dir_scratch.path().to_path_buf();
     let cfg: PathBuf = write_config(&dir, "[output]\njson = true\n");
     let r: Run = run_disrobe(&["config", "show", "--config", cfg.to_str().unwrap()]);
     assert_eq!(r.code, 0, "stderr={}", r.stderr);
@@ -94,7 +99,8 @@ fn config_drives_json_output_for_unrelated_command() {
 
 #[test]
 fn config_init_writes_template_and_round_trips() {
-    let dir: PathBuf = temp_dir("cfg-init");
+    let dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("cfg-init");
+    let dir: PathBuf = dir_scratch.path().to_path_buf();
     let target: PathBuf = dir.join("generated.toml");
     let r: Run = run_disrobe(&["config", "init", "--out", target.to_str().unwrap()]);
     assert_eq!(r.code, 0, "config init must succeed; stderr={}", r.stderr);
@@ -115,7 +121,8 @@ fn config_init_writes_template_and_round_trips() {
 
 #[test]
 fn config_auto_discovers_walking_up_from_cwd() {
-    let root: PathBuf = temp_dir("cfg-discover");
+    let root_scratch: disrobe_core::scratch::ScratchDir = temp_dir("cfg-discover");
+    let root: PathBuf = root_scratch.path().to_path_buf();
     write_config(&root, "[output]\njson = true\n");
     let nested: PathBuf = root.join("a").join("b");
     std::fs::create_dir_all(&nested).expect("mk nested");

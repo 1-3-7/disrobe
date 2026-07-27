@@ -10,7 +10,6 @@
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
 use zip::write::{FileOptions, ZipWriter};
 
@@ -43,13 +42,12 @@ fn cargo_bin() -> PathBuf {
 }
 
 #[allow(clippy::disallowed_methods)]
-fn tmp_path(name: &str) -> PathBuf {
-    let stamp: u128 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_nanos();
-    let pid: u32 = std::process::id();
-    std::env::temp_dir().join(format!("disrobe-apk-dex-{name}-{pid}-{stamp}"))
+fn tmp_path(name: &str) -> (disrobe_core::scratch::ScratchDir, PathBuf) {
+    let purpose: String = format!("disrobe-apk-dex-{name}");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory");
+    let path: PathBuf = scratch.path().join("payload");
+    (scratch, path)
 }
 
 fn run_chain_capture(input: &Path, out: &Path) -> std::process::Output {
@@ -140,11 +138,13 @@ fn auto_chain_apk_dex_recovers_decompiled_class_tokens() {
         .unwrap_or_else(|e: std::io::Error| panic!("cannot read {dex_fixture:?}: {e}"));
 
     let apk_bytes: Vec<u8> = pack_apk(&dex_bytes);
-    let apk_path: PathBuf = tmp_path("app").with_extension("apk");
+    let (_apk_path_scratch, apk_base): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        tmp_path("app");
+    let apk_path: PathBuf = apk_base.with_extension("apk");
     std::fs::write(&apk_path, &apk_bytes)
         .unwrap_or_else(|e: std::io::Error| panic!("cannot write synth apk {apk_path:?}: {e}"));
 
-    let out_dir: PathBuf = tmp_path("out");
+    let (_out_dir_scratch, out_dir): (disrobe_core::scratch::ScratchDir, PathBuf) = tmp_path("out");
     let proc_out: std::process::Output = run_chain_capture(&apk_path, &out_dir);
     assert!(
         proc_out.status.success(),

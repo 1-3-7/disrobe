@@ -676,16 +676,11 @@ pub(crate) fn batch_report_for_test() -> BatchReport {
 )]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use disrobe_core::scratch::ScratchDir;
 
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-
-    fn tmp_dir(stem: &str) -> PathBuf {
-        let pid: u32 = std::process::id();
-        let n: u64 = SEQ.fetch_add(1, Ordering::Relaxed);
-        let p: PathBuf = std::env::temp_dir().join(format!("disrobe-report-{stem}-{pid}-{n}"));
-        std::fs::create_dir_all(&p).expect("mk tmp dir");
-        p
+    fn tmp_dir(stem: &str) -> ScratchDir {
+        let purpose: String = format!("disrobe-report-{stem}");
+        ScratchDir::create(&purpose).expect("create scratch directory")
     }
 
     const CHAIN_JSON: &str = r#"{
@@ -727,11 +722,12 @@ mod tests {
       "verdict": "complete"
     }"#;
 
-    fn seed_single_dir(stem: &str) -> PathBuf {
-        let dir: PathBuf = tmp_dir(stem);
+    fn seed_single_dir(stem: &str) -> (ScratchDir, PathBuf) {
+        let scratch: ScratchDir = tmp_dir(stem);
+        let dir: PathBuf = scratch.path().to_path_buf();
         std::fs::write(dir.join("chain.json"), CHAIN_JSON).expect("w chain");
         std::fs::write(dir.join("recovery.json"), RECOVERY_JSON).expect("w recovery");
-        dir
+        (scratch, dir)
     }
 
     #[test]
@@ -744,7 +740,7 @@ mod tests {
 
     #[test]
     fn resolves_single_out_dir() {
-        let dir: PathBuf = seed_single_dir("single");
+        let (_scratch, dir): (ScratchDir, PathBuf) = seed_single_dir("single");
         let doc: ReportDocument = resolve_document(&dir, None).expect("resolve single");
         match doc {
             ReportDocument::Single(s) => {
@@ -758,12 +754,11 @@ mod tests {
             }
             ReportDocument::Batch(_) => panic!("expected single report"),
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn text_render_contains_key_fields() {
-        let dir: PathBuf = seed_single_dir("text");
+        let (_scratch, dir): (ScratchDir, PathBuf) = seed_single_dir("text");
         let doc: ReportDocument = resolve_document(&dir, None).expect("resolve");
         let ReportDocument::Single(s) = doc else {
             panic!("single");
@@ -773,12 +768,11 @@ mod tests {
         assert!(buf.contains("py.decompile"), "got: {buf}");
         assert!(buf.contains("blake3:"), "got: {buf}");
         assert!(buf.contains("app.py"), "artifact inventory missing: {buf}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn markdown_render_is_tabular() {
-        let dir: PathBuf = seed_single_dir("md");
+        let (_scratch, dir): (ScratchDir, PathBuf) = seed_single_dir("md");
         let doc: ReportDocument = resolve_document(&dir, None).expect("resolve");
         let ReportDocument::Single(s) = doc else {
             panic!("single");
@@ -788,12 +782,11 @@ mod tests {
         assert!(buf.starts_with("# disrobe report"), "got: {buf}");
         assert!(buf.contains("## Stages"), "got: {buf}");
         assert!(buf.contains("| `py.decompile` |"), "got: {buf}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn json_document_round_trips_as_value() {
-        let dir: PathBuf = seed_single_dir("json");
+        let (_scratch, dir): (ScratchDir, PathBuf) = seed_single_dir("json");
         let doc: ReportDocument = resolve_document(&dir, None).expect("resolve");
         let value: serde_json::Value = serde_json::to_value(&doc).expect("to value");
         assert_eq!(value["report_kind"], serde_json::json!("single"));
@@ -802,12 +795,12 @@ mod tests {
             value["stages"][0]["pass"],
             serde_json::json!("py.decompile")
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn resolves_batch_out_dir() {
-        let dir: PathBuf = tmp_dir("batch");
+        let scratch: ScratchDir = tmp_dir("batch");
+        let dir: PathBuf = scratch.path().to_path_buf();
         let manifest: &str = r#"{
           "schema": "disrobe.batch.manifest/v1",
           "tool_version": "0.9.0",
@@ -840,12 +833,12 @@ mod tests {
         render_markdown_batch(&b, &mut buf);
         assert!(buf.contains("# disrobe report (batch)"), "got: {buf}");
         assert!(buf.contains("error"), "errored file must show; got: {buf}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn missing_target_is_error() {
-        let missing: PathBuf = tmp_dir("missing").join("nope");
+        let scratch: ScratchDir = tmp_dir("missing");
+        let missing: PathBuf = scratch.path().join("nope");
         let err: miette::Report = resolve_document(&missing, None).expect_err("must error");
         assert!(format!("{err}").contains("DR-CLI-0350"));
     }
@@ -860,7 +853,8 @@ mod tests {
 
     #[test]
     fn a_chosen_root_takes_the_derived_run_out_of_the_working_directory() {
-        let root: PathBuf = tmp_dir("chosen-root");
+        let scratch: ScratchDir = tmp_dir("chosen-root");
+        let root: PathBuf = scratch.path().to_path_buf();
         let single: PathBuf = derived_out_dir(Path::new("sample.bin"), Some(&root));
         assert_eq!(single, root.join("sample-auto"));
         assert!(

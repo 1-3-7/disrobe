@@ -101,16 +101,16 @@ pub(crate) fn run(
 mod tests {
     use super::*;
     use disrobe_core::interop::{IndicatorClass, UnifiedIndicator};
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use disrobe_core::scratch::ScratchFile;
 
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-
-    fn tmp_file(stem: &str, content: &str) -> PathBuf {
-        let pid: u32 = std::process::id();
-        let n: u64 = SEQ.fetch_add(1, Ordering::Relaxed);
-        let p: PathBuf = std::env::temp_dir().join(format!("disrobe-ind-{stem}-{pid}-{n}.json"));
+    fn tmp_file(stem: &str, content: &str) -> (ScratchFile, PathBuf) {
+        let purpose: String = format!("disrobe-ind-{stem}");
+        let (scratch, file): (ScratchFile, std::fs::File) =
+            ScratchFile::create(&purpose, "json").expect("create scratch file");
+        drop(file);
+        let p: PathBuf = scratch.path().to_path_buf();
         std::fs::write(&p, content).expect("write tmp");
-        p
+        (scratch, p)
     }
 
     const RECON_DOC: &str = r#"{"schema":"disrobe.recon/v0","files_scanned":1,"bytes_scanned":1,"non_utf8_files":0,"total":1,"findings":[{"category":"url","rule_id":"r","value":"https://recon.example/x","line":1,"column":1,"offset":0,"severity":"note"}]}"#;
@@ -118,8 +118,8 @@ mod tests {
 
     #[test]
     fn aggregates_files_across_schemas() {
-        let recon: PathBuf = tmp_file("recon", RECON_DOC);
-        let prowl: PathBuf = tmp_file("prowl", PROWL_DOC);
+        let (_recon_scratch, recon): (ScratchFile, PathBuf) = tmp_file("recon", RECON_DOC);
+        let (_prowl_scratch, prowl): (ScratchFile, PathBuf) = tmp_file("prowl", PROWL_DOC);
         let mut agg: IndicatorAggregator = IndicatorAggregator::new();
         let r: String = std::fs::read_to_string(&recon).unwrap();
         let p: String = std::fs::read_to_string(&prowl).unwrap();
@@ -135,21 +135,19 @@ mod tests {
             "{:?}",
             bundle.indicators
         );
-        let _ = std::fs::remove_file(&recon);
-        let _ = std::fs::remove_file(&prowl);
     }
 
     #[test]
     fn unknown_input_errors() {
-        let junk: PathBuf = tmp_file("junk", r#"{"unrelated":true}"#);
+        let (_junk_scratch, junk): (ScratchFile, PathBuf) =
+            tmp_file("junk", r#"{"unrelated":true}"#);
         let err: miette::Report = run(
-            vec![junk.clone()],
+            vec![junk],
             false,
             IndicatorsFormat::Json,
             OutputFormat::Text,
         )
         .expect_err("must reject unknown artifact");
         assert!(format!("{err}").contains("DR-IND-0062"));
-        let _ = std::fs::remove_file(&junk);
     }
 }

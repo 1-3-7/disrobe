@@ -35,11 +35,14 @@ fn create(src: &Path, out: &Path, cache_dir: &Path, extra: &[&str]) -> Run {
 
 #[test]
 fn warm_run_is_a_cache_hit_and_byte_identical_to_cold() {
-    let cache_dir: PathBuf = temp_dir("cache-warm");
-    let src: PathBuf = temp_path("warm-src", "bin");
+    let cache_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("cache-warm");
+    let cache_dir: PathBuf = cache_dir_scratch.path().to_path_buf();
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("warm-src", "bin");
     write_bytes(&src, b"deterministic content-addressed cache subject\n");
 
-    let cold_out: PathBuf = temp_path("warm-cold", "dr");
+    let (_cold_out_scratch, cold_out): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("warm-cold", "dr");
     let _: std::io::Result<()> = std::fs::remove_file(&cold_out);
     let cold: Run = create(&src, &cold_out, &cache_dir, &[]);
     assert_eq!(
@@ -60,7 +63,8 @@ fn warm_run_is_a_cache_hit_and_byte_identical_to_cold() {
     );
     let cold_bytes: Vec<u8> = std::fs::read(&cold_out).expect("read cold .dr");
 
-    let warm_out: PathBuf = temp_path("warm-warm", "dr");
+    let (_warm_out_scratch, warm_out): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("warm-warm", "dr");
     let _: std::io::Result<()> = std::fs::remove_file(&warm_out);
     let warm: Run = create(&src, &warm_out, &cache_dir, &[]);
     assert_eq!(
@@ -89,17 +93,22 @@ fn warm_run_is_a_cache_hit_and_byte_identical_to_cold() {
 
 #[test]
 fn changing_input_busts_the_cache() {
-    let cache_dir: PathBuf = temp_dir("cache-bust");
-    let src_a: PathBuf = temp_path("bust-a", "bin");
+    let cache_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("cache-bust");
+    let cache_dir: PathBuf = cache_dir_scratch.path().to_path_buf();
+    let (_src_a_scratch, src_a): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("bust-a", "bin");
     write_bytes(&src_a, b"first payload\n");
-    let out_a: PathBuf = temp_path("bust-out-a", "dr");
+    let (_out_a_scratch, out_a): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("bust-out-a", "dr");
     let _: std::io::Result<()> = std::fs::remove_file(&out_a);
     let a: Run = create(&src_a, &out_a, &cache_dir, &[]);
     assert_eq!(a.code, 0, "stdout={} stderr={}", a.stdout, a.stderr);
 
-    let src_b: PathBuf = temp_path("bust-b", "bin");
+    let (_src_b_scratch, src_b): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("bust-b", "bin");
     write_bytes(&src_b, b"second different payload\n");
-    let out_b: PathBuf = temp_path("bust-out-b", "dr");
+    let (_out_b_scratch, out_b): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("bust-out-b", "dr");
     let _: std::io::Result<()> = std::fs::remove_file(&out_b);
     let b: Run = create(&src_b, &out_b, &cache_dir, &[]);
     assert_eq!(b.code, 0, "stdout={} stderr={}", b.stdout, b.stderr);
@@ -119,11 +128,14 @@ fn changing_input_busts_the_cache() {
 
 #[test]
 fn no_cache_neither_reads_nor_writes_and_output_is_identical() {
-    let cache_dir: PathBuf = temp_dir("cache-bypass");
-    let src: PathBuf = temp_path("bypass-src", "bin");
+    let cache_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("cache-bypass");
+    let cache_dir: PathBuf = cache_dir_scratch.path().to_path_buf();
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("bypass-src", "bin");
     write_bytes(&src, b"no-cache bypass subject\n");
 
-    let seed_out: PathBuf = temp_path("bypass-seed", "dr");
+    let (_seed_out_scratch, seed_out): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("bypass-seed", "dr");
     let _: std::io::Result<()> = std::fs::remove_file(&seed_out);
     let seed: Run = create(&src, &seed_out, &cache_dir, &[]);
     assert_eq!(
@@ -138,7 +150,8 @@ fn no_cache_neither_reads_nor_writes_and_output_is_identical() {
     );
     let seed_bytes: Vec<u8> = std::fs::read(&seed_out).expect("read seed .dr");
 
-    let bypass_out: PathBuf = temp_path("bypass-out", "dr");
+    let (_bypass_out_scratch, bypass_out): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("bypass-out", "dr");
     let _: std::io::Result<()> = std::fs::remove_file(&bypass_out);
     let bypass: Run = create(&src, &bypass_out, &cache_dir, &["--no-cache"]);
     assert_eq!(
@@ -162,8 +175,11 @@ fn no_cache_neither_reads_nor_writes_and_output_is_identical() {
         "output must be byte-identical with or without --no-cache"
     );
 
-    let fresh_cache: PathBuf = temp_dir("cache-bypass-fresh");
-    let fresh_out: PathBuf = temp_path("bypass-fresh", "dr");
+    let fresh_cache_scratch: disrobe_core::scratch::ScratchDir = temp_dir("cache-bypass-fresh");
+
+    let fresh_cache: PathBuf = fresh_cache_scratch.path().to_path_buf();
+    let (_fresh_out_scratch, fresh_out): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("bypass-fresh", "dr");
     let _: std::io::Result<()> = std::fs::remove_file(&fresh_out);
     let fresh: Run = create(&src, &fresh_out, &fresh_cache, &["--no-cache"]);
     assert_eq!(

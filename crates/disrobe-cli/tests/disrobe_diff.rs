@@ -7,12 +7,9 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-use disrobe_core::Capability;
+use disrobe_core::{Capability, scratch::ScratchDir};
 use disrobe_ir::{Envelope, RawPayload, Rung, Sidecar, encode_raw};
-
-static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn cli_binary() -> PathBuf {
     let mut p: PathBuf = env_target_dir();
@@ -37,28 +34,8 @@ fn env_target_dir() -> PathBuf {
     dir
 }
 
-struct ScratchDir {
-    path: PathBuf,
-}
-
-impl ScratchDir {
-    fn new() -> Self {
-        let pid: u32 = std::process::id();
-        let seq: u64 = FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path: PathBuf = std::env::temp_dir().join(format!("disrobe-envelope-diff-{pid}-{seq}"));
-        std::fs::create_dir_all(&path).expect("create scratch dir");
-        Self { path }
-    }
-
-    fn file(&self, name: &str) -> PathBuf {
-        self.path.join(name)
-    }
-}
-
-impl Drop for ScratchDir {
-    fn drop(&mut self) {
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&self.path);
-    }
+fn scratch_dir() -> ScratchDir {
+    ScratchDir::create("disrobe-envelope-diff").expect("create scratch directory")
 }
 
 struct Run {
@@ -112,8 +89,8 @@ fn write_envelope(path: &Path, env: &Envelope) {
 
 #[test]
 fn diff_identical_envelopes_reports_identical() {
-    let dir: ScratchDir = ScratchDir::new();
-    let a: PathBuf = dir.file("a.dr");
+    let dir: ScratchDir = scratch_dir();
+    let a: PathBuf = dir.path().join("a.dr");
     write_envelope(
         &a,
         &build_envelope(Rung::Raw, vec![Capability::produces("raw", 1)]),
@@ -129,9 +106,9 @@ fn diff_identical_envelopes_reports_identical() {
 
 #[test]
 fn diff_capability_bump_reports_difference() {
-    let dir: ScratchDir = ScratchDir::new();
-    let a: PathBuf = dir.file("a.dr");
-    let b: PathBuf = dir.file("b.dr");
+    let dir: ScratchDir = scratch_dir();
+    let a: PathBuf = dir.path().join("a.dr");
+    let b: PathBuf = dir.path().join("b.dr");
     write_envelope(
         &a,
         &build_envelope(Rung::Raw, vec![Capability::produces("mir.core", 1)]),
@@ -151,9 +128,9 @@ fn diff_capability_bump_reports_difference() {
 
 #[test]
 fn diff_json_emits_machine_report() {
-    let dir: ScratchDir = ScratchDir::new();
-    let a: PathBuf = dir.file("a.dr");
-    let b: PathBuf = dir.file("b.dr");
+    let dir: ScratchDir = scratch_dir();
+    let a: PathBuf = dir.path().join("a.dr");
+    let b: PathBuf = dir.path().join("b.dr");
     write_envelope(
         &a,
         &build_envelope(Rung::Raw, vec![Capability::produces("mir.core", 1)]),
@@ -179,8 +156,8 @@ fn diff_json_emits_machine_report() {
 
 #[test]
 fn migrate_check_sound_for_identical() {
-    let dir: ScratchDir = ScratchDir::new();
-    let a: PathBuf = dir.file("a.dr");
+    let dir: ScratchDir = scratch_dir();
+    let a: PathBuf = dir.path().join("a.dr");
     write_envelope(
         &a,
         &build_envelope(Rung::Raw, vec![Capability::produces("raw", 1)]),
@@ -197,9 +174,9 @@ fn migrate_check_sound_for_identical() {
 
 #[test]
 fn migrate_check_unsound_on_major_bump() {
-    let dir: ScratchDir = ScratchDir::new();
-    let from: PathBuf = dir.file("from.dr");
-    let to: PathBuf = dir.file("to.dr");
+    let dir: ScratchDir = scratch_dir();
+    let from: PathBuf = dir.path().join("from.dr");
+    let to: PathBuf = dir.path().join("to.dr");
     write_envelope(
         &from,
         &build_envelope(Rung::Raw, vec![Capability::produces("mir.core", 1)]),
@@ -224,9 +201,9 @@ fn migrate_check_unsound_on_major_bump() {
 
 #[test]
 fn migrate_check_unsound_on_rung_gap() {
-    let dir: ScratchDir = ScratchDir::new();
-    let raw: PathBuf = dir.file("raw.dr");
-    let surface: PathBuf = dir.file("surface.dr");
+    let dir: ScratchDir = scratch_dir();
+    let raw: PathBuf = dir.path().join("raw.dr");
+    let surface: PathBuf = dir.path().join("surface.dr");
     write_envelope(
         &raw,
         &build_envelope(Rung::Raw, vec![Capability::produces("raw", 1)]),
