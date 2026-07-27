@@ -104,12 +104,9 @@ fn real_webpack5_auto_unbundle_picks_webpack_and_emits_module_map() {
     assert!(result.detection.matched, "webpack5 must be detected");
     assert!(result.modules.len() >= 3, "auto path must extract modules");
 
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-js-unbundle-{}-{}",
-        std::process::id(),
-        result.modules.len()
-    ));
-    let _ = fs::remove_dir_all(&dir);
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe-js-unbundle").expect("create scratch");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let written: BTreeMap<String, PathBuf> =
         write_modules(&dir, &result).expect("write_modules must succeed");
     assert_eq!(
@@ -124,7 +121,6 @@ fn real_webpack5_auto_unbundle_picks_webpack_and_emits_module_map() {
             path.display()
         );
     }
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]

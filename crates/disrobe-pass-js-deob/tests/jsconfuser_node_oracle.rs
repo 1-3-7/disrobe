@@ -24,33 +24,22 @@ fn node_available() -> bool {
         .is_ok_and(|o: std::process::Output| o.status.success())
 }
 
-fn unique_temp() -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let seq: u64 = COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "disrobe_jsc_oracle_{}_{seq}.js",
-        std::process::id()
-    ))
-}
-
 fn run_node(code: &str) -> Option<String> {
     run_node_with_args(code, &[])
 }
 
 fn run_node_with_args(code: &str, args: &[&str]) -> Option<String> {
-    let tmp: PathBuf = unique_temp();
-    {
-        let mut f: fs::File = fs::File::create(&tmp).ok()?;
-        f.write_all(code.as_bytes()).ok()?;
-    }
+    let (scratch, mut f): (disrobe_core::scratch::ScratchFile, fs::File) =
+        disrobe_core::scratch::ScratchFile::create("disrobe_jsc_oracle", "js").ok()?;
+    let tmp: PathBuf = scratch.path().to_path_buf();
+    f.write_all(code.as_bytes()).ok()?;
+    drop(f);
     let output: std::process::Output = Command::new("node")
         .arg("--")
         .arg(&tmp)
         .args(args)
         .output()
         .ok()?;
-    let _ = fs::remove_file(&tmp);
     if !output.status.success() {
         return None;
     }

@@ -574,9 +574,7 @@ mod tests {
     use super::*;
     use std::fs;
     use std::io::Write as _;
-    use std::path::PathBuf;
     use std::process::{Command, Output};
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn node_available() -> bool {
         Command::new("node")
@@ -585,23 +583,19 @@ mod tests {
             .is_ok_and(|o: Output| o.status.success())
     }
 
-    fn unique_temp() -> PathBuf {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let seq: u64 = COUNTER.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("disrobe_cff_emit_{}_{seq}.js", std::process::id()))
-    }
-
     fn relex_codepoints(assignment: &str) -> Option<String> {
         let program: String = format!(
             "{assignment}\nprocess.stdout.write(Array.from(x).map(c => c.codePointAt(0).toString(16)).join(\",\"));"
         );
-        let tmp: PathBuf = unique_temp();
-        {
-            let mut file: fs::File = fs::File::create(&tmp).ok()?;
-            file.write_all(program.as_bytes()).ok()?;
-        }
-        let output: Output = Command::new("node").arg("--").arg(&tmp).output().ok()?;
-        let _ = fs::remove_file(&tmp);
+        let (scratch, mut file): (disrobe_core::scratch::ScratchFile, fs::File) =
+            disrobe_core::scratch::ScratchFile::create("disrobe_cff_emit", "js").ok()?;
+        file.write_all(program.as_bytes()).ok()?;
+        drop(file);
+        let output: Output = Command::new("node")
+            .arg("--")
+            .arg(scratch.path())
+            .output()
+            .ok()?;
         if !output.status.success() {
             return None;
         }

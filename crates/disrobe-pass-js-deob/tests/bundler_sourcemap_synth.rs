@@ -10,16 +10,9 @@ use disrobe_pass_js_deob::{
 const INLINE_BUNDLE: &str = include_str!("../corpus/bundlers/sourcemap/inline/bundle.js");
 const WEBPACK5_FULL: &str = include_str!("../corpus/bundlers/webpack5/full-graph/bundle.js");
 
-fn unique_dir(label: &str) -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static C: AtomicU64 = AtomicU64::new(0);
-    let seq: u64 = C.fetch_add(1, Ordering::Relaxed);
-    let p: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-bundler-sourcemap-{label}-{}-{seq}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&p);
-    p
+fn unique_dir(label: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-bundler-sourcemap-{label}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 #[test]
@@ -55,11 +48,11 @@ fn webpack5_full_synthesizes_v3_map_for_chunk() {
         main_map.sources
     );
     assert!(!main_map.mappings.is_empty());
-    let dir: PathBuf = unique_dir("write");
+    let scratch: disrobe_core::scratch::ScratchDir = unique_dir("write");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let written: BTreeMap<String, PathBuf> = write_sourcemaps(&dir, &emit).expect("write");
     assert!(written.contains_key("main"));
     let raw: String =
         std::fs::read_to_string(written.get("main").expect("main path")).expect("read");
     assert!(raw.contains("\"version\": 3"));
-    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -46,14 +46,9 @@ fn run_esbuild(npx_bin: &str, args: &[&str], cwd: &Path) -> Option<std::process:
     }
 }
 
-static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn temp_dir(tag: &str) -> PathBuf {
-    let seq: u64 = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let base: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-sm-{tag}-{}-{seq}", std::process::id()));
-    std::fs::create_dir_all(&base).expect("mkdir temp");
-    base
+fn temp_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-sm-{tag}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("mkdir temp")
 }
 
 #[test]
@@ -62,7 +57,8 @@ fn esbuild_map_recovers_original_sources_byte_for_byte() {
         eprintln!("skip: npx not on PATH; cannot generate a real esbuild source map");
         return;
     };
-    let work: PathBuf = temp_dir("esbuild");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("esbuild");
+    let work: PathBuf = scratch.path().to_path_buf();
     let src: PathBuf = work.join("src");
     std::fs::create_dir_all(&src).expect("mkdir src");
 
@@ -82,7 +78,6 @@ fn esbuild_map_recovers_original_sources_byte_for_byte() {
         ],
         &work,
     ) else {
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&work);
         return;
     };
 
@@ -136,7 +131,6 @@ fn esbuild_map_recovers_original_sources_byte_for_byte() {
             canonical.display()
         );
     }
-    let _: std::io::Result<()> = std::fs::remove_dir_all(&work);
 }
 
 #[test]
@@ -145,7 +139,8 @@ fn esbuild_inline_map_extracted_from_js_comment() {
         eprintln!("skip: npx not on PATH");
         return;
     };
-    let work: PathBuf = temp_dir("inline");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("inline");
+    let work: PathBuf = scratch.path().to_path_buf();
     std::fs::write(work.join("only.js"), "export const greeting = 'hi';\n").expect("write only");
 
     let out_js: PathBuf = work.join("inline.js");
@@ -159,7 +154,6 @@ fn esbuild_inline_map_extracted_from_js_comment() {
         ],
         &work,
     ) else {
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&work);
         return;
     };
 
@@ -176,7 +170,6 @@ fn esbuild_inline_map_extracted_from_js_comment() {
         .find(|f: &&RecoveredFile| f.relative_path.ends_with("only.js"))
         .expect("recovered only.js");
     assert_eq!(only.bytes, b"export const greeting = 'hi';\n");
-    let _: std::io::Result<()> = std::fs::remove_dir_all(&work);
 }
 
 #[test]
@@ -185,7 +178,8 @@ fn esbuild_full_tree_reconstructed_from_js_sourcemapping_url_trailer() {
         eprintln!("skip: npx not on PATH; cannot generate a real esbuild source map");
         return;
     };
-    let work: PathBuf = temp_dir("tree");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("tree");
+    let work: PathBuf = scratch.path().to_path_buf();
     let src: PathBuf = work.join("src");
     std::fs::create_dir_all(&src).expect("mkdir src");
 
@@ -222,7 +216,6 @@ fn esbuild_full_tree_reconstructed_from_js_sourcemapping_url_trailer() {
         ],
         &work,
     ) else {
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&work);
         return;
     };
 
@@ -286,7 +279,6 @@ fn esbuild_full_tree_reconstructed_from_js_sourcemapping_url_trailer() {
             canonical.display()
         );
     }
-    let _: std::io::Result<()> = std::fs::remove_dir_all(&work);
 }
 
 fn count_lines(text: &str) -> usize {
@@ -299,7 +291,8 @@ fn real_esbuild_maps_wrapped_in_indexed_section_map_reconstruct_both_sections() 
         eprintln!("skip: npx not on PATH; cannot generate real esbuild maps");
         return;
     };
-    let work: PathBuf = temp_dir("sectioned");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("sectioned");
+    let work: PathBuf = scratch.path().to_path_buf();
     let src: PathBuf = work.join("src");
     std::fs::create_dir_all(&src).expect("mkdir src");
 
@@ -331,7 +324,6 @@ fn real_esbuild_maps_wrapped_in_indexed_section_map_reconstruct_both_sections() 
             ],
             &work,
         ) else {
-            let _: std::io::Result<()> = std::fs::remove_dir_all(&work);
             return;
         };
     }
@@ -377,8 +369,6 @@ fn real_esbuild_maps_wrapped_in_indexed_section_map_reconstruct_both_sections() 
         "alphaFn must map to alpha.js, got {}",
         resolved_alpha.source
     );
-
-    let _: std::io::Result<()> = std::fs::remove_dir_all(&work);
 }
 
 #[test]
@@ -387,7 +377,8 @@ fn real_esbuild_map_with_injected_debug_id_is_surfaced() {
         eprintln!("skip: npx not on PATH; cannot generate a real esbuild map");
         return;
     };
-    let work: PathBuf = temp_dir("debugid");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("debugid");
+    let work: PathBuf = scratch.path().to_path_buf();
     std::fs::write(work.join("only.js"), "export const greeting = 'hi';\n").expect("write only");
     let out_js: PathBuf = work.join("out.js");
     let Some(_) = run_esbuild(
@@ -400,7 +391,6 @@ fn real_esbuild_map_with_injected_debug_id_is_surfaced() {
         ],
         &work,
     ) else {
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&work);
         return;
     };
     let raw_json: String = std::fs::read_to_string(work.join("out.js.map")).expect("read map");
@@ -423,7 +413,6 @@ fn real_esbuild_map_with_injected_debug_id_is_surfaced() {
         .find(|f: &&RecoveredFile| f.relative_path.ends_with("only.js"))
         .expect("recovered only.js");
     assert_eq!(only.bytes, b"export const greeting = 'hi';\n");
-    let _: std::io::Result<()> = std::fs::remove_dir_all(&work);
 }
 
 fn locate_token(haystack: &str, token: &str) -> Option<(u32, u32)> {
@@ -444,7 +433,8 @@ fn esbuild_map_resolves_generated_position_to_original_line_col() {
         eprintln!("skip: npx not on PATH; cannot generate a real esbuild source map");
         return;
     };
-    let work: PathBuf = temp_dir("resolve");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("resolve");
+    let work: PathBuf = scratch.path().to_path_buf();
     let src: PathBuf = work.join("src");
     std::fs::create_dir_all(&src).expect("mkdir src");
 
@@ -465,7 +455,6 @@ fn esbuild_map_resolves_generated_position_to_original_line_col() {
         ],
         &work,
     ) else {
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&work);
         return;
     };
 
@@ -495,5 +484,4 @@ fn esbuild_map_resolves_generated_position_to_original_line_col() {
         (orig_line, orig_col),
         "resolved original line/col must equal the token position in the pre-bundle util.js"
     );
-    let _: std::io::Result<()> = std::fs::remove_dir_all(&work);
 }

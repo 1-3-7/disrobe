@@ -167,21 +167,15 @@ mod tests {
     use super::*;
     use crate::bundle::{BundlerDetection, BundlerKind};
 
-    fn unique_temp(prefix: &str) -> PathBuf {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let seq: u64 = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path: PathBuf = std::env::temp_dir().join(format!(
-            "disrobe-jsdeob-{prefix}-{}-{seq}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&path);
-        path
+    fn unique_temp(prefix: &str) -> disrobe_core::scratch::ScratchDir {
+        let purpose: String = format!("disrobe-jsdeob-{prefix}");
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
     }
 
     #[test]
     fn write_graph_emits_per_chunk_files_and_graph_json() {
-        let dir: PathBuf = unique_temp("graph");
+        let scratch: disrobe_core::scratch::ScratchDir = unique_temp("graph");
+        let dir: PathBuf = scratch.path().to_path_buf();
         let mut graph: ModuleGraph = ModuleGraph::new();
         graph.with_entry("entry");
         graph.upsert_chunk(ChunkNode {
@@ -221,6 +215,5 @@ mod tests {
                 .and_then(|n: &std::ffi::OsStr| n.to_str())
                 .is_some_and(|n: &str| n.ends_with(".ts"))
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
