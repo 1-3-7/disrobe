@@ -9,7 +9,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
 fn workspace_root() -> PathBuf {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -40,12 +39,9 @@ fn cargo_bin() -> PathBuf {
 }
 
 #[allow(clippy::disallowed_methods)]
-fn tmp_out(name: &str) -> PathBuf {
-    let stamp: u128 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_nanos();
-    std::env::temp_dir().join(format!("disrobe-chain-{name}-{stamp}"))
+fn tmp_out(name: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-chain-{name}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn run_chain_cli(input: &Path, out: &Path, chain_arg: &str) -> std::process::Output {
@@ -79,7 +75,9 @@ fn auto_flutter_apk_recovers_dart_aot_snapshot_structures() {
         return;
     }
 
-    let out: PathBuf = tmp_out("flutter-apk");
+    let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("flutter-apk");
+
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let proc_out: std::process::Output = run_chain_cli(&fixture, &out, "auto:8");
     assert!(
         proc_out.status.success(),

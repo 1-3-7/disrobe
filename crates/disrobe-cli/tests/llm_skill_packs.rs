@@ -2,9 +2,6 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn cli_binary() -> PathBuf {
     let mut p: PathBuf = std::env::current_exe().expect("test exe path");
@@ -21,14 +18,9 @@ fn cli_binary() -> PathBuf {
     p
 }
 
-fn temp_dir(tag: &str) -> PathBuf {
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-skills-{tag}-{}-{}",
-        std::process::id(),
-        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).expect("mk temp");
-    dir
+fn temp_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-skills-{tag}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 struct ExpectedSkill {
@@ -85,7 +77,8 @@ const EXPECTED: &[ExpectedSkill; 7] = &[
 
 #[test]
 fn init_claude_emits_seven_skill_packs_with_distinct_bodies() {
-    let work: PathBuf = temp_dir("typed");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("typed");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let bin: PathBuf = cli_binary();
     let out: Output = Command::new(&bin)
         .args(["init", "--ide", "claude"])
@@ -156,7 +149,8 @@ fn init_claude_emits_seven_skill_packs_with_distinct_bodies() {
 
 #[test]
 fn skill_pack_count_is_exactly_seven() {
-    let work: PathBuf = temp_dir("count");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("count");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let bin: PathBuf = cli_binary();
     let _: Output = Command::new(&bin)
         .args(["init", "--ide", "claude"])

@@ -7,9 +7,11 @@ use common::{Run, run_disrobe, temp_dir, temp_path, write_bytes};
 
 #[test]
 fn rerunning_into_populated_out_dir_without_force_errors() {
-    let src: PathBuf = temp_path("force-src", "py");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("force-src", "py");
     write_bytes(&src, b"z = 3\n");
-    let out: PathBuf = temp_dir("force-out");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("force-out");
+    let out: PathBuf = out_scratch.path().to_path_buf();
     write_bytes(&out.join("preexisting.txt"), b"already here\n");
 
     let r: Run = run_disrobe(&[

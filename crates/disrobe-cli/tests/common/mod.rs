@@ -9,9 +9,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub fn cli_binary() -> PathBuf {
     let mut p: PathBuf = env_target_dir();
@@ -36,17 +33,22 @@ fn env_target_dir() -> PathBuf {
     dir
 }
 
-pub fn temp_path(stem: &str, ext: &str) -> PathBuf {
-    let pid: u32 = std::process::id();
-    let seq: u64 = FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("disrobe-cli-flags-{stem}-{pid}-{seq}.{ext}"))
+pub fn temp_path(stem: &str, ext: &str) -> (disrobe_core::scratch::ScratchDir, PathBuf) {
+    let purpose: String = format!("disrobe-cli-flags-{stem}");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory");
+    let basename: &std::ffi::OsStr = scratch
+        .path()
+        .file_name()
+        .expect("scratch directory has a basename");
+    let filename: String = format!("{}.{ext}", basename.to_string_lossy());
+    let path: PathBuf = scratch.path().join(filename);
+    (scratch, path)
 }
 
-pub fn temp_dir(stem: &str) -> PathBuf {
-    let p: PathBuf = temp_path(stem, "dir");
-    let _: std::io::Result<()> = std::fs::remove_dir_all(&p);
-    std::fs::create_dir_all(&p).expect("create temp dir");
-    p
+pub fn temp_dir(stem: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-cli-flags-{stem}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 pub fn write_bytes(path: &Path, bytes: &[u8]) {

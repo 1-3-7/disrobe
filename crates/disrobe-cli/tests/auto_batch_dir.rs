@@ -21,10 +21,12 @@ fn read_manifest(out: &std::path::Path) -> serde_json::Value {
 
 #[test]
 fn auto_directory_writes_manifest_and_per_file_dirs() {
-    let root: PathBuf = temp_dir("batch-basic");
+    let root_scratch: disrobe_core::scratch::ScratchDir = temp_dir("batch-basic");
+    let root: PathBuf = root_scratch.path().to_path_buf();
     write(&root.join("a.txt"), b"the quick brown fox");
     write(&root.join("nested/b.bin"), &[0u8; 48]);
-    let out: PathBuf = temp_dir("batch-basic-out");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("batch-basic-out");
+    let out: PathBuf = out_scratch.path().to_path_buf();
 
     let r: Run = run_disrobe(&[
         "auto",
@@ -48,11 +50,13 @@ fn auto_directory_writes_manifest_and_per_file_dirs() {
 
 #[test]
 fn auto_directory_exclude_glob_drops_files() {
-    let root: PathBuf = temp_dir("batch-exclude");
+    let root_scratch: disrobe_core::scratch::ScratchDir = temp_dir("batch-exclude");
+    let root: PathBuf = root_scratch.path().to_path_buf();
     write(&root.join("keep.bin"), &[1u8; 16]);
     write(&root.join("drop.log"), b"log line");
     write(&root.join("also.log"), b"log line two");
-    let out: PathBuf = temp_dir("batch-exclude-out");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("batch-exclude-out");
+    let out: PathBuf = out_scratch.path().to_path_buf();
 
     let r: Run = run_disrobe(&[
         "auto",
@@ -73,11 +77,13 @@ fn auto_directory_exclude_glob_drops_files() {
 
 #[test]
 fn auto_directory_include_glob_restricts_files() {
-    let root: PathBuf = temp_dir("batch-include");
+    let root_scratch: disrobe_core::scratch::ScratchDir = temp_dir("batch-include");
+    let root: PathBuf = root_scratch.path().to_path_buf();
     write(&root.join("x.pyc"), b"\x00\x00\x00\x00fake pyc");
     write(&root.join("y.txt"), b"text");
     write(&root.join("deep/z.pyc"), b"\x00\x00\x00\x00another");
-    let out: PathBuf = temp_dir("batch-include-out");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("batch-include-out");
+    let out: PathBuf = out_scratch.path().to_path_buf();
 
     let r: Run = run_disrobe(&[
         "auto",
@@ -98,11 +104,13 @@ fn auto_directory_include_glob_restricts_files() {
 
 #[test]
 fn auto_directory_max_depth_limits_recursion() {
-    let root: PathBuf = temp_dir("batch-depth");
+    let root_scratch: disrobe_core::scratch::ScratchDir = temp_dir("batch-depth");
+    let root: PathBuf = root_scratch.path().to_path_buf();
     write(&root.join("top.bin"), &[1u8; 8]);
     write(&root.join("a/mid.bin"), &[2u8; 8]);
     write(&root.join("a/b/low.bin"), &[3u8; 8]);
-    let out: PathBuf = temp_dir("batch-depth-out");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("batch-depth-out");
+    let out: PathBuf = out_scratch.path().to_path_buf();
 
     let r: Run = run_disrobe(&[
         "auto",
@@ -123,9 +131,11 @@ fn auto_directory_max_depth_limits_recursion() {
 
 #[test]
 fn auto_directory_json_output_is_machine_readable() {
-    let root: PathBuf = temp_dir("batch-json");
+    let root_scratch: disrobe_core::scratch::ScratchDir = temp_dir("batch-json");
+    let root: PathBuf = root_scratch.path().to_path_buf();
     write(&root.join("only.txt"), b"content");
-    let out: PathBuf = temp_dir("batch-json-out");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("batch-json-out");
+    let out: PathBuf = out_scratch.path().to_path_buf();
 
     let r: Run = run_disrobe(&[
         "--json",
@@ -143,10 +153,12 @@ fn auto_directory_json_output_is_machine_readable() {
 
 #[test]
 fn auto_single_file_behavior_unchanged() {
-    let root: PathBuf = temp_dir("batch-singlefile");
+    let root_scratch: disrobe_core::scratch::ScratchDir = temp_dir("batch-singlefile");
+    let root: PathBuf = root_scratch.path().to_path_buf();
     let file: PathBuf = root.join("solo.bin");
     write(&file, &[0u8; 16]);
-    let out: PathBuf = temp_dir("batch-singlefile-out");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("batch-singlefile-out");
+    let out: PathBuf = out_scratch.path().to_path_buf();
 
     let r: Run = run_disrobe(&[
         "auto",

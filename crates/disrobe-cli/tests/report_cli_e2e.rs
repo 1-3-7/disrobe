@@ -25,7 +25,8 @@ fn run_auto_into(input: &std::path::Path, out: &std::path::Path) {
 
 #[test]
 fn report_text_on_completed_single_run() {
-    let work: PathBuf = temp_dir("report-single");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("report-single");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let input: PathBuf = work.join("sample.bin");
     write(&input, &(0u8..96).collect::<Vec<u8>>());
     let out: PathBuf = work.join("run");
@@ -53,7 +54,8 @@ fn report_text_on_completed_single_run() {
 
 #[test]
 fn report_json_is_machine_readable() {
-    let work: PathBuf = temp_dir("report-json");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("report-json");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let input: PathBuf = work.join("sample.bin");
     write(&input, &(0u8..96).collect::<Vec<u8>>());
     let out: PathBuf = work.join("run");
@@ -70,7 +72,8 @@ fn report_json_is_machine_readable() {
 
 #[test]
 fn report_markdown_is_shareable() {
-    let work: PathBuf = temp_dir("report-md");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("report-md");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let input: PathBuf = work.join("sample.bin");
     write(&input, &(0u8..96).collect::<Vec<u8>>());
     let out: PathBuf = work.join("run");
@@ -89,7 +92,8 @@ fn report_markdown_is_shareable() {
 
 #[test]
 fn report_runs_auto_on_raw_input() {
-    let work: PathBuf = temp_dir("report-raw");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("report-raw");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let input: PathBuf = work.join("raw.bin");
     write(&input, &(0u8..64).collect::<Vec<u8>>());
 
@@ -107,7 +111,8 @@ fn report_runs_auto_on_raw_input() {
 
 #[test]
 fn report_on_batch_dir_aggregates_manifest() {
-    let work: PathBuf = temp_dir("report-batch");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("report-batch");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     write(&work.join("samples/a.bin"), &[1u8; 32]);
     write(&work.join("samples/b.bin"), &[2u8; 32]);
     let batch_out: PathBuf = work.join("batch-out");
@@ -130,7 +135,8 @@ fn report_on_batch_dir_aggregates_manifest() {
 
 #[test]
 fn report_missing_target_fails() {
-    let work: PathBuf = temp_dir("report-missing");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("report-missing");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let missing: PathBuf = work.join("not-here");
     let r: Run = run_disrobe(&["report", missing.to_str().unwrap()]);
     assert_ne!(r.code, 0, "missing target must fail");
@@ -143,7 +149,8 @@ fn report_missing_target_fails() {
 
 #[test]
 fn report_global_json_flag_forces_json() {
-    let work: PathBuf = temp_dir("report-global-json");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("report-global-json");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let input: PathBuf = work.join("sample.bin");
     write(&input, &(0u8..48).collect::<Vec<u8>>());
     let out: PathBuf = work.join("run");

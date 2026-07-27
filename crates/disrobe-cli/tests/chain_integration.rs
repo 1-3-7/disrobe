@@ -9,7 +9,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
 fn workspace_root() -> PathBuf {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -40,12 +39,9 @@ fn cargo_bin() -> PathBuf {
 }
 
 #[allow(clippy::disallowed_methods)]
-fn tmp_out(name: &str) -> PathBuf {
-    let stamp: u128 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_nanos();
-    std::env::temp_dir().join(format!("disrobe-chain-{name}-{stamp}"))
+fn tmp_out(name: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-chain-{name}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn upx_available() -> bool {
@@ -87,7 +83,8 @@ fn test_chain_upx_to_pe() {
         eprintln!("SKIP: upx CLI not available on PATH");
         return;
     }
-    let out: PathBuf = tmp_out("upx");
+    let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("upx");
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let proc_out: std::process::Output = run_chain_cli(&fixture, &out, "auto:8");
     assert!(
         proc_out.status.success(),
@@ -114,7 +111,8 @@ fn test_chain_pyarmor_to_pyc() {
         eprintln!("SKIP: fixture missing: {fixture:?}");
         return;
     }
-    let out: PathBuf = tmp_out("pyarmor");
+    let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("pyarmor");
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let proc_out: std::process::Output = run_chain_cli(&fixture, &out, "auto:8");
     assert!(
         proc_out.status.success(),
@@ -135,7 +133,8 @@ fn test_chain_js_obfuscator_to_source() {
         eprintln!("SKIP: fixture missing: {fixture:?}");
         return;
     }
-    let out: PathBuf = tmp_out("jsobf");
+    let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("jsobf");
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let proc_out: std::process::Output = run_chain_cli(&fixture, &out, "auto:8");
     assert!(
         proc_out.status.success(),
@@ -157,7 +156,8 @@ fn test_chain_squashfs_to_files() {
         eprintln!("SKIP: fixture missing: {fixture:?}");
         return;
     }
-    let out: PathBuf = tmp_out("squashfs");
+    let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("squashfs");
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let proc_out: std::process::Output = run_chain_cli(&fixture, &out, "auto:8");
     assert!(
         proc_out.status.success(),
@@ -179,7 +179,8 @@ fn test_chain_stacked_upx_then_js() {
         eprintln!("SKIP: fixture missing: {fixture:?}");
         return;
     }
-    let out: PathBuf = tmp_out("upx-js-sea");
+    let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("upx-js-sea");
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let proc_out: std::process::Output = run_chain_cli(&fixture, &out, "auto:8");
     assert!(
         proc_out.status.success(),
@@ -201,7 +202,8 @@ fn test_chain_emits_v1_schema() {
         eprintln!("SKIP: fixture missing: {fixture:?}");
         return;
     }
-    let out: PathBuf = tmp_out("schema");
+    let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("schema");
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let proc_out: std::process::Output = run_chain_cli(&fixture, &out, "?:4");
     assert!(
         proc_out.status.success(),

@@ -27,7 +27,9 @@ fn jvm_decompile_applies_proguard_mapping_to_real_jar() {
         return;
     }
 
-    let out: PathBuf = temp_dir("jvm-mapping-jar");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("jvm-mapping-jar");
+
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let run: common::Run = run_disrobe(&[
         "jvm",
         "decompile",
@@ -101,7 +103,9 @@ fn jvm_decompile_mapping_splits_same_letter_fields_by_type() {
         return;
     }
 
-    let out: PathBuf = temp_dir("jvm-mapping-hello");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("jvm-mapping-hello");
+
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let run: common::Run = run_disrobe(&[
         "jvm",
         "decompile",

@@ -8,7 +8,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::Duration;
 
 fn workspace_root() -> PathBuf {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -35,12 +34,9 @@ fn cargo_bin() -> PathBuf {
 }
 
 #[allow(clippy::disallowed_methods)]
-fn tmp_root(name: &str) -> PathBuf {
-    let stamp: u128 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_nanos();
-    std::env::temp_dir().join(format!("disrobe-guard-{name}-{stamp}"))
+fn tmp_root(name: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-guard-{name}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn guard_check(path: &Path, extra: &[&str]) -> Output {
@@ -60,7 +56,8 @@ fn guard_check(path: &Path, extra: &[&str]) -> Output {
 
 #[test]
 fn guard_denies_stage_output_and_allows_src() {
-    let root: PathBuf = tmp_root("denyallow");
+    let root_scratch: disrobe_core::scratch::ScratchDir = tmp_root("denyallow");
+    let root: PathBuf = root_scratch.path().to_path_buf();
     let stage_dir: PathBuf = root
         .join("out")
         .join("demo-chain")
@@ -104,7 +101,8 @@ fn guard_denies_stage_output_and_allows_src() {
 
 #[test]
 fn guard_json_reports_machine_decision() {
-    let root: PathBuf = tmp_root("json");
+    let root_scratch: disrobe_core::scratch::ScratchDir = tmp_root("json");
+    let root: PathBuf = root_scratch.path().to_path_buf();
     let stage_dir: PathBuf = root.join("out").join("x").join("final");
     std::fs::create_dir_all(&stage_dir).expect("mk final dir");
     let stage_output: PathBuf = stage_dir.join("01-pyarmor-unpack");

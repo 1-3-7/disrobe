@@ -14,7 +14,7 @@ use disrobe_ir::payload::{
 };
 use disrobe_ir::{Envelope, Rung};
 
-fn fixture_path() -> PathBuf {
+fn fixture_path() -> (disrobe_core::scratch::ScratchDir, PathBuf) {
     common::temp_path("vulnmatch", "dr")
 }
 
@@ -62,7 +62,7 @@ fn write_fixture(path: &std::path::Path) {
 
 #[test]
 fn vulnmatch_reports_reachable_gets_deterministically() {
-    let input: PathBuf = fixture_path();
+    let (_scratch, input): (disrobe_core::scratch::ScratchDir, PathBuf) = fixture_path();
     write_fixture(&input);
     let input_arg: String = input.display().to_string();
     let first: common::Run = common::run_disrobe(&["vulnmatch", &input_arg]);

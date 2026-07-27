@@ -2,10 +2,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static SEQ: AtomicU64 = AtomicU64::new(0);
-
 fn workspace_root() -> PathBuf {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.pop();
@@ -35,12 +31,9 @@ fn cli_binary() -> PathBuf {
     dir
 }
 
-fn out_dir(stem: &str) -> PathBuf {
-    let pid: u32 = std::process::id();
-    let seq: u64 = SEQ.fetch_add(1, Ordering::Relaxed);
-    let p: PathBuf = std::env::temp_dir().join(format!("disrobe-dotnet-it-{stem}-{pid}-{seq}"));
-    let _ = std::fs::remove_dir_all(&p);
-    p
+fn out_dir(stem: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-dotnet-it-{stem}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 struct Run {
@@ -72,7 +65,8 @@ fn run(args: &[&str]) -> Run {
 #[test]
 fn decompile_normal_assembly_emits_real_native_csharp() {
     let input: PathBuf = corpus("HelloApp.dll");
-    let out: PathBuf = out_dir("decompile-normal");
+    let out_scratch: disrobe_core::scratch::ScratchDir = out_dir("decompile-normal");
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let r: Run = run(&[
         "dotnet",
         "decompile",
@@ -99,13 +93,13 @@ fn decompile_normal_assembly_emits_real_native_csharp() {
 fn decompile_does_not_panic_on_truncated_managed_pe() {
     let mut base: Vec<u8> = std::fs::read(corpus("HelloApp.dll")).expect("fixture");
     base.truncate(base.len() / 2);
-    let input: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-dotnet-trunc-{}-{}.dll",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
+    let input_scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe-dotnet-trunc")
+            .expect("create scratch directory");
+    let input: PathBuf = input_scratch.path().join("payload.dll");
     std::fs::write(&input, &base).expect("write truncated fixture");
-    let out: PathBuf = out_dir("decompile-truncated");
+    let out_scratch: disrobe_core::scratch::ScratchDir = out_dir("decompile-truncated");
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let r: Run = run(&[
         "dotnet",
         "decompile",
@@ -124,14 +118,13 @@ fn decompile_does_not_panic_on_truncated_managed_pe() {
         "decompile panicked on truncated PE. stderr:\n{}",
         r.stderr
     );
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_dir_all(&out);
 }
 
 #[test]
 fn deobfuscate_confuserex2_recovers_real_data() {
     let input: PathBuf = corpus("SampleConstants.confuserex2.dll");
-    let out: PathBuf = out_dir("peel-cx2");
+    let out_scratch: disrobe_core::scratch::ScratchDir = out_dir("peel-cx2");
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let r: Run = run(&[
         "dotnet",
         "deobfuscate",
@@ -163,7 +156,8 @@ fn deobfuscate_confuserex2_recovers_real_data() {
 #[test]
 fn deobfuscate_obfuscar_classifies_renamable_identifiers() {
     let input: PathBuf = corpus("HelloAppLegacy.obfuscar.dll");
-    let out: PathBuf = out_dir("peel-obfuscar");
+    let out_scratch: disrobe_core::scratch::ScratchDir = out_dir("peel-obfuscar");
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let r: Run = run(&[
         "dotnet",
         "deobfuscate",
@@ -192,7 +186,8 @@ fn deobfuscate_obfuscar_classifies_renamable_identifiers() {
 #[test]
 fn deobfuscate_forced_themida_surfaces_honest_wall() {
     let input: PathBuf = corpus("HelloApp.dll");
-    let out: PathBuf = out_dir("peel-wall");
+    let out_scratch: disrobe_core::scratch::ScratchDir = out_dir("peel-wall");
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let r: Run = run(&[
         "dotnet",
         "deobfuscate",
@@ -218,14 +213,14 @@ fn deobfuscate_forced_themida_surfaces_honest_wall() {
 
 #[test]
 fn deobfuscate_rejects_malformed_pe_without_panic() {
-    let input: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-dotnet-junk-{}-{}.bin",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
+    let input_scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe-dotnet-junk")
+            .expect("create scratch directory");
+    let input: PathBuf = input_scratch.path().join("payload.bin");
     std::fs::write(&input, b"MZ\x00\x00 not a real portable executable at all")
         .expect("write junk");
-    let out: PathBuf = out_dir("peel-junk");
+    let out_scratch: disrobe_core::scratch::ScratchDir = out_dir("peel-junk");
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let r: Run = run(&[
         "dotnet",
         "deobfuscate",
@@ -244,6 +239,4 @@ fn deobfuscate_rejects_malformed_pe_without_panic() {
         "must not panic on malformed PE. stderr:\n{}",
         r.stderr
     );
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_dir_all(&out);
 }

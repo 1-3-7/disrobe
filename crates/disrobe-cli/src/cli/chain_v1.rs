@@ -836,7 +836,7 @@ mod tests {
     use disrobe_core::chain::{Detector, Pass};
     use disrobe_core::error::Result as CoreResult;
     use disrobe_core::pass::PassId;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     static OBSERVED_AUTHORIZATION: AtomicBool = AtomicBool::new(false);
 
@@ -1005,14 +1005,11 @@ mod tests {
         assert!(validate_explicit_passes(&s, &r).is_ok());
     }
 
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use disrobe_core::scratch::ScratchDir;
 
-    static MIRROR_SEQ: AtomicU64 = AtomicU64::new(0);
-
-    fn mirror_tmp(stem: &str) -> PathBuf {
-        let pid: u32 = std::process::id();
-        let n: u64 = MIRROR_SEQ.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("disrobe-mirror-{stem}-{pid}-{n}"))
+    fn mirror_tmp(stem: &str) -> ScratchDir {
+        let purpose: String = format!("disrobe-mirror-{stem}");
+        ScratchDir::create(&purpose).expect("create scratch directory")
     }
 
     #[test]
@@ -1030,8 +1027,8 @@ mod tests {
                 bytes: b"PWNED".to_vec(),
             },
         ];
-        let dir: PathBuf = mirror_tmp("extracted");
-        std::fs::create_dir_all(&dir).expect("mk tmp");
+        let dir_scratch: ScratchDir = mirror_tmp("extracted");
+        let dir: PathBuf = dir_scratch.path().to_path_buf();
         let written: Vec<String> = super::write_extracted_children(&dir, &plan).expect("write");
         assert_eq!(written.len(), 2);
         assert_eq!(
@@ -1043,7 +1040,6 @@ mod tests {
             b"PWNED",
             "traversal components must be stripped so the file stays under extracted/"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1066,8 +1062,8 @@ mod tests {
                 bytes: b"fallback".to_vec(),
             },
         ];
-        let dir: PathBuf = mirror_tmp("collision");
-        std::fs::create_dir_all(&dir).expect("mk tmp");
+        let dir_scratch: ScratchDir = mirror_tmp("collision");
+        let dir: PathBuf = dir_scratch.path().to_path_buf();
         let written: Vec<String> = super::write_extracted_children(&dir, &plan).expect("write");
         assert_eq!(written.len(), 3);
         let root: PathBuf = dir.join("extracted");
@@ -1083,7 +1079,6 @@ mod tests {
             std::fs::read(root.join("node1-1").join("main.dll")).expect("fallback"),
             b"fallback"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     fn leaf_node(id: u32, parent_id: Option<u32>, pass_id: &str, bytes: &[u8]) -> Node {
@@ -1204,8 +1199,8 @@ mod tests {
 
     #[test]
     fn write_stage_mirror_links_terminal_to_stage_bytes() {
-        let root: PathBuf = mirror_tmp("linear");
-        std::fs::create_dir_all(&root).expect("mk root");
+        let root_scratch: ScratchDir = mirror_tmp("linear");
+        let root: PathBuf = root_scratch.path().to_path_buf();
 
         let terminal_bytes: &[u8] = b"\xde\xad\xbe\xefterminal-output";
         let plan: ChainPlan = linear_plan(vec![
@@ -1243,14 +1238,12 @@ mod tests {
             !root.join("stages").exists(),
             "flat layout must not create a stages/ wrapper"
         );
-
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn write_stage_mirror_handles_multiple_terminals() {
-        let root: PathBuf = mirror_tmp("multi");
-        std::fs::create_dir_all(&root).expect("mk root");
+        let root_scratch: ScratchDir = mirror_tmp("multi");
+        let root: PathBuf = root_scratch.path().to_path_buf();
 
         let plan: ChainPlan = linear_plan(vec![
             leaf_node(0, None, "binfmt.container", b"root"),
@@ -1272,8 +1265,6 @@ mod tests {
                 "terminal {dir_name} bytes mismatch"
             );
         }
-
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -25,7 +25,8 @@ fn native_pdb_cxx_reconstructs_headers_from_the_real_fixture() {
         eprintln!("SKIP: real pdb fixture missing (pdb_cxx_recovery.pdb)");
         return;
     };
-    let out: PathBuf = temp_dir("pdb-cxx-headers");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("pdb-cxx-headers");
+    let out: PathBuf = out_scratch.path().to_path_buf();
 
     let run: common::Run = run_disrobe(&[
         "native",
@@ -93,7 +94,8 @@ fn native_pdb_cxx_json_summary_reports_deferred_reasons_shape() {
         eprintln!("SKIP: real pdb fixture missing (pdb_cxx_recovery.pdb)");
         return;
     };
-    let out: PathBuf = temp_dir("pdb-cxx-json");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("pdb-cxx-json");
+    let out: PathBuf = out_scratch.path().to_path_buf();
 
     let run: common::Run = run_disrobe(&[
         "--json",

@@ -355,16 +355,11 @@ fn run_parallel(
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use disrobe_core::scratch::ScratchDir;
 
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-
-    fn tmp_dir(stem: &str) -> PathBuf {
-        let pid: u32 = std::process::id();
-        let n: u64 = SEQ.fetch_add(1, Ordering::Relaxed);
-        let p: PathBuf = std::env::temp_dir().join(format!("disrobe-batch-{stem}-{pid}-{n}"));
-        std::fs::create_dir_all(&p).expect("mk tmp dir");
-        p
+    fn tmp_dir(stem: &str) -> ScratchDir {
+        let purpose: String = format!("disrobe-batch-{stem}");
+        ScratchDir::create(&purpose).expect("create scratch directory")
     }
 
     fn opts_for(_root: &Path, out: &Path) -> BatchOptions {
@@ -389,7 +384,8 @@ mod tests {
 
     #[test]
     fn collect_respects_exclude_glob() {
-        let root: PathBuf = tmp_dir("collect-excl");
+        let root_scratch: ScratchDir = tmp_dir("collect-excl");
+        let root: PathBuf = root_scratch.path().to_path_buf();
         std::fs::write(root.join("keep.txt"), b"a").expect("w");
         std::fs::write(root.join("drop.log"), b"b").expect("w");
         let mut opts: BatchOptions = opts_for(&root, &root.join("out"));
@@ -397,12 +393,12 @@ mod tests {
         let files: Vec<(PathBuf, PathBuf)> = collect_files(&root, &opts).expect("collect");
         assert_eq!(files.len(), 1, "the .log file must be excluded");
         assert!(files[0].0.ends_with("keep.txt"));
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn collect_respects_include_glob_and_depth() {
-        let root: PathBuf = tmp_dir("collect-incl");
+        let root_scratch: ScratchDir = tmp_dir("collect-incl");
+        let root: PathBuf = root_scratch.path().to_path_buf();
         std::fs::create_dir_all(root.join("sub/deeper")).expect("mk");
         std::fs::write(root.join("top.bin"), b"a").expect("w");
         std::fs::write(root.join("sub/mid.bin"), b"b").expect("w");
@@ -426,17 +422,18 @@ mod tests {
             !names.contains(&"sub/mid.txt".to_string()),
             "include=*.bin must drop the .txt; got {names:?}"
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn batch_writes_manifest_with_per_file_entries() {
-        let root: PathBuf = tmp_dir("manifest");
+        let root_scratch: ScratchDir = tmp_dir("manifest");
+        let root: PathBuf = root_scratch.path().to_path_buf();
         std::fs::write(root.join("a.txt"), b"plain text one").expect("w");
         std::fs::write(root.join("b.bin"), vec![0u8; 32]).expect("w");
-        let out: PathBuf = tmp_dir("manifest-out");
+        let out_scratch: ScratchDir = tmp_dir("manifest-out");
+        let out: PathBuf = out_scratch.path().to_path_buf();
         let opts: BatchOptions = opts_for(&root, &out);
-        run_dir(root.clone(), opts, OutputFormat::Text).expect("batch run");
+        run_dir(root, opts, OutputFormat::Text).expect("batch run");
         let manifest_path: PathBuf = out.join("manifest.json");
         assert!(manifest_path.is_file(), "manifest.json must be written");
         let text: String = std::fs::read_to_string(&manifest_path).expect("read manifest");
@@ -449,43 +446,44 @@ mod tests {
             "every file must be classified exactly once"
         );
         assert_eq!(manifest.entries.len(), 2);
-        let _ = std::fs::remove_dir_all(&root);
-        let _ = std::fs::remove_dir_all(&out);
     }
 
     #[test]
     fn one_unreadable_file_does_not_abort_batch() {
-        let root: PathBuf = tmp_dir("resilient");
+        let root_scratch: ScratchDir = tmp_dir("resilient");
+        let root: PathBuf = root_scratch.path().to_path_buf();
         std::fs::write(root.join("ok.txt"), b"fine").expect("w");
         let dir_as_file: PathBuf = root.join("trap");
         std::fs::create_dir_all(&dir_as_file).expect("mk dir");
         std::fs::write(dir_as_file.join("nested.txt"), b"nested").expect("w");
-        let out: PathBuf = tmp_dir("resilient-out");
+        let out_scratch: ScratchDir = tmp_dir("resilient-out");
+        let out: PathBuf = out_scratch.path().to_path_buf();
         let opts: BatchOptions = opts_for(&root, &out);
-        run_dir(root.clone(), opts, OutputFormat::Text).expect("batch must not error out");
+        run_dir(root, opts, OutputFormat::Text).expect("batch must not error out");
         let manifest: BatchManifest = serde_json::from_str(
             &std::fs::read_to_string(out.join("manifest.json")).expect("read"),
         )
         .expect("parse");
         assert_eq!(manifest.summary.processed, 2, "two files seen");
-        let _ = std::fs::remove_dir_all(&root);
-        let _ = std::fs::remove_dir_all(&out);
     }
 
     #[test]
     fn parallel_and_serial_agree_on_entry_count() {
-        let root: PathBuf = tmp_dir("par");
+        let root_scratch: ScratchDir = tmp_dir("par");
+        let root: PathBuf = root_scratch.path().to_path_buf();
         for i in 0..6 {
             std::fs::write(root.join(format!("f{i}.txt")), format!("content {i}")).expect("w");
         }
-        let out_serial: PathBuf = tmp_dir("par-serial");
-        let out_par: PathBuf = tmp_dir("par-par");
+        let out_serial_scratch: ScratchDir = tmp_dir("par-serial");
+        let out_serial: PathBuf = out_serial_scratch.path().to_path_buf();
+        let out_par_scratch: ScratchDir = tmp_dir("par-par");
+        let out_par: PathBuf = out_par_scratch.path().to_path_buf();
         let mut serial: BatchOptions = opts_for(&root, &out_serial);
         serial.jobs = 1;
         run_dir(root.clone(), serial, OutputFormat::Text).expect("serial");
         let mut par: BatchOptions = opts_for(&root, &out_par);
         par.jobs = 4;
-        run_dir(root.clone(), par, OutputFormat::Text).expect("parallel");
+        run_dir(root, par, OutputFormat::Text).expect("parallel");
         let m_serial: BatchManifest = serde_json::from_str(
             &std::fs::read_to_string(out_serial.join("manifest.json")).unwrap(),
         )
@@ -496,8 +494,5 @@ mod tests {
         assert_eq!(m_serial.entries.len(), 6);
         assert_eq!(m_par.entries.len(), 6);
         assert_eq!(m_serial.summary.processed, m_par.summary.processed);
-        let _ = std::fs::remove_dir_all(&root);
-        let _ = std::fs::remove_dir_all(&out_serial);
-        let _ = std::fs::remove_dir_all(&out_par);
     }
 }

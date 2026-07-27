@@ -425,13 +425,13 @@ mod tests {
 
     #[test]
     fn dyldcache_rejects_non_cache_input() {
-        let dir: PathBuf = std::env::temp_dir().join(format!("dr-dyld-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("dr-dyld").expect("create scratch directory");
+        let dir: PathBuf = scratch.path().to_path_buf();
         let bogus: PathBuf = dir.join("not-a-cache.bin");
         std::fs::write(&bogus, b"MZ\x00\x00 definitely not a dyld cache").expect("write");
         let err: miette::Report = dyldcache(bogus, Some(dir.join("out"))).expect_err("must reject");
         assert!(format!("{err}").contains("DR-CLI-0496"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -414,15 +414,16 @@ mod tests {
 
     #[test]
     fn find_executable_in_dir_probes_bin_subdir() {
-        let pid: u32 = std::process::id();
-        let root: PathBuf = std::env::temp_dir().join(format!("disrobe-doctor-bin-{pid}"));
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("disrobe-doctor-bin")
+                .expect("create scratch directory");
+        let root: PathBuf = scratch.path().to_path_buf();
         let bin: PathBuf = root.join("bin");
         std::fs::create_dir_all(&bin).expect("create bin dir");
         let exe_name: &str = if cfg!(windows) { "tool.exe" } else { "tool" };
         let exe_path: PathBuf = bin.join(exe_name);
         std::fs::write(&exe_path, b"#!/bin/sh\n").expect("write fake exe");
         let found: Option<PathBuf> = find_executable_in_dir(&root, &["tool"]);
-        std::fs::remove_dir_all(&root).ok();
         assert_eq!(
             found.as_deref(),
             Some(exe_path.as_path()),
@@ -432,14 +433,14 @@ mod tests {
 
     #[test]
     fn find_executable_in_dir_probes_dir_root() {
-        let pid: u32 = std::process::id();
-        let root: PathBuf = std::env::temp_dir().join(format!("disrobe-doctor-root-{pid}"));
-        std::fs::create_dir_all(&root).expect("create root dir");
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("disrobe-doctor-root")
+                .expect("create scratch directory");
+        let root: PathBuf = scratch.path().to_path_buf();
         let exe_name: &str = if cfg!(windows) { "tool.exe" } else { "tool" };
         let exe_path: PathBuf = root.join(exe_name);
         std::fs::write(&exe_path, b"#!/bin/sh\n").expect("write fake exe");
         let found: Option<PathBuf> = find_executable_in_dir(&root, &["tool"]);
-        std::fs::remove_dir_all(&root).ok();
         assert_eq!(found.as_deref(), Some(exe_path.as_path()));
     }
 

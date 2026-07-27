@@ -1,9 +1,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn cli_binary() -> PathBuf {
     let exe: PathBuf = std::env::current_exe().expect("current exe");
@@ -34,10 +31,12 @@ fn corpus_fixture(rel: &str) -> Option<PathBuf> {
     p.exists().then_some(p)
 }
 
-fn temp_path(stem: &str, ext: &str) -> PathBuf {
-    let pid: u32 = std::process::id();
-    let seq: u64 = COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("disrobe-py-auto-{stem}-{pid}-{seq}.{ext}"))
+fn temp_path(stem: &str, ext: &str) -> (disrobe_core::scratch::ScratchDir, PathBuf) {
+    let purpose: String = format!("disrobe-py-auto-{stem}");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory");
+    let path: PathBuf = scratch.path().join(format!("payload.{ext}"));
+    (scratch, path)
 }
 
 #[derive(Debug)]
@@ -100,7 +99,8 @@ fn py_decompile_auto_deobfuscates_real_obfuscated_fixture() {
         eprintln!("skip: blankobf real_hello_world fixture absent");
         return;
     };
-    let out_dir: PathBuf = temp_path("blankobf", "out");
+    let (_out_dir_scratch, out_dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("blankobf", "out");
     let _ = std::fs::remove_dir_all(&out_dir);
     let r: Run = run_disrobe(&[
         "py",
@@ -209,7 +209,8 @@ fn auto_chain_recovers_newly_wired_python_families() {
             eprintln!("skip: {family} fixture absent at {rel}");
             continue;
         };
-        let out_dir: PathBuf = temp_path(family, "out");
+        let (_out_dir_scratch, out_dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
+            temp_path(family, "out");
         let _ = std::fs::remove_dir_all(&out_dir);
         let r: Run = run_disrobe(&[
             "auto",
@@ -281,13 +282,15 @@ fn auto_chain_recovers_newly_wired_python_families() {
 
 #[test]
 fn auto_chain_does_not_fabricate_recovery_for_garbage() {
-    let garbage: PathBuf = temp_path("auto-garbage", "py");
+    let (_garbage_scratch, garbage): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("auto-garbage", "py");
     std::fs::write(
         &garbage,
         b"\x00\x01\x02\x03\xff\xfe not pyc not a known obfuscator \x80\x81\x82",
     )
     .expect("write garbage");
-    let out_dir: PathBuf = temp_path("auto-garbage", "out");
+    let (_out_dir_scratch, out_dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("auto-garbage", "out");
     let _ = std::fs::remove_dir_all(&out_dir);
     let _ = run_disrobe(&[
         "auto",
@@ -310,13 +313,15 @@ fn auto_chain_does_not_fabricate_recovery_for_garbage() {
 
 #[test]
 fn py_decompile_unknown_input_prints_guidance_and_does_not_fabricate() {
-    let garbage: PathBuf = temp_path("garbage", "py");
+    let (_garbage_scratch, garbage): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("garbage", "py");
     std::fs::write(
         &garbage,
         b"\x00\x01\x02\x03\xff\xfe not pyc not a known obfuscator \x80\x81\x82",
     )
     .expect("write garbage");
-    let out_dir: PathBuf = temp_path("garbage", "out");
+    let (_out_dir_scratch, out_dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("garbage", "out");
     let _ = std::fs::remove_dir_all(&out_dir);
     let r: Run = run_disrobe(&[
         "py",

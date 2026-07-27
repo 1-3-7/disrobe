@@ -430,27 +430,22 @@ pub(crate) fn run(
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use disrobe_core::scratch::ScratchDir;
 
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-
-    fn tmp_dir(stem: &str) -> PathBuf {
-        let pid: u32 = std::process::id();
-        let n: u64 = SEQ.fetch_add(1, Ordering::Relaxed);
-        let p: PathBuf = std::env::temp_dir().join(format!("disrobe-cfg-{stem}-{pid}-{n}"));
-        std::fs::create_dir_all(&p).expect("mk tmp dir");
-        p
+    fn tmp_dir(stem: &str) -> ScratchDir {
+        let purpose: String = format!("disrobe-cfg-{stem}");
+        ScratchDir::create(&purpose).expect("create scratch directory")
     }
 
     #[test]
     fn empty_config_is_all_defaults() {
-        let here: PathBuf = tmp_dir("empty");
+        let here_scratch: ScratchDir = tmp_dir("empty");
+        let here: PathBuf = here_scratch.path().to_path_buf();
         let path: PathBuf = here.join(CONFIG_FILE_NAME);
         std::fs::write(&path, b"").expect("write empty");
         let resolved: ResolvedConfig = resolve(Some(&path)).expect("resolve empty");
         assert_eq!(resolved.config, DisrobeConfig::default());
         assert_eq!(resolved.source.as_deref(), Some(path.as_path()));
-        let _ = std::fs::remove_dir_all(&here);
     }
 
     #[test]
@@ -474,7 +469,8 @@ mod tests {
             [passes]
             disable = ["native.packer-unpack"]
         "#;
-        let here: PathBuf = tmp_dir("full");
+        let here_scratch: ScratchDir = tmp_dir("full");
+        let here: PathBuf = here_scratch.path().to_path_buf();
         let cfg: DisrobeConfig = DisrobeConfig::parse_str(doc, &here).expect("parse full");
         assert_eq!(cfg.output.dir.as_deref(), Some(Path::new("build/out")));
         assert_eq!(
@@ -492,61 +488,61 @@ mod tests {
             cfg.passes.disable.as_deref(),
             Some(["native.packer-unpack".to_string()].as_slice())
         );
-        let _ = std::fs::remove_dir_all(&here);
     }
 
     #[test]
     fn unknown_key_is_rejected() {
         let doc: &str = "[output]\nnonsense_key = 3\n";
-        let here: PathBuf = tmp_dir("unknown");
+        let here_scratch: ScratchDir = tmp_dir("unknown");
+        let here: PathBuf = here_scratch.path().to_path_buf();
         let err: miette::Report = DisrobeConfig::parse_str(doc, &here).expect_err("must reject");
         let msg: String = format!("{err}");
         assert!(msg.contains("DR-CLI-0330"), "got: {msg}");
-        let _ = std::fs::remove_dir_all(&here);
     }
 
     #[test]
     fn unknown_top_level_table_is_rejected() {
         let doc: &str = "[nope]\nx = 1\n";
-        let here: PathBuf = tmp_dir("unknown-top");
+        let here_scratch: ScratchDir = tmp_dir("unknown-top");
+        let here: PathBuf = here_scratch.path().to_path_buf();
         assert!(DisrobeConfig::parse_str(doc, &here).is_err());
-        let _ = std::fs::remove_dir_all(&here);
     }
 
     #[test]
     fn explicit_missing_path_errors() {
-        let missing: PathBuf =
-            std::env::temp_dir().join("disrobe-cfg-definitely-missing-xyzzy.toml");
+        let scratch: ScratchDir = ScratchDir::create("disrobe-cfg-definitely-missing-xyzzy")
+            .expect("create scratch directory");
+        let missing: PathBuf = scratch.path().join("missing.toml");
         let err: miette::Report = resolve(Some(&missing)).expect_err("missing explicit must error");
         assert!(format!("{err}").contains("DR-CLI-0332"));
     }
 
     #[test]
     fn discover_walks_up_to_ancestor() {
-        let root: PathBuf = tmp_dir("walkup");
+        let root_scratch: ScratchDir = tmp_dir("walkup");
+        let root: PathBuf = root_scratch.path().to_path_buf();
         let nested: PathBuf = root.join("a").join("b").join("c");
         std::fs::create_dir_all(&nested).expect("mk nested");
         let cfg_path: PathBuf = root.join(CONFIG_FILE_NAME);
         std::fs::write(&cfg_path, b"[execution]\nthreads = 2\n").expect("write cfg");
         let found: PathBuf = discover_from(&nested).expect("should find ancestor cfg");
         assert_eq!(found, cfg_path);
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn discover_returns_none_when_absent() {
-        let root: PathBuf = tmp_dir("absent");
+        let root_scratch: ScratchDir = tmp_dir("absent");
+        let root: PathBuf = root_scratch.path().to_path_buf();
         assert!(discover_from(&root).is_none());
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn template_round_trips_through_parser() {
-        let here: PathBuf = tmp_dir("template");
+        let here_scratch: ScratchDir = tmp_dir("template");
+        let here: PathBuf = here_scratch.path().to_path_buf();
         let parsed: DisrobeConfig =
             DisrobeConfig::parse_str(TEMPLATE, &here).expect("template parses");
         assert_eq!(parsed, DisrobeConfig::default());
-        let _ = std::fs::remove_dir_all(&here);
     }
 
     #[test]

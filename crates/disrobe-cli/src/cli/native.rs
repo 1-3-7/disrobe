@@ -3152,9 +3152,10 @@ mod tests {
             eprintln!("skip: no C compiler (clang/gcc/cc) on PATH");
             return;
         };
-        let dir: PathBuf = std::env::temp_dir().join("disrobe-native-decompile-oracle");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mk test dir");
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("disrobe-native-decompile-oracle")
+                .expect("create scratch directory");
+        let dir: PathBuf = scratch.path().to_path_buf();
         let c_src: PathBuf = dir.join("battery.c");
         std::fs::write(
             &c_src,
@@ -3201,7 +3202,6 @@ mod tests {
                 "note: 0 leaf functions recovered from this compiler's codegen (endbr64 / stack-protector / optimizer shapes are soundly rejected); the CLI wiring is verified by discovery + manifest + emitted file, and codegen-level recovery is graded by the pseudo_c leaf oracle"
             );
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

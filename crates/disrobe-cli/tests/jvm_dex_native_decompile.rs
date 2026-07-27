@@ -35,7 +35,9 @@ fn native_dex_decompile_emits_real_method_bodies() {
         return;
     }
 
-    let out: PathBuf = temp_dir("edgecases-dex-native");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("edgecases-dex-native");
+
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let run: common::Run = run_disrobe(&[
         "jvm",
         "decompile",

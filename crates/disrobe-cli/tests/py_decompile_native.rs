@@ -1,9 +1,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn cli_binary() -> PathBuf {
     let mut p: PathBuf = env_target_dir();
@@ -28,13 +25,9 @@ fn env_target_dir() -> PathBuf {
     dir
 }
 
-fn temp_dir(stem: &str) -> PathBuf {
-    let pid: u32 = std::process::id();
-    let seq: u64 = FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let p: PathBuf = std::env::temp_dir().join(format!("disrobe-pydec-{stem}-{pid}-{seq}"));
-    let _: std::io::Result<()> = std::fs::remove_dir_all(&p);
-    std::fs::create_dir_all(&p).expect("create temp dir");
-    p
+fn temp_dir(stem: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-pydec-{stem}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn locate_python() -> Option<PathBuf> {
@@ -132,7 +125,8 @@ fn case(stem: &str, source: &str) {
         eprintln!("skipping {stem}: no python on PATH");
         return;
     };
-    let dir: PathBuf = temp_dir(stem);
+    let dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir(stem);
+    let dir: PathBuf = dir_scratch.path().to_path_buf();
     let py_path: PathBuf = dir.join(format!("{stem}.py"));
     let pyc_path: PathBuf = dir.join(format!("{stem}.pyc"));
     let out_dir: PathBuf = dir.join("recovered");
@@ -191,7 +185,8 @@ fn no_roundtrip_skips_interpreter_and_marks_skipped() {
         eprintln!("skipping no_roundtrip: no python on PATH");
         return;
     };
-    let dir: PathBuf = temp_dir("no_roundtrip");
+    let dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("no_roundtrip");
+    let dir: PathBuf = dir_scratch.path().to_path_buf();
     let py_path: PathBuf = dir.join("no_roundtrip.py");
     let pyc_path: PathBuf = dir.join("no_roundtrip.pyc");
     let out_dir: PathBuf = dir.join("recovered");

@@ -1,9 +1,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn cli_binary() -> PathBuf {
     let mut p: PathBuf = env_target_dir();
@@ -28,14 +25,9 @@ fn env_target_dir() -> PathBuf {
     dir
 }
 
-fn temp_dir(stem: &str) -> PathBuf {
-    let pid: u32 = std::process::id();
-    let seq: u64 = FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let p: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-helper-e2e-{stem}-{pid}-{seq}.dir"));
-    let _ = std::fs::remove_dir_all(&p);
-    std::fs::create_dir_all(&p).expect("create temp dir");
-    p
+fn temp_dir(stem: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-helper-e2e-{stem}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 #[derive(Debug)]
@@ -92,7 +84,8 @@ fn read_json(path: &Path) -> serde_json::Value {
 
 #[test]
 fn rename_appends_not_overwrites() {
-    let work: PathBuf = temp_dir("rename-append");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("rename-append");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let init: Run = run_disrobe_in(&work, &["init"]);
     assert_eq!(init.code, 0, "init stderr: {}", init.stderr);
 
@@ -120,7 +113,8 @@ fn rename_appends_not_overwrites() {
 
 #[test]
 fn rename_without_init_fails() {
-    let work: PathBuf = temp_dir("rename-noinit");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("rename-noinit");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let run: Run = run_disrobe_in(&work, &["rename", "x", "y"]);
     assert_ne!(run.code, 0, "expected failure, got 0");
     assert!(
@@ -132,7 +126,8 @@ fn rename_without_init_fails() {
 
 #[test]
 fn annot_regenerate_then_refresh() {
-    let work: PathBuf = temp_dir("annot-cycle");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("annot-cycle");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let init: Run = run_disrobe_in(&work, &["init"]);
     assert_eq!(init.code, 0, "init stderr: {}", init.stderr);
 
@@ -172,7 +167,8 @@ fn annot_regenerate_then_refresh() {
 
 #[test]
 fn annot_without_init_fails() {
-    let work: PathBuf = temp_dir("annot-noinit");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("annot-noinit");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let run: Run = run_disrobe_in(&work, &["annot", "refresh", "foo.py"]);
     assert_ne!(run.code, 0, "expected failure, got 0");
     assert!(
@@ -184,7 +180,8 @@ fn annot_without_init_fails() {
 
 #[test]
 fn context_summarizes_recovery() {
-    let work: PathBuf = temp_dir("context-ok");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("context-ok");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let out: PathBuf = work.join("out");
     std::fs::create_dir_all(&out).expect("create out dir");
     std::fs::write(out.join("recovery.json"), RECOVERY_FIXTURE).expect("write recovery");
@@ -205,7 +202,8 @@ fn context_summarizes_recovery() {
 
 #[test]
 fn context_missing_recovery_fails() {
-    let work: PathBuf = temp_dir("context-missing");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("context-missing");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let out: PathBuf = work.join("empty");
     std::fs::create_dir_all(&out).expect("create empty dir");
     let run: Run = run_disrobe_in(&work, &["context", "--out", "empty"]);
@@ -219,7 +217,8 @@ fn context_missing_recovery_fails() {
 
 #[test]
 fn context_json_emits_valid_object() {
-    let work: PathBuf = temp_dir("context-json");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("context-json");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let out: PathBuf = work.join("out");
     std::fs::create_dir_all(&out).expect("create out dir");
     std::fs::write(out.join("recovery.json"), RECOVERY_FIXTURE).expect("write recovery");
@@ -241,7 +240,8 @@ fn context_json_emits_valid_object() {
 
 #[test]
 fn rename_json_emits_valid_object() {
-    let work: PathBuf = temp_dir("rename-json");
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("rename-json");
+    let work: PathBuf = work_scratch.path().to_path_buf();
     let init: Run = run_disrobe_in(&work, &["init"]);
     assert_eq!(init.code, 0, "init stderr: {}", init.stderr);
 

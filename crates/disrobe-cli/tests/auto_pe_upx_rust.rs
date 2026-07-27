@@ -9,7 +9,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
 use disrobe_pass_native::{DemangleScheme, DemangledSymbol, demangle_rust};
 
@@ -42,13 +41,9 @@ fn cargo_bin() -> PathBuf {
 }
 
 #[allow(clippy::disallowed_methods)]
-fn tmp_out(name: &str) -> PathBuf {
-    let stamp: u128 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_nanos();
-    let pid: u32 = std::process::id();
-    std::env::temp_dir().join(format!("disrobe-chain-{name}-{pid}-{stamp}"))
+fn tmp_out(name: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-chain-{name}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn run_chain_cli(input: &Path, out: &Path, chain_arg: &str) -> std::process::Output {
@@ -141,7 +136,9 @@ fn auto_pe_upx_rust_chain_unpacks_and_recovers_rust() {
         return;
     }
 
-    let out: PathBuf = tmp_out("pe-upx-rust");
+    let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("pe-upx-rust");
+
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let proc_out: std::process::Output = run_chain_cli(&packed, &out, "auto:8");
     let json: String = read_chain_json(&out);
 

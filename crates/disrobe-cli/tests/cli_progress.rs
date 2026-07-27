@@ -36,7 +36,8 @@ fn progress_trait_fires_under_simulated_pipeline() {
 
 #[test]
 fn cli_accepts_progress_flag_without_crashing() {
-    let src: PathBuf = temp_path("progress-cli", "py");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("progress-cli", "py");
     write_bytes(&src, b"k = 9\n");
     let r: Run = run_disrobe(&["--progress", "always", "py", "deob", src.to_str().unwrap()]);
     assert_eq!(
@@ -53,19 +54,21 @@ fn has_control_codes(s: &str) -> bool {
     })
 }
 
-fn auto_fixture() -> PathBuf {
-    let src: PathBuf = temp_path("auto-progress", "py");
+fn auto_fixture() -> (disrobe_core::scratch::ScratchDir, PathBuf) {
+    let (scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("auto-progress", "py");
     write_bytes(
         &src,
         b"import os\n\n\ndef greet(name):\n    return f'hi {name}'\n\n\nprint(greet('world'))\n",
     );
-    src
+    (scratch, src)
 }
 
 #[test]
 fn auto_default_progress_emits_no_control_codes_when_piped() {
-    let src: PathBuf = auto_fixture();
-    let out_dir: PathBuf = temp_path("auto-out-default", "dir");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) = auto_fixture();
+    let (_out_dir_scratch, out_dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("auto-out-default", "dir");
     let r: Run = run_disrobe(&[
         "auto",
         src.to_str().unwrap(),
@@ -91,8 +94,9 @@ fn auto_default_progress_emits_no_control_codes_when_piped() {
 
 #[test]
 fn auto_progress_always_stays_plain_on_a_non_tty() {
-    let src: PathBuf = auto_fixture();
-    let out_dir: PathBuf = temp_path("auto-out-always", "dir");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) = auto_fixture();
+    let (_out_dir_scratch, out_dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("auto-out-always", "dir");
     let r: Run = run_disrobe(&[
         "--progress",
         "always",
@@ -120,8 +124,9 @@ fn auto_progress_always_stays_plain_on_a_non_tty() {
 
 #[test]
 fn auto_quiet_suppresses_progress_and_keeps_streams_plain() {
-    let src: PathBuf = auto_fixture();
-    let out_dir: PathBuf = temp_path("auto-out-quiet", "dir");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) = auto_fixture();
+    let (_out_dir_scratch, out_dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("auto-out-quiet", "dir");
     let r: Run = run_disrobe(&[
         "--quiet",
         "auto",
@@ -148,9 +153,11 @@ fn auto_quiet_suppresses_progress_and_keeps_streams_plain() {
 
 #[test]
 fn native_unpack_progress_always_draws_nothing_on_a_non_tty() {
-    let src: PathBuf = temp_path("native-unpack-progress", "bin");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("native-unpack-progress", "bin");
     write_bytes(&src, b"not a packed executable, just plain bytes\n");
-    let out_path: PathBuf = temp_path("native-unpack-out", "bin");
+    let (_out_path_scratch, out_path): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("native-unpack-out", "bin");
     let r: Run = run_disrobe(&[
         "--progress",
         "always",
@@ -179,9 +186,11 @@ fn native_unpack_progress_always_draws_nothing_on_a_non_tty() {
 
 #[test]
 fn native_unpack_quiet_suppresses_progress_on_a_non_tty() {
-    let src: PathBuf = temp_path("native-unpack-quiet", "bin");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("native-unpack-quiet", "bin");
     write_bytes(&src, b"plain bytes with no packer signature\n");
-    let out_path: PathBuf = temp_path("native-unpack-quiet-out", "bin");
+    let (_out_path_scratch, out_path): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("native-unpack-quiet-out", "bin");
     let r: Run = run_disrobe(&[
         "--quiet",
         "native",
@@ -205,8 +214,9 @@ fn native_unpack_quiet_suppresses_progress_on_a_non_tty() {
 
 #[test]
 fn auto_json_output_is_clean_json_with_no_progress_bleed() {
-    let src: PathBuf = auto_fixture();
-    let out_dir: PathBuf = temp_path("auto-out-json", "dir");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) = auto_fixture();
+    let (_out_dir_scratch, out_dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("auto-out-json", "dir");
     let r: Run = run_disrobe(&[
         "--json",
         "auto",
@@ -278,7 +288,8 @@ fn py_decompile_json_output_is_clean_with_no_progress_bleed() {
         eprintln!("skipping py_decompile_json clean test: no python on PATH");
         return;
     };
-    let dir: PathBuf = temp_path("py-dec-progress", "dir");
+    let (_dir_scratch, dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("py-dec-progress", "dir");
     std::fs::create_dir_all(&dir).unwrap();
     let py_path: PathBuf = dir.join("greet.py");
     let pyc_path: PathBuf = dir.join("greet.pyc");
@@ -319,7 +330,8 @@ fn py_decompile_progress_always_stays_plain_on_a_non_tty() {
         eprintln!("skipping py_decompile progress-always test: no python on PATH");
         return;
     };
-    let dir: PathBuf = temp_path("py-dec-always", "dir");
+    let (_dir_scratch, dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("py-dec-always", "dir");
     std::fs::create_dir_all(&dir).unwrap();
     let py_path: PathBuf = dir.join("greet.py");
     let pyc_path: PathBuf = dir.join("greet.pyc");

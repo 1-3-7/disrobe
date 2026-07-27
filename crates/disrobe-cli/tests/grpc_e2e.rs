@@ -12,15 +12,13 @@ use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 const GRPC_TEST_DEADLINE: Duration = Duration::from_secs(30);
 const SERVE_LOCK_STALE_AFTER: Duration = Duration::from_secs(90);
 const SERVE_LOCK_BACKOFF: Duration = Duration::from_millis(25);
-
-static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
 struct ServeSpawnLock {
@@ -29,7 +27,9 @@ struct ServeSpawnLock {
 
 impl ServeSpawnLock {
     fn acquire() -> Self {
-        let path: PathBuf = std::env::temp_dir().join("disrobe-serve-e2e-spawn.lock");
+        let root: PathBuf = disrobe_core::scratch::scratch_root();
+        std::fs::create_dir_all(&root).expect("create scratch root");
+        let path: PathBuf = root.join("disrobe-serve-e2e-spawn.lock");
         loop {
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(_file) => return Self { path },
@@ -202,12 +202,9 @@ fn wait_for_listen(addr: SocketAddr, timeout: Duration) {
     }
 }
 
-fn temp_dir(stem: &str) -> PathBuf {
-    let pid: u32 = std::process::id();
-    let seq: u64 = FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf = std::env::temp_dir().join(format!("disrobe-grpc-e2e-{stem}-{pid}-{seq}"));
-    std::fs::create_dir_all(&dir).expect("create temp dir");
-    dir
+fn temp_dir(stem: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-grpc-e2e-{stem}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 #[test]
@@ -343,7 +340,8 @@ fn cli_dry_run_global_flag_overrides_subcommand_default() {
         eprintln!("disrobe binary missing; skip");
         return;
     }
-    let tmp: PathBuf = temp_dir("dry-auto");
+    let tmp_scratch: disrobe_core::scratch::ScratchDir = temp_dir("dry-auto");
+    let tmp: PathBuf = tmp_scratch.path().to_path_buf();
     let input: PathBuf = tmp.join("hello.py");
     std::fs::write(&input, b"print('hi')\n").expect("write input");
     let out: std::process::Output = Command::new(&bin)

@@ -6,11 +6,8 @@
 )]
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
-
-static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn cli_binary() -> PathBuf {
     let exe: PathBuf = std::env::current_exe().expect("current exe");
@@ -79,13 +76,12 @@ impl Planted {
     }
 }
 
-fn corpus() -> (PathBuf, Planted) {
+fn corpus() -> (disrobe_core::scratch::ScratchDir, PathBuf, Planted) {
     let planted: Planted = Planted::build();
-    let pid: u32 = std::process::id();
-    let seq: u64 = FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf = std::env::temp_dir().join(format!("disrobe-frisk-redact-{pid}-{seq}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir corpus");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe-frisk-redact")
+            .expect("create scratch directory");
+    let dir: PathBuf = scratch.path().to_path_buf();
     std::fs::write(
         dir.join("keys.txt"),
         format!("aws key = {}\ntoken: {}\n", planted.aws, planted.github),
@@ -99,7 +95,7 @@ fn corpus() -> (PathBuf, Planted) {
         ),
     )
     .expect("write hooks.env");
-    (dir, planted)
+    (scratch, dir, planted)
 }
 
 fn frisk(dir: &PathBuf, args: &[&str]) -> String {
@@ -145,7 +141,7 @@ fn finding_value(json: &str, rule_id: &str) -> Option<String> {
 
 #[test]
 fn redact_produces_zero_leak_across_text_json_sarif_with_location_parity() {
-    let (dir, planted) = corpus();
+    let (_scratch, dir, planted): (disrobe_core::scratch::ScratchDir, PathBuf, Planted) = corpus();
 
     let plain_json: String = frisk(&dir, &["--format", "json"]);
 
@@ -196,13 +192,11 @@ fn redact_produces_zero_leak_across_text_json_sarif_with_location_parity() {
         aws_value.starts_with("[REDACTED:"),
         "the preview of a secret-scan secret must also be replaced by a sentinel: {aws_value}"
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn keyed_redaction_is_deterministic_across_runs() {
-    let (dir, planted) = corpus();
+    let (_scratch, dir, planted): (disrobe_core::scratch::ScratchDir, PathBuf, Planted) = corpus();
 
     let first: String = frisk(&dir, &["--format", "json", "--redact-key", "shared-key"]);
     let second: String = frisk(&dir, &["--format", "json", "--redact-key", "shared-key"]);
@@ -217,6 +211,4 @@ fn keyed_redaction_is_deterministic_across_runs() {
         first, second,
         "a fixed --redact-key must yield byte-identical redacted output across runs"
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }

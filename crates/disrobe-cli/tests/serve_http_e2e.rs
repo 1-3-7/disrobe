@@ -29,7 +29,9 @@ struct ServeSpawnLock {
 
 impl ServeSpawnLock {
     fn acquire() -> Self {
-        let path: PathBuf = std::env::temp_dir().join("disrobe-serve-e2e-spawn.lock");
+        let root: PathBuf = disrobe_core::scratch::scratch_root();
+        std::fs::create_dir_all(&root).expect("create scratch root");
+        let path: PathBuf = root.join("disrobe-serve-e2e-spawn.lock");
         loop {
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(_file) => return Self { path },

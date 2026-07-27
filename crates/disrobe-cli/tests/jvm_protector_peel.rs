@@ -26,7 +26,9 @@ fn cli_peels_static_table_class_and_substitutes_plaintext() {
         return;
     }
 
-    let out: PathBuf = temp_dir("zkm-peel");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("zkm-peel");
+
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let run: common::Run = run_disrobe(&[
         "jvm",
         "decompile",
@@ -79,7 +81,9 @@ fn cli_dex_decompile_surfaces_recovered_dexguard_strings() {
         return;
     }
 
-    let out: PathBuf = temp_dir("dexguard-peel");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("dexguard-peel");
+
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let run: common::Run = run_disrobe(&[
         "jvm",
         "decompile",

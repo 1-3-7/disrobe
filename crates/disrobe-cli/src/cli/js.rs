@@ -966,12 +966,12 @@ mod tests {
         let mut bytes: Vec<u8> = synth_stored_zip("app.js", b"console.log(1)");
         patch_first_u32(&mut bytes, b"PK\x03\x04", 22, u32::MAX);
         patch_first_u32(&mut bytes, b"PK\x01\x02", 24, u32::MAX);
-        let out: PathBuf =
-            std::env::temp_dir().join(format!("disrobe-cli-nwjs-forged-{}", std::process::id()));
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&out);
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("disrobe-cli-nwjs-forged")
+                .expect("create scratch directory");
+        let out: PathBuf = scratch.path().join("out");
         let err: miette::Report =
             carve_nwjs_zip(&bytes, &out).expect_err("forged size must reject");
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&out);
         assert!(format!("{err}").contains("declared size"));
     }
 }

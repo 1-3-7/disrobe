@@ -8,9 +8,6 @@
 
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn cli_binary() -> PathBuf {
     let exe: PathBuf = std::env::current_exe().expect("current exe");
@@ -172,11 +169,14 @@ fn as3_disasm_source_emit_writes_lifted_bodies() {
         "disrobe binary not built at {}; run `cargo build -p disrobe-cli` first",
         bin.display()
     );
-    let seq: u64 = SEQ.fetch_add(1, Ordering::Relaxed);
-    let pid: u32 = std::process::id();
-    let swf_path: PathBuf = std::env::temp_dir().join(format!("disrobe-as3-src-{pid}-{seq}.swf"));
-    let out_dir: PathBuf = std::env::temp_dir().join(format!("disrobe-as3-out-{pid}-{seq}"));
-    let _ = std::fs::remove_dir_all(&out_dir);
+    let swf_scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe-as3-src")
+            .expect("create scratch directory");
+    let swf_path: PathBuf = swf_scratch.path().join("payload.swf");
+    let out_scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe-as3-out")
+            .expect("create scratch directory");
+    let out_dir: PathBuf = out_scratch.path().to_path_buf();
     std::fs::write(&swf_path, build_swf()).expect("write swf fixture");
 
     let output: std::process::Output = Command::new(&bin)
@@ -225,7 +225,4 @@ fn as3_disasm_source_emit_writes_lifted_bodies() {
         !source.contains("/* method */"),
         "no stub markers may remain:\n{source}"
     );
-
-    let _ = std::fs::remove_file(&swf_path);
-    let _ = std::fs::remove_dir_all(&out_dir);
 }

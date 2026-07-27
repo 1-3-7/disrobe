@@ -7,12 +7,14 @@ use common::{Run, run_disrobe, temp_path, write_bytes};
 
 #[test]
 fn pyarmor_unpack_dry_run_exits_zero_with_no_file_output() {
-    let src: PathBuf = temp_path("dryrun-pyarmor", "py");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("dryrun-pyarmor", "py");
     write_bytes(
         &src,
         b"# pyarmor wrapper stub\nfrom pyarmor_runtime import __pyarmor__\n",
     );
-    let out: PathBuf = temp_path("dryrun-pyarmor-out", "dir");
+    let (_out_scratch, out): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("dryrun-pyarmor-out", "dir");
     let _: std::io::Result<()> = std::fs::remove_dir_all(&out);
 
     let r: Run = run_disrobe(&[
@@ -43,9 +45,11 @@ fn pyarmor_unpack_dry_run_exits_zero_with_no_file_output() {
 
 #[test]
 fn pyinstaller_extract_dry_run_exits_zero_with_no_file_output() {
-    let src: PathBuf = temp_path("dryrun-pyinst", "bin");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("dryrun-pyinst", "bin");
     write_bytes(&src, b"not a real pyinstaller archive\n");
-    let out: PathBuf = temp_path("dryrun-pyinst-out", "dir");
+    let (_out_scratch, out): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("dryrun-pyinst-out", "dir");
     let _: std::io::Result<()> = std::fs::remove_dir_all(&out);
 
     let r: Run = run_disrobe(&[

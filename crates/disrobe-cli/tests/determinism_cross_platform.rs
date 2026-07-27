@@ -8,9 +8,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn workspace_root() -> PathBuf {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -40,13 +37,9 @@ fn cargo_bin() -> PathBuf {
     p
 }
 
-fn temp_dir(stem: &str) -> PathBuf {
-    let pid: u32 = std::process::id();
-    let seq: u64 = FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let p: PathBuf = std::env::temp_dir().join(format!("disrobe-determinism-{stem}-{pid}-{seq}"));
-    let _ = std::fs::remove_dir_all(&p);
-    std::fs::create_dir_all(&p).expect("create temp dir");
-    p
+fn temp_dir(stem: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-determinism-{stem}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn run_disrobe(args: &[String]) -> Output {
@@ -76,7 +69,8 @@ fn threaded_args(threads: Option<u32>, rest: &[&str]) -> Vec<String> {
 
 fn recover_py_decompile(threads: Option<u32>) -> Vec<u8> {
     let input: PathBuf = corpus_path("python/decompile/playground/edge_cases_2_7.pyc");
-    let out_dir: PathBuf = temp_dir("py");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("py");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     let input_arg: String = input.to_string_lossy().into_owned();
     let out_arg: String = out_dir.to_string_lossy().into_owned();
     let args: Vec<String> =
@@ -95,7 +89,8 @@ fn recover_py_decompile(threads: Option<u32>) -> Vec<u8> {
 
 fn recover_native_unpack(threads: Option<u32>) -> Vec<u8> {
     let input: PathBuf = corpus_path("native/packers/kkrunchy/hello.packed.kkrunchy_classic.exe");
-    let out_file: PathBuf = temp_dir("native").join("hello.unpacked.bin");
+    let out_file_scratch: disrobe_core::scratch::ScratchDir = temp_dir("native");
+    let out_file: PathBuf = out_file_scratch.path().join("hello.unpacked.bin");
     let input_arg: String = input.to_string_lossy().into_owned();
     let out_arg: String = out_file.to_string_lossy().into_owned();
     let args: Vec<String> = threaded_args(
@@ -115,7 +110,8 @@ fn recover_native_unpack(threads: Option<u32>) -> Vec<u8> {
 
 fn recover_pickle_decompile(threads: Option<u32>) -> Vec<u8> {
     let input: PathBuf = corpus_path("pickle/malicious/p3/reduce_os_system.pkl");
-    let out_file: PathBuf = temp_dir("pickle").join("reduce_os_system.py");
+    let out_file_scratch: disrobe_core::scratch::ScratchDir = temp_dir("pickle");
+    let out_file: PathBuf = out_file_scratch.path().join("reduce_os_system.py");
     let input_arg: String = input.to_string_lossy().into_owned();
     let out_arg: String = out_file.to_string_lossy().into_owned();
     let args: Vec<String> = threaded_args(
@@ -174,8 +170,9 @@ fn cross_platform_fixture_hashes() {
 
 const BATCH_SIDECAR_NAMES: &[&str] = &["manifest.json", "chain.json", "recovery.json"];
 
-fn stage_batch_input() -> PathBuf {
-    let dir: PathBuf = temp_dir("batch-input");
+fn stage_batch_input() -> (disrobe_core::scratch::ScratchDir, PathBuf) {
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("batch-input");
+    let dir: PathBuf = scratch.path().to_path_buf();
     for rel in [
         "python/decompile/playground/edge_cases_2_7.pyc",
         "native/packers/kkrunchy/hello.packed.kkrunchy_classic.exe",
@@ -185,11 +182,12 @@ fn stage_batch_input() -> PathBuf {
         let file_name: &std::ffi::OsStr = src.file_name().expect("fixture has a file name");
         std::fs::copy(&src, dir.join(file_name)).expect("stage batch fixture");
     }
-    dir
+    (scratch, dir)
 }
 
-fn run_batch(input_dir: &Path, jobs: u32) -> PathBuf {
-    let out_dir: PathBuf = temp_dir("batch-out");
+fn run_batch(input_dir: &Path, jobs: u32) -> (disrobe_core::scratch::ScratchDir, PathBuf) {
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("batch-out");
+    let out_dir: PathBuf = scratch.path().to_path_buf();
     let args: Vec<String> = vec![
         "auto".to_string(),
         input_dir.to_string_lossy().into_owned(),
@@ -204,7 +202,7 @@ fn run_batch(input_dir: &Path, jobs: u32) -> PathBuf {
         "disrobe auto (batch, jobs={jobs}) failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    out_dir
+    (scratch, out_dir)
 }
 
 fn hash_batch_tree(root: &Path) -> blake3::Hash {
@@ -253,9 +251,12 @@ fn hash_batch_tree(root: &Path) -> blake3::Hash {
 #[test]
 #[ignore = "runs on a single CI leg via an explicit `--ignored` invocation, not the default workspace sweep"]
 fn batch_jobs_does_not_change_recovered_output() {
-    let input_dir: PathBuf = stage_batch_input();
-    let single_jobs_out: PathBuf = run_batch(&input_dir, 1);
-    let multi_jobs_out: PathBuf = run_batch(&input_dir, 4);
+    let (_input_scratch, input_dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        stage_batch_input();
+    let (_single_jobs_scratch, single_jobs_out): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        run_batch(&input_dir, 1);
+    let (_multi_jobs_scratch, multi_jobs_out): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        run_batch(&input_dir, 4);
     let single_hash: blake3::Hash = hash_batch_tree(&single_jobs_out);
     let multi_hash: blake3::Hash = hash_batch_tree(&multi_jobs_out);
     assert_eq!(

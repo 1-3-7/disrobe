@@ -9,7 +9,6 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::Duration;
 
 use object::{Object, ObjectSymbol};
 
@@ -42,12 +41,9 @@ fn cargo_bin() -> PathBuf {
 }
 
 #[allow(clippy::disallowed_methods)]
-fn tmp_dir(name: &str) -> PathBuf {
-    let stamp: u128 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_nanos();
-    std::env::temp_dir().join(format!("disrobe-export-{name}-{stamp}"))
+fn tmp_dir(name: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-export-{name}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
 fn run_export(input: &Path, out_dir: &Path, format: &str) -> Output {
@@ -185,7 +181,8 @@ fn native_export_produces_loadable_pe_and_parseable_sidecar() {
         eprintln!("SKIP: fixture missing: {packed:?}");
         return;
     }
-    let out_dir: PathBuf = tmp_dir("wellformed");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = tmp_dir("wellformed");
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
 
     let proc_out: Output = run_export(&packed, &out_dir, "ghidra");
     assert!(
@@ -239,7 +236,9 @@ fn native_export_before_after_ghidra_recovers_more() {
         return;
     }
 
-    let out_dir: PathBuf = tmp_dir("delta");
+    let out_dir_scratch: disrobe_core::scratch::ScratchDir = tmp_dir("delta");
+
+    let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     let proc_out: Output = run_export(&packed, &out_dir, "json");
     assert!(
         proc_out.status.success(),
