@@ -178,8 +178,22 @@ fn read_u64(image: &[u8], at: usize) -> Option<u64> {
 
 const MIN_NAME_LEN: usize = 2;
 const MAX_NAME_LEN: usize = 256;
-const MIN_NAME_RUN: usize = 4;
+const NAME_RUN_THRESHOLDS: [usize; 4] = [1, 2, 3, 4];
 const MAX_RECOVERED_NAMES: usize = 65536;
+
+#[must_use]
+pub fn is_metadata_identifier(text: &str) -> bool {
+    let mut chars: std::str::Chars<'_> = text.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_' || first == '<') {
+        return false;
+    }
+    text.chars().all(|c: char| {
+        c.is_ascii_alphanumeric() || matches!(c, '_' | '<' | '>' | '.' | '`' | '+' | '/')
+    })
+}
 
 #[must_use]
 pub fn decode_metadata_unsigned(bytes: &[u8], at: usize) -> Option<(u32, usize)> {
@@ -220,7 +234,7 @@ fn read_metadata_name(bytes: &[u8], at: usize) -> Option<(&str, usize)> {
     Some((text, end))
 }
 
-fn recover_names_in(bytes: &[u8], out: &mut Vec<String>) {
+fn recover_names_at_threshold(bytes: &[u8], min_run: usize, out: &mut Vec<String>) {
     let mut at: usize = 0;
     while at < bytes.len() && out.len() < MAX_RECOVERED_NAMES {
         let mut cursor: usize = at;
@@ -232,17 +246,25 @@ fn recover_names_in(bytes: &[u8], out: &mut Vec<String>) {
                 break;
             }
         }
-        if run.len() >= MIN_NAME_RUN {
+        if run.len() >= min_run {
             for text in run {
                 if out.len() >= MAX_RECOVERED_NAMES {
                     break;
                 }
-                out.push(text.to_owned());
+                if is_metadata_identifier(text) {
+                    out.push(text.to_owned());
+                }
             }
             at = cursor;
         } else {
             at = at.saturating_add(1);
         }
+    }
+}
+
+fn recover_names_in(bytes: &[u8], out: &mut Vec<String>) {
+    for min_run in NAME_RUN_THRESHOLDS {
+        recover_names_at_threshold(bytes, min_run, out);
     }
 }
 
