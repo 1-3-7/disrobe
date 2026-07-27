@@ -98,30 +98,29 @@ mod tests {
 
     static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
-    fn temp_file(name: &str) -> std::path::PathBuf {
+    fn temp_file(name: &str) -> disrobe_core::scratch::ScratchFile {
         let seq: u64 = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "disrobe_pyfreeze_{name}_{}_{}",
-            std::process::id(),
-            seq
-        ))
+        let purpose: String = format!("disrobe_pyfreeze_{name}_{}_{}", std::process::id(), seq);
+        let (scratch, _file): (disrobe_core::scratch::ScratchFile, std::fs::File) =
+            disrobe_core::scratch::ScratchFile::create(&purpose, "").expect("create scratch file");
+        scratch
     }
 
     #[test]
     fn bounded_file_read_accepts_under_cap() {
-        let path: std::path::PathBuf = temp_file("under");
+        let scratch: disrobe_core::scratch::ScratchFile = temp_file("under");
+        let path: std::path::PathBuf = scratch.path().to_path_buf();
         std::fs::write(&path, b"abc").expect("write temp file");
         let bytes: Vec<u8> = read_file_bounded(&path, 3).expect("read under cap");
         assert_eq!(bytes, b"abc");
-        std::fs::remove_file(&path).expect("remove temp file");
     }
 
     #[test]
     fn bounded_file_read_rejects_over_cap() {
-        let path: std::path::PathBuf = temp_file("over");
+        let scratch: disrobe_core::scratch::ScratchFile = temp_file("over");
+        let path: std::path::PathBuf = scratch.path().to_path_buf();
         std::fs::write(&path, b"abcd").expect("write temp file");
         let err: Error = read_file_bounded(&path, 3).unwrap_err();
         assert!(matches!(err, Error::Io(_)));
-        std::fs::remove_file(&path).expect("remove temp file");
     }
 }

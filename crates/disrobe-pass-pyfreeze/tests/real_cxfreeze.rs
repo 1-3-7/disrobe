@@ -37,14 +37,13 @@ fn binary_path() -> PathBuf {
     fixture_dir().join("extracted").join("hello.exe")
 }
 
-fn out_dir(tag: &str) -> PathBuf {
-    let mut p: PathBuf = std::env::temp_dir();
-    p.push(format!(
+fn out_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!(
         "disrobe-real-cxfreeze-{tag}-{pid}-{nonce}",
         pid = std::process::id(),
         nonce = next_nonce()
-    ));
-    p
+    );
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
 }
 
 fn next_nonce() -> u64 {
@@ -84,7 +83,8 @@ fn cxfreeze_real_fixture_extracts_all_edge_case_bands_from_library_zip() {
         eprintln!("[real_cxfreeze] skipped: fixture missing");
         return;
     }
-    let out: PathBuf = out_dir("extract");
+    let scratch: disrobe_core::scratch::ScratchDir = out_dir("extract");
+    let out: PathBuf = scratch.path().to_path_buf();
     let extraction: CxFreezeExtraction =
         detect_and_extract(&path, &out).expect("cxfreeze extraction");
     let names: BTreeSet<String> = extraction
@@ -111,5 +111,4 @@ fn cxfreeze_real_fixture_extracts_all_edge_case_bands_from_library_zip() {
         BANDS.len(),
         extraction.manifest.entry_count
     );
-    let _ = std::fs::remove_dir_all(&out);
 }

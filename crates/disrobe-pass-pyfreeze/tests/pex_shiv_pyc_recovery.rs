@@ -38,14 +38,13 @@ fn build_container(members: &[(&str, &[u8])]) -> Vec<u8> {
     out
 }
 
-fn out_dir(tag: &str) -> PathBuf {
-    let mut p: PathBuf = std::env::temp_dir();
-    p.push(format!(
+fn out_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!(
         "disrobe-pex-shiv-pyc-{tag}-{pid}-{nonce}",
         pid = std::process::id(),
         nonce = next_nonce()
-    ));
-    p
+    );
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
 }
 
 fn next_nonce() -> u64 {
@@ -91,7 +90,8 @@ fn pex_container_with_pyc_populates_recovery_field() {
         ("known_mod.pyc", KNOWN_PYC),
     ]);
 
-    let dir: PathBuf = out_dir("pex");
+    let scratch: disrobe_core::scratch::ScratchDir = out_dir("pex");
+    let dir: PathBuf = scratch.path().to_path_buf();
     std::fs::create_dir_all(&dir).expect("create out dir");
     let input: PathBuf = dir.join("hello.pex");
     std::fs::write(&input, &container).expect("write pex");
@@ -130,7 +130,6 @@ fn pex_container_with_pyc_populates_recovery_field() {
         out.recovery.modules.len(),
         module.roundtrip.label()
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -143,7 +142,8 @@ fn shiv_container_with_pyc_populates_recovery_field() {
         ("site-packages/known_mod.pyc", KNOWN_PYC),
     ]);
 
-    let dir: PathBuf = out_dir("shiv");
+    let scratch: disrobe_core::scratch::ScratchDir = out_dir("shiv");
+    let dir: PathBuf = scratch.path().to_path_buf();
     std::fs::create_dir_all(&dir).expect("create out dir");
     let input: PathBuf = dir.join("hello.pyz");
     std::fs::write(&input, &container).expect("write pyz");
@@ -182,13 +182,12 @@ fn shiv_container_with_pyc_populates_recovery_field() {
         out.recovery.modules.len(),
         module.roundtrip.label()
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn raw_pyc_file_populates_recovery_field() {
-    let dir: PathBuf = out_dir("raw-pyc");
-    std::fs::create_dir_all(&dir).expect("create out dir");
+    let scratch: disrobe_core::scratch::ScratchDir = out_dir("raw-pyc");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let input: PathBuf = dir.join("known_mod.pyc");
     std::fs::write(&input, KNOWN_PYC).expect("write pyc");
 
@@ -221,5 +220,4 @@ fn raw_pyc_file_populates_recovery_field() {
             )
         });
     assert_known_module_recovered(module);
-    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -124,11 +124,14 @@ mod tests {
             ("d.pyc", big),
         ];
         let zip_bytes: Vec<u8> = build_deflated_zip(&entries);
-        let tmp: std::path::PathBuf = std::env::temp_dir().join(format!(
+        let purpose: String = format!(
             "disrobe-cxfreeze-aggbomb-{}-{}",
             std::process::id(),
             zip_bytes.len()
-        ));
+        );
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+        let tmp: std::path::PathBuf = scratch.path().to_path_buf();
         let strict: ExtractionQuota = ExtractionQuota {
             max_per_entry_ratio: u64::MAX,
             max_aggregate_ratio: 4,
@@ -146,7 +149,6 @@ mod tests {
             matches!(err, Error::QuotaExceeded { .. }),
             "aggregate ratio breach must surface QuotaExceeded, got {err:?}"
         );
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -156,14 +158,16 @@ mod tests {
             ("pkg/mod.pyc", b"another small module payload".to_vec()),
         ];
         let zip_bytes: Vec<u8> = build_deflated_zip(&entries);
-        let tmp: std::path::PathBuf = std::env::temp_dir().join(format!(
+        let purpose: String = format!(
             "disrobe-cxfreeze-ok-{}-{}",
             std::process::id(),
             zip_bytes.len()
-        ));
+        );
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+        let tmp: std::path::PathBuf = scratch.path().to_path_buf();
         let out: Vec<ExtractedEntry> = extract_all_with_quota(&zip_bytes, &tmp, default_quota())
             .expect("a normal cx_Freeze zip must still extract under the armed aggregate cap");
         assert_eq!(out.len(), 2, "both members must extract: {out:?}");
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

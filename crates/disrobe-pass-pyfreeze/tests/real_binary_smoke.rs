@@ -77,12 +77,14 @@ fn detect_synthetic_pyoxidizer_via_runtime_markers() {
 
 #[test]
 fn detect_synthetic_briefcase_via_sibling_layout() {
-    let tmp: PathBuf = std::env::temp_dir().join(format!(
+    let purpose: String = format!(
         "disrobe-briefcase-detect-{}-{}",
         std::process::id(),
         rand_suffix()
-    ));
-    std::fs::create_dir_all(&tmp).expect("mkdir");
+    );
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let tmp: PathBuf = scratch.path().to_path_buf();
     let bin: PathBuf = tmp.join("hello.exe");
     std::fs::write(&bin, b"fake").expect("write bin");
     std::fs::create_dir_all(tmp.join("app_packages")).expect("mkdir app_packages");

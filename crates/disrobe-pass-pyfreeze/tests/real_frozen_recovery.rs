@@ -109,13 +109,9 @@ fn build_cx_freeze() -> Option<PathBuf> {
     exe
 }
 
-fn out_dir() -> PathBuf {
-    let mut p: PathBuf = std::env::temp_dir();
-    p.push(format!(
-        "disrobe-frozen-gate-{pid}",
-        pid = std::process::id()
-    ));
-    p
+fn out_dir() -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe-frozen-gate-{pid}", pid = std::process::id());
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
 }
 
 #[test]
@@ -136,7 +132,8 @@ fn cxfreeze_real_build_recovers_bytecode_and_surfaces_native() {
         "real cx_Freeze build must detect as cx_Freeze; got {det:?}"
     );
 
-    let out: PathBuf = out_dir();
+    let scratch: disrobe_core::scratch::ScratchDir = out_dir();
+    let out: PathBuf = scratch.path().to_path_buf();
     let extraction: CxFreezeExtraction =
         detect_and_extract(&exe, &out).expect("cxfreeze extraction");
 
@@ -225,8 +222,6 @@ fn cxfreeze_real_build_recovers_bytecode_and_surfaces_native() {
         surfaced.arch.label(),
         surfaced.instruction_count
     );
-
-    let _ = std::fs::remove_dir_all(&out);
 }
 
 #[test]
@@ -239,8 +234,10 @@ fn clean_control_yields_no_recovery() {
         "a plain shell script must not be classified as a Python freezer"
     );
 
-    let tmp: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-frozen-control-{}.bin", std::process::id()));
+    let purpose: String = format!("disrobe-frozen-control-{}", std::process::id());
+    let (scratch, _file): (disrobe_core::scratch::ScratchFile, std::fs::File) =
+        disrobe_core::scratch::ScratchFile::create(&purpose, "bin").expect("create scratch file");
+    let tmp: PathBuf = scratch.path().to_path_buf();
     std::fs::write(&tmp, &clean).expect("write control");
     assert!(
         recover_bytecode_file("control.pyc", &tmp).is_err(),
@@ -250,5 +247,4 @@ fn clean_control_yields_no_recovery() {
         surface_native_file("control.pyd", &tmp).is_err(),
         "non-native bytes must not surface disasm"
     );
-    let _ = std::fs::remove_file(&tmp);
 }

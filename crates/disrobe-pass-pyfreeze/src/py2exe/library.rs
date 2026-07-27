@@ -67,16 +67,15 @@ mod tests {
 
     use super::*;
 
-    fn tempdir(tag: &str) -> PathBuf {
+    fn tempdir(tag: &str) -> disrobe_core::scratch::ScratchDir {
         use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0x9E2E_0000);
-        let p: PathBuf = std::env::temp_dir().join(format!(
+        let purpose: String = format!(
             "disrobe-py2exe-lib-{tag}-{}-{}",
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&p).expect("mkdir");
-        p
+        );
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
     }
 
     fn build_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
@@ -94,7 +93,8 @@ mod tests {
 
     #[test]
     fn extracts_sibling_library_zip_members() {
-        let dir: PathBuf = tempdir("sibling");
+        let dir_scratch: disrobe_core::scratch::ScratchDir = tempdir("sibling");
+        let dir: PathBuf = dir_scratch.path().to_path_buf();
         let bin: PathBuf = dir.join("hello.exe");
         std::fs::write(&bin, b"MZ stub").expect("write bin");
         let zip: Vec<u8> = build_zip(&[
@@ -102,20 +102,20 @@ mod tests {
             ("pkg/mod_b.pyc", b"\x00\x02module b"),
         ]);
         std::fs::write(dir.join("library.zip"), &zip).expect("write zip");
-        let out: PathBuf = tempdir("sibling-out");
+        let out_scratch: disrobe_core::scratch::ScratchDir = tempdir("sibling-out");
+        let out: PathBuf = out_scratch.path().to_path_buf();
         let bundled: BundledModules = extract_bundled_modules(&bin, None, &out).expect("extract");
         assert!(bundled.library_zip_path.is_some());
         assert_eq!(bundled.entries.len(), 2);
         let names: Vec<&str> = bundled.entries.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"mod_a.pyc"));
         assert!(names.contains(&"pkg/mod_b.pyc"));
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::remove_dir_all(&out);
     }
 
     #[test]
     fn overlay_and_sibling_dedup_by_name() {
-        let dir: PathBuf = tempdir("dedup");
+        let dir_scratch: disrobe_core::scratch::ScratchDir = tempdir("dedup");
+        let dir: PathBuf = dir_scratch.path().to_path_buf();
         let bin: PathBuf = dir.join("onefile.exe");
         std::fs::write(&bin, b"MZ stub").expect("write bin");
         let overlay: Vec<u8> = build_zip(&[("shared.pyc", b"overlay copy")]);
@@ -124,7 +124,8 @@ mod tests {
             ("only_sibling.pyc", b"unique"),
         ]);
         std::fs::write(dir.join("library.zip"), &sibling).expect("write zip");
-        let out: PathBuf = tempdir("dedup-out");
+        let out_scratch: disrobe_core::scratch::ScratchDir = tempdir("dedup-out");
+        let out: PathBuf = out_scratch.path().to_path_buf();
         let bundled: BundledModules =
             extract_bundled_modules(&bin, Some(&overlay), &out).expect("extract");
         assert_eq!(bundled.overlay_member_count, 1);
@@ -135,20 +136,18 @@ mod tests {
             "overlay copy must win, sibling duplicate must be skipped"
         );
         assert!(names.contains(&"only_sibling.pyc"));
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::remove_dir_all(&out);
     }
 
     #[test]
     fn no_overlay_no_sibling_yields_empty() {
-        let dir: PathBuf = tempdir("empty");
+        let dir_scratch: disrobe_core::scratch::ScratchDir = tempdir("empty");
+        let dir: PathBuf = dir_scratch.path().to_path_buf();
         let bin: PathBuf = dir.join("plain.exe");
         std::fs::write(&bin, b"MZ stub").expect("write bin");
-        let out: PathBuf = tempdir("empty-out");
+        let out_scratch: disrobe_core::scratch::ScratchDir = tempdir("empty-out");
+        let out: PathBuf = out_scratch.path().to_path_buf();
         let bundled: BundledModules = extract_bundled_modules(&bin, None, &out).expect("extract");
         assert!(bundled.entries.is_empty());
         assert!(bundled.library_zip_path.is_none());
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::remove_dir_all(&out);
     }
 }

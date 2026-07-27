@@ -130,17 +130,18 @@ fn shiv_does_not_preallocate_on_lying_declared_uncompressed_size() {
     blob.extend_from_slice(b"#!/usr/bin/env python3\n");
     blob.extend_from_slice(&forge_zip_with_lying_uncompressed_size());
 
-    let out: std::path::PathBuf = std::env::temp_dir().join(format!(
+    let purpose: String = format!(
         "disrobe-shiv-alloc-bound-{}-{}",
         std::process::id(),
         blob.len()
-    ));
+    );
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let out: std::path::PathBuf = scratch.path().to_path_buf();
 
     PEAK_SINGLE_ALLOC.store(0, Ordering::Relaxed);
     let result = disrobe_pass_pyfreeze::shiv::detect_and_extract(&blob, Path::new("x.pyz"), &out);
     let peak: usize = PEAK_SINGLE_ALLOC.load(Ordering::Relaxed);
-    let _ = std::fs::remove_dir_all(&out);
-
     assert!(
         result.is_ok(),
         "a structurally valid shiv with a lying declared size must still extract: {:?}",

@@ -98,12 +98,10 @@ fn zipapp_real_fixture_extracts_entries() {
         eprintln!("[real_zipapp] skipped: fixture missing");
         return;
     }
-    let mut out_dir: PathBuf = std::env::temp_dir();
-    out_dir.push(format!(
-        "disrobe-zipapp-real-{pid}",
-        pid = std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&out_dir);
+    let purpose: String = format!("disrobe-zipapp-real-{pid}", pid = std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let out_dir: PathBuf = scratch.path().to_path_buf();
     let out: PyfreezeOutput = extract(&path, &out_dir).expect("zipapp extract");
     assert_eq!(out.detection.kind, FreezerKind::Zipapp);
     assert!(
@@ -122,7 +120,6 @@ fn zipapp_real_fixture_extracts_entries() {
         out.extracted_count >= BANDS.len(),
         "zipapp extraction should surface the edge-case module set"
     );
-    let _ = std::fs::remove_dir_all(&out_dir);
 }
 
 fn skip_shebang(bytes: &[u8]) -> &[u8] {

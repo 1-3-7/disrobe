@@ -1,7 +1,6 @@
 #![allow(clippy::expect_used)]
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::time::Duration;
 
 use disrobe_pass_pyfreeze::bbfreeze;
@@ -30,7 +29,7 @@ use disrobe_pass_pyfreeze::recover::{
 use disrobe_pass_pyfreeze::shiv;
 use disrobe_pass_pyfreeze::zipapp;
 use disrobe_pass_pyfreeze::{ExtractionQuota, detect_bytes as exported_detect_bytes};
-use disrobe_testkit::{BATCH_ENV, CorpusEntry, StressCase, StressConfig, XorShift64};
+use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, XorShift64};
 
 const RANDOM_SPAN_BYTES: usize = 4096;
 const ENTROPY_SPAN_SEED: u64 = 0x5046_5A00_0001_0003;
@@ -60,21 +59,22 @@ const NATIVE_NAME: &str = "fuzz.pyd";
 
 #[derive(Debug)]
 struct Scratch {
-    directory: PathBuf,
+    _guard: disrobe_core::scratch::ScratchDir,
     input: PathBuf,
     out: PathBuf,
 }
 
 impl Scratch {
-    fn create(base: &Path, tag: &str) -> Self {
-        let directory: PathBuf =
-            base.join(format!("{SCRATCH_DIRECTORY}-{}-{tag}", std::process::id()));
-        std::fs::create_dir_all(&directory)
-            .expect("the stress worker can create its scratch directory");
+    fn create(tag: &str) -> Self {
+        let purpose: String = format!("{SCRATCH_DIRECTORY}-{tag}");
+        let guard: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create(&purpose)
+                .expect("the stress worker can create its scratch directory");
+        let directory: PathBuf = guard.path().to_path_buf();
         Self {
             input: directory.join(SCRATCH_INPUT),
             out: directory.join(SCRATCH_OUT),
-            directory,
+            _guard: guard,
         }
     }
 
@@ -87,25 +87,6 @@ impl Scratch {
             .expect("the stress worker can create its scratch output directory");
         &self.out
     }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&self.directory);
-    }
-}
-
-fn batch_workspace() -> PathBuf {
-    let batch: Option<PathBuf> = std::env::var_os(BATCH_ENV).map(PathBuf::from);
-    batch
-        .as_deref()
-        .and_then(Path::parent)
-        .map_or_else(std::env::temp_dir, Path::to_path_buf)
-}
-
-fn worker_scratch() -> &'static Scratch {
-    static SCRATCH: OnceLock<Scratch> = OnceLock::new();
-    SCRATCH.get_or_init(|| Scratch::create(&batch_workspace(), WORKER_SCRATCH_TAG))
 }
 
 const fn test_quota() -> ExtractionQuota {
@@ -455,10 +436,14 @@ fn probe(bytes: &[u8], scratch: &Scratch, rng: &mut XorShift64) {
 }
 
 fn check(case: &StressCase<'_>) {
-    let scratch: &Scratch = worker_scratch();
+    let scratch: Scratch = Scratch::create(WORKER_SCRATCH_TAG);
     let mut rng: XorShift64 = XorShift64::new(case.case_seed() ^ PROBE_DOMAIN);
-    probe(case.bytes(), scratch, &mut rng);
-    probe(&saturate(case.bytes(), case.case_seed()), scratch, &mut rng);
+    probe(case.bytes(), &scratch, &mut rng);
+    probe(
+        &saturate(case.bytes(), case.case_seed()),
+        &scratch,
+        &mut rng,
+    );
 }
 
 fn config() -> StressConfig {
@@ -508,7 +493,7 @@ fn the_saturation_probe_rewrites_the_bytes_it_is_handed_and_replays_from_its_see
 
 #[test]
 fn every_unmutated_seed_finishes() {
-    let scratch: Scratch = Scratch::create(&std::env::temp_dir(), UNMUTATED_SCRATCH_TAG);
+    let scratch: Scratch = Scratch::create(UNMUTATED_SCRATCH_TAG);
     for entry in corpus() {
         let mut rng: XorShift64 = XorShift64::new(PROBE_DOMAIN);
         probe(entry.bytes(), &scratch, &mut rng);
@@ -517,7 +502,7 @@ fn every_unmutated_seed_finishes() {
 
 #[test]
 fn the_constructed_stored_zips_extract_the_entries_the_seeds_claim() {
-    let scratch: Scratch = Scratch::create(&std::env::temp_dir(), CONSTRUCTED_SCRATCH_TAG);
+    let scratch: Scratch = Scratch::create(CONSTRUCTED_SCRATCH_TAG);
     let source: &Path = scratch.input.as_path();
 
     let pex_bytes: Vec<u8> = pex_seed();

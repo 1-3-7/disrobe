@@ -491,14 +491,13 @@ mod tests {
         N.fetch_add(0x517c_c1b7, Ordering::Relaxed)
     }
 
-    fn temp_dir() -> PathBuf {
-        let dir: PathBuf = std::env::temp_dir().join(format!(
+    fn temp_dir() -> disrobe_core::scratch::ScratchDir {
+        let purpose: String = format!(
             "disrobe-pyox-extract-{}-{}",
             std::process::id(),
             rand_suffix()
-        ));
-        std::fs::create_dir_all(&dir).expect("mkdir temp");
-        dir
+        );
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
     }
 
     const BLOB_START_OF_ENTRY: u8 = 0x01;
@@ -580,7 +579,8 @@ mod tests {
         container.extend_from_slice(&[0u8; 16]);
         container.extend_from_slice(&blob);
 
-        let out: PathBuf = temp_dir();
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir();
+        let out: PathBuf = scratch.path().to_path_buf();
         let extraction: PyOxidizerExtraction =
             detect_and_extract(&container, Path::new("app.exe"), &out).expect("extract");
 
@@ -658,7 +658,8 @@ mod tests {
 
     #[test]
     fn detect_and_extract_rejects_non_pyoxidizer() {
-        let out: PathBuf = temp_dir();
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir();
+        let out: PathBuf = scratch.path().to_path_buf();
         let err: Error = detect_and_extract(b"just random bytes", Path::new("x.bin"), &out)
             .expect_err("must reject");
         assert!(matches!(err, Error::PyOxidizerConfigMissing));
@@ -671,7 +672,8 @@ mod tests {
         container.extend_from_slice(b"python312.dll");
         container.extend_from_slice(b"pyembed\x03");
 
-        let out: PathBuf = temp_dir();
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir();
+        let out: PathBuf = scratch.path().to_path_buf();
         let err: Error =
             detect_and_extract(&container, Path::new("corrupt.exe"), &out).expect_err("must fail");
         assert!(matches!(err, Error::PyOxidizerResourceIndex(_)));

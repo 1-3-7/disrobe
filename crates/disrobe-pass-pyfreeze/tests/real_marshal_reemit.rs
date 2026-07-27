@@ -61,17 +61,12 @@ const fn python_cmd() -> &'static str {
     if cfg!(windows) { "py" } else { "python3" }
 }
 
-fn workdir(tag: &str) -> PathBuf {
+fn workdir(tag: &str) -> disrobe_core::scratch::ScratchDir {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let seq: u64 = SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-reemit-{tag}-{}-{}",
-        std::process::id(),
-        seq
-    ));
-    std::fs::create_dir_all(&dir).expect("mk workdir");
-    dir
+    let purpose: String = format!("disrobe-reemit-{tag}-{}-{}", std::process::id(), seq);
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
 }
 
 fn run_generator(dir: &Path) -> Option<GeneratedMarshal> {
@@ -190,21 +185,20 @@ fn decode_reemitted(body: &[u8], major: u8, minor: u8) -> (PycFile, usize) {
 
 #[test]
 fn synthesize_pyc_reemits_cpython_marshal_constants_byte_exact() {
-    let dir: PathBuf = workdir("cpython");
+    let scratch: disrobe_core::scratch::ScratchDir = workdir("cpython");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let Some(((major, minor), module_marshal, tuple_marshal)): Option<GeneratedMarshal> =
         run_generator(&dir)
     else {
         eprintln!(
             "[real_marshal_reemit] HONEST-PARTIAL: no usable CPython on PATH; synthesize_pyc re-emit not graded end-to-end this run"
         );
-        let _ = std::fs::remove_dir_all(&dir);
         return;
     };
     if magic_for(PyVersion::new(major, minor)).is_none() {
         eprintln!(
             "[real_marshal_reemit] HONEST-PARTIAL: CPython {major}.{minor} predates the supported pyc magic table; skipping"
         );
-        let _ = std::fs::remove_dir_all(&dir);
         return;
     }
 
@@ -286,6 +280,4 @@ fn synthesize_pyc_reemits_cpython_marshal_constants_byte_exact() {
             "[real_marshal_reemit] HONEST-PARTIAL: CPython cross-check inspect failed; disrobe-side decode still asserted"
         );
     }
-
-    let _ = std::fs::remove_dir_all(&dir);
 }

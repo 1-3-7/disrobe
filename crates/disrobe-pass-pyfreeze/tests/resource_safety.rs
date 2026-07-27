@@ -91,14 +91,13 @@ fn build_stored_zip(entries: &[StoredEntry]) -> Vec<u8> {
     out
 }
 
-fn out_dir(tag: &str) -> PathBuf {
-    let mut p: PathBuf = std::env::temp_dir();
-    p.push(format!(
+fn out_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!(
         "disrobe-pyfreeze-ressafe-{tag}-{pid}-{nonce}",
         pid = std::process::id(),
         nonce = next_nonce()
-    ));
-    p
+    );
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
 }
 
 fn next_nonce() -> u64 {
@@ -124,7 +123,8 @@ fn shiv_manifest_with_lying_4gib_uncompressed_size_does_not_oom() {
     ];
     let archive: Vec<u8> = build_stored_zip(&entries);
     let src: PathBuf = PathBuf::from("forged.pyz");
-    let out: PathBuf = out_dir("shiv-lie");
+    let scratch: disrobe_core::scratch::ScratchDir = out_dir("shiv-lie");
+    let out: PathBuf = scratch.path().to_path_buf();
 
     let start: Instant = Instant::now();
     let result: Result<ShivExtraction, Error> = detect_and_extract(&archive, &src, &out);
@@ -144,7 +144,6 @@ fn shiv_manifest_with_lying_4gib_uncompressed_size_does_not_oom() {
         ),
         "the oversized manifest must surface a bounded structured error, got {err:?}"
     );
-    let _ = std::fs::remove_dir_all(&out);
 }
 
 #[test]
@@ -164,7 +163,8 @@ fn shiv_manifest_read_is_bounded_when_only_manifest_lies() {
     ];
     let archive: Vec<u8> = build_stored_zip(&entries);
     let src: PathBuf = PathBuf::from("forged-manifest-lie.pyz");
-    let out: PathBuf = out_dir("shiv-manifest-lie");
+    let scratch: disrobe_core::scratch::ScratchDir = out_dir("shiv-manifest-lie");
+    let out: PathBuf = scratch.path().to_path_buf();
     let quota: ExtractionQuota = ExtractionQuota {
         max_per_entry_uncompressed: 4096,
         ..ExtractionQuota::default_safe()
@@ -185,7 +185,6 @@ fn shiv_manifest_read_is_bounded_when_only_manifest_lies() {
         matches!(&err, Error::QuotaExceeded { entry, .. } if entry == "_bootstrap/environment.json"),
         "manifest parsing succeeded (read_entry stayed bounded) but the loop guard must reject the inflated declaration, got {err:?}"
     );
-    let _ = std::fs::remove_dir_all(&out);
 }
 
 #[test]
@@ -204,7 +203,8 @@ fn shiv_valid_small_manifest_still_extracts() {
     ];
     let archive: Vec<u8> = build_stored_zip(&entries);
     let src: PathBuf = PathBuf::from("valid.pyz");
-    let out: PathBuf = out_dir("shiv-ok");
+    let scratch: disrobe_core::scratch::ScratchDir = out_dir("shiv-ok");
+    let out: PathBuf = scratch.path().to_path_buf();
 
     let extraction: ShivExtraction =
         detect_and_extract(&archive, &src, &out).expect("a valid shiv archive must still extract");
@@ -221,7 +221,6 @@ fn shiv_valid_small_manifest_still_extracts() {
         "the bootstrap member must be extracted: {:?}",
         extraction.extracted
     );
-    let _ = std::fs::remove_dir_all(&out);
 }
 
 fn make_dir(path: &std::path::Path) {
@@ -237,7 +236,8 @@ fn write_file(path: &std::path::Path, body: &[u8]) {
 
 #[test]
 fn briefcase_walk_rejects_pathologically_deep_tree() {
-    let root: PathBuf = out_dir("bc-deep");
+    let scratch: disrobe_core::scratch::ScratchDir = out_dir("bc-deep");
+    let root: PathBuf = scratch.path().to_path_buf();
     make_dir(&root);
     let mut cursor: PathBuf = root.clone();
     for _ in 0..70u32 {
@@ -259,13 +259,12 @@ fn briefcase_walk_rejects_pathologically_deep_tree() {
         matches!(err, Error::BriefcaseWalkBounded { .. }),
         "deep nesting must surface a bounded walk error, got {err:?}"
     );
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn briefcase_walk_collects_valid_shallow_sources() {
-    let root: PathBuf = out_dir("bc-ok");
-    make_dir(&root);
+    let scratch: disrobe_core::scratch::ScratchDir = out_dir("bc-ok");
+    let root: PathBuf = scratch.path().to_path_buf();
     write_file(&root.join("main.py"), b"print('hi')\n");
     write_file(&root.join("pkg").join("mod.py"), b"y = 2\n");
 
@@ -277,5 +276,4 @@ fn briefcase_walk_collects_valid_shallow_sources() {
     );
     assert!(entries.iter().any(|e| e.relative_name == "main.py"));
     assert!(entries.iter().any(|e| e.relative_name == "pkg/mod.py"));
-    let _ = std::fs::remove_dir_all(&root);
 }

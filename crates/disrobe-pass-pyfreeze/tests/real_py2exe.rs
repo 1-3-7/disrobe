@@ -42,14 +42,13 @@ fn library_zip_path() -> PathBuf {
     fixture_dir().join("extracted").join("library.zip")
 }
 
-fn out_dir(tag: &str) -> PathBuf {
-    let mut p: PathBuf = std::env::temp_dir();
-    p.push(format!(
+fn out_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!(
         "disrobe-real-py2exe-{tag}-{pid}-{nonce}",
         pid = std::process::id(),
         nonce = next_nonce()
-    ));
-    p
+    );
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
 }
 
 fn next_nonce() -> u64 {
@@ -90,7 +89,8 @@ fn py2exe_real_fixture_extracts_pythonscript_resource() {
         return;
     }
     let bytes: Vec<u8> = std::fs::read(&path).expect("read fixture");
-    let out: PathBuf = out_dir("script");
+    let scratch: disrobe_core::scratch::ScratchDir = out_dir("script");
+    let out: PathBuf = scratch.path().to_path_buf();
     let extraction: Py2exeExtraction =
         detect_and_extract(&bytes, &path, &out).expect("py2exe extraction");
     assert!(
@@ -101,7 +101,6 @@ fn py2exe_real_fixture_extracts_pythonscript_resource() {
         extraction.embedded_pyc_path.is_file(),
         "embedded __pythonscript__.pyc must be written to disk"
     );
-    let _ = std::fs::remove_dir_all(&out);
 }
 
 #[test]
