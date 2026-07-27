@@ -9,19 +9,12 @@
 
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use disrobe_core::anti_analysis::{AntiAnalysisReport, Technique, scan};
+use disrobe_core::scratch::ScratchDir;
 
-fn scratch_dir() -> PathBuf {
-    let stamp: u128 = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_nanos();
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-aa-corpus-{}-{stamp}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create scratch dir");
-    dir
+fn scratch_dir() -> ScratchDir {
+    ScratchDir::create("disrobe-aa-corpus").expect("create scratch dir")
 }
 
 fn tool_available(tool: &str) -> bool {
@@ -104,7 +97,8 @@ fn benign_c_binaries_yield_zero_verdicts() {
         eprintln!("SKIP: no C compiler (cc/gcc/clang) available");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let mut compiled_any: bool = false;
     for (stem, src) in [("aa_tiny", TINY_C), ("aa_medium", MEDIUM_C)] {
         for opt in ["-O0", "-O2"] {
@@ -117,7 +111,6 @@ fn benign_c_binaries_yield_zero_verdicts() {
             assert_zero_anti_analysis_verdicts(&format!("{cc}{opt}/{stem}"), &bytes);
         }
     }
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         compiled_any,
         "at least one benign C build must succeed to exercise the precision corpus"
@@ -130,7 +123,8 @@ fn benign_rust_binary_yields_zero_verdicts() {
         eprintln!("SKIP: rustc unavailable");
         return;
     }
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let src_path: PathBuf = dir.join("aa_rust.rs");
     std::fs::write(
         &src_path,
@@ -158,7 +152,6 @@ fn benign_rust_binary_yields_zero_verdicts() {
         compiled_any = true;
         assert_zero_anti_analysis_verdicts(&format!("rust/{label}"), &bytes);
     }
-    let _ = std::fs::remove_dir_all(&dir);
     if !compiled_any {
         eprintln!("SKIP: no rust build succeeded");
     }
@@ -193,10 +186,10 @@ fn upx_packed_benign_reports_only_packing() {
         eprintln!("SKIP: upx unavailable");
         return;
     }
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let Some(_): Option<Vec<u8>> = compile_c(cc, &dir, "aa_upx", MEDIUM_C, "-O2") else {
         eprintln!("SKIP: could not build upx input");
-        let _ = std::fs::remove_dir_all(&dir);
         return;
     };
     let input: PathBuf = dir.join(exe_name("aa_upx"));
@@ -211,7 +204,6 @@ fn upx_packed_benign_reports_only_packing() {
         .is_ok_and(|s: std::process::ExitStatus| s.success());
     if !ok {
         eprintln!("SKIP: upx packing failed");
-        let _ = std::fs::remove_dir_all(&dir);
         return;
     }
     let bytes: Vec<u8> = std::fs::read(&packed).expect("read packed");
@@ -228,7 +220,6 @@ fn upx_packed_benign_reports_only_packing() {
         "a upx-packed benign must report exactly one verdict, Packing; got {:?}",
         report.findings
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn pe_with_code(payload: &[u8], bits64: bool) -> Vec<u8> {

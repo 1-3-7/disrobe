@@ -5,21 +5,22 @@ use std::path::PathBuf;
 use disrobe_core::recon::{
     CustomPattern, ReconCategory, ReconConfig, ReconFinding, ReconReport, report_tree,
 };
+use disrobe_core::scratch::ScratchDir;
 
 struct Fixture {
+    _scratch: ScratchDir,
     root: PathBuf,
 }
 
 impl Fixture {
     fn new(tag: &str) -> Self {
-        let root: PathBuf = std::env::temp_dir().join(format!(
-            "disrobe-recon-{tag}-{}-{}",
-            std::process::id(),
-            tag.len()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("create fixture root");
-        Self { root }
+        let purpose: String = format!("disrobe-recon-{tag}");
+        let scratch: ScratchDir = ScratchDir::create(&purpose).expect("create fixture root");
+        let root: PathBuf = scratch.path().to_path_buf();
+        Self {
+            _scratch: scratch,
+            root,
+        }
     }
 
     fn write(&self, rel: &str, bytes: &[u8]) {
@@ -28,12 +29,6 @@ impl Fixture {
             std::fs::create_dir_all(parent).expect("create parent dirs");
         }
         std::fs::write(&path, bytes).expect("write fixture file");
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 

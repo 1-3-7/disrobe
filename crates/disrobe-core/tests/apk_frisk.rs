@@ -7,6 +7,7 @@ use disrobe_core::recon::{
     ReconCategory, ReconConfig, ReconFinding, ReconReport, report_bytes, report_tree,
     scan_zip_bytes,
 };
+use disrobe_core::scratch::ScratchDir;
 
 fn planted_apk() -> Vec<u8> {
     let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -94,13 +95,10 @@ fn apk_manifest_recon_inside_archive() {
 #[test]
 fn report_tree_unpacks_apk_in_directory() {
     let apk: Vec<u8> = planted_apk();
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-apk-tree-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let scratch: ScratchDir = ScratchDir::create("disrobe-apk-tree").expect("mkdir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     std::fs::write(dir.join("app.apk"), &apk).expect("write apk");
     let report: ReconReport = report_tree(&dir, &ReconConfig::default()).expect("scan tree");
-    let _ = std::fs::remove_dir_all(&dir);
     let ids: BTreeSet<String> = rule_ids(&report);
     assert!(ids.contains("DR-SEC-AWS-AKID"), "tree apk unpack: {ids:?}");
     assert!(

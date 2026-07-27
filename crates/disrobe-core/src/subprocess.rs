@@ -294,10 +294,10 @@ mod tests {
 
     #[test]
     fn run_captured_metacharacter_argv_passes_through_literally() {
-        let dir: PathBuf =
-            std::env::temp_dir().join(format!("disrobe-core-metachar-{}", std::process::id()));
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir metachar dir");
+        let scratch: crate::scratch::ScratchDir =
+            crate::scratch::ScratchDir::create("disrobe-core-metachar")
+                .expect("mkdir metachar dir");
+        let dir: PathBuf = scratch.path().to_path_buf();
         let weird_name: &str = "disrobe-metachar-'; & $HOME `id` (test) !bang %VAR% done.txt";
         let weird_path: PathBuf = dir.join(weird_name);
         std::fs::write(&weird_path, b"payload").expect("write metachar file");
@@ -321,7 +321,6 @@ mod tests {
             weird_path.to_string_lossy(),
             "the child must receive the metacharacter-laden path as a single literal argv element"
         );
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
