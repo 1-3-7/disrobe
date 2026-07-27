@@ -20370,11 +20370,9 @@ mod structuring_corpus {
         None
     }
 
-    fn scratch_dir() -> PathBuf {
-        let dir: PathBuf =
-            std::env::temp_dir().join(format!("disrobe-structuring-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("scratch dir");
-        dir
+    fn scratch_dir() -> disrobe_core::scratch::ScratchDir {
+        disrobe_core::scratch::ScratchDir::create("disrobe-structuring")
+            .expect("create scratch directory")
     }
 
     pub(super) fn compile_corpus(compiler: &str) -> Option<Vec<u8>> {
@@ -20385,7 +20383,8 @@ mod structuring_corpus {
             source.push_str(shape.source);
             source.push('\n');
         }
-        let dir: PathBuf = scratch_dir();
+        let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+        let dir: &std::path::Path = scratch.path();
         let tag: u64 = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let src: PathBuf = dir.join(format!("cf_corpus_{tag}.c"));
         let obj: PathBuf = dir.join(format!("cf_corpus_{tag}.o"));

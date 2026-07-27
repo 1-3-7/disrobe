@@ -12,6 +12,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_native::{
     ProgramFunction, PseudoAbi, RecoveredFunction as LibRecoveredFunction,
     RecoveredProgram as LibRecoveredProgram, recover_program as lib_recover_program,
@@ -320,11 +321,8 @@ fn rustc() -> Option<String> {
         .then(|| "rustc".to_owned())
 }
 
-fn scratch_dir() -> PathBuf {
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-pseudo-rustwp-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+fn scratch_dir() -> ScratchDir {
+    ScratchDir::create("disrobe-pseudo-rustwp").expect("create scratch directory")
 }
 
 fn function_code(object_bytes: &[u8], name: &str) -> Option<(Vec<u8>, u64)> {
@@ -556,7 +554,8 @@ fn compile_object_opt(
     source: &str,
     out: &Path,
 ) -> Option<Vec<u8>> {
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let src: PathBuf = dir.join(format!(
         "{}.c",
         out.file_stem().and_then(|s| s.to_str()).unwrap_or("unit")
@@ -747,7 +746,8 @@ fn whole_programs_recompile_to_rust_equivalence_hostabi() {
         host_cc: builder.clone(),
         rustc_bin,
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let battery: Vec<&WholeProgram> = full_battery();
     let mut total_equivalent: usize = 0;
     let mut total_slots: usize = 0;
@@ -848,7 +848,8 @@ fn whole_programs_recompile_to_rust_equivalence_sysv() {
         return;
     };
     let env: Env = Env { host_cc, rustc_bin };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let battery: Vec<&WholeProgram> = full_battery();
     let sysv_flags: [&str; 5] = [
         "--target=x86_64-unknown-linux-gnu",

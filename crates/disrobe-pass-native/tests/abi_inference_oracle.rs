@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_native::{
     AbiInference, ArgCount, CallingConvention, ReturnKind, infer_function_abi,
 };
@@ -209,11 +210,11 @@ fn abi_inference_matches_compiler_lowering() {
         println!("objdump not on PATH: skipping ABI oracle");
         return;
     };
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_abi_oracle_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let scratch: ScratchDir =
+        ScratchDir::create("disrobe_abi_oracle").expect("create scratch directory");
+    let dir: &Path = scratch.path();
 
-    let src64: PathBuf = write_src(&dir, "fx64.c", FIXTURES_64);
+    let src64: PathBuf = write_src(dir, "fx64.c", FIXTURES_64);
     let mut graded_legs: u32 = 0;
 
     let sysv_obj: PathBuf = dir.join("sysv.o");
@@ -309,7 +310,7 @@ fn abi_inference_matches_compiler_lowering() {
         println!("MS x64 leg could not be built: skipped honestly");
     }
 
-    let src32: PathBuf = write_src(&dir, "fx32.c", FIXTURES_32);
+    let src32: PathBuf = write_src(dir, "fx32.c", FIXTURES_32);
     let x32_obj: PathBuf = dir.join("x32.o");
     if compile(&clang, &src32, "i686-pc-windows-msvc", &["-m32"], &x32_obj) {
         graded_legs += 1;
@@ -363,7 +364,7 @@ fn abi_inference_matches_compiler_lowering() {
         println!("x86 32-bit leg could not be built on this clang: skipped honestly");
     }
 
-    let tc_src: PathBuf = write_src(&dir, "tc.c", FIXTURES_THISCALL);
+    let tc_src: PathBuf = write_src(dir, "tc.c", FIXTURES_THISCALL);
     let tc_obj: PathBuf = dir.join("tc.o");
     if compile(&clang, &tc_src, "i686-pc-windows-msvc", &["-m32"], &tc_obj) {
         graded_legs += 1;
@@ -381,7 +382,7 @@ fn abi_inference_matches_compiler_lowering() {
         println!("x86 thiscall leg could not be built on this clang: skipped honestly");
     }
 
-    let vc32_src: PathBuf = write_src(&dir, "vc32.c", FIXTURES_VC32);
+    let vc32_src: PathBuf = write_src(dir, "vc32.c", FIXTURES_VC32);
     let vc32_obj: PathBuf = dir.join("vc32.o");
     if compile(
         &clang,
@@ -406,7 +407,7 @@ fn abi_inference_matches_compiler_lowering() {
         println!("x86 vectorcall leg could not be built on this clang: skipped honestly");
     }
 
-    let vc64_src: PathBuf = write_src(&dir, "vc64.c", FIXTURES_VC64);
+    let vc64_src: PathBuf = write_src(dir, "vc64.c", FIXTURES_VC64);
     let vc64_obj: PathBuf = dir.join("vc64.o");
     if compile(&clang, &vc64_src, "x86_64-pc-windows-msvc", &[], &vc64_obj) {
         graded_legs += 1;
@@ -427,7 +428,6 @@ fn abi_inference_matches_compiler_lowering() {
         println!("x64 vectorcall leg could not be built on this clang: skipped honestly");
     }
 
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         graded_legs > 0,
         "clang is present but no ABI leg compiled; refusing to report a vacuous green"

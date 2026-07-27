@@ -13,6 +13,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_native::{
     Arch, FpConstant, JumpTable, LeafRecovery, PseudoAbi, PseudoScalarType, ResolvedCall,
     callee_int_arity, disassemble, recover_leaf_function_abi, recover_leaf_function_const_abi,
@@ -203,11 +204,8 @@ fn rustc() -> Option<String> {
         .then(|| "rustc".to_owned())
 }
 
-fn scratch_dir() -> PathBuf {
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-pseudo-rust-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+fn scratch_dir() -> ScratchDir {
+    ScratchDir::create("disrobe-pseudo-rust").expect("create scratch directory")
 }
 
 fn function_code(object_bytes: &[u8], name: &str) -> Option<(Vec<u8>, u64)> {
@@ -418,7 +416,8 @@ fn run_battery(tag: &str, battery: &[Case], inputs: &[[i64; 3]], rust_token: Opt
         eprintln!("skipping {tag}: rustc not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut battery_src: String = String::new();
     for case in battery {
@@ -934,7 +933,8 @@ fn call_leaf_functions_recompile_to_rust_equivalence() {
         eprintln!("skipping rust call oracle: rustc not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut battery_src: String = String::new();
     for case in RUST_CALL_BATTERY {
@@ -1190,7 +1190,8 @@ fn run_multiblock_battery(
         eprintln!("skipping {tag}: rustc not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut battery_src: String = String::new();
     for case in battery {
@@ -1553,7 +1554,8 @@ fn switch_dense_jump_table_leaf_functions_recompile_to_rust_equivalence() {
         eprintln!("skipping rust switch oracle: rustc not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut battery_src: String = String::new();
     for case in SWITCH_BATTERY {
@@ -2128,7 +2130,8 @@ fn scalar_float_leaf_functions_recompile_to_rust_equivalence() {
         eprintln!("skipping rust scalar-float oracle: rustc not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut battery_src: String = String::new();
     for case in FP_BATTERY {
@@ -2458,7 +2461,8 @@ fn fp_switch_dense_jump_table_leaf_functions_recompile_to_rust_equivalence() {
         eprintln!("skipping rust fp-switch oracle: rustc not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut battery_src: String = String::new();
     for case in FP_SWITCH_BATTERY {

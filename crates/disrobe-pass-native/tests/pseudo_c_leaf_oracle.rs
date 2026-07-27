@@ -11,6 +11,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_native::{
     Arch, DisasmInsn, FpConstant, JumpTable, LeafRecovery, PseudoAbi,
     PseudoScalarType as ScalarType, ResolvedCall, callee_int_arity, disassemble,
@@ -168,11 +169,8 @@ fn sysv_host_can_run() -> bool {
     true
 }
 
-fn scratch_dir() -> PathBuf {
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-pseudo-c-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+fn scratch_dir() -> ScratchDir {
+    ScratchDir::create("disrobe-pseudo-c").expect("create scratch directory")
 }
 
 fn function_code(object_bytes: &[u8], name: &str) -> Option<(Vec<u8>, u64)> {
@@ -312,7 +310,8 @@ fn leaf_functions_recompile_to_behavioral_equivalence() {
         eprintln!("skipping: no C compiler (gcc/clang/cc) on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut battery_src: String = String::new();
     for case in BATTERY {
@@ -408,7 +407,8 @@ struct SysvCrossObjects {
 fn compile_sysv_cross(tag: &str, battery_src: &str) -> Option<SysvCrossObjects> {
     let host_cc: String = cc()?;
     let clang_cc: String = clang()?;
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let battery_c: PathBuf = dir.join(format!("{tag}_sysv_battery.c"));
     std::fs::write(&battery_c, battery_src.as_bytes()).expect("write sysv battery");
 
@@ -455,7 +455,8 @@ fn compile_sysv_cross(tag: &str, battery_src: &str) -> Option<SysvCrossObjects> 
 
 fn link_and_run_sysv(tag: &str, driver: &str, host_object: &[u8], watchdog_secs: u64) -> String {
     let host_cc: String = cc().expect("host cc present when linking sysv harness");
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let host_o: PathBuf = dir.join(format!("{tag}_sysv_link_host.o"));
     std::fs::write(&host_o, host_object).expect("write sysv host object for link");
     let driver_c: PathBuf = dir.join(format!("{tag}_sysv_driver.c"));
@@ -499,7 +500,8 @@ fn sysv_leaf_functions_recompile_to_behavioral_equivalence() {
         eprintln!("skipping sysv: clang (needed for SysV cross object) not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut battery_src: String = String::new();
     for case in BATTERY {
@@ -796,7 +798,8 @@ fn memory_access_leaf_functions_recompile_to_behavioral_equivalence() {
         eprintln!("skipping: no C compiler (gcc/clang/cc) on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut battery_src: String = String::new();
     for case in MEM_BATTERY {
@@ -1140,7 +1143,8 @@ fn gcc_and_clang_aggregate_accesses_recompile_to_c_and_rust_equivalence() {
         eprintln!("skipping aggregate compiler differential on a non-x86-64 host");
         return;
     }
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let source_path: PathBuf = dir.join("aggregate_types.c");
     std::fs::write(&source_path, AGGREGATE_SOURCE.as_bytes()).expect("write aggregate source");
     assert!(
@@ -1309,7 +1313,8 @@ fn gcc_and_clang_union_accesses_recompile_to_c_and_rust_equivalence() {
         eprintln!("skipping union compiler differential on a non-x86-64 host");
         return;
     }
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let source_path: PathBuf = dir.join("union_types.c");
     std::fs::write(&source_path, UNION_SOURCE.as_bytes()).expect("write union source");
     assert!(
@@ -1465,7 +1470,8 @@ fn gcc_and_clang_union_accesses_recompile_to_c_and_rust_equivalence() {
 
 #[test]
 fn clang_frame_spill_recovers_one_struct_across_reload_registers() {
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let source_path: PathBuf = dir.join("aggregate_frame_types.c");
     std::fs::write(&source_path, AGGREGATE_SOURCE.as_bytes())
         .expect("write frame aggregate source");
@@ -1667,7 +1673,8 @@ fn control_flow_leaf_functions_recompile_to_behavioral_equivalence() {
         );
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut battery_src: String = String::new();
     for case in CF_BATTERY {
@@ -1832,7 +1839,8 @@ fn split_return_leaf_functions_recompile_to_behavioral_equivalence() {
         );
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut battery_src: String = String::new();
     for case in SPLIT_RETURN_BATTERY {
@@ -2093,7 +2101,8 @@ fn natural_loop_leaf_functions_recompile_to_behavioral_equivalence() {
         eprintln!("skipping loop oracle: gcc (needed for the rotated do-while idiom) not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut battery_src: String = String::new();
     for case in LOOP_BATTERY {
@@ -2215,7 +2224,8 @@ fn loop_oracle_has_teeth_a_wrong_bound_diverges() {
         eprintln!("skipping loop teeth check: gcc not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let probe: LoopCase = LoopCase {
         name: "lp_sum",
@@ -2415,7 +2425,8 @@ fn top_guarded_while_loops_recompile_to_behavioral_equivalence() {
         );
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut battery_src: String = String::new();
     for case in GUARDED_WHILE_BATTERY {
@@ -2529,7 +2540,8 @@ fn guarded_while_oracle_has_teeth_dropping_the_guard_diverges_on_zero_trip() {
         eprintln!("skipping guarded-while teeth check: gcc not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let probe: LoopCase = LoopCase {
         name: "wg_count",
@@ -2702,7 +2714,8 @@ fn width_extension_leaf_functions_recompile_to_behavioral_equivalence() {
         );
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut battery_src: String = String::new();
     for case in WIDTH_EXT_BATTERY {
@@ -2809,7 +2822,8 @@ fn width_extension_oracle_has_teeth_flipping_sign_to_zero_extend_diverges() {
         eprintln!("skipping width-extension teeth check: gcc not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let probe: Case = Case {
         name: "x_sext8",
@@ -3103,7 +3117,8 @@ fn same_object_call_leaf_functions_recompile_to_behavioral_equivalence() {
         eprintln!("skipping call oracle: gcc (needed for the noinline call idiom) not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut battery_src: String = String::new();
     for case in CALL_BATTERY {
@@ -3206,7 +3221,8 @@ fn call_oracle_has_teeth_dropping_the_helper_call_diverges() {
         eprintln!("skipping call teeth check: gcc not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let probe: CallCase = CallCase {
         caller: CALL_BATTERY[0].caller,
@@ -3407,7 +3423,8 @@ fn precise_call_recovery_recompiles_against_real_helpers() {
         eprintln!("skipping precise call oracle: gcc not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut battery_src: String = String::new();
     for case in CALL_BATTERY {
@@ -3584,7 +3601,8 @@ fn if_in_loop_leaf_functions_recompile_to_behavioral_equivalence() {
         );
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut battery_src: String = String::new();
     for case in IF_IN_LOOP_BATTERY {
@@ -3698,7 +3716,8 @@ fn if_in_loop_oracle_has_teeth_dropping_the_inner_guard_diverges() {
         eprintln!("skipping if-in-loop teeth check: gcc not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let probe: LoopCase = LoopCase {
         name: "il_sumeven",
@@ -3845,7 +3864,8 @@ fn pointer_walk_if_in_loop_recompiles_to_behavioral_equivalence() {
         eprintln!("skipping pointer-walk if-in-loop oracle: gcc not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut battery_src: String = String::new();
     for case in PTR_LOOP_BATTERY {
@@ -4186,7 +4206,8 @@ fn nested_loop_leaf_functions_recompile_to_behavioral_equivalence() {
         );
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let battery_c: PathBuf = dir.join("nl_battery.c");
     std::fs::write(&battery_c, nested_loop_source().as_bytes()).expect("write nl_battery.c");
@@ -4292,7 +4313,8 @@ fn nested_loop_oracle_has_teeth_a_wrong_inner_bound_diverges() {
         eprintln!("skipping nested-loop teeth check: gcc not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let probe: &NestedLoopCase = &NESTED_LOOP_BATTERY[0];
     let battery_c: PathBuf = dir.join("nl_teeth_battery.c");
@@ -4535,7 +4557,8 @@ fn closed_form_mul_shift_leaf_functions_recompile_to_behavioral_equivalence() {
         );
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let battery_c: PathBuf = dir.join("cform_battery.c");
     std::fs::write(&battery_c, battery_source(CLOSED_FORM_BATTERY).as_bytes())
@@ -4631,7 +4654,8 @@ fn closed_form_oracle_has_teeth_flipping_the_shift_amount_diverges() {
         eprintln!("skipping closed-form teeth check: clang not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let probe: Case = Case {
         name: CLOSED_FORM_BATTERY[0].name,
@@ -4837,7 +4861,8 @@ fn imul_mem_source_leaf_functions_recompile_to_behavioral_equivalence() {
         eprintln!("skipping: no C compiler (gcc/clang/cc) on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut battery_src: String = String::new();
     for case in IMUL_MEM_BATTERY {
@@ -5016,7 +5041,8 @@ fn imul_mem_oracle_has_teeth_perturbing_the_immediate_diverges() {
         eprintln!("skipping imul-mem teeth check: no C compiler on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let probe: &MemCase = &IMUL_MEM_BATTERY[0];
     let battery_c: PathBuf = dir.join("imul_mem_teeth_battery.c");
@@ -5329,7 +5355,8 @@ fn read_modify_write_memory_leaf_functions_recompile_to_behavioral_equivalence()
         eprintln!("skipping: no C compiler (gcc/clang/cc) on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let battery_src: String = rmw_battery_source();
     let battery_c: PathBuf = dir.join("rmw_battery.c");
@@ -5504,7 +5531,8 @@ fn read_modify_write_oracle_has_teeth_perturbing_the_or_mask_diverges() {
         eprintln!("skipping rmw teeth check: no C compiler on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let probe: &RmwCase = RMW_BATTERY
         .iter()
@@ -6234,7 +6262,8 @@ fn divide_leaf_functions_recompile_to_behavioral_equivalence() {
         );
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let battery_c: PathBuf = dir.join("div_battery.c");
     std::fs::write(&battery_c, battery_source(DIV_BATTERY).as_bytes())
@@ -6335,7 +6364,8 @@ fn divide_oracle_has_teeth_swapping_signedness_diverges() {
         eprintln!("skipping divide teeth check: clang not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let probe: &Case = &DIV_BATTERY[0];
     let battery_c: PathBuf = dir.join("div_teeth_battery.c");
@@ -6878,7 +6908,8 @@ fn scalar_float_leaf_functions_recompile_to_behavioral_equivalence() {
         );
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let battery_c: PathBuf = dir.join("fp_battery.c");
     std::fs::write(&battery_c, fp_battery_source(FP_BATTERY).as_bytes())
@@ -6973,7 +7004,8 @@ fn scalar_float_oracle_has_teeth_swapping_op_and_width_diverges() {
         eprintln!("skipping scalar float teeth check: clang not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let probe: &FpCase = &FP_BATTERY[0];
     let battery_c: PathBuf = dir.join("fp_teeth_battery.c");
@@ -7249,7 +7281,8 @@ fn scalar_minmax_leaf_functions_recompile_to_behavioral_equivalence() {
         );
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let battery_c: PathBuf = dir.join("minmax_battery.c");
     std::fs::write(&battery_c, fp_battery_source(MINMAX_BATTERY).as_bytes())
@@ -7350,7 +7383,8 @@ fn scalar_minmax_oracle_has_teeth_flipping_min_to_max_diverges() {
         eprintln!("skipping scalar min/max teeth check: clang not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let probe: &FpCase = &MINMAX_BATTERY[0];
     let battery_c: PathBuf = dir.join("minmax_teeth_battery.c");
@@ -7766,7 +7800,8 @@ fn fp_const_and_memory_leaf_functions_recompile_to_behavioral_equivalence() {
         eprintln!("skipping fp const/mem oracle: clang not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let battery_c: PathBuf = dir.join("fc_battery.c");
     std::fs::write(&battery_c, fc_battery_source(FP_CONST_BATTERY).as_bytes())
         .expect("write fc_battery.c");
@@ -7893,7 +7928,8 @@ fn fp_const_oracle_has_teeth_perturbing_the_constant_diverges() {
         eprintln!("skipping fp const teeth check: clang not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let probe: &FcCase = &FP_CONST_BATTERY[0];
     let battery_c: PathBuf = dir.join("fc_teeth_battery.c");
     std::fs::write(&battery_c, probe.c_source.as_bytes()).expect("write fc_teeth_battery.c");
@@ -8094,7 +8130,8 @@ fn recovered_non_finite_double_constants_recompile_to_bit_exact_values() {
          \x20   return 0;\n\
          }}\n"
     );
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let driver_c: PathBuf = dir.join("fp_edge_double_driver.c");
     std::fs::write(&driver_c, driver.as_bytes()).expect("write fp_edge_double_driver.c");
     let harness_exe: PathBuf = dir.join(if cfg!(windows) {
@@ -8183,7 +8220,8 @@ fn recovered_non_finite_float_constants_recompile_to_bit_exact_values() {
          \x20   return 0;\n\
          }}\n"
     );
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let driver_c: PathBuf = dir.join("fp_edge_float_driver.c");
     std::fs::write(&driver_c, driver.as_bytes()).expect("write fp_edge_float_driver.c");
     let harness_exe: PathBuf = dir.join(if cfg!(windows) {
@@ -8277,7 +8315,8 @@ fn compile_sysv_cross_extra(
 ) -> Option<SysvCrossObjects> {
     let host_cc: String = cc()?;
     let clang_cc: String = clang()?;
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let battery_c: PathBuf = dir.join(format!("{tag}_sysv_battery.c"));
     std::fs::write(&battery_c, battery_src.as_bytes()).expect("write sysv battery");
 
@@ -8334,7 +8373,8 @@ fn scalar_sqrt_leaf_functions_recompile_to_behavioral_equivalence() {
         eprintln!("skipping scalar sqrt oracle: clang not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let battery_c: PathBuf = dir.join("sqrt_battery.c");
     std::fs::write(&battery_c, fp_battery_source(SQRT_BATTERY).as_bytes())
@@ -8430,7 +8470,8 @@ fn scalar_sqrt_oracle_has_teeth_dropping_the_sqrt_diverges() {
         eprintln!("skipping scalar sqrt teeth check: clang not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let probe: &FpCase = &SQRT_BATTERY[0];
     let battery_c: PathBuf = dir.join("sqrt_teeth_battery.c");
     std::fs::write(&battery_c, probe.c_source.as_bytes()).expect("write sqrt_teeth_battery.c");
@@ -8743,7 +8784,8 @@ fn scalar_round_leaf_functions_recompile_to_behavioral_equivalence() {
         eprintln!("skipping scalar round oracle: clang not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let battery_c: PathBuf = dir.join("round_battery.c");
     std::fs::write(&battery_c, fp_battery_source(ROUND_BATTERY).as_bytes())
@@ -8854,7 +8896,8 @@ fn scalar_round_oracle_has_teeth_dropping_the_round_diverges() {
         eprintln!("skipping scalar round teeth check: clang not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let probe: &FpCase = &ROUND_BATTERY[0];
     let (builtin, mnemonic): (&str, &str) = round_expectations(probe.name);
     let battery_c: PathBuf = dir.join("round_teeth_battery.c");
@@ -8941,7 +8984,8 @@ fn link_and_run_round_sysv(
     watchdog_secs: u64,
 ) -> String {
     let host_cc: String = cc().expect("host cc present when linking sysv round harness");
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let host_o: PathBuf = dir.join(format!("{tag}_sysv_round_link_host.o"));
     std::fs::write(&host_o, host_object).expect("write sysv round host object for link");
     let driver_c: PathBuf = dir.join(format!("{tag}_sysv_round_driver.c"));
@@ -9087,7 +9131,8 @@ fn scalar_fp_bitcast_and_zero_leaf_functions_recompile_to_behavioral_equivalence
         eprintln!("skipping scalar fp bitcast oracle: clang not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let battery_c: PathBuf = dir.join("bitcast_battery.c");
     std::fs::write(&battery_c, fp_battery_source(BITCAST_BATTERY).as_bytes())
@@ -9178,7 +9223,8 @@ fn scalar_fp_bitcast_oracle_has_teeth_corrupting_the_bitcast_diverges() {
         eprintln!("skipping scalar fp bitcast teeth check: clang not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let probe: &FpCase = &BITCAST_BATTERY[3];
     let battery_c: PathBuf = dir.join("bitcast_teeth_battery.c");
     std::fs::write(&battery_c, probe.c_source.as_bytes()).expect("write bitcast_teeth_battery.c");
@@ -9414,7 +9460,8 @@ fn nested_switch_division_and_setcc_recompile_to_behavioral_equivalence() {
         eprintln!("skipping nested-switch oracle: gcc not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let battery_c: PathBuf = dir.join("nested_switch_battery.c");
     std::fs::write(&battery_c, battery_source(NESTED_SWITCH_BATTERY).as_bytes())
         .expect("write nested_switch_battery.c");
@@ -9524,7 +9571,8 @@ fn nested_switch_oracle_has_teeth_swapping_division_signedness_diverges() {
         eprintln!("skipping nested-switch teeth check: gcc not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let battery_c: PathBuf = dir.join("nested_switch_teeth_battery.c");
     std::fs::write(&battery_c, battery_source(NESTED_SWITCH_BATTERY).as_bytes())
         .expect("write nested_switch_teeth_battery.c");
@@ -9881,7 +9929,8 @@ fn switch_dense_jump_table_leaf_functions_recompile_to_behavioral_equivalence() 
         );
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let object_bytes: Vec<u8> = compile_switch_host(&builder, &dir);
 
     let mut recovered_decls: String = String::new();
@@ -9962,7 +10011,8 @@ fn switch_oracle_has_teeth_a_wrong_case_value_diverges() {
         eprintln!("skipping switch teeth check: gcc not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let object_bytes: Vec<u8> = compile_switch_host(&builder, &dir);
 
     let probe: &Case = &SWITCH_BATTERY[0];
@@ -10258,7 +10308,8 @@ fn fp_switch_dense_jump_table_leaf_functions_recompile_to_behavioral_equivalence
         );
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let battery_c: PathBuf = dir.join("fp_switch_battery.c");
     std::fs::write(&battery_c, fp_switch_battery_source().as_bytes())
         .expect("write fp_switch_battery.c");
@@ -10353,7 +10404,8 @@ fn fp_switch_oracle_has_teeth_relabeling_a_case_diverges() {
         eprintln!("skipping fp-switch teeth check: gcc not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let battery_c: PathBuf = dir.join("fp_switch_teeth_battery.c");
     std::fs::write(&battery_c, fp_switch_battery_source().as_bytes())
         .expect("write fp switch teeth battery");
@@ -10612,7 +10664,8 @@ fn block_move_fill_leaf_functions_recompile_to_behavioral_equivalence() {
         );
         return;
     }
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut battery_src: String = String::new();
     for case in BLOCK_BATTERY {
@@ -10724,7 +10777,8 @@ fn block_move_oracle_has_teeth_a_wrong_copy_length_diverges() {
         eprintln!("skipping block-move teeth: gcc not on PATH");
         return;
     }
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let case: &BlockCase = &BLOCK_BATTERY[0];
     let Some((object_bytes, battery_o)): Option<(Vec<u8>, PathBuf)> =
         gcc_rep_object(&dir, "blockteeth", &format!("{}\n", case.original))
@@ -10876,7 +10930,8 @@ fn sysv_block_move_fill_leaf_functions_recompile_to_behavioral_equivalence() {
         eprintln!("skipping sysv block-move: no C compiler on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let battery: Vec<SysvBlockCase> = sysv_block_battery();
 
     let mut ground_src: String = String::new();
@@ -11107,7 +11162,8 @@ fn setcc_boolean_leaf_functions_recompile_to_behavioral_equivalence() {
         eprintln!("skipping setcc oracle: gcc (needed for the branchless setcc idiom) not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut battery_src: String = String::new();
     for case in SETCC_BATTERY {
@@ -11214,7 +11270,8 @@ fn setcc_oracle_has_teeth_negating_the_predicate_diverges() {
         eprintln!("skipping setcc teeth check: gcc not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let probe: Case = Case {
         name: "b_lt",
@@ -11362,7 +11419,8 @@ fn sysv_setcc_boolean_leaf_functions_recompile_to_behavioral_equivalence() {
         eprintln!("skipping sysv setcc: no C compiler on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let battery: Vec<SysvSetccCase> = sysv_setcc_battery();
 
     let mut ground_src: String = String::new();
@@ -11548,7 +11606,8 @@ fn stack_spill_leaf_functions_recompile_to_behavioral_equivalence() {
         eprintln!("skipping: no C compiler (gcc/clang/cc) on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let battery_c: PathBuf = dir.join("stack_battery.c");
     std::fs::write(&battery_c, battery_source(STACK_BATTERY).as_bytes())
@@ -11694,7 +11753,8 @@ fn stack_spill_oracle_has_teeth_corrupting_a_slot_offset_diverges() {
     );
 
     let run_variant = |tag: &str, body: &str| -> String {
-        let dir: PathBuf = scratch_dir();
+        let scratch: ScratchDir = scratch_dir();
+        let dir: PathBuf = scratch.path().to_path_buf();
         let driver: String = format!(
             "#include <stdint.h>\n#include <stdio.h>\n{body}\n\
              int main(void) {{\n\
@@ -11792,7 +11852,8 @@ fn scalar_float_stack_spill_recompile_to_behavioral_equivalence() {
         eprintln!("skipping scalar float stack-spill oracle: clang not on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let battery_c: PathBuf = dir.join("fp_stack_battery.c");
     std::fs::write(&battery_c, fp_battery_source(FP_STACK_BATTERY).as_bytes())
@@ -12700,7 +12761,8 @@ fn struct_return_leaf_functions_recompile_to_behavioral_equivalence() {
         eprintln!("skipping: no C compiler (gcc/clang/cc) on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let battery_c: PathBuf = dir.join("sret_battery.c");
     std::fs::write(&battery_c, sret_battery_source().as_bytes()).expect("write sret_battery.c");
@@ -12838,7 +12900,8 @@ fn struct_return_oracle_has_teeth_corrupting_a_field_store_diverges() {
     );
 
     let run_variant = |tag: &str, decls: &str| -> String {
-        let dir: PathBuf = scratch_dir();
+        let scratch: ScratchDir = scratch_dir();
+        let dir: PathBuf = scratch.path().to_path_buf();
         let driver: String = format!(
             "#include <stdint.h>\n#include <stdio.h>\n{decls}\n\
              int main(void) {{\n\
@@ -12953,7 +13016,8 @@ fn if_else_diamond_leaf_functions_recompile_to_behavioral_equivalence() {
         );
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let battery_c: PathBuf = dir.join("diamond_battery.c");
     std::fs::write(&battery_c, battery_source(DIAMOND_BATTERY).as_bytes())
@@ -13467,7 +13531,8 @@ fn cmov_select_idioms_recompile_to_behavioral_equivalence() {
         eprintln!("skipping: no C compiler (gcc/clang/cc) on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let mut battery_src: String = String::new();
     for case in SEL_BATTERY {
         battery_src.push_str(case.c_source);
@@ -13659,7 +13724,8 @@ fn object_dense_switch_recovers_bias_and_duplicates_hostabi() {
         );
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let mut battery_src: String = String::new();
     for case in OBJ_SWITCH_BATTERY {
         battery_src.push_str(case.c_source);
@@ -13950,7 +14016,8 @@ fn narrow_variable_count_shift_matches_x86_masking() {
         eprintln!("skipping narrow variable-count shift differential: no C compiler on PATH");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let asm_path: PathBuf = dir.join("narrow_shift_stub.s");
     std::fs::write(&asm_path, narrow_shift_asm().as_bytes()).expect("write shift stub asm");
     let object_path: PathBuf = dir.join("narrow_shift_stub.o");
