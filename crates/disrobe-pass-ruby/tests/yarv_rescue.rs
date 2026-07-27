@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::analyze_bytes;
 
 fn ruby_available() -> bool {
@@ -20,10 +21,16 @@ fn ruby_available() -> bool {
 }
 
 fn compile_to_yarb(source: &str, tag: &str) -> Option<Vec<u8>> {
-    let mut script_path: PathBuf = std::env::temp_dir();
-    script_path.push(format!("disrobe_rescue_gen_{tag}.rb"));
-    let mut out_path: PathBuf = std::env::temp_dir();
-    out_path.push(format!("disrobe_rescue_{tag}.yarvc"));
+    let script_purpose: String = format!("disrobe_rescue_gen_{tag}");
+    let (script_scratch, script_file): (ScratchFile, std::fs::File) =
+        ScratchFile::create(&script_purpose, "rb").ok()?;
+    drop(script_file);
+    let script_path: PathBuf = script_scratch.path().to_path_buf();
+    let out_purpose: String = format!("disrobe_rescue_{tag}");
+    let (out_scratch, out_file): (ScratchFile, std::fs::File) =
+        ScratchFile::create(&out_purpose, "yarvc").ok()?;
+    drop(out_file);
+    let out_path: PathBuf = out_scratch.path().to_path_buf();
 
     let script: String = format!(
         "src = {source:?}\nFile.binwrite(ARGV.fetch(0), RubyVM::InstructionSequence.compile(src).to_binary)\n"
@@ -34,12 +41,10 @@ fn compile_to_yarb(source: &str, tag: &str) -> Option<Vec<u8>> {
         .arg(&out_path)
         .status()
         .ok()?;
-    let _ = std::fs::remove_file(&script_path);
     if !status.success() {
         return None;
     }
     let bytes: Vec<u8> = std::fs::read(&out_path).ok()?;
-    let _ = std::fs::remove_file(&out_path);
     Some(bytes)
 }
 
@@ -60,8 +65,10 @@ fn code_only(source: &str) -> String {
 }
 
 fn ruby_opcode_count(source: &str, opcode: &str, tag: &str) -> Option<usize> {
-    let mut source_path: PathBuf = std::env::temp_dir();
-    source_path.push(format!("disrobe_rescue_source_{tag}.rb"));
+    let purpose: String = format!("disrobe_rescue_source_{tag}");
+    let (scratch, file): (ScratchFile, std::fs::File) = ScratchFile::create(&purpose, "rb").ok()?;
+    drop(file);
+    let source_path: PathBuf = scratch.path().to_path_buf();
     std::fs::write(&source_path, source).ok()?;
     let output = Command::new("ruby")
         .arg("-e")
@@ -72,7 +79,6 @@ fn ruby_opcode_count(source: &str, opcode: &str, tag: &str) -> Option<usize> {
         .arg(opcode)
         .output()
         .ok()?;
-    let _ = std::fs::remove_file(&source_path);
     if !output.status.success() {
         return None;
     }

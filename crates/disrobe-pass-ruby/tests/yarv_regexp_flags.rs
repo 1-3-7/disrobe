@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::{RubyAnalysis, analyze_bytes};
 
 fn ruby_available() -> bool {
@@ -13,11 +14,14 @@ fn ruby_available() -> bool {
 }
 
 fn compile_regexp(literal: &str) -> Option<(Vec<u8>, String)> {
-    let mut bin_path: PathBuf = std::env::temp_dir();
-    bin_path.push(format!(
-        "disrobe_regexp_{}.yarvc",
+    let purpose: String = format!(
+        "disrobe_regexp_{}",
         literal.replace(['/', '\\', '?', '*', '.', ' '], "_")
-    ));
+    );
+    let (scratch, file): (ScratchFile, std::fs::File) =
+        ScratchFile::create(&purpose, "yarvc").ok()?;
+    drop(file);
+    let bin_path: PathBuf = scratch.path().to_path_buf();
     let script: String = format!(
         "File.binwrite({path:?}, RubyVM::InstructionSequence.compile({literal:?}).to_binary); print(({literal}).inspect)",
         path = bin_path.to_string_lossy(),
@@ -29,7 +33,6 @@ fn compile_regexp(literal: &str) -> Option<(Vec<u8>, String)> {
     }
     let expected: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     let bytes: Vec<u8> = std::fs::read(&bin_path).ok()?;
-    let _ = std::fs::remove_file(&bin_path);
     Some((bytes, expected))
 }
 

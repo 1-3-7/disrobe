@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::analyze_bytes;
 
 fn ruby_available() -> bool {
@@ -18,9 +19,16 @@ fn ruby_available() -> bool {
 }
 
 fn compile_to_ibf(src: &str, tag: &str) -> Option<Vec<u8>> {
-    let dir: PathBuf = std::env::temp_dir();
-    let src_path: PathBuf = dir.join(format!("disrobe_ruby_rt_src_{tag}.rb"));
-    let ibf_path: PathBuf = dir.join(format!("disrobe_ruby_rt_{tag}.yarvc"));
+    let src_purpose: String = format!("disrobe_ruby_rt_src_{tag}");
+    let (src_scratch, src_file): (ScratchFile, std::fs::File) =
+        ScratchFile::create(&src_purpose, "rb").ok()?;
+    drop(src_file);
+    let src_path: PathBuf = src_scratch.path().to_path_buf();
+    let ibf_purpose: String = format!("disrobe_ruby_rt_{tag}");
+    let (ibf_scratch, ibf_file): (ScratchFile, std::fs::File) =
+        ScratchFile::create(&ibf_purpose, "yarvc").ok()?;
+    drop(ibf_file);
+    let ibf_path: PathBuf = ibf_scratch.path().to_path_buf();
     std::fs::write(&src_path, src).ok()?;
     let status = Command::new("ruby")
         .arg("-e")
@@ -33,16 +41,16 @@ fn compile_to_ibf(src: &str, tag: &str) -> Option<Vec<u8>> {
         .success()
         .then(|| std::fs::read(&ibf_path).ok())
         .flatten();
-    let _ = std::fs::remove_file(&src_path);
-    let _ = std::fs::remove_file(&ibf_path);
     bytes
 }
 
 fn run_ruby_stdout(src: &str, tag: &str) -> Option<Vec<u8>> {
-    let path: PathBuf = std::env::temp_dir().join(format!("disrobe_ruby_rt_run_{tag}.rb"));
+    let purpose: String = format!("disrobe_ruby_rt_run_{tag}");
+    let (scratch, file): (ScratchFile, std::fs::File) = ScratchFile::create(&purpose, "rb").ok()?;
+    drop(file);
+    let path: PathBuf = scratch.path().to_path_buf();
     std::fs::write(&path, src).ok()?;
     let out = Command::new("ruby").arg(&path).output().ok()?;
-    let _ = std::fs::remove_file(&path);
     out.status.success().then_some(out.stdout)
 }
 

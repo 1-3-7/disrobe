@@ -9,6 +9,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::analyze_bytes;
 
 fn corpus_dir() -> PathBuf {
@@ -78,8 +79,11 @@ fn op_assign_recompiles_to_matching_opcode_multiset() {
         return;
     };
 
-    let mut rec_path: PathBuf = std::env::temp_dir();
-    rec_path.push("disrobe_yarv_opassign_recovered.rb");
+    let (scratch, file): (ScratchFile, std::fs::File) =
+        ScratchFile::create("disrobe_yarv_opassign_recovered", "rb")
+            .expect("create recovered source scratch file");
+    drop(file);
+    let rec_path: PathBuf = scratch.path().to_path_buf();
     std::fs::write(&rec_path, recovered).expect("write recovered source");
 
     let oracle: PathBuf = corpus_path("mri/yarv/recompile_oracle.rb");
@@ -90,7 +94,6 @@ fn op_assign_recompiles_to_matching_opcode_multiset() {
         .arg(&rec_path)
         .output()
         .expect("run recompile oracle");
-    let _ = std::fs::remove_file(&rec_path);
     let line: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     println!("[opassign] {line}");
     let pct: u32 = line
