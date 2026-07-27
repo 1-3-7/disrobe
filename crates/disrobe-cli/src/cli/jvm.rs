@@ -1005,8 +1005,12 @@ fn decompile_apk_dexes(apk_bytes: &[u8]) -> DecompiledDex {
         method_count: 0,
         fully_lifted_methods: 0,
         fallback_methods: 0,
+        code_scan_complete: true,
+        decode_error_count: 0,
     };
     let Ok(extract): Result<JarExtract, _> = extract_jar(apk_bytes) else {
+        combined.code_scan_complete = false;
+        combined.decode_error_count += 1;
         return combined;
     };
     for entry in &extract.entries {
@@ -1019,6 +1023,8 @@ fn decompile_apk_dexes(apk_bytes: &[u8]) -> DecompiledDex {
             continue;
         }
         let Ok(dx): Result<DexFile, _> = parse_dex(&entry.bytes) else {
+            combined.code_scan_complete = false;
+            combined.decode_error_count += 1;
             continue;
         };
         let part: DecompiledDex = decompile_dex(&dx, &entry.bytes);
@@ -1027,6 +1033,8 @@ fn decompile_apk_dexes(apk_bytes: &[u8]) -> DecompiledDex {
         combined.method_count += part.method_count;
         combined.fully_lifted_methods += part.fully_lifted_methods;
         combined.fallback_methods += part.fallback_methods;
+        combined.code_scan_complete &= part.code_scan_complete;
+        combined.decode_error_count += part.decode_error_count;
     }
     combined
 }

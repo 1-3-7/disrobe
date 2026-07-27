@@ -239,12 +239,8 @@ fn classfile_children(bytes: &[u8]) -> CoreResult<Vec<ChildArtifact>> {
             fallback_methods,
             decode_error_count,
         ));
-    match manifest_json {
-        Ok(json_value) => {
-            let json: Vec<u8> = json_value;
-            children.push(terminal_child("jvm-manifest.json".to_string(), json));
-        }
-        Err(_) => {}
+    if let Ok(json) = manifest_json {
+        children.push(terminal_child("jvm-manifest.json".to_string(), json));
     }
 
     reindex(&mut children);
@@ -283,12 +279,8 @@ fn dex_children(bytes: &[u8]) -> CoreResult<Vec<ChildArtifact>> {
     let manifest_json: Result<Vec<u8>, serde_json::Error> = serde_json::to_vec_pretty(
         &dex_manifest(&dex, &cff, code_scan_complete, decode_error_count),
     );
-    match manifest_json {
-        Ok(json_value) => {
-            let json: Vec<u8> = json_value;
-            children.push(terminal_child("jvm-manifest.json".to_string(), json));
-        }
-        Err(_) => {}
+    if let Ok(json) = manifest_json {
+        children.push(terminal_child("jvm-manifest.json".to_string(), json));
     }
 
     reindex(&mut children);
