@@ -223,8 +223,10 @@ fn long_number_obfuscation_folds_and_recompiles_to_same_jvm_output() {
     };
 
     let (obf_bytes, expected): (Vec<u8>, i64) = build_obfuscated_class();
-    let tmp: PathBuf = std::env::temp_dir().join(format!("disrobe_numfold_{}", std::process::id()));
-    std::fs::create_dir_all(&tmp).expect("mk tmp");
+    let purpose: String = format!("disrobe_numfold_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let tmp: PathBuf = scratch.path().to_path_buf();
     let obf_class: PathBuf = tmp.join("NumberObf.class");
     std::fs::write(&obf_class, &obf_bytes).expect("write obf class");
 
@@ -271,6 +273,4 @@ fn long_number_obfuscation_folds_and_recompiles_to_same_jvm_output() {
         recovered_stdout, oracle_stdout,
         "recovered program's JVM stdout must match the obfuscated original's JVM stdout"
     );
-
-    let _ = std::fs::remove_dir_all(&tmp);
 }

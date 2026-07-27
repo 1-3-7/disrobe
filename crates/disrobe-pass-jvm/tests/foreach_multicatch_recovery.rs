@@ -74,12 +74,10 @@ fn method_body(source: &str, signature_fragment: &str) -> String {
 fn compile_and_decompile(javac: &PathBuf) -> String {
     static DIR_SEQ: AtomicU64 = AtomicU64::new(0);
     let seq: u64 = DIR_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_foreach_multicatch_{}_{seq}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let purpose: String = format!("disrobe_foreach_multicatch_{}_{seq}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let src: PathBuf = dir.join("ForMulti.java");
     std::fs::write(&src, FIXTURE).expect("write fixture");
     let compiled: std::process::Output = Command::new(javac)
@@ -183,12 +181,13 @@ fn recovered_foreach_multicatch_recompiles_clean() {
         return;
     };
     let source: String = compile_and_decompile(&javac);
-    let dir: PathBuf = std::env::temp_dir().join(format!(
+    let purpose: String = format!(
         "disrobe_foreach_multicatch_recompile_{}",
         std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    );
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let path: PathBuf = dir.join("ForMulti.java");
     std::fs::write(&path, &source).expect("write recovered source");
     let out: std::process::Output = Command::new(&javac)

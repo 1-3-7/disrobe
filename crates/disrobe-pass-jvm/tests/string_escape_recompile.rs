@@ -100,10 +100,10 @@ fn escaped_string_literals_recompile_and_round_trip_under_real_jvm() {
     let inputs: Vec<String> = trap_battery();
     let source: String = emit_source(&inputs);
 
-    let root: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_str_escape_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).expect("mkdir root");
+    let purpose: String = format!("disrobe_str_escape_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let root: PathBuf = scratch.path().to_path_buf();
     let src_path: PathBuf = root.join("EscRoundTrip.java");
     std::fs::write(&src_path, source.as_bytes()).expect("write source");
 
@@ -162,6 +162,4 @@ fn escaped_string_literals_recompile_and_round_trip_under_real_jvm() {
             actual[idx]
         );
     }
-
-    let _ = std::fs::remove_dir_all(&root);
 }

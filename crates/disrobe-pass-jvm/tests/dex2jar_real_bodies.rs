@@ -463,9 +463,10 @@ fn translated_classes_pass_jvm_verifier() {
         return;
     };
 
-    let dir: PathBuf = std::env::temp_dir().join("disrobe_dex2jar_verify");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_dex2jar_verify")
+            .expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let src_path: PathBuf = dir.join("V.java");
     std::fs::write(&src_path, VERIFIER_SRC).expect("write helper");
 

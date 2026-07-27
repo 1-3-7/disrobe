@@ -250,9 +250,10 @@ fn report_decompiled_recompile_acceptance() {
         eprintln!("skip: baseline jar absent");
         return;
     };
-    let dir: PathBuf = std::env::temp_dir().join("disrobe_decompile_recompile");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_decompile_recompile")
+            .expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut sources: BTreeMap<String, String> = BTreeMap::new();
     for (name, bytes) in &classes {
@@ -379,12 +380,10 @@ fn report_multi_class_javac_recompile() {
     let total: usize = sources.len();
     assert_eq!(total, 2, "Hello-baseline.jar class denominator drifted");
 
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_multi_class_recompile_{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let purpose: String = format!("disrobe_multi_class_recompile_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let mut paths: Vec<PathBuf> = Vec::with_capacity(total);
     for (simple, src) in &sources {
         let path: PathBuf = dir.join(format!("{simple}.java"));
@@ -441,9 +440,10 @@ fn report_per_method_javac_recompile() {
         .collect();
     let d: DecompiledClass = decompile_class_with_inners(&cf, &inners);
 
-    let dir: PathBuf = std::env::temp_dir().join("disrobe_per_method_recompile");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_per_method_recompile")
+            .expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let path: PathBuf = dir.join("EdgeCases.java");
     std::fs::write(&path, &d.source).expect("write");
 
@@ -546,10 +546,10 @@ fn recompiled_class_links_under_jvm_verifier() {
         .collect();
     let d: DecompiledClass = decompile_class_with_inners(&cf, &inners);
 
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_verify_gate_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let purpose: String = format!("disrobe_verify_gate_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     std::fs::write(dir.join("EdgeCases.java"), &d.source).expect("write java");
 
     let compiled: std::process::Output = Command::new(&javac)
@@ -684,10 +684,10 @@ fn report_gapcases_family_recovery() {
         return;
     };
     let jar: PathBuf = corpus(&["megafile", "GapCases-baseline.jar"]);
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_gapcases_recompile_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let purpose: String = format!("disrobe_gapcases_recompile_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let path: PathBuf = dir.join("GapCases.java");
     std::fs::write(&path, &src).expect("write");
 
@@ -822,14 +822,13 @@ fn repeatable_class_annotations_recompile_with_reflection_equivalence() {
         );
     }
 
-    let root: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_annotation_equivalence_{}",
-        std::process::id()
-    ));
+    let purpose: String = format!("disrobe_annotation_equivalence_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let root: PathBuf = scratch.path().to_path_buf();
     let original_dir: PathBuf = root.join("original");
     let recovered_dir: PathBuf = root.join("recovered");
     let standalone_dir: PathBuf = root.join("standalone");
-    let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&original_dir).expect("mkdir original");
     std::fs::create_dir_all(&recovered_dir).expect("mkdir recovered");
     std::fs::create_dir_all(&standalone_dir).expect("mkdir standalone");
@@ -931,13 +930,12 @@ fn runtime_invisible_class_annotation_recompiles_to_the_same_bucket() {
         eprintln!("SKIP: javap not on PATH; invisible annotation gate NOT enforced");
         return;
     };
-    let root: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_invisible_annotation_{}",
-        std::process::id()
-    ));
+    let purpose: String = format!("disrobe_invisible_annotation_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let root: PathBuf = scratch.path().to_path_buf();
     let original_dir: PathBuf = root.join("original");
     let recovered_dir: PathBuf = root.join("recovered");
-    let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&original_dir).expect("mkdir original");
     std::fs::create_dir_all(&recovered_dir).expect("mkdir recovered");
     let original_path: PathBuf = original_dir.join("ClassMarked.java");
@@ -1254,11 +1252,12 @@ fn member_annotations_recompile_with_retention_and_runtime_equivalence() {
         eprintln!("SKIP: javap not on PATH; member annotation gate NOT enforced");
         return;
     };
-    let root: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_member_annotation_{}", std::process::id()));
+    let purpose: String = format!("disrobe_member_annotation_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let root: PathBuf = scratch.path().to_path_buf();
     let original_dir: PathBuf = root.join("original");
     let recovered_dir: PathBuf = root.join("recovered");
-    let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&original_dir).expect("mkdir original");
     std::fs::create_dir_all(&recovered_dir).expect("mkdir recovered");
 

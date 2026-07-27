@@ -89,11 +89,12 @@ fn narrow_typed_constant_arguments_keep_their_cast_and_recompile() {
         eprintln!("SKIP: java not on PATH; narrow-argument cast eval gate NOT enforced.");
         return;
     };
-    let root: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_narrow_arg_{}", std::process::id()));
+    let purpose: String = format!("disrobe_narrow_arg_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let root: PathBuf = scratch.path().to_path_buf();
     let gold: PathBuf = root.join("gold");
     let recov: PathBuf = root.join("recov");
-    let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&gold).expect("mkdir gold");
     std::fs::create_dir_all(&recov).expect("mkdir recov");
 

@@ -136,8 +136,10 @@ fn real_javac_generic_signatures_round_trip_exactly() -> TestResult {
         eprintln!("SKIP: javac not on PATH; generic signature recovery not enforced");
         return Ok(());
     };
-    let root: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_generic_signature_{}", std::process::id()));
+    let purpose: String = format!("disrobe_generic_signature_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose)?;
+    let root: PathBuf = scratch.path().to_path_buf();
     let original_dir: PathBuf = root.join("original");
     let recovered_dir: PathBuf = root.join("recovered");
     let original: ClassFile = compile(&javac, &original_dir, GENERIC_SOURCE)?;
@@ -170,10 +172,10 @@ fn malformed_signature_falls_back_atomically_to_erased_declarations() -> TestRes
         eprintln!("SKIP: javac not on PATH; malformed signature rejection not enforced");
         return Ok(());
     };
-    let root: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_malformed_signature_{}",
-        std::process::id()
-    ));
+    let purpose: String = format!("disrobe_malformed_signature_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose)?;
+    let root: PathBuf = scratch.path().to_path_buf();
     let mut class_file: ClassFile = compile(&javac, &root, GENERIC_SOURCE)?;
     let signature_indices: BTreeSet<u16> = std::iter::once(&class_file.attributes)
         .chain(class_file.fields.iter().map(|field| &field.attributes))
@@ -234,11 +236,10 @@ fn edge_cases_outer_signatures_round_trip_exactly() -> TestResult {
     assert_eq!(original_signatures.len(), 51);
 
     let recovered_source: String = decompile_class_with_inners(original, &inners).source;
-    let recovered_dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_corpus_generic_signature_{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&recovered_dir)?;
+    let purpose: String = format!("disrobe_corpus_generic_signature_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose)?;
+    let recovered_dir: PathBuf = scratch.path().to_path_buf();
     let source_path: PathBuf = recovered_dir.join("EdgeCases.java");
     std::fs::write(&source_path, &recovered_source)?;
     let output: std::process::Output = Command::new(&javac)

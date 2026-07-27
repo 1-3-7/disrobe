@@ -104,11 +104,10 @@ public class StrdecFixture {{
 
 fn jvm_ground_truth(java: &Path, javac: &Path) -> [Vec<u8>; 3] {
     let sequence: u64 = GROUND_TRUTH_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let tmp: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_strdec_oracle_{}_{sequence}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&tmp).expect("mk tmp");
+    let purpose: String = format!("disrobe_strdec_oracle_{}_{sequence}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let tmp: PathBuf = scratch.path().to_path_buf();
     let src_path: PathBuf = tmp.join("StrdecFixture.java");
     std::fs::write(&src_path, fixture_source().as_bytes()).expect("write fixture source");
 
@@ -150,7 +149,6 @@ fn jvm_ground_truth(java: &Path, javac: &Path) -> [Vec<u8>; 3] {
         hex_to_bytes(lines[1]),
         hex_to_bytes(lines[2]),
     ];
-    let _ = std::fs::remove_dir_all(&tmp);
     ground
 }
 

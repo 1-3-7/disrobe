@@ -134,9 +134,10 @@ fn javac_error_lines(
     label: &str,
     classpath: &PathBuf,
 ) -> Vec<usize> {
-    let dir: PathBuf = std::env::temp_dir().join(format!("disrobe_h2h_{label}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let purpose: String = format!("disrobe_h2h_{label}");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let path: PathBuf = dir.join("EdgeCases.java");
     std::fs::write(&path, source).expect("write java");
     let out: std::process::Output = Command::new(javac)
@@ -159,7 +160,6 @@ fn javac_error_lines(
             error_lines.push(n);
         }
     }
-    let _ = std::fs::remove_dir_all(&dir);
     error_lines
 }
 

@@ -68,9 +68,10 @@ fn emitted_prototypes_match_javac_h_and_compile_against_jni_h() {
         return;
     };
 
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_jni_proto_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let purpose: String = format!("disrobe_jni_proto_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let classes: PathBuf = dir.join("classes");
     let headers: PathBuf = dir.join("headers");
     std::fs::create_dir_all(&classes).expect("mkdir classes");
@@ -162,6 +163,4 @@ fn emitted_prototypes_match_javac_h_and_compile_against_jni_h() {
         "clang -fsyntax-only against real jni.h: exit 0 ({} prototypes)",
         protos.len()
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }

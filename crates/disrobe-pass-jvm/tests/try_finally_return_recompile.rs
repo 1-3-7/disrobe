@@ -122,9 +122,10 @@ fn try_finally_with_return_recompiles_to_equivalent_bytecode() {
         return;
     };
 
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_tf_return_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let purpose: String = format!("disrobe_tf_return_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let orig_dir: PathBuf = dir.join("orig");
     let rec_dir: PathBuf = dir.join("rec");
     std::fs::create_dir_all(&orig_dir).expect("mkdir orig");

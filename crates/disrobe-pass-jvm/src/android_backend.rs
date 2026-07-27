@@ -8,9 +8,9 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use disrobe_core::scratch::ScratchDir;
 use serde::{Deserialize, Serialize};
 
 use crate::backends::{AndroidBackend, BackendInvocation, invoke_android};
@@ -18,8 +18,6 @@ use crate::dalvik_decompile::{DecompiledDex, decompile_dex_bytes};
 use crate::error::{Error, Result};
 
 const JADX_TIMEOUT: Duration = Duration::from_secs(300);
-
-static WORK_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum AndroidDecompiler {
@@ -95,12 +93,11 @@ fn decompile_dex_in_house(dex_bytes: &[u8]) -> Result<AndroidDecompileOutput> {
 }
 
 pub fn run_jadx_on_bytes(input_bytes: &[u8], file_name: &str) -> Result<AndroidDecompileOutput> {
-    let work: PathBuf = make_work_dir()?;
-    let input_path: PathBuf = work.join(file_name);
+    let work: ScratchDir = make_work_dir()?;
+    let input_path: PathBuf = work.path().join(file_name);
     std::fs::write(&input_path, input_bytes)?;
-    let out_dir: PathBuf = work.join("out");
+    let out_dir: PathBuf = work.path().join("out");
     let result: Result<AndroidDecompileOutput> = run_jadx_on_path(&input_path, &out_dir);
-    let _ = std::fs::remove_dir_all(&work);
     result
 }
 
@@ -139,12 +136,8 @@ fn run_jadx_on_path(input_path: &Path, out_dir: &Path) -> Result<AndroidDecompil
     })
 }
 
-fn make_work_dir() -> Result<PathBuf> {
-    let pid: u32 = std::process::id();
-    let seq: u64 = WORK_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf = std::env::temp_dir().join(format!("disrobe_jadx_{pid}_{seq}"));
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
+fn make_work_dir() -> Result<ScratchDir> {
+    Ok(ScratchDir::create("disrobe_jadx")?)
 }
 
 fn collect_java_sources(out_dir: &Path) -> Result<BTreeMap<String, String>> {
