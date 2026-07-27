@@ -218,7 +218,6 @@ gimli = "0.32.3"
 gix = { version = "0.85.0", default-features = false, features = ["sha1", "revision", "blob-diff"] }
 goblin = "0.10.5"
 hmac = "0.12.1"
-human-panic = "2.0.5"
 hyper = "1.9.0"
 iced-x86 = "1.21.0"
 indexmap = { version = "2.14.0", features = ["serde"] }
