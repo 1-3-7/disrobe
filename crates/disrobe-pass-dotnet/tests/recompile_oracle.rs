@@ -176,9 +176,9 @@ fn run_oracle() -> Option<OracleReport> {
         .collect();
     let gen_hosts: usize = hosts.iter().filter(|h| !h.user_authored).count();
     let user_hosts: Vec<HostMethod> = hosts.into_iter().filter(|h| h.user_authored).collect();
-    let tmp: PathBuf = std::env::temp_dir().join("disrobe_recompile_oracle");
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).expect("mk tmp");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_recompile_oracle").expect("mk tmp");
+    let tmp: PathBuf = scratch.path().to_path_buf();
     let dll: PathBuf = manifest(FIXTURE_DLL)
         .canonicalize()
         .expect("canonicalize dll");

@@ -212,10 +212,10 @@ fn recovered_cil_reinjects_and_runs_identically() {
         "the disrobe-produced CIL artifact is empty or malformed:\n{recovered_cil}"
     );
 
-    let scratch: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_eazvm_reinject_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&scratch);
-    std::fs::create_dir_all(&scratch).expect("create scratch dir");
+    let scratch_guard: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_eazvm_reinject")
+            .expect("create scratch dir");
+    let scratch: PathBuf = scratch_guard.path().to_path_buf();
 
     let cil_path: PathBuf = scratch.join("EazSample.recovered.cil");
     std::fs::write(&cil_path, recovered_cil.as_bytes()).expect("write recovered cil");
@@ -228,7 +228,6 @@ fn recovered_cil_reinjects_and_runs_identically() {
              gates this run.",
             cil_path.display()
         );
-        let _ = std::fs::remove_dir_all(&scratch);
         return;
     };
 
@@ -303,6 +302,4 @@ fn recovered_cil_reinjects_and_runs_identically() {
         "the assembly rebuilt from the devirtualized CIL must print the clean baseline output \
          byte-for-byte; got {stdout:?}"
     );
-
-    let _ = std::fs::remove_dir_all(&scratch);
 }

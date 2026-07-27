@@ -1,27 +1,17 @@
 use std::path::PathBuf;
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU64, Ordering};
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_dotnet::cil::{FlowControl, MethodBody, OperandValue, parse_method_body};
 use disrobe_pass_dotnet::metadata::{MetadataRoot, parse_metadata_root};
 use disrobe_pass_dotnet::model::Resolver;
 use disrobe_pass_dotnet::pe::{ClrHeader, PeImage, parse, parse_clr_header};
 
 const FIXTURE_DIR: &str = "tests/fixtures/cha_devirtualization";
-static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
 struct FixtureProject {
-    root: Option<PathBuf>,
+    _scratch: Option<ScratchDir>,
     assembly: PathBuf,
-}
-
-impl Drop for FixtureProject {
-    fn drop(&mut self) {
-        let root: Option<&PathBuf> = self.root.as_ref();
-        if let Some(root) = root {
-            let _: std::io::Result<()> = std::fs::remove_dir_all(root);
-        }
-    }
 }
 
 fn manifest_path(relative: &str) -> PathBuf {
@@ -45,21 +35,13 @@ fn sdk_list_has_dotnet_9(sdk_list: &str) -> bool {
         .any(|version: &str| version.split('.').next() == Some("9"))
 }
 
-fn unique_fixture_root() -> PathBuf {
-    let counter: u64 = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "disrobe-dotnet-cha-{}-{counter}",
-        std::process::id()
-    ))
-}
-
 fn build_fixture() -> Result<FixtureProject, String> {
     if !dotnet_9_sdk_available() {
         return committed_fixture("ChaDevirtualization.dll");
     }
-    let root: PathBuf = unique_fixture_root();
-    std::fs::create_dir_all(&root)
+    let scratch: ScratchDir = ScratchDir::create("disrobe-dotnet-cha")
         .map_err(|error: std::io::Error| format!("create temporary fixture project: {error}"))?;
+    let root: PathBuf = scratch.path().to_path_buf();
     for name in ["ChaDevirtualization.csproj", "Calls.cs"] {
         let source: PathBuf = manifest_path(FIXTURE_DIR).join(name);
         let destination: PathBuf = root.join(name);
@@ -86,7 +68,7 @@ fn build_fixture() -> Result<FixtureProject, String> {
         ));
     }
     Ok(FixtureProject {
-        root: Some(root),
+        _scratch: Some(scratch),
         assembly: output_dir.join("ChaDevirtualization.dll"),
     })
 }
@@ -95,9 +77,9 @@ fn build_duplicate_fixture() -> Result<FixtureProject, String> {
     if !dotnet_9_sdk_available() {
         return committed_fixture("DuplicateDispatch.dll");
     }
-    let root: PathBuf = unique_fixture_root();
-    std::fs::create_dir_all(&root)
+    let scratch: ScratchDir = ScratchDir::create("disrobe-dotnet-cha")
         .map_err(|error: std::io::Error| format!("create duplicate fixture project: {error}"))?;
+    let root: PathBuf = scratch.path().to_path_buf();
     for name in [
         "DuplicateDispatchEmitter.csproj",
         "DuplicateDispatchEmitter.cs",
@@ -137,7 +119,7 @@ fn build_duplicate_fixture() -> Result<FixtureProject, String> {
         return Err("duplicate fixture emitter produced no assembly".to_owned());
     }
     Ok(FixtureProject {
-        root: Some(root),
+        _scratch: Some(scratch),
         assembly,
     })
 }
@@ -148,7 +130,7 @@ fn committed_fixture(name: &str) -> Result<FixtureProject, String> {
         return Err("CORPUS-BLOCKED: dotnet SDK and committed fixture are unavailable".to_owned());
     }
     Ok(FixtureProject {
-        root: None,
+        _scratch: None,
         assembly,
     })
 }
