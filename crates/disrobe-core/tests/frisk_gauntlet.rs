@@ -1,31 +1,30 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use disrobe_core::recon::{ReconCategory, ReconConfig, ReconFinding, ReconReport, report_tree};
+use disrobe_core::scratch::ScratchDir;
 
 const PLANTED: &str = "../../corpus/recon/planted";
 
-static STAGE_SEQ: AtomicU64 = AtomicU64::new(0);
-
 struct Staged {
+    _scratch: ScratchDir,
     root: PathBuf,
 }
 
 impl Staged {
     fn new() -> Self {
-        let seq: u64 = STAGE_SEQ.fetch_add(1, Ordering::Relaxed);
-        let root: PathBuf = std::env::temp_dir().join(format!(
-            "disrobe-frisk-gauntlet-{}-{seq}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
+        let scratch: ScratchDir =
+            ScratchDir::create("disrobe-frisk-gauntlet").expect("create staged tree");
+        let root: PathBuf = scratch.path().to_path_buf();
         copy_tree(
             &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(PLANTED),
             &root,
         );
-        Self { root }
+        Self {
+            _scratch: scratch,
+            root,
+        }
     }
 
     fn write(&self, rel: &str, contents: &str) {
@@ -34,12 +33,6 @@ impl Staged {
             std::fs::create_dir_all(parent).expect("create parent");
         }
         std::fs::write(&path, contents).expect("write staged file");
-    }
-}
-
-impl Drop for Staged {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 

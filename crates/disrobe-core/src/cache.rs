@@ -239,16 +239,17 @@ fn non_empty_env(name: &str) -> Option<String> {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use crate::scratch::ScratchDir;
 
-    static SEQ: AtomicU64 = AtomicU64::new(0);
+    fn scratch_dir(stem: &str) -> ScratchDir {
+        let purpose: String = format!("disrobe-cache-test-{stem}");
+        ScratchDir::create(&purpose).expect("create scratch directory")
+    }
 
-    fn scratch_dir(stem: &str) -> PathBuf {
-        let pid: u32 = std::process::id();
-        let n: u64 = SEQ.fetch_add(1, Ordering::Relaxed);
-        let p: PathBuf = std::env::temp_dir().join(format!("disrobe-cache-test-{stem}-{pid}-{n}"));
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&p);
-        p
+    fn cache(stem: &str) -> (ScratchDir, Cache) {
+        let scratch: ScratchDir = scratch_dir(stem);
+        let cache: Cache = Cache::new(scratch.path().to_path_buf());
+        (scratch, cache)
     }
 
     fn key_for(op: &str, config: &str, input: &[u8]) -> CacheKey {
@@ -259,44 +260,40 @@ mod tests {
 
     #[test]
     fn miss_then_hit_returns_identical_payload() {
-        let cache: Cache = Cache::new(scratch_dir("hit"));
+        let (_scratch, cache): (ScratchDir, Cache) = cache("hit");
         let key: CacheKey = key_for("envelope.create", "rung=raw", b"hello world");
         assert!(cache.get(&key).is_none(), "cold lookup must miss");
         let payload: &[u8] = b"\x00\x01\x02 produced .dr bytes";
         cache.put(&key, payload).expect("store");
         let got: Vec<u8> = cache.get(&key).expect("warm lookup must hit");
         assert_eq!(got.as_slice(), payload);
-        let _ = std::fs::remove_dir_all(cache.root());
     }
 
     #[test]
     fn different_input_misses() {
-        let cache: Cache = Cache::new(scratch_dir("input"));
+        let (_scratch, cache): (ScratchDir, Cache) = cache("input");
         let k1: CacheKey = key_for("op", "cfg", b"aaaa");
         let k2: CacheKey = key_for("op", "cfg", b"bbbb");
         cache.put(&k1, b"one").expect("store");
         assert!(cache.get(&k2).is_none(), "distinct input must not hit");
-        let _ = std::fs::remove_dir_all(cache.root());
     }
 
     #[test]
     fn different_config_misses() {
-        let cache: Cache = Cache::new(scratch_dir("config"));
+        let (_scratch, cache): (ScratchDir, Cache) = cache("config");
         let k1: CacheKey = key_for("op", "rung=raw", b"same");
         let k2: CacheKey = key_for("op", "rung=disasm", b"same");
         cache.put(&k1, b"one").expect("store");
         assert!(cache.get(&k2).is_none(), "distinct config must not hit");
-        let _ = std::fs::remove_dir_all(cache.root());
     }
 
     #[test]
     fn different_operation_misses() {
-        let cache: Cache = Cache::new(scratch_dir("op"));
+        let (_scratch, cache): (ScratchDir, Cache) = cache("op");
         let k1: CacheKey = key_for("op.a", "cfg", b"same");
         let k2: CacheKey = key_for("op.b", "cfg", b"same");
         cache.put(&k1, b"one").expect("store");
         assert!(cache.get(&k2).is_none(), "distinct operation must not hit");
-        let _ = std::fs::remove_dir_all(cache.root());
     }
 
     #[test]
@@ -312,7 +309,7 @@ mod tests {
 
     #[test]
     fn corrupt_entry_is_a_miss() {
-        let cache: Cache = Cache::new(scratch_dir("corrupt"));
+        let (_scratch, cache): (ScratchDir, Cache) = cache("corrupt");
         let key: CacheKey = key_for("op", "cfg", b"payload");
         cache.put(&key, b"the original payload").expect("store");
         let path: PathBuf = cache.entry_path(&key);
@@ -324,23 +321,21 @@ mod tests {
             cache.get(&key).is_none(),
             "a tampered payload must be treated as a miss"
         );
-        let _ = std::fs::remove_dir_all(cache.root());
     }
 
     #[test]
     fn truncated_entry_is_a_miss() {
-        let cache: Cache = Cache::new(scratch_dir("trunc"));
+        let (_scratch, cache): (ScratchDir, Cache) = cache("trunc");
         let key: CacheKey = key_for("op", "cfg", b"payload");
         cache.put(&key, b"some bytes here").expect("store");
         let path: PathBuf = cache.entry_path(&key);
         std::fs::write(&path, b"DRC").expect("truncate");
         assert!(cache.get(&key).is_none(), "short entry must miss");
-        let _ = std::fs::remove_dir_all(cache.root());
     }
 
     #[test]
     fn bad_magic_entry_is_a_miss() {
-        let cache: Cache = Cache::new(scratch_dir("magic"));
+        let (_scratch, cache): (ScratchDir, Cache) = cache("magic");
         let key: CacheKey = key_for("op", "cfg", b"payload");
         let mut bogus: Vec<u8> = vec![0u8; ENTRY_HEADER_SIZE + 4];
         bogus[0] = b'X';
@@ -348,12 +343,11 @@ mod tests {
         std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
         std::fs::write(&path, &bogus).expect("write bogus");
         assert!(cache.get(&key).is_none(), "wrong magic must miss");
-        let _ = std::fs::remove_dir_all(cache.root());
     }
 
     #[test]
     fn oversized_entry_file_is_a_miss() {
-        let cache: Cache = Cache::new(scratch_dir("oversized"));
+        let (_scratch, cache): (ScratchDir, Cache) = cache("oversized");
         let key: CacheKey = key_for("op", "cfg", b"payload");
         let path: PathBuf = cache.entry_path(&key);
         std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
@@ -363,18 +357,16 @@ mod tests {
             cache.get(&key).is_none(),
             "oversized cache entries must miss before payload allocation"
         );
-        let _ = std::fs::remove_dir_all(cache.root());
     }
 
     #[test]
     fn put_is_idempotent_and_overwrites() {
-        let cache: Cache = Cache::new(scratch_dir("idem"));
+        let (_scratch, cache): (ScratchDir, Cache) = cache("idem");
         let key: CacheKey = key_for("op", "cfg", b"x");
         cache.put(&key, b"first").expect("first");
         cache.put(&key, b"first").expect("second identical");
         let got: Vec<u8> = cache.get(&key).expect("hit");
         assert_eq!(got.as_slice(), b"first");
-        let _ = std::fs::remove_dir_all(cache.root());
     }
 
     #[test]

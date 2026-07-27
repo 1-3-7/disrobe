@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_core::yara::parse_ruleset;
 use disrobe_core::yara_match::CompiledRuleset;
 
@@ -287,9 +288,8 @@ fn engine_agrees_with_real_yara() {
         return;
     };
 
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-yara-oracle-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let scratch: ScratchDir = ScratchDir::create("disrobe-yara-oracle").expect("temp dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
 
     let mut mismatches: Vec<String> = Vec::new();
     let mut compared: usize = 0;
@@ -319,8 +319,6 @@ fn engine_agrees_with_real_yara() {
         }
         compared += 1;
     }
-
-    let _ = std::fs::remove_dir_all(&dir);
 
     assert!(
         mismatches.is_empty(),

@@ -2169,44 +2169,39 @@ mod tests {
 
     #[test]
     fn report_tree_skips_oversized_file() {
-        let root: PathBuf =
-            std::env::temp_dir().join(format!("disrobe-recon-oversized-{}", std::process::id()));
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("mkdir");
+        let scratch: crate::scratch::ScratchDir =
+            crate::scratch::ScratchDir::create("disrobe-recon-oversized").expect("mkdir");
+        let root: PathBuf = scratch.path().to_path_buf();
         let path: PathBuf = root.join("huge.bin");
         let file: std::fs::File = std::fs::File::create(&path).expect("create");
         file.set_len(MAX_FILE_BYTES + 1).expect("set len");
         let report: ReconReport = report_tree(&root, &ReconConfig::default()).expect("scan");
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&root);
         assert_eq!(report.files_scanned, 0);
         assert_eq!(report.bytes_scanned, 0);
     }
 
     #[test]
     fn read_scan_file_oversized_file_is_policy_skip() {
-        let path: PathBuf = std::env::temp_dir().join(format!(
-            "disrobe-recon-oversized-direct-{}",
-            std::process::id()
-        ));
-        let file: std::fs::File = std::fs::File::create(&path).expect("create");
+        let (scratch, file): (crate::scratch::ScratchFile, std::fs::File) =
+            crate::scratch::ScratchFile::create("disrobe-recon-oversized-direct", "")
+                .expect("create");
+        let path: PathBuf = scratch.path().to_path_buf();
         file.set_len(MAX_FILE_BYTES + 1).expect("set len");
+        drop(file);
         let bytes: Option<Vec<u8>> = read_scan_file(&path);
-        let _: std::io::Result<()> = std::fs::remove_file(&path);
         assert!(bytes.is_none());
     }
 
     #[test]
     fn walk_with_limit_stops_inside_large_directory() {
-        let root: PathBuf =
-            std::env::temp_dir().join(format!("disrobe-recon-walk-limit-{}", std::process::id()));
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("mkdir");
+        let scratch: crate::scratch::ScratchDir =
+            crate::scratch::ScratchDir::create("disrobe-recon-walk-limit").expect("mkdir");
+        let root: PathBuf = scratch.path().to_path_buf();
         for i in 0..3usize {
             std::fs::write(root.join(format!("{i}.txt")), b"x").expect("write");
         }
         let mut files: Vec<PathBuf> = Vec::new();
         walk_with_limit(&root, &mut files, 2).expect("walk");
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&root);
         assert_eq!(files.len(), 2);
     }
 

@@ -294,19 +294,11 @@ mod tests {
             .is_ok_and(|o: std::process::Output| o.status.success())
     }
 
-    fn temp_repo() -> std::path::PathBuf {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let mut base: std::path::PathBuf = std::env::temp_dir();
-        let unique: String = format!(
-            "disrobe-githist-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        );
-        base.push(unique);
-        std::fs::create_dir_all(&base).expect("create temp repo dir");
-        git(&base, &["init", "-q", "-b", "main"]);
-        base
+    fn temp_repo() -> crate::scratch::ScratchDir {
+        let scratch: crate::scratch::ScratchDir =
+            crate::scratch::ScratchDir::create("disrobe-githist").expect("create temp repo dir");
+        git(scratch.path(), &["init", "-q", "-b", "main"]);
+        scratch
     }
 
     #[test]
@@ -315,16 +307,17 @@ mod tests {
             eprintln!("skipping: git not available");
             return;
         }
-        let repo: std::path::PathBuf = temp_repo();
+        let scratch: crate::scratch::ScratchDir = temp_repo();
+        let repo: &Path = scratch.path();
         let secret_file: std::path::PathBuf = repo.join("config.env");
         let key: String = aws_akid();
         std::fs::write(&secret_file, format!("AWS_ACCESS_KEY_ID={key}\n")).unwrap();
-        git(&repo, &["add", "config.env"]);
-        git(&repo, &["commit", "-q", "-m", "add config"]);
+        git(repo, &["add", "config.env"]);
+        git(repo, &["commit", "-q", "-m", "add config"]);
 
         std::fs::remove_file(&secret_file).unwrap();
-        git(&repo, &["add", "-A"]);
-        git(&repo, &["commit", "-q", "-m", "remove config"]);
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-q", "-m", "remove config"]);
 
         assert!(
             !repo.join("config.env").exists(),
@@ -332,7 +325,7 @@ mod tests {
         );
 
         let report: GitHistoryReport =
-            report_git(&repo, &GitHistoryOptions::default()).expect("git history scan");
+            report_git(repo, &GitHistoryOptions::default()).expect("git history scan");
         let hit: Option<&GitFinding> = report
             .findings
             .iter()
@@ -349,7 +342,7 @@ mod tests {
         assert!(report.commits_scanned >= 2, "{}", report.commits_scanned);
 
         let working_tree: super::super::ReconReport =
-            super::super::report_tree(&repo, &ReconConfig::default()).expect("tree scan");
+            super::super::report_tree(repo, &ReconConfig::default()).expect("tree scan");
         assert!(
             working_tree
                 .findings
@@ -358,8 +351,6 @@ mod tests {
                     || !f.value.starts_with("AKIA")),
             "a working-tree walk must miss the deleted secret, proving the oracle is non-circular"
         );
-
-        let _ = std::fs::remove_dir_all(&repo);
     }
 
     #[test]
@@ -368,20 +359,19 @@ mod tests {
             eprintln!("skipping: git not available");
             return;
         }
-        let repo: std::path::PathBuf = temp_repo();
+        let scratch: crate::scratch::ScratchDir = temp_repo();
+        let repo: &Path = scratch.path();
         let key: String = aws_akid();
         std::fs::write(repo.join("a.txt"), format!("k={key}\n")).unwrap();
-        git(&repo, &["add", "a.txt"]);
-        git(&repo, &["commit", "-q", "-m", "seed"]);
+        git(repo, &["add", "a.txt"]);
+        git(repo, &["commit", "-q", "-m", "seed"]);
 
         let report: GitHistoryReport =
-            report_git(&repo, &GitHistoryOptions::default()).expect("scan");
+            report_git(repo, &GitHistoryOptions::default()).expect("scan");
         let value: serde_json::Value = serde_json::to_value(&report).expect("serialize");
         assert_eq!(value["schema"], serde_json::json!(GIT_HISTORY_SCHEMA));
         assert!(value["findings"][0]["commit"].is_string());
         assert!(value["findings"][0]["blob_path"].is_string());
         assert!(value["findings"][0]["rule_id"].is_string());
-
-        let _ = std::fs::remove_dir_all(&repo);
     }
 }
