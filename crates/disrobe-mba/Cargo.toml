@@ -28,4 +28,5 @@ oxiz = { workspace = true, optional = true }
 disrobe-nir = { workspace = true, optional = true }
 
 [dev-dependencies]
+disrobe-core = { workspace = true }
 proptest = { workspace = true }
