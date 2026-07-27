@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_beam::{
     BeamFile, DebugInfo, ElixirRecovery, ErlangSurface, EzArchive, RecoverySource, parse_dbgi,
     recover_elixir, recover_erlang,
@@ -106,10 +107,9 @@ fn real_elixir_recovered_source_recompiles_with_elixirc() {
     let surface: ErlangSurface = recover_erlang(&original).expect("recover");
     assert_eq!(surface.recovered_from, RecoverySource::ElixirDbgiForm);
 
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_elixir_recompile_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let scratch: ScratchDir =
+        ScratchDir::create("disrobe_elixir_recompile").expect("create scratch directory");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let src_path: PathBuf = dir.join("hello_recovered.ex");
     std::fs::write(&src_path, &surface.source).expect("write recovered ex");
     let out: std::process::Output = Command::new(&elixirc)

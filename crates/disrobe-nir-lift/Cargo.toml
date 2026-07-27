@@ -36,6 +36,7 @@ default = []
 wasm = ["dep:disrobe-pass-wasm-deob", "dep:wasmparser"]
 
 [dev-dependencies]
+disrobe-core = { workspace = true }
 disrobe-query = { workspace = true }
 wat = "1"
 

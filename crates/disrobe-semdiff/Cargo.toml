@@ -19,6 +19,7 @@ disrobe-nir = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
+disrobe-core = { workspace = true }
 disrobe-nir-lift = { workspace = true }
 disrobe-pass-native = { workspace = true }
 disrobe-query = { workspace = true }

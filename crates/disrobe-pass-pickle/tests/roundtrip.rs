@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_pickle::{PickleValue, Session, disassemble, execute_full, reconstruct};
 use serde_json::{Map, Value, json};
 
@@ -223,10 +224,9 @@ fn cpython_roundtrip_differential_oracle() {
         return;
     };
 
-    let workdir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-pkl-rt-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&workdir);
-    std::fs::create_dir_all(&workdir).expect("create workdir");
+    let scratch: ScratchDir =
+        ScratchDir::create("disrobe-pkl-rt").expect("create scratch directory");
+    let workdir: PathBuf = scratch.path().to_path_buf();
     let harness: PathBuf = harness_path();
 
     let emit_status: std::process::ExitStatus = Command::new(&python)
@@ -385,8 +385,6 @@ fn cpython_roundtrip_differential_oracle() {
         }
     }
     eprintln!("{summary}");
-
-    let _ = std::fs::remove_dir_all(&workdir);
 
     assert!(
         total >= MIN_SUPPORTED,

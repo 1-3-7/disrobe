@@ -1,17 +1,15 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU64, Ordering};
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_nir::{
     NirFunction, SurfaceFunction, ValueId, basic_blocks, def_use, emit_pseudo_source,
     structurize_function, surfacify_function,
 };
 use disrobe_nir_lift::lower_aarch64;
-
-static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
 fn assemble(words: &[u32]) -> Vec<u8> {
     words
@@ -146,10 +144,9 @@ fn cross_toolchain() -> Option<(String, String)> {
 }
 
 fn cross_compile(gcc: &str, objcopy: &str, name: &str, source: &str) -> Vec<u8> {
-    let sequence: u64 = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-    let directory: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-aarch64-{}-{sequence}", std::process::id()));
-    fs::create_dir_all(&directory).expect("create cross test directory");
+    let scratch: ScratchDir =
+        ScratchDir::create("disrobe-aarch64").expect("create scratch directory");
+    let directory: PathBuf = scratch.path().to_path_buf();
     let source_path: PathBuf = directory.join(format!("{name}.c"));
     let object_path: PathBuf = directory.join(format!("{name}.o"));
     let binary_path: PathBuf = directory.join(format!("{name}.bin"));
@@ -182,13 +179,8 @@ fn cross_compile(gcc: &str, objcopy: &str, name: &str, source: &str) -> Vec<u8> 
     while bytes.len() >= 4 && bytes.ends_with(&nop) {
         bytes.truncate(bytes.len().saturating_sub(4));
     }
-    remove_directory(&directory);
     assert!(!bytes.is_empty(), "cross gcc emitted no text for {name}");
     bytes
-}
-
-fn remove_directory(directory: &Path) {
-    let _ignored: std::io::Result<()> = fs::remove_dir_all(directory);
 }
 
 #[test]

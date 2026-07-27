@@ -14,6 +14,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_beam::{BeamFile, ErlangSurface, RecoverySource, recover_erlang};
 
 fn corpus(rel: &str) -> PathBuf {
@@ -112,19 +113,15 @@ struct Roundtrip {
     recompile_msg: String,
     rec_dir: PathBuf,
     orig_dir: PathBuf,
+    _scratch: ScratchDir,
 }
 
-static ROUNDTRIP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 fn roundtrip(erlc: &Path, module: &str, rel: &str) -> Roundtrip {
-    let seq: u64 = ROUNDTRIP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let base: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_erlc_{module}_{}_{seq}",
-        std::process::id()
-    ));
+    let purpose: String = format!("disrobe_erlc_{module}");
+    let scratch: ScratchDir = ScratchDir::create(&purpose).expect("create scratch directory");
+    let base: PathBuf = scratch.path().to_path_buf();
     let orig_dir: PathBuf = base.join("orig");
     let rec_dir: PathBuf = base.join("rec");
-    let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&orig_dir).expect("mkdir orig");
     std::fs::create_dir_all(&rec_dir).expect("mkdir rec");
 
@@ -157,6 +154,7 @@ fn roundtrip(erlc: &Path, module: &str, rel: &str) -> Roundtrip {
         recompile_msg,
         rec_dir,
         orig_dir,
+        _scratch: scratch,
     }
 }
 
