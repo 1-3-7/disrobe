@@ -386,11 +386,8 @@ fn render_bytes_literal(data: &[u8]) -> String {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use std::process::Command;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::{Const, PyExpr, render_fstring, render_string_literal};
-
-    static SEQ: AtomicU64 = AtomicU64::new(0);
 
     const BATTERY: &[&str] = &[
         "\u{0}",
@@ -420,20 +417,19 @@ mod tests {
     }
 
     fn eval_codepoints(python: &str, literal: &str) -> Vec<u32> {
-        let seq: u64 = SEQ.fetch_add(1, Ordering::Relaxed);
-        let path: std::path::PathBuf = std::env::temp_dir().join(format!(
-            "disrobe_abyss_reemit_{pid}_{seq}.py",
-            pid = std::process::id()
-        ));
         let source: String = format!(
             "x = {literal}\nimport sys\nsys.stdout.write(' '.join(str(ord(c)) for c in x))\n"
         );
-        std::fs::write(&path, &source).expect("write emitted source");
+        let (scratch, mut file): (disrobe_core::scratch::ScratchFile, std::fs::File) =
+            disrobe_core::scratch::ScratchFile::create("disrobe_abyss_reemit", "py")
+                .expect("write emitted source");
+        let path: std::path::PathBuf = scratch.path().to_path_buf();
+        std::io::Write::write_all(&mut file, source.as_bytes()).expect("write emitted source");
+        drop(file);
         let output: std::process::Output = Command::new(python)
             .arg(&path)
             .output()
             .expect("run python");
-        let _: std::io::Result<()> = std::fs::remove_file(&path);
         assert!(
             output.status.success(),
             "cpython rejected emitted source:\n{source}\nstderr: {stderr}",

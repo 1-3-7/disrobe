@@ -67,12 +67,9 @@ else:
 ";
 
 fn assert_bytecode_equivalent(python: &str, recovered_pyc: &[u8], original_name: &str) {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let unique: u64 = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_pycz_{}_{unique}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_pycz").expect("scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let recovered_path: PathBuf = dir.join("recovered.pyc");
     let oracle_path: PathBuf = dir.join("oracle.py");
     std::fs::write(&recovered_path, recovered_pyc).expect("write recovered");
@@ -87,7 +84,6 @@ fn assert_bytecode_equivalent(python: &str, recovered_pyc: &[u8], original_name:
         .expect("run dis oracle");
     let stdout: String = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr: String = String::from_utf8_lossy(&output.stderr).into_owned();
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         output.status.success(),
         "dis oracle failed: {stdout}\n{stderr}"

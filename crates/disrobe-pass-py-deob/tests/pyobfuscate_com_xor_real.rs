@@ -28,17 +28,14 @@ fn oracle_script() -> PathBuf {
         .join("oracle.py")
 }
 
-fn gate_dir(slot: &str) -> PathBuf {
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_pyobf_xor_{pid}_{slot}",
-        pid = std::process::id()
-    ));
-    let _: std::io::Result<()> = std::fs::create_dir_all(&dir);
-    dir
+fn gate_dir(slot: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!("disrobe_pyobf_xor_{slot}");
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create gate directory")
 }
 
 fn reparses(python: &str, source: &str, slot: &str) -> bool {
-    let dir: PathBuf = gate_dir(slot);
+    let scratch: disrobe_core::scratch::ScratchDir = gate_dir(slot);
+    let dir: PathBuf = scratch.path().to_path_buf();
     let path: PathBuf = dir.join(format!("recovered_{slot}.py"));
     std::fs::write(&path, source).expect("write recovered");
     let output: std::process::Output = Command::new(python)
@@ -51,7 +48,8 @@ fn reparses(python: &str, source: &str, slot: &str) -> bool {
 }
 
 fn exec_equivalent(python: &str, original: &[u8], recovered: &str, slot: &str) -> (bool, String) {
-    let dir: PathBuf = gate_dir(slot);
+    let scratch: disrobe_core::scratch::ScratchDir = gate_dir(slot);
+    let dir: PathBuf = scratch.path().to_path_buf();
     let original_path: PathBuf = dir.join(format!("original_{slot}.py"));
     let recovered_path: PathBuf = dir.join(format!("recovered_{slot}.py"));
     std::fs::write(&original_path, original).expect("write original");

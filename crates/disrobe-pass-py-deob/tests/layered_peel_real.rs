@@ -1,5 +1,5 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 use disrobe_pass_py_deob::{PeelResult, peel};
@@ -26,6 +26,7 @@ fn python_exe() -> Option<String> {
 }
 
 struct Gate {
+    _scratch: disrobe_core::scratch::ScratchDir,
     python: String,
     dir: PathBuf,
     artifacts: serde_json::Value,
@@ -33,11 +34,10 @@ struct Gate {
 
 fn build_gate(slot: &str) -> Option<Gate> {
     let python: String = python_exe()?;
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_layered_gate_{pid}_{slot}",
-        pid = std::process::id()
-    ));
-    let _: std::io::Result<()> = std::fs::remove_dir_all(&dir);
+    let purpose: String = format!("disrobe_layered_gate_{slot}");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).ok()?;
+    let dir: PathBuf = scratch.path().to_path_buf();
     let output: std::process::Output = Command::new(&python)
         .arg(script_path())
         .arg("build")
@@ -52,6 +52,7 @@ fn build_gate(slot: &str) -> Option<Gate> {
     let artifacts: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("generator emitted json");
     Some(Gate {
+        _scratch: scratch,
         python,
         dir,
         artifacts,
@@ -126,7 +127,6 @@ fn layered_chains_recover_to_recompile_equivalent_source() {
         );
         checked += 1;
     }
-    cleanup(&gate.dir);
     assert_eq!(checked, RECOMPILE_EQUIVALENT_CASES.len());
 }
 
@@ -168,7 +168,6 @@ fn keyed_loaders_recover_keys_and_source() {
         grade_equivalent(&gate, &rc4.final_source, "rc4_zlib_marshal"),
         "rc4: recovered source not recompile-equivalent"
     );
-    cleanup(&gate.dir);
 }
 
 #[test]
@@ -188,7 +187,6 @@ fn single_byte_xor_recovered_key_is_load_bearing() {
         "xor1: expected single-byte key 0x5e recovered, got {:?}",
         result.key_findings
     );
-    cleanup(&gate.dir);
 }
 
 const CODEC_SCHEME_CASES: [&str; 5] = [
@@ -224,7 +222,6 @@ fn core_codec_schemes_recover_to_recompile_equivalent_source() {
         );
         checked += 1;
     }
-    cleanup(&gate.dir);
     assert_eq!(checked, CODEC_SCHEME_CASES.len());
 }
 
@@ -305,10 +302,5 @@ fn new_cipher_loaders_recover_keys_and_recompile_equivalent_source() {
         );
         checked += 1;
     }
-    cleanup(&gate.dir);
     assert_eq!(checked, CIPHER_CASES.len());
-}
-
-fn cleanup(dir: &Path) {
-    let _: std::io::Result<()> = std::fs::remove_dir_all(dir);
 }
