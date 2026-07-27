@@ -99,11 +99,13 @@ fn skeleton_of(b: &OpArrayBuilder) -> String {
 
 fn php_eval(skeleton: &str) -> Option<(bool, String)> {
     let seq: u64 = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let name: String = format!("disrobe_php_prec_{}_{seq}.php", std::process::id());
-    let path: std::path::PathBuf = std::env::temp_dir().join(name);
-    std::fs::write(&path, skeleton).ok()?;
+    let purpose: String = format!("disrobe_php_prec_{}_{}", std::process::id(), seq);
+    let (scratch, mut file): (disrobe_core::scratch::ScratchFile, std::fs::File) =
+        disrobe_core::scratch::ScratchFile::create(&purpose, "php").ok()?;
+    let path: std::path::PathBuf = scratch.path().to_path_buf();
+    std::io::Write::write_all(&mut file, skeleton.as_bytes()).ok()?;
+    drop(file);
     let result = Command::new("php").arg("-n").arg(&path).output();
-    let _ = std::fs::remove_file(&path);
     let out = result.ok()?;
     let stdout: String = String::from_utf8_lossy(&out.stdout).trim().to_owned();
     Some((out.status.success(), stdout))

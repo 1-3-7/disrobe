@@ -36,14 +36,13 @@ static RUN_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new
 
 fn run_php_source(php: &Path, source: &str) -> Option<String> {
     let seq: u64 = RUN_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tmp: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_php_diff_{}_{}.php",
-        std::process::id(),
-        seq
-    ));
-    std::fs::write(&tmp, source).ok()?;
+    let purpose: String = format!("disrobe_php_diff_{}_{}", std::process::id(), seq);
+    let (scratch, mut file): (disrobe_core::scratch::ScratchFile, std::fs::File) =
+        disrobe_core::scratch::ScratchFile::create(&purpose, "php").ok()?;
+    let tmp: PathBuf = scratch.path().to_path_buf();
+    std::io::Write::write_all(&mut file, source.as_bytes()).ok()?;
+    drop(file);
     let out: std::io::Result<std::process::Output> = Command::new(php).arg(&tmp).output();
-    let _ = std::fs::remove_file(&tmp);
     let out: std::process::Output = out.ok()?;
     if !out.status.success() {
         eprintln!(

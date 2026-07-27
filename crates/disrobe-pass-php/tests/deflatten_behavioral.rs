@@ -26,17 +26,16 @@ fn php_bin() -> Option<String> {
 }
 
 fn run_php_source(php: &str, source: &[u8]) -> (bool, Vec<u8>) {
-    let dir: PathBuf = std::env::temp_dir();
     let unique: String = format!(
-        "disrobe_deflatten_oracle_{}_{}.php",
+        "disrobe_deflatten_oracle_{}_{}",
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     );
-    let path: PathBuf = dir.join(unique);
-    {
-        let mut f: std::fs::File = std::fs::File::create(&path).expect("create temp php");
-        f.write_all(source).expect("write temp php");
-    }
+    let (scratch, mut f): (disrobe_core::scratch::ScratchFile, std::fs::File) =
+        disrobe_core::scratch::ScratchFile::create(&unique, "php").expect("create temp php");
+    let path: PathBuf = scratch.path().to_path_buf();
+    f.write_all(source).expect("write temp php");
+    drop(f);
     let out: std::process::Output = Command::new(php)
         .arg("-d")
         .arg("error_reporting=0")
@@ -45,7 +44,6 @@ fn run_php_source(php: &str, source: &[u8]) -> (bool, Vec<u8>) {
         .arg(&path)
         .output()
         .expect("spawn php");
-    let _ = std::fs::remove_file(&path);
     (out.status.success(), out.stdout)
 }
 
