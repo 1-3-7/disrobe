@@ -104,19 +104,18 @@ fn python_minor() -> i32 {
         .unwrap_or(14)
 }
 
-fn stage_dir(tag: &str) -> PathBuf {
+fn stage_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0xBBFE_0000);
-    let p: PathBuf = std::env::temp_dir().join(format!(
+    let purpose: String = format!(
         "disrobe-bbfreeze-stage-{tag}-{}-{}",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&p).expect("mkdir stage");
-    p
+    );
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
 }
 
-fn assemble_real_bbfreeze_dist() -> Option<(PathBuf, PathBuf)> {
+fn assemble_real_bbfreeze_dist() -> Option<(disrobe_core::scratch::ScratchDir, PathBuf)> {
     if !has_python() {
         eprintln!("[real_bbfreeze] skipped: python interpreter unavailable on this box");
         return None;
@@ -126,7 +125,8 @@ fn assemble_real_bbfreeze_dist() -> Option<(PathBuf, PathBuf)> {
         let pyc: Vec<u8> = compile_pyc(src)?;
         zip_entries.push((format!("{name}.pyc"), pyc));
     }
-    let dist: PathBuf = stage_dir("dist");
+    let scratch: disrobe_core::scratch::ScratchDir = stage_dir("dist");
+    let dist: PathBuf = scratch.path().to_path_buf();
     let library_zip: Vec<u8> = build_zip(&zip_entries);
     std::fs::write(dist.join("library.zip"), &library_zip).expect("write library.zip");
     let dll_name: String = runtime_dll_name();
@@ -137,22 +137,25 @@ fn assemble_real_bbfreeze_dist() -> Option<(PathBuf, PathBuf)> {
     .expect("write runtime dll");
     let exe: PathBuf = dist.join("hello.exe");
     std::fs::write(&exe, b"MZ\x90\x00bbfreeze-stub-launcher").expect("write stub exe");
-    Some((dist, exe))
+    Some((scratch, exe))
 }
 
-fn out_dir(tag: &str) -> PathBuf {
+fn out_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0xBBFE_F000);
-    std::env::temp_dir().join(format!(
+    let purpose: String = format!(
         "disrobe-bbfreeze-out-{tag}-{}-{}",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
-    ))
+    );
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
 }
 
 #[test]
 fn bbfreeze_real_layout_detects_as_bbfreeze() {
-    let Some((dist, exe)): Option<(PathBuf, PathBuf)> = assemble_real_bbfreeze_dist() else {
+    let Some((_dist_scratch, exe)): Option<(disrobe_core::scratch::ScratchDir, PathBuf)> =
+        assemble_real_bbfreeze_dist()
+    else {
         return;
     };
     let bytes: Vec<u8> = std::fs::read(&exe).expect("read stub");
@@ -162,15 +165,17 @@ fn bbfreeze_real_layout_detects_as_bbfreeze() {
         FreezerKind::Bbfreeze,
         "a stub next to library.zip + pythonNN.dll with no license must classify as bbfreeze; got {det:?}"
     );
-    let _ = std::fs::remove_dir_all(&dist);
 }
 
 #[test]
 fn bbfreeze_extracts_and_recovers_real_module_set() {
-    let Some((dist, exe)): Option<(PathBuf, PathBuf)> = assemble_real_bbfreeze_dist() else {
+    let Some((_dist_scratch, exe)): Option<(disrobe_core::scratch::ScratchDir, PathBuf)> =
+        assemble_real_bbfreeze_dist()
+    else {
         return;
     };
-    let out: PathBuf = out_dir("extract");
+    let out_scratch: disrobe_core::scratch::ScratchDir = out_dir("extract");
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let extraction: BbfreezeExtraction =
         bbfreeze::detect_and_extract(&exe, &out).expect("bbfreeze extraction");
 
@@ -206,17 +211,17 @@ fn bbfreeze_extracts_and_recovers_real_module_set() {
         Some("__main__.pyc"),
         "bbfreeze manifest must mark __main__.pyc as the entry point"
     );
-
-    let _ = std::fs::remove_dir_all(&dist);
-    let _ = std::fs::remove_dir_all(&out);
 }
 
 #[test]
 fn bbfreeze_full_pipeline_recovers_source() {
-    let Some((dist, exe)): Option<(PathBuf, PathBuf)> = assemble_real_bbfreeze_dist() else {
+    let Some((_dist_scratch, exe)): Option<(disrobe_core::scratch::ScratchDir, PathBuf)> =
+        assemble_real_bbfreeze_dist()
+    else {
         return;
     };
-    let out: PathBuf = out_dir("pipeline");
+    let out_scratch: disrobe_core::scratch::ScratchDir = out_dir("pipeline");
+    let out: PathBuf = out_scratch.path().to_path_buf();
     let output: PyfreezeOutput = extract(&exe, &out).expect("pyfreeze extract");
     assert_eq!(output.detection.kind, FreezerKind::Bbfreeze);
     let recovered: BTreeSet<String> = output
@@ -250,6 +255,4 @@ fn bbfreeze_full_pipeline_recovers_source() {
              recover direct source on this build; extraction and marshal-load asserted"
         );
     }
-    let _ = std::fs::remove_dir_all(&dist);
-    let _ = std::fs::remove_dir_all(&out);
 }

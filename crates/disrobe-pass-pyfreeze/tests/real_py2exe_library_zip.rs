@@ -40,14 +40,15 @@ fn sibling_layout_exe() -> PathBuf {
         .join("hello.exe")
 }
 
-fn out_dir(tag: &str) -> PathBuf {
+fn out_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0x70CE_0000);
-    std::env::temp_dir().join(format!(
+    let purpose: String = format!(
         "disrobe-py2exe-libzip-{tag}-{}-{}",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
-    ))
+    );
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
 }
 
 #[test]
@@ -78,7 +79,8 @@ fn py2exe_recovers_full_module_set_from_sibling_library_zip() {
         return;
     }
     let bytes: Vec<u8> = std::fs::read(&exe).expect("read exe");
-    let out: PathBuf = out_dir("extract");
+    let scratch: disrobe_core::scratch::ScratchDir = out_dir("extract");
+    let out: PathBuf = scratch.path().to_path_buf();
     let extraction: Py2exeExtraction =
         detect_and_extract(&bytes, &exe, &out).expect("py2exe extraction");
 
@@ -121,8 +123,6 @@ fn py2exe_recovers_full_module_set_from_sibling_library_zip() {
         "manifest must enumerate the script entry plus all bundled modules, got {}",
         extraction.manifest.entry_count
     );
-
-    let _ = std::fs::remove_dir_all(&out);
 }
 
 #[test]
@@ -133,7 +133,8 @@ fn py2exe_bundled_pyc_are_real_loadable_bytecode() {
         return;
     }
     let bytes: Vec<u8> = std::fs::read(&exe).expect("read exe");
-    let out: PathBuf = out_dir("loadable");
+    let scratch: disrobe_core::scratch::ScratchDir = out_dir("loadable");
+    let out: PathBuf = scratch.path().to_path_buf();
     let extraction: Py2exeExtraction =
         detect_and_extract(&bytes, &exe, &out).expect("py2exe extraction");
 
@@ -164,8 +165,6 @@ fn py2exe_bundled_pyc_are_real_loadable_bytecode() {
          marshal reader; loaded {loaded}, expected at least {}",
         BANDS.len()
     );
-
-    let _ = std::fs::remove_dir_all(&out);
 }
 
 #[test]
@@ -175,7 +174,8 @@ fn py2exe_full_pipeline_extract_recovers_more_than_just_the_script() {
         eprintln!("[real_py2exe_library_zip] skipped: fixture missing");
         return;
     }
-    let out: PathBuf = out_dir("pipeline");
+    let scratch: disrobe_core::scratch::ScratchDir = out_dir("pipeline");
+    let out: PathBuf = scratch.path().to_path_buf();
     let output: PyfreezeOutput = extract(&exe, &out).expect("pyfreeze extract");
     assert_eq!(output.detection.kind, FreezerKind::Py2exe);
     assert!(
@@ -206,5 +206,4 @@ fn py2exe_full_pipeline_extract_recovers_more_than_just_the_script() {
          (recovered={recovered:?})",
         BANDS.len()
     );
-    let _ = std::fs::remove_dir_all(&out);
 }

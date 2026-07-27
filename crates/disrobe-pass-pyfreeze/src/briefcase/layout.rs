@@ -143,7 +143,8 @@ mod tests {
 
     #[test]
     fn probe_rejects_dir_without_briefcase_markers() {
-        let tmp: PathBuf = tempdir();
+        let scratch: disrobe_core::scratch::ScratchDir = tempdir();
+        let tmp: PathBuf = scratch.path().to_path_buf();
         let bin: PathBuf = tmp.join("app.exe");
         std::fs::write(&bin, b"fake").expect("write");
         let err: Error = probe(&bin).expect_err("must fail");
@@ -152,7 +153,8 @@ mod tests {
 
     #[test]
     fn probe_accepts_app_packages_sibling() {
-        let tmp: PathBuf = tempdir();
+        let scratch: disrobe_core::scratch::ScratchDir = tempdir();
+        let tmp: PathBuf = scratch.path().to_path_buf();
         let bin: PathBuf = tmp.join("app.exe");
         std::fs::write(&bin, b"fake").expect("write");
         std::fs::create_dir_all(tmp.join("app_packages")).expect("mkdir");
@@ -162,7 +164,8 @@ mod tests {
 
     #[test]
     fn probe_accepts_python_stdlib_sibling() {
-        let tmp: PathBuf = tempdir();
+        let scratch: disrobe_core::scratch::ScratchDir = tempdir();
+        let tmp: PathBuf = scratch.path().to_path_buf();
         let bin: PathBuf = tmp.join("app.exe");
         std::fs::write(&bin, b"fake").expect("write");
         std::fs::create_dir_all(tmp.join("python-stdlib")).expect("mkdir");
@@ -172,7 +175,8 @@ mod tests {
 
     #[test]
     fn probe_accepts_briefcase_toml_sibling() {
-        let tmp: PathBuf = tempdir();
+        let scratch: disrobe_core::scratch::ScratchDir = tempdir();
+        let tmp: PathBuf = scratch.path().to_path_buf();
         let bin: PathBuf = tmp.join("app.exe");
         std::fs::write(&bin, b"fake").expect("write");
         std::fs::write(tmp.join("briefcase.toml"), b"[tool.briefcase]\n").expect("toml");
@@ -182,7 +186,8 @@ mod tests {
 
     #[test]
     fn walk_collects_python_sources() {
-        let tmp: PathBuf = tempdir();
+        let scratch: disrobe_core::scratch::ScratchDir = tempdir();
+        let tmp: PathBuf = scratch.path().to_path_buf();
         let app: PathBuf = tmp.join("app");
         std::fs::create_dir_all(app.join("pkg")).expect("mkdir");
         std::fs::write(app.join("main.py"), b"print('hi')").expect("write");
@@ -193,15 +198,12 @@ mod tests {
         assert!(entries.iter().any(|e| e.relative_name == "pkg/mod.py"));
     }
 
-    fn tempdir() -> PathBuf {
-        let base: PathBuf = std::env::temp_dir();
+    fn tempdir() -> disrobe_core::scratch::ScratchDir {
         let unique: String = format!(
             "disrobe-briefcase-{}-{}",
             std::process::id(),
             super::counter()
         );
-        let p: PathBuf = base.join(unique);
-        std::fs::create_dir_all(&p).expect("mkdir tempdir");
-        p
+        disrobe_core::scratch::ScratchDir::create(&unique).expect("create scratch dir")
     }
 }

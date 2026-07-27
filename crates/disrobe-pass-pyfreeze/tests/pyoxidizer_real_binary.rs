@@ -574,11 +574,10 @@ fn module_inventory_surfaces_names_and_per_tier_presence() {
     container.extend_from_slice(&[0u8; 8]);
     container.extend_from_slice(&blob);
 
-    let out: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-pyox-inv-{}-{}",
-        std::process::id(),
-        blob.len()
-    ));
+    let purpose: String = format!("disrobe-pyox-inv-{}-{}", std::process::id(), blob.len());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let out: PathBuf = scratch.path().to_path_buf();
     let extraction: PyOxidizerExtraction =
         detect_and_extract(&container, Path::new("inv.exe"), &out).expect("extract");
 
@@ -619,18 +618,14 @@ fn module_inventory_surfaces_names_and_per_tier_presence() {
         json.contains("pkg.leaf"),
         "dotted module names must reach the JSON report"
     );
-
-    let _ = std::fs::remove_dir_all(&out);
 }
 
-fn unique_temp_dir(tag: &str) -> PathBuf {
+fn unique_temp_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let seq: u64 = SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-{tag}-{}-{}", std::process::id(), seq));
-    std::fs::create_dir_all(&dir).expect("mk temp dir");
-    dir
+    let purpose: String = format!("disrobe-{tag}-{}-{}", std::process::id(), seq);
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
 }
 
 fn cpython_marshal_loads_is_code(marshal_path: &Path) -> Option<bool> {
@@ -748,7 +743,8 @@ fn filesystem_relative_siblings_surface_and_marshal_load() {
     let (sibling_pyc, marshalled, real_available): (Vec<u8>, Vec<u8>, bool) =
         real_312_pyc("def greet(who):\n    return f'hi {who}'\n");
 
-    let root: PathBuf = unique_temp_dir("pyox-fsrel");
+    let root_scratch: disrobe_core::scratch::ScratchDir = unique_temp_dir("pyox-fsrel");
+    let root: PathBuf = root_scratch.path().to_path_buf();
     let lib_dir: PathBuf = root.join("lib");
     std::fs::create_dir_all(&lib_dir).expect("mk lib");
     std::fs::write(lib_dir.join("sib.pyc"), &sibling_pyc).expect("write sibling pyc");
@@ -828,8 +824,6 @@ fn filesystem_relative_siblings_surface_and_marshal_load() {
             "ground truth: the surfaced sibling's marshalled body loads as a code object under real CPython marshal.loads"
         );
     }
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -869,7 +863,8 @@ fn packed_resources_legacy_v2_surfaces_modules() {
     );
 
     if real_available {
-        let tmp: PathBuf = unique_temp_dir("pyox-v2");
+        let tmp_scratch: disrobe_core::scratch::ScratchDir = unique_temp_dir("pyox-v2");
+        let tmp: PathBuf = tmp_scratch.path().to_path_buf();
         let body: PathBuf = tmp.join("body.marshal");
         std::fs::write(&body, &bytecode).expect("write marshal body");
         assert_eq!(
@@ -877,6 +872,5 @@ fn packed_resources_legacy_v2_surfaces_modules() {
             Some(true),
             "ground truth: v2-recovered marshalled bytecode loads as a code object under real CPython"
         );
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

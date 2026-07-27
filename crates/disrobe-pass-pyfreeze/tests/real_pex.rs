@@ -34,14 +34,13 @@ fn fixture_path() -> PathBuf {
     p
 }
 
-fn out_dir(tag: &str) -> PathBuf {
-    let mut p: PathBuf = std::env::temp_dir();
-    p.push(format!(
+fn out_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
+    let purpose: String = format!(
         "disrobe-real-pex-{tag}-{pid}-{nonce}",
         pid = std::process::id(),
         nonce = next_nonce()
-    ));
-    p
+    );
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
 }
 
 fn next_nonce() -> u64 {
@@ -79,7 +78,8 @@ fn pex_real_fixture_extracts_all_edge_case_bands_inside_deps_wheel() {
         return;
     }
     let bytes: Vec<u8> = std::fs::read(&path).expect("read fixture");
-    let out: PathBuf = out_dir("extract");
+    let scratch: disrobe_core::scratch::ScratchDir = out_dir("extract");
+    let out: PathBuf = scratch.path().to_path_buf();
     let extraction: PexExtraction =
         detect_and_extract(&bytes, &path, &out).expect("pex extraction");
     let names: BTreeSet<String> = extraction
@@ -105,5 +105,4 @@ fn pex_real_fixture_extracts_all_edge_case_bands_inside_deps_wheel() {
         "PEX-INFO entry_point must reference hello; got {:?}",
         extraction.pex_info.entry_point
     );
-    let _ = std::fs::remove_dir_all(&out);
 }

@@ -81,16 +81,15 @@ fn is_python_runtime_dll(name: &str) -> bool {
 mod tests {
     use super::*;
 
-    fn tempdir(tag: &str) -> PathBuf {
+    fn tempdir(tag: &str) -> disrobe_core::scratch::ScratchDir {
         use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0xBBF0_0000);
-        let p: PathBuf = std::env::temp_dir().join(format!(
+        let purpose: String = format!(
             "disrobe-bbfreeze-layout-{tag}-{}-{}",
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&p).expect("mkdir");
-        p
+        );
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
     }
 
     #[test]
@@ -104,7 +103,8 @@ mod tests {
 
     #[test]
     fn probe_accepts_library_zip_plus_python_dll() {
-        let dir: PathBuf = tempdir("accept");
+        let scratch: disrobe_core::scratch::ScratchDir = tempdir("accept");
+        let dir: PathBuf = scratch.path().to_path_buf();
         let bin: PathBuf = dir.join("app.exe");
         std::fs::write(&bin, b"stub").expect("write");
         std::fs::write(dir.join("library.zip"), b"PK\x05\x06").expect("zip");
@@ -115,7 +115,8 @@ mod tests {
 
     #[test]
     fn probe_rejects_when_only_library_zip() {
-        let dir: PathBuf = tempdir("only-zip");
+        let scratch: disrobe_core::scratch::ScratchDir = tempdir("only-zip");
+        let dir: PathBuf = scratch.path().to_path_buf();
         let bin: PathBuf = dir.join("app.exe");
         std::fs::write(&bin, b"stub").expect("write");
         std::fs::write(dir.join("library.zip"), b"PK\x05\x06").expect("zip");
@@ -124,7 +125,8 @@ mod tests {
 
     #[test]
     fn probe_rejects_cxfreeze_license_layout() {
-        let dir: PathBuf = tempdir("cx");
+        let scratch: disrobe_core::scratch::ScratchDir = tempdir("cx");
+        let dir: PathBuf = scratch.path().to_path_buf();
         let bin: PathBuf = dir.join("app.exe");
         std::fs::write(&bin, b"stub").expect("write");
         std::fs::write(dir.join("library.zip"), b"PK\x05\x06").expect("zip");

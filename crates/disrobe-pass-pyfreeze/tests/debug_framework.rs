@@ -20,14 +20,12 @@ fn fixture_binary() -> PathBuf {
     p
 }
 
-fn out_dir() -> PathBuf {
+fn out_dir() -> disrobe_core::scratch::ScratchDir {
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0x51ED_2A7C);
     let nonce: u64 = N.fetch_add(0x9E37_79B9, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "disrobe-pyfreeze-debug-{}-{nonce}",
-        std::process::id()
-    ))
+    let purpose: String = format!("disrobe-pyfreeze-debug-{}-{nonce}", std::process::id());
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
 }
 
 fn run_harness(debug: Option<&str>, json: bool) -> Output {
@@ -58,14 +56,14 @@ fn harness_entrypoint() {
         return;
     }
     let binary: PathBuf = fixture_binary();
-    let dest: PathBuf = out_dir();
+    let scratch: disrobe_core::scratch::ScratchDir = out_dir();
+    let dest: PathBuf = scratch.path().to_path_buf();
     let out: disrobe_pass_pyfreeze::PyfreezeOutput =
         disrobe_pass_pyfreeze::extract(&binary, &dest).expect("cxfreeze fixture extracts");
     assert_eq!(
         out.detection.kind,
         disrobe_pass_pyfreeze::FreezerKind::CxFreeze
     );
-    let _ = std::fs::remove_dir_all(&dest);
 }
 
 fn fixture_present() -> bool {
