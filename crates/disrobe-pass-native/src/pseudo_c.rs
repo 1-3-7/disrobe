@@ -19,6 +19,7 @@ use crate::error::{Error, Result};
 use crate::structuring;
 
 mod aarch64;
+mod aarch64_callsite;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Reg {
@@ -1183,11 +1184,26 @@ pub struct SretReturn {
     pub size: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallSiteReturnProof {
+    FloatingPoint32,
+    FloatingPoint64,
+    Integer64,
+    UnanimousInteger32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallSiteSignatureProof {
+    pub return_proof: CallSiteReturnProof,
+    pub attributed_sites: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeafRecovery {
     pub source: String,
     pub rust_source: Option<String>,
     pub return_width_bits: u32,
+    pub param_width_bits: Vec<u32>,
     pub params: Vec<Reg>,
     pub fp_params: Vec<ScalarType>,
     pub returns_fp: Option<ScalarType>,
@@ -1196,6 +1212,7 @@ pub struct LeafRecovery {
     pub lifted_switch: bool,
     pub call_targets: Vec<u64>,
     pub sret: Option<SretReturn>,
+    pub call_site_signature: Option<CallSiteSignatureProof>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1239,6 +1256,10 @@ pub fn recover_aarch64_function_with_calls(
     calls: &[ResolvedCall],
 ) -> Result<LeafRecovery> {
     aarch64::recover_with_calls(machine_code, base, calls)
+}
+
+pub fn recover_aarch64_program(object: &[u8]) -> RecoveredProgram {
+    aarch64_callsite::recover(object)
 }
 
 fn no_aarch64_image(_: u64) -> Option<&'static [u8]> {
@@ -1466,8 +1487,12 @@ pub struct RecoveredFunction {
     pub source: String,
     pub rust_source: Option<String>,
     pub return_width_bits: u32,
+    pub param_width_bits: Vec<u32>,
     pub params: Vec<Reg>,
+    pub fp_params: Vec<ScalarType>,
+    pub returns_fp: Option<ScalarType>,
     pub resolved_calls: Vec<u64>,
+    pub call_site_signature: Option<CallSiteSignatureProof>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1560,8 +1585,12 @@ fn recover_program_function(
         source,
         rust_source,
         return_width_bits: rec.return_width_bits,
+        param_width_bits: rec.param_width_bits,
         params: rec.params,
+        fp_params: rec.fp_params,
+        returns_fp: rec.returns_fp,
         resolved_calls: resolved.iter().map(|c: &ResolvedCall| c.target).collect(),
+        call_site_signature: rec.call_site_signature,
     })
 }
 
@@ -2164,9 +2193,10 @@ fn recover_leaf_function_calls_impl(
     let ret: FnReturn = fp_return.map_or(FnReturn::Int(return_width), FnReturn::Fp);
     let signature: FnSignature = FnSignature {
         fp: fp_args,
-        int: params.clone(),
+        int: wide_int_signature(&params),
         vec: Vec::new(),
         ret,
+        exact_integer_types: false,
     };
     let fp_params: Vec<ScalarType> = signature.ordered_param_types();
     let frame_plan: Option<FramePlan> = plan_frame(&structured.body, classify_frame(&insns, abi))?;
@@ -2202,6 +2232,7 @@ fn recover_leaf_function_calls_impl(
         source,
         rust_source,
         return_width_bits: return_width.bits(),
+        param_width_bits: vec![64; params.len()],
         params,
         fp_params,
         returns_fp,
@@ -2210,6 +2241,7 @@ fn recover_leaf_function_calls_impl(
         lifted_switch: false,
         call_targets,
         sret,
+        call_site_signature: None,
     })
 }
 
@@ -2242,9 +2274,10 @@ enum FnReturn {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FnSignature {
     fp: Vec<(Xmm, FpWidth)>,
-    int: Vec<Reg>,
+    int: Vec<(Reg, Width)>,
     vec: Vec<(u8, VecArrangement)>,
     ret: FnReturn,
+    exact_integer_types: bool,
 }
 
 impl FnSignature {
@@ -2257,6 +2290,121 @@ impl FnSignature {
         out.extend(std::iter::repeat_n(ScalarType::Int, self.int.len()));
         out
     }
+}
+
+fn wide_int_signature(params: &[Reg]) -> Vec<(Reg, Width)> {
+    params
+        .iter()
+        .copied()
+        .map(|reg: Reg| (reg, Width::W64))
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallSiteScalar {
+    Integer(Width),
+    FloatingPoint(FpWidth),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CallSiteIdentitySignature {
+    fp_params: Vec<FpWidth>,
+    int_params: Vec<Width>,
+    return_type: CallSiteScalar,
+    proof: CallSiteSignatureProof,
+}
+
+const AARCH64_CALL_SITE_MAX_INSTRUCTIONS: usize = 4096;
+
+fn aarch64_call_site_body_is_bounded(machine_code: &[u8]) -> bool {
+    !machine_code.is_empty()
+        && machine_code.len().is_multiple_of(4)
+        && machine_code.len() <= AARCH64_CALL_SITE_MAX_INSTRUCTIONS * 4
+}
+
+fn recover_call_site_identity(
+    machine_code: &[u8],
+    base: u64,
+    recovered_signature: &CallSiteIdentitySignature,
+) -> Result<LeafRecovery> {
+    if !aarch64_call_site_body_is_bounded(machine_code) {
+        return Err(Error::LlvmIr(
+            "call-site signature evidence is outside the bounded aarch64 lift".to_owned(),
+        ));
+    }
+    let insns: Vec<DisasmInsn> = disassemble(Arch::Aarch64, base, machine_code)?;
+    if insns.is_empty() || !insns.iter().all(|insn: &DisasmInsn| insn.mnemonic == "ret") {
+        return Err(Error::LlvmIr(
+            "call-site signature evidence only applies to a result-free return body".to_owned(),
+        ));
+    }
+    if recovered_signature.fp_params.len() > FP_ARG_ORDER.len()
+        || recovered_signature.int_params.len() > 8
+    {
+        return Err(Error::LlvmIr(
+            "call-site signature evidence exceeds the aapcs64 register argument limit".to_owned(),
+        ));
+    }
+    let fp: Vec<(Xmm, FpWidth)> = recovered_signature
+        .fp_params
+        .iter()
+        .copied()
+        .zip(FP_ARG_ORDER)
+        .map(|(width, register): (FpWidth, Xmm)| (register, width))
+        .collect();
+    let int: Vec<(Reg, Width)> = recovered_signature
+        .int_params
+        .iter()
+        .copied()
+        .zip(Abi::Aapcs64.arg_order().iter().copied())
+        .map(|(width, register): (Width, Reg)| (register, width))
+        .collect();
+    let ret: FnReturn = match recovered_signature.return_type {
+        CallSiteScalar::Integer(width) => FnReturn::Int(width),
+        CallSiteScalar::FloatingPoint(width) => FnReturn::Fp(width),
+    };
+    let signature: FnSignature = FnSignature {
+        fp,
+        int: int.clone(),
+        vec: Vec::new(),
+        ret,
+        exact_integer_types: true,
+    };
+    let body: Block = vec![Node::Return];
+    let aggregates: AggregatePlan = AggregatePlan::default();
+    let source: String = emit_c(&body, &signature, None, None, &aggregates);
+    let rust_source: Option<String> = emit_rust(&body, &signature, None, None, &aggregates);
+    let params: Vec<Reg> = int.iter().map(|(reg, _): &(Reg, Width)| *reg).collect();
+    let param_width_bits: Vec<u32> = int
+        .iter()
+        .map(|(_, width): &(Reg, Width)| width.bits())
+        .collect();
+    let fp_params: Vec<ScalarType> = if signature.fp.is_empty() {
+        Vec::new()
+    } else {
+        signature.ordered_param_types()
+    };
+    let (return_width_bits, returns_fp): (u32, Option<ScalarType>) =
+        match recovered_signature.return_type {
+            CallSiteScalar::Integer(width) => (width.bits(), None),
+            CallSiteScalar::FloatingPoint(FpWidth::F32) => (32, Some(ScalarType::Float)),
+            CallSiteScalar::FloatingPoint(FpWidth::F64) => (64, Some(ScalarType::Double)),
+        };
+    Ok(LeafRecovery {
+        source,
+        rust_source,
+        return_width_bits,
+        param_width_bits,
+        params,
+        fp_params,
+        returns_fp,
+        lifted_split_return: false,
+        lifted_loop: false,
+        lifted_switch: false,
+        call_targets: Vec::new(),
+        sret: None,
+        call_site_signature: Some(recovered_signature.proof.clone()),
+    })
 }
 
 pub fn recover_leaf_function_switch_abi(
@@ -2499,9 +2647,10 @@ fn build_switch_recovery(
     let fp_args: Vec<(Xmm, FpWidth)> = infer_fp_params(&body)?;
     let signature: FnSignature = FnSignature {
         fp: fp_args,
-        int: params.clone(),
+        int: wide_int_signature(&params),
         vec: Vec::new(),
         ret,
+        exact_integer_types: false,
     };
     let returns_fp: Option<ScalarType> = match ret {
         FnReturn::Fp(width) => Some(scalar_of_fp(width)),
@@ -2527,6 +2676,7 @@ fn build_switch_recovery(
         source,
         rust_source,
         return_width_bits: return_width.bits(),
+        param_width_bits: vec![64; params.len()],
         params,
         fp_params: signature.ordered_param_types(),
         returns_fp,
@@ -2535,6 +2685,7 @@ fn build_switch_recovery(
         lifted_switch: true,
         call_targets,
         sret: None,
+        call_site_signature: None,
     })
 }
 
@@ -2731,9 +2882,10 @@ fn build_value_switch_recovery(
     let params: Vec<Reg> = infer_params(&body, abi);
     let signature: FnSignature = FnSignature {
         fp: Vec::new(),
-        int: params.clone(),
+        int: wide_int_signature(&params),
         vec: Vec::new(),
         ret: FnReturn::Int(return_width),
+        exact_integer_types: false,
     };
     let aggregate_plan: AggregatePlan = infer_aggregate_plan(&body, &params, None);
     let source: String = emit_c(&body, &signature, None, None, &aggregate_plan);
@@ -2742,6 +2894,7 @@ fn build_value_switch_recovery(
         source,
         rust_source,
         return_width_bits: return_width.bits(),
+        param_width_bits: vec![64; params.len()],
         params,
         fp_params: signature.ordered_param_types(),
         returns_fp: None,
@@ -2750,6 +2903,7 @@ fn build_value_switch_recovery(
         lifted_switch: true,
         call_targets: Vec::new(),
         sret: None,
+        call_site_signature: None,
     })
 }
 
@@ -12355,11 +12509,21 @@ fn emit_c(
 
     let param_types: Vec<ScalarType> = signature.ordered_param_types();
     let scalar_count: usize = param_types.len();
+    let mut int_param_index: usize = 0;
     let mut param_decls: Vec<String> = param_types
         .iter()
         .enumerate()
         .map(|(i, ty): (usize, &ScalarType)| match ty {
-            ScalarType::Int => format!("uint64_t a{i}"),
+            ScalarType::Int => {
+                let width: Width = signature.int[int_param_index].1;
+                int_param_index += 1;
+                let c_type: &str = if signature.exact_integer_types {
+                    width_c_uint(width)
+                } else {
+                    "uint64_t"
+                };
+                format!("{c_type} a{i}")
+            }
             ScalarType::Double => format!("double a{i}"),
             ScalarType::Float => format!("float a{i}"),
         })
@@ -12413,6 +12577,9 @@ fn emit_c(
     }
     let return_type: String = match (sret, signature.ret) {
         (Some(_), _) => "recovered_sret_t".to_owned(),
+        (None, FnReturn::Int(width)) if signature.exact_integer_types => {
+            width_c_uint(width).to_owned()
+        }
         (None, FnReturn::Int(_)) => "uint64_t".to_owned(),
         (None, FnReturn::Fp(width)) => width.c_type().to_owned(),
         (None, FnReturn::Void) => "void".to_owned(),
@@ -12448,7 +12615,7 @@ fn emit_c(
         match ty {
             ScalarType::Int => {
                 let index: usize = declared_gp.len();
-                let reg: Reg = signature.int[index];
+                let reg: Reg = signature.int[index].0;
                 let _ = writeln!(out, "    uint64_t {} = a{i};", reg_var(reg));
                 declared_gp.push(reg);
             }
@@ -15273,17 +15440,28 @@ fn emit_rust(
     }
 
     let param_types: Vec<ScalarType> = signature.ordered_param_types();
+    let mut int_param_index: usize = 0;
     let params_sig: String = param_types
         .iter()
         .enumerate()
         .map(|(i, ty): (usize, &ScalarType)| match ty {
-            ScalarType::Int => format!("a{i}: u64"),
+            ScalarType::Int => {
+                let width: Width = signature.int[int_param_index].1;
+                int_param_index += 1;
+                let rust_type: &str = if signature.exact_integer_types {
+                    rs_uint_ty(width)
+                } else {
+                    "u64"
+                };
+                format!("a{i}: {rust_type}")
+            }
             ScalarType::Double => format!("a{i}: f64"),
             ScalarType::Float => format!("a{i}: f32"),
         })
         .collect::<Vec<String>>()
         .join(", ");
     let return_type: &str = match signature.ret {
+        FnReturn::Int(width) if signature.exact_integer_types => rs_uint_ty(width),
         FnReturn::Int(_) => "u64",
         FnReturn::Fp(FpWidth::F64) => "f64",
         FnReturn::Fp(FpWidth::F32) => "f32",
@@ -15324,8 +15502,13 @@ fn emit_rust(
         match ty {
             ScalarType::Int => {
                 let index: usize = declared_gp.len();
-                let reg: Reg = signature.int[index];
-                let _ = writeln!(out, "    let mut {}: u64 = a{i};", reg_var(reg));
+                let (reg, width): (Reg, Width) = signature.int[index];
+                let init: String = if signature.exact_integer_types && width != Width::W64 {
+                    format!("u64::from(a{i})")
+                } else {
+                    format!("a{i}")
+                };
+                let _ = writeln!(out, "    let mut {}: u64 = {init};", reg_var(reg));
                 declared_gp.push(reg);
             }
             ScalarType::Double | ScalarType::Float => {
@@ -15372,6 +15555,11 @@ fn emit_rust(
     }
 
     let ret_expr: String = match signature.ret {
+        FnReturn::Int(return_width) if signature.exact_integer_types => format!(
+            "({}) as {}",
+            rs_width_mask(return_width, reg_var(Reg::Rax)),
+            rs_uint_ty(return_width)
+        ),
         FnReturn::Int(return_width) => rs_width_mask(return_width, reg_var(Reg::Rax)),
         FnReturn::Fp(width) => rs_fp_load_xmm(Xmm::Xmm0, width),
         FnReturn::Void | FnReturn::Vec(_) => String::new(),

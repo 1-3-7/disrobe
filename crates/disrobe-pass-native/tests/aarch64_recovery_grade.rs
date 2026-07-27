@@ -16,6 +16,9 @@ use std::time::Duration;
 use disrobe_pass_native::{LeafRecovery, PseudoScalarType as ScalarType, recover_aarch64_function};
 use wait_timeout::ChildExt as _;
 
+#[path = "support/aarch64_callsite_cases.rs"]
+mod aarch64_callsite_cases;
+
 const CASES: &[(&str, &str, &[u8])] = &include!("aarch64_recovery_corpus.inc");
 const INCREMENT_TWO_FP_FUNCTIONS: &[&str] = &[
     "fp_add_f",
