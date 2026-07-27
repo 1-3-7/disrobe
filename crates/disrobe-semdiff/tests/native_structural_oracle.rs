@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_nir::NirModule;
 use disrobe_pass_native::disasm_ir::build_disasm_payload;
 use disrobe_query::disasm_to_nir;
@@ -93,13 +94,11 @@ fn strip_tool() -> Option<&'static str> {
     })
 }
 
-fn scratch_dir() -> PathBuf {
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-semdiff-structural-oracle-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+fn scratch_dir() -> (ScratchDir, PathBuf) {
+    let scratch: ScratchDir =
+        ScratchDir::create("disrobe-semdiff-structural-oracle").expect("create scratch directory");
+    let dir: PathBuf = scratch.path().to_path_buf();
+    (scratch, dir)
 }
 
 fn compile(compiler: &str, opt: &str, source: &Path, out: &Path) -> bool {
@@ -274,7 +273,7 @@ fn stripped_vs_symbolized_reference_matches_are_structurally_grounded() {
         return;
     }
 
-    let scratch: PathBuf = scratch_dir();
+    let (_scratch, scratch): (ScratchDir, PathBuf) = scratch_dir();
     let source_path: PathBuf = scratch.join("battery.c");
     std::fs::write(&source_path, BATTERY_SOURCE).expect("write source");
 

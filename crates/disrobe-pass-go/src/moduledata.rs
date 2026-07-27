@@ -1067,12 +1067,10 @@ mod tests {
 
     #[cfg(not(miri))]
     fn go_strconv_quote(go: &std::path::Path, value: &str) -> String {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static SEQ: AtomicU64 = AtomicU64::new(0);
-        let unique: u64 = SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe_go_quote_{}_{unique}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("disrobe_go_quote")
+                .expect("create scratch directory");
+        let dir: std::path::PathBuf = scratch.path().to_path_buf();
         let src: &str = "package main\nimport (\n\t\"fmt\"\n\t\"os\"\n\t\"strconv\"\n)\nfunc main() {\n\tb, _ := os.ReadFile(os.Args[1])\n\tfmt.Print(strconv.Quote(string(b)))\n}\n";
         let src_path: std::path::PathBuf = dir.join("main.go");
         let in_path: std::path::PathBuf = dir.join("in.bin");
@@ -1090,7 +1088,6 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         );
         let quoted: String = String::from_utf8(out.stdout).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
         quoted
     }
 

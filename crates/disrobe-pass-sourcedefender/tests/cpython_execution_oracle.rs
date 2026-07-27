@@ -6,8 +6,8 @@
 )]
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_sourcedefender::{
     ContainerVariant, LayeredRecovery, SourceRecoverOpts, SourceRecoverOutput,
     decrypt_pye_to_source, recover_from_marshal_bytes, recover_layered,
@@ -20,8 +20,6 @@ const CRAFTED_MODERN_KNOWN_KEY: &[u8] =
     include_bytes!("../../../corpus/python/sourcedefender/crafted_modern_aesgcm_known_key.pye");
 const REAL_LEGACY_BYTECODE_PYE: &[u8] =
     include_bytes!("../../../corpus/python/sourcedefender/legacy_bytecode.pye");
-
-static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn workspace_root() -> PathBuf {
     let mut dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -39,15 +37,11 @@ fn ground_truth_source(rel: &str) -> PathBuf {
         .join(rel)
 }
 
-fn make_tmp(name: &str) -> PathBuf {
-    let seq: u64 = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-sd-cpyexec-{name}-{}-{seq}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    dir
+fn make_tmp(name: &str) -> (ScratchDir, PathBuf) {
+    let purpose: String = format!("disrobe-sd-cpyexec-{name}");
+    let scratch: ScratchDir = ScratchDir::create(&purpose).expect("create scratch directory");
+    let dir: PathBuf = scratch.path().to_path_buf();
+    (scratch, dir)
 }
 
 fn any_cpython() -> Option<String> {
@@ -95,7 +89,7 @@ fn assert_recovered_behaves_like_ground_truth(
         "{label}: ground-truth {ground_truth_rel} must exist in the corpus"
     );
 
-    let tmp: PathBuf = make_tmp(label);
+    let (_scratch, tmp): (ScratchDir, PathBuf) = make_tmp(label);
     let recovered_path: std::path::PathBuf = tmp.join("recovered.py");
     std::fs::write(&recovered_path, recovered_source).expect("write recovered source");
 
@@ -107,7 +101,6 @@ fn assert_recovered_behaves_like_ground_truth(
     let recovered_stderr: std::borrow::Cow<'_, str> =
         String::from_utf8_lossy(&recovered_run.stderr);
     let truth_stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&truth_run.stdout);
-    let _ = std::fs::remove_dir_all(&tmp);
 
     assert!(
         recovered_run.status.success(),

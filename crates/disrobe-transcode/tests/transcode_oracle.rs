@@ -1,9 +1,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
-use disrobe_core::Rung;
+use disrobe_core::{Rung, scratch::ScratchDir};
 use disrobe_ir::io::mmap_envelope_view;
 use disrobe_ir::payload::{
     DisasmInstruction, DisasmPayload, DisasmSymbol, DisasmSymbolKind, InsnEncoding, InsnFlow,
@@ -17,8 +16,6 @@ use disrobe_transcode::{
     verify_transcode, verify_transcode_envelope,
 };
 
-static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
 fn workspace_root() -> PathBuf {
     let mut dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     dir.pop();
@@ -26,10 +23,11 @@ fn workspace_root() -> PathBuf {
     dir
 }
 
-fn temp_path(stem: &str) -> PathBuf {
-    let id: u64 = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let pid: u32 = std::process::id();
-    std::env::temp_dir().join(format!("disrobe-transcode-{stem}-{pid}-{id}.dr"))
+fn temp_path(stem: &str) -> (ScratchDir, PathBuf) {
+    let purpose: String = format!("disrobe-transcode-{stem}");
+    let scratch: ScratchDir = ScratchDir::create(&purpose).expect("create scratch directory");
+    let path: PathBuf = scratch.path().join("payload.dr");
+    (scratch, path)
 }
 
 fn real_corpus_bytes() -> Vec<u8> {
@@ -248,7 +246,7 @@ fn canonical_mmap_view_opens_transcoded_output() {
     let (env, original_payload): (Envelope, RawPayload) = raw_envelope_from_real_bytes();
     let input: Vec<u8> = env.encode().expect("encode");
     let transcoded: disrobe_transcode::Transcoded = transcode_bytes(&input).expect("transcode");
-    let path: PathBuf = temp_path("mmap");
+    let (_scratch, path): (ScratchDir, PathBuf) = temp_path("mmap");
     std::fs::write(&path, &transcoded.bytes).expect("write transcoded");
 
     let view: disrobe_ir::io::MmapView = mmap_envelope_view(&path).expect("mmap canonical output");
@@ -259,7 +257,6 @@ fn canonical_mmap_view_opens_transcoded_output() {
     assert_eq!(recovered, original_payload);
 
     drop(view);
-    let _ = std::fs::remove_file(&path);
 }
 
 #[test]
@@ -333,7 +330,7 @@ fn every_canonical_reader_accepts_the_transcoded_version() {
         Envelope::decode(&transcoded.bytes).expect("in-memory reader accepts transcoded version");
     assert_eq!(via_decode.version, ENVELOPE_FORMAT_VERSION);
 
-    let path: PathBuf = temp_path("readpath");
+    let (_scratch, path): (ScratchDir, PathBuf) = temp_path("readpath");
     std::fs::write(&path, &transcoded.bytes).expect("write transcoded");
     let via_path: Envelope =
         Envelope::read_from_path(&path).expect("path reader accepts transcoded version");
@@ -341,7 +338,6 @@ fn every_canonical_reader_accepts_the_transcoded_version() {
     assert_eq!(via_path.rung, Rung::Raw);
     let recovered: RawPayload = decode_raw(&via_path.hot).expect("path reader hot decodes");
     assert_eq!(recovered, original_payload);
-    let _ = std::fs::remove_file(&path);
 
     let mut forged: Vec<u8> = transcoded.bytes;
     let version_lo: usize = 8;

@@ -5,6 +5,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_sleigh::coverage::{DecodeReport, decode_block_with_coverage};
 
@@ -64,6 +65,7 @@ fn grade_optimization(toolchain: Option<&Toolchain>, optimization: &str) {
     assert_cross_check(&format!("live {optimization}"), &live);
 }
 
+#[allow(clippy::expect_used)]
 fn cross_check(
     toolchain: &Toolchain,
     language: &str,
@@ -71,10 +73,9 @@ fn cross_check(
     source: &Path,
     label: &str,
 ) -> CrossCheck {
-    let directory: PathBuf =
-        env::temp_dir().join(format!("disrobe-sleigh-{}-{}", std::process::id(), label));
-    let create_result: io::Result<()> = fs::create_dir_all(&directory);
-    assert!(create_result.is_ok(), "{create_result:?}");
+    let purpose: String = format!("disrobe-sleigh-{label}");
+    let scratch: ScratchDir = ScratchDir::create(&purpose).expect("create scratch directory");
+    let directory: PathBuf = scratch.path().to_path_buf();
     let object: PathBuf = directory.join("input.o");
     let text: PathBuf = directory.join("input.text");
     let mut compiler_arguments: Vec<OsString> = vec![
@@ -116,12 +117,8 @@ fn cross_check(
         .unwrap_or_default();
     let reference: Vec<String> = objdump_mnemonics(&reference_text);
     let checked: CrossCheck = CrossCheck { reference, report };
-    let remove_object: io::Result<()> = fs::remove_file(&object);
-    let remove_text: io::Result<()> = fs::remove_file(&text);
-    let remove_directory: io::Result<()> = fs::remove_dir(&directory);
-    assert!(remove_object.is_ok(), "{remove_object:?}");
-    assert!(remove_text.is_ok(), "{remove_text:?}");
-    assert!(remove_directory.is_ok(), "{remove_directory:?}");
+    let close_result: io::Result<()> = scratch.close();
+    assert!(close_result.is_ok(), "{close_result:?}");
     checked
 }
 

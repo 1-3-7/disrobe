@@ -9,7 +9,8 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU64, Ordering};
+
+use disrobe_core::scratch::ScratchDir;
 
 pub fn fixture_path(name: &str) -> PathBuf {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -114,8 +115,6 @@ pub fn fixture_with_patched_pclntab(name: &str, patch: impl Fn(&mut [u8])) -> Op
     Some(bytes)
 }
 
-static BUILD_SEQ: AtomicU64 = AtomicU64::new(0);
-
 pub fn go_on_path() -> bool {
     Command::new("go")
         .arg("version")
@@ -141,31 +140,19 @@ fn skip_note(reason: &str) {
 }
 
 pub struct GoBuildScratch {
-    dir: PathBuf,
-}
-
-impl Drop for GoBuildScratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
+    scratch: ScratchDir,
 }
 
 impl GoBuildScratch {
     pub fn path(&self) -> &Path {
-        &self.dir
+        self.scratch.path()
     }
 }
 
 pub fn new_scratch(tag: &str) -> GoBuildScratch {
-    let seq: u64 = BUILD_SEQ.fetch_add(1, Ordering::Relaxed);
-    let mut dir: PathBuf = std::env::temp_dir();
-    dir.push(format!(
-        "disrobe_go_oracle_{tag}_{}_{seq}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create scratch dir");
-    GoBuildScratch { dir }
+    let purpose: String = format!("disrobe_go_oracle_{tag}");
+    let scratch: ScratchDir = ScratchDir::create(&purpose).expect("create scratch directory");
+    GoBuildScratch { scratch }
 }
 
 pub fn write_module(scratch: &GoBuildScratch, module: &str, main_go: &str) {

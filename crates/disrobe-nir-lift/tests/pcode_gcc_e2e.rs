@@ -1,22 +1,19 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU64, Ordering};
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_nir::{
     SurfaceFunction, basic_blocks, emit_pseudo_source, structurize_function, surfacify_function,
 };
 use disrobe_nir_lift::lower_x86_64;
 
-static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
-
 fn compile_text(name: &str, source: &str, extra: &[&str]) -> Vec<u8> {
-    let sequence: u64 = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-    let directory: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-pcode-{}-{sequence}", std::process::id()));
-    fs::create_dir_all(&directory).expect("create gcc test directory");
+    let scratch: ScratchDir =
+        ScratchDir::create("disrobe-pcode").expect("create scratch directory");
+    let directory: PathBuf = scratch.path().to_path_buf();
     let source_path: PathBuf = directory.join(format!("{name}.c"));
     let object_path: PathBuf = directory.join(format!("{name}.o"));
     let binary_path: PathBuf = directory.join(format!("{name}.bin"));
@@ -45,13 +42,8 @@ fn compile_text(name: &str, source: &str, extra: &[&str]) -> Vec<u8> {
     while bytes.last() == Some(&0x90) {
         bytes.pop();
     }
-    remove_directory(&directory);
     assert!(!bytes.is_empty(), "gcc emitted no text for {name}");
     bytes
-}
-
-fn remove_directory(directory: &Path) {
-    fs::remove_dir_all(directory).expect("remove gcc test directory");
 }
 
 fn command_version_contains(command: &str, expected: &[u8]) -> bool {

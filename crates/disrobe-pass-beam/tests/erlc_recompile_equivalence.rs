@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_beam::{
     BeamFile, Disassembly, ErlangSurface, Operand, RecoverySource, disassemble, recover_erlang,
 };
@@ -203,17 +204,12 @@ impl Fidelity {
     }
 }
 
-static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 fn measure(erlc: &Path, erl: Option<&Path>, module: &str, src: &Path) -> Fidelity {
-    let seq: u64 = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let base: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_recompile_eq_{module}_{}_{seq}",
-        std::process::id()
-    ));
+    let purpose: String = format!("disrobe_recompile_eq_{module}");
+    let scratch: ScratchDir = ScratchDir::create(&purpose).expect("create scratch directory");
+    let base: PathBuf = scratch.path().to_path_buf();
     let orig_dir: PathBuf = base.join("orig");
     let rec_dir: PathBuf = base.join("rec");
-    let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&orig_dir).expect("mkdir orig");
     std::fs::create_dir_all(&rec_dir).expect("mkdir rec");
 
@@ -294,7 +290,6 @@ fn measure(erlc: &Path, erl: Option<&Path>, module: &str, src: &Path) -> Fidelit
         );
     }
 
-    let _ = std::fs::remove_dir_all(&base);
     Fidelity {
         module: module.to_owned(),
         recompiled,

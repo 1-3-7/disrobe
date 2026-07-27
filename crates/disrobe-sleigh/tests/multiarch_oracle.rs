@@ -5,6 +5,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_sleigh::coverage::{DecodeReport, decode_block_with_coverage_for_language};
 use disrobe_sleigh::lifter::{ArmMode, Language, RiscVWidth};
@@ -448,6 +449,7 @@ fn live_cross_gcc_functions_match_gnu_objdump() {
     }
 }
 
+#[allow(clippy::expect_used)]
 fn live_cross_check(
     toolchain: &Toolchain,
     label: &str,
@@ -455,10 +457,9 @@ fn live_cross_check(
     language: Language,
     options: &[&str],
 ) -> CrossCheck {
-    let directory: PathBuf =
-        env::temp_dir().join(format!("disrobe-sleigh-{}-{label}", std::process::id()));
-    let create_result: io::Result<()> = fs::create_dir_all(&directory);
-    assert!(create_result.is_ok(), "{create_result:?}");
+    let purpose: String = format!("disrobe-sleigh-{label}");
+    let scratch: ScratchDir = ScratchDir::create(&purpose).expect("create scratch directory");
+    let directory: PathBuf = scratch.path().to_path_buf();
     let object: PathBuf = directory.join("input.o");
     let text: PathBuf = directory.join("input.text");
     let source: PathBuf = fixture_path(source_name);
@@ -498,12 +499,8 @@ fn live_cross_check(
         .map(|output: CapturedOutput| String::from_utf8_lossy(&output.stdout).into_owned())
         .unwrap_or_default();
     let reference: Vec<String> = objdump_mnemonics(&disassembly, language);
-    let remove_object: io::Result<()> = fs::remove_file(&object);
-    let remove_text: io::Result<()> = fs::remove_file(&text);
-    let remove_directory: io::Result<()> = fs::remove_dir(&directory);
-    assert!(remove_object.is_ok(), "{remove_object:?}");
-    assert!(remove_text.is_ok(), "{remove_text:?}");
-    assert!(remove_directory.is_ok(), "{remove_directory:?}");
+    let close_result: io::Result<()> = scratch.close();
+    assert!(close_result.is_ok(), "{close_result:?}");
     CrossCheck { reference, report }
 }
 
