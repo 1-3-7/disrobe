@@ -86,6 +86,50 @@ fn the_pass_entry_point_reaches_a_verdict_on_a_real_native_aot_image() {
 }
 
 #[test]
+fn a_real_native_aot_image_yields_type_names_the_source_declared() {
+    let Some(image): Option<Vec<u8>> = real_sample() else {
+        println!("SKIP: set DISROBE_AOT_SAMPLE to a native aot executable to run this");
+        return;
+    };
+    let report: AotReport = detect(&image);
+    let names: &[String] = &report.recovered_names;
+    assert!(
+        names.len() >= 100,
+        "a real image carries hundreds of metadata names, got {}",
+        names.len()
+    );
+    for declared in ["Widget", "IGauge", "Thermometer"] {
+        assert!(
+            names.iter().any(|n: &String| n == declared),
+            "the probe source declares `{declared}` and the metadata still carries it, \
+             so the reader must surface it; recovered {} names",
+            names.len()
+        );
+    }
+    assert!(
+        names.windows(2).all(|w: &[String]| w[0] < w[1]),
+        "names must be sorted and deduplicated so a caller can search them"
+    );
+    println!(
+        "recovered {} unique metadata names from a stripped native aot image",
+        names.len()
+    );
+}
+
+#[test]
+fn the_metadata_length_prefix_decodes_the_documented_widths() {
+    use disrobe_pass_dotnet::aot::decode_metadata_unsigned;
+    assert_eq!(decode_metadata_unsigned(&[0x0c], 0), Some((6, 1)));
+    assert_eq!(decode_metadata_unsigned(&[0x16], 0), Some((11, 1)));
+    assert_eq!(decode_metadata_unsigned(&[0x1e], 0), Some((15, 1)));
+    assert_eq!(decode_metadata_unsigned(&[0x00], 0), Some((0, 1)));
+    assert_eq!(decode_metadata_unsigned(&[0x01, 0x01], 0), Some((64, 2)));
+    assert_eq!(decode_metadata_unsigned(&[0x01], 0), None);
+    assert_eq!(decode_metadata_unsigned(&[], 0), None);
+    assert_eq!(decode_metadata_unsigned(&[0x0f], 0), None);
+}
+
+#[test]
 fn the_name_needles_alone_do_not_recognize_a_real_image() {
     let Some(image): Option<Vec<u8>> = real_sample() else {
         println!("SKIP: set DISROBE_AOT_SAMPLE to a native aot executable to run this");
