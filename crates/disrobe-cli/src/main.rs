@@ -1457,8 +1457,30 @@ fn parse_u64_auto(s: &str) -> Result<u64, String> {
         )
 }
 
+fn install_crash_reporter() {
+    if cfg!(debug_assertions) || std::env::var_os("RUST_BACKTRACE").is_some() {
+        return;
+    }
+    let previous: Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send> =
+        std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info: &std::panic::PanicHookInfo<'_>| {
+        previous(info);
+        eprintln!();
+        eprintln!(
+            "{} {} crashed. Nothing was written outside the directory you chose.",
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION")
+        );
+        eprintln!(
+            "Run `{} bug-report --out <PATH>` to collect the environment and tooling versions,",
+            env!("CARGO_PKG_NAME")
+        );
+        eprintln!("then attach that file to a report. No diagnostics are sent automatically.");
+    }));
+}
+
 fn main() -> miette::Result<()> {
-    human_panic::setup_panic!();
+    install_crash_reporter();
     color_eyre::install().map_err(|e| miette::miette!("color-eyre install failed: {e}"))?;
 
     let matches: clap::ArgMatches = Cli::command().get_matches();
