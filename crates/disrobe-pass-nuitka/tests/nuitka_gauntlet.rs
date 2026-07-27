@@ -439,9 +439,10 @@ fn emitted_python_compiles_and_ast_matches_original_on_cpython_314() {
     let decomp: NuitkaDecompilation = decompile();
     let source: String = emit_python(surface(&decomp));
 
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-nuitka-gauntlet-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let purpose: String = format!("disrobe-nuitka-gauntlet-{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let file: PathBuf = dir.join("recovered_gauntlet.py");
     std::fs::write(&file, source.as_bytes()).expect("write recovered .py");
 
@@ -489,8 +490,6 @@ fn emitted_python_compiles_and_ast_matches_original_on_cpython_314() {
         "recovered AST must match the clean original signatures: {}",
         String::from_utf8_lossy(&ast_out.stderr)
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -503,9 +502,10 @@ fn recovered_main_body_ast_equals_clean_original_on_cpython_314() {
     let decomp: NuitkaDecompilation = decompile();
     let source: String = emit_python(surface(&decomp));
 
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-nuitka-mainbody-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let purpose: String = format!("disrobe-nuitka-mainbody-{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let recovered: PathBuf = dir.join("recovered_gauntlet.py");
     std::fs::write(&recovered, source.as_bytes()).expect("write recovered .py");
 
@@ -537,6 +537,4 @@ fn recovered_main_body_ast_equals_clean_original_on_cpython_314() {
         "recovered `main` body must AST-match the clean original (intrinsics fully lowered): {}",
         String::from_utf8_lossy(&out.stderr)
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }

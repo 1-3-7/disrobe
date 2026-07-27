@@ -114,9 +114,10 @@ fn emitted_python_compiles_and_parses_on_cpython_314() {
     let s: SurfaceModule = build();
     let source: String = emit_python(&s);
 
-    let dir: std::path::PathBuf =
-        std::env::temp_dir().join(format!("disrobe-surface-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let purpose: String = format!("disrobe-surface-{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: std::path::PathBuf = scratch.path().to_path_buf();
     let file: std::path::PathBuf = dir.join("recovered_hello.py");
     std::fs::write(&file, source.as_bytes()).expect("write temp py");
 
@@ -146,8 +147,6 @@ fn emitted_python_compiles_and_parses_on_cpython_314() {
         "ast gate failed: {}",
         String::from_utf8_lossy(&ast_out.stderr)
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -160,11 +159,13 @@ fn malformed_quoted_annotation_emits_compilable_python_on_cpython_314() {
     surface.functions[0].return_annotation = Some(r"'\x'".to_owned());
     let source: String = emit_python(&surface);
 
-    let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
+    let purpose: String = format!(
         "disrobe-surface-malformed-annotation-{}",
         std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    );
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: std::path::PathBuf = scratch.path().to_path_buf();
     let file: std::path::PathBuf = dir.join("recovered_annotation.py");
     std::fs::write(&file, source.as_bytes()).expect("write temp py");
 
@@ -178,8 +179,6 @@ fn malformed_quoted_annotation_emits_compilable_python_on_cpython_314() {
         "compile failed: {}",
         String::from_utf8_lossy(&compile_out.stderr)
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -192,11 +191,10 @@ fn nul_quoted_annotation_emits_compilable_python_on_cpython_314() {
     surface.functions[0].return_annotation = Some("'a\0b'".to_owned());
     let source: String = emit_python(&surface);
 
-    let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-surface-nul-annotation-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let purpose: String = format!("disrobe-surface-nul-annotation-{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: std::path::PathBuf = scratch.path().to_path_buf();
     let file: std::path::PathBuf = dir.join("recovered_annotation.py");
     std::fs::write(&file, source.as_bytes()).expect("write temp py");
 
@@ -210,8 +208,6 @@ fn nul_quoted_annotation_emits_compilable_python_on_cpython_314() {
         "compile failed: {}",
         String::from_utf8_lossy(&compile_out.stderr)
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -224,11 +220,10 @@ fn integer_attribute_annotation_emits_compilable_python_on_cpython_314() {
     surface.functions[0].return_annotation = Some("1.foo".to_owned());
     let source: String = emit_python(&surface);
 
-    let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-surface-integer-annotation-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let purpose: String = format!("disrobe-surface-integer-annotation-{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: std::path::PathBuf = scratch.path().to_path_buf();
     let file: std::path::PathBuf = dir.join("recovered_annotation.py");
     std::fs::write(&file, source.as_bytes()).expect("write temp py");
 
@@ -242,6 +237,4 @@ fn integer_attribute_annotation_emits_compilable_python_on_cpython_314() {
         "compile failed: {}",
         String::from_utf8_lossy(&compile_out.stderr)
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }

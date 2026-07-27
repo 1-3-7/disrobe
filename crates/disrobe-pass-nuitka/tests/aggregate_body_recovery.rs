@@ -223,9 +223,10 @@ fn lifted_main_bodies_behave_correctly_on_cpython_314() {
 
     let source: String = emit_python(&main_surface);
 
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-nuitka-main-body-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let purpose: String = format!("disrobe-nuitka-main-body-{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let file: PathBuf = dir.join("recovered_main.py");
     std::fs::write(&file, source.as_bytes()).expect("write recovered_main.py");
 
@@ -289,6 +290,4 @@ print('MAIN_BODY_OK')
         stdout.contains("MAIN_BODY_OK"),
         "behavioral oracle did not confirm: {stdout}"
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }

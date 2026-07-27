@@ -193,9 +193,10 @@ fn behavioral_gate_fib_greet_main_against_cpython() {
     let s: SurfaceModule = build_with_lifting();
     let source: String = emit_python(&s);
 
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-body-lift-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let purpose: String = format!("disrobe-body-lift-{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
     let file: PathBuf = dir.join("recovered_hello.py");
     std::fs::write(&file, source.as_bytes()).expect("write recovered.py");
 
@@ -324,6 +325,4 @@ print('GREET:hello, world')
         fib_is_stub, "False",
         "fib body must NOT be a single-statement ellipsis stub"
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }

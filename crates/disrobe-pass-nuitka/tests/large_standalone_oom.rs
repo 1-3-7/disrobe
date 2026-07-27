@@ -127,10 +127,10 @@ fn large_standalone_native_disasm_is_bounded_and_completes() {
         "no onefile payload in a standalone"
     );
 
-    let out_path: std::path::PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-large-standalone-{}.asm",
-        std::process::id()
-    ));
+    let purpose: String = format!("disrobe-large-standalone-{}", std::process::id());
+    let (scratch, _file): (disrobe_core::scratch::ScratchFile, std::fs::File) =
+        disrobe_core::scratch::ScratchFile::create(&purpose, "asm").expect("create scratch file");
+    let out_path: std::path::PathBuf = scratch.path().to_path_buf();
     let disasm: disrobe_pass_nuitka::NativeDisasm =
         disrobe_pass_nuitka::disassemble_module_to_file("<standalone>", &image, &out_path)
             .expect("streamed disasm produced");
@@ -161,8 +161,6 @@ fn large_standalone_native_disasm_is_bounded_and_completes() {
         buf
     };
     assert!(header.contains("push"), "real x86 mnemonics streamed");
-
-    let _ = std::fs::remove_file(&out_path);
 }
 
 #[test]

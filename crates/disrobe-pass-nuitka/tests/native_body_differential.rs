@@ -93,25 +93,18 @@ def long_constant_return_function_name_for_digest_metadata(value):
 
 #[derive(Debug)]
 struct TestDir {
-    path: PathBuf,
+    scratch: disrobe_core::scratch::ScratchDir,
 }
 
 impl TestDir {
     fn create(prefix: &str) -> Self {
-        let path: PathBuf = std::env::temp_dir().join(format!("{prefix}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&path);
-        std::fs::create_dir_all(&path).expect("create temp dir");
-        Self { path }
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create(prefix).expect("create scratch dir");
+        Self { scratch }
     }
 
     fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
+        self.scratch.path()
     }
 }
 
