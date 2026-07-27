@@ -28,14 +28,10 @@ fn lua_bin(name: &str) -> Option<String> {
     }
 }
 
-fn scratch_dir() -> PathBuf {
+fn scratch_dir() -> disrobe_core::scratch::ScratchDir {
     let seq: u64 = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_lua_float_type-{}-{seq}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    let purpose: String = format!("disrobe_lua_float_type-{}-{seq}", std::process::id());
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
 }
 
 fn compile(luac: &str, src: &Path, out: &Path) -> bool {
@@ -107,7 +103,8 @@ fn lua54_float_literals_keep_float_type_after_recovery() {
         eprintln!("skip: lua 5.4 interpreter not found on box");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let src: PathBuf = dir.join("f.lua");
     std::fs::write(&src, FIXTURE).expect("write fixture");
     let original: PathBuf = dir.join("f.luac");

@@ -59,12 +59,10 @@ fn toolchain_54() -> Option<Toolchain> {
     Some(Toolchain { luac, lua })
 }
 
-fn scratch_dir() -> PathBuf {
+fn scratch_dir() -> disrobe_core::scratch::ScratchDir {
     let seq: u64 = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_lua_reexec-{}-{seq}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    let purpose: String = format!("disrobe_lua_reexec-{}-{seq}", std::process::id());
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
 }
 
 fn compile(luac: &str, src: &Path, out: &Path) -> bool {
@@ -139,7 +137,8 @@ struct LaneResult {
 }
 
 fn run_lane(tc: &Toolchain) -> LaneResult {
-    let dir: PathBuf = scratch_dir();
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let mut res: LaneResult = LaneResult {
         total: 0,
         compiled: 0,
@@ -281,7 +280,8 @@ fn vararg_table_constructor_reexecutes_lua_5_4() {
 }
 
 fn assert_vararg_table_constructor_reexecutes(tc: &Toolchain) {
-    let dir: PathBuf = scratch_dir();
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let src: PathBuf = dir.join("vararg_table.lua");
     std::fs::write(&src, VARARG_TABLE_PROGRAM).expect("write source");
     let bc: PathBuf = dir.join("vararg_table.luac");
@@ -307,7 +307,8 @@ fn goto_edges_preserved_not_dropped_lua_5_4() {
         eprintln!("skip: lua 5.4 toolchain not found");
         return;
     };
-    let dir: PathBuf = scratch_dir();
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let src: PathBuf = dir.join("goto_prog.lua");
     std::fs::write(&src, GOTO_PROGRAM).expect("write goto src");
     let bc: PathBuf = dir.join("goto_prog.luac");

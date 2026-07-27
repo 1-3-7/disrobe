@@ -59,12 +59,10 @@ fn toolchain_54() -> Option<Toolchain> {
     Some(Toolchain { luac, lua })
 }
 
-fn scratch_dir() -> PathBuf {
+fn scratch_dir() -> disrobe_core::scratch::ScratchDir {
     let seq: u64 = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_lua_divmod-{}-{seq}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    let purpose: String = format!("disrobe_lua_divmod-{}-{seq}", std::process::id());
+    disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
 }
 
 fn compile(luac: &str, src: &Path, out: &Path) -> bool {
@@ -144,7 +142,8 @@ fn recover_body(tc: &Toolchain, dir: &Path, name: &str, source: &str) -> String 
 }
 
 fn assert_reexec_equivalent(tc: &Toolchain, name: &str, source: &str, must_contain: &[&str]) {
-    let dir: PathBuf = scratch_dir();
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
     let body: String = recover_body(tc, &dir, name, source);
     for token in must_contain {
         assert!(

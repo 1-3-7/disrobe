@@ -75,20 +75,20 @@ fn recovered_body_reparses_under_real_lua() {
         .take_while(|l: &&str| l.trim() != "end")
         .collect::<Vec<&str>>()
         .join("\n");
-    let mut checker: PathBuf = std::env::temp_dir();
-    checker.push(format!("disrobe_reserved_{}.lua", std::process::id()));
+    let purpose: String = format!("disrobe_reserved_{}", std::process::id());
+    let (scratch, mut file): (disrobe_core::scratch::ScratchFile, fs::File) =
+        disrobe_core::scratch::ScratchFile::create(&purpose, "lua").expect("create scratch file");
+    let checker: PathBuf = scratch.path().to_path_buf();
     let script: String = format!(
         "local chunk = [==[\n{body}\n]==]\nlocal ok, err = load(chunk)\nif not ok then\n  io.stderr:write(err)\n  os.exit(1)\nend\n"
     );
-    {
-        let mut f: fs::File = fs::File::create(&checker).expect("write checker script");
-        f.write_all(script.as_bytes()).expect("write script bytes");
-    }
+    file.write_all(script.as_bytes())
+        .expect("write script bytes");
+    drop(file);
     let status = Command::new(&interp)
         .arg(&checker)
         .output()
         .expect("run lua checker");
-    let _ = fs::remove_file(&checker);
     assert!(
         status.status.success(),
         "recovered body must reparse under real lua; body was:\n{body}\nstderr:\n{}",
