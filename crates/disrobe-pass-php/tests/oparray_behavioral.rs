@@ -92,14 +92,13 @@ static RECOVERED_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 
 fn run_php_source(php: &Path, source: &str) -> Option<String> {
     let seq: u64 = RECOVERED_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tmp: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_recovered_{}_{}.php",
-        std::process::id(),
-        seq
-    ));
-    std::fs::write(&tmp, source).ok()?;
+    let purpose: String = format!("disrobe_recovered_{}_{}", std::process::id(), seq);
+    let (scratch, mut file): (disrobe_core::scratch::ScratchFile, std::fs::File) =
+        disrobe_core::scratch::ScratchFile::create(&purpose, "php").ok()?;
+    let tmp: PathBuf = scratch.path().to_path_buf();
+    std::io::Write::write_all(&mut file, source.as_bytes()).ok()?;
+    drop(file);
     let result: Option<String> = run_php(php, &tmp);
-    let _ = std::fs::remove_file(&tmp);
     result
 }
 
@@ -178,8 +177,10 @@ fn behavioral_roundtrip(sample: &str) {
         panic!("could not run original {sample}.php");
     };
 
-    let out_dir: PathBuf = std::env::temp_dir().join("disrobe_oparray_oracle");
-    std::fs::create_dir_all(&out_dir).expect("mkdir oracle tmp");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_oparray_oracle")
+            .expect("mkdir oracle tmp");
+    let out_dir: PathBuf = scratch.path().to_path_buf();
     let dzoa: PathBuf = out_dir.join(format!("{sample}.dzoa"));
     let emitted: Result<(), String> = emit_dzoa(&php, &dll, &src, &dzoa);
     if let Err(diag) = emitted {
@@ -253,8 +254,10 @@ fn emit_real_dump_versioned(sample: &str, force_version: Option<u8>) -> Option<R
         eprintln!("skip: sample {sample} absent");
         return None;
     }
-    let out_dir: PathBuf = std::env::temp_dir().join("disrobe_oparray_oracle");
-    std::fs::create_dir_all(&out_dir).expect("mkdir oracle tmp");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_oparray_oracle")
+            .expect("mkdir oracle tmp");
+    let out_dir: PathBuf = scratch.path().to_path_buf();
     let seq: u64 = RECOVERED_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let pid: u32 = std::process::id();
     let src: PathBuf = out_dir.join(format!("{sample}_{pid}_{seq}.php"));
@@ -267,12 +270,9 @@ fn emit_real_dump_versioned(sample: &str, force_version: Option<u8>) -> Option<R
             "skip: this php/opcache build emits no op_array dump for {sample}; the path is exercised on builds whose opcache honors opt_debug_level.\n{diag}\n\n{}",
             environment_diagnostics(&php)
         );
-        let _ = std::fs::remove_file(&src);
         return None;
     }
     let bytes: Vec<u8> = std::fs::read(&dzoa).expect("read dzoa");
-    let _ = std::fs::remove_file(&dzoa);
-    let _ = std::fs::remove_file(&src);
     Some(RealDump {
         php,
         original_stdout,
