@@ -237,9 +237,14 @@ mod tests {
 
     #[test]
     fn walk_corpus_ignores_excessively_deep_entries() {
-        let base: PathBuf =
-            std::env::temp_dir().join(format!("disrobe-validator-depth-{}", std::process::id()));
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&base);
+        let scratch_result: std::io::Result<disrobe_core::scratch::ScratchDir> =
+            disrobe_core::scratch::ScratchDir::create("disrobe-validator-depth");
+        assert!(scratch_result.is_ok(), "create scratch directory");
+        let Ok(scratch): Result<disrobe_core::scratch::ScratchDir, std::io::Error> = scratch_result
+        else {
+            return;
+        };
+        let base: PathBuf = scratch.path().to_path_buf();
         let mut dir: PathBuf = base.clone();
         for idx in 0..70usize {
             dir = dir.join(format!("d{idx}"));
@@ -250,6 +255,5 @@ mod tests {
         assert!(std::fs::write(js_dir.join("sample.js"), b"var x = 1;").is_ok());
         let entries: Vec<CorpusEntry> = walk_corpus(&base);
         assert!(entries.is_empty(), "unexpected entries: {entries:?}");
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&base);
     }
 }

@@ -100,21 +100,14 @@ mod tests {
         MAX_MARSHAL_BODY_BYTES, PYC_HEADER_LEN, WrittenPyc, blake3_hex, checked_pyc_len,
         ensure_writable, pyc_header, write_pyc,
     };
+    use disrobe_core::scratch::ScratchDir;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    fn temp_dir() -> PathBuf {
-        let n: u64 = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let base: PathBuf = std::env::temp_dir().join(format!(
-            "disrobe_cextract_test_{}_{}",
-            std::process::id(),
-            n
-        ));
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
-        base
+    fn temp_dir() -> (ScratchDir, PathBuf) {
+        let scratch: ScratchDir =
+            ScratchDir::create("disrobe_cextract_test").expect("create scratch directory");
+        let base: PathBuf = scratch.path().to_path_buf();
+        (scratch, base)
     }
 
     #[test]
@@ -130,7 +123,7 @@ mod tests {
 
     #[test]
     fn write_pyc_writes_header_plus_body_and_filename_carries_hash_prefix() {
-        let dir: PathBuf = temp_dir();
+        let (_scratch, dir): (ScratchDir, PathBuf) = temp_dir();
         let body: [u8; 3] = [0x63, 0x00, 0x00];
         let magic: [u8; 4] = [0xa7, 0x0d, 0x0d, 0x0a];
         let w: WrittenPyc = write_pyc(&dir, "hello", 0, &body, magic).unwrap();
@@ -147,14 +140,12 @@ mod tests {
         assert!(filename.to_lowercase().ends_with(".pyc"));
         let prefix_present: bool = w.blake3_hex.get(..16).is_some_and(|p| filename.contains(p));
         assert!(prefix_present);
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn ensure_writable_round_trip_creates_dir_and_passes() {
-        let dir: PathBuf = temp_dir();
+        let (_scratch, dir): (ScratchDir, PathBuf) = temp_dir();
         ensure_writable(&dir).unwrap();
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -166,12 +157,11 @@ mod tests {
 
     #[test]
     fn write_pyc_distinct_bodies_have_distinct_filenames() {
-        let dir: PathBuf = temp_dir();
+        let (_scratch, dir): (ScratchDir, PathBuf) = temp_dir();
         let magic: [u8; 4] = [0xa7, 0x0d, 0x0d, 0x0a];
         let w1: WrittenPyc = write_pyc(&dir, "x", 0, b"alpha", magic).unwrap();
         let w2: WrittenPyc = write_pyc(&dir, "x", 0, b"beta", magic).unwrap();
         assert_ne!(w1.path, w2.path);
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

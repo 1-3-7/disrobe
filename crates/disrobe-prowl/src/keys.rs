@@ -528,8 +528,10 @@ mod tests {
 
     #[test]
     fn config_file_parses_keys_table() {
-        let dir: PathBuf = std::env::temp_dir().join(format!("prowl-keys-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("prowl-keys")
+                .expect("create scratch directory");
+        let dir: PathBuf = scratch.path().to_path_buf();
         let path: PathBuf = dir.join("prowl.toml");
         std::fs::write(
             &path,
@@ -546,14 +548,14 @@ mod tests {
             keys.get(&Source::Urlscan).map(String::as_str),
             Some("cfg-us-key-yyyyyyyyy")
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn oversized_config_file_is_refused() {
-        let dir: PathBuf =
-            std::env::temp_dir().join(format!("prowl-keys-big-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("prowl-keys-big")
+                .expect("create scratch directory");
+        let dir: PathBuf = scratch.path().to_path_buf();
         let path: PathBuf = dir.join("prowl.toml");
         let text: String = "x".repeat((MAX_CONFIG_BYTES + 1) as usize);
         std::fs::write(&path, text).unwrap();
@@ -567,14 +569,14 @@ mod tests {
                 ..
             } if bytes == MAX_CONFIG_BYTES + 1
         ));
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn config_reader_enforces_actual_read_cap() {
-        let dir: PathBuf =
-            std::env::temp_dir().join(format!("prowl-keys-read-cap-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("prowl-keys-read-cap")
+                .expect("create scratch directory");
+        let dir: PathBuf = scratch.path().to_path_buf();
         let path: PathBuf = dir.join("prowl.toml");
         std::fs::write(&path, "abcdef").unwrap();
         let err: KeyError = read_config_text(&path, 5).unwrap_err();
@@ -586,7 +588,6 @@ mod tests {
                 ..
             } if bytes == 6
         ));
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(unix)]
@@ -602,13 +603,14 @@ mod tests {
     #[test]
     fn world_readable_config_is_refused() {
         use std::os::unix::fs::PermissionsExt as _;
-        let dir: PathBuf = std::env::temp_dir().join(format!("prowl-perms-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("prowl-perms")
+                .expect("create scratch directory");
+        let dir: PathBuf = scratch.path().to_path_buf();
         let path: PathBuf = dir.join("prowl.toml");
         std::fs::write(&path, "[keys]\nvirustotal = \"leaky-key-wwwwwwwwww\"\n").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         let err: KeyError = config_keys_at(&path).unwrap_err();
         assert!(matches!(err, KeyError::ConfigPermissions { .. }));
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

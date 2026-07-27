@@ -1,8 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_typerec::CellStore;
 use disrobe_typerec::cfg;
 use disrobe_typerec::decode::decode_all;
@@ -324,12 +325,13 @@ fn o2_indexed_stack_fixture_matches_dwarf_offsets_and_widths() {
         eprintln!("skipping: clang and objcopy are required for the indexed ELF fixture");
         return;
     }
-    let work: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_typerec_indexed_{}", std::process::id()));
-    if std::fs::create_dir_all(&work).is_err() {
+    let scratch: ScratchDir = if let Ok(scratch) = ScratchDir::create("disrobe_typerec_indexed") {
+        scratch
+    } else {
         eprintln!("skipping: could not create a working directory");
         return;
-    }
+    };
+    let work: PathBuf = scratch.path().to_path_buf();
     let unstripped: PathBuf = work.join("indexed.unstripped.elf");
     let stripped: PathBuf = work.join("indexed.stripped.elf");
     let built: bool = run(Command::new("clang")
@@ -348,7 +350,6 @@ fn o2_indexed_stack_fixture_matches_dwarf_offsets_and_widths() {
         .arg(&unstripped)
         .arg(indexed_source_path()));
     if !built {
-        cleanup(&work);
         eprintln!("skipping: clang could not build the indexed ELF fixture on this host");
         return;
     }
@@ -357,7 +358,6 @@ fn o2_indexed_stack_fixture_matches_dwarf_offsets_and_widths() {
         .arg(&unstripped)
         .arg(&stripped))
     {
-        cleanup(&work);
         eprintln!("skipping: objcopy could not strip the indexed ELF fixture on this host");
         return;
     }
@@ -365,14 +365,12 @@ fn o2_indexed_stack_fixture_matches_dwarf_offsets_and_widths() {
         .ok()
         .and_then(|bytes: Vec<u8>| dwarf_gt::load(&bytes).ok())
     else {
-        cleanup(&work);
         panic!("freshly built indexed fixture must carry DWARF");
     };
     let Some((base, text)): Option<(u64, Vec<u8>)> = std::fs::read(&stripped)
         .ok()
         .and_then(|bytes: Vec<u8>| dwarf_gt::load_text(&bytes).ok())
     else {
-        cleanup(&work);
         panic!("freshly stripped indexed fixture must expose .text");
     };
     let functions: Vec<dwarf_gt::GroundTruthFunction> = ground_truth
@@ -391,7 +389,6 @@ fn o2_indexed_stack_fixture_matches_dwarf_offsets_and_widths() {
         .find(|function: &&dwarf_gt::GroundTruthFunction| function.name == "indexed_pair")
         .cloned()
     else {
-        cleanup(&work);
         eprintln!("skipping: this build did not keep indexed_pair as a standalone function");
         return;
     };
@@ -418,13 +415,10 @@ fn o2_indexed_stack_fixture_matches_dwarf_offsets_and_widths() {
         fields.insert((displacement, cell));
     }
     if !has_indexed_rbp_memory(&image.text, image.text_base) || fields.len() != 2 {
-        cleanup(&work);
         eprintln!("skipping: this build did not emit the expected two scale-8 indexed rbp fields");
         return;
     }
     let report: StructGradeReport = grade::grade_struct_image(&image);
-    cleanup(&work);
-
     let cells: BTreeSet<TypeVar> = fields
         .iter()
         .map(|(_, cell): &(i64, TypeVar)| *cell)
@@ -446,12 +440,13 @@ fn recompiled_struct_corpus_reproduces_perfect_layout() {
         eprintln!("skipping: gcc and objcopy are required for the recompile path");
         return;
     }
-    let work: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_typerec_struct_{}", std::process::id()));
-    if std::fs::create_dir_all(&work).is_err() {
+    let scratch: ScratchDir = if let Ok(scratch) = ScratchDir::create("disrobe_typerec_struct") {
+        scratch
+    } else {
         eprintln!("skipping: could not create a working directory");
         return;
-    }
+    };
+    let work: PathBuf = scratch.path().to_path_buf();
     let unstripped: PathBuf = work.join("struct.unstripped.exe");
     let stripped: PathBuf = work.join("struct.stripped.exe");
 
@@ -468,7 +463,6 @@ fn recompiled_struct_corpus_reproduces_perfect_layout() {
         .arg(&unstripped)
         .arg(source_path()));
     if !built {
-        cleanup(&work);
         eprintln!("skipping: gcc could not build the struct corpus on this host");
         return;
     }
@@ -477,7 +471,6 @@ fn recompiled_struct_corpus_reproduces_perfect_layout() {
         .arg(&unstripped)
         .arg(&stripped))
     {
-        cleanup(&work);
         eprintln!("skipping: objcopy could not strip on this host");
         return;
     }
@@ -486,14 +479,12 @@ fn recompiled_struct_corpus_reproduces_perfect_layout() {
         .ok()
         .and_then(|bytes: Vec<u8>| dwarf_gt::load(&bytes).ok())
     else {
-        cleanup(&work);
         panic!("freshly built unstripped binary must carry DWARF");
     };
     let Some((base, text)): Option<(u64, Vec<u8>)> = std::fs::read(&stripped)
         .ok()
         .and_then(|bytes: Vec<u8>| dwarf_gt::load_text(&bytes).ok())
     else {
-        cleanup(&work);
         panic!("freshly stripped binary must expose .text");
     };
 
@@ -503,8 +494,6 @@ fn recompiled_struct_corpus_reproduces_perfect_layout() {
         functions: ground_truth.functions,
     };
     let report: StructGradeReport = grade::grade_struct_image(&image);
-    cleanup(&work);
-
     if report.aggregates_total == 0 {
         eprintln!(
             "skipping: the freshly built struct corpus exposed no gradeable dwarf aggregates on this host toolchain (dwarf_gt read no aggregate members from this gcc's debug info); the committed-fixture struct grade tests carry the layout floors"
@@ -518,8 +507,4 @@ fn recompiled_struct_corpus_reproduces_perfect_layout() {
     assert!((report.offset.recall() - 1.0).abs() < f64::EPSILON);
     assert!((report.width.precision() - 1.0).abs() < f64::EPSILON);
     assert!((report.width.recall() - 1.0).abs() < f64::EPSILON);
-}
-
-fn cleanup(work: &Path) {
-    let _ = std::fs::remove_dir_all(work);
 }

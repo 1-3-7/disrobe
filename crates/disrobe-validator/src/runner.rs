@@ -639,23 +639,22 @@ mod tests {
 
     #[test]
     fn bounded_file_reader_rejects_limit_overrun() {
-        let base: std::path::PathBuf =
-            std::env::temp_dir().join("disrobe_validator_read_limit_test");
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("disrobe_validator_read_limit_test")
+                .expect("create scratch directory");
+        let base: std::path::PathBuf = scratch.path().to_path_buf();
         let path: std::path::PathBuf = base.join("sample.bin");
         std::fs::write(&path, b"abcd").unwrap();
         let err: String = read_bounded_file(&path, 3).expect_err("limit must reject");
         assert!(err.contains("exceeds 3 bytes"));
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
     fn collect_files_stops_at_file_cap() {
-        let base: std::path::PathBuf =
-            std::env::temp_dir().join("disrobe_validator_collect_cap_test");
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("disrobe_validator_collect_cap_test")
+                .expect("create scratch directory");
+        let base: std::path::PathBuf = scratch.path().to_path_buf();
         for i in 0..4usize {
             std::fs::write(base.join(format!("{i}.bin")), [u8::try_from(i).unwrap()]).unwrap();
         }
@@ -664,22 +663,20 @@ mod tests {
         let err: String = collect_files(&base, &mut out, 0).expect_err("file cap must reject");
         assert!(err.contains("file cap"));
         assert_eq!(out.len(), MAX_HASH_FILES);
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
     fn hash_dir_tree_reports_file_read_errors() {
-        let base: std::path::PathBuf =
-            std::env::temp_dir().join("disrobe_validator_hash_read_error_test");
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("disrobe_validator_hash_read_error_test")
+                .expect("create scratch directory");
+        let base: std::path::PathBuf = scratch.path().to_path_buf();
         let path: std::path::PathBuf = base.join("sample.bin");
         std::fs::write(&path, b"abcd").unwrap();
         let err: String =
             hash_dir_tree_with_file_limit(&base, 3).expect_err("read cap must reject");
         assert!(err.contains("sample.bin"));
         assert!(err.contains("exceeds 3 bytes"));
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -708,9 +705,10 @@ mod tests {
 
     #[test]
     fn collect_files_skips_symlinked_dirs() {
-        let base: std::path::PathBuf =
-            std::env::temp_dir().join("disrobe_validator_collect_symlink_test");
-        let _ = std::fs::remove_dir_all(&base);
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("disrobe_validator_collect_symlink_test")
+                .expect("create scratch directory");
+        let base: std::path::PathBuf = scratch.path().to_path_buf();
         let root: std::path::PathBuf = base.join("root");
         let outside: std::path::PathBuf = base.join("outside");
         std::fs::create_dir_all(&root).unwrap();
@@ -718,13 +716,11 @@ mod tests {
         std::fs::write(outside.join("hidden.bin"), b"hidden").unwrap();
         let link: std::path::PathBuf = root.join("linked");
         if create_dir_symlink(&outside, &link).is_err() {
-            let _ = std::fs::remove_dir_all(&base);
             return;
         }
         let mut out: Vec<std::path::PathBuf> = Vec::new();
         collect_files(&root, &mut out, 0).unwrap();
         assert!(out.is_empty(), "unexpected entries: {out:?}");
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[cfg(unix)]

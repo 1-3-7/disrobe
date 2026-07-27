@@ -9,6 +9,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_pyinstaller::{
     ExtractOutput, ExtractedEntry, ProtectionSignal, PyInstallerManifest, ZipperCompression,
     build_manifest, extract_archive,
@@ -188,12 +189,9 @@ fn cli_extract_json_manifest_reports_pyc_zipper_decompression() {
     };
 
     let archive: Vec<u8> = assemble_zipped_module_carchive();
-    let tmp: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-pyc-zipper-{}-{}",
-        std::process::id(),
-        archive.len()
-    ));
-    std::fs::create_dir_all(&tmp).expect("create scratch dir");
+    let scratch: ScratchDir =
+        ScratchDir::create("disrobe-pyc-zipper").expect("create scratch directory");
+    let tmp: PathBuf = scratch.path().to_path_buf();
     let input: PathBuf = tmp.join("zipped_app.bin");
     let out_dir: PathBuf = tmp.join("extracted");
     std::fs::write(&input, &archive).expect("write carchive fixture");
@@ -264,6 +262,4 @@ fn cli_extract_json_manifest_reports_pyc_zipper_decompression() {
         recovered, ORIGINAL_PYC,
         "the .pyc written under the extract dir must be the peeled original bytes"
     );
-
-    let _ = std::fs::remove_dir_all(&tmp);
 }

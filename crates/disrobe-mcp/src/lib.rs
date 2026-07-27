@@ -1228,9 +1228,10 @@ mod tests {
 
     #[test]
     fn renames_loader_rejects_bad_existing_files() {
-        let base: PathBuf = std::env::temp_dir().join("disrobe_mcp_renames_validation_test");
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("disrobe_mcp_renames_validation_test")
+                .expect("create scratch directory");
+        let base: PathBuf = scratch.path().to_path_buf();
         let target: PathBuf = base.join("renames.json");
         std::fs::write(&target, br#"{"schema":"wrong","records":[]}"#).unwrap();
         let schema_err: ErrorData = expect_err(load_renames_or_default(&target));
@@ -1248,7 +1249,6 @@ mod tests {
         std::fs::write(&target, oversized.as_bytes()).unwrap();
         let field_err: ErrorData = expect_err(load_renames_or_default(&target));
         assert!(field_err.message.contains("DR-MCP-0343"));
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1328,10 +1328,12 @@ mod tests {
 
     #[test]
     fn resolve_workspace_target_confines_reads_to_root() {
-        let base: PathBuf = std::env::temp_dir().join("disrobe_mcp_confine_test");
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("disrobe_mcp_confine_test")
+                .expect("create scratch directory");
+        let base: PathBuf = scratch.path().to_path_buf();
         let root: PathBuf = base.join("root");
         let outside: PathBuf = base.join("outside");
-        let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(root.join("sub")).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
         let inside_file: PathBuf = root.join("sub").join("artifact.json");
@@ -1354,20 +1356,18 @@ mod tests {
         let missing: ErrorData =
             expect_err(resolve_workspace_target(&root, Path::new("sub/nope.json")));
         assert!(missing.message.contains("DR-MCP-0339"));
-
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
     fn bounded_file_reader_rejects_limit_overrun() {
-        let base: PathBuf = std::env::temp_dir().join("disrobe_mcp_read_limit_test");
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("disrobe_mcp_read_limit_test")
+                .expect("create scratch directory");
+        let base: PathBuf = scratch.path().to_path_buf();
         let target: PathBuf = base.join("payload.bin");
         std::fs::write(&target, b"abcd").unwrap();
         let err: ErrorData = expect_err(read_bounded_file(&target, 3, "DR-MCP-0324"));
         assert!(err.message.contains("DR-MCP-0324"));
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     fn b64(bytes: &[u8]) -> String {
