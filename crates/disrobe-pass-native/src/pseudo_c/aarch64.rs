@@ -2809,9 +2809,10 @@ fn finish(
     }
     let signature: FnSignature = FnSignature {
         fp: fp_args,
-        int: params.clone(),
+        int: super::wide_int_signature(&params),
         vec: context.vec_abi.params.clone(),
         ret,
+        exact_integer_types: false,
     };
     let fp_params: Vec<ScalarType> = if has_scalar_fp {
         signature.ordered_param_types()
@@ -2855,6 +2856,7 @@ fn finish(
         source,
         rust_source,
         return_width_bits,
+        param_width_bits: vec![64; params.len()],
         params,
         fp_params,
         returns_fp,
@@ -2870,6 +2872,7 @@ fn finish(
                 .collect(),
             size: plan.size,
         }),
+        call_site_signature: None,
     })
 }
 

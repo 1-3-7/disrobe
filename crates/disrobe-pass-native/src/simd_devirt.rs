@@ -1297,6 +1297,7 @@ fn emit_reduction(form: ReductionForm, abi: Abi, base_pos: usize, len_pos: usize
         source,
         rust_source: None,
         return_width_bits: u32::from(form.ret_bytes) * 8,
+        param_width_bits: vec![64; params.len()],
         params,
         fp_params: Vec::new(),
         returns_fp: None,
@@ -1305,6 +1306,7 @@ fn emit_reduction(form: ReductionForm, abi: Abi, base_pos: usize, len_pos: usize
         lifted_switch: false,
         call_targets: Vec::new(),
         sret: None,
+        call_site_signature: None,
     }
 }
 
@@ -2907,6 +2909,7 @@ fn emit_map(
         source,
         rust_source: None,
         return_width_bits: 64,
+        param_width_bits: vec![64; params.len()],
         params,
         fp_params: Vec::new(),
         returns_fp: None,
@@ -2915,6 +2918,7 @@ fn emit_map(
         lifted_switch: false,
         call_targets: Vec::new(),
         sret: None,
+        call_site_signature: None,
     }
 }
 
@@ -3676,6 +3680,7 @@ fn emit_minmax(form: MinMaxForm, abi: Abi, base_pos: usize, len_pos: usize) -> L
         source,
         rust_source: None,
         return_width_bits: u32::from(form.ret_bytes) * 8,
+        param_width_bits: vec![64; params.len()],
         params,
         fp_params: Vec::new(),
         returns_fp: None,
@@ -3684,6 +3689,7 @@ fn emit_minmax(form: MinMaxForm, abi: Abi, base_pos: usize, len_pos: usize) -> L
         lifted_switch: false,
         call_targets: Vec::new(),
         sret: None,
+        call_site_signature: None,
     }
 }
 
