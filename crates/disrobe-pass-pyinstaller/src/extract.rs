@@ -579,6 +579,7 @@ const fn pyc_header_capacity(trailing_u32_count: usize, body_len: usize) -> usiz
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use disrobe_core::scratch::ScratchFile;
 
     #[test]
     fn missing_cookie_fails() {
@@ -589,22 +590,14 @@ mod tests {
 
     #[test]
     fn path_reader_rejects_file_past_cap() {
-        let pid: u32 = std::process::id();
-        let path: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-pyinstaller-read-cap-{pid}.bin"));
-        remove_temp_file_if_present(&path);
+        let (scratch, handle): (ScratchFile, std::fs::File) =
+            ScratchFile::create("disrobe-pyinstaller-read-cap", "bin")
+                .expect("create scratch file");
+        drop(handle);
+        let path: std::path::PathBuf = scratch.path().to_path_buf();
         std::fs::write(&path, [0u8; 8]).expect("write temp input");
         let err: Error = read_file_bounded(&path, 4u64).expect_err("over-cap file rejected");
-        remove_temp_file_if_present(&path);
         assert!(matches!(err, Error::InputFileTooLarge { len: 8, limit: 4 }));
-    }
-
-    fn remove_temp_file_if_present(path: &Path) {
-        match std::fs::remove_file(path) {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => panic!("remove temp input: {err}"),
-        }
     }
 
     #[test]

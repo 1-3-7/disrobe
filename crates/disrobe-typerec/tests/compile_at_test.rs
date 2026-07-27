@@ -1,7 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_typerec::dwarf_gt::{self, DebugImage};
 use disrobe_typerec::grade::{self, GradeReport};
 
@@ -33,12 +34,13 @@ fn recompiled_corpus_reproduces_measured_floors() {
         return;
     }
 
-    let work: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_typerec_{}", std::process::id()));
-    if std::fs::create_dir_all(&work).is_err() {
+    let scratch: ScratchDir = if let Ok(scratch) = ScratchDir::create("disrobe_typerec") {
+        scratch
+    } else {
         eprintln!("skipping: could not create a working directory");
         return;
-    }
+    };
+    let work: PathBuf = scratch.path().to_path_buf();
     let unstripped: PathBuf = work.join("corpus.unstripped.exe");
     let stripped: PathBuf = work.join("corpus.stripped.exe");
 
@@ -55,7 +57,6 @@ fn recompiled_corpus_reproduces_measured_floors() {
         .arg(&unstripped)
         .arg(source_path()));
     if !built {
-        cleanup(&work);
         eprintln!("skipping: gcc could not build the freestanding corpus on this host");
         return;
     }
@@ -64,7 +65,6 @@ fn recompiled_corpus_reproduces_measured_floors() {
         .arg(&unstripped)
         .arg(&stripped));
     if !object_stripped {
-        cleanup(&work);
         eprintln!("skipping: objcopy could not strip debug info on this host");
         return;
     }
@@ -73,14 +73,12 @@ fn recompiled_corpus_reproduces_measured_floors() {
         .ok()
         .and_then(|bytes: Vec<u8>| dwarf_gt::load(&bytes).ok())
     else {
-        cleanup(&work);
         panic!("freshly built unstripped binary must carry readable DWARF");
     };
     let Some((base, text)): Option<(u64, Vec<u8>)> = std::fs::read(&stripped)
         .ok()
         .and_then(|bytes: Vec<u8>| dwarf_gt::load_text(&bytes).ok())
     else {
-        cleanup(&work);
         panic!("freshly stripped binary must expose a .text section");
     };
 
@@ -90,8 +88,6 @@ fn recompiled_corpus_reproduces_measured_floors() {
         functions: ground_truth.functions,
     };
     let report: GradeReport = grade::grade_image(&input);
-    cleanup(&work);
-
     if report.total_vars == 0 {
         eprintln!(
             "skipping: the freshly built corpus exposed no gradeable dwarf variables on this host toolchain (dwarf_gt read no variable locations from this gcc's debug info); the committed-fixture grade tests carry the recovery-quality floors"
@@ -114,8 +110,4 @@ fn recompiled_corpus_reproduces_measured_floors() {
     );
     assert!((report.sign.precision() - 1.0).abs() < f64::EPSILON);
     assert!(report.sign.correct >= 1, "some signs must be recoverable");
-}
-
-fn cleanup(work: &Path) {
-    let _ = std::fs::remove_dir_all(work);
 }
