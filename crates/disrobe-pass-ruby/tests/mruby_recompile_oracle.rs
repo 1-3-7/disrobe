@@ -9,6 +9,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::{MrubyDecompiled, analyze_bytes};
 
 const STRAIGHT_LINE_SET: &[&str] = &["arith", "strings", "coll", "klass", "advanced"];
@@ -59,23 +60,28 @@ fn reconstructed_body(dec: &MrubyDecompiled) -> String {
         .map_or_else(|| dec.source.clone(), |(_, body)| body.to_owned())
 }
 
-fn write_temp(name: &str, source: &str) -> PathBuf {
-    let mut path: PathBuf = std::env::temp_dir();
-    path.push(format!("disrobe_mruby_recovered_{name}.rb"));
+fn write_temp(name: &str, source: &str) -> (ScratchFile, PathBuf) {
+    let purpose: String = format!("disrobe_mruby_recovered_{name}");
+    let (scratch, file): (ScratchFile, std::fs::File) =
+        ScratchFile::create(&purpose, "rb").expect("create recovered source scratch file");
+    drop(file);
+    let path: PathBuf = scratch.path().to_path_buf();
     std::fs::write(&path, source).expect("write recovered source");
-    path
+    (scratch, path)
 }
 
 fn mrbc_recompiles(rb_path: &PathBuf) -> bool {
-    let mut out_path: PathBuf = std::env::temp_dir();
-    out_path.push("disrobe_mruby_recompile_probe.mrb");
+    let (scratch, file): (ScratchFile, std::fs::File) =
+        ScratchFile::create("disrobe_mruby_recompile_probe", "mrb")
+            .expect("create mrbc output scratch file");
+    drop(file);
+    let out_path: PathBuf = scratch.path().to_path_buf();
     let ok: bool = Command::new("mrbc")
         .arg("-o")
         .arg(&out_path)
         .arg(rb_path)
         .output()
         .is_ok_and(|o| o.status.success());
-    let _ = std::fs::remove_file(&out_path);
     ok
 }
 
@@ -197,7 +203,7 @@ fn mrbc_recompile_and_semantic_equivalence_oracle() {
     for name in BREADTH_SET {
         let dec: MrubyDecompiled = recover(name);
         let body: String = reconstructed_body(&dec);
-        let recovered_path: PathBuf = write_temp(name, &body);
+        let (_recovered_scratch, recovered_path): (ScratchFile, PathBuf) = write_temp(name, &body);
         let original_path: PathBuf = corpus_path(name, "rb");
 
         let recompiles: bool = mrbc_recompiles(&recovered_path);
@@ -214,7 +220,6 @@ fn mrbc_recompile_and_semantic_equivalence_oracle() {
         println!(
             "[{name}] recompile={recompiles} semantic_equivalent={same} want={want:?} have={have:?}"
         );
-        let _ = std::fs::remove_file(&recovered_path);
     }
 
     println!(
@@ -224,7 +229,7 @@ fn mrbc_recompile_and_semantic_equivalence_oracle() {
     for name in EQUIVALENT_SET {
         let dec: MrubyDecompiled = recover(name);
         let body: String = reconstructed_body(&dec);
-        let recovered_path: PathBuf = write_temp(name, &body);
+        let (_recovered_scratch, recovered_path): (ScratchFile, PathBuf) = write_temp(name, &body);
         let original_path: PathBuf = corpus_path(name, "rb");
 
         assert!(
@@ -237,7 +242,6 @@ fn mrbc_recompile_and_semantic_equivalence_oracle() {
             have, want,
             "{name}: recovered source must produce identical mruby output to the original"
         );
-        let _ = std::fs::remove_file(&recovered_path);
     }
 
     assert!(

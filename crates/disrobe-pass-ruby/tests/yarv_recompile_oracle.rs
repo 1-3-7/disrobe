@@ -9,6 +9,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::analyze_bytes;
 
 fn corpus_dir() -> PathBuf {
@@ -44,11 +45,13 @@ fn recover_source(yarvc_rel: &str) -> Option<String> {
 
 fn oracle_line(original_rel: &str, yarvc_rel: &str) -> Option<String> {
     let recovered: String = recover_source(yarvc_rel)?;
-    let mut rec_path: PathBuf = std::env::temp_dir();
-    rec_path.push(format!(
-        "disrobe_yarv_recovered_{}.rb",
+    let purpose: String = format!(
+        "disrobe_yarv_recovered_{}",
         yarvc_rel.replace(['/', '.'], "_")
-    ));
+    );
+    let (scratch, file): (ScratchFile, std::fs::File) = ScratchFile::create(&purpose, "rb").ok()?;
+    drop(file);
+    let rec_path: PathBuf = scratch.path().to_path_buf();
     std::fs::write(&rec_path, recovered).ok()?;
 
     let oracle: PathBuf = corpus_path("mri/yarv/recompile_oracle.rb");
@@ -59,7 +62,6 @@ fn oracle_line(original_rel: &str, yarvc_rel: &str) -> Option<String> {
         .arg(&rec_path)
         .output()
         .ok()?;
-    let _ = std::fs::remove_file(&rec_path);
     let line: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     println!("[{yarvc_rel}] {line}");
     Some(line)

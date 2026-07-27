@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::analyze_bytes;
 
 fn ruby_oracle_available() -> bool {
@@ -20,10 +21,16 @@ fn ruby_oracle_available() -> bool {
 }
 
 fn compile_to_yarb(source: &str, tag: &str) -> Option<Vec<u8>> {
-    let mut script_path: PathBuf = std::env::temp_dir();
-    script_path.push(format!("disrobe_la_gen_{tag}.rb"));
-    let mut out_path: PathBuf = std::env::temp_dir();
-    out_path.push(format!("disrobe_la_{tag}.yarvc"));
+    let script_purpose: String = format!("disrobe_la_gen_{tag}");
+    let (script_scratch, script_file): (ScratchFile, std::fs::File) =
+        ScratchFile::create(&script_purpose, "rb").ok()?;
+    drop(script_file);
+    let script_path: PathBuf = script_scratch.path().to_path_buf();
+    let out_purpose: String = format!("disrobe_la_{tag}");
+    let (out_scratch, out_file): (ScratchFile, std::fs::File) =
+        ScratchFile::create(&out_purpose, "yarvc").ok()?;
+    drop(out_file);
+    let out_path: PathBuf = out_scratch.path().to_path_buf();
 
     let script: String = format!(
         "src = {source:?}\nFile.binwrite(ARGV.fetch(0), RubyVM::InstructionSequence.compile(src).to_binary)\n"
@@ -34,12 +41,10 @@ fn compile_to_yarb(source: &str, tag: &str) -> Option<Vec<u8>> {
         .arg(&out_path)
         .status()
         .ok()?;
-    let _ = std::fs::remove_file(&script_path);
     if !status.success() {
         return None;
     }
     let bytes: Vec<u8> = std::fs::read(&out_path).ok()?;
-    let _ = std::fs::remove_file(&out_path);
     Some(bytes)
 }
 
@@ -58,10 +63,16 @@ fn code_only(src: &str) -> String {
 }
 
 fn recompile_pct(original: &str, recovered_code: &str, tag: &str) -> Option<u32> {
-    let mut orig_path: PathBuf = std::env::temp_dir();
-    orig_path.push(format!("disrobe_la_orig_{tag}.rb"));
-    let mut rec_path: PathBuf = std::env::temp_dir();
-    rec_path.push(format!("disrobe_la_rec_{tag}.rb"));
+    let orig_purpose: String = format!("disrobe_la_orig_{tag}");
+    let (orig_scratch, orig_file): (ScratchFile, std::fs::File) =
+        ScratchFile::create(&orig_purpose, "rb").ok()?;
+    drop(orig_file);
+    let orig_path: PathBuf = orig_scratch.path().to_path_buf();
+    let rec_purpose: String = format!("disrobe_la_rec_{tag}");
+    let (rec_scratch, rec_file): (ScratchFile, std::fs::File) =
+        ScratchFile::create(&rec_purpose, "rb").ok()?;
+    drop(rec_file);
+    let rec_path: PathBuf = rec_scratch.path().to_path_buf();
     std::fs::write(&orig_path, original).ok()?;
     std::fs::write(&rec_path, recovered_code).ok()?;
 
@@ -74,8 +85,11 @@ fn recompile_pct(original: &str, recovered_code: &str, tag: &str) -> Option<u32>
         "h=ops(RubyVM::InstructionSequence.compile(File.read(ARGV[1])))\n",
         "puts(w.empty? ? 0 : (100*mm(w,h)/w.size))\n"
     );
-    let mut script_path: PathBuf = std::env::temp_dir();
-    script_path.push(format!("disrobe_la_oracle_{tag}.rb"));
+    let script_purpose: String = format!("disrobe_la_oracle_{tag}");
+    let (script_scratch, script_file): (ScratchFile, std::fs::File) =
+        ScratchFile::create(&script_purpose, "rb").ok()?;
+    drop(script_file);
+    let script_path: PathBuf = script_scratch.path().to_path_buf();
     std::fs::write(&script_path, script).ok()?;
 
     let output = Command::new("ruby")
@@ -84,9 +98,6 @@ fn recompile_pct(original: &str, recovered_code: &str, tag: &str) -> Option<u32>
         .arg(&rec_path)
         .output()
         .ok()?;
-    let _ = std::fs::remove_file(&orig_path);
-    let _ = std::fs::remove_file(&rec_path);
-    let _ = std::fs::remove_file(&script_path);
     if !output.status.success() {
         return None;
     }

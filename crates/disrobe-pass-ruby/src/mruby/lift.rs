@@ -1701,14 +1701,16 @@ mod tests {
         let code: String = format!(
             "# encoding: UTF-8\nx = {emitted}\n$stdout.binmode\n$stdout.write(x.bytes.pack('C*'))\n"
         );
-        let mut path: std::path::PathBuf = std::env::temp_dir();
-        path.push(format!("disrobe_mruby_str_reemit_{tag}.rb"));
+        let purpose: String = format!("disrobe_mruby_str_reemit_{tag}");
+        let (scratch, file): (disrobe_core::scratch::ScratchFile, std::fs::File) =
+            disrobe_core::scratch::ScratchFile::create(&purpose, "rb").ok()?;
+        drop(file);
+        let path: std::path::PathBuf = scratch.path().to_path_buf();
         std::fs::write(&path, code.as_bytes()).ok()?;
         let output: std::process::Output = std::process::Command::new("ruby")
             .arg(&path)
             .output()
             .ok()?;
-        let _ = std::fs::remove_file(&path);
         output.status.success().then_some(output.stdout)
     }
 

@@ -9,6 +9,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::{RubyAnalysis, YarvAnalysis, analyze_bytes};
 
 fn fixture_path(rel: &str) -> PathBuf {
@@ -53,14 +54,16 @@ fn ruby_available() -> bool {
 }
 
 fn ruby_eval_stdout(source: &str) -> String {
-    let mut path: PathBuf = std::env::temp_dir();
-    path.push("disrobe_ruby_float_division_eval.rb");
+    let (scratch, file): (ScratchFile, std::fs::File) =
+        ScratchFile::create("disrobe_ruby_float_division_eval", "rb")
+            .expect("create ruby evaluation scratch file");
+    drop(file);
+    let path: PathBuf = scratch.path().to_path_buf();
     std::fs::write(&path, source).expect("write temp ruby source");
     let output = Command::new("ruby")
         .arg(&path)
         .output()
         .expect("run ruby on the source");
-    let _ = std::fs::remove_file(&path);
     assert!(
         output.status.success(),
         "ruby failed to evaluate the source:\n{source}\nstderr: {}",

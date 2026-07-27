@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::{RubyAnalysis, analyze_bytes};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/precedence.yarvc");
@@ -55,11 +56,12 @@ fn ruby_available() -> bool {
 }
 
 fn eval_ruby(source: &str) -> Option<String> {
-    let mut path: PathBuf = std::env::temp_dir();
-    path.push("disrobe_yarv_precedence_recovered.rb");
+    let (scratch, file): (ScratchFile, std::fs::File) =
+        ScratchFile::create("disrobe_yarv_precedence_recovered", "rb").ok()?;
+    drop(file);
+    let path: PathBuf = scratch.path().to_path_buf();
     std::fs::write(&path, source).ok()?;
     let output = Command::new("ruby").arg(&path).output().ok()?;
-    let _ = std::fs::remove_file(&path);
     if !output.status.success() {
         return None;
     }

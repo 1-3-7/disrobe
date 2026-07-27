@@ -9,6 +9,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::analyze_bytes;
 
 fn ruby_pattern_oracle_available() -> bool {
@@ -21,10 +22,16 @@ fn ruby_pattern_oracle_available() -> bool {
 }
 
 fn compile_to_yarb(source: &str, tag: &str) -> Option<Vec<u8>> {
-    let mut script_path: PathBuf = std::env::temp_dir();
-    script_path.push(format!("disrobe_pm_gen_{tag}.rb"));
-    let mut out_path: PathBuf = std::env::temp_dir();
-    out_path.push(format!("disrobe_pm_{tag}.yarvc"));
+    let script_purpose: String = format!("disrobe_pm_gen_{tag}");
+    let (script_scratch, script_file): (ScratchFile, std::fs::File) =
+        ScratchFile::create(&script_purpose, "rb").ok()?;
+    drop(script_file);
+    let script_path: PathBuf = script_scratch.path().to_path_buf();
+    let out_purpose: String = format!("disrobe_pm_{tag}");
+    let (out_scratch, out_file): (ScratchFile, std::fs::File) =
+        ScratchFile::create(&out_purpose, "yarvc").ok()?;
+    drop(out_file);
+    let out_path: PathBuf = out_scratch.path().to_path_buf();
 
     let script: String = format!(
         "src = {source:?}\nFile.binwrite(ARGV.fetch(0), RubyVM::InstructionSequence.compile(src).to_binary)\n"
@@ -35,12 +42,10 @@ fn compile_to_yarb(source: &str, tag: &str) -> Option<Vec<u8>> {
         .arg(&out_path)
         .status()
         .ok()?;
-    let _ = std::fs::remove_file(&script_path);
     if !status.success() {
         return None;
     }
     let bytes: Vec<u8> = std::fs::read(&out_path).ok()?;
-    let _ = std::fs::remove_file(&out_path);
     Some(bytes)
 }
 
@@ -67,14 +72,23 @@ fn strip_annotations(recovered: &str) -> String {
 
 fn opcode_multiset_pct(original: &str, recovered: &str, tag: &str) -> Option<u32> {
     let cleaned: String = strip_annotations(recovered);
-    let mut script: PathBuf = std::env::temp_dir();
-    script.push(format!("disrobe_pm_oracle_{tag}.rb"));
+    let script_purpose: String = format!("disrobe_pm_oracle_{tag}");
+    let (script_scratch, script_file): (ScratchFile, std::fs::File) =
+        ScratchFile::create(&script_purpose, "rb").ok()?;
+    drop(script_file);
+    let script: PathBuf = script_scratch.path().to_path_buf();
     let program: &str = "def opcodes(iseq)\n  out = []\n  walk = lambda do |i|\n    i.disasm.each_line { |l| out << $1 if l =~ /^\\d{4} (\\S+)/ }\n    i.each_child { |c| walk.call(c) }\n  end\n  walk.call(iseq)\n  out\nend\nwant = opcodes(RubyVM::InstructionSequence.compile(File.read(ARGV.fetch(0))))\nhave = opcodes(RubyVM::InstructionSequence.compile(File.read(ARGV.fetch(1))))\nhw = Hash.new(0); want.each { |x| hw[x] += 1 }\nhh = Hash.new(0); have.each { |x| hh[x] += 1 }\ninter = 0; hw.each { |k, v| inter += [v, hh[k]].min }\ntotal = want.size\nputs(total > 0 ? (100 * inter / total) : 0)\n";
     std::fs::write(&script, program).ok()?;
-    let mut orig_path: PathBuf = std::env::temp_dir();
-    orig_path.push(format!("disrobe_pm_orig_{tag}.rb"));
-    let mut rec_path: PathBuf = std::env::temp_dir();
-    rec_path.push(format!("disrobe_pm_rec_{tag}.rb"));
+    let orig_purpose: String = format!("disrobe_pm_orig_{tag}");
+    let (orig_scratch, orig_file): (ScratchFile, std::fs::File) =
+        ScratchFile::create(&orig_purpose, "rb").ok()?;
+    drop(orig_file);
+    let orig_path: PathBuf = orig_scratch.path().to_path_buf();
+    let rec_purpose: String = format!("disrobe_pm_rec_{tag}");
+    let (rec_scratch, rec_file): (ScratchFile, std::fs::File) =
+        ScratchFile::create(&rec_purpose, "rb").ok()?;
+    drop(rec_file);
+    let rec_path: PathBuf = rec_scratch.path().to_path_buf();
     std::fs::write(&orig_path, original).ok()?;
     std::fs::write(&rec_path, cleaned).ok()?;
     let out = Command::new("ruby")
@@ -83,9 +97,6 @@ fn opcode_multiset_pct(original: &str, recovered: &str, tag: &str) -> Option<u32
         .arg(&rec_path)
         .output()
         .ok()?;
-    let _ = std::fs::remove_file(&script);
-    let _ = std::fs::remove_file(&orig_path);
-    let _ = std::fs::remove_file(&rec_path);
     if !out.status.success() {
         return None;
     }
