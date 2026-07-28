@@ -117,6 +117,15 @@ pub enum Error {
         "DR-DOTNET-0032: CIL exception section at offset {offset} is smaller than its 4-byte header ({size} bytes)"
     )]
     CilSectionTooSmall { offset: usize, size: usize },
+
+    #[error("DR-DOTNET-0033: ahead-of-time container read failed: {0}")]
+    AotContainerRead(String),
+
+    #[error("DR-DOTNET-0034: unsupported ahead-of-time container: {0}")]
+    UnsupportedAotContainer(&'static str),
+
+    #[error("DR-DOTNET-0035: ahead-of-time layout candidates are structurally ambiguous")]
+    AmbiguousAotLayout,
 }
 
 impl From<ByteReadError> for Error {
