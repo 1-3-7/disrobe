@@ -447,22 +447,6 @@ fn back_edges(region: &Region, dom: &[BTreeSet<usize>]) -> Vec<(usize, usize)> {
     edges
 }
 
-fn natural_loop_body(preds: &[Vec<usize>], latch: usize, header: usize) -> BTreeSet<usize> {
-    let mut body: BTreeSet<usize> = BTreeSet::from([header]);
-    let mut stack: Vec<usize> = Vec::new();
-    if body.insert(latch) {
-        stack.push(latch);
-    }
-    while let Some(node) = stack.pop() {
-        for &pred in &preds[node] {
-            if body.insert(pred) {
-                stack.push(pred);
-            }
-        }
-    }
-    body
-}
-
 fn detect_single_loop(region: &Region) -> Option<NaturalLoop> {
     let preds: Vec<Vec<usize>> = predecessors(region);
     let dom: Vec<BTreeSet<usize>> = dominator_sets(region);
@@ -480,7 +464,15 @@ fn detect_single_loop(region: &Region) -> Option<NaturalLoop> {
         }
     }
 
-    let body: BTreeSet<usize> = natural_loop_body(&preds, latch, header);
+    let body: BTreeSet<usize> = disrobe_core::dominators::natural_loop_body(
+        header,
+        &[latch],
+        |node: usize, emit: &mut dyn FnMut(usize)| {
+            for &pred in &preds[node] {
+                emit(pred);
+            }
+        },
+    );
 
     let mut exits: BTreeSet<usize> = BTreeSet::new();
     for &node in &body {

@@ -43,7 +43,17 @@ pub fn structure_program(cfg: &VmCfg) -> Vec<StructuredNode> {
             continue;
         }
         if let Some(tail) = loop_headers.get(offset) {
-            let body_set: BTreeSet<u32> = natural_loop_body(cfg, *offset, *tail);
+            let body_set: BTreeSet<u32> = disrobe_core::dominators::natural_loop_body(
+                *offset,
+                &[*tail],
+                |node: u32, emit: &mut dyn FnMut(u32)| {
+                    for block in &cfg.blocks {
+                        if block.successors.contains(&node) {
+                            emit(block.start_offset);
+                        }
+                    }
+                },
+            );
             let mut body: Vec<StructuredNode> = Vec::new();
             for body_off in &order {
                 if body_set.contains(body_off) && !handled.contains(body_off) {
@@ -248,25 +258,6 @@ fn find_back_edges(cfg: &VmCfg, order: &[u32]) -> BTreeSet<(u32, u32)> {
         }
     }
     edges
-}
-
-fn natural_loop_body(cfg: &VmCfg, header: u32, tail: u32) -> BTreeSet<u32> {
-    let mut body: BTreeSet<u32> = BTreeSet::new();
-    body.insert(header);
-    if header == tail {
-        return body;
-    }
-    body.insert(tail);
-    let mut stack: Vec<u32> = vec![tail];
-    while let Some(off) = stack.pop() {
-        for block in &cfg.blocks {
-            if block.successors.contains(&off) && !body.contains(&block.start_offset) {
-                body.insert(block.start_offset);
-                stack.push(block.start_offset);
-            }
-        }
-    }
-    body
 }
 
 #[cfg(test)]

@@ -246,6 +246,29 @@ pub fn dominator_sets<G: DiGraph>(graph: &G) -> Vec<BTreeSet<u32>> {
     dom
 }
 
+pub fn natural_loop_body<T: Ord + Copy>(
+    header: T,
+    latches: &[T],
+    mut predecessors: impl FnMut(T, &mut dyn FnMut(T)),
+) -> BTreeSet<T> {
+    let mut body: BTreeSet<T> = BTreeSet::new();
+    body.insert(header);
+    let mut pending: Vec<T> = Vec::with_capacity(latches.len());
+    for &latch in latches {
+        if body.insert(latch) {
+            pending.push(latch);
+        }
+    }
+    while let Some(node) = pending.pop() {
+        predecessors(node, &mut |pred: T| {
+            if body.insert(pred) {
+                pending.push(pred);
+            }
+        });
+    }
+    body
+}
+
 pub fn immediate_post_dominators(
     node_count: usize,
     mut successors_with_exit: impl FnMut(u32, &mut dyn FnMut(u32)),
@@ -274,6 +297,54 @@ mod tests {
     use crate::rng::{SeededRng, seeded};
     use rand::RngExt;
     use std::collections::BTreeMap;
+
+    fn body_over(preds: &[Vec<u32>], header: u32, latches: &[u32]) -> BTreeSet<u32> {
+        natural_loop_body(header, latches, |node: u32, emit: &mut dyn FnMut(u32)| {
+            for &pred in &preds[node as usize] {
+                emit(pred);
+            }
+        })
+    }
+
+    #[test]
+    fn a_self_loop_is_its_own_body() {
+        let preds: Vec<Vec<u32>> = vec![vec![], vec![0, 1]];
+        assert_eq!(body_over(&preds, 1, &[1]), BTreeSet::from([1]));
+    }
+
+    #[test]
+    fn the_body_walks_predecessors_back_to_the_header() {
+        let preds: Vec<Vec<u32>> = vec![vec![], vec![0, 3], vec![1], vec![2]];
+        assert_eq!(body_over(&preds, 1, &[3]), BTreeSet::from([1, 2, 3]));
+    }
+
+    #[test]
+    fn a_node_outside_the_loop_stays_outside() {
+        let preds: Vec<Vec<u32>> = vec![vec![], vec![0, 2], vec![1], vec![0]];
+        assert_eq!(
+            body_over(&preds, 1, &[2]),
+            BTreeSet::from([1, 2]),
+            "node 3 reaches nothing in the loop and must not be pulled in"
+        );
+    }
+
+    #[test]
+    fn several_latches_contribute_one_body() {
+        let preds: Vec<Vec<u32>> = vec![vec![], vec![0, 2, 3], vec![1], vec![1]];
+        assert_eq!(body_over(&preds, 1, &[2, 3]), BTreeSet::from([1, 2, 3]));
+    }
+
+    #[test]
+    fn a_cycle_among_predecessors_terminates() {
+        let preds: Vec<Vec<u32>> = vec![vec![], vec![0, 2], vec![3], vec![2, 1]];
+        assert_eq!(body_over(&preds, 1, &[2]), BTreeSet::from([1, 2, 3]));
+    }
+
+    #[test]
+    fn the_header_is_present_even_with_no_latches() {
+        let preds: Vec<Vec<u32>> = vec![vec![], vec![0]];
+        assert_eq!(body_over(&preds, 1, &[]), BTreeSet::from([1]));
+    }
 
     fn naive_dominators(entry: u32, succ: &[Vec<u32>]) -> Vec<Option<BTreeSet<u32>>> {
         let count: usize = succ.len();
