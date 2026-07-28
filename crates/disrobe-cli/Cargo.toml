@@ -149,6 +149,7 @@ disrobe-pass-webview = { path = "../disrobe-pass-webview", version = "0.10.3" }
 disrobe-prowl = { workspace = true }
 disrobe-py-marshal = { workspace = true }
 disrobe-nir = { workspace = true }
+disrobe-similarity = { workspace = true }
 disrobe-nir-lift = { workspace = true, optional = true }
 disrobe-mba = { workspace = true, optional = true }
 disrobe-typerec = { workspace = true }
