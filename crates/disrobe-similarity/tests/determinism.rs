@@ -53,6 +53,46 @@ fn shaped(id: u64, structure: ControlFlowGraph) -> FunctionFeatures {
     FunctionFeatures::with_structure(FunctionId(id), [], structure)
 }
 
+fn leaf(category: InstructionCategory) -> ControlFlowGraph {
+    graph(0, vec![block([], [category, InstructionCategory::Return])])
+}
+
+fn calling<const N: usize>(
+    id: u64,
+    category: InstructionCategory,
+    calls: [u64; N],
+) -> FunctionFeatures {
+    shaped(id, leaf(category)).calling(calls.into_iter().map(FunctionId))
+}
+
+fn left_calls() -> Vec<FunctionFeatures> {
+    vec![
+        calling(0x1200, InstructionCategory::Logic, [0x1300]),
+        FunctionFeatures::with_structure(
+            FunctionId(0x1000),
+            [DataReference::string_literal("packet body truncated")],
+            diamond(InstructionCategory::Load),
+        )
+        .calling([FunctionId(0x1100), FunctionId(0x1200)]),
+        calling(0x1300, InstructionCategory::Move, []),
+        calling(0x1100, InstructionCategory::Arithmetic, []),
+    ]
+}
+
+fn right_calls() -> Vec<FunctionFeatures> {
+    vec![
+        calling(0x2100, InstructionCategory::Arithmetic, []),
+        calling(0x2300, InstructionCategory::Move, []),
+        FunctionFeatures::with_structure(
+            FunctionId(0x2000),
+            [DataReference::string_literal("packet body truncated")],
+            diamond(InstructionCategory::Load),
+        )
+        .calling([FunctionId(0x2100), FunctionId(0x2200)]),
+        calling(0x2200, InstructionCategory::Logic, [0x2300]),
+    ]
+}
+
 fn left_shapes() -> Vec<FunctionFeatures> {
     vec![
         shaped(0x1200, triangle()),
@@ -222,6 +262,63 @@ fn swapping_the_two_sides_mirrors_a_shaped_report() {
 fn the_order_of_a_shaped_corpus_does_not_change_the_report() {
     let left: Vec<FunctionFeatures> = left_shapes();
     let right: Vec<FunctionFeatures> = right_shapes();
+    let reversed_left: Vec<FunctionFeatures> = left.iter().rev().cloned().collect();
+    let reversed_right: Vec<FunctionFeatures> = right.iter().rev().cloned().collect();
+
+    let baseline: MatchReport = match_functions(&left, &right);
+    let permuted: MatchReport = match_functions(&reversed_left, &reversed_right);
+
+    assert_eq!(baseline, permuted);
+    assert_eq!(format!("{baseline:?}"), format!("{permuted:?}"));
+}
+
+#[test]
+fn repeated_runs_over_a_calling_corpus_produce_an_identical_report() {
+    let left: Vec<FunctionFeatures> = left_calls();
+    let right: Vec<FunctionFeatures> = right_calls();
+
+    let first: MatchReport = match_functions(&left, &right);
+    let second: MatchReport = match_functions(&left, &right);
+
+    assert_eq!(first, second);
+    assert_eq!(format!("{first:?}"), format!("{second:?}"));
+    assert_eq!(
+        first.propagated_pairs(),
+        vec![
+            (FunctionId(0x1100), FunctionId(0x2100)),
+            (FunctionId(0x1200), FunctionId(0x2200)),
+            (FunctionId(0x1300), FunctionId(0x2300)),
+        ]
+    );
+}
+
+#[test]
+fn swapping_the_two_sides_mirrors_a_calling_report() {
+    let left: Vec<FunctionFeatures> = left_calls();
+    let right: Vec<FunctionFeatures> = right_calls();
+
+    let forward: MatchReport = match_functions(&left, &right);
+    let reversed: MatchReport = match_functions(&right, &left);
+
+    assert_eq!(forward.left, reversed.right);
+    assert_eq!(forward.right, reversed.left);
+    assert_eq!(forward.propagated_count(), reversed.propagated_count());
+    let mirrored: Vec<(FunctionId, FunctionId)> = reversed
+        .propagated_pairs()
+        .into_iter()
+        .map(|(subject, counterpart): (FunctionId, FunctionId)| (counterpart, subject))
+        .collect();
+    let mut forward_pairs: Vec<(FunctionId, FunctionId)> = forward.propagated_pairs();
+    forward_pairs.sort_unstable();
+    let mut mirrored_pairs: Vec<(FunctionId, FunctionId)> = mirrored;
+    mirrored_pairs.sort_unstable();
+    assert_eq!(forward_pairs, mirrored_pairs);
+}
+
+#[test]
+fn the_order_of_a_calling_corpus_does_not_change_the_report() {
+    let left: Vec<FunctionFeatures> = left_calls();
+    let right: Vec<FunctionFeatures> = right_calls();
     let reversed_left: Vec<FunctionFeatures> = left.iter().rev().cloned().collect();
     let reversed_right: Vec<FunctionFeatures> = right.iter().rev().cloned().collect();
 

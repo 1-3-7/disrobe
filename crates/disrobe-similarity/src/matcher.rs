@@ -1,3 +1,5 @@
+mod propagation;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::features::{
@@ -5,6 +7,9 @@ use crate::features::{
 };
 use crate::fingerprint::ControlFlowFingerprint;
 use crate::structure::{InstructionMix, StructuralKey};
+use propagation::{FunctionIndex, propagate};
+
+pub use propagation::{CallRelation, MAXIMUM_PROPAGATION_HOPS};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum UnmatchedCause {
@@ -17,6 +22,7 @@ pub enum UnmatchedCause {
 pub enum MatchStage {
     DataReference,
     ControlFlow,
+    Propagation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +36,14 @@ pub enum Verdict {
         counterpart: FunctionId,
         fingerprint: ControlFlowFingerprint,
         instruction_mix: InstructionMix,
+    },
+    Propagated {
+        counterpart: FunctionId,
+        anchor: FunctionId,
+        anchor_counterpart: FunctionId,
+        relation: CallRelation,
+        hops: u32,
+        agreement: StructuralKey,
     },
     Ambiguous {
         candidates: BTreeSet<FunctionId>,
@@ -45,9 +59,9 @@ impl Verdict {
     #[must_use]
     pub const fn counterpart(&self) -> Option<FunctionId> {
         match self {
-            Self::Exact { counterpart, .. } | Self::Structural { counterpart, .. } => {
-                Some(*counterpart)
-            }
+            Self::Exact { counterpart, .. }
+            | Self::Structural { counterpart, .. }
+            | Self::Propagated { counterpart, .. } => Some(*counterpart),
             Self::Ambiguous { .. } | Self::Unmatched { .. } => None,
         }
     }
@@ -57,6 +71,7 @@ impl Verdict {
         match self {
             Self::Exact { .. } => Some(MatchStage::DataReference),
             Self::Structural { .. } => Some(MatchStage::ControlFlow),
+            Self::Propagated { .. } => Some(MatchStage::Propagation),
             Self::Ambiguous { .. } | Self::Unmatched { .. } => None,
         }
     }
@@ -93,6 +108,16 @@ impl MatchReport {
     #[must_use]
     pub fn structural_count(&self) -> usize {
         self.structural_pairs().len()
+    }
+
+    #[must_use]
+    pub fn propagated_pairs(&self) -> Vec<(FunctionId, FunctionId)> {
+        self.pairs_from(Some(MatchStage::Propagation))
+    }
+
+    #[must_use]
+    pub fn propagated_count(&self) -> usize {
+        self.propagated_pairs().len()
     }
 
     #[must_use]
@@ -139,11 +164,19 @@ fn lookup(entries: &[FunctionVerdict], subject: FunctionId) -> Option<&Verdict> 
         .map(|entry: &FunctionVerdict| &entry.verdict)
 }
 
+fn lookup_mut(entries: &mut [FunctionVerdict], subject: FunctionId) -> Option<&mut Verdict> {
+    entries
+        .binary_search_by_key(&subject, |entry: &FunctionVerdict| entry.subject)
+        .ok()
+        .and_then(|position: usize| entries.get_mut(position))
+        .map(|entry: &mut FunctionVerdict| &mut entry.verdict)
+}
+
 type AnchorIndex<'a> = BTreeMap<&'a BTreeSet<DataReference>, BTreeSet<FunctionId>>;
 
 #[derive(Debug)]
 struct SideIndex<'a> {
-    unique: BTreeMap<FunctionId, &'a FunctionFeatures>,
+    unique: FunctionIndex<'a>,
     duplicated: BTreeSet<FunctionId>,
     anchors: AnchorIndex<'a>,
 }
@@ -160,11 +193,12 @@ pub fn match_functions(left: &[FunctionFeatures], right: &[FunctionFeatures]) ->
     let right_shapes: ShapeIndex = unresolved_shapes(&report.right, &right_index);
     resolve_by_shape(&mut report.left, &left_shapes, &right_shapes);
     resolve_by_shape(&mut report.right, &right_shapes, &left_shapes);
+    propagate(&mut report, &left_index.unique, &right_index.unique);
     report
 }
 
 fn index_side(side: &[FunctionFeatures]) -> SideIndex<'_> {
-    let mut unique: BTreeMap<FunctionId, &FunctionFeatures> = BTreeMap::new();
+    let mut unique: FunctionIndex<'_> = FunctionIndex::new();
     let mut duplicated: BTreeSet<FunctionId> = BTreeSet::new();
     for features in side {
         if unique.insert(features.id(), features).is_some() {

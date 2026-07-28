@@ -15,7 +15,8 @@ use disrobe_pass_native::{
     Error, FunctionSpan, build_disasm_payload, extract_function_features, function_spans,
 };
 use disrobe_similarity::{
-    DataReference, FunctionFeatures, FunctionId, MatchReport, match_functions,
+    CallRelation, DataReference, FunctionFeatures, FunctionId, MatchReport, Verdict,
+    match_functions,
 };
 use tempfile::TempDir;
 
@@ -410,6 +411,20 @@ fn keyed(features: &[FunctionFeatures]) -> usize {
         .count()
 }
 
+fn corroborable(features: &[FunctionFeatures]) -> usize {
+    features
+        .iter()
+        .filter(|entry: &&FunctionFeatures| entry.corroborating_key().is_some())
+        .count()
+}
+
+fn call_edges(features: &[FunctionFeatures]) -> usize {
+    features
+        .iter()
+        .map(|entry: &FunctionFeatures| entry.call_targets().len())
+        .sum()
+}
+
 struct Verification {
     agreed: usize,
     disagreed: Vec<(String, String)>,
@@ -420,6 +435,7 @@ struct Verification {
 struct PairGrade {
     exact: Verification,
     structural: Verification,
+    propagated: Verification,
 }
 
 fn verify_against_symbols(
@@ -469,11 +485,13 @@ fn describe(label: &str, features: &[FunctionFeatures]) {
         }
     }
     println!(
-        "{label}: {} functions, {} carrying an anchor, {} carrying a structure, {} carrying a distinguishing structural key, references {strings} string / {constants} constant / {imports} import",
+        "{label}: {} functions, {} carrying an anchor, {} carrying a structure, {} carrying a distinguishing structural key, {} carrying a corroborating key, {} resolved call edges, references {strings} string / {constants} constant / {imports} import",
         features.len(),
         anchored(features),
         structured(features),
-        keyed(features)
+        keyed(features),
+        corroborable(features),
+        call_edges(features)
     );
 }
 
@@ -499,6 +517,8 @@ fn graded_pair(
     let exact: Verification = verify_against_symbols(&report.exact_pairs(), left_side, right_side);
     let structural: Verification =
         verify_against_symbols(&report.structural_pairs(), left_side, right_side);
+    let propagated: Verification =
+        verify_against_symbols(&report.propagated_pairs(), left_side, right_side);
     report_stage(label, "data-reference", report.exact_count(), &exact);
     report_stage(
         label,
@@ -506,7 +526,50 @@ fn graded_pair(
         report.structural_count(),
         &structural,
     );
-    PairGrade { exact, structural }
+    report_stage(label, "propagation", report.propagated_count(), &propagated);
+    report_hops(label, &report);
+    PairGrade {
+        exact,
+        structural,
+        propagated,
+    }
+}
+
+fn report_hops(label: &str, report: &MatchReport) {
+    let mut hops: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut relations: BTreeMap<&str, usize> = BTreeMap::new();
+    for entry in &report.left {
+        let Verdict::Propagated {
+            hops: distance,
+            relation,
+            ..
+        } = entry.verdict
+        else {
+            continue;
+        };
+        *hops.entry(distance).or_default() += 1;
+        let named: &str = match relation {
+            CallRelation::Callee => "callee",
+            CallRelation::Caller => "caller",
+        };
+        *relations.entry(named).or_default() += 1;
+    }
+    if hops.is_empty() {
+        return;
+    }
+    let spread: Vec<String> = hops
+        .iter()
+        .map(|(distance, count): (&u32, &usize)| format!("{count} at {distance} hop"))
+        .collect();
+    let over: Vec<String> = relations
+        .iter()
+        .map(|(named, count): (&&str, &usize)| format!("{count} over a {named}"))
+        .collect();
+    println!(
+        "{label} [propagation]: {}, {}",
+        spread.join(", "),
+        over.join(", ")
+    );
 }
 
 fn report_stage(label: &str, stage: &str, pairs: usize, verification: &Verification) {
@@ -668,6 +731,10 @@ fn a_two_optimization_level_pair_matches_functions_across_stripped_images() {
         "a structural pair that names two different functions is a wrong match"
     );
     assert!(
+        grade.propagated.disagreed.is_empty(),
+        "a propagated pair that names two different functions is a wrong match"
+    );
+    assert!(
         grade.exact.agreed > 0,
         "the pair must anchor at least one function through its data references"
     );
@@ -730,6 +797,10 @@ fn two_adjacent_versions_at_one_optimization_level_grade_the_structural_stage() 
         grade.structural.disagreed.is_empty(),
         "a structural pair that names two different functions is a wrong match"
     );
+    assert!(
+        grade.propagated.disagreed.is_empty(),
+        "a propagated pair that names two different functions is a wrong match"
+    );
 
     let one_stripped: Vec<u8> = stripped_copy(&one_path, &scratch.path().join("version_one.strip"))
         .unwrap_or_else(|| one.clone());
@@ -755,6 +826,10 @@ fn two_adjacent_versions_at_one_optimization_level_grade_the_structural_stage() 
     assert!(
         stripped_grade.structural.disagreed.is_empty(),
         "a structural pair that names two different functions is a wrong match"
+    );
+    assert!(
+        stripped_grade.propagated.disagreed.is_empty(),
+        "a propagated pair that names two different functions is a wrong match"
     );
 }
 
@@ -813,6 +888,10 @@ fn an_aarch64_pair_matches_functions_through_adrp_pairs_and_wide_moves() {
     assert!(
         grade.structural.disagreed.is_empty(),
         "a structural pair that names two different functions is a wrong match"
+    );
+    assert!(
+        grade.propagated.disagreed.is_empty(),
+        "a propagated aarch64 pair that names two different functions is a wrong match"
     );
     assert!(
         grade.exact.agreed > 0,

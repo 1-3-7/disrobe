@@ -12,7 +12,8 @@ pub use constant::{SMALL_INTEGER_CEILING, is_discriminating_constant};
 pub use features::{AnchorStrength, DataReference, FunctionFeatures, FunctionId, anchor_strength};
 pub use fingerprint::ControlFlowFingerprint;
 pub use matcher::{
-    FunctionVerdict, MatchReport, MatchStage, UnmatchedCause, Verdict, match_functions,
+    CallRelation, FunctionVerdict, MAXIMUM_PROPAGATION_HOPS, MatchReport, MatchStage,
+    UnmatchedCause, Verdict, match_functions,
 };
 pub use structure::{
     BasicBlock, ControlFlowGraph, INSTRUCTION_CATEGORY_COUNT, InstructionCategory, InstructionMix,
