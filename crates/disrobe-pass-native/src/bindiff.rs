@@ -4,12 +4,10 @@ use iced_x86::{ConstantOffsets, Decoder, DecoderOptions, Instruction};
 use object::Object;
 use serde::Serialize;
 
-use crate::disasm_ir::build_disasm_payload;
+use crate::disasm_ir::{FunctionSpan, build_disasm_payload, function_spans};
 use crate::error::{Error, Result};
 use crate::flirt::crc16_flirt;
-use disrobe_ir::payload::{
-    DisasmInstruction, DisasmPayload, DisasmSymbol, DisasmSymbolKind, InsnFlow,
-};
+use disrobe_ir::payload::{DisasmInstruction, DisasmPayload, InsnFlow};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DiffArch {
@@ -82,46 +80,27 @@ pub struct BinDiffReport {
 pub const BINDIFF_SCHEMA: &str = "disrobe.native.bindiff/v1";
 
 fn function_partition(payload: &DisasmPayload, arch: DiffArch) -> Vec<FunctionPrint> {
-    let mut starts: Vec<(u64, String, bool)> = payload
-        .symbol_table
-        .iter()
-        .filter(|s: &&DisasmSymbol| {
-            matches!(
-                s.kind,
-                DisasmSymbolKind::Function | DisasmSymbolKind::Export
-            )
-        })
-        .map(|s: &DisasmSymbol| {
-            (
-                s.address,
-                s.name.clone(),
-                matches!(s.kind, DisasmSymbolKind::Export),
-            )
-        })
-        .collect();
-    starts.sort_by_key(|s: &(u64, String, bool)| s.0);
-    starts.dedup_by_key(|s: &mut (u64, String, bool)| s.0);
-
+    let spans: Vec<FunctionSpan> = function_spans(payload);
     let mut sorted: Vec<&DisasmInstruction> = payload.instructions.iter().collect();
     sorted.sort_by_key(|i: &&DisasmInstruction| i.offset);
-    let last_end: u64 = sorted
-        .last()
-        .map_or(0, |i: &&DisasmInstruction| i.offset + i.bytes.len() as u64);
 
-    let mut out: Vec<FunctionPrint> = Vec::with_capacity(starts.len());
-    for (idx, (start, name, is_export)) in starts.iter().enumerate() {
-        let end: u64 = starts
-            .get(idx + 1)
-            .map_or(last_end, |next: &(u64, String, bool)| next.0);
+    let mut out: Vec<FunctionPrint> = Vec::with_capacity(spans.len());
+    for span in spans {
         let insns: Vec<&DisasmInstruction> = sorted
             .iter()
             .copied()
-            .filter(|i: &&DisasmInstruction| i.offset >= *start && i.offset < end)
+            .filter(|i: &&DisasmInstruction| i.offset >= span.address && i.offset < span.end)
             .collect();
         if insns.is_empty() {
             continue;
         }
-        out.push(build_print(name.clone(), *start, *is_export, &insns, arch));
+        out.push(build_print(
+            span.name,
+            span.address,
+            span.is_export,
+            &insns,
+            arch,
+        ));
     }
     out
 }
