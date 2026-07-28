@@ -1,12 +1,75 @@
-#![allow(clippy::panic)]
+#![allow(clippy::expect_used, clippy::panic)]
 
 use disrobe_similarity::{
-    DataReference, FunctionFeatures, FunctionId, FunctionVerdict, MatchReport, Verdict,
-    match_functions,
+    BasicBlock, ControlFlowGraph, DataReference, FunctionFeatures, FunctionId, FunctionVerdict,
+    InstructionCategory, MatchReport, Verdict, match_functions,
 };
 
 fn features<const N: usize>(id: u64, references: [DataReference; N]) -> FunctionFeatures {
     FunctionFeatures::new(FunctionId(id), references)
+}
+
+fn block<const N: usize, const M: usize>(
+    successors: [usize; N],
+    categories: [InstructionCategory; M],
+) -> BasicBlock {
+    BasicBlock::new(successors, categories)
+}
+
+fn graph(entry: usize, blocks: Vec<BasicBlock>) -> ControlFlowGraph {
+    ControlFlowGraph::new(entry, blocks).expect("the fixture graph is well formed")
+}
+
+fn diamond(arm: InstructionCategory) -> ControlFlowGraph {
+    graph(
+        0,
+        vec![
+            block(
+                [1, 2],
+                [InstructionCategory::Compare, InstructionCategory::Branch],
+            ),
+            block([3], [arm]),
+            block([3], [InstructionCategory::Store]),
+            block([], [InstructionCategory::Return]),
+        ],
+    )
+}
+
+fn triangle() -> ControlFlowGraph {
+    graph(
+        0,
+        vec![
+            block(
+                [1, 2],
+                [InstructionCategory::Compare, InstructionCategory::Branch],
+            ),
+            block([2], [InstructionCategory::Arithmetic]),
+            block([], [InstructionCategory::Return]),
+        ],
+    )
+}
+
+fn shaped(id: u64, structure: ControlFlowGraph) -> FunctionFeatures {
+    FunctionFeatures::with_structure(FunctionId(id), [], structure)
+}
+
+fn left_shapes() -> Vec<FunctionFeatures> {
+    vec![
+        shaped(0x1200, triangle()),
+        shaped(0x1000, diamond(InstructionCategory::Load)),
+        shaped(0x1100, diamond(InstructionCategory::Vector)),
+        shaped(0x1300, diamond(InstructionCategory::Load)),
+        features(0x1400, [DataReference::string_literal("only a reference")]),
+    ]
+}
+
+fn right_shapes() -> Vec<FunctionFeatures> {
+    vec![
+        shaped(0x2100, diamond(InstructionCategory::Load)),
+        shaped(0x2000, triangle()),
+        features(0x2200, [DataReference::string_literal("only a reference")]),
+        shaped(0x2300, diamond(InstructionCategory::Vector)),
+    ]
 }
 
 fn left_corpus() -> Vec<FunctionFeatures> {
@@ -117,6 +180,56 @@ fn verdicts_are_ordered_by_subject_regardless_of_input_order() {
             FunctionId(0x1400),
         ]
     );
+}
+
+#[test]
+fn repeated_runs_over_a_shaped_corpus_produce_an_identical_report() {
+    let left: Vec<FunctionFeatures> = left_shapes();
+    let right: Vec<FunctionFeatures> = right_shapes();
+
+    let first: MatchReport = match_functions(&left, &right);
+    let second: MatchReport = match_functions(&left, &right);
+
+    assert_eq!(first, second);
+    assert_eq!(format!("{first:?}"), format!("{second:?}"));
+    assert_eq!(
+        first.structural_pairs(),
+        vec![
+            (FunctionId(0x1100), FunctionId(0x2300)),
+            (FunctionId(0x1200), FunctionId(0x2000)),
+        ]
+    );
+    assert_eq!(
+        first.exact_pairs(),
+        vec![(FunctionId(0x1400), FunctionId(0x2200))]
+    );
+}
+
+#[test]
+fn swapping_the_two_sides_mirrors_a_shaped_report() {
+    let left: Vec<FunctionFeatures> = left_shapes();
+    let right: Vec<FunctionFeatures> = right_shapes();
+
+    let forward: MatchReport = match_functions(&left, &right);
+    let reversed: MatchReport = match_functions(&right, &left);
+
+    assert_eq!(forward.left, reversed.right);
+    assert_eq!(forward.right, reversed.left);
+    assert_eq!(forward.matched_count(), reversed.matched_count());
+}
+
+#[test]
+fn the_order_of_a_shaped_corpus_does_not_change_the_report() {
+    let left: Vec<FunctionFeatures> = left_shapes();
+    let right: Vec<FunctionFeatures> = right_shapes();
+    let reversed_left: Vec<FunctionFeatures> = left.iter().rev().cloned().collect();
+    let reversed_right: Vec<FunctionFeatures> = right.iter().rev().cloned().collect();
+
+    let baseline: MatchReport = match_functions(&left, &right);
+    let permuted: MatchReport = match_functions(&reversed_left, &reversed_right);
+
+    assert_eq!(baseline, permuted);
+    assert_eq!(format!("{baseline:?}"), format!("{permuted:?}"));
 }
 
 #[test]
