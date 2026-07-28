@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use disrobe_similarity::{
-    DataReference, FunctionFeatures, FunctionId, MatchReport, UnmatchedCause, Verdict,
-    match_functions,
+    AnchorStrength, DataReference, FunctionFeatures, FunctionId, MatchReport, UnmatchedCause,
+    Verdict, match_functions,
 };
 
 fn features<const N: usize>(id: u64, references: [DataReference; N]) -> FunctionFeatures {
@@ -118,6 +118,7 @@ fn an_anchor_unique_on_both_sides_matches_exactly() {
         Some(&Verdict::Exact {
             counterpart: FunctionId(0x2000),
             shared_references: anchor_set(parser_anchor()),
+            strength: AnchorStrength::Distinctive,
         })
     );
     assert_eq!(
@@ -125,6 +126,7 @@ fn an_anchor_unique_on_both_sides_matches_exactly() {
         Some(&Verdict::Exact {
             counterpart: FunctionId(0x1000),
             shared_references: anchor_set(parser_anchor()),
+            strength: AnchorStrength::Distinctive,
         })
     );
 }
