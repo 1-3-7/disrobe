@@ -2341,6 +2341,7 @@ dependencies = [
  "disrobe-llm-metadata",
  "disrobe-mba",
  "disrobe-query",
+ "disrobe-similarity",
  "disrobe-typerec",
  "flate2",
  "gimli 0.32.3",
