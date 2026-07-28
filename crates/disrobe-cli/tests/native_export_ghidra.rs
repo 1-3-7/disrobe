@@ -83,8 +83,8 @@ fn locate_analyze_headless() -> Option<PathBuf> {
     for var in ["GHIDRA_HOME", "GHIDRA_INSTALL_DIR"] {
         if let Ok(home) = std::env::var(var) {
             let base: PathBuf = PathBuf::from(home);
-            for sub in ["support/analyzeHeadless", "support/analyzeHeadless.bat"] {
-                let cand: PathBuf = base.join(sub);
+            for name in names {
+                let cand: PathBuf = base.join("support").join(name);
                 if cand.is_file() {
                     return Some(cand);
                 }
@@ -157,7 +157,13 @@ fn run_ghidra_count(
         .arg("-deleteProject")
         .arg("-overwrite")
         .output()
-        .ok()?;
+        .unwrap_or_else(|e: std::io::Error| {
+            panic!(
+                "failed to spawn {} for {}: {e}",
+                ghidra.display(),
+                input.display()
+            )
+        });
     let text: String = String::from_utf8_lossy(&out.stdout).into_owned();
     for line in text.lines() {
         if let Some(rest) = line.split_once("DISROBE_COUNT functions=") {
