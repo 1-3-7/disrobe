@@ -7,6 +7,9 @@ use object::{
     SectionIndex,
 };
 
+use super::aarch64::{
+    Aarch64DirectTransfer, aarch64_direct_transfer, aarch64_is_indirect_branch, aarch64_is_return,
+};
 use super::{
     CallSiteIdentitySignature, CallSiteReturnProof, CallSiteScalar, CallSiteSignatureProof, Error,
     FpWidth, LeafRecovery, RecoveredFunction, RecoveredProgram, UnrecoveredFunction, Width,
@@ -439,16 +442,14 @@ fn direct_target(
     word: u32,
     direct_targets: &BTreeMap<(usize, u64), Vec<usize>>,
 ) -> Option<(usize, bool)> {
-    let opcode: u32 = word & BRANCH_OPCODE_MASK;
-    let tail: bool = match opcode {
-        BL_OPCODE => false,
-        B_OPCODE => true,
-        _ => return None,
+    let transfer: Aarch64DirectTransfer = aarch64_direct_transfer(instruction_offset, word)?;
+    let (target_offset, tail): (u64, bool) = match transfer {
+        Aarch64DirectTransfer::BranchLink { target } => (target, false),
+        Aarch64DirectTransfer::UnconditionalBranch { target } => (target, true),
+        Aarch64DirectTransfer::ConditionalBranch { .. }
+        | Aarch64DirectTransfer::CompareBranch { .. }
+        | Aarch64DirectTransfer::TestBranch { .. } => return None,
     };
-    let displacement: i64 = sign_extend(u64::from(word & 0x03ff_ffff), 26)?.checked_mul(4)?;
-    let instruction_offset_i64: i64 = i64::try_from(instruction_offset).ok()?;
-    let target_offset_i64: i64 = instruction_offset_i64.checked_add(displacement)?;
-    let target_offset: u64 = u64::try_from(target_offset_i64).ok()?;
     let matches: &Vec<usize> = direct_targets.get(&(caller_section.0, target_offset))?;
     if matches.len() != 1 {
         return None;
@@ -462,15 +463,6 @@ fn direct_target(
 fn instruction_word(instruction: &DisasmInsn) -> Option<u32> {
     let bytes: [u8; 4] = instruction.bytes.as_slice().try_into().ok()?;
     Some(u32::from_le_bytes(bytes))
-}
-
-fn sign_extend(value: u64, bits: u32) -> Option<i64> {
-    if bits == 0 || bits > 63 {
-        return None;
-    }
-    let shift: u32 = 64_u32.checked_sub(bits)?;
-    let shifted: i64 = i64::from_ne_bytes(value.wrapping_shl(shift).to_ne_bytes());
-    Some(shifted.wrapping_shr(shift))
 }
 
 fn is_result_free_return_body(code: &[u8], address: u64) -> bool {
@@ -1301,15 +1293,28 @@ fn control_flow_successors(
             .checked_add(1)
             .filter(|next_index: &usize| *next_index < instructions.len());
         let word: Option<u32> = instruction_word(instruction);
-        if is_indirect_terminator(instruction) {
+        let direct_transfer: Option<Aarch64DirectTransfer> =
+            word.and_then(|value: u32| aarch64_direct_transfer(instruction.address, value));
+        if aarch64_is_indirect_branch(&instruction.mnemonic)
+            || aarch64_is_return(&instruction.mnemonic)
+        {
             continue;
         }
         if instruction.mnemonic == "b" {
             let target: Option<usize> = if relocated_branches.contains(&index) {
                 None
             } else {
-                word.and_then(|value: u32| branch_target_index(value, instruction.address, 26, 0))
-                    .and_then(|address: u64| by_address.get(&address).copied())
+                match direct_transfer {
+                    Some(Aarch64DirectTransfer::UnconditionalBranch { target }) => Some(target),
+                    Some(
+                        Aarch64DirectTransfer::BranchLink { .. }
+                        | Aarch64DirectTransfer::ConditionalBranch { .. }
+                        | Aarch64DirectTransfer::CompareBranch { .. }
+                        | Aarch64DirectTransfer::TestBranch { .. },
+                    )
+                    | None => None,
+                }
+                .and_then(|address: u64| by_address.get(&address).copied())
             };
             successors[index].push(target.unwrap_or(unresolved_target));
             continue;
@@ -1318,8 +1323,19 @@ fn control_flow_successors(
             let target: Option<usize> = if relocated_branches.contains(&index) {
                 None
             } else {
-                word.and_then(|value: u32| conditional_target(value, instruction.address))
-                    .and_then(|address: u64| by_address.get(&address).copied())
+                match direct_transfer {
+                    Some(
+                        Aarch64DirectTransfer::ConditionalBranch { target, .. }
+                        | Aarch64DirectTransfer::CompareBranch { target }
+                        | Aarch64DirectTransfer::TestBranch { target },
+                    ) => Some(target),
+                    Some(
+                        Aarch64DirectTransfer::BranchLink { .. }
+                        | Aarch64DirectTransfer::UnconditionalBranch { .. },
+                    )
+                    | None => None,
+                }
+                .and_then(|address: u64| by_address.get(&address).copied())
             };
             successors[index].push(target.unwrap_or(unresolved_target));
             if let Some(next_index) = next {
@@ -1361,45 +1377,10 @@ fn is_conditional_branch(instruction: &DisasmInsn) -> bool {
         )
 }
 
-fn conditional_target(word: u32, address: u64) -> Option<u64> {
-    if word & 0xff00_0010 == 0x5400_0000 || word & 0x7e00_0000 == 0x3400_0000 {
-        branch_target_index(word, address, 19, 5)
-    } else if word & 0x7e00_0000 == 0x3600_0000 {
-        branch_target_index(word, address, 14, 5)
-    } else {
-        None
-    }
-}
-
-fn branch_target_index(word: u32, address: u64, bits: u32, shift: u32) -> Option<u64> {
-    let mask: u64 = 1_u64.checked_shl(bits)?.checked_sub(1)?;
-    let immediate: u64 = u64::from(word.wrapping_shr(shift)) & mask;
-    let displacement: i64 = sign_extend(immediate, bits)?.checked_mul(4)?;
-    let address_i64: i64 = i64::try_from(address).ok()?;
-    u64::try_from(address_i64.checked_add(displacement)?).ok()
-}
-
 fn is_call_instruction(instruction: &DisasmInsn) -> bool {
     matches!(
         instruction.mnemonic.as_str(),
         "bl" | "blr" | "blraa" | "blraaz" | "blrab" | "blrabz" | "hvc" | "smc" | "svc"
-    )
-}
-
-fn is_indirect_terminator(instruction: &DisasmInsn) -> bool {
-    matches!(
-        instruction.mnemonic.as_str(),
-        "br" | "braa"
-            | "braaz"
-            | "brab"
-            | "brabz"
-            | "drps"
-            | "eret"
-            | "eretaa"
-            | "eretab"
-            | "ret"
-            | "retaa"
-            | "retab"
     )
 }
 

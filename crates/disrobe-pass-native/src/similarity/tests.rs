@@ -192,7 +192,7 @@ fn padding_behind_the_return_stays_out_of_the_graph() {
 }
 
 #[test]
-fn an_aarch64_body_partitions_from_its_printed_branch_targets() {
+fn an_aarch64_body_partitions_from_its_encoded_branch_targets() {
     let body: Vec<DisasmInstruction> = vec![
         DisasmInstruction {
             offset: 0x1000,
@@ -203,7 +203,7 @@ fn an_aarch64_body_partitions_from_its_printed_branch_targets() {
         },
         DisasmInstruction {
             offset: 0x1004,
-            bytes: 0x5400_0060_u32.to_le_bytes().to_vec(),
+            bytes: 0x5400_0040_u32.to_le_bytes().to_vec(),
             mnemonic: "b.eq".to_owned(),
             operands: vec!["$+0x8".to_owned()],
             ..DisasmInstruction::default()
@@ -234,7 +234,7 @@ fn an_aarch64_body_partitions_from_its_printed_branch_targets() {
 }
 
 #[test]
-fn an_aarch64_branch_without_a_readable_target_yields_no_structure() {
+fn an_aarch64_branch_leaving_the_body_yields_no_structure() {
     let body: Vec<DisasmInstruction> = vec![
         DisasmInstruction {
             offset: 0x1000,
@@ -378,6 +378,15 @@ fn a_branch_with_link_decodes_its_own_displacement() {
         None,
         "a return is not a call"
     );
+    assert_eq!(
+        aarch64_branch_link_target(0x1000, 0x95FF_FFFF),
+        Some(0x0800_0FFC)
+    );
+    assert_eq!(
+        aarch64_branch_link_target(0x0800_0000, 0x9600_0000),
+        Some(0)
+    );
+    assert_eq!(aarch64_branch_link_target(u64::MAX - 3, 0x9400_0001), None);
 }
 
 #[test]
@@ -394,6 +403,208 @@ fn an_aarch64_call_is_recorded_only_when_its_target_is_a_known_function() {
         aarch64_call_targets(&body, &entries),
         BTreeSet::from([FunctionId::from(0x1010)]),
         "only the resolved call into a known function survives"
+    );
+}
+
+#[test]
+fn unreachable_aarch64_tail_features_are_excluded() {
+    let body: Vec<DisasmInstruction> = vec![
+        aarch64_insn(0x1000, "adrp", 0x9000_0008),
+        aarch64_insn(0x1004, "add", 0x9104_8D08),
+        aarch64_insn(0x1008, "nop", 0xD503_201F),
+        aarch64_insn(0x100C, "ret", 0xD65F_03C0),
+        aarch64_insn(0x1010, "adrp", 0x9000_0008),
+        aarch64_insn(0x1014, "add", 0x9111_5908),
+        aarch64_insn(0x1018, "bl", 0x9400_03FA),
+        aarch64_insn(0x101C, "ret", 0xD65F_03C0),
+    ];
+    let index: ImageIndex = ImageIndex {
+        strings: BTreeMap::from([
+            (0x1123, "reachable".to_owned()),
+            (0x1456, "unreachable".to_owned()),
+        ]),
+        ..ImageIndex::default()
+    };
+    let entries: BTreeSet<u64> = BTreeSet::from([0x2000]);
+    let parts: Aarch64FeatureParts = aarch64_feature_parts(&body, &index, &entries, true);
+
+    assert_eq!(
+        parts.references,
+        vec![DataReference::string_literal("reachable".to_owned())]
+    );
+    assert!(parts.structure.is_some());
+    assert!(parts.calls.is_empty());
+}
+
+#[test]
+fn aarch64_cfg_refusal_uses_only_the_terminated_prefix() {
+    let body: Vec<DisasmInstruction> = vec![
+        aarch64_insn(0x1000, "adrp", 0x9000_0008),
+        aarch64_insn(0x1004, "add", 0x9104_8D08),
+        aarch64_insn(0x1008, "nop", 0xD503_201F),
+        aarch64_insn(0x100C, "br", 0xD61F_0000),
+        aarch64_insn(0x1010, "bl", 0x9400_03FC),
+    ];
+    let index: ImageIndex = ImageIndex {
+        strings: BTreeMap::from([(0x1123, "preserved".to_owned())]),
+        ..ImageIndex::default()
+    };
+    let entries: BTreeSet<u64> = BTreeSet::from([0x2000]);
+    let parts: Aarch64FeatureParts = aarch64_feature_parts(&body, &index, &entries, true);
+
+    assert_eq!(
+        parts.references,
+        vec![DataReference::string_literal("preserved".to_owned())]
+    );
+    assert!(parts.structure.is_none());
+    assert!(parts.calls.is_empty());
+}
+
+#[test]
+fn incomplete_aarch64_cfg_refusal_suppresses_full_span_calls() {
+    let body: Vec<DisasmInstruction> = vec![
+        aarch64_insn(0x1000, "br", 0xD61F_0000),
+        aarch64_insn(0x1004, "bl", 0x9400_03FF),
+    ];
+    let index: ImageIndex = ImageIndex::default();
+    let entries: BTreeSet<u64> = BTreeSet::from([0x2000]);
+    let parts: Aarch64FeatureParts = aarch64_feature_parts(&body, &index, &entries, false);
+
+    assert!(parts.references.is_empty());
+    assert!(parts.structure.is_none());
+    assert!(parts.calls.is_empty());
+}
+
+#[test]
+fn incomplete_aarch64_features_do_not_cross_instruction_gaps() {
+    let body: Vec<DisasmInstruction> = vec![
+        aarch64_insn(0x1000, "nop", 0xD503_201F),
+        aarch64_insn(0x2000, "bl", 0x9400_0400),
+        aarch64_insn(0x2004, "ret", 0xD65F_03C0),
+    ];
+    let index: ImageIndex = ImageIndex::default();
+    let entries: BTreeSet<u64> = BTreeSet::from([0x3000]);
+    let parts: Aarch64FeatureParts = aarch64_feature_parts(&body, &index, &entries, false);
+
+    assert!(parts.references.is_empty());
+    assert!(parts.structure.is_none());
+    assert!(parts.calls.is_empty());
+}
+
+#[test]
+fn unreachable_aarch64_interior_features_are_excluded() {
+    let mut branch: DisasmInstruction = aarch64_insn(0x1000, "b", 0x1400_0004);
+    branch.operands = vec!["$+0x10".to_owned()];
+    let body: Vec<DisasmInstruction> = vec![
+        branch,
+        aarch64_insn(0x1004, "adrp", 0x9000_0008),
+        aarch64_insn(0x1008, "add", 0x9111_5908),
+        aarch64_insn(0x100C, "bl", 0x9400_03FD),
+        aarch64_insn(0x1010, "ret", 0xD65F_03C0),
+    ];
+    let index: ImageIndex = ImageIndex {
+        strings: BTreeMap::from([(0x1456, "unreachable".to_owned())]),
+        ..ImageIndex::default()
+    };
+    let entries: BTreeSet<u64> = BTreeSet::from([0x2000]);
+    let parts: Aarch64FeatureParts = aarch64_feature_parts(&body, &index, &entries, true);
+
+    assert!(parts.references.is_empty());
+    assert!(parts.structure.is_some());
+    assert!(parts.calls.is_empty());
+}
+
+#[test]
+fn reachable_aarch64_reference_chains_cross_basic_block_leaders() {
+    let mut branch: DisasmInstruction = aarch64_insn(0x1000, "cbz", 0x3400_0040);
+    branch.operands = vec!["w0".to_owned(), "$+0x8".to_owned()];
+    let body: Vec<DisasmInstruction> = vec![
+        branch,
+        aarch64_insn(0x1004, "adrp", 0x9000_0008),
+        aarch64_insn(0x1008, "add", 0x9104_8D08),
+        aarch64_insn(0x100C, "ret", 0xD65F_03C0),
+    ];
+    let index: ImageIndex = ImageIndex {
+        strings: BTreeMap::from([(0x1123, "across leader".to_owned())]),
+        ..ImageIndex::default()
+    };
+    let entries: BTreeSet<u64> = BTreeSet::new();
+    let parts: Aarch64FeatureParts = aarch64_feature_parts(&body, &index, &entries, true);
+
+    assert_eq!(
+        parts.references,
+        vec![DataReference::string_literal("across leader".to_owned())]
+    );
+    assert!(parts.structure.is_some());
+}
+
+#[test]
+fn aarch64_reference_chains_do_not_cross_authenticated_exception_returns() {
+    let mut branch: DisasmInstruction = aarch64_insn(0x1000, "cbz", 0x3400_0060);
+    branch.operands = vec!["w0".to_owned(), "$+0xc".to_owned()];
+    let body: Vec<DisasmInstruction> = vec![
+        branch,
+        aarch64_insn(0x1004, "adrp", 0x9000_0008),
+        aarch64_insn(0x1008, "eretaa", 0xD69F_0BFF),
+        aarch64_insn(0x100C, "add", 0x9104_8D08),
+        aarch64_insn(0x1010, "ret", 0xD65F_03C0),
+    ];
+    let index: ImageIndex = ImageIndex {
+        strings: BTreeMap::from([(0x1123, "must not cross".to_owned())]),
+        ..ImageIndex::default()
+    };
+    let entries: BTreeSet<u64> = BTreeSet::new();
+    let parts: Aarch64FeatureParts = aarch64_feature_parts(&body, &index, &entries, true);
+
+    assert!(parts.references.is_empty());
+    assert!(parts.structure.is_some());
+}
+
+#[test]
+fn aarch64_exception_returns_exclude_trailing_calls() {
+    for (mnemonic, word) in [
+        ("eretaa", 0xD69F_0BFF),
+        ("eretab", 0xD69F_0FFF),
+        ("drps", 0xD6BF_03E0),
+    ] {
+        let body: Vec<DisasmInstruction> = vec![
+            aarch64_insn(0x1000, mnemonic, word),
+            aarch64_insn(0x1004, "bl", 0x9400_03FF),
+        ];
+        let index: ImageIndex = ImageIndex::default();
+        let entries: BTreeSet<u64> = BTreeSet::from([0x2000]);
+        let parts: Aarch64FeatureParts = aarch64_feature_parts(&body, &index, &entries, true);
+
+        assert!(parts.structure.is_some(), "{mnemonic}");
+        assert!(parts.calls.is_empty(), "{mnemonic}");
+    }
+}
+
+#[test]
+fn discovered_aarch64_parts_suppress_only_reference_anchors() {
+    let body: Vec<DisasmInstruction> = vec![
+        aarch64_insn(0x1000, "adrp", 0x9000_0008),
+        aarch64_insn(0x1004, "add", 0x9104_8D08),
+        aarch64_insn(0x1008, "nop", 0xD503_201F),
+        aarch64_insn(0x100C, "bl", 0x9400_03FD),
+        aarch64_insn(0x1010, "ret", 0xD65F_03C0),
+    ];
+    let index: ImageIndex = ImageIndex {
+        strings: BTreeMap::from([(0x1123, "retained for symbols".to_owned())]),
+        ..ImageIndex::default()
+    };
+    let entries: BTreeSet<u64> = BTreeSet::from([0x2000]);
+    let discovered: Aarch64FeatureParts = aarch64_feature_parts(&body, &index, &entries, false);
+    let symbol_backed: Aarch64FeatureParts = aarch64_feature_parts(&body, &index, &entries, true);
+
+    assert!(discovered.references.is_empty());
+    assert!(discovered.structure.is_some());
+    assert_eq!(discovered.calls, BTreeSet::from([FunctionId::from(0x2000)]));
+    assert_eq!(
+        symbol_backed.references,
+        vec![DataReference::string_literal(
+            "retained for symbols".to_owned()
+        )]
     );
 }
 
