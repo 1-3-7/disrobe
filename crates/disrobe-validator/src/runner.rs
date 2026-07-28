@@ -1,3 +1,4 @@
+use disrobe_core::scratch::ScratchDir;
 use std::io::Read as _;
 use std::path::Path;
 use std::time::Instant;
@@ -294,38 +295,25 @@ fn run_nuitka(entry: &CorpusEntry, bytes: &[u8], blake_in: &str) -> Vec<SampleMe
 
 fn run_pyfreeze(entry: &CorpusEntry, bytes: &[u8], blake_in: &str) -> Vec<SampleMetrics> {
     let start: Instant = Instant::now();
-    let out_dir: std::path::PathBuf =
-        std::env::temp_dir().join(format!("disrobe-validate-pyfreeze-{blake_in}"));
-    if let Err(e) = cleanup_pyfreeze_dir(&out_dir) {
-        let micros: u128 = start.elapsed().as_micros();
-        return vec![SampleMetrics {
-            entry: entry.clone(),
-            pass_name: "pyfreeze".to_owned(),
-            ok: false,
-            recovered: false,
-            input_bytes: bytes_len(bytes),
-            output_bytes: 0,
-            micros,
-            blake3_input: blake_in.to_owned(),
-            blake3_output: None,
-            message: Some(format!("temp cleanup: {e}")),
-        }];
-    }
-    if let Err(e) = std::fs::create_dir_all(&out_dir) {
-        let micros: u128 = start.elapsed().as_micros();
-        return vec![SampleMetrics {
-            entry: entry.clone(),
-            pass_name: "pyfreeze".to_owned(),
-            ok: false,
-            recovered: false,
-            input_bytes: bytes_len(bytes),
-            output_bytes: 0,
-            micros,
-            blake3_input: blake_in.to_owned(),
-            blake3_output: None,
-            message: Some(format!("temp dir: {e}")),
-        }];
-    }
+    let scratch: ScratchDir = match ScratchDir::create("validate-pyfreeze") {
+        Ok(dir) => dir,
+        Err(e) => {
+            let micros: u128 = start.elapsed().as_micros();
+            return vec![SampleMetrics {
+                entry: entry.clone(),
+                pass_name: "pyfreeze".to_owned(),
+                ok: false,
+                recovered: false,
+                input_bytes: bytes_len(bytes),
+                output_bytes: 0,
+                micros,
+                blake3_input: blake_in.to_owned(),
+                blake3_output: None,
+                message: Some(format!("temp dir: {e}")),
+            }];
+        }
+    };
+    let out_dir: std::path::PathBuf = scratch.path().to_path_buf();
     let result: disrobe_pass_pyfreeze::Result<disrobe_pass_pyfreeze::PyfreezeOutput> =
         disrobe_pass_pyfreeze::extract(&entry.path, &out_dir);
     let micros: u128 = start.elapsed().as_micros();
@@ -378,7 +366,7 @@ fn run_pyfreeze(entry: &CorpusEntry, bytes: &[u8], blake_in: &str) -> Vec<Sample
             message: Some(format!("{e}")),
         }],
     };
-    if let Err(e) = cleanup_pyfreeze_dir(&out_dir) {
+    if let Err(e) = scratch.close() {
         let cleanup_message: String = format!("temp cleanup: {e}");
         return metrics
             .into_iter()
@@ -394,14 +382,6 @@ fn run_pyfreeze(entry: &CorpusEntry, bytes: &[u8], blake_in: &str) -> Vec<Sample
             .collect();
     }
     metrics
-}
-
-fn cleanup_pyfreeze_dir(path: &Path) -> Result<(), String> {
-    match std::fs::remove_dir_all(path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!("{}: {e}", path.display())),
-    }
 }
 
 fn hash_dir_tree(root: &std::path::Path) -> Result<(u64, Option<String>), String> {
@@ -680,27 +660,41 @@ mod tests {
     }
 
     #[test]
-    fn pyfreeze_temp_cleanup_failure_is_reported() {
-        let blake_in: String = format!("cleanup-file-{}", std::process::id());
-        let out_dir: std::path::PathBuf =
-            std::env::temp_dir().join(format!("disrobe-validate-pyfreeze-{blake_in}"));
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&out_dir);
-        let _: std::io::Result<()> = std::fs::remove_file(&out_dir);
-        std::fs::write(&out_dir, b"stale").unwrap();
+    fn pyfreeze_leaves_no_scratch_directory_behind() {
+        let blake_in: String = format!("no-leak-{}", std::process::id());
         let entry: CorpusEntry = CorpusEntry {
             kind: CorpusKind::CxFreeze,
-            path: out_dir.with_extension("input"),
+            path: std::path::PathBuf::from("a-path-that-does-not-exist.input"),
             size_bytes: 0,
         };
+        let before: std::collections::BTreeSet<String> = extraction_directories();
         let metrics: Vec<SampleMetrics> = run_pyfreeze(&entry, b"", &blake_in);
-        let _: std::io::Result<()> = std::fs::remove_file(&out_dir);
         assert_eq!(metrics.len(), 1);
-        assert!(!metrics[0].ok);
-        let message: &str = metrics[0].message.as_deref().unwrap_or("");
         assert!(
-            message.contains("temp cleanup"),
-            "cleanup failure should be explicit, got {message}"
+            !metrics[0].ok,
+            "an absent input must not report a successful run"
         );
+        let after: std::collections::BTreeSet<String> = extraction_directories();
+        let gained: Vec<&String> = after.difference(&before).collect::<Vec<&String>>();
+        assert!(
+            gained.is_empty(),
+            "the extraction directory must not outlive the call, even on the failure path: {gained:?}"
+        );
+    }
+
+    fn extraction_directories() -> std::collections::BTreeSet<String> {
+        let Ok(entries): std::io::Result<std::fs::ReadDir> =
+            std::fs::read_dir(disrobe_core::scratch::scratch_root())
+        else {
+            return std::collections::BTreeSet::new();
+        };
+        entries
+            .flatten()
+            .filter_map(|entry: std::fs::DirEntry| {
+                let name: String = entry.file_name().to_string_lossy().into_owned();
+                name.starts_with("validate-pyfreeze-").then_some(name)
+            })
+            .collect()
     }
 
     #[test]
