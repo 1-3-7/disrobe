@@ -1,0 +1,15 @@
+[package]
+name = "disrobe-similarity"
+description = "Cross-image function matching for stripped binaries, anchored on the data a function references (string literals, unusual constants, named import calls). A pair is reported as a match only when the reference set is identical and occurs exactly once on each side, so an anchor shared by a third function is refused with its candidate set instead of guessed."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["binary-diffing", "function-matching", "stripped", "similarity", "binary-analysis"]
+categories.workspace = true
+
+[lints]
+workspace = true
