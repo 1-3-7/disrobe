@@ -61,6 +61,7 @@ pub mod sig_engine;
 pub mod sigmaker;
 #[allow(clippy::redundant_pub_crate)]
 mod simd_devirt;
+pub mod similarity;
 pub mod stack_frame;
 pub mod stack_string;
 pub mod stream_disasm;
@@ -133,7 +134,8 @@ pub use desync::{
     vmware_backdoor_port,
 };
 pub use disasm_ir::{
-    build_disasm_payload, is_disassemblable_format, seh_scope_function_starts, text_section_window,
+    FunctionSpan, build_disasm_payload, function_spans, is_disassemblable_format,
+    seh_scope_function_starts, text_section_window,
 };
 pub use dwarf_sourcemap::{
     CompileUnit, CoverageScore, DwarfSourcemap, LineRow, ReconstructedType, SplitDwarfInfo,
@@ -284,6 +286,7 @@ pub use sig_engine::{
 #[cfg(feature = "chain")]
 pub use sig_engine::{PASS_ID as SIG_ENGINE_PASS_ID, SigEngineDetector};
 pub use sigmaker::{SigmakerOptions, Signature, SignatureByte, make_signature};
+pub use similarity::extract_function_features;
 pub use stack_frame::{
     FrameLayout, STACK_FRAME_SCHEMA, StackFrameReport, StackSlot, recover_stack_frames,
 };

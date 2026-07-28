@@ -21,6 +21,7 @@ disrobe-core = { workspace = true }
 disrobe-ir = { workspace = true }
 disrobe-binfmt = { workspace = true }
 disrobe-mba = { workspace = true }
+disrobe-similarity = { workspace = true }
 disrobe-emit = { workspace = true }
 disrobe-typerec = { workspace = true }
 blake3 = { workspace = true }

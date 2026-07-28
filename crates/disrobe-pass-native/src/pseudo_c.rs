@@ -18,7 +18,8 @@ use crate::arch::{Arch, DisasmInsn, disassemble};
 use crate::error::{Error, Result};
 use crate::structuring;
 
-mod aarch64;
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) mod aarch64;
 mod aarch64_callsite;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

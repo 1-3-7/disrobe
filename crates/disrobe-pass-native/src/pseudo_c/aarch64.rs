@@ -2326,12 +2326,12 @@ fn aarch64_relative_target(address: u64, word: u32, shift: u8, bits: u8) -> Opti
     address.checked_add_signed(delta)
 }
 
-fn aarch64_adr_target(address: u64, word: u32) -> Option<u64> {
+pub(crate) fn aarch64_adr_target(address: u64, word: u32) -> Option<u64> {
     let immediate: u32 = aarch64_adr_immediate(word);
     address.checked_add_signed(signed_immediate(immediate, 21))
 }
 
-fn aarch64_adrp_target(address: u64, word: u32) -> Option<u64> {
+pub(crate) fn aarch64_adrp_target(address: u64, word: u32) -> Option<u64> {
     let immediate: u32 = aarch64_adr_immediate(word);
     let delta: i64 = signed_immediate(immediate, 21).checked_mul(4096)?;
     (address & !0xfff).checked_add_signed(delta)
@@ -2343,12 +2343,12 @@ fn aarch64_adr_immediate(word: u32) -> u32 {
     high << 2 | low
 }
 
-fn immediate_field(word: u32, shift: u8, width: u8) -> u32 {
+pub(crate) fn immediate_field(word: u32, shift: u8, width: u8) -> u32 {
     let mask: u32 = (1_u32.checked_shl(u32::from(width)).unwrap_or(0)).wrapping_sub(1);
     word.checked_shr(u32::from(shift)).unwrap_or(0) & mask
 }
 
-fn register_field(word: u32, shift: u8) -> u8 {
+pub(crate) fn register_field(word: u32, shift: u8) -> u8 {
     immediate_field(word, shift, 5) as u8
 }
 

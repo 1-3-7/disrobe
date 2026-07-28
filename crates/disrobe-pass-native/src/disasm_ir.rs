@@ -245,7 +245,89 @@ struct ExecutableSection {
     bytes: Vec<u8>,
 }
 
-fn read_only_windows(bytes: &[u8]) -> Vec<ReadOnlyWindow<'_>> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionSpan {
+    pub address: u64,
+    pub end: u64,
+    pub name: String,
+    pub is_export: bool,
+}
+
+#[must_use]
+pub fn function_spans(payload: &DisasmPayload) -> Vec<FunctionSpan> {
+    let mut starts: Vec<(u64, String, bool)> = payload
+        .symbol_table
+        .iter()
+        .filter(|symbol: &&DisasmSymbol| {
+            matches!(
+                symbol.kind,
+                DisasmSymbolKind::Function | DisasmSymbolKind::Export
+            )
+        })
+        .map(|symbol: &DisasmSymbol| {
+            (
+                symbol.address,
+                symbol.name.clone(),
+                matches!(symbol.kind, DisasmSymbolKind::Export),
+            )
+        })
+        .collect();
+    starts.sort_by_key(|start: &(u64, String, bool)| start.0);
+    starts.dedup_by_key(|start: &mut (u64, String, bool)| start.0);
+
+    let last_end: u64 = payload
+        .instructions
+        .iter()
+        .max_by_key(|insn: &&DisasmInstruction| insn.offset)
+        .map_or(0, |insn: &DisasmInstruction| {
+            insn.offset.saturating_add(insn.bytes.len() as u64)
+        });
+
+    let mut spans: Vec<FunctionSpan> = Vec::with_capacity(starts.len());
+    for (index, (address, name, is_export)) in starts.iter().enumerate() {
+        let end: u64 = starts
+            .get(index + 1)
+            .map_or(last_end, |next: &(u64, String, bool)| next.0);
+        spans.push(FunctionSpan {
+            address: *address,
+            end,
+            name: name.clone(),
+            is_export: *is_export,
+        });
+    }
+    spans
+}
+
+pub(crate) fn span_instructions<'a>(
+    sorted: &'a [DisasmInstruction],
+    span: &FunctionSpan,
+) -> &'a [DisasmInstruction] {
+    let low: usize = sorted.partition_point(|insn: &DisasmInstruction| insn.offset < span.address);
+    let high: usize = sorted.partition_point(|insn: &DisasmInstruction| insn.offset < span.end);
+    sorted.get(low..high).unwrap_or_default()
+}
+
+pub(crate) fn image_arch(bytes: &[u8]) -> Option<DisasmArch> {
+    let native: NativeFile = parse_native(bytes).ok()?;
+    map_arch(native.arch, native.endian)
+}
+
+pub(crate) fn mapped_address_extent(bytes: &[u8]) -> Option<(u64, u64)> {
+    let file: object::File<'_> = object::File::parse(bytes).ok()?;
+    let mut low: u64 = u64::MAX;
+    let mut high: u64 = 0;
+    for section in file.sections() {
+        let address: u64 = section.address();
+        if address == 0 || section.size() == 0 {
+            continue;
+        }
+        low = low.min(address);
+        high = high.max(address.saturating_add(section.size()));
+    }
+    (low < high).then_some((low, high))
+}
+
+pub(crate) fn read_only_windows(bytes: &[u8]) -> Vec<ReadOnlyWindow<'_>> {
     let Ok(file): core::result::Result<object::File<'_>, object::Error> =
         object::File::parse(bytes)
     else {
