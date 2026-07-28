@@ -97,6 +97,10 @@ const NON_PARSER_ALLOWLIST: &[NonParserCrate] = &[
         rationale: "semantic diff over the already-lifted Mir-rung IR, downstream of the format parsers",
     },
     NonParserCrate {
+        package_name: "disrobe-similarity",
+        rationale: "matches functions across two images from features the native pass already extracted, and never reads image bytes itself",
+    },
+    NonParserCrate {
         package_name: "disrobe-taint",
         rationale: "dataflow analysis over the already-lifted Mir-rung IR, downstream of the format parsers",
     },
