@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use disrobe_ir::payload::{DisasmInstruction, DisasmPayload};
+use disrobe_ir::payload::{DisasmInstruction, DisasmPayload, DisasmSymbol, DisasmSymbolKind};
 use disrobe_pass_native::{
     Error, FunctionSpan, build_disasm_payload, extract_function_features, function_spans,
 };
@@ -183,6 +183,27 @@ void _start(void) {
 }
 "#;
 
+const AARCH64_DYNAMIC_EXPORT_SOURCE: &str = r#"
+typedef unsigned long long u64;
+
+volatile u64 sink;
+
+__attribute__((noinline)) static u64 internal_mix(u64 value) {
+    value ^= value >> 17;
+    value *= 0x9e3779b97f4a7c15ULL;
+    return value ^ (value >> 29);
+}
+
+__attribute__((visibility("default"))) void _start(void) {
+    sink = internal_mix(7);
+    register long x8 __asm__("x8") = 93;
+    register long x0 __asm__("x0") = 0;
+    __asm__ volatile("svc #0" : : "r"(x8), "r"(x0) : "memory");
+    for (;;) {
+    }
+}
+"#;
+
 const REFERENCE_FREE_SOURCE: &str = r"
 typedef unsigned int u32;
 
@@ -338,12 +359,19 @@ fn compile(compiler: &Path, source: &Path, output: &Path, flags: &[&str]) -> Opt
 }
 
 fn stripped_copy(source: &Path, output: &Path) -> Option<Vec<u8>> {
-    let stripper: PathBuf = tool("strip")?;
-    std::fs::copy(source, output).ok()?;
-    if !run(Command::new(stripper).arg("-s").arg(output)) {
-        return None;
+    for name in ["llvm-strip", "strip"] {
+        let Some(stripper): Option<PathBuf> = tool(name) else {
+            continue;
+        };
+        std::fs::copy(source, output).ok()?;
+        if run(Command::new(stripper).arg("-s").arg(output)) {
+            let bytes: Option<Vec<u8>> = std::fs::read(output).ok();
+            if bytes.is_some() {
+                return bytes;
+            }
+        }
     }
-    std::fs::read(output).ok()
+    None
 }
 
 struct Side {
@@ -896,5 +924,84 @@ fn an_aarch64_pair_matches_functions_through_adrp_pairs_and_wide_moves() {
     assert!(
         grade.exact.agreed > 0,
         "adrp pairs and wide moves must anchor at least one aarch64 function"
+    );
+}
+
+#[test]
+fn a_stripped_aarch64_dynamic_export_does_not_suppress_internal_call_targets() {
+    let Some(compiler): Option<PathBuf> = tool("clang") else {
+        eprintln!("skipping: clang absent, no aarch64 dynamic-export build");
+        return;
+    };
+    let scratch: TempDir = TempDir::new().expect("scratch directory");
+    let source: PathBuf = scratch.path().join("dynamic_export.c");
+    let unstripped_path: PathBuf = scratch.path().join("dynamic_export.elf");
+    let stripped_path: PathBuf = scratch.path().join("dynamic_export.stripped.elf");
+    std::fs::write(&source, AARCH64_DYNAMIC_EXPORT_SOURCE).expect("write aarch64 source");
+    let flags: [&str; 7] = [
+        "-target",
+        "aarch64-unknown-linux-gnu",
+        "-nostdlib",
+        "-ffreestanding",
+        "-fuse-ld=lld",
+        "-Wl,--export-dynamic",
+        "-O0",
+    ];
+    let Some(unstripped): Option<Vec<u8>> = compile(&compiler, &source, &unstripped_path, &flags)
+    else {
+        eprintln!("skipping: clang cannot cross link an aarch64 dynamic-export image");
+        return;
+    };
+    let unstripped_payload: DisasmPayload =
+        build_disasm_payload(&unstripped).expect("build unstripped payload");
+    let internal_address: u64 = unstripped_payload
+        .symbol_table
+        .iter()
+        .find(|symbol: &&DisasmSymbol| symbol.name == "internal_mix")
+        .map(|symbol: &DisasmSymbol| symbol.address)
+        .expect("unstripped internal_mix symbol");
+    let Some(stripped): Option<Vec<u8>> = stripped_copy(&unstripped_path, &stripped_path) else {
+        eprintln!("skipping: strip cannot process the aarch64 dynamic-export image");
+        return;
+    };
+    let payload: DisasmPayload = build_disasm_payload(&stripped).expect("build stripped payload");
+    let functions: Vec<&DisasmSymbol> = payload
+        .symbol_table
+        .iter()
+        .filter(|symbol: &&DisasmSymbol| {
+            matches!(
+                symbol.kind,
+                DisasmSymbolKind::Function | DisasmSymbolKind::Export
+            )
+        })
+        .collect();
+
+    let start_address: u64 = functions
+        .iter()
+        .find(|symbol: &&&DisasmSymbol| symbol.name == "_start")
+        .map(|symbol: &&DisasmSymbol| symbol.address)
+        .expect("stripped _start export");
+    let recovered_internal: Vec<&DisasmSymbol> = functions
+        .iter()
+        .copied()
+        .filter(|symbol: &&DisasmSymbol| symbol.address == internal_address)
+        .collect();
+    assert_eq!(recovered_internal.len(), 1, "{functions:?}");
+    assert!(
+        recovered_internal[0].name.starts_with("sub_"),
+        "{functions:?}"
+    );
+
+    let features: Vec<FunctionFeatures> =
+        extract_function_features(&stripped).expect("extract stripped features");
+    let start_features: &FunctionFeatures = features
+        .iter()
+        .find(|feature: &&FunctionFeatures| feature.id() == FunctionId::from(start_address))
+        .expect("_start features");
+    assert!(
+        start_features
+            .call_targets()
+            .contains(&FunctionId::from(internal_address)),
+        "{features:?}"
     );
 }

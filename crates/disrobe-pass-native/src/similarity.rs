@@ -14,20 +14,20 @@ use crate::arch::Arch;
 use crate::basic_blocks::{BasicBlock, Transfer, build_cfg};
 use crate::desync::ReadOnlyWindow;
 use crate::disasm_ir::{
-    FunctionSpan, build_disasm_payload, function_spans, image_arch, map_access,
-    mapped_address_extent, read_only_windows, span_instructions,
+    DisasmBuild, FunctionSpan, FunctionUniverse, build_disasm_payload_with_discovery,
+    function_spans, image_arch, map_access, mapped_address_extent, read_only_windows,
+    span_instructions,
 };
 use crate::error::{Error, Result};
 use crate::fingerprint::{ASCII_XREF_MIN_LEN, StringXref, extract_ascii_xrefs};
 use crate::plt_resolve::{ImportStub, resolve_elf_plt_imports, resolve_pe_iat_imports};
 use crate::pseudo_c::aarch64::{
-    aarch64_adr_target, aarch64_adrp_target, immediate_field, parse_unsigned_literal,
-    register_field,
+    AARCH64_INSTRUCTION_BYTES, Aarch64DirectTransfer, aarch64_adr_target, aarch64_adrp_target,
+    aarch64_direct_transfer, aarch64_is_indirect_branch, aarch64_is_return, aarch64_is_trap,
+    aarch64_stops_traversal, immediate_field, register_field,
 };
 
 const ADRP_PAIR_SCAN_LIMIT: usize = 16;
-
-const AARCH64_INSN_BYTES: usize = 4;
 
 const WIDE_MOVE_CHAIN_LIMIT: usize = 3;
 
@@ -44,12 +44,6 @@ const MOVN: u32 = 0x1280_0000;
 const MOVZ: u32 = 0x5280_0000;
 
 const MOVK: u32 = 0x7280_0000;
-
-const BRANCH_LINK: u32 = 0x9400_0000;
-
-const BRANCH_LINK_MASK: u32 = 0xfc00_0000;
-
-const BRANCH_IMMEDIATE_MASK: u32 = 0x03ff_ffff;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FeatureArch {
@@ -74,6 +68,17 @@ struct ImageIndex {
     import_slots: BTreeMap<u64, String>,
     import_stubs: BTreeMap<u64, String>,
     mapped: Option<(u64, u64)>,
+}
+
+struct Aarch64FeatureParts {
+    references: Vec<DataReference>,
+    structure: Option<ControlFlowGraph>,
+    calls: BTreeSet<FunctionId>,
+}
+
+struct FunctionBody<'a> {
+    address: u64,
+    instructions: &'a [DisasmInstruction],
 }
 
 impl ImageIndex {
@@ -109,7 +114,9 @@ impl ImageIndex {
 }
 
 pub fn extract_function_features(bytes: &[u8]) -> Result<Vec<FunctionFeatures>> {
-    let payload: DisasmPayload = build_disasm_payload(bytes)?;
+    let build: DisasmBuild = build_disasm_payload_with_discovery(bytes)?;
+    let function_universe: FunctionUniverse = build.function_universe;
+    let payload: DisasmPayload = build.payload;
     let arch: Arch = image_arch(bytes).ok_or_else(|| {
         Error::UnsupportedArch("image carries no architecture the disassembler maps".to_owned())
     })?;
@@ -122,20 +129,23 @@ pub fn extract_function_features(bytes: &[u8]) -> Result<Vec<FunctionFeatures>> 
 
     let index: ImageIndex = ImageIndex::build(bytes, &payload, feature_arch);
     let spans: Vec<FunctionSpan> = function_spans(&payload);
-    let mut bodies: Vec<(u64, &[DisasmInstruction])> = Vec::with_capacity(spans.len());
+    let mut bodies: Vec<FunctionBody<'_>> = Vec::with_capacity(spans.len());
     for span in &spans {
-        let body: &[DisasmInstruction] = span_instructions(&payload.instructions, span);
-        if !body.is_empty() {
-            bodies.push((span.address, body));
+        let instructions: &[DisasmInstruction] = span_instructions(&payload.instructions, span);
+        if !instructions.is_empty() {
+            bodies.push(FunctionBody {
+                address: span.address,
+                instructions,
+            });
         }
     }
     let entries: BTreeSet<u64> = bodies
         .iter()
-        .map(|(address, _): &(u64, &[DisasmInstruction])| *address)
+        .map(|body: &FunctionBody<'_>| body.address)
         .collect();
 
     let mut features: Vec<FunctionFeatures> = Vec::with_capacity(bodies.len());
-    for (address, body) in bodies {
+    for body in bodies {
         let (references, structure, calls): (
             Vec<DataReference>,
             Option<ControlFlowGraph>,
@@ -143,22 +153,29 @@ pub fn extract_function_features(bytes: &[u8]) -> Result<Vec<FunctionFeatures>> 
         ) = match feature_arch {
             FeatureArch::X86 { bits } => {
                 let decoded: Vec<Option<Instruction>> = body
+                    .instructions
                     .iter()
                     .map(|insn: &DisasmInstruction| decode_x86(bits, insn))
                     .collect();
                 (
-                    x86_references(body, &decoded, &index),
-                    x86_structure(body, &decoded),
-                    x86_call_targets(body, &index, &entries),
+                    x86_references(body.instructions, &decoded, &index),
+                    x86_structure(body.instructions, &decoded),
+                    x86_call_targets(body.instructions, &index, &entries),
                 )
             }
-            FeatureArch::Aarch64 => (
-                aarch64_references(body, &index),
-                aarch64_structure(body),
-                aarch64_call_targets(body, &entries),
-            ),
+            FeatureArch::Aarch64 => {
+                let reference_anchors_trusted: bool =
+                    function_universe.reference_anchors_trusted(body.address);
+                let parts: Aarch64FeatureParts = aarch64_feature_parts(
+                    body.instructions,
+                    &index,
+                    &entries,
+                    reference_anchors_trusted,
+                );
+                (parts.references, parts.structure, parts.calls)
+            }
         };
-        let id: FunctionId = FunctionId::from(address);
+        let id: FunctionId = FunctionId::from(body.address);
         let carried: FunctionFeatures = match structure {
             Some(graph) => FunctionFeatures::with_structure(id, references, graph),
             None => FunctionFeatures::new(id, references),
@@ -166,6 +183,118 @@ pub fn extract_function_features(bytes: &[u8]) -> Result<Vec<FunctionFeatures>> 
         features.push(carried.calling(calls));
     }
     Ok(features)
+}
+
+fn aarch64_feature_parts(
+    body: &[DisasmInstruction],
+    index: &ImageIndex,
+    entries: &BTreeSet<u64>,
+    reference_anchors: bool,
+) -> Aarch64FeatureParts {
+    let Some(parts): Option<Aarch64FeatureParts> =
+        aarch64_reachable_feature_parts(body, index, entries, reference_anchors)
+    else {
+        let prefix: &[DisasmInstruction] = aarch64_terminated_prefix(body);
+        return Aarch64FeatureParts {
+            references: if reference_anchors {
+                aarch64_references(prefix, index)
+            } else {
+                Vec::new()
+            },
+            structure: None,
+            calls: aarch64_call_targets(prefix, entries),
+        };
+    };
+    parts
+}
+
+fn aarch64_terminated_prefix(body: &[DisasmInstruction]) -> &[DisasmInstruction] {
+    let mut previous_address: Option<u64> = None;
+    for (index, instruction) in body.iter().enumerate() {
+        if instruction.bytes.len() != AARCH64_INSTRUCTION_BYTES
+            || previous_address.is_some_and(|address: u64| {
+                address.checked_add(AARCH64_INSTRUCTION_BYTES as u64) != Some(instruction.offset)
+            })
+        {
+            return &[];
+        }
+        previous_address = Some(instruction.offset);
+        let Some(word): Option<u32> = instruction_word(instruction) else {
+            return &[];
+        };
+        let stops: bool = match aarch64_direct_transfer(instruction.offset, word) {
+            Some(Aarch64DirectTransfer::BranchLink { .. }) => false,
+            Some(
+                Aarch64DirectTransfer::UnconditionalBranch { .. }
+                | Aarch64DirectTransfer::ConditionalBranch { .. }
+                | Aarch64DirectTransfer::CompareBranch { .. }
+                | Aarch64DirectTransfer::TestBranch { .. },
+            ) => true,
+            None => aarch64_stops_traversal(&instruction.mnemonic),
+        };
+        if stops {
+            let Some(end): Option<usize> = index.checked_add(1) else {
+                return &[];
+            };
+            let Some(prefix): Option<&[DisasmInstruction]> = body.get(..end) else {
+                return &[];
+            };
+            return prefix;
+        }
+    }
+    &[]
+}
+
+fn aarch64_reachable_feature_parts(
+    body: &[DisasmInstruction],
+    index: &ImageIndex,
+    entries: &BTreeSet<u64>,
+    reference_anchors: bool,
+) -> Option<Aarch64FeatureParts> {
+    let blocks: Vec<BasicBlock> = aarch64_blocks(body)?;
+    let spans: Vec<&[DisasmInstruction]> = aarch64_reachable_spans(body, &blocks)?;
+    let reference_capacity: usize = if reference_anchors { blocks.len() } else { 0 };
+    let mut references: Vec<DataReference> = Vec::with_capacity(reference_capacity);
+    let mut calls: BTreeSet<FunctionId> = BTreeSet::new();
+    for span in spans {
+        if reference_anchors {
+            references.extend(aarch64_references(span, index));
+        }
+        calls.extend(aarch64_call_targets(span, entries));
+    }
+    let structure: Option<ControlFlowGraph> = aarch64_structure_from_blocks(body, &blocks);
+    Some(Aarch64FeatureParts {
+        references,
+        structure,
+        calls,
+    })
+}
+
+fn aarch64_reachable_spans<'a>(
+    body: &'a [DisasmInstruction],
+    blocks: &[BasicBlock],
+) -> Option<Vec<&'a [DisasmInstruction]>> {
+    let mut reachable: Vec<u8> = vec![0; body.len()];
+    for block in blocks {
+        let marked: &mut [u8] = reachable.get_mut(block.insns.clone())?;
+        marked.fill(1);
+    }
+
+    let mut spans: Vec<&[DisasmInstruction]> = Vec::with_capacity(blocks.len());
+    let mut cursor: usize = 0;
+    while cursor < reachable.len() {
+        while cursor < reachable.len() && reachable.get(cursor).copied()? == 0 {
+            cursor = cursor.checked_add(1)?;
+        }
+        let start: usize = cursor;
+        while cursor < reachable.len() && reachable.get(cursor).copied()? != 0 {
+            cursor = cursor.checked_add(1)?;
+        }
+        if start < cursor {
+            spans.push(body.get(start..cursor)?);
+        }
+    }
+    Some(spans)
 }
 
 fn x86_call_targets(
@@ -212,11 +341,16 @@ fn aarch64_call_targets(
 }
 
 fn aarch64_branch_link_target(address: u64, word: u32) -> Option<u64> {
-    if word & BRANCH_LINK_MASK != BRANCH_LINK {
-        return None;
+    match aarch64_direct_transfer(address, word) {
+        Some(Aarch64DirectTransfer::BranchLink { target }) => Some(target),
+        Some(
+            Aarch64DirectTransfer::UnconditionalBranch { .. }
+            | Aarch64DirectTransfer::ConditionalBranch { .. }
+            | Aarch64DirectTransfer::CompareBranch { .. }
+            | Aarch64DirectTransfer::TestBranch { .. },
+        )
+        | None => None,
     }
-    let displacement: i64 = i64::from(((word & BRANCH_IMMEDIATE_MASK) << 6).cast_signed() >> 4);
-    address.checked_add_signed(displacement)
 }
 
 fn instruction_positions(body: &[DisasmInstruction]) -> Option<BTreeMap<u64, usize>> {
@@ -732,12 +866,6 @@ fn aarch64_references(body: &[DisasmInstruction], index: &ImageIndex) -> Vec<Dat
     out
 }
 
-const AARCH64_INDIRECT_BRANCHES: [&str; 5] = ["br", "braa", "brab", "braaz", "brabz"];
-
-const AARCH64_RETURNS: [&str; 4] = ["ret", "retaa", "retab", "eret"];
-
-const AARCH64_TRAPS: [&str; 3] = ["brk", "hlt", "udf"];
-
 const AARCH64_CALLS: [&str; 6] = ["bl", "blr", "blraa", "blrab", "blraaz", "blrabz"];
 
 const AARCH64_SYSTEM: [&str; 20] = [
@@ -770,43 +898,80 @@ const AARCH64_MOVE: [&str; 21] = [
     "csetm", "cinc", "cinv", "cneg", "sxtb", "sxth", "sxtw", "uxtb", "uxth", "uxtw",
 ];
 
+#[cfg(test)]
 fn aarch64_structure(body: &[DisasmInstruction]) -> Option<ControlFlowGraph> {
+    let blocks: Vec<BasicBlock> = aarch64_blocks(body)?;
+    aarch64_structure_from_blocks(body, &blocks)
+}
+
+fn aarch64_blocks(body: &[DisasmInstruction]) -> Option<Vec<BasicBlock>> {
     if body
         .iter()
-        .any(|insn: &DisasmInstruction| insn.bytes.len() != AARCH64_INSN_BYTES)
+        .any(|insn: &DisasmInstruction| insn.bytes.len() != AARCH64_INSTRUCTION_BYTES)
+        || body.windows(2).any(|pair: &[DisasmInstruction]| {
+            pair[0].offset.checked_add(AARCH64_INSTRUCTION_BYTES as u64) != Some(pair[1].offset)
+        })
     {
         return None;
     }
     let positions: BTreeMap<u64, usize> = instruction_positions(body)?;
     let transfers: Vec<Transfer> = body.iter().map(aarch64_transfer).collect();
-    let blocks: Vec<BasicBlock> = build_cfg(&transfers, &positions, 0)?;
+    build_cfg(&transfers, &positions, 0)
+}
+
+fn aarch64_structure_from_blocks(
+    body: &[DisasmInstruction],
+    blocks: &[BasicBlock],
+) -> Option<ControlFlowGraph> {
     let categories: Vec<InstructionCategory> = body.iter().map(aarch64_category).collect();
-    control_flow_graph(&blocks, &categories)
+    control_flow_graph(blocks, &categories)
 }
 
 fn aarch64_transfer(insn: &DisasmInstruction) -> Transfer {
     let mnemonic: &str = insn.mnemonic.as_str();
-    if AARCH64_RETURNS.contains(&mnemonic) {
+    if aarch64_is_return(mnemonic) {
         return Transfer::Terminal { returns: true };
     }
-    if AARCH64_TRAPS.contains(&mnemonic) {
+    if aarch64_is_trap(mnemonic) {
         return Transfer::Terminal { returns: false };
     }
-    if AARCH64_INDIRECT_BRANCHES.contains(&mnemonic) {
+    if aarch64_is_indirect_branch(mnemonic) {
         return Transfer::Unresolved;
     }
     if AARCH64_CALLS.contains(&mnemonic) {
         return Transfer::FallsThrough;
     }
     if mnemonic == "b" {
-        return aarch64_branch_target(insn).map_or(Transfer::Unresolved, |taken: u64| {
-            Transfer::UnconditionalBranch { taken }
-        });
+        return match instruction_word(insn)
+            .and_then(|word: u32| aarch64_direct_transfer(insn.offset, word))
+        {
+            Some(Aarch64DirectTransfer::UnconditionalBranch { target }) => {
+                Transfer::UnconditionalBranch { taken: target }
+            }
+            Some(
+                Aarch64DirectTransfer::BranchLink { .. }
+                | Aarch64DirectTransfer::ConditionalBranch { .. }
+                | Aarch64DirectTransfer::CompareBranch { .. }
+                | Aarch64DirectTransfer::TestBranch { .. },
+            )
+            | None => Transfer::Unresolved,
+        };
     }
     if is_direct_conditional_branch(mnemonic) {
-        return aarch64_branch_target(insn).map_or(Transfer::Unresolved, |taken: u64| {
-            Transfer::ConditionalBranch { taken }
-        });
+        return match instruction_word(insn)
+            .and_then(|word: u32| aarch64_direct_transfer(insn.offset, word))
+        {
+            Some(
+                Aarch64DirectTransfer::ConditionalBranch { target, .. }
+                | Aarch64DirectTransfer::CompareBranch { target }
+                | Aarch64DirectTransfer::TestBranch { target },
+            ) => Transfer::ConditionalBranch { taken: target },
+            Some(
+                Aarch64DirectTransfer::BranchLink { .. }
+                | Aarch64DirectTransfer::UnconditionalBranch { .. },
+            )
+            | None => Transfer::Unresolved,
+        };
     }
     Transfer::FallsThrough
 }
@@ -817,31 +982,16 @@ fn is_direct_conditional_branch(mnemonic: &str) -> bool {
         || is_conditional_branch(mnemonic)
 }
 
-fn aarch64_branch_target(insn: &DisasmInstruction) -> Option<u64> {
-    let token: &str = insn.operands.last()?.trim();
-    let (negative, magnitude): (bool, &str) = token
-        .strip_prefix("$+")
-        .map(|rest: &str| (false, rest))
-        .or_else(|| token.strip_prefix("$-").map(|rest: &str| (true, rest)))?;
-    let displacement: i64 = i64::try_from(parse_unsigned_literal(magnitude)?).ok()?;
-    let delta: i64 = if negative {
-        displacement.checked_neg()?
-    } else {
-        displacement
-    };
-    insn.offset.checked_add_signed(delta)
-}
-
 fn aarch64_category(insn: &DisasmInstruction) -> InstructionCategory {
     let mnemonic: &str = insn.mnemonic.as_str();
-    if AARCH64_RETURNS.contains(&mnemonic) {
+    if aarch64_is_return(mnemonic) {
         return InstructionCategory::Return;
     }
     if AARCH64_CALLS.contains(&mnemonic) {
         return InstructionCategory::Call;
     }
     if mnemonic == "b"
-        || AARCH64_INDIRECT_BRANCHES.contains(&mnemonic)
+        || aarch64_is_indirect_branch(mnemonic)
         || is_direct_conditional_branch(mnemonic)
     {
         return InstructionCategory::Branch;
@@ -951,11 +1101,10 @@ fn paired_low_bits(
 }
 
 fn is_branch(mnemonic: &str) -> bool {
-    matches!(
-        mnemonic,
-        "b" | "bl" | "br" | "blr" | "ret" | "cbz" | "cbnz" | "tbz" | "tbnz" | "svc" | "brk" | "hlt"
-    ) || mnemonic.starts_with("b.")
-        || is_conditional_branch(mnemonic)
+    aarch64_stops_traversal(mnemonic)
+        || AARCH64_CALLS.contains(&mnemonic)
+        || matches!(mnemonic, "b" | "hvc" | "smc" | "svc")
+        || is_direct_conditional_branch(mnemonic)
 }
 
 fn is_conditional_branch(mnemonic: &str) -> bool {

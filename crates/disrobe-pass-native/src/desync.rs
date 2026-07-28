@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+use disrobe_ir::payload::DisasmInstruction;
 use iced_x86::{
     Code, Decoder, DecoderOptions, FlowControl, Formatter as _, Instruction, Mnemonic,
     NasmFormatter, OpKind, Register,
@@ -7,6 +8,10 @@ use iced_x86::{
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::pseudo_c::aarch64::{
+    AARCH64_INSTRUCTION_BYTES, Aarch64DirectTransfer, aarch64_direct_transfer,
+    aarch64_stops_traversal,
+};
 
 const VMWARE_BACKDOOR_MAGIC: u32 = 0x564D_5868;
 const VMWARE_BACKDOOR_PORT: u16 = 0x5658;
@@ -658,6 +663,157 @@ pub fn discover_functions(input: &DiscoveryInput<'_>) -> DiscoveredFunctions {
     }
 }
 
+pub(crate) fn discover_aarch64_functions(
+    code: &[CodeWindow<'_>],
+    instructions: &[DisasmInstruction],
+    seeds: &[u64],
+) -> Option<DiscoveredFunctions> {
+    let mut previous_end: Option<u64> = None;
+    for window in code {
+        if window.address % AARCH64_INSTRUCTION_BYTES as u64 != 0
+            || window.bytes.len() % AARCH64_INSTRUCTION_BYTES != 0
+        {
+            return None;
+        }
+        let length: u64 = u64::try_from(window.bytes.len()).ok()?;
+        let end: u64 = window.address.checked_add(length)?;
+        if previous_end.is_some_and(|prior: u64| window.address < prior) {
+            return None;
+        }
+        previous_end = Some(end);
+    }
+
+    let mut previous_address: Option<u64> = None;
+    let mut window_index: usize = 0;
+    for instruction in instructions {
+        if instruction.offset % AARCH64_INSTRUCTION_BYTES as u64 != 0
+            || instruction.bytes.len() != AARCH64_INSTRUCTION_BYTES
+            || previous_address.is_some_and(|prior: u64| instruction.offset <= prior)
+        {
+            return None;
+        }
+        let instruction_end: u64 = instruction
+            .offset
+            .checked_add(AARCH64_INSTRUCTION_BYTES as u64)?;
+        let window: &CodeWindow<'_> = loop {
+            let candidate: &CodeWindow<'_> = code.get(window_index)?;
+            let candidate_length: u64 = u64::try_from(candidate.bytes.len()).ok()?;
+            let candidate_end: u64 = candidate.address.checked_add(candidate_length)?;
+            if instruction.offset < candidate.address {
+                return None;
+            }
+            if instruction.offset < candidate_end {
+                break candidate;
+            }
+            window_index = window_index.checked_add(1)?;
+        };
+        let window_length: u64 = u64::try_from(window.bytes.len()).ok()?;
+        let window_end: u64 = window.address.checked_add(window_length)?;
+        if instruction_end > window_end {
+            return None;
+        }
+        let relative_address: u64 = instruction.offset.checked_sub(window.address)?;
+        let relative_offset: usize = usize::try_from(relative_address).ok()?;
+        let relative_end: usize = relative_offset.checked_add(AARCH64_INSTRUCTION_BYTES)?;
+        let expected: &[u8] = window.bytes.get(relative_offset..relative_end)?;
+        if instruction.bytes.as_slice() != expected {
+            return None;
+        }
+        previous_address = Some(instruction.offset);
+    }
+
+    let mut starts: BTreeMap<u64, StartOrigin> = BTreeMap::new();
+    let mut pending: VecDeque<usize> = VecDeque::new();
+    for seed in seeds {
+        if starts.len() >= MAX_DISCOVERY_FUNCTIONS {
+            break;
+        }
+        if seed % AARCH64_INSTRUCTION_BYTES as u64 != 0 {
+            continue;
+        }
+        let Some(seed_index): Option<usize> = aarch64_instruction_index(instructions, *seed) else {
+            continue;
+        };
+        if starts.insert(*seed, StartOrigin::Seed).is_none() {
+            pending.push_back(seed_index);
+        }
+    }
+
+    let mut visited: Vec<u8> = vec![0; instructions.len()];
+    while !pending.is_empty() {
+        let index: usize = pending.pop_front()?;
+        let visited_entry: &mut u8 = visited.get_mut(index)?;
+        if *visited_entry != 0 {
+            continue;
+        }
+        *visited_entry = 1;
+        let instruction: &DisasmInstruction = instructions.get(index)?;
+        let address: u64 = instruction.offset;
+        let raw: [u8; AARCH64_INSTRUCTION_BYTES] = instruction.bytes.as_slice().try_into().ok()?;
+        let word: u32 = u32::from_le_bytes(raw);
+        let next_address: Option<u64> = address.checked_add(AARCH64_INSTRUCTION_BYTES as u64);
+        let fallthrough: Option<usize> = index.checked_add(1).filter(|next_index: &usize| {
+            instructions
+                .get(*next_index)
+                .is_some_and(|next: &DisasmInstruction| Some(next.offset) == next_address)
+        });
+        match aarch64_direct_transfer(address, word) {
+            Some(Aarch64DirectTransfer::BranchLink { target }) => {
+                if target == address {
+                    continue;
+                }
+                let target_index: Option<usize> = aarch64_instruction_index(instructions, target);
+                if target_index.is_some()
+                    && !starts.contains_key(&target)
+                    && starts.len() < MAX_DISCOVERY_FUNCTIONS
+                {
+                    starts.insert(target, StartOrigin::CallTarget);
+                    pending.extend(target_index);
+                }
+                pending.extend(fallthrough);
+            }
+            Some(Aarch64DirectTransfer::UnconditionalBranch { target }) => {
+                let target_index: Option<usize> = aarch64_instruction_index(instructions, target);
+                pending.extend(target_index);
+            }
+            Some(
+                Aarch64DirectTransfer::ConditionalBranch { target, .. }
+                | Aarch64DirectTransfer::CompareBranch { target }
+                | Aarch64DirectTransfer::TestBranch { target },
+            ) => {
+                let target_index: Option<usize> = aarch64_instruction_index(instructions, target);
+                pending.extend(target_index);
+                pending.extend(fallthrough);
+            }
+            None => {
+                if !aarch64_stops_traversal(&instruction.mnemonic) {
+                    pending.extend(fallthrough);
+                }
+            }
+        }
+    }
+
+    let from_seed: usize = count_origin(&starts, StartOrigin::Seed);
+    let from_call_target: usize = count_origin(&starts, StartOrigin::CallTarget);
+    Some(DiscoveredFunctions {
+        starts: starts.keys().copied().collect(),
+        jump_tables: Vec::new(),
+        unresolved: Vec::new(),
+        from_seed,
+        from_prologue: 0,
+        from_call_target,
+        from_jump_table: 0,
+    })
+}
+
+fn aarch64_instruction_index(instructions: &[DisasmInstruction], address: u64) -> Option<usize> {
+    instructions
+        .binary_search_by_key(&address, |instruction: &DisasmInstruction| {
+            instruction.offset
+        })
+        .ok()
+}
+
 fn count_origin(starts: &BTreeMap<u64, StartOrigin>, origin: StartOrigin) -> usize {
     starts
         .values()
@@ -1084,6 +1240,15 @@ fn starts_with_push_ebp_mov_ebp_esp32(bytes: &[u8]) -> bool {
 mod tests {
     use super::*;
 
+    fn aarch64_discovery_instruction(address: u64, mnemonic: &str, word: u32) -> DisasmInstruction {
+        DisasmInstruction {
+            offset: address,
+            bytes: word.to_le_bytes().to_vec(),
+            mnemonic: mnemonic.to_owned(),
+            ..DisasmInstruction::default()
+        }
+    }
+
     #[test]
     fn jump_over_junk_byte_recovers_real_stream() {
         let bytes: [u8; 6] = [0xEB, 0x01, 0xE8, 0x90, 0xC3, 0xCC];
@@ -1223,6 +1388,256 @@ mod tests {
             out.starts
         );
         assert!(out.from_prologue >= 1);
+    }
+
+    #[test]
+    fn aarch64_discovery_accepts_forward_and_backward_bl_targets() {
+        let words: [u32; 5] = [
+            0x9400_0004,
+            0xd65f_03c0,
+            0xd65f_03c0,
+            0xd503_201f,
+            0x97ff_fffe,
+        ];
+        let code: Vec<u8> = words
+            .iter()
+            .flat_map(|word: &u32| word.to_le_bytes())
+            .collect();
+        let windows: [CodeWindow<'_>; 1] = [CodeWindow {
+            address: 0x1000,
+            bytes: &code,
+        }];
+        let instructions: Vec<DisasmInstruction> = vec![
+            aarch64_discovery_instruction(0x1000, "bl", words[0]),
+            aarch64_discovery_instruction(0x1004, "ret", words[1]),
+            aarch64_discovery_instruction(0x1008, "ret", words[2]),
+            aarch64_discovery_instruction(0x100c, "nop", words[3]),
+            aarch64_discovery_instruction(0x1010, "bl", words[4]),
+        ];
+        let discovered: DiscoveredFunctions =
+            discover_aarch64_functions(&windows, &instructions, &[0x1000])
+                .expect("aligned complete code");
+        assert_eq!(discovered.starts, vec![0x1000, 0x1008, 0x1010]);
+        assert_eq!(discovered.from_seed, 1);
+        assert_eq!(discovered.from_call_target, 2);
+        assert_eq!(discovered.from_prologue, 0);
+        assert_eq!(discovered.from_jump_table, 0);
+    }
+
+    #[test]
+    fn aarch64_discovery_requires_a_decoded_target_instruction() {
+        let code: [u8; 8] = [0x01, 0x00, 0x00, 0x94, 0x1f, 0x20, 0x03, 0xd5];
+        let windows: [CodeWindow<'_>; 1] = [CodeWindow {
+            address: 0x2000,
+            bytes: &code,
+        }];
+        let instructions: [DisasmInstruction; 1] =
+            [aarch64_discovery_instruction(0x2000, "bl", 0x9400_0001)];
+        let discovered: DiscoveredFunctions =
+            discover_aarch64_functions(&windows, &instructions, &[0x2000])
+                .expect("aligned complete code");
+        assert_eq!(discovered.starts, vec![0x2000]);
+        assert_eq!(discovered.from_call_target, 0);
+    }
+
+    #[test]
+    fn aarch64_discovery_rejects_a_self_targeting_bl() {
+        let code: [u8; 8] = [0x00, 0x00, 0x00, 0x94, 0x1f, 0x20, 0x03, 0xd5];
+        let windows: [CodeWindow<'_>; 1] = [CodeWindow {
+            address: 0x2800,
+            bytes: &code,
+        }];
+        let instructions: [DisasmInstruction; 2] = [
+            aarch64_discovery_instruction(0x2800, "bl", 0x9400_0000),
+            aarch64_discovery_instruction(0x2804, "nop", 0xd503_201f),
+        ];
+        let discovered: DiscoveredFunctions =
+            discover_aarch64_functions(&windows, &instructions, &[0x2800])
+                .expect("aligned complete code");
+        assert_eq!(discovered.starts, vec![0x2800]);
+        assert_eq!(discovered.from_call_target, 0);
+    }
+
+    #[test]
+    fn aarch64_discovery_refuses_misaligned_or_truncated_windows() {
+        let complete: [u8; 4] = [0x00, 0x00, 0x00, 0x94];
+        let misaligned: [CodeWindow<'_>; 1] = [CodeWindow {
+            address: 0x3001,
+            bytes: &complete,
+        }];
+        let truncated: [CodeWindow<'_>; 1] = [CodeWindow {
+            address: 0x3000,
+            bytes: &complete[..3],
+        }];
+        let instructions: [DisasmInstruction; 1] =
+            [aarch64_discovery_instruction(0x3000, "bl", 0x9400_0000)];
+        assert!(discover_aarch64_functions(&misaligned, &instructions, &[]).is_none());
+        assert!(discover_aarch64_functions(&truncated, &instructions, &[]).is_none());
+    }
+
+    #[test]
+    fn aarch64_discovery_refuses_overlapping_overflowing_or_duplicate_input() {
+        let complete: [u8; 4] = [0x1f, 0x20, 0x03, 0xd5];
+        let overlapping: [CodeWindow<'_>; 2] = [
+            CodeWindow {
+                address: 0x4000,
+                bytes: &complete,
+            },
+            CodeWindow {
+                address: 0x4000,
+                bytes: &complete,
+            },
+        ];
+        let overflowing: [CodeWindow<'_>; 1] = [CodeWindow {
+            address: u64::MAX - 3,
+            bytes: &complete,
+        }];
+        let ordinary: [CodeWindow<'_>; 1] = [CodeWindow {
+            address: 0x4000,
+            bytes: &complete,
+        }];
+        let ordinary_instruction: DisasmInstruction =
+            aarch64_discovery_instruction(0x4000, "nop", 0xd503_201f);
+        let overflowing_instruction: DisasmInstruction =
+            aarch64_discovery_instruction(u64::MAX - 3, "nop", 0xd503_201f);
+        let duplicate_instructions: [DisasmInstruction; 2] =
+            [ordinary_instruction.clone(), ordinary_instruction.clone()];
+        assert!(
+            discover_aarch64_functions(
+                &overlapping,
+                std::slice::from_ref(&ordinary_instruction),
+                &[]
+            )
+            .is_none()
+        );
+        assert!(
+            discover_aarch64_functions(
+                &overflowing,
+                std::slice::from_ref(&overflowing_instruction),
+                &[]
+            )
+            .is_none()
+        );
+        assert!(discover_aarch64_functions(&ordinary, &duplicate_instructions, &[]).is_none());
+    }
+
+    #[test]
+    fn aarch64_discovery_accepts_cross_window_calls_and_valid_seeds() {
+        let caller: [u8; 4] = 0x9400_0400_u32.to_le_bytes();
+        let callee: [u8; 4] = 0xd65f_03c0_u32.to_le_bytes();
+        let windows: [CodeWindow<'_>; 2] = [
+            CodeWindow {
+                address: 0x1000,
+                bytes: &caller,
+            },
+            CodeWindow {
+                address: 0x2000,
+                bytes: &callee,
+            },
+        ];
+        let instructions: [DisasmInstruction; 2] = [
+            aarch64_discovery_instruction(0x1000, "bl", 0x9400_0400),
+            aarch64_discovery_instruction(0x2000, "ret", 0xd65f_03c0),
+        ];
+        let discovered: DiscoveredFunctions =
+            discover_aarch64_functions(&windows, &instructions, &[0x1000])
+                .expect("aligned complete windows");
+        assert_eq!(discovered.starts, vec![0x1000, 0x2000]);
+        assert_eq!(discovered.from_seed, 1);
+        assert_eq!(discovered.from_call_target, 1);
+    }
+
+    #[test]
+    fn aarch64_discovery_ignores_unreachable_branch_link_words() {
+        let words: [u32; 5] = [
+            0x1400_0003,
+            0x9400_0003,
+            0xd503_201f,
+            0xd65f_03c0,
+            0xd65f_03c0,
+        ];
+        let code: Vec<u8> = words
+            .iter()
+            .flat_map(|word: &u32| word.to_le_bytes())
+            .collect();
+        let windows: [CodeWindow<'_>; 1] = [CodeWindow {
+            address: 0x1000,
+            bytes: &code,
+        }];
+        let instructions: Vec<DisasmInstruction> = vec![
+            aarch64_discovery_instruction(0x1000, "b", words[0]),
+            aarch64_discovery_instruction(0x1004, "bl", words[1]),
+            aarch64_discovery_instruction(0x1008, "nop", words[2]),
+            aarch64_discovery_instruction(0x100c, "ret", words[3]),
+            aarch64_discovery_instruction(0x1010, "ret", words[4]),
+        ];
+        let discovered: DiscoveredFunctions =
+            discover_aarch64_functions(&windows, &instructions, &[0x1000])
+                .expect("aligned complete code");
+
+        assert_eq!(discovered.starts, vec![0x1000]);
+        assert_eq!(discovered.from_seed, 1);
+        assert_eq!(discovered.from_call_target, 0);
+    }
+
+    #[test]
+    fn aarch64_discovery_reaches_calls_on_both_conditional_paths() {
+        let words: [u32; 6] = [
+            0x5400_0040,
+            0x9400_0003,
+            0x9400_0003,
+            0xd65f_03c0,
+            0xd65f_03c0,
+            0xd65f_03c0,
+        ];
+        let code: Vec<u8> = words
+            .iter()
+            .flat_map(|word: &u32| word.to_le_bytes())
+            .collect();
+        let windows: [CodeWindow<'_>; 1] = [CodeWindow {
+            address: 0x1000,
+            bytes: &code,
+        }];
+        let instructions: Vec<DisasmInstruction> = vec![
+            aarch64_discovery_instruction(0x1000, "b.eq", words[0]),
+            aarch64_discovery_instruction(0x1004, "bl", words[1]),
+            aarch64_discovery_instruction(0x1008, "bl", words[2]),
+            aarch64_discovery_instruction(0x100c, "ret", words[3]),
+            aarch64_discovery_instruction(0x1010, "ret", words[4]),
+            aarch64_discovery_instruction(0x1014, "ret", words[5]),
+        ];
+        let discovered: DiscoveredFunctions =
+            discover_aarch64_functions(&windows, &instructions, &[0x1000])
+                .expect("aligned complete code");
+
+        assert_eq!(discovered.starts, vec![0x1000, 0x1010, 0x1014]);
+        assert_eq!(discovered.from_seed, 1);
+        assert_eq!(discovered.from_call_target, 2);
+    }
+
+    #[test]
+    fn aarch64_discovery_stops_at_debug_returns() {
+        let words: [u32; 4] = [0xd6bf_03e0, 0x9400_0002, 0xd503_201f, 0xd65f_03c0];
+        let code: Vec<u8> = words
+            .iter()
+            .flat_map(|word: &u32| word.to_le_bytes())
+            .collect();
+        let windows: [CodeWindow<'_>; 1] = [CodeWindow {
+            address: 0x5000,
+            bytes: &code,
+        }];
+        let instructions: Vec<DisasmInstruction> = vec![
+            aarch64_discovery_instruction(0x5000, "drps", words[0]),
+            aarch64_discovery_instruction(0x5004, "bl", words[1]),
+            aarch64_discovery_instruction(0x5008, "nop", words[2]),
+            aarch64_discovery_instruction(0x500c, "ret", words[3]),
+        ];
+        let discovered: DiscoveredFunctions =
+            discover_aarch64_functions(&windows, &instructions, &[0x5000])
+                .expect("aligned complete code");
+
+        assert_eq!(discovered.starts, vec![0x5000]);
+        assert_eq!(discovered.from_call_target, 0);
     }
 
     #[test]

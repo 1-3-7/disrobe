@@ -228,6 +228,36 @@ enum SwitchInsn {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Aarch64DirectTransfer {
+    BranchLink { target: u64 },
+    UnconditionalBranch { target: u64 },
+    ConditionalBranch { condition: u8, target: u64 },
+    CompareBranch { target: u64 },
+    TestBranch { target: u64 },
+}
+
+pub(crate) const AARCH64_INSTRUCTION_BYTES: usize = 4;
+
+pub(crate) fn aarch64_is_indirect_branch(mnemonic: &str) -> bool {
+    matches!(mnemonic, "br" | "braa" | "brab" | "braaz" | "brabz")
+}
+
+pub(crate) fn aarch64_is_return(mnemonic: &str) -> bool {
+    matches!(
+        mnemonic,
+        "drps" | "eret" | "eretaa" | "eretab" | "ret" | "retaa" | "retab"
+    )
+}
+
+pub(crate) fn aarch64_is_trap(mnemonic: &str) -> bool {
+    matches!(mnemonic, "brk" | "hlt" | "udf")
+}
+
+pub(crate) fn aarch64_stops_traversal(mnemonic: &str) -> bool {
+    aarch64_is_indirect_branch(mnemonic) || aarch64_is_return(mnemonic) || aarch64_is_trap(mnemonic)
+}
+
 impl RelativeLoadKind {
     fn natural(self) -> Option<(usize, bool)> {
         match self {
@@ -2153,32 +2183,18 @@ fn decode_switch_instruction(insn: &DisasmInsn) -> SwitchInsn {
             limit: immediate_field(word, 10, 12) as u16,
         };
     }
-    if word & 0xff00_0010 == 0x5400_0000 {
-        let Some(target): Option<u64> = aarch64_relative_target(insn.address, word, 5, 19) else {
-            return SwitchInsn::Other;
-        };
-        return SwitchInsn::ConditionalBranch {
-            condition: (word & 0xf) as u8,
-            target,
-        };
-    }
-    if word & 0xfc00_0000 == 0x1400_0000 {
-        let Some(target): Option<u64> = aarch64_relative_target(insn.address, word, 0, 26) else {
-            return SwitchInsn::Other;
-        };
-        return SwitchInsn::DirectBranch { target };
-    }
-    if word & 0x7e00_0000 == 0x3400_0000 {
-        let Some(target): Option<u64> = aarch64_relative_target(insn.address, word, 5, 19) else {
-            return SwitchInsn::Other;
-        };
-        return SwitchInsn::DirectBranch { target };
-    }
-    if word & 0x7e00_0000 == 0x3600_0000 {
-        let Some(target): Option<u64> = aarch64_relative_target(insn.address, word, 5, 14) else {
-            return SwitchInsn::Other;
-        };
-        return SwitchInsn::DirectBranch { target };
+    match aarch64_direct_transfer(insn.address, word) {
+        Some(Aarch64DirectTransfer::ConditionalBranch { condition, target }) => {
+            return SwitchInsn::ConditionalBranch { condition, target };
+        }
+        Some(
+            Aarch64DirectTransfer::UnconditionalBranch { target }
+            | Aarch64DirectTransfer::CompareBranch { target }
+            | Aarch64DirectTransfer::TestBranch { target },
+        ) => {
+            return SwitchInsn::DirectBranch { target };
+        }
+        Some(Aarch64DirectTransfer::BranchLink { .. }) | None => {}
     }
     if word & 0x9f00_0000 == 0x9000_0000 {
         let Some(target): Option<u64> = aarch64_adrp_target(insn.address, word) else {
@@ -2324,6 +2340,31 @@ fn aarch64_relative_target(address: u64, word: u32, shift: u8, bits: u8) -> Opti
     let immediate: u32 = immediate_field(word, shift, bits);
     let delta: i64 = signed_immediate(immediate, bits).checked_mul(4)?;
     address.checked_add_signed(delta)
+}
+
+pub(crate) fn aarch64_direct_transfer(address: u64, word: u32) -> Option<Aarch64DirectTransfer> {
+    if word & 0xfc00_0000 == 0x9400_0000 {
+        let target: u64 = aarch64_relative_target(address, word, 0, 26)?;
+        return Some(Aarch64DirectTransfer::BranchLink { target });
+    }
+    if word & 0xfc00_0000 == 0x1400_0000 {
+        let target: u64 = aarch64_relative_target(address, word, 0, 26)?;
+        return Some(Aarch64DirectTransfer::UnconditionalBranch { target });
+    }
+    if word & 0xff00_0010 == 0x5400_0000 {
+        let target: u64 = aarch64_relative_target(address, word, 5, 19)?;
+        let condition: u8 = u8::try_from(word & 0xf).ok()?;
+        return Some(Aarch64DirectTransfer::ConditionalBranch { condition, target });
+    }
+    if word & 0x7e00_0000 == 0x3400_0000 {
+        let target: u64 = aarch64_relative_target(address, word, 5, 19)?;
+        return Some(Aarch64DirectTransfer::CompareBranch { target });
+    }
+    if word & 0x7e00_0000 == 0x3600_0000 {
+        let target: u64 = aarch64_relative_target(address, word, 5, 14)?;
+        return Some(Aarch64DirectTransfer::TestBranch { target });
+    }
+    None
 }
 
 pub(crate) fn aarch64_adr_target(address: u64, word: u32) -> Option<u64> {
@@ -6654,7 +6695,10 @@ fn reject_at(insn: &DisasmInsn, message: &str) -> Error {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{DisasmInsn, Stmt, lower_fp_to_int, lower_int_to_fp, split_operands};
+    use super::{
+        Aarch64DirectTransfer, DisasmInsn, Stmt, aarch64_direct_transfer, lower_fp_to_int,
+        lower_int_to_fp, split_operands,
+    };
     use crate::error::Result;
 
     fn lower(mnemonic: &str, operands: &str) -> Result<Vec<Stmt>> {
@@ -6669,6 +6713,103 @@ mod tests {
             lower_int_to_fp(&insn, &split, mnemonic == "scvtf")
         } else {
             lower_fp_to_int(&insn, &split)
+        }
+    }
+
+    #[test]
+    fn direct_transfer_boundaries_decode_for_every_immediate_branch_family() {
+        let address: u64 = 0x1000_0000;
+        let cases: [(u32, Aarch64DirectTransfer); 14] = [
+            (
+                0x95ff_ffff,
+                Aarch64DirectTransfer::BranchLink {
+                    target: 0x17ff_fffc,
+                },
+            ),
+            (
+                0x9600_0000,
+                Aarch64DirectTransfer::BranchLink {
+                    target: 0x0800_0000,
+                },
+            ),
+            (
+                0x15ff_ffff,
+                Aarch64DirectTransfer::UnconditionalBranch {
+                    target: 0x17ff_fffc,
+                },
+            ),
+            (
+                0x1600_0000,
+                Aarch64DirectTransfer::UnconditionalBranch {
+                    target: 0x0800_0000,
+                },
+            ),
+            (
+                0x547f_ffe0,
+                Aarch64DirectTransfer::ConditionalBranch {
+                    condition: 0,
+                    target: 0x100f_fffc,
+                },
+            ),
+            (
+                0x5480_0000,
+                Aarch64DirectTransfer::ConditionalBranch {
+                    condition: 0,
+                    target: 0x0ff0_0000,
+                },
+            ),
+            (
+                0x347f_ffe0,
+                Aarch64DirectTransfer::CompareBranch {
+                    target: 0x100f_fffc,
+                },
+            ),
+            (
+                0x3480_0000,
+                Aarch64DirectTransfer::CompareBranch {
+                    target: 0x0ff0_0000,
+                },
+            ),
+            (
+                0x357f_ffe0,
+                Aarch64DirectTransfer::CompareBranch {
+                    target: 0x100f_fffc,
+                },
+            ),
+            (
+                0x3580_0000,
+                Aarch64DirectTransfer::CompareBranch {
+                    target: 0x0ff0_0000,
+                },
+            ),
+            (
+                0x3603_ffe0,
+                Aarch64DirectTransfer::TestBranch {
+                    target: 0x1000_7ffc,
+                },
+            ),
+            (
+                0x3604_0000,
+                Aarch64DirectTransfer::TestBranch {
+                    target: 0x0fff_8000,
+                },
+            ),
+            (
+                0x3703_ffe0,
+                Aarch64DirectTransfer::TestBranch {
+                    target: 0x1000_7ffc,
+                },
+            ),
+            (
+                0x3704_0000,
+                Aarch64DirectTransfer::TestBranch {
+                    target: 0x0fff_8000,
+                },
+            ),
+        ];
+        for (word, expected) in cases {
+            let actual: Option<Aarch64DirectTransfer> = aarch64_direct_transfer(address, word);
+            assert_eq!(actual, Some(expected), "{word:#010x}");
         }
     }
 

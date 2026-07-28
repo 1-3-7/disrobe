@@ -19,16 +19,41 @@ use object::{
 use crate::arch::{Arch as DisasmArch, DisasmInsn, disassemble};
 use crate::cxx_recovery::parse_windows_seh_scope_table;
 use crate::desync::{
-    Bitness, CodeWindow, DiscoveredFunctions, DiscoveryInput, ReadOnlyWindow, discover_functions,
-    is_noreturn_import_name,
+    Bitness, CodeWindow, DiscoveredFunctions, DiscoveryInput, ReadOnlyWindow,
+    discover_aarch64_functions, discover_functions, is_noreturn_import_name,
 };
 use crate::error::{Error, Result};
+use crate::pseudo_c::aarch64::AARCH64_INSTRUCTION_BYTES;
 
 pub const MAX_DECODE_TEXT_BYTES: usize = 32 * 1024 * 1024;
 
 pub const MAX_PAYLOAD_INSTRUCTIONS: usize = 4_000_000;
 
+pub(crate) enum FunctionUniverse {
+    Complete,
+    Aarch64Fallback { discovered_starts: BTreeSet<u64> },
+}
+
+impl FunctionUniverse {
+    pub(crate) fn reference_anchors_trusted(&self, address: u64) -> bool {
+        match self {
+            Self::Complete => true,
+            Self::Aarch64Fallback { discovered_starts } => !discovered_starts.contains(&address),
+        }
+    }
+}
+
+pub(crate) struct DisasmBuild {
+    pub(crate) payload: DisasmPayload,
+    pub(crate) function_universe: FunctionUniverse,
+}
+
 pub fn build_disasm_payload(bytes: &[u8]) -> Result<DisasmPayload> {
+    let build: DisasmBuild = build_disasm_payload_with_discovery(bytes)?;
+    Ok(build.payload)
+}
+
+pub(crate) fn build_disasm_payload_with_discovery(bytes: &[u8]) -> Result<DisasmBuild> {
     let native: NativeFile = parse_native(bytes).map_err(|e| Error::ObjectParse(e.to_string()))?;
     let arch: DisasmArch = map_arch(native.arch, native.endian).ok_or_else(|| {
         Error::UnsupportedArch(format!(
@@ -51,7 +76,14 @@ pub fn build_disasm_payload(bytes: &[u8]) -> Result<DisasmPayload> {
         if text_budget == 0 || instructions.len() >= MAX_PAYLOAD_INSTRUCTIONS {
             break;
         }
-        let window: usize = section.bytes.len().min(text_budget);
+        let remaining_instructions: usize =
+            MAX_PAYLOAD_INSTRUCTIONS.saturating_sub(instructions.len());
+        let instruction_byte_limit: usize = decode_byte_limit(arch, remaining_instructions);
+        let window: usize = section
+            .bytes
+            .len()
+            .min(text_budget)
+            .min(instruction_byte_limit);
         text_budget -= window;
         let decoded: Vec<DisasmInsn> =
             disassemble(arch, section.address, &section.bytes[..window])?;
@@ -81,33 +113,65 @@ pub fn build_disasm_payload(bytes: &[u8]) -> Result<DisasmPayload> {
     instructions.sort_by_key(|i: &DisasmInstruction| i.offset);
 
     let mut symbol_table: Vec<DisasmSymbol> = build_symbol_table(bytes, &native);
-    if !symbol_table.iter().any(|s: &DisasmSymbol| {
+    let has_function_or_export: bool = symbol_table.iter().any(|s: &DisasmSymbol| {
         matches!(
             s.kind,
             DisasmSymbolKind::Function | DisasmSymbolKind::Export
         )
-    }) {
-        inject_discovered_functions(arch, &native, &sections, bytes, &mut symbol_table);
-    }
+    });
+    let needs_discovery: bool = needs_function_discovery(arch, has_function_or_export);
+    let discovered_starts: BTreeSet<u64> = if needs_discovery {
+        inject_discovered_functions(
+            arch,
+            &native,
+            &sections,
+            &instructions,
+            bytes,
+            &mut symbol_table,
+        )
+    } else {
+        BTreeSet::new()
+    };
+    let aarch64_fallback: bool = matches!(arch, DisasmArch::Aarch64)
+        && matches!(native.format, NativeFormat::Elf64)
+        && matches!(native.endian, Endian::Little);
+    let function_universe: FunctionUniverse = if aarch64_fallback {
+        FunctionUniverse::Aarch64Fallback { discovered_starts }
+    } else {
+        FunctionUniverse::Complete
+    };
 
     let source_hash: [u8; 32] = *blake3::hash(bytes).as_bytes();
-    Ok(DisasmPayload {
-        source_hash,
-        instructions,
-        symbol_table,
+    Ok(DisasmBuild {
+        payload: DisasmPayload {
+            source_hash,
+            instructions,
+            symbol_table,
+        },
+        function_universe,
     })
+}
+
+const fn decode_byte_limit(arch: DisasmArch, remaining_instructions: usize) -> usize {
+    if matches!(arch, DisasmArch::Aarch64) {
+        remaining_instructions.saturating_mul(AARCH64_INSTRUCTION_BYTES)
+    } else {
+        usize::MAX
+    }
+}
+
+const fn needs_function_discovery(arch: DisasmArch, has_function_or_export: bool) -> bool {
+    matches!(arch, DisasmArch::Aarch64) || !has_function_or_export
 }
 
 fn inject_discovered_functions(
     arch: DisasmArch,
     native: &NativeFile,
     sections: &[ExecutableSection],
+    instructions: &[DisasmInstruction],
     bytes: &[u8],
     symbol_table: &mut Vec<DisasmSymbol>,
-) {
-    let Some(bitness): Option<Bitness> = discovery_bitness(arch) else {
-        return;
-    };
+) -> BTreeSet<u64> {
     let code: Vec<CodeWindow<'_>> = sections
         .iter()
         .map(|s: &ExecutableSection| CodeWindow {
@@ -115,25 +179,47 @@ fn inject_discovered_functions(
             bytes: &s.bytes,
         })
         .collect();
-    let rodata: Vec<ReadOnlyWindow<'_>> = read_only_windows(bytes);
-    let seeds: Vec<u64> = discovery_seeds(native, bytes);
-    let noreturn: BTreeSet<u64> = noreturn_import_targets(bytes);
-    let input: DiscoveryInput<'_> = DiscoveryInput {
-        bitness,
-        code,
-        rodata,
-        seeds,
-        noreturn,
+    let discovered: DiscoveredFunctions = if matches!(arch, DisasmArch::Aarch64) {
+        if !matches!(native.format, NativeFormat::Elf64) || !matches!(native.endian, Endian::Little)
+        {
+            return BTreeSet::new();
+        }
+        let seeds: Vec<u64> = aarch64_function_seeds(native, bytes);
+        let Some(discovered): Option<DiscoveredFunctions> =
+            discover_aarch64_functions(&code, instructions, &seeds)
+        else {
+            return BTreeSet::new();
+        };
+        discovered
+    } else {
+        let Some(bitness): Option<Bitness> = discovery_bitness(arch) else {
+            return BTreeSet::new();
+        };
+        let rodata: Vec<ReadOnlyWindow<'_>> = read_only_windows(bytes);
+        let seeds: Vec<u64> = discovery_seeds(native, bytes);
+        let noreturn: BTreeSet<u64> = noreturn_import_targets(bytes);
+        let input: DiscoveryInput<'_> = DiscoveryInput {
+            bitness,
+            code,
+            rodata,
+            seeds,
+            noreturn,
+        };
+        discover_functions(&input)
     };
-    let discovered: DiscoveredFunctions = discover_functions(&input);
 
     let mut seen: BTreeSet<u64> = symbol_table
         .iter()
         .map(|s: &DisasmSymbol| s.address)
         .collect();
+    let retain_provenance: bool = matches!(arch, DisasmArch::Aarch64);
+    let mut injected_starts: BTreeSet<u64> = BTreeSet::new();
     for start in discovered.starts {
         if !seen.insert(start) {
             continue;
+        }
+        if retain_provenance {
+            injected_starts.insert(start);
         }
         symbol_table.push(DisasmSymbol {
             address: start,
@@ -144,6 +230,7 @@ fn inject_discovered_functions(
     symbol_table.sort_by(|a: &DisasmSymbol, b: &DisasmSymbol| {
         a.address.cmp(&b.address).then_with(|| a.name.cmp(&b.name))
     });
+    injected_starts
 }
 
 fn noreturn_import_targets(bytes: &[u8]) -> BTreeSet<u64> {
@@ -177,6 +264,14 @@ const fn discovery_bitness(arch: DisasmArch) -> Option<Bitness> {
 }
 
 fn discovery_seeds(native: &NativeFile, bytes: &[u8]) -> Vec<u64> {
+    let mut seeds: Vec<u64> = entry_export_seeds(native, bytes);
+    seeds.extend(pdata_function_starts(bytes));
+    seeds.sort_unstable();
+    seeds.dedup();
+    seeds
+}
+
+fn entry_export_seeds(native: &NativeFile, bytes: &[u8]) -> Vec<u64> {
     let mut seeds: Vec<u64> = Vec::new();
     if let Ok(file) = object::File::parse(bytes) {
         let entry: u64 = file.entry();
@@ -189,7 +284,27 @@ fn discovery_seeds(native: &NativeFile, bytes: &[u8]) -> Vec<u64> {
             seeds.push(export.address);
         }
     }
-    seeds.extend(pdata_function_starts(bytes));
+    seeds.sort_unstable();
+    seeds.dedup();
+    seeds
+}
+
+fn aarch64_function_seeds(native: &NativeFile, bytes: &[u8]) -> Vec<u64> {
+    let mut seeds: Vec<u64> = entry_export_seeds(native, bytes);
+    let Ok(file): core::result::Result<object::File<'_>, object::Error> =
+        object::File::parse(bytes)
+    else {
+        return seeds;
+    };
+    seeds.extend(
+        file.symbols()
+            .filter(|symbol: &object::Symbol<'_, '_>| {
+                matches!(symbol.kind(), ObjSymbolKind::Text)
+                    && !symbol.is_undefined()
+                    && symbol.address() != 0
+            })
+            .map(|symbol: object::Symbol<'_, '_>| symbol.address()),
+    );
     seeds.sort_unstable();
     seeds.dedup();
     seeds
@@ -879,7 +994,6 @@ fn build_symbol_table(bytes: &[u8], native: &NativeFile) -> Vec<DisasmSymbol> {
 
     let mut out: Vec<DisasmSymbol> = Vec::new();
     let mut seen: BTreeSet<(u64, String)> = BTreeSet::new();
-
     if let Ok(file) = object::File::parse(bytes) {
         for sym in file.symbols() {
             let Ok(name): core::result::Result<&str, object::Error> = sym.name() else {
@@ -1032,6 +1146,67 @@ mod tests {
         obj.write().expect("elf write")
     }
 
+    fn aarch64_object_with_entry_and_internal_bl() -> Vec<u8> {
+        let words: [u32; 5] = [
+            0xd503_201f,
+            0x9400_0003,
+            0xd503_201f,
+            0xd503_201f,
+            0xd65f_03c0,
+        ];
+        let code: Vec<u8> = words
+            .iter()
+            .flat_map(|word: &u32| word.to_le_bytes())
+            .collect();
+        let mut obj: WriteObject<'_> =
+            WriteObject::new(BinaryFormat::Elf, Architecture::Aarch64, Endianness::Little);
+        let text: object::write::SectionId = obj.section_id(StandardSection::Text);
+        let _: u64 = obj.append_section_data(text, &code, 4);
+        let mut elf: Vec<u8> = obj.write().expect("aarch64 elf write");
+        let entry: [u8; 8] = 4_u64.to_le_bytes();
+        elf.get_mut(24..32)
+            .expect("elf64 entry field")
+            .copy_from_slice(&entry);
+        elf
+    }
+
+    fn aarch64_object_with_retained_local_caller() -> Vec<u8> {
+        let words: [u32; 7] = [
+            0xd503_201f,
+            0xd65f_03c0,
+            0xd503_201f,
+            0xd503_201f,
+            0x9400_0002,
+            0xd65f_03c0,
+            0xd65f_03c0,
+        ];
+        let code: Vec<u8> = words
+            .iter()
+            .flat_map(|word: &u32| word.to_le_bytes())
+            .collect();
+        let mut obj: WriteObject<'_> =
+            WriteObject::new(BinaryFormat::Elf, Architecture::Aarch64, Endianness::Little);
+        let text: object::write::SectionId = obj.section_id(StandardSection::Text);
+        let _: u64 = obj.append_section_data(text, &code, 4);
+        let symbol: WriteSymbol = WriteSymbol {
+            name: b"retained_local".to_vec(),
+            value: 0x10,
+            size: 8,
+            kind: WriteSymbolKind::Text,
+            scope: SymbolScope::Linkage,
+            weak: false,
+            section: SymbolSection::Section(text),
+            flags: WriteSymbolFlags::None,
+        };
+        let _: object::write::SymbolId = obj.add_symbol(symbol);
+        let mut elf: Vec<u8> = obj.write().expect("aarch64 elf write");
+        let entry: [u8; 8] = 4_u64.to_le_bytes();
+        elf.get_mut(24..32)
+            .expect("elf64 entry field")
+            .copy_from_slice(&entry);
+        elf
+    }
+
     #[test]
     fn builds_instructions_and_symbols_from_real_elf() {
         let elf: Vec<u8> = two_function_elf();
@@ -1056,6 +1231,57 @@ mod tests {
             .find(|i: &&DisasmInstruction| i.mnemonic == "call")
             .expect("a call instruction");
         assert!(!call.operands.is_empty());
+    }
+
+    #[test]
+    fn aarch64_entry_seed_injects_the_decoded_bl_target() {
+        let elf: Vec<u8> = aarch64_object_with_entry_and_internal_bl();
+        let build: DisasmBuild = build_disasm_payload_with_discovery(&elf).expect("build payload");
+        let starts: Vec<u64> = build
+            .payload
+            .symbol_table
+            .iter()
+            .filter(|symbol: &&DisasmSymbol| {
+                matches!(
+                    symbol.kind,
+                    DisasmSymbolKind::Function | DisasmSymbolKind::Export
+                )
+            })
+            .map(|symbol: &DisasmSymbol| symbol.address)
+            .collect();
+        assert_eq!(starts, vec![0x4, 0x10]);
+        assert!(!build.function_universe.reference_anchors_trusted(0x4));
+        assert!(!build.function_universe.reference_anchors_trusted(0x10));
+        assert!(build.function_universe.reference_anchors_trusted(0x14));
+    }
+
+    #[test]
+    fn aarch64_retained_local_function_seeds_its_internal_call_target() {
+        let elf: Vec<u8> = aarch64_object_with_retained_local_caller();
+        let build: DisasmBuild = build_disasm_payload_with_discovery(&elf).expect("build payload");
+        let starts: Vec<(u64, String)> = build
+            .payload
+            .symbol_table
+            .iter()
+            .filter(|symbol: &&DisasmSymbol| {
+                matches!(
+                    symbol.kind,
+                    DisasmSymbolKind::Function | DisasmSymbolKind::Export
+                )
+            })
+            .map(|symbol: &DisasmSymbol| (symbol.address, symbol.name.clone()))
+            .collect();
+        assert_eq!(
+            starts,
+            vec![
+                (0x4, "sub_4".to_owned()),
+                (0x10, "retained_local".to_owned()),
+                (0x18, "sub_18".to_owned()),
+            ]
+        );
+        assert!(!build.function_universe.reference_anchors_trusted(0x4));
+        assert!(build.function_universe.reference_anchors_trusted(0x10));
+        assert!(!build.function_universe.reference_anchors_trusted(0x18));
     }
 
     #[test]
@@ -1303,6 +1529,28 @@ mod tests {
         assert!(isa.is_empty());
         assert!(stack.is_neutral());
         assert!(segments.is_empty());
+    }
+
+    #[test]
+    fn aarch64_decode_byte_limit_matches_fixed_instruction_width() {
+        assert_eq!(decode_byte_limit(DisasmArch::Aarch64, 4), 16);
+        assert_eq!(decode_byte_limit(DisasmArch::Aarch64, 0), 0);
+        assert_eq!(
+            decode_byte_limit(DisasmArch::Aarch64, 1),
+            AARCH64_INSTRUCTION_BYTES
+        );
+        assert_eq!(
+            decode_byte_limit(DisasmArch::Aarch64, MAX_PAYLOAD_INSTRUCTIONS),
+            MAX_PAYLOAD_INSTRUCTIONS.saturating_mul(AARCH64_INSTRUCTION_BYTES)
+        );
+        assert_eq!(decode_byte_limit(DisasmArch::X86_64, 4), usize::MAX);
+    }
+
+    #[test]
+    fn aarch64_dynamic_exports_do_not_suppress_function_discovery() {
+        assert!(needs_function_discovery(DisasmArch::Aarch64, true));
+        assert!(!needs_function_discovery(DisasmArch::X86_64, true));
+        assert!(needs_function_discovery(DisasmArch::X86_64, false));
     }
 
     #[test]
