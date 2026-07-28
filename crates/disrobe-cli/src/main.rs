@@ -72,6 +72,7 @@ use cli::man;
 #[cfg(feature = "mobile")]
 use cli::mobile::{self, MobileCmd};
 use cli::native;
+use cli::native_match;
 use cli::nuitka::{self, NuitkaCmd};
 use cli::output::OutputFormat;
 #[cfg(feature = "php")]
@@ -1438,6 +1439,17 @@ enum NativeCmd {
         #[arg(long, help = "emit the full diff report as JSON")]
         json: bool,
     },
+    #[command(
+        about = "name the counterpart of every function across two stripped binaries: anchor on shared data references, then on a control-flow fingerprint, then propagate along the call graph; each pair carries the stage and the evidence that produced it, and a refusal is reported with its candidates"
+    )]
+    Match {
+        #[arg(help = "binary A (PE/ELF/Mach-O)")]
+        a: PathBuf,
+        #[arg(help = "binary B (PE/ELF/Mach-O)")]
+        b: PathBuf,
+        #[arg(short, long, help = "output path for the match report JSON")]
+        out: Option<PathBuf>,
+    },
 }
 
 fn parse_u64_auto(s: &str) -> Result<u64, String> {
@@ -1704,6 +1716,7 @@ fn main() -> miette::Result<()> {
             } => native::patch(input, at, bytes, nop_range, out),
             NativeCmd::Sigmaker { input, at, emit } => native::sigmaker(input, at, emit),
             NativeCmd::Diff { a, b, json } => native::diff(a, b, json),
+            NativeCmd::Match { a, b, out } => native_match::run(a, b, out, fmt),
         },
         #[cfg(feature = "jvm")]
         Cmd::Jvm { action } => jvm::run(action),

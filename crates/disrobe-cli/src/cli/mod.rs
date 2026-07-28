@@ -66,6 +66,7 @@ pub(crate) mod man;
 #[cfg(feature = "mobile")]
 pub(crate) mod mobile;
 pub(crate) mod native;
+pub(crate) mod native_match;
 pub(crate) mod nuitka;
 pub(crate) mod output;
 pub(crate) mod pass_registry;
