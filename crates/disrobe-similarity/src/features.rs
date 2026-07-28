@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::constant::is_discriminating_constant;
+use crate::structure::{ControlFlowGraph, StructuralKey};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct FunctionId(pub u64);
@@ -59,22 +60,45 @@ impl DataReference {
 pub struct FunctionFeatures {
     id: FunctionId,
     references: BTreeSet<DataReference>,
+    structure: Option<ControlFlowGraph>,
 }
 
 impl FunctionFeatures {
     pub fn new(id: FunctionId, references: impl IntoIterator<Item = DataReference>) -> Self {
         Self {
             id,
-            references: references
-                .into_iter()
-                .filter(DataReference::is_admissible)
-                .collect(),
+            references: admissible(references),
+            structure: None,
+        }
+    }
+
+    pub fn with_structure(
+        id: FunctionId,
+        references: impl IntoIterator<Item = DataReference>,
+        structure: ControlFlowGraph,
+    ) -> Self {
+        Self {
+            id,
+            references: admissible(references),
+            structure: Some(structure),
         }
     }
 
     #[must_use]
     pub const fn id(&self) -> FunctionId {
         self.id
+    }
+
+    #[must_use]
+    pub const fn structure(&self) -> Option<&ControlFlowGraph> {
+        self.structure.as_ref()
+    }
+
+    #[must_use]
+    pub fn structural_key(&self) -> Option<StructuralKey> {
+        self.structure
+            .as_ref()
+            .and_then(ControlFlowGraph::structural_key)
     }
 
     #[must_use]
@@ -91,6 +115,13 @@ impl FunctionFeatures {
     pub fn anchor_strength(&self) -> AnchorStrength {
         anchor_strength(&self.references)
     }
+}
+
+fn admissible(references: impl IntoIterator<Item = DataReference>) -> BTreeSet<DataReference> {
+    references
+        .into_iter()
+        .filter(DataReference::is_admissible)
+        .collect()
 }
 
 #[must_use]

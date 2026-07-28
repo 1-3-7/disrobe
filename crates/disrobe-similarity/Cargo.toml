@@ -1,6 +1,6 @@
 [package]
 name = "disrobe-similarity"
-description = "Cross-image function matching for stripped binaries, anchored on the data a function references (string literals, unusual constants, named import calls). A pair is reported as a match only when the reference set is identical and occurs exactly once on each side, so an anchor shared by a third function is refused with its candidate set instead of guessed."
+description = "Cross-image function matching for stripped binaries. The first stage anchors on the data a function references (string literals, unusual constants, named import calls). The second stage keys the functions that stage left unresolved on a control-flow-graph invariant: a canonical block ordering derived from the graph itself, then an integer accumulation over the edges of each endpoint's in-degree and out-degree, so the value survives block reordering, layout changes, register allocation and addressing. Both stages report a pair only when the key is identical and occurs exactly once on each side, and a structural key must also agree on an instruction-category histogram, because the invariant is blind to what the blocks compute: two functions with one skeleton and unrelated computation collide. It is equally fragile to anything that rewrites topology, so a change of optimisation level, inlining, loop unrolling, tail duplication or if-conversion moves a function out of its reach and back into the reference stage's."
 version.workspace = true
 readme.workspace = true
 edition.workspace = true
