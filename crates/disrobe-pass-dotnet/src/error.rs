@@ -126,6 +126,11 @@ pub enum Error {
 
     #[error("DR-DOTNET-0035: ahead-of-time layout candidates are structurally ambiguous")]
     AmbiguousAotLayout,
+
+    #[error(
+        "DR-DOTNET-0036: invalid ahead-of-time metadata at section offset 0x{offset:X}: {reason}"
+    )]
+    InvalidAotMetadata { offset: u32, reason: &'static str },
 }
 
 impl From<ByteReadError> for Error {
