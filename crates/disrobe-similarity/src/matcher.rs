@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::features::{DataReference, FunctionFeatures, FunctionId};
+use crate::features::{
+    AnchorStrength, DataReference, FunctionFeatures, FunctionId, anchor_strength,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum UnmatchedCause {
@@ -14,6 +16,7 @@ pub enum Verdict {
     Exact {
         counterpart: FunctionId,
         shared_references: BTreeSet<DataReference>,
+        strength: AnchorStrength,
     },
     Ambiguous {
         candidates: BTreeSet<FunctionId>,
@@ -187,6 +190,7 @@ fn forced_or_ambiguous(
             |counterpart: &FunctionId| Verdict::Exact {
                 counterpart: *counterpart,
                 shared_references: anchor.clone(),
+                strength: anchor_strength(anchor),
             },
         );
     }

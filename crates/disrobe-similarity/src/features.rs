@@ -45,6 +45,14 @@ impl DataReference {
             Self::ImportedCall(name) => !name.is_empty(),
         }
     }
+
+    #[must_use]
+    pub const fn anchors_alone(&self) -> bool {
+        match self {
+            Self::StringLiteral(_) | Self::UnusualConstant(_) => true,
+            Self::ImportedCall(_) => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,4 +86,27 @@ impl FunctionFeatures {
     pub fn has_anchor(&self) -> bool {
         !self.references.is_empty()
     }
+
+    #[must_use]
+    pub fn anchor_strength(&self) -> AnchorStrength {
+        anchor_strength(&self.references)
+    }
+}
+
+#[must_use]
+pub fn anchor_strength(references: &BTreeSet<DataReference>) -> AnchorStrength {
+    let only_reference: Option<&DataReference> = match references.len() {
+        1 => references.iter().next(),
+        _ => None,
+    };
+    match only_reference {
+        Some(reference) if !reference.anchors_alone() => AnchorStrength::SingleImportedCall,
+        _ => AnchorStrength::Distinctive,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AnchorStrength {
+    Distinctive,
+    SingleImportedCall,
 }
