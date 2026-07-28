@@ -5,9 +5,9 @@ use iced_x86::{
     OpKind, Register, UsedRegister,
 };
 
+use crate::basic_blocks::{BasicBlock, Transfer, build_cfg};
+
 const MAX_DECODE_INSNS: usize = 4096;
-const MAX_BLOCKS: usize = 256;
-const MAX_BLOCK_INSNS: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -47,13 +47,6 @@ pub struct AbiInference {
     pub param_regs: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
-struct BasicBlock {
-    insns: std::ops::Range<usize>,
-    successors: Vec<usize>,
-    returns: bool,
-}
-
 #[derive(Debug, Clone, Default)]
 struct LiveSets {
     use_set: BTreeSet<Register>,
@@ -73,7 +66,8 @@ pub fn infer(bitness: u32, base: u64, code: &[u8], entry: u64) -> Option<AbiInfe
         .collect();
     let start: usize = *index.get(&entry)?;
 
-    let blocks: Vec<BasicBlock> = build_cfg(&insns, &index, start)?;
+    let transfers: Vec<Transfer> = insns.iter().map(transfer_of).collect();
+    let blocks: Vec<BasicBlock> = build_cfg(&transfers, &index, start)?;
     let mut factory: InstructionInfoFactory = InstructionInfoFactory::new();
 
     let live_in: BTreeSet<Register> = live_in_at_entry(&insns, &blocks, &mut factory);
@@ -582,167 +576,24 @@ fn predecessors(blocks: &[BasicBlock]) -> Vec<Vec<usize>> {
     preds
 }
 
-fn build_cfg(
-    insns: &[Instruction],
-    index: &BTreeMap<u64, usize>,
-    start: usize,
-) -> Option<Vec<BasicBlock>> {
-    let leaders: BTreeSet<usize> = collect_leaders(insns, index, start)?;
-    let leader_vec: Vec<usize> = leaders.iter().copied().collect();
-    if leader_vec.len() > MAX_BLOCKS {
-        return None;
-    }
-    let leader_to_block: BTreeMap<usize, usize> = leader_vec
-        .iter()
-        .enumerate()
-        .map(|(i, leader): (usize, &usize)| (*leader, i))
-        .collect();
-
-    let mut blocks: Vec<BasicBlock> = Vec::with_capacity(leader_vec.len());
-    for (i, &leader) in leader_vec.iter().enumerate() {
-        let next_leader: usize = leader_vec.get(i + 1).copied().unwrap_or(insns.len());
-        blocks.push(build_block(
-            insns,
-            index,
-            leader,
-            next_leader,
-            &leader_to_block,
-        )?);
-    }
-    let start_block: usize = *leader_to_block.get(&start)?;
-    if start_block != 0 {
-        blocks.swap(0, start_block);
-        let remap = |b: usize| -> usize {
-            if b == 0 {
-                start_block
-            } else if b == start_block {
-                0
+fn transfer_of(insn: &Instruction) -> Transfer {
+    match insn.flow_control() {
+        FlowControl::Next | FlowControl::Call => {
+            if insn.has_lock_prefix() {
+                Transfer::Unresolved
             } else {
-                b
-            }
-        };
-        for block in &mut blocks {
-            for succ in &mut block.successors {
-                *succ = remap(*succ);
+                Transfer::FallsThrough
             }
         }
-    }
-    Some(blocks)
-}
-
-fn collect_leaders(
-    insns: &[Instruction],
-    index: &BTreeMap<u64, usize>,
-    start: usize,
-) -> Option<BTreeSet<usize>> {
-    let mut leaders: BTreeSet<usize> = BTreeSet::from([start]);
-    let mut worklist: Vec<usize> = vec![start];
-    let mut visited: BTreeSet<usize> = BTreeSet::new();
-
-    while let Some(leader) = worklist.pop() {
-        if !visited.insert(leader) {
-            continue;
-        }
-        if visited.len() > MAX_BLOCKS {
-            return None;
-        }
-        let mut cursor: usize = leader;
-        let limit: usize = leader + MAX_BLOCK_INSNS;
-        loop {
-            if cursor >= insns.len() || cursor > limit {
-                return None;
-            }
-            let insn: &Instruction = &insns[cursor];
-            match insn.flow_control() {
-                FlowControl::Next | FlowControl::Call => {
-                    if insn.has_lock_prefix() {
-                        return None;
-                    }
-                    cursor += 1;
-                }
-                FlowControl::Return | FlowControl::Interrupt => break,
-                FlowControl::ConditionalBranch => {
-                    let taken: usize = *index.get(&insn.near_branch_target())?;
-                    let fallthrough: usize = cursor + 1;
-                    if fallthrough >= insns.len() {
-                        return None;
-                    }
-                    leaders.insert(taken);
-                    leaders.insert(fallthrough);
-                    worklist.push(taken);
-                    worklist.push(fallthrough);
-                    break;
-                }
-                FlowControl::UnconditionalBranch => {
-                    let target: usize = *index.get(&insn.near_branch_target())?;
-                    leaders.insert(target);
-                    worklist.push(target);
-                    break;
-                }
-                _ => return None,
-            }
-        }
-    }
-    Some(leaders)
-}
-
-fn build_block(
-    insns: &[Instruction],
-    index: &BTreeMap<u64, usize>,
-    leader: usize,
-    next_leader: usize,
-    leader_to_block: &BTreeMap<usize, usize>,
-) -> Option<BasicBlock> {
-    let mut cursor: usize = leader;
-    let limit: usize = leader + MAX_BLOCK_INSNS;
-    loop {
-        if cursor >= insns.len() || cursor > limit {
-            return None;
-        }
-        let insn: &Instruction = &insns[cursor];
-        match insn.flow_control() {
-            FlowControl::Next | FlowControl::Call => {
-                if insn.has_lock_prefix() {
-                    return None;
-                }
-                if cursor + 1 == next_leader {
-                    let to: usize = *leader_to_block.get(&next_leader)?;
-                    return Some(BasicBlock {
-                        insns: leader..cursor + 1,
-                        successors: vec![to],
-                        returns: false,
-                    });
-                }
-                cursor += 1;
-            }
-            FlowControl::Return | FlowControl::Interrupt => {
-                return Some(BasicBlock {
-                    insns: leader..cursor + 1,
-                    successors: Vec::new(),
-                    returns: matches!(insn.flow_control(), FlowControl::Return),
-                });
-            }
-            FlowControl::ConditionalBranch => {
-                let taken_insn: usize = *index.get(&insn.near_branch_target())?;
-                let taken: usize = *leader_to_block.get(&taken_insn)?;
-                let fallthrough: usize = *leader_to_block.get(&(cursor + 1))?;
-                return Some(BasicBlock {
-                    insns: leader..cursor + 1,
-                    successors: vec![taken, fallthrough],
-                    returns: false,
-                });
-            }
-            FlowControl::UnconditionalBranch => {
-                let target_insn: usize = *index.get(&insn.near_branch_target())?;
-                let to: usize = *leader_to_block.get(&target_insn)?;
-                return Some(BasicBlock {
-                    insns: leader..cursor + 1,
-                    successors: vec![to],
-                    returns: false,
-                });
-            }
-            _ => return None,
-        }
+        FlowControl::Return => Transfer::Terminal { returns: true },
+        FlowControl::Interrupt => Transfer::Terminal { returns: false },
+        FlowControl::ConditionalBranch => Transfer::ConditionalBranch {
+            taken: insn.near_branch_target(),
+        },
+        FlowControl::UnconditionalBranch => Transfer::UnconditionalBranch {
+            taken: insn.near_branch_target(),
+        },
+        _ => Transfer::Unresolved,
     }
 }
 

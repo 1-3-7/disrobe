@@ -820,7 +820,7 @@ const fn modrm_has_sib(modrm: u8) -> bool {
     mod_bits != 0b11 && rm_bits == 0b100
 }
 
-const fn map_access(access: OpAccess) -> RegAccess {
+pub(crate) const fn map_access(access: OpAccess) -> RegAccess {
     match access {
         OpAccess::None => RegAccess::None,
         OpAccess::Read => RegAccess::Read,

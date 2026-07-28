@@ -20,6 +20,8 @@ pub mod api_hash;
 pub mod arch;
 pub mod authenticode;
 pub mod backend_export;
+#[allow(clippy::redundant_pub_crate)]
+mod basic_blocks;
 pub mod bindiff;
 #[cfg(feature = "chain")]
 pub mod chain_detector;

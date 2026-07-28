@@ -5055,7 +5055,7 @@ fn relative_target(insn: &DisasmInsn, token: &str) -> Result<u64> {
         .ok_or_else(|| reject_at(insn, "branch target overflow"))
 }
 
-fn parse_unsigned_literal(token: &str) -> Option<u64> {
+pub(crate) fn parse_unsigned_literal(token: &str) -> Option<u64> {
     token.strip_prefix("0x").map_or_else(
         || token.parse::<u64>().ok(),
         |hex: &str| u64::from_str_radix(hex, 16).ok(),
