@@ -10,8 +10,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use disrobe_ir::payload::{DisasmInstruction, DisasmPayload};
 use disrobe_pass_native::{
-    FunctionSpan, build_disasm_payload, extract_function_features, function_spans,
+    Error, FunctionSpan, build_disasm_payload, extract_function_features, function_spans,
 };
 use disrobe_similarity::{
     DataReference, FunctionFeatures, FunctionId, MatchReport, match_functions,
@@ -181,6 +182,122 @@ void _start(void) {
 }
 "#;
 
+const REFERENCE_FREE_SOURCE: &str = r"
+typedef unsigned int u32;
+
+__attribute__((noinline)) static u32 rotate_mix(u32 x, int rounds) {
+    u32 acc = x;
+    for (int i = 0; i < rounds; i++) {
+        acc = (acc << 5) | (acc >> 27);
+        acc ^= (u32)i;
+    }
+    return acc;
+}
+
+__attribute__((noinline)) static int count_bits(u32 v) {
+    int n = 0;
+    while (v != 0) {
+        if (v & 1u) {
+            n++;
+        }
+        v >>= 1;
+    }
+    return n;
+}
+
+__attribute__((noinline)) static int clamp_scale(int v, int lo, int hi) {
+    int scaled = v * 2;
+    if (scaled < lo) {
+        scaled = lo;
+    }
+    if (scaled > hi) {
+        scaled = hi;
+    }
+    return scaled + 3;
+}
+
+__attribute__((noinline)) static u32 alternating_sum(const int *values, int count) {
+    u32 total = 0;
+    for (int i = 0; i < count; i++) {
+        if ((i & 1) == 0) {
+            total += (u32)values[i];
+        } else {
+            total -= (u32)values[i];
+        }
+    }
+    return total;
+}
+";
+
+const VERSION_ONE_TAIL: &str = r"
+__attribute__((noinline)) static int classify(int v) {
+    if (v < 10) {
+        return v + 1;
+    }
+    if (v < 40) {
+        return v * 3;
+    }
+    if (v < 90) {
+        return v - 7;
+    }
+    return v >> 1;
+}
+
+int main(int argc, char **argv) {
+    (void)argv;
+    int seed = argc;
+    int values[8];
+    for (int i = 0; i < 8; i++) {
+        values[i] = seed + i;
+    }
+    int a = classify(seed * 7);
+    u32 b = rotate_mix((u32)seed, 6);
+    int c = count_bits(b);
+    int d = clamp_scale(a, 2, 60);
+    u32 e = alternating_sum(values, 8);
+    return (int)((u32)(a + c + d) ^ b ^ e);
+}
+";
+
+const VERSION_TWO_TAIL: &str = r"
+__attribute__((noinline)) static int classify(int v) {
+    if (v < 12) {
+        return v + 1;
+    }
+    if (v < 44) {
+        return v * 3;
+    }
+    if (v < 96) {
+        return v - 7;
+    }
+    return v >> 1;
+}
+
+__attribute__((noinline)) static int checksum_pairs(const int *values, int count) {
+    int acc = 0;
+    for (int i = 0; i + 1 < count; i += 2) {
+        acc += values[i] * 3 - values[i + 1];
+    }
+    return acc;
+}
+
+int main(int argc, char **argv) {
+    (void)argv;
+    int seed = argc;
+    int values[8];
+    for (int i = 0; i < 8; i++) {
+        values[i] = seed + i;
+    }
+    int a = classify(seed * 7);
+    u32 b = rotate_mix((u32)seed, 6);
+    int c = count_bits(b);
+    int d = clamp_scale(a, 2, 60);
+    u32 e = alternating_sum(values, 8);
+    int f = checksum_pairs(values, 8);
+    return (int)((u32)(a + c + d + f) ^ b ^ e);
+}
+";
+
 fn fixture(name: &str) -> Option<Vec<u8>> {
     let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -228,14 +345,48 @@ fn stripped_copy(source: &Path, output: &Path) -> Option<Vec<u8>> {
     std::fs::read(output).ok()
 }
 
-fn symbol_names(bytes: &[u8]) -> BTreeMap<u64, String> {
-    let Ok(payload) = build_disasm_payload(bytes) else {
-        return BTreeMap::new();
+struct Side {
+    names: BTreeMap<u64, String>,
+    shapes: BTreeMap<u64, Vec<String>>,
+}
+
+impl Side {
+    fn is_empty(&self) -> bool {
+        self.names.is_empty()
+    }
+}
+
+fn side(bytes: &[u8]) -> Side {
+    let Ok(payload): Result<DisasmPayload, Error> = build_disasm_payload(bytes) else {
+        return Side {
+            names: BTreeMap::new(),
+            shapes: BTreeMap::new(),
+        };
     };
-    function_spans(&payload)
-        .into_iter()
-        .map(|span: FunctionSpan| (span.address, span.name))
-        .collect()
+    let mut sorted: Vec<&DisasmInstruction> = payload.instructions.iter().collect();
+    sorted.sort_by_key(|insn: &&DisasmInstruction| insn.offset);
+    let spans: Vec<FunctionSpan> = function_spans(&payload);
+    let names: BTreeMap<u64, String> = spans
+        .iter()
+        .map(|span: &FunctionSpan| (span.address, span.name.clone()))
+        .collect();
+    let shapes: BTreeMap<u64, Vec<String>> = spans
+        .iter()
+        .map(|span: &FunctionSpan| {
+            let low: usize =
+                sorted.partition_point(|insn: &&DisasmInstruction| insn.offset < span.address);
+            let high: usize =
+                sorted.partition_point(|insn: &&DisasmInstruction| insn.offset < span.end);
+            let shape: Vec<String> = sorted
+                .get(low..high)
+                .unwrap_or_default()
+                .iter()
+                .map(|insn: &&DisasmInstruction| insn.mnemonic.clone())
+                .collect();
+            (span.address, shape)
+        })
+        .collect();
+    Side { names, shapes }
 }
 
 fn anchored(features: &[FunctionFeatures]) -> usize {
@@ -245,23 +396,47 @@ fn anchored(features: &[FunctionFeatures]) -> usize {
         .count()
 }
 
+fn structured(features: &[FunctionFeatures]) -> usize {
+    features
+        .iter()
+        .filter(|entry: &&FunctionFeatures| entry.structure().is_some())
+        .count()
+}
+
+fn keyed(features: &[FunctionFeatures]) -> usize {
+    features
+        .iter()
+        .filter(|entry: &&FunctionFeatures| entry.structural_key().is_some())
+        .count()
+}
+
 struct Verification {
     agreed: usize,
     disagreed: Vec<(String, String)>,
     unnamed: usize,
+    recompiled: usize,
+}
+
+struct PairGrade {
+    exact: Verification,
+    structural: Verification,
 }
 
 fn verify_against_symbols(
-    report: &MatchReport,
-    left: &BTreeMap<u64, String>,
-    right: &BTreeMap<u64, String>,
+    pairs: &[(FunctionId, FunctionId)],
+    left: &Side,
+    right: &Side,
 ) -> Verification {
     let mut agreed: usize = 0;
     let mut disagreed: Vec<(String, String)> = Vec::new();
     let mut unnamed: usize = 0;
-    for (a, b) in report.exact_pairs() {
+    let mut recompiled: usize = 0;
+    for (a, b) in pairs.iter().copied() {
         let (a, b): (FunctionId, FunctionId) = (a, b);
-        match (left.get(&a.0), right.get(&b.0)) {
+        if left.shapes.get(&a.0) != right.shapes.get(&b.0) {
+            recompiled += 1;
+        }
+        match (left.names.get(&a.0), right.names.get(&b.0)) {
             (Some(name_a), Some(name_b)) => {
                 if name_a == name_b {
                     agreed += 1;
@@ -276,6 +451,7 @@ fn verify_against_symbols(
         agreed,
         disagreed,
         unnamed,
+        recompiled,
     }
 }
 
@@ -293,43 +469,57 @@ fn describe(label: &str, features: &[FunctionFeatures]) {
         }
     }
     println!(
-        "{label}: {} functions, {} carrying an anchor, references {strings} string / {constants} constant / {imports} import",
+        "{label}: {} functions, {} carrying an anchor, {} carrying a structure, {} carrying a distinguishing structural key, references {strings} string / {constants} constant / {imports} import",
         features.len(),
-        anchored(features)
+        anchored(features),
+        structured(features),
+        keyed(features)
     );
 }
 
 fn self_match_count(features: &[FunctionFeatures]) -> usize {
     let report: MatchReport = match_functions(features, features);
-    for (a, b) in report.exact_pairs() {
+    for (a, b) in report.matched_pairs() {
         assert_eq!(
             a, b,
-            "an image matched against itself must map every anchor to its own address"
+            "an image matched against itself must map every function to its own address"
         );
     }
-    report.exact_count()
+    report.matched_count()
 }
 
 fn graded_pair(
     label: &str,
     left: &[FunctionFeatures],
     right: &[FunctionFeatures],
-    left_names: &BTreeMap<u64, String>,
-    right_names: &BTreeMap<u64, String>,
-) -> Verification {
+    left_side: &Side,
+    right_side: &Side,
+) -> PairGrade {
     let report: MatchReport = match_functions(left, right);
-    let verification: Verification = verify_against_symbols(&report, left_names, right_names);
+    let exact: Verification = verify_against_symbols(&report.exact_pairs(), left_side, right_side);
+    let structural: Verification =
+        verify_against_symbols(&report.structural_pairs(), left_side, right_side);
+    report_stage(label, "data-reference", report.exact_count(), &exact);
+    report_stage(
+        label,
+        "control-flow",
+        report.structural_count(),
+        &structural,
+    );
+    PairGrade { exact, structural }
+}
+
+fn report_stage(label: &str, stage: &str, pairs: usize, verification: &Verification) {
     println!(
-        "{label}: {} exact pairs, {} verified by symbol name, {} unnamed, {} disagreements",
-        report.exact_count(),
+        "{label} [{stage}]: {pairs} pairs, {} verified by symbol name, {} unverifiable, {} disagreements, {} over two different instruction sequences",
         verification.agreed,
         verification.unnamed,
-        verification.disagreed.len()
+        verification.disagreed.len(),
+        verification.recompiled
     );
     for (name_a, name_b) in &verification.disagreed {
-        println!("  disagreement: {name_a} paired with {name_b}");
+        println!("  {stage} disagreement: {name_a} paired with {name_b}");
     }
-    verification
 }
 
 #[test]
@@ -429,10 +619,10 @@ fn a_two_optimization_level_pair_matches_functions_across_stripped_images() {
         return;
     };
 
-    let low_names: BTreeMap<u64, String> = symbol_names(&low);
-    let high_names: BTreeMap<u64, String> = symbol_names(&high);
+    let low_side: Side = side(&low);
+    let high_side: Side = side(&high);
     assert!(
-        !low_names.is_empty() && !high_names.is_empty(),
+        !low_side.is_empty() && !high_side.is_empty(),
         "the unstripped builds must carry symbols to grade against"
     );
 
@@ -464,19 +654,107 @@ fn a_two_optimization_level_pair_matches_functions_across_stripped_images() {
         "O0 vs O2 with symbols",
         &symbol_left,
         &symbol_right,
-        &low_names,
-        &high_names,
+        &low_side,
+        &high_side,
     );
 
-    let verification: Verification =
-        graded_pair("O0 vs O2 stripped", &left, &right, &low_names, &high_names);
+    let grade: PairGrade = graded_pair("O0 vs O2 stripped", &left, &right, &low_side, &high_side);
     assert!(
-        verification.disagreed.is_empty(),
+        grade.exact.disagreed.is_empty(),
         "every symbol-named pair must name the same function on both sides"
     );
     assert!(
-        verification.agreed > 0,
+        grade.structural.disagreed.is_empty(),
+        "a structural pair that names two different functions is a wrong match"
+    );
+    assert!(
+        grade.exact.agreed > 0,
         "the pair must anchor at least one function through its data references"
+    );
+}
+
+#[test]
+fn two_adjacent_versions_at_one_optimization_level_grade_the_structural_stage() {
+    let Some(compiler): Option<PathBuf> = host_c_compiler() else {
+        eprintln!("skipping: no host C compiler on PATH");
+        return;
+    };
+    let scratch: TempDir = TempDir::new().expect("scratch directory");
+    let one_source: PathBuf = scratch.path().join("version_one.c");
+    let two_source: PathBuf = scratch.path().join("version_two.c");
+    std::fs::write(
+        &one_source,
+        format!("{REFERENCE_FREE_SOURCE}{VERSION_ONE_TAIL}"),
+    )
+    .expect("write version one");
+    std::fs::write(
+        &two_source,
+        format!("{REFERENCE_FREE_SOURCE}{VERSION_TWO_TAIL}"),
+    )
+    .expect("write version two");
+
+    let one_path: PathBuf = scratch.path().join("version_one.exe");
+    let two_path: PathBuf = scratch.path().join("version_two.exe");
+    let (Some(one), Some(two)): (Option<Vec<u8>>, Option<Vec<u8>>) = (
+        compile(&compiler, &one_source, &one_path, &["-O2"]),
+        compile(&compiler, &two_source, &two_path, &["-O2"]),
+    ) else {
+        eprintln!("skipping: host C compiler cannot link a hosted executable");
+        return;
+    };
+
+    let one_side: Side = side(&one);
+    let two_side: Side = side(&two);
+    assert!(
+        !one_side.is_empty() && !two_side.is_empty(),
+        "the unstripped builds must carry symbols to grade against"
+    );
+
+    let left: Vec<FunctionFeatures> = extract_function_features(&one).expect("version one extract");
+    let right: Vec<FunctionFeatures> =
+        extract_function_features(&two).expect("version two extract");
+    describe("adjacent versions: v1 -O2 with symbols", &left);
+    describe("adjacent versions: v2 -O2 with symbols", &right);
+    let grade: PairGrade = graded_pair(
+        "adjacent versions: v1 vs v2 -O2 with symbols",
+        &left,
+        &right,
+        &one_side,
+        &two_side,
+    );
+    assert!(
+        grade.exact.disagreed.is_empty(),
+        "every symbol-named pair must name the same function on both sides"
+    );
+    assert!(
+        grade.structural.disagreed.is_empty(),
+        "a structural pair that names two different functions is a wrong match"
+    );
+
+    let one_stripped: Vec<u8> = stripped_copy(&one_path, &scratch.path().join("version_one.strip"))
+        .unwrap_or_else(|| one.clone());
+    let two_stripped: Vec<u8> = stripped_copy(&two_path, &scratch.path().join("version_two.strip"))
+        .unwrap_or_else(|| two.clone());
+    let left: Vec<FunctionFeatures> =
+        extract_function_features(&one_stripped).expect("version one stripped extract");
+    let right: Vec<FunctionFeatures> =
+        extract_function_features(&two_stripped).expect("version two stripped extract");
+    describe("adjacent versions: v1 -O2 stripped", &left);
+    describe("adjacent versions: v2 -O2 stripped", &right);
+    let stripped_grade: PairGrade = graded_pair(
+        "adjacent versions: v1 vs v2 -O2 stripped",
+        &left,
+        &right,
+        &one_side,
+        &two_side,
+    );
+    assert!(
+        stripped_grade.exact.disagreed.is_empty(),
+        "every symbol-named pair must name the same function on both sides"
+    );
+    assert!(
+        stripped_grade.structural.disagreed.is_empty(),
+        "a structural pair that names two different functions is a wrong match"
     );
 }
 
@@ -526,19 +804,18 @@ fn an_aarch64_pair_matches_functions_through_adrp_pairs_and_wide_moves() {
     describe("aarch64 O0", &left);
     describe("aarch64 O2", &right);
 
-    let verification: Verification = graded_pair(
-        "aarch64 O0 vs O2",
-        &left,
-        &right,
-        &symbol_names(&low),
-        &symbol_names(&high),
-    );
+    let grade: PairGrade =
+        graded_pair("aarch64 O0 vs O2", &left, &right, &side(&low), &side(&high));
     assert!(
-        verification.disagreed.is_empty(),
+        grade.exact.disagreed.is_empty(),
         "every symbol-named aarch64 pair must name the same function on both sides"
     );
     assert!(
-        verification.agreed > 0,
+        grade.structural.disagreed.is_empty(),
+        "a structural pair that names two different functions is a wrong match"
+    );
+    assert!(
+        grade.exact.agreed > 0,
         "adrp pairs and wide moves must anchor at least one aarch64 function"
     );
 }

@@ -134,6 +134,127 @@ fn an_image_without_import_data_reports_no_imported_calls() {
 }
 
 #[test]
+fn a_forward_conditional_branch_builds_a_three_block_graph() {
+    let text: [u8; 12] = [
+        0x85, 0xC0, 0x74, 0x04, 0x48, 0xFF, 0xC0, 0xC3, 0x48, 0xFF, 0xC8, 0xC3,
+    ];
+    let features: Vec<FunctionFeatures> = features_of(&text);
+    assert_eq!(features.len(), 1, "one discovered function: {features:?}");
+    let graph: &ControlFlowGraph = features[0]
+        .structure()
+        .expect("a fully resolved body carries a structure");
+    assert_eq!(graph.block_count(), 3, "test, taken arm, fallthrough arm");
+    assert_eq!(graph.entry(), 0);
+    assert_eq!(graph.blocks()[0].successors().len(), 2);
+    assert_eq!(
+        graph.blocks()[0].categories(),
+        [InstructionCategory::Compare, InstructionCategory::Branch]
+    );
+    assert!(
+        features[0].structural_key().is_some(),
+        "three blocks clear the distinguishing minimum"
+    );
+    assert_eq!(
+        graph.instruction_mix().count(InstructionCategory::Return),
+        2,
+        "both arms return"
+    );
+}
+
+#[test]
+fn an_unbounded_indirect_branch_yields_no_structure_at_all() {
+    let text: [u8; 5] = [0x85, 0xC0, 0x48, 0xFF, 0xE0];
+    let features: Vec<FunctionFeatures> = features_of(&text);
+    assert_eq!(features.len(), 1, "one discovered function: {features:?}");
+    assert!(
+        features[0].structure().is_none(),
+        "a jump whose target cannot be bounded must produce no graph, not a partial one"
+    );
+}
+
+#[test]
+fn padding_behind_the_return_stays_out_of_the_graph() {
+    let text: [u8; 3] = [0x31, 0xC0, 0xC3];
+    let features: Vec<FunctionFeatures> = features_of(&text);
+    let graph: &ControlFlowGraph = features[0]
+        .structure()
+        .expect("a returning body carries a structure");
+    assert_eq!(graph.block_count(), 1);
+    assert_eq!(
+        graph.instruction_mix().total(),
+        2,
+        "the trailing 0xCC alignment fill is not part of the function"
+    );
+    assert!(
+        features[0].structural_key().is_none(),
+        "one block cannot distinguish a function"
+    );
+}
+
+#[test]
+fn an_aarch64_body_partitions_from_its_printed_branch_targets() {
+    let body: Vec<DisasmInstruction> = vec![
+        DisasmInstruction {
+            offset: 0x1000,
+            bytes: 0xF100_001F_u32.to_le_bytes().to_vec(),
+            mnemonic: "cmp".to_owned(),
+            operands: vec!["x0".to_owned(), "#0".to_owned()],
+            ..DisasmInstruction::default()
+        },
+        DisasmInstruction {
+            offset: 0x1004,
+            bytes: 0x5400_0060_u32.to_le_bytes().to_vec(),
+            mnemonic: "b.eq".to_owned(),
+            operands: vec!["$+0x8".to_owned()],
+            ..DisasmInstruction::default()
+        },
+        DisasmInstruction {
+            offset: 0x1008,
+            bytes: 0xD65F_03C0_u32.to_le_bytes().to_vec(),
+            mnemonic: "ret".to_owned(),
+            operands: Vec::new(),
+            ..DisasmInstruction::default()
+        },
+        DisasmInstruction {
+            offset: 0x100C,
+            bytes: 0xD65F_03C0_u32.to_le_bytes().to_vec(),
+            mnemonic: "ret".to_owned(),
+            operands: Vec::new(),
+            ..DisasmInstruction::default()
+        },
+    ];
+    let graph: ControlFlowGraph =
+        aarch64_structure(&body).expect("a resolved aarch64 body carries a structure");
+    assert_eq!(graph.block_count(), 3);
+    assert_eq!(graph.blocks()[0].successors().len(), 2);
+    assert_eq!(
+        graph.blocks()[0].categories(),
+        [InstructionCategory::Compare, InstructionCategory::Branch]
+    );
+}
+
+#[test]
+fn an_aarch64_branch_without_a_readable_target_yields_no_structure() {
+    let body: Vec<DisasmInstruction> = vec![
+        DisasmInstruction {
+            offset: 0x1000,
+            bytes: 0x1400_0002_u32.to_le_bytes().to_vec(),
+            mnemonic: "b".to_owned(),
+            operands: vec!["some_label".to_owned()],
+            ..DisasmInstruction::default()
+        },
+        DisasmInstruction {
+            offset: 0x1004,
+            bytes: 0xD65F_03C0_u32.to_le_bytes().to_vec(),
+            mnemonic: "ret".to_owned(),
+            operands: Vec::new(),
+            ..DisasmInstruction::default()
+        },
+    ];
+    assert!(aarch64_structure(&body).is_none());
+}
+
+#[test]
 fn an_adrp_pairs_only_with_an_add_on_its_own_register() {
     let body: Vec<DisasmInstruction> = vec![
         aarch64_insn(0x1000, "adrp", 0x9000_0008),
