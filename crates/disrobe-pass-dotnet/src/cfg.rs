@@ -295,21 +295,15 @@ impl Cfg {
     }
 
     fn natural_loop_body(&self, header: BlockId, latch: BlockId) -> BTreeSet<BlockId> {
-        let mut body: BTreeSet<BlockId> = BTreeSet::new();
-        body.insert(header);
-        if latch == header {
-            return body;
-        }
-        let mut worklist: Vec<BlockId> = vec![latch];
-        body.insert(latch);
-        while let Some(n) = worklist.pop() {
-            for &p in &self.blocks[n].preds {
-                if body.insert(p) {
-                    worklist.push(p);
+        disrobe_core::dominators::natural_loop_body(
+            header,
+            &[latch],
+            |node: BlockId, emit: &mut dyn FnMut(BlockId)| {
+                for &predecessor in &self.blocks[node].preds {
+                    emit(predecessor);
                 }
-            }
-        }
-        body
+            },
+        )
     }
 
     #[must_use]
