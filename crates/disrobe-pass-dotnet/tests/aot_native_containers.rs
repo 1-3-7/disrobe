@@ -1,6 +1,6 @@
 use disrobe_pass_dotnet::Error;
 use disrobe_pass_dotnet::aot::{
-    AotLayoutProfile, AotReport, ReadyToRunHeader, ReadyToRunInspection, detect,
+    AotLayoutProfile, AotMetadataStatus, AotReport, ReadyToRunHeader, ReadyToRunInspection, detect,
     inspect_ready_to_run_header,
 };
 use object::Object as _;
@@ -135,6 +135,12 @@ fn linked_elf_recovers_pointer_pair_metadata_names() -> Result<(), &'static str>
     assert_eq!(inspection.profile_selection.self_consistent_rows, 2);
     assert_eq!(inspection.profile_selection.mapped_rows, 2);
     assert_eq!(report.recovered_names, ["ElfFixtureType", "SharedMetadata"]);
+    assert_eq!(
+        report.metadata_attribution.status,
+        AotMetadataStatus::NotPresent
+    );
+    assert!(report.metadata_attribution.types.is_empty());
+    assert!(report.metadata_attribution.methods.is_empty());
     assert_names_are_present(ELF_IMAGE, &report.recovered_names);
     Ok(())
 }
@@ -159,6 +165,12 @@ fn linked_macho_recovers_length_and_pointer_metadata_names() -> Result<(), &'sta
         report.recovered_names,
         ["MachOFixtureType", "SharedMetadata"]
     );
+    assert_eq!(
+        report.metadata_attribution.status,
+        AotMetadataStatus::NotPresent
+    );
+    assert!(report.metadata_attribution.types.is_empty());
+    assert!(report.metadata_attribution.methods.is_empty());
     assert_names_are_present(MACHO_IMAGE, &report.recovered_names);
     Ok(())
 }

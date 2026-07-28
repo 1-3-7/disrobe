@@ -14,6 +14,12 @@ use object::{RelocationFlags, RelocationTarget};
 
 use serde::{Deserialize, Serialize};
 
+mod metadata_records;
+
+pub use metadata_records::{
+    AotMetadataAttribution, AotMetadataStatus, AotMethod, AotType, recover_metadata_attribution,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AotReport {
     pub is_native_aot: bool,
@@ -23,6 +29,8 @@ pub struct AotReport {
     pub runtime_label: AotRuntime,
     pub ready_to_run: Option<ReadyToRunHeader>,
     pub recovered_names: Vec<String>,
+    #[serde(default)]
+    pub metadata_attribution: AotMetadataAttribution,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -949,6 +957,21 @@ pub fn decode_metadata_unsigned(bytes: &[u8], at: usize) -> Option<(u32, usize)>
             u32::from(first >> 3) | (u32::from(second) << 5) | (u32::from(third) << 13);
         return Some((value, 3));
     }
+    if first & 15 == 7 {
+        let second: u8 = *bytes.get(at.checked_add(1)?)?;
+        let third: u8 = *bytes.get(at.checked_add(2)?)?;
+        let fourth: u8 = *bytes.get(at.checked_add(3)?)?;
+        let value: u32 = u32::from(first >> 4)
+            | (u32::from(second) << 4)
+            | (u32::from(third) << 12)
+            | (u32::from(fourth) << 20);
+        return Some((value, 4));
+    }
+    if first & 31 == 15 {
+        let value_at: usize = at.checked_add(1)?;
+        let value: u32 = read_u32_le_at(bytes, value_at).ok()?;
+        return Some((value, 5));
+    }
     None
 }
 
@@ -1097,6 +1120,13 @@ pub fn detect(image: &[u8]) -> AotReport {
         .map_or_else(Vec::new, |header: &ReadyToRunHeader| {
             recover_metadata_names(image, header)
         });
+    let metadata_attribution: AotMetadataAttribution = ready_to_run.as_ref().map_or_else(
+        AotMetadataAttribution::default,
+        |header: &ReadyToRunHeader| match recover_metadata_attribution(image, header) {
+            Ok(attribution) => attribution,
+            Err(error) => AotMetadataAttribution::rejected(error),
+        },
+    );
     let is_native_aot: bool = ready_to_run.is_some()
         || symbols.contains_key("aot_marker")
         || symbols.contains_key("modules_table")
@@ -1111,6 +1141,7 @@ pub fn detect(image: &[u8]) -> AotReport {
         runtime_label: runtime,
         ready_to_run,
         recovered_names,
+        metadata_attribution,
     }
 }
 
@@ -1171,6 +1202,24 @@ mod tests {
     fn detect_empty_image_is_not_aot() {
         let report: AotReport = detect(&[]);
         assert!(!report.is_native_aot);
+    }
+
+    #[test]
+    fn legacy_serialized_reports_default_metadata_attribution() {
+        let report: AotReport = detect(&[]);
+        let mut value: serde_json::Value =
+            serde_json::to_value(report).expect("AotReport must serialize");
+        let object: &mut serde_json::Map<String, serde_json::Value> = value
+            .as_object_mut()
+            .expect("AotReport must serialize as an object");
+        let removed: Option<serde_json::Value> = object.remove("metadata_attribution");
+        assert!(removed.is_some());
+        let restored: AotReport =
+            serde_json::from_value(value).expect("legacy AotReport must deserialize");
+        assert_eq!(
+            restored.metadata_attribution,
+            AotMetadataAttribution::default()
+        );
     }
 
     #[test]
