@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use disrobe_ir::payload::{DisasmInstruction, DisasmPayload, InsnFlow, RegAccess};
 use disrobe_similarity::{
@@ -44,6 +44,12 @@ const MOVN: u32 = 0x1280_0000;
 const MOVZ: u32 = 0x5280_0000;
 
 const MOVK: u32 = 0x7280_0000;
+
+const BRANCH_LINK: u32 = 0x9400_0000;
+
+const BRANCH_LINK_MASK: u32 = 0xfc00_0000;
+
+const BRANCH_IMMEDIATE_MASK: u32 = 0x03ff_ffff;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FeatureArch {
@@ -116,33 +122,101 @@ pub fn extract_function_features(bytes: &[u8]) -> Result<Vec<FunctionFeatures>> 
 
     let index: ImageIndex = ImageIndex::build(bytes, &payload, feature_arch);
     let spans: Vec<FunctionSpan> = function_spans(&payload);
-    let mut features: Vec<FunctionFeatures> = Vec::with_capacity(spans.len());
+    let mut bodies: Vec<(u64, &[DisasmInstruction])> = Vec::with_capacity(spans.len());
     for span in &spans {
         let body: &[DisasmInstruction] = span_instructions(&payload.instructions, span);
-        if body.is_empty() {
-            continue;
+        if !body.is_empty() {
+            bodies.push((span.address, body));
         }
-        let (references, structure): (Vec<DataReference>, Option<ControlFlowGraph>) =
-            match feature_arch {
-                FeatureArch::X86 { bits } => {
-                    let decoded: Vec<Option<Instruction>> = body
-                        .iter()
-                        .map(|insn: &DisasmInstruction| decode_x86(bits, insn))
-                        .collect();
-                    (
-                        x86_references(body, &decoded, &index),
-                        x86_structure(body, &decoded),
-                    )
-                }
-                FeatureArch::Aarch64 => (aarch64_references(body, &index), aarch64_structure(body)),
-            };
-        let id: FunctionId = FunctionId::from(span.address);
-        features.push(match structure {
+    }
+    let entries: BTreeSet<u64> = bodies
+        .iter()
+        .map(|(address, _): &(u64, &[DisasmInstruction])| *address)
+        .collect();
+
+    let mut features: Vec<FunctionFeatures> = Vec::with_capacity(bodies.len());
+    for (address, body) in bodies {
+        let (references, structure, calls): (
+            Vec<DataReference>,
+            Option<ControlFlowGraph>,
+            BTreeSet<FunctionId>,
+        ) = match feature_arch {
+            FeatureArch::X86 { bits } => {
+                let decoded: Vec<Option<Instruction>> = body
+                    .iter()
+                    .map(|insn: &DisasmInstruction| decode_x86(bits, insn))
+                    .collect();
+                (
+                    x86_references(body, &decoded, &index),
+                    x86_structure(body, &decoded),
+                    x86_call_targets(body, &index, &entries),
+                )
+            }
+            FeatureArch::Aarch64 => (
+                aarch64_references(body, &index),
+                aarch64_structure(body),
+                aarch64_call_targets(body, &entries),
+            ),
+        };
+        let id: FunctionId = FunctionId::from(address);
+        let carried: FunctionFeatures = match structure {
             Some(graph) => FunctionFeatures::with_structure(id, references, graph),
             None => FunctionFeatures::new(id, references),
-        });
+        };
+        features.push(carried.calling(calls));
     }
     Ok(features)
+}
+
+fn x86_call_targets(
+    body: &[DisasmInstruction],
+    index: &ImageIndex,
+    entries: &BTreeSet<u64>,
+) -> BTreeSet<FunctionId> {
+    let mut out: BTreeSet<FunctionId> = BTreeSet::new();
+    for insn in body {
+        if !matches!(insn.flow, InsnFlow::Call) {
+            continue;
+        }
+        let Some(target): Option<u64> = insn.branch_target else {
+            continue;
+        };
+        if index.import_stubs.contains_key(&target) || !entries.contains(&target) {
+            continue;
+        }
+        out.insert(FunctionId::from(target));
+    }
+    out
+}
+
+fn aarch64_call_targets(
+    body: &[DisasmInstruction],
+    entries: &BTreeSet<u64>,
+) -> BTreeSet<FunctionId> {
+    let mut out: BTreeSet<FunctionId> = BTreeSet::new();
+    for insn in body {
+        if insn.mnemonic != "bl" {
+            continue;
+        }
+        let Some(target): Option<u64> = instruction_word(insn)
+            .and_then(|word: u32| aarch64_branch_link_target(insn.offset, word))
+        else {
+            continue;
+        };
+        if !entries.contains(&target) {
+            continue;
+        }
+        out.insert(FunctionId::from(target));
+    }
+    out
+}
+
+fn aarch64_branch_link_target(address: u64, word: u32) -> Option<u64> {
+    if word & BRANCH_LINK_MASK != BRANCH_LINK {
+        return None;
+    }
+    let displacement: i64 = i64::from(((word & BRANCH_IMMEDIATE_MASK) << 6).cast_signed() >> 4);
+    address.checked_add_signed(displacement)
 }
 
 fn instruction_positions(body: &[DisasmInstruction]) -> Option<BTreeMap<u64, usize>> {

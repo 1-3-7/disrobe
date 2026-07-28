@@ -324,6 +324,80 @@ fn a_wide_move_chain_ignores_a_movk_on_another_register() {
 }
 
 #[test]
+fn a_direct_call_to_a_discovered_function_is_recorded_as_a_call_target() {
+    let text: [u8; 9] = [0xE8, 0x01, 0x00, 0x00, 0x00, 0xC3, 0x31, 0xC0, 0xC3];
+    let features: Vec<FunctionFeatures> = features_of(&text);
+    let entry: u64 = pe64_text_base() + 0x1000;
+    assert_eq!(features.len(), 2, "a caller and a callee: {features:?}");
+    assert_eq!(
+        features[0].call_targets(),
+        &BTreeSet::from([FunctionId::from(entry + 6)])
+    );
+    assert!(
+        features[1].call_targets().is_empty(),
+        "the callee itself calls nothing"
+    );
+}
+
+#[test]
+fn an_indirect_call_yields_no_call_target() {
+    let text: [u8; 3] = [0xFF, 0xD0, 0xC3];
+    let features: Vec<FunctionFeatures> = features_of(&text);
+    assert!(
+        features
+            .iter()
+            .all(|entry: &FunctionFeatures| entry.call_targets().is_empty()),
+        "a call through a register names no function that can be resolved statically"
+    );
+}
+
+#[test]
+fn a_call_leaving_the_mapped_image_yields_no_call_target() {
+    let text: [u8; 6] = [0xE8, 0x00, 0x10, 0x00, 0x00, 0xC3];
+    let features: Vec<FunctionFeatures> = features_of(&text);
+    assert!(
+        features
+            .iter()
+            .all(|entry: &FunctionFeatures| entry.call_targets().is_empty()),
+        "a target that is not the entry of a discovered function may not become an edge"
+    );
+}
+
+#[test]
+fn a_branch_with_link_decodes_its_own_displacement() {
+    assert_eq!(
+        aarch64_branch_link_target(0x1000, 0x9400_0004),
+        Some(0x1010)
+    );
+    assert_eq!(
+        aarch64_branch_link_target(0x1000, 0x97FF_FFFF),
+        Some(0x0FFC)
+    );
+    assert_eq!(
+        aarch64_branch_link_target(0x1000, 0xD65F_03C0),
+        None,
+        "a return is not a call"
+    );
+}
+
+#[test]
+fn an_aarch64_call_is_recorded_only_when_its_target_is_a_known_function() {
+    let body: Vec<DisasmInstruction> = vec![
+        aarch64_insn(0x1000, "bl", 0x9400_0004),
+        aarch64_insn(0x1004, "bl", 0x9400_0100),
+        aarch64_insn(0x1008, "blr", 0xD63F_0000),
+        aarch64_insn(0x100C, "ret", 0xD65F_03C0),
+    ];
+    let entries: BTreeSet<u64> = BTreeSet::from([0x1000, 0x1010]);
+
+    assert_eq!(
+        aarch64_call_targets(&body, &entries),
+        BTreeSet::from([FunctionId::from(0x1010)]),
+        "only the resolved call into a known function survives"
+    );
+}
+
+#[test]
 fn a_conditional_branch_mnemonic_is_recognized_in_both_renderings() {
     for mnemonic in ["b.eq", "beq", "b", "bl", "cbz", "ret", "tbnz"] {
         assert!(is_branch(mnemonic), "{mnemonic} must abort a forward scan");

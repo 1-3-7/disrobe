@@ -61,6 +61,7 @@ pub struct FunctionFeatures {
     id: FunctionId,
     references: BTreeSet<DataReference>,
     structure: Option<ControlFlowGraph>,
+    call_targets: BTreeSet<FunctionId>,
 }
 
 impl FunctionFeatures {
@@ -69,6 +70,7 @@ impl FunctionFeatures {
             id,
             references: admissible(references),
             structure: None,
+            call_targets: BTreeSet::new(),
         }
     }
 
@@ -81,7 +83,14 @@ impl FunctionFeatures {
             id,
             references: admissible(references),
             structure: Some(structure),
+            call_targets: BTreeSet::new(),
         }
+    }
+
+    #[must_use]
+    pub fn calling(mut self, call_targets: impl IntoIterator<Item = FunctionId>) -> Self {
+        self.call_targets = call_targets.into_iter().collect();
+        self
     }
 
     #[must_use]
@@ -99,6 +108,18 @@ impl FunctionFeatures {
         self.structure
             .as_ref()
             .and_then(ControlFlowGraph::structural_key)
+    }
+
+    #[must_use]
+    pub fn corroborating_key(&self) -> Option<StructuralKey> {
+        self.structure
+            .as_ref()
+            .and_then(ControlFlowGraph::corroborating_key)
+    }
+
+    #[must_use]
+    pub const fn call_targets(&self) -> &BTreeSet<FunctionId> {
+        &self.call_targets
     }
 
     #[must_use]

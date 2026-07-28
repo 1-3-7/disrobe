@@ -172,6 +172,11 @@ impl ControlFlowGraph {
         if self.block_count() < MINIMUM_DISTINGUISHING_BLOCKS {
             return None;
         }
+        self.corroborating_key()
+    }
+
+    #[must_use]
+    pub fn corroborating_key(&self) -> Option<StructuralKey> {
         let instruction_mix: InstructionMix = self.instruction_mix();
         if instruction_mix.is_empty() {
             return None;
