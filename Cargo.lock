@@ -2026,6 +2026,7 @@ dependencies = [
 name = "disrobe-emit"
 version = "0.10.3"
 dependencies = [
+ "disrobe-core",
  "pretty",
  "prettyplease",
  "proc-macro2",
@@ -2074,6 +2075,7 @@ dependencies = [
 name = "disrobe-lift-x86"
 version = "0.10.4"
 dependencies = [
+ "disrobe-core",
  "disrobe-sleigh",
  "iced-x86",
 ]
@@ -2096,6 +2098,7 @@ dependencies = [
 name = "disrobe-mba"
 version = "0.10.4"
 dependencies = [
+ "disrobe-core",
  "disrobe-nir",
  "oxiz",
  "proptest",
@@ -2145,6 +2148,7 @@ name = "disrobe-nir-lift"
 version = "0.10.4"
 dependencies = [
  "blake3",
+ "disrobe-core",
  "disrobe-lift-x86",
  "disrobe-nir",
  "disrobe-pass-as3",
@@ -2805,6 +2809,7 @@ name = "disrobe-pyarmor-cextract"
 version = "0.10.4"
 dependencies = [
  "blake3",
+ "disrobe-core",
  "libc",
  "pyo3",
  "windows-sys 0.59.0",
@@ -2883,6 +2888,7 @@ dependencies = [
 name = "disrobe-semdiff"
 version = "0.10.4"
 dependencies = [
+ "disrobe-core",
  "disrobe-nir",
  "disrobe-nir-lift",
  "disrobe-pass-native",
@@ -2891,6 +2897,10 @@ dependencies = [
  "serde",
  "wat",
 ]
+
+[[package]]
+name = "disrobe-similarity"
+version = "0.10.4"
 
 [[package]]
 name = "disrobe-sleigh"
@@ -2927,6 +2937,7 @@ dependencies = [
 name = "disrobe-typerec"
 version = "0.10.4"
 dependencies = [
+ "disrobe-core",
  "gimli 0.32.3",
  "iced-x86",
  "object",
@@ -2939,6 +2950,7 @@ name = "disrobe-validator"
 version = "0.10.4"
 dependencies = [
  "blake3",
+ "disrobe-core",
  "disrobe-pass-js-deob",
  "disrobe-pass-nuitka",
  "disrobe-pass-pyarmor",
