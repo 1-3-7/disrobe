@@ -16,6 +16,7 @@ members = [
     "crates/disrobe-nir",
     "crates/disrobe-nir-lift",
     "crates/disrobe-semdiff",
+    "crates/disrobe-similarity",
     "crates/disrobe-sleigh",
     "crates/disrobe-taint",
     "crates/disrobe-irsummary",
@@ -173,6 +174,7 @@ disrobe-mcp = { path = "crates/disrobe-mcp", version = "0.10.3" }
 disrobe-nir = { path = "crates/disrobe-nir", version = "0.10.3" }
 disrobe-nir-lift = { path = "crates/disrobe-nir-lift", version = "0.10.3" }
 disrobe-semdiff = { path = "crates/disrobe-semdiff", version = "0.10.3" }
+disrobe-similarity = { path = "crates/disrobe-similarity", version = "0.10.3" }
 disrobe-taint = { path = "crates/disrobe-taint", version = "0.10.3" }
 disrobe-testkit = { path = "crates/disrobe-testkit", version = "0.10.3" }
 disrobe-typerec = { path = "crates/disrobe-typerec", version = "0.10.3" }
