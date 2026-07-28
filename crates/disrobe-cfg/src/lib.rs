@@ -1958,21 +1958,15 @@ impl Collapse {
 
     fn natural_loop_body(&self, header: NodeId, latches: &[NodeId]) -> BTreeSet<NodeId> {
         let preds: Vec<Vec<NodeId>> = self.preds();
-        let mut body: BTreeSet<NodeId> = BTreeSet::from([header]);
-        let mut stack: Vec<NodeId> = Vec::new();
-        for &latch in latches {
-            if body.insert(latch) {
-                stack.push(latch);
-            }
-        }
-        while let Some(node) = stack.pop() {
-            for &pred in &preds[node as usize] {
-                if body.insert(pred) {
-                    stack.push(pred);
+        disrobe_core::dominators::natural_loop_body(
+            header,
+            latches,
+            |node: NodeId, emit: &mut dyn FnMut(NodeId)| {
+                for &pred in &preds[node as usize] {
+                    emit(pred);
                 }
-            }
-        }
-        body
+            },
+        )
     }
 
     fn loop_boundary(&self) -> BTreeSet<NodeId> {
