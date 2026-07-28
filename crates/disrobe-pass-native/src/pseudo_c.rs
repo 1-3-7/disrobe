@@ -6756,20 +6756,15 @@ fn natural_loop_body(
     latch: usize,
     preds: &[Vec<usize>],
 ) -> std::collections::BTreeSet<usize> {
-    use std::collections::BTreeSet;
-    let mut body: BTreeSet<usize> = BTreeSet::from([header]);
-    let mut stack: Vec<usize> = Vec::new();
-    if body.insert(latch) {
-        stack.push(latch);
-    }
-    while let Some(node) = stack.pop() {
-        for &pred in &preds[node] {
-            if body.insert(pred) {
-                stack.push(pred);
+    disrobe_core::dominators::natural_loop_body(
+        header,
+        &[latch],
+        |node: usize, emit: &mut dyn FnMut(usize)| {
+            for &pred in &preds[node] {
+                emit(pred);
             }
-        }
-    }
-    body
+        },
+    )
 }
 
 fn detect_loop_forest(blocks: &[CfgBlock], preds: &[Vec<usize>]) -> Option<Vec<LoopInfo>> {
