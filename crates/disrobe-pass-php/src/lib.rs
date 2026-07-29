@@ -56,8 +56,9 @@ pub use peel::{
     DEFAULT_MAX_DEPTH, PeelLayer, PeelOptions, PeelReport, PeelTrace, peel as peel_eval_chain,
 };
 pub use phar::{
-    PharArchive, PharCompression, PharEntry, extract_entry as extract_phar_entry,
-    parse as parse_phar,
+    PHAR_DECOMPRESS_CAP, PHAR_MAX_EXPANSION_RATIO, PHAR_MIN_DECOMPRESS_ALLOWANCE, PharArchive,
+    PharCompression, PharEntry, decompress_ceiling as phar_decompress_ceiling,
+    extract_entry as extract_phar_entry, parse as parse_phar,
 };
 pub use pipeline::{RecoveryReport, RecoveryStage, recover as recover_php};
 pub use protectors::{

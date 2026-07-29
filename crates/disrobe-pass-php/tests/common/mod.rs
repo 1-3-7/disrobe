@@ -304,7 +304,31 @@ pub fn build_str_replace(payload: &str, from: &str, to: &str) -> Vec<u8> {
     out
 }
 
+pub const PHAR_FLAG_DEFLATE: u32 = 0x0000_1000;
+
+pub struct PharFixtureEntry<'a> {
+    pub name: &'a str,
+    pub stored: &'a [u8],
+    pub declared_uncompressed: u32,
+    pub crc32: u32,
+    pub flags: u32,
+}
+
 pub fn build_tiny_phar(stub_php: &[u8], files: &[(&str, &[u8])]) -> Vec<u8> {
+    let entries: Vec<PharFixtureEntry<'_>> = files
+        .iter()
+        .map(|(name, body): &(&str, &[u8])| PharFixtureEntry {
+            name,
+            stored: body,
+            declared_uncompressed: u32::try_from(body.len()).expect("uncompressed"),
+            crc32: crc32(body),
+            flags: 0,
+        })
+        .collect();
+    build_phar_with_entries(stub_php, &entries)
+}
+
+pub fn build_phar_with_entries(stub_php: &[u8], files: &[PharFixtureEntry<'_>]) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
     out.extend_from_slice(stub_php);
     out.extend_from_slice(b"\n");
@@ -323,25 +347,25 @@ pub fn build_tiny_phar(stub_php: &[u8], files: &[(&str, &[u8])]) -> Vec<u8> {
     manifest_body.extend_from_slice(&0u32.to_le_bytes());
 
     let mut payload_section: Vec<u8> = Vec::new();
-    for (name, body) in files {
-        let name_bytes: &[u8] = name.as_bytes();
+    for entry in files {
+        let name_bytes: &[u8] = entry.name.as_bytes();
         manifest_body.extend_from_slice(
             &u32::try_from(name_bytes.len())
                 .expect("name len")
                 .to_le_bytes(),
         );
         manifest_body.extend_from_slice(name_bytes);
+        manifest_body.extend_from_slice(&entry.declared_uncompressed.to_le_bytes());
+        manifest_body.extend_from_slice(&0u32.to_le_bytes());
         manifest_body.extend_from_slice(
-            &u32::try_from(body.len())
-                .expect("uncompressed")
+            &u32::try_from(entry.stored.len())
+                .expect("stored")
                 .to_le_bytes(),
         );
+        manifest_body.extend_from_slice(&entry.crc32.to_le_bytes());
+        manifest_body.extend_from_slice(&entry.flags.to_le_bytes());
         manifest_body.extend_from_slice(&0u32.to_le_bytes());
-        manifest_body.extend_from_slice(&u32::try_from(body.len()).expect("stored").to_le_bytes());
-        manifest_body.extend_from_slice(&crc32(body).to_le_bytes());
-        manifest_body.extend_from_slice(&0u32.to_le_bytes());
-        manifest_body.extend_from_slice(&0u32.to_le_bytes());
-        payload_section.extend_from_slice(body);
+        payload_section.extend_from_slice(entry.stored);
     }
 
     out.extend_from_slice(
