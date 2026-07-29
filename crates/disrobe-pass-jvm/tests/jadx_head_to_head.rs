@@ -21,8 +21,9 @@ use disrobe_pass_jvm::{
     decompile_class_with_inners, parse_classfile, run_jadx_on_bytes,
 };
 
-const RECOMPILE_FLOOR: usize = 119;
+const RECOMPILE_FLOOR: usize = 131;
 const METHOD_TOTAL: usize = 131;
+const JADX_RECOMPILE_OK: usize = 128;
 
 fn corpus(parts: &[&str]) -> PathBuf {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -274,9 +275,34 @@ fn disrobe_meets_or_beats_jadx_on_recompile_when_jadx_present() {
     let jadx_errs: Vec<usize> = javac_error_lines(&javac, &jadx_src, "jadx", &jar);
     let (jadx_ok, jadx_total): (usize, usize) = methods_error_free(&jadx_src, &jadx_errs);
 
-    let gap: i64 = jadx_ok as i64 - disrobe_ok as i64;
+    let lead: i64 = disrobe_ok as i64 - jadx_ok as i64;
     eprintln!(
         "HEAD-TO-HEAD (real javac recompile of EdgeCases): disrobe {disrobe_ok}/{disrobe_total} \
-         vs jadx {jadx_ok}/{jadx_total} (gap: {gap} methods below jadx)"
+         vs jadx {jadx_ok}/{jadx_total} (disrobe minus jadx: {lead} methods)"
+    );
+
+    assert_eq!(
+        disrobe_total, METHOD_TOTAL,
+        "disrobe method denominator drifted: {disrobe_total} != {METHOD_TOTAL}; the comparison is \
+         denominator-pinned, recheck the corpus"
+    );
+    assert!(
+        disrobe_ok >= RECOMPILE_FLOOR,
+        "disrobe side of the comparison regressed: {disrobe_ok}/{disrobe_total} < floor \
+         {RECOMPILE_FLOOR}"
+    );
+    assert!(
+        jadx_ok >= JADX_RECOMPILE_OK,
+        "the jadx side measured {jadx_ok}/{jadx_total}, under the {JADX_RECOMPILE_OK} it scores at \
+         full strength. A jadx leg that silently degrades (wrong version, partial run, or a source \
+         map that no longer yields the EdgeCases unit) inflates disrobe's apparent lead, so this \
+         fails rather than reporting a flattering margin. Fix the jadx install, or re-measure and \
+         move JADX_RECOMPILE_OK if jadx itself changed"
+    );
+    assert!(
+        disrobe_ok >= jadx_ok,
+        "jadx now recompiles {jadx_ok}/{jadx_total} methods against disrobe's \
+         {disrobe_ok}/{disrobe_total}, so the claim this test carries, that disrobe meets or beats \
+         jadx on real javac recompile, no longer holds and must be restated wherever it is published"
     );
 }
