@@ -16,7 +16,7 @@
     { "label": "Python pickle", "kind": "carve", "note": "symbolic VM, never runs" },
     { "label": "JavaScript", "kind": "source", "note": "obfuscator.io, 11 bundlers" },
     { "label": "WebAssembly", "kind": "bytecode", "note": "to Rust/TS/WAT/C" },
-    { "label": ".NET / CIL", "kind": "bytecode", "note": "C#/F#/VB, 21 protectors" },
+    { "label": ".NET / CIL", "kind": "bytecode", "note": "C#/F#/VB, 23 protectors" },
     { "label": "JVM classfile", "kind": "bytecode", "note": "in-house decompiler" },
     { "label": "Android DEX", "kind": "bytecode", "note": "Dalvik, JVM-verified" },
     { "label": "Go", "kind": "symbols", "note": "pclntab type recovery" },
@@ -31,7 +31,7 @@
     { "label": "Shell / PowerShell", "kind": "source", "note": "deobfuscate" },
     { "label": "Native PE/ELF/Mach-O", "kind": "unpack", "note": "stub-emu unpack" },
     { "label": "Nim / Zig / Crystal", "kind": "symbols", "note": "demangle + metadata" },
-    { "label": "Containers", "kind": "carve", "note": "98 formats in-tree" }
+    { "label": "Containers", "kind": "carve", "note": "100 formats in-tree" }
   ],
   "footnote": "Bytecode-to-source is structurally faithful but never byte-identical: class/dex/CIL erase local names, generics, and formatting. AOT-compiled native languages keep symbols and metadata, not the source body."
 }

@@ -1,10 +1,8 @@
-# `disrobe`
+![disrobe: decompile, deobfuscate, and unpack almost anything, deterministically](docs/assets/social-card.svg)
 
-![project social card](docs/assets/social-card.svg)
+One static Rust binary that decompiles, deobfuscates, and unpacks software across 20+ ecosystems, and grades every recovery against a real compiler, verifier, or runtime rather than its own output. It never executes the sample, runs no model, and produces identical output on every machine. Built for malware analysis, CTFs, IP recovery, and security research.
 
-One static Rust binary that decompiles, deobfuscates, and unpacks software across 20+ ecosystems and proves what it recovered against an independent oracle. Deterministic, no execution of the sample, no model. Built for malware analysis, CTFs, IP recovery, and security research.
-
-The pipeline matters more than any single pass. One deterministic chain runner carries every input end to end. It persists every recovered output as a content-addressed `.dr` envelope with its own provenance and oracle grade, so a result always traces back to how it was produced.
+The pipeline matters more than any single pass. One deterministic chain runner carries every input end to end: it fingerprints the input, runs the matching pass, re-fingerprints the output, and repeats until nothing else applies. Every recovered artifact is persisted as a content-addressed `.dr` envelope carrying its own provenance and grade, so a result always traces back to how it was produced.
 
 [![CI](https://github.com/1-3-7/disrobe/actions/workflows/ci.yml/badge.svg)](https://github.com/1-3-7/disrobe/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/1-3-7/disrobe?sort=semver)](https://github.com/1-3-7/disrobe/releases)

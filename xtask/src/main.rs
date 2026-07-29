@@ -8,6 +8,7 @@
 mod attack_surface;
 mod card;
 mod codegen;
+mod crossdata;
 mod demo;
 mod errdocs;
 mod evidence;
