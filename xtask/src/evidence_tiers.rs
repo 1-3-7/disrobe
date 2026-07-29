@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use eyre::{Result, WrapErr, bail, eyre};
@@ -5,6 +6,7 @@ use eyre::{Result, WrapErr, bail, eyre};
 use crate::fileio::read_text_bounded;
 
 const MAX_README_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_DESCRIPTOR_BYTES: u64 = 256 * 1024;
 
 const BENCHMARKS_HEADING: &str = "## Benchmarks";
 const NEXT_SECTION_HEADING: &str = "## Ecosystem maturity matrix";
@@ -55,8 +57,10 @@ pub(crate) fn run(root: &Path) -> Result<()> {
     let benchmarks_section: &str =
         extract_section(&readme, BENCHMARKS_HEADING, NEXT_SECTION_HEADING)?;
 
+    let recorded: BTreeMap<String, DescriptorTier> = descriptor_tiers(root)?;
     let mut drift: Vec<String> = Vec::new();
     let mut placed_rows: usize = 0;
+    let mut bound_rows: usize = 0;
 
     for table in &TIER_TABLES {
         let table_section: &str = match table.next_heading {
@@ -80,6 +84,26 @@ pub(crate) fn run(root: &Path) -> Result<()> {
                     row.metric, table.tier_name, declared_tier
                 ));
             }
+            let mut bound: bool = false;
+            for test_name in cited_test_names(&row.raw_line) {
+                let Some(descriptor): Option<&DescriptorTier> = recorded.get(&test_name) else {
+                    continue;
+                };
+                bound = true;
+                if descriptor.tier != table.tier_name {
+                    drift.push(format!(
+                        "`{}` sits in the `{}` table, but evidence/descriptors/{}.toml records its oracle strength as `{}`, which is the `{}` tier; the README row and the descriptor cannot both be right",
+                        row.metric,
+                        table.tier_name,
+                        descriptor.id,
+                        descriptor.strength,
+                        descriptor.tier
+                    ));
+                }
+            }
+            if bound {
+                bound_rows += 1;
+            }
         }
     }
 
@@ -94,7 +118,8 @@ pub(crate) fn run(root: &Path) -> Result<()> {
 
     if drift.is_empty() {
         println!(
-            "xtask regen: tiered-results cross-check ok ({placed_rows} benchmark row(s) across Strong/Recompile-only/Self-reported coverage all match their own declared tier)"
+            "xtask regen: tiered-results cross-check ok ({placed_rows} benchmark row(s) across Strong/Recompile-only/Self-reported coverage all match their own declared tier; {bound_rows} of them also match the oracle strength recorded in evidence/descriptors, and the remaining {} cite no descriptor-backed test)",
+            placed_rows.saturating_sub(bound_rows)
         );
         Ok(())
     } else {
@@ -103,6 +128,96 @@ pub(crate) fn run(root: &Path) -> Result<()> {
             drift.join("\n  ")
         )
     }
+}
+
+struct DescriptorTier {
+    id: String,
+    strength: String,
+    tier: &'static str,
+}
+
+fn tier_for_strength(strength: &str) -> Option<&'static str> {
+    match strength {
+        "strong" => Some(STRONG_TIER),
+        RECOMPILE_ONLY_MARKER => Some(RECOMPILE_ONLY_TIER),
+        SELF_REPORTED_MARKER => Some(SELF_REPORTED_TIER),
+        _ => None,
+    }
+}
+
+fn descriptor_tiers(root: &Path) -> Result<BTreeMap<String, DescriptorTier>> {
+    let dir: PathBuf = root.join("evidence").join("descriptors");
+    let mut tiers: BTreeMap<String, DescriptorTier> = BTreeMap::new();
+    if !dir.is_dir() {
+        return Ok(tiers);
+    }
+    let entries: std::fs::ReadDir =
+        std::fs::read_dir(&dir).wrap_err_with(|| format!("listing {}", dir.display()))?;
+    for entry in entries {
+        let path: PathBuf = entry
+            .wrap_err_with(|| format!("reading an entry of {}", dir.display()))?
+            .path();
+        if path.extension().and_then(std::ffi::OsStr::to_str) != Some("toml") {
+            continue;
+        }
+        let raw: String = read_text_bounded(&path, MAX_DESCRIPTOR_BYTES)
+            .wrap_err_with(|| format!("reading {}", path.display()))?;
+        let parsed: toml::Table = raw
+            .parse::<toml::Table>()
+            .wrap_err_with(|| format!("parsing {}", path.display()))?;
+        let Some(strength): Option<&str> =
+            parsed.get("oracle_strength").and_then(toml::Value::as_str)
+        else {
+            continue;
+        };
+        let Some(tier): Option<&'static str> = tier_for_strength(strength) else {
+            bail!(
+                "{} declares oracle_strength `{strength}`, which is not one of `strong`, `{RECOMPILE_ONLY_MARKER}`, `{SELF_REPORTED_MARKER}`",
+                path.display()
+            );
+        };
+        let id: String = parsed
+            .get("id")
+            .and_then(toml::Value::as_str)
+            .ok_or_else(|| eyre!("{} has no id", path.display()))?
+            .to_owned();
+        let reproduce: Option<&str> = parsed
+            .get("oracle")
+            .and_then(|oracle: &toml::Value| oracle.get("reproduce"))
+            .and_then(toml::Value::as_str);
+        for test_name in reproduce.map(cited_test_names).unwrap_or_default() {
+            tiers.insert(
+                test_name,
+                DescriptorTier {
+                    id: id.clone(),
+                    strength: strength.to_owned(),
+                    tier,
+                },
+            );
+        }
+    }
+    Ok(tiers)
+}
+
+fn cited_test_names(text: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for (index, token) in text.split_whitespace().enumerate() {
+        let cleaned: &str = token.trim_matches(|c: char| c == '`' || c == '|' || c == ',');
+        if let Some(stem) = cleaned.strip_suffix(".rs")
+            && let Some((_, file)) = stem.rsplit_once('/')
+        {
+            names.push(file.to_owned());
+        }
+        if index > 0
+            && text.split_whitespace().nth(index - 1) == Some("--test")
+            && !cleaned.is_empty()
+        {
+            names.push(cleaned.to_owned());
+        }
+    }
+    names.sort_unstable();
+    names.dedup();
+    names
 }
 
 fn extract_section<'doc>(
