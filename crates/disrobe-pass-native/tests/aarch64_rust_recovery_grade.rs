@@ -64,12 +64,32 @@ struct Signature {
     ret: String,
 }
 
+fn matching_paren(line: &str, open: usize) -> Option<usize> {
+    let mut depth: usize = 0;
+    for (index, ch) in line.char_indices() {
+        if index < open {
+            continue;
+        }
+        match ch {
+            '(' => depth = depth.saturating_add(1),
+            ')' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn parse_rust_signature(source: &str) -> Option<Signature> {
     let line: &str = source
         .lines()
         .find(|line: &&str| line.trim_start().starts_with("pub fn recovered("))?;
     let open: usize = line.find('(')?;
-    let close: usize = line.rfind(')')?;
+    let close: usize = matching_paren(line, open)?;
     let inside: &str = line.get(open.checked_add(1)?..close)?;
     let params: Vec<String> = if inside.trim().is_empty() {
         Vec::new()
@@ -749,14 +769,34 @@ fn corpus_rust_grade_report() {
         numeric_divergences.is_empty(),
         "every driven aarch64 rust rendering must agree numerically with the reference; these did not: {numeric_divergences:?}"
     );
+    let mut nan_payload_members: Vec<(&str, &str)> = nan_payload_divergences
+        .iter()
+        .map(|entry: &&(String, String, String)| (entry.0.as_str(), entry.1.as_str()))
+        .collect();
+    nan_payload_members.sort_unstable();
+    nan_payload_members.dedup();
+    assert_eq!(
+        nan_payload_members.as_slice(),
+        NAN_PAYLOAD_DIVERGENCES,
+        "the only tolerated divergence class is one where BOTH sides are nan and they differ solely in sign and payload, which ieee 754 leaves implementation defined and where the rust rendering follows the aarch64 rule while the reference inherits the host's choice; that class is pinned by case identity so a new member fails here rather than joining a tolerated bucket"
+    );
     assert_eq!(
         nan_payload_divergences.len(),
-        NAN_PAYLOAD_DIVERGENCES,
-        "the only tolerated divergence class is one where BOTH sides are nan and they differ solely in sign and payload, which ieee 754 leaves implementation defined and where the rust rendering follows the aarch64 rule while the reference inherits the host's choice; that class is pinned so a new member fails here rather than joining a tolerated bucket"
+        NAN_PAYLOAD_DIVERGENCES.len(),
+        "a pinned nan-payload case must diverge exactly once; a second divergence inside one of them is a new finding"
     );
 }
 
-const NAN_PAYLOAD_DIVERGENCES: usize = 7;
+const NAN_PAYLOAD_DIVERGENCES: &[(&str, &str)] = &[
+    ("O0", "fs_sqrt_sum_d"),
+    ("O1", "fs_sqrt_scaled_f"),
+    ("O1", "fs_sqrt_sum_d"),
+    ("O2", "fs_sqrt_sum_d"),
+    ("O3", "fs_sqrt_scaled_f"),
+    ("O3", "fs_sqrt_sum_d"),
+    ("Os", "fs_sqrt_scaled_f"),
+    ("Os", "fs_sqrt_sum_d"),
+];
 
 fn both_sides_are_nan(detail: &str) -> bool {
     let expected: Option<u64> = hex_field(detail, "w=");
