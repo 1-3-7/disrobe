@@ -20,5 +20,5 @@ disrobe-nir = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
-disrobe-nir-lift = { workspace = true }
+disrobe-nir-lift = { workspace = true, features = ["wasm"] }
 wat = "1"

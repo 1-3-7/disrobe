@@ -14,6 +14,7 @@ const CLEAN: &[u8] = include_bytes!("fixtures/clean.exe");
 const PEBCHECK: &[u8] = include_bytes!("fixtures/pebcheck.exe");
 const STACKSTR: &[u8] = include_bytes!("fixtures/stackstr.exe");
 const EMBEDPE: &[u8] = include_bytes!("fixtures/embedpe.exe");
+const STACKSTR_EXPECTED: &str = "injected";
 
 fn analyze(bytes: &[u8]) -> CapabilitiesReport {
     disrobe_capabilities::analyze(bytes).expect("analyze native binary")
@@ -240,91 +241,50 @@ fn independent_segment_access_site(bytes: &[u8], segment: &str) -> u64 {
     site.offset
 }
 
-fn independent_stack_string(bytes: &[u8]) -> (u64, String) {
+struct StackStringStore {
+    site: u64,
+    instruction: Vec<u8>,
+}
+
+fn independent_stack_string_store(bytes: &[u8]) -> StackStringStore {
     let payload: DisasmPayload = build_disasm_payload(bytes).expect("payload");
-    let mut stores: Vec<(i64, u64, Vec<u8>)> = Vec::new();
-    for insn in &payload.instructions {
-        if !insn.mnemonic.eq_ignore_ascii_case("mov") || insn.operands.len() != 2 {
-            continue;
-        }
-        let dest: String = insn.operands[0].to_ascii_lowercase();
-        if !dest.contains("rsp") && !dest.contains("esp") {
-            continue;
-        }
-        let Some(open): Option<usize> = dest.find('[') else {
-            continue;
-        };
-        let Some(close_rel): Option<usize> = dest[open + 1..].find(']') else {
-            continue;
-        };
-        let inner: &str = &dest[open + 1..open + 1 + close_rel];
-        if inner.contains('*') {
-            continue;
-        }
-        let disp: i64 = inner
-            .split('+')
-            .nth(1)
-            .and_then(|t: &str| parse_hex_or_dec(t.trim_end_matches('h').trim()))
-            .map_or(0, |value: i64| value);
-        let Some(imm): Option<u64> = parse_imm32(&insn.operands[1]) else {
-            continue;
-        };
-        let width: usize = if dest.contains("dword") {
-            4
-        } else if dest.contains("qword") {
-            8
-        } else if dest.contains("byte") {
-            1
-        } else {
-            4
-        };
-        let mut chunk: Vec<u8> = imm.to_le_bytes().to_vec();
-        chunk.truncate(width);
-        stores.push((disp, insn.offset, chunk));
-    }
-    let first: u64 = stores
-        .first()
-        .map(|(_, off, _): &(i64, u64, Vec<u8>)| *off)
-        .expect("at least one stack store");
-    stores.sort_by_key(|(disp, _, _): &(i64, u64, Vec<u8>)| *disp);
-    let mut assembled: Vec<u8> = Vec::new();
-    for (_, _, chunk) in &stores {
-        assembled.extend_from_slice(chunk);
-    }
-    let text: String = assembled
+    payload
+        .instructions
         .iter()
-        .take_while(|b: &&u8| **b != 0)
-        .filter(|b: &&u8| (0x20..0x7f).contains(*b))
-        .map(|b: &u8| *b as char)
+        .find(|insn: &&DisasmInstruction| {
+            insn.mnemonic.eq_ignore_ascii_case("mov")
+                && insn.operands.len() == 2
+                && insn.operands[0].contains("rsp")
+                && insn.operands[0].contains("dword")
+                && insn.operands[1]
+                    .trim_end_matches('h')
+                    .bytes()
+                    .all(|byte: u8| byte.is_ascii_hexdigit())
+        })
+        .map(|insn: &DisasmInstruction| StackStringStore {
+            site: insn.offset,
+            instruction: insn.bytes.clone(),
+        })
+        .expect("fixture retains the first inlined stack-string store")
+}
+
+fn replace_stack_string_immediate(bytes: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+    assert_eq!(from.len(), to.len());
+    let store: StackStringStore = independent_stack_string_store(bytes);
+    assert!(store.instruction.ends_with(from));
+    let mut mutated: Vec<u8> = bytes.to_vec();
+    let matches: Vec<usize> = mutated
+        .windows(store.instruction.len())
+        .enumerate()
+        .filter_map(|(offset, window): (usize, &[u8])| {
+            (window == store.instruction.as_slice()).then_some(offset)
+        })
         .collect();
-    (first, text)
-}
-
-fn parse_hex_or_dec(token: &str) -> Option<i64> {
-    if let Some(hex) = token.strip_prefix("0x") {
-        return i64::from_str_radix(hex, 16).ok();
-    }
-    if token.chars().all(|c: char| c.is_ascii_hexdigit())
-        && token.chars().any(|c: char| c.is_ascii_alphabetic())
-    {
-        return i64::from_str_radix(token, 16).ok();
-    }
-    token
-        .parse::<i64>()
-        .ok()
-        .or_else(|| i64::from_str_radix(token, 16).ok())
-}
-
-fn parse_imm32(operand: &str) -> Option<u64> {
-    let lower: String = operand.to_ascii_lowercase();
-    let trimmed: &str = lower.trim();
-    if let Some(hex) = trimmed.strip_prefix("0x") {
-        return u64::from_str_radix(hex, 16).ok();
-    }
-    if let Some(hex) = trimmed.strip_suffix('h') {
-        return u64::from_str_radix(hex, 16).ok();
-    }
-    trimmed.parse::<u64>().ok()
+    assert_eq!(matches.len(), 1);
+    let offset: usize = matches[0];
+    let immediate_start: usize = offset + store.instruction.len() - from.len();
+    mutated[immediate_start..immediate_start + from.len()].copy_from_slice(to);
+    mutated
 }
 
 fn independent_embedded_pe_offset(bytes: &[u8]) -> u64 {
@@ -371,10 +331,19 @@ fn stackstr_oracle_reassembles_the_real_inlined_string() {
     let report: CapabilitiesReport = analyze(STACKSTR);
     let stack: &CapabilityMatch =
         rule(&report, "build string on the stack").expect("stack-string capability fires");
-    let (site, expected): (u64, String) = independent_stack_string(STACKSTR);
+    let store: StackStringStore = independent_stack_string_store(STACKSTR);
+    let site: u64 = store.site;
+    let expected: String = STACKSTR_EXPECTED.to_owned();
+    let payload: DisasmPayload = build_disasm_payload(STACKSTR).expect("payload");
+    let module: Module = Module::from_disasm(&payload);
+    let imports: ImportMap = ImportMap::from_bytes(STACKSTR);
+    let scoped: ScopedFeatures = disrobe_capabilities::extract(&module, STACKSTR, &imports);
     assert!(
-        !expected.is_empty(),
-        "the fixture must build a printable inlined string"
+        scoped
+            .file
+            .matches(&Feature::StringExact(expected.clone()))
+            .contains(&site),
+        "stack-string reconstruction must emit the source-defined text {expected:?} at {site:#x}"
     );
     assert_eq!(
         stack.address, site,
@@ -391,6 +360,32 @@ fn stackstr_oracle_reassembles_the_real_inlined_string() {
     assert_addr_in_image("stack-string match", stack.address, STACKSTR);
     assert!(rule(&report, "write file").is_none());
     assert!(rule(&report, "connect to network resource").is_none());
+}
+
+#[test]
+fn stackstr_oracle_tracks_a_mutated_immediate_store() {
+    let mutated: Vec<u8> = replace_stack_string_immediate(STACKSTR, b"inje", b"inj!");
+    let store: StackStringStore = independent_stack_string_store(&mutated);
+    let site: u64 = store.site;
+    let expected: String = "inj!cted".to_owned();
+    let payload: DisasmPayload = build_disasm_payload(&mutated).expect("payload");
+    let module: Module = Module::from_disasm(&payload);
+    let imports: ImportMap = ImportMap::from_bytes(&mutated);
+    let scoped: ScopedFeatures = disrobe_capabilities::extract(&module, &mutated, &imports);
+    assert!(
+        scoped
+            .file
+            .matches(&Feature::StringExact(expected))
+            .contains(&site),
+        "the altered immediate store must alter the recovered stack string"
+    );
+    assert!(
+        !scoped
+            .file
+            .matches(&Feature::StringExact("injected".to_owned()))
+            .contains(&site),
+        "the original stack string must not survive the altered immediate store"
+    );
 }
 
 #[test]
