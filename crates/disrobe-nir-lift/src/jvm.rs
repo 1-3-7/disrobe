@@ -422,7 +422,7 @@ const fn binary_op(opcode: u8) -> Option<BinaryOp> {
         0x68..=0x6B => BinaryOp::Mul,
         0x6C..=0x6F => BinaryOp::Div,
         0x70..=0x73 => BinaryOp::Rem,
-        0x74 | 0x75 => BinaryOp::Neg,
+        0x74..=0x77 => BinaryOp::Neg,
         0x78 | 0x79 => BinaryOp::Shl,
         0x7A..=0x7D => BinaryOp::Shr,
         0x7E | 0x7F => BinaryOp::And,
@@ -546,7 +546,84 @@ fn memory_operands(insn: &Instruction) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use disrobe_pass_jvm::{OpcodeInfo, opcode_info};
+
     use super::*;
+
+    const ARITHMETIC_TABLE: [(u8, &str, BinaryOp, &str); 36] = [
+        (0x60, "iadd", BinaryOp::Add, "add"),
+        (0x61, "ladd", BinaryOp::Add, "add"),
+        (0x62, "fadd", BinaryOp::Add, "add"),
+        (0x63, "dadd", BinaryOp::Add, "add"),
+        (0x64, "isub", BinaryOp::Sub, "sub"),
+        (0x65, "lsub", BinaryOp::Sub, "sub"),
+        (0x66, "fsub", BinaryOp::Sub, "sub"),
+        (0x67, "dsub", BinaryOp::Sub, "sub"),
+        (0x68, "imul", BinaryOp::Mul, "mul"),
+        (0x69, "lmul", BinaryOp::Mul, "mul"),
+        (0x6A, "fmul", BinaryOp::Mul, "mul"),
+        (0x6B, "dmul", BinaryOp::Mul, "mul"),
+        (0x6C, "idiv", BinaryOp::Div, "div"),
+        (0x6D, "ldiv", BinaryOp::Div, "div"),
+        (0x6E, "fdiv", BinaryOp::Div, "div"),
+        (0x6F, "ddiv", BinaryOp::Div, "div"),
+        (0x70, "irem", BinaryOp::Rem, "rem"),
+        (0x71, "lrem", BinaryOp::Rem, "rem"),
+        (0x72, "frem", BinaryOp::Rem, "rem"),
+        (0x73, "drem", BinaryOp::Rem, "rem"),
+        (0x74, "ineg", BinaryOp::Neg, "neg"),
+        (0x75, "lneg", BinaryOp::Neg, "neg"),
+        (0x76, "fneg", BinaryOp::Neg, "neg"),
+        (0x77, "dneg", BinaryOp::Neg, "neg"),
+        (0x78, "ishl", BinaryOp::Shl, "shl"),
+        (0x79, "lshl", BinaryOp::Shl, "shl"),
+        (0x7A, "ishr", BinaryOp::Shr, "shr"),
+        (0x7B, "lshr", BinaryOp::Shr, "shr"),
+        (0x7C, "iushr", BinaryOp::Shr, "shr"),
+        (0x7D, "lushr", BinaryOp::Shr, "shr"),
+        (0x7E, "iand", BinaryOp::And, "and"),
+        (0x7F, "land", BinaryOp::And, "and"),
+        (0x80, "ior", BinaryOp::Or, "or"),
+        (0x81, "lor", BinaryOp::Or, "or"),
+        (0x82, "ixor", BinaryOp::Xor, "xor"),
+        (0x83, "lxor", BinaryOp::Xor, "xor"),
+    ];
+
+    #[test]
+    fn every_arithmetic_opcode_lifts_to_its_specified_operation() {
+        for (op, jvm_mnemonic, expected, nir_mnemonic) in ARITHMETIC_TABLE {
+            let lifted: Option<BinaryOp> = binary_op(op);
+            assert_eq!(
+                lifted,
+                Some(expected),
+                "opcode 0x{op:02X} {jvm_mnemonic} must lift to {expected:?}"
+            );
+            assert_eq!(
+                lifted.map(BinaryOp::mnemonic),
+                Some(nir_mnemonic),
+                "opcode 0x{op:02X} {jvm_mnemonic} must carry the mnemonic {nir_mnemonic}"
+            );
+            assert_eq!(
+                opcode_info(op).map(|info: OpcodeInfo| info.mnemonic),
+                Some(jvm_mnemonic),
+                "opcode 0x{op:02X} is named differently by the disassembler"
+            );
+        }
+    }
+
+    #[test]
+    fn no_opcode_outside_the_arithmetic_table_lifts_to_a_binary_operation() {
+        for op in u8::MIN..=u8::MAX {
+            let tabled: bool = ARITHMETIC_TABLE
+                .iter()
+                .any(|(entry, _, _, _): &(u8, &str, BinaryOp, &str)| *entry == op);
+            assert_eq!(
+                binary_op(op).is_some(),
+                tabled,
+                "opcode 0x{op:02X} disagrees with the arithmetic table"
+            );
+        }
+    }
 
     #[test]
     fn implicit_const_macro_forms_carry_their_value() {

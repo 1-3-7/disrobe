@@ -379,21 +379,22 @@ const fn binary_op(op: u8) -> Option<BinaryOp> {
 }
 
 const fn arithmetic_binop(op: u8) -> Option<BinaryOp> {
-    let kind: u8 = match op {
-        0x90..=0x9A => op - 0x90,
-        0x9B..=0xA5 => op - 0x9B,
-        0xA6..=0xAF => op - 0xA6,
-        0xB0..=0xBA => op - 0xB0,
-        0xBB..=0xC5 => op - 0xBB,
-        0xC6..=0xCF => op - 0xC6,
-        0xD0..=0xD7 => return lit16_binop(op),
-        0xD8..=0xE2 => return lit8_binop(op),
-        _ => return None,
-    };
-    arith_kind(kind)
+    match op {
+        0x90..=0x9A => integral_arith_kind(op - 0x90),
+        0x9B..=0xA5 => integral_arith_kind(op - 0x9B),
+        0xA6..=0xAA => floating_arith_kind(op - 0xA6),
+        0xAB..=0xAF => floating_arith_kind(op - 0xAB),
+        0xB0..=0xBA => integral_arith_kind(op - 0xB0),
+        0xBB..=0xC5 => integral_arith_kind(op - 0xBB),
+        0xC6..=0xCA => floating_arith_kind(op - 0xC6),
+        0xCB..=0xCF => floating_arith_kind(op - 0xCB),
+        0xD0..=0xD7 => lit16_binop(op),
+        0xD8..=0xE2 => lit8_binop(op),
+        _ => None,
+    }
 }
 
-const fn arith_kind(kind: u8) -> Option<BinaryOp> {
+const fn integral_arith_kind(kind: u8) -> Option<BinaryOp> {
     Some(match kind {
         0 => BinaryOp::Add,
         1 => BinaryOp::Sub,
@@ -405,6 +406,17 @@ const fn arith_kind(kind: u8) -> Option<BinaryOp> {
         7 => BinaryOp::Xor,
         8 => BinaryOp::Shl,
         9 | 10 => BinaryOp::Shr,
+        _ => return None,
+    })
+}
+
+const fn floating_arith_kind(kind: u8) -> Option<BinaryOp> {
+    Some(match kind {
+        0 => BinaryOp::Add,
+        1 => BinaryOp::Sub,
+        2 => BinaryOp::Mul,
+        3 => BinaryOp::Div,
+        4 => BinaryOp::Rem,
         _ => return None,
     })
 }
@@ -437,4 +449,147 @@ const fn lit8_binop(op: u8) -> Option<BinaryOp> {
         0xE1 | 0xE2 => BinaryOp::Shr,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use disrobe_pass_jvm::{DalvikOp, dalvik_opcode};
+
+    use super::{BinaryOp, binary_op};
+
+    const ARITHMETIC_TABLE: [(u8, &str, BinaryOp, &str); 89] = [
+        (0x7B, "neg-int", BinaryOp::Neg, "neg"),
+        (0x7C, "not-int", BinaryOp::Not, "not"),
+        (0x7D, "neg-long", BinaryOp::Neg, "neg"),
+        (0x7E, "not-long", BinaryOp::Not, "not"),
+        (0x7F, "neg-float", BinaryOp::Neg, "neg"),
+        (0x80, "neg-double", BinaryOp::Neg, "neg"),
+        (0x90, "add-int", BinaryOp::Add, "add"),
+        (0x91, "sub-int", BinaryOp::Sub, "sub"),
+        (0x92, "mul-int", BinaryOp::Mul, "mul"),
+        (0x93, "div-int", BinaryOp::Div, "div"),
+        (0x94, "rem-int", BinaryOp::Rem, "rem"),
+        (0x95, "and-int", BinaryOp::And, "and"),
+        (0x96, "or-int", BinaryOp::Or, "or"),
+        (0x97, "xor-int", BinaryOp::Xor, "xor"),
+        (0x98, "shl-int", BinaryOp::Shl, "shl"),
+        (0x99, "shr-int", BinaryOp::Shr, "shr"),
+        (0x9A, "ushr-int", BinaryOp::Shr, "shr"),
+        (0x9B, "add-long", BinaryOp::Add, "add"),
+        (0x9C, "sub-long", BinaryOp::Sub, "sub"),
+        (0x9D, "mul-long", BinaryOp::Mul, "mul"),
+        (0x9E, "div-long", BinaryOp::Div, "div"),
+        (0x9F, "rem-long", BinaryOp::Rem, "rem"),
+        (0xA0, "and-long", BinaryOp::And, "and"),
+        (0xA1, "or-long", BinaryOp::Or, "or"),
+        (0xA2, "xor-long", BinaryOp::Xor, "xor"),
+        (0xA3, "shl-long", BinaryOp::Shl, "shl"),
+        (0xA4, "shr-long", BinaryOp::Shr, "shr"),
+        (0xA5, "ushr-long", BinaryOp::Shr, "shr"),
+        (0xA6, "add-float", BinaryOp::Add, "add"),
+        (0xA7, "sub-float", BinaryOp::Sub, "sub"),
+        (0xA8, "mul-float", BinaryOp::Mul, "mul"),
+        (0xA9, "div-float", BinaryOp::Div, "div"),
+        (0xAA, "rem-float", BinaryOp::Rem, "rem"),
+        (0xAB, "add-double", BinaryOp::Add, "add"),
+        (0xAC, "sub-double", BinaryOp::Sub, "sub"),
+        (0xAD, "mul-double", BinaryOp::Mul, "mul"),
+        (0xAE, "div-double", BinaryOp::Div, "div"),
+        (0xAF, "rem-double", BinaryOp::Rem, "rem"),
+        (0xB0, "add-int/2addr", BinaryOp::Add, "add"),
+        (0xB1, "sub-int/2addr", BinaryOp::Sub, "sub"),
+        (0xB2, "mul-int/2addr", BinaryOp::Mul, "mul"),
+        (0xB3, "div-int/2addr", BinaryOp::Div, "div"),
+        (0xB4, "rem-int/2addr", BinaryOp::Rem, "rem"),
+        (0xB5, "and-int/2addr", BinaryOp::And, "and"),
+        (0xB6, "or-int/2addr", BinaryOp::Or, "or"),
+        (0xB7, "xor-int/2addr", BinaryOp::Xor, "xor"),
+        (0xB8, "shl-int/2addr", BinaryOp::Shl, "shl"),
+        (0xB9, "shr-int/2addr", BinaryOp::Shr, "shr"),
+        (0xBA, "ushr-int/2addr", BinaryOp::Shr, "shr"),
+        (0xBB, "add-long/2addr", BinaryOp::Add, "add"),
+        (0xBC, "sub-long/2addr", BinaryOp::Sub, "sub"),
+        (0xBD, "mul-long/2addr", BinaryOp::Mul, "mul"),
+        (0xBE, "div-long/2addr", BinaryOp::Div, "div"),
+        (0xBF, "rem-long/2addr", BinaryOp::Rem, "rem"),
+        (0xC0, "and-long/2addr", BinaryOp::And, "and"),
+        (0xC1, "or-long/2addr", BinaryOp::Or, "or"),
+        (0xC2, "xor-long/2addr", BinaryOp::Xor, "xor"),
+        (0xC3, "shl-long/2addr", BinaryOp::Shl, "shl"),
+        (0xC4, "shr-long/2addr", BinaryOp::Shr, "shr"),
+        (0xC5, "ushr-long/2addr", BinaryOp::Shr, "shr"),
+        (0xC6, "add-float/2addr", BinaryOp::Add, "add"),
+        (0xC7, "sub-float/2addr", BinaryOp::Sub, "sub"),
+        (0xC8, "mul-float/2addr", BinaryOp::Mul, "mul"),
+        (0xC9, "div-float/2addr", BinaryOp::Div, "div"),
+        (0xCA, "rem-float/2addr", BinaryOp::Rem, "rem"),
+        (0xCB, "add-double/2addr", BinaryOp::Add, "add"),
+        (0xCC, "sub-double/2addr", BinaryOp::Sub, "sub"),
+        (0xCD, "mul-double/2addr", BinaryOp::Mul, "mul"),
+        (0xCE, "div-double/2addr", BinaryOp::Div, "div"),
+        (0xCF, "rem-double/2addr", BinaryOp::Rem, "rem"),
+        (0xD0, "add-int/lit16", BinaryOp::Add, "add"),
+        (0xD1, "rsub-int", BinaryOp::Sub, "sub"),
+        (0xD2, "mul-int/lit16", BinaryOp::Mul, "mul"),
+        (0xD3, "div-int/lit16", BinaryOp::Div, "div"),
+        (0xD4, "rem-int/lit16", BinaryOp::Rem, "rem"),
+        (0xD5, "and-int/lit16", BinaryOp::And, "and"),
+        (0xD6, "or-int/lit16", BinaryOp::Or, "or"),
+        (0xD7, "xor-int/lit16", BinaryOp::Xor, "xor"),
+        (0xD8, "add-int/lit8", BinaryOp::Add, "add"),
+        (0xD9, "rsub-int/lit8", BinaryOp::Sub, "sub"),
+        (0xDA, "mul-int/lit8", BinaryOp::Mul, "mul"),
+        (0xDB, "div-int/lit8", BinaryOp::Div, "div"),
+        (0xDC, "rem-int/lit8", BinaryOp::Rem, "rem"),
+        (0xDD, "and-int/lit8", BinaryOp::And, "and"),
+        (0xDE, "or-int/lit8", BinaryOp::Or, "or"),
+        (0xDF, "xor-int/lit8", BinaryOp::Xor, "xor"),
+        (0xE0, "shl-int/lit8", BinaryOp::Shl, "shl"),
+        (0xE1, "shr-int/lit8", BinaryOp::Shr, "shr"),
+        (0xE2, "ushr-int/lit8", BinaryOp::Shr, "shr"),
+    ];
+
+    #[test]
+    fn every_arithmetic_opcode_lifts_to_its_specified_operation() {
+        for (op, dalvik_mnemonic, expected, nir_mnemonic) in ARITHMETIC_TABLE {
+            let lifted: Option<BinaryOp> = binary_op(op);
+            assert_eq!(
+                lifted,
+                Some(expected),
+                "opcode 0x{op:02X} {dalvik_mnemonic} must lift to {expected:?}"
+            );
+            assert_eq!(
+                lifted.map(BinaryOp::mnemonic),
+                Some(nir_mnemonic),
+                "opcode 0x{op:02X} {dalvik_mnemonic} must carry the mnemonic {nir_mnemonic}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_arithmetic_table_names_the_same_opcodes_as_the_decoder() {
+        for (op, dalvik_mnemonic, _, _) in ARITHMETIC_TABLE {
+            let decoded: DalvikOp = dalvik_opcode(op);
+            assert_eq!(
+                decoded.mnemonic, dalvik_mnemonic,
+                "opcode 0x{op:02X} is {} in the decoder, not {dalvik_mnemonic}",
+                decoded.mnemonic
+            );
+        }
+    }
+
+    #[test]
+    fn no_opcode_outside_the_arithmetic_table_lifts_to_a_binary_operation() {
+        for op in u8::MIN..=u8::MAX {
+            let tabled: bool = ARITHMETIC_TABLE
+                .iter()
+                .any(|(entry, _, _, _): &(u8, &str, BinaryOp, &str)| *entry == op);
+            assert_eq!(
+                binary_op(op).is_some(),
+                tabled,
+                "opcode 0x{op:02X} ({}) disagrees with the arithmetic table",
+                dalvik_opcode(op).mnemonic
+            );
+        }
+    }
 }

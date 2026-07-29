@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use disrobe_nir::{NirFunction, NirInstr, NirModule, NirOp};
+use disrobe_nir::{BinaryOp, NirFunction, NirInstr, NirModule, NirOp};
 use disrobe_nir_lift::{LiftError, dalvik_function_address, lift_dex};
 use disrobe_pass_jvm::{
     CodeItem, CodeItemsReport, DalvikInsn, DexCodeState, DexFile, DexMethodCode, decode_method,
@@ -39,6 +39,29 @@ struct NirStats {
     nop: usize,
     opcodes: BTreeSet<u8>,
     mnemonics: BTreeSet<String>,
+    lifted_mnemonics: BTreeSet<String>,
+    binops: BTreeSet<(u8, String)>,
+}
+
+fn decoded_operation(dalvik_mnemonic: &str) -> Option<&'static str> {
+    let head: &str = dalvik_mnemonic
+        .split_once('-')
+        .map_or(dalvik_mnemonic, |(head, _): (&str, &str)| head);
+    Some(match head {
+        "add" => "add",
+        "sub" | "rsub" => "sub",
+        "mul" => "mul",
+        "div" => "div",
+        "rem" => "rem",
+        "and" => "and",
+        "or" => "or",
+        "xor" => "xor",
+        "shl" => "shl",
+        "shr" | "ushr" => "shr",
+        "neg" => "neg",
+        "not" => "not",
+        _ => return None,
+    })
 }
 
 fn tool_available(tool: &str) -> bool {
@@ -134,6 +157,7 @@ fn nir_invariants(bytes: &[u8]) -> NirStats {
             stats.total += 1;
             stats.opcodes.insert(insn.op);
             stats.mnemonics.insert(insn.mnemonic.to_owned());
+            stats.lifted_mnemonics.insert(nir.mnemonic.clone());
             assert_eq!(
                 nir.address,
                 function.address.saturating_add(u64::from(insn.pc)),
@@ -147,6 +171,27 @@ fn nir_invariants(bytes: &[u8]) -> NirStats {
                         insn.op, 0x00,
                         "only a real nop lifts to Nop, saw {} at offset {} in {}",
                         insn.mnemonic, insn.pc, function.name
+                    );
+                }
+                NirOp::BinOp { op } => {
+                    let op: BinaryOp = *op;
+                    stats.binops.insert((insn.op, nir.mnemonic.clone()));
+                    assert_eq!(
+                        nir.mnemonic,
+                        op.mnemonic(),
+                        "the lifted mnemonic must name the operation the lift chose for {} at offset {} in {}",
+                        insn.mnemonic,
+                        insn.pc,
+                        function.name
+                    );
+                    assert_eq!(
+                        Some(op.mnemonic()),
+                        decoded_operation(insn.mnemonic),
+                        "the lifted operation must match the decoded opcode {} (0x{:02X}) at offset {} in {}",
+                        insn.mnemonic,
+                        insn.op,
+                        insn.pc,
+                        function.name
                     );
                 }
                 NirOp::Unmodeled { opcode, offset } => {
@@ -183,8 +228,49 @@ fn merged_stats() -> NirStats {
         merged.nop += stats.nop;
         merged.opcodes.extend(stats.opcodes);
         merged.mnemonics.extend(stats.mnemonics);
+        merged.lifted_mnemonics.extend(stats.lifted_mnemonics);
+        merged.binops.extend(stats.binops);
     }
     merged
+}
+
+#[test]
+fn committed_dex_lifts_double_arithmetic_to_arithmetic_not_bitwise() {
+    let merged: NirStats = merged_stats();
+    for (opcode, expected) in [
+        (0xAB_u8, "add"),
+        (0xAC, "sub"),
+        (0xAD, "mul"),
+        (0xAE, "div"),
+        (0xCB, "add"),
+        (0xCC, "sub"),
+        (0xCD, "mul"),
+        (0xCE, "div"),
+    ] {
+        assert!(
+            merged.binops.contains(&(opcode, expected.to_owned())),
+            "opcode 0x{opcode:02X} must lift to {expected}: {:?}",
+            merged.binops
+        );
+    }
+    for bitwise in ["and", "or", "xor", "shl", "shr"] {
+        for opcode in 0xA6_u8..=0xAF {
+            assert!(
+                !merged.binops.contains(&(opcode, bitwise.to_owned())),
+                "float and double opcode 0x{opcode:02X} must never lift to {bitwise}"
+            );
+        }
+        for opcode in 0xC6_u8..=0xCF {
+            assert!(
+                !merged.binops.contains(&(opcode, bitwise.to_owned())),
+                "float and double opcode 0x{opcode:02X} must never lift to {bitwise}"
+            );
+        }
+    }
+    assert!(
+        merged.lifted_mnemonics.contains("add"),
+        "the lifted mnemonic set must record the operation names the lift produced"
+    );
 }
 
 #[test]
