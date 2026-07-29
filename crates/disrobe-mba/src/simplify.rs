@@ -16,7 +16,6 @@ use std::collections::{BTreeMap, BTreeSet};
 pub enum Verification {
     Unverified,
     ExhaustiveAtWidth(Width),
-    LinearLiftedFrom(Width),
     LinearColumnIdentity(Width),
     PolynomialIdentity(Width),
     #[cfg(feature = "smt-verify")]
@@ -823,15 +822,12 @@ fn verify_equivalent(
         }
         return Verification::Unverified;
     }
-    let liftable: bool = original_is_mba && candidate.is_linear_mba();
-    if liftable
+    if original_is_mba
+        && candidate.is_linear_mba()
         && (1..=MAX_SOLVER_VARS).contains(&var_count)
         && column_identity_proves(original, candidate, width, var_count)
     {
         return Verification::LinearColumnIdentity(width);
-    }
-    if liftable && equivalent_exhaustive(original, candidate, budget_width, var_count) {
-        return Verification::LinearLiftedFrom(budget_width);
     }
     #[cfg(feature = "smt-verify")]
     if crate::verify::verify_equivalent(original, candidate, width).is_proven() {
@@ -1115,6 +1111,27 @@ mod tests {
                 "{width:?}: a changed result carries no independently established proof"
             );
         }
+        for (scaled, vanishing_width) in reduced_width_vanishing_shapes() {
+            let zero: Expr = Expr::konst(0);
+            let scaled_is_mba: bool = scaled.is_linear_mba();
+            let var_count: u32 = u32::try_from(scaled.vars().len()).expect("small var count");
+            assert!(
+                equivalent_exhaustive(&scaled, &zero, vanishing_width, var_count),
+                "`{scaled}` must vanish at {vanishing_width:?} or it does not exercise the reduced-width route"
+            );
+            for width in [Width::W32, Width::W64] {
+                assert_eq!(
+                    verify_equivalent(&scaled, &zero, width, var_count, scaled_is_mba),
+                    Verification::Unverified,
+                    "{width:?}: `{scaled}` was accepted as zero on the strength of a narrower width"
+                );
+                let result: Simplification = simplify(&scaled, width);
+                assert_ne!(
+                    result.simplified, zero,
+                    "{width:?}: the pipeline collapsed `{scaled}` to zero"
+                );
+            }
+        }
         for shape in fallback_prone_shapes() {
             for width in [Width::W32, Width::W64] {
                 let result: Simplification = simplify(&shape, width);
@@ -1131,6 +1148,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn reduced_width_vanishing_shapes() -> Vec<(Expr, Width)> {
+        vec![
+            (
+                Expr::mul(Expr::konst(256), Expr::xor(Expr::var(0), Expr::var(1))),
+                Width::W8,
+            ),
+            (
+                Expr::mul(Expr::konst(256), Expr::and(Expr::var(0), Expr::var(1))),
+                Width::W8,
+            ),
+            (
+                Expr::shl(Expr::xor(Expr::var(0), Expr::var(1)), Expr::konst(8)),
+                Width::W8,
+            ),
+            (
+                Expr::mul(Expr::konst(0x1_0000), Expr::xor(Expr::var(0), Expr::var(1))),
+                Width::W8,
+            ),
+            (Expr::mul(Expr::konst(0x1_0000), Expr::var(0)), Width::W16),
+        ]
     }
 
     fn fallback_prone_shapes() -> Vec<Expr> {
@@ -1254,16 +1293,21 @@ mod tests {
     }
 
     #[test]
-    fn single_var_wide_width_uses_w16_budget() {
+    fn two_complement_identity_is_settled_at_the_real_width() {
         let obfuscated: Expr = Expr::sub(Expr::neg(Expr::var(0)), Expr::konst(1));
         let result: Simplification = simplify(&obfuscated, Width::W64);
-        if result.changed() {
-            assert_eq!(
-                result.verification,
-                Verification::LinearLiftedFrom(Width::W16),
-                "neg is not per-bit independent, so the two's-complement identity ~x = -x-1 falls to the W16 lift, not the column-identity proof"
-            );
-        }
+        assert!(result.changed());
+        #[cfg(feature = "smt-verify")]
+        assert_eq!(
+            result.verification,
+            Verification::SmtProvenAtWidth(Width::W64)
+        );
+        #[cfg(not(feature = "smt-verify"))]
+        assert_eq!(
+            result.verification,
+            Verification::PolynomialIdentity(Width::W64)
+        );
+        assert_eq!(result.simplified, Expr::not(Expr::var(0)));
     }
 
     #[test]

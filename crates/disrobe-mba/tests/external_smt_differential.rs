@@ -4,10 +4,15 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[path = "support/solver_requirement.rs"]
+#[allow(clippy::redundant_pub_crate)]
+mod solver_requirement;
+
 use disrobe_mba::{
     BinOp, Expr, Predicate, Simplification, Width, equivalence_query, simplify,
     tautology_refutation_query,
 };
+use solver_requirement::{enforce_solver_requirement, solver_is_required};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Answer {
@@ -208,7 +213,9 @@ fn perturb_one_operator(expr: &Expr) -> Option<Expr> {
 
 #[test]
 fn simplifications_match_an_external_bitvector_solver() {
-    let Some(solver): Option<Solver> = detect_solver() else {
+    let detected: Option<Solver> = detect_solver();
+    enforce_solver_requirement(detected.as_ref(), solver_is_required());
+    let Some(solver): Option<Solver> = detected else {
         eprintln!(
             "external_smt_differential: neither z3 nor bitwuzla found on PATH; skipping cleanly"
         );

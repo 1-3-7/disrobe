@@ -1,7 +1,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use disrobe_mba::{
-    Expr, Simplification, Verification, Width, simplify, simplify_mixed, solve_polynomial_mba,
+    Expr, Simplification, Verification, Width, equivalent_exhaustive, simplify, simplify_mixed,
+    solve_polynomial_mba,
 };
 
 #[derive(Debug)]
@@ -145,7 +146,7 @@ fn bdd_disproof(original: &Expr, candidate: &Expr, width: Width) -> Option<Vec<u
 }
 
 #[cfg(not(feature = "smt-verify"))]
-fn bdd_disproof(_original: &Expr, _candidate: &Expr, _width: Width) -> Option<Vec<u64>> {
+const fn bdd_disproof(_original: &Expr, _candidate: &Expr, _width: Width) -> Option<Vec<u64>> {
     None
 }
 
@@ -196,6 +197,59 @@ fn wide_polynomial_certificate_only_accepts_equivalent_reductions() {
     assert!(
         accepted > 50,
         "the sweep never exercised the wide-width polynomial certificate (accepted={accepted})"
+    );
+}
+
+#[test]
+fn terms_that_vanish_only_at_a_narrower_width_are_not_accepted() {
+    let mut reaching: u32 = 0;
+    let mut emitted: u32 = 0;
+    for width in [Width::W32, Width::W64] {
+        for var_count in 1u32..=3 {
+            let pool: Vec<Expr> = atom_pool(var_count);
+            let mut rng: Lcg =
+                Lcg::new(0x00C0_FFEE_0BAD_0001 ^ u64::from(width.bits()) ^ u64::from(var_count));
+            for _ in 0..40u32 {
+                let shift: u32 = 16 + rng.below(9) as u32;
+                let multiplier: u64 = 1u64 << shift;
+                let term_count: u64 = 1 + rng.below(3);
+                let mut expr: Expr = scaled(
+                    multiplier.wrapping_mul(1 + rng.below(8)),
+                    pick(&mut rng, &pool).clone(),
+                );
+                for _ in 1..term_count {
+                    expr = Expr::add(
+                        expr,
+                        scaled(
+                            multiplier.wrapping_mul(1 + rng.below(8)),
+                            pick(&mut rng, &pool).clone(),
+                        ),
+                    );
+                }
+                if equivalent_exhaustive(&expr, &Expr::konst(0), Width::W16, var_count) {
+                    reaching += 1;
+                }
+                let result: Simplification = simplify(&expr, width);
+                if !result.changed() {
+                    continue;
+                }
+                emitted += 1;
+                confirm_equivalent(
+                    &expr,
+                    &result.simplified,
+                    width,
+                    var_count as usize,
+                    0x51DE_0BAD_51DE_0BAD,
+                );
+            }
+        }
+    }
+    eprintln!(
+        "narrow-vanishing sweep: {reaching} shapes vanish at W16, {emitted} rewrites emitted at the real width"
+    );
+    assert!(
+        reaching > 0,
+        "the sweep never produced a shape that vanishes at a narrower width, so it does not exercise the route it is meant to guard"
     );
 }
 
