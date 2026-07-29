@@ -2177,7 +2177,7 @@ fn recover_leaf_function_calls_impl(
     if let Some(plan) = &sret_plan {
         params.retain(|r: &Reg| *r != plan.ptr);
     }
-    let fp_args: Vec<(Xmm, FpWidth)> = infer_fp_params(&structured.body)?;
+    let fp_args: Vec<(Xmm, FpWidth)> = infer_fp_params(&structured.body, abi)?;
     let returns_fp: Option<ScalarType> = fp_return.map(scalar_of_fp);
     let ret: FnReturn = fp_return.map_or(FnReturn::Int(return_width), FnReturn::Fp);
     let signature: FnSignature = FnSignature {
@@ -2633,7 +2633,7 @@ fn build_switch_recovery(
     let mut call_targets: Vec<u64> = Vec::new();
     collect_call_targets(&body, &mut call_targets);
     let params: Vec<Reg> = infer_params(&body, abi);
-    let fp_args: Vec<(Xmm, FpWidth)> = infer_fp_params(&body)?;
+    let fp_args: Vec<(Xmm, FpWidth)> = infer_fp_params(&body, abi)?;
     let signature: FnSignature = FnSignature {
         fp: fp_args,
         int: wide_int_signature(&params),
@@ -8190,11 +8190,30 @@ const FP_ARG_ORDER: [Xmm; 8] = [
     Xmm::Xmm7,
 ];
 
-fn infer_fp_params(body: &Block) -> Result<Vec<(Xmm, FpWidth)>> {
+const MS_X64_FP_ARG_ORDER: [Xmm; 4] = [Xmm::Xmm0, Xmm::Xmm1, Xmm::Xmm2, Xmm::Xmm3];
+
+const fn fp_arg_order(abi: Abi) -> &'static [Xmm] {
+    match abi {
+        Abi::MsX64 => &MS_X64_FP_ARG_ORDER,
+        Abi::SysV | Abi::Aapcs64 => &FP_ARG_ORDER,
+    }
+}
+
+fn infer_fp_params(body: &Block, abi: Abi) -> Result<Vec<(Xmm, FpWidth)>> {
     let mut written: BTreeMap<Xmm, bool> = BTreeMap::new();
     let mut read_before_write: Vec<(Xmm, FpWidth)> = Vec::new();
     scan_fp_params(body, &mut written, &mut read_before_write)?;
     read_before_write.sort_by_key(|(x, _): &(Xmm, FpWidth)| x.index());
+    let argument_registers: &'static [Xmm] = fp_arg_order(abi);
+    if let Some((xmm, _)) = read_before_write
+        .iter()
+        .find(|(x, _): &&(Xmm, FpWidth)| !argument_registers.contains(x))
+    {
+        return Err(Error::LlvmIr(format!(
+            "floating register {} is read before any write, but under {abi:?} it is volatile scratch rather than an argument register, so its entry value is not recoverable",
+            xmm.index()
+        )));
+    }
     Ok(read_before_write)
 }
 
@@ -18524,6 +18543,51 @@ mod tests {
         assert!(
             rec.source.contains("return fp_d_from_bits(x_xmm0);"),
             "result must be reinterpreted from the low xmm0 bits: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn a_read_of_xmm4_is_a_system_v_argument_but_microsoft_x64_volatile_scratch() {
+        const CODE: [u8; 5] = [0xf2, 0x0f, 0x58, 0xc4, 0xc3];
+        let sysv: LeafRecovery = recover_leaf_function_abi(&CODE, 0xb080, Abi::SysV)
+            .expect("xmm4 is the fifth System V floating-point argument register");
+        assert_eq!(
+            sysv.fp_params,
+            vec![ScalarType::Double, ScalarType::Double],
+            "System V passes floating-point arguments in xmm0..xmm7: {}",
+            sysv.source
+        );
+        let err: Error = recover_leaf_function_abi(&CODE, 0xb080, Abi::MsX64)
+            .err()
+            .expect("xmm4 carries no incoming argument under Microsoft x64");
+        let Error::LlvmIr(message) = err else {
+            panic!("expected a lifter rejection");
+        };
+        assert!(
+            message.contains("floating register 4 is read before any write")
+                && message.contains("volatile scratch rather than an argument register"),
+            "the rejection must name the register and the calling convention: {message}"
+        );
+    }
+
+    #[test]
+    fn microsoft_x64_still_accepts_every_one_of_its_four_floating_argument_registers() {
+        const CODE: [u8; 17] = [
+            0xf2, 0x0f, 0x58, 0xc1, 0xf2, 0x0f, 0x58, 0xc2, 0xf2, 0x0f, 0x58, 0xc3, 0xf2, 0x0f,
+            0x5c, 0xc3, 0xc3,
+        ];
+        let rec: LeafRecovery = recover_leaf_function_abi(&CODE, 0xb090, Abi::MsX64)
+            .expect("xmm0..xmm3 are the Microsoft x64 floating-point argument registers");
+        assert_eq!(
+            rec.fp_params,
+            vec![
+                ScalarType::Double,
+                ScalarType::Double,
+                ScalarType::Double,
+                ScalarType::Double
+            ],
+            "all four Microsoft x64 floating-point argument registers must stay recoverable: {}",
             rec.source
         );
     }
