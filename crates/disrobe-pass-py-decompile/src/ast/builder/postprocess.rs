@@ -775,7 +775,7 @@ impl AnnParser<'_> {
     }
 }
 
-fn is_simple_identifier(s: &str) -> bool {
+pub(crate) fn is_simple_identifier(s: &str) -> bool {
     let mut chars: std::str::Chars<'_> = s.chars();
     let Some(first) = chars.next() else {
         return false;

@@ -5,6 +5,7 @@ use disrobe_pass_py_disasm::alt_runtimes::micropython::{
 };
 use disrobe_py_marshal::{CodeEra, CodeObject, Object};
 
+use crate::ast::builder::is_simple_identifier;
 use crate::error::{DecompileError, Result};
 
 const OP_POP_TOP: u8 = 1;
@@ -125,7 +126,7 @@ fn lift_function(
     let mut varnames: NamePool = NamePool::new();
     let mut derefs: NamePool = NamePool::new();
 
-    seed_varnames(func, &mut varnames);
+    seed_varnames(func, &mut varnames)?;
 
     let mut child_codes: Vec<CodeObject> = Vec::with_capacity(func.children.len());
     for child in &func.children {
@@ -194,11 +195,39 @@ fn function_flags(func: &MpyFunction, is_module: bool) -> i32 {
     flags
 }
 
-fn seed_varnames(func: &MpyFunction, varnames: &mut NamePool) {
-    let total_args: u32 = func.n_pos_args + func.n_kwonly_args;
-    for i in 0..total_args {
-        let _: u32 = varnames.intern(&format!("arg{i}"));
+const PYTHON_KEYWORDS: [&str; 35] = [
+    "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue",
+    "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import",
+    "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while",
+    "with", "yield",
+];
+
+fn declared_parameter_name(func: &MpyFunction, slot: usize) -> Option<&str> {
+    let candidate: &str = func.arg_names.get(slot)?.as_str();
+    (is_simple_identifier(candidate) && !PYTHON_KEYWORDS.contains(&candidate)).then_some(candidate)
+}
+
+fn seed_varnames(func: &MpyFunction, varnames: &mut NamePool) -> Result<()> {
+    let total_args: u32 = func.n_pos_args.saturating_add(func.n_kwonly_args);
+    if total_args >= MAX_SLOT_INDEX {
+        return Err(DecompileError::Emit {
+            reason: format!(
+                "function prelude declares {total_args} parameters, over the {MAX_SLOT_INDEX} local-slot cap"
+            ),
+        });
     }
+    let declared_slots: usize = usize::try_from(total_args).unwrap_or(0);
+    for slot in 0..declared_slots {
+        match declared_parameter_name(func, slot) {
+            Some(declared) => {
+                let _: u32 = varnames.push_unique(declared);
+            }
+            None => {
+                let _: u32 = varnames.push_unique(&format!("arg{slot}"));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -925,9 +954,9 @@ fn fast_slot(arg: &MpyArg, varnames: &mut NamePool) -> Result<u32> {
             ),
         });
     }
-    while varnames.entries.len() <= idx as usize {
+    while varnames.entries.len() <= usize::try_from(idx).unwrap_or(usize::MAX) {
         let n: usize = varnames.entries.len();
-        let _: u32 = varnames.intern(&format!("arg{n}"));
+        let _: u32 = varnames.push_unique(&format!("local{n}"));
     }
     Ok(idx)
 }
@@ -941,9 +970,9 @@ fn deref_slot(arg: &MpyArg, derefs: &mut NamePool) -> Result<u32> {
             ),
         });
     }
-    while derefs.entries.len() <= idx as usize {
+    while derefs.entries.len() <= usize::try_from(idx).unwrap_or(usize::MAX) {
         let n: usize = derefs.entries.len();
-        let _: u32 = derefs.intern(&format!("cell{n}"));
+        let _: u32 = derefs.push_unique(&format!("cell{n}"));
     }
     Ok(idx)
 }
@@ -1039,6 +1068,18 @@ impl NamePool {
         idx
     }
 
+    fn push_unique(&mut self, name: &str) -> u32 {
+        let idx: u32 = u32::try_from(self.entries.len()).unwrap_or(0);
+        let mut candidate: String = name.to_owned();
+        let mut suffix: usize = 1;
+        while self.entries.contains(&candidate) {
+            candidate = format!("{name}_{suffix}");
+            suffix = suffix.saturating_add(1);
+        }
+        self.entries.push(candidate);
+        idx
+    }
+
     fn into_objects(self) -> Vec<Object> {
         self.entries
             .into_iter()
@@ -1098,5 +1139,67 @@ mod tests {
         let idx: u32 = deref_slot(&MpyArg::Uint(2), &mut pool).unwrap();
         assert_eq!(idx, 2);
         assert_eq!(pool.entries.len(), 3);
+    }
+
+    fn function_with_args(arg_names: &[&str], n_pos_args: u32) -> MpyFunction {
+        MpyFunction {
+            simple_name: "probe".to_owned(),
+            arg_names: arg_names.iter().map(|s: &&str| (*s).to_owned()).collect(),
+            n_state: 4,
+            n_exc_stack: 0,
+            scope_flags: 0,
+            n_pos_args,
+            n_kwonly_args: 0,
+            n_def_pos_args: 0,
+            instructions: Vec::new(),
+            children: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn declared_parameter_names_seed_the_local_slots() {
+        let func: MpyFunction = function_with_args(&["items", "step"], 2);
+        let mut pool: NamePool = NamePool::new();
+        seed_varnames(&func, &mut pool).unwrap();
+        assert_eq!(pool.entries, vec!["items".to_owned(), "step".to_owned()]);
+    }
+
+    #[test]
+    fn a_parameter_name_that_is_not_a_usable_identifier_falls_back_to_its_position() {
+        let func: MpyFunction = function_with_args(&["class", "<qstr#9>", "9lives", ""], 4);
+        let mut pool: NamePool = NamePool::new();
+        seed_varnames(&func, &mut pool).unwrap();
+        assert_eq!(
+            pool.entries,
+            vec![
+                "arg0".to_owned(),
+                "arg1".to_owned(),
+                "arg2".to_owned(),
+                "arg3".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_parameter_named_like_a_generated_slot_never_collapses_two_slots() {
+        let func: MpyFunction = function_with_args(&["local1", "local1"], 2);
+        let mut pool: NamePool = NamePool::new();
+        seed_varnames(&func, &mut pool).unwrap();
+        let idx: u32 = fast_slot(&MpyArg::Uint(3), &mut pool).unwrap();
+        assert_eq!(idx, 3);
+        assert_eq!(pool.entries.len(), 4, "every slot must own a distinct name");
+        let mut seen: Vec<&String> = pool.entries.iter().collect();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), 4, "slot names collided: {:?}", pool.entries);
+    }
+
+    #[test]
+    fn an_absurd_declared_parameter_count_is_rejected_before_seeding() {
+        let func: MpyFunction = function_with_args(&[], u32::MAX);
+        let mut pool: NamePool = NamePool::new();
+        let err: DecompileError = seed_varnames(&func, &mut pool).unwrap_err();
+        assert!(matches!(err, DecompileError::Emit { .. }), "got {err:?}");
+        assert!(pool.entries.is_empty());
     }
 }

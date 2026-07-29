@@ -18,6 +18,7 @@ mod try_with;
 
 use self::exprs::name_at;
 use self::function_meta::{prepend_global_decls, thread_module_annotations};
+pub(crate) use self::postprocess::is_simple_identifier;
 use self::postprocess::{
     BodyKind, postprocess_body, strip_module_docstring_stmt, strip_module_implicit_return,
     strip_module_scope_implicit_returns,
