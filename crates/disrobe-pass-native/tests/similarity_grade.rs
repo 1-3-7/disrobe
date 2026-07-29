@@ -733,6 +733,27 @@ fn the_corpus_grades_the_matcher_against_compiler_produced_ground_truth() {
         "precision over changed code fell from the pinned floor of {CHANGED_PRECISION_FLOOR_PERMILLE} per mille to {} per mille",
         changed.precision_permille()
     );
+    for stage in Stage::ALL {
+        let tally: Tally = total.stage(stage);
+        assert_eq!(
+            tally.wrong,
+            0,
+            "the {} stage paired {} correspondences with the wrong counterpart, and every stage \
+             carries a standing claim of none",
+            stage.label(),
+            tally.wrong
+        );
+        if tally.judged_emissions() > 0 {
+            assert_eq!(
+                tally.precision_permille(),
+                1000,
+                "the {} stage fell to {} per mille precision over {} judged pairs",
+                stage.label(),
+                tally.precision_permille(),
+                tally.judged_emissions()
+            );
+        }
+    }
     let wrong_rate: u64 = grade::rate(overall.wrong, overall.judged_emissions());
     assert!(
         wrong_rate <= WRONG_CEILING_PERMILLE,
