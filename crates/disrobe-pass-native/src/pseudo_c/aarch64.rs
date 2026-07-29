@@ -2504,7 +2504,7 @@ fn aarch64_fp_params(body: &Block) -> Result<Vec<(Xmm, FpWidth)>> {
             "scalar floating-point access uses v8..v15, which is outside increment 1",
         ));
     }
-    let inferred: Vec<(Xmm, FpWidth)> = infer_fp_params(body)?;
+    let inferred: Vec<(Xmm, FpWidth)> = infer_fp_params(body, Abi::Aapcs64)?;
     let Some(highest): Option<usize> = inferred
         .iter()
         .map(|(register, _): &(Xmm, FpWidth)| usize::from(register.index()))
