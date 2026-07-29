@@ -970,7 +970,7 @@ def own_equiv(a, b):
 ### 1.5 Evaluation
 
 Each figure below is stated with its exact corpus, because the corpora differ and must not be
-conflated. The representative headline is per-code-object recompile-equivalence on the full 571-module
+conflated. The representative headline is per-code-object recompile-equivalence on the full <!-- m:py_stdlib_full_modules -->574<!-- /m -->-module
 CPython 3.14 standard library: <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> (<!-- m:py_stdlib_full_count_grouped -->17,378 of 18,276<!-- /m --> code objects), locked at HEAD `7adfad10`. A
 separate 200-module pinned corpus, a curated subset used as the CI regression sample, runs higher at
 <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> (<!-- m:py_stdlib_pinned_count_grouped -->6,072 of 6,286<!-- /m --> code objects), precisely because it over-represents recoverable modules; the
@@ -995,18 +995,22 @@ holds the per-object rate above a floor of 90.0%; the full-stdlib <!-- m:py_stdl
 harness over the entire Lib rather than the pinned list:
 
 ```rust
-/// Floor enforced in CI.
-const OBJECT_PCT_FLOOR: f64 = 90.0;
+const OBJECT_PCT_FLOOR: f64 = 96.60;
 ```
-(`tests/arbitrary_recompile_gate.rs:19-20`)
+(`tests/arbitrary_recompile_gate.rs:17`)
 
 ```rust
-assert!(
-    m.object_pct >= OBJECT_PCT_FLOOR,
-    "per-code-object recompile-equivalence regressed: {:.2}% < floor {OBJECT_PCT_FLOOR}% \
-     ({}/{} objects on {} modules)",
+    assert!(
+        m.object_pct >= OBJECT_PCT_FLOOR,
+        "per-code-object recompile-equivalence regressed: {:.2}% < floor {OBJECT_PCT_FLOOR}% \
+         ({}/{} objects on {} modules, CPython {}). The floor is pinned at the exact figure this \
+         corpus measures, so any drop is a real regression unless the stdlib sources themselves \
+         moved: if this run is on a different 3.14 patch release than the one the floor was pinned \
 ```
-(`tests/arbitrary_recompile_gate.rs:274-278`)
+(`tests/arbitrary_recompile_gate.rs:274-280`)
+
+The floor is pinned at the measured figure rather than a round number below it, so the gate has no
+slack to absorb a regression in silence.
 
 The legacy line has its own gate over a corpus of 191 vendored fixtures spanning 1.x through 3.x. It
 grades by a two-verdict union: recompile-equivalence for versions with an available interpreter, and
@@ -2290,7 +2294,7 @@ A skip that names its reason is honest; a silently relaxed assertion is not. dis
 
 Where a measurement varies with compiler version or optimization but has a provable lower bound, disrobe asserts the floor, not a point estimate that only one machine produces. The floors are named constants, each traceable to the corpus and date on which it was measured, and each set below the locally observed value so that a legitimate codegen difference does not turn into a false failure while a real regression still trips the assertion. Representative floors across passes include:
 
-- `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:20` sets `OBJECT_PCT_FLOOR = 90.0`, the per-code-object recompile-equivalence floor on the pinned CPython 3.14 corpus; the 3.12 gate raises it to 91.0 (`arbitrary_recompile_gate_312.rs:20`).
+- `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:17` sets `OBJECT_PCT_FLOOR = 96.60`, the per-code-object recompile-equivalence floor on the pinned CPython 3.14 corpus, pinned at the figure the corpus actually measures rather than a round number beneath it; the 3.12 gate sits at 91.0 (`arbitrary_recompile_gate_312.rs:17`).
 - `crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs:36` sets `PER_METHOD_JAVAC_OK_FLOOR = 131`, the count of methods that must recompile cleanly through javac.
 - `crates/disrobe-pass-jvm/tests/jadx_head_to_head.rs:24` sets `RECOMPILE_FLOOR = 119` for the head-to-head recompile comparison.
 - `crates/disrobe-pass-dotnet/tests/whole_type_il_equivalence_oracle.rs:697` sets `IL_EQUIVALENCE_FLOOR = 47`, and `crates/disrobe-pass-dotnet/tests/recompile_oracle.rs:212` sets `RECOMPILE_FLOOR = 6`.
