@@ -27,6 +27,45 @@
       ]
     },
     {
+      "heading": "Python bytecode by interpreter band (same pinned module list, each compiled and recompiled by its own interpreter)",
+      "axis_label": "per-code-object recompile-to-equivalent-bytecode, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "CPython 3.10 (161 of the pinned modules)",
+          "value": 91.5,
+          "num": 4994,
+          "den": 5458,
+          "detail": "4994 / 5458 code objects over 161 modules on CPython 3.10.20. 39 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.10.20 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt"
+        },
+        {
+          "label": "CPython 3.12 (177 of the pinned modules)",
+          "value": 95.41,
+          "num": 5399,
+          "den": 5659,
+          "detail": "5399 / 5659 code objects over 177 modules on CPython 3.12.13. 23 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.12.13 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt"
+        },
+        {
+          "label": "CPython 3.14 (all 200 pinned modules)",
+          "value": 96.6,
+          "num": 6072,
+          "den": 6286,
+          "detail": "6072 / 6286 code objects over 200 modules on CPython 3.14.5. 0 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.14.5 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt"
+        },
+        {
+          "label": "CPython 3.15 (199 of the pinned modules)",
+          "value": 96.03,
+          "num": 6214,
+          "den": 6471,
+          "detail": "6214 / 6471 code objects over 199 modules on CPython 3.15.0b1. 1 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.15.0b1 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt"
+        }
+      ]
+    },
+    {
       "heading": "CPython legacy 1.0-3.7 (proven-correct: recompile-equivalence or structural token-match)",
       "axis_label": "proven-correct decompiles over the legacy band, %",
       "kind": "percent",
