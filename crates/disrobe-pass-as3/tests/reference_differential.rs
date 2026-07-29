@@ -1468,16 +1468,21 @@ fn as3_lift_agrees_with_an_independent_reference_decompiler() {
         m.tally.reference_only_classes
     );
     assert!(
-        m.tally.agreed * 1000 >= m.tally.graded * 850,
-        "per-method agreement with the independent reference decompiler must hold its measured floor (>=85.0%); got {}/{} = {rate:.2}%",
+        m.tally.agreed * 1000 >= m.tally.graded * 920,
+        "per-method agreement with the independent reference decompiler must hold its measured floor (>=92.0%); got {}/{} = {rate:.2}%",
         m.tally.agreed,
         m.tally.graded
     );
     assert!(
-        m.tally.self_reported_full_agreed * 1000 >= m.tally.self_reported_full * 969,
-        "bodies disrobe calls fully recovered must hold their measured agreement floor (>=96.9%); got {}/{}",
+        m.tally.self_reported_full_agreed * 1000 >= m.tally.self_reported_full * 952,
+        "bodies disrobe calls fully recovered must hold their measured agreement floor (>=95.2%); got {}/{}",
         m.tally.self_reported_full_agreed,
         m.tally.self_reported_full
+    );
+    assert!(
+        m.tally.self_reported_full_agreed >= 11874,
+        "the count of bodies disrobe calls fully recovered that also agree with the reference must not shrink; got {}",
+        m.tally.self_reported_full_agreed
     );
 }
 
@@ -1514,8 +1519,8 @@ fn string_literals_and_call_targets_match_the_reference_almost_everywhere() {
     let rate: f64 = report(&m);
     assert_population(&m);
     assert!(
-        m.tally.agreed * 1000 >= m.tally.graded * 957,
-        "constant-pool and call-target agreement must hold its measured floor (>=95.7%); got {}/{} = {rate:.2}%",
+        m.tally.agreed * 1000 >= m.tally.graded * 966,
+        "constant-pool and call-target agreement must hold its measured floor (>=96.6%); got {}/{} = {rate:.2}%",
         m.tally.agreed,
         m.tally.graded
     );
