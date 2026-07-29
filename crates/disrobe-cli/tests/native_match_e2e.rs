@@ -264,8 +264,199 @@ fn a_refusal_is_reported_with_its_candidates_rather_than_dropped() {
         variant.to_str().expect("utf-8"),
     ]);
     assert_eq!(run.code, 0, "stderr: {}", run.stderr);
-    assert!(run.stdout.contains("ambiguous on a:"), "{}", run.stdout);
+    assert!(run.stdout.contains("refusal ambiguous"), "{}", run.stdout);
     assert!(run.stdout.contains("candidates: 0x"), "{}", run.stdout);
+}
+
+#[test]
+fn text_listing_controls_bound_rows_select_verdicts_and_leave_json_complete() {
+    let (Some(clean), Some(variant)): (Option<PathBuf>, Option<PathBuf>) =
+        (fixture(CLEAN), fixture(VARIANT))
+    else {
+        return;
+    };
+    let report: Value = report_of(&clean, &variant);
+    let default_run: Run = run_match(&[
+        clean.to_str().expect("utf-8"),
+        variant.to_str().expect("utf-8"),
+    ]);
+    assert_eq!(default_run.code, 0, "stderr: {}", default_run.stderr);
+    assert!(
+        default_run.stdout.contains("withheld listing rows:"),
+        "{}",
+        default_run.stdout
+    );
+
+    let limited_run: Run = run_match(&[
+        clean.to_str().expect("utf-8"),
+        variant.to_str().expect("utf-8"),
+        "--limit",
+        "1",
+    ]);
+    assert_eq!(limited_run.code, 0, "stderr: {}", limited_run.stderr);
+    assert!(
+        limited_run.stdout.contains("withheld listing rows:"),
+        "{}",
+        limited_run.stdout
+    );
+
+    let data_reference: &Value = verdicts_of(&report, "a_verdicts")
+        .iter()
+        .find(|verdict: &&Value| kind_of(verdict) == "data-reference")
+        .expect("fixture carries a data-reference pair");
+    let subject: u64 = data_reference["subject"].as_u64().expect("subject");
+    let address: String = format!("0x{subject:x}");
+    let function_run: Run = run_match(&[
+        clean.to_str().expect("utf-8"),
+        variant.to_str().expect("utf-8"),
+        "--limit",
+        "0",
+        "--function",
+        &address,
+    ]);
+    assert_eq!(function_run.code, 0, "stderr: {}", function_run.stderr);
+    assert!(
+        function_run
+            .stdout
+            .contains(&format!("function {address} on a:")),
+        "{}",
+        function_run.stdout
+    );
+    assert!(
+        function_run.stdout.contains("data reference"),
+        "{}",
+        function_run.stdout
+    );
+    assert!(
+        !function_run.stdout.contains("withheld listing rows:"),
+        "{}",
+        function_run.stdout
+    );
+
+    let propagation_run: Run = run_match(&[
+        clean.to_str().expect("utf-8"),
+        variant.to_str().expect("utf-8"),
+        "--stage",
+        "propagation",
+        "--limit",
+        "1000",
+    ]);
+    assert_eq!(
+        propagation_run.code, 0,
+        "stderr: {}",
+        propagation_run.stderr
+    );
+    let propagation_rows: Vec<&str> = propagation_run
+        .stdout
+        .lines()
+        .filter(|line: &&str| line.starts_with("    a 0x"))
+        .collect();
+    assert!(!propagation_rows.is_empty(), "{}", propagation_run.stdout);
+    assert!(
+        propagation_rows
+            .iter()
+            .all(|line: &&str| line.contains("propagation")),
+        "{}",
+        propagation_run.stdout
+    );
+
+    let refused_run: Run = run_match(&[
+        clean.to_str().expect("utf-8"),
+        variant.to_str().expect("utf-8"),
+        "--stage",
+        "refused",
+        "--limit",
+        "1000",
+    ]);
+    assert_eq!(refused_run.code, 0, "stderr: {}", refused_run.stderr);
+    let refusal_rows: Vec<&str> = refused_run
+        .stdout
+        .lines()
+        .filter(|line: &&str| line.starts_with("    a 0x") || line.starts_with("    b 0x"))
+        .collect();
+    assert!(!refusal_rows.is_empty(), "{}", refused_run.stdout);
+    assert!(
+        refusal_rows
+            .iter()
+            .all(|line: &&str| line.contains("refusal")),
+        "{}",
+        refused_run.stdout
+    );
+
+    let json_run: Run = run_match(&[
+        "--json",
+        "--limit",
+        "0",
+        "--stage",
+        "refused",
+        clean.to_str().expect("utf-8"),
+        variant.to_str().expect("utf-8"),
+    ]);
+    assert_eq!(json_run.code, 0, "stderr: {}", json_run.stderr);
+    let filtered_json: Value = serde_json::from_str(&json_run.stdout).expect("json report");
+    assert_eq!(filtered_json, report, "--json must keep every verdict");
+}
+
+#[test]
+fn malformed_listing_selectors_are_diagnostics_not_panics() {
+    let (Some(clean), Some(variant)): (Option<PathBuf>, Option<PathBuf>) =
+        (fixture(CLEAN), fixture(VARIANT))
+    else {
+        return;
+    };
+    let function_run: Run = run_match(&[
+        clean.to_str().expect("utf-8"),
+        variant.to_str().expect("utf-8"),
+        "--function",
+        "not-an-address",
+    ]);
+    assert_ne!(function_run.code, 0, "stdout: {}", function_run.stdout);
+    assert!(
+        function_run.stderr.contains("invalid value"),
+        "{}",
+        function_run.stderr
+    );
+    assert!(
+        !function_run.stderr.contains("panicked at"),
+        "{}",
+        function_run.stderr
+    );
+
+    let absent_run: Run = run_match(&[
+        clean.to_str().expect("utf-8"),
+        variant.to_str().expect("utf-8"),
+        "--function",
+        "0xffffffffffffffff",
+    ]);
+    assert_ne!(absent_run.code, 0, "stdout: {}", absent_run.stdout);
+    assert!(
+        absent_run.stderr.contains("DR-NATIVE-0208"),
+        "{}",
+        absent_run.stderr
+    );
+    assert!(
+        !absent_run.stderr.contains("panicked at"),
+        "{}",
+        absent_run.stderr
+    );
+
+    let stage_run: Run = run_match(&[
+        clean.to_str().expect("utf-8"),
+        variant.to_str().expect("utf-8"),
+        "--stage",
+        "unknown-stage",
+    ]);
+    assert_ne!(stage_run.code, 0, "stdout: {}", stage_run.stdout);
+    assert!(
+        stage_run.stderr.contains("invalid value"),
+        "{}",
+        stage_run.stderr
+    );
+    assert!(
+        !stage_run.stderr.contains("panicked at"),
+        "{}",
+        stage_run.stderr
+    );
 }
 
 #[test]

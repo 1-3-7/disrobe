@@ -1449,6 +1449,22 @@ enum NativeCmd {
         b: PathBuf,
         #[arg(short, long, help = "output path for the match report JSON")]
         out: Option<PathBuf>,
+        #[arg(
+            long,
+            value_name = "N",
+            default_value_t = native_match::DEFAULT_LISTING_LIMIT,
+            help = "maximum text rows to show"
+        )]
+        limit: usize,
+        #[arg(
+            long,
+            value_name = "ADDRESS",
+            value_parser = parse_u64_auto,
+            help = "show one function verdict (accepts 0x-prefixed hex)"
+        )]
+        function: Option<u64>,
+        #[arg(long, value_enum, help = "show one match stage or refused rows")]
+        stage: Option<native_match::ListingStage>,
     },
 }
 
@@ -1716,7 +1732,24 @@ fn main() -> miette::Result<()> {
             } => native::patch(input, at, bytes, nop_range, out),
             NativeCmd::Sigmaker { input, at, emit } => native::sigmaker(input, at, emit),
             NativeCmd::Diff { a, b, json } => native::diff(a, b, json),
-            NativeCmd::Match { a, b, out } => native_match::run(a, b, out, fmt),
+            NativeCmd::Match {
+                a,
+                b,
+                out,
+                limit,
+                function,
+                stage,
+            } => native_match::run(
+                a,
+                b,
+                out,
+                fmt,
+                native_match::ListingOptions {
+                    limit,
+                    function,
+                    stage,
+                },
+            ),
         },
         #[cfg(feature = "jvm")]
         Cmd::Jvm { action } => jvm::run(action),
