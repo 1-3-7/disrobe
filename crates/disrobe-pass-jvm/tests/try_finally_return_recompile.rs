@@ -52,6 +52,36 @@ const TRY_FINALLY_RETURN_SRC: &str = "public class TryFinallyReturn {\n\
         }\n\
         return r;\n\
     }\n\
+    static int finallyReturns(int a) {\n\
+        try {\n\
+            CTR = a;\n\
+            return a * 2;\n\
+        } finally {\n\
+            return a + 1;\n\
+        }\n\
+    }\n\
+    static void voidFinallyReturns(int a) {\n\
+        try {\n\
+            CTR = a;\n\
+        } finally {\n\
+            return;\n\
+        }\n\
+    }\n\
+    static String strFinallyReturns(String s) {\n\
+        try {\n\
+            return s.trim();\n\
+        } finally {\n\
+            return s;\n\
+        }\n\
+    }\n\
+    static int multiReturnTry(int a) {\n\
+        try {\n\
+            if (a >= 1) { return a; }\n\
+            return -a;\n\
+        } finally {\n\
+            CTR++;\n\
+        }\n\
+    }\n\
 }\n";
 
 fn find_on_path(name: &str) -> Option<PathBuf> {
@@ -154,6 +184,12 @@ fn try_finally_with_return_recompiles_to_equivalent_bytecode() {
     assert!(
         !decompiled.source.contains("(stack reset)"),
         "decompiled output left a lifting hole:\n{}",
+        decompiled.source
+    );
+    assert!(
+        !decompiled.source.contains("catch (Throwable"),
+        "a finally whose body returns was rendered as a catch clause, which is different java \
+         than the class declares:\n{}",
         decompiled.source
     );
 

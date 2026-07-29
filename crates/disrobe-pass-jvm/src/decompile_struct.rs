@@ -521,6 +521,7 @@ pub enum Region {
         try_body: Box<Self>,
         handlers: Vec<(Vec<String>, Self)>,
         finally_chain: Vec<BlockId>,
+        finally_trim: usize,
     },
     TryWithResources {
         resource_slot: u16,
@@ -946,7 +947,7 @@ impl<'a> Structurer<'a> {
         }
     }
 
-    fn finally_handler_chain(&self, handler_bid: BlockId) -> Option<Vec<BlockId>> {
+    fn finally_handler_chain(&self, handler_bid: BlockId) -> Option<FinallyChain> {
         let entry_insns: &[Instruction] = self.block_instructions(handler_bid);
         let slot: u16 = astore_slot(entry_insns.first()?)?;
         let mut chain: Vec<BlockId> = vec![handler_bid];
@@ -958,12 +959,25 @@ impl<'a> Structurer<'a> {
                 return None;
             }
             let block_insns: &[Instruction] = self.block_instructions(cur);
-            if let Some(last) = block_insns.last()
-                && last.opcode == 0xBF
-                && block_insns.len() >= 2
-                && aload_slot(&block_insns[block_insns.len() - 2]) == Some(slot)
-            {
-                return Some(chain);
+            if let Some(last) = block_insns.last() {
+                if last.opcode == 0xBF
+                    && block_insns.len() >= 2
+                    && aload_slot(&block_insns[block_insns.len() - 2]) == Some(slot)
+                {
+                    return Some(FinallyChain {
+                        blocks: chain,
+                        trim: 2,
+                    });
+                }
+                if matches!(last.opcode, 0xAC..=0xB1)
+                    && !self.chain_reloads_slot(&chain, slot)
+                    && self.slot_total_uses(slot) == 1
+                {
+                    return Some(FinallyChain {
+                        blocks: chain,
+                        trim: 0,
+                    });
+                }
             }
             let mut normal_succs = self.cfg.blocks[cur.0 as usize]
                 .successors
@@ -981,14 +995,23 @@ impl<'a> Structurer<'a> {
         }
     }
 
-    fn finally_body_instructions(&self, chain: &[BlockId]) -> Option<Vec<Instruction>> {
-        let (&first, &last): (&BlockId, &BlockId) = chain.first().zip(chain.last())?;
+    fn chain_reloads_slot(&self, chain: &[BlockId], slot: u16) -> bool {
+        chain.iter().any(|&bid: &BlockId| {
+            self.block_instructions(bid)
+                .iter()
+                .any(|ins: &Instruction| aload_slot(ins) == Some(slot))
+        })
+    }
+
+    fn finally_body_instructions(&self, chain: &FinallyChain) -> Option<Vec<Instruction>> {
+        let (&first, &last): (&BlockId, &BlockId) =
+            chain.blocks.first().zip(chain.blocks.last())?;
         let mut body: Vec<Instruction> = Vec::new();
-        for &bid in chain {
+        for &bid in &chain.blocks {
             let insns: &[Instruction] = self.block_instructions(bid);
             let lo: usize = usize::from(bid == first);
             let hi: usize = if bid == last {
-                insns.len().checked_sub(2)?
+                insns.len().checked_sub(chain.trim)?
             } else {
                 insns.len()
             };
@@ -997,10 +1020,14 @@ impl<'a> Structurer<'a> {
             }
             body.extend_from_slice(&insns[lo..hi]);
         }
-        if body.is_empty()
-            || body
-                .iter()
-                .any(|ins: &Instruction| matches!(ins.opcode, 0x99..=0xB1 | 0xBF | 0xC6..=0xC9))
+        if body.is_empty() {
+            return None;
+        }
+        let tail_return: usize = usize::from(chain.trim == 0);
+        let scanned: &[Instruction] = body.get(..body.len() - tail_return)?;
+        if scanned
+            .iter()
+            .any(|ins: &Instruction| matches!(ins.opcode, 0x99..=0xB1 | 0xBF | 0xC6..=0xC9))
         {
             return None;
         }
@@ -1042,6 +1069,16 @@ impl<'a> Structurer<'a> {
         cont: BlockId,
         skip: usize,
     ) -> Option<(BlockId, u16)> {
+        self.finally_value_return_temp_uses(group, cont, skip, 2)
+    }
+
+    fn finally_value_return_temp_uses(
+        &self,
+        group: &GroupedTry,
+        cont: BlockId,
+        skip: usize,
+        expected_uses: usize,
+    ) -> Option<(BlockId, u16)> {
         let insns: &[Instruction] = self.block_instructions(cont);
         let tail: &[Instruction] = insns.get(skip..)?;
         let [load, ret]: &[Instruction; 2] = tail.try_into().ok()?;
@@ -1054,7 +1091,33 @@ impl<'a> Structurer<'a> {
         if any_store_slot(pred_last) != Some(slot) {
             return None;
         }
-        (self.slot_total_uses(slot) == 2).then_some((pred, slot))
+        (self.slot_total_uses(slot) == expected_uses).then_some((pred, slot))
+    }
+
+    fn multi_exit_return_folds(
+        &self,
+        group: &GroupedTry,
+        chain: &FinallyChain,
+        exits: &[BlockId],
+    ) -> Option<Vec<(BlockId, BlockId, u16)>> {
+        if exits.len() < 2 {
+            return None;
+        }
+        let expected_uses: usize = exits.len().checked_mul(2)?;
+        let mut folds: Vec<(BlockId, BlockId, u16)> = Vec::with_capacity(exits.len());
+        for &exit in exits {
+            let skip: usize = self.finally_inline_skip(chain, exit)?;
+            let (pred, slot): (BlockId, u16) =
+                self.finally_value_return_temp_uses(group, exit, skip, expected_uses)?;
+            if folds
+                .iter()
+                .any(|(_, _, s): &(BlockId, BlockId, u16)| *s != slot)
+            {
+                return None;
+            }
+            folds.push((exit, pred, slot));
+        }
+        Some(folds)
     }
 
     fn finally_return_exit(&self, group: &GroupedTry, cont: BlockId, skip: usize) -> bool {
@@ -1094,7 +1157,40 @@ impl<'a> Structurer<'a> {
         pred_pc >= group.try_start_pc && pred_pc < group.try_end_pc
     }
 
-    fn finally_inline_skip(&self, chain: &[BlockId], cont: BlockId) -> Option<usize> {
+    fn try_gap_blocks(&self, group: &GroupedTry) -> Vec<BlockId> {
+        if group.ranges.len() < 2 {
+            return Vec::new();
+        }
+        self.cfg
+            .blocks
+            .iter()
+            .filter(|b: &&BasicBlock| {
+                b.start_pc >= group.try_start_pc
+                    && b.start_pc < group.try_end_pc
+                    && !group
+                        .ranges
+                        .iter()
+                        .any(|(lo, hi): &(u32, u32)| b.start_pc >= *lo && b.start_pc < *hi)
+            })
+            .map(|b: &BasicBlock| b.id)
+            .collect()
+    }
+
+    fn finally_return_copy(&self, chain: &FinallyChain, cont: BlockId) -> bool {
+        let Some(body): Option<Vec<Instruction>> = self.finally_body_instructions(chain) else {
+            return false;
+        };
+        let cont_insns: &[Instruction] = self.block_instructions(cont);
+        cont_insns.len() == body.len()
+            && body
+                .iter()
+                .zip(cont_insns.iter())
+                .all(|(a, b): (&Instruction, &Instruction)| {
+                    a.opcode == b.opcode && a.operands == b.operands
+                })
+    }
+
+    fn finally_inline_skip(&self, chain: &FinallyChain, cont: BlockId) -> Option<usize> {
         let body: Vec<Instruction> = self.finally_body_instructions(chain)?;
         let cont_insns: &[Instruction] = self.block_instructions(cont);
         if cont_insns.len() <= body.len() {
@@ -1317,7 +1413,7 @@ impl<'a> Structurer<'a> {
                     .iter()
                     .find(|(t, bid)| t.is_none() && self.is_finally_handler(*bid))
                     .map(|(_, bid)| *bid);
-                let finally_chain: Option<Vec<BlockId>> =
+                let finally_chain: Option<FinallyChain> =
                     finally_handler.and_then(|bid| self.finally_handler_chain(bid));
                 let redundant_finally: bool = finally_handler
                     .is_some_and(|h| self.active_finally.contains(&h))
@@ -1387,12 +1483,12 @@ impl<'a> Structurer<'a> {
                     self.active_finally.pop();
                 }
                 if let Some(chain) = finally_chain {
-                    for &fb in &chain {
+                    for &fb in &chain.blocks {
                         self.visited.insert(fb);
                     }
                     if handlers_out.is_empty()
                         && let Some((lock_block, lock_slot)) = self.synchronized_lock_block(b)
-                        && self.is_synchronized_finally(&chain, lock_slot)
+                        && self.is_synchronized_finally(&chain.blocks, lock_slot)
                         && matches!(seq.last(), Some(Region::Block(prev)) if *prev == lock_block)
                     {
                         seq.pop();
@@ -1404,15 +1500,43 @@ impl<'a> Structurer<'a> {
                         cur = after_try;
                         continue;
                     }
+                    let gap_exits: Vec<BlockId> = self.try_gap_blocks(&try_group);
+                    let all_exits: Vec<BlockId> =
+                        gap_exits.iter().copied().chain(after_try).collect();
+                    let multi_folds: Option<Vec<(BlockId, BlockId, u16)>> =
+                        self.multi_exit_return_folds(&try_group, &chain, &all_exits);
+                    if let Some(folds) = multi_folds {
+                        for (exit, pred, slot) in folds {
+                            self.finally_return_stores.insert(pred, slot);
+                            self.finally_inline_skips
+                                .insert(exit, self.block_instructions(exit).len());
+                            self.visited.insert(exit);
+                        }
+                        after_try = None;
+                    } else {
+                        for gap in gap_exits {
+                            if let Some(skip) = self.finally_inline_skip(&chain, gap) {
+                                self.finally_inline_skips.insert(gap, skip);
+                            }
+                        }
+                    }
+                    let expected_exc_uses: usize = if chain.trim == 0 { 1 } else { 2 };
                     if handlers_out.is_empty()
-                        && let Some(&first) = chain.first()
+                        && let Some(&first) = chain.blocks.first()
                         && let Some(entry) = self.block_instructions(first).first()
                         && let Some(exc_slot) = astore_slot(entry)
-                        && self.slot_total_uses(exc_slot) == 2
+                        && self.slot_total_uses(exc_slot) == expected_exc_uses
                     {
                         self.finally_exception_slots.insert(exc_slot);
                     }
-                    if let Some(cont) = after_try
+                    if chain.trim == 0
+                        && let Some(cont) = after_try
+                        && self.finally_return_copy(&chain, cont)
+                        && !self.visited.contains(&cont)
+                    {
+                        self.visited.insert(cont);
+                        after_try = None;
+                    } else if let Some(cont) = after_try
                         && let Some(skip) = self.finally_inline_skip(&chain, cont)
                         && handlers_out.is_empty()
                         && !self.visited.contains(&cont)
@@ -1437,7 +1561,8 @@ impl<'a> Structurer<'a> {
                     seq.push(Region::TryFinally {
                         try_body: Box::new(body_region),
                         handlers: handlers_out,
-                        finally_chain: chain,
+                        finally_trim: chain.trim,
+                        finally_chain: chain.blocks,
                     });
                 } else {
                     seq.push(Region::Try {
@@ -1760,15 +1885,18 @@ fn find_loop_exit(cfg: &Cfg, loop_info: &NaturalLoop) -> Option<BlockId> {
 }
 
 fn is_if(block: &BasicBlock) -> bool {
-    block.successors.len() == 2
-        && block
-            .successors
+    let normal: Vec<&Edge> = block
+        .successors
+        .iter()
+        .filter(|e: &&Edge| !matches!(e.kind, EdgeKind::Exception))
+        .collect();
+    normal.len() == 2
+        && normal
             .iter()
-            .any(|e| matches!(e.kind, EdgeKind::CondTrue))
-        && block
-            .successors
+            .any(|e: &&Edge| matches!(e.kind, EdgeKind::CondTrue))
+        && normal
             .iter()
-            .any(|e| matches!(e.kind, EdgeKind::CondFalse))
+            .any(|e: &&Edge| matches!(e.kind, EdgeKind::CondFalse))
 }
 
 fn is_switch(block: &BasicBlock, _blocks: &[BasicBlock]) -> bool {
@@ -1966,13 +2094,31 @@ pub fn group_exception_regions(cfg: &Cfg) -> Vec<GroupedTry> {
             .iter()
             .map(|r| (r.catch_type.clone(), r.handler_pc))
             .collect();
-        out.push(GroupedTry {
-            try_start_pc: start,
-            try_end_pc: end,
-            handlers,
-        });
+        match out
+            .iter_mut()
+            .find(|g: &&mut GroupedTry| g.handlers == handlers)
+            .filter(|g: &&mut GroupedTry| mergeable_try_span(g, end, &handlers))
+        {
+            Some(existing) => {
+                existing.try_end_pc = end;
+                existing.ranges.push((start, end));
+            }
+            None => out.push(GroupedTry {
+                try_start_pc: start,
+                try_end_pc: end,
+                handlers,
+                ranges: vec![(start, end)],
+            }),
+        }
     }
     out
+}
+
+fn mergeable_try_span(group: &GroupedTry, end: u32, handlers: &[(Option<String>, u32)]) -> bool {
+    end > group.try_start_pc
+        && handlers
+            .iter()
+            .all(|(_, hpc): &(Option<String>, u32)| *hpc < group.try_start_pc || *hpc >= end)
 }
 
 #[derive(Debug)]
@@ -1982,10 +2128,17 @@ struct TwrResult {
 }
 
 #[derive(Debug, Clone)]
+struct FinallyChain {
+    blocks: Vec<BlockId>,
+    trim: usize,
+}
+
+#[derive(Debug, Clone)]
 pub struct GroupedTry {
     pub try_start_pc: u32,
     pub try_end_pc: u32,
     pub handlers: Vec<(Option<String>, u32)>,
+    pub ranges: Vec<(u32, u32)>,
 }
 
 fn compact_key(values: &[i32]) -> SwitchKey {

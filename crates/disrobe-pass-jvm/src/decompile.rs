@@ -3787,6 +3787,7 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
             try_body,
             handlers,
             finally_chain,
+            finally_trim,
         } => {
             let pad: String = indent_string(level);
             let _ = writeln!(out, "{pad}try {{");
@@ -3799,7 +3800,7 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
                 render_handler_region(ctx, handler_region, &var, out, level + 1);
             }
             let _ = writeln!(out, "{pad}}} finally {{");
-            render_finally_body(ctx, finally_chain, out, level + 1);
+            render_finally_body(ctx, finally_chain, *finally_trim, out, level + 1);
             let _ = writeln!(out, "{pad}}}");
         }
         Region::TryWithResources {
@@ -4432,6 +4433,7 @@ fn render_block_seeded(
 fn render_finally_body(
     ctx: &mut RenderCtx<'_>,
     finally_chain: &[BlockId],
+    finally_trim: usize,
     out: &mut String,
     level: usize,
 ) {
@@ -4446,7 +4448,7 @@ fn render_finally_body(
         ctx.rendered_blocks.insert(bid);
         let (block_start, block_end): (usize, usize) = block_insn_range(ctx, bid);
         let skip_front: usize = usize::from(bid == first);
-        let trim_back: usize = if bid == last { 2 } else { 0 };
+        let trim_back: usize = if bid == last { finally_trim } else { 0 };
         let lo: usize = block_start + skip_front;
         let hi: usize = block_end.saturating_sub(trim_back);
         if lo >= hi {
