@@ -9,14 +9,14 @@ use disrobe_ir::payload::{
 };
 use iced_x86::{
     ConstantOffsets, Decoder, DecoderOptions, EncodingKind, FlowControl, Instruction,
-    InstructionInfoFactory, OpAccess, OpKind, RflagsBits,
+    InstructionInfoFactory, Mnemonic, OpAccess, OpKind, RflagsBits,
 };
 use object::{
     Object as _, ObjectSection as _, ObjectSymbol as _, SymbolKind as ObjSymbolKind,
     SymbolScope as ObjSymbolScope,
 };
 
-use crate::arch::{Arch as DisasmArch, DisasmInsn, disassemble};
+use crate::arch::{Arch as DisasmArch, DisasmInsn, decode_one_x86, disassemble};
 use crate::cxx_recovery::parse_windows_seh_scope_table;
 use crate::desync::{
     Bitness, CodeWindow, DiscoveredFunctions, DiscoveryInput, ReadOnlyWindow,
@@ -24,7 +24,10 @@ use crate::desync::{
     is_noreturn_import_name,
 };
 use crate::error::{Error, Result};
-use crate::pseudo_c::aarch64::AARCH64_INSTRUCTION_BYTES;
+use crate::pseudo_c::aarch64::{
+    AARCH64_INSTRUCTION_BYTES, Aarch64DirectTransfer, aarch64_direct_transfer,
+    aarch64_is_indirect_branch, aarch64_is_return, aarch64_word,
+};
 
 pub const MAX_DECODE_TEXT_BYTES: usize = 32 * 1024 * 1024;
 
@@ -410,8 +413,203 @@ pub struct FunctionSpan {
     pub is_export: bool,
 }
 
+const MIN_BOUNDARY_ALIGNMENT_LOG2: u32 = 3;
+
+const MAX_BOUNDARY_PADDING_BYTES: u64 = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundaryIsa {
+    X86 { bits: u32 },
+    Aarch64,
+}
+
+impl BoundaryIsa {
+    const fn of(arch: DisasmArch) -> Option<Self> {
+        match arch {
+            DisasmArch::X86 => Some(Self::X86 { bits: 32 }),
+            DisasmArch::X86_64 => Some(Self::X86 { bits: 64 }),
+            DisasmArch::Aarch64 => Some(Self::Aarch64),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundaryRole {
+    Terminator,
+    IndirectBranch,
+    Plain,
+}
+
+fn aarch64_transfer_of(insn: &DisasmInstruction) -> Option<Aarch64DirectTransfer> {
+    aarch64_word(&insn.bytes).and_then(|word: u32| aarch64_direct_transfer(insn.offset, word))
+}
+
+fn is_alignment_filler(isa: BoundaryIsa, insn: &DisasmInstruction) -> bool {
+    if insn.bytes.is_empty() {
+        return false;
+    }
+    if insn.bytes.iter().all(|byte: &u8| *byte == 0) {
+        return true;
+    }
+    match isa {
+        BoundaryIsa::X86 { bits } => {
+            decode_one_x86(bits, insn.offset, &insn.bytes).is_some_and(|decoded: Instruction| {
+                decoded.len() == insn.bytes.len()
+                    && matches!(decoded.mnemonic(), Mnemonic::Nop | Mnemonic::Int3)
+            })
+        }
+        BoundaryIsa::Aarch64 => insn.mnemonic == "nop",
+    }
+}
+
+fn boundary_role(isa: BoundaryIsa, insn: &DisasmInstruction) -> BoundaryRole {
+    match isa {
+        BoundaryIsa::X86 { .. } => match insn.flow {
+            InsnFlow::Return => BoundaryRole::Terminator,
+            InsnFlow::UnconditionalBranch if insn.branch_target.is_some() => {
+                BoundaryRole::Terminator
+            }
+            InsnFlow::IndirectBranch => BoundaryRole::IndirectBranch,
+            InsnFlow::Sequential
+            | InsnFlow::Call
+            | InsnFlow::IndirectCall
+            | InsnFlow::ConditionalBranch
+            | InsnFlow::UnconditionalBranch
+            | InsnFlow::Interrupt => BoundaryRole::Plain,
+        },
+        BoundaryIsa::Aarch64 => {
+            if aarch64_is_return(&insn.mnemonic) {
+                return BoundaryRole::Terminator;
+            }
+            if aarch64_is_indirect_branch(&insn.mnemonic) {
+                return BoundaryRole::IndirectBranch;
+            }
+            match aarch64_transfer_of(insn) {
+                Some(Aarch64DirectTransfer::UnconditionalBranch { .. }) => BoundaryRole::Terminator,
+                Some(
+                    Aarch64DirectTransfer::BranchLink { .. }
+                    | Aarch64DirectTransfer::ConditionalBranch { .. }
+                    | Aarch64DirectTransfer::CompareBranch { .. }
+                    | Aarch64DirectTransfer::TestBranch { .. },
+                )
+                | None => BoundaryRole::Plain,
+            }
+        }
+    }
+}
+
+fn boundary_branch_target(isa: BoundaryIsa, insn: &DisasmInstruction) -> Option<u64> {
+    match isa {
+        BoundaryIsa::X86 { .. } => match insn.flow {
+            InsnFlow::ConditionalBranch | InsnFlow::UnconditionalBranch => insn.branch_target,
+            InsnFlow::Sequential
+            | InsnFlow::Call
+            | InsnFlow::IndirectCall
+            | InsnFlow::IndirectBranch
+            | InsnFlow::Return
+            | InsnFlow::Interrupt => None,
+        },
+        BoundaryIsa::Aarch64 => match aarch64_transfer_of(insn) {
+            Some(
+                Aarch64DirectTransfer::UnconditionalBranch { target }
+                | Aarch64DirectTransfer::ConditionalBranch { target, .. }
+                | Aarch64DirectTransfer::CompareBranch { target }
+                | Aarch64DirectTransfer::TestBranch { target },
+            ) => Some(target),
+            Some(Aarch64DirectTransfer::BranchLink { .. }) | None => None,
+        },
+    }
+}
+
+fn decodes_cleanly(isa: BoundaryIsa, insn: &DisasmInstruction) -> bool {
+    match isa {
+        BoundaryIsa::X86 { bits } => decode_one_x86(bits, insn.offset, &insn.bytes)
+            .is_some_and(|decoded: Instruction| decoded.len() == insn.bytes.len()),
+        BoundaryIsa::Aarch64 => aarch64_word(&insn.bytes).is_some(),
+    }
+}
+
+fn is_alignment_boundary(address: u64, padding: u64) -> bool {
+    if address == 0 || padding == 0 || padding >= MAX_BOUNDARY_PADDING_BYTES {
+        return false;
+    }
+    let log2: u32 = address.trailing_zeros();
+    log2 >= MIN_BOUNDARY_ALIGNMENT_LOG2 && (1_u64 << log2) > padding
+}
+
+fn internal_boundary(
+    isa: BoundaryIsa,
+    span_start: u64,
+    span_end: u64,
+    body: &[&DisasmInstruction],
+) -> Option<u64> {
+    let mut furthest_branch: u64 = span_start;
+    for (position, insn) in body.iter().enumerate() {
+        let role: BoundaryRole = boundary_role(isa, insn);
+        if matches!(role, BoundaryRole::IndirectBranch) {
+            return None;
+        }
+        if let Some(target) = boundary_branch_target(isa, insn)
+            && (span_start..span_end).contains(&target)
+        {
+            furthest_branch = furthest_branch.max(target);
+        }
+        if !matches!(role, BoundaryRole::Terminator) {
+            continue;
+        }
+        let terminator_end: u64 = insn.offset.checked_add(insn.bytes.len() as u64)?;
+        let mut cursor: usize = position.checked_add(1)?;
+        while body
+            .get(cursor)
+            .is_some_and(|next: &&DisasmInstruction| is_alignment_filler(isa, next))
+        {
+            cursor = cursor.checked_add(1)?;
+        }
+        let Some(next): Option<&&DisasmInstruction> = body.get(cursor) else {
+            continue;
+        };
+        let candidate: u64 = next.offset;
+        let Some(padding): Option<u64> = candidate.checked_sub(terminator_end) else {
+            continue;
+        };
+        if furthest_branch >= terminator_end
+            || !is_alignment_boundary(candidate, padding)
+            || !decodes_cleanly(isa, next)
+        {
+            continue;
+        }
+        return Some(candidate);
+    }
+    None
+}
+
+fn trim_to_internal_boundaries(
+    payload: &DisasmPayload,
+    arch: DisasmArch,
+    spans: &mut [FunctionSpan],
+) {
+    let Some(isa): Option<BoundaryIsa> = BoundaryIsa::of(arch) else {
+        return;
+    };
+    let mut sorted: Vec<&DisasmInstruction> = payload.instructions.iter().collect();
+    sorted.sort_by_key(|insn: &&DisasmInstruction| insn.offset);
+    for span in spans {
+        let low: usize =
+            sorted.partition_point(|insn: &&DisasmInstruction| insn.offset < span.address);
+        let high: usize =
+            sorted.partition_point(|insn: &&DisasmInstruction| insn.offset < span.end);
+        let Some(body): Option<&[&DisasmInstruction]> = sorted.get(low..high) else {
+            continue;
+        };
+        if let Some(boundary) = internal_boundary(isa, span.address, span.end, body) {
+            span.end = boundary;
+        }
+    }
+}
+
 #[must_use]
-pub fn function_spans(payload: &DisasmPayload) -> Vec<FunctionSpan> {
+pub fn function_spans(payload: &DisasmPayload, arch: DisasmArch) -> Vec<FunctionSpan> {
     let mut starts: Vec<(u64, String, bool)> = payload
         .symbol_table
         .iter()
@@ -452,6 +650,7 @@ pub fn function_spans(payload: &DisasmPayload) -> Vec<FunctionSpan> {
             is_export: *is_export,
         });
     }
+    trim_to_internal_boundaries(payload, arch, &mut spans);
     spans
 }
 
@@ -464,7 +663,8 @@ pub(crate) fn span_instructions<'a>(
     sorted.get(low..high).unwrap_or_default()
 }
 
-pub(crate) fn image_arch(bytes: &[u8]) -> Option<DisasmArch> {
+#[must_use]
+pub fn image_arch(bytes: &[u8]) -> Option<DisasmArch> {
     let native: NativeFile = parse_native(bytes).ok()?;
     map_arch(native.arch, native.endian)
 }
@@ -1146,6 +1346,202 @@ mod tests {
     use object::{Architecture, BinaryFormat, Endianness};
 
     use super::*;
+
+    const X86_BOUNDARY_BASE: u64 = 0x1000;
+
+    const X86_ISA: BoundaryIsa = BoundaryIsa::X86 { bits: 64 };
+
+    const AARCH64_ISA: BoundaryIsa = BoundaryIsa::Aarch64;
+
+    fn decoded_body(arch: DisasmArch, base: u64, bytes: &[u8]) -> Vec<DisasmInstruction> {
+        let decoded: Vec<DisasmInsn> = disassemble(arch, base, bytes).expect("fixture decodes");
+        let mut factory: InstructionInfoFactory = InstructionInfoFactory::new();
+        decoded
+            .into_iter()
+            .map(|insn: DisasmInsn| {
+                let facts: InstructionFacts =
+                    instruction_facts(arch, &insn.bytes, insn.address, &mut factory);
+                DisasmInstruction {
+                    offset: insn.address,
+                    bytes: insn.bytes,
+                    mnemonic: insn.mnemonic,
+                    operands: split_operands(&insn.operands),
+                    flow: facts.flow,
+                    branch_target: facts.branch_target,
+                    reg_uses: facts.reg_uses,
+                    mem_uses: facts.mem_uses,
+                    rflags: facts.rflags,
+                    isa: facts.isa,
+                    stack_effect: facts.stack_effect,
+                    segments: facts.segments,
+                }
+            })
+            .collect()
+    }
+
+    fn boundary_of(arch: DisasmArch, isa: BoundaryIsa, bytes: &[u8]) -> Option<u64> {
+        let body: Vec<DisasmInstruction> = decoded_body(arch, X86_BOUNDARY_BASE, bytes);
+        let refs: Vec<&DisasmInstruction> = body.iter().collect();
+        let end: u64 = X86_BOUNDARY_BASE.saturating_add(bytes.len() as u64);
+        internal_boundary(isa, X86_BOUNDARY_BASE, end, &refs)
+    }
+
+    fn padded(head: &[u8], padding: usize, tail: &[u8]) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::with_capacity(head.len() + padding + tail.len());
+        out.extend_from_slice(head);
+        out.extend(std::iter::repeat_n(0x90_u8, padding));
+        out.extend_from_slice(tail);
+        out
+    }
+
+    #[test]
+    fn a_return_then_padding_then_an_aligned_instruction_is_a_boundary() {
+        let bytes: Vec<u8> = padded(&[0x31, 0xC0, 0xC3], 13, &[0x31, 0xC0, 0xC3]);
+        assert_eq!(
+            boundary_of(DisasmArch::X86_64, X86_ISA, &bytes),
+            Some(0x1010)
+        );
+    }
+
+    #[test]
+    fn a_tail_call_then_padding_then_an_aligned_instruction_is_a_boundary() {
+        let bytes: Vec<u8> = padded(&[0xE9, 0x00, 0x10, 0x00, 0x00], 11, &[0x31, 0xC0, 0xC3]);
+        assert_eq!(
+            boundary_of(DisasmArch::X86_64, X86_ISA, &bytes),
+            Some(0x1010)
+        );
+    }
+
+    #[test]
+    fn a_cold_tail_reached_from_inside_the_span_is_not_a_boundary() {
+        let bytes: Vec<u8> = padded(
+            &[0x85, 0xC0, 0x0F, 0x85, 0x08, 0x00, 0x00, 0x00, 0xC3],
+            7,
+            &[0x31, 0xC0, 0xC3],
+        );
+        assert_eq!(boundary_of(DisasmArch::X86_64, X86_ISA, &bytes), None);
+    }
+
+    #[test]
+    fn a_branch_landing_inside_the_padding_run_is_not_a_boundary() {
+        let bytes: Vec<u8> = padded(
+            &[0x85, 0xC0, 0x0F, 0x85, 0x01, 0x00, 0x00, 0x00, 0xC3],
+            7,
+            &[0x31, 0xC0, 0xC3],
+        );
+        assert_eq!(boundary_of(DisasmArch::X86_64, X86_ISA, &bytes), None);
+    }
+
+    #[test]
+    fn an_unaligned_successor_after_padding_is_not_a_boundary() {
+        let bytes: Vec<u8> = padded(&[0xC3], 3, &[0x31, 0xC0, 0xC3]);
+        assert_eq!(boundary_of(DisasmArch::X86_64, X86_ISA, &bytes), None);
+    }
+
+    #[test]
+    fn an_indirect_branch_before_the_candidate_blocks_every_boundary() {
+        let bytes: Vec<u8> = padded(&[0xFF, 0xE0, 0xC3], 13, &[0x31, 0xC0, 0xC3]);
+        assert_eq!(boundary_of(DisasmArch::X86_64, X86_ISA, &bytes), None);
+    }
+
+    #[test]
+    fn adjacent_code_without_padding_is_not_a_boundary() {
+        let bytes: Vec<u8> = padded(&[0xC3], 0, &[0x31, 0xC0, 0xC3]);
+        assert_eq!(boundary_of(DisasmArch::X86_64, X86_ISA, &bytes), None);
+    }
+
+    #[test]
+    fn an_aarch64_nop_padded_return_is_a_boundary() {
+        let words: [u32; 3] = [0xd65f_03c0, 0xd503_201f, 0xd65f_03c0];
+        let bytes: Vec<u8> = words
+            .iter()
+            .flat_map(|word: &u32| word.to_le_bytes())
+            .collect();
+        assert_eq!(
+            boundary_of(DisasmArch::Aarch64, AARCH64_ISA, &bytes),
+            Some(0x1008)
+        );
+    }
+
+    #[test]
+    fn an_aarch64_branch_into_the_padding_run_is_not_a_boundary() {
+        let words: [u32; 3] = [0x1400_0001, 0xd503_201f, 0xd65f_03c0];
+        let bytes: Vec<u8> = words
+            .iter()
+            .flat_map(|word: &u32| word.to_le_bytes())
+            .collect();
+        assert_eq!(boundary_of(DisasmArch::Aarch64, AARCH64_ISA, &bytes), None);
+    }
+
+    #[test]
+    fn a_body_whose_addresses_overflow_yields_no_boundary() {
+        let body: Vec<DisasmInstruction> = vec![
+            DisasmInstruction {
+                offset: u64::MAX,
+                bytes: vec![0xC3],
+                mnemonic: "ret".to_owned(),
+                operands: Vec::new(),
+                flow: InsnFlow::Return,
+                ..DisasmInstruction::default()
+            },
+            DisasmInstruction {
+                offset: 0,
+                bytes: Vec::new(),
+                mnemonic: String::new(),
+                operands: Vec::new(),
+                ..DisasmInstruction::default()
+            },
+        ];
+        let refs: Vec<&DisasmInstruction> = body.iter().collect();
+        assert_eq!(internal_boundary(X86_ISA, 0, u64::MAX, &refs), None);
+    }
+
+    fn swallowing_elf() -> Vec<u8> {
+        let mut code: Vec<u8> = vec![0x90_u8; 0x30];
+        code[0x00] = 0x31;
+        code[0x01] = 0xC0;
+        code[0x02] = 0xC3;
+        code[0x10] = 0x31;
+        code[0x11] = 0xC0;
+        code[0x12] = 0xC3;
+        code[0x20] = 0xC3;
+
+        let mut obj: WriteObject<'_> =
+            WriteObject::new(BinaryFormat::Elf, Architecture::X86_64, Endianness::Little);
+        let text: object::write::SectionId = obj.section_id(StandardSection::Text);
+        let _: u64 = obj.append_section_data(text, &code, 16);
+        for (name, offset) in [("head", 0x00_u64), ("tail", 0x20_u64)] {
+            let symbol: WriteSymbol = WriteSymbol {
+                name: name.as_bytes().to_vec(),
+                value: offset,
+                size: 3,
+                kind: WriteSymbolKind::Text,
+                scope: SymbolScope::Linkage,
+                weak: false,
+                section: SymbolSection::Section(text),
+                flags: WriteSymbolFlags::None,
+            };
+            let _: object::write::SymbolId = obj.add_symbol(symbol);
+        }
+        obj.write().expect("elf write")
+    }
+
+    #[test]
+    fn a_span_that_swallows_an_undiscovered_body_stops_at_its_padding_boundary() {
+        let elf: Vec<u8> = swallowing_elf();
+        let payload: DisasmPayload = build_disasm_payload(&elf).expect("build payload");
+        let arch: DisasmArch = image_arch(&elf).expect("elf names x86-64");
+        let spans: Vec<FunctionSpan> = function_spans(&payload, arch);
+        let head: &FunctionSpan = spans
+            .iter()
+            .find(|span: &&FunctionSpan| span.name == "head")
+            .expect("head span");
+        assert_eq!(
+            (head.address, head.end),
+            (0x00, 0x10),
+            "the swallowed body at 0x10 must stay outside the head span"
+        );
+    }
 
     #[test]
     fn decoded_instruction_end_stays_inside_the_payload_prefix() {

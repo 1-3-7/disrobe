@@ -4,7 +4,8 @@ use iced_x86::{ConstantOffsets, Decoder, DecoderOptions, Instruction};
 use object::Object;
 use serde::Serialize;
 
-use crate::disasm_ir::{FunctionSpan, build_disasm_payload, function_spans};
+use crate::arch::Arch;
+use crate::disasm_ir::{FunctionSpan, build_disasm_payload, function_spans, image_arch};
 use crate::error::{Error, Result};
 use crate::flirt::crc16_flirt;
 use disrobe_ir::payload::{DisasmInstruction, DisasmPayload, InsnFlow};
@@ -79,8 +80,8 @@ pub struct BinDiffReport {
 
 pub const BINDIFF_SCHEMA: &str = "disrobe.native.bindiff/v1";
 
-fn function_partition(payload: &DisasmPayload, arch: DiffArch) -> Vec<FunctionPrint> {
-    let spans: Vec<FunctionSpan> = function_spans(payload);
+fn function_partition(payload: &DisasmPayload, isa: Arch, arch: DiffArch) -> Vec<FunctionPrint> {
+    let spans: Vec<FunctionSpan> = function_spans(payload, isa);
     let mut sorted: Vec<&DisasmInstruction> = payload.instructions.iter().collect();
     sorted.sort_by_key(|i: &&DisasmInstruction| i.offset);
 
@@ -307,9 +308,19 @@ pub fn diff(image_a: &[u8], image_b: &[u8]) -> Result<BinDiffReport> {
     let payload_b: DisasmPayload = build_disasm_payload(image_b).map_err(wrap_b)?;
     let arch_a: DiffArch = diff_arch(image_a);
     let arch_b: DiffArch = diff_arch(image_b);
+    let Some(isa_a): Option<Arch> = image_arch(image_a) else {
+        return Err(wrap_a(Error::UnsupportedArch(
+            "image names no architecture the disassembler maps".to_owned(),
+        )));
+    };
+    let Some(isa_b): Option<Arch> = image_arch(image_b) else {
+        return Err(wrap_b(Error::UnsupportedArch(
+            "image names no architecture the disassembler maps".to_owned(),
+        )));
+    };
 
-    let funcs_a: Vec<FunctionPrint> = function_partition(&payload_a, arch_a);
-    let funcs_b: Vec<FunctionPrint> = function_partition(&payload_b, arch_b);
+    let funcs_a: Vec<FunctionPrint> = function_partition(&payload_a, isa_a, arch_a);
+    let funcs_b: Vec<FunctionPrint> = function_partition(&payload_b, isa_b, arch_b);
     let total_a: usize = funcs_a.len();
     let total_b: usize = funcs_b.len();
 
