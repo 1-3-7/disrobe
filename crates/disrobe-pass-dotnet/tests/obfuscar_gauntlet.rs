@@ -18,6 +18,7 @@ use disrobe_pass_dotnet::peel::obfuscar::{
 };
 use disrobe_pass_dotnet::peel::{NameClassification, PeelReport, PeelStrategy, classify_names};
 use disrobe_pass_dotnet::protectors::Protector;
+use disrobe_pass_dotnet::tables::{FieldRvaRow, Tables, parse_tables};
 
 const CLEAN_REL: &str =
     "../../corpus/dotnet/obfuscators/obfuscar/gauntlet/GauntletSample.clean.dll";
@@ -315,6 +316,49 @@ fn peel_recovers_every_hidden_string_from_real_obfuscar_field_rva_carrier() {
             .any(|note: &String| note.contains("15/15")),
         "the peel report must expose the complete recovered/accessor count: {:?}",
         report.notes
+    );
+}
+
+fn flip_first_field_rva_byte(image: &mut [u8]) -> u32 {
+    let pe: PeImage = parse(image).expect("PE parse");
+    let clr: ClrHeader = parse_clr_header(image, &pe).expect("CLR header");
+    let root: MetadataRoot = parse_metadata_root(image, &pe, &clr).expect("metadata root");
+    let md: &[u8] = pe
+        .slice_at_rva(image, clr.metadata.rva, clr.metadata.size as usize)
+        .expect("metadata slice");
+    let header: disrobe_pass_dotnet::metadata::StreamHeader = *root
+        .streams
+        .get("#~")
+        .or_else(|| root.streams.get("#-"))
+        .expect("table stream present");
+    let tables: Tables = parse_tables(md, header).expect("tables");
+    let row: &FieldRvaRow = tables
+        .field_rvas
+        .first()
+        .expect("Obfuscar HideStrings must place the hidden literals in a FieldRVA carrier");
+    let offset: usize = pe
+        .rva_to_offset(row.rva)
+        .expect("FieldRVA data must map into the file");
+    image[offset] ^= 0xFF;
+    row.rva
+}
+
+#[test]
+fn recovery_reads_the_carrier_and_not_a_baked_in_table() {
+    let mut mutated: Vec<u8> = load(OBFUSCATED_REL);
+    let rva: u32 = flip_first_field_rva_byte(&mut mutated);
+    let expected_accessors: BTreeMap<u32, Vec<u8>> = hidden_accessors();
+    let recovered: BTreeMap<u32, Vec<u8>> = peel_obfuscar(&mutated)
+        .expect("peel mutated Obfuscar assembly")
+        .recovered_strings
+        .iter()
+        .map(|value| (value.method_token, value.text.as_bytes().to_vec()))
+        .collect();
+    assert_ne!(
+        recovered, expected_accessors,
+        "flipping one byte of the FieldRVA carrier at rva {rva:#x} must change what the peeler \
+         reports; an unchanged 15/15 map would mean the recovery is reading a baked-in table \
+         instead of the assembly"
     );
 }
 

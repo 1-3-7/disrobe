@@ -69,6 +69,38 @@ fn malformed_unrelated_resource_does_not_hide_static_payload() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn recovery_reads_the_carrier_and_not_a_baked_in_payload() -> TestResult {
+    let mut image: Vec<u8> = PROTECTED.to_vec();
+    let length_offset: usize = resource_length_offset(&image, "[z]payload")?;
+    let length_bytes: [u8; 4] = image
+        .get(length_offset..length_offset.saturating_add(4))
+        .ok_or_else(|| test_failure("resource length missing"))?
+        .try_into()?;
+    let payload_len: usize = usize::try_from(u32::from_le_bytes(length_bytes))?;
+    let midpoint: usize = length_offset
+        .checked_add(4)
+        .and_then(|start: usize| start.checked_add(payload_len / 2))
+        .ok_or_else(|| test_failure("payload midpoint overflow"))?;
+    *image
+        .get_mut(midpoint)
+        .ok_or_else(|| test_failure("payload midpoint outside the image"))? ^= 0xFF;
+    let recovered: Vec<Vec<u8>> = peel_smartassembly(&image)?
+        .recovered_resources
+        .into_iter()
+        .filter(|resource| resource.name == "[z]payload")
+        .map(|resource| resource.bytes)
+        .collect();
+    assert_ne!(
+        recovered.first().map(Vec::as_slice),
+        Some(ORIGINAL),
+        "flipping one byte in the middle of the [z]payload DEFLATE stream must stop the peeler \
+         reproducing the clean payload; an unchanged result would mean the recovery is not \
+         reading the carrier"
+    );
+    Ok(())
+}
+
 fn resource_length_offset(image: &[u8], target_name: &str) -> TestResult<usize> {
     let parsed_pe: pe::PeImage = pe::parse(image)?;
     let clr: pe::ClrHeader = pe::parse_clr_header(image, &parsed_pe)?;
