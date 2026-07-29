@@ -3746,6 +3746,7 @@ fn lower_fp_sqrt(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
         dest: dest.0,
         src: FpOperand::Xmm(src.0),
         width: dest.1,
+        saturating: true,
     }])
 }
 
@@ -3890,6 +3891,7 @@ fn lower_fp_to_int(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
         signed,
         round,
         fbits,
+        saturating: true,
     }])
 }
 

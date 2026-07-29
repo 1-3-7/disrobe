@@ -21,6 +21,7 @@ use crate::structuring;
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) mod aarch64;
 mod aarch64_callsite;
+pub mod fp_semantics;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Reg {
@@ -229,21 +230,6 @@ impl RoundMode {
             2 => Self::Ceil,
             _ => Self::Trunc,
         })
-    }
-
-    const fn c_builtin(self, width: FpWidth) -> &'static str {
-        match (self, width) {
-            (Self::Nearest, FpWidth::F64) => "__builtin_rint",
-            (Self::Floor, FpWidth::F64) => "__builtin_floor",
-            (Self::Ceil, FpWidth::F64) => "__builtin_ceil",
-            (Self::Trunc, FpWidth::F64) => "__builtin_trunc",
-            (Self::Nearest, FpWidth::F32) => "__builtin_rintf",
-            (Self::Floor, FpWidth::F32) => "__builtin_floorf",
-            (Self::Ceil, FpWidth::F32) => "__builtin_ceilf",
-            (Self::Trunc, FpWidth::F32) => "__builtin_truncf",
-            (Self::TiesAway, FpWidth::F64) => "__builtin_round",
-            (Self::TiesAway, FpWidth::F32) => "__builtin_roundf",
-        }
     }
 }
 
@@ -1028,6 +1014,7 @@ enum Stmt {
         signed: bool,
         round: FpToIntRound,
         fbits: Option<NonZeroU8>,
+        saturating: bool,
     },
     FpConvert {
         dest: Xmm,
@@ -1062,6 +1049,7 @@ enum Stmt {
         dest: Xmm,
         src: FpOperand,
         width: FpWidth,
+        saturating: bool,
     },
     FpUnary {
         dest: Xmm,
@@ -8326,7 +8314,9 @@ fn scan_fp_stmt(
             scan_fp_flags(flags, written, acc)?;
             written.insert(*dest, true);
         }
-        Stmt::FpSqrt { dest, src, width }
+        Stmt::FpSqrt {
+            dest, src, width, ..
+        }
         | Stmt::FpUnary {
             dest, src, width, ..
         } => {
@@ -9609,6 +9599,7 @@ fn lift_fp(
                 signed: true,
                 round: FpToIntRound::Zero,
                 fbits: None,
+                saturating: false,
             }))
         }
         "cvtsd2ss" | "cvtss2sd" => {
@@ -9647,7 +9638,12 @@ fn lift_fp(
                 Error::LlvmIr(format!("`{mnemonic}` dest is not an xmm register"))
             })?;
             let src: FpOperand = parse_fp_operand(rhs.trim(), width, site, consts)?;
-            Ok(Some(Stmt::FpSqrt { dest, src, width }))
+            Ok(Some(Stmt::FpSqrt {
+                dest,
+                src,
+                width,
+                saturating: false,
+            }))
         }
         "roundsd" | "roundss" => {
             let width: FpWidth = if mnemonic == "roundsd" {
@@ -10651,6 +10647,81 @@ fn source_expr(src: &Source, width: Width, plan: &AggregatePlan) -> String {
                 };
                 c_cast(cx, "uint64_t", inner)
             })
+        }
+    }
+}
+
+fn collect_fp_semantics_helpers(body: &Block, acc: &mut BTreeSet<&'static str>) {
+    for node in body {
+        match node {
+            Node::Stmt(stmt) => match stmt {
+                Stmt::FpMinMax { kind, width, .. } if kind.is_ieee_num() => {
+                    acc.insert(fp_semantics::minmax_helper(kind.is_max(), *width));
+                }
+                Stmt::FpFma { width, .. } => {
+                    acc.insert(fp_semantics::fma_helper(*width));
+                }
+                Stmt::FpRound { width, mode, .. } => {
+                    acc.insert(fp_semantics::rint_helper(*mode, *width));
+                }
+                Stmt::FpSqrt {
+                    width, saturating, ..
+                } => {
+                    acc.insert(fp_semantics::sqrt_helper(*saturating, *width));
+                }
+                Stmt::FpToInt {
+                    dest,
+                    width,
+                    signed,
+                    round,
+                    saturating,
+                    ..
+                } => {
+                    match round {
+                        FpToIntRound::Zero => {}
+                        FpToIntRound::Floor => {
+                            acc.insert(fp_semantics::rint_helper(RoundMode::Floor, *width));
+                        }
+                        FpToIntRound::Ceil => {
+                            acc.insert(fp_semantics::rint_helper(RoundMode::Ceil, *width));
+                        }
+                        FpToIntRound::Away => {
+                            acc.insert(fp_semantics::rint_helper(RoundMode::TiesAway, *width));
+                        }
+                    }
+                    if let Some(helper) =
+                        fp_semantics::cvt_helper(*saturating, *signed, dest.width, *width)
+                    {
+                        acc.insert(helper);
+                    }
+                }
+                _ => {}
+            },
+            Node::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                collect_fp_semantics_helpers(then_body, acc);
+                if let Some(body) = else_body {
+                    collect_fp_semantics_helpers(body, acc);
+                }
+            }
+            Node::DoWhile { body, .. } | Node::While { body, .. } => {
+                collect_fp_semantics_helpers(body, acc);
+            }
+            Node::Switch { cases, default, .. } => {
+                for case in cases {
+                    collect_fp_semantics_helpers(&case.body, acc);
+                }
+                collect_fp_semantics_helpers(default, acc);
+            }
+            Node::CondSnapshot { .. }
+            | Node::Break
+            | Node::Continue
+            | Node::Return
+            | Node::Label(_)
+            | Node::Goto(_) => {}
         }
     }
 }
@@ -12489,6 +12560,11 @@ fn emit_c(
     };
     if uses_fp {
         emit_fp_helpers(&mut out);
+        let mut requested: BTreeSet<&'static str> = BTreeSet::new();
+        collect_fp_semantics_helpers(body, &mut requested);
+        for source in fp_semantics::resolved_sources(&requested) {
+            let _ = writeln!(out, "{source}");
+        }
     } else if block_string_ops_present(body) {
         let _ = writeln!(out, "#include <string.h>");
     }
@@ -13699,14 +13775,11 @@ fn packed_shldq_exprs(imm: u8, lo: &str, hi: &str) -> (String, String) {
     ("0ULL".to_owned(), format!("({lo} << {})", bits - 64))
 }
 
-fn c_fp_round_builtin(base: &str, value: &str, width: FpWidth) -> String {
-    let name: String = match width {
-        FpWidth::F64 => format!("__builtin_{base}"),
-        FpWidth::F32 => format!("__builtin_{base}f"),
-    };
+fn c_fp_rint(mode: RoundMode, value: &str, width: FpWidth) -> String {
+    let name: &'static str = fp_semantics::rint_helper(mode, width);
     c_render(|cx| {
         let arg: CExpr = cx.var(value);
-        cx.call(&name, vec![arg])
+        cx.call(name, vec![arg])
     })
 }
 
@@ -13960,6 +14033,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             signed,
             round,
             fbits,
+            saturating,
         } => {
             let loaded: String = fp_load(&FpOperand::Xmm(*src), *width, aggregates);
             let value: String = match fbits {
@@ -13972,19 +14046,25 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             };
             let rounded: String = match round {
                 FpToIntRound::Zero => value,
-                FpToIntRound::Floor => c_fp_round_builtin("floor", &value, *width),
-                FpToIntRound::Ceil => c_fp_round_builtin("ceil", &value, *width),
-                FpToIntRound::Away => c_fp_round_builtin("round", &value, *width),
+                FpToIntRound::Floor => c_fp_rint(RoundMode::Floor, &value, *width),
+                FpToIntRound::Ceil => c_fp_rint(RoundMode::Ceil, &value, *width),
+                FpToIntRound::Away => c_fp_rint(RoundMode::TiesAway, &value, *width),
             };
             let bits: u32 = dest.width.bits();
+            let convert: Option<&'static str> =
+                fp_semantics::cvt_helper(*saturating, *signed, dest.width, *width);
             let truncated: String = c_render(|cx| {
                 let opaque: CExpr = c_opaque(cx, &rounded);
-                let converted_type: String = if *signed {
-                    format!("int{bits}_t")
+                let converted: CExpr = if let Some(helper) = convert {
+                    cx.call(helper, vec![opaque])
                 } else {
-                    format!("uint{bits}_t")
+                    let converted_type: String = if *signed {
+                        format!("int{bits}_t")
+                    } else {
+                        format!("uint{bits}_t")
+                    };
+                    c_cast(cx, &converted_type, opaque)
                 };
-                let converted: CExpr = c_cast(cx, &converted_type, opaque);
                 if *signed {
                     c_cast(cx, &format!("uint{bits}_t"), converted)
                 } else {
@@ -14014,12 +14094,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             let lhs_val: String = fp_load(lhs, *width, aggregates);
             let rhs_val: String = fp_load(rhs, *width, aggregates);
             let computed: String = if kind.is_ieee_num() {
-                let name: &str = match (kind.is_max(), *width) {
-                    (true, FpWidth::F64) => "__builtin_fmax",
-                    (true, FpWidth::F32) => "__builtin_fmaxf",
-                    (false, FpWidth::F64) => "__builtin_fmin",
-                    (false, FpWidth::F32) => "__builtin_fminf",
-                };
+                let name: &'static str = fp_semantics::minmax_helper(kind.is_max(), *width);
                 c_render(|cx| {
                     let lhs_arg: CExpr = cx.var(&lhs_val);
                     let rhs_arg: CExpr = cx.var(&rhs_val);
@@ -14050,10 +14125,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             let lhs_val: String = fp_load(mul_lhs, *width, aggregates);
             let rhs_val: String = fp_load(mul_rhs, *width, aggregates);
             let addend_val: String = fp_load(addend, *width, aggregates);
-            let name: &str = match width {
-                FpWidth::F64 => "__builtin_fma",
-                FpWidth::F32 => "__builtin_fmaf",
-            };
+            let name: &'static str = fp_semantics::fma_helper(*width);
             let neg_mul: bool = kind.negates_multiplicand();
             let neg_add: bool = kind.negates_addend();
             let computed: String = c_render(|cx| {
@@ -14096,12 +14168,14 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             });
             assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&computed, *width))
         }
-        Stmt::FpSqrt { dest, src, width } => {
+        Stmt::FpSqrt {
+            dest,
+            src,
+            width,
+            saturating,
+        } => {
             let value: String = fp_load(src, *width, aggregates);
-            let name: &str = match width {
-                FpWidth::F64 => "__builtin_sqrt",
-                FpWidth::F32 => "__builtin_sqrtf",
-            };
+            let name: &'static str = fp_semantics::sqrt_helper(*saturating, *width);
             let call: String = c_render(|cx| {
                 let arg: CExpr = cx.var(&value);
                 cx.call(name, vec![arg])
@@ -14140,11 +14214,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             mode,
         } => {
             let value: String = fp_load(src, *width, aggregates);
-            let name: &str = mode.c_builtin(*width);
-            let call: String = c_render(|cx| {
-                let arg: CExpr = cx.var(&value);
-                cx.call(name, vec![arg])
-            });
+            let call: String = c_fp_rint(*mode, &value, *width);
             assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&call, *width))
         }
         Stmt::GprToXmm { dest, src, width } => {
@@ -15435,6 +15505,12 @@ fn emit_rust(
         let _ = writeln!(out, "}}");
     }
 
+    let mut requested: BTreeSet<&'static str> = BTreeSet::new();
+    collect_fp_semantics_helpers(body, &mut requested);
+    for source in fp_semantics::rust_resolved_sources(&requested) {
+        let _ = writeln!(out, "{source}");
+    }
+
     let param_types: Vec<ScalarType> = signature.ordered_param_types();
     let mut int_param_index: usize = 0;
     let params_sig: String = param_types
@@ -15839,38 +15915,46 @@ fn rs_int_to_fp_stmt(
     Some(())
 }
 
-fn rs_fp_to_int_stmt(
-    out: &mut String,
+#[derive(Debug, Clone, Copy)]
+struct RsFpToIntPlan {
     dest: RegRef,
     src: Xmm,
     width: FpWidth,
     signed: bool,
     round: FpToIntRound,
     fbits: Option<NonZeroU8>,
-    indent: &str,
-) -> Option<()> {
-    let loaded: String = rs_fp_load_xmm(src, width);
-    let value: String = match fbits {
+    saturating: bool,
+}
+
+fn rs_fp_to_int_stmt(out: &mut String, plan: RsFpToIntPlan, indent: &str) -> Option<()> {
+    let loaded: String = rs_fp_load_xmm(plan.src, plan.width);
+    let value: String = match plan.fbits {
         None => loaded,
         Some(fraction) => {
-            let scale: String = width.rust_power_of_two(fraction)?;
+            let scale: String = plan.width.rust_power_of_two(fraction)?;
             format!("({loaded} * {scale})")
         }
     };
-    let rounded: String = match round {
+    let rounded: String = match plan.round {
         FpToIntRound::Zero => value,
-        FpToIntRound::Floor => format!("({value}).floor()"),
-        FpToIntRound::Ceil => format!("({value}).ceil()"),
-        FpToIntRound::Away => format!("({value}).round()"),
+        FpToIntRound::Floor => rs_fp_rint(RoundMode::Floor, &value, plan.width),
+        FpToIntRound::Ceil => rs_fp_rint(RoundMode::Ceil, &value, plan.width),
+        FpToIntRound::Away => rs_fp_rint(RoundMode::TiesAway, &value, plan.width),
     };
-    let ity: &str = rs_int_ty(dest.width);
-    let uty: &str = rs_uint_ty(dest.width);
-    let truncated: String = if signed {
+    let ity: &str = rs_int_ty(plan.dest.width);
+    let uty: &str = rs_uint_ty(plan.dest.width);
+    let truncated: String = if !plan.saturating && plan.signed {
+        let ty: &str = plan.width.rust_type();
+        let bound: String = format!("2{ty}.powi({})", plan.dest.width.bits() - 1);
+        format!(
+            "({{ let t: {ty} = {rounded}; (if t >= -({bound}) && t < {bound} {{ t as {ity} }} else {{ {ity}::MIN }}) as {uty} as u64 }})"
+        )
+    } else if plan.signed {
         format!("((({rounded}) as {ity}) as {uty} as u64)")
     } else {
         format!("((({rounded}) as {uty}) as u64)")
     };
-    rs_emit_reg_assign(out, dest, &truncated, indent);
+    rs_emit_reg_assign(out, plan.dest, &truncated, indent);
     Some(())
 }
 
@@ -15886,6 +15970,11 @@ fn rs_fp_convert_stmt(
     rs_emit_xmm_store(out, dest, &value, to, indent);
 }
 
+fn rs_fp_rint(mode: RoundMode, value: &str, width: FpWidth) -> String {
+    let helper: &'static str = fp_semantics::rint_helper(mode, width);
+    format!("{helper}({value})")
+}
+
 fn rs_fp_minmax_stmt(
     out: &mut String,
     dest: Xmm,
@@ -15899,8 +15988,8 @@ fn rs_fp_minmax_stmt(
     let lhs_val: String = rs_fp_load(lhs, width, aggregates)?;
     let rhs_val: String = rs_fp_load(rhs, width, aggregates)?;
     let computed: String = if kind.is_ieee_num() {
-        let method: &str = if kind.is_max() { "max" } else { "min" };
-        format!("(({lhs_val}).{method}({rhs_val}))")
+        let helper: &'static str = fp_semantics::minmax_helper(kind.is_max(), width);
+        format!("({helper}({lhs_val}, {rhs_val}))")
     } else {
         let opstr: &str = if kind.is_max() { ">" } else { "<" };
         format!("(if {lhs_val} {opstr} {rhs_val} {{ {lhs_val} }} else {{ {rhs_val} }})")
@@ -15914,11 +16003,13 @@ fn rs_fp_sqrt_stmt(
     dest: Xmm,
     src: &FpOperand,
     width: FpWidth,
+    saturating: bool,
     indent: &str,
     aggregates: &AggregatePlan,
 ) -> Option<()> {
     let value: String = rs_fp_load(src, width, aggregates)?;
-    let call: String = format!("({value}).sqrt()");
+    let helper: &'static str = fp_semantics::sqrt_helper(saturating, width);
+    let call: String = format!("{helper}({value})");
     rs_emit_xmm_store(out, dest, &call, width, indent);
     Some(())
 }
@@ -15933,14 +16024,7 @@ fn rs_fp_round_stmt(
     aggregates: &AggregatePlan,
 ) -> Option<()> {
     let value: String = rs_fp_load(src, width, aggregates)?;
-    let method: &str = match mode {
-        RoundMode::Nearest => "round_ties_even",
-        RoundMode::Floor => "floor",
-        RoundMode::Ceil => "ceil",
-        RoundMode::Trunc => "trunc",
-        RoundMode::TiesAway => "round",
-    };
-    let call: String = format!("({value}).{method}()");
+    let call: String = rs_fp_rint(mode, &value, width);
     rs_emit_xmm_store(out, dest, &call, width, indent);
     Some(())
 }
@@ -16072,7 +16156,20 @@ fn rs_emit_stmt(
             signed,
             round,
             fbits,
-        } => rs_fp_to_int_stmt(out, *dest, *src, *width, *signed, *round, *fbits, indent)?,
+            saturating,
+        } => rs_fp_to_int_stmt(
+            out,
+            RsFpToIntPlan {
+                dest: *dest,
+                src: *src,
+                width: *width,
+                signed: *signed,
+                round: *round,
+                fbits: *fbits,
+                saturating: *saturating,
+            },
+            indent,
+        )?,
         Stmt::FpConvert {
             dest,
             src,
@@ -16107,7 +16204,8 @@ fn rs_emit_stmt(
             } else {
                 format!("({addend_val})")
             };
-            let computed: String = format!("({lhs_expr}.mul_add({rhs_val}, {addend_expr}))");
+            let helper: &'static str = fp_semantics::fma_helper(*width);
+            let computed: String = format!("{helper}({lhs_expr}, {rhs_val}, {addend_expr})");
             rs_emit_xmm_store(out, *dest, &computed, *width, indent);
         }
         Stmt::FpCsel {
@@ -16124,8 +16222,13 @@ fn rs_emit_stmt(
             let computed: String = format!("(if {cond} {{ {taken} }} else {{ {untaken} }})");
             rs_emit_xmm_store(out, *dest, &computed, *width, indent);
         }
-        Stmt::FpSqrt { dest, src, width } => {
-            rs_fp_sqrt_stmt(out, *dest, src, *width, indent, aggregates)?;
+        Stmt::FpSqrt {
+            dest,
+            src,
+            width,
+            saturating,
+        } => {
+            rs_fp_sqrt_stmt(out, *dest, src, *width, *saturating, indent, aggregates)?;
         }
         Stmt::FpUnary {
             dest,
@@ -18448,8 +18551,8 @@ mod tests {
         );
         assert!(
             rec.source
-                .contains("r_rax = (uint64_t)(int64_t)(fp_d_from_bits(x_xmm0));"),
-            "cvttsd2si must truncate the double toward zero into a signed int: {}",
+                .contains("r_rax = (uint64_t)fpx_cvtind_i64_f64((fp_d_from_bits(x_xmm0)));"),
+            "cvttsd2si must truncate the double toward zero into a signed int with the x86 out-of-range value: {}",
             rec.source
         );
     }
@@ -18683,9 +18786,9 @@ mod tests {
         assert_eq!(rec.fp_params, vec![ScalarType::Double]);
         assert!(
             rec.source.contains(
-                "x_xmm0 = fp_d_to_bits((double)(__builtin_sqrt(fp_d_from_bits(x_xmm0))));"
+                "x_xmm0 = fp_d_to_bits((double)(fpx_sqrt_x86_f64(fp_d_from_bits(x_xmm0))));"
             ),
-            "sqrtsd must lower to a double __builtin_sqrt over the low xmm0 bits: {}",
+            "sqrtsd must lower to a double square root over the low xmm0 bits: {}",
             rec.source
         );
     }
@@ -18699,8 +18802,8 @@ mod tests {
         assert_eq!(rec.fp_params, vec![ScalarType::Float]);
         assert!(
             rec.source
-                .contains("__builtin_sqrtf(fp_f_from_bits((uint32_t)x_xmm0))"),
-            "sqrtss must lower to a float __builtin_sqrtf: {}",
+                .contains("fpx_sqrt_x86_f32(fp_f_from_bits((uint32_t)x_xmm0))"),
+            "sqrtss must lower to a single-precision square root: {}",
             rec.source
         );
     }

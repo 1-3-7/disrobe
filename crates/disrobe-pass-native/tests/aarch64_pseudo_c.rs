@@ -624,14 +624,14 @@ fn aarch64_cross_width_fmov_zero_extends_the_low_lane() {
 }
 
 #[test]
-fn aarch64_scalar_fmaxnm_and_fminnm_recover_as_ieee_num_builtins() {
+fn aarch64_scalar_fmaxnm_and_fminnm_recover_as_ieee_num_helpers() {
     let max_single: [u8; 8] = [0x00, 0x68, 0x21, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
     let min_double: [u8; 8] = [0x00, 0x78, 0x61, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
     let single: LeafRecovery =
         recover_aarch64_function(&max_single, 0).expect("aarch64 fmaxnm single");
     assert!(
-        single.source.contains("__builtin_fmaxf"),
-        "single-precision fmaxnm must recover as the ieee maxnum builtin: {}",
+        single.source.contains("fpx_maxnum_f32("),
+        "single-precision fmaxnm must recover as the ieee maxnum helper: {}",
         single.source
     );
     assert_eq!(single.fp_params.len(), 2);
@@ -639,8 +639,8 @@ fn aarch64_scalar_fmaxnm_and_fminnm_recover_as_ieee_num_builtins() {
     let double: LeafRecovery =
         recover_aarch64_function(&min_double, 0).expect("aarch64 fminnm double");
     assert!(
-        double.source.contains("__builtin_fmin("),
-        "double-precision fminnm must recover as the ieee minnum builtin: {}",
+        double.source.contains("fpx_minnum_f64("),
+        "double-precision fminnm must recover as the ieee minnum helper: {}",
         double.source
     );
     assert_eq!(double.fp_params.len(), 2);
@@ -651,11 +651,11 @@ fn aarch64_scalar_fmaxnm_and_fminnm_recover_as_ieee_num_builtins() {
 fn aarch64_scalar_fma_recovers_with_correct_input_negations() {
     let ret: [u8; 4] = [0xc0, 0x03, 0x5f, 0xd6];
     let cases: [(u32, &str, bool, bool); 5] = [
-        (0x1f01_0800, "__builtin_fmaf(", false, false),
-        (0x1f01_8800, "__builtin_fmaf(", true, false),
-        (0x1f21_0800, "__builtin_fmaf(", true, true),
-        (0x1f21_8800, "__builtin_fmaf(", false, true),
-        (0x1f41_0800, "__builtin_fma(", false, false),
+        (0x1f01_0800, "fpx_fma_f32(", false, false),
+        (0x1f01_8800, "fpx_fma_f32(", true, false),
+        (0x1f21_0800, "fpx_fma_f32(", true, true),
+        (0x1f21_8800, "fpx_fma_f32(", false, true),
+        (0x1f41_0800, "fpx_fma_f64(", false, false),
     ];
     for (word, builtin, neg_mul_lhs, neg_addend) in cases {
         let mut bytes: Vec<u8> = word.to_le_bytes().to_vec();
@@ -663,11 +663,10 @@ fn aarch64_scalar_fma_recovers_with_correct_input_negations() {
         let recovered: LeafRecovery =
             recover_aarch64_function(&bytes, 0).expect("aarch64 fused multiply-add");
         assert_eq!(recovered.fp_params.len(), 3, "{builtin}");
-        let call: &str = recovered
-            .source
-            .split(builtin)
-            .nth(1)
-            .unwrap_or_else(|| panic!("missing {builtin} in {}", recovered.source));
+        let call: &str = recovered.source.rsplit_once(builtin).map_or_else(
+            || panic!("missing {builtin} in {}", recovered.source),
+            |(_, rest): (&str, &str)| rest,
+        );
         let mut depth: i32 = 1;
         let mut parts: Vec<String> = vec![String::new()];
         for ch in call.chars() {
