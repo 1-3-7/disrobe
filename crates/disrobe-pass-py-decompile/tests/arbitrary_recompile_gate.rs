@@ -16,6 +16,9 @@ const PINNED_MODULES: &str = "tests/harness/pinned_modules_314.txt";
 
 const OBJECT_PCT_FLOOR: f64 = 96.60;
 
+const RECOVERY_JSON: &str = "../../xtask/data/recovery.json";
+const PINNED_BAR_LABEL: &str = "200-module pinned corpus";
+
 #[derive(Debug)]
 struct Measurement {
     modules: u64,
@@ -164,6 +167,122 @@ fn parse_measurement(stdout: &str) -> Result<Measurement, String> {
     })
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PublishedBar {
+    value: f64,
+    num: u64,
+    den: u64,
+}
+
+fn recovery_document() -> serde_json::Value {
+    let path: PathBuf = manifest_dir().join(RECOVERY_JSON);
+    let raw: String = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", path.display()));
+    serde_json::from_str(&raw)
+        .unwrap_or_else(|e: serde_json::Error| panic!("parse {}: {e}", path.display()))
+}
+
+fn published_bar(doc: &serde_json::Value, label: &str) -> Result<PublishedBar, String> {
+    let groups: &Vec<serde_json::Value> =
+        doc.get("groups")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| "recovery.json carries no groups array".to_owned())?;
+    for group in groups {
+        let Some(bars): Option<&Vec<serde_json::Value>> =
+            group.get("bars").and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        for bar in bars {
+            if bar.get("label").and_then(serde_json::Value::as_str) != Some(label) {
+                continue;
+            }
+            let value: f64 = bar
+                .get("value")
+                .and_then(serde_json::Value::as_f64)
+                .ok_or_else(|| format!("bar {label} carries no numeric value"))?;
+            let num: u64 = bar
+                .get("num")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| format!("bar {label} carries no numerator"))?;
+            let den: u64 = bar
+                .get("den")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| format!("bar {label} carries no denominator"))?;
+            return Ok(PublishedBar { value, num, den });
+        }
+    }
+    Err(format!("recovery.json carries no bar labelled {label}"))
+}
+
+fn bar_disagreements(bar: &PublishedBar, floor: f64) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    if bar.den == 0 {
+        found.push("denominator is zero".to_owned());
+        return found;
+    }
+    let derived: f64 = (bar.num as f64) * 100.0 / (bar.den as f64);
+    if (derived - bar.value).abs() > 0.05 {
+        found.push(format!(
+            "published value {} disagrees with its own {}/{} = {derived:.4}",
+            bar.value, bar.num, bar.den
+        ));
+    }
+    if (bar.value - floor).abs() > 0.0001 {
+        found.push(format!(
+            "published value {} is not the floor {floor} this crate enforces",
+            bar.value
+        ));
+    }
+    found
+}
+
+#[test]
+fn published_pinned_bar_agrees_with_the_enforced_floor() {
+    let doc: serde_json::Value = recovery_document();
+    let bar: PublishedBar =
+        published_bar(&doc, PINNED_BAR_LABEL).unwrap_or_else(|e: String| panic!("{e}"));
+    let disagreements: Vec<String> = bar_disagreements(&bar, OBJECT_PCT_FLOOR);
+    assert!(
+        disagreements.is_empty(),
+        "xtask/data/recovery.json and this crate describe different numbers, and every document \
+         renders the JSON: {disagreements:?}"
+    );
+}
+
+#[test]
+fn published_bar_check_rejects_a_corrupted_bar() {
+    let doc: serde_json::Value = recovery_document();
+    let real: PublishedBar =
+        published_bar(&doc, PINNED_BAR_LABEL).unwrap_or_else(|e: String| panic!("{e}"));
+
+    let corrupted: PublishedBar = PublishedBar {
+        value: 90.0,
+        ..real
+    };
+    assert_eq!(
+        bar_disagreements(&corrupted, OBJECT_PCT_FLOOR).len(),
+        2,
+        "a bar republished at the old 90 floor must fail both its own ratio and the enforced \
+         floor, otherwise this check would pass over the number the documents used to print"
+    );
+
+    let ratio_only: PublishedBar = PublishedBar {
+        num: real.num / 2,
+        ..real
+    };
+    assert_eq!(
+        bar_disagreements(&ratio_only, OBJECT_PCT_FLOOR).len(),
+        1,
+        "halving the numerator must break the ratio leg alone"
+    );
+
+    assert!(
+        bar_disagreements(&real, OBJECT_PCT_FLOOR).is_empty(),
+        "the committed bar itself must stay clean"
+    );
+}
+
 #[test]
 fn arbitrary_recompile_equivalence_gate() {
     let Some(disrobe): Option<PathBuf> = find_disrobe() else {
@@ -176,13 +295,13 @@ fn arbitrary_recompile_equivalence_gate() {
     };
 
     let Some(python): Option<PathBuf> = find_python_314() else {
-        eprintln!(
-            "skip: no CPython 3.14 interpreter found (uv python find 3.14 / known install paths). \
-             The pinned corpus is 3.14-specific, so per-code-object recompile-equivalence cannot be \
-             measured here; floor {OBJECT_PCT_FLOOR} not enforced this run. Install one with \
+        panic!(
+            "no CPython 3.14 interpreter found (uv python find 3.14 / known install paths). This \
+             gate is the reference behind the published per-code-object figure, so its absence \
+             fails the run rather than passing it: a skip here would leave floor \
+             {OBJECT_PCT_FLOOR} unenforced while the suite still reported green. Install one with \
              `uv python install 3.14`."
         );
-        return;
     };
 
     let Some((maj, min)): Option<(u8, u8)> = interpreter_version(&python) else {
@@ -282,6 +401,21 @@ fn arbitrary_recompile_equivalence_gate() {
         m.objects_ok,
         m.code_objects,
         m.modules,
+        m.cpython_version
+    );
+
+    let doc: serde_json::Value = recovery_document();
+    let bar: PublishedBar =
+        published_bar(&doc, PINNED_BAR_LABEL).unwrap_or_else(|e: String| panic!("{e}"));
+    assert_eq!(
+        (bar.num, bar.den),
+        (m.objects_ok, m.code_objects),
+        "xtask/data/recovery.json publishes {}/{} for the pinned corpus and every document \
+         renders that pair, but this run measured {}/{} on CPython {}",
+        bar.num,
+        bar.den,
+        m.objects_ok,
+        m.code_objects,
         m.cpython_version
     );
 }
