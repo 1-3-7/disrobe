@@ -86,6 +86,75 @@ const BOOL_FIXTURE: &str = r"public class BoolArrCases {
 }
 ";
 
+const BOOL_COND_FIXTURE: &str = r#"public class BoolCondCases {
+    static boolean FLAG = false;
+    static boolean gt(int a, int b) {
+        boolean r = a > b;
+        return r;
+    }
+    static boolean negated(int a) {
+        boolean r = !(a > 0);
+        return r;
+    }
+    static boolean nullCheck(Object o) {
+        boolean r = o == null;
+        return r;
+    }
+    static boolean ternary(int a) {
+        boolean r = a > 0 ? true : false;
+        return r;
+    }
+    static boolean branchAssigned(int a) {
+        boolean r;
+        if (a > 0) {
+            r = true;
+        } else {
+            r = false;
+        }
+        return r;
+    }
+    static boolean viaField(int a) {
+        boolean r = a > 0;
+        FLAG = r;
+        return FLAG;
+    }
+    static boolean fromCall(String s) {
+        boolean r = s.isEmpty();
+        return r;
+    }
+    static int countPositive(int[] xs) {
+        int n = 0;
+        for (int x : xs) {
+            boolean p = x > 0;
+            if (p) { n++; }
+        }
+        return n;
+    }
+    static String describe(int a) {
+        boolean r = a > 0;
+        return "v=" + r;
+    }
+    static boolean widened(int a) {
+        int t = a + 1;
+        boolean r = t > 0;
+        return r;
+    }
+}
+"#;
+
+const BOOL_COND_METHODS: &[&str] = &[
+    "gt",
+    "negated",
+    "nullCheck",
+    "ternary",
+    "branchAssigned",
+    "viaField",
+    "fromCall",
+    "countPositive",
+    "describe",
+    "widened",
+];
+
 const BOOL_METHODS: &[&str] = &[
     "countTrue",
     "countForEach",
@@ -198,6 +267,63 @@ fn javac(javac: &PathBuf, dir: &PathBuf, file: &PathBuf) -> (bool, String) {
     )
 }
 
+fn compile_and_parse(
+    javac_path: &PathBuf,
+    dir: &PathBuf,
+    class: &str,
+    source: &str,
+) -> Result<ClassFile, String> {
+    std::fs::create_dir_all(dir).expect("mkdir");
+    let src: PathBuf = dir.join(format!("{class}.java"));
+    std::fs::write(&src, source).expect("write source");
+    let (ok, err): (bool, String) = javac(javac_path, dir, &src);
+    if !ok {
+        return Err(err);
+    }
+    let bytes: Vec<u8> = std::fs::read(dir.join(format!("{class}.class"))).expect("read class");
+    parse_classfile(&bytes).map_err(|e: disrobe_pass_jvm::Error| e.to_string())
+}
+
+fn divergent_methods(gold: &ClassFile, other: &ClassFile, methods: &[&str]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in methods {
+        let gold_stream: Vec<String> =
+            method_stream(gold, name).unwrap_or_else(|| panic!("reference method {name} missing"));
+        match method_stream(other, name) {
+            Some(other_stream) if other_stream == gold_stream => {}
+            Some(_) => out.push((*name).to_owned()),
+            None => out.push(format!("{name} (missing)")),
+        }
+    }
+    out
+}
+
+fn recovered_stream_divergence(
+    javac_path: &PathBuf,
+    purpose: &str,
+    class: &str,
+    fixture: &str,
+    methods: &[&str],
+) -> (Vec<String>, String) {
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(purpose).expect("create scratch dir");
+    let root: PathBuf = scratch.path().to_path_buf();
+    let gold: PathBuf = root.join("gold");
+    let recov: PathBuf = root.join("recov");
+
+    let gold_cf: ClassFile = compile_and_parse(javac_path, &gold, class, fixture)
+        .unwrap_or_else(|e: String| panic!("reference fixture did not compile: {e}"));
+    let recovered: String = decompile_class(&gold_cf).source;
+    let recov_cf: ClassFile = compile_and_parse(javac_path, &recov, class, &recovered)
+        .unwrap_or_else(|e: String| {
+            panic!(
+                "recovered {class} did not recompile under real javac: {e}\nrecovered source:\n\
+                 {recovered}"
+            )
+        });
+    (divergent_methods(&gold_cf, &recov_cf, methods), recovered)
+}
+
 #[test]
 fn boolean_array_elements_recompile_to_equivalent_bytecode() {
     let Some(javac_path): Option<PathBuf> = find_on_path("javac") else {
@@ -208,45 +334,81 @@ fn boolean_array_elements_recompile_to_equivalent_bytecode() {
         return;
     };
     let purpose: String = format!("disrobe_bool_arr_{}", std::process::id());
+    let (diverged, recovered): (Vec<String>, String) = recovered_stream_divergence(
+        &javac_path,
+        &purpose,
+        "BoolArrCases",
+        BOOL_FIXTURE,
+        BOOL_METHODS,
+    );
+    assert!(
+        diverged.is_empty(),
+        "these methods did not recompile to an equivalent instruction stream: {diverged:?}; \
+         a boolean[] baload element mis-typed as int changes the recovered local type. \
+         recovered source:\n{recovered}"
+    );
+}
+
+#[test]
+fn conditional_derived_booleans_recompile_to_equivalent_bytecode() {
+    let Some(javac_path): Option<PathBuf> = find_on_path("javac") else {
+        eprintln!(
+            "SKIP: javac not on PATH; the conditional-derived boolean typing gate is NOT \
+             enforced. A green result here is a SKIP, not a measured pass."
+        );
+        return;
+    };
+    let purpose: String = format!("disrobe_bool_cond_{}", std::process::id());
+    let (diverged, recovered): (Vec<String>, String) = recovered_stream_divergence(
+        &javac_path,
+        &purpose,
+        "BoolCondCases",
+        BOOL_COND_FIXTURE,
+        BOOL_COND_METHODS,
+    );
+    assert!(
+        diverged.is_empty(),
+        "these methods did not recompile to an equivalent instruction stream: {diverged:?}; \
+         a boolean produced by a comparison must recover as a boolean local, not an int. \
+         recovered source:\n{recovered}"
+    );
+}
+
+#[test]
+fn the_boolean_typing_gate_reports_an_int_local_standing_in_for_a_boolean() {
+    let Some(javac_path): Option<PathBuf> = find_on_path("javac") else {
+        eprintln!("SKIP: javac not on PATH; the boolean-typing control is NOT enforced.");
+        return;
+    };
+    let mutant: String = BOOL_COND_FIXTURE.replace(
+        "    static boolean gt(int a, int b) {\n        boolean r = a > b;\n        return r;\n",
+        "    static boolean gt(int a, int b) {\n        int r = a > b ? 1 : 0;\n        return r \
+         != 0;\n",
+    );
+    assert_ne!(
+        mutant, BOOL_COND_FIXTURE,
+        "the mutation-kill control did not apply; the method it targets moved"
+    );
+
+    let purpose: String = format!("disrobe_bool_cond_control_{}", std::process::id());
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
     let root: PathBuf = scratch.path().to_path_buf();
-    let gold: PathBuf = root.join("gold");
-    let recov: PathBuf = root.join("recov");
-    std::fs::create_dir_all(&gold).expect("mkdir gold");
-    std::fs::create_dir_all(&recov).expect("mkdir recov");
+    let gold_cf: ClassFile = compile_and_parse(
+        &javac_path,
+        &root.join("gold"),
+        "BoolCondCases",
+        BOOL_COND_FIXTURE,
+    )
+    .unwrap_or_else(|e: String| panic!("reference fixture did not compile: {e}"));
+    let bad_cf: ClassFile =
+        compile_and_parse(&javac_path, &root.join("bad"), "BoolCondCases", &mutant)
+            .unwrap_or_else(|e: String| panic!("control fixture did not compile: {e}"));
 
-    let gold_src: PathBuf = gold.join("BoolArrCases.java");
-    std::fs::write(&gold_src, BOOL_FIXTURE).expect("write fixture");
-    let (gold_ok, gold_err): (bool, String) = javac(&javac_path, &gold, &gold_src);
-    assert!(gold_ok, "reference fixture did not compile: {gold_err}");
-    let gold_bytes: Vec<u8> =
-        std::fs::read(gold.join("BoolArrCases.class")).expect("read gold class");
-    let gold_cf: ClassFile = parse_classfile(&gold_bytes).expect("parse gold");
-
-    let recovered: String = decompile_class(&gold_cf).source;
-
-    let recov_src: PathBuf = recov.join("BoolArrCases.java");
-    std::fs::write(&recov_src, &recovered).expect("write recovered");
-    let (recov_ok, recov_err): (bool, String) = javac(&javac_path, &recov, &recov_src);
+    let diverged: Vec<String> = divergent_methods(&gold_cf, &bad_cf, BOOL_COND_METHODS);
     assert!(
-        recov_ok,
-        "recovered BoolArrCases did not recompile under real javac: {recov_err}\nrecovered source:\n{recovered}"
+        diverged.iter().any(|m: &String| m == "gt"),
+        "a boolean local replaced by an int local was NOT reported as divergent, so this gate \
+         measures nothing; diffs were: {diverged:?}"
     );
-    let recov_bytes: Vec<u8> =
-        std::fs::read(recov.join("BoolArrCases.class")).expect("read recovered class");
-    let recov_cf: ClassFile = parse_classfile(&recov_bytes).expect("parse recovered");
-
-    for name in BOOL_METHODS {
-        let gold_stream: Vec<String> =
-            method_stream(&gold_cf, name).unwrap_or_else(|| panic!("gold method {name} missing"));
-        let recov_stream: Vec<String> = method_stream(&recov_cf, name)
-            .unwrap_or_else(|| panic!("recovered method {name} missing"));
-        assert_eq!(
-            gold_stream, recov_stream,
-            "method `{name}` did not recompile to an equivalent instruction stream; \
-             a boolean[] baload element mis-typed as int changes the recovered local type. \
-             recovered source:\n{recovered}"
-        );
-    }
 }
