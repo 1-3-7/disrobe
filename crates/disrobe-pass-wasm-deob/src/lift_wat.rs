@@ -85,6 +85,13 @@ fn module_prelude(globals_used: &[(u32, ValType)], reqs: &FeatureReqs) -> String
         };
         push_line!(out, "  (global $g{idx} (mut {t}) ({init}))");
     }
+    for idx in &reqs.atomic_globals {
+        if seen.contains(idx) {
+            continue;
+        }
+        seen.push(*idx);
+        push_line!(out, "  (global $g{idx} (mut i32) (i32.const 0))");
+    }
     let idx64: fn(&FeatureReqs, u32) -> &'static str =
         |r: &FeatureReqs, m: u32| if r.memory64.contains(&m) { "i64 " } else { "" };
     if reqs.shared_memory {
@@ -110,6 +117,12 @@ fn module_prelude(globals_used: &[(u32, ValType)], reqs: &FeatureReqs) -> String
 
 fn emit_gc_type_decls(mut out: &mut String, reqs: &FeatureReqs) {
     for (idx, field_count) in &reqs.struct_types {
+        if reqs.array_types.contains(idx)
+            || reqs.func_types.contains_key(idx)
+            || reqs.cont_types.contains_key(idx)
+        {
+            continue;
+        }
         push_text!(out, "  (type $t{idx} (struct");
         let field_types: Option<&std::collections::BTreeMap<u32, ValType>> =
             reqs.struct_field_types.get(idx);
@@ -123,6 +136,9 @@ fn emit_gc_type_decls(mut out: &mut String, reqs: &FeatureReqs) {
         out.push_str("))\n");
     }
     for idx in &reqs.array_types {
+        if reqs.func_types.contains_key(idx) || reqs.cont_types.contains_key(idx) {
+            continue;
+        }
         let elem: String = reqs
             .array_elem_types
             .get(idx)
@@ -130,6 +146,9 @@ fn emit_gc_type_decls(mut out: &mut String, reqs: &FeatureReqs) {
         push_line!(out, "  (type $t{idx} (array (mut {elem})))");
     }
     for (idx, (params, results)) in &reqs.func_types {
+        if reqs.cont_types.contains_key(idx) {
+            continue;
+        }
         push_text!(out, "  (type $t{idx} (func");
         for ty in params {
             push_text!(out, " (param {})", val_type_str(*ty));
@@ -242,6 +261,7 @@ pub(crate) struct FeatureReqs {
     cont_types: std::collections::BTreeMap<u32, u32>,
     cont_func_targets: std::collections::BTreeMap<u32, u32>,
     referenced_gc_types: std::collections::BTreeSet<u32>,
+    atomic_globals: std::collections::BTreeSet<u32>,
 }
 
 impl FeatureReqs {
@@ -286,6 +306,11 @@ impl FeatureReqs {
             self.cont_func_targets.entry(*idx).or_insert(*type_idx);
         }
         self.referenced_gc_types.extend(&other.referenced_gc_types);
+        self.atomic_globals.extend(&other.atomic_globals);
+    }
+
+    fn note_atomic_global(&mut self, idx: u32) {
+        self.atomic_globals.insert(idx);
     }
 
     fn record_func_type(&mut self, idx: u32) {
@@ -1855,7 +1880,7 @@ fn render_extended_op(op: &Operator<'_>, reqs: &mut FeatureReqs) -> Option<Strin
             ordering,
             global_index,
         } => {
-            note_global(*global_index, &mut Vec::new());
+            reqs.note_atomic_global(*global_index);
             format!(
                 "global.atomic.get {} $g{global_index}",
                 ordering_str(*ordering)
@@ -1864,10 +1889,13 @@ fn render_extended_op(op: &Operator<'_>, reqs: &mut FeatureReqs) -> Option<Strin
         Operator::GlobalAtomicSet {
             ordering,
             global_index,
-        } => format!(
-            "global.atomic.set {} $g{global_index}",
-            ordering_str(*ordering)
-        ),
+        } => {
+            reqs.note_atomic_global(*global_index);
+            format!(
+                "global.atomic.set {} $g{global_index}",
+                ordering_str(*ordering)
+            )
+        }
         Operator::GlobalAtomicRmwAdd {
             ordering,
             global_index,
@@ -1891,18 +1919,24 @@ fn render_extended_op(op: &Operator<'_>, reqs: &mut FeatureReqs) -> Option<Strin
         | Operator::GlobalAtomicRmwXchg {
             ordering,
             global_index,
-        } => format!(
-            "global.atomic.rmw.{} {} $g{global_index}",
-            atomic_rmw_suffix(op),
-            ordering_str(*ordering)
-        ),
+        } => {
+            reqs.note_atomic_global(*global_index);
+            format!(
+                "global.atomic.rmw.{} {} $g{global_index}",
+                atomic_rmw_suffix(op),
+                ordering_str(*ordering)
+            )
+        }
         Operator::GlobalAtomicRmwCmpxchg {
             ordering,
             global_index,
-        } => format!(
-            "global.atomic.rmw.cmpxchg {} $g{global_index}",
-            ordering_str(*ordering)
-        ),
+        } => {
+            reqs.note_atomic_global(*global_index);
+            format!(
+                "global.atomic.rmw.cmpxchg {} $g{global_index}",
+                ordering_str(*ordering)
+            )
+        }
         _ => return render_shared_aggregate_atomic(op, reqs),
     })
 }

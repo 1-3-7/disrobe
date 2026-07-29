@@ -1407,8 +1407,7 @@ impl Translator<'_> {
             Operator::RefNull { .. } => {
                 let expr: String = match self.lang {
                     HighLang::Rust => "0usize".to_owned(),
-                    HighLang::TypeScript => "null".to_owned(),
-                    HighLang::C => "((funcref_t)0)".to_owned(),
+                    HighLang::TypeScript | HighLang::C => "0".to_owned(),
                 };
                 self.push(expr, REF_TYPE);
                 self.coverage.record_translated();
@@ -1418,7 +1417,7 @@ impl Translator<'_> {
                 let r: Operand = self.pop("ref.is_null")?;
                 let expr: String = match self.lang {
                     HighLang::Rust => format!("(({} == 0) as i32)", r.text),
-                    HighLang::TypeScript => format!("({} === null ? 1 : 0)", r.text),
+                    HighLang::TypeScript => format!("({} === 0 ? 1 : 0)", r.text),
                     HighLang::C => format!("(({}) == 0)", r.text),
                 };
                 self.spill(&expr, ValType::I32);
@@ -1561,33 +1560,23 @@ impl Translator<'_> {
             }
             Operator::RefI31 => {
                 let v: Operand = self.pop("ref.i31")?;
-                let expr: String = match self.lang {
-                    HighLang::Rust => format!("({} & 0x7fff_ffff)", v.text),
-                    HighLang::TypeScript => format!("({} & 0x7fffffff)", v.text),
-                    HighLang::C => format!("({} & 0x7fffffff)", v.text),
-                };
+                let expr: String = i31_pack(&v.text, self.lang);
                 self.spill(&expr, REF_TYPE);
                 self.coverage.record_translated();
                 Ok(true)
             }
             Operator::I31GetS => {
                 let v: Operand = self.pop("i31.get_s")?;
-                let expr: String = match self.lang {
-                    HighLang::Rust => format!("(({} << 1) >> 1)", v.text),
-                    HighLang::TypeScript => format!("(({} << 1) >> 1)", v.text),
-                    HighLang::C => format!("(((int32_t)({}) << 1) >> 1)", v.text),
-                };
+                let scalar: String = i31_scalar(&v.text, self.lang);
+                let expr: String = format!("(({scalar} << 1) >> 1)");
                 self.spill(&expr, ValType::I32);
                 self.coverage.record_translated();
                 Ok(true)
             }
             Operator::I31GetU => {
                 let v: Operand = self.pop("i31.get_u")?;
-                let expr: String = match self.lang {
-                    HighLang::Rust => format!("({} & 0x7fff_ffff)", v.text),
-                    HighLang::TypeScript => format!("({} & 0x7fffffff)", v.text),
-                    HighLang::C => format!("({} & 0x7fffffff)", v.text),
-                };
+                let scalar: String = i31_scalar(&v.text, self.lang);
+                let expr: String = format!("({scalar} & {})", i31_mask(self.lang));
                 self.spill(&expr, ValType::I32);
                 self.coverage.record_translated();
                 Ok(true)
@@ -2271,10 +2260,7 @@ impl Translator<'_> {
         match op {
             Operator::RefI31Shared => {
                 let v: Operand = self.pop("ref.i31_shared")?;
-                let expr: String = match self.lang {
-                    HighLang::Rust => format!("({} & 0x7fff_ffff)", v.text),
-                    HighLang::TypeScript | HighLang::C => format!("({} & 0x7fffffff)", v.text),
-                };
+                let expr: String = i31_pack(&v.text, self.lang);
                 self.spill(&expr, REF_TYPE);
             }
             Operator::GlobalAtomicGet { global_index, .. } => {
@@ -2438,7 +2424,10 @@ impl Translator<'_> {
                 "({f}({global_index}, ({}) as i64, \"{op_sym}\") as i32)",
                 v.text
             ),
-            HighLang::TypeScript => format!("{}({global_index}, {}, \"{op_sym}\")", f, v.text),
+            HighLang::TypeScript => format!(
+                "Number(BigInt.asIntN(32, {f}({global_index}, BigInt({}), \"{op_sym}\")))",
+                v.text
+            ),
             HighLang::C => format!(
                 "(int32_t){f}({global_index}, (int64_t)({}), \"{op_sym}\")",
                 v.text
@@ -2457,12 +2446,10 @@ impl Translator<'_> {
                 "({f}({global_index}, ({}) as i64, ({}) as i64) as i32)",
                 expected.text, replacement.text
             ),
-            HighLang::TypeScript => {
-                format!(
-                    "{f}({global_index}, {}, {})",
-                    expected.text, replacement.text
-                )
-            }
+            HighLang::TypeScript => format!(
+                "Number(BigInt.asIntN(32, {f}({global_index}, BigInt({}), BigInt({}))))",
+                expected.text, replacement.text
+            ),
             HighLang::C => format!(
                 "(int32_t){f}({global_index}, (int64_t)({}), (int64_t)({}))",
                 expected.text, replacement.text
@@ -2739,13 +2726,13 @@ impl Translator<'_> {
         let cond: String = if on_null {
             match self.lang {
                 HighLang::Rust => format!("({} == 0)", r.text),
-                HighLang::TypeScript => format!("({} === null)", r.text),
+                HighLang::TypeScript => format!("({} === 0)", r.text),
                 HighLang::C => format!("(({}) == 0)", r.text),
             }
         } else {
             match self.lang {
                 HighLang::Rust => format!("({} != 0)", r.text),
-                HighLang::TypeScript => format!("({} !== null)", r.text),
+                HighLang::TypeScript => format!("({} !== 0)", r.text),
                 HighLang::C => format!("(({}) != 0)", r.text),
             }
         };
@@ -3189,6 +3176,29 @@ const fn ts_ty(ty: ValType) -> &'static str {
     match ty {
         ValType::I64 | ValType::V128 => "bigint",
         ValType::I32 | ValType::F32 | ValType::F64 | ValType::Ref(_) => "number",
+    }
+}
+
+const fn i31_mask(lang: HighLang) -> &'static str {
+    match lang {
+        HighLang::Rust => "0x7fff_ffff",
+        HighLang::TypeScript | HighLang::C => "0x7fffffff",
+    }
+}
+
+fn i31_pack(value: &str, lang: HighLang) -> String {
+    let masked: String = format!("({value} & {})", i31_mask(lang));
+    match lang {
+        HighLang::Rust => format!("({masked} as usize)"),
+        HighLang::TypeScript | HighLang::C => masked,
+    }
+}
+
+fn i31_scalar(value: &str, lang: HighLang) -> String {
+    match lang {
+        HighLang::Rust => format!("({value} as i32)"),
+        HighLang::TypeScript => format!("({value})"),
+        HighLang::C => format!("((int32_t)({value}))"),
     }
 }
 

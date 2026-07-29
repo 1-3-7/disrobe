@@ -27,7 +27,7 @@ fn data_segment_bytes(bytes: &[u8]) -> Vec<u8> {
     Vec::new()
 }
 
-fn body_opcodes(bytes: &[u8]) -> Vec<String> {
+fn body_operators(bytes: &[u8]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for payload in Parser::new(0).parse_all(bytes) {
         if let Payload::CodeSectionEntry(body) = payload.expect("payload parses") {
@@ -35,13 +35,7 @@ fn body_opcodes(bytes: &[u8]) -> Vec<String> {
                 body.get_operators_reader().expect("operators reader");
             for op in reader {
                 let op: Operator<'_> = op.expect("operator");
-                out.push(
-                    format!("{op:?}")
-                        .split_whitespace()
-                        .next()
-                        .unwrap()
-                        .to_owned(),
-                );
+                out.push(format!("{op:?}"));
             }
         }
     }
@@ -242,8 +236,8 @@ fn canonicalize_folds_identity_trash_to_original_shape() {
     let original: Vec<u8> = clean_arith_module();
     let mutated: Vec<u8> = mutated_arith_module();
     assert_ne!(
-        body_opcodes(&original),
-        body_opcodes(&mutated),
+        body_operators(&original),
+        body_operators(&mutated),
         "mutated fixture must differ from the clean original"
     );
 
@@ -256,9 +250,86 @@ fn canonicalize_folds_identity_trash_to_original_shape() {
         "x+0, x*1, x|0 are the three identity trash pairs"
     );
     assert_eq!(
-        body_opcodes(&reversed),
-        body_opcodes(&original),
+        body_operators(&reversed),
+        body_operators(&original),
         "reversed body opcode sequence must structurally match the clean original"
+    );
+}
+
+#[cfg(feature = "sandbox")]
+fn arith_battery() -> Vec<i32> {
+    vec![
+        0,
+        1,
+        -1,
+        2,
+        7,
+        -8,
+        100,
+        255,
+        -1_073_741_824,
+        i32::MIN,
+        i32::MAX,
+    ]
+}
+
+#[cfg(feature = "sandbox")]
+fn run_export_i32(bytes: &[u8], export: &str, args: &[i32]) -> Vec<Option<i32>> {
+    use wasmtime::{Config, Engine, Linker, Module as WtModule, Store, Val};
+
+    let mut config: Config = Config::new();
+    config.consume_fuel(true);
+    let eng: Engine = Engine::new(&config).expect("engine");
+    let module: WtModule = WtModule::new(&eng, bytes).expect("module compiles");
+    let mut store: Store<()> = Store::new(&eng, ());
+    store.set_fuel(1_000_000).expect("fuel");
+    let linker: Linker<()> = Linker::new(&eng);
+    let instance: wasmtime::Instance = linker
+        .instantiate(&mut store, &module)
+        .expect("module instantiates");
+    let func: wasmtime::Func = instance
+        .get_func(&mut store, export)
+        .expect("export present");
+    let mut out: Vec<Option<i32>> = Vec::with_capacity(args.len());
+    for a in args {
+        let mut results: [Val; 1] = [Val::I32(0)];
+        store.set_fuel(1_000_000).ok();
+        let got: Option<i32> = match func.call(&mut store, &[Val::I32(*a)], &mut results) {
+            Ok(()) => match results[0] {
+                Val::I32(v) => Some(v),
+                _ => None,
+            },
+            Err(_) => None,
+        };
+        out.push(got);
+    }
+    out
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn canonicalized_module_executes_identically_to_the_clean_original() {
+    let original: Vec<u8> = clean_arith_module();
+    let mutated: Vec<u8> = mutated_arith_module();
+    let (reversed, stats): (Vec<u8>, CanonicalizeStats) =
+        canonicalize_substitutions(&mutated).expect("canonicalize succeeds");
+    assert_eq!(stats.identity_ops_folded, 3);
+
+    let args: Vec<i32> = arith_battery();
+    let want: Vec<Option<i32>> = run_export_i32(&original, "f", &args);
+    assert!(
+        want.iter().all(Option::is_some),
+        "the clean original must not trap on the battery: {want:?}"
+    );
+    assert_eq!(
+        run_export_i32(&mutated, "f", &args),
+        want,
+        "the mutated fixture must already be behaviourally equal to the clean original"
+    );
+    assert_eq!(
+        run_export_i32(&reversed, "f", &args),
+        want,
+        "the canonicalized module must execute identically to the clean original"
     );
 }
 
@@ -269,7 +340,7 @@ fn canonicalize_is_noop_on_clean_module() {
         canonicalize_substitutions(&original).expect("clean module canonicalizes to no-op");
     validate(&reversed);
     assert_eq!(stats.identity_ops_folded, 0, "no identity trash present");
-    assert_eq!(body_opcodes(&reversed), body_opcodes(&original));
+    assert_eq!(body_operators(&reversed), body_operators(&original));
 }
 
 const PLAINTEXT: &[u8] = b"HELLO_DISROBE_WASM";

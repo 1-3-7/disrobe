@@ -5,10 +5,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "common/div_cases.rs"]
+mod div_cases;
+
 use disrobe_pass_wasm_deob::{
     CalleeNames, FunctionSig, LiftResult, LiftTarget, ModuleSignatures, extract_signatures,
     lift_function_body, rust_runtime_prelude,
 };
+use div_cases::{DIV_REM_MODULE, I32Case, I64Case, i32_cases, i64_cases};
 use wasmparser::{FunctionBody, Operator, Parser, Payload, ValType};
 use wasmtime::{Config, Engine, Linker, Module, Store, Val};
 
@@ -546,6 +550,168 @@ fn recovered_rust_executes_identically_to_original_under_wasmtime() {
         total_labeled_loops <= 8,
         "labeled-loop scaffolding must not regress above the collapsed floor; \
          total_labeled_loops={total_labeled_loops}"
+    );
+}
+
+fn lifted_div_rem_program(bytes: &[u8], sigs: &ModuleSignatures, driver: &str) -> String {
+    let defined: Vec<FunctionSig> = sigs.defined().to_vec();
+    let calls: CalleeNames = callees(sigs);
+    let mut program: String = rust_runtime_prelude().to_owned();
+    for (i, body) in defined_bodies(bytes).iter().enumerate() {
+        let sig: &FunctionSig = &defined[i];
+        let lifted: LiftResult = lift_function_body(body, sig, &calls, LiftTarget::Rust);
+        assert!(
+            lifted.coverage.fully_recovered(),
+            "{} did not fully lift: {:?}",
+            sig.name,
+            lifted.coverage.untranslated
+        );
+        program.push('\n');
+        program.push_str(&lifted.pseudo_source);
+    }
+    program.push_str(driver);
+    program
+}
+
+#[test]
+fn divide_and_remainder_helpers_execute_identically_on_non_trapping_inputs() {
+    let Some(rustc): Option<PathBuf> = tool_on_path("rustc") else {
+        eprintln!("SKIP: rustc not on PATH for the divide/remainder differential");
+        return;
+    };
+    let bytes: Vec<u8> = wat::parse_str(DIV_REM_MODULE).expect("assemble the div/rem module");
+    let sigs: ModuleSignatures = extract_signatures(&bytes).expect("signatures");
+
+    let i32s: Vec<I32Case> = i32_cases();
+    let i64s: Vec<I64Case> = i64_cases();
+    let mut expected: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    let mut driver: String = String::from("\nfn main() {\n");
+    for case in &i32s {
+        for (op, want) in [
+            ("i32_div_s", case.div_s),
+            ("i32_div_u", case.div_u),
+            ("i32_rem_s", case.rem_s),
+            ("i32_rem_u", case.rem_u),
+        ] {
+            let key: String = format!("{op} {} {}", case.a, case.b);
+            expected.insert(key.clone(), want.to_string());
+            let _: Result<(), std::fmt::Error> = writeln!(
+                driver,
+                "    println!(\"{key} {{}}\", {op}({}i32, {}i32));",
+                case.a, case.b
+            );
+        }
+    }
+    for case in &i64s {
+        for (op, want) in [
+            ("i64_div_s", case.div_s),
+            ("i64_div_u", case.div_u),
+            ("i64_rem_s", case.rem_s),
+            ("i64_rem_u", case.rem_u),
+        ] {
+            let key: String = format!("{op} {} {}", case.a, case.b);
+            expected.insert(key.clone(), want.to_string());
+            let _: Result<(), std::fmt::Error> = writeln!(
+                driver,
+                "    println!(\"{key} {{}}\", {op}({}i64, {}i64));",
+                case.a, case.b
+            );
+        }
+    }
+    driver.push_str("}\n");
+
+    let program: String = lifted_div_rem_program(&bytes, &sigs, &driver);
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_wasm_div_rem_diff").expect("mkdir");
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let rs: PathBuf = dir.join("div_rem.rs");
+    fs::write(&rs, &program).expect("write rs");
+    let bin: PathBuf = dir.join(if cfg!(windows) {
+        "div_rem.exe"
+    } else {
+        "div_rem"
+    });
+    let compile: std::process::Output = Command::new(&rustc)
+        .args(["--edition", "2021", "-O", "-o"])
+        .arg(&bin)
+        .arg(&rs)
+        .output()
+        .expect("spawn rustc");
+    assert!(
+        compile.status.success(),
+        "rustc rejected the lifted divide/remainder program\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let run: std::process::Output = Command::new(&bin).output().expect("run div/rem binary");
+    assert!(
+        run.status.success(),
+        "lifted divide/remainder program crashed"
+    );
+    let stdout: String = String::from_utf8_lossy(&run.stdout).to_string();
+
+    let mut got: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        let [op, a, b, value] = parts.as_slice() else {
+            panic!("unparsable divide/remainder result line {line:?}");
+        };
+        got.insert(format!("{op} {a} {b}"), (*value).to_owned());
+    }
+
+    let eng: Engine = Engine::new(&rich_config()).expect("wasmtime engine");
+    let mut sandbox: Sandbox = instantiate(&eng, &bytes).expect("div/rem module instantiates");
+    let mut diverged: Vec<String> = Vec::new();
+    for (key, want) in &expected {
+        let parts: Vec<&str> = key.split_whitespace().collect();
+        let [op, a, b] = parts.as_slice() else {
+            panic!("malformed key {key:?}");
+        };
+        let args: Vec<Val> = if op.starts_with("i32") {
+            vec![
+                Val::I32(a.parse::<i32>().expect("i32 operand")),
+                Val::I32(b.parse::<i32>().expect("i32 operand")),
+            ]
+        } else {
+            vec![
+                Val::I64(a.parse::<i64>().expect("i64 operand")),
+                Val::I64(b.parse::<i64>().expect("i64 operand")),
+            ]
+        };
+        let result_ty: ValType = if op.starts_with("i32") {
+            ValType::I32
+        } else {
+            ValType::I64
+        };
+        let engine_value: String = match wasm_outcome(&mut sandbox, op, &args, result_ty) {
+            Some(CmpVal::I32(v)) => v.to_string(),
+            Some(CmpVal::I64(v)) => v.to_string(),
+            other => panic!("{key}: the module must not trap on a non-trapping operand: {other:?}"),
+        };
+        if &engine_value != want {
+            diverged.push(format!(
+                "{key}: tabulated={want} wasmtime={engine_value} (the operand table is wrong)"
+            ));
+            continue;
+        }
+        match got.get(key) {
+            Some(actual) if actual == want => {}
+            Some(actual) => {
+                diverged.push(format!("{key}: wasm={want} lifted-rust={actual}"));
+            }
+            None => diverged.push(format!("{key}: missing from the lifted output")),
+        }
+    }
+    assert!(
+        diverged.is_empty(),
+        "the lifted divide/remainder helpers diverged on {} of {} case(s):\n{}",
+        diverged.len(),
+        expected.len(),
+        diverged.join("\n")
+    );
+    eprintln!(
+        "divide/remainder differential: {} non-trapping cases, lifted-rust == wasmtime on all",
+        expected.len()
     );
 }
 

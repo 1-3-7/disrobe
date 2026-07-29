@@ -177,8 +177,21 @@ fn recovery_is_byte_stable_and_valid() {
             "recovered {} must validate",
             case.obf
         );
+        assert_ne!(
+            recovered.bytes, obf_bytes,
+            "recovery must change {}, otherwise the stability check below compares nothing",
+            case.obf
+        );
         let again: RecoveredModule = recover_module(&recovered.bytes).expect("re-recover");
-        let _ = again;
+        assert_eq!(
+            again.bytes,
+            recovered.bytes,
+            "recovering {} a second time must re-encode to the identical module ({} bytes then {} \
+             bytes)",
+            case.obf,
+            recovered.bytes.len(),
+            again.bytes.len()
+        );
     }
 }
 
@@ -309,6 +322,15 @@ fn named_family_recovery_is_idempotent_and_import_free() {
             wasmparser::validate(&again.bytes).is_ok(),
             "second-pass recovery of {} must still validate",
             case.obf
+        );
+        assert_eq!(
+            again.bytes,
+            recovered.bytes,
+            "recovering {} a second time must re-encode to the identical module ({} bytes then {} \
+             bytes)",
+            case.obf,
+            recovered.bytes.len(),
+            again.bytes.len()
         );
     }
 }
