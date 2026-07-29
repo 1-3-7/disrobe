@@ -719,7 +719,7 @@ fn secret_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>
         out.push(ReconFinding {
             category: ReconCategory::Secret,
             rule_id: f.code,
-            value: f.redacted_preview,
+            value: f.value,
             path: path.map(str::to_owned),
             line,
             column,
@@ -1828,7 +1828,48 @@ mod tests {
             .expect("aws finding");
         assert_eq!(
             fingerprint(aws),
-            "a.smali|secret|DR-SEC-AWS-AKID|AKIA\u{2026}20"
+            format!("a.smali|secret|DR-SEC-AWS-AKID|{}", aws_akid())
+        );
+    }
+
+    #[test]
+    fn secret_findings_carry_the_full_value_not_a_preview() {
+        let key: String = aws_akid();
+        let report: ReconReport = report_bytes(
+            format!("k {key}").as_bytes(),
+            Some("a.smali"),
+            &ReconConfig::default(),
+        );
+        let aws: &ReconFinding = report
+            .findings
+            .iter()
+            .find(|f: &&ReconFinding| f.rule_id == "DR-SEC-AWS-AKID")
+            .expect("aws finding");
+        assert_eq!(
+            aws.value, key,
+            "a DR-SEC-* finding must expose the same full match its DR-RECON-* siblings do"
+        );
+    }
+
+    #[test]
+    fn two_distinct_keys_in_one_file_both_survive_dedup() {
+        let first: String = aws_akid();
+        let second: String = format!("{}{}", "AKIA", "9QWERTY7ZXCVB2NM");
+        assert_ne!(first, second);
+        let report: ReconReport = report_bytes(
+            format!("a {first}\nb {second}\n").as_bytes(),
+            Some("a.smali"),
+            &ReconConfig::default(),
+        );
+        let values: Vec<&str> = report
+            .findings
+            .iter()
+            .filter(|f: &&ReconFinding| f.rule_id == "DR-SEC-AWS-AKID")
+            .map(|f: &ReconFinding| f.value.as_str())
+            .collect();
+        assert!(
+            values.contains(&first.as_str()) && values.contains(&second.as_str()),
+            "dedup keys on the value, so two distinct keys must not collapse into one: {values:?}"
         );
     }
 
@@ -2382,8 +2423,13 @@ mod tests {
         );
         let block_len: usize = pem.trim_end().len();
         assert!(
-            pem_hit.redacted_preview.ends_with(&block_len.to_string()),
+            pem_hit.preview.ends_with(&block_len.to_string()),
             "preview must report the full block length {block_len}: {pem_hit:?}"
+        );
+        assert_eq!(
+            pem_hit.value,
+            pem.trim_end(),
+            "the value must be the whole key block a researcher pivots on"
         );
         assert!(
             block_len > 256,

@@ -700,7 +700,7 @@ fn push_secret(container_path: &str, f: &Finding, out: &mut Vec<SurfacedSecret>)
         container_path: container_path.to_owned(),
         code: f.code.clone(),
         kind: format!("{:?}", f.kind),
-        redacted_preview: f.redacted_preview.clone(),
+        redacted_preview: f.preview.clone(),
     });
 }
 

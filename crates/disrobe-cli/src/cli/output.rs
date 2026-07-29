@@ -76,6 +76,11 @@ fn emit_sarif<T: serde::Serialize>(value: &T) -> miette::Result<()> {
     emit_sarif_log(&log)
 }
 
+fn finding_region(f: &serde_json::Value) -> Option<crate::cli::sarif::Region> {
+    let offset: u64 = f.get("offset").and_then(serde_json::Value::as_u64)?;
+    Some(crate::cli::sarif::Region::at_byte_offset(offset))
+}
+
 fn sarif_results_from(payload: &serde_json::Value) -> Vec<crate::cli::sarif::SarifResult> {
     use crate::cli::sarif::{
         ArtifactLocation, Location, Message, PhysicalLocation, SarifLevel, SarifResult,
@@ -103,6 +108,7 @@ fn sarif_results_from(payload: &serde_json::Value) -> Vec<crate::cli::sarif::Sar
                 Some("warning") => SarifLevel::Warning,
                 _ => SarifLevel::Note,
             };
+            let region: Option<crate::cli::sarif::Region> = finding_region(f);
             let locations: Vec<Location> = f
                 .get("uri")
                 .and_then(|v| v.as_str())
@@ -110,7 +116,7 @@ fn sarif_results_from(payload: &serde_json::Value) -> Vec<crate::cli::sarif::Sar
                     vec![Location {
                         physical_location: PhysicalLocation {
                             artifact_location: ArtifactLocation { uri: u.to_owned() },
-                            region: None,
+                            region,
                         },
                     }]
                 })

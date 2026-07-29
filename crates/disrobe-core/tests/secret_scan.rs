@@ -251,12 +251,71 @@ fn serialization_contract_matches_sarif_mapper() {
 }
 
 #[test]
-fn redacted_preview_never_echoes_full_secret() {
+fn compact_preview_stays_short_while_value_stays_whole() {
     let key: String = aws_akid();
     let findings: Vec<Finding> = scan_bytes(key.as_bytes(), None);
     let f: &Finding = findings.first().expect("finding");
-    assert!(!f.redacted_preview.contains(&key[4..]));
-    assert!(f.redacted_preview.starts_with("AKIA"));
+    assert!(!f.preview.contains(&key[4..]));
+    assert!(f.preview.starts_with("AKIA"));
+    assert_eq!(
+        f.value, key,
+        "the value field is the researcher-facing full match"
+    );
+}
+
+#[test]
+fn every_finding_carries_the_full_match_in_value() {
+    let key: String = aws_akid();
+    let ssh: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIabcdef user@host";
+    let pem: &str = "-----BEGIN RSA PRIVATE KEY-----\nMIIEAAAA\n-----END RSA PRIVATE KEY-----";
+
+    let aws: Vec<Finding> = scan_bytes(format!("k = {key}").as_bytes(), None);
+    assert_eq!(
+        first_of(&aws, SecretKind::AwsAccessKeyId)
+            .expect("aws finding")
+            .value,
+        key
+    );
+
+    let ssh_found: Vec<Finding> = scan_bytes(ssh.as_bytes(), None);
+    assert_eq!(
+        first_of(&ssh_found, SecretKind::SshPublicKey)
+            .expect("ssh finding")
+            .value,
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIabcdef",
+        "the ssh finding must carry the whole key blob, not just the prefix needle"
+    );
+
+    let pem_found: Vec<Finding> = scan_bytes(pem.as_bytes(), None);
+    assert_eq!(
+        first_of(&pem_found, SecretKind::PemPrivateKey)
+            .expect("pem finding")
+            .value,
+        pem,
+        "the pem finding must carry the whole block, not just the begin line"
+    );
+}
+
+#[test]
+fn serialized_finding_exposes_value_as_its_own_field() {
+    let key: String = aws_akid();
+    let findings: Vec<Finding> = scan_bytes(key.as_bytes(), None);
+    let f: &Finding = findings.first().expect("finding");
+    let v: serde_json::Value = serde_json::to_value(f).expect("serialize finding");
+    assert_eq!(
+        v.get("value").and_then(serde_json::Value::as_str),
+        Some(key.as_str()),
+        "a structured consumer must read the match from `value`, not parse it out of `message`"
+    );
+    assert!(
+        v.get("redacted_preview").is_none(),
+        "the misleading field name must be gone from the wire shape"
+    );
+    assert!(
+        v.get("preview")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+    );
 }
 
 #[test]

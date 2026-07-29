@@ -103,13 +103,44 @@ pub(crate) struct ArtifactLocation {
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Region {
-    pub(crate) start_line: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) start_line: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) start_column: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) end_line: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) end_column: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) byte_offset: Option<u64>,
+}
+
+impl Region {
+    pub(crate) const fn line_col(line: u32, column: u32) -> Self {
+        Self {
+            start_line: Some(line),
+            start_column: Some(column),
+            end_line: None,
+            end_column: None,
+            byte_offset: None,
+        }
+    }
+
+    pub(crate) const fn at_byte_offset(offset: u64) -> Self {
+        Self {
+            start_line: None,
+            start_column: None,
+            end_line: None,
+            end_column: None,
+            byte_offset: Some(offset),
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn with_byte_offset(mut self, offset: u64) -> Self {
+        self.byte_offset = Some(offset);
+        self
+    }
 }
 
 impl SarifLog {
@@ -183,7 +214,9 @@ pub(crate) fn from_findings(findings: &[Finding], artifact_uri: &str) -> SarifLo
                     artifact_location: ArtifactLocation {
                         uri: artifact_uri.to_owned(),
                     },
-                    region: None,
+                    region: f
+                        .offset
+                        .and_then(|off: usize| u64::try_from(off).ok().map(Region::at_byte_offset)),
                 },
             }],
         })
@@ -296,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn offset_appears_in_message_and_region_omitted() {
+    fn offset_appears_in_message_and_region_byte_offset() {
         let v: Value = to_value(&from_findings(
             &[finding(
                 Severity::OvertlyMalicious,
@@ -313,8 +346,20 @@ mod tests {
                 .expect("text")
                 .contains("offset 7")
         );
+        assert_eq!(
+            r0["locations"][0]["physicalLocation"]["region"]["byteOffset"], 7,
+            "a finding that knows its byte offset must place it in the sarif region"
+        );
+    }
+
+    #[test]
+    fn absent_offset_leaves_the_region_out() {
+        let v: Value = to_value(&from_findings(
+            &[finding(Severity::Benign, "memo.unused", "nothing", None)],
+            "f.pkl",
+        ));
         assert!(
-            r0["locations"][0]["physicalLocation"]
+            v["runs"][0]["results"][0]["locations"][0]["physicalLocation"]
                 .get("region")
                 .is_none()
         );

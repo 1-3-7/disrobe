@@ -91,6 +91,14 @@ pub enum SecretKind {
     HighEntropyGeneric,
 }
 
+impl SecretKind {
+    #[inline]
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        describe(self)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
@@ -140,7 +148,9 @@ pub struct Finding {
     pub level: String,
     pub kind: SecretKind,
     pub offset: usize,
-    pub redacted_preview: String,
+    pub value: String,
+    #[serde(alias = "redacted_preview")]
+    pub preview: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub validation: Option<Confidence>,
 }
@@ -721,14 +731,8 @@ static PREFIX_RULES: LazyLock<Vec<PrefixRule>> = LazyLock::new(|| {
 });
 
 #[inline]
-fn redact(matched: &str) -> String {
+fn compact_preview(matched: &str) -> String {
     let head: String = matched.chars().take(4).collect();
-    format!("{head}\u{2026}{}", matched.len())
-}
-
-#[inline]
-fn redact_bytes(matched: &[u8]) -> String {
-    let head: String = String::from_utf8_lossy(&matched[..matched.len().min(4)]).into_owned();
     format!("{head}\u{2026}{}", matched.len())
 }
 
@@ -737,23 +741,54 @@ const fn is_secretish_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'_' | b'-')
 }
 
+#[inline]
+const fn is_base64_body_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=')
+}
+
+#[derive(Debug)]
+struct MatchText<'a> {
+    summary: &'a str,
+    value: String,
+    preview: String,
+}
+
+impl<'a> MatchText<'a> {
+    fn derived(summary: &'a str, value: String) -> Self {
+        let preview: String = compact_preview(&value);
+        Self {
+            summary,
+            value,
+            preview,
+        }
+    }
+
+    const fn with_preview(summary: &'a str, value: String, preview: String) -> Self {
+        Self {
+            summary,
+            value,
+            preview,
+        }
+    }
+}
+
 fn finding_for(
     kind: SecretKind,
     code: &'static str,
     severity: Severity,
     offset: usize,
-    matched: &str,
-    redacted_preview: String,
+    text: MatchText<'_>,
     uri: Option<&str>,
 ) -> Finding {
     Finding {
         code: code.to_owned(),
-        message: format!("{} detected ({matched})", describe(kind)),
+        message: format!("{} detected ({})", describe(kind), text.summary),
         uri: uri.map(str::to_owned),
         level: severity.sarif_level().to_owned(),
         kind,
         offset,
-        redacted_preview,
+        value: text.value,
+        preview: text.preview,
         validation: None,
     }
 }
@@ -1050,14 +1085,18 @@ pub fn scan_bytes(bytes: &[u8], uri: Option<&str>) -> Vec<Finding> {
             let mut start: usize = 0;
             while let Some(rel) = crate::byte_search::find(&bytes[start..], needle) {
                 let at: usize = start + rel;
-                let preview: String = redact_bytes(&bytes[at..at + needle.len()]);
+                let mut end: usize = at + needle.len();
+                while end < bytes.len() && is_base64_body_byte(bytes[end]) {
+                    end += 1;
+                }
+                let value: String = String::from_utf8_lossy(&bytes[at..end]).into_owned();
+                let summary: std::borrow::Cow<'_, str> = String::from_utf8_lossy(needle);
                 findings.push(finding_for(
                     rule.kind,
                     rule.code,
                     rule.severity,
                     at,
-                    &String::from_utf8_lossy(needle),
-                    preview,
+                    MatchText::derived(&summary, value),
                     uri,
                 ));
                 claimed.push((at, at + needle.len()));
@@ -1084,15 +1123,13 @@ pub fn scan_bytes(bytes: &[u8], uri: Option<&str>) -> Vec<Finding> {
                 };
                 at
             };
-            let preview: String = redact(matched);
             claimed.push((offset, offset + matched.len()));
             let mut finding: Finding = finding_for(
                 rule.kind,
                 rule.code,
                 rule.severity,
                 offset,
-                matched,
-                preview,
+                MatchText::derived(matched, matched.to_owned()),
                 uri,
             );
             if is_github_checksummed(rule.kind) {
@@ -1196,13 +1233,14 @@ fn scan_pem_blocks(
 
         let block_len: usize = block_end - begin_at;
         let preview: String = format!("-----BEGIN {label}\u{2026}{block_len}");
+        let summary: String = format!("-----BEGIN {label}-----");
+        let value: String = String::from_utf8_lossy(&bytes[begin_at..block_end]).into_owned();
         let mut finding: Finding = finding_for(
             kind,
             code,
             severity,
             begin_at,
-            &format!("-----BEGIN {label}-----"),
-            preview,
+            MatchText::with_preview(&summary, value, preview),
             uri,
         );
         finding.validation = Some(if valid {
@@ -1276,13 +1314,13 @@ fn scan_solana_keypair(
                 })
             {
                 let preview: String = format!("[\u{2026}{}", end - start);
+                let value: String = text.get(start..end).map_or_else(String::new, str::to_owned);
                 findings.push(finding_for(
                     SecretKind::SolanaKeypair,
                     "DR-SEC-SOLANA-KEYPAIR",
                     Severity::Error,
                     start,
-                    "[64-byte ed25519 keypair]",
-                    preview,
+                    MatchText::with_preview("[64-byte ed25519 keypair]", value, preview),
                     uri,
                 ));
                 claimed.push((start, end));
@@ -1342,14 +1380,14 @@ fn scan_entropy(
         if crate::entropy::shannon_entropy_bits(run) < ENTROPY_THRESHOLD {
             continue;
         }
-        let preview: String = redact_bytes(run);
+        let value: String = String::from_utf8_lossy(run).into_owned();
+        let summary: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&run[..run.len().min(8)]);
         findings.push(finding_for(
             SecretKind::HighEntropyGeneric,
             "DR-SEC-ENTROPY",
             Severity::Note,
             run_start,
-            &String::from_utf8_lossy(&run[..run.len().min(8)]),
-            preview,
+            MatchText::derived(&summary, value),
             uri,
         ));
     }

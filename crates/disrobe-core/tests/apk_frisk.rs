@@ -68,9 +68,10 @@ fn apk_findings_attribute_inner_entry_paths() {
         Some("planted-secrets.apk!res/raw/credentials.properties"),
         "aws finding must name its inner archive entry: {aws:?}"
     );
-    assert!(
-        aws.value.contains('\u{2026}'),
-        "secret preview must be redacted: {aws:?}"
+    assert_eq!(
+        aws.value,
+        format!("{}{}", "AKIA", "3KFTG2KQ4WXYZ7AB"),
+        "the finding must carry the full key, not a truncated preview: {aws:?}"
     );
 }
 
