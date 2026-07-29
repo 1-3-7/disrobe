@@ -499,6 +499,8 @@ Missing rows are not implied wins. They stay in the edge table until the same-in
 
 ## Benchmarks
 
+![how each ecosystem's recovery is graded: the independent oracle used, the result, and whether a committed CI gate enforces it](docs/assets/verification.svg)
+
 Every number below is either graded by an oracle that can reject a wrong answer or explicitly labeled as self-reported coverage or parse scale. Lossy results carry the measured score, never rounded in `disrobe`'s favor.
 
 **Legend**
@@ -520,7 +522,7 @@ Oracle strength `strong`: external-equivalence, execution, or byte-identity, the
 | Metric | Measured | Oracle | Reproduce |
 |---|---|---|---|
 | Python `.pyc`, full CPython 3.14 stdlib | <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per-code-object (<!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m --> code objects, <!-- m:py_stdlib_full_modules -->574<!-- /m --> modules) `[local]` | recompile to equivalent bytecode | `crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py` over the full Lib; pinned in `xtask/data/recovery.json` |
-| Python `.pyc`, pinned 200-module corpus | <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> per-code-object (<!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m --> code objects, <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules), floor 90% `[CI]` | recompile to equivalent bytecode | `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs` |
+| Python `.pyc`, pinned 200-module corpus | <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> per-code-object (<!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m --> code objects, <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules), floor 96.60% `[CI]` | recompile to equivalent bytecode | `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs` |
 | Python legacy 1.0-3.7 | <!-- m:py_legacy_count -->150 of 191<!-- /m --> gate-verified floor `[CI]`, <!-- m:py_legacy_local_count -->166 of 191<!-- /m --> `[local]` | recompile-equivalence or structural token-match | `crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs` |
 | Android DEX, committed corpus | 102 / 103 verifiable classes clean, 307 re-hosted bodies clean `[CI]` | real JVM verifier `-Xverify:all` | `crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs` |
 | .NET Eazfuscator VM (in-repo EazVM encoder) | 57 / 57 instructions lifted, ordered-CIL match `[CI]`; recovered CIL re-injects to byte-identical stdout `[local]` (needs a .NET runtime, not provisioned in CI) | independently compiled clean DLL, ordered CIL compare | `crates/disrobe-pass-dotnet/tests/real_eazvm.rs` |

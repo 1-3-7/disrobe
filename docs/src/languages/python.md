@@ -11,7 +11,7 @@ Python is `disrobe`'s most contested and most developed ecosystem. It ships an *
 | Modern constructs | `match`, walrus, f-strings and PEP 750 t-strings, exception groups, PEP 695/696/709 |
 | Control flow | try/except/else and try/finally structured from the exception-table forest, with-statement folding, multi-exit `while True` and `while COND` loops, conditional (ternary) expressions, and chained comparisons in conditions, each recompile-checked |
 | Freezers | PyInstaller 2.x-6.20+, Nuitka, cx_Freeze, py2exe, PyOxidizer, shiv, pex, Briefcase, SourceDefender |
-| Protectors | PyArmor v6-v9-pro and 18 source obfuscators with an AST-evaluator backend |
+| Protectors | PyArmor v6-v9-pro and <!-- m:py_source_obfuscators -->20<!-- /m --> source obfuscators with an AST-evaluator backend |
 
 ## Decompiling `.pyc`
 
@@ -31,7 +31,7 @@ The `native` backend is the in-tree engine: it runs a frame-tree pre-pass, per-v
 
 ### Measured equivalence
 
-The per-code-object figure is measured against an independent oracle, not the tool's own output: each recovered module is recompiled on CPython 3.14.5 and its code objects are diffed against the originals. The full stdlib measurement is **<!-- m:py_stdlib_full_pct -->95.09%<!-- /m -->** (<!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m --> code objects across <!-- m:py_stdlib_full_modules -->574<!-- /m --> modules). On the pinned 200-module corpus (6286 code objects) the rate is **<!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m -->** (<!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m -->), above a 90% floor a committed CI gate enforces (`arbitrary_recompile_gate.rs`). uncompyle6 stops near 3.8 and decompyle3 near 3.9; the ML-based decompilers self-flag benchmark contamination, and there is no model here to contaminate.
+The per-code-object figure is measured against an independent oracle, not the tool's own output: each recovered module is recompiled on CPython 3.14.5 and its code objects are diffed against the originals. The full stdlib measurement is **<!-- m:py_stdlib_full_pct -->95.09%<!-- /m -->** (<!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m --> code objects across <!-- m:py_stdlib_full_modules -->574<!-- /m --> modules). On the pinned 200-module corpus (6286 code objects) the rate is **<!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m -->** (<!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m -->), above a 96.60% floor a committed CI gate enforces (`arbitrary_recompile_gate.rs`). uncompyle6 stops near 3.8 and decompyle3 near 3.9; the ML-based decompilers self-flag benchmark contamination, and there is no model here to contaminate.
 
 ## Disassembling
 

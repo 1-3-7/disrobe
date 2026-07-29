@@ -1,6 +1,6 @@
 # Supported families catalog
 
-This is the authoritative per-ecosystem list of every packer, obfuscator, protector, freezer, and bundler `disrobe` recognizes, with the support tier for each. The live CLI view is `disrobe catalog [ecosystem]`; the current binary reports 167 families across 15 ecosystems. The counts come from the in-tree catalog tables (`Packer` in `crates/disrobe-pass-native/src/packers/mod.rs`, each pass `chain_detector.rs` `CATALOG_COUNT`, `crates/disrobe-pass-dotnet/src/protectors.rs`, `crates/disrobe-pass-jvm/src/protectors.rs` and `rasp.rs`), so they match the binary, not a hand-kept list.
+This is the authoritative per-ecosystem list of every packer, obfuscator, protector, freezer, and bundler `disrobe` recognizes, with the support tier for each. The live CLI view is `disrobe catalog [ecosystem]`; the current binary reports 169 families across 15 ecosystems. The counts come from the in-tree catalog tables (`Packer` in `crates/disrobe-pass-native/src/packers/mod.rs`, each pass `chain_detector.rs` `CATALOG_COUNT`, `crates/disrobe-pass-dotnet/src/protectors.rs`, `crates/disrobe-pass-jvm/src/protectors.rs` and `rasp.rs`), so they match the binary, not a hand-kept list.
 
 ```sh
 disrobe catalog
