@@ -653,6 +653,15 @@ fn strip_expr(expr: &Expr) -> Expr {
             lhs: Box::new(strip_expr(lhs)),
             rhs: Box::new(strip_expr(rhs)),
         },
+        Expr::Ternary {
+            cond,
+            then_value,
+            else_value,
+        } => Expr::Ternary {
+            cond: Box::new(strip_expr(cond)),
+            then_value: Box::new(strip_expr(then_value)),
+            else_value: Box::new(strip_expr(else_value)),
+        },
         Expr::Typeof(inner) => Expr::Typeof(Box::new(strip_expr(inner))),
         Expr::Delete { object, property } => Expr::Delete {
             object: Box::new(strip_expr(object)),
@@ -1459,14 +1468,14 @@ fn as3_lift_agrees_with_an_independent_reference_decompiler() {
         m.tally.reference_only_classes
     );
     assert!(
-        m.tally.agreed * 1000 >= m.tally.graded * 847,
-        "per-method agreement with the independent reference decompiler must hold its measured floor (>=84.7%); got {}/{} = {rate:.2}%",
+        m.tally.agreed * 1000 >= m.tally.graded * 850,
+        "per-method agreement with the independent reference decompiler must hold its measured floor (>=85.0%); got {}/{} = {rate:.2}%",
         m.tally.agreed,
         m.tally.graded
     );
     assert!(
-        m.tally.self_reported_full_agreed * 1000 >= m.tally.self_reported_full * 966,
-        "bodies disrobe calls fully recovered must hold their measured agreement floor (>=96.6%); got {}/{}",
+        m.tally.self_reported_full_agreed * 1000 >= m.tally.self_reported_full * 969,
+        "bodies disrobe calls fully recovered must hold their measured agreement floor (>=96.9%); got {}/{}",
         m.tally.self_reported_full_agreed,
         m.tally.self_reported_full
     );
@@ -1505,8 +1514,8 @@ fn string_literals_and_call_targets_match_the_reference_almost_everywhere() {
     let rate: f64 = report(&m);
     assert_population(&m);
     assert!(
-        m.tally.agreed * 1000 >= m.tally.graded * 950,
-        "constant-pool and call-target agreement must hold its measured floor (>=95.0%); got {}/{} = {rate:.2}%",
+        m.tally.agreed * 1000 >= m.tally.graded * 957,
+        "constant-pool and call-target agreement must hold its measured floor (>=95.7%); got {}/{} = {rate:.2}%",
         m.tally.agreed,
         m.tally.graded
     );
