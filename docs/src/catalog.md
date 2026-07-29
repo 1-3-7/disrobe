@@ -16,15 +16,15 @@ Three words describe how far recovery goes:
 
 The `disrobe auto` chain at the bottom is what stitches these together: it fingerprints the input, runs the matching pass, re-fingerprints the output, and repeats until nothing else applies.
 
-## Native packers and protectors (27)
+## Native packers and protectors (29)
 
-The `Packer` enum carries 27 variants across five `UnpackerStatus` tiers (10 + 6 + 3 + 6 + 2 = 27). The native chain detector catalog advertises 25 of them; the two CLR-layer crypters route to the .NET pass, so `disrobe catalog native` lists 25.
+The `Packer` enum carries 29 variants across five `UnpackerStatus` tiers (12 + 6 + 3 + 6 + 2 = 29). The native chain detector catalog advertises 27 of them; the two CLR-layer crypters route to the .NET pass, so `disrobe catalog native` lists 27.
 
-The tier names below are the in-tree `UnpackerStatus` values, so the split is exactly what the binary advertises.
+The tier names below are the in-tree `UnpackerStatus` values, so the split is exactly what the binary advertises. `crates/disrobe-pass-native/src/packers/mod.rs` test `published_tier_counts_match_this_enum` asserts every count in the table below against `unpacker_status`, so a variant cannot be added or moved between tiers without this page failing.
 
 | Tier (`UnpackerStatus`) | Count | Families |
 |---|---|---|
-| **Implemented**: byte-exact decoders plus an in-house x86 stub emulator | 10 | UPX, kkrunchy, NSPack, Petite, MPRESS, MEW, FSG, ASPack, PECompact, Yoda's Crypter |
+| **Implemented**: byte-exact decoders plus an in-house x86 stub emulator | 12 | UPX, kkrunchy, NSPack, Petite, MPRESS, MEW, FSG, ASPack, PECompact, Yoda's Crypter, plus the Donut and sRDI shellcode loaders, whose recovery is the embedded payload rather than a compressed image |
 | **StubEvalPending**: stub emulator validated against a spec-built stub, real-sample recovery tracked | 6 | ASProtect, Morphine, nPack, NeoLite, PolyCryptor, Warzone crypter |
 | **GreyZoneDetectAndCarve**: virtualizing tier, runtime-keyed handler stream | 3 | VMProtect, Themida, Yoda's Protector |
 | **GreyZoneDetectOnly**: commercial protector tier, reported without static recovery | 6 | WinLicense, Enigma Protector, Obsidium, Armadillo, PELock, PE-Protector |

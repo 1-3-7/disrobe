@@ -873,6 +873,131 @@ fn trim_trailing_nul(bytes: &[u8]) -> &[u8] {
 mod tests {
     use super::*;
 
+    #[test]
+    fn published_tier_counts_match_this_enum() {
+        const EVERY_PACKER: [Packer; 29] = [
+            Packer::Donut,
+            Packer::Srdi,
+            Packer::Upx,
+            Packer::AsPack,
+            Packer::AsProtect,
+            Packer::Petite,
+            Packer::Mpress,
+            Packer::Fsg,
+            Packer::Morphine,
+            Packer::PeCompact,
+            Packer::YodasCrypter,
+            Packer::YodasProtector,
+            Packer::NPack,
+            Packer::Nspack,
+            Packer::NeoLite,
+            Packer::Mew,
+            Packer::Kkrunchy,
+            Packer::PolyCryptor,
+            Packer::PeProtector,
+            Packer::PeLock,
+            Packer::VmProtect,
+            Packer::Themida,
+            Packer::EnigmaProtector,
+            Packer::Armadillo,
+            Packer::Obsidium,
+            Packer::WinLicense,
+            Packer::WarzoneCrypter,
+            Packer::DotNetPatcher,
+            Packer::NetCryptor,
+        ];
+
+        const IMPLEMENTED: [&str; 12] = [
+            "aspack",
+            "donut",
+            "fsg",
+            "kkrunchy",
+            "mew",
+            "mpress",
+            "nspack",
+            "pecompact",
+            "petite",
+            "srdi",
+            "upx",
+            "yodas-crypter",
+        ];
+        const STUB_EVAL_PENDING: [&str; 6] = [
+            "asprotect",
+            "morphine",
+            "neolite",
+            "npack",
+            "polycryptor",
+            "warzone-crypter",
+        ];
+        const GREY_CARVE: [&str; 3] = ["themida", "vmprotect", "yodas-protector"];
+        const GREY_DETECT_ONLY: [&str; 6] = [
+            "armadillo",
+            "enigma-protector",
+            "obsidium",
+            "pelock",
+            "pe-protector",
+            "winlicense",
+        ];
+        const DELEGATED: [&str; 2] = ["dotnet-patcher", "netcryptor"];
+
+        let mut seen: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+        for packer in EVERY_PACKER {
+            assert!(
+                seen.insert(packer.label()),
+                "the roster lists {} twice, so a tier tally built from it cannot be trusted",
+                packer.label()
+            );
+        }
+
+        let gather = |wanted: UnpackerStatus| -> Vec<&'static str> {
+            let mut names: Vec<&'static str> = EVERY_PACKER
+                .into_iter()
+                .filter(|p: &Packer| p.unpacker_status() == wanted)
+                .map(|p: Packer| p.label())
+                .collect();
+            names.sort_unstable();
+            names
+        };
+
+        let mut normalise = |mut expected: Vec<&'static str>| -> Vec<&'static str> {
+            expected.sort_unstable();
+            expected
+        };
+
+        assert_eq!(
+            gather(UnpackerStatus::Implemented),
+            normalise(IMPLEMENTED.to_vec()),
+            "docs/src/catalog.md publishes the Implemented tier by name and count; a variant moved \
+             into or out of that tier without the page moving with it"
+        );
+        assert_eq!(
+            gather(UnpackerStatus::StubEvalPending),
+            normalise(STUB_EVAL_PENDING.to_vec())
+        );
+        assert_eq!(
+            gather(UnpackerStatus::GreyZoneDetectAndCarve),
+            normalise(GREY_CARVE.to_vec())
+        );
+        assert_eq!(
+            gather(UnpackerStatus::GreyZoneDetectOnly),
+            normalise(GREY_DETECT_ONLY.to_vec())
+        );
+        assert_eq!(
+            gather(UnpackerStatus::DelegatedToDotnet),
+            normalise(DELEGATED.to_vec())
+        );
+
+        assert_eq!(
+            IMPLEMENTED.len()
+                + STUB_EVAL_PENDING.len()
+                + GREY_CARVE.len()
+                + GREY_DETECT_ONLY.len()
+                + DELEGATED.len(),
+            EVERY_PACKER.len(),
+            "the published tiers must partition the enum with nothing left over"
+        );
+    }
+
     fn mz_buf(len: usize) -> Vec<u8> {
         let mut buf: Vec<u8> = vec![0u8; len];
         buf[0] = b'M';
