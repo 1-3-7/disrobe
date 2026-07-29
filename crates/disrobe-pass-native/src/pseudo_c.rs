@@ -18559,8 +18559,7 @@ mod tests {
             sysv.source
         );
         let err: Error = recover_leaf_function_abi(&CODE, 0xb080, Abi::MsX64)
-            .err()
-            .expect("xmm4 carries no incoming argument under Microsoft x64");
+            .expect_err("xmm4 carries no incoming argument under Microsoft x64");
         let Error::LlvmIr(message) = err else {
             panic!("expected a lifter rejection");
         };
