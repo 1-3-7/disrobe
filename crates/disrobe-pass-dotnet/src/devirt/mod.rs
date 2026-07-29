@@ -2,6 +2,7 @@ mod budget;
 pub mod byte_stack;
 pub mod cil_handler;
 pub mod emit;
+pub mod extract;
 mod handlers;
 mod ir;
 mod lift;

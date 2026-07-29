@@ -35,6 +35,7 @@ pub enum Outcome {
     Skipped(SkipCause),
     Failed(Divergence),
     FailedHalting(HaltingAsymmetry),
+    FailedEmulation(EmulationFailure),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -63,6 +64,13 @@ pub struct Divergence {
     pub recovered: Observable,
     pub reference: Observable,
     pub first_diff: FirstDiff,
+}
+
+#[derive(Clone, Debug)]
+pub struct EmulationFailure {
+    pub input: StubInput,
+    pub seed: u64,
+    pub error: EmulationError,
 }
 
 #[derive(Clone, Debug)]
@@ -191,7 +199,7 @@ fn check_bodies(
         return skipped_report(SkipCause::ReferenceUnavailable);
     }
     let samples: usize = inputs.len();
-    let mut first_divergence: Option<Divergence> = None;
+    let mut first_failure: Option<Outcome> = None;
     let mut first_skip: Option<SkipCause> = None;
     for case in inputs {
         let recovered_capture: ExecCapture = emulate_capture(recovered_body, &case.input);
@@ -200,31 +208,39 @@ fn check_bodies(
         let reference: Result<Observable, EmulationError> = observable(reference_capture);
         match (recovered, reference) {
             (Ok(recovered), Ok(reference)) => {
-                if recovered != reference && first_divergence.is_none() {
+                if recovered != reference && first_failure.is_none() {
                     let first_diff: FirstDiff = first_difference(&recovered, &reference);
-                    first_divergence = Some(Divergence {
+                    first_failure = Some(Outcome::Failed(Divergence {
                         input: case.input,
                         seed: case.seed,
                         recovered,
                         reference,
                         first_diff,
-                    });
+                    }));
                 }
             }
-            (Err(error), Ok(_)) | (Ok(_), Err(error)) => {
+            (Err(error), Ok(_)) => {
+                if first_failure.is_none() {
+                    first_failure = Some(Outcome::FailedEmulation(EmulationFailure {
+                        input: case.input,
+                        seed: case.seed,
+                        error,
+                    }));
+                }
+            }
+            (Ok(_), Err(error)) => {
                 record_skip(&mut first_skip, error);
             }
-            (Err(recovered_error), Err(reference_error)) => {
-                record_skip(&mut first_skip, recovered_error);
+            (Err(_), Err(reference_error)) => {
                 record_skip(&mut first_skip, reference_error);
             }
         }
     }
+    if let Some(outcome) = first_failure {
+        return failure_report(outcome);
+    }
     if let Some(cause) = first_skip {
         return skipped_report(cause);
-    }
-    if let Some(divergence) = first_divergence {
-        return failed_report(divergence);
     }
     equivalent_report(samples)
 }
@@ -237,7 +253,7 @@ fn check_body_against_model(
         return skipped_report(SkipCause::ReferenceUnavailable);
     }
     let sample_count: usize = samples.len();
-    let mut first_divergence: Option<Divergence> = None;
+    let mut first_failure: Option<Outcome> = None;
     let mut first_skip: Option<SkipCause> = None;
     let mut both_exhausted: bool = false;
     for sample in samples {
@@ -245,14 +261,14 @@ fn check_body_against_model(
             observable(emulate_capture(recovered_body, &sample.case.input));
         match (recovered, sample.run) {
             (Ok(recovered), model_ref::ModelRun::Returned(reference)) => {
-                if recovered.return_value != reference.value && first_divergence.is_none() {
-                    first_divergence = Some(Divergence {
+                if recovered.return_value != reference.value && first_failure.is_none() {
+                    first_failure = Some(Outcome::Failed(Divergence {
                         input: sample.case.input,
                         seed: sample.case.seed,
                         recovered,
                         reference: return_observable(reference.value),
                         first_diff: FirstDiff::ReturnValue,
-                    });
+                    }));
                 }
             }
             (Err(EmulationError::StepLimitExceeded), model_ref::ModelRun::StepLimit) => {
@@ -274,7 +290,16 @@ fn check_body_against_model(
                     model_exhausted: true,
                 });
             }
-            (Err(error), model_ref::ModelRun::Returned(_) | model_ref::ModelRun::StepLimit) => {
+            (Err(error), model_ref::ModelRun::Returned(_)) => {
+                if first_failure.is_none() {
+                    first_failure = Some(Outcome::FailedEmulation(EmulationFailure {
+                        input: sample.case.input,
+                        seed: sample.case.seed,
+                        error,
+                    }));
+                }
+            }
+            (Err(error), model_ref::ModelRun::StepLimit) => {
                 record_skip(&mut first_skip, error);
             }
             (_, model_ref::ModelRun::Skipped(cause)) => {
@@ -284,14 +309,14 @@ fn check_body_against_model(
             }
         }
     }
+    if let Some(outcome) = first_failure {
+        return failure_report(outcome);
+    }
     if let Some(cause) = first_skip {
         return skipped_report(cause);
     }
     if both_exhausted {
         return skipped_report(SkipCause::NonterminatingUnderBudget);
-    }
-    if let Some(divergence) = first_divergence {
-        return failed_report(divergence);
     }
     equivalent_report(sample_count)
 }
@@ -380,6 +405,8 @@ fn input_schedule(
     for scalar in edge_scalars {
         append_input_case(&mut inputs, model, None, scalar, budget)?;
     }
+    append_argument_separation_case(&mut inputs, model, budget)?;
+    append_operator_separating_cases(&mut inputs, model, budget)?;
     if let Some(ir) = ir {
         for (argument, scalar) in branch_inversion_values(ir) {
             append_input_case(&mut inputs, model, Some(argument), scalar, budget)?;
@@ -396,8 +423,6 @@ fn model_input_schedule(
     budget: &mut Budget,
 ) -> Result<ModelSchedule, Reject> {
     let mut inputs: Vec<InputCase> = input_schedule(model, None, budget)?;
-    append_argument_separation_case(&mut inputs, model, budget)?;
-    append_operator_separating_cases(&mut inputs, model, budget)?;
     append_targeted_edge_cases(&mut inputs, model, budget)?;
     let mut branch_outcomes: BTreeMap<usize, BTreeSet<bool>> = BTreeMap::new();
     let mut samples: Vec<ModelSample> = Vec::with_capacity(inputs.len());
@@ -693,9 +718,9 @@ const fn skipped_report(cause: SkipCause) -> OracleReport {
     }
 }
 
-const fn failed_report(divergence: Divergence) -> OracleReport {
+const fn failure_report(outcome: Outcome) -> OracleReport {
     OracleReport {
-        outcome: Outcome::Failed(divergence),
+        outcome,
         equivalent: 0,
         failed: 1,
         skipped: 0,
