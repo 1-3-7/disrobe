@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -142,6 +143,23 @@ fn verify(editors_dir: &Path, artifacts: &[PluginArtifact]) -> Result<()> {
                 path.display()
             )),
             Err(err) => stale.push(format!("{} unreadable: {err}", path.display())),
+        }
+    }
+    let generated: BTreeSet<PathBuf> = artifacts
+        .iter()
+        .map(|artifact: &PluginArtifact| editors_dir.join(artifact.dir).join(artifact.rel_path))
+        .collect();
+    for entry in walkdir::WalkDir::new(editors_dir) {
+        let entry: walkdir::DirEntry =
+            entry.wrap_err_with(|| format!("walking {}", editors_dir.display()))?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if !generated.contains(entry.path()) {
+            stale.push(format!(
+                "{} is under editors/ but regeneration no longer produces it, so it ships without a source of truth; delete it or restore the entry that generated it",
+                entry.path().display()
+            ));
         }
     }
     if stale.is_empty() {
