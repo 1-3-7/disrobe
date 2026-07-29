@@ -5,30 +5,41 @@ use std::collections::BTreeSet;
 
 use disrobe_pass_go::{GoAnalysis, GoFunc, GoGenericInstantiation, analyze};
 
-fn nm_text_symbols(raw: &str) -> BTreeSet<String> {
-    let mut out: BTreeSet<String> = BTreeSet::new();
-    for line in raw.lines() {
-        let cols: Vec<&str> = line.split_whitespace().collect();
-        if cols.len() >= 3 && matches!(cols[cols.len() - 2], "T" | "t") {
-            out.insert(cols[cols.len() - 1].to_owned());
-        }
-    }
-    out
-}
+const WINDOWS_NORMAL_FLOOR: common::FunctionRecoveryFloor =
+    common::FunctionRecoveryFloor::new(85, 100);
+const WINDOWS_STRIPPED_FLOOR: common::FunctionRecoveryFloor =
+    common::FunctionRecoveryFloor::new(93, 100);
 
-fn recovered_names(analysis: &GoAnalysis) -> BTreeSet<String> {
-    let mut out: BTreeSet<String> = BTreeSet::new();
-    for f in &analysis.symbols.funcs {
-        out.insert(f.name.clone());
-        if let Some(ls) = &f.linker_symbol {
-            out.insert(ls.clone());
-        }
-    }
-    out
+#[test]
+fn function_name_grade_excludes_only_runtime_range_anchors() {
+    let truth: BTreeSet<String> = [
+        "runtime.text",
+        "runtime.etext",
+        "main.main",
+        "runtime.morestack.abi0",
+        "_aeshashbody",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let recovered: BTreeSet<String> = std::iter::once("main.main").map(str::to_owned).collect();
+
+    let grade: common::FunctionRecoveryGrade =
+        common::grade_function_name_recovery(&truth, &recovered);
+
+    assert_eq!(grade.hit, 1);
+    assert_eq!(grade.total, 3);
+    assert_eq!(
+        grade.missing,
+        vec![
+            "_aeshashbody".to_owned(),
+            "runtime.morestack.abi0".to_owned()
+        ]
+    );
 }
 
 #[test]
-fn nonstripped_function_names_match_go_tool_nm() {
+fn normal_function_names_match_go_tool_nm() {
     let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::BENCH_GENERICS) else {
         return;
     };
@@ -36,26 +47,31 @@ fn nonstripped_function_names_match_go_tool_nm() {
         return;
     };
     let analysis: GoAnalysis = analyze(&bytes).expect("analyze bench_generics");
-    let truth: BTreeSet<String> = nm_text_symbols(&String::from_utf8_lossy(&nm_bytes));
-    let recovered: BTreeSet<String> = recovered_names(&analysis);
-
-    let hit: usize = truth.iter().filter(|n| recovered.contains(*n)).count();
-    let total: usize = truth.len();
-    #[allow(clippy::cast_precision_loss)]
-    let ratio: f64 = hit as f64 / total.max(1) as f64;
-    assert!(
-        ratio >= 0.99,
-        "function-name recovery against `go tool nm` ground truth regressed below 99%: \
-         {hit}/{total} = {ratio:.4}"
+    let truth: BTreeSet<String> =
+        common::parse_nm_text_symbols(&String::from_utf8_lossy(&nm_bytes));
+    let grade: common::FunctionRecoveryGrade =
+        common::grade_analyzed_function_names(&analysis, &truth);
+    eprintln!(
+        "windows/amd64 fixture (pe normal): function-name recovery {}/{} = {}; missing={:?}",
+        grade.hit,
+        grade.total,
+        grade.percentage_display(),
+        grade.missing
     );
-
-    let unmatched: Vec<&String> = truth.iter().filter(|n| !recovered.contains(*n)).collect();
     assert!(
-        unmatched
-            .iter()
-            .all(|n: &&String| n.as_str() == "runtime.text" || n.as_str() == "runtime.etext"),
-        "the only acceptable unmatched nm text symbols are the zero-size section anchors \
-         runtime.text/runtime.etext; got {unmatched:?}"
+        grade.meets_floor(WINDOWS_NORMAL_FLOOR),
+        "windows/amd64 fixture (pe normal): function-name recovery against `go tool nm` \
+         fell below 85%: {}/{} = {}; missing={:?}",
+        grade.hit,
+        grade.total,
+        grade.percentage_display(),
+        grade.missing
+    );
+    assert!(
+        grade.missing.is_empty(),
+        "windows/amd64 fixture (pe normal): non-anchor `go tool nm` names must all recover; \
+         missing={:?}",
+        grade.missing
     );
 }
 
@@ -120,16 +136,25 @@ fn stripped_build_recovers_canonical_pclntab_names() {
         analysis.stripped.stripped,
         "the -s -w build must be classified as stripped"
     );
-    let truth: BTreeSet<String> = nm_text_symbols(&String::from_utf8_lossy(&nm_bytes));
-    let recovered: BTreeSet<String> = recovered_names(&analysis);
-    let hit: usize = truth.iter().filter(|n| recovered.contains(*n)).count();
-    let total: usize = truth.len();
-    #[allow(clippy::cast_precision_loss)]
-    let ratio: f64 = hit as f64 / total.max(1) as f64;
+    let truth: BTreeSet<String> =
+        common::parse_nm_text_symbols(&String::from_utf8_lossy(&nm_bytes));
+    let grade: common::FunctionRecoveryGrade =
+        common::grade_analyzed_function_names(&analysis, &truth);
+    eprintln!(
+        "windows/amd64 fixture (pe stripped): function-name recovery {}/{} = {}; missing={:?}",
+        grade.hit,
+        grade.total,
+        grade.percentage_display(),
+        grade.missing
+    );
     assert!(
-        ratio >= 0.93,
+        grade.meets_floor(WINDOWS_STRIPPED_FLOOR),
         "even with the linker symbol table stripped, the pclntab funcname table is intact and \
-         must yield the canonical names: {hit}/{total} = {ratio:.4}"
+         must yield the canonical names: {}/{} = {}; missing={:?}",
+        grade.hit,
+        grade.total,
+        grade.percentage_display(),
+        grade.missing
     );
 
     let no_linker: bool = analysis
