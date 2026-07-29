@@ -16,7 +16,21 @@ const NETWORK_HEADING: &str = "**Network-capable code**";
 const CRYPTOGRAPHY_HEADING: &str = "## Cryptography";
 const CFG_TEST_ATTR: &str = "#[cfg(test)]";
 const COMMAND_NEW_CALL: &str = "Command::new(";
-const NETWORK_DEP_NAMES: &[&str] = &["reqwest", "axum", "hyper", "tonic"];
+const NETWORK_DEP_NAMES: &[&str] = &[
+    "attohttpc",
+    "axum",
+    "curl",
+    "hyper",
+    "isahc",
+    "reqwest",
+    "surf",
+    "tiny_http",
+    "tokio-tungstenite",
+    "tonic",
+    "tungstenite",
+    "ureq",
+    "warp",
+];
 
 struct NonParserCrate {
     package_name: &'static str,
@@ -193,11 +207,7 @@ fn read_crate_manifests(root: &Path) -> Result<Vec<CrateManifest>> {
             .and_then(toml::Value::as_str)
             .ok_or_else(|| eyre!("{} has no [package].name", manifest_path.display()))?
             .to_owned();
-        let dependencies: BTreeSet<String> = parsed
-            .get("dependencies")
-            .and_then(toml::Value::as_table)
-            .map(|table: &toml::map::Map<String, toml::Value>| table.keys().cloned().collect())
-            .unwrap_or_default();
+        let dependencies: BTreeSet<String> = collect_dependency_names(&parsed);
         let dir_name: String = dir
             .file_name()
             .and_then(std::ffi::OsStr::to_str)
@@ -210,6 +220,29 @@ fn read_crate_manifests(root: &Path) -> Result<Vec<CrateManifest>> {
         });
     }
     Ok(manifests)
+}
+
+const DEPENDENCY_TABLES: [&str; 2] = ["dependencies", "build-dependencies"];
+
+fn table_keys_into(table: Option<&toml::Value>, out: &mut BTreeSet<String>) {
+    if let Some(entries) = table.and_then(toml::Value::as_table) {
+        out.extend(entries.keys().cloned());
+    }
+}
+
+fn collect_dependency_names(parsed: &toml::Table) -> BTreeSet<String> {
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    for table in DEPENDENCY_TABLES {
+        table_keys_into(parsed.get(table), &mut names);
+    }
+    if let Some(targets) = parsed.get("target").and_then(toml::Value::as_table) {
+        for platform in targets.values() {
+            for table in DEPENDENCY_TABLES {
+                table_keys_into(platform.get(table), &mut names);
+            }
+        }
+    }
+    names
 }
 
 fn extract_section<'doc>(
@@ -310,12 +343,21 @@ fn check_network_inventory(
         ));
     }
     for name in &documented {
-        if !manifests
+        let Some(manifest): Option<&CrateManifest> = manifests
             .iter()
-            .any(|manifest: &CrateManifest| &manifest.package_name == name)
-        {
+            .find(|manifest: &&CrateManifest| &manifest.package_name == name)
+        else {
             drift.push(format!(
                 "SECURITY.md's Network-capable code table lists `{name}`, but no such crate exists under crates/ anymore"
+            ));
+            continue;
+        };
+        if !NETWORK_DEP_NAMES
+            .iter()
+            .any(|dep: &&str| manifest.dependencies.contains(*dep))
+        {
+            drift.push(format!(
+                "SECURITY.md's Network-capable code table lists `{name}`, but it no longer depends on any network client crate; either the row is stale or the client it uses is missing from NETWORK_DEP_NAMES in xtask/src/attack_surface.rs"
             ));
         }
     }

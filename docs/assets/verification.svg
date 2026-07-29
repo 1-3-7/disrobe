@@ -1,5 +1,5 @@
-<?xml version="1.0" encoding="UTF-8"?><desc>generated from verification.json sha256:f6cbce37524679dadd99a51e44fe0a31</desc>
-<svg xmlns="http://www.w3.org/2000/svg" width="920" height="482" viewBox="0 0 920 482" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="482" viewBox="0 0 920 482" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"><desc>generated from verification.json sha256:f6cbce37524679dadd99a51e44fe0a31</desc>
   <rect x="0" y="0" width="920" height="482" rx="10" fill="#0a0a0a"/>
   <rect x="0.5" y="0.5" width="919" height="481" rx="9.5" fill="none" stroke="#262626"/>
   <text x="28.00" y="40.00" font-size="19" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">How recovery is proven</text>

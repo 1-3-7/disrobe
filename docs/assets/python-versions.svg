@@ -1,5 +1,5 @@
-<?xml version="1.0" encoding="UTF-8"?><desc>generated from python_versions.json sha256:93f6d70ccab1db0acab553efc9d8e0c5</desc>
-<svg xmlns="http://www.w3.org/2000/svg" width="920" height="488" viewBox="0 0 920 488" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="488" viewBox="0 0 920 488" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"><desc>generated from python_versions.json sha256:93f6d70ccab1db0acab553efc9d8e0c5</desc>
   <rect x="0" y="0" width="920" height="488" rx="10" fill="#0a0a0a"/>
   <rect x="0.5" y="0.5" width="919" height="487" rx="9.5" fill="none" stroke="#262626"/>
   <text x="28.00" y="40.00" font-size="19" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Python decompiler version coverage</text>
