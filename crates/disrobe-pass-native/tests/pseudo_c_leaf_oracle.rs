@@ -6652,6 +6652,18 @@ const FP_BATTERY: &[FpCase] = &[
         ret: FpRet::Float,
         c_source: "float fv_subhalff(float a){ return a - 0.5f; }",
     },
+    FpCase {
+        name: "fv_eqd",
+        args: &[FpArg::Double, FpArg::Double],
+        ret: FpRet::LongLong,
+        c_source: "long long fv_eqd(double a, double b){ return a == b; }",
+    },
+    FpCase {
+        name: "fv_ltd",
+        args: &[FpArg::Double, FpArg::Double],
+        ret: FpRet::LongLong,
+        c_source: "long long fv_ltd(double a, double b){ return a < b; }",
+    },
 ];
 
 fn fp_battery_source(cases: &[FpCase]) -> String {
@@ -6703,6 +6715,14 @@ fn fp_lift(
             return None;
         }
     };
+    assert_eq!(
+        recovery.returns_fp.is_none(),
+        matches!(case.ret, FpRet::LongLong),
+        "{} ({abi:?}): the recovered return class must follow the source return type, not the last floating register the body happens to load; got returns_fp={:?} for {}",
+        case.name,
+        recovery.returns_fp,
+        case.c_source
+    );
     let recovered_name: String = format!("rec_{}", case.name);
     let ret_type: &str = match case.ret {
         FpRet::Double => "double",
@@ -11843,6 +11863,12 @@ const FP_STACK_BATTERY: &[FpCase] = &[
         args: &[FpArg::Float, FpArg::Float],
         ret: FpRet::Float,
         c_source: "float sf_fchain(float a, float b){ float r = a - b; r = r * a; return r + b; }",
+    },
+    FpCase {
+        name: "sf_dlt",
+        args: &[FpArg::Double, FpArg::Double],
+        ret: FpRet::LongLong,
+        c_source: "long long sf_dlt(double a, double b){ return a < b; }",
     },
 ];
 
