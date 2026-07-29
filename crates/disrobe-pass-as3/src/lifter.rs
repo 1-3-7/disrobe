@@ -54,6 +54,11 @@ pub enum Expr {
         op: &'static str,
         operand: Box<Self>,
     },
+    Update {
+        op: &'static str,
+        operand: Box<Self>,
+        postfix: bool,
+    },
     Binary {
         op: &'static str,
         lhs: Box<Self>,
@@ -169,6 +174,18 @@ impl Expr {
                     format!("{op}{inner}")
                 }
             }
+            Self::Update {
+                op,
+                operand,
+                postfix,
+            } => {
+                let inner: String = operand.render(names);
+                if *postfix {
+                    format!("{inner}{op}")
+                } else {
+                    format!("{op}{inner}")
+                }
+            }
             Self::Binary { op, lhs, rhs } => {
                 format!("({} {} {})", lhs.render(names), op, rhs.render(names))
             }
@@ -234,6 +251,7 @@ fn expr_node_count_capped(e: &Expr, cap: usize) -> usize {
                 walk(rhs, cap, acc);
             }
             Expr::Unary { operand: value, .. }
+            | Expr::Update { operand: value, .. }
             | Expr::Coerce { operand: value, .. }
             | Expr::Typeof(value)
             | Expr::Get { object: value, .. }
@@ -569,6 +587,11 @@ struct Idioms {
     dup_backed_setlocals: BTreeSet<usize>,
     short_circuit_branches: BTreeMap<usize, &'static str>,
     short_circuit_discards: BTreeSet<usize>,
+    defaulted_short_circuits: BTreeSet<usize>,
+}
+
+fn is_conditional_branch(op: u8) -> bool {
+    matches!(op, OP_IFTRUE | OP_IFFALSE) || compare_branch_op(op).is_some()
 }
 
 fn detect_idioms(lines: &[DisasmLine]) -> Idioms {
@@ -576,6 +599,9 @@ fn detect_idioms(lines: &[DisasmLine]) -> Idioms {
     for pair in lines.windows(2) {
         if pair[0].opcode == OP_DUP && is_setlocal(pair[1].opcode) {
             out.dup_backed_setlocals.insert(pair[1].offset);
+        }
+        if pair[1].opcode == OP_POP && is_conditional_branch(pair[0].opcode) {
+            out.defaulted_short_circuits.insert(pair[0].offset);
         }
     }
     for triple in lines.windows(3) {
@@ -625,9 +651,10 @@ fn expr_reads_location(e: &Expr, written: WrittenLocation<'_>) -> bool {
                 || expr_reads_location(object, written)
                 || expr_reads_location(index, written)
         }
-        Expr::Unary { operand, .. } | Expr::Coerce { operand, .. } | Expr::Typeof(operand) => {
-            expr_reads_location(operand, written)
-        }
+        Expr::Unary { operand, .. }
+        | Expr::Update { operand, .. }
+        | Expr::Coerce { operand, .. }
+        | Expr::Typeof(operand) => expr_reads_location(operand, written),
         Expr::Binary { lhs, rhs, .. } => {
             expr_reads_location(lhs, written) || expr_reads_location(rhs, written)
         }
@@ -2042,6 +2069,20 @@ fn emit_coerce(lifter: &mut Lifter<'_>, ty: String) {
 
 fn emit_inc_local(lifter: &mut Lifter<'_>, slot: i64, op: &'static str) {
     let target: Expr = local_expr(slot, lifter.names);
+    let occurrences: usize = lifter
+        .stack
+        .iter()
+        .filter(|e: &&Expr| **e == target)
+        .count();
+    if occurrences == 1 && lifter.stack.last() == Some(&target) {
+        lifter.stack.pop();
+        lifter.push(Expr::Update {
+            op: if op == "+" { "++" } else { "--" },
+            operand: Box::new(target),
+            postfix: true,
+        });
+        return;
+    }
     let value: Expr = Expr::Binary {
         op,
         lhs: Box::new(target.clone()),
@@ -2174,7 +2215,9 @@ fn emit_branch(lifter: &mut Lifter<'_>, line: &DisasmLine, next_off: usize, end_
                 return;
             }
             let cond: Expr = branch_condition(line.opcode, value);
-            push_conditional_branch(lifter, cond, target);
+            if !push_defaulted_short_circuit(lifter, line.offset, &cond, target) {
+                push_conditional_branch(lifter, cond, target);
+            }
         }
         other => {
             if let Some(cmp) = compare_branch_op(other) {
@@ -2185,7 +2228,9 @@ fn emit_branch(lifter: &mut Lifter<'_>, line: &DisasmLine, next_off: usize, end_
                     lhs: Box::new(lhs),
                     rhs: Box::new(rhs),
                 };
-                push_conditional_branch(lifter, cond, target);
+                if !push_defaulted_short_circuit(lifter, line.offset, &cond, target) {
+                    push_conditional_branch(lifter, cond, target);
+                }
             }
         }
     }
@@ -2200,6 +2245,39 @@ fn branch_condition(opcode: u8, value: Expr) -> Expr {
     } else {
         value
     }
+}
+
+fn push_defaulted_short_circuit(
+    lifter: &mut Lifter<'_>,
+    offset: usize,
+    cond: &Expr,
+    target: usize,
+) -> bool {
+    if target <= offset || !lifter.idioms.defaulted_short_circuits.contains(&offset) {
+        return false;
+    }
+    let default: bool = match lifter.stack.last() {
+        Some(Expr::BoolLit(value)) => *value,
+        _ => return false,
+    };
+    let (op, lhs): (&'static str, Expr) = if default {
+        ("||", cond.clone())
+    } else {
+        ("&&", negate(cond.clone()))
+    };
+    lifter.statements.push(Stmt::If {
+        cond: cond.clone(),
+        target_label: target,
+    });
+    lifter.short_circuits.push(ShortCircuit {
+        target,
+        op,
+        lhs,
+        join_height: lifter.stack.len().saturating_sub(1),
+        branch_index: lifter.statements.len() - 1,
+        discard_index: None,
+    });
+    true
 }
 
 fn push_conditional_branch(lifter: &mut Lifter<'_>, cond: Expr, target: usize) {
@@ -2235,7 +2313,7 @@ fn emit_switch(lifter: &mut Lifter<'_>, line: &DisasmLine, _next_off: usize, _en
 fn expr_has_effect(e: &Expr) -> bool {
     matches!(
         e,
-        Expr::Call { .. } | Expr::Construct { .. } | Expr::New { .. }
+        Expr::Call { .. } | Expr::Construct { .. } | Expr::New { .. } | Expr::Update { .. }
     )
 }
 
@@ -2282,6 +2360,49 @@ fn label_ref_count(stmts: &[Stmt], label: usize) -> usize {
         .count()
 }
 
+fn label_ref_count_deep(stmts: &[Stmt], label: usize) -> usize {
+    stmts
+        .iter()
+        .map(|s: &Stmt| match s {
+            Stmt::If { target_label, .. } | Stmt::Jump { target_label } => {
+                usize::from(*target_label == label)
+            }
+            Stmt::Switch {
+                case_labels,
+                default_label,
+                ..
+            } => {
+                case_labels.iter().filter(|l: &&usize| **l == label).count()
+                    + usize::from(*default_label == label)
+            }
+            Stmt::IfBlock { body, .. }
+            | Stmt::While { body, .. }
+            | Stmt::DoWhile { body, .. }
+            | Stmt::For { body, .. }
+            | Stmt::ForEach { body, .. }
+            | Stmt::ForIn { body, .. }
+            | Stmt::With { body, .. } => label_ref_count_deep(body, label),
+            Stmt::IfElse {
+                then_body,
+                else_body,
+                ..
+            } => label_ref_count_deep(then_body, label) + label_ref_count_deep(else_body, label),
+            Stmt::StructuredSwitch { cases, .. } => cases
+                .iter()
+                .map(|c: &SwitchCase| label_ref_count_deep(&c.body, label))
+                .sum(),
+            Stmt::Try { body, catches } => {
+                label_ref_count_deep(body, label)
+                    + catches
+                        .iter()
+                        .map(|c: &CatchClause| label_ref_count_deep(&c.body, label))
+                        .sum::<usize>()
+            }
+            _ => 0,
+        })
+        .sum()
+}
+
 fn label_at(stmts: &[Stmt], label: usize) -> Option<usize> {
     stmts
         .iter()
@@ -2292,6 +2413,15 @@ fn region_is_structurable(slice: &[Stmt]) -> bool {
     !slice
         .iter()
         .any(|s: &Stmt| matches!(s, Stmt::Switch { .. }))
+}
+
+fn slice_labels_are_private(outer: &[Stmt], body: &[Stmt]) -> bool {
+    body.iter().all(|s: &Stmt| match s {
+        Stmt::Label(label) => {
+            label_ref_count_deep(body, *label) == label_ref_count_deep(outer, *label)
+        }
+        _ => true,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -2555,7 +2685,9 @@ fn drop_dead_labels(stmts: Vec<Stmt>) -> Vec<Stmt> {
 
 fn expr_is_effect_free(e: &Expr) -> bool {
     match e {
-        Expr::Call { .. } | Expr::Construct { .. } | Expr::New { .. } => false,
+        Expr::Call { .. } | Expr::Construct { .. } | Expr::New { .. } | Expr::Update { .. } => {
+            false
+        }
         Expr::Binary { lhs, rhs, .. }
         | Expr::Index {
             object: lhs,
@@ -2806,6 +2938,9 @@ fn try_match_forward_dispatch(stmts: &[Stmt], i: usize, depth: usize) -> Option<
             }
             _ => (segment, false),
         };
+        if !slice_labels_are_private(stmts, body_slice) {
+            return None;
+        }
         let body: Vec<Stmt> = structure_if_blocks(
             structure_loops(
                 structure_switches(body_slice.to_vec(), inner_depth),
@@ -2960,6 +3095,9 @@ fn build_switch_case(
         }
         _ => (inner, false),
     };
+    if !slice_labels_are_private(stmts, body_slice) {
+        return None;
+    }
     let inner_depth: usize = depth - 1;
     let body: Vec<Stmt> = structure_if_blocks(
         structure_loops(
@@ -3107,6 +3245,11 @@ fn structure_loops(stmts: Vec<Stmt>, depth: usize) -> Vec<Stmt> {
         }
         if let Some((consumed, do_stmt)) = try_match_do_while(&stmts, i, depth) {
             out.push(do_stmt);
+            i += consumed;
+            continue;
+        }
+        if let Some((consumed, while_stmt)) = try_match_top_test_while(&stmts, i, depth) {
+            out.push(while_stmt);
             i += consumed;
             continue;
         }
@@ -3265,15 +3408,16 @@ fn try_match_while_with_exits(stmts: &[Stmt], i: usize, depth: usize) -> Option<
     if outer_test_refs != inner_continue_only + 1 {
         return None;
     }
+    if !slice_labels_are_private(stmts, body_slice) {
+        return None;
+    }
     let exits: LoopExits = LoopExits {
         continue_label: test_label,
         break_label: merge_label,
     };
     let rewritten: Vec<Stmt> = rewrite_loop_exits(body_slice.to_vec(), &exits)?;
-    let body: Vec<Stmt> = structure_if_blocks(structure_loops(rewritten, depth - 1), depth - 1);
-    if !body_is_structured_with_exits(&body) {
-        return None;
-    }
+    let body: Vec<Stmt> =
+        structure_acyclic(&structure_loops(rewritten, depth - 1), None, depth - 1)?;
     if !body.iter().any(loop_has_real_exit) {
         return None;
     }
@@ -3336,13 +3480,35 @@ enum IteratorKind {
 }
 
 fn iterator_var_binding(stmt: &Stmt) -> Option<(Expr, Expr, IteratorKind)> {
-    let (var, value): (&Expr, &Expr) = match stmt {
-        Stmt::Assign { target, value } => (target, value),
+    let (var, value): (Expr, &Expr) = match stmt {
+        Stmt::Assign { target, value } => (target.clone(), value),
+        Stmt::AssignProperty {
+            object,
+            property,
+            value,
+        } => (
+            Expr::Get {
+                object: Box::new(object.clone()),
+                property: property.clone(),
+            },
+            value,
+        ),
+        Stmt::AssignIndex {
+            object,
+            index,
+            value,
+        } => (
+            Expr::Index {
+                object: Box::new(object.clone()),
+                index: Box::new(index.clone()),
+            },
+            value,
+        ),
         _ => return None,
     };
     match value {
-        Expr::Coerce { operand, .. } => iterator_call(var, operand),
-        other => iterator_call(var, other),
+        Expr::Coerce { operand, .. } => iterator_call(&var, operand),
+        other => iterator_call(&var, other),
     }
 }
 
@@ -3364,15 +3530,6 @@ fn iterator_call(var: &Expr, value: &Expr) -> Option<(Expr, Expr, IteratorKind)>
         _ => return None,
     };
     Some(((*var).clone(), (**callee).clone(), kind))
-}
-
-fn loop_body_is_self_contained(body: &[Stmt]) -> bool {
-    !body.iter().any(|s: &Stmt| {
-        matches!(
-            s,
-            Stmt::Label(_) | Stmt::Jump { .. } | Stmt::If { .. } | Stmt::Switch { .. }
-        )
-    })
 }
 
 fn try_match_iterator_loop(stmts: &[Stmt], i: usize, depth: usize) -> Option<(usize, Stmt)> {
@@ -3412,13 +3569,15 @@ fn try_match_iterator_loop(stmts: &[Stmt], i: usize, depth: usize) -> Option<(us
         return None;
     }
     let body_slice: &[Stmt] = &inner[1..];
+    if !slice_labels_are_private(stmts, body_slice) {
+        return None;
+    }
     let body: Vec<Stmt> = if label_ref_count(stmts, test_label) == 1 {
-        let structured: Vec<Stmt> =
-            structure_if_blocks(structure_loops(body_slice.to_vec(), depth - 1), depth - 1);
-        if !loop_body_is_self_contained(&structured) {
-            return None;
-        }
-        structured
+        structure_acyclic(
+            &structure_loops(body_slice.to_vec(), depth - 1),
+            None,
+            depth - 1,
+        )?
     } else {
         let merge_label: usize = match stmts.get(test_idx + 2) {
             Some(Stmt::Label(l)) => *l,
@@ -3442,12 +3601,7 @@ fn try_match_iterator_loop(stmts: &[Stmt], i: usize, depth: usize) -> Option<(us
             break_label: merge_label,
         };
         let rewritten: Vec<Stmt> = rewrite_loop_exits(body_slice.to_vec(), &exits)?;
-        let structured: Vec<Stmt> =
-            structure_if_blocks(structure_loops(rewritten, depth - 1), depth - 1);
-        if !body_is_structured_with_exits(&structured) {
-            return None;
-        }
-        structured
+        structure_acyclic(&structure_loops(rewritten, depth - 1), None, depth - 1)?
     };
     let stmt: Stmt = match kind {
         IteratorKind::Each => Stmt::ForEach {
@@ -3525,14 +3679,14 @@ fn try_match_for(stmts: &[Stmt], i: usize, depth: usize) -> Option<(usize, Stmt)
         return None;
     }
     let body_slice: &[Stmt] = &inner[..inner.len() - 1];
-    if body_slice.is_empty() {
+    if body_slice.is_empty() || !slice_labels_are_private(stmts, body_slice) {
         return None;
     }
-    let body: Vec<Stmt> =
-        structure_if_blocks(structure_loops(body_slice.to_vec(), depth - 1), depth - 1);
-    if !loop_body_is_self_contained(&body) {
-        return None;
-    }
+    let body: Vec<Stmt> = structure_acyclic(
+        &structure_loops(body_slice.to_vec(), depth - 1),
+        None,
+        depth - 1,
+    )?;
     let stmt: Stmt = Stmt::For {
         init: Box::new(init.clone()),
         cond: cond.clone(),
@@ -3557,6 +3711,66 @@ fn for_update_matches_init(init: &Stmt, update: &Stmt) -> bool {
     }
 }
 
+fn latch_index(stmts: &[Stmt], from: usize, top_label: usize) -> Option<usize> {
+    stmts
+        .iter()
+        .enumerate()
+        .skip(from)
+        .rev()
+        .find(|(_, s): &(usize, &Stmt)| {
+            matches!(s, Stmt::Jump { target_label } if *target_label == top_label)
+        })
+        .map(|(index, _): (usize, &Stmt)| index)
+}
+
+fn try_match_top_test_while(stmts: &[Stmt], i: usize, depth: usize) -> Option<(usize, Stmt)> {
+    if depth == 0 {
+        return None;
+    }
+    let Stmt::Label(top_label): &Stmt = &stmts[i] else {
+        return None;
+    };
+    let top_label: usize = *top_label;
+    let (cond, exit_label, body_start): (Expr, usize, usize) = match stmts.get(i + 1)? {
+        Stmt::If {
+            cond,
+            target_label: exit,
+        } => (negate(cond.clone()), *exit, i + 2),
+        _ => (Expr::BoolLit(true), NO_BREAK_LABEL, i + 1),
+    };
+    let latch: usize = latch_index(stmts, body_start, top_label)?;
+    let exit_label: usize = if exit_label == NO_BREAK_LABEL {
+        match stmts.get(latch + 1) {
+            Some(Stmt::Label(l)) => *l,
+            _ => NO_BREAK_LABEL,
+        }
+    } else {
+        if !matches!(stmts.get(latch + 1), Some(Stmt::Label(l)) if *l == exit_label) {
+            return None;
+        }
+        exit_label
+    };
+    let body_slice: &[Stmt] = &stmts[body_start..latch];
+    if body_slice.is_empty()
+        || !region_is_structurable(body_slice)
+        || !slice_labels_are_private(stmts, body_slice)
+    {
+        return None;
+    }
+    if label_ref_count_deep(&stmts[i..=latch], top_label) != label_ref_count_deep(stmts, top_label)
+    {
+        return None;
+    }
+    let exits: LoopExits = LoopExits {
+        continue_label: top_label,
+        break_label: exit_label,
+    };
+    let rewritten: Vec<Stmt> = rewrite_loop_exits(body_slice.to_vec(), &exits)?;
+    let body: Vec<Stmt> =
+        structure_acyclic(&structure_loops(rewritten, depth - 1), None, depth - 1)?;
+    Some((latch + 1 - i, Stmt::While { cond, body }))
+}
+
 fn try_match_do_while(stmts: &[Stmt], i: usize, depth: usize) -> Option<(usize, Stmt)> {
     if depth == 0 {
         return None;
@@ -3578,17 +3792,17 @@ fn try_match_do_while(stmts: &[Stmt], i: usize, depth: usize) -> Option<(usize, 
         return None;
     };
     let body_slice: &[Stmt] = &stmts[i + 1..back_idx];
-    if body_slice.is_empty() || !region_is_structurable(body_slice) {
-        return None;
-    }
-    if body_slice
-        .iter()
-        .any(|s: &Stmt| matches!(s, Stmt::Label(_) | Stmt::Jump { .. } | Stmt::If { .. }))
+    if body_slice.is_empty()
+        || !region_is_structurable(body_slice)
+        || !slice_labels_are_private(stmts, body_slice)
     {
         return None;
     }
-    let body: Vec<Stmt> =
-        structure_if_blocks(structure_loops(body_slice.to_vec(), depth - 1), depth - 1);
+    let body: Vec<Stmt> = structure_acyclic(
+        &structure_loops(body_slice.to_vec(), depth - 1),
+        None,
+        depth - 1,
+    )?;
     let do_stmt: Stmt = Stmt::DoWhile {
         cond: cond.clone(),
         body,
@@ -3630,16 +3844,14 @@ fn try_match_while(stmts: &[Stmt], i: usize, depth: usize) -> Option<(usize, Stm
     if label_ref_count(stmts, top_label) != 1 || label_ref_count(stmts, test_label) != 1 {
         return None;
     }
-    let body: Vec<Stmt> = structure_if_blocks(
-        structure_loops(
-            structure_switches(body_slice.to_vec(), depth - 1),
-            depth - 1,
-        ),
-        depth - 1,
-    );
-    if !slice_is_structured(&body) {
+    if !slice_labels_are_private(stmts, body_slice) {
         return None;
     }
+    let inner: Vec<Stmt> = structure_loops(
+        structure_switches(body_slice.to_vec(), depth - 1),
+        depth - 1,
+    );
+    let body: Vec<Stmt> = structure_acyclic(&inner, None, depth - 1)?;
     let while_stmt: Stmt = Stmt::While {
         cond: cond.clone(),
         body,
@@ -3677,6 +3889,162 @@ fn structure_if_blocks(stmts: Vec<Stmt>, depth: usize) -> Vec<Stmt> {
         i += 1;
     }
     out
+}
+
+fn restructure_nested(stmt: Stmt, depth: usize) -> Stmt {
+    let recur =
+        |body: Vec<Stmt>| -> Vec<Stmt> { structure_acyclic(&body, None, depth).unwrap_or(body) };
+    match stmt {
+        Stmt::IfBlock { cond, body } => Stmt::IfBlock {
+            cond,
+            body: recur(body),
+        },
+        Stmt::IfElse {
+            cond,
+            then_body,
+            else_body,
+        } => Stmt::IfElse {
+            cond,
+            then_body: recur(then_body),
+            else_body: recur(else_body),
+        },
+        Stmt::With { object, body } => Stmt::With {
+            object,
+            body: recur(body),
+        },
+        Stmt::Try { body, catches } => Stmt::Try {
+            body: recur(body),
+            catches: catches
+                .into_iter()
+                .map(|c: CatchClause| CatchClause {
+                    body: recur(c.body),
+                    ..c
+                })
+                .collect(),
+        },
+        Stmt::StructuredSwitch { selector, cases } => Stmt::StructuredSwitch {
+            selector,
+            cases: cases
+                .into_iter()
+                .map(|c: SwitchCase| SwitchCase {
+                    body: recur(c.body),
+                    ..c
+                })
+                .collect(),
+        },
+        other => other,
+    }
+}
+
+fn acyclic_conditional(
+    slice: &[Stmt],
+    i: usize,
+    cond: &Expr,
+    label: usize,
+    end_label: Option<usize>,
+    depth: usize,
+) -> Option<(usize, Stmt)> {
+    if let Some(merge) = label_at(&slice[i + 1..], label).map(|p: usize| i + 1 + p) {
+        if label_ref_count_deep(&slice[i..=merge], label) != label_ref_count_deep(slice, label) {
+            return None;
+        }
+        let then_slice: &[Stmt] = &slice[i + 1..merge];
+        if let Some(Stmt::Jump { target_label: tail }) = then_slice.last()
+            && *tail != label
+        {
+            let tail: usize = *tail;
+            let then_core: &[Stmt] = &then_slice[..then_slice.len() - 1];
+            let else_span: Option<(&[Stmt], Option<usize>, usize)> =
+                match label_at(&slice[merge + 1..], tail).map(|p: usize| merge + 1 + p) {
+                    Some(join)
+                        if label_ref_count_deep(&slice[i..=join], tail)
+                            == label_ref_count_deep(slice, tail) =>
+                    {
+                        Some((&slice[merge + 1..join], Some(tail), join + 1 - i))
+                    }
+                    None if Some(tail) == end_label => {
+                        Some((&slice[merge + 1..], end_label, slice.len() - i))
+                    }
+                    Some(_) | None => None,
+                };
+            if let Some((else_slice, inner_end, consumed)) = else_span {
+                let then_body: Vec<Stmt> = structure_acyclic(then_core, Some(tail), depth - 1)?;
+                let else_body: Vec<Stmt> = structure_acyclic(else_slice, inner_end, depth - 1)?;
+                let folded: Option<Stmt> = match (then_body.is_empty(), else_body.is_empty()) {
+                    (false, false) => Some(Stmt::IfElse {
+                        cond: negate(cond.clone()),
+                        then_body,
+                        else_body,
+                    }),
+                    (true, false) => Some(Stmt::IfBlock {
+                        cond: cond.clone(),
+                        body: else_body,
+                    }),
+                    (false, true) => Some(Stmt::IfBlock {
+                        cond: negate(cond.clone()),
+                        body: then_body,
+                    }),
+                    (true, true) => None,
+                };
+                if let Some(stmt) = folded {
+                    return Some((consumed, stmt));
+                }
+            }
+        }
+        let body: Vec<Stmt> = structure_acyclic(then_slice, Some(label), depth - 1)?;
+        return Some((
+            merge + 1 - i,
+            Stmt::IfBlock {
+                cond: negate(cond.clone()),
+                body,
+            },
+        ));
+    }
+    if Some(label) == end_label {
+        let body: Vec<Stmt> = structure_acyclic(&slice[i + 1..], end_label, depth - 1)?;
+        return Some((
+            slice.len() - i,
+            Stmt::IfBlock {
+                cond: negate(cond.clone()),
+                body,
+            },
+        ));
+    }
+    None
+}
+
+fn structure_acyclic(slice: &[Stmt], end_label: Option<usize>, depth: usize) -> Option<Vec<Stmt>> {
+    if depth == 0 {
+        return None;
+    }
+    let mut out: Vec<Stmt> = Vec::with_capacity(slice.len());
+    let mut i: usize = 0;
+    while i < slice.len() {
+        match &slice[i] {
+            Stmt::Label(_) | Stmt::Switch { .. } => return None,
+            Stmt::Jump { target_label } => {
+                if Some(*target_label) != end_label || i + 1 != slice.len() {
+                    return None;
+                }
+                i += 1;
+            }
+            Stmt::If { cond, target_label } => {
+                let (consumed, stmt): (usize, Stmt) =
+                    acyclic_conditional(slice, i, cond, *target_label, end_label, depth)?;
+                out.push(stmt);
+                i += consumed;
+            }
+            other => {
+                let mapped: Stmt = restructure_nested(other.clone(), depth - 1);
+                if !body_is_structured_with_exits(std::slice::from_ref(&mapped)) {
+                    return None;
+                }
+                out.push(mapped);
+                i += 1;
+            }
+        }
+    }
+    Some(out)
 }
 
 fn slice_is_structured(slice: &[Stmt]) -> bool {
@@ -4117,13 +4485,14 @@ pub fn lift_body(
     let with_regions: Vec<WithRegion> = lifter.with_regions.clone();
     let scoped: Vec<Stmt> = structure_with(lifter.statements, &with_regions, MAX_STRUCTURE_DEPTH);
     let raw_statements: Vec<Stmt> = structure_try(scoped, &regions, MAX_STRUCTURE_DEPTH);
-    let pruned: Vec<Stmt> = drop_empty_branches(raw_statements);
-    let dispatched: Vec<Stmt> = structure_forward_dispatch(pruned, MAX_STRUCTURE_DEPTH);
-    let switched: Vec<Stmt> = structure_switches(dispatched, MAX_STRUCTURE_DEPTH);
-    let structured: Vec<Stmt> = structure_if_blocks(
-        structure_loops(switched, MAX_STRUCTURE_DEPTH),
-        MAX_STRUCTURE_DEPTH,
-    );
+    let pruned: Vec<Stmt> = drop_dead_labels(drop_empty_branches(drop_dead_labels(raw_statements)));
+    let dispatched: Vec<Stmt> =
+        drop_dead_labels(structure_forward_dispatch(pruned, MAX_STRUCTURE_DEPTH));
+    let switched: Vec<Stmt> = drop_dead_labels(structure_switches(dispatched, MAX_STRUCTURE_DEPTH));
+    let looped: Vec<Stmt> = structure_loops(switched, MAX_STRUCTURE_DEPTH);
+    let acyclic: Option<Vec<Stmt>> = structure_acyclic(&looped, None, MAX_STRUCTURE_DEPTH);
+    let structured: Vec<Stmt> =
+        acyclic.unwrap_or_else(|| structure_if_blocks(looped, MAX_STRUCTURE_DEPTH));
     let statements: Vec<Stmt> = drop_dead_labels(structured);
     let opaque_operands: usize = lift_opaque.saturating_add(stmts_phi_count(&statements));
     let reached_terminator: bool = statements.iter().any(stmt_reaches_terminator);
@@ -4173,6 +4542,15 @@ pub fn render_body(lifted: &LiftedBody, names: &LocalNames, indent: &str) -> Str
         render_stmt(&mut out, stmt, names, indent);
     }
     out
+}
+
+fn iteration_binding(var: &Expr, names: &LocalNames) -> String {
+    let rendered: String = var.render(names);
+    if matches!(var, Expr::Local(_) | Expr::Param(_) | Expr::Name(_)) {
+        format!("var {rendered}")
+    } else {
+        rendered
+    }
 }
 
 fn render_stmt(out: &mut String, stmt: &Stmt, names: &LocalNames, indent: &str) {
@@ -4378,8 +4756,8 @@ fn render_stmt(out: &mut String, stmt: &Stmt, names: &LocalNames, indent: &str) 
             push_format(
                 out,
                 format_args!(
-                    "{indent}for each (var {} in {}) {{\n",
-                    var.render(names),
+                    "{indent}for each ({} in {}) {{\n",
+                    iteration_binding(var, names),
                     collection.render(names)
                 ),
             );
@@ -4397,8 +4775,8 @@ fn render_stmt(out: &mut String, stmt: &Stmt, names: &LocalNames, indent: &str) 
             push_format(
                 out,
                 format_args!(
-                    "{indent}for (var {} in {}) {{\n",
-                    var.render(names),
+                    "{indent}for ({} in {}) {{\n",
+                    iteration_binding(var, names),
                     collection.render(names)
                 ),
             );

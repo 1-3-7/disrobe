@@ -61,7 +61,10 @@ impl Flat {
 type LeafId = String;
 
 fn is_iterator_binding(stmt: &Stmt) -> bool {
-    let Stmt::Assign { value, .. } = stmt else {
+    let (Stmt::Assign { value, .. }
+    | Stmt::AssignProperty { value, .. }
+    | Stmt::AssignIndex { value, .. }) = stmt
+    else {
         return false;
     };
     let call: &disrobe_pass_as3::Expr = match value {
