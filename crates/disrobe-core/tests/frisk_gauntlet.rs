@@ -276,12 +276,13 @@ fn js_bundle_yields_fetch_websocket_and_graphql_endpoints() {
 }
 
 #[test]
-fn secret_value_is_redacted_not_raw() {
+fn secret_value_is_the_whole_key_a_researcher_pivots_on() {
     let report: ReconReport = scan();
     let aws: &ReconFinding = finding(&report, "DR-SEC-AWS-AKID");
-    assert!(
-        aws.value.contains('\u{2026}'),
-        "secret preview must be redacted, not the raw key: {aws:?}"
+    assert_eq!(
+        aws.value,
+        format!("{}{}", "AKIA", "3KFTG2KQ4WXYZ7AB"),
+        "a DR-SEC-* finding must carry the full match by default: {aws:?}"
     );
     assert_eq!(aws.path.as_deref(), Some("res/raw/credentials.properties"));
 }

@@ -135,12 +135,7 @@ fn git_to_sarif(report: &GitHistoryReport) -> SarifLog {
                         artifact_location: ArtifactLocation {
                             uri: gf.blob_path.clone(),
                         },
-                        region: Some(Region {
-                            start_line: u32::try_from(gf.finding.line).unwrap_or(1),
-                            start_column: Some(u32::try_from(gf.finding.column).unwrap_or(1)),
-                            end_line: None,
-                            end_column: None,
-                        }),
+                        region: Some(finding_region(&gf.finding)),
                     },
                 }],
             }
@@ -201,6 +196,14 @@ fn run_git(
     }
 }
 
+fn finding_region(f: &ReconFinding) -> Region {
+    Region::line_col(
+        u32::try_from(f.line).unwrap_or(1),
+        u32::try_from(f.column).unwrap_or(1),
+    )
+    .with_byte_offset(u64::try_from(f.offset).unwrap_or_default())
+}
+
 fn sarif_level(severity: &str) -> SarifLevel {
     match severity {
         "error" => SarifLevel::Error,
@@ -241,12 +244,7 @@ fn to_sarif(report: &ReconReport) -> SarifLog {
                 locations: vec![Location {
                     physical_location: PhysicalLocation {
                         artifact_location: ArtifactLocation { uri },
-                        region: Some(Region {
-                            start_line: u32::try_from(f.line).unwrap_or(1),
-                            start_column: Some(u32::try_from(f.column).unwrap_or(1)),
-                            end_line: None,
-                            end_column: None,
-                        }),
+                        region: Some(finding_region(f)),
                     },
                 }],
             }
@@ -396,7 +394,34 @@ mod tests {
             .expect("aws");
         assert_eq!(
             fingerprint(aws),
-            "f.txt|secret|DR-SEC-AWS-AKID|AKIA\u{2026}20"
+            format!("f.txt|secret|DR-SEC-AWS-AKID|{key}")
         );
+    }
+
+    #[test]
+    fn sarif_region_carries_the_byte_span() {
+        let key: String = format!("{}{}", "AKIA", "3KFTG2KQ4WXYZ7AB");
+        let input: String = format!("line\nkey {key} end");
+        let report: ReconReport =
+            recon::report_bytes(input.as_bytes(), Some("a.smali"), &ReconConfig::default());
+        let expected_offset: u64 = u64::try_from(
+            report
+                .findings
+                .iter()
+                .find(|f: &&ReconFinding| f.rule_id == "DR-SEC-AWS-AKID")
+                .expect("aws finding")
+                .offset,
+        )
+        .expect("offset fits u64");
+        let log: SarifLog = to_sarif(&report);
+        let v: serde_json::Value = serde_json::to_value(&log).expect("serialize");
+        let results: &Vec<serde_json::Value> = v["runs"][0]["results"].as_array().expect("results");
+        let aws: &serde_json::Value = results
+            .iter()
+            .find(|r: &&serde_json::Value| r["ruleId"] == "DR-SEC-AWS-AKID")
+            .expect("aws result");
+        let region: &serde_json::Value = &aws["locations"][0]["physicalLocation"]["region"];
+        assert_eq!(region["byteOffset"], expected_offset);
+        assert_eq!(region["startLine"], 2);
     }
 }
