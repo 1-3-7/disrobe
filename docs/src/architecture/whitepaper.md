@@ -991,7 +991,7 @@ deliberately reported as the harder, lower number. These figures are not re-meas
 
 The measurement is enforced as a regression gate, not asserted. The CI gate runs the same harness
 over the 200-module pinned corpus (the source of the <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> and 54.5% figures), parses its JSON, and
-holds the per-object rate above a floor of 90.0%; the full-stdlib <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> comes from running that
+holds the per-object rate above a floor of 96.60%; the full-stdlib <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> comes from running that
 harness over the entire Lib rather than the pinned list:
 
 ```rust
@@ -2294,14 +2294,16 @@ A skip that names its reason is honest; a silently relaxed assertion is not. dis
 
 Where a measurement varies with compiler version or optimization but has a provable lower bound, disrobe asserts the floor, not a point estimate that only one machine produces. The floors are named constants, each traceable to the corpus and date on which it was measured, and each set below the locally observed value so that a legitimate codegen difference does not turn into a false failure while a real regression still trips the assertion. Representative floors across passes include:
 
-- `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:17` sets `OBJECT_PCT_FLOOR = 96.60`, the per-code-object recompile-equivalence floor on the pinned CPython 3.14 corpus, pinned at the figure the corpus actually measures rather than a round number beneath it; the 3.12 gate sits at 91.0 (`arbitrary_recompile_gate_312.rs:17`).
-- `crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs:36` sets `PER_METHOD_JAVAC_OK_FLOOR = 131`, the count of methods that must recompile cleanly through javac.
-- `crates/disrobe-pass-jvm/tests/jadx_head_to_head.rs:24` sets `RECOMPILE_FLOOR = 119` for the head-to-head recompile comparison.
-- `crates/disrobe-pass-dotnet/tests/whole_type_il_equivalence_oracle.rs:697` sets `IL_EQUIVALENCE_FLOOR = 47`, and `crates/disrobe-pass-dotnet/tests/recompile_oracle.rs:212` sets `RECOMPILE_FLOOR = 6`.
-- `crates/disrobe-pass-go/tests/go_crossformat_recovery.rs:30` sets `RECOVERY_FLOOR = 0.99` for cross-format Go symbol recovery.
-- `crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs:10` sets `RECOVERY_FLOOR = 72`, the count of PyArmor samples that must be recovered out of the 72-sample corpus.
-- `crates/disrobe-pass-beam/tests/erlc_recompile_equivalence.rs:320` sets `EQUIVALENCE_FLOOR = 18`, and `crates/disrobe-pass-lua/tests/reexec_diff_oracle.rs:252` sets `REEXEC_FLOOR_NUM = 27` for the Lua re-execution differential.
-- `crates/disrobe-pass-py-decompile/tests/roundtrip_metric.rs` sets `WHOLE_MODULE_FLOOR_PCT = 57.1` for whole-module recovery measured on the edge_cases monolith corpus (`roundtrip_metric.rs:635`), which is a distinct corpus from the 200-module pinned stdlib behind the 54.5% figure and must not be conflated with it, alongside the UPX content floors of 96.0% and 98.0% shown in section 4.2.4.
+These citations name the file and the constant, not a line number, because a line number rots every time the file above it changes while the constant it points at stays put.
+
+- `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs` sets `OBJECT_PCT_FLOOR = 96.60`, the per-code-object recompile-equivalence floor on the pinned CPython 3.14 corpus, pinned at the figure the corpus actually measures rather than a round number beneath it; the 3.12 gate sits at 91.0 (`arbitrary_recompile_gate_312.rs`).
+- `crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs` sets `PER_METHOD_JAVAC_OK_FLOOR = 131`, the count of methods that must recompile cleanly through javac.
+- `crates/disrobe-pass-jvm/tests/jadx_head_to_head.rs` sets `RECOMPILE_FLOOR = 131` for the head-to-head recompile comparison.
+- `crates/disrobe-pass-dotnet/tests/whole_type_il_equivalence_oracle.rs` sets `IL_EQUIVALENCE_FLOOR = 66`, and `crates/disrobe-pass-dotnet/tests/recompile_oracle.rs` sets `RECOMPILE_FLOOR = 6`.
+- `crates/disrobe-pass-go/tests/go_crossformat_recovery.rs` sets `RECOVERY_FLOOR` to the ratio 99 of 100 for cross-format Go symbol recovery.
+- `crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs` sets `RECOVERY_FLOOR = 72`, the count of PyArmor samples that must be recovered out of the 72-sample corpus.
+- `crates/disrobe-pass-beam/tests/erlc_recompile_equivalence.rs` sets `EQUIVALENCE_FLOOR = 18`, and `crates/disrobe-pass-lua/tests/reexec_diff_oracle.rs` sets `REEXEC_FLOOR_NUM = 29` for the Lua re-execution differential.
+- `crates/disrobe-pass-py-decompile/tests/roundtrip_metric.rs` sets `WHOLE_MODULE_FLOOR_PCT = 57.1` for whole-module recovery measured on the edge_cases monolith corpus, which is a distinct corpus from the 200-module pinned stdlib behind the 54.5% figure and must not be conflated with it, alongside the UPX content floors of 96.0% and 98.0% shown in section 4.2.4.
 
 Each floor is a promise of the form "at least this much recovery is reproducible anywhere the matrix runs." It is deliberately weaker than the best local number and deliberately stronger than zero, because the honest claim is a guaranteed lower bound, not a lucky maximum. The recompile-execute-diff oracles that do run, such as the leaf behavioral differential and the Eazfuscator re-injection, are exact rather than floored, because behavioral equivalence over a shared input battery either holds or does not; there is no honest partial credit for a program that computes the wrong answer.
 
