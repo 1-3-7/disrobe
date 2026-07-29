@@ -100,7 +100,7 @@ Stacked eval-chain obfuscation (FOPO, Better PHP Obfuscator, and the base64/gzin
 | **Swift / Obj-C** | Mach-O class-dump plus SwiftConfidential and SwiftShield rename-undo; `objc_msgSend` call sites in recovered native bodies resolved to selector and receiver class. |
 | **ActionScript 3** | SWF parse and AVM2 disasm; commercial obfuscators (secureSWF, DoSWF, Kindi, Irrfuscator, swfLock) detect-only. |
 | **Hermes / Flutter** | Hermes bytecode v60-v96 lift; Flutter Dart kernel byte-exact body recovery and ARM64 AOT disasm. |
-| **Containers / archives / filesystems / firmware** | <!-- m:containers_formats -->98<!-- /m --> formats detected, all <!-- m:containers_formats -->98<!-- /m --> with in-tree extractors that write member bytes. |
+| **Containers / archives / filesystems / firmware** | <!-- m:containers_formats -->100<!-- /m --> formats detected, all <!-- m:containers_formats -->100<!-- /m --> with in-tree extractors that write member bytes. |
 
 ## The `disrobe auto` chain
 

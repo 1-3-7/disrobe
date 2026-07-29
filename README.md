@@ -230,7 +230,7 @@ disrobe pyfreeze extract frozen.exe --out out/         # cx_Freeze / py2exe / Py
 ### Containers, orchestration, shell integration
 
 ```sh
-disrobe extract firmware.bin --out carved/ --recursive    # carve 98 container/archive/filesystem/firmware formats
+disrobe extract firmware.bin --out carved/ --recursive    # carve every supported container/archive/filesystem/firmware format
 disrobe chain sample.bin --chain auto:8 --capture-stages  # explicit pass pipeline (or pin e.g. pyarmor+py-decompile)
 disrobe apk app.apk --out out/                            # decode binary AndroidManifest + arsc + signer cert
 disrobe completions zsh > _disrobe                        # shell completions (bash/zsh/fish/pwsh), generated live
@@ -492,7 +492,7 @@ Missing rows are not implied wins. They stay in the edge table until the same-in
 | BEAM / AS3 | BEAM and ABC parsers lift bytecode to typed intermediate forms | `beam_disasm`, rabcdasm | same bytecode set, assembler round-trip gate |
 | Hermes / React Native | HBC v96 sample lifts <!-- m:hermes_opcoverage_count -->8 of 8<!-- /m --> functions at zero fallback ops; <!-- m:hermes_functions -->122,633<!-- /m -->-function bundle parses locally | hermes-dec, hbctool | same HBC set, bytecode-to-source and parse gates |
 | Flutter / Dart AOT | snapshot structure and cluster tags are parsed without fabricating names | reFlutter, Darter, blutter | same `libapp.so`, object-body name and field oracle |
-| Containers and firmware | <!-- m:containers_frac -->98 / 98<!-- /m --> detected formats write member bytes in-tree | binwalk, unblob, 7-Zip | same archive and firmware set, member-byte diff |
+| Containers and firmware | <!-- m:containers_frac -->100 / 100<!-- /m --> detected formats write member bytes in-tree | binwalk, unblob, 7-Zip | same archive and firmware set, member-byte diff |
 | Recon and secrets | apkleaks row is proven above; planted non-secret IOC recall is 6 / 6 | trufflehog, gitleaks, apkleaks, LinkFinder | same recovered tree, shared ground truth |
 | Format / packer / compiler ID | multi-signal ID tolerates damaged magic and renamed sections | Detect It Easy, TrID, PEiD, binwalk | same mutated corpus, ID accuracy plus extraction |
 | Capabilities and taint | ATT&CK/MBC mapping and source-to-sink paths run over normalized IR | capa, Ghidra scripts, Joern | same samples, rule-match and flow-path agreement |
@@ -548,7 +548,7 @@ Oracle strength `strong`: external-equivalence, execution, or byte-identity, the
 | Hermes HBC v96 | <!-- m:hermes_opcoverage_count -->8 of 8<!-- /m --> functions, 0 fallback ops `[CI]`; <!-- m:hermes_functions -->122,633<!-- /m -->-function production bundle parsed without module-parse failure `[local]` | op-coverage with source-matching bodies for the CI fixture; parse-scale only for the local bundle | `crates/disrobe-pass-mobile/tests/real_hermes_sample.rs`, `real_hermes_discord.rs` |
 | APK secrets vs apkleaks | 8 / 8 planted secrets vs 5 / 8 `[CI]` | hand-verified planted APK ground truth | `cargo run -p disrobe-bench-head-to-head` |
 | frisk IOC detection | 6 / 6 planted non-secret IOC categories `[CI]` | known-planted endpoints, manifest findings, URLs, IPv4, email, and `.onion` | `crates/disrobe-core/tests/frisk_gauntlet.rs` |
-| Container / archive / firmware extraction | <!-- m:containers_frac -->98 / 98<!-- /m --> formats write member bytes in-tree `[CI]` | per-format in-tree extraction count | `crates/disrobe-binfmt/src/container.rs` (`every_real_format_extracts_in_tree`) |
+| Container / archive / firmware extraction | <!-- m:containers_frac -->100 / 100<!-- /m --> formats write member bytes in-tree `[CI]` | per-format in-tree extraction count | `crates/disrobe-binfmt/src/container.rs` (`every_real_format_extracts_in_tree`) |
 | Cross-platform determinism | 3 / 3 real fixtures (Python `.pyc` decompile, native packer unpack, malicious pickle decompile) byte-identical across Linux/macOS/Windows, and a batch run over the same fixtures identical between `--jobs 1` and `--jobs 4` `[CI]` | BLAKE3 hash equality of the real recovered output, compared across the 3-OS CI matrix and across worker-pool sizes on the one real concurrent code path (`disrobe auto <dir>`'s batch runner) | `crates/disrobe-cli/tests/determinism_cross_platform.rs`; the `determinism-cross-platform` job in `.github/workflows/ci.yml` |
 
 ### Recompile-only

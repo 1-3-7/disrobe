@@ -10,7 +10,7 @@ Every pass is its own crate over the shared `disrobe-core` and `disrobe-ir` type
 |---|---|
 | `disrobe-core` | Shared types: the `Artifact` envelope, `Rung`, confidence tiers, error codes, the chain `Pass`/`Detector` traits, and the obfuscator-catalog traits. |
 | `disrobe-ir` | The five-rung IR ladder, the `.dr` envelope (rkyv hot payload + postcard cold sidecar + BLAKE3 root), and the transcode registry. |
-| `disrobe-binfmt` | Container detection, the 98-format extractors, and the chain runner. |
+| `disrobe-binfmt` | Container detection, the in-tree format extractors, and the chain runner. |
 | `disrobe-prowl` | Typed URL and IOC harvest reports, source filters, bounded async provider fan-out, and API-key resolution for the `prowl` CLI. |
 | `disrobe-pass-py-decompile`, `disrobe-pass-jvm`, `disrobe-pass-native`, `disrobe-pass-dotnet`, ... | One crate per ecosystem, each exposing a typed `Pass` plus direct entry points (for example the Python decompiler's `PY_DECOMPILE_PASS` and `roundtrip_native`). |
 | `disrobe-query`, `disrobe-capabilities` | The queryable-IR layer and the ATT&CK/MBC rule engine over the disassembled native code. |

@@ -45,7 +45,7 @@ Every figure below is produced by a committed test gate or a local measurement h
 | Android (Dalvik) | <!-- m:dalvik_verifier_pct -->99%<!-- /m --> of the committed dex corpus passes the JVM verifier (<!-- m:dalvik_verifier_count -->102 of 103<!-- /m --> classes; the 103rd is link-skipped before verification, so the gate counts every one of the 102 verifiable classes clean) | `-Xverify:all` over assembled jar |
 | Ruby YARV | greeter <!-- m:ruby_greeter_pct -->100%<!-- /m -->, megafile <!-- m:ruby_megafile_pct -->98%<!-- /m --> opcode-multiset equivalence | recompile on MRI |
 | PyArmor | <!-- m:pyarmor_samples -->72<!-- /m --> of 72 real-corpus samples recovered | plaintext-absent oracle |
-| Containers | <!-- m:containers_formats -->98<!-- /m --> formats detected, <!-- m:containers_formats -->98<!-- /m --> extracted in-tree | per-format byte length |
+| Containers | <!-- m:containers_formats -->100<!-- /m --> formats detected, <!-- m:containers_formats -->100<!-- /m --> extracted in-tree | per-format byte length |
 
 The numbers that are not perfect are labelled `SEMANTIC`, `PARTIAL`, or `SKELETON`, and the information-theoretic walls (native-virtualized code, runtime-only keys, RSA-wrapped capsule keys) are reported as detect-only by design.
 
