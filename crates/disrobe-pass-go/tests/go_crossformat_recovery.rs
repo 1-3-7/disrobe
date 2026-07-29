@@ -5,17 +5,6 @@ use std::collections::BTreeSet;
 
 use disrobe_pass_go::{GoAnalysis, GoFunc, GoItab, GoTypeRef, analyze};
 
-fn recovered_names(analysis: &GoAnalysis) -> BTreeSet<String> {
-    let mut out: BTreeSet<String> = BTreeSet::new();
-    for f in &analysis.symbols.funcs {
-        out.insert(f.name.clone());
-        if let Some(ls) = &f.linker_symbol {
-            out.insert(ls.clone());
-        }
-    }
-    out
-}
-
 fn recovered_type_names(analysis: &GoAnalysis) -> BTreeSet<String> {
     analysis
         .typemeta
@@ -40,7 +29,7 @@ fn recovered_itab_pairs(analysis: &GoAnalysis) -> BTreeSet<(String, String)> {
         .collect()
 }
 
-const RECOVERY_FLOOR: f64 = 0.99;
+const RECOVERY_FLOOR: common::FunctionRecoveryFloor = common::FunctionRecoveryFloor::new(99, 100);
 const TYPE_EQ_RECOVERY_FLOOR: f64 = 1.0;
 const ITAB_RECOVERY_FLOOR: f64 = 1.0;
 
@@ -69,24 +58,29 @@ fn assert_nm_recovery(bin: &str, nm: &str, expect_kind: &str, expect_ptr: u8) {
          regenerate via crates/disrobe-pass-go/tests/fixtures/regen.ps1",
         truth.len()
     );
-    let recovered: BTreeSet<String> = recovered_names(&analysis);
-    let hit: usize = truth.iter().filter(|n| recovered.contains(*n)).count();
-    let total: usize = truth.len();
-    #[allow(clippy::cast_precision_loss)]
-    let ratio: f64 = hit as f64 / total.max(1) as f64;
-    assert!(
-        ratio >= RECOVERY_FLOOR,
-        "{bin} ({expect_kind}): function-name recovery against `go tool nm` ground truth \
-         fell below {RECOVERY_FLOOR}: {hit}/{total} = {ratio:.4}"
+    let grade: common::FunctionRecoveryGrade =
+        common::grade_analyzed_function_names(&analysis, &truth);
+    eprintln!(
+        "{bin} ({expect_kind} normal): function-name recovery {}/{} = {}; missing={:?}",
+        grade.hit,
+        grade.total,
+        grade.percentage_display(),
+        grade.missing
     );
-
-    let unmatched: Vec<&String> = truth.iter().filter(|n| !recovered.contains(*n)).collect();
     assert!(
-        unmatched
-            .iter()
-            .all(|n: &&String| n.as_str() == "runtime.text" || n.as_str() == "runtime.etext"),
-        "{bin} ({expect_kind}): the only acceptable unmatched nm text symbols are the zero-size \
-         section anchors runtime.text/runtime.etext; got {unmatched:?}"
+        grade.meets_floor(RECOVERY_FLOOR),
+        "{bin} ({expect_kind}): function-name recovery against `go tool nm` ground truth \
+         fell below 99%: {}/{} = {}; missing={:?}",
+        grade.hit,
+        grade.total,
+        grade.percentage_display(),
+        grade.missing
+    );
+    assert!(
+        grade.missing.is_empty(),
+        "{bin} ({expect_kind} normal): non-anchor `go tool nm` names must all recover; \
+         missing={:?}",
+        grade.missing
     );
 }
 
@@ -332,4 +326,44 @@ fn macho_asm_symbols_carry_their_underscore_linker_symbol() {
         Some("runtime.morestack.abi0")
     );
     assert!(morestack.abi0);
+}
+
+#[test]
+fn real_pe_elf_and_macho_truncations_are_rejected() {
+    let targets: [(&str, &str); 3] = [
+        (common::BENCH_GENERICS, "pe"),
+        (common::BENCH_LINUX_AMD64, "elf"),
+        (common::BENCH_DARWIN_AMD64, "macho"),
+    ];
+    for (bin, kind) in targets {
+        let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(bin) else {
+            return;
+        };
+        let Some(pclntab_offset): Option<usize> = common::find_pclntab_offset(&bytes) else {
+            panic!("{bin} ({kind}) must contain a pclntab header");
+        };
+        let truncation_end: usize = pclntab_offset
+            .checked_add(16)
+            .expect("pclntab offset plus header prefix fits usize");
+        assert!(
+            truncation_end < bytes.len(),
+            "{bin} ({kind}) must have pclntab data after its header prefix"
+        );
+        assert!(
+            analyze(&bytes[..truncation_end]).is_err(),
+            "{bin} ({kind}) truncated inside the pclntab header must be refused"
+        );
+
+        let mut malformed: Vec<u8> = bytes;
+        let count_end: usize = pclntab_offset
+            .checked_add(16)
+            .expect("pclntab function count range fits usize");
+        malformed[pclntab_offset + 8..count_end].copy_from_slice(&u64::MAX.to_le_bytes());
+        let malformed_analysis: GoAnalysis = analyze(&malformed)
+            .expect("oversized pclntab function count must degrade without panicking");
+        assert!(
+            malformed_analysis.symbols.funcs.is_empty(),
+            "{bin} ({kind}) with an out-of-range pclntab function count must not recover functions"
+        );
+    }
 }

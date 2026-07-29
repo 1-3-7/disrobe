@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use disrobe_core::scratch::ScratchDir;
+use disrobe_pass_go::GoAnalysis;
 
 pub fn fixture_path(name: &str) -> PathBuf {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -204,6 +205,22 @@ pub fn go_build_cross(
     goarch: &str,
     extra: &[&str],
 ) -> Option<PathBuf> {
+    match go_build_cross_required(scratch, out_name, goos, goarch, extra) {
+        Ok(out) => Some(out),
+        Err(error) => {
+            eprintln!("{error}");
+            None
+        }
+    }
+}
+
+pub fn go_build_cross_required(
+    scratch: &GoBuildScratch,
+    out_name: &str,
+    goos: &str,
+    goarch: &str,
+    extra: &[&str],
+) -> Result<PathBuf, String> {
     let out: PathBuf = scratch.path().join(out_name);
     let mut cmd: Command = Command::new("go");
     cmd.current_dir(scratch.path())
@@ -212,19 +229,21 @@ pub fn go_build_cross(
         .env("CGO_ENABLED", "0")
         .env("GO111MODULE", "on");
     cmd.arg("build").arg("-trimpath");
-    for a in extra {
-        cmd.arg(a);
+    for arg in extra {
+        cmd.arg(arg);
     }
     cmd.arg("-o").arg(&out).arg(".");
-    let output: Output = cmd.output().ok()?;
-    if !output.status.success() {
-        eprintln!(
-            "go build ({out_name}, {goos}/{goarch}) failed:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
+    let output: Output = cmd.output().map_err(|error: std::io::Error| {
+        format!("go build {goos}/{goarch} ({out_name}) could not start: {error}")
+    })?;
+    if output.status.success() {
+        return Ok(out);
     }
-    Some(out)
+    let stderr: String = String::from_utf8_lossy(&output.stderr).into_owned();
+    Err(format!(
+        "go build {goos}/{goarch} ({out_name}) failed with {}: {stderr}",
+        output.status
+    ))
 }
 
 pub fn garble_build(scratch: &GoBuildScratch, out_name: &str, extra: &[&str]) -> Option<PathBuf> {
@@ -255,6 +274,108 @@ pub fn parse_nm_text_symbols(text: &str) -> BTreeSet<String> {
         }
     }
     out
+}
+
+pub const FUNCTION_NAME_ANCHORS: [&str; 2] = ["runtime.text", "runtime.etext"];
+
+pub struct FunctionRecoveryGrade {
+    pub hit: usize,
+    pub total: usize,
+    pub missing: Vec<String>,
+}
+
+impl FunctionRecoveryGrade {
+    pub const fn percentage_hundredths(&self) -> u128 {
+        if self.total == 0 {
+            return 0;
+        }
+        (self.hit as u128).saturating_mul(10_000) / (self.total as u128)
+    }
+
+    pub fn percentage_display(&self) -> String {
+        let hundredths: u128 = self.percentage_hundredths();
+        format!("{}.{:02}%", hundredths / 100, hundredths % 100)
+    }
+
+    pub const fn meets_floor(&self, floor: FunctionRecoveryFloor) -> bool {
+        (self.hit as u128).saturating_mul(floor.denominator as u128)
+            >= (self.total as u128).saturating_mul(floor.numerator as u128)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct FunctionRecoveryFloor {
+    pub numerator: usize,
+    pub denominator: usize,
+}
+
+impl FunctionRecoveryFloor {
+    pub const fn new(numerator: usize, denominator: usize) -> Self {
+        Self {
+            numerator,
+            denominator,
+        }
+    }
+}
+
+pub fn recovered_function_names(analysis: &GoAnalysis) -> BTreeSet<String> {
+    let mut recovered: BTreeSet<String> = BTreeSet::new();
+    for function in &analysis.symbols.funcs {
+        recovered.insert(function.name.clone());
+        if let Some(linker_symbol) = &function.linker_symbol {
+            recovered.insert(linker_symbol.clone());
+        }
+    }
+    recovered
+}
+
+pub fn grade_function_name_recovery(
+    truth: &BTreeSet<String>,
+    recovered: &BTreeSet<String>,
+) -> FunctionRecoveryGrade {
+    let eligible: BTreeSet<String> = truth
+        .iter()
+        .filter(|name: &&String| !FUNCTION_NAME_ANCHORS.contains(&name.as_str()))
+        .cloned()
+        .collect();
+    let missing: Vec<String> = eligible
+        .iter()
+        .filter(|name: &&String| !recovered.contains(*name))
+        .cloned()
+        .collect();
+    let hit: usize = eligible.len().saturating_sub(missing.len());
+    FunctionRecoveryGrade {
+        hit,
+        total: eligible.len(),
+        missing,
+    }
+}
+
+pub fn grade_analyzed_function_names(
+    analysis: &GoAnalysis,
+    truth: &BTreeSet<String>,
+) -> FunctionRecoveryGrade {
+    let recovered: BTreeSet<String> = recovered_function_names(analysis);
+    grade_function_name_recovery(truth, &recovered)
+}
+
+pub fn go_tool_nm_output(binary: &Path) -> Result<String, String> {
+    let output: Output = Command::new("go")
+        .args(["tool", "nm"])
+        .arg(binary)
+        .output()
+        .map_err(|error: std::io::Error| {
+            format!("go tool nm {} could not start: {error}", binary.display())
+        })?;
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+    }
+    let stderr: String = String::from_utf8_lossy(&output.stderr).into_owned();
+    Err(format!(
+        "go tool nm {} failed with {}: {stderr}",
+        binary.display(),
+        output.status
+    ))
 }
 
 pub fn parse_nm_text_symbol_vas(text: &str) -> std::collections::BTreeMap<String, u64> {
@@ -421,6 +542,34 @@ pub fn require_go() -> bool {
     }
     skip_note("Go toolchain absent from PATH");
     false
+}
+
+const GO_GRADING_VERSION: &str = "go1.26.3";
+
+pub fn require_go_1_26_3_for_grading() -> Result<Option<String>, String> {
+    let output: Output = match Command::new("go").arg("version").output() {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("SKIP live Go grading: go executable not found");
+            return Ok(None);
+        }
+        Err(error) => return Err(format!("go version could not start: {error}")),
+    };
+    if !output.status.success() {
+        let stderr: String = String::from_utf8_lossy(&output.stderr).into_owned();
+        return Err(format!(
+            "go version failed with {}: {stderr}",
+            output.status
+        ));
+    }
+    let version: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let required_prefix: String = format!("go version {GO_GRADING_VERSION} ");
+    if !version.starts_with(&required_prefix) {
+        return Err(format!(
+            "live Go grading requires {GO_GRADING_VERSION}, found {version}"
+        ));
+    }
+    Ok(Some(version))
 }
 
 pub fn require_garble() -> bool {

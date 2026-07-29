@@ -99,12 +99,16 @@ if (Test-Path (Join-Path $benchSrc 'main.go')) {
         if ($LASTEXITCODE -ne 0) { throw "go build (bench stripped) failed" }
 
         $rawNm = & go tool nm (Join-Path $here 'bench_generics.exe')
+        if ($LASTEXITCODE -ne 0) { throw "go tool nm (bench windows/amd64) failed" }
         $textSyms = $rawNm | Where-Object {
             $cols = ($_ -split '\s+') | Where-Object { $_ -ne '' }
             $cols.Count -ge 3 -and ($cols[$cols.Count - 2] -eq 'T' -or $cols[$cols.Count - 2] -eq 't')
         }
         $utf8NoBom = New-Object System.Text.UTF8Encoding $false
         [System.IO.File]::WriteAllLines((Join-Path $here 'bench_generics.nm.txt'), $textSyms, $utf8NoBom)
+        $benchVm = & go version -m (Join-Path $here 'bench_generics.exe')
+        if ($LASTEXITCODE -ne 0) { throw "go version -m (bench windows/amd64) failed" }
+        [System.IO.File]::WriteAllLines((Join-Path $here 'bench_generics.govm.txt'), $benchVm, $utf8NoBom)
 
         # Cross-compile the same generics benchmark for the dominant real-world/malware Go
         # surface: linux ELF (amd64+arm64) and darwin Mach-O (amd64+arm64). `go tool nm` reads
@@ -125,6 +129,7 @@ if (Test-Path (Join-Path $benchSrc 'main.go')) {
             & go build -trimpath -o $binPath .
             if ($LASTEXITCODE -ne 0) { throw ("go build (cross {0}/{1}) failed" -f $t.os, $t.arch) }
             $rawCross = & go tool nm $binPath
+            if ($LASTEXITCODE -ne 0) { throw ("go tool nm (cross {0}/{1}) failed" -f $t.os, $t.arch) }
             $crossSyms = $rawCross | Where-Object {
                 $cols = ($_ -split '\s+') | Where-Object { $_ -ne '' }
                 $cols.Count -ge 3 -and ($cols[$cols.Count - 2] -eq 'T' -or $cols[$cols.Count - 2] -eq 't')

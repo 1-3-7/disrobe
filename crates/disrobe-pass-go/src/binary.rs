@@ -72,7 +72,9 @@ impl<'a> GoImage<'a> {
         let mut sections: Vec<Section<'a>> = Vec::new();
         for sec in file.sections() {
             let name: String = sec.name().unwrap_or("").to_owned();
-            let data: &'a [u8] = sec.data().unwrap_or(b"");
+            let data: &'a [u8] = sec
+                .data()
+                .map_err(|error| Error::ContainerParse(format!("section {name} data: {error}")))?;
             let mapped_len: u64 = section_mapped_len(kind, data, sec.size(), sec.align())
                 .ok_or_else(|| Error::ContainerParse("invalid mapped section span".to_owned()))?;
             sections.push(Section {
