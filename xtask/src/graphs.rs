@@ -29,6 +29,8 @@ const DATA_BACKED: [(&str, &str); 7] = [
 
 const MAX_DATA_BYTES: u64 = 4 * 1024 * 1024;
 
+const MIRRORED: [&str; 2] = ["recovery.svg", "social-card.png"];
+
 pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
     let assets_dir: PathBuf = root.join("docs").join("assets");
     for name in ASSETS {
@@ -45,6 +47,9 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
             svg_reflects_its_data(root, name, data_file, rendered)?;
         }
     }
+    for name in MIRRORED {
+        published_copy_matches(root, name)?;
+    }
     if check {
         println!(
             "xtask graphs --check: {} committed chart assets present and well-formed",
@@ -54,6 +59,28 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         println!(
             "xtask graphs: validated {} chart assets; regenerate them with `node xtask/graphgen/build.mjs`",
             ASSETS.len()
+        );
+    }
+    Ok(())
+}
+
+fn published_copy_matches(root: &Path, name: &str) -> Result<()> {
+    let rendered_path: PathBuf = root.join("docs").join("assets").join(name);
+    let published_path: PathBuf = root.join("docs").join("src").join("assets").join(name);
+    let rendered: Vec<u8> = read_bytes_bounded(&rendered_path, MAX_ASSET_BYTES)
+        .wrap_err_with(|| format!("reading {}", rendered_path.display()))?;
+    let published: Vec<u8> =
+        read_bytes_bounded(&published_path, MAX_ASSET_BYTES).wrap_err_with(|| {
+            format!(
+                "reading {}, which mdbook publishes and docs/theme/head.hbs links",
+                published_path.display()
+            )
+        })?;
+    if rendered != published {
+        bail!(
+            "docs/src/assets/{name} does not match docs/assets/{name}; mdbook serves the copy under \
+             docs/src, so readers get the stale one while the fresh render sits unpublished. copy \
+             docs/assets/{name} over docs/src/assets/{name}"
         );
     }
     Ok(())

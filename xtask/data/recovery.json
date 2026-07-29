@@ -13,6 +13,7 @@
           "value": 95.09,
           "num": 17378,
           "den": 18276,
+          "modules": 574,
           "detail": "17378 / 18276 code objects across the entire CPython 3.14 Lib; the honest representative number (the 200-module pinned corpus over-represents recoverable modules). The module list is committed at tests/harness/full_modules_314.txt so the figure is reproducible.",
           "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over crates/disrobe-pass-py-decompile/tests/harness/full_modules_314.txt (574 modules, 18276 code objects, CPython 3.14.5)"
         },
@@ -21,8 +22,9 @@
           "value": 96.6,
           "num": 6072,
           "den": 6286,
+          "modules": 200,
           "detail": "6072 / 6286 code objects; CI floor 90%; a curated subset that runs higher than the full stdlib",
-          "source": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:34 (OBJECT_PCT_FLOOR 90.0); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 96.29 (6053 of 6286 code objects, 200 of 200 modules) on CPython 3.14 at HEAD 17aca38b (a pure-or if-guard whose short-circuit exits reach an inlined terminator reassembles into a single if a or b: body, and a loop after a with recurses through the statement structurer instead of collapsing to a tuple assignment)"
+          "source": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:34 (OBJECT_PCT_FLOOR 90.0); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 96.6 (6072 of 6286 code objects, 200 of 200 modules) on CPython 3.14.5 (a pure-or if-guard whose short-circuit exits reach an inlined terminator reassembles into a single if a or b: body, and a loop after a with recurses through the statement structurer instead of collapsing to a tuple assignment)"
         }
       ]
     },
@@ -112,8 +114,8 @@
         {
           "label": "type names",
           "value": 85.0,
-          "detail": "CI floor >= 85% on the committed stripped fixture; 528 of 528 (100%) measured (typelinks/moduledata survive -s -w stripping)",
-          "source": "crates/disrobe-pass-go/tests/go_typemeta.rs (typemeta_recovers_real_type_names_on_go126 asserts ratio >= 0.85 on common::HELLO_STRIPPED); the stripped fixture is force-committed (git add -f, overriding the crates/disrobe-pass-go/tests/fixtures/*.exe gitignore) so the gate runs in CI; the garble/embed/generics/magic-stomp fixtures are force-committed the same way so those gates also run; 528/528 measured on go1.26.3 2026-06-12"
+          "detail": "CI floor >= 85% on the committed stripped fixture; 838 of 838 (100%) measured, with the type count and the recovered count both pinned in the gate so a change to either forces a re-measure (typelinks/moduledata survive -s -w stripping)",
+          "source": "crates/disrobe-pass-go/tests/go_typemeta.rs (typemeta_recovers_real_type_names_on_go126 asserts the type total equals 838 and the recovered count is at least 838 on common::HELLO_STRIPPED, with ratio >= 0.85 kept as a secondary guard); the stripped fixture is force-committed (git add -f, overriding the crates/disrobe-pass-go/tests/fixtures/*.exe gitignore) so the gate runs in CI; the garble/embed/generics/magic-stomp fixtures are force-committed the same way so those gates also run; 528/528 measured on go1.26.3 2026-06-12"
         }
       ]
     },
@@ -125,7 +127,7 @@
         {
           "label": "verifier-clean (committed, CI)",
           "value": 99.0,
-          "detail": "102 of 103 verifiable classes pass the real JVM bytecode verifier (-Xverify:all) on the committed EdgeCases/EdgeCasesKt/Hello dex; 0 lifter verify failures (the 103rd is link-blocked by an unbundled Kotlin Function1 supertype, a test-harness limit not a lifter defect); a live-range-splitting pass recovers bodies with conflicting register types across joins, 307 re-hosted method bodies verify clean; floor 102 classes; oracle is the JVM rejecting malformed bytecode, not the lifter self-report",
+          "detail": "102 of the 103 classes in the committed EdgeCases/EdgeCasesKt/Hello dex pass the real JVM bytecode verifier (-Xverify:all); 0 lifter verify failures (the 103rd is link-blocked by an unbundled Kotlin Function1 supertype, a test-harness limit not a lifter defect, so it is never presented to the verifier and the gate counts 102 of 102 verifiable classes clean); a live-range-splitting pass recovers bodies with conflicting register types across joins, 307 re-hosted method bodies verify clean; floor 102 classes; oracle is the JVM rejecting malformed bytecode, not the lifter self-report",
           "source": "crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs (VERIFY_CLEAN_CLASS_FLOOR 102, LIFTER_VERIFY_FAIL_CEILING 0, BODY_VERIFY_CLEAN_FLOOR 307); oracle = -Xverify:all over assemble_jar output, not the lifter self-report; measured 102/103 classes + 307 re-hosted bodies on JDK 25"
         },
         {

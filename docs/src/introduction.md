@@ -34,7 +34,7 @@ Built for forensic and recovery work where reproducibility matters:
 
 Every figure below is produced by a committed test gate or a local measurement harness graded against an independent oracle, never the tool's own output. The full per-value sourcing lives in [`xtask/data/recovery.json`](https://github.com/1-3-7/disrobe/blob/main/xtask/data/recovery.json).
 
-![Measured recovery by ecosystem](../assets/recovery.svg)
+![Measured recovery by ecosystem](./assets/recovery.svg)
 
 | Ecosystem | Measured | Oracle |
 |---|---|---|
@@ -42,7 +42,7 @@ Every figure below is produced by a committed test gate or a local measurement h
 | CPython legacy 1.0-3.7 | 150 of 191 proven-correct (CI floor); 166 of 191 measured locally | recompile-equivalence or structural token-match |
 | WebAssembly | 133 of 133 corpus functions op-covered across the 38 parseable modules; 57 of 57 execution-eligible functions equivalent | execution differential under wasmtime |
 | JVM classfile | 131 of 131 methods recompile error-free | real `javac` |
-| Android (Dalvik) | <!-- m:dalvik_verifier_pct -->99%<!-- /m --> of verifiable classes pass the JVM verifier (102 of 103) | `-Xverify:all` over assembled jar |
+| Android (Dalvik) | <!-- m:dalvik_verifier_pct -->99%<!-- /m --> of the committed dex corpus passes the JVM verifier (102 of 103 classes; the 103rd is link-skipped before verification, so the gate counts 102 of 102 verifiable classes clean) | `-Xverify:all` over assembled jar |
 | Ruby YARV | greeter <!-- m:ruby_greeter_pct -->100%<!-- /m -->, megafile <!-- m:ruby_megafile_pct -->98%<!-- /m --> opcode-multiset equivalence | recompile on MRI |
 | PyArmor | <!-- m:pyarmor_samples -->72<!-- /m --> of 72 real-corpus samples recovered | plaintext-absent oracle |
 | Containers | <!-- m:containers_formats -->98<!-- /m --> formats detected, <!-- m:containers_formats -->98<!-- /m --> extracted in-tree | per-format byte length |
