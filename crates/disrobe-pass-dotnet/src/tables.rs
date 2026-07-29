@@ -265,6 +265,7 @@ pub struct Tables {
     pub type_refs: Vec<TypeRefRow>,
     pub type_defs: Vec<TypeDefRow>,
     pub fields: Vec<FieldRow>,
+    pub constants: Vec<ConstantRow>,
     pub methods: Vec<MethodDefRow>,
     pub params: Vec<ParamRow>,
     pub interface_impls: Vec<InterfaceImplRow>,
@@ -314,6 +315,13 @@ pub struct FieldRow {
     pub flags: u16,
     pub name: u32,
     pub signature: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConstantRow {
+    pub element_type: u8,
+    pub parent: Option<RowRef>,
+    pub value: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -452,6 +460,11 @@ impl<'a> Cursor<'a> {
         let mut reader: ByteReader<'a> = ByteReader::new(bytes);
         reader.seek(pos)?;
         Ok(Self { reader })
+    }
+
+    #[inline]
+    fn u8(&mut self) -> Result<u8> {
+        Ok(self.reader.read_u8()?)
     }
 
     #[inline]
@@ -826,6 +839,20 @@ fn decode_table(
                     flags,
                     name,
                     signature,
+                });
+            }
+        }
+        TableId::Constant => {
+            for k in 0..count as usize {
+                let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
+                let element_type: u8 = c.u8()?;
+                let _: u8 = c.u8()?;
+                let parent: Option<RowRef> = coded(&mut c, CodedIndex::HasConstant)?;
+                let value: u32 = c.index(sz.heap.blob)?;
+                out.constants.push(ConstantRow {
+                    element_type,
+                    parent,
+                    value,
                 });
             }
         }

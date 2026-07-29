@@ -112,6 +112,8 @@ mod tests {
             name: name.to_owned(),
             flags: 0,
             field_type: TypeSig::I4,
+            is_volatile: false,
+            constant: None,
         }
     }
 

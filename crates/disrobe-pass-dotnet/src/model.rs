@@ -7,7 +7,8 @@ use crate::error::{Error, Result};
 use crate::metadata::{MetadataRoot, decompress_uint};
 use crate::pe::{ClrHeader, PeImage};
 use crate::signature::{
-    MethodSig, TypeSig, parse_field_sig, parse_method_sig, parse_method_sig_strict,
+    FieldSig, MethodSig, TypeSig, parse_field_sig_with_modifiers, parse_method_sig,
+    parse_method_sig_strict,
 };
 use crate::structurize::TargetLang;
 use crate::tables::{
@@ -33,6 +34,14 @@ pub struct FieldModel {
     pub name: String,
     pub flags: u16,
     pub field_type: TypeSig,
+    pub is_volatile: bool,
+    pub constant: Option<FieldConstant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FieldConstant {
+    pub element_type: u8,
+    pub value: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1493,6 +1502,7 @@ impl Resolver {
         let type_count: u32 = self.tables.type_defs.len() as u32;
         let field_total: u32 = self.tables.fields.len() as u32;
         let method_total: u32 = self.tables.methods.len() as u32;
+        let field_constants: BTreeMap<u32, FieldConstant> = self.materialize_field_constants();
 
         let mut types: Vec<TypeModel> = Vec::with_capacity(self.tables.type_defs.len());
         let n_types: usize = self.tables.type_defs.len();
@@ -1512,7 +1522,7 @@ impl Resolver {
                 .map_or(method_total + 1, |n| n.method_list);
 
             let fields: Vec<FieldModel> =
-                self.materialize_fields(field_start, field_end, field_total);
+                self.materialize_fields(field_start, field_end, field_total, &field_constants);
             let methods: Vec<MethodModel> =
                 self.materialize_methods(method_start, method_end, method_total);
 
@@ -1543,7 +1553,36 @@ impl Resolver {
         }
     }
 
-    fn materialize_fields(&self, start: u32, end: u32, total: u32) -> Vec<FieldModel> {
+    fn materialize_field_constants(&self) -> BTreeMap<u32, FieldConstant> {
+        let mut constants: BTreeMap<u32, FieldConstant> = BTreeMap::new();
+        for row in &self.tables.constants {
+            let parent: Option<RowRef> = row.parent;
+            let Some(parent): Option<RowRef> = parent else {
+                continue;
+            };
+            if parent.table != TableId::Field {
+                continue;
+            }
+            let value: Option<&[u8]> = self.blob(row.value);
+            let Some(value): Option<&[u8]> = value else {
+                continue;
+            };
+            let constant: FieldConstant = FieldConstant {
+                element_type: row.element_type,
+                value: value.to_vec(),
+            };
+            constants.entry(parent.row).or_insert(constant);
+        }
+        constants
+    }
+
+    fn materialize_fields(
+        &self,
+        start: u32,
+        end: u32,
+        total: u32,
+        constants: &BTreeMap<u32, FieldConstant>,
+    ) -> Vec<FieldModel> {
         let lo: u32 = start.clamp(1, total.saturating_add(1));
         let hi: u32 = end.clamp(lo, total.saturating_add(1));
         let mut out: Vec<FieldModel> = Vec::with_capacity((hi - lo) as usize);
@@ -1551,15 +1590,20 @@ impl Resolver {
             let Some(row) = self.tables.fields.get((rid - 1) as usize) else {
                 break;
             };
-            let field_type: TypeSig = self
+            let signature: FieldSig = self
                 .blob(row.signature)
-                .and_then(|b: &[u8]| parse_field_sig(b).ok())
-                .unwrap_or(TypeSig::Unknown);
+                .and_then(|blob: &[u8]| parse_field_sig_with_modifiers(blob).ok())
+                .unwrap_or_default();
+            let is_volatile: bool = signature.required_modifiers.iter().any(|token: &u32| {
+                self.resolve_token(*token) == "System.Runtime.CompilerServices.IsVolatile"
+            });
             out.push(FieldModel {
                 token: (u32::from(TableId::Field.index()) << 24) | rid,
                 name: self.string(row.name),
                 flags: row.flags,
-                field_type,
+                field_type: signature.field_type,
+                is_volatile,
+                constant: constants.get(&rid).cloned(),
             });
         }
         out

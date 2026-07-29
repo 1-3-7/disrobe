@@ -692,7 +692,7 @@ pub(crate) fn csharp_string_literal(s: &str) -> String {
 }
 
 #[must_use]
-pub(crate) fn csharp_escape_identifier(name: &str) -> String {
+pub fn csharp_escape_identifier(name: &str) -> String {
     if name.is_empty() || name.starts_with('@') || !is_csharp_keyword(name) {
         name.to_owned()
     } else {
@@ -2237,7 +2237,7 @@ fn static_call_target(raw: &str, lang: TargetLang) -> String {
     format!("{owner}.{member}")
 }
 
-fn field_name(name: &str) -> String {
+pub fn field_name(name: &str) -> String {
     let raw: String = short(name);
     let recovered: Option<String> = auto_property_backing_name(&raw).map(str::to_owned);
     recovered.unwrap_or(raw)

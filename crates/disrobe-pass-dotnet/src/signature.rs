@@ -49,6 +49,12 @@ pub const SIG_FIELD: u8 = 0x06;
 pub const SIG_LOCAL: u8 = 0x07;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct FieldSig {
+    pub field_type: TypeSig,
+    pub required_modifiers: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TypeSig {
     Void,
     Boolean,
@@ -561,7 +567,54 @@ pub(crate) fn parse_method_spec_sig_strict(blob: &[u8]) -> Result<Vec<TypeSig>> 
     parse_method_spec_sig_with_reader(SigReader::new_strict(blob))
 }
 
-fn parse_field_sig_with_reader(mut r: SigReader<'_>) -> Result<TypeSig> {
+fn parse_field_sig_with_modifiers_reader(mut r: SigReader<'_>) -> Result<FieldSig> {
+    let cc: u8 = r.byte()?;
+    if cc != SIG_FIELD {
+        return Err(Error::BadCompressedUint(0));
+    }
+    let mut required_modifiers: Vec<u32> = Vec::new();
+    let mut modifier_count: usize = 0;
+    loop {
+        match r.peek() {
+            Some(element_type::CMOD_REQD) => {
+                let _: u8 = r.byte()?;
+                if modifier_count >= MAX_SIGNATURE_NODES {
+                    return Err(Error::SignatureTooManyNodes(MAX_SIGNATURE_NODES));
+                }
+                modifier_count += 1;
+                required_modifiers.push(r.type_def_or_ref()?);
+            }
+            Some(element_type::CMOD_OPT) => {
+                let _: u8 = r.byte()?;
+                if modifier_count >= MAX_SIGNATURE_NODES {
+                    return Err(Error::SignatureTooManyNodes(MAX_SIGNATURE_NODES));
+                }
+                modifier_count += 1;
+                let _: u32 = r.type_def_or_ref()?;
+            }
+            _ => break,
+        }
+    }
+    let field_type: TypeSig = r.type_sig()?;
+    if r.remaining() != 0 {
+        return Err(Error::BadCompressedUint(r.reader.position()));
+    }
+    Ok(FieldSig {
+        field_type,
+        required_modifiers,
+    })
+}
+
+pub fn parse_field_sig(blob: &[u8]) -> Result<TypeSig> {
+    Ok(parse_field_sig_with_modifiers(blob)?.field_type)
+}
+
+pub(crate) fn parse_field_sig_with_modifiers(blob: &[u8]) -> Result<FieldSig> {
+    parse_field_sig_with_modifiers_reader(SigReader::new(blob))
+}
+
+pub(crate) fn parse_field_sig_strict(blob: &[u8]) -> Result<TypeSig> {
+    let mut r: SigReader<'_> = SigReader::new_strict(blob);
     let cc: u8 = r.byte()?;
     if cc != SIG_FIELD {
         return Err(Error::BadCompressedUint(0));
@@ -571,14 +624,6 @@ fn parse_field_sig_with_reader(mut r: SigReader<'_>) -> Result<TypeSig> {
         return Err(Error::BadCompressedUint(r.reader.position()));
     }
     Ok(signature)
-}
-
-pub fn parse_field_sig(blob: &[u8]) -> Result<TypeSig> {
-    parse_field_sig_with_reader(SigReader::new(blob))
-}
-
-pub(crate) fn parse_field_sig_strict(blob: &[u8]) -> Result<TypeSig> {
-    parse_field_sig_with_reader(SigReader::new_strict(blob))
 }
 
 fn parse_local_sig_with_reader(mut r: SigReader<'_>) -> Result<Vec<TypeSig>> {
@@ -880,6 +925,27 @@ mod tests {
     fn local_sig_flags_and_trailing_bytes_error() {
         assert!(parse_local_sig(&[SIG_LOCAL | SIG_HASTHIS, 0x00]).is_err());
         assert!(parse_local_sig(&[SIG_LOCAL, 0x00, element_type::I4]).is_err());
+    }
+
+    #[test]
+    fn field_sig_preserves_required_custom_modifiers() {
+        let blob: [u8; 4] = [SIG_FIELD, element_type::CMOD_REQD, 0x05, element_type::I4];
+        let signature: FieldSig = parse_field_sig_with_modifiers(&blob).expect("field signature");
+        assert_eq!(
+            (signature.field_type, signature.required_modifiers),
+            (TypeSig::I4, vec![0x0100_0001])
+        );
+    }
+
+    #[test]
+    fn field_sig_rejects_too_many_optional_custom_modifiers() {
+        let mut blob: Vec<u8> = vec![SIG_FIELD];
+        for _ in 0..=MAX_SIGNATURE_NODES {
+            blob.push(element_type::CMOD_OPT);
+            blob.push(0x05);
+        }
+        blob.push(element_type::I4);
+        assert!(parse_field_sig_with_modifiers(&blob).is_err());
     }
 
     #[test]
