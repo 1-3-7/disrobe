@@ -1441,6 +1441,51 @@ mod tests {
     }
 
     #[test]
+    fn published_container_counts_match_this_enum() {
+        const BAR: &str = "Containers";
+        let manifest: &str = env!("CARGO_MANIFEST_DIR");
+        let data: std::path::PathBuf = std::path::Path::new(manifest)
+            .join("..")
+            .join("..")
+            .join("xtask")
+            .join("data")
+            .join("recovery.json");
+        let raw: String = std::fs::read_to_string(&data)
+            .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", data.display()));
+        let parsed: serde_json::Value = serde_json::from_str(&raw)
+            .unwrap_or_else(|e: serde_json::Error| panic!("parse {}: {e}", data.display()));
+
+        let mut detected: Option<u64> = None;
+        let mut delivered: Option<u64> = None;
+        for group in parsed["groups"].as_array().expect("groups array") {
+            for bar in group["bars"].as_array().unwrap_or(&Vec::new()) {
+                if bar["label"].as_str() == Some(BAR) {
+                    detected = bar["detected"].as_u64();
+                    delivered = bar["delivered"].as_u64();
+                }
+            }
+        }
+
+        let detected: u64 = detected.expect("recovery.json must carry a Containers bar");
+        let delivered: u64 = delivered.expect("the Containers bar must record a delivered count");
+
+        assert_eq!(
+            usize::try_from(detected).expect("detected fits usize"),
+            ContainerKind::ALL.len(),
+            "xtask/data/recovery.json publishes {detected} detected container formats and every \
+             document renders that number, but this enum carries {}. The published figure is wrong \
+             until this assertion passes.",
+            ContainerKind::ALL.len()
+        );
+        assert_eq!(
+            usize::try_from(delivered).expect("delivered fits usize"),
+            ContainerKind::extracted_in_tree_count(),
+            "recovery.json publishes {delivered} formats extracting in-tree; the real count is {}",
+            ContainerKind::extracted_in_tree_count()
+        );
+    }
+
+    #[test]
     fn every_real_format_extracts_in_tree() {
         assert_eq!(ContainerKind::extracted_in_tree_count(), 100);
         let metadata_only: usize = ContainerKind::ALL

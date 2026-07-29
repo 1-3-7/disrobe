@@ -1339,7 +1339,7 @@ transformation_count: int = ps_deob.transformation_count
 
 ## Containers
 
-98 container families detected and extracted in-tree. See [container docs](./languages/containers.md)
+<!-- m:containers_formats -->100<!-- /m --> container families detected and extracted in-tree. See [container docs](./languages/containers.md)
 for the full family list.
 
 ```python

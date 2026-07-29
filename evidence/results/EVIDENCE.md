@@ -11,7 +11,7 @@ Oracle strength: `strong` = external-equivalence, execution, or byte-identity; `
 | ecosystem | claim | measured | strength | CI | external oracle | reproduce |
 |---|---|---|---|---|---|---|
 | android | On the identical EdgeCases input, disrobe recovers at least as many recompile-clean main-class methods under real javac as JADX and CFR, with no original-jar classpath leak. | disrobe 100.0% vs best competitor 99.1% | recompile-only | [CI] | real javac (JDK), per-method recompile error-free against a STUBBED (empty) classpath so a wrong recovered signature cannot resolve against the original classes; the SAME oracle scores every tool | `cargo run -p disrobe-bench-head-to-head  (needs javac + jadx + cfr on PATH; cfr.jar via evidence/competitors/install-linux.sh)` |
-| binfmt | disrobe extracts member bytes in-tree for every container, archive, and firmware format it detects, with no metadata-only or external-tool-gated formats. | 98 extracted / 98 detected | strong | [CI] | per-format in-tree member-byte extraction count (every detected format writes real bytes) | `cargo test -p disrobe-binfmt every_real_format_extracts_in_tree` |
+| binfmt | disrobe extracts member bytes in-tree for every container, archive, and firmware format it detects, with no metadata-only or external-tool-gated formats. | 100 extracted / 100 detected | strong | [CI] | per-format in-tree member-byte extraction count (every detected format writes real bytes) | `cargo test -p disrobe-binfmt every_real_format_extracts_in_tree` |
 | android | disrobe lowers a Dalvik method body (rather than a throw-stub) for the large majority of methods on real FOSS APKs. | 92.50% | coverage-self-reported | [local] | none external: this counts methods for which the lifter returned a body vs a throw-stub (self-reported coverage, NOT verifier-attested) | `cargo test -p disrobe-pass-jvm --test dex2jar_realworld_apks (local-only: the APKs are gitignored)` |
 | android | disrobe re-hosts Dalvik method bodies into class bytecode that the real JVM bytecode verifier accepts under -Xverify:all, on the committed dex corpus. | 99.00% | strong | [CI] | real JVM verifier (-Xverify:all over the assembled jar; the JVM rejects malformed bytecode) | `cargo test -p disrobe-pass-jvm --test dalvik_verifier_gate` |
 | dotnet | disrobe devirtualizes every method of an in-repo reimplementation of Eazfuscator's EazVM scheme (the committed assembly is encoded by our own virtualizer, not the shipping Eazfuscator.NET product) back to CIL, graded against an independently compiled clean DLL by ordered instruction compare; the recovered CIL also re-injects to byte-identical stdout wherever a .NET runtime is on PATH. | 3 reversed on real samples / 23 detected | strong | [CI] | independently compiled clean DLL (ordered CIL compare: opcode and operand, branch targets resolved to instruction index) + byte-identical stdout on reinjection | `cargo test -p disrobe-pass-dotnet --test real_eazvm` |
@@ -71,7 +71,7 @@ Floors sit a declared margin below the measured value so a regression masked by 
 | id | measured | floor | holds |
 |---|---|---|---|
 | apk-jadx-cfr | disrobe 100.0% vs best competitor 99.1% | 95.00 | yes |
-| binfmt-extract | 98 extracted / 98 detected | n/a | n/a |
+| binfmt-extract | 100 extracted / 100 detected | n/a | n/a |
 | dalvik-realapk-coverage | 92.50% | 88.00 | yes |
 | dalvik-verifier | 99.00% | 97.00 | yes |
 | dotnet-eazvm | 3 reversed on real samples / 23 detected | n/a | n/a |

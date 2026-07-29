@@ -58,7 +58,7 @@
       "floor": null,
       "floor_holds": null,
       "id": "binfmt-extract",
-      "measured": "98 extracted / 98 detected",
+      "measured": "100 extracted / 100 detected",
       "oracle_strength": "strong",
       "reproduce": "cargo test -p disrobe-binfmt every_real_format_extracts_in_tree"
     },

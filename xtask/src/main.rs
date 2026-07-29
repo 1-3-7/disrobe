@@ -12,6 +12,7 @@ mod demo;
 mod errdocs;
 mod evidence;
 mod evidence_tiers;
+mod facts;
 mod fileio;
 mod fuzz_scope;
 mod graphs;

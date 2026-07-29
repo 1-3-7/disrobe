@@ -45,6 +45,12 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         || crate::evidence_tiers::run(root),
         &mut stale,
     );
+    run_one(
+        "claim-provenance",
+        check,
+        || crate::facts::run(root),
+        &mut stale,
+    );
 
     if check {
         if stale.is_empty() {

@@ -23,8 +23,8 @@
           "num": 6072,
           "den": 6286,
           "modules": 200,
-          "detail": "6072 / 6286 code objects; CI floor 90%; a curated subset that runs higher than the full stdlib",
-          "source": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:34 (OBJECT_PCT_FLOOR 90.0); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 96.6 (6072 of 6286 code objects, 200 of 200 modules) on CPython 3.14.5 (a pure-or if-guard whose short-circuit exits reach an inlined terminator reassembles into a single if a or b: body, and a loop after a with recurses through the statement structurer instead of collapsing to a tuple assignment)"
+          "detail": "6072 / 6286 code objects; CI floor 96.60%, pinned at the figure this corpus measures rather than a round number beneath it, so the gate has no slack to absorb a regression; a curated subset that runs higher than the full stdlib",
+          "source": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:17 (OBJECT_PCT_FLOOR 96.60); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 96.6 (6072 of 6286 code objects, 200 of 200 modules) on CPython 3.14.5 (a pure-or if-guard whose short-circuit exits reach an inlined terminator reassembles into a single if a or b: body, and a loop after a with recurses through the statement structurer instead of collapsing to a tuple assignment)"
         }
       ]
     },
@@ -163,10 +163,14 @@
       "bars": [
         {
           "label": "Containers",
-          "detected": 98,
-          "delivered": 98,
+          "detected": 100,
+          "delivered": 100,
           "delivered_label": "extracted",
-          "source": "ContainerKind enum crates/disrobe-binfmt/src/container.rs (98 real variants excluding None); all 98 write member bytes in-tree per ContainerKind::extracted_in_tree_count, asserted in crates/disrobe-binfmt/src/container.rs tests detected_count_is_ninety_eight and every_real_format_extracts_in_tree (0 metadata-summary-only, 0 external-tool-gated); the superset spans archives/installers (ZIP/tar/7z/RAR/cab/MSI/NSIS/deb/rpm/Docker/OCI/ISO), bare single-stream compression (gz/bz2/zst/lzma/lzip/lz4-frame/zlib/.Z), legacy archives (ar/arj/arc/lzh/lzop/uzip/xamarin-xalz/par2/ELF-overlay carve), embedded-linux filesystems (squashfs/cramfs/ext4/romfs/minixfs/jffs2/ubi-ubifs/yaffs/erofs/ntfs/android-sparse/btrfs-send), disk-image/partition containers (GPT/MBR/VHD/VHDX/WIM walked through FAT), and vendor firmware decryptors (D-Link AES/EnGenius XOR/Autel table/QNAP PC1 plus CRC-verified Netgear/Xiaomi/Tesla carves); a recursive carve-everything engine (multi-magic scan, chunk model, depth recursion, entropy gating) drives nested extraction. InnoSetup writes the decoded setup-data block stream (per-file split via the version-specific TSetupHeader parse is the documented limit) and InstallShield writes its stored and zlib members; the arj/arc/stuffit/partclone heavy codecs are carved verbatim with a documented note"
+          "verified_by": {
+            "path": "crates/disrobe-binfmt/src/container.rs",
+            "function": "published_container_counts_match_this_enum"
+          },
+          "source": "ContainerKind enum crates/disrobe-binfmt/src/container.rs (ContainerKind::ALL is [Self; 100], 100 real variants excluding None); all 100 write member bytes in-tree per ContainerKind::extracted_in_tree_count, asserted in crates/disrobe-binfmt/src/container.rs tests detected_count_is_one_hundred (container.rs:1438) and every_real_format_extracts_in_tree (container.rs:1444) (0 metadata-summary-only, 0 external-tool-gated); the superset spans archives/installers (ZIP/tar/7z/RAR/cab/MSI/NSIS/deb/rpm/Docker/OCI/ISO), bare single-stream compression (gz/bz2/zst/lzma/lzip/lz4-frame/zlib/.Z), legacy archives (ar/arj/arc/lzh/lzop/uzip/xamarin-xalz/par2/ELF-overlay carve), embedded-linux filesystems (squashfs/cramfs/ext4/romfs/minixfs/jffs2/ubi-ubifs/yaffs/erofs/ntfs/android-sparse/btrfs-send), disk-image/partition containers (GPT/MBR/VHD/VHDX/WIM walked through FAT), and vendor firmware decryptors (D-Link AES/EnGenius XOR/Autel table/QNAP PC1 plus CRC-verified Netgear/Xiaomi/Tesla carves); a recursive carve-everything engine (multi-magic scan, chunk model, depth recursion, entropy gating) drives nested extraction. InnoSetup writes the decoded setup-data block stream (per-file split via the version-specific TSetupHeader parse is the documented limit) and InstallShield writes its stored and zlib members; the arj/arc/stuffit/partclone heavy codecs are carved verbatim with a documented note"
         },
         {
           "label": ".NET protectors",
@@ -187,7 +191,7 @@
           "detected": 20,
           "delivered": 17,
           "delivered_label": "recovered to source",
-          "source": "crates/disrobe-pass-py-deob/src/auto_route.rs describe_obfuscator (20 Obfuscator variants); the roster is pinned by name, not by count, in auto_route.rs test published_source_obfuscator_roster_matches_the_registered_passes, so adding or removing a pass fails until the published figure moves with it. README and docs/src/catalog.md both read this key, so the two cannot drift apart again"
+          "source": "crates/disrobe-pass-py-deob/src/auto_route.rs describe_obfuscator (20 Obfuscator variants); the roster is pinned by name, not by count, in auto_route.rs test published_source_obfuscator_roster_matches_the_registered_passes, so adding or removing a pass fails until the published figure moves with it"
         },
         {
           "label": "JVM / Android families",
@@ -213,7 +217,11 @@
         {
           "label": "JS bundlers",
           "value": 11,
-          "source": "README.md JS bundlers row; docs/src/catalog.md JS bundlers row (11 bundlers)"
+          "verified_by": {
+            "path": "crates/disrobe-pass-js-deob/src/bundle/mod.rs",
+            "function": "published_js_bundler_count_matches_this_enum"
+          },
+          "source": "BundlerKind enum crates/disrobe-pass-js-deob/src/bundle/mod.rs carries 12 variants; SystemJs and Amd are one published family (the unbundler treats RequireJS and AMD as the SystemJS lineage), so 12 variants render as 11 published bundlers. This entry previously recorded its own provenance as the README row it is used to validate, which made the check a copy compared against its original."
         },
         {
           "label": "Lua chain catalog entries",

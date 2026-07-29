@@ -107,6 +107,49 @@ impl BundlerKind {
         Self::SystemJs,
         Self::Amd,
     ];
+
+    pub const PUBLISHED_FAMILY_ALIASES: usize = 1;
+}
+
+#[cfg(test)]
+mod published_count_tests {
+    use super::BundlerKind;
+
+    #[test]
+    fn published_js_bundler_count_matches_this_enum() {
+        const BAR: &str = "JS bundlers";
+        let manifest: &str = env!("CARGO_MANIFEST_DIR");
+        let data: std::path::PathBuf = std::path::Path::new(manifest)
+            .join("..")
+            .join("..")
+            .join("xtask")
+            .join("data")
+            .join("recovery.json");
+        let raw: String = std::fs::read_to_string(&data)
+            .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", data.display()));
+        let parsed: serde_json::Value = serde_json::from_str(&raw)
+            .unwrap_or_else(|e: serde_json::Error| panic!("parse {}: {e}", data.display()));
+
+        let mut published: Option<f64> = None;
+        for group in parsed["groups"].as_array().expect("groups array") {
+            for bar in group["bars"].as_array().unwrap_or(&Vec::new()) {
+                if bar["label"].as_str() == Some(BAR) {
+                    published = bar["value"].as_f64();
+                }
+            }
+        }
+        let published: f64 = published.expect("recovery.json must carry a JS bundlers bar");
+        let expected: usize = BundlerKind::ALL.len() - BundlerKind::PUBLISHED_FAMILY_ALIASES;
+
+        assert!(
+            (published - expected as f64).abs() < f64::EPSILON,
+            "xtask/data/recovery.json publishes {published} JS bundlers and the README and catalog \
+             render that number, but this enum carries {} variants of which \
+             {} is an alias of another published family, giving {expected}",
+            BundlerKind::ALL.len(),
+            BundlerKind::PUBLISHED_FAMILY_ALIASES
+        );
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
