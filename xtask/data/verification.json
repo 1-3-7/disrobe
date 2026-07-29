@@ -5,7 +5,7 @@
     {
       "ecosystem": "Python",
       "oracle": "recompile to equivalent bytecode",
-      "result": "94.18% of 6286 objects",
+      "result": "96.60% of 6286 objects",
       "ci": true,
       "source": "arbitrary_recompile_gate.rs, CI floor 90%"
     },
@@ -26,7 +26,7 @@
     {
       "ecosystem": "WebAssembly",
       "oracle": "execution differential under wasmtime",
-      "result": "50 / 50 numeric fns equal",
+      "result": "57 / 57 execution-eligible fns equal",
       "ci": true,
       "source": "semantic_differential.rs, --features sandbox"
     },

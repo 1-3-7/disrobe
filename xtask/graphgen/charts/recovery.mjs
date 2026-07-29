@@ -49,6 +49,15 @@ function sectionLabel(svg, y, label, unit) {
     });
 }
 
+function parentheticalHint(label) {
+  const inner = label.match(/\(([^)]*)\)/);
+  if (!inner) return "";
+  const words = inner[1]
+    .split(/[\s,]+/)
+    .filter((w) => w && !/^(the|of|all|full|set|and)$/i.test(w));
+  return words[0] ? words[0].toLowerCase() : "";
+}
+
 export function renderRecovery(doc) {
   const percentBars = [];
   for (const group of doc.groups) {
@@ -56,8 +65,36 @@ export function renderRecovery(doc) {
     const eco = ecoShort(group.heading);
     for (const bar of group.bars) {
       const qual = qualShort(bar.label);
-      percentBars.push({ label: `${eco} ${qual}`.trim(), value: bar.value });
+      percentBars.push({
+        label: `${eco} ${qual}`.trim(),
+        hint: parentheticalHint(bar.label),
+        value: bar.value,
+      });
     }
+  }
+
+  const seen = new Map();
+  for (const bar of percentBars) {
+    seen.set(bar.label, (seen.get(bar.label) || 0) + 1);
+  }
+  const used = new Set();
+  for (const bar of percentBars) {
+    if (seen.get(bar.label) < 2) continue;
+    const candidate = bar.hint ? `${bar.label} ${bar.hint}` : bar.label;
+    if (candidate !== bar.label && !used.has(candidate)) {
+      used.add(candidate);
+      bar.label = candidate;
+    }
+  }
+  if (new Set(percentBars.map((b) => b.label)).size !== percentBars.length) {
+    const dupes = percentBars
+      .map((b) => b.label)
+      .filter((l, i, all) => all.indexOf(l) !== i);
+    throw new Error(
+      `recovery chart would render two bars under the same label (${dupes.join(", ")}); ` +
+        "a reader cannot tell which measurement is which, so give the bar a distinguishing " +
+        "parenthetical in recovery.json",
+    );
   }
 
   const pairBars = [];
@@ -149,7 +186,7 @@ export function renderRecovery(doc) {
     series: [
       {
         type: "bar",
-        data: pairBars.map((b) => b.detected),
+        data: pairBars.map(() => 100),
         barGap: "-100%",
         barWidth: 13,
         itemStyle: { color: C.subtle, borderRadius: 3 },
@@ -167,7 +204,9 @@ export function renderRecovery(doc) {
       },
       {
         type: "bar",
-        data: pairBars.map((b) => b.delivered),
+        data: pairBars.map((b) =>
+          b.detected > 0 ? (b.delivered / b.detected) * 100 : 0,
+        ),
         barWidth: 13,
         itemStyle: { color: C.accent, borderRadius: 3 },
         z: 2,
