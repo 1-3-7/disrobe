@@ -63,8 +63,15 @@ JVM, wasmtime, Lua, or external tool is linked into or invoked by the product at
 | Go | go1.26.3 toolchain | yes | type metadata parsed against the real toolchain output |
 | Native packers | byte-identity vs the committed original PE | yes | no external tool participates |
 
-CI installs the runtime/validation set per ecosystem so a missing tool fails only its own lane. A
-skipped oracle in a CI lane is a hard failure, never a silent pass.
+CI installs the runtime/validation set per ecosystem so a missing tool fails only its own lane.
+
+This is where a reader should be careful, because the stronger claim that used to sit here was not
+true. Many checks in this tree still return early and report success when the tool they need is
+absent, and an audit counted several hundred such sites. Where CI provisions the tool the check does
+run, and a provisioning step that fails takes its whole job down with it. Where CI does not provision
+it, the check degrades to a weaker comparison or to nothing at all, and says so only on stderr. Two
+figures were found to have never been enforced in CI at all for exactly this reason. Treat a number
+as gated only when a workflow visibly installs the tool that measures it.
 
 ## Reproducibility tiers (offline vs network)
 
