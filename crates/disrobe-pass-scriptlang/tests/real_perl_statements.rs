@@ -154,11 +154,12 @@ fn ops_recovers_binary_with_constant_operand_against_source() {
 
 #[test]
 fn ops_concat_multiconcat_keeps_my_intro() {
+    assert!(OPS_PL.contains("my $s = $a . $b;"));
     let src: PerlSource = decompile(OPS_CONCISE);
     let cmps: &PerlSubSource = sub(&src, "main::cmps");
     assert!(
-        has_stmt(cmps, r#"my $s = "$a$b";"#),
-        "LVINTRO multiconcat concatenation must keep the my declaration: {:?}",
+        has_stmt(cmps, "my $s = $a . $b;"),
+        "an LVINTRO multiconcat without the STRINGIFY private flag came from the concat operator, not from interpolation, and must render as `$a . $b`: {:?}",
         cmps.statements
     );
 }
