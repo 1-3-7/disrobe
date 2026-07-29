@@ -51,6 +51,16 @@ pub enum Error {
     )]
     PharDecompressBomb { name: String, cap: usize },
 
+    #[error(
+        "DR-PHP-0029: phar entry '{name}' declares {declared} uncompressed bytes behind only {stored} stored bytes, past the {ceiling}-byte ceiling its compressed length supports"
+    )]
+    PharDeclaredSizeImplausible {
+        name: String,
+        declared: u32,
+        stored: u32,
+        ceiling: usize,
+    },
+
     #[error("DR-PHP-0030: FOPO peel failed: {0}")]
     FopoPeel(&'static str),
 

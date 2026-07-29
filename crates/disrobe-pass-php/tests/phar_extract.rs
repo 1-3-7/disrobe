@@ -2,6 +2,7 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::missing_panics_doc,
+    clippy::panic,
     unreachable_pub,
     dead_code,
     clippy::print_stdout,
@@ -38,40 +39,80 @@ fn extracts_uncompressed_payload_byte_perfect() {
     assert_eq!(extracted, body);
 }
 
+fn deflate_entry_phar(declared_uncompressed: u32, stored: &[u8]) -> Vec<u8> {
+    common::build_phar_with_entries(
+        &common::default_phar_stub(),
+        &[common::PharFixtureEntry {
+            name: "bounded.php",
+            stored,
+            declared_uncompressed,
+            crc32: 0,
+            flags: common::PHAR_FLAG_DEFLATE,
+        }],
+    )
+}
+
 #[test]
-fn forged_uncompressed_size_does_not_preallocate_from_metadata() {
+fn compressed_entry_with_a_truthful_declared_length_extracts() {
     let payload: &[u8] = b"<?php return 42;";
     let compressed: Vec<u8> = common::deflate(payload);
-    let mut phar: Vec<u8> = common::build_tiny_phar(
-        &common::default_phar_stub(),
-        &[("bounded.php", compressed.as_slice())],
-    );
-    let manifest_offset: usize = common::default_phar_stub().len() + 1;
-    let manifest_body_start: usize = manifest_offset + 4;
-    let alias_len_offset: usize = manifest_body_start + 10;
-    let alias_len: usize = usize::try_from(u32::from_le_bytes(
-        phar[alias_len_offset..alias_len_offset + 4]
-            .try_into()
-            .expect("alias length"),
-    ))
-    .expect("alias length fits usize");
-    let metadata_len_offset: usize = alias_len_offset + 4 + alias_len;
-    let entry_start: usize = metadata_len_offset + 4;
-    let name_len: usize = usize::try_from(u32::from_le_bytes(
-        phar[entry_start..entry_start + 4]
-            .try_into()
-            .expect("entry name length"),
-    ))
-    .expect("entry name length fits usize");
-    let uncompressed_size_offset: usize = entry_start + 4 + name_len;
-    let flags_offset: usize = uncompressed_size_offset + 16;
-    phar[uncompressed_size_offset..uncompressed_size_offset + 4]
-        .copy_from_slice(&u32::MAX.to_le_bytes());
-    phar[flags_offset..flags_offset + 4].copy_from_slice(&0x0000_1000u32.to_le_bytes());
-    let archive: PharArchive = parse_phar(&phar).expect("parse forged size archive");
-    let extracted: Vec<u8> = extract_phar_entry(&archive, &phar, "bounded.php")
-        .expect("small compressed payload must extract");
+    let declared: u32 = u32::try_from(payload.len()).expect("declared size");
+    let phar: Vec<u8> = deflate_entry_phar(declared, &compressed);
+    let archive: PharArchive = parse_phar(&phar).expect("parse");
+    let extracted: Vec<u8> =
+        extract_phar_entry(&archive, &phar, "bounded.php").expect("truthful entry extracts");
     assert_eq!(extracted, payload);
+}
+
+#[test]
+fn forged_uncompressed_size_is_refused_rather_than_trusted() {
+    let payload: &[u8] = b"<?php return 42;";
+    let compressed: Vec<u8> = common::deflate(payload);
+    let phar: Vec<u8> = deflate_entry_phar(u32::MAX, &compressed);
+    let archive: PharArchive = parse_phar(&phar).expect("parse forged size archive");
+    let err: Error =
+        extract_phar_entry(&archive, &phar, "bounded.php").expect_err("forged size must refuse");
+    let msg: String = format!("{err}");
+    assert!(msg.contains("DR-PHP-0029"), "got: {msg}");
+    match err {
+        Error::PharDeclaredSizeImplausible {
+            name,
+            declared,
+            stored,
+            ceiling,
+        } => {
+            assert_eq!(name, "bounded.php");
+            assert_eq!(declared, u32::MAX);
+            assert_eq!(stored, u32::try_from(compressed.len()).expect("stored"));
+            assert_eq!(
+                ceiling,
+                disrobe_pass_php::phar_decompress_ceiling(compressed.len())
+            );
+        }
+        other => panic!("expected a refused declared length, got {other:?}"),
+    }
+}
+
+#[test]
+fn declared_length_the_stream_cannot_reach_is_refused() {
+    let payload: &[u8] = b"<?php return 42;";
+    let compressed: Vec<u8> = common::deflate(payload);
+    let declared: u32 = 1000;
+    assert!(
+        usize::try_from(declared).expect("declared fits usize")
+            <= disrobe_pass_php::phar_decompress_ceiling(compressed.len()),
+        "this case must clear the ceiling so the post-decode check is what refuses it"
+    );
+    let phar: Vec<u8> = deflate_entry_phar(declared, &compressed);
+    let archive: PharArchive = parse_phar(&phar).expect("parse short-stream archive");
+    let err: Error =
+        extract_phar_entry(&archive, &phar, "bounded.php").expect_err("short stream must refuse");
+    let msg: String = format!("{err}");
+    assert!(msg.contains("DR-PHP-0027"), "got: {msg}");
+    assert!(
+        msg.contains("declared 1000 uncompressed bytes, stream yielded 16"),
+        "got: {msg}"
+    );
 }
 
 #[test]

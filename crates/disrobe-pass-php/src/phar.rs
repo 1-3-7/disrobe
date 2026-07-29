@@ -18,6 +18,8 @@ const FLAG_COMPRESSED_GZ: u32 = 0x0000_1000;
 const FLAG_COMPRESSED_BZ: u32 = 0x0000_2000;
 
 pub const PHAR_DECOMPRESS_CAP: usize = 256 * 1024 * 1024;
+pub const PHAR_MAX_EXPANSION_RATIO: usize = 100;
+pub const PHAR_MIN_DECOMPRESS_ALLOWANCE: usize = 64 * 1024;
 const PHAR_DECOMPRESS_INITIAL_CAP: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -201,47 +203,99 @@ pub fn extract_entry(archive: &PharArchive, bytes: &[u8], name: &str) -> Result<
     });
     match entry.compression {
         PharCompression::None => Ok(stored.to_vec()),
-        PharCompression::Deflate => decompress_deflate(stored, name),
-        PharCompression::Bzip2 => decompress_bzip2(stored, name),
+        PharCompression::Deflate => {
+            let expected: usize = declared_output_len(entry, name, stored.len())?;
+            decompress_deflate(stored, name, expected)
+        }
+        PharCompression::Bzip2 => {
+            let expected: usize = declared_output_len(entry, name, stored.len())?;
+            decompress_bzip2(stored, name, expected)
+        }
     }
 }
 
-fn decompress_bzip2(stored: &[u8], name: &str) -> Result<Vec<u8>> {
-    let initial: usize = stored.len().min(PHAR_DECOMPRESS_INITIAL_CAP);
+#[must_use]
+pub const fn decompress_ceiling(stored_len: usize) -> usize {
+    let proportional: usize = match stored_len.checked_mul(PHAR_MAX_EXPANSION_RATIO) {
+        Some(scaled) => scaled,
+        None => PHAR_DECOMPRESS_CAP,
+    };
+    let allowed: usize = if proportional > PHAR_MIN_DECOMPRESS_ALLOWANCE {
+        proportional
+    } else {
+        PHAR_MIN_DECOMPRESS_ALLOWANCE
+    };
+    if allowed > PHAR_DECOMPRESS_CAP {
+        PHAR_DECOMPRESS_CAP
+    } else {
+        allowed
+    }
+}
+
+fn declared_output_len(entry: &PharEntry, name: &str, stored_len: usize) -> Result<usize> {
+    let ceiling: usize = decompress_ceiling(stored_len);
+    let declared: usize = entry.uncompressed_size as usize;
+    if declared > ceiling {
+        return Err(Error::PharDeclaredSizeImplausible {
+            name: name.to_string(),
+            declared: entry.uncompressed_size,
+            stored: entry.stored_size,
+            ceiling,
+        });
+    }
+    dbg_kv("phar-decompress-budget", || {
+        format!("{name} declared={declared} ceiling={ceiling}")
+    });
+    Ok(declared)
+}
+
+fn short_stream(name: &str, expected: usize, produced: usize) -> Error {
+    Error::PharDecompressFailed {
+        name: name.to_string(),
+        reason: format!("declared {expected} uncompressed bytes, stream yielded {produced}"),
+    }
+}
+
+fn decompress_bzip2(stored: &[u8], name: &str, expected: usize) -> Result<Vec<u8>> {
+    let initial: usize = expected.min(PHAR_DECOMPRESS_INITIAL_CAP);
     let decoder: bzip2_rs::DecoderReader<&[u8]> = bzip2_rs::DecoderReader::new(stored);
-    try_bounded(decoder, initial, name, PHAR_DECOMPRESS_CAP)?.map_or_else(
+    try_bounded(decoder, initial, name, expected)?.map_or_else(
         || {
             Err(Error::PharDecompressFailed {
                 name: name.to_string(),
                 reason: "bzip2 stream invalid".to_string(),
             })
         },
-        Ok,
+        |out: Vec<u8>| exactly_declared(out, name, expected),
     )
 }
 
-fn decompress_deflate(stored: &[u8], name: &str) -> Result<Vec<u8>> {
-    let initial: usize = stored.len().min(PHAR_DECOMPRESS_INITIAL_CAP);
-    if let Some(out) = try_bounded(GzDecoder::new(stored), initial, name, PHAR_DECOMPRESS_CAP)?
-        && !out.is_empty()
-    {
-        return Ok(out);
+fn decompress_deflate(stored: &[u8], name: &str, expected: usize) -> Result<Vec<u8>> {
+    let initial: usize = expected.min(PHAR_DECOMPRESS_INITIAL_CAP);
+    if let Some(out) = try_bounded(GzDecoder::new(stored), initial, name, expected)? {
+        if out.len() == expected {
+            return Ok(out);
+        }
+        if !out.is_empty() {
+            return Err(short_stream(name, expected, out.len()));
+        }
     }
-    try_bounded(
-        DeflateDecoder::new(stored),
-        initial,
-        name,
-        PHAR_DECOMPRESS_CAP,
-    )?
-    .map_or_else(
+    try_bounded(DeflateDecoder::new(stored), initial, name, expected)?.map_or_else(
         || {
             Err(Error::PharDecompressFailed {
                 name: name.to_string(),
                 reason: "raw deflate stream invalid".to_string(),
             })
         },
-        Ok,
+        |out: Vec<u8>| exactly_declared(out, name, expected),
     )
+}
+
+fn exactly_declared(out: Vec<u8>, name: &str, expected: usize) -> Result<Vec<u8>> {
+    if out.len() == expected {
+        return Ok(out);
+    }
+    Err(short_stream(name, expected, out.len()))
 }
 
 fn try_bounded<R: Read>(
