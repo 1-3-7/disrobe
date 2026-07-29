@@ -2,7 +2,7 @@
   "ci_attested": true,
   "claim": "disrobe re-hosts Dalvik method bodies into class bytecode that the real JVM bytecode verifier accepts under -Xverify:all, on the committed dex corpus.",
   "competitors": [],
-  "detail": "102 of 103 verifiable classes pass the real JVM bytecode verifier (-Xverify:all) on the committed EdgeCases/EdgeCasesKt/Hello dex; 0 lifter verify failures (the 103rd is link-blocked by an unbundled Kotlin Function1 supertype, a test-harness limit not a lifter defect); a live-range-splitting pass recovers bodies with conflicting register types across joins, 307 re-hosted method bodies verify clean; floor 102 classes; oracle is the JVM rejecting malformed bytecode, not the lifter self-report",
+  "detail": "102 of the 103 classes in the committed EdgeCases/EdgeCasesKt/Hello dex pass the real JVM bytecode verifier (-Xverify:all); 0 lifter verify failures (the 103rd is link-blocked by an unbundled Kotlin Function1 supertype, a test-harness limit not a lifter defect, so it is never presented to the verifier and the gate counts 102 of 102 verifiable classes clean); a live-range-splitting pass recovers bodies with conflicting register types across joins, 307 re-hosted method bodies verify clean; floor 102 classes; oracle is the JVM rejecting malformed bytecode, not the lifter self-report",
   "disrobe_leads": null,
   "ecosystem": "android",
   "floor": 97.0,

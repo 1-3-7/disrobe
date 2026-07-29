@@ -139,6 +139,9 @@ jobs:
       - name: batch worker-pool determinism (--jobs 1 vs --jobs 4, same fixtures, one leg only)
         if: matrix.os == 'ubuntu-latest'
         run: cargo test -p disrobe-cli --test determinism_cross_platform -- --ignored batch_jobs_does_not_change_recovered_output --nocapture
+      - name: aarch64 decompiler recompile-execution differential (one leg only)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo test -p disrobe-pass-native --test aarch64_recovery_grade -- --ignored --nocapture
 
   determinism-cross-platform:
     name: determinism cross-platform proof

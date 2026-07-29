@@ -1204,7 +1204,7 @@ recovered_string_count: int = deob.recovered_string_count
 
 ## Go
 
-<!-- m:go_typename_pct -->85%<!-- /m -->+ type-name recovery on stripped go1.26 fixtures; 528 of 528 measured.
+<!-- m:go_typename_pct -->85%<!-- /m -->+ type-name recovery on stripped go1.26 fixtures; 838 of 838 measured, pinned by the gate.
 
 ```python
 import disrobe

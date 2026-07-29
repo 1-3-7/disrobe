@@ -43,6 +43,8 @@ struct Bar {
     detected: Option<u64>,
     #[serde(default)]
     delivered: Option<u64>,
+    #[serde(default)]
+    modules: Option<u64>,
 }
 
 impl Recovery {
@@ -83,6 +85,13 @@ impl Bar {
             .den
             .ok_or_else(|| eyre!("bar `{}` has no `den` count", self.label))?;
         Ok(MetricValue::Ratio { num, den })
+    }
+
+    fn module_count(&self) -> Result<MetricValue> {
+        let modules: u64 = self
+            .modules
+            .ok_or_else(|| eyre!("bar `{}` has no `modules` count", self.label))?;
+        Ok(MetricValue::Int(modules))
     }
 
     fn delivered(&self) -> Result<u64> {
@@ -175,6 +184,24 @@ const KEYS: &[KeySpec] = &[
         extract: |r: &Recovery| {
             r.bar("Python bytecode", "full 574-module stdlib (representative)")?
                 .count_ratio()
+        },
+    },
+    KeySpec {
+        name: "py_stdlib_full_modules",
+        formatter: Formatter::Int,
+        nouns: &["modules", "module corpus"],
+        extract: |r: &Recovery| {
+            r.bar("Python bytecode", "full 574-module stdlib (representative)")?
+                .module_count()
+        },
+    },
+    KeySpec {
+        name: "py_stdlib_pinned_modules",
+        formatter: Formatter::Int,
+        nouns: &["modules", "module corpus"],
+        extract: |r: &Recovery| {
+            r.bar("Python bytecode", "200-module pinned corpus")?
+                .module_count()
         },
     },
     KeySpec {

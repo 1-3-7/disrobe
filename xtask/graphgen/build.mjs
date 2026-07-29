@@ -54,3 +54,11 @@ const resvg = new Resvg(cardSvg, {
 });
 writeFileSync(cardPngPath, resvg.render().asPng());
 console.log("graphgen: rasterized social-card.png from social-card.svg");
+
+const PUBLISHED_DIR = new URL("../../docs/src/assets/", import.meta.url);
+
+for (const name of ["recovery.svg", "social-card.png"]) {
+  const published = new URL(name, PUBLISHED_DIR);
+  writeFileSync(published, readFileSync(join(ASSETS_DIR, name)));
+  console.log("graphgen: published", name, "to docs/src/assets (the copy mdbook serves)");
+}
