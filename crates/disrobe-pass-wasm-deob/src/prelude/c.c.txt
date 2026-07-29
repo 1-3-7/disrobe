@@ -1,4 +1,7 @@
 /* disrobe wasm lift target=c (wasm2c-parity, self-contained) */
+/* Single-threaded runtime: memory.atomic.wait reports 1 (not-equal) or 2 (timed-out)
+   and never blocks, memory.atomic.notify wakes nobody, and atomic accesses share the
+   same storage as their plain counterparts. */
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -522,10 +525,10 @@ static inline int32_t wasm_memory_size(void) { return (int32_t)(sizeof(wasm_memo
 static inline int32_t wasm_memory_grow(int32_t delta) { (void)delta; return (int32_t)(sizeof(wasm_memory) / (64 * 1024)); }
 static inline int32_t wasm_memory_atomic_notify(int32_t addr, uint64_t offset, int32_t count) { (void)addr; (void)offset; (void)count; return 0; }
 static inline int32_t wasm_memory_atomic_notify_a64(int64_t addr, uint64_t offset, int32_t count) { (void)addr; (void)offset; (void)count; return 0; }
-static inline int32_t wasm_memory_atomic_wait32(int32_t addr, uint64_t offset, int32_t expected, int64_t timeout) { (void)addr; (void)offset; (void)expected; (void)timeout; return 0; }
-static inline int32_t wasm_memory_atomic_wait32_a64(int64_t addr, uint64_t offset, int32_t expected, int64_t timeout) { (void)addr; (void)offset; (void)expected; (void)timeout; return 0; }
-static inline int32_t wasm_memory_atomic_wait64(int32_t addr, uint64_t offset, int64_t expected, int64_t timeout) { (void)addr; (void)offset; (void)expected; (void)timeout; return 0; }
-static inline int32_t wasm_memory_atomic_wait64_a64(int64_t addr, uint64_t offset, int64_t expected, int64_t timeout) { (void)addr; (void)offset; (void)expected; (void)timeout; return 0; }
+static inline int32_t wasm_memory_atomic_wait32(int32_t addr, uint64_t offset, int32_t expected, int64_t timeout) { (void)timeout; return wasm_load_i32(addr, offset) == expected ? 2 : 1; }
+static inline int32_t wasm_memory_atomic_wait32_a64(int64_t addr, uint64_t offset, int32_t expected, int64_t timeout) { (void)timeout; return wasm_load_i32_a64(addr, offset) == expected ? 2 : 1; }
+static inline int32_t wasm_memory_atomic_wait64(int32_t addr, uint64_t offset, int64_t expected, int64_t timeout) { (void)timeout; return wasm_load_i64(addr, offset) == expected ? 2 : 1; }
+static inline int32_t wasm_memory_atomic_wait64_a64(int64_t addr, uint64_t offset, int64_t expected, int64_t timeout) { (void)timeout; return wasm_load_i64_a64(addr, offset) == expected ? 2 : 1; }
 static inline int32_t wasm_i32_atomic_load(int32_t addr, uint64_t offset) { return wasm_load_i32(addr, offset); }
 static inline int32_t wasm_i32_atomic_load_a64(int64_t addr, uint64_t offset) { return wasm_load_i32_a64(addr, offset); }
 static inline int64_t wasm_i64_atomic_load(int32_t addr, uint64_t offset) { return wasm_load_i64(addr, offset); }
@@ -656,14 +659,17 @@ static inline void wasm_atomic_fence(void) { }
 
 typedef struct { int64_t lo; int64_t hi; } wasm_i128_pair;
 
-static int64_t wasm_atomic_globals[64];
-static inline int32_t wasm_table_get(uint32_t table, int32_t index) { (void)table; (void)index; return 0; }
-static inline void wasm_table_set(uint32_t table, int32_t index, int32_t value) { (void)table; (void)index; (void)value; }
-static inline int32_t wasm_table_size(uint32_t table) { (void)table; return 0; }
-static inline int32_t wasm_table_grow(uint32_t table, int32_t init, int32_t n) { (void)table; (void)init; (void)n; return 0; }
-static inline void wasm_table_fill(uint32_t table, int32_t index, int32_t value, int32_t n) { (void)table; (void)index; (void)value; (void)n; }
-static inline void wasm_table_copy(uint32_t dst_table, uint32_t src_table, int32_t dst, int32_t src, int32_t n) { (void)dst_table; (void)src_table; (void)dst; (void)src; (void)n; }
-static inline void wasm_table_init(uint32_t table, uint32_t elem, int32_t dst, int32_t src, int32_t n) { (void)table; (void)elem; (void)dst; (void)src; (void)n; }
+#define WASM_TABLE_COUNT 8
+#define WASM_TABLE_CAP 16384
+static int32_t wasm_tables[WASM_TABLE_COUNT][WASM_TABLE_CAP];
+static int32_t wasm_table_lens[WASM_TABLE_COUNT];
+static inline int32_t wasm_table_get(uint32_t table, int32_t index) { if (table >= WASM_TABLE_COUNT || index < 0 || index >= wasm_table_lens[table]) return 0; return wasm_tables[table][index]; }
+static inline void wasm_table_set(uint32_t table, int32_t index, int32_t value) { if (table >= WASM_TABLE_COUNT || index < 0 || index >= wasm_table_lens[table]) return; wasm_tables[table][index] = value; }
+static inline int32_t wasm_table_size(uint32_t table) { return table >= WASM_TABLE_COUNT ? 0 : wasm_table_lens[table]; }
+static inline int32_t wasm_table_grow(uint32_t table, int32_t init, int32_t n) { if (table >= WASM_TABLE_COUNT || n < 0) return -1; int32_t prev = wasm_table_lens[table]; if (n > WASM_TABLE_CAP - prev) return -1; for (int32_t i = 0; i < n; i++) wasm_tables[table][prev + i] = init; wasm_table_lens[table] = prev + n; return prev; }
+static inline void wasm_table_fill(uint32_t table, int32_t index, int32_t value, int32_t n) { if (table >= WASM_TABLE_COUNT) return; for (int32_t i = 0; i < n; i++) { int32_t p = index + i; if (p >= 0 && p < wasm_table_lens[table]) wasm_tables[table][p] = value; } }
+static inline void wasm_table_copy(uint32_t dst_table, uint32_t src_table, int32_t dst, int32_t src, int32_t n) { if (dst_table >= WASM_TABLE_COUNT || src_table >= WASM_TABLE_COUNT || n <= 0) return; int32_t step = dst > src ? -1 : 1; int32_t start = dst > src ? n - 1 : 0; for (int32_t k = 0; k < n; k++) { int32_t i = start + step * k; int32_t sp = src + i; int32_t dp = dst + i; int32_t v = (sp >= 0 && sp < wasm_table_lens[src_table]) ? wasm_tables[src_table][sp] : 0; if (dp >= 0 && dp < wasm_table_lens[dst_table]) wasm_tables[dst_table][dp] = v; } }
+static inline void wasm_table_init(uint32_t table, uint32_t elem, int32_t dst, int32_t src, int32_t n) { (void)elem; (void)src; if (table >= WASM_TABLE_COUNT) return; for (int32_t i = 0; i < n; i++) { int32_t p = dst + i; if (p >= 0 && p < wasm_table_lens[table]) wasm_tables[table][p] = 0; } }
 static inline void wasm_elem_drop(uint32_t elem) { (void)elem; }
 static inline int32_t wasm_ref_test(int32_t r, int32_t nullable) { return nullable != 0 || r != 0; }
 static inline int32_t wasm_ref_get_desc(int32_t r) { return r; }
@@ -673,8 +679,8 @@ static inline void wasm_array_fill(int32_t arr, int32_t index, int32_t value, in
 static inline void wasm_array_copy(int32_t dst, int32_t dst_index, int32_t src, int32_t src_index, int32_t n) { (void)dst; (void)dst_index; (void)src; (void)src_index; (void)n; }
 static inline void wasm_array_init_seg(int32_t arr, int32_t index, int32_t src, int32_t n) { (void)arr; (void)index; (void)src; (void)n; }
 static inline void wasm_memory_discard(size_t dst, size_t n) { if (dst + n <= sizeof(wasm_memory)) memset(wasm_memory + dst, 0, n); }
-static inline int64_t wasm_global_atomic_rmw(uint32_t index, int64_t val, const char* op) { if (index >= 64) return 0; int64_t prev = wasm_atomic_globals[index]; if (op[0] == 'a' && op[1] == 'd') wasm_atomic_globals[index] = prev + val; else if (op[0] == 's') wasm_atomic_globals[index] = prev - val; else if (op[0] == 'a') wasm_atomic_globals[index] = prev & val; else if (op[0] == 'o') wasm_atomic_globals[index] = prev | val; else if (op[0] == 'x' && op[1] == 'o') wasm_atomic_globals[index] = prev ^ val; else wasm_atomic_globals[index] = val; return prev; }
-static inline int64_t wasm_global_atomic_cmpxchg(uint32_t index, int64_t expected, int64_t replacement) { if (index >= 64) return 0; int64_t prev = wasm_atomic_globals[index]; if (prev == expected) wasm_atomic_globals[index] = replacement; return prev; }
+static inline int64_t wasm_global_atomic_rmw(uint32_t index, int64_t val, const char* op) { if (index >= 64) return 0; int64_t prev = wasm_globals[index]; if (op[0] == 'a' && op[1] == 'd') wasm_globals[index] = prev + val; else if (op[0] == 's') wasm_globals[index] = prev - val; else if (op[0] == 'a') wasm_globals[index] = prev & val; else if (op[0] == 'o') wasm_globals[index] = prev | val; else if (op[0] == 'x' && op[1] == 'o') wasm_globals[index] = prev ^ val; else wasm_globals[index] = val; return prev; }
+static inline int64_t wasm_global_atomic_cmpxchg(uint32_t index, int64_t expected, int64_t replacement) { if (index >= 64) return 0; int64_t prev = wasm_globals[index]; if (prev == expected) wasm_globals[index] = replacement; return prev; }
 static inline int32_t wasm_table_atomic_rmw_xchg(uint32_t table, int32_t index, int32_t value) { int32_t prev = wasm_table_get(table, index); wasm_table_set(table, index, value); return prev; }
 static inline int32_t wasm_table_atomic_rmw_cmpxchg(uint32_t table, int32_t index, int32_t expected, int32_t replacement) { int32_t prev = wasm_table_get(table, index); if (prev == expected) wasm_table_set(table, index, replacement); return prev; }
 static inline int32_t wasm_cont_new(int32_t r) { return r; }

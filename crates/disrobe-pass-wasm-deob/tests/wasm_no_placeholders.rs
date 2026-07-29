@@ -85,7 +85,19 @@ fn check_corpus(name: &str, wat: &str) {
 
     let pairs: Vec<(FunctionBody<'_>, FunctionSig)> =
         bodies.into_iter().zip(defined.iter().cloned()).collect();
-    let _: String = lift_module_to_wat(&pairs, 0);
+    let module_wat: String = lift_module_to_wat(&pairs, 0);
+    assert_no_placeholders(&format!("{name}:module:Wat"), &module_wat);
+    let reassembled: Result<Vec<u8>, wat::Error> = wat::parse_str(&module_wat);
+    assert!(
+        reassembled.is_ok(),
+        "{name}: the whole-module WAT must reassemble ({:?}):\n{module_wat}",
+        reassembled.err()
+    );
+    assert_eq!(
+        module_wat.matches("\n  (func ").count(),
+        defined.len(),
+        "{name}: the whole-module WAT must carry every defined function:\n{module_wat}"
+    );
 
     assert!(function_count > 0, "{name}: no functions checked");
 }

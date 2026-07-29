@@ -3,6 +3,9 @@
 //! Self-contained WebAssembly numeric + memory runtime for the lifted functions below.
 //! Divide/remainder by zero and signed-overflow are made total (return 0) to keep the
 //! artifact panic-free; float->int truncation saturates (Rust `as`), matching trunc_sat.
+//! Single-threaded runtime: memory.atomic.wait reports 1 (not-equal) or 2 (timed-out)
+//! and never blocks, memory.atomic.notify wakes nobody, and atomic accesses share the
+//! same storage as their plain counterparts.
 
 use std::cell::RefCell;
 
@@ -611,10 +614,10 @@ fn wasm_memory_grow(delta: i32) -> i32 {
 
 #[inline] fn wasm_memory_atomic_notify(addr: i32, offset: u64, count: i32) -> i32 { let _ = (addr, offset, count); 0 }
 #[inline] fn wasm_memory_atomic_notify_a64(addr: i64, offset: u64, count: i32) -> i32 { let _ = (addr, offset, count); 0 }
-#[inline] fn wasm_memory_atomic_wait32(addr: i32, offset: u64, expected: i32, timeout: i64) -> i32 { let _ = (addr, offset, expected, timeout); 0 }
-#[inline] fn wasm_memory_atomic_wait32_a64(addr: i64, offset: u64, expected: i32, timeout: i64) -> i32 { let _ = (addr, offset, expected, timeout); 0 }
-#[inline] fn wasm_memory_atomic_wait64(addr: i32, offset: u64, expected: i64, timeout: i64) -> i32 { let _ = (addr, offset, expected, timeout); 0 }
-#[inline] fn wasm_memory_atomic_wait64_a64(addr: i64, offset: u64, expected: i64, timeout: i64) -> i32 { let _ = (addr, offset, expected, timeout); 0 }
+#[inline] fn wasm_memory_atomic_wait32(addr: i32, offset: u64, expected: i32, timeout: i64) -> i32 { let _ = timeout; if wasm_load_i32(addr, offset) == expected { 2 } else { 1 } }
+#[inline] fn wasm_memory_atomic_wait32_a64(addr: i64, offset: u64, expected: i32, timeout: i64) -> i32 { let _ = timeout; if wasm_load_i32_a64(addr, offset) == expected { 2 } else { 1 } }
+#[inline] fn wasm_memory_atomic_wait64(addr: i32, offset: u64, expected: i64, timeout: i64) -> i32 { let _ = timeout; if wasm_load_i64(addr, offset) == expected { 2 } else { 1 } }
+#[inline] fn wasm_memory_atomic_wait64_a64(addr: i64, offset: u64, expected: i64, timeout: i64) -> i32 { let _ = timeout; if wasm_load_i64_a64(addr, offset) == expected { 2 } else { 1 } }
 #[inline] fn wasm_i32_atomic_load(addr: i32, offset: u64) -> i32 { wasm_load_i32(addr, offset) }
 #[inline] fn wasm_i32_atomic_load_a64(addr: i64, offset: u64) -> i32 { wasm_load_i32_a64(addr, offset) }
 #[inline] fn wasm_i64_atomic_load(addr: i32, offset: u64) -> i64 { wasm_load_i64(addr, offset) }
@@ -746,7 +749,6 @@ fn wasm_memory_grow(delta: i32) -> i32 {
 
 thread_local! {
     static WASM_TABLES: RefCell<Vec<Vec<usize>>> = RefCell::new(vec![vec![0usize; 0]; 8]);
-    static WASM_ATOMIC_GLOBALS: RefCell<Vec<i64>> = RefCell::new(vec![0i64; 64]);
 }
 
 fn wasm_table_get(table: u32, index: i32) -> usize {
@@ -793,10 +795,10 @@ fn wasm_memory_discard(dst: usize, n: usize) {
 }
 
 fn wasm_global_atomic_rmw(index: u32, val: i64, op: &str) -> i64 {
-    WASM_ATOMIC_GLOBALS.with(|g| { let mut g = g.borrow_mut(); let slot = g.get_mut(index as usize); match slot { Some(s) => { let prev = *s; *s = match op { "add" => prev.wrapping_add(val), "sub" => prev.wrapping_sub(val), "and" => prev & val, "or" => prev | val, "xor" => prev ^ val, _ => val }; prev } None => 0 } })
+    WASM_GLOBALS.with(|g| { let mut g = g.borrow_mut(); let slot = g.get_mut(index as usize); match slot { Some(s) => { let prev = *s; *s = match op { "add" => prev.wrapping_add(val), "sub" => prev.wrapping_sub(val), "and" => prev & val, "or" => prev | val, "xor" => prev ^ val, _ => val }; prev } None => 0 } })
 }
 fn wasm_global_atomic_cmpxchg(index: u32, expected: i64, replacement: i64) -> i64 {
-    WASM_ATOMIC_GLOBALS.with(|g| { let mut g = g.borrow_mut(); match g.get_mut(index as usize) { Some(s) => { let prev = *s; if prev == expected { *s = replacement; } prev } None => 0 } })
+    WASM_GLOBALS.with(|g| { let mut g = g.borrow_mut(); match g.get_mut(index as usize) { Some(s) => { let prev = *s; if prev == expected { *s = replacement; } prev } None => 0 } })
 }
 
 fn wasm_table_atomic_rmw_xchg(table: u32, index: i32, value: usize) -> usize { let prev = wasm_table_get(table, index); wasm_table_set(table, index, value); prev }
