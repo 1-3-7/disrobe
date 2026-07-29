@@ -695,6 +695,7 @@ fn render_region(state: &mut RenderState<'_>, region: &Region, out: &mut String,
             try_body,
             handlers,
             finally_chain,
+            ..
         } => {
             let pad: String = indent_string(level);
             let _ = writeln!(out, "{pad}try {{");
