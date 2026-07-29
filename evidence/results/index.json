@@ -271,7 +271,7 @@
       "floor": 88.0,
       "floor_holds": true,
       "id": "py-stdlib-full",
-      "measured": "92.43%",
+      "measured": "95.09%",
       "oracle_strength": "strong",
       "reproduce": "python crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the full CPython 3.14 Lib (local-only: needs a full CPython 3.14 install)"
     },
@@ -285,7 +285,7 @@
       "floor": 90.0,
       "floor_holds": true,
       "id": "py-stdlib-recompile",
-      "measured": "96.29%",
+      "measured": "96.60%",
       "oracle_strength": "strong",
       "reproduce": "cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate"
     },

@@ -3,7 +3,7 @@
 - id: `py-stdlib-recompile`
 - ecosystem: python
 - claim: disrobe recovers Python source whose recompiled bytecode is equivalent to the original, per code object, across the CPython 3.14 stdlib.
-- measured: 96.29%
+- measured: 96.60%
 - oracle strength: strong
 - CI-attested: yes [CI]
 - external oracle: CPython 3.14 (recompile the recovered source, compare emitted bytecode per code object)

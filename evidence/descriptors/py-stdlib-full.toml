@@ -12,5 +12,5 @@ reproduce = "python crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_
 
 [source]
 recovery_group = "Python bytecode (CPython 3.14 stdlib, per-code-object recompile-equivalence)"
-recovery_bar = "full 571-module stdlib (representative)"
+recovery_bar = "full 574-module stdlib (representative)"
 floor = 88.0
