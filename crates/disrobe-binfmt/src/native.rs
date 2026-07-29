@@ -168,57 +168,7 @@ const MACHO_FAT_MIN: usize = 8;
 
 #[allow(clippy::too_many_lines)]
 pub fn parse_native(bytes: &[u8]) -> Result<NativeFile> {
-    if bytes.len() < MACHO_FAT_MIN {
-        return Err(Error::NativeParse(
-            "input too small for any native format".to_owned(),
-        ));
-    }
-    let kind: FileKind = FileKind::parse(bytes).map_err(|e| Error::NativeParse(e.to_string()))?;
-    let format: NativeFormat = match kind {
-        FileKind::Pe32 => {
-            if bytes.len() < PE32_MIN {
-                return Err(Error::NativeParse("pe32 image too short".to_owned()));
-            }
-            NativeFormat::Pe32
-        }
-        FileKind::Pe64 => {
-            if bytes.len() < PE32_MIN {
-                return Err(Error::NativeParse("pe64 image too short".to_owned()));
-            }
-            NativeFormat::Pe64
-        }
-        FileKind::Elf32 => {
-            if bytes.len() < ELF_MIN {
-                return Err(Error::NativeParse("elf32 image too short".to_owned()));
-            }
-            NativeFormat::Elf32
-        }
-        FileKind::Elf64 => {
-            if bytes.len() < ELF_MIN {
-                return Err(Error::NativeParse("elf64 image too short".to_owned()));
-            }
-            NativeFormat::Elf64
-        }
-        FileKind::MachO32 => {
-            if bytes.len() < MACHO_MIN {
-                return Err(Error::NativeParse("mach-o 32 too short".to_owned()));
-            }
-            NativeFormat::MachO32
-        }
-        FileKind::MachO64 => {
-            if bytes.len() < MACHO_MIN {
-                return Err(Error::NativeParse("mach-o 64 too short".to_owned()));
-            }
-            NativeFormat::MachO64
-        }
-        FileKind::MachOFat32 | FileKind::MachOFat64 => NativeFormat::MachOFat,
-        FileKind::Coff | FileKind::CoffBig => NativeFormat::Coff,
-        other => {
-            return Err(Error::NativeParse(format!(
-                "unsupported file kind for native parse: {other:?}"
-            )));
-        }
-    };
+    let format: NativeFormat = detect_native_format(bytes)?;
 
     if matches!(format, NativeFormat::MachOFat) {
         return Ok(NativeFile {
@@ -330,7 +280,63 @@ pub fn parse_native(bytes: &[u8]) -> Result<NativeFile> {
     })
 }
 
-const fn map_arch(a: ObjArchitecture) -> Arch {
+pub(crate) fn detect_native_format(bytes: &[u8]) -> Result<NativeFormat> {
+    if bytes.len() < MACHO_FAT_MIN {
+        return Err(Error::NativeParse(
+            "input too small for any native format".to_owned(),
+        ));
+    }
+    let kind: FileKind = FileKind::parse(bytes).map_err(|e| Error::NativeParse(e.to_string()))?;
+    let format: NativeFormat = match kind {
+        FileKind::Pe32 => {
+            if bytes.len() < PE32_MIN {
+                return Err(Error::NativeParse("pe32 image too short".to_owned()));
+            }
+            NativeFormat::Pe32
+        }
+        FileKind::Pe64 => {
+            if bytes.len() < PE32_MIN {
+                return Err(Error::NativeParse("pe64 image too short".to_owned()));
+            }
+            NativeFormat::Pe64
+        }
+        FileKind::Elf32 => {
+            if bytes.len() < ELF_MIN {
+                return Err(Error::NativeParse("elf32 image too short".to_owned()));
+            }
+            NativeFormat::Elf32
+        }
+        FileKind::Elf64 => {
+            if bytes.len() < ELF_MIN {
+                return Err(Error::NativeParse("elf64 image too short".to_owned()));
+            }
+            NativeFormat::Elf64
+        }
+        FileKind::MachO32 => {
+            if bytes.len() < MACHO_MIN {
+                return Err(Error::NativeParse("mach-o 32 too short".to_owned()));
+            }
+            NativeFormat::MachO32
+        }
+        FileKind::MachO64 => {
+            if bytes.len() < MACHO_MIN {
+                return Err(Error::NativeParse("mach-o 64 too short".to_owned()));
+            }
+            NativeFormat::MachO64
+        }
+        FileKind::MachOFat32 | FileKind::MachOFat64 => NativeFormat::MachOFat,
+        FileKind::Coff | FileKind::CoffBig => NativeFormat::Coff,
+        other => {
+            return Err(Error::NativeParse(format!(
+                "unsupported file kind for native parse: {other:?}"
+            )));
+        }
+    };
+
+    Ok(format)
+}
+
+pub(crate) const fn map_arch(a: ObjArchitecture) -> Arch {
     match a {
         ObjArchitecture::I386 => Arch::X86,
         ObjArchitecture::X86_64 | ObjArchitecture::X86_64_X32 => Arch::X86_64,

@@ -4,6 +4,7 @@ use disrobe_core::codec::crc32_ieee;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::native_image::{NativeImage, parse_native_image};
 use disrobe_bytes::ByteReader;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -279,105 +280,126 @@ fn resource_loader_table(bytes: &[u8]) -> Option<Vec<u8>> {
     if !bytes.starts_with(b"MZ") {
         return None;
     }
-    let e_lfanew: usize = u32::from_le_bytes(bytes.get(0x3C..0x40)?.try_into().ok()?) as usize;
-    if bytes.get(e_lfanew..e_lfanew + 4)? != b"PE\0\0" {
+    let e_lfanew_u32: u32 = disrobe_bytes::read_u32_le_at(bytes, 0x3C).ok()?;
+    let e_lfanew: usize = usize::try_from(e_lfanew_u32).ok()?;
+    let signature_end: usize = e_lfanew.checked_add(4)?;
+    if bytes.get(e_lfanew..signature_end)? != b"PE\0\0" {
         return None;
     }
-    let coff: usize = e_lfanew + 4;
-    let section_count: u16 = u16::from_le_bytes(bytes.get(coff + 2..coff + 4)?.try_into().ok()?);
+    let coff: usize = signature_end;
+    let optional_size_offset: usize = coff.checked_add(16)?;
     let optional_size: usize =
-        u16::from_le_bytes(bytes.get(coff + 16..coff + 18)?.try_into().ok()?) as usize;
-    let optional: usize = coff + 20;
-    let magic: u16 = u16::from_le_bytes(bytes.get(optional..optional + 2)?.try_into().ok()?);
-    let is_pe32_plus: bool = magic == 0x20B;
-    let data_dir: usize = optional + if is_pe32_plus { 112 } else { 96 };
-    let resource_rva: u32 =
-        u32::from_le_bytes(bytes.get(data_dir + 16..data_dir + 20)?.try_into().ok()?);
-    if resource_rva == 0 {
+        usize::from(disrobe_bytes::read_u16_le_at(bytes, optional_size_offset).ok()?);
+    let optional: usize = coff.checked_add(20)?;
+    let optional_end: usize = optional.checked_add(optional_size)?;
+    let magic: u16 = disrobe_bytes::read_u16_le_at(bytes, optional).ok()?;
+    let data_dir_delta: usize = match magic {
+        0x10B => 96,
+        0x20B => 112,
+        _ => return None,
+    };
+    let directory_count_delta: usize = data_dir_delta.checked_sub(4)?;
+    let directory_count_offset: usize = optional.checked_add(directory_count_delta)?;
+    let directory_count: u32 = disrobe_bytes::read_u32_le_at(bytes, directory_count_offset).ok()?;
+    if directory_count <= 2 {
         return None;
     }
-    let section_table: usize = optional + optional_size;
-    let sections: Vec<(u32, u32, u32, u32)> = (0..section_count as usize)
-        .filter_map(|i: usize| {
-            let so: usize = section_table + i * 40;
-            let vsize: u32 = u32::from_le_bytes(bytes.get(so + 8..so + 12)?.try_into().ok()?);
-            let vrva: u32 = u32::from_le_bytes(bytes.get(so + 12..so + 16)?.try_into().ok()?);
-            let rsize: u32 = u32::from_le_bytes(bytes.get(so + 16..so + 20)?.try_into().ok()?);
-            let rraw: u32 = u32::from_le_bytes(bytes.get(so + 20..so + 24)?.try_into().ok()?);
-            Some((vrva, vsize, rraw, rsize))
-        })
-        .collect();
-    let rva_to_off = |rva: u32| -> Option<usize> {
-        sections.iter().find_map(|&(vrva, vsize, rraw, rsize)| {
-            let span: u32 = vsize.max(rsize);
-            if rva < vrva || rva >= vrva.saturating_add(span) {
-                return None;
-            }
-            rraw.checked_add(rva.saturating_sub(vrva))
-                .map(|offset: u32| offset as usize)
-        })
-    };
-    let res_base: usize = rva_to_off(resource_rva)?;
-    let rcdata_dir: usize = resource_dir_subdir(bytes, res_base, res_base, 10)?;
-    let id_dir: usize = resource_dir_subdir(bytes, res_base, rcdata_dir, SETUP_LOADER_RESOURCE_ID)?;
-    let lang_entry: u32 = resource_dir_first_entry(bytes, id_dir)?;
-    let data_entry_off: usize = res_base.checked_add((lang_entry & 0x7FFF_FFFF) as usize)?;
-    let data_rva: u32 = u32::from_le_bytes(
-        bytes
-            .get(data_entry_off..data_entry_off.checked_add(4)?)?
-            .try_into()
-            .ok()?,
-    );
-    let size_off: usize = data_entry_off.checked_add(4)?;
-    let data_size: usize = u32::from_le_bytes(
-        bytes
-            .get(size_off..size_off.checked_add(4)?)?
-            .try_into()
-            .ok()?,
-    ) as usize;
+    let data_dir: usize = optional.checked_add(data_dir_delta)?;
+    let resource_rva_offset: usize = data_dir.checked_add(16)?;
+    let resource_size_offset: usize = resource_rva_offset.checked_add(4)?;
+    let resource_entry_end: usize = resource_size_offset.checked_add(4)?;
+    if resource_entry_end > optional_end {
+        return None;
+    }
+    let resource_rva: u32 = disrobe_bytes::read_u32_le_at(bytes, resource_rva_offset).ok()?;
+    let resource_size_u32: u32 = disrobe_bytes::read_u32_le_at(bytes, resource_size_offset).ok()?;
+    let resource_size: usize = usize::try_from(resource_size_u32).ok()?;
+    if resource_rva == 0 || resource_size == 0 {
+        return None;
+    }
+    let image: NativeImage<'_> = parse_native_image(bytes).ok()?;
+    let resource_address: u64 = image.virtual_address_from_relative(resource_rva)?;
+    let resource: &[u8] = image.bytes_at(resource_address)?.get(..resource_size)?;
+    let rcdata_dir: usize = resource_dir_subdir(resource, 0, 10)?;
+    let id_dir: usize = resource_dir_subdir(resource, rcdata_dir, SETUP_LOADER_RESOURCE_ID)?;
+    let lang_entry: u32 = resource_dir_first_entry(resource, id_dir)?;
+    if lang_entry & 0x8000_0000 != 0 {
+        return None;
+    }
+    let data_entry_relative: usize = usize::try_from(lang_entry).ok()?;
+    let (data_rva, data_size): (u32, usize) = resource_data_entry(
+        resource,
+        data_entry_relative,
+        resource_rva,
+        resource_size_u32,
+    )?;
     if data_size == 0 || data_size > 4096 {
         return None;
     }
-    let data_off: usize = rva_to_off(data_rva)?;
-    bytes
-        .get(data_off..data_off.checked_add(data_size)?)
-        .map(<[u8]>::to_vec)
+    let data_address: u64 = image.virtual_address_from_relative(data_rva)?;
+    let data: &[u8] = image.bytes_at(data_address)?;
+    data.get(..data_size).map(<[u8]>::to_vec)
 }
 
-fn resource_dir_subdir(
-    bytes: &[u8],
-    res_base: usize,
-    dir_off: usize,
-    want_id: u32,
-) -> Option<usize> {
-    let named: u16 = u16::from_le_bytes(bytes.get(dir_off + 12..dir_off + 14)?.try_into().ok()?);
-    let ids: u16 = u16::from_le_bytes(bytes.get(dir_off + 14..dir_off + 16)?.try_into().ok()?);
-    let total: usize = named as usize + ids as usize;
-    let base: usize = dir_off + 16;
+fn resource_data_entry(
+    resource: &[u8],
+    entry_offset: usize,
+    resource_rva: u32,
+    resource_size: u32,
+) -> Option<(u32, usize)> {
+    let entry_end: usize = entry_offset.checked_add(16)?;
+    let entry: &[u8] = resource.get(entry_offset..entry_end)?;
+    let data_rva: u32 = disrobe_bytes::read_u32_le_at(entry, 0).ok()?;
+    let data_size_u32: u32 = disrobe_bytes::read_u32_le_at(entry, 4).ok()?;
+    let reserved: u32 = disrobe_bytes::read_u32_le_at(entry, 12).ok()?;
+    if reserved != 0 {
+        return None;
+    }
+    let resource_end: u32 = resource_rva.checked_add(resource_size)?;
+    let data_end: u32 = data_rva.checked_add(data_size_u32)?;
+    if data_rva < resource_rva || data_end > resource_end {
+        return None;
+    }
+    let data_size: usize = usize::try_from(data_size_u32).ok()?;
+    Some((data_rva, data_size))
+}
+
+fn resource_dir_subdir(bytes: &[u8], dir_off: usize, want_id: u32) -> Option<usize> {
+    let named_offset: usize = dir_off.checked_add(12)?;
+    let ids_offset: usize = dir_off.checked_add(14)?;
+    let named: u16 = disrobe_bytes::read_u16_le_at(bytes, named_offset).ok()?;
+    let ids: u16 = disrobe_bytes::read_u16_le_at(bytes, ids_offset).ok()?;
+    let total: usize = usize::from(named).checked_add(usize::from(ids))?;
+    let base: usize = dir_off.checked_add(16)?;
     for i in 0..total {
-        let eo: usize = base + i * 8;
-        let id: u32 = u32::from_le_bytes(bytes.get(eo..eo + 4)?.try_into().ok()?);
-        let off: u32 = u32::from_le_bytes(bytes.get(eo + 4..eo + 8)?.try_into().ok()?);
+        let entry_delta: usize = i.checked_mul(8)?;
+        let eo: usize = base.checked_add(entry_delta)?;
+        let off_offset: usize = eo.checked_add(4)?;
+        let id: u32 = disrobe_bytes::read_u32_le_at(bytes, eo).ok()?;
+        let off: u32 = disrobe_bytes::read_u32_le_at(bytes, off_offset).ok()?;
         if id & 0x8000_0000 != 0 {
             continue;
         }
         if id == want_id && off & 0x8000_0000 != 0 {
-            return Some(res_base + (off & 0x7FFF_FFFF) as usize);
+            let relative: usize = usize::try_from(off & 0x7FFF_FFFF).ok()?;
+            return Some(relative);
         }
     }
     None
 }
 
 fn resource_dir_first_entry(bytes: &[u8], dir_off: usize) -> Option<u32> {
-    let named: u16 = u16::from_le_bytes(bytes.get(dir_off + 12..dir_off + 14)?.try_into().ok()?);
-    let ids: u16 = u16::from_le_bytes(bytes.get(dir_off + 14..dir_off + 16)?.try_into().ok()?);
-    if named as usize + ids as usize == 0 {
+    let named_offset: usize = dir_off.checked_add(12)?;
+    let ids_offset: usize = dir_off.checked_add(14)?;
+    let named: u16 = disrobe_bytes::read_u16_le_at(bytes, named_offset).ok()?;
+    let ids: u16 = disrobe_bytes::read_u16_le_at(bytes, ids_offset).ok()?;
+    let total: usize = usize::from(named).checked_add(usize::from(ids))?;
+    if total == 0 {
         return None;
     }
-    let eo: usize = dir_off + 16;
-    Some(u32::from_le_bytes(
-        bytes.get(eo + 4..eo + 8)?.try_into().ok()?,
-    ))
+    let eo: usize = dir_off.checked_add(16)?;
+    let off_offset: usize = eo.checked_add(4)?;
+    disrobe_bytes::read_u32_le_at(bytes, off_offset).ok()
 }
 
 pub fn extract_inno_block_stream(bytes: &[u8], info: &InnoSetupInfo) -> Result<Vec<u8>> {
@@ -697,6 +719,61 @@ mod tests {
     #[test]
     fn hint_points_to_innoextract() {
         assert_eq!(innosetup_external_hint().tool_binary, "innoextract");
+    }
+
+    #[test]
+    fn traverses_real_pe_resources_without_fabricating_loader_data() {
+        let bytes: &[u8] = include_bytes!("../../../../corpus/dotnet/cff/DecryptSample.exe");
+        let image: NativeImage<'_> =
+            parse_native_image(bytes).expect("real resource pe should parse");
+        let resource_address: u64 = image
+            .virtual_address_from_relative(0x4000)
+            .expect("resource address should fit");
+        let resource: &[u8] = image
+            .bytes_at(resource_address)
+            .expect("resource directory should be file-backed");
+        let root_id_count: u16 =
+            disrobe_bytes::read_u16_le_at(resource, 14).expect("resource root should parse");
+
+        assert_eq!(root_id_count, 2);
+        assert!(resource_dir_subdir(resource, 0, 16).is_some());
+        assert!(resource_dir_subdir(resource, 0, 24).is_some());
+        assert!(resource_loader_table(bytes).is_none());
+    }
+
+    fn resource_entry(data_rva: u32, data_size: u32, reserved: u32) -> [u8; 16] {
+        let mut entry: [u8; 16] = [0; 16];
+        let data_rva_field: &mut [u8] = entry
+            .get_mut(0..4)
+            .expect("resource data rva field should exist");
+        data_rva_field.copy_from_slice(&data_rva.to_le_bytes());
+        let data_size_field: &mut [u8] = entry
+            .get_mut(4..8)
+            .expect("resource data size field should exist");
+        data_size_field.copy_from_slice(&data_size.to_le_bytes());
+        let reserved_field: &mut [u8] = entry
+            .get_mut(12..16)
+            .expect("resource reserved field should exist");
+        reserved_field.copy_from_slice(&reserved.to_le_bytes());
+        entry
+    }
+
+    #[test]
+    fn resource_data_entry_requires_complete_valid_leaf() {
+        let valid: [u8; 16] = resource_entry(0x4040, 0x20, 0);
+        let truncated: &[u8] = valid
+            .get(..15)
+            .expect("truncated resource entry range should exist");
+        let reserved: [u8; 16] = resource_entry(0x4040, 0x20, 1);
+        let outside: [u8; 16] = resource_entry(0x4100, 1, 0);
+
+        assert_eq!(
+            resource_data_entry(&valid, 0, 0x4000, 0x100),
+            Some((0x4040, 0x20))
+        );
+        assert!(resource_data_entry(truncated, 0, 0x4000, 0x100).is_none());
+        assert!(resource_data_entry(&reserved, 0, 0x4000, 0x100).is_none());
+        assert!(resource_data_entry(&outside, 0, 0x4000, 0x100).is_none());
     }
 
     #[test]

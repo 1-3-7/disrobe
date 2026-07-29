@@ -17,6 +17,7 @@ pub mod external_wrap;
 pub mod extract;
 pub mod native;
 pub mod native_graph;
+pub mod native_image;
 pub mod quota;
 pub mod structural;
 
@@ -44,5 +45,6 @@ pub use native::{
     SectionInfo, SegmentInfo, SymbolInfo, SymbolRole, parse_native,
 };
 pub use native_graph::{ImportGraph, import_graph_dot};
+pub use native_image::{NativeImage, NativeImageSection, parse_native_image};
 pub use quota::{ExtractionQuota, QuotaGuard, QuotaReport, sanitize_entry_path};
 pub use structural::{StructuralFormat, identify_by_structure, locate_pe_header};
