@@ -85,7 +85,9 @@ fn verify_citation(root: &Path, bar: &Bar, cited: &VerifiedBy, issues: &mut Vec<
     let text: String = match read_text_bounded(&absolute, MAX_SOURCE_BYTES) {
         Ok(text) => text,
         Err(error) => {
-            issues.push(format!("bar `{label}` cites `{rel}`, which could not be read: {error}"));
+            issues.push(format!(
+                "bar `{label}` cites `{rel}`, which could not be read: {error}"
+            ));
             return;
         }
     };
@@ -162,7 +164,7 @@ pub(crate) fn run(root: &Path) -> Result<()> {
         Ok(())
     } else {
         bail!(
-            "xtask regen: {} claim(s) in xtask/data/recovery.json are not honestly sourced:\n  {}",
+            "xtask regen: {} claim(s) in xtask/data/recovery.json are not sourced from code:\n  {}",
             issues.len(),
             issues.join("\n  ")
         )

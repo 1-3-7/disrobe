@@ -349,8 +349,11 @@ const KEYS: &[KeySpec] = &[
         nouns: &[],
         extract: |r: &Recovery| {
             Ok(MetricValue::Int(
-                r.bar("Detection and extraction breadth", "Python source obfuscators")?
-                    .detected()?,
+                r.bar(
+                    "Detection and extraction breadth",
+                    "Python source obfuscators",
+                )?
+                .detected()?,
             ))
         },
     },
@@ -371,8 +374,11 @@ const KEYS: &[KeySpec] = &[
         nouns: &[],
         extract: |r: &Recovery| {
             Ok(MetricValue::Int(
-                r.bar("Detection and extraction breadth", "Shell obfuscation modes")?
-                    .detected()?,
+                r.bar(
+                    "Detection and extraction breadth",
+                    "Shell obfuscation modes",
+                )?
+                .detected()?,
             ))
         },
     },
