@@ -46,6 +46,8 @@ struct CardStats {
     fmt_count: u64,
     dex_clean: u64,
     dex_total: u64,
+    rust_loc: usize,
+    crate_count: usize,
 }
 
 const TEMPLATE: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
@@ -55,16 +57,16 @@ const TEMPLATE: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
   <defs>
     <linearGradient id="reveal" gradientUnits="userSpaceOnUse" x1="540" y1="0" x2="1208" y2="0">
       <stop offset="0" stop-color="#000000"/>
-      <stop offset="0.30" stop-color="#000000"/>
-      <stop offset="0.58" stop-color="#8a8a8a"/>
-      <stop offset="0.75" stop-color="#ffffff"/>
+      <stop offset="0.44" stop-color="#000000"/>
+      <stop offset="0.58" stop-color="#808080"/>
+      <stop offset="0.72" stop-color="#ffffff"/>
       <stop offset="1" stop-color="#ffffff"/>
     </linearGradient>
     <linearGradient id="reveal-inv" gradientUnits="userSpaceOnUse" x1="540" y1="0" x2="1208" y2="0">
       <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="0.34" stop-color="#ffffff"/>
-      <stop offset="0.58" stop-color="#9a9a9a"/>
-      <stop offset="0.74" stop-color="#000000"/>
+      <stop offset="0.44" stop-color="#ffffff"/>
+      <stop offset="0.58" stop-color="#808080"/>
+      <stop offset="0.72" stop-color="#000000"/>
       <stop offset="1" stop-color="#000000"/>
     </linearGradient>
     <mask id="obfmask" maskUnits="userSpaceOnUse" x="540" y="132" width="668" height="300">
@@ -151,7 +153,7 @@ const TEMPLATE: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
   <line x1="72" y1="554" x2="1208" y2="554" stroke="#262626"/>
   <text x="72" y="582" font-size="13.5" fill="#a1a1a1" xml:space="preserve" letter-spacing="0.15"><tspan fill="#8fb3d9" font-weight="700">$ </tspan>20+ ecosystems, one static binary<tspan fill="#828282"> &#183; </tspan>0 LLM, deterministic<tspan fill="#828282"> &#183; </tspan>python __PY_PCT__% recompile-verified in CI<tspan fill="#828282"> &#183; </tspan>__FMT_COUNT__ formats, no external unzipper</text>
-  <text x="72" y="606" font-size="13.5" fill="#a1a1a1" xml:space="preserve" letter-spacing="0.15"><tspan fill="#8fb3d9" font-weight="700">$ </tspan>Android __DEX_CLEAN__/__DEX_TOTAL__ dex JVM-verified<tspan fill="#828282"> &#183; </tspan>WASM re-run under wasmtime<tspan fill="#828282"> &#183; </tspan>Lua IronBrew2 devirt proven by execution<tspan fill="#828282"> &#183; </tspan>~637k lines of original Rust</text>
+  <text x="72" y="606" font-size="13.5" fill="#a1a1a1" xml:space="preserve" letter-spacing="0.15"><tspan fill="#8fb3d9" font-weight="700">$ </tspan>Android __DEX_CLEAN__/__DEX_TOTAL__ dex JVM-verified<tspan fill="#828282"> &#183; </tspan>WASM re-run under wasmtime<tspan fill="#828282"> &#183; </tspan>Lua IronBrew2 devirt proven by execution<tspan fill="#828282"> &#183; </tspan>__RUST_LOC__ lines of Rust in __CRATE_COUNT__ crates</text>
 </svg>
 "##;
 
@@ -176,7 +178,7 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
     let verif_doc: VerificationDoc = serde_json::from_str(&verif_raw)
         .wrap_err_with(|| format!("parsing {}", verif_path.display()))?;
 
-    let stats: CardStats = collect_stats(&recovery_doc, &verif_doc)?;
+    let stats: CardStats = collect_stats(root, &recovery_doc, &verif_doc)?;
     let svg: String = render(&stats);
 
     if check {
@@ -207,15 +209,22 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
     Ok(())
 }
 
-fn collect_stats(recovery: &RecoveryDoc, verif: &VerificationDoc) -> Result<CardStats> {
+fn collect_stats(
+    root: &Path,
+    recovery: &RecoveryDoc,
+    verif: &VerificationDoc,
+) -> Result<CardStats> {
     let py_pct: f64 = find_value(recovery, "Python bytecode", "200-module pinned corpus")?;
     let fmt_count: u64 = find_detected(recovery, "Detection and extraction breadth", "Containers")?;
     let (dex_clean, dex_total): (u64, u64) = find_dex_pair(verif)?;
+    let (rust_loc, crate_count): (usize, usize) = count_rust_lines(root)?;
     Ok(CardStats {
         py_pct,
         fmt_count,
         dex_clean,
         dex_total,
+        rust_loc,
+        crate_count,
     })
 }
 
@@ -278,6 +287,54 @@ fn find_dex_pair(doc: &VerificationDoc) -> Result<(u64, u64)> {
     bail!("no 'Android DEX' row in verification.json")
 }
 
+fn approximate_loc(lines: usize) -> String {
+    if lines >= 1_000_000 {
+        format!("{:.2}M", lines as f64 / 1_000_000.0)
+    } else {
+        format!("{}k", lines / 1_000)
+    }
+}
+
+fn rust_lines_under(dir: &Path) -> Result<usize> {
+    if !dir.is_dir() {
+        return Ok(0);
+    }
+    let mut total: usize = 0;
+    let entries = std::fs::read_dir(dir).wrap_err_with(|| format!("reading {}", dir.display()))?;
+    for entry in entries {
+        let path: PathBuf = entry?.path();
+        if path.is_dir() {
+            total += rust_lines_under(&path)?;
+            continue;
+        }
+        if path
+            .extension()
+            .is_some_and(|ext: &std::ffi::OsStr| ext.eq_ignore_ascii_case("rs"))
+        {
+            let text: String = read_text_bounded(&path, MAX_SVG_BYTES)?;
+            total += text.lines().count();
+        }
+    }
+    Ok(total)
+}
+
+fn count_rust_lines(root: &Path) -> Result<(usize, usize)> {
+    let mut lines: usize = 0;
+    let mut crates: usize = 0;
+    let crates_dir: PathBuf = root.join("crates");
+    let entries = std::fs::read_dir(&crates_dir)
+        .wrap_err_with(|| format!("reading {}", crates_dir.display()))?;
+    for entry in entries {
+        let path: PathBuf = entry?.path();
+        if !path.is_dir() || !path.join("Cargo.toml").is_file() {
+            continue;
+        }
+        crates += 1;
+        lines += rust_lines_under(&path.join("src"))?;
+    }
+    Ok((lines, crates))
+}
+
 fn render(stats: &CardStats) -> String {
     let py_str: String = format!("{:.2}", stats.py_pct);
     TEMPLATE
@@ -285,4 +342,6 @@ fn render(stats: &CardStats) -> String {
         .replace("__FMT_COUNT__", &stats.fmt_count.to_string())
         .replace("__DEX_CLEAN__", &stats.dex_clean.to_string())
         .replace("__DEX_TOTAL__", &stats.dex_total.to_string())
+        .replace("__RUST_LOC__", &approximate_loc(stats.rust_loc))
+        .replace("__CRATE_COUNT__", &stats.crate_count.to_string())
 }
