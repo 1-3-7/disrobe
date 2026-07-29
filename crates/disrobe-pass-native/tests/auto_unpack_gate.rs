@@ -45,15 +45,23 @@ fn write_source(dir: &Path) -> PathBuf {
     src
 }
 
-fn run_pass(bytes: &[u8]) -> Vec<ChildArtifact> {
+fn try_run_pass(bytes: &[u8]) -> Option<Vec<ChildArtifact>> {
     let input: Artifact = Artifact::new(Rung::Raw, bytes.to_vec(), [0u8; 32]);
-    PACKER_PASS
-        .extract_children(&input)
-        .expect("packer-unpack children extraction")
+    PACKER_PASS.extract_children(&input).ok()
+}
+
+fn run_pass(bytes: &[u8]) -> Vec<ChildArtifact> {
+    try_run_pass(bytes).expect("packer-unpack children extraction")
+}
+
+fn recovered_image(children: &[ChildArtifact]) -> Option<&[u8]> {
+    children
+        .iter()
+        .find(|c: &&ChildArtifact| c.handle.relative_path == "recovered-image.bin")
+        .map(|c: &ChildArtifact| c.bytes.as_slice())
 }
 
 #[test]
-#[ignore = "upx unpacked-image recovery is platform-dependent (passes on windows, empty on linux ci runner); validated locally, linux gap tracked in RECOVERY.md"]
 fn auto_surfaces_upx_unpacked_image_matching_upx_d_reference() {
     let Some(cc): Option<&'static str> = compiler() else {
         println!("SKIP: no C compiler (gcc/clang/cc) on PATH");
@@ -159,6 +167,156 @@ fn auto_surfaces_upx_unpacked_image_matching_upx_d_reference() {
     );
 
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+fn write_go_source(dir: &Path) {
+    let marker: String = String::from_utf8(KNOWN_MARKER.to_vec()).expect("ascii marker");
+    let program: String = format!(
+        "package main\n\nimport \"fmt\"\n\nconst marker = \"{marker}\"\n\nfunc main() {{ \
+         fmt.Println(marker) }}\n"
+    );
+    std::fs::write(dir.join("main.go"), program).expect("write go source");
+    std::fs::write(dir.join("go.mod"), "module knownplaintext\n\ngo 1.21\n").expect("write go.mod");
+}
+
+fn build_packed_elf(tmp: &Path) -> Option<(Vec<u8>, Vec<u8>)> {
+    if !tool_available("go", "version") {
+        println!("SKIP: go toolchain not on PATH (needed to build an ELF host-independently)");
+        return None;
+    }
+    if !tool_available("upx", "--version") {
+        println!("SKIP: upx CLI not on PATH");
+        return None;
+    }
+    write_go_source(tmp);
+    let exe: PathBuf = tmp.join("known_plaintext.elf");
+    let build: std::process::Output = Command::new("go")
+        .current_dir(tmp)
+        .args(["build", "-trimpath", "-o"])
+        .arg(&exe)
+        .arg(".")
+        .env("GOOS", "linux")
+        .env("GOARCH", "amd64")
+        .env("CGO_ENABLED", "0")
+        .output()
+        .expect("invoke go build");
+    if !build.status.success() {
+        println!(
+            "SKIP: go build failed: {}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        return None;
+    }
+
+    let packed: PathBuf = tmp.join("packed.elf");
+    std::fs::copy(&exe, &packed).expect("copy to packed path");
+    let pack: std::process::Output = Command::new("upx")
+        .arg("--best")
+        .arg("-f")
+        .arg(packed.to_str().expect("path utf8"))
+        .output()
+        .expect("invoke upx pack");
+    if !pack.status.success() {
+        println!(
+            "SKIP: upx pack failed: {}",
+            String::from_utf8_lossy(&pack.stderr)
+        );
+        return None;
+    }
+
+    let reference: PathBuf = tmp.join("ref_unpacked.elf");
+    let unpack: std::process::Output = Command::new("upx")
+        .arg("-d")
+        .arg("-o")
+        .arg(reference.to_str().expect("path utf8"))
+        .arg("-f")
+        .arg(packed.to_str().expect("path utf8"))
+        .output()
+        .expect("invoke upx -d");
+    assert!(
+        unpack.status.success(),
+        "upx -d reference must succeed: {}",
+        String::from_utf8_lossy(&unpack.stderr)
+    );
+    Some((
+        std::fs::read(&packed).expect("read packed elf"),
+        std::fs::read(&reference).expect("read upx -d reference"),
+    ))
+}
+
+#[test]
+fn auto_surfaces_upx_unpacked_elf_byte_identical_to_upx_d_reference() {
+    let scratch: ScratchDir =
+        ScratchDir::create("disrobe-auto-unpack-elf").expect("create scratch directory");
+    let tmp: &Path = scratch.path();
+    let Some((packed_bytes, reference)): Option<(Vec<u8>, Vec<u8>)> = build_packed_elf(tmp) else {
+        return;
+    };
+
+    let children: Vec<ChildArtifact> = run_pass(&packed_bytes);
+    let manifest: &ChildArtifact = children
+        .iter()
+        .find(|c: &&ChildArtifact| c.handle.relative_path == "packer-unpack.manifest.json")
+        .expect("auto must emit the packer-unpack manifest sidecar");
+    let manifest_json: serde_json::Value =
+        serde_json::from_slice(&manifest.bytes).expect("manifest is valid json");
+    assert_eq!(
+        manifest_json["packer"].as_str(),
+        Some("upx"),
+        "auto must detect UPX on the real packed ELF: {manifest_json}"
+    );
+
+    let recovered: &[u8] = recovered_image(&children).expect("auto must surface a recovered image");
+    assert!(
+        contains(recovered, KNOWN_MARKER),
+        "surfaced unpacked ELF must contain the original known-plaintext marker"
+    );
+    assert_eq!(
+        recovered.len(),
+        reference.len(),
+        "recovered ELF length must equal the upx -d reference"
+    );
+    assert!(
+        recovered == reference.as_slice(),
+        "recovered ELF must be byte-identical to the upx -d reference; first difference at {:?}",
+        recovered
+            .iter()
+            .zip(reference.iter())
+            .position(|(a, b): (&u8, &u8)| a != b)
+    );
+
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn corrupting_one_compressed_byte_stops_the_elf_recovery() {
+    let scratch: ScratchDir =
+        ScratchDir::create("disrobe-auto-unpack-elf-mutate").expect("create scratch directory");
+    let tmp: &Path = scratch.path();
+    let Some((packed_bytes, reference)): Option<(Vec<u8>, Vec<u8>)> = build_packed_elf(tmp) else {
+        return;
+    };
+
+    let mut mutated: Vec<u8> = packed_bytes.clone();
+    let victim: usize = mutated.len() / 2;
+    mutated[victim] ^= 0xff;
+    let recovered_is_reference: bool = try_run_pass(&mutated)
+        .as_deref()
+        .and_then(recovered_image)
+        .is_some_and(|bytes: &[u8]| bytes == reference.as_slice());
+    assert!(
+        !recovered_is_reference,
+        "a corrupted compressed byte must not still produce the exact upx -d reference image"
+    );
+
+    let clean: Vec<ChildArtifact> = run_pass(&packed_bytes);
+    assert_eq!(
+        recovered_image(&clean),
+        Some(reference.as_slice()),
+        "the unmutated sample must still recover byte-identically (control)"
+    );
+
+    let _ = std::fs::remove_dir_all(tmp);
 }
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
