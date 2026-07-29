@@ -5,13 +5,17 @@
     clippy::missing_panics_doc
 )]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use disrobe_pass_dotnet::decompile::{DecompiledAssembly, decompile_assembly};
 use disrobe_pass_dotnet::signature::{TypeSig, element_type, parse_local_sig};
 use disrobe_pass_dotnet::structurize::StructuredMethod;
 
 const EDGECASES_BASELINE_REL: &str = "../../corpus/dotnet/megafile/EdgeCases.baseline.dll";
+const CORPUS_ROOT_REL: &str = "../../corpus/dotnet";
+const UNRECOVERED_EXPRESSION: &str = "__unrecovered_expression";
+const STACK_UNDERFLOW: &str = "__stack_underflow";
+const STACK_UNDERFLOW_CEILING: usize = 87;
 
 fn load(rel: &str) -> Vec<u8> {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -36,6 +40,97 @@ fn method_by_signature<'a>(
             .next_back()
             .is_some_and(|l: &str| l.contains(needle))
     })
+}
+
+fn collect_images(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path: PathBuf = entry.path();
+        if path.is_dir() {
+            collect_images(&path, out);
+        } else if path
+            .extension()
+            .and_then(|e: &std::ffi::OsStr| e.to_str())
+            .is_some_and(|e: &str| e.eq_ignore_ascii_case("dll") || e.eq_ignore_ascii_case("exe"))
+        {
+            out.push(path);
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct PlaceholderSweep {
+    assemblies: usize,
+    methods: usize,
+    depth_capped: Vec<String>,
+    underflowed: Vec<String>,
+}
+
+fn sweep_placeholders() -> PlaceholderSweep {
+    let mut images: Vec<PathBuf> = Vec::new();
+    let mut root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    root.push(CORPUS_ROOT_REL);
+    collect_images(&root, &mut images);
+    images.sort();
+
+    let mut sweep: PlaceholderSweep = PlaceholderSweep::default();
+    for image in &images {
+        let Ok(bytes) = std::fs::read(image) else {
+            continue;
+        };
+        let Ok(asm) = decompile_assembly(&bytes) else {
+            continue;
+        };
+        sweep.assemblies += 1;
+        sweep.methods += asm.methods.len();
+        let name: &str = image
+            .file_name()
+            .and_then(|n: &std::ffi::OsStr| n.to_str())
+            .unwrap_or("<unnamed>");
+        for m in &asm.methods {
+            let signature: &str = m.signature.lines().next_back().unwrap_or("").trim();
+            if m.body.contains(UNRECOVERED_EXPRESSION) {
+                sweep.depth_capped.push(format!("{name} :: {signature}"));
+            }
+            if m.body.contains(STACK_UNDERFLOW) {
+                sweep.underflowed.push(format!("{name} :: {signature}"));
+            }
+        }
+    }
+    sweep
+}
+
+#[test]
+fn no_recovered_body_falls_back_to_a_placeholder() {
+    let sweep: PlaceholderSweep = sweep_placeholders();
+    assert!(
+        sweep.assemblies >= 30 && sweep.methods >= 3000,
+        "the sweep must actually reach the corpus, otherwise it asserts nothing; \
+         reached {} assemblies / {} methods",
+        sweep.assemblies,
+        sweep.methods
+    );
+    assert!(
+        sweep.depth_capped.is_empty(),
+        "{} of {} recovered bodies across {} assemblies emit `{UNRECOVERED_EXPRESSION}`; \
+         an expression that exceeded the depth cap is lost output, not recovered source: {:#?}",
+        sweep.depth_capped.len(),
+        sweep.methods,
+        sweep.assemblies,
+        sweep.depth_capped
+    );
+    assert!(
+        sweep.underflowed.len() <= STACK_UNDERFLOW_CEILING,
+        "`{STACK_UNDERFLOW}` spread to {} of {} recovered bodies across {} assemblies \
+         (ceiling {STACK_UNDERFLOW_CEILING}); each one is an operand the stack model failed to \
+         reconstruct: {:#?}",
+        sweep.underflowed.len(),
+        sweep.methods,
+        sweep.assemblies,
+        sweep.underflowed
+    );
 }
 
 #[test]

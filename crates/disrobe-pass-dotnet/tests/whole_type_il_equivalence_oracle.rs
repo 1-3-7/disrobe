@@ -11,6 +11,7 @@ const NAMESPACE: &str = "Sample";
 #[derive(Debug, Clone, Copy)]
 struct Target {
     dll: &'static str,
+    origin_namespace: &'static str,
     type_name: &'static str,
     is_static: bool,
 }
@@ -18,52 +19,68 @@ struct Target {
 const TARGETS: &[Target] = &[
     Target {
         dll: "../../corpus/dotnet/constructs/Constructs.dll",
+        origin_namespace: NAMESPACE,
         type_name: "Constructs",
         is_static: true,
     },
     Target {
         dll: "../../corpus/dotnet/shapes/Shapes.dll",
+        origin_namespace: NAMESPACE,
         type_name: "Shapes",
         is_static: false,
     },
     Target {
         dll: "../../corpus/dotnet/guards/Guards.dll",
+        origin_namespace: NAMESPACE,
         type_name: "Guards",
         is_static: false,
     },
     Target {
         dll: "../../corpus/dotnet/ranges/Ranges.dll",
+        origin_namespace: NAMESPACE,
         type_name: "Ranges",
         is_static: false,
     },
     Target {
         dll: "../../corpus/dotnet/patterns/Patterns.dll",
+        origin_namespace: NAMESPACE,
         type_name: "Patterns",
         is_static: false,
     },
     Target {
         dll: "../../corpus/dotnet/typepat/TypeMatch.dll",
+        origin_namespace: NAMESPACE,
         type_name: "TypeMatch",
         is_static: false,
     },
     Target {
         dll: "../../corpus/dotnet/proppat/PropMatch.dll",
+        origin_namespace: NAMESPACE,
         type_name: "PropMatch",
         is_static: false,
     },
     Target {
         dll: "../../corpus/dotnet/typerel/TypeRel.dll",
+        origin_namespace: NAMESPACE,
         type_name: "TypeRel",
         is_static: false,
     },
     Target {
         dll: "../../corpus/dotnet/listpat/ListMatch.dll",
+        origin_namespace: NAMESPACE,
         type_name: "ListMatch",
         is_static: false,
     },
     Target {
         dll: "../../corpus/dotnet/branches/Branches.dll",
+        origin_namespace: NAMESPACE,
         type_name: "Branches",
+        is_static: false,
+    },
+    Target {
+        dll: "../../corpus/dotnet/megafile/EdgeCases.baseline.dll",
+        origin_namespace: "EdgeCases",
+        type_name: "Cat",
         is_static: false,
     },
 ];
@@ -219,32 +236,22 @@ fn compile_whole_type(dir: &Path, src: &str, type_name: &str) -> (Vec<String>, O
     (errors, produced)
 }
 
-fn ilspy_il(dll: &Path, type_name: &str) -> String {
+fn ilspy_il(dll: &Path, namespace: &str, type_name: &str) -> String {
     let out: std::process::Output = Command::new("ilspycmd")
         .env("DOTNET_ROLL_FORWARD", "LatestMajor")
         .args(["-il", "-t"])
-        .arg(format!("{NAMESPACE}.{type_name}"))
+        .arg(format!("{namespace}.{type_name}"))
         .arg(dll)
         .output()
         .expect("ilspycmd");
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+const TARGET_PREFIX: &str = "L#";
+const OFF_BODY_PREFIX: &str = "X#";
+
 fn normalize_op(line: &str) -> String {
-    let mut out: String = String::new();
-    let mut rest: &str = line;
-    while let Some(pos) = rest.find("IL_") {
-        out.push_str(&rest[..pos]);
-        let after: &str = &rest[pos..];
-        let hex_len: usize = after["IL_".len()..]
-            .bytes()
-            .take_while(|b: &u8| b.is_ascii_hexdigit())
-            .count();
-        out.push('L');
-        rest = &after["IL_".len() + hex_len..];
-    }
-    out.push_str(rest);
-    let mut normalized: String = out;
+    let mut normalized: String = line.to_owned();
     for pat in ["'<>9__", "'<>9'", ">b__", "'<>c'", "'<>c__"] {
         if normalized.contains(pat) {
             normalized = mask_generated_idents(&normalized);
@@ -255,6 +262,66 @@ fn normalize_op(line: &str) -> String {
         .split_whitespace()
         .collect::<Vec<&str>>()
         .join(" ")
+}
+
+fn branch_target_name(
+    offset: u32,
+    ordinals: &BTreeMap<u32, usize>,
+    off_body: &mut Vec<u32>,
+) -> String {
+    if let Some(index) = ordinals.get(&offset) {
+        return format!("{TARGET_PREFIX}{index}");
+    }
+    let slot: usize = off_body
+        .iter()
+        .position(|known: &u32| *known == offset)
+        .unwrap_or(off_body.len());
+    if slot == off_body.len() {
+        off_body.push(offset);
+    }
+    format!("{OFF_BODY_PREFIX}{slot}")
+}
+
+fn rewrite_branch_targets(
+    line: &str,
+    ordinals: &BTreeMap<u32, usize>,
+    off_body: &mut Vec<u32>,
+) -> String {
+    let mut out: String = String::new();
+    let mut rest: &str = line;
+    while let Some(pos) = rest.find("IL_") {
+        out.push_str(&rest[..pos]);
+        let after: &str = &rest[pos + "IL_".len()..];
+        let hex_len: usize = after
+            .bytes()
+            .take_while(|b: &u8| b.is_ascii_hexdigit())
+            .count();
+        let hex: &str = &after[..hex_len];
+        if let Ok(offset) = u32::from_str_radix(hex, 16) {
+            out.push_str(&branch_target_name(offset, ordinals, off_body));
+        } else {
+            out.push_str("IL_");
+            out.push_str(hex);
+        }
+        rest = &after[hex_len..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn finalize_method_ops(instructions: &[(u32, String)]) -> Vec<String> {
+    let ordinals: BTreeMap<u32, usize> = instructions
+        .iter()
+        .enumerate()
+        .map(|(index, (offset, _)): (usize, &(u32, String))| (*offset, index))
+        .collect();
+    let mut off_body: Vec<u32> = Vec::new();
+    instructions
+        .iter()
+        .map(|(_, text): &(u32, String)| {
+            normalize_op(&rewrite_branch_targets(text, &ordinals, &mut off_body))
+        })
+        .collect()
 }
 
 fn mask_generated_idents(line: &str) -> String {
@@ -284,7 +351,7 @@ fn mask_generated_idents(line: &str) -> String {
 
 fn method_il_ops(il: &str, method: &str, type_name: &str) -> Option<Vec<String>> {
     let mut in_method: bool = false;
-    let mut ops: Vec<String> = Vec::new();
+    let mut ops: Vec<(u32, String)> = Vec::new();
     let needle_open: String = format!(" {method} (");
     let needle_open_tight: String = format!(" {method}(");
     let needle_close: String = format!("end of method {type_name}::{method}");
@@ -301,11 +368,11 @@ fn method_il_ops(il: &str, method: &str, type_name: &str) -> Option<Vec<String>>
             in_method = true;
             ops.clear();
         }
-        if in_method && let Some(rest) = il_instruction(trimmed) {
-            ops.push(normalize_op(rest));
+        if in_method && let Some((offset, rest)) = il_instruction(trimmed) {
+            ops.push((offset, rest.to_owned()));
         }
         if in_method && line.contains(&needle_close) {
-            return Some(ops);
+            return Some(finalize_method_ops(&ops));
         }
     }
     None
@@ -318,13 +385,11 @@ fn looks_like_method_header(line: &str, method: &str) -> bool {
     after.trim_start().starts_with('(')
 }
 
-fn il_instruction(trimmed: &str) -> Option<&str> {
-    if !trimmed.starts_with("IL_") {
-        return None;
-    }
-    let after_label: &str = trimmed.split_once(':').map(|(_, r): (&str, &str)| r)?;
+fn il_instruction(trimmed: &str) -> Option<(u32, &str)> {
+    let (label, after_label): (&str, &str) = trimmed.split_once(':')?;
+    let offset: u32 = u32::from_str_radix(label.strip_prefix("IL_")?, 16).ok()?;
     let op: &str = after_label.trim_start();
-    (!op.is_empty()).then_some(op)
+    (!op.is_empty()).then_some((offset, op))
 }
 
 struct Outcome {
@@ -333,10 +398,15 @@ struct Outcome {
     equivalent: Vec<String>,
     mismatched: Vec<String>,
     missing: Vec<String>,
+    branching: Vec<String>,
 }
 
 fn qualify(target: Target, method: &str) -> String {
     format!("{}.{method}", target.type_name)
+}
+
+fn carries_branch_target(ops: &[String]) -> bool {
+    ops.iter().any(|op: &String| op.contains(TARGET_PREFIX))
 }
 
 fn run_target(target: Target) -> Outcome {
@@ -366,9 +436,10 @@ fn run_target(target: Target) -> Outcome {
     let mut equivalent: Vec<String> = Vec::new();
     let mut mismatched: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
+    let mut branching: Vec<String> = Vec::new();
     if let Some(recompiled) = produced.as_ref() {
-        let orig_il: String = ilspy_il(&dll_path, target.type_name);
-        let recomp_il: String = ilspy_il(recompiled, target.type_name);
+        let orig_il: String = ilspy_il(&dll_path, target.origin_namespace, target.type_name);
+        let recomp_il: String = ilspy_il(recompiled, NAMESPACE, target.type_name);
         let orig_ops: BTreeMap<String, Vec<String>> = methods
             .iter()
             .filter_map(|m: &UserMethod| {
@@ -379,7 +450,12 @@ fn run_target(target: Target) -> Outcome {
         for m in &methods {
             let recomp: Option<Vec<String>> = method_il_ops(&recomp_il, &m.name, target.type_name);
             match (orig_ops.get(&m.name), recomp) {
-                (Some(o), Some(r)) if *o == r => equivalent.push(qualify(target, &m.name)),
+                (Some(o), Some(r)) if *o == r => {
+                    if carries_branch_target(o) {
+                        branching.push(qualify(target, &m.name));
+                    }
+                    equivalent.push(qualify(target, &m.name));
+                }
                 (Some(_), Some(_)) => mismatched.push(qualify(target, &m.name)),
                 _ => missing.push(qualify(target, &m.name)),
             }
@@ -391,6 +467,7 @@ fn run_target(target: Target) -> Outcome {
         equivalent,
         mismatched,
         missing,
+        branching,
     }
 }
 
@@ -481,19 +558,22 @@ fn il_method_blocks(il: &str, type_name: &str) -> BTreeMap<String, Vec<Vec<Strin
     let mut blocks: BTreeMap<String, Vec<Vec<String>>> = BTreeMap::new();
     let close_prefix: String = format!("end of method {type_name}::");
     let mut in_method: bool = false;
-    let mut ops: Vec<String> = Vec::new();
+    let mut ops: Vec<(u32, String)> = Vec::new();
     for line in il.lines() {
         let trimmed: &str = line.trim_start();
         if trimmed.starts_with(".method") {
             in_method = true;
             ops.clear();
         }
-        if in_method && let Some(rest) = il_instruction(trimmed) {
-            ops.push(normalize_op(rest));
+        if in_method && let Some((offset, rest)) = il_instruction(trimmed) {
+            ops.push((offset, rest.to_owned()));
         }
         if in_method && let Some(pos) = line.find(&close_prefix) {
             let name: &str = line[pos + close_prefix.len()..].trim();
-            blocks.entry(name.to_owned()).or_default().push(ops.clone());
+            blocks
+                .entry(name.to_owned())
+                .or_default()
+                .push(finalize_method_ops(&ops));
             in_method = false;
             ops.clear();
         }
@@ -515,6 +595,7 @@ fn run_record_target(target: RecordTarget) -> Outcome {
             equivalent: Vec::new(),
             mismatched: Vec::new(),
             missing: vec![target.type_name.to_owned()],
+            branching: Vec::new(),
         };
     };
 
@@ -530,9 +611,10 @@ fn run_record_target(target: RecordTarget) -> Outcome {
     let mut equivalent: Vec<String> = Vec::new();
     let mut mismatched: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
+    let mut branching: Vec<String> = Vec::new();
     if let Some(recompiled) = produced.as_ref() {
-        let orig_il: String = ilspy_il(&dll_path, target.type_name);
-        let recomp_il: String = ilspy_il(recompiled, target.type_name);
+        let orig_il: String = ilspy_il(&dll_path, NAMESPACE, target.type_name);
+        let recomp_il: String = ilspy_il(recompiled, NAMESPACE, target.type_name);
         let orig_blocks: BTreeMap<String, Vec<Vec<String>>> =
             il_method_blocks(&orig_il, target.type_name);
         let recomp_blocks: BTreeMap<String, Vec<Vec<String>>> =
@@ -541,6 +623,12 @@ fn run_record_target(target: RecordTarget) -> Outcome {
             let qualified: String = format!("{}.{name}", target.type_name);
             match recomp_blocks.get(name) {
                 Some(recomp_ops) if multiset_eq(orig_ops, recomp_ops) => {
+                    if orig_ops
+                        .iter()
+                        .any(|ops: &Vec<String>| carries_branch_target(ops))
+                    {
+                        branching.push(qualified.clone());
+                    }
                     equivalent.push(qualified);
                 }
                 Some(_) => mismatched.push(qualified),
@@ -554,6 +642,7 @@ fn run_record_target(target: RecordTarget) -> Outcome {
         equivalent,
         mismatched,
         missing,
+        branching,
     }
 }
 
@@ -603,6 +692,7 @@ fn run_record_method_target(target: RecordMethodTarget) -> Outcome {
             equivalent: Vec::new(),
             mismatched: Vec::new(),
             missing: vec![target.class_type.to_owned()],
+            branching: Vec::new(),
         };
     };
     let methods: Vec<UserMethod> = asm
@@ -628,9 +718,10 @@ fn run_record_method_target(target: RecordMethodTarget) -> Outcome {
     let mut equivalent: Vec<String> = Vec::new();
     let mut mismatched: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
+    let mut branching: Vec<String> = Vec::new();
     if let Some(recompiled) = produced.as_ref() {
-        let orig_il: String = ilspy_il(&dll_path, target.class_type);
-        let recomp_il: String = ilspy_il(recompiled, target.class_type);
+        let orig_il: String = ilspy_il(&dll_path, NAMESPACE, target.class_type);
+        let recomp_il: String = ilspy_il(recompiled, NAMESPACE, target.class_type);
         let orig_ops: BTreeMap<String, Vec<String>> = methods
             .iter()
             .filter_map(|m: &UserMethod| {
@@ -642,7 +733,12 @@ fn run_record_method_target(target: RecordMethodTarget) -> Outcome {
             let qualified: String = format!("{}.{}", target.class_type, m.name);
             let recomp: Option<Vec<String>> = method_il_ops(&recomp_il, &m.name, target.class_type);
             match (orig_ops.get(&m.name), recomp) {
-                (Some(o), Some(r)) if *o == r => equivalent.push(qualified),
+                (Some(o), Some(r)) if *o == r => {
+                    if carries_branch_target(o) {
+                        branching.push(qualified.clone());
+                    }
+                    equivalent.push(qualified);
+                }
                 (Some(_), Some(_)) => mismatched.push(qualified),
                 _ => missing.push(qualified),
             }
@@ -654,6 +750,7 @@ fn run_record_method_target(target: RecordMethodTarget) -> Outcome {
         equivalent,
         mismatched,
         missing,
+        branching,
     }
 }
 
@@ -690,7 +787,84 @@ fn run_oracle() -> Option<Vec<Outcome>> {
     Some(outcomes)
 }
 
-const IL_EQUIVALENCE_FLOOR: usize = 47;
+fn probe_il(back_edge: &str, arm_order: [&str; 3]) -> String {
+    let [first, second, third]: [&str; 3] = arm_order;
+    format!(
+        "\t.method public hidebysig static \n\t\tint32 Probe (\n\t\t\tint32 n\n\t\t) cil managed \n\t{{\n\t\t.maxstack 2\n\t\t.locals init (\n\t\t\t[0] int32 i\n\t\t)\n\n\t\tIL_0000: ldc.i4.0\n\t\tIL_0001: stloc.0\n\t\tIL_0002: br.s IL_0008\n\t\tIL_0004: ldloc.0\n\t\tIL_0005: ldc.i4.1\n\t\tIL_0006: add\n\t\tIL_0007: stloc.0\n\t\tIL_0008: ldloc.0\n\t\tIL_0009: ldarg.0\n\t\tIL_000a: blt.s {back_edge}\n\t\tIL_000c: ldarg.0\n\t\tIL_000d: switch ({first}, {second}, {third})\n\t\tIL_001e: ldloc.0\n\t\tIL_001f: ret\n\t}} // end of method Probe::Probe\n"
+    )
+}
+
+fn erase_branch_targets(ops: &[String]) -> Vec<String> {
+    ops.iter()
+        .map(|op: &String| {
+            let mut out: String = String::new();
+            let mut rest: &str = op.as_str();
+            while let Some(pos) = rest.find(TARGET_PREFIX) {
+                out.push_str(&rest[..pos]);
+                out.push('L');
+                let after: &str = &rest[pos + TARGET_PREFIX.len()..];
+                let digits: usize = after
+                    .bytes()
+                    .take_while(|b: &u8| b.is_ascii_digit())
+                    .count();
+                rest = &after[digits..];
+            }
+            out.push_str(rest);
+            out
+        })
+        .collect()
+}
+
+#[test]
+fn branch_target_identity_survives_normalization() {
+    let inner: Vec<String> = method_il_ops(
+        &probe_il("IL_0004", ["IL_0000", "IL_0004", "IL_001e"]),
+        "Probe",
+        "Probe",
+    )
+    .expect("inner-back-edge probe parses");
+    let outer: Vec<String> = method_il_ops(
+        &probe_il("IL_0000", ["IL_0000", "IL_0004", "IL_001e"]),
+        "Probe",
+        "Probe",
+    )
+    .expect("outer-back-edge probe parses");
+    let permuted: Vec<String> = method_il_ops(
+        &probe_il("IL_0004", ["IL_0004", "IL_0000", "IL_001e"]),
+        "Probe",
+        "Probe",
+    )
+    .expect("permuted-switch probe parses");
+
+    for other in [&outer, &permuted] {
+        assert_eq!(
+            erase_branch_targets(&inner),
+            erase_branch_targets(other),
+            "these bodies differ only in branch targets, so collapsing every target to one token makes them identical, which is what a target-erasing comparison scores as equivalent"
+        );
+    }
+    assert_ne!(
+        inner, outer,
+        "a loop back-edge that jumps to a different block must not compare equal"
+    );
+    assert_ne!(
+        inner, permuted,
+        "a switch whose arms are permuted must not compare equal"
+    );
+    assert!(
+        inner.iter().any(|op: &String| op.contains("blt.s L#3")),
+        "the back-edge must resolve to the ordinal of the instruction it targets; got {inner:?}"
+    );
+    assert!(
+        inner
+            .iter()
+            .any(|op: &String| op.contains("switch (L#0, L#3, L#12)")),
+        "every switch arm must keep its own target identity; got {inner:?}"
+    );
+}
+
+const IL_EQUIVALENCE_FLOOR: usize = 66;
+const IL_BRANCHING_FLOOR: usize = 45;
 
 #[test]
 fn whole_type_recompiles_to_equivalent_il() {
@@ -701,6 +875,7 @@ fn whole_type_recompiles_to_equivalent_il() {
     let mut equivalent: Vec<String> = Vec::new();
     let mut mismatched: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
+    let mut branching: Vec<String> = Vec::new();
     for outcome in &outcomes {
         assert!(
             outcome.compiled,
@@ -710,6 +885,7 @@ fn whole_type_recompiles_to_equivalent_il() {
         equivalent.extend(outcome.equivalent.iter().cloned());
         mismatched.extend(outcome.mismatched.iter().cloned());
         missing.extend(outcome.missing.iter().cloned());
+        branching.extend(outcome.branching.iter().cloned());
     }
     eprintln!(
         "WHOLE-TYPE IL EQUIVALENCE ({} types in {NAMESPACE}): {} methods IL-equivalent after standalone csc recompile + ilspycmd compare against the original assembly",
@@ -717,6 +893,10 @@ fn whole_type_recompiles_to_equivalent_il() {
         equivalent.len()
     );
     eprintln!("  equivalent: {equivalent:?}");
+    eprintln!(
+        "  of those, {} carry at least one branch or switch target whose destination block had to match: {branching:?}",
+        branching.len()
+    );
     if !mismatched.is_empty() {
         eprintln!("  IL-mismatched (recovered shape differs): {mismatched:?}");
     }
@@ -728,5 +908,13 @@ fn whole_type_recompiles_to_equivalent_il() {
         "whole-type IL-equivalence regressed below the floor: {}/{} (floor {IL_EQUIVALENCE_FLOOR}). mismatched={mismatched:?} missing={missing:?}",
         equivalent.len(),
         equivalent.len() + mismatched.len() + missing.len(),
+    );
+    assert!(
+        branching.len() >= IL_BRANCHING_FLOOR,
+        "only {} of the {} equivalent methods compared a real branch target (floor {IL_BRANCHING_FLOOR}); \
+         if this collapses, label normalization has stopped preserving branch destinations and the \
+         comparison no longer separates two methods that differ only in where they jump",
+        branching.len(),
+        equivalent.len(),
     );
 }
