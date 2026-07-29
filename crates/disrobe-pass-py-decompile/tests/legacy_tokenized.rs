@@ -26,9 +26,10 @@ const SOURCE_DIR: &str = "../../corpus/python/decompile/legacy/source";
 
 const TOKEN_MATCH_FLOOR_1X: usize = 25;
 const TOKEN_MATCH_FLOOR_2X: usize = 80;
-const TOKEN_MATCH_FLOOR_3X: usize = 67;
+const TOKEN_MATCH_FLOOR_3X: usize = 66;
 
 const SOURCE_GRADED_FIXTURES: &[&str] = &[
+    "binary_ops.3.11",
     "test_del.1.5",
     "test_del.2.2",
     "test_slices.1.5",
@@ -161,7 +162,12 @@ fn legacy_decode_and_token_equivalence() {
             counts.token_match += 1;
         } else {
             counts.token_diff += 1;
-            diff_keys.push(format!("{era} {fixture_key}"));
+            let graded_against: &str = if source_graded {
+                "original source"
+            } else {
+                "golden"
+            };
+            diff_keys.push(format!("{era} {fixture_key} (vs {graded_against})"));
         }
     }
     diff_keys.sort();
@@ -206,7 +212,9 @@ fn legacy_decode_and_token_equivalence() {
     );
     assert!(
         match_3x >= TOKEN_MATCH_FLOOR_3X,
-        "3.x token-equivalence regressed: {match_3x} < floor {TOKEN_MATCH_FLOOR_3X}"
+        "3.x token-equivalence regressed: {match_3x} < floor {TOKEN_MATCH_FLOOR_3X}. The \
+         SOURCE_GRADED_FIXTURES entries are compared against the original .py, so a diff there is \
+         a real difference from the source and never a reason to rewrite the reference"
     );
 }
 

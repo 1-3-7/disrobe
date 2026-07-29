@@ -527,16 +527,27 @@ fn write_summary(records: &[Record], path: &Path) {
         };
         buf.push_str(&format!("  {k:24} {n:>4}  ({pct:>5.1}%)\n"));
     }
-    let recovered: usize =
-        totals.get("Perfect").copied().unwrap_or(0) + totals.get("Semantic").copied().unwrap_or(0);
-    let pct_recovered: f64 = if records.is_empty() {
+    let graded: Vec<&Record> = records.iter().filter(|r| is_graded(r)).collect();
+    let recovered: usize = graded
+        .iter()
+        .filter(|r| matches!(r.verdict, MetricVerdict::Perfect | MetricVerdict::Semantic))
+        .count();
+    let pct_recovered: f64 = if graded.is_empty() {
         0.0
     } else {
-        (recovered as f64 / records.len() as f64) * 100.0
+        (recovered as f64 / graded.len() as f64) * 100.0
     };
     buf.push_str(&format!(
-        "\nRECOVERED CORRECT (Perfect+Semantic): {recovered}/{} ({pct_recovered:.1}%)\n\n",
-        records.len()
+        "\nRECOVERED CORRECT (Perfect+Semantic): {recovered}/{} ({pct_recovered:.1}%)\n",
+        graded.len()
+    ));
+    buf.push_str(&format!(
+        "This is the graded figure and the gated one: the denominator is the {} committed \
+         fixtures whose pyc version is in {GRADED_PYC_VERSIONS:?}, so it does not move with what \
+         happens to be installed. The other {} fixture(s) target interpreters uv cannot provide \
+         and are reported but never counted.\n\n",
+        graded.len(),
+        records.len() - graded.len()
     ));
     buf.push_str("--- Per-version breakdown ---\n");
     for (ver, counts) in &by_version {
@@ -609,36 +620,54 @@ fn roundtrip_metric_edge_cases_bands() {
         "{pipeline_failures} pipeline failures detected (read/marshal/ast/emit broke); see TSV"
     );
 
-    let evaluated: usize = records
+    let graded: Vec<&Record> = records.iter().filter(|r| is_graded(r)).collect();
+    assert_eq!(
+        graded.len(),
+        GRADED_FIXTURE_COUNT,
+        "the graded set must stay a fixed {GRADED_FIXTURE_COUNT}-fixture denominator so the \
+         percentage means the same thing on every host; got {} fixtures whose pyc version is in \
+         {GRADED_PYC_VERSIONS:?} out of {} collected. Re-pin GRADED_FIXTURE_COUNT and the floor \
+         together when the corpus changes.",
+        graded.len(),
+        records.len()
+    );
+    let unavailable: Vec<&str> = graded
         .iter()
-        .filter(|r| !matches!(r.verdict, MetricVerdict::RecompilerUnavailable))
-        .count();
-    let recovered: usize = records
+        .filter(|r| matches!(r.verdict, MetricVerdict::RecompilerUnavailable))
+        .map(|r: &&Record| r.fixture.as_str())
+        .collect();
+    assert!(
+        unavailable.is_empty(),
+        "{} graded fixture(s) had no recompiler, which would silently shrink the denominator \
+         instead of failing: {}. Install the interpreters with `uv python install` and re-run.",
+        unavailable.len(),
+        unavailable.join(", ")
+    );
+    let recovered: usize = graded
         .iter()
         .filter(|r| matches!(r.verdict, MetricVerdict::Perfect | MetricVerdict::Semantic))
         .count();
-    let pct: f64 = if evaluated == 0 {
-        0.0
-    } else {
-        (recovered as f64 / evaluated as f64) * 100.0
-    };
-    if evaluated == 0 {
-        eprintln!(
-            "skip: no Python interpreter resolved for edge_cases recompile - whole-module recovery \
-             floor not enforced; pipeline integrity ({} records) still asserted",
-            records.len()
-        );
-    } else {
-        assert!(
-            pct >= WHOLE_MODULE_FLOOR_PCT,
-            "real whole-module recovery {pct:.1}% ({recovered}/{evaluated}) fell below honest floor \
-             {WHOLE_MODULE_FLOOR_PCT:.1}%; the edge_cases monolith round-trips this fraction. \
-             Ratchet WHOLE_MODULE_FLOOR_PCT up as the engine improves; never lower it. See TSV."
-        );
-    }
+    let pct: f64 = (recovered as f64 / GRADED_FIXTURE_COUNT as f64) * 100.0;
+    println!(
+        "graded whole-module recovery: {recovered}/{GRADED_FIXTURE_COUNT} ({pct:.1}%), floor \
+         {WHOLE_MODULE_FLOOR_PCT:.1}%"
+    );
+    assert!(
+        pct >= WHOLE_MODULE_FLOOR_PCT,
+        "whole-module recovery {pct:.1}% ({recovered}/{GRADED_FIXTURE_COUNT}) fell below the \
+         pinned floor {WHOLE_MODULE_FLOOR_PCT:.1}%; the edge_cases monolith round-trips this \
+         fraction. Ratchet WHOLE_MODULE_FLOOR_PCT up as the engine improves; never lower it. \
+         See TSV."
+    );
 }
 
-const WHOLE_MODULE_FLOOR_PCT: f64 = 51.0;
+const GRADED_PYC_VERSIONS: &[&str] = &["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14"];
+const GRADED_FIXTURE_COUNT: usize = 42;
+const WHOLE_MODULE_FLOOR_PCT: f64 = 57.1;
+
+fn is_graded(record: &Record) -> bool {
+    GRADED_PYC_VERSIONS.contains(&record.pyc_version.as_str())
+}
 
 const TSTRING_SNIPPET: &str = "x = 1\nw = 4\n\n\ndef f():\n    return t\"{x!r:>{w}} done\"\n";
 

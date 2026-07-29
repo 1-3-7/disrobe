@@ -14,7 +14,7 @@ use std::process::{Command, Stdio};
 const HARNESS: &str = "tests/harness/py_arbitrary_measure.py";
 const PINNED_MODULES: &str = "tests/harness/pinned_modules_314.txt";
 
-const OBJECT_PCT_FLOOR: f64 = 90.0;
+const OBJECT_PCT_FLOOR: f64 = 96.60;
 
 #[derive(Debug)]
 struct Measurement {
@@ -25,6 +25,7 @@ struct Measurement {
     module_pct: f64,
     sibling_collisions: u64,
     missing_from_lib: u64,
+    cpython_version: String,
 }
 
 fn manifest_dir() -> PathBuf {
@@ -159,6 +160,7 @@ fn parse_measurement(stdout: &str) -> Result<Measurement, String> {
         module_pct: get_f64("module_pct")?,
         sibling_collisions: get_u64("sibling_collisions")?,
         missing_from_lib: get_u64("missing_from_lib")?,
+        cpython_version: json_scalar(line, "cpython_version")?.to_owned(),
     })
 }
 
@@ -244,8 +246,9 @@ fn arbitrary_recompile_equivalence_gate() {
 
     let m: Measurement = parse_measurement(&stdout).expect("parse harness measurement");
     println!(
-        "measured: {}/{} code objects ({:.2}%) across {} modules; whole-module exact {:.2}%; \
-         sibling-count collisions {}; pinned modules absent from this Lib {}",
+        "measured on CPython {}: {}/{} code objects ({:.2}%) across {} modules; whole-module \
+         exact {:.2}%; sibling-count collisions {}; pinned modules absent from this Lib {}",
+        m.cpython_version,
         m.objects_ok,
         m.code_objects,
         m.object_pct,
@@ -271,10 +274,14 @@ fn arbitrary_recompile_equivalence_gate() {
     assert!(
         m.object_pct >= OBJECT_PCT_FLOOR,
         "per-code-object recompile-equivalence regressed: {:.2}% < floor {OBJECT_PCT_FLOOR}% \
-         ({}/{} objects on {} modules)",
+         ({}/{} objects on {} modules, CPython {}). The floor is pinned at the exact figure this \
+         corpus measures, so any drop is a real regression unless the stdlib sources themselves \
+         moved: if this run is on a different 3.14 patch release than the one the floor was pinned \
+         against, re-measure and re-pin rather than lowering the floor",
         m.object_pct,
         m.objects_ok,
         m.code_objects,
-        m.modules
+        m.modules,
+        m.cpython_version
     );
 }
