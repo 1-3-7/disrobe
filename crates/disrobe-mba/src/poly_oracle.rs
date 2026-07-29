@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 
 const MAX_MONOMIALS: usize = 4096;
 const MAX_MONOMIAL_DEGREE: u32 = 128;
+const MAX_CERTIFICATE_ATOMS: usize = 8;
 
 type Monomial = BTreeMap<u32, u32>;
 type Poly = BTreeMap<Monomial, u64>;
@@ -228,6 +229,50 @@ fn concrete_refutes(original: &Expr, candidate: &Expr, width: Width) -> bool {
     false
 }
 
+fn difference_monomials(
+    left: &Poly,
+    right: &Poly,
+    mask: u64,
+    atom_count: usize,
+) -> Option<Vec<(Vec<u32>, u128)>> {
+    let mut difference: Poly = left.clone();
+    for (monomial, coeff) in right {
+        accumulate(
+            &mut difference,
+            monomial.clone(),
+            coeff.wrapping_neg() & mask,
+            mask,
+        );
+    }
+    let mut rows: Vec<(Vec<u32>, u128)> = Vec::with_capacity(difference.len());
+    for (monomial, coeff) in difference {
+        let mut key: Vec<u32> = vec![0; atom_count];
+        for (atom, exponent) in monomial {
+            let axis: usize = usize::try_from(atom).ok()?;
+            *key.get_mut(axis)? = exponent;
+        }
+        rows.push((key, u128::from(coeff)));
+    }
+    Some(rows)
+}
+
+fn induces_zero_over_free_atoms(
+    left: &Poly,
+    right: &Poly,
+    width: Width,
+    atom_count: usize,
+) -> bool {
+    if atom_count == 0 || atom_count > MAX_CERTIFICATE_ATOMS {
+        return false;
+    }
+    let Some(rows): Option<Vec<(Vec<u32>, u128)>> =
+        difference_monomials(left, right, width.mask(), atom_count)
+    else {
+        return false;
+    };
+    crate::finite_diff::multivar_induces_zero(&rows, atom_count, width)
+}
+
 #[must_use]
 pub fn polynomial_identity_proves(original: &Expr, candidate: &Expr, width: Width) -> bool {
     if concrete_refutes(original, candidate, width) {
@@ -240,13 +285,16 @@ pub fn polynomial_identity_proves(original: &Expr, candidate: &Expr, width: Widt
     let Some(candidate_poly): Option<Poly> = normalize(candidate, width, &mut atoms) else {
         return false;
     };
-    original_poly == candidate_poly
+    if original_poly == candidate_poly {
+        return true;
+    }
+    induces_zero_over_free_atoms(&original_poly, &candidate_poly, width, atoms.registry.len())
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::polynomial_identity_proves;
+    use super::{AtomTable, Poly, normalize, polynomial_identity_proves};
     use crate::expr::{Expr, Width};
 
     fn var(index: u32) -> Expr {
@@ -427,17 +475,51 @@ mod tests {
         use crate::expr::equivalent_exhaustive;
         let mut state: u64 = 0xDEAD_BEEF_CAFE_1234;
         let mut proven: u32 = 0;
+        let mut certified: u32 = 0;
         for _ in 0..4000u32 {
             let original: Expr = random_expr(&mut state, 4);
             let candidate: Expr = random_expr(&mut state, 4);
-            if polynomial_identity_proves(&original, &candidate, Width::W8) {
+            let padded: Expr = Expr::add(original.clone(), vanishing_at_w8(&candidate));
+            for (left, right) in [
+                (&original, &candidate),
+                (&padded, &original),
+                (&padded, &candidate),
+            ] {
+                if !polynomial_identity_proves(left, right, Width::W8) {
+                    continue;
+                }
                 proven += 1;
+                if !normal_forms_match(left, right, Width::W8) {
+                    certified += 1;
+                }
                 assert!(
-                    equivalent_exhaustive(&original, &candidate, Width::W8, 2),
-                    "oracle accepted a non-equivalent pair at W8: {original:?} vs {candidate:?}",
+                    equivalent_exhaustive(left, right, Width::W8, 2),
+                    "oracle accepted a non-equivalent pair at W8: {left:?} vs {right:?}",
                 );
             }
         }
         assert!(proven > 0, "fuzz never exercised the accept path");
+        assert!(
+            certified > 0,
+            "fuzz never exercised the finite-difference certificate path, so it is unguarded"
+        );
+    }
+
+    fn vanishing_at_w8(atom: &Expr) -> Expr {
+        Expr::mul(
+            Expr::konst(0x80),
+            Expr::mul(atom.clone(), Expr::add(atom.clone(), Expr::konst(0xFF))),
+        )
+    }
+
+    fn normal_forms_match(original: &Expr, candidate: &Expr, width: Width) -> bool {
+        let mut atoms: AtomTable = AtomTable::default();
+        let Some(left): Option<Poly> = normalize(original, width, &mut atoms) else {
+            return false;
+        };
+        let Some(right): Option<Poly> = normalize(candidate, width, &mut atoms) else {
+            return false;
+        };
+        left == right
     }
 }

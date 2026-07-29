@@ -179,6 +179,7 @@ struct Row {
 #[test]
 fn corpus_reduces_or_survives_under_behavioral_and_smt_grading() {
     const REDUCE_FLOOR: usize = 22;
+    const PROVEN_FLOOR: usize = 28;
     let solver: Option<Solver> = detect_solver();
     match &solver {
         Some(found) => eprintln!(
@@ -194,10 +195,19 @@ fn corpus_reduces_or_survives_under_behavioral_and_smt_grading() {
     let mut rows: Vec<Row> = Vec::with_capacity(entries.len());
     let mut reduced: usize = 0;
     let mut survived: usize = 0;
+    let mut proven: usize = 0;
 
     for entry in &entries {
         let simplification: Simplification = simplify(&entry.e_obf, entry.width);
         let simplified: &Expr = &simplification.simplified;
+        if simplification.verification.is_proven() {
+            proven += 1;
+        }
+        assert!(
+            simplification.verification.is_proven() || !simplification.changed(),
+            "{}: a rewrite was emitted without an independently established proof",
+            entry.name
+        );
         let var_count: u32 = max_var(entry, simplified);
         let vectors: Vec<Vec<u64>> = input_vectors(var_count, entry.width);
 
@@ -287,6 +297,11 @@ fn corpus_reduces_or_survives_under_behavioral_and_smt_grading() {
     assert!(
         reduced >= REDUCE_FLOOR,
         "capability regression: only {reduced} of {} corpus pairs reduced to the source form, floor is {REDUCE_FLOOR}",
+        entries.len()
+    );
+    assert!(
+        proven >= PROVEN_FLOOR,
+        "capability regression: only {proven} of {} corpus pairs carry an independently established proof, floor is {PROVEN_FLOOR}",
         entries.len()
     );
 
