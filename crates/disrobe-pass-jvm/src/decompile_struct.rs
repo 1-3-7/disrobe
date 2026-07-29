@@ -9,6 +9,7 @@ use crate::classfile::{ClassFile, ConstantPoolEntry};
 const MAX_BLOCKS: usize = 16_384;
 const MAX_STRUCTURE_DEPTH: usize = 256;
 const MAX_STRUCTURE_WORK: usize = 200_000;
+const MAX_JOIN_CHAIN: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct BlockId(pub u32);
@@ -586,7 +587,8 @@ pub struct Structurer<'a> {
     loop_header_of: BTreeMap<BlockId, BlockId>,
     loop_exits: BTreeMap<BlockId, BlockId>,
     try_groups: Vec<GroupedTry>,
-    suppress_try_at: Option<BlockId>,
+    suppressed_spans: BTreeSet<(u32, u32)>,
+    handler_stops: BTreeSet<BlockId>,
     active_finally: Vec<BlockId>,
     loop_stack: Vec<LoopFrame>,
     labels_used: BTreeSet<u32>,
@@ -650,7 +652,8 @@ impl<'a> Structurer<'a> {
             loop_header_of,
             loop_exits,
             try_groups,
-            suppress_try_at: None,
+            suppressed_spans: BTreeSet::new(),
+            handler_stops: BTreeSet::new(),
             active_finally: Vec::new(),
             loop_stack: Vec::new(),
             labels_used: BTreeSet::new(),
@@ -697,7 +700,10 @@ impl<'a> Structurer<'a> {
         let pc: u32 = self.cfg.blocks[bid.0 as usize].start_pc;
         self.try_groups
             .iter()
-            .find(|g| g.try_start_pc == pc)
+            .filter(|g: &&GroupedTry| {
+                g.try_start_pc == pc && !self.suppressed_spans.contains(&(pc, g.try_end_pc))
+            })
+            .max_by_key(|g: &&GroupedTry| g.try_end_pc)
             .cloned()
     }
 
@@ -1205,6 +1211,86 @@ impl<'a> Structurer<'a> {
         matched.then_some(body.len())
     }
 
+    fn finally_inline_prefix(&self, chain: &FinallyChain, cont: BlockId) -> Option<usize> {
+        let body: Vec<Instruction> = self.finally_body_instructions(chain)?;
+        let cont_insns: &[Instruction] = self.block_instructions(cont);
+        let head: &[Instruction] = cont_insns.get(..body.len())?;
+        body.iter()
+            .zip(head.iter())
+            .all(|(a, b): (&Instruction, &Instruction)| {
+                a.opcode == b.opcode && a.operands == b.operands
+            })
+            .then_some(body.len())
+    }
+
+    fn continuation_joins(&self, after_try: Option<BlockId>) -> BTreeSet<BlockId> {
+        let mut joins: BTreeSet<BlockId> = BTreeSet::new();
+        let mut cur: Option<BlockId> = after_try;
+        while let Some(bid) = cur {
+            if self.visited.contains(&bid) || !joins.insert(bid) || joins.len() > MAX_JOIN_CHAIN {
+                break;
+            }
+            cur = follow_single_successor(&self.cfg.blocks[bid.0 as usize]);
+        }
+        joins
+    }
+
+    fn protected_exit_inline_sites(
+        &self,
+        chain: &FinallyChain,
+        finally_handler: BlockId,
+    ) -> Vec<BlockId> {
+        let handler_pc: u32 = self.cfg.blocks[finally_handler.0 as usize].start_pc;
+        let chain_blocks: BTreeSet<BlockId> = chain.blocks.iter().copied().collect();
+        let mut sites: Vec<BlockId> = Vec::new();
+        for region in &self.cfg.exception_regions {
+            if region.catch_type.is_some() || region.handler_pc != handler_pc {
+                continue;
+            }
+            let Some(&site): Option<&BlockId> = self.cfg.pc_to_block.get(&region.try_end_pc) else {
+                continue;
+            };
+            if chain_blocks.contains(&site) || sites.contains(&site) {
+                continue;
+            }
+            sites.push(site);
+        }
+        sites
+    }
+
+    fn unprotected_catch_inline_skip(
+        &self,
+        chain: &FinallyChain,
+        finally_handler: BlockId,
+        handler_bid: BlockId,
+    ) -> Option<usize> {
+        let handler_pc: u32 = self.cfg.blocks[finally_handler.0 as usize].start_pc;
+        let catch_pc: u32 = self.cfg.blocks[handler_bid.0 as usize].start_pc;
+        if self
+            .cfg
+            .exception_regions
+            .iter()
+            .any(|r: &ExceptionRegion| {
+                r.catch_type.is_none() && r.handler_pc == handler_pc && r.try_start_pc == catch_pc
+            })
+        {
+            return None;
+        }
+        let insns: &[Instruction] = self.block_instructions(handler_bid);
+        let exc_slot: u16 = astore_slot(insns.first()?)?;
+        if self.slot_total_uses(exc_slot) != 1 {
+            return None;
+        }
+        let body: Vec<Instruction> = self.finally_body_instructions(chain)?;
+        let head: &[Instruction] = insns.get(1..=body.len())?;
+        body.iter()
+            .zip(head.iter())
+            .all(|(a, b): (&Instruction, &Instruction)| {
+                a.opcode == b.opcode && a.operands == b.operands
+            })
+            .then_some(body.len() + 1)
+    }
+
     fn outer_loop_jump(&mut self, target: BlockId) -> Option<Region> {
         if self.loop_stack.len() < 2 {
             return None;
@@ -1377,7 +1463,7 @@ impl<'a> Structurer<'a> {
                 self.had_irreducible = true;
                 break;
             }
-            if Some(b) == stop {
+            if Some(b) == stop || self.handler_stops.contains(&b) {
                 break;
             }
             if let Some(jump) = self.outer_loop_jump(b) {
@@ -1388,9 +1474,7 @@ impl<'a> Structurer<'a> {
                 break;
             }
 
-            if self.suppress_try_at != Some(b)
-                && let Some(try_group) = self.try_group_at_block(b)
-            {
+            if let Some(try_group) = self.try_group_at_block(b) {
                 if let Some(twr) = self.try_with_resources_at(b, &try_group) {
                     seq.push(twr.region);
                     cur = twr.after;
@@ -1415,16 +1499,23 @@ impl<'a> Structurer<'a> {
                     .map(|(_, bid)| *bid);
                 let finally_chain: Option<FinallyChain> =
                     finally_handler.and_then(|bid| self.finally_handler_chain(bid));
+                if let Some(chain) = finally_chain.as_ref() {
+                    for &fb in &chain.blocks {
+                        self.visited.insert(fb);
+                    }
+                }
                 let redundant_finally: bool = finally_handler
                     .is_some_and(|h| self.active_finally.contains(&h))
                     && handler_block_ids
                         .iter()
                         .all(|(_, bid)| Some(*bid) == finally_handler);
                 if redundant_finally {
-                    let prev_suppress: Option<BlockId> = self.suppress_try_at;
-                    self.suppress_try_at = Some(b);
+                    let span: (u32, u32) = (try_group.try_start_pc, try_group.try_end_pc);
+                    let fresh_span: bool = self.suppressed_spans.insert(span);
                     let body_region: Region = self.structure_at(b, try_end_block);
-                    self.suppress_try_at = prev_suppress;
+                    if fresh_span {
+                        self.suppressed_spans.remove(&span);
+                    }
                     seq.push(body_region);
                     cur = try_end_block;
                     continue;
@@ -1437,8 +1528,8 @@ impl<'a> Structurer<'a> {
                 let handler_set: BTreeSet<BlockId> =
                     catch_handler_ids.iter().map(|(_, bid)| *bid).collect();
                 let end_is_handler: bool = try_end_block.is_some_and(|e| handler_set.contains(&e));
-                let prev_suppress: Option<BlockId> = self.suppress_try_at;
-                self.suppress_try_at = Some(b);
+                let span: (u32, u32) = (try_group.try_start_pc, try_group.try_end_pc);
+                let fresh_span: bool = self.suppressed_spans.insert(span);
                 let pushed_finally: bool = if let Some(h) = finally_handler {
                     self.active_finally.push(h);
                     true
@@ -1446,7 +1537,9 @@ impl<'a> Structurer<'a> {
                     false
                 };
                 let mut body_region: Region = self.structure_at(b, try_end_block);
-                self.suppress_try_at = prev_suppress;
+                if fresh_span {
+                    self.suppressed_spans.remove(&span);
+                }
                 let mut handlers_out: Vec<(Vec<String>, Region)> = Vec::new();
                 let absorbed_terminal: Option<BlockId> = if finally_handler.is_none() {
                     self.absorbable_value_return(&try_group, try_end_block, &handler_set)
@@ -1463,6 +1556,9 @@ impl<'a> Structurer<'a> {
                     try_end_block
                 };
                 let mut handler_index: BTreeMap<BlockId, usize> = BTreeMap::new();
+                let joins: BTreeSet<BlockId> = self.continuation_joins(after_try);
+                let prev_handler_stops: BTreeSet<BlockId> =
+                    std::mem::replace(&mut self.handler_stops, joins);
                 for (catch_type, handler_bid) in catch_handler_ids {
                     if let Some(&idx) = handler_index.get(&handler_bid) {
                         if let Some(ty) = catch_type
@@ -1479,13 +1575,11 @@ impl<'a> Structurer<'a> {
                     handler_index.insert(handler_bid, handlers_out.len());
                     handlers_out.push((catch_type.into_iter().collect(), handler_region));
                 }
+                self.handler_stops = prev_handler_stops;
                 if pushed_finally {
                     self.active_finally.pop();
                 }
                 if let Some(chain) = finally_chain {
-                    for &fb in &chain.blocks {
-                        self.visited.insert(fb);
-                    }
                     if handlers_out.is_empty()
                         && let Some((lock_block, lock_slot)) = self.synchronized_lock_block(b)
                         && self.is_synchronized_finally(&chain.blocks, lock_slot)
@@ -1557,6 +1651,26 @@ impl<'a> Structurer<'a> {
                         && let Some(skip) = self.finally_inline_skip(&chain, cont)
                     {
                         self.finally_inline_skips.insert(cont, skip);
+                    }
+                    if let Some(handler) = finally_handler {
+                        for site in self.protected_exit_inline_sites(&chain, handler) {
+                            if self.finally_inline_skips.contains_key(&site) {
+                                continue;
+                            }
+                            if let Some(skip) = self.finally_inline_prefix(&chain, site) {
+                                self.finally_inline_skips.insert(site, skip);
+                            }
+                        }
+                        for &catch_bid in &handler_set {
+                            if self.finally_inline_skips.contains_key(&catch_bid) {
+                                continue;
+                            }
+                            if let Some(skip) =
+                                self.unprotected_catch_inline_skip(&chain, handler, catch_bid)
+                            {
+                                self.finally_inline_skips.insert(catch_bid, skip);
+                            }
+                        }
                     }
                     seq.push(Region::TryFinally {
                         try_body: Box::new(body_region),
@@ -1677,7 +1791,8 @@ impl<'a> Structurer<'a> {
             loop_header_of: self.loop_header_of.clone(),
             loop_exits: self.loop_exits.clone(),
             try_groups: self.try_groups.clone(),
-            suppress_try_at: None,
+            suppressed_spans: self.suppressed_spans.clone(),
+            handler_stops: self.handler_stops.clone(),
             active_finally: self.active_finally.clone(),
             loop_stack,
             labels_used: BTreeSet::new(),
@@ -2088,15 +2203,22 @@ pub fn group_exception_regions(cfg: &Cfg) -> Vec<GroupedTry> {
             .or_default()
             .push(r);
     }
+    let handler_pcs: BTreeSet<u32> = cfg
+        .exception_regions
+        .iter()
+        .map(|r: &ExceptionRegion| r.handler_pc)
+        .collect();
     let mut out: Vec<GroupedTry> = Vec::with_capacity(by_try.len());
     for ((start, end), regions) in by_try {
         let handlers: Vec<(Option<String>, u32)> = regions
             .iter()
             .map(|r| (r.catch_type.clone(), r.handler_pc))
             .collect();
+        let starts_a_handler_body: bool = handler_pcs.contains(&start);
         match out
             .iter_mut()
             .find(|g: &&mut GroupedTry| g.handlers == handlers)
+            .filter(|_: &&mut GroupedTry| !starts_a_handler_body)
             .filter(|g: &&mut GroupedTry| mergeable_try_span(g, end, &handlers))
         {
             Some(existing) => {

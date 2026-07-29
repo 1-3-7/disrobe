@@ -2652,8 +2652,13 @@ fn compute_slot_types(
     let param_slots: BTreeSet<u16> = params.iter().map(|(i, _)| *i).collect();
     let reused_exc: BTreeSet<u16> = reused_exception_slots(insns, exception_regions);
     let exc_conflicted: BTreeSet<u16> = exception_value_conflicted_slots(insns, exception_regions);
-    let seen_types: BTreeMap<u16, BTreeSet<String>> = reference_seen_types(cf, insns);
-    let mut inferred: BTreeMap<u16, String> = infer_reference_local_types(cf, insns, param_types);
+    let handler_pcs: BTreeSet<u32> = exception_regions
+        .iter()
+        .map(|r: &ExceptionRegion| r.handler_pc)
+        .collect();
+    let seen_types: BTreeMap<u16, BTreeSet<String>> = reference_seen_types(cf, insns, &handler_pcs);
+    let mut inferred: BTreeMap<u16, String> =
+        infer_reference_local_types(cf, insns, param_types, &handler_pcs);
     for (slot, ty) in constructed_local_types(cf, insns) {
         let conflicts_with_seen: bool = seen_types
             .get(&slot)
@@ -2744,12 +2749,14 @@ fn boolean_array_names(
     params: &[(u16, String)],
     param_types: &BTreeMap<u16, String>,
 ) -> BTreeMap<String, u8> {
-    let mut ranks: BTreeMap<String, u8> = infer_reference_local_types(cf, insns, param_types)
-        .into_iter()
-        .filter_map(|(slot, ty): (u16, String)| {
-            boolean_array_rank(Some(ty.as_str())).map(|rank: u8| (local_name(slot, params), rank))
-        })
-        .collect();
+    let mut ranks: BTreeMap<String, u8> =
+        infer_reference_local_types(cf, insns, param_types, &BTreeSet::new())
+            .into_iter()
+            .filter_map(|(slot, ty): (u16, String)| {
+                boolean_array_rank(Some(ty.as_str()))
+                    .map(|rank: u8| (local_name(slot, params), rank))
+            })
+            .collect();
     for (slot, ty) in param_types {
         let rank: Option<u8> = boolean_array_rank(Some(ty.as_str()));
         if let Some(rank) = rank {
@@ -2777,7 +2784,74 @@ fn is_boolean_element_array(expr: &Expr, ranks: &BTreeMap<String, u8>) -> bool {
 enum BoolScalarVal {
     BoolArray(u8),
     BoolScalar,
+    ZeroOrOne,
     Other,
+}
+
+fn field_descriptor_is_boolean(cf: &ClassFile, insn: &Instruction) -> bool {
+    let Operands::ConstPool(idx) = &insn.operands else {
+        return false;
+    };
+    let Some(reference): Option<String> = bytecode::resolve_ref(cf, *idx) else {
+        return false;
+    };
+    let Some((_owner, desc)): Option<(&str, &str)> = reference.rsplit_once(':') else {
+        return false;
+    };
+    matches!(descriptor::parse_field(desc), Some(JavaType::Boolean))
+}
+
+fn invoke_returns_boolean(cf: &ClassFile, insn: &Instruction) -> bool {
+    let idx: u16 = match &insn.operands {
+        Operands::ConstPool(i) => *i,
+        Operands::InvokeInterface { index, .. } => *index,
+        _ => return false,
+    };
+    let Some(reference): Option<String> = bytecode::resolve_ref(cf, idx) else {
+        return false;
+    };
+    let Some((_member, desc)): Option<(&str, &str)> = reference.rsplit_once(':') else {
+        return false;
+    };
+    let Some(parsed): Option<MethodDescriptor> = descriptor::parse_method(desc) else {
+        return false;
+    };
+    matches!(parsed.returns, JavaType::Boolean)
+}
+
+fn conditional_boolean_store_slots(insns: &[Instruction]) -> BTreeSet<u16> {
+    let mut out: BTreeSet<u16> = BTreeSet::new();
+    for (i, window) in insns.windows(5).enumerate() {
+        let [head, second, jump, fourth, fifth]: &[Instruction] = window else {
+            continue;
+        };
+        if matches!(head.opcode, 0x99..=0xA6 | 0xC6 | 0xC7)
+            && matches!((second.opcode, fourth.opcode), (0x04, 0x03) | (0x03, 0x04))
+            && jump.opcode == 0xA7
+            && branch_target(head) == Some(fourth.pc)
+            && branch_target(jump) == Some(fifth.pc)
+            && let Some(slot) = int_store_slot(fifth)
+        {
+            out.insert(slot);
+            continue;
+        }
+        if matches!((head.opcode, fourth.opcode), (0x04, 0x03) | (0x03, 0x04))
+            && jump.opcode == 0xA7
+            && let Some(slot) = int_store_slot(second)
+            && int_store_slot(fifth) == Some(slot)
+            && let Some(next) = insns.get(i + 5)
+            && branch_target(jump) == Some(next.pc)
+        {
+            out.insert(slot);
+        }
+    }
+    out
+}
+
+fn int_store_slot(insn: &Instruction) -> Option<u16> {
+    matches!(insn.opcode, 0x36 | 0x3B..=0x3E)
+        .then(|| store_target_slot(insn))
+        .flatten()
 }
 
 fn boolean_array_rank(ty: Option<&str>) -> Option<u8> {
@@ -2800,7 +2874,7 @@ fn boolean_scalar_local_slots(
     param_types: &BTreeMap<u16, String>,
 ) -> BTreeSet<u16> {
     let mut bool_array_slots: BTreeMap<u16, u8> =
-        infer_reference_local_types(cf, insns, param_types)
+        infer_reference_local_types(cf, insns, param_types, &BTreeSet::new())
             .into_iter()
             .filter_map(|(slot, ty): (u16, String)| {
                 boolean_array_rank(Some(ty.as_str())).map(|rank: u8| (slot, rank))
@@ -2826,7 +2900,8 @@ fn boolean_scalar_local_slots(
     for insn in insns {
         let op: u8 = insn.opcode;
         match op {
-            0x02..=0x18 | 0x1A..=0x29 => stack.push(BoolScalarVal::Other),
+            0x03 | 0x04 => stack.push(BoolScalarVal::ZeroOrOne),
+            0x02 | 0x05..=0x18 | 0x1A..=0x29 => stack.push(BoolScalarVal::Other),
             0x19 => {
                 let slot: Option<u16> = match &insn.operands {
                     Operands::Local(idx) => Some(*idx),
@@ -2835,10 +2910,15 @@ fn boolean_scalar_local_slots(
                 stack.push(slot_val(slot));
             }
             0x2A..=0x2D => stack.push(slot_val(Some(u16::from(op - 0x2A)))),
-            0xB2 => stack.push(array_of(field_static_type(cf, insn).as_deref())),
-            0xB4 => {
-                stack.pop();
-                stack.push(array_of(field_static_type(cf, insn).as_deref()));
+            0xB2 | 0xB4 => {
+                if op == 0xB4 {
+                    stack.pop();
+                }
+                stack.push(if field_descriptor_is_boolean(cf, insn) {
+                    BoolScalarVal::BoolScalar
+                } else {
+                    array_of(field_static_type(cf, insn).as_deref())
+                });
             }
             0xBC | 0xBD => {
                 stack.pop();
@@ -2850,7 +2930,9 @@ fn boolean_scalar_local_slots(
                     stack.pop();
                 }
                 let ret: Option<String> = invoke_return_type(cf, insn);
-                if !matches!(ret.as_deref(), Some("void")) {
+                if invoke_returns_boolean(cf, insn) {
+                    stack.push(BoolScalarVal::BoolScalar);
+                } else if !matches!(ret.as_deref(), Some("void")) {
                     stack.push(array_of(ret.as_deref()));
                 }
             }
@@ -2899,15 +2981,20 @@ fn boolean_scalar_local_slots(
                     (0x3B..=0x3E, _) => u16::from(op - 0x3B),
                     _ => continue,
                 };
-                if matches!(value, BoolScalarVal::BoolScalar) {
-                    bool_stores.insert(slot);
-                } else {
-                    other_stores.insert(slot);
+                match value {
+                    BoolScalarVal::BoolScalar => {
+                        bool_stores.insert(slot);
+                    }
+                    BoolScalarVal::ZeroOrOne => {}
+                    BoolScalarVal::BoolArray(_) | BoolScalarVal::Other => {
+                        other_stores.insert(slot);
+                    }
                 }
             }
             _ => stack.clear(),
         }
     }
+    bool_stores.extend(conditional_boolean_store_slots(insns));
     bool_stores
         .into_iter()
         .filter(|slot: &u16| !other_stores.contains(slot) && !param_slots.contains(slot))
@@ -2929,8 +3016,9 @@ fn infer_reference_local_types(
     cf: &ClassFile,
     insns: &[Instruction],
     param_types: &BTreeMap<u16, String>,
+    handler_pcs: &BTreeSet<u32>,
 ) -> BTreeMap<u16, String> {
-    infer_reference_local_slots(cf, insns, param_types)
+    infer_reference_local_slots(cf, insns, param_types, handler_pcs)
         .0
         .into_iter()
         .filter_map(|(slot, ty): (u16, Option<String>)| ty.map(|t: String| (slot, t)))
@@ -2938,14 +3026,19 @@ fn infer_reference_local_types(
         .collect()
 }
 
-fn reference_seen_types(cf: &ClassFile, insns: &[Instruction]) -> BTreeMap<u16, BTreeSet<String>> {
-    infer_reference_local_slots(cf, insns, &BTreeMap::new()).1
+fn reference_seen_types(
+    cf: &ClassFile,
+    insns: &[Instruction],
+    handler_pcs: &BTreeSet<u32>,
+) -> BTreeMap<u16, BTreeSet<String>> {
+    infer_reference_local_slots(cf, insns, &BTreeMap::new(), handler_pcs).1
 }
 
 fn infer_reference_local_slots(
     cf: &ClassFile,
     insns: &[Instruction],
     param_types: &BTreeMap<u16, String>,
+    handler_pcs: &BTreeSet<u32>,
 ) -> (
     BTreeMap<u16, Option<String>>,
     BTreeMap<u16, BTreeSet<String>>,
@@ -3044,17 +3137,23 @@ fn infer_reference_local_slots(
                 type_stack.push(live_types.get(&slot).cloned());
             }
             0x3A => {
+                let catch_bind: bool = handler_pcs.contains(&insn.pc) && type_stack.is_empty();
                 let top: Option<String> = type_stack.pop().flatten();
-                if let Operands::Local(idx) = &insn.operands {
+                if let Operands::Local(idx) = &insn.operands
+                    && !catch_bind
+                {
                     record(&mut slots, &mut distinct, *idx, top.clone());
                     update_live(&mut live_types, *idx, top);
                 }
             }
             0x4B..=0x4E => {
+                let catch_bind: bool = handler_pcs.contains(&insn.pc) && type_stack.is_empty();
                 let top: Option<String> = type_stack.pop().flatten();
                 let slot: u16 = u16::from(op - 0x4B);
-                record(&mut slots, &mut distinct, slot, top.clone());
-                update_live(&mut live_types, slot, top);
+                if !catch_bind {
+                    record(&mut slots, &mut distinct, slot, top.clone());
+                    update_live(&mut live_types, slot, top);
+                }
             }
             _ => {
                 type_stack.clear();
@@ -4384,6 +4483,12 @@ fn render_block_seeded(
         }
         if op == 0x54
             && let Some(stmt) = boolean_array_store(&mut stack, &ctx.bool_array_names)
+        {
+            let _ = writeln!(out, "{pad}{stmt};");
+            continue;
+        }
+        if matches!(op, 0x36 | 0x3B..=0x3E)
+            && let Some(stmt) = boolean_local_store(ins, &mut stack, ctx.params, &ctx.slot_types)
         {
             let _ = writeln!(out, "{pad}{stmt};");
             continue;
@@ -7255,6 +7360,34 @@ fn boolean_array_store(
     Some(stmt)
 }
 
+fn boolean_local_store(
+    insn: &Instruction,
+    stack: &mut Vec<Expr>,
+    params: &[(u16, String)],
+    slot_types: &BTreeMap<u16, String>,
+) -> Option<String> {
+    let slot: u16 = int_store_slot(insn)?;
+    if slot_types.get(&slot).map(String::as_str) != Some("boolean") {
+        return None;
+    }
+    let rendered: String = stack.last()?.render();
+    let value: String = int_literal_as_bool(&rendered)
+        .map(str::to_owned)
+        .or_else(|| bool_ternary_condition(&rendered))?;
+    stack.pop();
+    Some(format!("{} = {value}", local_name(slot, params)))
+}
+
+fn bool_ternary_condition(rendered: &str) -> Option<String> {
+    let inner: &str = rendered.strip_prefix('(')?.strip_suffix(')')?;
+    let (cond, arms): (&str, &str) = inner.rsplit_once(" ? ")?;
+    match arms {
+        "1 : 0" => Some(cond.to_owned()),
+        "0 : 1" => Some(invert(cond)),
+        _ => None,
+    }
+}
+
 fn boolean_array_load_render(
     expr: &Expr,
     negate: bool,
@@ -7806,7 +7939,8 @@ fn object_typed_local_names(
     params: &[(u16, String)],
     exc_conflicted: &BTreeSet<u16>,
 ) -> BTreeSet<String> {
-    let concrete: BTreeMap<u16, String> = infer_reference_local_types(cf, insns, &BTreeMap::new());
+    let concrete: BTreeMap<u16, String> =
+        infer_reference_local_types(cf, insns, &BTreeMap::new(), &BTreeSet::new());
     let param_slots: BTreeSet<u16> = params.iter().map(|(i, _): &(u16, String)| *i).collect();
     let mut names: BTreeSet<String> = BTreeSet::new();
     for insn in insns {
