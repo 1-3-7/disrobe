@@ -517,14 +517,14 @@ static CATALOG: [PyarmorVersionEntry; CATALOG_COUNT] = [
         version: PyarmorVersion::V7,
         id: "pyarmor-v7",
         display_name: "PyArmor v7",
-        aliases: &[],
+        aliases: &["pyarmor-supermode"],
         quality: SupportQuality::Partial,
     },
     PyarmorVersionEntry {
         version: PyarmorVersion::V8,
         id: "pyarmor-v8",
-        display_name: "PyArmor v8 (super mode)",
-        aliases: &["pyarmor-supermode"],
+        display_name: "PyArmor v8",
+        aliases: &[],
         quality: SupportQuality::Full,
     },
     PyarmorVersionEntry {
