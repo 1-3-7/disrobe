@@ -132,6 +132,17 @@ jobs:
           echo "$SCRIPTS" >> "$GITHUB_PATH"
           PATH="$SCRIPTS:$PATH" z3 --version
           echo "DISROBE_REQUIRE_SOLVER=1" >> "$GITHUB_ENV"
+      - name: provision erlang so the beam differentials run instead of returning early
+        if: runner.os == 'Linux'
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+      - name: confirm erlc is callable before the suite depends on it
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          erl -noshell -eval 'io:format("otp ~s~n",[erlang:system_info(otp_release)]),halt().'
+          erlc -v
       - run: cargo test --workspace --all-features
       - name: stage this OS leg's cross-platform determinism hash file
         shell: bash
