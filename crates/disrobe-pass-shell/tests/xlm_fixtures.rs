@@ -9,6 +9,7 @@ use std::io::{Cursor, Write};
 
 use disrobe_pass_shell::detect::{Dialect, detect};
 use disrobe_pass_shell::xlm::ptg::{BiffVersion, PtgContext, decode_rgce};
+use disrobe_pass_shell::xlm::scope::XtiScope;
 use disrobe_pass_shell::{XlmRecovery, recover_xlm};
 
 fn record(rt: u16, data: &[u8]) -> Vec<u8> {
@@ -307,6 +308,57 @@ const EXPECTED: [(&str, &str); 11] = [
     ("A11", "=(1+2)*3"),
 ];
 
+fn build_zip(files: &[(&str, &[u8])]) -> Vec<u8> {
+    let cursor: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+    let mut writer: zip::ZipWriter<Cursor<Vec<u8>>> = zip::ZipWriter::new(cursor);
+    let opts: zip::write::FileOptions<'_, ()> =
+        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    for (name, body) in files {
+        writer.start_file(*name, opts).expect("start zip entry");
+        writer.write_all(body).expect("write zip entry");
+    }
+    writer.finish().expect("finish zip").into_inner()
+}
+
+const ROOT_RELS: &str = concat!(
+    r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
+    r#"<Relationship Id="rId3" "#,
+    r#"Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" "#,
+    r#"Target="docProps/app.xml"/>"#,
+    r#"<Relationship Id="rId1" "#,
+    r#"Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" "#,
+    r#"Target="xl/workbook.bin"/>"#,
+    r#"</Relationships>"#
+);
+
+const INDEXED_CONTENT_TYPES: &str = concat!(
+    r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">"#,
+    r#"<Override PartName="/xl/macrosheets/sheet1.bin" "#,
+    r#"ContentType="application/vnd.ms-excel.macrosheet"/>"#,
+    r#"<Override PartName="/xl/macrosheets/binaryIndex1.bin" "#,
+    r#"ContentType="application/vnd.ms-excel.binIndexMs"/>"#,
+    r#"</Types>"#
+);
+
+#[test]
+fn xlsb_without_workbook_rels_still_skips_index_parts() {
+    let xlsb: Vec<u8> = build_zip(&[
+        ("[Content_Types].xml", INDEXED_CONTENT_TYPES.as_bytes()),
+        ("_rels/.rels", ROOT_RELS.as_bytes()),
+        ("xl/workbook.bin", &[]),
+        ("xl/macrosheets/sheet1.bin", &[]),
+        ("xl/macrosheets/binaryIndex1.bin", &[]),
+        ("docProps/app.xml", b"<Properties/>"),
+    ]);
+    let report: XlmRecovery = recover_xlm(&xlsb).expect("recover the constructed package");
+    let names: Vec<&str> = report
+        .sheets
+        .iter()
+        .map(|s: &disrobe_pass_shell::XlmSheet| s.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["sheet1.bin"]);
+}
+
 #[test]
 fn xls_macro_sheet_detects_as_xlm() {
     let xls: Vec<u8> = build_xls();
@@ -343,6 +395,7 @@ fn unrecognized_ptg_yields_marker_not_a_guess() {
         base_row: 0,
         base_col: 0,
         names: &[],
+        scope: &XtiScope::default(),
     };
     let rgce: [u8; 4] = [0x1E, 0x05, 0x00, 0x7F];
     let decoded: disrobe_pass_shell::xlm::ptg::DecodedFormula = decode_rgce(&rgce, &ctx);
@@ -354,12 +407,68 @@ fn unrecognized_ptg_yields_marker_not_a_guess() {
 }
 
 #[test]
+fn unmapped_function_id_costs_one_token_not_the_formula() {
+    let ctx: PtgContext<'_> = PtgContext {
+        version: BiffVersion::Biff8,
+        base_row: 0,
+        base_col: 0,
+        names: &[],
+        scope: &XtiScope::default(),
+    };
+    let rgce: Vec<u8> = concat(&[&p_int(1), &p_int(2), &p_funcvar(2, 0x7FFE, false)]);
+    let decoded: disrobe_pass_shell::xlm::ptg::DecodedFormula = decode_rgce(&rgce, &ctx);
+    assert_eq!(decoded.text, "[[xlm-unknown-function:0x7FFE]](1,2)");
+    assert!(decoded.unknown, "an unmapped id must be reported");
+}
+
+#[test]
+fn known_function_without_a_fixed_arity_costs_one_token() {
+    let ctx: PtgContext<'_> = PtgContext {
+        version: BiffVersion::Biff8,
+        base_row: 0,
+        base_col: 0,
+        names: &[],
+        scope: &XtiScope::default(),
+    };
+    let rgce: Vec<u8> = concat(&[&p_int(7), &p_func(0x019E)]);
+    let decoded: disrobe_pass_shell::xlm::ptg::DecodedFormula = decode_rgce(&rgce, &ctx);
+    assert_eq!(
+        decoded.text,
+        "7 [[xlm-unknown-arity:SERIESSUM]] [[xlm-unknown-token]]"
+    );
+    assert!(decoded.unknown, "an unknown arity must be reported");
+}
+
+#[test]
+fn unresolvable_names_are_marked_rather_than_invented() {
+    let ctx: PtgContext<'_> = PtgContext {
+        version: BiffVersion::Biff8,
+        base_row: 0,
+        base_col: 0,
+        names: &[],
+        scope: &XtiScope::default(),
+    };
+    let mut name: Vec<u8> = vec![0x23];
+    name.extend_from_slice(&4u32.to_le_bytes());
+    let decoded: disrobe_pass_shell::xlm::ptg::DecodedFormula = decode_rgce(&name, &ctx);
+    assert_eq!(decoded.text, "[[xlm-unknown-name:4]]");
+    assert!(decoded.unknown);
+    let mut extern_name: Vec<u8> = vec![0x39];
+    extern_name.extend_from_slice(&0u16.to_le_bytes());
+    extern_name.extend_from_slice(&6u32.to_le_bytes());
+    let decoded: disrobe_pass_shell::xlm::ptg::DecodedFormula = decode_rgce(&extern_name, &ctx);
+    assert_eq!(decoded.text, "[[xlm-unknown-extern-name:6]]");
+    assert!(decoded.unknown);
+}
+
+#[test]
 fn biff12_ref_uses_four_byte_row() {
     let ctx: PtgContext<'_> = PtgContext {
         version: BiffVersion::Biff12,
         base_row: 0,
         base_col: 0,
         names: &[],
+        scope: &XtiScope::default(),
     };
     let mut rgce: Vec<u8> = vec![0x44];
     rgce.extend_from_slice(&4u32.to_le_bytes());
@@ -383,6 +492,7 @@ fn biff8_ptg_refn_negative_row_offset_resolves_absolute() {
         base_row: 6,
         base_col: 0,
         names: &[],
+        scope: &XtiScope::default(),
     };
     let rgce: [u8; 5] = [0x2C, 0xFF, 0xFF, 0x00, 0xC0];
     let decoded: disrobe_pass_shell::xlm::ptg::DecodedFormula = decode_rgce(&rgce, &ctx);
@@ -401,6 +511,7 @@ fn biff8_ptg_refn_negative_column_offset_resolves_absolute() {
         base_row: 6,
         base_col: 3,
         names: &[],
+        scope: &XtiScope::default(),
     };
     let rgce: [u8; 5] = [0x2C, 0x00, 0x00, 0xFF, 0xFF];
     let decoded: disrobe_pass_shell::xlm::ptg::DecodedFormula = decode_rgce(&rgce, &ctx);

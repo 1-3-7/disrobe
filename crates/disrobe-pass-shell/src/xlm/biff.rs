@@ -70,6 +70,30 @@ pub fn read_xlunicode(buf: &[u8], at: usize) -> Option<(String, usize)> {
     decode_chars(buf, at + 3, cch, grbit & 0x01 != 0).map(|(s, n): (String, usize)| (s, 3 + n))
 }
 
+pub fn read_wide_string(buf: &[u8], at: usize) -> Option<(String, usize)> {
+    let cch: usize = read_u16(buf, at)? as usize;
+    read_utf16_units(buf, at + 2, cch).map(|(s, n): (String, usize)| (s, 2 + n))
+}
+
+pub fn read_wide_string32(buf: &[u8], at: usize) -> Option<(String, usize)> {
+    let cch: usize = read_u32(buf, at)? as usize;
+    read_utf16_units(buf, at + 4, cch).map(|(s, n): (String, usize)| (s, 4 + n))
+}
+
+fn read_utf16_units(buf: &[u8], at: usize, cch: usize) -> Option<(String, usize)> {
+    if cch > super::limits::MAX_STRING_CHARS {
+        return None;
+    }
+    let byte_len: usize = cch.checked_mul(2)?;
+    let end: usize = at.checked_add(byte_len)?;
+    let slice: &[u8] = buf.get(at..end)?;
+    let units: Vec<u16> = slice
+        .chunks_exact(2)
+        .map(|c: &[u8]| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    Some((String::from_utf16_lossy(&units), byte_len))
+}
+
 fn decode_chars(buf: &[u8], at: usize, cch: usize, high_byte: bool) -> Option<(String, usize)> {
     let capped: usize = cch.min(super::limits::MAX_STRING_CHARS);
     if high_byte {

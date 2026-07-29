@@ -1,0 +1,532 @@
+{
+  "producer": "Microsoft Excel 16.0.20228.20110 (Microsoft 365)",
+  "fixtures": [
+    {
+      "file": "real_xlm_excel16.xls",
+      "sha256": "fbe4fdb7feac11a8513dbb7b2b1df3d9cb218f5c09e41fb55eddb6c271981133",
+      "bytes": 27136,
+      "expected_from": "excel-readback",
+      "cells": [
+        {
+          "sheet": "Sheet1",
+          "cell": "A1",
+          "formula": "=SUM(1,2)"
+        },
+        {
+          "sheet": "Sheet1",
+          "cell": "A2",
+          "formula": "=A1*2"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "C1",
+          "formula": "=EXEC(\"calc.exe\")"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "E1",
+          "formula": "=A2+1"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A2",
+          "formula": "=SUM(1,2)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "C2",
+          "formula": "=CALL(\"Kernel32\",\"GetTickCount\",\"J\")"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "E2",
+          "formula": "=IF(A2>2,\"big\",\"small\")"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A3",
+          "formula": "=RETURN()"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "C3",
+          "formula": "=HALT()"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "E3",
+          "formula": "=\"abc\"&\"def\""
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "C4",
+          "formula": "=GOTO(A3)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "E4",
+          "formula": "=SUM(A1:A5)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "C5",
+          "formula": "=RUN(A2)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "E5",
+          "formula": "=-A2"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "E6",
+          "formula": "=A2*2+3/4"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "E7",
+          "formula": "=CHAR(72)&CHAR(73)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "E8",
+          "formula": "=Sheet1!A1"
+        }
+      ]
+    },
+    {
+      "file": "real_xlm_ptgspread.xls",
+      "sha256": "6abb0f4a0d8314b76a8eda4b91d95d91ed9bf0c6ddd62c7ea8c81e3303069a1a",
+      "bytes": 28672,
+      "expected_from": "excel-readback",
+      "cells": [
+        {
+          "sheet": "Macro2",
+          "cell": "C1",
+          "formula": "=1.5+2"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "E1",
+          "formula": "=REGISTER(\"Kernel32\",\"GetTickCount\",\"J\",\"GetTicks\")"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "G1",
+          "formula": "=SUM(A1:A5*2)"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "A2",
+          "formula": "=SET.NAME(\"counter\",0)"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "C2",
+          "formula": "=2^3"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "E2",
+          "formula": "=ARGUMENT(\"x\")"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "A3",
+          "formula": "=FOR(\"i\",1,3)"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "C3",
+          "formula": "=50%"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "E3",
+          "formula": "=RESULT(1)"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "A4",
+          "formula": "=SET.NAME(\"counter\",1)"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "C4",
+          "formula": "=(1+2)*3"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "E4",
+          "formula": "=ERROR(FALSE)"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "A5",
+          "formula": "=NEXT()"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "C5",
+          "formula": "=+A1"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "E5",
+          "formula": "=ECHO(FALSE)"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "A6",
+          "formula": "=WHILE(A2<1)"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "C6",
+          "formula": "=#DIV/0!"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "E6",
+          "formula": "=CANCEL.KEY(FALSE)"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "A7",
+          "formula": "=NEXT()"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "C7",
+          "formula": "=SUM({1,2;3,4})"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "E7",
+          "formula": "=CALL(\"user32\",\"GetSystemMetrics\",\"JJ\",0)"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "A8",
+          "formula": "=IF(A2>0)"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "C8",
+          "formula": "=INDEX(A1:A5,2)"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "E8",
+          "formula": "=EXEC(\"calc.exe\",1)"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "A9",
+          "formula": "=ELSE()"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "C9",
+          "formula": "=SUM((A1:A2,C1:C2))"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "E9",
+          "formula": "=FORMULA(\"=1+1\",A20)"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "A10",
+          "formula": "=END.IF()"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "C10",
+          "formula": "=SUM(A1:B5 B1:C5)"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "E10",
+          "formula": "=GET.WORKSPACE(1)"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "A11",
+          "formula": "=RETURN()"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "C11",
+          "formula": "=NOT(A2=1)"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "E11",
+          "formula": "=GET.DOCUMENT(1)"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "C12",
+          "formula": "=\"x\"<>\"y\""
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "E12",
+          "formula": "=GOTO(A11)"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "C13",
+          "formula": "=MyVal*2"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "E13",
+          "formula": "=WAIT(NOW()+\"00:00:01\")"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "C14",
+          "formula": "=SUM(Sheet1!A1:A2)"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "E14",
+          "formula": "=DEFINE.NAME(\"zz\",1)"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "C15",
+          "formula": "=1>=2"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "E15",
+          "formula": "=SELECT(A1)"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "C16",
+          "formula": "=A1&\"tail\""
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "E16",
+          "formula": "=HALT()"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "C17",
+          "formula": "=INDEX(A1:A5,,1)"
+        },
+        {
+          "sheet": "Macro2",
+          "cell": "C18",
+          "formula": "=-2^2"
+        }
+      ]
+    },
+    {
+      "file": "bench_biff12.xlsb",
+      "sha256": "3faf6e5c56a475fe2b8131ac80f50198a270d859a509b6bd82992ce970a22645",
+      "bytes": 10006,
+      "expected_from": "authored",
+      "cells": [
+        {
+          "sheet": "Macro1",
+          "cell": "A1",
+          "formula": "=SUM(1,2,3)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A2",
+          "formula": "=CHAR(72)&CHAR(73)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A3",
+          "formula": "=MID(D1,2,3)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A4",
+          "formula": "=LEN(D1)+LEN(D2)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A5",
+          "formula": "=IF(LEN(D1)>2,1,0)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A6",
+          "formula": "=CONCATENATE(D1,D2)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A7",
+          "formula": "=ABS(-5)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A8",
+          "formula": "=ROUND(3.14159,2)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A9",
+          "formula": "=NOW()"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A10",
+          "formula": "=ISNUMBER(1)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A11",
+          "formula": "=SEARCH(\"e\",D1)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A12",
+          "formula": "=TEXT(1,\"0\")"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A13",
+          "formula": "=REGISTER(D4,D5,D6)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A14",
+          "formula": "=CALL(D4,D5,D6)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A15",
+          "formula": "=EXEC(D1&D2)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A16",
+          "formula": "=SET.NAME(\"zz\",1)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A17",
+          "formula": "=GET.WORKSPACE(1)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A18",
+          "formula": "=GET.WINDOW(1)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A19",
+          "formula": "=ACTIVE.CELL()"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A20",
+          "formula": "=SELECTION()"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A21",
+          "formula": "=ERROR(FALSE)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A22",
+          "formula": "=ALERT(D1,2)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A23",
+          "formula": "=ECHO(FALSE)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A24",
+          "formula": "=FORMULA(D1,D2)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A25",
+          "formula": "=WHILE(LEN(D1)>99)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A26",
+          "formula": "=NEXT()"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A27",
+          "formula": "=GOTO(A28)"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A28",
+          "formula": "=RETURN()"
+        },
+        {
+          "sheet": "Macro1",
+          "cell": "A29",
+          "formula": "=HALT()"
+        }
+      ]
+    },
+    {
+      "file": "ftab_probe.xls",
+      "sha256": "7b0cd26e296d255fb857fe1747e26d34ae87bca56fc8a01b62a46a64d9379f60",
+      "bytes": 27136,
+      "expected_from": "authored",
+      "cells": [
+        {
+          "sheet": "Probe",
+          "cell": "B1",
+          "formula": "=SERIESSUM(1,0,1,{1,2})"
+        },
+        {
+          "sheet": "Probe",
+          "cell": "B2",
+          "formula": "=IFERROR(1,2)"
+        },
+        {
+          "sheet": "Probe",
+          "cell": "B3",
+          "formula": "=RANDBETWEEN(1,2)"
+        },
+        {
+          "sheet": "Probe",
+          "cell": "B4",
+          "formula": "=EDATE(1,2)"
+        },
+        {
+          "sheet": "Probe",
+          "cell": "B5",
+          "formula": "=HEX2DEC(\"FF\")"
+        },
+        {
+          "sheet": "Probe",
+          "cell": "B6",
+          "formula": "=GCD(4,6)"
+        },
+        {
+          "sheet": "Probe",
+          "cell": "B7",
+          "formula": "=SUMIFS(D1:D2,D1:D2,1)"
+        },
+        {
+          "sheet": "Probe",
+          "cell": "B8",
+          "formula": "=QUOTIENT(4,2)"
+        }
+      ]
+    }
+  ]
+}

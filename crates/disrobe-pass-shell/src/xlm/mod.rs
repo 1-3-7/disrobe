@@ -5,6 +5,7 @@ pub mod container;
 pub mod ftab;
 pub mod limits;
 pub mod ptg;
+pub mod scope;
 
 use std::fmt::Write as _;
 

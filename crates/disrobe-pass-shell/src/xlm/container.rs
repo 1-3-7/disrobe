@@ -8,8 +8,38 @@ const OLE_MAGIC: &[u8; 8] = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1";
 const ZIP_MAGIC: &[u8] = b"PK\x03\x04";
 
 const MACROSHEET_CONTENT_TYPE: &str = "application/vnd.ms-excel.macrosheet";
+const INTL_MACROSHEET_CONTENT_TYPE: &str = "application/vnd.ms-excel.intlmacrosheet";
 const WORKSHEET_CONTENT_TYPE: &str = "application/vnd.ms-excel.worksheet";
+const CHARTSHEET_CONTENT_TYPE: &str = "application/vnd.ms-excel.chartsheet";
+const DIALOGSHEET_CONTENT_TYPE: &str = "application/vnd.ms-excel.dialogsheet";
+
+const SHEET_CONTENT_TYPES: [&str; 5] = [
+    MACROSHEET_CONTENT_TYPE,
+    INTL_MACROSHEET_CONTENT_TYPE,
+    WORKSHEET_CONTENT_TYPE,
+    CHARTSHEET_CONTENT_TYPE,
+    DIALOGSHEET_CONTENT_TYPE,
+];
+
 const OFFICE_DOCUMENT_REL: &str = "officeDocument";
+
+const SHEET_RELATIONSHIPS: [&str; 5] = [
+    "worksheet",
+    "chartsheet",
+    "dialogsheet",
+    "xlMacrosheet",
+    "xlIntlMacrosheet",
+];
+
+const SHEET_DIRECTORIES: [&str; 4] = [
+    "/worksheets/",
+    "/macrosheets/",
+    "/chartsheets/",
+    "/dialogsheets/",
+];
+
+const BINARY_INDEX_LEAF_PREFIX: &str = "binaryindex";
+const BINARY_INDEX_CONTENT_TYPE_MARKER: &str = "binindex";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SheetKindHint {
@@ -102,25 +132,26 @@ fn open_biff12(data: &[u8]) -> Option<XlmSource> {
         .unwrap_or_default();
     let workbook_part: String =
         resolve_workbook_part(&mut archive).unwrap_or_else(|| "xl/workbook.bin".to_owned());
-    let name_by_rel: Vec<(String, String)> = read_workbook_rels(&mut archive, &workbook_part);
-    let sheet_targets: Vec<String> = collect_sheet_targets(&name_by_rel, &workbook_part);
+    let rels: Vec<PartRelationship> = read_part_rels(&mut archive, &workbook_part);
+    let bundled: Vec<(String, String)> = read_bundled_sheets(&mut archive, &workbook_part);
+    let sheet_targets: Vec<(String, Option<String>)> = collect_sheet_targets(&bundled, &rels);
     let mut sheets: Vec<Biff12SheetPart> = Vec::new();
-    let candidates: Vec<String> = if sheet_targets.is_empty() {
+    let candidates: Vec<(String, Option<String>)> = if sheet_targets.is_empty() {
         entry_names
             .iter()
-            .filter(|n: &&String| is_sheet_part(n))
-            .cloned()
+            .filter(|n: &&String| is_sheet_part(n, &content_types))
+            .map(|n: &String| (n.clone(), None))
             .collect()
     } else {
         sheet_targets
     };
-    for part in candidates {
+    for (part, tab_name) in candidates {
         let Some(bytes): Option<Vec<u8>> = read_zip_entry(&mut archive, &part) else {
             continue;
         };
         let kind_hint: SheetKindHint = classify_part(&part, &content_types);
         sheets.push(Biff12SheetPart {
-            name_hint: Some(leaf_name(&part)),
+            name_hint: Some(tab_name.unwrap_or_else(|| leaf_name(&part))),
             kind_hint,
             bytes,
         });
@@ -131,15 +162,70 @@ fn open_biff12(data: &[u8]) -> Option<XlmSource> {
     Some(XlmSource::Biff12 { sheets })
 }
 
-fn is_sheet_part(name: &str) -> bool {
+const BRT_BUNDLE_SH: u32 = 156;
+const NULL_STRING_LEN: u32 = 0xFFFF_FFFF;
+
+fn read_bundled_sheets(
+    archive: &mut ZipArchive<Cursor<&[u8]>>,
+    workbook_part: &str,
+) -> Vec<(String, String)> {
+    let Some(bytes): Option<Vec<u8>> = read_zip_entry(archive, workbook_part) else {
+        return Vec::new();
+    };
+    super::biff::iter_biff12(&bytes)
+        .iter()
+        .filter(|rec: &&super::biff::BiffRecord| rec.rt == BRT_BUNDLE_SH)
+        .filter_map(|rec: &super::biff::BiffRecord| parse_bundle_sh(&rec.data))
+        .collect()
+}
+
+fn parse_bundle_sh(data: &[u8]) -> Option<(String, String)> {
+    let rel_len: u32 = super::biff::read_u32(data, 8)?;
+    if rel_len == NULL_STRING_LEN {
+        return None;
+    }
+    let (rel_id, consumed): (String, usize) = super::biff::read_wide_string32(data, 8)?;
+    let (name, _consumed): (String, usize) = super::biff::read_wide_string32(data, 8 + consumed)?;
+    Some((rel_id, name))
+}
+
+fn is_sheet_part(name: &str, content_types: &[(String, String)]) -> bool {
+    let declared: Option<&str> = content_type_of(name, content_types);
+    if declared.is_some_and(is_sheet_content_type) {
+        return true;
+    }
+    if declared.is_some_and(is_index_content_type) {
+        return false;
+    }
     let lower: String = name.to_ascii_lowercase();
     let is_bin: bool = std::path::Path::new(&lower)
         .extension()
         .is_some_and(|ext: &std::ffi::OsStr| ext == "bin");
     is_bin
-        && (lower.contains("/worksheets/")
-            || lower.contains("/macrosheets/")
-            || lower.contains("/chartsheets/"))
+        && !leaf_name(&lower).starts_with(BINARY_INDEX_LEAF_PREFIX)
+        && SHEET_DIRECTORIES
+            .iter()
+            .any(|dir: &&str| lower.contains(dir))
+}
+
+fn is_sheet_content_type(declared: &str) -> bool {
+    SHEET_CONTENT_TYPES
+        .iter()
+        .any(|kind: &&str| declared.eq_ignore_ascii_case(kind))
+}
+
+fn is_index_content_type(declared: &str) -> bool {
+    declared
+        .to_ascii_lowercase()
+        .contains(BINARY_INDEX_CONTENT_TYPE_MARKER)
+}
+
+fn content_type_of<'a>(part: &str, content_types: &'a [(String, String)]) -> Option<&'a str> {
+    let normalised: String = normalise_part_name(part);
+    content_types
+        .iter()
+        .find(|(name, _ctype): &&(String, String)| normalise_part_name(name) == normalised)
+        .map(|(_name, ctype): &(String, String)| ctype.as_str())
 }
 
 fn leaf_name(part: &str) -> String {
@@ -147,21 +233,21 @@ fn leaf_name(part: &str) -> String {
 }
 
 fn classify_part(part: &str, content_types: &[(String, String)]) -> SheetKindHint {
-    let normalised: String = normalise_part_name(part);
-    for (name, ctype) in content_types {
-        if normalise_part_name(name) == normalised {
-            if ctype.eq_ignore_ascii_case(MACROSHEET_CONTENT_TYPE) {
-                return SheetKindHint::Macro;
-            }
-            if ctype.eq_ignore_ascii_case(WORKSHEET_CONTENT_TYPE) {
-                return SheetKindHint::Worksheet;
-            }
+    if let Some(declared) = content_type_of(part, content_types) {
+        if declared.eq_ignore_ascii_case(MACROSHEET_CONTENT_TYPE)
+            || declared.eq_ignore_ascii_case(INTL_MACROSHEET_CONTENT_TYPE)
+        {
+            return SheetKindHint::Macro;
+        }
+        if declared.eq_ignore_ascii_case(WORKSHEET_CONTENT_TYPE) {
+            return SheetKindHint::Worksheet;
         }
     }
-    if part.to_ascii_lowercase().contains("/macrosheets/") {
+    let lower: String = part.to_ascii_lowercase();
+    if lower.contains("/macrosheets/") {
         return SheetKindHint::Macro;
     }
-    if part.to_ascii_lowercase().contains("/worksheets/") {
+    if lower.contains("/worksheets/") {
         return SheetKindHint::Worksheet;
     }
     SheetKindHint::Unknown
@@ -171,21 +257,39 @@ fn normalise_part_name(name: &str) -> String {
     name.trim_start_matches('/').to_ascii_lowercase()
 }
 
-fn resolve_workbook_part(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Option<String> {
-    let xml: String = read_zip_text(archive, "_rels/.rels")?;
-    for (rel_type, target) in parse_relationships(&xml) {
-        if rel_type.contains(OFFICE_DOCUMENT_REL) {
-            return Some(normalise_target(&target, ""));
-        }
-    }
-    None
+#[derive(Debug, Clone)]
+struct PartRelationship {
+    id: String,
+    kind: String,
+    target: String,
 }
 
-fn read_workbook_rels(
-    archive: &mut ZipArchive<Cursor<&[u8]>>,
-    workbook_part: &str,
-) -> Vec<(String, String)> {
-    let (dir, leaf): (&str, &str) = split_dir(workbook_part);
+fn relationship_kind(rel_type: &str) -> &str {
+    rel_type
+        .rsplit('/')
+        .next()
+        .filter(|segment: &&str| !segment.is_empty())
+        .unwrap_or(rel_type)
+}
+
+fn is_sheet_relationship(kind: &str) -> bool {
+    SHEET_RELATIONSHIPS
+        .iter()
+        .any(|known: &&str| kind.eq_ignore_ascii_case(known))
+}
+
+fn resolve_workbook_part(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Option<String> {
+    let xml: String = read_zip_text(archive, "_rels/.rels")?;
+    parse_relationships(&xml)
+        .into_iter()
+        .find(|(rel_type, _target): &(String, String)| {
+            relationship_kind(rel_type).eq_ignore_ascii_case(OFFICE_DOCUMENT_REL)
+        })
+        .map(|(_rel_type, target): (String, String)| normalise_target(&target, ""))
+}
+
+fn read_part_rels(archive: &mut ZipArchive<Cursor<&[u8]>>, part: &str) -> Vec<PartRelationship> {
+    let (dir, leaf): (&str, &str) = split_dir(part);
     let rels_path: String = if dir.is_empty() {
         format!("_rels/{leaf}.rels")
     } else {
@@ -196,19 +300,38 @@ fn read_workbook_rels(
     };
     parse_relationships_with_id(&xml)
         .into_iter()
-        .map(|(id, _rel_type, target): (String, String, String)| {
-            (id, normalise_target(&target, dir))
-        })
+        .map(
+            |(id, rel_type, target): (String, String, String)| PartRelationship {
+                id,
+                kind: relationship_kind(&rel_type).to_owned(),
+                target: normalise_target(&target, dir),
+            },
+        )
         .collect()
 }
 
-fn collect_sheet_targets(name_by_rel: &[(String, String)], workbook_part: &str) -> Vec<String> {
-    let _ = workbook_part;
-    name_by_rel
-        .iter()
-        .map(|(_id, target): &(String, String)| target.clone())
-        .filter(|t: &String| is_sheet_part(t))
-        .collect()
+fn collect_sheet_targets(
+    bundled: &[(String, String)],
+    rels: &[PartRelationship],
+) -> Vec<(String, Option<String>)> {
+    let mut out: Vec<(String, Option<String>)> = Vec::new();
+    let mut claimed: Vec<&str> = Vec::new();
+    for (rel_id, tab_name) in bundled {
+        let Some(rel): Option<&PartRelationship> = rels
+            .iter()
+            .find(|rel: &&PartRelationship| rel.id == *rel_id && is_sheet_relationship(&rel.kind))
+        else {
+            continue;
+        };
+        claimed.push(rel.id.as_str());
+        out.push((rel.target.clone(), Some(tab_name.clone())));
+    }
+    for rel in rels {
+        if is_sheet_relationship(&rel.kind) && !claimed.contains(&rel.id.as_str()) {
+            out.push((rel.target.clone(), None));
+        }
+    }
+    out
 }
 
 fn split_dir(part: &str) -> (&str, &str) {
