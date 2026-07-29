@@ -11,6 +11,16 @@ hello_native_x64.mpy   real mpy-cross output, x86-64 native emitter (mpy v6, arc
 hello_native_armv7m.mpy real mpy-cross output, armv7m thumb native emitter (mpy v6, arch armv7m).
 iter_loops.py          source: walk(items) iterating a sequence and counted(n) iterating range(n).
 iter_loops.mpy         real mpy-cross output, default bytecode emitter (mpy v6).
+classes.py             source: class bodies, methods, a class attribute, inheritance, zero-argument super().
+classes.mpy            real mpy-cross output, default bytecode emitter (mpy v6).
+closures.py            source: nested defs over captured cells, nonlocal rebinding, three-level nesting.
+closures.mpy           real mpy-cross output, default bytecode emitter (mpy v6).
+generators.py          source: yield in a while loop and a for loop, yield from, a generator with a return value.
+generators.mpy         real mpy-cross output, default bytecode emitter (mpy v6).
+exceptions.py          source: try/except, except-as binding, else, finally, bare raise, several handlers.
+exceptions.mpy         real mpy-cross output, default bytecode emitter (mpy v6).
+signatures.py          source: positional defaults, keyword-only parameters, *args, **kwargs, keyword call sites on functions and on a method.
+signatures.mpy         real mpy-cross output, default bytecode emitter (mpy v6).
 
 Origin
 ------
@@ -19,6 +29,11 @@ Compiled in-house with the official mpy-cross (MicroPython v1.27.0, emitting mpy
   mpy-cross -o hello_bytecode.mpy hello.py
   mpy-cross -o control_flow.mpy  control_flow.py
   mpy-cross -o iter_loops.mpy    iter_loops.py
+  mpy-cross -o classes.mpy       classes.py
+  mpy-cross -o closures.mpy      closures.py
+  mpy-cross -o generators.mpy    generators.py
+  mpy-cross -o exceptions.mpy    exceptions.py
+  mpy-cross -o signatures.mpy    signatures.py
   mpy-cross -march=x64    -X emit=native -o hello_native_x64.mpy    hello_native.py
   mpy-cross -march=armv7m -X emit=native -o hello_native_armv7m.mpy hello_native.py
 
@@ -32,8 +47,16 @@ rewritten to the FOR_ITER+range form), then run through the normal structurer. T
 recovered source is graded by recompiling it under CPython (it round-trips to valid Python)
 and by matching the known sources: hello -> def add + print(add(1, 2)); control_flow ->
 def classify with `for i in range(n)`, the if/else body, and the trailing branch; iter_loops
--> walk's sequence for-loop and counted's range for-loop. MicroPython does not store local or
-argument names, so recovered parameters are positional (arg0, arg1, ...).
+-> walk's sequence for-loop and counted's range for-loop.
+
+Beyond that, tests/alt_runtime_decompile.rs grades every bytecode fixture against mpy-cross
+itself: the recovered source is handed back to mpy-cross, the resulting .mpy is decoded, and
+every function prelude and opcode step is compared with the committed fixture. All eight
+bytecode fixtures agree on every unit. MicroPython stores parameter names in the prelude but
+not the names of other locals, of the *args and **kwargs slots, or of closure cells, so those
+are regenerated (local3, varargs, varkwargs, cell5) while every parameter, class, method and
+function name is recovered. MicroPython also moves a named *args parameter to the end of the
+parameter list, so the keyword-only order is unrotated on the way back out.
 
 Bytecode oracle
 ---------------

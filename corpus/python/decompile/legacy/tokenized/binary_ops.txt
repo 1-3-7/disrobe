@@ -1,4 +1,4 @@
-a , b = ( 10 , 3 ) <EOL>
+( a , b ) = ( 10 , 3 ) <EOL>
 print ( 'Addition:' , a + b ) <EOL>
 print ( 'Subtraction:' , a - b ) <EOL>
 print ( 'Multiplication:' , a * b ) <EOL>

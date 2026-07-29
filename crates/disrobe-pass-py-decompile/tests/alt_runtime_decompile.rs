@@ -27,6 +27,16 @@ const MPY_CONTROL_FLOW: &[u8] =
     include_bytes!("../../../corpus/python/alt_runtimes/micropython/control_flow.mpy");
 const MPY_ITER_LOOPS: &[u8] =
     include_bytes!("../../../corpus/python/alt_runtimes/micropython/iter_loops.mpy");
+const MPY_CLASSES: &[u8] =
+    include_bytes!("../../../corpus/python/alt_runtimes/micropython/classes.mpy");
+const MPY_CLOSURES: &[u8] =
+    include_bytes!("../../../corpus/python/alt_runtimes/micropython/closures.mpy");
+const MPY_GENERATORS: &[u8] =
+    include_bytes!("../../../corpus/python/alt_runtimes/micropython/generators.mpy");
+const MPY_EXCEPTIONS: &[u8] =
+    include_bytes!("../../../corpus/python/alt_runtimes/micropython/exceptions.mpy");
+const MPY_SIGNATURES: &[u8] =
+    include_bytes!("../../../corpus/python/alt_runtimes/micropython/signatures.mpy");
 const PYPY27_METHODS: &[u8] =
     include_bytes!("../../../corpus/python/alt_runtimes/pypy/methods.pypy27.pyc");
 const PYPY39_LEGACY: &[u8] =
@@ -47,27 +57,69 @@ struct MpyFixture {
     label: &'static str,
     source_name: &'static str,
     original: &'static [u8],
+    floor: f64,
+    forms: &'static str,
 }
 
-static MPY_FIXTURES: [MpyFixture; 3] = [
+static MPY_FIXTURES: [MpyFixture; 8] = [
     MpyFixture {
         label: "hello",
         source_name: "hello.py",
         original: MPY_HELLO,
+        floor: 100.0,
+        forms: "module-level code, positional parameters, addition, call",
     },
     MpyFixture {
         label: "control_flow",
         source_name: "control_flow.py",
         original: MPY_CONTROL_FLOW,
+        floor: 100.0,
+        forms: "for over range, if and else, augmented assignment, string returns",
     },
     MpyFixture {
         label: "iter_loops",
         source_name: "iter_loops.py",
         original: MPY_ITER_LOOPS,
+        floor: 100.0,
+        forms: "for over a sequence, for over range, accumulator returns",
+    },
+    MpyFixture {
+        label: "classes",
+        source_name: "classes.py",
+        original: MPY_CLASSES,
+        floor: 100.0,
+        forms: "class bodies, methods, class attributes, inheritance, super()",
+    },
+    MpyFixture {
+        label: "closures",
+        source_name: "closures.py",
+        original: MPY_CLOSURES,
+        floor: 100.0,
+        forms: "nested defs, captured cells, nonlocal rebinding, three-level nesting",
+    },
+    MpyFixture {
+        label: "generators",
+        source_name: "generators.py",
+        original: MPY_GENERATORS,
+        floor: 100.0,
+        forms: "yield in while and for, yield from, generator with a return value",
+    },
+    MpyFixture {
+        label: "exceptions",
+        source_name: "exceptions.py",
+        original: MPY_EXCEPTIONS,
+        floor: 100.0,
+        forms: "try and except, as-binding, else, finally, bare raise, multiple handlers",
+    },
+    MpyFixture {
+        label: "signatures",
+        source_name: "signatures.py",
+        original: MPY_SIGNATURES,
+        floor: 100.0,
+        forms: "default arguments, keyword-only arguments, star-args, star-kwargs, keyword call \
+                sites on functions and on methods",
     },
 ];
-
-const MPY_STEP_AGREEMENT_FLOOR: f64 = 100.0;
 
 fn locate_python() -> Option<PathBuf> {
     if let Some(found) = uv_python() {
@@ -561,20 +613,23 @@ fn micropython_lift_matches_mpy_cross_reference_bytecode() {
             }
             Graded::Compared(agreement) => {
                 println!(
-                    "{} : {}/{} units agree ({:.1}%)",
+                    "{} : {}/{} units agree ({:.1}%, floor {:.1}%) [{}]",
                     fixture.label,
                     agreement.matched,
                     agreement.total,
-                    agreement.percent()
+                    agreement.percent(),
+                    fixture.floor,
+                    fixture.forms
                 );
                 for difference in &agreement.differences {
                     println!("{difference}");
                 }
-                if agreement.percent() < MPY_STEP_AGREEMENT_FLOOR {
+                if agreement.percent() < fixture.floor {
                     failures.push(format!(
-                        "{}: {:.1}% is under the pinned {MPY_STEP_AGREEMENT_FLOOR:.1}% floor\n{}",
+                        "{}: {:.1}% is under the pinned {:.1}% floor\n{}",
                         fixture.label,
                         agreement.percent(),
+                        fixture.floor,
                         agreement.differences.join("\n")
                     ));
                 }
@@ -604,10 +659,20 @@ fn micropython_reference_comparison_catches_semantic_edits() {
     };
     let control: &MpyFixture = fixture("control_flow");
     let loops: &MpyFixture = fixture("iter_loops");
+    let classes: &MpyFixture = fixture("classes");
+    let closures: &MpyFixture = fixture("closures");
+    let generators: &MpyFixture = fixture("generators");
+    let exceptions: &MpyFixture = fixture("exceptions");
+    let signatures: &MpyFixture = fixture("signatures");
     let control_src: String = recovered_source(control);
     let loops_src: String = recovered_source(loops);
+    let classes_src: String = recovered_source(classes);
+    let closures_src: String = recovered_source(closures);
+    let generators_src: String = recovered_source(generators);
+    let exceptions_src: String = recovered_source(exceptions);
+    let signatures_src: String = recovered_source(signatures);
 
-    let probes: [(&str, &MpyFixture, String); 7] = [
+    let probes: [(&str, &MpyFixture, String); 22] = [
         (
             "comparison flipped",
             control,
@@ -646,6 +711,81 @@ fn micropython_reference_comparison_catches_semantic_edits() {
             "loop bound changed",
             loops,
             require_replace(&loops_src, "range(", "range(1 + "),
+        ),
+        (
+            "base class dropped",
+            classes,
+            require_replace(&classes_src, "class Doubler(Counter)", "class Doubler"),
+        ),
+        (
+            "super call replaced with a direct call",
+            classes,
+            require_replace(&classes_src, "super().bump(", "self.bump("),
+        ),
+        (
+            "class attribute value changed",
+            classes,
+            require_replace(&classes_src, "step = 1", "step = 2"),
+        ),
+        (
+            "captured cell replaced with a parameter read",
+            closures,
+            require_replace(&closures_src, "return base + x", "return x + x"),
+        ),
+        (
+            "nonlocal rebinding turned into a local one",
+            closures,
+            require_replace(&closures_src, "nonlocal ", "del "),
+        ),
+        (
+            "yield turned into a return",
+            generators,
+            require_replace(&generators_src, "yield from ", "return "),
+        ),
+        (
+            "trailing yield dropped",
+            generators,
+            require_drop_line(&generators_src, "yield 0"),
+        ),
+        (
+            "except type widened",
+            exceptions,
+            require_replace(&exceptions_src, "except ValueError:", "except:"),
+        ),
+        (
+            "finally clause dropped",
+            exceptions,
+            require_drop_line(&exceptions_src, "finally:"),
+        ),
+        (
+            "second handler dropped",
+            exceptions,
+            require_replace(&exceptions_src, "except TypeError:", "except ValueError:"),
+        ),
+        (
+            "default argument value changed",
+            signatures,
+            require_replace(&signatures_src, "b=2", "b=3"),
+        ),
+        (
+            "keyword-only parameter made positional",
+            signatures,
+            require_replace(&signatures_src, "def kwonly(a, *, b", "def kwonly(a, b"),
+        ),
+        (
+            "keyword argument passed positionally",
+            signatures,
+            require_replace(&signatures_src, "kwonly(1, b=2)", "kwonly(1, 2)"),
+        ),
+        (
+            "star-kwargs parameter dropped",
+            signatures,
+            require_replace(&signatures_src, ", **varkwargs)", ")"),
+        ),
+        (
+            "keyword argument to a method passed positionally",
+            signatures,
+            require_replace(&signatures_src, ".take(1, b=2)", ".take(1, 2)"),
         ),
     ];
 
