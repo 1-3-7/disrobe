@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use disrobe_cli::ghidra::locate_headless;
 use object::{Object, ObjectSymbol};
 
 fn workspace_root() -> PathBuf {
@@ -62,36 +63,6 @@ fn run_export(input: &Path, out_dir: &Path, format: &str) -> Output {
         .arg(format)
         .output()
         .unwrap_or_else(|e: std::io::Error| panic!("failed to spawn disrobe export: {e}"))
-}
-
-fn locate_analyze_headless() -> Option<PathBuf> {
-    let names: [&str; 2] = if cfg!(windows) {
-        ["analyzeHeadless.bat", "analyzeHeadless"]
-    } else {
-        ["analyzeHeadless", "analyzeHeadless.bat"]
-    };
-    if let Some(path_var) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&path_var) {
-            for name in names {
-                let cand: PathBuf = dir.join(name);
-                if cand.is_file() {
-                    return Some(cand);
-                }
-            }
-        }
-    }
-    for var in ["GHIDRA_HOME", "GHIDRA_INSTALL_DIR"] {
-        if let Ok(home) = std::env::var(var) {
-            let base: PathBuf = PathBuf::from(home);
-            for name in names {
-                let cand: PathBuf = base.join("support").join(name);
-                if cand.is_file() {
-                    return Some(cand);
-                }
-            }
-        }
-    }
-    None
 }
 
 fn count_object_functions(bytes: &[u8]) -> usize {
@@ -263,7 +234,7 @@ fn native_export_before_after_ghidra_recovers_more() {
         "the exported image must differ from the raw packed input (else the unpack is a no-op)"
     );
 
-    let Some(ghidra): Option<PathBuf> = locate_analyze_headless() else {
+    let Some(ghidra): Option<PathBuf> = locate_headless() else {
         let raw_static: usize = count_object_functions(&packed_bytes);
         let exported_static: usize = count_object_functions(&exported_bytes);
         eprintln!(
