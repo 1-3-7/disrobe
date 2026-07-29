@@ -2,10 +2,11 @@
 mod manifest;
 
 pub use manifest::{Manifest, ManifestError};
+pub use minisign::PublicKey;
 
 use std::io::Cursor;
 
-use minisign::{PublicKey, SignatureBox};
+use minisign::SignatureBox;
 use thiserror::Error;
 use wasmtime::Engine;
 use wasmtime::component::Component;
@@ -36,6 +37,7 @@ pub enum LoaderError {
 }
 
 pub fn load_signed(
+    engine: &Engine,
     component: &[u8],
     signature: &[u8],
     trusted_key: &PublicKey,
@@ -68,12 +70,10 @@ pub fn load_signed(
     minisign::verify(trusted_key, &signature_box, reader, true, false, false)
         .map_err(|err| LoaderError::BadSignature(err.to_string()))?;
 
-    let engine: Engine = Engine::default();
-
-    let compiled: Component = Component::from_binary(&engine, component)
+    let compiled: Component = Component::from_binary(engine, component)
         .map_err(|err| LoaderError::Malformed(err.to_string()))?;
 
-    enforce_capabilities(&compiled, &engine, manifest)?;
+    enforce_capabilities(&compiled, engine, manifest)?;
 
     Ok(compiled)
 }

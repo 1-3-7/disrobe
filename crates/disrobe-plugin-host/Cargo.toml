@@ -1,6 +1,6 @@
 [package]
 name = "disrobe-plugin-host"
-description = "Capability-gated WebAssembly plugin sandbox for the disrobe suite. Runs untrusted plugin modules under fuel metering, an epoch-deadline wall-clock watchdog, a linear-memory byte cap, and a structurally empty linker that denies all ambient host imports."
+description = "Capability-gated WebAssembly plugin sandbox for the disrobe suite. Verifies a signed WebAssembly Component through disrobe-plugin-loader, then runs it under fuel metering, an epoch-deadline wall-clock watchdog, a linear-memory byte cap, and an empty component linker that denies all ambient host imports."
 version.workspace = true
 readme.workspace = true
 edition.workspace = true
@@ -15,8 +15,10 @@ categories.workspace = true
 workspace = true
 
 [dependencies]
-wasmtime = { workspace = true }
+disrobe-plugin-loader = { path = "../disrobe-plugin-loader", version = "0.10.3" }
+wasmtime = { workspace = true, features = ["component-model", "cranelift", "runtime", "std"] }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+minisign = "0.9.1"
 wat = "1"

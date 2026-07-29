@@ -5,9 +5,13 @@ use std::thread::{Builder, JoinHandle};
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
+use wasmtime::component::{Component, Instance as ComponentInstance, Linker as ComponentLinker};
 use wasmtime::{
-    Config, Engine, Instance, Linker, Memory, Module, ResourceLimiter, Store, Trap, TypedFunc,
+    Config, Engine, EngineWeak, Instance, Linker, Memory, Module, ResourceLimiter, Store, Trap,
+    TypedFunc,
 };
+
+pub use disrobe_plugin_loader::{LoaderError, Manifest, ManifestError, PublicKey};
 
 const DEFAULT_FUEL_BUDGET: u64 = 50_000_000;
 const DEFAULT_WALL_DEADLINE_MS: u64 = 1_000;
@@ -73,6 +77,15 @@ pub enum SandboxError {
     Trap(String),
 }
 
+#[derive(Debug, Error)]
+pub enum PluginError {
+    #[error(transparent)]
+    Rejected(#[from] LoaderError),
+
+    #[error(transparent)]
+    Sandbox(#[from] SandboxError),
+}
+
 #[derive(Debug)]
 struct MemoryGate {
     cap_bytes: usize,
@@ -112,10 +125,125 @@ impl ResourceLimiter for MemoryGate {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct PluginHost;
+fn metered_engine() -> Result<Engine, SandboxError> {
+    let mut config: Config = Config::new();
+    config
+        .consume_fuel(true)
+        .epoch_interruption(true)
+        .wasm_component_model(true)
+        .wasm_backtrace(false);
+    Engine::new(&config).map_err(|e| SandboxError::Trap(format!("engine: {e}")))
+}
+
+fn metered_store(engine: &Engine, limits: Limits) -> Result<Store<MemoryGate>, SandboxError> {
+    let gate: MemoryGate = MemoryGate {
+        cap_bytes: limits.memory_cap_bytes,
+        denied: false,
+    };
+    let mut store: Store<MemoryGate> = Store::new(engine, gate);
+    store.limiter(|state: &mut MemoryGate| state as &mut dyn ResourceLimiter);
+    store
+        .set_fuel(limits.fuel_budget)
+        .map_err(|e| SandboxError::Trap(format!("set_fuel: {e}")))?;
+    store.set_epoch_deadline(EPOCH_DEADLINE_TICKS);
+    Ok(store)
+}
+
+#[derive(Debug)]
+pub struct PluginHost {
+    engine: Engine,
+}
 
 impl PluginHost {
+    pub fn new() -> Result<Self, SandboxError> {
+        Ok(Self {
+            engine: metered_engine()?,
+        })
+    }
+
+    #[must_use]
+    pub const fn engine(&self) -> &Engine {
+        &self.engine
+    }
+
+    pub fn load(
+        &self,
+        component: &[u8],
+        signature: &[u8],
+        trusted_key: &PublicKey,
+        manifest: &Manifest,
+    ) -> Result<Component, LoaderError> {
+        disrobe_plugin_loader::load_signed(
+            &self.engine,
+            component,
+            signature,
+            trusted_key,
+            manifest,
+        )
+    }
+
+    pub fn load_and_run(
+        &self,
+        component: &[u8],
+        signature: &[u8],
+        trusted_key: &PublicKey,
+        manifest: &Manifest,
+        input: &[u8],
+        limits: Limits,
+    ) -> Result<Vec<u8>, PluginError> {
+        let compiled: Component = self.load(component, signature, trusted_key, manifest)?;
+        Ok(self.run_component(&compiled, input, limits)?)
+    }
+
+    pub fn run_component(
+        &self,
+        component: &Component,
+        input: &[u8],
+        limits: Limits,
+    ) -> Result<Vec<u8>, SandboxError> {
+        let limits: Limits = limits.effective();
+        if input.len() > limits.memory_cap_bytes {
+            return Err(SandboxError::Memory);
+        }
+        let mut store: Store<MemoryGate> = metered_store(&self.engine, limits)?;
+
+        let linker: ComponentLinker<MemoryGate> = ComponentLinker::new(&self.engine);
+        let instance: ComponentInstance = match linker.instantiate(&mut store, component) {
+            Ok(instance) => instance,
+            Err(_) if store.data().denied => return Err(SandboxError::Memory),
+            Err(err) => return Err(SandboxError::Trap(format!("instantiate: {err}"))),
+        };
+
+        let entry: wasmtime::component::TypedFunc<(&[u8],), (Vec<u8>,)> = instance
+            .get_typed_func::<(&[u8],), (Vec<u8>,)>(&mut store, GUEST_ENTRY)
+            .map_err(|e| SandboxError::Trap(format!("entry lookup: {e}")))?;
+
+        let started: Instant = Instant::now();
+        let watch: WatchdogGuard =
+            WatchdogGuard::spawn(&self.engine, limits.wall_deadline, started)?;
+        let call_result: wasmtime::Result<(Vec<u8>,)> = entry.call(&mut store, (input,));
+        watch.finish()?;
+        if started.elapsed() >= limits.wall_deadline && call_result.is_ok() {
+            return Err(SandboxError::Timeout);
+        }
+
+        let (output,): (Vec<u8>,) = match call_result {
+            Ok(values) => values,
+            Err(err) => return Err(classify(&store, err)),
+        };
+        entry
+            .post_return(&mut store)
+            .map_err(|e| SandboxError::Trap(format!("post-return: {e}")))?;
+
+        if store.data().denied {
+            return Err(SandboxError::Memory);
+        }
+        if output.len() > limits.memory_cap_bytes {
+            return Err(SandboxError::Memory);
+        }
+        Ok(output)
+    }
+
     pub fn run(wasm: &[u8], input: &[u8], limits: Limits) -> Result<Vec<u8>, SandboxError> {
         let limits: Limits = limits.effective();
         if wasm.len() > MAX_WASM_MODULE_BYTES {
@@ -124,13 +252,7 @@ impl PluginHost {
                 max: MAX_WASM_MODULE_BYTES,
             });
         }
-        let mut config: Config = Config::new();
-        config
-            .consume_fuel(true)
-            .epoch_interruption(true)
-            .wasm_backtrace(false);
-        let engine: Engine =
-            Engine::new(&config).map_err(|e| SandboxError::Trap(format!("engine: {e}")))?;
+        let engine: Engine = metered_engine()?;
         let module: Module =
             Module::new(&engine, wasm).map_err(|e| SandboxError::Trap(format!("module: {e}")))?;
 
@@ -138,16 +260,7 @@ impl PluginHost {
             return Err(SandboxError::DeniedImport(denied));
         }
 
-        let gate: MemoryGate = MemoryGate {
-            cap_bytes: limits.memory_cap_bytes,
-            denied: false,
-        };
-        let mut store: Store<MemoryGate> = Store::new(&engine, gate);
-        store.limiter(|state: &mut MemoryGate| state as &mut dyn ResourceLimiter);
-        store
-            .set_fuel(limits.fuel_budget)
-            .map_err(|e| SandboxError::Trap(format!("set_fuel: {e}")))?;
-        store.set_epoch_deadline(EPOCH_DEADLINE_TICKS);
+        let mut store: Store<MemoryGate> = metered_store(&engine, limits)?;
 
         let mut linker: Linker<MemoryGate> = Linker::new(&engine);
         linker
@@ -192,17 +305,9 @@ impl PluginHost {
             .map_err(|e| SandboxError::Trap(format!("entry lookup: {e}")))?;
 
         let started: Instant = Instant::now();
-        let stopper: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-        let watchdog: JoinHandle<()> =
-            spawn_epoch_watchdog(engine, Arc::clone(&stopper), limits.wall_deadline, started)
-                .map_err(|e| SandboxError::Trap(format!("watchdog spawn: {e}")))?;
-
+        let watch: WatchdogGuard = WatchdogGuard::spawn(&engine, limits.wall_deadline, started)?;
         let call_result: wasmtime::Result<i32> = entry.call(&mut store, input_len);
-
-        stopper.store(true, Ordering::Relaxed);
-        watchdog
-            .join()
-            .map_err(|_| SandboxError::Trap("watchdog thread panicked".to_owned()))?;
+        watch.finish()?;
         if started.elapsed() >= limits.wall_deadline && call_result.is_ok() {
             return Err(SandboxError::Timeout);
         }
@@ -234,6 +339,33 @@ impl PluginHost {
         mem.read(&store, GUEST_IO_BASE, &mut buffer)
             .map_err(|e| SandboxError::Trap(format!("output read: {e}")))?;
         Ok(buffer)
+    }
+}
+
+#[derive(Debug)]
+struct WatchdogGuard {
+    stopper: Arc<AtomicBool>,
+    handle: JoinHandle<()>,
+}
+
+impl WatchdogGuard {
+    fn spawn(
+        engine: &Engine,
+        wall_deadline: Duration,
+        started: Instant,
+    ) -> Result<Self, SandboxError> {
+        let stopper: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+        let handle: JoinHandle<()> =
+            spawn_epoch_watchdog(engine.weak(), Arc::clone(&stopper), wall_deadline, started)
+                .map_err(|e| SandboxError::Trap(format!("watchdog spawn: {e}")))?;
+        Ok(Self { stopper, handle })
+    }
+
+    fn finish(self) -> Result<(), SandboxError> {
+        self.stopper.store(true, Ordering::Relaxed);
+        self.handle
+            .join()
+            .map_err(|_| SandboxError::Trap("watchdog thread panicked".to_owned()))
     }
 }
 
@@ -269,7 +401,7 @@ fn classify(store: &Store<MemoryGate>, err: wasmtime::Error) -> SandboxError {
 }
 
 fn spawn_epoch_watchdog(
-    engine: Engine,
+    engine: EngineWeak,
     stopper: Arc<AtomicBool>,
     wall_deadline: Duration,
     started: Instant,
@@ -280,7 +412,9 @@ fn spawn_epoch_watchdog(
             let tick: Duration = Duration::from_millis(WATCHDOG_TICK_MS);
             while !stopper.load(Ordering::Relaxed) {
                 if started.elapsed() >= wall_deadline {
-                    engine.increment_epoch();
+                    if let Some(alive) = engine.upgrade() {
+                        alive.increment_epoch();
+                    }
                     break;
                 }
                 std::thread::sleep(tick);

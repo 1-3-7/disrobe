@@ -47,7 +47,8 @@ fn load_outcome(
     trusted_key: &PublicKey,
     manifest: &Manifest,
 ) -> Result<(), LoaderError> {
-    load_signed(component, signature, trusted_key, manifest).map(|_component| ())
+    let engine: Engine = Engine::default();
+    load_signed(&engine, component, signature, trusted_key, manifest).map(|_component| ())
 }
 
 #[test]
