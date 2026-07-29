@@ -162,6 +162,7 @@ fn signature_line(body: &str) -> Option<(usize, String)> {
 fn method_name_of(decl: &str) -> Option<String> {
     let before_paren: &str = decl.split('(').next()?;
     let ident: &str = before_paren.split_whitespace().next_back()?;
+    let ident: &str = ident.split('<').next()?;
     (!ident.is_empty()
         && ident
             .bytes()
@@ -257,6 +258,21 @@ fn field_declarations(bytes: &[u8], target: Target) -> Vec<String> {
         .iter()
         .map(|field: &FieldModel| csharp_field_declaration(&resolver, field))
         .collect()
+}
+
+fn is_value_type(bytes: &[u8], target: Target) -> bool {
+    let pe: PeImage = parse(bytes).expect("parse fixture PE");
+    let clr: ClrHeader = parse_clr_header(bytes, &pe).expect("parse fixture CLR header");
+    let root: MetadataRoot = parse_metadata_root(bytes, &pe, &clr).expect("parse fixture metadata");
+    let resolver: Resolver = Resolver::build(bytes, &pe, &clr, &root).expect("build fixture model");
+    let full_name: String = format!("{}.{}", target.origin_namespace, target.type_name);
+    resolver
+        .model()
+        .types
+        .iter()
+        .find(|candidate: &&TypeModel| candidate.full_name == full_name)
+        .and_then(|ty: &TypeModel| ty.base_type.clone())
+        .is_some_and(|base: String| base.ends_with("System.ValueType"))
 }
 
 fn csharp_field_declaration(resolver: &Resolver, field: &FieldModel) -> String {
@@ -407,7 +423,12 @@ fn csharp_double_literal(value: f64) -> String {
     }
 }
 
-fn whole_type_source(fields: &[String], methods: &[UserMethod], target: Target) -> String {
+fn whole_type_source(
+    fields: &[String],
+    methods: &[UserMethod],
+    target: Target,
+    value_type: bool,
+) -> String {
     let declarations: String = fields.join("\n");
     let bodies: String = methods
         .iter()
@@ -416,12 +437,15 @@ fn whole_type_source(fields: &[String], methods: &[UserMethod], target: Target) 
         .join("\n");
     let kind: &str = if target.is_static {
         "public static class"
+    } else if value_type {
+        "public struct"
     } else {
         "public class"
     };
     let type_name: &str = target.type_name;
+    let namespace: &str = target.origin_namespace;
     format!(
-        "{PREAMBLE}namespace {NAMESPACE}\n{{\n    {kind} {type_name}\n    {{\n{declarations}\n{bodies}\n    }}\n}}\n"
+        "{PREAMBLE}namespace {namespace}\n{{\n    {kind} {type_name}\n    {{\n{declarations}\n{bodies}\n    }}\n}}\n"
     )
 }
 
@@ -568,6 +592,7 @@ fn method_il_ops(il: &str, method: &str, type_name: &str) -> Option<Vec<String>>
     let mut ops: Vec<(u32, String)> = Vec::new();
     let needle_open: String = format!(" {method} (");
     let needle_open_tight: String = format!(" {method}(");
+    let needle_open_generic: String = format!(" {method}<");
     let needle_close: String = format!("end of method {type_name}::{method}");
     for line in il.lines() {
         let trimmed: &str = line.trim_start();
@@ -575,7 +600,9 @@ fn method_il_ops(il: &str, method: &str, type_name: &str) -> Option<Vec<String>>
             in_method = false;
         }
         if !in_method
-            && (line.contains(&needle_open) || line.contains(&needle_open_tight))
+            && (line.contains(&needle_open)
+                || line.contains(&needle_open_tight)
+                || line.contains(&needle_open_generic))
             && line.contains(method)
             && looks_like_method_header(line, method)
         {
@@ -595,6 +622,10 @@ fn method_il_ops(il: &str, method: &str, type_name: &str) -> Option<Vec<String>>
 fn looks_like_method_header(line: &str, method: &str) -> bool {
     let Some((_, after)): Option<(&str, &str)> = line.split_once(method) else {
         return false;
+    };
+    let after: &str = match after.split_once('>') {
+        Some((generics, rest)) if after.starts_with('<') && !generics.contains('(') => rest,
+        _ => after,
     };
     after.trim_start().starts_with('(')
 }
@@ -644,7 +675,7 @@ fn run_target(target: Target) -> Outcome {
     let tmp: PathBuf = scratch.path().to_path_buf();
     write_project(&tmp, target.type_name);
     let fields: Vec<String> = field_declarations(&bytes, target);
-    let src: String = whole_type_source(&fields, &methods, target);
+    let src: String = whole_type_source(&fields, &methods, target, is_value_type(&bytes, target));
     let (compile_errors, produced): (Vec<String>, Option<PathBuf>) =
         compile_whole_type(&tmp, &src, target.type_name);
 
@@ -654,7 +685,7 @@ fn run_target(target: Target) -> Outcome {
     let mut branching: Vec<String> = Vec::new();
     if let Some(recompiled) = produced.as_ref() {
         let orig_il: String = ilspy_il(&dll_path, target.origin_namespace, target.type_name);
-        let recomp_il: String = ilspy_il(recompiled, NAMESPACE, target.type_name);
+        let recomp_il: String = ilspy_il(recompiled, target.origin_namespace, target.type_name);
         let orig_ops: BTreeMap<String, Vec<String>> = methods
             .iter()
             .filter_map(|m: &UserMethod| {
@@ -1075,6 +1106,124 @@ fn branch_target_identity_survives_normalization() {
             .iter()
             .any(|op: &String| op.contains("switch (L#0, L#3, L#12)")),
         "every switch arm must keep its own target identity; got {inner:?}"
+    );
+}
+
+const EDGECASES_DLL: &str = "../../corpus/dotnet/megafile/EdgeCases.baseline.dll";
+
+const EDGECASES_TYPES: &[(&str, bool)] = &[
+    ("AnimalBase", false),
+    ("AsyncDisposableScope", false),
+    ("AsyncPlayground", true),
+    ("Cat", false),
+    ("CollectionPlayground", true),
+    ("ConditionalCompilation", true),
+    ("ConfigParser", true),
+    ("DeconstructPlayground", true),
+    ("DisposableScope", false),
+    ("DisposalPlayground", true),
+    ("Dog", false),
+    ("EntryPoint", true),
+    ("EventSource", false),
+    ("ExceptionPlayground", true),
+    ("ExpressionPlayground", true),
+    ("FileSystemPlayground", true),
+    ("FixedBufferHolder", false),
+    ("IteratorPlayground", true),
+    ("JsonLite", true),
+    ("LinqPlayground", true),
+    ("Money", false),
+    ("PackedHeader", false),
+    ("PatternKit", true),
+    ("Pipeline", false),
+    ("PinvokePlayground", true),
+    ("PrimaryCtorService", false),
+    ("RefPlayground", true),
+    ("SpanPlayground", true),
+    ("StaticFinalizationKit", true),
+    ("StringPlayground", true),
+    ("TargetTypedNewPlayground", true),
+    ("TplPlayground", true),
+    ("TraceableAttribute", false),
+    ("UnionLike", false),
+    ("WithExpressionPlayground", true),
+];
+
+const EDGECASES_RECOMPILE_FLOOR: usize = 6;
+
+fn error_code(line: &str) -> Option<&str> {
+    let start: usize = line.find(": error ")? + ": error ".len();
+    let rest: &str = line.get(start..)?;
+    rest.split(':').next()
+}
+
+#[test]
+fn edgecases_whole_type_recompile_fraction_is_published_as_measured() {
+    if !dotnet_available() {
+        eprintln!("SKIP EdgeCases whole-type recompile fraction: no dotnet SDK");
+        return;
+    }
+    let path: PathBuf = manifest(EDGECASES_DLL)
+        .canonicalize()
+        .expect("canonicalize");
+    let bytes: Vec<u8> = std::fs::read(&path).expect("read fixture");
+    let asm: DecompiledAssembly = decompile_assembly(&bytes).expect("decompile");
+    let mut compiled: Vec<&str> = Vec::new();
+    let mut residual: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for (type_name, is_static) in EDGECASES_TYPES {
+        let target: Target = Target {
+            dll: EDGECASES_DLL,
+            origin_namespace: "EdgeCases",
+            type_name,
+            is_static: *is_static,
+        };
+        let methods: Vec<UserMethod> = asm
+            .methods
+            .iter()
+            .filter_map(|m: &StructuredMethod| user_method_for(&m.body, type_name))
+            .collect();
+        let fields: Vec<String> = field_declarations(&bytes, target);
+        if methods.is_empty() && fields.is_empty() {
+            residual
+                .entry("no member recovered".to_owned())
+                .or_default()
+                .push(type_name);
+            continue;
+        }
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create(&format!("disrobe_wt_{type_name}"))
+                .expect("mk tmp");
+        let tmp: PathBuf = scratch.path().to_path_buf();
+        write_project(&tmp, type_name);
+        let src: String =
+            whole_type_source(&fields, &methods, target, is_value_type(&bytes, target));
+        let (errors, produced): (Vec<String>, Option<PathBuf>) =
+            compile_whole_type(&tmp, &src, type_name);
+        if produced.is_some() {
+            compiled.push(type_name);
+            continue;
+        }
+        let first: String = errors
+            .first()
+            .and_then(|line: &String| error_code(line))
+            .unwrap_or("no diagnostic")
+            .to_owned();
+        residual.entry(first).or_default().push(type_name);
+    }
+    eprintln!(
+        "EDGECASES WHOLE-TYPE RECOMPILE: {}/{} types whose recovered source csc accepts standalone",
+        compiled.len(),
+        EDGECASES_TYPES.len()
+    );
+    eprintln!("  recompiled: {compiled:?}");
+    for (code, types) in &residual {
+        eprintln!("  first-error {code}: {types:?}");
+    }
+    assert!(
+        compiled.len() >= EDGECASES_RECOMPILE_FLOOR,
+        "EdgeCases whole-type recompile regressed below the measured floor: {}/{} (floor {EDGECASES_RECOMPILE_FLOOR}); residual={residual:?}",
+        compiled.len(),
+        EDGECASES_TYPES.len()
     );
 }
 

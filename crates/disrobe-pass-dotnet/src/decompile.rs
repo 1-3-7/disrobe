@@ -291,9 +291,49 @@ fn decompile_one(
                     &method_param_names,
                 );
             }
+            if lang == TargetLang::CSharp && !method_param_names.is_empty() {
+                let short_name: &str = m.name.rsplit("::").next().unwrap_or(&m.name);
+                structured.signature = declare_method_type_parameters(
+                    &structured.signature,
+                    short_name,
+                    &method_param_names,
+                );
+                structured.body = declare_method_type_parameters(
+                    &structured.body,
+                    short_name,
+                    &method_param_names,
+                );
+            }
             methods.push(structured);
         }
         Err(_) => *failed = failed.saturating_add(1),
+    }
+}
+
+fn declare_method_type_parameters(text: &str, name: &str, params: &[String]) -> String {
+    let needle: String = format!("{name}(");
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    let Some(decl): Option<&mut String> = lines.iter_mut().find(|line: &&mut String| {
+        let trimmed: &str = line.trim_start();
+        !trimmed.is_empty() && !trimmed.starts_with("//") && !trimmed.starts_with('\'')
+    }) else {
+        return text.to_owned();
+    };
+    let Some(open): Option<usize> = decl.find(&needle) else {
+        return text.to_owned();
+    };
+    let split: usize = open + name.len();
+    *decl = format!(
+        "{}<{}>{}",
+        &decl[..split],
+        params.join(", "),
+        &decl[split..]
+    );
+    let joined: String = lines.join("\n");
+    if text.ends_with('\n') {
+        format!("{joined}\n")
+    } else {
+        joined
     }
 }
 
