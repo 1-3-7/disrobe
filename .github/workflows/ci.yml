@@ -130,7 +130,20 @@ jobs:
           python -m pip install --disable-pip-version-check z3-solver
           SCRIPTS="$(python -c "import sysconfig; print(sysconfig.get_path('scripts'))")"
           echo "$SCRIPTS" >> "$GITHUB_PATH"
-          PATH="$SCRIPTS:$PATH" z3 --version
+          if command -v cygpath >/dev/null 2>&1; then
+            PROBE="$(cygpath -u "$SCRIPTS")"
+          else
+            PROBE="$SCRIPTS"
+          fi
+          if [ -x "$PROBE/z3" ]; then
+            "$PROBE/z3" --version
+          elif [ -x "$PROBE/z3.exe" ]; then
+            "$PROBE/z3.exe" --version
+          else
+            echo "z3 was installed but no executable is present in $SCRIPTS"
+            ls -la "$PROBE" | head -40
+            exit 1
+          fi
           echo "DISROBE_REQUIRE_SOLVER=1" >> "$GITHUB_ENV"
       - name: provision erlang so the beam differentials run instead of returning early
         if: runner.os == 'Linux'
