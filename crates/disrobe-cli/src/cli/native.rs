@@ -200,7 +200,7 @@ fn decompile_native(
     match obj.architecture() {
         object::Architecture::X86_64 => {}
         object::Architecture::Aarch64 => {
-            return decompile_native_aarch64(&input, &obj, &module, out, format, devirt);
+            return decompile_native_aarch64(&input, &bytes, &obj, &module, out, format, devirt);
         }
         other => {
             return Err(miette::miette!(
@@ -531,14 +531,58 @@ fn devirt_report_json(report: &disrobe_mba::NirDevirtReport) -> serde_json::Valu
 }
 
 #[cfg(feature = "nir-lift")]
-fn decompile_native_aarch64(
+fn aarch64_image_slice<'data>(obj: &object::File<'data>, address: u64) -> Option<&'data [u8]> {
+    for section in obj.sections() {
+        let start: u64 = section.address();
+        if start == 0 {
+            continue;
+        }
+        let Some(offset): Option<u64> = address.checked_sub(start) else {
+            continue;
+        };
+        let Ok(offset): Result<usize, _> = usize::try_from(offset) else {
+            continue;
+        };
+        let Ok(data): Result<&'data [u8], object::Error> = section.data() else {
+            continue;
+        };
+        if offset < data.len() {
+            return data.get(offset..);
+        }
+    }
+    None
+}
+
+#[cfg(feature = "nir-lift")]
+fn rename_emitted_function(source: &str, from: &str, to: &str) -> String {
+    if from == to {
+        return source.to_owned();
+    }
+    source.replacen(&format!("{from}("), &format!("{to}("), 1)
+}
+
+#[cfg(feature = "nir-lift")]
+fn devirt_folded_edges(report: &serde_json::Value) -> u64 {
+    report
+        .get("edges_folded")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0)
+}
+
+#[cfg(feature = "nir-lift")]
+fn decompile_native_aarch64<'data>(
     input: &Path,
-    obj: &object::File<'_>,
+    bytes: &'data [u8],
+    obj: &object::File<'data>,
     module: &disrobe_query::Module,
     out: Option<PathBuf>,
     format: DecompileLang,
     devirt: bool,
 ) -> miette::Result<()> {
+    use disrobe_pass_native::{
+        LeafRecovery, RecoveredFunction, RecoveredProgram, recover_aarch64_function_with_image,
+        recover_aarch64_program,
+    };
     use std::fmt::Write as _;
 
     let stem: String = input
@@ -551,11 +595,20 @@ fn decompile_native_aarch64(
     std::fs::create_dir_all(&out_dir)
         .map_err(|e| miette::miette!("DR-NATIVE-0170: cannot create out dir: {e}"))?;
 
+    let program: RecoveredProgram = recover_aarch64_program(bytes);
+    let whole_program: BTreeMap<u64, &RecoveredFunction> = program
+        .recovered
+        .iter()
+        .map(|rec: &RecoveredFunction| (rec.address, rec))
+        .collect();
+
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut bodies: String = String::new();
     let mut recovered: Vec<serde_json::Value> = Vec::new();
     let mut unrecovered: Vec<serde_json::Value> = Vec::new();
     let mut structured_count: usize = 0;
+    let mut whole_program_count: usize = 0;
+    let mut image_leaf_count: usize = 0;
     let mut devirt_full: usize = 0;
     let mut devirt_partial: usize = 0;
     let mut devirt_none: usize = 0;
@@ -592,10 +645,52 @@ fn decompile_native_aarch64(
                 false
             }
         };
-        let (source, structured, devirt_report): (String, bool, serde_json::Value) =
-            match aarch64_recover_source(&code, f.address, &emitted_name, effective_devirt) {
-                Ok(value) => value,
-                Err(reason) => {
+        let lifted: Result<(String, bool, serde_json::Value), String> =
+            aarch64_recover_source(&code, f.address, &emitted_name, effective_devirt);
+        let fold_wins: bool =
+            lifted
+                .as_ref()
+                .is_ok_and(|(_, _, report): &(String, bool, serde_json::Value)| {
+                    devirt_folded_edges(report) > 0
+                });
+        let flagship: Option<(String, &'static str)> = if fold_wins {
+            None
+        } else {
+            whole_program
+                .get(&f.address)
+                .map(|rec: &&RecoveredFunction| {
+                    (
+                        rename_emitted_function(&rec.source, &rec.name, &emitted_name),
+                        "whole-program",
+                    )
+                })
+                .or_else(|| {
+                    recover_aarch64_function_with_image(
+                        &code,
+                        f.address,
+                        &|address: u64| aarch64_image_slice(obj, address),
+                        &|_: u64| None,
+                    )
+                    .ok()
+                    .map(|leaf: LeafRecovery| {
+                        (
+                            rename_emitted_function(&leaf.source, "recovered", &emitted_name),
+                            "image-leaf",
+                        )
+                    })
+                })
+        };
+        let (source, structured, engine, devirt_report): (String, bool, &str, serde_json::Value) =
+            match (flagship, lifted) {
+                (Some((source, engine)), _) => {
+                    match engine {
+                        "whole-program" => whole_program_count += 1,
+                        _ => image_leaf_count += 1,
+                    }
+                    (source, true, engine, serde_json::Value::Null)
+                }
+                (None, Ok((source, structured, report))) => (source, structured, "nir", report),
+                (None, Err(reason)) => {
                     unrecovered.push(serde_json::json!({
                         "name": f.name, "address": f.address, "reason": reason
                     }));
@@ -618,7 +713,7 @@ fn decompile_native_aarch64(
             source.trim()
         );
         let mut entry: serde_json::Value = serde_json::json!({
-            "name": f.name, "address": f.address, "emitted_as": emitted_name, "structured": structured
+            "name": f.name, "address": f.address, "emitted_as": emitted_name, "structured": structured, "engine": engine
         });
         if !devirt_report.is_null() {
             match devirt_report
@@ -678,6 +773,8 @@ fn decompile_native_aarch64(
         "functions_total": total,
         "functions_recovered": recovered.len(),
         "functions_structured": structured_count,
+        "functions_whole_program": whole_program_count,
+        "functions_image_leaf": image_leaf_count,
         "functions_unrecovered": unrecovered.len(),
         "source": src_path.display().to_string(),
         "devirt": devirt_summary,
@@ -692,10 +789,12 @@ fn decompile_native_aarch64(
     .map_err(|e| miette::miette!("DR-NATIVE-0173: cannot write manifest: {e}"))?;
 
     println!(
-        "native decompile (in-tree aarch64 -> pseudo-C): recovered {}/{} function(s), {} structured -> {}",
+        "native decompile (in-tree aarch64 -> pseudo-C): recovered {}/{} function(s), {} structured ({} whole-program, {} image-leaf) -> {}",
         recovered.len(),
         total,
         structured_count,
+        whole_program_count,
+        image_leaf_count,
         src_path.display()
     );
     if devirt {

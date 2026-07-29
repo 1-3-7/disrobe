@@ -13,8 +13,8 @@ use super::aarch64::{
 use super::{
     CallSiteIdentitySignature, CallSiteReturnProof, CallSiteScalar, CallSiteSignatureProof, Error,
     FpWidth, LeafRecovery, RecoveredFunction, RecoveredProgram, UnrecoveredFunction, Width,
-    aarch64_call_site_body_is_bounded, recover_aarch64_function, recover_call_site_identity,
-    rename_recovered_c_symbol, rename_recovered_rust_symbol,
+    aarch64_call_site_body_is_bounded, recover_aarch64_function_with_image,
+    recover_call_site_identity, rename_recovered_c_symbol, rename_recovered_rust_symbol,
 };
 use crate::arch::{Arch, DisasmInsn, disassemble};
 
@@ -112,8 +112,8 @@ struct BufferLocation {
     displacement: i64,
 }
 
-pub(super) fn recover(object_bytes: &[u8]) -> RecoveredProgram {
-    let file: object::File<'_> = match object::File::parse(object_bytes) {
+pub(super) fn recover<'data>(object_bytes: &'data [u8]) -> RecoveredProgram {
+    let file: object::File<'data> = match object::File::parse(object_bytes) {
         Ok(file) => file,
         Err(error) => return object_refusal(format!("cannot parse object: {error}")),
     };
@@ -130,6 +130,8 @@ pub(super) fn recover(object_bytes: &[u8]) -> RecoveredProgram {
     }
     let functions: Vec<FunctionSymbol> = collect_functions(&file);
     let attributed: BTreeMap<usize, Vec<AttributedSite>> = attribute_call_sites(&file, &functions);
+    let windows: Vec<ImageWindow<'data>> = image_windows(&file);
+    let data_targets: BTreeMap<u64, u64> = absolute_data_targets(&file);
     let mut recovered: Vec<RecoveredFunction> = Vec::with_capacity(functions.len());
     let mut unrecovered: Vec<UnrecoveredFunction> = Vec::new();
     for function in &functions {
@@ -142,7 +144,12 @@ pub(super) fn recover(object_bytes: &[u8]) -> RecoveredProgram {
             continue;
         };
         let isolated: core::result::Result<LeafRecovery, Error> =
-            recover_aarch64_function(code.as_ref(), function.address);
+            recover_aarch64_function_with_image(
+                code.as_ref(),
+                function.address,
+                &|address: u64| image_slice(&windows, address),
+                &|address: u64| data_targets.get(&address).copied(),
+            );
         let recovery: core::result::Result<LeafRecovery, String> = match isolated {
             Ok(recovery) => Ok(recovery),
             Err(error) => {
@@ -171,6 +178,85 @@ pub(super) fn recover(object_bytes: &[u8]) -> RecoveredProgram {
         recovered,
         unrecovered,
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ImageWindow<'data> {
+    address: u64,
+    data: &'data [u8],
+}
+
+fn image_windows<'data>(file: &object::File<'data>) -> Vec<ImageWindow<'data>> {
+    let mut windows: Vec<ImageWindow<'data>> = Vec::new();
+    for section in file.sections() {
+        let address: u64 = section.address();
+        if address == 0 {
+            continue;
+        }
+        let Ok(data): core::result::Result<&'data [u8], object::Error> = section.data() else {
+            continue;
+        };
+        if data.is_empty() {
+            continue;
+        }
+        windows.push(ImageWindow { address, data });
+    }
+    windows.sort_by_key(|window: &ImageWindow<'data>| window.address);
+    windows
+}
+
+fn image_slice<'data>(windows: &[ImageWindow<'data>], address: u64) -> Option<&'data [u8]> {
+    for window in windows {
+        let Some(offset): Option<u64> = address.checked_sub(window.address) else {
+            continue;
+        };
+        let Ok(offset): core::result::Result<usize, _> = usize::try_from(offset) else {
+            continue;
+        };
+        if offset < window.data.len() {
+            return window.data.get(offset..);
+        }
+    }
+    None
+}
+
+fn absolute_data_targets(file: &object::File<'_>) -> BTreeMap<u64, u64> {
+    let mut targets: BTreeMap<u64, u64> = BTreeMap::new();
+    for section in file.sections() {
+        let section_address: u64 = section.address();
+        for (offset, relocation) in section.relocations() {
+            let RelocationFlags::Elf { r_type } = relocation.flags() else {
+                continue;
+            };
+            if r_type != object::elf::R_AARCH64_ABS64 {
+                continue;
+            }
+            let Some(entry_address): Option<u64> = section_address.checked_add(offset) else {
+                continue;
+            };
+            let base_address: Option<u64> = match relocation.target() {
+                RelocationTarget::Symbol(index) => file
+                    .symbol_by_index(index)
+                    .ok()
+                    .map(|symbol: object::Symbol<'_, '_>| symbol.address()),
+                RelocationTarget::Section(index) => file
+                    .section_by_index(index)
+                    .ok()
+                    .map(|target: object::Section<'_, '_>| target.address()),
+                RelocationTarget::Absolute => Some(0),
+                _ => None,
+            };
+            let Some(base_address): Option<u64> = base_address else {
+                continue;
+            };
+            let Some(target): Option<u64> = base_address.checked_add_signed(relocation.addend())
+            else {
+                continue;
+            };
+            targets.insert(entry_address, target);
+        }
+    }
+    targets
 }
 
 fn object_refusal(reason: String) -> RecoveredProgram {
