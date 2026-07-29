@@ -197,6 +197,7 @@ pub struct MpyBytecodeModule {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MpyFunction {
     pub simple_name: String,
+    pub arg_names: Vec<String>,
     pub n_state: u32,
     pub n_exc_stack: u32,
     pub scope_flags: u32,
@@ -352,6 +353,7 @@ fn read_function(cursor: &mut Cursor<'_>, qstrs: &[String], depth: u8) -> Result
     }
     Ok(MpyFunction {
         simple_name: decoded.simple_name,
+        arg_names: decoded.arg_names,
         n_state: decoded.n_state,
         n_exc_stack: decoded.n_exc_stack,
         scope_flags: decoded.scope_flags,
@@ -365,6 +367,7 @@ fn read_function(cursor: &mut Cursor<'_>, qstrs: &[String], depth: u8) -> Result
 
 struct DecodedFunctionBody {
     simple_name: String,
+    arg_names: Vec<String>,
     n_state: u32,
     n_exc_stack: u32,
     scope_flags: u32,
@@ -374,24 +377,63 @@ struct DecodedFunctionBody {
     instructions: Vec<MpyDecodedInsn>,
 }
 
+fn qstr_text_at(qstrs: &[String], index: u64) -> String {
+    qstrs
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+        .cloned()
+        .unwrap_or_else(|| format!("<qstr#{index}>"))
+}
+
+fn decode_arg_names(
+    fun_data: &[u8],
+    info_ip: &mut usize,
+    code_info_end: usize,
+    wanted: usize,
+    qstrs: &[String],
+) -> Result<Vec<String>> {
+    let room: usize = code_info_end.saturating_sub(*info_ip);
+    let mut names: Vec<String> = Vec::with_capacity(wanted.min(room).min(MAX_TABLE_PREALLOC));
+    for _ in 0..wanted.min(room) {
+        let mut probe: usize = *info_ip;
+        let index: u64 = decode_uint(fun_data, &mut probe)?;
+        if probe > code_info_end {
+            break;
+        }
+        *info_ip = probe;
+        names.push(qstr_text_at(qstrs, index));
+    }
+    Ok(names)
+}
+
 fn decode_function_body(fun_data: &[u8], qstrs: &[String]) -> Result<DecodedFunctionBody> {
     let mut ip: usize = 0;
     let sig: PreludeSig = decode_prelude_sig(fun_data, &mut ip)?;
     let size: PreludeSize = decode_prelude_size(fun_data, &mut ip)?;
     let code_info_start: usize = ip;
+    let code_info_end: usize =
+        code_info_start
+            .checked_add(size.n_info)
+            .ok_or(AltRuntimeError::BadEncoding {
+                field: "prelude_size",
+                offset: code_info_start,
+            })?;
     let mut info_ip: usize = code_info_start;
     let name_index: u64 = decode_uint(fun_data, &mut info_ip)?;
-    let simple_name: String = qstrs
-        .get(usize::try_from(name_index).unwrap_or(usize::MAX))
-        .cloned()
-        .unwrap_or_else(|| format!("<qstr#{name_index}>"));
-    let opcodes_start: usize = code_info_start
-        .checked_add(size.n_info)
-        .and_then(|v: usize| v.checked_add(size.n_cell))
-        .ok_or(AltRuntimeError::BadEncoding {
-            field: "prelude_size",
-            offset: code_info_start,
-        })?;
+    let simple_name: String = qstr_text_at(qstrs, name_index);
+    let arg_names: Vec<String> = decode_arg_names(
+        fun_data,
+        &mut info_ip,
+        code_info_end,
+        sig.n_pos_args.saturating_add(sig.n_kwonly_args),
+        qstrs,
+    )?;
+    let opcodes_start: usize =
+        code_info_end
+            .checked_add(size.n_cell)
+            .ok_or(AltRuntimeError::BadEncoding {
+                field: "prelude_size",
+                offset: code_info_start,
+            })?;
     let opcodes: &[u8] =
         fun_data
             .get(opcodes_start..)
@@ -405,6 +447,7 @@ fn decode_function_body(fun_data: &[u8], qstrs: &[String]) -> Result<DecodedFunc
     let instructions: Vec<MpyDecodedInsn> = decode_opcodes(opcodes, qstrs)?;
     Ok(DecodedFunctionBody {
         simple_name,
+        arg_names,
         n_state: u32::try_from(sig.n_state).unwrap_or(u32::MAX),
         n_exc_stack: u32::try_from(sig.n_exc_stack).unwrap_or(u32::MAX),
         scope_flags: u32::try_from(sig.scope_flags).unwrap_or(u32::MAX),
@@ -1084,8 +1127,9 @@ fn walk_function(out: &mut String, func: &MpyFunction, depth: usize) {
     crate::push_string_line(
         out,
         format_args!(
-            "\n{indent}; function {} (state {}, args {}, kwonly {}, defaults {})",
+            "\n{indent}; function {}({}) (state {}, args {}, kwonly {}, defaults {})",
             func.simple_name,
+            func.arg_names.join(", "),
             func.n_state,
             func.n_pos_args,
             func.n_kwonly_args,
@@ -1234,6 +1278,38 @@ mod tests {
         );
         let binop: &MpyDecodedInsn = &add.instructions[2];
         assert_eq!(binop.operand.as_deref(), Some("add"));
+    }
+
+    #[test]
+    fn prelude_carries_the_declared_parameter_names() {
+        let module: MpyBytecodeModule = parse_bytecode(HELLO_BYTECODE).expect("parse bytecode mpy");
+        let add: &MpyFunction = module
+            .function
+            .children
+            .iter()
+            .find(|f: &&MpyFunction| f.simple_name == "add")
+            .expect("add child present");
+        assert_eq!(
+            add.arg_names,
+            vec!["a".to_owned(), "b".to_owned()],
+            "mpy stores one prelude qstr per positional and keyword-only parameter"
+        );
+        assert!(
+            module.function.arg_names.is_empty(),
+            "the module body takes no parameters, so its prelude carries no argument qstrs"
+        );
+        let control: MpyBytecodeModule = parse_bytecode(CONTROL_FLOW).expect("parse control flow");
+        let classify: &MpyFunction = control
+            .function
+            .children
+            .iter()
+            .find(|f: &&MpyFunction| f.simple_name == "classify")
+            .expect("classify present");
+        assert_eq!(classify.arg_names, vec!["n".to_owned()]);
+        assert!(
+            render(&control).contains("; function classify(n)"),
+            "the rendered listing must show the recovered parameter names"
+        );
     }
 
     #[test]
