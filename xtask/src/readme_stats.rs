@@ -12,6 +12,7 @@ const MAX_README_BYTES: u64 = 4 * 1024 * 1024;
 struct Binding {
     heading_substr: &'static str,
     bar_label: &'static str,
+    marker_key: &'static str,
     format: fn(f64) -> String,
 }
 
@@ -19,11 +20,13 @@ const BINDINGS: &[Binding] = &[
     Binding {
         heading_substr: "Python bytecode",
         bar_label: "full 574-module stdlib (representative)",
+        marker_key: "py_stdlib_full_pct",
         format: format_percent,
     },
     Binding {
         heading_substr: "Python bytecode",
         bar_label: "200-module pinned corpus",
+        marker_key: "py_stdlib_pinned_pct",
         format: format_percent,
     },
 ];
@@ -49,10 +52,19 @@ pub(crate) fn run(root: &Path) -> Result<()> {
             );
         };
         let formatted: String = (binding.format)(value);
-        if !readme.contains(formatted.as_str()) {
+        let anchored: String = format!("<!-- m:{} -->{formatted}<!-- /m -->", binding.marker_key);
+        if !readme.contains(anchored.as_str()) {
+            let loose: bool = readme.contains(formatted.as_str());
             drift.push(format!(
-                "README.md no longer contains `{formatted}` (source: recovery.json heading containing `{}`, bar `{}`)",
-                binding.heading_substr, binding.bar_label
+                "README.md does not carry `{formatted}` inside its `{}` marker span (source: recovery.json heading containing `{}`, bar `{}`){}",
+                binding.marker_key,
+                binding.heading_substr,
+                binding.bar_label,
+                if loose {
+                    "; the value does appear elsewhere in the file, which is how a stale figure passes a plain substring search"
+                } else {
+                    ""
+                }
             ));
         }
     }
