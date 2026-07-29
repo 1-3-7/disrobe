@@ -28,7 +28,7 @@ The optional external backends (Ghidra, CFR, Vineflower, jadx, ILSpy, dnSpy, de4
 `disrobe` parses adversarial binary input constantly, so the parsing surface is hardened deliberately:
 
 - Format decoders avoid `unsafe`. The remaining unsafe code is limited to audited boundary code such as C interop, WASM exports, archive/io shims, build/install helpers, and native-loader interfaces. Any panic or abort on adversarial input that is not a clean `Result::Err` is a bug.
-- Zip-bombs, decompression bombs, container-recursion bombs, and malformed-length-field bombs are defused by the shared quota machinery in `crates/disrobe-binfmt/src/quota.rs` (per-entry cap, aggregate cap, recursion-depth cap).
+- Zip-bombs, decompression bombs, container-recursion bombs, and malformed-length-field bombs are defused by the shared quota machinery in `crates/disrobe-binfmt/src/quota.rs`, whose per-entry ratio the phar reader mirrors in-crate rather than calling (per-entry cap, aggregate cap, recursion-depth cap).
 - zip-slip and equivalent path traversals are sanitized on every container extraction path.
 - The `.dr` envelope decoder is fuzzed. Read-past-end, integer overflow, and BLAKE3-mismatch acceptance are all in scope.
 - A depth cap (default 8) and content-hash cycle detection stop a malicious input from making a chain recurse forever.

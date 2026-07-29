@@ -295,7 +295,7 @@ The CLI is a thin layer over the same crates, so a TUI, an IDE plugin, a web ser
 - Rust: each pass is its own crate (`disrobe-pass-py-decompile`, `disrobe-pass-jvm`, `disrobe-pass-native`, ...) over shared `disrobe-core` and `disrobe-ir` types; depend on the ones you need.
 - Python: `import disrobe` (a pyo3 `abi3` module, Python 3.9+, ships `.pyi` and `py.typed`, built with `maturin`). Bytes in, typed report objects out; the bindings never touch the filesystem.
 - Daemon: `disrobe serve` speaks HTTP, gRPC, and LSP; `disrobe serve --mcp` exposes the same operations as Model Context Protocol tools for automation clients.
-- Plugins: third-party analysis passes ship as signed WebAssembly Components. `disrobe-plugin-loader` loads a plugin only when its minisign signature verifies against a trusted key and its TOML manifest grants every imported WIT capability. `disrobe-plugin-host` then runs it under a fuel budget, an epoch-deadline watchdog, and a linear-memory cap, with an empty linker that denies all ambient host imports.
+- Plugins: signed WebAssembly Components verify and execute under the sandbox as a library capability. The CLI does not yet dispatch an analysis pass through one. `disrobe-plugin-loader` loads a plugin only when its minisign signature verifies against a trusted key and its TOML manifest grants every imported WIT capability. `disrobe-plugin-host` then runs it under a fuel budget, an epoch-deadline watchdog, and a linear-memory cap, with an empty linker that denies all ambient host imports.
 
 ```python
 import disrobe
