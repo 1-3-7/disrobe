@@ -4,12 +4,17 @@
 #[allow(clippy::redundant_pub_crate)]
 mod mba_corpus;
 
+#[path = "support/solver_requirement.rs"]
+#[allow(clippy::redundant_pub_crate)]
+mod solver_requirement;
+
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use disrobe_mba::{Expr, Simplification, Width, equivalence_query, simplify};
 use mba_corpus::{CorpusEntry, corpus};
+use solver_requirement::{enforce_solver_requirement, solver_is_required};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Answer {
@@ -181,6 +186,7 @@ fn corpus_reduces_or_survives_under_behavioral_and_smt_grading() {
     const REDUCE_FLOOR: usize = 22;
     const PROVEN_FLOOR: usize = 28;
     let solver: Option<Solver> = detect_solver();
+    enforce_solver_requirement(solver.as_ref(), solver_is_required());
     match &solver {
         Some(found) => eprintln!(
             "corpus_capability: grading with the external solver {} ({})",

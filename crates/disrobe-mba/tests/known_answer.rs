@@ -226,9 +226,15 @@ fn solver_recovers_three_var_affine_constant_form_at_w64() {
         result.changed(),
         "the affine linear MBA must reduce beyond the two-variable template set"
     );
+    #[cfg(feature = "smt-verify")]
     assert_eq!(
         result.verification,
-        Verification::LinearLiftedFrom(Width::W4)
+        Verification::SmtProvenAtWidth(Width::W64)
+    );
+    #[cfg(not(feature = "smt-verify"))]
+    assert_eq!(
+        result.verification,
+        Verification::PolynomialIdentity(Width::W64)
     );
     let clean: Expr = Expr::add(Expr::sub(var(0), var(1)), var(2));
     assert!(equivalent_exhaustive(
