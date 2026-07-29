@@ -31,3 +31,11 @@ public class CourierService {
         self.pendingMessages += 1
     }
 }
+
+public struct lowercaseBox {
+    public let PayloadTag: String
+
+    public init(PayloadTag: String) {
+        self.PayloadTag = PayloadTag
+    }
+}

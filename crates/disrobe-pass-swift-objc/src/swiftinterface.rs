@@ -35,6 +35,7 @@ pub struct InterfaceProperty {
     pub type_name: Option<String>,
     pub is_let: bool,
     pub is_static: bool,
+    pub is_computed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +76,7 @@ impl ParsedInterface {
             names.extend(
                 decl.properties
                     .iter()
+                    .filter(|p: &&InterfaceProperty| !p.is_static && !p.is_computed)
                     .map(|p: &InterfaceProperty| p.name.clone()),
             );
             names.extend(decl.cases.iter().map(|c: &InterfaceCase| c.name.clone()));
@@ -257,30 +259,100 @@ fn decl_kind_of(line: &str) -> Option<InterfaceDeclKind> {
     }
 }
 
-fn strip_leading_modifiers(line: &str) -> &str {
+const DECLARATION_MODIFIERS: [&str; 22] = [
+    "public",
+    "package",
+    "internal",
+    "fileprivate",
+    "private",
+    "open",
+    "final",
+    "static",
+    "mutating",
+    "nonmutating",
+    "convenience",
+    "required",
+    "override",
+    "dynamic",
+    "lazy",
+    "weak",
+    "unowned",
+    "indirect",
+    "nonisolated",
+    "distributed",
+    "borrowing",
+    "consuming",
+];
+
+const MEMBER_KEYWORDS: [&str; 5] = ["func", "var", "let", "subscript", "init"];
+
+#[derive(Debug, Clone, Copy, Default)]
+struct MemberModifiers {
+    is_static: bool,
+}
+
+fn leading_token(text: &str) -> Option<&str> {
+    let end: usize = text
+        .find(|c: char| c.is_whitespace() || c == '(')
+        .unwrap_or(text.len());
+    (end > 0).then(|| &text[..end])
+}
+
+fn skip_attribute_arguments(text: &str) -> &str {
+    if !text.starts_with('(') {
+        return text;
+    }
+    let mut depth: usize = 0;
+    for (index, ch) in text.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &text[index + ch.len_utf8()..];
+                }
+            }
+            _ => {}
+        }
+    }
+    text
+}
+
+fn introduces_member(text: &str) -> bool {
+    let trimmed: &str = text.trim_start();
+    MEMBER_KEYWORDS.iter().any(|keyword: &&str| {
+        trimmed
+            .strip_prefix(keyword)
+            .is_some_and(is_keyword_boundary)
+    })
+}
+
+fn is_keyword_boundary(rest: &str) -> bool {
+    rest.starts_with(|c: char| c.is_whitespace() || c == '(')
+}
+
+fn split_modifiers(line: &str) -> (MemberModifiers, &str) {
+    let mut modifiers: MemberModifiers = MemberModifiers::default();
     let mut rest: &str = line;
     loop {
         let trimmed: &str = rest.trim_start();
-        let word: Option<&str> = trimmed.split_whitespace().next();
-        match word {
-            Some(w)
-                if w.starts_with('@')
-                    || matches!(
-                        w,
-                        "public"
-                            | "open"
-                            | "internal"
-                            | "final"
-                            | "indirect"
-                            | "fileprivate"
-                            | "private"
-                    ) =>
-            {
-                rest = &trimmed[w.len()..];
-            }
-            _ => return trimmed,
+        let Some(word): Option<&str> = leading_token(trimmed) else {
+            return (modifiers, trimmed);
+        };
+        let after: &str = &trimmed[word.len()..];
+        let type_scoped: bool = word == "class" && introduces_member(after);
+        if !(word.starts_with('@') || DECLARATION_MODIFIERS.contains(&word) || type_scoped) {
+            return (modifiers, trimmed);
         }
+        if word == "static" || type_scoped {
+            modifiers.is_static = true;
+        }
+        rest = skip_attribute_arguments(after);
     }
+}
+
+fn strip_leading_modifiers(line: &str) -> &str {
+    split_modifiers(line).1
 }
 
 fn parse_decl_header(line: &str, kind: InterfaceDeclKind) -> InterfaceDecl {
@@ -316,8 +388,8 @@ fn parse_decl_header(line: &str, kind: InterfaceDeclKind) -> InterfaceDecl {
 }
 
 fn consume_member(line: &str, decl: &mut InterfaceDecl) {
-    let body: &str = strip_leading_modifiers(line);
-    let is_static: bool = line.contains("static ") || line.contains("class var ");
+    let (modifiers, body): (MemberModifiers, &str) = split_modifiers(line);
+    let is_static: bool = modifiers.is_static;
     if let Some(rest) = body
         .strip_prefix("let ")
         .or_else(|| body.strip_prefix("var "))
@@ -342,6 +414,7 @@ fn consume_member(line: &str, decl: &mut InterfaceDecl) {
 }
 
 fn parse_property(rest: &str, is_let: bool, is_static: bool) -> Option<InterfaceProperty> {
+    let is_computed: bool = rest.contains('{');
     let head: &str = rest.split('{').next().unwrap_or(rest).trim();
     let (name_raw, type_raw): (&str, Option<&str>) = match head.split_once(':') {
         Some((n, t)) => (n.trim(), Some(t.trim())),
@@ -364,6 +437,7 @@ fn parse_property(rest: &str, is_let: bool, is_static: bool) -> Option<Interface
         type_name,
         is_let,
         is_static,
+        is_computed,
     })
 }
 
@@ -424,10 +498,104 @@ public enum AuthState {\n\
   case loggedIn(token: Swift.String)\n\
 }\n";
 
+    const MODIFIER_SAMPLE: &str = "// swift-interface-format-version: 1.0\n\
+// swift-module-flags: -target arm64-apple-ios17.0 -module-name Modifiers\n\
+public struct Ticket {\n\
+  public let serial: Swift.String\n\
+  @available(iOS 17.0, macOS 14.0, *) public static func issue() -> Modifiers.Ticket\n\
+  nonisolated(unsafe) public static let registry: Swift.String\n\
+  public static var counter: Swift.Int\n\
+  public class var shared: Modifiers.Ticket {\n\
+    get\n\
+  }\n\
+  public static func == (a: Modifiers.Ticket, b: Modifiers.Ticket) -> Swift.Bool\n\
+  public var checksum: Swift.Int {\n\
+    get\n\
+  }\n\
+}\n";
+
     #[test]
     fn detects_swiftinterface_header() {
         assert!(looks_like_swiftinterface(SAMPLE));
         assert!(!looks_like_swiftinterface("class Foo {}\n"));
+    }
+
+    #[test]
+    fn parses_members_behind_declaration_modifiers_and_attribute_arguments() {
+        let parsed: ParsedInterface = parse(MODIFIER_SAMPLE);
+        let ticket: &InterfaceDecl = parsed
+            .decls
+            .iter()
+            .find(|d: &&InterfaceDecl| d.name == "Ticket")
+            .expect("struct decl");
+        assert_eq!(ticket.kind, InterfaceDeclKind::Struct);
+
+        let methods: Vec<&str> = ticket
+            .methods
+            .iter()
+            .map(|m: &InterfaceMethod| m.name.as_str())
+            .collect();
+        assert_eq!(methods, vec!["issue", "=="]);
+        assert!(
+            ticket.methods.iter().all(|m: &InterfaceMethod| m.is_static),
+            "both methods carry the static modifier"
+        );
+
+        let properties: Vec<&str> = ticket
+            .properties
+            .iter()
+            .map(|p: &InterfaceProperty| p.name.as_str())
+            .collect();
+        assert_eq!(
+            properties,
+            vec!["serial", "registry", "counter", "shared", "checksum"]
+        );
+    }
+
+    #[test]
+    fn classifies_static_and_computed_properties() {
+        let parsed: ParsedInterface = parse(MODIFIER_SAMPLE);
+        let ticket: &InterfaceDecl = parsed
+            .decls
+            .iter()
+            .find(|d: &&InterfaceDecl| d.name == "Ticket")
+            .expect("struct decl");
+        let by_name: BTreeMap<&str, &InterfaceProperty> = ticket
+            .properties
+            .iter()
+            .map(|p: &InterfaceProperty| (p.name.as_str(), p))
+            .collect();
+
+        assert!(!by_name["serial"].is_static && !by_name["serial"].is_computed);
+        assert!(by_name["registry"].is_static && !by_name["registry"].is_computed);
+        assert!(by_name["counter"].is_static && !by_name["counter"].is_computed);
+        assert!(
+            by_name["shared"].is_static && by_name["shared"].is_computed,
+            "class var is a type-scoped computed property"
+        );
+        assert!(!by_name["checksum"].is_static && by_name["checksum"].is_computed);
+    }
+
+    #[test]
+    fn resilient_field_names_exclude_static_and_computed_properties() {
+        let parsed: ParsedInterface = parse(MODIFIER_SAMPLE);
+        let index: BTreeMap<String, Vec<String>> = parsed.resilient_field_names();
+        assert_eq!(
+            index.get("Ticket").map(Vec::as_slice),
+            Some(["serial".to_owned()].as_slice()),
+            "only stored instance properties can back a reflected field slot"
+        );
+    }
+
+    #[test]
+    fn class_keyword_still_opens_a_class_declaration() {
+        let parsed: ParsedInterface = parse(SAMPLE);
+        let class: &InterfaceDecl = parsed
+            .decls
+            .iter()
+            .find(|d: &&InterfaceDecl| d.name == "LoginViewController")
+            .expect("class decl");
+        assert_eq!(class.kind, InterfaceDeclKind::Class);
     }
 
     #[test]

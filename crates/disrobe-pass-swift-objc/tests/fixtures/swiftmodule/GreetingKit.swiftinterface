@@ -29,5 +29,9 @@ public class CourierService {
   public func enqueueGreeting(_ greeting: GreetingKit.Greeting)
   deinit
 }
+public struct lowercaseBox {
+  public let PayloadTag: Swift.String
+  public init(PayloadTag: Swift.String)
+}
 extension GreetingKit.DeliveryChannel : Swift.Equatable {}
 extension GreetingKit.DeliveryChannel : Swift.Hashable {}
