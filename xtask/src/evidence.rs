@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Arguments;
 use std::fs;
 use std::io::Read as _;
@@ -219,6 +219,13 @@ pub(crate) fn run(root: &Path, mode: Mode) -> Result<()> {
         check,
         &mut stale,
     )?;
+
+    let mut produced: BTreeSet<String> = BTreeSet::new();
+    produced.extend(per_descriptor.keys().cloned());
+    produced.extend(per_descriptor_md.keys().cloned());
+    produced.insert("index.json".to_owned());
+    produced.insert("EVIDENCE.md".to_owned());
+    report_orphans(&results_dir, &produced, &mut stale)?;
 
     if check {
         if stale.is_empty() {
@@ -1014,6 +1021,33 @@ fn load_failures(path: &Path) -> Result<Failures> {
         walls: doc.wall,
         hard_cases: doc.hard_case,
     })
+}
+
+fn report_orphans(
+    results_dir: &Path,
+    produced: &BTreeSet<String>,
+    stale: &mut Vec<String>,
+) -> Result<()> {
+    if !results_dir.is_dir() {
+        return Ok(());
+    }
+    let entries: std::fs::ReadDir = std::fs::read_dir(results_dir)
+        .wrap_err_with(|| format!("listing {}", results_dir.display()))?;
+    for entry in entries {
+        let entry: std::fs::DirEntry =
+            entry.wrap_err_with(|| format!("reading an entry of {}", results_dir.display()))?;
+        if entry.path().is_dir() {
+            continue;
+        }
+        let name: String = entry.file_name().to_string_lossy().into_owned();
+        if !produced.contains(&name) {
+            stale.push(format!(
+                "{} is not produced by any descriptor in evidence/descriptors, so it is published with numbers nothing backs; delete it or restore its descriptor",
+                entry.path().display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn sync_file(path: &Path, content: &str, check: bool, stale: &mut Vec<String>) -> Result<()> {
