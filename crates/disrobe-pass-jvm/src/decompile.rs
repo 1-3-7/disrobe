@@ -2787,7 +2787,7 @@ fn boolean_array_rank(ty: Option<&str>) -> Option<u8> {
         return None;
     }
     let brackets: usize = ty.len() - base.len();
-    if brackets == 0 || brackets % 2 != 0 {
+    if brackets == 0 || !brackets.is_multiple_of(2) {
         return None;
     }
     u8::try_from(brackets / 2).ok()
