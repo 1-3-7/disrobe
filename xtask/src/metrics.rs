@@ -223,6 +223,60 @@ const KEYS: &[KeySpec] = &[
         },
     },
     KeySpec {
+        name: "py_legacy_count",
+        formatter: Formatter::OfPlain,
+        nouns: &[],
+        extract: |r: &Recovery| r.bar("CPython legacy", "proven-correct")?.count_ratio(),
+    },
+    KeySpec {
+        name: "py_legacy_local_count",
+        formatter: Formatter::OfPlain,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            r.bar(
+                "CPython legacy",
+                "proven-correct (local, full period interpreter set)",
+            )?
+            .count_ratio()
+        },
+    },
+    KeySpec {
+        name: "wasm_opcoverage_count",
+        formatter: Formatter::OfPlain,
+        nouns: &[],
+        extract: |r: &Recovery| r.bar("WebAssembly", "op-coverage")?.count_ratio(),
+    },
+    KeySpec {
+        name: "jvm_per_method_count",
+        formatter: Formatter::OfPlain,
+        nouns: &[],
+        extract: |r: &Recovery| r.bar("JVM classfile", "per-method")?.count_ratio(),
+    },
+    KeySpec {
+        name: "go_typename_count",
+        formatter: Formatter::OfPlain,
+        nouns: &[],
+        extract: |r: &Recovery| r.bar("Go type-name", "type names")?.count_ratio(),
+    },
+    KeySpec {
+        name: "dalvik_verifier_count",
+        formatter: Formatter::OfPlain,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            r.bar("Dalvik recovered bodies", "verifier-clean (committed, CI)")?
+                .count_ratio()
+        },
+    },
+    KeySpec {
+        name: "hermes_opcoverage_count",
+        formatter: Formatter::OfPlain,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            r.bar("React Native Hermes (committed", "op-coverage")?
+                .count_ratio()
+        },
+    },
+    KeySpec {
         name: "py_legacy_pct",
         formatter: Formatter::Pct,
         nouns: &[],
@@ -541,7 +595,14 @@ fn backstop(
         let trimmed: &str = line.trim_start();
         let is_fence_delim: bool = trimmed.starts_with("```") || trimmed.starts_with("~~~");
         if !in_fence && !is_fence_delim && !suppressed.contains(&line_no) {
-            scan_backstop_line(line, offset, bytes, &nouns, spans, label, line_no, issues);
+            let tracked_line: bool = line.contains(OPEN_PREFIX);
+            let scan: BackstopScan<'_> = BackstopScan {
+                file_bytes: bytes,
+                nouns: &nouns,
+                spans,
+                label,
+            };
+            scan_backstop_line(&scan, line, offset, line_no, tracked_line, issues);
         }
         if is_fence_delim {
             in_fence = !in_fence;
@@ -550,16 +611,27 @@ fn backstop(
     }
 }
 
+struct BackstopScan<'doc> {
+    file_bytes: &'doc [u8],
+    nouns: &'doc [&'static str],
+    spans: &'doc [MarkerSpan],
+    label: &'doc str,
+}
+
 fn scan_backstop_line(
+    scan: &BackstopScan<'_>,
     line: &str,
     line_offset: usize,
-    file_bytes: &[u8],
-    nouns: &[&'static str],
-    spans: &[MarkerSpan],
-    label: &str,
     line_no: usize,
+    tracked_line: bool,
     issues: &mut Vec<String>,
 ) {
+    let BackstopScan {
+        file_bytes,
+        nouns,
+        spans,
+        label,
+    } = *scan;
     let raw: &[u8] = line.as_bytes();
     let mut idx: usize = 0;
     while idx < raw.len() {
@@ -580,19 +652,38 @@ fn scan_backstop_line(
         while noun_at < raw.len() && (raw[noun_at] == b' ' || raw[noun_at] == b'\t') {
             noun_at += 1;
         }
+        let covered: bool = spans.iter().any(|span: &MarkerSpan| {
+            start_abs >= span.content_start && start_abs < span.content_end
+        });
         if let Some(noun) = matching_noun(&line[noun_at..], nouns) {
-            let covered: bool = spans.iter().any(|span: &MarkerSpan| {
-                start_abs >= span.content_start && start_abs < span.content_end
-            });
             if !covered {
                 let digits: &str = &line[idx..end];
                 issues.push(format!(
                     "{label}:{line_no}: bare number `{digits}` before unit noun `{noun}` is not inside a marker span (wrap it in `{OPEN_PREFIX}KEY{OPEN_SUFFIX}...{CLOSE}` or add `{IGNORE_MARKER}` to the line)"
                 ));
             }
+        } else if tracked_line && !covered && denominator_follows(&line[end..]) {
+            let digits: &str = &line[idx..end];
+            issues.push(format!(
+                "{label}:{line_no}: hand-typed fraction starting `{digits}` shares a line with a tracked metric but sits outside every marker span, which is how a fraction drifts out of step with the percentage beside it (wrap it in `{OPEN_PREFIX}KEY{OPEN_SUFFIX}...{CLOSE}` or add `{IGNORE_MARKER}` to the line)"
+            ));
         }
         idx = end.max(idx + 1);
     }
+}
+
+fn denominator_follows(rest: &str) -> bool {
+    let trimmed: &str = rest.trim_start_matches([' ', '\t']);
+    let after_separator: &str = match trimmed.strip_prefix('/') {
+        Some(tail) => tail,
+        None => match trimmed.strip_prefix("of") {
+            Some(tail) if tail.starts_with([' ', '\t']) => tail,
+            _ => return false,
+        },
+    };
+    after_separator
+        .trim_start_matches([' ', '\t'])
+        .starts_with(|c: char| c.is_ascii_digit())
 }
 
 fn matching_noun(rest: &str, nouns: &[&'static str]) -> Option<&'static str> {

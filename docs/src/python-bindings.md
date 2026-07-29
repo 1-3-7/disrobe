@@ -715,7 +715,7 @@ See also [Python decompiler](./languages/python.md) for the full decompiler desi
 Decompiles a `.pyc` (with header) to source. Full CPython 3.14 stdlib coverage is
 <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per-code-object recompile equivalence (<!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m -->); the pinned
 200-module corpus is <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> (<!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m -->, CI floor 90%). Legacy CPython
-1.0-3.7: <!-- m:py_legacy_pct -->78.5%<!-- /m --> proven-correct (CI floor 150 of 191; 166 of 191 with the full
+1.0-3.7: <!-- m:py_legacy_pct -->78.5%<!-- /m --> proven-correct (CI floor <!-- m:py_legacy_count -->150 of 191<!-- /m -->; <!-- m:py_legacy_local_count -->166 of 191<!-- /m --> with the full
 interpreter zoo present).
 
 ```python
@@ -1204,7 +1204,7 @@ recovered_string_count: int = deob.recovered_string_count
 
 ## Go
 
-<!-- m:go_typename_pct -->85%<!-- /m -->+ type-name recovery on stripped go1.26 fixtures; 838 of 838 measured, pinned by the gate.
+<!-- m:go_typename_pct -->85%<!-- /m -->+ type-name recovery on stripped go1.26 fixtures; <!-- m:go_typename_count -->838 of 838<!-- /m --> measured, pinned by the gate.
 
 ```python
 import disrobe

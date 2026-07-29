@@ -76,7 +76,17 @@
           "label": "proven-correct",
           "value": 78.5,
           "detail": "CI floor 150 / 191 (asserted, token-match alone holds when the 1.0-3.7 interpreter zoo is absent); 166 / 191 measured locally with the full period interpreter zoo (67 recompile-equiv + 99 token-match)",
-          "source": "crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs:31 (PROVEN_CORRECT_FLOOR 150, CI-enforced via the test job); 166/191 measured locally 2026-06-12 with python 1.0-3.12 present"
+          "source": "crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs:31 (PROVEN_CORRECT_FLOOR 150, CI-enforced via the test job); 166/191 measured locally 2026-06-12 with python 1.0-3.12 present",
+          "num": 150,
+          "den": 191
+        },
+        {
+          "label": "proven-correct (local, full period interpreter set)",
+          "value": 86.91,
+          "num": 166,
+          "den": 191,
+          "detail": "166 / 191 proven correct when every period interpreter is installed (67 recompile-equivalent plus 99 structural token-match). No gate asserts this number; it depends on which 1.0-3.7 interpreters are present, so it is a local measurement and is labelled local wherever it is published.",
+          "source": "crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs run locally 2026-06-12 with python 1.0-3.12 present; the CI-asserted figure is the 150 / 191 floor in the bar above"
         }
       ]
     },
@@ -89,7 +99,9 @@
           "label": "op-coverage",
           "value": 100.0,
           "detail": "133 of 133 functions in the 38 PARSEABLE corpus modules are fully op-covered (every operator lowered, output re-parses); 2 corpus modules are skipped on wat-parse/sig-extract failure (malformed corpus source the reference assembler also rejects), so this is 100% of the supported subset, NOT of all wasm; separately, 57 of 57 execution-eligible functions are EXECUTION-EQUIVALENT under wasmtime (original vs recovered: return values, trap parity, linear memory; 6 byte-identical), the remainder op-coverage-only",
-          "source": "crates/disrobe-pass-wasm-deob/tests/semantic_recovery_corpus.rs measure() = 38 modules parsed / 2 skipped / 133 functions / fully_recovered==133 (floor asserted >=76); tests/semantic_differential.rs = wasmtime execution differential, 57/57 execution-eligible equivalent (6 byte-identical), CI-runnable under --features sandbox; op-coverage is NOT execution-equivalence except for those 57"
+          "source": "crates/disrobe-pass-wasm-deob/tests/semantic_recovery_corpus.rs measure() = 38 modules parsed / 2 skipped / 133 functions / fully_recovered==133, with the module count and function total pinned by equality and the recovered count floored at 133; tests/semantic_differential.rs = wasmtime execution differential, 57/57 execution-eligible equivalent (6 byte-identical), CI-runnable under --features sandbox; op-coverage is NOT execution-equivalence except for those 57",
+          "num": 133,
+          "den": 133
         }
       ]
     },
@@ -102,7 +114,9 @@
           "label": "per-method",
           "value": 100.0,
           "detail": "CI floor 131 of 131 (every top-level method recompiles error-free) measured under real javac attribution; the pickWord switch-expression lift (9afa2306) unmasked 25 latent defects previously hidden by javac parse-masking from the __unresolved__ token, all fixed by class: pattern-switch subject resolved to its source parameter (sealed-subtype exhaustiveness), sealed/permits emitted on inner type stubs, typed default initializers on final inner-stub fields, the Exceptions attribute threaded into a real throws clause, the loop-exhausted terminal emitted after a while loop whose exit is a shared pure-return tail, loop-captured locals hoisted to a fresh final declaration, and the shared return tail of an instanceof if-else-if chain duplicated under a Region-tree fall-through analysis",
-          "source": "crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs (report_per_method_javac_recompile asserts ok >= PER_METHOD_JAVAC_OK_FLOOR 131 of PER_METHOD_JAVAC_TOTAL 131); CI runs it via the test job with actions/setup-java (JDK 25); floor measured 2026-06-22 after fixing the pickWord-unmasked defects"
+          "source": "crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs (report_per_method_javac_recompile asserts ok >= PER_METHOD_JAVAC_OK_FLOOR 131 of PER_METHOD_JAVAC_TOTAL 131); CI runs it via the test job with actions/setup-java (JDK 25); floor measured 2026-06-22 after fixing the pickWord-unmasked defects",
+          "num": 131,
+          "den": 131
         }
       ]
     },
@@ -115,7 +129,9 @@
           "label": "type names",
           "value": 85.0,
           "detail": "CI floor >= 85% on the committed stripped fixture; 838 of 838 (100%) measured, with the type count and the recovered count both pinned in the gate so a change to either forces a re-measure (typelinks/moduledata survive -s -w stripping)",
-          "source": "crates/disrobe-pass-go/tests/go_typemeta.rs (typemeta_recovers_real_type_names_on_go126 asserts the type total equals 838 and the recovered count is at least 838 on common::HELLO_STRIPPED, with ratio >= 0.85 kept as a secondary guard); the stripped fixture is force-committed (git add -f, overriding the crates/disrobe-pass-go/tests/fixtures/*.exe gitignore) so the gate runs in CI; the garble/embed/generics/magic-stomp fixtures are force-committed the same way so those gates also run; 528/528 measured on go1.26.3 2026-06-12"
+          "source": "crates/disrobe-pass-go/tests/go_typemeta.rs (typemeta_recovers_real_type_names_on_go126 asserts the type total equals 838 and the recovered count is at least 838 on common::HELLO_STRIPPED, with ratio >= 0.85 kept as a secondary guard); the stripped fixture is force-committed (git add -f, overriding the crates/disrobe-pass-go/tests/fixtures/*.exe gitignore) so the gate runs in CI; the garble/embed/generics/magic-stomp fixtures are force-committed the same way so those gates also run; 528/528 measured on go1.26.3 2026-06-12",
+          "num": 838,
+          "den": 838
         }
       ]
     },
@@ -128,7 +144,9 @@
           "label": "verifier-clean (committed, CI)",
           "value": 99.0,
           "detail": "102 of the 103 classes in the committed EdgeCases/EdgeCasesKt/Hello dex pass the real JVM bytecode verifier (-Xverify:all); 0 lifter verify failures (the 103rd is link-blocked by an unbundled Kotlin Function1 supertype, a test-harness limit not a lifter defect, so it is never presented to the verifier and the gate counts 102 of 102 verifiable classes clean); a live-range-splitting pass recovers bodies with conflicting register types across joins, 307 re-hosted method bodies verify clean; floor 102 classes; oracle is the JVM rejecting malformed bytecode, not the lifter self-report",
-          "source": "crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs (VERIFY_CLEAN_CLASS_FLOOR 102, LIFTER_VERIFY_FAIL_CEILING 0, BODY_VERIFY_CLEAN_FLOOR 307); oracle = -Xverify:all over assemble_jar output, not the lifter self-report; measured 102/103 classes + 307 re-hosted bodies on JDK 25"
+          "source": "crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs (VERIFY_CLEAN_CLASS_FLOOR 102, LIFTER_VERIFY_FAIL_CEILING 0, BODY_VERIFY_CLEAN_FLOOR 307); oracle = -Xverify:all over assemble_jar output, not the lifter self-report; measured 102/103 classes + 307 re-hosted bodies on JDK 25",
+          "num": 102,
+          "den": 103
         },
         {
           "label": "body-lowering (real apks, local)",
@@ -221,7 +239,9 @@
           "label": "op-coverage",
           "value": 100.0,
           "detail": "self-authored sample.js compiled with the real hermesc (HBC v96); all 8 functions lift with correct names and source-matching bodies at 0 fallback ops; CI-gated",
-          "source": "crates/disrobe-pass-mobile/tests/real_hermes_sample.rs (hbc_v96_sample_recovers_every_function_at_full_op_coverage asserts total_fallback_ops == 0)"
+          "source": "crates/disrobe-pass-mobile/tests/real_hermes_sample.rs (hbc_v96_sample_recovers_every_function_at_full_op_coverage asserts total_fallback_ops == 0)",
+          "num": 8,
+          "den": 8
         }
       ]
     },
