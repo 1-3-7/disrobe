@@ -115,6 +115,8 @@ SCARRY = "SCARRY"
 fle = "fle"
 ands = "ands"
 padd = "padd"
+cpy = "cpy"
+lod = "lod"
 
 [default.extend-identifiers]
 handler_vas = "handler_vas"
