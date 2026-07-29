@@ -650,7 +650,7 @@ enum Cmd {
     },
     #[cfg(feature = "php")]
     #[command(
-        about = "PHP encoder decode (phar, ionCube, SourceGuardian, ZendGuard) & eval-chain deobfuscation"
+        about = "PHP phar decode, commercial encoder envelope report (ionCube, SourceGuardian, ZendGuard), & eval-chain deobfuscation"
     )]
     Php {
         #[command(subcommand)]
@@ -2012,7 +2012,7 @@ fn print_passes() -> miette::Result<()> {
         "  lua           Lua 5.1 / 5.2 / 5.3 / 5.4 / LuaJIT / Luau / GLua decompile + obfuscator peel"
     );
     println!(
-        "  php           encoder decode (phar / ionCube / SourceGuardian / ZendGuard) + eval-chain peel"
+        "  php           phar decode, encoder envelope report (ionCube / SourceGuardian / ZendGuard) + eval-chain peel"
     );
     println!("  ruby          MRI / YARV / mruby / JRuby / TruffleRuby / Ruby2Exe / Ocra analysis");
     println!("  beam          .beam IFF parse + Core Erlang lift + Code chunk disasm");

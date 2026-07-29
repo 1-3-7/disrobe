@@ -15,7 +15,9 @@ use super::globals;
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum PhpCmd {
-    #[command(about = "decode a PHP encoder envelope: phar / ionCube / SourceGuardian / ZendGuard")]
+    #[command(
+        about = "decode a phar archive to its member files, or surface a commercial encoder envelope (ionCube / SourceGuardian / ZendGuard) and report why the payload stays sealed"
+    )]
     Decode {
         #[arg(help = "input PHP file or .phar archive")]
         input: Option<PathBuf>,
