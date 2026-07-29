@@ -1149,7 +1149,24 @@ const EDGECASES_TYPES: &[(&str, bool)] = &[
     ("WithExpressionPlayground", true),
 ];
 
-const EDGECASES_RECOMPILE_FLOOR: usize = 6;
+const EDGECASES_RECOMPILE_MEMBERS: &[&str] = &[
+    "Cat",
+    "ConditionalCompilation",
+    "Dog",
+    "PackedHeader",
+    "Pipeline",
+    "StaticFinalizationKit",
+    "TargetTypedNewPlayground",
+    "TraceableAttribute",
+    "UnionLike",
+];
+
+fn states_refusal(methods: &[UserMethod]) -> bool {
+    methods.iter().any(|m: &UserMethod| {
+        m.source
+            .contains(disrobe_pass_dotnet::iterator_reverse::UNRECONSTRUCTED_STATE_MACHINE_MARKER)
+    })
+}
 
 fn error_code(line: &str) -> Option<&str> {
     let start: usize = line.find(": error ")? + ": error ".len();
@@ -1169,6 +1186,7 @@ fn edgecases_whole_type_recompile_fraction_is_published_as_measured() {
     let bytes: Vec<u8> = std::fs::read(&path).expect("read fixture");
     let asm: DecompiledAssembly = decompile_assembly(&bytes).expect("decompile");
     let mut compiled: Vec<&str> = Vec::new();
+    let mut refused: Vec<&str> = Vec::new();
     let mut residual: BTreeMap<String, Vec<&str>> = BTreeMap::new();
     for (type_name, is_static) in EDGECASES_TYPES {
         let target: Target = Target {
@@ -1200,7 +1218,11 @@ fn edgecases_whole_type_recompile_fraction_is_published_as_measured() {
         let (errors, produced): (Vec<String>, Option<PathBuf>) =
             compile_whole_type(&tmp, &src, type_name);
         if produced.is_some() {
-            compiled.push(type_name);
+            if states_refusal(&methods) {
+                refused.push(type_name);
+            } else {
+                compiled.push(type_name);
+            }
             continue;
         }
         let first: String = errors
@@ -1216,14 +1238,76 @@ fn edgecases_whole_type_recompile_fraction_is_published_as_measured() {
         EDGECASES_TYPES.len()
     );
     eprintln!("  recompiled: {compiled:?}");
+    eprintln!(
+        "  parses but carries a stated refusal for at least one state machine, so it does not count as recovered: {refused:?}"
+    );
     for (code, types) in &residual {
         eprintln!("  first-error {code}: {types:?}");
     }
+    let missing: Vec<&&str> = EDGECASES_RECOMPILE_MEMBERS
+        .iter()
+        .filter(|name: &&&str| !compiled.contains(*name))
+        .collect();
     assert!(
-        compiled.len() >= EDGECASES_RECOMPILE_FLOOR,
-        "EdgeCases whole-type recompile regressed below the measured floor: {}/{} (floor {EDGECASES_RECOMPILE_FLOOR}); residual={residual:?}",
-        compiled.len(),
-        EDGECASES_TYPES.len()
+        missing.is_empty(),
+        "EdgeCases whole-type recompile regressed: {missing:?} no longer recompile without a stated refusal. compiled={compiled:?} refused={refused:?} residual={residual:?}"
+    );
+}
+
+#[test]
+fn whole_type_recompile_check_rejects_deliberately_broken_source() {
+    if !dotnet_available() {
+        eprintln!("SKIP whole-type recompile mutation control: no dotnet SDK");
+        return;
+    }
+    let target: Target = Target {
+        dll: EDGECASES_DLL,
+        origin_namespace: "EdgeCases",
+        type_name: "ConditionalCompilation",
+        is_static: true,
+    };
+    let path: PathBuf = manifest(EDGECASES_DLL)
+        .canonicalize()
+        .expect("canonicalize");
+    let bytes: Vec<u8> = std::fs::read(&path).expect("read fixture");
+    let asm: DecompiledAssembly = decompile_assembly(&bytes).expect("decompile");
+    let methods: Vec<UserMethod> = asm
+        .methods
+        .iter()
+        .filter_map(|m: &StructuredMethod| user_method_for(&m.body, target.type_name))
+        .collect();
+    let fields: Vec<String> = field_declarations(&bytes, target);
+    let src: String = whole_type_source(&fields, &methods, target, is_value_type(&bytes, target));
+
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_wt_mutation_control").expect("mk tmp");
+    let tmp: PathBuf = scratch.path().to_path_buf();
+    write_project(&tmp, target.type_name);
+    let (clean_errors, clean_dll): (Vec<String>, Option<PathBuf>) =
+        compile_whole_type(&tmp, &src, target.type_name);
+    assert!(
+        clean_dll.is_some(),
+        "the unmutated recovered source must still compile, otherwise this control proves nothing. csc errors:\n{}",
+        clean_errors.join("\n")
+    );
+    if let Some(dll) = clean_dll.as_ref() {
+        std::fs::remove_file(dll).expect("remove the clean build output");
+    }
+
+    let broken: String = src.replacen(
+        "public static class",
+        "public static class\n    <SumAsync>d__0 local0;\n    (&local0).<>t__builder = Create();\n    public static class",
+        1,
+    );
+    assert_ne!(
+        broken, src,
+        "the mutation must actually change the source it grades"
+    );
+    let (broken_errors, broken_dll): (Vec<String>, Option<PathBuf>) =
+        compile_whole_type(&tmp, &broken, target.type_name);
+    assert!(
+        broken_dll.is_none() && !broken_errors.is_empty(),
+        "csc accepted recovered source carrying raw state-machine plumbing, so this check cannot separate recovered C# from builder plumbing"
     );
 }
 
