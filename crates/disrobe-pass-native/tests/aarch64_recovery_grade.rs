@@ -22,6 +22,7 @@ mod battery;
 use battery::{
     CASES, EXTERNS, FP_DRIVER_HELPERS, FpExpectation, ORACLE_FLAGS, build_ground_truth_object, cc,
     compare_block, expected_arity, fp_expectation, rename_recovered, run_with_watchdog,
+    shared_prelude,
 };
 
 const INCREMENT_TWO_FP_FUNCTIONS: &[&str] = &[
@@ -934,12 +935,14 @@ fn corpus_grade_report() {
         "corpus grade produced no recovered case with a runnable driver descriptor"
     );
 
+    let prelude: String = shared_prelude();
     let driver: String = format!(
         "#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n#include <stddef.h>\n\
          #define BUFN 16\n#define ITER 400\n\
          {EXTERNS}\n\
          static uint64_t xs(uint64_t *st) {{ uint64_t x = *st; x ^= x << 13; x ^= x >> 7; x ^= x << 17; *st = x; return x; }}\n\
          {FP_DRIVER_HELPERS}\n\
+         {prelude}\n\
          static long long passed = 0;\n\
          static long long fails = 0;\n\
          {decls}\n\

@@ -298,28 +298,28 @@ fn scalar_fp_increment_two_conversions_recover_signedness_and_widths() {
             &[ScalarType::Float],
             None,
             32,
-            "(int32_t)(fp_f_from_bits((uint32_t)x_xmm0))",
+            "fpx_cvtsat_i32_f32((fp_f_from_bits((uint32_t)x_xmm0)))",
         ),
         (
             0x1e39_0000,
             &[ScalarType::Float],
             None,
             32,
-            "(uint32_t)(fp_f_from_bits((uint32_t)x_xmm0))",
+            "fpx_cvtsat_u32_f32((fp_f_from_bits((uint32_t)x_xmm0)))",
         ),
         (
             0x9e78_0000,
             &[ScalarType::Double],
             None,
             64,
-            "(int64_t)(fp_d_from_bits(x_xmm0))",
+            "fpx_cvtsat_i64_f64((fp_d_from_bits(x_xmm0)))",
         ),
         (
             0x9e79_0000,
             &[ScalarType::Double],
             None,
             64,
-            "(uint64_t)(fp_d_from_bits(x_xmm0))",
+            "fpx_cvtsat_u64_f64((fp_d_from_bits(x_xmm0)))",
         ),
         (
             0x1e22_c000,
@@ -403,9 +403,12 @@ fn scalar_fp_fixed_point_forms_recover_with_their_scale() {
         (0x1e03_ec00, "(float)((float)(uint32_t)r_rax / 0x1p5f)"),
         (
             0x1e18_f400,
-            "(int32_t)(fp_f_from_bits((uint32_t)x_xmm0) * 0x1p3f)",
+            "fpx_cvtsat_i32_f32((fp_f_from_bits((uint32_t)x_xmm0) * 0x1p3f))",
         ),
-        (0x9e59_dc00, "(uint64_t)(fp_d_from_bits(x_xmm0) * 0x1p9)"),
+        (
+            0x9e59_dc00,
+            "fpx_cvtsat_u64_f64((fp_d_from_bits(x_xmm0) * 0x1p9))",
+        ),
     ];
     for (word, expected) in cases {
         let mut code: Vec<u8> = word.to_le_bytes().to_vec();

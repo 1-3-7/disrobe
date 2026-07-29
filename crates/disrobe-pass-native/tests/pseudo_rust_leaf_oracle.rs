@@ -2072,8 +2072,10 @@ fn build_fp_c_golden(prepared: &[PreparedFp]) -> String {
 fn build_fp_rust_driver(prepared: &[PreparedFp]) -> String {
     let mut out: String = String::from("#![allow(unused, unused_parens, dead_code)]\n");
     for p in prepared {
+        let _ = writeln!(out, "mod scope_{} {{", p.name);
         out.push_str(&p.rust);
-        out.push('\n');
+        let _ = writeln!(out, "}}");
+        let _ = writeln!(out, "use scope_{}::rec_{};", p.name, p.name);
     }
     let mut body: String = String::new();
     for p in prepared {
@@ -2402,8 +2404,10 @@ fn build_fp_switch_c_golden(prepared: &[PreparedFpSwitch]) -> String {
 fn build_fp_switch_rust_driver(prepared: &[PreparedFpSwitch]) -> String {
     let mut out: String = String::from("#![allow(unused, unused_parens, dead_code)]\n");
     for p in prepared {
+        let _ = writeln!(out, "mod scope_{} {{", p.name);
         out.push_str(&p.rust);
-        out.push('\n');
+        let _ = writeln!(out, "}}");
+        let _ = writeln!(out, "use scope_{}::rec_{};", p.name, p.name);
     }
     let mut body: String = String::new();
     for p in prepared {

@@ -11,7 +11,10 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::process::Command;
 
+use std::collections::BTreeSet;
+
 use disrobe_core::scratch::ScratchDir;
+use disrobe_pass_native::pseudo_c::fp_semantics;
 use disrobe_pass_native::{
     Arch, DisasmInsn, FpConstant, JumpTable, LeafRecovery, PseudoAbi,
     PseudoScalarType as ScalarType, ResolvedCall, callee_int_arity, disassemble,
@@ -6706,19 +6709,12 @@ fn fp_lift(
         FpRet::Float => "float",
         FpRet::LongLong => "uint64_t",
     };
-    let renamed: String = recovery
-        .source
-        .replacen(
-            &format!("{ret_type} recovered("),
-            &format!("{ret_type} {recovered_name}("),
-            1,
-        )
-        .lines()
-        .filter(|l: &&str| {
-            !l.starts_with("#include") && !l.trim_start().starts_with("static inline")
-        })
-        .collect::<Vec<&str>>()
-        .join("\n");
+    let renamed: String = recovery.source.replacen(
+        &format!("{ret_type} recovered("),
+        &format!("{ret_type} {recovered_name}("),
+        1,
+    );
+    let renamed: String = strip_shared_fp_prelude(&renamed);
     Some((recovery, renamed, recovered_name))
 }
 
@@ -6757,6 +6753,22 @@ fn fp_driver_snippet(case: &FpCase, recovered_name: &str) -> String {
     snippet
 }
 
+fn strip_shared_fp_prelude(source: &str) -> String {
+    let prelude: BTreeSet<String> = fp_semantics::prelude_lines().into_iter().collect();
+    let lines: Vec<&str> = source.lines().collect();
+    let mut start: usize = 0;
+    while let Some(line) = lines.get(start) {
+        let shared: bool = line.starts_with("#include")
+            || line.trim_start().starts_with("static inline")
+            || prelude.contains(*line);
+        if !shared {
+            break;
+        }
+        start = start.saturating_add(1);
+    }
+    lines.get(start..).unwrap_or_default().join("\n")
+}
+
 fn build_fp_driver(recovered_decls: &str, driver_body: &str) -> String {
     format!(
         "#include <stdint.h>\n#include <string.h>\n#include <stdio.h>\n#include <stddef.h>\n\
@@ -6767,6 +6779,7 @@ fn build_fp_driver(recovered_decls: &str, driver_body: &str) -> String {
          static inline uint64_t d_bits(double v){{ uint64_t b; memcpy(&b,&v,8); return b; }}\n\
          static inline uint32_t f_bits(float v){{ uint32_t b; memcpy(&b,&v,4); return b; }}\n\
          static inline uint64_t i_bits(long long v){{ uint64_t b; memcpy(&b,&v,8); return b; }}\n\
+         {}\n\
          {recovered_decls}\n\
          int main(void) {{\n\
          \x20   double pairs[][2] = {{\n\
@@ -6779,7 +6792,8 @@ fn build_fp_driver(recovered_decls: &str, driver_body: &str) -> String {
          {driver_body}\
          \x20   printf(\"OK\\n\");\n\
          \x20   return 0;\n\
-         }}\n"
+         }}\n",
+        fp_semantics::prelude_source()
     )
 }
 
@@ -7247,6 +7261,7 @@ fn build_minmax_driver(recovered_decls: &str, driver_body: &str) -> String {
          static inline uint64_t d_bits(double v){{ uint64_t b; memcpy(&b,&v,8); return b; }}\n\
          static inline uint32_t f_bits(float v){{ uint32_t b; memcpy(&b,&v,4); return b; }}\n\
          static inline uint64_t i_bits(long long v){{ uint64_t b; memcpy(&b,&v,8); return b; }}\n\
+         {}\n\
          {recovered_decls}\n\
          int main(void) {{\n\
          \x20   double triples[][3] = {{\n\
@@ -7259,7 +7274,8 @@ fn build_minmax_driver(recovered_decls: &str, driver_body: &str) -> String {
          {driver_body}\
          \x20   printf(\"OK\\n\");\n\
          \x20   return 0;\n\
-         }}\n"
+         }}\n",
+        fp_semantics::prelude_source()
     )
 }
 
@@ -7666,19 +7682,12 @@ fn fc_lift(
         FpRet::Float => "float",
         FpRet::LongLong => "uint64_t",
     };
-    let renamed: String = recovery
-        .source
-        .replacen(
-            &format!("{ret_type} recovered("),
-            &format!("{ret_type} {recovered_name}("),
-            1,
-        )
-        .lines()
-        .filter(|l: &&str| {
-            !l.starts_with("#include") && !l.trim_start().starts_with("static inline")
-        })
-        .collect::<Vec<&str>>()
-        .join("\n");
+    let renamed: String = recovery.source.replacen(
+        &format!("{ret_type} recovered("),
+        &format!("{ret_type} {recovered_name}("),
+        1,
+    );
+    let renamed: String = strip_shared_fp_prelude(&renamed);
     Some((recovery, renamed, recovered_name))
 }
 
@@ -7735,6 +7744,7 @@ fn build_fc_driver(recovered_decls: &str, driver_body: &str) -> String {
          static inline uint64_t d_bits(double v){{ uint64_t b; memcpy(&b,&v,8); return b; }}\n\
          static inline uint32_t f_bits(float v){{ uint32_t b; memcpy(&b,&v,4); return b; }}\n\
          static inline uint64_t i_bits(long long v){{ uint64_t b; memcpy(&b,&v,8); return b; }}\n\
+         {}\n\
          {recovered_decls}\n\
          int main(void) {{\n\
          \x20   double seeds[] = {{ 0.0, 1.0, -1.0, 2.5, 4.0, -4.0, 7.25, -7.25, 0.5, 100.0, -100.0, 3.5, 1.25, -0.5, 42.0 }};\n\
@@ -7742,7 +7752,8 @@ fn build_fc_driver(recovered_decls: &str, driver_body: &str) -> String {
          {driver_body}\
          \x20   printf(\"OK\\n\");\n\
          \x20   return 0;\n\
-         }}\n"
+         }}\n",
+        fp_semantics::prelude_source()
     )
 }
 
@@ -8292,6 +8303,7 @@ fn build_fp_sqrt_driver(recovered_decls: &str, driver_body: &str) -> String {
          static inline uint64_t d_bits(double v){{ uint64_t b; memcpy(&b,&v,8); return b; }}\n\
          static inline uint32_t f_bits(float v){{ uint32_t b; memcpy(&b,&v,4); return b; }}\n\
          static inline uint64_t i_bits(long long v){{ uint64_t b; memcpy(&b,&v,8); return b; }}\n\
+         {}\n\
          {recovered_decls}\n\
          int main(void) {{\n\
          \x20   double pairs[][2] = {{\n\
@@ -8304,7 +8316,8 @@ fn build_fp_sqrt_driver(recovered_decls: &str, driver_body: &str) -> String {
          {driver_body}\
          \x20   printf(\"OK\\n\");\n\
          \x20   return 0;\n\
-         }}\n"
+         }}\n",
+        fp_semantics::prelude_source()
     )
 }
 
@@ -8404,7 +8417,7 @@ fn scalar_sqrt_leaf_functions_recompile_to_behavioral_equivalence() {
             continue;
         };
         assert!(
-            recovery.source.contains("__builtin_sqrt"),
+            recovery.source.contains("fpx_sqrt_x86_f"),
             "a lifted sqrt case must carry a sqrt intrinsic: {}",
             recovery.source
         );
@@ -8496,7 +8509,7 @@ fn scalar_sqrt_oracle_has_teeth_dropping_the_sqrt_diverges() {
         return;
     };
     let sabotaged: String = renamed.replacen(
-        "__builtin_sqrt(fp_d_from_bits(x_xmm0))",
+        "fpx_sqrt_x86_f64(fp_d_from_bits(x_xmm0))",
         "fp_d_from_bits(x_xmm0)",
         1,
     );
@@ -8566,7 +8579,7 @@ fn sysv_scalar_sqrt_leaf_functions_recompile_to_behavioral_equivalence() {
             continue;
         };
         assert!(
-            recovery.source.contains("__builtin_sqrt"),
+            recovery.source.contains("fpx_sqrt_x86_f"),
             "a lifted sqrt case must carry a sqrt intrinsic: {}",
             recovery.source
         );
@@ -8648,14 +8661,14 @@ const ROUND_BATTERY: &[FpCase] = &[
 
 fn round_expectations(name: &str) -> (&'static str, &'static str) {
     match name {
-        "rd_floor" => ("__builtin_floor", "roundsd"),
-        "rd_ceil" => ("__builtin_ceil", "roundsd"),
-        "rd_trunc" => ("__builtin_trunc", "roundsd"),
-        "rd_near" => ("__builtin_rint", "roundsd"),
-        "rs_floor" => ("__builtin_floorf", "roundss"),
-        "rs_ceil" => ("__builtin_ceilf", "roundss"),
-        "rs_trunc" => ("__builtin_truncf", "roundss"),
-        "rs_near" => ("__builtin_rintf", "roundss"),
+        "rd_floor" => ("fpx_rintm_f64", "roundsd"),
+        "rd_ceil" => ("fpx_rintp_f64", "roundsd"),
+        "rd_trunc" => ("fpx_rintz_f64", "roundsd"),
+        "rd_near" => ("fpx_rintn_f64", "roundsd"),
+        "rs_floor" => ("fpx_rintm_f32", "roundss"),
+        "rs_ceil" => ("fpx_rintp_f32", "roundss"),
+        "rs_trunc" => ("fpx_rintz_f32", "roundss"),
+        "rs_near" => ("fpx_rintn_f32", "roundss"),
         other => panic!("no round expectation registered for `{other}`"),
     }
 }
@@ -8701,42 +8714,42 @@ fn round_lift_emits_expected_builtin_for_each_mode() {
         (
             "floor",
             [0x66, 0x0f, 0x3a, 0x0b, 0xc0, 0x09, 0xc3],
-            "__builtin_floor",
+            "fpx_rintm_f64",
         ),
         (
             "ceil",
             [0x66, 0x0f, 0x3a, 0x0b, 0xc0, 0x0a, 0xc3],
-            "__builtin_ceil",
+            "fpx_rintp_f64",
         ),
         (
             "trunc",
             [0x66, 0x0f, 0x3a, 0x0b, 0xc0, 0x0b, 0xc3],
-            "__builtin_trunc",
+            "fpx_rintz_f64",
         ),
         (
             "nearest",
             [0x66, 0x0f, 0x3a, 0x0b, 0xc0, 0x08, 0xc3],
-            "__builtin_rint",
+            "fpx_rintn_f64",
         ),
         (
             "floorf",
             [0x66, 0x0f, 0x3a, 0x0a, 0xc0, 0x09, 0xc3],
-            "__builtin_floorf",
+            "fpx_rintm_f32",
         ),
         (
             "ceilf",
             [0x66, 0x0f, 0x3a, 0x0a, 0xc0, 0x0a, 0xc3],
-            "__builtin_ceilf",
+            "fpx_rintp_f32",
         ),
         (
             "truncf",
             [0x66, 0x0f, 0x3a, 0x0a, 0xc0, 0x0b, 0xc3],
-            "__builtin_truncf",
+            "fpx_rintz_f32",
         ),
         (
             "nearestf",
             [0x66, 0x0f, 0x3a, 0x0a, 0xc0, 0x08, 0xc3],
-            "__builtin_rintf",
+            "fpx_rintn_f32",
         ),
     ];
     for (tag, bytes, want) in cases {
@@ -10219,19 +10232,12 @@ fn fp_switch_lift(
         FpSwitchWidth::Float => "float",
     };
     let recovered_name: String = format!("rec_{}", case.name);
-    let renamed: String = recovery
-        .source
-        .replacen(
-            &format!("{ret_type} recovered("),
-            &format!("{ret_type} {recovered_name}("),
-            1,
-        )
-        .lines()
-        .filter(|l: &&str| {
-            !l.starts_with("#include") && !l.trim_start().starts_with("static inline")
-        })
-        .collect::<Vec<&str>>()
-        .join("\n");
+    let renamed: String = recovery.source.replacen(
+        &format!("{ret_type} recovered("),
+        &format!("{ret_type} {recovered_name}("),
+        1,
+    );
+    let renamed: String = strip_shared_fp_prelude(&renamed);
     Some((recovery, renamed))
 }
 

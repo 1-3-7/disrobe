@@ -1,12 +1,18 @@
 #![allow(dead_code, clippy::too_many_lines, clippy::redundant_pub_crate)]
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use disrobe_pass_native::PseudoScalarType as ScalarType;
+use disrobe_pass_native::pseudo_c::fp_semantics;
 use wait_timeout::ChildExt as _;
+
+#[path = "fp_model.rs"]
+pub(crate) mod fp_model;
 
 pub(crate) const CASES: &[(&str, &str, &[u8])] = &include!("../aarch64_recovery_corpus.inc");
 pub(crate) const ORACLE_FLAGS: &[&str] = &[
@@ -17,7 +23,7 @@ pub(crate) const ORACLE_FLAGS: &[&str] = &[
     "-ffp-contract=off",
 ];
 
-pub(crate) const GROUND_TRUTH_C: &str = r"
+pub(crate) const GROUND_TRUTH_C_BODY: &str = r"
 typedef unsigned int u32;
 typedef unsigned long long u64;
 typedef signed int i32;
@@ -211,9 +217,9 @@ double fp_mul_d(double a, double b) { return a * b; }
 double fp_div_d(double a, double b) { return a / b; }
 float fp_div_f(float a, float b) { return a / b; }
 float fp_axpy(float a, float x, float y) { return a * x + y; }
-int fp_to_int_s(float x) { return (int)x; }
-unsigned fp_to_uint_s(float x) { return (unsigned)x; }
-u64 fp_to_ulong_d(double x) { return (u64)x; }
+int fp_to_int_s(float x) { return a64m_cvt_i32_f32(x, 3, 0); }
+unsigned fp_to_uint_s(float x) { return a64m_cvt_u32_f32(x, 3, 0); }
+u64 fp_to_ulong_d(double x) { return a64m_cvt_u64_f64(x, 3, 0); }
 double fp_from_int(int x) { return (double)x; }
 float fp_from_uint(unsigned x) { return (float)(u64)x; }
 double fp_widen(float x) { return (double)x; }
@@ -225,32 +231,32 @@ double fp_iavg(const int *a, int n) {
     for (int i = n; i > 0; i--) s += (double)a[i - 1];
     return s / (double)(n ? n : 1);
 }
-double fp_floor_d(double x) { return __builtin_floor(x); }
-float fp_ceil_f(float x) { return __builtin_ceilf(x); }
-double fp_trunc_d(double x) { return __builtin_trunc(x); }
-double fp_round_d(double x) { return __builtin_round(x); }
-double fp_rint_d(double x) { return __builtin_rint(x); }
-float fp_max_f(float a, float b) { return __builtin_fmaxf(a, b); }
-float fp_min_f(float a, float b) { return __builtin_fminf(a, b); }
-double fp_max_d(double a, double b) { return __builtin_fmax(a, b); }
-double fp_min_d(double a, double b) { return __builtin_fmin(a, b); }
-float fp_clamp_f(float x, float lo, float hi) { return __builtin_fminf(__builtin_fmaxf(x, lo), hi); }
-float fma_madd_f(float a, float b, float c) { return __builtin_fmaf(a, b, c); }
-float fma_msub_f(float a, float b, float c) { return __builtin_fmaf(-a, b, c); }
-float fma_nmadd_f(float a, float b, float c) { return __builtin_fmaf(-a, b, -c); }
-float fma_nmsub_f(float a, float b, float c) { return __builtin_fmaf(a, b, -c); }
-double fma_madd_d(double a, double b, double c) { return __builtin_fma(a, b, c); }
-double fma_msub_d(double a, double b, double c) { return __builtin_fma(-a, b, c); }
-double fma_nmadd_d(double a, double b, double c) { return __builtin_fma(-a, b, -c); }
-double fma_nmsub_d(double a, double b, double c) { return __builtin_fma(a, b, -c); }
+double fp_floor_d(double x) { return a64m_rint_f64(x, 1); }
+float fp_ceil_f(float x) { return a64m_rint_f32(x, 2); }
+double fp_trunc_d(double x) { return a64m_rint_f64(x, 3); }
+double fp_round_d(double x) { return a64m_rint_f64(x, 4); }
+double fp_rint_d(double x) { return a64m_rint_f64(x, 0); }
+float fp_max_f(float a, float b) { return a64m_maxnm_f32(a, b); }
+float fp_min_f(float a, float b) { return a64m_minnm_f32(a, b); }
+double fp_max_d(double a, double b) { return a64m_maxnm_f64(a, b); }
+double fp_min_d(double a, double b) { return a64m_minnm_f64(a, b); }
+float fp_clamp_f(float x, float lo, float hi) { return a64m_minnm_f32(a64m_maxnm_f32(x, lo), hi); }
+float fma_madd_f(float a, float b, float c) { return a64m_fma_f32(a, b, c); }
+float fma_msub_f(float a, float b, float c) { return a64m_fma_f32(-a, b, c); }
+float fma_nmadd_f(float a, float b, float c) { return a64m_fma_f32(-a, b, -c); }
+float fma_nmsub_f(float a, float b, float c) { return a64m_fma_f32(a, b, -c); }
+double fma_madd_d(double a, double b, double c) { return a64m_fma_f64(a, b, c); }
+double fma_msub_d(double a, double b, double c) { return a64m_fma_f64(-a, b, c); }
+double fma_nmadd_d(double a, double b, double c) { return a64m_fma_f64(-a, b, -c); }
+double fma_nmsub_d(double a, double b, double c) { return a64m_fma_f64(a, b, -c); }
 float mul_add_unfused_f(float a, float b, float c) { return a * b + c; }
 double mul_add_unfused_d(double a, double b, double c) { return a * b + c; }
 float sub_mul_unfused_f(float a, float b, float c) { return c - a * b; }
 double sub_mul_unfused_d(double a, double b, double c) { return c - a * b; }
-float fma_mixed_f(float a, float b, float c) { return __builtin_fmaf(a, b, c) + a * b; }
-double fma_mixed_d(double a, double b, double c) { return __builtin_fma(a, b, c) + a * b; }
-float fma_chained_f(float a, float b, float c) { return __builtin_fmaf(a, a, __builtin_fmaf(b, c, a)); }
-double fma_chained_d(double a, double b, double c) { return __builtin_fma(a, a, __builtin_fma(b, c, a)); }
+float fma_mixed_f(float a, float b, float c) { return a64m_fma_f32(a, b, c) + a * b; }
+double fma_mixed_d(double a, double b, double c) { return a64m_fma_f64(a, b, c) + a * b; }
+float fma_chained_f(float a, float b, float c) { return a64m_fma_f32(a, a, a64m_fma_f32(b, c, a)); }
+double fma_chained_d(double a, double b, double c) { return a64m_fma_f64(a, a, a64m_fma_f64(b, c, a)); }
 int fc_lt_f(float a, float b) { return a < b; }
 int fc_le_f(float a, float b) { return a <= b; }
 int fc_gt_f(float a, float b) { return a > b; }
@@ -288,14 +294,14 @@ float fu_abs_f(float x) { return __builtin_fabsf(x); }
 double fu_abs_d(double x) { return __builtin_fabs(x); }
 float fu_nabs_f(float x) { return -__builtin_fabsf(x); }
 double fu_nabs_d(double x) { return -__builtin_fabs(x); }
-float fs_sqrt_f(float x) { return __builtin_sqrtf(x); }
-double fs_sqrt_d(double x) { return __builtin_sqrt(x); }
-float fs_hypot_f(float a, float b) { return __builtin_sqrtf(a * a + b * b); }
-double fs_norm3_d(double a, double b, double c) { return __builtin_sqrt(a * a + b * b + c * c); }
-float fs_rsqrt_f(float x) { return 1.0f / __builtin_sqrtf(x); }
-double fs_sqrt_sum_d(double a, double b) { return __builtin_sqrt(a) + __builtin_sqrt(b); }
-float fs_sqrt_scaled_f(float x, float k) { return k * __builtin_sqrtf(x); }
-double fs_sqrt_diff_d(double a, double b) { return __builtin_sqrt(a) - b; }
+float fs_sqrt_f(float x) { return a64m_sqrt_f32(x); }
+double fs_sqrt_d(double x) { return a64m_sqrt_f64(x); }
+float fs_hypot_f(float a, float b) { return a64m_sqrt_f32(a * a + b * b); }
+double fs_norm3_d(double a, double b, double c) { return a64m_sqrt_f64(a * a + b * b + c * c); }
+float fs_rsqrt_f(float x) { return 1.0f / a64m_sqrt_f32(x); }
+double fs_sqrt_sum_d(double a, double b) { return a64m_sqrt_f64(a) + a64m_sqrt_f64(b); }
+float fs_sqrt_scaled_f(float x, float k) { return k * a64m_sqrt_f32(x); }
+double fs_sqrt_diff_d(double a, double b) { return a64m_sqrt_f64(a) - b; }
 float fb_ge_f(float a, float b, float x, float y) {
     volatile float r = y;
     if (a >= b) r = x;
@@ -444,22 +450,22 @@ float fnegmul_f(float a, float b) { return -(a * b); }
 double fnegmul_d(double a, double b) { return -(a * b); }
 float fnabsdiff_f(float a, float b) { return -__builtin_fabsf(a - b); }
 double fnabsdiff_d(double a, double b) { return -__builtin_fabs(a - b); }
-float fz_relu_f(float x) { return __builtin_fmaxf(x, 0.0f); }
-double fz_relu_d(double x) { return __builtin_fmax(x, 0.0); }
-float fz_nrelu_f(float x) { return __builtin_fminf(x, 0.0f); }
-double fz_nrelu_d(double x) { return __builtin_fmin(x, 0.0); }
+float fz_relu_f(float x) { return a64m_maxnm_f32(x, 0.0f); }
+double fz_relu_d(double x) { return a64m_maxnm_f64(x, 0.0); }
+float fz_nrelu_f(float x) { return a64m_minnm_f32(x, 0.0f); }
+double fz_nrelu_d(double x) { return a64m_minnm_f64(x, 0.0); }
 float fz_mulz_f(float x) { return x * 0.0f; }
 double fz_mulz_d(double x) { return x * 0.0; }
 float fz_zsub_f(float x) { return 0.0f - x; }
 double fz_zsub_d(double x) { return 0.0 - x; }
 float fz_addz_f(float x) { return x + 0.0f; }
 double fz_addz_d(double x) { return x + 0.0; }
-i32 fcvt_floor_s(float x) { return (i32)__builtin_floorf(x); }
-i32 fcvt_ceil_s(float x) { return (i32)__builtin_ceilf(x); }
-i32 fcvt_away_s(float x) { return (i32)__builtin_roundf(x); }
-u32 fcvt_floor_us(float x) { return (u32)__builtin_floorf(x); }
-u32 fcvt_ceil_us(float x) { return (u32)__builtin_ceilf(x); }
-u32 fcvt_away_us(float x) { return (u32)__builtin_roundf(x); }
+i32 fcvt_floor_s(float x) { return a64m_cvt_i32_f32(x, 1, 0); }
+i32 fcvt_ceil_s(float x) { return a64m_cvt_i32_f32(x, 2, 0); }
+i32 fcvt_away_s(float x) { return a64m_cvt_i32_f32(x, 4, 0); }
+u32 fcvt_floor_us(float x) { return a64m_cvt_u32_f32(x, 1, 0); }
+u32 fcvt_ceil_us(float x) { return a64m_cvt_u32_f32(x, 2, 0); }
+u32 fcvt_away_us(float x) { return a64m_cvt_u32_f32(x, 4, 0); }
 int vol_four_slots(int a) {
     volatile int p = a;
     volatile int q = a + 1;
@@ -473,10 +479,10 @@ int vol_two_guards(int a, int b, int c) {
     if (b > c) t = c;
     return t;
 }
-i64 fcvt_floor_d(double x) { return (i64)__builtin_floor(x); }
-i64 fcvt_ceil_d(double x) { return (i64)__builtin_ceil(x); }
-i64 fcvt_away_d(double x) { return (i64)__builtin_round(x); }
-u64 fcvt_floor_ud(double x) { return (u64)__builtin_floor(x); }
+i64 fcvt_floor_d(double x) { return a64m_cvt_i64_f64(x, 1, 0); }
+i64 fcvt_ceil_d(double x) { return a64m_cvt_i64_f64(x, 2, 0); }
+i64 fcvt_away_d(double x) { return a64m_cvt_i64_f64(x, 4, 0); }
+u64 fcvt_floor_ud(double x) { return a64m_cvt_u64_f64(x, 1, 0); }
 
 float fx_scvtf_f_w(int a, int b) { return (float)(a + b) / 65536.0f; }
 double fx_scvtf_d_w(int a, int b) { return (double)(a + b) / 4294967296.0; }
@@ -486,14 +492,14 @@ float fx_ucvtf_f_w(unsigned a, unsigned b) { return (float)(a + b) / 65536.0f; }
 double fx_ucvtf_d_w(unsigned a, unsigned b) { return (double)(a + b) / 2.0; }
 float fx_ucvtf_f_x(u64 a, u64 b) { return (float)(a + b) / 65536.0f; }
 double fx_ucvtf_d_x(u64 a, u64 b) { return (double)(a + b) / 4294967296.0; }
-i32 fx_fcvtzs_w_f(float x) { return (i32)(x * 65536.0f); }
-i32 fx_fcvtzs_w_d(double x) { return (i32)(x * 16.0); }
-i64 fx_fcvtzs_x_f(float x) { return (i64)(x * 4294967296.0f); }
-i64 fx_fcvtzs_x_d(double x) { return (i64)(x * 18446744073709551616.0); }
-u32 fx_fcvtzu_w_f(float x) { return (u32)(x * 4294967296.0f); }
-u32 fx_fcvtzu_w_d(double x) { return (u32)(x * 16.0); }
-u64 fx_fcvtzu_x_f(float x) { return (u64)(x * 65536.0f); }
-u64 fx_fcvtzu_x_d(double x) { return (u64)(x * 18446744073709551616.0); }
+i32 fx_fcvtzs_w_f(float x) { return a64m_cvt_i32_f32(x, 3, 16); }
+i32 fx_fcvtzs_w_d(double x) { return a64m_cvt_i32_f64(x, 3, 4); }
+i64 fx_fcvtzs_x_f(float x) { return a64m_cvt_i64_f32(x, 3, 32); }
+i64 fx_fcvtzs_x_d(double x) { return a64m_cvt_i64_f64(x, 3, 64); }
+u32 fx_fcvtzu_w_f(float x) { return a64m_cvt_u32_f32(x, 3, 32); }
+u32 fx_fcvtzu_w_d(double x) { return a64m_cvt_u32_f64(x, 3, 4); }
+u64 fx_fcvtzu_x_f(float x) { return a64m_cvt_u64_f32(x, 3, 16); }
+u64 fx_fcvtzu_x_d(double x) { return a64m_cvt_u64_f64(x, 3, 64); }
 ";
 
 pub(crate) const EXTERNS: &str = r"struct Pt { int x; int y; };
@@ -2432,9 +2438,17 @@ pub(crate) fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Opti
     Some(block)
 }
 
+pub(crate) fn ground_truth_source() -> String {
+    format!(
+        "#include <stdint.h>\n{}\n{GROUND_TRUTH_C_BODY}",
+        fp_model::MODEL_C
+    )
+}
+
 pub(crate) fn build_ground_truth_object(compiler: &str, dir: &Path) -> Result<PathBuf, String> {
     let battery_c: PathBuf = dir.join("gt_battery.c");
-    std::fs::write(&battery_c, GROUND_TRUTH_C.as_bytes()).expect("write ground-truth battery");
+    std::fs::write(&battery_c, ground_truth_source().as_bytes())
+        .expect("write ground-truth battery");
     let battery_o: PathBuf = dir.join("gt_battery.o");
     let compiled: std::process::Output = Command::new(compiler)
         .args(ORACLE_FLAGS)
@@ -2468,17 +2482,34 @@ pub(crate) fn run_with_watchdog(exe: &Path, budget: Duration) -> Option<std::pro
     Some(child.wait_with_output().expect("collect harness output"))
 }
 
+fn shared_prelude_lines() -> &'static BTreeSet<String> {
+    static LINES: OnceLock<BTreeSet<String>> = OnceLock::new();
+    LINES.get_or_init(|| fp_semantics::prelude_lines().into_iter().collect())
+}
+
+pub(crate) fn shared_prelude() -> String {
+    fp_semantics::prelude_source()
+}
+
 pub(crate) fn rename_recovered(source: &str, rec: &str) -> String {
-    source
-        .lines()
-        .filter(|line: &&str| {
-            !line.starts_with("#include")
-                && !line.starts_with("static inline double fp_d_from_bits")
-                && !line.starts_with("static inline uint64_t fp_d_to_bits")
-                && !line.starts_with("static inline float fp_f_from_bits")
-                && !line.starts_with("static inline uint32_t fp_f_to_bits")
-        })
-        .collect::<Vec<&str>>()
-        .join("\n")
-        .replacen(" recovered(", &format!(" {rec}("), 1)
+    let prelude: &BTreeSet<String> = shared_prelude_lines();
+    let lines: Vec<&str> = source.lines().collect();
+    let mut start: usize = 0;
+    while let Some(line) = lines.get(start) {
+        let shared: bool = line.starts_with("#include")
+            || line.starts_with("static inline double fp_d_from_bits")
+            || line.starts_with("static inline uint64_t fp_d_to_bits")
+            || line.starts_with("static inline float fp_f_from_bits")
+            || line.starts_with("static inline uint32_t fp_f_to_bits")
+            || prelude.contains(*line);
+        if !shared {
+            break;
+        }
+        start = start.saturating_add(1);
+    }
+    lines.get(start..).unwrap_or_default().join("\n").replacen(
+        " recovered(",
+        &format!(" {rec}("),
+        1,
+    )
 }
