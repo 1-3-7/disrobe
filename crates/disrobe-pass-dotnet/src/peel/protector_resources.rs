@@ -374,37 +374,50 @@ fn read_unicode_records_int32_strict(blob: &[u8]) -> Option<Vec<String>> {
     (!out.is_empty()).then_some(out)
 }
 
-fn read_binaryreader_strings_utf8(blob: &[u8]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut pos: usize = 0;
-    while pos < blob.len() {
-        let mut byte_len: usize = 0;
-        let mut shift: u32 = 0;
-        loop {
-            let b: u8 = match blob.get(pos) {
-                Some(&b) => b,
-                None => return out,
-            };
-            pos += 1;
-            byte_len |= usize::from(b & 0x7F) << shift;
-            if b & 0x80 == 0 {
-                break;
-            }
-            shift += 7;
-            if shift > 28 {
-                return out;
-            }
+fn read_7bit_encoded_len(blob: &[u8], pos: &mut usize) -> Option<usize> {
+    let mut byte_len: usize = 0;
+    let mut shift: u32 = 0;
+    loop {
+        let b: u8 = *blob.get(*pos)?;
+        *pos += 1;
+        if shift > 0 && b == 0 {
+            return None;
         }
-        if byte_len == 0 || pos.saturating_add(byte_len) > blob.len() {
-            break;
+        byte_len |= usize::from(b & 0x7F) << shift;
+        if b & 0x80 == 0 {
+            return Some(byte_len);
         }
-        out.push(String::from_utf8_lossy(&blob[pos..pos + byte_len]).into_owned());
-        pos += byte_len;
-        if out.len() >= MAX_STRINGS {
-            break;
+        shift += 7;
+        if shift > 28 {
+            return None;
         }
     }
-    out
+}
+
+fn is_plausible_literal(text: &str) -> bool {
+    text.chars()
+        .all(|c: char| !c.is_control() || matches!(c, '\t' | '\n' | '\r'))
+}
+
+fn read_binaryreader_strings_utf8_strict(blob: &[u8]) -> Option<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    let mut pos: usize = 0;
+    let mut non_empty: usize = 0;
+    while pos < blob.len() {
+        let byte_len: usize = read_7bit_encoded_len(blob, &mut pos)?;
+        let end: usize = pos.checked_add(byte_len)?;
+        let text: &str = std::str::from_utf8(blob.get(pos..end)?).ok()?;
+        if !is_plausible_literal(text) {
+            return None;
+        }
+        non_empty += usize::from(!text.is_empty());
+        out.push(text.to_string());
+        pos = end;
+        if out.len() > MAX_STRINGS {
+            return None;
+        }
+    }
+    (non_empty > 0).then_some(out)
 }
 
 pub const CRYPTO_OBFUSCATOR_DES_FLAG: u8 = 1;
@@ -581,8 +594,8 @@ pub fn recover_babel_strings(image: &[u8]) -> Option<ResourceStringRecovery> {
         dynamic_wall: None,
     };
     match babel_decrypt_blob(blob, assembly_public_key(&view).as_deref()) {
-        Ok(plain) => {
-            recovery.strings = read_binaryreader_strings_utf8(&plain);
+        Ok(strings) => {
+            recovery.strings = strings;
         }
         Err(reason) => {
             recovery.dynamic_wall = Some(reason);
@@ -603,7 +616,7 @@ fn assembly_public_key(view: &ImageView) -> Option<Vec<u8>> {
 fn babel_decrypt_blob(
     blob: &[u8],
     public_key: Option<&[u8]>,
-) -> std::result::Result<Vec<u8>, String> {
+) -> std::result::Result<Vec<String>, String> {
     if blob.len() < 2 {
         return Err("Babel resource header truncated".to_string());
     }
@@ -648,13 +661,25 @@ fn babel_decrypt_blob(
         key.copy_from_slice(&pk[..8]);
     }
     let cipher: &[u8] = blob.get(pos..).unwrap_or(&[]);
-    match des_cbc_decrypt(key, iv, cipher) {
-        Ok(plain) => Ok(strip_pkcs7(&plain, 8)),
+    let padded: Vec<u8> = match des_cbc_decrypt(key, iv, cipher) {
+        Ok(plain) => plain,
         Err(CryptoError::BadBlockAlignment) => {
-            Err("Babel DES ciphertext is not an 8-byte multiple".to_string())
+            return Err("Babel DES ciphertext is not an 8-byte multiple".to_string());
         }
-        Err(_) => Err("Babel DES ciphertext empty".to_string()),
-    }
+        Err(_) => return Err("Babel DES ciphertext empty".to_string()),
+    };
+    let Some(plain): Option<Vec<u8>> = strip_pkcs7(&padded, 8) else {
+        return Err(
+            "Babel DES plaintext carries no valid PKCS7 padding, so the header IV and key do not \
+             decrypt this resource; no strings are reported"
+                .to_string(),
+        );
+    };
+    read_binaryreader_strings_utf8_strict(&plain).ok_or_else(|| {
+        "Babel DES plaintext does not parse as a complete BinaryWriter UTF-8 record stream of \
+         printable literals, so the decryption is rejected and no strings are reported"
+            .to_string()
+    })
 }
 
 mod reactor;
