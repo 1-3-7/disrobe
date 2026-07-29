@@ -4,7 +4,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use disrobe_pass_dotnet::decompile::{DecompiledAssembly, decompile_assembly};
-use disrobe_pass_dotnet::structurize::StructuredMethod;
+use disrobe_pass_dotnet::metadata::{MetadataRoot, parse_metadata_root};
+use disrobe_pass_dotnet::model::{AssemblyModel, FieldConstant, FieldModel, Resolver, TypeModel};
+use disrobe_pass_dotnet::pe::{ClrHeader, PeImage, parse, parse_clr_header};
+use disrobe_pass_dotnet::structurize::{StructuredMethod, csharp_escape_identifier, field_name};
 
 const NAMESPACE: &str = "Sample";
 
@@ -81,6 +84,30 @@ const TARGETS: &[Target] = &[
         dll: "../../corpus/dotnet/megafile/EdgeCases.baseline.dll",
         origin_namespace: "EdgeCases",
         type_name: "Cat",
+        is_static: false,
+    },
+    Target {
+        dll: "../../corpus/dotnet/megafile/EdgeCases.baseline.dll",
+        origin_namespace: "EdgeCases",
+        type_name: "Dog",
+        is_static: false,
+    },
+    Target {
+        dll: "../../corpus/dotnet/megafile/EdgeCases.baseline.dll",
+        origin_namespace: "EdgeCases",
+        type_name: "StaticFinalizationKit",
+        is_static: true,
+    },
+    Target {
+        dll: "../../corpus/dotnet/megafile/EdgeCases.baseline.dll",
+        origin_namespace: "EdgeCases",
+        type_name: "TraceableAttribute",
+        is_static: false,
+    },
+    Target {
+        dll: "../../corpus/dotnet/megafile/EdgeCases.baseline.dll",
+        origin_namespace: "EdgeCases",
+        type_name: "Pipeline",
         is_static: false,
     },
 ];
@@ -194,7 +221,194 @@ fn user_method_for(body: &str, target_type: &str) -> Option<UserMethod> {
 
 const PREAMBLE: &str = "using System;\nusing System.Text;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Threading.Tasks;\nusing System.Runtime.CompilerServices;\n\n";
 
-fn whole_type_source(methods: &[UserMethod], target: Target) -> String {
+const FIELD_ACCESS_MASK: u16 = 0x0007;
+const FIELD_STATIC: u16 = 0x0010;
+const FIELD_INIT_ONLY: u16 = 0x0020;
+const FIELD_LITERAL: u16 = 0x0040;
+
+const ELEMENT_TYPE_BOOLEAN: u8 = 0x02;
+const ELEMENT_TYPE_CHAR: u8 = 0x03;
+const ELEMENT_TYPE_I1: u8 = 0x04;
+const ELEMENT_TYPE_U1: u8 = 0x05;
+const ELEMENT_TYPE_I2: u8 = 0x06;
+const ELEMENT_TYPE_U2: u8 = 0x07;
+const ELEMENT_TYPE_I4: u8 = 0x08;
+const ELEMENT_TYPE_U4: u8 = 0x09;
+const ELEMENT_TYPE_I8: u8 = 0x0A;
+const ELEMENT_TYPE_U8: u8 = 0x0B;
+const ELEMENT_TYPE_R4: u8 = 0x0C;
+const ELEMENT_TYPE_R8: u8 = 0x0D;
+const ELEMENT_TYPE_STRING: u8 = 0x0E;
+const ELEMENT_TYPE_CLASS: u8 = 0x12;
+
+fn field_declarations(bytes: &[u8], target: Target) -> Vec<String> {
+    let pe: PeImage = parse(bytes).expect("parse fixture PE");
+    let clr: ClrHeader = parse_clr_header(bytes, &pe).expect("parse fixture CLR header");
+    let root: MetadataRoot = parse_metadata_root(bytes, &pe, &clr).expect("parse fixture metadata");
+    let resolver: Resolver = Resolver::build(bytes, &pe, &clr, &root).expect("build fixture model");
+    let full_name: String = format!("{}.{}", target.origin_namespace, target.type_name);
+    let model: AssemblyModel = resolver.model();
+    let ty: &TypeModel = model
+        .types
+        .iter()
+        .find(|candidate: &&TypeModel| candidate.full_name == full_name)
+        .expect("locate target type metadata");
+    ty.fields
+        .iter()
+        .map(|field: &FieldModel| csharp_field_declaration(&resolver, field))
+        .collect()
+}
+
+fn csharp_field_declaration(resolver: &Resolver, field: &FieldModel) -> String {
+    let accessibility: &str = match field.flags & FIELD_ACCESS_MASK {
+        0x0002 => "private protected ",
+        0x0003 => "internal ",
+        0x0004 => "protected ",
+        0x0005 => "protected internal ",
+        0x0006 => "public ",
+        _ => "private ",
+    };
+    let is_literal: bool = field.flags & FIELD_LITERAL != 0;
+    let mut modifiers: Vec<&str> = Vec::new();
+    if is_literal {
+        modifiers.push("const");
+    } else {
+        if field.flags & FIELD_STATIC != 0 {
+            modifiers.push("static");
+        }
+        if field.flags & FIELD_INIT_ONLY != 0 {
+            modifiers.push("readonly");
+        }
+        if field.is_volatile {
+            modifiers.push("volatile");
+        }
+    }
+    let modifiers: String = if modifiers.is_empty() {
+        String::new()
+    } else {
+        format!("{} ", modifiers.join(" "))
+    };
+    let field_type: String = resolver.resolve_type_tokens(&field.field_type.render());
+    let recovered_name: String = field_name(&field.name);
+    let name: String = csharp_escape_identifier(&recovered_name);
+    let initializer: String = if is_literal {
+        let constant: &FieldConstant = field
+            .constant
+            .as_ref()
+            .expect("literal metadata field must carry a Constant-table value");
+        format!(" = {}", csharp_constant(constant))
+    } else {
+        String::new()
+    };
+    format!("    {accessibility}{modifiers}{field_type} {name}{initializer};")
+}
+
+fn csharp_constant(constant: &FieldConstant) -> String {
+    match constant.element_type {
+        ELEMENT_TYPE_BOOLEAN => match constant.value.as_slice() {
+            [0] => "false".to_owned(),
+            [1] => "true".to_owned(),
+            _ => panic!("invalid Boolean Constant-table value"),
+        },
+        ELEMENT_TYPE_CHAR => {
+            let value: u16 = u16::from_le_bytes(constant_bytes(constant));
+            csharp_char_literal(value)
+        }
+        ELEMENT_TYPE_I1 => i8::from_le_bytes(constant_bytes(constant)).to_string(),
+        ELEMENT_TYPE_U1 => u8::from_le_bytes(constant_bytes(constant)).to_string(),
+        ELEMENT_TYPE_I2 => i16::from_le_bytes(constant_bytes(constant)).to_string(),
+        ELEMENT_TYPE_U2 => u16::from_le_bytes(constant_bytes(constant)).to_string(),
+        ELEMENT_TYPE_I4 => i32::from_le_bytes(constant_bytes(constant)).to_string(),
+        ELEMENT_TYPE_U4 => format!("{}u", u32::from_le_bytes(constant_bytes(constant))),
+        ELEMENT_TYPE_I8 => format!("{}L", i64::from_le_bytes(constant_bytes(constant))),
+        ELEMENT_TYPE_U8 => format!("{}UL", u64::from_le_bytes(constant_bytes(constant))),
+        ELEMENT_TYPE_R4 => csharp_float_literal(f32::from_le_bytes(constant_bytes(constant))),
+        ELEMENT_TYPE_R8 => csharp_double_literal(f64::from_le_bytes(constant_bytes(constant))),
+        ELEMENT_TYPE_STRING => {
+            let chunks: std::slice::ChunksExact<'_, u8> = constant.value.chunks_exact(2);
+            assert!(
+                chunks.remainder().is_empty(),
+                "String Constant-table value must contain UTF-16 code units"
+            );
+            let code_units: Vec<u16> = chunks
+                .map(|chunk: &[u8]| u16::from_le_bytes([chunk[0], chunk[1]]))
+                .collect();
+            csharp_string_literal(&code_units)
+        }
+        ELEMENT_TYPE_CLASS if constant.value.is_empty() => "null".to_owned(),
+        _ => panic!("unsupported Constant-table element type"),
+    }
+}
+
+fn constant_bytes<const LENGTH: usize>(constant: &FieldConstant) -> [u8; LENGTH] {
+    constant
+        .value
+        .as_slice()
+        .try_into()
+        .expect("Constant-table value has the expected width")
+}
+
+fn csharp_char_literal(value: u16) -> String {
+    let escaped: String = match value {
+        0x0027 => "\\'".to_owned(),
+        0x005C => "\\\\".to_owned(),
+        0x0020..=0x007E => csharp_ascii_code_unit(value),
+        _ => format!("\\u{value:04X}"),
+    };
+    format!("'{escaped}'")
+}
+
+fn csharp_string_literal(code_units: &[u16]) -> String {
+    let escaped: String = code_units
+        .iter()
+        .map(|code_unit: &u16| csharp_string_code_unit(*code_unit))
+        .collect();
+    format!("\"{escaped}\"")
+}
+
+fn csharp_string_code_unit(value: u16) -> String {
+    match value {
+        0x0022 => "\\\"".to_owned(),
+        0x005C => "\\\\".to_owned(),
+        0x0020..=0x007E => csharp_ascii_code_unit(value),
+        _ => format!("\\u{value:04X}"),
+    }
+}
+
+fn csharp_ascii_code_unit(value: u16) -> String {
+    let character: Option<char> = char::from_u32(u32::from(value));
+    character.map_or_else(
+        || format!("\\u{value:04X}"),
+        |character: char| character.to_string(),
+    )
+}
+
+fn csharp_float_literal(value: f32) -> String {
+    if value.is_nan() {
+        "float.NaN".to_owned()
+    } else if value == f32::INFINITY {
+        "float.PositiveInfinity".to_owned()
+    } else if value == f32::NEG_INFINITY {
+        "float.NegativeInfinity".to_owned()
+    } else {
+        format!("{value:?}f")
+    }
+}
+
+fn csharp_double_literal(value: f64) -> String {
+    if value.is_nan() {
+        "double.NaN".to_owned()
+    } else if value == f64::INFINITY {
+        "double.PositiveInfinity".to_owned()
+    } else if value == f64::NEG_INFINITY {
+        "double.NegativeInfinity".to_owned()
+    } else {
+        format!("{value:?}d")
+    }
+}
+
+fn whole_type_source(fields: &[String], methods: &[UserMethod], target: Target) -> String {
+    let declarations: String = fields.join("\n");
     let bodies: String = methods
         .iter()
         .map(|m: &UserMethod| m.source.clone())
@@ -207,7 +421,7 @@ fn whole_type_source(methods: &[UserMethod], target: Target) -> String {
     };
     let type_name: &str = target.type_name;
     format!(
-        "{PREAMBLE}namespace {NAMESPACE}\n{{\n    {kind} {type_name}\n    {{\n{bodies}\n    }}\n}}\n"
+        "{PREAMBLE}namespace {NAMESPACE}\n{{\n    {kind} {type_name}\n    {{\n{declarations}\n{bodies}\n    }}\n}}\n"
     )
 }
 
@@ -429,7 +643,8 @@ fn run_target(target: Target) -> Outcome {
         disrobe_core::scratch::ScratchDir::create(&purpose).expect("mk tmp");
     let tmp: PathBuf = scratch.path().to_path_buf();
     write_project(&tmp, target.type_name);
-    let src: String = whole_type_source(&methods, target);
+    let fields: Vec<String> = field_declarations(&bytes, target);
+    let src: String = whole_type_source(&fields, &methods, target);
     let (compile_errors, produced): (Vec<String>, Option<PathBuf>) =
         compile_whole_type(&tmp, &src, target.type_name);
 
@@ -865,6 +1080,62 @@ fn branch_target_identity_survives_normalization() {
 
 const IL_EQUIVALENCE_FLOOR: usize = 66;
 const IL_BRANCHING_FLOOR: usize = 45;
+
+#[test]
+fn dog_recompiles_when_its_metadata_fields_are_emitted() {
+    if !dotnet_available() || !ilspy_available() {
+        return;
+    }
+    let target: Target = Target {
+        dll: "../../corpus/dotnet/megafile/EdgeCases.baseline.dll",
+        origin_namespace: "EdgeCases",
+        type_name: "Dog",
+        is_static: false,
+    };
+    let outcome: Outcome = run_target(target);
+    assert!(
+        outcome.compiled,
+        "recovered Dog source did not recompile. csc errors:\n{}",
+        outcome.compile_errors.join("\n")
+    );
+}
+
+#[test]
+fn metadata_constant_fields_render_csharp_literals() {
+    let target: Target = Target {
+        dll: "../../corpus/dotnet/megafile/EdgeCases.baseline.dll",
+        origin_namespace: "EdgeCases",
+        type_name: "ConditionalCompilation",
+        is_static: true,
+    };
+    let path: PathBuf = manifest(target.dll);
+    let bytes: Vec<u8> = std::fs::read(&path)
+        .unwrap_or_else(|error: std::io::Error| panic!("read {}: {error}", path.display()));
+    let fields: Vec<String> = field_declarations(&bytes, target);
+    assert_eq!(
+        fields,
+        vec![
+            "    public const string BuildKind = \"release\";".to_owned(),
+            "    public const string Tfm = \"netstandard2.0\";".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn metadata_constant_literals_escape_utf16_edge_cases() {
+    let apostrophe: FieldConstant = FieldConstant {
+        element_type: ELEMENT_TYPE_CHAR,
+        value: vec![0x27, 0x00],
+    };
+    let surrogate: FieldConstant = FieldConstant {
+        element_type: ELEMENT_TYPE_STRING,
+        value: vec![0x00, 0xD8, 0x61, 0x00],
+    };
+    assert_eq!(
+        (csharp_constant(&apostrophe), csharp_constant(&surrogate)),
+        ("'\\''".to_owned(), "\"\\uD800a\"".to_owned())
+    );
+}
 
 #[test]
 fn whole_type_recompiles_to_equivalent_il() {

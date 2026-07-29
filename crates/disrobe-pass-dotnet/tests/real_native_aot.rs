@@ -21,6 +21,19 @@ fn load(rel: &str) -> Vec<u8> {
     })
 }
 
+fn assert_native_aot_report(report: &AotReport) {
+    assert_eq!(
+        (
+            report.is_native_aot,
+            report.runtime_label,
+            report.modules_table_offset,
+            report.eager_class_constructors,
+        ),
+        (true, AotRuntime::Net9, None, 0),
+        "unexpected NativeAOT report: {report:?}"
+    );
+}
+
 #[test]
 fn native_aot_helloapp_parses_as_pe() {
     let bytes: Vec<u8> = load(HELLOAPP_AOT_EXE_REL);
@@ -55,26 +68,12 @@ fn native_aot_helloapp_has_no_clr_data_directory() {
 fn native_aot_helloapp_aot_report_classifies_runtime() {
     let bytes: Vec<u8> = load(HELLOAPP_AOT_EXE_REL);
     let report: AotReport = aot_detect(&bytes);
-    assert!(
-        matches!(
-            report.runtime_label,
-            AotRuntime::Net7
-                | AotRuntime::Net8
-                | AotRuntime::Net9
-                | AotRuntime::Net10
-                | AotRuntime::Unknown
-        ),
-        "got {:?}",
-        report.runtime_label
-    );
+    assert_native_aot_report(&report);
 }
 
 #[test]
 fn native_aot_edgecases_aot_report_inspectable() {
     let bytes: Vec<u8> = load(EDGECASES_AOT_EXE_REL);
     let report: AotReport = aot_detect(&bytes);
-    let _ = report.is_native_aot;
-    let _ = report.runtime_label;
-    let _ = report.modules_table_offset;
-    let _ = report.eager_class_constructors;
+    assert_native_aot_report(&report);
 }
