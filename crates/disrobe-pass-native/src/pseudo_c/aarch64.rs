@@ -258,6 +258,12 @@ pub(crate) fn aarch64_stops_traversal(mnemonic: &str) -> bool {
     aarch64_is_indirect_branch(mnemonic) || aarch64_is_return(mnemonic) || aarch64_is_trap(mnemonic)
 }
 
+pub(crate) fn aarch64_word(bytes: &[u8]) -> Option<u32> {
+    <[u8; AARCH64_INSTRUCTION_BYTES]>::try_from(bytes)
+        .ok()
+        .map(u32::from_le_bytes)
+}
+
 impl RelativeLoadKind {
     fn natural(self) -> Option<(usize, bool)> {
         match self {
@@ -2332,8 +2338,7 @@ fn decode_switch_instruction(insn: &DisasmInsn) -> SwitchInsn {
 }
 
 fn aarch64_instruction_word(insn: &DisasmInsn) -> Option<u32> {
-    let bytes: [u8; 4] = insn.bytes.as_slice().try_into().ok()?;
-    Some(u32::from_le_bytes(bytes))
+    aarch64_word(&insn.bytes)
 }
 
 fn aarch64_relative_target(address: u64, word: u32, shift: u8, bits: u8) -> Option<u64> {

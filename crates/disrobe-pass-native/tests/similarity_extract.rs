@@ -12,7 +12,8 @@ use std::process::Command;
 
 use disrobe_ir::payload::{DisasmInstruction, DisasmPayload, DisasmSymbol, DisasmSymbolKind};
 use disrobe_pass_native::{
-    Error, FunctionSpan, build_disasm_payload, extract_function_features, function_spans,
+    Arch, Error, FunctionSpan, build_disasm_payload, extract_function_features, function_spans,
+    image_arch,
 };
 use disrobe_similarity::{
     CallRelation, DataReference, FunctionFeatures, FunctionId, MatchReport, Verdict,
@@ -386,7 +387,9 @@ impl Side {
 }
 
 fn side(bytes: &[u8]) -> Side {
-    let Ok(payload): Result<DisasmPayload, Error> = build_disasm_payload(bytes) else {
+    let (Ok(payload), Some(arch)): (Result<DisasmPayload, Error>, Option<Arch>) =
+        (build_disasm_payload(bytes), image_arch(bytes))
+    else {
         return Side {
             names: BTreeMap::new(),
             shapes: BTreeMap::new(),
@@ -394,7 +397,7 @@ fn side(bytes: &[u8]) -> Side {
     };
     let mut sorted: Vec<&DisasmInstruction> = payload.instructions.iter().collect();
     sorted.sort_by_key(|insn: &&DisasmInstruction| insn.offset);
-    let spans: Vec<FunctionSpan> = function_spans(&payload);
+    let spans: Vec<FunctionSpan> = function_spans(&payload, arch);
     let names: BTreeMap<u64, String> = spans
         .iter()
         .map(|span: &FunctionSpan| (span.address, span.name.clone()))

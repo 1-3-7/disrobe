@@ -24,7 +24,7 @@ use crate::plt_resolve::{ImportStub, resolve_elf_plt_imports, resolve_pe_iat_imp
 use crate::pseudo_c::aarch64::{
     AARCH64_INSTRUCTION_BYTES, Aarch64DirectTransfer, aarch64_adr_target, aarch64_adrp_target,
     aarch64_direct_transfer, aarch64_is_indirect_branch, aarch64_is_return, aarch64_is_trap,
-    aarch64_stops_traversal, immediate_field, register_field,
+    aarch64_stops_traversal, aarch64_word, immediate_field, register_field,
 };
 
 const ADRP_PAIR_SCAN_LIMIT: usize = 16;
@@ -128,7 +128,7 @@ pub fn extract_function_features(bytes: &[u8]) -> Result<Vec<FunctionFeatures>> 
     };
 
     let index: ImageIndex = ImageIndex::build(bytes, &payload, feature_arch);
-    let spans: Vec<FunctionSpan> = function_spans(&payload);
+    let spans: Vec<FunctionSpan> = function_spans(&payload, arch);
     let mut bodies: Vec<FunctionBody<'_>> = Vec::with_capacity(spans.len());
     for span in &spans {
         let instructions: &[DisasmInstruction] = span_instructions(&payload.instructions, span);
@@ -1045,9 +1045,7 @@ fn is_vector_register_token(token: &str) -> bool {
 }
 
 fn instruction_word(insn: &DisasmInstruction) -> Option<u32> {
-    <[u8; 4]>::try_from(insn.bytes.as_slice())
-        .ok()
-        .map(u32::from_le_bytes)
+    aarch64_word(&insn.bytes)
 }
 
 fn aarch64_address_targets(

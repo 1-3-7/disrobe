@@ -138,7 +138,7 @@ pub use desync::{
     vmware_backdoor_port,
 };
 pub use disasm_ir::{
-    FunctionSpan, build_disasm_payload, function_spans, is_disassemblable_format,
+    FunctionSpan, build_disasm_payload, function_spans, image_arch, is_disassemblable_format,
     seh_scope_function_starts, text_section_window,
 };
 pub use dwarf_sourcemap::{
