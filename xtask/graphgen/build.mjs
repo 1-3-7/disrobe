@@ -9,7 +9,6 @@ import { renderEcosystems } from "./charts/ecosystems.mjs";
 import { renderVerification } from "./charts/verification.mjs";
 import { renderArchitecture } from "./charts/architecture.mjs";
 import { renderLadder } from "./charts/ladder.mjs";
-import { renderCrateGraph } from "./charts/crategraph.mjs";
 
 const graphs = [
   ["recovery.svg", "recovery.json", renderRecovery],
@@ -18,7 +17,6 @@ const graphs = [
   ["verification.svg", "verification.json", renderVerification],
   ["architecture.svg", "architecture.json", renderArchitecture],
   ["ir-ladder.svg", "ir_ladder.json", renderLadder],
-  ["crate-graph.svg", "crate_graph.json", renderCrateGraph],
 ];
 
 const DATA_DIR = new URL("../data/", import.meta.url);
