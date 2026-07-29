@@ -20,7 +20,8 @@ use crate::arch::{Arch as DisasmArch, DisasmInsn, disassemble};
 use crate::cxx_recovery::parse_windows_seh_scope_table;
 use crate::desync::{
     Bitness, CodeWindow, DiscoveredFunctions, DiscoveryInput, ReadOnlyWindow,
-    discover_aarch64_functions, discover_functions, is_noreturn_import_name,
+    discover_aarch64_functions, discover_functions, discover_functions_with_direct_call_sweep,
+    is_noreturn_import_name,
 };
 use crate::error::{Error, Result};
 use crate::pseudo_c::aarch64::AARCH64_INSTRUCTION_BYTES;
@@ -71,6 +72,7 @@ pub(crate) fn build_disasm_payload_with_discovery(bytes: &[u8]) -> Result<Disasm
     }
 
     let mut instructions: Vec<DisasmInstruction> = Vec::new();
+    let mut decoded_code: Vec<CodeWindow<'_>> = Vec::new();
     let mut text_budget: usize = MAX_DECODE_TEXT_BYTES;
     'sections: for section in &sections {
         if text_budget == 0 || instructions.len() >= MAX_PAYLOAD_INSTRUCTIONS {
@@ -87,11 +89,21 @@ pub(crate) fn build_disasm_payload_with_discovery(bytes: &[u8]) -> Result<Disasm
         text_budget -= window;
         let decoded: Vec<DisasmInsn> =
             disassemble(arch, section.address, &section.bytes[..window])?;
+        let mut decoded_byte_len: usize = 0;
         let mut factory: InstructionInfoFactory = InstructionInfoFactory::new();
         for insn in decoded {
             if instructions.len() >= MAX_PAYLOAD_INSTRUCTIONS {
-                break 'sections;
+                break;
             }
+            let insn_end: usize = decoded_instruction_end(section.address, &insn, window)
+                .ok_or_else(|| Error::Disasm {
+                    engine: "disasm-ir",
+                    message: format!(
+                        "instruction {:#x} lies outside decoded section {:#x}",
+                        insn.address, section.address
+                    ),
+                })?;
+            decoded_byte_len = decoded_byte_len.max(insn_end);
             let facts: InstructionFacts =
                 instruction_facts(arch, &insn.bytes, insn.address, &mut factory);
             instructions.push(DisasmInstruction {
@@ -109,6 +121,24 @@ pub(crate) fn build_disasm_payload_with_discovery(bytes: &[u8]) -> Result<Disasm
                 segments: facts.segments,
             });
         }
+        if decoded_byte_len != 0 {
+            let Some(bytes): Option<&[u8]> = section.bytes.get(..decoded_byte_len) else {
+                return Err(Error::Disasm {
+                    engine: "disasm-ir",
+                    message: format!(
+                        "decoded prefix exceeds executable section {:#x}",
+                        section.address
+                    ),
+                });
+            };
+            decoded_code.push(CodeWindow {
+                address: section.address,
+                bytes,
+            });
+        }
+        if instructions.len() >= MAX_PAYLOAD_INSTRUCTIONS {
+            break 'sections;
+        }
     }
     instructions.sort_by_key(|i: &DisasmInstruction| i.offset);
 
@@ -124,7 +154,7 @@ pub(crate) fn build_disasm_payload_with_discovery(bytes: &[u8]) -> Result<Disasm
         inject_discovered_functions(
             arch,
             &native,
-            &sections,
+            &decoded_code,
             &instructions,
             bytes,
             &mut symbol_table,
@@ -160,6 +190,20 @@ const fn decode_byte_limit(arch: DisasmArch, remaining_instructions: usize) -> u
     }
 }
 
+fn decoded_instruction_end(
+    section_address: u64,
+    instruction: &DisasmInsn,
+    byte_limit: usize,
+) -> Option<usize> {
+    if instruction.bytes.is_empty() {
+        return None;
+    }
+    let relative: u64 = instruction.address.checked_sub(section_address)?;
+    let offset: usize = usize::try_from(relative).ok()?;
+    let end: usize = offset.checked_add(instruction.bytes.len())?;
+    (end <= byte_limit).then_some(end)
+}
+
 const fn needs_function_discovery(arch: DisasmArch, has_function_or_export: bool) -> bool {
     matches!(arch, DisasmArch::Aarch64) || !has_function_or_export
 }
@@ -167,18 +211,12 @@ const fn needs_function_discovery(arch: DisasmArch, has_function_or_export: bool
 fn inject_discovered_functions(
     arch: DisasmArch,
     native: &NativeFile,
-    sections: &[ExecutableSection],
+    decoded_code: &[CodeWindow<'_>],
     instructions: &[DisasmInstruction],
     bytes: &[u8],
     symbol_table: &mut Vec<DisasmSymbol>,
 ) -> BTreeSet<u64> {
-    let code: Vec<CodeWindow<'_>> = sections
-        .iter()
-        .map(|s: &ExecutableSection| CodeWindow {
-            address: s.address,
-            bytes: &s.bytes,
-        })
-        .collect();
+    let code: Vec<CodeWindow<'_>> = decoded_code.to_vec();
     let discovered: DiscoveredFunctions = if matches!(arch, DisasmArch::Aarch64) {
         if !matches!(native.format, NativeFormat::Elf64) || !matches!(native.endian, Endian::Little)
         {
@@ -205,7 +243,11 @@ fn inject_discovered_functions(
             seeds,
             noreturn,
         };
-        discover_functions(&input)
+        if matches!(native.format, NativeFormat::Elf64) {
+            discover_functions_with_direct_call_sweep(&input)
+        } else {
+            discover_functions(&input)
+        }
     };
 
     let mut seen: BTreeSet<u64> = symbol_table
@@ -1104,6 +1146,31 @@ mod tests {
     use object::{Architecture, BinaryFormat, Endianness};
 
     use super::*;
+
+    #[test]
+    fn decoded_instruction_end_stays_inside_the_payload_prefix() {
+        let valid: DisasmInsn = DisasmInsn {
+            address: 0x1004,
+            bytes: vec![0x90, 0x90],
+            mnemonic: "nop".to_owned(),
+            operands: String::new(),
+        };
+        let outside: DisasmInsn = DisasmInsn {
+            address: 0x100F,
+            bytes: vec![0x90, 0x90],
+            mnemonic: "nop".to_owned(),
+            operands: String::new(),
+        };
+        let empty: DisasmInsn = DisasmInsn {
+            address: 0x1004,
+            bytes: Vec::new(),
+            mnemonic: String::new(),
+            operands: String::new(),
+        };
+        assert_eq!(decoded_instruction_end(0x1000, &valid, 0x10), Some(6));
+        assert_eq!(decoded_instruction_end(0x1000, &outside, 0x10), None);
+        assert_eq!(decoded_instruction_end(0x1000, &empty, 0x10), None);
+    }
 
     fn call_rel32(buf: &mut [u8], at: usize, target: i64) {
         let next: i64 = at as i64 + 5;
