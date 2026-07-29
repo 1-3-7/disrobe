@@ -3,13 +3,15 @@ use capstone::arch::BuildsCapstone as _;
 use capstone::arch::BuildsCapstoneEndian as _;
 use capstone::arch::BuildsCapstoneExtraMode as _;
 use iced_x86::{
-    Decoder, DecoderOptions, GasFormatter, Instruction, IntelFormatter, MasmFormatter,
-    NasmFormatter,
+    Decoder, DecoderError, DecoderOptions, GasFormatter, Instruction, IntelFormatter,
+    MasmFormatter, NasmFormatter,
 };
 use serde::{Deserialize, Serialize};
 use yaxpeax_arch::Decoder as _;
 
 use crate::error::{Error, Result};
+
+const X86_MAX_INSTRUCTION_BYTES: usize = 15;
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
@@ -171,6 +173,27 @@ fn disasm_iced(bytes: &[u8], base: u64, bits: u32, syntax: Syntax) -> Result<Vec
         });
     }
     Ok(out)
+}
+
+pub(crate) fn decode_one_x86(bits: u32, address: u64, bytes: &[u8]) -> Option<Instruction> {
+    let decode_len: usize = bytes.len().min(X86_MAX_INSTRUCTION_BYTES);
+    let window: &[u8] = bytes.get(..decode_len)?;
+    if window.is_empty() {
+        return None;
+    }
+    let mut decoder: Decoder<'_> = Decoder::with_ip(bits, window, address, DecoderOptions::NONE);
+    if !decoder.can_decode() {
+        return None;
+    }
+    let mut instruction: Instruction = Instruction::default();
+    decoder.decode_out(&mut instruction);
+    if decoder.last_error() != DecoderError::None
+        || instruction.is_invalid()
+        || instruction.len() == 0
+    {
+        return None;
+    }
+    Some(instruction)
 }
 
 fn split_text(text: &str) -> (String, String) {

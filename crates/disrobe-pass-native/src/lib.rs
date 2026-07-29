@@ -33,6 +33,8 @@ pub mod decompile;
 pub mod delphi;
 pub mod deobf;
 pub mod desync;
+#[cfg(test)]
+mod desync_grade;
 pub mod disasm_ir;
 pub mod dwarf_sourcemap;
 pub mod ebpf;

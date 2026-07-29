@@ -7,6 +7,7 @@ use iced_x86::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::arch::decode_one_x86;
 use crate::error::{Error, Result};
 use crate::pseudo_c::aarch64::{
     AARCH64_INSTRUCTION_BYTES, Aarch64DirectTransfer, aarch64_direct_transfer,
@@ -586,6 +587,33 @@ pub struct DiscoveredFunctions {
 
 const MAX_DISCOVERY_FUNCTIONS: usize = 1 << 18;
 const MAX_JUMP_TABLE_ENTRIES: usize = 1 << 12;
+const MAX_DIRECT_CALL_SWEEP_OFFSETS: usize = 32 * 1024 * 1024;
+const MAX_REL32_FORWARD_DISTANCE: u64 = (1_u64 << 31) - 1;
+const MAX_REL32_BACKWARD_DISTANCE: u64 = 1_u64 << 31;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DirectCallTargetEvidence {
+    pub(crate) decoded: usize,
+    pub(crate) independent: usize,
+    pub(crate) linear: usize,
+    target_boundary: bool,
+}
+
+impl DirectCallTargetEvidence {
+    #[must_use]
+    pub(crate) const fn accepted(self) -> bool {
+        self.independent > 1 && self.linear > 1 && self.target_boundary
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct DirectCallTargetAccumulator {
+    decoded_calls: usize,
+    independent_calls: usize,
+    linear_calls: usize,
+    target_boundary: bool,
+    last_independent_end: Option<u64>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StartOrigin {
@@ -597,6 +625,19 @@ enum StartOrigin {
 
 #[must_use]
 pub fn discover_functions(input: &DiscoveryInput<'_>) -> DiscoveredFunctions {
+    discover_functions_impl(input, false)
+}
+
+pub(crate) fn discover_functions_with_direct_call_sweep(
+    input: &DiscoveryInput<'_>,
+) -> DiscoveredFunctions {
+    discover_functions_impl(input, true)
+}
+
+fn discover_functions_impl(
+    input: &DiscoveryInput<'_>,
+    enable_direct_call_sweep: bool,
+) -> DiscoveredFunctions {
     let mut starts: BTreeMap<u64, StartOrigin> = BTreeMap::new();
     for seed in &input.seeds {
         if window_for(&input.code, *seed).is_some() {
@@ -606,6 +647,15 @@ pub fn discover_functions(input: &DiscoveryInput<'_>) -> DiscoveredFunctions {
     for window in &input.code {
         for candidate in scan_prologues(input.bitness, window) {
             starts.entry(candidate).or_insert(StartOrigin::Prologue);
+        }
+    }
+    if enable_direct_call_sweep && matches!(input.bitness, Bitness::Bits64) {
+        let swept_targets: BTreeMap<u64, usize> = direct_call_target_counts(input);
+        for target in swept_targets.keys().copied() {
+            if starts.len() >= MAX_DISCOVERY_FUNCTIONS {
+                break;
+            }
+            starts.entry(target).or_insert(StartOrigin::CallTarget);
         }
     }
 
@@ -826,6 +876,215 @@ fn window_for<'a, 'b>(code: &'b [CodeWindow<'a>], address: u64) -> Option<&'b Co
         let end: u64 = w.address.saturating_add(w.bytes.len() as u64);
         address >= w.address && address < end
     })
+}
+
+fn decode_input_instruction(input: &DiscoveryInput<'_>, address: u64) -> Option<Instruction> {
+    let window: &CodeWindow<'_> = window_for(&input.code, address)?;
+    let relative: u64 = address.checked_sub(window.address)?;
+    let offset: usize = usize::try_from(relative).ok()?;
+    let bytes: &[u8] = window.bytes.get(offset..)?;
+    decode_one_x86(input.bitness.value(), address, bytes)
+}
+
+fn valid_code_windows(code: &[CodeWindow<'_>]) -> bool {
+    let mut previous_end: Option<u64> = None;
+    for window in code {
+        let Ok(window_len): core::result::Result<u64, std::num::TryFromIntError> =
+            u64::try_from(window.bytes.len())
+        else {
+            return false;
+        };
+        let Some(window_end): Option<u64> = window.address.checked_add(window_len) else {
+            return false;
+        };
+        if previous_end.is_some_and(|end: u64| window.address < end) {
+            return false;
+        }
+        previous_end = Some(window_end);
+    }
+    true
+}
+
+#[must_use]
+fn direct_call_target_counts(input: &DiscoveryInput<'_>) -> BTreeMap<u64, usize> {
+    direct_call_target_evidence(input)
+        .into_iter()
+        .filter_map(|(target, evidence): (u64, DirectCallTargetEvidence)| {
+            evidence.accepted().then_some((target, evidence.decoded))
+        })
+        .collect()
+}
+
+#[must_use]
+pub(crate) fn direct_call_target_evidence(
+    input: &DiscoveryInput<'_>,
+) -> BTreeMap<u64, DirectCallTargetEvidence> {
+    sweep_direct_call_target_evidence(input, MAX_DIRECT_CALL_SWEEP_OFFSETS)
+}
+
+fn direct_call_target(
+    input: &DiscoveryInput<'_>,
+    address: u64,
+    instruction: &Instruction,
+) -> Option<(u64, u64)> {
+    if instruction.code() != Code::Call_rel32_64
+        || instruction.flow_control() != FlowControl::Call
+        || !matches!(instruction.op0_kind(), OpKind::NearBranch64)
+    {
+        return None;
+    }
+    let instruction_len: u64 = u64::try_from(instruction.len()).ok()?;
+    let instruction_end: u64 = address.checked_add(instruction_len)?;
+    let target: u64 = instruction.near_branch_target();
+    let rel32_in_range: bool = if target >= instruction_end {
+        target
+            .checked_sub(instruction_end)
+            .is_some_and(|distance: u64| distance <= MAX_REL32_FORWARD_DISTANCE)
+    } else {
+        instruction_end
+            .checked_sub(target)
+            .is_some_and(|distance: u64| distance <= MAX_REL32_BACKWARD_DISTANCE)
+    };
+    if !rel32_in_range {
+        return None;
+    }
+    if target >= address && target <= instruction_end {
+        return None;
+    }
+    decode_input_instruction(input, target)?;
+    Some((target, instruction_end))
+}
+
+fn sweep_direct_call_target_evidence(
+    input: &DiscoveryInput<'_>,
+    offset_limit: usize,
+) -> BTreeMap<u64, DirectCallTargetEvidence> {
+    if !matches!(input.bitness, Bitness::Bits64) || !valid_code_windows(&input.code) {
+        return BTreeMap::new();
+    }
+    let mut targets: BTreeMap<u64, DirectCallTargetAccumulator> = BTreeMap::new();
+    let mut remaining_offsets: usize = offset_limit;
+    for window in &input.code {
+        let scan_len: usize = window.bytes.len().min(remaining_offsets);
+        for offset in 0..scan_len {
+            let Ok(offset_address): core::result::Result<u64, std::num::TryFromIntError> =
+                u64::try_from(offset)
+            else {
+                continue;
+            };
+            let Some(address): Option<u64> = window.address.checked_add(offset_address) else {
+                continue;
+            };
+            let Some(bytes): Option<&[u8]> = window.bytes.get(offset..) else {
+                continue;
+            };
+            let Some(instruction): Option<Instruction> =
+                decode_one_x86(input.bitness.value(), address, bytes)
+            else {
+                continue;
+            };
+            let Some((target, instruction_end)): Option<(u64, u64)> =
+                direct_call_target(input, address, &instruction)
+            else {
+                continue;
+            };
+            let accumulator: &mut DirectCallTargetAccumulator = targets.entry(target).or_default();
+            accumulator.decoded_calls = accumulator.decoded_calls.saturating_add(1);
+            if accumulator
+                .last_independent_end
+                .is_none_or(|end: u64| address >= end)
+            {
+                accumulator.independent_calls = accumulator.independent_calls.saturating_add(1);
+                accumulator.last_independent_end = Some(instruction_end);
+            }
+            if targets.len() > MAX_DISCOVERY_FUNCTIONS {
+                return BTreeMap::new();
+            }
+        }
+        remaining_offsets = remaining_offsets.saturating_sub(scan_len);
+        if remaining_offsets == 0 {
+            break;
+        }
+    }
+    add_linear_call_evidence(input, offset_limit, &mut targets);
+    targets
+        .into_iter()
+        .map(
+            |(target, accumulator): (u64, DirectCallTargetAccumulator)| {
+                (
+                    target,
+                    DirectCallTargetEvidence {
+                        decoded: accumulator.decoded_calls,
+                        independent: accumulator.independent_calls,
+                        linear: accumulator.linear_calls,
+                        target_boundary: accumulator.target_boundary,
+                    },
+                )
+            },
+        )
+        .collect()
+}
+
+fn add_linear_call_evidence(
+    input: &DiscoveryInput<'_>,
+    offset_limit: usize,
+    targets: &mut BTreeMap<u64, DirectCallTargetAccumulator>,
+) {
+    let mut remaining_offsets: usize = offset_limit;
+    for window in &input.code {
+        let scan_len: usize = window.bytes.len().min(remaining_offsets);
+        let mut offset: usize = 0;
+        while offset < scan_len {
+            let Ok(offset_address): core::result::Result<u64, std::num::TryFromIntError> =
+                u64::try_from(offset)
+            else {
+                break;
+            };
+            let Some(address): Option<u64> = window.address.checked_add(offset_address) else {
+                break;
+            };
+            let Some(bytes): Option<&[u8]> = window.bytes.get(offset..) else {
+                break;
+            };
+            let Some(instruction): Option<Instruction> =
+                decode_one_x86(input.bitness.value(), address, bytes)
+            else {
+                break;
+            };
+            record_linear_target(address, targets);
+            record_linear_call(input, address, &instruction, targets);
+            offset = offset.saturating_add(instruction.len());
+        }
+        remaining_offsets = remaining_offsets.saturating_sub(scan_len);
+        if remaining_offsets == 0 {
+            break;
+        }
+    }
+}
+
+fn record_linear_target(address: u64, targets: &mut BTreeMap<u64, DirectCallTargetAccumulator>) {
+    let Some(accumulator): Option<&mut DirectCallTargetAccumulator> = targets.get_mut(&address)
+    else {
+        return;
+    };
+    accumulator.target_boundary = true;
+}
+
+fn record_linear_call(
+    input: &DiscoveryInput<'_>,
+    address: u64,
+    instruction: &Instruction,
+    targets: &mut BTreeMap<u64, DirectCallTargetAccumulator>,
+) {
+    let Some((target, _)): Option<(u64, u64)> = direct_call_target(input, address, instruction)
+    else {
+        return;
+    };
+    let Some(accumulator): Option<&mut DirectCallTargetAccumulator> = targets.get_mut(&target)
+    else {
+        return;
+    };
+    accumulator.linear_calls = accumulator.linear_calls.saturating_add(1);
 }
 
 fn rodata_slice<'a>(rodata: &[ReadOnlyWindow<'a>], address: u64, len: usize) -> Option<&'a [u8]> {
@@ -1366,6 +1625,268 @@ mod tests {
             out.starts
         );
         assert!(out.from_call_target >= 1);
+    }
+
+    #[test]
+    fn discovery_recovers_call_targets_from_unreachable_code() {
+        let code: [u8; 27] = [
+            0xC3, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xE8, 0x0B, 0x00, 0x00, 0x00, 0xC3,
+            0xCC, 0xCC, 0xE8, 0x03, 0x00, 0x00, 0x00, 0xC3, 0xCC, 0xCC, 0x31, 0xC0, 0xC3,
+        ];
+        let input: DiscoveryInput<'_> = DiscoveryInput {
+            bitness: Bitness::Bits64,
+            code: vec![CodeWindow {
+                address: 0x1000,
+                bytes: &code,
+            }],
+            rodata: Vec::new(),
+            seeds: vec![0x1000],
+            noreturn: BTreeSet::new(),
+        };
+        let out: DiscoveredFunctions = discover_functions_with_direct_call_sweep(&input);
+        assert_eq!(out.starts, vec![0x1000, 0x1018]);
+        assert_eq!(out.from_seed, 1);
+        assert_eq!(out.from_call_target, 1);
+        assert_eq!(out.from_prologue, 0);
+    }
+
+    #[test]
+    fn embedded_e8_is_not_accepted_as_an_independent_call() {
+        let code: [u8; 9] = [0xC7, 0x45, 0xE8, 0x01, 0x00, 0x00, 0x00, 0x90, 0xC3];
+        let input: DiscoveryInput<'_> = DiscoveryInput {
+            bitness: Bitness::Bits64,
+            code: vec![CodeWindow {
+                address: 0x1000,
+                bytes: &code,
+            }],
+            rodata: Vec::new(),
+            seeds: vec![0x1000],
+            noreturn: BTreeSet::new(),
+        };
+        let counts: BTreeMap<u64, usize> = direct_call_target_counts(&input);
+        assert!(
+            !counts.contains_key(&0x1008),
+            "overlapping decodes of an embedded E8 are not independent call evidence: {counts:x?}"
+        );
+    }
+
+    #[test]
+    fn separate_embedded_e8_values_do_not_corroborate() {
+        let code: [u8; 33] = [
+            0xB8, 0xE8, 0x1A, 0x00, 0x00, 0x00, 0xC0, 0xB8, 0xE8, 0x13, 0x00, 0x00, 0x00, 0xC0,
+            0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+            0x90, 0x90, 0x90, 0x90, 0xC3,
+        ];
+        let input: DiscoveryInput<'_> = DiscoveryInput {
+            bitness: Bitness::Bits64,
+            code: vec![CodeWindow {
+                address: 0x1000,
+                bytes: &code,
+            }],
+            rodata: Vec::new(),
+            seeds: Vec::new(),
+            noreturn: BTreeSet::new(),
+        };
+        let counts: BTreeMap<u64, usize> = direct_call_target_counts(&input);
+        assert!(
+            !counts.contains_key(&0x1020),
+            "separate immediates are not independent call evidence: {counts:x?}"
+        );
+    }
+
+    #[test]
+    fn calls_to_an_interior_decodable_byte_do_not_corroborate() {
+        let code: [u8; 36] = [
+            0xE8, 0x1B, 0x00, 0x00, 0x00, 0xE8, 0x16, 0x00, 0x00, 0x00, 0x90, 0x90, 0x90, 0x90,
+            0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+            0x90, 0x90, 0x90, 0xB8, 0xC3, 0x00, 0x00, 0x00,
+        ];
+        let input: DiscoveryInput<'_> = DiscoveryInput {
+            bitness: Bitness::Bits64,
+            code: vec![CodeWindow {
+                address: 0x1000,
+                bytes: &code,
+            }],
+            rodata: Vec::new(),
+            seeds: Vec::new(),
+            noreturn: BTreeSet::new(),
+        };
+        let counts: BTreeMap<u64, usize> = direct_call_target_counts(&input);
+        assert!(
+            !counts.contains_key(&0x1020),
+            "an interior target byte is not a function boundary: {counts:x?}"
+        );
+    }
+
+    #[test]
+    fn call_sweep_accepts_a_cross_window_target() {
+        let caller: [u8; 22] = [
+            0xC3, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xE8, 0xF3, 0x0F, 0x00, 0x00, 0xC3,
+            0xCC, 0xCC, 0xE8, 0xEB, 0x0F, 0x00, 0x00, 0xC3,
+        ];
+        let callee: [u8; 3] = [0x31, 0xC0, 0xC3];
+        let input: DiscoveryInput<'_> = DiscoveryInput {
+            bitness: Bitness::Bits64,
+            code: vec![
+                CodeWindow {
+                    address: 0x1000,
+                    bytes: &caller,
+                },
+                CodeWindow {
+                    address: 0x2000,
+                    bytes: &callee,
+                },
+            ],
+            rodata: Vec::new(),
+            seeds: vec![0x1000],
+            noreturn: BTreeSet::new(),
+        };
+        let discovered: DiscoveredFunctions = discover_functions_with_direct_call_sweep(&input);
+        assert_eq!(discovered.starts, vec![0x1000, 0x2000]);
+        assert_eq!(discovered.from_call_target, 1);
+    }
+
+    #[test]
+    fn call_sweep_rejects_truncated_and_outside_targets() {
+        let truncated_call: [u8; 5] = [0xC3, 0xCC, 0xE8, 0x00, 0x00];
+        let truncated_target: [u8; 8] = [0xE8, 0x02, 0x00, 0x00, 0x00, 0xC3, 0xCC, 0x0F];
+        let outside_target: [u8; 6] = [0xE8, 0xFB, 0x0F, 0x00, 0x00, 0xC3];
+        let cases: [&[u8]; 3] = [&truncated_call, &truncated_target, &outside_target];
+        for code in cases {
+            let input: DiscoveryInput<'_> = DiscoveryInput {
+                bitness: Bitness::Bits64,
+                code: vec![CodeWindow {
+                    address: 0x1000,
+                    bytes: code,
+                }],
+                rodata: Vec::new(),
+                seeds: Vec::new(),
+                noreturn: BTreeSet::new(),
+            };
+            let counts: BTreeMap<u64, DirectCallTargetEvidence> =
+                direct_call_target_evidence(&input);
+            assert!(
+                counts.is_empty(),
+                "invalid call evidence accepted: {counts:x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn call_sweep_rejects_invalid_window_layouts() {
+        let first: [u8; 8] = [0xE8, 0x03, 0x00, 0x00, 0x00, 0xC3, 0xCC, 0xCC];
+        let second: [u8; 2] = [0x90, 0xC3];
+        let overlapping: DiscoveryInput<'_> = DiscoveryInput {
+            bitness: Bitness::Bits64,
+            code: vec![
+                CodeWindow {
+                    address: 0x1000,
+                    bytes: &first,
+                },
+                CodeWindow {
+                    address: 0x1004,
+                    bytes: &second,
+                },
+            ],
+            rodata: Vec::new(),
+            seeds: Vec::new(),
+            noreturn: BTreeSet::new(),
+        };
+        let overflowing: DiscoveryInput<'_> = DiscoveryInput {
+            bitness: Bitness::Bits64,
+            code: vec![CodeWindow {
+                address: u64::MAX - 1,
+                bytes: &first,
+            }],
+            rodata: Vec::new(),
+            seeds: Vec::new(),
+            noreturn: BTreeSet::new(),
+        };
+        assert!(direct_call_target_counts(&overlapping).is_empty());
+        assert!(direct_call_target_counts(&overflowing).is_empty());
+    }
+
+    #[test]
+    fn call_sweep_obeys_the_offset_limit() {
+        let code: [u8; 27] = [
+            0xC3, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xE8, 0x0B, 0x00, 0x00, 0x00, 0xC3,
+            0xCC, 0xCC, 0xE8, 0x03, 0x00, 0x00, 0x00, 0xC3, 0xCC, 0xCC, 0x31, 0xC0, 0xC3,
+        ];
+        let input: DiscoveryInput<'_> = DiscoveryInput {
+            bitness: Bitness::Bits64,
+            code: vec![CodeWindow {
+                address: 0x1000,
+                bytes: &code,
+            }],
+            rodata: Vec::new(),
+            seeds: Vec::new(),
+            noreturn: BTreeSet::new(),
+        };
+        let before_second_call: BTreeMap<u64, DirectCallTargetEvidence> =
+            sweep_direct_call_target_evidence(&input, 16);
+        let through_second_call: BTreeMap<u64, DirectCallTargetEvidence> =
+            sweep_direct_call_target_evidence(&input, 17);
+        let through_target: BTreeMap<u64, DirectCallTargetEvidence> =
+            sweep_direct_call_target_evidence(&input, 25);
+        assert!(
+            before_second_call
+                .get(&0x1018)
+                .is_some_and(|evidence: &DirectCallTargetEvidence| !evidence.accepted())
+        );
+        assert!(through_second_call.get(&0x1018).is_some_and(
+            |evidence: &DirectCallTargetEvidence| {
+                evidence.independent > 1
+                    && evidence.linear > 1
+                    && !evidence.target_boundary
+                    && !evidence.accepted()
+            }
+        ));
+        assert!(
+            through_target
+                .get(&0x1018)
+                .is_some_and(|evidence: &DirectCallTargetEvidence| evidence.accepted())
+        );
+    }
+
+    #[test]
+    fn call_sweep_rejects_wrapped_rel32_targets() {
+        let low_target: [u8; 1] = [0xC3];
+        let positive_wrap: [u8; 5] = [0xE8, 0x08, 0x00, 0x00, 0x00];
+        let negative_wrap: [u8; 5] = [0xE8, 0xF8, 0xFF, 0xFF, 0xFF];
+        let positive_input: DiscoveryInput<'_> = DiscoveryInput {
+            bitness: Bitness::Bits64,
+            code: vec![
+                CodeWindow {
+                    address: 0x4,
+                    bytes: &low_target,
+                },
+                CodeWindow {
+                    address: u64::MAX - 8,
+                    bytes: &positive_wrap,
+                },
+            ],
+            rodata: Vec::new(),
+            seeds: Vec::new(),
+            noreturn: BTreeSet::new(),
+        };
+        let negative_input: DiscoveryInput<'_> = DiscoveryInput {
+            bitness: Bitness::Bits64,
+            code: vec![
+                CodeWindow {
+                    address: 0,
+                    bytes: &negative_wrap,
+                },
+                CodeWindow {
+                    address: u64::MAX - 2,
+                    bytes: &low_target,
+                },
+            ],
+            rodata: Vec::new(),
+            seeds: Vec::new(),
+            noreturn: BTreeSet::new(),
+        };
+        assert!(direct_call_target_evidence(&positive_input).is_empty());
+        assert!(direct_call_target_evidence(&negative_input).is_empty());
     }
 
     #[test]
