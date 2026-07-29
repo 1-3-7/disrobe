@@ -2049,7 +2049,8 @@ fn lift_structured(
     let block_entry_stacks: BTreeMap<BlockId, Vec<Expr>> =
         compute_block_entry_stacks(cf, &cfg, insns, params, bootstraps, has_this, bool_return);
     let reused_exc_slots: BTreeSet<u16> = reused_exception_slots(insns, &cfg.exception_regions);
-    let bool_array_names: BTreeSet<String> = boolean_array_names(cf, insns, params, param_types);
+    let bool_array_names: BTreeMap<String, u8> =
+        boolean_array_names(cf, insns, params, param_types);
     let slot_types: BTreeMap<u16, String> =
         compute_slot_types(cf, insns, params, param_types, &cfg.exception_regions);
     let mut ctx: RenderCtx<'_> = RenderCtx {
@@ -2556,7 +2557,7 @@ fn classify_bool_block(
     if stack.iter().any(expr_has_hole) {
         return None;
     }
-    let cond: String = render_branch_condition(last, &mut stack, &BTreeSet::new());
+    let cond: String = render_branch_condition(last, &mut stack, &BTreeMap::new());
     if cond == "true" || cond.contains(HOLE_RENDER) || !stack.is_empty() {
         return None;
     }
@@ -2742,19 +2743,54 @@ fn boolean_array_names(
     insns: &[Instruction],
     params: &[(u16, String)],
     param_types: &BTreeMap<u16, String>,
-) -> BTreeSet<String> {
-    infer_reference_local_types(cf, insns, param_types)
+) -> BTreeMap<String, u8> {
+    let mut ranks: BTreeMap<String, u8> = infer_reference_local_types(cf, insns, param_types)
         .into_iter()
-        .filter(|(_, ty)| ty == "boolean[]")
-        .map(|(slot, _)| local_name(slot, params))
-        .collect()
+        .filter_map(|(slot, ty): (u16, String)| {
+            boolean_array_rank(Some(ty.as_str())).map(|rank: u8| (local_name(slot, params), rank))
+        })
+        .collect();
+    for (slot, ty) in param_types {
+        let rank: Option<u8> = boolean_array_rank(Some(ty.as_str()));
+        if let Some(rank) = rank {
+            ranks.insert(local_name(*slot, params), rank);
+        }
+    }
+    ranks
+}
+
+fn boolean_array_expr_rank(expr: &Expr, ranks: &BTreeMap<String, u8>) -> Option<u8> {
+    match expr {
+        Expr::Local(name) => ranks.get(name).copied(),
+        Expr::ArrayLoad { array, .. } => {
+            boolean_array_expr_rank(array, ranks).and_then(|rank: u8| rank.checked_sub(1))
+        }
+        _ => None,
+    }
+}
+
+fn is_boolean_element_array(expr: &Expr, ranks: &BTreeMap<String, u8>) -> bool {
+    boolean_array_expr_rank(expr, ranks) == Some(1)
 }
 
 #[derive(Clone, Copy)]
 enum BoolScalarVal {
-    BoolArray,
+    BoolArray(u8),
     BoolScalar,
     Other,
+}
+
+fn boolean_array_rank(ty: Option<&str>) -> Option<u8> {
+    let ty: &str = ty?;
+    let base: &str = ty.trim_end_matches("[]");
+    if base != "boolean" {
+        return None;
+    }
+    let brackets: usize = ty.len() - base.len();
+    if brackets == 0 || brackets % 2 != 0 {
+        return None;
+    }
+    u8::try_from(brackets / 2).ok()
 }
 
 fn boolean_scalar_local_slots(
@@ -2763,20 +2799,26 @@ fn boolean_scalar_local_slots(
     params: &[(u16, String)],
     param_types: &BTreeMap<u16, String>,
 ) -> BTreeSet<u16> {
-    let mut bool_array_slots: BTreeSet<u16> = infer_reference_local_types(cf, insns, param_types)
-        .into_iter()
-        .filter(|(_, ty): &(u16, String)| ty == "boolean[]")
-        .map(|(slot, _): (u16, String)| slot)
-        .collect();
+    let mut bool_array_slots: BTreeMap<u16, u8> =
+        infer_reference_local_types(cf, insns, param_types)
+            .into_iter()
+            .filter_map(|(slot, ty): (u16, String)| {
+                boolean_array_rank(Some(ty.as_str())).map(|rank: u8| (slot, rank))
+            })
+            .collect();
     for (slot, ty) in param_types {
-        if ty == "boolean[]" {
-            bool_array_slots.insert(*slot);
+        let rank: Option<u8> = boolean_array_rank(Some(ty.as_str()));
+        if let Some(rank) = rank {
+            bool_array_slots.insert(*slot, rank);
         }
     }
     let param_slots: BTreeSet<u16> = params.iter().map(|(i, _): &(u16, String)| *i).collect();
-    let array_of = |val: Option<&str>| match val {
-        Some("boolean[]") => BoolScalarVal::BoolArray,
-        _ => BoolScalarVal::Other,
+    let array_of = |val: Option<&str>| -> BoolScalarVal {
+        boolean_array_rank(val).map_or(BoolScalarVal::Other, BoolScalarVal::BoolArray)
+    };
+    let slot_val = |slot: Option<u16>| -> BoolScalarVal {
+        slot.and_then(|s: u16| bool_array_slots.get(&s).copied())
+            .map_or(BoolScalarVal::Other, BoolScalarVal::BoolArray)
     };
     let mut stack: Vec<BoolScalarVal> = Vec::new();
     let mut bool_stores: BTreeSet<u16> = BTreeSet::new();
@@ -2790,19 +2832,9 @@ fn boolean_scalar_local_slots(
                     Operands::Local(idx) => Some(*idx),
                     _ => None,
                 };
-                stack.push(match slot {
-                    Some(s) if bool_array_slots.contains(&s) => BoolScalarVal::BoolArray,
-                    _ => BoolScalarVal::Other,
-                });
+                stack.push(slot_val(slot));
             }
-            0x2A..=0x2D => {
-                let slot: u16 = u16::from(op - 0x2A);
-                stack.push(if bool_array_slots.contains(&slot) {
-                    BoolScalarVal::BoolArray
-                } else {
-                    BoolScalarVal::Other
-                });
-            }
+            0x2A..=0x2D => stack.push(slot_val(Some(u16::from(op - 0x2A)))),
             0xB2 => stack.push(array_of(field_static_type(cf, insn).as_deref())),
             0xB4 => {
                 stack.pop();
@@ -2827,18 +2859,38 @@ fn boolean_scalar_local_slots(
                 stack.push(array_of(checkcast_static_type(cf, insn).as_deref()));
             }
             0x59 => stack.push(stack.last().copied().unwrap_or(BoolScalarVal::Other)),
+            0x32 => {
+                stack.pop();
+                let array: BoolScalarVal = stack.pop().unwrap_or(BoolScalarVal::Other);
+                stack.push(match array {
+                    BoolScalarVal::BoolArray(rank) if rank >= 2 => {
+                        BoolScalarVal::BoolArray(rank - 1)
+                    }
+                    _ => BoolScalarVal::Other,
+                });
+            }
             0x33 => {
                 stack.pop();
                 let array: BoolScalarVal = stack.pop().unwrap_or(BoolScalarVal::Other);
                 stack.push(match array {
-                    BoolScalarVal::BoolArray => BoolScalarVal::BoolScalar,
+                    BoolScalarVal::BoolArray(1) => BoolScalarVal::BoolScalar,
                     _ => BoolScalarVal::Other,
                 });
             }
-            0x2E..=0x32 | 0x34 | 0x35 => {
+            0x2E..=0x31 | 0x34 | 0x35 => {
                 stack.pop();
                 stack.pop();
                 stack.push(BoolScalarVal::Other);
+            }
+            0xC5 => {
+                let dims: usize = match &insn.operands {
+                    Operands::MultiANewArray { dimensions, .. } => usize::from(*dimensions),
+                    _ => 0,
+                };
+                for _ in 0..dims {
+                    stack.pop();
+                }
+                stack.push(array_of(multi_new_array_static_type(cf, insn).as_deref()));
             }
             0x36 | 0x3B..=0x3E => {
                 let value: BoolScalarVal = stack.pop().unwrap_or(BoolScalarVal::Other);
@@ -3583,7 +3635,7 @@ struct RenderCtx<'a> {
     pattern_binding_slots: BTreeSet<u16>,
     catch_var_counter: usize,
     reused_exc_slots: BTreeSet<u16>,
-    bool_array_names: BTreeSet<String>,
+    bool_array_names: BTreeMap<String, u8>,
     string_switch_tables: BTreeMap<BlockId, crate::decompile_struct::StringSwitchTable>,
     slot_types: BTreeMap<u16, String>,
     param_types: BTreeMap<u16, String>,
@@ -4591,7 +4643,7 @@ fn compute_block_entry_stacks(
         pattern_binding_slots: BTreeSet::new(),
         catch_var_counter: 0,
         reused_exc_slots: BTreeSet::new(),
-        bool_array_names: BTreeSet::new(),
+        bool_array_names: BTreeMap::new(),
         string_switch_tables: BTreeMap::new(),
         slot_types: BTreeMap::new(),
         param_types: BTreeMap::new(),
@@ -5215,7 +5267,7 @@ fn render_if_condition(
 fn render_branch_condition(
     insn: &Instruction,
     stack: &mut Vec<Expr>,
-    bool_arrays: &BTreeSet<String>,
+    bool_arrays: &BTreeMap<String, u8>,
 ) -> String {
     match insn.opcode {
         0x99 => unary_or_cmp_cond(stack, "==", "== 0", bool_arrays),
@@ -5245,7 +5297,7 @@ fn unary_or_cmp_cond(
     stack: &mut Vec<Expr>,
     rel_op: &str,
     zero_suffix: &str,
-    bool_arrays: &BTreeSet<String>,
+    bool_arrays: &BTreeMap<String, u8>,
 ) -> String {
     let v: Expr = pop_expr(stack);
     if zero_suffix == "== 0" || zero_suffix == "!= 0" {
@@ -6582,7 +6634,7 @@ const fn pattern_render_ctx<'a>(
         pattern_binding_slots: BTreeSet::new(),
         catch_var_counter: 0,
         reused_exc_slots: BTreeSet::new(),
-        bool_array_names: BTreeSet::new(),
+        bool_array_names: BTreeMap::new(),
         string_switch_tables: BTreeMap::new(),
         slot_types: BTreeMap::new(),
         param_types: BTreeMap::new(),
@@ -7177,16 +7229,16 @@ fn lift_guard_condition(ctx: &RenderCtx<'_>, slice: &[Instruction], var: &str) -
     Some(cond)
 }
 
-fn boolean_array_store(stack: &mut Vec<Expr>, bool_arrays: &BTreeSet<String>) -> Option<String> {
+fn boolean_array_store(
+    stack: &mut Vec<Expr>,
+    bool_arrays: &BTreeMap<String, u8>,
+) -> Option<String> {
     let len: usize = stack.len();
     if len < 3 {
         return None;
     }
     let array: &Expr = &stack[len - 3];
-    let Expr::Local(name) = array else {
-        return None;
-    };
-    if !bool_arrays.contains(name) {
+    if !is_boolean_element_array(array, bool_arrays) {
         return None;
     }
     let value: &Expr = &stack[len - 1];
@@ -7196,7 +7248,7 @@ fn boolean_array_store(stack: &mut Vec<Expr>, bool_arrays: &BTreeSet<String>) ->
         _ => return None,
     };
     let index: &Expr = &stack[len - 2];
-    let stmt: String = format!("{}[{}] = {literal}", name, index.render());
+    let stmt: String = format!("{}[{}] = {literal}", array.render(), index.render());
     stack.truncate(len - 3);
     Some(stmt)
 }
@@ -7204,15 +7256,12 @@ fn boolean_array_store(stack: &mut Vec<Expr>, bool_arrays: &BTreeSet<String>) ->
 fn boolean_array_load_render(
     expr: &Expr,
     negate: bool,
-    bool_arrays: &BTreeSet<String>,
+    bool_arrays: &BTreeMap<String, u8>,
 ) -> Option<String> {
     let Expr::ArrayLoad { array, .. } = expr else {
         return None;
     };
-    let Expr::Local(name) = array.as_ref() else {
-        return None;
-    };
-    if !bool_arrays.contains(name) {
+    if !is_boolean_element_array(array, bool_arrays) {
         return None;
     }
     let rendered: String = expr.render();
@@ -7228,7 +7277,7 @@ fn build_guard_expr(
     stack: &mut Vec<Expr>,
     fused_cmp: bool,
     _var: &str,
-    bool_arrays: &BTreeSet<String>,
+    bool_arrays: &BTreeMap<String, u8>,
 ) -> Option<String> {
     if fused_cmp {
         let rhs: Expr = stack.pop()?;
@@ -8460,7 +8509,7 @@ fn cast_numeric(insn: &Instruction, stack: &mut Vec<Expr>) -> LiftResult {
 
 fn conditional_branch(insn: &Instruction, stack: &mut Vec<Expr>) -> LiftResult {
     let target: u32 = branch_target(insn).unwrap_or(0);
-    let no_bool_arrays: BTreeSet<String> = BTreeSet::new();
+    let no_bool_arrays: BTreeMap<String, u8> = BTreeMap::new();
     let cond: String = match insn.opcode {
         0x99 => unary_or_cmp_cond(stack, "==", "== 0", &no_bool_arrays),
         0x9A => unary_or_cmp_cond(stack, "!=", "!= 0", &no_bool_arrays),

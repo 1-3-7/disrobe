@@ -59,6 +59,30 @@ const BOOL_FIXTURE: &str = r"public class BoolArrCases {
         }
         return n;
     }
+    static int countGrid(boolean[][] grid) {
+        int n = 0;
+        for (int i = 0; i < grid.length; i++) {
+            for (int j = 0; j < grid[i].length; j++) {
+                boolean f = grid[i][j];
+                if (f) { n++; }
+            }
+        }
+        return n;
+    }
+    static boolean cubeElement(boolean[][][] cube, int i, int j, int k) {
+        boolean f = cube[i][j][k];
+        return f;
+    }
+    static boolean multiNewGrid(int n) {
+        boolean[][] grid = new boolean[n][n];
+        grid[0][0] = true;
+        boolean f = grid[0][0];
+        return f;
+    }
+    static int sumByteGrid(byte[][] grid, int i, int j) {
+        int v = grid[i][j];
+        return v;
+    }
 }
 ";
 
@@ -69,6 +93,10 @@ const BOOL_METHODS: &[&str] = &[
     "sumByteIndexed",
     "sumShortIndexed",
     "sumCharIndexed",
+    "countGrid",
+    "cubeElement",
+    "multiNewGrid",
+    "sumByteGrid",
 ];
 
 fn find_on_path(name: &str) -> Option<PathBuf> {
