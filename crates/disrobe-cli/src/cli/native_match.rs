@@ -16,6 +16,23 @@ const SCHEMA: &str = "disrobe.native.match/v1";
 
 const LITERAL_PREVIEW_LIMIT: usize = 64;
 
+pub(crate) const DEFAULT_LISTING_LIMIT: usize = 25;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum ListingStage {
+    DataReference,
+    ControlFlow,
+    Propagation,
+    Refused,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ListingOptions {
+    pub(crate) limit: usize,
+    pub(crate) function: Option<u64>,
+    pub(crate) stage: Option<ListingStage>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 enum ReferenceRow {
@@ -114,11 +131,18 @@ enum Written {
     Wrote(PathBuf),
 }
 
+struct ListingRow<'a> {
+    side: &'static str,
+    other_side: &'static str,
+    row: &'a VerdictRow,
+}
+
 pub(crate) fn run(
     a: PathBuf,
     b: PathBuf,
     out: Option<PathBuf>,
     fmt: OutputFormat,
+    listing: ListingOptions,
 ) -> miette::Result<()> {
     let bytes_a: Vec<u8> = std::fs::read(&a)
         .map_err(|e| miette::miette!("DR-NATIVE-0200: cannot read {}: {e}", a.display()))?;
@@ -152,8 +176,19 @@ pub(crate) fn run(
     let summary: MatchSummary = summarize(&a, &b, &left, &right, &report);
     spinner.finish(&format!("{} pair(s)", summary.pairs));
 
+    if !fmt.is_machine() {
+        let address: Option<u64> = listing.function;
+        if let Some(address) = address
+            && matching_rows(&summary, address).is_empty()
+        {
+            return Err(miette::miette!(
+                "DR-NATIVE-0208: no function at address {address:#x} in either input"
+            ));
+        }
+    }
+
     let written: Written = write_report(&summary, out)?;
-    output::emit(fmt, &summary, || render(&summary, &written))
+    output::emit(fmt, &summary, || render(&summary, &written, listing))
 }
 
 fn write_report(summary: &MatchSummary, out: Option<PathBuf>) -> miette::Result<Written> {
@@ -385,7 +420,7 @@ fn without_evidence(features: &[FunctionFeatures]) -> usize {
         .count()
 }
 
-fn render(summary: &MatchSummary, written: &Written) {
+fn render(summary: &MatchSummary, written: &Written, listing: ListingOptions) {
     println!("native match: OK");
     println!("  a:            {}", summary.a);
     println!("  b:            {}", summary.b);
@@ -399,9 +434,12 @@ fn render(summary: &MatchSummary, written: &Written) {
     println!("    propagation:    {}", summary.by_stage.propagation);
     render_side("a", &summary.a_side);
     render_side("b", &summary.b_side);
-    render_pairs(&summary.a_verdicts);
-    render_ambiguous("a", "b", &summary.a_verdicts);
-    render_ambiguous("b", "a", &summary.b_verdicts);
+    let address: Option<u64> = listing.function;
+    if let Some(address) = address {
+        render_function(summary, address);
+    } else {
+        render_listing(summary, listing);
+    }
     match written {
         Written::NotRequested => {}
         Written::Skipped(path) => println!("  would write:  {}", path.display()),
@@ -420,82 +458,190 @@ fn render_side(label: &str, side: &SideSummary) {
     );
 }
 
-fn render_pairs(rows: &[VerdictRow]) {
-    println!("  pairs from a:");
-    let mut shown: usize = 0;
-    for row in rows {
-        match &row.verdict {
-            VerdictBody::DataReference {
-                counterpart,
-                anchor_strength,
-                shared_references,
-            } => {
-                println!(
-                    "    {:#x} -> {counterpart:#x}  data reference  {anchor_strength} anchor, {} shared reference(s)",
-                    row.subject,
-                    shared_references.len()
-                );
-                for reference in shared_references {
-                    println!("        {}", reference_text(reference));
-                }
-                shown += 1;
-            }
-            VerdictBody::ControlFlow {
-                counterpart,
-                fingerprint,
-                instructions,
-                instruction_mix,
-            } => {
-                println!(
-                    "    {:#x} -> {counterpart:#x}  control flow    fingerprint {fingerprint:#018x}, {instructions} instruction(s): {}",
-                    row.subject,
-                    mix_text(instruction_mix)
-                );
-                shown += 1;
-            }
-            VerdictBody::Propagation {
-                counterpart,
-                anchor,
-                anchor_counterpart,
-                relation,
-                hops,
-                fingerprint,
-                instructions,
-            } => {
-                println!(
-                    "    {:#x} -> {counterpart:#x}  propagation     {relation} of {anchor:#x} -> {anchor_counterpart:#x}, {hops} hop(s), fingerprint {fingerprint:#018x}, {instructions} instruction(s)",
-                    row.subject
-                );
-                shown += 1;
-            }
-            VerdictBody::Ambiguous { .. } | VerdictBody::Unmatched { .. } => {}
-        }
+fn render_listing(summary: &MatchSummary, listing: ListingOptions) {
+    println!("  listing:");
+    let rows: Vec<ListingRow<'_>> = listing_rows(summary, listing.stage);
+    let shown: usize = rows.len().min(listing.limit);
+    for row in rows.iter().take(shown) {
+        let row: &ListingRow<'_> = row;
+        render_listing_row(row, false);
     }
     if shown == 0 {
         println!("    none");
     }
+    let withheld: usize = rows.len() - shown;
+    if withheld > 0 {
+        println!("  withheld listing rows: {withheld}");
+    }
 }
 
-fn render_ambiguous(own: &str, other: &str, rows: &[VerdictRow]) {
-    let mut shown: usize = 0;
+fn render_function(summary: &MatchSummary, address: u64) {
+    let rows: Vec<ListingRow<'_>> = matching_rows(summary, address);
+    for row in &rows {
+        let row: &ListingRow<'_> = row;
+        println!("  function {:#x} on {}:", row.row.subject, row.side);
+        render_listing_row(row, true);
+    }
+}
+
+fn listing_rows<'a>(summary: &'a MatchSummary, stage: Option<ListingStage>) -> Vec<ListingRow<'a>> {
+    let mut rows: Vec<ListingRow<'a>> =
+        Vec::with_capacity(summary.a_verdicts.len() + summary.b_verdicts.len());
+    append_listing_rows(&mut rows, "a", "b", &summary.a_verdicts, stage, true);
+    append_listing_rows(&mut rows, "b", "a", &summary.b_verdicts, stage, false);
+    rows
+}
+
+fn append_listing_rows<'a>(
+    output: &mut Vec<ListingRow<'a>>,
+    side: &'static str,
+    other_side: &'static str,
+    rows: &'a [VerdictRow],
+    stage: Option<ListingStage>,
+    left_side: bool,
+) {
     for row in rows {
-        let VerdictBody::Ambiguous {
+        let row: &'a VerdictRow = row;
+        if includes_listing_row(row, stage, left_side) {
+            output.push(ListingRow {
+                side,
+                other_side,
+                row,
+            });
+        }
+    }
+}
+
+const fn includes_listing_row(
+    row: &VerdictRow,
+    stage: Option<ListingStage>,
+    left_side: bool,
+) -> bool {
+    match stage {
+        None => {
+            if left_side {
+                !matches!(&row.verdict, VerdictBody::Unmatched { .. })
+            } else {
+                matches!(&row.verdict, VerdictBody::Ambiguous { .. })
+            }
+        }
+        Some(
+            ListingStage::DataReference | ListingStage::ControlFlow | ListingStage::Propagation,
+        ) => left_side && matches_stage(row, stage),
+        Some(ListingStage::Refused) => is_refusal(row),
+    }
+}
+
+const fn matches_stage(row: &VerdictRow, stage: Option<ListingStage>) -> bool {
+    matches!(
+        (&row.verdict, stage),
+        (
+            VerdictBody::DataReference { .. },
+            Some(ListingStage::DataReference)
+        ) | (
+            VerdictBody::ControlFlow { .. },
+            Some(ListingStage::ControlFlow)
+        ) | (
+            VerdictBody::Propagation { .. },
+            Some(ListingStage::Propagation)
+        )
+    )
+}
+
+const fn is_refusal(row: &VerdictRow) -> bool {
+    matches!(
+        &row.verdict,
+        VerdictBody::Ambiguous { .. } | VerdictBody::Unmatched { .. }
+    )
+}
+
+fn matching_rows<'a>(summary: &'a MatchSummary, address: u64) -> Vec<ListingRow<'a>> {
+    let mut rows: Vec<ListingRow<'a>> = Vec::with_capacity(2);
+    append_matching_rows(&mut rows, "a", "b", &summary.a_verdicts, address);
+    append_matching_rows(&mut rows, "b", "a", &summary.b_verdicts, address);
+    rows
+}
+
+fn append_matching_rows<'a>(
+    output: &mut Vec<ListingRow<'a>>,
+    side: &'static str,
+    other_side: &'static str,
+    rows: &'a [VerdictRow],
+    address: u64,
+) {
+    for row in rows {
+        let row: &'a VerdictRow = row;
+        if row.subject == address {
+            output.push(ListingRow {
+                side,
+                other_side,
+                row,
+            });
+        }
+    }
+}
+
+fn render_listing_row(row: &ListingRow<'_>, full_evidence: bool) {
+    match &row.row.verdict {
+        VerdictBody::DataReference {
+            counterpart,
+            anchor_strength,
+            shared_references,
+        } => {
+            println!(
+                "    {} {:#x} -> {counterpart:#x}  data reference  {anchor_strength} anchor, {} shared reference(s)",
+                row.side,
+                row.row.subject,
+                shared_references.len()
+            );
+            for reference in shared_references {
+                let reference: &ReferenceRow = reference;
+                let text: String = if full_evidence {
+                    full_reference_text(reference)
+                } else {
+                    reference_text(reference)
+                };
+                println!("        {text}");
+            }
+        }
+        VerdictBody::ControlFlow {
+            counterpart,
+            fingerprint,
+            instructions,
+            instruction_mix,
+        } => println!(
+            "    {} {:#x} -> {counterpart:#x}  control flow    fingerprint {fingerprint:#018x}, {instructions} instruction(s): {}",
+            row.side,
+            row.row.subject,
+            mix_text(instruction_mix)
+        ),
+        VerdictBody::Propagation {
+            counterpart,
+            anchor,
+            anchor_counterpart,
+            relation,
+            hops,
+            fingerprint,
+            instructions,
+        } => println!(
+            "    {} {:#x} -> {counterpart:#x}  propagation     {relation} of {anchor:#x} -> {anchor_counterpart:#x}, {hops} hop(s), fingerprint {fingerprint:#018x}, {instructions} instruction(s)",
+            row.side, row.row.subject
+        ),
+        VerdictBody::Ambiguous {
             candidates,
             own_side,
             other_side,
-        } = &row.verdict
-        else {
-            continue;
-        };
-        if shown == 0 {
-            println!("  ambiguous on {own}:");
-        }
-        println!(
-            "    {:#x}  {own_side} on {own}, {other_side} on {other}; candidates: {}",
-            row.subject,
+        } => println!(
+            "    {} {:#x}  refusal ambiguous: {own_side} on {}, {other_side} on {}; candidates: {}",
+            row.side,
+            row.row.subject,
+            row.side,
+            row.other_side,
             candidate_text(candidates)
-        );
-        shown += 1;
+        ),
+        VerdictBody::Unmatched { cause } => {
+            println!("    {} {:#x}  refusal {cause}", row.side, row.row.subject);
+        }
     }
 }
 
@@ -504,6 +650,14 @@ fn reference_text(reference: &ReferenceRow) -> String {
         ReferenceRow::StringLiteral { value } => format!("string \"{}\"", preview(value)),
         ReferenceRow::UnusualConstant { value } => format!("constant {value:#x}"),
         ReferenceRow::ImportedCall { name } => format!("import {}", preview(name)),
+    }
+}
+
+fn full_reference_text(reference: &ReferenceRow) -> String {
+    match reference {
+        ReferenceRow::StringLiteral { value } => format!("string {value:?}"),
+        ReferenceRow::UnusualConstant { value } => format!("constant {value:#x}"),
+        ReferenceRow::ImportedCall { name } => format!("import {name}"),
     }
 }
 
