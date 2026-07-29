@@ -97,6 +97,48 @@ fn typeof_collapses_gettypefromhandle() {
     );
 }
 
+fn decompile_edge_cases() -> DecompiledAssembly {
+    let bytes: Vec<u8> = load("../../corpus/dotnet/megafile/EdgeCases.baseline.dll");
+    decompile_assembly(&bytes).expect("decompile EdgeCases.baseline.dll")
+}
+
+#[test]
+fn indexer_accessor_calls_lower_to_subscripts() {
+    let asm: DecompiledAssembly = decompile_edge_cases();
+    let mut subscripted: usize = 0;
+    for m in &asm.methods {
+        let stmts: String = statement_lines(&m.body);
+        for accessor in ["get_Item(", "set_Item(", "get_Chars(", "set_Chars("] {
+            assert!(
+                !stmts.contains(accessor),
+                "an indexer access must render as `receiver[index]`, not a raw {accessor} call in {}; got:\n{}",
+                m.signature,
+                m.body
+            );
+        }
+        subscripted += usize::from(stmts.contains(']'));
+    }
+    assert!(
+        subscripted > 0,
+        "no recovered body carries a subscript, so this check would pass even if every indexer access had disappeared"
+    );
+}
+
+#[test]
+fn generic_methods_declare_their_type_parameters() {
+    let asm: DecompiledAssembly = decompile_edge_cases();
+    let throw_if_null: &str = &asm
+        .methods
+        .iter()
+        .find(|m| m.signature.contains("ThrowIfNull"))
+        .expect("EdgeCases.ExceptionPlayground.ThrowIfNull")
+        .signature;
+    assert!(
+        throw_if_null.contains("ThrowIfNull<T>("),
+        "a generic method must declare its type parameters, otherwise the recovered signature names a type that is not in scope; got:\n{throw_if_null}"
+    );
+}
+
 #[test]
 fn decompile_remains_lossless_after_property_typeof_lowering() {
     let asm: DecompiledAssembly = decompile();

@@ -583,6 +583,10 @@ fn property_setter_name(member: &str) -> Option<&str> {
     }
 }
 
+fn is_indexer_property(name: &str) -> bool {
+    matches!(name, "Item" | "Chars")
+}
+
 fn is_property_identifier(name: &str) -> bool {
     let mut chars: std::str::Chars<'_> = name.chars();
     let Some(first): Option<char> = chars.next() else {
@@ -985,6 +989,14 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         });
     }
 
+    fn render_subscript(&self, indices: Vec<Expr>) -> String {
+        indices
+            .into_iter()
+            .map(|index: Expr| index.render(self.lang, self.names))
+            .collect::<Vec<String>>()
+            .join(", ")
+    }
+
     fn render_byref_args(
         &mut self,
         args: &[Expr],
@@ -1111,10 +1123,42 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 self.push(Expr::Field(prop.to_owned()));
                 return;
             }
+            if has_this
+                && args.len() > 1
+                && self.lang == TargetLang::CSharp
+                && is_indexer_property(prop)
+            {
+                let indices: Vec<Expr> = args.split_off(1);
+                let recv: Expr = args.pop().unwrap_or(Expr::Null);
+                let subscript: String = self.render_subscript(indices);
+                self.push(Expr::Field(format!(
+                    "{}[{subscript}]",
+                    call_receiver(&recv, self.lang, self.names)
+                )));
+                return;
+            }
         }
         if let Some(prop) = property_setter_name(member)
             && !returns_value
         {
+            if has_this
+                && args.len() > 2
+                && self.lang == TargetLang::CSharp
+                && is_indexer_property(prop)
+            {
+                let value: Expr = args.pop().unwrap_or(Expr::Null);
+                let indices: Vec<Expr> = args.split_off(1);
+                let recv: Expr = args.pop().unwrap_or(Expr::Null);
+                let subscript: String = self.render_subscript(indices);
+                self.stmts.push(Stmt::Assign {
+                    target: format!(
+                        "{}[{subscript}]",
+                        call_receiver(&recv, self.lang, self.names)
+                    ),
+                    value: value.render(self.lang, self.names),
+                });
+                return;
+            }
             if has_this && args.len() == 2 {
                 let value: Expr = args.pop().unwrap_or(Expr::Null);
                 let recv: Expr = args.pop().unwrap_or(Expr::Null);
