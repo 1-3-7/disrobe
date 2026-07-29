@@ -137,6 +137,13 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           otp-version: "27"
+      - name: provision the dotnet sdk the il-equivalence floors are measured with
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+      - name: confirm the dotnet sdk is callable before the suite depends on it
+        shell: bash
+        run: dotnet --info
       - name: confirm erlc is callable before the suite depends on it
         if: runner.os == 'Linux'
         shell: bash
