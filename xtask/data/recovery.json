@@ -181,6 +181,27 @@
           "delivered": 72,
           "delivered_label": "recovered",
           "source": "crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs:10 (RECOVERY_FLOOR 72) and :172 (recovered >= 72 of 72); measured 72/72 locally 2026-06-11"
+        },
+        {
+          "label": "Python source obfuscators",
+          "detected": 20,
+          "delivered": 17,
+          "delivered_label": "recovered to source",
+          "source": "crates/disrobe-pass-py-deob/src/auto_route.rs describe_obfuscator (20 Obfuscator variants); the roster is pinned by name, not by count, in auto_route.rs test published_source_obfuscator_roster_matches_the_registered_passes, so adding or removing a pass fails until the published figure moves with it. README and docs/src/catalog.md both read this key, so the two cannot drift apart again"
+        },
+        {
+          "label": "JVM / Android families",
+          "detected": 10,
+          "delivered": 2,
+          "delivered_label": "recovered",
+          "source": "crates/disrobe-pass-jvm/src/obfuscators.rs Protector enum carries 9 detected protectors (ProGuard/R8, Zelix KlassMaster, Allatori, Stringer, DashO, DexGuard, yGuard, SkidSuite2, JBCO); BlackObfuscator is the tenth family, handled by the separate DEX deflattening path in crates/disrobe-pass-jvm/src/dalvik_blackobf.rs and recognised by chain_detector.rs rather than by the Protector enum. Counted as 10 addressed families. NOT yet pinned by a roster test the way py_source_obfuscators is: the crate was held by another lane when this key was added"
+        },
+        {
+          "label": "Shell obfuscation modes",
+          "detected": 19,
+          "delivered": 19,
+          "delivered_label": "reversed",
+          "source": "counted per obfuscation mode across crates/disrobe-pass-shell/src: powershell (invoke_obfuscation.rs token/AST/string/encoding/compress/launcher = 6, invoke_stealth.rs, powerhell.rs, chameleon.rs, psobf, isesteroids.rs = 11), bash (bashfuscator.rs token/string/obfuscate/compress = 4, indirect.rs IFS/eval, node_bash_obfuscate.rs = 17), batch (%random%, set-indirection = 19). The VBA p-code decompiler and the Excel 4.0 XLM reader are scripting FORMATS covered alongside these and are deliberately excluded from this count. The previous published pair was contradictory: README said 19 over a population including VBA and XLM, while the catalog said 20 over a list that enumerated 19. NOT yet pinned by a roster test"
         }
       ]
     },

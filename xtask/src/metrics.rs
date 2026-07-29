@@ -344,6 +344,39 @@ const KEYS: &[KeySpec] = &[
         },
     },
     KeySpec {
+        name: "py_source_obfuscators",
+        formatter: Formatter::Int,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            Ok(MetricValue::Int(
+                r.bar("Detection and extraction breadth", "Python source obfuscators")?
+                    .detected()?,
+            ))
+        },
+    },
+    KeySpec {
+        name: "jvm_families",
+        formatter: Formatter::Int,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            Ok(MetricValue::Int(
+                r.bar("Detection and extraction breadth", "JVM / Android families")?
+                    .detected()?,
+            ))
+        },
+    },
+    KeySpec {
+        name: "shell_families",
+        formatter: Formatter::Int,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            Ok(MetricValue::Int(
+                r.bar("Detection and extraction breadth", "Shell obfuscation modes")?
+                    .detected()?,
+            ))
+        },
+    },
+    KeySpec {
         name: "pyarmor_frac",
         formatter: Formatter::Frac,
         nouns: &[],
