@@ -51,6 +51,12 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         || crate::facts::run(root),
         &mut stale,
     );
+    run_one(
+        "cross-data",
+        check,
+        || crate::crossdata::run(root),
+        &mut stale,
+    );
 
     if check {
         if stale.is_empty() {
