@@ -971,16 +971,16 @@ def own_equiv(a, b):
 
 Each figure below is stated with its exact corpus, because the corpora differ and must not be
 conflated. The representative headline is per-code-object recompile-equivalence on the full 571-module
-CPython 3.14 standard library: <!-- m:py_stdlib_full_pct -->92.43%<!-- /m --> (<!-- m:py_stdlib_full_count_grouped -->16,880 of 18,262<!-- /m --> code objects), locked at HEAD `7adfad10`. A
+CPython 3.14 standard library: <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> (<!-- m:py_stdlib_full_count_grouped -->17,378 of 18,276<!-- /m --> code objects), locked at HEAD `7adfad10`. A
 separate 200-module pinned corpus, a curated subset used as the CI regression sample, runs higher at
-<!-- m:py_stdlib_pinned_pct -->96.29%<!-- /m --> (<!-- m:py_stdlib_pinned_count_grouped -->6,053 of 6,286<!-- /m --> code objects), precisely because it over-represents recoverable modules; the
+<!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> (<!-- m:py_stdlib_pinned_count_grouped -->6,072 of 6,286<!-- /m --> code objects), precisely because it over-represents recoverable modules; the
 crate's own provenance record labels the full-stdlib number as "the honest representative number (the
 200-module pinned corpus over-represents recoverable modules)".
 
 The whole-module exact figure, where a module counts only if every one of its code objects is
 equivalent, is 54.5%, and it is measured only on the pinned 200-module corpus. There is no
 full-stdlib whole-module figure; since the pinned corpus over-represents recoverable modules, the
-full-stdlib whole-module rate would be lower still, not higher. The gap between the <!-- m:py_stdlib_full_pct -->92.43%<!-- /m --> per-object
+full-stdlib whole-module rate would be lower still, not higher. The gap between the <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per-object
 rate and the 54.5% per-module rate is the honest center of the evaluation, not a footnote, and the
 two numbers are not even on the same corpus: a module passes only when all of its typically dozens of
 code objects pass, so a small per-object miss rate compounds into a large per-module miss rate. A
@@ -990,8 +990,8 @@ improvement because it is granular and monotonic; the per-module figure is the e
 deliberately reported as the harder, lower number. These figures are not re-measured here.
 
 The measurement is enforced as a regression gate, not asserted. The CI gate runs the same harness
-over the 200-module pinned corpus (the source of the <!-- m:py_stdlib_pinned_pct -->96.29%<!-- /m --> and 54.5% figures), parses its JSON, and
-holds the per-object rate above a floor of 90.0%; the full-stdlib <!-- m:py_stdlib_full_pct -->92.43%<!-- /m --> comes from running that
+over the 200-module pinned corpus (the source of the <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> and 54.5% figures), parses its JSON, and
+holds the per-object rate above a floor of 90.0%; the full-stdlib <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> comes from running that
 harness over the entire Lib rather than the pinned list:
 
 ```rust
@@ -2324,7 +2324,7 @@ walls these with a stated reason and the residual static evidence rather than fa
 body (Section 3.4).
 
 Whole-module Python recovery is far below the per-object figure. The representative
-per-code-object recompile-equivalence on the CPython 3.14 standard library is <!-- m:py_stdlib_full_pct -->92.43%<!-- /m -->, but the
+per-code-object recompile-equivalence on the CPython 3.14 standard library is <!-- m:py_stdlib_full_pct -->95.09%<!-- /m -->, but the
 whole-module exact rate, where a module counts only if every one of its code objects is
 equivalent, is 54.5% on the pinned corpus; a module passes only when all of its typically
 dozens of code objects pass, so a small per-object miss rate compounds into a large

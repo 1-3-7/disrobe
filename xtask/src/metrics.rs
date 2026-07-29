@@ -146,7 +146,7 @@ const KEYS: &[KeySpec] = &[
         formatter: Formatter::Pct,
         nouns: &[],
         extract: |r: &Recovery| {
-            r.bar("Python bytecode", "full 571-module stdlib (representative)")?
+            r.bar("Python bytecode", "full 574-module stdlib (representative)")?
                 .percent()
         },
     },
@@ -164,7 +164,7 @@ const KEYS: &[KeySpec] = &[
         formatter: Formatter::OfPlain,
         nouns: &[],
         extract: |r: &Recovery| {
-            r.bar("Python bytecode", "full 571-module stdlib (representative)")?
+            r.bar("Python bytecode", "full 574-module stdlib (representative)")?
                 .count_ratio()
         },
     },
@@ -173,7 +173,7 @@ const KEYS: &[KeySpec] = &[
         formatter: Formatter::OfGrouped,
         nouns: &[],
         extract: |r: &Recovery| {
-            r.bar("Python bytecode", "full 571-module stdlib (representative)")?
+            r.bar("Python bytecode", "full 574-module stdlib (representative)")?
                 .count_ratio()
         },
     },
@@ -718,7 +718,7 @@ mod tests {
                 {
                     "heading": "Python bytecode (CPython 3.14 stdlib)",
                     "bars": [
-                        {"label": "full 571-module stdlib (representative)", "value": 92.43, "num": 16880, "den": 18262},
+                        {"label": "full 574-module stdlib (representative)", "value": 92.43, "num": 16880, "den": 18262},
                         {"label": "200-module pinned corpus", "value": 94.18, "num": 6051, "den": 6286}
                     ]
                 },
@@ -758,7 +758,7 @@ mod tests {
         assert_eq!(Formatter::OfPlain.render(plain)?, "6051 of 6286");
         assert_eq!(Formatter::OfGrouped.render(plain)?, "6,051 of 6,286");
         let full: MetricValue = recovery
-            .bar("Python bytecode", "full 571-module stdlib (representative)")?
+            .bar("Python bytecode", "full 574-module stdlib (representative)")?
             .count_ratio()?;
         assert_eq!(Formatter::OfPlain.render(full)?, "16880 of 18262");
         assert_eq!(Formatter::OfGrouped.render(full)?, "16,880 of 18,262");

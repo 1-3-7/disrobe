@@ -18,7 +18,7 @@ struct Binding {
 const BINDINGS: &[Binding] = &[
     Binding {
         heading_substr: "Python bytecode",
-        bar_label: "full 571-module stdlib (representative)",
+        bar_label: "full 574-module stdlib (representative)",
         format: format_percent,
     },
     Binding {
