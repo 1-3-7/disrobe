@@ -1,15 +1,64 @@
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::print_stderr
+    clippy::print_stderr,
+    clippy::unwrap_used
 )]
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use disrobe_pass_as3::abc::{self, ABC_MAJOR, ABC_MINOR, AbcFile, DisasmLine, MethodInfo, disasm};
-use disrobe_pass_as3::lifter::{LiftedBody, Stmt, lift_body};
+use disrobe_pass_as3::abc::{
+    self, ABC_MAJOR, ABC_MINOR, AbcFile, DisasmLine, MethodBody, MethodInfo, disasm,
+};
+use disrobe_pass_as3::lifter::{Expr, LiftedBody, Stmt, lift_body};
 use disrobe_pass_as3::swf::{self, DoAbc, Swf, SwfCompression};
+
+#[derive(Debug, Clone, Copy)]
+enum RecoveryShape {
+    Constructor,
+    SumTo,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RecoveryMember {
+    fixture: &'static str,
+    compression: SwfCompression,
+    method: u32,
+    label: &'static str,
+    shape: RecoveryShape,
+}
+
+const RECOVERY_MEMBERS: [RecoveryMember; 4] = [
+    RecoveryMember {
+        fixture: "synthetic_counter_fws.swf",
+        compression: SwfCompression::None,
+        method: 0,
+        label: "Counter::constructor",
+        shape: RecoveryShape::Constructor,
+    },
+    RecoveryMember {
+        fixture: "synthetic_counter_fws.swf",
+        compression: SwfCompression::None,
+        method: 1,
+        label: "Counter::sumTo",
+        shape: RecoveryShape::SumTo,
+    },
+    RecoveryMember {
+        fixture: "synthetic_counter_cws.swf",
+        compression: SwfCompression::Zlib,
+        method: 0,
+        label: "Counter::constructor",
+        shape: RecoveryShape::Constructor,
+    },
+    RecoveryMember {
+        fixture: "synthetic_counter_cws.swf",
+        compression: SwfCompression::Zlib,
+        method: 1,
+        label: "Counter::sumTo",
+        shape: RecoveryShape::SumTo,
+    },
+];
 
 fn fixture_dir() -> PathBuf {
     let manifest: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -26,30 +75,18 @@ fn fixture_dir() -> PathBuf {
 
 fn load(name: &str) -> Vec<u8> {
     let path: PathBuf = fixture_dir().join(name);
-    std::fs::read(&path).unwrap_or_else(|e| {
+    std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
         panic!(
-            "committed synthetic fixture {} must exist: {e}",
+            "committed synthetic fixture {} must exist: {error}",
             path.display()
         )
     })
 }
 
-fn has_loop(stmts: &[Stmt]) -> bool {
-    stmts.iter().any(|s: &Stmt| match s {
-        Stmt::While { .. } | Stmt::For { .. } | Stmt::DoWhile { .. } => true,
-        Stmt::IfBlock { body, .. } | Stmt::With { body, .. } => has_loop(body),
-        Stmt::IfElse {
-            then_body,
-            else_body,
-            ..
-        } => has_loop(then_body) || has_loop(else_body),
-        _ => false,
-    })
-}
-
-fn recover(bytes: &[u8], expected: SwfCompression) -> (Swf, AbcFile, LiftedBody) {
-    let swf: Swf = swf::parse(bytes).expect("synthetic swf must parse");
-    assert_eq!(swf.header.compression, expected);
+fn load_abc(name: &str, expected_compression: SwfCompression) -> AbcFile {
+    let bytes: Vec<u8> = load(name);
+    let swf: Swf = swf::parse(&bytes).expect("committed synthetic SWF must parse");
+    assert_eq!(swf.header.compression, expected_compression);
     assert_eq!(swf.header.version, 13, "fixture pins SWF version 13");
 
     let attrs: disrobe_pass_as3::swf::FileAttributes = swf
@@ -61,9 +98,13 @@ fn recover(bytes: &[u8], expected: SwfCompression) -> (Swf, AbcFile, LiftedBody)
     );
 
     let symbols: Vec<disrobe_pass_as3::swf::SymbolClassEntry> = swf.symbol_classes();
-    assert!(
-        symbols.iter().any(|s| s.class_name == "Counter"),
-        "SymbolClass must bind the Counter class: {symbols:?}"
+    assert_eq!(
+        symbols
+            .iter()
+            .map(|symbol: &disrobe_pass_as3::swf::SymbolClassEntry| symbol.class_name.as_str())
+            .collect::<Vec<&str>>(),
+        vec!["Counter"],
+        "SymbolClass must bind exactly the Counter class"
     );
 
     let blobs: Vec<DoAbc> = swf.collect_do_abc();
@@ -74,56 +115,182 @@ fn recover(bytes: &[u8], expected: SwfCompression) -> (Swf, AbcFile, LiftedBody)
     let abc: AbcFile = abc::parse(&blob.abc_bytes).expect("DoABC payload must parse as ABC");
     assert_eq!(abc.minor, ABC_MINOR);
     assert_eq!(abc.major, ABC_MAJOR);
+    assert_eq!(abc.class_names(), vec!["Counter"]);
+    abc
+}
 
-    let body: &disrobe_pass_as3::abc::MethodBody = abc
-        .method_bodies
+fn method_body(abc: &AbcFile, method: u32) -> &MethodBody {
+    abc.method_bodies
         .iter()
-        .max_by_key(|b| b.code.len())
-        .expect("a non-trivial method body");
+        .find(|body: &&MethodBody| body.method == method)
+        .expect("fixture must contain the pinned method body")
+}
+
+fn member_label(abc: &AbcFile, body: &MethodBody) -> String {
+    if body.method == 0 {
+        return "Counter::constructor".to_owned();
+    }
+    let info: &MethodInfo = abc
+        .methods
+        .get(body.method as usize)
+        .expect("method body must have method metadata");
+    let name: String = abc
+        .cpool
+        .render_multiname(info.name_index)
+        .expect("pinned method name must render");
+    format!("Counter::{name}")
+}
+
+fn lift(abc: &AbcFile, body: &MethodBody) -> LiftedBody {
     let info: Option<&MethodInfo> = abc.methods.get(body.method as usize);
-    let lifted: LiftedBody = lift_body(&abc, body, info).expect("lift the sumTo body");
-    (swf, abc, lifted)
+    lift_body(abc, body, info).expect("pinned method body must lift")
+}
+
+fn expected_statements(shape: RecoveryShape) -> Vec<Stmt> {
+    match shape {
+        RecoveryShape::Constructor => vec![Stmt::Return(None)],
+        RecoveryShape::SumTo => vec![
+            Stmt::For {
+                init: Box::new(Stmt::Assign {
+                    target: Expr::Local(2),
+                    value: Expr::IntLit(0),
+                }),
+                cond: Expr::Binary {
+                    op: "<",
+                    lhs: Box::new(Expr::Local(2)),
+                    rhs: Box::new(Expr::Local(1)),
+                },
+                update: Box::new(Stmt::Assign {
+                    target: Expr::Local(2),
+                    value: Expr::Binary {
+                        op: "+",
+                        lhs: Box::new(Expr::Local(2)),
+                        rhs: Box::new(Expr::IntLit(1)),
+                    },
+                }),
+                body: vec![Stmt::AssignProperty {
+                    object: Expr::This,
+                    property: "total".to_owned(),
+                    value: Expr::Local(2),
+                }],
+            },
+            Stmt::Return(Some(Expr::Get {
+                object: Box::new(Expr::This),
+                property: "total".to_owned(),
+            })),
+        ],
+    }
+}
+
+fn check_recovery(lifted: &LiftedBody, expected: &[Stmt]) -> Result<(), String> {
+    if !lifted.fully_recovered {
+        return Err(format!(
+            "recovery was partial: {:?}",
+            lifted.fidelity_warning()
+        ));
+    }
+    if !lifted.fully_structured {
+        return Err("recovery retained raw control flow".to_owned());
+    }
+    if !lifted.reached_terminator {
+        return Err("recovery did not reach a terminator".to_owned());
+    }
+    if !lifted.dropped_opcodes.is_empty() {
+        return Err(format!(
+            "recovery dropped opcodes: {:?}",
+            lifted.dropped_opcodes
+        ));
+    }
+    if lifted.opaque_operands != 0 {
+        return Err(format!(
+            "recovery fabricated {} operand(s)",
+            lifted.opaque_operands
+        ));
+    }
+    if lifted.statements != expected {
+        return Err(format!(
+            "statement mismatch\nexpected: {expected:#?}\nactual: {:#?}",
+            lifted.statements
+        ));
+    }
+    Ok(())
+}
+
+fn expected_member_labels() -> BTreeSet<String> {
+    RECOVERY_MEMBERS
+        .iter()
+        .map(|member: &RecoveryMember| format!("{}::{}", member.fixture, member.label))
+        .collect()
 }
 
 #[test]
-fn synthetic_fws_swf_recovers_counter_class_and_while_loop() {
-    let (_swf, abc, lifted): (Swf, AbcFile, LiftedBody) =
-        recover(&load("synthetic_counter_fws.swf"), SwfCompression::None);
+fn committed_swf_recovery_matches_the_pinned_member_contract() {
+    let fixtures: [&str; 2] = ["synthetic_counter_fws.swf", "synthetic_counter_cws.swf"];
+    let mut recovered: BTreeSet<String> = BTreeSet::new();
 
-    let class_names: Vec<String> = abc.class_names();
-    assert!(
-        class_names.iter().any(|n| n == "Counter"),
-        "ABC must define the Counter class: {class_names:?}"
-    );
+    for fixture in fixtures {
+        let members: Vec<&RecoveryMember> = RECOVERY_MEMBERS
+            .iter()
+            .filter(|member: &&RecoveryMember| member.fixture == fixture)
+            .collect();
+        let compression: SwfCompression = members
+            .first()
+            .expect("every fixture must have pinned members")
+            .compression;
+        assert!(
+            members
+                .iter()
+                .all(|member: &&RecoveryMember| member.compression == compression),
+            "each fixture must have one compression mode"
+        );
 
-    assert!(
-        lifted.dropped_opcodes.is_empty(),
-        "every opcode in the synthetic body must be modelled: {:?}",
-        lifted.dropped_opcodes
-    );
-    assert!(
-        has_loop(&lifted.statements),
-        "the counted loop must structure into a for/while, not raw branches: {:?}",
-        lifted.statements
-    );
-    assert!(
-        lifted.fully_recovered,
-        "the synthetic sumTo body must lift with full fidelity: {:?}",
-        lifted.fidelity_warning()
-    );
+        let abc: AbcFile = load_abc(fixture, compression);
+        assert_eq!(
+            abc.method_bodies.len(),
+            members.len(),
+            "every fixture method body must have a pinned membership entry"
+        );
+
+        for body in &abc.method_bodies {
+            let lifted: LiftedBody = lift(&abc, body);
+            if lifted.fully_recovered {
+                recovered.insert(format!("{fixture}::{}", member_label(&abc, body)));
+            }
+        }
+
+        for member in members {
+            let body: &MethodBody = method_body(&abc, member.method);
+            assert_eq!(member_label(&abc, body), member.label);
+            let expected: Vec<Stmt> = expected_statements(member.shape);
+            let lifted: LiftedBody = lift(&abc, body);
+            let result: Result<(), String> = check_recovery(&lifted, &expected);
+            assert!(result.is_ok(), "{}: {}", member.label, result.unwrap_err());
+        }
+    }
+
+    let expected: BTreeSet<String> = expected_member_labels();
+    assert_eq!(recovered, expected, "recovered membership changed");
 }
 
 #[test]
-fn synthetic_cws_zlib_swf_decompresses_and_recovers_identically() {
-    let (_swf, abc, lifted): (Swf, AbcFile, LiftedBody) =
-        recover(&load("synthetic_counter_cws.swf"), SwfCompression::Zlib);
+fn recovery_grader_rejects_a_corrupted_expected_sum_to_body() {
+    let member: &RecoveryMember = RECOVERY_MEMBERS
+        .iter()
+        .find(|member: &&RecoveryMember| member.label == "Counter::sumTo")
+        .expect("sumTo membership entry must exist");
+    let abc: AbcFile = load_abc(member.fixture, member.compression);
+    let body: &MethodBody = method_body(&abc, member.method);
+    let lifted: LiftedBody = lift(&abc, body);
+    let mut corrupted: Vec<Stmt> = expected_statements(member.shape);
+    let removed: Option<Stmt> = corrupted.pop();
+    assert!(matches!(removed, Some(Stmt::Return(_))));
 
-    assert!(abc.class_names().iter().any(|n| n == "Counter"));
+    let result: Result<(), String> = check_recovery(&lifted, &corrupted);
+    let error: String = result.expect_err("corrupted expected output must be rejected");
     assert!(
-        has_loop(&lifted.statements),
-        "zlib-packed fixture must recover the same loop as the uncompressed one"
+        error.contains("statement mismatch"),
+        "the grader must report the mismatched recovery, got: {error}"
     );
-    assert!(lifted.fully_recovered, "{:?}", lifted.fidelity_warning());
 }
 
 #[test]
@@ -137,7 +304,7 @@ fn synthetic_swf_disassembles_to_a_real_opcode_stream() {
     for body in &abc.method_bodies {
         let lines: Vec<DisasmLine> = disasm(&body.code).expect("disasm");
         total_ops += lines.len();
-        saw_back_branch |= lines.iter().any(|l: &DisasmLine| l.opcode == 0x0F);
+        saw_back_branch |= lines.iter().any(|line: &DisasmLine| line.opcode == 0x0F);
     }
     assert!(total_ops >= 10, "real opcode stream, got {total_ops}");
     assert!(
