@@ -99,7 +99,7 @@ fn main_program_reconstructs_call_and_assignment() {
 }
 
 #[test]
-fn recovery_is_measured_and_honest() {
+fn recovery_ratio_counts_coverage_and_does_not_grade_fidelity() {
     let src: PerlSource = decompiled();
     assert!(
         src.statements_total >= 4,
@@ -110,6 +110,6 @@ fn recovery_is_measured_and_honest() {
     let ratio: f64 = src.recovery_ratio();
     assert!(
         ratio >= 0.75,
-        "names-erased Perl op-tree ceiling is ~0.75; measured recovery was {ratio}"
+        "recovery_ratio only counts how many statement slots the walker filled in, and the walker computes it about its own output, so it can never show that a filled slot is CORRECT. Fidelity is graded in tests/real_perl_optree_differential.rs, which re-compiles the recovered source with the real perl and compares op trees. Coverage here was {ratio}"
     );
 }

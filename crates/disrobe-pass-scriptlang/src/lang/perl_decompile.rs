@@ -403,9 +403,9 @@ fn reconstruct_my_scalar_assignment(seg: &[PerlOp]) -> Option<PerlStatement> {
 }
 
 fn recover_assignment_rhs(seg: &[PerlOp], lhs: &str) -> Option<String> {
-    if let Some(detail) = multiconcat_detail_in(seg) {
+    if let Some(op) = multiconcat_op_in(seg) {
         let pads: Vec<String> = operand_list(seg);
-        return Some(render_multiconcat(&detail, &pads));
+        return render_concat(op, &pads);
     }
     if let Some(op_idx) = seg.iter().position(|o: &PerlOp| is_binary_op(&o.name)) {
         let operands: Vec<String> = scalar_operand_list(&seg[op_idx..]);
@@ -440,9 +440,8 @@ fn targmy_rhs(seg: &[PerlOp]) -> Option<String> {
         (is_binary_op(&o.name) || o.name.starts_with("multiconcat")) && o.flags.contains("TARGMY")
     })?;
     if op.name.starts_with("multiconcat") {
-        let detail: String = multiconcat_detail_in(seg)?;
         let pads: Vec<String> = operand_list(seg);
-        return Some(render_multiconcat(&detail, &pads));
+        return render_concat(op, &pads);
     }
     let operands: Vec<String> = operand_list(seg);
     let literal: Option<String> = seg
@@ -522,9 +521,9 @@ fn reconstruct_bare_call(seg: &[PerlOp]) -> Option<PerlStatement> {
 }
 
 fn recover_expression(seg: &[PerlOp]) -> Option<String> {
-    if let Some(detail) = multiconcat_detail_in(seg) {
+    if let Some(op) = multiconcat_op_in(seg) {
         let pads: Vec<String> = operand_list(seg);
-        return Some(render_multiconcat(&detail, &pads));
+        return render_concat(op, &pads);
     }
     let operands: Vec<String> = operand_list(seg);
     if let Some(op) = seg.iter().find(|o: &&PerlOp| is_binary_op(&o.name))
@@ -545,13 +544,16 @@ fn recover_expression(seg: &[PerlOp]) -> Option<String> {
 }
 
 fn recover_print_args(seg: &[PerlOp]) -> Option<String> {
-    if let Some(detail) = multiconcat_detail_in(seg) {
+    if let Some(op) = multiconcat_op_in(seg) {
         let pads: Vec<String> = operand_list(seg);
-        return Some(render_multiconcat(&detail, &pads));
+        return render_concat(op, &pads);
     }
-    if let Some(name) = called_name(seg) {
-        let args: String = call_arguments(seg);
-        return Some(format!("{name}({args})"));
+    if let Some(idx) = callee_index(seg) {
+        let name: String = gv_call_name(&seg[idx])?;
+        let args: String = operand_tokens(&seg[..idx]).join(", ");
+        let mut items: Vec<String> = vec![format!("{name}({args})")];
+        items.extend(operand_tokens(&seg[idx + 1..]));
+        return Some(items.join(", "));
     }
     let pads: Vec<String> = collect_pad_names(seg);
     if !pads.is_empty() {
@@ -618,23 +620,35 @@ fn first_pad_name(detail: &str) -> Option<String> {
     pad_names_in(detail).into_iter().next()
 }
 
+fn gv_call_name(op: &PerlOp) -> Option<String> {
+    if op.name != "gv" {
+        return None;
+    }
+    let detail: &str = op.detail.as_deref()?;
+    let inner: &str = detail.trim_start_matches('[').trim_end_matches(']');
+    let name: &str = inner.trim_start_matches('*');
+    if name.is_empty() || name == "_" {
+        None
+    } else {
+        Some(name.to_owned())
+    }
+}
+
+fn callee_index(seg: &[PerlOp]) -> Option<usize> {
+    seg.iter()
+        .position(|op: &PerlOp| gv_call_name(op).is_some())
+}
+
 fn called_name(seg: &[PerlOp]) -> Option<String> {
-    seg.iter().find_map(|op: &PerlOp| {
-        if op.name != "gv" {
-            return None;
-        }
-        let detail: &str = op.detail.as_deref()?;
-        let inner: &str = detail.trim_start_matches('[').trim_end_matches(']');
-        let name: &str = inner.trim_start_matches('*');
-        if name.is_empty() || name == "_" {
-            None
-        } else {
-            Some(name.to_owned())
-        }
-    })
+    seg.iter().find_map(gv_call_name)
 }
 
 fn call_arguments(seg: &[PerlOp]) -> String {
+    let end: usize = callee_index(seg).map_or(seg.len(), |idx: usize| idx);
+    operand_tokens(&seg[..end]).join(", ")
+}
+
+fn operand_tokens(seg: &[PerlOp]) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     for op in seg {
         match op.name.as_str() {
@@ -651,7 +665,7 @@ fn call_arguments(seg: &[PerlOp]) -> String {
             _ => {}
         }
     }
-    args.join(", ")
+    args
 }
 
 fn const_literal(detail: &str) -> Option<String> {
@@ -675,14 +689,22 @@ fn const_literal(detail: &str) -> Option<String> {
 }
 
 const MAX_MULTICONCAT_SEGMENTS: usize = 256;
+const STRINGIFY_PRIVATE_FLAG: &str = "STRINGIFY";
+const CONCAT_JOINER: &str = " . ";
+const ELIDED_OPERAND: &str = "${...}";
 
-fn multiconcat_detail_in(seg: &[PerlOp]) -> Option<String> {
-    seg.iter().find_map(|op: &PerlOp| {
-        if !op.name.starts_with("multiconcat") {
-            return None;
-        }
-        op.detail.clone()
-    })
+fn multiconcat_op_in(seg: &[PerlOp]) -> Option<&PerlOp> {
+    seg.iter()
+        .find(|op: &&PerlOp| op.name.starts_with("multiconcat"))
+}
+
+fn render_concat(op: &PerlOp, pads: &[String]) -> Option<String> {
+    let detail: &str = op.detail.as_deref()?;
+    Some(render_concat_detail(
+        detail,
+        op.flags.contains(STRINGIFY_PRIVATE_FLAG),
+        pads,
+    ))
 }
 
 struct MultiConcatLayout {
@@ -731,33 +753,73 @@ fn template_units(template: &str) -> Vec<String> {
     units
 }
 
-fn render_multiconcat(detail: &str, pads: &[String]) -> String {
+enum ConcatPiece {
+    Literal(String),
+    Operand(String),
+}
+
+fn render_concat_detail(detail: &str, stringify: bool, pads: &[String]) -> String {
     let Some(layout): Option<MultiConcatLayout> = parse_multiconcat(detail) else {
         return format!("\"{}\"", quote_inner(detail));
     };
+    let pieces: Vec<ConcatPiece> = concat_pieces(&layout, pads);
+    if stringify {
+        join_interpolated(&pieces, layout.template.len() + pads.len() * 4 + 2)
+    } else {
+        join_with_operator(&pieces)
+    }
+}
+
+fn concat_pieces(layout: &MultiConcatLayout, pads: &[String]) -> Vec<ConcatPiece> {
     let units: Vec<String> = template_units(&layout.template);
     let mut cursor: usize = 0usize;
     let mut pad_iter: std::slice::Iter<'_, String> = pads.iter();
-    let mut out: String = String::with_capacity(layout.template.len() + pads.len() * 4 + 2);
-    out.push('"');
     let total: usize = layout.lengths.len();
+    let mut pieces: Vec<ConcatPiece> = Vec::with_capacity(total * 2);
     for (idx, raw_len) in layout.lengths.iter().enumerate() {
         if *raw_len > 0 {
             let take: usize = (*raw_len as usize).min(units.len().saturating_sub(cursor));
-            for unit in &units[cursor..cursor + take] {
-                out.push_str(unit);
-            }
+            let literal: String = units[cursor..cursor + take].concat();
             cursor += take;
+            if !literal.is_empty() {
+                pieces.push(ConcatPiece::Literal(literal));
+            }
         }
         if idx + 1 < total {
-            match pad_iter.next() {
-                Some(name) => push_interp(&mut out, name),
-                None => out.push_str("${...}"),
-            }
+            let name: String = pad_iter
+                .next()
+                .map_or_else(|| ELIDED_OPERAND.to_owned(), Clone::clone);
+            pieces.push(ConcatPiece::Operand(name));
+        }
+    }
+    pieces
+}
+
+fn join_interpolated(pieces: &[ConcatPiece], capacity: usize) -> String {
+    let mut out: String = String::with_capacity(capacity);
+    out.push('"');
+    for piece in pieces {
+        match piece {
+            ConcatPiece::Literal(text) => out.push_str(text),
+            ConcatPiece::Operand(name) => push_interp(&mut out, name),
         }
     }
     out.push('"');
     out
+}
+
+fn join_with_operator(pieces: &[ConcatPiece]) -> String {
+    if pieces.is_empty() {
+        return String::from("\"\"");
+    }
+    pieces
+        .iter()
+        .map(|piece: &ConcatPiece| match piece {
+            ConcatPiece::Literal(text) => format!("\"{text}\""),
+            ConcatPiece::Operand(name) => name.clone(),
+        })
+        .collect::<Vec<String>>()
+        .join(CONCAT_JOINER)
 }
 
 fn push_interp(out: &mut String, name: &str) {
@@ -992,15 +1054,15 @@ mod tests {
     fn multiconcat_splices_args_between_literal_runs() {
         let pads: Vec<String> = vec!["$x".to_owned(), "$y".to_owned()];
         assert_eq!(
-            render_multiconcat("(\" mid \",-1,5,-1)[t1]", &pads),
+            render_concat_detail("(\" mid \",-1,5,-1)[t1]", true, &pads),
             "\"$x mid $y\""
         );
         assert_eq!(
-            render_multiconcat("(\"lead  tail\",5,5)[t1]", &[String::from("$x")]),
+            render_concat_detail("(\"lead  tail\",5,5)[t1]", true, &[String::from("$x")]),
             "\"lead $x tail\""
         );
         assert_eq!(
-            render_multiconcat("(\"\",-1,-1,-1)[$e:1,2]", &pads),
+            render_concat_detail("(\"\",-1,-1,-1)[$e:1,2]", true, &pads),
             "\"$x$y\""
         );
     }
@@ -1008,13 +1070,57 @@ mod tests {
     #[test]
     fn multiconcat_counts_escapes_as_one_logical_char() {
         assert_eq!(
-            render_multiconcat("(\"\\n\",-1,1)[t4]", &[String::from("$x")]),
+            render_concat_detail("(\"\\n\",-1,1)[t4]", true, &[String::from("$x")]),
             "\"$x\\n\""
         );
         assert_eq!(
-            render_multiconcat("(\"only \\n\",5,1)[$g:1,2]", &[String::from("$x")]),
+            render_concat_detail("(\"only \\n\",5,1)[$g:1,2]", true, &[String::from("$x")]),
             "\"only $x\\n\""
         );
+    }
+
+    #[test]
+    fn multiconcat_without_stringify_renders_the_concat_operator() {
+        let pads: Vec<String> = vec!["$a".to_owned(), "$b".to_owned()];
+        assert_eq!(
+            render_concat_detail("(\"\",-1,-1,-1)[$s:8,10]", false, &pads),
+            "$a . $b"
+        );
+        assert_eq!(
+            render_concat_detail("(\"-\",-1,1,-1)[t3]", false, &pads),
+            "$a . \"-\" . $b"
+        );
+        assert_eq!(
+            render_concat_detail("(\"-\",-1,1,-1)[t3]", true, &pads),
+            "\"$a-$b\""
+        );
+    }
+
+    #[test]
+    fn call_arguments_stop_at_the_callee_glob() {
+        let seg: Vec<PerlOp> = vec![
+            op("print", "vK", None),
+            op("pushmark", "s", None),
+            op("entersub", "lKS/STRICT", None),
+            op("const", "sM", Some("[IV 2]")),
+            op("const", "sM", Some("[IV 3]")),
+            op("gv", "s", Some("[*add]")),
+            op("const", "s", Some("[PV \"\\n\"]")),
+        ];
+        assert_eq!(call_arguments(&seg), "2, 3");
+        assert_eq!(
+            recover_print_args(&seg).as_deref(),
+            Some("add(2, 3), \"\\n\"")
+        );
+    }
+
+    fn op(name: &str, flags: &str, detail: Option<&str>) -> PerlOp {
+        PerlOp {
+            seq: String::from("-"),
+            name: name.to_owned(),
+            flags: flags.to_owned(),
+            detail: detail.map(str::to_owned),
+        }
     }
 
     #[test]
