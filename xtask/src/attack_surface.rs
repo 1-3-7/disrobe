@@ -304,6 +304,13 @@ fn check_crate_inventory(
             manifest.dir_name, manifest.package_name
         ));
     }
+    for name in &mentioned {
+        if name.starts_with("disrobe-") && !seen.contains(name) {
+            drift.push(format!(
+                "SECURITY.md's Untrusted-input parsers table lists `{name}`, but no such crate exists under crates/ anymore; the row documents an attack surface that is no longer shipped"
+            ));
+        }
+    }
     for entry in NON_PARSER_ALLOWLIST {
         if entry.package_name != "xtask" && !seen.contains(entry.package_name) {
             drift.push(format!(
@@ -676,6 +683,7 @@ mod tests {
     #[test]
     fn crate_inventory_flags_unclassified_new_crate() -> core::result::Result<(), String> {
         let mut manifests: Vec<CrateManifest> = allowlisted_manifests();
+        manifests.push(manifest("disrobe-pass-native", "disrobe-pass-native", &[]));
         manifests.push(manifest(
             "disrobe-pass-newformat",
             "disrobe-pass-newformat",
@@ -688,6 +696,24 @@ mod tests {
         check_crate_inventory(&manifests, &security_md, &mut drift).map_err(|e| e.to_string())?;
         assert_eq!(drift.len(), 1);
         assert!(drift[0].contains("disrobe-pass-newformat"));
+        Ok(())
+    }
+
+    #[test]
+    fn crate_inventory_flags_a_parsers_row_whose_crate_is_gone() -> core::result::Result<(), String>
+    {
+        let manifests: Vec<CrateManifest> = allowlisted_manifests();
+        let security_md: String = format!(
+            "{UNTRUSTED_PARSERS_HEADING}\n| Family | Crates |\n|---|---|\n| Existing | `disrobe-pass-deleted` |\n\n{SUBPROCESS_HEADING}\n\n{NETWORK_HEADING}\n\n{CRYPTOGRAPHY_HEADING}\n"
+        );
+        let mut drift: Vec<String> = Vec::new();
+        check_crate_inventory(&manifests, &security_md, &mut drift).map_err(|e| e.to_string())?;
+        assert_eq!(drift.len(), 1);
+        assert!(
+            drift[0].contains("disrobe-pass-deleted") && drift[0].contains("no longer shipped"),
+            "{}",
+            drift[0]
+        );
         Ok(())
     }
 
