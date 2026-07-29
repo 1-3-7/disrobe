@@ -1,3 +1,5 @@
+mod opaque;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use disrobe_ir::payload::{DisasmInstruction, DisasmPayload, InsnFlow, RegAccess};
@@ -26,6 +28,7 @@ use crate::pseudo_c::aarch64::{
     aarch64_direct_transfer, aarch64_is_indirect_branch, aarch64_is_return, aarch64_is_trap,
     aarch64_stops_traversal, aarch64_word, immediate_field, register_field,
 };
+use crate::similarity::opaque::fold_constant_conditions;
 
 const ADRP_PAIR_SCAN_LIMIT: usize = 16;
 
@@ -70,7 +73,59 @@ struct ImageIndex {
     mapped: Option<(u64, u64)>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct TailContext<'a> {
+    positions: Option<&'a BTreeMap<u64, usize>>,
+    entries: &'a BTreeSet<u64>,
+    import_slots: &'a BTreeMap<u64, String>,
+    import_stubs: &'a BTreeMap<u64, String>,
+}
+
+impl<'a> TailContext<'a> {
+    fn new(
+        index: &'a ImageIndex,
+        entries: &'a BTreeSet<u64>,
+        positions: Option<&'a BTreeMap<u64, usize>>,
+    ) -> Self {
+        Self {
+            positions,
+            entries,
+            import_slots: &index.import_slots,
+            import_stubs: &index.import_stubs,
+        }
+    }
+
+    fn is_inside(&self, address: u64) -> bool {
+        self.positions
+            .is_some_and(|held: &BTreeMap<u64, usize>| held.contains_key(&address))
+    }
+
+    fn escapes(&self, address: u64) -> bool {
+        self.positions
+            .is_some_and(|held: &BTreeMap<u64, usize>| !held.contains_key(&address))
+    }
+
+    fn leaves_for_function(&self, address: u64) -> bool {
+        self.escapes(address) && self.entries.contains(&address)
+    }
+
+    fn returns_to_caller(&self, address: u64) -> bool {
+        self.escapes(address)
+            && (self.import_stubs.contains_key(&address) || self.entries.contains(&address))
+    }
+
+    fn returns_through_slot(&self, slot: u64) -> bool {
+        self.import_slots.contains_key(&slot)
+    }
+}
+
 struct Aarch64FeatureParts {
+    references: Vec<DataReference>,
+    structure: Option<ControlFlowGraph>,
+    calls: BTreeSet<FunctionId>,
+}
+
+struct X86FeatureParts {
     references: Vec<DataReference>,
     structure: Option<ControlFlowGraph>,
     calls: BTreeSet<FunctionId>,
@@ -152,16 +207,9 @@ pub fn extract_function_features(bytes: &[u8]) -> Result<Vec<FunctionFeatures>> 
             BTreeSet<FunctionId>,
         ) = match feature_arch {
             FeatureArch::X86 { bits } => {
-                let decoded: Vec<Option<Instruction>> = body
-                    .instructions
-                    .iter()
-                    .map(|insn: &DisasmInstruction| decode_x86(bits, insn))
-                    .collect();
-                (
-                    x86_references(body.instructions, &decoded, &index),
-                    x86_structure(body.instructions, &decoded),
-                    x86_call_targets(body.instructions, &index, &entries),
-                )
+                let parts: X86FeatureParts =
+                    x86_feature_parts(body.instructions, bits, &index, &entries);
+                (parts.references, parts.structure, parts.calls)
             }
             FeatureArch::Aarch64 => {
                 let reference_anchors_trusted: bool =
@@ -185,14 +233,42 @@ pub fn extract_function_features(bytes: &[u8]) -> Result<Vec<FunctionFeatures>> 
     Ok(features)
 }
 
+fn x86_feature_parts(
+    body: &[DisasmInstruction],
+    bits: u32,
+    index: &ImageIndex,
+    entries: &BTreeSet<u64>,
+) -> X86FeatureParts {
+    let decoded: Vec<Option<Instruction>> = body
+        .iter()
+        .map(|insn: &DisasmInstruction| decode_x86(bits, insn))
+        .collect();
+    let positions: Option<BTreeMap<u64, usize>> = instruction_positions(body);
+    let tail: TailContext<'_> = TailContext::new(index, entries, positions.as_ref());
+    let blocks: Option<Vec<BasicBlock>> = x86_blocks(&decoded, positions.as_ref(), tail);
+    let live: Vec<bool> = blocks
+        .as_deref()
+        .and_then(|blocks: &[BasicBlock]| reachable_mask(body.len(), blocks))
+        .unwrap_or_else(|| vec![true; body.len()]);
+    X86FeatureParts {
+        references: x86_references(body, &decoded, &live, index),
+        structure: blocks
+            .as_deref()
+            .and_then(|blocks: &[BasicBlock]| x86_structure(&decoded, blocks)),
+        calls: x86_call_targets(body, &live, tail),
+    }
+}
+
 fn aarch64_feature_parts(
     body: &[DisasmInstruction],
     index: &ImageIndex,
     entries: &BTreeSet<u64>,
     reference_anchors: bool,
 ) -> Aarch64FeatureParts {
+    let positions: Option<BTreeMap<u64, usize>> = instruction_positions(body);
+    let tail: TailContext<'_> = TailContext::new(index, entries, positions.as_ref());
     let Some(parts): Option<Aarch64FeatureParts> =
-        aarch64_reachable_feature_parts(body, index, entries, reference_anchors)
+        aarch64_reachable_feature_parts(body, index, positions.as_ref(), tail, reference_anchors)
     else {
         let prefix: &[DisasmInstruction] = aarch64_terminated_prefix(body);
         return Aarch64FeatureParts {
@@ -202,7 +278,7 @@ fn aarch64_feature_parts(
                 Vec::new()
             },
             structure: None,
-            calls: aarch64_call_targets(prefix, entries),
+            calls: aarch64_call_targets(prefix, tail),
         };
     };
     parts
@@ -248,11 +324,13 @@ fn aarch64_terminated_prefix(body: &[DisasmInstruction]) -> &[DisasmInstruction]
 fn aarch64_reachable_feature_parts(
     body: &[DisasmInstruction],
     index: &ImageIndex,
-    entries: &BTreeSet<u64>,
+    positions: Option<&BTreeMap<u64, usize>>,
+    tail: TailContext<'_>,
     reference_anchors: bool,
 ) -> Option<Aarch64FeatureParts> {
-    let blocks: Vec<BasicBlock> = aarch64_blocks(body)?;
-    let spans: Vec<&[DisasmInstruction]> = aarch64_reachable_spans(body, &blocks)?;
+    let blocks: Vec<BasicBlock> = aarch64_blocks(body, positions?, tail)?;
+    let live: Vec<bool> = reachable_mask(body.len(), &blocks)?;
+    let spans: Vec<&[DisasmInstruction]> = contiguous_spans(body, &live);
     let reference_capacity: usize = if reference_anchors { blocks.len() } else { 0 };
     let mut references: Vec<DataReference> = Vec::with_capacity(reference_capacity);
     let mut calls: BTreeSet<FunctionId> = BTreeSet::new();
@@ -260,7 +338,7 @@ fn aarch64_reachable_feature_parts(
         if reference_anchors {
             references.extend(aarch64_references(span, index));
         }
-        calls.extend(aarch64_call_targets(span, entries));
+        calls.extend(aarch64_call_targets(span, tail));
     }
     let structure: Option<ControlFlowGraph> = aarch64_structure_from_blocks(body, &blocks);
     Some(Aarch64FeatureParts {
@@ -270,47 +348,59 @@ fn aarch64_reachable_feature_parts(
     })
 }
 
-fn aarch64_reachable_spans<'a>(
-    body: &'a [DisasmInstruction],
-    blocks: &[BasicBlock],
-) -> Option<Vec<&'a [DisasmInstruction]>> {
-    let mut reachable: Vec<u8> = vec![0; body.len()];
+fn reachable_mask(length: usize, blocks: &[BasicBlock]) -> Option<Vec<bool>> {
+    let mut live: Vec<bool> = vec![false; length];
     for block in blocks {
-        let marked: &mut [u8] = reachable.get_mut(block.insns.clone())?;
-        marked.fill(1);
+        live.get_mut(block.insns.clone())?.fill(true);
     }
+    Some(live)
+}
 
-    let mut spans: Vec<&[DisasmInstruction]> = Vec::with_capacity(blocks.len());
-    let mut cursor: usize = 0;
-    while cursor < reachable.len() {
-        while cursor < reachable.len() && reachable.get(cursor).copied()? == 0 {
-            cursor = cursor.checked_add(1)?;
-        }
-        let start: usize = cursor;
-        while cursor < reachable.len() && reachable.get(cursor).copied()? != 0 {
-            cursor = cursor.checked_add(1)?;
-        }
-        if start < cursor {
-            spans.push(body.get(start..cursor)?);
+fn contiguous_spans<'a>(
+    body: &'a [DisasmInstruction],
+    live: &[bool],
+) -> Vec<&'a [DisasmInstruction]> {
+    let mut spans: Vec<&[DisasmInstruction]> = Vec::new();
+    let mut start: Option<usize> = None;
+    for (position, reachable) in live.iter().copied().enumerate() {
+        match (reachable, start) {
+            (true, None) => start = Some(position),
+            (false, Some(begin)) => {
+                if let Some(span) = body.get(begin..position) {
+                    spans.push(span);
+                }
+                start = None;
+            }
+            (true, Some(_)) | (false, None) => {}
         }
     }
-    Some(spans)
+    if let Some(begin) = start
+        && let Some(span) = body.get(begin..live.len())
+    {
+        spans.push(span);
+    }
+    spans
 }
 
 fn x86_call_targets(
     body: &[DisasmInstruction],
-    index: &ImageIndex,
-    entries: &BTreeSet<u64>,
+    live: &[bool],
+    tail: TailContext<'_>,
 ) -> BTreeSet<FunctionId> {
     let mut out: BTreeSet<FunctionId> = BTreeSet::new();
-    for insn in body {
-        if !matches!(insn.flow, InsnFlow::Call) {
+    for (insn, reachable) in body.iter().zip(live.iter().copied()) {
+        if !reachable {
             continue;
         }
         let Some(target): Option<u64> = insn.branch_target else {
             continue;
         };
-        if index.import_stubs.contains_key(&target) || !entries.contains(&target) {
+        let reaches: bool = match insn.flow {
+            InsnFlow::Call => true,
+            InsnFlow::UnconditionalBranch => tail.escapes(target),
+            _ => false,
+        };
+        if !reaches || tail.import_stubs.contains_key(&target) || !tail.entries.contains(&target) {
             continue;
         }
         out.insert(FunctionId::from(target));
@@ -318,21 +408,22 @@ fn x86_call_targets(
     out
 }
 
-fn aarch64_call_targets(
-    body: &[DisasmInstruction],
-    entries: &BTreeSet<u64>,
-) -> BTreeSet<FunctionId> {
+fn aarch64_call_targets(body: &[DisasmInstruction], tail: TailContext<'_>) -> BTreeSet<FunctionId> {
     let mut out: BTreeSet<FunctionId> = BTreeSet::new();
     for insn in body {
-        if insn.mnemonic != "bl" {
-            continue;
-        }
-        let Some(target): Option<u64> = instruction_word(insn)
-            .and_then(|word: u32| aarch64_branch_link_target(insn.offset, word))
-        else {
+        let Some(word): Option<u32> = instruction_word(insn) else {
             continue;
         };
-        if !entries.contains(&target) {
+        let target: Option<u64> = match insn.mnemonic.as_str() {
+            "bl" => aarch64_branch_link_target(insn.offset, word),
+            "b" => aarch64_jump_target(insn.offset, word)
+                .filter(|reached: &u64| tail.leaves_for_function(*reached)),
+            _ => None,
+        };
+        let Some(target): Option<u64> = target else {
+            continue;
+        };
+        if !tail.entries.contains(&target) {
             continue;
         }
         out.insert(FunctionId::from(target));
@@ -345,6 +436,19 @@ fn aarch64_branch_link_target(address: u64, word: u32) -> Option<u64> {
         Some(Aarch64DirectTransfer::BranchLink { target }) => Some(target),
         Some(
             Aarch64DirectTransfer::UnconditionalBranch { .. }
+            | Aarch64DirectTransfer::ConditionalBranch { .. }
+            | Aarch64DirectTransfer::CompareBranch { .. }
+            | Aarch64DirectTransfer::TestBranch { .. },
+        )
+        | None => None,
+    }
+}
+
+fn aarch64_jump_target(address: u64, word: u32) -> Option<u64> {
+    match aarch64_direct_transfer(address, word) {
+        Some(Aarch64DirectTransfer::UnconditionalBranch { target }) => Some(target),
+        Some(
+            Aarch64DirectTransfer::BranchLink { .. }
             | Aarch64DirectTransfer::ConditionalBranch { .. }
             | Aarch64DirectTransfer::CompareBranch { .. }
             | Aarch64DirectTransfer::TestBranch { .. },
@@ -476,11 +580,12 @@ fn absolute_memory_target(decoded: &Instruction) -> Option<u64> {
 fn x86_references(
     body: &[DisasmInstruction],
     decoded: &[Option<Instruction>],
+    live: &[bool],
     index: &ImageIndex,
 ) -> Vec<DataReference> {
     let mut out: Vec<DataReference> = Vec::new();
-    for (insn, slot) in body.iter().zip(decoded) {
-        let Some(decoded): Option<&Instruction> = slot.as_ref() else {
+    for ((insn, slot), reachable) in body.iter().zip(decoded).zip(live.iter().copied()) {
+        let Some(decoded): Option<&Instruction> = slot.as_ref().filter(|_| reachable) else {
             continue;
         };
         if let Some(reference) = x86_reference(insn, decoded, index) {
@@ -490,30 +595,38 @@ fn x86_references(
     out
 }
 
-fn x86_structure(
-    body: &[DisasmInstruction],
+fn x86_blocks(
     decoded: &[Option<Instruction>],
-) -> Option<ControlFlowGraph> {
-    let mut resolved: Vec<&Instruction> = Vec::with_capacity(body.len());
+    positions: Option<&BTreeMap<u64, usize>>,
+    tail: TailContext<'_>,
+) -> Option<Vec<BasicBlock>> {
+    let positions: &BTreeMap<u64, usize> = positions?;
+    let mut resolved: Vec<&Instruction> = Vec::with_capacity(decoded.len());
     for slot in decoded {
         resolved.push(slot.as_ref()?);
     }
-    if resolved.len() != body.len() {
-        return None;
-    }
-    let positions: BTreeMap<u64, usize> = instruction_positions(body)?;
-    let transfers: Vec<Transfer> = resolved.iter().copied().map(x86_transfer).collect();
-    let blocks: Vec<BasicBlock> = build_cfg(&transfers, &positions, 0)?;
-    let mut factory: InstructionInfoFactory = InstructionInfoFactory::new();
-    let categories: Vec<InstructionCategory> = resolved
+    let mut transfers: Vec<Transfer> = resolved
         .iter()
         .copied()
-        .map(|insn: &Instruction| x86_category(insn, &mut factory))
+        .map(|insn: &Instruction| x86_transfer(insn, tail))
         .collect();
-    control_flow_graph(&blocks, &categories)
+    fold_constant_conditions(&resolved, &mut transfers);
+    build_cfg(&transfers, positions, 0)
 }
 
-fn x86_transfer(decoded: &Instruction) -> Transfer {
+fn x86_structure(
+    decoded: &[Option<Instruction>],
+    blocks: &[BasicBlock],
+) -> Option<ControlFlowGraph> {
+    let mut factory: InstructionInfoFactory = InstructionInfoFactory::new();
+    let mut categories: Vec<InstructionCategory> = Vec::with_capacity(decoded.len());
+    for slot in decoded {
+        categories.push(x86_category(slot.as_ref()?, &mut factory));
+    }
+    control_flow_graph(blocks, &categories)
+}
+
+fn x86_transfer(decoded: &Instruction, tail: TailContext<'_>) -> Transfer {
     let direct: bool = matches!(
         decoded.op0_kind(),
         OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64
@@ -525,11 +638,32 @@ fn x86_transfer(decoded: &Instruction) -> Transfer {
         FlowControl::ConditionalBranch if direct => Transfer::ConditionalBranch {
             taken: decoded.near_branch_target(),
         },
-        FlowControl::UnconditionalBranch if direct => Transfer::UnconditionalBranch {
-            taken: decoded.near_branch_target(),
-        },
+        FlowControl::UnconditionalBranch if direct => {
+            direct_jump_transfer(decoded.near_branch_target(), tail)
+        }
+        FlowControl::IndirectBranch => indirect_jump_transfer(decoded, tail),
         _ => Transfer::Unresolved,
     }
+}
+
+fn direct_jump_transfer(target: u64, tail: TailContext<'_>) -> Transfer {
+    if tail.is_inside(target) {
+        return Transfer::UnconditionalBranch { taken: target };
+    }
+    if tail.returns_to_caller(target) {
+        return Transfer::Terminal { returns: true };
+    }
+    Transfer::Unresolved
+}
+
+fn indirect_jump_transfer(decoded: &Instruction, tail: TailContext<'_>) -> Transfer {
+    let Some(slot): Option<u64> = absolute_memory_target(decoded) else {
+        return Transfer::Unresolved;
+    };
+    if tail.returns_through_slot(slot) {
+        return Transfer::Terminal { returns: true };
+    }
+    Transfer::Unresolved
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -756,8 +890,10 @@ fn x86_import_name(
     index: &ImageIndex,
 ) -> Option<String> {
     match insn.flow {
-        InsnFlow::Call => index.import_stubs.get(&insn.branch_target?).cloned(),
-        InsnFlow::IndirectCall => index
+        InsnFlow::Call | InsnFlow::UnconditionalBranch => {
+            index.import_stubs.get(&insn.branch_target?).cloned()
+        }
+        InsnFlow::IndirectCall | InsnFlow::IndirectBranch => index
             .import_slots
             .get(&absolute_memory_target(decoded)?)
             .cloned(),
@@ -900,11 +1036,19 @@ const AARCH64_MOVE: [&str; 21] = [
 
 #[cfg(test)]
 fn aarch64_structure(body: &[DisasmInstruction]) -> Option<ControlFlowGraph> {
-    let blocks: Vec<BasicBlock> = aarch64_blocks(body)?;
+    let entries: BTreeSet<u64> = BTreeSet::new();
+    let index: ImageIndex = ImageIndex::default();
+    let positions: BTreeMap<u64, usize> = instruction_positions(body)?;
+    let tail: TailContext<'_> = TailContext::new(&index, &entries, Some(&positions));
+    let blocks: Vec<BasicBlock> = aarch64_blocks(body, &positions, tail)?;
     aarch64_structure_from_blocks(body, &blocks)
 }
 
-fn aarch64_blocks(body: &[DisasmInstruction]) -> Option<Vec<BasicBlock>> {
+fn aarch64_blocks(
+    body: &[DisasmInstruction],
+    positions: &BTreeMap<u64, usize>,
+    tail: TailContext<'_>,
+) -> Option<Vec<BasicBlock>> {
     if body
         .iter()
         .any(|insn: &DisasmInstruction| insn.bytes.len() != AARCH64_INSTRUCTION_BYTES)
@@ -914,9 +1058,11 @@ fn aarch64_blocks(body: &[DisasmInstruction]) -> Option<Vec<BasicBlock>> {
     {
         return None;
     }
-    let positions: BTreeMap<u64, usize> = instruction_positions(body)?;
-    let transfers: Vec<Transfer> = body.iter().map(aarch64_transfer).collect();
-    build_cfg(&transfers, &positions, 0)
+    let transfers: Vec<Transfer> = body
+        .iter()
+        .map(|insn: &DisasmInstruction| aarch64_transfer(insn, tail))
+        .collect();
+    build_cfg(&transfers, positions, 0)
 }
 
 fn aarch64_structure_from_blocks(
@@ -927,7 +1073,7 @@ fn aarch64_structure_from_blocks(
     control_flow_graph(blocks, &categories)
 }
 
-fn aarch64_transfer(insn: &DisasmInstruction) -> Transfer {
+fn aarch64_transfer(insn: &DisasmInstruction, tail: TailContext<'_>) -> Transfer {
     let mnemonic: &str = insn.mnemonic.as_str();
     if aarch64_is_return(mnemonic) {
         return Transfer::Terminal { returns: true };
@@ -942,20 +1088,11 @@ fn aarch64_transfer(insn: &DisasmInstruction) -> Transfer {
         return Transfer::FallsThrough;
     }
     if mnemonic == "b" {
-        return match instruction_word(insn)
-            .and_then(|word: u32| aarch64_direct_transfer(insn.offset, word))
-        {
-            Some(Aarch64DirectTransfer::UnconditionalBranch { target }) => {
-                Transfer::UnconditionalBranch { taken: target }
-            }
-            Some(
-                Aarch64DirectTransfer::BranchLink { .. }
-                | Aarch64DirectTransfer::ConditionalBranch { .. }
-                | Aarch64DirectTransfer::CompareBranch { .. }
-                | Aarch64DirectTransfer::TestBranch { .. },
-            )
-            | None => Transfer::Unresolved,
-        };
+        return instruction_word(insn)
+            .and_then(|word: u32| aarch64_jump_target(insn.offset, word))
+            .map_or(Transfer::Unresolved, |target: u64| {
+                direct_jump_transfer(target, tail)
+            });
     }
     if is_direct_conditional_branch(mnemonic) {
         return match instruction_word(insn)
