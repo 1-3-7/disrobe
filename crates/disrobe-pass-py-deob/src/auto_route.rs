@@ -314,6 +314,46 @@ mod tests {
     }
 
     #[test]
+    fn published_source_obfuscator_roster_matches_the_registered_passes() {
+        const PUBLISHED: [&str; 20] = [
+            "Kramer / Specter",
+            "Berserker",
+            "Jawbreaker",
+            "BlankOBF",
+            "PlusOBF",
+            "Wodx",
+            "pyobfuscate.com",
+            "pyobfuscate.com (2026 XOR/lambda)",
+            "PyObfuscator (mauricelambert)",
+            "python-obfuscator (PyPI)",
+            "ObfuXtreme",
+            "Manglify",
+            "Oxyry",
+            "pyminifier",
+            "online obfuscator family",
+            "Xindex",
+            "pyobfus",
+            "Pypacker",
+            "Patchwork",
+            "pyc-zipper",
+        ];
+        let mut registered: Vec<&'static str> = supported_obfuscators()
+            .into_iter()
+            .map(|entry: SupportedObfuscator| entry.display_name)
+            .collect();
+        let mut published: Vec<&'static str> = PUBLISHED.to_vec();
+        registered.sort_unstable();
+        published.sort_unstable();
+        assert_eq!(
+            registered, published,
+            "README and docs/src/catalog.md publish py_source_obfuscators as {}; the registered \
+             roster must name exactly these passes, so adding or removing one has to move the \
+             published figure in the same change",
+            PUBLISHED.len()
+        );
+    }
+
+    #[test]
     fn guidance_lists_known_obfuscators_and_command() {
         let guidance: String = unidentified_guidance(b"def foo():\n    return 1\n");
         assert!(guidance.contains("BlankOBF"));
