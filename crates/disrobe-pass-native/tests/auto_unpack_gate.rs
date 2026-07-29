@@ -76,7 +76,7 @@ fn auto_surfaces_upx_unpacked_image_matching_upx_d_reference() {
         ScratchDir::create("disrobe-auto-unpack").expect("create scratch directory");
     let tmp: &Path = scratch.path();
 
-    let src: PathBuf = write_source(&tmp);
+    let src: PathBuf = write_source(tmp);
     let exe: PathBuf = tmp.join("known_plaintext.exe");
     let compile: std::process::Output = Command::new(cc)
         .arg("-O2")
@@ -90,7 +90,7 @@ fn auto_surfaces_upx_unpacked_image_matching_upx_d_reference() {
             "SKIP: compiler failed: {}",
             String::from_utf8_lossy(&compile.stderr)
         );
-        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(tmp);
         return;
     }
 
@@ -106,7 +106,7 @@ fn auto_surfaces_upx_unpacked_image_matching_upx_d_reference() {
             "SKIP: upx pack failed: {}",
             String::from_utf8_lossy(&pack.stderr)
         );
-        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(tmp);
         return;
     }
 
@@ -166,7 +166,7 @@ fn auto_surfaces_upx_unpacked_image_matching_upx_d_reference() {
          reference (independent oracle); longest common run was {overlap} bytes"
     );
 
-    let _ = std::fs::remove_dir_all(&tmp);
+    let _ = std::fs::remove_dir_all(tmp);
 }
 
 fn write_go_source(dir: &Path) {
