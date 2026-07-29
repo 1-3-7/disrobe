@@ -68,20 +68,19 @@ pub fn aes256_cbc_decrypt_no_pad(
 }
 
 #[must_use]
-pub fn strip_pkcs7(data: &[u8], block: usize) -> Vec<u8> {
-    let Some(&pad): Option<&u8> = data.last() else {
-        return data.to_vec();
-    };
-    let pad_len: usize = pad as usize;
+pub fn strip_pkcs7(data: &[u8], block: usize) -> Option<Vec<u8>> {
+    if block == 0 || data.is_empty() || !data.len().is_multiple_of(block) {
+        return None;
+    }
+    let pad_len: usize = usize::from(*data.last()?);
     if pad_len == 0 || pad_len > block || pad_len > data.len() {
-        return data.to_vec();
+        return None;
     }
     let start: usize = data.len() - pad_len;
-    if data[start..].iter().all(|&b: &u8| b == pad) {
-        data[..start].to_vec()
-    } else {
-        data.to_vec()
-    }
+    data.get(start..)?
+        .iter()
+        .all(|&b: &u8| usize::from(b) == pad_len)
+        .then(|| data[..start].to_vec())
 }
 
 pub fn tdes_cbc_decrypt(key: &[u8; 24], iv: [u8; 8], data: &[u8]) -> Result<Vec<u8>, CryptoError> {
@@ -373,6 +372,25 @@ mod tests {
     fn pkcs7_strip_removes_valid_padding() {
         let mut data: Vec<u8> = b"hello".to_vec();
         data.extend_from_slice(&[3, 3, 3]);
-        assert_eq!(strip_pkcs7(&data, 8), b"hello");
+        assert_eq!(strip_pkcs7(&data, 8).as_deref(), Some(&b"hello"[..]));
+    }
+
+    #[test]
+    fn pkcs7_strip_rejects_invalid_padding() {
+        let mut inconsistent: Vec<u8> = b"hello".to_vec();
+        inconsistent.extend_from_slice(&[3, 2, 3]);
+        assert_eq!(strip_pkcs7(&inconsistent, 8), None);
+
+        let mut zero_pad: Vec<u8> = b"hellowor".to_vec();
+        zero_pad.extend_from_slice(&[0u8; 8]);
+        assert_eq!(strip_pkcs7(&zero_pad, 8), None);
+
+        let mut over_block: Vec<u8> = b"hi".to_vec();
+        over_block.extend_from_slice(&[9u8; 6]);
+        assert_eq!(strip_pkcs7(&over_block, 8), None);
+
+        assert_eq!(strip_pkcs7(b"", 8), None);
+        assert_eq!(strip_pkcs7(&[1u8; 7], 8), None);
+        assert_eq!(strip_pkcs7(&[1u8; 8], 0), None);
     }
 }
