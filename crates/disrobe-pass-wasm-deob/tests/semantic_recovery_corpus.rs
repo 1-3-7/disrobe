@@ -9,6 +9,10 @@ use disrobe_pass_wasm_deob::{
 };
 use wasmparser::{FunctionBody, Parser, Payload};
 
+const CORPUS_MODULES: usize = 38;
+const CORPUS_FUNCTIONS: usize = 133;
+const CORPUS_FULLY_RECOVERED: usize = 133;
+
 fn corpus_dirs() -> Vec<PathBuf> {
     let root: &Path = Path::new(env!("CARGO_MANIFEST_DIR"));
     vec![
@@ -150,11 +154,17 @@ fn function_has_real_name(sig: &FunctionSig, defined_index: usize) -> bool {
 #[test]
 fn corpus_recovery_requires_full_op_coverage_not_just_parseability() {
     let tally: Tally = measure();
-    assert!(
-        tally.total_functions >= 10,
-        "expected a non-trivial corpus, saw {} functions across {} modules",
-        tally.total_functions,
-        tally.modules_parsed
+    assert_eq!(
+        tally.modules_parsed, CORPUS_MODULES,
+        "the wat corpus is fixed at {CORPUS_MODULES} parseable modules; got {} parsed and {} \
+         skipped, so the published denominator no longer describes what ran",
+        tally.modules_parsed, tally.modules_skipped
+    );
+    assert_eq!(
+        tally.total_functions, CORPUS_FUNCTIONS,
+        "the wat corpus is fixed at {CORPUS_FUNCTIONS} defined functions; got {}, so the \
+         published denominator no longer describes what ran",
+        tally.total_functions
     );
 
     let semantic_pct: f64 = 100.0 * tally.fully_recovered as f64 / tally.total_functions as f64;
@@ -200,10 +210,11 @@ fn corpus_recovery_requires_full_op_coverage_not_just_parseability() {
          nothing is stubbed"
     );
     assert!(
-        tally.fully_recovered >= 76,
-        "the genuinely-recovered baseline must not regress below 76 functions (100% op-coverage); \
-         ratchet this up as more op families are lowered, got {}",
-        tally.fully_recovered
+        tally.fully_recovered >= CORPUS_FULLY_RECOVERED,
+        "full op-coverage recovery must not regress below {CORPUS_FULLY_RECOVERED}/{CORPUS_FUNCTIONS} \
+         functions, the figure the docs publish; got {}/{}",
+        tally.fully_recovered,
+        tally.total_functions
     );
 }
 

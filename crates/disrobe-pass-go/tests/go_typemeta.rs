@@ -6,6 +6,9 @@ use std::path::PathBuf;
 
 use disrobe_pass_go::{GoAnalysis, GoItab, GoTypeRef, analyze};
 
+const STRIPPED_GO126_TYPES: usize = 838;
+const STRIPPED_GO126_NAMED: usize = 838;
+
 const TYPEMETA_SOURCE: &str = r#"package main
 
 import (
@@ -181,11 +184,19 @@ fn typemeta_recovers_real_type_names_on_go126() {
         .iter()
         .filter(|t: &&GoTypeRef| t.name.is_some())
         .count();
-    assert!(
-        total > 100,
-        "stripped go1.26.3 fixture should expose hundreds of types via typelinks (got {total})"
-    );
     let ratio: f64 = (named as f64) / (total.max(1) as f64);
+    eprintln!("stripped go1.26.3 (pe): type-name recovery {named}/{total} = {ratio:.4}");
+    assert_eq!(
+        total, STRIPPED_GO126_TYPES,
+        "the typelinks walk over the committed stripped go1.26.3 fixture is fixed at \
+         {STRIPPED_GO126_TYPES} types; a different count means the walk changed shape \
+         (got {total}) and the published figure needs re-measuring"
+    );
+    assert!(
+        named >= STRIPPED_GO126_NAMED,
+        "type-name recovery on the stripped go1.26.3 fixture must not regress below \
+         {STRIPPED_GO126_NAMED}/{STRIPPED_GO126_TYPES}; got {named}/{total} = {ratio:.4}"
+    );
     assert!(
         ratio >= 0.85,
         "expected >= 85% type-name recovery on the stripped go1.26.3 fixture \
