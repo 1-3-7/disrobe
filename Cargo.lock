@@ -2762,6 +2762,8 @@ dependencies = [
 name = "disrobe-plugin-host"
 version = "0.10.4"
 dependencies = [
+ "disrobe-plugin-loader",
+ "minisign",
  "thiserror 2.0.18",
  "wasmtime",
  "wat",
