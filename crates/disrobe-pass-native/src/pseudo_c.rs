@@ -15862,9 +15862,9 @@ fn rs_fp_bin_stmt(
     width: FpWidth,
     indent: &str,
     aggregates: &AggregatePlan,
-) -> Option<()> {
-    let lhs_val: String = rs_fp_load(lhs, width, aggregates)?;
-    let rhs_val: String = rs_fp_load(rhs, width, aggregates)?;
+) {
+    let lhs_val: String = rs_fp_load(lhs, width, aggregates);
+    let rhs_val: String = rs_fp_load(rhs, width, aggregates);
     let opstr: &str = match op {
         FpOp::Add => "+",
         FpOp::Sub => "-",
@@ -15873,7 +15873,6 @@ fn rs_fp_bin_stmt(
     };
     let computed: String = format!("({lhs_val} {opstr} {rhs_val})");
     rs_emit_xmm_store(out, dest, &computed, width, indent);
-    Some(())
 }
 
 fn rs_fp_mov_stmt(
@@ -15883,10 +15882,9 @@ fn rs_fp_mov_stmt(
     width: FpWidth,
     indent: &str,
     aggregates: &AggregatePlan,
-) -> Option<()> {
-    let value: String = rs_fp_load(src, width, aggregates)?;
+) {
+    let value: String = rs_fp_load(src, width, aggregates);
     rs_emit_xmm_store(out, dest, &value, width, indent);
-    Some(())
 }
 
 fn rs_int_to_fp_stmt(
@@ -15984,9 +15982,9 @@ fn rs_fp_minmax_stmt(
     width: FpWidth,
     indent: &str,
     aggregates: &AggregatePlan,
-) -> Option<()> {
-    let lhs_val: String = rs_fp_load(lhs, width, aggregates)?;
-    let rhs_val: String = rs_fp_load(rhs, width, aggregates)?;
+) {
+    let lhs_val: String = rs_fp_load(lhs, width, aggregates);
+    let rhs_val: String = rs_fp_load(rhs, width, aggregates);
     let computed: String = if kind.is_ieee_num() {
         let helper: &'static str = fp_semantics::minmax_helper(kind.is_max(), width);
         format!("({helper}({lhs_val}, {rhs_val}))")
@@ -15995,7 +15993,6 @@ fn rs_fp_minmax_stmt(
         format!("(if {lhs_val} {opstr} {rhs_val} {{ {lhs_val} }} else {{ {rhs_val} }})")
     };
     rs_emit_xmm_store(out, dest, &computed, width, indent);
-    Some(())
 }
 
 fn rs_fp_sqrt_stmt(
@@ -16006,12 +16003,11 @@ fn rs_fp_sqrt_stmt(
     saturating: bool,
     indent: &str,
     aggregates: &AggregatePlan,
-) -> Option<()> {
-    let value: String = rs_fp_load(src, width, aggregates)?;
+) {
+    let value: String = rs_fp_load(src, width, aggregates);
     let helper: &'static str = fp_semantics::sqrt_helper(saturating, width);
     let call: String = format!("{helper}({value})");
     rs_emit_xmm_store(out, dest, &call, width, indent);
-    Some(())
 }
 
 fn rs_fp_round_stmt(
@@ -16022,11 +16018,10 @@ fn rs_fp_round_stmt(
     mode: RoundMode,
     indent: &str,
     aggregates: &AggregatePlan,
-) -> Option<()> {
-    let value: String = rs_fp_load(src, width, aggregates)?;
+) {
+    let value: String = rs_fp_load(src, width, aggregates);
     let call: String = rs_fp_rint(mode, &value, width);
     rs_emit_xmm_store(out, dest, &call, width, indent);
-    Some(())
 }
 
 fn rs_gpr_to_xmm_stmt(out: &mut String, dest: Xmm, src: RegRef, width: FpWidth, indent: &str) {
@@ -16138,9 +16133,9 @@ fn rs_emit_stmt(
             rhs,
             op,
             width,
-        } => rs_fp_bin_stmt(out, *dest, lhs, rhs, *op, *width, indent, aggregates)?,
+        } => rs_fp_bin_stmt(out, *dest, lhs, rhs, *op, *width, indent, aggregates),
         Stmt::FpMov { dest, src, width } => {
-            rs_fp_mov_stmt(out, *dest, src, *width, indent, aggregates)?;
+            rs_fp_mov_stmt(out, *dest, src, *width, indent, aggregates);
         }
         Stmt::IntToFp {
             dest,
@@ -16182,7 +16177,7 @@ fn rs_emit_stmt(
             rhs,
             kind,
             width,
-        } => rs_fp_minmax_stmt(out, *dest, lhs, rhs, *kind, *width, indent, aggregates)?,
+        } => rs_fp_minmax_stmt(out, *dest, lhs, rhs, *kind, *width, indent, aggregates),
         Stmt::FpFma {
             dest,
             mul_lhs,
@@ -16191,9 +16186,9 @@ fn rs_emit_stmt(
             kind,
             width,
         } => {
-            let lhs_val: String = rs_fp_load(mul_lhs, *width, aggregates)?;
-            let rhs_val: String = rs_fp_load(mul_rhs, *width, aggregates)?;
-            let addend_val: String = rs_fp_load(addend, *width, aggregates)?;
+            let lhs_val: String = rs_fp_load(mul_lhs, *width, aggregates);
+            let rhs_val: String = rs_fp_load(mul_rhs, *width, aggregates);
+            let addend_val: String = rs_fp_load(addend, *width, aggregates);
             let lhs_expr: String = if kind.negates_multiplicand() {
                 format!("(-{lhs_val})")
             } else {
@@ -16217,8 +16212,8 @@ fn rs_emit_stmt(
             width,
         } => {
             let cond: String = rs_cond_expr(*kind, flags, aggregates)?;
-            let taken: String = rs_fp_load(if_true, *width, aggregates)?;
-            let untaken: String = rs_fp_load(if_false, *width, aggregates)?;
+            let taken: String = rs_fp_load(if_true, *width, aggregates);
+            let untaken: String = rs_fp_load(if_false, *width, aggregates);
             let computed: String = format!("(if {cond} {{ {taken} }} else {{ {untaken} }})");
             rs_emit_xmm_store(out, *dest, &computed, *width, indent);
         }
@@ -16228,7 +16223,7 @@ fn rs_emit_stmt(
             width,
             saturating,
         } => {
-            rs_fp_sqrt_stmt(out, *dest, src, *width, *saturating, indent, aggregates)?;
+            rs_fp_sqrt_stmt(out, *dest, src, *width, *saturating, indent, aggregates);
         }
         Stmt::FpUnary {
             dest,
@@ -16236,7 +16231,7 @@ fn rs_emit_stmt(
             op,
             width,
         } => {
-            let value: String = rs_fp_load(src, *width, aggregates)?;
+            let value: String = rs_fp_load(src, *width, aggregates);
             let computed: String = match op {
                 FpUnaryOp::Neg => format!("(-({value}))"),
                 FpUnaryOp::Abs => format!("({value}).abs()"),
@@ -16248,7 +16243,7 @@ fn rs_emit_stmt(
             src,
             width,
             mode,
-        } => rs_fp_round_stmt(out, *dest, src, *width, *mode, indent, aggregates)?,
+        } => rs_fp_round_stmt(out, *dest, src, *width, *mode, indent, aggregates),
         Stmt::GprToXmm { dest, src, width } => rs_gpr_to_xmm_stmt(out, *dest, *src, *width, indent),
         Stmt::XmmToGpr { dest, src, width } => rs_xmm_to_gpr_stmt(out, *dest, *src, *width, indent),
         Stmt::Store { addr, src } => {
@@ -16259,7 +16254,7 @@ fn rs_emit_stmt(
             rs_mem_rmw_stmt(out, addr, op, indent, aggregates)?;
         }
         Stmt::FpStore { addr, src, width } => {
-            rs_emit_fp_store(out, addr, *src, *width, indent, aggregates)?;
+            rs_emit_fp_store(out, addr, *src, *width, indent, aggregates);
         }
         Stmt::BlockMove { .. }
         | Stmt::BlockFill { .. }
@@ -16400,6 +16395,18 @@ fn rs_emit_store(
     let _ = writeln!(out, "{indent}{stmt}");
 }
 
+fn rs_fp_aggregate_slot(
+    mem: &MemRef,
+    width: FpWidth,
+    mutable: bool,
+    aggregates: &AggregatePlan,
+) -> Option<RustExpr> {
+    match aggregate_rust_address(mem, aggregates, mutable, AggregateScalar::Float(width))? {
+        (_, true) => None,
+        (ptr, false) => parse_expr(&ptr),
+    }
+}
+
 fn rs_emit_fp_store(
     out: &mut String,
     addr: &MemRef,
@@ -16407,40 +16414,65 @@ fn rs_emit_fp_store(
     width: FpWidth,
     indent: &str,
     aggregates: &AggregatePlan,
-) -> Option<()> {
-    let (ptr, pointer): (String, bool) =
-        aggregate_rust_address(addr, aggregates, true, AggregateScalar::Float(width))?;
-    if pointer {
-        return None;
-    }
-    let ptr_expr: RustExpr = parse_expr(&ptr)?;
+) {
     let value: String = rs_fp_load_xmm(src, width);
-    let value_expr: RustExpr = parse_expr(&value)?;
-    let write: RustExpr = rcall(
-        path_expr(&["core", "ptr", "write_unaligned"]),
-        vec![ptr_expr, value_expr],
-    );
-    let _ = writeln!(out, "{indent}{};", render_rust_expr(&unsafe_block(write)));
-    Some(())
+    if let Some(ptr_expr) = rs_fp_aggregate_slot(addr, width, true, aggregates)
+        && let Some(value_expr) = parse_expr(&value)
+    {
+        let write: RustExpr = rcall(
+            path_expr(&["core", "ptr", "write_unaligned"]),
+            vec![ptr_expr, value_expr],
+        );
+        let _ = writeln!(out, "{indent}{};", render_rust_expr(&unsafe_block(write)));
+        return;
+    }
+    let bits: String = rs_xmm_bits(src, width);
+    rs_emit_store(out, addr, &bits, indent, aggregates);
 }
 
-fn rs_fp_load(operand: &FpOperand, width: FpWidth, aggregates: &AggregatePlan) -> Option<String> {
-    match operand {
-        FpOperand::Xmm(x) => Some(rs_fp_load_xmm(*x, width)),
-        FpOperand::Mem(mem) => {
-            let (ptr, pointer): (String, bool) =
-                aggregate_rust_address(mem, aggregates, false, AggregateScalar::Float(width))?;
-            if pointer {
-                return None;
-            }
-            let ptr_expr: RustExpr = parse_expr(&ptr)?;
+const fn rs_fp_bits_ty(width: FpWidth) -> &'static str {
+    match width {
+        FpWidth::F32 => "u32",
+        FpWidth::F64 => "u64",
+    }
+}
+
+#[allow(clippy::option_if_let_else)]
+fn rs_fp_mem_read(mem: &MemRef, width: FpWidth, aggregates: &AggregatePlan) -> String {
+    if let Some(ptr_expr) = rs_fp_aggregate_slot(mem, width, false, aggregates) {
+        let read: RustExpr = rcall(
+            path_expr(&["core", "ptr", "read_unaligned"]),
+            vec![ptr_expr],
+        );
+        return render_rust_expr(&unsafe_block(read));
+    }
+    let bits_ty: &'static str = rs_fp_bits_ty(width);
+    let float_ty: &'static str = width.rust_type();
+    let ptr: String = rs_addr_expr(mem.base, mem.index, mem.disp);
+    match parse_expr(&ptr) {
+        Some(ptr_expr) => {
+            let as_usize: RustExpr = rcast(ptr_expr, rtype_path("usize"));
+            let as_const_ptr: RustExpr = rcast(as_usize, ptr_type(false, rtype_path(bits_ty)));
             let read: RustExpr = rcall(
                 path_expr(&["core", "ptr", "read_unaligned"]),
-                vec![ptr_expr],
+                vec![as_const_ptr],
             );
-            Some(render_rust_expr(&unsafe_block(read)))
+            render_rust_expr(&rcall(
+                path_expr(&[float_ty, "from_bits"]),
+                vec![unsafe_block(read)],
+            ))
         }
-        FpOperand::Const { bits, .. } => Some(rs_fp_const_literal(*bits, width)),
+        None => format!(
+            "{float_ty}::from_bits(unsafe {{ core::ptr::read_unaligned((({ptr}) as usize) as *const {bits_ty}) }})"
+        ),
+    }
+}
+
+fn rs_fp_load(operand: &FpOperand, width: FpWidth, aggregates: &AggregatePlan) -> String {
+    match operand {
+        FpOperand::Xmm(x) => rs_fp_load_xmm(*x, width),
+        FpOperand::Mem(mem) => rs_fp_mem_read(mem, width, aggregates),
+        FpOperand::Const { bits, .. } => rs_fp_const_literal(*bits, width),
     }
 }
 
@@ -17133,7 +17165,7 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Op
             model,
         } => {
             let a: String = rs_fp_load_xmm(*lhs, *width);
-            let b: String = rs_fp_load(rhs, *width, aggregates)?;
+            let b: String = rs_fp_load(rhs, *width, aggregates);
             let same: bool = matches!(rhs, FpOperand::Xmm(operand) if operand == lhs);
             Some(fp_compare_rust(kind, &a, &b, same, *model))
         }
