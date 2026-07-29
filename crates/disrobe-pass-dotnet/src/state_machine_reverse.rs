@@ -449,14 +449,9 @@ fn parse_param_field(s: &str) -> Option<(String, usize)> {
         .take_while(|&b: &u8| b == b'_' || b.is_ascii_alphanumeric())
         .count();
     let name: &str = &name_part[..name_len];
-    if name.is_empty() || matches!(name, "state" | "current" | "this" | "builder") {
-        return None;
-    }
+    let resolved: String = crate::state_machine::hoisted_slot_source_name(name)?;
     let consumed: usize = digits + underscores + name_len;
-    if name.bytes().all(|b: u8| b.is_ascii_digit()) {
-        return Some((format!("__hoisted{name}"), consumed));
-    }
-    Some((name.to_owned(), consumed))
+    Some((resolved, consumed))
 }
 
 fn replace_captured_this(line: &str) -> String {

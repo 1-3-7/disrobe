@@ -9,36 +9,106 @@ fn push_format(out: &mut String, args: std::fmt::Arguments<'_>) {
     }
 }
 
+pub const UNRECONSTRUCTED_STATE_MACHINE_MARKER: &str = "disrobe: state machine not reconstructed";
+
 pub fn reconstruct_iterator_stubs(
     methods: &mut [StructuredMethod],
     hoisted_types: &BTreeMap<String, BTreeMap<String, String>>,
 ) -> u32 {
     let move_next: BTreeMap<String, String> = collect_move_next_inner(methods);
-    if move_next.is_empty() {
-        return 0;
-    }
     let mut rebuilt: u32 = 0;
     for m in methods.iter_mut() {
         if declaring_type(&m.signature).is_some_and(is_state_machine_type) {
             continue;
         }
-        let Some(params): Option<Vec<String>> = method_params(&m.signature) else {
-            continue;
-        };
+        let params: Vec<String> = method_params(&m.signature).unwrap_or_default();
         if let Some(body) = rebuild_iterator_stub(&m.body, &move_next, &params, hoisted_types) {
             m.body = body;
             rebuilt = rebuilt.saturating_add(1);
             continue;
         }
-        if let Some((sig, body)) =
-            rebuild_async_stub(&m.signature, &m.body, &move_next, &params, hoisted_types)
-        {
+        if let Some((sig, body)) = rebuild_async_stub(
+            &m.signature,
+            &m.body,
+            &move_next,
+            &params,
+            hoisted_types,
+            method_has_this(&m.signature),
+        ) {
             m.signature = sig;
             m.body = body;
             rebuilt = rebuilt.saturating_add(1);
+            continue;
+        }
+        if let Some(body) = state_machine_refusal(&m.body) {
+            m.body = body;
         }
     }
     rebuilt
+}
+
+fn state_machine_refusal(body: &str) -> Option<String> {
+    if !carries_state_machine_plumbing(body) {
+        return None;
+    }
+    let inner: String = method_inner_block(body)?;
+    let mut out: String = String::with_capacity(body.len() * 2);
+    push_format(
+        &mut out,
+        format_args!(
+            "    // {UNRECONSTRUCTED_STATE_MACHINE_MARKER}; the compiler-emitted plumbing below is kept verbatim as the only static evidence\n"
+        ),
+    );
+    for line in inner.lines() {
+        let trimmed: &str = line.trim_end();
+        if trimmed.trim().is_empty() {
+            continue;
+        }
+        push_format(&mut out, format_args!("    // {}\n", trimmed.trim_start()));
+    }
+    push_format(
+        &mut out,
+        format_args!(
+            "    throw new System.NotSupportedException(\"{UNRECONSTRUCTED_STATE_MACHINE_MARKER}\");"
+        ),
+    );
+    Some(rewrap_method(body, &out))
+}
+
+fn carries_state_machine_plumbing(body: &str) -> bool {
+    body.lines()
+        .skip_while(|l: &&str| l.trim() != "{")
+        .any(|l: &str| {
+            let t: &str = l.trim();
+            t.contains(">d__") || t.contains("<>t__builder") || t.contains("<>1__state")
+        })
+}
+
+fn method_has_this(signature: &str) -> bool {
+    let header: Option<&str> = signature.lines().find(|l: &&str| {
+        let t: &str = l.trim_start();
+        !t.starts_with("//") && !t.starts_with('\'') && t.contains('(')
+    });
+    header.is_none_or(|h: &str| {
+        !h.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .any(|token: &str| token == "static")
+    })
+}
+
+const IRRECOVERABLE_RESIDUE: [&str; 6] = [
+    ">d__",
+    "<>",
+    "__m__Finally",
+    "__c__DisplayClass",
+    "__hoisted",
+    "_b__",
+];
+
+fn has_unresolved_residue(recovered: &str, has_this: bool) -> bool {
+    IRRECOVERABLE_RESIDUE
+        .iter()
+        .any(|needle: &&str| recovered.contains(needle))
+        || (!has_this && recovered.contains("this."))
 }
 
 fn rebuild_async_stub(
@@ -47,6 +117,7 @@ fn rebuild_async_stub(
     move_next: &BTreeMap<String, String>,
     params: &[String],
     hoisted_types: &BTreeMap<String, BTreeMap<String, String>>,
+    has_this: bool,
 ) -> Option<(String, String)> {
     let sm_type: String = async_builder_state_machine(body)?;
     let inner: &String = move_next.get(&sm_type)?;
@@ -54,12 +125,15 @@ fn rebuild_async_stub(
         return None;
     }
     let recovered: String = substitute_params(inner, params);
-    if recovered.contains("this.") || recovered.contains(">d__") {
+    if has_unresolved_residue(&recovered, has_this) {
         return None;
     }
-    let field_types: &BTreeMap<String, String> = hoisted_types.get(&sm_type)?;
+    let empty: BTreeMap<String, String> = BTreeMap::new();
+    let field_types: &BTreeMap<String, String> = hoisted_types.get(&sm_type).unwrap_or(&empty);
     let decls: String = local_declarations(&recovered, params, field_types);
-    let cleaned: String = qualify_task_statics(&clean_async_result_tail(&recovered)?);
+    let collapsed: String =
+        clean_async_result_tail(&recovered).unwrap_or_else(|| recovered.clone());
+    let cleaned: String = qualify_task_statics(&collapsed);
     let pruned: String = drop_unused_local_decls(&format!("{decls}{cleaned}"));
     let async_sig: String = add_async_modifier(signature)?;
     let async_body: String = add_async_modifier(body)?;
@@ -84,9 +158,17 @@ fn drop_unused_local_decls(body: &str) -> String {
     kept.join("\n")
 }
 
+const STATEMENT_LEADERS: [&str; 8] = [
+    "return", "throw", "yield", "await", "goto", "case", "else", "new",
+];
+
 fn local_decl_name(line: &str) -> Option<String> {
     let t: &str = line.trim();
     let inner: &str = t.strip_suffix(';')?;
+    let leader: &str = inner.split_whitespace().next()?;
+    if STATEMENT_LEADERS.contains(&leader) {
+        return None;
+    }
     let name: &str = inner.rsplit([' ', '\t']).next()?;
     let is_decl: bool = inner.split_whitespace().count() >= 2
         && name.starts_with("local")
@@ -179,18 +261,46 @@ fn add_async_modifier(signature: &str) -> Option<String> {
     Some(out.join("\n"))
 }
 
+const METHOD_MODIFIERS: [&str; 13] = [
+    "public",
+    "private",
+    "protected",
+    "internal",
+    "static",
+    "virtual",
+    "override",
+    "sealed",
+    "abstract",
+    "extern",
+    "unsafe",
+    "new",
+    "partial",
+];
+
 fn inject_async_keyword(header: &str) -> Option<String> {
-    for kw in ["static ", "private ", "public ", "protected ", "internal "] {
-        if let Some(pos) = header.rfind(kw) {
-            let insert_at: usize = pos + kw.len();
-            return Some(format!(
-                "{}async {}",
-                &header[..insert_at],
-                &header[insert_at..]
-            ));
+    let indent: usize = header.len() - header.trim_start().len();
+    let mut insert_at: usize = indent;
+    let mut saw_modifier: bool = false;
+    loop {
+        let rest: &str = &header[insert_at..];
+        let word_len: usize = rest
+            .bytes()
+            .take_while(|b: &u8| b.is_ascii_alphabetic())
+            .count();
+        if word_len == 0 || !METHOD_MODIFIERS.contains(&&rest[..word_len]) {
+            break;
         }
+        let spaces: usize = rest[word_len..]
+            .bytes()
+            .take_while(|b: &u8| *b == b' ')
+            .count();
+        if spaces == 0 {
+            break;
+        }
+        insert_at += word_len + spaces;
+        saw_modifier = true;
     }
-    None
+    saw_modifier.then(|| format!("{}async {}", &header[..insert_at], &header[insert_at..]))
 }
 
 fn collect_move_next_inner(methods: &[StructuredMethod]) -> BTreeMap<String, String> {
@@ -339,7 +449,7 @@ fn rebuild_iterator_stub(
         return None;
     }
     let recovered: String = substitute_params(inner, params);
-    if recovered.contains("this.") || recovered.contains(">d__") {
+    if has_unresolved_residue(&recovered, false) {
         return None;
     }
     let field_types: &BTreeMap<String, String> = hoisted_types.get(&sm_type)?;

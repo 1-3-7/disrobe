@@ -75,7 +75,7 @@ pub fn decompile_assembly_in(image: &[u8], lang: TargetLang) -> Result<Decompile
         let hoisted_types: std::collections::BTreeMap<
             String,
             std::collections::BTreeMap<String, String>,
-        > = hoisted_field_types(&model, lang);
+        > = hoisted_field_types(&model, &resolver, lang);
         let _ = crate::iterator_reverse::reconstruct_iterator_stubs(&mut methods, &hoisted_types);
         let _ = crate::switch_expr_reverse::reconstruct_switch_expressions(&mut methods);
         let record_struct_types: BTreeSet<String> = model
@@ -422,6 +422,7 @@ fn is_cached_delegate_field(token: u32, resolver: &Resolver) -> bool {
 
 fn hoisted_field_types(
     model: &crate::model::AssemblyModel,
+    resolver: &Resolver,
     lang: TargetLang,
 ) -> std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>> {
     let mut out: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>> =
@@ -434,8 +435,11 @@ fn hoisted_field_types(
         let mut fields: std::collections::BTreeMap<String, String> =
             std::collections::BTreeMap::new();
         for f in &ty.fields {
-            if let Some(name) = hoisted_source_name(&f.name) {
-                fields.insert(name, f.field_type.render_in(lang));
+            if let Some(name) = crate::state_machine::hoisted_field_source_name(&f.name) {
+                fields.insert(
+                    name,
+                    resolver.resolve_type_tokens(&f.field_type.render_in(lang)),
+                );
             }
         }
         if !fields.is_empty() {
@@ -443,19 +447,6 @@ fn hoisted_field_types(
         }
     }
     out
-}
-
-fn hoisted_source_name(field_name: &str) -> Option<String> {
-    let short: &str = field_name.rsplit("::").next().unwrap_or(field_name);
-    if let Some(rest) = short.strip_prefix('<') {
-        let close: usize = rest.find('>')?;
-        let inner: &str = &rest[..close];
-        return (!inner.is_empty()).then(|| inner.to_owned());
-    }
-    if short.starts_with("<>") {
-        return None;
-    }
-    Some(short.to_owned())
 }
 
 fn apply_inferred_param_names(signature: &str, names: &NameTable) -> String {

@@ -80,6 +80,43 @@ pub fn is_move_next(m: &MethodModel) -> bool {
     short_name(&m.name) == "MoveNext"
 }
 
+const RESERVED_HOISTED_SLOTS: [&str; 4] = ["state", "current", "this", "builder"];
+
+#[must_use]
+pub fn hoisted_slot_source_name(slot: &str) -> Option<String> {
+    if slot.is_empty() || RESERVED_HOISTED_SLOTS.contains(&slot) {
+        return None;
+    }
+    if slot.bytes().all(|b: u8| b.is_ascii_digit()) {
+        return Some(format!("__hoisted{slot}"));
+    }
+    Some(slot.to_owned())
+}
+
+#[must_use]
+pub fn hoisted_field_source_name(field_name: &str) -> Option<String> {
+    let short: &str = short_name(field_name);
+    let Some(rest): Option<&str> = short.strip_prefix('<') else {
+        return Some(short.to_owned());
+    };
+    let close: usize = rest.find('>')?;
+    let inner: &str = &rest[..close];
+    if !inner.is_empty() {
+        return Some(inner.to_owned());
+    }
+    let after: &str = &rest[close + 1..];
+    let digits: usize = after.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 {
+        return None;
+    }
+    let tail: &str = &after[digits..];
+    let underscores: usize = tail.bytes().take_while(|&b: &u8| b == b'_').count();
+    if underscores < 2 {
+        return None;
+    }
+    hoisted_slot_source_name(&tail[underscores..])
+}
+
 #[must_use]
 pub fn is_closure_display_type(ty: &TypeModel) -> bool {
     let short: &str = short_name(&ty.name);
