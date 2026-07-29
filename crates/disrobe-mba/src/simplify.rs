@@ -19,9 +19,6 @@ pub enum Verification {
     LinearLiftedFrom(Width),
     LinearColumnIdentity(Width),
     PolynomialIdentity(Width),
-    AlgebraicIdentity,
-    PolynomialNormalForm(Width),
-    MixedNormalForm(Width),
     #[cfg(feature = "smt-verify")]
     SmtProvenAtWidth(Width),
 }
@@ -104,7 +101,7 @@ pub fn simplify(expr: &Expr, width: Width) -> Simplification {
     };
     let (candidate, verification): (Expr, Verification) =
         simplify_dense(&dense.expr, width, dense.var_count);
-    if candidate == dense.expr {
+    if candidate == dense.expr || !verification.is_proven() {
         return unchanged_simplification(expr, width);
     }
     let Some(restored): Option<Expr> = dense.restore(&candidate) else {
@@ -183,16 +180,15 @@ pub(crate) fn simplify_l0_l5(expr: &Expr, width: Width, var_count: u32) -> (Expr
     let original_is_mba: bool = expr.is_linear_mba();
 
     let mut best: (Expr, Verification) = (expr.clone(), Verification::Unverified);
-    let mut consider = |candidate: Expr, fallback: Verification| {
+    let mut consider = |candidate: Expr| {
         if candidate.node_count() >= original_nodes {
             return;
         }
         if candidate.node_count() >= best.0.node_count() {
             return;
         }
-        let verified: Verification =
+        let proof: Verification =
             verify_equivalent(expr, &candidate, width, var_count, original_is_mba);
-        let proof: Verification = prefer_proof(verified, fallback);
         if proof.is_proven() {
             best = (candidate, proof);
         }
@@ -200,58 +196,55 @@ pub(crate) fn simplify_l0_l5(expr: &Expr, width: Width, var_count: u32) -> (Expr
 
     let folded: Expr = canonicalize(expr, width);
     if folded != *expr {
-        consider(folded, Verification::AlgebraicIdentity);
+        consider(folded);
     }
 
     let minimized: Option<Expr> = minimize_boolean_verified(expr, width);
     if let Some(minimized) = minimized {
-        consider(minimized, Verification::Unverified);
+        consider(minimized);
     }
 
     if var_count <= MAX_TEMPLATE_VARS {
         for candidate in template_candidates(var_count) {
-            consider(candidate, Verification::Unverified);
+            consider(candidate);
         }
     }
     if var_count <= MAX_LINEAR_VARS
         && original_is_mba
         && let Some(synth) = synthesize_linear(expr, width, var_count)
     {
-        consider(synth, Verification::Unverified);
+        consider(synth);
     }
     if (2..=MAX_BASIS_VARS).contains(&var_count)
         && original_is_mba
         && let Some(synth) = synthesize_linear_basis(expr, width, var_count)
     {
-        consider(synth, Verification::Unverified);
+        consider(synth);
     }
     if (1..=MAX_SOLVER_VARS).contains(&var_count)
         && let Some(solved) = solve_linear_mba(expr, width, var_count)
     {
-        consider(solved, Verification::Unverified);
+        consider(solved);
     }
     if var_count == 1 && is_bitwise(expr) {
-        consider(
-            synthesize_bitwise_unary(expr, width),
-            Verification::Unverified,
-        );
+        consider(synthesize_bitwise_unary(expr, width));
     }
     if (2..=MAX_BITWISE_SYNTH_VARS).contains(&var_count)
         && let Some(synth) = synthesize_bitwise_masked(expr, width, var_count)
     {
-        consider(synth, Verification::Unverified);
+        consider(synth);
     }
     if !original_is_mba
         && (1..=crate::poly_mba::MAX_POLY_MBA_VARS).contains(&var_count)
         && let Some(reduced) = crate::poly_mba::solve_polynomial_mba(expr, width, var_count)
     {
-        consider(reduced, Verification::PolynomialNormalForm(width));
+        consider(reduced);
     }
     if !original_is_mba
         && (1..=crate::mixed_mba::MAX_MIXED_MBA_VARS).contains(&var_count)
         && let Some(mixed) = crate::mixed_mba::simplify_mixed(expr, width)
     {
-        consider(mixed, Verification::MixedNormalForm(width));
+        consider(mixed);
     }
 
     if let Some(saturated) = crate::egraph::saturate_simplify(expr, width)
@@ -816,24 +809,6 @@ const fn predicate_constant(value: bool) -> Predicate {
     Predicate::eq(Expr::konst(0), Expr::konst(right))
 }
 
-const fn prefer_proof(verified: Verification, fallback: Verification) -> Verification {
-    match verified {
-        Verification::ExhaustiveAtWidth(_)
-        | Verification::LinearColumnIdentity(_)
-        | Verification::LinearLiftedFrom(_)
-        | Verification::PolynomialIdentity(_) => verified,
-        #[cfg(feature = "smt-verify")]
-        Verification::SmtProvenAtWidth(_) => verified,
-        other => {
-            if fallback.is_proven() {
-                fallback
-            } else {
-                other
-            }
-        }
-    }
-}
-
 fn verify_equivalent(
     original: &Expr,
     candidate: &Expr,
@@ -1111,6 +1086,67 @@ mod tests {
             Expr::xor(Expr::var(a), Expr::var(b)),
             Expr::mul(Expr::konst(2), Expr::and(Expr::var(a), Expr::var(b))),
         )
+    }
+
+    #[test]
+    fn the_gate_refuses_a_seeded_wrong_rewrite_at_every_width() {
+        let original: Expr = xor_and_basis(0, 1);
+        let correct: Expr = Expr::add(Expr::var(0), Expr::var(1));
+        let corrupted: Expr = Expr::xor(Expr::var(0), Expr::var(1));
+        let original_is_mba: bool = original.is_linear_mba();
+        assert!(corrupted.node_count() < original.node_count());
+        for width in [Width::W8, Width::W16, Width::W32, Width::W64] {
+            assert_eq!(
+                verify_equivalent(&original, &corrupted, width, 2, original_is_mba),
+                Verification::Unverified,
+                "{width:?}: a smaller but non-equivalent rewrite was accepted"
+            );
+            assert!(
+                verify_equivalent(&original, &correct, width, 2, original_is_mba).is_proven(),
+                "{width:?}: the same gate cannot establish the correct rewrite, so the refusal above proves nothing"
+            );
+            let result: Simplification = simplify(&original, width);
+            assert_ne!(
+                result.simplified, corrupted,
+                "{width:?}: the pipeline emitted the non-equivalent rewrite"
+            );
+            assert!(
+                result.verification.is_proven(),
+                "{width:?}: a changed result carries no independently established proof"
+            );
+        }
+        for shape in fallback_prone_shapes() {
+            for width in [Width::W32, Width::W64] {
+                let result: Simplification = simplify(&shape, width);
+                if !result.changed() {
+                    continue;
+                }
+                let rederived: Verification =
+                    verify_equivalent(&shape, &result.simplified, width, 2, shape.is_linear_mba());
+                assert!(
+                    rederived.is_proven(),
+                    "{width:?}: `{shape}` was rewritten to `{}` and tagged {:?}, but no independent checker reproduces that proof",
+                    result.simplified,
+                    result.verification
+                );
+            }
+        }
+    }
+
+    fn fallback_prone_shapes() -> Vec<Expr> {
+        vec![
+            Expr::ite(
+                Expr::and(Expr::var(0), Expr::konst(1)),
+                Expr::add(Expr::var(1), Expr::konst(0)),
+                Expr::var(1),
+            ),
+            Expr::add(Expr::neg(Expr::not(Expr::var(0))), Expr::konst(0)),
+            Expr::xor(
+                Expr::xor(Expr::var(0), Expr::konst(0xFF)),
+                Expr::konst(0xFF),
+            ),
+            Expr::or(Expr::var(0), Expr::and(Expr::var(0), Expr::var(1))),
+        ]
     }
 
     #[test]
