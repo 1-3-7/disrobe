@@ -355,12 +355,12 @@ fn decode_elf_extents(packed: &[u8], header: &UpxPackHeader) -> Option<(Vec<u8>,
     let mut image: Vec<u8> = Vec::with_capacity(target.min(MAX_DECOMPRESSED));
     let mut cursor: usize = start;
     let mut blocks: usize = 0;
+    let mut scanned: usize = 0;
     while image.len() < target {
         let remaining: usize = target - image.len();
         let mut block: Option<ElfBlock> = elf_block_at(packed, cursor, remaining, header.method);
         if block.is_none() {
             let mut probe: usize = (cursor + 4) & !3usize;
-            let mut scanned: usize = 0;
             while probe + B_INFO_LEN <= packed.len() && scanned < MAX_RESYNC_OFFSETS {
                 if let Some(candidate) = elf_block_at(packed, probe, remaining, header.method) {
                     block = Some(candidate);
