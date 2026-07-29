@@ -387,11 +387,21 @@ fn walk_block(
 ) -> BlockState {
     let mut state: BlockState = incoming;
     for instr in &block.instructions {
-        let defuse: DefUse = def_use(instr);
+        let defuse: DefUse = taint_def_use(instr);
         if let Some(callee) = ctx.resolved.callee_internal(instr) {
             instantiate_callee(ctx, arena, mode, instr, callee, &mut state, out);
         } else if let Some(symbol) = ctx.resolved.external_symbol(instr) {
-            dispatch_external(ctx, arena, mode, instr, &symbol, &defuse, &mut state, out);
+            let external_defuse: DefUse = external_taint_def_use(ctx, instr, &symbol, defuse);
+            dispatch_external(
+                ctx,
+                arena,
+                mode,
+                instr,
+                &symbol,
+                &external_defuse,
+                &mut state,
+                out,
+            );
         } else {
             propagate(arena, instr, &defuse, &mut state);
         }
@@ -405,6 +415,121 @@ fn walk_block(
         }
     }
     state
+}
+
+fn taint_def_use(instr: &NirInstr) -> DefUse {
+    native_register_move_def_use(instr).unwrap_or_else(|| def_use(instr))
+}
+
+fn external_taint_def_use(ctx: &Ctx<'_>, instr: &NirInstr, symbol: &str, defuse: DefUse) -> DefUse {
+    let configured: bool = ctx.config.source_kind(symbol).is_some()
+        || ctx.config.sink_policy(symbol).is_some()
+        || ctx.config.sanitizer_feature(symbol).is_some();
+    if instr.source.lang != SourceLang::NativeX86
+        || !matches!(instr.op, NirOp::Call { target: Some(_) })
+        || !configured
+    {
+        return defuse;
+    }
+    DefUse {
+        defs: defuse.defs,
+        uses: ARG_REGISTERS
+            .iter()
+            .map(|register: &&str| ValueId::register(register))
+            .collect(),
+    }
+}
+
+fn native_register_move_def_use(instr: &NirInstr) -> Option<DefUse> {
+    if instr.source.lang != SourceLang::NativeX86
+        || !matches!(instr.op, NirOp::Nop)
+        || !instr.mnemonic.eq_ignore_ascii_case("mov")
+        || instr.operands.len() != 2
+    {
+        return None;
+    }
+    let dst: ValueId = native_register_value(&instr.operands[0])?;
+    let src: Option<ValueId> = native_register_value(&instr.operands[1]);
+    Some(DefUse {
+        defs: vec![dst],
+        uses: src.into_iter().collect(),
+    })
+}
+
+fn native_register_value(operand: &str) -> Option<ValueId> {
+    let register: String = operand.trim().to_ascii_lowercase();
+    matches!(
+        register.as_str(),
+        "rax"
+            | "eax"
+            | "ax"
+            | "al"
+            | "ah"
+            | "rbx"
+            | "ebx"
+            | "bx"
+            | "bl"
+            | "bh"
+            | "rcx"
+            | "ecx"
+            | "cx"
+            | "cl"
+            | "ch"
+            | "rdx"
+            | "edx"
+            | "dx"
+            | "dl"
+            | "dh"
+            | "rsi"
+            | "esi"
+            | "si"
+            | "sil"
+            | "rdi"
+            | "edi"
+            | "di"
+            | "dil"
+            | "rbp"
+            | "ebp"
+            | "bp"
+            | "bpl"
+            | "rsp"
+            | "esp"
+            | "sp"
+            | "spl"
+            | "r8"
+            | "r8d"
+            | "r8w"
+            | "r8b"
+            | "r9"
+            | "r9d"
+            | "r9w"
+            | "r9b"
+            | "r10"
+            | "r10d"
+            | "r10w"
+            | "r10b"
+            | "r11"
+            | "r11d"
+            | "r11w"
+            | "r11b"
+            | "r12"
+            | "r12d"
+            | "r12w"
+            | "r12b"
+            | "r13"
+            | "r13d"
+            | "r13w"
+            | "r13b"
+            | "r14"
+            | "r14d"
+            | "r14w"
+            | "r14b"
+            | "r15"
+            | "r15d"
+            | "r15w"
+            | "r15b"
+    )
+    .then(|| ValueId::register(&register))
 }
 
 #[allow(clippy::too_many_arguments)]

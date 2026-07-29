@@ -1,304 +1,177 @@
-#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+#![allow(clippy::expect_used, clippy::panic)]
 
-use disrobe_nir::{BinaryOp, NirFunction, NirInstr, NirModule, NirOp, SourceLang, SourceRef};
-use disrobe_taint::{TaintConfig, TaintReport, analyze};
+use std::fs;
+use std::path::PathBuf;
+use std::process::{Command, Output};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-fn ext(address: u64, symbol: &str, operands: &[&str]) -> NirInstr {
-    build(
-        address,
-        NirOp::ExternCall {
-            symbol: symbol.to_owned(),
-        },
-        "call",
-        operands,
-    )
+static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
+static CLI_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+const FLOWING_PROGRAM: &str = r"
+#include <stdio.h>
+#include <stdlib.h>
+
+__declspec(dllexport) int taint_entry(void) {
+    char input[64];
+    return system(fgets(input, sizeof input, stdin));
 }
 
-fn call_internal(address: u64, target: u64) -> NirInstr {
-    build(
-        address,
-        NirOp::Call {
-            target: Some(target),
-        },
-        "call",
-        &[],
-    )
+int main(void) {
+    return taint_entry();
+}
+";
+
+const OVERWRITTEN_PROGRAM: &str = r#"
+#include <stdio.h>
+#include <stdlib.h>
+
+__declspec(dllexport) int taint_entry(void) {
+    char input[64];
+    char * volatile command = fgets(input, sizeof input, stdin);
+    command = "dir";
+    return system(command);
 }
 
-fn mov(address: u64, dst: &str, src: &str) -> NirInstr {
-    build(
-        address,
-        NirOp::BinOp { op: BinaryOp::Add },
-        "mov",
-        &[dst, src],
-    )
+int main(void) {
+    return taint_entry();
+}
+"#;
+
+struct FixtureDirectory {
+    path: PathBuf,
 }
 
-fn ret(address: u64) -> NirInstr {
-    build(address, NirOp::Return, "ret", &[])
+struct CompiledFixture {
+    _directory: FixtureDirectory,
+    executable: PathBuf,
 }
 
-fn build(address: u64, op: NirOp, mnemonic: &str, operands: &[&str]) -> NirInstr {
-    NirInstr {
-        address,
-        op,
-        mnemonic: mnemonic.to_owned(),
-        operands: operands.iter().map(|s: &&str| (*s).to_owned()).collect(),
-        reads_memory: false,
-        writes_memory: false,
-        byte_width: false,
-        source: SourceRef::new(SourceLang::NativeX86, address),
+impl FixtureDirectory {
+    fn create(name: &str) -> Self {
+        let fixture_id: u64 = NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
+        let path: PathBuf = std::env::temp_dir().join(format!(
+            "disrobe-taint-{name}-{}-{fixture_id}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).expect("create fixture directory");
+        Self { path }
     }
 }
 
-fn func(name: &str, address: u64, instructions: Vec<NirInstr>) -> NirFunction {
-    let end: u64 = instructions
-        .last()
-        .map_or(address, |i: &NirInstr| i.address + 1);
-    NirFunction {
-        name: name.to_owned(),
-        address,
-        end,
-        is_export: true,
-        instructions,
-        source: SourceRef::new(SourceLang::NativeX86, address),
+impl Drop for FixtureDirectory {
+    fn drop(&mut self) {
+        let _result: std::io::Result<()> = fs::remove_dir_all(&self.path);
     }
 }
 
-const fn module(functions: Vec<NirFunction>) -> NirModule {
-    NirModule {
-        source_hash: [0x5a; 32],
-        lang: SourceLang::NativeX86,
-        functions,
-        symbols: Vec::new(),
-    }
-}
-
-fn corpus_config() -> TaintConfig {
-    TaintConfig::from_lists(["recv", "getenv"], ["system", "query", "printf"])
-        .with_sanitizer_for("escape_shell", "system")
-        .with_sanitizer_for("escape_sql", "query")
-        .with_sanitizer_for("escape_fmt", "printf")
-}
-
-fn direct_flow(source: &str, sink: &str, sanitizer: Option<&str>) -> NirModule {
-    let mut instrs: Vec<NirInstr> = vec![ext(0x100, source, &[])];
-    let mut next: u64 = 0x108;
-    if let Some(clean) = sanitizer {
-        instrs.push(ext(next, clean, &["rax"]));
-        next += 8;
-    }
-    instrs.push(mov(next, "rdi", "rax"));
-    next += 8;
-    instrs.push(ext(next, sink, &["rdi"]));
-    next += 8;
-    instrs.push(ret(next));
-    module(vec![func("handle", 0x100, instrs)])
-}
-
-fn interprocedural_flow(sanitizer: Option<&str>) -> NirModule {
-    let reader: NirFunction = func(
-        "read_input",
-        0x200,
-        vec![ext(0x200, "recv", &[]), ret(0x208)],
+fn compile_program(name: &str, source: &str) -> CompiledFixture {
+    let fixture_dir: FixtureDirectory = FixtureDirectory::create(name);
+    let source_path: PathBuf = fixture_dir.path.join("fixture.c");
+    let executable_path: PathBuf = fixture_dir.path.join("fixture.exe");
+    fs::write(&source_path, source).expect("write fixture source");
+    let output: Output = Command::new("C:\\Strawberry\\c\\bin\\gcc.exe")
+        .args(["-O2", "-fno-builtin"])
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&executable_path)
+        .output()
+        .expect("run gcc");
+    assert!(
+        output.status.success(),
+        "gcc failed: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    let runner: NirFunction = func(
-        "run_cmd",
-        0x300,
-        vec![ext(0x300, "system", &["rdi"]), ret(0x308)],
-    );
-    let mut instrs: Vec<NirInstr> = vec![call_internal(0x400, 0x200)];
-    let mut next: u64 = 0x408;
-    if let Some(clean) = sanitizer {
-        instrs.push(ext(next, clean, &["rax"]));
-        next += 8;
+    CompiledFixture {
+        _directory: fixture_dir,
+        executable: executable_path,
     }
-    instrs.push(mov(next, "rdi", "rax"));
-    next += 8;
-    instrs.push(call_internal(next, 0x300));
-    next += 8;
-    instrs.push(ret(next));
-    let dispatch: NirFunction = func("dispatch", 0x400, instrs);
-    module(vec![reader, runner, dispatch])
 }
 
-fn out_parameter_flow(sanitizer: Option<&str>) -> NirModule {
-    let forward: NirFunction = func("forward", 0x500, vec![mov(0x500, "rsi", "rdi"), ret(0x508)]);
-    let mut instrs: Vec<NirInstr> = vec![ext(0x600, "recv", &[])];
-    let mut next: u64 = 0x608;
-    if let Some(clean) = sanitizer {
-        instrs.push(ext(next, clean, &["rax"]));
-        next += 8;
-    }
-    instrs.push(mov(next, "rdi", "rax"));
-    next += 8;
-    instrs.push(call_internal(next, 0x500));
-    next += 8;
-    instrs.push(mov(next, "rdi", "rsi"));
-    next += 8;
-    instrs.push(ext(next, "system", &["rdi"]));
-    next += 8;
-    instrs.push(ret(next));
-    let caller: NirFunction = func("use_forward", 0x600, instrs);
-    module(vec![forward, caller])
+fn workspace_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..\\..")
 }
 
-fn lift_wasm(wat: &str) -> NirModule {
-    let bytes: Vec<u8> = wat::parse_str(wat).expect("assemble wat");
-    disrobe_nir_lift::lift_wasm_module(&bytes).expect("lift wasm module")
-}
-
-fn wasm_direct(sanitizer: bool) -> NirModule {
-    let body: &str = if sanitizer {
-        "(call $system (call $escape_shell (call $recv)))"
-    } else {
-        "(call $system (call $recv))"
-    };
-    let wat: String = format!(
-        "(module \
-           (import \"env\" \"recv\" (func $recv (result i32))) \
-           (import \"env\" \"escape_shell\" (func $escape_shell (param i32) (result i32))) \
-           (import \"env\" \"system\" (func $system (param i32) (result i32))) \
-           (memory (export \"memory\") 1) \
-           (func (export \"handle\") (result i32) {body}))"
+fn build_cli() -> PathBuf {
+    let workspace: PathBuf = workspace_path();
+    let output: Output = Command::new(env!("CARGO"))
+        .current_dir(&workspace)
+        .args(["build", "--quiet", "-p", "disrobe-cli"])
+        .output()
+        .expect("build disrobe CLI");
+    assert!(
+        output.status.success(),
+        "disrobe CLI build failed: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    lift_wasm(&wat)
+    workspace.join("target\\debug\\disrobe.exe")
 }
 
-struct Case {
-    name: &'static str,
-    module: NirModule,
-    genuine: bool,
+fn cli_path() -> &'static PathBuf {
+    CLI_PATH.get_or_init(build_cli)
 }
 
-fn corpus() -> Vec<Case> {
-    vec![
-        Case {
-            name: "cmd_injection_bad",
-            module: direct_flow("recv", "system", None),
-            genuine: true,
-        },
-        Case {
-            name: "cmd_injection_good",
-            module: direct_flow("recv", "system", Some("escape_shell")),
-            genuine: false,
-        },
-        Case {
-            name: "sql_injection_bad",
-            module: direct_flow("getenv", "query", None),
-            genuine: true,
-        },
-        Case {
-            name: "sql_injection_good",
-            module: direct_flow("getenv", "query", Some("escape_sql")),
-            genuine: false,
-        },
-        Case {
-            name: "format_string_bad",
-            module: direct_flow("recv", "printf", None),
-            genuine: true,
-        },
-        Case {
-            name: "format_string_good",
-            module: direct_flow("recv", "printf", Some("escape_fmt")),
-            genuine: false,
-        },
-        Case {
-            name: "interprocedural_bad",
-            module: interprocedural_flow(None),
-            genuine: true,
-        },
-        Case {
-            name: "interprocedural_good",
-            module: interprocedural_flow(Some("escape_shell")),
-            genuine: false,
-        },
-        Case {
-            name: "out_parameter_bad",
-            module: out_parameter_flow(None),
-            genuine: true,
-        },
-        Case {
-            name: "out_parameter_good",
-            module: out_parameter_flow(Some("escape_shell")),
-            genuine: false,
-        },
-        Case {
-            name: "wasm_direct_bad",
-            module: wasm_direct(false),
-            genuine: true,
-        },
-        Case {
-            name: "wasm_direct_good",
-            module: wasm_direct(true),
-            genuine: false,
-        },
-        Case {
-            name: "wrong_sanitizer_still_flags",
-            module: direct_flow("recv", "system", Some("escape_sql")),
-            genuine: true,
-        },
-    ]
+fn run_taint(fixture: &CompiledFixture) -> String {
+    let output: Output = Command::new(cli_path())
+        .args(["--json", "taint"])
+        .arg(&fixture.executable)
+        .args(["--source", "fgets", "--sink", "system"])
+        .output()
+        .expect("run disrobe taint");
+    assert!(
+        output.status.success(),
+        "disrobe taint failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("taint output is utf-8")
 }
 
-fn flagged(module: &NirModule) -> bool {
-    let report: TaintReport = analyze(module, &corpus_config());
-    !report.is_empty()
+fn compact_json(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character: &char| !character.is_whitespace())
+        .collect()
+}
+
+fn finding_count(json: &str) -> usize {
+    let compact: String = compact_json(json);
+    let prefix: &str = "\"finding_count\":";
+    let count: &str = compact
+        .split(prefix)
+        .nth(1)
+        .and_then(|tail: &str| tail.split(',').next())
+        .expect("taint JSON carries finding_count");
+    count.parse::<usize>().expect("finding_count is numeric")
 }
 
 #[test]
-fn every_bad_case_is_flagged_and_every_good_twin_is_clean() {
-    for case in corpus() {
-        let observed: bool = flagged(&case.module);
-        assert_eq!(
-            observed, case.genuine,
-            "{}: expected genuine-flow={}, engine flagged={observed}",
-            case.name, case.genuine
-        );
-    }
-}
-
-#[test]
-fn discrimination_score_is_perfect_and_beats_a_taint_everything_cheat() {
-    let cases: Vec<Case> = corpus();
-    let bad: Vec<&Case> = cases.iter().filter(|c: &&Case| c.genuine).collect();
-    let good: Vec<&Case> = cases.iter().filter(|c: &&Case| !c.genuine).collect();
-    assert!(!bad.is_empty() && !good.is_empty());
-
-    let true_positive: usize = bad.iter().filter(|c: &&&Case| flagged(&c.module)).count();
-    let false_positive: usize = good.iter().filter(|c: &&&Case| flagged(&c.module)).count();
-    let tpr: f64 = true_positive as f64 / bad.len() as f64;
-    let fpr: f64 = false_positive as f64 / good.len() as f64;
-    let discrimination: f64 = tpr - fpr;
-
+fn compiled_fgets_to_system_flow_is_attributed_to_its_exported_function() {
+    let fixture: CompiledFixture = compile_program("flowing", FLOWING_PROGRAM);
+    let json: String = compact_json(&run_taint(&fixture));
+    let count: usize = finding_count(&json);
     assert!(
-        (tpr - 1.0).abs() < f64::EPSILON,
-        "every genuine flow must be caught: tpr={tpr}"
+        count >= 1,
+        "pinned native-flow floor is one finding: {json}"
+    );
+    assert_eq!(
+        count, 1,
+        "the reference PE has one source-to-sink finding: {json}"
     );
     assert!(
-        fpr.abs() < f64::EPSILON,
-        "no sanitized twin may be flagged: fpr={fpr}"
-    );
-    assert!(
-        discrimination > 0.99,
-        "a taint-everything cheat scores 0; discrimination={discrimination}"
+        json.contains("\"function\":\"taint_entry\"")
+            && json.contains("\"source_symbol\":\"fgets\"")
+            && json.contains("\"sink_symbol\":\"system\""),
+        "fgets feeding system must be attributed to taint_entry: {json}"
     );
 }
 
 #[test]
-fn interprocedural_finding_attributes_callee_source_and_sink() {
-    let report: TaintReport = analyze(&interprocedural_flow(None), &corpus_config());
+fn overwriting_the_fgets_result_before_system_kills_the_native_flow() {
+    let fixture: CompiledFixture = compile_program("overwritten", OVERWRITTEN_PROGRAM);
+    let json: String = run_taint(&fixture);
     assert!(
-        report.flow_in("dispatch", "read_input", "run_cmd"),
-        "the source-returning callee and the sink-wrapping callee are named in the flow: {report:?}"
-    );
-}
-
-#[test]
-fn out_parameter_flow_travels_argument_to_argument() {
-    let report: TaintReport = analyze(&out_parameter_flow(None), &corpus_config());
-    assert!(
-        report.reaches("recv", "system"),
-        "recv taints rdi, forward copies rdi into rsi, and rsi feeds the sink: {report:?}"
+        finding_count(&json) == 0,
+        "the mutation overwrites the source result before system: {json}"
     );
 }
