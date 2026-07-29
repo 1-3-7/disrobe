@@ -1,0 +1,44 @@
+dispatch_sends_*.macho provenance
+
+Source: dispatch_sends.m. It declares its own NSString / NSArray / NSObject
+interfaces so it needs no Apple SDK, and it covers the cases that make receiver
+resolution hard: a receiver register clobbered by an earlier send, a chained
+send whose receiver is the previous send's result, a class send following an
+instance send, one class reference used from two branches, [[NSObject alloc]
+init], and an @implementation method dispatching through super.
+
+Compiler and linker: clang 22.1.8 with ld64.lld 22.1.8 (LLVM
+ca7933e47d3a3451d81e72ac174dcb5aa28b59d1). Each Mach-O records
+LC_BUILD_VERSION platform macos, sdk 11.0, tool lld.
+
+Commands (run in this directory):
+  clang -target arm64-apple-macos11  -O0 -dynamiclib -fuse-ld=lld -nostdlib \
+    -Wl,-undefined,dynamic_lookup dispatch_sends.m -o dispatch_sends_arm64.macho
+  clang -target x86_64-apple-macos11 -O0 -dynamiclib -fuse-ld=lld -nostdlib \
+    -Wl,-undefined,dynamic_lookup dispatch_sends.m -o dispatch_sends_x86_64.macho
+  clang -target arm64-apple-macos11  -O2 -dynamiclib -fuse-ld=lld -nostdlib \
+    -Wl,-undefined,dynamic_lookup dispatch_sends.m -o dispatch_sends_arm64_opt.macho
+  clang -target x86_64-apple-macos11 -O2 -dynamiclib -fuse-ld=lld -nostdlib \
+    -Wl,-undefined,dynamic_lookup dispatch_sends.m -o dispatch_sends_x86_64_opt.macho
+
+The two committed pairs are the same source at two optimization levels because
+the codegen differs in ways that matter to the resolver:
+
+  -O0 loads every selref and classref with adrp + ldr, spills arguments to the
+  stack, and calls _objc_msgSend through a __got slot.
+
+  -O2 tail-calls _objc_msgSend, keeps the dispatch pointer in a callee-saved
+  register across a call, moves values between registers before the call, and
+  (on arm64) gets its adrp + ldr pairs relaxed by the linker into PC-relative
+  ldr-literal loads. _branch_shared_classref loads its class reference once in
+  the entry block and uses it from two successor blocks.
+
+The predecessor pair of this fixture set carried no provenance file. Their
+LC_BUILD_VERSION records tool lld 22.1.6 and their UUIDs start 4C4C44 ("LLD"),
+so they were real clang plus lld output too, one patch release older.
+
+objc_dispatch_sends.rs derives its expectations by parsing dispatch_sends.m: the
+declared @interface names give the set of statically determinable receivers,
+every other receiver expression is expected to resolve to no class, and the
+[[C alloc] init] pair is expected to fold into a single objc_alloc_init call.
+The same derived table is applied to all four binaries.

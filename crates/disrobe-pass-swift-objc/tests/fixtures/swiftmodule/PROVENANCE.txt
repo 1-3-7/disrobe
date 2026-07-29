@@ -1,6 +1,7 @@
 GreetingKit.swiftmodule / GreetingKit.swiftinterface provenance
 
-Source: Greeting.swift (benign struct/enum/class with typed fields and methods).
+Source: Greeting.swift (benign struct/enum/class with typed fields and methods,
+plus lowercaseBox/PayloadTag, which deliberately break Swift naming convention).
 
 Compiler: Swift version 6.3.2 (swift-6.3.2-RELEASE), target x86_64-unknown-windows-msvc.
 
@@ -11,12 +12,50 @@ Command (run in this directory):
     -enable-library-evolution -swift-version 6 \
     -module-name GreetingKit Greeting.swift
 
-GreetingKit.swiftmodule is a real Swift serialized module: 4-byte signature
-0xE2 0x9C 0xA8 0x0E followed by a standard LLVM bitstream. The declared
-identifier names live in the IDENTIFIER_DATA block (block id 12) as a single
-NUL-separated blob. swiftmodule.rs recovers those names; the test grades the
-recovery against the identifiers declared in Greeting.swift (the independent
-oracle) and cross-checks the textual GreetingKit.swiftinterface.
+swiftmodule_dewall.rs re-runs that exact command when swiftc is on PATH and
+requires the freshly built module to yield the same identifier table as the
+committed fixture, so the two files cannot drift apart silently.
 
-Scope: this recovers the declared symbol / type / member NAMES, not Swift
+GreetingKit.swiftmodule is a real Swift serialized module: 4-byte signature
+0xE2 0x9C 0xA8 0x0E followed by a standard LLVM bitstream. swiftmodule.rs reads
+the IDENTIFIER_DATA block (block id 12), a single NUL-separated blob.
+
+What that blob actually is
+--------------------------
+It is the module's identifier string table, NOT the set of declarations. For
+this fixture it holds 36 entries: the 17 names the .swiftinterface declares plus
+19 entries that are not declarations of this module. swiftmodule_dewall.rs
+compares the two sets in both directions and names every one of the 19, in five
+categories:
+
+  class initializer mangled symbols (2)
+    $s11GreetingKit14CourierServiceC12channelLabelACSS_tcfc and the ...cfC
+    allocating form. Both demangle to CourierService.init(channelLabel:).
+
+  argument labels and parameter names (5)
+    a, b from ==(a:b:); into, hasher from hash(into hasher:); greeting from
+    enqueueGreeting(_ greeting:).
+
+  implicit setter parameter (1)
+    value. Compiling a module whose only content is a class with one settable
+    stored property emits exactly ['$s...cfc', '$s...cfC', 'CourierService',
+    'pendingMessages', 'value', 'Swift', 'Int', 'Copyable', 'Escapable'], which
+    is where this entry comes from.
+
+  synthesized Hashable witness (2)
+    _rawHashValue and its seed: parameter. Compiling a module whose only content
+    is `public enum DeliveryChannel { case inbox }` emits both; compiling a
+    module with no enum emits neither.
+
+  names of decls in imported modules (7) and implicit protocols (2)
+    Swift, String, Int, Bool, Hasher, Equatable, Hashable are referenced, not
+    declared. Copyable and Escapable are the implicit Swift 6 layout protocols
+    every nominal type conforms to; they appear for a module as small as one
+    struct and are never printed in an interface.
+
+type_like_identifiers / member_like_identifiers split on the first character's
+case alone. lowercaseBox (a struct) and PayloadTag (a stored property) are in
+the fixture so that limitation is asserted rather than hidden.
+
+Scope: this recovers declared symbol / type / member NAMES, not Swift
 function-body source.

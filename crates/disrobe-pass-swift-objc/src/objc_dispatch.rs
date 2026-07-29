@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use disrobe_bytes::read_uleb128_at;
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,9 @@ const MAX_STUB_ENTRIES: usize = 1 << 16;
 const MAX_CALL_SITES: usize = 1 << 14;
 const BACKWARD_WINDOW: usize = 24;
 const MAX_CSTR: usize = 4096;
+const MAX_MOVE_HOPS: usize = 8;
+const MAX_CFG_DEPTH: usize = 16;
+const MAX_CFG_STEPS: usize = 1 << 13;
 
 const SECT_OBJC_SELREFS: &str = "__objc_selrefs";
 const SECT_OBJC_CLASSREFS: &str = "__objc_classrefs";
@@ -391,14 +394,27 @@ enum CallForm {
     Indirect(u8),
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Terminator {
+    #[default]
+    FallThrough,
+    Branch {
+        target: Option<u64>,
+        conditional: bool,
+    },
+    Return,
+}
+
 #[derive(Debug, Clone, Default)]
 struct Step {
     addr: u64,
     boundary: bool,
+    terminator: Terminator,
     call: Option<CallForm>,
     adrp: Option<u64>,
     ldr: Option<(u8, u8, u64)>,
-    rip_load: Option<(u8, u64)>,
+    pc_relative_slot: Option<u64>,
+    mov_from: Option<u8>,
     writes: WriteSet,
     recognized: bool,
 }
@@ -409,6 +425,7 @@ enum WriteSet {
     None,
     One(u8),
     Two(u8, u8),
+    Three(u8, u8, u8),
 }
 
 impl WriteSet {
@@ -417,6 +434,7 @@ impl WriteSet {
             Self::None => false,
             Self::One(a) => a == reg,
             Self::Two(a, b) => a == reg || b == reg,
+            Self::Three(a, b, c) => a == reg || b == reg || c == reg,
         }
     }
 }
@@ -467,6 +485,16 @@ pub fn annotate_instructions(
         .iter()
         .map(|insn: &DisasmInstruction| decode_step(insn, arch))
         .collect();
+    let leaves_function: Vec<bool> = steps
+        .iter()
+        .enumerate()
+        .map(|(index, step): (usize, &Step)| {
+            step.call.is_some_and(|call: CallForm| {
+                call_symbol(&steps, index, call, arch, maps).is_some()
+            })
+        })
+        .collect();
+    let cfg: Cfg = Cfg::build(&steps, &leaves_function);
     let mut out: Vec<ObjcMessageSend> = Vec::new();
     for (index, step) in steps.iter().enumerate() {
         if out.len() >= MAX_CALL_SITES {
@@ -475,13 +503,13 @@ pub fn annotate_instructions(
         let Some(call): Option<CallForm> = step.call else {
             continue;
         };
-        let Some(symbol): Option<&String> = call_symbol(&steps, index, call, maps) else {
+        let Some(symbol): Option<&String> = call_symbol(&steps, index, call, arch, maps) else {
             continue;
         };
         let Some(kind): Option<Dispatch> = dispatch_kind(symbol) else {
             continue;
         };
-        if let Some(send) = resolve_send(&steps, index, arch, maps, kind) {
+        if let Some(send) = resolve_send(&steps, index, arch, maps, &cfg, kind) {
             out.push(ObjcMessageSend {
                 call_site: step.addr,
                 send,
@@ -495,6 +523,7 @@ fn call_symbol<'a>(
     steps: &[Step],
     index: usize,
     call: CallForm,
+    arch: DispatchArch,
     maps: &'a DispatchMaps,
 ) -> Option<&'a String> {
     match call {
@@ -503,7 +532,7 @@ fn call_symbol<'a>(
             .get(&target)
             .or_else(|| maps.imports_by_addr.get(&target)),
         CallForm::Indirect(reg) => {
-            let slot: u64 = trace_pointer_slot(steps, index, reg)?;
+            let slot: u64 = trace_pointer_slot(steps, index, reg, arch)?;
             maps.imports_by_addr.get(&slot)
         }
     }
@@ -514,6 +543,7 @@ fn resolve_send(
     index: usize,
     arch: DispatchArch,
     maps: &DispatchMaps,
+    cfg: &Cfg,
     kind: Dispatch,
 ) -> Option<ObjcSend> {
     let (sel_reg, recv_reg): (u8, u8) = match arch {
@@ -522,11 +552,11 @@ fn resolve_send(
     };
     match kind {
         Dispatch::MsgSend { is_super } => {
-            let selector: String = trace_selector(steps, index, sel_reg, maps)?;
+            let selector: String = trace_selector(steps, cfg, index, sel_reg, arch, maps)?;
             let receiver_class: Option<String> = if is_super {
                 None
             } else {
-                trace_receiver_class(steps, index, recv_reg, maps)
+                trace_receiver_class(steps, cfg, index, recv_reg, arch, maps)
             };
             let recv_token: String = receiver_token(receiver_class.as_deref(), is_super, arch);
             let rendered: String = render_message(&selector, &recv_token, arch);
@@ -537,7 +567,8 @@ fn resolve_send(
             })
         }
         Dispatch::Alloc => {
-            let receiver_class: Option<String> = trace_receiver_class(steps, index, recv_reg, maps);
+            let receiver_class: Option<String> =
+                trace_receiver_class(steps, cfg, index, recv_reg, arch, maps);
             let recv_token: String = receiver_token(receiver_class.as_deref(), false, arch);
             Some(ObjcSend {
                 selector: "alloc".to_owned(),
@@ -546,7 +577,8 @@ fn resolve_send(
             })
         }
         Dispatch::AllocInit => {
-            let receiver_class: Option<String> = trace_receiver_class(steps, index, recv_reg, maps);
+            let receiver_class: Option<String> =
+                trace_receiver_class(steps, cfg, index, recv_reg, arch, maps);
             let recv_token: String = receiver_token(receiver_class.as_deref(), false, arch);
             Some(ObjcSend {
                 selector: "init".to_owned(),
@@ -601,46 +633,77 @@ fn render_message(selector: &str, recv: &str, arch: DispatchArch) -> String {
 
 fn trace_selector(
     steps: &[Step],
+    cfg: &Cfg,
     call_index: usize,
     reg: u8,
+    arch: DispatchArch,
     maps: &DispatchMaps,
 ) -> Option<String> {
-    let slot: u64 = trace_pointer_slot(steps, call_index, reg)?;
+    let slot: u64 = resolve_pointer_slot(steps, cfg, call_index, reg, arch)?;
     maps.selref_by_va.get(&slot).cloned()
 }
 
 fn trace_receiver_class(
     steps: &[Step],
+    cfg: &Cfg,
     call_index: usize,
     reg: u8,
+    arch: DispatchArch,
     maps: &DispatchMaps,
 ) -> Option<String> {
-    let slot: u64 = trace_pointer_slot(steps, call_index, reg)?;
+    let slot: u64 = resolve_pointer_slot(steps, cfg, call_index, reg, arch)?;
     maps.classref_by_va.get(&slot).cloned()
 }
 
-fn trace_pointer_slot(steps: &[Step], from: usize, reg: u8) -> Option<u64> {
-    let def_index: usize = find_def(steps, from, reg)?;
-    let (_, base, off): (u8, u8, u64) = steps[def_index].ldr?;
-    if let Some(page) = steps[def_index].rip_load_slot() {
-        return Some(page.wrapping_add(off));
-    }
-    let base_index: usize = find_def(steps, def_index, base)?;
-    let page: u64 = steps[base_index].adrp?;
-    Some(page.wrapping_add(off))
+fn resolve_pointer_slot(
+    steps: &[Step],
+    cfg: &Cfg,
+    from: usize,
+    reg: u8,
+    arch: DispatchArch,
+) -> Option<u64> {
+    trace_pointer_slot(steps, from, reg, arch)
+        .or_else(|| cfg.reaching_pointer_slot(steps, from, reg, arch))
 }
 
-impl Step {
-    fn rip_load_slot(&self) -> Option<u64> {
-        self.rip_load.map(|(_, slot): (u8, u64)| slot)
+fn trace_pointer_slot(steps: &[Step], from: usize, reg: u8, arch: DispatchArch) -> Option<u64> {
+    let mut register: u8 = reg;
+    let mut cursor: usize = from;
+    for _ in 0..MAX_MOVE_HOPS {
+        let def_index: usize = find_def(steps, cursor, register, arch)?;
+        let step: &Step = &steps[def_index];
+        if let Some(source) = step.mov_from {
+            register = source;
+            cursor = def_index;
+            continue;
+        }
+        if let Some(slot) = step.pc_relative_slot {
+            return Some(slot);
+        }
+        let (_, base, off): (u8, u8, u64) = step.ldr?;
+        let base_index: usize = find_def(steps, def_index, base, arch)?;
+        return Some(steps[base_index].adrp?.wrapping_add(off));
+    }
+    None
+}
+
+const fn is_callee_saved(arch: DispatchArch, reg: u8) -> bool {
+    match arch {
+        DispatchArch::Arm64 => matches!(reg, 19..=28),
+        DispatchArch::X86_64 => matches!(reg, 3..=5 | 12..=15),
     }
 }
 
-fn find_def(steps: &[Step], from: usize, reg: u8) -> Option<usize> {
+const fn survives_call(step: &Step, preserved: bool) -> bool {
+    preserved && step.call.is_some() && matches!(step.terminator, Terminator::FallThrough)
+}
+
+fn find_def(steps: &[Step], from: usize, reg: u8, arch: DispatchArch) -> Option<usize> {
+    let preserved: bool = is_callee_saved(arch, reg);
     let lower: usize = from.saturating_sub(BACKWARD_WINDOW);
     for index in (lower..from).rev() {
         let step: &Step = &steps[index];
-        if step.boundary {
+        if step.boundary && !survives_call(step, preserved) {
             return None;
         }
         if step.writes.contains(reg) {
@@ -651,6 +714,201 @@ fn find_def(steps: &[Step], from: usize, reg: u8) -> Option<usize> {
         }
     }
     None
+}
+
+#[derive(Debug, Clone, Default)]
+struct Cfg {
+    block_of: Vec<usize>,
+    block_start: Vec<usize>,
+    block_end: Vec<usize>,
+    preds: Vec<Vec<usize>>,
+    analyzable: bool,
+}
+
+impl Cfg {
+    fn build(steps: &[Step], leaves_function: &[bool]) -> Self {
+        if steps.is_empty() || steps.len() > MAX_CFG_STEPS {
+            return Self::default();
+        }
+        let index_of_addr: BTreeMap<u64, usize> = steps
+            .iter()
+            .enumerate()
+            .map(|(index, step): (usize, &Step)| (step.addr, index))
+            .collect();
+
+        let mut analyzable: bool = true;
+        let mut leaders: BTreeSet<usize> = BTreeSet::from([0usize]);
+        for (index, step) in steps.iter().enumerate() {
+            match step.terminator {
+                Terminator::FallThrough => {}
+                Terminator::Return => {
+                    leaders.insert(index + 1);
+                }
+                Terminator::Branch { target, .. } => {
+                    leaders.insert(index + 1);
+                    match target.and_then(|addr: u64| index_of_addr.get(&addr).copied()) {
+                        Some(inside) => {
+                            leaders.insert(inside);
+                        }
+                        None => {
+                            analyzable &= leaves_function.get(index).copied().unwrap_or(false);
+                        }
+                    }
+                }
+            }
+        }
+        leaders.retain(|leader: &usize| *leader < steps.len());
+
+        let block_start: Vec<usize> = leaders.into_iter().collect();
+        let block_end: Vec<usize> = block_start
+            .iter()
+            .skip(1)
+            .copied()
+            .chain(std::iter::once(steps.len()))
+            .collect();
+        let mut block_of: Vec<usize> = vec![0usize; steps.len()];
+        for (block, (start, end)) in block_start.iter().zip(block_end.iter()).enumerate() {
+            for slot in block_of.iter_mut().take(*end).skip(*start) {
+                *slot = block;
+            }
+        }
+
+        let mut preds: Vec<Vec<usize>> = vec![Vec::new(); block_start.len()];
+        for (block, end) in block_end.iter().enumerate() {
+            let last: usize = end.saturating_sub(1);
+            let step: &Step = &steps[last];
+            let mut link = |to: usize| {
+                if to < preds.len() && !preds[to].contains(&block) {
+                    preds[to].push(block);
+                }
+            };
+            match step.terminator {
+                Terminator::FallThrough => link(block + 1),
+                Terminator::Return => {}
+                Terminator::Branch {
+                    target,
+                    conditional,
+                } => {
+                    if let Some(inside) = target.and_then(|a: u64| index_of_addr.get(&a).copied()) {
+                        link(block_of[inside]);
+                    }
+                    if conditional {
+                        link(block + 1);
+                    }
+                }
+            }
+        }
+
+        Self {
+            block_of,
+            block_start,
+            block_end,
+            preds,
+            analyzable,
+        }
+    }
+
+    fn reaching_pointer_slot(
+        &self,
+        steps: &[Step],
+        from: usize,
+        reg: u8,
+        arch: DispatchArch,
+    ) -> Option<u64> {
+        if !self.analyzable {
+            return None;
+        }
+        let block: usize = self.block_of.get(from).copied()?;
+        self.reaching_slot(steps, block, from, reg, arch, 0)
+    }
+
+    fn reaching_slot(
+        &self,
+        steps: &[Step],
+        block: usize,
+        until: usize,
+        reg: u8,
+        arch: DispatchArch,
+        depth: usize,
+    ) -> Option<u64> {
+        if depth >= MAX_CFG_DEPTH {
+            return None;
+        }
+        let (def_block, def_index): (usize, usize) =
+            self.reaching_def(steps, block, until, reg, arch)?;
+        let step: &Step = &steps[def_index];
+        if let Some(source) = step.mov_from {
+            return self.reaching_slot(steps, def_block, def_index, source, arch, depth + 1);
+        }
+        if let Some(slot) = step.pc_relative_slot {
+            return Some(slot);
+        }
+        let (_, base, off): (u8, u8, u64) = step.ldr?;
+        let (_, page_index): (usize, usize) =
+            self.reaching_def(steps, def_block, def_index, base, arch)?;
+        Some(steps[page_index].adrp?.wrapping_add(off))
+    }
+
+    fn reaching_def(
+        &self,
+        steps: &[Step],
+        block: usize,
+        until: usize,
+        reg: u8,
+        arch: DispatchArch,
+    ) -> Option<(usize, usize)> {
+        let mut visited: Vec<bool> = vec![false; self.block_start.len()];
+        self.reaching_def_from(steps, block, until, reg, arch, &mut visited, 0)
+    }
+
+    fn reaching_def_from(
+        &self,
+        steps: &[Step],
+        block: usize,
+        until: usize,
+        reg: u8,
+        arch: DispatchArch,
+        visited: &mut Vec<bool>,
+        depth: usize,
+    ) -> Option<(usize, usize)> {
+        let preserved: bool = is_callee_saved(arch, reg);
+        if depth >= MAX_CFG_DEPTH || *visited.get(block)? {
+            return None;
+        }
+        visited[block] = true;
+        let start: usize = self.block_start.get(block).copied()?;
+        for index in (start..until.min(self.block_end[block])).rev() {
+            let step: &Step = &steps[index];
+            if !step.recognized || (step.call.is_some() && !preserved) {
+                return None;
+            }
+            if step.writes.contains(reg) {
+                return Some((block, index));
+            }
+        }
+        let preds: &Vec<usize> = self.preds.get(block)?;
+        if preds.is_empty() {
+            return None;
+        }
+        let mut answer: Option<(usize, usize)> = None;
+        for pred in preds {
+            let found: (usize, usize) = self.reaching_def_from(
+                steps,
+                *pred,
+                self.block_end[*pred],
+                reg,
+                arch,
+                visited,
+                depth + 1,
+            )?;
+            match answer {
+                None => answer = Some(found),
+                Some(existing) if existing == found => {}
+                Some(_) => return None,
+            }
+        }
+        answer
+    }
 }
 
 fn decode_step(insn: &DisasmInstruction, arch: DispatchArch) -> Step {
@@ -670,6 +928,10 @@ fn decode_arm64(addr: u64, bytes: &[u8]) -> Step {
         return step;
     }
     let word: u32 = read_u32_le(bytes, 0);
+    if word & 0xFFFF_F01F == 0xD503_201F {
+        step.recognized = true;
+        return step;
+    }
     if let Some((rd, page)) = decode_adrp(addr, word) {
         step.adrp = Some(page);
         step.writes = WriteSet::One(rd);
@@ -682,6 +944,18 @@ fn decode_arm64(addr: u64, bytes: &[u8]) -> Step {
         step.recognized = true;
         return step;
     }
+    if let Some((rt, slot)) = decode_ldr_literal64(addr, word) {
+        step.pc_relative_slot = Some(slot);
+        step.writes = WriteSet::One(rt);
+        step.recognized = true;
+        return step;
+    }
+    if let Some((rd, rm)) = decode_arm64_move(word) {
+        step.mov_from = Some(rm);
+        step.writes = WriteSet::One(rd);
+        step.recognized = true;
+        return step;
+    }
     if word & 0xFC00_0000 == 0x9400_0000 {
         step.call = Some(CallForm::Direct(branch_target(addr, word)));
         step.boundary = true;
@@ -689,7 +963,12 @@ fn decode_arm64(addr: u64, bytes: &[u8]) -> Step {
         return step;
     }
     if word & 0xFC00_0000 == 0x1400_0000 {
-        step.call = Some(CallForm::Direct(branch_target(addr, word)));
+        let target: u64 = branch_target(addr, word);
+        step.call = Some(CallForm::Direct(target));
+        step.terminator = Terminator::Branch {
+            target: Some(target),
+            conditional: false,
+        };
         step.boundary = true;
         step.recognized = true;
         return step;
@@ -702,15 +981,25 @@ fn decode_arm64(addr: u64, bytes: &[u8]) -> Step {
     }
     if word & 0xFFFF_FC1F == 0xD61F_0000 {
         step.call = Some(CallForm::Indirect(((word >> 5) & 0x1F) as u8));
+        step.terminator = Terminator::Branch {
+            target: None,
+            conditional: false,
+        };
         step.boundary = true;
         step.recognized = true;
         return step;
     }
-    if word & 0xFFFF_FC1F == 0xD65F_0000
-        || word & 0xFF00_0010 == 0x5400_0000
-        || word & 0x7E00_0000 == 0x3400_0000
-        || word & 0x7E00_0000 == 0x3600_0000
-    {
+    if word & 0xFFFF_FC1F == 0xD65F_0000 {
+        step.terminator = Terminator::Return;
+        step.boundary = true;
+        step.recognized = true;
+        return step;
+    }
+    if let Some(target) = decode_conditional_branch_target(addr, word) {
+        step.terminator = Terminator::Branch {
+            target: Some(target),
+            conditional: true,
+        };
         step.boundary = true;
         step.recognized = true;
         return step;
@@ -719,7 +1008,43 @@ fn decode_arm64(addr: u64, bytes: &[u8]) -> Step {
     step
 }
 
+const fn decode_ldr_literal64(addr: u64, word: u32) -> Option<(u8, u64)> {
+    if word & 0xFF00_0000 != 0x5800_0000 {
+        return None;
+    }
+    let rt: u8 = (word & 0x1F) as u8;
+    let imm19: u64 = ((word >> 5) & 0x7_FFFF) as u64;
+    let signed: i64 = ((imm19 << 45) as i64) >> 45;
+    Some((rt, addr.wrapping_add((signed << 2) as u64)))
+}
+
+const fn decode_arm64_move(word: u32) -> Option<(u8, u8)> {
+    if word & 0xFFE0_FFE0 != 0xAA00_03E0 {
+        return None;
+    }
+    let rd: u8 = (word & 0x1F) as u8;
+    let rm: u8 = ((word >> 16) & 0x1F) as u8;
+    if rm == 31 { None } else { Some((rd, rm)) }
+}
+
+const fn decode_conditional_branch_target(addr: u64, word: u32) -> Option<u64> {
+    let (imm, width): (u64, u32) =
+        if word & 0xFF00_0010 == 0x5400_0000 || word & 0x7E00_0000 == 0x3400_0000 {
+            (((word >> 5) & 0x7_FFFF) as u64, 19u32)
+        } else if word & 0x7E00_0000 == 0x3600_0000 {
+            (((word >> 5) & 0x3FFF) as u64, 14u32)
+        } else {
+            return None;
+        };
+    let shift: u32 = 64 - width;
+    let signed: i64 = ((imm << shift) as i64) >> shift;
+    Some(addr.wrapping_add((signed << 2) as u64))
+}
+
 const fn classify_arm64_writer(word: u32, step: &mut Step) {
+    if classify_arm64_pair(word, step) || classify_arm64_single(word, step) {
+        return;
+    }
     let rd: u8 = (word & 0x1F) as u8;
     let hi7: u32 = (word >> 24) & 0x7F;
     if word & 0x1F80_0000 == 0x1280_0000 {
@@ -737,26 +1062,55 @@ const fn classify_arm64_writer(word: u32, step: &mut Step) {
         step.recognized = true;
         return;
     }
-    if word & 0xFFC0_0000 == 0xB940_0000 || word & 0xFFE0_0C00 == 0xF840_0000 {
+    if word & 0xFFC0_0000 == 0xB940_0000 {
         step.writes = WriteSet::One(rd);
         step.recognized = true;
         return;
     }
-    if word & 0x7FC0_0000 == 0x2940_0000 {
-        let rt: u8 = (word & 0x1F) as u8;
-        let rt2: u8 = ((word >> 10) & 0x1F) as u8;
-        step.writes = WriteSet::Two(rt, rt2);
-        step.recognized = true;
-        return;
-    }
-    if word & 0xFFC0_0000 == 0xF900_0000
-        || word & 0xFFE0_0C00 == 0xF800_0000
-        || word & 0x7FC0_0000 == 0x2900_0000
-        || word & 0xFFC0_0000 == 0xB900_0000
-    {
+    if word & 0xFFC0_0000 == 0xF900_0000 || word & 0xFFC0_0000 == 0xB900_0000 {
         step.writes = WriteSet::None;
         step.recognized = true;
     }
+}
+
+const fn classify_arm64_pair(word: u32, step: &mut Step) -> bool {
+    let rt: u8 = (word & 0x1F) as u8;
+    let rt2: u8 = ((word >> 10) & 0x1F) as u8;
+    let rn: u8 = ((word >> 5) & 0x1F) as u8;
+    match word & 0x7FC0_0000 {
+        0x2940_0000 => step.writes = WriteSet::Two(rt, rt2),
+        0x28C0_0000 | 0x29C0_0000 => step.writes = WriteSet::Three(rt, rt2, rn),
+        0x2900_0000 => step.writes = WriteSet::None,
+        0x2880_0000 | 0x2980_0000 => step.writes = WriteSet::One(rn),
+        _ => return false,
+    }
+    step.recognized = true;
+    true
+}
+
+const fn classify_arm64_single(word: u32, step: &mut Step) -> bool {
+    let rt: u8 = (word & 0x1F) as u8;
+    let rn: u8 = ((word >> 5) & 0x1F) as u8;
+    let writes_back: bool = matches!((word >> 10) & 0x3, 1 | 3);
+    if word & 0xFFE0_0000 == 0xF840_0000 {
+        step.writes = if writes_back {
+            WriteSet::Two(rt, rn)
+        } else {
+            WriteSet::One(rt)
+        };
+        step.recognized = true;
+        return true;
+    }
+    if word & 0xFFE0_0000 == 0xF800_0000 {
+        step.writes = if writes_back {
+            WriteSet::One(rn)
+        } else {
+            WriteSet::None
+        };
+        step.recognized = true;
+        return true;
+    }
+    false
 }
 
 fn decode_adrp(addr: u64, word: u32) -> Option<(u8, u64)> {
@@ -827,20 +1181,52 @@ fn decode_x86(addr: u64, bytes: &[u8]) -> Step {
             step.boundary = true;
             step.recognized = true;
         }
-        0xE9 | 0xEB | 0xC3 | 0xC2 | 0xF4 | 0x70..=0x7F => {
+        0xE9 | 0xEB => {
+            let delta: u64 = if opcode == 0xEB {
+                read_disp8(bytes, i + 1)
+            } else {
+                read_disp(bytes, i + 1)
+            };
+            let target: u64 = end.wrapping_add(delta);
+            step.call = Some(CallForm::Direct(target));
+            step.terminator = Terminator::Branch {
+                target: Some(target),
+                conditional: false,
+            };
+            step.boundary = true;
+            step.recognized = true;
+        }
+        0xC3 | 0xC2 | 0xF4 => {
+            step.terminator = Terminator::Return;
+            step.boundary = true;
+            step.recognized = true;
+        }
+        0x70..=0x7F => {
+            step.terminator = Terminator::Branch {
+                target: Some(end.wrapping_add(read_disp8(bytes, i + 1))),
+                conditional: true,
+            };
             step.boundary = true;
             step.recognized = true;
         }
         0x0F => {
             if matches!(bytes.get(i + 1), Some(0x80..=0x8F)) {
+                step.terminator = Terminator::Branch {
+                    target: Some(end.wrapping_add(read_disp(bytes, i + 2))),
+                    conditional: true,
+                };
                 step.boundary = true;
+                step.recognized = true;
+            } else if matches!(bytes.get(i + 1), Some(0x1F)) {
                 step.recognized = true;
             }
         }
         0xFF => decode_x86_ff(bytes, i, end, rex_b, &mut step),
-        0x8B | 0x63 => decode_x86_load(bytes, i, end, rex_r, rex_b, &mut step),
-        0x89 | 0x01 | 0x09 | 0x11 | 0x19 | 0x21 | 0x29 | 0x31 => {
-            decode_x86_store(bytes, i, rex_b, &mut step);
+        0x8B => decode_x86_load(bytes, i, end, rex_r, rex_b, true, &mut step),
+        0x63 => decode_x86_load(bytes, i, end, rex_r, rex_b, false, &mut step),
+        0x89 => decode_x86_store(bytes, i, rex_r, rex_b, true, &mut step),
+        0x01 | 0x09 | 0x11 | 0x19 | 0x21 | 0x29 | 0x31 => {
+            decode_x86_store(bytes, i, rex_r, rex_b, false, &mut step);
         }
         0x8D | 0x03 | 0x0B | 0x13 | 0x1B | 0x23 | 0x2B | 0x33 => {
             decode_x86_reg_dest(bytes, i, rex_r, &mut step);
@@ -871,14 +1257,16 @@ fn decode_x86_ff(bytes: &[u8], i: usize, end: u64, rex_b: u8, step: &mut Step) {
     let rm: u8 = modrm & 0x7;
     match reg {
         2 | 3 => {
-            if mode == 0 && rm == 5 {
-                let slot: u64 = end.wrapping_add(read_disp(bytes, i + 2));
-                step.call = Some(CallForm::Direct(slot));
-            }
+            step.call = indirect_call_form(bytes, i, end, mode, rm, rex_b);
             step.boundary = true;
             step.recognized = true;
         }
         4 | 5 => {
+            step.call = indirect_call_form(bytes, i, end, mode, rm, rex_b);
+            step.terminator = Terminator::Branch {
+                target: None,
+                conditional: false,
+            };
             step.boundary = true;
             step.recognized = true;
         }
@@ -894,7 +1282,30 @@ fn decode_x86_ff(bytes: &[u8], i: usize, end: u64, rex_b: u8, step: &mut Step) {
     }
 }
 
-fn decode_x86_load(bytes: &[u8], i: usize, end: u64, rex_r: u8, rex_b: u8, step: &mut Step) {
+fn indirect_call_form(
+    bytes: &[u8],
+    i: usize,
+    end: u64,
+    mode: u8,
+    rm: u8,
+    rex_b: u8,
+) -> Option<CallForm> {
+    match (mode, rm) {
+        (0, 5) => Some(CallForm::Direct(end.wrapping_add(read_disp(bytes, i + 2)))),
+        (3, _) => Some(CallForm::Indirect(rm | (rex_b << 3))),
+        _ => None,
+    }
+}
+
+fn decode_x86_load(
+    bytes: &[u8],
+    i: usize,
+    end: u64,
+    rex_r: u8,
+    rex_b: u8,
+    is_move: bool,
+    step: &mut Step,
+) {
     let Some(&modrm): Option<&u8> = bytes.get(i + 1) else {
         return;
     };
@@ -904,15 +1315,13 @@ fn decode_x86_load(bytes: &[u8], i: usize, end: u64, rex_r: u8, rex_b: u8, step:
     step.writes = WriteSet::One(reg);
     step.recognized = true;
     if mode == 0 && rm == 5 {
-        let slot: u64 = end.wrapping_add(read_disp(bytes, i + 2));
-        step.ldr = Some((reg, 0xFF, 0));
-        step.rip_load = Some((reg, slot));
-    } else if mode == 3 {
-        let _ = rex_b;
+        step.pc_relative_slot = Some(end.wrapping_add(read_disp(bytes, i + 2)));
+    } else if mode == 3 && is_move {
+        step.mov_from = Some(rm | (rex_b << 3));
     }
 }
 
-fn decode_x86_store(bytes: &[u8], i: usize, rex_b: u8, step: &mut Step) {
+fn decode_x86_store(bytes: &[u8], i: usize, rex_r: u8, rex_b: u8, is_move: bool, step: &mut Step) {
     let Some(&modrm): Option<&u8> = bytes.get(i + 1) else {
         return;
     };
@@ -920,6 +1329,9 @@ fn decode_x86_store(bytes: &[u8], i: usize, rex_b: u8, step: &mut Step) {
     let rm: u8 = modrm & 0x7;
     if mode == 3 {
         step.writes = WriteSet::One(rm | (rex_b << 3));
+        if is_move {
+            step.mov_from = Some(((modrm >> 3) & 0x7) | (rex_r << 3));
+        }
     }
     step.recognized = true;
 }
@@ -948,6 +1360,10 @@ fn decode_x86_group_imm(bytes: &[u8], i: usize, rex_b: u8, step: &mut Step) {
 
 fn read_disp(bytes: &[u8], off: usize) -> u64 {
     read_i32_le(bytes, off) as i64 as u64
+}
+
+fn read_disp8(bytes: &[u8], off: usize) -> u64 {
+    bytes.get(off).map_or(0, |b: &u8| *b as i8 as i64 as u64)
 }
 
 fn read_u32_le(bytes: &[u8], off: usize) -> u32 {
