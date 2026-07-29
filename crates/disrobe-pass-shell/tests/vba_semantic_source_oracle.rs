@@ -5,7 +5,6 @@
     clippy::missing_panics_doc
 )]
 
-use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::PathBuf;
 
@@ -39,39 +38,223 @@ fn vbaproject_from_docm(relative: &str) -> Vec<u8> {
     panic!("no vbaProject.bin inside {relative}");
 }
 
-const STOPWORDS: &[&str] = &[
-    "as", "byval", "byref", "dim", "public", "private", "end", "then", "sub", "function",
-    "property", "get", "let", "set", "to", "step", "in",
-];
-
-fn tokens(line: &str) -> BTreeSet<String> {
-    let lower: String = line.to_ascii_lowercase();
-    let mut out: BTreeSet<String> = BTreeSet::new();
-    let mut cur: String = String::new();
-    for ch in lower.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '_' {
-            cur.push(ch);
-        } else if !cur.is_empty() {
-            push_token(&mut out, std::mem::take(&mut cur));
+fn strip_trailing_comment(line: &str) -> &str {
+    let mut in_string: bool = false;
+    for (index, byte) in line.as_bytes().iter().enumerate() {
+        match byte {
+            b'"' => in_string = !in_string,
+            b'\'' if !in_string => return &line[..index],
+            _ => {}
         }
     }
-    if !cur.is_empty() {
-        push_token(&mut out, cur);
+    line
+}
+
+fn normalize(line: &str) -> String {
+    let source: &str = strip_trailing_comment(line);
+    let mut out: String = String::with_capacity(source.len());
+    let mut in_string: bool = false;
+    let mut pending_space: bool = false;
+    for ch in source.chars() {
+        if in_string {
+            out.push(ch);
+            if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if ch == '"' {
+            if pending_space && !out.is_empty() {
+                out.push(' ');
+            }
+            pending_space = false;
+            out.push('"');
+            in_string = true;
+            continue;
+        }
+        if ch.is_whitespace() {
+            pending_space = true;
+            continue;
+        }
+        if pending_space && !out.is_empty() {
+            out.push(' ');
+        }
+        pending_space = false;
+        out.push(ch.to_ascii_lowercase());
     }
     out
 }
 
-fn push_token(set: &mut BTreeSet<String>, tok: String) {
-    if tok.len() > 1 && !STOPWORDS.contains(&tok.as_str()) {
-        set.insert(tok);
+fn ends_with_continuation(line: &str) -> bool {
+    let trimmed: &str = line.trim_end();
+    let Some(head) = trimmed.strip_suffix('_') else {
+        return false;
+    };
+    head.is_empty() || head.ends_with(char::is_whitespace)
+}
+
+fn join_continuations(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut pending: Option<String> = None;
+    for raw in text.lines() {
+        let head: &str = if ends_with_continuation(raw) {
+            raw.trim_end()
+                .strip_suffix('_')
+                .expect("continuation suffix checked")
+                .trim_end()
+        } else {
+            raw
+        };
+        let merged: String = pending.take().map_or_else(
+            || head.to_owned(),
+            |mut acc: String| {
+                acc.push(' ');
+                acc.push_str(head.trim_start());
+                acc
+            },
+        );
+        if ends_with_continuation(raw) {
+            pending = Some(merged);
+        } else {
+            out.push(merged);
+        }
+    }
+    if let Some(acc) = pending {
+        out.push(acc);
+    }
+    out
+}
+
+fn code_lines(text: &str) -> Vec<String> {
+    join_continuations(text)
+        .into_iter()
+        .map(|l: String| normalize(&l))
+        .filter(|l: &String| !l.is_empty() && !l.starts_with("attribute "))
+        .collect()
+}
+
+fn align_in_order(authored: &[String], recovered: &[String]) -> Vec<Option<usize>> {
+    let rows: usize = authored.len();
+    let cols: usize = recovered.len();
+    let stride: usize = cols + 1;
+    let mut table: Vec<u32> = vec![0_u32; (rows + 1) * stride];
+    for a in (0..rows).rev() {
+        for r in (0..cols).rev() {
+            let cell: u32 = if authored[a] == recovered[r] {
+                table[(a + 1) * stride + r + 1] + 1
+            } else {
+                table[(a + 1) * stride + r].max(table[a * stride + r + 1])
+            };
+            table[a * stride + r] = cell;
+        }
+    }
+    let mut mapping: Vec<Option<usize>> = vec![None; rows];
+    let mut a: usize = 0;
+    let mut r: usize = 0;
+    while a < rows && r < cols {
+        if authored[a] == recovered[r] {
+            mapping[a] = Some(r);
+            a += 1;
+            r += 1;
+        } else if table[(a + 1) * stride + r] >= table[a * stride + r + 1] {
+            a += 1;
+        } else {
+            r += 1;
+        }
+    }
+    mapping
+}
+
+struct Grade {
+    matched: usize,
+    total: usize,
+    line_match_pct: f64,
+    first_mismatch: Option<Mismatch>,
+}
+
+struct Mismatch {
+    authored_ordinal: usize,
+    authored: String,
+    recovered: String,
+}
+
+fn grade(recovered: &str, authored: &str) -> Grade {
+    let auth_lines: Vec<String> = code_lines(authored);
+    let rec_lines: Vec<String> = code_lines(recovered);
+    let mapping: Vec<Option<usize>> = align_in_order(&auth_lines, &rec_lines);
+
+    let matched: usize = mapping
+        .iter()
+        .filter(|m: &&Option<usize>| m.is_some())
+        .count();
+    let mut first_mismatch: Option<Mismatch> = None;
+    let mut cursor: usize = 0;
+    for (index, slot) in mapping.iter().enumerate() {
+        match slot {
+            Some(r) => cursor = r + 1,
+            None => {
+                if first_mismatch.is_none() {
+                    first_mismatch = Some(Mismatch {
+                        authored_ordinal: index + 1,
+                        authored: auth_lines[index].clone(),
+                        recovered: rec_lines
+                            .get(cursor)
+                            .cloned()
+                            .unwrap_or_else(|| "<past end of recovered source>".to_owned()),
+                    });
+                }
+            }
+        }
+    }
+
+    Grade {
+        matched,
+        total: auth_lines.len(),
+        line_match_pct: 100.0 * matched as f64 / auth_lines.len().max(1) as f64,
+        first_mismatch,
     }
 }
 
-fn sig_lines(text: &str) -> Vec<String> {
-    text.lines()
-        .map(|l: &str| l.trim().to_owned())
-        .filter(|l: &String| !l.is_empty() && !l.starts_with('\'') && !l.starts_with("Attribute "))
-        .collect()
+fn assert_line_match(label: &str, grade: &Grade, floor_pct: f64, expected_total: usize) {
+    let detail: String = grade.first_mismatch.as_ref().map_or_else(
+        || "every authored line matched in order".to_owned(),
+        |m: &Mismatch| {
+            format!(
+                "first unmatched authored line {}\n  authored:  {}\n  recovered: {}",
+                m.authored_ordinal, m.authored, m.recovered
+            )
+        },
+    );
+    println!(
+        "{label}: in-order line match {:.2}% ({}/{})\n{label}: {detail}",
+        grade.line_match_pct, grade.matched, grade.total
+    );
+    assert_eq!(
+        grade.total, expected_total,
+        "{label} authored code-line count changed; the match rate denominator is pinned so a \
+         shrinking fixture cannot raise the rate"
+    );
+    assert!(
+        grade.line_match_pct >= floor_pct,
+        "{label} in-order line match {:.2}% below floor {floor_pct:.2}% ({}/{})\n{detail}",
+        grade.line_match_pct,
+        grade.matched,
+        grade.total
+    );
+}
+
+fn assert_every_line_lifted(label: &str, lift: &SemanticLift) {
+    let markers: Vec<&str> = lift
+        .pseudocode
+        .lines()
+        .filter(|l: &&str| l.trim_start().starts_with("' [pcode] "))
+        .collect();
+    assert!(
+        markers.is_empty(),
+        "{label} emitted {} raw p-code passthrough lines; first: {}",
+        markers.len(),
+        markers.first().unwrap_or(&"")
+    );
 }
 
 fn lift_module(docm: &str, module: &str) -> SemanticLift {
@@ -83,49 +266,6 @@ fn lift_module(docm: &str, module: &str) -> SemanticLift {
         .find(|m: &&RealModuleDisasm| m.name == module)
         .unwrap_or_else(|| panic!("module {module} not found"));
     semantic_lift(target)
-}
-
-struct Grade {
-    line_recovery_pct: f64,
-    token_recall_pct: f64,
-    line_hits: usize,
-    line_total: usize,
-}
-
-fn grade(recovered: &str, authored: &str) -> Grade {
-    let rec_lines: Vec<String> = sig_lines(recovered);
-    let auth_lines: Vec<String> = sig_lines(authored);
-    let rec_token_lines: Vec<BTreeSet<String>> =
-        rec_lines.iter().map(|l: &String| tokens(l)).collect();
-
-    let mut line_hits: usize = 0;
-    for al in &auth_lines {
-        let at: BTreeSet<String> = tokens(al);
-        if at.is_empty() {
-            line_hits += 1;
-            continue;
-        }
-        let best: f64 = rec_token_lines
-            .iter()
-            .filter(|rt: &&BTreeSet<String>| !rt.is_empty())
-            .map(|rt: &BTreeSet<String>| at.intersection(rt).count() as f64 / at.len() as f64)
-            .fold(0.0_f64, f64::max);
-        if best >= 0.7 {
-            line_hits += 1;
-        }
-    }
-
-    let auth_tokens: BTreeSet<String> =
-        auth_lines.iter().flat_map(|l: &String| tokens(l)).collect();
-    let rec_tokens: BTreeSet<String> = rec_lines.iter().flat_map(|l: &String| tokens(l)).collect();
-    let recalled: usize = auth_tokens.intersection(&rec_tokens).count();
-
-    Grade {
-        line_recovery_pct: 100.0 * line_hits as f64 / auth_lines.len().max(1) as f64,
-        token_recall_pct: 100.0 * recalled as f64 / auth_tokens.len().max(1) as f64,
-        line_hits,
-        line_total: auth_lines.len(),
-    }
 }
 
 fn assert_constructs(recovered: &str, authored: &str, constructs: &[&str]) {
@@ -160,34 +300,28 @@ const ALL_CONSTRUCTS: &[&str] = &[
     "Const ",
 ];
 
+const SOURCEPROBE_LINE_FLOOR_PCT: f64 = 88.73;
+const SOURCEPROBE_AUTHORED_LINES: usize = 71;
+const EDGECASES_LINE_FLOOR_PCT: f64 = 70.47;
+const EDGECASES_AUTHORED_LINES: usize = 552;
+
 #[test]
 fn sourceprobe_lift_recovers_authored_source() {
     let lift: SemanticLift = lift_module("vba/sourceprobe.docm", "SourceProbe");
     let authored: String = std::fs::read_to_string(corpus_path("vba/sourceprobe/SourceProbe.bas"))
         .expect("read SourceProbe.bas");
-    assert_eq!(
-        lift.unlifted_lines, 0,
-        "every disassembled line of SourceProbe must lift; pseudocode:\n{}",
-        lift.pseudocode
-    );
+    assert_every_line_lifted("SourceProbe", &lift);
     assert!(
         lift.walls.is_empty(),
-        "well-formed module must not need synthetic block closures; walls={:?}",
+        "well-formed module must not need block closures inferred by the lifter; walls={:?}",
         lift.walls
     );
     let g: Grade = grade(&lift.pseudocode, &authored);
-    assert!(
-        g.line_recovery_pct >= 90.0,
-        "SourceProbe authored-line recovery {:.1}% below floor 90% ({}/{})\n{}",
-        g.line_recovery_pct,
-        g.line_hits,
-        g.line_total,
-        lift.pseudocode
-    );
-    assert!(
-        g.token_recall_pct >= 95.0,
-        "SourceProbe identifier recall {:.1}% below floor 95%",
-        g.token_recall_pct
+    assert_line_match(
+        "SourceProbe",
+        &g,
+        SOURCEPROBE_LINE_FLOOR_PCT,
+        SOURCEPROBE_AUTHORED_LINES,
     );
     assert_constructs(&lift.pseudocode, &authored, ALL_CONSTRUCTS);
 }
@@ -197,25 +331,92 @@ fn edgecases_lift_recovers_authored_source() {
     let lift: SemanticLift = lift_module("vba/megafile.docm", "EdgeCases");
     let authored: String = std::fs::read_to_string(corpus_path("vba/megafile/EdgeCases.bas"))
         .expect("read EdgeCases.bas");
-    assert_eq!(
-        lift.unlifted_lines, 0,
-        "every disassembled line of EdgeCases must lift; unlifted lines indicate a dropped opcode"
-    );
+    assert_every_line_lifted("EdgeCases", &lift);
     let g: Grade = grade(&lift.pseudocode, &authored);
-    assert!(
-        g.line_recovery_pct >= 75.0,
-        "EdgeCases authored-line recovery {:.1}% below floor 75% ({}/{})\n{}",
-        g.line_recovery_pct,
-        g.line_hits,
-        g.line_total,
-        lift.pseudocode
-    );
-    assert!(
-        g.token_recall_pct >= 90.0,
-        "EdgeCases identifier recall {:.1}% below floor 90%",
-        g.token_recall_pct
+    assert_line_match(
+        "EdgeCases",
+        &g,
+        EDGECASES_LINE_FLOOR_PCT,
+        EDGECASES_AUTHORED_LINES,
     );
     assert_constructs(&lift.pseudocode, &authored, ALL_CONSTRUCTS);
+}
+
+const IF_BLOCK: &str = "If a > b Then\n    x = a - b\nEnd If\n";
+
+#[test]
+fn identical_source_matches_every_line() {
+    let g: Grade = grade(IF_BLOCK, IF_BLOCK);
+    assert_eq!((g.matched, g.total), (3, 3));
+}
+
+#[test]
+fn flipped_comparison_direction_does_not_match() {
+    let recovered: &str = "If a < b Then\n    x = a - b\nEnd If\n";
+    assert_eq!(grade(recovered, IF_BLOCK).matched, 2);
+}
+
+#[test]
+fn swapped_operands_do_not_match() {
+    let recovered: &str = "If a > b Then\n    x = b - a\nEnd If\n";
+    assert_eq!(grade(recovered, IF_BLOCK).matched, 2);
+}
+
+#[test]
+fn widened_comparison_does_not_match() {
+    let recovered: &str = "If a >= b Then\n    x = a - b\nEnd If\n";
+    assert_eq!(grade(recovered, IF_BLOCK).matched, 2);
+}
+
+#[test]
+fn reordered_lines_do_not_all_match() {
+    let recovered: &str = "End If\n    x = a - b\nIf a > b Then\n";
+    assert_eq!(grade(recovered, IF_BLOCK).matched, 1);
+}
+
+#[test]
+fn one_recovered_line_cannot_satisfy_many_authored_lines() {
+    let recovered: &str = "If a > b Then\n";
+    let authored: &str = "If a > b Then\nIf a > b Then\nIf a > b Then\n";
+    assert_eq!(grade(recovered, authored).matched, 1);
+}
+
+#[test]
+fn missing_lines_are_not_covered_by_surplus_recovered_lines() {
+    let recovered: &str = "If a > b Then\nEnd If\nEnd If\nEnd If\n";
+    assert_eq!(grade(recovered, IF_BLOCK).matched, 2);
+}
+
+#[test]
+fn whitespace_and_keyword_case_are_free() {
+    assert_eq!(normalize("  IF   a > b  Then "), normalize("if a > b then"));
+    assert_eq!(normalize("Dim X As Long"), normalize("dim x as long"));
+}
+
+#[test]
+fn string_literal_case_and_spacing_are_preserved() {
+    assert_ne!(normalize("s = \"Hello\""), normalize("s = \"hello\""));
+    assert_eq!(normalize("s = \"a  b\""), "s = \"a  b\"");
+    assert_eq!(normalize("s = \"it's\""), "s = \"it's\"");
+}
+
+#[test]
+fn operators_and_operand_order_are_preserved() {
+    assert_ne!(normalize("x = a - b"), normalize("x = b - a"));
+    assert_ne!(normalize("If a >= b"), normalize("If a > b"));
+    assert_ne!(normalize("x = a Or b"), normalize("x = a And b"));
+}
+
+#[test]
+fn trailing_comments_are_excluded() {
+    assert_eq!(normalize("x = 1 ' trailing note"), normalize("x = 1"));
+}
+
+#[test]
+fn continuations_join_into_one_logical_line() {
+    let joined: Vec<String> =
+        join_continuations("PointInRect = p.X >= r.X _\n    And p.Y >= r.Y\n");
+    assert_eq!(joined, vec!["PointInRect = p.X >= r.X And p.Y >= r.Y"]);
 }
 
 #[test]
