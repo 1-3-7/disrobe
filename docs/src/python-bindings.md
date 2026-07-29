@@ -1097,8 +1097,8 @@ available_count: int = backend_list.available_count
 
 ## WebAssembly
 
-98.4% op-coverage on 126 functions across 36 parseable corpus modules (124 of
-126). 50 of 50 execution-eligible functions are execution-equivalent under wasmtime.
+100% op-coverage on 133 functions across 38 parseable corpus modules (133 of
+133). 57 of 57 execution-eligible functions are execution-equivalent under wasmtime.
 
 ```python
 import disrobe

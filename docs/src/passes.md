@@ -27,7 +27,7 @@ Run `disrobe passes` for the live list. As of the current release:
 | `strings` | Extract ASCII and UTF-16LE strings with optional XOR, base64, ROT, and stack-string decoding. |
 | `behavior` | Summarize static behavior across network, filesystem, process, registry, crypto, anti-analysis, and dynamic-code categories. |
 | `yara` | Parse YARA rules into a typed AST or generate a candidate rule from an artifact. |
-| `native` | Ghidra-headless decompile / symbol dump / unpack / devirt / entropy / crypto signatures / disasm / callgraph / patch / sigmaker / diff. |
+| `native` | In-tree decompile to C and Rust by default, with ghidra-headless as an opt-in backend / symbol dump / unpack / devirt / entropy / crypto signatures / disasm / callgraph / patch / sigmaker / diff. |
 | `jvm` | Classfile / `.jar` / `.dex` / `.apk` decompile via CFR / Vineflower / Procyon / JADX. |
 | `apk` | AndroidManifest.xml decode + resource id-to-name map + signer-cert SHA-256. |
 | `dotnet` | .NET PE decompile via ILSpy / dnSpyEx / de4dot + protector detection. |
