@@ -1449,24 +1449,24 @@ fn as3_lift_agrees_with_an_independent_reference_decompiler() {
     let rate: f64 = report(&m);
     assert_population(&m);
     assert!(
-        m.tally.shared_classes >= 1900,
+        m.tally.shared_classes >= 1971,
         "the corpus must keep matching the reference on the bulk of its classes, got {}",
         m.tally.shared_classes
     );
     assert!(
-        m.tally.reference_only_classes <= 43,
-        "disrobe must not start losing more classes than the 43 it already loses to the package-qualifier gap, got {}",
+        m.tally.reference_only_classes <= 36,
+        "disrobe must not start losing more classes than the 36 whose package survives only in the defining script, got {}",
         m.tally.reference_only_classes
     );
     assert!(
-        m.tally.agreed * 1000 >= m.tally.graded * 790,
-        "per-method agreement with the independent reference decompiler must hold its measured floor (>=79.0%); got {}/{} = {rate:.2}%",
+        m.tally.agreed * 1000 >= m.tally.graded * 847,
+        "per-method agreement with the independent reference decompiler must hold its measured floor (>=84.7%); got {}/{} = {rate:.2}%",
         m.tally.agreed,
         m.tally.graded
     );
     assert!(
-        m.tally.self_reported_full_agreed * 1000 >= m.tally.self_reported_full * 940,
-        "bodies disrobe calls fully recovered must hold their measured agreement floor (>=94.0%); got {}/{}",
+        m.tally.self_reported_full_agreed * 1000 >= m.tally.self_reported_full * 966,
+        "bodies disrobe calls fully recovered must hold their measured agreement floor (>=96.6%); got {}/{}",
         m.tally.self_reported_full_agreed,
         m.tally.self_reported_full
     );
@@ -1479,7 +1479,7 @@ fn assert_population(m: &Measurement) {
         m.files_compared
     );
     assert!(
-        m.tally.graded >= 12000,
+        m.tally.graded >= 13000,
         "the graded population must stay large enough to be meaningful, got {}",
         m.tally.graded
     );
@@ -1505,8 +1505,8 @@ fn string_literals_and_call_targets_match_the_reference_almost_everywhere() {
     let rate: f64 = report(&m);
     assert_population(&m);
     assert!(
-        m.tally.agreed * 1000 >= m.tally.graded * 910,
-        "constant-pool and call-target agreement must hold its measured floor (>=91.0%); got {}/{} = {rate:.2}%",
+        m.tally.agreed * 1000 >= m.tally.graded * 950,
+        "constant-pool and call-target agreement must hold its measured floor (>=95.0%); got {}/{} = {rate:.2}%",
         m.tally.agreed,
         m.tally.graded
     );

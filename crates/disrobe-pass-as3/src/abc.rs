@@ -133,7 +133,10 @@ impl ConstantPool {
     }
 
     fn package_qualifier(&self, ns_index: u32) -> Result<&str> {
-        if self.namespace_kind(ns_index) != NS_KIND_PACKAGE {
+        if !matches!(
+            self.namespace_kind(ns_index),
+            NS_KIND_PACKAGE | NS_KIND_PACKAGE_INTERNAL
+        ) {
             return Ok("");
         }
         self.namespace_uri(ns_index)
@@ -1223,6 +1226,26 @@ mod tests {
         assert_eq!(
             cp.render_multiname(1).expect("render"),
             "flash.display.Sprite"
+        );
+    }
+
+    #[test]
+    fn package_internal_namespace_qualifies_a_type_reference() {
+        let cp: ConstantPool = pool_with_qname(NS_KIND_PACKAGE_INTERNAL, "bb.core", "BBPanel");
+        assert_eq!(
+            cp.render_multiname(1).expect("render"),
+            "bb.core.BBPanel",
+            "an internal class still lives in its package and must render fully qualified"
+        );
+    }
+
+    #[test]
+    fn protected_namespace_does_not_leak_into_a_type_reference() {
+        let cp: ConstantPool = pool_with_qname(NS_KIND_PROTECTED, "bb.core:BBPanel", "resize");
+        assert_eq!(
+            cp.render_multiname(1).expect("render"),
+            "resize",
+            "a protected resolution namespace names a class, not a package"
         );
     }
 

@@ -59,6 +59,11 @@ pub enum Expr {
         lhs: Box<Self>,
         rhs: Box<Self>,
     },
+    Ternary {
+        cond: Box<Self>,
+        then_value: Box<Self>,
+        else_value: Box<Self>,
+    },
     Coerce {
         ty: String,
         operand: Box<Self>,
@@ -167,6 +172,16 @@ impl Expr {
             Self::Binary { op, lhs, rhs } => {
                 format!("({} {} {})", lhs.render(names), op, rhs.render(names))
             }
+            Self::Ternary {
+                cond,
+                then_value,
+                else_value,
+            } => format!(
+                "({} ? {} : {})",
+                cond.render(names),
+                then_value.render(names),
+                else_value.render(names)
+            ),
             Self::Coerce { ty, operand } => {
                 if ty == "*" || ty.is_empty() {
                     operand.render(names)
@@ -227,6 +242,15 @@ fn expr_node_count_capped(e: &Expr, cap: usize) -> usize {
             Expr::IsType { operand, ty } | Expr::AsType { operand, ty } => {
                 walk(operand, cap, acc);
                 walk(ty, cap, acc);
+            }
+            Expr::Ternary {
+                cond,
+                then_value,
+                else_value,
+            } => {
+                walk(cond, cap, acc);
+                walk(then_value, cap, acc);
+                walk(else_value, cap, acc);
             }
             Expr::Call { callee, args, .. } | Expr::Construct { callee, args, .. } => {
                 walk(callee, cap, acc);
@@ -531,6 +555,120 @@ struct WithRegion {
     object: Expr,
 }
 
+const OP_POP: u8 = 0x29;
+const OP_DUP: u8 = 0x2A;
+const OP_IFTRUE: u8 = 0x11;
+const OP_IFFALSE: u8 = 0x12;
+
+const fn is_setlocal(op: u8) -> bool {
+    matches!(op, 0x63 | 0xD4 | 0xD5 | 0xD6 | 0xD7)
+}
+
+#[derive(Debug, Default)]
+struct Idioms {
+    dup_backed_setlocals: BTreeSet<usize>,
+    short_circuit_branches: BTreeMap<usize, &'static str>,
+    short_circuit_discards: BTreeSet<usize>,
+}
+
+fn detect_idioms(lines: &[DisasmLine]) -> Idioms {
+    let mut out: Idioms = Idioms::default();
+    for pair in lines.windows(2) {
+        if pair[0].opcode == OP_DUP && is_setlocal(pair[1].opcode) {
+            out.dup_backed_setlocals.insert(pair[1].offset);
+        }
+    }
+    for triple in lines.windows(3) {
+        if triple[0].opcode != OP_DUP || triple[2].opcode != OP_POP {
+            continue;
+        }
+        let op: &'static str = match triple[1].opcode {
+            OP_IFTRUE => "||",
+            OP_IFFALSE => "&&",
+            _ => continue,
+        };
+        out.short_circuit_branches.insert(triple[1].offset, op);
+        out.short_circuit_discards.insert(triple[2].offset);
+    }
+    out
+}
+
+#[derive(Debug)]
+struct ShortCircuit {
+    target: usize,
+    op: &'static str,
+    lhs: Expr,
+    join_height: usize,
+    branch_index: usize,
+    discard_index: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum WrittenLocation<'a> {
+    Property(&'a str),
+    Element,
+}
+
+fn expr_reads_location(e: &Expr, written: WrittenLocation<'_>) -> bool {
+    match e {
+        Expr::Get { object, property }
+        | Expr::Delete { object, property }
+        | Expr::Descendants { object, property } => {
+            matches!(written, WrittenLocation::Property(name) if name == property)
+                || expr_reads_location(object, written)
+        }
+        Expr::Name(name) | Expr::Lex(name) => {
+            matches!(written, WrittenLocation::Property(target) if target == name)
+        }
+        Expr::Index { object, index } => {
+            matches!(written, WrittenLocation::Element)
+                || expr_reads_location(object, written)
+                || expr_reads_location(index, written)
+        }
+        Expr::Unary { operand, .. } | Expr::Coerce { operand, .. } | Expr::Typeof(operand) => {
+            expr_reads_location(operand, written)
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            expr_reads_location(lhs, written) || expr_reads_location(rhs, written)
+        }
+        Expr::Ternary {
+            cond,
+            then_value,
+            else_value,
+        } => {
+            expr_reads_location(cond, written)
+                || expr_reads_location(then_value, written)
+                || expr_reads_location(else_value, written)
+        }
+        Expr::IsType { operand, ty } | Expr::AsType { operand, ty } => {
+            expr_reads_location(operand, written) || expr_reads_location(ty, written)
+        }
+        Expr::Call { callee, args, .. } | Expr::Construct { callee, args, .. } => {
+            expr_reads_location(callee, written)
+                || args.iter().any(|a: &Expr| expr_reads_location(a, written))
+        }
+        Expr::New { ty: base, args } | Expr::Applied { base, args } => {
+            expr_reads_location(base, written)
+                || args.iter().any(|a: &Expr| expr_reads_location(a, written))
+        }
+        Expr::Array(items) => items
+            .iter()
+            .any(|item: &Expr| expr_reads_location(item, written)),
+        Expr::Object(pairs) => pairs.iter().any(|(key, value): &(Expr, Expr)| {
+            expr_reads_location(key, written) || expr_reads_location(value, written)
+        }),
+        _ => false,
+    }
+}
+
+#[derive(Debug)]
+struct BranchMark {
+    stmt_index: usize,
+    join_height: usize,
+    else_label: usize,
+    cond: Expr,
+}
+
 struct Lifter<'a> {
     abc: &'a AbcFile,
     stack: Vec<Expr>,
@@ -541,6 +679,10 @@ struct Lifter<'a> {
     opaque_operands: usize,
     scope_stack: Vec<ScopeEntry>,
     with_regions: Vec<WithRegion>,
+    idioms: Idioms,
+    short_circuits: Vec<ShortCircuit>,
+    branch_marks: Vec<BranchMark>,
+    hoisted_temporaries: u32,
 }
 
 impl Lifter<'_> {
@@ -554,6 +696,117 @@ impl Lifter<'_> {
 }
 
 impl Lifter<'_> {
+    fn hoist_stale_stack_reads(&mut self, written: WrittenLocation<'_>) {
+        let stale: Vec<usize> = self
+            .stack
+            .iter()
+            .enumerate()
+            .filter(|(_, e): &(usize, &Expr)| expr_reads_location(e, written))
+            .map(|(index, _): (usize, &Expr)| index)
+            .collect();
+        for index in stale {
+            let value: Expr = self.stack[index].clone();
+            let target: Expr = Expr::Name(format!("_temp{}", self.hoisted_temporaries));
+            self.hoisted_temporaries = self.hoisted_temporaries.saturating_add(1);
+            self.statements.push(Stmt::Assign {
+                target: target.clone(),
+                value,
+            });
+            self.stack[index] = target;
+        }
+    }
+
+    fn remove_statement(&mut self, index: usize) {
+        if index >= self.statements.len() {
+            return;
+        }
+        self.statements.remove(index);
+        self.short_circuits
+            .retain(|s: &ShortCircuit| s.branch_index < index);
+        self.branch_marks
+            .retain(|m: &BranchMark| m.stmt_index < index);
+    }
+
+    fn short_circuit_resolves(&self, pending: &ShortCircuit) -> bool {
+        if self.stack.len() != pending.join_height + 1 {
+            return false;
+        }
+        self.statements
+            .iter()
+            .enumerate()
+            .skip(pending.branch_index + 1)
+            .all(|(index, stmt): (usize, &Stmt)| {
+                Some(index) == pending.discard_index || matches!(stmt, Stmt::Label(_))
+            })
+    }
+
+    fn resolve_short_circuits(&mut self, label: usize) {
+        while let Some(position) = self
+            .short_circuits
+            .iter()
+            .rposition(|s: &ShortCircuit| s.target == label)
+        {
+            let pending: ShortCircuit = self.short_circuits.remove(position);
+            if !self.short_circuit_resolves(&pending) {
+                continue;
+            }
+            let rhs: Expr = self.pop();
+            self.push(Expr::Binary {
+                op: pending.op,
+                lhs: Box::new(pending.lhs),
+                rhs: Box::new(rhs),
+            });
+            if let Some(discard) = pending.discard_index {
+                self.remove_statement(discard);
+            }
+            self.remove_statement(pending.branch_index);
+        }
+    }
+
+    fn resolve_ternary(&mut self, label: usize) {
+        let len: usize = self.statements.len();
+        if len < 4 {
+            return;
+        }
+        let branch_index: usize = len - 4;
+        let Some(position): Option<usize> = self
+            .branch_marks
+            .iter()
+            .rposition(|m: &BranchMark| m.stmt_index == branch_index)
+        else {
+            return;
+        };
+        let jump_matches: bool = matches!(
+            self.statements[len - 3],
+            Stmt::Jump { target_label } if target_label == label
+        );
+        let else_label: usize = self.branch_marks[position].else_label;
+        let else_matches: bool = matches!(
+            self.statements[len - 2],
+            Stmt::Label(l) if l == else_label
+        );
+        let end_matches: bool = matches!(self.statements[len - 1], Stmt::Label(l) if l == label);
+        let mark_height: usize = self.branch_marks[position].join_height;
+        if !jump_matches
+            || !else_matches
+            || !end_matches
+            || else_label == label
+            || self.stack.len() != mark_height + 2
+        {
+            return;
+        }
+        let else_value: Expr = self.pop();
+        let then_value: Expr = self.pop();
+        let cond: Expr = negate(self.branch_marks[position].cond.clone());
+        self.push(Expr::Ternary {
+            cond: Box::new(cond),
+            then_value: Box::new(then_value),
+            else_value: Box::new(else_value),
+        });
+        self.remove_statement(len - 3);
+        self.remove_statement(branch_index);
+    }
+
     fn push(&mut self, e: Expr) {
         self.stack.push(e);
     }
@@ -990,6 +1243,10 @@ fn block_entry_heights(
         opaque_operands: 0,
         scope_stack: Vec::new(),
         with_regions: Vec::new(),
+        idioms: detect_idioms(lines),
+        short_circuits: Vec::new(),
+        branch_marks: Vec::new(),
+        hoisted_temporaries: 0,
     };
     let mut line_by_offset: BTreeMap<usize, &DisasmLine> = BTreeMap::new();
     let mut succs: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
@@ -1120,12 +1377,12 @@ fn step(lifter: &mut Lifter<'_>, line: &DisasmLine, next_off: usize, end_off: us
         0xD3 => lifter.push(local_expr(3, lifter.names)),
         0x63 => {
             let index: i64 = lifter.operand(ops, 0);
-            emit_setlocal(lifter, index);
+            emit_setlocal(lifter, index, line.offset);
         }
-        0xD4 => emit_setlocal(lifter, 0),
-        0xD5 => emit_setlocal(lifter, 1),
-        0xD6 => emit_setlocal(lifter, 2),
-        0xD7 => emit_setlocal(lifter, 3),
+        0xD4 => emit_setlocal(lifter, 0, line.offset),
+        0xD5 => emit_setlocal(lifter, 1, line.offset),
+        0xD6 => emit_setlocal(lifter, 2, line.offset),
+        0xD7 => emit_setlocal(lifter, 3, line.offset),
         0x22 => {
             let index: i64 = lifter.operand(ops, 0);
             emit_push_float(lifter, index, "float");
@@ -1163,6 +1420,13 @@ fn step(lifter: &mut Lifter<'_>, line: &DisasmLine, next_off: usize, end_off: us
             let e: Expr = lifter.pop();
             if expr_has_effect(&e) {
                 lifter.statements.push(Stmt::Expression(e));
+                let index: usize = lifter.statements.len() - 1;
+                if lifter.idioms.short_circuit_discards.contains(&line.offset)
+                    && let Some(pending) = lifter.short_circuits.last_mut()
+                    && pending.branch_index + 1 == index
+                {
+                    pending.discard_index = Some(index);
+                }
             }
         }
         0x2A => {
@@ -1347,9 +1611,14 @@ fn local_expr(slot: i64, _names: &LocalNames) -> Expr {
     }
 }
 
-fn emit_setlocal(lifter: &mut Lifter<'_>, slot: i64) {
+fn emit_setlocal(lifter: &mut Lifter<'_>, slot: i64, offset: usize) {
     let value: Expr = lifter.pop();
     let target: Expr = local_expr(slot, lifter.names);
+    if lifter.idioms.dup_backed_setlocals.contains(&offset)
+        && let Some(top) = lifter.stack.last_mut()
+    {
+        *top = target.clone();
+    }
     lifter.statements.push(Stmt::Assign { target, value });
 }
 
@@ -1392,6 +1661,7 @@ fn emit_setproperty(lifter: &mut Lifter<'_>, mn_idx: i64) {
     if needs_ns || needs_name {
         let index: Expr = lifter.pop_runtime_selector(mn_idx, needs_ns, needs_name);
         let object: Expr = lifter.pop();
+        lifter.hoist_stale_stack_reads(WrittenLocation::Element);
         lifter.statements.push(Stmt::AssignIndex {
             object,
             index,
@@ -1401,6 +1671,7 @@ fn emit_setproperty(lifter: &mut Lifter<'_>, mn_idx: i64) {
     }
     let property: String = lifter.property(mn_idx);
     let object: Expr = lifter.pop();
+    lifter.hoist_stale_stack_reads(WrittenLocation::Property(&property));
     lifter
         .statements
         .push(scope_relative_assign(object, property, value));
@@ -1428,6 +1699,7 @@ fn emit_setslot(lifter: &mut Lifter<'_>, slot: i64) {
     let property: String = lifter.slot_name(slot);
     let value: Expr = lifter.pop();
     let object: Expr = lifter.pop();
+    lifter.hoist_stale_stack_reads(WrittenLocation::Property(&property));
     lifter
         .statements
         .push(scope_relative_assign(object, property, value));
@@ -1878,38 +2150,69 @@ fn emit_branch(lifter: &mut Lifter<'_>, line: &DisasmLine, next_off: usize, end_
         0x10 => lifter.statements.push(Stmt::Jump {
             target_label: target,
         }),
-        0x11 => {
-            let cond: Expr = lifter.pop();
-            lifter.statements.push(Stmt::If {
-                cond,
-                target_label: target,
-            });
-        }
-        0x12 => {
-            let cond: Expr = lifter.pop();
-            lifter.statements.push(Stmt::If {
-                cond: Expr::Unary {
-                    op: "!",
-                    operand: Box::new(cond),
-                },
-                target_label: target,
-            });
+        OP_IFTRUE | OP_IFFALSE => {
+            let value: Expr = lifter.pop();
+            if let Some(op) = lifter
+                .idioms
+                .short_circuit_branches
+                .get(&line.offset)
+                .copied()
+                && target > line.offset
+            {
+                lifter.statements.push(Stmt::If {
+                    cond: branch_condition(line.opcode, value.clone()),
+                    target_label: target,
+                });
+                lifter.short_circuits.push(ShortCircuit {
+                    target,
+                    op,
+                    lhs: value,
+                    join_height: lifter.stack.len().saturating_sub(1),
+                    branch_index: lifter.statements.len() - 1,
+                    discard_index: None,
+                });
+                return;
+            }
+            let cond: Expr = branch_condition(line.opcode, value);
+            push_conditional_branch(lifter, cond, target);
         }
         other => {
             if let Some(cmp) = compare_branch_op(other) {
                 let rhs: Expr = lifter.pop();
                 let lhs: Expr = lifter.pop();
-                lifter.statements.push(Stmt::If {
-                    cond: Expr::Binary {
-                        op: cmp,
-                        lhs: Box::new(lhs),
-                        rhs: Box::new(rhs),
-                    },
-                    target_label: target,
-                });
+                let cond: Expr = Expr::Binary {
+                    op: cmp,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                };
+                push_conditional_branch(lifter, cond, target);
             }
         }
     }
+}
+
+fn branch_condition(opcode: u8, value: Expr) -> Expr {
+    if opcode == OP_IFFALSE {
+        Expr::Unary {
+            op: "!",
+            operand: Box::new(value),
+        }
+    } else {
+        value
+    }
+}
+
+fn push_conditional_branch(lifter: &mut Lifter<'_>, cond: Expr, target: usize) {
+    lifter.branch_marks.push(BranchMark {
+        stmt_index: lifter.statements.len(),
+        join_height: lifter.stack.len(),
+        else_label: target,
+        cond: cond.clone(),
+    });
+    lifter.statements.push(Stmt::If {
+        cond,
+        target_label: target,
+    });
 }
 
 fn emit_switch(lifter: &mut Lifter<'_>, line: &DisasmLine, _next_off: usize, _end_off: usize) {
@@ -2279,6 +2582,15 @@ fn expr_is_effect_free(e: &Expr) -> bool {
             .all(|(k, v): &(Expr, Expr)| expr_is_effect_free(k) && expr_is_effect_free(v)),
         Expr::Applied { base, args } => {
             expr_is_effect_free(base) && args.iter().all(expr_is_effect_free)
+        }
+        Expr::Ternary {
+            cond,
+            then_value,
+            else_value,
+        } => {
+            expr_is_effect_free(cond)
+                && expr_is_effect_free(then_value)
+                && expr_is_effect_free(else_value)
         }
         _ => true,
     }
@@ -3480,6 +3792,11 @@ fn expr_phi_count(e: &Expr) -> usize {
         Expr::Applied { base, args } => {
             expr_phi_count(base) + args.iter().map(expr_phi_count).sum::<usize>()
         }
+        Expr::Ternary {
+            cond,
+            then_value,
+            else_value,
+        } => expr_phi_count(cond) + expr_phi_count(then_value) + expr_phi_count(else_value),
         Expr::Array(items) => items.iter().map(expr_phi_count).sum(),
         Expr::Object(pairs) => pairs
             .iter()
@@ -3682,6 +3999,10 @@ fn lift_raw(
         opaque_operands: 0,
         scope_stack: Vec::new(),
         with_regions: Vec::new(),
+        idioms: detect_idioms(&lines),
+        short_circuits: Vec::new(),
+        branch_marks: Vec::new(),
+        hoisted_temporaries: 0,
     };
     let reachable: BTreeSet<usize> =
         reachable_offsets(&lines, &next_offset, end_off, &body.exceptions);
@@ -3691,6 +4012,8 @@ fn lift_raw(
         }
         if labels.contains(&line.offset) {
             lifter.statements.push(Stmt::Label(line.offset));
+            lifter.resolve_short_circuits(line.offset);
+            lifter.resolve_ternary(line.offset);
         }
         if let Some(&height) = entry_heights.get(&line.offset) {
             lifter.reconcile_entry_height(line.offset, height, exc_targets.contains(&line.offset));
@@ -3766,6 +4089,10 @@ pub fn lift_body(
         opaque_operands: 0,
         scope_stack: Vec::new(),
         with_regions: Vec::new(),
+        idioms: detect_idioms(&lines),
+        short_circuits: Vec::new(),
+        branch_marks: Vec::new(),
+        hoisted_temporaries: 0,
     };
     let reachable: BTreeSet<usize> =
         reachable_offsets(&lines, &next_offset, end_off, &body.exceptions);
@@ -3775,6 +4102,8 @@ pub fn lift_body(
         }
         if labels.contains(&line.offset) {
             lifter.statements.push(Stmt::Label(line.offset));
+            lifter.resolve_short_circuits(line.offset);
+            lifter.resolve_ternary(line.offset);
         }
         if let Some(&height) = entry_heights.get(&line.offset) {
             lifter.reconcile_entry_height(line.offset, height, exc_targets.contains(&line.offset));
@@ -4507,6 +4836,131 @@ mod tests {
     }
 
     #[test]
+    fn dup_guarded_iftrue_rebuilds_a_logical_or() {
+        let code: Vec<u8> = vec![0xD1, 0x2A, 0x11, 0x03, 0x00, 0x00, 0x29, 0x24, 0x07, 0x48];
+        let abc: AbcFile = bare_abc();
+        let body: MethodBody = body_with_code(code);
+        let lifted: LiftedBody = lift_body(&abc, &body, None).expect("lift");
+        assert_eq!(
+            lifted.statements,
+            vec![Stmt::Return(Some(Expr::Binary {
+                op: "||",
+                lhs: Box::new(Expr::Local(1)),
+                rhs: Box::new(Expr::IntLit(7)),
+            }))],
+            "both operands of a short-circuit disjunction must survive the join"
+        );
+    }
+
+    #[test]
+    fn dup_guarded_iffalse_rebuilds_a_logical_and() {
+        let code: Vec<u8> = vec![0xD1, 0x2A, 0x12, 0x03, 0x00, 0x00, 0x29, 0x24, 0x07, 0x48];
+        let abc: AbcFile = bare_abc();
+        let body: MethodBody = body_with_code(code);
+        let lifted: LiftedBody = lift_body(&abc, &body, None).expect("lift");
+        assert_eq!(
+            lifted.statements,
+            vec![Stmt::Return(Some(Expr::Binary {
+                op: "&&",
+                lhs: Box::new(Expr::Local(1)),
+                rhs: Box::new(Expr::IntLit(7)),
+            }))],
+            "both operands of a short-circuit conjunction must survive the join"
+        );
+    }
+
+    #[test]
+    fn chained_short_circuit_keeps_every_operand() {
+        let code: Vec<u8> = vec![
+            0xD1, 0x2A, 0x11, 0x0B, 0x00, 0x00, 0x29, 0x24, 0x07, 0x2A, 0x11, 0x03, 0x00, 0x00,
+            0x29, 0x24, 0x09, 0x48,
+        ];
+        let abc: AbcFile = bare_abc();
+        let body: MethodBody = body_with_code(code);
+        let lifted: LiftedBody = lift_body(&abc, &body, None).expect("lift");
+        let expected: Expr = Expr::Binary {
+            op: "||",
+            lhs: Box::new(Expr::Local(1)),
+            rhs: Box::new(Expr::Binary {
+                op: "||",
+                lhs: Box::new(Expr::IntLit(7)),
+                rhs: Box::new(Expr::IntLit(9)),
+            }),
+        };
+        assert_eq!(
+            lifted.statements,
+            vec![Stmt::Return(Some(expected))],
+            "a three-way disjunction must keep all three operands"
+        );
+    }
+
+    #[test]
+    fn branch_over_a_value_rebuilds_a_conditional_expression() {
+        let code: Vec<u8> = vec![
+            0xD1, 0x12, 0x06, 0x00, 0x00, 0x24, 0x01, 0x10, 0x02, 0x00, 0x00, 0x24, 0x02, 0x48,
+        ];
+        let abc: AbcFile = bare_abc();
+        let body: MethodBody = body_with_code(code);
+        let lifted: LiftedBody = lift_body(&abc, &body, None).expect("lift");
+        assert_eq!(
+            lifted.statements,
+            vec![Stmt::Return(Some(Expr::Ternary {
+                cond: Box::new(Expr::Local(1)),
+                then_value: Box::new(Expr::IntLit(1)),
+                else_value: Box::new(Expr::IntLit(2)),
+            }))],
+            "a value-producing branch pair is a conditional expression, not two dead labels"
+        );
+    }
+
+    #[test]
+    fn dup_into_a_local_reuses_the_local_instead_of_repeating_the_value() {
+        let code: Vec<u8> = vec![0x60, 0x00, 0x2A, 0xD5, 0x48];
+        let abc: AbcFile = bare_abc();
+        let body: MethodBody = body_with_code(code);
+        let lifted: LiftedBody = lift_body(&abc, &body, None).expect("lift");
+        assert_eq!(
+            lifted.statements,
+            vec![
+                Stmt::Assign {
+                    target: Expr::Local(1),
+                    value: Expr::Lex(String::new()),
+                },
+                Stmt::Return(Some(Expr::Local(1))),
+            ],
+            "the copy left by a dup is the stored local, not a second evaluation"
+        );
+    }
+
+    #[test]
+    fn a_property_read_held_across_a_store_is_saved_first() {
+        let code: Vec<u8> = vec![0xD0, 0xD0, 0x66, 0x01, 0xD0, 0x24, 0x01, 0x61, 0x01, 0x48];
+        let abc: AbcFile = bare_abc();
+        let body: MethodBody = body_with_code(code);
+        let lifted: LiftedBody = lift_body(&abc, &body, None).expect("lift");
+        let saved: Expr = Expr::Name("_temp0".to_owned());
+        assert_eq!(
+            lifted.statements,
+            vec![
+                Stmt::Assign {
+                    target: saved.clone(),
+                    value: Expr::Get {
+                        object: Box::new(Expr::This),
+                        property: "mn#1".to_owned(),
+                    },
+                },
+                Stmt::AssignProperty {
+                    object: Expr::This,
+                    property: "mn#1".to_owned(),
+                    value: Expr::IntLit(1),
+                },
+                Stmt::Return(Some(saved)),
+            ],
+            "a pending read of the property being written must be captured before the write"
+        );
+    }
+
+    #[test]
     fn while_loop_with_back_jump_is_structured() {
         let code: Vec<u8> = vec![
             0x10, 0x05, 0x00, 0x00, 0xD1, 0x24, 0x01, 0xA0, 0xD5, 0xD1, 0x24, 0x0A, 0x15, 0xF4,
@@ -4662,6 +5116,10 @@ mod tests {
             opaque_operands: 0,
             scope_stack: Vec::new(),
             with_regions: Vec::new(),
+            idioms: Idioms::default(),
+            short_circuits: Vec::new(),
+            branch_marks: Vec::new(),
+            hoisted_temporaries: 0,
         };
         let line: DisasmLine = DisasmLine {
             offset: 0,
