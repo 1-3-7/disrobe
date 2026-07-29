@@ -49,7 +49,7 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
     if check {
         if stale.is_empty() {
             println!(
-                "xtask regen --check: every generated artifact is byte-fresh (schemas, bindings, error docs, graphs, demo, card, plugins, evidence, README stat cross-check, attack-surface cross-check, fuzz-scope cross-check, tiered-results cross-check)"
+                "xtask regen --check: every generated artifact is byte-fresh (schemas, bindings, error docs, demo, card, plugins, evidence), the charts match the digest of the data they were rendered from and the copies mdbook serves, and the README stat, attack-surface, fuzz-scope and tiered-results cross-checks all hold"
             );
             Ok(())
         } else {

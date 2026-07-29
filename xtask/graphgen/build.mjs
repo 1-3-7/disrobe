@@ -30,9 +30,13 @@ function sourceDigest(dataFile) {
 
 function stamp(svg, dataFile, digest) {
   const marker = `<desc>generated from ${dataFile} sha256:${digest}</desc>`;
-  const at = svg.indexOf(">");
+  const rootStart = svg.indexOf("<svg");
+  if (rootStart < 0) {
+    throw new Error(`rendered svg for ${dataFile} has no <svg> root element`);
+  }
+  const at = svg.indexOf(">", rootStart);
   if (at < 0) {
-    throw new Error(`rendered svg for ${dataFile} has no root element`);
+    throw new Error(`rendered svg for ${dataFile} has an unterminated <svg> tag`);
   }
   return `${svg.slice(0, at + 1)}${marker}${svg.slice(at + 1)}`;
 }
