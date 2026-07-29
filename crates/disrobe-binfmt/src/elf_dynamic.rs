@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::native_image::{NativeImage, parse_native_image};
+
 const EI_CLASS: usize = 4;
 const EI_DATA: usize = 5;
 const ELFCLASS32: u8 = 1;
@@ -7,6 +9,7 @@ const ELFCLASS64: u8 = 2;
 const ELFDATA2LSB: u8 = 1;
 const ELFDATA2MSB: u8 = 2;
 
+#[cfg(test)]
 const PT_LOAD: u32 = 1;
 const PT_DYNAMIC: u32 = 2;
 
@@ -40,6 +43,7 @@ const MAX_DYNAMIC_ENTRIES: usize = 0x10_0000;
 const MAX_DT_STRSZ: u64 = 0x100_0000;
 const MAX_STRING_LEN: usize = 0x1_0000;
 const MAX_NEEDED: usize = 0x1_0000;
+const MAX_DYNAMIC_STRING_OUTPUT: usize = 0x100_0000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ElfDynamic {
@@ -62,7 +66,6 @@ struct ElfClass {
 struct LoadSegment {
     file_off: u64,
     file_size: u64,
-    vaddr: u64,
 }
 
 fn read_u16(bytes: &[u8], off: usize, little: bool) -> Option<u16> {
@@ -136,30 +139,16 @@ fn read_program_header(
     class: ElfClass,
 ) -> Option<(u32, LoadSegment)> {
     let p_type: u32 = read_u32(bytes, entry_off, class.little)?;
-    let (off_field, vaddr_field, filesz_field): (usize, usize, usize) =
-        if class.is_64 { (8, 16, 32) } else { (4, 8, 16) };
+    let (off_field, filesz_field): (usize, usize) = if class.is_64 { (8, 32) } else { (4, 16) };
     let file_off: u64 = read_addr(bytes, entry_off.checked_add(off_field)?, class)?;
-    let vaddr: u64 = read_addr(bytes, entry_off.checked_add(vaddr_field)?, class)?;
     let file_size: u64 = read_addr(bytes, entry_off.checked_add(filesz_field)?, class)?;
     Some((
         p_type,
         LoadSegment {
             file_off,
             file_size,
-            vaddr,
         },
     ))
-}
-
-fn vaddr_to_file_off(loads: &[LoadSegment], vaddr: u64) -> Option<u64> {
-    for seg in loads {
-        let end: u64 = seg.vaddr.checked_add(seg.file_size)?;
-        if vaddr >= seg.vaddr && vaddr < end {
-            let delta: u64 = vaddr.checked_sub(seg.vaddr)?;
-            return seg.file_off.checked_add(delta);
-        }
-    }
-    None
 }
 
 fn read_cstr(bytes: &[u8], off: usize) -> Option<String> {
@@ -167,6 +156,52 @@ fn read_cstr(bytes: &[u8], off: usize) -> Option<String> {
     let cap: usize = tail.len().min(MAX_STRING_LEN);
     let end: usize = tail[..cap].iter().position(|&b: &u8| b == 0)?;
     Some(String::from_utf8_lossy(&tail[..end]).into_owned())
+}
+
+fn resolve_string(string_table: &[u8], string_offset: u64) -> Option<String> {
+    let index: usize = usize::try_from(string_offset).ok()?;
+    if index >= string_table.len() {
+        return None;
+    }
+    read_cstr(string_table, index)
+}
+
+fn resolve_bounded_string(
+    string_table: &[u8],
+    string_offset: u64,
+    decoded_bytes: &mut usize,
+    output_limit: usize,
+) -> Option<String> {
+    let value: String = resolve_string(string_table, string_offset)?;
+    let next_decoded_bytes: usize = decoded_bytes.checked_add(value.len())?;
+    if next_decoded_bytes > output_limit {
+        return None;
+    }
+    *decoded_bytes = next_decoded_bytes;
+    Some(value)
+}
+
+fn resolve_needed(
+    string_table: &[u8],
+    offsets: &[u64],
+    decoded_bytes: &mut usize,
+    output_limit: usize,
+) -> Option<Vec<String>> {
+    let mut needed: Vec<String> = Vec::with_capacity(offsets.len());
+    for &offset in offsets {
+        let value: String =
+            resolve_bounded_string(string_table, offset, decoded_bytes, output_limit)?;
+        needed.push(value);
+    }
+    Some(needed)
+}
+
+fn push_needed_offset(offsets: &mut Vec<u64>, value: u64, limit: usize) -> Option<()> {
+    if offsets.len() >= limit {
+        return None;
+    }
+    offsets.push(value);
+    Some(())
 }
 
 #[must_use]
@@ -181,9 +216,8 @@ pub fn parse_elf_dynamic(bytes: &[u8]) -> Option<ElfDynamic> {
         return None;
     }
     let phoff_usize: usize = usize::try_from(phoff).ok()?;
-    let entsize: usize = phentsize as usize;
+    let entsize: usize = usize::from(phentsize);
 
-    let mut loads: Vec<LoadSegment> = Vec::new();
     let mut dynamic: Option<LoadSegment> = None;
     for i in 0..phnum {
         let entry_off: usize = phoff_usize.checked_add(i.checked_mul(entsize)?)?;
@@ -191,10 +225,8 @@ pub fn parse_elf_dynamic(bytes: &[u8]) -> Option<ElfDynamic> {
             return None;
         }
         let (p_type, seg): (u32, LoadSegment) = read_program_header(bytes, entry_off, class)?;
-        match p_type {
-            PT_LOAD => loads.push(seg),
-            PT_DYNAMIC => dynamic = Some(seg),
-            _ => {}
+        if p_type == PT_DYNAMIC {
+            dynamic = Some(seg);
         }
     }
 
@@ -229,10 +261,10 @@ pub fn parse_elf_dynamic(bytes: &[u8]) -> Option<ElfDynamic> {
         let off: usize = dyn_off.checked_add(i.checked_mul(entry_width)?)?;
         let tag: u64 = read_addr(bytes, off, class)?;
         let val: u64 = read_addr(bytes, off.checked_add(entry_width / 2)?, class)?;
-        entry_count += 1;
+        entry_count = entry_count.checked_add(1)?;
         match tag {
             DT_NULL => break,
-            DT_NEEDED if needed_offsets.len() < MAX_NEEDED => needed_offsets.push(val),
+            DT_NEEDED => push_needed_offset(&mut needed_offsets, val, MAX_NEEDED)?,
             DT_SONAME => soname_off = Some(val),
             DT_RPATH => rpath_off = Some(val),
             DT_RUNPATH => runpath_off = Some(val),
@@ -244,38 +276,56 @@ pub fn parse_elf_dynamic(bytes: &[u8]) -> Option<ElfDynamic> {
         }
     }
 
-    let strtab_off: Option<usize> = strtab_vaddr.and_then(|v: u64| {
-        vaddr_to_file_off(&loads, v)
-            .or(Some(v))
-            .and_then(|f: u64| usize::try_from(f).ok())
-    });
-
-    let strtab_limit: Option<usize> = match (strtab_off, strsz) {
-        (Some(base), Some(sz)) if sz <= MAX_DT_STRSZ => {
-            let span: usize = usize::try_from(sz).ok()?;
-            Some(base.checked_add(span)?.min(bytes.len()))
+    let image: NativeImage<'_> = parse_native_image(bytes).ok()?;
+    let strtab_address: u64 = strtab_vaddr?;
+    let strtab_bytes: &[u8] = match image.bytes_at(strtab_address) {
+        Some(mapped) => mapped,
+        None if image.sections().is_empty() => image.loader_bytes_at(strtab_address)?,
+        None => return None,
+    };
+    let string_table: &[u8] = match strsz {
+        Some(size) if size <= MAX_DT_STRSZ => {
+            let declared_size: usize = usize::try_from(size).ok()?;
+            strtab_bytes.get(..declared_size)?
         }
-        (Some(_), _) => Some(bytes.len()),
-        _ => None,
+        Some(_) => return None,
+        None => strtab_bytes,
     };
 
-    let resolve = |str_off: u64| -> Option<String> {
-        let base: usize = strtab_off?;
-        let idx: usize = base.checked_add(usize::try_from(str_off).ok()?)?;
-        let limit: usize = strtab_limit.map_or(bytes.len(), |value: usize| value);
-        if idx >= limit {
-            return None;
-        }
-        read_cstr(bytes, idx)
+    let mut decoded_bytes: usize = 0;
+    let needed: Vec<String> = resolve_needed(
+        string_table,
+        &needed_offsets,
+        &mut decoded_bytes,
+        MAX_DYNAMIC_STRING_OUTPUT,
+    )?;
+    let soname: Option<String> = match soname_off {
+        Some(offset) => Some(resolve_bounded_string(
+            string_table,
+            offset,
+            &mut decoded_bytes,
+            MAX_DYNAMIC_STRING_OUTPUT,
+        )?),
+        None => None,
     };
-
-    let needed: Vec<String> = needed_offsets
-        .into_iter()
-        .filter_map(|o: u64| resolve(o))
-        .collect();
-    let soname: Option<String> = soname_off.and_then(resolve);
-    let rpath: Option<String> = rpath_off.and_then(resolve);
-    let runpath: Option<String> = runpath_off.and_then(resolve);
+    let rpath: Option<String> = match rpath_off {
+        Some(offset) => Some(resolve_bounded_string(
+            string_table,
+            offset,
+            &mut decoded_bytes,
+            MAX_DYNAMIC_STRING_OUTPUT,
+        )?),
+        None => None,
+    };
+    let runpath: Option<String> = match runpath_off {
+        Some(offset) => Some(resolve_bounded_string(
+            string_table,
+            offset,
+            &mut decoded_bytes,
+            MAX_DYNAMIC_STRING_OUTPUT,
+        )?),
+        None => None,
+    };
     let bind_now: bool = (flags & DF_BIND_NOW) != 0 || (flags_1 & DF_1_NOW) != 0;
     let pie: bool = (flags_1 & DF_1_PIE) != 0;
 
@@ -294,6 +344,26 @@ pub fn parse_elf_dynamic(bytes: &[u8]) -> Option<ElfDynamic> {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_needed_offsets_respect_cumulative_output_limit() {
+        let string_table: &[u8] = b"abcd\0";
+        let offsets: [u64; 3] = [0, 0, 0];
+        let mut decoded_bytes: usize = 0;
+        let resolved: Option<Vec<String>> =
+            resolve_needed(string_table, &offsets, &mut decoded_bytes, 8);
+
+        assert!(resolved.is_none());
+        assert_eq!(decoded_bytes, 8);
+    }
+
+    #[test]
+    fn needed_offset_limit_rejects_incomplete_dependency_list() {
+        let mut offsets: Vec<u64> = vec![1, 2];
+
+        assert!(push_needed_offset(&mut offsets, 3, 2).is_none());
+        assert_eq!(offsets, vec![1, 2]);
+    }
 
     #[test]
     fn non_elf_input_yields_none() {

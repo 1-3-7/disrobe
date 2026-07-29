@@ -52,6 +52,27 @@ fn crafted_so_matches_readelf_ground_truth() {
 }
 
 #[test]
+fn declared_string_table_crossing_load_boundary_rejects() {
+    let mut bytes: Vec<u8> = common::load_fixture("elf-dynamic", "sample.elf")
+        .expect("missing corpus/binfmt/elf-dynamic/sample.elf");
+    let strsz_tag_offset: usize = 0x170;
+    let strsz_value_offset: usize = 0x178;
+    let strsz_value_end: usize = strsz_value_offset
+        .checked_add(8)
+        .expect("string table size field should fit");
+    let strsz_tag: u64 = disrobe_bytes::read_u64_le_at(&bytes, strsz_tag_offset)
+        .expect("string table tag should parse");
+    let oversized: [u8; 8] = 0xe1u64.to_le_bytes();
+    let field: &mut [u8] = bytes
+        .get_mut(strsz_value_offset..strsz_value_end)
+        .expect("string table size field should exist");
+
+    assert_eq!(strsz_tag, 10);
+    field.copy_from_slice(&oversized);
+    assert!(parse_elf_dynamic(&bytes).is_none());
+}
+
+#[test]
 fn real_elf_dynamic_surfaced_through_native_file() {
     let Some(bytes): Option<Vec<u8>> = read_corpus("native/nim/hello.nim.elf") else {
         return;

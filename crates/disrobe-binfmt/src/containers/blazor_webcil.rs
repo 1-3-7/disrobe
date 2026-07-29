@@ -10,6 +10,7 @@ use crate::containers::bare_stream::{
 };
 use crate::containers::dotnet_bundle::{BundleFileType, DotnetBundleEntry};
 use crate::error::{Error, Result};
+use crate::native_image::{NativeImage, parse_native_image};
 use crate::quota::{ExtractionQuota, QuotaGuard, sanitize_entry_path};
 
 pub const WEBCIL_MAGIC: &[u8; 4] = b"WbIL";
@@ -119,23 +120,11 @@ fn read_u32(reader: &mut ByteReader<'_>, field: &str) -> Result<u32> {
 }
 
 fn le_u16(bytes: &[u8], offset: usize) -> Result<u16> {
-    let end: usize = offset
-        .checked_add(2)
-        .ok_or_else(|| blazor_err("u16 offset overflow"))?;
-    let slice: &[u8] = bytes
-        .get(offset..end)
-        .ok_or_else(|| blazor_err("u16 read out of bounds"))?;
-    Ok(u16::from_le_bytes([slice[0], slice[1]]))
+    disrobe_bytes::read_u16_le_at(bytes, offset).map_err(|_| blazor_err("u16 read out of bounds"))
 }
 
 fn le_u32(bytes: &[u8], offset: usize) -> Result<u32> {
-    let end: usize = offset
-        .checked_add(4)
-        .ok_or_else(|| blazor_err("u32 offset overflow"))?;
-    let slice: &[u8] = bytes
-        .get(offset..end)
-        .ok_or_else(|| blazor_err("u32 read out of bounds"))?;
-    Ok(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+    disrobe_bytes::read_u32_le_at(bytes, offset).map_err(|_| blazor_err("u32 read out of bounds"))
 }
 
 fn put_u16(buf: &mut [u8], offset: usize, value: u16) -> Result<()> {
@@ -502,20 +491,10 @@ const fn section_name(is_code: bool) -> [u8; 8] {
     }
 }
 
-fn resolve_rva(sections: &[WebcilSection], rva: u32) -> Option<usize> {
-    for section in sections {
-        let start: u32 = section.virtual_address;
-        let extent: u32 = section.virtual_size.max(section.raw_size);
-        let end: u32 = start.saturating_add(extent);
-        if rva >= start && rva < end {
-            let delta: u32 = rva - start;
-            if delta >= section.raw_size {
-                return None;
-            }
-            return usize::try_from(u64::from(section.pointer_to_raw_data) + u64::from(delta)).ok();
-        }
-    }
-    None
+fn resolve_rva(image: &NativeImage<'_>, rva: u32) -> Option<usize> {
+    let address: u64 = image.virtual_address_from_relative(rva)?;
+    let file_offset: u64 = image.file_offset(address)?;
+    usize::try_from(file_offset).ok()
 }
 
 fn validate_managed_pe(image: &[u8]) -> Result<()> {
@@ -524,55 +503,92 @@ fn validate_managed_pe(image: &[u8]) -> Result<()> {
     }
     let pe: usize = usize::try_from(le_u32(image, 0x3C)?)
         .map_err(|_| blazor_err("pe header offset out of range"))?;
-    if le_u32(image, pe)? & 0x0000_FFFF != NT_SIGNATURE {
+    if le_u32(image, pe)? != NT_SIGNATURE {
         return Err(blazor_err("synthesized image missing PE signature"));
     }
-    let number_of_sections: u16 = le_u16(image, pe + 6)?;
-    let optional_header_size: usize = usize::from(le_u16(image, pe + 20)?);
-    let opt: usize = pe + 24;
+    let opt: usize = pe
+        .checked_add(24)
+        .ok_or_else(|| blazor_err("optional header offset overflow"))?;
     let optional_magic: u16 = le_u16(image, opt)?;
     let directories_base: usize = match optional_magic {
-        PE32_MAGIC => opt + 96,
-        PE32PLUS_MAGIC => opt + 112,
+        PE32_MAGIC => opt
+            .checked_add(96)
+            .ok_or_else(|| blazor_err("data directory offset overflow"))?,
+        PE32PLUS_MAGIC => opt
+            .checked_add(112)
+            .ok_or_else(|| blazor_err("data directory offset overflow"))?,
+        _ => return Err(blazor_err("synthesized image has unknown optional magic")),
+    };
+    let directory_count_offset: usize = match optional_magic {
+        PE32_MAGIC => opt
+            .checked_add(92)
+            .ok_or_else(|| blazor_err("directory count offset overflow"))?,
+        PE32PLUS_MAGIC => opt
+            .checked_add(108)
+            .ok_or_else(|| blazor_err("directory count offset overflow"))?,
         _ => return Err(blazor_err("synthesized image has unknown optional magic")),
     };
     let number_of_directories: u32 = match optional_magic {
-        PE32_MAGIC => le_u32(image, opt + 92)?,
-        _ => le_u32(image, opt + 108)?,
+        PE32_MAGIC | PE32PLUS_MAGIC => le_u32(image, directory_count_offset)?,
+        _ => return Err(blazor_err("synthesized image has unknown optional magic")),
     };
-    if (CLR_DIRECTORY_INDEX as u32) >= number_of_directories {
+    let clr_directory_index: u32 = u32::try_from(CLR_DIRECTORY_INDEX)
+        .map_err(|_| blazor_err("clr directory index out of range"))?;
+    if clr_directory_index >= number_of_directories {
         return Err(blazor_err("synthesized image lacks a clr data directory"));
     }
-    let clr_rva: u32 = le_u32(image, directories_base + CLR_DIRECTORY_INDEX * 8)?;
-    let clr_size: u32 = le_u32(image, directories_base + CLR_DIRECTORY_INDEX * 8 + 4)?;
-    if clr_rva == 0 || clr_size == 0 {
-        return Err(blazor_err("synthesized image has an empty clr directory"));
+    let clr_entry_delta: usize = CLR_DIRECTORY_INDEX
+        .checked_mul(8)
+        .ok_or_else(|| blazor_err("clr directory offset overflow"))?;
+    let clr_entry: usize = directories_base
+        .checked_add(clr_entry_delta)
+        .ok_or_else(|| blazor_err("clr directory offset overflow"))?;
+    let clr_size_offset: usize = clr_entry
+        .checked_add(4)
+        .ok_or_else(|| blazor_err("clr directory size offset overflow"))?;
+    let clr_rva: u32 = le_u32(image, clr_entry)?;
+    let clr_size: u32 = le_u32(image, clr_size_offset)?;
+    let clr_size_usize: usize =
+        usize::try_from(clr_size).map_err(|_| blazor_err("clr directory size is out of range"))?;
+    if clr_rva == 0 || clr_size_usize < COR20_HEADER_LEN {
+        return Err(blazor_err(
+            "synthesized image has an invalid clr directory size",
+        ));
     }
 
-    let sections_start: usize = opt
-        .checked_add(optional_header_size)
-        .ok_or_else(|| blazor_err("section table offset overflow"))?;
-    let mut sections: Vec<WebcilSection> = Vec::with_capacity(usize::from(number_of_sections));
-    for index in 0..usize::from(number_of_sections) {
-        let entry: usize = sections_start
-            .checked_add(index * PE_SECTION_ENTRY_LEN)
-            .ok_or_else(|| blazor_err("section entry offset overflow"))?;
-        sections.push(WebcilSection {
-            virtual_size: le_u32(image, entry + 8)?,
-            virtual_address: le_u32(image, entry + 12)?,
-            raw_size: le_u32(image, entry + 16)?,
-            pointer_to_raw_data: le_u32(image, entry + 20)?,
-        });
+    let native_image: NativeImage<'_> = parse_native_image(image).map_err(|error: Error| {
+        Error::BlazorWebcil(format!("invalid synthesized image: {error}"))
+    })?;
+    let clr_address: u64 = native_image
+        .virtual_address_from_relative(clr_rva)
+        .ok_or_else(|| blazor_err("clr virtual address overflow"))?;
+    let clr_directory: &[u8] = native_image
+        .bytes_at(clr_address)
+        .and_then(|mapped: &[u8]| mapped.get(..clr_size_usize))
+        .ok_or_else(|| blazor_err("clr header past end of synthesized image"))?;
+    let cli_header_size_u32: u32 = disrobe_bytes::read_u32_le_at(clr_directory, 0)
+        .map_err(|_| blazor_err("cli header size field is truncated"))?;
+    let cli_header_size: usize = usize::try_from(cli_header_size_u32)
+        .map_err(|_| blazor_err("cli header size is out of range"))?;
+    if cli_header_size < COR20_HEADER_LEN || cli_header_size > clr_directory.len() {
+        return Err(blazor_err(
+            "synthesized image has an invalid cli header size",
+        ));
     }
-
-    let clr_offset: usize = resolve_rva(&sections, clr_rva)
-        .ok_or_else(|| blazor_err("clr rva resolves to no section"))?;
-    if clr_offset + COR20_HEADER_LEN > image.len() {
-        return Err(blazor_err("clr header past end of synthesized image"));
-    }
-    let metadata_rva: u32 = le_u32(image, clr_offset + 8)?;
-    let metadata_offset: usize = resolve_rva(&sections, metadata_rva)
+    let clr_header: &[u8] = clr_directory
+        .get(..cli_header_size)
+        .ok_or_else(|| blazor_err("cli header exceeds its declared directory"))?;
+    let metadata_rva: u32 = disrobe_bytes::read_u32_le_at(clr_header, 8)
+        .map_err(|_| blazor_err("clr metadata rva field is truncated"))?;
+    let metadata_address: u64 = native_image
+        .virtual_address_from_relative(metadata_rva)
+        .ok_or_else(|| blazor_err("metadata virtual address overflow"))?;
+    let metadata_offset: usize = resolve_rva(&native_image, metadata_rva)
         .ok_or_else(|| blazor_err("metadata rva resolves to no section"))?;
+    native_image
+        .bytes_at(metadata_address)
+        .and_then(|mapped: &[u8]| mapped.get(..4))
+        .ok_or_else(|| blazor_err("metadata signature crosses a section boundary"))?;
     if le_u32(image, metadata_offset)? != METADATA_SIGNATURE {
         return Err(blazor_err("metadata root is missing the BSJB signature"));
     }
@@ -1007,22 +1023,10 @@ mod tests {
         let opt: usize = pe + 24;
         let directories: usize = opt + 96;
         let clr_rva: u32 = le_u32(image, directories + CLR_DIRECTORY_INDEX * 8).unwrap();
-        let number_of_sections: u16 = le_u16(image, pe + 6).unwrap();
-        let optional_header_size: usize = usize::from(le_u16(image, pe + 20).unwrap());
-        let sections_start: usize = opt + optional_header_size;
-        let mut sections: Vec<WebcilSection> = Vec::new();
-        for i in 0..usize::from(number_of_sections) {
-            let entry: usize = sections_start + i * PE_SECTION_ENTRY_LEN;
-            sections.push(WebcilSection {
-                virtual_size: le_u32(image, entry + 8).unwrap(),
-                virtual_address: le_u32(image, entry + 12).unwrap(),
-                raw_size: le_u32(image, entry + 16).unwrap(),
-                pointer_to_raw_data: le_u32(image, entry + 20).unwrap(),
-            });
-        }
-        let clr_offset: usize = resolve_rva(&sections, clr_rva).unwrap();
+        let native_image: NativeImage<'_> = parse_native_image(image).unwrap();
+        let clr_offset: usize = resolve_rva(&native_image, clr_rva).unwrap();
         let metadata_rva: u32 = le_u32(image, clr_offset + 8).unwrap();
-        let metadata_offset: usize = resolve_rva(&sections, metadata_rva).unwrap();
+        let metadata_offset: usize = resolve_rva(&native_image, metadata_rva).unwrap();
         let version_len: u32 = le_u32(image, metadata_offset + 12).unwrap();
         let mut cursor: usize = metadata_offset + 16 + version_len as usize;
         cursor += 2;
@@ -1056,6 +1060,53 @@ mod tests {
         assert_eq!(header.cli_header_rva, 0x2008);
         let image: Vec<u8> = unwrap_webcil(&payload).expect("unwrap");
         validate_managed_pe(&image).expect("valid");
+    }
+
+    #[test]
+    fn rejects_clr_directory_smaller_than_fixed_header() {
+        let mut payload: Vec<u8> = build_webcil_payload();
+        let size_start: usize = 16;
+        let size_end: usize = size_start
+            .checked_add(4)
+            .expect("clr size field should fit");
+        let size_field: &mut [u8] = payload
+            .get_mut(size_start..size_end)
+            .expect("clr size field should exist");
+        let invalid_size: [u8; 4] = 71u32.to_le_bytes();
+        size_field.copy_from_slice(&invalid_size);
+
+        let error: Error = unwrap_webcil(&payload).expect_err("short clr directory should reject");
+
+        assert!(matches!(
+            error,
+            Error::BlazorWebcil(reason) if reason.contains("invalid clr directory size")
+        ));
+    }
+
+    #[test]
+    fn rejects_cli_header_size_smaller_than_fixed_fields() {
+        let payload: Vec<u8> = build_webcil_payload();
+        let header: WebcilHeader = parse_webcil_header(&payload).expect("header");
+        let mut image: Vec<u8> = synthesize_pe(&payload, &header).expect("synthesized image");
+        let native_image: NativeImage<'_> =
+            parse_native_image(&image).expect("native image should parse");
+        let cli_offset: usize =
+            resolve_rva(&native_image, header.cli_header_rva).expect("cli header should map");
+        let cli_size_end: usize = cli_offset
+            .checked_add(4)
+            .expect("cli header size field should fit");
+        let cli_size_field: &mut [u8] = image
+            .get_mut(cli_offset..cli_size_end)
+            .expect("cli header size field should exist");
+        let invalid_size: [u8; 4] = 8u32.to_le_bytes();
+        cli_size_field.copy_from_slice(&invalid_size);
+
+        let error: Error = validate_managed_pe(&image).expect_err("short cli header should reject");
+
+        assert!(matches!(
+            error,
+            Error::BlazorWebcil(reason) if reason.contains("invalid cli header size")
+        ));
     }
 
     #[test]
