@@ -7,23 +7,21 @@ use crate::fileio::read_bytes_bounded;
 
 const MAX_ASSET_BYTES: u64 = 4 * 1024 * 1024;
 
-const ASSETS: [&str; 7] = [
+const ASSETS: [&str; 6] = [
     "recovery.svg",
     "python-versions.svg",
     "architecture.svg",
     "ir-ladder.svg",
     "ecosystems.svg",
-    "crate-graph.svg",
     "verification.svg",
 ];
 
-const DATA_BACKED: [(&str, &str); 7] = [
+const DATA_BACKED: [(&str, &str); 6] = [
     ("recovery.svg", "recovery.json"),
     ("python-versions.svg", "python_versions.json"),
     ("architecture.svg", "architecture.json"),
     ("ir-ladder.svg", "ir_ladder.json"),
     ("ecosystems.svg", "ecosystems.json"),
-    ("crate-graph.svg", "crate_graph.json"),
     ("verification.svg", "verification.json"),
 ];
 
