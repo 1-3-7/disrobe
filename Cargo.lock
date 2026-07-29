@@ -2707,15 +2707,18 @@ dependencies = [
 name = "disrobe-pass-webview"
 version = "0.10.4"
 dependencies = [
+ "brotli",
  "disrobe-binfmt",
  "disrobe-bytes",
  "disrobe-testkit",
+ "flate2",
  "miette",
  "object",
  "serde",
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
+ "zstd",
 ]
 
 [[package]]

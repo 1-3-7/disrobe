@@ -25,6 +25,9 @@ thiserror = { workspace = true }
 miette = { workspace = true }
 
 [dev-dependencies]
+brotli = { workspace = true }
 disrobe-testkit = { workspace = true }
+flate2 = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+zstd = { workspace = true }

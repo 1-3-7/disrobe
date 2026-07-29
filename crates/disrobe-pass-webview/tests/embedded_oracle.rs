@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use disrobe_pass_webview::{CarveReport, Error, RecoveredAsset, WebviewFamily, carve_report};
+use disrobe_pass_webview::{
+    CarveReport, Compression, Error, RecoveredAsset, WebviewFamily, carve_report,
+};
 
 static DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -422,4 +424,155 @@ fn write_elf_header(out: &mut [u8], shoff: u64, shnum: u16, shstrndx: u16) {
     header[58..60].copy_from_slice(&64u16.to_le_bytes());
     header[60..62].copy_from_slice(&shnum.to_le_bytes());
     header[62..64].copy_from_slice(&shstrndx.to_le_bytes());
+}
+
+fn compressible_payloads() -> Vec<(&'static str, Vec<u8>)> {
+    let html: Vec<u8> = "<html><body><div class=\"app\">"
+        .bytes()
+        .chain(std::iter::repeat_n(b'x', 600))
+        .chain("</div></body></html>".bytes())
+        .collect();
+    let script: Vec<u8> = "export function render(state){return state.items.map(i=>i.id);}"
+        .repeat(12)
+        .into_bytes();
+    let style: Vec<u8> = ".panel{display:flex;align-items:center;padding:4px}"
+        .repeat(14)
+        .into_bytes();
+    let json: Vec<u8> = "{\"name\":\"widget\",\"deps\":[\"a\",\"b\",\"c\"]}"
+        .repeat(10)
+        .into_bytes();
+    let vendor: Vec<u8> = "function noop(){};var registry={};registry.add=noop;"
+        .repeat(11)
+        .into_bytes();
+    let readme: Vec<u8> = "the quick brown fox jumps over the lazy dog. "
+        .repeat(16)
+        .into_bytes();
+    let svg: Vec<u8> = "<svg><path d=\"M0 0 L10 10\"/></svg>"
+        .repeat(13)
+        .into_bytes();
+    let worker: Vec<u8> = "self.onmessage=function(e){postMessage(e.data);};"
+        .repeat(12)
+        .into_bytes();
+    let manifest: Vec<u8> = "{\"start_url\":\"/\",\"display\":\"standalone\"}"
+        .repeat(9)
+        .into_bytes();
+    vec![
+        ("dist/index.html", html),
+        ("dist/app.js", script),
+        ("dist/style.css", style),
+        ("dist/data.json", json),
+        ("dist/vendor.js", vendor),
+        ("dist/readme.txt", readme),
+        ("dist/logo.svg", svg),
+        ("dist/worker.js", worker),
+        ("dist/manifest.json", manifest),
+    ]
+}
+
+fn gzip_encode(raw: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+
+    let mut encoder: flate2::write::GzEncoder<Vec<u8>> =
+        flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+    encoder.write_all(raw).unwrap();
+    encoder.finish().unwrap()
+}
+
+fn zstd_encode(raw: &[u8]) -> Vec<u8> {
+    zstd::encode_all(raw, 19).unwrap()
+}
+
+fn brotli_encode(raw: &[u8]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    let mut input: &[u8] = raw;
+    brotli::BrotliCompress(
+        &mut input,
+        &mut out,
+        &brotli::enc::BrotliEncoderParams::default(),
+    )
+    .unwrap();
+    out
+}
+
+fn c_byte_array(name: &str, bytes: &[u8]) -> String {
+    let body: String = bytes
+        .iter()
+        .map(|byte: &u8| byte.to_string())
+        .collect::<Vec<String>>()
+        .join(",");
+    format!("static const char {name}[]={{{body}}};\n")
+}
+
+fn compressed_table_source(entries: &[(&str, Vec<u8>)]) -> String {
+    use std::fmt::Write;
+
+    let mut source: String = String::from("typedef unsigned long usize;\n");
+    source
+        .push_str("struct rec { const char* name; usize nlen; const char* data; usize dlen; };\n");
+    for (index, (name, blob)) in entries.iter().enumerate() {
+        writeln!(source, "static const char n{index}[]=\"{name}\";").unwrap();
+        source.push_str(&c_byte_array(&format!("d{index}"), blob));
+    }
+    source.push_str("__attribute__((used, retain)) const struct rec table[]={\n");
+    for index in 0..entries.len() {
+        writeln!(
+            source,
+            " {{n{index},sizeof(n{index})-1,d{index},sizeof(d{index})}},"
+        )
+        .unwrap();
+    }
+    source.push_str("};\n");
+    source.push_str("void _start(void){ __asm__ volatile(\"\":: \"r\"(table)); for(;;){} }\n");
+    source
+}
+
+fn carve_encoded_tree(encode: fn(&[u8]) -> Vec<u8>, tag: &str) -> Option<Vec<RecoveredAsset>> {
+    let encoded: Vec<(&str, Vec<u8>)> = compressible_payloads()
+        .iter()
+        .map(|(name, raw): &(&'static str, Vec<u8>)| (*name, encode(raw)))
+        .collect();
+    let image: Vec<u8> = clang_static_pie(&compressed_table_source(&encoded), tag)?;
+    Some(carve_report(&image).unwrap().assets)
+}
+
+fn assert_encoder_round_trip(encode: fn(&[u8]) -> Vec<u8>, expected: Compression, tag: &str) {
+    let Some(assets): Option<Vec<RecoveredAsset>> = carve_encoded_tree(encode, tag) else {
+        eprintln!("SKIP {tag}: clang is not on PATH, so no embedded image could be built");
+        return;
+    };
+    let recovered: BTreeMap<String, &RecoveredAsset> = assets
+        .iter()
+        .map(|asset: &RecoveredAsset| (asset.path.clone(), asset))
+        .collect();
+    for (name, raw) in compressible_payloads() {
+        let asset: &RecoveredAsset = recovered.get(name).unwrap_or_else(|| {
+            panic!("{tag}: {name} was not recovered from the embedded table at all")
+        });
+        assert_eq!(
+            asset.bytes, raw,
+            "{tag}: {name} decoded to bytes the encoder was never given, so a caller reading this \
+             asset gets wrong file content instead of an error"
+        );
+        assert_eq!(
+            asset.compression, expected,
+            "{tag}: {name} is reported as {:?} rather than {expected:?}, so the reported encoding \
+             does not describe how the bytes were actually recovered",
+            asset.compression
+        );
+    }
+}
+
+#[test]
+fn gzip_embedded_assets_decode_to_what_the_encoder_was_given() {
+    assert_encoder_round_trip(gzip_encode, Compression::Gzip, "webview-gzip");
+}
+
+#[test]
+fn zstd_embedded_assets_decode_to_what_the_encoder_was_given() {
+    assert_encoder_round_trip(zstd_encode, Compression::Zstd, "webview-zstd");
+}
+
+#[test]
+fn brotli_embedded_assets_decode_to_what_the_encoder_was_given() {
+    assert_encoder_round_trip(brotli_encode, Compression::Brotli, "webview-brotli");
 }
