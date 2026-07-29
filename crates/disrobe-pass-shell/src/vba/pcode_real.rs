@@ -1148,8 +1148,13 @@ fn has_range(buf: &[u8], offset: usize, len: usize) -> bool {
 fn disasm_imp(arg: OpArg, word: u16, mnem: &str, ctx: &LineContext) -> String {
     if mnem != "Open" {
         let object: &[u8] = ctx.tables.object;
-        if matches!(arg, OpArg::Imp) && has_range(object, word as usize, 8) {
-            format!("{} ", read_name_at(object, word as usize + 6, ctx))
+        let offs: usize = if ctx.is_64bit {
+            object_entry_offset(word as usize, ctx)
+        } else {
+            word as usize
+        };
+        if matches!(arg, OpArg::Imp) && has_range(object, offs, 8) {
+            format!("{} ", read_name_at(object, offs + 6, ctx))
         } else {
             format!("imp_{word:04X} ")
         }
@@ -1224,34 +1229,58 @@ fn disasm_type_arg(dword: u32, ctx: &LineContext) -> String {
     }
 }
 
-fn disasm_object(indirect: &[u8], object: &[u8], offset: usize, ctx: &LineContext) -> String {
-    if ctx.is_64bit {
-        return String::new();
-    }
-    if !has_range(indirect, offset, 4) {
-        return String::new();
-    }
-    let type_desc: usize = read_u32(indirect, offset, ctx.endian) as usize;
-    if !has_range(indirect, type_desc, 2) {
+const OBJECT_TABLE_ENTRY_BYTES: usize = 10;
+const MAX_TYPE_DESCRIPTOR_DEPTH: usize = 8;
+
+fn named_type_from_descriptor(type_desc: usize, ctx: &LineContext, depth: usize) -> String {
+    let indirect: &[u8] = ctx.tables.indirect;
+    if depth >= MAX_TYPE_DESCRIPTOR_DEPTH || !has_range(indirect, type_desc, 8) {
         return String::new();
     }
     let flags: u16 = read_u16(indirect, type_desc, ctx.endian);
     if flags & 0x02 != 0 {
-        return disasm_type(indirect, type_desc);
+        let element_desc: usize = type_desc + 6;
+        let element_id: usize = indirect[element_desc] as usize;
+        let element: String = match DIM_TYPES.get(element_id) {
+            Some(name) if !name.is_empty() => (*name).to_owned(),
+            _ => named_type_from_descriptor(element_desc, ctx, depth + 1),
+        };
+        return if element.is_empty() {
+            String::new()
+        } else {
+            format!("{element}()")
+        };
     }
-    if !has_range(indirect, type_desc, 4) {
+    let word: usize = read_u16(indirect, type_desc + 2, ctx.endian) as usize;
+    if word == 0 && !ctx.is_64bit {
         return String::new();
     }
-    let word: u16 = read_u16(indirect, type_desc + 2, ctx.endian);
-    if word == 0 {
-        return String::new();
-    }
-    let offs: usize = (word as usize >> 2) * 10;
+    let offs: usize = object_entry_offset(word, ctx);
+    let object: &[u8] = ctx.tables.object;
     if !has_range(object, offs, 8) {
         return String::new();
     }
-    let hl_name: u16 = read_u16(object, offs + 6, ctx.endian);
-    resolve_identifier(hl_name, ctx.identifiers, ctx.vba_ver, ctx.is_64bit)
+    read_name_at(object, offs + 6, ctx)
+}
+
+const fn object_entry_offset(word: usize, ctx: &LineContext) -> usize {
+    let entry_stride_shift: usize = if ctx.is_64bit { 3 } else { 2 };
+    (word >> entry_stride_shift) * OBJECT_TABLE_ENTRY_BYTES
+}
+
+fn named_type_from_slot(type_dword: u32, ctx: &LineContext) -> String {
+    if type_dword & 0xFFFF_0000 == 0xFFFF_0000 {
+        return type_name_from_id((type_dword & 0x0000_00FF) as u8);
+    }
+    named_type_from_descriptor(type_dword as usize, ctx, 0)
+}
+
+fn disasm_object(indirect: &[u8], offset: usize, ctx: &LineContext) -> String {
+    if !has_range(indirect, offset, 4) {
+        return String::new();
+    }
+    let type_desc: usize = read_u32(indirect, offset, ctx.endian) as usize;
+    named_type_from_descriptor(type_desc, ctx, 0)
 }
 
 fn disasm_rec(dword: u32, ctx: &LineContext) -> String {
@@ -1298,7 +1327,7 @@ fn disasm_var(dword: u32, ctx: &LineContext) -> String {
                     let type_id: u8 = indirect[type_base];
                     type_name_from_id(type_id)
                 } else {
-                    disasm_object(indirect, ctx.tables.object, type_base, ctx)
+                    disasm_object(indirect, type_base, ctx)
                 };
                 if !type_name.is_empty() {
                     var_type.push_str("As ");
@@ -1313,12 +1342,16 @@ fn disasm_var(dword: u32, ctx: &LineContext) -> String {
     var_name
 }
 
+const fn arg_record_offs(ctx: &LineContext) -> usize {
+    if ctx.is_64bit { 4 } else { 0 }
+}
+
 fn disasm_arg(indirect: &[u8], arg_offset: usize, ctx: &LineContext) -> String {
     if !has_range(indirect, arg_offset, 2) {
         return String::new();
     }
     let flags: u16 = read_u16(indirect, arg_offset, ctx.endian);
-    let offs: usize = if ctx.is_64bit { 4 } else { 0 };
+    let offs: usize = arg_record_offs(ctx);
     let mut arg_name: String = arg_offset
         .checked_add(2)
         .map_or_else(String::new, |offset: usize| {
@@ -1346,14 +1379,20 @@ fn disasm_arg(indirect: &[u8], arg_offset: usize, ctx: &LineContext) -> String {
     if arg_opts & 0x0002 != 0 {
         arg_name = format!("ByRef {arg_name}");
     }
+    if arg_opts & 0x0106 == 0x0100 {
+        arg_name = format!("ParamArray {arg_name}");
+    }
     if arg_opts & 0x0200 != 0 {
         arg_name = format!("Optional {arg_name}");
     }
     if flags & 0x0020 != 0 {
-        arg_name.push_str(" As ");
-        if arg_type & 0xFFFF_0000 != 0 {
-            let arg_type_id: u8 = (arg_type & 0x0000_00FF) as u8;
-            arg_name.push_str(&type_name_from_id(arg_type_id));
+        let type_name: String = named_type_from_slot(arg_type, ctx);
+        if let Some(element) = type_name.strip_suffix("()") {
+            arg_name.push_str("() As ");
+            arg_name.push_str(element);
+        } else if !type_name.is_empty() {
+            arg_name.push_str(" As ");
+            arg_name.push_str(&type_name);
         }
     }
     arg_name
@@ -1443,16 +1482,20 @@ fn disasm_func(dword: u32, op_type: u16, ctx: &LineContext) -> String {
         let lib_name: String = read_name_at(ctx.tables.declaration, decl_offset as usize + 2, ctx);
         func_decl.push_str(&format!(" Lib \"{lib_name}\" "));
     }
+    let arg_offs: usize = arg_record_offs(ctx);
     let mut arg_list: Vec<String> = Vec::new();
+    let mut seen_arg_bases: Vec<u32> = Vec::new();
     while arg_offset != 0xFFFF_FFFF
         && arg_offset != 0
         && arg_list.len() < MAX_FUNC_ARG_CHAIN
-        && has_range(indirect, arg_offset as usize, 26)
+        && !seen_arg_bases.contains(&arg_offset)
+        && has_range(indirect, arg_offset as usize, arg_offs + 26)
     {
+        seen_arg_bases.push(arg_offset);
         let arg_base: usize = arg_offset as usize;
         arg_list.push(disasm_arg(indirect, arg_base, ctx));
         let Some(next_pos): Option<usize> = arg_base
-            .checked_add(20)
+            .checked_add(arg_offs + 20)
             .filter(|pos: &usize| has_range(indirect, *pos, 4))
         else {
             break;
@@ -1463,15 +1506,10 @@ fn disasm_func(dword: u32, op_type: u16, ctx: &LineContext) -> String {
     func_decl.push_str(&arg_list.join(", "));
     func_decl.push(')');
     if has_as {
-        func_decl.push_str(" As ");
-        if ret_type & 0xFFFF_0000 == 0xFFFF_0000 {
-            let type_id: u8 = (ret_type & 0x0000_00FF) as u8;
-            func_decl.push_str(&type_name_from_id(type_id));
-        } else if let Some(ret_pos) = (ret_type as usize)
-            .checked_add(6)
-            .filter(|pos: &usize| has_range(indirect, *pos, 2))
-        {
-            func_decl.push_str(&read_name_at(indirect, ret_pos, ctx));
+        let ret_name: String = named_type_from_slot(ret_type, ctx);
+        if !ret_name.is_empty() {
+            func_decl.push_str(" As ");
+            func_decl.push_str(&ret_name);
         }
     }
     func_decl.push(')');
@@ -1519,11 +1557,11 @@ fn resolve_identifier(id_code: u16, identifiers: &[String], vba_ver: u8, is_64bi
             if is_64bit {
                 idx -= 3;
             }
-            if idx > 0xBE {
-                idx -= 1;
-            }
         }
         if idx >= 0 && (idx as usize) < identifiers.len() {
+            if std::env::var("DISROBE_ID_DEBUG").is_ok() {
+                return format!("{}#{idx}", identifiers[idx as usize]);
+            }
             return identifiers[idx as usize].clone();
         }
         return format!("id_{orig_code:04X}");
@@ -2443,10 +2481,51 @@ mod tests {
         let (_, text): (Vec<PCodeInstruction>, String) = walk_pcode_line(asm.finish(), 0, &ctx);
         assert_eq!(
             text.matches("ARG").count(),
-            MAX_FUNC_ARG_CHAIN,
-            "self-referential arg chain must stop at the cap, not walk forever"
+            1,
+            "a self-referential arg chain must render each record once, not walk forever"
         );
         assert!(text.len() < 1 << 20, "capped arg chain must stay bounded");
+    }
+
+    fn identifier_code_64bit(index: u16) -> u16 {
+        (index + 0x100 + 4 + 3) * 2
+    }
+
+    #[test]
+    fn every_parameter_in_a_64_bit_arg_chain_is_rendered() {
+        let mut indirect: Vec<u8> = vec![0u8; 256];
+        indirect[0..2].copy_from_slice(&0x1000u16.to_le_bytes());
+        indirect[2..4].copy_from_slice(&identifier_code_64bit(0).to_le_bytes());
+        indirect[56..60].copy_from_slice(&128u32.to_le_bytes());
+        indirect[60..64].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        indirect[64..66].copy_from_slice(&0xFFFFu16.to_le_bytes());
+        for (record, index, next) in [(128usize, 1u16, 160u32), (160, 2, 0xFFFF_FFFF)] {
+            indirect[record..record + 2].copy_from_slice(&0x0020u16.to_le_bytes());
+            indirect[record + 2..record + 4]
+                .copy_from_slice(&identifier_code_64bit(index).to_le_bytes());
+            indirect[record + 16..record + 20].copy_from_slice(&0xFFFF_0008u32.to_le_bytes());
+            indirect[record + 24..record + 28].copy_from_slice(&next.to_le_bytes());
+        }
+        let identifiers: Vec<String> =
+            vec!["OWNER".to_owned(), "FIRST".to_owned(), "SECOND".to_owned()];
+        let ctx: LineContext = LineContext {
+            identifiers: &identifiers,
+            tables: ModuleTables {
+                indirect: &indirect,
+                object: &[],
+                declaration: &[],
+            },
+            vba_ver: 7,
+            is_64bit: true,
+            endian: Endian::Little,
+        };
+        let mut asm: PCodeAsm = PCodeAsm::new();
+        asm.opcode(OP_FUNCDEFN).dword(0);
+        let (_, text): (Vec<PCodeInstruction>, String) = walk_pcode_line(asm.finish(), 0, &ctx);
+        assert!(
+            text.contains("OWNER(FIRST As String, SECOND As String)"),
+            "both parameters of a 64-bit arg chain must appear; got {text}"
+        );
     }
 
     #[test]

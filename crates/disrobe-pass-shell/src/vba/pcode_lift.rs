@@ -29,6 +29,7 @@ enum BlockKind {
 struct OpenBlock {
     kind: BlockKind,
     header_out_index: usize,
+    inline: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +50,8 @@ struct Lifter {
     printing: bool,
     print_target: String,
     print_items: Vec<String>,
+    join_next: Option<&'static str>,
+    dim_group: Option<usize>,
 }
 
 impl Lifter {
@@ -65,6 +68,8 @@ impl Lifter {
             printing: false,
             print_target: String::new(),
             print_items: Vec::new(),
+            join_next: None,
+            dim_group: None,
         }
     }
 
@@ -83,16 +88,24 @@ impl Lifter {
     }
 
     fn emit(&mut self, stmt: String) {
+        if let Some(separator) = self.join_next.take()
+            && let Some(previous) = self.out.last_mut()
+        {
+            previous.push_str(separator);
+            previous.push_str(&stmt);
+            return;
+        }
         let pad: String = "    ".repeat(self.indent);
         self.out.push(format!("{pad}{stmt}"));
     }
 
     fn open(&mut self, kind: BlockKind, header: String) {
-        let header_out_index: usize = self.out.len();
         self.emit(header);
+        let header_out_index: usize = self.out.len().saturating_sub(1);
         self.blocks.push(OpenBlock {
             kind,
             header_out_index,
+            inline: false,
         });
         self.indent += 1;
     }
@@ -244,11 +257,9 @@ fn decl_keyword(head: &DeclHead) -> String {
 
 #[must_use]
 fn vardefn_type_suffix(paren: &str) -> String {
-    let p: &str = paren
-        .trim()
-        .trim_start_matches('(')
-        .trim_end_matches(')')
-        .trim();
+    let outer: &str = paren.trim();
+    let inner: &str = outer.strip_prefix('(').unwrap_or(outer);
+    let p: &str = inner.strip_suffix(')').unwrap_or(inner).trim();
     if p.is_empty() {
         return String::new();
     }
@@ -267,12 +278,14 @@ fn vardefn_type_suffix(paren: &str) -> String {
 #[must_use]
 fn parse_vardefn(rest: &str) -> (String, String) {
     let trimmed: &str = rest.trim();
-    match trimmed.find('(') {
-        Some(i) => (
-            trimmed[..i].trim().to_owned(),
-            vardefn_type_suffix(&trimmed[i..]),
-        ),
-        None => (trimmed.to_owned(), String::new()),
+    let Some(i): Option<usize> = trimmed.find('(') else {
+        return (trimmed.to_owned(), String::new());
+    };
+    let name: String = trimmed[..i].trim().to_owned();
+    let suffix: String = vardefn_type_suffix(&trimmed[i..]);
+    match suffix.strip_suffix("()") {
+        Some(element) => (format!("{name}()"), element.to_owned()),
+        None => (name, suffix),
     }
 }
 
@@ -334,6 +347,8 @@ fn unary_prefix(l: &mut Lifter, op: &str) {
 
 fn lift_line(l: &mut Lifter, line: &RealPCodeLine) {
     l.pending_decl = None;
+    l.join_next = None;
+    l.dim_group = None;
     let produced_before: usize = l.out.len();
     let mut saw_known: bool = false;
     for raw in line.text.lines() {
@@ -702,7 +717,17 @@ fn apply(l: &mut Lifter, mnem: &str, rest: &str, line: &RealPCodeLine) -> bool {
             true
         }
         "EndIf" | "EndIfBlock" => {
-            l.close("End If".to_owned());
+            if l.blocks
+                .last()
+                .is_some_and(|b: &OpenBlock| b.kind == BlockKind::If && b.inline)
+            {
+                l.blocks.pop();
+                if l.indent > 0 {
+                    l.indent -= 1;
+                }
+            } else {
+                l.close("End If".to_owned());
+            }
             true
         }
         "For" | "ForStep" => {
@@ -727,8 +752,13 @@ fn apply(l: &mut Lifter, mnem: &str, rest: &str, line: &RealPCodeLine) -> bool {
             l.open(BlockKind::ForEach, format!("For Each {var} In {coll}"));
             true
         }
-        "Next" | "NextVar" => {
+        "Next" => {
             l.close("Next".to_owned());
+            true
+        }
+        "NextVar" => {
+            let var: String = l.pop();
+            l.close(format!("Next {var}"));
             true
         }
         "Do" => {
@@ -915,6 +945,7 @@ fn apply(l: &mut Lifter, mnem: &str, rest: &str, line: &RealPCodeLine) -> bool {
         }
         "Dim" | "DimImplicit" => {
             l.pending_decl = Some(parse_decl_head(rest));
+            l.dim_group = None;
             true
         }
         "VarDefn" => {
@@ -936,7 +967,14 @@ fn apply(l: &mut Lifter, mnem: &str, rest: &str, line: &RealPCodeLine) -> bool {
                 } else {
                     String::new()
                 };
-                l.emit(format!("{keyword} {name}{type_suffix}{value}"));
+                let declarator: String = format!("{name}{type_suffix}{value}");
+                if let Some(existing) = l.dim_group.and_then(|i: usize| l.out.get_mut(i)) {
+                    existing.push_str(", ");
+                    existing.push_str(&declarator);
+                } else {
+                    l.emit(format!("{keyword} {declarator}"));
+                    l.dim_group = Some(l.out.len().saturating_sub(1));
+                }
             }
             true
         }
@@ -944,7 +982,7 @@ fn apply(l: &mut Lifter, mnem: &str, rest: &str, line: &RealPCodeLine) -> bool {
             let raw: &str = rest.trim();
             let (prefix, name): (&str, &str) = match raw.strip_prefix("(Private)") {
                 Some(r) => ("Private ", r.trim()),
-                None => ("", raw),
+                None => ("Public ", raw),
             };
             l.open(BlockKind::Type, format!("{prefix}Type {name}"));
             true
@@ -1070,11 +1108,81 @@ fn apply(l: &mut Lifter, mnem: &str, rest: &str, line: &RealPCodeLine) -> bool {
             }
             true
         }
+        "Coerce" => {
+            if let Some(func) = coercion_function(rest)
+                && !l.stack.is_empty()
+            {
+                let value: String = l.pop();
+                l.stack.push(format!("{func}({value})"));
+            }
+            true
+        }
+        "BoS" => {
+            l.join_next = Some(": ");
+            true
+        }
+        "BoSImplicit" => {
+            l.join_next = Some(" ");
+            if let Some(block) = l.blocks.last_mut()
+                && block.kind == BlockKind::If
+            {
+                block.inline = true;
+            }
+            true
+        }
         "SetStmt" | "CaseDone" | "PrintNL" | "PrintEoS" | "PrintSemi" | "PrintComma"
-        | "PrintSpc" | "PrintTab" | "PrintTabComma" | "BoS" | "BoSImplicit" | "BoL" | "Coerce"
-        | "CoerceVar" | "Paren0" | "EndContext" | "Context" | "LineCont" | "ParamByVal"
-        | "ParamOmitted" | "OptionBase" | "StartForVariable" | "EndForVariable" => true,
+        | "PrintSpc" | "PrintTab" | "PrintTabComma" | "BoL" | "CoerceVar" | "Paren0"
+        | "EndContext" | "Context" | "LineCont" | "ParamByVal" | "ParamOmitted" | "OptionBase"
+        | "StartForVariable" | "EndForVariable" => true,
         _ => false,
+    }
+}
+
+#[must_use]
+fn typed_float_literal(rendered: &str, suffix: char) -> String {
+    if rendered
+        .chars()
+        .all(|c: char| c.is_ascii_digit() || c == '-' || c == '+')
+    {
+        return format!("{rendered}{suffix}");
+    }
+    rendered.to_owned()
+}
+
+const CURRENCY_SCALE: u64 = 10_000;
+
+#[must_use]
+fn format_currency(scaled: i64) -> String {
+    let sign: &str = if scaled < 0 { "-" } else { "" };
+    let magnitude: u64 = scaled.unsigned_abs();
+    let units: u64 = magnitude / CURRENCY_SCALE;
+    let frac: u64 = magnitude % CURRENCY_SCALE;
+    if frac == 0 {
+        return format!("{sign}{units}@");
+    }
+    let mut digits: String = format!("{frac:04}");
+    while digits.ends_with('0') {
+        digits.pop();
+    }
+    format!("{sign}{units}.{digits}@")
+}
+
+#[must_use]
+fn coercion_function(rest: &str) -> Option<&'static str> {
+    let outer: &str = rest.trim();
+    let inner: &str = outer.strip_prefix('(').unwrap_or(outer);
+    match inner.strip_suffix(')').unwrap_or(inner).trim() {
+        "Int" => Some("CInt"),
+        "Lng" => Some("CLng"),
+        "Sng" => Some("CSng"),
+        "Dbl" => Some("CDbl"),
+        "Cur" => Some("CCur"),
+        "Date" => Some("CDate"),
+        "Str" => Some("CStr"),
+        "Bool" => Some("CBool"),
+        "Byte" => Some("CByte"),
+        "Var" => Some("CVar"),
+        _ => None,
     }
 }
 
@@ -1100,14 +1208,21 @@ fn lit_number(mnem: &str, rest: &str) -> String {
         "LitR4" => {
             let lo: u32 = words.first().copied().unwrap_or(0) as u32;
             let hi: u32 = words.get(1).copied().unwrap_or(0) as u32;
-            f32::from_bits(hi << 16 | lo).to_string()
+            typed_float_literal(&f32::from_bits(hi << 16 | lo).to_string(), '!')
         }
         "LitR8" => {
             let mut bits: u64 = 0;
             for (i, w) in words.iter().take(4).enumerate() {
                 bits |= (*w as u64) << (16 * i);
             }
-            f64::from_bits(bits).to_string()
+            typed_float_literal(&f64::from_bits(bits).to_string(), '#')
+        }
+        "LitCy" => {
+            let mut bits: u64 = 0;
+            for (i, w) in words.iter().take(4).enumerate() {
+                bits |= (*w as u64) << (16 * i);
+            }
+            format_currency(bits as i64)
         }
         _ => {
             let mut bits: u64 = 0;
@@ -1264,6 +1379,68 @@ mod tests {
         assert!(
             r.pseudocode.contains("result = a * 2 + 3"),
             "lift output:\n{}",
+            r.pseudocode
+        );
+    }
+
+    #[test]
+    fn statements_sharing_one_pcode_line_stay_on_one_source_line() {
+        let m: RealModuleDisasm = module(
+            "M",
+            vec![
+                line(
+                    0,
+                    "Ld level\nLd g_LogLevel\nLt\nIf\nBoSImplicit\nExitSub\nEndIf",
+                ),
+                line(
+                    1,
+                    "Ld LogLevelDebug\nCase\nCaseDone\nBoS 0x001D\nLitStr 0x0003 \"DBG\"\nSt Prefix",
+                ),
+                line(2, "Dim\nVarDefn r (As Long)\nVarDefn c (As Long)"),
+            ],
+        );
+        let r: SemanticLift = semantic_lift(&m);
+        assert!(
+            r.pseudocode.contains("If level < g_LogLevel Then Exit Sub"),
+            "{}",
+            r.pseudocode
+        );
+        assert!(
+            !r.pseudocode.contains("End If"),
+            "a single-line If must not gain a block terminator:\n{}",
+            r.pseudocode
+        );
+        assert!(
+            r.pseudocode
+                .contains("Case LogLevelDebug: Prefix = \"DBG\""),
+            "{}",
+            r.pseudocode
+        );
+        assert!(
+            r.pseudocode.contains("Dim r As Long, c As Long"),
+            "{}",
+            r.pseudocode
+        );
+    }
+
+    #[test]
+    fn typed_literals_keep_the_suffix_that_produced_them() {
+        let m: RealModuleDisasm = module(
+            "M",
+            vec![
+                line(0, "LitCy 0x4000 0x009C 0x0000 0x0000\nSt size"),
+                line(1, "LitCy 0x1F40 0x0000 0x0000 0x0000\nSt half"),
+                line(2, "LitR8 0x0000 0x0000 0x0000 0x0000\nSt zero"),
+                line(3, "Ld raw\nCoerce (Lng)\nSt count"),
+            ],
+        );
+        let r: SemanticLift = semantic_lift(&m);
+        assert!(r.pseudocode.contains("size = 1024@"), "{}", r.pseudocode);
+        assert!(r.pseudocode.contains("half = 0.8@"), "{}", r.pseudocode);
+        assert!(r.pseudocode.contains("zero = 0#"), "{}", r.pseudocode);
+        assert!(
+            r.pseudocode.contains("count = CLng(raw)"),
+            "{}",
             r.pseudocode
         );
     }
