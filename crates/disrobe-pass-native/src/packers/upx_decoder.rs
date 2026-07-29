@@ -34,6 +34,7 @@ impl UpxMethod {
 }
 
 const UPX_MAGIC: &[u8; 4] = b"UPX!";
+const ELF_MAGIC: &[u8; 4] = b"\x7fELF";
 const PACK_HEADER_LEN: usize = 32;
 const B_INFO_LEN: usize = 12;
 const MAX_DECOMPRESSED: usize = 256 * 1024 * 1024;
@@ -41,6 +42,11 @@ const MAX_BLOCKS: usize = 1 << 16;
 const MAX_BRUTE_FORCE_OFFSETS: usize = 1 << 16;
 const MAX_VERIFY_CANDIDATES: usize = 4096;
 const MAX_VERIFY_EXPANSION: u64 = 64;
+const L_INFO_MAGIC_TO_FIRST_BLOCK: usize = 20;
+const L_INFO_MAGIC_TO_FILESIZE: usize = 12;
+const MAX_L_INFO_SCAN: usize = 64 * 1024;
+const MAX_TAIL_SCAN: usize = 4096;
+const MAX_RESYNC_OFFSETS: usize = 1 << 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UpxPackHeader {
@@ -182,6 +188,7 @@ pub struct BInfo {
     pub method: u8,
     pub filter_id: u8,
     pub filter_cto: u8,
+    pub extra: u8,
 }
 
 impl BInfo {
@@ -193,6 +200,7 @@ impl BInfo {
             method: slice[8],
             filter_id: slice[9],
             filter_cto: slice[10],
+            extra: slice[11],
         })
     }
 }
@@ -208,6 +216,11 @@ pub struct UpxUnpackOutput {
 
 pub fn unpack_upx(packed: &[u8]) -> Result<UpxUnpackOutput> {
     crate::debug::dbg_section("upx unpack");
+    if packed.starts_with(ELF_MAGIC)
+        && let Some(out) = unpack_upx_elf(packed)
+    {
+        return Ok(out);
+    }
     let header: UpxPackHeader =
         UpxPackHeader::locate_and_parse(packed).inspect_err(|e: &Error| {
             crate::debug::dbg_kv("upx-wall", || {
@@ -263,6 +276,231 @@ pub fn unpack_upx(packed: &[u8]) -> Result<UpxUnpackOutput> {
         recovered_image: image,
         block_count,
         adler_verified,
+    })
+}
+
+struct ElfBlock {
+    bytes: Vec<u8>,
+    next: usize,
+}
+
+fn tail_pack_header(packed: &[u8]) -> Option<UpxPackHeader> {
+    let last: usize = packed.len().checked_sub(PACK_HEADER_LEN)?;
+    let first: usize = last.saturating_sub(MAX_TAIL_SCAN);
+    (first..=last).rev().find_map(|offset: usize| {
+        if packed.get(offset..offset + 4)? != &UPX_MAGIC[..] {
+            return None;
+        }
+        let header: UpxPackHeader = UpxPackHeader::parse_at(packed, offset)?;
+        (header.u_len == header.u_file_size && header.version != 0 && header.version <= 16)
+            .then_some(header)
+    })
+}
+
+fn elf_first_block_offset(packed: &[u8], u_len: u32) -> Option<usize> {
+    let limit: usize = MAX_L_INFO_SCAN.min(packed.len());
+    let mut from: usize = 0;
+    while let Some(rel) = find_subsequence(packed.get(from..limit)?, UPX_MAGIC) {
+        let magic: usize = from + rel;
+        let at: usize = magic + L_INFO_MAGIC_TO_FILESIZE;
+        if let Some(raw) = packed.get(at..at + 4)
+            && u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) == u_len
+        {
+            return Some(magic + L_INFO_MAGIC_TO_FIRST_BLOCK);
+        }
+        from = magic + 1;
+    }
+    None
+}
+
+fn elf_block_at(
+    packed: &[u8],
+    offset: usize,
+    remaining: usize,
+    method: UpxMethod,
+) -> Option<ElfBlock> {
+    let info: BInfo = BInfo::parse_at(packed, offset)?;
+    let u_len: usize = info.u_len as usize;
+    let c_len: usize = info.c_len as usize;
+    if u_len == 0 || u_len > remaining || c_len == 0 || c_len > u_len || info.extra != 0 {
+        return None;
+    }
+    let data_start: usize = offset.checked_add(B_INFO_LEN)?;
+    let data_end: usize = data_start.checked_add(c_len)?;
+    let comp: &[u8] = packed.get(data_start..data_end)?;
+    let mut bytes: Vec<u8> = if c_len == u_len {
+        comp.to_vec()
+    } else {
+        if info.method != method.id() {
+            return None;
+        }
+        let decoded: Vec<u8> = decompress_block(method, comp, u_len).ok()?;
+        if decoded.len() != u_len {
+            return None;
+        }
+        decoded
+    };
+    if info.filter_id != 0 {
+        unfilter_ct(&mut bytes, info.filter_id, info.filter_cto).ok()?;
+    }
+    Some(ElfBlock {
+        bytes,
+        next: data_end,
+    })
+}
+
+fn decode_elf_extents(packed: &[u8], header: &UpxPackHeader) -> Option<(Vec<u8>, usize)> {
+    let target: usize = header.u_len as usize;
+    let start: usize = elf_first_block_offset(packed, header.u_len)?;
+    let mut image: Vec<u8> = Vec::with_capacity(target.min(MAX_DECOMPRESSED));
+    let mut cursor: usize = start;
+    let mut blocks: usize = 0;
+    while image.len() < target {
+        let remaining: usize = target - image.len();
+        let mut block: Option<ElfBlock> = elf_block_at(packed, cursor, remaining, header.method);
+        if block.is_none() {
+            let mut probe: usize = (cursor + 4) & !3usize;
+            let mut scanned: usize = 0;
+            while probe + B_INFO_LEN <= packed.len() && scanned < MAX_RESYNC_OFFSETS {
+                if let Some(candidate) = elf_block_at(packed, probe, remaining, header.method) {
+                    block = Some(candidate);
+                    break;
+                }
+                scanned += 1;
+                probe += 4;
+            }
+        }
+        let found: ElfBlock = block?;
+        image.extend_from_slice(&found.bytes);
+        cursor = found.next;
+        blocks += 1;
+        if blocks > MAX_BLOCKS {
+            return None;
+        }
+    }
+    Some((image, blocks))
+}
+
+fn elf_load_ranges(image: &[u8]) -> Option<Vec<(usize, usize)>> {
+    let total: usize = image.len();
+    let elf64: bool = match image.get(4)? {
+        1 => false,
+        2 => true,
+        _ => return None,
+    };
+    if *image.get(5)? != 1 {
+        return None;
+    }
+    let (ph_off, ph_ent, ph_num): (usize, usize, usize) = if elf64 {
+        (
+            usize::try_from(read_u64(image, 0x20)?).ok()?,
+            read_u16(image, 0x36).ok()? as usize,
+            read_u16(image, 0x38).ok()? as usize,
+        )
+    } else {
+        (
+            read_u32(image, 0x1c).ok()? as usize,
+            read_u16(image, 0x2a).ok()? as usize,
+            read_u16(image, 0x2c).ok()? as usize,
+        )
+    };
+    let min_ent: usize = if elf64 { 56 } else { 32 };
+    if ph_ent < min_ent || ph_num == 0 {
+        return None;
+    }
+    let mut loads: Vec<(usize, usize)> = Vec::with_capacity(ph_num);
+    for i in 0..ph_num {
+        let base: usize = ph_off.checked_add(i.checked_mul(ph_ent)?)?;
+        if read_u32(image, base).ok()? != 1 {
+            continue;
+        }
+        let (offset, filesz): (usize, usize) = if elf64 {
+            (
+                usize::try_from(read_u64(image, base + 8)?).ok()?,
+                usize::try_from(read_u64(image, base + 0x20)?).ok()?,
+            )
+        } else {
+            (
+                read_u32(image, base + 4).ok()? as usize,
+                read_u32(image, base + 0x10).ok()? as usize,
+            )
+        };
+        if filesz == 0 {
+            continue;
+        }
+        if offset.checked_add(filesz)? > total {
+            return None;
+        }
+        if loads
+            .last()
+            .is_some_and(|&(o, l): &(usize, usize)| o + l > offset)
+        {
+            return None;
+        }
+        loads.push((offset, filesz));
+    }
+    if loads.first().map(|&(o, _): &(usize, usize)| o) != Some(0) {
+        return None;
+    }
+    let mut order: Vec<(usize, usize)> = loads.clone();
+    let mut cursor: usize = 0;
+    for &(offset, filesz) in &loads {
+        if offset > cursor {
+            order.push((cursor, offset - cursor));
+        }
+        cursor = offset + filesz;
+    }
+    if cursor < total {
+        order.push((cursor, total - cursor));
+    }
+    (order
+        .iter()
+        .map(|&(_, l): &(usize, usize)| l)
+        .sum::<usize>()
+        == total)
+        .then_some(order)
+}
+
+fn read_u64(bytes: &[u8], offset: usize) -> Option<u64> {
+    let raw: &[u8] = bytes.get(offset..offset + 8)?;
+    Some(u64::from_le_bytes(raw.try_into().ok()?))
+}
+
+fn relayout_elf_extents(stream: &[u8]) -> Option<Vec<u8>> {
+    let order: Vec<(usize, usize)> = elf_load_ranges(stream)?;
+    let mut out: Vec<u8> = vec![0u8; stream.len()];
+    let mut cursor: usize = 0;
+    for &(offset, len) in &order {
+        let src: &[u8] = stream.get(cursor..cursor.checked_add(len)?)?;
+        out.get_mut(offset..offset.checked_add(len)?)?
+            .copy_from_slice(src);
+        cursor += len;
+    }
+    Some(out)
+}
+
+fn unpack_upx_elf(packed: &[u8]) -> Option<UpxUnpackOutput> {
+    let header: UpxPackHeader = tail_pack_header(packed)?;
+    let (image, blocks): (Vec<u8>, usize) = decode_elf_extents(packed, &header)?;
+    let adler: u32 = ucl_adler32(1, &image);
+    crate::debug::dbg_kv("upx-elf", || {
+        format!(
+            "blocks={blocks} recovered={} u_len={} adler={adler:#x} expected={:#x}",
+            image.len(),
+            header.u_len,
+            header.u_adler
+        )
+    });
+    if adler != header.u_adler {
+        return None;
+    }
+    let recovered_image: Vec<u8> = relayout_elf_extents(&image).unwrap_or(image);
+    Some(UpxUnpackOutput {
+        method: header.method,
+        filter_id: header.filter_id,
+        recovered_image,
+        block_count: blocks,
+        adler_verified: true,
     })
 }
 
