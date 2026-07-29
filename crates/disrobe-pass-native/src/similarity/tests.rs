@@ -36,6 +36,14 @@ fn words_of(body: &[DisasmInstruction]) -> Vec<Option<u32>> {
     body.iter().map(instruction_word).collect()
 }
 
+fn tail_context<'a>(
+    index: &'a ImageIndex,
+    entries: &'a BTreeSet<u64>,
+    positions: &'a BTreeMap<u64, usize>,
+) -> TailContext<'a> {
+    TailContext::new(index, entries, Some(positions))
+}
+
 #[test]
 fn a_non_object_input_is_refused() {
     let error: Error = extract_function_features(b"this is not a binary").expect_err("refuse");
@@ -398,9 +406,12 @@ fn an_aarch64_call_is_recorded_only_when_its_target_is_a_known_function() {
         aarch64_insn(0x100C, "ret", 0xD65F_03C0),
     ];
     let entries: BTreeSet<u64> = BTreeSet::from([0x1000, 0x1010]);
+    let index: ImageIndex = ImageIndex::default();
+    let positions: BTreeMap<u64, usize> =
+        instruction_positions(&body).expect("distinct instruction offsets");
 
     assert_eq!(
-        aarch64_call_targets(&body, &entries),
+        aarch64_call_targets(&body, tail_context(&index, &entries, &positions)),
         BTreeSet::from([FunctionId::from(0x1010)]),
         "only the resolved call into a known function survives"
     );
@@ -605,6 +616,225 @@ fn discovered_aarch64_parts_suppress_only_reference_anchors() {
         vec![DataReference::string_literal(
             "retained for symbols".to_owned()
         )]
+    );
+}
+
+fn x86_insn(address: u64, mnemonic: &str, flow: InsnFlow, bytes: &[u8]) -> DisasmInstruction {
+    let mut carried: DisasmInstruction = DisasmInstruction {
+        offset: address,
+        bytes: bytes.to_vec(),
+        mnemonic: mnemonic.to_owned(),
+        flow,
+        ..DisasmInstruction::default()
+    };
+    if let Some(decoded) = decode_x86(64, &carried)
+        && matches!(
+            decoded.op0_kind(),
+            OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64
+        )
+    {
+        carried.branch_target = Some(decoded.near_branch_target());
+    }
+    carried
+}
+
+fn only_graph(text: &[u8]) -> ControlFlowGraph {
+    let features: Vec<FunctionFeatures> = features_of(text);
+    assert_eq!(features.len(), 1, "one discovered function: {features:?}");
+    features[0]
+        .structure()
+        .expect("a fully resolved body carries a structure")
+        .clone()
+}
+
+#[test]
+fn a_tail_jump_to_a_discovered_function_ends_the_body_and_names_a_call_edge() {
+    let text: [u8; 12] = [
+        0xE8, 0x03, 0x00, 0x00, 0x00, 0xEB, 0x01, 0xCC, 0x31, 0xC0, 0xC3, 0xC3,
+    ];
+    let features: Vec<FunctionFeatures> = features_of(&text);
+    let entry: u64 = pe64_text_base() + 0x1000;
+    assert_eq!(features.len(), 2, "a caller and a callee: {features:?}");
+
+    let graph: &ControlFlowGraph = features[0]
+        .structure()
+        .expect("a body ending in a tail jump carries a structure");
+    assert_eq!(graph.block_count(), 1, "call then tail jump is one block");
+    assert_eq!(
+        graph.instruction_mix().total(),
+        2,
+        "the alignment fill behind the tail jump is not part of the body"
+    );
+    assert_eq!(
+        features[0].call_targets(),
+        &BTreeSet::from([FunctionId::from(entry + 8)]),
+        "the tail jump reaches the same function the call reaches"
+    );
+}
+
+#[test]
+fn a_tail_jump_to_an_address_that_is_not_a_function_yields_no_structure() {
+    let text: [u8; 8] = [0x31, 0xC0, 0xE9, 0x00, 0x10, 0x00, 0x00, 0xC3];
+    let features: Vec<FunctionFeatures> = features_of(&text);
+    assert_eq!(features.len(), 1, "one discovered function: {features:?}");
+    assert!(
+        features[0].structure().is_none(),
+        "a jump whose target is neither inside the body nor a known function stays unresolved"
+    );
+    assert!(features[0].call_targets().is_empty());
+}
+
+#[test]
+fn a_tail_jump_through_an_import_slot_is_named_and_returns_to_the_caller() {
+    let insn: DisasmInstruction = x86_insn(
+        0x1000,
+        "jmp",
+        InsnFlow::IndirectBranch,
+        &[0xFF, 0x25, 0x00, 0x00, 0x00, 0x00],
+    );
+    let decoded: Instruction = decode_x86(64, &insn).expect("a jump through memory decodes");
+    let named: ImageIndex = ImageIndex {
+        import_slots: BTreeMap::from([(0x1006, "GetProcAddress".to_owned())]),
+        ..ImageIndex::default()
+    };
+    let entries: BTreeSet<u64> = BTreeSet::new();
+    let positions: BTreeMap<u64, usize> = BTreeMap::from([(0x1000, 0)]);
+
+    assert_eq!(
+        x86_transfer(&decoded, tail_context(&named, &entries, &positions)),
+        Transfer::Terminal { returns: true }
+    );
+    assert_eq!(
+        x86_import_name(&insn, &decoded, &named).as_deref(),
+        Some("GetProcAddress")
+    );
+
+    let bare: ImageIndex = ImageIndex::default();
+    assert_eq!(
+        x86_transfer(&decoded, tail_context(&bare, &entries, &positions)),
+        Transfer::Unresolved,
+        "a slot the import table does not name proves nothing"
+    );
+    assert!(x86_import_name(&insn, &decoded, &bare).is_none());
+}
+
+#[test]
+fn a_direct_tail_jump_to_an_import_thunk_is_named_and_returns_to_the_caller() {
+    let insn: DisasmInstruction = x86_insn(
+        0x1000,
+        "jmp",
+        InsnFlow::UnconditionalBranch,
+        &[0xE9, 0xFB, 0x0F, 0x00, 0x00],
+    );
+    let decoded: Instruction = decode_x86(64, &insn).expect("a relative jump decodes");
+    assert_eq!(insn.branch_target, Some(0x2000));
+    let named: ImageIndex = ImageIndex {
+        import_stubs: BTreeMap::from([(0x2000, "memcpy".to_owned())]),
+        ..ImageIndex::default()
+    };
+    let entries: BTreeSet<u64> = BTreeSet::new();
+    let positions: BTreeMap<u64, usize> = BTreeMap::from([(0x1000, 0)]);
+
+    assert_eq!(
+        x86_transfer(&decoded, tail_context(&named, &entries, &positions)),
+        Transfer::Terminal { returns: true }
+    );
+    assert_eq!(
+        x86_import_name(&insn, &decoded, &named).as_deref(),
+        Some("memcpy")
+    );
+}
+
+#[test]
+fn an_unreachable_x86_immediate_is_not_a_reference() {
+    let mut text: Vec<u8> = vec![0x48, 0xB8];
+    text.extend_from_slice(&0x9e37_79b9_7f4a_7c15_u64.to_le_bytes());
+    text.push(0xC3);
+    text.extend_from_slice(&[0x48, 0xB8]);
+    text.extend_from_slice(&0xc4ce_b9fe_1a85_ec53_u64.to_le_bytes());
+    text.push(0xC3);
+    assert_eq!(
+        all_references(&features_of(&text)),
+        vec![DataReference::UnusualConstant(0x9e37_79b9_7f4a_7c15)],
+        "an immediate behind the return is never executed and never anchors"
+    );
+}
+
+#[test]
+fn an_always_taken_condition_drops_the_arm_it_never_reaches() {
+    let text: [u8; 8] = [0x31, 0xC0, 0x74, 0x03, 0x48, 0xFF, 0xC0, 0xC3];
+    let graph: ControlFlowGraph = only_graph(&text);
+    assert_eq!(
+        graph.block_count(),
+        2,
+        "the zeroing block and the arm the condition always reaches"
+    );
+    assert_eq!(graph.instruction_mix().total(), 3);
+    assert_eq!(
+        graph
+            .instruction_mix()
+            .count(InstructionCategory::Arithmetic),
+        0,
+        "the increment behind an always taken branch is not part of the body"
+    );
+}
+
+#[test]
+fn a_never_taken_condition_leaves_one_straight_run() {
+    let text: [u8; 8] = [0x31, 0xC0, 0x75, 0x03, 0x48, 0xFF, 0xC0, 0xC3];
+    let graph: ControlFlowGraph = only_graph(&text);
+    assert_eq!(graph.block_count(), 1, "nothing branches: {graph:?}");
+    assert_eq!(graph.instruction_mix().total(), 4);
+    assert_eq!(
+        graph
+            .instruction_mix()
+            .count(InstructionCategory::Arithmetic),
+        1,
+        "the increment the condition always reaches stays in the body"
+    );
+}
+
+#[test]
+fn a_compare_against_a_loaded_immediate_folds() {
+    let text: [u8; 16] = [
+        0xB8, 0x39, 0x05, 0x00, 0x00, 0x3D, 0x39, 0x05, 0x00, 0x00, 0x75, 0x03, 0x48, 0xFF, 0xC0,
+        0xC3,
+    ];
+    let graph: ControlFlowGraph = only_graph(&text);
+    assert_eq!(graph.block_count(), 1, "the compare can only agree");
+    assert_eq!(graph.instruction_mix().total(), 5);
+}
+
+#[test]
+fn a_condition_the_body_cannot_prove_keeps_both_arms() {
+    let text: [u8; 6] = [0x85, 0xC0, 0x74, 0x01, 0xC3, 0xC3];
+    let graph: ControlFlowGraph = only_graph(&text);
+    assert_eq!(
+        graph.block_count(),
+        3,
+        "a register the caller set proves nothing: {graph:?}"
+    );
+    assert_eq!(graph.blocks()[0].successors().len(), 2);
+}
+
+#[test]
+fn a_call_between_the_constant_and_the_compare_stops_the_fold() {
+    let text: [u8; 10] = [0x31, 0xC0, 0xFF, 0xD0, 0x85, 0xC0, 0x74, 0x01, 0xC3, 0xC3];
+    let graph: ControlFlowGraph = only_graph(&text);
+    assert_eq!(
+        graph.block_count(),
+        3,
+        "a call clears every register the fold could have relied on: {graph:?}"
+    );
+}
+
+#[test]
+fn a_constant_reached_only_through_a_branch_target_is_not_carried_into_the_condition() {
+    let text: [u8; 10] = [0x31, 0xC0, 0xEB, 0x00, 0x85, 0xC0, 0x74, 0x01, 0xC3, 0xC3];
+    let graph: ControlFlowGraph = only_graph(&text);
+    assert!(
+        graph.block_count() >= 3,
+        "a leader between the zeroing and the test breaks the run: {graph:?}"
     );
 }
 

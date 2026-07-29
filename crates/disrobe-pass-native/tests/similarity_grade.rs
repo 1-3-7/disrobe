@@ -34,7 +34,7 @@ const CORPUS_SOURCE: &str = include_str!("similarity_grade/corpus.rs");
 
 const CORRESPONDENCE_FLOOR: usize = 500;
 
-const RECALL_FLOOR_PERMILLE: u64 = 400;
+const RECALL_FLOOR_PERMILLE: u64 = 600;
 
 const PRECISION_FLOOR_PERMILLE: u64 = 980;
 
