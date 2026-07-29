@@ -30,7 +30,7 @@ The tier names below are the in-tree `UnpackerStatus` values, so the split is ex
 | **GreyZoneDetectOnly**: commercial protector tier, reported without static recovery | 6 | WinLicense, Enigma Protector, Obsidium, Armadillo, PELock, PE-Protector |
 | **DelegatedToDotnet**: managed CLR crypter, recovery delegated to the .NET pass | 2 | DotNetPatcher, NetCryptor |
 
-The recover tier is scored byte-for-byte against real committed originals: UPX `.text` and `.pdata` are bit-identical (the whole loaded image about 96%, the residual being loader-rebuilt relocations and IAT the OS resolves at run time), ASPack and PECompact rebuild the decompressed image with the reconstructed IAT at least 98% byte-identical, and Yoda's Crypter `.rsrc` is byte-identical with its `.text` decrypted to full plaintext. NSPack (about 99% content section) and kkrunchy (byte-exact) are local-only, their vendor fixtures not committed, so those numbers do not reproduce from a clean checkout. The full breakdown is in the [native guide](./languages/native.md).
+The recover tier is scored byte-for-byte against real committed originals: UPX `.text` and `.pdata` are bit-identical (the whole loaded image about 96%, the residual being loader-rebuilt relocations and IAT the OS resolves at run time), ASPack and PECompact rebuild the decompressed image with the reconstructed IAT at least 98% byte-identical, and Yoda's Crypter `.rsrc` is byte-identical with its `.text` decrypted to full plaintext. NSPack (about 99% content section) is local-only, its vendor fixture not committed, so that number does not reproduce from a clean checkout; kkrunchy is byte-exact against committed fixtures and does reproduce. The full breakdown is in the [native guide](./languages/native.md).
 
 ## Python
 
