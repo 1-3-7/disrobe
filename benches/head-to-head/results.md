@@ -17,7 +17,7 @@ Regenerate with `cargo run -p disrobe-bench-head-to-head`; `--check` fails if th
 | disrobe (in-house JVM, JAR input) | n/a (in-process) | recompile-clean main-class methods (clean / emitted) | 131 clean / 131 emitted (100.0%) | ok |
 | cfr (JAR input) | CFR 0.152 | recompile-clean main-class methods (clean / emitted) | 105 clean / 106 emitted (99.1%) | ok |
 
-`disrobe` leads the JAR leg at 131/131 clean methods vs CFR's 105/106. On the DEX leg, JADX has the higher clean-rate (98.5% vs 97.7%) while `disrobe` emits one more clean method (129 vs 128). All rows use the same stubbed real-`javac` oracle and are recompile-only.
+DEX leg: `disrobe` recovers 129 clean of 132 emitted (97.7%); `jadx` (1.5.5) recovers 128 clean of 130 emitted (98.5%). `disrobe` leads by 1 clean method; `jadx` leads on clean rate, 98.5% to 97.7%. JAR leg: `disrobe` recovers 131 clean of 131 emitted (100.0%); `cfr` (CFR 0.152) recovers 105 clean of 106 emitted (99.1%). `disrobe` leads by 26 clean methods; `disrobe` leads on clean rate, 100.0% to 99.1%. All rows use the same stubbed real-`javac` oracle and are recompile-only.
 
 ## Secret / IOC recall: disrobe frisk vs apkleaks (same APK, hand-verified planted ground truth)
 

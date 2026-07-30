@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -48,34 +49,26 @@ pub fn measure(root: &Path) -> Result<(String, Value)> {
         .wrap_err_with(|| format!("reading {}", original_src.display()))?;
     let denominator: usize = main_class_method_ranges(&original).len().max(1);
 
-    let mut tools: Vec<Value> = Vec::new();
+    let dex_leg: Leg = Leg {
+        label: "DEX leg",
+        disrobe_name: "disrobe (in-house Dalvik, DEX input)",
+        disrobe: score_disrobe_dex(&javac, &dex_bytes, denominator),
+        competitor_name: "jadx (DEX input)",
+        competitor_short: "jadx",
+        competitor: jadx_outcome(&javac, &dex_bytes, denominator),
+    };
 
-    let disrobe_dex: ToolScore = score_disrobe_dex(&javac, &dex_bytes, denominator);
-    tools.push(disrobe_dex.to_json("disrobe (in-house Dalvik, DEX input)", "n/a (in-process)"));
+    let jar_leg: Leg = Leg {
+        label: "JAR leg",
+        disrobe_name: "disrobe (in-house JVM, JAR input)",
+        disrobe: score_disrobe_jar(&javac, &jar_bytes, denominator),
+        competitor_name: "cfr (JAR input)",
+        competitor_short: "cfr",
+        competitor: cfr_outcome(root, &javac, &jar_path, denominator),
+    };
 
-    match find_on_path("jadx") {
-        Some(jadx) => {
-            let version: String = version_of(&jadx, &["--version"]);
-            let jadx_score: ToolScore = score_jadx(&javac, &dex_bytes, denominator);
-            tools.push(jadx_score.to_json("jadx (DEX input)", &version));
-        }
-        None => tools.push(skipped_tool("jadx (DEX input)", "jadx not on PATH")),
-    }
-
-    let disrobe_jar: ToolScore = score_disrobe_jar(&javac, &jar_bytes, denominator);
-    tools.push(disrobe_jar.to_json("disrobe (in-house JVM, JAR input)", "n/a (in-process)"));
-
-    match resolve_cfr(root) {
-        Some(cfr) => {
-            let version: String = cfr_version(&cfr);
-            let cfr_score: ToolScore = score_cfr(&javac, &jar_path, &cfr, denominator);
-            tools.push(cfr_score.to_json("cfr (JAR input)", &version));
-        }
-        None => tools.push(skipped_tool(
-            "cfr (JAR input)",
-            "cfr not found on PATH or under evidence/competitors/jars; install with evidence/competitors/install.sh",
-        )),
-    }
+    let legs: [Leg; 2] = [dex_leg, jar_leg];
+    let tools: Vec<Value> = legs.iter().flat_map(Leg::to_json_rows).collect();
 
     let value: Value = json!({
         "id": id,
@@ -94,9 +87,159 @@ pub fn measure(root: &Path) -> Result<(String, Value)> {
             "a tool that produces no EdgeCases source counts 0 clean, not an excluded sample"
         ],
         "tools": tools,
-        "honest_note": honest_note(&tools),
+        "honest_note": measured_summary(&legs),
     });
     Ok((id, value))
+}
+
+const IN_PROCESS_VERSION: &str = "n/a (in-process)";
+const OK_STATUS: &str = "ok";
+const SHARED_ORACLE: &str =
+    "All rows use the same stubbed real-`javac` oracle and are recompile-only.";
+
+#[derive(Debug)]
+enum CompetitorOutcome {
+    Scored { version: String, score: ToolScore },
+    Absent { reason: String },
+}
+
+fn jadx_outcome(javac: &Path, dex_bytes: &[u8], denominator: usize) -> CompetitorOutcome {
+    let Some(jadx): Option<PathBuf> = find_on_path("jadx") else {
+        return CompetitorOutcome::Absent {
+            reason: "jadx is not on PATH".to_owned(),
+        };
+    };
+    CompetitorOutcome::Scored {
+        version: version_of(&jadx, &["--version"]),
+        score: score_jadx(javac, dex_bytes, denominator),
+    }
+}
+
+fn cfr_outcome(
+    root: &Path,
+    javac: &Path,
+    jar_path: &Path,
+    denominator: usize,
+) -> CompetitorOutcome {
+    let Some(cfr): Option<CfrInvoke> = resolve_cfr(root) else {
+        return CompetitorOutcome::Absent {
+            reason: "cfr is not on PATH and evidence/competitors/jars/cfr.jar is absent; install \
+                     it with evidence/competitors/install-linux.sh"
+                .to_owned(),
+        };
+    };
+    CompetitorOutcome::Scored {
+        version: cfr_version(&cfr),
+        score: score_cfr(javac, jar_path, &cfr, denominator),
+    }
+}
+
+#[derive(Debug)]
+struct Leg {
+    label: &'static str,
+    disrobe_name: &'static str,
+    disrobe: ToolScore,
+    competitor_name: &'static str,
+    competitor_short: &'static str,
+    competitor: CompetitorOutcome,
+}
+
+impl Leg {
+    fn to_json_rows(&self) -> Vec<Value> {
+        let competitor: Value = match &self.competitor {
+            CompetitorOutcome::Scored { version, score } => {
+                score.to_json(self.competitor_name, version)
+            }
+            CompetitorOutcome::Absent { reason } => skipped_tool(self.competitor_name, reason),
+        };
+        vec![
+            self.disrobe.to_json(self.disrobe_name, IN_PROCESS_VERSION),
+            competitor,
+        ]
+    }
+
+    fn sentence(&self) -> String {
+        let ours: String = score_phrase(&self.disrobe);
+        let (version, theirs): (&str, &ToolScore) = match &self.competitor {
+            CompetitorOutcome::Absent { reason } => {
+                return format!(
+                    "{label}: NOT MEASURED against `{short}`, because {reason}. `disrobe` recovers \
+                     {ours} on this leg, and no `{short}` figure is published for it.",
+                    label = self.label,
+                    short = self.competitor_short,
+                );
+            }
+            CompetitorOutcome::Scored { version, score } => (version.as_str(), score),
+        };
+        let theirs_phrase: String = score_phrase(theirs);
+        if self.disrobe.status != OK_STATUS || theirs.status != OK_STATUS {
+            return format!(
+                "{label}: `disrobe` recovers {ours}; `{short}` ({version}) recovers \
+                 {theirs_phrase}. No lead is stated, because one side produced nothing scorable.",
+                label = self.label,
+                short = self.competitor_short,
+            );
+        }
+        format!(
+            "{label}: `disrobe` recovers {ours}; `{short}` ({version}) recovers {theirs_phrase}. \
+             {counts}; {rates}.",
+            label = self.label,
+            short = self.competitor_short,
+            counts = count_verdict(self.disrobe.clean, self.competitor_short, theirs.clean),
+            rates = rate_verdict(self.disrobe.rate(), self.competitor_short, theirs.rate()),
+        )
+    }
+}
+
+fn measured_summary(legs: &[Leg]) -> String {
+    let mut sentences: Vec<String> = legs.iter().map(Leg::sentence).collect();
+    sentences.push(SHARED_ORACLE.to_owned());
+    sentences.join(" ")
+}
+
+fn score_phrase(score: &ToolScore) -> String {
+    if score.status == OK_STATUS {
+        return format!(
+            "{} clean of {} emitted ({:.1}%)",
+            score.clean,
+            score.emitted,
+            score.rate()
+        );
+    }
+    format!("nothing scorable ({})", score.detail)
+}
+
+fn count_verdict(ours: usize, competitor_short: &str, theirs: usize) -> String {
+    match ours.cmp(&theirs) {
+        Ordering::Greater => {
+            let delta: usize = ours - theirs;
+            format!("`disrobe` leads by {delta} clean {}", methods(delta))
+        }
+        Ordering::Less => {
+            let delta: usize = theirs - ours;
+            format!(
+                "`{competitor_short}` leads by {delta} clean {}",
+                methods(delta)
+            )
+        }
+        Ordering::Equal => format!("both tools recover {ours} clean {}", methods(ours)),
+    }
+}
+
+fn rate_verdict(ours: f64, competitor_short: &str, theirs: f64) -> String {
+    let shown_ours: String = format!("{ours:.1}");
+    let shown_theirs: String = format!("{theirs:.1}");
+    if shown_ours == shown_theirs {
+        return format!("the clean rates are level at {shown_ours}%");
+    }
+    if ours > theirs {
+        return format!("`disrobe` leads on clean rate, {shown_ours}% to {shown_theirs}%");
+    }
+    format!("`{competitor_short}` leads on clean rate, {shown_theirs}% to {shown_ours}%")
+}
+
+const fn methods(count: usize) -> &'static str {
+    if count == 1 { "method" } else { "methods" }
 }
 
 #[derive(Debug)]
@@ -416,48 +559,6 @@ fn main_class_method_ranges(src: &str) -> Vec<(usize, usize)> {
     out
 }
 
-fn honest_note(tools: &[Value]) -> String {
-    let scored: Vec<(&str, f64, &str)> = tools
-        .iter()
-        .filter_map(|t: &Value| {
-            let status: &str = t.get("status").and_then(Value::as_str)?;
-            if status != "ok" {
-                return None;
-            }
-            Some((
-                t.get("name").and_then(Value::as_str)?,
-                t.get("value").and_then(Value::as_f64)?,
-                t.get("display").and_then(Value::as_str)?,
-            ))
-        })
-        .collect();
-    if scored.is_empty() {
-        return "No tool produced a scorable result on this box (competitor tools or the javac \
-                oracle are absent). Install them to measure the head-to-head."
-            .to_owned();
-    }
-    let best_rate: f64 = scored.iter().map(|(_, v, _)| *v).fold(0.0, f64::max);
-    let disrobe_best: Option<f64> = scored
-        .iter()
-        .filter(|(n, _, _)| n.starts_with("disrobe"))
-        .map(|(_, v, _)| *v)
-        .fold(None, |acc: Option<f64>, v: f64| {
-            Some(acc.map_or(v, |a: f64| a.max(v)))
-        });
-    let leads: bool = disrobe_best.is_some_and(|d: f64| d >= best_rate - 1e-9);
-    if leads {
-        "`disrobe` leads the JAR leg at 131/131 clean methods vs CFR's 105/106. On the DEX leg, \
-         JADX has the higher clean-rate (98.5% vs 97.7%) while `disrobe` emits one more clean \
-         method (129 vs 128). All rows use the same stubbed real-`javac` oracle and are \
-         recompile-only."
-            .to_owned()
-    } else {
-        "A competitor leads on this fixture. Published as measured; the gap is in the per-tool \
-         clean/emitted rows. `disrobe` still has the separate JVM 131/131 recompile gate."
-            .to_owned()
-    }
-}
-
 fn skipped(reason: &str) -> Value {
     json!({
         "title": "APK / DEX decompilation: disrobe vs JADX vs CFR (recompile-clean main-class methods under real javac)",
@@ -578,10 +679,151 @@ mod tests {
 
     #[test]
     fn tool_score_rate_is_clean_over_emitted() {
-        let score: ToolScore = ToolScore::measured(129, 132, 106, "d".to_owned());
-        assert!((score.rate() - 97.727).abs() < 0.01);
-        let miss: ToolScore = ToolScore::miss(106, "x".to_owned());
+        let score: ToolScore = ToolScore::measured(3, 4, 4, "sample arithmetic".to_owned());
+        assert!((score.rate() - 75.0).abs() < f64::EPSILON);
+        let miss: ToolScore = ToolScore::miss(4, "sample miss".to_owned());
         assert!(miss.rate().abs() < f64::EPSILON);
+    }
+
+    fn dex_leg(disrobe: ToolScore, competitor: CompetitorOutcome) -> Leg {
+        Leg {
+            label: "DEX leg",
+            disrobe_name: "disrobe (in-house Dalvik, DEX input)",
+            disrobe,
+            competitor_name: "jadx (DEX input)",
+            competitor_short: "jadx",
+            competitor,
+        }
+    }
+
+    fn scored(version: &str, clean: usize, emitted: usize) -> CompetitorOutcome {
+        CompetitorOutcome::Scored {
+            version: version.to_owned(),
+            score: ToolScore::measured(clean, emitted, 106, "measured".to_owned()),
+        }
+    }
+
+    #[test]
+    fn every_figure_in_the_summary_moves_with_the_measurement() {
+        let first: String = dex_leg(
+            ToolScore::measured(129, 132, 106, "measured".to_owned()),
+            scored("1.5.5", 128, 130),
+        )
+        .sentence();
+        assert_eq!(
+            first,
+            "DEX leg: `disrobe` recovers 129 clean of 132 emitted (97.7%); `jadx` (1.5.5) \
+             recovers 128 clean of 130 emitted (98.5%). `disrobe` leads by 1 clean method; `jadx` \
+             leads on clean rate, 98.5% to 97.7%."
+        );
+
+        let improved: String = dex_leg(
+            ToolScore::measured(130, 132, 106, "measured".to_owned()),
+            scored("1.5.5", 128, 130),
+        )
+        .sentence();
+        assert_eq!(
+            improved,
+            "DEX leg: `disrobe` recovers 130 clean of 132 emitted (98.5%); `jadx` (1.5.5) \
+             recovers 128 clean of 130 emitted (98.5%). `disrobe` leads by 2 clean methods; the \
+             clean rates are level at 98.5%."
+        );
+        assert_ne!(
+            first, improved,
+            "a one-method change in what disrobe recovers has to change the published sentence. \
+             A summary that reads the same after the measurement moved is a figure the reader \
+             cannot tell apart from a literal"
+        );
+    }
+
+    #[test]
+    fn the_whole_summary_is_assembled_from_the_rows_beside_it() {
+        let legs: [Leg; 2] = [
+            dex_leg(
+                ToolScore::measured(129, 132, 106, "measured".to_owned()),
+                scored("1.5.5", 128, 130),
+            ),
+            Leg {
+                label: "JAR leg",
+                disrobe_name: "disrobe (in-house JVM, JAR input)",
+                disrobe: ToolScore::measured(131, 131, 106, "measured".to_owned()),
+                competitor_name: "cfr (JAR input)",
+                competitor_short: "cfr",
+                competitor: CompetitorOutcome::Scored {
+                    version: "CFR 0.152".to_owned(),
+                    score: ToolScore::measured(105, 106, 106, "measured".to_owned()),
+                },
+            },
+        ];
+        assert_eq!(
+            measured_summary(&legs),
+            "DEX leg: `disrobe` recovers 129 clean of 132 emitted (97.7%); `jadx` (1.5.5) \
+             recovers 128 clean of 130 emitted (98.5%). `disrobe` leads by 1 clean method; `jadx` \
+             leads on clean rate, 98.5% to 97.7%. JAR leg: `disrobe` recovers 131 clean of 131 \
+             emitted (100.0%); `cfr` (CFR 0.152) recovers 105 clean of 106 emitted (99.1%). \
+             `disrobe` leads by 26 clean methods; `disrobe` leads on clean rate, 100.0% to 99.1%. \
+             All rows use the same stubbed real-`javac` oracle and are recompile-only."
+        );
+    }
+
+    #[test]
+    fn a_losing_leg_is_reported_as_a_loss() {
+        let sentence: String = dex_leg(
+            ToolScore::measured(100, 132, 106, "measured".to_owned()),
+            scored("1.5.5", 128, 130),
+        )
+        .sentence();
+        assert!(
+            sentence.contains("`jadx` leads by 28 clean methods"),
+            "the competitor leads this leg and the summary states so, got: {sentence}"
+        );
+    }
+
+    #[test]
+    fn an_absent_competitor_gets_no_figure_at_all() {
+        let sentence: String = dex_leg(
+            ToolScore::measured(129, 132, 106, "measured".to_owned()),
+            CompetitorOutcome::Absent {
+                reason: "jadx is not on PATH".to_owned(),
+            },
+        )
+        .sentence();
+        assert!(
+            sentence.contains("NOT MEASURED against `jadx`"),
+            "an unrun competitor must be marked, not narrated, got: {sentence}"
+        );
+        assert!(
+            sentence.contains("no `jadx` figure is published for it"),
+            "the sentence has to say the competitor side carries no number, got: {sentence}"
+        );
+        for printed in ["128", "130", "98.5", "leads"] {
+            assert!(
+                !sentence.contains(printed),
+                "`{printed}` appears in a leg where jadx never ran. A competitor that was not \
+                 measured cannot be given a number or a verdict, because a reader cannot tell one \
+                 from a measurement, got: {sentence}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_side_that_produced_nothing_gets_no_lead_claim() {
+        let sentence: String = dex_leg(
+            ToolScore::miss(
+                106,
+                "disrobe in-house DEX decompile returned an error".to_owned(),
+            ),
+            scored("1.5.5", 128, 130),
+        )
+        .sentence();
+        assert!(
+            sentence.contains("No lead is stated"),
+            "a leg with an empty side must not carry a comparison, got: {sentence}"
+        );
+        assert!(
+            !sentence.contains("leads by"),
+            "a leg with an empty side must not claim a lead, got: {sentence}"
+        );
     }
 
     #[test]
