@@ -49,6 +49,67 @@ pub fn fixture_or_skip(name: &str) -> Option<Vec<u8>> {
     bytes
 }
 
+pub fn required_fixture(name: &str) -> Vec<u8> {
+    let path: PathBuf = fixture_path(name);
+    let read: std::io::Result<Vec<u8>> = std::fs::read(&path);
+    let bytes: Vec<u8> = read.unwrap_or_else(|error: std::io::Error| {
+        let cause: &str = if error.kind() == std::io::ErrorKind::NotFound {
+            "absent from this checkout"
+        } else {
+            "present but unreadable"
+        };
+        panic!(
+            "fixture `{name}` is tracked in git and a published figure is graded against it, so a \
+             run that cannot read it must fail rather than measure nothing: {} is {cause} \
+             ({error}). Restore it from git, or rebuild the corpus with \
+             crates/disrobe-pass-go/tests/fixtures/regen.ps1",
+            path.display()
+        )
+    });
+    assert!(
+        !bytes.is_empty(),
+        "fixture `{name}` is tracked in git and read back empty at {}; a truncated input grades \
+         nothing and must never report success",
+        path.display()
+    );
+    bytes
+}
+
+pub fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {
+    let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("xtask")
+        .join("data")
+        .join("recovery.json");
+    let raw: String = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error: std::io::Error| panic!("read {}: {error}", path.display()));
+    let doc: serde_json::Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|error: serde_json::Error| panic!("parse {}: {error}", path.display()));
+    let mut found: Vec<serde_json::Value> = Vec::new();
+    for group in doc["groups"].as_array().expect("groups array") {
+        let heading_matches: bool = group["heading"]
+            .as_str()
+            .is_some_and(|heading: &str| heading.contains(heading_needle));
+        if !heading_matches {
+            continue;
+        }
+        for bar in group["bars"].as_array().unwrap_or(&Vec::new()) {
+            if bar["label"].as_str() == Some(label) {
+                found.push(bar.clone());
+            }
+        }
+    }
+    assert_eq!(
+        found.len(),
+        1,
+        "xtask/data/recovery.json must carry exactly one bar labelled `{label}` under a heading \
+         containing `{heading_needle}`, found {}",
+        found.len()
+    );
+    found.remove(0)
+}
+
 pub const HELLO_NORMAL: &str = "hello_normal.exe";
 pub const HELLO_STRIPPED: &str = "hello_stripped.exe";
 pub const HELLO_GARBLE: &str = "hello_garble.exe";
@@ -62,19 +123,31 @@ pub const BENCH_GENERICS: &str = "bench_generics.exe";
 pub const BENCH_GENERICS_STRIPPED: &str = "bench_generics_stripped.exe";
 pub const BENCH_GENERICS_NM: &str = "bench_generics.nm.txt";
 
+pub const BENCH_WINDOWS_386: &str = "bench_generics_windows_386.exe";
+pub const BENCH_WINDOWS_386_STRIPPED: &str = "bench_generics_windows_386_stripped.exe";
+pub const BENCH_WINDOWS_386_NM: &str = "bench_generics_windows_386.nm.txt";
+
 pub const BENCH_LINUX_AMD64: &str = "bench_generics_linux_amd64";
+pub const BENCH_LINUX_AMD64_STRIPPED: &str = "bench_generics_linux_amd64_stripped";
 pub const BENCH_LINUX_AMD64_NM: &str = "bench_generics_linux_amd64.nm.txt";
 pub const BENCH_LINUX_AMD64_NM_EQ: &str = "bench_generics_linux_amd64.nm_eq.txt";
 pub const BENCH_LINUX_AMD64_NM_ITAB: &str = "bench_generics_linux_amd64.nm_itab.txt";
+pub const BENCH_LINUX_386: &str = "bench_generics_linux_386";
+pub const BENCH_LINUX_386_STRIPPED: &str = "bench_generics_linux_386_stripped";
+pub const BENCH_LINUX_386_NM: &str = "bench_generics_linux_386.nm.txt";
+
 pub const BENCH_LINUX_ARM64: &str = "bench_generics_linux_arm64";
+pub const BENCH_LINUX_ARM64_STRIPPED: &str = "bench_generics_linux_arm64_stripped";
 pub const BENCH_LINUX_ARM64_NM: &str = "bench_generics_linux_arm64.nm.txt";
 pub const BENCH_LINUX_ARM64_NM_EQ: &str = "bench_generics_linux_arm64.nm_eq.txt";
 pub const BENCH_LINUX_ARM64_NM_ITAB: &str = "bench_generics_linux_arm64.nm_itab.txt";
 pub const BENCH_DARWIN_AMD64: &str = "bench_generics_darwin_amd64";
+pub const BENCH_DARWIN_AMD64_STRIPPED: &str = "bench_generics_darwin_amd64_stripped";
 pub const BENCH_DARWIN_AMD64_NM: &str = "bench_generics_darwin_amd64.nm.txt";
 pub const BENCH_DARWIN_AMD64_NM_EQ: &str = "bench_generics_darwin_amd64.nm_eq.txt";
 pub const BENCH_DARWIN_AMD64_NM_ITAB: &str = "bench_generics_darwin_amd64.nm_itab.txt";
 pub const BENCH_DARWIN_ARM64: &str = "bench_generics_darwin_arm64";
+pub const BENCH_DARWIN_ARM64_STRIPPED: &str = "bench_generics_darwin_arm64_stripped";
 pub const BENCH_DARWIN_ARM64_NM: &str = "bench_generics_darwin_arm64.nm.txt";
 pub const BENCH_DARWIN_ARM64_NM_EQ: &str = "bench_generics_darwin_arm64.nm_eq.txt";
 pub const BENCH_DARWIN_ARM64_NM_ITAB: &str = "bench_generics_darwin_arm64.nm_itab.txt";
@@ -278,6 +351,7 @@ pub fn parse_nm_text_symbols(text: &str) -> BTreeSet<String> {
 
 pub const FUNCTION_NAME_ANCHORS: [&str; 2] = ["runtime.text", "runtime.etext"];
 
+#[derive(Debug)]
 pub struct FunctionRecoveryGrade {
     pub hit: usize,
     pub total: usize,
