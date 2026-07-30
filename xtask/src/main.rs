@@ -7,6 +7,7 @@
 
 mod attack_surface;
 mod card;
+mod catalog_counts;
 mod codegen;
 mod crossdata;
 mod demo;

@@ -63,6 +63,12 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         || crate::floors::run(root),
         &mut stale,
     );
+    run_one(
+        "catalog-counts",
+        check,
+        || crate::catalog_counts::run(root),
+        &mut stale,
+    );
 
     if check {
         if stale.is_empty() {

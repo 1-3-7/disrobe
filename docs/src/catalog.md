@@ -1,6 +1,8 @@
 # Supported families catalog
 
-This is the authoritative per-ecosystem list of every packer, obfuscator, protector, freezer, and bundler `disrobe` recognizes, with the support tier for each. The live CLI view is `disrobe catalog [ecosystem]`; the current binary reports 169 families across 15 ecosystems. The counts come from the in-tree catalog tables (`Packer` in `crates/disrobe-pass-native/src/packers/mod.rs`, each pass `chain_detector.rs` `CATALOG_COUNT`, `crates/disrobe-pass-dotnet/src/protectors.rs`, `crates/disrobe-pass-jvm/src/protectors.rs` and `rasp.rs`), so they match the binary, not a hand-kept list.
+This is the authoritative per-ecosystem list of every packer, obfuscator, protector, freezer, and bundler `disrobe` recognizes, with the support tier for each. The live CLI view is `disrobe catalog [ecosystem]`; a default build, which turns the `full` feature on, reports 169 families across 15 ecosystems, and the totals on this page are the `full` ones. Most catalogs sit behind a cargo feature, so a build with features trimmed registers fewer catalogs and reports a smaller total.
+
+`cargo run -p xtask -- regen --check` re-derives the headline total, the native tier split, and the per-pass counts in the tables below from the tables the binary itself carries (`Packer` in `crates/disrobe-pass-native/src/packers/mod.rs`, `CATALOG_COUNT` in each pass `chain_detector.rs`, `Protector::ALL` in `crates/disrobe-pass-dotnet/src/protectors.rs`, and `RaspVendor` in `crates/disrobe-pass-jvm/src/rasp.rs`), so a family added to the binary without this page moving with it fails that check. Two rows count something no catalog table holds, `Freezers / packagers` and `JS bundlers (unbundler)`; for those the check compares the published count against the family list beside it, which keeps the two halves of a row consistent but proves neither against the binary.
 
 ```sh
 disrobe catalog
