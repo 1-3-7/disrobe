@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -8,8 +9,10 @@ use disrobe_binfmt::containers::nsis::{
     slice_solid_file,
 };
 
+use common::requirement::{MAKENSIS, find_on_path, unmeasured};
+
 fn find_makensis() -> Option<PathBuf> {
-    if let Ok(found) = which("makensis") {
+    if let Some(found) = find_on_path("makensis") {
         return Some(found);
     }
     if cfg!(windows) {
@@ -23,19 +26,6 @@ fn find_makensis() -> Option<PathBuf> {
             .find(|p: &PathBuf| p.exists());
     }
     None
-}
-
-fn which(tool: &str) -> Result<PathBuf, ()> {
-    let path: String = std::env::var("PATH").map_err(|_| ())?;
-    for dir in std::env::split_paths(&path) {
-        for ext in ["", ".exe"] {
-            let candidate: PathBuf = dir.join(format!("{tool}{ext}"));
-            if candidate.is_file() {
-                return Ok(candidate);
-            }
-        }
-    }
-    Err(())
 }
 
 fn build_installer(
@@ -93,7 +83,12 @@ fn make_payloads() -> Vec<(&'static str, Vec<u8>)> {
 #[test]
 fn makensis_bzip2_non_solid_round_trips() {
     let Some(makensis): Option<PathBuf> = find_makensis() else {
-        eprintln!("skipping: makensis not installed");
+        unmeasured(
+            &MAKENSIS,
+            "byte-exact recovery of a bzip2 non-solid installer built by the real \
+             NSIS compiler",
+            "no makensis binary is on PATH or in the standard install directories",
+        );
         return;
     };
     let scratch: disrobe_core::scratch::ScratchDir =
@@ -124,7 +119,12 @@ fn makensis_bzip2_non_solid_round_trips() {
 #[test]
 fn makensis_bzip2_solid_round_trips() {
     let Some(makensis): Option<PathBuf> = find_makensis() else {
-        eprintln!("skipping: makensis not installed");
+        unmeasured(
+            &MAKENSIS,
+            "byte-exact recovery of a bzip2 solid installer built by the real \
+             NSIS compiler",
+            "no makensis binary is on PATH or in the standard install directories",
+        );
         return;
     };
     let scratch: disrobe_core::scratch::ScratchDir =

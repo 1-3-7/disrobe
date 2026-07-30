@@ -1,4 +1,6 @@
 #![allow(dead_code, unreachable_pub)]
+pub mod requirement;
+
 use std::path::PathBuf;
 
 pub fn corpus_binfmt_root() -> PathBuf {

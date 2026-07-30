@@ -1,27 +1,18 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod common;
 
-use std::path::PathBuf;
-
 use disrobe_binfmt::{ElfDynamic, NativeFile, parse_elf_dynamic, parse_native};
 
-fn corpus_root() -> PathBuf {
-    let manifest_dir: &str = env!("CARGO_MANIFEST_DIR");
-    let mut p: PathBuf = PathBuf::from(manifest_dir);
-    p.pop();
-    p.pop();
-    p.push("corpus");
-    p
-}
+use common::requirement::{required_corpus, required_fixture};
 
-fn read_corpus(rel: &str) -> Option<Vec<u8>> {
-    std::fs::read(corpus_root().join(rel)).ok()
-}
+const NIM_ELF: &str = "native/nim/hello.nim.elf";
+
+const PYARMOR_RUNTIME: &str =
+    "python/pyarmor/v9/platform_linux/pyarmor_runtime_000000/pyarmor_runtime.so";
 
 #[test]
 fn crafted_so_matches_readelf_ground_truth() {
-    let bytes: Vec<u8> = common::load_fixture("elf-dynamic", "sample.elf")
-        .expect("missing corpus/binfmt/elf-dynamic/sample.elf");
+    let bytes: Vec<u8> = required_fixture("elf-dynamic", "sample.elf");
 
     let dynamic: ElfDynamic = parse_elf_dynamic(&bytes).expect("dynamic segment parses");
 
@@ -53,8 +44,7 @@ fn crafted_so_matches_readelf_ground_truth() {
 
 #[test]
 fn declared_string_table_crossing_load_boundary_rejects() {
-    let mut bytes: Vec<u8> = common::load_fixture("elf-dynamic", "sample.elf")
-        .expect("missing corpus/binfmt/elf-dynamic/sample.elf");
+    let mut bytes: Vec<u8> = required_fixture("elf-dynamic", "sample.elf");
     let strsz_tag_offset: usize = 0x170;
     let strsz_value_offset: usize = 0x178;
     let strsz_value_end: usize = strsz_value_offset
@@ -74,9 +64,7 @@ fn declared_string_table_crossing_load_boundary_rejects() {
 
 #[test]
 fn real_elf_dynamic_surfaced_through_native_file() {
-    let Some(bytes): Option<Vec<u8>> = read_corpus("native/nim/hello.nim.elf") else {
-        return;
-    };
+    let bytes: Vec<u8> = required_corpus(NIM_ELF);
     let nf: NativeFile = parse_native(&bytes).expect("parse native elf");
     let dynamic: &ElfDynamic = nf
         .dynamic
@@ -95,9 +83,7 @@ fn real_elf_dynamic_surfaced_through_native_file() {
 
 #[test]
 fn real_nim_executable_needed_matches_readelf() {
-    let Some(bytes): Option<Vec<u8>> = read_corpus("native/nim/hello.nim.elf") else {
-        return;
-    };
+    let bytes: Vec<u8> = required_corpus(NIM_ELF);
     let dynamic: ElfDynamic = parse_elf_dynamic(&bytes).expect("nim elf has a dynamic segment");
     assert_eq!(
         dynamic.needed,
@@ -116,11 +102,7 @@ fn real_nim_executable_needed_matches_readelf() {
 
 #[test]
 fn real_pyarmor_runtime_needed_matches_readelf() {
-    let Some(bytes): Option<Vec<u8>> =
-        read_corpus("python/pyarmor/v9/platform_linux/pyarmor_runtime_000000/pyarmor_runtime.so")
-    else {
-        return;
-    };
+    let bytes: Vec<u8> = required_corpus(PYARMOR_RUNTIME);
     let dynamic: ElfDynamic =
         parse_elf_dynamic(&bytes).expect("pyarmor runtime has a dynamic segment");
     assert_eq!(

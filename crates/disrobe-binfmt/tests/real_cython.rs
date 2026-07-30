@@ -5,6 +5,8 @@ use disrobe_binfmt::containers::cython::{
     CythonFunction, CythonModule, RecoverySource, detect_cython, recover_cython,
 };
 
+use common::requirement::required_fixture;
+
 const FORMAT_DIR: &str = "cython";
 
 fn find<'m>(module: &'m CythonModule, name: &str) -> Option<&'m CythonFunction> {
@@ -22,11 +24,7 @@ fn doc_of(module: &CythonModule, name: &str) -> String {
 
 #[test]
 fn unstripped_recovers_full_python_surface() {
-    let Some(bytes): Option<Vec<u8>> = common::load_fixture(FORMAT_DIR, "mod.unstripped.pyd")
-    else {
-        eprintln!("skip: missing corpus/binfmt/cython/mod.unstripped.pyd");
-        return;
-    };
+    let bytes: Vec<u8> = required_fixture(FORMAT_DIR, "mod.unstripped.pyd");
 
     let identity = detect_cython(&bytes).expect("cython module detected");
     assert_eq!(identity.module_name, "mod");
@@ -93,10 +91,7 @@ fn unstripped_recovers_full_python_surface() {
 
 #[test]
 fn stripped_recovers_surface_structurally() {
-    let Some(bytes): Option<Vec<u8>> = common::load_fixture(FORMAT_DIR, "mod.stripped.pyd") else {
-        eprintln!("skip: missing corpus/binfmt/cython/mod.stripped.pyd");
-        return;
-    };
+    let bytes: Vec<u8> = required_fixture(FORMAT_DIR, "mod.stripped.pyd");
 
     let identity = detect_cython(&bytes).expect("cython detected via markers");
     assert_eq!(identity.module_name, "mod");
@@ -127,10 +122,7 @@ fn stripped_recovers_surface_structurally() {
 
 #[test]
 fn linked_elf_resolves_pointers_through_dynamic_relocations() {
-    let Some(bytes): Option<Vec<u8>> = common::load_fixture(FORMAT_DIR, "cymod.linux.so") else {
-        eprintln!("skip: missing corpus/binfmt/cython/cymod.linux.so");
-        return;
-    };
+    let bytes: Vec<u8> = required_fixture(FORMAT_DIR, "cymod.linux.so");
 
     let identity = detect_cython(&bytes).expect("linked cython so detected");
     assert_eq!(identity.module_name, "cymod");
@@ -155,9 +147,7 @@ fn linked_elf_resolves_pointers_through_dynamic_relocations() {
 
 #[test]
 fn truncated_module_does_not_panic() {
-    let Some(bytes): Option<Vec<u8>> = common::load_fixture(FORMAT_DIR, "mod.stripped.pyd") else {
-        return;
-    };
+    let bytes: Vec<u8> = required_fixture(FORMAT_DIR, "mod.stripped.pyd");
     for cut in (0..bytes.len()).step_by(1024) {
         let _ = detect_cython(&bytes[..cut]);
         let _ = recover_cython(&bytes[..cut]);

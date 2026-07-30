@@ -14,6 +14,24 @@ use disrobe_binfmt::{ContainerKind, ExtractionQuota, extract_to};
 
 const WIM_CHUNK_SIZE: u32 = 32_768;
 
+const LZX_BLOCKTYPE_VERBATIM: u16 = 1;
+
+const LZX_BLOCKTYPE_ALIGNED: u16 = 2;
+
+const LZX_BLOCKTYPE_BITS: u32 = 3;
+
+fn lzx_declared_block_type(chunk: &[u8]) -> u16 {
+    let first: u16 = u16::from_le_bytes([
+        chunk.first().copied().unwrap_or(0),
+        chunk.get(1).copied().unwrap_or(0),
+    ]);
+    first >> (u16::BITS - LZX_BLOCKTYPE_BITS)
+}
+
+const fn chunk_table_len(chunk_count: usize) -> usize {
+    chunk_count.saturating_sub(1) * 4
+}
+
 fn known_plaintext(len: usize, seed: u32) -> Vec<u8> {
     let mut data: Vec<u8> = Vec::with_capacity(len);
     let phrase: &[u8] = b"\\Windows\\System32\\drivers ";
@@ -41,7 +59,81 @@ fn compress_resource(plaintext: &[u8], aligned: bool) -> Vec<u8> {
         chunks.push(compressed);
         offset = end;
     }
+    assert_encoder_emits_a_spec_shaped_resource(plaintext, &chunks, aligned);
     lzx_build_resource_body(&chunks)
+}
+
+fn assert_encoder_emits_a_spec_shaped_resource(
+    plaintext: &[u8],
+    chunks: &[Vec<u8>],
+    aligned: bool,
+) {
+    let expected_chunks: usize = plaintext.len().div_ceil(WIM_CHUNK_SIZE as usize);
+    assert_eq!(
+        chunks.len(),
+        expected_chunks,
+        "a resource of {} bytes is split into {expected_chunks} chunks of at most {WIM_CHUNK_SIZE}",
+        plaintext.len()
+    );
+
+    let want_type: u16 = if aligned {
+        LZX_BLOCKTYPE_ALIGNED
+    } else {
+        LZX_BLOCKTYPE_VERBATIM
+    };
+    for (index, chunk) in chunks.iter().enumerate() {
+        assert_eq!(
+            lzx_declared_block_type(chunk),
+            want_type,
+            "chunk {index} must open with the 3-bit LZX block type {want_type} in the high bits of \
+             its first 16-bit little-endian unit, read straight from the bytes and not through the \
+             decoder under test"
+        );
+    }
+
+    let compressed_total: usize = chunks.iter().map(Vec::len).sum();
+    assert!(
+        compressed_total < plaintext.len(),
+        "the encoder must actually encode: {compressed_total} compressed bytes against {} \
+         plaintext bytes means a round trip could pass on a pair that copies rather than codes",
+        plaintext.len()
+    );
+}
+
+fn assert_decoder_reads_the_bitstream(plaintext: &[u8], aligned: bool) {
+    let mut chunks: Vec<Vec<u8>> = Vec::new();
+    let mut offset: usize = 0;
+    while offset < plaintext.len() {
+        let end: usize = (offset + WIM_CHUNK_SIZE as usize).min(plaintext.len());
+        chunks.push(
+            lzx_compress_chunk(&plaintext[offset..end], aligned).expect("compress lzx chunk"),
+        );
+        offset = end;
+    }
+    let table: usize = chunk_table_len(chunks.len());
+    let mut body: Vec<u8> = lzx_build_resource_body(&chunks);
+    let victim: usize = table + chunks.first().map_or(0, Vec::len) / 2;
+    let byte: &mut u8 = body
+        .get_mut(victim)
+        .expect("the compressed body reaches into its first chunk");
+    *byte ^= 0xff;
+
+    let wim: Vec<u8> = build_wim_with_boot_resource(plaintext, &body);
+    let archive: WimArchive = parse_wim(&wim).expect("parse lzx wim with a damaged chunk");
+    let outcome: disrobe_binfmt::Result<Vec<u8>> = decompress_named_resource(
+        &wim,
+        &archive.header,
+        &archive.header.boot_metadata,
+        &ExtractionQuota::unrestricted(),
+    );
+    match outcome {
+        Err(_) => {}
+        Ok(decoded) => assert_ne!(
+            decoded, plaintext,
+            "flipping a byte inside the first compressed chunk still reproduced the plaintext, so \
+             the decoder is not reading the bitstream it was handed (aligned={aligned})"
+        ),
+    }
 }
 
 fn write_reshdr(header: &mut [u8], at: usize, size: u64, flags: u8, offset: u64, original: u64) {
@@ -156,6 +248,8 @@ fn assert_lzx_resource_round_trips(len: usize, aligned: bool, tag: &str) {
         result.integrity_violations
     );
     let _ = std::fs::remove_dir_all(&out_dir);
+
+    assert_decoder_reads_the_bitstream(&plaintext, aligned);
 }
 
 #[test]

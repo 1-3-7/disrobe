@@ -1,23 +1,16 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod common;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use disrobe_binfmt::{
     Action, ContainerKind, InputClassification, Lang, StructuralFormat, classify_input,
     detect_container, identify_by_structure,
 };
 
-fn corpus(rel: &str) -> Option<Vec<u8>> {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("..");
-    p.push("..");
-    p.push("corpus");
-    p.push(rel);
-    std::fs::read(&p).ok()
-}
+use common::requirement::required_corpus;
 
 const ELF_REL: &str = "native/zig/hello.zig.elf";
-const ELF_REL_ALT: &str = "native/nim/hello.nim.elf";
 const PE_REL: &str = "native/packers/upx/hello.packed.nrv2b.exe";
 const MACHO_FAT_REL: &str = "mac/megafile/EdgeCases.fat";
 const DEX_REL: &str = "jvm/dex/Hello.dex";
@@ -42,10 +35,7 @@ fn flip_prefix(bytes: &[u8], n: usize) -> Vec<u8> {
 
 #[test]
 fn real_elf_survives_zeroed_and_flipped_magic() {
-    let Some(elf): Option<Vec<u8>> = corpus(ELF_REL).or_else(|| corpus(ELF_REL_ALT)) else {
-        eprintln!("FIXTURE PENDING: {ELF_REL}");
-        return;
-    };
+    let elf: Vec<u8> = required_corpus(ELF_REL);
     assert_eq!(
         identify_by_structure(&elf),
         Some(StructuralFormat::Elf),
@@ -73,10 +63,7 @@ fn real_elf_survives_zeroed_and_flipped_magic() {
 
 #[test]
 fn real_pe_survives_flipped_mz_and_corrupt_e_lfanew() {
-    let Some(pe): Option<Vec<u8>> = corpus(PE_REL) else {
-        eprintln!("FIXTURE PENDING: {PE_REL}");
-        return;
-    };
+    let pe: Vec<u8> = required_corpus(PE_REL);
     assert_eq!(&pe[..2], b"MZ", "fixture must be a real MZ image");
     assert_eq!(identify_by_structure(&pe), Some(StructuralFormat::Pe));
 
@@ -109,10 +96,7 @@ fn real_pe_survives_flipped_mz_and_corrupt_e_lfanew() {
 
 #[test]
 fn real_macho_fat_survives_scrambled_magic() {
-    let Some(fat): Option<Vec<u8>> = corpus(MACHO_FAT_REL) else {
-        eprintln!("FIXTURE PENDING: {MACHO_FAT_REL}");
-        return;
-    };
+    let fat: Vec<u8> = required_corpus(MACHO_FAT_REL);
     assert_eq!(
         identify_by_structure(&fat),
         Some(StructuralFormat::MachOFat),
@@ -128,10 +112,7 @@ fn real_macho_fat_survives_scrambled_magic() {
 
 #[test]
 fn real_dex_survives_zeroed_magic_structurally() {
-    let Some(dex): Option<Vec<u8>> = corpus(DEX_REL) else {
-        eprintln!("FIXTURE PENDING: {DEX_REL}");
-        return;
-    };
+    let dex: Vec<u8> = required_corpus(DEX_REL);
     assert_eq!(
         identify_by_structure(&dex),
         Some(StructuralFormat::Dex),
@@ -147,10 +128,7 @@ fn real_dex_survives_zeroed_magic_structurally() {
 
 #[test]
 fn real_class_survives_scrambled_magic_structurally() {
-    let Some(class): Option<Vec<u8>> = corpus(CLASS_REL) else {
-        eprintln!("FIXTURE PENDING: {CLASS_REL}");
-        return;
-    };
+    let class: Vec<u8> = required_corpus(CLASS_REL);
     assert_eq!(
         identify_by_structure(&class),
         Some(StructuralFormat::JavaClass),
@@ -172,10 +150,7 @@ fn real_class_survives_scrambled_magic_structurally() {
 
 #[test]
 fn real_zip_survives_scrambled_local_header_via_eocd_anchor() {
-    let Some(zip): Option<Vec<u8>> = corpus(ZIP_REL) else {
-        eprintln!("FIXTURE PENDING: {ZIP_REL}");
-        return;
-    };
+    let zip: Vec<u8> = required_corpus(ZIP_REL);
     assert_eq!(&zip[..2], b"PK", "fixture must be a real zip");
     assert_eq!(detect_container(&zip), Some(ContainerKind::Zip));
 
@@ -219,13 +194,27 @@ fn scrambled_wasm_routes_to_wasm_lang() {
 
 #[test]
 fn unrelated_real_bytes_do_not_false_positive() {
-    let Some(dex): Option<Vec<u8>> = corpus(DEX_REL) else {
-        return;
-    };
+    let dex: Vec<u8> = required_corpus(DEX_REL);
     let truncated: &[u8] = &dex[..dex.len().min(16)];
     let mut scratch: Vec<u8> = truncated.to_vec();
     for b in &mut scratch {
         *b = b.wrapping_add(0x55);
     }
-    let _ = identify_by_structure(&scratch);
+    assert_eq!(
+        identify_by_structure(&scratch),
+        None,
+        "a shifted 16-byte dex prefix carries no header table any format can validate, so naming \
+         a format here is a false positive"
+    );
+
+    for size in [0usize, 1, 4, 15, 64, 1024, 4096] {
+        for filler in [0x00u8, 0xff, 0x41] {
+            let uniform: Vec<u8> = vec![filler; size];
+            assert_eq!(
+                identify_by_structure(&uniform),
+                None,
+                "{size} bytes of {filler:#04x} must not be named as a structural format"
+            );
+        }
+    }
 }
