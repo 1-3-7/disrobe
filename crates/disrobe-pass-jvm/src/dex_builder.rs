@@ -1277,6 +1277,20 @@ impl MethodBuilder {
     }
 }
 
+#[cfg(test)]
+pub(crate) const DEXGUARD_REFLECT_TOOLCHAIN_DEX: &[u8] =
+    include_bytes!("../../../corpus/jvm/dexguard/DexGuardReflectStrings.dex");
+
+#[cfg(test)]
+pub(crate) const DEXGUARD_REFLECT_TOOLCHAIN_PLAINTEXT: [&str; 6] = [
+    "https://api.example.com/v1/auth",
+    "X-Api-Key",
+    "decryptToken",
+    "SELECT * FROM secrets WHERE id = ?",
+    "AES/CBC/PKCS5Padding",
+    "com.disrobe.sample.Secret",
+];
+
 #[must_use]
 pub fn dexguard_reflect_sample(plaintexts: &[&str], key: u8) -> Vec<u8> {
     let class: String = "Lcom/disrobe/sample/DexGuardReflectStrings;".to_owned();

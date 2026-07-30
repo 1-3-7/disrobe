@@ -1217,6 +1217,7 @@ pub fn is_plausible_plaintext(s: &str) -> bool {
 mod tests {
     use super::*;
     use crate::dex_builder::{
+        DEXGUARD_REFLECT_TOOLCHAIN_DEX, DEXGUARD_REFLECT_TOOLCHAIN_PLAINTEXT,
         dexguard_name_keyed_sample, dexguard_native_key_sample, dexguard_reflect_sample,
         dexguard_seeded_random_sample,
     };
@@ -1270,16 +1271,11 @@ mod tests {
     }
 
     #[test]
-    fn recovers_authored_plaintext_from_built_dex() {
-        let plaintexts: [&str; 4] = [
-            "https://api.example.com/v1/auth",
-            "X-Api-Key",
-            "decryptToken",
-            "AES/CBC/PKCS5Padding",
-        ];
-        let dex: Vec<u8> = dexguard_reflect_sample(&plaintexts, 0x66);
-        let parsed: DexFile = crate::dex::parse(&dex).expect("parse");
-        let reports: Vec<DexStringRecovery> = recover(&parsed, &dex);
+    fn recovers_plaintext_from_a_javac_and_d8_built_dex() {
+        let dex: &[u8] = DEXGUARD_REFLECT_TOOLCHAIN_DEX;
+        let plaintexts: [&str; 6] = DEXGUARD_REFLECT_TOOLCHAIN_PLAINTEXT;
+        let parsed: DexFile = crate::dex::parse(dex).expect("parse");
+        let reports: Vec<DexStringRecovery> = recover(&parsed, dex);
         assert_eq!(reports.len(), 1);
         let report: &DexStringRecovery = &reports[0];
         assert_eq!(report.table_size, plaintexts.len());
@@ -1294,7 +1290,19 @@ mod tests {
                 "missing {expected:?} in {recovered:?}"
             );
         }
-        assert!(!report.reflective_call_sites.is_empty());
+        assert!(
+            report
+                .reflective_call_sites
+                .iter()
+                .any(|s: &ReflectiveCallSite| s.resolved_member.ends_with(".decrypt")),
+            "the reflective site must name the method the getDeclaredMethod argument holds, got \
+             {:?}",
+            report
+                .reflective_call_sites
+                .iter()
+                .map(|s: &ReflectiveCallSite| s.resolved_member.as_str())
+                .collect::<Vec<&str>>()
+        );
     }
 
     #[test]
