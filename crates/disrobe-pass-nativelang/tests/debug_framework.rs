@@ -38,15 +38,26 @@ fn run_harness(debug: Option<&str>, json: bool) -> Output {
     cmd.arg("--nocapture");
     cmd.arg("--test-threads=1");
     cmd.arg("harness_entrypoint");
-    cmd.output().expect("spawn harness child")
+    let out: Output = cmd.output().expect("spawn harness child");
+    let stdout: String = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        stdout.contains("1 passed"),
+        "the child has to report one test executed, otherwise the filter matched nothing and \
+         every assertion below would be grading an empty run; child stdout was:\n{stdout}"
+    );
+    out
 }
 
 #[test]
-#[ignore = "spawned as a subprocess by the debug-framework contract tests"]
+#[ignore = "the subprocess body of the contract tests below, which spawn it on every run"]
 fn harness_entrypoint() {
-    if std::env::var_os(HARNESS_ENV).is_none() {
-        return;
-    }
+    assert!(
+        std::env::var_os(HARNESS_ENV).is_some(),
+        "this is the child half of the debug-framework contract tests in this file, not a test to \
+         run on its own. They spawn it with {HARNESS_ENV} set. Reaching this line without the \
+         variable means the spawn stopped propagating it and every parent was grading a child that \
+         did nothing"
+    );
     let bytes: Vec<u8> = nim_fixture();
     let analysis: disrobe_pass_nativelang::NativeLangAnalysis =
         disrobe_pass_nativelang::analyze(&bytes).expect("nim fixture analyzes");
