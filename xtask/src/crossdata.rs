@@ -24,8 +24,6 @@ struct RecoveryBar {
     #[serde(default)]
     value: Option<f64>,
     #[serde(default)]
-    num: Option<u64>,
-    #[serde(default)]
     detected: Option<u64>,
 }
 
@@ -59,10 +57,6 @@ enum Expected {
         label: &'static str,
     },
     Percent {
-        heading: &'static str,
-        label: &'static str,
-    },
-    Numerator {
         heading: &'static str,
         label: &'static str,
     },
@@ -122,9 +116,6 @@ fn resolve(doc: &Recovery, expected: &Expected) -> Option<f64> {
             .detected
             .map(|v: u64| v as f64),
         Expected::Percent { heading, label } => find_bar(doc, heading, label)?.value,
-        Expected::Numerator { heading, label } => {
-            find_bar(doc, heading, label)?.num.map(|v: u64| v as f64)
-        }
     }
 }
 

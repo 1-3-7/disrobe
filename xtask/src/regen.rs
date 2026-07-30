@@ -57,6 +57,12 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         || crate::crossdata::run(root),
         &mut stale,
     );
+    run_one(
+        "published-floors",
+        check,
+        || crate::floors::run(root),
+        &mut stale,
+    );
 
     if check {
         if stale.is_empty() {
