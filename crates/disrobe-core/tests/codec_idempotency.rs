@@ -61,12 +61,6 @@ fn build_fixtures() -> Vec<Fixture> {
             let Some(encoded): Option<Vec<u8>> = encode_for(scheme, &plaintext) else {
                 continue;
             };
-            let Ok(roundtrip): Result<Vec<u8>, _> = decode(&encoded, scheme) else {
-                continue;
-            };
-            if roundtrip != plaintext {
-                continue;
-            }
             fixtures.push(Fixture {
                 scheme,
                 plaintext: plaintext.clone(),

@@ -321,12 +321,13 @@ pub fn base92_encode(input: &[u8]) -> String {
             out.push(BASE92_ALPHABET[(value % 91) as usize]);
         }
     }
-    if bits > 0 {
+    if bits > 6 {
         let value: u32 = (accumulator << (13 - bits)) & 0x1fff;
         out.push(BASE92_ALPHABET[(value / 91) as usize]);
-        if bits > 6 {
-            out.push(BASE92_ALPHABET[(value % 91) as usize]);
-        }
+        out.push(BASE92_ALPHABET[(value % 91) as usize]);
+    } else if bits > 0 {
+        let value: u32 = (accumulator << (6 - bits)) & 0x3f;
+        out.push(BASE92_ALPHABET[value as usize]);
     }
     bytes_to_string(out)
 }
@@ -469,16 +470,16 @@ mod tests {
     fn base92_known_vectors() {
         assert_eq!(base92_encode(b""), "~");
         assert_eq!(base92_encode(b"a"), "D,");
-        assert_eq!(base92_encode(b"AB"), "8y8");
+        assert_eq!(base92_encode(b"AB"), "8y2");
         assert_eq!(base92_encode(b"abc"), "D8<q");
-        assert_eq!(base92_encode(b"hello"), "Fc_$aOO");
+        assert_eq!(base92_encode(b"hello"), "Fc_$aOB");
         assert_eq!(
             base92_encode(b"hello, base92 world"),
             "Fc_$aOVi$0gRoGis-Gv^iw3W"
         );
         assert_eq!(base92_decode(b"~").unwrap(), b"");
         assert_eq!(base92_decode(b"D,").unwrap(), b"a");
-        assert_eq!(base92_decode(b"Fc_$aOO").unwrap(), b"hello");
+        assert_eq!(base92_decode(b"Fc_$aOB").unwrap(), b"hello");
     }
 
     #[test]
