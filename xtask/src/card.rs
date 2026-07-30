@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use eyre::{Result, WrapErr, bail};
 use serde::Deserialize;
 
+use crate::datamodel::VerificationDoc;
 use crate::fileio::{read_bytes_bounded, read_text_bounded};
 
 const MAX_DATA_JSON_BYTES: u64 = 4 * 1024 * 1024;
@@ -29,23 +30,11 @@ struct RecoveryBar {
     detected: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
-struct VerificationDoc {
-    rows: Vec<VerificationRow>,
-}
-
-#[derive(Debug, Deserialize)]
-struct VerificationRow {
-    ecosystem: String,
-    result: String,
-}
-
 #[derive(Debug)]
 struct CardStats {
     py_pct: f64,
     fmt_count: u64,
     dex_clean: u64,
-    dex_total: u64,
     rust_loc: usize,
     crate_count: usize,
 }
@@ -153,7 +142,7 @@ const TEMPLATE: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
   <line x1="72" y1="554" x2="1208" y2="554" stroke="#262626"/>
   <text x="72" y="582" font-size="13.5" fill="#a1a1a1" xml:space="preserve" letter-spacing="0.15"><tspan fill="#8fb3d9" font-weight="700">$ </tspan>20+ ecosystems, one static binary<tspan fill="#828282"> &#183; </tspan>0 LLM, deterministic<tspan fill="#828282"> &#183; </tspan>python __PY_PCT__% recompile-verified in CI<tspan fill="#828282"> &#183; </tspan>__FMT_COUNT__ formats, no external unzipper</text>
-  <text x="72" y="606" font-size="13.5" fill="#a1a1a1" xml:space="preserve" letter-spacing="0.15"><tspan fill="#8fb3d9" font-weight="700">$ </tspan>Android __DEX_CLEAN__/__DEX_TOTAL__ dex JVM-verified<tspan fill="#828282"> &#183; </tspan>WASM re-run under wasmtime<tspan fill="#828282"> &#183; </tspan>Lua IronBrew2 devirt proven by execution<tspan fill="#828282"> &#183; </tspan>__RUST_LOC__ lines of Rust in __CRATE_COUNT__ crates</text>
+  <text x="72" y="606" font-size="13.5" fill="#a1a1a1" xml:space="preserve" letter-spacing="0.15"><tspan fill="#8fb3d9" font-weight="700">$ </tspan>Android dex __DEX_CLEAN__ classes JVM-verified<tspan fill="#828282"> &#183; </tspan>WASM re-run under wasmtime<tspan fill="#828282"> &#183; </tspan>Lua IronBrew2 devirt proven by execution<tspan fill="#828282"> &#183; </tspan>__RUST_LOC__ lines of Rust in __CRATE_COUNT__ crates</text>
 </svg>
 "##;
 
@@ -216,13 +205,12 @@ fn collect_stats(
 ) -> Result<CardStats> {
     let py_pct: f64 = find_value(recovery, "Python bytecode", "200-module pinned corpus")?;
     let fmt_count: u64 = find_detected(recovery, "Detection and extraction breadth", "Containers")?;
-    let (dex_clean, dex_total): (u64, u64) = find_dex_pair(verif)?;
+    let dex_clean: u64 = find_dex_clean(verif)?;
     let (rust_loc, crate_count): (usize, usize) = count_rust_lines(root)?;
     Ok(CardStats {
         py_pct,
         fmt_count,
         dex_clean,
-        dex_total,
         rust_loc,
         crate_count,
     })
@@ -262,7 +250,7 @@ fn find_detected(doc: &RecoveryDoc, heading_sub: &str, label: &str) -> Result<u6
     bail!("no bar `{label}` under heading containing `{heading_sub}`")
 }
 
-fn find_dex_pair(doc: &VerificationDoc) -> Result<(u64, u64)> {
+fn find_dex_clean(doc: &VerificationDoc) -> Result<u64> {
     for row in &doc.rows {
         if row.ecosystem != "Android DEX" {
             continue;
@@ -282,7 +270,13 @@ fn find_dex_pair(doc: &VerificationDoc) -> Result<(u64, u64)> {
         let total: u64 = total_str
             .parse()
             .map_err(|_| eyre::eyre!("could not parse total count from {:?}", row.result))?;
-        return Ok((clean, total));
+        if clean > total {
+            bail!(
+                "Android DEX row claims {clean} clean of {total} graded, which cannot be: {:?}",
+                row.result
+            );
+        }
+        return Ok(clean);
     }
     bail!("no 'Android DEX' row in verification.json")
 }
@@ -341,7 +335,6 @@ fn render(stats: &CardStats) -> String {
         .replace("__PY_PCT__", &py_str)
         .replace("__FMT_COUNT__", &stats.fmt_count.to_string())
         .replace("__DEX_CLEAN__", &stats.dex_clean.to_string())
-        .replace("__DEX_TOTAL__", &stats.dex_total.to_string())
         .replace("__RUST_LOC__", &approximate_loc(stats.rust_loc))
         .replace("__CRATE_COUNT__", &stats.crate_count.to_string())
 }
