@@ -31,18 +31,21 @@ const COMMITTED_DEXES: &[(&str, &[u8])] = &[
 
 const WHOLE_BODY_POPULATION_PERMILLE: u32 = 1000;
 
-const VERIFY_CLEAN_CLASS_FLOOR: usize = 102;
+const COMMITTED_VERIFY_CLEAN_CLASSES: usize = 118;
 
-const LIFTER_VERIFY_FAIL_CEILING: usize = 0;
+const COMMITTED_LIFTER_VERIFY_FAILURES: usize = 0;
 
-const BODY_VERIFY_CLEAN_FLOOR: usize = 317;
+const COMMITTED_CORPUS_CLASSES: usize = 155;
 
-const BODY_VERIFY_FAIL_CEILING: usize = 0;
+const COMMITTED_BODY_VERIFY_CLEAN: usize = 317;
+
+const COMMITTED_BODY_VERIFY_FAILURES: usize = 0;
 
 struct VerifyCounts {
     clean_classes: usize,
     lifter_fail_classes: usize,
     link_skipped_classes: usize,
+    link_unstable_classes: usize,
     methods_clean: usize,
     methods_in_failed_classes: usize,
     body_clean: usize,
@@ -57,6 +60,7 @@ fn counts_from(stdout: &str) -> VerifyCounts {
         clean_classes: parse_metric(stdout, "verify_clean_classes="),
         lifter_fail_classes: parse_metric(stdout, "lifter_verify_fail_classes="),
         link_skipped_classes: parse_metric(stdout, "link_skipped_classes="),
+        link_unstable_classes: parse_metric(stdout, "link_unstable_classes="),
         methods_clean: parse_metric(stdout, "methods_clean="),
         methods_in_failed_classes: parse_metric(stdout, "methods_lifter_fail="),
         body_clean: parse_metric(stdout, "body_clean="),
@@ -84,6 +88,8 @@ fn recovered_dalvik_bodies_pass_the_real_jvm_verifier() {
     let mut total_clean: usize = 0;
     let mut total_lifter_fail: usize = 0;
     let mut total_link_skipped: usize = 0;
+    let mut total_link_unstable: usize = 0;
+    let mut total_recovered: usize = 0;
     let mut total_methods_clean: usize = 0;
     let mut total_methods_in_failed: usize = 0;
     let mut total_body_clean: usize = 0;
@@ -120,6 +126,8 @@ fn recovered_dalvik_bodies_pass_the_real_jvm_verifier() {
         total_clean += counts.clean_classes;
         total_lifter_fail += counts.lifter_fail_classes;
         total_link_skipped += counts.link_skipped_classes;
+        total_link_unstable += counts.link_unstable_classes;
+        total_recovered += result.classes.len();
         total_methods_clean += counts.methods_clean;
         total_methods_in_failed += counts.methods_in_failed_classes;
         total_body_clean += counts.body_clean;
@@ -140,31 +148,55 @@ fn recovered_dalvik_bodies_pass_the_real_jvm_verifier() {
     for e in &all_errors {
         eprintln!("  {e}");
     }
-    assert!(
-        total_clean >= VERIFY_CLEAN_CLASS_FLOOR,
-        "verifier-clean classes {total_clean} fell below floor {VERIFY_CLEAN_CLASS_FLOOR}; \
-         the dalvik lifter regressed (fewer recovered bodies pass the real JVM verifier)"
+    assert_eq!(
+        total_clean, COMMITTED_VERIFY_CLEAN_CLASSES,
+        "verifier-clean classes {total_clean} against the pinned \
+         {COMMITTED_VERIFY_CLEAN_CLASSES}. The dex corpus is committed and the translation is \
+         deterministic, so nothing here can legitimately move without the lifter moving: fewer is a \
+         regression, and more is an improvement the published figure has to state before it lands. \
+         A floor is what let 102 stand while the corpus measured 118"
     );
-    assert!(
-        total_lifter_fail <= LIFTER_VERIFY_FAIL_CEILING,
-        "genuine lifter verify failures {total_lifter_fail} exceeded ceiling {LIFTER_VERIFY_FAIL_CEILING}; \
-         the lifter started emitting malformed bytecode the JVM rejects:\n{}",
+    assert_eq!(
+        total_lifter_fail,
+        COMMITTED_LIFTER_VERIFY_FAILURES,
+        "the jvm rejected {total_lifter_fail} recovered classes against the pinned \
+         {COMMITTED_LIFTER_VERIFY_FAILURES}; every rejection is malformed bytecode the lifter \
+         emitted:\n{}",
         all_errors.join("\n")
     );
-    assert!(
-        total_body_clean >= BODY_VERIFY_CLEAN_FLOOR,
-        "re-hosted verifier-clean method bodies {total_body_clean} fell below floor {BODY_VERIFY_CLEAN_FLOOR}; \
-         the dalvik lifter recovered fewer real bodies that pass the per-method -Xverify:all carrier"
+    assert_eq!(
+        total_link_unstable, 0,
+        "{total_link_unstable} classes ended in a jvm resource error rather than a verdict, so this \
+         run measured the lifter through a degraded jvm and its clean count is lower than the \
+         lifter earns. The bucket keeps such a class out of the rejection count, where it would \
+         read as a lifter defect, and it is asserted empty so that an always-zero counter states a \
+         precondition of the measurement rather than standing as unearned coverage"
     );
-    assert!(
-        total_body_fail <= BODY_VERIFY_FAIL_CEILING,
-        "re-hosted method bodies that the JVM verifier rejects {total_body_fail} exceeded ceiling {BODY_VERIFY_FAIL_CEILING}; \
-         the lifter emitted a real body the verifier rejects:\n{}",
+    assert_eq!(
+        total_clean + total_lifter_fail + total_link_skipped + total_link_unstable,
+        total_recovered,
+        "the pass recovered {total_recovered} classes but {} carry a verdict, so a class left the \
+         population without being graded",
+        total_clean + total_lifter_fail + total_link_skipped + total_link_unstable
+    );
+    assert_eq!(
+        total_recovered, COMMITTED_CORPUS_CLASSES,
+        "the committed dex corpus recovers {total_recovered} classes against the pinned \
+         {COMMITTED_CORPUS_CLASSES}; that is the second denominator the published prose names, and \
+         with the clean count pinned above it fixes the link-skipped remainder exactly"
+    );
+    assert_eq!(
+        total_body_clean, COMMITTED_BODY_VERIFY_CLEAN,
+        "re-hosted verifier-clean method bodies {total_body_clean} against the pinned \
+         {COMMITTED_BODY_VERIFY_CLEAN}; this population is fixed by the committed corpus, so a \
+         change either way has to reach the published body count"
+    );
+    assert_eq!(
+        total_body_fail,
+        COMMITTED_BODY_VERIFY_FAILURES,
+        "the jvm rejected {total_body_fail} re-hosted bodies against the pinned \
+         {COMMITTED_BODY_VERIFY_FAILURES}:\n{}",
         all_errors.join("\n")
-    );
-    assert!(
-        verifiable >= 90,
-        "expected the committed corpus to submit >=90 verifiable classes to the JVM, got {verifiable}"
     );
 }
 
@@ -202,10 +234,10 @@ fn published_dalvik_verifier_bar_matches_the_floors_this_gate_enforces() {
 
     assert_eq!(
         usize::try_from(num).expect("numerator fits usize"),
-        VERIFY_CLEAN_CLASS_FLOOR,
+        COMMITTED_VERIFY_CLEAN_CLASSES,
         "recovery.json publishes {num} verifier-clean classes and every document renders that \
-         number, but this gate enforces {VERIFY_CLEAN_CLASS_FLOOR}; the published figure is wrong \
-         until this assertion passes"
+         number, but this gate measures {COMMITTED_VERIFY_CLEAN_CLASSES}; the published figure is \
+         wrong until this assertion passes"
     );
     assert_eq!(
         num, den,
@@ -217,11 +249,31 @@ fn published_dalvik_verifier_bar_matches_the_floors_this_gate_enforces() {
         "recovery.json plots {value}% for {num} of {den} classes; the percentage and the counts \
          beside it have drifted apart"
     );
-    let bodies: String = format!("{BODY_VERIFY_CLEAN_FLOOR} re-hosted method bodies verify clean");
+    let bodies: String =
+        format!("{COMMITTED_BODY_VERIFY_CLEAN} re-hosted method bodies verify clean");
     assert!(
         detail.contains(&bodies),
-        "the `{BAR}` detail does not state `{bodies}`, but this gate enforces \
-         {BODY_VERIFY_CLEAN_FLOOR} re-hosted bodies; the prose that ships beside the chart states a \
-         body count nothing measures"
+        "the `{BAR}` detail does not state `{bodies}`, but this gate measures \
+         {COMMITTED_BODY_VERIFY_CLEAN} re-hosted bodies; the prose that ships beside the chart \
+         states a body count nothing measures"
+    );
+    let attested: String = format!(
+        "{COMMITTED_VERIFY_CLEAN_CLASSES} of {COMMITTED_CORPUS_CLASSES} classes are \
+         verifier-attested"
+    );
+    assert!(
+        detail.contains(&attested),
+        "the `{BAR}` detail does not state `{attested}`. The plotted ratio is over presentable \
+         classes, so the corpus denominator only exists in this prose, and it is the number that \
+         went stale last time"
+    );
+    let skipped: String = format!(
+        "{} of them are link-skipped",
+        COMMITTED_CORPUS_CLASSES - COMMITTED_VERIFY_CLEAN_CLASSES
+    );
+    assert!(
+        detail.contains(&skipped),
+        "the `{BAR}` detail does not state `{skipped}`; the ungraded remainder is what the \
+         presentable ratio leaves out, so it cannot be left to drift"
     );
 }

@@ -30,6 +30,11 @@ public class V {
             return defineClass(name, b, 0, b.length);
         }
         boolean isStubbed(String name) { return stubbed.contains(name); }
+        Class<?> resolveTop(String name) throws ClassNotFoundException {
+            Class<?> already = findLoadedClass(name);
+            if (already != null) return already;
+            return findClass(name);
+        }
         Class<?> defineRaw(String name, byte[] b) {
             return defineClass(name, b, 0, b.length);
         }
@@ -127,7 +132,7 @@ public class V {
         for (String cn : names) {
             int mc = methodsWithCode(pool.get(cn));
             try {
-                Class<?> c = l.loadClass(cn);
+                Class<?> c = l.resolveTop(cn);
                 l.link(c);
                 c.getDeclaredMethods();
                 c.getDeclaredConstructors();
