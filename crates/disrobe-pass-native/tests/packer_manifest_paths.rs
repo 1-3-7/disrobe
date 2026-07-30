@@ -4,14 +4,38 @@ mod packer_fixture;
 
 use std::path::{Path, PathBuf};
 
-use packer_fixture::{
-    COMMITTED_FIXTURES, CommittedFixture, FixtureRequirement, REQUIRE_FIXTURES_VAR,
-    fixture_requirement, is_committed,
-};
+use packer_fixture::{FixtureRequirement, REQUIRE_FIXTURES_VAR, fixture_requirement, is_committed};
 use toml::Value;
 
-const PATH_KEYS: [&str; 3] = ["packed_path", "unpacked_path", "original_path"];
+#[derive(Debug, Clone, Copy)]
+struct PathKey {
+    path: &'static str,
+    provenance: &'static str,
+}
+
+const PATH_KEYS: [PathKey; 4] = [
+    PathKey {
+        path: "packed_path",
+        provenance: "packed_provenance",
+    },
+    PathKey {
+        path: "unpacked_path",
+        provenance: "unpacked_provenance",
+    },
+    PathKey {
+        path: "original_path",
+        provenance: "original_provenance",
+    },
+    PathKey {
+        path: "disrobe_original_path",
+        provenance: "disrobe_original_provenance",
+    },
+];
+
 const CORPUS_PREFIX: &str = "corpus/native/packers/";
+const COMMITTED_WORD: &str = "committed";
+const LOCAL_WORD: &str = "local";
+const RECIPE_KEY: &str = "local_fixture_recipe";
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -19,23 +43,41 @@ fn repo_root() -> PathBuf {
         .join("..")
 }
 
+#[allow(clippy::panic)]
 fn manifest() -> toml::Table {
     let path: PathBuf = repo_root().join("corpus/native/packers/MANIFEST.toml");
-    let text: String = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+    let text: String = std::fs::read_to_string(&path).unwrap_or_else(|e: std::io::Error| {
         panic!(
             "the packer manifest must be readable at {}: {e}",
             path.display()
         )
     });
     text.parse::<toml::Table>()
-        .unwrap_or_else(|e| panic!("the packer manifest must be valid TOML: {e}"))
+        .unwrap_or_else(|e: toml::de::Error| panic!("the packer manifest must be valid TOML: {e}"))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Provenance {
+    Committed,
+    Local,
+}
+
+fn parse_provenance(raw: &str) -> Option<Provenance> {
+    match raw.trim() {
+        COMMITTED_WORD => Some(Provenance::Committed),
+        LOCAL_WORD => Some(Provenance::Local),
+        _ => None,
+    }
 }
 
 #[derive(Debug)]
 struct DeclaredPath {
     label: String,
     key: &'static str,
+    provenance_key: &'static str,
     declared: String,
+    provenance: Option<String>,
+    recipe: Option<String>,
     absent_is_recorded: bool,
 }
 
@@ -50,6 +92,10 @@ fn declared_paths(manifest: &toml::Table) -> Vec<DeclaredPath> {
             .get("name")
             .and_then(Value::as_str)
             .unwrap_or("<unnamed packer>");
+        let recipe: Option<String> = packer
+            .get(RECIPE_KEY)
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         let entries: &[Value] = packer
             .get("runs")
             .and_then(Value::as_array)
@@ -64,13 +110,19 @@ fn declared_paths(manifest: &toml::Table) -> Vec<DeclaredPath> {
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             for key in PATH_KEYS {
-                let Some(value): Option<&Value> = run.get(key) else {
+                let Some(value): Option<&Value> = run.get(key.path) else {
                     continue;
                 };
                 out.push(DeclaredPath {
                     label: format!("{family} / {input}"),
-                    key,
+                    key: key.path,
+                    provenance_key: key.provenance,
                     declared: value.as_str().unwrap_or("").to_owned(),
+                    provenance: run
+                        .get(key.provenance)
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    recipe: recipe.clone(),
                     absent_is_recorded,
                 });
             }
@@ -83,6 +135,99 @@ fn family_and_name(declared: &str) -> Option<(&str, &str)> {
     let rest: &str = declared.strip_prefix(CORPUS_PREFIX)?;
     let (family, name): (&str, &str) = rest.split_once('/')?;
     Some((family, name))
+}
+
+fn base_name(name: &str) -> &str {
+    name.rsplit('/').next().unwrap_or(name)
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ProvenanceAudit {
+    defects: Vec<String>,
+    committed: usize,
+    local: usize,
+}
+
+fn audit_provenance(manifest: &toml::Table, root: &Path) -> ProvenanceAudit {
+    let mut audit: ProvenanceAudit = ProvenanceAudit::default();
+    for entry in declared_paths(manifest) {
+        let Some((family, name)): Option<(&str, &str)> = family_and_name(&entry.declared) else {
+            continue;
+        };
+        let Some(raw): Option<&String> = entry.provenance.as_ref() else {
+            audit.defects.push(format!(
+                "{}: {} = {:?} states no provenance; set {} to {COMMITTED_WORD:?} or {LOCAL_WORD:?}",
+                entry.label, entry.key, entry.declared, entry.provenance_key
+            ));
+            continue;
+        };
+        let Some(provenance): Option<Provenance> = parse_provenance(raw) else {
+            audit.defects.push(format!(
+                "{}: {} = {raw:?} is not a provenance this check knows; the only values are \
+                 {COMMITTED_WORD:?} and {LOCAL_WORD:?}",
+                entry.label, entry.provenance_key
+            ));
+            continue;
+        };
+        match provenance {
+            Provenance::Committed => {
+                audit.committed += 1;
+                if !is_committed(family, name) {
+                    audit.defects.push(format!(
+                        "{}: {} = {:?} is declared {COMMITTED_WORD}, but the committed-fixture \
+                         registry carries no {family}/{name}. A renamed or mistyped path lands \
+                         here, and so does a fixture that was never staged",
+                        entry.label, entry.key, entry.declared
+                    ));
+                }
+                let full: PathBuf = root.join(&entry.declared);
+                if !full.is_file() {
+                    audit.defects.push(format!(
+                        "{}: {} = {:?} is declared {COMMITTED_WORD} but names no file at {}",
+                        entry.label,
+                        entry.key,
+                        entry.declared,
+                        full.display()
+                    ));
+                }
+            }
+            Provenance::Local => {
+                audit.local += 1;
+                if is_committed(family, name) {
+                    audit.defects.push(format!(
+                        "{}: {} = {:?} is declared {LOCAL_WORD}, but the committed-fixture \
+                         registry tracks {family}/{name}; a tracked input reproduces for every \
+                         reader and must say so",
+                        entry.label, entry.key, entry.declared
+                    ));
+                    continue;
+                }
+                let Some(recipe): Option<&String> = entry
+                    .recipe
+                    .as_ref()
+                    .filter(|r: &&String| !r.trim().is_empty())
+                else {
+                    audit.defects.push(format!(
+                        "{}: {} = {:?} is declared {LOCAL_WORD}, but its packer carries no \
+                         {RECIPE_KEY}, so nothing records how to rebuild or refetch it",
+                        entry.label, entry.key, entry.declared
+                    ));
+                    continue;
+                };
+                if !recipe.contains(base_name(name)) {
+                    audit.defects.push(format!(
+                        "{}: {} = {:?} is declared {LOCAL_WORD}, and its packer's {RECIPE_KEY} \
+                         never names {}, so the recipe covers some other input",
+                        entry.label,
+                        entry.key,
+                        entry.declared,
+                        base_name(name)
+                    ));
+                }
+            }
+        }
+    }
+    audit
 }
 
 #[test]
@@ -176,37 +321,27 @@ fn no_manifest_path_resolves_to_nothing() {
 }
 
 #[test]
-fn a_manifest_row_never_points_at_a_renamed_committed_fixture() {
+fn every_manifest_path_says_whether_its_input_is_committed_or_local() {
     let manifest: toml::Table = manifest();
-    let root: PathBuf = repo_root();
-    let mut offenders: Vec<String> = Vec::new();
-    for entry in declared_paths(&manifest) {
-        let Some((family, name)): Option<(&str, &str)> = family_and_name(&entry.declared) else {
-            continue;
-        };
-        if root.join(&entry.declared).is_file() || entry.absent_is_recorded {
-            continue;
-        }
-        let sibling: Option<&CommittedFixture> = COMMITTED_FIXTURES
-            .iter()
-            .find(|f: &&CommittedFixture| f.family == family && f.name != name);
-        let Some(sibling): Option<&CommittedFixture> = sibling else {
-            continue;
-        };
-        if is_committed(family, name) {
-            continue;
-        }
-        offenders.push(format!(
-            "{}: {} = {:?} names no file, in a family whose committed fixtures include {}/{}",
-            entry.label, entry.key, entry.declared, sibling.family, sibling.name
-        ));
-    }
+    let audit: ProvenanceAudit = audit_provenance(&manifest, &repo_root());
     assert!(
-        offenders.is_empty(),
-        "a row in a family that ships committed fixtures, pointing at a path that is neither on \
-         disk nor in the committed registry, is how a renamed or mistyped fixture path turns a \
-         graded row into one that silently measures nothing. Offending rows:\n  {}",
-        offenders.join("\n  ")
+        audit.defects.is_empty(),
+        "a row measured against an input nobody else has must be distinguishable from one measured \
+         against a fixture in the tree, or a figure that no reader can reproduce reads exactly like \
+         one that every reader can. Each declared path states {COMMITTED_WORD:?} or {LOCAL_WORD:?} \
+         beside it. {COMMITTED_WORD:?} means the committed-fixture registry carries it and the file \
+         is here, so a rename or a deletion fails this check. {LOCAL_WORD:?} means the file is \
+         deliberately out of the tree, and it is only accepted when the packer's {RECIPE_KEY} names \
+         that file and records how to rebuild or refetch it, so declaring an input local can never \
+         be a way to silence this. Offending paths:\n  {}",
+        audit.defects.join("\n  ")
+    );
+    assert!(
+        audit.committed > 0 && audit.local > 0,
+        "this check saw {} committed and {} local path(s), so one of its two halves graded nothing; \
+         it must run against the real manifest, which carries both kinds",
+        audit.committed,
+        audit.local
     );
 }
 
@@ -221,4 +356,149 @@ fn committed_fixture_registry_paths_are_reachable() {
          every manifest path is relative to it",
         dir.display()
     );
+}
+
+const COMMITTED_SAMPLE: &str = "corpus/native/packers/upx/hello.packed.nrv2b.exe";
+const ABSENT_SAMPLE: &str = "corpus/native/packers/upx/rg.packed.upx.exe";
+const NOWHERE_SAMPLE: &str = "corpus/native/packers/upx/nothing.here.exe";
+
+fn one_run(family_keys: &str, run_keys: &str) -> Result<toml::Table, toml::de::Error> {
+    format!("[[packers]]\nname = \"UPX\"\n{family_keys}\n[[packers.runs]]\ninput = \"probe\"\n{run_keys}\n")
+        .parse::<toml::Table>()
+}
+
+#[test]
+fn a_path_with_no_provenance_is_a_defect() -> Result<(), toml::de::Error> {
+    let table: toml::Table = one_run("", &format!("packed_path = {COMMITTED_SAMPLE:?}\n"))?;
+    let audit: ProvenanceAudit = audit_provenance(&table, &repo_root());
+    assert_eq!(audit.defects.len(), 1, "got {:?}", audit.defects);
+    assert!(
+        audit.defects[0].contains("states no provenance"),
+        "got {:?}",
+        audit.defects
+    );
+    Ok(())
+}
+
+#[test]
+fn an_unknown_provenance_word_is_a_defect() -> Result<(), toml::de::Error> {
+    let table: toml::Table = one_run(
+        "",
+        &format!("packed_path = {COMMITTED_SAMPLE:?}\npacked_provenance = \"nearby\"\n"),
+    )?;
+    let audit: ProvenanceAudit = audit_provenance(&table, &repo_root());
+    assert_eq!(audit.defects.len(), 1, "got {:?}", audit.defects);
+    assert!(
+        audit.defects[0].contains("not a provenance this check knows"),
+        "got {:?}",
+        audit.defects
+    );
+    Ok(())
+}
+
+#[test]
+fn a_committed_claim_over_an_uncommitted_path_is_a_defect() -> Result<(), toml::de::Error> {
+    let table: toml::Table = one_run(
+        "",
+        &format!("packed_path = {ABSENT_SAMPLE:?}\npacked_provenance = \"committed\"\n"),
+    )?;
+    let audit: ProvenanceAudit = audit_provenance(&table, &repo_root());
+    assert!(
+        audit
+            .defects
+            .iter()
+            .any(|d: &String| d.contains("registry carries no")),
+        "a path the registry does not track cannot claim to be committed, got {:?}",
+        audit.defects
+    );
+    Ok(())
+}
+
+#[test]
+fn a_committed_path_that_is_present_and_registered_is_clean() -> Result<(), toml::de::Error> {
+    let table: toml::Table = one_run(
+        "",
+        &format!("packed_path = {COMMITTED_SAMPLE:?}\npacked_provenance = \"committed\"\n"),
+    )?;
+    let audit: ProvenanceAudit = audit_provenance(&table, &repo_root());
+    assert_eq!(
+        audit,
+        ProvenanceAudit {
+            defects: Vec::new(),
+            committed: 1,
+            local: 0
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn a_local_path_without_a_recipe_is_a_defect() -> Result<(), toml::de::Error> {
+    let table: toml::Table = one_run(
+        "",
+        &format!("packed_path = {ABSENT_SAMPLE:?}\npacked_provenance = \"local\"\n"),
+    )?;
+    let audit: ProvenanceAudit = audit_provenance(&table, &repo_root());
+    assert_eq!(audit.defects.len(), 1, "got {:?}", audit.defects);
+    assert!(
+        audit.defects[0].contains(RECIPE_KEY),
+        "got {:?}",
+        audit.defects
+    );
+    Ok(())
+}
+
+#[test]
+fn a_local_path_a_recipe_never_names_is_a_defect() -> Result<(), toml::de::Error> {
+    let table: toml::Table = one_run(
+        "local_fixture_recipe = \"rebuild hello.unpacked.exe with upx -d\"",
+        &format!("packed_path = {ABSENT_SAMPLE:?}\npacked_provenance = \"local\"\n"),
+    )?;
+    let audit: ProvenanceAudit = audit_provenance(&table, &repo_root());
+    assert_eq!(audit.defects.len(), 1, "got {:?}", audit.defects);
+    assert!(
+        audit.defects[0].contains("never names rg.packed.upx.exe"),
+        "got {:?}",
+        audit.defects
+    );
+    Ok(())
+}
+
+#[test]
+fn a_local_path_its_recipe_names_is_clean_even_when_absent() -> Result<(), toml::de::Error> {
+    let table: toml::Table = one_run(
+        "local_fixture_recipe = \"nothing.here.exe is refetched from the upstream corpus\"",
+        &format!("packed_path = {NOWHERE_SAMPLE:?}\npacked_provenance = \"local\"\n"),
+    )?;
+    assert!(
+        !repo_root().join(NOWHERE_SAMPLE).is_file(),
+        "this case only means something while {NOWHERE_SAMPLE} is absent from every checkout"
+    );
+    let audit: ProvenanceAudit = audit_provenance(&table, &repo_root());
+    assert_eq!(
+        audit,
+        ProvenanceAudit {
+            defects: Vec::new(),
+            committed: 0,
+            local: 1
+        },
+        "an input the recipe names is clean whether or not this machine happens to hold it"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_committed_fixture_relabelled_local_is_a_defect() -> Result<(), toml::de::Error> {
+    let table: toml::Table = one_run(
+        "local_fixture_recipe = \"hello.packed.nrv2b.exe is upx --best over hello.exe\"",
+        &format!("packed_path = {COMMITTED_SAMPLE:?}\npacked_provenance = \"local\"\n"),
+    )?;
+    let audit: ProvenanceAudit = audit_provenance(&table, &repo_root());
+    assert_eq!(audit.defects.len(), 1, "got {:?}", audit.defects);
+    assert!(
+        audit.defects[0].contains("registry tracks"),
+        "a tracked input relabelled local understates what a reader can reproduce, got {:?}",
+        audit.defects
+    );
+    Ok(())
 }

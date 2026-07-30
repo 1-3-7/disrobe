@@ -1,6 +1,23 @@
-schema_version = 2
+schema_version = 3
 generated_utc = "2026-05-25T16:48:00Z"
 description = "Category C 'EASY' packer corpus - real-binary round-trip testing (megafile + hello-baseline)"
+path_provenance = """
+Schema 3 requires every declared path key to carry a sibling provenance key: packed_path pairs with
+packed_provenance, unpacked_path with unpacked_provenance, original_path with original_provenance,
+disrobe_original_path with disrobe_original_provenance. Two values are allowed.
+
+  committed: the file is in the repository and in the committed-fixture registry
+    (crates/disrobe-pass-native/tests/support/packer_fixture.rs), so every reader has the same
+    bytes and every figure beside it re-derives from a clean checkout.
+
+  local: the file is deliberately out of the tree, on size or on licence. The figures on that row
+    were measured here and no clean checkout re-derives them. A local path is only accepted when
+    its packer carries a local_fixture_recipe that names that file and records how to rebuild or
+    refetch it, so marking an input local can never be a way to silence the check.
+
+Enforced by crates/disrobe-pass-native/tests/packer_manifest_paths.rs
+(every_manifest_path_says_whether_its_input_is_committed_or_local).
+"""
 
 [source.hello_x64]
 arch = "x86_64"
@@ -50,16 +67,34 @@ version = "5.1.1"
 install_method = "winget UPX.UPX"
 install_path = "C:\\Users\\-\\AppData\\Local\\Microsoft\\WinGet\\Packages\\UPX.UPX_Microsoft.Winget.Source_8wekyb3d8bbwe\\upx-5.1.1-win64\\upx.exe"
 status = "ok-megafile-verified"
+local_fixture_recipe = """
+hello.unpacked.exe is rebuilt from committed bytes with UPX 5.1.1:
+`upx -d -o hello.unpacked.exe corpus/native/packers/upx/hello.packed.nrv2b.exe`, which reproduces
+unpacked_sha256 96762AB4... . Anyone can re-derive it.
+
+rg.packed.upx.exe and rg.unpacked.upx.exe are built from the ripgrep 15.1.0 win64 MSVC release
+(`winget install BurntSushi.ripgrep.MSVC`, rg.exe sha256 DECDD499..., 4266496 B), then
+`upx --best rg.exe` and `upx -d`. The version is pinned, so the input refetches from a public
+release; the two 4 MB artifacts stay out of the tree on size.
+
+git.packed.upx.exe and git.unpacked.upx.exe are built the same way from the git.exe of a Git for
+Windows MSVC install (sha256 CAB4C4EE..., 4422544 B) staged at .developer/big-binaries/git.exe.
+This manifest never recorded WHICH Git for Windows release shipped that git.exe, so the input can
+be matched by hash but not refetched by version. It is the one input in this family that a reader
+cannot obtain from the recipe alone.
+"""
 
 [[packers.runs]]
 input = "hello.exe (x64)"
 input_sha256 = "37D55B50D63CC0005E0EC2B3070E4D16019F8358AC48C54B4F8E71FC114EE70A"
 packed_path = "corpus/native/packers/upx/hello.packed.nrv2b.exe"
+packed_provenance = "committed"
 packed_sha256 = "DDD7E1CA914A971B5D976E1F238C3320383AE4367845CE5E274CAA6C82060A91"
 packed_size_bytes = 53248
 compression_ratio_pct = 50.98
 runtime_ok = true
 unpacked_path = "corpus/native/packers/upx/hello.unpacked.exe"
+unpacked_provenance = "local"
 unpacked_sha256 = "96762AB47F23223A51A8BB4C46B003ADFD6F4F80CFA42168DE4C2F6789902F66"
 pack_command = "upx --best hello.exe"
 unpack_command = "upx -d -o hello.unpacked.exe hello.packed.exe"
@@ -72,6 +107,7 @@ disrobe_pdata_byte_identical = true
 disrobe_whole_image_recovery_pct = 96.50
 disrobe_whole_image_recovery_floor_pct = 96.0
 disrobe_original_path = "corpus/native/packers/upx/hello.original.exe"
+disrobe_original_provenance = "committed"
 disrobe_original_sha256 = "37D55B50D63CC0005E0EC2B3070E4D16019F8358AC48C54B4F8E71FC114EE70A"
 disrobe_unpacker_basis = ".text (0x11dc8 B) and .pdata (0xb10 B) recovered BYTE-IDENTICAL against the committed original (0 diffs each); whole loaded-image content recovery 99001/102592 = 96.50% mapped by VADDR. Residual confined to loader-rebuilt zones: .reloc (base relocations rebuilt by the OS loader), the import/IAT-patched .rdata, and .data initializers - none present byte-for-byte in the packed stream. The recovered_image is the decompressed loaded memory image (u_len 116810 B, laid out at VADDR base 0x1000), not the on-disk file (u_file_size 104448 B), so whole-FILE byte-identity is not claimed; .text byte-identity is the asserted oracle. Non-circular: graded against the committed hello.original.exe, never disrobe's own output. Asserted by cargo test -p disrobe-pass-native --test upx_unpack_all (nrv2b_recovered_text_is_byte_identical_to_committed_original, nrv2b_content_section_byte_recovery_meets_floor, nrv2b_residual_diff_is_confined_to_loader_rebuilt_zones)."
 
@@ -79,11 +115,13 @@ disrobe_unpacker_basis = ".text (0x11dc8 B) and .pdata (0xb10 B) recovered BYTE-
 input = "rg.exe (megafile, 4.07 MB)"
 input_sha256 = "DECDD4992F3F1B9A5EF9898F1B40AB16886D579D6516B4EFD3D5EAA19364E408"
 packed_path = "corpus/native/packers/upx/rg.packed.upx.exe"
+packed_provenance = "local"
 packed_sha256 = "1BB8D1452B7A442D95DBC5A460B2907C4076F47C59ED86D072B07CF1626F2F00"
 packed_size_bytes = 1462784
 compression_ratio_pct = 34.29
 runtime_ok = true
 unpacked_path = "corpus/native/packers/upx/rg.unpacked.upx.exe"
+unpacked_provenance = "local"
 unpacked_sha256 = "852B4AC43B4D5C72192A20F53D64A5CC26E83594BCC5215DD29CF7F27C678EA8"
 unpacked_size_bytes = 4266496
 unpacked_byte_diff_count = 261
@@ -95,11 +133,13 @@ notes = "round-trip byte-identical modulo 261 bytes (0.01%) across 4.27 MB - con
 input = "git.exe (megafile, 4.22 MB)"
 input_sha256 = "CAB4C4EEA1D869CF9F7BE73868DC9A90AD2DF1B1B673E5F8C8714A576C25EA96"
 packed_path = "corpus/native/packers/upx/git.packed.upx.exe"
+packed_provenance = "local"
 packed_sha256 = "A9B4892FFE9A26CEE4E23AC9BA571FEFC7C515AEDAB05F458620ADA6573808DE"
 packed_size_bytes = 1812368
 compression_ratio_pct = 40.98
 runtime_ok = "unverifiable-missing-dlls"
 unpacked_path = "corpus/native/packers/upx/git.unpacked.upx.exe"
+unpacked_provenance = "local"
 unpacked_sha256 = "8E571F09286B5F64955DB0E6D52ACE80D27F464B8A4E849C9A60FD1695492A16"
 unpacked_size_bytes = 4422544
 unpacked_byte_diff_count = 1301
@@ -113,11 +153,23 @@ install_method = "wayback https://web.archive.org/web/2020if_/https://www.matcod
 install_path = ".developer/packers/mpress/mpress.exe"
 status = "ok-trivial-only"
 limitation = "rejects PE binaries with TLS callbacks - applies to nearly all modern Rust/MSVC release builds"
+local_fixture_recipe = """
+hello.exe (the MPRESS-packed one under mpress/, not an original) is rebuilt from committed bytes:
+copy corpus/native/packers/upx/hello.original.exe (sha256 37D55B50..., the same 104448 B x64 build
+this family's run row names as its input) and run `mpress -q hello.exe` with MPRESS 2.19 from the
+wayback URL in install_method. Anyone can re-derive it.
+
+taskmgr.packed.mpress.exe is `mpress -q taskmgr.exe` over C:\\Windows\\System32\\Taskmgr.exe from a
+Windows 11 install whose copy hashes to 67012F45... . That system file is not redistributable and
+its bytes differ between Windows builds, so this input can be matched by hash but cannot be
+refetched from any public source. It is the one input in this family a reader cannot obtain.
+"""
 
 [[packers.runs]]
 input = "hello.exe (x64, trivial)"
 input_sha256 = "37D55B50D63CC0005E0EC2B3070E4D16019F8358AC48C54B4F8E71FC114EE70A"
 packed_path = "corpus/native/packers/mpress/hello.exe"
+packed_provenance = "local"
 packed_sha256 = "AA0C292EE175DA3D554B3B25859AC501BA9E6E816A789F0897178010CD129EE8"
 packed_size_bytes = 50176
 compression_ratio_pct = 48.0
@@ -140,6 +192,7 @@ input = "taskmgr.exe (megafile, Windows System32 PE)"
 input_sha256 = "67012F45B7AD6EA6243AB3A9C8BF3ADAD32CEC432994840A2968BCA54944E379"
 input_size_bytes = 5621104
 packed_path = "corpus/native/packers/mpress/taskmgr.packed.mpress.exe"
+packed_provenance = "local"
 packed_sha256 = "886605FA11BC754FFDEB48DFB64A3499F65D427EE7CB8FD667F177D525DD5441"
 packed_size_bytes = 1061376
 compression_ratio_pct = 18.88
@@ -156,12 +209,19 @@ install_method = "https://www.un4seen.com/files/petite24.zip"
 install_path = ".developer/packers/petite/petite.exe"
 status = "ok-x86-only"
 limitation = "x86 only - rejects PE32+ with 'Not an x86 executable'"
+local_fixture_recipe = """
+megafile_DirCmp.exe is refetched from github.com/chesvectain/PackingData, the MIT-licensed
+pre-packed corpus, Petite subset; it ships packed upstream and no original counterpart exists there.
+Match it by packed_sha256 E94CF282... at 4242387 B. Anyone can refetch it; it stays out of the tree
+on size.
+"""
 sample_coverage = "two x86 samples are staged and they do not carry the same result, so the two figures stay separate and are never averaged into one Petite number. hello.exe reaches 97.80% content-section recovery through the emulated phase-two path. megafile_DirCmp.exe does not reach its original entry point: the emulator now drives all four of the stub's descriptor blocks to their exact declared output sizes and follows the stub into its own exception handler, and the run stops inside that handler. See the per-run rows."
 
 [[packers.runs]]
 input = "hello32.exe (x86)"
 input_sha256 = "3B263798B36403015C20CC778B4E8831F911EA2514995C17D8BDB8A30F9B8554"
 packed_path = "corpus/native/packers/petite/hello.exe"
+packed_provenance = "committed"
 packed_sha256 = "4022E6A82AD782A94DA07DA46EC4AF3E721AF111B456E5F0E3B05331D510AC8D"
 packed_size_bytes = 52144
 compression_ratio_pct = 55.1
@@ -186,6 +246,7 @@ notes = "clean rejection. No megafile x86 test attempted - would require i686 ri
 input = "DirCmp.exe (megafile, x86, ~4.05 MB)"
 input_sha256 = "n/a-third-party-prepacked"
 packed_path = "corpus/native/packers/petite/megafile_DirCmp.exe"
+packed_provenance = "local"
 packed_sha256 = "E94CF2825D0C10B9CCAE76DBCD26D4C4D4B780A9CD742CB240483D2A836E784F"
 packed_size_bytes = 4242387
 unpacker_status = "structural-recovery"
@@ -240,6 +301,7 @@ notes = "kkrunchy aborts on any modern compiler output - by design. Documented a
 input = "hello.exe (hand-rolled NASM PE32, 1024 B, single section, no CRT/exports/TLS)"
 input_sha256 = "B2EA8973316F"
 packed_path = "corpus/native/packers/kkrunchy/hello.packed.kkrunchy.exe"
+packed_provenance = "committed"
 packed_sha256 = "BA4421F51C56"
 packed_size_bytes = 5632
 unpacker_status = "structural-recovery"
@@ -252,6 +314,7 @@ notes = "k7 variant. parse_kkrunchy_header succeeds; variant fingerprint = K7Var
 input = "hello.exe (hand-rolled NASM PE32, 1024 B, single section, no CRT/exports/TLS)"
 input_sha256 = "B2EA8973A937BD1F67125CBE69D8204ECEDBB6F4FC29DE38BB626BBD37C7316F"
 packed_path = "corpus/native/packers/kkrunchy/hello.packed.kkrunchy_classic.exe"
+packed_provenance = "committed"
 packed_sha256 = "A2FB9DCB82F646347A6F1A56580FB6ECBE6B67AA9570057126DD351D1770B3B6"
 packed_size_bytes = 4608
 fixture_absent = false
@@ -311,14 +374,27 @@ install_path = ".developer/packers/fsg/fsg.exe"
 status = "unpacker-implemented"
 fixture_source = "github.com/chesvectain/PackingData (FSG/ subset of MIT-licensed pre-packed corpus, originals from Notpacked/)"
 limitation = "FSG 2.0 EP-stub layout only (BB <import_meta_va> BF <unpack_dst_va> BE <packed_stream_va> 53 E8 0A...). FSG 1.x variants not exercised by current fixtures. Original section table is destroyed by FSG (packed PE has 3 sections - bss target + payload + entry stub) so disrobe reports the decompressed image as a flat blob at unpack_dest_va, not a reconstructed multi-section PE."
+local_fixture_recipe = """
+Every local input here refetches from github.com/chesvectain/PackingData, the MIT-licensed
+pre-packed corpus: the packed forms from its FSG subset and the originals from its Notpacked
+subset. Anyone can refetch all four; they stay out of the tree on size.
+
+  - aatools_setup.packed.fsg.exe (8896 B) and aatools_setup.original.exe (3153537 B). The packed
+    form is not staged locally either; see fixture_absent on that row.
+  - ftp.packed.fsg.exe (19744 B) and ftp.original.exe (42496 B), the Microsoft ftp client.
+
+Hash.packed.fsg.exe and Hash.original.exe are committed instead and need no refetch.
+"""
 
 [[packers.runs]]
 input = "aatools_setup.exe (3153537 B, NSIS installer)"
 packed_path = "corpus/native/packers/fsg/aatools_setup.packed.fsg.exe"
+packed_provenance = "local"
 fixture_absent = true
 fixture_absent_reason = "the packed artifact is not present in the local corpus; only aatools_setup.original.exe is staged. The four fsg_unpack tests that name this fixture return early when it is missing, so the byte-exact figure below is a record of an earlier staged run and is not re-derived by any test on a tree without it. Re-stage from the PackingData corpus to grade it again."
 packed_size_bytes = 8896
 original_path = "corpus/native/packers/fsg/aatools_setup.original.exe"
+original_provenance = "local"
 unpacker_status = "byte-exact"
 unpacked_witnessed_bytes = 8259
 unpacked_byte_diff_count = 0
@@ -328,9 +404,11 @@ notes = "Smallest fixture, ImageBase 0x00400000, unpack_dest_va 0x00401000. aPLi
 [[packers.runs]]
 input = "Hash.exe (29184 B)"
 packed_path = "corpus/native/packers/fsg/Hash.packed.fsg.exe"
+packed_provenance = "committed"
 packed_size_bytes = 16624
 compression_ratio_pct = 56.96
 original_path = "corpus/native/packers/fsg/Hash.original.exe"
+original_provenance = "committed"
 unpacker_status = "byte-exact"
 unpacked_witnessed_bytes = 18188
 unpacked_byte_diff_count = 0
@@ -340,9 +418,11 @@ notes = "ImageBase 0x00400000, unpack_dest_va 0x00401000, decompressed-image len
 [[packers.runs]]
 input = "ftp.exe (42496 B, Microsoft ftp client)"
 packed_path = "corpus/native/packers/fsg/ftp.packed.fsg.exe"
+packed_provenance = "local"
 packed_size_bytes = 19744
 compression_ratio_pct = 46.46
 original_path = "corpus/native/packers/fsg/ftp.original.exe"
+original_provenance = "local"
 unpacker_status = "near-byte-exact"
 unpacked_witnessed_bytes = 31220
 unpacked_byte_diff_count = 622
@@ -356,6 +436,20 @@ install_method = "wayback https://web.archive.org/web/2008if_/http://www.nsdsn.c
 install_path = ".developer/packers/nspack/nspack/nSpack.exe"
 status = "byte-recovery-implemented"
 fixture_source = "github.com/chesvectain/PackingData (cloned 2026-05-25, MIT-licensed test corpus of pre-packed real binaries; original counterparts in PackingData/Notpacked/)"
+local_fixture_recipe = """
+Every local input here refetches from the PackingData NSPack subset named in fixture_source, then
+is renamed to the local basename below. Match each by the packed_sha256 prefix on its own run row.
+Anyone can refetch all five; they stay out of the tree on size.
+
+  - ftp.packed.nspack.exe, upstream PackingData/NSPack/nspack_ftp.exe, 21225 B. Not staged locally
+    either, because Defender quarantines it on read; see fixture_absent on that row.
+  - cmd.packed.nspack.exe, 108193 B.
+  - psexec.packed.nspack.exe, 100885 B.
+  - handle.packed.nspack.exe, 155143 B.
+  - calc.packed.nspack.exe, 312233 B.
+
+hash.packed.nspack.exe and hash.original.exe are committed instead and need no refetch.
+"""
 limitation = "NSPack 3.x payload uses an LZMA-class binary range coder embedded in the x86 stub. v0.8 W4E shipped an in-house pure-Rust port of the decoder (lc=tre, lp=allocsz, pb=firstbyte parameterization) plus a 24-bit BE E8/E9 call-jmp fixup. v0.9 A5 tightened the selective-fixup rule to a dual in-image-target check. v0.10 root-caused the apparent 'large-fixture failures': NSPack stores .rsrc + .reloc UNCOMPRESSED outside the nsp1 stream (the decompressor decodes those regions to zero), so the prior whole-image byte-diff metric was unfairly penalizing handle (huge 256 KB .rsrc) + psexec + calc. The decoder itself is correct. Measured over the COMPRESSED content sections (.text/.rdata/.data, excluding .rsrc/.reloc - same convention as the MPRESS/FSG rows), byte-recovery is 98.59-99.34% across ALL fixtures: hash 99.34, cmd 99.34, psexec 98.90, handle 98.59, calc 98.99. Asserted by test_nspack_<name>_content_byte_recovery (NspackEmulatedReport::content_recovery_pct, floor 90%). Reference algorithm taken from the public format spec."
 
 [[packers.runs]]
@@ -368,6 +462,7 @@ notes = "NSPack 3.7 binary obtained (303941 B). Probed /?, /q, -h, --help, -help
 input = "Hash.exe (29184 B)"
 input_sha256 = "43C5182F83086524"
 packed_path = "corpus/native/packers/nspack/hash.packed.nspack.exe"
+packed_provenance = "committed"
 packed_sha256 = "527903A5E0957C45"
 packed_size_bytes = 19068
 compression_ratio_pct = 65.34
@@ -382,6 +477,7 @@ notes = "Smallest fixture - 2-section nsp0/nsp1 layout (nsp0 raw 0x74, nsp1 raw 
 input = "ftp.exe (42496 B)"
 input_sha256 = "74E674254BDA1A06"
 packed_path = "corpus/native/packers/nspack/ftp.packed.nspack.exe"
+packed_provenance = "local"
 fixture_absent = true
 fixture_absent_reason = "quarantined on read by Windows Defender real-time protection and not present in the local corpus; see defender_status and notes below"
 packed_sha256 = "317EA9EAADA60E31"
@@ -398,6 +494,7 @@ notes = "Microsoft ftp.exe - 4-section original (.text/.data/.rsrc/.reloc) colla
 input = "cmd.exe (302592 B)"
 input_sha256 = "17F746D82695FA9B"
 packed_path = "corpus/native/packers/nspack/cmd.packed.nspack.exe"
+packed_provenance = "local"
 packed_sha256 = "963FA62622FD132F"
 packed_size_bytes = 108193
 compression_ratio_pct = 35.76
@@ -412,6 +509,7 @@ notes = "Microsoft cmd.exe - exercises larger nsp0 metadata cache (0x156 bytes).
 input = "PsExec.exe (339096 B)"
 input_sha256 = "3337E3875B05E0BF"
 packed_path = "corpus/native/packers/nspack/psexec.packed.nspack.exe"
+packed_provenance = "local"
 packed_sha256 = "BA3355D78F5A6A15"
 packed_size_bytes = 100885
 compression_ratio_pct = 29.75
@@ -426,6 +524,7 @@ notes = "Sysinternals PsExec - 5-section original (.text/.rdata/.data/.rsrc/.rel
 input = "handle.exe (425608 B)"
 input_sha256 = "E2D9A1D6103D45BB"
 packed_path = "corpus/native/packers/nspack/handle.packed.nspack.exe"
+packed_provenance = "local"
 packed_sha256 = "C88F58CBC69CB373"
 packed_size_bytes = 155143
 compression_ratio_pct = 36.45
@@ -440,6 +539,7 @@ notes = "Sysinternals handle - tiny nsp0 raw (0x32) edge case, x64 PE. EXCEEDS t
 input = "calc.exe (776192 B)"
 input_sha256 = "80C10EE5F21F92F8"
 packed_path = "corpus/native/packers/nspack/calc.packed.nspack.exe"
+packed_provenance = "local"
 packed_sha256 = "C84BE010FCB0CB92"
 packed_size_bytes = 312233
 compression_ratio_pct = 40.23
@@ -480,10 +580,12 @@ bootstrap pair and the per-DLL import-name plaintext zone.
 input = "AccessEnum.exe (174968 B, Sysinternals)"
 input_sha256 = "a4cc61f6c7ed716e4622e12b75f05ea17e79a45f0d8bd6855c340a30ec882b47"
 packed_path = "corpus/native/packers/mew/AccessEnum.packed.mew.exe"
+packed_provenance = "committed"
 packed_sha256 = "576f741a4f1e99b8a4b82273b59e505807de3f13eeb680dd5397b2dc74e79bbe"
 packed_size_bytes = 41810
 compression_ratio_pct = 23.9
 original_path = "corpus/native/packers/mew/AccessEnum.original.exe"
+original_provenance = "committed"
 unpacker_status = "lzma-rebuilder-byte-recovery"
 recovered_oep_rva = "0x35110"
 recovered_imports = 347
@@ -495,10 +597,12 @@ notes = "MEW 11 SE 1.2 layout validated. 2-section: section[0] 'MEW\\0F\\x12\\xd
 input = "Autologon.exe (138920 B, Sysinternals)"
 input_sha256 = "324c64d24818a0be63a43a8df678b88dca4f8959841f91f4875cc6ed0e93f549"
 packed_path = "corpus/native/packers/mew/Autologon.packed.mew.exe"
+packed_provenance = "committed"
 packed_sha256 = "6906d7f3794d3aff60d1c339d21dab18de0109b2b33a9ca11fcb01e71f0cc953"
 packed_size_bytes = 47510
 compression_ratio_pct = 34.2
 original_path = "corpus/native/packers/mew/Autologon.original.exe"
+original_provenance = "committed"
 unpacker_status = "lzma-rebuilder-byte-recovery"
 recovered_oep_rva = "0x2e754"
 recovered_imports = 371
@@ -510,10 +614,12 @@ notes = "Same MEW 11 SE layout. Imports include the bootstrap pair plus 369 addi
 input = "Clockres.exe (139944 B, Sysinternals)"
 input_sha256 = "aa358fb6d7458e0ab2c7212bc2ad5cc5ab67c2a5275a61c2408d998951ef77d1"
 packed_path = "corpus/native/packers/mew/Clockres.packed.mew.exe"
+packed_provenance = "committed"
 packed_sha256 = "c717a038be8d4035d5aeb1e8d16ce851ad203b677f77e87bfbb9baab97f32fa0"
 packed_size_bytes = 47784
 compression_ratio_pct = 34.1
 original_path = "corpus/native/packers/mew/Clockres.original.exe"
+original_provenance = "committed"
 unpacker_status = "lzma-rebuilder-byte-recovery"
 recovered_oep_rva = "0x2f866"
 recovered_imports = 363
