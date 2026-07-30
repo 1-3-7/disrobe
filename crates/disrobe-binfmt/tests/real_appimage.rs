@@ -6,14 +6,14 @@ use disrobe_binfmt::containers::squashfs::SquashfsCompression;
 
 const FORMAT_DIR: &str = "appimage";
 const FIXTURE_NAME: &str = "hello.AppImage";
+const GRADED: &str = "the real AppImage layout checks";
 
 #[test]
-#[ignore = "needs gitignored real fixture corpus/binfmt/appimage/hello.AppImage (ELF stub + mksquashfs, ~5MB); regen via corpus/binfmt/MANIFEST.toml, run with --ignored"]
 fn real_appimage_layout_recovered() {
-    let Some(bytes): Option<Vec<u8>> = common::load_fixture(FORMAT_DIR, FIXTURE_NAME) else {
-        panic!(
-            "missing fixture: corpus/binfmt/{FORMAT_DIR}/{FIXTURE_NAME} - see corpus/binfmt/MANIFEST.toml for regeneration"
-        );
+    let Some(bytes): Option<Vec<u8>> =
+        common::requirement::regenerable_fixture(FORMAT_DIR, FIXTURE_NAME, GRADED)
+    else {
+        return;
     };
     assert!(bytes.len() > 1_000_000);
     let layout: AppImageLayout = parse_appimage(&bytes).expect("parse appimage");
@@ -29,10 +29,11 @@ fn real_appimage_layout_recovered() {
 }
 
 #[test]
-#[ignore = "needs gitignored real fixture corpus/binfmt/appimage/hello.AppImage (ELF stub + mksquashfs, ~5MB); regen via corpus/binfmt/MANIFEST.toml, run with --ignored"]
 fn real_appimage_elf_header_bytes() {
-    let Some(bytes): Option<Vec<u8>> = common::load_fixture(FORMAT_DIR, FIXTURE_NAME) else {
-        panic!("missing fixture: corpus/binfmt/{FORMAT_DIR}/{FIXTURE_NAME}");
+    let Some(bytes): Option<Vec<u8>> =
+        common::requirement::regenerable_fixture(FORMAT_DIR, FIXTURE_NAME, GRADED)
+    else {
+        return;
     };
     assert_eq!(&bytes[0..4], b"\x7fELF");
     assert_eq!(&bytes[8..11], b"AI\x02");

@@ -8,14 +8,14 @@ use disrobe_binfmt::containers::msix::{MsixManifest, parse_appx_manifest};
 
 const FORMAT_DIR: &str = "msix";
 const FIXTURE_NAME: &str = "hello.msix";
+const GRADED: &str = "the real MSIX package checks";
 
 #[test]
-#[ignore = "needs gitignored real fixture corpus/binfmt/msix/hello.msix (MakeAppx, ~5MB); regen via corpus/binfmt/MANIFEST.toml, run with --ignored"]
 fn real_msix_manifest_identity_recovered() {
-    let Some(bytes): Option<Vec<u8>> = common::load_fixture(FORMAT_DIR, FIXTURE_NAME) else {
-        panic!(
-            "missing fixture: corpus/binfmt/{FORMAT_DIR}/{FIXTURE_NAME} - see corpus/binfmt/MANIFEST.toml for regeneration (requires MakeAppx)"
-        );
+    let Some(bytes): Option<Vec<u8>> =
+        common::requirement::regenerable_fixture(FORMAT_DIR, FIXTURE_NAME, GRADED)
+    else {
+        return;
     };
     assert!(bytes.len() > 1_000_000);
     let manifest: MsixManifest = parse_appx_manifest(&bytes).expect("parse appx manifest");
@@ -29,10 +29,11 @@ fn real_msix_manifest_identity_recovered() {
 }
 
 #[test]
-#[ignore = "needs gitignored real fixture corpus/binfmt/msix/hello.msix (MakeAppx, ~5MB); regen via corpus/binfmt/MANIFEST.toml, run with --ignored"]
 fn real_msix_contains_payload_files_and_edge_case_names() {
-    let Some(bytes): Option<Vec<u8>> = common::load_fixture(FORMAT_DIR, FIXTURE_NAME) else {
-        panic!("missing fixture: corpus/binfmt/{FORMAT_DIR}/{FIXTURE_NAME}");
+    let Some(bytes): Option<Vec<u8>> =
+        common::requirement::regenerable_fixture(FORMAT_DIR, FIXTURE_NAME, GRADED)
+    else {
+        return;
     };
     let cursor: Cursor<&[u8]> = Cursor::new(bytes.as_slice());
     let mut archive: zip::ZipArchive<Cursor<&[u8]>> =
@@ -78,10 +79,11 @@ fn real_msix_contains_payload_files_and_edge_case_names() {
 }
 
 #[test]
-#[ignore = "needs gitignored real fixture corpus/binfmt/msix/hello.msix (MakeAppx, ~5MB); regen via corpus/binfmt/MANIFEST.toml, run with --ignored"]
 fn real_msix_hello_txt_content_round_trip() {
-    let Some(bytes): Option<Vec<u8>> = common::load_fixture(FORMAT_DIR, FIXTURE_NAME) else {
-        panic!("missing fixture: corpus/binfmt/{FORMAT_DIR}/{FIXTURE_NAME}");
+    let Some(bytes): Option<Vec<u8>> =
+        common::requirement::regenerable_fixture(FORMAT_DIR, FIXTURE_NAME, GRADED)
+    else {
+        return;
     };
     let cursor: Cursor<&[u8]> = Cursor::new(bytes.as_slice());
     let mut archive: zip::ZipArchive<Cursor<&[u8]>> =

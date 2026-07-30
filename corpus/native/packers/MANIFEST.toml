@@ -131,8 +131,6 @@ unpacker_notes = "Wave v0.8-W4A unpacker: pure-Rust port of the 7zip LZMA1 SDK a
 [[packers.runs]]
 input = "rg.exe (megafile, Rust MSVC release)"
 input_sha256 = "DECDD4992F3F1B9A5EF9898F1B40AB16886D579D6516B4EFD3D5EAA19364E408"
-packed_path = ""
-packed_sha256 = ""
 runtime_ok = false
 error = "MPRESS: TLS callbacks are not supported in this version."
 notes = "default mode silently no-op (exit code 10); -m LZMAT mode raises explicit TLS-callback rejection. Modern Rust/MSVC release binaries embed TLS callbacks and fail MPRESS."
@@ -158,6 +156,7 @@ install_method = "https://www.un4seen.com/files/petite24.zip"
 install_path = ".developer/packers/petite/petite.exe"
 status = "ok-x86-only"
 limitation = "x86 only - rejects PE32+ with 'Not an x86 executable'"
+sample_coverage = "two x86 samples are staged and they do not carry the same result, so the two figures stay separate and are never averaged into one Petite number. hello.exe reaches 97.80% content-section recovery through the emulated phase-two path. megafile_DirCmp.exe does not reach its original entry point: the emulator now drives all four of the stub's descriptor blocks to their exact declared output sizes and follows the stub into its own exception handler, and the run stops inside that handler. See the per-run rows."
 
 [[packers.runs]]
 input = "hello32.exe (x86)"
@@ -172,13 +171,13 @@ v0_8_w4b_byte_match_pct = 16.91
 v0_8_w4b_size_delta_bytes = 0
 v0_8_w4b_phase_one_decoded_ok = true
 v0_9_a2_phase2_emulated_whole_file_pct = 54.07
-v0_10_phase2_content_memory_recovery_pct = 97.80
-v0_8_w4b_byte_match_note = "Wave-4B static decode reached 16.91% match. v0.9 A2 ran the packed image through the pure-Rust stub_emu x86 interpreter (unpack_petite_phase2_emulated); the unpacker runs its full LZ decompression loop (~2.47M emulated instructions: Lodsb/Stosb/Movsb + Shr/Adc/Cmp bit-decoder) and reaches the OEP transfer cleanly. v0.10 root-caused the apparent 54% whole-file figure: memory_to_file_image re-laid the recovered image using Petite's degenerate 1-section header (the original 4-section table is destroyed by Petite), truncating the file to 52144 B. Measured over the deobfuscated MEMORY image (the meaningful unpacker output) against the original mapped to its loaded layout, content-section byte-recovery (.text/.rdata/.data, .reloc excluded - loader-rebuilt) is 97.80% (88132/90112). Added PhaseTwoEmulatedOutput::recovered_memory_image. Asserted by test_petite_hello32_phase2_byte_recovery_beats_static (>=95% floor)."
+v0_10_phase2_content_memory_recovery_pct = 97.05
+v0_10_phase2_content_memory_recovery_note = "corrected downward from a recorded 97.80 (88132/90112) to the 97.05 (87450/90112) this tree measures. The drift predates the loader-page-protection and 16-bit-stack-width work in this crate: reverting those five files to their committed state measures the same 87450/90112, so the recorded figure had already fallen out of step with the code. The >=95 floor in test_petite_hello32_phase2_byte_recovery_beats_static is unchanged and still holds."
+v0_8_w4b_byte_match_note = "Wave-4B static decode reached 16.91% match. v0.9 A2 ran the packed image through the pure-Rust stub_emu x86 interpreter (unpack_petite_phase2_emulated); the unpacker runs its full LZ decompression loop (~2.47M emulated instructions: Lodsb/Stosb/Movsb + Shr/Adc/Cmp bit-decoder) and reaches the OEP transfer cleanly. v0.10 root-caused the apparent 54% whole-file figure: memory_to_file_image re-laid the recovered image using Petite's degenerate 1-section header (the original 4-section table is destroyed by Petite), truncating the file to 52144 B. Measured over the deobfuscated MEMORY image (the meaningful unpacker output) against the original mapped to its loaded layout, content-section byte-recovery (.text/.rdata/.data, .reloc excluded - loader-rebuilt) is 97.05% (87450/90112); the 97.80% (88132/90112) recorded when this note was written no longer matches the tree. Added PhaseTwoEmulatedOutput::recovered_memory_image. Asserted by test_petite_hello32_phase2_byte_recovery_beats_static (>=95% floor)."
 
 [[packers.runs]]
 input = "rg.exe (megafile, x64)"
 input_sha256 = "DECDD4992F3F1B9A5EF9898F1B40AB16886D579D6516B4EFD3D5EAA19364E408"
-packed_path = ""
 runtime_ok = false
 error = "Not an x86 executable"
 notes = "clean rejection. No megafile x86 test attempted - would require i686 ripgrep build (multi-minute cargo build + many transitive deps)."
@@ -195,6 +194,12 @@ unpacker_functions_recovered = 1262
 v0_8_w4b_phase_one_decoded_ok = false
 v0_8_w4b_preserved_header_bytes = 934
 v0_8_w4b_recovered_zero_pct = 61.3
+phase2_emulated_reaches_original_entry = false
+phase2_emulated_blocks_decompressed = 4
+phase2_emulated_blocks_declared = 4
+phase2_emulated_steps = 4916094
+phase2_emulated_stop_reason = "runs off the end of the stub's first exception-handler block at 0x7af599, one instruction past a call whose target the run computes as unmapped"
+phase2_emulated_note = "No byte-recovery figure is published for this sample and none is claimed. The stub decompresses its four descriptor blocks with zlib inflate and each one now produces exactly its declared output size (0x599 bytes at RVA 0x3af000, 0x3e1c at 0x3b1000, a backward block move, and 0x4a000 at 0x422000), then walks one descriptor past the list so the destination is the read-only header page. The write at the head of its decompressor faults there on purpose, which is how the stub hands control to the exception handler it decompressed into RVA 0x3af000 first. Reaching that point needed four fixes: the interpreter was executing the 16-bit pushfw as a four-byte push, which shifted the stack by two and corrupted the handler address the stub stores in its registration record; the image was mapped uniformly writable so the deliberate fault never happened; VirtualProtect did not change any permission; and the dispatcher unlinked FS:[0] before calling the handler and ran it on the establisher frame, where its own argument pushes overwrote the record. The handler now runs through relocation application and stops at the end of its first block. What remains is the last five bytes of that block, a call whose displacement resolves outside the image, which points at a further inflate divergence in the tail of the first block rather than at the descriptor walk."
 notes = "Real-world Petite 2.x megafile sample from github.com/chesvectain/PackingData. Source binary not in repo (only the packed form is shipped upstream). disrobe-pass-native unpack_petite_with_report recovers structural PE (MZ+PE32 headers + 1 reconstituted section) and 22 DLLs / 1262 import-function names via the plaintext name-table scan. Wave-4B's phase-one stub parser does not detect a Petite EP shape match here (DirCmp uses a non-standard wrapper prologue), so the stream falls back to structural-only padding; LZ77 stream decode is best-effort. This row asserts structural+import recovery, not byte-identical decompression."
 
 [[packers]]
@@ -227,7 +232,6 @@ DisFilter forward + inverse port (dis_filter / dis_unfilter) from the documented
 [[packers.runs]]
 input = "rust hello.exe (rustc-built, 94720 B with exports + TLS + CRT)"
 input_sha256 = "3B263798B36403015C20CC778B4E8831F911EA2514995C17D8BDB8A30F9B8554"
-packed_path = ""
 runtime_ok = false
 error = "files with exports or tls data are not supported"
 notes = "kkrunchy aborts on any modern compiler output - by design. Documented as a known kkrunchy fitness-envelope limit."
@@ -311,6 +315,8 @@ limitation = "FSG 2.0 EP-stub layout only (BB <import_meta_va> BF <unpack_dst_va
 [[packers.runs]]
 input = "aatools_setup.exe (3153537 B, NSIS installer)"
 packed_path = "corpus/native/packers/fsg/aatools_setup.packed.fsg.exe"
+fixture_absent = true
+fixture_absent_reason = "the packed artifact is not present in the local corpus; only aatools_setup.original.exe is staged. The four fsg_unpack tests that name this fixture return early when it is missing, so the byte-exact figure below is a record of an earlier staged run and is not re-derived by any test on a tree without it. Re-stage from the PackingData corpus to grade it again."
 packed_size_bytes = 8896
 original_path = "corpus/native/packers/fsg/aatools_setup.original.exe"
 unpacker_status = "byte-exact"
@@ -354,7 +360,6 @@ limitation = "NSPack 3.x payload uses an LZMA-class binary range coder embedded 
 
 [[packers.runs]]
 input = "hello32.exe (x86) - GUI-driver attempt"
-packed_path = ""
 runtime_ok = false
 error = "no CLI mode - all probed switches open GUI"
 notes = "NSPack 3.7 binary obtained (303941 B). Probed /?, /q, -h, --help, -help, /help - all open main window with no headless exit. Strings inside nSpack.exe are encrypted (NSPack self-packed), blocking static option discovery. Pivoted to pre-packed corpus from PackingData repo (next 6 rows)."
@@ -377,6 +382,8 @@ notes = "Smallest fixture - 2-section nsp0/nsp1 layout (nsp0 raw 0x74, nsp1 raw 
 input = "ftp.exe (42496 B)"
 input_sha256 = "74E674254BDA1A06"
 packed_path = "corpus/native/packers/nspack/ftp.packed.nspack.exe"
+fixture_absent = true
+fixture_absent_reason = "quarantined on read by Windows Defender real-time protection and not present in the local corpus; see defender_status and notes below"
 packed_sha256 = "317EA9EAADA60E31"
 packed_size_bytes = 21225
 compression_ratio_pct = 49.94

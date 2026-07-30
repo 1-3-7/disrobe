@@ -5,14 +5,14 @@ use disrobe_binfmt::containers::nsis::{NsisHeader, detect_nsis};
 
 const FORMAT_DIR: &str = "nsis";
 const FIXTURE_NAME: &str = "hello.exe";
+const GRADED: &str = "the real NSIS header detection";
 
 #[test]
-#[ignore = "needs gitignored real fixture corpus/binfmt/nsis/hello.exe (makensis, ~5MB); regen via corpus/binfmt/MANIFEST.toml, run with --ignored"]
 fn real_nsis_first_header_detected_in_pe_tail() {
-    let Some(bytes): Option<Vec<u8>> = common::load_fixture(FORMAT_DIR, FIXTURE_NAME) else {
-        panic!(
-            "missing fixture: corpus/binfmt/{FORMAT_DIR}/{FIXTURE_NAME} - see corpus/binfmt/MANIFEST.toml for regeneration (requires makensis)"
-        );
+    let Some(bytes): Option<Vec<u8>> =
+        common::requirement::regenerable_fixture(FORMAT_DIR, FIXTURE_NAME, GRADED)
+    else {
+        return;
     };
     assert!(
         bytes.len() > 1_000_000,

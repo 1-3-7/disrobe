@@ -8,6 +8,7 @@ use disrobe_binfmt::containers::docker::{DockerManifest, parse_docker_manifest};
 
 const FORMAT_DIR: &str = "docker";
 const FIXTURE_NAME: &str = "hello.docker.tar";
+const GRADED: &str = "the real docker-save image checks";
 
 fn collect_tar_entries(bytes: &[u8]) -> BTreeMap<String, Vec<u8>> {
     let mut out: BTreeMap<String, Vec<u8>> = BTreeMap::new();
@@ -27,12 +28,11 @@ fn collect_tar_entries(bytes: &[u8]) -> BTreeMap<String, Vec<u8>> {
 }
 
 #[test]
-#[ignore = "needs gitignored real fixture corpus/binfmt/docker/hello.docker.tar (docker save, ~6MB); regen via corpus/binfmt/MANIFEST.toml, run with --ignored"]
 fn real_docker_save_manifest_and_layer_parse() {
-    let Some(bytes): Option<Vec<u8>> = common::load_fixture(FORMAT_DIR, FIXTURE_NAME) else {
-        panic!(
-            "missing fixture: corpus/binfmt/{FORMAT_DIR}/{FIXTURE_NAME} - see corpus/binfmt/MANIFEST.toml for regeneration"
-        );
+    let Some(bytes): Option<Vec<u8>> =
+        common::requirement::regenerable_fixture(FORMAT_DIR, FIXTURE_NAME, GRADED)
+    else {
+        return;
     };
     assert!(bytes.len() > 1_000_000);
     let entries: BTreeMap<String, Vec<u8>> = collect_tar_entries(&bytes);
@@ -57,10 +57,11 @@ fn real_docker_save_manifest_and_layer_parse() {
 }
 
 #[test]
-#[ignore = "needs gitignored real fixture corpus/binfmt/docker/hello.docker.tar (docker save, ~6MB); regen via corpus/binfmt/MANIFEST.toml, run with --ignored"]
 fn real_docker_layer_tar_contains_payload_edge_cases() {
-    let Some(bytes): Option<Vec<u8>> = common::load_fixture(FORMAT_DIR, FIXTURE_NAME) else {
-        panic!("missing fixture: corpus/binfmt/{FORMAT_DIR}/{FIXTURE_NAME}");
+    let Some(bytes): Option<Vec<u8>> =
+        common::requirement::regenerable_fixture(FORMAT_DIR, FIXTURE_NAME, GRADED)
+    else {
+        return;
     };
     let entries: BTreeMap<String, Vec<u8>> = collect_tar_entries(&bytes);
     let manifest_bytes: &Vec<u8> = entries.get("manifest.json").expect("manifest");
