@@ -158,6 +158,19 @@ pub fn recover_delphi_classes(bytes: &[u8]) -> Vec<DelphiClass> {
 }
 
 #[must_use]
+pub fn decode_dfm(bytes: &[u8]) -> Option<DelphiForm> {
+    let decoded: dfm::DfmDecoded = dfm::decode(bytes)?;
+    Some(DelphiForm {
+        resource_name: String::new(),
+        root_class: decoded.root_class,
+        text: decoded.text,
+        object_count: decoded.object_count,
+        truncated: decoded.truncated,
+        notes: decoded.notes,
+    })
+}
+
+#[must_use]
 pub fn recover_dfm_resources(bytes: &[u8]) -> Vec<DelphiForm> {
     let Some(view): Option<PeView<'_>> = PeView::parse(bytes) else {
         return Vec::new();
