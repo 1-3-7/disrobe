@@ -117,10 +117,10 @@ pub use decompile::{
 };
 pub use delphi::{
     DelphiClass, DelphiDynamicMethod, DelphiEra, DelphiField, DelphiForm, DelphiInitTable,
-    DelphiInterface, DelphiMethod, DelphiOrigin, DelphiProperty, DelphiReport, DelphiSignalKind,
-    DelphiString, DelphiStringKind, DelphiTypeInfo, DelphiUnitEntry, DelphiVersion,
-    DelphiVersionSignal, analyze as analyze_delphi, classify_unit, decode_dfm, detect_delphi,
-    recover_delphi_classes, recover_delphi_strings, recover_dfm_resources,
+    DelphiInterface, DelphiMethod, DelphiOrigin, DelphiProperty, DelphiRecordField, DelphiReport,
+    DelphiSignalKind, DelphiString, DelphiStringKind, DelphiTypeInfo, DelphiUnitEntry,
+    DelphiVersion, DelphiVersionSignal, analyze as analyze_delphi, classify_unit, decode_dfm,
+    detect_delphi, recover_delphi_classes, recover_delphi_strings, recover_dfm_resources,
 };
 pub use deobf::{
     AbiInference, ArgCount, Bits as DeobfBits, BlockCopyProp, BlockDeadFlags, BogusBranch,
