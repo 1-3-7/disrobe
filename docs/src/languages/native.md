@@ -19,7 +19,7 @@ Two adjacent surfaces have their own pages: [native decompile](./native-decompil
 | Capabilities | MITRE ATT&CK technique and MBC ID mapping, with matching instruction offsets as per-rule evidence |
 | String recovery | Static scan plus decoder execution through the in-house x86 emulator |
 | Editing | Byte patch and nop-range at a virtual address, wildcarded signature generation, cross-build function diff |
-| Object models | Delphi and C++Builder classes with parents, published properties, fields, methods, dynamic method handlers and interfaces, enumeration members, string literals, DFM form resources, and compiler release identification (library API) |
+| Object models | Delphi and C++Builder classes with parents, published properties, fields, methods, dynamic method handlers and interfaces, enumeration members, string literals, DFM form resources, and compiler release identification |
 | Forensics | Entropy map (text / JSON / SVG), crypto and FLIRT signatures, import/export graph, CycloneDX SBOM |
 
 ## Commands
