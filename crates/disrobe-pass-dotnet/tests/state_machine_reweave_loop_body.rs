@@ -55,7 +55,7 @@ fn async_using_await_with_catch_keeps_the_awaited_body() {
         "the single await inside the using/try must survive reweave, not be cut:\n{body}"
     );
     assert!(
-        body.contains("cts = new CancellationTokenSource(this.timeout);"),
+        body.contains("cts = new System.Threading.CancellationTokenSource(this.timeout);"),
         "the using-bound resource construction must survive:\n{body}"
     );
     assert!(

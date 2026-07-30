@@ -415,18 +415,36 @@ fn unknown_type_stubs(body: &str) -> String {
     if !edgecases_root.is_empty() || !edgecases_more.is_empty() {
         out.push_str("namespace EdgeCases\n{\n");
         for name in &edgecases_root {
-            let _ = writeln!(out, "    public class {name} {{ }}");
+            out.push_str(&namespaced_stub(name, "EdgeCases", &ctor_arities));
         }
         out.push_str("}\n");
     }
     if !edgecases_more.is_empty() {
         out.push_str("namespace EdgeCases.More\n{\n");
         for name in &edgecases_more {
-            let _ = writeln!(out, "    public class {name} {{ }}");
+            out.push_str(&namespaced_stub(name, "EdgeCases.More", &ctor_arities));
         }
         out.push_str("}\n");
     }
     out
+}
+
+fn namespaced_stub(
+    name: &str,
+    namespace: &str,
+    ctor_arities: &std::collections::BTreeMap<String, usize>,
+) -> String {
+    let arity: usize = ctor_arities
+        .get(&format!("{namespace}.{name}"))
+        .copied()
+        .unwrap_or(0);
+    if arity == 0 {
+        return format!("    public class {name} {{ }}\n");
+    }
+    format!(
+        "    public class {name}\n    {{\n    {}    }}\n",
+        ctor_member(name, arity)
+    )
 }
 
 fn type_param_clause(arity: usize) -> String {
@@ -472,9 +490,7 @@ fn new_expression_ctor_arities(body: &str) -> std::collections::BTreeMap<String,
     let mut rest: &str = body;
     while let Some(pos) = rest.find("new ") {
         let after: &str = &rest[pos + "new ".len()..];
-        if let Some(name) = leading_type_path(after)
-            && !name.contains('.')
-        {
+        if let Some(name) = leading_type_path(after) {
             let tail: &str = after[name.len()..].trim_start();
             if let Some(arity) = call_arity(tail) {
                 let slot: &mut usize = out.entry(name).or_insert(0);

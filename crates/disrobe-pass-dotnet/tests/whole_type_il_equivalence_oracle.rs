@@ -1152,7 +1152,9 @@ const EDGECASES_TYPES: &[(&str, bool)] = &[
 const EDGECASES_RECOMPILE_MEMBERS: &[&str] = &[
     "Cat",
     "ConditionalCompilation",
+    "DisposableScope",
     "Dog",
+    "JsonLite",
     "PackedHeader",
     "Pipeline",
     "StaticFinalizationKit",

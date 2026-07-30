@@ -7,8 +7,8 @@ use crate::error::{Error, Result};
 use crate::metadata::{MetadataRoot, decompress_uint};
 use crate::pe::{ClrHeader, PeImage};
 use crate::signature::{
-    FieldSig, MethodSig, TypeSig, parse_field_sig_with_modifiers, parse_method_sig,
-    parse_method_sig_strict,
+    FieldSig, MethodSig, TypeSig, parse_field_sig, parse_field_sig_with_modifiers,
+    parse_method_sig, parse_method_sig_strict,
 };
 use crate::structurize::TargetLang;
 use crate::tables::{
@@ -1782,6 +1782,29 @@ impl Resolver {
         };
         let blob: &[u8] = self.blob(blob_index)?;
         parse_method_sig(blob).ok()
+    }
+
+    #[must_use]
+    pub fn callee_param_type_name(&self, token: u32, param_index: usize) -> Option<String> {
+        let sig: MethodSig = self.callee_signature(token)?;
+        let param: &TypeSig = sig.params.get(param_index)?;
+        let rendered: String = self.render_type(param, TargetLang::CSharp);
+        (!rendered.is_empty()).then_some(rendered)
+    }
+
+    #[must_use]
+    pub fn field_token_type_name(&self, token: u32) -> Option<String> {
+        let table_idx: u8 = u8::try_from(token >> 24).unwrap_or(0xFF);
+        let rid: usize = (token & 0x00FF_FFFF).checked_sub(1)? as usize;
+        let blob_index: u32 = match TableId::from_index(table_idx)? {
+            TableId::Field => self.tables.fields.get(rid)?.signature,
+            TableId::MemberRef => self.tables.member_refs.get(rid)?.signature,
+            _ => return None,
+        };
+        let blob: &[u8] = self.blob(blob_index)?;
+        let sig: TypeSig = parse_field_sig(blob).ok()?;
+        let rendered: String = self.render_type(&sig, TargetLang::CSharp);
+        (!rendered.is_empty()).then_some(rendered)
     }
 
     #[must_use]
