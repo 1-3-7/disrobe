@@ -14,6 +14,7 @@ pub(crate) enum RegType {
     Long,
     Double,
     ZeroOrNull,
+    NullRef,
     Ref(String),
 
     UninitializedThis,
@@ -84,8 +85,10 @@ fn merge(a: &RegType, b: &RegType) -> RegType {
     }
     match (a, b) {
         (RegType::ZeroOrNull, RegType::Int) | (RegType::Int, RegType::ZeroOrNull) => RegType::Int,
-        (RegType::ZeroOrNull, RegType::Ref(r)) | (RegType::Ref(r), RegType::ZeroOrNull) => {
-            RegType::Ref(r.clone())
+        (RegType::ZeroOrNull | RegType::NullRef, RegType::Ref(r))
+        | (RegType::Ref(r), RegType::ZeroOrNull | RegType::NullRef) => RegType::Ref(r.clone()),
+        (RegType::ZeroOrNull, RegType::NullRef) | (RegType::NullRef, RegType::ZeroOrNull) => {
+            RegType::NullRef
         }
         (RegType::Ref(x), RegType::Ref(y)) if x == y => RegType::Ref(x.clone()),
         (RegType::Ref(_), RegType::Ref(_)) => RegType::Ref("java/lang/Object".to_string()),
@@ -290,24 +293,7 @@ pub(crate) fn analyze(
         let mut out: RegState = cur;
         transfer(dex, insn, parsed, &mut out, &tctx)?;
 
-        let mut succs: Vec<u32> = Vec::new();
-        if let Some(t) = insn.branch_target_pc() {
-            succs.push(t);
-        }
-        if insn.is_switch()
-            && let Some(targets) = switch_targets.get(&insn.pc)
-        {
-            succs.extend(targets.iter().copied());
-        }
-        if !insn.is_unconditional_goto()
-            && !insn.is_return()
-            && !insn.is_throw()
-            && let Some(next) = insns.get(idx + 1)
-        {
-            succs.push(next.pc);
-        }
-
-        for spc in succs {
+        for spc in successor_pcs(insns, idx, switch_targets) {
             let sidx: usize = *pc_to_idx.get(&spc)?;
             let propagate: RegState = out.clone();
             match &mut state_in[sidx] {
@@ -324,10 +310,21 @@ pub(crate) fn analyze(
         }
     }
 
+    let null_refs: usize = resolve_null_constants(
+        dex,
+        insns,
+        parsed,
+        &tctx,
+        edges,
+        &pc_to_idx,
+        &reached,
+        &mut state_in,
+    );
+
     crate::debug::dbg_kv("dalvik-typestate", || {
         let reached_count: usize = reached.iter().filter(|&&r: &&bool| r).count();
         format!(
-            "{class_internal} fixpoint converged: insns={n} reached={reached_count} iterations={iters}"
+            "{class_internal} fixpoint converged: insns={n} reached={reached_count} iterations={iters} null_refs={null_refs}"
         )
     });
     let entry_state: Vec<RegState> = state_in
@@ -338,6 +335,240 @@ pub(crate) fn analyze(
         entry_state,
         reached,
     })
+}
+
+fn successor_pcs(
+    insns: &[DalvikInsn],
+    idx: usize,
+    switch_targets: &BTreeMap<u32, Vec<u32>>,
+) -> Vec<u32> {
+    let Some(insn): Option<&DalvikInsn> = insns.get(idx) else {
+        return Vec::new();
+    };
+    let mut succs: Vec<u32> = Vec::new();
+    if let Some(t) = insn.branch_target_pc() {
+        succs.push(t);
+    }
+    if insn.is_switch()
+        && let Some(targets) = switch_targets.get(&insn.pc)
+    {
+        succs.extend(targets.iter().copied());
+    }
+    if !insn.is_unconditional_goto()
+        && !insn.is_return()
+        && !insn.is_throw()
+        && let Some(next) = insns.get(idx + 1)
+    {
+        succs.push(next.pc);
+    }
+    succs
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NullDemand {
+    Free,
+    Integral,
+    Reference,
+    Conflict,
+}
+
+impl NullDemand {
+    const fn join(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Free, resolved) => resolved,
+            (resolved, Self::Free) => resolved,
+            (Self::Integral, Self::Integral) => Self::Integral,
+            (Self::Reference, Self::Reference) => Self::Reference,
+            _ => Self::Conflict,
+        }
+    }
+}
+
+const fn edge_demand(ty: &RegType) -> NullDemand {
+    match ty {
+        RegType::Int => NullDemand::Integral,
+        RegType::Ref(_)
+        | RegType::NullRef
+        | RegType::UninitializedThis
+        | RegType::Uninitialized(_) => NullDemand::Reference,
+        RegType::ZeroOrNull | RegType::Top | RegType::Long | RegType::Float | RegType::Double => {
+            NullDemand::Free
+        }
+    }
+}
+
+#[derive(Debug)]
+struct NullClasses {
+    parent: Vec<usize>,
+    demand: Vec<NullDemand>,
+    index: BTreeMap<(usize, u16), usize>,
+}
+
+impl NullClasses {
+    const fn new() -> Self {
+        Self {
+            parent: Vec::new(),
+            demand: Vec::new(),
+            index: BTreeMap::new(),
+        }
+    }
+
+    fn node(&mut self, idx: usize, reg: u16) -> usize {
+        if let Some(&existing) = self.index.get(&(idx, reg)) {
+            return existing;
+        }
+        let fresh: usize = self.parent.len();
+        self.parent.push(fresh);
+        self.demand.push(NullDemand::Free);
+        self.index.insert((idx, reg), fresh);
+        fresh
+    }
+
+    fn root(&mut self, node: usize) -> usize {
+        let mut cursor: usize = node;
+        loop {
+            let Some(&parent) = self.parent.get(cursor) else {
+                return cursor;
+            };
+            if parent == cursor {
+                return cursor;
+            }
+            let Some(&grand) = self.parent.get(parent) else {
+                return parent;
+            };
+            if let Some(slot) = self.parent.get_mut(cursor) {
+                *slot = grand;
+            }
+            cursor = grand;
+        }
+    }
+
+    fn at_root(&self, root: usize) -> NullDemand {
+        self.demand.get(root).copied().unwrap_or(NullDemand::Free)
+    }
+
+    fn unite(&mut self, left: usize, right: usize) {
+        let keep: usize = self.root(left);
+        let folded: usize = self.root(right);
+        if keep == folded {
+            return;
+        }
+        let merged: NullDemand = self.at_root(keep).join(self.at_root(folded));
+        if let Some(slot) = self.parent.get_mut(folded) {
+            *slot = keep;
+        }
+        if let Some(slot) = self.demand.get_mut(keep) {
+            *slot = merged;
+        }
+    }
+
+    fn require(&mut self, node: usize, demand: NullDemand) {
+        let root: usize = self.root(node);
+        let merged: NullDemand = self.at_root(root).join(demand);
+        if let Some(slot) = self.demand.get_mut(root) {
+            *slot = merged;
+        }
+    }
+
+    fn settled(&mut self, idx: usize, reg: u16) -> NullDemand {
+        let Some(&node) = self.index.get(&(idx, reg)) else {
+            return NullDemand::Free;
+        };
+        let root: usize = self.root(node);
+        self.at_root(root)
+    }
+}
+
+fn link_null_edge(
+    classes: &mut NullClasses,
+    carried: &RegState,
+    state_in: &[Option<RegState>],
+    reached: &[bool],
+    from: usize,
+    to: usize,
+) {
+    if !reached.get(to).copied().unwrap_or(false) {
+        return;
+    }
+    let Some(Some(target)): Option<&Option<RegState>> = state_in.get(to) else {
+        return;
+    };
+    for (&reg, ty) in carried {
+        if !matches!(ty, RegType::ZeroOrNull) {
+            continue;
+        }
+        let node: usize = classes.node(from, reg);
+        match target.get(&reg) {
+            Some(RegType::ZeroOrNull) => {
+                let joined: usize = classes.node(to, reg);
+                classes.unite(node, joined);
+            }
+            Some(other) => classes.require(node, edge_demand(other)),
+            None => {}
+        }
+    }
+}
+
+fn resolve_null_constants(
+    dex: &DexFile,
+    insns: &[DalvikInsn],
+    parsed: &MethodDescriptor,
+    tctx: &TransferCtx<'_>,
+    edges: &CfgEdges<'_>,
+    pc_to_idx: &BTreeMap<u32, usize>,
+    reached: &[bool],
+    state_in: &mut [Option<RegState>],
+) -> usize {
+    let mut classes: NullClasses = NullClasses::new();
+    for (idx, insn) in insns.iter().enumerate() {
+        if !reached.get(idx).copied().unwrap_or(false) {
+            continue;
+        }
+        let Some(Some(cur)): Option<&Option<RegState>> = state_in.get(idx) else {
+            continue;
+        };
+        let cur: RegState = cur.clone();
+        if let Some(handlers) = edges.handler_edges.get(&insn.pc) {
+            for &hpc in handlers {
+                let Some(&hidx): Option<&usize> = pc_to_idx.get(&hpc) else {
+                    continue;
+                };
+                link_null_edge(&mut classes, &cur, state_in, reached, idx, hidx);
+            }
+        }
+        let mut out: RegState = cur;
+        if transfer(dex, insn, parsed, &mut out, tctx).is_none() {
+            continue;
+        }
+        for spc in successor_pcs(insns, idx, edges.switch_targets) {
+            let Some(&sidx): Option<&usize> = pc_to_idx.get(&spc) else {
+                continue;
+            };
+            link_null_edge(&mut classes, &out, state_in, reached, idx, sidx);
+        }
+    }
+
+    let mut null_refs: usize = 0;
+    for idx in 0..insns.len() {
+        if !reached.get(idx).copied().unwrap_or(false) {
+            continue;
+        }
+        let Some(Some(st)): Option<&mut Option<RegState>> = state_in.get_mut(idx) else {
+            continue;
+        };
+        for (&reg, ty) in st.iter_mut() {
+            if !matches!(ty, RegType::ZeroOrNull) {
+                continue;
+            }
+            if matches!(classes.settled(idx, reg), NullDemand::Reference) {
+                *ty = RegType::NullRef;
+                null_refs += 1;
+            } else {
+                *ty = RegType::Int;
+            }
+        }
+    }
+    null_refs
 }
 
 struct TransferCtx<'a> {

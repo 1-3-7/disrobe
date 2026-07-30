@@ -158,6 +158,7 @@ struct CfgEmit {
     pc_post_array_elem: BTreeMap<u32, BTreeMap<u16, Slot>>,
 
     pc_entry_ref: BTreeMap<u32, BTreeMap<u16, String>>,
+    pc_entry_null: BTreeMap<u32, BTreeSet<u16>>,
 
     pc_exit_ref_regs: BTreeMap<u32, BTreeSet<u16>>,
     tries: Vec<TryRegion>,
@@ -312,7 +313,10 @@ const fn regtype_to_slot(ty: &crate::dalvik_typestate::RegType) -> Slot {
         RegType::Long => Slot::Long,
         RegType::Float => Slot::Float,
         RegType::Double => Slot::Double,
-        RegType::Ref(_) | RegType::UninitializedThis | RegType::Uninitialized(_) => Slot::Ref,
+        RegType::Ref(_)
+        | RegType::NullRef
+        | RegType::UninitializedThis
+        | RegType::Uninitialized(_) => Slot::Ref,
         RegType::Int | RegType::ZeroOrNull | RegType::Top => Slot::Int,
     }
 }
@@ -470,6 +474,7 @@ pub(crate) fn emit_branch_method_code(
 
     let mut pc_post_slot: BTreeMap<u32, BTreeMap<u16, Slot>> = BTreeMap::new();
     let mut pc_entry_ref: BTreeMap<u32, BTreeMap<u16, String>> = BTreeMap::new();
+    let mut pc_entry_null: BTreeMap<u32, BTreeSet<u16>> = BTreeMap::new();
     let mut pc_post_array_elem: BTreeMap<u32, BTreeMap<u16, Slot>> = BTreeMap::new();
     for (i, insn) in insns.iter().enumerate() {
         if !states.reached[i] {
@@ -487,6 +492,15 @@ pub(crate) fn emit_branch_method_code(
             .collect();
         if !refs.is_empty() {
             pc_entry_ref.insert(insn.pc, refs);
+        }
+        let nulls: BTreeSet<u16> = entry
+            .iter()
+            .filter_map(|(&r, t): (&u16, &crate::dalvik_typestate::RegType)| {
+                matches!(t, crate::dalvik_typestate::RegType::NullRef).then_some(r)
+            })
+            .collect();
+        if !nulls.is_empty() {
+            pc_entry_null.insert(insn.pc, nulls);
         }
         let Some(next): Option<&DalvikInsn> = insns.get(i + 1) else {
             continue;
@@ -577,6 +591,7 @@ pub(crate) fn emit_branch_method_code(
             pc_post_slot,
             pc_post_array_elem,
             pc_entry_ref,
+            pc_entry_null,
             pc_exit_ref_regs,
             tries,
             handler_stack,
@@ -877,7 +892,7 @@ fn compute_exit_ref_regs(
             let st: &crate::dalvik_typestate::RegState = &states.entry_state[sidx];
             for (&reg, ty) in st {
                 match ty {
-                    RegType::Ref(_) | RegType::UninitializedThis => {
+                    RegType::Ref(_) | RegType::NullRef | RegType::UninitializedThis => {
                         ref_regs.insert(reg);
                     }
                     RegType::ZeroOrNull => {}
@@ -1735,6 +1750,26 @@ impl Emitter<'_> {
         cfg.pc_post_slot.get(&cfg.cur_pc)?.get(&reg).copied()
     }
 
+    fn entry_holds_null(&self, reg: u16) -> bool {
+        self.cfg.as_ref().is_some_and(|c: &CfgEmit| {
+            c.pc_entry_null
+                .get(&c.cur_pc)
+                .is_some_and(|s: &BTreeSet<u16>| s.contains(&reg))
+        })
+    }
+
+    fn emit_zero_operand(&mut self, slot: Slot) {
+        let opcode: u8 = match slot {
+            Slot::Int => 0x03,
+            Slot::Long => 0x09,
+            Slot::Float => 0x0B,
+            Slot::Double => 0x0E,
+            Slot::Ref => 0x01,
+        };
+        self.push(opcode);
+        self.adjust_stack(slot.width());
+    }
+
     fn apply_post_array_elem(&mut self, pc: u32) {
         let Some(elems): Option<BTreeMap<u16, Slot>> = self
             .cfg
@@ -1896,8 +1931,8 @@ impl Emitter<'_> {
                 self.adjust_stack(-2);
                 self.emit_jump(if op == 0x32 { 0xA5 } else { 0xA6 }, target_pc);
             } else {
-                self.emit_load(a);
-                self.emit_load(b);
+                self.emit_int_operand(a);
+                self.emit_int_operand(b);
                 self.adjust_stack(-2);
                 self.emit_jump(0x9F + (op - 0x32), target_pc);
             }
@@ -1921,7 +1956,7 @@ impl Emitter<'_> {
                 self.adjust_stack(-1);
                 self.emit_jump(if op == 0x38 { 0xC6 } else { 0xC7 }, target_pc);
             } else {
-                self.emit_load(a);
+                self.emit_int_operand(a);
                 self.adjust_stack(-1);
                 self.emit_jump(0x99 + (op - 0x38), target_pc);
             }
@@ -1990,7 +2025,7 @@ impl Emitter<'_> {
             return;
         }
         let default_pc: u32 = insn.pc.wrapping_add(u32::from(insn.width));
-        self.emit_load(value_reg);
+        self.emit_int_operand(value_reg);
         self.adjust_stack(-1);
 
         let insn_offset: usize = self.code.len();
@@ -2301,6 +2336,7 @@ impl Emitter<'_> {
         match ty {
             RegType::Top => out.push(0),
             RegType::Int | RegType::ZeroOrNull => out.push(1),
+            RegType::NullRef => out.push(5),
             RegType::Float => out.push(2),
             RegType::Double => out.push(3),
             RegType::Long => out.push(4),
@@ -2376,6 +2412,10 @@ impl Emitter<'_> {
             return;
         }
         let slot: Slot = self.reg_slot(reg);
+        if !matches!(slot, Slot::Ref) && self.entry_holds_null(reg) {
+            self.emit_zero_operand(slot);
+            return;
+        }
         let Some(index): Option<u16> = self.local_index(reg) else {
             return;
         };
@@ -2397,6 +2437,14 @@ impl Emitter<'_> {
         } else {
             self.emit_load(reg);
         }
+    }
+
+    fn emit_int_operand(&mut self, reg: u16) {
+        if matches!(self.reg_slot(reg), Slot::Ref) && self.entry_holds_null(reg) {
+            self.emit_zero_operand(Slot::Int);
+            return;
+        }
+        self.emit_load(reg);
     }
 
     fn emit_value_operand(&mut self, value: u16, slot: Slot) {
@@ -2777,7 +2825,7 @@ impl Emitter<'_> {
             return;
         };
         let element: &str = ty.strip_prefix('[').unwrap_or(&ty);
-        self.emit_load(size);
+        self.emit_int_operand(size);
         match primitive_atype(element) {
             Some(atype) => {
                 self.push(0xBC);
@@ -2914,7 +2962,7 @@ impl Emitter<'_> {
         };
         self.set_reg(array, Slot::Ref);
         self.emit_load(array);
-        self.emit_load(index);
+        self.emit_int_operand(index);
         self.push(opcode);
         self.adjust_stack(-2 + slot.width());
         self.emit_store(dest, slot);
@@ -2955,7 +3003,7 @@ impl Emitter<'_> {
         };
         self.set_reg(array, Slot::Ref);
         self.emit_load(array);
-        self.emit_load(index);
+        self.emit_int_operand(index);
         self.emit_value_operand(value, slot);
         self.push(opcode);
         self.adjust_stack(-2 - slot.width());

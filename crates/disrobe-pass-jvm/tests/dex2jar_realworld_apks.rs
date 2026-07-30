@@ -8,6 +8,7 @@
 
 pub mod common;
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use common::{
@@ -31,14 +32,14 @@ const CLASS_SCOPE_GRADED_FLOOR: usize = 3_223;
 
 const CLASS_SCOPE_REPEAT_RUNS: usize = 8;
 
-const CLASS_SCOPE_CLEAN: usize = 2_917;
+const CLASS_SCOPE_CLEAN: usize = 2_986;
 
-const CLASS_SCOPE_CLEAN_METHODS: usize = 12_488;
+const CLASS_SCOPE_CLEAN_METHODS: usize = 13_819;
 
-const CLASS_SCOPE_REJECTABLE: usize = 322;
+const CLASS_SCOPE_REJECTABLE: usize = 253;
 
 const CLASS_SCOPE_JAR_SHA256: &str =
-    "9a9757ac54b9636e5649a44105c6479b0d0079e207bc96110428fcc7f8a6a435";
+    "72eeec49158b731e29d5ef328efaefc6559acc25fade786d4c1182fe5a850e64";
 
 fn class_verify_golden() -> PathBuf {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -62,6 +63,14 @@ fn verdict_names(stdout: &str, verdict: &str) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+fn rejected_types(line: &str) -> impl Iterator<Item = String> + '_ {
+    let reason: &str = match line.split_once("Reason:") {
+        Some((_, rest)) => rest.split("Current Frame").next().unwrap_or(rest),
+        None => "",
+    };
+    reason.split('\'').skip(1).step_by(2).map(str::to_owned)
 }
 
 fn golden_section(recorded: &str, tag: &str) -> Vec<String> {
@@ -122,9 +131,11 @@ fn assert_verdict_membership(clean: &[String], rejected: &[String]) {
          section is a work queue rather than a bound: it lists classes the real jvm has been seen \
          to reject over {CLASS_SCOPE_REPEAT_RUNS} runs, it grows as reach varies, and it is not \
          asserted against a run because a class reaching the verifier for the first time is not a \
-         regression. Their messages are real defects in what the lifter emitted, over four fifths \
-         of them a stackmap frame that disagrees with the types the code actually carries at a \
-         join. Change this number only when you have added or fixed entries by hand",
+         regression. The family that used to dominate it, a dalvik zero constant materialized as an \
+         int on one path and a null on another so that the frame at their join described neither, \
+         is gone; what is left is led by assignability checks the harness cannot decide because it \
+         stubs the android framework, which the attribution line above sizes. Change this number \
+         only when you have added or fixed entries by hand",
         rejectable.len()
     );
     assert!(
@@ -324,6 +335,31 @@ fn realworld_apk_translated_classes_verify() {
     for line in &reported {
         eprintln!("  {line}");
     }
+    let stubbed: BTreeSet<String> = lines_with_prefix(&stdout, "STUB ")
+        .into_iter()
+        .filter_map(|line: String| {
+            line.strip_prefix("STUB ")
+                .map(|name: &str| name.trim().replace('.', "/"))
+        })
+        .collect();
+    let stub_named: usize = reported
+        .iter()
+        .filter(|line: &&String| rejected_types(line).any(|name: String| stubbed.contains(&name)))
+        .count();
+    eprintln!(
+        "REALWORLD CLASS VERIFY STUB ATTRIBUTION: {stub_named} of {} rejected classes name, in the \
+         Reason clause of the verifier's own message, one of the {} classes the apk does not \
+         define and the harness had to stub. A stub is a bare subclass of RuntimeException, so it \
+         has no supertypes and no subtypes: nothing is assignable to it and it is assignable to \
+         nothing. Whatever assignability the original program got from the android framework \
+         hierarchy is unavailable here whatever bytecode the lifter emits, so a check that failed \
+         on a stubbed type is not evidence of a lifter defect. Putting android.jar on the \
+         verification classpath is what would settle those; until then they are excluded from \
+         neither the rejection count nor the clean count, and this figure is reported and never \
+         asserted on",
+        reported.len(),
+        stubbed.len()
+    );
     assert_eq!(
         reported.len(),
         failed,

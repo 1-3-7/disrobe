@@ -236,7 +236,7 @@ pub(crate) fn plan_split(
             (!is_primary, *root)
         });
         for root in ordered {
-            let slot: SplitSlot = web_slot.get(&root).copied()?;
+            web_slot.get(&root)?;
             if !primary_assigned {
                 web_reg.insert(root, reg);
                 primary_assigned = true;
@@ -244,8 +244,8 @@ pub(crate) fn plan_split(
             }
             web_reg.insert(root, next_reg);
             virtual_local.insert(next_reg, next_local);
-            next_reg = next_reg.checked_add(if slot.is_wide() { 2 } else { 1 })?;
-            next_local = next_local.checked_add(if slot.is_wide() { 2 } else { 1 })?;
+            next_reg = next_reg.checked_add(2)?;
+            next_local = next_local.checked_add(2)?;
         }
     }
 

@@ -141,7 +141,7 @@ public class V {
             } catch (VerifyError ve) {
                 String m = String.valueOf(ve.getMessage());
                 lifterFail++; methodsLifterFail += mc;
-                errs.add("VERIFY "+cn+": "+m.replace('\n',' ').substring(0, Math.min(200, m.length())));
+                errs.add("VERIFY "+cn+": "+m.replace('\n',' ').substring(0, Math.min(1200, m.length())));
                 verdicts.add("CLASSVERDICT REJECT "+cn);
             } catch (VirtualMachineError vme) {
                 linkUnstable++;
@@ -182,7 +182,11 @@ public class V {
             +" verify_clean_classes="+verifyClean+" lifter_verify_fail_classes="+lifterFail
             +" link_skipped_classes="+linkSkipped+" link_unstable_classes="+linkUnstable
             +" methods_clean="+methodsClean+" methods_lifter_fail="+methodsLifterFail
-            +" body_clean="+bodyClean+" body_fail="+bodyFail);
+            +" body_clean="+bodyClean+" body_fail="+bodyFail
+            +" stubbed_classes="+l.stubbed.size());
+        List<String> stubNames = new ArrayList<>(l.stubbed);
+        Collections.sort(stubNames);
+        for (String s : stubNames) System.out.println("STUB "+s);
         for (String s : errs) System.out.println(s);
         for (String s : bodyErrs) System.out.println(s);
         Collections.sort(verdicts);
