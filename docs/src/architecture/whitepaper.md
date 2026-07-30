@@ -18,9 +18,11 @@ Common Intermediate Language from two bytecode-virtualizing .NET VM schemes, an 
 reimplementation of Eazfuscator.NET's EazVM and the real ConfuserEx-lineage KoiVM, and recording information-theoretic walls where the
 plaintext leaves the static file. The final part is the verification methodology itself, a
 four-tier taxonomy of non-circular oracles ordered from recompile-equivalence to byte-exact
-comparison against the original. The central methodological claim is that every capability is
-graded by an oracle disrobe does not control: a real compiler, interpreter, or virtual
-machine, or the true pre-transformation input, never disrobe's own output. A green
+comparison against the original. The central methodological claim is that every capability
+documented here is graded by an oracle disrobe does not control: a real compiler, interpreter, or
+virtual machine, or the true pre-transformation input, never disrobe's own output. Where a figure
+elsewhere in the project is a coverage count that no external reference grades, it is published in a
+separate self-reported tier and never blended into a graded one. A green
 measurement is treated as false until it has been shown incapable of flattering the tool that
 produced it.
 
@@ -986,8 +988,10 @@ full-stdlib whole-module rate would be lower still, not higher. The gap between 
 rate and the 54.5% per-module rate is the honest center of the evaluation, not a footnote, and the
 two numbers are not even on the same corpus: a module passes only when all of its typically dozens of
 code objects pass, so a small per-object miss rate compounds into a large per-module miss rate. A
-module with fifty functions and a 92% per-object rate is more likely than not to contain at least one
-imperfect object, which fails the whole module. The per-object figure is the metric that guides
+module with fifty functions and a 92% per-object rate carries under a 2% chance that all fifty pass,
+so it is all but certain to contain at least one imperfect object, which fails the whole module. Even
+at the measured pinned per-object rate, fifty independent objects clear together well under a quarter
+of the time. The per-object figure is the metric that guides
 improvement because it is granular and monotonic; the per-module figure is the end goal and is
 deliberately reported as the harder, lower number. These figures are not re-measured here.
 
@@ -1979,7 +1983,7 @@ strongest, so that every earlier number can be traced to the class of evidence b
 
 ## 4. Verification methodology: grading recovery against non-circular oracles
 
-Every capability claim disrobe makes rests on a single discipline: a recovery is credited only when an oracle that disrobe does not control confirms it. This section states that discipline precisely, enumerates the oracle forms disrobe uses from weakest to strongest, and shows the code that implements each. The organizing principle is adversarial.
+Every graded capability claim disrobe makes rests on a single discipline: a recovery is credited only when an oracle that disrobe does not control confirms it. The exception is named rather than hidden. Where a number is a coverage count with no external reference behind it, the project publishes it under a self-reported tier defined as graded against nothing external, kept at lower confidence and never folded into a graded figure. This section states the discipline precisely, enumerates the oracle forms disrobe uses from weakest to strongest, and shows the code that implements each. The organizing principle is adversarial.
 
 ### 4.1 The central failure mode: circular oracles
 
@@ -1993,7 +1997,7 @@ The consequence is that a passing test in disrobe is a claim about the world, no
 
 ### 4.2 The non-circular oracle taxonomy, weakest to strongest
 
-disrobe grades recovery with four oracle forms of increasing strength. Each form is stronger than the one before it because it depends on a wider and more independent body of external truth. The recovery signal a pass reports is drawn directly from which oracle form certified it, so the confidence tier is not a self-assessment but a record of which external check passed.
+disrobe grades recovery with four oracle forms of increasing strength. Each form is stronger than the one before it because it depends on a wider and more independent body of external truth. For the two strongest signals a pass can report, the signal is drawn directly from which oracle form certified it, so those two are a record of which external check passed rather than a self-assessment. The remaining five signals are the pass's own report on what it managed to reconstruct, and `StructuredNoVerify` says so in its name; the tier mapping in `assign_tier` keeps them strictly below the verified two, so a self-report can never be read as an external confirmation.
 
 The signal enum is the spine of this mapping:
 
@@ -2175,7 +2179,7 @@ For the whole image, where a portion of the file is legitimately rebuilt by the 
 ```
 `crates/disrobe-pass-native/tests/upx_unpack_all.rs`, the loader-zone residual assertion
 
-The locked measurements are as follows. For the nrv2b and LZMA fixtures the `.text` and `.pdata` sections recover byte-identically, at zero differences. The nrv2b whole-image content floor is 96.0% (`FLOOR_PCT` in `crates/disrobe-pass-native/tests/upx_unpack_all.rs`). The large nrv2e fixtures set floors of 96% for the `rg` binary and 98% for the `git` binary:
+The locked assertions are as follows. For the nrv2b and LZMA fixtures the `.text` and `.pdata` sections recover byte-identically, at zero differences, and that is the whole of what the LZMA fixture asserts: it carries no whole-image content floor. The nrv2b whole-image content floor is 96.0% (`FLOOR_PCT` in `crates/disrobe-pass-native/tests/upx_unpack_all.rs`). The large nrv2e fixtures set floors of 96% for the `rg` binary and 98% for the `git` binary:
 
 ```rust
     assert!(
@@ -2193,7 +2197,7 @@ The locked measurements are as follows. For the nrv2b and LZMA fixtures the `.te
 ```
 `crates/disrobe-pass-native/tests/upx_unpack_all.rs`, the nrv2e `git` fixture
 
-The range 96 to 98 percent is the whole-image content figure for these UPX fixtures across nrv2b, LZMA, and nrv2e; the executable code itself is exact.
+The range 96 to 98 percent is the floor these UPX fixtures hold on whole-image content bytes, carried by the nrv2b fixture and the two nrv2e fixtures. It is a lower bound, not a measurement: each test computes and prints its own content-recovery percentage but no constant records it, so the published figure is the floor the gate enforces and the measured value sits above it. The executable code itself is exact rather than floored.
 
 ### 4.3 Recover-or-sound-reject
 
@@ -2303,12 +2307,12 @@ Where a measurement varies with compiler version or optimization but has a prova
 These citations name the file and the constant, not a line number, because a line number rots every time the file above it changes while the constant it points at stays put.
 
 - `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs` sets `OBJECT_PCT_FLOOR = 96.60`, the per-code-object recompile-equivalence floor on the pinned CPython 3.14 corpus, pinned at the figure the corpus actually measures rather than a round number beneath it; the 3.12 gate sits at 91.0 (`arbitrary_recompile_gate_312.rs`).
-- `crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs` sets `PER_METHOD_JAVAC_OK_FLOOR = 131`, the count of methods that must recompile cleanly through javac.
-- `crates/disrobe-pass-jvm/tests/jadx_head_to_head.rs` sets `RECOMPILE_FLOOR = 131` for the head-to-head recompile comparison.
-- `crates/disrobe-pass-dotnet/tests/whole_type_il_equivalence_oracle.rs` sets `IL_EQUIVALENCE_FLOOR = 66`, and `crates/disrobe-pass-dotnet/tests/recompile_oracle.rs` sets `RECOMPILE_FLOOR = 6`.
-- `crates/disrobe-pass-go/tests/go_crossformat_recovery.rs` sets `RECOVERY_FLOOR` to the ratio 99 of 100 for cross-format Go symbol recovery.
-- `crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs` sets `RECOVERY_FLOOR = 72`, the count of PyArmor samples that must be recovered out of the 72-sample corpus.
-- `crates/disrobe-pass-beam/tests/erlc_recompile_equivalence.rs` sets `EQUIVALENCE_FLOOR = 18`, and `crates/disrobe-pass-lua/tests/reexec_diff_oracle.rs` sets `REEXEC_FLOOR_NUM = 29` for the Lua re-execution differential.
+- `crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs` sets `PER_METHOD_JAVAC_OK_FLOOR = 131`, the count of methods that must recompile cleanly through javac, against the `PER_METHOD_JAVAC_TOTAL = 131` the same file pins: the floor is every top-level method in the corpus, not a fraction of them.
+- `crates/disrobe-pass-jvm/tests/jadx_head_to_head.rs` sets `RECOMPILE_FLOOR = 131` for the head-to-head recompile comparison, again against a pinned `METHOD_TOTAL = 131`, and the test fails if that denominator drifts.
+- `crates/disrobe-pass-dotnet/tests/whole_type_il_equivalence_oracle.rs` sets `IL_EQUIVALENCE_FLOOR = 66`. Its denominator is not a pinned constant: the test counts the methods it found equivalent, mismatched and missing across the graded namespace and reports the floor against that run-time total, so the 66 is a count and not a ratio. The same file also sets `IL_BRANCHING_FLOOR = 45`, requiring at least 45 of the equivalent methods to have compared a real branch or switch destination rather than straight-line code. `crates/disrobe-pass-dotnet/tests/recompile_oracle.rs` sets `RECOMPILE_FLOOR = 6`, likewise a count of user methods against a run-time total.
+- `crates/disrobe-pass-go/tests/go_crossformat_recovery.rs` sets `RECOVERY_FLOOR` to the ratio 99 over 100, which is a 99% threshold rather than a count of 99 items: it is applied to the function names recovered from each binary against the symbols a real `go tool nm` reports, a population the test refuses to accept below 1000 text symbols per binary. The same file holds two floors at a full 1.0, `TYPE_EQ_RECOVERY_FLOOR` and `ITAB_RECOVERY_FLOOR`, so the `type:.eq` and `go:itab` recoveries must be complete against that same `go tool nm` reference, not merely above a threshold.
+- `crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs` sets `RECOVERY_FLOOR = 72`, the count of PyArmor samples that must be recovered out of the 72-sample corpus, so that floor too is the whole corpus.
+- `crates/disrobe-pass-beam/tests/erlc_recompile_equivalence.rs` sets `EQUIVALENCE_FLOOR = 18` over the 19 committed `.erl` modules the corpus directory holds. `crates/disrobe-pass-lua/tests/reexec_diff_oracle.rs` sets `REEXEC_FLOOR_NUM = 29` for the Lua re-execution differential, and its denominator is the 29-entry `CORPUS`, so that floor requires every fixture to re-execute identically, on the 5.1 and the 5.4 lane alike.
 - `crates/disrobe-pass-py-decompile/tests/roundtrip_metric.rs` sets `WHOLE_MODULE_FLOOR_PCT = 57.1` for whole-module recovery measured on the edge_cases monolith corpus, which is a distinct corpus from the 200-module pinned stdlib behind the 54.5% figure and must not be conflated with it, alongside the UPX content floors of 96.0% and 98.0% shown in section 4.2.4.
 
 Each floor is a promise of the form "at least this much recovery is reproducible anywhere the matrix runs." It is deliberately weaker than the best local number and deliberately stronger than zero, because the honest claim is a guaranteed lower bound, not a lucky maximum. The recompile-execute-diff oracles that do run, such as the leaf behavioral differential and the Eazfuscator re-injection, are exact rather than floored, because behavioral equivalence over a shared input battery either holds or does not; there is no honest partial credit for a program that computes the wrong answer.
