@@ -9,7 +9,51 @@ use crate::fileio::read_text_bounded;
 const MAX_RECOVERY_JSON_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 const IGNORE_LOOKBACK_BYTES: usize = 256;
-const VERIFIED_FLOOR: usize = 24;
+
+const UNPINNED_BARS: [(&str, &str); 9] = [
+    (
+        "CPython 3.10 (161 of the pinned modules)",
+        "the interpreter-band figures are measured by the python harness under each interpreter in \
+         turn, and no crate holds a constant to compare them against",
+    ),
+    (
+        "CPython 3.12 (177 of the pinned modules)",
+        "same interpreter-band harness as the 3.10 bar",
+    ),
+    (
+        "CPython 3.14 (all 200 pinned modules)",
+        "same interpreter-band harness as the 3.10 bar",
+    ),
+    (
+        "CPython 3.15 (199 of the pinned modules)",
+        "same interpreter-band harness as the 3.10 bar",
+    ),
+    (
+        "proven-correct (local, full period interpreter set)",
+        "the local leg of a bar whose enforced figure is the 150 of 191 floor in the bar above it, \
+         which is pinned",
+    ),
+    (
+        "Shell obfuscation modes",
+        "counted per obfuscation mode across the shell pass sources, with no roster declaration in \
+         the crate to compare the published count against",
+    ),
+    (
+        "Lua VM-devirt (IronBrew2 real, MoonSec synthetic)",
+        "a prose description of which lineage is reversed on real output and which is not, rather \
+         than a number a test can pin",
+    ),
+    (
+        "WASM obfuscator reversers",
+        "a family count whose members are named across two test files with no single declaration to \
+         compare it against",
+    ),
+    (
+        "functions parsed",
+        "the production Hermes bundle is not redistributable, so the count is asserted in a test \
+         that cannot run without it",
+    ),
+];
 
 #[derive(Debug, Deserialize)]
 struct Recovery {
@@ -250,15 +294,21 @@ fn verify_citation(root: &Path, bar: &Bar, cited: &VerifiedBy, issues: &mut Vec<
     }
 }
 
-pub(crate) fn run(root: &Path) -> Result<()> {
-    let path: PathBuf = root.join("xtask").join("data").join("recovery.json");
-    let raw: String = read_text_bounded(&path, MAX_RECOVERY_JSON_BYTES)?;
-    let recovery: Recovery = serde_json::from_str(&raw)?;
+#[derive(Debug, Default)]
+struct Provenance {
+    issues: Vec<String>,
+    verified: usize,
+    conditional: usize,
+    total: usize,
+    unpinned: usize,
+}
 
+fn audit_recovery(root: &Path, recovery: &Recovery, allowed: &[(&str, &str)]) -> Provenance {
     let mut issues: Vec<String> = Vec::new();
     let mut verified: usize = 0;
     let mut conditional: usize = 0;
     let mut total: usize = 0;
+    let mut unpinned: Vec<&str> = Vec::new();
 
     for group in &recovery.groups {
         for bar in &group.bars {
@@ -273,22 +323,63 @@ pub(crate) fn run(root: &Path) -> Result<()> {
                     bar.label
                 ));
             }
-            if let Some(cited) = bar.verified_by.as_ref() {
-                verified += 1;
-                if cited.conditional.is_some() {
-                    conditional += 1;
+            let Some(cited): Option<&VerifiedBy> = bar.verified_by.as_ref() else {
+                unpinned.push(&bar.label);
+                if !allowed
+                    .iter()
+                    .any(|(label, _): &(&str, &str)| *label == bar.label)
+                {
+                    issues.push(format!(
+                        "bar `{}` names no test at all, and it is not one of the {} bar(s) \
+                         UNPINNED_BARS in xtask/src/facts.rs records as knowingly unpinned. A \
+                         published number with no citation is graded by nothing: give it a \
+                         `verified_by`, or add it to that list with the reason no test can pin it \
+                         so the gap is named rather than absorbed into a count",
+                        bar.label,
+                        allowed.len()
+                    ));
                 }
-                verify_citation(root, bar, cited, &mut issues);
+                continue;
+            };
+            verified += 1;
+            if cited.conditional.is_some() {
+                conditional += 1;
             }
+            verify_citation(root, bar, cited, &mut issues);
         }
     }
 
-    if verified < VERIFIED_FLOOR {
-        issues.push(format!(
-            "only {verified} of {total} published bar(s) name a test that asserts them against the \
-             code (floor {VERIFIED_FLOOR}); this floor only ever rises"
-        ));
+    for (label, reason) in allowed {
+        if !unpinned.contains(label) {
+            issues.push(format!(
+                "UNPINNED_BARS in xtask/src/facts.rs still excuses `{label}` ({reason}), but that \
+                 bar is no longer unpinned or no longer exists. Remove the entry: an excuse that \
+                 outlives the gap it described is how the next unpinned bar slips in under it"
+            ));
+        }
     }
+
+    Provenance {
+        issues,
+        verified,
+        conditional,
+        total,
+        unpinned: unpinned.len(),
+    }
+}
+
+pub(crate) fn run(root: &Path) -> Result<()> {
+    let path: PathBuf = root.join("xtask").join("data").join("recovery.json");
+    let raw: String = read_text_bounded(&path, MAX_RECOVERY_JSON_BYTES)?;
+    let recovery: Recovery = serde_json::from_str(&raw)?;
+
+    let Provenance {
+        issues,
+        verified,
+        conditional,
+        total,
+        unpinned,
+    }: Provenance = audit_recovery(root, &recovery, &UNPINNED_BARS);
 
     if issues.is_empty() {
         let unconditional: usize = verified.saturating_sub(conditional);
@@ -296,7 +387,10 @@ pub(crate) fn run(root: &Path) -> Result<()> {
             "xtask regen: claim-provenance cross-check ok ({verified} of {total} bar(s) name a test \
              that exists, is not #[ignore]d and names the bar it verifies; {unconditional} of those \
              enforce unconditionally and {conditional} declare enforcement conditional on an input \
-             this gate cannot guarantee is present, and no bar cites a document as its own source)"
+             this gate cannot guarantee is present, and no bar cites a document as its own source. \
+             The remaining {unpinned} carry no citation at all and are named one by one in \
+             UNPINNED_BARS in xtask/src/facts.rs, so a new uncited bar fails this check instead of \
+             raising a count)"
         );
         Ok(())
     } else {
@@ -305,5 +399,98 @@ pub(crate) fn run(root: &Path) -> Result<()> {
             issues.len(),
             issues.join("\n  ")
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bar(label: &str, verified_by: Option<VerifiedBy>) -> Bar {
+        Bar {
+            label: label.to_owned(),
+            source: None,
+            verified_by,
+        }
+    }
+
+    fn recovery(bars: Vec<Bar>) -> Recovery {
+        Recovery {
+            groups: vec![Group { bars }],
+        }
+    }
+
+    #[test]
+    fn an_uncited_bar_outside_the_allowlist_fails_instead_of_raising_a_count() {
+        let document: Recovery = recovery(vec![bar("newly published figure", None)]);
+        let result: Provenance =
+            audit_recovery(Path::new("."), &document, &[("a known gap", "a reason")]);
+        assert_eq!(result.unpinned, 1);
+        assert_eq!(
+            result.issues.len(),
+            2,
+            "the new gap and the stale excuse are both reported, got {:?}",
+            result.issues
+        );
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue: &String| issue.contains("newly published figure")
+                    && issue.contains("names no test at all")),
+            "got {:?}",
+            result.issues
+        );
+    }
+
+    #[test]
+    fn an_uncited_bar_named_in_the_allowlist_passes() {
+        let document: Recovery = recovery(vec![bar("a known gap", None)]);
+        let result: Provenance =
+            audit_recovery(Path::new("."), &document, &[("a known gap", "a reason")]);
+        assert!(
+            result.issues.is_empty(),
+            "a gap recorded by name is the one thing this list is for, got {:?}",
+            result.issues
+        );
+        assert_eq!((result.total, result.verified, result.unpinned), (1, 0, 1));
+    }
+
+    #[test]
+    fn an_allowlist_entry_that_outlives_its_gap_fails() {
+        let document: Recovery = recovery(vec![bar(
+            "a known gap",
+            Some(VerifiedBy {
+                path: "crates/x/tests/y.rs".to_owned(),
+                function: "z".to_owned(),
+                conditional: None,
+            }),
+        )]);
+        let result: Provenance =
+            audit_recovery(Path::new("."), &document, &[("a known gap", "a reason")]);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue: &String| issue.contains("still excuses `a known gap`")),
+            "a bar that gained a citation must force its excuse out of the list, got {:?}",
+            result.issues
+        );
+    }
+
+    #[test]
+    fn every_allowlisted_label_is_distinct() {
+        let mut labels: Vec<&str> = UNPINNED_BARS
+            .iter()
+            .map(|(label, _): &(&str, &str)| *label)
+            .collect();
+        let before: usize = labels.len();
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(
+            labels.len(),
+            before,
+            "two entries naming the same bar would let one gap cover another"
+        );
     }
 }
