@@ -291,6 +291,8 @@ crates/disrobe-pass-go/tests/fixtures/*.exe
 !crates/disrobe-pass-go/tests/fixtures/hello_stripped.exe
 !crates/disrobe-pass-go/tests/fixtures/hello_normal.exe
 !crates/disrobe-pass-go/tests/fixtures/hello_garble.exe
+!crates/disrobe-pass-go/tests/fixtures/bench_generics_windows_386.exe
+!crates/disrobe-pass-go/tests/fixtures/bench_generics_windows_386_stripped.exe
 !crates/disrobe-pass-go/tests/fixtures/hello_embed.exe
 !crates/disrobe-pass-go/tests/fixtures/hello_generics.exe
 !crates/disrobe-pass-go/tests/fixtures/hello_generics_stripped.exe
