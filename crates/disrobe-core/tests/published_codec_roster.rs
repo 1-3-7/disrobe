@@ -4,12 +4,8 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use disrobe_core::codec::alphabets::{
-    base45_encode, base58_encode, base62_encode, base91_encode, base92_encode,
-};
-use disrobe_core::codec::framed::{ascii85_encode, uuencode, xxencode, yenc_encode, z85_encode};
-use disrobe_core::codec::web_escape::percent_encode;
-use disrobe_core::{Base58Variant, CodecScheme, DecodeError, codec_decode};
+use disrobe_core::codec::framed::{xxencode, yenc_encode};
+use disrobe_core::{CodecScheme, DecodeError, codec_decode};
 
 const PUBLISHED_SCHEME_COUNT: usize = 17;
 
@@ -20,6 +16,17 @@ const ROUND_TRIP_PLAINTEXT: &[u8] = b"disrobe codec roster";
 
 const BASE122_VECTOR_HEX: &str = "34192d46633c582031182e3629446432101d6d77133148";
 const BASE122_PLAINTEXT: &[u8] = b"hello, base122 world";
+
+const BASE58_BITCOIN_VECTOR_HEX: &str = "3251387657335447726a34583274344e71327a793677487a6f6a7533";
+const BASE58_RIPPLE_VECTOR_HEX: &str = "7051337657735447696a68587074683471707a796141487a6f6a7573";
+const BASE62_VECTOR_HEX: &str = "454b486670576c4477694c685a734e475556796236744b7a636773";
+const BASE45_VECTOR_HEX: &str = "415643595145543345445a435550433656432d4e43304c45205145352443";
+const BASE91_VECTOR_HEX: &str = "6d614f33693e61652479372639387b692279633d5b5b724e48";
+const BASE92_VECTOR_HEX: &str = "453e323f6978613e3e6f68776f4131302d473d466b44336f2a";
+const ASCII85_VECTOR_HEX: &str = "41382d2b2a44646d39234072476d68406a236631462a287536";
+const Z85_VECTOR_HEX: &str = "776e6361397a5e296f32764043293f763c322f67423937236c";
+const UUENCODE_VECTOR_HEX: &str = "626567696e20363434207061796c6f61642e62696e0a34392645533c465d42393221433b563145385221523b572d54393728200a600a656e640a";
+const PERCENT_URL_VECTOR_HEX: &str = "646973726f6265253230636f646563253230726f73746572";
 
 #[derive(Debug, Clone, Copy)]
 struct PublishedScheme {
@@ -171,34 +178,34 @@ fn vector_for(scheme: CodecScheme) -> Vector {
     let round_trip: &str = "an encoding produced by this crate's own encoder for the same scheme";
     match scheme {
         CodecScheme::Base58Bitcoin => Vector {
-            encoded: base58_encode(&plain, Base58Variant::Bitcoin).into_bytes(),
+            encoded: unhex(BASE58_BITCOIN_VECTOR_HEX),
             plaintext: plain,
-            basis: round_trip,
+            basis: "the base58 2.1.1 PyPI package, `b58encode` on the bitcoin alphabet",
         },
         CodecScheme::Base58Ripple => Vector {
-            encoded: base58_encode(&plain, Base58Variant::Ripple).into_bytes(),
+            encoded: unhex(BASE58_RIPPLE_VECTOR_HEX),
             plaintext: plain,
-            basis: round_trip,
+            basis: "the base58 2.1.1 PyPI package, `b58encode` on `RIPPLE_ALPHABET`",
         },
         CodecScheme::Base62 => Vector {
-            encoded: base62_encode(&plain).into_bytes(),
+            encoded: unhex(BASE62_VECTOR_HEX),
             plaintext: plain,
-            basis: round_trip,
+            basis: "the pybase62 1.0.0 PyPI package, `encodebytes`",
         },
         CodecScheme::Base45 => Vector {
-            encoded: base45_encode(&plain).into_bytes(),
+            encoded: unhex(BASE45_VECTOR_HEX),
             plaintext: plain,
-            basis: round_trip,
+            basis: "the base45 0.4.4 PyPI package, `b45encode`, which implements RFC 9285",
         },
         CodecScheme::Base91 => Vector {
-            encoded: base91_encode(&plain).into_bytes(),
+            encoded: unhex(BASE91_VECTOR_HEX),
             plaintext: plain,
-            basis: round_trip,
+            basis: "the base91 1.0.1 PyPI package, `encode`",
         },
         CodecScheme::Base92 => Vector {
-            encoded: base92_encode(&plain).into_bytes(),
+            encoded: unhex(BASE92_VECTOR_HEX),
             plaintext: plain,
-            basis: round_trip,
+            basis: "the base92 2.0.0 PyPI package, `b92encode`",
         },
         CodecScheme::Base122 => Vector {
             encoded: unhex(BASE122_VECTOR_HEX),
@@ -207,27 +214,19 @@ fn vector_for(scheme: CodecScheme) -> Vector {
                     src/codec/alphabets.rs",
         },
         CodecScheme::Ascii85 => Vector {
-            encoded: ascii85_encode(&plain).into_bytes(),
+            encoded: unhex(ASCII85_VECTOR_HEX),
             plaintext: plain,
-            basis: round_trip,
+            basis: "CPython 3.13 `base64.a85encode`",
         },
-        CodecScheme::Z85 => {
-            let encoded: String = z85_encode(&plain).unwrap_or_else(|error: DecodeError| {
-                panic!(
-                    "z85 is published as reversed and its input length is a multiple of four, so \
-                     encoding the roster plaintext must succeed: {error:?}"
-                )
-            });
-            Vector {
-                encoded: encoded.into_bytes(),
-                plaintext: plain,
-                basis: round_trip,
-            }
-        }
-        CodecScheme::UuEncode => Vector {
-            encoded: uuencode(&plain, "payload.bin").into_bytes(),
+        CodecScheme::Z85 => Vector {
+            encoded: unhex(Z85_VECTOR_HEX),
             plaintext: plain,
-            basis: round_trip,
+            basis: "pyzmq 27.1.0 `zmq.utils.z85.encode`, the ZeroMQ reference implementation",
+        },
+        CodecScheme::UuEncode => Vector {
+            encoded: unhex(UUENCODE_VECTOR_HEX),
+            plaintext: plain,
+            basis: "CPython 3.13 `binascii.b2a_uu` inside the standard begin/end framing",
         },
         CodecScheme::XxEncode => Vector {
             encoded: xxencode(&plain, "payload.bin").into_bytes(),
@@ -240,9 +239,9 @@ fn vector_for(scheme: CodecScheme) -> Vector {
             basis: round_trip,
         },
         CodecScheme::PercentUrl => Vector {
-            encoded: percent_encode(&plain).into_bytes(),
+            encoded: unhex(PERCENT_URL_VECTOR_HEX),
             plaintext: plain,
-            basis: round_trip,
+            basis: "CPython 3.13 `urllib.parse.quote` with an empty safe set",
         },
         CodecScheme::HtmlEntity => Vector {
             encoded: b"&lt;script&gt;&#x41;&amp;".to_vec(),
