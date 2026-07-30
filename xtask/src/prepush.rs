@@ -63,6 +63,7 @@ pub(crate) fn run(root: &Path, full: bool) -> Result<()> {
     total += gate("regen", || gate_regen(root, &scope))?;
     total += gate("metrics", || gate_metrics(root, &scope))?;
     total += gate("clippy", || gate_clippy(root))?;
+    total += gate("test", || gate_test(root, &scope))?;
     println!(
         "xtask prepush: all gates passed in {:.1}s",
         total.as_secs_f64()
@@ -173,6 +174,27 @@ fn gate_clippy(root: &Path) -> Result<GateOutcome> {
         ],
         || "resolve the clippy findings above, then re-run the push".to_owned(),
     )?;
+    Ok(GateOutcome::Ran)
+}
+
+fn gate_test(root: &Path, scope: &Scope) -> Result<GateOutcome> {
+    let crates: Vec<String> = match scope {
+        Scope::All => workspace_crates(root)?,
+        Scope::Changed(paths) => owning_crates(root, paths)?,
+        Scope::Skip => return Ok(GateOutcome::Skipped("no push content".to_owned())),
+    };
+    if crates.is_empty() {
+        return Ok(GateOutcome::Skipped("no changed rust crates".to_owned()));
+    }
+    for name in &crates {
+        run_checked(root, cargo_bin().as_str(), &["test", "-p", name], || {
+            format!(
+                "a committed test in {name} fails on the state being pushed. A commit can introduce \
+                 an assertion before the data it asserts exists, and no other gate here catches \
+                 that, so the failure can predate the range being pushed"
+            )
+        })?;
+    }
     Ok(GateOutcome::Ran)
 }
 
