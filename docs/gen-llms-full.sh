@@ -8,7 +8,7 @@ base="https://1-3-7.github.io/disrobe/latest"
 {
   echo "# disrobe: full documentation for LLM ingestion"
   echo
-  echo "> One tool to decompile, deobfuscate, and unpack almost anything, deterministically, in a single Rust binary. This file concatenates the full disrobe documentation in reading order for retrieval and ingestion. Canonical hosted docs: ${base}/. Source repository: https://github.com/1-3-7/disrobe."
+  echo "> One tool to decompile, deobfuscate, and unpack compiled software, deterministically, in a single Rust binary. This file concatenates the full disrobe documentation in reading order for retrieval and ingestion. Canonical hosted docs: ${base}/. Source repository: https://github.com/1-3-7/disrobe."
   echo
   echo "Recovery is always measured against an independent reference, never the tool's own output, and lossy results are reported as measured."
   echo

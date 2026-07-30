@@ -1,4 +1,4 @@
-![disrobe: decompile, deobfuscate, and unpack almost anything, deterministically](docs/assets/social-card.svg)
+![disrobe: decompile, deobfuscate, and unpack compiled software, deterministically](docs/assets/social-card.svg)
 
 disrobe is one static Rust binary that decompiles, deobfuscates, and unpacks compiled software across 20+ ecosystems: Python, JVM and Android, .NET, JavaScript and WebAssembly, Lua, Go, Ruby, PHP, shell, and native x86-64/AArch64. By default it never executes the sample, runs no model, and produces byte-identical output on every machine.
 
