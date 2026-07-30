@@ -1,10 +1,25 @@
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::print_stderr)]
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::print_stderr,
+    clippy::print_stdout
+)]
+
+#[path = "support/ruby_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod ruby_toolchain;
+
 use std::path::PathBuf;
 use std::process::Command;
 
 use disrobe_pass_ruby::{
     IrepTree, MrubyInstruction, RubyAnalysis, analyze_bytes, disassemble_iseq,
 };
+use ruby_toolchain::{ToolchainBanner, require_mri};
+
+const CROSS_CHECK_GRADED: &str = "the independent ruby-vm confirmation of the method name, argument \
+                                  count and string argument recovered from the real mrbc artifact";
 
 fn corpus_path(rel: &str) -> PathBuf {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -24,12 +39,24 @@ struct MriCall {
     string_arg: Option<String>,
 }
 
-fn mri_oracle_for(source: &str) -> Option<MriCall> {
+fn mri_oracle_for(source: &str) -> MriCall {
     let script: String = format!("puts RubyVM::InstructionSequence.compile({source:?}).disasm");
-    let output: std::process::Output = Command::new("ruby").arg("-e").arg(&script).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
+    let output: std::process::Output = Command::new("ruby")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .unwrap_or_else(|e: std::io::Error| {
+            panic!(
+                "ruby answered --version a moment ago but could not compile `{source}` for the \
+                 cross-check: {e}"
+            )
+        });
+    assert!(
+        output.status.success(),
+        "ruby could not compile `{source}` for the cross-check, so {CROSS_CHECK_GRADED} was not \
+         performed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
     let disasm: String = String::from_utf8_lossy(&output.stdout).into_owned();
 
     let mut method: Option<String> = None;
@@ -63,11 +90,21 @@ fn mri_oracle_for(source: &str) -> Option<MriCall> {
         }
     });
 
-    Some(MriCall {
-        method: method?,
-        argc: argc?,
+    MriCall {
+        method: method.unwrap_or_else(|| {
+            panic!(
+                "the ruby disassembly of `{source}` names no call target, so nothing was \
+                 cross-checked:\n{disasm}"
+            )
+        }),
+        argc: argc.unwrap_or_else(|| {
+            panic!(
+                "the ruby disassembly of `{source}` states no argument count, so nothing was \
+                 cross-checked:\n{disasm}"
+            )
+        }),
         string_arg,
-    })
+    }
 }
 
 fn mnemonics(iseq: &[u8]) -> Vec<String> {
@@ -179,29 +216,30 @@ fn mruby_decode_grades_against_a_real_mrbc_artifact() {
         recovered.source
     );
 
-    if let Some(call) = mri_oracle_for("greet(\"world\")") {
-        assert_eq!(
-            call.method, "greet",
-            "an independent ruby vm confirms the method name"
-        );
-        assert_eq!(call.argc, 1, "an independent ruby vm confirms argc 1");
-        assert_eq!(
-            call.string_arg.as_deref(),
-            Some("world"),
-            "an independent ruby vm confirms the string argument"
-        );
-        let expected: String = match call.string_arg {
-            Some(arg) => format!("{}({:?})", call.method, arg),
-            None => call.method,
-        };
-        assert!(
-            body_has_call_line(&recovered.source, &expected),
-            "the lift must reproduce the ruby-confirmed call {expected}, got:\n{}",
-            recovered.source
-        );
-    } else {
-        eprintln!("note: host ruby unavailable; graded against the real mrbc artifact only");
-    }
+    let Some(toolchain): Option<ToolchainBanner> = require_mri(CROSS_CHECK_GRADED) else {
+        return;
+    };
+    println!("cross-checking against {}", toolchain.banner);
+    let call: MriCall = mri_oracle_for("greet(\"world\")");
+    assert_eq!(
+        call.method, "greet",
+        "an independent ruby vm confirms the method name"
+    );
+    assert_eq!(call.argc, 1, "an independent ruby vm confirms argc 1");
+    assert_eq!(
+        call.string_arg.as_deref(),
+        Some("world"),
+        "an independent ruby vm confirms the string argument"
+    );
+    let expected: String = match call.string_arg {
+        Some(arg) => format!("{}({:?})", call.method, arg),
+        None => call.method,
+    };
+    assert!(
+        body_has_call_line(&recovered.source, &expected),
+        "the lift must reproduce the ruby-confirmed call {expected}, got:\n{}",
+        recovered.source
+    );
 }
 
 fn body_has_call_line(source: &str, call: &str) -> bool {

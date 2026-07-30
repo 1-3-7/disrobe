@@ -12,11 +12,21 @@
     clippy::cargo
 )]
 
+#[path = "support/php_toolchain.rs"]
+#[allow(
+    dead_code,
+    clippy::redundant_pub_crate,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
+mod php_toolchain;
+
 use disrobe_pass_php::decompile::op;
 use disrobe_pass_php::{
     Decompilation, OPARRAY_MAGIC, OPARRAY_VERSION, decompile_oparray, parse_oparray,
 };
-use std::process::Command;
+use php_toolchain::{PhpRun, PhpRuntime, require_php};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -97,33 +107,34 @@ fn skeleton_of(b: &OpArrayBuilder) -> String {
     decomp.php_skeleton
 }
 
-fn php_eval(skeleton: &str) -> Option<(bool, String)> {
-    let seq: u64 = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let purpose: String = format!("disrobe_php_prec_{}_{}", std::process::id(), seq);
-    let (scratch, mut file): (disrobe_core::scratch::ScratchFile, std::fs::File) =
-        disrobe_core::scratch::ScratchFile::create(&purpose, "php").ok()?;
-    let path: std::path::PathBuf = scratch.path().to_path_buf();
-    std::io::Write::write_all(&mut file, skeleton.as_bytes()).ok()?;
-    drop(file);
-    let result = Command::new("php").arg("-n").arg(&path).output();
-    let out = result.ok()?;
-    let stdout: String = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-    Some((out.status.success(), stdout))
-}
+const GRADED: &str = "the arithmetic value of the emitted op_array skeleton, evaluated by the real \
+                      php interpreter";
 
 fn assert_case(skeleton: &str, expected_line: &str, expected_value: i64) {
     assert!(
         skeleton.contains(expected_line),
         "expected `{expected_line}` in skeleton:\n{skeleton}"
     );
-    if let Some((ok, value)) = php_eval(skeleton) {
-        assert!(ok, "php rejected emitted source:\n{skeleton}");
-        assert_eq!(
-            value,
-            expected_value.to_string(),
-            "emitted source evaluates to the wrong value:\n{skeleton}"
-        );
-    }
+    let Some(php): Option<PhpRuntime> = require_php(GRADED) else {
+        return;
+    };
+    let seq: u64 = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let label: String = format!("precedence case {seq}");
+    let run: PhpRun = php.run(&label, skeleton.as_bytes());
+    assert!(
+        run.exited_clean,
+        "php rejected the emitted source, so its value was never checked (stderr `{}`):\n{skeleton}",
+        run.stderr
+    );
+    let value: String = String::from_utf8_lossy(&run.stdout).trim().to_owned();
+    assert_eq!(
+        value,
+        expected_value.to_string(),
+        "the emitted source parses but evaluates to the wrong value under {}; a lost or misplaced \
+         parenthesis changes the number here even when the text still looks \
+         plausible:\n{skeleton}",
+        php.banner
+    );
 }
 
 #[test]
@@ -222,13 +233,23 @@ fn assert_case_str(skeleton: &str, expected_line: &str, expected_stdout: &str) {
         skeleton.contains(expected_line),
         "expected `{expected_line}` in skeleton:\n{skeleton}"
     );
-    if let Some((ok, value)) = php_eval(skeleton) {
-        assert!(ok, "php rejected emitted source:\n{skeleton}");
-        assert_eq!(
-            value, expected_stdout,
-            "emitted source evaluates to the wrong value:\n{skeleton}"
-        );
-    }
+    let Some(php): Option<PhpRuntime> = require_php(GRADED) else {
+        return;
+    };
+    let seq: u64 = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let label: String = format!("precedence case {seq}");
+    let run: PhpRun = php.run(&label, skeleton.as_bytes());
+    assert!(
+        run.exited_clean,
+        "php rejected the emitted source, so its value was never checked (stderr `{}`):\n{skeleton}",
+        run.stderr
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).trim(),
+        expected_stdout,
+        "the emitted source parses but evaluates to the wrong value under {}:\n{skeleton}",
+        php.banner
+    );
 }
 
 #[test]

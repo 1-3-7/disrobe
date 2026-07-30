@@ -8,145 +8,94 @@
     clippy::nursery
 )]
 
-use std::io::Write as _;
-use std::path::PathBuf;
-use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+#[path = "support/php_toolchain.rs"]
+#[allow(
+    dead_code,
+    clippy::redundant_pub_crate,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
+mod php_toolchain;
 
 use disrobe_pass_php::deflatten::{DeflattenReport, deflatten};
+use php_toolchain::{PhpRuntime, require_php, required_corpus};
 
-static SEQ: AtomicU64 = AtomicU64::new(0);
-
-fn php_bin() -> Option<String> {
-    let out: std::io::Result<std::process::Output> = Command::new("php").arg("--version").output();
-    match out {
-        Ok(o) if o.status.success() => Some("php".to_owned()),
-        _ => None,
-    }
-}
-
-fn run_php_source(php: &str, source: &[u8]) -> (bool, Vec<u8>) {
-    let unique: String = format!(
-        "disrobe_deflatten_oracle_{}_{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    );
-    let (scratch, mut f): (disrobe_core::scratch::ScratchFile, std::fs::File) =
-        disrobe_core::scratch::ScratchFile::create(&unique, "php").expect("create temp php");
-    let path: PathBuf = scratch.path().to_path_buf();
-    f.write_all(source).expect("write temp php");
-    drop(f);
-    let out: std::process::Output = Command::new(php)
-        .arg("-d")
-        .arg("error_reporting=0")
-        .arg("-d")
-        .arg("display_errors=0")
-        .arg(&path)
-        .output()
-        .expect("spawn php");
-    (out.status.success(), out.stdout)
-}
-
-fn corpus(name: &str) -> PathBuf {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.pop();
-    p.pop();
-    p.push("corpus");
-    p.push("php");
-    p.push("yakpro");
-    p.push(name);
-    p
-}
-
-fn assert_recovered_matches_original(obf_name: &str, orig_name: &str) {
-    let Some(php): Option<String> = php_bin() else {
-        eprintln!("SKIP: php not on PATH");
-        return;
-    };
-    let obfuscated: Vec<u8> = match std::fs::read(corpus(obf_name)) {
-        Ok(b) => b,
-        Err(_) => {
-            eprintln!("SKIP: corpus sample {obf_name} absent");
-            return;
-        }
-    };
-    let original: Vec<u8> = std::fs::read(corpus(orig_name)).expect("original sample present");
-
-    let (orig_ok, orig_out): (bool, Vec<u8>) = run_php_source(&php, &original);
-    assert!(orig_ok, "original sample must run under php");
-
-    let report: DeflattenReport = deflatten(&obfuscated).expect("deflatten must succeed");
-    let recovered: Vec<u8> = report.source;
-
-    assert!(
-        !contains_goto(&recovered),
-        "deflattened output must drop the linear goto chain; got:\n{}",
-        String::from_utf8_lossy(&recovered)
-    );
-
-    let (rec_ok, rec_out): (bool, Vec<u8>) = run_php_source(&php, &recovered);
-    assert!(
-        rec_ok,
-        "recovered php must run under php; source:\n{}",
-        String::from_utf8_lossy(&recovered)
-    );
-    assert_eq!(
-        rec_out,
-        orig_out,
-        "recovered php output must equal original output (non-circular behavioral oracle)\nrecovered source:\n{}",
-        String::from_utf8_lossy(&recovered)
-    );
-}
-
-fn assert_recovered_matches_original_runs(obf_name: &str, orig_name: &str) {
-    let Some(php): Option<String> = php_bin() else {
-        eprintln!("SKIP: php not on PATH");
-        return;
-    };
-    let obfuscated: Vec<u8> = match std::fs::read(corpus(obf_name)) {
-        Ok(b) => b,
-        Err(_) => {
-            eprintln!("SKIP: corpus sample {obf_name} absent");
-            return;
-        }
-    };
-    let original: Vec<u8> = std::fs::read(corpus(orig_name)).expect("original sample present");
-    let (orig_ok, orig_out): (bool, Vec<u8>) = run_php_source(&php, &original);
-    assert!(orig_ok, "original sample must run under php");
-
-    let report: DeflattenReport = deflatten(&obfuscated).expect("deflatten must succeed");
-    let (rec_ok, rec_out): (bool, Vec<u8>) = run_php_source(&php, &report.source);
-    assert!(
-        rec_ok,
-        "recovered php must run under php; source:\n{}",
-        String::from_utf8_lossy(&report.source)
-    );
-    assert_eq!(
-        rec_out,
-        orig_out,
-        "recovered php output must equal original output\nrecovered source:\n{}",
-        String::from_utf8_lossy(&report.source)
-    );
+fn graded_for(sample: &str) -> String {
+    format!(
+        "the yakpro-po deflatten of corpus/php/yakpro/{sample}, re-executed under the real php interpreter"
+    )
 }
 
 fn contains_goto(src: &[u8]) -> bool {
     let lower: Vec<u8> = src.to_ascii_lowercase();
-    twoway_contains(&lower, b"goto ")
+    lower.windows(5).any(|w: &[u8]| w == b"goto ")
 }
 
-fn twoway_contains(hay: &[u8], needle: &[u8]) -> bool {
-    hay.windows(needle.len()).any(|w| w == needle)
+fn assert_recovered_matches_original(obf_name: &str, orig_name: &str, require_goto_gone: bool) {
+    let graded: String = graded_for(obf_name);
+    let Some(php): Option<PhpRuntime> = require_php(&graded) else {
+        return;
+    };
+    let obfuscated: Vec<u8> = required_corpus(&format!("yakpro/{obf_name}"));
+    let original: Vec<u8> = required_corpus(&format!("yakpro/{orig_name}"));
+
+    assert!(
+        contains_goto(&obfuscated),
+        "{obf_name}: the committed sample is supposed to be goto-flattened, and it carries no \
+         `goto ` at all; a deflatten graded over a sample that was never flattened proves nothing"
+    );
+    assert!(
+        !contains_goto(&original),
+        "{orig_name}: the reference source must be the unflattened original"
+    );
+
+    let original_stdout: Vec<u8> = php.stdout_of(orig_name, &original);
+    assert!(
+        !original_stdout.is_empty(),
+        "{orig_name}: the reference program prints nothing under {}, so comparing stdout against \
+         it would accept a recovery that also prints nothing",
+        php.banner
+    );
+    let obfuscated_stdout: Vec<u8> = php.stdout_of(obf_name, &obfuscated);
+    assert_eq!(
+        obfuscated_stdout, original_stdout,
+        "{obf_name}: the flattened sample does not behave like {orig_name}, so the pair is not a \
+         valid before-and-after and nothing graded against it means anything"
+    );
+
+    let report: DeflattenReport =
+        deflatten(&obfuscated).unwrap_or_else(|e| panic!("{obf_name}: deflatten failed: {e}"));
+    let recovered: Vec<u8> = report.source;
+
+    if require_goto_gone {
+        assert!(
+            !contains_goto(&recovered),
+            "{obf_name}: deflattened output must drop the linear goto chain; got:\n{}",
+            String::from_utf8_lossy(&recovered)
+        );
+    }
+
+    let recovered_stdout: Vec<u8> = php.stdout_of(&format!("{obf_name} recovered"), &recovered);
+    assert_eq!(
+        String::from_utf8_lossy(&recovered_stdout),
+        String::from_utf8_lossy(&original_stdout),
+        "{obf_name}: the deflattened source does not print what {orig_name} prints\n--- recovered \
+         ---\n{}",
+        String::from_utf8_lossy(&recovered)
+    );
 }
 
 #[test]
 fn oracle_linear_goto_chain_deflattens_to_original_output() {
-    assert_recovered_matches_original("calc_yakpro_3.0.0.php", "calc_original.php");
+    assert_recovered_matches_original("calc_yakpro_3.0.0.php", "calc_original.php", true);
 }
 
 #[test]
 fn oracle_control_flow_sample_runs_identically_after_deflatten() {
-    assert_recovered_matches_original_runs(
+    assert_recovered_matches_original(
         "controlflow_yakpro_3.0.0.php",
         "controlflow_original.php",
+        false,
     );
 }

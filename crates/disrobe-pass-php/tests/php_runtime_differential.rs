@@ -13,71 +13,46 @@
 
 mod common;
 
-use disrobe_pass_php::{RecoveryStage, recover_php};
-use std::path::{Path, PathBuf};
-use std::process::Command;
+#[path = "support/php_toolchain.rs"]
+#[allow(
+    dead_code,
+    clippy::redundant_pub_crate,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
+mod php_toolchain;
 
-fn find_php() -> Option<PathBuf> {
-    if let Ok(explicit) = std::env::var("DISROBE_PHP_BIN") {
-        let p: PathBuf = PathBuf::from(explicit);
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    let probe: std::io::Result<std::process::Output> =
-        Command::new("php").arg("--version").output();
-    match probe {
-        Ok(out) if out.status.success() => Some(PathBuf::from("php")),
-        _ => None,
-    }
+use disrobe_pass_php::{RecoveryReport, RecoveryStage, recover_php};
+use php_toolchain::{PhpRuntime, require_php, residual_decode_primitives, with_open_tag};
+
+const MARKER: &str = "DISROBE-PHP-DIFF-9F3A";
+
+fn marker_payload() -> String {
+    format!("echo '{MARKER}';")
 }
 
-static RUN_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn run_php_source(php: &Path, source: &str) -> Option<String> {
-    let seq: u64 = RUN_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let purpose: String = format!("disrobe_php_diff_{}_{}", std::process::id(), seq);
-    let (scratch, mut file): (disrobe_core::scratch::ScratchFile, std::fs::File) =
-        disrobe_core::scratch::ScratchFile::create(&purpose, "php").ok()?;
-    let tmp: PathBuf = scratch.path().to_path_buf();
-    std::io::Write::write_all(&mut file, source.as_bytes()).ok()?;
-    drop(file);
-    let out: std::io::Result<std::process::Output> = Command::new(php).arg(&tmp).output();
-    let out: std::process::Output = out.ok()?;
-    if !out.status.success() {
-        eprintln!(
-            "php run failed: {}\n--- source ---\n{source}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        return None;
-    }
-    Some(String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
-fn wrap_recovered(recovered: &str) -> String {
-    let trimmed: &str = recovered.trim_start();
-    if trimmed.starts_with("<?php") || trimmed.starts_with("<?") {
-        recovered.to_owned()
-    } else {
-        format!("<?php {recovered}")
-    }
+fn graded_for(label: &str) -> String {
+    format!("the {label} loader differential against the real php interpreter")
 }
 
 fn assert_runtime_equivalent(label: &str, obfuscated: &[u8], expected_marker: &str) {
-    let Some(php): Option<PathBuf> = find_php() else {
-        eprintln!("skip {label}: php not on PATH (set DISROBE_PHP_BIN)");
+    let graded: String = graded_for(label);
+    let Some(php): Option<PhpRuntime> = require_php(&graded) else {
         return;
     };
 
-    let obf_source: String = String::from_utf8_lossy(obfuscated).into_owned();
-    let obf_stdout: String = run_php_source(&php, &obf_source)
-        .unwrap_or_else(|| panic!("{label}: obfuscated loader did not run cleanly under php"));
+    let obf_stdout: Vec<u8> = php.stdout_of(label, obfuscated);
+    let obf_text: String = String::from_utf8_lossy(&obf_stdout).into_owned();
     assert!(
-        obf_stdout.contains(expected_marker),
-        "{label}: obfuscated loader stdout lacks the ground-truth marker {expected_marker:?}; got {obf_stdout:?}"
+        obf_text.contains(expected_marker),
+        "{label}: the obfuscated loader itself does not print the ground-truth marker \
+         {expected_marker:?} under {}; got {obf_text:?}. Comparing a recovery against an input that \
+         never produced the marker would grade nothing.",
+        php.banner
     );
 
-    let report = recover_php(obfuscated, None)
+    let report: RecoveryReport = recover_php(obfuscated, None)
         .unwrap_or_else(|e: disrobe_pass_php::Error| panic!("{label}: recover failed: {e}"));
     assert_ne!(
         report.stage,
@@ -89,21 +64,25 @@ fn assert_runtime_equivalent(label: &str, obfuscated: &[u8], expected_marker: &s
         "{label}: recovery produced no source to grade"
     );
 
-    let recovered_source: String = wrap_recovered(&report.output);
-    let recovered_stdout: String = run_php_source(&php, &recovered_source).unwrap_or_else(|| {
-        panic!("{label}: recovered source did not run cleanly under php:\n{recovered_source}")
-    });
+    let recovered_source: String = with_open_tag(&report.output);
+    let recovered_stdout: Vec<u8> = php.stdout_of(label, recovered_source.as_bytes());
 
     assert_eq!(
-        recovered_stdout, obf_stdout,
-        "{label}: recovered source is not behaviorally equivalent to the obfuscated loader under the real php runtime\n--- recovered ---\n{recovered_source}"
+        String::from_utf8_lossy(&recovered_stdout),
+        String::from_utf8_lossy(&obf_stdout),
+        "{label}: the recovered source is not behaviorally equivalent to the obfuscated loader \
+         under {}\n--- recovered ---\n{recovered_source}",
+        php.banner
     );
-}
 
-const MARKER: &str = "DISROBE-PHP-DIFF-9F3A";
-
-fn marker_payload() -> String {
-    format!("echo '{MARKER}';")
+    let residual: Vec<&'static str> = residual_decode_primitives(&report.output);
+    assert!(
+        residual.is_empty(),
+        "{label}: the recovered source runs to the same output as the loader but still calls \
+         {residual:?}. A loader with one layer left on executes identically to the fully peeled \
+         program, so behavioral equality alone must never be read as recovered \
+         source.\n--- recovered ---\n{recovered_source}"
+    );
 }
 
 #[test]
@@ -192,21 +171,57 @@ fn rc4_static_key_loop_runtime_equivalent() {
 
 #[test]
 fn runtime_sourced_key_walls_and_recovered_body_is_never_fabricated() {
-    let Some(php): Option<PathBuf> = find_php() else {
-        eprintln!("skip runtime-key wall: php not on PATH (set DISROBE_PHP_BIN)");
+    let graded: String = graded_for("runtime-keyed eval wall");
+    let Some(php): Option<PhpRuntime> = require_php(&graded) else {
         return;
     };
     let loader: &[u8] =
         b"<?php $k=$_GET['k']; ev\x61l(gzinflate(base64_decode($k . 'cGF5bG9hZA==')));";
-    let report = recover_php(loader, None).expect("recover runtime-key loader");
+    let report: RecoveryReport = recover_php(loader, None).expect("recover runtime-key loader");
     assert!(
         !report.output.contains(MARKER),
-        "a $_GET-sourced key is absent from the file; recovery must wall, never fabricate a body; got:\n{}",
+        "a $_GET-sourced key is absent from the file; recovery must wall, never fabricate a body; \
+         got:\n{}",
         report.output
     );
+    let sanity: Vec<u8> = php.stdout_of("wall sanity", b"<?php echo 'wall-pin-ok';");
     assert_eq!(
-        run_php_source(&php, "<?php echo 'wall-pin-ok';").as_deref(),
-        Some("wall-pin-ok"),
-        "php oracle sanity check failed"
+        String::from_utf8_lossy(&sanity),
+        "wall-pin-ok",
+        "the php reference this wall is graded beside does not run correctly, so the absence of a \
+         fabricated body proves nothing"
+    );
+}
+
+#[test]
+fn the_differential_rejects_a_loader_whose_recovery_keeps_a_decode_layer() {
+    let graded: String = graded_for("under-peeled loader rejection");
+    let Some(php): Option<PhpRuntime> = require_php(&graded) else {
+        return;
+    };
+    let inner: String = marker_payload();
+    let once_wrapped: Vec<u8> = common::build_b64_only_eval(&inner);
+    let twice_wrapped: Vec<u8> =
+        common::build_b64_only_eval(&String::from_utf8_lossy(&once_wrapped).replace("<?php ", ""));
+
+    let outer_stdout: Vec<u8> = php.stdout_of("twice-wrapped", &twice_wrapped);
+    let inner_stdout: Vec<u8> = php.stdout_of("once-wrapped", &once_wrapped);
+    assert_eq!(
+        outer_stdout, inner_stdout,
+        "a loader and the same loader with one more layer print the same thing, which is exactly \
+         why behavioral equality alone cannot show a chain was fully peeled"
+    );
+
+    let half_peeled: String = String::from_utf8_lossy(&once_wrapped).into_owned();
+    let residual: Vec<&'static str> = residual_decode_primitives(&half_peeled);
+    assert!(
+        residual.contains(&"base64_decode") && residual.contains(&"eval("),
+        "the residual check must see the decode call and the sink that are still present in a \
+         half-peeled recovery, saw {residual:?}"
+    );
+    assert!(
+        residual_decode_primitives(&inner).is_empty(),
+        "the fully peeled payload must carry no decode primitive, so the check does not simply \
+         reject everything"
     );
 }

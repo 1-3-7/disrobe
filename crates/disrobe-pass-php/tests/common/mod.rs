@@ -1,4 +1,10 @@
-#![allow(dead_code, unreachable_pub)]
+#![allow(
+    dead_code,
+    unreachable_pub,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64_STD;
 use flate2::Compression;
@@ -18,8 +24,21 @@ pub fn corpus_php_root() -> PathBuf {
     root
 }
 
-pub fn load_php_fixture(rel: &str) -> Option<Vec<u8>> {
-    std::fs::read(corpus_php_root().join(rel)).ok()
+pub fn load_php_fixture(rel: &str) -> Vec<u8> {
+    let path: PathBuf = corpus_php_root().join(rel);
+    let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|err: std::io::Error| {
+        panic!(
+            "corpus/php/{rel} is tracked in this repository and graded here, so a run that cannot \
+             read it must fail rather than measure nothing: {} ({err})",
+            path.display()
+        )
+    });
+    assert!(
+        !bytes.is_empty(),
+        "corpus/php/{rel} read back empty at {}; a truncated input grades nothing",
+        path.display()
+    );
+    bytes
 }
 
 pub fn b64(bytes: &[u8]) -> String {

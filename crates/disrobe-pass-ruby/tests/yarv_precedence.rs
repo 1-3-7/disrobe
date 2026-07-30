@@ -1,12 +1,25 @@
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::print_stdout
+)]
+
+#[path = "support/ruby_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod ruby_toolchain;
 
 use std::path::PathBuf;
 use std::process::Command;
 
 use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::{RubyAnalysis, analyze_bytes};
+use ruby_toolchain::{ToolchainBanner, require_mri};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/precedence.yarvc");
+
+const GRADED: &str = "the operand-grouping recovery from precedence.yarvc, re-evaluated under the \
+                      real ruby interpreter";
 
 fn recover(bytes: &[u8], name: &str) -> String {
     let analysis: RubyAnalysis = analyze_bytes(bytes, name).expect("analyze precedence fixture");
@@ -48,13 +61,6 @@ fn recovers_operand_grouping_that_survives_reassociation() {
     );
 }
 
-fn ruby_available() -> bool {
-    Command::new("ruby")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
-}
-
 fn eval_ruby(source: &str) -> Option<String> {
     let (scratch, file): (ScratchFile, std::fs::File) =
         ScratchFile::create("disrobe_yarv_precedence_recovered", "rb").ok()?;
@@ -70,11 +76,11 @@ fn eval_ruby(source: &str) -> Option<String> {
 
 #[test]
 fn recovered_source_evaluates_to_the_intended_values() {
-    if !ruby_available() {
-        eprintln!("skip: ruby not on PATH; install ruby 3.4.x to run the recompile-and-eval check");
+    let Some(toolchain): Option<ToolchainBanner> = require_mri(GRADED) else {
         return;
-    }
+    };
     let src: String = recover(FIXTURE, "precedence.yarvc");
+    println!("grading {GRADED} against {}", toolchain.banner);
     let recovered: String = eval_ruby(&src).expect("recovered source must run under ruby");
     let intended: &str = "15\n16\n1\n20\n7\n-2\n75\n2\n";
     assert_eq!(
