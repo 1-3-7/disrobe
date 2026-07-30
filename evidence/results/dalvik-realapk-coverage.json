@@ -7,7 +7,7 @@
   "ecosystem": "android",
   "floor": 92.5,
   "floor_holds": true,
-  "gate_source": "crates/disrobe-pass-jvm/tests/dalvik_realworld_body_attest.rs (REAL_APK_METHOD_TOTAL 89516 and ATTESTED_PRESENTED 2994 pinned by equality, SELF_REPORTED_BODY_FLOOR 82788, ATTESTED_CLEAN_FLOOR 2960, ATTESTED_FAIL_CEILING 34, per-apk pins in common::REAL_APKS) and crates/disrobe-pass-jvm/tests/dex2jar_realworld_apks.rs (per-apk self-reported numerator floors against equality-pinned method totals); reference for the attested figure = java -Xverify:all rejecting malformed bytecode, not the lifter self-report",
+  "gate_source": "crates/disrobe-pass-jvm/tests/dalvik_realworld_body_attest.rs (REAL_APK_METHOD_TOTAL 89516, SELF_REPORTED_BODIES 82788, CANDIDATE_BODIES 82756, SAMPLED_BODIES 8343, ATTESTED_PRESENTED 2994, ATTESTED_CLEAN 2960, ATTESTED_REJECTED 34, every one an equality rather than a floor, with the same counts pinned per apk in common::REAL_APKS and all 2994 verdicts pinned by name in tests/golden/dalvik_body_attest) and crates/disrobe-pass-jvm/tests/dex2jar_realworld_apks.rs (the same per-apk self-reported counts, also by equality); reference for the attested figure = java -Xverify:all rejecting malformed bytecode, not the lifter self-report",
   "id": "dalvik-realapk-coverage",
   "measured": "92.50%",
   "oracle": {
