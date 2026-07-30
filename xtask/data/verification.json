@@ -19,7 +19,7 @@
     {
       "ecosystem": "Android DEX",
       "oracle": "real JVM verifier, -Xverify:all",
-      "result": "102 / 102 presentable classes clean",
+      "result": "118 / 118 presentable classes clean",
       "ci": true,
       "source": "dalvik_verifier_gate.rs"
     },
