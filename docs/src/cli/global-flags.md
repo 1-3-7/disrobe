@@ -26,6 +26,15 @@ These flags are accepted on every subcommand (they are declared `global = true` 
 | `--no-cache` | Bypass the `.dr` envelope cache. Output is identical with or without this; it is a performance toggle, not a correctness one. |
 | `--dry-run` | Report what would happen without writing any output. |
 
+## Debug tracing
+
+| Variable | Effect |
+|---|---|
+| `DISROBE_DEBUG=<area>` | Stream every offset, size, candidate, and classification a pass walked to stderr. Takes `all` or a comma-separated area list. |
+| `DISROBE_DEBUG_FORMAT=json` | Emit one JSON object per debug event instead of human text. |
+
+Secret-shaped strings are redacted automatically in both formats.
+
 ## Metadata sidecar flags
 
 The metadata bundle flags are also global. See [metadata sidecar and provenance](../llm-sidecar.md) for the complete pack/category model. Summary:

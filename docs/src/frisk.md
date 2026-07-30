@@ -18,6 +18,10 @@ disrobe frisk app/ --entropy                        # include high-entropy gener
 
 `frisk` is offline. Network enrichment is explicit through `prowl`, and schema merging is explicit through `indicators`.
 
+## Decoded string layers
+
+A secret hidden behind an encoding is still a secret, so `frisk` does not scan only the literal bytes. It peels base58, base62, base45, base91, base92, base122, Ascii85, Z85, uuencode, xxencode, yEnc, percent-encoding, HTML entities, and Punycode recursively, with decompression-bomb caps at every level, and rescans each recovered layer for the same secrets and IOCs. A finding inside a decoded layer reports the position in the file that carried it.
+
 ## Finding categories
 
 Every finding carries a category, a rule id, the matched value, a severity, and a `file:line:column` (or byte offset for non-text input).
