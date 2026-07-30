@@ -1,11 +1,21 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
+use std::path::PathBuf;
+
 use disrobe_similarity::{
     BasicBlock, ControlFlowGraph, DataReference, FunctionFeatures, FunctionId, FunctionVerdict,
     InstructionCategory, MatchReport, MatchStage, UnmatchedCause, Verdict, match_functions,
 };
 
 const IMAGE_DELTA: u64 = 0x10_000;
+
+const DEPENDENCY_TABLES: [&str; 3] = [
+    "[dependencies]",
+    "[dev-dependencies]",
+    "[build-dependencies]",
+];
+
+const EXTRACTOR_HOME: &str = "crates/disrobe-pass-native";
 
 fn block<const N: usize, const M: usize>(
     successors: [usize; N],
@@ -331,7 +341,24 @@ fn wrong_pairs(report: &MatchReport, delta: u64) -> Vec<(FunctionId, FunctionId)
 }
 
 #[test]
-fn a_rebuilt_image_matches_every_function_that_carries_evidence_to_its_own_counterpart() {
+fn the_inputs_here_are_authored_graphs_because_this_crate_carries_no_image_reader() {
+    let manifest: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let text: String = std::fs::read_to_string(&manifest).expect("the crate manifest is readable");
+    for table in DEPENDENCY_TABLES {
+        assert!(
+            !text.contains(table),
+            "{} declares {table}, so this crate is no longer dependency free and the reason every \
+             case in this file is graded on graphs written by hand no longer holds. Reading a \
+             compiled image needs the container parser, the decoder and the span discovery that \
+             live in {EXTRACTOR_HOME}, which depends on this crate; grading real images belongs \
+             there, and the cases here cover graph shapes a single real binary will not contain.",
+            manifest.display()
+        );
+    }
+}
+
+#[test]
+fn an_authored_graph_rebuild_matches_every_function_that_carries_evidence_to_its_counterpart() {
     let left: Vec<FunctionFeatures> = build(&PARSER, 0x40_0000);
     let right: Vec<FunctionFeatures> = shuffled(&build(&PARSER, 0x40_0000 + IMAGE_DELTA));
 
@@ -491,7 +518,7 @@ fn recompiling_one_function_moves_only_that_function_out_of_reach() {
 }
 
 #[test]
-fn an_image_matched_against_itself_resolves_every_function_it_can_and_names_no_other() {
+fn an_authored_graph_set_matched_against_itself_resolves_every_function_and_names_no_other() {
     let left: Vec<FunctionFeatures> = build(&joined(&PARSER, &UNRELATED), 0x40_0000);
 
     let report: MatchReport = match_functions(&left, &left);
