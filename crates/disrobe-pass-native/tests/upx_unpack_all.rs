@@ -8,9 +8,22 @@
     clippy::cast_possible_truncation
 )]
 
+#[path = "support/packer_fixture.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code, clippy::panic)]
+mod packer_fixture;
+
 use disrobe_pass_native::{
     Packer, UpxMethod, UpxUnpackOutput, detect_packers, packed_upx_elf64_marker, unpack_upx,
 };
+use packer_fixture::{PackerFixture, load_fixture};
+
+fn read_corpus(name: &str) -> Option<Vec<u8>> {
+    load_fixture(PackerFixture {
+        decoder: "UPX",
+        family: "upx",
+        name,
+    })
+}
 
 const PACKED_NRV2B: &[u8] =
     include_bytes!("../../../corpus/native/packers/upx/hello.packed.nrv2b.exe");
@@ -294,10 +307,8 @@ fn lzma_recovered_text_is_byte_identical_to_committed_original() {
 }
 
 fn run_large_fixture(name: &str) -> Option<(UpxUnpackOutput, f64)> {
-    let packed_path: String = format!("../../corpus/native/packers/upx/{name}.packed.upx.exe");
-    let orig_path: String = format!("../../corpus/native/packers/upx/{name}.unpacked.upx.exe");
-    let packed: Vec<u8> = std::fs::read(&packed_path).ok()?;
-    let orig: Vec<u8> = std::fs::read(&orig_path).ok()?;
+    let packed: Vec<u8> = read_corpus(&format!("{name}.packed.upx.exe"))?;
+    let orig: Vec<u8> = read_corpus(&format!("{name}.unpacked.upx.exe"))?;
     let out: UpxUnpackOutput = unpack_upx(&packed).unwrap_or_else(|e| {
         panic!("{name}: unpack_upx must succeed on the >1MB nrv2e fixture: {e:?}")
     });

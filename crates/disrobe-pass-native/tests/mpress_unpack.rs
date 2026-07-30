@@ -11,27 +11,20 @@
     clippy::needless_type_cast
 )]
 
-use std::fs;
-use std::path::PathBuf;
+#[path = "support/packer_fixture.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code, clippy::panic)]
+mod packer_fixture;
 
 use disrobe_pass_native::error::Error;
 use disrobe_pass_native::packers::{MpressRecoveryStatus, MpressUnpackOutput, unpack_mpress};
-
-fn corpus_dir() -> PathBuf {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("..");
-    p.push("..");
-    p.push("corpus");
-    p.push("native");
-    p.push("packers");
-    p.push("mpress");
-    p
-}
+use packer_fixture::{PackerFixture, load_fixture};
 
 fn read_corpus(name: &str) -> Option<Vec<u8>> {
-    let mut p: PathBuf = corpus_dir();
-    p.push(name);
-    fs::read(&p).ok()
+    load_fixture(PackerFixture {
+        decoder: "MPRESS",
+        family: "mpress",
+        name,
+    })
 }
 
 fn looks_like_pe(bytes: &[u8]) -> bool {

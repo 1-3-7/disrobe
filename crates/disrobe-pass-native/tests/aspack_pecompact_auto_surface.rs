@@ -8,25 +8,31 @@
     clippy::cast_sign_loss
 )]
 
-use std::fs;
-use std::path::PathBuf;
+#[path = "support/packer_fixture.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code, clippy::panic)]
+mod packer_fixture;
 
 use disrobe_pass_native::packers::pe_sections::{PeImage, parse_pe_image};
 use disrobe_pass_native::packers::section_recovery::build_loaded_image;
 use disrobe_pass_native::packers::{
     Detection, Packer, RecoveredImage, RecoveryOracle, detect, recover_detected,
 };
+use packer_fixture::{PackerFixture, load_fixture};
+
+fn decoder_for(family: &str) -> &'static str {
+    if family == "aspack" {
+        "ASPack"
+    } else {
+        "PECompact"
+    }
+}
 
 fn corpus(family: &str, name: &str) -> Option<Vec<u8>> {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("..");
-    p.push("..");
-    p.push("corpus");
-    p.push("native");
-    p.push("packers");
-    p.push(family);
-    p.push(name);
-    fs::read(&p).ok()
+    load_fixture(PackerFixture {
+        decoder: decoder_for(family),
+        family,
+        name,
+    })
 }
 
 fn text_recovery_vs_original(recovered: &[u8], original: &[u8]) -> (usize, usize) {

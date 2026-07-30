@@ -1,24 +1,23 @@
 #![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
-use std::fs;
-use std::path::PathBuf;
+
+#[path = "support/packer_fixture.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code, clippy::panic)]
+mod packer_fixture;
 
 use disrobe_pass_native::{
     EntropyBlock, HIGH_ENTROPY_THRESHOLD, locate_high_entropy, shannon_entropy_bits,
     windowed_entropy,
 };
+use packer_fixture::{PackerFixture, load_fixture};
 
 const WINDOW: usize = 4096;
 
 fn upx_corpus(name: &str) -> Option<Vec<u8>> {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("..");
-    p.push("..");
-    p.push("corpus");
-    p.push("native");
-    p.push("packers");
-    p.push("upx");
-    p.push(name);
-    fs::read(&p).ok()
+    load_fixture(PackerFixture {
+        decoder: "UPX",
+        family: "upx",
+        name,
+    })
 }
 
 fn mean(blocks: &[EntropyBlock]) -> f64 {

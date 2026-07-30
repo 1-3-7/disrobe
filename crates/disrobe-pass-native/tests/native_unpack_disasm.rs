@@ -11,9 +11,11 @@
     clippy::doc_markdown
 )]
 
+#[path = "support/packer_fixture.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code, clippy::panic)]
+mod packer_fixture;
+
 use std::collections::BTreeSet;
-use std::fs;
-use std::path::PathBuf;
 
 use disrobe_pass_native::{
     RebuildLayout, RebuiltImage, rebuild_passthrough, rebuild_unpacked_pe,
@@ -22,19 +24,26 @@ use disrobe_pass_native::{
 };
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic};
 use object::{Object, ObjectSection, SectionFlags};
+use packer_fixture::{PackerFixture, load_fixture};
 
 const IMAGE_SCN_MEM_EXECUTE: u64 = 0x2000_0000;
 
+fn decoder_for(family: &str) -> &'static str {
+    match family {
+        "aspack" => "ASPack",
+        "pecompact" => "PECompact",
+        "mew" => "MEW",
+        "kkrunchy" => "kkrunchy",
+        other => panic!("no decoder name is registered for packer family {other}"),
+    }
+}
+
 fn corpus(family: &str, name: &str) -> Option<Vec<u8>> {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("..");
-    p.push("..");
-    p.push("corpus");
-    p.push("native");
-    p.push("packers");
-    p.push(family);
-    p.push(name);
-    fs::read(&p).ok()
+    load_fixture(PackerFixture {
+        decoder: decoder_for(family),
+        family,
+        name,
+    })
 }
 
 #[allow(clippy::suboptimal_flops)]

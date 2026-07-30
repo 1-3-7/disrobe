@@ -10,8 +10,9 @@
     clippy::doc_markdown
 )]
 
-use std::fs;
-use std::path::PathBuf;
+#[path = "support/packer_fixture.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code, clippy::panic)]
+mod packer_fixture;
 
 use disrobe_pass_native::packers::aspack_phase2::{
     AspackPhaseTwoOutput, unpack_aspack_phase2_emulated,
@@ -19,17 +20,22 @@ use disrobe_pass_native::packers::aspack_phase2::{
 use disrobe_pass_native::packers::pecompact_phase2::{
     PecompactPhaseTwoOutput, unpack_pecompact_phase2_emulated,
 };
+use packer_fixture::{PackerFixture, load_fixture};
+
+fn decoder_for(family: &str) -> &'static str {
+    if family == "aspack" {
+        "ASPack"
+    } else {
+        "PECompact"
+    }
+}
 
 fn corpus(family: &str, name: &str) -> Option<Vec<u8>> {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("..");
-    p.push("..");
-    p.push("corpus");
-    p.push("native");
-    p.push("packers");
-    p.push(family);
-    p.push(name);
-    fs::read(&p).ok()
+    load_fixture(PackerFixture {
+        decoder: decoder_for(family),
+        family,
+        name,
+    })
 }
 
 fn assert_aspack(label: &str, packed_n: &str, orig_n: &str, content_floor: f64, whole_floor: f64) {

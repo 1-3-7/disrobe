@@ -9,6 +9,10 @@
     clippy::cast_sign_loss
 )]
 
+#[path = "support/packer_fixture.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code, clippy::panic)]
+mod packer_fixture;
+
 use std::fs;
 use std::path::PathBuf;
 
@@ -16,16 +20,14 @@ use disrobe_pass_native::{
     NspackEmulatedReport, unpack_nspack_emulated_with_baseline,
     unpack_nspack_emulated_with_baseline_raw,
 };
+use packer_fixture::{PackerFixture, load_fixture};
 
-fn corpus_dir() -> PathBuf {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("..");
-    p.push("..");
-    p.push("corpus");
-    p.push("native");
-    p.push("packers");
-    p.push("nspack");
-    p
+fn read_corpus(name: &str) -> Option<Vec<u8>> {
+    load_fixture(PackerFixture {
+        decoder: "NSPack",
+        family: "nspack",
+        name,
+    })
 }
 
 fn scratch_dir() -> PathBuf {
@@ -39,14 +41,10 @@ fn scratch_dir() -> PathBuf {
 
 #[test]
 fn dump_handle_first_diff() {
-    let mut packed_p: PathBuf = corpus_dir();
-    packed_p.push("handle.packed.nspack.exe");
-    let mut orig_p: PathBuf = corpus_dir();
-    orig_p.push("handle.original.exe");
-    let Ok(packed): std::io::Result<Vec<u8>> = fs::read(&packed_p) else {
+    let Some(packed): Option<Vec<u8>> = read_corpus("handle.packed.nspack.exe") else {
         return;
     };
-    let Ok(orig): std::io::Result<Vec<u8>> = fs::read(&orig_p) else {
+    let Some(orig): Option<Vec<u8>> = read_corpus("handle.original.exe") else {
         return;
     };
     let (r, raw): (NspackEmulatedReport, Vec<u8>) =
@@ -108,14 +106,10 @@ fn dump_handle_first_diff() {
 
 #[test]
 fn dump_cmd_for_inspection() {
-    let mut packed_p: PathBuf = corpus_dir();
-    packed_p.push("cmd.packed.nspack.exe");
-    let mut orig_p: PathBuf = corpus_dir();
-    orig_p.push("cmd.original.exe");
-    let Ok(packed): std::io::Result<Vec<u8>> = fs::read(&packed_p) else {
+    let Some(packed): Option<Vec<u8>> = read_corpus("cmd.packed.nspack.exe") else {
         return;
     };
-    let Ok(orig): std::io::Result<Vec<u8>> = fs::read(&orig_p) else {
+    let Some(orig): Option<Vec<u8>> = read_corpus("cmd.original.exe") else {
         return;
     };
     let res = unpack_nspack_emulated_with_baseline_raw(&packed, Some(&orig));
@@ -138,14 +132,10 @@ fn dump_cmd_for_inspection() {
 
 #[test]
 fn dump_hash_for_inspection() {
-    let mut packed_p: PathBuf = corpus_dir();
-    packed_p.push("hash.packed.nspack.exe");
-    let mut orig_p: PathBuf = corpus_dir();
-    orig_p.push("hash.original.exe");
-    let Ok(packed): std::io::Result<Vec<u8>> = fs::read(&packed_p) else {
+    let Some(packed): Option<Vec<u8>> = read_corpus("hash.packed.nspack.exe") else {
         return;
     };
-    let Ok(orig): std::io::Result<Vec<u8>> = fs::read(&orig_p) else {
+    let Some(orig): Option<Vec<u8>> = read_corpus("hash.original.exe") else {
         return;
     };
     let (_r2, raw_hash): (NspackEmulatedReport, Vec<u8>) =

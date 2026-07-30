@@ -1,7 +1,7 @@
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{ErrorKind, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub(crate) const REQUIRE_FIXTURES_VAR: &str = "DISROBE_REQUIRE_PACKER_FIXTURES";
 
@@ -29,40 +29,220 @@ pub(crate) struct CommittedFixture {
 
 pub(crate) const COMMITTED_FIXTURES: &[CommittedFixture] = &[
     CommittedFixture {
-        family: "fsg",
-        name: "Hash.packed.fsg.exe",
-        size_bytes: 16624,
-        crc32: 0xa480_90fc,
+        family: "aspack",
+        name: "AccessEnum.original.exe",
+        size_bytes: 174_968,
+        crc32: 0x0a1a_c525,
+    },
+    CommittedFixture {
+        family: "aspack",
+        name: "AccessEnum.packed.aspack.exe",
+        size_bytes: 52_736,
+        crc32: 0x643b_3fbe,
+    },
+    CommittedFixture {
+        family: "aspack",
+        name: "Clockres.original.exe",
+        size_bytes: 139_944,
+        crc32: 0x46c2_7692,
+    },
+    CommittedFixture {
+        family: "aspack",
+        name: "Clockres.packed.aspack.exe",
+        size_bytes: 59_904,
+        crc32: 0x7df3_477b,
     },
     CommittedFixture {
         family: "fsg",
         name: "Hash.original.exe",
-        size_bytes: 29184,
+        size_bytes: 29_184,
+        crc32: 0x26da_84e4,
+    },
+    CommittedFixture {
+        family: "fsg",
+        name: "Hash.packed.fsg.exe",
+        size_bytes: 16_624,
+        crc32: 0xa480_90fc,
+    },
+    CommittedFixture {
+        family: "kkrunchy",
+        name: "hello.exe",
+        size_bytes: 1_024,
+        crc32: 0x687e_5d0f,
+    },
+    CommittedFixture {
+        family: "kkrunchy",
+        name: "hello.packed.kkrunchy.exe",
+        size_bytes: 5_632,
+        crc32: 0x4633_b742,
+    },
+    CommittedFixture {
+        family: "kkrunchy",
+        name: "hello.packed.kkrunchy_classic.exe",
+        size_bytes: 4_608,
+        crc32: 0x14ac_dd76,
+    },
+    CommittedFixture {
+        family: "mew",
+        name: "AccessEnum.original.exe",
+        size_bytes: 174_968,
+        crc32: 0x0a1a_c525,
+    },
+    CommittedFixture {
+        family: "mew",
+        name: "AccessEnum.packed.mew.exe",
+        size_bytes: 41_810,
+        crc32: 0x6b68_c14e,
+    },
+    CommittedFixture {
+        family: "mew",
+        name: "Autologon.original.exe",
+        size_bytes: 138_920,
+        crc32: 0x358f_b1f0,
+    },
+    CommittedFixture {
+        family: "mew",
+        name: "Autologon.packed.mew.exe",
+        size_bytes: 47_510,
+        crc32: 0xb6c7_ae2f,
+    },
+    CommittedFixture {
+        family: "mew",
+        name: "Clockres.original.exe",
+        size_bytes: 139_944,
+        crc32: 0x46c2_7692,
+    },
+    CommittedFixture {
+        family: "mew",
+        name: "Clockres.packed.mew.exe",
+        size_bytes: 47_784,
+        crc32: 0x4d85_a2ba,
+    },
+    CommittedFixture {
+        family: "mpress",
+        name: "gauntlet/gauntlet_target.original.exe",
+        size_bytes: 104_448,
+        crc32: 0x3d68_bd5b,
+    },
+    CommittedFixture {
+        family: "mpress",
+        name: "gauntlet/gauntlet_target.packed.mpress219.exe",
+        size_bytes: 50_176,
+        crc32: 0x00c2_305c,
+    },
+    CommittedFixture {
+        family: "nspack",
+        name: "hash.original.exe",
+        size_bytes: 29_184,
         crc32: 0x26da_84e4,
     },
     CommittedFixture {
         family: "nspack",
         name: "hash.packed.nspack.exe",
-        size_bytes: 19068,
+        size_bytes: 19_068,
         crc32: 0x28c2_279c,
     },
     CommittedFixture {
-        family: "nspack",
-        name: "hash.original.exe",
-        size_bytes: 29184,
-        crc32: 0x26da_84e4,
+        family: "pecompact",
+        name: "AccessEnum.original.exe",
+        size_bytes: 174_968,
+        crc32: 0x0a1a_c525,
+    },
+    CommittedFixture {
+        family: "pecompact",
+        name: "AccessEnum.packed.pecompact.exe",
+        size_bytes: 52_600,
+        crc32: 0xd36c_e0c6,
+    },
+    CommittedFixture {
+        family: "pecompact",
+        name: "Clockres.original.exe",
+        size_bytes: 139_944,
+        crc32: 0x46c2_7692,
+    },
+    CommittedFixture {
+        family: "pecompact",
+        name: "Clockres.packed.pecompact.exe",
+        size_bytes: 68_264,
+        crc32: 0xa761_e727,
     },
     CommittedFixture {
         family: "petite",
         name: "hello.exe",
-        size_bytes: 52144,
+        size_bytes: 52_144,
         crc32: 0x7e18_b1e5,
     },
     CommittedFixture {
         family: "petite",
         name: "hello.original.exe",
-        size_bytes: 94720,
+        size_bytes: 94_720,
         crc32: 0xad20_9c87,
+    },
+    CommittedFixture {
+        family: "upx",
+        name: "hello.original.exe",
+        size_bytes: 104_448,
+        crc32: 0x3d68_bd5b,
+    },
+    CommittedFixture {
+        family: "upx",
+        name: "hello.packed.lzma.exe",
+        size_bytes: 51_712,
+        crc32: 0xd8c7_3398,
+    },
+    CommittedFixture {
+        family: "upx",
+        name: "hello.packed.nrv2b.exe",
+        size_bytes: 53_248,
+        crc32: 0x1b63_6f0a,
+    },
+    CommittedFixture {
+        family: "yodas_crypter",
+        name: "AccessEnum.original.exe",
+        size_bytes: 174_968,
+        crc32: 0x0a1a_c525,
+    },
+    CommittedFixture {
+        family: "yodas_crypter",
+        name: "AccessEnum.packed.yodascrypter.exe",
+        size_bytes: 171_134,
+        crc32: 0x124b_fd3c,
+    },
+    CommittedFixture {
+        family: "yodas_crypter",
+        name: "Clockres.original.exe",
+        size_bytes: 139_944,
+        crc32: 0x46c2_7692,
+    },
+    CommittedFixture {
+        family: "yodas_crypter",
+        name: "Clockres.packed.yodascrypter.exe",
+        size_bytes: 127_102,
+        crc32: 0xc436_3b4d,
+    },
+    CommittedFixture {
+        family: "yodas_protector",
+        name: "AccessEnum.original.exe",
+        size_bytes: 174_968,
+        crc32: 0x0a1a_c525,
+    },
+    CommittedFixture {
+        family: "yodas_protector",
+        name: "AccessEnum.packed.yodasprotector.exe",
+        size_bytes: 77_824,
+        crc32: 0xc29e_0ca8,
+    },
+    CommittedFixture {
+        family: "yodas_protector",
+        name: "Clockres.original.exe",
+        size_bytes: 139_944,
+        crc32: 0x46c2_7692,
+    },
+    CommittedFixture {
+        family: "yodas_protector",
+        name: "Clockres.packed.yodasprotector.exe",
+        size_bytes: 70_144,
+        crc32: 0x7c85_e5b5,
     },
 ];
 
@@ -106,6 +286,16 @@ pub(crate) fn is_committed(family: &str, name: &str) -> bool {
         .any(|f: &CommittedFixture| f.family == family && f.name == name)
 }
 
+pub(crate) fn fixture_role(name: &str) -> &'static str {
+    if name.starts_with('<') {
+        "unspecified-role"
+    } else if name.contains(".original.") || name.contains(".unpacked.") {
+        "original"
+    } else {
+        "packed"
+    }
+}
+
 pub(crate) fn enforce_fixture_requirement(
     fixture: &PackerFixture<'_>,
     committed: bool,
@@ -116,34 +306,51 @@ pub(crate) fn enforce_fixture_requirement(
         FixtureRequirement::Committed => committed,
         FixtureRequirement::Every => true,
     };
+    let path: PathBuf = fixture_path(fixture.family, fixture.name);
     assert!(
         !fatal,
-        "{REQUIRE_FIXTURES_VAR} makes this fixture mandatory for this run, so the {} decoder \
-         cannot be graded: corpus/native/packers/{}/{} is absent (committed_in_repo={committed})",
-        fixture.decoder, fixture.family, fixture.name
+        "{REQUIRE_FIXTURES_VAR} makes this fixture mandatory for this run, so the {decoder} \
+         decoder cannot be graded and this case must not report success. The {role} fixture of \
+         family {family} is absent: expected it at {resolved}, which is \
+         corpus/native/packers/{family}/{name} in the repository (tracked_in_git={committed}). \
+         Restore that file, or clear {REQUIRE_FIXTURES_VAR} to permit a run that grades nothing \
+         here.",
+        decoder = fixture.decoder,
+        role = fixture_role(fixture.name),
+        family = fixture.family,
+        resolved = path.display(),
+        name = fixture.name,
     );
-    announce_ungraded(fixture);
+    announce_ungraded(fixture, &path);
 }
 
-fn announce_ungraded(fixture: &PackerFixture<'_>) {
+fn announce_ungraded(fixture: &PackerFixture<'_>, path: &Path) {
     let line: String = format!(
-        "\nUNGRADED {}: corpus/native/packers/{}/{} is absent, so this case graded nothing. Set \
-         {REQUIRE_FIXTURES_VAR}=1 to fail instead of skipping when a committed fixture is missing, \
-         or {REQUIRE_FIXTURES_VAR}=all to fail on any absent fixture.\n",
-        fixture.decoder, fixture.family, fixture.name
+        "\nUNGRADED {decoder}: the {role} fixture of family {family} is absent at {resolved} \
+         (corpus/native/packers/{family}/{name}), so this case measured nothing and graded \
+         nothing. Set {REQUIRE_FIXTURES_VAR}=1 to fail instead of skipping when a fixture tracked \
+         in git is missing, or {REQUIRE_FIXTURES_VAR}=all to fail on any absent fixture.\n",
+        decoder = fixture.decoder,
+        role = fixture_role(fixture.name),
+        family = fixture.family,
+        resolved = path.display(),
+        name = fixture.name,
     );
-    let mut sink: std::io::StderrLock<'static> = std::io::stderr().lock();
+    let mut sink: std::io::StdoutLock<'static> = std::io::stdout().lock();
     drop(sink.write_all(line.as_bytes()));
     drop(sink.flush());
 }
 
-pub(crate) fn load_fixture(fixture: PackerFixture<'_>) -> Option<Vec<u8>> {
+pub(crate) fn load_fixture_with_requirement(
+    fixture: PackerFixture<'_>,
+    requirement: FixtureRequirement,
+) -> Option<Vec<u8>> {
     let path: PathBuf = fixture_path(fixture.family, fixture.name);
     match fs::read(&path) {
         Ok(bytes) => Some(bytes),
         Err(err) if err.kind() == ErrorKind::NotFound => {
             let committed: bool = is_committed(fixture.family, fixture.name);
-            enforce_fixture_requirement(&fixture, committed, fixture_requirement());
+            enforce_fixture_requirement(&fixture, committed, requirement);
             None
         }
         Err(err) => panic!(
@@ -153,6 +360,10 @@ pub(crate) fn load_fixture(fixture: PackerFixture<'_>) -> Option<Vec<u8>> {
             path.display()
         ),
     }
+}
+
+pub(crate) fn load_fixture(fixture: PackerFixture<'_>) -> Option<Vec<u8>> {
+    load_fixture_with_requirement(fixture, fixture_requirement())
 }
 
 pub(crate) fn enforce_something_was_graded(decoder: &str, graded: usize, family: &str) {
