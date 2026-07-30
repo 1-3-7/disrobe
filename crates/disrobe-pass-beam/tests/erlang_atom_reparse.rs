@@ -15,23 +15,11 @@ use std::process::Command;
 
 use disrobe_pass_beam::body_lift::render::render_atom;
 
-fn find_on_path(name: &str) -> Option<PathBuf> {
-    let path_var: std::ffi::OsString = std::env::var_os("PATH")?;
-    let exts: &[&str] = if cfg!(windows) {
-        &["", ".exe", ".bat", ".cmd"]
-    } else {
-        &[""]
-    };
-    for dir in std::env::split_paths(&path_var) {
-        for ext in exts {
-            let candidate: PathBuf = dir.join(format!("{name}{ext}"));
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
+mod common;
+
+use common::erlang_toolchain::{Erlang, require_erlang};
+
+const GRADED: &str = "the emitted-atom reparse check";
 
 fn erl_string_literal(raw: &str) -> String {
     let escaped: String = raw.replace('\\', "\\\\").replace('"', "\\\"");
@@ -72,12 +60,10 @@ fn atom_corpus() -> Vec<String> {
 fn emitted_atoms_reparse_to_intended_atom() {
     let names: Vec<String> = atom_corpus();
 
-    let Some(erl): Option<PathBuf> = find_on_path("erl") else {
-        println!(
-            "SKIP: erl not on PATH (Erlang/OTP not installed); atom shapes still pinned by render.rs unit tests"
-        );
+    let Some(erlang): Option<Erlang> = require_erlang(GRADED) else {
         return;
     };
+    let erl: PathBuf = erlang.erl;
 
     let comparisons: Vec<String> = names
         .iter()

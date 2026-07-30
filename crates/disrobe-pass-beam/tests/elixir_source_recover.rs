@@ -30,23 +30,11 @@ fn corpus(rel: &str) -> PathBuf {
         .join(rel)
 }
 
-fn find_on_path(name: &str) -> Option<PathBuf> {
-    let path_var: std::ffi::OsString = std::env::var_os("PATH")?;
-    let exts: &[&str] = if cfg!(windows) {
-        &["", ".exe", ".bat", ".cmd"]
-    } else {
-        &[""]
-    };
-    for dir in std::env::split_paths(&path_var) {
-        for ext in exts {
-            let candidate: PathBuf = dir.join(format!("{name}{ext}"));
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
+mod common;
+
+use common::erlang_toolchain::{ELIXIRC, require};
+
+const GRADED: &str = "the recovered-elixir recompile check";
 
 fn beam_from_ez(suffix: &str) -> BeamFile {
     let bytes: Vec<u8> = std::fs::read(corpus("megafile/edge_cases.ez")).unwrap();
@@ -98,8 +86,7 @@ fn idents(src: &str) -> BTreeSet<String> {
 
 #[test]
 fn real_elixir_recovered_source_recompiles_with_elixirc() {
-    let Some(elixirc): Option<PathBuf> = find_on_path("elixirc") else {
-        println!("SKIP: elixirc not on PATH");
+    let Some(elixirc): Option<PathBuf> = require(&ELIXIRC, GRADED) else {
         return;
     };
     let bytes: Vec<u8> = std::fs::read(corpus("elixir/Elixir.Hello.beam")).unwrap();
