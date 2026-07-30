@@ -5,20 +5,16 @@
     clippy::print_stderr
 )]
 
+#[path = "support/ruby_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod ruby_toolchain;
+
 use std::path::PathBuf;
 use std::process::Command;
 
 use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::analyze_bytes;
-
-fn ruby_oracle_available() -> bool {
-    let Ok(out): Result<std::process::Output, std::io::Error> =
-        Command::new("ruby").arg("--version").output()
-    else {
-        return false;
-    };
-    out.status.success() && String::from_utf8_lossy(&out.stdout).contains("ruby 3.4")
-}
+use ruby_toolchain::require_mri_measured_series;
 
 fn compile_to_yarb(source: &str, tag: &str) -> Option<Vec<u8>> {
     let script_purpose: String = format!("disrobe_la_gen_{tag}");
@@ -108,14 +104,16 @@ fn recompile_pct(original: &str, recovered_code: &str, tag: &str) -> Option<u32>
 }
 
 fn assert_recovers(source: &str, tag: &str, needle: &str, min_pct: u32) {
-    if !ruby_oracle_available() {
-        eprintln!("skip: {tag} needs ruby 3.4.x");
+    if require_mri_measured_series(&format!("the {tag} loop-assignment recovery")).is_none() {
         return;
     }
-    let Some(src): Option<String> = recover(source, tag) else {
-        eprintln!("skip: ruby could not compile the {tag} source");
-        return;
-    };
+    let src: String = recover(source, tag).unwrap_or_else(|| {
+        panic!(
+            "ruby is usable here but could not compile the {tag} source into a yarv image, so this \
+             case compared nothing; an interpreter that is present and then fails to build the \
+             input is a defect, never a skip"
+        )
+    });
     let code: String = code_only(&src);
     assert!(
         code.contains(needle),

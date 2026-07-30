@@ -6,11 +6,19 @@
     clippy::print_stdout
 )]
 
+#[path = "support/ruby_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod ruby_toolchain;
+
 use std::path::PathBuf;
 use std::process::Command;
 
 use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::analyze_bytes;
+use ruby_toolchain::require_mri;
+
+const OPASSIGN_YARVC: &str = "mri/yarv/opassign.rb.yarvc";
+const GRADED: &str = "the compound-assignment recompile comparison against real ruby";
 
 fn corpus_dir() -> PathBuf {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -29,25 +37,27 @@ fn corpus_path(rel: &str) -> PathBuf {
     path
 }
 
-fn ruby_available() -> bool {
-    Command::new("ruby")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
-}
-
-fn recover_source(yarvc_rel: &str) -> Option<String> {
-    let bytes: Vec<u8> = std::fs::read(corpus_path(yarvc_rel)).ok()?;
-    let analysis = analyze_bytes(&bytes, yarvc_rel).ok()?;
-    Some(analysis.yarv?.decompiled.source)
+fn recover_source(yarvc_rel: &str) -> String {
+    let path: PathBuf = corpus_path(yarvc_rel);
+    let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|e: std::io::Error| {
+        panic!(
+            "corpus/ruby/{yarvc_rel} is tracked in this repository but could not be read here \
+             ({e}); an absent or unreadable fixture is never a skip, because that is how a check \
+             stops comparing anything without saying so"
+        )
+    });
+    let analysis = analyze_bytes(&bytes, yarvc_rel)
+        .unwrap_or_else(|e| panic!("analyze corpus/ruby/{yarvc_rel}: {e}"));
+    analysis
+        .yarv
+        .unwrap_or_else(|| panic!("corpus/ruby/{yarvc_rel} produced no YARV analysis"))
+        .decompiled
+        .source
 }
 
 #[test]
 fn op_assign_forms_reconstruct_idiomatic_compound_assignment() {
-    let Some(source): Option<String> = recover_source("mri/yarv/opassign.rb.yarvc") else {
-        eprintln!("skip: mri/yarv/opassign.rb.yarvc fixture absent");
-        return;
-    };
+    let source: String = recover_source(OPASSIGN_YARVC);
     for expected in [
         "cfg[:cache] ||= {}",
         "cfg[:nested] &&= cfg[:nested].dup",
@@ -70,14 +80,10 @@ fn op_assign_forms_reconstruct_idiomatic_compound_assignment() {
 
 #[test]
 fn op_assign_recompiles_to_matching_opcode_multiset() {
-    if !ruby_available() {
-        eprintln!("skip: ruby not on PATH; install ruby 3.4.x to run the non-circular YARV oracle");
+    if require_mri(GRADED).is_none() {
         return;
     }
-    let Some(recovered): Option<String> = recover_source("mri/yarv/opassign.rb.yarvc") else {
-        eprintln!("skip: mri/yarv/opassign.rb.yarvc fixture absent");
-        return;
-    };
+    let recovered: String = recover_source(OPASSIGN_YARVC);
 
     let (scratch, file): (ScratchFile, std::fs::File) =
         ScratchFile::create("disrobe_yarv_opassign_recovered", "rb")

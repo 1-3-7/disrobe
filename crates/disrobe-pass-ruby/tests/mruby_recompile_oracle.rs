@@ -6,11 +6,18 @@
     clippy::print_stdout
 )]
 
+#[path = "support/ruby_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod ruby_toolchain;
+
 use std::path::PathBuf;
 use std::process::Command;
 
 use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::{MrubyDecompiled, analyze_bytes};
+use ruby_toolchain::{MRBC, MRUBY, require};
+
+const GRADED: &str = "the mrbc recompile and mruby output comparison over the breadth corpus";
 
 const STRAIGHT_LINE_SET: &[&str] = &["arith", "strings", "coll", "klass", "advanced"];
 const EQUIVALENT_SET: &[&str] = &[
@@ -37,13 +44,6 @@ fn corpus_path(name: &str, ext: &str) -> PathBuf {
     path.push("breadth");
     path.push(format!("{name}.{ext}"));
     path
-}
-
-fn tool_available(name: &str) -> bool {
-    Command::new(name)
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
 }
 
 fn recover(name: &str) -> MrubyDecompiled {
@@ -189,10 +189,7 @@ fn rescue_control_flow_stays_honestly_marked() {
 
 #[test]
 fn mrbc_recompile_and_semantic_equivalence_oracle() {
-    if !tool_available("mrbc") || !tool_available("mruby") {
-        eprintln!(
-            "skip: mrbc/mruby not on PATH; build mruby (rake) and add build/host/bin to run the non-circular mrbc oracle"
-        );
+    if require(&MRBC, GRADED).is_none() || require(&MRUBY, GRADED).is_none() {
         return;
     }
 
