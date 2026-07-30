@@ -42,8 +42,6 @@ Try it in your browser at [`1-3-7.github.io/disrobe/playground`](https://1-3-7.g
 
 ![Recovery rates across ecosystems, scored against independent oracles](docs/assets/recovery.svg)
 
-![Coverage across ecosystems](docs/assets/ecosystems.svg)
-
 | Ecosystem | Tier | Headline measured figure | Oracle | Guide |
 |---|---|---|---|---|
 | Python bytecode | Recover | <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> per code object | strong `[CI]` | [python](docs/src/languages/python.md) |
@@ -81,8 +79,6 @@ Roster sizes the binary carries: Python source obfuscators (<!-- m:py_source_obf
 Anti-analysis defeat, from opaque-predicate folding and control-flow deflattening through verified MBA simplification, stack-string emulation, calling-convention and type recovery, indirect-dispatch resolution, and generic VM devirtualization, is documented capability by capability with the gate behind each one in the [anti-analysis guide](docs/src/anti-analysis.md). Recursive payload peeling, the encoding and cipher set it reverses, and the structural check that stops a decode from advancing on garbage are in the [chain runner guide](docs/src/chain.md).
 
 ## How the numbers are checked
-
-![how each ecosystem's recovery is graded: the independent oracle used, the result, and whether a committed CI gate enforces it](docs/assets/verification.svg)
 
 Two independent labels qualify every figure below. The first is oracle strength, which says what could have rejected a wrong answer.
 
