@@ -24,6 +24,7 @@ pub mod swift_symbolic;
 pub mod swift_typedump;
 pub mod swiftinterface;
 pub mod swiftmodule;
+pub mod toolchain;
 
 pub use code_signature::{
     BlobSlot, CodeDirectory, CodeSignature, HashKind, PageHashAudit, PageHashVerdict,
@@ -41,9 +42,11 @@ pub use ipa::{
     IpaEntry, IpaExtract, IpaInventory, extract as extract_ipa, inventory as ipa_inventory,
 };
 pub use macho::{
-    Bitness, CpuKind, EncryptionInfo, Endian, FatArchEntry, FunctionSymbol, LoadCommand, MachoKind,
-    ParsedSlice, Section, Segment, SliceHeader, SymtabInfo, detect_magic, find_section,
-    function_symbols, parse_slice, section_bytes, slice_bytes, symbol_names, walk_fat,
+    Bitness, CpuKind, DylibKind, DylibReference, DysymtabInfo, EncryptionInfo, Endian, EntryPoint,
+    FatArchEntry, FunctionSymbol, ImportThunk, LinkeditData, LoadCommand, MachoKind, PackedVersion,
+    ParsedSlice, PlatformVersion, Section, Segment, SliceHeader, SymtabInfo, detect_magic,
+    find_section, function_symbols, import_thunks, parse_slice, section_bytes, slice_bytes,
+    symbol_names, walk_fat,
 };
 pub use native_bodies::{
     DisasmInstruction, FunctionBody, NativeBodyReport, ReconstructedMember,
@@ -95,5 +98,6 @@ pub use swiftinterface::{
 pub use swiftmodule::{
     MODULE_SIGNATURE, SwiftModuleDecls, is_swift_module, read as read_swift_module,
 };
+pub use toolchain::{SymbolState, ToolchainReport, file_type_label, report as toolchain_report};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

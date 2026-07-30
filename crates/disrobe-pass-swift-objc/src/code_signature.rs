@@ -719,12 +719,9 @@ mod tests {
                 filetype: 0,
                 flags: 0,
             },
-            segments: Vec::new(),
-            load_commands: Vec::new(),
-            encryption: None,
             code_signature_off: Some(0),
             code_signature_size: Some(64),
-            symtab: None,
+            ..ParsedSlice::default()
         };
         assert!(parse(&slice, &parsed).is_none());
     }

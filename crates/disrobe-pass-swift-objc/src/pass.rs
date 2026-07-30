@@ -12,6 +12,7 @@ use crate::swift::{self, SwiftClassDump};
 use crate::swift_reflect::{self, SwiftTypeReflection};
 use crate::swiftinterface::{self, ParsedInterface};
 use crate::swiftmodule::{self, SwiftModuleDecls};
+use crate::toolchain::{self, ToolchainReport};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SwiftObjcReport {
@@ -39,6 +40,7 @@ pub struct SliceReport {
     pub objc: ObjcClassDump,
     pub fairplay: FairPlayStatus,
     pub code_signature: Option<CodeSignature>,
+    pub toolchain: ToolchainReport,
     pub native_bodies: NativeBodyReport,
 }
 
@@ -291,6 +293,20 @@ fn build_slice_report(slice: &[u8], parsed: &ParsedSlice) -> SliceReport {
         ),
         )
     });
+    let toolchain_report: ToolchainReport = toolchain::report(parsed);
+    crate::debug::dbg_kv("toolchain", || {
+        format!(
+            "filetype={} platform={:?} minos={:?} sdk={:?} swift_runtime={} objc_runtime={} symbols={} dylibs={}",
+            toolchain_report.file_type,
+            toolchain_report.platform,
+            toolchain_report.min_os_version,
+            toolchain_report.sdk_version,
+            toolchain_report.links_swift_runtime,
+            toolchain_report.links_objc_runtime,
+            toolchain_report.symbol_state.label(),
+            toolchain_report.dylib_count,
+        )
+    });
     let bits: u32 = match parsed.header.bitness {
         macho::Bitness::Bits32 => 32,
         macho::Bitness::Bits64 => 64,
@@ -317,6 +333,7 @@ fn build_slice_report(slice: &[u8], parsed: &ParsedSlice) -> SliceReport {
         objc: objc_dump,
         fairplay: fp,
         code_signature: signature,
+        toolchain: toolchain_report,
         native_bodies: native,
     }
 }

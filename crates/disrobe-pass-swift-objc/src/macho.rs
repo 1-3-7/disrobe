@@ -14,10 +14,42 @@ pub const MH_CIGAM_64: u32 = 0xCFFA_EDFE;
 pub const LC_SEGMENT: u32 = 0x1;
 pub const LC_SEGMENT_64: u32 = 0x19;
 pub const LC_SYMTAB: u32 = 0x2;
+pub const LC_DYSYMTAB: u32 = 0xB;
+pub const LC_LOAD_DYLIB: u32 = 0xC;
+pub const LC_ID_DYLIB: u32 = 0xD;
+pub const LC_LOAD_WEAK_DYLIB: u32 = 0x18;
+pub const LC_UUID: u32 = 0x1B;
+pub const LC_RPATH: u32 = 0x1C;
+pub const LC_REEXPORT_DYLIB: u32 = 0x1F;
+pub const LC_LAZY_LOAD_DYLIB: u32 = 0x20;
+pub const LC_LOAD_UPWARD_DYLIB: u32 = 0x23;
+pub const LC_VERSION_MIN_MACOSX: u32 = 0x24;
+pub const LC_VERSION_MIN_IPHONEOS: u32 = 0x25;
+pub const LC_FUNCTION_STARTS: u32 = 0x26;
+pub const LC_MAIN: u32 = 0x28;
+pub const LC_DATA_IN_CODE: u32 = 0x29;
+pub const LC_SOURCE_VERSION: u32 = 0x2A;
+pub const LC_VERSION_MIN_TVOS: u32 = 0x2F;
+pub const LC_VERSION_MIN_WATCHOS: u32 = 0x30;
+pub const LC_BUILD_VERSION: u32 = 0x32;
+pub const LC_DYLD_EXPORTS_TRIE: u32 = 0x33;
+pub const LC_DYLD_CHAINED_FIXUPS: u32 = 0x34;
 pub const LC_ENCRYPTION_INFO: u32 = 0x21;
 pub const LC_ENCRYPTION_INFO_64: u32 = 0x2C;
 pub const LC_CODE_SIGNATURE: u32 = 0x1D;
 pub const LC_REQ_DYLD: u32 = 0x8000_0000;
+
+pub const S_SYMBOL_STUBS: u32 = 0x8;
+pub const S_LAZY_SYMBOL_POINTERS: u32 = 0x7;
+pub const S_NON_LAZY_SYMBOL_POINTERS: u32 = 0x6;
+pub const SECTION_TYPE_MASK: u32 = 0xFF;
+
+pub const INDIRECT_SYMBOL_ABS: u32 = 0x4000_0000;
+pub const INDIRECT_SYMBOL_LOCAL: u32 = 0x8000_0000;
+
+const MAX_DYLIBS: usize = 4096;
+const MAX_RPATHS: usize = 1024;
+const MAX_INDIRECT_SYMBOLS: usize = 1 << 22;
 
 const NLIST_64_SIZE: usize = 16;
 const NLIST_32_SIZE: usize = 12;
@@ -113,6 +145,8 @@ pub struct Section {
     pub size: u64,
     pub offset: u32,
     pub flags: u32,
+    pub reserved1: u32,
+    pub reserved2: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,6 +174,128 @@ pub struct EncryptionInfo {
     pub crypt_id: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DylibKind {
+    Load,
+    LoadWeak,
+    Reexport,
+    LazyLoad,
+    LoadUpward,
+    Id,
+}
+
+impl DylibKind {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Load => "load",
+            Self::LoadWeak => "load-weak",
+            Self::Reexport => "reexport",
+            Self::LazyLoad => "lazy-load",
+            Self::LoadUpward => "load-upward",
+            Self::Id => "id",
+        }
+    }
+
+    const fn from_cmd(cmd: u32) -> Option<Self> {
+        match cmd {
+            LC_LOAD_DYLIB => Some(Self::Load),
+            LC_LOAD_WEAK_DYLIB => Some(Self::LoadWeak),
+            LC_REEXPORT_DYLIB => Some(Self::Reexport),
+            LC_LAZY_LOAD_DYLIB => Some(Self::LazyLoad),
+            LC_LOAD_UPWARD_DYLIB => Some(Self::LoadUpward),
+            LC_ID_DYLIB => Some(Self::Id),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DylibReference {
+    pub kind: DylibKind,
+    pub name: String,
+    pub current_version: String,
+    pub compatibility_version: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformVersion {
+    pub platform: u32,
+    pub min_os: PackedVersion,
+    pub sdk: PackedVersion,
+}
+
+impl PlatformVersion {
+    #[must_use]
+    pub const fn platform_label(self) -> &'static str {
+        match self.platform {
+            1 => "macos",
+            2 => "ios",
+            3 => "tvos",
+            4 => "watchos",
+            5 => "bridgeos",
+            6 => "mac-catalyst",
+            7 => "ios-simulator",
+            8 => "tvos-simulator",
+            9 => "watchos-simulator",
+            10 => "driverkit",
+            11 => "visionos",
+            12 => "visionos-simulator",
+            _ => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackedVersion(pub u32);
+
+impl PackedVersion {
+    #[must_use]
+    pub const fn major(self) -> u32 {
+        self.0 >> 16
+    }
+
+    #[must_use]
+    pub const fn minor(self) -> u32 {
+        (self.0 >> 8) & 0xFF
+    }
+
+    #[must_use]
+    pub const fn patch(self) -> u32 {
+        self.0 & 0xFF
+    }
+}
+
+impl core::fmt::Display for PackedVersion {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}.{}.{}", self.major(), self.minor(), self.patch())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntryPoint {
+    pub entry_offset: u64,
+    pub stack_size: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkeditData {
+    pub offset: u32,
+    pub size: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DysymtabInfo {
+    pub local_sym_index: u32,
+    pub local_sym_count: u32,
+    pub extdef_sym_index: u32,
+    pub extdef_sym_count: u32,
+    pub undef_sym_index: u32,
+    pub undef_sym_count: u32,
+    pub indirect_sym_off: u32,
+    pub indirect_sym_count: u32,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct SymtabInfo {
     pub sym_off: u32,
@@ -157,6 +313,52 @@ pub struct ParsedSlice {
     pub code_signature_off: Option<u32>,
     pub code_signature_size: Option<u32>,
     pub symtab: Option<SymtabInfo>,
+    pub dysymtab: Option<DysymtabInfo>,
+    pub uuid: Option<String>,
+    pub id_dylib: Option<DylibReference>,
+    pub dylibs: Vec<DylibReference>,
+    pub rpaths: Vec<String>,
+    pub platform_version: Option<PlatformVersion>,
+    pub entry_point: Option<EntryPoint>,
+    pub source_version: Option<u64>,
+    pub function_starts: Option<LinkeditData>,
+    pub data_in_code: Option<LinkeditData>,
+    pub chained_fixups: Option<LinkeditData>,
+    pub exports_trie: Option<LinkeditData>,
+}
+
+impl Default for ParsedSlice {
+    fn default() -> Self {
+        Self {
+            header: SliceHeader {
+                cpu: CpuKind::Unknown(0),
+                bitness: Bitness::Bits64,
+                endian: Endian::Little,
+                ncmds: 0,
+                sizeofcmds: 0,
+                filetype: 0,
+                flags: 0,
+            },
+            segments: Vec::new(),
+            load_commands: Vec::new(),
+            encryption: None,
+            code_signature_off: None,
+            code_signature_size: None,
+            symtab: None,
+            dysymtab: None,
+            uuid: None,
+            id_dylib: None,
+            dylibs: Vec::new(),
+            rpaths: Vec::new(),
+            platform_version: None,
+            entry_point: None,
+            source_version: None,
+            function_starts: None,
+            data_in_code: None,
+            chained_fixups: None,
+            exports_trie: None,
+        }
+    }
 }
 
 #[inline]
@@ -318,6 +520,8 @@ fn parse_segment_64(
         let size: u64 = read_u64(slice, s_off + 40)?;
         let offset: u32 = read_u32(slice, s_off + 48)?;
         let sflags: u32 = read_u32(slice, s_off + 64)?;
+        let reserved1: u32 = read_u32(slice, s_off + 68)?;
+        let reserved2: u32 = read_u32(slice, s_off + 72)?;
         sections.push(Section {
             seg: seg_field,
             name: sect_name,
@@ -325,6 +529,8 @@ fn parse_segment_64(
             size,
             offset,
             flags: sflags,
+            reserved1,
+            reserved2,
         });
     }
     Ok(Segment {
@@ -360,6 +566,8 @@ fn parse_segment_32(slice: &[u8], cursor: usize, read_u32: ReadU32, idx: u32) ->
         let size: u32 = read_u32(slice, s_off + 36)?;
         let offset: u32 = read_u32(slice, s_off + 40)?;
         let sflags: u32 = read_u32(slice, s_off + 56)?;
+        let reserved1: u32 = read_u32(slice, s_off + 60)?;
+        let reserved2: u32 = read_u32(slice, s_off + 64)?;
         sections.push(Section {
             seg: seg_field,
             name: sect_name,
@@ -367,6 +575,8 @@ fn parse_segment_32(slice: &[u8], cursor: usize, read_u32: ReadU32, idx: u32) ->
             size: u64::from(size),
             offset,
             flags: sflags,
+            reserved1,
+            reserved2,
         });
     }
     Ok(Segment {
@@ -425,6 +635,18 @@ pub fn parse_slice(slice: &[u8]) -> Result<ParsedSlice> {
     let mut code_signature_off: Option<u32> = None;
     let mut code_signature_size: Option<u32> = None;
     let mut symtab: Option<SymtabInfo> = None;
+    let mut dysymtab: Option<DysymtabInfo> = None;
+    let mut uuid: Option<String> = None;
+    let mut id_dylib: Option<DylibReference> = None;
+    let mut dylibs: Vec<DylibReference> = Vec::new();
+    let mut rpaths: Vec<String> = Vec::new();
+    let mut platform_version: Option<PlatformVersion> = None;
+    let mut entry_point: Option<EntryPoint> = None;
+    let mut source_version: Option<u64> = None;
+    let mut function_starts: Option<LinkeditData> = None;
+    let mut data_in_code: Option<LinkeditData> = None;
+    let mut chained_fixups: Option<LinkeditData> = None;
+    let mut exports_trie: Option<LinkeditData> = None;
     let mut cursor: usize = header_size;
 
     for idx in 0..ncmds {
@@ -487,6 +709,97 @@ pub fn parse_slice(slice: &[u8]) -> Result<ParsedSlice> {
                     str_size,
                 });
             }
+            LC_DYSYMTAB => {
+                dysymtab = Some(DysymtabInfo {
+                    local_sym_index: read_u32(slice, cursor + 8)?,
+                    local_sym_count: read_u32(slice, cursor + 12)?,
+                    extdef_sym_index: read_u32(slice, cursor + 16)?,
+                    extdef_sym_count: read_u32(slice, cursor + 20)?,
+                    undef_sym_index: read_u32(slice, cursor + 24)?,
+                    undef_sym_count: read_u32(slice, cursor + 28)?,
+                    indirect_sym_off: read_u32(slice, cursor + 56)?,
+                    indirect_sym_count: read_u32(slice, cursor + 60)?,
+                });
+            }
+            LC_UUID => {
+                let raw: &[u8] = slice
+                    .get(cursor + 8..cursor + 24)
+                    .ok_or_else(|| Error::LoadCommand(idx as usize, "uuid truncated".to_owned()))?;
+                uuid = Some(format_uuid(raw));
+            }
+            LC_RPATH => {
+                if rpaths.len() < MAX_RPATHS
+                    && let Some(path) = lc_string(slice, cursor, cmdsize_usize, read_u32)
+                {
+                    rpaths.push(path);
+                }
+            }
+            LC_LOAD_DYLIB | LC_LOAD_WEAK_DYLIB | LC_REEXPORT_DYLIB | LC_LAZY_LOAD_DYLIB
+            | LC_LOAD_UPWARD_DYLIB | LC_ID_DYLIB => {
+                if let Some(kind) = DylibKind::from_cmd(cmd)
+                    && let Some(name) = lc_string(slice, cursor, cmdsize_usize, read_u32)
+                {
+                    let current: u32 = read_u32(slice, cursor + 16).unwrap_or(0);
+                    let compat: u32 = read_u32(slice, cursor + 20).unwrap_or(0);
+                    let reference: DylibReference = DylibReference {
+                        kind,
+                        name,
+                        current_version: PackedVersion(current).to_string(),
+                        compatibility_version: PackedVersion(compat).to_string(),
+                    };
+                    if kind == DylibKind::Id {
+                        id_dylib = Some(reference);
+                    } else if dylibs.len() < MAX_DYLIBS {
+                        dylibs.push(reference);
+                    }
+                }
+            }
+            LC_BUILD_VERSION => {
+                platform_version = Some(PlatformVersion {
+                    platform: read_u32(slice, cursor + 8)?,
+                    min_os: PackedVersion(read_u32(slice, cursor + 12)?),
+                    sdk: PackedVersion(read_u32(slice, cursor + 16)?),
+                });
+            }
+            LC_VERSION_MIN_MACOSX
+            | LC_VERSION_MIN_IPHONEOS
+            | LC_VERSION_MIN_TVOS
+            | LC_VERSION_MIN_WATCHOS
+                if platform_version.is_none() =>
+            {
+                let platform: u32 = match cmd {
+                    LC_VERSION_MIN_MACOSX => 1,
+                    LC_VERSION_MIN_IPHONEOS => 2,
+                    LC_VERSION_MIN_TVOS => 3,
+                    _ => 4,
+                };
+                platform_version = Some(PlatformVersion {
+                    platform,
+                    min_os: PackedVersion(read_u32(slice, cursor + 8)?),
+                    sdk: PackedVersion(read_u32(slice, cursor + 12)?),
+                });
+            }
+            LC_MAIN => {
+                entry_point = Some(EntryPoint {
+                    entry_offset: read_u64(slice, cursor + 8)?,
+                    stack_size: read_u64(slice, cursor + 16)?,
+                });
+            }
+            LC_SOURCE_VERSION => {
+                source_version = Some(read_u64(slice, cursor + 8)?);
+            }
+            LC_FUNCTION_STARTS => {
+                function_starts = Some(read_linkedit(slice, cursor, read_u32)?);
+            }
+            LC_DATA_IN_CODE => {
+                data_in_code = Some(read_linkedit(slice, cursor, read_u32)?);
+            }
+            LC_DYLD_CHAINED_FIXUPS => {
+                chained_fixups = Some(read_linkedit(slice, cursor, read_u32)?);
+            }
+            LC_DYLD_EXPORTS_TRIE => {
+                exports_trie = Some(read_linkedit(slice, cursor, read_u32)?);
+            }
             _ => {}
         }
         cursor += cmdsize_usize;
@@ -500,7 +813,158 @@ pub fn parse_slice(slice: &[u8]) -> Result<ParsedSlice> {
         code_signature_off,
         code_signature_size,
         symtab,
+        dysymtab,
+        uuid,
+        id_dylib,
+        dylibs,
+        rpaths,
+        platform_version,
+        entry_point,
+        source_version,
+        function_starts,
+        data_in_code,
+        chained_fixups,
+        exports_trie,
     })
+}
+
+fn format_uuid(raw: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out: String = String::with_capacity(36);
+    for (index, byte) in raw.iter().enumerate() {
+        if matches!(index, 4 | 6 | 8 | 10) {
+            out.push('-');
+        }
+        let _: core::result::Result<(), core::fmt::Error> = write!(out, "{byte:02x}");
+    }
+    out
+}
+
+fn read_linkedit(slice: &[u8], cursor: usize, read_u32: ReadU32) -> Result<LinkeditData> {
+    Ok(LinkeditData {
+        offset: read_u32(slice, cursor + 8)?,
+        size: read_u32(slice, cursor + 12)?,
+    })
+}
+
+fn lc_string(slice: &[u8], cursor: usize, cmdsize: usize, read_u32: ReadU32) -> Option<String> {
+    let name_off: u32 = read_u32(slice, cursor + 8).ok()?;
+    let start: usize = cursor.checked_add(usize::try_from(name_off).ok()?)?;
+    let end: usize = cursor.checked_add(cmdsize)?;
+    if start >= end {
+        return None;
+    }
+    let window: &[u8] = slice.get(start..end.min(slice.len()))?;
+    let stop: usize = window
+        .iter()
+        .position(|b: &u8| *b == 0)
+        .unwrap_or(window.len());
+    std::str::from_utf8(&window[..stop])
+        .ok()
+        .map(str::to_owned)
+        .filter(|s: &String| !s.is_empty())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportThunk {
+    pub address: u64,
+    pub section: String,
+    pub segment: String,
+    pub slot_index: u32,
+    pub symbol_index: u32,
+    pub name: Option<String>,
+}
+
+#[must_use]
+pub fn import_thunks(slice: &[u8], parsed: &ParsedSlice) -> Vec<ImportThunk> {
+    let (Some(dysymtab), Some(symtab)): (Option<DysymtabInfo>, Option<SymtabInfo>) =
+        (parsed.dysymtab, parsed.symtab)
+    else {
+        return Vec::new();
+    };
+    if dysymtab.indirect_sym_count == 0 {
+        return Vec::new();
+    }
+    let read_u32: ReadU32 = match parsed.header.endian {
+        Endian::Little => u32_le,
+        Endian::Big => u32_be,
+    };
+    let entry_size: usize = match parsed.header.bitness {
+        Bitness::Bits64 => NLIST_64_SIZE,
+        Bitness::Bits32 => NLIST_32_SIZE,
+    };
+    let indirect_base: usize = dysymtab.indirect_sym_off as usize;
+    let indirect_count: usize = (dysymtab.indirect_sym_count as usize).min(MAX_INDIRECT_SYMBOLS);
+    let str_base: usize = symtab.str_off as usize;
+    let str_end: usize = str_base.saturating_add(symtab.str_size as usize);
+    let mut out: Vec<ImportThunk> = Vec::new();
+
+    for segment in &parsed.segments {
+        for section in &segment.sections {
+            let section_type: u32 = section.flags & SECTION_TYPE_MASK;
+            let stride: u64 = match section_type {
+                S_SYMBOL_STUBS => u64::from(section.reserved2),
+                S_LAZY_SYMBOL_POINTERS | S_NON_LAZY_SYMBOL_POINTERS => {
+                    match parsed.header.bitness {
+                        Bitness::Bits64 => 8,
+                        Bitness::Bits32 => 4,
+                    }
+                }
+                _ => continue,
+            };
+            if stride == 0 {
+                continue;
+            }
+            let slot_count: u64 = section.size / stride;
+            for slot in 0..slot_count {
+                let Ok(slot_u32): core::result::Result<u32, _> = u32::try_from(slot) else {
+                    break;
+                };
+                let table_index: usize = match usize::try_from(slot)
+                    .ok()
+                    .and_then(|s: usize| s.checked_add(section.reserved1 as usize))
+                {
+                    Some(index) if index < indirect_count => index,
+                    _ => break,
+                };
+                let Some(entry_off): Option<usize> = table_index
+                    .checked_mul(4)
+                    .and_then(|delta: usize| indirect_base.checked_add(delta))
+                else {
+                    break;
+                };
+                let Ok(symbol_index): Result<u32> = read_u32(slice, entry_off) else {
+                    break;
+                };
+                let name: Option<String> = if symbol_index & INDIRECT_SYMBOL_ABS != 0
+                    || symbol_index & INDIRECT_SYMBOL_LOCAL != 0
+                    || symbol_index >= symtab.num_syms
+                {
+                    None
+                } else {
+                    (symbol_index as usize)
+                        .checked_mul(entry_size)
+                        .and_then(|delta: usize| (symtab.sym_off as usize).checked_add(delta))
+                        .and_then(|off: usize| read_u32(slice, off).ok())
+                        .filter(|strx: &u32| *strx != 0)
+                        .and_then(|strx: u32| str_base.checked_add(strx as usize))
+                        .filter(|name_off: &usize| *name_off < str_end)
+                        .and_then(|name_off: usize| {
+                            read_cstr_bounded(slice, name_off, str_end.min(slice.len()))
+                        })
+                };
+                out.push(ImportThunk {
+                    address: section.addr.saturating_add(slot.saturating_mul(stride)),
+                    section: section.name.clone(),
+                    segment: section.seg.clone(),
+                    slot_index: slot_u32,
+                    symbol_index,
+                    name,
+                });
+            }
+        }
+    }
+    out
 }
 
 #[must_use]

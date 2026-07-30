@@ -63,12 +63,8 @@ mod tests {
                 filetype: 0,
                 flags: 0,
             },
-            segments: Vec::new(),
-            load_commands: Vec::new(),
             encryption,
-            code_signature_off: None,
-            code_signature_size: None,
-            symtab: None,
+            ..ParsedSlice::default()
         }
     }
 
