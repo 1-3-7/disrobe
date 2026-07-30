@@ -239,76 +239,60 @@ pub use loader_generators::{
     recover_loader,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Packer {
-    Donut,
-    Srdi,
-    Upx,
-    AsPack,
-    AsProtect,
-    Petite,
-    Mpress,
-    Fsg,
-    Morphine,
-    PeCompact,
-    YodasCrypter,
-    YodasProtector,
-    NPack,
-    Nspack,
-    NeoLite,
-    Mew,
-    Kkrunchy,
-    PolyCryptor,
-    PeProtector,
-    PeLock,
-    VmProtect,
-    Themida,
-    EnigmaProtector,
-    Armadillo,
-    Obsidium,
-    WinLicense,
-    WarzoneCrypter,
-    DotNetPatcher,
-    NetCryptor,
+macro_rules! packer_families {
+    ($($variant:ident => $label:literal),+ $(,)?) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        #[serde(rename_all = "kebab-case")]
+        pub enum Packer {
+            $($variant,)+
+        }
+
+        impl Packer {
+            pub const ALL: &[Self] = &[$(Self::$variant,)+];
+
+            #[must_use]
+            pub const fn label(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $label,)+
+                }
+            }
+        }
+    };
+}
+
+packer_families! {
+    Donut => "donut",
+    Srdi => "srdi",
+    Upx => "upx",
+    AsPack => "aspack",
+    AsProtect => "asprotect",
+    Petite => "petite",
+    Mpress => "mpress",
+    Fsg => "fsg",
+    Morphine => "morphine",
+    PeCompact => "pecompact",
+    YodasCrypter => "yodas-crypter",
+    YodasProtector => "yodas-protector",
+    NPack => "npack",
+    Nspack => "nspack",
+    NeoLite => "neolite",
+    Mew => "mew",
+    Kkrunchy => "kkrunchy",
+    PolyCryptor => "polycryptor",
+    PeProtector => "pe-protector",
+    PeLock => "pelock",
+    VmProtect => "vmprotect",
+    Themida => "themida",
+    EnigmaProtector => "enigma-protector",
+    Armadillo => "armadillo",
+    Obsidium => "obsidium",
+    WinLicense => "winlicense",
+    WarzoneCrypter => "warzone-crypter",
+    DotNetPatcher => "dotnet-patcher",
+    NetCryptor => "netcryptor",
 }
 
 impl Packer {
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Donut => "donut",
-            Self::Srdi => "srdi",
-            Self::Upx => "upx",
-            Self::AsPack => "aspack",
-            Self::AsProtect => "asprotect",
-            Self::Petite => "petite",
-            Self::Mpress => "mpress",
-            Self::Fsg => "fsg",
-            Self::Morphine => "morphine",
-            Self::PeCompact => "pecompact",
-            Self::YodasCrypter => "yodas-crypter",
-            Self::YodasProtector => "yodas-protector",
-            Self::NPack => "npack",
-            Self::Nspack => "nspack",
-            Self::NeoLite => "neolite",
-            Self::Mew => "mew",
-            Self::Kkrunchy => "kkrunchy",
-            Self::PolyCryptor => "polycryptor",
-            Self::PeProtector => "pe-protector",
-            Self::PeLock => "pelock",
-            Self::VmProtect => "vmprotect",
-            Self::Themida => "themida",
-            Self::EnigmaProtector => "enigma-protector",
-            Self::Armadillo => "armadillo",
-            Self::Obsidium => "obsidium",
-            Self::WinLicense => "winlicense",
-            Self::WarzoneCrypter => "warzone-crypter",
-            Self::DotNetPatcher => "dotnet-patcher",
-            Self::NetCryptor => "netcryptor",
-        }
-    }
-
     #[must_use]
     pub const fn is_grey_zone(self) -> bool {
         matches!(
@@ -878,42 +862,114 @@ fn trim_trailing_nul(bytes: &[u8]) -> &[u8] {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
+
+    const EVERY_PACKER: [Packer; 29] = [
+        Packer::Donut,
+        Packer::Srdi,
+        Packer::Upx,
+        Packer::AsPack,
+        Packer::AsProtect,
+        Packer::Petite,
+        Packer::Mpress,
+        Packer::Fsg,
+        Packer::Morphine,
+        Packer::PeCompact,
+        Packer::YodasCrypter,
+        Packer::YodasProtector,
+        Packer::NPack,
+        Packer::Nspack,
+        Packer::NeoLite,
+        Packer::Mew,
+        Packer::Kkrunchy,
+        Packer::PolyCryptor,
+        Packer::PeProtector,
+        Packer::PeLock,
+        Packer::VmProtect,
+        Packer::Themida,
+        Packer::EnigmaProtector,
+        Packer::Armadillo,
+        Packer::Obsidium,
+        Packer::WinLicense,
+        Packer::WarzoneCrypter,
+        Packer::DotNetPatcher,
+        Packer::NetCryptor,
+    ];
+
+    fn or_none(labels: &[&'static str]) -> String {
+        if labels.is_empty() {
+            "none".to_owned()
+        } else {
+            labels.join(", ")
+        }
+    }
+
+    fn roster_drift(roster: &[Packer]) -> Option<String> {
+        let published: usize = roster.len();
+        let carried: usize = Packer::ALL.len();
+        let mut listed: BTreeSet<&'static str> = BTreeSet::new();
+        let mut repeated: Vec<&'static str> = Vec::new();
+        for packer in roster {
+            if !listed.insert(packer.label()) {
+                repeated.push(packer.label());
+            }
+        }
+        let carried_labels: BTreeSet<&'static str> = Packer::ALL
+            .iter()
+            .map(|packer: &Packer| packer.label())
+            .collect();
+        let absent: Vec<&'static str> = carried_labels.difference(&listed).copied().collect();
+        let unknown: Vec<&'static str> = listed.difference(&carried_labels).copied().collect();
+        if published == carried && absent.is_empty() && unknown.is_empty() && repeated.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "the roster in this file lists {published} packer families and every published packer \
+             total is derived from its length, but the `Packer` enum carries {carried}: README.md \
+             publishes `Packers ({published} families)` and docs/src/catalog.md publishes a \
+             five-tier split summing to {published}, so both pages are stale. Carried by the enum \
+             and absent from the roster: {}. Named by the roster and absent from the enum: {}. \
+             Listed twice: {}. Put every new variant in EVERY_PACKER and in one tier list below \
+             it, then move the two published totals with it.",
+            or_none(&absent),
+            or_none(&unknown),
+            or_none(&repeated),
+        ))
+    }
+
+    #[test]
+    fn the_roster_lists_every_packer_the_enum_carries() {
+        if let Some(report) = roster_drift(&EVERY_PACKER) {
+            panic!("{report}");
+        }
+    }
+
+    #[test]
+    fn a_roster_lagging_the_enum_reports_the_published_total_as_stale() {
+        let lagging: Vec<Packer> = EVERY_PACKER
+            .into_iter()
+            .filter(|packer: &Packer| *packer != Packer::NetCryptor)
+            .collect();
+        let report: String = roster_drift(&lagging)
+            .expect("a roster one variant short of the enum must be reported, not passed over");
+        for expected in [
+            "the roster in this file lists 28 packer families",
+            "the `Packer` enum carries 29",
+            "README.md publishes `Packers (28 families)`",
+            "docs/src/catalog.md publishes a five-tier split summing to 28",
+            "absent from the roster: netcryptor",
+        ] {
+            assert!(
+                report.contains(expected),
+                "the drift report must state `{expected}`, got: {report}"
+            );
+        }
+    }
 
     #[test]
     fn published_tier_counts_match_this_enum() {
-        const EVERY_PACKER: [Packer; 29] = [
-            Packer::Donut,
-            Packer::Srdi,
-            Packer::Upx,
-            Packer::AsPack,
-            Packer::AsProtect,
-            Packer::Petite,
-            Packer::Mpress,
-            Packer::Fsg,
-            Packer::Morphine,
-            Packer::PeCompact,
-            Packer::YodasCrypter,
-            Packer::YodasProtector,
-            Packer::NPack,
-            Packer::Nspack,
-            Packer::NeoLite,
-            Packer::Mew,
-            Packer::Kkrunchy,
-            Packer::PolyCryptor,
-            Packer::PeProtector,
-            Packer::PeLock,
-            Packer::VmProtect,
-            Packer::Themida,
-            Packer::EnigmaProtector,
-            Packer::Armadillo,
-            Packer::Obsidium,
-            Packer::WinLicense,
-            Packer::WarzoneCrypter,
-            Packer::DotNetPatcher,
-            Packer::NetCryptor,
-        ];
-
         const IMPLEMENTED: [&str; 12] = [
             "aspack",
             "donut",
@@ -946,15 +1002,6 @@ mod tests {
             "winlicense",
         ];
         const DELEGATED: [&str; 2] = ["dotnet-patcher", "netcryptor"];
-
-        let mut seen: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
-        for packer in EVERY_PACKER {
-            assert!(
-                seen.insert(packer.label()),
-                "the roster lists {} twice, so a tier tally built from it cannot be trusted",
-                packer.label()
-            );
-        }
 
         let gather = |wanted: UnpackerStatus| -> Vec<&'static str> {
             let mut names: Vec<&'static str> = EVERY_PACKER
