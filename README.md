@@ -40,11 +40,9 @@ Try it in your browser at [`1-3-7.github.io/disrobe/playground`](https://1-3-7.g
 
 ## Coverage
 
-![Recovery rates across ecosystems, scored against independent oracles](docs/assets/recovery.svg)
-
 | Ecosystem | Tier | Headline measured figure | Oracle | Guide |
 |---|---|---|---|---|
-| Python bytecode | Recover | <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> per code object | strong `[CI]` | [python](docs/src/languages/python.md) |
+| Python bytecode | Recover | <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> per code object, 54.5% whole module | strong `[CI]` | [python](docs/src/languages/python.md) |
 | PyArmor | Recover | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> free-mode samples | strong `[CI]` | [python](docs/src/languages/python.md) |
 | Python pickle | Recover | 340 / 340 re-execute equal | strong `[CI]` | [pickle](docs/src/languages/pickle.md) |
 | JVM classfile | Recover | 131 / 131 methods recompile | recompile-only `[CI]` | [jvm](docs/src/languages/jvm-android.md) |
@@ -69,7 +67,7 @@ Try it in your browser at [`1-3-7.github.io/disrobe/playground`](https://1-3-7.g
 | Shell, VBA, XLM | Recover | PowerShell, bash, batch, VBA, Excel 4.0 | pass-gated | [shell](docs/src/languages/shell.md) |
 | Perl, R, Tcl | Partial | op-tree, `.rds` round-trip, starkit | pass-gated | [scriptlang](docs/src/languages/shell.md) |
 | Nim, Zig, Crystal, D | Partial | demangle plus DWARF aggregates | pass-gated | [native](docs/src/languages/native.md) |
-| Containers, firmware | Recover | <!-- m:containers_frac -->100 / 100<!-- /m --> formats extract in-tree | strong `[CI]` | [containers](docs/src/languages/containers.md) |
+| Containers, firmware | Recover | <!-- m:containers_frac -->100 / 100<!-- /m --> formats write member bytes, self-counted | self-reported `[CI]` | [containers](docs/src/languages/containers.md) |
 | Recon, secrets, format ID | Recover | 6 / 6 planted IOC categories | strong `[CI]` | [frisk](docs/src/frisk.md) |
 
 A row's tier is the strongest level any family in that ecosystem reaches, not a promise for every family in it. **Recover** means real recovered output, source or bytes or structure, on the run path. **Partial** means a structural peel or constants only, with the residual stated. **Detect-only** means identification plus a stated reason the rest is not statically present, which is a legitimate triage result rather than a failure. Per-family tiers are in the linked guide and in `disrobe catalog [ecosystem]`, which prints the roster the binary itself carries. Breadth and depth are separate axes: `disrobe identify` and `disrobe catalog` span the full ecosystem list, while recovery depth per family runs from full source recovery down to detect-only.
