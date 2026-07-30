@@ -332,23 +332,32 @@ fn records(root: &Path, tracked: &BTreeSet<String>) -> Result<Vec<Record>> {
     Ok(collected)
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct Reach {
+    pub(crate) unresolved: usize,
+    pub(crate) declared_untracked: usize,
+    pub(crate) fixtures_inspected: usize,
+}
+
 fn contradictions(
     records: &[Record],
     sources: &BTreeMap<String, String>,
     index: &BTreeMap<String, Vec<String>>,
     tracked: &BTreeSet<String>,
-) -> (Vec<Finding>, usize) {
+) -> (Vec<Finding>, Reach) {
     let mut found: Vec<Finding> = Vec::new();
-    let mut unresolved: usize = 0;
+    let mut reach: Reach = Reach::default();
     for record in records {
         let cited: Vec<String> = cited_test_paths(&record.citation, index);
         if cited.is_empty() {
-            unresolved += 1;
+            reach.unresolved += 1;
             continue;
         }
         if record.citation.contains(UNTRACKED_DECLARATION) {
+            reach.declared_untracked += 1;
             continue;
         }
+        reach.fixtures_inspected += 1;
         let mut named: Vec<(String, String)> = Vec::new();
         for test in &cited {
             let Some(source): Option<&String> = sources.get(test) else {
@@ -381,7 +390,7 @@ fn contradictions(
             }
         }
     }
-    (found, unresolved)
+    (found, reach)
 }
 
 fn read_cited_sources(
@@ -408,15 +417,27 @@ pub(crate) fn run(root: &Path) -> Result<()> {
     let index: BTreeMap<String, Vec<String>> = test_index(&tracked);
     let rows: Vec<Record> = records(root, &tracked)?;
     let sources: BTreeMap<String, String> = read_cited_sources(root, &rows, &index)?;
-    let (found, unresolved): (Vec<Finding>, usize) =
-        contradictions(&rows, &sources, &index, &tracked);
+    let (found, reach): (Vec<Finding>, Reach) = contradictions(&rows, &sources, &index, &tracked);
 
     if found.is_empty() {
+        let coverage: String = if reach.fixtures_inspected == 0 {
+            "no row reached fixture inspection at all, so this check currently proves nothing about \
+             whether a tagged figure reads a committed input"
+                .to_owned()
+        } else {
+            format!(
+                "{} had their cited test's named fixtures inspected and every one of those reads an \
+                 untracked input",
+                reach.fixtures_inspected
+            )
+        };
         println!(
-            "xtask regen: local-tag reproducibility cross-check ok ({} row(s) tagged `[local]` with no `[CI]` leg beside them; {} cite a test whose named fixture paths are all untracked, and {} cite no test target this check can resolve)",
+            "xtask regen: local-tag reproducibility cross-check ok ({} row(s) tagged `[local]` with \
+             no `[CI]` leg beside them; {} cite no test target this check can resolve and {} declare \
+             the input untracked in the citation itself. {coverage})",
             rows.len(),
-            rows.len().saturating_sub(unresolved),
-            unresolved
+            reach.unresolved,
+            reach.declared_untracked
         );
         Ok(())
     } else {
@@ -434,10 +455,12 @@ pub(crate) fn run(root: &Path) -> Result<()> {
             })
             .collect();
         bail!(
-            "{} published row(s) tagged `[local]` cite a test that reads a git-tracked fixture ({} row(s) inspected, {} cite no resolvable test target):\n  {}",
+            "{} published row(s) tagged `[local]` cite a test that reads a git-tracked fixture ({} \
+             row(s) tagged, {} had fixtures inspected, {} cite no resolvable test target):\n  {}",
             found.len(),
             rows.len(),
-            unresolved,
+            reach.fixtures_inspected,
+            reach.unresolved,
             listed.join("\n  ")
         )
     }
@@ -613,9 +636,22 @@ mod tests {
         let tracked: BTreeSet<String> =
             tracked_set(&["corpus/mobile/macho-mac/SwiftHello.original"]);
 
-        let (found, unresolved): (Vec<Finding>, usize) =
+        let (found, reach): (Vec<Finding>, Reach) =
             contradictions(&rows, &sources, &index, &tracked);
-        assert_eq!(unresolved, 1, "the python-harness row resolves to no test");
+        assert_eq!(
+            reach.unresolved, 1,
+            "the python-harness row resolves to no test"
+        );
+        assert_eq!(
+            reach.fixtures_inspected, 2,
+            "both resolvable rows must reach fixture inspection rather than be counted as if \
+             they had"
+        );
+        assert!(
+            reach.fixtures_inspected > found.len(),
+            "one inspected row is clean and one contradicts, which is what separates a row \
+             whose fixtures were read and found untracked from a row nothing ever looked at"
+        );
         assert_eq!(found.len(), 1, "only the tracked-fixture row contradicts");
         assert_eq!(found[0].label, "Swift symbol demangle");
         assert_eq!(found[0].named, "corpus/mobile/macho-mac");
@@ -646,12 +682,12 @@ mod tests {
         )]);
 
         let with_corpus: BTreeSet<String> = tracked_set(&["corpus/python/pyarmor/v8/wrapper.py"]);
-        let (flagged, _): (Vec<Finding>, usize) =
+        let (flagged, _): (Vec<Finding>, Reach) =
             contradictions(&rows, &sources, &index, &with_corpus);
         assert_eq!(flagged.len(), 1);
 
         let without_corpus: BTreeSet<String> = tracked_set(&["crates/p/tests/x.rs"]);
-        let (clean, _): (Vec<Finding>, usize) =
+        let (clean, _): (Vec<Finding>, Reach) =
             contradictions(&rows, &sources, &index, &without_corpus);
         assert!(
             clean.is_empty(),
