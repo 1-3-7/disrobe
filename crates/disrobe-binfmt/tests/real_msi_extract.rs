@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -6,22 +7,10 @@ use std::process::Command;
 use disrobe_binfmt::container::ContainerKind;
 use disrobe_binfmt::extract::{ExtractedEntry, ExtractionResult, extract_to};
 
-fn which(tool: &str) -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path) {
-            for ext in ["", ".exe"] {
-                let candidate: PathBuf = dir.join(format!("{tool}{ext}"));
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-    None
-}
+use common::requirement::{WIX, find_on_path, unmeasured};
 
 fn find_wix() -> Option<PathBuf> {
-    if let Some(found) = which("wix") {
+    if let Some(found) = find_on_path("wix") {
         return Some(found);
     }
     if cfg!(windows) {
@@ -117,7 +106,12 @@ fn push_line(out: &mut String, line: &str) {
 #[test]
 fn real_msi_embedded_cab_round_trips() {
     let Some(wix): Option<PathBuf> = find_wix() else {
-        eprintln!("skipping real_msi_embedded_cab_round_trips: WiX not installed");
+        unmeasured(
+            &WIX,
+            "byte-exact recovery of the cabinet embedded in an installer built by the \
+             real WiX toolset",
+            "no wix binary is on PATH or in the standard install directories",
+        );
         return;
     };
     let scratch: disrobe_core::scratch::ScratchDir =

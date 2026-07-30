@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -6,6 +7,8 @@ use std::process::Command;
 use disrobe_binfmt::container::{ContainerKind, detect_container};
 use disrobe_binfmt::extract::{ExtractedEntry, ExtractionResult, extract_to_with_quota};
 use disrobe_binfmt::quota::ExtractionQuota;
+
+use common::requirement::{MAKECAB, find_on_path, unmeasured};
 
 const fn bounded_quota() -> ExtractionQuota {
     ExtractionQuota {
@@ -15,22 +18,8 @@ const fn bounded_quota() -> ExtractionQuota {
     }
 }
 
-fn which(tool: &str) -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path) {
-            for ext in ["", ".exe"] {
-                let candidate: PathBuf = dir.join(format!("{tool}{ext}"));
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-    None
-}
-
 fn find_makecab() -> Option<PathBuf> {
-    if let Some(found) = which("makecab") {
+    if let Some(found) = find_on_path("makecab") {
         return Some(found);
     }
     if cfg!(windows) {
@@ -152,7 +141,11 @@ fn assert_round_trip(cab_bytes: &[u8], originals: &[(String, Vec<u8>)], label: &
 #[test]
 fn real_cab_mszip_round_trips() {
     let Some(makecab): Option<PathBuf> = find_makecab() else {
-        eprintln!("skipping real_cab_mszip_round_trips: makecab not installed");
+        unmeasured(
+            &MAKECAB,
+            "byte-exact recovery of an MSZIP cabinet built by the real Microsoft cabinet writer",
+            "makecab is not on PATH and not in System32",
+        );
         return;
     };
     let scratch: disrobe_core::scratch::ScratchDir =
@@ -180,7 +173,11 @@ fn real_cab_mszip_round_trips() {
 #[test]
 fn real_cab_stored_round_trips() {
     let Some(makecab): Option<PathBuf> = find_makecab() else {
-        eprintln!("skipping real_cab_stored_round_trips: makecab not installed");
+        unmeasured(
+            &MAKECAB,
+            "byte-exact recovery of a stored cabinet built by the real Microsoft cabinet writer",
+            "makecab is not on PATH and not in System32",
+        );
         return;
     };
     let scratch: disrobe_core::scratch::ScratchDir =
@@ -208,7 +205,12 @@ fn real_cab_stored_round_trips() {
 #[test]
 fn real_cab_lzx_round_trips_or_walls_honestly() {
     let Some(makecab): Option<PathBuf> = find_makecab() else {
-        eprintln!("skipping real_cab_lzx_round_trips_or_walls_honestly: makecab not installed");
+        unmeasured(
+            &MAKECAB,
+            "the LZX cabinet outcome, which must be either byte-exact recovery or a structured \
+             refusal",
+            "makecab is not on PATH and not in System32",
+        );
         return;
     };
     let scratch: disrobe_core::scratch::ScratchDir =

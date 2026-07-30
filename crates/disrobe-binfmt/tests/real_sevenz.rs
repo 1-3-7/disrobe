@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -6,6 +7,8 @@ use std::process::Command;
 use disrobe_binfmt::container::ContainerKind;
 use disrobe_binfmt::extract::{ExtractedEntry, ExtractionResult, extract_to_with_quota};
 use disrobe_binfmt::quota::ExtractionQuota;
+
+use common::requirement::{SEVEN_ZIP, find_on_path, unmeasured};
 
 const fn bounded_quota() -> ExtractionQuota {
     ExtractionQuota {
@@ -15,23 +18,9 @@ const fn bounded_quota() -> ExtractionQuota {
     }
 }
 
-fn which(tool: &str) -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path) {
-            for ext in ["", ".exe"] {
-                let candidate: PathBuf = dir.join(format!("{tool}{ext}"));
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-    None
-}
-
 fn find_seven_zip() -> Option<PathBuf> {
     for name in ["7z", "7za", "7zz", "7zr"] {
-        if let Some(found) = which(name) {
+        if let Some(found) = find_on_path(name) {
             return Some(found);
         }
     }
@@ -140,7 +129,12 @@ fn assert_round_trip(archive_bytes: &[u8], originals: &[(String, Vec<u8>)], labe
 #[test]
 fn real_sevenz_lzma2_round_trips() {
     let Some(seven_zip): Option<PathBuf> = find_seven_zip() else {
-        eprintln!("skipping real_sevenz_lzma2_round_trips: 7-Zip not installed");
+        unmeasured(
+            &SEVEN_ZIP,
+            "byte-exact recovery of a LZMA2 7z archive built by the real 7-Zip writer",
+            "no 7z, 7za, 7zz or 7zr binary is on PATH or in the standard install \
+             directories",
+        );
         return;
     };
     let scratch: disrobe_core::scratch::ScratchDir =
@@ -150,7 +144,11 @@ fn real_sevenz_lzma2_round_trips() {
     let originals: Vec<(String, Vec<u8>)> = seed_files(&seed_dir);
     let archive: PathBuf = seed_dir.join("out_lzma2.7z");
     if !build_archive(&seven_zip, &seed_dir, &archive, "LZMA2") {
-        eprintln!("skipping real_sevenz_lzma2_round_trips: 7-Zip could not build the archive");
+        unmeasured(
+            &SEVEN_ZIP,
+            "byte-exact recovery of a LZMA2 7z archive built by the real 7-Zip writer",
+            "the located 7-Zip binary did not produce the reference archive",
+        );
         return;
     }
     let bytes: Vec<u8> = std::fs::read(&archive).expect("read archive");
@@ -160,7 +158,12 @@ fn real_sevenz_lzma2_round_trips() {
 #[test]
 fn real_sevenz_lzma_round_trips() {
     let Some(seven_zip): Option<PathBuf> = find_seven_zip() else {
-        eprintln!("skipping real_sevenz_lzma_round_trips: 7-Zip not installed");
+        unmeasured(
+            &SEVEN_ZIP,
+            "byte-exact recovery of a LZMA 7z archive built by the real 7-Zip writer",
+            "no 7z, 7za, 7zz or 7zr binary is on PATH or in the standard install \
+             directories",
+        );
         return;
     };
     let scratch: disrobe_core::scratch::ScratchDir =
@@ -170,7 +173,11 @@ fn real_sevenz_lzma_round_trips() {
     let originals: Vec<(String, Vec<u8>)> = seed_files(&seed_dir);
     let archive: PathBuf = seed_dir.join("out_lzma.7z");
     if !build_archive(&seven_zip, &seed_dir, &archive, "LZMA") {
-        eprintln!("skipping real_sevenz_lzma_round_trips: 7-Zip could not build the archive");
+        unmeasured(
+            &SEVEN_ZIP,
+            "byte-exact recovery of a LZMA 7z archive built by the real 7-Zip writer",
+            "the located 7-Zip binary did not produce the reference archive",
+        );
         return;
     }
     let bytes: Vec<u8> = std::fs::read(&archive).expect("read archive");
@@ -180,7 +187,12 @@ fn real_sevenz_lzma_round_trips() {
 #[test]
 fn real_sevenz_stored_round_trips() {
     let Some(seven_zip): Option<PathBuf> = find_seven_zip() else {
-        eprintln!("skipping real_sevenz_stored_round_trips: 7-Zip not installed");
+        unmeasured(
+            &SEVEN_ZIP,
+            "byte-exact recovery of a stored 7z archive built by the real 7-Zip writer",
+            "no 7z, 7za, 7zz or 7zr binary is on PATH or in the standard install \
+             directories",
+        );
         return;
     };
     let scratch: disrobe_core::scratch::ScratchDir =
@@ -190,7 +202,11 @@ fn real_sevenz_stored_round_trips() {
     let originals: Vec<(String, Vec<u8>)> = seed_files(&seed_dir);
     let archive: PathBuf = seed_dir.join("out_copy.7z");
     if !build_archive(&seven_zip, &seed_dir, &archive, "Copy") {
-        eprintln!("skipping real_sevenz_stored_round_trips: 7-Zip could not build the archive");
+        unmeasured(
+            &SEVEN_ZIP,
+            "byte-exact recovery of a stored 7z archive built by the real 7-Zip writer",
+            "the located 7-Zip binary did not produce the reference archive",
+        );
         return;
     }
     let bytes: Vec<u8> = std::fs::read(&archive).expect("read archive");
