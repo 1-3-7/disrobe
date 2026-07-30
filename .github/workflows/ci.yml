@@ -233,6 +233,30 @@ jobs:
         run: |
           erl -noshell -eval 'io:format("otp ~s~n",[erlang:system_info(otp_release)]),halt().'
           erlc -v
+      - name: provision the installer and elf toolchains so their round trips run instead of returning early
+        shell: bash
+        run: |
+          demand() {
+            probe="$1"
+            var="$2"
+            if ! command -v "$probe" >/dev/null 2>&1; then
+              echo "$probe is not callable after provisioning, so the tests behind $var would grade nothing"
+              exit 1
+            fi
+            ("$probe" --version 2>&1 || true) | head -1
+            echo "$var=1" >> "$GITHUB_ENV"
+          }
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            dotnet tool install --global wix || dotnet tool update --global wix
+            export PATH="$HOME/.dotnet/tools:$PATH"
+            demand wix DISROBE_REQUIRE_WIX
+          fi
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            demand readelf DISROBE_REQUIRE_READELF
+            sudo apt-get update
+            sudo apt-get install -y nsis
+            demand makensis DISROBE_REQUIRE_MAKENSIS
+          fi
       - run: cargo test --workspace --all-features
       - name: stage this OS leg's cross-platform determinism hash file
         shell: bash
