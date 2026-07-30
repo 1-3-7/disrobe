@@ -71,21 +71,24 @@ pub fn recover_detected(packed: &[u8], detections: &[Detection]) -> Vec<Recovere
     out
 }
 
-fn recover_one(packed: &[u8], packer: Packer) -> Option<RecoveredImage> {
-    crate::debug::dbg_kv("recover", || format!("dispatch {}", packer.label()));
+pub type RecoveryRoute = fn(&[u8]) -> Option<RecoveredImage>;
+
+#[must_use]
+pub const fn recovery_route(packer: Packer) -> Option<RecoveryRoute> {
     match packer {
-        Packer::Donut | Packer::Srdi => recover_loader_generator(packed, packer),
-        Packer::Upx => recover_upx(packed),
-        Packer::Fsg => recover_fsg(packed),
-        Packer::Petite => recover_petite(packed),
-        Packer::Mpress => recover_mpress(packed),
-        Packer::Nspack => recover_nspack(packed),
-        Packer::Mew => recover_mew(packed),
-        Packer::Kkrunchy => recover_kkrunchy(packed),
-        Packer::AsPack => recover_aspack(packed),
-        Packer::PeCompact => recover_pecompact(packed),
-        Packer::VmProtect => recover_vmprotect_carve(packed),
-        Packer::Themida => recover_themida_carve(packed),
+        Packer::Donut => Some(recover_donut),
+        Packer::Srdi => Some(recover_srdi),
+        Packer::Upx => Some(recover_upx),
+        Packer::Fsg => Some(recover_fsg),
+        Packer::Petite => Some(recover_petite),
+        Packer::Mpress => Some(recover_mpress),
+        Packer::Nspack => Some(recover_nspack),
+        Packer::Mew => Some(recover_mew),
+        Packer::Kkrunchy => Some(recover_kkrunchy),
+        Packer::AsPack => Some(recover_aspack),
+        Packer::PeCompact => Some(recover_pecompact),
+        Packer::VmProtect => Some(recover_vmprotect_carve),
+        Packer::Themida => Some(recover_themida_carve),
         Packer::YodasCrypter
         | Packer::AsProtect
         | Packer::Morphine
@@ -103,6 +106,20 @@ fn recover_one(packed: &[u8], packer: Packer) -> Option<RecoveredImage> {
         | Packer::WinLicense
         | Packer::YodasProtector => None,
     }
+}
+
+fn recover_one(packed: &[u8], packer: Packer) -> Option<RecoveredImage> {
+    crate::debug::dbg_kv("recover", || format!("dispatch {}", packer.label()));
+    let route: RecoveryRoute = recovery_route(packer)?;
+    route(packed)
+}
+
+fn recover_donut(packed: &[u8]) -> Option<RecoveredImage> {
+    recover_loader_generator(packed, Packer::Donut)
+}
+
+fn recover_srdi(packed: &[u8]) -> Option<RecoveredImage> {
+    recover_loader_generator(packed, Packer::Srdi)
 }
 
 fn recover_loader_generator(packed: &[u8], packer: Packer) -> Option<RecoveredImage> {
@@ -488,7 +505,7 @@ impl From<CarvedVmpSection> for CarvedSectionArtifact {
     }
 }
 
-fn status_emits_recovered_image(status: UnpackerStatus) -> bool {
+pub(crate) const fn status_emits_recovered_image(status: UnpackerStatus) -> bool {
     matches!(
         status,
         UnpackerStatus::Implemented | UnpackerStatus::GreyZoneDetectAndCarve

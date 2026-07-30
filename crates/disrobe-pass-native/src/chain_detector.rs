@@ -645,6 +645,8 @@ impl ObfuscatorCatalog for PackerDetector {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     #[test]
@@ -819,60 +821,45 @@ mod tests {
         );
     }
 
+    fn dispatch_arm_is_wired(packer: Packer) -> bool {
+        let a: Artifact = Artifact::new(Rung::Raw, vec![0u8; 256], [0u8; 32]);
+        match run_rust_unpacker(packer, &a) {
+            Ok(_) => true,
+            Err(e) => !format!("{e}").contains("DR-NAT-0914"),
+        }
+    }
+
     #[test]
-    fn every_implemented_packer_has_a_dispatch_arm() {
-        let implemented: [Packer; 12] = [
-            Packer::Donut,
-            Packer::Srdi,
-            Packer::Upx,
-            Packer::Petite,
-            Packer::Nspack,
-            Packer::Mew,
-            Packer::Fsg,
-            Packer::Mpress,
-            Packer::YodasCrypter,
-            Packer::AsPack,
-            Packer::PeCompact,
-            Packer::Kkrunchy,
-        ];
-        for p in implemented {
+    fn dispatch_arms_cover_exactly_the_implemented_packers() {
+        for packer in Packer::ALL {
+            let implemented: bool = packer.unpacker_status() == UnpackerStatus::Implemented;
             assert_eq!(
-                p.unpacker_status(),
-                UnpackerStatus::Implemented,
-                "{} must be Implemented for CLI dispatch",
-                p.label()
-            );
-            let a: Artifact = Artifact::new(Rung::Raw, vec![0u8; 256], [0u8; 32]);
-            let msg: String = match dispatch_unpack(p, &a) {
-                Ok(_) => continue,
-                Err(e) => format!("{e}"),
-            };
-            assert!(
-                !msg.contains("DR-NAT-0914"),
-                "{} must have a real dispatch arm, not the missing-arm guard; got: {msg}",
-                p.label()
+                dispatch_arm_is_wired(*packer),
+                implemented,
+                "{label} is {status:?} and run_rust_unpacker {has} an arm for it. An Implemented \
+                 packer without an arm reports the missing-arm guard to a user instead of \
+                 unpacking; an arm on any other tier is unreachable code whose recovery no \
+                 published tier credits",
+                label = packer.label(),
+                status = packer.unpacker_status(),
+                has = if implemented { "has no" } else { "has" },
             );
         }
     }
 
     #[test]
     fn stub_eval_pending_packers_report_detected_not_fabricated_success() {
-        let stub_eval_pending: [Packer; 6] = [
-            Packer::AsProtect,
-            Packer::Morphine,
-            Packer::NPack,
-            Packer::NeoLite,
-            Packer::PolyCryptor,
-            Packer::WarzoneCrypter,
-        ];
+        let stub_eval_pending: Vec<Packer> = Packer::ALL
+            .iter()
+            .copied()
+            .filter(|p: &Packer| p.unpacker_status() == UnpackerStatus::StubEvalPending)
+            .collect();
+        assert!(
+            !stub_eval_pending.is_empty(),
+            "the stub-eval-pending tier is published with a count of its own; an empty filter here \
+             would check nothing"
+        );
         for p in stub_eval_pending {
-            assert_eq!(
-                p.unpacker_status(),
-                UnpackerStatus::StubEvalPending,
-                "{} is stub-eval pending: emulator validated on a synthetic stub, real-sample \
-                 recovery unproven",
-                p.label()
-            );
             let a: Artifact = Artifact::new(Rung::Raw, vec![0u8; 256], [0u8; 32]);
             let msg: String = match dispatch_unpack(p, &a) {
                 Ok(_) => panic!("{} must not report a recovery success", p.label()),
@@ -880,7 +867,8 @@ mod tests {
             };
             assert!(
                 msg.contains("DR-NAT-0902") && msg.contains("real packed-sample recovery unproven"),
-                "{} must surface the honest stub-eval-pending error; got: {msg}",
+                "{} must surface the stub-eval-pending error stating recovery is unproven; got: \
+                 {msg}",
                 p.label()
             );
         }
@@ -989,6 +977,40 @@ mod tests {
             .find(|e| e.id() == "vmprotect")
             .expect("vmprotect in catalog");
         assert_eq!(vmp.support_quality(), SupportQuality::DetectOnly);
+    }
+
+    #[test]
+    fn the_catalog_advertises_exactly_the_packers_this_pass_owns() {
+        let owned: BTreeSet<&'static str> = Packer::ALL
+            .iter()
+            .filter(|packer: &&Packer| {
+                packer.unpacker_status() != UnpackerStatus::DelegatedToDotnet
+            })
+            .map(|packer: &Packer| packer.label())
+            .collect();
+        let advertised: BTreeSet<&'static str> = CATALOG
+            .iter()
+            .map(|entry: &PackerEntry| entry.packer.label())
+            .collect();
+        let unadvertised: Vec<&'static str> = owned.difference(&advertised).copied().collect();
+        let disowned: Vec<&'static str> = advertised.difference(&owned).copied().collect();
+        assert!(
+            unadvertised.is_empty() && disowned.is_empty(),
+            "`disrobe catalog native` prints this catalog and {CATALOG_COUNT} is published as its \
+             size, so it must hold every packer this pass owns, which is the `Packer` enum minus \
+             the managed wrappers the .NET pass owns. Owned but never advertised: {unadvertised:?}. \
+             Advertised but not owned: {disowned:?}"
+        );
+        assert_eq!(
+            CATALOG.len(),
+            advertised.len(),
+            "one packer holds two catalog entries, so CATALOG_COUNT counts a family twice"
+        );
+        assert_eq!(
+            CATALOG_COUNT,
+            owned.len(),
+            "CATALOG_COUNT is the number docs/src/catalog.md publishes for this pass"
+        );
     }
 
     #[test]
