@@ -249,6 +249,7 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then
             dotnet tool install --global wix || dotnet tool update --global wix
             export PATH="$HOME/.dotnet/tools:$PATH"
+            echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
             demand wix DISROBE_REQUIRE_WIX
           fi
           if [ "$RUNNER_OS" = "Linux" ]; then
