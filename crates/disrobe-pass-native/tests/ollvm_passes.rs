@@ -131,7 +131,7 @@ fn ollvm_substitution_folds_self_authored_sequence_back_to_addition() {
 }
 
 #[test]
-fn ollvm_substitution_folds_shift_encoded_carry_back_to_addition() {
+fn ollvm_substitution_folds_assembled_shift_encoded_carry_back_to_addition() {
     let mut asm: CodeAssembler = CodeAssembler::new(64).expect("assembler");
     asm.mov(ecx, esi).unwrap();
     asm.xor(ecx, edx).unwrap();
@@ -154,7 +154,7 @@ fn ollvm_substitution_folds_shift_encoded_carry_back_to_addition() {
 }
 
 #[test]
-fn ollvm_substitution_folds_through_movzx_loaded_operands() {
+fn ollvm_substitution_folds_through_assembled_movzx_sub_register_operands() {
     let mut asm: CodeAssembler = CodeAssembler::new(64).expect("assembler");
     asm.movzx(eax, cl).unwrap();
     asm.mov(edx, eax).unwrap();
