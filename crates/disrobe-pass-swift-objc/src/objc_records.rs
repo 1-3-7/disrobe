@@ -411,11 +411,7 @@ mod tests {
                 filesize: 0x1000,
                 sections: Vec::<Section>::new(),
             }],
-            load_commands: Vec::new(),
-            encryption: None,
-            code_signature_off: None,
-            code_signature_size: None,
-            symtab: None,
+            ..ParsedSlice::default()
         }
     }
 
