@@ -40,11 +40,15 @@ method with verbatim code, and an evaluation graded by an independent oracle, wi
 limitations stated beside the results rather than in a footnote.
 
 Every number in this document is read directly from committed sources, a committed test, a
-committed data file, or a commit in the repository's own history; none is estimated. Figures
-are per code object, per method, or per function unless stated otherwise. Where a measurement
+committed data file, or a commit in the repository's own history; none is estimated. The one
+exception is called out where it appears: the 54.5% whole-module Python rate is a harness output that
+no committed file records the count for. Figures
+are per code object, per method, or per function unless stated otherwise, and a percentage is given
+with the counts behind it wherever those counts exist. Where a measurement
 depends on a compiler's code generation, the number reported is a CI-enforced floor set below
 the locally observed value, because a floor has to hold on a slower machine and a narrower
-toolchain than a development box.
+toolchain than a development box. Section 4.4.4 lists what each figure needs beyond a clone of the
+repository, because a floor whose input or toolchain is absent skips rather than measuring.
 
 Two terms recur. Recompile-equivalence always means grading against a real, independent
 toolchain that disrobe does not control, never against disrobe's re-emission of its own
@@ -99,7 +103,7 @@ Native decompilers. Ghidra, RetDec, and Hex-Rays lift machine code to C-like pse
 native path in Section 2 differs in emission and in grading: recovered code is built as a typed
 AST whose parenthesization and C declarator grouping are computed once from the grammar
 (Section 2.1 sets out why string-concatenation emission is unsound), and it is validated by a
-recompile-execute-differential oracle that links the recovered function against the original
+recompile-execute-diff oracle that links the recovered function against the original
 object and refuses any input it cannot soundly lift.
 
 .NET deobfuscation and devirtualization. de4dot cleans many .NET protectors, and
@@ -980,9 +984,15 @@ crate's own provenance record labels the full-stdlib number as "the honest repre
 200-module pinned corpus over-represents recoverable modules)".
 
 The whole-module exact figure, where a module counts only if every one of its code objects is
-equivalent, is 54.5%, and it is measured only on the pinned 200-module corpus. That figure is a local
-measurement: the gate reads the harness's `module_pct` field and prints it, but no floor asserts it,
-so unlike the per-object rate it is not CI-enforced. There is no
+equivalent, is 54.5% of the <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules in the pinned corpus, and it is measured only on that corpus.
+That figure is weaker evidence than the per-object one in two ways. It is a local measurement: the
+gate reads the harness's `module_pct` field and prints it, but no floor asserts it, so unlike the
+per-object rate it is not CI-enforced. It is also the one figure in this paper with no numerator on
+record: the harness computes `module_pct` as a rounded percentage
+(`tests/harness/py_arbitrary_measure.py`, the JSON summary), the gate prints it without storing the
+module count behind it, and no committed data file publishes that count, so the figure is
+reproducible by re-running the harness but is not readable from a data file the way the per-object
+counts are. There is no
 full-stdlib whole-module figure; since the pinned corpus over-represents recoverable modules, the
 full-stdlib whole-module rate would be lower still, not higher. The gap between the <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per-object
 rate and the 54.5% per-module rate is the honest center of the evaluation, not a footnote, and the
@@ -1017,6 +1027,21 @@ const OBJECT_PCT_FLOOR: f64 = 96.60;
 
 The floor is pinned at the measured figure rather than a round number below it, so the gate has no
 slack to absorb a regression in silence.
+
+Reproducing the pinned figure takes two commands and one interpreter. Build the CLI the harness
+drives, then run the gate, which prints the full per-object and per-module breakdown on the way to
+its assertion:
+
+```bash
+cargo build --release -p disrobe-cli --bin disrobe
+cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate -- --nocapture
+```
+
+CPython 3.14 must be resolvable, because the gate recompiles through the real interpreter and refuses
+to run without it; CI provisions it with `uv python install 3.14`
+(`.github/workflows/ci.yml`, the `py-recompile-gate` job, which is where these two commands are taken
+from). The full-stdlib figure comes from the same harness pointed at
+`tests/harness/full_modules_314.txt` instead of the pinned list.
 
 The legacy line has its own gate over a corpus of 191 vendored fixtures spanning 1.x through 3.x. It
 grades by a two-verdict union: recompile-equivalence for versions with an available interpreter, and
@@ -1122,7 +1147,7 @@ design principle that separates this path from a string-concatenating printer is
 that no target-language text is ever produced by concatenating strings whose meaning
 depends on the reader guessing operator binding. Every emitted construct passes through a
 typed abstract syntax tree with a single precedence authority, and the recovered source is
-graded against the original binary by a recompile-execute-differential oracle that treats a
+graded against the original binary by a recompile-execute-diff oracle that treats a
 non-recoverable input as an honest skip rather than a silent pass.
 
 This section documents the emission substrate (`disrobe-emit`), the lift that feeds it
@@ -1247,6 +1272,12 @@ generated cases in both minimal and full parenthesization modes. A precedence bu
 dropped or misplaced a parenthesis would change the reparsed tree and fail the round trip.
 A companion invariant asserts that minimal-mode output is never longer than full-mode
 output, so the minimal policy cannot secretly over-parenthesize.
+
+The limit of this guarantee is the boundary of the typed AST. It holds for every operand the emitter
+routes through `parenthesize_operand`, which is every operand of every node the emitter constructs.
+It says nothing about text that reaches the printer already rendered: the native lift splices some
+composite subexpressions in as pre-rendered fragments, and those are covered by a different and
+cruder mechanism, unconditional parentheses at the splice point, described in Section 2.5.
 
 ### 2.3 The C AST and the inside-out declarator
 
@@ -1494,10 +1525,13 @@ The guard `if src.width >= dest.width { return None; }` (and its memory-operand 
 soundness check, not an optimization: a widening move whose source is not strictly narrower
 than its destination is not the extension idiom being modeled, so the lifter declines to
 lift it rather than emit a guess. The `signed` flag is carried into `Stmt::Extend` and later
-realized by `extend_expr` (`pseudo_c.rs`), which builds the exact mask-and-cast chain
-in the typed C AST: it masks the source to its width, casts through the signed or unsigned
-integer type of the source width, then to the destination width, then back to a 64-bit
-unsigned storage value. Sign correctness of a recovered `movsx` versus `movzx` is therefore
+realized by `extend_expr` (`pseudo_c.rs`), which builds the mask-and-cast chain
+in the typed C AST. Both chains start by masking the source to its own width, and they differ
+after that, because a zero-extend needs no signed step. Unsigned is two casts, `uint{src}_t`
+then `uint{dest}_t`. Signed is three, `int{src}_t` to carry the sign, then `int{dest}_t` to
+widen it, then `uint{dest}_t` as the storage type. The final cast is to the unsigned type of
+the destination width, which is 64-bit only when the destination is, so a `movzx eax, bl`
+ends at `uint32_t`. Sign correctness of a recovered `movsx` versus `movzx` is therefore
 a single boolean threaded from decode to the typed cast, and the oracle in Section 2.6 has a
 dedicated teeth test that flips it.
 
@@ -1624,10 +1658,13 @@ float arithmetic, min/max, square root, rounding, bitcast, dense and floating-po
 tables, block move and fill, `setcc`, stack spills, and struct returns). The C oracle file
 contains 102 `#[test]` functions and the Rust oracle file
 (`crates/disrobe-pass-native/tests/pseudo_rust_leaf_oracle.rs`) contains 12; these are
-backed in the emission crate by the precedence and declarator property oracles (roughly a
-half-dozen golden and property tests across `c_precedence.rs` and `c_cc_oracle.rs`,
-including the `with_cases(64)` declarator proptest) and by 2 render-reparse fixpoint
-proptests in `rust_roundtrip.rs`. Both the MS x64 and the System V ABIs are exercised, with
+backed in the emission crate by 7 precedence and declarator tests, 3 in `c_precedence.rs`
+(the two reparse round trips and the minimal-never-wider invariant) and 4 in
+`c_cc_oracle.rs` (the 8-case declarator spiral golden, a type-name and storage-class golden, a
+declarations-and-items case that a real C compiler must accept, and the `with_cases(64)` declarator
+proptest that the same compiler judges), and by the 2 proptests in
+`rust_roundtrip.rs`, one asserting render-reparse is a fixpoint and one asserting it preserves the
+tree. Both the MS x64 and the System V ABIs are exercised, with
 the host-native class gated to Windows and the cross-platform System V floor carried by
 `clang` cross-compilation guards on Linux.
 
@@ -1944,7 +1981,7 @@ All six bodies are decoded and lifted to CIL with zero unknown ops (`detect` rep
 
 ### 3.4 Static-recovery walls: ILProtector, MaxToCode, and Themida-class native VMs
 
-Three families are `DetectOnly` (`protectors.rs`, `Protector::handling`), and their `plan_execution` verdict is `DetectOnly`, not devirtualization (`protectors.rs`, `plan_execution`). This is a proven information-theoretic ceiling, not an unfinished feature, because in each case the plaintext CIL is absent from the static file by construction.
+Three families are `DetectOnly` (`protectors.rs`, `Protector::handling`), and their `plan_execution` verdict is `DetectOnly`, not devirtualization (`protectors.rs`, `plan_execution`). This is a proven information-theoretic wall, in the sense the introduction defines, not an unfinished feature, because in each case the plaintext CIL is absent from the static file by construction.
 
 **ILProtector** replaces each body with an Invoke-stub and stores the ciphertext in a managed resource, but the decryption key and logic live in a native runtime delegate. The plaintext exists only after the assembly runs and calls its own decrypt delegate:
 
@@ -1976,7 +2013,7 @@ const BASE_RATIONALE: &str = "Themida-.NET wraps the managed assembly inside the
 ```
 (`crates/disrobe-pass-dotnet/src/peel/themida_dotnet.rs`, `BASE_RATIONALE`)
 
-The wall is not silence. Each `DetectOnly` path still performs every static recovery the ceiling permits, and reports it honestly. ILProtector enumerates the Invoke-stubs and locates the encrypted-body resource (offset, size, hash) before declaring the `RUNTIME-DELEGATE WALL` (`ilprotector.rs`, the `RUNTIME-DELEGATE WALL` report); MaxToCode enumerates the zero-RVA methods and the encrypted section before declaring the `NATIVE-KEY WALL` (`maxtocode.rs`, the `NATIVE-KEY WALL` report); and all three disassemble the native loader or VM section as machine code through `surface_native_stub`, surfacing the unmanaged support code without claiming to have devirtualized it (the `surface_native_stub` call in each of `ilprotector.rs`, `maxtocode.rs` and `themida_dotnet.rs`). The distinction the pass draws is exact: what can be recovered statically is recovered and measured against an independent baseline; what genuinely leaves the static file (a runtime-produced key, a JIT-restored body, a native-VM translation) is walled with a stated reason and the residual static evidence, never fabricated.
+The wall is not silence. Each `DetectOnly` path still performs every static recovery the wall permits, and reports it honestly. ILProtector enumerates the Invoke-stubs and locates the encrypted-body resource (offset, size, hash) before declaring the `RUNTIME-DELEGATE WALL` (`ilprotector.rs`, the `RUNTIME-DELEGATE WALL` report); MaxToCode enumerates the zero-RVA methods and the encrypted section before declaring the `NATIVE-KEY WALL` (`maxtocode.rs`, the `NATIVE-KEY WALL` report); and all three disassemble the native loader or VM section as machine code through `surface_native_stub`, surfacing the unmanaged support code without claiming to have devirtualized it (the `surface_native_stub` call in each of `ilprotector.rs`, `maxtocode.rs` and `themida_dotnet.rs`). The distinction the pass draws is exact: what can be recovered statically is recovered and measured against an independent baseline; what genuinely leaves the static file (a runtime-produced key, a JIT-restored body, a native-VM translation) is walled with a stated reason and the residual static evidence, never fabricated.
 
 Each preceding section asserted a recovery result and named the oracle that certified it; this
 section states the oracle discipline in full, ordered from the weakest external check to the
@@ -1998,7 +2035,7 @@ The consequence is that a passing test in disrobe is a claim about the world, no
 
 ### 4.2 The non-circular oracle taxonomy, weakest to strongest
 
-disrobe grades recovery with four oracle forms of increasing strength. Each form is stronger than the one before it because it depends on a wider and more independent body of external truth. For the two strongest signals a pass can report, the signal is drawn directly from which oracle form certified it, so those two are a record of which external check passed rather than a self-assessment. The remaining five signals are the pass's own report on what it managed to reconstruct, and `StructuredNoVerify` says so in its name; the tier mapping in `assign_tier` keeps them strictly below the verified two, so a self-report can never be read as an external confirmation.
+disrobe grades recovery with four oracle forms of increasing strength. Each form is stronger than the one before it because it depends on a wider and more independent body of external truth. For the two strongest signals a pass can report, the signal is drawn directly from which oracle form certified it, so those two are a record of which external check passed rather than a self-assessment. The remaining five signals are the pass's own report on what it managed to reconstruct, and `StructuredNoVerify` says so in its name.
 
 The signal enum is the spine of this mapping:
 
@@ -2016,6 +2053,8 @@ pub enum RecoverySignal {
 `crates/disrobe-core/src/recovery.rs`, `RecoverySignal`
 
 The two strongest variants, `ByteRoundtripVerified` and `RecompilesEquivalent`, correspond to the two strongest oracle forms below. A pass that cannot reach either reports a lower signal honestly rather than inflating the higher one.
+
+The confidence tier a caller sees is coarser than the signal, and it blurs the verified boundary in one place. `assign_tier` (`crates/disrobe-core/src/recovery.rs`) sends `ByteRoundtripVerified` to `ConfidenceTier::Exact`, `RecompilesEquivalent` and `FullBodyLifted` both to `Semantic`, `SomeBodiesLifted` and `StructuredNoVerify` to `Partial`, and `SignaturesOnly` and `NoRecovery` to `Skeleton`. Four of the five self-reports therefore sit strictly below both verified signals, but `FullBodyLifted` is a self-report sharing the `Semantic` tier with the externally verified `RecompilesEquivalent`, and `Exact` is the only tier no self-report reaches. Read the signal, not the tier, when the question is whether an external check passed: `Semantic` alone does not separate a recompile-verified body from a fully lifted but unverified one.
 
 #### 4.2.1 Recompile-equivalence (weakest of the strong forms)
 
@@ -2180,6 +2219,14 @@ For the whole image, where a portion of the file is legitimately rebuilt by the 
 ```
 `crates/disrobe-pass-native/tests/upx_unpack_all.rs`, the loader-zone residual assertion
 
+The span behind that percentage has to be stated, because "content" could mean either the executable
+sections alone or the whole image, and the two give different correct numbers for the same fixture.
+Here it is the whole image: the test walks every entry in the original PE's section table and counts
+`min(virtual size, raw size)` bytes for each (`parse_original_sections` and the `content_len` field of
+`OriginalSection`, same file), so `.rsrc`, `.reloc`, and every other named section sits inside the
+denominator, not only `.text`, `.rdata`, and `.data`. A percentage computed over the narrower
+executable-and-data span is a different measurement and is not what these floors assert.
+
 The locked assertions are as follows. For the nrv2b and LZMA fixtures the `.text` and `.pdata` sections recover byte-identically, at zero differences, and that is the whole of what the LZMA fixture asserts: it carries no whole-image content floor. The nrv2b whole-image content floor is 96.0% (`FLOOR_PCT` in `crates/disrobe-pass-native/tests/upx_unpack_all.rs`). The large nrv2e fixtures set floors of 96% for the `rg` binary and 98% for the `git` binary:
 
 ```rust
@@ -2198,7 +2245,9 @@ The locked assertions are as follows. For the nrv2b and LZMA fixtures the `.text
 ```
 `crates/disrobe-pass-native/tests/upx_unpack_all.rs`, the nrv2e `git` fixture
 
-The range 96 to 98 percent is the floor these UPX fixtures hold on whole-image content bytes, carried by the nrv2b fixture and the two nrv2e fixtures. It is a lower bound, not a measurement: each test computes and prints its own content-recovery percentage but no constant records it, so the published figure is the floor the gate enforces and the measured value sits above it. The executable code itself is exact rather than floored.
+The range 96 to 98 percent is the floor these UPX fixtures hold on whole-image content bytes. It is a lower bound, not a measurement: each test computes and prints its own content-recovery percentage but no constant records it, so the published figure is the floor the gate enforces and the measured value sits above it. The executable code itself is exact rather than floored.
+
+Only part of that range reproduces from a clean checkout, and the difference is the fixture, not the code. The nrv2b pair and the LZMA pair are committed (`corpus/native/packers/upx/hello.original.exe`, `hello.packed.nrv2b.exe`, `hello.packed.lzma.exe`, and the matching entries in `COMMITTED_FIXTURES`, `crates/disrobe-pass-native/tests/support/packer_fixture.rs`), so the two byte-identical `.text` and `.pdata` assertions and the 96.0% nrv2b whole-image floor run on any checkout. The `rg` and `git` nrv2e inputs are multi-megabyte real binaries that are not committed and are not listed as committed fixtures, so `load_fixture` returns nothing and both tests print `skip: rg.packed.upx.exe missing` and return without asserting their 96% and 98% floors. Setting `DISROBE_REQUIRE_PACKER_FIXTURES` to `all` turns an absent fixture into a failure instead of a skip (`packer_fixture.rs`, `requirement_from_value`), which is how a local run with the large binaries present is prevented from silently degrading to the committed subset. Read the 98% as a floor that holds where the input is supplied, not as a figure a stranger reproduces by cloning.
 
 ### 4.3 Recover-or-sound-reject
 
@@ -2251,7 +2300,9 @@ The oracles are run under a three-operating-system matrix so that a platform-spe
 ```
 `.github/workflows/ci.yml`, the `check` job matrix
 
-The full test job runs on the same three-way matrix (`.github/workflows/ci.yml`, the `test` job matrix) with the language runtimes the differentials need provisioned in the environment, including CPython 3.8 through 3.14, Temurin JDK 25, Ruby 3.4, and the uv toolchain (`.github/workflows/ci.yml`, the `test` job provisioning steps). A separate `execution-differentials` job installs Lua 5.4, LuaJIT, luau, PHP 8.3 with opcache, and Node 24 so that the re-execution oracles run against genuine interpreters rather than stubs (`.github/workflows/ci.yml`, the `execution-differentials` job). Lint runs under `-D warnings` with `unreachable_pub`, `missing_debug_implementations`, and `unused` promoted to errors (`.github/workflows/ci.yml`, the `clippy` job), and a minimum-supported-Rust job pins the toolchain to 1.95.0 so that a portability regression in the language edition is caught as well (`.github/workflows/ci.yml`, the `msrv` job).
+The full test job runs on the same three-way matrix (`.github/workflows/ci.yml`, the `test` job matrix) with the toolchains the differentials need provisioned in the environment: CPython 3.8 through 3.14 via uv, Temurin JDK 25, Ruby 3.4, the .NET 9 SDK the .NET IL-equivalence floors are measured with, and the z3 solver the MBA corpus is graded against (`.github/workflows/ci.yml`, the `test` job provisioning steps).
+
+Not every oracle is on all three legs, and the exceptions matter when reading a floor. Erlang/OTP 27 is provisioned only on the Linux leg, so the BEAM recompile-equivalence floor cited below is enforced there and skips elsewhere with a stated reason. The `execution-differentials` job is a single Linux job rather than a matrix leg (`runs-on: ubuntu-latest`), and it is what installs Lua 5.4, LuaJIT, luau, PHP 8.3 with opcache, and Node 24 so the re-execution oracles run against genuine interpreters rather than stubs (`.github/workflows/ci.yml`, the `execution-differentials` job). Those interpreter differentials therefore carry a one-platform guarantee, not a three-platform one; the three-platform claim covers the `check` and `test` jobs. Lint runs under `-D warnings` with `unreachable_pub`, `missing_debug_implementations`, and `unused` promoted to errors (`.github/workflows/ci.yml`, the `clippy` job), and a minimum-supported-Rust job pins the toolchain to 1.95.0 so that a portability regression in the language edition is caught as well (`.github/workflows/ci.yml`, the `msrv` job).
 
 #### 4.4.2 Platform gates instead of platform lies
 
@@ -2299,28 +2350,57 @@ fn sysv_host_can_run() -> bool {
 ```
 `crates/disrobe-pass-native/tests/pseudo_c_leaf_oracle.rs`, `sysv_host_can_run`
 
-A skip that names its reason is honest; a silently relaxed assertion is not. disrobe uses the first and forbids the second.
+A skip that names its reason is honest; a silently relaxed assertion is not. disrobe uses the first and forbids the second, with one exception worth naming rather than glossing: in `crates/disrobe-emit/tests/c_cc_oracle.rs` the declarations golden prints `skipping cc syntax oracle: no host c compiler found` when no `cc`, `gcc`, or `clang` is on `PATH`, but the companion declarator proptest returns without a message in the same situation. On a host with no C compiler that one proptest silently contributes nothing. It is a narrow case, because every CI leg that runs the emit crate has a C compiler, but a silent skip is still a silent skip.
 
 #### 4.4.3 Conservative floors for codegen-sensitive measures
 
-Where a measurement varies with compiler version or optimization but has a provable lower bound, disrobe asserts the floor, not a point estimate that only one machine produces. The floors are named constants, each traceable to the corpus and date on which it was measured, and each set below the locally observed value so that a legitimate codegen difference does not turn into a false failure while a real regression still trips the assertion. Representative floors across passes include:
+Where a measurement varies with compiler version or optimization but has a provable lower bound, disrobe asserts the floor, not a point estimate that only one machine produces. The floors are named constants, each traceable to the corpus and date on which it was measured, and each set below the locally observed value so that a legitimate codegen difference does not turn into a false failure while a real regression still trips the assertion. These citations name the file and the constant, not a line number, because a line number rots every time the file above it changes while the constant it points at stays put. Each entry below reads floor over denominator, then where the denominator comes from, because a floor with an unstated denominator is not a claim.
 
-These citations name the file and the constant, not a line number, because a line number rots every time the file above it changes while the constant it points at stays put.
+- **Python, per code object: 96.60% on the pinned 200-module CPython 3.14 corpus, 6,286 code objects at the measurement the floor was pinned against.** `OBJECT_PCT_FLOOR = 96.60` in `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs`, pinned at the figure the corpus actually measures rather than a round number beneath it. The denominator is counted at run time rather than pinned, and the gate guards it in two ways instead: it requires at least 180 of the <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules to resolve in the host interpreter's `Lib` and at least 5,000 code objects to be measured, so a corpus that has drifted or an interpreter missing most of it fails rather than producing a high percentage over a thin population. The 3.12 gate sits at 91.0 over its own smaller population (`arbitrary_recompile_gate_312.rs`).
+- **JVM, per method recompiled: 131 of 131 methods.** `crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs` sets `PER_METHOD_JAVAC_OK_FLOOR = 131` against the `PER_METHOD_JAVAC_TOTAL = 131` the same file pins, so the floor is every top-level method in the corpus, not a fraction of them. This grades whether real javac accepts the recovered source.
+- **JVM, per method executed: 117 of the same 131 methods.** `crates/disrobe-pass-jvm/tests/edgecases_execution_differential.rs` sets `EXECUTION_EQUIVALENT_FLOOR = 117` against the `PER_METHOD_TOTAL = 131` in the same file. This is the figure to read for behavior, and it is strictly stronger than the 131 above it: original and recovered source are each compiled by real javac, both run under a real JVM, and every observable per-method result is compared. The two numbers share one denominator and must never be merged, because a method can compile cleanly and still compute the wrong answer, which is exactly what this crate once shipped. Read the residual 14 as the two populations it is: 8 methods are javac-clean and measurably divergent (`BEHAVIOUR_DIVERGENT`), and 6 are javac-clean but not executable in isolation, 5 that only measure a nested-type stub (`STUB_BLOCKED`) and 1 whose own original output is not self-reproducible across JVM runs (`NOT_DRIVEN`). Those 6 are ungraded rather than passing. Each residual set is a pinned membership list of method names rather than a count, the test fails if a pinned method starts matching (the lists only ever shrink), it fails on any divergent method in no pinned bucket, and it asserts the four-way partition sums to 131, so neither the numerator nor the denominator can move quietly.
+- **JVM, head-to-head recompile: 131 of a pinned `METHOD_TOTAL = 131`.** `RECOMPILE_FLOOR = 131` in `crates/disrobe-pass-jvm/tests/jadx_head_to_head.rs`, and the test fails if that denominator drifts.
+- **.NET, whole-type IL equivalence: 66 methods, denominator computed at run time.** `crates/disrobe-pass-dotnet/tests/whole_type_il_equivalence_oracle.rs` sets `IL_EQUIVALENCE_FLOOR = 66`. The denominator is not a pinned constant: the test counts the methods it found equivalent, mismatched, and missing across the graded `Sample` namespace and reports the floor against that run-time total, so the 66 is a count and not a ratio. The same file sets `IL_BRANCHING_FLOOR = 45`, requiring at least 45 of the equivalent methods to have compared a real branch or switch destination rather than straight-line code, which is what stops the count being satisfied by trivially linear bodies. `RECOMPILE_FLOOR = 6` in `crates/disrobe-pass-dotnet/tests/recompile_oracle.rs` is likewise a count of user methods against a run-time total.
+- **Go, function names: 99% of the symbols `go tool nm` reports, per binary.** `RECOVERY_FLOOR` is the ratio 99 over 100 in `crates/disrobe-pass-go/tests/go_crossformat_recovery.rs`, a 99% threshold rather than a count of 99 items, and the test refuses a binary yielding under 1,000 text symbols so the ratio cannot be met on a thin population. The same file holds `TYPE_EQ_RECOVERY_FLOOR` and `ITAB_RECOVERY_FLOOR` at a full 1.0, so `type:.eq` and `go:itab` recovery must be complete against that same `go tool nm` reference, not merely above a threshold.
+- **PyArmor: 72 of the 72-sample committed corpus.** `RECOVERY_FLOOR = 72` in `crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs`, so this floor too is the whole corpus, and a second assertion requires the corpus itself to still hold 72 wrappers.
+- **BEAM: 18 equivalent, out of the modules the corpus directory holds.** `crates/disrobe-pass-beam/tests/erlc_recompile_equivalence.rs` sets `EQUIVALENCE_FLOOR = 18`. The denominator is a directory scan of `corpus/beam/recompile_oracle`, which holds 19 committed `.erl` files today, not a pinned constant; the test guards only that the scan finds at least 17, and it skips outright when `erlc` and `erl` are absent from `PATH`. So 18 of 19 as committed, and the denominator can move without tripping an assertion.
+- **Lua, re-execution: every fixture the lane measures.** `crates/disrobe-pass-lua/tests/reexec_diff_oracle.rs` sets `REEXEC_FLOOR_NUM = 29`, which is the numerator of a ratio whose denominator is the 29-entry `CORPUS`, so the floor is 29 over 29, a full 1.0. The assertion compares that ratio against the fixtures the lane measured rather than against 29 directly, so what it requires is that every fixture it measured re-executes identically, on the 5.1 and the 5.4 lane alike.
+- **Python, whole module on a different corpus: 57.1% of 42 graded fixtures.** `WHOLE_MODULE_FLOOR_PCT = 57.1` against `GRADED_FIXTURE_COUNT = 42` in `crates/disrobe-pass-py-decompile/tests/roundtrip_metric.rs`, so the floor is 24 of 42 fixtures round-tripping whole. The denominator is pinned by equality rather than counted, and the test fails outright if a graded fixture has no recompiler available, because a missing interpreter would otherwise shrink the denominator and inflate the percentage. This corpus is the edge_cases monolith over CPython 3.8 through 3.14, a different population from the 200-module pinned stdlib behind the 54.5% whole-module figure; neither is a floor on the other and the two must not be conflated. The UPX content floors of 96.0% and 98.0% from section 4.2.4 belong to this class as well, with the availability caveat stated there.
 
-- `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs` sets `OBJECT_PCT_FLOOR = 96.60`, the per-code-object recompile-equivalence floor on the pinned CPython 3.14 corpus, pinned at the figure the corpus actually measures rather than a round number beneath it; the 3.12 gate sits at 91.0 (`arbitrary_recompile_gate_312.rs`).
-- `crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs` sets `PER_METHOD_JAVAC_OK_FLOOR = 131`, the count of methods that must recompile cleanly through javac, against the `PER_METHOD_JAVAC_TOTAL = 131` the same file pins: the floor is every top-level method in the corpus, not a fraction of them.
-- `crates/disrobe-pass-jvm/tests/jadx_head_to_head.rs` sets `RECOMPILE_FLOOR = 131` for the head-to-head recompile comparison, again against a pinned `METHOD_TOTAL = 131`, and the test fails if that denominator drifts.
-- `crates/disrobe-pass-dotnet/tests/whole_type_il_equivalence_oracle.rs` sets `IL_EQUIVALENCE_FLOOR = 66`. Its denominator is not a pinned constant: the test counts the methods it found equivalent, mismatched and missing across the graded namespace and reports the floor against that run-time total, so the 66 is a count and not a ratio. The same file also sets `IL_BRANCHING_FLOOR = 45`, requiring at least 45 of the equivalent methods to have compared a real branch or switch destination rather than straight-line code. `crates/disrobe-pass-dotnet/tests/recompile_oracle.rs` sets `RECOMPILE_FLOOR = 6`, likewise a count of user methods against a run-time total.
-- `crates/disrobe-pass-go/tests/go_crossformat_recovery.rs` sets `RECOVERY_FLOOR` to the ratio 99 over 100, which is a 99% threshold rather than a count of 99 items: it is applied to the function names recovered from each binary against the symbols a real `go tool nm` reports, a population the test refuses to accept below 1000 text symbols per binary. The same file holds two floors at a full 1.0, `TYPE_EQ_RECOVERY_FLOOR` and `ITAB_RECOVERY_FLOOR`, so the `type:.eq` and `go:itab` recoveries must be complete against that same `go tool nm` reference, not merely above a threshold.
-- `crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs` sets `RECOVERY_FLOOR = 72`, the count of PyArmor samples that must be recovered out of the 72-sample corpus, so that floor too is the whole corpus.
-- `crates/disrobe-pass-beam/tests/erlc_recompile_equivalence.rs` sets `EQUIVALENCE_FLOOR = 18` over the 19 committed `.erl` modules the corpus directory holds. `crates/disrobe-pass-lua/tests/reexec_diff_oracle.rs` sets `REEXEC_FLOOR_NUM = 29` for the Lua re-execution differential, and its denominator is the 29-entry `CORPUS`, so that floor requires every fixture to re-execute identically, on the 5.1 and the 5.4 lane alike.
-- `crates/disrobe-pass-py-decompile/tests/roundtrip_metric.rs` sets `WHOLE_MODULE_FLOOR_PCT = 57.1` for whole-module recovery measured on the edge_cases monolith corpus, which is a distinct corpus from the 200-module pinned stdlib behind the 54.5% figure and must not be conflated with it, alongside the UPX content floors of 96.0% and 98.0% shown in section 4.2.4.
+Each floor is a promise of the form "at least this much recovery is reproducible wherever the input and the toolchain the floor names are present." It is deliberately weaker than the best local number and deliberately stronger than zero, because the honest claim is a guaranteed lower bound, not a lucky maximum. That qualifier matters: several of the floors above need a runtime or a fixture that is not on every leg of the matrix, and 4.4.4 states which. The recompile-execute-diff oracles that do run, such as the leaf behavioral differential and the Eazfuscator re-injection, are exact rather than floored, because behavioral equivalence over a shared input battery either holds or does not; there is no honest partial credit for a program that computes the wrong answer.
 
-Each floor is a promise of the form "at least this much recovery is reproducible anywhere the matrix runs." It is deliberately weaker than the best local number and deliberately stronger than zero, because the honest claim is a guaranteed lower bound, not a lucky maximum. The recompile-execute-diff oracles that do run, such as the leaf behavioral differential and the Eazfuscator re-injection, are exact rather than floored, because behavioral equivalence over a shared input battery either holds or does not; there is no honest partial credit for a program that computes the wrong answer.
+#### 4.4.4 What a clean checkout reproduces, and what each figure needs beyond one
+
+A floor is only as reproducible as its inputs and its toolchain. Every oracle here skips rather than weakens when a precondition is missing, and all but the one case named in 4.4.2 say so on the way out. That keeps a number from being faked, but it also means a bare `cargo test` on a bare machine measures less than CI does, and a reader who does not know which figures went unmeasured will read a green run as a full one. What each figure needs follows.
+
+Reproducible with a Rust toolchain alone, because the input and the reference answer are both committed:
+
+- The EazVM ordered-CIL grade, 57 of 57 (Section 3.3). Both `EazSample.eazvm.dll` and the `EazSample.clean.dll` answer key are committed; the grade is computed in process. Only the dynamic re-injection half needs a .NET runtime, and it says so when one is absent.
+- The KoiVM grade against its hand-specified ground truth, including the seed-0 `System.Random` and descriptor-table anchors.
+- The UPX `.text` and `.pdata` byte-identity assertions and the 96.0% nrv2b whole-image content floor (Section 4.2.4).
+- The Go floors. The reference is a committed capture of real `go tool nm` output alongside the committed binaries (`crates/disrobe-pass-go/tests/fixtures/`), so no Go toolchain is needed at test time; the reference was produced by the real tool, not simulated. An absent fixture prints a skip banner stating that the assertion did not run.
+- The PyArmor 72-of-72 floor, over the committed wrapper corpus.
+- The `disrobe-emit` precedence and Rust round-trip proptests, which need only `syn` and `prettyplease`.
+
+Needing one more thing, and skipping with a stated reason without it:
+
+- Python per code object, 96.60% floor: a resolvable CPython 3.14, because the gate recompiles through the real interpreter. Also the release CLI binary, which the gate drives rather than calling in process, and which it refuses to run without.
+- Python legacy: the 150-of-191 floor holds on structural token-match alone, so it runs anywhere. The higher 166-of-191 local figure needs the 1.0 through 3.7 interpreter set installed, which is why it is published as a local measurement and no gate asserts it.
+- Native leaf C and Rust differentials: a real C compiler, plus a host whose ABI matches for the host-native class and `clang` for the cross-compiled System V class (Section 4.4.2).
+- .NET IL-equivalence and re-injection: the .NET SDK, provisioned in CI on all three legs.
+- BEAM 18-module floor: `erlc` and `erl` on `PATH`, provisioned in CI on Linux only.
+- Lua, LuaJIT, luau, PHP, and Node re-execution differentials: those interpreters, provisioned in the single-platform `execution-differentials` job.
+- The MBA corpus: an external SMT solver. `DISROBE_REQUIRE_SOLVER` makes an absent one fatal so the differential cannot quietly fall back to a weaker check.
+
+Needing an input that is not committed at all:
+
+- The UPX `rg` and `git` nrv2e floors, 96% and 98%. Their multi-megabyte inputs are not in the repository, so both tests skip on any checkout (Section 4.2.4).
+
+Two environment variables convert an absent input from a skip into a failure, which is how a local run is stopped from silently grading less than it claims: `DISROBE_REQUIRE_PACKER_FIXTURES` for the packer corpus, at `1` for the committed fixtures or `all` to demand every fixture including the uncommitted large ones, and `DISROBE_REQUIRE_SOLVER` for the solver. Where a figure in this paper depends on a precondition, the precondition is named beside it rather than assumed.
 
 ### 4.5 Summary
 
-disrobe's verification stack is a ladder of external truth. Recompile-equivalence borrows the language toolchain as judge. Recompile-execute-diff replaces static comparison with the observable behavior of two independently compiled programs over a shared battery. Independent-baseline grading measures recovery against a separately built clean artifact the recovery never sees. Byte-exact-vs-original compares recovered bytes to the true pre-transformation input, the one reference that admits no argument. Beneath all four sits the recover-or-sound-reject invariant, which forbids a confident wrong answer, and above all four sits a three-platform CI matrix with named, dated, conservative floors and explicit platform gates, so that a number that is green in one place is not a lie in another. The result is a body of claims a stranger can re-run, and a measurement discipline built so that a green number cannot vouch for the tool that produced it.
+disrobe's verification stack is a ladder of external truth. Recompile-equivalence borrows the language toolchain as judge. Recompile-execute-diff replaces static comparison with the observable behavior of two independently compiled programs over a shared battery. Independent-baseline grading measures recovery against a separately built clean artifact the recovery never sees. Byte-exact-vs-original compares recovered bytes to the true pre-transformation input, the one reference that admits no argument. Beneath all four sits the recover-or-sound-reject invariant, which forbids a confident wrong answer, and above all four sits a CI matrix with named, dated, conservative floors and explicit platform gates, three-platform for the oracles whose toolchain exists everywhere and single-platform where only one leg carries the runtime, so that a number that is green in one place is not a lie in another. The result is a body of claims a stranger can re-run, with the precondition for each one stated in 4.4.4, and a measurement discipline built so that a green number cannot vouch for the tool that produced it.
 
 ## What this whitepaper does not claim
 
@@ -2343,11 +2423,24 @@ body (Section 3.4).
 Whole-module Python recovery is far below the per-object figure. The representative
 per-code-object recompile-equivalence on the CPython 3.14 standard library is <!-- m:py_stdlib_full_pct -->95.09%<!-- /m -->, but the
 whole-module exact rate, where a module counts only if every one of its code objects is
-equivalent, is 54.5% on the pinned corpus, a locally measured figure that no CI floor
-asserts; a module passes only when all of its typically
+equivalent, is 54.5% of the <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules in the pinned corpus, a locally measured figure that no CI
+floor asserts and the one figure here with no numerator on any committed file; a module passes only
+when all of its typically
 dozens of code objects pass, so a small per-object miss rate compounds into a large
 per-module one (Section 1.5). The per-object number is the granular headline and the
 whole-module number is the harder truth reported beside it.
+
+Recompiling is not executing, and where both are measured the paper reports both separately. The JVM
+corpus is the clearest case: 131 of 131 top-level methods recompile cleanly through real javac, and
+117 of those same 131 are execution-equivalent under a real JVM. The 117 is the behavioral claim, the
+131 is only a compile claim, and merging them into one figure would overstate the result by 14 methods
+(Section 4.4.3).
+
+Two published figures need an input that is not in the repository. The UPX 96% and 98% content floors
+for the `rg` and `git` binaries are asserted against multi-megabyte real executables that are not
+committed, so those two tests skip on a clean checkout rather than measuring anything. What does
+reproduce from a clone is the byte-identical `.text` and `.pdata` recovery and the 96.0% nrv2b floor
+(Sections 4.2.4 and 4.4.4).
 
 The KoiVM oracle is weaker than the Eazfuscator oracle. EazVM recovery is graded against
 ordered CIL that the C# compiler emitted into a separate clean assembly the recovery code
@@ -2373,13 +2466,18 @@ structured source; the native path lifts x86-64 into a typed AST and emits C and
 precedence authority; the .NET path reconstructs CIL from two managed VMs and walls the cases
 whose plaintext leaves the static file. What binds them is the verification methodology of
 Section 4: each result is credited only by an oracle disrobe does not control, from
-recompile-equivalence through recompile-execute-differential and independent-baseline grading
-to byte-exact comparison, and each codegen-sensitive number is held by a conservative CI floor
-on a three-platform matrix. The combined claim is therefore narrow and checkable: within the
+recompile-equivalence through recompile-execute-diff and independent-baseline grading
+to byte-exact comparison, and each codegen-sensitive number is held by a conservative CI floor, on a
+three-platform matrix for the passes whose oracle runs everywhere and on a named single platform for
+the interpreter differentials that need a runtime only Linux CI provisions. The combined claim is
+therefore narrow and checkable: within the
 class each pass proves it handles, disrobe recovers source, IL, or bytes that an independent
 toolchain confirms, and outside that class it rejects the input rather than fabricating an
-answer. Every figure in this paper is anchored to a committed source, test, or data file, so a
-stranger can re-run the measurement and reach the same result.
+answer. Every figure in this paper cites the committed source, test, or data file behind it, and
+Section 4.4.4 states, for each one, what a reader needs beyond a clone to reach the same result. Three
+are weaker than that standard: the two large UPX floors need an input the repository does not carry,
+and the 54.5% whole-module rate is a percentage with no committed count behind it. All three are
+labelled as such where they appear rather than folded in with the rest.
 
 ## References
 
