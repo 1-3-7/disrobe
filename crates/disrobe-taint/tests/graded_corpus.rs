@@ -223,7 +223,7 @@ fn compiled_fgets_to_system_flow_is_attributed_to_its_exported_function() {
     let count: usize = finding_count(&json);
     assert!(
         count >= 1,
-        "pinned native-flow floor is one finding; the graded flow needs an x86-64 image whose imported fgets and system land at named call targets: {json}"
+        "pinned native-flow floor is one finding; the graded flow needs an image whose imported fgets and system land at named call targets, which takes two things the lifted IR does not supply on every host: import-thunk naming for the object format, since an elf plt entry and a mach-o __stubs entry both resolve to an unnamed thunk while a pe import thunk carries its own symbol, and per-instruction flow facts for the architecture, since disasm_ir::instruction_facts only decodes x86 and x86-64 and hands every other architecture a default fact set with no call flow and no branch target: {json}"
     );
     assert_eq!(
         count, 1,
@@ -239,6 +239,12 @@ fn compiled_fgets_to_system_flow_is_attributed_to_its_exported_function() {
 
 #[test]
 fn overwriting_the_fgets_result_before_system_kills_the_native_flow() {
+    let control: CompiledFixture = compile_program("kill-control", FLOWING_BODY);
+    let control_json: String = run_taint(&control);
+    assert!(
+        finding_count(&control_json) >= 1,
+        "a zero on the mutated program only means the overwrite killed the flow if this host reports the unmutated flow; it reports none, so the kill is not graded here and the analysis may simply be blind to this source and sink pair: {control_json}"
+    );
     let fixture: CompiledFixture = compile_program("overwritten", OVERWRITTEN_BODY);
     let json: String = run_taint(&fixture);
     assert!(
