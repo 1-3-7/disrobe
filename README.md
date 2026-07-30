@@ -101,58 +101,69 @@ Each `[CI]` number links to a committed corpus or fixture, a runnable reproduce 
 
 Read the first three Python rows together. A module counts as recovered only when every one of its code objects recompiles to equivalent bytecode. A module typically holds dozens of code objects, so a small per-object miss rate compounds into a large per-module one. To know whether a whole readable module comes back, use the whole-module figure of 54.5%, not the per-object 96.6%. That gap is the center of the evaluation rather than a footnote, and the [whitepaper](docs/src/architecture/whitepaper.md) works through it.
 
+The Oracle column names the independent reference in a few words. What that reference is and how it can reject a wrong answer is in the cited test and in the linked guide.
+
 | Metric | Measured | Oracle | Reproduce |
 |---|---|---|---|
-| Python `.pyc`, full 3.14 stdlib | <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per code object, <!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m --> objects in <!-- m:py_stdlib_full_modules -->574<!-- /m --> modules `[local]` | recompile-equivalence | `crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py` |
-| Python `.pyc`, pinned 200-module corpus | <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> per code object, <!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m --> objects in <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules, floor 96.60% `[CI]` | recompile-equivalence | `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs` |
-| Python `.pyc`, whole-module exact | 54.5% of modules recompile whole, same pinned corpus `[CI]` | recompile-equivalence over every code object in the module | `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs` |
-| Python legacy 1.0-3.7 | <!-- m:py_legacy_count -->150 of 191<!-- /m --> gate-verified `[CI]`, <!-- m:py_legacy_local_count -->166 of 191<!-- /m --> `[local]` | recompile-equivalence or structural token match | `crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs` |
-| PyArmor v6-v9-pro | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> real-corpus samples `[CI]` | detected wrapper version vs each sample's declared build | `crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs` |
-| Pickle safety | 102 / 102 fixtures disassemble, trace, and classify `[CI]` | pickletools-semantics equivalence | `crates/disrobe-pass-pickle/tests/corpus.rs` |
-| Pickle reconstruction roundtrip | 340 / 340 re-execute to an equal object, floor 100% `[CI]` | CPython re-execution differential | `crates/disrobe-pass-pickle/tests/roundtrip.rs` |
-| Android DEX, committed corpus | 118 / 118 presentable classes clean, 317 re-hosted bodies clean `[CI]` | real JVM verifier `-Xverify:all` | `crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs` |
-| .NET Eazfuscator VM | 57 / 57 instructions lifted, ordered-CIL match `[CI]` | independently compiled clean DLL, ordered CIL compare | `crates/disrobe-pass-dotnet/tests/real_eazvm.rs` |
-| .NET KoiVM | 6 / 6 bodies lifted to CIL, structural recovery >= 75% `[CI]` | independently compiled `KoiSample.clean.exe` | `crates/disrobe-pass-dotnet/tests/real_koivm.rs` |
-| .NET protectors | <!-- m:dotnet_protectors -->23<!-- /m --> classified, ConfuserEx2 constants decrypted `[CI]` | plaintext-absent check on the committed DLL | `crates/disrobe-pass-dotnet/tests/confuserex2_full.rs` |
-| WebAssembly, op-coverage | <!-- m:wasm_opcoverage_count -->133 of 133<!-- /m --> corpus functions fully op-covered `[CI]` | output re-parses, every operator lowered | `crates/disrobe-pass-wasm-deob/tests/semantic_recovery_corpus.rs` |
-| WebAssembly, execution-equiv | 57 / 57 eligible functions equivalent, 6 byte-identical `[CI]` | execution differential under wasmtime | `crates/disrobe-pass-wasm-deob/tests/semantic_differential.rs` |
-| WebAssembly obfuscator reversers | <!-- m:wasm_reversers -->4<!-- /m --> reverser families `[CI]` | family byte or IR transforms, then parser and execution gates | `crates/disrobe-pass-wasm-deob/tests/obfuscators_e2e.rs` |
-| Lua IronBrew2 2.7.0 devirt | output runs equal to the original, standard and MAX mode `[CI]` | real-`lua` execution differential | `crates/disrobe-pass-lua/tests/ironbrew2_real_oracle.rs` |
-| Ruby YARV | greeter <!-- m:ruby_greeter_pct -->100%<!-- /m -->, megafile floor <!-- m:ruby_megafile_pct -->98%<!-- /m --> `[CI]` | recompile under MRI, opcode multiset | `crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs` |
-| Go type-name recovery | <!-- m:go_typename_count -->838 of 838<!-- /m --> on a stripped go1.26.3 fixture, floor <!-- m:go_typename_pct -->85%<!-- /m --> `[CI]` | typelinks and moduledata survive `-s -w` | `crates/disrobe-pass-go/tests/go_typemeta.rs` |
-| Go BuildInfo and garble undo | BuildInfo recovered, garble `-literals` rebuilt `[CI]` | parsed against the real toolchain output | `crates/disrobe-pass-go/tests/go_buildinfo_oracle.rs`, `go_garble_undo.rs` |
-| Swift symbol demangle | 37 / 37 mangled symbols, pinned by name `[CI]` | the binary's own `LC_SYMTAB` symbols | `crates/disrobe-pass-swift-objc/tests/real_swift_demangle.rs` |
-| HashLink (Haxe `.hl`) | class names 100%, method names floor 75% `[CI]` | recovered names vs the original `.hx` source | `crates/disrobe-pass-scriptlang/tests/real_hashlink_decompile.rs` |
-| Native UPX | `.text` and `.pdata` byte-identical, ~96% whole image, floor 96% `[CI]` | byte-identity vs the committed original | `crates/disrobe-pass-native/tests/upx_unpack_all.rs` |
-| Native packers, MPRESS and Yoda's | MPRESS `.text` >= 90%, `.rdata` >= 85%; Yoda's byte-identical `[CI]` | RVA-aligned recovery or byte-identity vs the original | `crates/disrobe-pass-native/tests/mpress_gauntlet.rs`, `packer_real_samples.rs` |
-| Native packers, emulated unpack | ASPack, PECompact, and rebuilt IAT >= 98% byte-identical; MEW structural `[CI]` | RVA-aligned recovery and IAT byte-identity | `crates/disrobe-pass-native/tests/aspack_pecompact_phase2.rs`, `mew_unpack.rs` |
-| Native packers, committed pairs | nspack 57721 / 60060, fsg 55263 / 60060, petite 86986 / 89648 `[CI]` | content-section byte compare, denominator pinned to the original | `crates/disrobe-pass-native/tests/committed_packer_byte_recovery.rs` |
-| Native packers, larger local samples | no figure published; the samples are not committed `[local]` | whole-image byte comparison | `crates/disrobe-pass-native/tests/{petite_unpack,fsg_unpack,nspack_byte_recovery}.rs` |
-| Native packers, kkrunchy | kkrunchy and kkrunchy classic payload recovery `[CI]` | payload byte-identity vs the pre-packed original | `crates/disrobe-pass-native/tests/kkrunchy_unpack.rs` |
-| Native stub-emulator unpack | dispatch and decode validated by round-trip `[CI]` | stub-emu execution equivalence | `crates/disrobe-pass-native/tests/stub_pack_oracle_roundtrip.rs` |
-| Hermes HBC v96 | <!-- m:hermes_opcoverage_count -->8 of 8<!-- /m --> functions, 0 fallback ops `[CI]`; <!-- m:hermes_functions -->122,633<!-- /m -->-function bundle `[local]` | op-coverage with source-matching bodies; parse scale for the bundle | `crates/disrobe-pass-mobile/tests/real_hermes_sample.rs`, `real_hermes_discord.rs` |
-| APK secrets vs apkleaks | 8 / 8 planted secrets vs 5 / 8 `[CI]` | hand-verified planted APK ground truth | `cargo run -p disrobe-bench-head-to-head` |
-| frisk IOC detection | 6 / 6 planted non-secret IOC categories `[CI]` | known-planted endpoints, URLs, IPv4, email, `.onion` | `crates/disrobe-core/tests/frisk_gauntlet.rs` |
-| Container / archive / firmware extraction | <!-- m:containers_frac -->100 / 100<!-- /m --> formats write member bytes in-tree `[CI]` | per-format in-tree extraction count | `crates/disrobe-binfmt/src/container.rs` (`every_real_format_extracts_in_tree`) |
-| Cross-platform determinism | 3 / 3 real fixtures byte-identical on Linux, macOS, and Windows `[CI]` | BLAKE3 equality across the 3-OS CI matrix | `crates/disrobe-cli/tests/determinism_cross_platform.rs` |
+| Python `.pyc`, full 3.14 stdlib | <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per code object `[local]` | recompile-equivalence | `crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py` |
+| Python `.pyc`, pinned 200-module corpus | <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> per object, floor 96.60% `[CI]` | recompile-equivalence | `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs` |
+| Python `.pyc`, whole-module exact | 54.5% of modules recompile whole `[CI]` | recompile-equivalence | `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs` |
+| Python legacy 1.0-3.7 | <!-- m:py_legacy_count -->150 of 191<!-- /m --> gate-verified `[CI]` | recompile or token match | `crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs` |
+| PyArmor v6-v9-pro | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> real-corpus samples `[CI]` | declared build match | `crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs` |
+| Pickle safety | 102 / 102 fixtures classify `[CI]` | pickletools semantics | `crates/disrobe-pass-pickle/tests/corpus.rs` |
+| Pickle reconstruction roundtrip | 340 / 340 re-execute equal, floor 100% `[CI]` | CPython re-execution | `crates/disrobe-pass-pickle/tests/roundtrip.rs` |
+| Android DEX, committed corpus | 118 / 118 presentable classes clean, 317 re-hosted bodies clean `[CI]` | real JVM verifier | `crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs` |
+| .NET Eazfuscator VM | 57 / 57 instructions lifted, ordered-CIL match `[CI]` | independent clean DLL | `crates/disrobe-pass-dotnet/tests/real_eazvm.rs` |
+| .NET KoiVM | 6 / 6 bodies lifted, structural recovery >= 75% `[CI]` | independent clean build | `crates/disrobe-pass-dotnet/tests/real_koivm.rs` |
+| .NET protectors | <!-- m:dotnet_protectors -->23<!-- /m --> classified, ConfuserEx2 decrypted `[CI]` | plaintext-absent check | `crates/disrobe-pass-dotnet/tests/confuserex2_full.rs` |
+| WebAssembly, op-coverage | <!-- m:wasm_opcoverage_count -->133 of 133<!-- /m --> corpus functions `[CI]` | operator lowering | `crates/disrobe-pass-wasm-deob/tests/semantic_recovery_corpus.rs` |
+| WebAssembly, execution-equiv | 57 / 57 eligible functions equal, 6 byte-identical `[CI]` | wasmtime differential | `crates/disrobe-pass-wasm-deob/tests/semantic_differential.rs` |
+| WebAssembly obfuscator reversers | <!-- m:wasm_reversers -->4<!-- /m --> reverser families `[CI]` | parser and execution gates | `crates/disrobe-pass-wasm-deob/tests/obfuscators_e2e.rs` |
+| Lua IronBrew2 2.7.0 devirt | runs equal, standard and MAX mode `[CI]` | real-`lua` differential | `crates/disrobe-pass-lua/tests/ironbrew2_real_oracle.rs` |
+| Ruby YARV, greeter | <!-- m:ruby_greeter_pct -->100%<!-- /m --> `[CI]` | MRI recompile, opcode multiset | `crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs` |
+| Ruby YARV, megafile | floor <!-- m:ruby_megafile_pct -->98%<!-- /m --> `[CI]` | MRI recompile, opcode multiset | `crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs` |
+| Go type-name recovery | <!-- m:go_typename_count -->838 of 838<!-- /m --> type names, stripped `[CI]` | typelinks survive `-s -w` | `crates/disrobe-pass-go/tests/go_typemeta.rs` |
+| Go BuildInfo and garble undo | BuildInfo recovered, `-literals` rebuilt `[CI]` | real toolchain output | `crates/disrobe-pass-go/tests/go_buildinfo_oracle.rs` |
+| Swift symbol demangle | 37 / 37 mangled symbols `[CI]` | binary `LC_SYMTAB` symbols | `crates/disrobe-pass-swift-objc/tests/real_swift_demangle.rs` |
+| HashLink (Haxe `.hl`) | class names 100%, method names floor 75% `[CI]` | names vs the original `.hx` | `crates/disrobe-pass-scriptlang/tests/real_hashlink_decompile.rs` |
+| Native UPX | `.text` and `.pdata` byte-identical, floor 96% `[CI]` | byte-identity | `crates/disrobe-pass-native/tests/upx_unpack_all.rs` |
+| Native packers, MPRESS | `.text` >= 90%, `.rdata` >= 85% `[CI]` | RVA-aligned recovery | `crates/disrobe-pass-native/tests/mpress_gauntlet.rs` |
+| Native packers, Yoda's Crypter | `.rsrc`, `.text`, `.data` byte-identical `[CI]` | byte-identity | `crates/disrobe-pass-native/tests/packer_real_samples.rs` |
+| Native packers, ASPack and PECompact | content and rebuilt IAT >= 98% byte-identical `[CI]` | RVA-aligned recovery | `crates/disrobe-pass-native/tests/aspack_pecompact_phase2.rs` |
+| Native packers, MEW | structural loaded-image recovery `[CI]` | RVA-aligned recovery | `crates/disrobe-pass-native/tests/mew_unpack.rs` |
+| Native packers, committed pairs | nspack 57721 / 60060, fsg 55263 / 60060, petite 86986 / 89648 `[CI]` | content-section bytes | `crates/disrobe-pass-native/tests/committed_packer_byte_recovery.rs` |
+| Native packers, larger local samples | no figure published, samples uncommitted `[local]` | whole-image comparison | `crates/disrobe-pass-native/tests/petite_unpack.rs` |
+| Native packers, kkrunchy | kkrunchy and kkrunchy classic payloads `[CI]` | payload byte-identity | `crates/disrobe-pass-native/tests/kkrunchy_unpack.rs` |
+| Native stub-emulator unpack | dispatch and decode round-trip `[CI]` | stub-emu equivalence | `crates/disrobe-pass-native/tests/stub_pack_oracle_roundtrip.rs` |
+| Hermes HBC v96 | <!-- m:hermes_opcoverage_count -->8 of 8<!-- /m --> functions, 0 fallback `[CI]` | op-coverage, source bodies | `crates/disrobe-pass-mobile/tests/real_hermes_sample.rs` |
+| Hermes production bundle | <!-- m:hermes_functions -->122,633<!-- /m -->-function parse `[local]` | parse scale, gitignored input | `crates/disrobe-pass-mobile/tests/real_hermes_discord.rs` |
+| APK secrets vs apkleaks | 8 / 8 planted secrets vs 5 / 8 `[CI]` | planted ground truth | `cargo run -p disrobe-bench-head-to-head` |
+| frisk IOC detection | 6 / 6 planted IOC categories `[CI]` | planted ground truth | `crates/disrobe-core/tests/frisk_gauntlet.rs` |
+| Container / archive / firmware extraction | <!-- m:containers_frac -->100 / 100<!-- /m --> formats in-tree `[CI]` | in-tree extraction count | `crates/disrobe-binfmt/src/container.rs` |
+| Cross-platform determinism | 3 / 3 real fixtures byte-identical, 3-OS matrix `[CI]` | BLAKE3 hash equality | `crates/disrobe-cli/tests/determinism_cross_platform.rs` |
 
-The Android committed-corpus row is measured on small methods; 37 of 155 classes are link-skipped and ungraded, and the real-apk row further down carries the production scale. The .NET Eazfuscator row has a second leg, `[local]`, in which the recovered CIL re-injects to byte-identical stdout; it needs a .NET runtime that CI does not provision. The WebAssembly op-coverage figure is 100% of the 38 parseable modules, and the other 2 of the 40 corpus files are skipped on wat-parse or signature-extraction failure, with the gate pinning both counts.
+The Python figures count code objects, not modules. The full-stdlib row covers <!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m --> objects across <!-- m:py_stdlib_full_modules -->574<!-- /m --> modules; the pinned row covers <!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m --> objects across <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules, and the same legacy gate reaches <!-- m:py_legacy_local_count -->166 of 191<!-- /m --> locally. The Go row is measured on a stripped go1.26.3 fixture, its gate pins the count and holds the ratio above a <!-- m:go_typename_pct -->85%<!-- /m --> floor, and `go_garble_undo.rs` covers the garble leg beside it.
 
-The Swift row is pinned against a committed fixture's own symbol table; the parity leg against the reference `swift-demangle` runs only where that tool is installed, which CI does not provide. HashLink also parses the whole HLB image byte-exact, 336 functions and 421 types on the committed fixture. The PyArmor row draws its samples from a corpus of 289 committed files.
+The Android committed-corpus row is measured on small methods; 37 of 155 classes are link-skipped and ungraded, and the real-apk row further down carries the production scale. The WebAssembly op-coverage figure is 100% of the 38 parseable modules, and the other 2 of the 40 corpus files are skipped on wat-parse or signature-extraction failure, with the gate pinning both counts. The .NET Eazfuscator row has a second leg, `[local]`, in which the recovered CIL re-injects to byte-identical stdout; it needs a .NET runtime that CI does not provision.
 
-For the committed packer pairs, `.text` and `.data` are byte-identical for all three families and nspack's `.rdata` is byte-identical too. One packed-and-original pair per family is committed, so each figure reproduces from a clean checkout. The same decoders score lower on the whole-image measure over larger uncommitted vendor samples, with the content sections holding up far better than the whole image; no figure is published for that row, because nothing there reproduces or is pinned. Determinism is also checked across worker-pool sizes: the same fixtures run through `disrobe auto <dir>`'s batch runner at `--jobs 1` and `--jobs 4` produce identical bytes, and that batch runner is the one real concurrent code path in the CLI.
+The Swift row is pinned against a committed fixture's own symbol table; the parity leg against the reference `swift-demangle` runs only where that tool is installed, which CI does not provide. HashLink also parses the whole HLB image byte-exact, 336 functions and 421 types on the committed fixture. The PyArmor row draws its samples from a corpus of 289 committed files. The container row's assertion is `every_real_format_extracts_in_tree`. The six planted IOC categories frisk is graded on are endpoints, manifest findings, URLs, IPv4, email, and `.onion`.
+
+Native UPX recovers about 96% of the whole image beyond the two byte-identical sections. For the committed packer pairs, `.text` and `.data` are byte-identical for all three families and nspack's `.rdata` is byte-identical too, and one packed-and-original pair per family is committed, so each figure reproduces from a clean checkout. The same decoders score lower on the whole-image measure over larger uncommitted vendor samples, with the content sections holding up far better than the whole image; `fsg_unpack.rs` and `nspack_byte_recovery.rs` sit beside the cited petite test, and no figure is published for any of them because nothing there reproduces or is pinned. Determinism is also checked across worker-pool sizes: the same fixtures run through `disrobe auto <dir>`'s batch runner at `--jobs 1` and `--jobs 4` produce identical bytes, and that batch runner is the one real concurrent code path in the CLI.
 
 ### Recompile-only
 
 | Metric | Measured | Oracle | Reproduce |
 |---|---|---|---|
-| JVM classfile `recompile-only` | 131 / 131 methods recompile error-free, floor 131 `[CI]` | real `javac` (JDK 25); not bytecode-equivalence | `crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs` |
+| JVM classfile `recompile-only` | 131 / 131 methods recompile error-free, floor 131 `[CI]` | real `javac`, JDK 25 | `crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs` |
+
+Nothing asserts bytecode-equivalence for that row. The recovered source compiles, which is a weaker statement than the Strong tier makes.
 
 ### Self-reported coverage
 
 | Metric | Measured | Oracle | Reproduce |
 |---|---|---|---|
-| Android DEX, real APKs `coverage-self-reported` | <!-- m:dalvik_body_frac -->82788 / 89516<!-- /m --> defined methods recover a body, <!-- m:dalvik_body_pct -->92.5%<!-- /m --> `[local]` | self-reported per-method body count over three gitignored real apks | `crates/disrobe-pass-jvm/tests/dalvik_realworld_body_attest.rs`, `dex2jar_realworld_apks.rs` |
+| Android DEX, real APKs `coverage-self-reported` | <!-- m:dalvik_body_pct -->92.5%<!-- /m --> of defined methods `[local]` | self-reported, gitignored apks | `crates/disrobe-pass-jvm/tests/dex2jar_realworld_apks.rs` |
+| Android DEX, real APKs, count `coverage-self-reported` | <!-- m:dalvik_body_frac -->82788 / 89516<!-- /m --> `[local]` | self-reported, gitignored apks | `crates/disrobe-pass-jvm/tests/dalvik_realworld_body_attest.rs` |
 
 That figure is the total across all three apks and not any one of them. The per-apk split, and a separate verifier-attested population with its own smaller denominator, are in the [Android guide](docs/src/languages/jvm-android.md).
 
