@@ -13,41 +13,6 @@ const PUBLISHED_HEADING: &str = "Go type-name recovery";
 const PUBLISHED_BAR: &str = "type names";
 const PUBLISHED_RATIO_GUARD: f64 = 0.85;
 
-fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {
-    let path: PathBuf = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("xtask")
-        .join("data")
-        .join("recovery.json");
-    let raw: String = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", path.display()));
-    let doc: serde_json::Value = serde_json::from_str(&raw)
-        .unwrap_or_else(|e: serde_json::Error| panic!("parse {}: {e}", path.display()));
-    let mut found: Vec<serde_json::Value> = Vec::new();
-    for group in doc["groups"].as_array().expect("groups array") {
-        let heading_matches: bool = group["heading"]
-            .as_str()
-            .is_some_and(|h: &str| h.contains(heading_needle));
-        if !heading_matches {
-            continue;
-        }
-        for bar in group["bars"].as_array().unwrap_or(&Vec::new()) {
-            if bar["label"].as_str() == Some(label) {
-                found.push(bar.clone());
-            }
-        }
-    }
-    assert_eq!(
-        found.len(),
-        1,
-        "xtask/data/recovery.json must carry exactly one bar labelled `{label}` under a heading \
-         containing `{heading_needle}`, found {}",
-        found.len()
-    );
-    found.remove(0)
-}
-
 const TYPEMETA_SOURCE: &str = r#"package main
 
 import (
@@ -242,7 +207,7 @@ fn typemeta_recovers_real_type_names_on_go126() {
          (got {named}/{total} = {ratio:.3})"
     );
 
-    let bar: serde_json::Value = published_bar(PUBLISHED_HEADING, PUBLISHED_BAR);
+    let bar: serde_json::Value = common::published_bar(PUBLISHED_HEADING, PUBLISHED_BAR);
     let num: u64 = bar["num"]
         .as_u64()
         .expect("the type names bar must carry a numerator");

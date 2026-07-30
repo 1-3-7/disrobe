@@ -115,10 +115,12 @@ if (Test-Path (Join-Path $benchSrc 'main.go')) {
         # any object format regardless of host OS, so it grades all four here. Pure-Go, so no C
         # cross-toolchain is required.
         $crossTargets = @(
-            @{ os = 'linux';  arch = 'amd64'; out = 'bench_generics_linux_amd64' },
-            @{ os = 'linux';  arch = 'arm64'; out = 'bench_generics_linux_arm64' },
-            @{ os = 'darwin'; arch = 'amd64'; out = 'bench_generics_darwin_amd64' },
-            @{ os = 'darwin'; arch = 'arm64'; out = 'bench_generics_darwin_arm64' }
+            @{ os = 'windows'; arch = '386';   out = 'bench_generics_windows_386.exe';   stripped = 'bench_generics_windows_386_stripped.exe'; sidecars = $false },
+            @{ os = 'linux';   arch = 'amd64'; out = 'bench_generics_linux_amd64';        stripped = 'bench_generics_linux_amd64_stripped';     sidecars = $true  },
+            @{ os = 'linux';   arch = '386';   out = 'bench_generics_linux_386';          stripped = 'bench_generics_linux_386_stripped';       sidecars = $false },
+            @{ os = 'linux';   arch = 'arm64'; out = 'bench_generics_linux_arm64';        stripped = 'bench_generics_linux_arm64_stripped';     sidecars = $true  },
+            @{ os = 'darwin';  arch = 'amd64'; out = 'bench_generics_darwin_amd64';       stripped = 'bench_generics_darwin_amd64_stripped';    sidecars = $true  },
+            @{ os = 'darwin';  arch = 'arm64'; out = 'bench_generics_darwin_arm64';       stripped = 'bench_generics_darwin_arm64_stripped';    sidecars = $true  }
         )
         $savedOs = $env:GOOS
         $savedArch = $env:GOARCH
@@ -128,6 +130,8 @@ if (Test-Path (Join-Path $benchSrc 'main.go')) {
             $binPath = Join-Path $here $t.out
             & go build -trimpath -o $binPath .
             if ($LASTEXITCODE -ne 0) { throw ("go build (cross {0}/{1}) failed" -f $t.os, $t.arch) }
+            & go build -trimpath -ldflags '-s -w' -o (Join-Path $here $t.stripped) .
+            if ($LASTEXITCODE -ne 0) { throw ("go build (cross {0}/{1} stripped) failed" -f $t.os, $t.arch) }
             $rawCross = & go tool nm $binPath
             if ($LASTEXITCODE -ne 0) { throw ("go tool nm (cross {0}/{1}) failed" -f $t.os, $t.arch) }
             $crossSyms = $rawCross | Where-Object {
@@ -135,13 +139,15 @@ if (Test-Path (Join-Path $benchSrc 'main.go')) {
                 $cols.Count -ge 3 -and ($cols[$cols.Count - 2] -eq 'T' -or $cols[$cols.Count - 2] -eq 't')
             }
             [System.IO.File]::WriteAllLines(($binPath + '.nm.txt'), $crossSyms, $utf8NoBom)
-            $crossEq = $rawCross | Where-Object { ($_ -split '\s+') | Where-Object { $_ -like 'type:.eq.*' } }
-            [System.IO.File]::WriteAllLines(($binPath + '.nm_eq.txt'), $crossEq, $utf8NoBom)
-            $crossItab = $rawCross | Where-Object { ($_ -split '\s+') | Where-Object { $_ -like 'go:itab.*' } }
-            [System.IO.File]::WriteAllLines(($binPath + '.nm_itab.txt'), $crossItab, $utf8NoBom)
-            $crossVm = & go version -m $binPath
-            if ($LASTEXITCODE -ne 0) { throw ("go version -m (cross {0}/{1}) failed" -f $t.os, $t.arch) }
-            [System.IO.File]::WriteAllLines(($binPath + '.govm.txt'), $crossVm, $utf8NoBom)
+            if ($t.sidecars) {
+                $crossEq = $rawCross | Where-Object { ($_ -split '\s+') | Where-Object { $_ -like 'type:.eq.*' } }
+                [System.IO.File]::WriteAllLines(($binPath + '.nm_eq.txt'), $crossEq, $utf8NoBom)
+                $crossItab = $rawCross | Where-Object { ($_ -split '\s+') | Where-Object { $_ -like 'go:itab.*' } }
+                [System.IO.File]::WriteAllLines(($binPath + '.nm_itab.txt'), $crossItab, $utf8NoBom)
+                $crossVm = & go version -m $binPath
+                if ($LASTEXITCODE -ne 0) { throw ("go version -m (cross {0}/{1}) failed" -f $t.os, $t.arch) }
+                [System.IO.File]::WriteAllLines(($binPath + '.govm.txt'), $crossVm, $utf8NoBom)
+            }
         }
         $env:GOOS = $savedOs
         $env:GOARCH = $savedArch
