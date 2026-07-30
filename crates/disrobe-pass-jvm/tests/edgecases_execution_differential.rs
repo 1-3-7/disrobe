@@ -135,7 +135,7 @@ fn jdk() -> Jdk {
     let java: PathBuf = common::find_on_path("java").unwrap_or_else(|| {
         panic!(
             "java is required: this differential executes both compiled programs and compares \
-             observable behaviour"
+             observable behavior"
         )
     });
     Jdk { javac, java }
@@ -275,11 +275,11 @@ fn run_probe(jdk: &Jdk, classpath: &[&Path]) -> BTreeMap<String, String> {
         .arg("EdgeProbe")
         .arg(OBSERVATION_TIMEOUT_MS.to_string())
         .output()
-        .expect("run the behaviour probe");
+        .expect("run the behavior probe");
     let stdout: String = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
     assert!(
         out.status.success(),
-        "the behaviour probe did not run to completion on classpath {}: {}\n{stdout}",
+        "the behavior probe did not run to completion on classpath {}: {}\n{stdout}",
         PathBuf::from(&joined).display(),
         String::from_utf8_lossy(&out.stderr)
     );
@@ -327,7 +327,7 @@ fn measure(jdk: &Jdk, recovered_source: &str, purpose: &str) -> Differential {
 
     let probe_path: PathBuf = write_source(&source_dir, "EdgeProbe.java", PROBE_SRC);
     javac(jdk, &original_dir, &probe_dir, &[probe_path])
-        .unwrap_or_else(|e: String| panic!("the behaviour probe did not compile: {e}"));
+        .unwrap_or_else(|e: String| panic!("the behavior probe did not compile: {e}"));
 
     let reference: BTreeMap<String, String> =
         run_probe(jdk, &[probe_dir.as_path(), original_dir.as_path()]);
@@ -455,7 +455,7 @@ fn recovered_methods_execute_equivalently_under_a_real_jvm() {
     eprintln!(
         "JVM PER-METHOD EXECUTION DIFFERENTIAL (EdgeCases, real javac plus real jvm):\n  \
          execution-equivalent {equivalent_labels}/{PER_METHOD_TOTAL}\n  \
-         javac-clean but behaviour DIVERGENT {divergent_labels}/{PER_METHOD_TOTAL}\n  \
+         javac-clean but behavior DIVERGENT {divergent_labels}/{PER_METHOD_TOTAL}\n  \
          javac-clean, not executable in isolation {}/{PER_METHOD_TOTAL} \
          ({stub_labels} measure a nested-type stub, {not_driven_labels} not self-reproducible)\n  \
          equivalent membership: {:?}",
@@ -524,7 +524,7 @@ fn recovered_methods_execute_equivalently_under_a_real_jvm() {
         published_num,
         u64::try_from(equivalent_labels).expect("equivalent count fits u64"),
         "recovery.json publishes {published_num} execution-equivalent methods while this \
-         differential measured {equivalent_labels}; the chart states a behavioural result the JVM \
+         differential measured {equivalent_labels}; the chart states a behavioral result the JVM \
          did not produce"
     );
     assert_eq!(

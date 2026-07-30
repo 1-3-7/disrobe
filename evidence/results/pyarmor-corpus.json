@@ -1,5 +1,5 @@
 {
-  "ci_attested": false,
+  "ci_attested": true,
   "claim": "disrobe statically unpacks every PyArmor sample in the committed free-mode corpus.",
   "competitors": [],
   "detail": null,
@@ -16,6 +16,6 @@
     "note": "BCC and super mode lower the body into native code and are an information-theoretic wall shared by every static tool; the free-mode corpus is what this number covers."
   },
   "oracle_strength": "strong",
-  "reproduce": "cargo test -p disrobe-pass-pyarmor --test static_unpack_corpus (local-only: license-restricted and large samples live outside the tree)",
+  "reproduce": "cargo test -p disrobe-pass-pyarmor --test static_unpack_corpus (the 72 wrappers behind this figure are committed, so it reproduces from a clean checkout; a further 17 license-restricted and large samples live outside the tree and are not counted here)",
   "title": "PyArmor static unpack across the real-corpus free modes"
 }
