@@ -29,13 +29,16 @@ const CLASS_SCOPE_CLASSES: usize = 3_835;
 
 const CLASS_SCOPE_GRADED_FLOOR: usize = 3_223;
 
-const CLASS_SCOPE_REPEAT_RUNS: usize = 5;
+const CLASS_SCOPE_REPEAT_RUNS: usize = 8;
 
 const CLASS_SCOPE_CLEAN: usize = 2_917;
 
 const CLASS_SCOPE_CLEAN_METHODS: usize = 12_488;
 
-const CLASS_SCOPE_FAIL_CEILING: usize = 321;
+const CLASS_SCOPE_REJECTABLE: usize = 322;
+
+const CLASS_SCOPE_JAR_SHA256: &str =
+    "9a9757ac54b9636e5649a44105c6479b0d0079e207bc96110428fcc7f8a6a435";
 
 fn class_verify_golden() -> PathBuf {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -46,25 +49,54 @@ fn class_verify_golden() -> PathBuf {
     path
 }
 
-fn clean_membership(stdout: &str) -> Vec<String> {
-    let mut clean: Vec<String> = lines_with_prefix(stdout, "CLASSVERDICT CLEAN ")
+fn verdict_names(stdout: &str, verdict: &str) -> Vec<String> {
+    let tag: String = format!("CLASSVERDICT {verdict} ");
+    let mut names: Vec<String> = lines_with_prefix(stdout, &tag)
         .into_iter()
-        .map(|line: String| line.trim_start_matches("CLASSVERDICT ").to_string())
+        .map(|line: String| {
+            line.strip_prefix(tag.as_str())
+                .unwrap_or_else(|| panic!("{line} carries the {tag} prefix it was selected by"))
+                .trim()
+                .to_string()
+        })
         .collect();
-    clean.sort();
-    clean
+    names.sort();
+    names
 }
 
-fn assert_clean_membership(clean: &[String]) {
+fn golden_section(recorded: &str, tag: &str) -> Vec<String> {
+    let mut names: Vec<String> = recorded
+        .lines()
+        .filter_map(|line: &str| line.strip_prefix(tag))
+        .map(|rest: &str| rest.trim().to_string())
+        .collect();
+    names.sort();
+    names
+}
+
+fn assert_verdict_membership(clean: &[String], rejected: &[String]) {
     let golden: PathBuf = class_verify_golden();
-    let rendered: String = format!("{}\n", clean.join("\n"));
     if std::env::var_os("DISROBE_WRITE_CLASS_VERIFY_MEMBERSHIP").is_some() {
+        let mut lines: Vec<String> = clean
+            .iter()
+            .map(|name: &String| format!("CLEAN {name}"))
+            .collect();
+        lines.extend(
+            rejected
+                .iter()
+                .map(|name: &String| format!("REJECTABLE {name}")),
+        );
         std::fs::create_dir_all(golden.parent().expect("golden parent"))
             .expect("create the class-verify golden directory");
-        std::fs::write(&golden, rendered.as_bytes()).expect("write the class-verify golden");
+        std::fs::write(&golden, format!("{}\n", lines.join("\n")).as_bytes())
+            .expect("write the class-verify golden");
         eprintln!(
-            "wrote {} verifier-clean class names to {}",
+            "wrote {} verifier-clean and {} rejectable class names to {}. A single run cannot \
+             record the rejectable set on its own, because which boundary class the jvm rejects \
+             varies between runs; union this file's REJECTABLE section with the previous one rather \
+             than replacing it",
             clean.len(),
+            rejected.len(),
             golden.display()
         );
         return;
@@ -74,33 +106,66 @@ fn assert_clean_membership(clean: &[String]) {
             panic!(
                 "{} is absent ({e}), so one class could start failing the real jvm verifier while \
                  another started passing and the count would not move; re-run with \
-                 DISROBE_WRITE_CLASS_VERIFY_MEMBERSHIP=1 to record the {} clean classes",
+                 DISROBE_WRITE_CLASS_VERIFY_MEMBERSHIP=1 to record the {} clean classes and the \
+                 rejectable set beside them",
                 golden.display(),
                 clean.len()
             )
         })
         .replace("\r\n", "\n");
-    let pinned: Vec<&str> = recorded.lines().filter(|l: &&str| !l.is_empty()).collect();
-    let measured: Vec<&str> = rendered.lines().filter(|l: &&str| !l.is_empty()).collect();
-    let gained: Vec<&&str> = measured
+    let pinned_clean: Vec<String> = golden_section(&recorded, "CLEAN ");
+    let rejectable: Vec<String> = golden_section(&recorded, "REJECTABLE ");
+    assert_eq!(
+        rejectable.len(),
+        CLASS_SCOPE_REJECTABLE,
+        "the golden pins {} rejectable classes but this gate expects {CLASS_SCOPE_REJECTABLE}. That \
+         section is a work queue rather than a bound: it lists classes the real jvm has been seen \
+         to reject over {CLASS_SCOPE_REPEAT_RUNS} runs, it grows as reach varies, and it is not \
+         asserted against a run because a class reaching the verifier for the first time is not a \
+         regression. Their messages are real defects in what the lifter emitted, over four fifths \
+         of them a stackmap frame that disagrees with the types the code actually carries at a \
+         join. Change this number only when you have added or fixed entries by hand",
+        rejectable.len()
+    );
+    assert!(
+        !rejectable
+            .iter()
+            .any(|name: &String| pinned_clean.binary_search(name).is_ok()),
+        "a class cannot be pinned both verifier-clean and rejectable; the golden contradicts itself"
+    );
+    let unexpected: Vec<&String> = rejected
         .iter()
-        .filter(|l: &&&str| !pinned.contains(*l))
-        .collect();
-    let lost: Vec<&&str> = pinned
-        .iter()
-        .filter(|l: &&&str| !measured.contains(*l))
+        .filter(|name: &&String| rejectable.binary_search(name).is_err())
         .collect();
     eprintln!(
-        "MEMBERSHIP {}: pinned={} measured={} gained={} lost={}",
+        "MEMBERSHIP {}: pinned_clean={} measured_clean={} pinned_rejectable={} measured_rejected={} \
+         outside_rejectable={}",
         golden.display(),
-        pinned.len(),
-        measured.len(),
-        gained.len(),
-        lost.len()
+        pinned_clean.len(),
+        clean.len(),
+        rejectable.len(),
+        rejected.len(),
+        unexpected.len()
     );
+    for name in &unexpected {
+        eprintln!(
+            "  NOTE {name} is rejected by the jvm but absent from the known-bad list. It reached \
+             the verifier for the first time rather than regressed, since a class that stops \
+             verifying clean is caught by name below; read its VERIFY line above and add it to the \
+             golden's REJECTABLE section"
+        );
+    }
+    let gained: Vec<&String> = clean
+        .iter()
+        .filter(|name: &&String| pinned_clean.binary_search(name).is_err())
+        .collect();
+    let lost: Vec<&String> = pinned_clean
+        .iter()
+        .filter(|name: &&String| clean.binary_search(name).is_err())
+        .collect();
     let mut drift: Vec<String> = Vec::new();
-    drift.extend(lost.iter().map(|l: &&&str| format!("lost {l}")));
-    drift.extend(gained.iter().map(|l: &&&str| format!("gained {l}")));
+    drift.extend(lost.iter().map(|name: &&String| format!("lost {name}")));
+    drift.extend(gained.iter().map(|name: &&String| format!("gained {name}")));
     assert!(
         drift.is_empty(),
         "{} of the pinned verifier-clean classes changed. A lost entry is a class that no longer \
@@ -216,6 +281,24 @@ fn realworld_apk_translated_classes_verify() {
         .expect("the class-scope apk must carry classes.dex");
     let result: Dex2JarResult = translate_dex_bytes(dex).expect("translate");
     let jar: Vec<u8> = assemble_jar(&result).expect("assemble jar");
+    let second: Dex2JarResult = translate_dex_bytes(dex).expect("translate");
+    let second_jar: Vec<u8> = assemble_jar(&second).expect("assemble jar");
+    assert_eq!(
+        jar, second_jar,
+        "translating the same dex twice in one process produced different jars, so the recovered \
+         bytecode is not a function of the input alone and no verdict measured over it can be \
+         reproducible"
+    );
+    let digest: String = format!(
+        "{:x}",
+        <sha2::Sha256 as sha2::Digest>::digest(jar.as_slice())
+    );
+    eprintln!("CLASS SCOPE JAR sha256={digest} bytes={}", jar.len());
+    assert_eq!(
+        digest, CLASS_SCOPE_JAR_SHA256,
+        "the jar this gate measures is not the one its verdicts were recorded against; the pinned \
+         clean set and the known-bad list below describe a different build of the same apk"
+    );
     let jar_path: PathBuf = verifier.write_jar("realworld-classes", &jar);
     let stdout: String = verifier.run(
         VerifyScope::Classes {
@@ -248,7 +331,8 @@ fn realworld_apk_translated_classes_verify() {
          backed by the class names behind it",
         reported.len()
     );
-    let clean_names: Vec<String> = clean_membership(&stdout);
+    let clean_names: Vec<String> = verdict_names(&stdout, "CLEAN");
+    let rejected_names: Vec<String> = verdict_names(&stdout, "REJECT");
     assert_eq!(
         clean_names.len(),
         clean,
@@ -256,7 +340,13 @@ fn realworld_apk_translated_classes_verify() {
          by the class names behind it",
         clean_names.len()
     );
-    assert_clean_membership(&clean_names);
+    assert_eq!(
+        rejected_names.len(),
+        failed,
+        "the jvm reported {failed} rejected classes but named {} in its verdict list",
+        rejected_names.len()
+    );
+    assert_verdict_membership(&clean_names, &rejected_names);
     assert_eq!(
         clean + failed + link_skipped + link_unstable,
         CLASS_SCOPE_CLASSES,
@@ -279,9 +369,9 @@ fn realworld_apk_translated_classes_verify() {
          pinned {CLASS_SCOPE_GRADED_FLOOR}; {link_skipped} were link-skipped, and moving classes \
          into that bucket must not shrink the population the pass is graded over. The clean set \
          below is reproducible and pinned by name, so this bound guards the other side, which is \
-         reach. It is empirical like the ceiling below: the pinned clean count plus 306, the \
-         rejections that recurred in every one of {CLASS_SCOPE_REPEAT_RUNS} runs, rather than any \
-         single run's total, because a bound pinned to one run's figure fails on the next",
+         reach. It is empirical, set at the pinned clean count plus the rejections that recurred in \
+         every one of {CLASS_SCOPE_REPEAT_RUNS} runs rather than at any single run's total, because \
+         a bound pinned to one run's figure fails on the next",
         clean + failed
     );
     assert_eq!(
@@ -290,31 +380,13 @@ fn realworld_apk_translated_classes_verify() {
          against the pinned {CLASS_SCOPE_CLEAN}. This is the number to trust: across \
          {CLASS_SCOPE_REPEAT_RUNS} runs of this test on the same apk, including two under compile \
          load from other work, this set came back byte-identical every time with nothing lost and \
-         nothing gained, while the rejected-versus-never-loaded boundary moved by fifteen classes. \
-         A change here is the lifter moving and not the harness, and the membership assertion above \
-         names the classes that moved"
+         nothing gained, while which classes the jvm rejected rather than never loaded kept moving \
+         around it. A change here is the lifter moving and not the harness, and the membership \
+         assertion above names the classes that moved"
     );
     assert_eq!(
         methods, CLASS_SCOPE_CLEAN_METHODS,
         "the verifier-clean classes hold {methods} methods with code against the pinned \
          {CLASS_SCOPE_CLEAN_METHODS}"
-    );
-    assert!(
-        failed <= CLASS_SCOPE_FAIL_CEILING,
-        "the jvm rejected {failed} recovered classes, above the ceiling \
-         {CLASS_SCOPE_FAIL_CEILING}. Read this before treating it as a lifter regression, because \
-         the ceiling is empirical and not derived. Over {CLASS_SCOPE_REPEAT_RUNS} runs of this test \
-         on the same apk, the verifier-clean set above was byte-identical every time while fifteen \
-         classes moved between rejected and never-loaded; per-run rejections ran 311 to 316, the \
-         union of the rejected sets was {CLASS_SCOPE_FAIL_CEILING} and the intersection 306, and \
-         the ceiling is that union. The jar the harness reads is a BTreeMap and its class names are \
-         sorted before loading, so neither the bytes nor the order vary, and the movement is the \
-         jvm resolving a real apk's classes against framework supertypes the harness has to stub. \
-         Exceeding this ceiling therefore means one of two things: the lifter broke a class that \
-         used to be graded, or a sixteenth class joined the boundary. Distinguish them by the \
-         assertion above rather than this one, because a class that regresses from verifying clean \
-         leaves the pinned {CLASS_SCOPE_CLEAN}-class set and names itself there; if this fires and \
-         that set is intact, re-measure across repeat runs and widen the union. The per-body \
-         attribution lives in dalvik_realworld_body_attest.rs"
     );
 }
