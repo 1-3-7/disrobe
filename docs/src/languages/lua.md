@@ -6,7 +6,7 @@
 
 | Layer | Coverage |
 |---|---|
-| Dialects | Lua 5.1 / 5.2 / 5.3 / 5.4, LuaJIT 2.0 / 2.1, full Luau (all 82 opcodes, child-proto linking), GLua |
+| Dialects | Lua 5.1 / 5.2 / 5.3 / 5.4, LuaJIT 2.0 / 2.1, Luau (87 of the 88 opcodes its table declares are lifted, with `NEWCLASSMEMBER` decoded and reported rather than lifted; child-proto linking), GLua |
 | Decompile output | Lua source plus a manifest recording the detected dialect, fidelity grade (`Lossless` / `Lossy` / `BestEffort`), and any warnings |
 | Obfuscators (14) | IronBrew2, Prometheus, MoonSec V1 / V2 / V3, AztupBrew, DarkSec, Boronide, PSU, WeAreDevs, luaobfuscator.com, SLua, Hercules, Luraph |
 | Chain catalog | 16 entries: the 14 obfuscator families above plus the Luau and GLua dialect detectors |
