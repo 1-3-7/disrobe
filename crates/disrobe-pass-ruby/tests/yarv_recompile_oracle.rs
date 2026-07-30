@@ -17,13 +17,13 @@ use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::analyze_bytes;
 use ruby_toolchain::{ToolchainBanner, require_mri_measured_series};
 
-const HELLO_FLOOR_PCT: u32 = 100;
-const GREETER_FLOOR_PCT: u32 = 100;
-const MEGAFILE_FLOOR_PCT: u32 = 98;
+const HELLO_EXPECTED_PCT: u32 = 100;
+const GREETER_EXPECTED_PCT: u32 = 100;
+const MEGAFILE_EXPECTED_PCT: u32 = 98;
 
-const HELLO_MATCHED_FLOOR: u32 = 4;
-const GREETER_MATCHED_FLOOR: u32 = 79;
-const MEGAFILE_MATCHED_FLOOR: u32 = 23_580;
+const HELLO_MATCHED_TOTAL: u32 = 4;
+const GREETER_MATCHED_TOTAL: u32 = 79;
+const MEGAFILE_MATCHED_TOTAL: u32 = 23_648;
 
 const HELLO_COMPARED_TOTAL: u32 = 4;
 const GREETER_COMPARED_TOTAL: u32 = 79;
@@ -55,8 +55,8 @@ struct Fixture {
     label: &'static str,
     original_rel: &'static str,
     yarvc_rel: &'static str,
-    floor_pct: u32,
-    matched_floor: u32,
+    expected_pct: u32,
+    matched_total: u32,
     compared_total: u32,
     published_bar: Option<&'static str>,
 }
@@ -66,8 +66,8 @@ const FIXTURES: [Fixture; 3] = [
         label: "hello",
         original_rel: "hello.rb",
         yarvc_rel: "mri/yarv/hello.rb.yarvc",
-        floor_pct: HELLO_FLOOR_PCT,
-        matched_floor: HELLO_MATCHED_FLOOR,
+        expected_pct: HELLO_EXPECTED_PCT,
+        matched_total: HELLO_MATCHED_TOTAL,
         compared_total: HELLO_COMPARED_TOTAL,
         published_bar: None,
     },
@@ -75,8 +75,8 @@ const FIXTURES: [Fixture; 3] = [
         label: "greeter",
         original_rel: "greeter.rb",
         yarvc_rel: "mri/yarv/greeter.rb.yarvc",
-        floor_pct: GREETER_FLOOR_PCT,
-        matched_floor: GREETER_MATCHED_FLOOR,
+        expected_pct: GREETER_EXPECTED_PCT,
+        matched_total: GREETER_MATCHED_TOTAL,
         compared_total: GREETER_COMPARED_TOTAL,
         published_bar: Some(PUBLISHED_GREETER_BAR),
     },
@@ -84,8 +84,8 @@ const FIXTURES: [Fixture; 3] = [
         label: "megafile",
         original_rel: "megafile/edge_cases.rb",
         yarvc_rel: "mri/yarv/edge_cases.rb.yarvc",
-        floor_pct: MEGAFILE_FLOOR_PCT,
-        matched_floor: MEGAFILE_MATCHED_FLOOR,
+        expected_pct: MEGAFILE_EXPECTED_PCT,
+        matched_total: MEGAFILE_MATCHED_TOTAL,
         compared_total: MEGAFILE_COMPARED_TOTAL,
         published_bar: Some(PUBLISHED_MEGAFILE_BAR),
     },
@@ -228,19 +228,18 @@ fn published_detail_defect(
         counts_stated_in_detail(detail)
     else {
         return Some(format!(
-            "the {label} bar plots a floor rather than the measurement, so the counts behind it are \
-             stated only in its detail text, and that text carries no `matches N of M opcodes` \
-             phrase for this run to be checked against. This run measured {matched} of {compared}; \
-             state it, or the published prose is unverifiable.\n--- detail ---\n{detail}"
+            "the {label} bar states its counts in its detail text as well as plotting their rate, \
+             and that text carries no `matches N of M opcodes` phrase for this run to be checked \
+             against. This run measured {matched} of {compared}; state it, or the published prose is \
+             unverifiable.\n--- detail ---\n{detail}"
         ));
     };
     if (stated_matched, stated_compared) != (matched, compared) {
         return Some(format!(
             "the {label} bar states it matches {stated_matched} of {stated_compared} opcodes and \
-             every document renders that sentence, but this run measured {matched} of {compared}. \
-             The plotted value is a floor and a regression above the floor leaves it green, so this \
-             prose is the only thing that pins the measurement; re-measure and restate \
-             it.\n--- detail ---\n{detail}"
+             every document renders that sentence, but this run measured {matched} of {compared}; \
+             the prose beside a figure has to describe the same run the figure does, so re-measure \
+             and restate it.\n--- detail ---\n{detail}"
         ));
     }
     if compared == 0 {
@@ -259,6 +258,34 @@ fn published_detail_defect(
         ));
     }
     None
+}
+
+fn published_rate_defect(
+    published: f64,
+    matched: u32,
+    compared: u32,
+    label: &str,
+    measured_by: &str,
+) -> Option<String> {
+    if compared == 0 {
+        return Some(format!(
+            "{label}: the graded population is empty, so no plotted rate over it means anything"
+        ));
+    }
+    if !(0.0..=100.0).contains(&published) {
+        return Some(format!(
+            "xtask/data/recovery.json plots {label} at {published}, which is not a rate"
+        ));
+    }
+    let rate: f64 = 100.0 * f64::from(matched) / f64::from(compared);
+    ((published - rate).abs() >= PUBLISHED_VALUE_TOLERANCE).then(|| {
+        format!(
+            "xtask/data/recovery.json plots {label} at {published}% and every document renders that \
+             number, but {measured_by} is {matched}/{compared} = {rate:.2}%. The bar must equal the \
+             measurement, not bound it, so a recovery that drifts in either direction fails here \
+             until the figure is updated to describe it."
+        )
+    })
 }
 
 fn published_value_defect(bar: &serde_json::Value, label: &str) -> Option<String> {
@@ -284,27 +311,32 @@ fn published_value_defect(bar: &serde_json::Value, label: &str) -> Option<String
 }
 
 #[test]
-fn published_yarv_bars_match_the_floors_this_crate_enforces() {
-    for (label, floor) in [
-        (PUBLISHED_GREETER_BAR, GREETER_FLOOR_PCT),
-        (PUBLISHED_MEGAFILE_BAR, MEGAFILE_FLOOR_PCT),
-    ] {
+fn published_yarv_bars_match_the_counts_this_crate_pins() {
+    let mut checked: usize = 0;
+    for fixture in &FIXTURES {
+        let Some(label): Option<&'static str> = fixture.published_bar else {
+            continue;
+        };
         let bar: serde_json::Value = published_bar(PUBLISHED_HEADING, label);
         let value: f64 = published_value(label);
-        assert!(
-            value >= f64::from(floor),
-            "xtask/data/recovery.json publishes {label} at {value}% and every document renders that \
-             number, but this gate enforces a floor of {floor}%; a figure below the floor the tests \
-             hold is a figure no run has to reach"
-        );
-        assert!(
-            value <= 100.0,
-            "xtask/data/recovery.json publishes {label} at {value}%, which is not a rate"
-        );
+        if let Some(defect) = published_rate_defect(
+            value,
+            fixture.matched_total,
+            fixture.compared_total,
+            label,
+            "the count this crate pins for the same committed fixture",
+        ) {
+            panic!("{defect}");
+        }
         if let Some(defect) = published_value_defect(&bar, label) {
             panic!("{defect}");
         }
+        checked += 1;
     }
+    assert_eq!(
+        checked, 2,
+        "both published YARV bars must be checked against the counts this crate pins"
+    );
 }
 
 #[test]
@@ -313,7 +345,7 @@ fn a_published_count_that_no_run_reproduces_is_rejected() {
         mode: RecompileMode::Whole,
         matched: 23_648,
         compared: MEGAFILE_COMPARED_TOTAL,
-        pct: MEGAFILE_FLOOR_PCT,
+        pct: MEGAFILE_EXPECTED_PCT,
     };
     let num: u64 = u64::from(measured.matched);
     let den: u64 = u64::from(measured.compared);
@@ -336,9 +368,9 @@ fn a_published_count_that_no_run_reproduces_is_rejected() {
     }
     assert!(
         published_count_defect(&serde_json::json!({}), PUBLISHED_MEGAFILE_BAR, &measured).is_none(),
-        "these bars plot the enforced floor rather than the measurement and state their counts in \
-         their detail text, so an absent `num` and `den` is the published shape; the counts are \
-         pinned by published_detail_defect instead"
+        "these bars carry their counts in their detail text rather than in `num` and `den`, so an \
+         absent pair is the published shape; the counts are pinned by published_detail_defect and \
+         the plotted rate is pinned against them separately"
     );
 
     let honest: serde_json::Value = serde_json::json!({"num": num, "den": den, "value": 98.67});
@@ -378,10 +410,80 @@ fn a_published_count_that_no_run_reproduces_is_rejected() {
         assert!(
             published_detail_defect(&bar, PUBLISHED_MEGAFILE_BAR, &measured).is_some(),
             "the detail text {wrong:?} states something this run did not measure and must be \
-             rejected; a 48-opcode regression still clears the published floor, so this prose is \
-             what catches it"
+             rejected; prose stating counts no run produced is the same defect as a plotted number \
+             no run produced"
         );
     }
+}
+
+#[test]
+fn a_plotted_rate_that_does_not_equal_the_measurement_is_rejected_in_both_directions() {
+    let matched: u32 = MEGAFILE_MATCHED_TOTAL;
+    let compared: u32 = MEGAFILE_COMPARED_TOTAL;
+    let truth: f64 = 100.0 * f64::from(matched) / f64::from(compared);
+    assert!(
+        (truth - 98.67).abs() < PUBLISHED_VALUE_TOLERANCE,
+        "the pinned megafile counts are {matched}/{compared}, whose rate is {truth:.4}; the figure \
+         this crate expects to be published is 98.67"
+    );
+    assert!(
+        published_rate_defect(98.67, matched, compared, PUBLISHED_MEGAFILE_BAR, "pinned").is_none(),
+        "the rate the pinned counts produce must be accepted, otherwise the published figure this \
+         crate asks for could never be right"
+    );
+    for understating in [98.0, 90.0, 0.0] {
+        let defect: String = published_rate_defect(
+            understating,
+            matched,
+            compared,
+            PUBLISHED_MEGAFILE_BAR,
+            "pinned",
+        )
+        .unwrap_or_else(|| {
+            panic!(
+                "a plotted {understating}% below the measured {truth:.2}% understates the recovery \
+                 and must be rejected; a figure that only bounds the measurement stops describing \
+                 it as soon as the recovery improves"
+            )
+        });
+        assert!(
+            defect.contains("must equal the measurement, not bound it"),
+            "the rejection must say why a bound is not enough, got: {defect}"
+        );
+    }
+    for overstating in [98.9, 100.0] {
+        assert!(
+            published_rate_defect(
+                overstating,
+                matched,
+                compared,
+                PUBLISHED_MEGAFILE_BAR,
+                "pinned"
+            )
+            .is_some(),
+            "a plotted {overstating}% above the measured {truth:.2}% overstates the recovery and \
+             must be rejected"
+        );
+    }
+    assert!(
+        published_rate_defect(100.0, 0, 0, PUBLISHED_MEGAFILE_BAR, "pinned").is_some(),
+        "a rate over an empty population must be rejected rather than dividing by zero"
+    );
+    assert!(
+        published_rate_defect(101.0, matched, compared, PUBLISHED_MEGAFILE_BAR, "pinned").is_some(),
+        "a figure outside 0 to 100 is not a rate"
+    );
+    assert!(
+        published_rate_defect(
+            100.0,
+            GREETER_MATCHED_TOTAL,
+            GREETER_COMPARED_TOTAL,
+            PUBLISHED_GREETER_BAR,
+            "pinned"
+        )
+        .is_none(),
+        "an exact fixture legitimately plots 100, so the check must not reject a true 100"
+    );
 }
 
 fn recover_source(yarvc_rel: &str) -> String {
@@ -480,7 +582,7 @@ fn measure(fixture: &Fixture) -> Measurement {
     measurement
 }
 
-fn enforce_floors(fixture: &Fixture, measurement: &Measurement) {
+fn enforce_pinned_measurement(fixture: &Fixture, measurement: &Measurement) {
     assert_eq!(
         measurement.mode,
         RecompileMode::Whole,
@@ -496,27 +598,30 @@ fn enforce_floors(fixture: &Fixture, measurement: &Measurement) {
          the same change",
         fixture.label, measurement.compared, fixture.compared_total
     );
-    assert!(
-        measurement.matched >= fixture.matched_floor,
-        "{} matched-opcode count regressed below the locked floor {}, got {}",
-        fixture.label,
-        fixture.matched_floor,
-        measurement.matched
+    assert_eq!(
+        measurement.matched, fixture.matched_total,
+        "{} matched {} opcodes, not the {} it is pinned to. The inputs are committed and the \
+         interpreter series is pinned, so this count does not legitimately move: a lower number is \
+         a regression and a higher one is an improvement the published figure has to be updated to \
+         describe. Both directions fail here on purpose.",
+        fixture.label, measurement.matched, fixture.matched_total
     );
-    assert!(
-        measurement.pct >= fixture.floor_pct,
-        "{} opcode-equivalence regressed below {}%, got {}%",
-        fixture.label,
-        fixture.floor_pct,
-        measurement.pct
+    assert_eq!(
+        measurement.pct, fixture.expected_pct,
+        "{} scored {}%, not the {}% it is pinned to",
+        fixture.label, measurement.pct, fixture.expected_pct
     );
     if let Some(label) = fixture.published_bar {
         let published: f64 = published_value(label);
-        assert!(
-            f64::from(measurement.pct) >= published,
-            "recovery.json publishes {label} at {published}%; this run measured {}%",
-            measurement.pct
-        );
+        if let Some(defect) = published_rate_defect(
+            published,
+            measurement.matched,
+            measurement.compared,
+            label,
+            "what this run measured",
+        ) {
+            panic!("{defect}");
+        }
         let bar: serde_json::Value = published_bar(PUBLISHED_HEADING, label);
         if let Some(defect) = published_count_defect(&bar, label, measurement) {
             panic!("{defect}");
@@ -537,14 +642,14 @@ fn yarv_recompile_equivalence_is_reproducible() {
     let mut graded: usize = 0;
     for fixture in &FIXTURES {
         let measurement: Measurement = measure(fixture);
-        enforce_floors(fixture, &measurement);
+        enforce_pinned_measurement(fixture, &measurement);
         println!(
-            "[{}] matched={} compared={} pct={} floor={}% published_bar={}",
+            "[{}] matched={} compared={} pct={} pinned={}% published_bar={}",
             fixture.label,
             measurement.matched,
             measurement.compared,
             measurement.pct,
-            fixture.floor_pct,
+            fixture.expected_pct,
             fixture.published_bar.unwrap_or("none")
         );
         graded += 1;
