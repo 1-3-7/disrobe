@@ -10,25 +10,23 @@
     clippy::cast_possible_wrap
 )]
 
-use std::fs;
-use std::path::PathBuf;
+#[path = "support/packer_fixture.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod packer_fixture;
 
 use disrobe_pass_native::arch::{Arch, DisasmInsn, Syntax, disassemble_x86};
 use disrobe_pass_native::parse_nspack_layout;
+use packer_fixture::{PackerFixture, load_fixture};
 
 const STUB_MAGIC: &[u8] = b"\x9c\x60\xe8\x00\x00\x00\x00\x5d\xb8\x07\x00\x00\x00";
 const APLIB_BLOB_DELTA_FROM_STUB: usize = 0x3D1;
 
 fn corpus(name: &str) -> Option<Vec<u8>> {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("..");
-    p.push("..");
-    p.push("corpus");
-    p.push("native");
-    p.push("packers");
-    p.push("nspack");
-    p.push(name);
-    fs::read(&p).ok()
+    load_fixture(PackerFixture {
+        decoder: "NSPack",
+        family: "nspack",
+        name,
+    })
 }
 
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -163,7 +161,6 @@ fn recover_decoder_image(packed: &[u8]) -> Option<Vec<u8>> {
 #[test]
 fn nspack_stub_aplib_decompresses_to_valid_lzma_decoder() {
     let Some(packed): Option<Vec<u8>> = corpus("handle.packed.nspack.exe") else {
-        eprintln!("skip: handle.packed.nspack.exe missing");
         return;
     };
     let image: Vec<u8> =
@@ -192,7 +189,6 @@ fn nspack_stub_aplib_decompresses_to_valid_lzma_decoder() {
 #[test]
 fn nspack_decode_core_matches_disrobe_constants() {
     let Some(packed): Option<Vec<u8>> = corpus("handle.packed.nspack.exe") else {
-        eprintln!("skip: handle.packed.nspack.exe missing");
         return;
     };
     let image: Vec<u8> =

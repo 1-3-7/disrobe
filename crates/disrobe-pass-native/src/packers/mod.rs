@@ -959,7 +959,7 @@ mod tests {
             names
         };
 
-        let mut normalise = |mut expected: Vec<&'static str>| -> Vec<&'static str> {
+        let normalise = |mut expected: Vec<&'static str>| -> Vec<&'static str> {
             expected.sort_unstable();
             expected
         };

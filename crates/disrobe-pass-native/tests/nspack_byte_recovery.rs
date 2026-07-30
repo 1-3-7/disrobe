@@ -9,39 +9,26 @@
     clippy::cast_sign_loss
 )]
 
-use std::fs;
-use std::path::PathBuf;
+#[path = "support/packer_fixture.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod packer_fixture;
 
 use disrobe_pass_native::{
     NspackEmulatedReport, NspackRecoveryStatus, unpack_nspack_emulated_with_baseline,
 };
-
-fn corpus_dir() -> PathBuf {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("..");
-    p.push("..");
-    p.push("corpus");
-    p.push("native");
-    p.push("packers");
-    p.push("nspack");
-    p
-}
+use packer_fixture::{PackerFixture, enforce_something_was_graded, load_fixture};
 
 fn read_corpus(name: &str) -> Option<Vec<u8>> {
-    let mut p: PathBuf = corpus_dir();
-    p.push(name);
-    fs::read(&p).ok()
+    load_fixture(PackerFixture {
+        decoder: "NSPack",
+        family: "nspack",
+        name,
+    })
 }
 
 fn run_one_fixture(label: &str, packed_name: &str, orig_name: &str) -> Option<(f64, f64)> {
-    let Some(packed): Option<Vec<u8>> = read_corpus(packed_name) else {
-        eprintln!("skip: {packed_name} missing");
-        return None;
-    };
-    let Some(original): Option<Vec<u8>> = read_corpus(orig_name) else {
-        eprintln!("skip: {orig_name} missing");
-        return None;
-    };
+    let packed: Vec<u8> = read_corpus(packed_name)?;
+    let original: Vec<u8> = read_corpus(orig_name)?;
     let report: NspackEmulatedReport =
         match unpack_nspack_emulated_with_baseline(&packed, Some(&original)) {
             Ok(r) => r,
@@ -173,7 +160,7 @@ fn nspack_content_recovery_all_present_fixtures_pass() {
         }
     }
     if tested == 0 {
-        eprintln!("no fixtures present; content-recovery check skipped");
+        enforce_something_was_graded("NSPack", tested, "nspack");
         return;
     }
     println!("nspack content-recovery: {passed}/{tested} fixtures at or above 90%");

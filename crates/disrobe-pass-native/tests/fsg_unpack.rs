@@ -10,27 +10,20 @@
     clippy::cast_sign_loss
 )]
 
-use std::fs;
-use std::path::PathBuf;
+#[path = "support/packer_fixture.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod packer_fixture;
 
 use disrobe_pass_native::error::Error;
 use disrobe_pass_native::packers::{FsgUnpackOutput, unpack_fsg};
-
-fn corpus_path(name: &str) -> PathBuf {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("..");
-    p.push("..");
-    p.push("corpus");
-    p.push("native");
-    p.push("packers");
-    p.push("fsg");
-    p.push(name);
-    p
-}
+use packer_fixture::{PackerFixture, load_fixture};
 
 fn read_corpus(name: &str) -> Option<Vec<u8>> {
-    let p: PathBuf = corpus_path(name);
-    fs::read(&p).ok()
+    load_fixture(PackerFixture {
+        decoder: "FSG",
+        family: "fsg",
+        name,
+    })
 }
 
 fn expect_fsg_anchors(out: &FsgUnpackOutput) {
@@ -65,7 +58,6 @@ fn expect_fsg_anchors(out: &FsgUnpackOutput) {
 #[test]
 fn test_fsg_aatools_setup_round_trip() {
     let Some(packed): Option<Vec<u8>> = read_corpus("aatools_setup.packed.fsg.exe") else {
-        eprintln!("skip: aatools_setup.packed.fsg.exe missing");
         return;
     };
     let out: FsgUnpackOutput = unpack_fsg(&packed).expect("FSG unpack must succeed");
@@ -75,7 +67,6 @@ fn test_fsg_aatools_setup_round_trip() {
 #[test]
 fn test_fsg_hash_round_trip() {
     let Some(packed): Option<Vec<u8>> = read_corpus("Hash.packed.fsg.exe") else {
-        eprintln!("skip: Hash.packed.fsg.exe missing");
         return;
     };
     let out: FsgUnpackOutput = unpack_fsg(&packed).expect("FSG unpack must succeed");
@@ -85,7 +76,6 @@ fn test_fsg_hash_round_trip() {
 #[test]
 fn test_fsg_ftp_round_trip() {
     let Some(packed): Option<Vec<u8>> = read_corpus("ftp.packed.fsg.exe") else {
-        eprintln!("skip: ftp.packed.fsg.exe missing");
         return;
     };
     let out: FsgUnpackOutput = unpack_fsg(&packed).expect("FSG unpack must succeed");
@@ -109,7 +99,6 @@ fn test_fsg_rejects_non_fsg_pe() {
 #[test]
 fn test_fsg_unpacked_pe_runs_structural_check() {
     let Some(packed): Option<Vec<u8>> = read_corpus("aatools_setup.packed.fsg.exe") else {
-        eprintln!("skip: aatools_setup.packed.fsg.exe missing");
         return;
     };
     let out: FsgUnpackOutput = unpack_fsg(&packed).expect("FSG unpack must succeed");
@@ -175,11 +164,9 @@ fn byte_diff_pct(a: &[u8], b: &[u8]) -> f64 {
 
 fn assert_round_trip(packed_name: &str, original_name: &str, max_byte_diff_pct: f64) {
     let Some(packed): Option<Vec<u8>> = read_corpus(packed_name) else {
-        eprintln!("skip: {packed_name} missing");
         return;
     };
     let Some(orig): Option<Vec<u8>> = read_corpus(original_name) else {
-        eprintln!("skip: {original_name} missing");
         return;
     };
     let out: FsgUnpackOutput = unpack_fsg(&packed).expect("FSG unpack must succeed");
@@ -282,11 +269,9 @@ fn data_dir(orig: &[u8], index: usize) -> (u32, u32) {
 #[test]
 fn test_fsg_ftp_residual_diff_is_confined_to_bound_iat() {
     let Some(packed): Option<Vec<u8>> = read_corpus("ftp.packed.fsg.exe") else {
-        eprintln!("skip: ftp.packed.fsg.exe missing");
         return;
     };
     let Some(orig): Option<Vec<u8>> = read_corpus("ftp.original.exe") else {
-        eprintln!("skip: ftp.original.exe missing");
         return;
     };
     let out: FsgUnpackOutput = unpack_fsg(&packed).expect("FSG unpack must succeed");
@@ -338,7 +323,6 @@ fn test_fsg_ftp_residual_diff_is_confined_to_bound_iat() {
 #[test]
 fn test_fsg_synthetic_truncated_stream_errors_cleanly() {
     let Some(packed): Option<Vec<u8>> = read_corpus("aatools_setup.packed.fsg.exe") else {
-        eprintln!("skip: aatools_setup.packed.fsg.exe missing");
         return;
     };
     let truncated: Vec<u8> = packed[..0x250].to_vec();

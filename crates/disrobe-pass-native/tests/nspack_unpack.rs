@@ -9,8 +9,11 @@
     clippy::cast_sign_loss
 )]
 
-use std::fs;
-use std::path::PathBuf;
+#[path = "support/packer_fixture.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod packer_fixture;
+
+use packer_fixture::{PackerFixture, enforce_something_was_graded, load_fixture};
 
 use disrobe_pass_native::{
     NspackEmulatedReport, NspackRecoveredSectionName, NspackRecoveryStatus, NspackUnpackReport,
@@ -18,21 +21,12 @@ use disrobe_pass_native::{
     unpack_nspack_emulated_with_baseline,
 };
 
-fn corpus_dir() -> PathBuf {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("..");
-    p.push("..");
-    p.push("corpus");
-    p.push("native");
-    p.push("packers");
-    p.push("nspack");
-    p
-}
-
 fn read_corpus(name: &str) -> Option<Vec<u8>> {
-    let mut p: PathBuf = corpus_dir();
-    p.push(name);
-    fs::read(&p).ok()
+    load_fixture(PackerFixture {
+        decoder: "NSPack",
+        family: "nspack",
+        name,
+    })
 }
 
 const fn fixtures() -> &'static [(&'static str, &'static str, &'static str)] {
@@ -117,11 +111,9 @@ fn nspack_section_signatures_detected() {
 #[test]
 fn test_nspack_hash_round_trip() {
     let Some(packed) = read_corpus("hash.packed.nspack.exe") else {
-        eprintln!("skip: hash.packed.nspack.exe missing");
         return;
     };
     let Some(original) = read_corpus("hash.original.exe") else {
-        eprintln!("skip: hash.original.exe missing");
         return;
     };
     let report: NspackUnpackReport =
@@ -141,7 +133,6 @@ fn test_nspack_hash_round_trip() {
 #[test]
 fn test_nspack_ftp_round_trip() {
     let Some(packed) = read_corpus("ftp.packed.nspack.exe") else {
-        eprintln!("skip: ftp.packed.nspack.exe missing");
         return;
     };
     let report: NspackUnpackReport = unpack_nspack(&packed).expect("unpack ftp");
@@ -151,7 +142,6 @@ fn test_nspack_ftp_round_trip() {
 #[test]
 fn test_nspack_cmd_round_trip() {
     let Some(packed) = read_corpus("cmd.packed.nspack.exe") else {
-        eprintln!("skip: cmd.packed.nspack.exe missing");
         return;
     };
     let report: NspackUnpackReport = unpack_nspack(&packed).expect("unpack cmd");
@@ -171,7 +161,6 @@ fn test_nspack_cmd_round_trip() {
 #[test]
 fn test_nspack_psexec_round_trip() {
     let Some(packed) = read_corpus("psexec.packed.nspack.exe") else {
-        eprintln!("skip: psexec.packed.nspack.exe missing");
         return;
     };
     let report: NspackUnpackReport = unpack_nspack(&packed).expect("unpack psexec");
@@ -187,7 +176,6 @@ fn test_nspack_psexec_round_trip() {
 #[test]
 fn test_nspack_handle_round_trip() {
     let Some(packed) = read_corpus("handle.packed.nspack.exe") else {
-        eprintln!("skip: handle.packed.nspack.exe missing");
         return;
     };
     let report: NspackUnpackReport = unpack_nspack(&packed).expect("unpack handle");
@@ -197,7 +185,6 @@ fn test_nspack_handle_round_trip() {
 #[test]
 fn test_nspack_calc_round_trip() {
     let Some(packed) = read_corpus("calc.packed.nspack.exe") else {
-        eprintln!("skip: calc.packed.nspack.exe missing");
         return;
     };
     let report: NspackUnpackReport = unpack_nspack(&packed).expect("unpack calc");
@@ -225,9 +212,8 @@ fn test_nspack_all_fixtures_parse_without_panic() {
         assert_basic_report_shape(&report, bytes.len(), label);
         tested += 1;
     }
-    if tested == 0 {
-        eprintln!("skip: no NSPack fixtures present");
-    } else {
+    enforce_something_was_graded("NSPack", tested, "nspack");
+    if tested > 0 {
         println!("nspack: parsed {tested} fixtures cleanly");
     }
 }
@@ -235,7 +221,6 @@ fn test_nspack_all_fixtures_parse_without_panic() {
 #[test]
 fn test_nspack_unpacked_pe_runs() {
     let Some(packed) = read_corpus("hash.packed.nspack.exe") else {
-        eprintln!("skip: hash.packed.nspack.exe missing");
         return;
     };
     let report: NspackUnpackReport = unpack_nspack(&packed).expect("unpack");
@@ -255,11 +240,9 @@ fn test_nspack_unpacked_pe_runs() {
 
 fn assert_content_recovery(label: &str, packed_name: &str, orig_name: &str, min_pct: f64) {
     let Some(packed) = read_corpus(packed_name) else {
-        eprintln!("skip: {packed_name} missing/unreadable");
         return;
     };
     let Some(original) = read_corpus(orig_name) else {
-        eprintln!("skip: {orig_name} missing/unreadable");
         return;
     };
     let report: NspackEmulatedReport =
