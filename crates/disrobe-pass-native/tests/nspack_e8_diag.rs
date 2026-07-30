@@ -12,24 +12,24 @@
     clippy::needless_range_loop
 )]
 
+#[path = "support/packer_fixture.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code, clippy::panic)]
+mod packer_fixture;
+
 use std::collections::BTreeMap;
-use std::fs;
-use std::path::PathBuf;
 
 use disrobe_pass_native::{
     NspackEmulatedReport, unpack_nspack_emulated_with_baseline,
     unpack_nspack_emulated_with_baseline_raw,
 };
+use packer_fixture::{PackerFixture, load_fixture};
 
-fn corpus_dir() -> PathBuf {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("..");
-    p.push("..");
-    p.push("corpus");
-    p.push("native");
-    p.push("packers");
-    p.push("nspack");
-    p
+fn read_corpus(name: &str) -> Option<Vec<u8>> {
+    load_fixture(PackerFixture {
+        decoder: "NSPack",
+        family: "nspack",
+        name,
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -71,16 +71,10 @@ fn collect_sites(raw: &[u8], bl: &[u8]) -> Vec<E8Site> {
 }
 
 fn run_one(name: &str) {
-    let mut packed_p: PathBuf = corpus_dir();
-    packed_p.push(format!("{name}.packed.nspack.exe"));
-    let mut orig_p: PathBuf = corpus_dir();
-    orig_p.push(format!("{name}.original.exe"));
-    let Ok(packed): std::io::Result<Vec<u8>> = fs::read(&packed_p) else {
-        println!("SKIP {name}: packed missing");
+    let Some(packed): Option<Vec<u8>> = read_corpus(&format!("{name}.packed.nspack.exe")) else {
         return;
     };
-    let Ok(orig): std::io::Result<Vec<u8>> = fs::read(&orig_p) else {
-        println!("SKIP {name}: original missing");
+    let Some(orig): Option<Vec<u8>> = read_corpus(&format!("{name}.original.exe")) else {
         return;
     };
     let (rep, raw): (NspackEmulatedReport, Vec<u8>) =
@@ -372,14 +366,11 @@ fn run_one(name: &str) {
 fn diag_pe_layout() {
     let names: [&str; 6] = ["hash", "ftp", "cmd", "calc", "psexec", "handle"];
     for name in &names {
-        let mut packed_p: PathBuf = corpus_dir();
-        packed_p.push(format!("{name}.packed.nspack.exe"));
-        let mut orig_p: PathBuf = corpus_dir();
-        orig_p.push(format!("{name}.original.exe"));
-        let Ok(packed): std::io::Result<Vec<u8>> = fs::read(&packed_p) else {
+        let Some(packed): Option<Vec<u8>> = read_corpus(&format!("{name}.packed.nspack.exe"))
+        else {
             continue;
         };
-        let Ok(orig): std::io::Result<Vec<u8>> = fs::read(&orig_p) else {
+        let Some(orig): Option<Vec<u8>> = read_corpus(&format!("{name}.original.exe")) else {
             continue;
         };
         println!("===== {name} packed =====");
@@ -426,14 +417,11 @@ fn dump_pe_sections(buf: &[u8]) {
 fn diag_first_diff_per_fixture() {
     let names: [&str; 6] = ["hash", "ftp", "cmd", "calc", "psexec", "handle"];
     for name in &names {
-        let mut packed_p: PathBuf = corpus_dir();
-        packed_p.push(format!("{name}.packed.nspack.exe"));
-        let mut orig_p: PathBuf = corpus_dir();
-        orig_p.push(format!("{name}.original.exe"));
-        let Ok(packed): std::io::Result<Vec<u8>> = fs::read(&packed_p) else {
+        let Some(packed): Option<Vec<u8>> = read_corpus(&format!("{name}.packed.nspack.exe"))
+        else {
             continue;
         };
-        let Ok(orig): std::io::Result<Vec<u8>> = fs::read(&orig_p) else {
+        let Some(orig): Option<Vec<u8>> = read_corpus(&format!("{name}.original.exe")) else {
             continue;
         };
         let (_rep, raw): (NspackEmulatedReport, Vec<u8>) =

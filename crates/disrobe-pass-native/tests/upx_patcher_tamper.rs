@@ -1,22 +1,24 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use std::path::PathBuf;
+#[path = "support/packer_fixture.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code, clippy::panic)]
+mod packer_fixture;
 
 use disrobe_pass_native::packers::{
     self, Packer, PeImage, UpxUnpackOutput, parse_pe_image, unpack_upx,
 };
+use packer_fixture::{PackerFixture, load_fixture};
 
-fn corpus(rel: &str) -> Option<Vec<u8>> {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("..");
-    p.push("..");
-    p.push("corpus");
-    p.push(rel);
-    std::fs::read(&p).ok()
+fn corpus(name: &str) -> Option<Vec<u8>> {
+    load_fixture(PackerFixture {
+        decoder: "UPX",
+        family: "upx",
+        name,
+    })
 }
 
-const UPX_PE: &str = "native/packers/upx/hello.packed.nrv2b.exe";
-const UPX_LZMA: &str = "native/packers/upx/hello.packed.lzma.exe";
+const UPX_PE: &str = "hello.packed.nrv2b.exe";
+const UPX_LZMA: &str = "hello.packed.lzma.exe";
 
 fn pe_section_table_offset(bytes: &[u8]) -> usize {
     let e_lfanew: usize =

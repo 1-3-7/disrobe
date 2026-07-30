@@ -8,8 +8,43 @@ use std::ffi::OsStr;
 
 use packer_fixture::{
     COMMITTED_FIXTURES, CommittedFixture, FixtureRequirement, PackerFixture, REQUIRE_FIXTURES_VAR,
-    committed_fixture_defect, enforce_fixture_requirement, requirement_from_value,
+    committed_fixture_defect, enforce_fixture_requirement, load_fixture_with_requirement,
+    requirement_from_value,
 };
+
+#[test]
+fn an_absent_fixture_fails_the_load_instead_of_reaching_a_test_body_as_none() {
+    let absent: PackerFixture<'static> = PackerFixture {
+        decoder: "NSPack",
+        family: "nspack",
+        name: "this-path-does-not-exist.packed.nspack.exe",
+    };
+    let outcome: std::thread::Result<Option<Vec<u8>>> = std::panic::catch_unwind(|| {
+        load_fixture_with_requirement(absent, FixtureRequirement::Every)
+    });
+    let Err(payload): std::thread::Result<Option<Vec<u8>>> = outcome else {
+        panic!(
+            "load_fixture returned to its caller while the requirement was set; an absent fixture \
+             must fail the load, because a None that reaches a test body is what lets a case \
+             report success after measuring nothing"
+        );
+    };
+    let message: &str = payload
+        .downcast_ref::<String>()
+        .map_or("", |text: &String| text.as_str());
+    for expected in [
+        REQUIRE_FIXTURES_VAR,
+        "this-path-does-not-exist.packed.nspack.exe",
+        "nspack",
+        "packed",
+    ] {
+        assert!(
+            message.contains(expected),
+            "the failure must name the variable, the expected path, the family and the fixture \
+             role; {expected:?} is missing from {message:?}"
+        );
+    }
+}
 
 #[test]
 fn an_absent_committed_fixture_is_fatal_when_the_requirement_is_set() {

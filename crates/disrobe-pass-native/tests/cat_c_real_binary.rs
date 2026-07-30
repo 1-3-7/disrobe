@@ -8,6 +8,10 @@
     clippy::needless_pass_by_value
 )]
 
+#[path = "support/packer_fixture.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code, clippy::panic)]
+mod packer_fixture;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -16,6 +20,7 @@ use disrobe_pass_native::{
     DetectedFormat, NativeFormat, Packer, PackerDetection, UnpackerStatus, UpxMethod,
     UpxUnpackOutput, detect_format, detect_packers, unpack_upx,
 };
+use packer_fixture::{PackerFixture, load_fixture};
 
 fn corpus_root() -> PathBuf {
     let crate_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -26,9 +31,24 @@ fn corpus_root() -> PathBuf {
         .expect("workspace layout: crates/disrobe-pass-native -> ../../corpus/native/packers")
 }
 
+fn decoder_for(family: &str) -> &'static str {
+    match family {
+        "upx" => "UPX",
+        "mpress" => "MPRESS",
+        "petite" => "Petite",
+        other => panic!("no decoder name is registered for packer family {other}"),
+    }
+}
+
 fn read_corpus(rel: &str) -> Option<Vec<u8>> {
-    let path: PathBuf = corpus_root().join(rel);
-    std::fs::read(&path).ok()
+    let (family, name): (&str, &str) = rel
+        .split_once('/')
+        .unwrap_or_else(|| panic!("corpus path {rel} must be <family>/<fixture name>"));
+    load_fixture(PackerFixture {
+        decoder: decoder_for(family),
+        family,
+        name,
+    })
 }
 
 fn has_packer(hits: &[PackerDetection], packer: Packer) -> bool {
