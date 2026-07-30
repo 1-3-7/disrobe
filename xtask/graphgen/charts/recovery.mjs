@@ -3,9 +3,8 @@ import {
   Svg,
   C,
   MONO,
-  SANS,
   sansWidth,
-  num,
+  monoWidth,
   thousands,
   firstSentence,
 } from "../lib/kit.mjs";
@@ -14,6 +13,40 @@ import { TIERS, percentBarTiers, tierFor } from "../lib/tiers.mjs";
 const WIDTH = 920;
 const LEFT = 28;
 const INNER = WIDTH - LEFT * 2;
+const BAR_WIDTH = 13;
+const BAR_RADIUS = 3;
+const VALUE_LABEL_SIZE = 11.5;
+const PERCENT_LABEL_GAP = 8;
+const PAIR_LABEL_GAP = 10;
+const LABEL_GUTTER_PAD = 8;
+
+function labelGutter(labels, gap) {
+  const widest = Math.max(
+    ...labels.map((text) => monoWidth(text, VALUE_LABEL_SIZE)),
+  );
+  return Math.ceil(widest + gap + LABEL_GUTTER_PAD);
+}
+
+function trackSeries(rowCount, color, labels, gap) {
+  return {
+    type: "bar",
+    data: Array.from({ length: rowCount }, () => 100),
+    barGap: "-100%",
+    barWidth: BAR_WIDTH,
+    itemStyle: { color, borderRadius: BAR_RADIUS },
+    z: 1,
+    label: {
+      show: true,
+      position: "right",
+      distance: gap,
+      color: C.text,
+      fontFamily: MONO,
+      fontSize: VALUE_LABEL_SIZE,
+      fontWeight: 500,
+      formatter: (p) => labels[p.dataIndex],
+    },
+  };
+}
 
 function ecoShort(heading) {
   const h = heading.toLowerCase();
@@ -141,12 +174,20 @@ export function renderRecovery(doc) {
     }
   }
 
+  const percentLabels = percentBars.map((b) => `${b.value.toFixed(2)}%`);
   const labelMax = Math.max(...percentBars.map((b) => sansWidth(b.label, 12)));
   const gridLeftA = Math.min(240, Math.max(150, Math.ceil(labelMax) + 18));
+  const gridRightA = labelGutter(percentLabels, PERCENT_LABEL_GAP);
   const rowA = 27;
   const chartAh = 16 + percentBars.length * rowA;
   const chartA = renderChart(INNER, chartAh, {
-    grid: { left: gridLeftA, right: 66, top: 8, bottom: 8, containLabel: false },
+    grid: {
+      left: gridLeftA,
+      right: gridRightA,
+      top: 8,
+      bottom: 8,
+      containLabel: false,
+    },
     xAxis: { type: "value", min: 0, max: 100, show: false },
     yAxis: {
       type: "category",
@@ -157,26 +198,21 @@ export function renderRecovery(doc) {
       axisLabel: { color: C.muted, fontSize: 12 },
     },
     series: [
+      trackSeries(
+        percentBars.length,
+        C.panel,
+        percentLabels,
+        PERCENT_LABEL_GAP,
+      ),
       {
         type: "bar",
         data: percentBars.map((b) => ({
           value: b.value,
           itemStyle: { color: b.color },
         })),
-        barWidth: 13,
-        itemStyle: { borderRadius: 3 },
-        showBackground: true,
-        backgroundStyle: { color: C.panel, borderRadius: 3 },
-        label: {
-          show: true,
-          position: "right",
-          distance: 8,
-          color: C.text,
-          fontFamily: MONO,
-          fontSize: 11.5,
-          fontWeight: 500,
-          formatter: (p) => `${p.value.toFixed(2)}%`,
-        },
+        barWidth: BAR_WIDTH,
+        itemStyle: { borderRadius: BAR_RADIUS },
+        z: 2,
       },
     ],
   });
@@ -186,10 +222,17 @@ export function renderRecovery(doc) {
   );
   const pairLabelMax = Math.max(...pairBars.map((b) => sansWidth(b.label, 12)));
   const gridLeftB = Math.min(200, Math.max(120, Math.ceil(pairLabelMax) + 18));
+  const gridRightB = labelGutter(pairLabels, PAIR_LABEL_GAP);
   const rowB = 30;
   const chartBh = 14 + pairBars.length * rowB;
   const chartB = renderChart(INNER, chartBh, {
-    grid: { left: gridLeftB, right: 150, top: 7, bottom: 7, containLabel: false },
+    grid: {
+      left: gridLeftB,
+      right: gridRightB,
+      top: 7,
+      bottom: 7,
+      containLabel: false,
+    },
     xAxis: { type: "value", min: 0, max: 100, show: false },
     yAxis: {
       type: "category",
@@ -200,31 +243,14 @@ export function renderRecovery(doc) {
       axisLabel: { color: C.muted, fontSize: 12 },
     },
     series: [
-      {
-        type: "bar",
-        data: pairBars.map(() => 100),
-        barGap: "-100%",
-        barWidth: 13,
-        itemStyle: { color: C.subtle, borderRadius: 3 },
-        z: 1,
-        label: {
-          show: true,
-          position: "right",
-          distance: 10,
-          color: C.text,
-          fontFamily: MONO,
-          fontSize: 11.5,
-          fontWeight: 500,
-          formatter: (p) => pairLabels[p.dataIndex],
-        },
-      },
+      trackSeries(pairBars.length, C.subtle, pairLabels, PAIR_LABEL_GAP),
       {
         type: "bar",
         data: pairBars.map((b) =>
           b.detected > 0 ? (b.delivered / b.detected) * 100 : 0,
         ),
-        barWidth: 13,
-        itemStyle: { color: C.accent, borderRadius: 3 },
+        barWidth: BAR_WIDTH,
+        itemStyle: { color: C.accent, borderRadius: BAR_RADIUS },
         z: 2,
       },
     ],
@@ -234,7 +260,7 @@ export function renderRecovery(doc) {
   svg.header(doc.title, doc.subtitle);
 
   let y = 104;
-  sectionLabel(svg, y, "measured recovery", "bar colour = how the number was checked, %");
+  sectionLabel(svg, y, "measured recovery", "bar color = how the number was checked, %");
   y += 17;
   tierLegend(svg, y);
   y += 9;
