@@ -249,8 +249,7 @@ pub struct Resolver {
 
 impl Resolver {
     pub fn build(image: &[u8], pe: &PeImage, clr: &ClrHeader, root: &MetadataRoot) -> Result<Self> {
-        let metadata_slice: &[u8] =
-            pe.slice_at_rva(image, clr.metadata.rva, clr.metadata.size as usize)?;
+        let metadata_slice: &[u8] = crate::metadata::metadata_slice(image, pe, clr, root)?;
         let table_header: crate::metadata::StreamHeader = root
             .streams
             .get("#~")

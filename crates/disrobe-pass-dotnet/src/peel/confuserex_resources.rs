@@ -87,8 +87,7 @@ pub fn peel_confuserex_resources(image: &[u8]) -> Result<ConfuserExRecovery> {
     let pe: PeImage = parse(image)?;
     let clr: ClrHeader = parse_clr_header(image, &pe)?;
     let root: crate::metadata::MetadataRoot = parse_metadata_root(image, &pe, &clr)?;
-    let metadata_slice: &[u8] =
-        pe.slice_at_rva(image, clr.metadata.rva, clr.metadata.size as usize)?;
+    let metadata_slice: &[u8] = crate::metadata::metadata_slice(image, &pe, &clr, &root)?;
     let table_header: &StreamHeader =
         match root.streams.get("#~").or_else(|| root.streams.get("#-")) {
             Some(h) => h,

@@ -30,6 +30,7 @@ pub mod agile_net;
 pub mod agile_net_bodies;
 pub mod armdot;
 pub mod babel_net;
+pub mod bitmono_strings;
 pub mod confuserex_constants;
 pub mod confuserex_resources;
 pub mod confuserex_seed;
@@ -166,8 +167,7 @@ pub(crate) fn read_heaps(image: &[u8]) -> Result<HeapsView> {
     let pe: PeImage = parse(image)?;
     let clr: ClrHeader = parse_clr_header(image, &pe)?;
     let root: MetadataRoot = parse_metadata_root(image, &pe, &clr)?;
-    let metadata_slice: &[u8] =
-        pe.slice_at_rva(image, clr.metadata.rva, clr.metadata.size as usize)?;
+    let metadata_slice: &[u8] = crate::metadata::metadata_slice(image, &pe, &clr, &root)?;
     let strings_header_opt: Option<&crate::metadata::StreamHeader> = root.streams.get("#Strings");
     let us_header_opt: Option<&crate::metadata::StreamHeader> = root.streams.get("#US");
     let strings_map: BTreeMap<u32, String> = strings_header_opt
@@ -400,12 +400,54 @@ pub(crate) fn peel_managed_wrapper(protector: Protector, image: &[u8]) -> Result
 }
 
 pub(crate) fn peel_bitmono(image: &[u8]) -> Result<PeelReport> {
-    report_only_peel(
+    let mut report: PeelReport = report_only_peel(
         Protector::BitMono,
         image,
         &["BitMono", "BitMethodDotnet", "AntiDecompiler"],
         Vec::new(),
-    )
+    )?;
+    let Some(recovery): Option<bitmono_strings::BitMonoStringRecovery> =
+        bitmono_strings::recover_bitmono_strings(image)
+    else {
+        return Ok(report);
+    };
+    if recovery.recovered.is_empty() {
+        report.notes.push(format!(
+            "BitMono StringsEncryption decryptor located at token 0x{:08x} (AES-{} CBC keyed by \
+             PBKDF2-HMAC-SHA1 over {} iterations) but none of its {} call site(s) resolved to an \
+             in-assembly ciphertext field",
+            recovery.shape.method_token,
+            recovery.shape.key_size_bits,
+            recovery.shape.iterations,
+            recovery.call_sites_total,
+        ));
+        return Ok(report);
+    }
+    report.strategy = PeelStrategy::StaticStringRecovery;
+    report.recovered_decoders = report.recovered_decoders.saturating_add(1);
+    report.recovered_strings = recovery
+        .recovered
+        .iter()
+        .map(
+            |value: &bitmono_strings::BitMonoRecoveredString| string_emu::RecoveredString {
+                method_token: value.caller_token,
+                method_name: format!("call_site+0x{:04x}", value.call_offset),
+                text: value.text.clone(),
+            },
+        )
+        .collect();
+    report.notes.push(format!(
+        "BitMono StringsEncryption reversed: {}/{} call site(s) decrypted by reading the \
+         in-assembly password, salt, and ciphertext byte[] fields through their FieldRVA \
+         initializers and running the decryptor's own scheme (AES-{} CBC, key and IV derived by \
+         PBKDF2-HMAC-SHA1 over {} iterations) found at token 0x{:08x}",
+        recovery.recovered.len(),
+        recovery.call_sites_total,
+        recovery.shape.key_size_bits,
+        recovery.shape.iterations,
+        recovery.shape.method_token,
+    ));
+    Ok(report)
 }
 
 pub(crate) fn peel_koivm(image: &[u8]) -> Result<PeelReport> {

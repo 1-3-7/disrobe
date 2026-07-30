@@ -130,6 +130,30 @@ pub fn parse_metadata_root(image: &[u8], pe: &PeImage, clr: &ClrHeader) -> Resul
     })
 }
 
+#[must_use]
+pub fn metadata_stream_extent(root: &MetadataRoot) -> u32 {
+    root.streams
+        .values()
+        .map(|h: &StreamHeader| h.offset.saturating_add(h.size))
+        .max()
+        .unwrap_or(0)
+}
+
+pub fn metadata_slice<'a>(
+    image: &'a [u8],
+    pe: &PeImage,
+    clr: &ClrHeader,
+    root: &MetadataRoot,
+) -> Result<&'a [u8]> {
+    let declared: u32 = clr.metadata.size;
+    let wanted: u32 = declared.max(metadata_stream_extent(root));
+    if wanted <= declared {
+        return pe.slice_at_rva(image, clr.metadata.rva, declared as usize);
+    }
+    pe.slice_at_rva(image, clr.metadata.rva, wanted as usize)
+        .or_else(|_| pe.slice_at_rva_to_end(image, clr.metadata.rva))
+}
+
 fn read_aligned_cstring(r: &mut ByteReader<'_>) -> Result<String> {
     let start: usize = r.position();
     let mut bytes: Vec<u8> = Vec::with_capacity(16);

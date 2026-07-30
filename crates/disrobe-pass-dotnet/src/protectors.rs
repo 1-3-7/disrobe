@@ -263,6 +263,12 @@ pub fn detect_all(image: &[u8]) -> DetectionReport {
     }
     augment_with_obfuscar_heuristic(image, &mut matches);
     augment_with_bitmono_structural(image, &mut matches);
+    let decoys: Vec<DecoyRange> = if matches.contains_key(&Protector::BitMono) {
+        antide4dot_decoy_ranges(image)
+    } else {
+        Vec::new()
+    };
+    let suppressed: Vec<Protector> = drop_decoy_only_matches(&mut matches, &decoys);
     let primary: Option<Protector> = pick_primary(&matches);
     if dbg_enabled() {
         for (protector, offsets) in &matches {
@@ -276,6 +282,14 @@ pub fn detect_all(image: &[u8]) -> DetectionReport {
                     offsets
                         .first()
                         .map_or_else(|| "none".to_string(), |o: &u32| format!("0x{o:x}"))
+                )
+            });
+        }
+        for protector in &suppressed {
+            dbg_kv("protector-decoy-suppressed", || {
+                format!(
+                    "{} matched only inside BitMono AntiDe4dot decoy type references",
+                    protector.label()
                 )
             });
         }
@@ -334,6 +348,118 @@ fn augment_with_obfuscar_heuristic(image: &[u8], matches: &mut BTreeMap<Protecto
             vec![evidence.odometer_members, evidence.longest_run],
         );
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DecoyRange {
+    start: u32,
+    end: u32,
+}
+
+impl DecoyRange {
+    const fn holds(self, offset: u32) -> bool {
+        offset >= self.start && offset < self.end
+    }
+}
+
+fn drop_decoy_only_matches(
+    matches: &mut BTreeMap<Protector, Vec<u32>>,
+    decoys: &[DecoyRange],
+) -> Vec<Protector> {
+    if decoys.is_empty() {
+        return Vec::new();
+    }
+    let suppressed: Vec<Protector> = matches
+        .iter()
+        .filter(|(protector, offsets): &(&Protector, &Vec<u32>)| {
+            **protector != Protector::BitMono
+                && !offsets.is_empty()
+                && offsets.iter().all(|offset: &u32| {
+                    decoys.iter().any(|decoy: &DecoyRange| decoy.holds(*offset))
+                })
+        })
+        .map(|(protector, _): (&Protector, &Vec<u32>)| *protector)
+        .collect();
+    for protector in &suppressed {
+        matches.remove(protector);
+    }
+    suppressed
+}
+
+fn antide4dot_decoy_ranges(image: &[u8]) -> Vec<DecoyRange> {
+    let Ok(pe): crate::error::Result<PeImage> = crate::pe::parse(image) else {
+        return Vec::new();
+    };
+    let Ok(clr): crate::error::Result<ClrHeader> = crate::pe::parse_clr_header(image, &pe) else {
+        return Vec::new();
+    };
+    let Ok(root): crate::error::Result<crate::metadata::MetadataRoot> =
+        crate::metadata::parse_metadata_root(image, &pe, &clr)
+    else {
+        return Vec::new();
+    };
+    let Ok(metadata): crate::error::Result<&[u8]> =
+        crate::metadata::metadata_slice(image, &pe, &clr, &root)
+    else {
+        return Vec::new();
+    };
+    let Some(strings_header): Option<&crate::metadata::StreamHeader> = root.streams.get("#Strings")
+    else {
+        return Vec::new();
+    };
+    let Some(table_header): Option<&crate::metadata::StreamHeader> =
+        root.streams.get("#~").or_else(|| root.streams.get("#-"))
+    else {
+        return Vec::new();
+    };
+    let Ok(tables): crate::error::Result<crate::tables::Tables> =
+        crate::tables::parse_tables(metadata, *table_header)
+    else {
+        return Vec::new();
+    };
+    let Some(metadata_offset): Option<usize> = pe.rva_to_offset(clr.metadata.rva) else {
+        return Vec::new();
+    };
+    let heap_base: usize = metadata_offset.saturating_add(strings_header.offset as usize);
+    let strings: BTreeMap<u32, String> =
+        crate::metadata::read_strings_heap(metadata, *strings_header);
+    let defined: std::collections::BTreeSet<(u32, u32)> = tables
+        .type_defs
+        .iter()
+        .map(|row: &crate::tables::TypeDefRow| (row.namespace, row.name))
+        .collect();
+    let mut ranges: Vec<DecoyRange> = Vec::new();
+    for row in &tables.type_refs {
+        let module_scoped: bool =
+            row.resolution_scope
+                .is_none_or(|scope: crate::tables::RowRef| {
+                    matches!(
+                        scope.table,
+                        crate::tables::TableId::Module | crate::tables::TableId::ModuleRef
+                    )
+                });
+        if !module_scoped || defined.contains(&(row.namespace, row.name)) {
+            continue;
+        }
+        for index in [row.namespace, row.name] {
+            let Some(text): Option<&String> = strings.get(&index) else {
+                continue;
+            };
+            let Ok(start): std::result::Result<u32, _> =
+                u32::try_from(heap_base.saturating_add(index as usize))
+            else {
+                continue;
+            };
+            let Ok(len): std::result::Result<u32, _> = u32::try_from(text.len()) else {
+                continue;
+            };
+            ranges.push(DecoyRange {
+                start,
+                end: start.saturating_add(len),
+            });
+        }
+    }
+    ranges
 }
 
 fn pick_primary(matches: &BTreeMap<Protector, Vec<u32>>) -> Option<Protector> {

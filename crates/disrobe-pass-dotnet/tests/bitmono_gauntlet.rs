@@ -93,3 +93,61 @@ fn real_bitmono_parses_as_managed_pe() {
 fn bitmono_is_green_zone_foss() {
     assert_eq!(Protector::BitMono.grey_zone(), GreyZone::Green);
 }
+
+const ANTIDE4DOT_DECOY_MARKERS: &[&str] = &[
+    "SmartAssembly.Attributes",
+    "ObfuscatedByCliSecure",
+    "ObfuscatedByAgileDotNet",
+    "ProtectedWithCryptoObfuscator",
+    "ObfuscatedByGoliath",
+    "BabelObfuscator",
+    "NineRays.Obfuscator",
+];
+
+#[test]
+fn real_bitmono_plants_foreign_protector_watermarks() {
+    let bytes: Vec<u8> = load(BITMONO_REL);
+    let clean: Vec<u8> = load(CLEAN_REL);
+    for marker in ANTIDE4DOT_DECOY_MARKERS {
+        assert!(
+            bytes
+                .windows(marker.len())
+                .any(|w: &[u8]| w == marker.as_bytes()),
+            "gauntlet target: BitMono AntiDe4dot must plant the {marker:?} decoy watermark in the \
+             protected assembly"
+        );
+        assert!(
+            !clean
+                .windows(marker.len())
+                .any(|w: &[u8]| w == marker.as_bytes()),
+            "the clean baseline must carry no {marker:?} watermark"
+        );
+    }
+}
+
+#[test]
+fn planted_decoys_do_not_become_reported_protectors() {
+    let bytes: Vec<u8> = load(BITMONO_REL);
+    let report: DetectionReport = detect_all(&bytes);
+    let detected: Vec<&Protector> = report.matches.keys().collect();
+    assert_eq!(
+        detected,
+        vec![&Protector::BitMono],
+        "BitMono AntiDe4dot plants SmartAssembly, CliSecure/Agile.NET and CryptoObfuscator \
+         watermarks as module-scoped type references that resolve to nothing; reporting them \
+         would name protectors that are not present, and two of them are authorization-gated"
+    );
+}
+
+#[test]
+fn decoy_suppression_does_not_hide_a_real_watermark() {
+    let mut bytes: Vec<u8> = load(BITMONO_REL);
+    bytes.extend_from_slice(b"ConfuserEx2");
+    let report: DetectionReport = detect_all(&bytes);
+    assert!(
+        report.matches.contains_key(&Protector::ConfuserEx2),
+        "a watermark living outside the decoy type-reference names must still be detected on a \
+         BitMono-protected assembly; suppression is scoped to the planted names only"
+    );
+    assert!(report.matches.contains_key(&Protector::BitMono));
+}
