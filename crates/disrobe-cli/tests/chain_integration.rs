@@ -10,6 +10,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod common;
+
 fn workspace_root() -> PathBuf {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.pop();
@@ -75,12 +77,15 @@ fn read_chain_json(out_dir: &Path) -> String {
 #[test]
 fn test_chain_upx_to_pe() {
     let fixture: PathBuf = corpus_path("native/packers/upx/rg.packed.upx.exe");
-    if !fixture.exists() {
-        eprintln!("SKIP: fixture missing: {fixture:?}");
+    if common::uncommitted_corpus_is_absent(&fixture, "the upx-packed PE chain") {
         return;
     }
     if !upx_available() {
-        eprintln!("SKIP: upx CLI not available on PATH");
+        common::unmeasured(
+            "the upx-packed PE chain",
+            "no upx CLI is on PATH and no workflow installs one",
+            common::REQUIRE_UPX,
+        );
         return;
     }
     let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("upx");
@@ -107,10 +112,12 @@ fn test_chain_pyarmor_to_pyc() {
     let fixture: PathBuf = corpus_path(
         "python/pyarmor/v8/basic/chunk_00_try_except_basic_try_except_else/chunk_00_try_except_basic_try_except_else.py",
     );
-    if !fixture.exists() {
-        eprintln!("SKIP: fixture missing: {fixture:?}");
-        return;
-    }
+    assert!(
+        fixture.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its absence is a \
+         damaged checkout rather than an optional dependency",
+        fixture.display()
+    );
     let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("pyarmor");
     let out: PathBuf = out_scratch.path().to_path_buf();
     let proc_out: std::process::Output = run_chain_cli(&fixture, &out, "auto:8");
@@ -129,10 +136,12 @@ fn test_chain_pyarmor_to_pyc() {
 #[test]
 fn test_chain_js_obfuscator_to_source() {
     let fixture: PathBuf = corpus_path("js/javascript-obfuscator/obfuscated.js");
-    if !fixture.exists() {
-        eprintln!("SKIP: fixture missing: {fixture:?}");
-        return;
-    }
+    assert!(
+        fixture.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its absence is a \
+         damaged checkout rather than an optional dependency",
+        fixture.display()
+    );
     let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("jsobf");
     let out: PathBuf = out_scratch.path().to_path_buf();
     let proc_out: std::process::Output = run_chain_cli(&fixture, &out, "auto:8");
@@ -152,8 +161,7 @@ fn test_chain_js_obfuscator_to_source() {
 #[test]
 fn test_chain_squashfs_to_files() {
     let fixture: PathBuf = corpus_path("binfmt/squashfs/hello.squashfs");
-    if !fixture.exists() {
-        eprintln!("SKIP: fixture missing: {fixture:?}");
+    if common::uncommitted_corpus_is_absent(&fixture, "the squashfs container chain") {
         return;
     }
     let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("squashfs");
@@ -175,10 +183,12 @@ fn test_chain_squashfs_to_files() {
 #[test]
 fn test_chain_stacked_upx_then_js() {
     let fixture: PathBuf = corpus_path("js/sea/sea-prep.blob");
-    if !fixture.exists() {
-        eprintln!("SKIP: fixture missing: {fixture:?}");
-        return;
-    }
+    assert!(
+        fixture.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its absence is a \
+         damaged checkout rather than an optional dependency",
+        fixture.display()
+    );
     let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("upx-js-sea");
     let out: PathBuf = out_scratch.path().to_path_buf();
     let proc_out: std::process::Output = run_chain_cli(&fixture, &out, "auto:8");
@@ -198,8 +208,7 @@ fn test_chain_stacked_upx_then_js() {
 #[test]
 fn test_chain_emits_v1_schema() {
     let fixture: PathBuf = corpus_path("native/packers/upx/hello.exe");
-    if !fixture.exists() {
-        eprintln!("SKIP: fixture missing: {fixture:?}");
+    if common::uncommitted_corpus_is_absent(&fixture, "the plan-only chain schema") {
         return;
     }
     let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("schema");

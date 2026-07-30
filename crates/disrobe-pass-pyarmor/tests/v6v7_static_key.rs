@@ -15,6 +15,27 @@ use disrobe_py_marshal::{CodeObject, Object, PyVersion, load};
 
 const KNOWN_MARKER: &[u8] = b"try_except_basic";
 const PY312: PyVersion = PyVersion::new(3, 12);
+const REQUIRE_V6V7_RUNTIMES: &str = "DISROBE_REQUIRE_PYARMOR_V6V7_RUNTIMES";
+
+fn unmeasured(graded: &str, absent: &str) {
+    let raw: Option<std::ffi::OsString> = std::env::var_os(REQUIRE_V6V7_RUNTIMES);
+    let demanded: bool = raw.is_some_and(|value: std::ffi::OsString| {
+        !matches!(
+            value.to_string_lossy().trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "no" | "off" | "optional"
+        )
+    });
+    assert!(
+        !demanded,
+        "{REQUIRE_V6V7_RUNTIMES} makes the v6/v7 runtimes mandatory for this run, so {graded} was \
+         measured against nothing and this case must not report success: {absent}"
+    );
+    eprintln!(
+        "\nNOT MEASURED: {graded} graded nothing, because {absent}. PyArmor 6 and 7 runtimes are \
+         not redistributable and no workflow can stage them. Set {REQUIRE_V6V7_RUNTIMES}=1 to fail \
+         instead of skipping.\n"
+    );
+}
 
 fn corpus_root() -> PathBuf {
     let here: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -64,10 +85,12 @@ const CROSS_PLATFORM_RUNTIME_CASES: [PlatformRuntimeCase; 5] = [
 #[test]
 fn cross_platform_elf_macho_runtime_keypath_recovers_real_source() {
     let root: PathBuf = corpus_root();
-    if !root.is_dir() {
-        eprintln!("skipped: pyarmor corpus absent at {}", root.display());
-        return;
-    }
+    assert!(
+        root.is_dir(),
+        "the pyarmor corpus is tracked in git and carries the runtimes this case reads, so its \
+         absence is a damaged checkout rather than an optional dependency: {}",
+        root.display()
+    );
 
     let mut proven: usize = 0;
     for case in &CROSS_PLATFORM_RUNTIME_CASES {
@@ -148,9 +171,12 @@ fn cross_platform_elf_macho_runtime_keypath_recovers_real_source() {
 #[test]
 fn no_v6_or_v7_real_corpus_is_sourcing_blocked() {
     let root: PathBuf = corpus_root();
-    if !root.is_dir() {
-        return;
-    }
+    assert!(
+        root.is_dir(),
+        "the pyarmor corpus is tracked in git, so its absence is a damaged checkout rather than \
+         an optional dependency: {}",
+        root.display()
+    );
     let v6: PathBuf = root.join("v6");
     let v7: PathBuf = root.join("v7");
     let v7_super: PathBuf = root.join("v7-super");
@@ -168,9 +194,9 @@ fn no_v6_or_v7_real_corpus_is_sourcing_blocked() {
 fn v6v7_static_key_real_pytransform_when_baked() {
     let runtimes_dir: PathBuf = corpus_root().join("_pytransform-runtimes");
     if !runtimes_dir.is_dir() {
-        eprintln!(
-            "skipped: {} missing; bake the pyarmor corpus fixtures",
-            runtimes_dir.display()
+        unmeasured(
+            "the static-key probe over real pytransform runtimes",
+            &format!("{} is not in this checkout", runtimes_dir.display()),
         );
         return;
     }
@@ -195,9 +221,9 @@ fn v6v7_static_key_real_pytransform_when_baked() {
         );
     }
     if probed == 0 {
-        eprintln!(
-            "skipped: no v6_/v7_ runtimes staged in {} (run bake script)",
-            runtimes_dir.display()
+        unmeasured(
+            "the static-key probe over real pytransform runtimes",
+            &format!("{} carries no v6_ or v7_ runtime", runtimes_dir.display()),
         );
     }
 }
@@ -206,9 +232,9 @@ fn v6v7_static_key_real_pytransform_when_baked() {
 fn v7_wrapper_detect_when_baked_fixture_present() {
     let v7_dir: PathBuf = corpus_root().join("v7-super");
     if !v7_dir.is_dir() {
-        eprintln!(
-            "skipped: v7-super corpus not baked at {} (bake the pyarmor corpus fixtures)",
-            v7_dir.display()
+        unmeasured(
+            "the v7 super-mode wrapper detection",
+            &format!("{} is not in this checkout", v7_dir.display()),
         );
         return;
     }

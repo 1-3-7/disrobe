@@ -108,6 +108,7 @@ corpus/**/*.pyo
 corpus/**/*.pye
 corpus/**/*.mpy
 corpus/**/*.class
+!corpus/jvm/proguard/Hello-baseline.class
 corpus/**/*.dex
 corpus/**/*.jar
 corpus/**/*.aar
@@ -124,6 +125,7 @@ corpus/**/*.swf
 !corpus/flash/swf/synthetic/synthetic_counter_fws.swf
 !corpus/flash/swf/synthetic/synthetic_counter_cws.swf
 corpus/**/*.wasm
+!corpus/wasm/wat/function_refs.wasm
 corpus/**/*.msi
 corpus/**/*.pkl
 corpus/**/*.pickle

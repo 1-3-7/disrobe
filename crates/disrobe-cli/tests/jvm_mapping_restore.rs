@@ -18,14 +18,24 @@ fn corpus(rel: &str) -> PathBuf {
 fn jvm_decompile_applies_proguard_mapping_to_real_jar() {
     let jar: PathBuf = corpus("corpus/jvm/proguard/EdgeCases-pg.jar");
     let mapping: PathBuf = corpus("corpus/jvm/proguard/EdgeCases-mapping.txt");
-    if !jar.exists() || !mapping.exists() {
-        eprintln!("SKIP: missing corpus {jar:?} / {mapping:?}");
-        return;
-    }
-    if !cli_binary().exists() {
-        eprintln!("SKIP: disrobe binary not built");
-        return;
-    }
+    assert!(
+        jar.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        jar.display()
+    );
+    assert!(
+        mapping.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        mapping.display()
+    );
+    assert!(
+        cli_binary().exists(),
+        "cargo builds the disrobe binary before this test binary runs, so a missing \
+         {} would leave this case driving nothing",
+        cli_binary().display()
+    );
 
     let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("jvm-mapping-jar");
 
@@ -94,14 +104,24 @@ fn jvm_decompile_applies_proguard_mapping_to_real_jar() {
 fn jvm_decompile_mapping_splits_same_letter_fields_by_type() {
     let jar: PathBuf = corpus("corpus/jvm/proguard/Hello-obf.jar");
     let mapping: PathBuf = corpus("corpus/jvm/proguard/mapping.txt");
-    if !jar.exists() || !mapping.exists() {
-        eprintln!("SKIP: missing corpus {jar:?} / {mapping:?}");
-        return;
-    }
-    if !cli_binary().exists() {
-        eprintln!("SKIP: disrobe binary not built");
-        return;
-    }
+    assert!(
+        jar.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        jar.display()
+    );
+    assert!(
+        mapping.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        mapping.display()
+    );
+    assert!(
+        cli_binary().exists(),
+        "cargo builds the disrobe binary before this test binary runs, so a missing \
+         {} would leave this case driving nothing",
+        cli_binary().display()
+    );
 
     let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("jvm-mapping-hello");
 

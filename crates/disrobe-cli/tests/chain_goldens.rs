@@ -233,18 +233,26 @@ fn corpus_fixture(rel: &[&str]) -> PathBuf {
     p
 }
 
-fn load_corpus(rel: &[&str]) -> Option<Vec<u8>> {
-    std::fs::read(corpus_fixture(rel)).ok()
+fn required_corpus(rel: &[&str]) -> Vec<u8> {
+    let path: PathBuf = corpus_fixture(rel);
+    std::fs::read(&path).unwrap_or_else(|e: std::io::Error| {
+        panic!(
+            "corpus/{} is tracked in git and its golden beside it is too, so this case grades \
+             nothing without it and its absence is a damaged checkout: {e} ({})",
+            rel.join("/"),
+            path.display()
+        )
+    })
 }
 
 fn assert_golden_at(path: &PathBuf, name: &str, doc: &ChainDocument) {
     let actual: String = render_canonical(doc);
-    if !path.exists() {
-        std::fs::create_dir_all(path.parent().expect("dir")).expect("create goldens dir");
-        std::fs::write(path, &actual).expect("seed golden");
-        eprintln!("SEED golden written: {path:?}");
-        return;
-    }
+    assert!(
+        path.exists(),
+        "the golden for {name} is tracked at {path:?} and this case compares against it. Writing \
+         one here would make the first run its own expected value, so a missing golden is a \
+         damaged checkout or a new case whose golden has to be reviewed and committed"
+    );
     let raw: String = std::fs::read_to_string(path)
         .unwrap_or_else(|e: std::io::Error| panic!("read golden {path:?}: {e}"));
     let expected: String = raw.replace("\r\n", "\n");
@@ -328,16 +336,13 @@ fn dry_run_fixture() -> Vec<u8> {
 #[test]
 fn golden_pyc_to_python() {
     let spec: ChainSpec = ChainSpec::Auto { cap: 8 };
-    let Some(seed): Option<Vec<u8>> = load_corpus(&[
+    let seed: Vec<u8> = required_corpus(&[
         "python",
         "decompile",
         "playground",
         "__pycache__",
         "edge_cases_3_12.cpython-312.pyc",
-    ]) else {
-        eprintln!("skip: corpus fixture absent");
-        return;
-    };
+    ]);
     let doc: ChainDocument = run_to_document(
         seed,
         &spec,
@@ -374,11 +379,7 @@ fn golden_upx_packed_pe() {
 #[test]
 fn golden_jvm_classfile() {
     let spec: ChainSpec = ChainSpec::Auto { cap: 8 };
-    let Some(seed): Option<Vec<u8>> = load_corpus(&["jvm", "proguard", "Hello-baseline.class"])
-    else {
-        eprintln!("skip: corpus fixture absent");
-        return;
-    };
+    let seed: Vec<u8> = required_corpus(&["jvm", "proguard", "Hello-baseline.class"]);
     let doc: ChainDocument = run_to_document(
         seed,
         &spec,
@@ -390,10 +391,7 @@ fn golden_jvm_classfile() {
 #[test]
 fn golden_wasm_module() {
     let spec: ChainSpec = ChainSpec::Auto { cap: 8 };
-    let Some(seed): Option<Vec<u8>> = load_corpus(&["wasm", "wat", "function_refs.wasm"]) else {
-        eprintln!("skip: corpus fixture absent");
-        return;
-    };
+    let seed: Vec<u8> = required_corpus(&["wasm", "wat", "function_refs.wasm"]);
     let doc: ChainDocument = run_to_document(
         seed,
         &spec,
@@ -405,10 +403,7 @@ fn golden_wasm_module() {
 #[test]
 fn golden_beam_module() {
     let spec: ChainSpec = ChainSpec::Auto { cap: 8 };
-    let Some(seed): Option<Vec<u8>> = load_corpus(&["beam", "erlang", "hello.beam"]) else {
-        eprintln!("skip: corpus fixture absent");
-        return;
-    };
+    let seed: Vec<u8> = required_corpus(&["beam", "erlang", "hello.beam"]);
     let doc: ChainDocument = run_to_document(
         seed,
         &spec,
@@ -420,10 +415,7 @@ fn golden_beam_module() {
 #[test]
 fn golden_beam_edge_cases_module() {
     let spec: ChainSpec = ChainSpec::Auto { cap: 8 };
-    let Some(seed): Option<Vec<u8>> = load_corpus(&["beam", "megafile", "edge_cases.beam"]) else {
-        eprintln!("skip: corpus fixture absent");
-        return;
-    };
+    let seed: Vec<u8> = required_corpus(&["beam", "megafile", "edge_cases.beam"]);
     let doc: ChainDocument = run_to_document(
         seed,
         &spec,

@@ -87,21 +87,32 @@ fn detect_only_v9_bcc_without_runtime() {
 #[test]
 fn corpus_pyc_smoke_does_not_panic() {
     let corpus_dir: PathBuf = workspace_root().join("corpus/python/pyarmor");
-    if !corpus_dir.is_dir() {
-        return;
-    }
+    assert!(
+        corpus_dir.is_dir(),
+        "the pyarmor corpus is tracked in git and is what this case sweeps, so its absence is a \
+         damaged checkout rather than an optional dependency: {}",
+        corpus_dir.display()
+    );
+    let mut swept: usize = 0;
     walk_files(&corpus_dir, &mut |path: &Path| {
         if path.extension().and_then(std::ffi::OsStr::to_str) != Some("pyc") {
             return;
         }
-        if let Ok(bytes) = std::fs::read(path) {
-            let cfg: StaticUnpackConfig = StaticUnpackConfig {
-                emit_llm_metadata: true,
-                ..StaticUnpackConfig::default()
-            };
-            let _ = unpack_static_with_config(&bytes, &cfg);
-        }
+        let bytes: Vec<u8> = std::fs::read(path)
+            .unwrap_or_else(|e: std::io::Error| panic!("{} is unreadable: {e}", path.display()));
+        let cfg: StaticUnpackConfig = StaticUnpackConfig {
+            emit_llm_metadata: true,
+            ..StaticUnpackConfig::default()
+        };
+        let _ = unpack_static_with_config(&bytes, &cfg);
+        swept += 1;
     });
+    assert!(
+        swept > 0,
+        "{} carries no .pyc, so this case swept nothing and would report success without running \
+         the unpacker over a single sample",
+        corpus_dir.display()
+    );
 }
 
 struct Fixture {

@@ -124,15 +124,19 @@ fn picked_passes(doc: &serde_json::Value) -> Vec<String> {
 #[test]
 fn auto_chain_apk_dex_recovers_decompiled_class_tokens() {
     let dex_fixture: PathBuf = corpus_path("jvm/dex/Hello.dex");
-    if !dex_fixture.exists() {
-        eprintln!("SKIP: fixture missing: {dex_fixture:?}");
-        return;
-    }
+    assert!(
+        dex_fixture.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        dex_fixture.display()
+    );
     let bin: PathBuf = cargo_bin();
-    if !bin.exists() {
-        eprintln!("SKIP: disrobe binary missing at {bin:?}");
-        return;
-    }
+    assert!(
+        bin.exists(),
+        "cargo builds the disrobe binary before this test binary runs, so a missing \
+         {} would leave this case driving nothing",
+        bin.display()
+    );
 
     let dex_bytes: Vec<u8> = std::fs::read(&dex_fixture)
         .unwrap_or_else(|e: std::io::Error| panic!("cannot read {dex_fixture:?}: {e}"));

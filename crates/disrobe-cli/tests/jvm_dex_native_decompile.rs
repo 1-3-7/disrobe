@@ -26,14 +26,18 @@ fn gcd_body(java: &str) -> String {
 #[test]
 fn native_dex_decompile_emits_real_method_bodies() {
     let dex: PathBuf = corpus_dex();
-    if !dex.exists() {
-        eprintln!("SKIP: missing fixture {dex:?}");
-        return;
-    }
-    if !cli_binary().exists() {
-        eprintln!("SKIP: disrobe binary not built");
-        return;
-    }
+    assert!(
+        dex.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        dex.display()
+    );
+    assert!(
+        cli_binary().exists(),
+        "cargo builds the disrobe binary before this test binary runs, so a missing \
+         {} would leave this case driving nothing",
+        cli_binary().display()
+    );
 
     let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("edgecases-dex-native");
 

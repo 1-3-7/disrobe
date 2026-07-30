@@ -62,10 +62,18 @@ fn run_apk(extra: &[&str]) -> Output {
 
 #[test]
 fn apk_text_surfaces_package_and_cert_fingerprint() {
-    if !cargo_bin().exists() || !corpus_path(FIXTURE).exists() {
-        eprintln!("SKIP: binary or fixture missing");
-        return;
-    }
+    assert!(
+        cargo_bin().exists(),
+        "cargo builds the disrobe binary before this test binary runs, so a missing \
+         {} would leave this case driving nothing",
+        cargo_bin().display()
+    );
+    assert!(
+        corpus_path(FIXTURE).exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        corpus_path(FIXTURE).display()
+    );
     let out: Output = run_apk(&[]);
     assert!(
         out.status.success(),
@@ -93,10 +101,18 @@ fn apk_text_surfaces_package_and_cert_fingerprint() {
 
 #[test]
 fn apk_out_writes_decoded_manifest_xml_and_resource_table() {
-    if !cargo_bin().exists() || !corpus_path(FIXTURE).exists() {
-        eprintln!("SKIP: binary or fixture missing");
-        return;
-    }
+    assert!(
+        cargo_bin().exists(),
+        "cargo builds the disrobe binary before this test binary runs, so a missing \
+         {} would leave this case driving nothing",
+        cargo_bin().display()
+    );
+    assert!(
+        corpus_path(FIXTURE).exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        corpus_path(FIXTURE).display()
+    );
     let purpose: String = format!("disrobe-apk-out-{}", FIXTURE.replace('/', "_"));
     let out_scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory");
@@ -143,10 +159,18 @@ fn apk_out_writes_decoded_manifest_xml_and_resource_table() {
 
 #[test]
 fn apk_json_emits_report_with_package_and_cert() {
-    if !cargo_bin().exists() || !corpus_path(FIXTURE).exists() {
-        eprintln!("SKIP: binary or fixture missing");
-        return;
-    }
+    assert!(
+        cargo_bin().exists(),
+        "cargo builds the disrobe binary before this test binary runs, so a missing \
+         {} would leave this case driving nothing",
+        cargo_bin().display()
+    );
+    assert!(
+        corpus_path(FIXTURE).exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        corpus_path(FIXTURE).display()
+    );
     let out: Output = run_apk(&["--json"]);
     assert!(
         out.status.success(),

@@ -79,10 +79,12 @@ fn technique(
 #[test]
 fn auto_emits_anti_analysis_report_and_packing_overcome_on_real_upx() {
     let packed: PathBuf = corpus_path("native/packers/upx/hello.packed.nrv2b.exe");
-    if !packed.exists() {
-        eprintln!("SKIP: fixture missing: {packed:?}");
-        return;
-    }
+    assert!(
+        packed.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        packed.display()
+    );
     let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("upx");
     let out: PathBuf = out_scratch.path().to_path_buf();
     let proc: std::process::Output = run_auto(&packed, &out);
@@ -121,10 +123,12 @@ fn auto_emits_anti_analysis_report_and_packing_overcome_on_real_upx() {
 #[test]
 fn clean_compiled_binary_does_not_invent_string_encryption() {
     let original: PathBuf = corpus_path("native/packers/upx/hello.original.exe");
-    if !original.exists() {
-        eprintln!("SKIP: fixture missing: {original:?}");
-        return;
-    }
+    assert!(
+        original.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        original.display()
+    );
     let bytes: Vec<u8> =
         std::fs::read(&original).unwrap_or_else(|e: std::io::Error| panic!("read original: {e}"));
     let report: AntiAnalysisReport = scan(&bytes, None);

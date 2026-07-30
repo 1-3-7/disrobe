@@ -131,10 +131,12 @@ fn carve_legacy_rust_symbols(bytes: &[u8]) -> Vec<String> {
 #[test]
 fn auto_pe_upx_rust_chain_unpacks_and_recovers_rust() {
     let packed: PathBuf = corpus_path("native/packers/upx/hello.packed.nrv2b.exe");
-    if !packed.exists() {
-        eprintln!("SKIP: fixture missing: {packed:?}");
-        return;
-    }
+    assert!(
+        packed.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        packed.display()
+    );
 
     let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("pe-upx-rust");
 

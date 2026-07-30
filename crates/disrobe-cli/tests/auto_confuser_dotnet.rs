@@ -92,14 +92,18 @@ fn auto_confuser_dotnet_recovers_constant_and_csharp_node() {
     const KNOWN_PLAINTEXT: &[u8] = b"DISROBE_CONFUSER_CONSTANT_PROOF_8842";
 
     let fixture: PathBuf = corpus_path("dotnet/SampleConstants.confuserex2.dll");
-    if !fixture.exists() {
-        eprintln!("SKIP: fixture missing: {fixture:?}");
-        return;
-    }
-    if !cargo_bin().exists() {
-        eprintln!("SKIP: disrobe binary missing: {:?}", cargo_bin());
-        return;
-    }
+    assert!(
+        fixture.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        fixture.display()
+    );
+    assert!(
+        cargo_bin().exists(),
+        "cargo builds the disrobe binary before this test binary runs, so a missing \
+         {} would leave this case driving nothing",
+        cargo_bin().display()
+    );
 
     let raw: Vec<u8> = std::fs::read(&fixture)
         .unwrap_or_else(|e: std::io::Error| panic!("cannot read fixture {fixture:?}: {e}"));

@@ -89,10 +89,12 @@ const RECOVERED_TOKEN: &str = "disrobe-hermes-token";
 #[test]
 fn test_chain_rn_hermes_to_js() {
     let fixture: PathBuf = corpus_path("mobile/hermes/hello/index.android.bundle");
-    if !fixture.exists() {
-        eprintln!("SKIP: fixture missing: {fixture:?}");
-        return;
-    }
+    assert!(
+        fixture.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        fixture.display()
+    );
 
     let raw: Vec<u8> = std::fs::read(&fixture)
         .unwrap_or_else(|e: std::io::Error| panic!("cannot read hermes fixture {fixture:?}: {e}"));

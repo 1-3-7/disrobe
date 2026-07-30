@@ -154,10 +154,12 @@ fn run_ghidra_count(
 #[test]
 fn native_export_produces_loadable_pe_and_parseable_sidecar() {
     let packed: PathBuf = corpus_path("native/packers/upx/hello.packed.nrv2b.exe");
-    if !packed.exists() {
-        eprintln!("SKIP: fixture missing: {packed:?}");
-        return;
-    }
+    assert!(
+        packed.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        packed.display()
+    );
     let out_dir_scratch: disrobe_core::scratch::ScratchDir = tmp_dir("wellformed");
     let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
 
@@ -208,10 +210,12 @@ fn native_export_produces_loadable_pe_and_parseable_sidecar() {
 #[test]
 fn native_export_before_after_ghidra_recovers_more() {
     let packed: PathBuf = corpus_path("native/packers/upx/hello.packed.nrv2b.exe");
-    if !packed.exists() {
-        eprintln!("SKIP: fixture missing: {packed:?}");
-        return;
-    }
+    assert!(
+        packed.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        packed.display()
+    );
 
     let out_dir_scratch: disrobe_core::scratch::ScratchDir = tmp_dir("delta");
 

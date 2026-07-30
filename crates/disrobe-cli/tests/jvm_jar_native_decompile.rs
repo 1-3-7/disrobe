@@ -51,14 +51,18 @@ fn build_fixture_jar(entries: &[(&str, Vec<u8>)]) -> (disrobe_core::scratch::Scr
 #[test]
 fn native_jar_decompile_emits_real_source_per_class() {
     let corpus: PathBuf = corpus_jar();
-    if !corpus.exists() {
-        eprintln!("SKIP: missing fixture {corpus:?}");
-        return;
-    }
-    if !cli_binary().exists() {
-        eprintln!("SKIP: disrobe binary not built");
-        return;
-    }
+    assert!(
+        corpus.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        corpus.display()
+    );
+    assert!(
+        cli_binary().exists(),
+        "cargo builds the disrobe binary before this test binary runs, so a missing \
+         {} would leave this case driving nothing",
+        cli_binary().display()
+    );
 
     let main_class: Vec<u8> = class_bytes(&corpus, "EdgeCases.class");
     let vector_class: Vec<u8> = class_bytes(&corpus, "EdgeCases$Vector2D.class");
@@ -117,14 +121,18 @@ fn native_jar_decompile_emits_real_source_per_class() {
 #[test]
 fn native_jar_decompile_survives_one_corrupt_class() {
     let corpus: PathBuf = corpus_jar();
-    if !corpus.exists() {
-        eprintln!("SKIP: missing fixture {corpus:?}");
-        return;
-    }
-    if !cli_binary().exists() {
-        eprintln!("SKIP: disrobe binary not built");
-        return;
-    }
+    assert!(
+        corpus.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        corpus.display()
+    );
+    assert!(
+        cli_binary().exists(),
+        "cargo builds the disrobe binary before this test binary runs, so a missing \
+         {} would leave this case driving nothing",
+        cli_binary().display()
+    );
 
     let good_class: Vec<u8> = class_bytes(&corpus, "EdgeCases$Vector2D.class");
     let corrupt_class: Vec<u8> = vec![0xCA, 0xFE, 0xBA, 0xBE, 0x00, 0x00, 0x00, 0x34, 0xFF, 0xFF];
