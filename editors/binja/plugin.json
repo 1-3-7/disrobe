@@ -8,7 +8,7 @@
   "api": [
     "python3"
   ],
-  "description": "Deobfuscate, decompile, and unpack almost anything by driving the disrobe CLI from inside Binary Ninja.",
+  "description": "Deobfuscate, decompile, and unpack compiled software by driving the disrobe CLI from inside Binary Ninja.",
   "longdescription": "Registers Binary Ninja plugin commands under the `disrobe` menu that run disrobe subcommands on the open file and print the recovered output to the Binary Ninja log. Drives the real disrobe binary; no placeholder bodies.",
   "license": {
     "name": "Elastic-2.0",

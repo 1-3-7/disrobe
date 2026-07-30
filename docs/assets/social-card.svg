@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" font-family="ui-monospace, 'Cascadia Mono', 'JetBrains Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace">
   <title>disrobe</title>
-  <desc>disrobe: decompile, deobfuscate, and unpack almost anything, deterministically, in a single Rust binary.</desc>
+  <desc>disrobe: decompile, deobfuscate, and unpack compiled software, deterministically, in a single Rust binary.</desc>
   <defs>
     <linearGradient id="reveal" gradientUnits="userSpaceOnUse" x1="540" y1="0" x2="1208" y2="0">
       <stop offset="0" stop-color="#000000"/>
@@ -47,7 +47,7 @@
   <text x="70" y="312" font-size="22" fill="#a1a1a1" letter-spacing="0.1">strip the obfuscation,</text>
   <text x="70" y="343" font-size="22" fill="#a1a1a1" letter-spacing="0.1">read the source.</text>
   <text x="70" y="388" font-size="15" fill="#828282" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">deobfuscate, decompile, and unpack</text>
-  <text x="70" y="409" font-size="15" fill="#828282" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">almost anything, deterministically.</text>
+  <text x="70" y="409" font-size="15" fill="#828282" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">compiled software, deterministically.</text>
   <g font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
     <text x="70" y="456" font-size="13" fill="#828282" letter-spacing="0.3">RAW</text>
     <text x="113" y="456" font-size="13" fill="#828282">&#8594;</text>

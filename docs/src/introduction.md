@@ -2,7 +2,7 @@
 
 ![disrobe](./assets/social-card.svg)
 
-> One tool to decompile, deobfuscate, and unpack almost anything, deterministically, in a single Rust binary.
+> One tool to decompile, deobfuscate, and unpack compiled software, deterministically, in a single Rust binary.
 
 `disrobe` is a universal multi-language decompiler and deobfuscator. It decompiles Python `.pyc` bytecode, unpacks PyArmor and PyInstaller, reads Nuitka-compiled binaries, decompiles WebAssembly, deobfuscates JavaScript, decompiles .NET / CIL and JVM / Java, recovers Android DEX, and unwraps native PE / ELF / Mach-O packers, all from one static binary built for malware analysis and reverse engineering.
 

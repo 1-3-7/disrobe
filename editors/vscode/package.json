@@ -1,7 +1,7 @@
 {
   "name": "disrobe",
   "displayName": "disrobe",
-  "description": "Deobfuscate, decompile, and unpack almost anything via the disrobe CLI and LSP daemon.",
+  "description": "Deobfuscate, decompile, and unpack compiled software via the disrobe CLI and LSP daemon.",
   "version": "0.1.0",
   "publisher": "disrobe",
   "license": "Elastic-2.0",

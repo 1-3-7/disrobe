@@ -1,6 +1,6 @@
 # disrobe
 
-> One tool to decompile, deobfuscate, and unpack almost anything, deterministically, in a single Rust binary. disrobe is a multi-language decompiler, deobfuscator, and unpacker covering Python, JavaScript, WebAssembly, .NET, JVM, Android, Go, Lua, PHP, Ruby, native PE/ELF/Mach-O, and more, behind one CLI with a deterministic pass pipeline that records exactly what it recovered and what it could not.
+> One tool to decompile, deobfuscate, and unpack compiled software, deterministically, in a single Rust binary. disrobe is a multi-language decompiler, deobfuscator, and unpacker covering Python, JavaScript, WebAssembly, .NET, JVM, Android, Go, Lua, PHP, Ruby, native PE/ELF/Mach-O, and more, behind one CLI with a deterministic pass pipeline that records exactly what it recovered and what it could not.
 
 Recovery is always measured against an independent reference, never the tool's own output, and lossy results are reported as measured. The hosted docs live at https://1-3-7.github.io/disrobe/latest/ and a browser playground at https://1-3-7.github.io/disrobe/playground/.
 

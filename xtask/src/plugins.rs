@@ -336,7 +336,7 @@ fn render_package_json(ecosystems: &EcosystemsDoc, cmds: &[CliCommand]) -> Strin
         r#"{{
   "name": "disrobe",
   "displayName": "disrobe",
-  "description": "Deobfuscate, decompile, and unpack almost anything via the disrobe CLI and LSP daemon.",
+  "description": "Deobfuscate, decompile, and unpack compiled software via the disrobe CLI and LSP daemon.",
   "version": "0.1.0",
   "publisher": "disrobe",
   "license": "Elastic-2.0",
@@ -979,7 +979,7 @@ fn render_binja_plugin_json(cmds: &[CliCommand]) -> String {
   "api": [
     "python3"
   ],
-  "description": "Deobfuscate, decompile, and unpack almost anything by driving the disrobe CLI from inside Binary Ninja.",
+  "description": "Deobfuscate, decompile, and unpack compiled software by driving the disrobe CLI from inside Binary Ninja.",
   "longdescription": "Registers Binary Ninja plugin commands under the `disrobe` menu that run disrobe subcommands on the open file and print the recovered output to the Binary Ninja log. Drives the real disrobe binary; no placeholder bodies.",
   "license": {{
     "name": "Elastic-2.0",
