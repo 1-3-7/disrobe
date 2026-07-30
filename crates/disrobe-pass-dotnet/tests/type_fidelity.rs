@@ -18,7 +18,9 @@ const CORPUS_ROOT_REL: &str = "../../corpus/dotnet";
 const UNRECOVERED_EXPRESSION: &str = "__unrecovered_expression";
 const STACK_UNDERFLOW: &str = "__stack_underflow";
 const STACK_UNDERFLOW_GOLDEN_REL: &str = "golden/dotnet_stack_underflow.tsv";
+const UNPARSED_GOLDEN_REL: &str = "golden/dotnet_unparsed_images.tsv";
 const STACK_UNDERFLOW_UPDATE_ENV: &str = "DISROBE_UPDATE_STACK_UNDERFLOW_GOLDEN";
+const CORPUS_IMAGES: usize = 49;
 const CORPUS_ASSEMBLIES: usize = 46;
 const CORPUS_METHOD_FLOOR: usize = 3121;
 const BUILD_OUTPUT_DIRS: [&str; 2] = ["bin", "obj"];
@@ -90,7 +92,19 @@ impl RecoveredBody {
     }
 }
 
-fn escape_signature(raw: &str) -> String {
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct RefusedImage {
+    image: String,
+    reason: String,
+}
+
+impl RefusedImage {
+    fn record(&self) -> String {
+        format!("{}\t{}", self.image, self.reason)
+    }
+}
+
+fn escape_field(raw: &str) -> String {
     let mut out: String = String::with_capacity(raw.len());
     for ch in raw.chars() {
         match ch {
@@ -108,69 +122,88 @@ fn corpus_root() -> PathBuf {
     root
 }
 
-fn golden_path() -> PathBuf {
+fn golden_path(relative: &str) -> PathBuf {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push("tests");
-    path.push(STACK_UNDERFLOW_GOLDEN_REL);
+    path.push(relative);
     path
 }
 
-fn read_golden() -> Vec<RecoveredBody> {
-    let path: PathBuf = golden_path();
-    let text: String = std::fs::read_to_string(&path).unwrap_or_else(|e: std::io::Error| {
+fn read_records(path: &Path) -> Vec<(usize, String)> {
+    let text: String = std::fs::read_to_string(path).unwrap_or_else(|e: std::io::Error| {
         panic!(
-            "read the recorded stack-underflow bodies at {} ({e}); regenerate it with `{REFRESH_COMMAND}`",
+            "read {} ({e}); regenerate it with `{REFRESH_COMMAND}`",
             path.display()
         )
     });
-    let mut records: Vec<RecoveredBody> = Vec::new();
-    for (index, line) in text.lines().enumerate() {
-        if line.is_empty() {
-            continue;
-        }
-        let mut fields = line.splitn(3, '\t');
-        let (Some(image), Some(token), Some(signature)) =
-            (fields.next(), fields.next(), fields.next())
-        else {
-            panic!(
-                "{}:{} is not `image<TAB>token<TAB>signature`: {line}",
-                path.display(),
-                index + 1
-            );
-        };
-        let Some(digits): Option<&str> = token.strip_prefix("0x") else {
-            panic!(
-                "{}:{} token must be written `0x` then eight hex digits: {token}",
-                path.display(),
-                index + 1
-            );
-        };
-        let Ok(token): Result<u32, std::num::ParseIntError> = u32::from_str_radix(digits, 16)
-        else {
-            panic!(
-                "{}:{} token is not hexadecimal: {token}",
-                path.display(),
-                index + 1
-            )
-        };
-        records.push(RecoveredBody {
-            image: image.to_owned(),
-            token,
-            signature: signature.to_owned(),
-        });
-    }
-    records
+    text.lines()
+        .enumerate()
+        .filter(|(_, line): &(usize, &str)| !line.is_empty())
+        .map(|(index, line): (usize, &str)| (index + 1, line.to_owned()))
+        .collect()
 }
 
-fn write_golden(bodies: &[RecoveredBody]) {
-    let path: PathBuf = golden_path();
+fn split_record<const N: usize>(line: &str, path: &Path, line_number: usize) -> [String; N] {
+    let fields: Vec<String> = line.splitn(N, '\t').map(str::to_owned).collect();
+    let Ok(record): Result<[String; N], Vec<String>> = fields.try_into() else {
+        panic!(
+            "{}:{line_number} needs {N} tab separated fields: {line}",
+            path.display()
+        )
+    };
+    record
+}
+
+fn parse_token(text: &str, path: &Path, line_number: usize) -> u32 {
+    let Some(digits): Option<&str> = text.strip_prefix("0x") else {
+        panic!(
+            "{}:{line_number} token must be written `0x` then eight hex digits: {text}",
+            path.display()
+        )
+    };
+    u32::from_str_radix(digits, 16).unwrap_or_else(|e: std::num::ParseIntError| {
+        panic!(
+            "{}:{line_number} token is not hexadecimal: {text} ({e})",
+            path.display()
+        )
+    })
+}
+
+fn read_underflow_golden() -> Vec<RecoveredBody> {
+    let path: PathBuf = golden_path(STACK_UNDERFLOW_GOLDEN_REL);
+    read_records(&path)
+        .into_iter()
+        .map(|(line_number, line): (usize, String)| {
+            let [image, token, signature]: [String; 3] = split_record(&line, &path, line_number);
+            RecoveredBody {
+                image,
+                token: parse_token(&token, &path, line_number),
+                signature,
+            }
+        })
+        .collect()
+}
+
+fn read_refusal_golden() -> Vec<RefusedImage> {
+    let path: PathBuf = golden_path(UNPARSED_GOLDEN_REL);
+    read_records(&path)
+        .into_iter()
+        .map(|(line_number, line): (usize, String)| {
+            let [image, reason]: [String; 2] = split_record(&line, &path, line_number);
+            RefusedImage { image, reason }
+        })
+        .collect()
+}
+
+fn write_golden(relative: &str, records: &[String]) {
+    let path: PathBuf = golden_path(relative);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .unwrap_or_else(|e: std::io::Error| panic!("create {} ({e})", parent.display()));
     }
     let mut text: String = String::new();
-    for body in bodies {
-        text.push_str(&body.record());
+    for record in records {
+        text.push_str(record);
         text.push('\n');
     }
     std::fs::write(&path, text)
@@ -179,10 +212,12 @@ fn write_golden(bodies: &[RecoveredBody]) {
 
 #[derive(Debug, Default)]
 struct PlaceholderSweep {
+    images: usize,
     assemblies: usize,
     methods: usize,
     depth_capped: Vec<String>,
     underflowed: Vec<RecoveredBody>,
+    refused: Vec<RefusedImage>,
 }
 
 fn sweep_placeholders() -> PlaceholderSweep {
@@ -193,19 +228,31 @@ fn sweep_placeholders() -> PlaceholderSweep {
 
     let mut sweep: PlaceholderSweep = PlaceholderSweep::default();
     for image in &images {
-        let Ok(bytes) = std::fs::read(image) else {
-            continue;
-        };
-        let Ok(asm) = decompile_assembly(&bytes) else {
-            continue;
-        };
-        sweep.assemblies += 1;
-        sweep.methods += asm.methods.len();
+        sweep.images += 1;
         let relative: String = image
             .strip_prefix(&root)
             .unwrap_or(image)
             .to_string_lossy()
             .replace('\\', "/");
+        let bytes: Vec<u8> = std::fs::read(image).unwrap_or_else(|e: std::io::Error| {
+            panic!(
+                "read the committed corpus image {} ({e}); every discovered image has to be \
+                 readable or the sweep is scoring itself against a corpus it cannot see",
+                image.display()
+            )
+        });
+        let asm: DecompiledAssembly = match decompile_assembly(&bytes) {
+            Ok(asm) => asm,
+            Err(e) => {
+                sweep.refused.push(RefusedImage {
+                    image: relative,
+                    reason: escape_field(&e.to_string()),
+                });
+                continue;
+            }
+        };
+        sweep.assemblies += 1;
+        sweep.methods += asm.methods.len();
         for m in &asm.methods {
             let signature: &str = m.signature.lines().next_back().unwrap_or("").trim();
             if m.body.contains(UNRECOVERED_EXPRESSION) {
@@ -217,12 +264,13 @@ fn sweep_placeholders() -> PlaceholderSweep {
                 sweep.underflowed.push(RecoveredBody {
                     image: relative.clone(),
                     token: m.token,
-                    signature: escape_signature(signature),
+                    signature: escape_field(signature),
                 });
             }
         }
     }
     sweep.underflowed.sort();
+    sweep.refused.sort();
     sweep
 }
 
@@ -243,11 +291,45 @@ fn no_recovered_body_falls_back_to_a_placeholder() {
     );
     let sweep: PlaceholderSweep = sweep_placeholders();
     assert_eq!(
+        sweep.images, CORPUS_IMAGES,
+        "the sweep discovered {} images under the corpus and the committed tree holds \
+         {CORPUS_IMAGES}; this count is the denominator every other number here is measured \
+         against, so it is pinned rather than floored. Fewer means the corpus shrank and the run \
+         is scoring itself against a smaller universe, more means an image was added and has to be \
+         accounted for on one side of the ratio or the other",
+        sweep.images
+    );
+    assert_eq!(
         sweep.assemblies, CORPUS_ASSEMBLIES,
-        "the committed corpus holds exactly {CORPUS_ASSEMBLIES} assemblies this pass can parse, \
-         and this run reached {}; a smaller number means the corpus shrank or an assembly stopped \
+        "{} of the {CORPUS_IMAGES} discovered images decompiled and the recorded state is \
+         {CORPUS_ASSEMBLIES} of {CORPUS_IMAGES}; a smaller number means an assembly stopped \
          parsing, a larger one means new coverage that has to be recorded here",
         sweep.assemblies
+    );
+    let refusal_golden: Vec<RefusedImage> = read_refusal_golden();
+    let refused_names: BTreeSet<&str> = refusal_golden
+        .iter()
+        .map(|r: &RefusedImage| r.image.as_str())
+        .collect();
+    let unrecorded_refusals: Vec<&RefusedImage> = sweep
+        .refused
+        .iter()
+        .filter(|r: &&RefusedImage| !refused_names.contains(r.image.as_str()))
+        .collect();
+    assert!(
+        unrecorded_refusals.is_empty(),
+        "{} images did not decompile and {} does not list them. An image that used to decompile \
+         and now does not is a regression in the reader. An image that never decompiled is either \
+         a native binary this pass is right to decline, in which case record it with \
+         `{REFRESH_COMMAND}`, or a fixture that has been contributing nothing since the day it \
+         landed.\n{}",
+        unrecorded_refusals.len(),
+        golden_path(UNPARSED_GOLDEN_REL).display(),
+        unrecorded_refusals
+            .iter()
+            .map(|r: &&RefusedImage| format!("  {}", r.record()))
+            .collect::<Vec<String>>()
+            .join("\n")
     );
     assert!(
         sweep.methods >= CORPUS_METHOD_FLOOR,
@@ -278,7 +360,7 @@ fn no_recovered_body_falls_back_to_a_placeholder() {
         render(&untokenized)
     );
 
-    let golden: Vec<RecoveredBody> = read_golden();
+    let golden: Vec<RecoveredBody> = read_underflow_golden();
     let recorded: BTreeSet<(&str, u32)> = golden.iter().map(|b: &RecoveredBody| b.key()).collect();
     let unrecorded: Vec<&RecoveredBody> = sweep
         .underflowed
@@ -293,7 +375,7 @@ fn no_recovered_body_falls_back_to_a_placeholder() {
          because an assembly started parsing is new coverage: record it with `{REFRESH_COMMAND}` \
          and review the added names in the diff.\n{}",
         unrecorded.len(),
-        golden_path().display(),
+        golden_path(STACK_UNDERFLOW_GOLDEN_REL).display(),
         sweep.methods,
         sweep.assemblies,
         render(&unrecorded)
@@ -304,17 +386,35 @@ fn no_recovered_body_falls_back_to_a_placeholder() {
 fn recorded_stack_underflow_bodies_are_current() {
     let sweep: PlaceholderSweep = sweep_placeholders();
     if std::env::var_os(STACK_UNDERFLOW_UPDATE_ENV).is_some() {
-        write_golden(&sweep.underflowed);
+        write_golden(
+            STACK_UNDERFLOW_GOLDEN_REL,
+            &sweep
+                .underflowed
+                .iter()
+                .map(RecoveredBody::record)
+                .collect::<Vec<String>>(),
+        );
+        write_golden(
+            UNPARSED_GOLDEN_REL,
+            &sweep
+                .refused
+                .iter()
+                .map(RefusedImage::record)
+                .collect::<Vec<String>>(),
+        );
         panic!(
             "{STACK_UNDERFLOW_UPDATE_ENV} was set, so {} now holds the {} bodies this run \
-             observed. Read the diff before committing it: an added name is a body that stopped \
-             reconstructing and a removed name is one that started. Re-run without the variable \
-             to check the gate.",
-            golden_path().display(),
-            sweep.underflowed.len()
+             observed and {} holds the {} images it could not decompile. Read both diffs before \
+             committing them: an added body is one that stopped reconstructing, a removed body is \
+             one that started, and an added image is one the reader no longer accepts. Re-run \
+             without the variable to check the gate.",
+            golden_path(STACK_UNDERFLOW_GOLDEN_REL).display(),
+            sweep.underflowed.len(),
+            golden_path(UNPARSED_GOLDEN_REL).display(),
+            sweep.refused.len()
         );
     }
-    let golden: Vec<RecoveredBody> = read_golden();
+    let golden: Vec<RecoveredBody> = read_underflow_golden();
     let observed: BTreeSet<(&str, u32)> = sweep
         .underflowed
         .iter()
@@ -330,7 +430,7 @@ fn recorded_stack_underflow_bodies_are_current() {
          improvement, not a failure, and the only thing left to do is drop them from the record \
          with `{REFRESH_COMMAND}` so the file keeps describing what the pass actually does.\n{}",
         reconstructed.len(),
-        golden_path().display(),
+        golden_path(STACK_UNDERFLOW_GOLDEN_REL).display(),
         render(&reconstructed)
     );
     let drifted: Vec<String> = golden
@@ -355,6 +455,54 @@ fn recorded_stack_underflow_bodies_are_current() {
          refresh the record with `{REFRESH_COMMAND}`.\n{}",
         drifted.len(),
         drifted.join("\n")
+    );
+
+    let refusal_golden: Vec<RefusedImage> = read_refusal_golden();
+    let refused_now: BTreeSet<&str> = sweep
+        .refused
+        .iter()
+        .map(|r: &RefusedImage| r.image.as_str())
+        .collect();
+    let accepted: Vec<&RefusedImage> = refusal_golden
+        .iter()
+        .filter(|r: &&RefusedImage| !refused_now.contains(r.image.as_str()))
+        .collect();
+    assert!(
+        accepted.is_empty(),
+        "{} images listed in {} now decompile. That is new coverage, not a failure: drop them \
+         from the record with `{REFRESH_COMMAND}`, and raise CORPUS_ASSEMBLIES to match, since \
+         the bodies they bring are now part of the population.\n{}",
+        accepted.len(),
+        golden_path(UNPARSED_GOLDEN_REL).display(),
+        accepted
+            .iter()
+            .map(|r: &&RefusedImage| format!("  {}", r.record()))
+            .collect::<Vec<String>>()
+            .join("\n")
+    );
+    let changed_reasons: Vec<String> = refusal_golden
+        .iter()
+        .filter_map(|r: &RefusedImage| {
+            let current: &RefusedImage = sweep
+                .refused
+                .iter()
+                .find(|o: &&RefusedImage| o.image == r.image)?;
+            (current.reason != r.reason).then(|| {
+                format!(
+                    "  {}\n    recorded: {}\n    current:  {}",
+                    r.image, r.reason, current.reason
+                )
+            })
+        })
+        .collect();
+    assert!(
+        changed_reasons.is_empty(),
+        "{} images are still declined but for a different stated reason than the one on record. \
+         The reason is what tells a reader whether the refusal is correct, so refresh it with \
+         `{REFRESH_COMMAND}` and check that the new wording still describes a native image rather \
+         than a reader that broke earlier than it used to.\n{}",
+        changed_reasons.len(),
+        changed_reasons.join("\n")
     );
 }
 
