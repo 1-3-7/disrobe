@@ -448,19 +448,30 @@ mod tests {
             .join("tests")
             .join("fixtures")
             .join("haxe_main.swf");
-        let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(&fixture) else {
-            eprintln!("SKIP: as3 swf fixture missing at {}", fixture.display());
-            return;
-        };
+        let bytes: Vec<u8> = std::fs::read(&fixture).unwrap_or_else(|err: std::io::Error| {
+            panic!(
+                "the chain's AS3 recovery is measured against real Haxe compiler output at {}, \
+                 which could not be read: {err}",
+                fixture.display()
+            )
+        });
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let out: Artifact = AS3_PASS.run(&a).expect("swf with DoABC must decompile");
         assert_eq!(out.rung, Rung::Surface);
         let source: &str = std::str::from_utf8(&out.envelope).expect("as3 source is utf-8");
-        assert!(
-            source.contains("class ") && source.contains("function "),
-            "as3 chain output is not real source; first 400: {:?}",
-            source.chars().take(400).collect::<String>(),
-        );
+        for declaration in [
+            "class Main",
+            "function greet",
+            "function add",
+            "function main",
+        ] {
+            assert!(
+                source.contains(declaration),
+                "{declaration} is in the Main.hx the Haxe compiler was given but absent from the \
+                 chain's recovery; first 400: {:?}",
+                source.chars().take(400).collect::<String>(),
+            );
+        }
         assert!(
             !source.contains("\"class_skeleton_source\"")
                 && !source.contains("\"abc_payload_count\""),
