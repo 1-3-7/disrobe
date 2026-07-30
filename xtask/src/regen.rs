@@ -12,6 +12,14 @@ const fn metrics_mode(check: bool) -> crate::metrics::Mode {
     }
 }
 
+const fn packer_roster_mode(check: bool) -> crate::packer_roster::Mode {
+    if check {
+        crate::packer_roster::Mode::Check
+    } else {
+        crate::packer_roster::Mode::Write
+    }
+}
+
 pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
     let mut stale: Vec<String> = Vec::new();
 
@@ -87,6 +95,12 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         "catalog-counts",
         check,
         || crate::catalog_counts::run(root),
+        &mut stale,
+    );
+    run_one(
+        "packer-roster",
+        check,
+        || crate::packer_roster::run(root, packer_roster_mode(check)),
         &mut stale,
     );
 
