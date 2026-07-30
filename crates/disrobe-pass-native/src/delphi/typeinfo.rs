@@ -44,6 +44,8 @@ pub struct DelphiTypeInfo {
     pub max_value: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub element_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_size: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub record_fields: Vec<DelphiRecordField>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -146,6 +148,7 @@ pub(super) fn describe_at(view: &PeView<'_>, off: usize, ptr: usize) -> Option<D
         min_value: None,
         max_value: None,
         element_type: None,
+        record_size: None,
         record_fields: Vec::new(),
         record_field_evidence: None,
     };
@@ -350,7 +353,7 @@ fn fill_record(view: &PeView<'_>, body: usize, ptr: usize, info: &mut DelphiType
     if rec_size <= 0 || rec_size > MAX_RECORD_SIZE {
         return;
     }
-    info.min_value = Some(i64::from(rec_size));
+    info.record_size = u32::try_from(rec_size).ok();
 
     let Some(managed_count): Option<i32> = view.read_i32(body + 4) else {
         return;

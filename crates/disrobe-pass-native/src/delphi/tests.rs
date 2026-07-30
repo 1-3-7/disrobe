@@ -944,7 +944,11 @@ fn record_fields_are_recovered_with_names_offsets_and_visibility() {
     let pe: Vec<u8> = pe_with_code_and_data(build_record_blob(12, 0, false));
     let record: DelphiTypeInfo = recovered_record(&pe).expect("TPoint3 recovered");
     assert_eq!(record.kind, "record");
-    assert_eq!(record.min_value, Some(12));
+    assert_eq!(record.record_size, Some(12));
+    assert_eq!(
+        record.min_value, None,
+        "record size belongs in its own field, not in the ordinal range"
+    );
     assert_eq!(record.record_fields.len(), 3);
     assert_eq!(record.record_fields[0].name, "X");
     assert_eq!(record.record_fields[0].offset, 0);
