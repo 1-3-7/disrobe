@@ -3,6 +3,7 @@
 #![allow(clippy::redundant_pub_crate)]
 #[cfg(feature = "chain")]
 pub mod chain_detector;
+pub mod code_signature;
 pub(crate) mod debug;
 pub mod demangle;
 pub mod dyld_cache;
@@ -24,6 +25,10 @@ pub mod swift_typedump;
 pub mod swiftinterface;
 pub mod swiftmodule;
 
+pub use code_signature::{
+    BlobSlot, CodeDirectory, CodeSignature, HashKind, PageHashAudit, PageHashVerdict,
+    SignatureCoverage, SlotKind, parse as parse_code_signature,
+};
 pub use dyld_cache::{
     DyldImage, DyldMapping, DyldSharedCache, ReconstructedDylib, is_dyld_shared_cache,
     parse as parse_dyld_cache, reconstruct_all as reconstruct_dyld_images,
