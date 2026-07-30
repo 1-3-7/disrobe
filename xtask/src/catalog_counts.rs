@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::path::{Path, PathBuf};
 
 use eyre::{Result, WrapErr, bail, eyre};
@@ -15,6 +16,8 @@ const DOTNET_ROSTER_SOURCE: &str = "crates/disrobe-pass-dotnet/src/protectors.rs
 const RASP_ROSTER_SOURCE: &str = "crates/disrobe-pass-jvm/src/rasp.rs";
 const CATALOG_DOC: &str = "docs/src/catalog.md";
 const REFERENCE_DOC: &str = "docs/src/cli/reference.md";
+const README_DOC: &str = "README.md";
+const JVM_ANDROID_DOC: &str = "docs/src/languages/jvm-android.md";
 
 const REGISTRY_ENTRY_MARKER: &str = "::chain_detector::";
 const MIN_REGISTRY_MEMBERS: usize = 8;
@@ -126,6 +129,47 @@ const ROSTER_ROWS: [RosterClaim; 2] = [
 
 const ROSTERLESS_ROWS: [&str; 2] = ["**Freezers / packagers**", "**JS bundlers (unbundler)**"];
 
+#[derive(Debug)]
+struct DerivedPhrase {
+    source: &'static str,
+    shape: RosterShape,
+    symbol: &'static str,
+    doc: &'static str,
+    template: &'static str,
+    consequence: &'static str,
+}
+
+const DERIVED_PHRASES: [DerivedPhrase; 3] = [
+    DerivedPhrase {
+        source: RASP_ROSTER_SOURCE,
+        shape: RosterShape::EnumVariants,
+        symbol: "RaspVendor",
+        doc: README_DOC,
+        template: "Android RASP ({} vendors)",
+        consequence: "the RASP roster carries that many vendors, so the capability table offers a \
+                      reader a different breadth than the fingerprinter can detect",
+    },
+    DerivedPhrase {
+        source: RASP_ROSTER_SOURCE,
+        shape: RosterShape::EnumVariants,
+        symbol: "RaspVendor",
+        doc: JVM_ANDROID_DOC,
+        template: "RASP vendors ({})",
+        consequence: "the RASP roster carries that many vendors, so the per-language page and the \
+                      catalog page would publish two different rosters for one enum",
+    },
+    DerivedPhrase {
+        source: PACKER_SOURCE,
+        shape: RosterShape::ArrayLength,
+        symbol: "EVERY_PACKER",
+        doc: README_DOC,
+        template: "Packers ({} families)",
+        consequence: "the `Packer` roster carries that many variants, so the headline capability \
+                      row states a packer breadth the binary does not carry, which is the exact \
+                      drift that once left three different totals published at once",
+    },
+];
+
 #[derive(Debug, Default)]
 struct Findings {
     issues: Vec<String>,
@@ -173,12 +217,13 @@ pub(crate) fn run(root: &Path) -> Result<()> {
     check_lua_split(&catalogs, &catalog_md, &mut findings)?;
     check_roster_rows(root, &catalog_md, &mut findings)?;
     check_rosterless_rows(&catalog_md, &mut findings)?;
+    check_derived_phrases(root, &mut findings)?;
 
     if findings.issues.is_empty() {
         println!(
-            "xtask regen: catalog count cross-check ok ({} published count(s) across {} and {} \
-             match the catalog tables the binary carries)",
-            findings.checked, CATALOG_DOC, REFERENCE_DOC
+            "xtask regen: catalog count cross-check ok ({} published count(s) across {}, {}, {} \
+             and {} match the catalog tables the binary carries)",
+            findings.checked, CATALOG_DOC, REFERENCE_DOC, README_DOC, JVM_ANDROID_DOC
         );
         Ok(())
     } else {
@@ -453,14 +498,57 @@ fn check_lua_split(
     Ok(())
 }
 
+fn roster_count(source_text: &str, shape: RosterShape, symbol: &str) -> Option<usize> {
+    match shape {
+        RosterShape::ArrayLength => array_length_constant(source_text, symbol),
+        RosterShape::EnumVariants => enum_variant_count(source_text, symbol),
+    }
+}
+
+fn check_derived_phrases(root: &Path, findings: &mut Findings) -> Result<()> {
+    let mut sources: BTreeMap<&'static str, String> = BTreeMap::new();
+    let mut docs: BTreeMap<&'static str, String> = BTreeMap::new();
+
+    for phrase in &DERIVED_PHRASES {
+        if let Entry::Vacant(slot) = sources.entry(phrase.source) {
+            slot.insert(read_repo_text(root, phrase.source, MAX_SOURCE_BYTES)?);
+        }
+        if let Entry::Vacant(slot) = docs.entry(phrase.doc) {
+            slot.insert(read_repo_text(root, phrase.doc, MAX_DOC_BYTES)?);
+        }
+    }
+
+    for phrase in &DERIVED_PHRASES {
+        let source_text: &str = sources
+            .get(phrase.source)
+            .map(String::as_str)
+            .ok_or_else(|| eyre!("{} was not loaded", phrase.source))?;
+        let doc_text: &str = docs
+            .get(phrase.doc)
+            .map(String::as_str)
+            .ok_or_else(|| eyre!("{} was not loaded", phrase.doc))?;
+        let derived: usize = roster_count(source_text, phrase.shape, phrase.symbol).ok_or_else(|| {
+            eyre!(
+                "{} no longer declares `{}` in a shape this check can count, so the count {} publishes for it is checked against nothing",
+                phrase.source,
+                phrase.symbol,
+                phrase.doc
+            )
+        })?;
+        findings.require_phrase(
+            phrase.doc,
+            doc_text,
+            &phrase.template.replace("{}", &derived.to_string()),
+            phrase.consequence,
+        );
+    }
+    Ok(())
+}
+
 fn check_roster_rows(root: &Path, catalog_md: &str, findings: &mut Findings) -> Result<()> {
     for row in &ROSTER_ROWS {
         let source: String = read_repo_text(root, row.source, MAX_SOURCE_BYTES)?;
-        let derived: usize = match row.shape {
-            RosterShape::ArrayLength => array_length_constant(&source, row.symbol),
-            RosterShape::EnumVariants => enum_variant_count(&source, row.symbol),
-        }
-        .ok_or_else(|| {
+        let derived: usize = roster_count(&source, row.shape, row.symbol).ok_or_else(|| {
             eyre!(
                 "{} no longer declares `{}` in a shape this check can count, so the `{}` count on {CATALOG_DOC} is checked against nothing",
                 row.source,
