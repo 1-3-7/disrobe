@@ -81,7 +81,8 @@
           "value": 78.5,
           "verified_by": {
             "path": "crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs",
-            "function": "legacy_recompile_correctness_oracle"
+            "function": "legacy_recompile_correctness_oracle",
+            "conditional": "The published figure itself is gated unconditionally: the run asserts both corpora exist, then asserts proven-correct at or above this bar's own numerator regardless of environment. Only the stronger leg is conditional. The recompile-equivalence ratchet is skipped when no legacy CPython interpreter is present, printing `skip: no legacy interpreter present`, and CI provisions no CPython 1.0 through 3.7, so on a clean machine the figure is held by structural token-match alone. That is what this bar's heading already claims, recompile-equivalence or structural token-match, so the claim and its enforcement agree."
           },
           "detail": "CI floor 150 / 191 (asserted, token-match alone holds when the 1.0-3.7 interpreter zoo is absent); 166 / 191 measured locally with the full period interpreter zoo (67 recompile-equiv + 99 token-match)",
           "source": "crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs:31 (PROVEN_CORRECT_FLOOR 150, CI-enforced via the test job); 166/191 measured locally 2026-06-12 with python 1.0-3.12 present",
