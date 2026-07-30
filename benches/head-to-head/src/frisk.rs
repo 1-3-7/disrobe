@@ -557,7 +557,167 @@ fn skipped_tool(name: &str, reason: &str) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
+    use disrobe_core::recon::ReconError;
+
     use super::*;
+    use crate::published::{
+        CompetitorTool, PublishedBar, ToolRequirement, assert_published_membership_is_exact,
+        assert_published_membership_is_recovered, checked_workspace_root, enforce_requirement,
+        published_bar, requirement_for,
+    };
+
+    const PUBLISHED_HEADING: &str = "Secret recall on the committed planted APK";
+    const PUBLISHED_DISROBE_BAR: &str = "disrobe frisk";
+    const PUBLISHED_APKLEAKS_BAR: &str = "apkleaks 2.6.3";
+    const APKLEAKS_MEASURED_VERSION: &str = "2.6.3";
+    const APKLEAKS_GRADED: &str =
+        "the apkleaks side of the planted-APK secret recall row published in recovery.json";
+
+    const APKLEAKS: CompetitorTool = CompetitorTool {
+        program: "apkleaks",
+        require_var: "DISROBE_REQUIRE_APKLEAKS",
+        install_hint: "install apkleaks with evidence/competitors/install-linux.sh and put jadx on PATH",
+    };
+
+    fn planted_labels(hits: &[usize]) -> BTreeSet<String> {
+        hits.iter()
+            .filter_map(|index: &usize| GROUND_TRUTH.get(*index))
+            .map(|secret: &PlantedSecret| secret.label.to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn published_planted_apk_secret_bars_are_pinned_by_membership() {
+        assert!(
+            PUBLISHED_APKLEAKS_BAR.ends_with(APKLEAKS_MEASURED_VERSION),
+            "the published apkleaks bar label must name the version this row grades, so the label \
+             and the version this check enforces cannot drift apart"
+        );
+        let root: PathBuf = checked_workspace_root();
+        let apk: PathBuf = root
+            .join("corpus")
+            .join("recon")
+            .join("apk")
+            .join("planted-secrets.apk");
+        assert!(
+            apk.is_file(),
+            "{} is committed and both tools read it; without it neither side of this published row \
+             is measured against anything",
+            apk.display()
+        );
+        let read: Result<Vec<u8>> = read_bounded_file(&apk, MAX_FIXTURE_BYTES);
+        assert!(
+            read.is_ok(),
+            "{} must be readable: {:?}",
+            apk.display(),
+            read.as_ref().err()
+        );
+        let apk_bytes: Vec<u8> = read.unwrap_or_default();
+
+        let tree: PathBuf =
+            std::env::temp_dir().join(format!("disrobe_h2h_pinned_frisk_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tree);
+        let extracted: Result<()> = extract_apk(&apk_bytes, &tree);
+        assert!(
+            extracted.is_ok(),
+            "the planted APK must extract before frisk scans it: {:?}",
+            extracted.as_ref().err()
+        );
+        let scanned: core::result::Result<ReconReport, ReconError> =
+            report_tree(&tree, &ReconConfig::default());
+        assert!(
+            scanned.is_ok(),
+            "frisk must scan the extracted planted APK tree: {:?}",
+            scanned.as_ref().err()
+        );
+        let disrobe_hits: Vec<usize> = scanned.map_or_else(
+            |_| Vec::new(),
+            |report: ReconReport| recall_indices_disrobe(&report),
+        );
+        let _ = std::fs::remove_dir_all(&tree);
+        let disrobe_found: BTreeSet<String> = planted_labels(&disrobe_hits);
+
+        let apkleaks_result: ApkleaksResult = run_apkleaks(&root, &apk);
+        let apkleaks_found: BTreeSet<String> = match &apkleaks_result {
+            ApkleaksResult::Ok { hits, .. } => planted_labels(hits),
+            ApkleaksResult::Skipped(_) | ApkleaksResult::Error { .. } => BTreeSet::new(),
+        };
+
+        for (index, secret) in GROUND_TRUTH.iter().enumerate() {
+            eprintln!(
+                "planted secret {index} `{label}` = {token} | disrobe={disrobe} apkleaks={apkleaks}",
+                label = secret.label,
+                token = secret.token(),
+                disrobe = disrobe_found.contains(secret.label),
+                apkleaks = apkleaks_found.contains(secret.label),
+            );
+        }
+
+        let disrobe_bar: PublishedBar = published_bar(PUBLISHED_HEADING, PUBLISHED_DISROBE_BAR);
+        eprintln!(
+            "published `{label}` {num}/{den} = {value}; measured {measured}/{total} {found:?}",
+            label = disrobe_bar.label,
+            num = disrobe_bar.num,
+            den = disrobe_bar.den,
+            value = disrobe_bar.value,
+            measured = disrobe_found.len(),
+            total = GROUND_TRUTH.len(),
+            found = disrobe_found,
+        );
+        assert_published_membership_is_recovered(&disrobe_bar, &disrobe_found, GROUND_TRUTH.len());
+
+        match &apkleaks_result {
+            ApkleaksResult::Ok { version, via, .. } => {
+                eprintln!(
+                    "apkleaks `{version}` graded via {via}; measured {measured}/{total} {found:?}",
+                    measured = apkleaks_found.len(),
+                    total = GROUND_TRUTH.len(),
+                    found = apkleaks_found,
+                );
+                let requirement: ToolRequirement = requirement_for(&APKLEAKS);
+                if version.contains(APKLEAKS_MEASURED_VERSION) {
+                    let apkleaks_bar: PublishedBar =
+                        published_bar(PUBLISHED_HEADING, PUBLISHED_APKLEAKS_BAR);
+                    eprintln!(
+                        "published `{label}` {num}/{den} = {value}",
+                        label = apkleaks_bar.label,
+                        num = apkleaks_bar.num,
+                        den = apkleaks_bar.den,
+                        value = apkleaks_bar.value,
+                    );
+                    assert_published_membership_is_exact(
+                        &apkleaks_bar,
+                        &apkleaks_found,
+                        GROUND_TRUTH.len(),
+                    );
+                } else {
+                    enforce_requirement(
+                        &APKLEAKS,
+                        APKLEAKS_GRADED,
+                        &format!(
+                            "it reports `{version}`, which is not the {APKLEAKS_MEASURED_VERSION} \
+                             series this comparison row publishes"
+                        ),
+                        requirement,
+                    );
+                }
+            }
+            ApkleaksResult::Skipped(reason) => enforce_requirement(
+                &APKLEAKS,
+                APKLEAKS_GRADED,
+                reason,
+                requirement_for(&APKLEAKS),
+            ),
+            ApkleaksResult::Error { version, reason } => enforce_requirement(
+                &APKLEAKS,
+                APKLEAKS_GRADED,
+                &format!("apkleaks `{version}` ran and failed: {reason}"),
+                requirement_for(&APKLEAKS),
+            ),
+        }
+    }
 
     #[test]
     fn apkleaks_json_recall_matches_planted_tokens() -> core::result::Result<(), String> {
