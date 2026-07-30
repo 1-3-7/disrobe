@@ -119,7 +119,7 @@ The Oracle column names the independent reference in a few words. What that refe
 | Go BuildInfo and garble undo | BuildInfo recovered, `-literals` rebuilt `[CI]` | real toolchain output | `crates/disrobe-pass-go/tests/go_buildinfo_oracle.rs` |
 | Swift symbol demangle | 37 / 37 mangled symbols `[CI]` | binary `LC_SYMTAB` symbols | `crates/disrobe-pass-swift-objc/tests/real_swift_demangle.rs` |
 | HashLink (Haxe `.hl`) | class names 100%, method names floor 75% `[CI]` | names vs the original `.hx` | `crates/disrobe-pass-scriptlang/tests/real_hashlink_decompile.rs` |
-| Native UPX | `.text` and `.pdata` byte-identical, floor 96% `[CI]` | byte-identity | `crates/disrobe-pass-native/tests/upx_unpack_all.rs` |
+| Native UPX | `.text` and `.pdata` byte-identical, floor 96% `[CI]` | byte-identity | `crates/disrobe-pass-native/tests/upx_unpack_all.rs`, `nrv2b_content_section_byte_recovery_meets_floor` |
 | Native packers, MPRESS | `.text` >= 90%, `.rdata` >= 85% `[CI]` | RVA-aligned recovery | `crates/disrobe-pass-native/tests/mpress_gauntlet.rs` |
 | Native packers, Yoda's Crypter | `.rsrc`, `.text`, `.data` byte-identical `[CI]` | byte-identity | `crates/disrobe-pass-native/tests/packer_real_samples.rs` |
 | Native packers, ASPack and PECompact | content and rebuilt IAT >= 98% byte-identical `[CI]` | RVA-aligned recovery | `crates/disrobe-pass-native/tests/aspack_pecompact_phase2.rs` |
