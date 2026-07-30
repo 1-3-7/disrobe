@@ -1,6 +1,6 @@
 # BEAM (Erlang / Elixir)
 
-`disrobe` parses BEAM IFF files, recovers Erlang or Elixir source when debug chunks survive, lifts to Core Erlang otherwise, and disassembles the Code chunk per instruction. A flat text disassembly listing lands beside the JSON automatically.
+`disrobe` parses BEAM IFF files, recovers Erlang or Elixir source when debug chunks survive, lifts to Core Erlang otherwise, and disassembles the Code chunk per instruction.
 
 ## At a glance
 
@@ -11,15 +11,17 @@
 | Disassembly | Per-instruction Code-chunk trace including the `bs_match` (opcode 182) command list; a flat `.txt` listing lands beside the JSON |
 | Containers | `.ez` archives extract through the container layer |
 
-## Parsing
+## Commands
 
 ```sh
 disrobe beam parse module.beam --out ./out/module-beam.json
+disrobe beam lift module.beam --out out/module-beam-lift/
+disrobe beam disasm module.beam --out ./out/module-beam.disasm.json
 ```
 
-Reports the module name, atom / export / import / fun counts, which optional chunks are present, and any unrecognized chunk names.
+Output shapes below are illustrative.
 
-Output shape (illustrative):
+`parse` reports the module name, atom / export / import / fun counts, which optional chunks are present, and any unrecognized chunk names.
 
 ```text
 beam parse: OK
@@ -31,17 +33,7 @@ beam parse: OK
   wrote:        ./out/module-beam.json
 ```
 
-## Lifting to source
-
-```sh
-disrobe beam lift module.beam --out out/module-beam-lift/
-```
-
-Writes three files: `<stem>.<ext>` (recovered Erlang or Elixir source, extension derived from `recovered_from`), `<stem>.surface.json` (the surface record with provenance), and `<stem>.core.json` (lifted Core Erlang functions), plus a `manifest.json` linking them.
-
-When a `Dbgi` chunk is present the original forms are recovered directly and labelled `AbstractCode` (Erlang) or `ElixirDbgiForm` (Elixir). Without it the output is a best-effort Core Erlang lift labelled `CoreLifted`.
-
-Output shape (illustrative):
+`lift` writes three files: `<stem>.<ext>` (recovered Erlang or Elixir source, extension derived from `recovered_from`), `<stem>.surface.json` (the surface record with provenance), and `<stem>.core.json` (lifted Core Erlang functions), plus a `manifest.json` linking them.
 
 ```text
 beam lift: OK
@@ -54,15 +46,7 @@ beam lift: OK
   manifest:     ./out/module-beam-lift/manifest.json
 ```
 
-## Disassembling
-
-```sh
-disrobe beam disasm module.beam --out ./out/module-beam.disasm.json
-```
-
-Emits the per-instruction Code-chunk trace as JSON and a flat `.txt` listing beside it. Opcodes beyond the known table fail with an explicit `DR-BEAM-0012` error naming the offending opcode rather than silently skipping bytes.
-
-Output shape (illustrative):
+`disasm` emits the per-instruction Code-chunk trace as JSON and a flat `.txt` listing beside it.
 
 ```text
 beam disasm: OK
@@ -71,3 +55,12 @@ beam disasm: OK
   wrote:        ./out/module-beam.disasm.json
   listing:      ./out/module-beam.disasm.txt
 ```
+
+## Coverage and fidelity
+
+When a `Dbgi` chunk is present the original forms are recovered directly and labelled `AbstractCode` (Erlang) or `ElixirDbgiForm` (Elixir). Each lift records where its source came from in `recovered_from`, so a caller can tell a recovered original from a lift.
+
+## Limits
+
+- Without a `Dbgi` chunk the original source is not in the file. The output is then a best-effort Core Erlang lift labelled `CoreLifted`, not the original text.
+- An opcode beyond the known table fails with an explicit `DR-BEAM-0012` error naming the offending opcode rather than silently skipping bytes.

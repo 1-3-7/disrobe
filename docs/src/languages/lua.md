@@ -13,16 +13,18 @@
 | Peelers (`--family`) | `prometheus`, `moonsec-v1`, `moonsec-v2`, `moonsec-v3`, `ironbrew2`, `wearedevs`, `slua`; default `auto` detects first |
 | VM devirtualization | IronBrew2 2.7.0 reversed on real committed output, graded by real-Lua execution differential (hello / arith / control / tables / edge in standard and MAX mode); MoonSec-shape recovery is pending a real sample |
 
-## Decompiling
+## Commands
 
 ```sh
 disrobe lua decompile script.luac --out script.lua
 disrobe lua detect script.luac
+disrobe lua deobfuscate obfuscated.lua --out clean.lua
+disrobe lua deobfuscate dumped.lua --family moonsec-v3 --i-have-authorization
 ```
 
-`decompile` writes the recovered source (default `./out/<stem>.lua`) and a `manifest.json` recording the format, fidelity grade, and warnings. `detect` reports the dialect and header field summary (constant, proto, and code counts) without writing output.
+`decompile` writes the recovered source (default `./out/<stem>.lua`) and a `manifest.json` recording the format, fidelity grade, and warnings. `detect` reports the dialect and header field summary (constant, proto, and code counts) without writing output. MoonSec v3 and IronBrew2 are commercial-tier wrappers; their peelers require the explicit `--i-have-authorization` flag.
 
-Output shape (illustrative):
+Output shapes below are illustrative.
 
 ```text
 lua decompile: OK
@@ -33,15 +35,6 @@ lua decompile: OK
   wrote:        ./out/script.lua
   manifest:     ./out/script.manifest.json
 ```
-
-## Peeling an obfuscator
-
-```sh
-disrobe lua deobfuscate obfuscated.lua --out clean.lua
-disrobe lua deobfuscate dumped.lua --family moonsec-v3 --i-have-authorization
-```
-
-MoonSec v3 and IronBrew2 are commercial-tier wrappers; their peelers require the explicit `--i-have-authorization` flag. Output shape (illustrative):
 
 ```text
 lua deobfuscate: OK
@@ -57,9 +50,9 @@ lua deobfuscate: OK
   wrote:        ./out/obfuscated.peeled.lua
 ```
 
-The report lists every pass that ran, recovered string constants, a `fully peeled` verdict, and any residual markers. Where `fully peeled` is `false` the report carries the residual marker names and the reason (runtime key, anti-tamper variant, or unmodeled VM tier).
+The deobfuscate report lists every pass that ran, recovered string constants, a `fully peeled` verdict, and any residual markers.
 
-## VM devirtualization
+## Coverage and fidelity
 
 IronBrew2 and MoonSec ship their payload behind a custom register-VM: a permuted opcode-handler table and an embedded constant pool that a stock decompiler cannot read. The permutation is not stored in the loader; it is computed at load time inside the obfuscated bootstrap, then used to dispatch handlers and key the constant decryptor. `disrobe` reconstructs it the same way the loader does.
 
@@ -67,6 +60,8 @@ For IronBrew2 2.7.0, the devirtualizer parses the bootstrap's dispatch chain to 
 
 MAX mode adds three layers on top of standard: a control-flow-flattened dispatch (a nested binary search over the opcode enum, which the same handler walker un-flattens), comparison-polarity number-mutation (the EQ handler tests `~=` and jumps on equality, captured as the literal operator plus jump direction), and fused super-operator handlers (one VM step covering several real ops, whose hoisted scratch locals are stripped after classification).
 
-The MoonSec `emulate_perm_builder` path interprets a bootstrap table-builder over its seed and is unit-tested on a realistic synthetic bootstrap of our own design whose permutation is derived at runtime. End-to-end validation against a real captured MoonSec dump is pending: no live sample is publicly available.
+## Limits
 
-Runtime-key and anti-tamper variants (MoonSec v3 with an encrypted constant pool keyed at runtime) are the wall: the key is not present statically, so `disrobe` returns `fully_recovered: false` with a `runtime keys` residual marker.
+- Where `fully peeled` is `false` the report carries the residual marker names and the reason (runtime key, anti-tamper variant, or unmodeled VM tier).
+- Runtime-key and anti-tamper variants (MoonSec v3 with an encrypted constant pool keyed at runtime) are the wall: the key is not present statically, so `disrobe` returns `fully_recovered: false` with a `runtime keys` residual marker.
+- The MoonSec `emulate_perm_builder` path interprets a bootstrap table-builder over its seed and is unit-tested on a realistic synthetic bootstrap of our own design whose permutation is derived at runtime. End-to-end validation against a real captured MoonSec dump is pending: no live sample is publicly available.
