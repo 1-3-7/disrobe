@@ -2,6 +2,15 @@
 pub mod apk;
 pub mod frisk;
 pub mod gate;
+#[cfg(test)]
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "pub(crate) is the right visibility for this crate-internal published-figure pinning \
+              module; redundant_pub_crate (nursery) and the workspace unreachable_pub lint cannot \
+              both hold for a private submodule, matching the allow already shipped across the \
+              workspace"
+)]
+mod published;
 pub mod tool;
 
 use std::fmt::Write as _;

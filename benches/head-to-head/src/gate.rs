@@ -284,7 +284,98 @@ fn collect_pkl_with_limits(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
+    use disrobe_core::recon::ReconError;
+
     use super::*;
+    use crate::published::{
+        PublishedBar, assert_published_membership_is_recovered, checked_workspace_root,
+        published_bar,
+    };
+
+    const PUBLISHED_IOC_HEADING: &str = "frisk IOC category recall on the committed planted tree";
+    const PUBLISHED_IOC_BAR: &str = "planted non-secret IOC categories";
+
+    #[test]
+    fn published_planted_ioc_category_bar_is_pinned_by_membership() {
+        let planted: PathBuf = checked_workspace_root()
+            .join("corpus")
+            .join("recon")
+            .join("planted");
+        assert!(
+            planted.is_dir(),
+            "{} is the committed ground truth this published figure counts against; without it the \
+             row measures nothing",
+            planted.display()
+        );
+        let scanned: core::result::Result<ReconReport, ReconError> =
+            report_tree(&planted, &ReconConfig::default());
+        assert!(
+            scanned.is_ok(),
+            "frisk must scan the committed planted tree: {:?}",
+            scanned.as_ref().err()
+        );
+        let findings: Vec<ReconFinding> =
+            scanned.map_or_else(|_| Vec::new(), |report: ReconReport| report.findings);
+
+        let detected: BTreeSet<String> = REQUIRED_PLANTED_CATEGORIES
+            .iter()
+            .filter(|category: &&ReconCategory| {
+                findings
+                    .iter()
+                    .any(|finding: &ReconFinding| finding.category == **category)
+            })
+            .map(|category: &ReconCategory| category.label().to_owned())
+            .collect();
+
+        for category in REQUIRED_PLANTED_CATEGORIES {
+            let hits: Vec<&ReconFinding> = findings
+                .iter()
+                .filter(|finding: &&ReconFinding| finding.category == *category)
+                .collect();
+            eprintln!(
+                "planted category `{label}`: {count} finding(s)",
+                label = category.label(),
+                count = hits.len(),
+            );
+            for finding in hits {
+                eprintln!(
+                    "  {rule} {path}:{line} = {value}",
+                    rule = finding.rule_id,
+                    path = finding.path.as_deref().unwrap_or("(no path)"),
+                    line = finding.line,
+                    value = finding.value,
+                );
+            }
+        }
+
+        let bar: PublishedBar = published_bar(PUBLISHED_IOC_HEADING, PUBLISHED_IOC_BAR);
+        eprintln!(
+            "published `{label}` {num}/{den} = {value}; measured {measured} {detected:?}",
+            label = bar.label,
+            num = bar.num,
+            den = bar.den,
+            value = bar.value,
+            measured = detected.len(),
+        );
+        let required: BTreeSet<String> = REQUIRED_PLANTED_CATEGORIES
+            .iter()
+            .map(|category: &ReconCategory| category.label().to_owned())
+            .collect();
+        assert_eq!(
+            bar.membership,
+            required,
+            "bar `{label}`: recovery.json must name the same planted categories this gate grades, \
+             so the published figure cannot describe a different six than the one measured",
+            label = bar.label
+        );
+        assert_published_membership_is_recovered(
+            &bar,
+            &detected,
+            REQUIRED_PLANTED_CATEGORIES.len(),
+        );
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("disrobe_h2h_gate_{}_{}", std::process::id(), name))
