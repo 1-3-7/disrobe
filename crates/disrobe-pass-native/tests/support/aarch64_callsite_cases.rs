@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -107,26 +108,37 @@ fn compile_translation_unit(
     object_path
 }
 
-fn link_relocatable(directory: &Path, objects: &[PathBuf]) -> Vec<u8> {
-    let output_path: PathBuf = directory.join("combined.o");
+fn linker_path() -> PathBuf {
     let mut locate: Command = Command::new("clang");
     locate.arg("--print-prog-name=ld.lld");
     let located: Output = command_output(&mut locate);
     let printed: String = String::from_utf8(located.stdout).expect("linker path must be utf-8");
     let candidate: PathBuf = PathBuf::from(printed.trim());
-    let linker_path: PathBuf = if candidate.is_file() {
+    if candidate.is_file() {
         candidate
     } else {
         PathBuf::from(format!("{}.exe", candidate.display()))
-    };
-    let mut command: Command = Command::new(linker_path);
-    command.arg("-r");
+    }
+}
+
+fn link_with(directory: &Path, objects: &[PathBuf], mode: &str, stem: &str) -> Vec<u8> {
+    let output_path: PathBuf = directory.join(stem);
+    let mut command: Command = Command::new(linker_path());
+    command.arg(mode);
     for object_path in objects {
         command.arg(object_path);
     }
     command.arg("-o").arg(&output_path);
     let _: Output = command_output(&mut command);
     fs::read(output_path).expect("linked fixture must be readable")
+}
+
+fn link_relocatable(directory: &Path, objects: &[PathBuf]) -> Vec<u8> {
+    link_with(directory, objects, "-r", "combined.o")
+}
+
+fn link_shared(directory: &Path, objects: &[PathBuf]) -> Vec<u8> {
+    link_with(directory, objects, "-shared", "combined.so")
 }
 
 fn compile_c_pair(callee: &str, caller: &str, optimization: &str) -> Vec<u8> {
@@ -1847,5 +1859,508 @@ caller_drps:
     assert!(
         drps.contains("return type remains underdetermined"),
         "{drps}"
+    );
+}
+
+const DENSE_SWITCH_LEVELS: [&str; 4] = ["O1", "O2", "O3", "Os"];
+const DENSE_SWITCH_UNOPTIMIZED_LEVEL: &str = "O0";
+const DENSE_SWITCH_LABELS_PER_TABLE: usize = 20;
+const DENSE_SWITCH_DRAWS_PER_DISCRIMINANT: u32 = 8;
+const DENSE_SWITCH_GUARD_MARGIN: i64 = 3;
+const DENSE_SWITCH_MUTATED_FUNCTION: &str = "sw_tab_add";
+const DENSE_SWITCH_MUTATED_LABEL: &str = "case 0:";
+const DENSE_SWITCH_MUTATED_REPLACEMENT: &str = "case 4096:";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DenseSwitchShape {
+    Unsigned32,
+    Unsigned64,
+    Signed32Small,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DenseSwitchCase {
+    name: &'static str,
+    lowest_label: i64,
+    highest_label: i64,
+    shape: DenseSwitchShape,
+}
+
+const DENSE_SWITCH_CASES: [DenseSwitchCase; 6] = [
+    DenseSwitchCase {
+        name: "sw_tab_add",
+        lowest_label: 0,
+        highest_label: 19,
+        shape: DenseSwitchShape::Unsigned32,
+    },
+    DenseSwitchCase {
+        name: "sw_tab_offset",
+        lowest_label: 100,
+        highest_label: 119,
+        shape: DenseSwitchShape::Unsigned32,
+    },
+    DenseSwitchCase {
+        name: "sw_tab_negative",
+        lowest_label: -10,
+        highest_label: 9,
+        shape: DenseSwitchShape::Unsigned32,
+    },
+    DenseSwitchCase {
+        name: "sw_tab_shared",
+        lowest_label: 0,
+        highest_label: 19,
+        shape: DenseSwitchShape::Unsigned32,
+    },
+    DenseSwitchCase {
+        name: "sw_tab_wide",
+        lowest_label: 0,
+        highest_label: 19,
+        shape: DenseSwitchShape::Unsigned64,
+    },
+    DenseSwitchCase {
+        name: "sw_tab_signed",
+        lowest_label: 0,
+        highest_label: 19,
+        shape: DenseSwitchShape::Signed32Small,
+    },
+];
+
+const DENSE_SWITCH_C: &str = r"
+unsigned sw_tab_add(int x, unsigned a, unsigned b) {
+    switch (x) {
+        case 0: return a + b;
+        case 1: return a - b;
+        case 2: return a * b;
+        case 3: return a ^ b;
+        case 4: return a | b;
+        case 5: return a & b;
+        case 6: return a << 1;
+        case 7: return b >> 2;
+        case 8: return a + 2u * b;
+        case 9: return a - 3u * b;
+        case 10: return (a ^ b) + 5u;
+        case 11: return (a | b) - 7u;
+        case 12: return (a & b) * 3u;
+        case 13: return a * a;
+        case 14: return b * b;
+        case 15: return a + b + 11u;
+        case 16: return a - b - 13u;
+        case 17: return (a >> 1) + (b << 2);
+        case 18: return (a << 3) ^ b;
+        case 19: return a | (b + 17u);
+        default: return 0xa5a5a5a5u;
+    }
+}
+
+unsigned sw_tab_offset(int x, unsigned a, unsigned b) {
+    switch (x) {
+        case 100: return a + b;
+        case 101: return a - b;
+        case 102: return a * b;
+        case 103: return a ^ b;
+        case 104: return a | b;
+        case 105: return a & b;
+        case 106: return a << 2;
+        case 107: return b >> 1;
+        case 108: return a + 3u * b;
+        case 109: return a - 5u * b;
+        case 110: return (a ^ b) + 9u;
+        case 111: return (a | b) - 3u;
+        case 112: return (a & b) * 7u;
+        case 113: return a * a + 1u;
+        case 114: return b * b - 1u;
+        case 115: return a + b + 21u;
+        case 116: return a - b - 23u;
+        case 117: return (a >> 2) + (b << 1);
+        case 118: return (a << 1) ^ b;
+        case 119: return a | (b + 31u);
+        default: return 0x5a5a5a5au;
+    }
+}
+
+unsigned sw_tab_negative(int x, unsigned a, unsigned b) {
+    switch (x) {
+        case -10: return a + b;
+        case -9: return a - b;
+        case -8: return a * b;
+        case -7: return a ^ b;
+        case -6: return a | b;
+        case -5: return a & b;
+        case -4: return a << 3;
+        case -3: return b >> 3;
+        case -2: return a + 4u * b;
+        case -1: return a - 7u * b;
+        case 0: return (a ^ b) + 13u;
+        case 1: return (a | b) - 11u;
+        case 2: return (a & b) * 5u;
+        case 3: return a * a + 3u;
+        case 4: return b * b - 3u;
+        case 5: return a + b + 41u;
+        case 6: return a - b - 43u;
+        case 7: return (a >> 3) + (b << 3);
+        case 8: return (a << 2) ^ b;
+        case 9: return a | (b + 51u);
+        default: return 0xdeadbeefu;
+    }
+}
+
+unsigned sw_tab_shared(int x, unsigned a, unsigned b) {
+    switch (x) {
+        case 0:
+        case 5:
+        case 10: return a + b;
+        case 1:
+        case 6:
+        case 11: return a - b;
+        case 2:
+        case 7: return a * b;
+        case 3:
+        case 8: return a ^ b;
+        case 4:
+        case 9: return a | b;
+        case 12: return a & b;
+        case 13: return a << 1;
+        case 14: return b >> 1;
+        case 15: return a + 2u * b;
+        case 16: return a - 2u * b;
+        case 17: return a * a;
+        case 18: return b * b;
+        case 19: return a + b + 7u;
+        default: return 0x13571357u;
+    }
+}
+
+unsigned long long sw_tab_wide(int x, unsigned long long a, unsigned long long b) {
+    switch (x) {
+        case 0: return a + b;
+        case 1: return a - b;
+        case 2: return a * b;
+        case 3: return a ^ b;
+        case 4: return a | b;
+        case 5: return a & b;
+        case 6: return a << 1;
+        case 7: return b >> 2;
+        case 8: return (unsigned long long)((long long)a >> 3);
+        case 9: return a - 3ull * b;
+        case 10: return (a ^ b) + 5ull;
+        case 11: return (a | b) - 7ull;
+        case 12: return (a & b) * 3ull;
+        case 13: return a * a;
+        case 14: return b * b;
+        case 15: return a + b + 11ull;
+        case 16: return a - b - 13ull;
+        case 17: return (a >> 1) + (b << 2);
+        case 18: return (a << 3) ^ b;
+        case 19: return a | (b + 17ull);
+        default: return 0x0123456789abcdefull;
+    }
+}
+
+int sw_tab_signed(int x, int a, int b) {
+    switch (x) {
+        case 0: return a + b;
+        case 1: return a - b;
+        case 2: return a * b;
+        case 3: return a ^ b;
+        case 4: return a | b;
+        case 5: return a & b;
+        case 6: return a >> 1;
+        case 7: return b >> 2;
+        case 8: return -a;
+        case 9: return -b;
+        case 10: return a + b + 5;
+        case 11: return a - b - 7;
+        case 12: return (a ^ b) >> 3;
+        case 13: return a * 3;
+        case 14: return b * 5;
+        case 15: return (a >> 4) + b;
+        case 16: return a - (b >> 5);
+        case 17: return (a | b) >> 2;
+        case 18: return (a & b) - 9;
+        case 19: return a + (b >> 6);
+        default: return -424242;
+    }
+}
+";
+
+fn dense_switch_object(level: &str) -> Vec<u8> {
+    let directory: TempDir = tempfile::tempdir().expect("temporary directory must be available");
+    let object: PathBuf =
+        compile_translation_unit(directory.path(), "dense_switch", "c", DENSE_SWITCH_C, level);
+    link_shared(directory.path(), &[object])
+}
+
+fn dense_switch_originals() -> String {
+    let mut source: String = String::new();
+    for case in DENSE_SWITCH_CASES {
+        let _ = writeln!(source, "#define {} orig_{}", case.name, case.name);
+    }
+    source.push_str(DENSE_SWITCH_C);
+    for case in DENSE_SWITCH_CASES {
+        let _ = writeln!(source, "#undef {}", case.name);
+    }
+    source
+}
+
+fn dense_switch_block(level: &str, case: DenseSwitchCase, symbol: &str, seed: u64) -> String {
+    let lowest: i64 = case.lowest_label.saturating_sub(DENSE_SWITCH_GUARD_MARGIN);
+    let highest: i64 = case.highest_label.saturating_add(DENSE_SWITCH_GUARD_MARGIN);
+    let name: &str = case.name;
+    let draws: u32 = DENSE_SWITCH_DRAWS_PER_DISCRIMINANT;
+    let body: String = match case.shape {
+        DenseSwitchShape::Unsigned32 => format!(
+            "            unsigned a = (unsigned)xs(&s);\n\
+             \x20           unsigned b = (unsigned)xs(&s);\n\
+             \x20           uint64_t want = (uint64_t)orig_{name}((int)x, a, b);\n\
+             \x20           uint64_t got = {symbol}((uint64_t)(uint32_t)(int)x, (uint64_t)a, (uint64_t)b);\n"
+        ),
+        DenseSwitchShape::Unsigned64 => format!(
+            "            unsigned long long a = (unsigned long long)xs(&s);\n\
+             \x20           unsigned long long b = (unsigned long long)xs(&s);\n\
+             \x20           uint64_t want = (uint64_t)orig_{name}((int)x, a, b);\n\
+             \x20           uint64_t got = {symbol}((uint64_t)(uint32_t)(int)x, (uint64_t)a, (uint64_t)b);\n"
+        ),
+        DenseSwitchShape::Signed32Small => format!(
+            "            int a = (int)(xs(&s) % 2001ULL) - 1000;\n\
+             \x20           int b = (int)(xs(&s) % 2001ULL) - 1000;\n\
+             \x20           uint64_t want = (uint64_t)(uint32_t)orig_{name}((int)x, a, b);\n\
+             \x20           uint64_t got = {symbol}((uint64_t)(uint32_t)(int)x, (uint64_t)(uint32_t)a, (uint64_t)(uint32_t)b);\n"
+        ),
+    };
+    format!(
+        "    {{\n\
+         \x20       uint64_t s = {seed}ULL;\n\
+         \x20       for (long long x = {lowest}; x <= {highest}; ++x) {{\n\
+         \x20           for (unsigned k = 0; k < {draws}U; ++k) {{\n\
+         {body}\
+         \x20               if (want == got) {{ passed++; }} else {{ fails++; printf(\"FAIL {level} {name} x=%lld want=%llu got=%llu\\n\", x, (unsigned long long)want, (unsigned long long)got); }}\n\
+         \x20           }}\n\
+         \x20       }}\n\
+         \x20   }}\n"
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DenseSwitchTally {
+    passed: u64,
+    fails: u64,
+    graded_functions: usize,
+}
+
+fn dense_switch_grade(mutated: Option<&str>) -> DenseSwitchTally {
+    let mut decls: String = String::new();
+    let mut blocks: String = String::new();
+    let mut graded: Vec<(String, String)> = Vec::new();
+    for (level_index, level) in DENSE_SWITCH_LEVELS.iter().enumerate() {
+        let image: Vec<u8> = dense_switch_object(level);
+        let program: RecoveredProgram = recover_aarch64_program(&image);
+        for (case_index, case) in DENSE_SWITCH_CASES.iter().enumerate() {
+            let function: &RecoveredFunction = recovered(&program, case.name);
+            assert!(
+                function.source.contains("switch ("),
+                "{level} {} recovered without a switch, so the jump-table path was not what got graded:\n{}",
+                case.name,
+                function.source
+            );
+            assert_eq!(
+                function.source.matches("case ").count(),
+                DENSE_SWITCH_LABELS_PER_TABLE,
+                "{level} {} must recover every dense case label:\n{}",
+                case.name,
+                function.source
+            );
+            assert!(
+                function.source.contains("default:"),
+                "{level} {} must recover the out-of-range default:\n{}",
+                case.name,
+                function.source
+            );
+            assert!(
+                !function.source.contains("goto "),
+                "{level} {} must structure the dispatch without a goto:\n{}",
+                case.name,
+                function.source
+            );
+            let symbol: String = format!("rec_{level}_{}", case.name);
+            let mut body: String = recovered_body(&function.source, case.name, &symbol);
+            if mutated == Some(case.name) {
+                let replaced: String = body.replacen(
+                    DENSE_SWITCH_MUTATED_LABEL,
+                    DENSE_SWITCH_MUTATED_REPLACEMENT,
+                    1,
+                );
+                assert_ne!(
+                    replaced, body,
+                    "the mutation control must find `{DENSE_SWITCH_MUTATED_LABEL}` in the recovered {} body",
+                    case.name
+                );
+                body = replaced;
+            }
+            decls.push_str(&body);
+            decls.push('\n');
+            let seed: u64 = 0x9E37_79B9_7F4A_7C15u64
+                ^ ((level_index as u64) << 32)
+                ^ ((case_index as u64).wrapping_add(1)).wrapping_mul(0x0000_0100_0000_01B3);
+            blocks.push_str(&dense_switch_block(level, *case, &symbol, seed));
+            graded.push(((*level).to_owned(), case.name.to_owned()));
+        }
+    }
+    let originals: String = dense_switch_originals();
+    let driver: String = format!(
+        "#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n\
+         static uint64_t xs(uint64_t *st) {{ uint64_t x = *st; x ^= x << 13; x ^= x >> 7; x ^= x << 17; *st = x; return x; }}\n\
+         {originals}\n\
+         static long long passed = 0;\n\
+         static long long fails = 0;\n\
+         {decls}\n\
+         int main(void) {{\n\
+         {blocks}\
+         \x20   printf(\"SWITCHDONE passed=%lld fails=%lld\\n\", passed, fails);\n\
+         \x20   return 0;\n\
+         }}\n"
+    );
+    let directory: TempDir = tempfile::tempdir().expect("temporary directory must be available");
+    let source_path: PathBuf = directory.path().join("dense_switch_grade.c");
+    let executable_path: PathBuf =
+        directory
+            .path()
+            .join(if cfg!(windows) { "grade.exe" } else { "grade" });
+    fs::write(&source_path, driver.as_bytes()).expect("dense switch driver must be writable");
+    let compiler: String = super::cc().expect("host C compiler must be available");
+    let mut compile: Command = Command::new(compiler);
+    compile
+        .arg("-O1")
+        .arg("-fno-strict-aliasing")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&executable_path);
+    let _: Output = command_output(&mut compile);
+    let mut execute: Command = Command::new(&executable_path);
+    let output: Output = command_output(&mut execute);
+    let stdout: String = String::from_utf8_lossy(&output.stdout).into_owned();
+    let mut tally: Option<(u64, u64)> = None;
+    for line in stdout.lines() {
+        if let Some(rest) = line.strip_prefix("SWITCHDONE ") {
+            let mut passed: u64 = 0;
+            let mut fails: u64 = 0;
+            for token in rest.split_whitespace() {
+                if let Some(value) = token.strip_prefix("passed=") {
+                    passed = value.parse().unwrap_or(0);
+                } else if let Some(value) = token.strip_prefix("fails=") {
+                    fails = value.parse().unwrap_or(0);
+                }
+            }
+            tally = Some((passed, fails));
+        } else if line.starts_with("FAIL ") {
+            eprintln!("{line}");
+        }
+    }
+    let Some((passed, fails)): Option<(u64, u64)> = tally else {
+        panic!("dense switch driver produced no summary:\n{stdout}");
+    };
+    DenseSwitchTally {
+        passed,
+        fails,
+        graded_functions: graded.len(),
+    }
+}
+
+#[test]
+#[ignore = "requires clang, ld.lld, and a host C compiler"]
+fn dense_jump_table_switches_recompile_equivalently() {
+    let tally: DenseSwitchTally = dense_switch_grade(None);
+    let expected_functions: usize = DENSE_SWITCH_LEVELS.len() * DENSE_SWITCH_CASES.len();
+    assert_eq!(
+        tally.graded_functions, expected_functions,
+        "every optimization level must contribute every dense-switch function"
+    );
+    let expected_comparisons: u64 = DENSE_SWITCH_LEVELS.len() as u64
+        * DENSE_SWITCH_CASES
+            .iter()
+            .map(|case: &DenseSwitchCase| {
+                let span: i64 = case
+                    .highest_label
+                    .saturating_add(DENSE_SWITCH_GUARD_MARGIN)
+                    .saturating_sub(case.lowest_label.saturating_sub(DENSE_SWITCH_GUARD_MARGIN))
+                    .saturating_add(1);
+                u64::try_from(span).unwrap_or(0) * u64::from(DENSE_SWITCH_DRAWS_PER_DISCRIMINANT)
+            })
+            .sum::<u64>();
+    eprintln!(
+        "=== AARCH64 DENSE SWITCH GRADE: {} functions, {} comparisons, {} equivalent, {} divergent ===",
+        tally.graded_functions, expected_comparisons, tally.passed, tally.fails
+    );
+    assert_eq!(
+        tally.passed.saturating_add(tally.fails),
+        expected_comparisons,
+        "every scheduled comparison must be accounted for"
+    );
+    assert_eq!(
+        tally.fails, 0,
+        "every recovered dense switch must behave as the original on every case and both guard edges"
+    );
+}
+
+#[test]
+#[ignore = "requires clang, ld.lld, and a host C compiler"]
+fn dense_jump_table_grade_rejects_a_mislabelled_case() {
+    let tally: DenseSwitchTally = dense_switch_grade(Some(DENSE_SWITCH_MUTATED_FUNCTION));
+    eprintln!(
+        "=== AARCH64 DENSE SWITCH MUTATION CONTROL: {} equivalent, {} divergent ===",
+        tally.passed, tally.fails
+    );
+    assert!(
+        tally.fails
+            >= u64::from(DENSE_SWITCH_DRAWS_PER_DISCRIMINANT)
+                * u64::try_from(DENSE_SWITCH_LEVELS.len()).unwrap_or(1),
+        "moving one case label off its discriminant must diverge at that discriminant on every level, saw {} divergences",
+        tally.fails
+    );
+}
+
+#[test]
+#[ignore = "requires clang and ld.lld"]
+fn dense_jump_table_switch_population_at_o0_is_reported() {
+    let image: Vec<u8> = dense_switch_object(DENSE_SWITCH_UNOPTIMIZED_LEVEL);
+    let program: RecoveredProgram = recover_aarch64_program(&image);
+    let mut recovered_names: Vec<&str> = Vec::new();
+    let mut refused: Vec<(String, String)> = Vec::new();
+    for case in DENSE_SWITCH_CASES {
+        let found: Option<&RecoveredFunction> = program
+            .recovered
+            .iter()
+            .find(|function: &&RecoveredFunction| function.name == case.name);
+        if let Some(function) = found {
+            recovered_names.push(case.name);
+            assert!(
+                function.source.contains("switch ("),
+                "{} recovered at O0 without a switch:\n{}",
+                case.name,
+                function.source
+            );
+        } else {
+            let reason: String = program
+                .unrecovered
+                .iter()
+                .find(|function| function.name == case.name)
+                .map_or_else(
+                    || "absent from the symbol table".to_owned(),
+                    |function| function.reason.clone(),
+                );
+            refused.push((case.name.to_owned(), reason));
+        }
+    }
+    eprintln!(
+        "=== AARCH64 DENSE SWITCH AT O0: {} recovered, {} refused ===",
+        recovered_names.len(),
+        refused.len()
+    );
+    for (name, reason) in &refused {
+        eprintln!("  REFUSED {name}: {reason}");
+    }
+    assert_eq!(
+        recovered_names.len() + refused.len(),
+        DENSE_SWITCH_CASES.len(),
+        "every O0 dense-switch function must be either recovered or refused by name"
     );
 }
