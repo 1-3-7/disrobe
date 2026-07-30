@@ -17,12 +17,6 @@ struct LambdaBody {
 
 pub fn inline_lambdas(methods: &mut [StructuredMethod]) -> u32 {
     let bodies: BTreeMap<String, LambdaBody> = collect_lambda_bodies(methods);
-    let by_suffix: BTreeMap<String, LambdaBody> = bodies
-        .iter()
-        .filter_map(|(name, b): (&String, &LambdaBody)| {
-            lambda_suffix(name).map(|s: String| (s, b.clone()))
-        })
-        .collect();
     let mut inlined: u32 = 0;
     for m in methods.iter_mut() {
         if is_lambda_method(&m.signature) {
@@ -35,8 +29,9 @@ pub fn inline_lambdas(methods: &mut [StructuredMethod]) -> u32 {
             inlined = inlined.saturating_add(1);
             continue;
         }
-        if !by_suffix.is_empty()
-            && let Some(rewritten) = inline_cached_lambda_args(&m.body, &by_suffix)
+        if !bodies.is_empty()
+            && let Some(enclosing) = declared_method_name(&m.signature)
+            && let Some(rewritten) = inline_cached_lambda_args(&m.body, &enclosing, &bodies)
         {
             m.body = chain_extension_calls(&rewritten);
             inlined = inlined.saturating_add(1);
@@ -69,10 +64,22 @@ pub(crate) const LINQ_EXTENSIONS: [&str; 14] = [
 ];
 
 fn chain_extension_calls(body: &str) -> String {
-    body.lines()
-        .map(chain_extension_calls_line)
-        .collect::<Vec<String>>()
-        .join("\n")
+    let mut out: Vec<String> = Vec::new();
+    let mut inside_body: bool = false;
+    for line in body.lines() {
+        let trimmed: &str = line.trim();
+        if !inside_body {
+            inside_body = trimmed.ends_with('{');
+            out.push(line.to_owned());
+            continue;
+        }
+        if trimmed.starts_with("//") {
+            out.push(line.to_owned());
+            continue;
+        }
+        out.push(chain_extension_calls_line(line));
+    }
+    out.join("\n")
 }
 
 fn chain_extension_calls_line(line: &str) -> String {
@@ -162,11 +169,6 @@ fn split_first_arg(args: &str) -> Option<(String, String)> {
     (!first.is_empty()).then_some((first, String::new()))
 }
 
-fn lambda_suffix(lambda_name: &str) -> Option<String> {
-    let after: &str = lambda_name.split(">b__").nth(1)?;
-    (!after.is_empty()).then(|| after.to_owned())
-}
-
 fn lambda_arrow(lambda: &LambdaBody) -> String {
     let param_list: String = match lambda.params.as_slice() {
         [single] => single.clone(),
@@ -175,20 +177,42 @@ fn lambda_arrow(lambda: &LambdaBody) -> String {
     format!("{param_list} => {}", lambda.return_expr)
 }
 
+const CACHED_DELEGATE_PREFIX: &str = "<>9__";
+
 fn inline_cached_lambda_args(
     body: &str,
-    by_suffix: &BTreeMap<String, LambdaBody>,
+    enclosing: &str,
+    bodies: &BTreeMap<String, LambdaBody>,
 ) -> Option<String> {
-    let mut out: String = body.to_owned();
+    let mut out: String = String::with_capacity(body.len());
+    let mut rest: &str = body;
     let mut hit: bool = false;
-    for (suffix, lambda) in by_suffix {
-        let field: String = format!("<>9__{suffix}");
-        if out.contains(&field) {
-            out = out.replace(&field, &lambda_arrow(lambda));
-            hit = true;
+    while let Some(pos) = rest.find(CACHED_DELEGATE_PREFIX) {
+        let after: &str = &rest[pos + CACHED_DELEGATE_PREFIX.len()..];
+        let width: usize = after
+            .bytes()
+            .take_while(|b: &u8| b.is_ascii_alphanumeric() || *b == b'_')
+            .count();
+        out.push_str(&rest[..pos]);
+        match bodies.get(&format!("<{enclosing}>b__{}", &after[..width])) {
+            Some(lambda) => {
+                out.push_str(&lambda_arrow(lambda));
+                hit = true;
+            }
+            None => out.push_str(&rest[pos..pos + CACHED_DELEGATE_PREFIX.len() + width]),
         }
+        rest = &after[width..];
     }
+    out.push_str(rest);
     hit.then_some(out)
+}
+
+fn declared_method_name(signature: &str) -> Option<String> {
+    let header: &str = signature_header_line(signature);
+    let before_paren: &str = header.split('(').next()?;
+    let ident: &str = before_paren.split_whitespace().next_back()?;
+    let ident: &str = ident.split('<').next()?;
+    is_identifier(ident).then(|| ident.to_owned())
 }
 
 fn collect_lambda_bodies(methods: &[StructuredMethod]) -> BTreeMap<String, LambdaBody> {

@@ -35,6 +35,51 @@ fn capturing_lambda_factory_reconstructs_to_arrow_syntax() {
     );
 }
 
+fn edge_cases() -> DecompiledAssembly {
+    let bytes: Vec<u8> = load("../../corpus/dotnet/megafile/EdgeCases.baseline.dll");
+    decompile_assembly(&bytes).expect("decompile EdgeCases.baseline.dll")
+}
+
+fn declaring_line(body: &str) -> String {
+    body.lines()
+        .nth(1)
+        .unwrap_or_default()
+        .trim_start()
+        .to_owned()
+}
+
+#[test]
+fn a_cached_delegate_resolves_to_the_lambda_of_its_own_method() {
+    let asm: DecompiledAssembly = edge_cases();
+    let doubled: String = body_of(&asm, " Doubled(");
+    let even_squares: String = body_of(&asm, " EvenSquares(");
+    assert!(
+        doubled.contains("Select(x => x * 2)"),
+        "CollectionPlayground.Doubled caches lambda 1_0, so it must inline that lambda:\n{doubled}"
+    );
+    assert!(
+        even_squares.contains("Where(x => (x % 2) == 0)"),
+        "LinqPlayground.EvenSquares caches lambda 0_0, so it must inline that lambda and not the one whose ordinal is a prefix of it:\n{even_squares}"
+    );
+    for body in [&doubled, &even_squares] {
+        assert!(
+            !body.contains("=> this."),
+            "a static cached lambda has no receiver to capture, so no inlined arrow may reference one:\n{body}"
+        );
+    }
+}
+
+#[test]
+fn a_method_named_after_a_query_operator_keeps_its_declaration() {
+    let asm: DecompiledAssembly = edge_cases();
+    let aggregate: String = body_of(&asm, " Aggregate(");
+    assert_eq!(
+        declaring_line(&aggregate),
+        "protected internal static System.Collections.Generic.Dictionary<string, double> Aggregate(System.Collections.Generic.IEnumerable<EdgeCases.User> users)",
+        "rewriting a query operator into member position must not touch the method's own declaration:\n{aggregate}"
+    );
+}
+
 #[test]
 fn decompile_remains_lossless_after_lambda_inlining() {
     let asm: DecompiledAssembly = decompile();

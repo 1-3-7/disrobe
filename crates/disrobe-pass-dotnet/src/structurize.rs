@@ -157,7 +157,11 @@ enum Expr {
     IsInst(String, Box<Self>),
     LoadElem(Box<Self>, Box<Self>),
     LoadLen(Box<Self>),
-    NewArr(String, Box<Self>),
+    NewArr {
+        ty: String,
+        length: Box<Self>,
+        elements: Vec<Self>,
+    },
     AddressOf(Box<Self>),
     Deref(Box<Self>),
     StringLit(String),
@@ -184,11 +188,17 @@ impl Expr {
             | Self::Cast(_, child)
             | Self::IsInst(_, child)
             | Self::LoadLen(child)
-            | Self::NewArr(_, child)
             | Self::AddressOf(child)
             | Self::Deref(child) => {
                 let child: Self = std::mem::replace(child.as_mut(), Self::Raw(String::new()));
                 pending.push(child);
+            }
+            Self::NewArr {
+                length, elements, ..
+            } => {
+                let child: Self = std::mem::replace(length.as_mut(), Self::Raw(String::new()));
+                pending.push(child);
+                pending.extend(std::mem::take(elements));
             }
             Self::Binary(_, lhs, rhs) | Self::Coalesce(lhs, rhs) | Self::LoadElem(lhs, rhs) => {
                 let lhs: Self = std::mem::replace(lhs.as_mut(), Self::Raw(String::new()));
@@ -264,13 +274,20 @@ fn expression_depth(expression: &Expr) -> usize {
             | Expr::Cast(_, child)
             | Expr::IsInst(_, child)
             | Expr::LoadLen(child)
-            | Expr::NewArr(_, child)
             | Expr::AddressOf(child)
             | Expr::Deref(child)
             | Expr::MethodPtr {
                 receiver: Some(child),
                 ..
             } => pending.push((child, child_depth)),
+            Expr::NewArr {
+                length, elements, ..
+            } => {
+                pending.push((length, child_depth));
+                for child in elements {
+                    pending.push((child, child_depth));
+                }
+            }
             Expr::Binary(_, lhs, rhs) | Expr::Coalesce(lhs, rhs) | Expr::LoadElem(lhs, rhs) => {
                 pending.push((lhs, child_depth));
                 pending.push((rhs, child_depth));
@@ -457,11 +474,27 @@ fn render_expr(initial: RenderAction<'_>, lang: TargetLang, names: &NameTable) -
                     pending.push(RenderAction::Text(".Length"));
                     pending.push(RenderAction::Paren(array));
                 }
-                Expr::NewArr(ty, length) => {
+                Expr::NewArr {
+                    ty,
+                    length,
+                    elements,
+                } => {
                     output.push_str("new ");
                     output.push_str(ty);
                     output.push('[');
-                    pending.push(RenderAction::Text("]"));
+                    if elements.is_empty() {
+                        pending.push(RenderAction::Text("]"));
+                    } else {
+                        let unset: usize = const_operand_value(length)
+                            .unwrap_or_default()
+                            .saturating_sub(elements.len());
+                        pending.push(RenderAction::Text(" }"));
+                        for _ in 0..unset {
+                            pending.push(RenderAction::Text(", default"));
+                        }
+                        pending.push(RenderAction::Args(elements, 0));
+                        pending.push(RenderAction::Text("] { "));
+                    }
                     pending.push(RenderAction::Expr(length));
                 }
                 Expr::AddressOf(operand) => match lang {
@@ -516,6 +549,23 @@ fn render_expr(initial: RenderAction<'_>, lang: TargetLang, names: &NameTable) -
         }
     }
     output
+}
+
+const MAX_ARRAY_LITERAL_ELEMENTS: usize = 64;
+
+const fn boolean_literal(text: &str) -> Option<&'static str> {
+    match text.as_bytes() {
+        b"0" => Some("false"),
+        b"1" => Some("true"),
+        _ => None,
+    }
+}
+
+fn const_operand_value(expression: &Expr) -> Option<usize> {
+    match expression {
+        Expr::Const(text) => text.parse::<usize>().ok(),
+        _ => None,
+    }
 }
 
 fn paren(e: &Expr, lang: TargetLang, names: &NameTable) -> String {
@@ -909,6 +959,62 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         }
         v.reverse();
         v
+    }
+
+    fn append_to_duplicated_array_literal(
+        &mut self,
+        array: &Expr,
+        index: &Expr,
+        value: Expr,
+    ) -> std::result::Result<(), Expr> {
+        if self.lang != TargetLang::CSharp {
+            return Err(value);
+        }
+        let Expr::NewArr {
+            ty,
+            length,
+            elements,
+        } = array
+        else {
+            return Err(value);
+        };
+        let (Some(slot), Some(capacity)): (Option<usize>, Option<usize>) =
+            (const_operand_value(index), const_operand_value(length))
+        else {
+            return Err(value);
+        };
+        if slot != elements.len() || slot >= capacity || capacity > MAX_ARRAY_LITERAL_ELEMENTS {
+            return Err(value);
+        }
+        let duplicated: bool = match self.stack.last() {
+            Some(Expr::NewArr {
+                ty: twin_ty,
+                length: twin_length,
+                elements: twin_elements,
+            }) => {
+                twin_ty == ty
+                    && twin_elements.len() == elements.len()
+                    && const_operand_value(twin_length).is_some_and(|len: usize| len == capacity)
+            }
+            _ => false,
+        };
+        if !duplicated {
+            return Err(value);
+        }
+        let Some(Expr::NewArr {
+            elements: twin_elements,
+            ..
+        }) = self.stack.last_mut()
+        else {
+            return Err(value);
+        };
+        twin_elements.push(value);
+        if let Some(top) = self.stack.last()
+            && let Some(depth) = self.stack_depths.last_mut()
+        {
+            *depth = expression_depth(top);
+        }
+        Ok(())
     }
 
     fn binary(&mut self, op: &'static str) {
@@ -1341,8 +1447,12 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             "rethrow" => self.stmts.push(Stmt::Throw(None)),
             "newarr" => {
                 let len: Expr = self.pop();
-                let ty: String = short(&self.token_name(ins));
-                self.push(Expr::NewArr(ty, Box::new(len)));
+                let ty: String = qualified_type_name(&self.token_name(ins), self.lang);
+                self.push(Expr::NewArr {
+                    ty,
+                    length: Box::new(len),
+                    elements: Vec::new(),
+                });
             }
             "newobj" => {
                 let raw: String = self.token_name(ins);
@@ -1374,8 +1484,21 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let ty: String = short(&self.token_name(ins));
                 self.push(Expr::IsInst(ty, Box::new(e)));
             }
-            "box" | "unbox.any" | "unbox" | "readonly." | "volatile." | "tail."
-            | "constrained." | "no." => {}
+            "box" => {
+                let literal: Option<&'static str> = (self.lang == TargetLang::CSharp
+                    && self.token_name(ins) == "System.Boolean")
+                    .then(|| match self.stack.last() {
+                        Some(Expr::Const(text)) => boolean_literal(text),
+                        _ => None,
+                    })
+                    .flatten();
+                if let Some(literal) = literal {
+                    let (_, depth): (Expr, usize) = self.pop_with_depth();
+                    self.push_with_depth(Expr::Const(literal.to_owned()), depth);
+                }
+            }
+            "unbox.any" | "unbox" | "readonly." | "volatile." | "tail." | "constrained."
+            | "no." => {}
             "ldobj" => {
                 let addr: Expr = self.pop();
                 self.push(Expr::Deref(Box::new(addr)));
@@ -1488,14 +1611,16 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let val: Expr = self.pop();
                 let idx: Expr = self.pop();
                 let arr: Expr = self.pop();
-                self.stmts.push(Stmt::Assign {
-                    target: format!(
-                        "{}[{}]",
-                        paren(&arr, self.lang, self.names),
-                        idx.render(self.lang, self.names)
-                    ),
-                    value: val.render(self.lang, self.names),
-                });
+                if let Err(val) = self.append_to_duplicated_array_literal(&arr, &idx, val) {
+                    self.stmts.push(Stmt::Assign {
+                        target: format!(
+                            "{}[{}]",
+                            paren(&arr, self.lang, self.names),
+                            idx.render(self.lang, self.names)
+                        ),
+                        value: val.render(self.lang, self.names),
+                    });
+                }
             }
             n if n.starts_with("ldc.i4") => {
                 self.push(Expr::Const(Self::int_const(ins, n).to_string()));
@@ -1914,9 +2039,11 @@ fn classify_cond_kind(e: &Expr, names: &NameTable) -> CondKind {
                 CondKind::Bool
             }
         }
-        Expr::Null | Expr::StringLit(_) | Expr::This | Expr::NewObj { .. } | Expr::NewArr(_, _) => {
-            CondKind::Reference
-        }
+        Expr::Null
+        | Expr::StringLit(_)
+        | Expr::This
+        | Expr::NewObj { .. }
+        | Expr::NewArr { .. } => CondKind::Reference,
         Expr::Local(n) => names
             .local_type(*n)
             .map_or(CondKind::Bool, classify_type_str),
@@ -2279,6 +2406,21 @@ fn static_call_target(raw: &str, lang: TargetLang) -> String {
         return member;
     }
     format!("{owner}.{member}")
+}
+
+fn qualified_type_name(raw: &str, lang: TargetLang) -> String {
+    let member: String = short(raw);
+    if lang != TargetLang::CSharp || raw.contains("::") {
+        return member;
+    }
+    let dotted: bool = !raw.is_empty()
+        && raw
+            .bytes()
+            .all(|b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'.');
+    if !dotted || !raw.rsplit('.').next().is_some_and(is_simple_identifier) {
+        return member;
+    }
+    raw.to_owned()
 }
 
 pub fn field_name(name: &str) -> String {
