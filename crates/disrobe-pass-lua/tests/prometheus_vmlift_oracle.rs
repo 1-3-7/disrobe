@@ -1,13 +1,15 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+
+#[path = "support/lua_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod lua_toolchain;
+
 use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use disrobe_pass_lua::prometheus_vmlift;
-
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+use lua_toolchain::{LuaInterpreter, require_interpreter, run_lua};
 
 fn corpus_path(rel: &str) -> PathBuf {
     let manifest_dir: &str = env!("CARGO_MANIFEST_DIR");
@@ -27,51 +29,17 @@ fn load(rel: &str) -> String {
     fs::read_to_string(&path).unwrap_or_else(|e| panic!("missing fixture {}: {e}", path.display()))
 }
 
-fn find_lua() -> Option<String> {
-    let candidates: [&str; 6] = ["lua", "lua5.4", "lua5.1", "luajit", "lua54", "lua51"];
-    for c in candidates {
-        if Command::new(c)
-            .arg("-v")
-            .output()
-            .is_ok_and(|o| o.status.success() || !o.stderr.is_empty())
-        {
-            return Some(c.to_owned());
-        }
-    }
-    None
-}
-
-fn run_lua(interp: &str, source: &str) -> Option<String> {
-    let unique: u64 = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let purpose: String = format!("prom_vmlift_{}_{unique}", std::process::id());
-    let (scratch, file): (disrobe_core::scratch::ScratchFile, fs::File) =
-        disrobe_core::scratch::ScratchFile::create(&purpose, "lua").ok()?;
-    drop(file);
-    let tmp: PathBuf = scratch.path().to_path_buf();
-    fs::write(&tmp, source).ok()?;
-    let out = Command::new(interp).arg(&tmp).output().ok()?;
-    if !out.status.success() {
-        eprintln!("lua run failed: {}", String::from_utf8_lossy(&out.stderr));
-        return None;
-    }
-    Some(String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n"))
-}
-
-fn fold_preserves_behavior(rel: &str) -> (usize, usize) {
-    let Some(interp): Option<String> = find_lua() else {
-        eprintln!("no lua interpreter on PATH; skipping fold oracle for {rel}");
-        return (0, 0);
-    };
+fn fold_preserves_behavior(rel: &str) -> Option<(usize, usize)> {
+    let graded: String = format!("the Prometheus numeric-fold behavior differential for {rel}");
+    let interp: LuaInterpreter = require_interpreter(&graded)?;
     let obf: String = load(rel);
-    let expected: String = run_lua(&interp, &obf)
-        .unwrap_or_else(|| panic!("real obfuscated {rel} failed to run under {interp}"));
+    let expected: String = run_lua(&interp, rel, &obf);
 
     let before: usize = prometheus_vmlift::count_arithmetic_operators(&obf);
     let folded: String = prometheus_vmlift::fold_numeric_expressions(&obf);
     let after: usize = prometheus_vmlift::count_arithmetic_operators(&folded);
 
-    let actual: String = run_lua(&interp, &folded)
-        .unwrap_or_else(|| panic!("folded {rel} failed to run under {interp} (semantics broke)"));
+    let actual: String = run_lua(&interp, &format!("{rel} (folded)"), &folded);
 
     assert_eq!(
         actual.trim_end(),
@@ -82,7 +50,7 @@ fn fold_preserves_behavior(rel: &str) -> (usize, usize) {
         "fold oracle {rel}: OK stdout={:?} arithmetic-ops {before} -> {after}",
         expected.trim_end()
     );
-    (before, after)
+    Some((before, after))
 }
 
 #[test]
@@ -125,8 +93,9 @@ fn fold_reconstruction_preserves_inter_span_text() {
 
 #[test]
 fn every_folded_span_matches_lua_evaluation() {
-    let Some(interp): Option<String> = find_lua() else {
-        eprintln!("no lua interpreter; skipping per-span fold verification");
+    let Some(interp): Option<LuaInterpreter> =
+        require_interpreter("the per-span Prometheus fold verification")
+    else {
         return;
     };
     for rel in [
@@ -147,8 +116,7 @@ fn every_folded_span_matches_lua_evaluation() {
                 "do local a={folded} local b=({orig}) if a~=b then print({idx},a,b) end end"
             );
         }
-        let out: String =
-            run_lua(&interp, &prog).unwrap_or_else(|| panic!("{rel}: span check program failed"));
+        let out: String = run_lua(&interp, &format!("{rel} (span check)"), &prog);
         assert!(
             out.trim().is_empty(),
             "{rel}: {} folded spans disagree with Lua evaluation:\n{out}",
@@ -160,18 +128,32 @@ fn every_folded_span_matches_lua_evaluation() {
 
 #[test]
 fn fold_hello_strips_numbers_to_expressions_layer() {
-    if find_lua().is_none() {
-        return;
-    }
-    let (before, after): (usize, usize) =
-        fold_preserves_behavior("obfuscators/hello.prometheus.lua");
-    assert!(
-        before > 800,
-        "hello carries the NumbersToExpressions layer; expected >800 arithmetic ops, got {before}"
+    let obf: String = load("obfuscators/hello.prometheus.lua");
+    let static_before: usize = prometheus_vmlift::count_arithmetic_operators(&obf);
+    let static_after: usize = prometheus_vmlift::count_arithmetic_operators(
+        &prometheus_vmlift::fold_numeric_expressions(&obf),
     );
     assert!(
-        after * 2 < before,
-        "fold must remove the majority of the NumbersToExpressions layer ({before} -> {after})"
+        static_before > 800,
+        "hello carries the NumbersToExpressions layer; expected >800 arithmetic ops, got \
+         {static_before}"
+    );
+    assert!(
+        static_after * 2 < static_before,
+        "fold must remove the majority of the NumbersToExpressions layer ({static_before} -> \
+         {static_after})"
+    );
+
+    let Some((before, after)): Option<(usize, usize)> =
+        fold_preserves_behavior("obfuscators/hello.prometheus.lua")
+    else {
+        return;
+    };
+    assert_eq!(
+        (before, after),
+        (static_before, static_after),
+        "the operator counts taken with and without the interpreter must agree, otherwise the two \
+         paths are measuring different text"
     );
 }
 
