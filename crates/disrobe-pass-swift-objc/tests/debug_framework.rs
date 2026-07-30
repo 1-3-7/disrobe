@@ -1,22 +1,15 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use std::path::{Path, PathBuf};
+#[path = "support/macho_corpus.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod macho_corpus;
+
+use std::path::PathBuf;
 use std::process::{Command, Output};
 
-const HARNESS_ENV: &str = "DISROBE_SWIFT_OBJC_DEBUG_HARNESS";
+use macho_corpus::{EDGE_CASES_FAT, read_tracked};
 
-fn fat_fixture_path() -> PathBuf {
-    let manifest_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root: &Path = manifest_dir
-        .ancestors()
-        .nth(2)
-        .expect("workspace root above crate");
-    workspace_root
-        .join("corpus")
-        .join("mac")
-        .join("megafile")
-        .join("EdgeCases.fat")
-}
+const HARNESS_ENV: &str = "DISROBE_SWIFT_OBJC_DEBUG_HARNESS";
 
 fn run_harness(debug: Option<&str>, json: bool) -> Output {
     let exe: PathBuf = std::env::current_exe().expect("test executable path");
@@ -45,9 +38,7 @@ fn harness_entrypoint() {
     if std::env::var_os(HARNESS_ENV).is_none() {
         return;
     }
-    let path: PathBuf = fat_fixture_path();
-    let bytes: Vec<u8> =
-        std::fs::read(&path).unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()));
+    let bytes: Vec<u8> = read_tracked(EDGE_CASES_FAT);
     let report: disrobe_pass_swift_objc::pass::SwiftObjcReport =
         disrobe_pass_swift_objc::pass::analyze(&bytes).expect("fat mach-o analyzes");
     assert_eq!(
@@ -60,15 +51,8 @@ fn harness_entrypoint() {
     );
 }
 
-fn fixture_present() -> bool {
-    fat_fixture_path().is_file()
-}
-
 #[test]
 fn unset_is_zero_overhead() {
-    if !fixture_present() {
-        return;
-    }
     let out: Output = run_harness(None, false);
     assert!(out.status.success(), "child failed: {out:?}");
     let stderr: String = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -80,9 +64,6 @@ fn unset_is_zero_overhead() {
 
 #[test]
 fn set_emits_decision_points() {
-    if !fixture_present() {
-        return;
-    }
     let out: Output = run_harness(Some("swift-objc"), false);
     assert!(out.status.success(), "child failed: {out:?}");
     let stderr: String = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -114,9 +95,6 @@ fn set_emits_decision_points() {
 
 #[test]
 fn other_scope_does_not_enable_swift_objc() {
-    if !fixture_present() {
-        return;
-    }
     let out: Output = run_harness(Some("jvm,native"), false);
     assert!(out.status.success(), "child failed: {out:?}");
     let stderr: String = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -128,9 +106,6 @@ fn other_scope_does_not_enable_swift_objc() {
 
 #[test]
 fn json_mode_is_one_object_per_line() {
-    if !fixture_present() {
-        return;
-    }
     let out: Output = run_harness(Some("swift-objc"), true);
     assert!(out.status.success(), "child failed: {out:?}");
     let stderr: String = String::from_utf8_lossy(&out.stderr).into_owned();

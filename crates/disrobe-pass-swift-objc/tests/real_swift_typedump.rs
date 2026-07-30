@@ -1,40 +1,29 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-use std::fs;
-use std::path::{Path, PathBuf};
 
-use disrobe_pass_swift_objc::macho::{self, MachoKind, ParsedSlice};
+#[path = "support/macho_corpus.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod macho_corpus;
+
+use disrobe_pass_swift_objc::macho::{CpuKind, ParsedSlice};
 use disrobe_pass_swift_objc::swift::{self, SwiftClassDump};
 use disrobe_pass_swift_objc::swift_typedump::{
     ConformanceProtocolKind, NominalKind, ProtocolRequirementKind, SwiftNominalType,
     SwiftProtocolConformance, SwiftProtocolDescriptor, SwiftProtocolRequirement, SwiftTypeDump,
 };
 
-fn corpus_root() -> PathBuf {
-    let manifest_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root: &Path = manifest_dir
-        .ancestors()
-        .nth(2)
-        .expect("workspace root above crate");
-    workspace_root
-        .join("corpus")
-        .join("mobile")
-        .join("macho-mac")
+use macho_corpus::{
+    CorpusFixture, SWIFT_DRIVER, SWIFT_EDGE_CASES_OBFUSCATED, SWIFT_HELLO_ORIGINAL, first_slice,
+    read_host_sourced, read_tracked, slice_preferring,
+};
+
+fn tracked_slice(fixture: CorpusFixture) -> (Vec<u8>, ParsedSlice) {
+    let bytes: Vec<u8> = read_tracked(fixture);
+    first_slice(fixture, &bytes)
 }
 
-fn load_thin_slice(name: &str) -> Option<(Vec<u8>, ParsedSlice)> {
-    let path: PathBuf = corpus_root().join(name);
-    let bytes: Vec<u8> = fs::read(&path).ok()?;
-    let kind: MachoKind = macho::detect_magic(&bytes)?;
-    match kind {
-        MachoKind::Slice64Le
-        | MachoKind::Slice64Be
-        | MachoKind::Slice32Le
-        | MachoKind::Slice32Be => {
-            let parsed: ParsedSlice = macho::parse_slice(&bytes).expect("parse thin slice");
-            Some((bytes, parsed))
-        }
-        _ => None,
-    }
+fn driver_x86_64_slice() -> Option<(Vec<u8>, ParsedSlice)> {
+    let bytes: Vec<u8> = read_host_sourced(SWIFT_DRIVER)?;
+    Some(slice_preferring(SWIFT_DRIVER, &bytes, CpuKind::X86_64))
 }
 
 fn nominal_named<'a>(dump: &'a SwiftTypeDump, name: &str) -> Option<&'a SwiftNominalType> {
@@ -45,12 +34,7 @@ fn nominal_named<'a>(dump: &'a SwiftTypeDump, name: &str) -> Option<&'a SwiftNom
 
 #[test]
 fn swiftedgecases_recovers_full_structural_type_dump() {
-    let Some((slice, parsed)): Option<(Vec<u8>, ParsedSlice)> =
-        load_thin_slice("swiftshield-edgecases/SwiftEdgeCases.obfuscated")
-    else {
-        eprintln!("skip: SwiftEdgeCases.obfuscated absent or not a thin Mach-O");
-        return;
-    };
+    let (slice, parsed): (Vec<u8>, ParsedSlice) = tracked_slice(SWIFT_EDGE_CASES_OBFUSCATED);
     let dump: SwiftClassDump = swift::class_dump(&slice, &parsed);
     let td: &SwiftTypeDump = &dump.type_dump;
 
@@ -174,12 +158,7 @@ fn swiftedgecases_recovers_full_structural_type_dump() {
 
 #[test]
 fn swifthello_original_recovers_named_types_and_conformances() {
-    let Some((slice, parsed)): Option<(Vec<u8>, ParsedSlice)> =
-        load_thin_slice("SwiftHello.original")
-    else {
-        eprintln!("skip: SwiftHello.original absent or not a thin Mach-O");
-        return;
-    };
+    let (slice, parsed): (Vec<u8>, ParsedSlice) = tracked_slice(SWIFT_HELLO_ORIGINAL);
     let dump: SwiftClassDump = swift::class_dump(&slice, &parsed);
     let td: &SwiftTypeDump = &dump.type_dump;
 
@@ -246,9 +225,7 @@ fn swifthello_original_recovers_named_types_and_conformances() {
 
 #[test]
 fn swift_driver_yields_many_qualified_nominal_types() {
-    let Some((slice, parsed)): Option<(Vec<u8>, ParsedSlice)> = load_thin_slice("swift-driver")
-    else {
-        eprintln!("skip: swift-driver absent or not a thin Mach-O");
+    let Some((slice, parsed)): Option<(Vec<u8>, ParsedSlice)> = driver_x86_64_slice() else {
         return;
     };
     let dump: SwiftClassDump = swift::class_dump(&slice, &parsed);

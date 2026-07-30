@@ -1,42 +1,23 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+
+#[path = "support/macho_corpus.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod macho_corpus;
+
+#[path = "support/swift_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod swift_toolchain;
 
 use disrobe_pass_swift_objc::demangle;
-use disrobe_pass_swift_objc::macho::{self, MachoKind, ParsedSlice};
+use disrobe_pass_swift_objc::macho::{self, CpuKind, ParsedSlice};
 
-fn corpus_root() -> PathBuf {
-    let manifest_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root: &Path = manifest_dir
-        .ancestors()
-        .nth(2)
-        .expect("workspace root above crate");
-    workspace_root
-        .join("corpus")
-        .join("mobile")
-        .join("macho-mac")
-}
-
-fn load_fixture(name: &str) -> Option<Vec<u8>> {
-    fs::read(corpus_root().join(name)).ok()
-}
-
-fn thin_slice(bytes: &[u8]) -> Option<(Vec<u8>, ParsedSlice)> {
-    match macho::detect_magic(bytes)? {
-        MachoKind::Fat32 | MachoKind::Fat64 => {
-            let entries: Vec<macho::FatArchEntry> = macho::walk_fat(bytes).ok()?;
-            let entry: &macho::FatArchEntry = entries.first()?;
-            let inner: &[u8] = macho::slice_bytes(bytes, entry)?;
-            let parsed: ParsedSlice = macho::parse_slice(inner).ok()?;
-            Some((inner.to_vec(), parsed))
-        }
-        _ => {
-            let parsed: ParsedSlice = macho::parse_slice(bytes).ok()?;
-            Some((bytes.to_vec(), parsed))
-        }
-    }
-}
+use macho_corpus::{
+    CorpusFixture, SWIFT_DRIVER, SWIFT_HELLO_OBFUSCATED, SWIFT_HELLO_ORIGINAL, first_slice,
+    read_host_sourced, read_tracked, slice_preferring,
+};
+use swift_toolchain::{
+    ReferenceDemangler, provenance_note, reference_demangle, resolve_reference_demangler,
+};
 
 fn swift_mangled_symbols(slice: &[u8], parsed: &ParsedSlice) -> Vec<String> {
     let mut out: Vec<String> = macho::symbol_names(slice, parsed)
@@ -48,13 +29,14 @@ fn swift_mangled_symbols(slice: &[u8], parsed: &ParsedSlice) -> Vec<String> {
     out
 }
 
+fn tracked_slice(fixture: CorpusFixture) -> (Vec<u8>, ParsedSlice) {
+    let bytes: Vec<u8> = read_tracked(fixture);
+    first_slice(fixture, &bytes)
+}
+
 #[test]
 fn swift_hello_symbol_table_demangles_above_threshold() {
-    let Some(bytes): Option<Vec<u8>> = load_fixture("SwiftHello.original") else {
-        eprintln!("skip: macho-mac/SwiftHello.original fixture absent (LEGAL.md sourcing-gated)");
-        return;
-    };
-    let (slice, parsed): (Vec<u8>, ParsedSlice) = thin_slice(&bytes).expect("thin slice");
+    let (slice, parsed): (Vec<u8>, ParsedSlice) = tracked_slice(SWIFT_HELLO_ORIGINAL);
     let symbols: Vec<String> = swift_mangled_symbols(&slice, &parsed);
 
     assert!(
@@ -79,11 +61,7 @@ fn swift_hello_symbol_table_demangles_above_threshold() {
 
 #[test]
 fn swift_hello_demangle_recovers_ground_truth_class_names() {
-    let Some(bytes): Option<Vec<u8>> = load_fixture("SwiftHello.original") else {
-        eprintln!("skip: macho-mac/SwiftHello.original fixture absent");
-        return;
-    };
-    let (slice, parsed): (Vec<u8>, ParsedSlice) = thin_slice(&bytes).expect("thin slice");
+    let (slice, parsed): (Vec<u8>, ParsedSlice) = tracked_slice(SWIFT_HELLO_ORIGINAL);
     let symbols: Vec<String> = swift_mangled_symbols(&slice, &parsed);
 
     let rendered: Vec<String> = symbols
@@ -105,11 +83,7 @@ fn swift_hello_demangle_recovers_ground_truth_class_names() {
 
 #[test]
 fn swift_hello_demangle_recovers_entity_kinds_and_descriptors() {
-    let Some(bytes): Option<Vec<u8>> = load_fixture("SwiftHello.original") else {
-        eprintln!("skip: macho-mac/SwiftHello.original fixture absent");
-        return;
-    };
-    let (slice, parsed): (Vec<u8>, ParsedSlice) = thin_slice(&bytes).expect("thin slice");
+    let (slice, parsed): (Vec<u8>, ParsedSlice) = tracked_slice(SWIFT_HELLO_ORIGINAL);
     let symbols: Vec<String> = swift_mangled_symbols(&slice, &parsed);
     let rendered: String = symbols
         .iter()
@@ -140,15 +114,8 @@ fn swift_hello_demangle_recovers_entity_kinds_and_descriptors() {
 }
 
 fn driver_arm64_slice() -> Option<(Vec<u8>, ParsedSlice)> {
-    let bytes: Vec<u8> = load_fixture("swift-driver")?;
-    let entries: Vec<macho::FatArchEntry> = macho::walk_fat(&bytes).ok()?;
-    let entry: &macho::FatArchEntry = entries
-        .iter()
-        .find(|a: &&macho::FatArchEntry| matches!(a.cpu, macho::CpuKind::Arm64))
-        .or_else(|| entries.first())?;
-    let inner: &[u8] = macho::slice_bytes(&bytes, entry)?;
-    let parsed: ParsedSlice = macho::parse_slice(inner).ok()?;
-    Some((inner.to_vec(), parsed))
+    let bytes: Vec<u8> = read_host_sourced(SWIFT_DRIVER)?;
+    Some(slice_preferring(SWIFT_DRIVER, &bytes, CpuKind::Arm64))
 }
 
 fn tuple_shaped(mangled: &str) -> bool {
@@ -161,7 +128,6 @@ fn swift_driver_enum_payload_tuples_demangle_above_threshold() {
     use disrobe_pass_swift_objc::swift_typedump::{NominalKind, SwiftNominalType};
 
     let Some((slice, parsed)): Option<(Vec<u8>, ParsedSlice)> = driver_arm64_slice() else {
-        eprintln!("skip: macho-mac/swift-driver fixture absent or not universal");
         return;
     };
     let dump: SwiftClassDump = swift::class_dump(&slice, &parsed);
@@ -213,7 +179,6 @@ fn swift_driver_field_types_demangle_at_ceiling() {
     use disrobe_pass_swift_objc::swift_typedump::SwiftNominalType;
 
     let Some((slice, parsed)): Option<(Vec<u8>, ParsedSlice)> = driver_arm64_slice() else {
-        eprintln!("skip: macho-mac/swift-driver fixture absent or not universal");
         return;
     };
     let dump: SwiftClassDump = swift::class_dump(&slice, &parsed);
@@ -273,58 +238,31 @@ fn swift_driver_field_types_demangle_at_ceiling() {
     );
 }
 
-fn resolve_reference_demangler() -> Option<PathBuf> {
-    let exe: &str = if cfg!(windows) {
-        "swift-demangle.exe"
-    } else {
-        "swift-demangle"
-    };
-    let path_var: std::ffi::OsString = std::env::var_os("PATH")?;
-    std::env::split_paths(&path_var)
-        .map(|dir: PathBuf| dir.join(exe))
-        .find(|candidate: &PathBuf| candidate.is_file())
-}
-
-fn reference_demangle(tool: &Path, symbols: &[String]) -> Option<Vec<String>> {
-    use std::io::Write;
-    let joined: String = symbols.join("\n");
-    let mut child: std::process::Child = Command::new(tool)
-        .arg("--compact")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    child.stdin.take()?.write_all(joined.as_bytes()).ok()?;
-    let output: std::process::Output = child.wait_with_output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text: String = String::from_utf8(output.stdout).ok()?;
-    let lines: Vec<String> = text.lines().map(str::to_owned).collect();
-    (lines.len() == symbols.len()).then_some(lines)
-}
+const DRIVER_PARITY_GRADED: &str =
+    "byte-exact agreement with swift-demangle across swift-driver's own symbol table";
+const CURATED_PARITY_GRADED: &str =
+    "byte-exact agreement with swift-demangle on the curated Swift 6 feature symbols";
+const VARIADIC_PARITY_GRADED: &str =
+    "byte-exact agreement with swift-demangle on the committed variadic-generic manglings";
 
 #[test]
 fn swift_driver_symbols_match_reference_demangler_exactly() {
-    let Some(tool): Option<PathBuf> = resolve_reference_demangler() else {
-        eprintln!("skip: swift-demangle not on PATH (reference oracle absent on this host)");
+    let Some(demangler): Option<ReferenceDemangler> =
+        resolve_reference_demangler(DRIVER_PARITY_GRADED)
+    else {
         return;
     };
     let Some((slice, parsed)): Option<(Vec<u8>, ParsedSlice)> = driver_arm64_slice() else {
-        eprintln!("skip: macho-mac/swift-driver fixture absent or not universal");
         return;
     };
     let symbols: Vec<String> = swift_mangled_symbols(&slice, &parsed);
     assert!(
         symbols.len() >= 400,
-        "swift-driver must expose 400+ Swift-mangled symbols for the reference oracle, got {}",
+        "swift-driver must expose 400+ Swift-mangled symbols for the reference comparison, got {}",
         symbols.len()
     );
-    let Some(reference): Option<Vec<String>> = reference_demangle(&tool, &symbols) else {
-        eprintln!("skip: reference swift-demangle produced no comparable output");
-        return;
-    };
+    let borrowed: Vec<&str> = symbols.iter().map(String::as_str).collect();
+    let reference: Vec<String> = reference_demangle(&demangler, &borrowed);
 
     let ours: Vec<String> = symbols
         .iter()
@@ -353,20 +291,21 @@ fn swift_driver_symbols_match_reference_demangler_exactly() {
         ratio >= 0.95,
         "demangler must byte-match the real swift-demangle on >=95% of the binary's own \
          symbols (swift 6.x generic specialization, concurrency, opaque return type, and \
-         substitution-table coverage), got {matched}/{} = {:.2}%",
+         substitution-table coverage), got {matched}/{} = {:.2}%. {}",
         symbols.len(),
-        ratio * 100.0
+        ratio * 100.0,
+        provenance_note(&demangler.identity)
     );
 }
 
 #[test]
 fn swift_driver_swift6_feature_symbols_match_reference_exactly() {
-    let Some(tool): Option<PathBuf> = resolve_reference_demangler() else {
-        eprintln!("skip: swift-demangle not on PATH (reference oracle absent on this host)");
+    let Some(demangler): Option<ReferenceDemangler> =
+        resolve_reference_demangler(CURATED_PARITY_GRADED)
+    else {
         return;
     };
     let Some((slice, parsed)): Option<(Vec<u8>, ParsedSlice)> = driver_arm64_slice() else {
-        eprintln!("skip: macho-mac/swift-driver fixture absent or not universal");
         return;
     };
     let all_symbols: Vec<String> = swift_mangled_symbols(&slice, &parsed);
@@ -379,10 +318,9 @@ fn swift_driver_swift6_feature_symbols_match_reference_exactly() {
         "_$ss6HasherV5_hash4seed5bytes5countS2i_s6UInt64VSitFZ",
         "_$ss5ErrorWS",
     ];
-    let symbols: Vec<String> = curated
+    let symbols: Vec<&str> = curated
         .into_iter()
         .filter(|s: &&str| all_symbols.iter().any(|sym: &String| sym == s))
-        .map(str::to_owned)
         .collect();
     assert_eq!(
         symbols.len(),
@@ -393,18 +331,17 @@ fn swift_driver_swift6_feature_symbols_match_reference_exactly() {
         curated.len()
     );
 
-    let Some(reference): Option<Vec<String>> = reference_demangle(&tool, &symbols) else {
-        eprintln!("skip: reference swift-demangle produced no comparable output");
-        return;
-    };
+    let reference: Vec<String> = reference_demangle(&demangler, &symbols);
     let ours: Vec<String> = symbols
         .iter()
-        .map(|s: &String| demangle::demangle(s).unwrap_or_else(|_| s.clone()))
+        .map(|s: &&str| demangle::demangle(s).unwrap_or_else(|_| (*s).to_owned()))
         .collect();
     for ((sym, ref_text), our_text) in symbols.iter().zip(reference.iter()).zip(ours.iter()) {
         assert_eq!(
-            ref_text, our_text,
-            "mismatch for curated swift 6 symbol {sym}"
+            ref_text,
+            our_text,
+            "mismatch for curated swift 6 symbol {sym}. {}",
+            provenance_note(&demangler.identity)
         );
     }
 }
@@ -454,23 +391,23 @@ fn variadic_generic_manglings_demangle_to_committed_fixtures() {
 
 #[test]
 fn variadic_generic_manglings_match_reference_demangler_exactly() {
-    let Some(tool): Option<PathBuf> = resolve_reference_demangler() else {
-        eprintln!("skip: swift-demangle not on PATH (reference oracle absent on this host)");
+    let Some(demangler): Option<ReferenceDemangler> =
+        resolve_reference_demangler(VARIADIC_PARITY_GRADED)
+    else {
         return;
     };
-    let symbols: Vec<String> = VARIADIC_GENERIC_FIXTURES
+    let symbols: Vec<&str> = VARIADIC_GENERIC_FIXTURES
         .iter()
-        .map(|(m, _): &(&str, &str)| (*m).to_owned())
+        .map(|(m, _): &(&str, &str)| *m)
         .collect();
-    let Some(reference): Option<Vec<String>> = reference_demangle(&tool, &symbols) else {
-        eprintln!("skip: reference swift-demangle produced no comparable output");
-        return;
-    };
+    let reference: Vec<String> = reference_demangle(&demangler, &symbols);
     for (fixture, refd) in VARIADIC_GENERIC_FIXTURES.iter().zip(reference.iter()) {
         let (mangled, expected): (&str, &str) = *fixture;
         assert_eq!(
-            expected, refd,
-            "committed fixture drifted from the live swift-demangle for {mangled}"
+            expected,
+            refd,
+            "committed fixture drifted from the live swift-demangle for {mangled}. {}",
+            provenance_note(&demangler.identity)
         );
         let ours: String = demangle::demangle(mangled)
             .unwrap_or_else(|_| panic!("demangler must recover {mangled}"));
@@ -483,11 +420,7 @@ fn variadic_generic_manglings_match_reference_demangler_exactly() {
 
 #[test]
 fn swift_hello_obfuscated_symbol_table_still_demangles_structurally() {
-    let Some(bytes): Option<Vec<u8>> = load_fixture("SwiftHello.obfuscated") else {
-        eprintln!("skip: macho-mac/SwiftHello.obfuscated fixture absent");
-        return;
-    };
-    let (slice, parsed): (Vec<u8>, ParsedSlice) = thin_slice(&bytes).expect("thin slice");
+    let (slice, parsed): (Vec<u8>, ParsedSlice) = tracked_slice(SWIFT_HELLO_OBFUSCATED);
     let symbols: Vec<String> = swift_mangled_symbols(&slice, &parsed);
     assert!(
         symbols.len() >= 30,

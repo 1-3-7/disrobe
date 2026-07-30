@@ -1,17 +1,27 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-use std::ffi::{OsStr, OsString};
+
+#[path = "support/macho_corpus.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod macho_corpus;
+
+#[path = "support/swift_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod swift_toolchain;
+
 use std::fs;
-use std::io::{ErrorKind, Write};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::path::PathBuf;
 
 use disrobe_pass_swift_objc::demangle;
-use disrobe_pass_swift_objc::macho::{self, MachoKind, ParsedSlice};
+use disrobe_pass_swift_objc::macho::{self, ParsedSlice};
 
-const REQUIRE_REFERENCE_VAR: &str = "DISROBE_REQUIRE_SWIFT_DEMANGLE";
-const FIXTURE_NAME: &str = "SwiftHello.original";
-const FIXTURE_SIZE_BYTES: usize = 61_816;
-const FIXTURE_BLAKE3: &str = "49f667381558ef2fc3688c323ff13e502e46e3c464f1df03788114553fb5015c";
+use macho_corpus::{SWIFT_HELLO_ORIGINAL, first_slice, read_tracked};
+use swift_toolchain::{
+    ReferenceDemangler, provenance_note, reference_demangle, resolve_reference_demangler,
+};
+
+const FIXTURE_NAME: &str = SWIFT_HELLO_ORIGINAL.name;
+const REFERENCE_COLUMN_GRADED: &str =
+    "the pinned reference column, byte for byte against the real swift-demangle";
 
 const PUBLISHED_HEADING: &str = "Swift symbol recovery";
 const PUBLISHED_SYMBOL_BAR: &str = "mangled symbols recovered";
@@ -223,89 +233,9 @@ const REFERENCE_DIVERGENCES: [&str; 5] = [
 
 const REFERENCE_AGREEMENT_FLOOR: usize = PINNED.len() - REFERENCE_DIVERGENCES.len();
 
-fn corpus_root() -> PathBuf {
-    let manifest_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root: &Path = manifest_dir
-        .ancestors()
-        .nth(2)
-        .expect("workspace root above crate");
-    workspace_root
-        .join("corpus")
-        .join("mobile")
-        .join("macho-mac")
-}
-
-fn fixture_path() -> PathBuf {
-    corpus_root().join(FIXTURE_NAME)
-}
-
-fn reference_required() -> bool {
-    let raw: Option<OsString> = std::env::var_os(REQUIRE_REFERENCE_VAR);
-    let Some(value): Option<&OsStr> = raw.as_deref() else {
-        return false;
-    };
-    let text: String = value.to_string_lossy().trim().to_ascii_lowercase();
-    !matches!(
-        text.as_str(),
-        "" | "0" | "false" | "no" | "off" | "optional"
-    )
-}
-
-fn announce_ungraded(what: &str, detail: &str) {
-    let line: String = format!(
-        "\nUNGRADED {what}: {detail}, so this case measured nothing and graded nothing. Set \
-         {REQUIRE_REFERENCE_VAR}=1 to fail instead of skipping when the reference demangler is \
-         absent.\n"
-    );
-    let mut sink: std::io::StdoutLock<'static> = std::io::stdout().lock();
-    drop(sink.write_all(line.as_bytes()));
-    drop(sink.flush());
-}
-
-fn load_pinned_fixture() -> Vec<u8> {
-    let path: PathBuf = fixture_path();
-    let bytes: Vec<u8> = match fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(err) if err.kind() == ErrorKind::NotFound => panic!(
-            "{FIXTURE_NAME} is tracked in this repository, so its absence at {} is never a skip; \
-             restore corpus/mobile/macho-mac/{FIXTURE_NAME}",
-            path.display()
-        ),
-        Err(err) => panic!(
-            "{FIXTURE_NAME} exists at {} but could not be read ({err}); an unreadable fixture is \
-             never a skip, because that is how a quarantined or truncated sample silently stops \
-             grading",
-            path.display()
-        ),
-    };
-    assert_eq!(
-        bytes.len(),
-        FIXTURE_SIZE_BYTES,
-        "every pinned figure here was measured against a {FIXTURE_SIZE_BYTES} byte \
-         {FIXTURE_NAME}; grading a different binary would measure a different symbol table"
-    );
-    let digest: String = blake3::hash(&bytes).to_hex().to_string();
-    assert_eq!(
-        digest, FIXTURE_BLAKE3,
-        "{FIXTURE_NAME} is not the binary the pinned symbol set was measured against"
-    );
-    bytes
-}
-
-fn thin_slice(bytes: &[u8]) -> (Vec<u8>, ParsedSlice) {
-    match macho::detect_magic(bytes).expect("SwiftHello.original is a Mach-O") {
-        MachoKind::Fat32 | MachoKind::Fat64 => {
-            let entries: Vec<macho::FatArchEntry> = macho::walk_fat(bytes).expect("fat entries");
-            let entry: &macho::FatArchEntry = entries.first().expect("one fat entry");
-            let inner: &[u8] = macho::slice_bytes(bytes, entry).expect("slice bytes");
-            let parsed: ParsedSlice = macho::parse_slice(inner).expect("parse slice");
-            (inner.to_vec(), parsed)
-        }
-        _ => {
-            let parsed: ParsedSlice = macho::parse_slice(bytes).expect("parse slice");
-            (bytes.to_vec(), parsed)
-        }
-    }
+fn pinned_slice() -> (Vec<u8>, ParsedSlice) {
+    let bytes: Vec<u8> = read_tracked(SWIFT_HELLO_ORIGINAL);
+    first_slice(SWIFT_HELLO_ORIGINAL, &bytes)
 }
 
 fn extract_swift_symbols(slice: &[u8], parsed: &ParsedSlice) -> Vec<String> {
@@ -355,65 +285,9 @@ fn rendered(mangled: &str) -> String {
     demangle::demangle(mangled).unwrap_or_else(|_| mangled.to_owned())
 }
 
-fn resolve_reference_demangler() -> Option<PathBuf> {
-    let exe: &str = if cfg!(windows) {
-        "swift-demangle.exe"
-    } else {
-        "swift-demangle"
-    };
-    let path_var: OsString = std::env::var_os("PATH")?;
-    std::env::split_paths(&path_var)
-        .map(|dir: PathBuf| dir.join(exe))
-        .find(|candidate: &PathBuf| candidate.is_file())
-}
-
-fn reference_demangle(tool: &Path, symbols: &[&'static str]) -> Vec<String> {
-    let joined: String = symbols.join("\n");
-    let mut child: Child = Command::new(tool)
-        .arg("--compact")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap_or_else(|err: std::io::Error| {
-            panic!(
-                "{} is on PATH but could not be started ({err}); a reference demangler that is \
-                 present and unusable is never a skip",
-                tool.display()
-            )
-        });
-    let mut stdin: std::process::ChildStdin = child.stdin.take().expect("piped stdin");
-    stdin
-        .write_all(joined.as_bytes())
-        .expect("write symbols to the reference demangler");
-    drop(stdin);
-    let output: Output = child
-        .wait_with_output()
-        .expect("collect reference demangler output");
-    assert!(
-        output.status.success(),
-        "{} exited with {}; a reference demangler that is present and failing is never a skip",
-        tool.display(),
-        output.status
-    );
-    let text: String =
-        String::from_utf8(output.stdout).expect("reference demangler emits utf-8 output");
-    let lines: Vec<String> = text.lines().map(str::to_owned).collect();
-    assert_eq!(
-        lines.len(),
-        symbols.len(),
-        "{} answered {} of {} symbols; a partial reference answer is never a skip",
-        tool.display(),
-        lines.len(),
-        symbols.len()
-    );
-    lines
-}
-
 #[test]
 fn swift_hello_symbol_set_matches_pinned_membership_and_denominator() {
-    let bytes: Vec<u8> = load_pinned_fixture();
-    let (slice, parsed): (Vec<u8>, ParsedSlice) = thin_slice(&bytes);
+    let (slice, parsed): (Vec<u8>, ParsedSlice) = pinned_slice();
     let observed: Vec<String> = extract_swift_symbols(&slice, &parsed);
     let defects: Vec<String> = symbol_set_defects(&observed);
     assert!(
@@ -428,8 +302,7 @@ fn swift_hello_symbol_set_matches_pinned_membership_and_denominator() {
 
 #[test]
 fn swift_hello_demangler_output_matches_pinned_text() {
-    let bytes: Vec<u8> = load_pinned_fixture();
-    let (slice, parsed): (Vec<u8>, ParsedSlice) = thin_slice(&bytes);
+    let (slice, parsed): (Vec<u8>, ParsedSlice) = pinned_slice();
     let observed: Vec<String> = extract_swift_symbols(&slice, &parsed);
     assert!(
         symbol_set_defects(&observed).is_empty(),
@@ -476,30 +349,21 @@ fn swift_hello_reference_agreement_is_pinned_at_measured_floor() {
 
 #[test]
 fn pinned_reference_column_matches_live_swift_demangle() {
-    let Some(tool): Option<PathBuf> = resolve_reference_demangler() else {
-        assert!(
-            !reference_required(),
-            "{REQUIRE_REFERENCE_VAR} makes the reference demangler mandatory for this run, so the \
-             pinned reference column cannot be checked against the real tool and this case must \
-             not report success. swift-demangle was not found on PATH. Install a Swift toolchain, \
-             or clear {REQUIRE_REFERENCE_VAR} to permit a run that grades nothing here"
-        );
-        announce_ungraded(
-            "swift-demangle parity",
-            "swift-demangle is not on PATH, so the pinned reference column was never checked \
-             against the real tool",
-        );
+    let Some(demangler): Option<ReferenceDemangler> =
+        resolve_reference_demangler(REFERENCE_COLUMN_GRADED)
+    else {
         return;
     };
     let symbols: Vec<&'static str> = pinned_mangled();
-    let live: Vec<String> = reference_demangle(&tool, &symbols);
+    let live: Vec<String> = reference_demangle(&demangler, &symbols);
     for (entry, actual) in PINNED.iter().zip(live.iter()) {
         assert_eq!(
             actual,
             entry.reference,
-            "the pinned reference text for {} drifted from {}",
+            "the pinned reference text for {} does not match what {} produced here. {}",
             entry.mangled,
-            tool.display()
+            demangler.tool.display(),
+            provenance_note(&demangler.identity)
         );
     }
 }
@@ -594,8 +458,7 @@ fn published_swift_symbol_bars_are_pinned_to_the_measured_membership() {
     let symbol_bar: PinnedBar = pinned_bar(PUBLISHED_SYMBOL_BAR);
     let reference_bar: PinnedBar = pinned_bar(PUBLISHED_REFERENCE_BAR);
 
-    let bytes: Vec<u8> = load_pinned_fixture();
-    let (slice, parsed): (Vec<u8>, ParsedSlice) = thin_slice(&bytes);
+    let (slice, parsed): (Vec<u8>, ParsedSlice) = pinned_slice();
     let observed: Vec<String> = extract_swift_symbols(&slice, &parsed);
     let mut defects: Vec<String> = symbol_set_defects(&observed);
 

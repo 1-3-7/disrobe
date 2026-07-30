@@ -1,51 +1,26 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-use std::fs;
-use std::path::{Path, PathBuf};
 
-use disrobe_pass_swift_objc::macho::{self, MachoKind, ParsedSlice};
+#[path = "support/macho_corpus.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod macho_corpus;
+
+use disrobe_pass_swift_objc::macho::ParsedSlice;
 use disrobe_pass_swift_objc::objc::{self, ObjcClassDump};
 use disrobe_pass_swift_objc::objc_records::{ObjcInterface, ObjcIvar};
 use disrobe_pass_swift_objc::pass::{self, SliceReport, SwiftObjcReport};
 
-fn corpus_root() -> PathBuf {
-    let manifest_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root: &Path = manifest_dir
-        .ancestors()
-        .nth(2)
-        .expect("workspace root above crate");
-    workspace_root
-        .join("corpus")
-        .join("mobile")
-        .join("macho-mac")
-}
+use macho_corpus::{
+    CorpusFixture, SWIFT_HELLO_OBFUSCATED, SWIFT_HELLO_ORIGINAL, first_slice, read_tracked,
+};
 
-fn load_fixture(name: &str) -> Option<Vec<u8>> {
-    fs::read(corpus_root().join(name)).ok()
-}
-
-fn thin_slice(bytes: &[u8]) -> (Vec<u8>, ParsedSlice) {
-    match macho::detect_magic(bytes).expect("mach-o magic") {
-        MachoKind::Fat32 | MachoKind::Fat64 => {
-            let entries: Vec<macho::FatArchEntry> = macho::walk_fat(bytes).expect("walk fat");
-            let entry: &macho::FatArchEntry = entries.first().expect("a slice");
-            let inner: &[u8] = macho::slice_bytes(bytes, entry).expect("slice bytes");
-            let parsed: ParsedSlice = macho::parse_slice(inner).expect("parse slice");
-            (inner.to_vec(), parsed)
-        }
-        _ => {
-            let parsed: ParsedSlice = macho::parse_slice(bytes).expect("parse thin");
-            (bytes.to_vec(), parsed)
-        }
-    }
+fn tracked_slice(fixture: CorpusFixture) -> (Vec<u8>, ParsedSlice) {
+    let bytes: Vec<u8> = read_tracked(fixture);
+    first_slice(fixture, &bytes)
 }
 
 #[test]
 fn swifthello_recovers_objc_class_interfaces_with_names_and_ivars() {
-    let Some(bytes): Option<Vec<u8>> = load_fixture("SwiftHello.original") else {
-        eprintln!("skip: macho-mac/SwiftHello.original fixture absent (LEGAL.md sourcing-gated)");
-        return;
-    };
-    let (slice, parsed): (Vec<u8>, ParsedSlice) = thin_slice(&bytes);
+    let (slice, parsed): (Vec<u8>, ParsedSlice) = tracked_slice(SWIFT_HELLO_ORIGINAL);
     let dump: ObjcClassDump = objc::class_dump(&slice, &parsed);
 
     assert!(
@@ -90,11 +65,7 @@ fn swifthello_recovers_objc_class_interfaces_with_names_and_ivars() {
 
 #[test]
 fn swifthello_classname_and_methname_string_tables_are_present() {
-    let Some(bytes): Option<Vec<u8>> = load_fixture("SwiftHello.original") else {
-        eprintln!("skip: macho-mac/SwiftHello.original fixture absent");
-        return;
-    };
-    let (slice, parsed): (Vec<u8>, ParsedSlice) = thin_slice(&bytes);
+    let (slice, parsed): (Vec<u8>, ParsedSlice) = tracked_slice(SWIFT_HELLO_ORIGINAL);
     let dump: ObjcClassDump = objc::class_dump(&slice, &parsed);
 
     assert!(
@@ -111,10 +82,7 @@ fn swifthello_classname_and_methname_string_tables_are_present() {
 
 #[test]
 fn swifthello_pass_report_metadata_summary_reflects_recovery() {
-    let Some(bytes): Option<Vec<u8>> = load_fixture("SwiftHello.original") else {
-        eprintln!("skip: macho-mac/SwiftHello.original fixture absent");
-        return;
-    };
+    let bytes: Vec<u8> = read_tracked(SWIFT_HELLO_ORIGINAL);
     let report: SwiftObjcReport = pass::analyze(&bytes).expect("analyze");
     let slice: &SliceReport = report.slices.first().expect("a slice report");
     let s: &pass::MetadataSummary = &slice.metadata_summary;
@@ -135,11 +103,7 @@ fn swifthello_pass_report_metadata_summary_reflects_recovery() {
 
 #[test]
 fn swifthello_obfuscated_objc_metadata_still_structurally_recovers() {
-    let Some(bytes): Option<Vec<u8>> = load_fixture("SwiftHello.obfuscated") else {
-        eprintln!("skip: macho-mac/SwiftHello.obfuscated fixture absent");
-        return;
-    };
-    let (slice, parsed): (Vec<u8>, ParsedSlice) = thin_slice(&bytes);
+    let (slice, parsed): (Vec<u8>, ParsedSlice) = tracked_slice(SWIFT_HELLO_OBFUSCATED);
     let dump: ObjcClassDump = objc::class_dump(&slice, &parsed);
 
     assert!(

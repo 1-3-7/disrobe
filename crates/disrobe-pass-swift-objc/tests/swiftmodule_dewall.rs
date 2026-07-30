@@ -1,8 +1,15 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+#[path = "support/swift_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod swift_toolchain;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use swift_toolchain::resolve_swift_compiler;
 
 use disrobe_pass_swift_objc::demangle;
 use disrobe_pass_swift_objc::swiftinterface::{
@@ -572,25 +579,12 @@ fn module_metadata_matches_the_reference_interface_header() {
     );
 }
 
-fn resolve_swiftc() -> Option<PathBuf> {
-    let exe: &str = if cfg!(windows) {
-        "swiftc.exe"
-    } else {
-        "swiftc"
-    };
-    let path_var: std::ffi::OsString = std::env::var_os("PATH")?;
-    std::env::split_paths(&path_var)
-        .map(|dir: PathBuf| dir.join(exe))
-        .find(|candidate: &PathBuf| candidate.is_file())
-}
+const REBUILD_GRADED: &str = "the committed GreetingKit.swiftmodule identifier table, against a \
+                              module a live swiftc emits from the same source";
 
 #[test]
 fn rebuilding_the_fixture_with_swiftc_reproduces_the_identifier_table() {
-    let Some(swiftc): Option<PathBuf> = resolve_swiftc() else {
-        eprintln!(
-            "skip: swiftc not on PATH, cannot rebuild {MODULE_FILE} from {SOURCE_FILE}; the \
-             committed fixture stays ungraded against a live compiler on this host"
-        );
+    let Some(swiftc): Option<PathBuf> = resolve_swift_compiler(REBUILD_GRADED) else {
         return;
     };
     let work: PathBuf = Path::new(env!("CARGO_TARGET_TMPDIR")).join("swiftmodule_rebuild");
@@ -614,14 +608,15 @@ fn rebuilding_the_fixture_with_swiftc_reproduces_the_identifier_table() {
         .current_dir(&work)
         .output()
         .expect("run swiftc");
-    if !status.status.success() {
-        eprintln!(
-            "skip: swiftc at {} could not build the fixture (stderr: {})",
-            swiftc.display(),
-            String::from_utf8_lossy(&status.stderr).trim()
-        );
-        return;
-    }
+    assert!(
+        status.status.success(),
+        "swiftc at {} is on PATH but exited with {} while rebuilding {MODULE_FILE} from \
+         {SOURCE_FILE}; a compiler that is present and fails is never a skip, because that is how \
+         a broken toolchain silently stops grading the committed fixture. stderr: {}",
+        swiftc.display(),
+        status.status,
+        String::from_utf8_lossy(&status.stderr).trim()
+    );
 
     let rebuilt_bytes: Vec<u8> = fs::read(&module_out).expect("read rebuilt swiftmodule");
     let rebuilt: SwiftModuleDecls = read_swift_module(&rebuilt_bytes).expect("read rebuilt module");

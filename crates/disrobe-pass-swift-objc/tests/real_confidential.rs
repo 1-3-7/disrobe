@@ -1,12 +1,17 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+#[path = "support/macho_corpus.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod macho_corpus;
+
 use std::collections::BTreeSet;
-use std::fs;
-use std::path::{Path, PathBuf};
 
 use disrobe_pass_swift_objc::macho::{self, ParsedSlice};
 use disrobe_pass_swift_objc::swift::{
     self, ConfidentialDecryptResult, ConfidentialKeyRecovery, MIN_RECOVERABLE_CIPHERTEXT_LEN,
 };
+
+use macho_corpus::{CONFIDENTIAL_APP, CONFIDENTIAL_EDGE_BEFORE, read_host_sourced};
 
 const TRUE_KEY: u8 = 0x55;
 
@@ -22,26 +27,6 @@ const BEARER_TOKEN_CIPHERTEXT: &[u8] = &[
 
 const EXPECTED_API_PLAINTEXT: &str = "api_key_for_v1_prod_use";
 const EXPECTED_TOKEN_PLAINTEXT: &str = "bearer_access_grant_x";
-
-fn corpus_root() -> PathBuf {
-    let manifest_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root: &Path = manifest_dir
-        .ancestors()
-        .nth(2)
-        .expect("workspace root above crate");
-    workspace_root
-        .join("corpus")
-        .join("mobile")
-        .join("macho-mac")
-}
-
-fn edge_root() -> PathBuf {
-    corpus_root().join("confidential-edgecases")
-}
-
-fn load_at(root: &Path, name: &str) -> Option<Vec<u8>> {
-    fs::read(root.join(name)).ok()
-}
 
 #[test]
 fn confidential_pass_recovers_key_and_plaintext_for_api_endpoint() {
@@ -239,8 +224,7 @@ fn confidential_recovered_runs_are_distinct() {
 
 #[test]
 fn confidential_real_binary_recovers_key_when_fixture_present() {
-    let Some(bytes): Option<Vec<u8>> = load_at(&corpus_root(), "ConfidentialApp.bin") else {
-        eprintln!("skip: macho-mac/ConfidentialApp.bin fixture absent (sourcing-gated)");
+    let Some(bytes): Option<Vec<u8>> = read_host_sourced(CONFIDENTIAL_APP) else {
         return;
     };
     let parsed: ParsedSlice = macho::parse_slice(&bytes).expect("parse confidential binary");
@@ -251,10 +235,14 @@ fn confidential_real_binary_recovers_key_when_fixture_present() {
     let api_window: Option<usize> = bytes
         .windows(API_ENDPOINT_CIPHERTEXT.len())
         .position(|w: &[u8]| w == API_ENDPOINT_CIPHERTEXT);
-    let Some(start): Option<usize> = api_window else {
-        eprintln!("skip: ConfidentialApp.bin does not embed the expected ciphertext window");
-        return;
-    };
+    let start: usize = api_window.unwrap_or_else(|| {
+        panic!(
+            "{} is present but does not embed the ciphertext window this case grades against; a \
+             fixture that is here and carries nothing to recover is never a skip, because that is \
+             how a rebuilt sample silently stops grading",
+            CONFIDENTIAL_APP.relative()
+        )
+    });
     let isolated: &[u8] = &bytes[start..start + API_ENDPOINT_CIPHERTEXT.len()];
     let recovery: ConfidentialKeyRecovery =
         swift::confidential_recover_key(isolated).expect("recovery");
@@ -269,9 +257,7 @@ fn confidential_real_binary_recovers_key_when_fixture_present() {
 
 #[test]
 fn confidential_edge_before_binary_contains_every_plaintext_literal() {
-    let Some(bytes): Option<Vec<u8>> = load_at(&edge_root(), "ConfidentialEdgeCases.before.bin")
-    else {
-        eprintln!("skip: confidential-edgecases/ConfidentialEdgeCases.before.bin fixture absent");
+    let Some(bytes): Option<Vec<u8>> = read_host_sourced(CONFIDENTIAL_EDGE_BEFORE) else {
         return;
     };
     let mut missing: Vec<&'static str> = Vec::new();

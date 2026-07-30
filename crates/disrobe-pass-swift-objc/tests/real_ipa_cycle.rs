@@ -1,6 +1,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-use std::fs;
-use std::path::{Path, PathBuf};
+
+#[path = "support/macho_corpus.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod macho_corpus;
 
 use disrobe_pass_swift_objc::error::Error as PassError;
 use disrobe_pass_swift_objc::ipa::{self, IpaExtract, IpaInventory};
@@ -11,25 +13,17 @@ use disrobe_pass_swift_objc::objc::{self as objc_dump, ObjcClassDump};
 use disrobe_pass_swift_objc::plist_decode::{self, InfoPlistSummary};
 use disrobe_pass_swift_objc::swift::{self, SwiftClassDump, looks_like_swift_mangled};
 
-fn corpus_root() -> PathBuf {
-    let manifest_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root: &Path = manifest_dir
-        .ancestors()
-        .nth(2)
-        .expect("workspace root above crate");
-    workspace_root.join("corpus").join("mobile").join("ipa")
-}
+use macho_corpus::{CorpusFixture, read_host_sourced, released_ipa};
 
-fn load_fixture(name: &str) -> Option<Vec<u8>> {
-    let path: PathBuf = corpus_root().join(name);
-    fs::read(&path).ok()
-}
+const FEATHER: CorpusFixture = released_ipa("Feather-2.8.2.ipa");
+const ONION_BROWSER: CorpusFixture = released_ipa("OnionBrowser-3.3.8.ipa");
+const PPSSPP: CorpusFixture = released_ipa("PPSSPP-v1.20.4.ipa");
 
-fn assert_full_ipa_cycle(ipa_name: &str, expected_bundle: &str) {
-    let Some(bytes): Option<Vec<u8>> = load_fixture(ipa_name) else {
-        eprintln!("skip: ipa/{ipa_name} fixture absent");
+fn assert_full_ipa_cycle(fixture: CorpusFixture, expected_bundle: &str) {
+    let Some(bytes): Option<Vec<u8>> = read_host_sourced(fixture) else {
         return;
     };
+    let ipa_name: &str = fixture.name;
     let inventory: IpaInventory = ipa::inventory(&bytes)
         .unwrap_or_else(|e: PassError| panic!("inventory({ipa_name}) failed: {e}"));
     assert_eq!(
@@ -88,23 +82,22 @@ fn assert_full_ipa_cycle(ipa_name: &str, expected_bundle: &str) {
 
 #[test]
 fn real_ipa_feather_inventory_and_extract_full_cycle() {
-    assert_full_ipa_cycle("Feather-2.8.2.ipa", "Feather");
+    assert_full_ipa_cycle(FEATHER, "Feather");
 }
 
 #[test]
 fn real_ipa_onion_browser_inventory_and_extract_full_cycle() {
-    assert_full_ipa_cycle("OnionBrowser-3.3.8.ipa", "OnionBrowser");
+    assert_full_ipa_cycle(ONION_BROWSER, "OnionBrowser");
 }
 
 #[test]
 fn real_ipa_ppsspp_inventory_and_extract_full_cycle() {
-    assert_full_ipa_cycle("PPSSPP-v1.20.4.ipa", "PPSSPP");
+    assert_full_ipa_cycle(PPSSPP, "PPSSPP");
 }
 
 #[test]
 fn real_ipa_onion_browser_lists_frameworks_or_plugins() {
-    let Some(bytes): Option<Vec<u8>> = load_fixture("OnionBrowser-3.3.8.ipa") else {
-        eprintln!("skip: ipa/OnionBrowser-3.3.8.ipa fixture absent");
+    let Some(bytes): Option<Vec<u8>> = read_host_sourced(ONION_BROWSER) else {
         return;
     };
     let inventory: IpaInventory = ipa::inventory(&bytes).expect("onion inventory");
@@ -180,11 +173,11 @@ fn pick_arm64_slice_bytes(bytes: &[u8]) -> &[u8] {
     }
 }
 
-fn full_pipeline_for(ipa_name: &str, expected_bundle: &str) {
-    let Some(bytes): Option<Vec<u8>> = load_fixture(ipa_name) else {
-        eprintln!("skip: ipa/{ipa_name} fixture absent");
+fn full_pipeline_for(fixture: CorpusFixture, expected_bundle: &str) {
+    let Some(bytes): Option<Vec<u8>> = read_host_sourced(fixture) else {
         return;
     };
+    let ipa_name: &str = fixture.name;
     let extracted: IpaExtract =
         ipa::extract(&bytes).unwrap_or_else(|e: PassError| panic!("extract({ipa_name}): {e}"));
 
@@ -278,23 +271,22 @@ fn full_pipeline_for(ipa_name: &str, expected_bundle: &str) {
 
 #[test]
 fn real_ipa_feather_full_pipeline_plist_macho_objc_swift() {
-    full_pipeline_for("Feather-2.8.2.ipa", "Feather");
+    full_pipeline_for(FEATHER, "Feather");
 }
 
 #[test]
 fn real_ipa_onion_browser_full_pipeline_plist_macho_objc_swift() {
-    full_pipeline_for("OnionBrowser-3.3.8.ipa", "OnionBrowser");
+    full_pipeline_for(ONION_BROWSER, "OnionBrowser");
 }
 
 #[test]
 fn real_ipa_ppsspp_full_pipeline_plist_macho_objc_swift() {
-    full_pipeline_for("PPSSPP-v1.20.4.ipa", "PPSSPP");
+    full_pipeline_for(PPSSPP, "PPSSPP");
 }
 
 #[test]
 fn real_ipa_feather_lists_frameworks_when_present() {
-    let Some(bytes): Option<Vec<u8>> = load_fixture("Feather-2.8.2.ipa") else {
-        eprintln!("skip: ipa/Feather-2.8.2.ipa fixture absent");
+    let Some(bytes): Option<Vec<u8>> = read_host_sourced(FEATHER) else {
         return;
     };
     let inventory: IpaInventory = ipa::inventory(&bytes).expect("feather inventory");
@@ -306,8 +298,7 @@ fn real_ipa_feather_lists_frameworks_when_present() {
 
 #[test]
 fn real_ipa_ppsspp_main_binary_is_fat_or_thin_and_walks() {
-    let Some(bytes): Option<Vec<u8>> = load_fixture("PPSSPP-v1.20.4.ipa") else {
-        eprintln!("skip: ipa/PPSSPP-v1.20.4.ipa fixture absent");
+    let Some(bytes): Option<Vec<u8>> = read_host_sourced(PPSSPP) else {
         return;
     };
     let extracted: IpaExtract = ipa::extract(&bytes).expect("ppsspp extract");

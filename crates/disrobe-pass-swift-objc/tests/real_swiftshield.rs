@@ -1,45 +1,23 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+#[path = "support/macho_corpus.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod macho_corpus;
+
 use std::collections::BTreeSet;
-use std::fs;
-use std::path::{Path, PathBuf};
 
 use disrobe_pass_swift_objc::macho::{self, ParsedSlice};
 use disrobe_pass_swift_objc::swift::{self, SwiftClassDump, SwiftShieldUndoMap};
 
-fn corpus_root() -> PathBuf {
-    let manifest_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root: &Path = manifest_dir
-        .ancestors()
-        .nth(2)
-        .expect("workspace root above crate");
-    workspace_root
-        .join("corpus")
-        .join("mobile")
-        .join("macho-mac")
-}
-
-fn legacy_root() -> PathBuf {
-    corpus_root()
-}
-
-fn edge_root() -> PathBuf {
-    corpus_root().join("swiftshield-edgecases")
-}
-
-fn load_at(root: &Path, name: &str) -> Option<Vec<u8>> {
-    let path: PathBuf = root.join(name);
-    fs::read(&path).ok()
-}
-
-fn load_text_at(root: &Path, name: &str) -> Option<String> {
-    let path: PathBuf = root.join(name);
-    fs::read_to_string(&path).ok()
-}
+use macho_corpus::{
+    SWIFT_EDGE_CASES_OBFUSCATED, SWIFT_EDGE_CASES_ORIGINAL, SWIFT_EDGE_CASES_SWIFTSHIELD_MAPPING,
+    SWIFT_HELLO_OBFUSCATED, SWIFT_HELLO_ORIGINAL, SWIFT_HELLO_SWIFTSHIELD_MAPPING, read_tracked,
+    read_tracked_text,
+};
 
 #[test]
 fn swiftshield_legacy_mapping_reverses_known_obfuscated_identifiers() {
-    let text: String = load_text_at(&legacy_root(), "SwiftHello.swiftshield-mapping.txt")
-        .expect("SwiftHello.swiftshield-mapping.txt fixture must be committed and present");
+    let text: String = read_tracked_text(SWIFT_HELLO_SWIFTSHIELD_MAPPING);
     let undo: SwiftShieldUndoMap = swift::swiftshield_undo_from_dsym_text(&text);
 
     let known: &[(&str, &str)] = &[
@@ -79,8 +57,7 @@ fn swiftshield_legacy_mapping_reverses_known_obfuscated_identifiers() {
 
 #[test]
 fn swiftshield_legacy_original_binary_contains_unobfuscated_class_names() {
-    let bytes: Vec<u8> = load_at(&legacy_root(), "SwiftHello.original")
-        .expect("SwiftHello.original fixture must be committed and present");
+    let bytes: Vec<u8> = read_tracked(SWIFT_HELLO_ORIGINAL);
     let parsed: ParsedSlice = macho::parse_slice(&bytes).expect("parse original");
     let dump: SwiftClassDump = swift::class_dump(&bytes, &parsed);
 
@@ -108,8 +85,7 @@ fn swiftshield_legacy_original_binary_contains_unobfuscated_class_names() {
 
 #[test]
 fn swiftshield_legacy_obfuscated_binary_exposes_renamed_identifiers() {
-    let bytes: Vec<u8> = load_at(&legacy_root(), "SwiftHello.obfuscated")
-        .expect("SwiftHello.obfuscated fixture must be committed and present");
+    let bytes: Vec<u8> = read_tracked(SWIFT_HELLO_OBFUSCATED);
     let parsed: ParsedSlice = macho::parse_slice(&bytes).expect("parse obfuscated");
     let dump: SwiftClassDump = swift::class_dump(&bytes, &parsed);
 
@@ -120,8 +96,7 @@ fn swiftshield_legacy_obfuscated_binary_exposes_renamed_identifiers() {
         .unwrap_or_default();
     let cstring_concat: String = String::from_utf8_lossy(&bytes).into_owned();
 
-    let text: String = load_text_at(&legacy_root(), "SwiftHello.swiftshield-mapping.txt")
-        .expect("SwiftHello.swiftshield-mapping.txt fixture must be committed and present");
+    let text: String = read_tracked_text(SWIFT_HELLO_SWIFTSHIELD_MAPPING);
     let undo: SwiftShieldUndoMap = swift::swiftshield_undo_from_dsym_text(&text);
     let mut hits: usize = 0;
     for obfuscated_name in undo.mappings.keys() {
@@ -138,8 +113,7 @@ fn swiftshield_legacy_obfuscated_binary_exposes_renamed_identifiers() {
 
 #[test]
 fn swiftshield_legacy_apply_inverse_recovers_originals_from_obfuscated_strings() {
-    let text: String = load_text_at(&legacy_root(), "SwiftHello.swiftshield-mapping.txt")
-        .expect("SwiftHello.swiftshield-mapping.txt fixture must be committed and present");
+    let text: String = read_tracked_text(SWIFT_HELLO_SWIFTSHIELD_MAPPING);
     let undo: SwiftShieldUndoMap = swift::swiftshield_undo_from_dsym_text(&text);
 
     let obfuscated_snippet: &str = "A8X9k2QwLp.aPq2X9rT(BNm4Lz8a)";
@@ -153,16 +127,11 @@ fn swiftshield_legacy_apply_inverse_recovers_originals_from_obfuscated_strings()
     );
 }
 
-const EDGE_MAPPING: &str = "SwiftEdgeCases.swiftshield-mapping.txt";
-const EDGE_ORIGINAL: &str = "SwiftEdgeCases.original";
-const EDGE_OBFUSCATED: &str = "SwiftEdgeCases.obfuscated";
 const MIN_EDGE_MAPPING_ENTRIES: usize = 50;
 
 #[test]
 fn swiftshield_edge_mapping_parses_at_least_fifty_distinct_substitutions() {
-    let text: String = load_text_at(&edge_root(), EDGE_MAPPING).unwrap_or_else(|| {
-        panic!("swiftshield-edgecases/{EDGE_MAPPING} fixture must be committed")
-    });
+    let text: String = read_tracked_text(SWIFT_EDGE_CASES_SWIFTSHIELD_MAPPING);
     let undo: SwiftShieldUndoMap = swift::swiftshield_undo_from_dsym_text(&text);
     assert!(
         undo.mappings.len() >= MIN_EDGE_MAPPING_ENTRIES,
@@ -189,9 +158,7 @@ fn swiftshield_edge_mapping_parses_at_least_fifty_distinct_substitutions() {
 
 #[test]
 fn swiftshield_edge_original_binary_carries_unobfuscated_identifier_family() {
-    let bytes: Vec<u8> = load_at(&edge_root(), EDGE_ORIGINAL).unwrap_or_else(|| {
-        panic!("swiftshield-edgecases/{EDGE_ORIGINAL} fixture must be committed")
-    });
+    let bytes: Vec<u8> = read_tracked(SWIFT_EDGE_CASES_ORIGINAL);
     let parsed: ParsedSlice = macho::parse_slice(&bytes).expect("parse edge original");
     let dump: SwiftClassDump = swift::class_dump(&bytes, &parsed);
     let reflstr_concat: String = dump
@@ -227,9 +194,7 @@ fn swiftshield_edge_original_binary_carries_unobfuscated_identifier_family() {
 
 #[test]
 fn swiftshield_edge_inverse_substitution_recovers_at_least_fifty_originals() {
-    let bytes: Vec<u8> = load_at(&edge_root(), EDGE_OBFUSCATED).unwrap_or_else(|| {
-        panic!("swiftshield-edgecases/{EDGE_OBFUSCATED} fixture must be committed")
-    });
+    let bytes: Vec<u8> = read_tracked(SWIFT_EDGE_CASES_OBFUSCATED);
     let parsed: ParsedSlice = macho::parse_slice(&bytes).expect("parse edge obfuscated");
     let dump: SwiftClassDump = swift::class_dump(&bytes, &parsed);
     let reflstr_concat: String = dump
@@ -240,9 +205,7 @@ fn swiftshield_edge_inverse_substitution_recovers_at_least_fifty_originals() {
     let cstring_concat: String = String::from_utf8_lossy(&bytes).into_owned();
     let combined_search_space: String = format!("{reflstr_concat}\n{cstring_concat}");
 
-    let text: String = load_text_at(&edge_root(), EDGE_MAPPING).unwrap_or_else(|| {
-        panic!("swiftshield-edgecases/{EDGE_MAPPING} fixture must be committed")
-    });
+    let text: String = read_tracked_text(SWIFT_EDGE_CASES_SWIFTSHIELD_MAPPING);
     let undo: SwiftShieldUndoMap = swift::swiftshield_undo_from_dsym_text(&text);
 
     let mut substitutions_applied: usize = 0;
@@ -267,9 +230,7 @@ fn swiftshield_edge_inverse_substitution_recovers_at_least_fifty_originals() {
 
 #[test]
 fn swiftshield_edge_full_round_trip_substitution_produces_clean_text() {
-    let text: String = load_text_at(&edge_root(), EDGE_MAPPING).unwrap_or_else(|| {
-        panic!("swiftshield-edgecases/{EDGE_MAPPING} fixture must be committed")
-    });
+    let text: String = read_tracked_text(SWIFT_EDGE_CASES_SWIFTSHIELD_MAPPING);
     let undo: SwiftShieldUndoMap = swift::swiftshield_undo_from_dsym_text(&text);
     let obfuscated_keys: Vec<&String> = undo.mappings.keys().take(5).collect();
     assert!(
