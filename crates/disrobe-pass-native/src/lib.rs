@@ -46,6 +46,7 @@ pub mod fileid;
 pub mod fingerprint;
 pub mod fixtures;
 pub mod flirt;
+pub mod flow_facts;
 pub mod format;
 pub mod format_wire;
 pub mod identify;

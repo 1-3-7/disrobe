@@ -8,8 +8,8 @@ use disrobe_ir::payload::{
     InsnSegments, IsaTag, MemUse, RegAccess, RegUse, RflagsEffect, StackEffect,
 };
 use iced_x86::{
-    ConstantOffsets, Decoder, DecoderOptions, EncodingKind, FlowControl, Instruction,
-    InstructionInfoFactory, Mnemonic, OpAccess, OpKind, RflagsBits,
+    ConstantOffsets, Decoder, DecoderOptions, EncodingKind, Instruction, InstructionInfoFactory,
+    Mnemonic, OpAccess, RflagsBits,
 };
 use object::{
     Object as _, ObjectSection as _, ObjectSymbol as _, SymbolKind as ObjSymbolKind,
@@ -24,10 +24,8 @@ use crate::desync::{
     is_noreturn_import_name,
 };
 use crate::error::{Error, Result};
-use crate::pseudo_c::aarch64::{
-    AARCH64_INSTRUCTION_BYTES, Aarch64DirectTransfer, aarch64_direct_transfer,
-    aarch64_is_indirect_branch, aarch64_is_return, aarch64_word,
-};
+use crate::flow_facts::{ControlFlow, FlowModel, x86_flow};
+use crate::pseudo_c::aarch64::AARCH64_INSTRUCTION_BYTES;
 
 pub const MAX_DECODE_TEXT_BYTES: usize = 32 * 1024 * 1024;
 
@@ -74,6 +72,7 @@ pub(crate) fn build_disasm_payload_with_discovery(bytes: &[u8]) -> Result<Disasm
         )));
     }
 
+    let flow_model: FlowModel = FlowModel::for_arch(arch)?;
     let mut instructions: Vec<DisasmInstruction> = Vec::new();
     let mut decoded_code: Vec<CodeWindow<'_>> = Vec::new();
     let mut text_budget: usize = MAX_DECODE_TEXT_BYTES;
@@ -107,8 +106,13 @@ pub(crate) fn build_disasm_payload_with_discovery(bytes: &[u8]) -> Result<Disasm
                     ),
                 })?;
             decoded_byte_len = decoded_byte_len.max(insn_end);
-            let facts: InstructionFacts =
-                instruction_facts(arch, &insn.bytes, insn.address, &mut factory);
+            let facts: InstructionFacts = instruction_facts(
+                &flow_model,
+                &insn.bytes,
+                insn.address,
+                &insn.mnemonic,
+                &mut factory,
+            );
             instructions.push(DisasmInstruction {
                 offset: insn.address,
                 bytes: insn.bytes,
@@ -441,10 +445,6 @@ enum BoundaryRole {
     Plain,
 }
 
-fn aarch64_transfer_of(insn: &DisasmInstruction) -> Option<Aarch64DirectTransfer> {
-    aarch64_word(&insn.bytes).and_then(|word: u32| aarch64_direct_transfer(insn.offset, word))
-}
-
 fn is_alignment_filler(isa: BoundaryIsa, insn: &DisasmInstruction) -> bool {
     if insn.bytes.is_empty() {
         return false;
@@ -463,71 +463,37 @@ fn is_alignment_filler(isa: BoundaryIsa, insn: &DisasmInstruction) -> bool {
     }
 }
 
-fn boundary_role(isa: BoundaryIsa, insn: &DisasmInstruction) -> BoundaryRole {
-    match isa {
-        BoundaryIsa::X86 { .. } => match insn.flow {
-            InsnFlow::Return => BoundaryRole::Terminator,
-            InsnFlow::UnconditionalBranch if insn.branch_target.is_some() => {
-                BoundaryRole::Terminator
-            }
-            InsnFlow::IndirectBranch => BoundaryRole::IndirectBranch,
-            InsnFlow::Sequential
-            | InsnFlow::Call
-            | InsnFlow::IndirectCall
-            | InsnFlow::ConditionalBranch
-            | InsnFlow::UnconditionalBranch
-            | InsnFlow::Interrupt => BoundaryRole::Plain,
-        },
-        BoundaryIsa::Aarch64 => {
-            if aarch64_is_return(&insn.mnemonic) {
-                return BoundaryRole::Terminator;
-            }
-            if aarch64_is_indirect_branch(&insn.mnemonic) {
-                return BoundaryRole::IndirectBranch;
-            }
-            match aarch64_transfer_of(insn) {
-                Some(Aarch64DirectTransfer::UnconditionalBranch { .. }) => BoundaryRole::Terminator,
-                Some(
-                    Aarch64DirectTransfer::BranchLink { .. }
-                    | Aarch64DirectTransfer::ConditionalBranch { .. }
-                    | Aarch64DirectTransfer::CompareBranch { .. }
-                    | Aarch64DirectTransfer::TestBranch { .. },
-                )
-                | None => BoundaryRole::Plain,
-            }
-        }
+fn boundary_role(insn: &DisasmInstruction) -> BoundaryRole {
+    match insn.flow {
+        InsnFlow::Return => BoundaryRole::Terminator,
+        InsnFlow::UnconditionalBranch if insn.branch_target.is_some() => BoundaryRole::Terminator,
+        InsnFlow::IndirectBranch => BoundaryRole::IndirectBranch,
+        InsnFlow::Sequential
+        | InsnFlow::Call
+        | InsnFlow::IndirectCall
+        | InsnFlow::ConditionalBranch
+        | InsnFlow::UnconditionalBranch
+        | InsnFlow::Interrupt => BoundaryRole::Plain,
     }
 }
 
-fn boundary_branch_target(isa: BoundaryIsa, insn: &DisasmInstruction) -> Option<u64> {
-    match isa {
-        BoundaryIsa::X86 { .. } => match insn.flow {
-            InsnFlow::ConditionalBranch | InsnFlow::UnconditionalBranch => insn.branch_target,
-            InsnFlow::Sequential
-            | InsnFlow::Call
-            | InsnFlow::IndirectCall
-            | InsnFlow::IndirectBranch
-            | InsnFlow::Return
-            | InsnFlow::Interrupt => None,
-        },
-        BoundaryIsa::Aarch64 => match aarch64_transfer_of(insn) {
-            Some(
-                Aarch64DirectTransfer::UnconditionalBranch { target }
-                | Aarch64DirectTransfer::ConditionalBranch { target, .. }
-                | Aarch64DirectTransfer::CompareBranch { target }
-                | Aarch64DirectTransfer::TestBranch { target },
-            ) => Some(target),
-            Some(Aarch64DirectTransfer::BranchLink { .. }) | None => None,
-        },
+fn boundary_branch_target(insn: &DisasmInstruction) -> Option<u64> {
+    match insn.flow {
+        InsnFlow::ConditionalBranch | InsnFlow::UnconditionalBranch => insn.branch_target,
+        InsnFlow::Sequential
+        | InsnFlow::Call
+        | InsnFlow::IndirectCall
+        | InsnFlow::IndirectBranch
+        | InsnFlow::Return
+        | InsnFlow::Interrupt => None,
     }
 }
 
-fn decodes_cleanly(isa: BoundaryIsa, insn: &DisasmInstruction) -> bool {
-    match isa {
-        BoundaryIsa::X86 { bits } => decode_one_x86(bits, insn.offset, &insn.bytes)
-            .is_some_and(|decoded: Instruction| decoded.len() == insn.bytes.len()),
-        BoundaryIsa::Aarch64 => aarch64_word(&insn.bytes).is_some(),
-    }
+fn decodes_cleanly(model: &FlowModel, insn: &DisasmInstruction) -> bool {
+    model.decodes_whole_slice(&insn.bytes, insn.offset)
+        && model
+            .control_flow(&insn.bytes, insn.offset, &insn.mnemonic)
+            .is_decoded()
 }
 
 fn is_alignment_boundary(address: u64, padding: u64) -> bool {
@@ -540,17 +506,18 @@ fn is_alignment_boundary(address: u64, padding: u64) -> bool {
 
 fn internal_boundary(
     isa: BoundaryIsa,
+    model: &FlowModel,
     span_start: u64,
     span_end: u64,
     body: &[&DisasmInstruction],
 ) -> Option<u64> {
     let mut furthest_branch: u64 = span_start;
     for (position, insn) in body.iter().enumerate() {
-        let role: BoundaryRole = boundary_role(isa, insn);
+        let role: BoundaryRole = boundary_role(insn);
         if matches!(role, BoundaryRole::IndirectBranch) {
             return None;
         }
-        if let Some(target) = boundary_branch_target(isa, insn)
+        if let Some(target) = boundary_branch_target(insn)
             && (span_start..span_end).contains(&target)
         {
             furthest_branch = furthest_branch.max(target);
@@ -575,7 +542,7 @@ fn internal_boundary(
         };
         if furthest_branch >= terminator_end
             || !is_alignment_boundary(candidate, padding)
-            || !decodes_cleanly(isa, next)
+            || !decodes_cleanly(model, next)
         {
             continue;
         }
@@ -592,6 +559,9 @@ fn trim_to_internal_boundaries(
     let Some(isa): Option<BoundaryIsa> = BoundaryIsa::of(arch) else {
         return;
     };
+    let Ok(model): Result<FlowModel> = FlowModel::for_arch(arch) else {
+        return;
+    };
     let mut sorted: Vec<&DisasmInstruction> = payload.instructions.iter().collect();
     sorted.sort_by_key(|insn: &&DisasmInstruction| insn.offset);
     for span in spans {
@@ -602,7 +572,7 @@ fn trim_to_internal_boundaries(
         let Some(body): Option<&[&DisasmInstruction]> = sorted.get(low..high) else {
             continue;
         };
-        if let Some(boundary) = internal_boundary(isa, span.address, span.end, body) {
+        if let Some(boundary) = internal_boundary(isa, &model, span.address, span.end, body) {
             span.end = boundary;
         }
     }
@@ -827,15 +797,19 @@ impl Default for InstructionFacts {
 }
 
 fn instruction_facts(
-    arch: DisasmArch,
+    model: &FlowModel,
     raw: &[u8],
     address: u64,
+    mnemonic: &str,
     factory: &mut InstructionInfoFactory,
 ) -> InstructionFacts {
-    let bits: u32 = match arch {
-        DisasmArch::X86 => 32,
-        DisasmArch::X86_64 => 64,
-        _ => return InstructionFacts::default(),
+    let Some(bits): Option<u32> = model.x86_bits() else {
+        let control: ControlFlow = model.control_flow(raw, address, mnemonic);
+        return InstructionFacts {
+            flow: control.flow,
+            branch_target: control.branch_target,
+            ..InstructionFacts::default()
+        };
     };
     if raw.is_empty() {
         return InstructionFacts::default();
@@ -851,7 +825,7 @@ fn instruction_facts(
     }
     let offsets: ConstantOffsets = decoder.get_constant_offsets(&insn);
 
-    let (flow, branch_target): (InsnFlow, Option<u64>) = flow_from_insn(&insn);
+    let (flow, branch_target): (InsnFlow, Option<u64>) = x86_flow(&insn);
     let (reg_uses, mem_uses, rflags): (Vec<RegUse>, Vec<MemUse>, RflagsEffect) =
         info_from_insn(factory, &insn);
     let (isa, stack_effect, segments): (IsaTag, StackEffect, InsnSegments) =
@@ -866,32 +840,6 @@ fn instruction_facts(
         isa,
         stack_effect,
         segments,
-    }
-}
-
-fn flow_from_insn(insn: &Instruction) -> (InsnFlow, Option<u64>) {
-    let direct: bool = matches!(
-        insn.op0_kind(),
-        OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64
-    );
-    match insn.flow_control() {
-        FlowControl::Call if direct => (InsnFlow::Call, Some(insn.near_branch_target())),
-        FlowControl::Call => (InsnFlow::IndirectCall, None),
-        FlowControl::IndirectCall => (InsnFlow::IndirectCall, None),
-        FlowControl::ConditionalBranch => {
-            (InsnFlow::ConditionalBranch, Some(insn.near_branch_target()))
-        }
-        FlowControl::UnconditionalBranch if direct => (
-            InsnFlow::UnconditionalBranch,
-            Some(insn.near_branch_target()),
-        ),
-        FlowControl::UnconditionalBranch => (InsnFlow::UnconditionalBranch, None),
-        FlowControl::IndirectBranch => (InsnFlow::IndirectBranch, None),
-        FlowControl::Return => (InsnFlow::Return, None),
-        FlowControl::Interrupt => (InsnFlow::Interrupt, None),
-        FlowControl::Next | FlowControl::XbeginXabortXend | FlowControl::Exception => {
-            (InsnFlow::Sequential, None)
-        }
     }
 }
 
@@ -1001,7 +949,7 @@ fn decode_single(
 #[cfg(test)]
 fn flow_of(arch: DisasmArch, raw: &[u8], address: u64) -> (InsnFlow, Option<u64>) {
     match decode_single(arch, raw, address) {
-        Some((insn, _)) => flow_from_insn(&insn),
+        Some((insn, _)) => x86_flow(&insn),
         None => (InsnFlow::Sequential, None),
     }
 }
@@ -1355,12 +1303,18 @@ mod tests {
 
     fn decoded_body(arch: DisasmArch, base: u64, bytes: &[u8]) -> Vec<DisasmInstruction> {
         let decoded: Vec<DisasmInsn> = disassemble(arch, base, bytes).expect("fixture decodes");
+        let model: FlowModel = FlowModel::for_arch(arch).expect("fixture arch has a flow model");
         let mut factory: InstructionInfoFactory = InstructionInfoFactory::new();
         decoded
             .into_iter()
             .map(|insn: DisasmInsn| {
-                let facts: InstructionFacts =
-                    instruction_facts(arch, &insn.bytes, insn.address, &mut factory);
+                let facts: InstructionFacts = instruction_facts(
+                    &model,
+                    &insn.bytes,
+                    insn.address,
+                    &insn.mnemonic,
+                    &mut factory,
+                );
                 DisasmInstruction {
                     offset: insn.address,
                     bytes: insn.bytes,
@@ -1383,7 +1337,8 @@ mod tests {
         let body: Vec<DisasmInstruction> = decoded_body(arch, X86_BOUNDARY_BASE, bytes);
         let refs: Vec<&DisasmInstruction> = body.iter().collect();
         let end: u64 = X86_BOUNDARY_BASE.saturating_add(bytes.len() as u64);
-        internal_boundary(isa, X86_BOUNDARY_BASE, end, &refs)
+        let model: FlowModel = FlowModel::for_arch(arch).expect("fixture arch has a flow model");
+        internal_boundary(isa, &model, X86_BOUNDARY_BASE, end, &refs)
     }
 
     fn padded(head: &[u8], padding: usize, tail: &[u8]) -> Vec<u8> {
@@ -1493,7 +1448,9 @@ mod tests {
             },
         ];
         let refs: Vec<&DisasmInstruction> = body.iter().collect();
-        assert_eq!(internal_boundary(X86_ISA, 0, u64::MAX, &refs), None);
+        let model: FlowModel =
+            FlowModel::for_arch(DisasmArch::X86_64).expect("x86-64 has a flow model");
+        assert_eq!(internal_boundary(X86_ISA, &model, 0, u64::MAX, &refs), None);
     }
 
     fn swallowing_elf() -> Vec<u8> {
@@ -1992,6 +1949,49 @@ mod tests {
         assert!(isa.is_empty());
         assert!(stack.is_neutral());
         assert!(segments.is_empty());
+    }
+
+    #[test]
+    fn every_arch_the_payload_builder_accepts_carries_a_flow_model() {
+        let containers: [BinArch; 19] = [
+            BinArch::X86,
+            BinArch::X86_64,
+            BinArch::Arm,
+            BinArch::Aarch64,
+            BinArch::RiscV32,
+            BinArch::RiscV64,
+            BinArch::Mips,
+            BinArch::Mips64,
+            BinArch::PowerPc,
+            BinArch::PowerPc64,
+            BinArch::Sparc,
+            BinArch::Sparc64,
+            BinArch::Avr,
+            BinArch::Ebpf,
+            BinArch::LoongArch64,
+            BinArch::S390x,
+            BinArch::Wasm32,
+            BinArch::Wasm64,
+            BinArch::Unknown(0),
+        ];
+        let mut modelled: usize = 0;
+        for container in containers {
+            for endian in [Endian::Little, Endian::Big] {
+                let Some(arch): Option<DisasmArch> = map_arch(container, endian) else {
+                    continue;
+                };
+                assert!(
+                    FlowModel::for_arch(arch).is_ok(),
+                    "{} reaches the payload builder with no control-flow model",
+                    arch.label()
+                );
+                modelled += 1;
+            }
+        }
+        assert!(
+            modelled >= 14,
+            "expected the mapped architectures to be covered, saw {modelled}"
+        );
     }
 
     #[test]
