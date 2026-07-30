@@ -1,11 +1,13 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use disrobe_pass_dotnet::decompile::{DecompiledAssembly, decompile_assembly};
 use disrobe_pass_dotnet::metadata::{MetadataRoot, parse_metadata_root};
-use disrobe_pass_dotnet::model::{AssemblyModel, FieldConstant, FieldModel, Resolver, TypeModel};
+use disrobe_pass_dotnet::model::{
+    AssemblyModel, FieldConstant, FieldModel, MethodModel, Resolver, TypeModel,
+};
 use disrobe_pass_dotnet::pe::{ClrHeader, PeImage, parse, parse_clr_header};
 use disrobe_pass_dotnet::structurize::{StructuredMethod, csharp_escape_identifier, field_name};
 
@@ -423,11 +425,70 @@ fn csharp_double_literal(value: f64) -> String {
     }
 }
 
+fn base_called_members(bodies: &str) -> BTreeSet<String> {
+    let mut out: BTreeSet<String> = BTreeSet::new();
+    let mut rest: &str = bodies;
+    while let Some(pos) = rest.find("base.") {
+        let after: &str = &rest[pos + "base.".len()..];
+        let name: &str = after
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .next()
+            .unwrap_or_default();
+        if !name.is_empty() {
+            out.insert(name.to_owned());
+        }
+        rest = after;
+    }
+    out
+}
+
+fn base_support(bytes: &[u8], target: Target, bodies: &str) -> Option<(String, String)> {
+    let called: BTreeSet<String> = base_called_members(bodies);
+    if called.is_empty() {
+        return None;
+    }
+    let pe: PeImage = parse(bytes).expect("parse fixture PE");
+    let clr: ClrHeader = parse_clr_header(bytes, &pe).expect("parse fixture CLR header");
+    let root: MetadataRoot = parse_metadata_root(bytes, &pe, &clr).expect("parse fixture metadata");
+    let resolver: Resolver = Resolver::build(bytes, &pe, &clr, &root).expect("build fixture model");
+    let model: AssemblyModel = resolver.model();
+    let full_name: String = format!("{}.{}", target.origin_namespace, target.type_name);
+    let base_name: String = model
+        .types
+        .iter()
+        .find(|candidate: &&TypeModel| candidate.full_name == full_name)
+        .and_then(|ty: &TypeModel| ty.base_type.clone())?;
+    let base: &TypeModel = model
+        .types
+        .iter()
+        .find(|candidate: &&TypeModel| base_name.ends_with(&candidate.full_name))?;
+    let short_base: &str = base.full_name.rsplit('.').next().unwrap_or(&base.full_name);
+    let members: Vec<String> = base
+        .methods
+        .iter()
+        .filter(|m: &&MethodModel| called.contains(m.name.rsplit("::").next().unwrap_or(&m.name)))
+        .map(|m: &MethodModel| {
+            let resolved: String = resolver.resolve_type_tokens(&m.csharp_signature());
+            let promoted: String = promote_visibility_to_public(&resolved);
+            let header: &str = promoted.strip_prefix("public ").unwrap_or(&promoted);
+            format!("    public virtual {header}\n    {{\n        throw new System.NotSupportedException();\n    }}")
+        })
+        .collect();
+    if members.len() != called.len() {
+        return None;
+    }
+    let stub: String = format!(
+        "    public class {short_base}\n    {{\n{}\n    }}\n\n",
+        members.join("\n")
+    );
+    Some((format!(" : {short_base}"), stub))
+}
+
 fn whole_type_source(
+    bytes: &[u8],
     fields: &[String],
     methods: &[UserMethod],
     target: Target,
-    value_type: bool,
 ) -> String {
     let declarations: String = fields.join("\n");
     let bodies: String = methods
@@ -437,15 +498,17 @@ fn whole_type_source(
         .join("\n");
     let kind: &str = if target.is_static {
         "public static class"
-    } else if value_type {
+    } else if is_value_type(bytes, target) {
         "public struct"
     } else {
         "public class"
     };
+    let (base_clause, base_stub): (String, String) =
+        base_support(bytes, target, &bodies).unwrap_or_else(|| (String::new(), String::new()));
     let type_name: &str = target.type_name;
     let namespace: &str = target.origin_namespace;
     format!(
-        "{PREAMBLE}namespace {namespace}\n{{\n    {kind} {type_name}\n    {{\n{declarations}\n{bodies}\n    }}\n}}\n"
+        "{PREAMBLE}namespace {namespace}\n{{\n{base_stub}    {kind} {type_name}{base_clause}\n    {{\n{declarations}\n{bodies}\n    }}\n}}\n"
     )
 }
 
@@ -488,8 +551,33 @@ fn ilspy_il(dll: &Path, namespace: &str, type_name: &str) -> String {
 const TARGET_PREFIX: &str = "L#";
 const OFF_BODY_PREFIX: &str = "X#";
 
+fn erase_assembly_refs(line: &str) -> String {
+    let mut out: String = String::with_capacity(line.len());
+    let mut rest: &str = line;
+    while let Some(open) = rest.find('[') {
+        let after: &str = &rest[open + 1..];
+        let Some(close): Option<usize> = after.find(']') else {
+            break;
+        };
+        let name: &str = &after[..close];
+        let is_assembly_ref: bool = name.starts_with(|c: char| c.is_ascii_alphabetic())
+            && name
+                .chars()
+                .all(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.');
+        out.push_str(&rest[..open]);
+        if !is_assembly_ref {
+            out.push('[');
+            out.push_str(name);
+            out.push(']');
+        }
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 fn normalize_op(line: &str) -> String {
-    let mut normalized: String = line.to_owned();
+    let mut normalized: String = erase_assembly_refs(line);
     for pat in ["'<>9__", "'<>9'", ">b__", "'<>c'", "'<>c__"] {
         if normalized.contains(pat) {
             normalized = mask_generated_idents(&normalized);
@@ -638,12 +726,36 @@ fn il_instruction(trimmed: &str) -> Option<(u32, &str)> {
 }
 
 struct Outcome {
+    label: String,
     compiled: bool,
     compile_errors: Vec<String>,
     equivalent: Vec<String>,
     mismatched: Vec<String>,
     missing: Vec<String>,
     branching: Vec<String>,
+    divergence: Vec<String>,
+}
+
+impl Outcome {
+    const fn compared(&self) -> usize {
+        self.equivalent.len() + self.mismatched.len() + self.missing.len()
+    }
+}
+
+fn first_divergence(name: &str, original: &[String], recompiled: &[String]) -> String {
+    let at: usize = original
+        .iter()
+        .zip(recompiled.iter())
+        .position(|(o, r): (&String, &String)| o != r)
+        .unwrap_or_else(|| original.len().min(recompiled.len()));
+    let shown: &str = "(body ends)";
+    let o: &str = original.get(at).map_or(shown, String::as_str);
+    let r: &str = recompiled.get(at).map_or(shown, String::as_str);
+    format!(
+        "{name}: {} vs {} ops, first difference at {at}: original `{o}`, recovered `{r}`",
+        original.len(),
+        recompiled.len()
+    )
 }
 
 fn qualify(target: Target, method: &str) -> String {
@@ -675,7 +787,7 @@ fn run_target(target: Target) -> Outcome {
     let tmp: PathBuf = scratch.path().to_path_buf();
     write_project(&tmp, target.type_name);
     let fields: Vec<String> = field_declarations(&bytes, target);
-    let src: String = whole_type_source(&fields, &methods, target, is_value_type(&bytes, target));
+    let src: String = whole_type_source(&bytes, &fields, &methods, target);
     let (compile_errors, produced): (Vec<String>, Option<PathBuf>) =
         compile_whole_type(&tmp, &src, target.type_name);
 
@@ -683,6 +795,7 @@ fn run_target(target: Target) -> Outcome {
     let mut mismatched: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
     let mut branching: Vec<String> = Vec::new();
+    let mut divergence: Vec<String> = Vec::new();
     if let Some(recompiled) = produced.as_ref() {
         let orig_il: String = ilspy_il(&dll_path, target.origin_namespace, target.type_name);
         let recomp_il: String = ilspy_il(recompiled, target.origin_namespace, target.type_name);
@@ -702,18 +815,23 @@ fn run_target(target: Target) -> Outcome {
                     }
                     equivalent.push(qualify(target, &m.name));
                 }
-                (Some(_), Some(_)) => mismatched.push(qualify(target, &m.name)),
+                (Some(o), Some(r)) => {
+                    divergence.push(first_divergence(&qualify(target, &m.name), o, &r));
+                    mismatched.push(qualify(target, &m.name));
+                }
                 _ => missing.push(qualify(target, &m.name)),
             }
         }
     }
     Outcome {
+        label: target.type_name.to_owned(),
         compiled: produced.is_some(),
         compile_errors,
         equivalent,
         mismatched,
         missing,
         branching,
+        divergence,
     }
 }
 
@@ -833,6 +951,7 @@ fn run_record_target(target: RecordTarget) -> Outcome {
     let asm: DecompiledAssembly = decompile_assembly(&bytes).expect("decompile");
     let Some(decl): Option<String> = reconstruct_record_decl(&asm, target.type_name) else {
         return Outcome {
+            label: target.type_name.to_owned(),
             compiled: false,
             compile_errors: vec![format!(
                 "could not reconstruct record declaration for {}",
@@ -842,6 +961,7 @@ fn run_record_target(target: RecordTarget) -> Outcome {
             mismatched: Vec::new(),
             missing: vec![target.type_name.to_owned()],
             branching: Vec::new(),
+            divergence: Vec::new(),
         };
     };
 
@@ -858,6 +978,7 @@ fn run_record_target(target: RecordTarget) -> Outcome {
     let mut mismatched: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
     let mut branching: Vec<String> = Vec::new();
+    let mut divergence: Vec<String> = Vec::new();
     if let Some(recompiled) = produced.as_ref() {
         let orig_il: String = ilspy_il(&dll_path, NAMESPACE, target.type_name);
         let recomp_il: String = ilspy_il(recompiled, NAMESPACE, target.type_name);
@@ -877,18 +998,27 @@ fn run_record_target(target: RecordTarget) -> Outcome {
                     }
                     equivalent.push(qualified);
                 }
-                Some(_) => mismatched.push(qualified),
+                Some(recomp_ops) => {
+                    divergence.push(format!(
+                        "{qualified}: {} vs {} overload bodies compared as a multiset and no assignment matched",
+                        orig_ops.len(),
+                        recomp_ops.len()
+                    ));
+                    mismatched.push(qualified);
+                }
                 None => missing.push(qualified),
             }
         }
     }
     Outcome {
+        label: target.type_name.to_owned(),
         compiled: produced.is_some(),
         compile_errors,
         equivalent,
         mismatched,
         missing,
         branching,
+        divergence,
     }
 }
 
@@ -930,6 +1060,7 @@ fn run_record_method_target(target: RecordMethodTarget) -> Outcome {
     let Some(record_decl): Option<String> = reconstruct_record_decl(&asm, target.record_type)
     else {
         return Outcome {
+            label: target.class_type.to_owned(),
             compiled: false,
             compile_errors: vec![format!(
                 "could not reconstruct record declaration for {}",
@@ -939,6 +1070,7 @@ fn run_record_method_target(target: RecordMethodTarget) -> Outcome {
             mismatched: Vec::new(),
             missing: vec![target.class_type.to_owned()],
             branching: Vec::new(),
+            divergence: Vec::new(),
         };
     };
     let methods: Vec<UserMethod> = asm
@@ -965,6 +1097,7 @@ fn run_record_method_target(target: RecordMethodTarget) -> Outcome {
     let mut mismatched: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
     let mut branching: Vec<String> = Vec::new();
+    let mut divergence: Vec<String> = Vec::new();
     if let Some(recompiled) = produced.as_ref() {
         let orig_il: String = ilspy_il(&dll_path, NAMESPACE, target.class_type);
         let recomp_il: String = ilspy_il(recompiled, NAMESPACE, target.class_type);
@@ -985,18 +1118,23 @@ fn run_record_method_target(target: RecordMethodTarget) -> Outcome {
                     }
                     equivalent.push(qualified);
                 }
-                (Some(_), Some(_)) => mismatched.push(qualified),
+                (Some(o), Some(r)) => {
+                    divergence.push(first_divergence(&qualified, o, &r));
+                    mismatched.push(qualified);
+                }
                 _ => missing.push(qualified),
             }
         }
     }
     Outcome {
+        label: target.class_type.to_owned(),
         compiled: produced.is_some(),
         compile_errors,
         equivalent,
         mismatched,
         missing,
         branching,
+        divergence,
     }
 }
 
@@ -1107,6 +1245,21 @@ fn branch_target_identity_survives_normalization() {
             .any(|op: &String| op.contains("switch (L#0, L#3, L#12)")),
         "every switch arm must keep its own target identity; got {inner:?}"
     );
+    assert_eq!(
+        normalize_op("newarr [netstandard]System.Byte"),
+        normalize_op("newarr [System.Runtime]System.Byte"),
+        "the reference assembly a type resolves through is a property of the compilation target, not of the recovered source, so it must not count as a difference"
+    );
+    assert_ne!(
+        normalize_op("newarr [netstandard]System.Byte"),
+        normalize_op("newarr [netstandard]System.SByte"),
+        "erasing the reference assembly must not erase the type it qualifies"
+    );
+    assert_eq!(
+        normalize_op("ldelem [netstandard]System.Int32[0...5]"),
+        "ldelem System.Int32[0...5]",
+        "array bounds are not an assembly reference and must survive"
+    );
 }
 
 const EDGECASES_DLL: &str = "../../corpus/dotnet/megafile/EdgeCases.baseline.dll";
@@ -1215,8 +1368,7 @@ fn edgecases_whole_type_recompile_fraction_is_published_as_measured() {
                 .expect("mk tmp");
         let tmp: PathBuf = scratch.path().to_path_buf();
         write_project(&tmp, type_name);
-        let src: String =
-            whole_type_source(&fields, &methods, target, is_value_type(&bytes, target));
+        let src: String = whole_type_source(&bytes, &fields, &methods, target);
         let (errors, produced): (Vec<String>, Option<PathBuf>) =
             compile_whole_type(&tmp, &src, type_name);
         if produced.is_some() {
@@ -1279,7 +1431,7 @@ fn whole_type_recompile_check_rejects_deliberately_broken_source() {
         .filter_map(|m: &StructuredMethod| user_method_for(&m.body, target.type_name))
         .collect();
     let fields: Vec<String> = field_declarations(&bytes, target);
-    let src: String = whole_type_source(&fields, &methods, target, is_value_type(&bytes, target));
+    let src: String = whole_type_source(&bytes, &fields, &methods, target);
 
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_wt_mutation_control").expect("mk tmp");
@@ -1315,6 +1467,24 @@ fn whole_type_recompile_check_rejects_deliberately_broken_source() {
 
 const IL_EQUIVALENCE_FLOOR: usize = 66;
 const IL_BRANCHING_FLOOR: usize = 45;
+
+const IL_RESIDUAL: &[&str] = &[
+    "Dog.Describe",
+    "Dog.get_Breed",
+    "Pipeline.RunSteps",
+    "TraceableAttribute.get_Category",
+    "TraceableAttribute.get_Priority",
+    "TraceableAttribute.set_Priority",
+];
+
+fn percent(numerator: usize, denominator: usize) -> f64 {
+    if denominator == 0 {
+        return 0.0;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let ratio: f64 = numerator as f64 / denominator as f64;
+    ratio * 100.0
+}
 
 #[test]
 fn dog_recompiles_when_its_metadata_fields_are_emitted() {
@@ -1382,6 +1552,7 @@ fn whole_type_recompiles_to_equivalent_il() {
     let mut mismatched: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
     let mut branching: Vec<String> = Vec::new();
+    let mut divergence: Vec<String> = Vec::new();
     for outcome in &outcomes {
         assert!(
             outcome.compiled,
@@ -1392,28 +1563,67 @@ fn whole_type_recompiles_to_equivalent_il() {
         mismatched.extend(outcome.mismatched.iter().cloned());
         missing.extend(outcome.missing.iter().cloned());
         branching.extend(outcome.branching.iter().cloned());
+        divergence.extend(outcome.divergence.iter().cloned());
     }
+    let matched: usize = equivalent.len();
+    let compared: usize = matched + mismatched.len() + missing.len();
     eprintln!(
-        "WHOLE-TYPE IL EQUIVALENCE ({} types in {NAMESPACE}): {} methods IL-equivalent after standalone csc recompile + ilspycmd compare against the original assembly",
+        "WHOLE-TYPE IL EQUIVALENCE: matched={matched} compared={compared} ({:.2}%) across {} graded types, after standalone csc recompile and an ilspycmd compare against the original assembly",
+        percent(matched, compared),
         outcomes.len(),
-        equivalent.len()
     );
+    for outcome in &outcomes {
+        eprintln!(
+            "  {}: matched={} compared={} ({:.2}%)",
+            outcome.label,
+            outcome.equivalent.len(),
+            outcome.compared(),
+            percent(outcome.equivalent.len(), outcome.compared()),
+        );
+    }
     eprintln!("  equivalent: {equivalent:?}");
     eprintln!(
         "  of those, {} carry at least one branch or switch target whose destination block had to match: {branching:?}",
         branching.len()
     );
     if !mismatched.is_empty() {
-        eprintln!("  IL-mismatched (recovered shape differs): {mismatched:?}");
+        eprintln!(
+            "  not equivalent, recovered shape differs: matched=0 compared={} {mismatched:?}",
+            mismatched.len()
+        );
+        for line in &divergence {
+            eprintln!("    {line}");
+        }
     }
     if !missing.is_empty() {
         eprintln!("  not located in one assembly: {missing:?}");
     }
+    let unpinned: Vec<&String> = mismatched
+        .iter()
+        .filter(|name: &&String| !IL_RESIDUAL.contains(&name.as_str()))
+        .collect();
+    assert!(
+        unpinned.is_empty(),
+        "these methods are not IL-equivalent and are not in the pinned residual: {unpinned:?}. \
+         a new divergence must be fixed or added deliberately, never absorbed by a count that still clears its floor. \
+         divergences: {divergence:?}"
+    );
+    let recovered: Vec<&&str> = IL_RESIDUAL
+        .iter()
+        .filter(|name: &&&str| !mismatched.iter().any(|m: &String| m == *name))
+        .collect();
+    assert!(
+        recovered.is_empty(),
+        "these methods now match and must leave the pinned residual, which only ever shrinks: {recovered:?}"
+    );
+    assert_eq!(
+        compared,
+        matched + mismatched.len() + missing.len(),
+        "the graded population must partition into equivalent, mismatched and missing, so neither the numerator nor the denominator can move quietly"
+    );
     assert!(
         equivalent.len() >= IL_EQUIVALENCE_FLOOR,
-        "whole-type IL-equivalence regressed below the floor: {}/{} (floor {IL_EQUIVALENCE_FLOOR}). mismatched={mismatched:?} missing={missing:?}",
-        equivalent.len(),
-        equivalent.len() + mismatched.len() + missing.len(),
+        "whole-type IL-equivalence regressed below the floor: matched={matched} compared={compared} (floor {IL_EQUIVALENCE_FLOOR}). mismatched={mismatched:?} missing={missing:?}",
     );
     assert!(
         branching.len() >= IL_BRANCHING_FLOOR,

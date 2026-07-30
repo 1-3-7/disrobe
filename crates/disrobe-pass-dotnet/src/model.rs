@@ -148,11 +148,11 @@ impl MethodModel {
     fn csharp_header(&self) -> String {
         let vis: &str = match self.flags & METHOD_ACCESS_MASK {
             0x0001 => "private ",
-            0x0002 | 0x0003 => "private protected ",
-            0x0004 => "internal ",
-            0x0005 => "protected ",
-            0x0006 => "protected internal ",
-            0x0007 => "public ",
+            0x0002 => "private protected ",
+            0x0003 => "internal ",
+            0x0004 => "protected ",
+            0x0005 => "protected internal ",
+            METHOD_PUBLIC => "public ",
             _ => "",
         };
         let stat: &str = if self.is_static() { "static " } else { "" };
@@ -191,11 +191,11 @@ impl MethodModel {
     fn vbnet_header(&self) -> String {
         let vis: &str = match self.flags & METHOD_ACCESS_MASK {
             0x0001 => "Private ",
-            0x0002 | 0x0003 => "Private Protected ",
-            0x0004 => "Friend ",
-            0x0005 => "Protected ",
-            0x0006 => "Protected Friend ",
-            0x0007 => "Public ",
+            0x0002 => "Private Protected ",
+            0x0003 => "Friend ",
+            0x0004 => "Protected ",
+            0x0005 => "Protected Friend ",
+            METHOD_PUBLIC => "Public ",
             _ => "",
         };
         let shared: &str = if self.is_static() { "Shared " } else { "" };
@@ -1782,6 +1782,24 @@ impl Resolver {
         };
         let blob: &[u8] = self.blob(blob_index)?;
         parse_method_sig(blob).ok()
+    }
+
+    #[must_use]
+    pub fn callee_is_virtual_definition(&self, token: u32) -> bool {
+        let table_idx: u8 = u8::try_from(token >> 24).unwrap_or(0xFF);
+        if TableId::from_index(table_idx) != Some(TableId::MethodDef) {
+            return false;
+        }
+        let Some(rid): Option<usize> = (token & 0x00FF_FFFF)
+            .checked_sub(1)
+            .map(|r: u32| r as usize)
+        else {
+            return false;
+        };
+        self.tables
+            .methods
+            .get(rid)
+            .is_some_and(|row: &MethodDefRow| row.flags & METHOD_VIRTUAL != 0)
     }
 
     #[must_use]
