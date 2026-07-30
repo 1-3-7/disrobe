@@ -56,6 +56,14 @@ pub trait TokenNamer {
         None
     }
 
+    fn param_type_name(&self, _token: u32, _param_index: usize) -> Option<String> {
+        None
+    }
+
+    fn field_type_name(&self, _token: u32) -> Option<String> {
+        None
+    }
+
     fn outer_has_this(&self) -> bool {
         true
     }
@@ -95,6 +103,14 @@ impl TokenNamer for Resolver {
     fn enum_param_type(&self, token: u32, param_index: usize) -> Option<String> {
         self.enum_param_type_name(token, param_index)
     }
+
+    fn param_type_name(&self, token: u32, param_index: usize) -> Option<String> {
+        self.callee_param_type_name(token, param_index)
+    }
+
+    fn field_type_name(&self, token: u32) -> Option<String> {
+        self.field_token_type_name(token)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -117,6 +133,16 @@ impl TokenNamer for MethodNamer<'_> {
     #[inline]
     fn enum_param_type(&self, token: u32, param_index: usize) -> Option<String> {
         self.resolver.enum_param_type_name(token, param_index)
+    }
+
+    #[inline]
+    fn param_type_name(&self, token: u32, param_index: usize) -> Option<String> {
+        self.resolver.callee_param_type_name(token, param_index)
+    }
+
+    #[inline]
+    fn field_type_name(&self, token: u32) -> Option<String> {
+        self.resolver.field_token_type_name(token)
     }
 
     #[inline]
@@ -559,6 +585,52 @@ const fn boolean_literal(text: &str) -> Option<&'static str> {
         b"1" => Some("true"),
         _ => None,
     }
+}
+
+fn char_literal(text: &str) -> Option<String> {
+    let code_unit: u16 = text.parse::<u16>().ok()?;
+    let escaped: String = match code_unit {
+        0x0027 => "\\'".to_owned(),
+        0x005C => "\\\\".to_owned(),
+        0x0020..=0x007E => char::from_u32(u32::from(code_unit))?.to_string(),
+        _ => format!("\\u{code_unit:04X}"),
+    };
+    Some(format!("'{escaped}'"))
+}
+
+fn is_char_type_name(ty: &str) -> bool {
+    matches!(ty.trim(), "char" | "Char" | "System.Char")
+}
+
+fn coerced_literal(value: &str, target_type: &str, lang: TargetLang) -> Option<String> {
+    if lang != TargetLang::CSharp || !is_bare_integer_literal(value) {
+        return None;
+    }
+    if is_bool_type_name(target_type.trim()) {
+        return boolean_literal(value).map(str::to_owned);
+    }
+    if is_char_type_name(target_type) {
+        return char_literal(value);
+    }
+    None
+}
+
+fn array_element_type(array: &Expr, names: &NameTable) -> Option<String> {
+    let declared: &str = match array {
+        Expr::NewArr { ty, .. } => return Some(ty.clone()),
+        Expr::Local(slot) => names.local_type(*slot)?,
+        Expr::Arg(slot) => names.arg_type(*slot)?,
+        _ => return None,
+    };
+    declared.strip_suffix("[]").map(str::to_owned)
+}
+
+fn coerce_constant(value: Expr, target_type: Option<&str>, lang: TargetLang) -> Expr {
+    let literal: Option<String> = match (&value, target_type) {
+        (Expr::Const(text), Some(ty)) => coerced_literal(text, ty, lang),
+        _ => None,
+    };
+    literal.map_or(value, Expr::Const)
 }
 
 fn const_operand_value(expression: &Expr) -> Option<usize> {
@@ -1058,6 +1130,13 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         }
     }
 
+    fn stored_field_type(&self, ins: &Instruction) -> Option<String> {
+        match ins.operand {
+            OperandValue::Token(t) => self.namer.field_type_name(t),
+            _ => None,
+        }
+    }
+
     fn float_const(ins: &Instruction) -> String {
         match ins.operand {
             OperandValue::F32Bits(b) => csharp_single(f32::from_bits(b)),
@@ -1088,6 +1167,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         let n: u32 = local_index(ins, name);
         self.locals_used.insert(n);
         let val: Expr = self.pop();
+        let val: Expr = coerce_constant(val, self.names.local_type(n), self.lang);
         self.locals_assigned.insert(n);
         self.stmts.push(Stmt::Assign {
             target: NameTable::local_name(n),
@@ -1160,9 +1240,17 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 }
                 if let Expr::Const(value) = arg
                     && is_bare_integer_literal(value)
-                    && let Some(enum_ty) = self.namer.enum_param_type(token, idx - recv_off)
                 {
-                    *arg = Expr::Cast(enum_ty, Box::new(Expr::Const(value.clone())));
+                    let param_index: usize = idx - recv_off;
+                    if let Some(enum_ty) = self.namer.enum_param_type(token, param_index) {
+                        *arg = Expr::Cast(enum_ty, Box::new(Expr::Const(value.clone())));
+                    } else if let Some(literal) = self
+                        .namer
+                        .param_type_name(token, param_index)
+                        .and_then(|ty: String| coerced_literal(value, &ty, self.lang))
+                    {
+                        *arg = Expr::Const(literal);
+                    }
                 }
             }
         }
@@ -1464,13 +1552,17 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                     c.arg_count.saturating_sub(usize::from(c.has_this))
                 });
                 let args: Vec<Expr> = self.pop_n(argc);
-                let ctor: String = short(&raw.replace("::.ctor", ""));
+                let declared: String = raw.replace("::.ctor", "");
+                let ctor: String = short(&declared);
                 if let Some(group) = Self::as_method_group(&args) {
                     self.push(group);
                 } else if is_value_tuple_ctor(&ctor) && (2..=8).contains(&args.len()) {
                     self.push(Expr::Tuple(args));
                 } else {
-                    self.push(Expr::NewObj { ctor, args });
+                    self.push(Expr::NewObj {
+                        ctor: qualified_type_name(&declared, self.lang),
+                        args,
+                    });
                 }
             }
             "call" | "callvirt" | "calli" => self.emit_call(ins),
@@ -1581,6 +1673,8 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let val: Expr = self.pop();
                 let obj: Expr = self.pop();
                 let fld: String = field_name(&self.token_name(ins));
+                let field_type: Option<String> = self.stored_field_type(ins);
+                let val: Expr = coerce_constant(val, field_type.as_deref(), self.lang);
                 self.stmts.push(Stmt::Assign {
                     target: format!("{}.{}", paren(&obj, self.lang, self.names), fld),
                     value: val.render(self.lang, self.names),
@@ -1589,6 +1683,8 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             "stsfld" => {
                 let val: Expr = self.pop();
                 let fld: String = field_name(&self.token_name(ins));
+                let field_type: Option<String> = self.stored_field_type(ins);
+                let val: Expr = coerce_constant(val, field_type.as_deref(), self.lang);
                 self.stmts.push(Stmt::Assign {
                     target: fld,
                     value: val.render(self.lang, self.names),
@@ -1611,6 +1707,8 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let val: Expr = self.pop();
                 let idx: Expr = self.pop();
                 let arr: Expr = self.pop();
+                let element_type: Option<String> = array_element_type(&arr, self.names);
+                let val: Expr = coerce_constant(val, element_type.as_deref(), self.lang);
                 if let Err(val) = self.append_to_duplicated_array_literal(&arr, &idx, val) {
                     self.stmts.push(Stmt::Assign {
                         target: format!(
@@ -1661,6 +1759,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let idx: u32 = local_index(ins, n);
                 let slot: u32 = self.arg_slot(idx);
                 let val: Expr = self.pop();
+                let val: Expr = coerce_constant(val, self.names.arg_type(slot), self.lang);
                 self.stmts.push(Stmt::Assign {
                     target: self.names.arg_name(slot),
                     value: val.render(self.lang, self.names),
@@ -1819,10 +1918,14 @@ pub(crate) fn lift_filter_condition<N: TokenNamer>(
         .iter()
         .find(|i: &&Instruction| matches!(i.name.as_str(), "isinst" | "castclass"))
         .map(|i: &Instruction| {
-            short(&match i.operand {
+            let raw: String = match i.operand {
                 OperandValue::Token(t) => namer.name(t),
                 _ => "__token".to_owned(),
-            })
+            };
+            match lang {
+                TargetLang::CSharp => qualified_type_name(&raw, lang),
+                TargetLang::FSharp | TargetLang::VbNet => short(&raw),
+            }
         });
     let entry: u32 = region
         .iter()
@@ -2408,7 +2511,7 @@ fn static_call_target(raw: &str, lang: TargetLang) -> String {
     format!("{owner}.{member}")
 }
 
-fn qualified_type_name(raw: &str, lang: TargetLang) -> String {
+pub(crate) fn qualified_type_name(raw: &str, lang: TargetLang) -> String {
     let member: String = short(raw);
     if lang != TargetLang::CSharp || raw.contains("::") {
         return member;
@@ -2934,7 +3037,10 @@ mod tests {
             last,
         )
         .expect("filter recovered");
-        assert_eq!(catch_type.as_deref(), Some("InvalidOperationException"));
+        assert_eq!(
+            catch_type.as_deref(),
+            Some("System.InvalidOperationException")
+        );
         assert_eq!(cond, "arg1 == 5");
     }
 
@@ -2957,7 +3063,10 @@ mod tests {
             last,
         )
         .expect("filter recovered");
-        assert_eq!(catch_type.as_deref(), Some("InvalidOperationException"));
+        assert_eq!(
+            catch_type.as_deref(),
+            Some("System.InvalidOperationException")
+        );
         assert_eq!(
             cond, "arg1 == 5 && arg2 == 7",
             "short-circuit && must reconstruct both positive conjuncts"

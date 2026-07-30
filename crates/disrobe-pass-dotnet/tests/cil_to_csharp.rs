@@ -137,7 +137,7 @@ fn recovers_exception_filter_when_clause_from_real_assembly() {
         "no filter placeholder comment remains; got:\n{safe_divide}"
     );
     assert!(
-        safe_divide.contains("catch (OverflowException ex) when ("),
+        safe_divide.contains("catch (System.OverflowException ex) when ("),
         "filter recovers the typed exception and a guard; got:\n{safe_divide}"
     );
     assert!(
@@ -157,7 +157,7 @@ fn recovers_exception_filter_when_clause_from_real_assembly() {
         "guard preserves both comparison constants (int.MinValue and -1); got: {when_line}"
     );
     assert!(
-        safe_divide.contains("catch (DivideByZeroException ex)"),
+        safe_divide.contains("catch (System.DivideByZeroException ex)"),
         "the sibling typed catch on the same protected region still renders; got:\n{safe_divide}"
     );
     assert!(

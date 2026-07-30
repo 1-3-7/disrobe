@@ -545,7 +545,7 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
                 if matches!(c.kind, ExceptionClauseKind::Filter) {
                     self.recover_filter(c)
                 } else {
-                    (catch_type_name(self.namer, c), None)
+                    (catch_type_name(self.namer, c, self.lang), None)
                 };
             handlers.push(Handler {
                 kind: c.kind,
@@ -1159,9 +1159,18 @@ fn flip_relational(cond: &str, lang: TargetLang) -> Option<String> {
     (comparator_count == 1).then(|| cond.replacen(from, to, 1))
 }
 
-fn catch_type_name<N: TokenNamer>(namer: &N, c: &ExceptionClause) -> Option<String> {
-    matches!(c.kind, ExceptionClauseKind::Catch)
-        .then(|| short_type(&namer.name(c.class_token_or_filter)))
+fn catch_type_name<N: TokenNamer>(
+    namer: &N,
+    c: &ExceptionClause,
+    lang: TargetLang,
+) -> Option<String> {
+    matches!(c.kind, ExceptionClauseKind::Catch).then(|| {
+        let raw: String = namer.name(c.class_token_or_filter);
+        match lang {
+            TargetLang::CSharp => crate::structurize::qualified_type_name(&raw, lang),
+            TargetLang::FSharp | TargetLang::VbNet => short_type(&raw),
+        }
+    })
 }
 
 fn short_type(name: &str) -> String {
