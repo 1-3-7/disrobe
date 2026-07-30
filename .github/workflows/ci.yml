@@ -183,6 +183,41 @@ jobs:
           fi
           erl -noshell -eval 'io:format("otp ~s~n",[erlang:system_info(otp_release)]),halt().'
           echo "DISROBE_REQUIRE_ERLANG=1" >> "$GITHUB_ENV"
+      - name: require the interpreters and archivers this runner already carries, so an absent one fails instead of skipping
+        shell: bash
+        run: |
+          demand() {
+            probe="$1"
+            var="$2"
+            if ! command -v "$probe" >/dev/null 2>&1; then
+              echo "$probe is expected on $RUNNER_OS but is not callable, so the tests behind $var would grade nothing"
+              exit 1
+            fi
+            ("$probe" --version 2>&1 || true) | head -1
+            echo "$var=1" >> "$GITHUB_ENV"
+          }
+          demand ruby DISROBE_REQUIRE_RUBY
+          if [ "$RUNNER_OS" != "macOS" ]; then
+            demand php DISROBE_REQUIRE_PHP
+            seven=""
+            for candidate in 7z 7za 7zz 7zr; do
+              if command -v "$candidate" >/dev/null 2>&1; then
+                seven="$candidate"
+                break
+              fi
+            done
+            if [ -z "$seven" ]; then
+              echo "no 7-zip executable on $RUNNER_OS, so the archive round-trips would grade nothing"
+              exit 1
+            fi
+            echo "using $seven"
+            echo "DISROBE_REQUIRE_SEVEN_ZIP=1" >> "$GITHUB_ENV"
+          else
+            echo "macOS carries no php and its 7-zip name is unconfirmed, so those two stay unset here and their tests announce what they did not grade"
+          fi
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            demand makecab DISROBE_REQUIRE_MAKECAB
+          fi
       - name: provision the dotnet sdk the il-equivalence floors are measured with
         uses: actions/setup-dotnet@v4
         with:
