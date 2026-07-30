@@ -369,7 +369,7 @@ This section names the supported surface and its residual. Measured scores live 
 |---|---|
 | Go | **Recover:** pclntab symbol, type, and itab recovery across Go 1.2-1.26 on little- and big-endian targets (amd64/arm64/s390x/ppc64/mips), full BuildInfo, garble name-recovery, embedded-FS walker, and garble `-literals` rebuilt via static init-thunk emulation. Wall: seedless garble name-hashing. |
 | Swift / Obj-C | **Recover:** Swift symbol demangle against `swift-demangle`, ObjC class/selector/ivar metadata, resilient field names, generic where-clauses, full parameter types, value-witness and merged-thunk symbols, field-offset accessor directness, Punycode identifiers, SwiftConfidential/SwiftShield rename-undo, confidential XOR key recovery, and declared type/property/method names from a binary `.swiftmodule` (in-house LLVM-bitstream reader, graded against real `swiftc` output). In recovered native bodies, `objc_msgSend` call sites are resolved to selector and receiver class (graded on real clang fixtures, arm64 and x86-64). Wall: native machine-code function bodies. |
-| Lua (<!-- m:lua_catalog_entries -->16<!-- /m --> catalog entries) | **Recover:** bytecode 5.1-5.4, LuaJIT 2.0/2.1, full Luau, GLua, SLua, recompile-equivalent; 14 obfuscator catalog entries plus Luau and GLua dialect detectors. IronBrew2 VM devirt is validated by a real-`lua` execution differential. **Partial:** Prometheus, MoonSec V1-V3, AztupBrew, DarkSec, Boronide, PSU, WeAreDevs, luaobfuscator.com, Hercules, Luraph. |
+| Lua (<!-- m:lua_catalog_entries -->16<!-- /m --> catalog entries) | **Recover:** bytecode 5.1-5.4, LuaJIT 2.0/2.1, full Luau, GLua, SLua, recompile-equivalent; 14 obfuscator catalog entries plus Luau and GLua dialect detectors. A real-`lua` execution differential grades IronBrew2 VM devirt. **Partial:** Prometheus, MoonSec V1-V3, AztupBrew, DarkSec, Boronide, PSU, WeAreDevs, luaobfuscator.com, Hercules, Luraph. |
 | Ruby | **Recover:** MRI/YARV 2.6-3.4 + mruby via a recompile-equivalence oracle, plus JRuby, TruffleRuby AOT, Ruby2Exe and OCRA freezers. |
 | PHP | **Partial:** source + bytecode skeleton recovery, Phar decode, Zend legacy XOR decrypt. **Detect-only:** ionCube, SourceGuardian, Zend Guard (native-loader-resident key). |
 | BEAM | **Recover:** `.beam`/`.ez` chunk parse + Core Erlang lift + Elixir `Dbgi` quoted-AST (100% with Dbgi). **Partial:** Erlang without Dbgi (register names absent from bytecode). |
@@ -398,13 +398,13 @@ This section names the supported surface and its residual. Measured scores live 
 | Crash dumps | Windows minidump loaded-module carving into memory-aligned PE images, with per-page coverage reporting |
 | Vendor firmware | D-Link AES, EnGenius XOR, Autel table, QNAP PC1, plus CRC-verified Netgear/Xiaomi/Tesla carves |
 
-A recursive carve-everything engine (multi-magic scan, depth recursion, entropy gating) drives nested extraction with zip-slip and decompression-bomb guards. A few heavy codecs are carved or reported rather than fully decoded: ARJ method 4, ARC methods 5-7, EROFS microlzma, StuffIt compressed forks (no public spec), and OTP-AES airoha firmware (key absent from the artifact).
+A recursive carve-everything engine (multi-magic scan, depth recursion, entropy gating) drives nested extraction with zip-slip and decompression-bomb guards. `disrobe` carves or reports a few heavy codecs rather than fully decoding them: ARJ method 4, ARC methods 5-7, EROFS microlzma, StuffIt compressed forks (no public spec), and OTP-AES airoha firmware (key absent from the artifact).
 
 ### Recon and format ID
 
 | Surface | Coverage |
 |---|---|
-| Format / packer / compiler ID | **Recover:** `disrobe identify` is an in-house multi-signal signature engine; identification never trusts a single magic byte, re-deriving from internal self-consistency so a zeroed/flipped magic or renamed packer section still resolves. For a signed PE it verifies the Authenticode signature (hash range, PKCS#7 chain to an embedded trusted-root bundle, code-signing EKU, RFC 3161 timestamp) and reports the verdict. |
+| Format / packer / compiler ID | **Recover:** `disrobe identify` is an in-house multi-signal signature engine. It never trusts a single magic byte: it re-derives the identification from internal self-consistency, so a zeroed or flipped magic and a renamed packer section still resolve. For a signed PE it verifies the Authenticode signature (hash range, PKCS#7 chain to an embedded trusted-root bundle, code-signing EKU, RFC 3161 timestamp) and reports the verdict. |
 | Secrets / recon | **Recover:** `disrobe frisk` over recovered source and inside APK/zip, no network and no Python; secrets, endpoints, buckets, manifest exposure, and IOCs with file/line/column, in text/JSON/SARIF. Network recon is explicit through `disrobe prowl`, which harvests URLs and IOCs from public archives and threat-intel feeds. `disrobe indicators` normalizes frisk/ioc/prowl JSON into `disrobe.indicators/v0`. |
 
 ## Anti-analysis defeat
@@ -434,7 +434,7 @@ An oracle that can reject a wrong answer (a compiler, a runtime, a verifier, exh
 
 `disrobe` flags runtime-keyed schemes as walls rather than guessing them: a key from a system property, the environment, the clock, a secure random, or a per-machine value assembled at run time. The full treatment is in the [anti-analysis docs](docs/src/anti-analysis.md).
 
-`disrobe` also flags the evasion a sample attempts, so an analyst is warned before running anything. `disrobe behavior` and `disrobe capabilities` surface al-khaser / Pafish-class anti-debug, anti-VM, anti-sandbox, and timing checks, mapped to MITRE ATT&CK / MBC, with a confidence grade per technique. **Detect-only:** `disrobe` never executes the sample on its default path and never implements any of these techniques itself.
+`disrobe` also flags the evasion a sample attempts, warning the analyst before anything runs. `disrobe behavior` and `disrobe capabilities` surface al-khaser / Pafish-class anti-debug, anti-VM, anti-sandbox, and timing checks, mapped to MITRE ATT&CK / MBC, with a confidence grade per technique. **Detect-only:** `disrobe` never executes the sample on its default path and never implements any of these techniques itself.
 
 ### Layered payload recovery
 
