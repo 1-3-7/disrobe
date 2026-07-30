@@ -35,6 +35,53 @@ const LDR_ENTRY_FULLNAME: u64 = 0x24;
 const LDR_ENTRY_BASENAME: u64 = 0x2C;
 const LDR_ENTRY_STRIDE: u64 = 0x40;
 
+pub const PAGE_NOACCESS: u32 = 0x01;
+pub const PAGE_READONLY: u32 = 0x02;
+pub const PAGE_READWRITE: u32 = 0x04;
+pub const PAGE_WRITECOPY: u32 = 0x08;
+pub const PAGE_EXECUTE: u32 = 0x10;
+pub const PAGE_EXECUTE_READ: u32 = 0x20;
+pub const PAGE_EXECUTE_READWRITE: u32 = 0x40;
+pub const PAGE_EXECUTE_WRITECOPY: u32 = 0x80;
+
+const PAGE_PROTECT_MODIFIER_MASK: u32 = 0x0000_0700;
+
+const SCN_MEM_EXECUTE: u32 = 0x2000_0000;
+const SCN_MEM_READ: u32 = 0x4000_0000;
+const SCN_MEM_WRITE: u32 = 0x8000_0000;
+
+#[must_use]
+pub fn perm_from_page_protect(flags: u32) -> Perm {
+    match flags & !PAGE_PROTECT_MODIFIER_MASK {
+        PAGE_NOACCESS => Perm::default(),
+        PAGE_READONLY => Perm::R,
+        PAGE_READWRITE | PAGE_WRITECOPY => Perm::RW,
+        PAGE_EXECUTE | PAGE_EXECUTE_READ => Perm::RX,
+        PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY => Perm::RWX,
+        _ => Perm::RW,
+    }
+}
+
+#[must_use]
+pub fn page_protect_from_perm(perm: Perm) -> u32 {
+    match (perm.read, perm.write, perm.execute) {
+        (false, false, false) => PAGE_NOACCESS,
+        (_, false, false) => PAGE_READONLY,
+        (_, true, false) => PAGE_READWRITE,
+        (_, false, true) => PAGE_EXECUTE_READ,
+        (_, true, true) => PAGE_EXECUTE_READWRITE,
+    }
+}
+
+#[must_use]
+pub fn perm_from_section_characteristics(characteristics: u32) -> Perm {
+    Perm {
+        read: characteristics & SCN_MEM_READ != 0,
+        write: characteristics & SCN_MEM_WRITE != 0,
+        execute: characteristics & SCN_MEM_EXECUTE != 0,
+    }
+}
+
 const KERNEL32_EXPORTS: &[&str] = &[
     "CloseHandle",
     "CreateFileA",

@@ -51,4 +51,7 @@ pub mod win_env;
 pub use cpu::{Cpu, ExitReason, HostCall};
 pub use mem::{Memory, PAGE_BITS, PAGE_SIZE, Perm};
 pub use regs::{CpuMode, Reg, Regs};
-pub use win_env::{SyntheticWindows, install_synthetic_windows};
+pub use win_env::{
+    SyntheticWindows, install_synthetic_windows, page_protect_from_perm, perm_from_page_protect,
+    perm_from_section_characteristics,
+};

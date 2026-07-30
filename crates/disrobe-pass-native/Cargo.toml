@@ -77,3 +77,4 @@ cab = { workspace = true }
 crc32fast = { workspace = true }
 tempfile = "3"
 rbpf = "0.4"
+toml = { workspace = true }

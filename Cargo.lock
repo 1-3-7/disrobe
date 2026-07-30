@@ -2371,6 +2371,7 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.18",
+ "toml 0.9.12+spec-1.1.0",
  "wait-timeout",
  "x509-cert",
  "yaxpeax-arch 0.2.8",

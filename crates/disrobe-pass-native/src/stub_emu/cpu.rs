@@ -26,6 +26,13 @@ pub trait HostCall {
     fn dispatch(&mut self, target: u64, regs: &mut Regs, mem: &mut Memory) -> Result<bool>;
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SehDispatch {
+    context: u64,
+    frame: u64,
+    previous_chain_head: u64,
+}
+
 #[derive(Debug, Default)]
 pub struct NoopHost;
 
@@ -43,7 +50,9 @@ pub struct Cpu {
     fs_base: u64,
     gs_base: u64,
     seh_dispatch: bool,
-    pending_contexts: Vec<u64>,
+    pending_contexts: Vec<SehDispatch>,
+    steps_executed: u64,
+    host_calls_dispatched: u64,
 }
 
 impl Cpu {
@@ -57,6 +66,8 @@ impl Cpu {
             gs_base: 0,
             seh_dispatch: false,
             pending_contexts: Vec::new(),
+            steps_executed: 0,
+            host_calls_dispatched: 0,
         }
     }
 
@@ -74,6 +85,8 @@ impl Cpu {
     const SEH_END_OF_CHAIN: u64 = 0xFFFF_FFFF;
 
     const SEH_CONTINUE_SENTINEL: u64 = 0x7FF0_0000;
+    const DISPATCHER_HANDLER_MARKER: u64 = 0x7FF1_0000;
+    const DISPATCH_FRAME_GAP: u64 = 0x20;
     const SEH_NESTING_CAP: usize = 4096;
     const CONTEXT_SIZE: u64 = 0x2cc;
     const EXCEPTION_RECORD_SIZE: u64 = 0x50;
@@ -100,12 +113,34 @@ impl Cpu {
         self.gs_base = base;
     }
 
+    #[must_use]
+    pub const fn steps_executed(&self) -> u64 {
+        self.steps_executed
+    }
+
+    #[must_use]
+    pub const fn host_calls_dispatched(&self) -> u64 {
+        self.host_calls_dispatched
+    }
+
+    fn trace_ring_depth() -> Option<usize> {
+        let raw: std::ffi::OsString = std::env::var_os("STUB_EMU_TRACE")?;
+        let text: std::borrow::Cow<'_, str> = raw.to_string_lossy();
+        let trimmed: &str = text.trim();
+        if trimmed.eq_ignore_ascii_case("0") || trimmed.eq_ignore_ascii_case("off") {
+            return None;
+        }
+        Some(trimmed.parse::<usize>().unwrap_or(0).clamp(1, 1 << 22))
+    }
+
     pub fn run<H: HostCall>(&mut self, host: &mut H, step_cap: u64) -> Result<ExitReason> {
-        let trace: bool = std::env::var_os("STUB_EMU_TRACE").is_some();
+        let ring_depth: Option<usize> = Self::trace_ring_depth();
+        let trace: bool = ring_depth.is_some();
+        let ring_depth: usize = ring_depth.unwrap_or(0).max(40);
         let mut histogram: std::collections::BTreeMap<String, u64> =
             std::collections::BTreeMap::new();
-        let mut ring: std::collections::VecDeque<(u64, String, u64)> =
-            std::collections::VecDeque::with_capacity(40);
+        let mut ring: std::collections::VecDeque<(u64, String, u64, u64)> =
+            std::collections::VecDeque::with_capacity(ring_depth.min(1 << 16));
         let mut steps: u64 = 0;
         let mut fetch_buf: Vec<u8> = Vec::with_capacity(16);
         let result: ExitReason = loop {
@@ -139,10 +174,10 @@ impl Cpu {
             if trace {
                 let key: String = format!("{:?}", insn.code());
                 *histogram.entry(key.clone()).or_insert(0) += 1;
-                if ring.len() == 40 {
+                if ring.len() == ring_depth {
                     ring.pop_front();
                 }
-                ring.push_back((ip, key, self.regs.get(Reg::Rsp)));
+                ring.push_back((ip, key, self.regs.get(Reg::Rsp), self.regs.get(Reg::Rax)));
             }
             let next_ip: u64 = insn.next_ip();
             self.regs.rip = next_ip;
@@ -157,13 +192,14 @@ impl Cpu {
                 }
             }
         };
+        self.steps_executed = self.steps_executed.saturating_add(steps);
         if trace {
             let log: DebugLog = crate::debug::debug_log();
             if log.on() {
                 log.line(|| format!("STUB_EMU_TRACE exit={result:?} steps={steps}"));
-                log.line(|| "STUB_EMU_TRACE last 40 instructions before exit:".to_owned());
-                for (ip, code, sp) in &ring {
-                    log.line(|| format!("  ip=0x{ip:08x} {code} rsp=0x{sp:08x}"));
+                log.line(|| format!("STUB_EMU_TRACE last {ring_depth} instructions before exit:"));
+                for (ip, code, sp, ax) in &ring {
+                    log.line(|| format!("  ip=0x{ip:08x} {code} rsp=0x{sp:08x} rax=0x{ax:08x}"));
                 }
                 let mut by_count: Vec<(&String, &u64)> = histogram.iter().collect();
                 by_count.sort_by(|a: &(&String, &u64), b: &(&String, &u64)| b.1.cmp(a.1));
@@ -182,7 +218,15 @@ impl Cpu {
         }
         let chain_head: u64 = match self.mem.read_u32(self.fs_base) {
             Ok(v) => u64::from(v),
-            Err(_) => return false,
+            Err(_) => {
+                crate::debug::dbg_line(|| {
+                    format!(
+                        "seh: chain head unreadable at fs_base 0x{:08x}",
+                        self.fs_base
+                    )
+                });
+                return false;
+            }
         };
         let mut record: u64 = chain_head;
         let mut depth: u32 = 0;
@@ -195,14 +239,19 @@ impl Cpu {
                 Ok(v) => u64::from(v),
                 Err(_) => return false,
             };
-            if self.mem.is_mapped(handler) {
-                return self.enter_structured_handler(
-                    handler,
-                    record,
-                    next,
-                    resume_ip,
-                    exception_code,
-                );
+            let already_dispatching: bool = self
+                .pending_contexts
+                .iter()
+                .any(|d: &SehDispatch| d.frame == record);
+            if self.mem.is_mapped(handler) && !already_dispatching {
+                let entered: bool =
+                    self.enter_structured_handler(handler, record, next, resume_ip, exception_code);
+                crate::debug::dbg_line(|| {
+                    format!(
+                        "seh: fault 0x{exception_code:08x} at 0x{resume_ip:08x} -> handler 0x{handler:08x} frame 0x{record:08x} entered={entered}"
+                    )
+                });
+                return entered;
             }
             if next == record {
                 break;
@@ -210,6 +259,15 @@ impl Cpu {
             record = next;
             depth += 1;
         }
+        let head_handler: u64 = self
+            .mem
+            .read_u32(chain_head.wrapping_add(4))
+            .map_or(0, u64::from);
+        crate::debug::dbg_line(|| {
+            format!(
+                "seh: fault 0x{exception_code:08x} at 0x{resume_ip:08x} found no mapped handler (chain head 0x{chain_head:08x} handler 0x{head_handler:08x}, depth {depth})"
+            )
+        });
         false
     }
 
@@ -217,18 +275,18 @@ impl Cpu {
         &mut self,
         handler: u64,
         frame: u64,
-        next_frame: u64,
+        _next_frame: u64,
         resume_ip: u64,
         exception_code: u32,
     ) -> bool {
         if self.pending_contexts.len() >= Self::SEH_NESTING_CAP {
             return false;
         }
-        let saved_esp: u64 = frame.wrapping_add(8) & 0xFFFF_FFFF;
-        let ctx: u64 = (frame.wrapping_sub(Self::CONTEXT_SIZE + 0x40)) & !0xFu64;
+        let fault_esp: u64 = self.regs.get(Reg::Rsp) & 0xFFFF_FFFF;
+        let ctx: u64 = (fault_esp.wrapping_sub(Self::CONTEXT_SIZE + 0x40)) & !0xFu64;
         let exc_rec: u64 = (ctx.wrapping_sub(Self::EXCEPTION_RECORD_SIZE)) & !0xFu64;
         if self
-            .write_context_record(ctx, resume_ip, saved_esp)
+            .write_context_record(ctx, resume_ip, fault_esp)
             .is_err()
         {
             return false;
@@ -239,15 +297,29 @@ impl Cpu {
         {
             return false;
         }
-        if self.mem.write_u32(self.fs_base, next_frame as u32).is_err() {
-            return false;
-        }
-        let dispatcher: u64 = exc_rec;
-        let mut sp: u64 = saved_esp;
+        let previous_chain_head: u64 = match self.mem.read_u32(self.fs_base) {
+            Ok(v) => u64::from(v),
+            Err(_) => return false,
+        };
+        let mut sp: u64 = (exc_rec.wrapping_sub(Self::DISPATCH_FRAME_GAP)) & !0xFu64;
         let push = |cpu: &mut Self, sp: &mut u64, v: u64| -> bool {
             *sp = sp.wrapping_sub(4);
             cpu.mem.write_u32(*sp, v as u32).is_ok()
         };
+        if !push(self, &mut sp, Self::DISPATCHER_HANDLER_MARKER)
+            || !push(self, &mut sp, previous_chain_head)
+        {
+            return false;
+        }
+        let nested_record: u64 = sp;
+        if self
+            .mem
+            .write_u32(self.fs_base, nested_record as u32)
+            .is_err()
+        {
+            return false;
+        }
+        let dispatcher: u64 = exc_rec;
         let ok: bool = push(self, &mut sp, dispatcher)
             && push(self, &mut sp, ctx)
             && push(self, &mut sp, frame)
@@ -256,7 +328,11 @@ impl Cpu {
         if !ok {
             return false;
         }
-        self.pending_contexts.push(ctx);
+        self.pending_contexts.push(SehDispatch {
+            context: ctx,
+            frame,
+            previous_chain_head,
+        });
         self.regs.set(Reg::Rsp, sp);
         self.regs.rip = handler;
         true
@@ -303,8 +379,11 @@ impl Cpu {
     }
 
     fn seh_continue_from_sentinel(&mut self) -> Option<()> {
-        let ctx: u64 = self.pending_contexts.pop()?;
-        self.load_context_record(ctx);
+        let dispatch: SehDispatch = self.pending_contexts.pop()?;
+        let _ = self
+            .mem
+            .write_u32(self.fs_base, dispatch.previous_chain_head as u32);
+        self.load_context_record(dispatch.context);
         Some(())
     }
 
@@ -384,7 +463,7 @@ impl Cpu {
                     mnem,
                     M::Loop | M::Loope | M::Loopne | M::Jrcxz | M::Jcxz | M::Jecxz
                 ) {
-                    let _ = self.try_data_op(insn, insn.code())?;
+                    let _ = self.try_data_op(insn)?;
                     return Ok(None);
                 }
                 let take: bool = self.cond_true(insn.condition_code());
@@ -406,6 +485,7 @@ impl Cpu {
                 self.push(ret_ip)?;
                 if !self.is_executable_target(target) {
                     let ret: u64 = self.pop()?;
+                    self.host_calls_dispatched = self.host_calls_dispatched.saturating_add(1);
                     let cont: bool = host.dispatch(target, &mut self.regs, &mut self.mem)?;
                     if !cont {
                         return Ok(Some(ExitReason::HostHalt(format!(
@@ -454,6 +534,7 @@ impl Cpu {
                 self.push(ret_ip)?;
                 if !self.is_executable_target(target) {
                     let ret: u64 = self.pop()?;
+                    self.host_calls_dispatched = self.host_calls_dispatched.saturating_add(1);
                     let cont: bool = host.dispatch(target, &mut self.regs, &mut self.mem)?;
                     if !cont {
                         return Ok(Some(ExitReason::HostHalt(format!(
@@ -483,7 +564,7 @@ impl Cpu {
             }
             return Ok(None);
         }
-        if self.try_data_op(insn, code)? {
+        if self.try_data_op(insn)? {
             return Ok(None);
         }
         if self.try_mmx_op(insn)? {
@@ -560,6 +641,31 @@ impl Cpu {
         };
         self.regs.set(Reg::Rsp, sp.wrapping_add(u64::from(ps)));
         Ok(v)
+    }
+
+    fn stack_slot_bytes(insn: &Instruction, fallback: u8) -> u8 {
+        match insn.stack_pointer_increment().unsigned_abs() {
+            2 => 2,
+            4 => 4,
+            8 => 8,
+            _ => fallback,
+        }
+    }
+
+    fn push_slot(&mut self, sp: u64, slot: u8, value: u64) -> Result<()> {
+        match slot {
+            2 => self.mem.write_u16(sp, value as u16),
+            4 => self.mem.write_u32(sp, value as u32),
+            _ => self.mem.write_u64(sp, value),
+        }
+    }
+
+    fn pop_slot(&self, sp: u64, slot: u8) -> Result<u64> {
+        Ok(match slot {
+            2 => u64::from(self.mem.read_u16(sp)?),
+            4 => u64::from(self.mem.read_u32(sp)?),
+            _ => self.mem.read_u64(sp)?,
+        })
     }
 
     fn read_reg(&self, r: Register) -> Result<u64> {
@@ -752,7 +858,7 @@ impl Cpu {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn try_data_op(&mut self, insn: &Instruction, code: Code) -> Result<bool> {
+    fn try_data_op(&mut self, insn: &Instruction) -> Result<bool> {
         let mnem: iced_x86::Mnemonic = insn.mnemonic();
         use iced_x86::Mnemonic as M;
         match mnem {
@@ -794,14 +900,8 @@ impl Cpu {
             }
             M::Push => {
                 let v: u64 = self.read_operand(insn, 0)?;
-                let bits: u8 =
-                    if matches!(code, Code::Push_r16 | Code::Push_rm16 | Code::Push_imm16) {
-                        16
-                    } else {
-                        u8::from(self.mode.ptr_size() * 8)
-                    };
-                let m: u64 = Self::mask(bits);
-                let ps: u8 = bits / 8;
+                let ps: u8 = Self::stack_slot_bytes(insn, self.mode.ptr_size());
+                let m: u64 = Self::mask(ps * 8);
                 let sp: u64 = self.regs.get(Reg::Rsp).wrapping_sub(u64::from(ps));
                 self.regs.set(Reg::Rsp, sp);
                 if ps == 2 {
@@ -814,12 +914,7 @@ impl Cpu {
                 Ok(true)
             }
             M::Pop => {
-                let bits: u8 = if matches!(code, Code::Pop_r16 | Code::Pop_rm16) {
-                    16
-                } else {
-                    u8::from(self.mode.ptr_size() * 8)
-                };
-                let ps: u8 = bits / 8;
+                let ps: u8 = Self::stack_slot_bytes(insn, self.mode.ptr_size());
                 let sp: u64 = self.regs.get(Reg::Rsp);
                 let v: u64 = if ps == 2 {
                     u64::from(self.mem.read_u16(sp)?)
@@ -833,6 +928,7 @@ impl Cpu {
                 Ok(true)
             }
             M::Pushad | M::Pusha => {
+                let slot: u8 = if matches!(mnem, M::Pusha) { 2 } else { 4 };
                 let eax: u64 = self.regs.get(Reg::Rax);
                 let ecx: u64 = self.regs.get(Reg::Rcx);
                 let edx: u64 = self.regs.get(Reg::Rdx);
@@ -842,51 +938,50 @@ impl Cpu {
                 let esi: u64 = self.regs.get(Reg::Rsi);
                 let edi: u64 = self.regs.get(Reg::Rdi);
                 for v in [eax, ecx, edx, ebx, esp_orig, ebp, esi, edi] {
-                    let sp: u64 = self.regs.get(Reg::Rsp).wrapping_sub(4);
+                    let sp: u64 = self.regs.get(Reg::Rsp).wrapping_sub(u64::from(slot));
                     self.regs.set(Reg::Rsp, sp);
-                    self.mem.write_u32(sp, v as u32)?;
+                    self.push_slot(sp, slot, v)?;
                 }
                 Ok(true)
             }
             M::Popad | M::Popa => {
+                let slot: u8 = if matches!(mnem, M::Popa) { 2 } else { 4 };
+                let width: u8 = slot * 8;
                 let mut vals: [u64; 8] = [0u64; 8];
                 for v in vals.iter_mut() {
                     let sp: u64 = self.regs.get(Reg::Rsp);
-                    *v = u64::from(self.mem.read_u32(sp)?);
-                    self.regs.set(Reg::Rsp, sp.wrapping_add(4));
+                    *v = self.pop_slot(sp, slot)?;
+                    self.regs.set(Reg::Rsp, sp.wrapping_add(u64::from(slot)));
                 }
                 let [edi, esi, ebp, _esp_skip, ebx, edx, ecx, eax]: [u64; 8] = vals;
-                self.regs.write_sized(Reg::Rdi, edi, 32);
-                self.regs.write_sized(Reg::Rsi, esi, 32);
-                self.regs.write_sized(Reg::Rbp, ebp, 32);
-                self.regs.write_sized(Reg::Rbx, ebx, 32);
-                self.regs.write_sized(Reg::Rdx, edx, 32);
-                self.regs.write_sized(Reg::Rcx, ecx, 32);
-                self.regs.write_sized(Reg::Rax, eax, 32);
+                self.regs.write_sized(Reg::Rdi, edi, width);
+                self.regs.write_sized(Reg::Rsi, esi, width);
+                self.regs.write_sized(Reg::Rbp, ebp, width);
+                self.regs.write_sized(Reg::Rbx, ebx, width);
+                self.regs.write_sized(Reg::Rdx, edx, width);
+                self.regs.write_sized(Reg::Rcx, ecx, width);
+                self.regs.write_sized(Reg::Rax, eax, width);
                 Ok(true)
             }
             M::Pushfd | M::Pushfq | M::Pushf => {
                 let eflags: u64 = self.encode_flags();
-                let ps: u8 = self.mode.ptr_size();
+                let ps: u8 = Self::stack_slot_bytes(insn, self.mode.ptr_size());
                 let sp: u64 = self.regs.get(Reg::Rsp).wrapping_sub(u64::from(ps));
                 self.regs.set(Reg::Rsp, sp);
-                if ps == 4 {
-                    self.mem.write_u32(sp, eflags as u32)?;
-                } else {
-                    self.mem.write_u64(sp, eflags)?;
-                }
+                self.push_slot(sp, ps, eflags)?;
                 Ok(true)
             }
             M::Popfd | M::Popfq | M::Popf => {
-                let ps: u8 = self.mode.ptr_size();
+                let ps: u8 = Self::stack_slot_bytes(insn, self.mode.ptr_size());
                 let sp: u64 = self.regs.get(Reg::Rsp);
-                let v: u64 = if ps == 4 {
-                    u64::from(self.mem.read_u32(sp)?)
-                } else {
-                    self.mem.read_u64(sp)?
-                };
+                let v: u64 = self.pop_slot(sp, ps)?;
                 self.regs.set(Reg::Rsp, sp.wrapping_add(u64::from(ps)));
-                self.decode_flags(v);
+                if ps == 2 {
+                    let high: u64 = self.encode_flags() & !0xFFFFu64;
+                    self.decode_flags(high | (v & 0xFFFF));
+                } else {
+                    self.decode_flags(v);
+                }
                 Ok(true)
             }
             M::Add => {
@@ -2280,6 +2375,218 @@ mod tests {
         cpu.regs.set(Reg::Rsp, 0x2_0FF0);
         cpu.regs.rip = base;
         cpu
+    }
+
+    #[derive(Debug, Default)]
+    struct CountingHost {
+        seen: u64,
+    }
+
+    impl HostCall for CountingHost {
+        fn dispatch(&mut self, _target: u64, regs: &mut Regs, _mem: &mut Memory) -> Result<bool> {
+            self.seen += 1;
+            regs.write_sized(Reg::Rax, 0, 32);
+            Ok(true)
+        }
+    }
+
+    fn cpu_calling_host_then_spinning() -> Cpu {
+        let mut cpu: Cpu = Cpu::new(CpuMode::Bits32);
+        cpu.mem
+            .map(0x4000, 0x1000, Perm::RWX)
+            .expect("test map within ceiling");
+        cpu.mem
+            .map(0x2_0000, 0x1000, Perm::RW)
+            .expect("test map within ceiling");
+        let target: u64 = 0x9000_0000;
+        let next_ip: u64 = 0x4005;
+        let rel: u32 = (target.wrapping_sub(next_ip)) as u32;
+        let mut prog: Vec<u8> = vec![0xE8];
+        prog.extend_from_slice(&rel.to_le_bytes());
+        prog.extend_from_slice(&[0xEB, 0xFE]);
+        cpu.mem.write_unchecked(0x4000, &prog);
+        cpu.regs.rip = 0x4000;
+        cpu.regs.set(Reg::Rsp, 0x2_0FF0);
+        cpu
+    }
+
+    #[test]
+    fn a_run_reporting_a_host_call_can_never_report_zero_steps() {
+        let mut cpu: Cpu = cpu_calling_host_then_spinning();
+        let mut host: CountingHost = CountingHost::default();
+        let exit: ExitReason = cpu.run(&mut host, 64).expect("run must not error");
+        assert!(
+            matches!(exit, ExitReason::StepCap(_)),
+            "the program spins after the host call, so the run must end on the step cap, got {exit:?}",
+        );
+        assert_eq!(host.seen, 1, "the program makes exactly one host call");
+        assert_eq!(
+            cpu.host_calls_dispatched(),
+            host.seen,
+            "the interpreter's own host-call tally must agree with what the host observed",
+        );
+        assert!(
+            cpu.host_calls_dispatched() == 0 || cpu.steps_executed() > 0,
+            "a run that dispatched {} host calls reported {} steps; a host call can only happen \
+             while executing an instruction, so these two figures cannot disagree",
+            cpu.host_calls_dispatched(),
+            cpu.steps_executed(),
+        );
+        assert!(
+            cpu.steps_executed() >= 2,
+            "the call and at least one spin iteration must both be counted, got {}",
+            cpu.steps_executed(),
+        );
+    }
+
+    #[test]
+    fn step_and_host_call_counts_accumulate_across_runs() {
+        let mut cpu: Cpu = cpu_calling_host_then_spinning();
+        let mut host: CountingHost = CountingHost::default();
+        for _ in 0..4 {
+            let _ = cpu.run(&mut host, 1).expect("single step must not error");
+        }
+        assert_eq!(
+            cpu.steps_executed(),
+            4,
+            "a caller that drives the interpreter one instruction at a time must still see the \
+             total, because the count belongs to the interpreter and not to one run call",
+        );
+        assert_eq!(cpu.host_calls_dispatched(), 1);
+    }
+
+    #[test]
+    fn an_exit_on_a_refused_host_call_still_reports_its_steps() {
+        let mut cpu: Cpu = cpu_calling_host_then_spinning();
+        let mut host: NoopHost = NoopHost;
+        let exit: ExitReason = cpu.run(&mut host, 64).expect("run must not error");
+        assert!(
+            matches!(exit, ExitReason::HostHalt(_)),
+            "NoopHost refuses every call, so the run must halt there, got {exit:?}",
+        );
+        assert_eq!(cpu.host_calls_dispatched(), 1);
+        assert!(
+            cpu.steps_executed() > 0,
+            "the halting exit path must report the instructions it executed, not zero",
+        );
+    }
+
+    #[test]
+    fn pushfw_moves_the_stack_by_two_bytes_not_four() {
+        let mut cpu: Cpu = Cpu::new(CpuMode::Bits32);
+        cpu.mem
+            .map(0x4000, 0x1000, Perm::RWX)
+            .expect("test map within ceiling");
+        cpu.mem
+            .map(0x2_0000, 0x1000, Perm::RW)
+            .expect("test map within ceiling");
+        cpu.mem.write_unchecked(0x4000, &[0x66, 0x9C, 0x66, 0x9D]);
+        cpu.regs.rip = 0x4000;
+        cpu.regs.set(Reg::Rsp, 0x2_0FF0);
+        let mut host: NoopHost = NoopHost;
+        let _ = cpu.run(&mut host, 1).expect("pushfw must execute");
+        assert_eq!(
+            cpu.regs.get(Reg::Rsp),
+            0x2_0FEE,
+            "pushfw pushes the 16-bit FLAGS, so it moves esp by two; treating it as a 32-bit push \
+             shifts every later stack address by two bytes",
+        );
+        let _ = cpu.run(&mut host, 1).expect("popfw must execute");
+        assert_eq!(
+            cpu.regs.get(Reg::Rsp),
+            0x2_0FF0,
+            "popfw must undo exactly what pushfw did",
+        );
+    }
+
+    #[test]
+    fn pushaw_writes_eight_sixteen_bit_slots() {
+        let mut cpu: Cpu = Cpu::new(CpuMode::Bits32);
+        cpu.mem
+            .map(0x4000, 0x1000, Perm::RWX)
+            .expect("test map within ceiling");
+        cpu.mem
+            .map(0x2_0000, 0x1000, Perm::RW)
+            .expect("test map within ceiling");
+        cpu.mem.write_unchecked(0x4000, &[0x66, 0x60]);
+        cpu.regs.rip = 0x4000;
+        cpu.regs.set(Reg::Rsp, 0x2_0FF0);
+        cpu.regs.write_sized(Reg::Rax, 0x1234_5678, 32);
+        let mut host: NoopHost = NoopHost;
+        let _ = cpu.run(&mut host, 1).expect("pushaw must execute");
+        assert_eq!(
+            cpu.regs.get(Reg::Rsp),
+            0x2_0FE0,
+            "pushaw stores eight 16-bit registers, so it moves esp by sixteen",
+        );
+        assert_eq!(
+            cpu.mem.read_u16(0x2_0FEE).expect("slot must read"),
+            0x5678,
+            "the first slot holds AX, the low half of EAX",
+        );
+    }
+
+    #[test]
+    fn seh_dispatch_leaves_the_registration_record_linked_for_the_handler() {
+        const TEB: u64 = 0x7EFD_E000;
+        const HANDLER: u64 = 0x0050_0000;
+        let mut cpu: Cpu = Cpu::new(CpuMode::Bits32);
+        cpu.enable_seh_dispatch();
+        cpu.mem
+            .map(0x4000, 0x1000, Perm::RWX)
+            .expect("test map within ceiling");
+        cpu.mem
+            .map(0x2_0000, 0x4000, Perm::RW)
+            .expect("test map within ceiling");
+        cpu.mem
+            .map(TEB, 0x2000, Perm::RW)
+            .expect("test map within ceiling");
+        cpu.mem
+            .map(HANDLER, 0x1000, Perm::RWX)
+            .expect("test map within ceiling");
+        cpu.set_fs_base(TEB);
+        let frame: u64 = 0x2_2000;
+        cpu.mem.write_u32(frame, 0xFFFF_FFFF).unwrap();
+        cpu.mem.write_u32(frame + 4, HANDLER as u32).unwrap();
+        cpu.mem.write_u32(TEB, frame as u32).unwrap();
+        cpu.mem.write_unchecked(0x4000, &[0x33, 0xC0, 0x89, 0x08]);
+        cpu.mem.write_unchecked(HANDLER, &[0xEB, 0xFE]);
+        cpu.regs.rip = 0x4000;
+        cpu.regs.set(Reg::Rsp, 0x2_3F00);
+        let mut host: NoopHost = NoopHost;
+        let _ = cpu.run(&mut host, 100).unwrap();
+
+        let chain_head: u64 = u64::from(cpu.mem.read_u32(TEB).expect("chain head must read"));
+        assert_ne!(
+            chain_head, 0xFFFF_FFFF,
+            "the dispatcher must not unlink the chain before the handler runs; a handler that \
+             reads FS:[0] to find its own establisher frame gets the end-of-chain marker instead",
+        );
+        assert_eq!(
+            u64::from(
+                cpu.mem
+                    .read_u32(chain_head)
+                    .expect("nested record must read")
+            ),
+            frame,
+            "the dispatcher installs its own registration record whose next field points at the \
+             frame being dispatched, which is how a handler walks back to its own record",
+        );
+        assert!(
+            chain_head < 0x2_3F00 && chain_head >= 0x2_0000,
+            "the dispatcher record belongs below the faulting stack pointer, not on top of the \
+             establisher frame, got 0x{chain_head:08x}",
+        );
+        assert_eq!(
+            u64::from(cpu.mem.read_u32(frame).expect("frame next must read")),
+            0xFFFF_FFFF,
+            "the establisher record itself must survive dispatch untouched",
+        );
+        assert_eq!(
+            u64::from(cpu.mem.read_u32(frame + 4).expect("frame handler must read")),
+            HANDLER,
+            "the handler address in the establisher record must survive dispatch untouched",
+        );
     }
 
     #[test]

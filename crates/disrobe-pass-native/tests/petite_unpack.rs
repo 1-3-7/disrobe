@@ -564,6 +564,12 @@ fn test_petite_hello32_phase2_byte_recovery_beats_static() {
     );
 }
 
+const DIRCMP_DECOMPRESSED_BLOCKS: [(usize, usize, &str); 3] = [
+    (0x003a_f000, 0x0599, "exception handler"),
+    (0x003b_1000, 0x3e1c, "second stage"),
+    (0x0042_2000, 0x0004_a000, "relocation and import table"),
+];
+
 #[test]
 fn test_petite_dircmp_phase2_emulated_smoke() {
     let Some(packed): Option<Vec<u8>> = read_fixture("megafile_DirCmp.exe") else {
@@ -602,15 +608,46 @@ fn test_petite_dircmp_phase2_emulated_smoke() {
          lazy-commit). The emulator must run the wrapper past the SEH frame setup; got exit={}",
         result.exit_reason
     );
+    for (rva, declared_len, what) in DIRCMP_DECOMPRESSED_BLOCKS {
+        let end: usize = rva + declared_len;
+        assert!(
+            mem.len() >= end,
+            "the recovered image stops at {} but the stub's {what} block ends at {end:#x}",
+            mem.len()
+        );
+        let produced: usize = mem[rva..end]
+            .iter()
+            .rposition(|b: &u8| *b != 0)
+            .map_or(0, |i: usize| i + 1);
+        assert_eq!(
+            produced, declared_len,
+            "the stub's descriptor table declares {declared_len:#x} output bytes at {rva:#x} for \
+             the {what} block, and the emulated inflate produced {produced:#x}. A short block is \
+             a decompression that stopped early, which whole-image non-zero density cannot see, \
+             because the stub also zeroes its own scratch once it has run",
+        );
+    }
+
     assert!(
-        nonzero_pct >= 73.0,
+        nonzero_pct >= 72.0,
         "DirCmp emulated memory image must hold substantial decompressed content (the megafile has \
-         no in-repo original baseline, so we witness recovery as non-zero density rather than a \
-         byte-diff; the pre-fix path faulted at FS:0 and fell back to structural-only ~39% \
-         non-zero with NO real decompression; with synthetic TEB + bounded lazy-commit + the full \
-         Btr/Bsf/Leave/Enter/Rcl/Rcr/Shld/Shrd/Xadd/Cmpxchg/Popcnt/Lzcnt/Tzcnt/Salc/Xlatb/Lahf/Sahf \
-         opcode set the emulator now drives the LZ decompressor past 73% non-zero on the megafile); \
+         no in-repo original baseline, so density is only a coarse witness beside the exact \
+         per-block extents asserted above). This floor moved from 73.0 to 72.0 when the emulator \
+         began following the stub past its deliberate fault into its own exception handler. That \
+         handler applies the relocation table and then zeroes it, and zeroes the stub body from \
+         0x46c110 to 0x46d63c: 159151 bytes in total, measured as 3542846 non-zero before and \
+         3383695 after. Every one of those bytes is packer scratch the stub also erases on a real \
+         machine, so density here falls as more of the stub runs and cannot be read as recovery; \
          got {nonzero_pct:.1}% non-zero",
+    );
+
+    assert!(
+        result.host_calls.is_empty() || result.steps_executed > 0,
+        "the run reports {} host calls and {} executed steps; a host call can only be reached by \
+         executing an instruction, so a zero step count beside a non-empty call list would be a \
+         figure that cannot be true",
+        result.host_calls.len(),
+        result.steps_executed,
     );
     assert!(
         !result.exit_reason.contains("Leaved"),
