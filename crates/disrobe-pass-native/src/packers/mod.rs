@@ -6,6 +6,13 @@ pub mod pe_sections;
 
 pub use pe_sections::{DataDirectory, PeImage, PeSection, parse_pe_image};
 
+pub mod pe_resource;
+
+pub use pe_resource::{
+    ForcedPlacement, ResourceDirectoryNode, ResourceKey, ResourceLeaf, ResourceTree,
+    canonical_structure_bytes, forced_leaf_placements, parse_resource_tree,
+};
+
 pub mod section_recovery;
 
 pub use section_recovery::{

@@ -40,7 +40,7 @@ struct SectionFloor {
 }
 
 const FSG_HASH_CONTENT: ContentFloor = ContentFloor {
-    matching: 55080,
+    matching: 55263,
     compared: 60060,
 };
 
@@ -62,13 +62,13 @@ const FSG_HASH_SECTIONS: &[SectionFloor] = &[
     },
     SectionFloor {
         name: ".rsrc",
-        matching: 1369,
+        matching: 1552,
         compared: 4672,
     },
 ];
 
 const FSG_FTP_CONTENT: ContentFloor = ContentFloor {
-    matching: 52808,
+    matching: 52928,
     compared: 56742,
 };
 
@@ -85,13 +85,13 @@ const FSG_FTP_SECTIONS: &[SectionFloor] = &[
     },
     SectionFloor {
         name: ".rsrc",
-        matching: 749,
+        matching: 869,
         compared: 1984,
     },
 ];
 
 const NSPACK_HASH_CONTENT: ContentFloor = ContentFloor {
-    matching: 56967,
+    matching: 57721,
     compared: 60060,
 };
 
@@ -103,7 +103,7 @@ const NSPACK_HASH_SECTIONS: &[SectionFloor] = &[
     },
     SectionFloor {
         name: ".rdata",
-        matching: 3635,
+        matching: 3988,
         compared: 3988,
     },
     SectionFloor {
@@ -113,7 +113,7 @@ const NSPACK_HASH_SECTIONS: &[SectionFloor] = &[
     },
     SectionFloor {
         name: ".rsrc",
-        matching: 1932,
+        matching: 2333,
         compared: 4672,
     },
 ];
@@ -146,6 +146,8 @@ const CORRUPT_RVA: usize = 0x3000;
 const CORRUPT_TEXT_OFFSET: u32 = 0x2000;
 
 const TEXT_AND_DATA: &[&str] = &[".text", ".data"];
+
+const TEXT_RDATA_AND_DATA: &[&str] = &[".text", ".rdata", ".data"];
 
 const DATA_ONLY: &[&str] = &[".data"];
 
@@ -384,7 +386,7 @@ fn nspack_hash_content_byte_recovery_is_pinned() {
         &report,
         NSPACK_HASH_CONTENT,
         NSPACK_HASH_SECTIONS,
-        TEXT_AND_DATA,
+        TEXT_RDATA_AND_DATA,
     );
 }
 

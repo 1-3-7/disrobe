@@ -1,6 +1,14 @@
+use std::collections::BTreeSet;
+
+use serde::{Deserialize, Serialize};
+
 use crate::error::{Error, Result};
+use crate::packers::pe_resource::{
+    ResourceDirectoryRecovery, ResourceLeaf, ResourceTree, parse_resource_tree,
+    recover_resource_directory,
+};
 use crate::packers::pe_sections::{
-    PeImage, find_subsequence, parse_pe_image, read_u32 as read_u32_le,
+    DataDirectory, PeImage, PeSection, find_subsequence, parse_pe_image, read_u32 as read_u32_le,
 };
 
 #[cfg(test)]
@@ -108,6 +116,8 @@ pub struct NspackEmulatedReport {
     pub stream_size_bytes: usize,
     pub decompressed_size_bytes: usize,
     pub decompressed_image: Vec<u8>,
+    pub resource_recovery: Option<ResourceDirectoryRecovery>,
+    pub import_recovery: Option<ImportThunkRecovery>,
     pub original_image_baseline: Option<Vec<u8>>,
     pub byte_diff_count: Option<usize>,
     pub byte_diff_pct: Option<f64>,
@@ -233,6 +243,14 @@ fn unpack_nspack_emulated_with_baseline_inner(
     if apply_fixup {
         apply_e8e9_call_jmp_fixup(&mut output);
     }
+    let resource_recovery: Option<ResourceDirectoryRecovery> = restore_resource_section(
+        packed_bytes,
+        nsp0.virtual_address,
+        declared_dsize,
+        &mut output,
+    );
+    let import_recovery: Option<ImportThunkRecovery> =
+        restore_import_thunks(&mut output, nsp0.virtual_address);
     let metrics: RecoveryMetrics = match original_pe {
         Some(orig) => {
             let baseline: Vec<u8> = build_original_baseline(orig, nsp0)?;
@@ -257,6 +275,8 @@ fn unpack_nspack_emulated_with_baseline_inner(
         stream_size_bytes: stream.ssize as usize,
         decompressed_size_bytes: stream.dsize as usize,
         decompressed_image: output,
+        resource_recovery,
+        import_recovery,
         original_image_baseline: metrics.baseline,
         byte_diff_count: metrics.byte_diff_count,
         byte_diff_pct: metrics.byte_diff_pct,
@@ -270,6 +290,364 @@ pub fn unpack_nspack_emulated_with_baseline(
     original_pe: Option<&[u8]>,
 ) -> Result<NspackEmulatedReport> {
     unpack_nspack_emulated_with_baseline_inner(packed_bytes, original_pe, true)
+}
+
+const IMPORT_DESCRIPTOR_BYTES: usize = 20;
+const IMPORT_DESCRIPTOR_ORIGINAL_FIRST_THUNK: usize = 0;
+const IMPORT_DESCRIPTOR_NAME: usize = 12;
+const IMPORT_DESCRIPTOR_FIRST_THUNK: usize = 16;
+const IMPORT_RECORD_HEADER_BYTES: usize = 16;
+const IMPORT_RECORD_FIRST_THUNK: usize = 8;
+const MAX_IMPORTED_MODULES: usize = 96;
+const MAX_IMPORTS_PER_MODULE: usize = 4096;
+const MAX_MODULE_NAME_BYTES: usize = 96;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportThunkRecovery {
+    pub descriptor_rva: u32,
+
+    pub lookup_table_rva: u32,
+
+    pub modules: usize,
+
+    pub thunks_written: usize,
+
+    pub names_unresolved: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ImportModuleRecord {
+    first_thunk: u32,
+    name_lengths: Vec<usize>,
+}
+
+fn u32_at(image: &[u8], at: usize) -> Option<u32> {
+    image
+        .get(at..at + 4)
+        .and_then(|w: &[u8]| <[u8; 4]>::try_from(w).ok())
+        .map(u32::from_le_bytes)
+}
+
+fn put_u32(image: &mut [u8], at: usize, value: u32) -> bool {
+    image.get_mut(at..at + 4).is_some_and(|slot: &mut [u8]| {
+        slot.copy_from_slice(&value.to_le_bytes());
+        true
+    })
+}
+
+fn module_name_is_plausible(image: &[u8], at: usize) -> bool {
+    let Some(window): Option<&[u8]> = image.get(at..(at + MAX_MODULE_NAME_BYTES).min(image.len()))
+    else {
+        return false;
+    };
+    let Some(end): Option<usize> = window.iter().position(|&b: &u8| b == 0) else {
+        return false;
+    };
+    end >= 5
+        && window
+            .get(..end)
+            .is_some_and(|n: &[u8]| n.iter().all(|&b: &u8| b.is_ascii_graphic()))
+        && window
+            .get(..end)
+            .is_some_and(|n: &[u8]| n.ends_with(b".dll") || n.ends_with(b".DLL"))
+}
+
+fn locate_import_descriptors(image: &[u8], base: u32) -> Option<(usize, Vec<u32>)> {
+    let mut best: Option<(usize, Vec<u32>)> = None;
+    let mut at: usize = 0;
+    while at + IMPORT_DESCRIPTOR_BYTES <= image.len() {
+        let mut cursor: usize = at;
+        let mut thunks: Vec<u32> = Vec::new();
+        while cursor + IMPORT_DESCRIPTOR_BYTES <= image.len() && thunks.len() < MAX_IMPORTED_MODULES
+        {
+            let oft: u32 = u32_at(image, cursor + IMPORT_DESCRIPTOR_ORIGINAL_FIRST_THUNK)?;
+            let name: u32 = u32_at(image, cursor + IMPORT_DESCRIPTOR_NAME)?;
+            let thunk: u32 = u32_at(image, cursor + IMPORT_DESCRIPTOR_FIRST_THUNK)?;
+            if oft != 0 || name == 0 || thunk == 0 {
+                break;
+            }
+            let name_off: usize = match name.checked_sub(base) {
+                Some(rel) if (rel as usize) < image.len() => rel as usize,
+                _ => break,
+            };
+            if !module_name_is_plausible(image, name_off) {
+                break;
+            }
+            if thunk % 4 != 0
+                || thunk
+                    .checked_sub(base)
+                    .is_none_or(|r| r as usize >= image.len())
+            {
+                break;
+            }
+            thunks.push(thunk);
+            cursor += IMPORT_DESCRIPTOR_BYTES;
+        }
+        let terminated: bool = image
+            .get(cursor..cursor + IMPORT_DESCRIPTOR_BYTES)
+            .is_some_and(|w: &[u8]| w.iter().all(|&b: &u8| b == 0));
+        if thunks.len() >= 2
+            && terminated
+            && best
+                .as_ref()
+                .is_none_or(|(_, found): &(usize, Vec<u32>)| found.len() < thunks.len())
+        {
+            best = Some((at, thunks));
+        }
+        at += 4;
+    }
+    best
+}
+
+fn locate_import_record(
+    image: &[u8],
+    declared: &[u32],
+) -> Option<(Vec<ImportModuleRecord>, usize)> {
+    let wanted: BTreeSet<u32> = declared.iter().copied().collect();
+    let mut at: usize = 0;
+    while at + IMPORT_RECORD_HEADER_BYTES <= image.len() {
+        let mut cursor: usize = at;
+        let mut records: Vec<ImportModuleRecord> = Vec::new();
+        let parsed: Option<usize> = loop {
+            let Some(header): Option<&[u8]> =
+                image.get(cursor..cursor + IMPORT_RECORD_HEADER_BYTES)
+            else {
+                break None;
+            };
+            if header.iter().all(|&b: &u8| b == 0) {
+                break Some(cursor + IMPORT_RECORD_HEADER_BYTES);
+            }
+            let Some(first_thunk): Option<u32> = u32_at(image, cursor + IMPORT_RECORD_FIRST_THUNK)
+            else {
+                break None;
+            };
+            if !wanted.contains(&first_thunk) || records.len() >= MAX_IMPORTED_MODULES {
+                break None;
+            }
+            let mut walk: usize = cursor + IMPORT_RECORD_HEADER_BYTES;
+            let mut lengths: Vec<usize> = Vec::new();
+            let ended: bool = loop {
+                match image.get(walk).copied() {
+                    None => break false,
+                    Some(0) => {
+                        walk += 1;
+                        break true;
+                    }
+                    Some(len) => {
+                        lengths.push(len as usize);
+                        walk += 1;
+                        if lengths.len() > MAX_IMPORTS_PER_MODULE {
+                            break false;
+                        }
+                    }
+                }
+            };
+            if !ended || lengths.is_empty() {
+                break None;
+            }
+            records.push(ImportModuleRecord {
+                first_thunk,
+                name_lengths: lengths,
+            });
+            cursor = walk;
+        };
+        if let Some(blob) = parsed {
+            let found: BTreeSet<u32> = records
+                .iter()
+                .map(|r: &ImportModuleRecord| r.first_thunk)
+                .collect();
+            let total: usize = records
+                .iter()
+                .flat_map(|r: &ImportModuleRecord| r.name_lengths.iter())
+                .sum();
+            let printable: bool = image
+                .get(blob..blob + total)
+                .is_some_and(|w: &[u8]| w.iter().all(|&b: &u8| b.is_ascii_graphic()));
+            if found == wanted && printable && total > 0 {
+                return Some((records, blob));
+            }
+        }
+        at += 4;
+    }
+    None
+}
+
+fn name_entry_rva(image: &[u8], base: u32, lo: usize, hi: usize, name: &[u8]) -> Option<u32> {
+    let window: &[u8] = image.get(lo..hi)?;
+    let mut hits: Vec<usize> = Vec::new();
+    let needle_len: usize = name.len() + 1;
+    for at in 0..window.len().saturating_sub(needle_len) {
+        let Some(candidate): Option<&[u8]> = window.get(at..at + needle_len) else {
+            break;
+        };
+        if candidate.get(..name.len()) == Some(name) && candidate.last() == Some(&0) {
+            let absolute: usize = lo + at;
+            if absolute >= 2 && (absolute - 2) % 2 == 0 {
+                hits.push(absolute - 2);
+                if hits.len() > 1 {
+                    return None;
+                }
+            }
+        }
+    }
+    hits.first()
+        .and_then(|&at: &usize| u32::try_from(at).ok())
+        .map(|rel: u32| base.saturating_add(rel))
+}
+
+fn restore_import_thunks(image: &mut [u8], base: u32) -> Option<ImportThunkRecovery> {
+    let (descriptor_off, declared): (usize, Vec<u32>) = locate_import_descriptors(image, base)?;
+    let (records, blob): (Vec<ImportModuleRecord>, usize) = locate_import_record(image, &declared)?;
+    let lookup_rva: u32 = u32::try_from(descriptor_off)
+        .ok()?
+        .checked_add(base)?
+        .checked_add(u32::try_from((declared.len() + 1) * IMPORT_DESCRIPTOR_BYTES).ok()?)?;
+    let mut ordered: Vec<&ImportModuleRecord> = records.iter().collect();
+    ordered.sort_by_key(|r: &&ImportModuleRecord| r.first_thunk);
+    let iat_lo: u32 = ordered.first()?.first_thunk;
+    let mut expected: u32 = iat_lo;
+    for record in &ordered {
+        if record.first_thunk != expected {
+            return None;
+        }
+        expected =
+            expected.checked_add(u32::try_from((record.name_lengths.len() + 1) * 4).ok()?)?;
+    }
+    let lookup_span: u32 = expected.checked_sub(iat_lo)?;
+    let lookup_off: usize = lookup_rva.checked_sub(base)? as usize;
+    let lookup_end: usize = lookup_off.checked_add(lookup_span as usize)?;
+    if !image
+        .get(lookup_off..lookup_end)
+        .is_some_and(|w: &[u8]| w.iter().all(|&b: &u8| b == 0))
+    {
+        return None;
+    }
+    let mut cursor: usize = blob;
+    let mut written: usize = 0;
+    let mut unresolved: usize = 0;
+    let mut lookup_writes: Vec<(usize, u32)> = Vec::new();
+    for record in &records {
+        let thunk_off: usize = record.first_thunk.checked_sub(base)? as usize;
+        let mirror_off: usize = lookup_off + (record.first_thunk - iat_lo) as usize;
+        for (slot, &len) in record.name_lengths.iter().enumerate() {
+            let owned: Vec<u8> = image.get(cursor..cursor + len)?.to_vec();
+            cursor += len;
+            match name_entry_rva(image, base, lookup_end, blob, &owned) {
+                Some(rva) => {
+                    lookup_writes.push((thunk_off + slot * 4, rva));
+                    lookup_writes.push((mirror_off + slot * 4, rva));
+                    written += 2;
+                }
+                None => unresolved += 1,
+            }
+        }
+        lookup_writes.push((thunk_off + record.name_lengths.len() * 4, 0));
+        lookup_writes.push((mirror_off + record.name_lengths.len() * 4, 0));
+        let descriptor: usize = descriptor_off
+            + declared
+                .iter()
+                .position(|&t: &u32| t == record.first_thunk)?
+                * IMPORT_DESCRIPTOR_BYTES;
+        lookup_writes.push((
+            descriptor + IMPORT_DESCRIPTOR_ORIGINAL_FIRST_THUNK,
+            lookup_rva + (record.first_thunk - iat_lo),
+        ));
+    }
+    for (at, value) in lookup_writes {
+        if !put_u32(image, at, value) {
+            return None;
+        }
+    }
+    Some(ImportThunkRecovery {
+        descriptor_rva: base.saturating_add(u32::try_from(descriptor_off).unwrap_or(0)),
+        lookup_table_rva: lookup_rva,
+        modules: records.len(),
+        thunks_written: written,
+        names_unresolved: unresolved,
+    })
+}
+
+const PE_RESOURCE_DIRECTORY_INDEX: usize = 2;
+
+fn restore_resource_section(
+    packed: &[u8],
+    image_base_rva: u32,
+    image_bytes: usize,
+    image: &mut Vec<u8>,
+) -> Option<ResourceDirectoryRecovery> {
+    let pe: PeImage = parse_pe_image(packed).ok()?;
+    let dir: &DataDirectory = pe.data_directories.get(PE_RESOURCE_DIRECTORY_INDEX)?;
+    if dir.virtual_address == 0 || dir.size == 0 {
+        return None;
+    }
+    let resolve = |rva: u32| -> Option<usize> {
+        let host: &PeSection = pe.section_containing_rva(rva)?;
+        let delta: u32 = rva - host.virtual_address;
+        (delta < host.raw_size).then(|| (host.raw_pointer + delta) as usize)
+    };
+    let dir_off: usize = resolve(dir.virtual_address)?;
+    let tree: ResourceTree =
+        parse_resource_tree(packed, dir_off, dir.virtual_address, dir.size as usize).ok()?;
+    let original_base: u32 = original_resource_base(
+        &tree,
+        dir.size,
+        image_base_rva,
+        image_bytes,
+        pe.section_alignment,
+    )?;
+    recover_resource_directory(
+        packed,
+        &tree,
+        dir.size,
+        original_base,
+        image_base_rva,
+        &resolve,
+        image,
+    )
+    .ok()
+}
+
+fn original_resource_base(
+    tree: &ResourceTree,
+    dir_bytes: u32,
+    image_base_rva: u32,
+    image_bytes: usize,
+    section_alignment: u32,
+) -> Option<u32> {
+    let alignment: u32 = if section_alignment == 0 {
+        0x1000
+    } else {
+        section_alignment
+    };
+    let image_end: u64 = u64::from(image_base_rva) + image_bytes as u64;
+    let anchors: Vec<&ResourceLeaf> = tree
+        .leaves
+        .iter()
+        .filter(|l: &&ResourceLeaf| {
+            u64::from(l.data_rva) >= u64::from(image_base_rva)
+                && u64::from(l.data_rva) + u64::from(l.data_size) <= image_end
+        })
+        .collect();
+    if anchors.is_empty() {
+        return None;
+    }
+    let mut lowest: u32 = u32::MAX;
+    let mut highest_end: u32 = 0;
+    for leaf in &anchors {
+        lowest = lowest.min(leaf.data_rva);
+        highest_end = highest_end.max(leaf.data_rva.saturating_add(leaf.data_size));
+    }
+    let floor: u32 = highest_end.saturating_sub(dir_bytes);
+    let candidates: Vec<u32> = (0..=(lowest / alignment))
+        .rev()
+        .map(|step: u32| step * alignment)
+        .take_while(|&base: &u32| base + dir_bytes >= highest_end)
+        .filter(|&base: &u32| base >= floor && base <= lowest && base >= image_base_rva)
+        .collect();
+    match candidates.as_slice() {
+        [only] => Some(*only),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
