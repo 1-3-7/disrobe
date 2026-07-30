@@ -8,157 +8,107 @@
     clippy::doc_markdown
 )]
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+mod common;
 
-const HARNESS: &str = "tests/harness/py_arbitrary_measure.py";
-const PINNED_MODULES: &str = "tests/harness/pinned_modules_314.txt";
+use std::path::PathBuf;
 
-const OBJECT_PCT_FLOOR: f64 = 90.0;
+use common::band_gate::{
+    BandPopulation, CPYTHON_315, PINNED_MODULE_COUNT, PINNED_MODULE_LIST,
+    assert_bands_are_distinct_populations, assert_detail_states_its_own_counts,
+    assert_population_pin_rejects_shrinkage, population_disagreements, published_band_bar,
+    resolve_band_interpreter,
+};
+use common::stdlib_measure::{
+    HarnessRun, MEASURE_HARNESS, Measurement, PublishedBar, bar_disagreements, find_disrobe,
+    interpreter_stdlib, interpreter_version, manifest_dir, parse_measurement, population_line,
+    published_detail, recovery_document, run_measure, workspace_target,
+};
 
-#[derive(Debug)]
-struct Measurement {
-    modules: u64,
-    code_objects: u64,
-    objects_ok: u64,
-    object_pct: f64,
-    module_pct: f64,
-    sibling_collisions: u64,
-    missing_from_lib: u64,
+const BAND_LABEL: &str = "CPython 3.15 (199 of the pinned modules)";
+const BAND_POPULATION: &str = "cpython-315-band";
+
+const OBJECT_PCT_FLOOR: f64 = 96.03;
+const BAND_OBJECTS_OK: u64 = 6_214;
+const BAND_CODE_OBJECTS: u64 = 6_471;
+const BAND_MODULES: u64 = 199;
+const BAND_MODULES_EXACT_FLOOR: u64 = 119;
+const BAND_MISSING_FROM_LIB: u64 = 1;
+const BAND_CPYTHON: &str = "3.15.0b1";
+
+fn published() -> PublishedBar {
+    let doc: serde_json::Value = recovery_document();
+    published_band_bar(&doc, BAND_LABEL)
 }
 
-fn manifest_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+fn graded() -> String {
+    format!(
+        "the published {BAND_POPULATION} figure of {BAND_OBJECTS_OK} / {BAND_CODE_OBJECTS} code \
+         objects over {BAND_MODULES} modules"
+    )
 }
 
-fn workspace_target() -> PathBuf {
-    manifest_dir().join("../../target")
-}
+#[test]
+fn published_315_band_bar_agrees_with_the_counts_this_gate_enforces() {
+    let doc: serde_json::Value = recovery_document();
+    let bar: PublishedBar = published_band_bar(&doc, BAND_LABEL);
 
-#[must_use]
-fn find_disrobe() -> Option<PathBuf> {
-    let exe: &str = if cfg!(windows) {
-        "disrobe.exe"
-    } else {
-        "disrobe"
+    println!("=== PUBLISHED CPYTHON 3.15 BAND ===");
+    println!(
+        "{}",
+        population_line(BAND_POPULATION, bar.num, bar.den, bar.modules)
+    );
+    println!(
+        "this case reads xtask/data/recovery.json and compares it against the counts \
+         `arbitrary_recompile_equivalence_gate_315` enforces. It decompiles nothing, so it proves \
+         the chart and this crate name one population, not that the population is the one CPython \
+         {BAND_CPYTHON} measures. That measurement is the gate below."
+    );
+
+    let disagreements: Vec<String> = bar_disagreements(&bar, OBJECT_PCT_FLOOR);
+    assert!(
+        disagreements.is_empty(),
+        "the published `{BAND_LABEL}` bar and the floor this gate enforces describe different \
+         numbers, and the recovery chart renders the JSON: {disagreements:?}"
+    );
+
+    let enforced: BandPopulation = BandPopulation {
+        objects_ok: BAND_OBJECTS_OK,
+        code_objects: BAND_CODE_OBJECTS,
+        modules: BAND_MODULES,
     };
-    let target: PathBuf = workspace_target();
-    for profile in ["release", "debug"] {
-        let candidate: PathBuf = target.join(profile).join(exe);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
+    let against_published: Vec<String> = population_disagreements(&enforced, &bar);
+    assert!(
+        against_published.is_empty(),
+        "the published `{BAND_LABEL}` bar reads {} / {} over {} modules, but this gate enforces \
+         {BAND_OBJECTS_OK} / {BAND_CODE_OBJECTS} over {BAND_MODULES}: {against_published:?}",
+        bar.num,
+        bar.den,
+        bar.modules
+    );
+
+    assert_eq!(
+        BAND_MODULES + BAND_MISSING_FROM_LIB,
+        PINNED_MODULE_COUNT,
+        "this gate expects {BAND_MODULES} measured modules and {BAND_MISSING_FROM_LIB} absent from \
+         the 3.15 Lib, which does not account for all {PINNED_MODULE_COUNT} pinned module paths"
+    );
+
+    let detail: String =
+        published_detail(&doc, BAND_LABEL).unwrap_or_else(|e: String| panic!("{e}"));
+    assert_detail_states_its_own_counts(&detail, &bar, BAND_LABEL);
+    assert!(
+        detail.contains(BAND_CPYTHON),
+        "the `{BAND_LABEL}` detail never names the interpreter release the counts were measured \
+         on, so a re-measurement on another 3.15 prerelease cannot be told apart from this one: \
+         {detail}"
+    );
+
+    assert_bands_are_distinct_populations(&doc, BAND_LABEL);
 }
 
-#[must_use]
-fn interpreter_hidden(alias: &str) -> bool {
-    std::env::var("DISROBE_TEST_HIDE_PY").is_ok_and(|hidden: String| {
-        hidden
-            .split(',')
-            .map(str::trim)
-            .any(|entry: &str| entry == alias)
-    })
-}
-
-fn find_python_315() -> Option<PathBuf> {
-    if interpreter_hidden("3.15") {
-        return None;
-    }
-    if let Some(output) = Command::new("uv")
-        .args(["python", "find", "3.15"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()
-        && output.status.success()
-    {
-        let raw: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        let path: PathBuf = PathBuf::from(raw);
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-    let candidates: [PathBuf; 3] = [
-        PathBuf::from("C:/Python315/python.exe"),
-        PathBuf::from("/usr/bin/python3.15"),
-        PathBuf::from("/usr/local/bin/python3.15"),
-    ];
-    candidates.into_iter().find(|p: &PathBuf| p.is_file())
-}
-
-fn interpreter_version(python: &Path) -> Option<(u8, u8)> {
-    let output: std::process::Output = Command::new(python)
-        .args([
-            "-c",
-            "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')",
-        ])
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let raw: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    let (maj, min): (&str, &str) = raw.split_once('.')?;
-    Some((maj.parse::<u8>().ok()?, min.parse::<u8>().ok()?))
-}
-
-fn interpreter_stdlib(python: &Path) -> Option<PathBuf> {
-    let output: std::process::Output = Command::new(python)
-        .args(["-c", "import sysconfig;print(sysconfig.get_path('stdlib'))"])
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let raw: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    let path: PathBuf = PathBuf::from(raw);
-    if path.is_dir() { Some(path) } else { None }
-}
-
-fn json_scalar<'a>(line: &'a str, key: &str) -> Result<&'a str, String> {
-    let needle: String = format!("\"{key}\"");
-    let after_key: &str = line
-        .find(&needle)
-        .map(|i| &line[i + needle.len()..])
-        .ok_or_else(|| format!("missing field {key} in {line}"))?;
-    let after_colon: &str = after_key
-        .find(':')
-        .map(|i| after_key[i + 1..].trim_start())
-        .ok_or_else(|| format!("malformed field {key} in {line}"))?;
-    let end: usize = after_colon
-        .find([',', '}'])
-        .ok_or_else(|| format!("unterminated field {key} in {line}"))?;
-    Ok(after_colon[..end].trim().trim_matches('"'))
-}
-
-fn parse_measurement(stdout: &str) -> Result<Measurement, String> {
-    let line: &str = stdout
-        .lines()
-        .find(|l| l.trim_start().starts_with('{'))
-        .ok_or_else(|| format!("no JSON object on harness stdout:\n{stdout}"))?;
-    let get_u64 = |key: &str| -> Result<u64, String> {
-        json_scalar(line, key)?
-            .parse::<u64>()
-            .map_err(|e| format!("field {key} is not u64: {e} in {line}"))
-    };
-    let get_f64 = |key: &str| -> Result<f64, String> {
-        json_scalar(line, key)?
-            .parse::<f64>()
-            .map_err(|e| format!("field {key} is not f64: {e} in {line}"))
-    };
-    Ok(Measurement {
-        modules: get_u64("modules")?,
-        code_objects: get_u64("code_objects")?,
-        objects_ok: get_u64("objects_ok")?,
-        object_pct: get_f64("object_pct")?,
-        module_pct: get_f64("module_pct")?,
-        sibling_collisions: get_u64("sibling_collisions")?,
-        missing_from_lib: get_u64("missing_from_lib")?,
-    })
+#[test]
+fn a_shrunken_315_band_population_is_rejected() {
+    assert_population_pin_rejects_shrinkage(&published(), OBJECT_PCT_FLOOR, BAND_POPULATION);
 }
 
 #[test]
@@ -172,12 +122,7 @@ fn arbitrary_recompile_equivalence_gate_315() {
         );
     };
 
-    let Some(python): Option<PathBuf> = find_python_315() else {
-        eprintln!(
-            "skip: no CPython 3.15 interpreter found (uv python find 3.15 / known install paths). \
-             Per-code-object recompile-equivalence on 3.15 cannot be measured here; floor \
-             {OBJECT_PCT_FLOOR} not enforced this run. Install one with `uv python install 3.15`."
-        );
+    let Some(python): Option<PathBuf> = resolve_band_interpreter(&CPYTHON_315, &graded()) else {
         return;
     };
 
@@ -201,8 +146,8 @@ fn arbitrary_recompile_equivalence_gate_315() {
         );
     };
 
-    let harness: PathBuf = manifest_dir().join(HARNESS);
-    let modules: PathBuf = manifest_dir().join(PINNED_MODULES);
+    let harness: PathBuf = manifest_dir().join(MEASURE_HARNESS);
+    let modules: PathBuf = manifest_dir().join(PINNED_MODULE_LIST);
     assert!(
         harness.is_file(),
         "harness missing at {}",
@@ -214,65 +159,101 @@ fn arbitrary_recompile_equivalence_gate_315() {
         modules.display()
     );
 
-    let output: std::process::Output = Command::new(&python)
-        .arg(&harness)
-        .arg("--disrobe")
-        .arg(&disrobe)
-        .arg("--lib")
-        .arg(&lib)
-        .arg("--modules")
-        .arg(&modules)
-        .stdin(Stdio::null())
-        .output()
-        .expect("spawn recompile-equivalence harness");
-
-    let stdout: String = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr: String = String::from_utf8_lossy(&output.stderr).into_owned();
+    let run: HarnessRun = run_measure(&python, &disrobe, &lib, &modules);
     println!("=== ARBITRARY RECOMPILE-EQUIVALENCE HARNESS (3.15) ===");
     println!("interpreter : {} ({maj}.{min})", python.display());
     println!("lib         : {}", lib.display());
     println!("disrobe     : {}", disrobe.display());
-    println!("--- harness taxonomy (stderr) ---\n{stderr}");
+    println!("--- harness taxonomy (stderr) ---\n{}", run.stderr);
 
     assert!(
-        output.status.success(),
-        "harness exited {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
-        output.status.code()
+        run.success,
+        "harness exited {:?}\nstdout:\n{}\nstderr:\n{}",
+        run.code, run.stdout, run.stderr
     );
 
-    let m: Measurement = parse_measurement(&stdout).expect("parse harness measurement");
+    let m: Measurement = parse_measurement(&run.stdout).expect("parse harness measurement");
     println!(
-        "measured: {}/{} code objects ({:.2}%) across {} modules; whole-module exact {:.2}%; \
-         sibling-count collisions {}; pinned modules absent from this Lib {}",
-        m.objects_ok,
-        m.code_objects,
-        m.object_pct,
+        "{}",
+        population_line(BAND_POPULATION, m.objects_ok, m.code_objects, m.modules)
+    );
+    println!(
+        "population {BAND_POPULATION}: whole-module exact {} / {} ({:.2}%), sibling-count \
+         collisions {}, pinned modules absent from this Lib {}, measured on CPython {}",
+        m.modules_exact,
         m.modules,
         m.module_pct,
         m.sibling_collisions,
-        m.missing_from_lib
+        m.missing_from_lib,
+        m.cpython_version
     );
 
-    assert!(
-        m.modules >= 180,
-        "only {} of the 200 pinned modules were measured ({} absent from this Lib); the corpus has \
-         drifted too far to be representative on 3.15",
-        m.modules,
-        m.missing_from_lib
+    assert_eq!(
+        m.listed_modules, PINNED_MODULE_COUNT,
+        "the harness read {} module paths from the pinned corpus, not {PINNED_MODULE_COUNT}",
+        m.listed_modules
     );
-    assert!(
-        m.code_objects >= 5000,
-        "only {} code objects measured; expected ~6000+ from the pinned corpus, the sample is too \
-         thin to gate on",
-        m.code_objects
+    assert_eq!(
+        m.missing_from_lib, BAND_MISSING_FROM_LIB,
+        "{} of the {PINNED_MODULE_COUNT} pinned modules are absent from this 3.15 Lib, not the \
+         {BAND_MISSING_FROM_LIB} the published detail states; the band was pinned against CPython \
+         {BAND_CPYTHON} and a release that ships a different Lib needs a fresh measurement plus a \
+         re-published numerator, denominator and module count, never a lowered floor (this run: \
+         CPython {})",
+        m.missing_from_lib, m.cpython_version
+    );
+    assert_eq!(
+        m.modules, BAND_MODULES,
+        "only {} of the pinned modules were measured on 3.15, not {BAND_MODULES}; a run that \
+         inspects fewer modules must score worse, not measure itself against a smaller population \
+         (CPython {})",
+        m.modules, m.cpython_version
+    );
+    assert_eq!(
+        m.code_objects, BAND_CODE_OBJECTS,
+        "the {BAND_POPULATION} denominator is pinned by equality: this run walked {} code objects, \
+         the published band names {BAND_CODE_OBJECTS} (CPython {BAND_CPYTHON}, measured {}). A \
+         different denominator is a different population, so re-measure and re-publish both halves \
+         of the fraction",
+        m.code_objects, m.cpython_version
     );
     assert!(
         m.object_pct >= OBJECT_PCT_FLOOR,
         "per-code-object recompile-equivalence regressed on 3.15: {:.2}% < floor {OBJECT_PCT_FLOOR}% \
-         ({}/{} objects on {} modules)",
+         ({} / {} objects on {} modules, CPython {}). The floor is the exact figure this band \
+         publishes, so it has no slack to absorb a regression and only ever rises",
         m.object_pct,
         m.objects_ok,
         m.code_objects,
+        m.modules,
+        m.cpython_version
+    );
+    assert!(
+        m.modules_exact >= BAND_MODULES_EXACT_FLOOR,
+        "whole-module exact recovery regressed on 3.15: {} of the {} measured modules came back \
+         with every code object equivalent, floor {BAND_MODULES_EXACT_FLOOR}",
+        m.modules_exact,
         m.modules
+    );
+
+    let bar: PublishedBar = published();
+    let measured: BandPopulation = BandPopulation {
+        objects_ok: m.objects_ok,
+        code_objects: m.code_objects,
+        modules: m.modules,
+    };
+    let disagreements: Vec<String> = population_disagreements(&measured, &bar);
+    assert!(
+        disagreements.is_empty(),
+        "xtask/data/recovery.json publishes {} / {} over {} modules for the 3.15 band and the \
+         recovery chart renders that triple, but this run measured {} / {} over {} modules on \
+         CPython {}: {disagreements:?}",
+        bar.num,
+        bar.den,
+        bar.modules,
+        m.objects_ok,
+        m.code_objects,
+        m.modules,
+        m.cpython_version
     );
 }
