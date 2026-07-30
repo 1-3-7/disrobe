@@ -22,6 +22,7 @@ use wasmtime::{Config, Engine, Linker, Module, Store, Val};
 const PUBLISHED_HEADING: &str = "WebAssembly (committed 133-fn corpus";
 const PUBLISHED_BAR: &str = "op-coverage";
 const PUBLISHED_EXECUTION_BAR: &str = "execution-equivalence";
+const ELIGIBLE_ROSTER: &str = "tests/golden/wasm_execution_eligible.txt";
 const HEADING_ANCHOR: &str = " execution-verified under wasmtime";
 const DETAIL_RATIO_ANCHOR: &str = " execution-eligible functions are EXECUTION-EQUIVALENT";
 const SOURCE_RATIO_ANCHOR: &str = " execution-eligible equivalent (";
@@ -100,6 +101,7 @@ struct DiffTally {
     execution_eligible: usize,
     execution_equivalent: usize,
     memory_verified: usize,
+    eligible_labels: Vec<String>,
     diverged: Vec<String>,
     ineligible_reason: BTreeMap<String, usize>,
 }
@@ -810,6 +812,7 @@ fn whole_module_gc_phase(wat_path: &Path, tally: &mut DiffTally, eng: &Engine) {
     for sig in &numeric_exports {
         tally.execution_eligible += 1;
         let label: String = format!("{}:{}", file_label(wat_path), sig.name);
+        tally.eligible_labels.push(label.clone());
 
         let stopper: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
         let watchdog: std::thread::JoinHandle<()> =
@@ -938,6 +941,7 @@ fn whole_module_plain_phase(wat_path: &Path, tally: &mut DiffTally, eng: &Engine
     for sig in &targets {
         tally.execution_eligible += 1;
         let label: String = format!("{}:{}", file_label(wat_path), sig.name);
+        tally.eligible_labels.push(label.clone());
 
         let stopper: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
         let watchdog: std::thread::JoinHandle<()> =
@@ -1162,6 +1166,45 @@ fn published_execution_differential() -> ExecutionDifferential {
     }
 }
 
+fn pinned_eligible_roster() -> Vec<String> {
+    let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join(ELIGIBLE_ROSTER);
+    let raw: String = fs::read_to_string(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "{} names the execution-eligible functions the published denominator counts; without \
+             it the population is a bare number that can be refilled by different functions: \
+             {error}",
+            path.display()
+        )
+    });
+    let mut rows: Vec<String> = raw
+        .lines()
+        .map(str::trim)
+        .filter(|line: &&str| !line.is_empty())
+        .map(str::to_owned)
+        .collect();
+    rows.sort_unstable();
+    rows
+}
+
+fn roster_defects(measured: &[String], pinned: &[String]) -> Vec<String> {
+    let mut defects: Vec<String> = Vec::new();
+    for label in pinned {
+        if !measured.contains(label) {
+            defects.push(format!(
+                "{label} is pinned as execution-eligible but did not run"
+            ));
+        }
+    }
+    for label in measured {
+        if !pinned.contains(label) {
+            defects.push(format!(
+                "{label} ran as execution-eligible but is not in the pinned roster"
+            ));
+        }
+    }
+    defects
+}
+
 fn differential_defects(
     measured: ExecutionDifferential,
     published: ExecutionDifferential,
@@ -1251,6 +1294,7 @@ fn differential_execution_equivalence_under_wasmtime() {
 
         for candidate in candidates {
             tally.execution_eligible += 1;
+            tally.eligible_labels.push(candidate.label.clone());
             let Some(lifted_bytes): Option<Vec<u8>> =
                 lifted_single_module(&wat_path, &candidate.export)
             else {
@@ -1365,6 +1409,29 @@ fn differential_execution_equivalence_under_wasmtime() {
     }
 
     let published: ExecutionDifferential = published_execution_differential();
+
+    let mut measured_roster: Vec<String> = tally.eligible_labels.clone();
+    measured_roster.sort_unstable();
+    let pinned_roster: Vec<String> = pinned_eligible_roster();
+    let roster_drift: Vec<String> = roster_defects(&measured_roster, &pinned_roster);
+    assert!(
+        roster_drift.is_empty(),
+        "eligibility is a filter, so the published denominator is only as good as the set it \
+         filters to; {ELIGIBLE_ROSTER} names that set and this run reached a different one. \
+         Review each line below, then rewrite the roster from what actually ran:\n{}\n\nthis run \
+         reached:\n{}",
+        roster_drift.join("\n"),
+        measured_roster.join("\n")
+    );
+    assert_eq!(
+        u64::try_from(pinned_roster.len()).expect("the roster length fits u64"),
+        published.eligible,
+        "{ELIGIBLE_ROSTER} names {} functions and recovery.json publishes a denominator of {}; a \
+         roster and a count that disagree cannot both describe the population",
+        pinned_roster.len(),
+        published.eligible
+    );
+
     let measured: ExecutionDifferential = ExecutionDifferential {
         eligible: u64::try_from(tally.execution_eligible).expect("the eligible count fits u64"),
         equivalent: u64::try_from(tally.execution_equivalent)
@@ -1458,6 +1525,38 @@ fn the_pinned_execution_differential_rejects_a_dropped_function_and_a_shrunken_p
             .iter()
             .any(|defect: &String| defect.contains("not a ratio any run can reach")),
         "a published numerator above its own population must be rejected, got {overclaimed:?}"
+    );
+
+    let pinned: Vec<String> = pinned_eligible_roster();
+    assert!(
+        roster_defects(&pinned, &pinned).is_empty(),
+        "the roster check must accept the pinned population unchanged"
+    );
+
+    let mut dropped_one: Vec<String> = pinned.clone();
+    let removed: String = dropped_one.pop().expect("the roster names functions");
+    let missing: Vec<String> = roster_defects(&dropped_one, &pinned);
+    assert!(
+        missing
+            .iter()
+            .any(|defect: &String| defect.contains("pinned as execution-eligible but did not run")),
+        "a function leaving the executed population must be reported by name, got {missing:?}"
+    );
+
+    let mut swapped: Vec<String> = dropped_one.clone();
+    swapped.push(format!("{removed}_renamed"));
+    swapped.sort_unstable();
+    let substituted: Vec<String> = roster_defects(&swapped, &pinned);
+    assert!(
+        substituted
+            .iter()
+            .any(|defect: &String| defect.contains("pinned as execution-eligible but did not run"))
+            && substituted
+                .iter()
+                .any(|defect: &String| defect.contains("is not in the pinned roster")),
+        "swapping one function for another keeps the count at {} and must still be rejected on \
+         membership, got {substituted:?}",
+        pinned.len()
     );
 }
 
