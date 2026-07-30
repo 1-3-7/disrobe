@@ -15,6 +15,7 @@ mod evidence;
 mod evidence_tiers;
 mod facts;
 mod fileio;
+mod floors;
 mod fuzz_scope;
 mod graphs;
 mod metrics;
