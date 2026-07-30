@@ -333,22 +333,113 @@ fn compiler_version_line(tool: &str) -> Option<String> {
     Some(text.lines().next().unwrap_or_default().trim().to_owned())
 }
 
-fn distinct_c_compilers() -> Vec<(&'static str, String)> {
-    let mut found: Vec<(&'static str, String)> = Vec::new();
-    for tool in ["cc", "gcc", "clang"] {
-        let Some(identity): Option<String> = compiler_version_line(tool) else {
-            eprintln!("NOT GRADED: C compiler {tool} does not answer --version on this host");
-            continue;
-        };
-        if found
-            .iter()
-            .any(|(_, seen): &(&'static str, String)| *seen == identity)
-        {
-            continue;
+const C_COMPILER_NAMES: [&str; 3] = ["cc", "gcc", "clang"];
+
+#[derive(Debug, Clone)]
+enum ToolchainProbe {
+    Distinct {
+        tool: &'static str,
+        identity: String,
+    },
+    Alias {
+        tool: &'static str,
+        identity: String,
+    },
+    Absent {
+        tool: &'static str,
+    },
+}
+
+#[derive(Debug, Default)]
+struct CompilerRoster {
+    probes: Vec<ToolchainProbe>,
+}
+
+impl CompilerRoster {
+    fn probe() -> Self {
+        let mut probes: Vec<ToolchainProbe> = Vec::new();
+        for tool in C_COMPILER_NAMES {
+            let Some(identity): Option<String> = compiler_version_line(tool) else {
+                probes.push(ToolchainProbe::Absent { tool });
+                continue;
+            };
+            let already_seen: bool = probes.iter().any(|probe: &ToolchainProbe| {
+                matches!(probe, ToolchainProbe::Distinct { identity: seen, .. } if *seen == identity)
+            });
+            probes.push(if already_seen {
+                ToolchainProbe::Alias { tool, identity }
+            } else {
+                ToolchainProbe::Distinct { tool, identity }
+            });
         }
-        found.push((tool, identity));
+        Self { probes }
     }
-    found
+
+    fn distinct(&self) -> Vec<(&'static str, String)> {
+        self.probes
+            .iter()
+            .filter_map(|probe: &ToolchainProbe| match probe {
+                ToolchainProbe::Distinct { tool, identity } => Some((*tool, identity.clone())),
+                ToolchainProbe::Alias { .. } | ToolchainProbe::Absent { .. } => None,
+            })
+            .collect()
+    }
+
+    fn announce(&self, grade: &str) {
+        for probe in &self.probes {
+            match probe {
+                ToolchainProbe::Distinct { tool, identity } => {
+                    println!("{grade}: probing {tool}, which is {identity}");
+                }
+                ToolchainProbe::Alias { tool, identity } => {
+                    println!(
+                        "{grade}: {tool} answers as {identity}, the same toolchain an earlier name \
+                         already covers, so it is not a second data point"
+                    );
+                }
+                ToolchainProbe::Absent { tool } => {
+                    println!(
+                        "{grade}: no {tool} on this host, so nothing is graded under that name. \
+                         cc is the POSIX alias and is absent on a MinGW or MSVC Windows box by \
+                         design, which is why its absence is reported rather than failed"
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn compiled_sibling_objects(dir: &std::path::Path, grade: &str) -> Vec<(String, Vec<u8>)> {
+    let roster: CompilerRoster = CompilerRoster::probe();
+    roster.announce(grade);
+    let distinct: Vec<(&'static str, String)> = roster.distinct();
+    assert!(
+        !distinct.is_empty(),
+        "{grade} needs one C compiler out of cc, gcc or clang, and none of those names answers \
+         --version on this host: {roster:?}"
+    );
+    let mut objects: Vec<(String, Vec<u8>)> = Vec::new();
+    for (tool, identity) in distinct {
+        match compile_sibling_object(tool, dir) {
+            Ok(bytes) => objects.push((identity, bytes)),
+            Err(why) => panic!(
+                "{grade}: {identity} is installed here, so it is a toolchain a user has and this \
+                 grade has to cover it. Every attempt to get an x86-64 object out of it was \
+                 rejected, which is a gap in the grade rather than a fact about the host: {why}"
+            ),
+        }
+    }
+    let covered: Vec<&str> = objects
+        .iter()
+        .map(|(identity, _): &(String, Vec<u8>)| identity.as_str())
+        .collect();
+    println!(
+        "{grade}: graded {} of {} toolchain(s) on this host: {}",
+        objects.len(),
+        C_COMPILER_NAMES.len(),
+        covered.join(" | ")
+    );
+    objects
 }
 
 fn object_is_x86_64(bytes: &[u8]) -> bool {
@@ -567,34 +658,27 @@ const CARRY_CASES: &[(&str, RecoveredForm)] = &[
 
 #[test]
 fn real_compiler_carry_substitution_folds_back_to_addition() {
-    let compilers: Vec<(&'static str, String)> = distinct_c_compilers();
     let scratch: ScratchDir =
         ScratchDir::create("disrobe-ollvm-sibling-sub").expect("create scratch directory");
     let dir: std::path::PathBuf = scratch.path().to_path_buf();
+    let objects: Vec<(String, Vec<u8>)> = compiled_sibling_objects(
+        &dir,
+        "real_compiler_carry_substitution_folds_back_to_addition",
+    );
     let mut graded: u32 = 0;
-    let mut rejected: Vec<String> = Vec::new();
-    for (cc, identity) in &compilers {
-        let object_bytes: Vec<u8> = match compile_sibling_object(cc, &dir) {
-            Ok(bytes) => bytes,
-            Err(why) => {
-                eprintln!("NOT GRADED: {why}");
-                rejected.push(why);
-                continue;
-            }
-        };
+    for (identity, object_bytes) in &objects {
         for &(name, form) in CARRY_CASES {
-            let Some(code): Option<Vec<u8>> = function_code(&object_bytes, name) else {
+            let Some(code): Option<Vec<u8>> = function_code(object_bytes, name) else {
                 panic!("{identity}: {name} must be locatable in the object it just compiled");
             };
             assert_carry_identity_recovers(&format!("{identity}/{name}"), &code, form);
             graded += 1;
         }
     }
-    assert!(
-        graded > 0,
-        "this grade needs one C compiler out of cc/gcc/clang that can emit an x86-64 object; \
-         candidates were {compilers:?} and every attempt was rejected [{}]",
-        rejected.join(" | ")
+    assert_eq!(
+        graded as usize,
+        objects.len() * CARRY_CASES.len(),
+        "every carry case must be graded on every toolchain this host offers"
     );
     println!("graded {graded} real compiler-emitted carry-substitution functions");
 }
@@ -657,22 +741,16 @@ fn expected_even_predicate_outcome(block: &[u8]) -> OpaqueResult {
 
 #[test]
 fn real_compiler_opaque_even_predicate_folds_and_a_data_dependent_branch_survives() {
-    let compilers: Vec<(&'static str, String)> = distinct_c_compilers();
     let scratch: ScratchDir =
         ScratchDir::create("disrobe-ollvm-sibling-bcf").expect("create scratch directory");
     let dir: std::path::PathBuf = scratch.path().to_path_buf();
+    let objects: Vec<(String, Vec<u8>)> = compiled_sibling_objects(
+        &dir,
+        "real_compiler_opaque_even_predicate_folds_and_a_data_dependent_branch_survives",
+    );
     let mut graded: u32 = 0;
-    let mut rejected: Vec<String> = Vec::new();
-    for (cc, identity) in &compilers {
-        let object_bytes: Vec<u8> = match compile_sibling_object(cc, &dir) {
-            Ok(bytes) => bytes,
-            Err(why) => {
-                eprintln!("NOT GRADED: {why}");
-                rejected.push(why);
-                continue;
-            }
-        };
-        let Some(opaque): Option<Vec<u8>> = function_code(&object_bytes, "always_even_predicate")
+    for (identity, object_bytes) in &objects {
+        let Some(opaque): Option<Vec<u8>> = function_code(object_bytes, "always_even_predicate")
         else {
             panic!("{identity}: always_even_predicate must be locatable in the compiled object");
         };
@@ -699,7 +777,7 @@ fn real_compiler_opaque_even_predicate_folds_and_a_data_dependent_branch_survive
              {branch:?}"
         );
 
-        let Some(live): Option<Vec<u8>> = function_code(&object_bytes, "data_dependent_predicate")
+        let Some(live): Option<Vec<u8>> = function_code(object_bytes, "data_dependent_predicate")
         else {
             panic!("{identity}: data_dependent_predicate must be locatable in the compiled object");
         };
@@ -716,11 +794,10 @@ fn real_compiler_opaque_even_predicate_folds_and_a_data_dependent_branch_survive
         );
         graded += 1;
     }
-    assert!(
-        graded > 0,
-        "this grade needs one C compiler out of cc/gcc/clang that can emit an x86-64 object; \
-         candidates were {compilers:?} and every attempt was rejected [{}]",
-        rejected.join(" | ")
+    assert_eq!(
+        graded as usize,
+        objects.len(),
+        "every toolchain this host offers must contribute a predicate pair"
     );
     println!("graded {graded} real compiler-emitted predicate pairs");
 }
@@ -892,22 +969,16 @@ fn seed_xor_to_or_defect(code: &[u8]) -> Option<Vec<u8>> {
 
 #[test]
 fn a_seeded_xor_to_or_defect_is_rejected_by_the_real_compiler_carry_grade() {
-    let compilers: Vec<(&'static str, String)> = distinct_c_compilers();
     let scratch: ScratchDir =
         ScratchDir::create("disrobe-ollvm-sibling-mutant").expect("create scratch directory");
     let dir: std::path::PathBuf = scratch.path().to_path_buf();
+    let objects: Vec<(String, Vec<u8>)> = compiled_sibling_objects(
+        &dir,
+        "a_seeded_xor_to_or_defect_is_rejected_by_the_real_compiler_carry_grade",
+    );
     let mut graded: u32 = 0;
-    let mut rejected: Vec<String> = Vec::new();
-    for (cc, identity) in &compilers {
-        let object_bytes: Vec<u8> = match compile_sibling_object(cc, &dir) {
-            Ok(bytes) => bytes,
-            Err(why) => {
-                eprintln!("NOT GRADED: {why}");
-                rejected.push(why);
-                continue;
-            }
-        };
-        let Some(code): Option<Vec<u8>> = function_code(&object_bytes, "carry_add_shift") else {
+    for (identity, object_bytes) in &objects {
+        let Some(code): Option<Vec<u8>> = function_code(object_bytes, "carry_add_shift") else {
             panic!("{identity}: carry_add_shift must be locatable in the compiled object");
         };
         let Some(mutant): Option<Vec<u8>> = seed_xor_to_or_defect(&code) else {
@@ -951,11 +1022,10 @@ fn a_seeded_xor_to_or_defect_is_rejected_by_the_real_compiler_carry_grade() {
         );
         graded += 1;
     }
-    assert!(
-        graded > 0,
-        "this control needs one C compiler out of cc/gcc/clang that can emit an x86-64 object; \
-         candidates were {compilers:?} and every attempt was rejected [{}]",
-        rejected.join(" | ")
+    assert_eq!(
+        graded as usize,
+        objects.len(),
+        "the seeded defect must be rejected on every toolchain this host offers"
     );
     println!("rejected the seeded defect on {graded} real compiler-emitted functions");
 }
