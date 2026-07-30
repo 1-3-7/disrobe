@@ -82,7 +82,7 @@ The workspace has 61 crates under `crates/`, layered core -> ir -> passes -> sur
 5. Add a fixture under `corpus/` (next section) and a test that pins behavior against it.
 6. Benchmark with `cargo bench -p disrobe-pass-<name>` and note the baseline in the PR.
 
-**Grey-zone protectors** (commercial obfuscators with active legal programs: VMProtect, Themida, certain DRM stacks) require an issue first. Any pass that targets one of them gets a research review before it ships. The review is not there to discourage the work; it documents the statutory basis before code lands.
+**Gray-zone protectors** (commercial obfuscators with active legal programs: VMProtect, Themida, certain DRM stacks) require an issue first. Any pass that targets one of them gets a research review before it ships. The review is not there to discourage the work; it documents the statutory basis before code lands.
 
 ## Adding a fixture
 

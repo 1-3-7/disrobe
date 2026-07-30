@@ -288,7 +288,7 @@ Every default path is pure static analysis and never executes the sample. The pi
 
 ## Documentation
 
-Full docs site: [`1-3-7.github.io/disrobe`](https://1-3-7.github.io/disrobe/), covering the architecture, the IR ladder, the chain runner, per-language guides, the Python-bindings reference, the complete CLI reference, and the safety posture. The book source is under [`docs/`](docs/). [Per-protector stances](https://1-3-7.github.io/disrobe/latest/legal.html#per-protector-stances-on-file) records the legal posture behind a grey-zone recognizer escalating to a full peel.
+Full docs site: [`1-3-7.github.io/disrobe`](https://1-3-7.github.io/disrobe/), covering the architecture, the IR ladder, the chain runner, per-language guides, the Python-bindings reference, the complete CLI reference, and the safety posture. The book source is under [`docs/`](docs/). [Per-protector stances](https://1-3-7.github.io/disrobe/latest/legal.html#per-protector-stances-on-file) records the legal posture behind a gray-zone recognizer escalating to a full peel.
 
 Integrations: a [GitHub Action](docs/src/integrations/github-action.md) that scans a path or glob and uploads SARIF to code scanning, a [pre-commit hook](docs/src/integrations/pre-commit.md) that blocks a commit on a packed or obfuscated artifact, an [MCP server](docs/src/integrations/mcp.md), and [editor plugins](docs/src/integrations/editor-plugins.md) for VS Code, IDA Pro, Ghidra, and Binary Ninja.
 
