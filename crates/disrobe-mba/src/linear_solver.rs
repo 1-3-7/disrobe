@@ -103,7 +103,11 @@ fn faithful_bitwise(expr: &Expr, width: Width, face_value_constants: bool) -> bo
     match expr {
         Expr::Const(value) => {
             let masked: u64 = value & width.mask();
-            masked == 0 || (face_value_constants && masked == width.mask())
+            if face_value_constants {
+                masked == 0 || masked == width.mask()
+            } else {
+                *value == 0
+            }
         }
         Expr::Var(_) => true,
         Expr::Unary(UnOp::Not, inner) => faithful_bitwise(inner, width, face_value_constants),

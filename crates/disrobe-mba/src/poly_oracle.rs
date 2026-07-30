@@ -194,35 +194,134 @@ fn var_upper_bound(expr: &Expr, bound: &mut u32) {
     }
 }
 
-fn concrete_refutes(original: &Expr, candidate: &Expr, width: Width) -> bool {
+const MIXED_PROBE_ROUNDS: usize = 64;
+const RANDOM_PROBE_ROUNDS: usize = 64;
+
+fn lift_memory_leaves(expr: &Expr, table: &mut Vec<Expr>, first_free: u32) -> Expr {
+    match expr {
+        Expr::Mem(_, load_width) => {
+            let position: usize = table
+                .iter()
+                .position(|entry: &Expr| entry == expr)
+                .unwrap_or(table.len());
+            if position == table.len() {
+                table.push(expr.clone());
+            }
+            let Ok(offset): Result<u32, _> = u32::try_from(position) else {
+                return expr.clone();
+            };
+            let Some(index): Option<u32> = first_free.checked_add(offset) else {
+                return expr.clone();
+            };
+            Expr::and(Expr::var(index), Expr::konst(load_width.mask()))
+        }
+        Expr::Const(_) | Expr::Var(_) => expr.clone(),
+        Expr::Unary(op, inner) => {
+            Expr::Unary(*op, Box::new(lift_memory_leaves(inner, table, first_free)))
+        }
+        Expr::Binary(op, left, right) => Expr::Binary(
+            *op,
+            Box::new(lift_memory_leaves(left, table, first_free)),
+            Box::new(lift_memory_leaves(right, table, first_free)),
+        ),
+        Expr::Ite(cond, then_branch, else_branch) => Expr::Ite(
+            Box::new(lift_memory_leaves(cond, table, first_free)),
+            Box::new(lift_memory_leaves(then_branch, table, first_free)),
+            Box::new(lift_memory_leaves(else_branch, table, first_free)),
+        ),
+        Expr::Slice(inner, lo, hi) => Expr::Slice(
+            Box::new(lift_memory_leaves(inner, table, first_free)),
+            *lo,
+            *hi,
+        ),
+        Expr::Compose(low, high, low_bits) => Expr::Compose(
+            Box::new(lift_memory_leaves(low, table, first_free)),
+            Box::new(lift_memory_leaves(high, table, first_free)),
+            *low_bits,
+        ),
+    }
+}
+
+fn probe_values(width: Width) -> Vec<u64> {
     let mask: u64 = width.mask();
-    let mut var_count: u32 = 0;
-    var_upper_bound(original, &mut var_count);
-    var_upper_bound(candidate, &mut var_count);
-    let corners: [u64; 6] = [
+    let bits: u32 = width.bits();
+    let sign: u64 = 1u64 << (bits - 1);
+    let mut values: Vec<u64> = vec![
         0,
-        1,
+        1 & mask,
+        2 & mask,
         mask,
         mask ^ 1,
+        mask.wrapping_sub(2) & mask,
+        sign,
+        sign.wrapping_sub(1) & mask,
+        sign.wrapping_add(1) & mask,
         0x5555_5555_5555_5555 & mask,
         0xAAAA_AAAA_AAAA_AAAA & mask,
     ];
-    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
-    for round in 0..64u32 {
-        let mut env: Vec<u64> = Vec::with_capacity(var_count as usize);
-        for index in 0..var_count {
-            let value: u64 = if (round as usize) < corners.len() {
-                corners[round as usize]
-            } else {
-                state ^= state << 13;
-                state ^= state >> 7;
-                state ^= state << 17;
-                state = state.wrapping_add(u64::from(index).wrapping_mul(0x1000_0001B));
-                state & mask
-            };
-            env.push(value);
+    for bit in 0..bits {
+        let power: u64 = (1u64 << bit) & mask;
+        values.push(power);
+        values.push(power.wrapping_sub(1) & mask);
+        values.push(power.wrapping_add(1) & mask);
+    }
+    values.sort_unstable();
+    values.dedup();
+    values
+}
+
+const fn advance(state: &mut u64) -> u64 {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    *state
+}
+
+fn concrete_refutes(original: &Expr, candidate: &Expr, width: Width) -> bool {
+    let mask: u64 = width.mask();
+    let mut leaf_base: u32 = 0;
+    var_upper_bound(original, &mut leaf_base);
+    var_upper_bound(candidate, &mut leaf_base);
+    let mut table: Vec<Expr> = Vec::new();
+    let probe_original: Expr = lift_memory_leaves(original, &mut table, leaf_base);
+    let probe_candidate: Expr = lift_memory_leaves(candidate, &mut table, leaf_base);
+    let Ok(extra): Result<u32, _> = u32::try_from(table.len()) else {
+        return false;
+    };
+    let Some(var_count): Option<u32> = leaf_base.checked_add(extra) else {
+        return false;
+    };
+    let mut env: Vec<u64> = vec![0; var_count as usize];
+    let differs = |assignment: &[u64]| -> bool {
+        probe_original.eval(assignment, width) & mask
+            != probe_candidate.eval(assignment, width) & mask
+    };
+    if var_count == 0 {
+        return differs(&env);
+    }
+    let values: Vec<u64> = probe_values(width);
+    for value in &values {
+        env.fill(*value);
+        if differs(&env) {
+            return true;
         }
-        if original.eval(&env, width) & mask != candidate.eval(&env, width) & mask {
+    }
+    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+    for _ in 0..MIXED_PROBE_ROUNDS {
+        for slot in &mut env {
+            let draw: u64 = advance(&mut state);
+            let position: usize = (draw % values.len() as u64) as usize;
+            *slot = values.get(position).copied().unwrap_or(0);
+        }
+        if differs(&env) {
+            return true;
+        }
+    }
+    for _ in 0..RANDOM_PROBE_ROUNDS {
+        for slot in &mut env {
+            *slot = advance(&mut state) & mask;
+        }
+        if differs(&env) {
             return true;
         }
     }
@@ -271,6 +370,32 @@ fn induces_zero_over_free_atoms(
         return false;
     };
     crate::finite_diff::multivar_induces_zero(&rows, atom_count, width)
+}
+
+pub(crate) fn congruent_to_constant(
+    expr: &Expr,
+    constant: u64,
+    width: Width,
+    reduction: Width,
+) -> bool {
+    if reduction.bits() > width.bits() {
+        return false;
+    }
+    let mut atoms: AtomTable = AtomTable::default();
+    let Some(poly): Option<Poly> = normalize(expr, width, &mut atoms) else {
+        return false;
+    };
+    let atom_count: usize = atoms.registry.len();
+    if atom_count > MAX_CERTIFICATE_ATOMS {
+        return false;
+    }
+    let target: Poly = poly_constant(constant & width.mask());
+    let Some(rows): Option<Vec<(Vec<u32>, u128)>> =
+        difference_monomials(&poly, &target, width.mask(), atom_count)
+    else {
+        return false;
+    };
+    crate::finite_diff::multivar_induces_zero(&rows, atom_count, reduction)
 }
 
 #[must_use]

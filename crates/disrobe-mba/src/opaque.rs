@@ -316,16 +316,101 @@ pub fn classify(predicate: &Predicate, width: Width) -> OpaqueVerdict {
         }
     }
     match (seen_true, seen_false) {
-        (true, false) => OpaqueVerdict::AlwaysTrue {
-            verified_width: eval_width,
-            lifted,
-        },
-        (false, true) => OpaqueVerdict::AlwaysFalse {
-            verified_width: eval_width,
-            lifted,
-        },
+        (true, false) => settle_constant(predicate, width, eval_width, lifted, true),
+        (false, true) => settle_constant(predicate, width, eval_width, lifted, false),
         _ => OpaqueVerdict::DataDependent,
     }
+}
+
+const fn low_mask_bits(value: u64) -> Option<u32> {
+    if value == 0 || value & value.wrapping_add(1) != 0 {
+        return None;
+    }
+    Some(value.count_ones())
+}
+
+fn split_low_mask(expr: &Expr, width: Width) -> Option<(&Expr, u32)> {
+    let Expr::Binary(crate::expr::BinOp::And, left, right) = expr else {
+        return None;
+    };
+    if let Expr::Const(value) = right.as_ref()
+        && let Some(bits) = low_mask_bits(value & width.mask())
+    {
+        return Some((left.as_ref(), bits));
+    }
+    if let Expr::Const(value) = left.as_ref()
+        && let Some(bits) = low_mask_bits(value & width.mask())
+    {
+        return Some((right.as_ref(), bits));
+    }
+    None
+}
+
+fn certified_constant(predicate: &Predicate, width: Width) -> Option<bool> {
+    let zero: Expr = Expr::konst(0);
+    let (op, left, right): (CmpOp, &Expr, &Expr) = match predicate {
+        Predicate::Compare { op, left, right } => (*op, left, right),
+        Predicate::Nonzero(inner) => (CmpOp::Ne, inner, &zero),
+        Predicate::Or(_, _) | Predicate::And(_, _) => return None,
+    };
+    let value_when_congruent: bool = match op {
+        CmpOp::Eq => true,
+        CmpOp::Ne => false,
+        CmpOp::UnsignedLt
+        | CmpOp::UnsignedLe
+        | CmpOp::UnsignedGt
+        | CmpOp::UnsignedGe
+        | CmpOp::SignedLt
+        | CmpOp::SignedLe
+        | CmpOp::SignedGt
+        | CmpOp::SignedGe => return None,
+    };
+    let Expr::Const(target) = right else {
+        return None;
+    };
+    let (source, reduction_bits): (&Expr, u32) = split_low_mask(left, width)
+        .map_or_else(|| (left, width.bits()), |(inner, bits)| (inner, bits));
+    let reduction: Width = Width::from_bits(reduction_bits)?;
+    let target: u64 = target & width.mask();
+    if target & reduction.mask() != target {
+        return None;
+    }
+    crate::poly_oracle::congruent_to_constant(source, target, width, reduction)
+        .then_some(value_when_congruent)
+}
+
+const fn constant_verdict_at(value: bool, verified_width: Width) -> OpaqueVerdict {
+    if value {
+        OpaqueVerdict::AlwaysTrue {
+            verified_width,
+            lifted: false,
+        }
+    } else {
+        OpaqueVerdict::AlwaysFalse {
+            verified_width,
+            lifted: false,
+        }
+    }
+}
+
+fn settle_constant(
+    predicate: &Predicate,
+    requested: Width,
+    eval_width: Width,
+    lifted: bool,
+    value: bool,
+) -> OpaqueVerdict {
+    if !lifted {
+        return constant_verdict_at(value, eval_width);
+    }
+    if certified_constant(predicate, requested) == Some(value) {
+        return constant_verdict_at(value, requested);
+    }
+    #[cfg(feature = "smt-verify")]
+    let settled: OpaqueVerdict = crate::verify::classify_predicate(predicate, requested);
+    #[cfg(not(feature = "smt-verify"))]
+    let settled: OpaqueVerdict = OpaqueVerdict::OutOfBudget;
+    settled
 }
 
 fn classify_compound(predicate: &Predicate, width: Width) -> Option<OpaqueVerdict> {
@@ -511,22 +596,45 @@ mod tests {
     }
 
     #[test]
-    fn wide_width_lifts_and_flags() {
+    fn wide_width_parity_settles_at_the_requested_width() {
         let predicate: Predicate = Predicate::eq(
             Expr::and(x_squared_plus_x(), Expr::konst(1)),
             Expr::konst(0),
         );
-        let verdict: OpaqueVerdict = classify(&predicate, Width::W64);
-        match verdict {
+        assert_eq!(
+            budgeted_eval_width(Width::W64, 1),
+            Some((Width::W16, true)),
+            "this shape must still take the budget lift, otherwise the guard below is vacuous"
+        );
+        assert_eq!(
+            classify(&predicate, Width::W64),
             OpaqueVerdict::AlwaysTrue {
-                verified_width,
-                lifted,
-            } => {
-                assert_eq!(verified_width, Width::W16);
-                assert!(lifted);
+                verified_width: Width::W64,
+                lifted: false
             }
-            other => panic!("expected lifted AlwaysTrue, got {other:?}"),
-        }
+        );
+    }
+
+    #[test]
+    fn parity_reduction_settles_without_the_bit_blaster() {
+        let predicate: Predicate = Predicate::eq(
+            Expr::and(x_squared_plus_x(), Expr::konst(1)),
+            Expr::konst(0),
+        );
+        assert_eq!(certified_constant(&predicate, Width::W64), Some(true));
+        assert_eq!(certified_constant(&predicate, Width::W32), Some(true));
+    }
+
+    #[test]
+    fn a_high_bit_test_is_not_certified_by_the_reduction() {
+        let shifted: Predicate =
+            Predicate::eq(Expr::shr(Expr::var(0), Expr::konst(16)), Expr::konst(0));
+        assert_eq!(certified_constant(&shifted, Width::W32), None);
+        let scaled: Predicate = Predicate::eq(
+            Expr::mul(Expr::var(0), Expr::konst(0x1_0000)),
+            Expr::konst(0),
+        );
+        assert_eq!(certified_constant(&scaled, Width::W32), None);
     }
 
     #[test]
@@ -536,16 +644,22 @@ mod tests {
             Expr::mul(Expr::var(2), Expr::konst(0)),
         );
         let predicate: Predicate = Predicate::eq(Expr::and(body, Expr::konst(0)), Expr::konst(0));
+        assert_eq!(
+            budgeted_eval_width(Width::W16, 3),
+            Some((Width::W4, true)),
+            "this shape must still take the budget lift, otherwise the guard below is vacuous"
+        );
         let verdict: OpaqueVerdict = classify(&predicate, Width::W16);
-        match verdict {
-            OpaqueVerdict::AlwaysTrue {
-                verified_width,
-                lifted,
-            } => {
-                assert_eq!(verified_width, Width::W4);
-                assert!(lifted);
-            }
-            other => panic!("expected budgeted lifted AlwaysTrue at W4, got {other:?}"),
+        if cfg!(feature = "smt-verify") {
+            assert_eq!(
+                verdict,
+                OpaqueVerdict::AlwaysTrue {
+                    verified_width: Width::W16,
+                    lifted: false
+                }
+            );
+        } else {
+            assert_eq!(verdict, OpaqueVerdict::OutOfBudget);
         }
     }
 
@@ -571,21 +685,51 @@ mod tests {
     }
 
     #[test]
-    fn two_var_w16_lifts_into_budget() {
+    fn two_var_w16_settles_a_budget_lift_at_the_requested_width() {
         let predicate: Predicate = Predicate::eq(
             Expr::and(Expr::sub(Expr::var(0), Expr::var(0)), Expr::var(1)),
             Expr::konst(0),
         );
+        assert_eq!(
+            budgeted_eval_width(Width::W16, 2),
+            Some((Width::W8, true)),
+            "this shape must still take the budget lift, otherwise the guard below is vacuous"
+        );
         let verdict: OpaqueVerdict = classify(&predicate, Width::W16);
-        match verdict {
-            OpaqueVerdict::AlwaysTrue {
-                verified_width,
-                lifted,
-            } => {
-                assert_eq!(verified_width, Width::W8);
-                assert!(lifted);
+        if cfg!(feature = "smt-verify") {
+            assert_eq!(
+                verdict,
+                OpaqueVerdict::AlwaysTrue {
+                    verified_width: Width::W16,
+                    lifted: false
+                }
+            );
+        } else {
+            assert_eq!(verdict, OpaqueVerdict::OutOfBudget);
+        }
+    }
+
+    #[test]
+    fn a_constant_verdict_is_never_reported_as_lifted() {
+        let shapes: [Predicate; 3] = [
+            Predicate::eq(
+                Expr::and(Expr::sub(Expr::var(0), Expr::var(0)), Expr::var(1)),
+                Expr::konst(0),
+            ),
+            Predicate::eq(Expr::shr(Expr::var(0), Expr::konst(16)), Expr::konst(0)),
+            Predicate::eq(
+                Expr::and(Expr::var(0), Expr::konst(0xFFFF_0000)),
+                Expr::konst(0),
+            ),
+        ];
+        for width in [Width::W8, Width::W16, Width::W32, Width::W64] {
+            for predicate in &shapes {
+                let verdict: OpaqueVerdict = classify(predicate, width);
+                assert!(
+                    !verdict_lifted(verdict),
+                    "`{predicate:?}` at {width:?} produced the lifted constant verdict {verdict:?}"
+                );
             }
-            other => panic!("expected budgeted lifted AlwaysTrue at W8, got {other:?}"),
         }
     }
 
