@@ -19,9 +19,9 @@ const DESCRIPTOR_DIR = join(ROOT, "evidence", "descriptors");
 
 const UNBOUND_INSTRUMENT_TIERS = [
   {
-    instrument: "crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs",
+    instrument: "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs",
     strength: STRONG,
-    quoted: "grades every recovered name against go tool nm on the same build",
+    quoted: "against the committed `go tool nm` symbol dump beside it",
   },
 ];
 
