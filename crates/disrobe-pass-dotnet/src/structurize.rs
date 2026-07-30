@@ -17,6 +17,7 @@ pub enum TargetLang {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructuredMethod {
+    pub token: u32,
     pub signature: String,
     pub body: String,
     pub statement_count: u32,
@@ -2404,6 +2405,7 @@ fn finish_structured(
     let statement_count: u32 = u32::try_from(recovered_body.lines().count()).unwrap_or(u32::MAX);
     let used_locals: Vec<u32> = recovered.locals_used.iter().copied().collect();
     StructuredMethod {
+        token: 0,
         signature: signature.to_owned(),
         body: text,
         statement_count,

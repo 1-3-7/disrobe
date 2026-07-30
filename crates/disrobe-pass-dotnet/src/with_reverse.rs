@@ -587,6 +587,7 @@ mod tests {
 
     fn structured(body: &str) -> StructuredMethod {
         StructuredMethod {
+            token: 0,
             signature: "EdgeCases.Coordinate Shift(EdgeCases.Coordinate c, double dx, double dy)"
                 .to_owned(),
             body: body.to_owned(),

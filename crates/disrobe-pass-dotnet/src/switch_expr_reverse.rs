@@ -807,6 +807,7 @@ mod tests {
 
     fn method(body: &str) -> StructuredMethod {
         StructuredMethod {
+            token: 0,
             signature: "// Sample.Constructs\npublic static string Classify(string kind)"
                 .to_owned(),
             body: body.to_owned(),
