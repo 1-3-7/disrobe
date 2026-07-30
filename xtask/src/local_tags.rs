@@ -29,6 +29,8 @@ struct Record {
     citation: String,
 }
 
+const UNTRACKED_DECLARATION: &str = "gitignored";
+
 #[derive(Debug, PartialEq, Eq)]
 enum TrackedFixture {
     File { path: String },
@@ -344,20 +346,38 @@ fn contradictions(
             unresolved += 1;
             continue;
         }
+        if record.citation.contains(UNTRACKED_DECLARATION) {
+            continue;
+        }
+        let mut named: Vec<(String, String)> = Vec::new();
         for test in &cited {
             let Some(source): Option<&String> = sources.get(test) else {
                 continue;
             };
-            for fragment in &named_fragments(source) {
-                if let Some(fixture) = tracked_fixture(fragment, tracked) {
-                    found.push(Finding {
-                        document: record.document.clone(),
-                        label: record.label.clone(),
-                        test: test.clone(),
-                        named: fragment.clone(),
-                        tracked: fixture,
-                    });
+            for fragment in named_fragments(source) {
+                if is_fixture_path(&fragment) {
+                    named.push((test.clone(), fragment));
                 }
+            }
+        }
+        if named.is_empty() {
+            continue;
+        }
+        let reads_untracked: bool = named
+            .iter()
+            .any(|(_, fragment): &(String, String)| tracked_fixture(fragment, tracked).is_none());
+        if reads_untracked {
+            continue;
+        }
+        for (test, fragment) in named {
+            if let Some(fixture) = tracked_fixture(&fragment, tracked) {
+                found.push(Finding {
+                    document: record.document.clone(),
+                    label: record.label.clone(),
+                    test,
+                    named: fragment,
+                    tracked: fixture,
+                });
             }
         }
     }

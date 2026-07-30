@@ -55,7 +55,11 @@ DexGuard hides string constants in an encrypted static `String[]` decrypted at r
 
 ## Limits
 
-- The Dalvik body figure measured on the gitignored real FOSS apks is a self-report, not verifier-attested. On those apks the lifter self-reports a lowered body for 89% to <!-- m:dalvik_body_pct -->92.5%<!-- /m --> of methods (transmissionic <!-- m:dalvik_body_pct -->92.5%<!-- /m -->, enrecipes 90.7%, rustdesk 89.0%), but that figure counts the lifter returning a body rather than a throw-stub; those apks cannot run in CI.
+- The Dalvik body figure measured on the gitignored real FOSS apks is a self-report, not verifier-attested. Across all three apks the lifter self-reports a lowered body for <!-- m:dalvik_body_frac -->82788 / 89516<!-- /m --> defined methods, <!-- m:dalvik_body_pct -->92.5%<!-- /m -->. That is the corpus total and not any single apk. The figure counts the lifter returning a body rather than a throw-stub, so it grades its own output. Those apks are gitignored, so neither figure below re-derives in CI.
+
+Per apk, self-reported bodies over defined methods: transmissionic 26192 of 27805, rustdesk 29376 of 32410, enrecipes 27220 of 29301.
+
+A separate and much smaller population is graded by the real JVM rather than self-reported. Of 82756 non-stub candidate bodies, a deterministic 100-permille sample takes 8343, and 2994 of those can be re-hosted into an isolated carrier. Of the ones presented, 2960 pass `-Xverify:all`. The remaining 5349 are excluded by harness limits and are ungraded rather than passing: 1400 constructors, 1672 invokespecial receivers, 2128 unresolvable framework dependencies, and 149 others.
 - Runtime-keyed string schemes (system property, environment, clock, secure random, or a live cross-class table, as Stringer sometimes uses) are flagged as walled instead of faked.
 - A DexGuard routine that derives its key from runtime-only state (a system property, the environment, the clock, or a secure random) is reported as runtime-keyed rather than guessed.
 - Commercial DexGuard is paid Guardsquare software whose protected output is unsafe to build on an analysis box, so that path is validated against a self-authored benign dex that exhibits the same reflection-string-decryption technique, graded against its authored plaintext.

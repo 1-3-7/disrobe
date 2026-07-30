@@ -117,6 +117,16 @@ impl Bar {
         self.detected
             .ok_or_else(|| eyre!("bar `{}` has no detected count", self.label))
     }
+
+    fn numerator(&self) -> Result<u64> {
+        self.num
+            .ok_or_else(|| eyre!("bar `{}` has no `num` count", self.label))
+    }
+
+    fn denominator(&self) -> Result<u64> {
+        self.den
+            .ok_or_else(|| eyre!("bar `{}` has no `den` count", self.label))
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -356,6 +366,21 @@ const KEYS: &[KeySpec] = &[
         extract: |r: &Recovery| {
             r.bar("Dalvik recovered bodies", "verifier-clean (committed, CI)")?
                 .percent()
+        },
+    },
+    KeySpec {
+        name: "dalvik_body_frac",
+        formatter: Formatter::Frac,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            let bar: &Bar = r.bar(
+                "Dalvik recovered bodies",
+                "body-lowering (real apks, local)",
+            )?;
+            Ok(MetricValue::Ratio {
+                num: bar.numerator()?,
+                den: bar.denominator()?,
+            })
         },
     },
     KeySpec {

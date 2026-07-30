@@ -570,7 +570,7 @@ Oracle strength `coverage-self-reported`: the tool counts its own coverage; no e
 
 | Metric | Measured | Oracle | Reproduce |
 |---|---|---|---|
-| Android DEX, real APKs | transmissionic <!-- m:dalvik_body_pct -->92.5%<!-- /m --> / enrecipes 90.7% / rustdesk 89.0% of methods recover a body, >= 20k methods each `[local]` `coverage-self-reported` | per-method body-recovery count, self-reported (NOT verifier-attested); the verifier-attested number is the committed-corpus row above | `crates/disrobe-pass-jvm/tests/dex2jar_realworld_apks.rs` |
+| Android DEX, real APKs | <!-- m:dalvik_body_frac -->82788 / 89516<!-- /m --> defined methods recover a body, <!-- m:dalvik_body_pct -->92.5%<!-- /m --> `[local]` `coverage-self-reported`, measured on three gitignored real apks. That is the total across all three and not any one of them; the per-apk split, and a separate verifier-attested population with its own smaller denominator, are in the [Android guide](docs/src/languages/jvm-android.md) | per-method body count, self-reported by the lifter rather than graded; the attested figure in the guide is graded by real `java -Xverify:all` over bodies, not methods | `crates/disrobe-pass-jvm/tests/dalvik_realworld_body_attest.rs`, `dex2jar_realworld_apks.rs` |
 
 <details>
 <summary>Reproduce every number</summary>
