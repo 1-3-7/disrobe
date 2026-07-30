@@ -3,7 +3,7 @@
 - id: `dalvik-verifier`
 - ecosystem: android
 - claim: disrobe re-hosts Dalvik method bodies into class bytecode that the real JVM bytecode verifier accepts under -Xverify:all, on the committed dex corpus.
-- measured: 99.00%
+- measured: 100.00%
 - oracle strength: strong
 - CI-attested: yes [CI]
 - external oracle: real JVM verifier (-Xverify:all over the assembled jar; the JVM rejects malformed bytecode)

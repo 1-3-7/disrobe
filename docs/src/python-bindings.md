@@ -979,7 +979,7 @@ swift_slice_count: int = swift.slice_count
 ## JVM and Android
 
 131 of 131 JVM methods recompile error-free under javac (CI floor 131 of 131,
-JDK 25). <!-- m:dalvik_verifier_pct -->99%<!-- /m --> of committed DEX classes pass `-Xverify:all`.
+JDK 25). <!-- m:dalvik_verifier_pct -->100%<!-- /m --> of presentable committed DEX classes pass `-Xverify:all`, with 53 of the 155 classes link-skipped and never presented.
 
 ```python
 import disrobe
