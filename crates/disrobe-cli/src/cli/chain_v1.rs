@@ -308,6 +308,68 @@ fn render_anti_analysis(report: &AntiAnalysisReport) {
     }
 }
 
+fn delphi_report_for(bytes: &[u8]) -> Option<disrobe_pass_native::delphi::DelphiReport> {
+    disrobe_pass_native::detect_delphi(bytes).then(|| disrobe_pass_native::delphi::analyze(bytes))
+}
+
+fn render_delphi(report: Option<&disrobe_pass_native::delphi::DelphiReport>) {
+    let Some(report): Option<&disrobe_pass_native::delphi::DelphiReport> = report else {
+        return;
+    };
+    if !report.is_delphi {
+        println!("delphi: a Delphi signal fired, the analysis confirmed no Delphi structure");
+        render_delphi_notes(report);
+        return;
+    }
+    println!("delphi: built with Delphi or C++Builder");
+    render_delphi_version(&report.version);
+    if report.classes.is_empty() {
+        println!("  delphi: no class recovered from a virtual method table");
+    } else {
+        let unattributed: usize = report
+            .classes
+            .len()
+            .saturating_sub(report.author_class_count + report.library_class_count);
+        println!(
+            "  delphi: {} class(es) recovered ({} author, {} runtime library, {} unattributed)",
+            report.classes.len(),
+            report.author_class_count,
+            report.library_class_count,
+            unattributed
+        );
+    }
+    if !report.types.is_empty() {
+        println!("  delphi: {} RTTI type record(s)", report.types.len());
+    }
+    println!(
+        "  delphi: {} DFM form resource(s) decoded",
+        report.forms.len()
+    );
+    render_delphi_notes(report);
+}
+
+fn render_delphi_version(version: &disrobe_pass_native::delphi::DelphiVersion) {
+    match version.product.as_deref() {
+        Some(product) => {
+            let symbol: &str = version.ver_symbol.as_deref().unwrap_or("no VER symbol");
+            println!("  delphi: version {product} ({symbol})");
+        }
+        None if version.conflicts.is_empty() => {
+            println!("  delphi: version not named; no signal resolved a single release");
+        }
+        None => println!(
+            "  delphi: version not named; {} version signal(s) disagree, listed below",
+            version.conflicts.len()
+        ),
+    }
+}
+
+fn render_delphi_notes(report: &disrobe_pass_native::delphi::DelphiReport) {
+    for note in &report.notes {
+        println!("  delphi note: {note}");
+    }
+}
+
 fn build_registry() -> PassRegistry {
     let mut r: PassRegistry = PassRegistry::new();
     r.register(&disrobe_pass_pyarmor::chain_detector::PYARMOR_PASS);
@@ -449,6 +511,8 @@ pub(crate) fn run_with_disk(
         Some(&input.display().to_string()),
         &chain_evidence(&plan),
     );
+    let delphi: Option<disrobe_pass_native::delphi::DelphiReport> =
+        delphi_report_for(&seed_for_scan);
     let doc: ChainDocument = ChainDocument::from_plan(
         &plan,
         &spec,
@@ -466,6 +530,7 @@ pub(crate) fn run_with_disk(
         emit(fmt, &doc, || {
             println!("chain.json (dry-run; nothing written to disk)");
             render_anti_analysis(&anti);
+            render_delphi(delphi.as_ref());
             if let Some(guidance) = py_guidance.as_ref() {
                 eprintln!();
                 eprint!("{guidance}");
@@ -502,6 +567,17 @@ pub(crate) fn run_with_disk(
     std::fs::write(&anti_path, &anti_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0308: cannot write anti-analysis.json: {e}"))?;
     let anti_path_str: String = anti_path.display().to_string();
+    let delphi_path_str: Option<String> = match delphi.as_ref() {
+        None => None,
+        Some(report) => {
+            let delphi_path: PathBuf = out_dir.join("delphi.json");
+            let delphi_bytes: Vec<u8> = serde_json::to_vec_pretty(report)
+                .map_err(|e| miette::miette!("DR-CLI-0314: delphi.json serialize: {e}"))?;
+            std::fs::write(&delphi_path, &delphi_bytes)
+                .map_err(|e| miette::miette!("DR-CLI-0315: cannot write delphi.json: {e}"))?;
+            Some(delphi_path.display().to_string())
+        }
+    };
     let mut extracted_written: Vec<String> = streamed;
     extracted_written.extend(write_extracted_children(&out_dir, &plan)?);
     let extracted_dir_str: String = out_dir.join("extracted").display().to_string();
@@ -528,6 +604,9 @@ pub(crate) fn run_with_disk(
         println!("chain.json written: {chain_path_str}");
         println!("recovery.json written: {recovery_path_str}");
         println!("anti-analysis.json written: {anti_path_str}");
+        if let Some(path) = delphi_path_str.as_ref() {
+            println!("delphi.json written: {path}");
+        }
         if !extracted_written.is_empty() {
             println!(
                 "extracted {} file(s) to {extracted_dir_str}",
@@ -544,6 +623,7 @@ pub(crate) fn run_with_disk(
             println!("{summary}");
         }
         render_anti_analysis(&anti);
+        render_delphi(delphi.as_ref());
         if let Some(guidance) = py_guidance.as_ref() {
             eprintln!();
             eprint!("{guidance}");
