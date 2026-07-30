@@ -18,10 +18,28 @@ pub struct TaintFinding {
     pub path: Vec<TaintStep>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UnresolvedCallKind {
+    UnnamedTarget,
+    IndirectTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UnresolvedCall {
+    pub function: String,
+    pub function_address: u64,
+    pub site: u64,
+    pub kind: UnresolvedCallKind,
+    pub target: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct TaintReport {
     findings: Vec<TaintFinding>,
     truncated: bool,
+    unresolved_calls: Vec<UnresolvedCall>,
+    unresolved_call_count: usize,
 }
 
 impl TaintReport {
@@ -30,6 +48,8 @@ impl TaintReport {
         Self {
             findings,
             truncated: false,
+            unresolved_calls: Vec::new(),
+            unresolved_call_count: 0,
         }
     }
 
@@ -38,7 +58,20 @@ impl TaintReport {
         Self {
             findings,
             truncated,
+            unresolved_calls: Vec::new(),
+            unresolved_call_count: 0,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_unresolved_calls(
+        mut self,
+        unresolved_calls: Vec<UnresolvedCall>,
+        unresolved_call_count: usize,
+    ) -> Self {
+        self.unresolved_calls = unresolved_calls;
+        self.unresolved_call_count = unresolved_call_count;
+        self
     }
 
     #[must_use]
@@ -64,6 +97,30 @@ impl TaintReport {
     #[must_use]
     pub const fn is_truncated(&self) -> bool {
         self.truncated
+    }
+
+    #[must_use]
+    pub fn unresolved_calls(&self) -> &[UnresolvedCall] {
+        &self.unresolved_calls
+    }
+
+    #[must_use]
+    pub const fn unresolved_call_count(&self) -> usize {
+        self.unresolved_call_count
+    }
+
+    #[must_use]
+    pub const fn has_unresolved_calls(&self) -> bool {
+        self.unresolved_call_count > 0
+    }
+
+    #[must_use]
+    pub fn unresolved_call_sites(&self, function: &str) -> Vec<u64> {
+        self.unresolved_calls
+            .iter()
+            .filter(|call: &&UnresolvedCall| call.function == function)
+            .map(|call: &UnresolvedCall| call.site)
+            .collect()
     }
 
     #[must_use]
