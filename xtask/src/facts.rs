@@ -9,7 +9,7 @@ use crate::fileio::read_text_bounded;
 const MAX_RECOVERY_JSON_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 const IGNORE_LOOKBACK_BYTES: usize = 256;
-const VERIFIED_FLOOR: usize = 17;
+const VERIFIED_FLOOR: usize = 24;
 
 #[derive(Debug, Deserialize)]
 struct Recovery {
