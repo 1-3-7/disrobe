@@ -32,6 +32,14 @@ fn xor_of_two_encodings_of_the_same_sum_cancels_to_zero() {
 fn top_level_simplify_reaches_the_mixed_reduction_and_tags_it() {
     let obfuscated: Expr = Expr::xor(hidden_sum(0, 1), Expr::add(var(0), var(1)));
     let result: Simplification = simplify(&obfuscated, Width::W16);
+    if !cfg!(feature = "smt-verify") {
+        assert!(
+            !result.changed(),
+            "two W16 variables are beyond the enumerable core, so without the bit-blasting leg this construct must be left alone, got `{}`",
+            result.simplified
+        );
+        return;
+    }
     assert!(result.changed());
     assert_eq!(result.simplified, Expr::konst(0));
     assert!(

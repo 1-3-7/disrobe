@@ -104,7 +104,11 @@ fn verify_whole(original: &Expr, candidate: &Expr, width: Width) -> bool {
                 .max_var()
                 .map_or(0, |index: u32| index.saturating_add(1)),
         );
-    if width.is_exhaustible() && equivalent_exhaustive_runnable(width, var_count) {
+    if crate::simplify::expr_is_eval_faithful(original)
+        && crate::simplify::expr_is_eval_faithful(candidate)
+        && width.is_exhaustible()
+        && equivalent_exhaustive_runnable(width, var_count)
+    {
         return equivalent_exhaustive(original, candidate, width, var_count);
     }
     #[cfg(feature = "smt-verify")]
@@ -144,8 +148,15 @@ mod tests {
     #[test]
     fn xor_of_obfuscated_and_clean_sum_cancels_to_zero_at_wide_width() {
         let obfuscated: Expr = Expr::xor(hidden_sum(0, 1), Expr::add(var(0), var(1)));
-        let result: Expr = simplify_mixed(&obfuscated, Width::W64).expect("must simplify");
-        assert_eq!(result, Expr::konst(0));
+        let result: Option<Expr> = simplify_mixed(&obfuscated, Width::W64);
+        if cfg!(feature = "smt-verify") {
+            assert_eq!(result, Some(Expr::konst(0)));
+        } else {
+            assert_eq!(
+                result, None,
+                "W64 is beyond the enumerable core, so without the bit-blasting leg the mixed path must abstain"
+            );
+        }
     }
 
     #[test]
@@ -200,8 +211,15 @@ mod tests {
     #[test]
     fn sparse_variable_indices_inside_a_subterm_remap_correctly() {
         let obfuscated: Expr = Expr::xor(hidden_sum(3, 7), Expr::add(var(3), var(7)));
-        let result: Expr = simplify_mixed(&obfuscated, Width::W8).expect("must simplify");
-        assert_eq!(result, Expr::konst(0));
+        let result: Option<Expr> = simplify_mixed(&obfuscated, Width::W8);
+        if cfg!(feature = "smt-verify") {
+            assert_eq!(result, Some(Expr::konst(0)));
+        } else {
+            assert_eq!(
+                result, None,
+                "eight sparse indices put W8 beyond the enumerable core, so without the bit-blasting leg the mixed path must abstain"
+            );
+        }
     }
 
     #[test]
@@ -226,8 +244,16 @@ mod tests {
     fn wiring_into_top_level_simplify_collapses_the_same_construct() {
         let obfuscated: Expr = Expr::xor(hidden_sum(0, 1), Expr::add(var(0), var(1)));
         let result: Simplification = simplify(&obfuscated, Width::W16);
-        assert!(result.changed());
-        assert!(result.verification.is_proven());
-        assert_eq!(result.simplified, Expr::konst(0));
+        if cfg!(feature = "smt-verify") {
+            assert!(result.changed());
+            assert!(result.verification.is_proven());
+            assert_eq!(result.simplified, Expr::konst(0));
+        } else {
+            assert!(
+                !result.changed(),
+                "two W16 variables are beyond the enumerable core, so without the bit-blasting leg this construct must be left alone, got `{}`",
+                result.simplified
+            );
+        }
     }
 }

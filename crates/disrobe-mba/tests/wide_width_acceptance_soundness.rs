@@ -331,11 +331,19 @@ fn wide_mixed_path_is_gated_and_equivalent() {
     let y: Expr = Expr::var(1);
     let obfuscated: Expr = Expr::xor(sum_identity(&x, &y), Expr::add(x.clone(), y.clone()));
     for width in [Width::W32, Width::W64] {
-        let Some(collapsed): Option<Expr> = simplify_mixed(&obfuscated, width) else {
-            panic!("the mixed path must collapse `{obfuscated}` at {width:?}");
-        };
-        assert_eq!(collapsed, Expr::konst(0));
-        confirm_equivalent(&obfuscated, &collapsed, width, 2, 0x1BAD_C0DE_0F0F_0F0F);
+        let collapsed: Option<Expr> = simplify_mixed(&obfuscated, width);
+        if cfg!(feature = "smt-verify") {
+            let Some(collapsed): Option<Expr> = collapsed else {
+                panic!("the mixed path must collapse `{obfuscated}` at {width:?}");
+            };
+            assert_eq!(collapsed, Expr::konst(0));
+            confirm_equivalent(&obfuscated, &collapsed, width, 2, 0x1BAD_C0DE_0F0F_0F0F);
+        } else {
+            assert!(
+                collapsed.is_none(),
+                "without the bit-blasting leg the mixed path has no proof at {width:?}, so it must abstain rather than emit {collapsed:?}"
+            );
+        }
     }
     let irreducible: Expr = Expr::xor(Expr::add(x.clone(), y.clone()), Expr::sub(x, y));
     for width in [Width::W32, Width::W64] {
