@@ -235,7 +235,11 @@ fn published_bars() -> Vec<serde_json::Value> {
             path.display()
         )
     });
-    let doc: serde_json::Value = serde_json::from_str(&raw)
+    bars_in_group(&raw, &path)
+}
+
+fn bars_in_group(raw: &str, path: &Path) -> Vec<serde_json::Value> {
+    let doc: serde_json::Value = serde_json::from_str(raw)
         .unwrap_or_else(|err: serde_json::Error| panic!("parse {}: {err}", path.display()));
     let groups: &Vec<serde_json::Value> = doc["groups"]
         .as_array()
@@ -299,10 +303,13 @@ fn bar_source(bar: &serde_json::Value, label: &str) -> String {
 }
 
 fn lua_devirt_publication() -> Publication {
-    let bars: Vec<serde_json::Value> = published_bars();
-    let real: Option<serde_json::Value> = bar_named(&bars, REAL_TOOL_BAR);
-    let in_house: Option<serde_json::Value> = bar_named(&bars, IN_HOUSE_BAR);
-    let combined: Option<serde_json::Value> = bar_named(&bars, COMBINED_BAR);
+    publication_from_bars(&published_bars())
+}
+
+fn publication_from_bars(bars: &[serde_json::Value]) -> Publication {
+    let real: Option<serde_json::Value> = bar_named(bars, REAL_TOOL_BAR);
+    let in_house: Option<serde_json::Value> = bar_named(bars, IN_HOUSE_BAR);
+    let combined: Option<serde_json::Value> = bar_named(bars, COMBINED_BAR);
 
     match (real, in_house, combined) {
         (Some(real), Some(in_house), None) => {
@@ -986,6 +993,130 @@ fn recovered_real_ironbrew2_output_executes_like_the_original_under_real_lua() {
     );
 }
 
+static PANIC_HOOK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn quietly<T>(probe: impl FnOnce() -> T + std::panic::UnwindSafe) -> std::thread::Result<T> {
+    let guard: std::sync::MutexGuard<'_, ()> = PANIC_HOOK_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned: std::sync::PoisonError<_>| poisoned.into_inner());
+    let previous: Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send> =
+        std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let outcome: std::thread::Result<T> = std::panic::catch_unwind(probe);
+    std::panic::set_hook(previous);
+    drop(guard);
+    outcome
+}
+
+fn candidate_document(bars: serde_json::Value) -> String {
+    serde_json::json!({
+        "groups": [{
+            "heading": format!("{PUBLISHED_GROUP} (counts)"),
+            "kind": "count",
+            "bars": bars,
+        }]
+    })
+    .to_string()
+}
+
+fn in_house_provenance() -> String {
+    let families: Vec<&'static str> = IN_HOUSE_FAMILIES
+        .into_iter()
+        .map(|family: InHouseFamily| family.name)
+        .collect();
+    format!(
+        "the DVM1 container is ours, so no real sample is graded for any of {}",
+        families.join(", ")
+    )
+}
+
+fn read_candidate(raw: &str) -> Publication {
+    publication_from_bars(&bars_in_group(raw, Path::new("candidate")))
+}
+
+#[test]
+fn both_published_shapes_read_back_as_the_legs_they_describe() {
+    let split: String = candidate_document(serde_json::json!([
+        {"label": REAL_TOOL_BAR, "value": 1, "source": "ironbrew2 real output"},
+        {"label": IN_HOUSE_BAR, "value": 1, "source": in_house_provenance()},
+    ]));
+    assert_eq!(
+        read_candidate(&split),
+        Publication::Split {
+            real: 1,
+            in_house: 1
+        },
+        "the split shape is what this crate asks the chart to publish, so the reader must return \
+         both legs; if this branch is wrong the two bars would be graded against nothing the moment \
+         the chart is split"
+    );
+
+    let combined: String = candidate_document(serde_json::json!([
+        {"label": COMBINED_BAR, "value": COMBINED_VALUE, "source": "one bar, both legs"},
+    ]));
+    assert_eq!(
+        read_candidate(&combined),
+        Publication::Combined {
+            total: COMBINED_VALUE
+        },
+        "the combined shape must still read back while the chart carries one bar"
+    );
+}
+
+#[test]
+fn a_publication_that_hides_the_weak_leg_is_rejected() {
+    let mixture: String = candidate_document(serde_json::json!([
+        {"label": REAL_TOOL_BAR, "value": 1, "source": "real"},
+        {"label": COMBINED_BAR, "value": 2, "source": "combined"},
+    ]));
+    let mixed: std::thread::Result<Publication> = quietly(|| read_candidate(&mixture));
+
+    let unnamed: String = candidate_document(serde_json::json!([
+        {"label": REAL_TOOL_BAR, "value": 1, "source": "real"},
+        {"label": IN_HOUSE_BAR, "value": 1, "source": "no real sample is graded here"},
+    ]));
+    let families_missing: std::thread::Result<Publication> = quietly(|| read_candidate(&unnamed));
+
+    let undisclosed: String = candidate_document(serde_json::json!([
+        {"label": REAL_TOOL_BAR, "value": 1, "source": "real"},
+        {"label": IN_HOUSE_BAR, "value": 1, "source": IN_HOUSE_FAMILIES
+            .into_iter()
+            .map(|family: InHouseFamily| family.name)
+            .collect::<Vec<&str>>()
+            .join(", ")},
+    ]));
+    let disclosure_missing: std::thread::Result<Publication> =
+        quietly(|| read_candidate(&undisclosed));
+
+    let duplicated: String = candidate_document(serde_json::json!([
+        {"label": REAL_TOOL_BAR, "value": 1, "source": "real"},
+        {"label": REAL_TOOL_BAR, "value": 9, "source": "real again"},
+        {"label": IN_HOUSE_BAR, "value": 1, "source": in_house_provenance()},
+    ]));
+    let duplicate_label: std::thread::Result<Publication> = quietly(|| read_candidate(&duplicated));
+
+    assert!(
+        mixed.is_err(),
+        "a chart carrying the combined bar next to the real-tool bar publishes the same family \
+         twice, and the reader accepted it"
+    );
+    assert!(
+        families_missing.is_err(),
+        "the weak leg's provenance must name every family behind it; a provenance naming none of \
+         them was accepted"
+    );
+    assert!(
+        disclosure_missing.is_err(),
+        "the weak leg's provenance must say the sample is ours; a provenance that only lists \
+         families was accepted"
+    );
+    assert!(
+        duplicate_label.is_err(),
+        "two bars with the same label let one copy be graded while the other renders, and the \
+         reader accepted it"
+    );
+}
+
 #[test]
 fn a_missing_interpreter_fails_the_execution_leg_when_ci_marks_it_mandatory() {
     use lua_toolchain::InterpreterRequirement;
@@ -993,16 +1124,12 @@ fn a_missing_interpreter_fails_the_execution_leg_when_ci_marks_it_mandatory() {
     let graded: &str = "a case that must never report success without an interpreter";
     let defect: &str = "no interpreter was found on PATH";
 
-    let previous: Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send> =
-        std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let mandatory: std::thread::Result<()> = std::panic::catch_unwind(|| {
+    let mandatory: std::thread::Result<()> = quietly(|| {
         lua_toolchain::enforce_requirement(graded, defect, InterpreterRequirement::Mandatory);
     });
-    let optional: std::thread::Result<()> = std::panic::catch_unwind(|| {
+    let optional: std::thread::Result<()> = quietly(|| {
         lua_toolchain::enforce_requirement(graded, defect, InterpreterRequirement::Optional);
     });
-    std::panic::set_hook(previous);
 
     let payload: String = match &mandatory {
         Err(payload) => payload
