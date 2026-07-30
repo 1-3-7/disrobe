@@ -2,7 +2,7 @@
 
 Measured recovery by ecosystem
 
-disrobe's own measured numbers; sources cited per value in this file
+measured numbers, disrobe's own except where a row names another tool; sources cited per value in this file
 
 Every value here is produced by a committed test gate or a local measurement harness. The source field cites the exact file:line that asserts or computes it. Numbers that could not be sourced from a gate are omitted by design.
 

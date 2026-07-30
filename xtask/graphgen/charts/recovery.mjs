@@ -58,6 +58,8 @@ function ecoShort(heading) {
   if (h.startsWith("dalvik")) return "dalvik";
   if (h.startsWith("ruby")) return "ruby";
   if (h.startsWith("react native hermes")) return "hermes";
+  if (h.startsWith("secret recall")) return "planted apk";
+  if (h.startsWith("frisk ioc category recall")) return "";
   return heading.split(" ")[0].toLowerCase();
 }
 
