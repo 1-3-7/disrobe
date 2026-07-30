@@ -1,5 +1,6 @@
 mod dfm;
 mod image;
+mod init_table;
 mod layout;
 mod resource;
 mod strings;
@@ -16,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use image::PeView;
 
+pub use init_table::{DelphiInitTable, DelphiUnitEntry};
 pub use strings::{DelphiString, DelphiStringKind};
 pub use typeinfo::DelphiTypeInfo;
 pub use units::{DelphiOrigin, classify_unit};
@@ -121,6 +123,8 @@ pub struct DelphiReport {
     pub forms: Vec<DelphiForm>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub strings: Vec<DelphiString>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub init_table: Option<DelphiInitTable>,
     pub library_class_count: usize,
     pub author_class_count: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -240,6 +244,7 @@ pub fn analyze(bytes: &[u8]) -> DelphiReport {
             types: Vec::new(),
             forms: Vec::new(),
             strings: Vec::new(),
+            init_table: None,
             library_class_count: 0,
             author_class_count: 0,
             notes: if markers {
@@ -268,6 +273,7 @@ pub fn analyze(bytes: &[u8]) -> DelphiReport {
     } else {
         Vec::new()
     };
+    let init_table: Option<DelphiInitTable> = init_table::recover(&view);
 
     let mut notes: Vec<String> = Vec::new();
     if outcome.scan_truncated {
@@ -305,6 +311,7 @@ pub fn analyze(bytes: &[u8]) -> DelphiReport {
         types: outcome.types,
         forms,
         strings: literals,
+        init_table,
         library_class_count,
         author_class_count,
         notes,

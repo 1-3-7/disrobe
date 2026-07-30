@@ -1,9 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::{
-    DelphiClass, DelphiEra, DelphiForm, DelphiOrigin, DelphiReport, DelphiSignalKind, DelphiString,
-    DelphiStringKind, DelphiTypeInfo, DelphiVersionSignal, analyze, classify_unit, detect_delphi,
-    recover_delphi_classes, recover_delphi_strings, recover_dfm_resources,
+    DelphiClass, DelphiEra, DelphiForm, DelphiInitTable, DelphiOrigin, DelphiReport,
+    DelphiSignalKind, DelphiString, DelphiStringKind, DelphiTypeInfo, DelphiVersionSignal, analyze,
+    classify_unit, detect_delphi, recover_delphi_classes, recover_delphi_strings,
+    recover_dfm_resources,
 };
 
 const FORM1_HEX: &str = "545046300654466F726D3105466F726D31044C65667403C80003546F7002640557696474680340010648656967687403F0000743617074696F6E060C4C6F67696E2057696E646F7705436F6C6F720709636C42746E4661636507456E61626C6564090756697369626C650803546167022A0B426F7264657249636F6E730B0C626953797374656D4D656E750A62694D696E696D697A65000B426F726465725374796C65070862734469616C6F6700055445646974054564697431044C656674021003546F70021005576964746802790454657874060975736572206E616D6508526561644F6E6C790800000754427574746F6E07427574746F6E31044C656674021003546F70023C0743617074696F6E06034F274B0744656661756C74090B4D6F64616C526573756C740201000000";
@@ -664,6 +665,124 @@ fn string_pool_finds_nothing_in_real_system_dlls() {
             "{path} produced {} string literals, first {:?}",
             found.len(),
             found.first().map(|s: &DelphiString| s.text.clone())
+        );
+    }
+    assert!(checked > 0, "no real system DLL was readable for the check");
+}
+
+fn delphi_entry_stub(table_va: u64) -> Vec<u8> {
+    let mut stub: Vec<u8> = vec![0x55, 0x8B, 0xEC, 0x83, 0xC4, 0xF0, 0xB8];
+    stub.extend_from_slice(&(table_va as u32).to_le_bytes());
+    stub.extend_from_slice(&[0xE8, 0x00, 0x00, 0x00, 0x00, 0xC3]);
+    stub
+}
+
+fn pe_with_stub_and_data(stub: &[u8], blob: Vec<u8>) -> Vec<u8> {
+    let mut text: Vec<u8> = vec![0x90u8; 0x200];
+    text[..stub.len()].copy_from_slice(stub);
+    build_pe_sections(
+        false,
+        FLAT_BASE32,
+        &[
+            Section {
+                name: ".text".to_owned(),
+                rva: TEXT_RVA,
+                data: text,
+                characteristics: SCN_CODE_EXEC_READ,
+            },
+            Section {
+                name: ".data".to_owned(),
+                rva: DATA_RVA,
+                data: blob,
+                characteristics: SCN_DATA_READ,
+            },
+        ],
+        None,
+    )
+}
+
+fn build_init_table_blob(units: &[(u64, u64)]) -> (Vec<u8>, u64) {
+    let mut b: Blob = Blob::new(data_va(), 4);
+    let table_va: u64 = b.va(0);
+    b.put_u32(units.len() as u32);
+    let (slot, _placeholder): (usize, u64) = b.reserve_ptr();
+    let unit_table_va: u64 = b.va(b.buf.len());
+    for (init, finalize) in units {
+        b.put_ptr(*init);
+        b.put_ptr(*finalize);
+    }
+    b.patch_ptr(slot, unit_table_va);
+    (b.buf, table_va)
+}
+
+fn init_table_pe(units: &[(u64, u64)]) -> Vec<u8> {
+    let (blob, table_va): (Vec<u8>, u64) = build_init_table_blob(units);
+    pe_with_stub_and_data(&delphi_entry_stub(table_va), blob)
+}
+
+#[test]
+fn entry_point_stub_leads_to_the_unit_initialization_table() {
+    let units: [(u64, u64); 3] = [
+        (code_va() + 0x40, code_va() + 0x60),
+        (code_va() + 0x80, code_va() + 0xA0),
+        (code_va() + 0xC0, 0),
+    ];
+    let report: DelphiReport = analyze(&init_table_pe(&units));
+    let table: &DelphiInitTable = report
+        .init_table
+        .as_ref()
+        .expect("the entry stub names a unit initialization table");
+
+    assert_eq!(table.unit_count, 3);
+    assert_eq!(table.initialized_units, 3);
+    assert_eq!(table.finalized_units, 2);
+    assert_eq!(table.units[0].init, code_va() + 0x40);
+    assert_eq!(table.units[0].finalize, code_va() + 0x60);
+    assert_eq!(table.units[2].init, code_va() + 0xC0);
+    assert_eq!(table.units[2].finalize, 0);
+}
+
+#[test]
+fn init_table_is_rejected_whole_when_a_unit_entry_leaves_the_code_sections() {
+    let units: [(u64, u64); 3] = [
+        (code_va() + 0x40, code_va() + 0x60),
+        (data_va(), code_va() + 0xA0),
+        (code_va() + 0xC0, 0),
+    ];
+    let report: DelphiReport = analyze(&init_table_pe(&units));
+    assert!(
+        report.init_table.is_none(),
+        "one entry pointing outside an executable section must reject the whole table"
+    );
+}
+
+#[test]
+fn init_table_is_rejected_when_the_stub_names_nothing_parseable() {
+    let junk: Vec<u8> = (0..0x400u16)
+        .map(|i: u16| (i.wrapping_mul(37) & 0xFF) as u8)
+        .collect();
+    let pe: Vec<u8> = pe_with_stub_and_data(&delphi_entry_stub(data_va()), junk);
+    let report: DelphiReport = analyze(&pe);
+    assert!(report.init_table.is_none());
+}
+
+#[test]
+#[cfg(windows)]
+fn no_init_table_recovered_from_real_system_dlls() {
+    let mut checked: usize = 0;
+    for path in SYSTEM_DLLS {
+        let Ok(bytes): Result<Vec<u8>, std::io::Error> = std::fs::read(path) else {
+            continue;
+        };
+        checked += 1;
+        let report: DelphiReport = analyze(&bytes);
+        assert!(
+            report.init_table.is_none(),
+            "{path} produced a unit initialization table with {} units",
+            report
+                .init_table
+                .as_ref()
+                .map_or(0, |t: &DelphiInitTable| t.unit_count)
         );
     }
     assert!(checked > 0, "no real system DLL was readable for the check");
