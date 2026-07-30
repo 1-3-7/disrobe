@@ -3057,6 +3057,261 @@ pub(crate) fn diff(a: PathBuf, b: PathBuf, json: bool) -> miette::Result<()> {
     Ok(())
 }
 
+const DELPHI_LIST_LIMIT: usize = 20;
+
+#[derive(Debug)]
+enum DelphiSidecar {
+    Absent,
+    Written(PathBuf),
+    Withheld(PathBuf),
+}
+
+pub(crate) fn delphi(input: PathBuf, out: Option<PathBuf>, json: bool) -> miette::Result<()> {
+    use disrobe_pass_native::delphi::{DelphiReport, analyze};
+
+    let bytes: Vec<u8> = std::fs::read(&input)
+        .map_err(|e| miette::miette!("DR-NATIVE-0210: cannot read {}: {e}", input.display()))?;
+    let report: DelphiReport = analyze(&bytes);
+    let sidecar: DelphiSidecar = write_delphi_sidecar(&report, out)?;
+    if json {
+        let buf: String = serde_json::to_string_pretty(&report)
+            .map_err(|e| miette::miette!("DR-NATIVE-0212: serialize: {e}"))?;
+        println!("{buf}");
+        return Ok(());
+    }
+    render_delphi(&input, &report, &sidecar);
+    Ok(())
+}
+
+fn write_delphi_sidecar(
+    report: &disrobe_pass_native::delphi::DelphiReport,
+    out: Option<PathBuf>,
+) -> miette::Result<DelphiSidecar> {
+    let Some(path): Option<PathBuf> = out else {
+        return Ok(DelphiSidecar::Absent);
+    };
+    if globals::current().dry_run {
+        return Ok(DelphiSidecar::Withheld(path));
+    }
+    if let Some(parent) = path.parent().filter(|p: &&Path| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| miette::miette!("DR-NATIVE-0211: cannot create out dir: {e}"))?;
+    }
+    let buf: Vec<u8> = serde_json::to_vec_pretty(report)
+        .map_err(|e| miette::miette!("DR-NATIVE-0212: serialize: {e}"))?;
+    std::fs::write(&path, buf)
+        .map_err(|e| miette::miette!("DR-NATIVE-0213: cannot write Delphi report: {e}"))?;
+    Ok(DelphiSidecar::Written(path))
+}
+
+fn render_delphi(
+    input: &Path,
+    report: &disrobe_pass_native::delphi::DelphiReport,
+    sidecar: &DelphiSidecar,
+) {
+    if report.is_delphi {
+        println!("native delphi: OK");
+        println!("  input:        {}", input.display());
+        println!("  verdict:      built with Delphi or C++Builder");
+    } else {
+        println!("native delphi: not a Delphi binary");
+        println!("  input:        {}", input.display());
+        println!("  verdict:      no Delphi or C++Builder evidence in this image");
+        println!("  markers:      no toolchain marker string found");
+        println!("  rtti:         no virtual method table validated");
+        println!("  forms:        no DFM form resource decoded");
+        render_delphi_notes(report);
+        render_delphi_sidecar(sidecar);
+        return;
+    }
+    match report.era {
+        Some(era) => println!("  vmt layout:   {}", era.label()),
+        None => println!("  vmt layout:   not determined"),
+    }
+    render_delphi_version(&report.version);
+    render_delphi_classes(report);
+    render_delphi_types(report);
+    render_delphi_forms(report);
+    if !report.strings.is_empty() {
+        println!("  strings:      {} recovered", report.strings.len());
+    }
+    render_delphi_notes(report);
+    render_delphi_sidecar(sidecar);
+}
+
+fn render_delphi_version(version: &disrobe_pass_native::delphi::DelphiVersion) {
+    use disrobe_pass_native::delphi::DelphiVersionSignal;
+
+    match version.product.as_deref() {
+        Some(product) => {
+            let symbol: &str = version.ver_symbol.as_deref().unwrap_or("no VER symbol");
+            match version.package_version {
+                Some(package) => {
+                    println!("  version:      {product} ({symbol}, package {package})");
+                }
+                None => println!("  version:      {product} ({symbol})"),
+            }
+        }
+        None if version.conflicts.is_empty() => {
+            println!("  version:      not named; no signal resolved a single release");
+        }
+        None => {
+            println!(
+                "  version:      not named; {} version signal(s) disagree",
+                version.conflicts.len()
+            );
+            for conflict in &version.conflicts {
+                println!("    conflict:   {conflict}");
+            }
+        }
+    }
+    if version.product.is_none() && !version.candidates.is_empty() {
+        println!("    candidates: {}", version.candidates.join(", "));
+    }
+    for signal in &version.signals {
+        let signal: &DelphiVersionSignal = signal;
+        println!(
+            "    signal:     {} -> {}",
+            signal.kind.label(),
+            signal.evidence
+        );
+    }
+}
+
+fn render_delphi_classes(report: &disrobe_pass_native::delphi::DelphiReport) {
+    use disrobe_pass_native::delphi::{DelphiClass, DelphiOrigin};
+
+    if report.classes.is_empty() {
+        if report.rtti_present {
+            println!("  classes:      0 recovered");
+        } else {
+            println!(
+                "  classes:      0 recovered; this image is Delphi-built with no readable RTTI"
+            );
+        }
+        return;
+    }
+    let unattributed: usize = report
+        .classes
+        .len()
+        .saturating_sub(report.author_class_count + report.library_class_count);
+    println!(
+        "  classes:      {} recovered ({} author, {} runtime library, {} unattributed)",
+        report.classes.len(),
+        report.author_class_count,
+        report.library_class_count,
+        unattributed
+    );
+    let author: Vec<&DelphiClass> = report
+        .classes
+        .iter()
+        .filter(|c: &&DelphiClass| c.origin == DelphiOrigin::Author)
+        .collect();
+    if author.is_empty() {
+        println!("    no class carries a unit name outside the runtime library set");
+        return;
+    }
+    for class in author.iter().take(DELPHI_LIST_LIMIT) {
+        let parent: &str = class.parent.as_deref().unwrap_or("no parent recovered");
+        let unit: &str = class.unit_name.as_deref().unwrap_or("no unit recovered");
+        println!(
+            "    - {} : {} [{unit}] vmt {:#x}, {} byte instance, {} method(s), {} property(s), {} field(s)",
+            class.name,
+            parent,
+            class.vmt_va,
+            class.instance_size,
+            class.methods.len(),
+            class.properties.len(),
+            class.fields.len()
+        );
+    }
+    if author.len() > DELPHI_LIST_LIMIT {
+        println!(
+            "    ... and {} more author class(es)",
+            author.len() - DELPHI_LIST_LIMIT
+        );
+    }
+}
+
+fn render_delphi_types(report: &disrobe_pass_native::delphi::DelphiReport) {
+    use disrobe_pass_native::delphi::DelphiTypeInfo;
+
+    if report.types.is_empty() {
+        return;
+    }
+    println!("  types:        {} recovered", report.types.len());
+    for record in report.types.iter().take(DELPHI_LIST_LIMIT) {
+        let record: &DelphiTypeInfo = record;
+        let unit: &str = record.unit_name.as_deref().unwrap_or("no unit recovered");
+        println!(
+            "    - {} : {} [{unit}], {} member(s)",
+            record.name,
+            record.kind,
+            record.members.len()
+        );
+    }
+    if report.types.len() > DELPHI_LIST_LIMIT {
+        println!(
+            "    ... and {} more type record(s)",
+            report.types.len() - DELPHI_LIST_LIMIT
+        );
+    }
+}
+
+fn render_delphi_forms(report: &disrobe_pass_native::delphi::DelphiReport) {
+    use disrobe_pass_native::delphi::DelphiForm;
+
+    if report.forms.is_empty() {
+        println!("  forms:        0 DFM form resource(s) decoded");
+        return;
+    }
+    println!("  forms:        {} decoded", report.forms.len());
+    for form in report.forms.iter().take(DELPHI_LIST_LIMIT) {
+        let form: &DelphiForm = form;
+        let completeness: &str = if form.truncated {
+            "partial"
+        } else {
+            "complete"
+        };
+        println!(
+            "    - {} : {} ({} object(s), {completeness})",
+            form.resource_name, form.root_class, form.object_count
+        );
+    }
+    if report.forms.len() > DELPHI_LIST_LIMIT {
+        println!(
+            "    ... and {} more form resource(s)",
+            report.forms.len() - DELPHI_LIST_LIMIT
+        );
+    }
+}
+
+fn render_delphi_notes(report: &disrobe_pass_native::delphi::DelphiReport) {
+    let remaining: Vec<&String> = report
+        .notes
+        .iter()
+        .filter(|n: &&String| !report.version.conflicts.contains(n))
+        .collect();
+    if remaining.is_empty() {
+        return;
+    }
+    println!("  notes:        {}", remaining.len());
+    for note in remaining {
+        println!("    - {note}");
+    }
+}
+
+fn render_delphi_sidecar(sidecar: &DelphiSidecar) {
+    match sidecar {
+        DelphiSidecar::Absent => {}
+        DelphiSidecar::Written(path) => println!("  wrote:        {}", path.display()),
+        DelphiSidecar::Withheld(path) => {
+            println!("  dry-run:      no file written");
+            println!("  would write:  {}", path.display());
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {

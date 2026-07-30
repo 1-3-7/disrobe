@@ -1429,6 +1429,17 @@ enum NativeCmd {
         emit: native::SigEmit,
     },
     #[command(
+        about = "recover Delphi / C++Builder structure from a compiled image: virtual method tables to class names, parents, units, published properties, methods, fields, interfaces, plus RTTI type records, decoded DFM form resources, and the release identified from its version signals"
+    )]
+    Delphi {
+        #[arg(help = "input native binary (Delphi / C++Builder PE)")]
+        input: PathBuf,
+        #[arg(short, long, help = "output path for the Delphi report JSON")]
+        out: Option<PathBuf>,
+        #[arg(long, help = "emit the full Delphi report as JSON")]
+        json: bool,
+    },
+    #[command(
         about = "function-level diff of two binaries: match functions by content hash, name, and CFG fingerprint, then report added / removed / changed functions with the kind of change"
     )]
     Diff {
@@ -1731,6 +1742,7 @@ fn main() -> miette::Result<()> {
                 out,
             } => native::patch(input, at, bytes, nop_range, out),
             NativeCmd::Sigmaker { input, at, emit } => native::sigmaker(input, at, emit),
+            NativeCmd::Delphi { input, out, json } => native::delphi(input, out, json),
             NativeCmd::Diff { a, b, json } => native::diff(a, b, json),
             NativeCmd::Match {
                 a,
