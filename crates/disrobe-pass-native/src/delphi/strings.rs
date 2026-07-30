@@ -6,7 +6,7 @@ const CONSTANT_REFCOUNT: u32 = 0xFFFF_FFFF;
 const MAX_SCAN_POSITIONS: usize = 16_000_000;
 const MAX_STRINGS: usize = 65_536;
 const MAX_STRING_UNITS: u32 = 1 << 20;
-const MIN_STRING_UNITS: u32 = 4;
+const MIN_STRING_UNITS: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

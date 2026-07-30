@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::DelphiEra;
+use super::image::BYTE_SCAN_LIMIT;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -260,7 +261,6 @@ const STUDIO_PREFIXES: &[&str] = &[
 
 const BORLAND_PREFIXES: &[&str] = &["Borland\\Delphi\\"];
 
-const SCAN_LIMIT: usize = 8 * 1024 * 1024;
 const MAX_PATH_TAIL: usize = 16;
 
 fn release_for(package: u16) -> Option<&'static Release> {
@@ -408,7 +408,7 @@ pub(super) fn identify(
     unit_names: &[String],
     license_resource: Option<&str>,
 ) -> DelphiVersion {
-    let window: &[u8] = &bytes[..bytes.len().min(SCAN_LIMIT)];
+    let window: &[u8] = &bytes[..bytes.len().min(BYTE_SCAN_LIMIT)];
     let mut signals: Vec<DelphiVersionSignal> = Vec::new();
 
     if let Some(era) = era {

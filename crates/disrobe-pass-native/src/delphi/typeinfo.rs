@@ -234,7 +234,7 @@ fn fill_enumeration(view: &PeView<'_>, body: usize, ptr: usize, info: &mut Delph
         else {
             return;
         };
-        if !is_plausible_symbol(&name) {
+        if !is_plausible_symbol_of_length(&name, 1) {
             return;
         }
         cursor += consumed;

@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::image::{MAX_SHORTSTRING_LEN, PeView, is_plausible_symbol};
+use super::image::{
+    MAX_SHORTSTRING_LEN, PeView, is_plausible_symbol, is_plausible_symbol_of_length,
+};
 use super::layout::{VmtLayout, add_signed, variants_for};
 use super::tables::{
     RawFieldTable, field_class_candidates, parse_dynamic_table, parse_field_table,
@@ -318,7 +320,7 @@ fn parse_typeinfo(
             break;
         };
         off += pconsumed;
-        if !is_plausible_symbol(&pname) {
+        if !is_plausible_symbol_of_length(&pname, 1) {
             break;
         }
         if let Some(target) = typeinfo::resolve_reference(view, prop_type_field) {
@@ -362,7 +364,7 @@ fn parse_method_table(view: &PeView<'_>, mt_va: u64, layout: &VmtLayout) -> Vec<
         else {
             break;
         };
-        if is_plausible_symbol(&name) {
+        if is_plausible_symbol_of_length(&name, 1) {
             methods.push(DelphiMethod { name, address });
         }
         let size: usize = size as usize;
