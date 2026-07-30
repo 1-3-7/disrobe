@@ -1,11 +1,17 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::image::{MAX_SHORTSTRING_LEN, PeView, is_plausible_symbol};
-use super::{DelphiClass, DelphiEra, DelphiMethod, DelphiProperty};
-
-const TK_CLASS: u8 = 7;
-const TK_MIN: u8 = 1;
-const TK_MAX: u8 = 25;
+use super::layout::{VmtLayout, add_signed, variants_for};
+use super::tables::{
+    RawFieldTable, field_class_candidates, parse_dynamic_table, parse_field_table,
+    parse_interface_table,
+};
+use super::typeinfo::{self, DelphiTypeInfo, TK_CLASS};
+use super::units::{DelphiOrigin, classify_unit};
+use super::{
+    DelphiClass, DelphiDynamicMethod, DelphiEra, DelphiField, DelphiInterface, DelphiMethod,
+    DelphiProperty,
+};
 
 const MAX_SCAN_POSITIONS: usize = 8_000_000;
 const MAX_CLASSES: usize = 8192;
@@ -13,83 +19,28 @@ const MAX_PROPS_PER_CLASS: u16 = 8192;
 const MAX_METHODS_PER_CLASS: u16 = 8192;
 const MAX_INSTANCE_SIZE: u32 = 0x0100_0000;
 const MAX_PARENT_DEPTH: usize = 64;
-
-#[derive(Debug, Clone, Copy)]
-struct VmtLayout {
-    era: DelphiEra,
-    ptr_size: u64,
-    self_ptr_abs: u64,
-    type_info: i64,
-    method_table: i64,
-    class_name: i64,
-    instance_size: i64,
-    parent: i64,
-}
-
-const LAYOUT_LEGACY32: VmtLayout = VmtLayout {
-    era: DelphiEra::Legacy32,
-    ptr_size: 4,
-    self_ptr_abs: 76,
-    type_info: -60,
-    method_table: -52,
-    class_name: -44,
-    instance_size: -40,
-    parent: -36,
-};
-
-const LAYOUT_MODERN32: VmtLayout = VmtLayout {
-    era: DelphiEra::Modern32,
-    ptr_size: 4,
-    self_ptr_abs: 88,
-    type_info: -72,
-    method_table: -64,
-    class_name: -56,
-    instance_size: -52,
-    parent: -48,
-};
-
-const LAYOUT_MODERN64: VmtLayout = VmtLayout {
-    era: DelphiEra::Modern64,
-    ptr_size: 8,
-    self_ptr_abs: 176,
-    type_info: -144,
-    method_table: -128,
-    class_name: -112,
-    instance_size: -104,
-    parent: -96,
-};
-
-fn variants_for(view: &PeView<'_>) -> &'static [VmtLayout] {
-    if view.is_64() {
-        &[LAYOUT_MODERN64]
-    } else {
-        &[LAYOUT_LEGACY32, LAYOUT_MODERN32]
-    }
-}
-
-fn add_signed(base: u64, delta: i64) -> Option<u64> {
-    if delta >= 0 {
-        base.checked_add(delta as u64)
-    } else {
-        base.checked_sub(delta.unsigned_abs())
-    }
-}
+const MAX_TYPE_RECORDS: usize = 16384;
 
 #[derive(Debug, Clone)]
 struct RawClass {
     va: u64,
     era: DelphiEra,
+    layout: VmtLayout,
     name: String,
     parent_va: Option<u64>,
     unit_name: Option<String>,
     instance_size: u32,
     own_props: Vec<DelphiProperty>,
     methods: Vec<DelphiMethod>,
+    field_table: Option<RawFieldTable>,
+    dynamic_methods: Vec<DelphiDynamicMethod>,
+    interfaces: Vec<DelphiInterface>,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct ScanOutcome {
     pub classes: Vec<DelphiClass>,
+    pub types: Vec<DelphiTypeInfo>,
     pub era: Option<DelphiEra>,
     pub anchor_count: usize,
     pub scan_truncated: bool,
@@ -100,6 +51,7 @@ pub(super) fn scan_classes(view: &PeView<'_>) -> ScanOutcome {
     let ptr_size: usize = view.ptr_size();
     let image_base: u64 = view.image_base();
     let mut raw: BTreeMap<u64, RawClass> = BTreeMap::new();
+    let mut type_refs: BTreeSet<usize> = BTreeSet::new();
     let mut anchor_count: usize = 0;
     let mut scanned: usize = 0;
     let mut scan_truncated: bool = false;
@@ -127,7 +79,8 @@ pub(super) fn scan_classes(view: &PeView<'_>) -> ScanOutcome {
                         anchor_count += 1;
                         let candidate: u64 = value;
                         if !raw.contains_key(&candidate)
-                            && let Some(rc) = validate_class(view, candidate, layout)
+                            && let Some(rc) =
+                                validate_class(view, candidate, layout, &mut type_refs)
                         {
                             *era_votes.entry(rc.era).or_insert(0) += 1;
                             raw.insert(candidate, rc);
@@ -147,13 +100,37 @@ pub(super) fn scan_classes(view: &PeView<'_>) -> ScanOutcome {
         .max_by_key(|entry: &(DelphiEra, usize)| entry.1)
         .map(|entry: (DelphiEra, usize)| entry.0);
 
-    let classes: Vec<DelphiClass> = accumulate(&raw);
+    let types: Vec<DelphiTypeInfo> = describe_types(view, &type_refs, ptr_size);
+    let classes: Vec<DelphiClass> = accumulate(view, &raw);
     ScanOutcome {
         classes,
+        types,
         era,
         anchor_count,
         scan_truncated,
     }
+}
+
+fn describe_types(
+    view: &PeView<'_>,
+    refs: &BTreeSet<usize>,
+    ptr_size: usize,
+) -> Vec<DelphiTypeInfo> {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut out: Vec<DelphiTypeInfo> = Vec::new();
+    for off in refs.iter().take(MAX_TYPE_RECORDS) {
+        let Some(info): Option<DelphiTypeInfo> = typeinfo::describe_at(view, *off, ptr_size) else {
+            continue;
+        };
+        if info.members.is_empty() && info.min_value.is_none() && info.element_type.is_none() {
+            continue;
+        }
+        if seen.insert(info.name.clone()) {
+            out.push(info);
+        }
+    }
+    out.sort_by(|a: &DelphiTypeInfo, b: &DelphiTypeInfo| a.name.cmp(&b.name));
+    out
 }
 
 fn is_self_consistent(view: &PeView<'_>, candidate: u64, layout: &VmtLayout) -> bool {
@@ -175,7 +152,18 @@ fn class_name_of(view: &PeView<'_>, candidate: u64, layout: &VmtLayout) -> Optio
     }
 }
 
-fn validate_class(view: &PeView<'_>, candidate: u64, layout: &VmtLayout) -> Option<RawClass> {
+fn slot_pointer(view: &PeView<'_>, candidate: u64, slot: i64) -> u64 {
+    add_signed(candidate, slot)
+        .and_then(|va: u64| view.read_ptr_at_va(va))
+        .unwrap_or(0)
+}
+
+fn validate_class(
+    view: &PeView<'_>,
+    candidate: u64,
+    layout: &VmtLayout,
+    type_refs: &mut BTreeSet<usize>,
+) -> Option<RawClass> {
     if !is_self_consistent(view, candidate, layout) {
         return None;
     }
@@ -187,35 +175,57 @@ fn validate_class(view: &PeView<'_>, candidate: u64, layout: &VmtLayout) -> Opti
         return None;
     }
 
-    let parent_slot: u64 = add_signed(candidate, layout.parent)?;
-    let parent_field: u64 = view.read_ptr_at_va(parent_slot).unwrap_or(0);
+    let parent_field: u64 = slot_pointer(view, candidate, layout.parent);
     let parent_va: Option<u64> = resolve_parent(view, parent_field, layout);
 
-    let type_info_slot: u64 = add_signed(candidate, layout.type_info)?;
-    let type_info_va: u64 = view.read_ptr_at_va(type_info_slot).unwrap_or(0);
-    let (own_props, unit_name): (Vec<DelphiProperty>, Option<String>) = if type_info_va != 0 {
-        parse_typeinfo(view, type_info_va, layout)
-    } else {
+    let type_info_va: u64 = slot_pointer(view, candidate, layout.type_info);
+    let (own_props, unit_name): (Vec<DelphiProperty>, Option<String>) = if type_info_va == 0 {
         (Vec::new(), None)
+    } else {
+        parse_typeinfo(view, type_info_va, layout, type_refs)
     };
 
-    let method_slot: u64 = add_signed(candidate, layout.method_table)?;
-    let method_table_va: u64 = view.read_ptr_at_va(method_slot).unwrap_or(0);
-    let methods: Vec<DelphiMethod> = if method_table_va != 0 {
-        parse_method_table(view, method_table_va, layout)
-    } else {
+    let method_table_va: u64 = slot_pointer(view, candidate, layout.method_table);
+    let methods: Vec<DelphiMethod> = if method_table_va == 0 {
         Vec::new()
+    } else {
+        parse_method_table(view, method_table_va, layout)
+    };
+
+    let field_table_va: u64 = slot_pointer(view, candidate, layout.field_table);
+    let field_table: Option<RawFieldTable> = if field_table_va == 0 {
+        None
+    } else {
+        parse_field_table(view, field_table_va, layout, instance_size)
+    };
+
+    let dynamic_table_va: u64 = slot_pointer(view, candidate, layout.dynamic_table);
+    let dynamic_methods: Vec<DelphiDynamicMethod> = if dynamic_table_va == 0 {
+        Vec::new()
+    } else {
+        parse_dynamic_table(view, dynamic_table_va, layout).unwrap_or_default()
+    };
+
+    let intf_table_va: u64 = slot_pointer(view, candidate, layout.intf_table);
+    let interfaces: Vec<DelphiInterface> = if intf_table_va == 0 {
+        Vec::new()
+    } else {
+        parse_interface_table(view, intf_table_va, layout, instance_size).unwrap_or_default()
     };
 
     Some(RawClass {
         va: candidate,
         era: layout.era,
+        layout: *layout,
         name,
         parent_va,
         unit_name,
         instance_size,
         own_props,
         methods,
+        field_table,
+        dynamic_methods,
+        interfaces,
     })
 }
 
@@ -240,6 +250,7 @@ fn parse_typeinfo(
     view: &PeView<'_>,
     type_info_va: u64,
     layout: &VmtLayout,
+    type_refs: &mut BTreeSet<usize>,
 ) -> (Vec<DelphiProperty>, Option<String>) {
     let mut props: Vec<DelphiProperty> = Vec::new();
     let ptr: usize = layout.ptr_size as usize;
@@ -306,7 +317,10 @@ fn parse_typeinfo(
         if !is_plausible_symbol(&pname) {
             break;
         }
-        let type_name: Option<String> = resolve_type_name(view, prop_type_field);
+        if let Some(target) = typeinfo::resolve_reference(view, prop_type_field) {
+            type_refs.insert(target);
+        }
+        let type_name: Option<String> = typeinfo::resolve_name(view, prop_type_field);
         props.push(DelphiProperty {
             name: pname,
             type_name,
@@ -315,35 +329,6 @@ fn parse_typeinfo(
     }
 
     (props, Some(unit_name))
-}
-
-fn resolve_type_name(view: &PeView<'_>, field: u64) -> Option<String> {
-    if field == 0 {
-        return None;
-    }
-    let off0: usize = view.va_to_off(field)?;
-    if let Some(name) = typeinfo_name_at(view, off0) {
-        return Some(name);
-    }
-    let ptr2: u64 = view.read_ptr(off0)?;
-    if ptr2 == 0 {
-        return None;
-    }
-    let off1: usize = view.va_to_off(ptr2)?;
-    typeinfo_name_at(view, off1)
-}
-
-fn typeinfo_name_at(view: &PeView<'_>, off: usize) -> Option<String> {
-    let kind: u8 = *view.bytes.get(off)?;
-    if !(TK_MIN..=TK_MAX).contains(&kind) {
-        return None;
-    }
-    let (name, _consumed): (String, usize) = view.read_shortstring(off + 1, MAX_SHORTSTRING_LEN)?;
-    if is_plausible_symbol(&name) {
-        Some(name)
-    } else {
-        None
-    }
 }
 
 fn parse_method_table(view: &PeView<'_>, mt_va: u64, layout: &VmtLayout) -> Vec<DelphiMethod> {
@@ -389,7 +374,28 @@ fn parse_method_table(view: &PeView<'_>, mt_va: u64, layout: &VmtLayout) -> Vec<
     methods
 }
 
-fn accumulate(raw: &BTreeMap<u64, RawClass>) -> Vec<DelphiClass> {
+fn resolve_fields(
+    view: &PeView<'_>,
+    rc: &RawClass,
+    raw: &BTreeMap<u64, RawClass>,
+) -> Vec<DelphiField> {
+    let Some(table): Option<&RawFieldTable> = rc.field_table.as_ref() else {
+        return Vec::new();
+    };
+    table
+        .fields
+        .iter()
+        .map(|f: &super::tables::RawField| DelphiField {
+            name: f.name.clone(),
+            offset: f.offset,
+            type_name: field_class_candidates(view, table.class_tab_va, f.type_index, &rc.layout)
+                .into_iter()
+                .find_map(|va: u64| raw.get(&va).map(|c: &RawClass| c.name.clone())),
+        })
+        .collect()
+}
+
+fn accumulate(view: &PeView<'_>, raw: &BTreeMap<u64, RawClass>) -> Vec<DelphiClass> {
     let mut out: Vec<DelphiClass> = Vec::with_capacity(raw.len());
     for rc in raw.values() {
         let parent: Option<String> = rc
@@ -398,11 +404,11 @@ fn accumulate(raw: &BTreeMap<u64, RawClass>) -> Vec<DelphiClass> {
             .map(|p: &RawClass| p.name.clone());
 
         let mut properties: Vec<DelphiProperty> = rc.own_props.clone();
-        let mut seen: std::collections::BTreeSet<String> = properties
+        let mut seen: BTreeSet<String> = properties
             .iter()
             .map(|p: &DelphiProperty| p.name.clone())
             .collect();
-        let mut visited: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+        let mut visited: BTreeSet<u64> = BTreeSet::new();
         visited.insert(rc.va);
         let mut cursor: Option<u64> = rc.parent_va;
         let mut depth: usize = 0;
@@ -430,15 +436,41 @@ fn accumulate(raw: &BTreeMap<u64, RawClass>) -> Vec<DelphiClass> {
             name: rc.name.clone(),
             parent,
             unit_name: rc.unit_name.clone(),
+            origin: classify_unit(rc.unit_name.as_deref()),
             era: rc.era,
             instance_size: rc.instance_size,
             vmt_va: rc.va,
             properties,
             methods: rc.methods.clone(),
+            fields: resolve_fields(view, rc, raw),
+            dynamic_methods: rc.dynamic_methods.clone(),
+            interfaces: rc.interfaces.clone(),
         });
     }
     out.sort_by(|a: &DelphiClass, b: &DelphiClass| {
         a.name.cmp(&b.name).then(a.vmt_va.cmp(&b.vmt_va))
     });
     out
+}
+
+pub(super) fn unit_names(classes: &[DelphiClass]) -> Vec<String> {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for class in classes {
+        if let Some(unit) = class.unit_name.as_ref() {
+            seen.insert(unit.clone());
+        }
+    }
+    seen.into_iter().collect()
+}
+
+pub(super) fn origin_counts(classes: &[DelphiClass]) -> (usize, usize) {
+    let library: usize = classes
+        .iter()
+        .filter(|c: &&DelphiClass| c.origin == DelphiOrigin::RuntimeLibrary)
+        .count();
+    let author: usize = classes
+        .iter()
+        .filter(|c: &&DelphiClass| c.origin == DelphiOrigin::Author)
+        .count();
+    (library, author)
 }

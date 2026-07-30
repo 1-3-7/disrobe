@@ -1,12 +1,8 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::too_many_arguments
-)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::{
-    DelphiClass, DelphiEra, DelphiForm, DelphiReport, analyze, detect_delphi,
+    DelphiClass, DelphiEra, DelphiForm, DelphiOrigin, DelphiReport, DelphiSignalKind,
+    DelphiTypeInfo, DelphiVersionSignal, analyze, classify_unit, detect_delphi,
     recover_delphi_classes, recover_dfm_resources,
 };
 
@@ -72,7 +68,7 @@ fn form2_expected() -> String {
 }
 
 #[test]
-fn dfm_decode_matches_fpc_reference_form1() {
+fn dfm_decode_form1_matches_the_pinned_expectation() {
     let forms: Vec<DelphiForm> = vec![decode_standalone(&form1_bin())];
     assert_eq!(forms[0].text, FORM1_EXPECTED);
     assert_eq!(forms[0].root_class, "TForm1");
@@ -81,7 +77,7 @@ fn dfm_decode_matches_fpc_reference_form1() {
 }
 
 #[test]
-fn dfm_decode_matches_fpc_reference_form2() {
+fn dfm_decode_form2_matches_the_pinned_expectation() {
     let decoded: DelphiForm = decode_standalone(&form2_bin());
     assert_eq!(decoded.text, form2_expected());
     assert_eq!(decoded.root_class, "TDataForm");
@@ -122,20 +118,11 @@ fn dfm_decode_partial_on_unknown_value_type() {
 #[test]
 fn recover_modern32_classes_with_props_methods_inheritance() {
     let (blob, _base): (Vec<u8>, u64) = build_modern32_blob();
-    let pe: Vec<u8> = build_pe(
-        false,
-        0x0040_0000,
-        &[(".data".to_owned(), 0x2000, blob)],
-        None,
-    );
-    let mut classes: Vec<DelphiClass> = recover_delphi_classes(&pe);
-    classes.sort_by(|a: &DelphiClass, b: &DelphiClass| a.name.cmp(&b.name));
+    let pe: Vec<u8> = pe_with_code_and_data(blob);
+    let classes: Vec<DelphiClass> = recover_delphi_classes(&pe);
     assert_eq!(classes.len(), 2, "expected TBase and TChild");
 
-    let base: &DelphiClass = classes
-        .iter()
-        .find(|c: &&DelphiClass| c.name == "TBase")
-        .unwrap();
+    let base: &DelphiClass = find_class(&classes, "TBase");
     assert_eq!(base.era, DelphiEra::Modern32);
     assert_eq!(base.parent, None);
     assert_eq!(base.unit_name.as_deref(), Some("Unit1"));
@@ -147,10 +134,7 @@ fn recover_modern32_classes_with_props_methods_inheritance() {
                 && p.inherited_from.is_none())
     );
 
-    let child: &DelphiClass = classes
-        .iter()
-        .find(|c: &&DelphiClass| c.name == "TChild")
-        .unwrap();
+    let child: &DelphiClass = find_class(&classes, "TChild");
     assert_eq!(child.parent.as_deref(), Some("TBase"));
     assert!(
         child
@@ -177,13 +161,8 @@ fn recover_modern32_classes_with_props_methods_inheritance() {
 
 #[test]
 fn detect_legacy32_variant() {
-    let blob: Vec<u8> = build_single_class_blob32(76, "TLegacy", 0x0040_2000);
-    let pe: Vec<u8> = build_pe(
-        false,
-        0x0040_0000,
-        &[(".data".to_owned(), 0x2000, blob)],
-        None,
-    );
+    let blob: Vec<u8> = build_single_class_blob(T_LEGACY32, "TLegacy", data_va());
+    let pe: Vec<u8> = pe_with_code_and_data(blob);
     let classes: Vec<DelphiClass> = recover_delphi_classes(&pe);
     assert_eq!(classes.len(), 1);
     assert_eq!(classes[0].name, "TLegacy");
@@ -193,7 +172,7 @@ fn detect_legacy32_variant() {
 #[test]
 fn detect_modern64_variant() {
     let base: u64 = 0x1_4000_0000;
-    let blob: Vec<u8> = build_single_class_blob64(base + 0x2000, "TWin64");
+    let blob: Vec<u8> = build_single_class_blob(T_MODERN64, "TWin64", base + 0x2000);
     let pe: Vec<u8> = build_pe(true, base, &[(".data".to_owned(), 0x2000, blob)], None);
     let classes: Vec<DelphiClass> = recover_delphi_classes(&pe);
     assert_eq!(classes.len(), 1);
@@ -206,12 +185,7 @@ fn analyze_reports_no_rtti_when_absent() {
     let junk: Vec<u8> = (0..0x800u16)
         .map(|i: u16| (i.wrapping_mul(37) & 0xFF) as u8)
         .collect();
-    let pe: Vec<u8> = build_pe(
-        false,
-        0x0040_0000,
-        &[(".data".to_owned(), 0x2000, junk)],
-        None,
-    );
+    let pe: Vec<u8> = pe_with_code_and_data(junk);
     let report: DelphiReport = analyze(&pe);
     assert!(!report.rtti_present);
     assert!(report.classes.is_empty());
@@ -223,16 +197,19 @@ fn analyze_reports_no_rtti_when_absent() {
     );
 }
 
+#[cfg(windows)]
+const SYSTEM_DLLS: [&str; 4] = [
+    r"C:\Windows\System32\kernel32.dll",
+    r"C:\Windows\System32\ntdll.dll",
+    r"C:\Windows\System32\user32.dll",
+    r"C:\Windows\System32\shell32.dll",
+];
+
 #[test]
 #[cfg(windows)]
 fn no_validated_classes_on_real_system_dlls() {
-    let candidates: [&str; 3] = [
-        r"C:\Windows\System32\kernel32.dll",
-        r"C:\Windows\System32\ntdll.dll",
-        r"C:\Windows\System32\user32.dll",
-    ];
     let mut checked: usize = 0;
-    for path in candidates {
+    for path in SYSTEM_DLLS {
         let Ok(bytes): Result<Vec<u8>, std::io::Error> = std::fs::read(path) else {
             continue;
         };
@@ -244,6 +221,46 @@ fn no_validated_classes_on_real_system_dlls() {
             report.classes.len()
         );
         assert!(!report.rtti_present, "{path} unexpectedly reported RTTI");
+        assert!(
+            report.types.is_empty(),
+            "{path} unexpectedly produced recovered type records"
+        );
+        assert_eq!(report.library_class_count, 0);
+        assert_eq!(report.author_class_count, 0);
+        assert!(
+            report.version.product.is_none(),
+            "{path} must not be named as a Delphi release"
+        );
+    }
+    assert!(checked > 0, "no real system DLL was readable for the check");
+}
+
+#[test]
+#[cfg(windows)]
+fn no_published_tables_recovered_from_real_system_dlls() {
+    let mut checked: usize = 0;
+    for path in SYSTEM_DLLS {
+        let Ok(bytes): Result<Vec<u8>, std::io::Error> = std::fs::read(path) else {
+            continue;
+        };
+        checked += 1;
+        for class in recover_delphi_classes(&bytes) {
+            assert!(
+                class.fields.is_empty(),
+                "{path} produced published fields on {}",
+                class.name
+            );
+            assert!(
+                class.dynamic_methods.is_empty(),
+                "{path} produced dynamic methods on {}",
+                class.name
+            );
+            assert!(
+                class.interfaces.is_empty(),
+                "{path} produced interface entries on {}",
+                class.name
+            );
+        }
     }
     assert!(checked > 0, "no real system DLL was readable for the check");
 }
@@ -329,14 +346,235 @@ fn hardening_never_panics_on_garbage() {
         let _ = detect_delphi(input);
         let _ = super::dfm::decode(input);
     }
-    let mut truncated_pe: Vec<u8> = build_pe(
-        false,
-        0x0040_0000,
-        &[(".data".to_owned(), 0x2000, build_modern32_blob().0)],
-        None,
-    );
+    let mut truncated_pe: Vec<u8> = pe_with_code_and_data(build_modern32_blob().0);
     truncated_pe.truncate(truncated_pe.len() / 2);
     let _ = analyze(&truncated_pe);
+}
+
+#[test]
+fn library_unit_table_stays_sorted_and_lowercase() {
+    let names: Vec<&str> = super::units::library_unit_names().to_vec();
+    assert!(!names.is_empty());
+    let mut sorted: Vec<&str> = names.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        names, sorted,
+        "the runtime library unit table must stay sorted because lookup uses a binary search"
+    );
+    sorted.dedup();
+    assert_eq!(
+        sorted.len(),
+        names.len(),
+        "duplicate unit name in the table"
+    );
+    for name in &names {
+        assert_eq!(
+            *name,
+            name.to_ascii_lowercase(),
+            "unit table entries are compared lowercased"
+        );
+    }
+}
+
+#[test]
+fn unit_classification_splits_author_code_from_the_runtime_library() {
+    assert_eq!(
+        classify_unit(Some("SysUtils")),
+        DelphiOrigin::RuntimeLibrary
+    );
+    assert_eq!(
+        classify_unit(Some("System.Classes")),
+        DelphiOrigin::RuntimeLibrary
+    );
+    assert_eq!(
+        classify_unit(Some("Vcl.Forms")),
+        DelphiOrigin::RuntimeLibrary
+    );
+    assert_eq!(classify_unit(Some("uPayloadDropper")), DelphiOrigin::Author);
+    assert_eq!(classify_unit(None), DelphiOrigin::Unattributed);
+}
+
+#[test]
+fn field_table_recovers_names_offsets_and_class_types() {
+    let pe: Vec<u8> = pe_with_code_and_data(build_field_table_blob(false));
+    let classes: Vec<DelphiClass> = recover_delphi_classes(&pe);
+    let form: &DelphiClass = find_class(&classes, "TMainForm");
+
+    assert_eq!(form.fields.len(), 2, "both published fields recovered");
+    assert_eq!(form.fields[0].name, "Edit1");
+    assert_eq!(form.fields[0].offset, 0x10);
+    assert_eq!(form.fields[0].type_name.as_deref(), Some("TEdit"));
+    assert_eq!(form.fields[1].name, "Button1");
+    assert_eq!(form.fields[1].offset, 0x14);
+    assert_eq!(form.fields[1].type_name.as_deref(), Some("TEdit"));
+}
+
+#[test]
+fn field_table_is_rejected_whole_when_an_offset_escapes_the_instance() {
+    let pe: Vec<u8> = pe_with_code_and_data(build_field_table_blob(true));
+    let classes: Vec<DelphiClass> = recover_delphi_classes(&pe);
+    let form: &DelphiClass = find_class(&classes, "TMainForm");
+    assert!(
+        form.fields.is_empty(),
+        "one out-of-range field offset must reject the whole table, got {:?}",
+        form.fields
+    );
+}
+
+#[test]
+fn dynamic_method_table_recovers_message_handlers() {
+    let pe: Vec<u8> = pe_with_code_and_data(build_dynamic_table_blob(code_va()));
+    let classes: Vec<DelphiClass> = recover_delphi_classes(&pe);
+    let cls: &DelphiClass = find_class(&classes, "TWinControl");
+    assert_eq!(cls.dynamic_methods.len(), 2);
+    assert_eq!(cls.dynamic_methods[0].index, 0x0F);
+    assert_eq!(cls.dynamic_methods[0].address, code_va());
+    assert_eq!(cls.dynamic_methods[1].index, -3);
+    assert_eq!(cls.dynamic_methods[1].address, code_va() + 0x20);
+}
+
+#[test]
+fn dynamic_method_table_is_rejected_when_an_address_is_not_code() {
+    let pe: Vec<u8> = pe_with_code_and_data(build_dynamic_table_blob(data_va()));
+    let classes: Vec<DelphiClass> = recover_delphi_classes(&pe);
+    let cls: &DelphiClass = find_class(&classes, "TWinControl");
+    assert!(
+        cls.dynamic_methods.is_empty(),
+        "an address outside an executable section must reject the whole table"
+    );
+}
+
+#[test]
+fn interface_table_recovers_the_interface_identifier() {
+    let pe: Vec<u8> = pe_with_code_and_data(build_interface_table_blob());
+    let classes: Vec<DelphiClass> = recover_delphi_classes(&pe);
+    let cls: &DelphiClass = find_class(&classes, "TComObject");
+    assert_eq!(cls.interfaces.len(), 1);
+    assert_eq!(
+        cls.interfaces[0].iid,
+        "{00000000-0000-0000-C000-000000000046}"
+    );
+}
+
+#[test]
+fn enumeration_property_recovers_every_member_name() {
+    let pe: Vec<u8> = pe_with_code_and_data(build_enum_blob());
+    let report: DelphiReport = analyze(&pe);
+    let align: &DelphiTypeInfo = report
+        .types
+        .iter()
+        .find(|t: &&DelphiTypeInfo| t.name == "TAlign")
+        .expect("TAlign type recovered");
+    assert_eq!(align.kind, "enumeration");
+    assert_eq!(align.min_value, Some(0));
+    assert_eq!(align.max_value, Some(3));
+    assert_eq!(
+        align.members,
+        vec![
+            "alNone".to_owned(),
+            "alTop".to_owned(),
+            "alBottom".to_owned(),
+            "alClient".to_owned()
+        ]
+    );
+    assert_eq!(align.unit_name.as_deref(), Some("Controls"));
+}
+
+#[test]
+fn version_resolves_from_a_linked_runtime_package_name() {
+    let mut pe: Vec<u8> = pe_with_code_and_data(build_modern32_blob().0);
+    pe.extend_from_slice(b"rtl250.bpl\x00");
+    let report: DelphiReport = analyze(&pe);
+    assert_eq!(report.version.product.as_deref(), Some("Delphi 10.2 Tokyo"));
+    assert_eq!(report.version.package_version, Some(250));
+    assert_eq!(report.version.ver_symbol.as_deref(), Some("VER320"));
+    assert!(report.version.conflicts.is_empty());
+    assert!(
+        report
+            .version
+            .signals
+            .iter()
+            .any(|s: &DelphiVersionSignal| s.evidence == "rtl250.bpl")
+    );
+}
+
+#[test]
+fn version_reports_a_conflict_instead_of_picking_a_winner() {
+    let blob: Vec<u8> = build_single_class_blob(T_LEGACY32, "TLegacy", data_va());
+    let mut pe: Vec<u8> = pe_with_code_and_data(blob);
+    pe.extend_from_slice(b"rtl280.bpl\x00");
+    let report: DelphiReport = analyze(&pe);
+    assert_eq!(report.era, Some(DelphiEra::Legacy32));
+    assert!(
+        report.version.product.is_none(),
+        "a pre-2009 table layout cannot hold with a Delphi 11 runtime package"
+    );
+    assert!(!report.version.conflicts.is_empty());
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n: &String| n.contains("signals disagree"))
+    );
+}
+
+#[test]
+fn version_stays_silent_when_nothing_bounds_it() {
+    let junk: Vec<u8> = (0..0x800u16)
+        .map(|i: u16| (i.wrapping_mul(37) & 0xFF) as u8)
+        .collect();
+    let pe: Vec<u8> = pe_with_code_and_data(junk);
+    let report: DelphiReport = analyze(&pe);
+    assert!(report.version.product.is_none());
+    assert!(report.version.candidates.is_empty());
+    assert!(report.version.conflicts.is_empty());
+}
+
+#[test]
+fn dotted_unit_scope_names_bound_the_release_from_below_only() {
+    let pe: Vec<u8> = pe_with_code_and_data(build_scoped_unit_blob());
+    let report: DelphiReport = analyze(&pe);
+    let signal: &DelphiVersionSignal = report
+        .version
+        .signals
+        .iter()
+        .find(|s: &&DelphiVersionSignal| s.kind == DelphiSignalKind::UnitScopeNames)
+        .expect("dotted unit scope signal present");
+    assert_eq!(signal.min_package, Some(160));
+    assert_eq!(signal.max_package, None);
+}
+
+#[test]
+fn undotted_unit_names_assert_no_version_bound() {
+    let pe: Vec<u8> = pe_with_code_and_data(build_modern32_blob().0);
+    let report: DelphiReport = analyze(&pe);
+    assert!(
+        !report
+            .version
+            .signals
+            .iter()
+            .any(|s: &DelphiVersionSignal| s.kind == DelphiSignalKind::UnitScopeNames),
+        "an undotted unit name proves nothing because unit scope names can be switched off"
+    );
+}
+
+#[test]
+fn author_classes_are_counted_apart_from_runtime_library_classes() {
+    let pe: Vec<u8> = pe_with_code_and_data(build_mixed_origin_blob());
+    let report: DelphiReport = analyze(&pe);
+    assert_eq!(report.library_class_count, 1);
+    assert_eq!(report.author_class_count, 1);
+    let dropper: &DelphiClass = find_class(&report.classes, "TDropper");
+    assert_eq!(dropper.origin, DelphiOrigin::Author);
+    let control: &DelphiClass = find_class(&report.classes, "TControl");
+    assert_eq!(control.origin, DelphiOrigin::RuntimeLibrary);
+}
+
+fn find_class<'a>(classes: &'a [DelphiClass], name: &str) -> &'a DelphiClass {
+    classes
+        .iter()
+        .find(|c: &&DelphiClass| c.name == name)
+        .unwrap_or_else(|| panic!("class {name} was not recovered"))
 }
 
 fn w16(buf: &mut [u8], off: usize, v: u16) {
@@ -355,10 +593,118 @@ fn align_up(v: usize, a: usize) -> usize {
     v.div_ceil(a) * a
 }
 
-fn build_pe(
+#[derive(Debug, Clone, Copy)]
+struct TestLayout {
+    ptr: usize,
+    self_abs: usize,
+    intf_table: i64,
+    type_info: i64,
+    field_table: i64,
+    method_table: i64,
+    dynamic_table: i64,
+    class_name: i64,
+    instance_size: i64,
+    parent: i64,
+}
+
+const T_LEGACY32: TestLayout = TestLayout {
+    ptr: 4,
+    self_abs: 76,
+    intf_table: -72,
+    type_info: -60,
+    field_table: -56,
+    method_table: -52,
+    dynamic_table: -48,
+    class_name: -44,
+    instance_size: -40,
+    parent: -36,
+};
+
+const T_MODERN32: TestLayout = TestLayout {
+    ptr: 4,
+    self_abs: 88,
+    intf_table: -84,
+    type_info: -72,
+    field_table: -68,
+    method_table: -64,
+    dynamic_table: -60,
+    class_name: -56,
+    instance_size: -52,
+    parent: -48,
+};
+
+const T_MODERN64: TestLayout = TestLayout {
+    ptr: 8,
+    self_abs: 176,
+    intf_table: -168,
+    type_info: -144,
+    field_table: -136,
+    method_table: -128,
+    dynamic_table: -120,
+    class_name: -112,
+    instance_size: -104,
+    parent: -96,
+};
+
+#[derive(Debug, Clone, Copy, Default)]
+struct VmtSpec {
+    class_name_va: u64,
+    type_info_va: u64,
+    method_table_va: u64,
+    field_table_va: u64,
+    dynamic_table_va: u64,
+    intf_table_va: u64,
+    instance_size: u32,
+    parent_va: u64,
+}
+
+const TEXT_RVA: u32 = 0x1000;
+const DATA_RVA: u32 = 0x2000;
+const FLAT_BASE32: u64 = 0x0040_0000;
+const SCN_CODE_EXEC_READ: u32 = 0x6000_0020;
+const SCN_DATA_READ: u32 = 0x4000_0040;
+
+const fn code_va() -> u64 {
+    FLAT_BASE32 + TEXT_RVA as u64
+}
+
+const fn data_va() -> u64 {
+    FLAT_BASE32 + DATA_RVA as u64
+}
+
+struct Section {
+    name: String,
+    rva: u32,
+    data: Vec<u8>,
+    characteristics: u32,
+}
+
+fn pe_with_code_and_data(blob: Vec<u8>) -> Vec<u8> {
+    build_pe_sections(
+        false,
+        FLAT_BASE32,
+        &[
+            Section {
+                name: ".text".to_owned(),
+                rva: TEXT_RVA,
+                data: vec![0x90u8; 0x200],
+                characteristics: SCN_CODE_EXEC_READ,
+            },
+            Section {
+                name: ".data".to_owned(),
+                rva: DATA_RVA,
+                data: blob,
+                characteristics: SCN_DATA_READ,
+            },
+        ],
+        None,
+    )
+}
+
+fn build_pe_sections(
     plus: bool,
     image_base: u64,
-    sections: &[(String, u32, Vec<u8>)],
+    sections: &[Section],
     resource: Option<(u32, u32)>,
 ) -> Vec<u8> {
     let file_align: usize = 0x200;
@@ -370,11 +716,11 @@ fn build_pe(
     let num: usize = sections.len();
     let raw_start: usize = align_up(sec_table_off + num * 40, file_align);
 
-    let mut recs: Vec<(usize, u32, Vec<u8>, usize, String)> = Vec::new();
+    let mut recs: Vec<(usize, usize)> = Vec::with_capacity(num);
     let mut cur: usize = raw_start;
-    for (name, rva, data) in sections {
-        let rsize: usize = align_up(data.len().max(1), file_align);
-        recs.push((cur, *rva, data.clone(), rsize, name.clone()));
+    for section in sections {
+        let rsize: usize = align_up(section.data.len().max(1), file_align);
+        recs.push((cur, rsize));
         cur += rsize;
     }
     let file_size: usize = cur.max(raw_start + file_align);
@@ -399,11 +745,11 @@ fn build_pe(
     }
     w32(&mut buf, opt_off + 32, sect_align);
     w32(&mut buf, opt_off + 36, file_align as u32);
-    let max_end: u32 = recs
+    let max_end: u32 = sections
         .iter()
-        .map(|(_, rva, data, _, _)| {
-            let end: u32 = rva.saturating_add(data.len() as u32);
-            (end.div_ceil(sect_align)) * sect_align
+        .map(|s: &Section| {
+            let end: u32 = s.rva.saturating_add(s.data.len() as u32);
+            end.div_ceil(sect_align) * sect_align
         })
         .max()
         .unwrap_or(0x2000);
@@ -417,22 +763,41 @@ fn build_pe(
         w32(&mut buf, dir_table + 2 * 8 + 4, size);
     }
 
-    for (i, (off, rva, data, rsize, name)) in recs.iter().enumerate() {
+    for (i, section) in sections.iter().enumerate() {
+        let (off, rsize): (usize, usize) = recs[i];
         let so: usize = sec_table_off + i * 40;
         let mut nm: [u8; 8] = [0u8; 8];
-        let nb: &[u8] = name.as_bytes();
+        let nb: &[u8] = section.name.as_bytes();
         let n: usize = nb.len().min(8);
         nm[..n].copy_from_slice(&nb[..n]);
         buf[so..so + 8].copy_from_slice(&nm);
-        w32(&mut buf, so + 8, data.len() as u32);
-        w32(&mut buf, so + 12, *rva);
-        w32(&mut buf, so + 16, *rsize as u32);
-        w32(&mut buf, so + 20, *off as u32);
-        w32(&mut buf, so + 36, 0x4000_0040);
-        buf[*off..*off + data.len()].copy_from_slice(data);
+        w32(&mut buf, so + 8, section.data.len() as u32);
+        w32(&mut buf, so + 12, section.rva);
+        w32(&mut buf, so + 16, rsize as u32);
+        w32(&mut buf, so + 20, off as u32);
+        w32(&mut buf, so + 36, section.characteristics);
+        buf[off..off + section.data.len()].copy_from_slice(&section.data);
     }
 
     buf
+}
+
+fn build_pe(
+    plus: bool,
+    image_base: u64,
+    sections: &[(String, u32, Vec<u8>)],
+    resource: Option<(u32, u32)>,
+) -> Vec<u8> {
+    let mapped: Vec<Section> = sections
+        .iter()
+        .map(|(name, rva, data): &(String, u32, Vec<u8>)| Section {
+            name: name.clone(),
+            rva: *rva,
+            data: data.clone(),
+            characteristics: SCN_DATA_READ,
+        })
+        .collect();
+    build_pe_sections(plus, image_base, &mapped, resource)
 }
 
 fn pe_with_dfm_resource(res_name: &str, dfm: &[u8]) -> Vec<u8> {
@@ -440,7 +805,7 @@ fn pe_with_dfm_resource(res_name: &str, dfm: &[u8]) -> Vec<u8> {
     let (rsrc, size): (Vec<u8>, u32) = build_rsrc(res_base_rva, res_name, dfm);
     build_pe(
         false,
-        0x0040_0000,
+        FLAT_BASE32,
         &[(".rsrc".to_owned(), res_base_rva, rsrc)],
         Some((res_base_rva, size)),
     )
@@ -546,11 +911,50 @@ impl Blob {
         }
     }
 
+    fn reserve_ptr(&mut self) -> (usize, u64) {
+        self.align(self.ptr);
+        let at: usize = self.buf.len();
+        let va: u64 = self.va(at);
+        self.buf.extend(std::iter::repeat_n(0u8, self.ptr));
+        (at, va)
+    }
+
+    fn patch_ptr(&mut self, at: usize, value: u64) {
+        if self.ptr == 8 {
+            self.buf[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        } else {
+            self.buf[at..at + 4].copy_from_slice(&(value as u32).to_le_bytes());
+        }
+    }
+
     fn put_simple_typeinfo(&mut self, kind: u8, name: &str) -> u64 {
         self.align(4);
         let at: u64 = self.va(self.buf.len());
         self.put_u8(kind);
         self.put_bytes(&short_string(name));
+        at
+    }
+
+    fn put_enum_typeinfo(
+        &mut self,
+        name: &str,
+        min: i32,
+        max: i32,
+        members: &[&str],
+        unit: &str,
+    ) -> u64 {
+        self.align(4);
+        let at: u64 = self.va(self.buf.len());
+        self.put_u8(3);
+        self.put_bytes(&short_string(name));
+        self.put_u8(1);
+        self.put_u32(min as u32);
+        self.put_u32(max as u32);
+        self.put_ptr(0);
+        for member in members {
+            self.put_bytes(&short_string(member));
+        }
+        self.put_bytes(&short_string(unit));
         at
     }
 
@@ -590,70 +994,102 @@ impl Blob {
         at
     }
 
-    fn put_vmt(
-        &mut self,
-        self_abs: usize,
-        slot_type_info: i64,
-        slot_method: i64,
-        slot_class_name: i64,
-        slot_instance: i64,
-        slot_parent: i64,
-        class_name_va: u64,
-        type_info_va: u64,
-        method_table_va: u64,
-        instance_size: u32,
-        parent_va: u64,
-    ) -> u64 {
+    fn put_field_class_table(&mut self, count: u16) -> (u64, Vec<usize>) {
         self.align(self.ptr);
-        let region_off: usize = self.buf.len();
-        let c_va: u64 = self.va(region_off + self_abs);
-        for _ in 0..(self_abs + 4 * self.ptr) {
-            self.buf.push(0);
+        let at: u64 = self.va(self.buf.len());
+        self.put_u16(count);
+        let mut slots: Vec<usize> = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            let start: usize = self.buf.len();
+            self.buf.extend(std::iter::repeat_n(0u8, self.ptr));
+            slots.push(start);
         }
-        let write_ptr = |b: &mut Vec<u8>, base: usize, slot: i64, val: u64, ptr: usize| {
-            let at: usize = (base as i64 + self_abs as i64 + slot) as usize;
-            if ptr == 8 {
-                b[at..at + 8].copy_from_slice(&val.to_le_bytes());
-            } else {
-                b[at..at + 4].copy_from_slice(&(val as u32).to_le_bytes());
-            }
-        };
-        let self_slot: usize = region_off;
-        if self.ptr == 8 {
-            self.buf[self_slot..self_slot + 8].copy_from_slice(&c_va.to_le_bytes());
+        (at, slots)
+    }
+
+    fn put_field_table(&mut self, class_tab_va: u64, entries: &[(&str, u32, u16)]) -> u64 {
+        self.align(self.ptr);
+        let at: u64 = self.va(self.buf.len());
+        self.put_u16(entries.len() as u16);
+        self.put_ptr(class_tab_va);
+        for (name, offset, type_index) in entries {
+            self.put_u32(*offset);
+            self.put_u16(*type_index);
+            self.put_bytes(&short_string(name));
+        }
+        at
+    }
+
+    fn put_dynamic_table(&mut self, entries: &[(i16, u64)]) -> u64 {
+        self.align(self.ptr);
+        let at: u64 = self.va(self.buf.len());
+        self.put_u16(entries.len() as u16);
+        for (index, _addr) in entries {
+            self.put_u16(*index as u16);
+        }
+        for (_index, addr) in entries {
+            self.put_ptr(*addr);
+        }
+        at
+    }
+
+    fn put_interface_table(&mut self, entries: &[([u8; 16], u64, i32)]) -> u64 {
+        self.align(self.ptr);
+        let at: u64 = self.va(self.buf.len());
+        self.put_u32(entries.len() as u32);
+        for (iid, vtable, instance_offset) in entries {
+            self.put_bytes(iid);
+            self.put_ptr(*vtable);
+            self.put_u32(*instance_offset as u32);
+            self.put_u32(0);
+        }
+        at
+    }
+
+    fn write_slot(&mut self, anchor: i64, slot: i64, value: u64, ptr: usize) {
+        let at: usize = (anchor + slot) as usize;
+        if ptr == 8 {
+            self.buf[at..at + 8].copy_from_slice(&value.to_le_bytes());
         } else {
-            self.buf[self_slot..self_slot + 4].copy_from_slice(&(c_va as u32).to_le_bytes());
+            self.buf[at..at + 4].copy_from_slice(&(value as u32).to_le_bytes());
         }
-        write_ptr(
-            &mut self.buf,
-            region_off,
-            slot_type_info,
-            type_info_va,
-            self.ptr,
+    }
+
+    fn put_vmt(&mut self, layout: TestLayout, spec: &VmtSpec) -> u64 {
+        self.align(layout.ptr);
+        let region_off: usize = self.buf.len();
+        let class_va: u64 = self.va(region_off + layout.self_abs);
+        self.buf
+            .extend(std::iter::repeat_n(0u8, layout.self_abs + 4 * layout.ptr));
+
+        let anchor: i64 = region_off as i64 + layout.self_abs as i64;
+        self.write_slot(anchor, -(layout.self_abs as i64), class_va, layout.ptr);
+        self.write_slot(anchor, layout.intf_table, spec.intf_table_va, layout.ptr);
+        self.write_slot(anchor, layout.type_info, spec.type_info_va, layout.ptr);
+        self.write_slot(anchor, layout.field_table, spec.field_table_va, layout.ptr);
+        self.write_slot(
+            anchor,
+            layout.method_table,
+            spec.method_table_va,
+            layout.ptr,
         );
-        write_ptr(
-            &mut self.buf,
-            region_off,
-            slot_method,
-            method_table_va,
-            self.ptr,
+        self.write_slot(
+            anchor,
+            layout.dynamic_table,
+            spec.dynamic_table_va,
+            layout.ptr,
         );
-        write_ptr(
-            &mut self.buf,
-            region_off,
-            slot_class_name,
-            class_name_va,
-            self.ptr,
-        );
-        let inst_at: usize = (region_off as i64 + self_abs as i64 + slot_instance) as usize;
-        self.buf[inst_at..inst_at + 4].copy_from_slice(&instance_size.to_le_bytes());
-        write_ptr(&mut self.buf, region_off, slot_parent, parent_va, self.ptr);
-        c_va
+        self.write_slot(anchor, layout.class_name, spec.class_name_va, layout.ptr);
+        self.write_slot(anchor, layout.parent, spec.parent_va, layout.ptr);
+
+        let size_at: usize = (anchor + layout.instance_size) as usize;
+        self.buf[size_at..size_at + 4].copy_from_slice(&spec.instance_size.to_le_bytes());
+        class_va
     }
 }
 
 fn build_modern32_blob() -> (Vec<u8>, u64) {
-    let base_va: u64 = 0x0040_2000;
+    let base_va: u64 = data_va();
     let mut b: Blob = Blob::new(base_va, 4);
     let cn_base: u64 = b.put_ss("TBase");
     let cn_child: u64 = b.put_ss("TChild");
@@ -661,34 +1097,180 @@ fn build_modern32_blob() -> (Vec<u8>, u64) {
     let ti_astr: u64 = b.put_simple_typeinfo(10, "AnsiString");
     let ti_base: u64 = b.put_class_typeinfo("TBase", "Unit1", &[("Caption", ti_astr)]);
     let ti_child: u64 = b.put_class_typeinfo("TChild", "Unit1", &[("Value", ti_int)]);
-    let mt_child: u64 = b.put_method_table(&[("DoIt", 0x0040_1000)]);
-    let c_base: u64 = b.put_vmt(88, -72, -64, -56, -52, -48, cn_base, ti_base, 0, 20, 0);
+    let mt_child: u64 = b.put_method_table(&[("DoIt", code_va())]);
+    let c_base: u64 = b.put_vmt(
+        T_MODERN32,
+        &VmtSpec {
+            class_name_va: cn_base,
+            type_info_va: ti_base,
+            instance_size: 20,
+            ..VmtSpec::default()
+        },
+    );
     let _c_child: u64 = b.put_vmt(
-        88, -72, -64, -56, -52, -48, cn_child, ti_child, mt_child, 24, c_base,
+        T_MODERN32,
+        &VmtSpec {
+            class_name_va: cn_child,
+            type_info_va: ti_child,
+            method_table_va: mt_child,
+            instance_size: 24,
+            parent_va: c_base,
+            ..VmtSpec::default()
+        },
     );
     (b.buf, base_va)
 }
 
-fn build_single_class_blob32(self_abs: usize, name: &str, base_va: u64) -> Vec<u8> {
-    let (ti, mt): (i64, i64) = if self_abs == 76 {
-        (-60, -52)
-    } else {
-        (-72, -64)
-    };
-    let (cn, inst, par): (i64, i64, i64) = if self_abs == 76 {
-        (-44, -40, -36)
-    } else {
-        (-56, -52, -48)
-    };
-    let mut b: Blob = Blob::new(base_va, 4);
+fn build_single_class_blob(layout: TestLayout, name: &str, base_va: u64) -> Vec<u8> {
+    let mut b: Blob = Blob::new(base_va, layout.ptr);
     let cn_va: u64 = b.put_ss(name);
-    let _c: u64 = b.put_vmt(self_abs, ti, mt, cn, inst, par, cn_va, 0, 0, 16, 0);
+    let _c: u64 = b.put_vmt(
+        layout,
+        &VmtSpec {
+            class_name_va: cn_va,
+            instance_size: if layout.ptr == 8 { 32 } else { 16 },
+            ..VmtSpec::default()
+        },
+    );
     b.buf
 }
 
-fn build_single_class_blob64(base_va: u64, name: &str) -> Vec<u8> {
-    let mut b: Blob = Blob::new(base_va, 8);
-    let cn_va: u64 = b.put_ss(name);
-    let _c: u64 = b.put_vmt(176, -144, -128, -112, -104, -96, cn_va, 0, 0, 32, 0);
+fn build_field_table_blob(escape_instance: bool) -> Vec<u8> {
+    let mut b: Blob = Blob::new(data_va(), 4);
+    let cn_edit: u64 = b.put_ss("TEdit");
+    let cn_form: u64 = b.put_ss("TMainForm");
+
+    let (cell_at, cell_va): (usize, u64) = b.reserve_ptr();
+    let (class_tab_va, class_slots): (u64, Vec<usize>) = b.put_field_class_table(1);
+
+    let first_offset: u32 = if escape_instance { 0x400 } else { 0x10 };
+    let field_table_va: u64 = b.put_field_table(
+        class_tab_va,
+        &[("Edit1", first_offset, 0), ("Button1", 0x14, 0)],
+    );
+
+    let edit_va: u64 = b.put_vmt(
+        T_MODERN32,
+        &VmtSpec {
+            class_name_va: cn_edit,
+            instance_size: 0x20,
+            ..VmtSpec::default()
+        },
+    );
+    let _form_va: u64 = b.put_vmt(
+        T_MODERN32,
+        &VmtSpec {
+            class_name_va: cn_form,
+            field_table_va,
+            instance_size: 0x40,
+            ..VmtSpec::default()
+        },
+    );
+
+    b.patch_ptr(cell_at, edit_va);
+    b.patch_ptr(class_slots[0], cell_va);
+    b.buf
+}
+
+fn build_dynamic_table_blob(address_base: u64) -> Vec<u8> {
+    let mut b: Blob = Blob::new(data_va(), 4);
+    let cn: u64 = b.put_ss("TWinControl");
+    let dynamic_table_va: u64 =
+        b.put_dynamic_table(&[(0x0F, address_base), (-3, address_base + 0x20)]);
+    let _va: u64 = b.put_vmt(
+        T_MODERN32,
+        &VmtSpec {
+            class_name_va: cn,
+            dynamic_table_va,
+            instance_size: 0x30,
+            ..VmtSpec::default()
+        },
+    );
+    b.buf
+}
+
+fn build_interface_table_blob() -> Vec<u8> {
+    const IUNKNOWN: [u8; 16] = [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x46,
+    ];
+    let mut b: Blob = Blob::new(data_va(), 4);
+    let cn: u64 = b.put_ss("TComObject");
+    let intf_table_va: u64 = b.put_interface_table(&[(IUNKNOWN, code_va(), 0)]);
+    let _va: u64 = b.put_vmt(
+        T_MODERN32,
+        &VmtSpec {
+            class_name_va: cn,
+            intf_table_va,
+            instance_size: 0x28,
+            ..VmtSpec::default()
+        },
+    );
+    b.buf
+}
+
+fn build_enum_blob() -> Vec<u8> {
+    let mut b: Blob = Blob::new(data_va(), 4);
+    let cn: u64 = b.put_ss("TPanel");
+    let ti_align: u64 = b.put_enum_typeinfo(
+        "TAlign",
+        0,
+        3,
+        &["alNone", "alTop", "alBottom", "alClient"],
+        "Controls",
+    );
+    let ti_panel: u64 = b.put_class_typeinfo("TPanel", "ExtCtrls", &[("Align", ti_align)]);
+    let _va: u64 = b.put_vmt(
+        T_MODERN32,
+        &VmtSpec {
+            class_name_va: cn,
+            type_info_va: ti_panel,
+            instance_size: 0x30,
+            ..VmtSpec::default()
+        },
+    );
+    b.buf
+}
+
+fn build_scoped_unit_blob() -> Vec<u8> {
+    let mut b: Blob = Blob::new(data_va(), 4);
+    let cn: u64 = b.put_ss("TCustomForm");
+    let ti: u64 = b.put_class_typeinfo("TCustomForm", "Vcl.Forms", &[]);
+    let _va: u64 = b.put_vmt(
+        T_MODERN32,
+        &VmtSpec {
+            class_name_va: cn,
+            type_info_va: ti,
+            instance_size: 0x40,
+            ..VmtSpec::default()
+        },
+    );
+    b.buf
+}
+
+fn build_mixed_origin_blob() -> Vec<u8> {
+    let mut b: Blob = Blob::new(data_va(), 4);
+    let cn_control: u64 = b.put_ss("TControl");
+    let cn_dropper: u64 = b.put_ss("TDropper");
+    let ti_control: u64 = b.put_class_typeinfo("TControl", "Controls", &[]);
+    let ti_dropper: u64 = b.put_class_typeinfo("TDropper", "uPayload", &[]);
+    let _c: u64 = b.put_vmt(
+        T_MODERN32,
+        &VmtSpec {
+            class_name_va: cn_control,
+            type_info_va: ti_control,
+            instance_size: 0x20,
+            ..VmtSpec::default()
+        },
+    );
+    let _d: u64 = b.put_vmt(
+        T_MODERN32,
+        &VmtSpec {
+            class_name_va: cn_dropper,
+            type_info_va: ti_dropper,
+            instance_size: 0x24,
+            ..VmtSpec::default()
+        },
+    );
     b.buf
 }

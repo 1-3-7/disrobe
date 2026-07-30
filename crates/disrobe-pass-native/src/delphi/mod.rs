@@ -1,6 +1,11 @@
 mod dfm;
 mod image;
+mod layout;
 mod resource;
+mod tables;
+mod typeinfo;
+mod units;
+mod version;
 mod vmt;
 
 #[cfg(test)]
@@ -9,6 +14,10 @@ mod tests;
 use serde::{Deserialize, Serialize};
 
 use image::PeView;
+
+pub use typeinfo::DelphiTypeInfo;
+pub use units::{DelphiOrigin, classify_unit};
+pub use version::{DelphiSignalKind, DelphiVersion, DelphiVersionSignal};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -45,17 +54,45 @@ pub struct DelphiMethod {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DelphiField {
+    pub name: String,
+    pub offset: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DelphiDynamicMethod {
+    pub index: i16,
+    pub address: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DelphiInterface {
+    pub iid: String,
+    pub vtable: u64,
+    pub instance_offset: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DelphiClass {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit_name: Option<String>,
+    pub origin: DelphiOrigin,
     pub era: DelphiEra,
     pub instance_size: u32,
     pub vmt_va: u64,
     pub properties: Vec<DelphiProperty>,
     pub methods: Vec<DelphiMethod>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<DelphiField>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dynamic_methods: Vec<DelphiDynamicMethod>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub interfaces: Vec<DelphiInterface>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,8 +112,13 @@ pub struct DelphiReport {
     pub rtti_present: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub era: Option<DelphiEra>,
+    pub version: DelphiVersion,
     pub classes: Vec<DelphiClass>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<DelphiTypeInfo>,
     pub forms: Vec<DelphiForm>,
+    pub library_class_count: usize,
+    pub author_class_count: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
 }
@@ -125,7 +167,7 @@ pub fn recover_dfm_resources(bytes: &[u8]) -> Vec<DelphiForm> {
 
 fn decode_forms(view: &PeView<'_>) -> Vec<DelphiForm> {
     let mut forms: Vec<DelphiForm> = Vec::new();
-    for res in resource::collect_rcdata(view) {
+    for res in resource::collect_rcdata(view, &resource::is_form) {
         let Some(decoded): Option<dfm::DfmDecoded> = dfm::decode(&res.data) else {
             continue;
         };
@@ -147,8 +189,20 @@ pub fn detect_delphi(bytes: &[u8]) -> bool {
         return true;
     }
     PeView::parse(bytes).is_some_and(|view: PeView<'_>| {
-        !vmt::scan_classes(&view).classes.is_empty() || !resource::collect_rcdata(&view).is_empty()
+        !vmt::scan_classes(&view).classes.is_empty()
+            || !resource::collect_rcdata(&view, &resource::is_form).is_empty()
     })
+}
+
+fn empty_version() -> DelphiVersion {
+    DelphiVersion {
+        product: None,
+        ver_symbol: None,
+        package_version: None,
+        candidates: Vec::new(),
+        signals: Vec::new(),
+        conflicts: Vec::new(),
+    }
 }
 
 #[must_use]
@@ -159,8 +213,12 @@ pub fn analyze(bytes: &[u8]) -> DelphiReport {
             is_delphi: markers,
             rtti_present: false,
             era: None,
+            version: empty_version(),
             classes: Vec::new(),
+            types: Vec::new(),
             forms: Vec::new(),
+            library_class_count: 0,
+            author_class_count: 0,
             notes: if markers {
                 vec!["Delphi marker present but the input is not a PE image".to_owned()]
             } else {
@@ -172,6 +230,16 @@ pub fn analyze(bytes: &[u8]) -> DelphiReport {
     let outcome: vmt::ScanOutcome = vmt::scan_classes(&view);
     let forms: Vec<DelphiForm> = decode_forms(&view);
     let rtti_present: bool = !outcome.classes.is_empty();
+    let license: Option<String> = resource::find_license_resource(&view);
+    let version: DelphiVersion = version::identify(
+        bytes,
+        outcome.era,
+        &vmt::unit_names(&outcome.classes),
+        license.as_deref(),
+    );
+    let (library_class_count, author_class_count): (usize, usize) =
+        vmt::origin_counts(&outcome.classes);
+
     let mut notes: Vec<String> = Vec::new();
     if outcome.scan_truncated {
         notes.push(
@@ -187,6 +255,9 @@ pub fn analyze(bytes: &[u8]) -> DelphiReport {
             notes.push("no Delphi RTTI virtual method tables present".to_owned());
         }
     }
+    for conflict in &version.conflicts {
+        notes.push(conflict.clone());
+    }
     for form in &forms {
         if form.truncated {
             notes.push(format!(
@@ -200,8 +271,12 @@ pub fn analyze(bytes: &[u8]) -> DelphiReport {
         is_delphi: markers || rtti_present || !forms.is_empty(),
         rtti_present,
         era: outcome.era,
+        version,
         classes: outcome.classes,
+        types: outcome.types,
         forms,
+        library_class_count,
+        author_class_count,
         notes,
     }
 }
