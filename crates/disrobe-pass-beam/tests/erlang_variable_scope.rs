@@ -11,17 +11,18 @@
 
 mod common;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use common::erlang_scope::{UnboundReference, clause_count, unbound_references};
 use common::erlang_toolchain::{Erlang, require_erlang, run_bounded};
 use disrobe_core::scratch::ScratchDir;
-use disrobe_pass_beam::body_lift::LiftedBody;
 use disrobe_pass_beam::body_lift::comprehension::resugar_module;
-use disrobe_pass_beam::body_lift::expr::{BinSegment, CaseArm, CatchArm, Expr, Stmt};
+use disrobe_pass_beam::body_lift::expr::{BinSegment, CaseArm, CatchArm, Expr, FnClause, Stmt};
+use disrobe_pass_beam::body_lift::{LiftedBody, lift_function};
 use disrobe_pass_beam::core_erlang::{CoreClause, CoreFunction, CoreModule};
-use disrobe_pass_beam::{BeamFile, lift};
+use disrobe_pass_beam::{AtomTable, BeamFile, Chunks, Instruction, Operand, lift};
 
 fn tracked_beam_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -186,6 +187,131 @@ fn core_lifted_corpus_bodies_bind_every_variable_they_read() {
         failures.len(),
         failures.join("\n")
     );
+}
+
+const MATCH_DIRECTIVES: [&str; 11] = [
+    "ensure_at_least",
+    "ensure_exactly",
+    "integer",
+    "binary",
+    "float",
+    "utf8",
+    "skip",
+    "get_tail",
+    "=:=",
+    "test_tail",
+    "nil",
+];
+
+fn directive_chunks() -> Chunks {
+    Chunks {
+        atoms: AtomTable {
+            atoms: MATCH_DIRECTIVES
+                .iter()
+                .map(|name: &&str| (*name).to_owned())
+                .collect(),
+        },
+        code: None,
+        strings: None,
+        attributes: None,
+        compile_info: None,
+        dbgi: None,
+        docs: None,
+        exports: Vec::new(),
+        imports: Vec::new(),
+        locals: Vec::new(),
+        literals: None,
+        line: None,
+        funs: Vec::new(),
+        other: BTreeMap::new(),
+    }
+}
+
+fn directive(name: &str) -> Operand {
+    let index: usize = MATCH_DIRECTIVES
+        .iter()
+        .position(|known: &&str| *known == name)
+        .expect("directive is in the match atom table");
+    Operand::Atom(u32::try_from(index).expect("index fits") + 1)
+}
+
+fn value_command(kind: &str, size: u64, destination: u32) -> Vec<Operand> {
+    vec![
+        directive(kind),
+        Operand::Literal(3),
+        Operand::Literal(0b100),
+        Operand::Literal(size),
+        Operand::Literal(1),
+        Operand::XReg(destination),
+    ]
+}
+
+fn instruction(name: &'static str, operands: Vec<Operand>) -> Instruction {
+    Instruction {
+        offset: 0,
+        opcode: 0,
+        name,
+        operands,
+    }
+}
+
+#[test]
+fn an_exactly_sized_binary_match_lifts_a_head_that_binds_what_its_body_reads() {
+    let mut commands: Vec<Operand> = vec![directive("ensure_exactly"), Operand::Literal(24)];
+    commands.extend(value_command("integer", 8, 1));
+    commands.extend(value_command("integer", 16, 2));
+    let instrs: Vec<Instruction> = vec![
+        instruction("label", vec![Operand::Literal(1)]),
+        instruction(
+            "bs_start_match3",
+            vec![
+                Operand::Label(0),
+                Operand::XReg(0),
+                Operand::Literal(1),
+                Operand::XReg(0),
+            ],
+        ),
+        instruction(
+            "bs_match",
+            vec![Operand::Label(0), Operand::XReg(0), Operand::List(commands)],
+        ),
+        instruction(
+            "put_tuple2",
+            vec![
+                Operand::XReg(0),
+                Operand::List(vec![Operand::XReg(1), Operand::XReg(2)]),
+            ],
+        ),
+        instruction("return", Vec::new()),
+    ];
+
+    let (clauses, complete): (Vec<FnClause>, bool) =
+        lift_function(&instrs, 1, &directive_chunks(), &BTreeMap::new());
+    assert!(complete, "an exactly sized match is a complete lift");
+    assert_eq!(clauses.len(), 1);
+    assert_eq!(
+        clauses[0].patterns.len(),
+        1,
+        "the match belongs in the clause head, not the body"
+    );
+    let core: CoreModule = module_of(
+        "signed",
+        1,
+        clauses
+            .into_iter()
+            .map(|lifted: FnClause| CoreClause {
+                params: Vec::new(),
+                patterns: lifted.patterns,
+                guard: lifted.guard,
+                instructions: Vec::new(),
+                body: LiftedBody {
+                    stmts: lifted.body,
+                    lift_complete: true,
+                },
+            })
+            .collect(),
+    );
+    assert_eq!(unbound_references(&core), Vec::new());
 }
 
 fn clause(patterns: Vec<Expr>, stmts: Vec<Stmt>) -> CoreClause {
