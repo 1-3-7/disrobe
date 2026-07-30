@@ -112,6 +112,7 @@ impl BundlerKind {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic, clippy::expect_used, clippy::unwrap_used)]
 mod published_count_tests {
     use super::BundlerKind;
 
