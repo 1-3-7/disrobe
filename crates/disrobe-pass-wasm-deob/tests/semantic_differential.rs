@@ -1,5 +1,8 @@
 #![cfg(feature = "sandbox")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#[path = "common/published.rs"]
+mod published;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,8 +15,16 @@ use disrobe_pass_wasm_deob::{
     lift_function_body, lift_module_faithful_wat, recover_gc_types, scan_function_refs,
     scan_module_eh, scan_stack_switching,
 };
+use published::{published_bar, published_group};
 use wasmparser::{FunctionBody, Operator, Parser, Payload, ValType};
 use wasmtime::{Config, Engine, Linker, Module, Store, Val};
+
+const PUBLISHED_HEADING: &str = "WebAssembly (committed 133-fn corpus";
+const PUBLISHED_BAR: &str = "op-coverage";
+const HEADING_ANCHOR: &str = " execution-verified under wasmtime";
+const DETAIL_RATIO_ANCHOR: &str = " execution-eligible functions are EXECUTION-EQUIVALENT";
+const SOURCE_RATIO_ANCHOR: &str = " execution-eligible equivalent (";
+const BYTE_IDENTICAL_ANCHOR: &str = " byte-identical)";
 
 const FUEL_BUDGET: u64 = 2_000_000;
 const EPOCH_DEADLINE_TICKS: u64 = 1;
@@ -1014,6 +1025,169 @@ fn flag_unsupported_construct(wat_path: &Path, tally: &mut DiffTally, construct:
         .or_default() += count;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExecutionDifferential {
+    eligible: u64,
+    equivalent: u64,
+    byte_identical: u64,
+}
+
+fn digits_start(text: &str) -> Option<usize> {
+    let mut start: Option<usize> = None;
+    for (index, ch) in text.char_indices().rev() {
+        if ch.is_ascii_digit() {
+            start = Some(index);
+        } else {
+            break;
+        }
+    }
+    start
+}
+
+fn trailing_integer(head: &str) -> Option<u64> {
+    let start: usize = digits_start(head)?;
+    head[start..].parse::<u64>().ok()
+}
+
+fn trailing_ratio(head: &str, separator: &str) -> Option<(u64, u64)> {
+    let denominator_start: usize = digits_start(head)?;
+    let denominator: u64 = head[denominator_start..].parse::<u64>().ok()?;
+    let before_denominator: &str = head[..denominator_start].strip_suffix(separator)?;
+    let numerator: u64 = trailing_integer(before_denominator)?;
+    Some((numerator, denominator))
+}
+
+fn head_before(text: &str, anchor: &str, site: &str) -> String {
+    let cut: usize = text.find(anchor).unwrap_or_else(|| {
+        panic!(
+            "{site} is where the execution-differential figure is published, and it must carry the \
+             phrase `{anchor}`; a figure this test cannot locate is never a pass. recovery.json now \
+             reads:\n{text}"
+        )
+    });
+    text[..cut].to_owned()
+}
+
+fn integer_before(text: &str, anchor: &str, site: &str) -> u64 {
+    let head: String = head_before(text, anchor, site);
+    trailing_integer(&head).unwrap_or_else(|| {
+        panic!(
+            "{site} carries `{anchor}` with no count in front of it, so the published figure cannot \
+             be graded against what ran. recovery.json now reads:\n{text}"
+        )
+    })
+}
+
+fn ratio_before(text: &str, anchor: &str, separator: &str, site: &str) -> (u64, u64) {
+    let head: String = head_before(text, anchor, site);
+    trailing_ratio(&head, separator).unwrap_or_else(|| {
+        panic!(
+            "{site} carries `{anchor}` with no `N{separator}M` ratio in front of it, so neither the \
+             published numerator nor its population can be graded against what ran. recovery.json \
+             now reads:\n{text}"
+        )
+    })
+}
+
+fn published_execution_differential() -> ExecutionDifferential {
+    let group: serde_json::Value = published_group(PUBLISHED_HEADING);
+    let heading: &str = group["heading"]
+        .as_str()
+        .expect("the WebAssembly group must carry a heading");
+    let bar: serde_json::Value = published_bar(PUBLISHED_HEADING, PUBLISHED_BAR);
+    let detail: &str = bar["detail"]
+        .as_str()
+        .expect("the wasm op-coverage bar must carry a detail line");
+    let source: &str = bar["source"]
+        .as_str()
+        .expect("the wasm op-coverage bar must record where its numbers come from");
+
+    let heading_site: &str = "the recovery.json WebAssembly group heading";
+    let detail_site: &str = "the recovery.json wasm op-coverage bar detail";
+    let source_site: &str = "the recovery.json wasm op-coverage bar source";
+
+    let heading_eligible: u64 = integer_before(heading, HEADING_ANCHOR, heading_site);
+    let (detail_equivalent, detail_eligible): (u64, u64) =
+        ratio_before(detail, DETAIL_RATIO_ANCHOR, " of ", detail_site);
+    let detail_byte_identical: u64 = integer_before(detail, BYTE_IDENTICAL_ANCHOR, detail_site);
+    let (source_equivalent, source_eligible): (u64, u64) =
+        ratio_before(source, SOURCE_RATIO_ANCHOR, "/", source_site);
+    let source_byte_identical: u64 = integer_before(source, BYTE_IDENTICAL_ANCHOR, source_site);
+
+    assert_eq!(
+        heading_eligible, detail_eligible,
+        "the recovery.json WebAssembly heading and the op-coverage bar detail state different \
+         execution-eligible populations, so the documents cut from them disagree with each other"
+    );
+    assert_eq!(
+        source_eligible, detail_eligible,
+        "the recovery.json op-coverage bar source and its detail state different execution-eligible \
+         populations, so the documents cut from them disagree with each other"
+    );
+    assert_eq!(
+        detail_equivalent, source_equivalent,
+        "the equivalent count differs between the bar detail and the bar source, so the documents \
+         cut from them disagree with each other"
+    );
+    assert_eq!(
+        detail_byte_identical, source_byte_identical,
+        "the byte-identical count differs between the bar detail and the bar source, so the \
+         documents cut from them disagree with each other"
+    );
+
+    ExecutionDifferential {
+        eligible: detail_eligible,
+        equivalent: detail_equivalent,
+        byte_identical: detail_byte_identical,
+    }
+}
+
+fn differential_defects(
+    measured: ExecutionDifferential,
+    published: ExecutionDifferential,
+) -> Vec<String> {
+    let mut defects: Vec<String> = Vec::new();
+    if measured.eligible != published.eligible {
+        defects.push(format!(
+            "xtask/data/recovery.json publishes {} execution-eligible functions and the README, the \
+             mdBook and the Python bindings all render that number, but this run executed {}. A run \
+             that inspects fewer functions must score worse, never shrink what it is measured \
+             against",
+            published.eligible, measured.eligible
+        ));
+    }
+    if measured.equivalent < published.equivalent {
+        defects.push(format!(
+            "recovery.json publishes {} of {} execution-eligible functions equivalent between the \
+             original module and the recovered wasm; this run proved {}. Raise the recovery or \
+             correct the published figure, never the reverse",
+            published.equivalent, published.eligible, measured.equivalent
+        ));
+    }
+    if measured.byte_identical < published.byte_identical {
+        defects.push(format!(
+            "recovery.json publishes {} of those functions as leaving byte-identical linear memory; \
+             this run verified {}",
+            published.byte_identical, measured.byte_identical
+        ));
+    }
+    if published.equivalent > published.eligible {
+        defects.push(format!(
+            "recovery.json publishes {} equivalent out of {} eligible, which is not a ratio any run \
+             can reach",
+            published.equivalent, published.eligible
+        ));
+    }
+    if published.byte_identical > published.equivalent {
+        defects.push(format!(
+            "recovery.json publishes {} byte-identical out of {} equivalent, but a byte-identical \
+             function is one whose execution already matched, so that set is a subset",
+            published.byte_identical, published.equivalent
+        ));
+    }
+    defects
+}
+
 #[test]
 fn differential_execution_equivalence_under_wasmtime() {
     let mut tally: DiffTally = DiffTally::default();
@@ -1170,10 +1344,24 @@ fn differential_execution_equivalence_under_wasmtime() {
         }
     }
 
+    let published: ExecutionDifferential = published_execution_differential();
+    let measured: ExecutionDifferential = ExecutionDifferential {
+        eligible: u64::try_from(tally.execution_eligible).expect("the eligible count fits u64"),
+        equivalent: u64::try_from(tally.execution_equivalent)
+            .expect("the equivalent count fits u64"),
+        byte_identical: u64::try_from(tally.memory_verified)
+            .expect("the byte-identical count fits u64"),
+    };
+    let defects: Vec<String> = differential_defects(measured, published);
     assert!(
-        tally.execution_eligible >= 36,
-        "expected the whole-module faithful phase to keep a large execution-eligible set, got {}",
-        tally.execution_eligible
+        defects.is_empty(),
+        "the published execution differential is {} of {} execution-eligible functions ({} \
+         byte-identical), and the README, the mdBook, the language guide, the Python bindings and \
+         recovery.json all render it:\n{}",
+        published.equivalent,
+        published.eligible,
+        published.byte_identical,
+        defects.join("\n")
     );
     assert_eq!(
         tally.execution_equivalent,
@@ -1181,6 +1369,75 @@ fn differential_execution_equivalence_under_wasmtime() {
         "every execution-eligible function MUST be observationally equivalent between the \
          original module and disrobe's recovered wasm under wasmtime; divergences:\n{}",
         tally.diverged.join("\n")
+    );
+}
+
+#[test]
+fn the_pinned_execution_differential_rejects_a_dropped_function_and_a_shrunken_population() {
+    let published: ExecutionDifferential = published_execution_differential();
+    assert!(
+        differential_defects(published, published).is_empty(),
+        "the check must accept the published measurement unchanged"
+    );
+
+    let dropped: Vec<String> = differential_defects(
+        ExecutionDifferential {
+            equivalent: published.equivalent - 1,
+            ..published
+        },
+        published,
+    );
+    assert!(
+        dropped
+            .iter()
+            .any(|defect: &String| defect.contains("this run proved")),
+        "losing one equivalent function must be reported as a shortfall against the published \
+         numerator, got {dropped:?}"
+    );
+
+    let shrunk: Vec<String> = differential_defects(
+        ExecutionDifferential {
+            eligible: published.eligible - 1,
+            equivalent: published.equivalent - 1,
+            byte_identical: published.byte_identical,
+        },
+        published,
+    );
+    assert!(
+        shrunk
+            .iter()
+            .any(|defect: &String| defect.contains("never shrink what it is measured against")),
+        "dropping a function from the executed population must be rejected on the denominator \
+         rather than absorbed as an unchanged ratio, got {shrunk:?}"
+    );
+
+    let fewer_byte_identical: Vec<String> = differential_defects(
+        ExecutionDifferential {
+            byte_identical: published.byte_identical - 1,
+            ..published
+        },
+        published,
+    );
+    assert!(
+        fewer_byte_identical
+            .iter()
+            .any(|defect: &String| defect.contains("byte-identical linear memory")),
+        "losing one byte-identical function must be reported rather than absorbed, got \
+         {fewer_byte_identical:?}"
+    );
+
+    let overclaimed: Vec<String> = differential_defects(
+        published,
+        ExecutionDifferential {
+            equivalent: published.eligible + 1,
+            ..published
+        },
+    );
+    assert!(
+        overclaimed
+            .iter()
+            .any(|defect: &String| defect.contains("not a ratio any run can reach")),
+        "a published numerator above its own population must be rejected, got {overclaimed:?}"
     );
 }
 

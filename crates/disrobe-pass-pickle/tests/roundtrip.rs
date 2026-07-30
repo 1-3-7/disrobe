@@ -1,5 +1,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -9,6 +11,10 @@ use serde_json::{Map, Value, json};
 
 const MIN_SUPPORTED: usize = 120;
 const FLOOR_PERCENT: usize = 100;
+const PINNED_FIXTURES: usize = 470;
+const PINNED_REEXECUTED: usize = 470;
+const REQUIRE_PYTHON_VAR: &str = "DISROBE_REQUIRE_PYTHON";
+const GRADED: &str = "the pickle reconstruction roundtrip";
 const CPYTHON_SHARED_TUPLE_PROTOCOL2: &[u8] =
     b"\x80\x02]q\x00(K\x07]q\x01K\x08a\x86q\x02h\x02}q\x03X\x05\x00\x00\x00tupleq\x04h\x02se.";
 const CPYTHON_SHARED_TUPLE_PROTOCOL2_OPCODES: &[&str] = &[
@@ -84,6 +90,40 @@ fn probe(exe: &str) -> bool {
         .is_ok_and(|o: std::process::Output| o.status.success())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InterpreterRequirement {
+    Optional,
+    Mandatory,
+}
+
+fn requirement_from_value(value: Option<&OsStr>) -> InterpreterRequirement {
+    let Some(raw): Option<&OsStr> = value else {
+        return InterpreterRequirement::Optional;
+    };
+    let text: String = raw.to_string_lossy().trim().to_ascii_lowercase();
+    match text.as_str() {
+        "" | "0" | "false" | "no" | "off" | "optional" => InterpreterRequirement::Optional,
+        _ => InterpreterRequirement::Mandatory,
+    }
+}
+
+fn requirement() -> InterpreterRequirement {
+    let raw: Option<OsString> = std::env::var_os(REQUIRE_PYTHON_VAR);
+    requirement_from_value(raw.as_deref())
+}
+
+fn announce_unmeasured() {
+    let line: String = format!(
+        "\nNOT MEASURED: {GRADED} was compared against nothing and graded nothing, because no \
+         CPython interpreter is usable here. The published {PINNED_REEXECUTED}-fixture figure is \
+         not enforced on this host. Set DISROBE_PYTHON to a real interpreter, or set \
+         {REQUIRE_PYTHON_VAR}=1 to fail instead of skipping when CPython cannot be run.\n"
+    );
+    let mut sink: std::io::StdoutLock<'static> = std::io::stdout().lock();
+    drop(sink.write_all(line.as_bytes()));
+    drop(sink.flush());
+}
+
 fn find_python() -> Option<String> {
     if let Ok(explicit) = std::env::var("DISROBE_PYTHON")
         && probe(&explicit)
@@ -94,6 +134,55 @@ fn find_python() -> Option<String> {
         .into_iter()
         .find(|cand: &&str| probe(cand))
         .map(str::to_owned)
+}
+
+fn enforce_requirement(requirement: InterpreterRequirement) {
+    assert!(
+        requirement == InterpreterRequirement::Optional,
+        "{REQUIRE_PYTHON_VAR} makes a real CPython interpreter mandatory for this run, so {GRADED} \
+         cannot be measured and this case must not report success. Install CPython 3 and put it on \
+         PATH, or point DISROBE_PYTHON at one; to permit a run that measures nothing here, clear \
+         {REQUIRE_PYTHON_VAR}."
+    );
+    announce_unmeasured();
+}
+
+fn require_python() -> Option<String> {
+    let found: Option<String> = find_python();
+    if found.is_some() {
+        return found;
+    }
+    enforce_requirement(requirement());
+    None
+}
+
+#[test]
+fn the_python_requirement_reads_its_environment_variable() {
+    assert_eq!(
+        requirement_from_value(None),
+        InterpreterRequirement::Optional,
+        "an unset {REQUIRE_PYTHON_VAR} leaves the interpreter optional"
+    );
+    for off in ["", "0", "false", "no", "off", "optional", "  OFF  "] {
+        assert_eq!(
+            requirement_from_value(Some(OsStr::new(off))),
+            InterpreterRequirement::Optional,
+            "{off:?} must read as optional"
+        );
+    }
+    for on in ["1", "true", "yes", "required", "on"] {
+        assert_eq!(
+            requirement_from_value(Some(OsStr::new(on))),
+            InterpreterRequirement::Mandatory,
+            "{on:?} must read as mandatory"
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "makes a real CPython interpreter mandatory")]
+fn a_mandatory_python_requirement_fails_rather_than_skipping() {
+    enforce_requirement(InterpreterRequirement::Mandatory);
 }
 
 fn harness_path() -> PathBuf {
@@ -215,12 +304,96 @@ fn dup_keeps_the_cpython_memoized_list_alias() {
     assert!(reconstruction.program.contains("result = [_m[0], _m[0]]"));
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RoundtripTally {
+    population: usize,
+    recoverable: usize,
+    reexecuted: usize,
+}
+
+fn roundtrip_defects(tally: RoundtripTally) -> Vec<String> {
+    let mut defects: Vec<String> = Vec::new();
+    if tally.population != PINNED_FIXTURES {
+        defects.push(format!(
+            "the CPython harness emits a fixed fixture set and the published figure names it: \
+             {PINNED_FIXTURES} pickles across protocols 0 to 5. This run emitted {}. A run that \
+             grades fewer fixtures must score worse, never shrink what it is measured against",
+            tally.population
+        ));
+    }
+    if tally.recoverable < PINNED_REEXECUTED {
+        defects.push(format!(
+            "the published figure is graded over {PINNED_REEXECUTED} recoverable fixtures, but this \
+             run left only {} in the denominator. Excluding a case as a ceiling removes it from the \
+             population the figure is cut from, so it cannot be absorbed as an unchanged ratio",
+            tally.recoverable
+        ));
+    }
+    if tally.reexecuted < PINNED_REEXECUTED {
+        defects.push(format!(
+            "the published figure is {PINNED_REEXECUTED} fixtures reconstructing to source that \
+             re-executes to an equal object under CPython; this run reconstructed {}. Raise the \
+             recovery or correct the published figure, never the reverse",
+            tally.reexecuted
+        ));
+    }
+    defects
+}
+
+#[test]
+fn the_pinned_roundtrip_check_rejects_a_dropped_fixture_and_a_shrunken_denominator() {
+    let measured: RoundtripTally = RoundtripTally {
+        population: PINNED_FIXTURES,
+        recoverable: PINNED_REEXECUTED,
+        reexecuted: PINNED_REEXECUTED,
+    };
+    assert!(
+        roundtrip_defects(measured).is_empty(),
+        "the check must accept the published measurement unchanged"
+    );
+
+    let dropped: Vec<String> = roundtrip_defects(RoundtripTally {
+        reexecuted: measured.reexecuted - 1,
+        ..measured
+    });
+    assert!(
+        dropped
+            .iter()
+            .any(|defect: &String| defect.contains("this run reconstructed")),
+        "losing one reconstructed fixture must be reported as a shortfall against the published \
+         numerator, got {dropped:?}"
+    );
+
+    let shrunk: Vec<String> = roundtrip_defects(RoundtripTally {
+        population: measured.population - 1,
+        recoverable: measured.recoverable - 1,
+        reexecuted: measured.reexecuted - 1,
+    });
+    assert!(
+        shrunk
+            .iter()
+            .any(|defect: &String| defect.contains("never shrink what it is measured against")),
+        "dropping a fixture from the emitted corpus must be rejected on the denominator rather than \
+         absorbed as an unchanged percentage, got {shrunk:?}"
+    );
+
+    let relabeled: Vec<String> = roundtrip_defects(RoundtripTally {
+        recoverable: measured.recoverable - 1,
+        reexecuted: measured.reexecuted - 1,
+        ..measured
+    });
+    assert!(
+        relabeled
+            .iter()
+            .any(|defect: &String| defect.contains("left only")),
+        "relabeling one fixture as a ceiling removes it from the denominator and must be rejected, \
+         got {relabeled:?}"
+    );
+}
+
 #[test]
 fn cpython_roundtrip_differential_oracle() {
-    let Some(python): Option<String> = find_python() else {
-        eprintln!(
-            "roundtrip oracle SKIPPED: no CPython interpreter found (set DISROBE_PYTHON); the re-execution floor is not enforced on this host"
-        );
+    let Some(python): Option<String> = require_python() else {
         return;
     };
 
@@ -389,6 +562,17 @@ fn cpython_roundtrip_differential_oracle() {
     assert!(
         total >= MIN_SUPPORTED,
         "corpus too small: {total} < {MIN_SUPPORTED}{summary}"
+    );
+    let defects: Vec<String> = roundtrip_defects(RoundtripTally {
+        population: total,
+        recoverable,
+        reexecuted: ok,
+    });
+    assert!(
+        defects.is_empty(),
+        "the published pickle roundtrip figure is {PINNED_REEXECUTED} of {PINNED_FIXTURES}, and \
+         that figure is this emitted fixture set rather than a bare percentage:\n{}\n{summary}",
+        defects.join("\n")
     );
     assert!(
         modelable.is_empty(),
