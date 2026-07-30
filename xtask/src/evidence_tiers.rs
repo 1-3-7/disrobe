@@ -9,7 +9,7 @@ const MAX_README_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_DESCRIPTOR_BYTES: u64 = 256 * 1024;
 
 const BENCHMARKS_HEADING: &str = "## Benchmarks";
-const NEXT_SECTION_HEADING: &str = "## Ecosystem maturity matrix";
+const NEXT_SECTION_HEADING: &str = "## Head-to-head";
 
 const TABLE_HEADER_ROW: &str = "| Metric | Measured | Oracle | Reproduce |";
 
