@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use eyre::{Result, WrapErr, bail, eyre};
 use serde::Deserialize;
 
+use crate::catalog_counts::CatalogTables;
 use crate::fileio::read_text_bounded;
 
 const MAX_RECOVERY_JSON_BYTES: u64 = 4 * 1024 * 1024;
@@ -155,11 +156,58 @@ impl Formatter {
     }
 }
 
+#[derive(Debug)]
+struct MetricSources {
+    recovery: Recovery,
+    catalog: CatalogTables,
+}
+
 struct KeySpec {
     name: &'static str,
     formatter: Formatter,
     nouns: &'static [&'static str],
     extract: fn(&Recovery) -> Result<MetricValue>,
+}
+
+struct CatalogKeySpec {
+    name: &'static str,
+    formatter: Formatter,
+    extract: fn(&CatalogTables) -> Result<MetricValue>,
+}
+
+#[derive(Clone, Copy)]
+enum Spec {
+    Measured(&'static KeySpec),
+    Catalog(&'static CatalogKeySpec),
+}
+
+impl Spec {
+    const fn formatter(self) -> Formatter {
+        match self {
+            Self::Measured(spec) => spec.formatter,
+            Self::Catalog(spec) => spec.formatter,
+        }
+    }
+
+    fn value(self, sources: &MetricSources) -> Result<MetricValue> {
+        match self {
+            Self::Measured(spec) => (spec.extract)(&sources.recovery),
+            Self::Catalog(spec) => (spec.extract)(&sources.catalog),
+        }
+    }
+
+    fn render(self, sources: &MetricSources, name: &str) -> Result<String> {
+        let value: MetricValue = self
+            .value(sources)
+            .wrap_err_with(|| format!("extracting metric `{name}`"))?;
+        self.formatter().render(value)
+    }
+}
+
+fn catalog_int(value: usize) -> Result<MetricValue> {
+    Ok(MetricValue::Int(u64::try_from(value).wrap_err_with(
+        || format!("catalog count {value} does not fit in a u64"),
+    )?))
 }
 
 const KEYS: &[KeySpec] = &[
@@ -477,8 +525,99 @@ const KEYS: &[KeySpec] = &[
     },
 ];
 
-fn spec_for(name: &str) -> Option<&'static KeySpec> {
-    KEYS.iter().find(|spec: &&KeySpec| spec.name == name)
+const CATALOG_KEYS: &[CatalogKeySpec] = &[
+    CatalogKeySpec {
+        name: "catalog_family_total",
+        formatter: Formatter::Int,
+        extract: |c: &CatalogTables| catalog_int(c.family_total),
+    },
+    CatalogKeySpec {
+        name: "catalog_ecosystems",
+        formatter: Formatter::Int,
+        extract: |c: &CatalogTables| catalog_int(c.ecosystems),
+    },
+    CatalogKeySpec {
+        name: "native_packer_variants",
+        formatter: Formatter::Int,
+        extract: |c: &CatalogTables| catalog_int(c.packer_variants),
+    },
+    CatalogKeySpec {
+        name: "native_tier_implemented",
+        formatter: Formatter::Int,
+        extract: |c: &CatalogTables| catalog_int(c.native_tiers.implemented),
+    },
+    CatalogKeySpec {
+        name: "native_tier_stub_eval_pending",
+        formatter: Formatter::Int,
+        extract: |c: &CatalogTables| catalog_int(c.native_tiers.stub_eval_pending),
+    },
+    CatalogKeySpec {
+        name: "native_tier_grey_carve",
+        formatter: Formatter::Int,
+        extract: |c: &CatalogTables| catalog_int(c.native_tiers.grey_carve),
+    },
+    CatalogKeySpec {
+        name: "native_tier_grey_detect_only",
+        formatter: Formatter::Int,
+        extract: |c: &CatalogTables| catalog_int(c.native_tiers.grey_detect_only),
+    },
+    CatalogKeySpec {
+        name: "native_tier_delegated",
+        formatter: Formatter::Int,
+        extract: |c: &CatalogTables| catalog_int(c.native_tiers.delegated),
+    },
+    CatalogKeySpec {
+        name: "native_catalog_entries",
+        formatter: Formatter::Int,
+        extract: |c: &CatalogTables| catalog_int(c.pass_count("native.packer-unpack")?),
+    },
+    CatalogKeySpec {
+        name: "pyarmor_catalog_versions",
+        formatter: Formatter::Int,
+        extract: |c: &CatalogTables| catalog_int(c.pass_count("pyarmor.unpack")?),
+    },
+    CatalogKeySpec {
+        name: "js_catalog_entries",
+        formatter: Formatter::Int,
+        extract: |c: &CatalogTables| catalog_int(c.pass_count("js.deob")?),
+    },
+    CatalogKeySpec {
+        name: "wasm_catalog_entries",
+        formatter: Formatter::Int,
+        extract: |c: &CatalogTables| catalog_int(c.pass_count("wasm.deob")?),
+    },
+    CatalogKeySpec {
+        name: "php_catalog_entries",
+        formatter: Formatter::Int,
+        extract: |c: &CatalogTables| catalog_int(c.pass_count("php.peel")?),
+    },
+    CatalogKeySpec {
+        name: "lua_catalog_obfuscators",
+        formatter: Formatter::Int,
+        extract: |c: &CatalogTables| catalog_int(c.lua_obfuscators),
+    },
+    CatalogKeySpec {
+        name: "lua_catalog_dialects",
+        formatter: Formatter::Int,
+        extract: |c: &CatalogTables| catalog_int(c.lua_dialects),
+    },
+    CatalogKeySpec {
+        name: "rasp_vendors",
+        formatter: Formatter::Int,
+        extract: |c: &CatalogTables| catalog_int(c.rasp_vendors),
+    },
+];
+
+fn spec_for(name: &str) -> Option<Spec> {
+    KEYS.iter()
+        .find(|spec: &&KeySpec| spec.name == name)
+        .map(Spec::Measured)
+        .or_else(|| {
+            CATALOG_KEYS
+                .iter()
+                .find(|spec: &&CatalogKeySpec| spec.name == name)
+                .map(Spec::Catalog)
+        })
 }
 
 fn collect_nouns() -> Vec<&'static str> {
@@ -574,7 +713,7 @@ fn scan_line(
     Ok(())
 }
 
-fn rewrite_text(text: &str, recovery: &Recovery) -> Result<String> {
+fn rewrite_text(text: &str, sources: &MetricSources) -> Result<String> {
     let mut suppressed: Vec<usize> = Vec::new();
     let spans: Vec<MarkerSpan> = parse_spans(text, &mut suppressed)?;
     if spans.is_empty() {
@@ -586,9 +725,7 @@ fn rewrite_text(text: &str, recovery: &Recovery) -> Result<String> {
         let Some(spec) = spec_for(&span.name) else {
             bail!("line {}: unknown metric key `m:{}`", span.line, span.name);
         };
-        let value: MetricValue = (spec.extract)(recovery)
-            .wrap_err_with(|| format!("extracting metric `{}`", span.name))?;
-        let rendered: String = spec.formatter.render(value)?;
+        let rendered: String = spec.render(sources, &span.name)?;
         out.push_str(&text[cursor..span.content_start]);
         out.push_str(&rendered);
         cursor = span.content_end;
@@ -599,7 +736,7 @@ fn rewrite_text(text: &str, recovery: &Recovery) -> Result<String> {
 
 fn check_text(
     text: &str,
-    recovery: &Recovery,
+    sources: &MetricSources,
     label: &str,
     issues: &mut Vec<String>,
 ) -> Result<()> {
@@ -614,9 +751,7 @@ fn check_text(
             ));
             continue;
         };
-        let value: MetricValue = (spec.extract)(recovery)
-            .wrap_err_with(|| format!("extracting metric `{}`", span.name))?;
-        let expected: String = spec.formatter.render(value)?;
+        let expected: String = spec.render(sources, &span.name)?;
         if span.content != expected {
             issues.push(format!(
                 "{label}:{}: marker `m:{}` expected `{expected}` found `{}`",
@@ -816,8 +951,15 @@ fn load_recovery(root: &Path) -> Result<Recovery> {
     serde_json::from_str(&raw).wrap_err_with(|| format!("parsing {}", path.display()))
 }
 
+fn load_sources(root: &Path) -> Result<MetricSources> {
+    Ok(MetricSources {
+        recovery: load_recovery(root)?,
+        catalog: crate::catalog_counts::tables(root)?,
+    })
+}
+
 pub(crate) fn run(root: &Path, mode: Mode) -> Result<()> {
-    let recovery: Recovery = load_recovery(root)?;
+    let sources: MetricSources = load_sources(root)?;
     let files: Vec<PathBuf> = manifest(root)?;
     match mode {
         Mode::Write => {
@@ -825,7 +967,7 @@ pub(crate) fn run(root: &Path, mode: Mode) -> Result<()> {
             for path in &files {
                 let text: String = read_text_bounded(path, MAX_DOC_BYTES)
                     .wrap_err_with(|| format!("reading {}", path.display()))?;
-                let updated: String = rewrite_text(&text, &recovery)
+                let updated: String = rewrite_text(&text, &sources)
                     .wrap_err_with(|| format!("rewriting markers in {}", path.display()))?;
                 if updated != text {
                     std::fs::write(path, &updated)
@@ -834,7 +976,8 @@ pub(crate) fn run(root: &Path, mode: Mode) -> Result<()> {
                 }
             }
             println!(
-                "xtask metrics: {rewritten} file(s) rewritten across {} manifest file(s)",
+                "xtask metrics: {rewritten} file(s) rewritten across {} manifest file(s) from \
+                 xtask/data/recovery.json and the catalog tables the binary carries",
                 files.len()
             );
             Ok(())
@@ -845,11 +988,11 @@ pub(crate) fn run(root: &Path, mode: Mode) -> Result<()> {
                 let text: String = read_text_bounded(path, MAX_DOC_BYTES)
                     .wrap_err_with(|| format!("reading {}", path.display()))?;
                 let label: String = display_label(root, path);
-                check_text(&text, &recovery, &label, &mut issues)?;
+                check_text(&text, &sources, &label, &mut issues)?;
             }
             if issues.is_empty() {
                 println!(
-                    "xtask metrics --check: every marker span and unit-noun number across {} file(s) matches xtask/data/recovery.json",
+                    "xtask metrics --check: every marker span and unit-noun number across {} file(s) matches xtask/data/recovery.json and the catalog tables the binary carries",
                     files.len()
                 );
                 Ok(())
@@ -903,6 +1046,13 @@ mod tests {
         serde_json::from_str(raw).map_err(|err| eyre!("{err}"))
     }
 
+    fn test_sources() -> Result<MetricSources> {
+        Ok(MetricSources {
+            recovery: test_recovery()?,
+            catalog: crate::catalog_counts::sample_tables(),
+        })
+    }
+
     #[test]
     fn percent_formatter_strips_trailing_zeros() {
         assert_eq!(format_percent(92.43), "92.43%");
@@ -937,11 +1087,11 @@ mod tests {
 
     #[test]
     fn count_marker_is_a_fixpoint() -> Result<()> {
-        let recovery: Recovery = test_recovery()?;
+        let sources: MetricSources = test_sources()?;
         let source: &str = "pinned (<!-- m:py_stdlib_pinned_count -->0 of 0<!-- /m -->), \
              grouped (<!-- m:py_stdlib_pinned_count_grouped -->0 of 0<!-- /m --> code objects).\n";
-        let once: String = rewrite_text(source, &recovery)?;
-        let twice: String = rewrite_text(&once, &recovery)?;
+        let once: String = rewrite_text(source, &sources)?;
+        let twice: String = rewrite_text(&once, &sources)?;
         assert!(once.contains("-->6051 of 6286<!-- /m -->"));
         assert!(once.contains("-->6,051 of 6,286<!-- /m --> code objects"));
         assert_eq!(once, twice);
@@ -950,12 +1100,12 @@ mod tests {
 
     #[test]
     fn write_is_a_fixpoint() -> Result<()> {
-        let recovery: Recovery = test_recovery()?;
+        let sources: MetricSources = test_sources()?;
         let source: &str = "we detect <!-- m:dotnet_protectors -->0<!-- /m --> protector families, \
              <!-- m:containers_frac -->1 / 1<!-- /m --> formats, and \
              <!-- m:hermes_functions -->0<!-- /m -->-function bundles.\n";
-        let once: String = rewrite_text(source, &recovery)?;
-        let twice: String = rewrite_text(&once, &recovery)?;
+        let once: String = rewrite_text(source, &sources)?;
+        let twice: String = rewrite_text(&once, &sources)?;
         assert!(once.contains("-->23<!-- /m --> protector families"));
         assert!(once.contains("-->98 / 98<!-- /m --> formats"));
         assert!(once.contains("-->122,633<!-- /m -->-function"));
@@ -965,22 +1115,71 @@ mod tests {
 
     #[test]
     fn check_passes_after_write() -> Result<()> {
-        let recovery: Recovery = test_recovery()?;
+        let sources: MetricSources = test_sources()?;
         let source: &str =
             "we detect <!-- m:dotnet_protectors -->0<!-- /m --> protector families.\n";
-        let written: String = rewrite_text(source, &recovery)?;
+        let written: String = rewrite_text(source, &sources)?;
         let mut issues: Vec<String> = Vec::new();
-        check_text(&written, &recovery, "fixture.md", &mut issues)?;
+        check_text(&written, &sources, "fixture.md", &mut issues)?;
         assert!(issues.is_empty(), "unexpected issues: {issues:?}");
         Ok(())
     }
 
     #[test]
+    fn catalog_keys_render_the_tables_the_binary_carries() -> Result<()> {
+        let sources: MetricSources = test_sources()?;
+        let source: &str = "carries <!-- m:native_packer_variants -->0<!-- /m --> variants \
+             (<!-- m:native_tier_implemented -->0<!-- /m --> + \
+             <!-- m:native_tier_delegated -->0<!-- /m -->), lists \
+             <!-- m:native_catalog_entries -->0<!-- /m -->, reports \
+             <!-- m:catalog_family_total -->0<!-- /m --> across \
+             <!-- m:catalog_ecosystems -->0<!-- /m -->, with \
+             <!-- m:rasp_vendors -->0<!-- /m --> and \
+             <!-- m:lua_catalog_obfuscators -->0<!-- /m -->.\n";
+        let once: String = rewrite_text(source, &sources)?;
+        let twice: String = rewrite_text(&once, &sources)?;
+        assert!(once.contains("carries <!-- m:native_packer_variants -->29<!-- /m --> variants"));
+        assert!(once.contains("(<!-- m:native_tier_implemented -->12<!-- /m --> +"));
+        assert!(once.contains("<!-- m:native_tier_delegated -->2<!-- /m -->), lists"));
+        assert!(once.contains("<!-- m:native_catalog_entries -->27<!-- /m -->, reports"));
+        assert!(once.contains("<!-- m:catalog_family_total -->169<!-- /m --> across"));
+        assert!(once.contains("<!-- m:catalog_ecosystems -->15<!-- /m -->, with"));
+        assert!(once.contains("<!-- m:rasp_vendors -->8<!-- /m --> and"));
+        assert!(once.contains("<!-- m:lua_catalog_obfuscators -->14<!-- /m -->."));
+        assert_eq!(once, twice);
+        let mut issues: Vec<String> = Vec::new();
+        check_text(&once, &sources, "fixture.md", &mut issues)?;
+        assert!(issues.is_empty(), "unexpected issues: {issues:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_key_name_is_claimed_by_exactly_one_registry() {
+        let mut names: Vec<&'static str> = KEYS
+            .iter()
+            .map(|spec: &KeySpec| spec.name)
+            .chain(CATALOG_KEYS.iter().map(|spec: &CatalogKeySpec| spec.name))
+            .collect();
+        let total: usize = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), total, "duplicate metric key name");
+    }
+
+    #[test]
+    fn an_unregistered_catalog_pass_id_fails_loudly() -> Result<()> {
+        let tables: CatalogTables = crate::catalog_counts::sample_tables();
+        assert!(tables.pass_count("does.not.exist").is_err());
+        assert_eq!(tables.pass_count("native.packer-unpack")?, 27);
+        Ok(())
+    }
+
+    #[test]
     fn check_flags_a_bare_unit_noun_number() -> Result<()> {
-        let recovery: Recovery = test_recovery()?;
+        let sources: MetricSources = test_sources()?;
         let source: &str = "we detect 23 protectors here.\n";
         let mut issues: Vec<String> = Vec::new();
-        check_text(source, &recovery, "fixture.md", &mut issues)?;
+        check_text(source, &sources, "fixture.md", &mut issues)?;
         assert_eq!(
             issues.len(),
             1,
@@ -991,22 +1190,33 @@ mod tests {
 
     #[test]
     fn ignore_marker_suppresses_the_backstop() -> Result<()> {
-        let recovery: Recovery = test_recovery()?;
+        let sources: MetricSources = test_sources()?;
         let source: &str = "legacy note: 23 protectors from another era. <!-- m:ignore -->\n";
         let mut issues: Vec<String> = Vec::new();
-        check_text(source, &recovery, "fixture.md", &mut issues)?;
+        check_text(source, &sources, "fixture.md", &mut issues)?;
         assert!(issues.is_empty(), "ignore should suppress: {issues:?}");
         Ok(())
     }
 
     #[test]
     fn check_flags_a_stale_marker_value() -> Result<()> {
-        let recovery: Recovery = test_recovery()?;
+        let sources: MetricSources = test_sources()?;
         let source: &str = "detect <!-- m:dotnet_protectors -->21<!-- /m --> protectors.\n";
         let mut issues: Vec<String> = Vec::new();
-        check_text(source, &recovery, "fixture.md", &mut issues)?;
+        check_text(source, &sources, "fixture.md", &mut issues)?;
         assert_eq!(issues.len(), 1, "expected a stale-value issue: {issues:?}");
         assert!(issues[0].contains("expected `23` found `21`"));
+        Ok(())
+    }
+
+    #[test]
+    fn check_flags_a_stale_catalog_table_value() -> Result<()> {
+        let sources: MetricSources = test_sources()?;
+        let source: &str = "the tier holds <!-- m:native_tier_implemented -->11<!-- /m -->.\n";
+        let mut issues: Vec<String> = Vec::new();
+        check_text(source, &sources, "fixture.md", &mut issues)?;
+        assert_eq!(issues.len(), 1, "expected a stale-value issue: {issues:?}");
+        assert!(issues[0].contains("expected `12` found `11`"));
         Ok(())
     }
 

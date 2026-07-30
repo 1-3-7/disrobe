@@ -4,6 +4,14 @@ use eyre::{Result, bail};
 
 use crate::sync::run_one;
 
+const fn metrics_mode(check: bool) -> crate::metrics::Mode {
+    if check {
+        crate::metrics::Mode::Check
+    } else {
+        crate::metrics::Mode::Write
+    }
+}
+
 pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
     let mut stale: Vec<String> = Vec::new();
 
@@ -21,6 +29,12 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         &mut stale,
     );
     run_one("sync", check, || crate::sync::run(root, check), &mut stale);
+    run_one(
+        "metrics",
+        check,
+        || crate::metrics::run(root, metrics_mode(check)),
+        &mut stale,
+    );
     run_one(
         "readme-stats",
         check,
@@ -73,7 +87,7 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
     if check {
         if stale.is_empty() {
             println!(
-                "xtask regen --check: every generated artifact is byte-fresh (schemas, bindings, error docs, demo, card, plugins, evidence), the charts match the digest of the data they were rendered from and the copies mdbook serves, and the README stat, attack-surface, fuzz-scope and tiered-results cross-checks all hold"
+                "xtask regen --check: every generated artifact is byte-fresh (schemas, bindings, error docs, demo, card, plugins, evidence), every documentation count inside a marker span matches recovery.json or the catalog tables the binary carries, the charts match the digest of the data they were rendered from and the copies mdbook serves, and the README stat, attack-surface, fuzz-scope and tiered-results cross-checks all hold"
             );
             Ok(())
         } else {
@@ -85,7 +99,7 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         }
     } else {
         println!(
-            "xtask regen: schemas, bindings, error docs, graphs, demo, card, plugins, and evidence regenerated; README stat, attack-surface, fuzz-scope, and tiered-results cross-checks ok"
+            "xtask regen: schemas, bindings, error docs, graphs, demo, card, plugins, evidence, and the documentation counts inside marker spans regenerated; README stat, attack-surface, fuzz-scope, and tiered-results cross-checks ok"
         );
         Ok(())
     }
