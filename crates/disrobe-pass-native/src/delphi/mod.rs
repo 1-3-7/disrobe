@@ -2,6 +2,7 @@ mod dfm;
 mod image;
 mod layout;
 mod resource;
+mod strings;
 mod tables;
 mod typeinfo;
 mod units;
@@ -15,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use image::PeView;
 
+pub use strings::{DelphiString, DelphiStringKind};
 pub use typeinfo::DelphiTypeInfo;
 pub use units::{DelphiOrigin, classify_unit};
 pub use version::{DelphiSignalKind, DelphiVersion, DelphiVersionSignal};
@@ -117,6 +119,8 @@ pub struct DelphiReport {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub types: Vec<DelphiTypeInfo>,
     pub forms: Vec<DelphiForm>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub strings: Vec<DelphiString>,
     pub library_class_count: usize,
     pub author_class_count: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -155,6 +159,11 @@ pub fn recover_delphi_classes(bytes: &[u8]) -> Vec<DelphiClass> {
     PeView::parse(bytes).map_or_else(Vec::new, |view: PeView<'_>| {
         vmt::scan_classes(&view).classes
     })
+}
+
+#[must_use]
+pub fn recover_delphi_strings(bytes: &[u8]) -> Vec<DelphiString> {
+    PeView::parse(bytes).map_or_else(Vec::new, |view: PeView<'_>| strings::scan(&view))
 }
 
 #[must_use]
@@ -230,6 +239,7 @@ pub fn analyze(bytes: &[u8]) -> DelphiReport {
             classes: Vec::new(),
             types: Vec::new(),
             forms: Vec::new(),
+            strings: Vec::new(),
             library_class_count: 0,
             author_class_count: 0,
             notes: if markers {
@@ -252,6 +262,12 @@ pub fn analyze(bytes: &[u8]) -> DelphiReport {
     );
     let (library_class_count, author_class_count): (usize, usize) =
         vmt::origin_counts(&outcome.classes);
+    let is_delphi: bool = markers || rtti_present || !forms.is_empty();
+    let literals: Vec<DelphiString> = if is_delphi {
+        strings::scan(&view)
+    } else {
+        Vec::new()
+    };
 
     let mut notes: Vec<String> = Vec::new();
     if outcome.scan_truncated {
@@ -281,13 +297,14 @@ pub fn analyze(bytes: &[u8]) -> DelphiReport {
     }
 
     DelphiReport {
-        is_delphi: markers || rtti_present || !forms.is_empty(),
+        is_delphi,
         rtti_present,
         era: outcome.era,
         version,
         classes: outcome.classes,
         types: outcome.types,
         forms,
+        strings: literals,
         library_class_count,
         author_class_count,
         notes,
