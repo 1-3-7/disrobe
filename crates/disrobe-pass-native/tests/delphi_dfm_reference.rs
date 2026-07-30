@@ -4,11 +4,12 @@ use std::path::{Path, PathBuf};
 
 use disrobe_pass_native::delphi::{DelphiForm, decode_dfm};
 
-const CASES: [&str; 8] = [
+const CASES: [&str; 9] = [
     "bigbinary",
     "binary",
     "collection",
     "deep",
+    "edges",
     "inherit",
     "nested",
     "scalars",
