@@ -8,86 +8,20 @@
     clippy::option_if_let_else
 )]
 
-use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener as StdTcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
+
+use common::{ServeSpawnLock, cli_binary, kill_by_pid};
+
+mod common;
 
 const SERVE_TEST_DEADLINE: Duration = Duration::from_secs(30);
-const SERVE_LOCK_STALE_AFTER: Duration = Duration::from_secs(90);
-const SERVE_LOCK_BACKOFF: Duration = Duration::from_millis(25);
-
-#[derive(Debug)]
-struct ServeSpawnLock {
-    path: PathBuf,
-}
-
-impl ServeSpawnLock {
-    fn acquire() -> Self {
-        let root: PathBuf = disrobe_core::scratch::scratch_root();
-        std::fs::create_dir_all(&root).expect("create scratch root");
-        let path: PathBuf = root.join("disrobe-serve-e2e-spawn.lock");
-        loop {
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(_file) => return Self { path },
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                    if Self::reap_if_stale(&path) {
-                        continue;
-                    }
-                    thread::sleep(SERVE_LOCK_BACKOFF);
-                }
-                Err(_) => {
-                    thread::sleep(SERVE_LOCK_BACKOFF);
-                }
-            }
-        }
-    }
-
-    fn reap_if_stale(path: &Path) -> bool {
-        let Ok(meta): std::io::Result<std::fs::Metadata> = std::fs::metadata(path) else {
-            return false;
-        };
-        let Ok(modified): std::io::Result<SystemTime> = meta.modified() else {
-            return false;
-        };
-        let aged: bool = modified
-            .elapsed()
-            .is_ok_and(|age: Duration| age >= SERVE_LOCK_STALE_AFTER);
-        if aged {
-            return std::fs::remove_file(path).is_ok();
-        }
-        false
-    }
-}
-
-impl Drop for ServeSpawnLock {
-    fn drop(&mut self) {
-        let _: std::io::Result<()> = std::fs::remove_file(&self.path);
-    }
-}
-
-fn cli_binary() -> PathBuf {
-    let exe: PathBuf = std::env::current_exe().expect("current exe");
-    let mut dir: PathBuf = exe.parent().expect("exe dir").to_path_buf();
-    while dir.file_name().and_then(|s| s.to_str()) != Some("debug")
-        && dir.file_name().and_then(|s| s.to_str()) != Some("release")
-    {
-        if !dir.pop() {
-            break;
-        }
-    }
-    dir.push(if cfg!(windows) {
-        "disrobe.exe"
-    } else {
-        "disrobe"
-    });
-    dir
-}
 
 fn ephemeral_port() -> u16 {
     let listener: StdTcpListener = StdTcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
@@ -109,11 +43,13 @@ impl Drop for ServeHandle {
     }
 }
 
-fn spawn_serve() -> Option<ServeHandle> {
+fn spawn_serve() -> ServeHandle {
     let bin: PathBuf = cli_binary();
-    if !bin.exists() {
-        return None;
-    }
+    assert!(
+        bin.exists(),
+        "disrobe binary not built at {}: run `cargo build -p disrobe-cli` first",
+        bin.display()
+    );
     let guard: ServeSpawnLock = ServeSpawnLock::acquire();
     let port: u16 = ephemeral_port();
     let addr: SocketAddr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -141,29 +77,23 @@ fn spawn_serve() -> Option<ServeHandle> {
         }
     });
     wait_for_listen(addr, Duration::from_secs(8));
-    if let Ok(Some(_status)) = child.try_wait() {
-        return None;
+    if let Ok(Some(status)) = child.try_wait() {
+        let mut stderr_text: String = String::new();
+        if let Some(mut pipe) = child.stderr.take() {
+            let _ = pipe.read_to_string(&mut stderr_text);
+        }
+        panic!("serve died before it began listening on {addr}: {status}; stderr={stderr_text}");
     }
-    Some(ServeHandle {
+    assert!(
+        http_health_ready(addr),
+        "serve never answered /v1/health on {addr} within the startup window"
+    );
+    ServeHandle {
         child,
         addr,
         finished,
         _spawn_guard: guard,
-    })
-}
-
-#[cfg(unix)]
-fn kill_by_pid(pid: u32) {
-    let _ = std::process::Command::new("kill")
-        .args(["-9", &pid.to_string()])
-        .status();
-}
-
-#[cfg(windows)]
-fn kill_by_pid(pid: u32) {
-    let _ = std::process::Command::new("taskkill")
-        .args(["/F", "/T", "/PID", &pid.to_string()])
-        .status();
+    }
 }
 
 fn wait_for_listen(addr: SocketAddr, timeout: Duration) {
@@ -238,10 +168,7 @@ fn http_request(addr: SocketAddr, method: &str, path: &str, body: Option<&str>) 
 
 #[test]
 fn serve_health_endpoint_returns_ok_json() {
-    let Some(handle) = spawn_serve() else {
-        eprintln!("disrobe binary missing; skip");
-        return;
-    };
+    let handle: ServeHandle = spawn_serve();
     let (status, body): (u16, String) = http_request(handle.addr, "GET", "/v1/health", None);
     assert_eq!(status, 200, "body={body}");
     let v: serde_json::Value = serde_json::from_str(&body).expect("json");
@@ -250,10 +177,7 @@ fn serve_health_endpoint_returns_ok_json() {
 
 #[test]
 fn serve_version_endpoint_returns_cargo_version() {
-    let Some(handle) = spawn_serve() else {
-        eprintln!("disrobe binary missing; skip");
-        return;
-    };
+    let handle: ServeHandle = spawn_serve();
     let (status, body): (u16, String) = http_request(handle.addr, "GET", "/v1/version", None);
     assert_eq!(status, 200, "body={body}");
     let v: serde_json::Value = serde_json::from_str(&body).expect("json");
@@ -265,10 +189,7 @@ fn serve_version_endpoint_returns_cargo_version() {
 
 #[test]
 fn serve_passes_endpoint_returns_descriptors() {
-    let Some(handle) = spawn_serve() else {
-        eprintln!("disrobe binary missing; skip");
-        return;
-    };
+    let handle: ServeHandle = spawn_serve();
     let (status, body): (u16, String) = http_request(handle.addr, "GET", "/v1/passes", None);
     assert_eq!(status, 200);
     let v: serde_json::Value = serde_json::from_str(&body).expect("json");
@@ -282,10 +203,7 @@ fn serve_passes_endpoint_returns_descriptors() {
 
 #[test]
 fn serve_openapi_endpoint_returns_spec() {
-    let Some(handle) = spawn_serve() else {
-        eprintln!("disrobe binary missing; skip");
-        return;
-    };
+    let handle: ServeHandle = spawn_serve();
     let (status, body): (u16, String) = http_request(handle.addr, "GET", "/openapi.json", None);
     assert_eq!(status, 200);
     let v: serde_json::Value = serde_json::from_str(&body).expect("json");
@@ -294,10 +212,7 @@ fn serve_openapi_endpoint_returns_spec() {
 
 #[test]
 fn serve_analyze_endpoint_classifies_inline_bytes() {
-    let Some(handle) = spawn_serve() else {
-        eprintln!("disrobe binary missing; skip");
-        return;
-    };
+    let handle: ServeHandle = spawn_serve();
     let body_str: &str = r#"{"bytes_b64":"AGFzbQEAAAA="}"#;
     let (status, body): (u16, String) =
         http_request(handle.addr, "POST", "/v1/analyze", Some(body_str));
@@ -308,10 +223,7 @@ fn serve_analyze_endpoint_classifies_inline_bytes() {
 
 #[test]
 fn serve_explain_endpoint_returns_known_code() {
-    let Some(handle) = spawn_serve() else {
-        eprintln!("disrobe binary missing; skip");
-        return;
-    };
+    let handle: ServeHandle = spawn_serve();
     let (status, body): (u16, String) =
         http_request(handle.addr, "POST", "/v1/explain/DR-PYARM-0007", Some("{}"));
     assert_eq!(status, 200, "body={body}");
@@ -321,10 +233,7 @@ fn serve_explain_endpoint_returns_known_code() {
 
 #[test]
 fn serve_envelope_verify_endpoint_rejects_malformed_bytes() {
-    let Some(handle) = spawn_serve() else {
-        eprintln!("disrobe binary missing; skip");
-        return;
-    };
+    let handle: ServeHandle = spawn_serve();
     let body_str: &str = r#"{"bytes_b64":"AAAA"}"#;
     let (status, body): (u16, String) =
         http_request(handle.addr, "POST", "/v1/envelope/verify", Some(body_str));
@@ -335,10 +244,7 @@ fn serve_envelope_verify_endpoint_rejects_malformed_bytes() {
 
 #[test]
 fn serve_analyze_rejects_path_field_with_unknown_field_error() {
-    let Some(handle) = spawn_serve() else {
-        eprintln!("disrobe binary missing; skip");
-        return;
-    };
+    let handle: ServeHandle = spawn_serve();
     let body_str: &str = r#"{"path":"/etc/passwd"}"#;
     let (status, body): (u16, String) =
         http_request(handle.addr, "POST", "/v1/analyze", Some(body_str));
@@ -356,10 +262,7 @@ fn serve_analyze_rejects_path_field_with_unknown_field_error() {
 
 #[test]
 fn serve_envelope_verify_rejects_path_field_with_unknown_field_error() {
-    let Some(handle) = spawn_serve() else {
-        eprintln!("disrobe binary missing; skip");
-        return;
-    };
+    let handle: ServeHandle = spawn_serve();
     let body_str: &str = r#"{"path":"/etc/passwd"}"#;
     let (status, body): (u16, String) =
         http_request(handle.addr, "POST", "/v1/envelope/verify", Some(body_str));
@@ -371,10 +274,7 @@ fn serve_envelope_verify_rejects_path_field_with_unknown_field_error() {
 
 #[test]
 fn serve_envelope_create_then_verify_round_trips_inline() {
-    let Some(handle) = spawn_serve() else {
-        eprintln!("disrobe binary missing; skip");
-        return;
-    };
+    let handle: ServeHandle = spawn_serve();
     let create_body: &str =
         r#"{"bytes_b64":"AGFzbQEAAAA=","source_label":"sample.wasm","detected_format":"wasm"}"#;
     let (status, body): (u16, String) = http_request(
@@ -407,10 +307,7 @@ fn serve_envelope_create_then_verify_round_trips_inline() {
 
 #[test]
 fn serve_openapi_no_longer_exposes_path_field() {
-    let Some(handle) = spawn_serve() else {
-        eprintln!("disrobe binary missing; skip");
-        return;
-    };
+    let handle: ServeHandle = spawn_serve();
     let (status, body): (u16, String) = http_request(handle.addr, "GET", "/openapi.json", None);
     assert_eq!(status, 200);
     let v: serde_json::Value = serde_json::from_str(&body).expect("json");

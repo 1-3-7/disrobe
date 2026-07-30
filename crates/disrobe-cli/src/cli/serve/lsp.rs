@@ -2,7 +2,7 @@ use super::SERVE_VERSION;
 use super::util::{decode_base64, hex32, normalize_dr_code};
 
 pub(super) fn run_stdio_lsp() -> miette::Result<()> {
-    use lsp_server::{Connection, Message as LspMessage, Response};
+    use lsp_server::{Connection, Message as LspMessage, RequestId, Response};
     use lsp_types::{ServerCapabilities, ServerInfo};
 
     let (connection, io_threads): (Connection, lsp_server::IoThreads) = Connection::stdio();
@@ -23,9 +23,12 @@ pub(super) fn run_stdio_lsp() -> miette::Result<()> {
             version: Some(SERVE_VERSION.to_owned()),
         },
     });
-    let _init_params: serde_json::Value = connection
-        .initialize(init_value)
+    let (init_id, _init_params): (RequestId, serde_json::Value) = connection
+        .initialize_start()
         .map_err(|e| miette::miette!("DR-CLI-0201: initialize failed: {e}"))?;
+    connection
+        .initialize_finish(init_id, init_value)
+        .map_err(|e| miette::miette!("DR-CLI-0202: initialize response rejected: {e}"))?;
 
     while let Ok(msg) = connection.receiver.recv() {
         match msg {
@@ -39,6 +42,7 @@ pub(super) fn run_stdio_lsp() -> miette::Result<()> {
             LspMessage::Notification(_) | LspMessage::Response(_) => {}
         }
     }
+    drop(connection);
     io_threads
         .join()
         .map_err(|e| miette::miette!("DR-CLI-0203: io thread join: {e}"))?;

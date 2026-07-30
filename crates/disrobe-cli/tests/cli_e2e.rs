@@ -1360,18 +1360,20 @@ fn py_disasm_emit_writes_stub() {
 #[test]
 fn serve_stdio_returns_dr_cli_error_when_not_a_tty() {
     let r: Run = run_disrobe(&["serve", "--stdio"]);
-    let stderr_ok: bool = r.stderr.contains("DR-CLI-0170")
-        || r.stderr.contains("DR-CLI-0201")
-        || r.stderr.contains("initialize")
-        || r.stderr.contains("LSP")
-        || r.stderr.contains("lsp");
-    let exit_ok: bool = r.code != 0 || r.stdout.contains("disrobe");
+    assert_ne!(
+        r.code, 0,
+        "a closed stdin gives the LSP daemon no initialize request, so it must fail; stdout={} stderr={}",
+        r.stdout, r.stderr
+    );
     assert!(
-        stderr_ok || exit_ok,
-        "serve --stdio must surface a clear error or run; got code={} stdout={} stderr={}",
-        r.code,
-        r.stdout,
-        r.stderr,
+        r.stderr.contains("DR-CLI-0201"),
+        "the failure must name its DR code so a caller can look it up; stderr={}",
+        r.stderr
+    );
+    assert!(
+        r.stdout.is_empty(),
+        "stdout is the LSP JSON-RPC channel and must carry no diagnostics; stdout={}",
+        r.stdout
     );
 }
 
