@@ -18,6 +18,8 @@ const STATUS_EXTRACT: &str = "extract";
 const STATUS_DETECT: &str = "detect-only";
 const STATUS_MISDETECT: &str = "misdetect";
 
+const KNOWN_MISDETECTIONS: usize = 1;
+
 const MISDETECTED_SOURCE_SUFFIXES: [&str; 2] = [".rs", ".pyc"];
 
 fn crate_root() -> PathBuf {
@@ -113,10 +115,8 @@ fn measure() -> BTreeMap<&'static str, Reached> {
                 out_dir.display()
             )
         });
-        let wrote_members: bool =
-            extract_to(kind, &bytes, &out_dir).is_ok_and(|result: ExtractionResult| {
-                wrote_member_bytes(&result)
-            });
+        let wrote_members: bool = extract_to(kind, &bytes, &out_dir)
+            .is_ok_and(|result: ExtractionResult| wrote_member_bytes(&result));
         let status: &'static str = if is_source_text(&relative) {
             STATUS_MISDETECT
         } else if wrote_members {
@@ -297,4 +297,20 @@ fn a_format_whose_input_stopped_extracting_is_not_still_counted() {
             row.status
         );
     }
+}
+
+#[test]
+fn the_recorded_misdetections_only_ever_shrink() {
+    let rows: Vec<(String, String, String)> = parse(&committed_evidence());
+    let misdetected: Vec<&(String, String, String)> = rows
+        .iter()
+        .filter(|(_, status, _): &&(String, String, String)| status == STATUS_MISDETECT)
+        .collect();
+    assert!(
+        misdetected.len() <= KNOWN_MISDETECTIONS,
+        "{EVIDENCE} records {} formats claiming a source file they cannot contain, against a \
+         ceiling of {KNOWN_MISDETECTIONS}. A detector that started firing on unrelated bytes must \
+         fail here rather than be absorbed into the golden as an expected row: {misdetected:?}",
+        misdetected.len()
+    );
 }
