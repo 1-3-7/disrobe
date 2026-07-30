@@ -3,7 +3,10 @@
 use disrobe_nir::{
     BinaryOp, NirFunction, NirInstr, NirModule, NirOp, NirSymbol, SourceLang, SourceRef, SymbolKind,
 };
-use disrobe_taint::{TaintConfig, TaintReport, UnresolvedCall, UnresolvedCallKind, analyze};
+use disrobe_taint::{
+    ImportThunks, TaintConfig, TaintReport, UnresolvedCall, UnresolvedCallKind, analyze,
+    analyze_with_import_thunks,
+};
 
 const X86_ENTRY: u64 = 0x1390;
 const X86_FGETS_STUB: u64 = 0x13d0;
@@ -412,4 +415,120 @@ fn a_tail_call_into_an_unnamed_thunk_is_reported_as_unresolved() {
         UnresolvedCallKind::UnnamedTarget
     );
     assert_eq!(report.unresolved_calls()[0].target, Some(X86_SYSTEM_STUB));
+}
+
+#[test]
+fn supplying_the_thunk_names_from_outside_recovers_the_flow_the_symbol_table_lost() {
+    let blind: TaintReport = analyze(&module(x86_taint_entry(), undefined_imports()), &config());
+    assert_eq!(blind.count(), 0);
+    assert_eq!(blind.unresolved_call_count(), 2);
+
+    let thunks: ImportThunks = ImportThunks::new()
+        .with_thunk(X86_FGETS_STUB, "fgets")
+        .with_thunk(X86_SYSTEM_STUB, "system");
+    let named: TaintReport = analyze_with_import_thunks(
+        &module(x86_taint_entry(), undefined_imports()),
+        &config(),
+        &thunks,
+    );
+    assert_eq!(
+        named.count(),
+        1,
+        "the container knows the two plt stubs by name even though the symbol table files them at address zero: {named:?}"
+    );
+    assert!(named.flow_in("taint_entry", "fgets", "system"));
+    assert_eq!(
+        named.unresolved_call_count(),
+        0,
+        "a stub the caller could name is no longer an unresolved call site: {:?}",
+        named.unresolved_calls()
+    );
+}
+
+#[test]
+fn supplying_the_thunk_names_recovers_the_aarch64_flow_as_well() {
+    let thunks: ImportThunks = ImportThunks::from_pairs([
+        (AARCH64_FGETS_STUB, "_fgets"),
+        (AARCH64_SYSTEM_STUB, "_system"),
+    ]);
+    let named: TaintReport = analyze_with_import_thunks(
+        &module(aarch64_taint_entry(false), undefined_imports()),
+        &config(),
+        &thunks,
+    );
+    assert_eq!(
+        named.count(),
+        1,
+        "a mach-o stub name carries a leading underscore and still matches its declared source and sink: {named:?}"
+    );
+    assert!(!named.has_unresolved_calls());
+}
+
+#[test]
+fn an_empty_thunk_map_leaves_the_analysis_exactly_as_it_was() {
+    let plain: TaintReport = analyze(
+        &module(
+            x86_taint_entry(),
+            named_stubs(X86_FGETS_STUB, X86_SYSTEM_STUB),
+        ),
+        &config(),
+    );
+    let with_empty_map: TaintReport = analyze_with_import_thunks(
+        &module(
+            x86_taint_entry(),
+            named_stubs(X86_FGETS_STUB, X86_SYSTEM_STUB),
+        ),
+        &config(),
+        &ImportThunks::new(),
+    );
+    assert_eq!(
+        plain, with_empty_map,
+        "supplying no names must not change a single result"
+    );
+}
+
+#[test]
+fn a_supplied_thunk_name_wins_over_a_recovered_function_body_at_the_same_address() {
+    let entry: NirFunction = NirFunction {
+        name: "taint_entry".to_owned(),
+        address: X86_ENTRY,
+        end: 0x13b8,
+        is_export: true,
+        instructions: vec![
+            call(0x13a6, "call", X86_FGETS_STUB),
+            instr(0x13ab, NirOp::Nop, "mov", &["rdi", "rax"]),
+            call(0x13ae, "call", X86_SYSTEM_STUB),
+            instr(0x13b7, NirOp::Return, "ret", &[]),
+        ],
+        source: SourceRef::labelled(SourceLang::NativeX86, X86_ENTRY, "taint_entry".to_owned()),
+    };
+    let discovered_stub: NirFunction = NirFunction {
+        name: format!("sub_{X86_SYSTEM_STUB:x}"),
+        address: X86_SYSTEM_STUB,
+        end: X86_SYSTEM_STUB + 6,
+        is_export: false,
+        instructions: vec![instr(
+            X86_SYSTEM_STUB,
+            NirOp::Branch { target: None },
+            "jmp",
+            &["[rip+0x2102]"],
+        )],
+        source: SourceRef::new(SourceLang::NativeX86, X86_SYSTEM_STUB),
+    };
+    let blind_module: NirModule = NirModule {
+        source_hash: [0u8; 32],
+        lang: SourceLang::NativeX86,
+        functions: vec![entry, discovered_stub],
+        symbols: undefined_imports(),
+    };
+    let thunks: ImportThunks = ImportThunks::new()
+        .with_thunk(X86_FGETS_STUB, "fgets")
+        .with_thunk(X86_SYSTEM_STUB, "system");
+    let report: TaintReport = analyze_with_import_thunks(&blind_module, &config(), &thunks);
+    assert_eq!(
+        report.count(),
+        1,
+        "function discovery names a stub sub_13e0 and walks its body, which carries no sink; the supplied import name must win: {report:?}"
+    );
+    assert!(report.flow_in("taint_entry", "fgets", "system"));
 }
