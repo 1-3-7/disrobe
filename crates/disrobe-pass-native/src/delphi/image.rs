@@ -63,6 +63,19 @@ impl<'a> PeView<'a> {
             .is_some_and(|s: &PeSection| s.characteristics & (SCN_MEM_EXECUTE | SCN_CNT_CODE) != 0)
     }
 
+    pub(super) fn every_mapped_section_is_executable(&self) -> bool {
+        let mapped: Vec<&PeSection> = self
+            .image
+            .sections
+            .iter()
+            .filter(|s: &&PeSection| s.virtual_size.min(s.raw_size) > 0)
+            .collect();
+        !mapped.is_empty()
+            && mapped
+                .iter()
+                .all(|s: &&PeSection| s.characteristics & (SCN_MEM_EXECUTE | SCN_CNT_CODE) != 0)
+    }
+
     pub(super) fn read_u16(&self, off: usize) -> Option<u16> {
         let end: usize = off.checked_add(2)?;
         let s: &[u8] = self.bytes.get(off..end)?;
