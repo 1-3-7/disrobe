@@ -1,0 +1,9 @@
+object TextForm: TTextForm
+  Ascii = 'plain'
+  HighByte = 'caf'#233
+  Mixed = 'a'#0'b'
+  Tab = 'x'#9'y'
+  OnlyEscapes = #1#2#3#4
+  Apostrophes = ''''''
+  LongRun = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+end

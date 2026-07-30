@@ -290,6 +290,11 @@ pub fn analyze(bytes: &[u8]) -> DelphiReport {
             notes.push("no Delphi RTTI virtual method tables present".to_owned());
         }
     }
+    if is_delphi && init_table.is_none() {
+        notes.push(
+            "no unit initialization table was reached from the entry point; the entry point belongs to a packer or loader stub rather than the Delphi startup code when a binary is packed".to_owned(),
+        );
+    }
     for conflict in &version.conflicts {
         notes.push(conflict.clone());
     }
