@@ -8,7 +8,7 @@ use disrobe_binfmt::container::{ContainerKind, detect_container};
 use disrobe_binfmt::extract::{ExtractedEntry, ExtractionResult, extract_to_with_quota};
 use disrobe_binfmt::quota::ExtractionQuota;
 
-use common::requirement::{MAKECAB, find_on_path, unmeasured};
+use common::requirement::{MAKECAB, locate, unmeasured};
 
 const fn bounded_quota() -> ExtractionQuota {
     ExtractionQuota {
@@ -16,19 +16,6 @@ const fn bounded_quota() -> ExtractionQuota {
         max_aggregate_ratio: 4096,
         ..ExtractionQuota::default_safe()
     }
-}
-
-fn find_makecab() -> Option<PathBuf> {
-    if let Some(found) = find_on_path("makecab") {
-        return Some(found);
-    }
-    if cfg!(windows) {
-        let candidate: PathBuf = PathBuf::from(r"C:\Windows\System32\makecab.exe");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
 }
 
 fn seed_files(dir: &Path) -> Vec<(String, Vec<u8>)> {
@@ -140,13 +127,17 @@ fn assert_round_trip(cab_bytes: &[u8], originals: &[(String, Vec<u8>)], label: &
 
 #[test]
 fn real_cab_mszip_round_trips() {
-    let Some(makecab): Option<PathBuf> = find_makecab() else {
-        unmeasured(
-            &MAKECAB,
-            "byte-exact recovery of an MSZIP cabinet built by the real Microsoft cabinet writer",
-            "makecab is not on PATH and not in System32",
-        );
-        return;
+    let makecab: PathBuf = match locate(&MAKECAB) {
+        Ok(path) => path,
+        Err(reason) => {
+            unmeasured(
+                &MAKECAB,
+                "byte-exact recovery of an MSZIP cabinet built by the real Microsoft cabinet \
+                 writer",
+                &reason,
+            );
+            return;
+        }
     };
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_cab_seed_mszip")
@@ -172,13 +163,17 @@ fn real_cab_mszip_round_trips() {
 
 #[test]
 fn real_cab_stored_round_trips() {
-    let Some(makecab): Option<PathBuf> = find_makecab() else {
-        unmeasured(
-            &MAKECAB,
-            "byte-exact recovery of a stored cabinet built by the real Microsoft cabinet writer",
-            "makecab is not on PATH and not in System32",
-        );
-        return;
+    let makecab: PathBuf = match locate(&MAKECAB) {
+        Ok(path) => path,
+        Err(reason) => {
+            unmeasured(
+                &MAKECAB,
+                "byte-exact recovery of a stored cabinet built by the real Microsoft cabinet \
+                 writer",
+                &reason,
+            );
+            return;
+        }
     };
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_cab_seed_store")
@@ -204,14 +199,17 @@ fn real_cab_stored_round_trips() {
 
 #[test]
 fn real_cab_lzx_round_trips_or_walls_honestly() {
-    let Some(makecab): Option<PathBuf> = find_makecab() else {
-        unmeasured(
-            &MAKECAB,
-            "the LZX cabinet outcome, which must be either byte-exact recovery or a structured \
-             refusal",
-            "makecab is not on PATH and not in System32",
-        );
-        return;
+    let makecab: PathBuf = match locate(&MAKECAB) {
+        Ok(path) => path,
+        Err(reason) => {
+            unmeasured(
+                &MAKECAB,
+                "the LZX cabinet outcome, which must be either byte-exact recovery or a structured \
+                 refusal",
+                &reason,
+            );
+            return;
+        }
     };
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_cab_seed_lzx")
