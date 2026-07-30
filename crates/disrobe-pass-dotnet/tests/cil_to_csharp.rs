@@ -5,6 +5,7 @@ use disrobe_pass_dotnet::cil::{Instruction, MethodBody, disassemble};
 use disrobe_pass_dotnet::decompile::{
     CSharpPseudo, DecompiledAssembly, decompile_assembly, emit_csharp,
 };
+use disrobe_pass_dotnet::structurize::StructuredMethod;
 
 fn load(rel: &str) -> Vec<u8> {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -95,17 +96,41 @@ fn native_decompile_real_megafile_resolves_signatures() {
 }
 
 #[test]
-#[ignore = "inspection-only: prints native decompiler output; run with --ignored --nocapture"]
-fn dump_helloapp_decomp() {
+fn clean_helloapp_accounts_for_every_method_and_recovers_its_console_call() {
     let bytes: Vec<u8> = load("../../corpus/dotnet/HelloApp.dll");
-    let asm: DecompiledAssembly = decompile_assembly(&bytes).expect("decompile");
-    eprintln!(
-        "module={} decompiled={} bodyless={} failed={}",
-        asm.module_name, asm.methods_decompiled, asm.methods_bodyless, asm.methods_failed
+    let asm: DecompiledAssembly = decompile_assembly(&bytes).expect("decompile helloapp");
+    assert_eq!(
+        asm.module_name, "HelloApp.dll",
+        "the module name comes from the metadata module table, not the file name on disk"
     );
-    for m in asm.methods.iter().take(4) {
-        eprintln!("======\n{}", m.body);
+    assert_eq!(
+        asm.methods_failed, 0,
+        "no method body in a clean assembly may fail to parse; got {asm:?}"
+    );
+    assert_eq!(
+        asm.methods_bodyless, 0,
+        "every method in this assembly carries an rva, so none may be counted bodyless; got {asm:?}"
+    );
+    for m in &asm.methods {
+        let signature: &str = m.signature.lines().next_back().unwrap_or("");
+        assert!(
+            m.body.trim_end().ends_with('}'),
+            "each recovered body closes its own block, checked per method so a good body cannot \
+             mask an empty one; {signature} produced:\n{}",
+            m.body
+        );
     }
+    let entry_point: &str = asm
+        .methods
+        .iter()
+        .find(|m: &&StructuredMethod| m.signature.contains("<Main>$"))
+        .map(|m: &StructuredMethod| m.body.as_str())
+        .expect("the compiler-generated entry point is present");
+    assert!(
+        entry_point.contains(r#"System.Console.WriteLine("Hello, World!")"#),
+        "the entry point must recover the resolved call and its user string, not a skeleton; \
+         got:\n{entry_point}"
+    );
 }
 
 #[test]
