@@ -116,11 +116,11 @@ pub use decompile::{
     DecompileOutput, DecompilerBackend, Probe, lift_llvm_ir_to_pseudo_c, probe, probe_all, run,
 };
 pub use delphi::{
-    DelphiClass, DelphiDynamicMethod, DelphiEra, DelphiField, DelphiForm, DelphiInterface,
-    DelphiMethod, DelphiOrigin, DelphiProperty, DelphiReport, DelphiSignalKind, DelphiString,
-    DelphiStringKind, DelphiTypeInfo, DelphiVersion, DelphiVersionSignal, analyze as analyze_delphi,
-    classify_unit, decode_dfm, detect_delphi, recover_delphi_classes, recover_delphi_strings,
-    recover_dfm_resources,
+    DelphiClass, DelphiDynamicMethod, DelphiEra, DelphiField, DelphiForm, DelphiInitTable,
+    DelphiInterface, DelphiMethod, DelphiOrigin, DelphiProperty, DelphiReport, DelphiSignalKind,
+    DelphiString, DelphiStringKind, DelphiTypeInfo, DelphiUnitEntry, DelphiVersion,
+    DelphiVersionSignal, analyze as analyze_delphi, classify_unit, decode_dfm, detect_delphi,
+    recover_delphi_classes, recover_delphi_strings, recover_dfm_resources,
 };
 pub use deobf::{
     AbiInference, ArgCount, Bits as DeobfBits, BlockCopyProp, BlockDeadFlags, BogusBranch,
