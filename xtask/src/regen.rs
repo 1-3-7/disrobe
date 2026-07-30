@@ -12,11 +12,11 @@ const fn metrics_mode(check: bool) -> crate::metrics::Mode {
     }
 }
 
-const fn packer_roster_mode(check: bool) -> crate::packer_roster::Mode {
+const fn region_mode(check: bool) -> crate::doc_region::Mode {
     if check {
-        crate::packer_roster::Mode::Check
+        crate::doc_region::Mode::Check
     } else {
-        crate::packer_roster::Mode::Write
+        crate::doc_region::Mode::Write
     }
 }
 
@@ -100,7 +100,13 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
     run_one(
         "packer-roster",
         check,
-        || crate::packer_roster::run(root, packer_roster_mode(check)),
+        || crate::packer_roster::run(root, region_mode(check)),
+        &mut stale,
+    );
+    run_one(
+        "roster-breadth",
+        check,
+        || crate::roster_breadth::run(root, region_mode(check)),
         &mut stale,
     );
 

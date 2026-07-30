@@ -3,10 +3,10 @@ use std::path::{Path, PathBuf};
 
 use eyre::{Result, WrapErr, bail, eyre};
 
+use crate::doc_region::{self, Mode, Region, RegionSyntax};
 use crate::fileio::read_text_bounded;
 
 const MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
-const MAX_DOC_BYTES: u64 = 8 * 1024 * 1024;
 
 const FAMILY_SOURCE: &str = "crates/disrobe-pass-native/src/packers/mod.rs";
 const DISPATCH_SOURCE: &str = "crates/disrobe-pass-native/src/chain_detector.rs";
@@ -26,17 +26,12 @@ const STATUS_PATH: &str = "UnpackerStatus::";
 const IMPLEMENTED_STATUS: &str = "Implemented";
 const DELEGATED_STATUS: &str = "DelegatedToDotnet";
 
-const REGION_OPEN_PREFIX: &str = "<!-- packer-roster:";
-const REGION_OPEN_SUFFIX: &str = " -->";
-const REGION_CLOSE: &str = "<!-- /packer-roster -->";
+const SYNTAX: RegionSyntax = RegionSyntax {
+    open_prefix: "<!-- packer-roster:",
+    close: "<!-- /packer-roster -->",
+};
 
 const MIN_FAMILIES: usize = 20;
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum Mode {
-    Write,
-    Check,
-}
 
 #[derive(Debug, Clone)]
 struct PackerFamily {
@@ -455,65 +450,6 @@ fn check_catalog_membership(roster: &PackerRoster, issues: &mut Vec<String>) {
     }
 }
 
-#[derive(Debug)]
-struct Region {
-    slug: String,
-    line: usize,
-    content: String,
-    content_start: usize,
-    content_end: usize,
-}
-
-fn parse_regions(text: &str) -> Result<Vec<Region>> {
-    let mut out: Vec<Region> = Vec::new();
-    let mut offset: usize = 0;
-    for (index, line) in text.split_inclusive('\n').enumerate() {
-        let line_no: usize = index + 1;
-        let mut search_from: usize = 0;
-        while let Some(rel) = line
-            .get(search_from..)
-            .and_then(|rest: &str| rest.find(REGION_OPEN_PREFIX))
-        {
-            let open_at: usize = search_from + rel;
-            let after_prefix: usize = open_at + REGION_OPEN_PREFIX.len();
-            let Some(suffix_rel) = line
-                .get(after_prefix..)
-                .and_then(|rest: &str| rest.find(REGION_OPEN_SUFFIX))
-            else {
-                bail!(
-                    "line {line_no}: a `{REGION_OPEN_PREFIX}` opening has no `{REGION_OPEN_SUFFIX}` \
-                     on the same line"
-                );
-            };
-            let slug: &str = line
-                .get(after_prefix..after_prefix + suffix_rel)
-                .unwrap_or_default();
-            let content_from: usize = after_prefix + suffix_rel + REGION_OPEN_SUFFIX.len();
-            let Some(close_rel) = line
-                .get(content_from..)
-                .and_then(|rest: &str| rest.find(REGION_CLOSE))
-            else {
-                bail!(
-                    "line {line_no}: the packer roster region `{slug}` has no `{REGION_CLOSE}` on \
-                     the same line"
-                );
-            };
-            let content_end: usize = content_from + close_rel;
-            let content: &str = line.get(content_from..content_end).unwrap_or_default();
-            out.push(Region {
-                slug: slug.to_owned(),
-                line: line_no,
-                content: content.to_owned(),
-                content_start: offset + content_from,
-                content_end: offset + content_end,
-            });
-            search_from = content_end + REGION_CLOSE.len();
-        }
-        offset += line.len();
-    }
-    Ok(out)
-}
-
 fn status_for_slug(roster: &PackerRoster, slug: &str) -> Option<String> {
     roster
         .statuses()
@@ -601,51 +537,11 @@ fn check_region(
     }
 }
 
-fn manifest(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut files: Vec<PathBuf> = vec![root.join("README.md")];
-    let docs_src: PathBuf = root.join("docs").join("src");
-    if docs_src.is_dir() {
-        for entry in walkdir::WalkDir::new(&docs_src) {
-            let dirent: walkdir::DirEntry =
-                entry.wrap_err_with(|| format!("walking {}", docs_src.display()))?;
-            let path: &Path = dirent.path();
-            if path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("md") {
-                files.push(path.to_path_buf());
-            }
-        }
-    }
-    files.sort();
-    Ok(files)
-}
-
-fn display_label(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
-}
-
-fn rewrite_text(text: &str, roster: &PackerRoster) -> Result<String> {
-    let regions: Vec<Region> = parse_regions(text)?;
-    if regions.is_empty() {
-        return Ok(text.to_owned());
-    }
-    let mut out: String = String::with_capacity(text.len());
-    let mut cursor: usize = 0;
-    for region in &regions {
-        let Some(status): Option<String> = status_for_slug(roster, &region.slug) else {
-            bail!(
-                "line {}: `{}` is not an `UnpackerStatus` tier any packer carries",
-                region.line,
-                region.slug
-            );
-        };
-        out.push_str(text.get(cursor..region.content_start).unwrap_or_default());
-        out.push_str(&roster.render_tier(&status));
-        cursor = region.content_end;
-    }
-    out.push_str(text.get(cursor..).unwrap_or_default());
-    Ok(out)
+fn render_tier(roster: &PackerRoster, slug: &str) -> Result<String> {
+    let Some(status): Option<String> = status_for_slug(roster, slug) else {
+        bail!("`{slug}` is not an `UnpackerStatus` tier any packer carries");
+    };
+    Ok(roster.render_tier(&status))
 }
 
 fn check_published_tiers(roster: &PackerRoster, seen: &BTreeSet<String>, issues: &mut Vec<String>) {
@@ -664,16 +560,18 @@ fn check_published_tiers(roster: &PackerRoster, seen: &BTreeSet<String>, issues:
 pub(crate) fn run(root: &Path, mode: Mode) -> Result<()> {
     let roster: PackerRoster = roster(root)?;
     let resolver: BTreeMap<String, String> = roster.resolver()?;
-    let files: Vec<PathBuf> = manifest(root)?;
+    let files: Vec<PathBuf> = doc_region::manifest(root)?;
 
     match mode {
         Mode::Write => {
             let mut rewritten: usize = 0;
             for path in &files {
-                let text: String = read_text_bounded(path, MAX_DOC_BYTES)
-                    .wrap_err_with(|| format!("reading {}", path.display()))?;
-                let updated: String = rewrite_text(&text, &roster)
-                    .wrap_err_with(|| format!("rewriting packer rosters in {}", path.display()))?;
+                let text: String = doc_region::read_doc(path)?;
+                let updated: String =
+                    doc_region::rewrite(SYNTAX, &text, &|slug: &str| render_tier(&roster, slug))
+                        .wrap_err_with(|| {
+                            format!("rewriting packer rosters in {}", path.display())
+                        })?;
                 if updated != text {
                     std::fs::write(path, &updated)
                         .wrap_err_with(|| format!("writing {}", path.display()))?;
@@ -693,10 +591,9 @@ pub(crate) fn run(root: &Path, mode: Mode) -> Result<()> {
             check_dispatch(&roster, &mut issues);
             check_catalog_membership(&roster, &mut issues);
             for path in &files {
-                let text: String = read_text_bounded(path, MAX_DOC_BYTES)
-                    .wrap_err_with(|| format!("reading {}", path.display()))?;
-                let label: String = display_label(root, path);
-                let regions: Vec<Region> = parse_regions(&text)
+                let text: String = doc_region::read_doc(path)?;
+                let label: String = doc_region::label(root, path);
+                let regions: Vec<Region> = doc_region::parse(SYNTAX, &text)
                     .wrap_err_with(|| format!("parsing packer roster regions in {label}"))?;
                 for region in &regions {
                     if label == CATALOG_DOC {
@@ -830,9 +727,9 @@ static CATALOG: [PackerEntry; CATALOG_COUNT] = [
         let roster: PackerRoster = fixture_roster();
         let resolver: BTreeMap<String, String> = roster.resolver()?;
         let text: String = format!(
-            "| row | {REGION_OPEN_PREFIX}implemented{REGION_OPEN_SUFFIX}{content}{REGION_CLOSE} |\n"
+            "| row | <!-- packer-roster:implemented -->{content}<!-- /packer-roster --> |\n"
         );
-        let regions: Vec<Region> = parse_regions(&text)?;
+        let regions: Vec<Region> = doc_region::parse(SYNTAX, &text)?;
         let mut issues: Vec<String> = Vec::new();
         for region in &regions {
             check_region(&roster, &resolver, region, "fixture.md", &mut issues);
@@ -970,11 +867,11 @@ static CATALOG: [PackerEntry; CATALOG_COUNT] = [
     #[test]
     fn a_rewrite_is_a_fixpoint() -> Result<()> {
         let roster: PackerRoster = fixture_roster();
-        let source: String = format!(
-            "| tier | {REGION_OPEN_PREFIX}implemented{REGION_OPEN_SUFFIX}stale{REGION_CLOSE} |\n"
-        );
-        let once: String = rewrite_text(&source, &roster)?;
-        let twice: String = rewrite_text(&once, &roster)?;
+        let source: &str =
+            "| tier | <!-- packer-roster:implemented -->stale<!-- /packer-roster --> |\n";
+        let render = |slug: &str| -> Result<String> { render_tier(&roster, slug) };
+        let once: String = doc_region::rewrite(SYNTAX, source, &render)?;
+        let twice: String = doc_region::rewrite(SYNTAX, &once, &render)?;
         assert!(once.contains("UPX, kkrunchy"), "{once}");
         assert_eq!(once, twice);
         Ok(())
@@ -982,9 +879,8 @@ static CATALOG: [PackerEntry; CATALOG_COUNT] = [
 
     #[test]
     fn an_unclosed_region_is_refused() {
-        let source: String =
-            format!("| tier | {REGION_OPEN_PREFIX}implemented{REGION_OPEN_SUFFIX}UPX |\n");
-        assert!(parse_regions(&source).is_err());
+        let source: &str = "| tier | <!-- packer-roster:implemented -->UPX |\n";
+        assert!(doc_region::parse(SYNTAX, source).is_err());
     }
 
     #[test]
