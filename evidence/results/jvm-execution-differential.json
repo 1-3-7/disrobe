@@ -1,0 +1,21 @@
+{
+  "ci_attested": true,
+  "claim": "disrobe decompiles JVM bytecode to Java whose observable per-method behaviour under a real JVM matches the original, across the EdgeCases corpus.",
+  "competitors": [],
+  "detail": "117 of the same 131 top-level methods are EXECUTION-equivalent, which is a strictly stronger standard than the recompile bar beside it: the original and the recovered source are each compiled by real javac, both are run under a real JVM, and every observable per-method result is compared. Read the residual 14 as the two separate populations it is, never as one: 8 methods are javac-clean and measurably DIVERGENT, and 6 are javac-clean but not executable in isolation (5 measure a nested-type stub, 1 is not self-reproducible), so those 6 are ungraded rather than passing. The distinction is not academic in this crate, which once emitted a method that compiled cleanly and incremented a counter twice on its exception path.",
+  "disrobe_leads": null,
+  "ecosystem": "jvm",
+  "floor": 89.31,
+  "floor_holds": true,
+  "gate_source": "crates/disrobe-pass-jvm/tests/edgecases_execution_differential.rs (EXECUTION_EQUIVALENT_FLOOR 117 of PER_METHOD_TOTAL 131, with the equivalent set pinned as a membership list of method names rather than a count, so a method cannot leave it silently and the pinned-divergent lists only ever shrink); the reference is real javac plus a real JVM comparing observable behaviour, never the decompiler's own output; the_execution_differential_reports_a_double_counted_exception_path injects a second counter increment on divSafe's recovered exception path and requires this differential to report divergence while javac still accepts the file; measured 117 equivalent, 8 divergent, 6 not driven on JDK 25",
+  "id": "jvm-execution-differential",
+  "measured": "89.31%",
+  "oracle": {
+    "external": "real javac (JDK 25) plus a real JVM: the original and the recovered source are each compiled and run, and every observable per-method result is compared",
+    "kind": "recovery-import",
+    "note": "This is the strong companion to jvm-javac-recompile, which is recompile-only over the same 131-method denominator. Recompile-acceptance proves the recovered Java compiles, not that it behaves the same; this crate once emitted a method that compiled cleanly and incremented a counter twice on its exception path. The equivalent set is pinned as a membership list of method names rather than a count, so a method cannot leave it silently. The residual 14 is two populations: 8 javac-clean but measurably divergent, and 6 javac-clean but not executable in isolation, which are ungraded rather than passing. Publish both bars; do not blend them."
+  },
+  "oracle_strength": "strong",
+  "reproduce": "cargo test -p disrobe-pass-jvm --test edgecases_execution_differential",
+  "title": "JVM classfile decompilation, per-method execution differential"
+}
