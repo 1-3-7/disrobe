@@ -328,13 +328,15 @@
         },
         {
           "label": "megafile",
-          "value": 98.0,
+          "value": 98.67,
           "detail": "real MRI recompiles the recovered source and the YARV opcode multiset matches 23648 of 23966 opcodes, which is 98.67%. The plotted 98 is the floor this gate enforces, not the measurement, so the bar shows the guaranteed minimum and the measured value is asserted at or above it.",
           "verified_by": {
             "path": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs",
             "function": "published_yarv_bars_match_the_counts_this_crate_pins"
           },
-          "source": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs (megafile >= 98)"
+          "source": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs (megafile >= 98)",
+          "num": 23648,
+          "den": 23966
         }
       ]
     },

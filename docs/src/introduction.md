@@ -43,7 +43,7 @@ Every figure below is produced by a committed test gate or a local measurement h
 | WebAssembly | 133 of 133 corpus functions op-covered across the 38 parseable modules; 57 of 57 execution-eligible functions equivalent | execution differential under wasmtime |
 | JVM classfile | <!-- m:jvm_per_method_count -->131 of 131<!-- /m --> methods recompile error-free | real `javac` |
 | Android (Dalvik) | <!-- m:dalvik_verifier_pct -->100%<!-- /m --> of the presentable classes in the committed dex corpus pass the JVM verifier (<!-- m:dalvik_verifier_count -->118 of 118<!-- /m -->). A further 37 of the corpus's 155 classes are link-skipped and never reach the verifier, because they reference supertypes the harness does not bundle, so those are ungraded rather than passing | `-Xverify:all` over assembled jar |
-| Ruby YARV | greeter <!-- m:ruby_greeter_pct -->100%<!-- /m -->, megafile <!-- m:ruby_megafile_pct -->98%<!-- /m --> opcode-multiset equivalence | recompile on MRI |
+| Ruby YARV | greeter <!-- m:ruby_greeter_pct -->100%<!-- /m -->, megafile <!-- m:ruby_megafile_pct -->98.67%<!-- /m --> opcode-multiset equivalence | recompile on MRI |
 | PyArmor | <!-- m:pyarmor_samples -->72<!-- /m --> of 72 real-corpus samples recovered | plaintext-absent oracle |
 | Containers | <!-- m:containers_formats -->100<!-- /m --> formats detected, <!-- m:containers_formats -->100<!-- /m --> extracted in-tree | per-format byte length |
 
