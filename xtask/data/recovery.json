@@ -305,7 +305,7 @@
         {
           "label": "greeter",
           "value": 100.0,
-          "detail": "gate floor (>= 100%)",
+          "detail": "real MRI recompiles the recovered source and the YARV opcode multiset matches 79 of 79 opcodes, so this fixture is exact. The plotted 100 is the floor this gate enforces, and the measured value is asserted at or above it, so a regression fails instead of quietly lowering the published number. A third committed fixture, hello.rb, also matches 4 of 4 and is not plotted separately.",
           "verified_by": {
             "path": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs",
             "function": "published_yarv_bars_match_the_floors_this_crate_enforces"
@@ -315,7 +315,7 @@
         {
           "label": "megafile",
           "value": 98.0,
-          "detail": "gate floor (>= 98%)",
+          "detail": "real MRI recompiles the recovered source and the YARV opcode multiset matches 23648 of 23966 opcodes, which is 98.67%. The plotted 98 is the floor this gate enforces, not the measurement, so the bar shows the guaranteed minimum and the measured value is asserted at or above it.",
           "verified_by": {
             "path": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs",
             "function": "published_yarv_bars_match_the_floors_this_crate_enforces"
