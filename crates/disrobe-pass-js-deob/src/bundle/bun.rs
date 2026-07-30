@@ -20,7 +20,18 @@ pub fn detect(source: &str) -> BundlerDetection {
     let has_at_bun_pragma: bool = head.starts_with("// @bun") || head.contains("\n// @bun");
     let has_bun_module_object: bool =
         head.contains("Bun.embeddedFiles") || head.contains("$bun_runtime");
+    let has_bun_live_binding_setter: bool =
+        head.contains("function __exportSetter(") && head.contains("__exportSetter.bind(");
+    let has_bun_return_value_helper: bool = head.contains("var __returnValue = ");
 
+    if has_bun_live_binding_setter {
+        markers.push("__exportSetter".to_owned());
+        score += 0.55;
+    }
+    if has_bun_return_value_helper {
+        markers.push("__returnValue".to_owned());
+        score += 0.30;
+    }
     if has_bun_runtime {
         markers.push("__bun_register".to_owned());
         score += 0.4;
