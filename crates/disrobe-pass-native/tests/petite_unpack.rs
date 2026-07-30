@@ -13,32 +13,22 @@
     clippy::naive_bytecount
 )]
 
-use std::path::{Path, PathBuf};
+#[path = "support/packer_fixture.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod packer_fixture;
 
 use disrobe_pass_native::{
     Packer, PetitePhase2EmulatedOutput, PetiteUnpackResult, RecoveredImport, UnpackerStatus,
     unpack_petite, unpack_petite_phase2_emulated, unpack_petite_with_report,
 };
-
-fn corpus_root() -> PathBuf {
-    let crate_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    crate_dir
-        .parent()
-        .and_then(Path::parent)
-        .map(|p: &Path| {
-            p.join("corpus")
-                .join("native")
-                .join("packers")
-                .join("petite")
-        })
-        .expect(
-            "workspace layout: crates/disrobe-pass-native -> ../../corpus/native/packers/petite",
-        )
-}
+use packer_fixture::{PackerFixture, load_fixture};
 
 fn read_fixture(name: &str) -> Option<Vec<u8>> {
-    let path: PathBuf = corpus_root().join(name);
-    std::fs::read(&path).ok()
+    load_fixture(PackerFixture {
+        decoder: "Petite",
+        family: "petite",
+        name,
+    })
 }
 
 #[test]
@@ -53,11 +43,9 @@ fn test_petite_status_is_implemented() {
 #[test]
 fn test_petite_hello32_round_trip() {
     let Some(packed): Option<Vec<u8>> = read_fixture("hello.exe") else {
-        eprintln!("skipping: petite/hello.exe corpus fixture absent");
         return;
     };
     let Some(baseline): Option<Vec<u8>> = read_fixture("hello.original.exe") else {
-        eprintln!("skipping: petite/hello.original.exe corpus fixture absent");
         return;
     };
     assert!(
@@ -146,11 +134,9 @@ fn test_petite_hello32_round_trip() {
 #[test]
 fn test_petite_hello32_byte_recovery() {
     let Some(packed): Option<Vec<u8>> = read_fixture("hello.exe") else {
-        eprintln!("skipping: petite/hello.exe corpus fixture absent");
         return;
     };
     let Some(baseline): Option<Vec<u8>> = read_fixture("hello.original.exe") else {
-        eprintln!("skipping: petite/hello.original.exe corpus fixture absent");
         return;
     };
     let recovered: Vec<u8> =
@@ -196,7 +182,6 @@ fn test_petite_hello32_byte_recovery() {
 #[test]
 fn test_petite_unpacked_pe_runs() {
     let Some(packed): Option<Vec<u8>> = read_fixture("hello.exe") else {
-        eprintln!("skipping: petite/hello.exe corpus fixture absent");
         return;
     };
     let recovered: Vec<u8> = unpack_petite(&packed).expect("petite unpack must succeed");
@@ -234,7 +219,6 @@ fn test_petite_unpacked_pe_runs() {
 #[test]
 fn test_petite_dircmp_byte_recovery() {
     let Some(packed): Option<Vec<u8>> = read_fixture("megafile_DirCmp.exe") else {
-        eprintln!("skipping: petite/megafile_DirCmp.exe corpus fixture absent");
         return;
     };
     let result: PetiteUnpackResult =
@@ -283,7 +267,6 @@ fn test_petite_dircmp_byte_recovery() {
 #[test]
 fn test_petite_megafile_dircmp_recovers_structure() {
     let Some(packed): Option<Vec<u8>> = read_fixture("megafile_DirCmp.exe") else {
-        eprintln!("skipping: petite/megafile_DirCmp.exe corpus fixture absent");
         return;
     };
     assert!(
@@ -331,11 +314,9 @@ fn test_petite_megafile_dircmp_recovers_structure() {
 #[test]
 fn test_petite_hello32_phase2_emulated_smoke() {
     let Some(packed): Option<Vec<u8>> = read_fixture("hello.exe") else {
-        eprintln!("skipping: petite/hello.exe corpus fixture absent");
         return;
     };
     let Some(baseline): Option<Vec<u8>> = read_fixture("hello.original.exe") else {
-        eprintln!("skipping: petite/hello.original.exe corpus fixture absent");
         return;
     };
     let result: PetitePhase2EmulatedOutput =
@@ -538,11 +519,9 @@ fn section_name_eq(name: [u8; 8], target: &[u8]) -> bool {
 #[test]
 fn test_petite_hello32_phase2_byte_recovery_beats_static() {
     let Some(packed): Option<Vec<u8>> = read_fixture("hello.exe") else {
-        eprintln!("skipping: petite/hello.exe corpus fixture absent");
         return;
     };
     let Some(baseline): Option<Vec<u8>> = read_fixture("hello.original.exe") else {
-        eprintln!("skipping: petite/hello.original.exe corpus fixture absent");
         return;
     };
     let result: PetitePhase2EmulatedOutput =
@@ -588,7 +567,6 @@ fn test_petite_hello32_phase2_byte_recovery_beats_static() {
 #[test]
 fn test_petite_dircmp_phase2_emulated_smoke() {
     let Some(packed): Option<Vec<u8>> = read_fixture("megafile_DirCmp.exe") else {
-        eprintln!("skipping: petite/megafile_DirCmp.exe corpus fixture absent");
         return;
     };
     let result: PetitePhase2EmulatedOutput =
