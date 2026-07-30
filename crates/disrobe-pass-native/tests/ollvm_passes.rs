@@ -807,6 +807,60 @@ fn a_branch_on_an_untracked_stack_slot_stays_analyzable() {
     );
 }
 
+const STALE_FLAG_BRANCHES: &[(&str, &[u8])] = &[
+    (
+        "mov ecx, 4; cmp ecx, 5; sete al; mov eax, edx; test eax, eax; jne",
+        &[
+            0xb9, 0x04, 0x00, 0x00, 0x00, 0x83, 0xf9, 0x05, 0x0f, 0x94, 0xc0, 0x89, 0xd0, 0x85,
+            0xc0, 0x75, 0x05,
+        ],
+    ),
+    (
+        "mov ecx, 4; cmp ecx, 5; test edx, edx; sete al; test eax, eax; jne",
+        &[
+            0xb9, 0x04, 0x00, 0x00, 0x00, 0x83, 0xf9, 0x05, 0x85, 0xd2, 0x0f, 0x94, 0xc0, 0x85,
+            0xc0, 0x75, 0x05,
+        ],
+    ),
+];
+
+#[test]
+fn a_branch_reading_a_flag_that_a_later_write_replaced_names_no_dead_edge() {
+    for &(spelling, code) in STALE_FLAG_BRANCHES {
+        let verdict: Option<BogusBranch> = strip_ollvm_bcf(DeobfBits::Bits64, BASE, code);
+        println!("{spelling}: {verdict:?}");
+        assert!(
+            !verdict.as_ref().is_some_and(|found: &BogusBranch| matches!(
+                found.result,
+                OpaqueResult::AlwaysTaken | OpaqueResult::AlwaysNotTaken
+            )),
+            "the constant CMP in {spelling} does not reach the branch. In the first, MOV EAX, EDX \
+             replaces the SETE result before the TEST reads it; in the second, TEST EDX, EDX is \
+             the flag the SETE consumes and the CMP before it is stale. Both branches turn on EDX, \
+             so neither may name an edge dead: {verdict:?}"
+        );
+    }
+}
+
+#[test]
+fn a_branch_reading_the_flag_its_own_setcc_produced_still_folds() {
+    let code: &[u8] = &[
+        0xb9, 0x04, 0x00, 0x00, 0x00, 0x83, 0xf9, 0x05, 0x0f, 0x94, 0xc0, 0x85, 0xc0, 0x75, 0x05,
+    ];
+    let Some(branch): Option<BogusBranch> = strip_ollvm_bcf(DeobfBits::Bits64, BASE, code) else {
+        panic!(
+            "mov ecx, 4; cmp ecx, 5; sete al; test eax, eax; jne reaches the branch with nothing \
+             in between, so rejecting a replaced flag must not also reject this one"
+        );
+    };
+    assert_eq!(
+        branch.result,
+        OpaqueResult::AlwaysNotTaken,
+        "4 is not 5, so SETE clears AL, the TEST sets the zero flag and the JNE is never taken: \
+         {branch:?}"
+    );
+}
+
 fn seed_xor_to_or_defect(code: &[u8]) -> Option<Vec<u8>> {
     use iced_x86::{Decoder, DecoderOptions, Instruction, Mnemonic};
     const XOR_R32_RM32: u8 = 0x33;

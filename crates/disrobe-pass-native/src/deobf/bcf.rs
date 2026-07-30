@@ -267,18 +267,57 @@ const fn setcc_to_cmp(mnemonic: Mnemonic) -> Option<Mnemonic> {
     }
 }
 
+fn writes_register(insn: &Instruction, want: Register) -> bool {
+    if insn.op0_kind() == OpKind::Register && full_reg(insn.op0_register()) == want {
+        return true;
+    }
+    match insn.mnemonic() {
+        Mnemonic::Xchg => {
+            insn.op1_kind() == OpKind::Register && full_reg(insn.op1_register()) == want
+        }
+        Mnemonic::Mul
+        | Mnemonic::Div
+        | Mnemonic::Idiv
+        | Mnemonic::Cdq
+        | Mnemonic::Cqo
+        | Mnemonic::Cwd
+        | Mnemonic::Cpuid
+        | Mnemonic::Call => matches!(want, Register::RAX | Register::RDX),
+        _ => false,
+    }
+}
+
+fn writes_flags(insn: &Instruction) -> bool {
+    if setcc_to_cmp(insn.mnemonic()).is_some() {
+        return false;
+    }
+    !matches!(
+        insn.mnemonic(),
+        Mnemonic::Mov
+            | Mnemonic::Movzx
+            | Mnemonic::Movsx
+            | Mnemonic::Movsxd
+            | Mnemonic::Lea
+            | Mnemonic::Push
+            | Mnemonic::Pop
+            | Mnemonic::Nop
+    )
+}
+
 fn predicate_from_flag(
     prefix: &[Instruction],
     boolean_reg: Register,
 ) -> Option<(Predicate, Width)> {
     let want: Register = full_reg(boolean_reg);
-    let pos: usize = prefix.iter().rposition(|i: &Instruction| {
-        i.op0_kind() == OpKind::Register
-            && full_reg(i.op0_register()) == want
-            && (setcc_to_cmp(i.mnemonic()).is_some()
-                || matches!(i.mnemonic(), Mnemonic::Or | Mnemonic::And))
-    })?;
+    let pos: usize = prefix
+        .iter()
+        .rposition(|i: &Instruction| writes_register(i, want))?;
     let producer: &Instruction = &prefix[pos];
+    if setcc_to_cmp(producer.mnemonic()).is_none()
+        && !matches!(producer.mnemonic(), Mnemonic::Or | Mnemonic::And)
+    {
+        return None;
+    }
     match producer.mnemonic() {
         Mnemonic::Or => {
             let (left, lw): (Predicate, Width) =
@@ -296,10 +335,11 @@ fn predicate_from_flag(
         }
         other => {
             let jcc: Mnemonic = setcc_to_cmp(other)?;
-            let cmp_index: usize = prefix[..pos]
-                .iter()
-                .rposition(|i: &Instruction| matches!(i.mnemonic(), Mnemonic::Cmp))?;
+            let cmp_index: usize = prefix[..pos].iter().rposition(writes_flags)?;
             let cmp: &Instruction = &prefix[cmp_index];
+            if cmp.mnemonic() != Mnemonic::Cmp {
+                return None;
+            }
             let predicate: Predicate = build_cmp_predicate(&prefix[..cmp_index], cmp, jcc)?;
             Some((predicate, predicate_width(cmp)))
         }
