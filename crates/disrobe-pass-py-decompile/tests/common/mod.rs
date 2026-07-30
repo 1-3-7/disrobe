@@ -6,6 +6,7 @@
 )]
 
 pub(crate) mod band;
+pub(crate) mod band_gate;
 pub(crate) mod stdlib_measure;
 pub(crate) mod tokenize;
 
