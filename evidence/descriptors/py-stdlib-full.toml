@@ -8,7 +8,7 @@ ci = false
 [oracle]
 kind = "recovery-import"
 external = "CPython 3.14 (recompile the recovered source, compare emitted bytecode per code object)"
-reproduce = "python crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the full CPython 3.14 Lib (local-only: needs a full CPython 3.14 install)"
+reproduce = "python crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the full CPython 3.14 Lib, the population crates/disrobe-pass-py-decompile/tests/full_stdlib_recompile_gate.rs measures under --ignored; CI does not run that gate and re-derives only the 115-module slice beside it"
 
 [source]
 recovery_group = "Python bytecode (CPython 3.14 stdlib, per-code-object recompile-equivalence)"

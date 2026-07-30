@@ -14,13 +14,18 @@ const MAX_TEST_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 
 const LOCAL_TAG: &str = "[local]";
 const CI_TAG: &str = "[CI]";
-const JOIN_CALL: &str = ".join(\"";
+const SEGMENT_CALLS: [&str; 2] = [".join(\"", ".push(\""];
+const MODULE_PATH_ATTRIBUTE: &str = "#[path = \"";
+const MODULE_DECLARATION: &str = "mod ";
+const MAX_MODULE_DEPTH: usize = 3;
 const MIN_FRAGMENT_COMPONENTS: usize = 2;
 const FIXTURE_ROOTS: [&str; 2] = ["corpus/", "fuzz/"];
 const FIXTURE_SEGMENT: &str = "/tests/";
 const DESCRIPTOR_DIR: &str = "evidence/descriptors/";
 const AUDITED_DOC_ROOTS: [&str; 2] = ["docs/src/", "evidence/"];
 const README: &str = "README.md";
+const CITABLE_ROOTS: [&str; 2] = ["crates/", "benches/"];
+const CITATION_PUNCTUATION: [char; 6] = ['`', '|', ',', '(', ')', ';'];
 
 #[derive(Debug)]
 struct Record {
@@ -29,7 +34,30 @@ struct Record {
     citation: String,
 }
 
-const UNTRACKED_DECLARATION: &str = "gitignored";
+const UNTRACKED_DECLARATIONS: [&str; 2] = ["gitignored", "uncommitted"];
+const PREREQUISITE_DECLARATIONS: [&str; 2] = ["CI does not provision", "CI does not run"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalReason {
+    UntrackedInput,
+    ExternalPrerequisite,
+}
+
+fn declared_reason(citation: &str) -> Option<LocalReason> {
+    if UNTRACKED_DECLARATIONS
+        .iter()
+        .any(|word: &&str| citation.contains(word))
+    {
+        Some(LocalReason::UntrackedInput)
+    } else if PREREQUISITE_DECLARATIONS
+        .iter()
+        .any(|phrase: &&str| citation.contains(phrase))
+    {
+        Some(LocalReason::ExternalPrerequisite)
+    } else {
+        None
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 enum TrackedFixture {
@@ -151,6 +179,32 @@ fn cited_test_paths(citation: &str, index: &BTreeMap<String, Vec<String>>) -> Ve
     paths
 }
 
+fn cited_workspace_files(citation: &str, tracked: &BTreeSet<String>) -> Vec<String> {
+    citation
+        .split_whitespace()
+        .map(|token: &str| token.trim_matches(|c: char| CITATION_PUNCTUATION.contains(&c)))
+        .filter(|token: &&str| {
+            CITABLE_ROOTS
+                .iter()
+                .any(|root: &&str| token.starts_with(root))
+        })
+        .filter(|token: &&str| tracked.contains(*token))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn cited_sources(
+    citation: &str,
+    index: &BTreeMap<String, Vec<String>>,
+    tracked: &BTreeSet<String>,
+) -> Vec<String> {
+    let mut paths: Vec<String> = cited_test_paths(citation, index);
+    paths.extend(cited_workspace_files(citation, tracked));
+    paths.sort_unstable();
+    paths.dedup();
+    paths
+}
+
 fn string_literals(source: &str) -> Vec<String> {
     let bytes: &[u8] = source.as_bytes();
     let mut literals: Vec<String> = Vec::new();
@@ -175,21 +229,36 @@ fn string_literals(source: &str) -> Vec<String> {
 }
 
 fn chain_continues(gap: &str) -> bool {
-    gap.strip_prefix(')')
-        .is_some_and(|rest: &str| rest.chars().all(char::is_whitespace))
+    let Some(rest): Option<&str> = gap.strip_prefix(')') else {
+        return false;
+    };
+    let rest: &str = rest.strip_prefix(';').unwrap_or(rest);
+    let receiver: &str = rest.trim();
+    receiver.is_empty()
+        || receiver
+            .chars()
+            .all(|c: char| c.is_alphanumeric() || c == '_')
 }
 
-fn join_chains(source: &str) -> Vec<String> {
+fn next_segment_call(source: &str, from: usize) -> Option<(usize, usize)> {
+    SEGMENT_CALLS
+        .iter()
+        .filter_map(|call: &&str| {
+            source
+                .get(from..)
+                .and_then(|rest: &str| rest.find(call))
+                .map(|relative: usize| (from + relative, call.len()))
+        })
+        .min_by_key(|(at, _): &(usize, usize)| *at)
+}
+
+fn segment_chains(source: &str) -> Vec<String> {
     let mut chains: Vec<String> = Vec::new();
     let mut current: Vec<String> = Vec::new();
     let mut after_previous: usize = 0;
     let mut index: usize = 0;
-    while let Some(relative) = source
-        .get(index..)
-        .and_then(|rest: &str| rest.find(JOIN_CALL))
-    {
-        let at: usize = index + relative;
-        let start: usize = at + JOIN_CALL.len();
+    while let Some((at, call_width)) = next_segment_call(source, index) {
+        let start: usize = at + call_width;
         let Some(rest): Option<&str> = source.get(start..) else {
             break;
         };
@@ -214,6 +283,62 @@ fn join_chains(source: &str) -> Vec<String> {
     chains
 }
 
+fn parent_directory(rel: &str) -> String {
+    rel.rsplit_once('/')
+        .map_or_else(String::new, |(dir, _): (&str, &str)| format!("{dir}/"))
+}
+
+fn resolve_relative(directory: &str, fragment: &str) -> Option<String> {
+    let mut components: Vec<&str> = directory
+        .split('/')
+        .filter(|part: &&str| !part.is_empty())
+        .collect();
+    for part in fragment.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                components.pop()?;
+            }
+            other => components.push(other),
+        }
+    }
+    Some(components.join("/"))
+}
+
+fn declared_module_files(rel: &str, source: &str, tracked: &BTreeSet<String>) -> Vec<String> {
+    let directory: String = parent_directory(rel);
+    let mut candidates: Vec<String> = Vec::new();
+    for literal in string_literals(source) {
+        if source.contains(&format!("{MODULE_PATH_ATTRIBUTE}{literal}"))
+            && has_extension(&literal, "rs")
+        {
+            candidates.extend(resolve_relative(&directory, &literal));
+        }
+    }
+    for line in source.lines().map(str::trim) {
+        let Some(after): Option<&str> = line.find(MODULE_DECLARATION).and_then(|at: usize| {
+            line.get(at + MODULE_DECLARATION.len()..)
+                .and_then(|rest: &str| rest.strip_suffix(';'))
+        }) else {
+            continue;
+        };
+        let name: &str = after.trim();
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c: char| c.is_ascii_alphanumeric() || c == '_')
+        {
+            continue;
+        }
+        candidates.extend(resolve_relative(&directory, &format!("{name}.rs")));
+        candidates.extend(resolve_relative(&directory, &format!("{name}/mod.rs")));
+    }
+    candidates.retain(|path: &String| tracked.contains(path));
+    candidates.sort_unstable();
+    candidates.dedup();
+    candidates
+}
+
 fn normalize_fragment(raw: &str) -> Option<String> {
     let unusable: bool = raw
         .chars()
@@ -229,8 +354,16 @@ fn normalize_fragment(raw: &str) -> Option<String> {
     }
 }
 
+fn citation_fragments(citation: &str) -> BTreeSet<String> {
+    citation
+        .split_whitespace()
+        .map(|token: &str| token.trim_matches(|c: char| CITATION_PUNCTUATION.contains(&c)))
+        .filter_map(normalize_fragment)
+        .collect()
+}
+
 fn named_fragments(source: &str) -> BTreeSet<String> {
-    join_chains(source)
+    segment_chains(source)
         .into_iter()
         .chain(string_literals(source))
         .filter_map(|raw: String| normalize_fragment(&raw))
@@ -333,43 +466,99 @@ fn records(root: &Path, tracked: &BTreeSet<String>) -> Result<Vec<Record>> {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct Reach {
-    pub(crate) unresolved: usize,
-    pub(crate) declared_untracked: usize,
-    pub(crate) fixtures_inspected: usize,
+struct Audit {
+    problems: Vec<String>,
+    untracked_input: usize,
+    external_prerequisite: usize,
 }
 
-fn contradictions(
-    records: &[Record],
+fn named_fixtures(
+    record: &Record,
+    cited: &[String],
+    families: &BTreeMap<String, Vec<String>>,
     sources: &BTreeMap<String, String>,
-    index: &BTreeMap<String, Vec<String>>,
-    tracked: &BTreeSet<String>,
-) -> (Vec<Finding>, Reach) {
-    let mut found: Vec<Finding> = Vec::new();
-    let mut reach: Reach = Reach::default();
-    for record in records {
-        let cited: Vec<String> = cited_test_paths(&record.citation, index);
-        if cited.is_empty() {
-            reach.unresolved += 1;
-            continue;
+) -> Vec<(String, String)> {
+    let mut named: Vec<(String, String)> = Vec::new();
+    for fragment in citation_fragments(&record.citation) {
+        if is_fixture_path(&fragment) {
+            named.push((record.document.clone(), fragment));
         }
-        if record.citation.contains(UNTRACKED_DECLARATION) {
-            reach.declared_untracked += 1;
-            continue;
-        }
-        reach.fixtures_inspected += 1;
-        let mut named: Vec<(String, String)> = Vec::new();
-        for test in &cited {
-            let Some(source): Option<&String> = sources.get(test) else {
+    }
+    for test in cited {
+        let family: &[String] = families
+            .get(test)
+            .map_or_else(|| core::slice::from_ref(test), Vec::as_slice);
+        for member in family {
+            let Some(source): Option<&String> = sources.get(member) else {
                 continue;
             };
             for fragment in named_fragments(source) {
                 if is_fixture_path(&fragment) {
-                    named.push((test.clone(), fragment));
+                    named.push((member.clone(), fragment));
                 }
             }
         }
+    }
+    named
+}
+
+fn describe(finding: &Finding) -> String {
+    format!(
+        "{}: the row `{}` is tagged `[local]`, but its cited test {} reads `{}`, which carries {}. A tag that says a figure does not reproduce from a clean checkout understates the evidence when the input is committed: either drop the tag or stop tracking the fixture",
+        finding.document,
+        finding.label,
+        finding.test,
+        finding.named,
+        finding.tracked.describe()
+    )
+}
+
+fn audit(
+    records: &[Record],
+    sources: &BTreeMap<String, String>,
+    families: &BTreeMap<String, Vec<String>>,
+    index: &BTreeMap<String, Vec<String>>,
+    tracked: &BTreeSet<String>,
+) -> Audit {
+    let mut audit: Audit = Audit::default();
+    for record in records {
+        let cited: Vec<String> = cited_sources(&record.citation, index, tracked);
+        if cited.is_empty() {
+            audit.problems.push(format!(
+                "{}: the row `{}` is tagged `[local]` but names no test target and no git-tracked \
+                 file under {CITABLE_ROOTS:?} that this check can open, so nothing grades the \
+                 figure it publishes. A citation that resolves to nothing reads as verified while \
+                 proving less than an uncited number: name the `--test` target, or the exact path \
+                 of the test or harness that measures it",
+                record.document, record.label
+            ));
+            continue;
+        }
+        let Some(reason): Option<LocalReason> = declared_reason(&record.citation) else {
+            audit.problems.push(format!(
+                "{}: the row `{}` is tagged `[local]` but states no reason it cannot run in CI. \
+                 Say `gitignored` or `uncommitted` when the input is absent from the checkout, or \
+                 one of {PREREQUISITE_DECLARATIONS:?} when the measurement needs something no \
+                 workflow gives it; an undeclared reason cannot be checked against the repository",
+                record.document, record.label
+            ));
+            continue;
+        };
+        if reason == LocalReason::ExternalPrerequisite {
+            audit.external_prerequisite += 1;
+            continue;
+        }
+        audit.untracked_input += 1;
+        let named: Vec<(String, String)> = named_fixtures(record, &cited, families, sources);
         if named.is_empty() {
+            audit.problems.push(format!(
+                "{}: the row `{}` declares its input untracked, but neither the row nor {} names a \
+                 fixture path this check can read, so nothing confirms the input is absent from \
+                 the checkout. Name the absent input in the row itself",
+                record.document,
+                record.label,
+                cited.join(", ")
+            ));
             continue;
         }
         let reads_untracked: bool = named
@@ -380,88 +569,114 @@ fn contradictions(
         }
         for (test, fragment) in named {
             if let Some(fixture) = tracked_fixture(&fragment, tracked) {
-                found.push(Finding {
+                audit.problems.push(describe(&Finding {
                     document: record.document.clone(),
                     label: record.label.clone(),
                     test,
                     named: fragment,
                     tracked: fixture,
-                });
+                }));
             }
         }
     }
-    (found, reach)
+    audit
+}
+
+fn read_source(root: &Path, rel: &str, sources: &mut BTreeMap<String, String>) -> Result<()> {
+    if sources.contains_key(rel) {
+        return Ok(());
+    }
+    let text: String = read_text_bounded(&root.join(rel), MAX_TEST_SOURCE_BYTES)
+        .wrap_err_with(|| format!("reading the cited test {rel}"))?;
+    sources.insert(rel.to_owned(), text);
+    Ok(())
+}
+
+fn module_family(
+    root: &Path,
+    entry: &str,
+    tracked: &BTreeSet<String>,
+    sources: &mut BTreeMap<String, String>,
+) -> Result<Vec<String>> {
+    let mut family: Vec<String> = vec![entry.to_owned()];
+    let mut frontier: Vec<String> = vec![entry.to_owned()];
+    for _ in 0..MAX_MODULE_DEPTH {
+        let mut next: Vec<String> = Vec::new();
+        for rel in &frontier {
+            read_source(root, rel, sources)?;
+            let Some(source): Option<&String> = sources.get(rel) else {
+                continue;
+            };
+            for member in declared_module_files(rel, source, tracked) {
+                if !family.contains(&member) {
+                    family.push(member.clone());
+                    next.push(member);
+                }
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+    for rel in &family {
+        read_source(root, rel, sources)?;
+    }
+    Ok(family)
+}
+
+#[derive(Debug, Default)]
+struct CitedSources {
+    text: BTreeMap<String, String>,
+    families: BTreeMap<String, Vec<String>>,
 }
 
 fn read_cited_sources(
     root: &Path,
     records: &[Record],
     index: &BTreeMap<String, Vec<String>>,
-) -> Result<BTreeMap<String, String>> {
-    let mut sources: BTreeMap<String, String> = BTreeMap::new();
+    tracked: &BTreeSet<String>,
+) -> Result<CitedSources> {
+    let mut read: CitedSources = CitedSources::default();
     for record in records {
-        for test in cited_test_paths(&record.citation, index) {
-            if sources.contains_key(&test) {
+        for test in cited_sources(&record.citation, index, tracked) {
+            if read.families.contains_key(&test) {
                 continue;
             }
-            let text: String = read_text_bounded(&root.join(&test), MAX_TEST_SOURCE_BYTES)
-                .wrap_err_with(|| format!("reading the cited test {test}"))?;
-            sources.insert(test, text);
+            let family: Vec<String> = module_family(root, &test, tracked, &mut read.text)?;
+            read.families.insert(test, family);
         }
     }
-    Ok(sources)
+    Ok(read)
 }
 
 pub(crate) fn run(root: &Path) -> Result<()> {
     let tracked: BTreeSet<String> = tracked_paths(root)?;
     let index: BTreeMap<String, Vec<String>> = test_index(&tracked);
     let rows: Vec<Record> = records(root, &tracked)?;
-    let sources: BTreeMap<String, String> = read_cited_sources(root, &rows, &index)?;
-    let (found, reach): (Vec<Finding>, Reach) = contradictions(&rows, &sources, &index, &tracked);
+    let read: CitedSources = read_cited_sources(root, &rows, &index, &tracked)?;
+    let audit: Audit = audit(&rows, &read.text, &read.families, &index, &tracked);
 
-    if found.is_empty() {
-        let coverage: String = if reach.fixtures_inspected == 0 {
-            "no row reached fixture inspection at all, so this check currently proves nothing about \
-             whether a tagged figure reads a committed input"
-                .to_owned()
-        } else {
-            format!(
-                "{} had their cited test's named fixtures inspected and every one of those reads an \
-                 untracked input",
-                reach.fixtures_inspected
-            )
-        };
+    if audit.problems.is_empty() {
         println!(
             "xtask regen: local-tag reproducibility cross-check ok ({} row(s) tagged `[local]` with \
-             no `[CI]` leg beside them; {} cite no test target this check can resolve and {} declare \
-             the input untracked in the citation itself. {coverage})",
+             no `[CI]` leg beside them, every one of them resolving to a test or harness this \
+             checkout carries and stating why CI cannot run it: {} name an input absent from the \
+             checkout, and this check confirmed each of those cited tests reads a fixture git does \
+             not track; the other {} name something no workflow gives them)",
             rows.len(),
-            reach.unresolved,
-            reach.declared_untracked
+            audit.untracked_input,
+            audit.external_prerequisite
         );
         Ok(())
     } else {
-        let listed: Vec<String> = found
-            .iter()
-            .map(|finding: &Finding| {
-                format!(
-                    "{}: the row `{}` is tagged `[local]`, but its cited test {} reads `{}`, which carries {}. A tag that says a figure does not reproduce from a clean checkout understates the evidence when the input is committed: either drop the tag or stop tracking the fixture",
-                    finding.document,
-                    finding.label,
-                    finding.test,
-                    finding.named,
-                    finding.tracked.describe()
-                )
-            })
-            .collect();
         bail!(
-            "{} published row(s) tagged `[local]` cite a test that reads a git-tracked fixture ({} \
-             row(s) tagged, {} had fixtures inspected, {} cite no resolvable test target):\n  {}",
-            found.len(),
+            "{} of the {} published row(s) tagged `[local]` do not stand up: a `[local]` row must \
+             name a test or harness this checkout carries and say why CI cannot run it, and a row \
+             that blames an absent input must cite a test that really reads one:\n  {}",
+            audit.problems.len(),
             rows.len(),
-            reach.fixtures_inspected,
-            reach.unresolved,
-            listed.join("\n  ")
+            audit.problems.join("\n  ")
         )
     }
 }
@@ -476,12 +691,65 @@ mod tests {
     }
 
     #[test]
-    fn join_chain_merges_only_whitespace_separated_calls() {
+    fn segment_chain_merges_only_whitespace_separated_calls() {
         let source: &str = "root\n    .join(\"corpus\")\n    .join(\"mobile\")\n    .join(\"macho-mac\")\nlet other = dir.join(\"tmp\");\n";
         assert_eq!(
-            join_chains(source),
+            segment_chains(source),
             vec!["corpus/mobile/macho-mac".to_owned(), "tmp".to_owned()]
         );
+    }
+
+    #[test]
+    fn segment_chain_reads_a_statement_per_line_push_sequence() {
+        let source: &str = "let mut path: PathBuf = manifest();\n    path.pop();\n    path.push(\"corpus\");\n    path.push(\"mobile\");\n    path.push(\"apk\");\n    path.push(\"inbox\");\n";
+        assert_eq!(
+            segment_chains(source),
+            vec!["corpus/mobile/apk/inbox".to_owned()],
+            "a fixture directory built one push statement at a time is the same path as a join chain"
+        );
+    }
+
+    #[test]
+    fn declared_module_files_follows_both_module_forms() {
+        let tracked: BTreeSet<String> = tracked_set(&[
+            "crates/p/tests/common/mod.rs",
+            "crates/p/tests/support/fixture.rs",
+            "crates/p/tests/other.rs",
+        ]);
+        let source: &str =
+            "pub mod common;\n#[path = \"support/fixture.rs\"]\nmod fixture;\nuse std::fs;\n";
+        assert_eq!(
+            declared_module_files("crates/p/tests/real_apks.rs", source, &tracked),
+            vec![
+                "crates/p/tests/common/mod.rs".to_owned(),
+                "crates/p/tests/support/fixture.rs".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn citation_fragments_reads_a_backticked_path_out_of_a_markdown_row() {
+        let row: &str = "| Native packers | samples uncommitted `[local]` | whole-image | `corpus/native/packers/petite/megafile_DirCmp.exe`, `crates/n/tests/petite_unpack.rs` |";
+        let fragments: BTreeSet<String> = citation_fragments(row);
+        assert!(
+            fragments.contains("corpus/native/packers/petite/megafile_DirCmp.exe"),
+            "a row must be able to name the absent input itself, got {fragments:?}"
+        );
+        assert!(
+            !fragments
+                .iter()
+                .any(|f: &String| is_fixture_path(f) && has_extension(f, "rs")),
+            "the cited test is never the fixture, got {fragments:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_relative_walks_out_of_the_directory() {
+        assert_eq!(
+            resolve_relative("crates/p/tests/", "../fixtures/a.bin"),
+            Some("crates/p/fixtures/a.bin".to_owned())
+        );
+        assert_eq!(resolve_relative("", "../escape.rs"), None);
     }
 
     #[test]
@@ -595,22 +863,17 @@ mod tests {
     }
 
     #[test]
-    fn contradictions_name_the_tracked_fixture_and_count_unresolvable_rows() {
+    fn a_row_whose_cited_test_reads_only_tracked_fixtures_is_named() {
         let rows: Vec<Record> = vec![
             Record {
                 document: README.to_owned(),
                 label: "Swift symbol demangle".to_owned(),
-                citation: "| Swift symbol demangle | 37 / 37 `[local]` | `crates/s/tests/real_swift_demangle.rs` |".to_owned(),
+                citation: "| Swift symbol demangle | 37 / 37 `[local]` | gitignored input | `crates/s/tests/real_swift_demangle.rs` |".to_owned(),
             },
             Record {
                 document: README.to_owned(),
                 label: "Android DEX, real APKs".to_owned(),
-                citation: "| Android DEX, real APKs | 92.5% `[local]` | `crates/j/tests/real_apks.rs` |".to_owned(),
-            },
-            Record {
-                document: README.to_owned(),
-                label: "full stdlib".to_owned(),
-                citation: "| full stdlib | 95.09% `[local]` | a python harness |".to_owned(),
+                citation: "| Android DEX, real APKs | 92.5% `[local]` | gitignored apks | `crates/j/tests/real_apks.rs` |".to_owned(),
             },
         ];
         let index: BTreeMap<String, Vec<String>> = BTreeMap::from([
@@ -630,42 +893,56 @@ mod tests {
             ),
             (
                 "crates/j/tests/real_apks.rs".to_owned(),
-                "corpus(&[\"mobile\", \"apk\", \"inbox\", \"transmissionic.apk\"])".to_owned(),
+                "path.push(\"corpus\");\n    path.push(\"mobile\");\n    path.push(\"apk\");\n    path.push(\"inbox\");"
+                    .to_owned(),
             ),
         ]);
-        let tracked: BTreeSet<String> =
-            tracked_set(&["corpus/mobile/macho-mac/SwiftHello.original"]);
+        let tracked: BTreeSet<String> = tracked_set(&[
+            "corpus/mobile/macho-mac/SwiftHello.original",
+            "crates/s/tests/real_swift_demangle.rs",
+            "crates/j/tests/real_apks.rs",
+        ]);
 
-        let (found, reach): (Vec<Finding>, Reach) =
-            contradictions(&rows, &sources, &index, &tracked);
+        let result: Audit = audit(&rows, &sources, &BTreeMap::new(), &index, &tracked);
         assert_eq!(
-            reach.unresolved, 1,
-            "the python-harness row resolves to no test"
+            result.untracked_input, 2,
+            "declaring the input untracked no longer excuses a row from having its fixtures read"
         );
         assert_eq!(
-            reach.fixtures_inspected, 2,
-            "both resolvable rows must reach fixture inspection rather than be counted as if \
-             they had"
+            result.problems.len(),
+            1,
+            "only the row whose every named fixture is committed is reported, got {:?}",
+            result.problems
         );
+        assert!(result.problems[0].contains("Swift symbol demangle"));
+        assert!(result.problems[0].contains("corpus/mobile/macho-mac"));
+    }
+
+    #[test]
+    fn a_row_that_resolves_to_nothing_is_a_failure_rather_than_a_counted_pass() {
+        let rows: Vec<Record> = vec![Record {
+            document: README.to_owned(),
+            label: "full stdlib".to_owned(),
+            citation: "| full stdlib | 95.09% `[local]` | gitignored | a python harness |"
+                .to_owned(),
+        }];
+        let result: Audit = audit(
+            &rows,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &tracked_set(&["crates/p/tests/x.rs"]),
+        );
+        assert_eq!(result.problems.len(), 1);
         assert!(
-            reach.fixtures_inspected > found.len(),
-            "one inspected row is clean and one contradicts, which is what separates a row \
-             whose fixtures were read and found untracked from a row nothing ever looked at"
-        );
-        assert_eq!(found.len(), 1, "only the tracked-fixture row contradicts");
-        assert_eq!(found[0].label, "Swift symbol demangle");
-        assert_eq!(found[0].named, "corpus/mobile/macho-mac");
-        assert_eq!(
-            found[0].tracked,
-            TrackedFixture::Directory {
-                witness: "corpus/mobile/macho-mac/SwiftHello.original".to_owned(),
-                files: 1
-            }
+            result.problems[0].contains("names no test target"),
+            "an unresolvable citation must be reported as the failure it is, got {:?}",
+            result.problems
         );
     }
 
     #[test]
-    fn a_row_whose_fixture_stops_being_tracked_stops_contradicting() {
+    fn a_row_that_states_no_reason_it_skips_ci_is_a_failure() {
         let rows: Vec<Record> = vec![Record {
             document: README.to_owned(),
             label: "PyArmor".to_owned(),
@@ -676,22 +953,123 @@ mod tests {
             "static_unpack_corpus".to_owned(),
             vec!["crates/p/tests/static_unpack_corpus.rs".to_owned()],
         )]);
-        let sources: BTreeMap<String, String> = BTreeMap::from([(
-            "crates/p/tests/static_unpack_corpus.rs".to_owned(),
-            "root.join(\"corpus/python/pyarmor\")".to_owned(),
-        )]);
-
-        let with_corpus: BTreeSet<String> = tracked_set(&["corpus/python/pyarmor/v8/wrapper.py"]);
-        let (flagged, _): (Vec<Finding>, Reach) =
-            contradictions(&rows, &sources, &index, &with_corpus);
-        assert_eq!(flagged.len(), 1);
-
-        let without_corpus: BTreeSet<String> = tracked_set(&["crates/p/tests/x.rs"]);
-        let (clean, _): (Vec<Finding>, Reach) =
-            contradictions(&rows, &sources, &index, &without_corpus);
-        assert!(
-            clean.is_empty(),
-            "an untracked corpus is what a `[local]` tag is for"
+        let result: Audit = audit(
+            &rows,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &index,
+            &tracked_set(&["a/b.rs"]),
         );
+        assert_eq!(result.problems.len(), 1);
+        assert!(
+            result.problems[0].contains("states no reason"),
+            "got {:?}",
+            result.problems
+        );
+    }
+
+    #[test]
+    fn a_row_blocked_on_an_uninstalled_tool_keeps_its_committed_fixture() {
+        let rows: Vec<Record> = vec![Record {
+            document: "evidence/results/EVIDENCE.md".to_owned(),
+            label: "recon".to_owned(),
+            citation: "| recon | 62.50% | [local] | `cargo test -p b published_x` in benches/head-to-head/src/frisk.rs (requires apkleaks 2.6.3 on PATH, which CI does not provision) |".to_owned(),
+        }];
+        let tracked: BTreeSet<String> = tracked_set(&[
+            "benches/head-to-head/src/frisk.rs",
+            "corpus/recon/apk/planted-secrets.apk",
+        ]);
+        let sources: BTreeMap<String, String> = BTreeMap::from([(
+            "benches/head-to-head/src/frisk.rs".to_owned(),
+            "root.join(\"corpus/recon/apk/planted-secrets.apk\")".to_owned(),
+        )]);
+        let result: Audit = audit(
+            &rows,
+            &sources,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &tracked,
+        );
+        assert!(
+            result.problems.is_empty(),
+            "a row held local by an absent tool may read a committed fixture, got {:?}",
+            result.problems
+        );
+        assert_eq!(result.external_prerequisite, 1);
+        assert_eq!(result.untracked_input, 0);
+    }
+
+    #[test]
+    fn a_declared_untracked_row_whose_test_names_no_fixture_is_reported() {
+        let rows: Vec<Record> = vec![Record {
+            document: README.to_owned(),
+            label: "Hermes".to_owned(),
+            citation:
+                "| Hermes | 122633 `[local]` | gitignored input | `crates/m/tests/real_hermes.rs` |"
+                    .to_owned(),
+        }];
+        let index: BTreeMap<String, Vec<String>> = BTreeMap::from([(
+            "real_hermes".to_owned(),
+            vec!["crates/m/tests/real_hermes.rs".to_owned()],
+        )]);
+        let sources: BTreeMap<String, String> = BTreeMap::from([(
+            "crates/m/tests/real_hermes.rs".to_owned(),
+            "assert_eq!(functions, 122_633);".to_owned(),
+        )]);
+        let result: Audit = audit(
+            &rows,
+            &sources,
+            &BTreeMap::new(),
+            &index,
+            &tracked_set(&["a/b.rs"]),
+        );
+        assert_eq!(result.problems.len(), 1);
+        assert!(
+            result.problems[0].contains("names a fixture path this check can read"),
+            "got {:?}",
+            result.problems
+        );
+    }
+
+    #[test]
+    fn cited_workspace_files_resolves_a_harness_that_is_not_a_cargo_test_target() {
+        let tracked: BTreeSet<String> = tracked_set(&[
+            "crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py",
+            "benches/head-to-head/src/frisk.rs",
+        ]);
+        let citation: &str = "| x | y | `python crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py --lib DIR` |";
+        assert_eq!(
+            cited_workspace_files(citation, &tracked),
+            vec![
+                "crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py".to_owned()
+            ]
+        );
+        assert!(
+            cited_workspace_files("cargo test -p x crates/gone/tests/absent.rs", &tracked)
+                .is_empty(),
+            "a path this checkout does not track resolves to nothing"
+        );
+    }
+
+    #[test]
+    fn declared_reason_reads_both_vocabularies_and_prefers_the_checkable_one() {
+        assert_eq!(
+            declared_reason("the apks are gitignored"),
+            Some(LocalReason::UntrackedInput)
+        );
+        assert_eq!(
+            declared_reason("samples uncommitted"),
+            Some(LocalReason::UntrackedInput)
+        );
+        assert_eq!(
+            declared_reason("needs apkleaks, which CI does not provision"),
+            Some(LocalReason::ExternalPrerequisite)
+        );
+        assert_eq!(
+            declared_reason("gitignored input on a machine where CI does not provision the tool"),
+            Some(LocalReason::UntrackedInput),
+            "when a row states both, the reason this check can verify against git wins"
+        );
+        assert_eq!(declared_reason("measured locally"), None);
     }
 }

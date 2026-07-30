@@ -1,5 +1,5 @@
 {
-  "descriptor_count": 25,
+  "descriptor_count": 26,
   "descriptors": [
     {
       "ci_attested": true,
@@ -49,18 +49,18 @@
       "reproduce": "cargo run -p disrobe-bench-head-to-head  (needs javac + jadx + cfr on PATH; cfr.jar via evidence/competitors/install-linux.sh)"
     },
     {
-      "ci_attested": false,
+      "ci_attested": true,
       "claim": "apkleaks 2.6.3 recalls 5 of the 8 planted secrets in the committed planted-secrets.apk, measured by running the tool rather than by quoting its documentation.",
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "recon",
-      "external_oracle": "apkleaks 2.6.3 itself, executed over the same committed apk, with its findings compared against the same planted token list",
+      "external_oracle": "the raw --json output apkleaks 2.6.3 wrote over this same committed apk, captured at evidence/competitors/apkleaks-2.6.3-planted-secrets.json and hash-pinned by the provenance record beside it, with its findings compared against the same planted token list",
       "floor": null,
       "floor_holds": null,
       "id": "apkleaks-planted-apk-secret-recall",
       "measured": "62.50%",
       "oracle_strength": "strong",
-      "reproduce": "cargo test -p disrobe-bench-head-to-head published_planted_apk_secret_bars_are_pinned_by_membership (requires apkleaks 2.6.3 on PATH)"
+      "reproduce": "cargo test -p disrobe-bench-head-to-head published_planted_apk_secret_bars_are_pinned_by_membership, defined in benches/head-to-head/src/frisk.rs"
     },
     {
       "ci_attested": true,
@@ -329,7 +329,7 @@
       "id": "py-stdlib-full",
       "measured": "95.09%",
       "oracle_strength": "strong",
-      "reproduce": "python crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the full CPython 3.14 Lib (local-only: needs a full CPython 3.14 install)"
+      "reproduce": "python crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the full CPython 3.14 Lib, the population crates/disrobe-pass-py-decompile/tests/full_stdlib_recompile_gate.rs measures under --ignored; CI does not run that gate and re-derives only the 115-module slice beside it"
     },
     {
       "ci_attested": true,
@@ -389,17 +389,31 @@
     },
     {
       "ci_attested": true,
-      "claim": "disrobe lifts WebAssembly to structured source that re-parses with every operator lowered, and the execution-eligible functions execute equivalently to the original under wasmtime.",
+      "claim": "disrobe lowers 1034 of the 1034 opcodes that wasm-tools counts across the 38 parseable modules of the committed corpus, and the WAT it emits re-assembles.",
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "wasm",
-      "external_oracle": "wasmtime execution differential (original vs recovered: return values, trap parity, linear memory) for the 57 execution-eligible functions; output re-parse for op-coverage",
+      "external_oracle": "the denominator is external and pinned: wasm-tools 1.250.0 disassembles every committed .wat and its per-function instruction inventory is frozen under crates/disrobe-pass-wasm-deob/tests/golden/external_wasm_op_inventory.json, keyed by each fixture's BLAKE3. The numerator is still disrobe counting the opcodes it lowered, so this stays coverage rather than correctness; the emitted WAT is re-assembled by the wat crate before any of its opcodes count",
+      "floor": 100.0,
+      "floor_holds": true,
+      "id": "wasm-external-op-inventory",
+      "measured": "100.00%",
+      "oracle_strength": "coverage-self-reported",
+      "reproduce": "cargo test -p disrobe-pass-wasm-deob --test external_op_denominator --test semantic_recovery_corpus"
+    },
+    {
+      "ci_attested": true,
+      "claim": "the execution-eligible functions of the committed WebAssembly corpus execute equivalently to the original under wasmtime after disrobe lifts and re-emits them.",
+      "competitors": [],
+      "disrobe_leads": null,
+      "ecosystem": "wasm",
+      "external_oracle": "wasmtime runs the original module and the recovered one on the same inputs and compares return values, trap parity, and the first 4096 bytes of linear memory, for the 57 execution-eligible functions",
       "floor": 100.0,
       "floor_holds": true,
       "id": "wasm-wasmtime-diff",
       "measured": "100.00%",
       "oracle_strength": "strong",
-      "reproduce": "cargo test -p disrobe-pass-wasm-deob --test semantic_differential --features sandbox  (op-coverage: cargo test -p disrobe-pass-wasm-deob --test semantic_recovery_corpus)"
+      "reproduce": "cargo test -p disrobe-pass-wasm-deob --test semantic_differential --features sandbox"
     }
   ],
   "disrobe_loss_count": 0,

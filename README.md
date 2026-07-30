@@ -125,7 +125,7 @@ The Oracle column names the independent reference in a few words. What that refe
 | Native packers, ASPack and PECompact | content and rebuilt IAT >= 98% byte-identical `[CI]` | RVA-aligned recovery | `crates/disrobe-pass-native/tests/aspack_pecompact_phase2.rs` |
 | Native packers, MEW | structural loaded-image recovery `[CI]` | RVA-aligned recovery | `crates/disrobe-pass-native/tests/mew_unpack.rs` |
 | Native packers, committed pairs | nspack 57721 / 60060, fsg 55263 / 60060, petite 86986 / 89648 `[CI]` | content-section bytes | `crates/disrobe-pass-native/tests/committed_packer_byte_recovery.rs` |
-| Native packers, larger local samples | no figure published, samples uncommitted `[local]` | whole-image comparison | `crates/disrobe-pass-native/tests/petite_unpack.rs` |
+| Native packers, larger local samples | no figure published, `corpus/native/packers/petite/megafile_DirCmp.exe` uncommitted `[local]` | whole-image comparison | `crates/disrobe-pass-native/tests/petite_unpack.rs` |
 | Native packers, kkrunchy | kkrunchy and kkrunchy classic payloads `[CI]` | payload byte-identity | `crates/disrobe-pass-native/tests/kkrunchy_unpack.rs` |
 | Native stub-emulator unpack | dispatch and decode round-trip `[CI]` | stub-emu equivalence | `crates/disrobe-pass-native/tests/stub_pack_oracle_roundtrip.rs` |
 | Hermes HBC v96 | <!-- m:hermes_opcoverage_count -->8 of 8<!-- /m --> functions, 0 fallback `[CI]` | op-coverage, source bodies | `crates/disrobe-pass-mobile/tests/real_hermes_sample.rs` |

@@ -55,7 +55,7 @@ JVM, wasmtime, Lua, or external tool is linked into or invoked by the product at
 |---|---|---|---|
 | Python | CPython 3.8-3.14 (uv-provisioned) | tier 1/2 yes | recompile-to-equivalent-bytecode per code object |
 | JVM | `javac` (JDK 25, setup-java) | yes | per-method recompile (recompile-only oracle) |
-| Android | JVM `-Xverify:all` | committed dex yes; real APKs need fetch | verifier-attested classes are CI; real-APK coverage is `[local]` |
+| Android | JVM `-Xverify:all` | committed dex yes; real APKs need fetch | verifier-attested classes are `[CI]`; real-APK coverage is `[local]` |
 | WASM | wasmtime (a Rust crate dep of the test, not the product) | yes | execution differential under `--features sandbox` |
 | Lua | `luac` / `lua` 5.1-5.4 | yes | recompile + execution differential |
 | Ruby | MRI (`ruby`) | yes | recompile, opcode multiset |
