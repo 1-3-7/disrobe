@@ -1,6 +1,9 @@
+use std::fmt::Write as _;
+
 use super::image::PeView;
 
 const RT_RCDATA: u32 = 10;
+const GUID_BYTES: usize = 16;
 const RESOURCE_DIR_INDEX: usize = 2;
 const DIR_HEADER_SIZE: u32 = 16;
 const ENTRY_SIZE: u32 = 8;
@@ -10,13 +13,15 @@ const MAX_ENTRIES: u32 = 8192;
 const MAX_RESOURCES: usize = 8192;
 const MAX_NAME_CHARS: usize = 512;
 
+pub(super) type Accept<'f> = &'f dyn Fn(&str, &[u8]) -> bool;
+
 #[derive(Debug, Clone)]
 pub(super) struct RawResource {
     pub name: String,
     pub data: Vec<u8>,
 }
 
-pub(super) fn collect_rcdata(view: &PeView<'_>) -> Vec<RawResource> {
+pub(super) fn collect_rcdata(view: &PeView<'_>, accept: Accept<'_>) -> Vec<RawResource> {
     let mut out: Vec<RawResource> = Vec::new();
     let Some(dir): Option<&crate::packers::pe_sections::DataDirectory> =
         view.image.data_directories.get(RESOURCE_DIR_INDEX)
@@ -29,8 +34,27 @@ pub(super) fn collect_rcdata(view: &PeView<'_>) -> Vec<RawResource> {
     let Some(base_off): Option<usize> = view.rva_to_off(dir.virtual_address) else {
         return out;
     };
-    walk_types(view, base_off, 0, &mut out);
+    walk_types(view, base_off, 0, accept, &mut out);
     out
+}
+
+pub(super) fn is_form(_name: &str, data: &[u8]) -> bool {
+    data.starts_with(b"TPF0")
+}
+
+pub(super) fn find_license_resource(view: &PeView<'_>) -> Option<String> {
+    let hits: Vec<RawResource> = collect_rcdata(view, &|name: &str, _data: &[u8]| {
+        name.eq_ignore_ascii_case("DVCLAL")
+    });
+    let entry: &RawResource = hits.first()?;
+    if entry.data.len() != GUID_BYTES {
+        return None;
+    }
+    let mut hex: String = String::with_capacity(GUID_BYTES * 2);
+    for byte in &entry.data {
+        write!(hex, "{byte:02X}").ok()?;
+    }
+    Some(hex)
 }
 
 fn read_u16(view: &PeView<'_>, base_off: usize, rel: u32) -> Option<u16> {
@@ -47,7 +71,13 @@ fn entry_count(view: &PeView<'_>, base_off: usize, dir_rel: u32) -> u32 {
     named.saturating_add(ids).min(MAX_ENTRIES)
 }
 
-fn walk_types(view: &PeView<'_>, base_off: usize, dir_rel: u32, out: &mut Vec<RawResource>) {
+fn walk_types(
+    view: &PeView<'_>,
+    base_off: usize,
+    dir_rel: u32,
+    accept: Accept<'_>,
+    out: &mut Vec<RawResource>,
+) {
     let count: u32 = entry_count(view, base_off, dir_rel);
     for i in 0..count {
         if out.len() >= MAX_RESOURCES {
@@ -69,11 +99,17 @@ fn walk_types(view: &PeView<'_>, base_off: usize, dir_rel: u32, out: &mut Vec<Ra
         if offset_field & SUBDIR_FLAG == 0 {
             continue;
         }
-        walk_names(view, base_off, offset_field & OFFSET_MASK, out);
+        walk_names(view, base_off, offset_field & OFFSET_MASK, accept, out);
     }
 }
 
-fn walk_names(view: &PeView<'_>, base_off: usize, dir_rel: u32, out: &mut Vec<RawResource>) {
+fn walk_names(
+    view: &PeView<'_>,
+    base_off: usize,
+    dir_rel: u32,
+    accept: Accept<'_>,
+    out: &mut Vec<RawResource>,
+) {
     let count: u32 = entry_count(view, base_off, dir_rel);
     for i in 0..count {
         if out.len() >= MAX_RESOURCES {
@@ -95,7 +131,14 @@ fn walk_names(view: &PeView<'_>, base_off: usize, dir_rel: u32, out: &mut Vec<Ra
         if offset_field & SUBDIR_FLAG == 0 {
             continue;
         }
-        walk_langs(view, base_off, offset_field & OFFSET_MASK, &name, out);
+        walk_langs(
+            view,
+            base_off,
+            offset_field & OFFSET_MASK,
+            &name,
+            accept,
+            out,
+        );
     }
 }
 
@@ -104,6 +147,7 @@ fn walk_langs(
     base_off: usize,
     dir_rel: u32,
     name: &str,
+    accept: Accept<'_>,
     out: &mut Vec<RawResource>,
 ) {
     let count: u32 = entry_count(view, base_off, dir_rel);
@@ -133,7 +177,7 @@ fn walk_langs(
             _ => continue,
         };
         let data: &[u8] = &view.bytes[data_off..end];
-        if data.starts_with(b"TPF0") {
+        if accept(name, data) {
             out.push(RawResource {
                 name: name.to_owned(),
                 data: data.to_vec(),
