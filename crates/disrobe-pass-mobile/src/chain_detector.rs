@@ -163,7 +163,7 @@ fn to_children(entries: Vec<(String, Vec<u8>)>, hint: &str) -> Vec<ChildArtifact
 fn verdict_for(kind: DetectedKind) -> Option<DetectVerdict> {
     let (tag, marker, confidence): (&'static str, &'static str, f32) = match kind {
         DetectedKind::HermesRawBytecode => (TAG_HERMES, "hermes-magic", 0.95),
-        DetectedKind::FlutterLibAppSo => (TAG_FLUTTER_AOT, "flutter-elf+aot-snapshot", 0.86),
+        DetectedKind::FlutterLibAppSo => (TAG_FLUTTER_AOT, "flutter-elf+aot-snapshot", 0.95),
         DetectedKind::FlutterDartKernel => (TAG_FLUTTER_KERNEL, "dart-kernel-magic", 0.95),
         DetectedKind::ReactNativeApk => (TAG_RN_APK, "apk-zip-rn-bundle", 0.80),
         DetectedKind::ReactNativeIpa => (TAG_RN_IPA, "ipa-rn-bundle", 0.80),
