@@ -154,7 +154,7 @@ export function percentBarTiers(doc) {
     if (strengths.size > 1) {
       throw new Error(
         `recovery.json bar "${entry.key}" cites instruments of more than one grading strength ` +
-          `(${[...strengths].join(", ")} via ${cited.join(", ")}), so the chart cannot colour it; ` +
+          `(${[...strengths].join(", ")} via ${cited.join(", ")}), so the chart cannot color it; ` +
           "give the bar its own evidence descriptor",
       );
     }
@@ -162,8 +162,8 @@ export function percentBarTiers(doc) {
       throw new Error(
         `recovery.json bar "${entry.key}" carries no recorded grading strength: no ` +
           "evidence/descriptors/*.toml binds it through [source] recovery_group / recovery_bar, and " +
-          "nothing it cites is tied to a tier. the chart refuses to draw it in the strong colour on " +
-          "no evidence, because that is the defect this colouring exists to prevent. add a descriptor " +
+          "nothing it cites is tied to a tier. the chart refuses to draw it in the strong color on " +
+          "no evidence, because that is the defect this coloring exists to prevent. add a descriptor " +
           "with an oracle_strength of strong, recompile-only or coverage-self-reported, or add the bar's " +
           "grading instrument to UNBOUND_INSTRUMENT_TIERS in xtask/graphgen/lib/tiers.mjs quoting the " +
           "bar's own source text",
