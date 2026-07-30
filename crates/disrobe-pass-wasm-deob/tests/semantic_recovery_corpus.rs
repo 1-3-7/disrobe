@@ -1,4 +1,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#[path = "common/published.rs"]
+mod published;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -7,6 +10,7 @@ use disrobe_pass_wasm_deob::{
     CalleeNames, FunctionSig, LiftResult, LiftTarget, ModuleSignatures, extract_signatures,
     lift_function_body,
 };
+use published::published_bar;
 use wasmparser::{FunctionBody, Parser, Payload};
 
 const CORPUS_MODULES: usize = 38;
@@ -15,41 +19,6 @@ const CORPUS_FULLY_RECOVERED: usize = 133;
 
 const PUBLISHED_HEADING: &str = "WebAssembly (committed 133-fn corpus";
 const PUBLISHED_BAR: &str = "op-coverage";
-
-fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {
-    let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("xtask")
-        .join("data")
-        .join("recovery.json");
-    let raw: String = fs::read_to_string(&path)
-        .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", path.display()));
-    let doc: serde_json::Value = serde_json::from_str(&raw)
-        .unwrap_or_else(|e: serde_json::Error| panic!("parse {}: {e}", path.display()));
-    let mut found: Vec<serde_json::Value> = Vec::new();
-    for group in doc["groups"].as_array().expect("groups array") {
-        let heading_matches: bool = group["heading"]
-            .as_str()
-            .is_some_and(|h: &str| h.contains(heading_needle));
-        if !heading_matches {
-            continue;
-        }
-        for bar in group["bars"].as_array().unwrap_or(&Vec::new()) {
-            if bar["label"].as_str() == Some(label) {
-                found.push(bar.clone());
-            }
-        }
-    }
-    assert_eq!(
-        found.len(),
-        1,
-        "xtask/data/recovery.json must carry exactly one bar labelled `{label}` under a heading \
-         containing `{heading_needle}`, found {}",
-        found.len()
-    );
-    found.remove(0)
-}
 
 fn corpus_dirs() -> Vec<PathBuf> {
     let root: &Path = Path::new(env!("CARGO_MANIFEST_DIR"));
