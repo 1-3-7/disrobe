@@ -11,7 +11,8 @@
 )]
 
 use std::collections::BTreeSet;
-use std::io::Read;
+use std::ffi::OsString;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -120,6 +121,57 @@ fn erlc_compile(erlc: &Path, src: &Path, out_dir: &Path) -> (bool, String) {
     }
 }
 
+const REQUIRE_ERLANG_VAR: &str = "DISROBE_REQUIRE_ERLANG";
+const GRADED: &str = "stripped core-lift recompile equivalence over the erlang corpus";
+
+fn erlang_is_mandatory() -> bool {
+    let Some(raw): Option<OsString> = std::env::var_os(REQUIRE_ERLANG_VAR) else {
+        return false;
+    };
+    !matches!(
+        raw.to_string_lossy().trim().to_ascii_lowercase().as_str(),
+        "" | "0" | "false" | "no" | "off" | "optional"
+    )
+}
+
+fn skip_or_fail(defect: &str) {
+    assert!(
+        !erlang_is_mandatory(),
+        "{REQUIRE_ERLANG_VAR} makes the erlang toolchain mandatory for this run, so {GRADED} \
+         cannot be measured and this case must not report success: {defect}. To fix it, install \
+         Erlang/OTP and put erlc and erl on PATH; to permit a run that measures nothing here, \
+         clear {REQUIRE_ERLANG_VAR}."
+    );
+    let line: String = format!(
+        "\nNOT MEASURED: {GRADED} compared nothing and graded nothing, because {defect}. Set \
+         {REQUIRE_ERLANG_VAR}=1 to fail instead of skipping when erlc and erl cannot be run.\n"
+    );
+    let mut sink: std::io::StdoutLock<'static> = std::io::stdout().lock();
+    drop(sink.write_all(line.as_bytes()));
+    drop(sink.flush());
+}
+
+fn otp_release(erl: &Path) -> Result<String, String> {
+    let mut cmd: Command = Command::new(erl);
+    cmd.arg("-noshell")
+        .arg("-eval")
+        .arg("io:format(\"~s\", [erlang:system_info(otp_release)]), halt().");
+    match run_bounded(cmd) {
+        Some((true, so, _)) if !so.trim().is_empty() => Ok(so.trim().to_owned()),
+        Some((_, so, se)) => Err(format!(
+            "`erl` is present at {} but did not report its release (stdout {:?}, stderr {:?}), so \
+             the toolchain is installed and unusable rather than absent",
+            erl.display(),
+            so.trim(),
+            se.trim()
+        )),
+        None => Err(format!(
+            "`erl` at {} did not exit within {CALL_TIMEOUT:?}",
+            erl.display()
+        )),
+    }
+}
+
 fn run_test0(erl: &Path, code_dir: &Path, module: &str) -> (bool, String) {
     let eval: String = format!("io:format(\"~p~n\", [{module}:test()]), halt().");
     let mut cmd: Command = Command::new(erl);
@@ -196,6 +248,7 @@ struct Fidelity {
     fn_total: usize,
     fn_opcode_exact: usize,
     detail: String,
+    rejected_source: Option<String>,
 }
 
 impl Fidelity {
@@ -284,10 +337,7 @@ fn measure(erlc: &Path, erl: Option<&Path>, module: &str, src: &Path) -> Fidelit
             }
         }
     } else {
-        detail = format!(
-            "recompile rejected:\n{rec_msg}\n--- recovered {module}.erl ---\n{}",
-            surface.source
-        );
+        detail = format!("recompile rejected:\n{rec_msg}");
     }
 
     Fidelity {
@@ -298,6 +348,51 @@ fn measure(erlc: &Path, erl: Option<&Path>, module: &str, src: &Path) -> Fidelit
         fn_total,
         fn_opcode_exact,
         detail,
+        rejected_source: (!recompiled).then(|| surface.source.clone()),
+    }
+}
+
+const MAX_DETAIL_LINES: usize = 60;
+const MAX_SOURCE_LINES: usize = 200;
+
+fn print_verdict(r: &Fidelity) {
+    let status: &str = if r.behaviorally_equivalent() {
+        "PASS"
+    } else if !r.recompiled {
+        "FAIL(recompile)"
+    } else if !r.exports_match {
+        "FAIL(exports)"
+    } else {
+        "FAIL(runtime)"
+    };
+    let op_pct: f64 = if r.fn_total == 0 {
+        0.0
+    } else {
+        (r.fn_opcode_exact as f64) * 100.0 / (r.fn_total as f64)
+    };
+    println!(
+        "  {status:<16} {:<16} opcode-exact {}/{} ({op_pct:.0}%)",
+        r.module, r.fn_opcode_exact, r.fn_total
+    );
+    if r.behaviorally_equivalent() {
+        return;
+    }
+    for line in r.detail.lines().take(MAX_DETAIL_LINES) {
+        println!("       {line}");
+    }
+    let Some(source): Option<&String> = r.rejected_source.as_ref() else {
+        return;
+    };
+    println!("       --- recovered {}.erl as erlc saw it ---", r.module);
+    for (n, line) in source.lines().take(MAX_SOURCE_LINES).enumerate() {
+        println!("       {:>4} | {line}", n + 1);
+    }
+    let total: usize = source.lines().count();
+    if total > MAX_SOURCE_LINES {
+        println!(
+            "       ... {} further lines elided",
+            total - MAX_SOURCE_LINES
+        );
     }
 }
 
@@ -316,16 +411,23 @@ const EQUIVALENCE_FLOOR: usize = 18;
 
 #[test]
 fn stripped_core_lift_is_recompile_equivalent() {
-    let (Some(erlc), Some(erl)): (Option<PathBuf>, Option<PathBuf>) =
-        (find_on_path("erlc"), find_on_path("erl"))
+    let Some((erlc, erl)): Option<(PathBuf, PathBuf)> =
+        find_on_path("erlc").zip(find_on_path("erl"))
     else {
-        println!("SKIP: erlc/erl not on PATH (Erlang/OTP not installed)");
+        skip_or_fail("erlc and erl are not both on PATH, so Erlang/OTP is not installed here");
         return;
+    };
+    let release: String = match otp_release(&erl) {
+        Ok(release) => release,
+        Err(defect) => {
+            skip_or_fail(&defect);
+            return;
+        }
     };
 
     let modules: Vec<(String, PathBuf)> = corpus_modules();
     assert!(
-        modules.len() >= 17,
+        modules.len() >= 19,
         "recompile-equivalence corpus regressed to {} modules",
         modules.len()
     );
@@ -343,31 +445,19 @@ fn stripped_core_lift_is_recompile_equivalent() {
     let fn_total: usize = results.iter().map(|r| r.fn_total).sum();
     let fn_exact: usize = results.iter().map(|r| r.fn_opcode_exact).sum();
 
-    println!("\n=== STRIPPED CORE-LIFT RECOMPILE-EQUIVALENCE (real erlc/erl oracle) ===");
+    println!(
+        "\n=== STRIPPED CORE-LIFT RECOMPILE-EQUIVALENCE (erlc and erl from OTP {release}) ==="
+    );
     for r in &results {
-        let status: &str = if r.behaviorally_equivalent() {
-            "PASS"
-        } else if !r.recompiled {
-            "FAIL(recompile)"
-        } else if !r.exports_match {
-            "FAIL(exports)"
-        } else {
-            "FAIL(runtime)"
-        };
-        let op_pct: f64 = if r.fn_total == 0 {
-            0.0
-        } else {
-            (r.fn_opcode_exact as f64) * 100.0 / (r.fn_total as f64)
-        };
-        println!(
-            "  {status:<16} {:<16} opcode-exact {}/{} ({op_pct:.0}%)",
-            r.module, r.fn_opcode_exact, r.fn_total
-        );
-        if !r.behaviorally_equivalent() && !r.detail.is_empty() {
-            for line in r.detail.lines().take(24) {
-                println!("       {line}");
-            }
-        }
+        print_verdict(r);
+    }
+    let failing: Vec<&str> = results
+        .iter()
+        .filter(|r: &&Fidelity| !r.behaviorally_equivalent())
+        .map(|r: &Fidelity| r.module.as_str())
+        .collect();
+    if !failing.is_empty() {
+        println!("not equivalent under OTP {release}: {}", failing.join(", "));
     }
     let op_overall: f64 = if fn_total == 0 {
         0.0
@@ -386,7 +476,9 @@ fn stripped_core_lift_is_recompile_equivalent() {
 
     assert!(
         equivalent >= EQUIVALENCE_FLOOR,
-        "recompile-equivalence regressed: {equivalent}/{} (floor {EQUIVALENCE_FLOOR})",
-        modules.len()
+        "recompile-equivalence regressed: {equivalent}/{} (floor {EQUIVALENCE_FLOOR}) under OTP \
+         {release}, not equivalent: {}",
+        modules.len(),
+        failing.join(", ")
     );
 }

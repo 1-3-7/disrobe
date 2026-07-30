@@ -79,6 +79,10 @@ impl Env {
         self.regs.get(&reg).cloned().unwrap_or_else(|| reg.var())
     }
 
+    fn bound(&self, reg: Reg) -> Option<Expr> {
+        self.regs.get(&reg).cloned()
+    }
+
     fn set(&mut self, reg: Reg, value: Expr) {
         self.regs.insert(reg, value);
     }
@@ -747,6 +751,24 @@ fn close_pattern(
         flags: Vec::new(),
     });
     segments
+}
+
+fn inline_segment(seg: binmatch::MatchSegment, env: &mut Env, flags: &mut Flags) -> BinSegment {
+    let mut segment: BinSegment = seg.segment;
+    if let Some(src) = seg.size_src.as_ref() {
+        match as_reg(src).and_then(|reg: Reg| env.bound(reg)) {
+            Some(size) => segment.size = Some(Box::new(size)),
+            None => flags.degraded = true,
+        }
+    }
+    if seg.binds {
+        let var: String = flags.fresh_pat();
+        segment.value = Box::new(Expr::Var(var.clone()));
+        if let Some(dst) = seg.dst.as_ref().and_then(as_reg) {
+            env.set(dst, Expr::Var(var));
+        }
+    }
+    segment
 }
 
 fn rebind_prefix(shared: &BinShared, len: usize, env: &mut Env) {

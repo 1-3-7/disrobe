@@ -3,8 +3,8 @@ use crate::disasm::{Instruction, Operand};
 use super::expr::{AfterClause, BinSegment, CaseArm, CatchArm, Expr, IfArm, Stmt};
 use super::{
     BinMatchState, Block, Env, Flags, Lifter, Reg, TEST_OPS, as_reg, binmatch, body_uses_var,
-    catch_value, class_from_guard, class_of_trace, combine_guard, guard, is_reraise, label_of,
-    literal_u32,
+    catch_value, class_from_guard, class_of_trace, combine_guard, guard, inline_segment,
+    is_reraise, label_of, literal_u32,
 };
 
 impl Lifter<'_> {
@@ -34,13 +34,11 @@ impl Lifter<'_> {
         let mut then_env: Env = env.clone();
         let mut segments: Vec<BinSegment> = Vec::new();
         if let Some(Operand::List(items)) = ins.operands.get(2) {
-            for mut seg in binmatch::decode_match_commands(items, self.chunks) {
-                let var: String = flags.fresh_pat();
-                seg.segment.value = Box::new(Expr::Var(var.clone()));
-                if let Some(dst) = seg.dst.as_ref().and_then(as_reg) {
-                    then_env.set(dst, Expr::Var(var));
-                }
-                segments.push(seg.segment);
+            let decoded: binmatch::MatchCommands =
+                binmatch::decode_match_commands(items, self.chunks);
+            flags.degraded = flags.degraded || decoded.degraded;
+            for seg in decoded.segments {
+                segments.push(inline_segment(seg, &mut then_env, flags));
             }
         }
         let rest: String = flags.fresh_pat();

@@ -5,9 +5,52 @@ use crate::disasm::{Instruction, Operand};
 use super::expr::{self, BinSegment, Expr, Stmt};
 use super::{
     BinMatchState, BinShared, BinaryClause, Block, Env, Flags, Lifter, Reg, as_reg, binmatch,
-    close_pattern, has_unrecovered_marker, is_ensure_exactly_zero, label_of, literal_u32,
-    rebind_prefix, resugar, simplify,
+    close_pattern, has_unrecovered_marker, inline_segment, is_ensure_exactly_zero, label_of,
+    literal_u32, rebind_prefix, resugar, simplify,
 };
+
+fn push_fail(fails: &mut Vec<u32>, ins: &Instruction) {
+    let fail: u32 = ins.operands.first().map_or(0, label_of);
+    if fail != 0 && !fails.contains(&fail) {
+        fails.push(fail);
+    }
+}
+
+fn push_match_segment(
+    shared: &mut BinShared,
+    cursor: &mut usize,
+    local_max: &mut usize,
+    env: &mut Env,
+    flags: &mut Flags,
+    seg: binmatch::MatchSegment,
+) -> bool {
+    let var: String = Lifter::segment_var(shared, *cursor, flags);
+    let dst: Option<Reg> = seg.dst.as_ref().and_then(as_reg);
+    let mut segment: BinSegment = seg.segment;
+    let mut degraded: bool = false;
+    if let Some(src) = seg.size_src.as_ref() {
+        match as_reg(src).and_then(|reg: Reg| env.bound(reg)) {
+            Some(size) => segment.size = Some(Box::new(size)),
+            None => degraded = true,
+        }
+    }
+    if seg.binds {
+        segment.value = Box::new(Expr::Var(var.clone()));
+    }
+    if *cursor == shared.all_segments.len() {
+        shared.all_segments.push(segment);
+        shared.seg_vars.push(var.clone());
+        shared.seg_dsts.push(seg.binds.then_some(dst).flatten());
+    }
+    if seg.binds
+        && let Some(dst) = dst
+    {
+        env.set(dst, Expr::Var(var));
+    }
+    *cursor += 1;
+    *local_max = (*local_max).max(*cursor);
+    degraded
+}
 
 impl Lifter<'_> {
     pub(super) fn reconstruct_binary_clauses(
@@ -87,6 +130,7 @@ impl Lifter<'_> {
         let mut cursor: usize = shared.all_segments.len();
         let mut local_max: usize = cursor;
         let mut matched: bool = false;
+        let mut seg_degraded: bool = false;
         loop {
             if idx >= limit {
                 return Some(BinaryClause {
@@ -125,52 +169,101 @@ impl Lifter<'_> {
                 }
                 "bs_match" => {
                     matched = true;
-                    let fail: u32 = label_of(&ins.operands[0]);
-                    if fail != 0 {
-                        fails.push(fail);
-                    }
+                    push_fail(&mut fails, ins);
                     if let Some(Operand::List(items)) = ins.operands.get(2) {
-                        if is_ensure_exactly_zero(items, self.chunks) {
-                            exact = true;
-                        }
-                        for seg in binmatch::decode_match_commands(items, self.chunks) {
-                            let var: String = Self::segment_var(shared, cursor, flags);
-                            let dst: Option<Reg> = seg.dst.as_ref().and_then(as_reg);
-                            let mut s: BinSegment = seg.segment;
-                            s.value = Box::new(Expr::Var(var.clone()));
-                            if cursor == shared.all_segments.len() {
-                                shared.all_segments.push(s);
-                                shared.seg_vars.push(var.clone());
-                                shared.seg_dsts.push(dst);
-                            }
-                            if let Some(dst) = dst {
-                                env.set(dst, Expr::Var(var));
-                            }
-                            cursor += 1;
-                            local_max = local_max.max(cursor);
+                        let decoded: binmatch::MatchCommands =
+                            binmatch::decode_match_commands(items, self.chunks);
+                        exact |= decoded.exact;
+                        seg_degraded |= decoded.degraded;
+                        for seg in decoded.segments {
+                            seg_degraded |= push_match_segment(
+                                shared,
+                                &mut cursor,
+                                &mut local_max,
+                                &mut env,
+                                flags,
+                                seg,
+                            );
                         }
                     }
                 }
+                "bs_get_integer2" | "bs_get_float2" | "bs_get_binary2" | "bs_get_utf8"
+                | "bs_get_utf16" | "bs_get_utf32" => {
+                    matched = true;
+                    push_fail(&mut fails, ins);
+                    match binmatch::decode_get_segment(ins.name, &ins.operands, self.chunks) {
+                        Some(seg) => {
+                            seg_degraded |= push_match_segment(
+                                shared,
+                                &mut cursor,
+                                &mut local_max,
+                                &mut env,
+                                flags,
+                                seg,
+                            );
+                        }
+                        None => seg_degraded = true,
+                    }
+                }
+                "bs_skip_bits2" | "bs_skip_utf8" | "bs_skip_utf16" | "bs_skip_utf32" => {
+                    matched = true;
+                    push_fail(&mut fails, ins);
+                    match binmatch::decode_skip_segment(ins.name, &ins.operands, self.chunks) {
+                        Some(seg) => {
+                            seg_degraded |= push_match_segment(
+                                shared,
+                                &mut cursor,
+                                &mut local_max,
+                                &mut env,
+                                flags,
+                                seg,
+                            );
+                        }
+                        None => seg_degraded = true,
+                    }
+                }
+                "bs_match_string" => {
+                    matched = true;
+                    push_fail(&mut fails, ins);
+                    let (segs, lossy): (Vec<binmatch::MatchSegment>, bool) =
+                        self.match_string_segments(&ins.operands);
+                    seg_degraded |= lossy;
+                    for seg in segs {
+                        seg_degraded |= push_match_segment(
+                            shared,
+                            &mut cursor,
+                            &mut local_max,
+                            &mut env,
+                            flags,
+                            seg,
+                        );
+                    }
+                }
+                "bs_test_tail2" => {
+                    let bits: u32 = ins.operands.get(2).map_or(0, literal_u32);
+                    if bits > 0 {
+                        seg_degraded |= push_match_segment(
+                            shared,
+                            &mut cursor,
+                            &mut local_max,
+                            &mut env,
+                            flags,
+                            binmatch::skip_segment(bits, 1),
+                        );
+                    }
+                    exact = true;
+                }
+                "bs_test_unit" => {}
                 "bs_get_tail" => {
                     matched = true;
-                    let var: String = Self::segment_var(shared, cursor, flags);
-                    let dst: Option<Reg> = as_reg(&ins.operands[1]);
-                    if let Some(dst) = dst {
-                        env.set(dst, Expr::Var(var.clone()));
-                    }
-                    if cursor == shared.all_segments.len() {
-                        shared.all_segments.push(BinSegment {
-                            value: Box::new(Expr::Var(var.clone())),
-                            size: None,
-                            unit: 8,
-                            kind: "binary".to_owned(),
-                            flags: Vec::new(),
-                        });
-                        shared.seg_vars.push(var);
-                        shared.seg_dsts.push(dst);
-                    }
-                    cursor += 1;
-                    local_max = local_max.max(cursor);
+                    seg_degraded |= push_match_segment(
+                        shared,
+                        &mut cursor,
+                        &mut local_max,
+                        &mut env,
+                        flags,
+                        binmatch::tail_segment(8, ins.operands.get(1).cloned()),
+                    );
                     exact = true;
                 }
                 "jump" => {
@@ -193,7 +286,7 @@ impl Lifter<'_> {
                         ),
                         body: vec![Stmt::Return(env.get(Reg::X(0)))],
                         fails,
-                        degraded: false,
+                        degraded: seg_degraded,
                         wildcard: !matched,
                     });
                 }
@@ -220,7 +313,7 @@ impl Lifter<'_> {
                         segments,
                         body,
                         fails,
-                        degraded: sub_flags.degraded,
+                        degraded: seg_degraded || sub_flags.degraded,
                         wildcard: !matched,
                     });
                 }
@@ -235,6 +328,26 @@ impl Lifter<'_> {
             .get(cursor)
             .cloned()
             .unwrap_or_else(|| flags.fresh_pat())
+    }
+
+    fn match_string_segments(&self, ops: &[Operand]) -> (Vec<binmatch::MatchSegment>, bool) {
+        let bits: u32 = ops.get(2).map_or(0, literal_u32);
+        if bits == 0 {
+            return (Vec::new(), false);
+        }
+        if !bits.is_multiple_of(8) {
+            return (vec![binmatch::skip_segment(bits, 1)], true);
+        }
+        let offset: usize = ops.get(3).map_or(0, literal_u32) as usize;
+        let len: usize = (bits / 8) as usize;
+        let bytes: Vec<BinSegment> = self.strt_string_segments(offset, len);
+        if bytes.len() != len {
+            return (vec![binmatch::skip_segment(bits, 1)], true);
+        }
+        (
+            bytes.into_iter().map(binmatch::fixed_segment).collect(),
+            false,
+        )
     }
 
     fn is_gc_retry(&self, label: u32, visited: &[u32]) -> bool {
@@ -317,18 +430,13 @@ impl Lifter<'_> {
             .bin_ctx
             .get(&ctx)
             .map_or_else(|| ctx.var(), |s: &BinMatchState| env.get(s.source));
+        let decoded: binmatch::MatchCommands = binmatch::decode_match_commands(items, self.chunks);
+        flags.degraded = flags.degraded || decoded.degraded;
         let mut segments: Vec<BinSegment> = Vec::new();
-        let mut produced: bool = false;
-        for mut seg in binmatch::decode_match_commands(items, self.chunks) {
-            let var: String = flags.fresh_pat();
-            seg.segment.value = Box::new(Expr::Var(var.clone()));
-            if let Some(dst) = seg.dst.as_ref().and_then(as_reg) {
-                env.set(dst, Expr::Var(var));
-            }
-            segments.push(seg.segment);
-            produced = true;
+        for seg in decoded.segments {
+            segments.push(inline_segment(seg, env, flags));
         }
-        if !produced {
+        if segments.is_empty() {
             return None;
         }
         let rest: String = flags.fresh_pat();

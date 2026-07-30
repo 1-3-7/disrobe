@@ -218,7 +218,7 @@ pub fn render_expr(expr: &Expr) -> String {
         Expr::MakeFun { name, arity, env } => render_make_fun(name, *arity, env),
         Expr::CallFun { fun, args } => {
             let parts: Vec<String> = args.iter().map(render_expr).collect();
-            format!("{}({})", render_operand(fun), parts.join(", "))
+            format!("{}({})", render_callee(fun), parts.join(", "))
         }
         Expr::BinaryConstruct(segments) => render_binary_construct(segments),
         Expr::Catch(inner) => format!("catch {}", render_expr(inner)),
@@ -268,6 +268,13 @@ fn render_operand(expr: &Expr) -> String {
             format!("({})", render_expr(expr))
         }
         _ => render_expr(expr),
+    }
+}
+
+fn render_callee(expr: &Expr) -> String {
+    match expr {
+        Expr::Var(_) | Expr::Atom(_) => render_expr(expr),
+        _ => format!("({})", render_expr(expr)),
     }
 }
 
@@ -464,6 +471,42 @@ mod tests {
         assert_eq!(render_atom("end"), "'end'");
         assert_eq!(render_atom("else"), "'else'");
         assert_eq!(render_atom("maybe"), "'maybe'");
+    }
+
+    #[test]
+    fn a_computed_callee_is_parenthesized() {
+        let composed: Expr = Expr::CallFun {
+            fun: Box::new(Expr::Call {
+                target: "compose".to_owned(),
+                args: vec![Expr::Var("F".to_owned()), Expr::Var("G".to_owned())],
+            }),
+            args: vec![Expr::Int(4)],
+        };
+        assert_eq!(render_expr(&composed), "(compose(F, G))(4)");
+
+        let head_of_list: Expr = Expr::CallFun {
+            fun: Box::new(Expr::Guard {
+                name: "hd".to_owned(),
+                args: vec![Expr::Var("Fs".to_owned())],
+            }),
+            args: vec![Expr::Var("X".to_owned())],
+        };
+        assert_eq!(render_expr(&head_of_list), "(hd(Fs))(X)");
+    }
+
+    #[test]
+    fn a_variable_or_atom_callee_stays_bare() {
+        let via_var: Expr = Expr::CallFun {
+            fun: Box::new(Expr::Var("F".to_owned())),
+            args: vec![Expr::Int(1)],
+        };
+        assert_eq!(render_expr(&via_var), "F(1)");
+
+        let via_atom: Expr = Expr::CallFun {
+            fun: Box::new(Expr::Atom("-test/0-fun-0-".to_owned())),
+            args: vec![Expr::Int(1)],
+        };
+        assert_eq!(render_expr(&via_atom), "'-test/0-fun-0-'(1)");
     }
 
     #[test]
