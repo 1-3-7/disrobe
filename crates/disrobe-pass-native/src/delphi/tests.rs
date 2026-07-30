@@ -1,9 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::{
-    DelphiClass, DelphiEra, DelphiForm, DelphiOrigin, DelphiReport, DelphiSignalKind,
-    DelphiTypeInfo, DelphiVersionSignal, analyze, classify_unit, detect_delphi,
-    recover_delphi_classes, recover_dfm_resources,
+    DelphiClass, DelphiEra, DelphiForm, DelphiOrigin, DelphiReport, DelphiSignalKind, DelphiString,
+    DelphiStringKind, DelphiTypeInfo, DelphiVersionSignal, analyze, classify_unit, detect_delphi,
+    recover_delphi_classes, recover_delphi_strings, recover_dfm_resources,
 };
 
 const FORM1_HEX: &str = "545046300654466F726D3105466F726D31044C65667403C80003546F7002640557696474680340010648656967687403F0000743617074696F6E060C4C6F67696E2057696E646F7705436F6C6F720709636C42746E4661636507456E61626C6564090756697369626C650803546167022A0B426F7264657249636F6E730B0C626953797374656D4D656E750A62694D696E696D697A65000B426F726465725374796C65070862734469616C6F6700055445646974054564697431044C656674021003546F70021005576964746802790454657874060975736572206E616D6508526561644F6E6C790800000754427574746F6E07427574746F6E31044C656674021003546F70023C0743617074696F6E06034F274B0744656661756C74090B4D6F64616C526573756C740201000000";
@@ -570,6 +570,105 @@ fn author_classes_are_counted_apart_from_runtime_library_classes() {
     assert_eq!(control.origin, DelphiOrigin::RuntimeLibrary);
 }
 
+fn build_string_pool_blob() -> Vec<u8> {
+    let mut b: Blob = Blob::new(data_va(), 4);
+    let _legacy: u64 = b.put_legacy_string("legacy literal", 0xFFFF_FFFF);
+    let _ansi: u64 = b.put_ansi_string(1252, "ansi literal");
+    let _unicode: u64 = b.put_unicode_string("unicode literal");
+    let _live: u64 = b.put_legacy_string("runtime allocated", 3);
+    let _cut: u64 = b.put_unterminated_string("no terminator here");
+    let _padding: u64 = {
+        b.align(4);
+        b.put_u32(0xFFFF_FFFF);
+        b.put_u32(5);
+        let at: u64 = b.va(b.buf.len());
+        b.put_bytes(&[0xFF, 0xFF, 0xFF, 0xFF, 0x50]);
+        b.put_u8(0);
+        at
+    };
+    b.buf
+}
+
+#[test]
+fn string_pool_recovers_each_literal_shape() {
+    let pe: Vec<u8> = pe_with_code_and_data(build_string_pool_blob());
+    let found: Vec<DelphiString> = recover_delphi_strings(&pe);
+    let texts: Vec<&str> = found
+        .iter()
+        .map(|s: &DelphiString| s.text.as_str())
+        .collect();
+
+    assert!(
+        texts.contains(&"legacy literal"),
+        "pre-2009 header not recovered, got {texts:?}"
+    );
+    assert!(
+        texts.contains(&"ansi literal"),
+        "code page header not recovered, got {texts:?}"
+    );
+    assert!(
+        texts.contains(&"unicode literal"),
+        "UTF-16 header not recovered, got {texts:?}"
+    );
+
+    let unicode: &DelphiString = found
+        .iter()
+        .find(|s: &&DelphiString| s.text == "unicode literal")
+        .expect("UTF-16 literal present");
+    assert_eq!(unicode.kind, DelphiStringKind::Unicode);
+    assert_eq!(unicode.code_page, Some(1200));
+
+    let ansi: &DelphiString = found
+        .iter()
+        .find(|s: &&DelphiString| s.text == "ansi literal")
+        .expect("code page literal present");
+    assert_eq!(ansi.kind, DelphiStringKind::Ansi);
+    assert_eq!(ansi.code_page, Some(1252));
+}
+
+#[test]
+fn string_pool_refuses_a_live_reference_count_a_missing_terminator_and_filler() {
+    let pe: Vec<u8> = pe_with_code_and_data(build_string_pool_blob());
+    let found: Vec<DelphiString> = recover_delphi_strings(&pe);
+    let texts: Vec<&str> = found
+        .iter()
+        .map(|s: &DelphiString| s.text.as_str())
+        .collect();
+
+    assert!(
+        !texts.contains(&"runtime allocated"),
+        "a positive reference count is not a compiled-in literal"
+    );
+    assert!(
+        !texts.iter().any(|t: &&str| t.starts_with("no terminator")),
+        "a length that does not land on a null must be refused"
+    );
+    assert!(
+        !texts.iter().any(|t: &&str| t.contains('\u{00FF}')),
+        "a run of filler bytes must not read as a literal, got {texts:?}"
+    );
+}
+
+#[test]
+#[cfg(windows)]
+fn string_pool_finds_nothing_in_real_system_dlls() {
+    let mut checked: usize = 0;
+    for path in SYSTEM_DLLS {
+        let Ok(bytes): Result<Vec<u8>, std::io::Error> = std::fs::read(path) else {
+            continue;
+        };
+        checked += 1;
+        let found: Vec<DelphiString> = recover_delphi_strings(&bytes);
+        assert!(
+            found.is_empty(),
+            "{path} produced {} string literals, first {:?}",
+            found.len(),
+            found.first().map(|s: &DelphiString| s.text.clone())
+        );
+    }
+    assert!(checked > 0, "no real system DLL was readable for the check");
+}
+
 fn find_class<'a>(classes: &'a [DelphiClass], name: &str) -> &'a DelphiClass {
     classes
         .iter()
@@ -1043,6 +1142,53 @@ impl Blob {
             self.put_u32(*instance_offset as u32);
             self.put_u32(0);
         }
+        at
+    }
+
+    fn put_legacy_string(&mut self, text: &str, refcount: u32) -> u64 {
+        self.align(4);
+        self.put_u32(refcount);
+        self.put_u32(text.len() as u32);
+        let at: u64 = self.va(self.buf.len());
+        self.put_bytes(text.as_bytes());
+        self.put_u8(0);
+        at
+    }
+
+    fn put_ansi_string(&mut self, code_page: u16, text: &str) -> u64 {
+        self.align(4);
+        self.put_u16(code_page);
+        self.put_u16(1);
+        self.put_u32(0xFFFF_FFFF);
+        self.put_u32(text.len() as u32);
+        let at: u64 = self.va(self.buf.len());
+        self.put_bytes(text.as_bytes());
+        self.put_u8(0);
+        at
+    }
+
+    fn put_unicode_string(&mut self, text: &str) -> u64 {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        self.align(4);
+        self.put_u16(1200);
+        self.put_u16(2);
+        self.put_u32(0xFFFF_FFFF);
+        self.put_u32(units.len() as u32);
+        let at: u64 = self.va(self.buf.len());
+        for unit in units {
+            self.put_u16(unit);
+        }
+        self.put_u16(0);
+        at
+    }
+
+    fn put_unterminated_string(&mut self, text: &str) -> u64 {
+        self.align(4);
+        self.put_u32(0xFFFF_FFFF);
+        self.put_u32(text.len() as u32);
+        let at: u64 = self.va(self.buf.len());
+        self.put_bytes(text.as_bytes());
+        self.put_u8(b'!');
         at
     }
 
