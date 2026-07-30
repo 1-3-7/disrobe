@@ -4,58 +4,24 @@
     clippy::panic,
     clippy::print_stdout
 )]
+#[path = "support/macho_corpus.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod macho_corpus;
+
 use std::collections::BTreeSet;
-use std::fs;
-use std::path::{Path, PathBuf};
 
 use disrobe_nir::{NirFunction, NirInstr, NirOp, SourceLang};
-use disrobe_pass_swift_objc::macho::{self, MachoKind, ParsedSlice};
+use disrobe_pass_swift_objc::macho::{self, ParsedSlice};
 use disrobe_pass_swift_objc::{
     FunctionBody, NativeBodyReport, SourceGrade, function_symbols, recover_native_bodies,
 };
 
-fn corpus_root() -> PathBuf {
-    let manifest_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root: &Path = manifest_dir
-        .ancestors()
-        .nth(2)
-        .expect("workspace root above crate");
-    workspace_root.join("corpus")
-}
-
-fn load(rel: &[&str]) -> Option<Vec<u8>> {
-    let mut p: PathBuf = corpus_root();
-    for part in rel {
-        p.push(part);
-    }
-    fs::read(&p).ok()
-}
-
-fn thin_slice(bytes: &[u8]) -> (Vec<u8>, ParsedSlice) {
-    match macho::detect_magic(bytes).expect("mach-o magic") {
-        MachoKind::Fat32 | MachoKind::Fat64 => {
-            let entries: Vec<macho::FatArchEntry> = macho::walk_fat(bytes).expect("walk fat");
-            let entry: &macho::FatArchEntry = entries.first().expect("a slice");
-            let inner: &[u8] = macho::slice_bytes(bytes, entry).expect("slice bytes");
-            (
-                inner.to_vec(),
-                macho::parse_slice(inner).expect("parse slice"),
-            )
-        }
-        _ => (
-            bytes.to_vec(),
-            macho::parse_slice(bytes).expect("parse thin"),
-        ),
-    }
-}
+use macho_corpus::{SWIFT_HELLO_ORIGINAL, ZIG_HELLO_ELF, first_slice, read_tracked};
 
 #[test]
 fn stripped_swift_macho_degrades_honestly_with_carve_and_disasm() {
-    let Some(bytes): Option<Vec<u8>> = load(&["mobile", "macho-mac", "SwiftHello.original"]) else {
-        eprintln!("FIXTURE PENDING: corpus/mobile/macho-mac/SwiftHello.original missing");
-        return;
-    };
-    let (slice, parsed): (Vec<u8>, ParsedSlice) = thin_slice(&bytes);
+    let bytes: Vec<u8> = read_tracked(SWIFT_HELLO_ORIGINAL);
+    let (slice, parsed): (Vec<u8>, ParsedSlice) = first_slice(SWIFT_HELLO_ORIGINAL, &bytes);
     assert!(
         !slice.windows(7).any(|w: &[u8]| w == b"__DWARF"),
         "this fixture is the release/stripped path: it must carry no __DWARF segment",
@@ -384,10 +350,7 @@ fn build_macho_with_dwarf(elf: &[u8]) -> Vec<u8> {
 
 #[test]
 fn dwarf_bearing_swift_macho_recovers_types_lines_and_disasm() {
-    let Some(elf): Option<Vec<u8>> = load(&["native", "zig", "hello.zig.elf"]) else {
-        eprintln!("FIXTURE PENDING: corpus/native/zig/hello.zig.elf missing");
-        return;
-    };
+    let elf: Vec<u8> = read_tracked(ZIG_HELLO_ELF);
     let truth: BTreeSet<String> = debug_str_tokens(&elf);
     assert!(
         !truth.is_empty(),

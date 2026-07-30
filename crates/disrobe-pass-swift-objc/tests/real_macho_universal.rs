@@ -1,38 +1,21 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-use std::fs;
-use std::path::{Path, PathBuf};
+
+#[path = "support/macho_corpus.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod macho_corpus;
 
 use disrobe_pass_swift_objc::macho::{
     self, Bitness, CpuKind, FatArchEntry, MachoKind, ParsedSlice,
 };
 use disrobe_pass_swift_objc::swift::{self, SwiftClassDump};
 
-fn corpus_root() -> PathBuf {
-    let manifest_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root: &Path = manifest_dir
-        .ancestors()
-        .nth(2)
-        .expect("workspace root above crate");
-    workspace_root.join("corpus").join("mac").join("megafile")
-}
-
-fn read_fixture_or_skip(name: &str) -> Option<Vec<u8>> {
-    let path: PathBuf = corpus_root().join(name);
-    let bytes: Option<Vec<u8>> = fs::read(&path).ok();
-    if bytes.is_none() {
-        eprintln!(
-            "FIXTURE PENDING: {} missing; regenerate the Mach-O slice fixtures",
-            path.display()
-        );
-    }
-    bytes
-}
+use macho_corpus::{
+    EDGE_CASES_ARM64, EDGE_CASES_FAT, EDGE_CASES_X86_64, read_host_sourced, read_tracked,
+};
 
 #[test]
 fn edgecases_fat_walks_to_both_x86_64_and_arm64_slices() {
-    let Some(bytes): Option<Vec<u8>> = read_fixture_or_skip("EdgeCases.fat") else {
-        return;
-    };
+    let bytes: Vec<u8> = read_tracked(EDGE_CASES_FAT);
     let kind: Option<MachoKind> = macho::detect_magic(&bytes);
     assert!(
         matches!(kind, Some(MachoKind::Fat32 | MachoKind::Fat64)),
@@ -68,9 +51,8 @@ fn edgecases_fat_walks_to_both_x86_64_and_arm64_slices() {
 }
 
 #[test]
-#[ignore = "FIXTURE PENDING: EdgeCases.arm64 is a thin Mach-O slice not redistributed in git; regenerate the Mach-O slice fixtures on a macOS host"]
 fn edgecases_arm64_thin_slice_parses_and_exposes_swift_sections() {
-    let Some(bytes): Option<Vec<u8>> = read_fixture_or_skip("EdgeCases.arm64") else {
+    let Some(bytes): Option<Vec<u8>> = read_host_sourced(EDGE_CASES_ARM64) else {
         return;
     };
     let kind: Option<MachoKind> = macho::detect_magic(&bytes);
@@ -92,9 +74,8 @@ fn edgecases_arm64_thin_slice_parses_and_exposes_swift_sections() {
 }
 
 #[test]
-#[ignore = "FIXTURE PENDING: EdgeCases.x86_64 is a thin Mach-O slice not redistributed in git; regenerate the Mach-O slice fixtures on a macOS host"]
 fn edgecases_x86_64_thin_slice_parses_and_exposes_swift_sections() {
-    let Some(bytes): Option<Vec<u8>> = read_fixture_or_skip("EdgeCases.x86_64") else {
+    let Some(bytes): Option<Vec<u8>> = read_host_sourced(EDGE_CASES_X86_64) else {
         return;
     };
     let kind: Option<MachoKind> = macho::detect_magic(&bytes);
@@ -117,9 +98,7 @@ fn edgecases_x86_64_thin_slice_parses_and_exposes_swift_sections() {
 
 #[test]
 fn edgecases_fat_swift_class_dump_on_arm64_slice_yields_reflection_data() {
-    let Some(bytes): Option<Vec<u8>> = read_fixture_or_skip("EdgeCases.fat") else {
-        return;
-    };
+    let bytes: Vec<u8> = read_tracked(EDGE_CASES_FAT);
     let entries: Vec<FatArchEntry> = macho::walk_fat(&bytes).expect("walk fat");
     let arm64_entry: &FatArchEntry = entries
         .iter()

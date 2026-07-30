@@ -1,33 +1,20 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-use std::fs;
-use std::path::{Path, PathBuf};
+
+#[path = "support/macho_corpus.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod macho_corpus;
 
 use disrobe_pass_swift_objc::macho::{
     self, Bitness, CpuKind, FatArchEntry, MachoKind, ParsedSlice,
 };
 
-fn corpus_root() -> PathBuf {
-    let manifest_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root: &Path = manifest_dir
-        .ancestors()
-        .nth(2)
-        .expect("workspace root above crate");
-    workspace_root
-        .join("corpus")
-        .join("mobile")
-        .join("macho-mac")
-}
+use macho_corpus::{CorpusFixture, homebrew_binary, macos_system_binary, read_host_sourced};
 
-fn load_fixture(name: &str) -> Option<Vec<u8>> {
-    let path: PathBuf = corpus_root().join(name);
-    fs::read(&path).ok()
-}
-
-fn assert_two_slice_fat(name: &str, min_arches: usize) {
-    let Some(bytes): Option<Vec<u8>> = load_fixture(name) else {
-        eprintln!("skip: macho-mac/{name} fixture absent");
+fn assert_two_slice_fat(fixture: CorpusFixture, min_arches: usize) {
+    let Some(bytes): Option<Vec<u8>> = read_host_sourced(fixture) else {
         return;
     };
+    let name: String = fixture.relative();
     let kind: Option<MachoKind> = macho::detect_magic(&bytes);
     assert!(
         matches!(kind, Some(MachoKind::Fat32 | MachoKind::Fat64)),
@@ -91,71 +78,106 @@ fn assert_two_slice_fat(name: &str, min_arches: usize) {
     );
 }
 
+const LS: CorpusFixture = macos_system_binary("ls");
+const FILE: CorpusFixture = macos_system_binary("file");
+const LIPO: CorpusFixture = macos_system_binary("lipo");
+const LIBFFI_TRAMPOLINES: CorpusFixture = macos_system_binary("libffi-trampolines.dylib");
+const GREP: CorpusFixture = macos_system_binary("grep");
+const OTOOL: CorpusFixture = macos_system_binary("otool");
+const DYLD: CorpusFixture = macos_system_binary("dyld");
+const SWIFT_DRIVER_FAT: CorpusFixture = macos_system_binary("swift-driver");
+const PYTHON3: CorpusFixture = macos_system_binary("python3");
+const AWK: CorpusFixture = macos_system_binary("awk");
+const SED: CorpusFixture = macos_system_binary("sed");
+const CODESIGN: CorpusFixture = macos_system_binary("codesign");
+const SQLITE3: CorpusFixture = macos_system_binary("sqlite3");
+const RIPGREP: CorpusFixture = homebrew_binary("rg");
+const FD: CorpusFixture = homebrew_binary("fd");
+const BAT: CorpusFixture = homebrew_binary("bat");
+
+fn assert_thin_arm64(fixture: CorpusFixture) {
+    let Some(bytes): Option<Vec<u8>> = read_host_sourced(fixture) else {
+        return;
+    };
+    let name: String = fixture.relative();
+    let kind: Option<MachoKind> = macho::detect_magic(&bytes);
+    assert!(
+        matches!(kind, Some(MachoKind::Slice64Le | MachoKind::Slice64Be)),
+        "{name} should be a thin 64-bit slice, got {kind:?}"
+    );
+    let parsed: ParsedSlice =
+        macho::parse_slice(&bytes).unwrap_or_else(|e: disrobe_pass_swift_objc::error::Error| {
+            panic!("parse_slice({name}) failed: {e}")
+        });
+    assert!(matches!(parsed.header.bitness, Bitness::Bits64));
+    assert_eq!(parsed.header.cpu, CpuKind::Arm64);
+    assert!(!parsed.segments.is_empty(), "{name} has zero segments");
+}
+
 #[test]
 fn real_macos_ls_fat_walks_and_parses_all_slices() {
-    assert_two_slice_fat("ls", 2);
+    assert_two_slice_fat(LS, 2);
 }
 
 #[test]
 fn real_macos_file_fat_walks_and_parses_all_slices() {
-    assert_two_slice_fat("file", 3);
+    assert_two_slice_fat(FILE, 3);
 }
 
 #[test]
 fn real_macos_lipo_fat_walks_and_parses_all_slices() {
-    assert_two_slice_fat("lipo", 2);
+    assert_two_slice_fat(LIPO, 2);
 }
 
 #[test]
 fn real_macos_libffi_trampolines_dylib_walks_and_parses_all_slices() {
-    assert_two_slice_fat("libffi-trampolines.dylib", 2);
+    assert_two_slice_fat(LIBFFI_TRAMPOLINES, 2);
 }
 
 #[test]
 fn real_macos_grep_fat_walks_and_parses_all_slices() {
-    assert_two_slice_fat("grep", 2);
+    assert_two_slice_fat(GREP, 2);
 }
 
 #[test]
 fn real_macos_otool_fat_walks_and_parses_all_slices() {
-    assert_two_slice_fat("otool", 2);
+    assert_two_slice_fat(OTOOL, 2);
 }
 
 #[test]
 fn real_macos_dyld_fat_walks_and_parses_all_slices() {
-    assert_two_slice_fat("dyld", 2);
+    assert_two_slice_fat(DYLD, 2);
 }
 
 #[test]
 fn real_macos_swift_driver_fat_walks_and_parses_all_slices() {
-    assert_two_slice_fat("swift-driver", 2);
+    assert_two_slice_fat(SWIFT_DRIVER_FAT, 2);
 }
 
 #[test]
 fn real_macos_python3_fat_walks_and_parses_all_slices() {
-    assert_two_slice_fat("python3", 2);
+    assert_two_slice_fat(PYTHON3, 2);
 }
 
 #[test]
 fn real_macos_awk_fat_walks_and_parses_all_slices() {
-    assert_two_slice_fat("awk", 2);
+    assert_two_slice_fat(AWK, 2);
 }
 
 #[test]
 fn real_macos_sed_fat_walks_and_parses_all_slices() {
-    assert_two_slice_fat("sed", 2);
+    assert_two_slice_fat(SED, 2);
 }
 
 #[test]
 fn real_macos_codesign_fat_walks_and_parses_all_slices() {
-    assert_two_slice_fat("codesign", 2);
+    assert_two_slice_fat(CODESIGN, 2);
 }
 
 #[test]
 fn real_macos_sqlite3_three_slice_fat_walks_and_parses_all_slices() {
-    assert_two_slice_fat("sqlite3", 3);
-    let Some(bytes): Option<Vec<u8>> = load_fixture("sqlite3") else {
-        eprintln!("skip: macho-mac/sqlite3 fixture absent");
+    assert_two_slice_fat(SQLITE3, 3);
+    let Some(bytes): Option<Vec<u8>> = read_host_sourced(SQLITE3) else {
         return;
     };
     let entries: Vec<FatArchEntry> = macho::walk_fat(&bytes).expect("walk sqlite3");
@@ -169,59 +191,22 @@ fn real_macos_sqlite3_three_slice_fat_walks_and_parses_all_slices() {
 
 #[test]
 fn real_brew_ripgrep_thin_arm64_slice_parses() {
-    let Some(bytes): Option<Vec<u8>> = load_fixture("rg") else {
-        eprintln!("skip: macho-mac/rg fixture absent");
-        return;
-    };
-    let kind: Option<MachoKind> = macho::detect_magic(&bytes);
-    assert!(
-        matches!(kind, Some(MachoKind::Slice64Le | MachoKind::Slice64Be)),
-        "rg should be a thin 64-bit slice, got {kind:?}"
-    );
-    let parsed: ParsedSlice = macho::parse_slice(&bytes).expect("parse rg");
-    assert!(matches!(parsed.header.bitness, Bitness::Bits64));
-    assert_eq!(parsed.header.cpu, CpuKind::Arm64);
-    assert!(!parsed.segments.is_empty(), "rg has zero segments");
+    assert_thin_arm64(RIPGREP);
 }
 
 #[test]
 fn real_brew_fd_thin_arm64_slice_parses() {
-    let Some(bytes): Option<Vec<u8>> = load_fixture("fd") else {
-        eprintln!("skip: macho-mac/fd fixture absent");
-        return;
-    };
-    let kind: Option<MachoKind> = macho::detect_magic(&bytes);
-    assert!(
-        matches!(kind, Some(MachoKind::Slice64Le | MachoKind::Slice64Be)),
-        "fd should be a thin 64-bit slice, got {kind:?}"
-    );
-    let parsed: ParsedSlice = macho::parse_slice(&bytes).expect("parse fd");
-    assert!(matches!(parsed.header.bitness, Bitness::Bits64));
-    assert_eq!(parsed.header.cpu, CpuKind::Arm64);
-    assert!(!parsed.segments.is_empty(), "fd has zero segments");
+    assert_thin_arm64(FD);
 }
 
 #[test]
 fn real_brew_bat_thin_arm64_slice_parses() {
-    let Some(bytes): Option<Vec<u8>> = load_fixture("bat") else {
-        eprintln!("skip: macho-mac/bat fixture absent");
-        return;
-    };
-    let kind: Option<MachoKind> = macho::detect_magic(&bytes);
-    assert!(
-        matches!(kind, Some(MachoKind::Slice64Le | MachoKind::Slice64Be)),
-        "bat should be a thin 64-bit slice, got {kind:?}"
-    );
-    let parsed: ParsedSlice = macho::parse_slice(&bytes).expect("parse bat");
-    assert!(matches!(parsed.header.bitness, Bitness::Bits64));
-    assert_eq!(parsed.header.cpu, CpuKind::Arm64);
-    assert!(!parsed.segments.is_empty(), "bat has zero segments");
+    assert_thin_arm64(BAT);
 }
 
 #[test]
 fn real_macos_file_fat_contains_x86_64_and_arm_variant() {
-    let Some(bytes): Option<Vec<u8>> = load_fixture("file") else {
-        eprintln!("skip: macho-mac/file fixture absent");
+    let Some(bytes): Option<Vec<u8>> = read_host_sourced(FILE) else {
         return;
     };
     let entries: Vec<FatArchEntry> = macho::walk_fat(&bytes).expect("walk file");
