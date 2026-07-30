@@ -561,10 +561,6 @@
           "value": 100.0,
           "num": 102,
           "den": 102,
-          "verified_by": {
-            "path": "crates/disrobe-pass-pickle/tests/corpus.rs",
-            "function": "published_pickle_corpus_bar_is_pinned_to_the_graded_fixture_set"
-          },
           "detail": "102 of the 102 pickle fixtures committed under corpus/pickle disassemble, trace and classify in agreement with CPython's own pickletools, which is the reference this figure is graded against rather than the pass reading its own output. The denominator is pinned by equality against the committed fixture set, so a run that inspects fewer fixtures scores worse instead of shrinking what it is measured against, and the figure is a named fixture set rather than a bare count, so one fixture cannot start failing while another starts passing.",
           "source": "crates/disrobe-pass-pickle/tests/corpus.rs test published_pickle_corpus_bar_is_pinned_to_the_graded_fixture_set, with the_pinned_corpus_check_rejects_a_dropped_fixture_and_a_shrunken_denominator refuting both weakenings; reference = the opcode and argument tables CPython's pickletools emits, committed beside the corpus"
         }
