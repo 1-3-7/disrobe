@@ -20,6 +20,8 @@ const REGEN_TRIGGER_PREFIXES: &[&str] = &[
     "crates/disrobe-cli/src/cli/explain/codes/",
 ];
 
+const SELF_CRATE: &str = "xtask";
+
 const REGEN_TRIGGER_FILES: &[&str] = &["README.md"];
 
 const METRICS_TRIGGER_FILES: &[&str] = &[
@@ -186,7 +188,12 @@ fn gate_test(root: &Path, scope: &Scope) -> Result<GateOutcome> {
     if crates.is_empty() {
         return Ok(GateOutcome::Skipped("no changed rust crates".to_owned()));
     }
+    let mut self_excluded: bool = false;
     for name in &crates {
+        if name == SELF_CRATE {
+            self_excluded = true;
+            continue;
+        }
         run_checked(root, cargo_bin().as_str(), &["test", "-p", name], || {
             format!(
                 "a committed test in {name} fails on the state being pushed. A commit can introduce \
@@ -194,6 +201,13 @@ fn gate_test(root: &Path, scope: &Scope) -> Result<GateOutcome> {
                  that, so the failure can predate the range being pushed"
             )
         })?;
+    }
+    if self_excluded {
+        println!(
+            "    {SELF_CRATE}'s own tests are not run by this gate, because the gate executes as \
+             {SELF_CRATE} and cannot replace its own running binary; the workspace test job covers \
+             them instead"
+        );
     }
     Ok(GateOutcome::Ran)
 }
