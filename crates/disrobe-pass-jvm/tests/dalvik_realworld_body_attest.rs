@@ -8,35 +8,36 @@
 
 pub mod common;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use common::{JvmVerifier, VerifyScope, lines_with_prefix, parse_metric};
+use common::{
+    JvmVerifier, REAL_APKS, RealApk, VerifyScope, assert_permille, lines_with_prefix, parse_metric,
+    real_apk_inbox, real_apk_path, real_apks_absent,
+};
 use disrobe_pass_jvm::dex2jar::{Dex2JarResult, translate_dex_bytes};
 use disrobe_pass_jvm::{ApkExtract, assemble_jar, extract_apk};
 
 const PUBLISHED_BAR_LABEL: &str = "body-lowering (real apks, local)";
 
+const PUBLISHED_GROUP_HEADING: &str = "Dalvik recovered bodies";
+
 const SAMPLE_PERMILLE: u32 = 100;
 
-struct AttestTarget {
-    file: &'static str,
-    golden: &'static str,
-}
+const WHOLE_BODY_POPULATION_PERMILLE: u32 = 1000;
 
-const TARGETS: &[AttestTarget] = &[
-    AttestTarget {
-        file: "transmissionic-ionic.apk",
-        golden: "transmissionic-ionic.txt",
-    },
-    AttestTarget {
-        file: "rustdesk-flutter.apk",
-        golden: "rustdesk-flutter.txt",
-    },
-    AttestTarget {
-        file: "enrecipes-nativescript.apk",
-        golden: "enrecipes-nativescript.txt",
-    },
-];
+const REAL_APK_METHOD_TOTAL: usize = 89_516;
+
+const SELF_REPORTED_BODY_FLOOR: usize = 82_788;
+
+const CANDIDATE_BODY_FLOOR: usize = 82_756;
+
+const SAMPLED_BODY_FLOOR: usize = 8_343;
+
+const ATTESTED_PRESENTED: usize = 2_994;
+
+const ATTESTED_CLEAN_FLOOR: usize = 2_960;
+
+const ATTESTED_FAIL_CEILING: usize = 34;
 
 struct BodyAttest {
     self_reported_bodies: usize,
@@ -54,27 +55,16 @@ struct BodyAttest {
     failures: Vec<String>,
 }
 
-fn corpus(parts: &[&str]) -> PathBuf {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.pop();
-    p.pop();
-    p.push("corpus");
-    for part in parts {
-        p.push(part);
-    }
-    p
-}
-
 fn golden_path(name: &str) -> PathBuf {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("tests");
-    p.push("golden");
-    p.push("dalvik_body_attest");
-    p.push(name);
-    p
+    let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.push("tests");
+    path.push("golden");
+    path.push("dalvik_body_attest");
+    path.push(name);
+    path
 }
 
-fn attest_apk(verifier: &JvmVerifier, target: &AttestTarget, path: &PathBuf) -> BodyAttest {
+fn attest_apk(verifier: &JvmVerifier, apk: &RealApk, path: &Path) -> BodyAttest {
     let bytes: Vec<u8> = std::fs::read(path).expect("read apk");
     let extract: ApkExtract = extract_apk(&bytes).expect("extract apk");
     let mut out: BodyAttest = BodyAttest {
@@ -100,7 +90,7 @@ fn attest_apk(verifier: &JvmVerifier, target: &AttestTarget, path: &PathBuf) -> 
         out.method_total += result.method_total;
         out.self_reported_bodies += result.bodies_recovered;
         let jar: Vec<u8> = assemble_jar(&result).expect("assemble jar");
-        let label: String = format!("{}-{name}", target.file);
+        let label: String = format!("{}-{name}", apk.file);
         let jar_path: PathBuf = verifier.write_jar(&label, &jar);
         let stdout: String = verifier.run(
             VerifyScope::Bodies {
@@ -108,6 +98,7 @@ fn attest_apk(verifier: &JvmVerifier, target: &AttestTarget, path: &PathBuf) -> 
             },
             jar_path.as_path(),
         );
+        assert_permille(&stdout, SAMPLE_PERMILLE);
         out.candidate_bodies += parse_metric(&stdout, "candidate_bodies=");
         out.sampled_bodies += parse_metric(&stdout, "sampled_bodies=");
         out.presented += parse_metric(&stdout, "presented=");
@@ -138,21 +129,21 @@ fn attest_apk(verifier: &JvmVerifier, target: &AttestTarget, path: &PathBuf) -> 
 fn realworld_dalvik_body_lowering_is_verifier_attested() {
     if std::env::var_os("DISROBE_RUN_REAL_APK_TESTS").is_none() {
         eprintln!(
-            "SKIP {PUBLISHED_BAR_LABEL}: set DISROBE_RUN_REAL_APK_TESTS=1 to re-measure the \
-             local real-apk corpus (the apks are gitignored, so this bar cannot be attested in CI; \
-             the committed-corpus bar is the CI-enforced attestation)"
+            "SKIP {PUBLISHED_BAR_LABEL}: set DISROBE_RUN_REAL_APK_TESTS=1 to re-measure the local \
+             real-apk corpus. The apks are gitignored, so CI cannot re-derive either figure; what \
+             runs there is dalvik_body_attest_bar_matches_the_pins_this_gate_enforces, which holds \
+             the published ratios to the counts pinned in this file."
         );
         return;
     }
-    let present: Vec<(&AttestTarget, PathBuf)> = TARGETS
-        .iter()
-        .map(|t: &AttestTarget| (t, corpus(&["mobile", "apk", "inbox", t.file])))
-        .filter(|(_, p): &(&AttestTarget, PathBuf)| p.is_file())
-        .collect();
+    let absent: Vec<&'static str> = real_apks_absent();
     assert!(
-        !present.is_empty(),
-        "DISROBE_RUN_REAL_APK_TESTS=1 was set but none of the real apks are present under {}",
-        corpus(&["mobile", "apk", "inbox"]).display()
+        absent.is_empty(),
+        "DISROBE_RUN_REAL_APK_TESTS=1 demands the whole real-apk corpus, because the published \
+         denominators are pinned across all three apks and a partial run would measure a smaller \
+         population under the same published figure; absent from {}: {}",
+        real_apk_inbox().display(),
+        absent.join(", ")
     );
     let verifier: JvmVerifier = JvmVerifier::prepare(&format!(
         "disrobe_dalvik_body_attest_{}",
@@ -164,123 +155,327 @@ fn realworld_dalvik_body_lowering_is_verifier_attested() {
     let mut total_fail: usize = 0;
     let mut total_self: usize = 0;
     let mut total_methods: usize = 0;
+    let mut total_candidates: usize = 0;
+    let mut total_sampled: usize = 0;
+    let mut total_presented: usize = 0;
     let mut membership: Vec<(&'static str, BodyAttest)> = Vec::new();
-    for (target, path) in &present {
-        let a: BodyAttest = attest_apk(&verifier, target, path);
-        let self_pct: f64 = a.self_reported_bodies as f64 * 100.0 / a.method_total.max(1) as f64;
-        let attested_pct: f64 = a.clean as f64 * 100.0 / (a.clean + a.fail).max(1) as f64;
+    for apk in REAL_APKS {
+        let path: PathBuf = real_apk_path(apk.file);
+        let attest: BodyAttest = attest_apk(&verifier, apk, path.as_path());
         eprintln!(
-            "BODY ATTEST {} [{PUBLISHED_BAR_LABEL}]: self_reported={}/{} ({self_pct:.1}%) \
-             candidate_bodies={} sampled={} presented={} attested_clean={} attested_fail={} \
-             ({attested_pct:.1}% of presented) excl_ctor={} excl_invokespecial={} \
-             excl_unresolved={} excl_other={}",
-            target.file,
-            a.self_reported_bodies,
-            a.method_total,
-            a.candidate_bodies,
-            a.sampled_bodies,
-            a.presented,
-            a.clean,
-            a.fail,
-            a.excl_ctor,
-            a.excl_invokespecial,
-            a.excl_unresolved,
-            a.excl_other
+            "BODY ATTEST {} [{PUBLISHED_BAR_LABEL}]: self_reported={}/{} candidate_bodies={} \
+             sampled={} presented={} attested_clean={}/{} attested_fail={} excl_ctor={} \
+             excl_invokespecial={} excl_unresolved={} excl_other={}",
+            apk.file,
+            attest.self_reported_bodies,
+            attest.method_total,
+            attest.candidate_bodies,
+            attest.sampled_bodies,
+            attest.presented,
+            attest.clean,
+            attest.presented,
+            attest.fail,
+            attest.excl_ctor,
+            attest.excl_invokespecial,
+            attest.excl_unresolved,
+            attest.excl_other
         );
-        for f in a.failures.iter().take(40) {
-            eprintln!("  {f}");
+        for failure in attest.failures.iter().take(40) {
+            eprintln!("  {failure}");
         }
-        total_clean += a.clean;
-        total_fail += a.fail;
-        total_self += a.self_reported_bodies;
-        total_methods += a.method_total;
-        membership.push((target.golden, a));
+        assert_eq!(
+            attest.method_total, apk.method_total,
+            "{}: the apk defines {} methods but the published self-reported denominator is pinned \
+             at {}; a different input is being measured under the published figure",
+            apk.file, attest.method_total, apk.method_total
+        );
+        assert!(
+            attest.self_reported_bodies >= apk.self_reported_bodies_floor,
+            "{}: the lifter self-reports {}/{} lowered bodies, below the pinned {}/{}",
+            apk.file,
+            attest.self_reported_bodies,
+            attest.method_total,
+            apk.self_reported_bodies_floor,
+            apk.method_total
+        );
+        assert!(
+            attest.candidate_bodies >= apk.candidate_bodies_floor,
+            "{}: {} non-stub candidate bodies reached the sampler, below the pinned {}",
+            apk.file,
+            attest.candidate_bodies,
+            apk.candidate_bodies_floor
+        );
+        assert!(
+            attest.sampled_bodies >= apk.sampled_bodies_floor,
+            "{}: the {SAMPLE_PERMILLE}-permille sample selected {} bodies, below the pinned {}",
+            apk.file,
+            attest.sampled_bodies,
+            apk.sampled_bodies_floor
+        );
+        assert_eq!(
+            attest.presented,
+            attest.clean + attest.fail,
+            "{}: {} bodies were presented to the jvm but only {} clean plus {} rejected came back, \
+             so the attested ratio is being computed over a population the harness did not grade",
+            apk.file,
+            attest.presented,
+            attest.clean,
+            attest.fail
+        );
+        assert_eq!(
+            attest.presented, apk.presented_bodies,
+            "{}: {} recovered bodies reached the real jvm verifier but the published attested \
+             denominator is pinned at {}; re-measure and republish the attested ratio rather than \
+             leaving the old one beside a different population",
+            apk.file, attest.presented, apk.presented_bodies
+        );
+        assert!(
+            attest.clean >= apk.attested_clean_floor,
+            "{}: the real jvm verifier accepted {}/{} re-hosted bodies, below the pinned {}/{}",
+            apk.file,
+            attest.clean,
+            attest.presented,
+            apk.attested_clean_floor,
+            apk.presented_bodies
+        );
+        assert!(
+            attest.fail <= apk.attested_fail_ceiling,
+            "{}: the real jvm verifier rejected {} re-hosted bodies, above the pinned ceiling {}",
+            apk.file,
+            attest.fail,
+            apk.attested_fail_ceiling
+        );
+        total_clean += attest.clean;
+        total_fail += attest.fail;
+        total_self += attest.self_reported_bodies;
+        total_methods += attest.method_total;
+        total_candidates += attest.candidate_bodies;
+        total_sampled += attest.sampled_bodies;
+        total_presented += attest.presented;
+        membership.push((apk.golden, attest));
     }
 
-    let presented: usize = total_clean + total_fail;
-    let attested_pct: f64 = total_clean as f64 * 100.0 / presented.max(1) as f64;
+    let attested_pct: f64 = total_clean as f64 * 100.0 / total_presented.max(1) as f64;
     let self_pct: f64 = total_self as f64 * 100.0 / total_methods.max(1) as f64;
     eprintln!(
-        "BODY ATTEST TOTAL [{PUBLISHED_BAR_LABEL}]: verifier_attested={total_clean}/{presented} \
-         ({attested_pct:.1}%) at a {SAMPLE_PERMILLE}-permille deterministic sample of non-stub bodies; \
-         self_reported_bodies={total_self}/{total_methods} ({self_pct:.1}%)"
+        "BODY ATTEST TOTAL [{PUBLISHED_BAR_LABEL}]: verifier_attested={total_clean}/{total_presented} \
+         ({attested_pct:.1}%) from a {SAMPLE_PERMILLE}-permille deterministic sample that selected \
+         {total_sampled} of {total_candidates} non-stub bodies; self_reported_bodies={total_self}/{total_methods} \
+         ({self_pct:.1}%). The two denominators are different populations and neither figure implies the other."
     );
     check_membership(&membership);
+    assert_eq!(
+        total_methods, REAL_APK_METHOD_TOTAL,
+        "the real apks define {total_methods} methods but the published self-reported denominator \
+         is pinned at {REAL_APK_METHOD_TOTAL}"
+    );
+    assert_eq!(
+        total_presented, ATTESTED_PRESENTED,
+        "{total_presented} recovered bodies reached the real jvm verifier but the published \
+         attested denominator is pinned at {ATTESTED_PRESENTED}"
+    );
+    assert!(
+        total_candidates >= CANDIDATE_BODY_FLOOR,
+        "{total_candidates} non-stub candidate bodies reached the sampler, below the pinned \
+         {CANDIDATE_BODY_FLOOR}"
+    );
+    assert!(
+        total_sampled >= SAMPLED_BODY_FLOOR,
+        "the deterministic sample selected {total_sampled} bodies, below the pinned \
+         {SAMPLED_BODY_FLOOR}"
+    );
     assert!(
         total_fail <= ATTESTED_FAIL_CEILING,
-        "the real JVM verifier rejected {total_fail} re-hosted real-apk bodies, above the pinned \
+        "the real jvm verifier rejected {total_fail} re-hosted real-apk bodies, above the pinned \
          ceiling {ATTESTED_FAIL_CEILING}"
     );
     assert!(
         total_clean >= ATTESTED_CLEAN_FLOOR,
-        "verifier-attested real-apk bodies {total_clean} fell below floor {ATTESTED_CLEAN_FLOOR}"
+        "verifier-attested real-apk bodies {total_clean}/{total_presented} fell below the pinned \
+         {ATTESTED_CLEAN_FLOOR}/{ATTESTED_PRESENTED}"
     );
     assert!(
         total_self >= SELF_REPORTED_BODY_FLOOR,
-        "self-reported recovered bodies {total_self} fell below floor {SELF_REPORTED_BODY_FLOOR}"
+        "self-reported recovered bodies {total_self}/{total_methods} fell below the pinned \
+         {SELF_REPORTED_BODY_FLOOR}/{REAL_APK_METHOD_TOTAL}"
     );
-    assert!(
-        total_methods >= METHOD_TOTAL_FLOOR,
-        "defined methods across the real apks {total_methods} fell below floor {METHOD_TOTAL_FLOOR}"
-    );
-    assert_published_bar(total_self, total_methods, total_clean, presented);
 }
 
-fn assert_published_bar(
-    self_reported: usize,
-    method_total: usize,
-    attested_clean: usize,
-    presented: usize,
-) {
+fn recovery_json() -> serde_json::Value {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.pop();
     path.pop();
     path.push("xtask");
     path.push("data");
     path.push("recovery.json");
-    let raw: String =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {} ({e})", path.display()));
-    let doc: serde_json::Value = serde_json::from_str(&raw).expect("parse recovery.json");
-    let bar: &serde_json::Value = doc["groups"]
+    let raw: String = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e: std::io::Error| panic!("read {} ({e})", path.display()));
+    serde_json::from_str(&raw).expect("parse recovery.json")
+}
+
+fn published_bar(doc: &serde_json::Value) -> &serde_json::Value {
+    doc["groups"]
         .as_array()
         .expect("recovery.json groups")
         .iter()
-        .filter(|g: &&serde_json::Value| {
-            g["heading"]
+        .filter(|group: &&serde_json::Value| {
+            group["heading"]
                 .as_str()
-                .is_some_and(|h: &str| h.starts_with("Dalvik recovered bodies"))
+                .is_some_and(|heading: &str| heading.starts_with(PUBLISHED_GROUP_HEADING))
         })
-        .flat_map(|g: &serde_json::Value| g["bars"].as_array().expect("bars").iter())
-        .find(|b: &&serde_json::Value| b["label"].as_str() == Some(PUBLISHED_BAR_LABEL))
-        .unwrap_or_else(|| panic!("no {PUBLISHED_BAR_LABEL} bar in {}", path.display()));
+        .flat_map(|group: &serde_json::Value| group["bars"].as_array().expect("bars").iter())
+        .find(|bar: &&serde_json::Value| bar["label"].as_str() == Some(PUBLISHED_BAR_LABEL))
+        .unwrap_or_else(|| {
+            panic!(
+                "recovery.json carries no `{PUBLISHED_BAR_LABEL}` bar under a \
+                 `{PUBLISHED_GROUP_HEADING}` heading, so the real-apk figure every document \
+                 renders is sourced from nothing"
+            )
+        })
+}
 
-    let published: f64 = bar["value"].as_f64().expect("bar value");
-    let measured: f64 = (self_reported as f64 * 1000.0 / method_total.max(1) as f64).round() / 10.0;
-    assert!(
-        (published - measured).abs() < f64::EPSILON,
-        "recovery.json publishes {published} for {PUBLISHED_BAR_LABEL} but the lifter self-reports \
-         {self_reported}/{method_total} = {measured} on the local real-apk corpus"
+fn required_count(bar: &serde_json::Value, key: &str) -> u64 {
+    bar[key].as_u64().unwrap_or_else(|| {
+        panic!(
+            "the `{PUBLISHED_BAR_LABEL}` bar carries no `{key}`, so the published real-apk figure \
+             is a percentage with no counts behind it. Record `num`/`den` for the self-reported \
+             lowered-body count and `attested_num`/`attested_den` for the count the real jvm \
+             verifier accepted, because they are separate populations with different denominators"
+        )
+    })
+}
+
+#[test]
+fn dalvik_body_attest_bar_matches_the_pins_this_gate_enforces() {
+    let methods: usize = REAL_APKS.iter().map(|apk: &RealApk| apk.method_total).sum();
+    let bodies: usize = REAL_APKS
+        .iter()
+        .map(|apk: &RealApk| apk.self_reported_bodies_floor)
+        .sum();
+    let candidates: usize = REAL_APKS
+        .iter()
+        .map(|apk: &RealApk| apk.candidate_bodies_floor)
+        .sum();
+    let sampled: usize = REAL_APKS
+        .iter()
+        .map(|apk: &RealApk| apk.sampled_bodies_floor)
+        .sum();
+    let presented: usize = REAL_APKS
+        .iter()
+        .map(|apk: &RealApk| apk.presented_bodies)
+        .sum();
+    let clean: usize = REAL_APKS
+        .iter()
+        .map(|apk: &RealApk| apk.attested_clean_floor)
+        .sum();
+    let rejected: usize = REAL_APKS
+        .iter()
+        .map(|apk: &RealApk| apk.attested_fail_ceiling)
+        .sum();
+    assert_eq!(
+        (methods, bodies, candidates, sampled),
+        (
+            REAL_APK_METHOD_TOTAL,
+            SELF_REPORTED_BODY_FLOOR,
+            CANDIDATE_BODY_FLOOR,
+            SAMPLED_BODY_FLOOR
+        ),
+        "the per-apk pins in common::REAL_APKS no longer sum to the corpus totals this file \
+         publishes, so one apk could regress while the total held"
     );
-    if let Some(num) = bar["num"].as_u64() {
-        let den: u64 = bar["den"].as_u64().expect("a num must carry its den");
-        assert_eq!(
-            (num, den),
-            (self_reported as u64, method_total as u64),
-            "recovery.json publishes {num}/{den} for {PUBLISHED_BAR_LABEL}; measured \
-             {self_reported}/{method_total}"
+    assert_eq!(
+        (presented, clean, rejected),
+        (
+            ATTESTED_PRESENTED,
+            ATTESTED_CLEAN_FLOOR,
+            ATTESTED_FAIL_CEILING
+        ),
+        "the per-apk verifier-attested pins no longer sum to the corpus totals this file publishes"
+    );
+    assert!(
+        presented < sampled && sampled < candidates && candidates <= bodies,
+        "the attested population must stay a strict subset of the sampled bodies and the sample a \
+         subset of the candidates: presented={presented} sampled={sampled} candidates={candidates} \
+         self_reported={bodies}"
+    );
+
+    let doc: serde_json::Value = recovery_json();
+    let bar: &serde_json::Value = published_bar(&doc);
+    let num: u64 = required_count(bar, "num");
+    let den: u64 = required_count(bar, "den");
+    let attested_num: u64 = required_count(bar, "attested_num");
+    let attested_den: u64 = required_count(bar, "attested_den");
+    assert_eq!(
+        (num, den),
+        (
+            SELF_REPORTED_BODY_FLOOR as u64,
+            REAL_APK_METHOD_TOTAL as u64
+        ),
+        "recovery.json publishes {num}/{den} self-reported lowered bodies but this gate pins \
+         {SELF_REPORTED_BODY_FLOOR}/{REAL_APK_METHOD_TOTAL}"
+    );
+    assert_eq!(
+        (attested_num, attested_den),
+        (ATTESTED_CLEAN_FLOOR as u64, ATTESTED_PRESENTED as u64),
+        "recovery.json publishes {attested_num}/{attested_den} verifier-attested bodies but this \
+         gate pins {ATTESTED_CLEAN_FLOOR}/{ATTESTED_PRESENTED}"
+    );
+    assert_ne!(
+        (attested_num, attested_den),
+        (num, den),
+        "the verifier-attested count and the self-reported count are separate populations; \
+         publishing one as the other is the defect this bar exists to keep out"
+    );
+
+    let value: f64 = bar["value"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("the `{PUBLISHED_BAR_LABEL}` bar records no plotted percentage"));
+    let plotted: f64 = (num as f64 * 1000.0 / den as f64).round() / 10.0;
+    assert!(
+        (value - plotted).abs() < f64::EPSILON,
+        "recovery.json plots {value} for {PUBLISHED_BAR_LABEL} while {num}/{den} is {plotted}"
+    );
+
+    let detail: &str = bar["detail"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the `{PUBLISHED_BAR_LABEL}` bar records no detail prose"));
+    let mut unstated: Vec<String> = Vec::new();
+    for apk in REAL_APKS {
+        unstated.extend(
+            [
+                format!(
+                    "{} {} of {}",
+                    apk.short, apk.self_reported_bodies_floor, apk.method_total
+                ),
+                format!(
+                    "{} {} of {}",
+                    apk.short, apk.attested_clean_floor, apk.presented_bodies
+                ),
+            ]
+            .into_iter()
+            .filter(|phrase: &String| !detail.contains(phrase.as_str())),
         );
     }
-    if let Some(attested) = bar["attested_num"].as_u64() {
-        let den: u64 = bar["attested_den"]
-            .as_u64()
-            .expect("attested_num needs its den");
-        assert_eq!(
-            (attested, den),
-            (attested_clean as u64, presented as u64),
-            "recovery.json publishes {attested}/{den} verifier-attested bodies; measured \
-             {attested_clean}/{presented}"
-        );
-    }
+    unstated.extend(
+        [
+            format!("{SELF_REPORTED_BODY_FLOOR} of {REAL_APK_METHOD_TOTAL}"),
+            format!("{ATTESTED_CLEAN_FLOOR} of {ATTESTED_PRESENTED}"),
+            format!("{CANDIDATE_BODY_FLOOR} non-stub candidate bodies"),
+            SAMPLED_BODY_FLOOR.to_string(),
+            (SAMPLED_BODY_FLOOR - ATTESTED_PRESENTED).to_string(),
+            "ungraded".to_string(),
+        ]
+        .into_iter()
+        .filter(|phrase: &String| !detail.contains(phrase.as_str())),
+    );
+    assert!(
+        unstated.is_empty(),
+        "the `{PUBLISHED_BAR_LABEL}` detail is what every document renders beside the chart, and \
+         it does not state: {}. Each apk needs its own numerator over its own denominator so one \
+         apk's figure cannot be published against another apk's population, and the excluded \
+         bodies must be named as ungraded rather than counted as passing",
+        unstated.join(" | ")
+    );
 }
 
 fn check_membership(membership: &[(&'static str, BodyAttest)]) {
@@ -357,14 +552,6 @@ fn check_membership(membership: &[(&'static str, BodyAttest)]) {
     );
 }
 
-const ATTESTED_CLEAN_FLOOR: usize = 2_960;
-
-const ATTESTED_FAIL_CEILING: usize = 34;
-
-const SELF_REPORTED_BODY_FLOOR: usize = 82_788;
-
-const METHOD_TOTAL_FLOOR: usize = 89_516;
-
 const MUTATION_DEX: &[u8] = include_bytes!("../../../corpus/jvm/dex/EdgeCases.dex");
 
 #[test]
@@ -382,9 +569,20 @@ fn body_attest_rejects_a_corrupted_recovered_body() {
     let result: Dex2JarResult = translate_dex_bytes(MUTATION_DEX).expect("translate dex");
     let clean_jar: Vec<u8> = assemble_jar(&result).expect("assemble jar");
     let clean_path: PathBuf = verifier.write_jar("mutation-clean", &clean_jar);
-    let clean_classes: String = verifier.run(VerifyScope::Classes, clean_path.as_path());
-    let clean_bodies: String =
-        verifier.run(VerifyScope::Bodies { permille: 1000 }, clean_path.as_path());
+    let clean_classes: String = verifier.run(
+        VerifyScope::Classes {
+            permille: WHOLE_BODY_POPULATION_PERMILLE,
+        },
+        clean_path.as_path(),
+    );
+    let clean_bodies: String = verifier.run(
+        VerifyScope::Bodies {
+            permille: WHOLE_BODY_POPULATION_PERMILLE,
+        },
+        clean_path.as_path(),
+    );
+    assert_permille(&clean_classes, WHOLE_BODY_POPULATION_PERMILLE);
+    assert_permille(&clean_bodies, WHOLE_BODY_POPULATION_PERMILLE);
     let clean_class_fail: usize = parse_metric(&clean_classes, "lifter_verify_fail_classes=");
     let clean_ok: usize = parse_metric(&clean_bodies, "body_clean=");
     let clean_fail: usize = parse_metric(&clean_bodies, "body_fail=");
@@ -403,9 +601,20 @@ fn body_attest_rejects_a_corrupted_recovered_body() {
     let victim_class: &str = victim.split('#').next().expect("victim class");
     let bad_jar: Vec<u8> = assemble_jar(&corrupted).expect("assemble corrupted jar");
     let bad_path: PathBuf = verifier.write_jar("mutation-corrupt", &bad_jar);
-    let bad_classes: String = verifier.run(VerifyScope::Classes, bad_path.as_path());
-    let bad_bodies: String =
-        verifier.run(VerifyScope::Bodies { permille: 1000 }, bad_path.as_path());
+    let bad_classes: String = verifier.run(
+        VerifyScope::Classes {
+            permille: WHOLE_BODY_POPULATION_PERMILLE,
+        },
+        bad_path.as_path(),
+    );
+    let bad_bodies: String = verifier.run(
+        VerifyScope::Bodies {
+            permille: WHOLE_BODY_POPULATION_PERMILLE,
+        },
+        bad_path.as_path(),
+    );
+    assert_permille(&bad_classes, WHOLE_BODY_POPULATION_PERMILLE);
+    assert_permille(&bad_bodies, WHOLE_BODY_POPULATION_PERMILLE);
     let bad_class_fail: usize = parse_metric(&bad_classes, "lifter_verify_fail_classes=");
     let class_errors: Vec<String> = lines_with_prefix(&bad_classes, "VERIFY ");
     let body_reports: Vec<String> = lines_with_prefix(&bad_bodies, "BODYVERIFY ")

@@ -113,36 +113,44 @@ public class V {
         if (permille >= 1000) return true;
         return ((key.hashCode() & 0x7fffffff) % 1000) < permille;
     }
-    static void runClasses(String jar) throws Exception {
+    static void runClasses(String jar, int permille) throws Exception {
         Map<String,byte[]> pool = readJar(jar);
         L l = new L(pool, true);
-        int verifyClean=0, lifterFail=0, linkSkipped=0;
+        int verifyClean=0, lifterFail=0, linkSkipped=0, linkUnstable=0;
         int methodsClean=0, methodsLifterFail=0;
         int bodyClean=0, bodyFail=0;
         List<String> errs = new ArrayList<>();
         List<String> bodyErrs = new ArrayList<>();
+        List<String> verdicts = new ArrayList<>();
         List<String> names = new ArrayList<>(pool.keySet());
         Collections.sort(names);
         for (String cn : names) {
             int mc = methodsWithCode(pool.get(cn));
             try {
-                Class<?> c = l.findClass(cn);
+                Class<?> c = l.loadClass(cn);
                 l.link(c);
                 c.getDeclaredMethods();
                 c.getDeclaredConstructors();
                 verifyClean++; methodsClean += mc;
+                verdicts.add("CLASSVERDICT CLEAN "+cn);
             } catch (VerifyError ve) {
                 String m = String.valueOf(ve.getMessage());
                 lifterFail++; methodsLifterFail += mc;
                 errs.add("VERIFY "+cn+": "+m.replace('\n',' ').substring(0, Math.min(200, m.length())));
+                verdicts.add("CLASSVERDICT REJECT "+cn);
+            } catch (VirtualMachineError vme) {
+                linkUnstable++;
+                verdicts.add("CLASSVERDICT UNSTABLE "+cn);
             } catch (Throwable t) {
                 linkSkipped++;
+                verdicts.add("CLASSVERDICT SKIP "+cn+" "+t.getClass().getName());
             }
         }
         for (String cn : names) {
             ClassModel cm = ClassFile.of().parse(pool.get(cn));
             for (MethodModel mm : cm.methods()) {
                 if (mm.code().isEmpty()) continue;
+                if (!sampled(cn+"#"+mm.methodName().stringValue()+mm.methodType().stringValue(), permille)) continue;
                 if (mm.methodName().stringValue().equals("<init>")) continue;
                 if (mm.methodName().stringValue().equals("<clinit>")) continue;
                 if (isStub(mm.code().get())) continue;
@@ -165,12 +173,15 @@ public class V {
                 }
             }
         }
-        System.out.println("verify_clean_classes="+verifyClean+" lifter_verify_fail_classes="+lifterFail
-            +" link_skipped_classes="+linkSkipped
+        System.out.println("permille="+permille
+            +" verify_clean_classes="+verifyClean+" lifter_verify_fail_classes="+lifterFail
+            +" link_skipped_classes="+linkSkipped+" link_unstable_classes="+linkUnstable
             +" methods_clean="+methodsClean+" methods_lifter_fail="+methodsLifterFail
             +" body_clean="+bodyClean+" body_fail="+bodyFail);
         for (String s : errs) System.out.println(s);
         for (String s : bodyErrs) System.out.println(s);
+        Collections.sort(verdicts);
+        for (String s : verdicts) System.out.println(s);
     }
     static void runBodies(String jar, int permille) throws Exception {
         Map<String,byte[]> pool = readJar(jar);
@@ -216,7 +227,8 @@ public class V {
                 }
             }
         }
-        System.out.println("candidate_bodies="+candidates+" sampled_bodies="+sampledCount
+        System.out.println("permille="+permille
+            +" candidate_bodies="+candidates+" sampled_bodies="+sampledCount
             +" presented="+presented+" body_clean="+bodyClean+" body_fail="+bodyFail
             +" excl_ctor="+exclCtor+" excl_stub_body="+exclStubBody
             +" excl_invokespecial="+exclInvokeSpecial+" excl_unresolved="+exclUnresolved
@@ -229,11 +241,11 @@ public class V {
     public static void main(String[] a) throws Exception {
         String mode = a[0];
         if (mode.equals("classes")) {
-            runClasses(a[1]);
+            runClasses(a[2], Integer.parseInt(a[1]));
         } else if (mode.equals("bodies")) {
             runBodies(a[2], Integer.parseInt(a[1]));
         } else {
-            System.err.println("usage: V classes <jar> | V bodies <permille> <jar>");
+            System.err.println("usage: V classes <permille> <jar> | V bodies <permille> <jar>");
             System.exit(2);
         }
     }

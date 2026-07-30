@@ -9,7 +9,9 @@ pub mod common;
 
 use std::path::PathBuf;
 
-use common::{JvmVerifier, VerifyScope, find_on_path, lines_with_prefix, parse_metric};
+use common::{
+    JvmVerifier, VerifyScope, assert_permille, find_on_path, lines_with_prefix, parse_metric,
+};
 use disrobe_pass_jvm::assemble_jar;
 use disrobe_pass_jvm::dalvik::SwitchPayload;
 use disrobe_pass_jvm::dalvik_blackobf::{
@@ -41,6 +43,7 @@ const HELLO_FLAGGED_FLOOR: usize = 4;
 const HELLO_CASE_FLOOR: usize = 46;
 const EDGECASES_FLAGGED_FLOOR: usize = 175;
 const EDGECASES_CASE_FLOOR: usize = 2312;
+const WHOLE_BODY_POPULATION_PERMILLE: u32 = 1000;
 const VERIFY_CLEAN_CLASS_FLOOR: usize = 65;
 const BODY_CLEAN_FLOOR: usize = 167;
 const BODY_FAIL_CEILING: usize = 0;
@@ -253,7 +256,13 @@ fn recovered_classes_from_a_real_blackobfuscator_dex_pass_the_real_jvm_verifier(
             translate_dex_bytes(bytes).expect("translate the real obfuscated dex");
         let jar: Vec<u8> = assemble_jar(&result).expect("assemble the recovered jar");
         let jar_path: PathBuf = verifier.write_jar(label, &jar);
-        let stdout: String = verifier.run(VerifyScope::Classes, jar_path.as_path());
+        let stdout: String = verifier.run(
+            VerifyScope::Classes {
+                permille: WHOLE_BODY_POPULATION_PERMILLE,
+            },
+            jar_path.as_path(),
+        );
+        assert_permille(&stdout, WHOLE_BODY_POPULATION_PERMILLE);
         let clean: usize = parse_metric(&stdout, "verify_clean_classes=");
         let lifter_fail: usize = parse_metric(&stdout, "lifter_verify_fail_classes=");
         let body_clean: usize = parse_metric(&stdout, "body_clean=");
