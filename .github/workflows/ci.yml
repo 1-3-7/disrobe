@@ -383,6 +383,47 @@ jobs:
       - uses: actions/checkout@v6
       - uses: crate-ci/typos@master
 
+  hygiene:
+    name: source hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: reject committed scratch scaffolding
+        shell: bash
+        run: |
+          files=$(git ls-files -- crates xtask | grep '\.rs$')
+          named=$(printf '%s\n' "$files" | grep -E '_scratch\.rs$' || true)
+          if [ -n "$named" ]; then
+            echo "scratch scaffolding is committed; promote it to a named permanent target that asserts something, or delete it:"
+            printf '%s\n' "$named"
+            exit 1
+          fi
+          helpers=$(printf '%s\n' "$files" | xargs grep -nE '^[[:space:]]*(pub )?(async )?fn (scratch_dump|probe_dump)' || true)
+          if [ -n "$helpers" ]; then
+            echo "a throwaway dump helper is committed; move it out of the tree or make it assert something:"
+            printf '%s\n' "$helpers"
+            exit 1
+          fi
+          echo "no committed scratch scaffolding"
+      - name: source comment count stays at or below the string-literal baseline
+        shell: bash
+        run: |
+          baseline=30
+          files=$(git ls-files -- crates xtask | grep '\.rs$')
+          count=$(printf '%s\n' "$files" | xargs grep -nE '^[[:space:]]*(//|/\*)' | wc -l)
+          echo "line-leading comment-shaped lines: $count (baseline $baseline)"
+          if [ "$count" -gt "$baseline" ]; then
+            echo "this tree carries no source comments. Every one of the $baseline baseline matches is comment-shaped text INSIDE a string literal: embedded Java, Go build pragmas, YARA rule fixtures, and emitted IDE plugin templates."
+            echo "the count rose, so a real comment was added. Full list:"
+            printf '%s\n' "$files" | xargs grep -nE '^[[:space:]]*(//|/\*)'
+            exit 1
+          fi
+          if [ "$count" -lt "$baseline" ]; then
+            echo "the count fell to $count, which is an improvement; set baseline=$count in this workflow so it keeps ratcheting down"
+            exit 1
+          fi
+          echo "comment count matches the baseline exactly"
+
   msrv:
     name: msrv
     runs-on: ubuntu-latest
