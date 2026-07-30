@@ -5,6 +5,7 @@ use std::process::{Command, Output, Stdio};
 use super::{corpus_binfmt_root, fixture_path};
 
 pub const REQUIRE_ALL_VAR: &str = "DISROBE_REQUIRE_BINFMT_TOOLS";
+pub const REQUIRE_FIXTURES_VAR: &str = "DISROBE_REQUIRE_BINFMT_FIXTURES";
 
 const WINDOWS_EXECUTABLE_SUFFIXES: [&str; 5] = [".exe", ".com", ".bat", ".cmd", ""];
 const POSIX_EXECUTABLE_SUFFIXES: [&str; 1] = [""];
@@ -243,6 +244,29 @@ pub fn enforce(toolchain: &Toolchain, graded: &str, defect: &str, requirement: R
         var = toolchain.require_var,
         all = REQUIRE_ALL_VAR,
     );
+}
+
+#[allow(clippy::print_stderr)]
+pub fn regenerable_fixture(format_dir: &str, filename: &str, graded: &str) -> Option<Vec<u8>> {
+    let path: PathBuf = fixture_path(format_dir, filename);
+    if let Ok(bytes) = std::fs::read(&path) {
+        return Some(bytes);
+    }
+    assert!(
+        !asks_for_it(std::env::var_os(REQUIRE_FIXTURES_VAR).as_deref()),
+        "{REQUIRE_FIXTURES_VAR} makes the regenerable binfmt fixtures mandatory for this run, so \
+         {graded} was measured against nothing and this case must not report success: {} is \
+         absent. Build it with the recipe corpus/binfmt/MANIFEST.toml records for {format_dir}; to \
+         permit a run that grades nothing here, clear {REQUIRE_FIXTURES_VAR}.",
+        path.display()
+    );
+    eprintln!(
+        "\nNOT MEASURED: {graded} graded nothing, because {} is absent. It is a multi-megabyte \
+         artifact a blanket .gitignore rule keeps out of the tree; corpus/binfmt/MANIFEST.toml \
+         records how to rebuild it. Set {REQUIRE_FIXTURES_VAR}=1 to fail instead of skipping.\n",
+        path.display()
+    );
+    None
 }
 
 #[allow(clippy::panic)]

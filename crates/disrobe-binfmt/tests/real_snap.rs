@@ -6,14 +6,14 @@ use disrobe_binfmt::containers::squashfs::{SquashfsCompression, SquashfsSuperblo
 
 const FORMAT_DIR: &str = "snap";
 const FIXTURE_NAME: &str = "hello.snap";
+const GRADED: &str = "the real snap detection check";
 
 #[test]
-#[ignore = "needs gitignored real fixture corpus/binfmt/snap/hello.snap (mksquashfs, ~5MB); regen via corpus/binfmt/MANIFEST.toml, run with --ignored"]
 fn real_snap_detected_as_squashfs_at_offset_zero() {
-    let Some(bytes): Option<Vec<u8>> = common::load_fixture(FORMAT_DIR, FIXTURE_NAME) else {
-        panic!(
-            "missing fixture: corpus/binfmt/{FORMAT_DIR}/{FIXTURE_NAME} - see corpus/binfmt/MANIFEST.toml for regeneration"
-        );
+    let Some(bytes): Option<Vec<u8>> =
+        common::requirement::regenerable_fixture(FORMAT_DIR, FIXTURE_NAME, GRADED)
+    else {
+        return;
     };
     assert!(bytes.len() > 1_000_000);
     let sb: SquashfsSuperblock = detect_snap(&bytes).expect("snap detection");

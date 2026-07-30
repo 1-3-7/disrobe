@@ -5,14 +5,14 @@ use disrobe_binfmt::containers::msi::{MsiSummary, parse_msi_minimal};
 
 const FORMAT_DIR: &str = "msi";
 const FIXTURE_NAME: &str = "hello.msi";
+const GRADED: &str = "the real MSI summary round trip";
 
 #[test]
-#[ignore = "needs gitignored real fixture corpus/binfmt/msi/hello.msi (WiX, ~5MB); regen via corpus/binfmt/MANIFEST.toml, run with --ignored"]
 fn real_msi_summary_round_trip() {
-    let Some(bytes): Option<Vec<u8>> = common::load_fixture(FORMAT_DIR, FIXTURE_NAME) else {
-        panic!(
-            "missing fixture: corpus/binfmt/{FORMAT_DIR}/{FIXTURE_NAME} - see corpus/binfmt/MANIFEST.toml for regeneration (requires WiX)"
-        );
+    let Some(bytes): Option<Vec<u8>> =
+        common::requirement::regenerable_fixture(FORMAT_DIR, FIXTURE_NAME, GRADED)
+    else {
+        return;
     };
     assert!(
         bytes.len() > 1_000_000,

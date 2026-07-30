@@ -7,14 +7,14 @@ use disrobe_binfmt::containers::squashfs::{
 
 const FORMAT_DIR: &str = "squashfs";
 const FIXTURE_NAME: &str = "hello.squashfs";
+const GRADED: &str = "the real SquashFS superblock checks";
 
 #[test]
-#[ignore = "needs gitignored real fixture corpus/binfmt/squashfs/hello.squashfs (mksquashfs, ~5MB); regen via corpus/binfmt/MANIFEST.toml, run with --ignored"]
 fn real_squashfs_superblock_parses() {
-    let Some(bytes): Option<Vec<u8>> = common::load_fixture(FORMAT_DIR, FIXTURE_NAME) else {
-        panic!(
-            "missing fixture: corpus/binfmt/{FORMAT_DIR}/{FIXTURE_NAME} - see corpus/binfmt/MANIFEST.toml for regeneration"
-        );
+    let Some(bytes): Option<Vec<u8>> =
+        common::requirement::regenerable_fixture(FORMAT_DIR, FIXTURE_NAME, GRADED)
+    else {
+        return;
     };
     assert!(
         bytes.len() > 1_000_000,
@@ -35,20 +35,22 @@ fn real_squashfs_superblock_parses() {
 }
 
 #[test]
-#[ignore = "needs gitignored real fixture corpus/binfmt/squashfs/hello.squashfs (mksquashfs, ~5MB); regen via corpus/binfmt/MANIFEST.toml, run with --ignored"]
 fn real_squashfs_starts_with_le_magic() {
-    let Some(bytes): Option<Vec<u8>> = common::load_fixture(FORMAT_DIR, FIXTURE_NAME) else {
-        panic!("missing fixture: corpus/binfmt/{FORMAT_DIR}/{FIXTURE_NAME}");
+    let Some(bytes): Option<Vec<u8>> =
+        common::requirement::regenerable_fixture(FORMAT_DIR, FIXTURE_NAME, GRADED)
+    else {
+        return;
     };
     let head_magic: u32 = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
     assert_eq!(head_magic, SQUASHFS_MAGIC_LE);
 }
 
 #[test]
-#[ignore = "needs gitignored real fixture corpus/binfmt/squashfs/hello.squashfs (mksquashfs, ~5MB); regen via corpus/binfmt/MANIFEST.toml, run with --ignored"]
 fn real_squashfs_records_payload_byte_count() {
-    let Some(bytes): Option<Vec<u8>> = common::load_fixture(FORMAT_DIR, FIXTURE_NAME) else {
-        panic!("missing fixture: corpus/binfmt/{FORMAT_DIR}/{FIXTURE_NAME}");
+    let Some(bytes): Option<Vec<u8>> =
+        common::requirement::regenerable_fixture(FORMAT_DIR, FIXTURE_NAME, GRADED)
+    else {
+        return;
     };
     let sb: SquashfsSuperblock =
         parse_squashfs_superblock(&bytes, 0).expect("parse real squashfs superblock");

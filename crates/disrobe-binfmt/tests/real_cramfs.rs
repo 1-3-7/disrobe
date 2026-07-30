@@ -5,14 +5,14 @@ use disrobe_binfmt::containers::cramfs::{CRAMFS_MAGIC, CramfsHeader, detect_cram
 
 const FORMAT_DIR: &str = "cramfs";
 const FIXTURE_NAME: &str = "hello.cramfs";
+const GRADED: &str = "the real cramfs header check";
 
 #[test]
-#[ignore = "needs gitignored real fixture corpus/binfmt/cramfs/hello.cramfs (mkcramfs, ~5MB); regen via corpus/binfmt/MANIFEST.toml, run with --ignored"]
 fn real_cramfs_header_parsed() {
-    let Some(bytes): Option<Vec<u8>> = common::load_fixture(FORMAT_DIR, FIXTURE_NAME) else {
-        panic!(
-            "missing fixture: corpus/binfmt/{FORMAT_DIR}/{FIXTURE_NAME} - see corpus/binfmt/MANIFEST.toml for regeneration"
-        );
+    let Some(bytes): Option<Vec<u8>> =
+        common::requirement::regenerable_fixture(FORMAT_DIR, FIXTURE_NAME, GRADED)
+    else {
+        return;
     };
     assert!(bytes.len() > 1_000_000);
     let header: CramfsHeader = detect_cramfs(&bytes).expect("detect cramfs");

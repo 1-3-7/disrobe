@@ -8,6 +8,7 @@ use disrobe_binfmt::containers::oci::{OciIndex, OciManifest, parse_oci_index, pa
 
 const FORMAT_DIR: &str = "oci";
 const FIXTURE_NAME: &str = "hello.oci.tar";
+const GRADED: &str = "the real OCI image layout checks";
 
 fn collect_tar_entries(bytes: &[u8]) -> BTreeMap<String, Vec<u8>> {
     let mut out: BTreeMap<String, Vec<u8>> = BTreeMap::new();
@@ -27,12 +28,11 @@ fn collect_tar_entries(bytes: &[u8]) -> BTreeMap<String, Vec<u8>> {
 }
 
 #[test]
-#[ignore = "needs gitignored real fixture corpus/binfmt/oci/hello.oci.tar (buildah/skopeo, ~5MB); regen via corpus/binfmt/MANIFEST.toml, run with --ignored"]
 fn real_oci_layout_contains_index_manifest_config_layer() {
-    let Some(bytes): Option<Vec<u8>> = common::load_fixture(FORMAT_DIR, FIXTURE_NAME) else {
-        panic!(
-            "missing fixture: corpus/binfmt/{FORMAT_DIR}/{FIXTURE_NAME} - see corpus/binfmt/MANIFEST.toml for regeneration"
-        );
+    let Some(bytes): Option<Vec<u8>> =
+        common::requirement::regenerable_fixture(FORMAT_DIR, FIXTURE_NAME, GRADED)
+    else {
+        return;
     };
     assert!(bytes.len() > 1_000_000);
     let entries: BTreeMap<String, Vec<u8>> = collect_tar_entries(&bytes);
@@ -49,10 +49,11 @@ fn real_oci_layout_contains_index_manifest_config_layer() {
 }
 
 #[test]
-#[ignore = "needs gitignored real fixture corpus/binfmt/oci/hello.oci.tar (buildah/skopeo, ~5MB); regen via corpus/binfmt/MANIFEST.toml, run with --ignored"]
 fn real_oci_index_parses_and_references_manifest_blob() {
-    let Some(bytes): Option<Vec<u8>> = common::load_fixture(FORMAT_DIR, FIXTURE_NAME) else {
-        panic!("missing fixture: corpus/binfmt/{FORMAT_DIR}/{FIXTURE_NAME}");
+    let Some(bytes): Option<Vec<u8>> =
+        common::requirement::regenerable_fixture(FORMAT_DIR, FIXTURE_NAME, GRADED)
+    else {
+        return;
     };
     let entries: BTreeMap<String, Vec<u8>> = collect_tar_entries(&bytes);
     let index_bytes: &Vec<u8> = entries.get("index.json").expect("index.json");
@@ -73,10 +74,11 @@ fn real_oci_index_parses_and_references_manifest_blob() {
 }
 
 #[test]
-#[ignore = "needs gitignored real fixture corpus/binfmt/oci/hello.oci.tar (buildah/skopeo, ~5MB); regen via corpus/binfmt/MANIFEST.toml, run with --ignored"]
 fn real_oci_layer_contains_payload_hello_txt() {
-    let Some(bytes): Option<Vec<u8>> = common::load_fixture(FORMAT_DIR, FIXTURE_NAME) else {
-        panic!("missing fixture: corpus/binfmt/{FORMAT_DIR}/{FIXTURE_NAME}");
+    let Some(bytes): Option<Vec<u8>> =
+        common::requirement::regenerable_fixture(FORMAT_DIR, FIXTURE_NAME, GRADED)
+    else {
+        return;
     };
     let entries: BTreeMap<String, Vec<u8>> = collect_tar_entries(&bytes);
     let index_bytes: &Vec<u8> = entries.get("index.json").expect("index.json");
