@@ -808,6 +808,7 @@ fn decompile_native_aarch64<'data>(
 #[cfg(not(feature = "nir-lift"))]
 fn decompile_native_aarch64(
     input: &Path,
+    _bytes: &[u8],
     _obj: &object::File<'_>,
     _module: &disrobe_query::Module,
     _out: Option<PathBuf>,
