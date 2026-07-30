@@ -17,6 +17,14 @@ use std::process::Command;
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_beam::{BeamFile, ErlangSurface, RecoverySource, recover_erlang};
 
+mod common;
+
+use common::erlang_toolchain::{Erlang, require_erlang};
+
+const GRADED_RECOMPILE: &str =
+    "stripped core-lift recompile and export parity over the erlang source corpus";
+const GRADED_SEMANTICS: &str = "the stripped core-lift call-semantics battery";
+
 fn corpus(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -26,20 +34,6 @@ fn corpus(rel: &str) -> PathBuf {
         .join("corpus")
         .join("beam")
         .join(rel)
-}
-
-fn find_on_path(name: &str) -> Option<PathBuf> {
-    let path_var: std::ffi::OsString = std::env::var_os("PATH")?;
-    let exts: &[&str] = if cfg!(windows) { &["", ".exe"] } else { &[""] };
-    for dir in std::env::split_paths(&path_var) {
-        for ext in exts {
-            let candidate: PathBuf = dir.join(format!("{name}{ext}"));
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
 }
 
 fn strip_chunk(bytes: &[u8], target: &[u8; 4]) -> Vec<u8> {
@@ -186,10 +180,10 @@ const RECOMPILE_FLOOR: usize = 4;
 
 #[test]
 fn stripped_core_lift_recompiles_to_matching_exports() {
-    let Some(erlc): Option<PathBuf> = find_on_path("erlc") else {
-        println!("SKIP: erlc not on PATH (Erlang/OTP not installed)");
+    let Some(erlang): Option<Erlang> = require_erlang(GRADED_RECOMPILE) else {
         return;
     };
+    let erlc: PathBuf = erlang.erlc;
     let mut ok: usize = 0;
     for (module, rel) in SOURCES {
         let rt: Roundtrip = roundtrip(&erlc, module, rel);
@@ -289,12 +283,10 @@ fn battery(module: &str) -> &'static [&'static str] {
 
 #[test]
 fn stripped_core_lift_preserves_call_semantics() {
-    let (Some(erlc), Some(erl)): (Option<PathBuf>, Option<PathBuf>) =
-        (find_on_path("erlc"), find_on_path("erl"))
-    else {
-        println!("SKIP: erlc/erl not on PATH (Erlang/OTP not installed)");
+    let Some(erlang): Option<Erlang> = require_erlang(GRADED_SEMANTICS) else {
         return;
     };
+    let (erlc, erl): (PathBuf, PathBuf) = (erlang.erlc, erlang.erl);
     let mut checked: usize = 0;
     for (module, rel) in SOURCES {
         let rt: Roundtrip = roundtrip(&erlc, module, rel);

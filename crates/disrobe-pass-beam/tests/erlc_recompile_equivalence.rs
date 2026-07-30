@@ -11,42 +11,17 @@
 )]
 
 use std::collections::BTreeSet;
-use std::ffi::OsString;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::process::Command;
 
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_beam::{
     BeamFile, Disassembly, ErlangSurface, Operand, RecoverySource, disassemble, recover_erlang,
 };
-use wait_timeout::ChildExt;
 
-const CALL_TIMEOUT: Duration = Duration::from_secs(30);
+mod common;
 
-fn run_bounded(mut cmd: Command) -> Option<(bool, String, String)> {
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child: std::process::Child = cmd.spawn().expect("spawn subprocess");
-    match child.wait_timeout(CALL_TIMEOUT).expect("wait_timeout") {
-        Some(status) => {
-            let mut so: String = String::new();
-            let mut se: String = String::new();
-            if let Some(mut h) = child.stdout.take() {
-                let _ = h.read_to_string(&mut so);
-            }
-            if let Some(mut h) = child.stderr.take() {
-                let _ = h.read_to_string(&mut se);
-            }
-            Some((status.success(), so, se))
-        }
-        None => {
-            let _ = child.kill();
-            let _ = child.wait();
-            None
-        }
-    }
-}
+use common::erlang_toolchain::{Erlang, require_erlang, run_bounded};
 
 fn corpus_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -57,24 +32,6 @@ fn corpus_dir() -> PathBuf {
         .join("corpus")
         .join("beam")
         .join("recompile_oracle")
-}
-
-fn find_on_path(name: &str) -> Option<PathBuf> {
-    let path_var: std::ffi::OsString = std::env::var_os("PATH")?;
-    let exts: &[&str] = if cfg!(windows) {
-        &["", ".exe", ".bat", ".cmd"]
-    } else {
-        &[""]
-    };
-    for dir in std::env::split_paths(&path_var) {
-        for ext in exts {
-            let candidate: PathBuf = dir.join(format!("{name}{ext}"));
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
 }
 
 fn strip_chunk(bytes: &[u8], target: &[u8; 4]) -> Vec<u8> {
@@ -121,56 +78,7 @@ fn erlc_compile(erlc: &Path, src: &Path, out_dir: &Path) -> (bool, String) {
     }
 }
 
-const REQUIRE_ERLANG_VAR: &str = "DISROBE_REQUIRE_ERLANG";
 const GRADED: &str = "stripped core-lift recompile equivalence over the erlang corpus";
-
-fn erlang_is_mandatory() -> bool {
-    let Some(raw): Option<OsString> = std::env::var_os(REQUIRE_ERLANG_VAR) else {
-        return false;
-    };
-    !matches!(
-        raw.to_string_lossy().trim().to_ascii_lowercase().as_str(),
-        "" | "0" | "false" | "no" | "off" | "optional"
-    )
-}
-
-fn skip_or_fail(defect: &str) {
-    assert!(
-        !erlang_is_mandatory(),
-        "{REQUIRE_ERLANG_VAR} makes the erlang toolchain mandatory for this run, so {GRADED} \
-         cannot be measured and this case must not report success: {defect}. To fix it, install \
-         Erlang/OTP and put erlc and erl on PATH; to permit a run that measures nothing here, \
-         clear {REQUIRE_ERLANG_VAR}."
-    );
-    let line: String = format!(
-        "\nNOT MEASURED: {GRADED} compared nothing and graded nothing, because {defect}. Set \
-         {REQUIRE_ERLANG_VAR}=1 to fail instead of skipping when erlc and erl cannot be run.\n"
-    );
-    let mut sink: std::io::StdoutLock<'static> = std::io::stdout().lock();
-    drop(sink.write_all(line.as_bytes()));
-    drop(sink.flush());
-}
-
-fn otp_release(erl: &Path) -> Result<String, String> {
-    let mut cmd: Command = Command::new(erl);
-    cmd.arg("-noshell")
-        .arg("-eval")
-        .arg("io:format(\"~s\", [erlang:system_info(otp_release)]), halt().");
-    match run_bounded(cmd) {
-        Some((true, so, _)) if !so.trim().is_empty() => Ok(so.trim().to_owned()),
-        Some((_, so, se)) => Err(format!(
-            "`erl` is present at {} but did not report its release (stdout {:?}, stderr {:?}), so \
-             the toolchain is installed and unusable rather than absent",
-            erl.display(),
-            so.trim(),
-            se.trim()
-        )),
-        None => Err(format!(
-            "`erl` at {} did not exit within {CALL_TIMEOUT:?}",
-            erl.display()
-        )),
-    }
-}
 
 fn run_test0(erl: &Path, code_dir: &Path, module: &str) -> (bool, String) {
     let eval: String = format!("io:format(\"~p~n\", [{module}:test()]), halt().");
@@ -411,19 +319,11 @@ const EQUIVALENCE_FLOOR: usize = 18;
 
 #[test]
 fn stripped_core_lift_is_recompile_equivalent() {
-    let Some((erlc, erl)): Option<(PathBuf, PathBuf)> =
-        find_on_path("erlc").zip(find_on_path("erl"))
-    else {
-        skip_or_fail("erlc and erl are not both on PATH, so Erlang/OTP is not installed here");
+    let Some(erlang): Option<Erlang> = require_erlang(GRADED) else {
         return;
     };
-    let release: String = match otp_release(&erl) {
-        Ok(release) => release,
-        Err(defect) => {
-            skip_or_fail(&defect);
-            return;
-        }
-    };
+    let (erlc, erl, release): (PathBuf, PathBuf, String) =
+        (erlang.erlc, erlang.erl, erlang.release);
 
     let modules: Vec<(String, PathBuf)> = corpus_modules();
     assert!(

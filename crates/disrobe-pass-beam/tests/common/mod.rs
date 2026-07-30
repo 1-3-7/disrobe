@@ -7,6 +7,8 @@
     clippy::missing_const_for_fn
 )]
 
+pub mod erlang_toolchain;
+
 use std::io::Write;
 
 use flate2::Compression;
