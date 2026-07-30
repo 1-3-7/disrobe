@@ -15,8 +15,8 @@ note = "Floor equals measured (100%) because the gate asserts total_fallback_ops
 kind = "behavioral-differential"
 external = "the recovered JS of each function is run through the boa_engine JS interpreter (a real JS engine) on concrete inputs and compared output-for-output against the original sample.js function in the same engine; recovered bodies are also parse-gated by the oxc parser"
 reproduce = "cargo test -p disrobe-pass-mobile --test real_hermes_correctness"
-measured = "5 of 8 functions (add, greet, Counter, increment, label) reproduce original behavior exactly; sumRange (loop value-threading) and main (call-frame argument modeling) do not yet, global is a structural shell"
-note = "This is decompile-CORRECTNESS, measured against a real JS engine, NOT op-coverage. A deliberately-wrong body (subtract instead of add) is proven to FAIL the differential, so the number cannot be inflated by op-coverage. Floor 55.0 sits a margin below the measured 62.5."
+measured = "8 of 8 functions (global, add, greet, Counter, increment, label, sumRange, main) reproduce original behavior exactly, including the counted loop in sumRange and the call-frame argument window in main; global drives the whole module end to end rather than standing as a structural shell"
+note = "This is decompile-CORRECTNESS, measured against a real JS engine, NOT op-coverage. A deliberately-wrong body (subtract instead of add) is proven to FAIL the differential, so the number cannot be inflated by op-coverage. Floor equals measured because every function of the committed sample carries a behavior spec and the gate asserts the graded count equals the population, so one function regressing trips the gate rather than being absorbed by slack."
 
 [source]
 recovery_group = "React Native Hermes (committed hermesc-built HBC v96 sample: op-coverage, CI-gated)"
@@ -26,5 +26,5 @@ floor = 100.0
 [correctness_source]
 recovery_group = "React Native Hermes (committed hermesc-built HBC v96 sample: behavioral decompile-correctness via the boa JS engine, CI-gated)"
 recovery_bar = "decompile-correctness"
-measured = 62.5
-floor = 55.0
+measured = 100.0
+floor = 100.0

@@ -210,6 +210,10 @@ const SPECS: &[BehaviorSpec] = &[
 
 const SPEC_LESS_FUNCTIONS: &[&str] = &[];
 
+const PINNED_FUNCTIONS: usize = 8;
+const PINNED_BEHAVIORALLY_CORRECT: usize = 8;
+const CORRECTNESS_FLOOR_PERCENT: usize = 100;
+
 #[test]
 fn hbc_v96_sample_decompile_is_behaviorally_correct_against_real_js_engine() {
     let Some(report): Option<DecompileReport> = load_report() else {
@@ -218,7 +222,16 @@ fn hbc_v96_sample_decompile_is_behaviorally_correct_against_real_js_engine() {
     };
 
     let total_functions: usize = report.function_count;
-    assert_eq!(total_functions, 8, "global plus seven authored functions");
+    assert_eq!(
+        total_functions, PINNED_FUNCTIONS,
+        "global plus seven authored functions"
+    );
+    assert_eq!(
+        SPECS.len(),
+        PINNED_FUNCTIONS,
+        "every function in the sample carries a behavior spec, so the graded population cannot \
+         shrink onto whichever functions happen to reproduce"
+    );
 
     let mut behaviorally_correct: usize = 0;
     for spec in SPECS {
@@ -274,17 +287,12 @@ fn hbc_v96_sample_decompile_is_behaviorally_correct_against_real_js_engine() {
     );
 
     assert_eq!(
-        behaviorally_correct, 8,
+        behaviorally_correct, PINNED_BEHAVIORALLY_CORRECT,
         "all eight functions (global, add, greet, Counter, increment, label, sumRange, main) reproduce original behavior through a real JS engine"
     );
     assert!(
-        behaviorally_correct >= 7,
-        "decompile-correctness floor: at least seven functions must behaviorally match the original through boa; got {}",
-        behaviorally_correct
-    );
-    assert!(
-        correctness >= 0.95,
-        "decompile-correctness floor: at least 95% of functions must behaviorally match (distinct from op-coverage); got {:.1}%",
+        correctness * 100.0 >= CORRECTNESS_FLOOR_PERCENT as f64,
+        "decompile-correctness floor: at least {CORRECTNESS_FLOOR_PERCENT}% of functions must behaviorally match (distinct from op-coverage); got {:.1}%",
         correctness * 100.0
     );
 }
