@@ -77,6 +77,12 @@ Two distinct recovery paths cover two distinct Flutter artifacts.
 
 **ARM64 AOT snapshot (`libapp.so`).** The AOT snapshot is ordinary AArch64 machine code. `disrobe` locates the four `_kDart*Snapshot*` symbols, recovers class and method names from the isolate-data string table, scans frame prologues to bound functions, and disassembles each body to readable instructions with resolved direct-call and branch targets. `flutter decompile` also recovers the class table estimate, library URIs, and a string pool from the isolate image.
 
+Beyond the disassembly, the release ARM64 path recovers class membership and method-to-class attribution, and lifts each function to nested if/else/while pseudocode through the shared structurer. That lift is gated by a source-free CFG round-trip: when the recovered structure does not round-trip to the same control-flow graph, the function falls back to a flat call list rather than presenting a shape the graph does not support. Instance-field names are erased by the AOT compiler and are not recovered.
+
+## Detected runtimes
+
+`disrobe mobile detect|extract` routes the packaged JavaScript and .NET runtimes out of an `.apk` or `.ipa`: React Native Hermes, Flutter, Xamarin, Cordova, Capacitor, and NativeScript, each handed to the pass that reads it.
+
 ## Limits
 
 - The Hermes path is a structured lifter, not a full decompiler. Variadic call arguments are marked `<arg?>` where the Hermes frame-register layout is not modeled; unreconstructed opcodes appear in disasm form inline.

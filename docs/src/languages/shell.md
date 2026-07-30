@@ -53,6 +53,18 @@ The p-code path lifts a 264-opcode table across VBA3 / VBA5 / VBA6 / VBA7 (32-bi
 
 `disrobe shell deob book.xls` recovers Excel 4.0 macro-sheet formulas from a BIFF8 (`.xls`) or BIFF12 (`.xlsb`) workbook. It decodes the Ptg RPN token stream back to formula text over the full Ftab and Cetab function tables, resolves shared-formula masters to per-cell absolute references, and flags the built-in auto-run names (`Auto_Open`, `Auto_Close`, `Auto_Activate`, `Auto_Deactivate`) as execution entry points, so a `=EXEC("...")` or `=FORMULA(...)` macro reads back in full. A token the decoder does not recognize is emitted as an explicit unknown marker rather than a fabricated formula. Recovery is graded against hand-built BIFF fixtures with known formulas, covering BIFF12's wider reference fields, shared-formula relative-to-absolute resolution, and the `Auto_Open` entry point (`xlm_fixtures.rs`).
 
+### Haxe HashLink, Perl, R, and Tcl
+
+The same `scriptlang` pass covers four runtimes that ship compiled or packaged rather than as plain source.
+
+**HashLink (`.hl`).** The register bytecode is parsed byte-exact: type table, functions, natives, globals, and constants. Function bodies disassemble with reconstructed signatures, and source class and method names are recovered and graded against the original `.hx`. Haxe compiled to JavaScript or SWF routes to the JS and Flash stacks instead.
+
+**Perl.** A `B::Concise` op-tree is read back, and ByteLoader-encoded scripts are decoded.
+
+**R.** `.rds` serialized objects round-trip.
+
+**Tcl.** A starkit extracts byte-identically.
+
 ### PDF maldoc analysis
 
 The shell pass carries a PDF analyzer (`disrobe_pass_shell::analyze_pdf`) for document-borne malware. It loads a PDF through both cross-reference forms (the classic `xref` table and cross-reference streams), transparently decrypts a Standard-security-handler document that uses RC4 or AESV2 under an empty user password (authenticating against `/U` per the PDF algorithms, with no password supplied), then walks the catalog, name trees, page annotations, and form fields to recover embedded JavaScript and every Launch, URI, GoToR, SubmitForm, ImportData, and EmbeddedFile action with its resolved target. Hex-escaped names, split or concatenated JavaScript strings, and Flate / LZW / ASCII85 filter chains are decoded along the way, and every decompression is bomb-bounded. It is graded against hand-crafted PDF fixtures that plant a known marker behind each path (classic-table and xref-stream JavaScript, RC4 and AESV2 empty-password decrypt, a launch target, an embedded file, name-tree and additional-action scripts), plus an RC4 published-vector check and an empty-password authentication test (`pdf_fixtures.rs`).

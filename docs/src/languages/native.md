@@ -112,6 +112,10 @@ For a Delphi or C++Builder binary, the native Delphi analyzer (`disrobe_pass_nat
 
 DFM decoding is graded byte-for-byte against reference form text (root class, object count, and field values), the VMT walk recovers a two-class inheritance chain with per-property attribution on a constructed image, and a false-positive control confirms no class is produced from real `kernel32.dll`, `ntdll.dll`, or `user32.dll`.
 
+### Nim, Zig, Crystal, and D binaries
+
+These four compilers erase the source, so recovery works from each binary's own tables rather than from anything resembling the original file. `disrobe` detects the toolchain, demangles its name scheme, and recovers the symbol and metadata surface the compiler left behind. Where DWARF survives, aggregate members come back with full types, including multi-dimensional array dimensions and const/volatile qualifiers, so a field reads as `const u8[4]` or `u8[2][3]` rather than an opaque blob. A stripped D PE, which carries neither DWARF nor a name table, is a wall: the format is identified and nothing further is claimed.
+
 ### Entropy map and byte histogram
 
 `disrobe native entropy` slides a 4 KB window across the file computing Shannon entropy (bits/byte) to locate packed, compressed, or encrypted regions, and renders the profile three ways via `--format text|json|svg`:

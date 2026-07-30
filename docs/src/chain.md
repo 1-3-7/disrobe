@@ -29,6 +29,17 @@ disrobe chain input.bin --chain 'pyarmor+py-decompile' --chain-pin pyarmor@0.10.
 
 `--chain-pin` locks each pass to a specific version so a recovery is reproducible against an exact pass build.
 
+## Layered payload recovery
+
+`disrobe` unwraps obfuscated and packed payloads recursively. A structural check gates every step (compression magic, a loadable marshal object, a valid parse, a validated crib), so a decode never advances on garbage, and every decompression is bomb-bounded.
+
+| Layer | What it reverses |
+|---|---|
+| Recursive peel | Stacked encoding and compression down to the real payload. The Python engine unwinds base64/85/32/16, zlib/gzip/bz2/xz/lzma, pyc-strip, marshal, and cipher layers (depth-capped, bomb-bounded); PHP, JavaScript (`atob` chains), and shell have their own recursive peelers; and the chain driver re-detects and re-routes every carved child, so stacked containers across any ecosystem peel end-to-end |
+| Marshaled Python code objects | A raw CPython marshal blob (1.0 through 3.15) is loaded, its nested code objects (up to 64 deep) recovered, and each layer decompiled to source |
+| Encoding and cipher reversal | base64/85/32/16, base58/62/45/91/92/122, ascii85/Z85, uuencode/xxencode/yEnc, percent-URL, HTML entity, and Punycode, plus gzip/zlib/xz/lzma/bz2 and rot-N. Keyed layers (XOR single and repeating-key, RC4, TEA/XTEA/XXTEA, ChaCha20, Salsa20) are recovered when the key is a literal, a crib, or brute-forceable; custom and shuffled base64 alphabets are sniffed from cribs. A blind cascade keeps only decodes a structural validator accepts; runtime-only-key crypto is stated as a wall, not guessed |
+| Per-language loader unwrap | Python `exec`/`eval`/`compile`, PHP `eval`/`assert`/`preg_replace`-e/`create_function`, JavaScript `eval`/`Function` indirection plus esoteric encoders (JSFuck, the Dean Edwards packer, JJEncode, AAEncode) and V8 bytenode/SEA/asar carving, Lua per-obfuscator string and VM recovery, and PowerShell and bash Invoke-Obfuscation families |
+
 ## Depth and cycle safety
 
 Adversarial input can try to make a chain recurse forever (an archive nested inside itself, a packer that re-emits its own signature). The chain runner defends against this:
