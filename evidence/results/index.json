@@ -369,7 +369,7 @@
       "floor": 98.0,
       "floor_holds": true,
       "id": "ruby-yarv-recompile",
-      "measured": "98.00%",
+      "measured": "98.67%",
       "oracle_strength": "strong",
       "reproduce": "cargo test -p disrobe-pass-ruby --test yarv_recompile_oracle"
     },

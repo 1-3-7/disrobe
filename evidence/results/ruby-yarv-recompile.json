@@ -9,7 +9,7 @@
   "floor_holds": true,
   "gate_source": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs (megafile >= 98)",
   "id": "ruby-yarv-recompile",
-  "measured": "98.00%",
+  "measured": "98.67%",
   "oracle": {
     "external": "real MRI (ruby): recompile the recovered source, compare the YARV opcode multiset",
     "kind": "recovery-import",

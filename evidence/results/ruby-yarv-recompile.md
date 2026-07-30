@@ -3,7 +3,7 @@
 - id: `ruby-yarv-recompile`
 - ecosystem: ruby
 - claim: disrobe decompiles Ruby YARV bytecode to source whose recompiled instruction multiset matches the original under the real MRI interpreter.
-- measured: 98.00%
+- measured: 98.67%
 - oracle strength: strong
 - CI-attested: yes [CI]
 - external oracle: real MRI (ruby): recompile the recovered source, compare the YARV opcode multiset
