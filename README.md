@@ -1,6 +1,6 @@
 ![disrobe: decompile, deobfuscate, and unpack almost anything, deterministically](docs/assets/social-card.svg)
 
-One static Rust binary that decompiles, deobfuscates, and unpacks software across 20+ ecosystems, and grades every recovery against a real compiler, verifier, or runtime rather than its own output. It never executes the sample, runs no model, and produces identical output on every machine. Built for malware analysis, CTFs, IP recovery, and security research.
+One static Rust binary decompiles, deobfuscates, and unpacks software across 20+ ecosystems. It grades every recovery against a real compiler, verifier, or runtime, never against its own output. It never executes the sample on its default path, runs no model, and produces identical output on every machine. Use it for malware analysis, CTFs, IP recovery, and security research.
 
 The pipeline matters more than any single pass. One deterministic chain runner carries every input end to end: it fingerprints the input, runs the matching pass, re-fingerprints the output, and repeats until nothing else applies. Every recovered artifact is persisted as a content-addressed `.dr` envelope carrying its own provenance and grade, so a result always traces back to how it was produced.
 
@@ -55,7 +55,7 @@ Try it in your browser: [`1-3-7.github.io/disrobe/playground`](https://1-3-7.git
 - Not a guaranteed full-recovery tool for every family: several catalog entries are Partial (structural peel or constants only, stated residual) or Detect-only (identification plus a stated absent-data reason).
 - Not a virtualizing-protector devirtualizer for VMProtect, Themida, Enigma, and comparable runtime-keyed VMs: those are detect and carve only. See [Limits and honest walls](#limits-and-honest-walls).
 - Not a sample-execution sandbox: the default path never runs the sample; the only two code-execution paths (the PyArmor v6/v7 dynamic hook and the BCC native lift) sit behind explicit `--allow-dynamic`/`--allow-bcc` flags.
-- Not model-backed or heuristic-guessing: there is no LLM anywhere in the pipeline, and an absent runtime key is reported as a wall rather than guessed past.
+- Not model-backed or guess-driven: no LLM runs anywhere in the pipeline, and when a runtime key is absent, `disrobe` reports a wall rather than guessing past it.
 - Not a Ghidra/IDA replacement on large, deeply nested native binaries: `disrobe` unpacks, recovers symbols, and exports straight into them instead of competing on that surface.
 
 ## Install
@@ -117,7 +117,8 @@ Layer specific passes back onto a slim base with `--features`, for example `--no
 
 ### Per-OS notes
 
-- Windows: the binary is `disrobe.exe`. The musl Linux build is fully static; the glibc build needs a matching glibc.
+- Windows: the binary is `disrobe.exe`.
+- Linux: the musl build is fully static; the glibc build needs a matching glibc.
 - macOS: x86-64 and ARM64 (Apple silicon) archives are published separately. Gatekeeper may quarantine an unsigned download; clear it with `xattr -d com.apple.quarantine disrobe`.
 - Optional external backends (`Ghidra`, `CFR`, `jadx`, `ILSpy`, `de4dot`, and others) are off by default. `disrobe install --list` shows them; `disrobe doctor` probes which are on your `PATH`.
 
