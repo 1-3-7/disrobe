@@ -1,5 +1,5 @@
 {
-  "descriptor_count": 22,
+  "descriptor_count": 25,
   "descriptors": [
     {
       "ci_attested": true,
@@ -47,6 +47,20 @@
       "measured": "disrobe 100.0% vs best competitor 99.1%",
       "oracle_strength": "recompile-only",
       "reproduce": "cargo run -p disrobe-bench-head-to-head  (needs javac + jadx + cfr on PATH; cfr.jar via evidence/competitors/install-linux.sh)"
+    },
+    {
+      "ci_attested": false,
+      "claim": "apkleaks 2.6.3 recalls 5 of the 8 planted secrets in the committed planted-secrets.apk, measured by running the tool rather than by quoting its documentation.",
+      "competitors": [],
+      "disrobe_leads": null,
+      "ecosystem": "recon",
+      "external_oracle": "apkleaks 2.6.3 itself, executed over the same committed apk, with its findings compared against the same planted token list",
+      "floor": null,
+      "floor_holds": null,
+      "id": "apkleaks-planted-apk-secret-recall",
+      "measured": "62.50%",
+      "oracle_strength": "strong",
+      "reproduce": "cargo test -p disrobe-bench-head-to-head published_planted_apk_secret_bars_are_pinned_by_membership (requires apkleaks 2.6.3 on PATH)"
     },
     {
       "ci_attested": true,
@@ -162,6 +176,34 @@
       "measured": "6/6 (100.0%)",
       "oracle_strength": "strong",
       "reproduce": "cargo test -p disrobe-core --test frisk_gauntlet  (harvested by cargo run -p disrobe-bench-head-to-head)"
+    },
+    {
+      "ci_attested": true,
+      "claim": "disrobe frisk recalls all 8 planted secrets in the committed planted-secrets.apk, and each of the 8 is named individually so one cannot lapse while another starts being found.",
+      "competitors": [],
+      "disrobe_leads": null,
+      "ecosystem": "recon",
+      "external_oracle": "the planted token list committed alongside the apk, which is independent of what frisk reports; a scanner that misses a planted token fails regardless of what else it finds",
+      "floor": null,
+      "floor_holds": null,
+      "id": "frisk-planted-apk-secret-recall",
+      "measured": "100.00%",
+      "oracle_strength": "strong",
+      "reproduce": "cargo test -p disrobe-bench-head-to-head published_planted_apk_secret_bars_are_pinned_by_membership"
+    },
+    {
+      "ci_attested": true,
+      "claim": "All 6 planted non-secret IOC categories are represented in frisk's scan of the committed planted tree, and the 6 are named individually so the published row cannot describe a different set than the one graded.",
+      "competitors": [],
+      "disrobe_leads": null,
+      "ecosystem": "recon",
+      "external_oracle": "the committed category list the gate grades against, which is independent of frisk's output; the gate requires the published membership to equal that list exactly",
+      "floor": null,
+      "floor_holds": null,
+      "id": "frisk-planted-ioc-categories",
+      "measured": "100.00%",
+      "oracle_strength": "strong",
+      "reproduce": "cargo test -p disrobe-bench-head-to-head published_planted_ioc_category_bar_is_pinned_by_membership"
     },
     {
       "ci_attested": true,
@@ -373,6 +415,7 @@
     "pickle",
     "pyarmor",
     "python",
+    "recon",
     "ruby",
     "secrets",
     "swift",

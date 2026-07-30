@@ -181,10 +181,10 @@
             "path": "crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs",
             "function": "published_dalvik_verifier_bar_matches_the_floors_this_gate_enforces"
           },
-          "detail": "102 of 102 PRESENTABLE classes in the committed EdgeCases/EdgeCasesKt/Hello dex pass the real JVM bytecode verifier (-Xverify:all) with 0 lifter verify failures, so the plotted figure is the presentable ratio. State the other denominator too: the corpus holds 155 classes and 53 of them are link-skipped, never reaching the verifier because they reference supertypes the harness does not bundle, Kotlin's Function1 among them. That is a harness limit rather than a lifter defect, but it means 102 of 155 classes are verifier-attested and the remaining 53 are ungraded, not passing. A live-range-splitting pass recovers bodies with conflicting register types across joins, and 317 re-hosted method bodies verify clean with 0 failures, every non-stub recovered body re-hosted into an Object carrier and run through -Xverify:all. Floor 102 classes; the reference is the JVM rejecting malformed bytecode, not the lifter's own report.",
-          "source": "crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs (VERIFY_CLEAN_CLASS_FLOOR 102, LIFTER_VERIFY_FAIL_CEILING 0, BODY_VERIFY_CLEAN_FLOOR 317, BODY_VERIFY_FAIL_CEILING 0); reference = -Xverify:all over assemble_jar output, not the lifter self-report; measured 102 of 102 verifiable classes with 53 link-skipped and 317 re-hosted bodies clean on JDK 25, so each floor is pinned at the figure the corpus measures rather than beneath it",
-          "num": 102,
-          "den": 102
+          "detail": "118 of 118 PRESENTABLE classes in the committed EdgeCases/EdgeCasesKt/Hello dex pass the real JVM bytecode verifier (-Xverify:all) with 0 lifter verify failures, so the plotted figure is the presentable ratio. State the other denominator too: the corpus holds 155 classes and 37 of them are link-skipped, never reaching the verifier because they reference supertypes the harness does not bundle, Kotlin's Function1 among them. That is a harness limit rather than a lifter defect, but it means 118 of 155 classes are verifier-attested and the remaining 37 are ungraded, not passing. A live-range-splitting pass recovers bodies with conflicting register types across joins, and 317 re-hosted method bodies verify clean with 0 failures, every non-stub recovered body re-hosted into an Object carrier and run through -Xverify:all. Floor 118 classes; the reference is the JVM rejecting malformed bytecode, not the lifter's own report.",
+          "source": "crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs (VERIFY_CLEAN_CLASS_FLOOR 118, LIFTER_VERIFY_FAIL_CEILING 0, LINK_SKIPPED_CEILING 37, COMMITTED_CORPUS_CLASSES 155, BODY_VERIFY_CLEAN_FLOOR 317, BODY_VERIFY_FAIL_CEILING 0); reference = -Xverify:all over assemble_jar output, not the lifter self-report; measured 118 of 118 verifiable classes with 37 link-skipped and 317 re-hosted bodies clean on JDK 25, so each floor is pinned at the figure the corpus measures rather than beneath it",
+          "num": 118,
+          "den": 118
         },
         {
           "label": "body-lowering (real apks, local)",
@@ -318,7 +318,7 @@
           "detail": "real MRI recompiles the recovered source and the YARV opcode multiset matches 79 of 79 opcodes, so this fixture is exact. The plotted 100 is the floor this gate enforces, and the measured value is asserted at or above it, so a regression fails instead of quietly lowering the published number. A third committed fixture, hello.rb, also matches 4 of 4 and is not plotted separately.",
           "verified_by": {
             "path": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs",
-            "function": "published_yarv_bars_match_the_floors_this_crate_enforces"
+            "function": "published_yarv_bars_are_not_below_the_floors_this_crate_enforces"
           },
           "source": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs:105 (greeter >= 100)"
         },
@@ -328,7 +328,7 @@
           "detail": "real MRI recompiles the recovered source and the YARV opcode multiset matches 23648 of 23966 opcodes, which is 98.67%. The plotted 98 is the floor this gate enforces, not the measurement, so the bar shows the guaranteed minimum and the measured value is asserted at or above it.",
           "verified_by": {
             "path": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs",
-            "function": "published_yarv_bars_match_the_floors_this_crate_enforces"
+            "function": "published_yarv_bars_are_not_below_the_floors_this_crate_enforces"
           },
           "source": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs (megafile >= 98)"
         }
@@ -453,6 +453,82 @@
           },
           "detail": "1839 / 2043 function names recovered from the stripped build. The unstripped build of the same source recovers all 2043. The shortfall is assembly ABI0 entry points and platform linker symbols that carry no distinct pclntab entry, so a stripped image does not contain them to recover.",
           "source": "crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs, which builds each target live with the installed Go toolchain and grades every recovered name against go tool nm on the same build"
+        }
+      ]
+    },
+    {
+      "heading": "Secret recall on the committed planted APK (both tools read the same file)",
+      "axis_label": "planted secrets recalled, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "disrobe frisk",
+          "value": 100.0,
+          "num": 8,
+          "den": 8,
+          "verified_by": {
+            "path": "benches/head-to-head/src/frisk.rs",
+            "function": "published_planted_apk_secret_bars_are_pinned_by_membership"
+          },
+          "detail": "8 of 8 planted secrets recalled from corpus/recon/apk/planted-secrets.apk. The eight are named individually in this bar's membership list, so one secret cannot stop being found while another starts and leave the count at 8. The denominator is pinned by equality against the committed ground truth, so a run that inspects fewer secrets scores worse rather than shrinking what it is measured against.",
+          "source": "benches/head-to-head/src/frisk.rs test published_planted_apk_secret_bars_are_pinned_by_membership, which scans the committed apk and asserts every named secret is recalled; the ground truth is the planted token list, not frisk's own output",
+          "membership": [
+            "AWS access key id",
+            "AWS secret access key",
+            "Google OAuth access token",
+            "GCP / Google Maps API key",
+            "HTTP Basic auth credential",
+            "session JWT",
+            "Firebase database URL",
+            "S3 bucket URL"
+          ]
+        },
+        {
+          "label": "apkleaks 2.6.3",
+          "value": 62.5,
+          "num": 5,
+          "den": 8,
+          "verified_by": {
+            "path": "benches/head-to-head/src/frisk.rs",
+            "function": "published_planted_apk_secret_bars_are_pinned_by_membership",
+            "conditional": "this comparison leg is enforced only when apkleaks 2.6.3 is callable on the machine running the bench; on a machine without it the disrobe leg above still enforces unconditionally"
+          },
+          "detail": "5 of the same 8 planted secrets, measured by running apkleaks 2.6.3 over the same committed apk rather than quoting its documentation. It does not recall the AWS secret access key, the HTTP Basic auth credential, or the session JWT. This bar is asserted exact in both directions: publishing more than apkleaks finds would overstate it, and publishing less would flatter disrobe.",
+          "source": "benches/head-to-head/src/frisk.rs test published_planted_apk_secret_bars_are_pinned_by_membership, which pins the version it grades so the row and the measured build cannot drift apart",
+          "membership": [
+            "AWS access key id",
+            "Google OAuth access token",
+            "GCP / Google Maps API key",
+            "Firebase database URL",
+            "S3 bucket URL"
+          ]
+        }
+      ]
+    },
+    {
+      "heading": "frisk IOC category recall on the committed planted tree",
+      "axis_label": "planted IOC categories represented, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "planted non-secret IOC categories",
+          "value": 100.0,
+          "num": 6,
+          "den": 6,
+          "verified_by": {
+            "path": "benches/head-to-head/src/gate.rs",
+            "function": "published_planted_ioc_category_bar_is_pinned_by_membership"
+          },
+          "detail": "All 6 planted non-secret IOC categories are represented in the scan of corpus/recon/planted: endpoint, manifest, url, ipv4, email, and onion, with 31 findings in total across them (endpoint 13, manifest 7, url 7, email 2, ipv4 1, onion 1). Read this as category presence and not as per-item recall: a category counts once it yields at least one finding, so this figure says frisk covers every planted category, not that it finds every planted item inside one. The six are named individually and the denominator is pinned by equality against the category list the gate grades.",
+          "source": "benches/head-to-head/src/gate.rs test published_planted_ioc_category_bar_is_pinned_by_membership, which requires the published membership to equal the category list it grades so the row cannot describe a different six than the one measured",
+          "membership": [
+            "endpoint",
+            "manifest",
+            "url",
+            "ipv4",
+            "email",
+            "onion"
+          ]
         }
       ]
     }
