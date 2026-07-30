@@ -25,7 +25,14 @@ pub enum Verification {
 impl Verification {
     #[must_use]
     pub const fn is_proven(self) -> bool {
-        !matches!(self, Self::Unverified)
+        match self {
+            Self::Unverified => false,
+            Self::ExhaustiveAtWidth(_)
+            | Self::LinearColumnIdentity(_)
+            | Self::PolynomialIdentity(_) => true,
+            #[cfg(feature = "smt-verify")]
+            Self::SmtProvenAtWidth(_) => true,
+        }
     }
 }
 
