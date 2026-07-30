@@ -13503,6 +13503,22 @@ fn case_value_expr(value: i64) -> CExpr {
     }
 }
 
+fn switch_key_expr(disc: RegRef, cases: &[SwitchCase], plan: &AggregatePlan) -> String {
+    let key: String = source_expr(&Source::Reg(disc), disc.width, plan);
+    let signed: bool = cases
+        .iter()
+        .any(|case: &SwitchCase| case.values.iter().any(|value: &i64| *value < 0));
+    if !signed {
+        return key;
+    }
+    match disc.width {
+        Width::W8 => format!("(int8_t)(uint8_t)({key})"),
+        Width::W16 => format!("(int16_t)(uint16_t)({key})"),
+        Width::W32 => format!("(int32_t)(uint32_t)({key})"),
+        Width::W64 => format!("(int64_t)({key})"),
+    }
+}
+
 fn switch_case_chain(
     cx: &mut Cx<'_>,
     case: &SwitchCase,
@@ -13589,7 +13605,7 @@ fn node_to_cstmt(
             cases,
             default,
         } => {
-            let key: String = source_expr(&Source::Reg(*disc), disc.width, aggregates);
+            let key: String = switch_key_expr(*disc, cases, aggregates);
             let mut body_stmts: Vec<CStmt> = Vec::with_capacity(cases.len() + 1);
             for case in cases {
                 body_stmts.push(switch_case_chain(cx, case, ret_expr, aggregates));
