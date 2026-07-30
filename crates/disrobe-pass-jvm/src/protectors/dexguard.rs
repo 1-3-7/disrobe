@@ -403,15 +403,11 @@ mod tests {
     }
 
     #[test]
-    fn peels_reflection_string_decryptor_from_built_sample() {
-        let plaintexts: [&str; 3] = [
-            "https://api.example.com/v1/auth",
-            "X-Api-Key",
-            "decryptRoutine",
-        ];
-        let dex: Vec<u8> = crate::dex_builder::dexguard_reflect_sample(&plaintexts, 0x66);
+    fn peels_reflection_string_decryptor_from_a_javac_and_d8_built_dex() {
+        let plaintexts: [&str; 6] = crate::dex_builder::DEXGUARD_REFLECT_TOOLCHAIN_PLAINTEXT;
+        let dex: &[u8] = crate::dex_builder::DEXGUARD_REFLECT_TOOLCHAIN_DEX;
         let report: ProtectorPeelReport =
-            peel(&dex, Some(DexGuardAuthorization::user_attested())).expect("ok");
+            peel(dex, Some(DexGuardAuthorization::user_attested())).expect("ok");
         assert_eq!(report.status, PeelStatus::CipherRecovered);
         let recovered: Vec<&String> = report.strings_recovered.values().collect();
         for expected in plaintexts {
