@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-use disrobe_playground::circular::{CircularityKind, CircularityReport};
+use disrobe_playground::circular::{CircularityFinding, CircularityKind, CircularityReport};
 use disrobe_playground::manifest::ManifestIndex;
 use disrobe_playground::oracle::{OracleResult, OracleVerdict, ResolvedFixture};
 use disrobe_playground::report::{PlaygroundReport, render_json};
@@ -36,26 +36,55 @@ fn canary_dir() -> PathBuf {
 }
 
 fn real_tree_scan_roots() -> Vec<PathBuf> {
-    vec![corpus_root(), cli_tests_dir().join("chain")]
+    vec![corpus_root(), workspace_root().join("crates")]
+}
+
+fn is_canary_path(path: &str) -> bool {
+    path.replace('\\', "/").contains("_circular_canary/")
+}
+
+fn findings_outside_canary(report: &CircularityReport) -> Vec<&CircularityFinding> {
+    report
+        .findings
+        .iter()
+        .filter(|f: &&CircularityFinding| !is_canary_path(&f.path))
+        .collect()
 }
 
 #[test]
 fn circular_detector_reports_real_tree_clean() {
     let report: CircularityReport = scan_circularity(&real_tree_scan_roots());
+    let real: Vec<&CircularityFinding> = findings_outside_canary(&report);
     assert!(
-        report.is_clean(),
-        "PRIME DIRECTIVE VIOLATION: circularity detector found {} self-referential oracle(s) in the real tree (count must be 0): {:#?}",
-        report.count(),
-        report.findings,
-    );
-    assert_eq!(
-        report.count(),
-        0,
-        "real-tree circularity count must be exactly 0"
+        real.is_empty(),
+        "PRIME DIRECTIVE VIOLATION: circularity detector found {} self-referential oracle(s) in the real tree (count must be 0): {real:#?}",
+        real.len(),
     );
     assert!(
         report.files_scanned > 0,
         "detector scanned zero golden/oracle files - scan roots are wrong",
+    );
+}
+
+#[test]
+fn circular_detector_reaches_the_crate_test_trees() {
+    let report: CircularityReport = scan_circularity(&real_tree_scan_roots());
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|f: &CircularityFinding| is_canary_path(&f.path)),
+        "the real-tree scan did not reach {}, so it is not covering the crate test trees where \
+         the graders live. A detector aimed only at corpus/ cannot see a circular grader.",
+        canary_dir().display(),
+    );
+    let corpus_only: CircularityReport = scan_circularity(&[corpus_root()]);
+    assert!(
+        report.files_scanned > corpus_only.files_scanned,
+        "widened roots scanned {} files against {} for corpus alone; the crates tree contributed \
+         nothing",
+        report.files_scanned,
+        corpus_only.files_scanned,
     );
 }
 
@@ -94,15 +123,16 @@ fn circular_detector_trips_the_planted_canary() {
 
 #[test]
 fn detector_distinguishes_canary_from_real_tree() {
-    let real: CircularityReport = scan_circularity(&real_tree_scan_roots());
+    let scanned: CircularityReport = scan_circularity(&real_tree_scan_roots());
+    let real: Vec<&CircularityFinding> = findings_outside_canary(&scanned);
     let canary: CircularityReport = scan_circularity(&[canary_dir()]);
-    assert_eq!(real.count(), 0, "real tree must be clean");
+    assert_eq!(real.len(), 0, "real tree must be clean");
     assert!(canary.count() >= 1, "canary must be flagged");
     assert!(
-        canary.count() > real.count(),
+        canary.count() > real.len(),
         "detector must flag strictly more circularity in the canary ({}) than the real tree ({})",
         canary.count(),
-        real.count(),
+        real.len(),
     );
 }
 
