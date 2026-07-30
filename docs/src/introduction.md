@@ -10,7 +10,7 @@
 
 > **Try it in your browser: [the `disrobe` playground](https://1-3-7.github.io/disrobe/playground/).** Decompile a `.pyc`, scan a pickle for malicious reduce callables, and summarize a `.wasm` module, all client-side, with the core passes compiled to WebAssembly. Nothing is uploaded.
 
-`disrobe` reverses the bytecode, packers, freezers, and protectors layered onto compiled and frozen software across 20+ ecosystems: Python, JavaScript/TypeScript, WebAssembly, JVM and Android, .NET, native PE/ELF/Mach-O, Go, Lua, PHP, Ruby, Erlang/Elixir (BEAM), Swift/Objective-C, ActionScript 3, React Native Hermes, Flutter Dart AOT, and the native packer tier layered on top of them (UPX, MPRESS, NSPack, FSG, kkrunchy, MEW, ASPack, PECompact, Petite, Yoda's Crypter). It ships as a single static Rust binary.
+`disrobe` reverses the bytecode, packers, freezers, and protectors layered onto compiled and frozen software across 20+ ecosystems: Python, JavaScript/TypeScript, WebAssembly, JVM and Android, .NET, native PE/ELF/Mach-O, Go, Lua, PHP, Ruby, Erlang/Elixir (BEAM), Swift/Objective-C, ActionScript 3, React Native Hermes, Flutter Dart AOT, and the native packer tier layered on top of them (<!-- packer-roster:implemented -->Donut, sRDI, UPX, ASPack, Petite, MPRESS, FSG, PECompact, Yoda's Crypter, NSPack, MEW, kkrunchy<!-- /packer-roster -->). It ships as a single static Rust binary.
 
 Built for forensic and recovery work where reproducibility matters:
 
@@ -40,7 +40,7 @@ Every figure below is produced by a committed test gate or a local measurement h
 |---|---|---|
 | Python bytecode | <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per-code-object equivalence on the full CPython 3.14 stdlib (<!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m -->); <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> on the pinned 200-module corpus (<!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m -->). Whole-module exact, where a module counts only if all of its code objects pass: 54.5% on the pinned corpus | recompile on CPython 3.14.5, opcode diff |
 | CPython legacy 1.0-3.7 | <!-- m:py_legacy_count -->150 of 191<!-- /m --> proven-correct (CI floor); <!-- m:py_legacy_local_count -->166 of 191<!-- /m --> measured locally | recompile-equivalence or structural token-match |
-| WebAssembly | 133 of 133 corpus functions op-covered across the 38 parseable modules; 57 of 57 execution-eligible functions equivalent | execution differential under wasmtime |
+| WebAssembly | 1034 of 1034 opcodes lowered across the 38 parseable modules (133 of 133 functions), counted against an inventory `wasm-tools` produced rather than one disrobe produced; 57 of 57 execution-eligible functions equivalent | external opcode inventory for coverage, wasmtime differential for execution |
 | JVM classfile | <!-- m:jvm_per_method_count -->131 of 131<!-- /m --> methods recompile error-free | real `javac` |
 | Android (Dalvik) | <!-- m:dalvik_verifier_pct -->100%<!-- /m --> of the presentable classes in the committed dex corpus pass the JVM verifier (<!-- m:dalvik_verifier_count -->118 of 118<!-- /m -->). A further 37 of the corpus's 155 classes are link-skipped and never reach the verifier, because they reference supertypes the harness does not bundle, so those are ungraded rather than passing | `-Xverify:all` over assembled jar |
 | Ruby YARV | greeter <!-- m:ruby_greeter_pct -->100%<!-- /m -->, megafile <!-- m:ruby_megafile_pct -->98.67%<!-- /m --> opcode-multiset equivalence | recompile on MRI |

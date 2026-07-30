@@ -9,8 +9,9 @@ For symbol recovery, disassembly, identification, and forensics see the [native 
 | Tier | Support |
 |---|---|
 | In-house decoders | UPX, MPRESS, Petite, MEW, ASPack, PECompact, FSG, NSPack, kkrunchy and kkrunchy classic |
-| Stub emulation | ASProtect, Morphine, nPack, NeoLite, Yoda's Crypter driven to their original entry point through the in-house x86 stub emulator |
-| Detect and carve | Yoda's Protector, and the virtualizing protector tier (VMProtect, Themida, Enigma, and 15+ others) |
+| Stub emulation | Yoda's Crypter is driven to its original entry point through the in-house x86 stub emulator. The same emulator drives <!-- packer-roster:stub-eval-pending -->ASProtect, Morphine, nPack, NeoLite, PolyCryptor, Warzone Crypter<!-- /packer-roster -->, whose tier records the emulator as validated against spec-built stubs with real-sample recovery still unproven |
+| Detect and carve | <!-- packer-roster:grey-zone-detect-and-carve -->Yoda's Protector, VMProtect, Themida / WinLicense<!-- /packer-roster --> |
+| Detect only, no static recovery | <!-- packer-roster:grey-zone-detect-only -->PE-Protector, PELock, Enigma Protector, Armadillo, Obsidium, WinLicense<!-- /packer-roster --> |
 | Bytecode-VM devirtualization | Interpreter located, handler micro-ops fingerprinted behaviorally, opcode table recovered, VM CFG reconstructed, bytecode lifted to re-executable IR plus pseudo-code |
 | Devirtualization grade | Recovered IR re-executes to the same outputs as the original across arithmetic, loop, and branch programs, lifted from machine code alone (`vm_devirt_oracle.rs`) |
 | Per-fixture scores | Pinned in `corpus/native/packers/MANIFEST.toml` |
@@ -32,7 +33,7 @@ In-house decoders cover UPX (`.text` and `.pdata` byte-identical, ~96% whole loa
 
 On committed samples ASPack and PECompact rebuild the decompressed section image at its load RVA: the section report confirms the recovered `.text` byte-identical and the import table >=98% byte-identical to the original, both gated in CI, while the packed `.text` of near-random entropy and zero resolvable calls drops to ~6.2-6.5 with hundreds of disassembler-resolvable intra-code calls. Because the whole rebuild is a loaded-memory image rather than a disk-aligned file, the bench marks whole-output byte-identity n/a. MEW rebuilds a flat image of the committed Sysinternals samples, read as the entropy drop to ~4.2-4.9 and tens of thousands of decoded instructions.
 
-ASProtect, Morphine, nPack, NeoLite, and Yoda's Crypter are recovered by driving their unpack stub through the in-house x86 stub emulator: the decompressor or stream decryptor runs to the original entry point inside the emulator, then the reconstructed sections are read back and sliced byte-for-byte (Yoda's Crypter `.rsrc` recovers byte-identical and `.text` decrypts to full plaintext).
+Yoda's Crypter is recovered by driving its unpack stub through the in-house x86 stub emulator: the stream decryptor runs to the original entry point inside the emulator, then the reconstructed sections are read back and sliced byte-for-byte, so its `.rsrc` recovers byte-identical and its `.text` decrypts to full plaintext. The same emulator drives <!-- packer-roster:stub-eval-pending -->ASProtect, Morphine, nPack, NeoLite, PolyCryptor, Warzone Crypter<!-- /packer-roster -->, which sit one tier lower: the emulator is validated against spec-built stubs, and no vendor-packed sample in the corpus proves recovery on a real one.
 
 Per-fixture recovery scores are pinned in `corpus/native/packers/MANIFEST.toml`.
 

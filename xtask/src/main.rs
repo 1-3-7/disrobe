@@ -22,6 +22,7 @@ mod fuzz_scope;
 mod graphs;
 mod local_tags;
 mod metrics;
+mod packer_roster;
 #[cfg(feature = "playground")]
 mod playground;
 mod plugins;
