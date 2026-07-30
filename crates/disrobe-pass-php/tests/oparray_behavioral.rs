@@ -13,12 +13,56 @@
     clippy::cargo
 )]
 
+#[path = "support/php_toolchain.rs"]
+#[allow(
+    dead_code,
+    clippy::redundant_pub_crate,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
+mod php_toolchain;
+
 use disrobe_pass_php::{
     Decompilation, Error, OPARRAY_MAX_VERSION, OPARRAY_MIN_VERSION, decompile_oparray,
     parse_oparray,
 };
+use php_toolchain::{PHP_OPCACHE, PhpRuntime, require_php, unmeasured};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+const GRADED: &str = "the op_array decompile differential over the committed oparray samples";
+
+const PINNED_SAMPLES: [&str; 7] = [
+    "arithmetic",
+    "control_flow",
+    "do_while",
+    "functions",
+    "keyed_foreach",
+    "variable_variable",
+    "versioned",
+];
+
+const BEHAVIORALLY_GRADED_SAMPLES: [&str; 6] = [
+    "arithmetic",
+    "control_flow",
+    "do_while",
+    "functions",
+    "keyed_foreach",
+    "variable_variable",
+];
+
+fn required_sample(sample: &str) -> PathBuf {
+    let path: PathBuf = oparray_dir().join("src").join(format!("{sample}.php"));
+    assert!(
+        path.is_file(),
+        "corpus/php/oparray/src/{sample}.php is tracked in this repository and graded here, so a \
+         run that cannot read it must fail rather than measure nothing; {} is absent",
+        path.display()
+    );
+    path
+}
 
 fn oparray_dir() -> PathBuf {
     let manifest: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -31,19 +75,21 @@ fn oparray_dir() -> PathBuf {
     root
 }
 
-fn find_php() -> Option<PathBuf> {
-    if let Ok(explicit) = std::env::var("DISROBE_PHP_BIN") {
-        let p: PathBuf = PathBuf::from(explicit);
-        if p.exists() {
-            return Some(p);
-        }
+fn find_php(graded: &str) -> Option<PathBuf> {
+    let runtime: PhpRuntime = require_php(graded)?;
+    Some(runtime.binary)
+}
+
+fn find_opcache(php: &Path, graded: &str) -> Option<String> {
+    let dll: Option<String> = opcache_dll(php);
+    if dll.is_none() {
+        unmeasured(
+            &PHP_OPCACHE,
+            graded,
+            "the opcache extension was not found beside the php binary",
+        );
     }
-    let probe: std::io::Result<std::process::Output> =
-        Command::new("php").arg("--version").output();
-    match probe {
-        Ok(out) if out.status.success() => Some(PathBuf::from("php")),
-        _ => None,
-    }
+    dll
 }
 
 fn opcache_dll(php: &Path) -> Option<String> {
@@ -159,23 +205,23 @@ fn normalize(s: &str) -> String {
 }
 
 fn behavioral_roundtrip(sample: &str) {
-    let Some(php): Option<PathBuf> = find_php() else {
-        eprintln!("skip: php not on PATH (set DISROBE_PHP_BIN)");
+    let graded: String = format!("the {sample} op_array decompile differential");
+    let Some(php): Option<PathBuf> = find_php(&graded) else {
         return;
     };
-    let Some(dll): Option<String> = opcache_dll(&php) else {
-        eprintln!("skip: php_opcache extension not found next to the php binary");
+    let Some(dll): Option<String> = find_opcache(&php, &graded) else {
         return;
     };
-    let src: PathBuf = oparray_dir().join("src").join(format!("{sample}.php"));
-    if !src.exists() {
-        eprintln!("skip: sample {sample} absent");
-        return;
-    }
+    let src: PathBuf = required_sample(sample);
 
     let Some(original): Option<String> = run_php(&php, &src) else {
         panic!("could not run original {sample}.php");
     };
+    assert!(
+        !original.is_empty(),
+        "{sample}.php prints nothing, so comparing the recovered source against its output would \
+         accept a recovery that also prints nothing"
+    );
 
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_oparray_oracle")
@@ -184,9 +230,14 @@ fn behavioral_roundtrip(sample: &str) {
     let dzoa: PathBuf = out_dir.join(format!("{sample}.dzoa"));
     let emitted: Result<(), String> = emit_dzoa(&php, &dll, &src, &dzoa);
     if let Err(diag) = emitted {
-        eprintln!(
-            "skip: this php/opcache build emits no op_array dump for {sample}; the path is exercised on builds whose opcache honors opt_debug_level.\n{diag}\n\n{}",
-            environment_diagnostics(&php)
+        unmeasured(
+            &PHP_OPCACHE,
+            &graded,
+            &format!(
+                "this php and opcache build emits no op_array dump for {sample}, so the path is \
+                 exercised only on builds whose opcache honors opt_debug_level\n{diag}\n\n{}",
+                environment_diagnostics(&php)
+            ),
         );
         return;
     }
@@ -204,6 +255,70 @@ fn behavioral_roundtrip(sample: &str) {
         original, recovered_output,
         "behavioral mismatch for {sample}\n--- recovered source ---\n{recovered_source}\n--- original stdout ---\n{original}\n--- recovered stdout ---\n{recovered_output}"
     );
+}
+
+#[test]
+fn every_committed_oparray_sample_is_pinned_by_name() {
+    let dir: PathBuf = oparray_dir().join("src");
+    let entries: std::fs::ReadDir = std::fs::read_dir(&dir).unwrap_or_else(|e: std::io::Error| {
+        panic!(
+            "corpus/php/oparray/src is tracked in this repository and {GRADED} runs over it, so a \
+             run that cannot enumerate it must fail rather than grade an empty set: {e} at {}",
+            dir.display()
+        )
+    });
+    let mut on_disk: BTreeSet<String> = BTreeSet::new();
+    for entry in entries {
+        let entry: std::fs::DirEntry =
+            entry.unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", dir.display()));
+        let name: String = entry.file_name().to_string_lossy().into_owned();
+        if let Some(stem) = name.strip_suffix(".php") {
+            on_disk.insert(stem.to_owned());
+        }
+    }
+    let pinned: BTreeSet<String> = PINNED_SAMPLES
+        .iter()
+        .map(|s: &&str| (*s).to_owned())
+        .collect();
+    assert_eq!(
+        pinned.len(),
+        PINNED_SAMPLES.len(),
+        "a sample is pinned twice, so one entry grades nothing"
+    );
+    let ungraded: Vec<&String> = on_disk.difference(&pinned).collect();
+    assert!(
+        ungraded.is_empty(),
+        "these op_array samples are committed but named by no test: {ungraded:?}. A sample that is \
+         added without a case leaves a php construct compiled and never checked."
+    );
+    let missing: Vec<&String> = pinned.difference(&on_disk).collect();
+    assert!(
+        missing.is_empty(),
+        "these samples are pinned but absent: {missing:?}. Deleting an input must fail rather than \
+         quietly shrink what the differential covers."
+    );
+    assert_eq!(
+        on_disk.len(),
+        PINNED_SAMPLES.len(),
+        "corpus/php/oparray/src holds {} samples and {} are pinned; the total is asserted apart \
+         from the names so trading one sample for another cannot keep the count right",
+        on_disk.len(),
+        PINNED_SAMPLES.len()
+    );
+    let behavioral: BTreeSet<String> = BEHAVIORALLY_GRADED_SAMPLES
+        .iter()
+        .map(|s: &&str| (*s).to_owned())
+        .collect();
+    let not_behavioral: Vec<&String> = pinned.difference(&behavioral).collect();
+    assert_eq!(
+        not_behavioral,
+        vec!["versioned"],
+        "every pinned sample except `versioned`, which carries the schema-version cases, must have \
+         a behavioral roundtrip; these do not: {not_behavioral:?}"
+    );
+    for sample in PINNED_SAMPLES {
+        required_sample(sample);
+    }
 }
 
 #[test]
@@ -247,13 +362,10 @@ fn emit_real_dump(sample: &str) -> Option<RealDump> {
 }
 
 fn emit_real_dump_versioned(sample: &str, force_version: Option<u8>) -> Option<RealDump> {
-    let php: PathBuf = find_php()?;
-    let dll: String = opcache_dll(&php)?;
-    let canonical_src: PathBuf = oparray_dir().join("src").join(format!("{sample}.php"));
-    if !canonical_src.exists() {
-        eprintln!("skip: sample {sample} absent");
-        return None;
-    }
+    let graded: String = format!("the {sample} op_array schema-version differential");
+    let php: PathBuf = find_php(&graded)?;
+    let dll: String = find_opcache(&php, &graded)?;
+    let canonical_src: PathBuf = required_sample(sample);
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_oparray_oracle")
             .expect("mkdir oracle tmp");
@@ -266,9 +378,14 @@ fn emit_real_dump_versioned(sample: &str, force_version: Option<u8>) -> Option<R
     let dzoa: PathBuf = out_dir.join(format!("{sample}_{pid}_{seq}.dzoa"));
     let emitted: Result<(), String> = emit_dzoa_versioned(&php, &dll, &src, &dzoa, force_version);
     if let Err(diag) = emitted {
-        eprintln!(
-            "skip: this php/opcache build emits no op_array dump for {sample}; the path is exercised on builds whose opcache honors opt_debug_level.\n{diag}\n\n{}",
-            environment_diagnostics(&php)
+        unmeasured(
+            &PHP_OPCACHE,
+            &graded,
+            &format!(
+                "this php and opcache build emits no op_array dump for {sample}, so the path is \
+                 exercised only on builds whose opcache honors opt_debug_level\n{diag}\n\n{}",
+                environment_diagnostics(&php)
+            ),
         );
         return None;
     }
@@ -289,7 +406,6 @@ fn restamp_version(bytes: &[u8], version: u8) -> Vec<u8> {
 #[test]
 fn real_opcache_dump_stamps_a_version_inside_the_accepted_range() {
     let Some(dump): Option<RealDump> = emit_real_dump("versioned") else {
-        eprintln!("skip: php_opcache unavailable (set DISROBE_PHP_BIN)");
         return;
     };
     let stamped: u8 = dump.bytes[4];
@@ -305,7 +421,6 @@ fn every_in_range_schema_version_parses_and_roundtrips_through_real_php() {
     for version in OPARRAY_MIN_VERSION..=OPARRAY_MAX_VERSION {
         let Some(dump): Option<RealDump> = emit_real_dump_versioned("versioned", Some(version))
         else {
-            eprintln!("skip: php_opcache unavailable (set DISROBE_PHP_BIN)");
             return;
         };
         assert_eq!(
@@ -328,7 +443,6 @@ fn every_in_range_schema_version_parses_and_roundtrips_through_real_php() {
 #[test]
 fn out_of_range_schema_versions_are_rejected_naming_the_exact_version() {
     let Some(dump): Option<RealDump> = emit_real_dump("versioned") else {
-        eprintln!("skip: php_opcache unavailable (set DISROBE_PHP_BIN)");
         return;
     };
     for bad in [

@@ -155,52 +155,156 @@ fn published_value(label: &str) -> f64 {
         .unwrap_or_else(|| panic!("the {label} bar must carry a numeric value"))
 }
 
+const PUBLISHED_VALUE_TOLERANCE: f64 = 0.05;
+
 fn published_count_defect(
     bar: &serde_json::Value,
     label: &str,
     measured: &Measurement,
 ) -> Option<String> {
+    let matched: u64 = u64::from(measured.matched);
+    let compared: u64 = u64::from(measured.compared);
     let num: Option<u64> = bar.get("num").and_then(serde_json::Value::as_u64);
     let den: Option<u64> = bar.get("den").and_then(serde_json::Value::as_u64);
     match (num, den) {
         (None, None) => None,
-        (Some(num), Some(den)) => {
-            let matched: u64 = u64::from(measured.matched);
-            let compared: u64 = u64::from(measured.compared);
-            (num != matched || den != compared).then(|| {
-                format!(
-                    "the {label} bar publishes the counts {num} of {den}, but this run measured \
+        (Some(num), Some(den)) => (num != matched || den != compared).then(|| {
+            format!(
+                "the {label} bar publishes the counts {num} of {den}, but this run measured \
                      {matched} of {compared}; re-measure the fixture and publish the counts it \
                      produced, because a published fraction no run reproduces states a recovery \
                      rate nothing measured"
-                )
-            })
-        }
+            )
+        }),
         (Some(num), None) => Some(format!(
             "the {label} bar publishes the numerator {num} with no `den`, so the fraction it states \
-             has no denominator to be read against"
+             has no denominator to be read against; this run measured {matched} of {compared}"
         )),
         (None, Some(den)) => Some(format!(
             "the {label} bar publishes the denominator {den} with no `num`, so the fraction it \
-             states has no numerator to be read against"
+             states has no numerator to be read against; this run measured {matched} of {compared}"
         )),
     }
 }
 
+fn counts_stated_in_detail(detail: &str) -> Option<(u64, u64)> {
+    let at: usize = detail.find("matches ")?;
+    let rest: &str = &detail[at + "matches ".len()..];
+    let (numerator, tail): (&str, &str) = rest.split_once(" of ")?;
+    let denominator: String = tail
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>();
+    Some((
+        numerator.parse::<u64>().ok()?,
+        denominator.parse::<u64>().ok()?,
+    ))
+}
+
+fn percentage_stated_in_detail(detail: &str) -> Option<f64> {
+    let at: usize = detail.find("which is ")?;
+    let rest: &str = &detail[at + "which is ".len()..];
+    let figure: String = rest
+        .chars()
+        .take_while(|c: &char| c.is_ascii_digit() || *c == '.')
+        .collect::<String>();
+    figure.parse::<f64>().ok()
+}
+
+fn published_detail_defect(
+    bar: &serde_json::Value,
+    label: &str,
+    measured: &Measurement,
+) -> Option<String> {
+    let detail: &str = bar["detail"].as_str().unwrap_or_else(|| {
+        panic!(
+            "the {label} bar must carry the detail text every document renders beside it, because \
+             that prose is where its counts are stated"
+        )
+    });
+    let matched: u64 = u64::from(measured.matched);
+    let compared: u64 = u64::from(measured.compared);
+    let Some((stated_matched, stated_compared)): Option<(u64, u64)> =
+        counts_stated_in_detail(detail)
+    else {
+        return Some(format!(
+            "the {label} bar plots a floor rather than the measurement, so the counts behind it are \
+             stated only in its detail text, and that text carries no `matches N of M opcodes` \
+             phrase for this run to be checked against. This run measured {matched} of {compared}; \
+             state it, or the published prose is unverifiable.\n--- detail ---\n{detail}"
+        ));
+    };
+    if (stated_matched, stated_compared) != (matched, compared) {
+        return Some(format!(
+            "the {label} bar states it matches {stated_matched} of {stated_compared} opcodes and \
+             every document renders that sentence, but this run measured {matched} of {compared}. \
+             The plotted value is a floor and a regression above the floor leaves it green, so this \
+             prose is the only thing that pins the measurement; re-measure and restate \
+             it.\n--- detail ---\n{detail}"
+        ));
+    }
+    if compared == 0 {
+        return Some(format!(
+            "the {label} bar states a denominator of zero, over which any numerator reads as \
+             anything"
+        ));
+    }
+    let derived: f64 = 100.0 * matched as f64 / compared as f64;
+    if let Some(stated) = percentage_stated_in_detail(detail)
+        && (stated - derived).abs() >= PUBLISHED_VALUE_TOLERANCE
+    {
+        return Some(format!(
+            "the {label} bar states {stated}% beside its own counts {matched} of {compared}, which \
+             are {derived:.2}%\n--- detail ---\n{detail}"
+        ));
+    }
+    None
+}
+
+fn published_value_defect(bar: &serde_json::Value, label: &str) -> Option<String> {
+    let value: f64 = bar["value"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("the {label} bar must carry a numeric value"));
+    let num: u64 = bar.get("num").and_then(serde_json::Value::as_u64)?;
+    let den: u64 = bar.get("den").and_then(serde_json::Value::as_u64)?;
+    if den == 0 {
+        return Some(format!(
+            "the {label} bar publishes a denominator of zero, over which any numerator plots as \
+             anything"
+        ));
+    }
+    let derived: f64 = 100.0 * num as f64 / den as f64;
+    ((derived - value).abs() >= PUBLISHED_VALUE_TOLERANCE).then(|| {
+        format!(
+            "the {label} bar plots {value} beside its own counts {num} of {den}, which are \
+             {derived:.2}; the number every document renders must be the number its own fraction \
+             produces"
+        )
+    })
+}
+
 #[test]
 fn published_yarv_bars_match_the_floors_this_crate_enforces() {
-    let greeter: f64 = published_value(PUBLISHED_GREETER_BAR);
-    let megafile: f64 = published_value(PUBLISHED_MEGAFILE_BAR);
-    assert!(
-        (greeter - f64::from(GREETER_FLOOR_PCT)).abs() < f64::EPSILON,
-        "xtask/data/recovery.json publishes greeter at {greeter}% and every document renders that \
-         number, but this gate enforces {GREETER_FLOOR_PCT}%"
-    );
-    assert!(
-        (megafile - f64::from(MEGAFILE_FLOOR_PCT)).abs() < f64::EPSILON,
-        "xtask/data/recovery.json publishes megafile at {megafile}% and every document renders \
-         that number, but this gate enforces {MEGAFILE_FLOOR_PCT}%"
-    );
+    for (label, floor) in [
+        (PUBLISHED_GREETER_BAR, GREETER_FLOOR_PCT),
+        (PUBLISHED_MEGAFILE_BAR, MEGAFILE_FLOOR_PCT),
+    ] {
+        let bar: serde_json::Value = published_bar(PUBLISHED_HEADING, label);
+        let value: f64 = published_value(label);
+        assert!(
+            value >= f64::from(floor),
+            "xtask/data/recovery.json publishes {label} at {value}% and every document renders that \
+             number, but this gate enforces a floor of {floor}%; a figure below the floor the tests \
+             hold is a figure no run has to reach"
+        );
+        assert!(
+            value <= 100.0,
+            "xtask/data/recovery.json publishes {label} at {value}%, which is not a rate"
+        );
+        if let Some(defect) = published_value_defect(&bar, label) {
+            panic!("{defect}");
+        }
+    }
 }
 
 #[test]
@@ -232,9 +336,52 @@ fn a_published_count_that_no_run_reproduces_is_rejected() {
     }
     assert!(
         published_count_defect(&serde_json::json!({}), PUBLISHED_MEGAFILE_BAR, &measured).is_none(),
-        "a bar that publishes no counts at all is the state before any counts are published, so it \
-         is tolerated; once either count appears, both must match the measured run"
+        "these bars plot the enforced floor rather than the measurement and state their counts in \
+         their detail text, so an absent `num` and `den` is the published shape; the counts are \
+         pinned by published_detail_defect instead"
     );
+
+    let honest: serde_json::Value = serde_json::json!({"num": num, "den": den, "value": 98.67});
+    assert!(
+        published_value_defect(&honest, PUBLISHED_MEGAFILE_BAR).is_none(),
+        "a plotted value equal to its own fraction must be accepted"
+    );
+    for inconsistent in [
+        serde_json::json!({"num": num, "den": den, "value": 100.0}),
+        serde_json::json!({"num": num, "den": den, "value": 98.0}),
+        serde_json::json!({"num": num, "den": 0, "value": 98.67}),
+    ] {
+        assert!(
+            published_value_defect(&inconsistent, PUBLISHED_MEGAFILE_BAR).is_some(),
+            "the bar {inconsistent} plots a number its own counts do not produce and must be \
+             rejected"
+        );
+    }
+
+    let stated: serde_json::Value = serde_json::json!({
+        "detail": format!(
+            "real MRI recompiles the recovered source and the YARV opcode multiset matches {num} of \
+             {den} opcodes, which is 98.67%."
+        )
+    });
+    assert!(
+        published_detail_defect(&stated, PUBLISHED_MEGAFILE_BAR, &measured).is_none(),
+        "detail prose stating exactly the counts this run measured must be accepted"
+    );
+    for wrong in [
+        format!("matches {} of {den} opcodes, which is 98.67%.", num - 48),
+        format!("matches {num} of {} opcodes, which is 98.67%.", den - 1),
+        format!("matches {num} of {den} opcodes, which is 99.90%."),
+        "the recovered source recompiles cleanly.".to_owned(),
+    ] {
+        let bar: serde_json::Value = serde_json::json!({"detail": wrong});
+        assert!(
+            published_detail_defect(&bar, PUBLISHED_MEGAFILE_BAR, &measured).is_some(),
+            "the detail text {wrong:?} states something this run did not measure and must be \
+             rejected; a 48-opcode regression still clears the published floor, so this prose is \
+             what catches it"
+        );
+    }
 }
 
 fn recover_source(yarvc_rel: &str) -> String {
@@ -372,6 +519,9 @@ fn enforce_floors(fixture: &Fixture, measurement: &Measurement) {
         );
         let bar: serde_json::Value = published_bar(PUBLISHED_HEADING, label);
         if let Some(defect) = published_count_defect(&bar, label, measurement) {
+            panic!("{defect}");
+        }
+        if let Some(defect) = published_detail_defect(&bar, label, measurement) {
             panic!("{defect}");
         }
     }
