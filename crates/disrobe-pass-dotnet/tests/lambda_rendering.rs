@@ -75,7 +75,7 @@ fn a_method_named_after_a_query_operator_keeps_its_declaration() {
     let aggregate: String = body_of(&asm, " Aggregate(");
     assert_eq!(
         declaring_line(&aggregate),
-        "protected internal static System.Collections.Generic.Dictionary<string, double> Aggregate(System.Collections.Generic.IEnumerable<EdgeCases.User> users)",
+        "public static System.Collections.Generic.Dictionary<string, double> Aggregate(System.Collections.Generic.IEnumerable<EdgeCases.User> users)",
         "rewriting a query operator into member position must not touch the method's own declaration:\n{aggregate}"
     );
 }

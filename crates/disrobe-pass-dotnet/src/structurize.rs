@@ -64,6 +64,14 @@ pub trait TokenNamer {
         None
     }
 
+    fn callee_is_virtual_definition(&self, _token: u32) -> bool {
+        false
+    }
+
+    fn enclosing_type(&self) -> Option<&str> {
+        None
+    }
+
     fn outer_has_this(&self) -> bool {
         true
     }
@@ -111,12 +119,17 @@ impl TokenNamer for Resolver {
     fn field_type_name(&self, token: u32) -> Option<String> {
         self.field_token_type_name(token)
     }
+
+    fn callee_is_virtual_definition(&self, token: u32) -> bool {
+        Self::callee_is_virtual_definition(self, token)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct MethodNamer<'a> {
     pub resolver: &'a Resolver,
     pub has_this: bool,
+    pub enclosing_type: Option<&'a str>,
 }
 
 impl TokenNamer for MethodNamer<'_> {
@@ -143,6 +156,16 @@ impl TokenNamer for MethodNamer<'_> {
     #[inline]
     fn field_type_name(&self, token: u32) -> Option<String> {
         self.resolver.field_token_type_name(token)
+    }
+
+    #[inline]
+    fn callee_is_virtual_definition(&self, token: u32) -> bool {
+        self.resolver.callee_is_virtual_definition(token)
+    }
+
+    #[inline]
+    fn enclosing_type(&self) -> Option<&str> {
+        self.enclosing_type
     }
 
     #[inline]
@@ -1137,6 +1160,24 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         }
     }
 
+    fn is_inherited_call(&self, raw: &str) -> bool {
+        let Some((declaring, _)): Option<(&str, &str)> = raw.rsplit_once("::") else {
+            return false;
+        };
+        let Some(enclosing): Option<&str> = self.namer.enclosing_type() else {
+            return false;
+        };
+        let declaring: &str = declaring.split('<').next().unwrap_or(declaring);
+        !declaring.is_empty() && declaring != enclosing
+    }
+
+    fn receiver_text(&self, receiver: &Expr, base_call: bool) -> String {
+        if base_call && matches!(receiver, Expr::This) {
+            return "base".to_owned();
+        }
+        call_receiver(receiver, self.lang, self.names)
+    }
+
     fn float_const(ins: &Instruction) -> String {
         match ins.operand {
             OperandValue::F32Bits(b) => csharp_single(f32::from_bits(b)),
@@ -1230,6 +1271,12 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         let arg_count: usize = info.map_or(0, |c: CallInfo| c.arg_count);
         let returns_value: bool = info.map_or(!is_ctor, |c: CallInfo| c.returns_value);
         let has_this: bool = info.map_or_else(|| raw.contains("::"), |c: CallInfo| c.has_this);
+        let base_call: bool = self.lang == TargetLang::CSharp
+            && ins.name == "call"
+            && has_this
+            && !is_ctor
+            && self.namer.callee_is_virtual_definition(token)
+            && self.is_inherited_call(&raw);
 
         let mut args: Vec<Expr> = self.pop_n(arg_count);
         if token != 0 {
@@ -1309,7 +1356,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let recv: Expr = args.pop().unwrap_or(Expr::Null);
                 self.push(Expr::Field(format!(
                     "{}.{prop}",
-                    call_receiver(&recv, self.lang, self.names)
+                    self.receiver_text(&recv, base_call)
                 )));
                 return;
             }
@@ -1327,7 +1374,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let subscript: String = self.render_subscript(indices);
                 self.push(Expr::Field(format!(
                     "{}[{subscript}]",
-                    call_receiver(&recv, self.lang, self.names)
+                    self.receiver_text(&recv, base_call)
                 )));
                 return;
             }
@@ -1345,10 +1392,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let recv: Expr = args.pop().unwrap_or(Expr::Null);
                 let subscript: String = self.render_subscript(indices);
                 self.stmts.push(Stmt::Assign {
-                    target: format!(
-                        "{}[{subscript}]",
-                        call_receiver(&recv, self.lang, self.names)
-                    ),
+                    target: format!("{}[{subscript}]", self.receiver_text(&recv, base_call)),
                     value: value.render(self.lang, self.names),
                 });
                 return;
@@ -1357,7 +1401,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let value: Expr = args.pop().unwrap_or(Expr::Null);
                 let recv: Expr = args.pop().unwrap_or(Expr::Null);
                 self.stmts.push(Stmt::Assign {
-                    target: format!("{}.{prop}", call_receiver(&recv, self.lang, self.names)),
+                    target: format!("{}.{prop}", self.receiver_text(&recv, base_call)),
                     value: value.render(self.lang, self.names),
                 });
                 return;
@@ -1383,7 +1427,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             Expr::Call {
                 target: format!(
                     "{}{sep}{}",
-                    call_receiver(&recv, self.lang, self.names),
+                    self.receiver_text(&recv, base_call),
                     short(&raw)
                 ),
                 args: rendered_args,

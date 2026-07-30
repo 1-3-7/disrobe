@@ -163,6 +163,7 @@ fn decompile_one(
             let namer: MethodNamer<'_> = MethodNamer {
                 resolver,
                 has_this: !m.is_static(),
+                enclosing_type: Some(ty.full_name.as_str()),
             };
             let names: NameTable = build_name_table(resolver, m, &devirtualized_body, lang);
             let header_sig: String = if lang == TargetLang::CSharp {
