@@ -167,7 +167,11 @@ fn published_count_defect(
     let num: Option<u64> = bar.get("num").and_then(serde_json::Value::as_u64);
     let den: Option<u64> = bar.get("den").and_then(serde_json::Value::as_u64);
     match (num, den) {
-        (None, None) => None,
+        (None, None) => Some(format!(
+            "the {label} bar publishes no counts at all, so this check compares the run's \
+             {matched} of {compared} against nothing and reports success either way; publish the \
+             fraction the fixture measures"
+        )),
         (Some(num), Some(den)) => (num != matched || den != compared).then(|| {
             format!(
                 "the {label} bar publishes the counts {num} of {den}, but this run measured \
@@ -292,8 +296,18 @@ fn published_value_defect(bar: &serde_json::Value, label: &str) -> Option<String
     let value: f64 = bar["value"]
         .as_f64()
         .unwrap_or_else(|| panic!("the {label} bar must carry a numeric value"));
-    let num: u64 = bar.get("num").and_then(serde_json::Value::as_u64)?;
-    let den: u64 = bar.get("den").and_then(serde_json::Value::as_u64)?;
+    let counts: Option<(u64, u64)> = bar
+        .get("num")
+        .and_then(serde_json::Value::as_u64)
+        .zip(bar.get("den").and_then(serde_json::Value::as_u64));
+    let Some((num, den)): Option<(u64, u64)> = counts else {
+        return Some(format!(
+            "the {label} bar plots {value} with no `num` and `den` beside it. Every check in this \
+             file that reads those counts then has nothing to read and passes, so a bar that drops \
+             its fraction quietly loses the checks that bind the plotted rate to it: publish the \
+             counts this crate pins for the fixture"
+        ));
+    };
     if den == 0 {
         return Some(format!(
             "the {label} bar publishes a denominator of zero, over which any numerator plots as \
@@ -367,10 +381,11 @@ fn a_published_count_that_no_run_reproduces_is_rejected() {
         );
     }
     assert!(
-        published_count_defect(&serde_json::json!({}), PUBLISHED_MEGAFILE_BAR, &measured).is_none(),
-        "these bars carry their counts in their detail text rather than in `num` and `den`, so an \
-         absent pair is the published shape; the counts are pinned by published_detail_defect and \
-         the plotted rate is pinned against them separately"
+        published_count_defect(&serde_json::json!({}), PUBLISHED_MEGAFILE_BAR, &measured).is_some(),
+        "a bar carrying no counts at all used to be accepted here on the argument that its \
+         fraction lives in its detail text, but that let both count checks pass by having nothing \
+         to read; every plotted YARV bar now publishes the fraction its fixture measures, so an \
+         absent pair is a defect rather than a shape"
     );
 
     let honest: serde_json::Value = serde_json::json!({"num": num, "den": den, "value": 98.67});
