@@ -6,6 +6,7 @@ use serde::Deserialize;
 use crate::fileio::read_text_bounded;
 
 const MAX_DATA_JSON_BYTES: u64 = 4 * 1024 * 1024;
+const AGREEMENT_TOLERANCE: f64 = 0.005;
 
 #[derive(Debug, Deserialize)]
 struct Recovery {
@@ -23,6 +24,10 @@ struct RecoveryBar {
     label: String,
     #[serde(default)]
     value: Option<f64>,
+    #[serde(default)]
+    num: Option<u64>,
+    #[serde(default)]
+    den: Option<u64>,
     #[serde(default)]
     detected: Option<u64>,
 }
@@ -68,6 +73,24 @@ struct CrossClaim {
     unit: &'static str,
     expected: Expected,
 }
+
+#[derive(Debug)]
+struct MirrorClaim {
+    truth_heading: &'static str,
+    truth_label: &'static str,
+    copy_heading: &'static str,
+    copy_label: &'static str,
+    why: &'static str,
+}
+
+const MIRRORS: [MirrorClaim; 1] = [MirrorClaim {
+    truth_heading: "Python bytecode (CPython 3.14 stdlib",
+    truth_label: "200-module pinned corpus",
+    copy_heading: "Python bytecode by interpreter band",
+    copy_label: "CPython 3.14 (all 200 pinned modules)",
+    why: "the interpreter-band chart re-plots the pinned-corpus measurement for 3.14, so the two \
+          bars are one measurement published twice and only the first is asserted by a gate",
+}];
 
 const CLAIMS: [CrossClaim; 2] = [
     CrossClaim {
@@ -116,6 +139,65 @@ fn resolve(doc: &Recovery, expected: &Expected) -> Option<f64> {
             .detected
             .map(|v: u64| v as f64),
         Expected::Percent { heading, label } => find_bar(doc, heading, label)?.value,
+    }
+}
+
+fn mirrored_fields(bar: &RecoveryBar) -> [(&'static str, Option<f64>); 3] {
+    [
+        ("value", bar.value),
+        ("num", bar.num.map(|raw: u64| raw as f64)),
+        ("den", bar.den.map(|raw: u64| raw as f64)),
+    ]
+}
+
+fn check_mirrors(recovery: &Recovery, issues: &mut Vec<String>) {
+    for mirror in &MIRRORS {
+        let Some(truth): Option<&RecoveryBar> =
+            find_bar(recovery, mirror.truth_heading, mirror.truth_label)
+        else {
+            issues.push(format!(
+                "recovery.json has no `{}` bar under a heading containing `{}`, so the `{}` bar \
+                 that re-plots it is compared against nothing",
+                mirror.truth_label, mirror.truth_heading, mirror.copy_label
+            ));
+            continue;
+        };
+        let Some(copy): Option<&RecoveryBar> =
+            find_bar(recovery, mirror.copy_heading, mirror.copy_label)
+        else {
+            issues.push(format!(
+                "recovery.json has no `{}` bar under a heading containing `{}`, so the check that \
+                 holds it in step with `{}` covers nothing",
+                mirror.copy_label, mirror.copy_heading, mirror.truth_label
+            ));
+            continue;
+        };
+
+        for ((field, stated), (_, expected)) in mirrored_fields(copy)
+            .into_iter()
+            .zip(mirrored_fields(truth))
+        {
+            match (stated, expected) {
+                (Some(stated), Some(expected))
+                    if (stated - expected).abs() > AGREEMENT_TOLERANCE =>
+                {
+                    issues.push(format!(
+                        "bar `{}` states `{field}` {stated} while `{}` states {expected}; {}",
+                        mirror.copy_label, mirror.truth_label, mirror.why
+                    ));
+                }
+                (None, Some(expected)) => issues.push(format!(
+                    "bar `{}` carries no `{field}` while `{}` states {expected}; {}",
+                    mirror.copy_label, mirror.truth_label, mirror.why
+                )),
+                (Some(stated), None) => issues.push(format!(
+                    "bar `{}` states `{field}` {stated} while `{}` carries none, so the bar the \
+                     gate asserts no longer records the figure its copy plots",
+                    mirror.copy_label, mirror.truth_label
+                )),
+                _ => {}
+            }
+        }
     }
 }
 
@@ -174,7 +256,7 @@ pub(crate) fn run(root: &Path) -> Result<()> {
             continue;
         };
 
-        if (stated - truth).abs() > 0.005 {
+        if (stated - truth).abs() > AGREEMENT_TOLERANCE {
             issues.push(format!(
                 "{} row `{}` states {stated} {} while recovery.json says {truth}; the same \
                  measurement is published twice and the copies have drifted apart",
@@ -183,11 +265,15 @@ pub(crate) fn run(root: &Path) -> Result<()> {
         }
     }
 
+    check_mirrors(&recovery, &mut issues);
+
     if issues.is_empty() {
         println!(
             "xtask regen: cross-data cross-check ok ({} number(s) shared between recovery.json, \
-             ecosystems.json and verification.json agree)",
-            CLAIMS.len()
+             ecosystems.json and verification.json agree, and {} bar(s) that re-plot a measurement \
+             recovery.json already carries agree with it)",
+            CLAIMS.len(),
+            MIRRORS.len()
         );
         Ok(())
     } else {

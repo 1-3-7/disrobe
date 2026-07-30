@@ -33,7 +33,7 @@ const VERIFY_CLEAN_CLASS_FLOOR: usize = 102;
 
 const LIFTER_VERIFY_FAIL_CEILING: usize = 0;
 
-const BODY_VERIFY_CLEAN_FLOOR: usize = 307;
+const BODY_VERIFY_CLEAN_FLOOR: usize = 317;
 
 const BODY_VERIFY_FAIL_CEILING: usize = 0;
 
@@ -157,5 +157,63 @@ fn recovered_dalvik_bodies_pass_the_real_jvm_verifier() {
     assert!(
         verifiable >= 90,
         "expected the committed corpus to submit >=90 verifiable classes to the JVM, got {verifiable}"
+    );
+}
+
+#[test]
+fn published_dalvik_verifier_bar_matches_the_floors_this_gate_enforces() {
+    const BAR: &str = "verifier-clean (committed, CI)";
+    let data: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("xtask")
+        .join("data")
+        .join("recovery.json");
+    let raw: String = std::fs::read_to_string(&data)
+        .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", data.display()));
+    let parsed: serde_json::Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|e: serde_json::Error| panic!("parse {}: {e}", data.display()));
+
+    let bar: &serde_json::Value = parsed["groups"]
+        .as_array()
+        .expect("groups array")
+        .iter()
+        .filter_map(|group: &serde_json::Value| group["bars"].as_array())
+        .flatten()
+        .find(|candidate: &&serde_json::Value| candidate["label"].as_str() == Some(BAR))
+        .unwrap_or_else(|| {
+            panic!(
+                "xtask/data/recovery.json must carry a `{BAR}` bar for this gate to be its source"
+            )
+        });
+
+    let num: u64 = bar["num"].as_u64().expect("the bar records a numerator");
+    let den: u64 = bar["den"].as_u64().expect("the bar records a denominator");
+    let value: f64 = bar["value"].as_f64().expect("the bar records a percentage");
+    let detail: &str = bar["detail"].as_str().expect("the bar records a detail");
+
+    assert_eq!(
+        usize::try_from(num).expect("numerator fits usize"),
+        VERIFY_CLEAN_CLASS_FLOOR,
+        "recovery.json publishes {num} verifier-clean classes and every document renders that \
+         number, but this gate enforces {VERIFY_CLEAN_CLASS_FLOOR}; the published figure is wrong \
+         until this assertion passes"
+    );
+    assert_eq!(
+        num, den,
+        "the plotted figure is the presentable ratio, so a denominator of {den} against {num} \
+         clean classes means the bar no longer plots what its label says"
+    );
+    assert!(
+        (value - 100.0).abs() < f64::EPSILON,
+        "recovery.json plots {value}% for {num} of {den} classes; the percentage and the counts \
+         beside it have drifted apart"
+    );
+    let bodies: String = format!("{BODY_VERIFY_CLEAN_FLOOR} re-hosted method bodies verify clean");
+    assert!(
+        detail.contains(&bodies),
+        "the `{BAR}` detail does not state `{bodies}`, but this gate enforces \
+         {BODY_VERIFY_CLEAN_FLOOR} re-hosted bodies; the prose that ships beside the chart states a \
+         body count nothing measures"
     );
 }

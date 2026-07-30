@@ -13,7 +13,9 @@ struct FloorClaim {
     sites: &'static [(&'static str, &'static str)],
 }
 
-const CLAIMS: [FloorClaim; 4] = [
+const DALVIK_VERIFIER_GATE: &str = "crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs";
+
+const CLAIMS: [FloorClaim; 6] = [
     FloorClaim {
         constant: "OBJECT_PCT_FLOOR",
         source: "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs",
@@ -53,6 +55,22 @@ const CLAIMS: [FloorClaim; 4] = [
             "docs/src/architecture/whitepaper.md",
             "sets `REEXEC_FLOOR_NUM = {}`",
         )],
+    },
+    FloorClaim {
+        constant: "VERIFY_CLEAN_CLASS_FLOOR",
+        source: DALVIK_VERIFIER_GATE,
+        sites: &[("README.md", "{} / {} presentable classes clean")],
+    },
+    FloorClaim {
+        constant: "BODY_VERIFY_CLEAN_FLOOR",
+        source: DALVIK_VERIFIER_GATE,
+        sites: &[
+            ("README.md", "{} re-hosted bodies clean"),
+            (
+                "docs/src/languages/jvm-android.md",
+                "{} re-hosted bodies verify clean",
+            ),
+        ],
     },
 ];
 
