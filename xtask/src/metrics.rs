@@ -48,6 +48,10 @@ struct Bar {
     modules: Option<u64>,
     #[serde(default)]
     floor_pct: Option<f64>,
+    #[serde(default)]
+    attested_num: Option<u64>,
+    #[serde(default)]
+    attested_den: Option<u64>,
 }
 
 impl Recovery {
@@ -126,6 +130,16 @@ impl Bar {
     fn denominator(&self) -> Result<u64> {
         self.den
             .ok_or_else(|| eyre!("bar `{}` has no `den` count", self.label))
+    }
+
+    fn attested_ratio(&self) -> Result<MetricValue> {
+        let num: u64 = self
+            .attested_num
+            .ok_or_else(|| eyre!("bar `{}` has no `attested_num` count", self.label))?;
+        let den: u64 = self
+            .attested_den
+            .ok_or_else(|| eyre!("bar `{}` has no `attested_den` count", self.label))?;
+        Ok(MetricValue::Ratio { num, den })
     }
 }
 
@@ -366,6 +380,18 @@ const KEYS: &[KeySpec] = &[
         extract: |r: &Recovery| {
             r.bar("Dalvik recovered bodies", "verifier-clean (committed, CI)")?
                 .percent()
+        },
+    },
+    KeySpec {
+        name: "dalvik_body_attested_frac",
+        formatter: Formatter::OfPlain,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            r.bar(
+                "Dalvik recovered bodies",
+                "body-lowering (real apks, local)",
+            )?
+            .attested_ratio()
         },
     },
     KeySpec {
