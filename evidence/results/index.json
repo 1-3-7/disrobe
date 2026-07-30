@@ -173,7 +173,7 @@
       "floor": 84.0,
       "floor_holds": true,
       "id": "go-typemeta",
-      "measured": "85.00%",
+      "measured": "100.00%",
       "oracle_strength": "strong",
       "reproduce": "cargo test -p disrobe-pass-go --test go_typemeta"
     },

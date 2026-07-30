@@ -12,7 +12,6 @@ const STRIPPED_GO126_NAMED: usize = 838;
 const PUBLISHED_HEADING: &str = "Go type-name recovery";
 const PUBLISHED_BAR: &str = "type names";
 const PUBLISHED_RATIO_GUARD: f64 = 0.85;
-const PUBLISHED_RATIO_GUARD_PCT: f64 = 85.0;
 
 fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {
     let path: PathBuf = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -263,10 +262,19 @@ fn typemeta_recovers_real_type_names_on_go126() {
         u64::try_from(named).expect("named fits u64") >= num,
         "recovery.json publishes {num} of {den} named types; this run recovered {named}"
     );
+    let derived: f64 = 100.0 * num as f64 / den as f64;
     assert!(
-        (value - PUBLISHED_RATIO_GUARD_PCT).abs() < f64::EPSILON,
-        "the published value {value} is the ratio guard this gate enforces \
-         ({PUBLISHED_RATIO_GUARD_PCT}%), while the measured pair is carried by num and den"
+        (derived - value).abs() < 0.05,
+        "the published value {value} plots this measurement and must equal its own {num}/{den} = \
+         {derived:.4}; the floor this gate enforces is a separate number and lives in floor_pct"
+    );
+    let floor_pct: f64 = bar["floor_pct"]
+        .as_f64()
+        .expect("the type names bar must carry the floor its gate enforces as floor_pct");
+    assert!(
+        (floor_pct / 100.0 - PUBLISHED_RATIO_GUARD).abs() < f64::EPSILON,
+        "recovery.json publishes a floor of {floor_pct}% and four documents render that number, \
+         but this gate enforces {PUBLISHED_RATIO_GUARD}"
     );
 
     let names: Vec<&str> = analysis
