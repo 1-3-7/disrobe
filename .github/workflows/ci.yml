@@ -162,7 +162,17 @@ jobs:
         if: runner.os == 'Linux'
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "27"
+          otp-version: "27.3.4"
+      - name: require erlang so a beam differential fails instead of grading nothing
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          if ! command -v erlc >/dev/null 2>&1; then
+            echo "erlc is not callable after provisioning, so the beam differentials would grade nothing"
+            exit 1
+          fi
+          erl -noshell -eval 'io:format("otp ~s~n",[erlang:system_info(otp_release)]),halt().'
+          echo "DISROBE_REQUIRE_ERLANG=1" >> "$GITHUB_ENV"
       - name: provision the dotnet sdk the il-equivalence floors are measured with
         uses: actions/setup-dotnet@v4
         with:
