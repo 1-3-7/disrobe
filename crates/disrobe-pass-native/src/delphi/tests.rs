@@ -788,6 +788,39 @@ fn no_init_table_recovered_from_real_system_dlls() {
     assert!(checked > 0, "no real system DLL was readable for the check");
 }
 
+#[test]
+fn a_delphi_binary_without_a_reachable_init_table_says_so() {
+    let junk: Vec<u8> = (0..0x400u16)
+        .map(|i: u16| (i.wrapping_mul(37) & 0xFF) as u8)
+        .collect();
+    let mut pe: Vec<u8> = pe_with_stub_and_data(&delphi_entry_stub(data_va()), junk);
+    pe.extend_from_slice(b"compiled with Embarcadero Delphi 12\x00");
+    let report: DelphiReport = analyze(&pe);
+    assert!(report.is_delphi);
+    assert!(report.init_table.is_none());
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n: &String| n.contains("no unit initialization table was reached")),
+        "a missing table must explain itself, notes were {:?}",
+        report.notes
+    );
+}
+
+#[test]
+fn a_reachable_init_table_leaves_no_complaint() {
+    let units: [(u64, u64); 2] = [(code_va() + 0x40, code_va() + 0x60), (code_va() + 0x80, 0)];
+    let report: DelphiReport = analyze(&init_table_pe(&units));
+    assert!(report.init_table.is_some());
+    assert!(
+        !report
+            .notes
+            .iter()
+            .any(|n: &String| n.contains("no unit initialization table was reached"))
+    );
+}
+
 fn find_class<'a>(classes: &'a [DelphiClass], name: &str) -> &'a DelphiClass {
     classes
         .iter()

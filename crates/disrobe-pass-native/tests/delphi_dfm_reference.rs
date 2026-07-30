@@ -4,7 +4,16 @@ use std::path::{Path, PathBuf};
 
 use disrobe_pass_native::delphi::{DelphiForm, decode_dfm};
 
-const CASES: [&str; 5] = ["binary", "collection", "deep", "nested", "scalars"];
+const CASES: [&str; 8] = [
+    "bigbinary",
+    "binary",
+    "collection",
+    "deep",
+    "inherit",
+    "nested",
+    "scalars",
+    "wide",
+];
 
 fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/delphi_dfm")
