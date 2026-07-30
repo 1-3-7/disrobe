@@ -145,6 +145,19 @@ jobs:
             exit 1
           fi
           echo "DISROBE_REQUIRE_SOLVER=1" >> "$GITHUB_ENV"
+      - name: require the committed packer fixtures so an absent one fails instead of skipping
+        shell: bash
+        run: |
+          for pair in \
+            corpus/native/packers/fsg/Hash.packed.fsg.exe \
+            corpus/native/packers/nspack/hash.packed.nspack.exe \
+            corpus/native/packers/petite/hello.exe; do
+            if [ ! -f "$pair" ]; then
+              echo "committed packer fixture missing from the checkout: $pair"
+              exit 1
+            fi
+          done
+          echo "DISROBE_REQUIRE_PACKER_FIXTURES=1" >> "$GITHUB_ENV"
       - name: provision erlang so the beam differentials run instead of returning early
         if: runner.os == 'Linux'
         uses: erlef/setup-beam@v1
