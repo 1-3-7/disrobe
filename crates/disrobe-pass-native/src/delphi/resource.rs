@@ -1,9 +1,9 @@
 use std::fmt::Write as _;
 
 use super::image::PeView;
+use super::tables::GUID_BYTES;
 
 const RT_RCDATA: u32 = 10;
-const GUID_BYTES: usize = 16;
 const RESOURCE_DIR_INDEX: usize = 2;
 const DIR_HEADER_SIZE: u32 = 16;
 const ENTRY_SIZE: u32 = 8;

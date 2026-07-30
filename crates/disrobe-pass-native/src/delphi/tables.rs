@@ -6,7 +6,7 @@ const MAX_FIELDS_PER_CLASS: u16 = 4096;
 const MAX_FIELD_CLASSES: u16 = 8192;
 const MAX_DYNAMIC_METHODS: u16 = 4096;
 const MAX_INTERFACES: i32 = 1024;
-const GUID_BYTES: usize = 16;
+pub(super) const GUID_BYTES: usize = 16;
 
 #[derive(Debug, Clone)]
 pub(super) struct RawField {
