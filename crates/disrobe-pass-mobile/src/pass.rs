@@ -309,7 +309,11 @@ pub fn detect_kind(bytes: &[u8]) -> DetectedKind {
         return DetectedKind::FlutterDartKernel;
     }
     if bytes.len() >= 4 && bytes[..4] == [0x7f, b'E', b'L', b'F'] {
-        return DetectedKind::FlutterLibAppSo;
+        return if crate::flutter::has_dart_aot_snapshot(bytes) {
+            DetectedKind::FlutterLibAppSo
+        } else {
+            DetectedKind::Unknown
+        };
     }
     if bytes.len() >= 4 && bytes[..2] == [b'P', b'K'] {
         return classify_zip_container(bytes);
@@ -522,9 +526,21 @@ mod tests {
     }
 
     #[test]
-    fn detect_elf_kind() {
+    fn a_bare_elf_is_not_a_flutter_snapshot() {
         let bytes: Vec<u8> = vec![0x7f, b'E', b'L', b'F', 2, 1, 1, 0];
-        assert_eq!(detect_kind(&bytes), DetectedKind::FlutterLibAppSo);
+        assert_eq!(
+            detect_kind(&bytes),
+            DetectedKind::Unknown,
+            "elf magic alone says nothing about Dart; claiming Flutter here reports every linux \
+             binary as a Flutter app"
+        );
+    }
+
+    #[test]
+    fn an_elf_without_a_dart_snapshot_is_not_a_flutter_snapshot() {
+        let mut bytes: Vec<u8> = vec![0x7f, b'E', b'L', b'F', 2, 1, 1, 0];
+        bytes.extend_from_slice(&[0u8; 512]);
+        assert_eq!(detect_kind(&bytes), DetectedKind::Unknown);
     }
 
     #[test]

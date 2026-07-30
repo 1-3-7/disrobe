@@ -188,6 +188,17 @@ pub fn parse_libapp_so(bytes: &[u8]) -> Result<LibAppLayout> {
     Ok(layout)
 }
 
+#[must_use]
+pub fn has_dart_aot_snapshot(bytes: &[u8]) -> bool {
+    let Ok(layout): Result<LibAppLayout> = parse_libapp_so(bytes) else {
+        return false;
+    };
+    [&layout.vm_snapshot_data, &layout.isolate_snapshot_data]
+        .into_iter()
+        .flatten()
+        .any(|section: &SnapshotSection| parse_dart_snapshot(&section.bytes_preview).is_ok())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlutterApkLayout {
     pub libapp_path: String,
