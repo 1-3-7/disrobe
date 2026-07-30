@@ -996,6 +996,84 @@ fn recovered_record_fields_carry_their_grading_tier() {
     );
 }
 
+fn build_single_letter_enum_blob() -> Vec<u8> {
+    let mut b: Blob = Blob::new(data_va(), 4);
+    let cn: u64 = b.put_ss("TChart");
+    let ti_axis: u64 = b.put_enum_typeinfo("TAxis", 0, 2, &["X", "Y", "Z"], "Graphics");
+    let ti_chart: u64 = b.put_class_typeinfo("TChart", "Unit1", &[("Axis", ti_axis)]);
+    let _va: u64 = b.put_vmt(
+        T_MODERN32,
+        &VmtSpec {
+            class_name_va: cn,
+            type_info_va: ti_chart,
+            instance_size: 0x20,
+            ..VmtSpec::default()
+        },
+    );
+    b.buf
+}
+
+#[test]
+fn an_enumeration_whose_members_are_single_letters_is_recovered_whole() {
+    let pe: Vec<u8> = pe_with_code_and_data(build_single_letter_enum_blob());
+    let report: DelphiReport = analyze(&pe);
+    let axis: &DelphiTypeInfo = report
+        .types
+        .iter()
+        .find(|t: &&DelphiTypeInfo| t.name == "TAxis")
+        .expect("TAxis recovered");
+    assert_eq!(
+        axis.members,
+        vec!["X".to_owned(), "Y".to_owned(), "Z".to_owned()],
+        "single letter enumeration members are ordinary Delphi and must not be dropped"
+    );
+    assert_eq!(axis.max_value, Some(2));
+}
+
+fn build_short_literal_blob() -> Vec<u8> {
+    let mut b: Blob = Blob::new(data_va(), 4);
+    let _two: u64 = b.put_ansi_string(1252, "OK");
+    let _three: u64 = b.put_ansi_string(1252, "%s ");
+    let _one: u64 = b.put_ansi_string(1252, "!");
+    b.buf
+}
+
+#[test]
+fn literals_of_two_and_three_characters_are_recovered() {
+    let pe: Vec<u8> = pe_with_code_and_data(build_short_literal_blob());
+    let found: Vec<DelphiString> = recover_delphi_strings(&pe);
+    let texts: Vec<&str> = found
+        .iter()
+        .map(|s: &DelphiString| s.text.as_str())
+        .collect();
+    assert!(texts.contains(&"OK"), "got {texts:?}");
+    assert!(texts.contains(&"%s "), "got {texts:?}");
+    assert!(
+        !texts.contains(&"!"),
+        "a single character literal stays below the measured floor, got {texts:?}"
+    );
+}
+
+#[test]
+fn dynamic_methods_on_an_all_executable_image_report_the_weak_check_too() {
+    let stub: [u8; 8] = [0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0xC3];
+    let pe: Vec<u8> = all_executable_pe(&stub, build_dynamic_table_blob(code_va()));
+    let report: DelphiReport = analyze(&pe);
+    let cls: &DelphiClass = find_class(&report.classes, "TWinControl");
+    assert!(
+        !cls.dynamic_methods.is_empty(),
+        "the dynamic method table is recovered here"
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n: &String| n.contains("cannot discriminate here")),
+        "the dynamic method table leans on the same code-address check as the init table, so an all-executable image must say so, notes were {:?}",
+        report.notes
+    );
+}
+
 fn find_class<'a>(classes: &'a [DelphiClass], name: &str) -> &'a DelphiClass {
     classes
         .iter()

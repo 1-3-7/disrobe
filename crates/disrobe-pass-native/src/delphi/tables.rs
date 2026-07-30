@@ -1,4 +1,4 @@
-use super::image::{MAX_SHORTSTRING_LEN, PeView, is_plausible_symbol};
+use super::image::{MAX_SHORTSTRING_LEN, PeView, is_plausible_symbol_of_length};
 use super::layout::VmtLayout;
 use super::{DelphiDynamicMethod, DelphiInterface};
 
@@ -45,7 +45,7 @@ pub(super) fn parse_field_table(
         off = off.checked_add(2)?;
         let (name, consumed): (String, usize) = view.read_shortstring(off, MAX_SHORTSTRING_LEN)?;
         off = off.checked_add(consumed)?;
-        if !is_plausible_symbol(&name) {
+        if !is_plausible_symbol_of_length(&name, 1) {
             return None;
         }
         if field_offset < layout.ptr_size as u32 || field_offset >= instance_size {

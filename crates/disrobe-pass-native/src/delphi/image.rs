@@ -1,6 +1,7 @@
 use crate::packers::pe_sections::{PeImage, PeSection, parse_pe_image};
 
 pub(super) const MAX_SHORTSTRING_LEN: usize = 255;
+pub(super) const BYTE_SCAN_LIMIT: usize = 8 * 1024 * 1024;
 
 const SCN_CNT_CODE: u32 = 0x0000_0020;
 const SCN_MEM_EXECUTE: u32 = 0x2000_0000;

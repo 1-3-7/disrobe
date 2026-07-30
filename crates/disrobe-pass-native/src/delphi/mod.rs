@@ -142,8 +142,7 @@ const MARKERS: &[&[u8]] = &[
 ];
 
 fn scan_window(bytes: &[u8]) -> &[u8] {
-    const LIMIT: usize = 8 * 1024 * 1024;
-    &bytes[..bytes.len().min(LIMIT)]
+    &bytes[..bytes.len().min(image::BYTE_SCAN_LIMIT)]
 }
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
@@ -290,7 +289,12 @@ pub fn analyze(bytes: &[u8]) -> DelphiReport {
             notes.push("no Delphi RTTI virtual method tables present".to_owned());
         }
     }
-    if init_table.is_some() && view.every_mapped_section_is_executable() {
+    let leaned_on_code_addresses: bool = init_table.is_some()
+        || outcome
+            .classes
+            .iter()
+            .any(|c: &DelphiClass| !c.dynamic_methods.is_empty());
+    if leaned_on_code_addresses && view.every_mapped_section_is_executable() {
         notes.push(
             "every mapped section in this image is flagged executable, so the check that unit addresses lie in code cannot discriminate here and the recovered table is weakly validated".to_owned(),
         );
