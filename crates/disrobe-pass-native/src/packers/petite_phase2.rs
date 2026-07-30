@@ -32,7 +32,7 @@ use crate::error::{Error, Result};
 use crate::packers::pe_sections::{
     memory_to_file_image, read_u16 as read_u16_le, read_u32 as read_u32_le,
 };
-use crate::stub_emu::mem::MAX_MAP_BYTES;
+use crate::stub_emu::mem::{MAX_MAP_BYTES, PAGE_SIZE};
 use crate::stub_emu::{Cpu, CpuMode, ExitReason, HostCall, Memory, Perm, Reg, Regs};
 
 const FILE_HEADER_OFFSET_E_LFANEW: usize = 0x3C;
@@ -199,7 +199,25 @@ impl HostCall for PetiteHost {
                 };
                 ret(regs, 1, argc)
             }
-            "VirtualProtect" => ret(regs, 1, 4),
+            "VirtualProtect" => {
+                let address: u64 = u64::from(read_arg(0)?);
+                let size: u64 = u64::from(read_arg(1)?);
+                let new_protect: u32 = read_arg(2)?;
+                let old_protect_out: u64 = u64::from(read_arg(3)?);
+                let previous: u32 = mem.perm_at(address).map_or(
+                    crate::stub_emu::win_env::PAGE_READWRITE,
+                    crate::stub_emu::page_protect_from_perm,
+                );
+                let applied: u64 = mem.protect(
+                    address,
+                    size,
+                    crate::stub_emu::perm_from_page_protect(new_protect),
+                )?;
+                if old_protect_out != 0 {
+                    mem.write_u32(old_protect_out, previous)?;
+                }
+                ret(regs, u64::from(applied > 0), 4)
+            }
             "VirtualQuery" => ret(regs, 0, 3),
             "GetModuleHandleA" | "GetModuleHandleW" => {
                 self.capture_pre_resolution_snapshot(regs.rip, mem);
@@ -289,6 +307,9 @@ pub fn unpack_petite_phase2_emulated(packed: &[u8]) -> Result<PhaseTwoEmulatedOu
 
     rewrite_iat(packed, &pe_layout, &mut cpu, &mut host, &env)?;
 
+    apply_loader_page_protection(&mut cpu, image_base, &pe_layout)?;
+    cpu.enable_seh_dispatch();
+
     cpu.regs.rip = u64::from(pe_layout.entry_point_rva) + image_base;
     cpu.regs
         .set(Reg::Rsp, EMU_STACK_BASE + EMU_STACK_SIZE - 0x100);
@@ -302,6 +323,7 @@ pub fn unpack_petite_phase2_emulated(packed: &[u8]) -> Result<PhaseTwoEmulatedOu
 
     let exit: ExitReason = cpu.run(&mut host, STEP_CAP_DEFAULT)?;
     let final_rip: u64 = cpu.regs.rip;
+    let steps_executed: u64 = cpu.steps_executed();
 
     let recovered_size: usize = (pe_layout.size_of_image.max(pe_layout.last_section_end_va)
         as usize)
@@ -347,9 +369,27 @@ pub fn unpack_petite_phase2_emulated(packed: &[u8]) -> Result<PhaseTwoEmulatedOu
         heap_used,
         exit_reason: format!("{exit:?} final_rip=0x{final_rip:016x}"),
         host_calls: host.calls,
-        steps_executed: 0,
+        steps_executed,
         oep_estimate,
     })
+}
+
+fn apply_loader_page_protection(cpu: &mut Cpu, image_base: u64, pe: &PeLayout) -> Result<()> {
+    let header_span: u64 = (pe.headers_raw_end as u64).max(PAGE_SIZE as u64);
+    cpu.mem.protect(image_base, header_span, Perm::R)?;
+    for sec in &pe.sections {
+        let span: u32 = sec.virtual_size.max(sec.size_of_raw_data);
+        if span == 0 {
+            continue;
+        }
+        let perm: Perm = crate::stub_emu::perm_from_section_characteristics(sec.characteristics);
+        cpu.mem.protect(
+            image_base + u64::from(sec.virtual_address),
+            u64::from(span),
+            perm,
+        )?;
+    }
+    Ok(())
 }
 
 fn restore_preserved_pe_headers(mem_image: &mut [u8], packed: &[u8], pe: &PeLayout) {
@@ -572,6 +612,7 @@ struct SectionRecord {
     virtual_size: u32,
     pointer_to_raw_data: u32,
     size_of_raw_data: u32,
+    characteristics: u32,
 }
 
 fn parse_pe_layout(bytes: &[u8]) -> Result<PeLayout> {
@@ -603,6 +644,7 @@ fn parse_pe_layout(bytes: &[u8]) -> Result<PeLayout> {
         let virtual_address: u32 = read_u32_le(bytes, s + 12)?;
         let size_of_raw_data: u32 = read_u32_le(bytes, s + 16)?;
         let pointer_to_raw_data: u32 = read_u32_le(bytes, s + 20)?;
+        let characteristics: u32 = read_u32_le(bytes, s + 36)?;
         let end_va: u32 = virtual_address.saturating_add(virtual_size.max(size_of_raw_data));
         if end_va > last_end_va {
             last_end_va = end_va;
@@ -612,6 +654,7 @@ fn parse_pe_layout(bytes: &[u8]) -> Result<PeLayout> {
             virtual_size,
             pointer_to_raw_data,
             size_of_raw_data,
+            characteristics,
         });
     }
     Ok(PeLayout {

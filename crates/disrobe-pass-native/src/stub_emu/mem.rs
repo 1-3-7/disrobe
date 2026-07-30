@@ -159,6 +159,49 @@ impl Memory {
         Ok(())
     }
 
+    #[must_use]
+    pub fn perm_at(&self, addr: u64) -> Option<Perm> {
+        self.pages.get(&(addr >> PAGE_BITS)).map(|p: &Page| p.perm)
+    }
+
+    pub fn protect(&mut self, addr: u64, size: u64, perm: Perm) -> Result<u64> {
+        if size == 0 {
+            return Ok(0);
+        }
+        if size > MAX_MAP_BYTES {
+            return Err(Error::GoblinParse(format!(
+                "emu: refusing protect of {size} bytes (exceeds {MAX_MAP_BYTES}-byte ceiling)"
+            )));
+        }
+        let start: u64 = addr & !PAGE_MASK;
+        let raw_end: u64 = addr.checked_add(size).ok_or_else(|| {
+            Error::GoblinParse(format!(
+                "emu: refusing protect at 0x{addr:016x} of {size} bytes (address overflow)"
+            ))
+        })?;
+        let end: u64 = raw_end.checked_add(PAGE_MASK).ok_or_else(|| {
+            Error::GoblinParse(format!(
+                "emu: refusing protect at 0x{addr:016x} of {size} bytes (page alignment overflow)"
+            ))
+        })? & !PAGE_MASK;
+        let pages: u64 = (end.saturating_sub(start)) >> PAGE_BITS;
+        if pages > MAX_MAP_PAGES {
+            return Err(Error::GoblinParse(format!(
+                "emu: refusing protect spanning {pages} pages (exceeds {MAX_MAP_PAGES}-page ceiling)"
+            )));
+        }
+        let mut changed: u64 = 0;
+        for page_index in 0..pages {
+            let p: u64 = start.wrapping_add(page_index << PAGE_BITS);
+            let Some(page) = self.pages.get_mut(&(p >> PAGE_BITS)) else {
+                continue;
+            };
+            page.perm = perm;
+            changed += 1;
+        }
+        Ok(changed)
+    }
+
     pub fn write(&mut self, addr: u64, bytes: &[u8]) -> Result<()> {
         for (i, b) in bytes.iter().enumerate() {
             self.write_u8(addr.wrapping_add(i as u64), *b)?;
