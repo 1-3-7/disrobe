@@ -25,7 +25,7 @@ The workspace splits into a small set of shared cores and one crate per ecosyste
 | `disrobe-core` | Shared types: error codes (`DR-<DOMAIN>-<NNNN>`), progress, confidence tiers, secret/credential scanning, cyclomatic metrics. |
 | `disrobe-prowl` | Async URL and IOC harvester over public archives and threat-intel feeds, with bounded paging, per-host rate limits, key resolution, and typed reports. |
 | `disrobe-ir` | The five-rung IR ladder, the `.dr` envelope (rkyv hot + postcard cold + BLAKE3 root), transcoders, capability descriptors. |
-| `disrobe-binfmt` | Container, archive, filesystem, and firmware layer (<!-- m:containers_formats -->100<!-- /m --> formats detected, <!-- m:containers_formats -->100<!-- /m --> extracted in-tree, plus a recursive carve-everything engine) with shared zip-slip and decompression-bomb quota machinery. |
+| `disrobe-binfmt` | Container, archive, filesystem, and firmware layer (<!-- m:containers_formats -->100<!-- /m --> formats detected, each with an in-tree extractor and <!-- roster-breadth:containers-exercised -->33<!-- /roster-breadth --> of them reached by a committed input, plus a recursive carve-everything engine) with shared zip-slip and decompression-bomb quota machinery. |
 | `disrobe-llm-metadata` | The `--llm` sidecar: 18 categories, 4 packs, `AGENTS.md` / `SKILL.md` brief generation. |
 | `disrobe-mcp` | The rmcp Model Context Protocol companion wired to `disrobe serve --mcp`. |
 | `disrobe-py-marshal` | CPython marshal reader: code objects across 1.0-3.15. |
