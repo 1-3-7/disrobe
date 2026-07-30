@@ -393,7 +393,7 @@
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "wasm",
-      "external_oracle": "wasmtime execution differential (original vs recovered: return values, trap parity, linear memory) for the 50 execution-eligible functions; output re-parse for op-coverage",
+      "external_oracle": "wasmtime execution differential (original vs recovered: return values, trap parity, linear memory) for the 57 execution-eligible functions; output re-parse for op-coverage",
       "floor": 76.0,
       "floor_holds": true,
       "id": "wasm-wasmtime-diff",
