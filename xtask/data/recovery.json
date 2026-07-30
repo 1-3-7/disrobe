@@ -15,7 +15,11 @@
           "den": 18276,
           "modules": 574,
           "detail": "17378 / 18276 code objects across the entire CPython 3.14 Lib; the honest representative number (the 200-module pinned corpus over-represents recoverable modules). The module list is committed at tests/harness/full_modules_314.txt so the figure is reproducible.",
-          "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over crates/disrobe-pass-py-decompile/tests/harness/full_modules_314.txt (574 modules, 18276 code objects, CPython 3.14.5)"
+          "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over crates/disrobe-pass-py-decompile/tests/harness/full_modules_314.txt (574 modules, 18276 code objects, CPython 3.14.5)",
+          "verified_by": {
+            "path": "crates/disrobe-pass-py-decompile/tests/full_stdlib_recompile_gate.rs",
+            "function": "published_full_stdlib_bar_agrees_with_the_gated_population"
+          }
         },
         {
           "label": "200-module pinned corpus",

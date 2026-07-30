@@ -28,7 +28,7 @@ disrobe native devirt protected.exe --out recovered/
 
 ### Packers
 
-In-house decoders cover UPX (`.text` and `.pdata` byte-identical, ~96% whole loaded image), MPRESS, Petite, MEW, ASPack, and PECompact, plus NSPack whose vendor fixtures are not committed (local-only, no number reproduces from a clean checkout); kkrunchy and kkrunchy classic ship committed fixtures and recover their payload at a pinned 100.00% floor from a clean checkout.
+In-house decoders cover UPX (`.text` and `.pdata` byte-identical, ~96% whole loaded image), MPRESS, Petite, MEW, ASPack, and PECompact, plus NSPack, FSG and Petite, each of which ships a committed original and packed pair so its byte-recovery figure re-derives from a clean checkout; kkrunchy and kkrunchy classic ship committed fixtures and recover their payload at a pinned 100.00% floor from a clean checkout.
 
 On committed samples ASPack and PECompact rebuild the decompressed section image at its load RVA: the section report confirms the recovered `.text` byte-identical and the import table >=98% byte-identical to the original, both gated in CI, while the packed `.text` of near-random entropy and zero resolvable calls drops to ~6.2-6.5 with hundreds of disassembler-resolvable intra-code calls. Because the whole rebuild is a loaded-memory image rather than a disk-aligned file, the bench marks whole-output byte-identity n/a. MEW rebuilds a flat image of the committed Sysinternals samples, read as the entropy drop to ~4.2-4.9 and tens of thousands of decoded instructions.
 

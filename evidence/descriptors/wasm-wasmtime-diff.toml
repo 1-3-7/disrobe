@@ -7,9 +7,9 @@ ci = true
 
 [oracle]
 kind = "recovery-import"
-external = "wasmtime execution differential (original vs recovered: return values, trap parity, linear memory) for the 50 execution-eligible functions; output re-parse for op-coverage"
+external = "wasmtime execution differential (original vs recovered: return values, trap parity, linear memory) for the 57 execution-eligible functions; output re-parse for op-coverage"
 reproduce = "cargo test -p disrobe-pass-wasm-deob --test semantic_differential --features sandbox  (op-coverage: cargo test -p disrobe-pass-wasm-deob --test semantic_recovery_corpus)"
-note = "Op-coverage (124/126) means every operator lowered and the output re-parses; it is NOT execution-equivalence. The 50/50 wasmtime figure is the strong execution-equivalence number. They are distinct and labeled distinctly."
+note = "Op-coverage (133/133) means every operator lowered and the output re-parses; it is NOT execution-equivalence. The 57/57 wasmtime figure is the execution-equivalence number and is the stronger of the two. They are distinct and labeled distinctly."
 
 [source]
 recovery_group = "WebAssembly (committed 133-fn corpus: op-coverage, 57 execution-verified under wasmtime)"
