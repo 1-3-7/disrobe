@@ -516,6 +516,44 @@ fn recovered_methods_execute_equivalently_under_a_real_jvm() {
          differential partitions {PER_METHOD_TOTAL} members; the {PUBLISHED_EXECUTION_BAR} bar \
          must share that denominator"
     );
+    let execution_bar: serde_json::Value = published_bar(PUBLISHED_EXECUTION_BAR);
+    let published_num: u64 = execution_bar["num"]
+        .as_u64()
+        .expect("the execution-verified bar must carry a numerator");
+    assert_eq!(
+        published_num,
+        u64::try_from(equivalent_labels).expect("equivalent count fits u64"),
+        "recovery.json publishes {published_num} execution-equivalent methods while this \
+         differential measured {equivalent_labels}; the chart states a behavioural result the JVM \
+         did not produce"
+    );
+    assert_eq!(
+        execution_bar["den"].as_u64(),
+        Some(published_den),
+        "the execution-verified bar must share the recompile bar's denominator, or the two tiers \
+         are published over different populations and cannot be compared"
+    );
+    let published_pct: f64 = execution_bar["value"]
+        .as_f64()
+        .expect("the execution-verified bar must carry a percentage");
+    let measured_pct: f64 = equivalent_labels as f64 * 100.0 / PER_METHOD_TOTAL as f64;
+    assert!(
+        (published_pct - measured_pct).abs() < 0.01,
+        "recovery.json plots {published_pct}% for {published_num} of {published_den}, but the \
+         measured rate is {measured_pct}%; the percentage and the counts beside it disagree"
+    );
+    let detail: &str = execution_bar["detail"]
+        .as_str()
+        .expect("the execution-verified bar must carry a detail");
+    assert!(
+        detail.contains(&format!(
+            "{divergent_labels} methods are javac-clean and measurably"
+        )),
+        "the published detail does not state that {divergent_labels} of the residual are known \
+         divergent, so a reader takes the whole residual for merely ungraded and the two \
+         populations are conflated"
+    );
+
     assert!(
         result
             .recovered_source
