@@ -78,7 +78,7 @@ Floors sit a declared margin below the measured value so a regression masked by 
 | apk-jadx-cfr | disrobe 100.0% vs best competitor 99.1% | 95.00 | yes |
 | apkleaks-planted-apk-secret-recall | 62.50% | n/a | n/a |
 | binfmt-extract | 100 extracted / 100 detected | n/a | n/a |
-| dalvik-realapk-coverage | 92.50% | 92.50 | yes |
+| dalvik-realapk-coverage | 92.50% | 92.40 | yes |
 | dalvik-verifier | 100.00% | 100.00 | yes |
 | dotnet-eazvm | 3 reversed on real samples / 23 detected | n/a | n/a |
 | dotnet-koivm | 3 reversed on real samples / 23 detected | n/a | n/a |
@@ -93,11 +93,11 @@ Floors sit a declared margin below the measured value so a regression masked by 
 | lua-ironbrew | 2 families | n/a | n/a |
 | native-packer-byterecovery | byte-identity table, see results_md | n/a | n/a |
 | pickle-corpus | 102/102 (100.0%) | 100.00 | yes |
-| py-legacy-recompile | 78.50% | 78.00 | yes |
+| py-legacy-recompile | 78.50% | 78.50 | yes |
 | py-stdlib-full | 95.09% | 95.00 | yes |
 | py-stdlib-recompile | 96.60% | 96.60 | yes |
 | pyarmor-corpus | 72 recovered / 72 detected | n/a | n/a |
-| ruby-yarv-recompile | 98.67% | 98.00 | yes |
+| ruby-yarv-recompile | 98.67% | 98.67 | yes |
 | swift-demangle | 37/37 (100.0%) | 95.00 | yes |
 | wasm-external-op-inventory | 100.00% | 100.00 | yes |
 | wasm-wasmtime-diff | 100.00% | 100.00 | yes |

@@ -13,4 +13,4 @@ reproduce = "cargo test -p disrobe-pass-py-decompile --test legacy_recompile"
 [source]
 recovery_group = "CPython legacy 1.0-3.7 (proven-correct: recompile-equivalence or structural token-match)"
 recovery_bar = "proven-correct"
-floor = 78.0
+floor = 78.5

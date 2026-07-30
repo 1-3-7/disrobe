@@ -1341,8 +1341,10 @@ transformation_count: int = ps_deob.transformation_count
 
 ## Containers
 
-<!-- m:containers_formats -->100<!-- /m --> container families detected and extracted in-tree. See [container docs](./languages/containers.md)
-for the full family list.
+<!-- m:containers_formats -->100<!-- /m --> container families are detected and carry an in-tree extractor.
+<!-- roster-breadth:containers-exercised -->33<!-- /roster-breadth --> of them are driven to member
+bytes by an input this repository commits. See [container docs](./languages/containers.md) for the
+full family list.
 
 ```python
 import disrobe

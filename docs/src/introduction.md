@@ -45,7 +45,7 @@ Every figure below is produced by a committed test gate or a local measurement h
 | Android (Dalvik) | <!-- m:dalvik_verifier_pct -->100%<!-- /m --> of the presentable classes in the committed dex corpus pass the JVM verifier (<!-- m:dalvik_verifier_count -->118 of 118<!-- /m -->). A further 37 of the corpus's 155 classes are link-skipped and never reach the verifier, because they reference supertypes the harness does not bundle, so those are ungraded rather than passing | `-Xverify:all` over assembled jar |
 | Ruby YARV | greeter <!-- m:ruby_greeter_pct -->100%<!-- /m -->, megafile <!-- m:ruby_megafile_pct -->98.67%<!-- /m --> opcode-multiset equivalence | recompile on MRI |
 | PyArmor | <!-- m:pyarmor_samples -->72<!-- /m --> of 72 real-corpus samples recovered | plaintext-absent oracle |
-| Containers | <!-- m:containers_formats -->100<!-- /m --> formats detected, <!-- m:containers_formats -->100<!-- /m --> extracted in-tree | per-format byte length |
+| Containers | <!-- m:containers_formats -->100<!-- /m --> formats declared with an in-tree extractor, <!-- roster-breadth:containers-exercised -->33<!-- /roster-breadth --> of them driven to member bytes by a committed input | extraction over the committed corpus, pinned per format |
 
 The numbers that are not perfect are labeled `SEMANTIC`, `PARTIAL`, or `SKELETON`, and the information-theoretic walls (native-virtualized code, runtime-only keys, RSA-wrapped capsule keys) are reported as detect-only by design.
 

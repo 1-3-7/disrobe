@@ -8,5 +8,5 @@
 - CI-attested: yes [CI]
 - external oracle: period CPython interpreters 1.0-3.7 (recompile-equivalence) or original .py source (structural token-match)
 - reproduce: `cargo test -p disrobe-pass-py-decompile --test legacy_recompile`
-- floor: 78.00 (holds)
+- floor: 78.50 (holds)
 - gate source: crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs:31 (PROVEN_CORRECT_FLOOR 150, CI-enforced via the test job); 166/191 measured locally 2026-06-12 with python 1.0-3.12 present
