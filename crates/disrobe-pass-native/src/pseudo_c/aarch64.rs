@@ -243,6 +243,10 @@ pub(crate) fn aarch64_is_indirect_branch(mnemonic: &str) -> bool {
     matches!(mnemonic, "br" | "braa" | "brab" | "braaz" | "brabz")
 }
 
+pub(crate) fn aarch64_is_indirect_call(mnemonic: &str) -> bool {
+    matches!(mnemonic, "blr" | "blraa" | "blrab" | "blraaz" | "blrabz")
+}
+
 pub(crate) fn aarch64_is_return(mnemonic: &str) -> bool {
     matches!(
         mnemonic,
@@ -252,6 +256,10 @@ pub(crate) fn aarch64_is_return(mnemonic: &str) -> bool {
 
 pub(crate) fn aarch64_is_trap(mnemonic: &str) -> bool {
     matches!(mnemonic, "brk" | "hlt" | "udf")
+}
+
+pub(crate) fn aarch64_is_exception_entry(mnemonic: &str) -> bool {
+    matches!(mnemonic, "svc" | "hvc" | "smc")
 }
 
 pub(crate) fn aarch64_stops_traversal(mnemonic: &str) -> bool {
@@ -2398,7 +2406,7 @@ pub(crate) fn register_field(word: u32, shift: u8) -> u8 {
     immediate_field(word, shift, 5) as u8
 }
 
-fn signed_immediate(value: u32, bits: u8) -> i64 {
+pub(crate) fn signed_immediate(value: u32, bits: u8) -> i64 {
     let shift: u32 = 64_u32.saturating_sub(u32::from(bits));
     (i64::from(value) << shift) >> shift
 }

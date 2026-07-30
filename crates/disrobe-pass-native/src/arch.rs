@@ -107,16 +107,13 @@ pub fn disassemble(arch: Arch, base: u64, bytes: &[u8]) -> Result<Vec<DisasmInsn
         Arch::X86_64 => disasm_iced(bytes, base, 64, Syntax::Nasm),
         Arch::Aarch64 => disasm_yaxpeax_aarch64(bytes, base),
         Arch::Arm32 | Arch::Thumb => disasm_yaxpeax_arm(bytes, base, matches!(arch, Arch::Thumb)),
-        Arch::RiscV32 => disasm_capstone_riscv(bytes, base, false),
-        Arch::RiscV64 => disasm_capstone_riscv(bytes, base, true),
-        Arch::MipsBe32 => disasm_capstone_mips(bytes, base, false, true),
-        Arch::MipsLe32 => disasm_capstone_mips(bytes, base, false, false),
-        Arch::Mips64 => disasm_capstone_mips(bytes, base, true, true),
-        Arch::PowerPc32 => disasm_capstone_ppc(bytes, base, false),
-        Arch::PowerPc64 => disasm_capstone_ppc(bytes, base, true),
-        Arch::Sparc => disasm_capstone_sparc(bytes, base, false),
-        Arch::Sparc64 => disasm_capstone_sparc(bytes, base, true),
-        Arch::Ebpf => disasm_capstone_ebpf(bytes, base),
+        Arch::RiscV32 | Arch::RiscV64 => disasm_capstone(arch, bytes, base, "capstone-riscv"),
+        Arch::MipsBe32 | Arch::MipsLe32 | Arch::Mips64 => {
+            disasm_capstone(arch, bytes, base, "capstone-mips")
+        }
+        Arch::PowerPc32 | Arch::PowerPc64 => disasm_capstone(arch, bytes, base, "capstone-ppc"),
+        Arch::Sparc | Arch::Sparc64 => disasm_capstone(arch, bytes, base, "capstone-sparc"),
+        Arch::Ebpf => disasm_capstone(arch, bytes, base, "capstone-ebpf"),
         Arch::Avr => disasm_yaxpeax_avr(bytes, base),
     }
 }
@@ -331,6 +328,113 @@ where
     })
 }
 
+pub(crate) fn capstone_for(arch: Arch, detail: bool) -> Result<Option<Capstone>> {
+    let engine: Capstone = match arch {
+        Arch::Arm32 | Arch::Thumb => build_capstone(
+            || {
+                Capstone::new()
+                    .arm()
+                    .mode(if matches!(arch, Arch::Thumb) {
+                        capstone::arch::arm::ArchMode::Thumb
+                    } else {
+                        capstone::arch::arm::ArchMode::Arm
+                    })
+                    .endian(capstone::Endian::Little)
+                    .detail(detail)
+                    .build()
+            },
+            "capstone-arm",
+        )?,
+        Arch::RiscV32 | Arch::RiscV64 => build_capstone(
+            || {
+                Capstone::new()
+                    .riscv()
+                    .mode(if matches!(arch, Arch::RiscV64) {
+                        capstone::arch::riscv::ArchMode::RiscV64
+                    } else {
+                        capstone::arch::riscv::ArchMode::RiscV32
+                    })
+                    .extra_mode(
+                        [capstone::arch::riscv::ArchExtraMode::RiscVC]
+                            .iter()
+                            .copied(),
+                    )
+                    .detail(detail)
+                    .build()
+            },
+            "capstone-riscv",
+        )?,
+        Arch::MipsBe32 | Arch::MipsLe32 | Arch::Mips64 => build_capstone(
+            || {
+                Capstone::new()
+                    .mips()
+                    .mode(if matches!(arch, Arch::Mips64) {
+                        capstone::arch::mips::ArchMode::Mips64
+                    } else {
+                        capstone::arch::mips::ArchMode::Mips32
+                    })
+                    .endian(if matches!(arch, Arch::MipsLe32) {
+                        capstone::Endian::Little
+                    } else {
+                        capstone::Endian::Big
+                    })
+                    .detail(detail)
+                    .build()
+            },
+            "capstone-mips",
+        )?,
+        Arch::PowerPc32 | Arch::PowerPc64 => build_capstone(
+            || {
+                Capstone::new()
+                    .ppc()
+                    .mode(if matches!(arch, Arch::PowerPc64) {
+                        capstone::arch::ppc::ArchMode::Mode64
+                    } else {
+                        capstone::arch::ppc::ArchMode::Mode32
+                    })
+                    .endian(capstone::Endian::Big)
+                    .detail(detail)
+                    .build()
+            },
+            "capstone-ppc",
+        )?,
+        Arch::Sparc | Arch::Sparc64 => build_capstone(
+            || {
+                Capstone::new()
+                    .sparc()
+                    .mode(if matches!(arch, Arch::Sparc64) {
+                        capstone::arch::sparc::ArchMode::V9
+                    } else {
+                        capstone::arch::sparc::ArchMode::Default
+                    })
+                    .detail(detail)
+                    .build()
+            },
+            "capstone-sparc",
+        )?,
+        Arch::Ebpf => build_capstone(
+            || {
+                Capstone::new()
+                    .bpf()
+                    .mode(capstone::arch::bpf::ArchMode::Ebpf)
+                    .endian(capstone::Endian::Little)
+                    .detail(detail)
+                    .build()
+            },
+            "capstone-ebpf",
+        )?,
+        Arch::X86 | Arch::X86_64 | Arch::Aarch64 | Arch::Avr => return Ok(None),
+    };
+    Ok(Some(engine))
+}
+
+fn capstone_required(arch: Arch, engine: &'static str) -> Result<Capstone> {
+    capstone_for(arch, false)?.ok_or_else(|| Error::Disasm {
+        engine,
+        message: format!("{} has no capstone engine", arch.label()),
+    })
+}
+
 fn cs_run(cs: &Capstone, bytes: &[u8], base: u64, engine: &'static str) -> Result<Vec<DisasmInsn>> {
     let insns: capstone::Instructions<'_> =
         cs.disasm_all(bytes, base)
@@ -350,102 +454,14 @@ fn cs_run(cs: &Capstone, bytes: &[u8], base: u64, engine: &'static str) -> Resul
     Ok(out)
 }
 
-fn disasm_capstone_riscv(bytes: &[u8], base: u64, bits64: bool) -> Result<Vec<DisasmInsn>> {
-    let cs: Capstone = build_capstone(
-        || {
-            Capstone::new()
-                .riscv()
-                .mode(if bits64 {
-                    capstone::arch::riscv::ArchMode::RiscV64
-                } else {
-                    capstone::arch::riscv::ArchMode::RiscV32
-                })
-                .extra_mode(
-                    [capstone::arch::riscv::ArchExtraMode::RiscVC]
-                        .iter()
-                        .copied(),
-                )
-                .build()
-        },
-        "capstone-riscv",
-    )?;
-    cs_run(&cs, bytes, base, "capstone-riscv")
-}
-
-fn disasm_capstone_mips(
+fn disasm_capstone(
+    arch: Arch,
     bytes: &[u8],
     base: u64,
-    bits64: bool,
-    big_endian: bool,
+    engine: &'static str,
 ) -> Result<Vec<DisasmInsn>> {
-    let cs: Capstone = build_capstone(
-        || {
-            Capstone::new()
-                .mips()
-                .mode(if bits64 {
-                    capstone::arch::mips::ArchMode::Mips64
-                } else {
-                    capstone::arch::mips::ArchMode::Mips32
-                })
-                .endian(if big_endian {
-                    capstone::Endian::Big
-                } else {
-                    capstone::Endian::Little
-                })
-                .build()
-        },
-        "capstone-mips",
-    )?;
-    cs_run(&cs, bytes, base, "capstone-mips")
-}
-
-fn disasm_capstone_ppc(bytes: &[u8], base: u64, bits64: bool) -> Result<Vec<DisasmInsn>> {
-    let cs: Capstone = build_capstone(
-        || {
-            Capstone::new()
-                .ppc()
-                .mode(if bits64 {
-                    capstone::arch::ppc::ArchMode::Mode64
-                } else {
-                    capstone::arch::ppc::ArchMode::Mode32
-                })
-                .endian(capstone::Endian::Big)
-                .build()
-        },
-        "capstone-ppc",
-    )?;
-    cs_run(&cs, bytes, base, "capstone-ppc")
-}
-
-fn disasm_capstone_sparc(bytes: &[u8], base: u64, bits64: bool) -> Result<Vec<DisasmInsn>> {
-    let cs: Capstone = build_capstone(
-        || {
-            Capstone::new()
-                .sparc()
-                .mode(if bits64 {
-                    capstone::arch::sparc::ArchMode::V9
-                } else {
-                    capstone::arch::sparc::ArchMode::Default
-                })
-                .build()
-        },
-        "capstone-sparc",
-    )?;
-    cs_run(&cs, bytes, base, "capstone-sparc")
-}
-
-fn disasm_capstone_ebpf(bytes: &[u8], base: u64) -> Result<Vec<DisasmInsn>> {
-    let cs: Capstone = build_capstone(
-        || {
-            Capstone::new()
-                .bpf()
-                .mode(capstone::arch::bpf::ArchMode::Ebpf)
-                .endian(capstone::Endian::Little)
-                .build()
-        },
-        "capstone-ebpf",
-    )?;
-    cs_run(&cs, bytes, base, "capstone-ebpf")
+    let cs: Capstone = capstone_required(arch, engine)?;
+    cs_run(&cs, bytes, base, engine)
 }
 
 fn disasm_yaxpeax_avr(bytes: &[u8], base: u64) -> Result<Vec<DisasmInsn>> {
