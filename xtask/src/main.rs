@@ -12,6 +12,7 @@ mod codegen;
 mod crossdata;
 mod datamodel;
 mod demo;
+mod doc_region;
 mod errdocs;
 mod evidence;
 mod evidence_tiers;
@@ -29,6 +30,7 @@ mod plugins;
 mod prepush;
 mod readme_stats;
 mod regen;
+mod roster_breadth;
 mod sync;
 
 use std::fs;
