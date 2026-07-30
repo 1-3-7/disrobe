@@ -158,20 +158,21 @@ fn published_value(label: &str) -> f64 {
 fn published_count_defect(
     bar: &serde_json::Value,
     label: &str,
-    fixture: &Fixture,
+    measured: &Measurement,
 ) -> Option<String> {
     let num: Option<u64> = bar.get("num").and_then(serde_json::Value::as_u64);
     let den: Option<u64> = bar.get("den").and_then(serde_json::Value::as_u64);
     match (num, den) {
         (None, None) => None,
         (Some(num), Some(den)) => {
-            let want_num: u64 = u64::from(fixture.matched_floor);
-            let want_den: u64 = u64::from(fixture.compared_total);
-            (num != want_num || den != want_den).then(|| {
+            let matched: u64 = u64::from(measured.matched);
+            let compared: u64 = u64::from(measured.compared);
+            (num != matched || den != compared).then(|| {
                 format!(
-                    "the {label} bar publishes the counts {num} of {den}, but this gate enforces \
-                     {want_num} of {want_den}; a published count that no gate enforces can drift \
-                     away from what the differential measures"
+                    "the {label} bar publishes the counts {num} of {den}, but this run measured \
+                     {matched} of {compared}; re-measure the fixture and publish the counts it \
+                     produced, because a published fraction no run reproduces states a recovery \
+                     rate nothing measured"
                 )
             })
         }
@@ -184,13 +185,6 @@ fn published_count_defect(
              states has no numerator to be read against"
         )),
     }
-}
-
-fn fixture_for_bar(label: &str) -> &'static Fixture {
-    FIXTURES
-        .iter()
-        .find(|fixture: &&Fixture| fixture.published_bar == Some(label))
-        .unwrap_or_else(|| panic!("no fixture in this gate publishes the {label} bar"))
 }
 
 #[test]
@@ -210,25 +204,19 @@ fn published_yarv_bars_match_the_floors_this_crate_enforces() {
 }
 
 #[test]
-fn published_yarv_counts_match_the_counts_this_crate_enforces() {
-    for label in [PUBLISHED_GREETER_BAR, PUBLISHED_MEGAFILE_BAR] {
-        let bar: serde_json::Value = published_bar(PUBLISHED_HEADING, label);
-        let fixture: &Fixture = fixture_for_bar(label);
-        if let Some(defect) = published_count_defect(&bar, label, fixture) {
-            panic!("{defect}");
-        }
-    }
-}
-
-#[test]
-fn a_published_count_that_disagrees_with_this_gate_is_rejected() {
-    let fixture: &Fixture = fixture_for_bar(PUBLISHED_MEGAFILE_BAR);
-    let num: u64 = u64::from(fixture.matched_floor);
-    let den: u64 = u64::from(fixture.compared_total);
+fn a_published_count_that_no_run_reproduces_is_rejected() {
+    let measured: Measurement = Measurement {
+        mode: RecompileMode::Whole,
+        matched: 23_648,
+        compared: MEGAFILE_COMPARED_TOTAL,
+        pct: MEGAFILE_FLOOR_PCT,
+    };
+    let num: u64 = u64::from(measured.matched);
+    let den: u64 = u64::from(measured.compared);
     let agreeing: serde_json::Value = serde_json::json!({"num": num, "den": den});
     assert!(
-        published_count_defect(&agreeing, PUBLISHED_MEGAFILE_BAR, fixture).is_none(),
-        "counts equal to the enforced floor and total must be accepted"
+        published_count_defect(&agreeing, PUBLISHED_MEGAFILE_BAR, &measured).is_none(),
+        "counts equal to the measured matched and compared totals must be accepted"
     );
     for disagreeing in [
         serde_json::json!({"num": num + 1, "den": den}),
@@ -238,15 +226,14 @@ fn a_published_count_that_disagrees_with_this_gate_is_rejected() {
         serde_json::json!({"den": den}),
     ] {
         assert!(
-            published_count_defect(&disagreeing, PUBLISHED_MEGAFILE_BAR, fixture).is_some(),
-            "the counts {disagreeing} state a fraction this gate does not enforce and must be \
-             rejected"
+            published_count_defect(&disagreeing, PUBLISHED_MEGAFILE_BAR, &measured).is_some(),
+            "the counts {disagreeing} state a fraction the run did not produce and must be rejected"
         );
     }
     assert!(
-        published_count_defect(&serde_json::json!({}), PUBLISHED_MEGAFILE_BAR, fixture).is_none(),
-        "a bar that publishes no counts at all is the state before the counts are published, so it \
-         is tolerated; once either count appears, both must match this gate"
+        published_count_defect(&serde_json::json!({}), PUBLISHED_MEGAFILE_BAR, &measured).is_none(),
+        "a bar that publishes no counts at all is the state before any counts are published, so it \
+         is tolerated; once either count appears, both must match the measured run"
     );
 }
 
@@ -383,6 +370,10 @@ fn enforce_floors(fixture: &Fixture, measurement: &Measurement) {
             "recovery.json publishes {label} at {published}%; this run measured {}%",
             measurement.pct
         );
+        let bar: serde_json::Value = published_bar(PUBLISHED_HEADING, label);
+        if let Some(defect) = published_count_defect(&bar, label, measurement) {
+            panic!("{defect}");
+        }
     }
 }
 
