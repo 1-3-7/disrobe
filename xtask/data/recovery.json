@@ -325,7 +325,7 @@
         {
           "label": "WASM obfuscator reversers",
           "value": 4,
-          "source": "crates/disrobe-pass-wasm-deob/tests/obfuscators_e2e.rs and reverse_oracle.rs: four families reversed with byte/IR transforms (Jscrambler-WASM strip+fold, Wobfuscator optable lift, Tigress-via-Emscripten unflatten+demangle, Wasmixer stub-unwrap); wasm-name-obfuscator is detect+classify only (hex renames destroy the original names), so it is excluded from the reverser count"
+          "source": "crates/disrobe-pass-wasm-deob/tests/obfuscators_e2e.rs and reverse_oracle.rs: four families' transforms undone on hand-authored modules that model their output, no artifact from the tools themselves is committed; byte/IR transforms (Jscrambler-WASM strip+fold, Wobfuscator optable lift, Tigress-via-Emscripten unflatten+demangle, Wasmixer stub-unwrap); wasm-name-obfuscator is detect+classify only (hex renames destroy the original names), so it is excluded from the reverser count"
         }
       ]
     },
