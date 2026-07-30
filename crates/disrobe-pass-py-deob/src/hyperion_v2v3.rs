@@ -192,10 +192,11 @@ pub fn peel_all_layers(source: &[u8], max_iters: usize) -> Result<HyperionV2V3Pe
         if !det.matched {
             break;
         }
-        let step_result: HyperionV2V3PeelResult = match peel_one_layer(&current_bytes) {
-            Ok(r) => r,
-            Err(_) => break,
-        };
+        let (step_result, decoded): (HyperionV2V3PeelResult, Vec<u8>) =
+            match peel_one_layer_decoded(&current_bytes) {
+                Ok(r) => r,
+                Err(_) => break,
+            };
         if step_result.steps.is_empty() {
             break;
         }
@@ -203,7 +204,7 @@ pub fn peel_all_layers(source: &[u8], max_iters: usize) -> Result<HyperionV2V3Pe
         last_remaining = step_result.layers_remaining;
         last_len = step_result.final_bytes_len;
         final_preview = step_result.final_source_preview;
-        current_bytes = final_preview.as_bytes().to_vec();
+        current_bytes = decoded;
         if !detect(&current_bytes).matched {
             break;
         }
@@ -218,6 +219,10 @@ pub fn peel_all_layers(source: &[u8], max_iters: usize) -> Result<HyperionV2V3Pe
 }
 
 pub fn peel_one_layer(source: &[u8]) -> Result<HyperionV2V3PeelResult> {
+    peel_one_layer_decoded(source).map(|(result, _): (HyperionV2V3PeelResult, Vec<u8>)| result)
+}
+
+fn peel_one_layer_decoded(source: &[u8]) -> Result<(HyperionV2V3PeelResult, Vec<u8>)> {
     let detection: HyperionV2V3Detection = detect(source);
     if !detection.matched {
         return Err(Error::NoFamilyMatched);
@@ -244,13 +249,17 @@ pub fn peel_one_layer(source: &[u8]) -> Result<HyperionV2V3PeelResult> {
 
     let layers_remaining: usize = detection.layers_estimated.saturating_sub(steps.len());
     let preview: String = preview_of(&after_lzma);
-    Ok(HyperionV2V3PeelResult {
-        initial: detection,
-        steps,
-        layers_remaining,
-        final_bytes_len: after_lzma.len(),
-        final_source_preview: preview,
-    })
+    let final_bytes_len: usize = after_lzma.len();
+    Ok((
+        HyperionV2V3PeelResult {
+            initial: detection,
+            steps,
+            layers_remaining,
+            final_bytes_len,
+            final_source_preview: preview,
+        },
+        after_lzma,
+    ))
 }
 
 pub fn decode_inner(source: &[u8]) -> Result<InnerDecodeResult> {
@@ -809,6 +818,49 @@ mod tests {
         assert!(
             result.final_source_preview.contains("def main"),
             "preview: {}",
+            result.final_source_preview
+        );
+    }
+
+    fn varied_ascii(len: usize) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/";
+        let mut out: String = String::with_capacity(len);
+        let mut state: u32 = 0x1357_9bdf;
+        for _ in 0..len {
+            state = state
+                .wrapping_mul(1_664_525u32)
+                .wrapping_add(1_013_904_223u32);
+            let pick: usize = (state >> 24) as usize % ALPHABET.len();
+            out.push(ALPHABET[pick] as char);
+        }
+        out
+    }
+
+    #[test]
+    fn peel_all_layers_carries_a_layer_larger_than_the_preview_into_the_next_layer() {
+        let filler: String = varied_ascii(4096);
+        let inner_source: String = format!("def main(): return 7\nPAD = '{filler}'\n");
+        let inner: Vec<u8> = xz_compress(inner_source.as_bytes());
+        let inner_literal: String = python_bytes_literal(&inner);
+        let inner_stub: String =
+            format!("import lzma\nimport base64\nexec(lzma.decompress({inner_literal}))\n");
+        assert!(
+            inner_stub.len() > PREVIEW_BYTES,
+            "the middle layer must exceed the preview cap or this control proves nothing; len = {}",
+            inner_stub.len()
+        );
+        let middle: Vec<u8> = xz_compress(inner_stub.as_bytes());
+        let middle_literal: String = python_bytes_literal(&middle);
+        let outer: String =
+            format!("import lzma\nimport base64\nexec(lzma.decompress({middle_literal}))\n");
+        let result: HyperionV2V3PeelResult =
+            peel_all_layers(outer.as_bytes(), 4).expect("peel-all nested");
+        assert!(result.steps.len() >= 2, "steps = {}", result.steps.len());
+        assert!(
+            result.final_source_preview.contains("def main"),
+            "the innermost source was not reached, so an intermediate layer was cut to \
+             {PREVIEW_BYTES} bytes before being peeled: {}",
             result.final_source_preview
         );
     }
