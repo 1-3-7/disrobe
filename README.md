@@ -477,7 +477,7 @@ Missing rows are not implied wins. They stay in the edge table until the same-in
 | JavaScript and source maps | obfuscator and bundler recovery is pass-gated; <!-- m:js_bundlers -->11<!-- /m --> bundler families are cataloged | webcrack, wakaru, synchrony, REstringer, sourcemapper | same deployed bundle set, recovered-tree diff |
 | WebAssembly | 133 / 133 op-covered; 57 / 57 execution-eligible functions match under wasmtime | wabt `wasm-decompile`, Binaryen | same module set, parse plus wasmtime differential |
 | JVM `.class` | 131 / 131 methods recompile; CFR row is proven above | CFR, Vineflower, Procyon, Fernflower | add the missing decompilers to the `javac` gate |
-| Android DEX/APK | 102 / 103 committed classes verify; JADX row is proven above | JADX, apktool, androguard, dex2jar | verifier-attested FOSS APK set, SHA-pinned |
+| Android DEX/APK | 102 / 102 presentable committed classes verify; JADX row is proven above | JADX, apktool, androguard, dex2jar | verifier-attested FOSS APK set, SHA-pinned |
 | .NET CIL/protectors | Eazfuscator VM, KoiVM, and ConfuserEx2 are recovered on committed samples | ILSpy, dnSpyEx, de4dot | same assemblies, CIL diff plus compile/run gate |
 | Native unpacking | UPX and seven packer families recover bytes against committed originals | `upx -d`, unipacker, Detect It Easy plugins | same packer corpus, section-byte identity |
 | Native deobfuscation | OLLVM, stack strings, MBA, path predicates, and VM handler lifting have real or exhaustive gates | Ghidra, IDA, Binary Ninja plus deobfuscation scripts | same binaries, emulator or trace-equivalence gate |
@@ -506,18 +506,18 @@ Every number below is either graded by an oracle that can reject a wrong answer 
 **Legend**
 
 - `[CI]`: reproduced by a committed test gate in this repo, on every run.
-- `[local]`: measured against a sample that license or size keeps out of the tree; the command still reproduces the number, just not inside CI.
-- Oracle strength `strong`: external-equivalence, execution, or byte-identity, the tier the word "proves" is reserved for in this README.
-- Oracle strength `recompile-only`: the recovered source compiles but byte-equivalence is not asserted.
-- Oracle strength `coverage-self-reported`: a coverage count graded against nothing external; treated as a lower-confidence tier, never blended into a `strong` figure.
+- `[local]`: measured against a sample that license or size keeps out of the tree; the command still reproduces the number, but not inside CI.
+- Oracle strength `strong`: the result passes an external-equivalence, execution, or byte-identity check against an independent reference. This README reserves the word "proves" for this tier.
+- Oracle strength `recompile-only`: the recovered source compiles under the real toolchain; no gate asserts byte-equivalence.
+- Oracle strength `coverage-self-reported`: the tool counts its own coverage; no external check grades the count. The tier is lower-confidence and never blends into a `strong` figure.
 - The three tables below are split by that oracle-strength tier, one table per tier; a row's `[CI]`/`[local]` tag is the separate, orthogonal reproducibility axis and still applies inside each table.
 - The [Capabilities by ecosystem](#capabilities-by-ecosystem) tables use a parallel tier per family: `Recover` (real output), `Partial` (structural peel or constants with a stated residual), `Detect-only` (identification plus a stated absent-data reason). Detect-only is a legitimate triage result, not a failure.
 
-Every measured number below links to a committed corpus or fixture, a runnable reproduce command, and a public CI log. The descriptors and rendered results live under [`evidence/`](evidence/). [`.github/workflows/ci.yml`](.github/workflows/ci.yml) and [`.github/workflows/evidence.yml`](.github/workflows/evidence.yml) run the gates that produce them. The evidence harness in [`evidence/`](evidence/) renders this table from committed descriptors, `xtask/data/recovery.json`, and measured JSON.
+Each `[CI]` number links to a committed corpus or fixture, a runnable reproduce command, and a public CI log. Each `[local]` number states the command that reproduces it. The descriptors and rendered results live under [`evidence/`](evidence/). [`.github/workflows/ci.yml`](.github/workflows/ci.yml) and [`.github/workflows/evidence.yml`](.github/workflows/evidence.yml) run the gates that produce them. The evidence harness in [`evidence/`](evidence/) renders this table from committed descriptors, `xtask/data/recovery.json`, and measured JSON.
 
 ### Strong
 
-Oracle strength `strong`: external-equivalence, execution, or byte-identity, the tier the word "proves" is reserved for in this README.
+Oracle strength `strong`: the result passes an external-equivalence, execution, or byte-identity check against an independent reference. This README reserves the word "proves" for this tier.
 
 Read the first two Python rows together. A module counts as recovered only when every one of its code objects recompiles to equivalent bytecode. A module typically holds dozens of code objects, so a small per-object miss rate compounds into a large per-module one. To know whether a whole readable module comes back, use the whole-module figure of 54.5%, not the per-object 96.6%. That gap is the center of the evaluation rather than a footnote, and the [whitepaper](docs/src/architecture/whitepaper.md) works through it.
 
@@ -541,7 +541,7 @@ Read the first two Python rows together. A module counts as recovered only when 
 | Go BuildInfo + garble undo | BuildInfo recovered, garble `-literals` rebuilt via static init-thunk emulation `[CI]` | parsed against the real toolchain output | `crates/disrobe-pass-go/tests/go_buildinfo_oracle.rs`, `go_garble_undo.rs` |
 | Swift symbol demangle | 37 / 37 mangled symbols `[local]` | binary LC_SYMTAB symbols, with reference `swift-demangle` parity | `crates/disrobe-pass-swift-objc/tests/real_swift_demangle.rs` |
 | HashLink (Haxe `.hl`) | class names 100%, method names >= 75% floor, whole HLB image parsed byte-exact (336 functions, 421 types on the committed fixture) `[CI]` | recovered class and method names vs the original `.hx` source | `crates/disrobe-pass-scriptlang/tests/real_hashlink_decompile.rs` |
-| PyArmor v6-v9-pro | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> real-corpus samples `[local]` | static unpack + decompile | `crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs` |
+| PyArmor v6-v9-pro | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> real-corpus samples `[local]` | detected wrapper version matched against each committed sample's declared PyArmor build | `crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs` |
 | Native UPX | `.text` and `.pdata` byte-identical, ~96% whole image (floor 96%) `[CI]` | byte-identity vs committed original | `crates/disrobe-pass-native/tests/upx_unpack_all.rs` |
 | Native packers, committed corpus | MPRESS 2.19 `.text` >= 90% / `.rdata` >= 85% and Yoda's Crypter `.rsrc`/`.text`/`.data` byte-identical vs the committed original `[CI]` | byte-identity or RVA-aligned recovery percentage vs committed original | `crates/disrobe-pass-native/tests/mpress_gauntlet.rs`, `packer_real_samples.rs` |
 | Native packers, emulated unpack | ASPack / PECompact content (`.text`/`.rdata`/`.data`/`.rsrc`) + whole-image recovery vs the committed original with the reconstructed IAT >= 98% byte-identical; MEW structural loaded-image recovery vs a committed fixture `[CI]` | RVA-aligned recovery percentage + IAT byte-identity vs committed original | `crates/disrobe-pass-native/tests/aspack_pecompact_phase2.rs`, `mew_unpack.rs` |
@@ -557,7 +557,7 @@ Read the first two Python rows together. A module counts as recovered only when 
 
 ### Recompile-only
 
-Oracle strength `recompile-only`: the recovered source compiles but byte-equivalence is not asserted.
+Oracle strength `recompile-only`: the recovered source compiles under the real toolchain; no gate asserts byte-equivalence.
 
 | Metric | Measured | Oracle | Reproduce |
 |---|---|---|---|
@@ -565,7 +565,7 @@ Oracle strength `recompile-only`: the recovered source compiles but byte-equival
 
 ### Self-reported coverage
 
-Oracle strength `coverage-self-reported`: a coverage count graded against nothing external; treated as a lower-confidence tier, never blended into a `strong` figure.
+Oracle strength `coverage-self-reported`: the tool counts its own coverage; no external check grades the count. The tier is lower-confidence and never blends into a `strong` figure.
 
 | Metric | Measured | Oracle | Reproduce |
 |---|---|---|---|
@@ -700,11 +700,11 @@ Fully deterministic and static, with no model anywhere in the pipeline. Identica
 
 ### What does "recovery %" mean?
 
-It is a measured fraction graded by an independent oracle, not a self-report: per-code-object recompile-to-equivalent-bytecode for Python, verifier-clean classes for Android, op-coverage or wasmtime execution-equivalence for WebAssembly, byte-identity for unpacked sections. The denominator and the test path are stated for every number.
+Recovery % is a measured fraction graded by the row's stated oracle: per-code-object recompile-to-equivalent-bytecode for Python, verifier-clean classes for Android, op-coverage or wasmtime execution-equivalence for WebAssembly, byte-identity for unpacked sections. Rows in the `coverage-self-reported` table are the exception: the tool counts those itself, and the row label says so. The oracle and the reproduce path are stated for every row.
 
 ### How is correctness proven?
 
-Each Recover-level result is replayed against an oracle that can reject a wrong answer: recovered Python recompiles to equivalent bytecode, recovered JVM/Ruby re-assembles under real `javac`/MRI, recovered WebAssembly re-executes equivalently under wasmtime, recovered Android re-verifies under the real JVM verifier, and unpacked bytes are byte-compared to the committed original. The tool never grades against its own output.
+Each Recover-level result is replayed against an oracle that can reject a wrong answer: recovered Python recompiles to equivalent bytecode, recovered JVM/Ruby re-assembles under real `javac`/MRI, recovered WebAssembly re-executes equivalently under wasmtime, recovered Android re-verifies under the real JVM verifier, and unpacked bytes are byte-compared to the committed original. No `strong` or `recompile-only` figure grades against the tool's own output; the self-graded tier is labeled `coverage-self-reported` and kept separate.
 
 ### What are the honest limits?
 
