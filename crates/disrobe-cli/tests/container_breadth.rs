@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -49,12 +50,11 @@ fn tracked_files(root: &Path) -> Vec<PathBuf> {
                  build output and untracked samples: {error}"
             )
         });
-    if !out.status.success() {
-        panic!(
-            "`git ls-files` failed in {}, so the committed-input population cannot be established",
-            root.display()
-        );
-    }
+    assert!(
+        out.status.success(),
+        "`git ls-files` failed in {}, so the committed-input population cannot be established",
+        root.display()
+    );
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .map(str::trim_end)
@@ -106,13 +106,17 @@ fn measure() -> BTreeMap<&'static str, Reached> {
         seen += 1;
 
         let out_dir: PathBuf = temp.path().join(format!("{label}-{seen}"));
-        if std::fs::create_dir_all(&out_dir).is_err() {
-            continue;
-        }
-        let wrote_members: bool = match extract_to(kind, &bytes, &out_dir) {
-            Ok(result) => wrote_member_bytes(&result),
-            Err(_) => false,
-        };
+        std::fs::create_dir_all(&out_dir).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "cannot create {}, so {label} would drop out of the exercised count without \
+                 being measured: {error}",
+                out_dir.display()
+            )
+        });
+        let wrote_members: bool =
+            extract_to(kind, &bytes, &out_dir).is_ok_and(|result: ExtractionResult| {
+                wrote_member_bytes(&result)
+            });
         let status: &'static str = if is_source_text(&relative) {
             STATUS_MISDETECT
         } else if wrote_members {
@@ -157,7 +161,8 @@ fn rendered(reached: &BTreeMap<&'static str, Reached>) -> String {
         let Some(row): Option<&Reached> = reached.get(label) else {
             continue;
         };
-        out.push_str(&format!("{label}\t{}\t{}\n", row.status, row.input));
+        writeln!(out, "{label}\t{}\t{}", row.status, row.input)
+            .expect("writing a row into an in-memory string cannot fail");
     }
     out
 }
