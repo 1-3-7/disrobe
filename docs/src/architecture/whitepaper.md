@@ -111,11 +111,11 @@ lifter, so neither number can be manufactured by the tool under test.
 
 This section documents the `disrobe-pass-py-decompile` crate, which recovers Python source from
 compiled CPython code objects without any statistical model, learned prior, or interpreter in the
-loop at recovery time. The crate spans 84 source files and roughly 41,500 lines. The argument below
+loop at recovery time. The crate spans 89 source files and roughly 49,600 lines. The argument below
 proceeds from the problem it solves, to why the problem resists a naive solution, to the exact
 reconstruction algorithms in the code, to the recompile-equivalence oracle that grades the result,
 to the measured numbers, and finally to the limits the code itself exposes. Every claim is anchored
-to a line in the reviewed tree, and every code excerpt is reproduced verbatim.
+to a named symbol in the reviewed tree, and every code excerpt is reproduced verbatim.
 
 ### 1.1 The problem: deterministic recovery of Python source from bytecode
 
@@ -145,7 +145,7 @@ impl Pass for PyDecompilePass {
             formatted: true,
         }
 ```
-(`src/chain_detector.rs:53-68`)
+(`src/chain_detector.rs`, `impl Pass for PyDecompilePass`)
 
 Determinism matters for reverse engineering and malware analysis for three concrete reasons. First,
 static safety: the recovery runs no attacker-controlled code, so analyzing a hostile sample cannot
@@ -163,7 +163,7 @@ pub fn decompile_pyc(bytes: &[u8]) -> Result<NativeDecompile> {
     }
     let magic: u32 = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
 ```
-(`src/engine.rs:28-37`)
+(`src/engine.rs`, `decompile_pyc`)
 
 Second, coverage: a rule-based system can be pushed to a measured ceiling on a real corpus and held
 there by a regression gate, which a model that guesses cannot promise. Third, reproducibility: a
@@ -180,7 +180,7 @@ pub use engine::{
     NativeDecompile, decompile_micropython, decompile_pyc, decompile_pypy, pypy_variant_label,
 };
 ```
-(`src/lib.rs:29-31`)
+(`src/lib.rs`, the `engine` re-export)
 
 ### 1.2 Why it is hard
 
@@ -206,7 +206,7 @@ pub enum PyVersion {
     PyPy(Box<PyVersion>),
 }
 ```
-(`src/bytecode/version.rs:4-36`)
+(`src/bytecode/version.rs`, `PyVersion`)
 
 Each release is bound to its magic number, so a raw `.pyc` is routed to the correct context by the
 four header bytes:
@@ -218,7 +218,7 @@ four header bytes:
 3627 => Self::V3_14,
 3666 => Self::V3_15,
 ```
-(`src/bytecode/version.rs:106-110`)
+(`src/bytecode/version.rs`, the magic-number map)
 
 The renumbering problem is not only that byte 100 means different things in 3.10 and 3.12. The
 argument encoding also drifts. In 3.11 `LOAD_GLOBAL` began using the low argument bit as a flag and
@@ -237,7 +237,7 @@ let compare_index: u32 = match (maj, min) {
     _ => arg,
 };
 ```
-(`src/bytecode/opcode/mod.rs:418-425`)
+(`src/bytecode/opcode/mod.rs`, `shared_decode`)
 
 The regression suite pins these shifts against the exact byte values a real interpreter emits, which
 is why a mis-shift is caught rather than silently absorbed:
@@ -249,7 +249,7 @@ fn import_name_index_shifted_on_315() {
     assert_eq!(op, CanonicalOp::ImportName(2));
 }
 ```
-(`src/bytecode/opcode/mod.rs:1078-1082`)
+(`src/bytecode/opcode/mod.rs`, `import_name_index_shifted_on_315`)
 
 #### 1.2.2 Adaptive specialization, superinstructions, and quickening carry no source meaning
 
@@ -274,7 +274,7 @@ any structuring sees them:
 | "LOAD_ATTR_SLOT"
 | "LOAD_ATTR_WITH_HINT" => Some(CanonicalOp::LoadAttr(arg >> 1)),
 ```
-(`src/bytecode/opcode/mod.rs:757-815`)
+(`src/bytecode/opcode/mod.rs`, `shared_decode`)
 
 Cache slots are counted and skipped during decoding rather than decoded as instructions. The decoder
 advances the cursor by the per-opcode cache width so the inline cache bytes never enter the stream:
@@ -286,7 +286,7 @@ if caches > 0 {
     cursor += caches * WIDE_STEP;
 }
 ```
-(`src/ast/builder/mod.rs:955-959`)
+(`src/ast/builder/mod.rs`, the decode loop)
 
 Superinstructions are split back into their component operations, restoring the two logical pushes
 the source implies:
@@ -296,7 +296,7 @@ the source implies:
 "STORE_FAST_LOAD_FAST" => CanonicalOp::StoreFastLoadFast(arg >> 4, arg & 0xF),
 "STORE_FAST_STORE_FAST" => CanonicalOp::StoreFastStoreFast(arg >> 4, arg & 0xF),
 ```
-(`src/bytecode/opcode/mod.rs:745-747`)
+(`src/bytecode/opcode/mod.rs`, `shared_decode`)
 
 #### 1.2.3 Stack-machine to structured control flow is ambiguous
 
@@ -332,7 +332,7 @@ pub fn build_real_source(
             ..DefaultEmitter::new()
         }),
 ```
-(`src/engine.rs:212-224`)
+(`src/engine.rs`, `build_real_source`)
 
 Structuring runs on a dedicated 256 MB stack, because the structuring recursion tracks deeply nested
 control flow and the default thread stack is not enough for adversarial inputs:
@@ -341,7 +341,7 @@ control flow and the default thread stack is not enough for adversarial inputs:
 #[cfg(not(target_arch = "wasm32"))]
 const STRUCTURE_STACK_BYTES: usize = 256 * 1024 * 1024;
 ```
-(`src/engine.rs:166-167`)
+(`src/engine.rs`, `STRUCTURE_STACK_BYTES`)
 
 #### 1.3.1 Opcode normalization: raw byte, to stable mnemonic, to version-agnostic canonical op
 
@@ -363,7 +363,7 @@ pub trait OpcodeMap: Debug + Send + Sync {
     fn family(&self, op: u8) -> OpcodeFamily;
 }
 ```
-(`src/bytecode/opcode/mod.rs:296-304`)
+(`src/bytecode/opcode/mod.rs`, `OpcodeMap`)
 
 ```rust
 pub fn map_for(version: PyVersion) -> Box<dyn OpcodeMap> {
@@ -377,7 +377,7 @@ pub fn map_for(version: PyVersion) -> Box<dyn OpcodeMap> {
     }
 }
 ```
-(`src/bytecode/opcode/mod.rs:307-343`)
+(`src/bytecode/opcode/mod.rs`, `map_for`)
 
 The concrete adapters are intentionally thin. Each one binds its version and forwards to the shared
 implementation, so the release-specific knowledge is the version tag plus the byte-to-name table it
@@ -393,7 +393,7 @@ impl OpcodeMap for V311OpcodeMap {
         shared_decode(&PyVersion::V3_11, raw, arg)
     }
 ```
-(`src/bytecode/opcode/v3_11.rs:10-17`)
+(`src/bytecode/opcode/v3_11.rs`)
 
 The PyPy overlay is the one map with genuine per-variant bytes, because PyPy adds opcodes above the
 CPython range. It intercepts those and delegates everything else to the wrapped base:
@@ -408,7 +408,7 @@ fn decode(&self, raw: u8, arg: u32) -> CanonicalOp {
     }
 }
 ```
-(`src/bytecode/opcode/pypy.rs:21-33`)
+(`src/bytecode/opcode/pypy.rs`, `PyPyOpcodeMap::decode`)
 
 Second, the shared decoder maps the mnemonic, not the byte, to a version-agnostic `CanonicalOp`.
 This is what makes per-release renumbering a non-problem for everything downstream: byte 100 differs
@@ -431,19 +431,19 @@ pub enum CanonicalOp {
     Other(u8, u8),
 }
 ```
-(`src/bytecode/opcode/mod.rs:140-294`)
+(`src/bytecode/opcode/mod.rs`, `CanonicalOp`)
 
 The mnemonic-to-canonical mapping is one large explicit match. It folds families of legacy and modern
 spellings onto one canonical form, so that later stages never branch on version for meaning. Old and
 new division, method-call fusions, and renamed jumps all converge:
 
 ```rust
+"JUMP_ABSOLUTE" | "JUMP" => CanonicalOp::JumpAbsolute(arg),
+...
 "CALL_FUNCTION" | "CALL" => CanonicalOp::CallFunction(arg_lo),
 "CALL_FUNCTION_KW" | "CALL_KW" => CanonicalOp::CallFunctionKw(arg_lo),
-...
-"JUMP_ABSOLUTE" | "JUMP" => CanonicalOp::JumpAbsolute(arg),
 ```
-(`src/bytecode/opcode/mod.rs:539-562`)
+(`src/bytecode/opcode/mod.rs`, `shared_decode`)
 
 Instructions that exist only to drive interpreter mechanics collapse to `Nop`, including block-setup
 opcodes from the pre-3.11 exception model, which are reconstructed structurally later rather than
@@ -457,7 +457,7 @@ represented as operations:
 ...
 | "SET_LINENO" => CanonicalOp::Nop,
 ```
-(`src/bytecode/opcode/mod.rs:635-648`)
+(`src/bytecode/opcode/mod.rs`, `shared_decode`)
 
 Genuinely unknown bytes are preserved rather than dropped, as `Specialized(raw)` for instrumentation
 and executor opcodes or `Other(raw, arg)` for anything unrecognized, so recovery degrades locally
@@ -466,7 +466,7 @@ instead of desynchronizing the whole stream:
 ```rust
 _ => CanonicalOp::Other(raw, arg_lo),
 ```
-(`src/bytecode/opcode/mod.rs:750`)
+(`src/bytecode/opcode/mod.rs`, the `shared_decode` fallthrough)
 
 #### 1.3.2 Decoding, offsets, and jump resolution
 
@@ -479,7 +479,7 @@ const LEGACY_HAVE_ARGUMENT: u8 = 90;
 const WIDE_STEP: usize = 2;
 const NARROW_STEP: usize = 1;
 ```
-(`src/ast/builder/mod.rs:996-998`)
+(`src/ast/builder/mod.rs`, the instruction-width constants)
 
 The decoder records, for every emitted canonical op, its starting byte offset and its following byte
 offset, into parallel vectors. Because some decodes expand into more than one canonical op (a fused
@@ -494,7 +494,7 @@ if crate::bytecode::opcode::shared_method_form_load_attr(version, raw, arg) {
     ops.push(CanonicalOp::Push(0));
 }
 ```
-(`src/ast/builder/mod.rs:949-954`)
+(`src/ast/builder/mod.rs`, the decode loop)
 
 The decoded stream carries the offset tables plus everything structuring needs to reason about
 version-specific flow, including whether jumps are measured in instruction units or bytes and whether
@@ -514,7 +514,7 @@ struct DecodedStream {
     version: PyVersion,
 }
 ```
-(`src/ast/builder/mod.rs:320-337`)
+(`src/ast/builder/mod.rs`, `DecodedStream`)
 
 Jump targets are resolved from a byte offset to an instruction index by binary search over the
 recorded offsets, with a ceiling variant for targets that land inside a decoded region:
@@ -524,7 +524,7 @@ fn index_for_offset(&self, byte_offset: u32) -> Option<usize> {
     self.offsets.binary_search(&byte_offset).ok()
 }
 ```
-(`src/ast/builder/mod.rs:340-342`)
+(`src/ast/builder/mod.rs`, `DecodedStream::index_for_offset`)
 
 Exception structure is version-split. From 3.11 the compiler emits a zero-cost exception table, a
 base-128-style varint encoding of protected ranges and handler targets, parsed directly:
@@ -541,7 +541,7 @@ fn read_varint(&mut self) -> Result<u64> {
         value = (value << 6) | u64::from(next & 0x3F);
         more = (next & 0x40) != 0;
 ```
-(`src/bytecode/flow.rs:119-133`)
+(`src/bytecode/flow.rs`, `read_varint`)
 
 Before 3.11 there is no such table, so the crate synthesizes protected ranges from the
 `SETUP_FINALLY` and `SETUP_EXCEPT` block-setup opcodes, computing handler targets from the setup
@@ -557,11 +557,11 @@ if matches!(name, "SETUP_FINALLY" | "SETUP_EXCEPT") {
     };
     let target: u32 = after.saturating_add(delta_bytes);
 ```
-(`src/ast/builder/mod.rs:869-876`)
+(`src/ast/builder/mod.rs`, the pre-3.11 protected-range synthesis)
 
 Source line numbers, used to place recovered statements, are likewise parsed per era: the [PEP 626]
 linetable for 3.11+, a transitional linetable for 3.10, and classic `lnotab` before that
-(`src/bytecode/flow.rs:146-154`).
+(`src/bytecode/flow.rs`).
 
 #### 1.3.3 Frame tree: a coarse skeleton of compound statements
 
@@ -582,7 +582,7 @@ pub struct Frame {
     pub children: Vec<Frame>,
 }
 ```
-(`src/frame_tree/mod.rs:41-52`)
+(`src/frame_tree/mod.rs`, `Frame`)
 
 The builder is version-split at the same 3.11 boundary as exception handling:
 
@@ -595,7 +595,7 @@ pub fn builder_for(version: PyVersion) -> Box<dyn FrameTreeBuilder> {
     }
 }
 ```
-(`src/frame_tree/mod.rs:107-113`)
+(`src/frame_tree/mod.rs`, `builder_for`)
 
 The pre-3.11 builder is a straightforward block-stack walk. It pushes a frame on each `SETUP_*`
 opcode and closes the top frame on `POP_BLOCK`, using per-version opcode numbers so the same walk
@@ -609,7 +609,7 @@ if let Some(op) = ops.setup_loop
     continue;
 }
 ```
-(`src/frame_tree/builder.rs:259-264`)
+(`src/frame_tree/builder.rs`, `Pre311Builder`)
 
 The post-3.11 builder derives try/with frames from the exception table and loop frames from backward
 jumps, classifying each backward jump by what its target begins with (an async-iterator poll, a
@@ -624,7 +624,7 @@ let kind: FrameKind = if is_async_for {
     FrameKind::WhileLoop
 };
 ```
-(`src/frame_tree/builder.rs:503-509`)
+(`src/frame_tree/builder.rs`, `Post311Builder`)
 
 Frames are then nested by containment, with a depth cap that stops a pathological input from building
 an unbounded tree:
@@ -632,7 +632,7 @@ an unbounded tree:
 ```rust
 const MAX_FRAME_NEST_DEPTH: usize = 256;
 ```
-(`src/frame_tree/builder.rs:369`)
+(`src/frame_tree/builder.rs`, `MAX_FRAME_NEST_DEPTH`)
 
 #### 1.3.4 The stack machine: expressions and statements from stack effects
 
@@ -645,7 +645,7 @@ pub(super) struct StackSim {
     pub(super) stack: Vec<Expr>,
 }
 ```
-(`src/ast/builder/exprs.rs:2669-2672`)
+(`src/ast/builder/exprs.rs`, `StackSim`)
 
 A load pushes a leaf, a binary or subscript op pops its operands and pushes a composite, and a store
 pops the value and emits an assignment statement. Subscription is representative: the slice and the
@@ -662,7 +662,7 @@ CanonicalOp::LoadSubscr => {
     });
 }
 ```
-(`src/ast/builder/exprs.rs:814-822`)
+(`src/ast/builder/exprs.rs`, the `CanonicalOp::LoadSubscr` arm)
 
 The simulator is fail-soft by construction. A pop on an empty stack, which happens when a region is
 entered mid-expression or when an opcode is unrecognized, yields a `None` constant rather than an
@@ -677,7 +677,7 @@ pub(super) fn pop_or_synth(&mut self, code: &CodeObject, idx: usize) -> Expr {
     })
 }
 ```
-(`src/ast/builder/exprs.rs:2729-2735`)
+(`src/ast/builder/exprs.rs`, `StackSim::pop_or_synth`)
 
 The simulator returns both the statements it emitted and any residual expressions left on the stack,
 which is how the structurer above it obtains, for example, the test expression of an `if` whose
@@ -691,11 +691,11 @@ pub(super) fn build_linear_stmts_sim(
     build_linear_stmts_sim_seed(code, ops, Vec::new())
 }
 ```
-(`src/ast/builder/exprs.rs:218-223`)
+(`src/ast/builder/exprs.rs`, `build_linear_stmts_sim`)
 
 Beyond the base stack effects, the simulator recognizes several idioms that would otherwise
 mis-decompile. Boolean short-circuits are accumulated across the branch instructions that implement
-them into a single `BoolOp` rather than left as jumps (`src/ast/builder/exprs.rs:598-640`).
+them into a single `BoolOp` rather than left as jumps (`src/ast/builder/exprs.rs`, the short-circuit accumulator).
 Simultaneous assignment, where the compiler emits a stack rotation followed by stores, is folded back
 into a tuple assignment:
 
@@ -713,11 +713,11 @@ let merged: Stmt = Stmt::Assign {
     line: None,
 };
 ```
-(`src/ast/builder/exprs.rs:333-344`)
+(`src/ast/builder/exprs.rs`, the rotation-and-store fold)
 
 Imports, class construction, type aliases, and type parameters are threaded through the stack as
 encoded marker names (for example `DR_IMPORT_MODULE_PREFIX`, `DR_BUILD_CLASS_MARKER`,
-`DR_TYPE_ALIAS_MARKER` at `src/ast/builder/exprs.rs:2782-2792`) that a later stage resolves into the
+`DR_TYPE_ALIAS_MARKER` in `src/ast/builder/exprs.rs`) that a later stage resolves into the
 proper statement, because their bytecode spans several instructions whose meaning is only clear once
 assembled.
 
@@ -740,7 +740,7 @@ if let Some(stmts) = structure_fallthrough_continue_and_chain(code, stream, lo, 
     return Ok(stmts);
 }
 ```
-(`src/ast/builder/stmts.rs:1632-1640`)
+(`src/ast/builder/stmts.rs`, `structure_stmts`)
 
 Loops, try regions, and match statements are recognized by dedicated detectors that first confirm the
 region is not enclosed by a larger construct, so a nested loop is attributed to its enclosing try or
@@ -757,7 +757,7 @@ if let Some(loop_region) = find_loop(stream, lo, hi)
     return structure_loop(code, stream, lo, hi, &loop_region);
 }
 ```
-(`src/ast/builder/stmts.rs:1701-1709`)
+(`src/ast/builder/stmts.rs`, `structure_stmts`)
 
 When a plain conditional is found, the structurer splits the region into head, then-arm, and else-arm,
 recursively structures each arm, and reassembles an `If`, taking care to negate the test when the
@@ -776,7 +776,7 @@ if body_end > jump_idx + 1
     then_jump_at = Some(last);
 }
 ```
-(`src/ast/builder/stmts.rs:1834-1844`)
+(`src/ast/builder/stmts.rs`, `structure_stmts`)
 
 Chained and compound conditions are reconstructed before the simple case. `try_recover_compound_if`
 walks the run of conditional jumps that a single source `if a and b or c:` compiles to, recovers each
@@ -791,7 +791,7 @@ for (n, &jump) in jumps.iter().enumerate() {
         return Ok(None);
     };
 ```
-(`src/ast/builder/stmts.rs:995-1000` calls into `src/ast/builder/branches.rs:960-1045`)
+(`src/ast/builder/branches.rs`, `try_recover_compound_if`, called from `structure_stmts` in `src/ast/builder/stmts.rs`)
 
 Exception recovery reads the parsed table to locate the protected body, the handler start, and the
 region end, then distinguishes `try`/`except`, `try`/`finally`, and `with`/`async with` by the shape
@@ -804,19 +804,19 @@ let is_with: bool = is_modern
         Some(CanonicalOp::WithExceptStart)
     );
 ```
-(`src/ast/builder/try_with.rs:416-420`)
+(`src/ast/builder/try_with.rs`, `find_try_region`)
 
 Recursion is bounded on three axes so no input can hang the structurer: a per-region reentry limit of
 four, a structuring depth limit of 600, and a nested-code-object depth limit of 200
-(`src/ast/builder/mod.rs:1112-1187`). When a region reenters too many times it falls back to a linear
-recovery rather than recursing again (`src/ast/builder/stmts.rs:1628-1631`).
+(`src/ast/builder/mod.rs`, `STRUCTURE_DEPTH_LIMIT`, `STRUCTURE_REENTRY_LIMIT` and `CODEOBJ_DEPTH_LIMIT`). When a region reenters too many times it falls back to a linear
+recovery rather than recursing again (`src/ast/builder/stmts.rs`, `structure_stmts`).
 
 #### 1.3.6 The AST and emission
 
 The structured output is a typed Python AST that mirrors CPython's own `ast` module, including modern
 constructs: `Match`/`MatchCase`/`Pattern` for structural pattern matching, `TypeParam` and
 `TypeAlias` for [PEP 695] generics, `TStr`/`TStrItem` for 3.14 template strings, `NamedExpr` for the
-walrus operator, and `TryStar` for exception groups (`src/ast/node.rs:133-330`). The emitter walks
+walrus operator, and `TryStar` for exception groups (`src/ast/node.rs`). The emitter walks
 this tree to a source string. Recovery is fail-soft at the top level as well: if structuring or
 emission of a code object fails, the pass falls back to an annotated disassembly listing and records
 that the object was not directly recovered, rather than failing the whole file:
@@ -833,7 +833,7 @@ Err(real_err) => {
     })
 }
 ```
-(`src/engine.rs:61-72`)
+(`src/engine.rs`, the fallback arm of `decompile_pyc`)
 
 ### 1.4 The recompile-equivalence oracle
 
@@ -852,7 +852,7 @@ try:\n    py_compile.compile({src_lit}, cfile={pyc_lit}, doraise=True)\n\
 except Exception as e:\n    sys.stderr.write(str(e));sys.exit(2)\n"
 );
 ```
-(`src/recompile.rs:173-177`)
+(`src/recompile.rs`, `recompile_via_interpreter`)
 
 It then reads back the interpreter-produced `.pyc` and grades it against the original with
 `semantic_equiv`. That function returns one of three verdicts, of which two count as recovered:
@@ -864,7 +864,7 @@ pub enum Verdict {
     CodeDiff(DiffDetail),
 }
 ```
-(`src/roundtrip/mod.rs:7-12`)
+(`src/roundtrip/mod.rs`, `Verdict`)
 
 `Perfect` is reserved for a byte-identical code object, checked directly on the raw fields before any
 normalization:
@@ -879,7 +879,7 @@ if byte_identical {
     };
 }
 ```
-(`src/roundtrip/mod.rs:110-117`)
+(`src/roundtrip/mod.rs`, `semantic_equiv`)
 
 `Semantic` is the more important verdict in practice, because two source spellings can compile to the
 same behavior with different byte layout. It normalizes both instruction sequences and compares them
@@ -896,19 +896,19 @@ if let Verdict::CodeDiff(d) = compare_nested(a, b, version) {
 }
 Verdict::Semantic
 ```
-(`src/roundtrip/mod.rs:118-126`)
+(`src/roundtrip/mod.rs`, `semantic_equiv`)
 
 The normalization is what makes `Semantic` meaningful without being permissive. The Rust oracle and
 the Python harness apply the same normalization tables independently: the harness defines the `NOOP`
 set of padding mnemonics and the `SPLIT2`, `RENAME`, and `JUMPS` maps that expand superinstructions,
-rename specialized loads, and collapse jump spellings (`tests/harness/py_arbitrary_measure.py:39-80`),
+rename specialized loads, and collapse jump spellings (`tests/harness/py_arbitrary_measure.py`, the `NOOP`, `SPLIT2`, `RENAME` and `JUMPS` tables),
 mirroring the Rust side. The Rust normalizer removes interpreter padding (`NOP`, `CACHE`, `RESUME`,
-`EXTENDED_ARG`, `MAKE_CELL`, and so on at `src/roundtrip/normalize.rs:6-18`), expands superinstructions
+`EXTENDED_ARG`, `MAKE_CELL`, and so on at `PADDING_NAMES` in `src/roundtrip/normalize.rs`), expands superinstructions
 and `RETURN_CONST` back to primitives
-(`src/roundtrip/normalize.rs:174-241`), resolves each jump to a target instruction index so that
-byte-offset drift does not register as a difference (`src/roundtrip/normalize.rs:578-597`), and
+(`src/roundtrip/normalize.rs`, `normalize_sequence`), resolves each jump to a target instruction index so that
+byte-offset drift does not register as a difference (`src/roundtrip/normalize.rs`, jump-target resolution), and
 canonicalizes operand identity by resolving const, name, and local operands to their values rather
-than their indices (`src/roundtrip/normalize.rs:289-320`). Two operations are equal only when opcode,
+than their indices (`src/roundtrip/normalize.rs`, operand resolution). Two operations are equal only when opcode,
 resolved const value, resolved name, resolved jump target, and compare-operator id all match:
 
 ```rust
@@ -921,10 +921,10 @@ fn ops_semantically_equal(a: &NormalizedOp, b: &NormalizedOp) -> bool {
         && raw_arg_semantically_equal(a, b)
 }
 ```
-(`src/roundtrip/mod.rs:168-175`)
+(`src/roundtrip/mod.rs`, `ops_semantically_equal`)
 
 The comparison also recurses into nested code objects, so a function whose module compiles equal but
-whose inner comprehension does not is still charged as a difference (`src/roundtrip/mod.rs:285-317`).
+whose inner comprehension does not is still charged as a difference (`src/roundtrip/mod.rs`, `compare_nested`).
 
 Two points establish non-circularity. First, the graded artifact is a code object produced by CPython
 from disrobe's text, not disrobe's own re-emission; disrobe never grades itself. Second, the corpus
@@ -934,7 +934,7 @@ genuine CPython recompile:
 > Per-code-object recompile-to-equivalent-bytecode oracle ... compare EVERY nested code object ...
 > individually via an opcode-normalized diff. The oracle is non-circular: disrobe's output is graded
 > against a real CPython recompile, never against disrobe's own re-emission.
-(`tests/harness/py_arbitrary_measure.py:3-8`)
+(`tests/harness/py_arbitrary_measure.py`, module header)
 
 The harness carries an explicit anti-masking guard against a subtle way a per-name comparison could
 lie. When several code objects share a qualified name (multiple lambdas or comprehensions under one
@@ -951,7 +951,7 @@ if len(blist) != len(alist):
         else:
             reasons["COLLISION"] = reasons.get("COLLISION", 0) + 1
 ```
-(`tests/harness/py_arbitrary_measure.py:241-248`)
+(`tests/harness/py_arbitrary_measure.py`, the sibling-pairing guard in `main`)
 
 A code object counts as recovered only when its normalized instructions match and its argument counts
 match:
@@ -965,7 +965,7 @@ def own_equiv(a, b):
             return False, "sig"
     return True, ""
 ```
-(`tests/harness/py_arbitrary_measure.py:146-152`)
+(`tests/harness/py_arbitrary_measure.py`, `own_equiv`)
 
 ### 1.5 Evaluation
 
@@ -978,7 +978,9 @@ crate's own provenance record labels the full-stdlib number as "the honest repre
 200-module pinned corpus over-represents recoverable modules)".
 
 The whole-module exact figure, where a module counts only if every one of its code objects is
-equivalent, is 54.5%, and it is measured only on the pinned 200-module corpus. There is no
+equivalent, is 54.5%, and it is measured only on the pinned 200-module corpus. That figure is a local
+measurement: the gate reads the harness's `module_pct` field and prints it, but no floor asserts it,
+so unlike the per-object rate it is not CI-enforced. There is no
 full-stdlib whole-module figure; since the pinned corpus over-represents recoverable modules, the
 full-stdlib whole-module rate would be lower still, not higher. The gap between the <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per-object
 rate and the 54.5% per-module rate is the honest center of the evaluation, not a footnote, and the
@@ -989,15 +991,15 @@ imperfect object, which fails the whole module. The per-object figure is the met
 improvement because it is granular and monotonic; the per-module figure is the end goal and is
 deliberately reported as the harder, lower number. These figures are not re-measured here.
 
-The measurement is enforced as a regression gate, not asserted. The CI gate runs the same harness
-over the 200-module pinned corpus (the source of the <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> and 54.5% figures), parses its JSON, and
+The per-object measurement is enforced as a regression gate, not asserted. The CI gate runs the same harness
+over the 200-module pinned corpus (the corpus behind both the <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> and the 54.5% figures), parses its JSON, and
 holds the per-object rate above a floor of 96.60%; the full-stdlib <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> comes from running that
 harness over the entire Lib rather than the pinned list:
 
 ```rust
 const OBJECT_PCT_FLOOR: f64 = 96.60;
 ```
-(`tests/arbitrary_recompile_gate.rs:17`)
+(`tests/arbitrary_recompile_gate.rs`, `OBJECT_PCT_FLOOR`)
 
 ```rust
     assert!(
@@ -1007,24 +1009,26 @@ const OBJECT_PCT_FLOOR: f64 = 96.60;
          corpus measures, so any drop is a real regression unless the stdlib sources themselves \
          moved: if this run is on a different 3.14 patch release than the one the floor was pinned \
 ```
-(`tests/arbitrary_recompile_gate.rs:274-280`)
+(`tests/arbitrary_recompile_gate.rs`, `arbitrary_recompile_equivalence_gate`)
 
 The floor is pinned at the measured figure rather than a round number below it, so the gate has no
 slack to absorb a regression in silence.
 
 The legacy line has its own gate over a corpus of 191 vendored fixtures spanning 1.x through 3.x. It
 grades by a two-verdict union: recompile-equivalence for versions with an available interpreter, and
-structural token-match otherwise. The measured proven-correct count is 166 of 191, but the two halves
+structural token-match otherwise. The proven-correct count measured locally with the full period
+interpreter set installed is 166 of 191, and it is labelled local because it depends on which 1.0
+through 3.7 interpreters are present on the machine; no gate asserts it. The two halves
 are not equally strong: 67 of those are recompile-equivalent (the strong, behavioral guarantee) and
 99 rest on structural token-match (a strictly weaker guarantee that the recovered token stream matches
-a reference, used where the 1.0 through 3.7 interpreter zoo is not present to recompile). The CI floor
+a reference, the verdict recorded wherever the period interpreter cannot recompile the fixture). The CI floor
 of 150 holds on token-match alone, with a separate token-match floor of 86:
 
 ```rust
 const PROVEN_CORRECT_FLOOR: usize = 150;
 const SOURCE_TOKEN_FLOOR: usize = 86;
 ```
-(`tests/legacy_recompile.rs:31-32`)
+(`tests/legacy_recompile.rs`, `PROVEN_CORRECT_FLOOR` and `SOURCE_TOKEN_FLOOR`)
 
 ```rust
 let proven_correct: usize = recompile_equiv + source_match;
@@ -1034,17 +1038,17 @@ assert!(
      (platform-stable: recompile-equiv union token-match, minimum is the pure token-match count)"
 );
 ```
-(`tests/legacy_recompile.rs:378-383`)
+(`tests/legacy_recompile.rs`, `legacy_recompile_correctness_oracle`)
 
 The breadth of the version surface is not asserted rhetorically; it is the 30 CPython version-specific
 opcode tables spanning `v1_0` through `v3_15`, plus the dedicated PyPy tables, all enumerated in
-`map_for` (`src/bytecode/opcode/mod.rs:307-343`) as 30 concrete release adapters plus the PyPy overlay,
+`map_for` (`src/bytecode/opcode/mod.rs`) as 30 concrete release adapters plus the PyPy overlay,
 each exercised by the corpus that resolves through them.
 
 The corpus is pinned and
 version-stable, passed as an explicit module list so the same code objects are measured on every
-machine (`tests/harness/py_arbitrary_measure.py:9-13`). The gate measures the real built CLI binary,
-not an in-process shortcut, and refuses to run without it (`tests/arbitrary_recompile_gate.rs:170-177`).
+machine (`tests/harness/py_arbitrary_measure.py`, the `--modules` argument). The gate measures the real built CLI binary,
+not an in-process shortcut, and refuses to run without it (`tests/arbitrary_recompile_gate.rs`, `arbitrary_recompile_equivalence_gate`).
 And the grader is the independent Python reimplementation of the normalization, so agreement between
 the Rust oracle and the Python harness is itself corroboration rather than a single point of trust.
 
@@ -1052,7 +1056,7 @@ the Rust oracle and the Python harness is itself corroboration rather than a sin
 
 Recovery is not total; it degrades to disassembly. When structuring or emission of a code object
 throws, the pass emits an annotated disassembly listing and flags `recovered_directly = false`
-(`src/engine.rs:61-72`, `src/engine.rs:240-261`). Such an object is legible but is not recovered
+(`src/engine.rs`, the fallback arm of `decompile_pyc` and `disasm_fallback_source`). Such an object is legible but is not recovered
 source and would not pass the oracle. The per-object percentages in 1.5 are exactly the fraction that
 avoids this fallback and recompiles equivalent.
 
@@ -1070,7 +1074,7 @@ cases.push(MatchCase {
     body: case_body,
 });
 ```
-(`src/ast/builder/stmts.rs:352-359`)
+(`src/ast/builder/stmts.rs`, the `match`-frame arm of the frame-dispatch builder)
 
 Full pattern recovery exists on the simulation path (`structure_match` in `branches.rs`), so which
 result a given `match` receives depends on the route its enclosing region takes; the frame-dispatch
@@ -1078,20 +1082,20 @@ path is a skeleton.
 
 Several statement attributes are not recovered on the frame-dispatch path. `build_function_def` sets
 decorators to empty, the return annotation to `None`, and type parameters to empty
-(`src/ast/builder/stmts.rs:88-104`); these are recovered elsewhere through the marker mechanism, but
+(`src/ast/builder/stmts.rs`, `build_function_def`); these are recovered elsewhere through the marker mechanism, but
 the plain path does not carry them. Lambdas recovered through `build_lambda` reduce the body to the
 first returned or expression value and default to `None` when neither is present
-(`src/ast/builder/stmts.rs:106-123`).
+(`src/ast/builder/stmts.rs`, `build_lambda`).
 
 Deeply nested or adversarial control flow hits hard caps and errors rather than recursing without
 bound: structuring depth is limited to 600, nested-code-object depth to 200, frame nesting to 256,
-and per-region reentry to 4 (`src/ast/builder/mod.rs:1112-1187`, `src/frame_tree/builder.rs:369`).
+and per-region reentry to 4 (`src/ast/builder/mod.rs`, `STRUCTURE_DEPTH_LIMIT`, `STRUCTURE_REENTRY_LIMIT` and `CODEOBJ_DEPTH_LIMIT`; `src/frame_tree/builder.rs`, `MAX_FRAME_NEST_DEPTH`).
 Input past these limits fails to a `StructuringDepthExceeded` error and therefore to the disassembly
 fallback.
 
 Unknown or future opcodes are preserved but not lifted. A byte with no canonical meaning becomes
 `Other(raw, arg)` and instrumentation or executor opcodes become `Specialized(raw)`
-(`src/bytecode/opcode/mod.rs:750`, `mod.rs:706-727`); such an op has no expression semantics and will
+(`src/bytecode/opcode/mod.rs`, `shared_decode`); such an op has no expression semantics and will
 break recovery of the region that contains it, which is the correct fail-soft behavior but is not
 recovery.
 
@@ -1174,7 +1178,7 @@ impl Precedence {
     }
 }
 ```
-(`crates/disrobe-emit/src/precedence.rs:14`)
+(`crates/disrobe-emit/src/precedence.rs`, `Precedence`)
 
 The single authority is `parenthesize_operand`. It is a `const fn` and is reproduced here
 verbatim:
@@ -1199,7 +1203,7 @@ pub const fn parenthesize_operand(
     }
 }
 ```
-(`crates/disrobe-emit/src/precedence.rs:26`)
+(`crates/disrobe-emit/src/precedence.rs`, `parenthesize_operand`)
 
 The signature is exactly `parenthesize_operand(child, parent, parent_assoc, side)`. The
 function is total, and the totality is what makes the design trustworthy. `child` and
@@ -1218,15 +1222,15 @@ holds for right-associative operators. A non-associative parent parenthesizes ei
 This is precisely the C and Rust grouping rule, encoded once.
 
 The concrete precedence levels are assigned in the C printer,
-`crates/disrobe-emit/src/c/print.rs:28`, as fifteen constants from `P_COMMA = Precedence(0)`
+`crates/disrobe-emit/src/c/print.rs`, as fifteen constants from `P_COMMA = Precedence(0)`
 through `P_POSTFIX = Precedence(14)`, matching the C operator-precedence table. The atom
 level `Precedence::ATOM = Precedence(u8::MAX)` sits above all of them, so literals and
 identifiers are never parenthesized. The typed C AST carries 18 binary operators
-(`BinaryOp`, `crates/disrobe-emit/src/c/ast.rs:192`), 8 unary operators (`UnaryOp`,
-`ast.rs:174`), and 11 compound-assignment operators (`AssignOp`, `ast.rs:214`); every one
+(`BinaryOp`, `crates/disrobe-emit/src/c/ast.rs`), 8 unary operators (`UnaryOp`,
+`ast.rs`), and 11 compound-assignment operators (`AssignOp`, `ast.rs`); every one
 of these maps to a precedence and associativity through `binary_precedence`
-(`c/print.rs:140`) and is routed through `parenthesize_operand` by the `operand_doc` helper
-(`c/print.rs:201`) before it is printed. The worked `(a + b) * c` example resolves as
+(`c/print.rs`) and is routed through `parenthesize_operand` by the `operand_doc` helper
+(`c/print.rs`) before it is printed. The worked `(a + b) * c` example resolves as
 follows: the additive child has precedence `P_ADDITIVE = 11`, the multiplicative parent has
 `P_MULTIPLICATIVE = 12`, so `child.0 < parent.0` fires the second branch and the operand is
 parenthesized, yielding `(a + b) * c` rather than the corrupted `a + b * c`.
@@ -1234,7 +1238,7 @@ parenthesized, yielding `(a + b) * c` rather than the corrupted `a + b * c`.
 The rule is validated by a property test rather than by the tool grading its own output. In
 `crates/disrobe-emit/tests/c_precedence.rs`, `check_reparse` renders a randomly generated
 `CExpr`, parses the rendered text back with an independent C-expression parser, and asserts
-the parsed tree is structurally equal to the original (`c_precedence.rs:567`), across 2048
+the parsed tree is structurally equal to the original (`c_precedence.rs`, `check_reparse`), across 2048
 generated cases in both minimal and full parenthesization modes. A precedence bug that
 dropped or misplaced a parenthesis would change the reparsed tree and fail the round trip.
 A companion invariant asserts that minimal-mode output is never longer than full-mode
@@ -1249,7 +1253,7 @@ grouping whose placement follows the spiral rule, so a pointer to an array is wr
 changes the declared type.
 
 The recovered type is not a string; it is a linked constructor chain,
-`crates/disrobe-emit/src/c/ast.rs:76`:
+`crates/disrobe-emit/src/c/ast.rs`, `DeclaratorChain`:
 
 ```rust
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -1273,13 +1277,13 @@ pub enum DeclaratorChain {
 
 A `TypeName` and a `CDecl` each carry a `CBaseType` (the leaf specifier, for example `int`)
 plus a `DeclaratorChain`. The chain is built with the fluent constructors `pointer_to`,
-`array_of`, and `returning` (`ast.rs:94`), so the type "pointer to function returning
+`array_of`, and `returning` (`ast.rs`), so the type "pointer to function returning
 pointer to array of int" is assembled by chaining those calls, and the enum's `Box<Self>`
 recursion mirrors the inside-out nesting directly.
 
 Printing is a recursion that threads an accumulator representing "the declarator built so
 far" from the innermost constructor outward, and inserts grouping parentheses exactly where
-the spiral rule demands them, `crates/disrobe-emit/src/c/print.rs:402`:
+the spiral rule demands them, `crates/disrobe-emit/src/c/print.rs`, `declarator_doc`:
 
 ```rust
 fn declarator_doc<'a>(ctx: &Ctx<'a>, chain: &'a DeclaratorChain, acc: Doc<'a>) -> Doc<'a> {
@@ -1334,18 +1338,19 @@ lowers the whole file to a `Doc` before rendering (`c/print.rs`). Operator opera
 parenthesized through `operand_doc` and `operand_min_doc`, which call
 `parenthesize_operand` from Section 2.2, so the expression printer and the declarator
 printer share the one precedence authority. The declarator logic is checked by a golden
-oracle, `crates/disrobe-emit/tests/c_cc_oracle.rs:46`, whose eight cases include the
+oracle, `crates/disrobe-emit/tests/c_cc_oracle.rs`, `declarator_spiral_golden`, whose eight cases include the
 adversarial spiral `int (*(*x)(int))[5];` (a pointer to a function returning a pointer to an
 array of int), and by a proptest that generates random valid declarator chains and requires
 a real C compiler to accept every one of them under `ProptestConfig::with_cases(64)`
-(`c_cc_oracle.rs:378`). The compiler, not the tool, is the judge.
+(`c_cc_oracle.rs`). The compiler, not the tool, is the judge.
 
 ### 2.4 The Rust path via syn and prettyplease
 
 The Rust emitter does not print Rust text at all. It constructs `syn` AST nodes (the same
 data model the wider Rust ecosystem uses to represent parsed Rust) and hands the assembled
-`syn::File` to `prettyplease` to unparse. The delegation is the whole of
-`crates/disrobe-emit/src/rust/render.rs`:
+`syn::File` to `prettyplease` to unparse. The delegation is the whole of the render layer in
+`crates/disrobe-emit/src/rust/render.rs`, which carries nothing beyond these two functions and a
+`parse_expr` helper:
 
 ```rust
 use syn::Expr;
@@ -1374,7 +1379,7 @@ pub fn render_expr(expr: &Expr) -> String {
         .join(" ")
 }
 ```
-(`crates/disrobe-emit/src/rust/render.rs:1`)
+(`crates/disrobe-emit/src/rust/render.rs`)
 
 `syn` [syn] and `prettyplease` [prettyplease] are widely used across the Rust ecosystem, not a bespoke component
 of this project. `syn` is the de facto Rust parser used by procedural macros;
@@ -1402,31 +1407,31 @@ expression, reparse it with `syn`, and require the tree to survive.
 ### 2.5 The lift: x86-64 into the typed AST
 
 The lift lives in `crates/disrobe-pass-native/src/pseudo_c.rs` and is entered through
-`recover_leaf_function_calls_impl` (`pseudo_c.rs:1019`). The pipeline has four stages:
+`recover_leaf_function_calls_impl` (`pseudo_c.rs`). The pipeline has four stages:
 disassemble, lift per instruction into a private IR, structure the control flow, then emit C
 and Rust from the structured tree.
 
 Disassembly is delegated to the crate's `iced-x86`-backed decoder,
-`disassemble(Arch::X86_64, base, machine_code)` (`pseudo_c.rs:1029`), which yields textual
+`disassemble(Arch::X86_64, base, machine_code)` (`pseudo_c.rs`, `build_leaf_items`), which yields textual
 mnemonic and operand fields per instruction. The lift then walks the instruction stream and
 folds each instruction into a small typed IR: registers are modeled as a `Reg` enum with a
 separate `Width` (`W8`/`W16`/`W32`/`W64`), memory operands as a `MemRef` with base, scaled
 index, displacement, and access width, and each semantic effect as a `Stmt` variant
-(`pseudo_c.rs:433`). Register operands are parsed by name into a `(Reg, Width)` pair by
-`parse_reg` (`pseudo_c.rs:182`), so `eax` and `rax` resolve to the same `Reg::Rax` with
+(`pseudo_c.rs`, `enum Stmt`). Register operands are parsed by name into a `(Reg, Width)` pair by
+`parse_reg` (`pseudo_c.rs`), so `eax` and `rax` resolve to the same `Reg::Rax` with
 widths `W32` and `W64`; this is what lets the emitter model sub-register writes as masked
 updates of a single 64-bit variable.
 
 Instruction selection is a cascade of guarded lifters. The core arithmetic and data-movement
-opcodes are handled by `lift_one` (`pseudo_c.rs:5530`), which recognizes `mov`, `lea`, the
+opcodes are handled by `lift_one` (`pseudo_c.rs`), which recognizes `mov`, `lea`, the
 `add`/`sub`/`imul`/`and`/`or`/`xor`/`shl`/`sal`/`shr`/`sar` family, `inc`/`dec`,
 `neg`/`not`, `mul`, and the `shld`/`shrd` and three-operand `imul` forms, dispatching each
 to a `Stmt`. One idiom: `xor reg, reg` and `sub reg, reg` are recognized as a
-zeroing and lowered to `Assign { dest, src: Imm(0) }` (`pseudo_c.rs:5599`) rather than to a
+zeroing and lowered to `Assign { dest, src: Imm(0) }` (`pseudo_c.rs`, `lift_one`) rather than to a
 literal self-subtraction, matching what the compiler meant.
 
 Width extension is handled by
-`lift_width_extension` (`pseudo_c.rs:4807`):
+`lift_width_extension` (`pseudo_c.rs`):
 
 ```rust
 fn lift_width_extension(mnemonic: &str, operands: &str) -> Option<Stmt> {
@@ -1455,7 +1460,8 @@ fn lift_width_extension(mnemonic: &str, operands: &str) -> Option<Stmt> {
     let dest: RegRef = parse_reg(lhs.trim())?;
     let rhs_tok: &str = rhs.trim();
     if is_mem_token(rhs_tok) {
-        let mem: MemRef = parse_mem_access(rhs_tok, None)?;
+        let implied: Option<Width> = (mnemonic == "movsxd").then_some(Width::W32);
+        let mem: MemRef = parse_mem_access(rhs_tok, implied)?;
         if mem.width >= dest.width {
             return None;
         }
@@ -1484,62 +1490,62 @@ The guard `if src.width >= dest.width { return None; }` (and its memory-operand 
 soundness check, not an optimization: a widening move whose source is not strictly narrower
 than its destination is not the extension idiom being modeled, so the lifter declines to
 lift it rather than emit a guess. The `signed` flag is carried into `Stmt::Extend` and later
-realized by `extend_expr` (`pseudo_c.rs:7943`), which builds the exact mask-and-cast chain
+realized by `extend_expr` (`pseudo_c.rs`), which builds the exact mask-and-cast chain
 in the typed C AST: it masks the source to its width, casts through the signed or unsigned
 integer type of the source width, then to the destination width, then back to a 64-bit
 unsigned storage value. Sign correctness of a recovered `movsx` versus `movzx` is therefore
 a single boolean threaded from decode to the typed cast, and the oracle in Section 2.6 has a
 dedicated teeth test that flips it.
 
-After the linear lift, `structure_items` (`pseudo_c.rs:2974`) reconstructs structured
+After the linear lift, `structure_items` (`pseudo_c.rs`) reconstructs structured
 control flow from the branch and jump items: it builds a basic-block CFG, computes
 dominators and post-dominators, detects natural loops and reducible regions, and rebuilds
 `if`/`else`, `do`/`while`, top-guarded `while`, and dense `switch` constructs as a tree of
-`Node` values (`pseudo_c.rs:574`). Conditions carry the originating comparison flags, and
+`Node` values (`pseudo_c.rs`, `enum Node`). Conditions carry the originating comparison flags, and
 the lifter tracks flag liveness so that a conditional branch, `cmov`, or `setcc` with no
 live preceding comparison is rejected rather than lifted against stale flags
-(`pseudo_c.rs:1182`).
+(`pseudo_c.rs`, `build_leaf_items`).
 
 Emission then lowers the structured `Node` tree into the typed AST. `node_to_cstmt`
-(`pseudo_c.rs:7253`) maps each control node to a `CStmt` (`CStmt::If`, `CStmt::DoWhile`,
-`CStmt::While`, `CStmt::Switch`), and `stmt_to_cstmt` (`pseudo_c.rs:7345`) maps each IR
+(`pseudo_c.rs`) maps each control node to a `CStmt` (`CStmt::If`, `CStmt::DoWhile`,
+`CStmt::While`, `CStmt::Switch`), and `stmt_to_cstmt` (`pseudo_c.rs`) maps each IR
 `Stmt` to a `CStmt`, constructing `CExpr` nodes such as `CExpr::Binary`, `CExpr::Cast`,
 `CExpr::Ternary`, and `CExpr::Unary`. Every statement is rendered through `render_stmt`,
 which is the typed printer of Sections 2.2 and 2.3. The Rust emitter (`emit_rust`,
-`pseudo_c.rs:8196`) walks the same structured tree and produces the pure-safe Rust subset,
+`pseudo_c.rs`) walks the same structured tree and produces the pure-safe Rust subset,
 returning `None` for constructs it does not model as safe Rust (struct returns and block
 string operations), which is how the two targets stay independent while sharing one lift.
 
 The emitter is a hybrid: statement
 and top-level expression nodes are typed AST values, but some composite subexpression
 fragments are assembled as rendered strings and reinserted as opaque operands through
-`c_opaque` (`pseudo_c.rs:5945`), which wraps the fragment in explicit parentheses
+`c_opaque` (`pseudo_c.rs`), which wraps the fragment in explicit parentheses
 (`({text})`) before interning it as an identifier atom. The consequence is that the
 precedence authority governs every AST-node boundary it constructs, and any pre-rendered
 string fragment is defensively fully parenthesized at its splice point, so neither path can
 produce a wrong grouping. The masked sub-register write helper `reg_write_rhs`
-(`pseudo_c.rs:6034`), the binary-operator helper `bin_expr` (`pseudo_c.rs:7960`), and the
-address helper `addr_expr` (`pseudo_c.rs:6064`) all build `CExpr` trees and thread their
+(`pseudo_c.rs`), the binary-operator helper `bin_expr` (`pseudo_c.rs`), and the
+address helper `addr_expr` (`pseudo_c.rs`) all build `CExpr` trees and thread their
 results through this parenthesized-fragment convention.
 
 ### 2.6 The oracle: recompile, execute, differential, and the honesty property
 
 Recovery is graded against the original binary, never against the tool's own output. The
 oracle is `crates/disrobe-pass-native/tests/pseudo_c_leaf_oracle.rs`. The base flow, in
-`process_case` (`pseudo_c.rs` test file `:181`) and
-`leaf_functions_recompile_to_behavioral_equivalence` (`:264`), is:
+`process_case` and
+`leaf_functions_recompile_to_behavioral_equivalence`, is:
 
 1. Compile a hand-authored C battery to a real object file with a real compiler
-   (`gcc`/`clang`/`cc`) at `-O1 -fno-stack-protector` (`:285`).
+   (`gcc`/`clang`/`cc`) at `-O1 -fno-stack-protector`.
 2. Locate each battery function's machine code in the object by symbol, using the `object`
-   crate to slice the exact byte range (`function_code`, `:138`).
-3. Lift the bytes with `recover_leaf_function_abi` (`:186`).
+   crate to slice the exact byte range (`function_code`).
+3. Lift the bytes with `recover_leaf_function_abi`.
 4. Emit a driver that calls both the original function (linked from the compiled battery
    object) and the recovered function `rec_*` over a fixed vector of adversarial inputs,
    masks both results to the recovered return width, and prints `MISMATCH ... return 1` on
-   any disagreement and `OK` only if every input agrees (`:225`, `build_driver` `:245`).
+   any disagreement and `OK` only if every input agrees (`build_driver`).
 5. Compile and link that driver against the original battery object, run it, and assert the
-   process exits successfully with `OK` on stdout (`:341`).
+   process exits successfully with `OK` on stdout.
 
 The ground truth is the executed behavior of the compiler's own output for the same source,
 so the oracle cannot be satisfied by a recovered function that merely looks plausible; it
@@ -1557,24 +1563,25 @@ returns `Err`, and `process_case` converts that into a skip, not a pass:
         }
     };
 ```
-(`pseudo_c.rs` test file `:186`)
+(`pseudo_c_leaf_oracle.rs`, `process_case`)
 
 A skipped case contributes nothing to the differential; it is neither counted as recovered
 nor asserted to be correct. If a compiler build happens to lower none of the battery into the
-leaf class, the whole test skips with an explanatory message rather than passing vacuously
-(`:311`). The lifter reaches `Err` on any input it cannot model soundly: an absent `ret`
-("no ret found; not a single-exit leaf", `pseudo_c.rs:1399`), a division without a modeled
-high-half dividend setup (`pseudo_c.rs:1119`), a conditional set or branch with no live
-compare (`pseudo_c.rs:1182`), a width move that is not the extension idiom (Section 2.5), a
-backward string compare or an unbounded single string op (`pseudo_c.rs:1073`), and an
+leaf class, the whole test skips with an explanatory message rather than passing vacuously. The lifter reaches `Err` on any input it cannot model soundly: an absent `ret`
+("no ret found; not a single-exit leaf"), a division without a modeled
+high-half dividend setup ("division at {:#x} without a tracked high-half dividend setup"), a
+conditional set or branch with no live compare ("setcc without preceding flags"), a width move
+that is not the extension idiom (Section 2.5), a
+backward string compare or an unbounded single string op ("unbounded single string op ... has no rep count"), and an
 ordering `cmov` that selects a compared operand against their own difference
-(`pseudo_c.rs:1242`). Each of these is a refusal to emit a guess, and each is what turns a
+("ordering cmov selecting a compared operand against their difference is not soundly
+recoverable"), all in `pseudo_c.rs`, `build_leaf_items`. Each of these is a refusal to emit a guess, and each is what turns a
 green oracle into an honest one.
 
 The differential is proven non-vacuous by 23 companion "teeth" tests. Each takes a genuinely
 recovered function, mutates one recovered constant, and asserts the harness now reports
 `MISMATCH` rather than `OK`. The read-modify-write teeth test is representative
-(`:4753`): it recovers a fused `or [mem], imm`, confirms the recovered OR mask literal
+(`read_modify_write_oracle_has_teeth_perturbing_the_or_mask_diverges`): it recovers a fused `or [mem], imm`, confirms the recovered OR mask literal
 `23205LL` is present, replaces it with `10837LL`, and requires the perturbed harness to
 diverge:
 
@@ -1587,13 +1594,13 @@ diverge:
         String::from_utf8_lossy(&run.stderr)
     );
 ```
-(`pseudo_c.rs` test file `:4816`, `:4848`)
+(`pseudo_c_leaf_oracle.rs`, `read_modify_write_oracle_has_teeth_perturbing_the_or_mask_diverges`)
 
 Analogous teeth tests flip `movsx` sign-extension to zero-extension, swap division
 signedness, perturb a floating-point constant, relabel a switch case, corrupt a bitcast, and
 negate a `setcc` predicate; each confirms that the corresponding recovered detail is load
 bearing and that the oracle would catch a regression in it. Loop and control-flow classes
-run their harness under a wall-clock watchdog (`run_bounded`, `:1199`) that kills a
+run their harness under a wall-clock watchdog (`run_bounded`) that kills a
 non-terminating process and fails the test rather than hanging, so a recovered loop with a
 wrong exit condition surfaces as a bounded failure.
 
@@ -1603,15 +1610,15 @@ The claims above are bounded to what the code actually does, which is recovery o
 leaf functions graded by a hand-authored battery.
 
 The oracle corpus is a battery of small functions written by hand, not a sweep over
-arbitrary stripped binaries. The base integer battery is 14 cases (`BATTERY`,
-`pseudo_c.rs` test file `:35`), covering arithmetic, mixed-width expressions, min/max and
-clamp idioms, and sign selection; the file defines many further batteries (memory access,
+arbitrary stripped binaries. The base integer battery is 22 cases (`BATTERY`,
+`pseudo_c_leaf_oracle.rs`), covering arithmetic, mixed-width expressions, min/max and
+clamp idioms, sign selection, and eight operator-precedence shapes; the file defines many further batteries (memory access,
 read-modify-write, control flow, split returns, natural and nested loops, guarded `while`,
 width extension, same-object and precise calls, closed-form multiply-shift, divide, scalar
 float arithmetic, min/max, square root, rounding, bitcast, dense and floating-point switch
 tables, block move and fill, `setcc`, stack spills, and struct returns). The C oracle file
-contains 90 `#[test]` functions and the Rust oracle file
-(`crates/disrobe-pass-native/tests/pseudo_rust_leaf_oracle.rs`) contains 11; these are
+contains 102 `#[test]` functions and the Rust oracle file
+(`crates/disrobe-pass-native/tests/pseudo_rust_leaf_oracle.rs`) contains 12; these are
 backed in the emission crate by the precedence and declarator property oracles (roughly a
 half-dozen golden and property tests across `c_precedence.rs` and `c_cc_oracle.rs`,
 including the `with_cases(64)` declarator proptest) and by 2 render-reparse fixpoint
@@ -1644,17 +1651,17 @@ A bytecode-virtualizing protector does not encrypt a method and decrypt it at ru
 The .NET pass classifies twenty-three protector families. The canonical enumeration is fixed in the detector:
 
 ```rust
-let all: [Protector; 23] = [
-    Protector::ConfuserEx,
-    Protector::ConfuserEx2,
+pub const ALL: [Self; 23] = [
+    Self::ConfuserEx,
+    Self::ConfuserEx2,
     ...
-    Protector::KoiVm,
-    Protector::BitMono,
+    Self::KoiVm,
+    Self::BitMono,
 ];
 ```
-(`crates/disrobe-pass-dotnet/src/protectors.rs:222`)
+(`crates/disrobe-pass-dotnet/src/protectors.rs`, `Protector::ALL`)
 
-Each family carries a static handling verdict, drawn from `Handling`: `De4dotDelegate`, `NativeStrip`, `GatedDe4dotDelegate`, `Devirtualize`, or `DetectOnly` (`protectors.rs:113-135`). Only KoiVM is tagged `Handling::Devirtualize`; ConfuserEx2's non-VM layers delegate to the de4dot-class cleaner while its constant protection is recovered in-crate; ILProtector, MaxToCode, and the Themida .NET wrapper are `DetectOnly`, for reasons Section 3.4 grounds in the location of the plaintext.
+Each family carries a static handling verdict, drawn from `Handling`: `De4dotDelegate`, `NativeStrip`, `GatedDe4dotDelegate`, `Devirtualize`, or `DetectOnly` (`protectors.rs`, `enum Handling`). Only KoiVM is tagged `Handling::Devirtualize` (`protectors.rs`, `Protector::handling`); ConfuserEx2's non-VM layers delegate to the de4dot-class cleaner while its constant protection is recovered in-crate; ILProtector, MaxToCode, and the Themida .NET wrapper are `DetectOnly`, for reasons Section 3.4 grounds in the location of the plaintext.
 
 ### 3.1 The circularity hazard and the independent-baseline discipline
 
@@ -1669,7 +1676,7 @@ let recovery: EazVmRecovery = devirtualize(&vm).expect("devirtualize");
 ...
 let known: BTreeMap<String, Vec<OrderedInstr>> = known_method_ordered(&clean, "Compute");
 ```
-(`crates/disrobe-pass-dotnet/tests/real_eazvm.rs:62-72`)
+(`crates/disrobe-pass-dotnet/tests/real_eazvm.rs`, `devirtualizes_every_method_to_ordered_cil`)
 
 `known_method_ordered` runs disrobe's ordinary CIL parser over the clean image; it never touches the devirtualizer. It builds each expected instruction from the clean method body and resolves branch targets against the clean method's own offset map:
 
@@ -1682,7 +1689,7 @@ let offset_to_index: BTreeMap<u32, usize> = body
     .map(|(i, ins): (usize, &Instruction)| (ins.offset, i))
     .collect();
 ```
-(`crates/disrobe-pass-dotnet/src/peel/eazvm/grade.rs:160-166`)
+(`crates/disrobe-pass-dotnet/src/peel/eazvm/grade.rs`, `known_method_ordered`)
 
 Because the answer key is emitted by the C# compiler into a separate file that the recovery code has no access to, agreement between the recovered body and the clean body cannot be manufactured by the recovery code. The comparison is also ordered, not a bag of mnemonics: instruction *i* of the recovered body must equal instruction *i* of the clean body, so a lifter that recovers the right multiset in the wrong order fails.
 
@@ -1696,7 +1703,7 @@ assert!(
 assert_eq!(d.stub_count, 0);
 assert!(devirtualize(&image).is_err());
 ```
-(`real_eazvm.rs:52-57`)
+(`real_eazvm.rs`, `clean_assembly_is_not_seen_as_eazvm`)
 
 ### 3.2 Devirtualization approach per protector
 
@@ -1708,7 +1715,7 @@ recovered by a third, static path.
 
 #### 3.2.1 Eazfuscator.NET (EazVM)
 
-EazVM's protected assembly carries an embedded resource named `EazVirtualizedStream` holding every virtualized body as a position-keyed, encrypted virtual-instruction stream (`crates/disrobe-pass-dotnet/src/peel/eazvm/mod.rs:84`, `read_embedded_resource` at `mod.rs:118-137`). Recovery proceeds in four stages: build the opcode map, locate the stubs, decrypt each body's region, and lift.
+EazVM's protected assembly carries an embedded resource named `EazVirtualizedStream` holding every virtualized body as a position-keyed, encrypted virtual-instruction stream (`RESOURCE_NAME` in `crates/disrobe-pass-dotnet/src/peel/eazvm/mod.rs`, read by `read_embedded_resource`). Recovery proceeds in four stages: build the opcode map, locate the stubs, decrypt each body's region, and lift.
 
 **Opcode map.** The per-build map from a virtual code to a CIL operation is not guessed. disrobe locates the interpreter's dispatch-table constructor by name, reads the `(virtual-code, handler-method-token)` pairs it installs, and then identifies each handler:
 
@@ -1719,9 +1726,9 @@ let dispatch_body: MethodBody =
     read_body(image, pe, dispatch.rva).ok_or(DispatchError::NoDispatchTable)?;
 let pairs: Vec<(i32, u32)> = dispatch_pairs(&dispatch_body);
 ```
-(`crates/disrobe-pass-dotnet/src/peel/eazvm/dispatch.rs:135-139`)
+(`crates/disrobe-pass-dotnet/src/peel/eazvm/dispatch.rs`, `recover_opcode_map`)
 
-`dispatch_pairs` pattern-matches the constructor's own CIL: an `ldc.i4` that supplies the virtual code, immediately followed by an `ldftn` that supplies the handler method token (`dispatch.rs:106-123`). Each handler is then classified by a fingerprint constant embedded in its body: disrobe finds the tagged constant and matches it against a fingerprint computed from the CIL mnemonic:
+`dispatch_pairs` pattern-matches the constructor's own CIL: an `ldc.i4` that supplies the virtual code, immediately followed by an `ldftn` that supplies the handler method token (`dispatch.rs`, `dispatch_pairs`). Each handler is then classified by a fingerprint constant embedded in its body: disrobe finds the tagged constant and matches it against a fingerprint computed from the CIL mnemonic:
 
 ```rust
 fn identify_handler(body: &MethodBody) -> Option<CilOp> {
@@ -1735,11 +1742,11 @@ fn identify_handler(body: &MethodBody) -> Option<CilOp> {
         .find(|op: &CilOp| handler_fingerprint(op.handler_key()) == target)
 }
 ```
-(`dispatch.rs:74-83`)
+(`dispatch.rs`, `identify_handler`)
 
-where `handler_fingerprint` is a 28-bit-masked [FNV] hash of `HANDLER:{mnemonic}` with a high tag bit (`dispatch.rs:38-51`). The identified table spans the 48 operations in `HANDLED_OPS` (`dispatch.rs:217-266`), and the oracle confirms all 48 are resolved (`real_eazvm.rs:44`). This fingerprint-keyed identification is how disrobe's corpus sample encodes handler identity; the surrounding pipeline (dispatch discovery, pair extraction, stream decode, lift, name resolution) is the general mechanism.
+where `handler_fingerprint` is a 28-bit-masked [FNV] hash of `HANDLER:{mnemonic}` with a high tag bit (`dispatch.rs`, `handler_fingerprint`). The identified table spans the 48 operations in `HANDLED_OPS` (`dispatch.rs`, `HANDLED_OPS`), and the oracle confirms all 48 are resolved (`real_eazvm.rs`, `detect_reports_full_vm_structure`). This fingerprint-keyed identification is how disrobe's corpus sample encodes handler identity; the surrounding pipeline (dispatch discovery, pair extraction, stream decode, lift, name resolution) is the general mechanism.
 
-**Stub location and body decryption.** A virtualized method is recognized structurally: it carries an `ldstr` of an encrypted position string, at least two `ldc.i4` constants (the resource and position keys), and at least three `pop` operations (`is_vm_stub`, `dispatch.rs:194-215`). The position string is decrypted with candidate keys harvested from the stub itself, and the resulting offset selects the body's region inside the decrypted resource. The full per-body decode chain is:
+**Stub location and body decryption.** A virtualized method is recognized structurally: it carries an `ldstr` of an encrypted position string, at least two `ldc.i4` constants (the resource and position keys), and at least three `pop` operations (`is_vm_stub`, `dispatch.rs`). The position string is decrypted with candidate keys harvested from the stub itself, and the resulting offset selects the body's region inside the decrypted resource. The full per-body decode chain is:
 
 ```rust
 fn decode_one(
@@ -1759,7 +1766,7 @@ fn decode_one(
     Some((info, lifted))
 }
 ```
-(`mod.rs:304-319`)
+(`mod.rs`, `decode_one`)
 
 **Stream decode.** The virtual instruction stream is not little-endian. Each virtual opcode is a 32-bit word in a byte permutation disrobe reads with `read_int32_special`, then the operand is decoded per the opcode's operand class:
 
@@ -1771,7 +1778,7 @@ let op: CilOp = map
     .get(virtual_code)
     .ok_or(DecodeError::UnknownVirtualCode(virtual_code, virtual_offset))?;
 ```
-(`crates/disrobe-pass-dotnet/src/peel/eazvm/disasm.rs:38-46`)
+(`crates/disrobe-pass-dotnet/src/peel/eazvm/disasm.rs`, `decode_stream`)
 
 ```rust
 let value: u32 = (u32::from(b[3]) << 24)
@@ -1779,9 +1786,9 @@ let value: u32 = (u32::from(b[3]) << 24)
     | (u32::from(b[1]) << 8)
     | (u32::from(b[0]) << 16);
 ```
-(`crates/disrobe-pass-dotnet/src/peel/eazvm/opcodes.rs:192-197`)
+(`crates/disrobe-pass-dotnet/src/peel/eazvm/opcodes.rs`, `read_int32_special`)
 
-Operand classes cover inline i8/i32 immediates, byte/word variable indices, a short branch (stored as a full i32 stream offset), and inline member and string tokens (`opcodes.rs:48-67`, `disasm.rs:48-92`).
+Operand classes cover inline i8/i32 immediates, byte/word variable indices, a short branch (stored as a full i32 stream offset), and inline member and string tokens (`opcodes.rs`, the operand-class table; `disasm.rs`, `decode_stream`).
 
 **Lift.** Lifting resolves each decoded branch offset to a target *index* in the recovered instruction list, converting stream offsets into structured control flow:
 
@@ -1793,7 +1800,7 @@ DecodedOperand::Branch(target) => {
     LiftedOperand::BranchTo(dest)
 }
 ```
-(`crates/disrobe-pass-dotnet/src/peel/eazvm/lift.rs:47-52`)
+(`crates/disrobe-pass-dotnet/src/peel/eazvm/lift.rs`, `lift`)
 
 An unresolved branch is a hard error, not a silent drop, so a partially decoded body cannot masquerade as complete.
 
@@ -1809,7 +1816,7 @@ let got: [i32; 10] = core::array::from_fn(|_| r.next_bounded(1000));
 let want: [i32; 10] = [726, 817, 768, 558, 206, 558, 906, 442, 977, 273];
 assert_eq!(got, want, "NetRandom must match real System.Random(0)");
 ```
-(`crates/disrobe-pass-dotnet/src/peel/koivm/random.rs:104-109`)
+(`crates/disrobe-pass-dotnet/src/peel/koivm/random.rs`, `next_bounded_matches_net_framework_seed0`)
 
 The descriptors are then derived by shuffling identity arrays with that generator, exactly as the protector does at build time:
 
@@ -1823,9 +1830,9 @@ for ordinal in 0u8..KOI_OP_MAX {
     opcode_decode[usize::from(encoded)] = KoiOp::from_ordinal(ordinal);
 }
 ```
-(`crates/disrobe-pass-dotnet/src/peel/koivm/descriptors.rs:17-37`)
+(`crates/disrobe-pass-dotnet/src/peel/koivm/descriptors.rs`, `KoiDescriptors::from_seed`)
 
-The generated map is anchored against the real KoiVM's seed-0 tables (`descriptors.rs:104-119`, `random.rs:112-128`), so the encoding disrobe decodes is the encoding the protector emitted, not a plausible-looking guess.
+The generated map is anchored against the real KoiVM's seed-0 tables (`descriptors.rs` and `random.rs`, the seed-0 table tests), so the encoding disrobe decodes is the encoding the protector emitted, not a plausible-looking guess.
 
 **Encrypted stream decode and CFG recovery.** Each `#Koi` byte is XOR-decrypted with a rolling key that mutates after every byte, seeded per basic block by the block's entry key:
 
@@ -1836,9 +1843,9 @@ const fn decrypt(&mut self, cipher_byte: u8) -> u8 {
     plain
 }
 ```
-(`crates/disrobe-pass-dotnet/src/peel/koivm/disasm.rs:56-60`)
+(`crates/disrobe-pass-dotnet/src/peel/koivm/disasm.rs`, `decrypt`)
 
-`disassemble_method` walks the control-flow graph from the export's entry offset with a worklist, decoding one block at a time and following the exit key into each successor, so the per-block cipher state stays correct across jumps (`disasm.rs:193-229`). Terminators (`Jmp`, `Jz`, `Jnz`, `Ret`, `Leave`, `Swt`) end a block and enumerate its successors with their inherited keys (`disasm.rs:124-160`).
+`disassemble_method` walks the control-flow graph from the export's entry offset with a worklist, decoding one block at a time and following the exit key into each successor, so the per-block cipher state stays correct across jumps (`disasm.rs`, `disassemble_method`). Terminators (`Jmp`, `Jz`, `Jnz`, `Ret`, `Leave`, `Swt`) end a block and enumerate its successors with their inherited keys (`disasm.rs`, the terminator classification).
 
 **Lift.** KoiVM is a register machine over a stack discipline. disrobe interprets the block abstractly, tracking a value stack and register file, recognizing the `BP`-relative address arithmetic that encodes frame slots, and classifying each slot as an argument or local:
 
@@ -1859,9 +1866,9 @@ const fn classify(self, slot: i32) -> Value {
     Value::FrameAddr(slot)
 }
 ```
-(`crates/disrobe-pass-dotnet/src/peel/koivm/lift.rs:178-192`)
+(`crates/disrobe-pass-dotnet/src/peel/koivm/lift.rs`, `classify`)
 
-Indirect loads and stores against a recovered frame address emit `LoadArg`/`LoadLocal`/`StoreArg`/`StoreLocal`; arithmetic emits typed binary operations; `Vcall` codes resolve through the seed-derived virtual-call table to `LoadField`, `StoreField`, `LoadToken`, `LoadString`, `Throw`, or a named runtime service, and member operands resolve through the `#Koi` coded-token map back to real metadata tokens (`lift.rs:304-591`). A virtual-call code with no table entry surfaces as `Unknown` and is counted, never dropped; the lifter asserts zero unknown ops on every real body (`lift.rs:756-765`).
+Indirect loads and stores against a recovered frame address emit `LoadArg`/`LoadLocal`/`StoreArg`/`StoreLocal`; arithmetic emits typed binary operations; `Vcall` codes resolve through the seed-derived virtual-call table to `LoadField`, `StoreField`, `LoadToken`, `LoadString`, `Throw`, or a named runtime service, and member operands resolve through the `#Koi` coded-token map back to real metadata tokens (`lift.rs`, `lift_block`). A virtual-call code with no table entry surfaces as `Unknown` and is counted, never dropped; the lifter asserts zero unknown ops on every real body (`lift.rs`, `all_real_methods_report_zero_unknown_ops`).
 
 #### 3.2.3 ConfuserEx2 non-VM layers
 
@@ -1879,9 +1886,9 @@ if pool.len() == uncompressed {
     return Some((*seed, pool));
 }
 ```
-(`crates/disrobe-pass-dotnet/src/peel/confuserex_constants.rs:283-297`)
+(`crates/disrobe-pass-dotnet/src/peel/confuserex_constants.rs`, `recover_pool`)
 
-The block cipher is the protector's own key-evolving XOR over 64-byte blocks with an XorShift-derived key schedule (`decrypt_constants_blob` and `derive_constants_key`, `confuserex_constants.rs:129-175`), and recovered strings are re-associated to their call sites through the `mutate_id` transform (`confuserex_constants.rs:177-204`). The seed is only accepted when the decompressed length matches the header's declared length, an internal consistency check that rejects wrong seeds without any external oracle.
+The block cipher is the protector's own key-evolving XOR over 64-byte blocks with an XorShift-derived key schedule (`decrypt_constants_blob` and `derive_constants_key`, `confuserex_constants.rs`), and recovered strings are re-associated to their call sites through the `mutate_id` transform (`confuserex_constants.rs`, `mutate_id`). The seed is only accepted when the decompressed length matches the header's declared length, an internal consistency check that rejects wrong seeds without any external oracle.
 
 ### 3.3 The oracle: ordered CIL against a separately compiled baseline
 
@@ -1897,7 +1904,7 @@ for i in 0..common {
     }
 }
 ```
-(`crates/disrobe-pass-dotnet/src/peel/eazvm/grade.rs:408-421`)
+(`crates/disrobe-pass-dotnet/src/peel/eazvm/grade.rs`, `grade_ordered`)
 
 The corpus's five virtualized bodies hold exactly 57 instructions in the clean baseline, and every one of them must match in order. The test fixes both the count and the percentage:
 
@@ -1912,11 +1919,11 @@ assert!(
      ({total_matched}/{total_length})"
 );
 ```
-(`real_eazvm.rs:96-104`)
+(`real_eazvm.rs`, `devirtualizes_every_method_to_ordered_cil`)
 
-The result is 57 of 57 instructions recovered in order, a 100% ordered match against compiler-emitted CIL the recovery code never saw. A separate test closes the loop dynamically when a .NET runtime is present: the recovered CIL is rendered, re-injected into a rebuilt assembly, executed, and its standard output compared byte-for-byte against the clean program's output `"5\n69\n55\n-1\n9\n"` (`real_eazvm.rs:200-306`, expected constant at `real_eazvm.rs:23`). When no runtime is on `PATH` the dynamic half is skipped explicitly and the in-process ordered-CIL equivalence still gates the run (`real_eazvm.rs:223-233`); the numeric claim never silently depends on a tool that was absent.
+The result is 57 of 57 instructions recovered in order, a 100% ordered match against compiler-emitted CIL the recovery code never saw. A separate test closes the loop dynamically when a .NET runtime is present: the recovered CIL is rendered, re-injected into a rebuilt assembly, executed, and its standard output compared byte-for-byte against the clean program's output `"5\n69\n55\n-1\n9\n"` (`real_eazvm.rs`, `recovered_cil_reinjects_and_runs_identically`, expected constant `EXPECTED_STDOUT`). When no runtime is on `PATH` the dynamic half is skipped explicitly and the in-process ordered-CIL equivalence still gates the run (`real_eazvm.rs`, `recovered_cil_reinjects_and_runs_identically`); the numeric claim never silently depends on a tool that was absent.
 
-KoiVM is graded against an independent, hand-specified projection of the same six methods rather than compiler-emitted CIL. The `ground_truth` table declares the expected operation sequence for each method (`koivm/grade.rs:64-126`), `project` collapses the lifted body into the same coarse vocabulary, and the aggregate must clear a 75% floor:
+KoiVM is graded against an independent, hand-specified projection of the same six methods rather than compiler-emitted CIL. The `ground_truth` table declares the expected operation sequence for each method (`koivm/grade.rs`, `ground_truth`), `project` collapses the lifted body into the same coarse vocabulary, and the aggregate must clear a 75% floor:
 
 ```rust
 let pct: f64 = f64::from(total_matched) / f64::from(total_expected) * 100.0;
@@ -1926,13 +1933,13 @@ assert!(
     "aggregate structural recovery against known originals must be >= 75%; got {pct:.1}%"
 );
 ```
-(`koivm/grade.rs:226-232`)
+(`koivm/grade.rs`, the aggregate-recovery test)
 
-All six bodies are decoded and lifted to CIL with zero unknown ops (`detect` reports `virtualized_method_count == 6`, and `devirtualize` returns six methods with no undecoded ids, `koivm/mod.rs:222-259`); of these, two (Add, Square) are proven to recover fully, matching their hand-derived ground-truth ops in full, and the remaining four (SumTo, Classify, Factorial, Max3) are bounded only by the >=75% aggregate floor. This oracle is weaker than the EazVM one: the answer key is authored by hand from knowledge of the source, not parsed from a separately compiled clean assembly, and the comparison is over a projected op vocabulary rather than exact ordered CIL. It is still non-circular, because the ground truth is independent of the recovery code, and it is anchored by the RNG and descriptor tests that validate the decode against real System.Random output.
+All six bodies are decoded and lifted to CIL with zero unknown ops (`detect` reports `virtualized_method_count == 6`, and `devirtualize` returns six methods with no undecoded ids, `koivm/mod.rs`, `detects_koivm_in_real_sample` and `devirtualizes_all_six_methods`); of these, two (Add, Square) are proven to recover fully, matching their hand-derived ground-truth ops in full, and the remaining four (SumTo, Classify, Factorial, Max3) are bounded only by the >=75% aggregate floor. This oracle is weaker than the EazVM one: the answer key is authored by hand from knowledge of the source, not parsed from a separately compiled clean assembly, and the comparison is over a projected op vocabulary rather than exact ordered CIL. It is still non-circular, because the ground truth is independent of the recovery code, and it is anchored by the RNG and descriptor tests that validate the decode against real System.Random output.
 
 ### 3.4 Static-recovery walls: ILProtector, MaxToCode, and Themida-class native VMs
 
-Three families are `DetectOnly` (`protectors.rs:134`), and their `plan_execution` verdict is `DetectOnly`, not devirtualization (`protectors.rs:371-390`). This is a proven information-theoretic ceiling, not an unfinished feature, because in each case the plaintext CIL is absent from the static file by construction.
+Three families are `DetectOnly` (`protectors.rs`, `Protector::handling`), and their `plan_execution` verdict is `DetectOnly`, not devirtualization (`protectors.rs`, `plan_execution`). This is a proven information-theoretic ceiling, not an unfinished feature, because in each case the plaintext CIL is absent from the static file by construction.
 
 **ILProtector** replaces each body with an Invoke-stub and stores the ciphertext in a managed resource, but the decryption key and logic live in a native runtime delegate. The plaintext exists only after the assembly runs and calls its own decrypt delegate:
 
@@ -1942,7 +1949,7 @@ const BASE_RATIONALE: &str = "ILProtector replaces every protected method body w
      managed resource reached through the CLI resources directory. The plaintext IL is produced only \
      by invoking the assembly's own runtime decrypt delegate ...";
 ```
-(`crates/disrobe-pass-dotnet/src/peel/ilprotector.rs:13-19`)
+(`crates/disrobe-pass-dotnet/src/peel/ilprotector.rs`, `BASE_RATIONALE`)
 
 **MaxToCode** zeroes every protected method's RVA and restores bodies at JIT time through an unmanaged loader hooked into the execution engine. The per-method key is computed inside that native DLL, so it is not in the static metadata:
 
@@ -1952,7 +1959,7 @@ const BASE_RATIONALE: &str = "MaxToCode sets every protected MethodDef RVA to 0 
      hooked into the EE/JIT layer ... The per-method key is computed inside that native DLL, so the \
      original CIL is not present in the static metadata ...";
 ```
-(`crates/disrobe-pass-dotnet/src/peel/maxtocode.rs:13-19`)
+(`crates/disrobe-pass-dotnet/src/peel/maxtocode.rs`, `BASE_RATIONALE`)
 
 **Themida .NET** wraps the managed assembly inside Oreans' native VM, translating protected bodies into native VM bytecode that is decrypted into RWX memory only at runtime:
 
@@ -1962,9 +1969,9 @@ const BASE_RATIONALE: &str = "Themida-.NET wraps the managed assembly inside the
      genuine native virtualization; per project policy disrobe does not ship a native-VM \
      devirtualizer (VMP/Themida class). The native-VM-protected methods are walled, not fabricated.";
 ```
-(`crates/disrobe-pass-dotnet/src/peel/themida_dotnet.rs:13-16`)
+(`crates/disrobe-pass-dotnet/src/peel/themida_dotnet.rs`, `BASE_RATIONALE`)
 
-The wall is not silence. Each `DetectOnly` path still performs every static recovery the ceiling permits, and reports it honestly. ILProtector enumerates the Invoke-stubs and locates the encrypted-body resource (offset, size, hash) before declaring the `RUNTIME-DELEGATE WALL` (`ilprotector.rs:64-89`); MaxToCode enumerates the zero-RVA methods and the encrypted section before declaring the `NATIVE-KEY WALL` (`maxtocode.rs:63-86`); and all three disassemble the native loader or VM section as machine code through `surface_native_stub`, surfacing the unmanaged support code without claiming to have devirtualized it (`ilprotector.rs:44-60`, `maxtocode.rs:43-59`, `themida_dotnet.rs:22-37`). The distinction the pass draws is exact: what can be recovered statically is recovered and measured against an independent baseline; what genuinely leaves the static file (a runtime-produced key, a JIT-restored body, a native-VM translation) is walled with a stated reason and the residual static evidence, never fabricated.
+The wall is not silence. Each `DetectOnly` path still performs every static recovery the ceiling permits, and reports it honestly. ILProtector enumerates the Invoke-stubs and locates the encrypted-body resource (offset, size, hash) before declaring the `RUNTIME-DELEGATE WALL` (`ilprotector.rs`, the `RUNTIME-DELEGATE WALL` report); MaxToCode enumerates the zero-RVA methods and the encrypted section before declaring the `NATIVE-KEY WALL` (`maxtocode.rs`, the `NATIVE-KEY WALL` report); and all three disassemble the native loader or VM section as machine code through `surface_native_stub`, surfacing the unmanaged support code without claiming to have devirtualized it (the `surface_native_stub` call in each of `ilprotector.rs`, `maxtocode.rs` and `themida_dotnet.rs`). The distinction the pass draws is exact: what can be recovered statically is recovered and measured against an independent baseline; what genuinely leaves the static file (a runtime-produced key, a JIT-restored body, a native-VM translation) is walled with a stated reason and the residual static evidence, never fabricated.
 
 Each preceding section asserted a recovery result and named the oracle that certified it; this
 section states the oracle discipline in full, ordered from the weakest external check to the
@@ -2001,7 +2008,7 @@ pub enum RecoverySignal {
     NoRecovery,
 }
 ```
-`crates/disrobe-core/src/recovery.rs:48`
+`crates/disrobe-core/src/recovery.rs`, `RecoverySignal`
 
 The two strongest variants, `ByteRoundtripVerified` and `RecompilesEquivalent`, correspond to the two strongest oracle forms below. A pass that cannot reach either reports a lower signal honestly rather than inflating the higher one.
 
@@ -2009,7 +2016,7 @@ The two strongest variants, `ByteRoundtripVerified` and `RecompilesEquivalent`, 
 
 The recovered artifact is fed back through the real compiler or interpreter for its language, and the resulting object is compared, after normalization, against the object produced from the original. The oracle here is the language toolchain itself. disrobe does not decide whether its recovered Python is correct; it recompiles the recovered source and asks whether the recompiled code object matches the original code object.
 
-The Python decompiler's equivalence judge is the reference implementation of this form. It is the `semantic_equiv` judge shown in section 1.4: byte identity is checked first as the strongest possible outcome, and when the bytes differ the two code objects are normalized and compared operation by operation, descending into nested code objects, before any equivalence is granted (`crates/disrobe-pass-py-decompile/src/roundtrip/mod.rs:108`). What section 1.4 did not show is how a verdict becomes a recovery signal. The mapping is without editorializing: a byte-identical recompile is `ByteRoundtripVerified`, a normalized-equal recompile is `RecompilesEquivalent`, and any residual difference is `NoRecovery`:
+The Python decompiler's equivalence judge is the reference implementation of this form. It is the `semantic_equiv` judge shown in section 1.4: byte identity is checked first as the strongest possible outcome, and when the bytes differ the two code objects are normalized and compared operation by operation, descending into nested code objects, before any equivalence is granted (`crates/disrobe-pass-py-decompile/src/roundtrip/mod.rs`, `semantic_equiv`). What section 1.4 did not show is how a verdict becomes a recovery signal. The mapping is without editorializing: a byte-identical recompile is `ByteRoundtripVerified`, a normalized-equal recompile is `RecompilesEquivalent`, and any residual difference is `NoRecovery`:
 
 ```rust
 impl From<&Verdict> for disrobe_core::RecoverySignal {
@@ -2023,12 +2030,11 @@ impl From<&Verdict> for disrobe_core::RecoverySignal {
     }
 }
 ```
-`crates/disrobe-pass-py-decompile/src/roundtrip/mod.rs:14`
+`crates/disrobe-pass-py-decompile/src/roundtrip/mod.rs`, the `From<&Verdict>` impl
 
 The normalization is deliberately narrow. It collapses only differences that are semantically irrelevant, and it is itself defended against a subtle circularity: floating-point constants are canonicalized so that a NaN produced on one architecture compares equal to a NaN produced on another, while signed infinities and negative zero remain distinct because they are semantically distinct.
 
 ```rust
-/// Collapse every NaN payload to one representative bit pattern.
 #[must_use]
 fn canonical_float_bits(f: f64) -> u64 {
     if f.is_nan() {
@@ -2038,7 +2044,7 @@ fn canonical_float_bits(f: f64) -> u64 {
     }
 }
 ```
-`crates/disrobe-pass-py-decompile/src/roundtrip/mod.rs:80`
+`crates/disrobe-pass-py-decompile/src/roundtrip/mod.rs`, `canonical_float_bits`
 
 This is the weakest of the strong forms because it certifies that the recovered source recompiles to the same code, not that the same code behaves identically on inputs. For most languages the two are equivalent, but the stronger forms below remove even that assumption.
 
@@ -2056,7 +2062,7 @@ const BATTERY: &[Case] = &[
         c_source: "long long f_add(long long a, long long b){ return a + b; }",
     },
 ```
-`crates/disrobe-pass-native/tests/pseudo_c_leaf_oracle.rs:35`
+`crates/disrobe-pass-native/tests/pseudo_c_leaf_oracle.rs`, `BATTERY`
 
 The differential loop is the heart of the oracle. For each input triple, the harness calls the original function and the recovered function and aborts on the first mismatch:
 
@@ -2070,7 +2076,7 @@ The differential loop is the heart of the oracle. For each input triple, the har
          \x20       if (want != got) {{ printf(\"MISMATCH {} in=%lld,%lld,%lld want=%llu got=%llu\\n\", in[0], in[1], in[2], want, got); return 1; }}\n\
          \x20   }}\n",
 ```
-`crates/disrobe-pass-native/tests/pseudo_c_leaf_oracle.rs:226`
+`crates/disrobe-pass-native/tests/pseudo_c_leaf_oracle.rs`, `build_driver`
 
 The pass is credited only if the linked harness runs and prints `OK`:
 
@@ -2083,7 +2089,7 @@ The pass is credited only if the linked harness runs and prints `OK`:
         String::from_utf8_lossy(&run.stderr)
     );
 ```
-`crates/disrobe-pass-native/tests/pseudo_c_leaf_oracle.rs:341`
+`crates/disrobe-pass-native/tests/pseudo_c_leaf_oracle.rs`, `leaf_functions_recompile_to_behavioral_equivalence`
 
 Because the recovered function is linked against the same object that produced the reference, there is no shared code path between the recovery and the truth: the truth is native machine code compiled by a third-party compiler, the recovery is disrobe's reconstructed source, and the only thing they have in common is the input battery. A mismatch cannot be papered over.
 
@@ -2091,14 +2097,14 @@ Because the recovered function is linked against the same object that produced t
 
 The recovered artifact is graded against a separately produced clean artifact that was never packed, virtualized, or obfuscated. The oracle is a second, independently built version of the same program. This is the form used when the recovery target is a transformation that has an inverse only in the presence of a known-good reference, such as a commercial virtualizing protector.
 
-The Eazfuscator VM devirtualizer is graded against a clean assembly compiled from the same source without the protector. First, the clean baseline must not be mistaken for the protected one, which guards against a detector that fires on everything: the negative-baseline test shown in section 3.1 asserts the clean DLL exposes no dispatch table, carries zero stubs, and cannot be devirtualized (`crates/disrobe-pass-dotnet/tests/real_eazvm.rs:48`). Then the devirtualized CIL is graded instruction by instruction, in order, against the CIL of the clean baseline, and the match must be exact, using the `grade_ordered` comparison and the 57-of-57 assertion shown in section 3.3 (`crates/disrobe-pass-dotnet/tests/real_eazvm.rs:72`).
+The Eazfuscator VM devirtualizer is graded against a clean assembly compiled from the same source without the protector. First, the clean baseline must not be mistaken for the protected one, which guards against a detector that fires on everything: the negative-baseline test shown in section 3.1 asserts the clean DLL exposes no dispatch table, carries zero stubs, and cannot be devirtualized (`crates/disrobe-pass-dotnet/tests/real_eazvm.rs`, `clean_assembly_is_not_seen_as_eazvm`). Then the devirtualized CIL is graded instruction by instruction, in order, against the CIL of the clean baseline, and the match must be exact, using the `grade_ordered` comparison and the 57-of-57 assertion shown in section 3.3 (`crates/disrobe-pass-dotnet/tests/real_eazvm.rs`, `devirtualizes_every_method_to_ordered_cil`).
 
 The strongest step in this oracle removes even the assumption that matching CIL implies matching behavior. The recovered CIL is re-injected into an assembly, rebuilt with the real .NET toolchain, executed, and its standard output is compared byte for byte against the known output of the clean program:
 
 ```rust
 const EXPECTED_STDOUT: &str = "5\n69\n55\n-1\n9\n";
 ```
-`crates/disrobe-pass-dotnet/tests/real_eazvm.rs:23`
+`crates/disrobe-pass-dotnet/tests/real_eazvm.rs`, `EXPECTED_STDOUT`
 
 ```rust
     assert_eq!(
@@ -2107,7 +2113,7 @@ const EXPECTED_STDOUT: &str = "5\n69\n55\n-1\n9\n";
          byte-for-byte; got {stdout:?}"
     );
 ```
-`crates/disrobe-pass-dotnet/tests/real_eazvm.rs:301`
+`crates/disrobe-pass-dotnet/tests/real_eazvm.rs`, `recovered_cil_reinjects_and_runs_identically`
 
 The independent baseline is what makes this non-circular. disrobe never sees the clean CIL during devirtualization; it recovers from the virtualized bytecode alone, and the clean assembly exists only in the test to grade the result.
 
@@ -2134,7 +2140,7 @@ fn nrv2b_recovered_text_is_byte_identical_to_committed_original() {
         text.content_len
     );
 ```
-`crates/disrobe-pass-native/tests/upx_unpack_all.rs:129`
+`crates/disrobe-pass-native/tests/upx_unpack_all.rs`, `nrv2b_recovered_text_is_byte_identical_to_committed_original`
 
 The same byte-exact standard is applied to the LZMA-compressed variant, where the `.text` and `.pdata` sections must again show zero differences:
 
@@ -2146,7 +2152,7 @@ The same byte-exact standard is applied to the LZMA-compressed variant, where th
         text.content_len
     );
 ```
-`crates/disrobe-pass-native/tests/upx_unpack_all.rs:278`
+`crates/disrobe-pass-native/tests/upx_unpack_all.rs`, the LZMA fixture test
 
 For the whole image, where a portion of the file is legitimately rebuilt by the operating-system loader at run time and is therefore not present in the packed stream, disrobe does not claim byte identity it cannot honestly achieve. It measures content-section byte recovery against a stated floor and, separately, proves that every residual difference falls only in loader-rebuilt zones:
 
@@ -2156,7 +2162,7 @@ For the whole image, where a portion of the file is legitimately rebuilt by the 
         "UPX content-section byte recovery {recovery_pct:.2}% fell below the {FLOOR_PCT:.2}% floor"
     );
 ```
-`crates/disrobe-pass-native/tests/upx_unpack_all.rs:189`
+`crates/disrobe-pass-native/tests/upx_unpack_all.rs`, `FLOOR_PCT`
 
 ```rust
     assert_eq!(
@@ -2167,9 +2173,9 @@ For the whole image, where a portion of the file is legitimately rebuilt by the 
          and are not byte-present in the packed stream, so they are not a depacker defect"
     );
 ```
-`crates/disrobe-pass-native/tests/upx_unpack_all.rs:238`
+`crates/disrobe-pass-native/tests/upx_unpack_all.rs`, the loader-zone residual assertion
 
-The locked measurements are as follows. For the nrv2b and LZMA fixtures the `.text` and `.pdata` sections recover byte-identically, at zero differences. The nrv2b whole-image content floor is 96.0% (`FLOOR_PCT` at `crates/disrobe-pass-native/tests/upx_unpack_all.rs:158`). The large nrv2e fixtures set floors of 96% for the `rg` binary and 98% for the `git` binary:
+The locked measurements are as follows. For the nrv2b and LZMA fixtures the `.text` and `.pdata` sections recover byte-identically, at zero differences. The nrv2b whole-image content floor is 96.0% (`FLOOR_PCT` in `crates/disrobe-pass-native/tests/upx_unpack_all.rs`). The large nrv2e fixtures set floors of 96% for the `rg` binary and 98% for the `git` binary:
 
 ```rust
     assert!(
@@ -2177,7 +2183,7 @@ The locked measurements are as follows. For the nrv2b and LZMA fixtures the `.te
         "rg content-section byte recovery {pct:.2}% fell below the 96.0% floor"
     );
 ```
-`crates/disrobe-pass-native/tests/upx_unpack_all.rs:345`
+`crates/disrobe-pass-native/tests/upx_unpack_all.rs`, the nrv2e `rg` fixture
 
 ```rust
     assert!(
@@ -2185,7 +2191,7 @@ The locked measurements are as follows. For the nrv2b and LZMA fixtures the `.te
         "git content-section byte recovery {pct:.2}% fell below the 98.0% floor"
     );
 ```
-`crates/disrobe-pass-native/tests/upx_unpack_all.rs:362`
+`crates/disrobe-pass-native/tests/upx_unpack_all.rs`, the nrv2e `git` fixture
 
 The range 96 to 98 percent is the whole-image content figure for these UPX fixtures across nrv2b, LZMA, and nrv2e; the executable code itself is exact.
 
@@ -2207,9 +2213,9 @@ fn structure_items(items: &[Item]) -> Result<Structured> {
         return Err(Error::LlvmIr("missing terminal ret".to_owned()));
     };
 ```
-`crates/disrobe-pass-native/src/pseudo_c.rs:2974`
+`crates/disrobe-pass-native/src/pseudo_c.rs`, `structure_items`
 
-The oracle harnesses honor these rejections instead of forcing an answer. When a battery case is not in the leaf class, the harness records a skip and moves on, the skip-not-pass conversion shown in section 2.6 (`crates/disrobe-pass-native/tests/pseudo_c_leaf_oracle.rs:186`); the differential is run only over the cases that were genuinely lifted, and the reported count reflects that.
+The oracle harnesses honor these rejections instead of forcing an answer. When a battery case is not in the leaf class, the harness records a skip and moves on, the skip-not-pass conversion shown in section 2.6 (`crates/disrobe-pass-native/tests/pseudo_c_leaf_oracle.rs`, `process_case`); the differential is run only over the cases that were genuinely lifted, and the reported count reflects that.
 
 Sound rejection is tested as a first-class capability, not left implicit. The UPX unpacker must reject a non-UPX buffer:
 
@@ -2220,9 +2226,9 @@ fn non_upx_input_is_rejected() {
     assert!(unpack_upx(&buf).is_err());
 }
 ```
-`crates/disrobe-pass-native/tests/upx_unpack_all.rs:247`
+`crates/disrobe-pass-native/tests/upx_unpack_all.rs`, `non_upx_input_is_rejected`
 
-and the Eazfuscator devirtualizer must reject a clean assembly (`devirtualize(&image).is_err()` at `crates/disrobe-pass-dotnet/tests/real_eazvm.rs:57`). These negative oracles close the gap that a purely positive test suite leaves open, where a pass could score well on real samples while also happily producing garbage on anything else. The recovery signal makes the same distinction visible in output: `NoRecovery` and `SignaturesOnly` map to the skeleton tier, so a caller can tell a proven recovery from a sound refusal to guess.
+and the Eazfuscator devirtualizer must reject a clean assembly (`devirtualize(&image).is_err()` in `crates/disrobe-pass-dotnet/tests/real_eazvm.rs`). These negative oracles close the gap that a purely positive test suite leaves open, where a pass could score well on real samples while also happily producing garbage on anything else. The recovery signal makes the same distinction visible in output: `NoRecovery` and `SignaturesOnly` map to the skeleton tier, so a caller can tell a proven recovery from a sound refusal to guess.
 
 ### 4.4 CI portability: a green number that stays true across machines
 
@@ -2238,9 +2244,9 @@ The oracles are run under a three-operating-system matrix so that a platform-spe
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
 ```
-`.github/workflows/ci.yml:22`
+`.github/workflows/ci.yml`, the `check` job matrix
 
-The full test job runs on the same three-way matrix (`.github/workflows/ci.yml:87`) with the language runtimes the differentials need provisioned in the environment, including CPython 3.8 through 3.14, Temurin JDK 25, Ruby 3.4, and the uv toolchain (`.github/workflows/ci.yml:106`). A separate `execution-differentials` job installs Lua 5.4, LuaJIT, luau, PHP 8.3 with opcache, and Node 24 so that the re-execution oracles run against genuine interpreters rather than stubs (`.github/workflows/ci.yml:151`). Lint runs under `-D warnings` with `unreachable_pub`, `missing_debug_implementations`, and `unused` promoted to errors (`.github/workflows/ci.yml:64`), and a minimum-supported-Rust job pins the toolchain to 1.95.0 so that a portability regression in the language edition is caught as well (`.github/workflows/ci.yml:257`).
+The full test job runs on the same three-way matrix (`.github/workflows/ci.yml`, the `test` job matrix) with the language runtimes the differentials need provisioned in the environment, including CPython 3.8 through 3.14, Temurin JDK 25, Ruby 3.4, and the uv toolchain (`.github/workflows/ci.yml`, the `test` job provisioning steps). A separate `execution-differentials` job installs Lua 5.4, LuaJIT, luau, PHP 8.3 with opcache, and Node 24 so that the re-execution oracles run against genuine interpreters rather than stubs (`.github/workflows/ci.yml`, the `execution-differentials` job). Lint runs under `-D warnings` with `unreachable_pub`, `missing_debug_implementations`, and `unused` promoted to errors (`.github/workflows/ci.yml`, the `lint` job), and a minimum-supported-Rust job pins the toolchain to 1.95.0 so that a portability regression in the language edition is caught as well (`.github/workflows/ci.yml`, the `msrv` job).
 
 #### 4.4.2 Platform gates instead of platform lies
 
@@ -2256,7 +2262,7 @@ fn leaf_functions_recompile_to_behavioral_equivalence() {
         return;
     }
 ```
-`crates/disrobe-pass-native/tests/pseudo_c_leaf_oracle.rs:264`
+`crates/disrobe-pass-native/tests/pseudo_c_leaf_oracle.rs`, `leaf_functions_recompile_to_behavioral_equivalence`
 
 The cross-platform floor is not abandoned when the host cannot run it. It is carried by a separate SysV oracle that uses clang to emit a Linux x86-64 object regardless of host, so that the x86-64 System V ABI is exercised even on a Windows or macOS developer machine:
 
@@ -2271,7 +2277,7 @@ The cross-platform floor is not abandoned when the host cannot run it. It is car
             "-o",
         ])
 ```
-`crates/disrobe-pass-native/tests/pseudo_c_leaf_oracle.rs:389`
+`crates/disrobe-pass-native/tests/pseudo_c_leaf_oracle.rs`, the SysV cross-compilation step
 
 macOS is gated out of the SysV execution differential with an explicit rationale, because its `gcc` is an apple-clang alias and its arm64 core cannot execute an x86-64 battery; the note records that Ubuntu carries the cross-platform floor instead:
 
@@ -2286,7 +2292,7 @@ fn sysv_host_can_run() -> bool {
     true
 }
 ```
-`crates/disrobe-pass-native/tests/pseudo_c_leaf_oracle.rs:121`
+`crates/disrobe-pass-native/tests/pseudo_c_leaf_oracle.rs`, `sysv_host_can_run`
 
 A skip that names its reason is honest; a silently relaxed assertion is not. disrobe uses the first and forbids the second.
 
@@ -2332,7 +2338,8 @@ body (Section 3.4).
 Whole-module Python recovery is far below the per-object figure. The representative
 per-code-object recompile-equivalence on the CPython 3.14 standard library is <!-- m:py_stdlib_full_pct -->95.09%<!-- /m -->, but the
 whole-module exact rate, where a module counts only if every one of its code objects is
-equivalent, is 54.5% on the pinned corpus; a module passes only when all of its typically
+equivalent, is 54.5% on the pinned corpus, a locally measured figure that no CI floor
+asserts; a module passes only when all of its typically
 dozens of code objects pass, so a small per-object miss rate compounds into a large
 per-module one (Section 1.5). The per-object number is the granular headline and the
 whole-module number is the harder truth reported beside it.
