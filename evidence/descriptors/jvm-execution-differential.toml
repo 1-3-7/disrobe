@@ -1,7 +1,7 @@
 id = "jvm-execution-differential"
 ecosystem = "jvm"
 title = "JVM classfile decompilation, per-method execution differential"
-claim = "disrobe decompiles JVM bytecode to Java whose observable per-method behaviour under a real JVM matches the original, across the EdgeCases corpus."
+claim = "disrobe decompiles JVM bytecode to Java whose observable per-method behavior under a real JVM matches the original, across the EdgeCases corpus."
 oracle_strength = "strong"
 ci = true
 

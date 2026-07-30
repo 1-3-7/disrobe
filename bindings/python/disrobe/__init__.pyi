@@ -932,7 +932,7 @@ class PowershellDeobfuscation(_LlmReport):
     def transformation_count(self) -> int: ...
 
 class ContainerDetection(_LlmReport):
-    """Container detection: recognised flag, kind, zip-family membership."""
+    """Container detection: recognized flag, kind, zip-family membership."""
 
     @property
     def detected(self) -> bool: ...

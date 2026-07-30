@@ -2,7 +2,7 @@
 
 - id: `jvm-execution-differential`
 - ecosystem: jvm
-- claim: disrobe decompiles JVM bytecode to Java whose observable per-method behaviour under a real JVM matches the original, across the EdgeCases corpus.
+- claim: disrobe decompiles JVM bytecode to Java whose observable per-method behavior under a real JVM matches the original, across the EdgeCases corpus.
 - measured: 89.31%
 - oracle strength: strong
 - CI-attested: yes [CI]
