@@ -97,8 +97,7 @@ pub fn recover_spices(image: &[u8]) -> Result<SpicesRecovery> {
     let pe: PeImage = parse(image)?;
     let clr: ClrHeader = parse_clr_header(image, &pe)?;
     let root: MetadataRoot = parse_metadata_root(image, &pe, &clr)?;
-    let metadata_slice: &[u8] =
-        pe.slice_at_rva(image, clr.metadata.rva, clr.metadata.size as usize)?;
+    let metadata_slice: &[u8] = crate::metadata::metadata_slice(image, &pe, &clr, &root)?;
 
     let us_strings: Vec<String> = root
         .streams
