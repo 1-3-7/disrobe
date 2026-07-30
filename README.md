@@ -603,7 +603,7 @@ The rows below are the families with a committed evidence descriptor under [`evi
 | Family | Detect-only tier exists | Recover | Oracle strength | CI-covered | External backend | Maturity |
 |---|---|---|---|---|---|---|
 | Python `.pyc` | No | Yes | strong | Yes (pinned + legacy corpus); full stdlib is `[local]` | No | established |
-| PyArmor | Yes (v3-v5 runtime-key tier) | Yes (v6-v9-pro) | strong | No (`[local]` corpus only) | No | developing |
+| PyArmor | Yes (v3-v5 runtime-key tier) | Yes (v6-v9-pro) | strong | Yes (289 committed corpus files) | No | developing |
 | Pickle | No | Yes | strong | Yes | No | established |
 | JVM classfile | No | Yes | recompile-only | Yes | Optional (`--backend cfr\|vineflower\|procyon\|jadx`) | established |
 | Android / DEX | No | Yes | strong (committed corpus, plus real-apk bodies attested at <!-- m:dalvik_body_attested_frac -->2960 of 2994<!-- /m --> presented); coverage-self-reported (real-apk method coverage, `[local]`) | Yes (verifier + head-to-head); the real-apk numbers are `[local]` because those apks are gitignored | No | established |
