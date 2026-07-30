@@ -690,6 +690,42 @@ fn mutation_lockfile(deep_package: &str) -> String {
 }
 
 #[test]
+fn the_real_lockfile_walk_reports_pyo3_for_a_root_that_actually_pulls_it() {
+    let lockfile_path: PathBuf = workspace_root().join("Cargo.lock");
+    let lockfile: String =
+        std::fs::read_to_string(&lockfile_path).unwrap_or_else(|error: std::io::Error| {
+            panic!("read {}: {error}", lockfile_path.display())
+        });
+    let packages: Vec<LockedPackage> = parse_locked_packages(&lockfile);
+    let embedder: &str = "disrobe-python";
+    let findings: Vec<DependencyFinding> = dependency_findings(&packages, embedder);
+    eprintln!(
+        "{embedder} reaches {} python runtime package(s): {:?}",
+        findings.len(),
+        findings
+            .iter()
+            .map(|finding: &DependencyFinding| finding.crate_name.as_str())
+            .collect::<Vec<&str>>()
+    );
+    assert!(
+        findings
+            .iter()
+            .any(|finding: &DependencyFinding| is_family_member(&finding.crate_name, "pyo3")),
+        "{embedder} embeds CPython through pyo3, so running this same walk from it must report the \
+         family. A walk that stays silent here would also stay silent for {ROOT_PACKAGE}, and the \
+         clean result there would mean nothing"
+    );
+    for finding in &findings {
+        assert_eq!(
+            finding.path_from_root.first().map(String::as_str),
+            Some(embedder),
+            "every reported path must start at the root the walk was given, got {:?}",
+            finding.path_from_root
+        );
+    }
+}
+
+#[test]
 fn mutation_control_a_transitive_python_runtime_is_caught_with_its_puller() {
     let clean: String = mutation_lockfile("memchr");
     let mutated: String = mutation_lockfile("pyo3-ffi");
