@@ -7,67 +7,19 @@
     clippy::option_if_let_else
 )]
 
-use std::fs::OpenOptions;
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
+
+use common::{ServeSpawnLock, cli_binary, kill_by_pid};
+
+mod common;
 
 const GRPC_TEST_DEADLINE: Duration = Duration::from_secs(30);
-const SERVE_LOCK_STALE_AFTER: Duration = Duration::from_secs(90);
-const SERVE_LOCK_BACKOFF: Duration = Duration::from_millis(25);
-
-#[derive(Debug)]
-struct ServeSpawnLock {
-    path: PathBuf,
-}
-
-impl ServeSpawnLock {
-    fn acquire() -> Self {
-        let root: PathBuf = disrobe_core::scratch::scratch_root();
-        std::fs::create_dir_all(&root).expect("create scratch root");
-        let path: PathBuf = root.join("disrobe-serve-e2e-spawn.lock");
-        loop {
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(_file) => return Self { path },
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                    if Self::reap_if_stale(&path) {
-                        continue;
-                    }
-                    thread::sleep(SERVE_LOCK_BACKOFF);
-                }
-                Err(_) => {
-                    thread::sleep(SERVE_LOCK_BACKOFF);
-                }
-            }
-        }
-    }
-
-    fn reap_if_stale(path: &Path) -> bool {
-        let Ok(meta): std::io::Result<std::fs::Metadata> = std::fs::metadata(path) else {
-            return false;
-        };
-        let Ok(modified): std::io::Result<SystemTime> = meta.modified() else {
-            return false;
-        };
-        let aged: bool = modified
-            .elapsed()
-            .is_ok_and(|age: Duration| age >= SERVE_LOCK_STALE_AFTER);
-        if aged {
-            return std::fs::remove_file(path).is_ok();
-        }
-        false
-    }
-}
-
-impl Drop for ServeSpawnLock {
-    fn drop(&mut self) {
-        let _: std::io::Result<()> = std::fs::remove_file(&self.path);
-    }
-}
 
 fn reserve_adjacent_pair() -> Option<u16> {
     for _ in 0..64 {
@@ -92,24 +44,6 @@ fn reserve_adjacent_pair() -> Option<u16> {
         return Some(p);
     }
     None
-}
-
-fn cli_binary() -> PathBuf {
-    let exe: PathBuf = std::env::current_exe().expect("current exe");
-    let mut dir: PathBuf = exe.parent().expect("exe dir").to_path_buf();
-    while dir.file_name().and_then(|s| s.to_str()) != Some("debug")
-        && dir.file_name().and_then(|s| s.to_str()) != Some("release")
-    {
-        if !dir.pop() {
-            break;
-        }
-    }
-    dir.push(if cfg!(windows) {
-        "disrobe.exe"
-    } else {
-        "disrobe"
-    });
-    dir
 }
 
 fn ephemeral_port_pair() -> u16 {
@@ -176,20 +110,6 @@ fn spawn_grpc_serve() -> Option<ServeHandle> {
         finished,
         _spawn_guard: guard,
     })
-}
-
-#[cfg(unix)]
-fn kill_by_pid(pid: u32) {
-    let _ = std::process::Command::new("kill")
-        .args(["-9", &pid.to_string()])
-        .status();
-}
-
-#[cfg(windows)]
-fn kill_by_pid(pid: u32) {
-    let _ = std::process::Command::new("taskkill")
-        .args(["/F", "/T", "/PID", &pid.to_string()])
-        .status();
 }
 
 fn wait_for_listen(addr: SocketAddr, timeout: Duration) {

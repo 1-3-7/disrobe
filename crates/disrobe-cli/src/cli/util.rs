@@ -16,6 +16,7 @@ pub(crate) fn init_tracing(verbose: u8, quiet: bool) {
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
+        .with_writer(std::io::stderr)
         .compact()
         .init();
 }
