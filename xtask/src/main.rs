@@ -19,6 +19,7 @@ mod fileio;
 mod floors;
 mod fuzz_scope;
 mod graphs;
+mod local_tags;
 mod metrics;
 #[cfg(feature = "playground")]
 mod playground;

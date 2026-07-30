@@ -66,6 +66,12 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         &mut stale,
     );
     run_one(
+        "local-tags",
+        check,
+        || crate::local_tags::run(root),
+        &mut stale,
+    );
+    run_one(
         "cross-data",
         check,
         || crate::crossdata::run(root),

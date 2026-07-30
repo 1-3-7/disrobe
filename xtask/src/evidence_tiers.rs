@@ -199,7 +199,7 @@ fn descriptor_tiers(root: &Path) -> Result<BTreeMap<String, DescriptorTier>> {
     Ok(tiers)
 }
 
-fn cited_test_names(text: &str) -> Vec<String> {
+pub(crate) fn cited_test_names(text: &str) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     for (index, token) in text.split_whitespace().enumerate() {
         let cleaned: &str = token.trim_matches(|c: char| c == '`' || c == '|' || c == ',');
@@ -264,7 +264,7 @@ fn is_separator_row(line: &str) -> bool {
         })
 }
 
-fn row_metric(line: &str) -> String {
+pub(crate) fn row_metric(line: &str) -> String {
     line.trim_matches('|')
         .split('|')
         .next()

@@ -366,6 +366,10 @@
           "value": 94.92,
           "num": 1869,
           "den": 1969,
+          "verified_by": {
+            "path": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs",
+            "function": "published_go_function_name_bars_are_pinned_per_platform"
+          },
           "detail": "1869 / 1969 function names recovered from the stripped build. The unstripped build of the same source recovers all 1969. The shortfall is assembly ABI0 entry points and platform linker symbols that carry no distinct pclntab entry, so a stripped image does not contain them to recover.",
           "source": "crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs, which builds each target live with the installed Go toolchain and grades every recovered name against go tool nm on the same build"
         },
@@ -374,6 +378,10 @@
           "value": 100.0,
           "num": 1994,
           "den": 1994,
+          "verified_by": {
+            "path": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs",
+            "function": "published_go_function_name_bars_are_pinned_per_platform"
+          },
           "detail": "1994 / 1994 function names recovered from the stripped build. The unstripped build of the same source recovers all 1994. The shortfall is assembly ABI0 entry points and platform linker symbols that carry no distinct pclntab entry, so a stripped image does not contain them to recover.",
           "source": "crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs, which builds each target live with the installed Go toolchain and grades every recovered name against go tool nm on the same build"
         },
@@ -382,6 +390,10 @@
           "value": 93.81,
           "num": 1836,
           "den": 1957,
+          "verified_by": {
+            "path": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs",
+            "function": "published_go_function_name_bars_are_pinned_per_platform"
+          },
           "detail": "1836 / 1957 function names recovered from the stripped build. The unstripped build of the same source recovers all 1957. The shortfall is assembly ABI0 entry points and platform linker symbols that carry no distinct pclntab entry, so a stripped image does not contain them to recover.",
           "source": "crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs, which builds each target live with the installed Go toolchain and grades every recovered name against go tool nm on the same build"
         },
@@ -390,6 +402,10 @@
           "value": 99.94,
           "num": 1978,
           "den": 1979,
+          "verified_by": {
+            "path": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs",
+            "function": "published_go_function_name_bars_are_pinned_per_platform"
+          },
           "detail": "1978 / 1979 function names recovered from the stripped build. The unstripped build of the same source recovers all 1979. The shortfall is assembly ABI0 entry points and platform linker symbols that carry no distinct pclntab entry, so a stripped image does not contain them to recover.",
           "source": "crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs, which builds each target live with the installed Go toolchain and grades every recovered name against go tool nm on the same build"
         },
@@ -398,6 +414,10 @@
           "value": 94.16,
           "num": 1807,
           "den": 1919,
+          "verified_by": {
+            "path": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs",
+            "function": "published_go_function_name_bars_are_pinned_per_platform"
+          },
           "detail": "1807 / 1919 function names recovered from the stripped build. The unstripped build of the same source recovers all 1919. The shortfall is assembly ABI0 entry points and platform linker symbols that carry no distinct pclntab entry, so a stripped image does not contain them to recover.",
           "source": "crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs, which builds each target live with the installed Go toolchain and grades every recovered name against go tool nm on the same build"
         },
@@ -406,6 +426,10 @@
           "value": 88.78,
           "num": 1845,
           "den": 2078,
+          "verified_by": {
+            "path": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs",
+            "function": "published_go_function_name_bars_are_pinned_per_platform"
+          },
           "detail": "1845 / 2078 function names recovered from the stripped build. The unstripped build of the same source recovers all 2078. The shortfall is assembly ABI0 entry points and platform linker symbols that carry no distinct pclntab entry, so a stripped image does not contain them to recover.",
           "source": "crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs, which builds each target live with the installed Go toolchain and grades every recovered name against go tool nm on the same build"
         },
@@ -414,6 +438,10 @@
           "value": 90.01,
           "num": 1839,
           "den": 2043,
+          "verified_by": {
+            "path": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs",
+            "function": "published_go_function_name_bars_are_pinned_per_platform"
+          },
           "detail": "1839 / 2043 function names recovered from the stripped build. The unstripped build of the same source recovers all 2043. The shortfall is assembly ABI0 entry points and platform linker symbols that carry no distinct pclntab entry, so a stripped image does not contain them to recover.",
           "source": "crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs, which builds each target live with the installed Go toolchain and grades every recovered name against go tool nm on the same build"
         }
