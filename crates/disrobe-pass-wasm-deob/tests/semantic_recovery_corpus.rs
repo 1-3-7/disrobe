@@ -1,17 +1,19 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 #[path = "common/published.rs"]
 mod published;
+#[path = "common/wat_corpus.rs"]
+mod wat_corpus;
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
 
 use disrobe_pass_wasm_deob::{
     CalleeNames, FunctionSig, LiftResult, LiftTarget, ModuleSignatures, extract_signatures,
     lift_function_body,
 };
-use published::published_bar;
-use wasmparser::{FunctionBody, Parser, Payload};
+use published::{published_bar, published_group};
+use wasmparser::FunctionBody;
+use wat_corpus::{callees, defined_bodies, wat_files};
 
 const CORPUS_MODULES: usize = 38;
 const CORPUS_FUNCTIONS: usize = 133;
@@ -19,51 +21,6 @@ const CORPUS_FULLY_RECOVERED: usize = 133;
 
 const PUBLISHED_HEADING: &str = "WebAssembly (committed 133-fn corpus";
 const PUBLISHED_BAR: &str = "op-coverage";
-
-fn corpus_dirs() -> Vec<PathBuf> {
-    let root: &Path = Path::new(env!("CARGO_MANIFEST_DIR"));
-    vec![
-        root.join("../../corpus/src/wasm/sources"),
-        root.join("../../corpus/src/wasm/edge_cases"),
-        root.join("../../corpus/wasm/wat"),
-        root.join("../../corpus/wasm/plugins"),
-    ]
-}
-
-fn wat_files() -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = Vec::new();
-    for dir in corpus_dirs() {
-        let Ok(entries): Result<fs::ReadDir, _> = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path: PathBuf = entry.path();
-            if path.extension().is_some_and(|e| e == "wat") {
-                out.push(path);
-            }
-        }
-    }
-    out.sort();
-    out
-}
-
-fn callees(sigs: &ModuleSignatures) -> CalleeNames {
-    CalleeNames::with_signatures(
-        sigs.callee_names(),
-        sigs.call_signatures(),
-        sigs.call_signatures(),
-    )
-}
-
-fn defined_bodies(bytes: &[u8]) -> Vec<FunctionBody<'_>> {
-    let mut out: Vec<FunctionBody<'_>> = Vec::new();
-    for payload in Parser::new(0).parse_all(bytes) {
-        if let Ok(Payload::CodeSectionEntry(body)) = payload {
-            out.push(body);
-        }
-    }
-    out
-}
 
 #[derive(Debug, Default, Clone)]
 struct Tally {
@@ -224,32 +181,41 @@ fn corpus_recovery_requires_full_op_coverage_not_just_parseability() {
         tally.total_functions
     );
 
+    let group: serde_json::Value = published_group(PUBLISHED_HEADING);
+    let heading: &str = group["heading"]
+        .as_str()
+        .expect("the wasm group must carry a heading");
+    let corpus_claim: String = format!("committed {}-fn corpus", tally.total_functions);
+    assert!(
+        heading.contains(&corpus_claim),
+        "the published heading names the corpus this test measures, so it must read \
+         `{corpus_claim}`; it reads `{heading}`"
+    );
+    let axis: &str = group["axis_label"]
+        .as_str()
+        .expect("the wasm group must carry an axis label");
+    let population: String = format!("{} parseable modules", tally.modules_parsed);
+    assert!(
+        axis.contains(&population),
+        "the plotted axis must state the population it was computed over (`{population}`); it \
+         reads `{axis}`"
+    );
+
     let bar: serde_json::Value = published_bar(PUBLISHED_HEADING, PUBLISHED_BAR);
-    let num: u64 = bar["num"]
-        .as_u64()
-        .expect("the wasm op-coverage bar must carry a numerator");
-    let den: u64 = bar["den"]
-        .as_u64()
-        .expect("the wasm op-coverage bar must carry a denominator");
-    let value: f64 = bar["value"]
-        .as_f64()
-        .expect("the wasm op-coverage bar must carry a numeric value");
-    assert_eq!(
-        u64::try_from(tally.total_functions).expect("function total fits u64"),
-        den,
-        "xtask/data/recovery.json publishes a denominator of {den} functions and every document \
-         renders that number, but this corpus carries {}",
-        tally.total_functions
+    let detail: &str = bar["detail"]
+        .as_str()
+        .expect("the wasm op-coverage bar must carry a detail line");
+    let function_claim: String =
+        format!("{CORPUS_FULLY_RECOVERED} of {CORPUS_FUNCTIONS} functions");
+    assert!(
+        detail.contains(&function_claim),
+        "the function-level figure this test floors must appear verbatim as `{function_claim}` \
+         beside the published number; the detail reads `{detail}`"
     );
     assert!(
-        u64::try_from(tally.fully_recovered).expect("recovered fits u64") >= num,
-        "recovery.json publishes {num} of {den} fully op-covered functions; this run recovered {}",
-        tally.fully_recovered
-    );
-    let derived: f64 = 100.0 * num as f64 / den as f64;
-    assert!(
-        (derived - value).abs() < 0.05,
-        "the published value {value} disagrees with its own {num}/{den} = {derived:.4}"
+        detail.contains(&population),
+        "the function-level figure must carry its population (`{population}`) in the same \
+         sentence; the detail reads `{detail}`"
     );
 }
 

@@ -31,7 +31,15 @@ disrobe wasm types module.wasm            # recover the GC type graph (struct / 
 
 ## Coverage and fidelity
 
-Per-op coverage is measured, not assumed. Op-coverage is scored only when *every* operator in a function is lowered (no `unreachable`/`todo!` stub) and the result validates through an independent re-parser; parseability alone does not count. On the committed corpus all **133** of the **133** functions in the 38 parseable modules are fully op-covered: every operator has a lowering rule and the re-emitted WAT re-parses. The MVP instruction set plus the SIMD, atomics, bulk-memory, table/element, reference, and tail-call proposals are lowered.
+Per-op coverage is measured, not assumed, and it is not divided by a number disrobe produced. `wasm-tools 1.250.0` disassembles each committed `.wat` and its per-function instruction inventory is checked in at [`tests/golden/external_wasm_op_inventory.json`](https://github.com/1-3-7/disrobe/blob/main/crates/disrobe-pass-wasm-deob/tests/golden/external_wasm_op_inventory.json), keyed by each fixture's BLAKE3, so the denominator cannot shrink along with a decoder that stops finding instructions. Against that inventory disrobe lowers **1034** of the **1034** opcodes in the 38 parseable modules, and the two decoders agree instruction for instruction with none unseen. An opcode counts only when its function's re-emitted WAT re-assembles, so output that does not re-parse contributes nothing to the numerator while its instructions stay in the denominator. That covers all **133** of the **133** functions in those 38 parseable modules. The other 2 of the 40 corpus files are rejected by `wasm-tools` as well, and its error text is pinned beside them. The MVP instruction set plus the SIMD, atomics, bulk-memory, table/element, reference, and tail-call proposals are lowered.
+
+Coverage of this kind is not correctness. The denominator is external, but the numerator is still disrobe counting the opcodes it lowered, and a lowering rule firing is not proof the lowering is right, so the figure is published in the self-reported tier. Regenerate the inventory with:
+
+```sh
+cargo test -p disrobe-pass-wasm-deob --test external_op_denominator -- --ignored regenerate_external_inventory
+```
+
+That regeneration demands `wasm-tools 1.250.0` and fails without it. The check itself reads only the checked-in inventory, so a missing tool can never turn into a pass.
 
 Op-coverage is not the same as execution-equivalence. Separately, all **57** of the 57 execution-eligible functions (a numeric or nullable-reference ABI the harness can isolate per-function or drive as a whole faithful module) are execution-equivalent to the original under wasmtime: the `semantic_differential` test compares return values, trap parity, and linear memory between the original and the recovered module, and 6 are byte-identical in memory.
 
