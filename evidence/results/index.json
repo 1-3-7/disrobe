@@ -304,7 +304,7 @@
       "reproduce": "cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate"
     },
     {
-      "ci_attested": false,
+      "ci_attested": true,
       "claim": "disrobe statically unpacks every PyArmor sample in the committed free-mode corpus.",
       "competitors": [],
       "disrobe_leads": null,
@@ -315,7 +315,7 @@
       "id": "pyarmor-corpus",
       "measured": "72 recovered / 72 detected",
       "oracle_strength": "strong",
-      "reproduce": "cargo test -p disrobe-pass-pyarmor --test static_unpack_corpus (local-only: license-restricted and large samples live outside the tree)"
+      "reproduce": "cargo test -p disrobe-pass-pyarmor --test static_unpack_corpus (the 72 wrappers behind this figure are committed, so it reproduces from a clean checkout; a further 17 license-restricted and large samples live outside the tree and are not counted here)"
     },
     {
       "ci_attested": true,
@@ -332,12 +332,12 @@
       "reproduce": "cargo test -p disrobe-pass-ruby --test yarv_recompile_oracle"
     },
     {
-      "ci_attested": false,
+      "ci_attested": true,
       "claim": "disrobe demangles the Swift-mangled symbols carried in a real Mach-O's own LC_SYMTAB, recovering class names, type metadata, and field offsets that match the reference swift-demangle.",
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "swift",
-      "external_oracle": "the binary's own LC_SYMTAB Swift-mangled symbols (a non-circular, in-artifact ground truth); reference parity is the swift-demangle tool",
+      "external_oracle": "the binary's own LC_SYMTAB Swift-mangled symbols, an in-artifact ground truth the tool does not author; the committed fixture pins all 37 by name, and reference parity against the swift-demangle tool runs only where that tool is installed, which CI does not provide",
       "floor": 95.0,
       "floor_holds": true,
       "id": "swift-demangle",

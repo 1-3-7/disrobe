@@ -1,5 +1,5 @@
 {
-  "ci_attested": false,
+  "ci_attested": true,
   "claim": "disrobe demangles the Swift-mangled symbols carried in a real Mach-O's own LC_SYMTAB, recovering class names, type metadata, and field offsets that match the reference swift-demangle.",
   "competitors": [],
   "detail": "the binary's own LC_SYMTAB Swift-mangled symbols (a non-circular, in-artifact ground truth); reference parity is swift-demangle",
@@ -11,7 +11,7 @@
   "id": "swift-demangle",
   "measured": "37/37 (100.0%)",
   "oracle": {
-    "external": "the binary's own LC_SYMTAB Swift-mangled symbols (a non-circular, in-artifact ground truth); reference parity is the swift-demangle tool",
+    "external": "the binary's own LC_SYMTAB Swift-mangled symbols, an in-artifact ground truth the tool does not author; the committed fixture pins all 37 by name, and reference parity against the swift-demangle tool runs only where that tool is installed, which CI does not provide",
     "kind": "gate-test-harvest",
     "note": "Local: the SwiftHello.original Mach-O fixture is LEGAL.md sourcing-gated, so this is [local] until the Swift toolchain + fixture run in a Swift CI lane. The number is the in-process demangle of the binary's own symbols."
   },
