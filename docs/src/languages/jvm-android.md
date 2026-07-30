@@ -11,7 +11,7 @@
 | Language surface | Records, sealed types, pattern matching, enum constant bodies, declaration and member annotations, enhanced `for`, multi-`catch`, plus Kotlin and Scala idioms |
 | Obfuscators reversed | Zelix KlassMaster, Allatori, Stringer, DashO, DexGuard control flow, BlackObfuscator flattening; ProGuard/R8 names replayed from `mapping.txt` |
 | Families detected (9) | ProGuard/R8, Zelix KlassMaster, Allatori, Stringer, DashO, DexGuard, yGuard, SkidSuite2, JBCO (the last three detect-only) |
-| RASP vendors (8) | Promon SHIELD, Guardsquare DexGuard RASP and ThreatCast, Appdome, OneSpan, Arxan/Digital.ai, Zimperium zShield, Licel DexProtector |
+| RASP vendors (<!-- m:rasp_vendors -->8<!-- /m -->) | Promon SHIELD, Guardsquare DexGuard RASP and ThreatCast, Appdome, OneSpan, Arxan/Digital.ai, Zimperium zShield, Licel DexProtector |
 | Signatures | APK signature schemes v1 (JAR) through v4 verified |
 
 ## Commands
