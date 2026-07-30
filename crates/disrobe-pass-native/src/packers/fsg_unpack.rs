@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::packers::pe_sections::{PeImage, PeSection, parse_pe_image, read_u32 as read_u32_le};
+use crate::packers::pe_sections::{
+    PeImage, PeSection, parse_pe_image, read_u16 as read_u16_le, read_u32 as read_u32_le,
+};
 
 const FSG_MIN_STUB_BYTES: usize = 0x26;
 const FSG_STUB_OPCODE_MOV_EBX: u8 = 0xBB;
@@ -17,13 +19,31 @@ const APLIB_MAX_OFFSET: u32 = 0x0100_0000;
 const APLIB_MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 const FSG_STUB_AUTHORED_IMAGE_BASE: u32 = 0x0040_0000;
 
+const FSG_BLOCK_DEST_ABSOLUTE: u16 = 1;
+const FSG_BLOCK_TABLE_END: u16 = 2;
+const FSG_BLOCK_DEST_PAGE_BIAS: u32 = 2;
+const FSG_BLOCK_DEST_PAGE_SHIFT: u32 = 12;
+const FSG_MAX_BLOCKS: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsgBlock {
+    pub dest_rva: u32,
+    pub stream_file_offset: usize,
+    pub stream_bytes: usize,
+    pub decoded_bytes: usize,
+    pub stub_metadata: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FsgUnpackOutput {
     pub raw_image: Vec<u8>,
+    pub blocks: Vec<FsgBlock>,
     pub image_base: u32,
     pub unpack_dest_va: u32,
     pub packed_stream_va: u32,
     pub import_meta_va: u32,
+    pub import_descriptor_va: Option<u32>,
+    pub import_descriptor_block: Vec<u8>,
     pub iat_entries: Vec<FsgImport>,
     pub residual_note: String,
 }
@@ -49,27 +69,124 @@ pub fn unpack_fsg(packed_bytes: &[u8]) -> Result<FsgUnpackOutput> {
     let pe: PeImage = parse_fsg_pe(packed_bytes)?;
     let stub_raw_off: usize = find_entry_stub_raw_offset(&pe, packed_bytes)?;
     let anchors: StubAnchors = decode_stub_anchors(&pe, packed_bytes, stub_raw_off)?;
-    let stream_raw_off: usize = rva_to_file_offset(
-        &pe,
-        packed_bytes,
-        anchors.packed_stream_va - anchors.image_base,
-    )?;
-    let stream: &[u8] = packed_bytes.get(stream_raw_off..).ok_or(Error::Truncated {
-        needed: stream_raw_off + 1,
-        had: packed_bytes.len(),
-    })?;
-    let raw_image: Vec<u8> = aplib_depack(stream)?;
+    let depacked: DepackedImage = depack_all_blocks(&pe, packed_bytes, &anchors)?;
     let iat_entries: Vec<FsgImport> =
         parse_import_meta(packed_bytes, &pe, &anchors).unwrap_or_default();
     Ok(FsgUnpackOutput {
-        raw_image,
+        raw_image: depacked.image,
+        blocks: depacked.blocks,
         image_base: anchors.image_base,
         unpack_dest_va: anchors.unpack_dest_va,
         packed_stream_va: anchors.packed_stream_va,
         import_meta_va: anchors.import_meta_va,
+        import_descriptor_va: depacked.import_descriptor_va,
+        import_descriptor_block: depacked.import_descriptor_block,
         iat_entries,
         residual_note: "residual byte-diffs fall inside the original IAT / import directory: loader-resolved absolute import addresses are written at load time and were never in the packed stream; import names and ordinals are recovered".to_owned(),
     })
+}
+
+#[derive(Debug)]
+struct DepackedImage {
+    image: Vec<u8>,
+    blocks: Vec<FsgBlock>,
+    import_descriptor_va: Option<u32>,
+    import_descriptor_block: Vec<u8>,
+}
+
+fn depack_all_blocks(pe: &PeImage, bytes: &[u8], anchors: &StubAnchors) -> Result<DepackedImage> {
+    let mut stream_off: usize =
+        rva_to_file_offset(pe, bytes, anchors.packed_stream_va - anchors.image_base)?;
+    let mut table_off: usize =
+        rva_to_file_offset(pe, bytes, anchors.import_meta_va - anchors.image_base)?;
+    let mut dest_va: u32 = anchors.unpack_dest_va;
+    let headers: usize = header_span(pe, bytes);
+    let mut image: Vec<u8> = bytes[..headers].to_vec();
+    let mut blocks: Vec<FsgBlock> = Vec::new();
+    let mut import_descriptor_va: Option<u32> = None;
+    let mut import_descriptor_block: Vec<u8> = Vec::new();
+    let mut dest_is_stub_metadata: bool = false;
+    loop {
+        let stream: &[u8] = bytes.get(stream_off..).ok_or(Error::Truncated {
+            needed: stream_off + 1,
+            had: bytes.len(),
+        })?;
+        let (block, consumed): (Vec<u8>, usize) = aplib_depack(stream)?;
+        let dest_rva: u32 =
+            dest_va
+                .checked_sub(anchors.image_base)
+                .ok_or(Error::PackerUnpackerNotImplemented(
+                    "FSG: block destination below ImageBase",
+                ))?;
+        if dest_is_stub_metadata {
+            import_descriptor_block.clone_from(&block);
+        } else {
+            place_block(&mut image, dest_rva, &block)?;
+        }
+        blocks.push(FsgBlock {
+            dest_rva,
+            stream_file_offset: stream_off,
+            stream_bytes: consumed,
+            decoded_bytes: block.len(),
+            stub_metadata: dest_is_stub_metadata,
+        });
+        if blocks.len() >= FSG_MAX_BLOCKS {
+            return Err(Error::PackerUnpackerNotImplemented(
+                "FSG: block-destination table exceeded 64 entries",
+            ));
+        }
+        stream_off =
+            stream_off
+                .checked_add(consumed)
+                .ok_or(Error::PackerUnpackerNotImplemented(
+                    "FSG: packed-stream cursor overflow",
+                ))?;
+        match read_u16_le(bytes, table_off)? {
+            FSG_BLOCK_TABLE_END => break,
+            FSG_BLOCK_DEST_ABSOLUTE => {
+                dest_va = read_u32_le(bytes, table_off + 2)?;
+                import_descriptor_va = Some(dest_va);
+                dest_is_stub_metadata = true;
+                table_off += 6;
+            }
+            page => {
+                dest_va = (u32::from(page) - FSG_BLOCK_DEST_PAGE_BIAS) << FSG_BLOCK_DEST_PAGE_SHIFT;
+                dest_is_stub_metadata = false;
+                table_off += 2;
+            }
+        }
+    }
+    Ok(DepackedImage {
+        image,
+        blocks,
+        import_descriptor_va,
+        import_descriptor_block,
+    })
+}
+
+fn header_span(pe: &PeImage, bytes: &[u8]) -> usize {
+    let declared: usize = pe.size_of_headers as usize;
+    let ceiling: usize = (pe.section_alignment as usize).max(0x1000);
+    declared.clamp(1, ceiling).min(bytes.len())
+}
+
+fn place_block(image: &mut Vec<u8>, dest_rva: u32, block: &[u8]) -> Result<()> {
+    let start: usize = dest_rva as usize;
+    let end: usize = start
+        .checked_add(block.len())
+        .ok_or(Error::PackerUnpackerNotImplemented(
+            "FSG: block destination range overflow",
+        ))?;
+    if end > APLIB_MAX_OUTPUT_BYTES {
+        return Err(Error::PackerUnpackerNotImplemented(
+            "FSG: block destination beyond the 64 MiB image cap",
+        ));
+    }
+    if end > image.len() {
+        image.resize(end, 0u8);
+    }
+    image[start..end].copy_from_slice(block);
+    Ok(())
 }
 
 fn parse_fsg_pe(bytes: &[u8]) -> Result<PeImage> {
@@ -94,6 +211,9 @@ fn find_entry_stub_raw_offset(pe: &PeImage, bytes: &[u8]) -> Result<usize> {
 
 fn rva_to_file_offset(pe: &PeImage, bytes: &[u8], rva: u32) -> Result<usize> {
     let Some(sec): Option<&PeSection> = pe.section_containing_rva(rva) else {
+        if rva < pe.size_of_headers && (rva as usize) < bytes.len() {
+            return Ok(rva as usize);
+        }
         return Err(Error::PackerUnpackerNotImplemented(
             "FSG: RVA outside any section",
         ));
@@ -289,7 +409,7 @@ impl<'a> BitReader<'a> {
     }
 }
 
-fn aplib_depack(packed: &[u8]) -> Result<Vec<u8>> {
+fn aplib_depack(packed: &[u8]) -> Result<(Vec<u8>, usize)> {
     let mut out: Vec<u8> = Vec::with_capacity(packed.len());
     let mut br: BitReader<'_> = BitReader::new(packed);
     let first: u8 = br.read_byte()?;
@@ -344,7 +464,7 @@ fn aplib_depack(packed: &[u8]) -> Result<Vec<u8>> {
         if br.read_bit()? == 0 {
             let byte: u8 = br.read_byte()?;
             if byte == 0 {
-                return Ok(out);
+                return Ok((out, br.pos));
             }
             let short_off: u32 = u32::from(byte) >> 1;
             let len: u32 = 2 + u32::from(byte & 1);
@@ -411,7 +531,7 @@ mod tests {
     #[test]
     fn aplib_decodes_pure_literals_stream() {
         let stream: Vec<u8> = vec![b'H', 0x00];
-        let r: Result<Vec<u8>> = aplib_depack(&stream);
+        let r: Result<(Vec<u8>, usize)> = aplib_depack(&stream);
         assert!(r.is_ok() || matches!(r, Err(Error::Truncated { .. })));
     }
 

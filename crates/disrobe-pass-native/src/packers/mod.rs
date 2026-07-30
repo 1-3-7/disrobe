@@ -60,7 +60,7 @@ pub use petite_phase2::{
 
 pub mod fsg_unpack;
 
-pub use fsg_unpack::{FsgImport, FsgUnpackOutput, unpack_fsg};
+pub use fsg_unpack::{FsgBlock, FsgImport, FsgUnpackOutput, unpack_fsg};
 
 pub mod mpress_lzma;
 
