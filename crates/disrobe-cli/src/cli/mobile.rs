@@ -631,10 +631,16 @@ fn print_recon_secrets(secrets: &[SurfacedSecret]) {
     }
     println!("  secrets:      {}", secrets.len());
     for s in secrets {
-        println!(
-            "    - [{}] {} in {}: {}",
-            s.code, s.kind, s.container_path, s.redacted_preview
-        );
+        match s.offset {
+            Some(off) => println!(
+                "    - [{}] {} in {}@0x{off:x}: {}",
+                s.code, s.kind, s.container_path, s.value
+            ),
+            None => println!(
+                "    - [{}] {} in {}: {}",
+                s.code, s.kind, s.container_path, s.value
+            ),
+        }
     }
 }
 
