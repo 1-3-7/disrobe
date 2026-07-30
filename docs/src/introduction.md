@@ -17,7 +17,7 @@ Built for forensic and recovery work where reproducibility matters:
 - No model runs anywhere in the decompile path. The same input produces byte-identical output on every machine and every run, so a result serves as evidence and as a diff baseline.
 - The core runs as one static binary. It needs no JVM, no Python runtime, and no Docker image. It builds from a single `cargo build --release` and drops into CI headlessly.
 - Every recovered artifact persists as a content-addressed `.dr` envelope: an rkyv hot payload plus a postcard cold sidecar, rooted by a BLAKE3 hash. Cache hits are byte-identical, and chains compose offline.
-- Every Python decompile is recompiled on the matching interpreter and compared opcode-for-opcode: <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per-code-object equivalence on the full CPython 3.14 stdlib (<!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m -->), plus <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> on the pinned 200-module corpus (<!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m -->). Recovery that falls short is labelled `SEMANTIC`, `PARTIAL`, or `SKELETON` rather than presented as ground truth. Commercial-tier packers that `disrobe` cannot fully unpack are reported as detect-only by design, never faked.
+- Every Python decompile is recompiled on the matching interpreter and compared opcode-for-opcode: <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per-code-object equivalence on the full CPython 3.14 stdlib (<!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m -->), plus <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> on the pinned 200-module corpus (<!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m -->). Recovery that falls short is labeled `SEMANTIC`, `PARTIAL`, or `SKELETON` rather than presented as ground truth. Commercial-tier packers that `disrobe` cannot fully unpack are reported as detect-only by design, never faked.
 
 ## Who this is for
 
@@ -47,7 +47,7 @@ Every figure below is produced by a committed test gate or a local measurement h
 | PyArmor | <!-- m:pyarmor_samples -->72<!-- /m --> of 72 real-corpus samples recovered | plaintext-absent oracle |
 | Containers | <!-- m:containers_formats -->100<!-- /m --> formats detected, <!-- m:containers_formats -->100<!-- /m --> extracted in-tree | per-format byte length |
 
-The numbers that are not perfect are labelled `SEMANTIC`, `PARTIAL`, or `SKELETON`, and the information-theoretic walls (native-virtualized code, runtime-only keys, RSA-wrapped capsule keys) are reported as detect-only by design.
+The numbers that are not perfect are labeled `SEMANTIC`, `PARTIAL`, or `SKELETON`, and the information-theoretic walls (native-virtualized code, runtime-only keys, RSA-wrapped capsule keys) are reported as detect-only by design.
 
 ## Refusal is a result
 

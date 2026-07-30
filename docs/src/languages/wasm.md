@@ -40,6 +40,6 @@ Op-coverage is not the same as execution-equivalence. Separately, all **57** of 
 ## Limits
 
 - Two corpus modules are skipped on wat-parse or signature-extraction failure, so the op-coverage figure covers the supported subset, not all of wasm.
-- Functions outside the execution-eligible set are op-coverage-only; their behaviour is not compared against the original.
+- Functions outside the execution-eligible set are op-coverage-only; their behavior is not compared against the original.
 - The Component Model envelope, threads, memory64, and the GC type graph are parsed and decoded by dedicated scanners. That is distinct from lifting their per-instruction semantics to source.
 - A fifth obfuscator family, wasm-name-obfuscator, is detected and its rename strategy classified, but its high-entropy hex renames destroy the original names, so there is nothing to reverse.

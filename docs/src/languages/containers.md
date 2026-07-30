@@ -7,7 +7,7 @@ Before `disrobe` can decompile anything, it often has to get inside a container.
 | Surface | Support |
 |---|---|
 | Formats | <!-- m:containers_formats -->100<!-- /m --> archive, installer, filesystem, and firmware formats detected, with member bytes written in-tree for all <!-- m:containers_formats -->100<!-- /m --> |
-| Carve engine | A recursive carve-everything scan for every known magic, modelling chunked payloads, recursing by depth, and using entropy to separate code from padding |
+| Carve engine | A recursive carve-everything scan for every known magic, modeling chunked payloads, recursing by depth, and using entropy to separate code from padding |
 | Nesting | Container-in-container chaining, governed by `--max-depth` (default 8) |
 | Directory input | Batch-processed recursively, bounded by `--batch-max-depth` |
 | Guards | Per-entry and aggregate size caps, recursion-depth cap, zip-slip path sanitization, on every format |
