@@ -8,11 +8,15 @@ disrobe catalog native
 disrobe catalog python --json
 ```
 
-Three words describe how far recovery goes:
+Three words describe how far recovery goes for a family, the same three the README uses:
 
 - **Recover**: real recovered output (source, bytes, or structure), measured against an independent oracle where one exists.
-- **Detect + carve**: the layer is identified and any intact parts are extracted, without full reversal.
-- **Wall**: no static tool can recover it without the runtime key, the live process, or the network-fetched payload.
+- **Partial**: the layer is identified and what is intact is extracted or peeled, with the residual stated.
+- **Detect-only**: identification plus a stated reason the rest cannot be recovered statically.
+
+A **wall** is the strongest case of detect-only: the data is not in the artifact at all, so no static tool recovers it without the runtime key, the live process, or the network-fetched payload. Every wall is detect-only, and detect-only also covers families that are identified but reported without static recovery. Detect-only is a useful triage result and not a failed analysis: see [refusal is a result](./introduction.md#refusal-is-a-result) for why, and [reading a result](./reading-a-result.md) for what to do with one.
+
+`disrobe catalog` prints the same three tiers with the `SupportQuality` labels the binary carries (`crates/disrobe-core/src/chain/obfuscator_catalog.rs`), where `full` is the Recover tier: `[full]`, `[partial]`, `[detect-only]`.
 
 The `disrobe auto` chain at the bottom is what stitches these together: it fingerprints the input, runs the matching pass, re-fingerprints the output, and repeats until nothing else applies.
 
