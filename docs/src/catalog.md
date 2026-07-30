@@ -57,7 +57,7 @@ Jawbreaker's b16/b32/b64 loader shell is decoded statically, but a payload it fe
 | **JS chain catalog** | <!-- m:js_catalog_entries -->10<!-- /m --> | 4 obfuscators (obfuscator.io full pipeline, JS-Confuser, Jscrambler, js-obfuscator (jsobfu)) plus 6 bundler markers (webpack, Vite, Rollup, esbuild, Turbopack, Bun) |
 | **JS esoteric encoders + protectors** | separate detectors | JSFuck, aaencode, jjencode, JSFiretruck, Dean Edwards Packer (decoded); JSDefender and Arxan / Digital.ai (detect + static-transform peel); PACE (detect-only) |
 | **JS bundlers (unbundler)** | <!-- m:js_bundlers -->11<!-- /m --> | webpack 4, webpack 5, Vite, Rollup, Rolldown, esbuild, Turbopack, Bun, Parcel, Browserify, SystemJS |
-| **WASM obfuscators** | <!-- m:wasm_catalog_entries -->5<!-- /m --> (catalog) | Jscrambler-WASM, Wobfuscator, Tigress-via-Emscripten, Wasmixer (4 reversed); wasm-name-obfuscator is detect + classify only, because its hex renames destroy the original names |
+| **WASM obfuscators** | <!-- m:wasm_catalog_entries -->5<!-- /m --> (catalog) | Jscrambler-WASM, Wobfuscator, Tigress-via-Emscripten, Wasmixer (4 with transforms undone on modelled output, no artifact from the tools themselves is committed); wasm-name-obfuscator is detect + classify only, because its hex renames destroy the original names |
 
 The [JS](./languages/javascript.md) and [WebAssembly](./languages/wasm.md) guides cover each pipeline.
 
