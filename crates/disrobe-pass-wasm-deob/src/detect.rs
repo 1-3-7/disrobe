@@ -15,6 +15,37 @@ pub enum WasmObfuscator {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WasmRecovery {
+    Reversed,
+    DetectAndClassifyOnly,
+}
+
+impl WasmObfuscator {
+    pub const NAMED_FAMILIES: [Self; 5] = [
+        Self::JscramblerWasm,
+        Self::Wobfuscator,
+        Self::TigressEmscripten,
+        Self::WasmMixer,
+        Self::WasmNameObfuscator,
+    ];
+
+    pub const fn recovery(self) -> Option<WasmRecovery> {
+        match self {
+            Self::None | Self::Unknown => None,
+            Self::WasmNameObfuscator => Some(WasmRecovery::DetectAndClassifyOnly),
+            Self::JscramblerWasm
+            | Self::Wobfuscator
+            | Self::TigressEmscripten
+            | Self::WasmMixer => Some(WasmRecovery::Reversed),
+        }
+    }
+
+    pub const fn is_named_family(self) -> bool {
+        self.recovery().is_some()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct WasmDetection {
     pub obfuscator: WasmObfuscator,
@@ -306,5 +337,50 @@ mod tests {
             classify(&exports, &[], &[], false, false, 500, &mut Vec::new());
         assert_eq!(kind, WasmObfuscator::WasmMixer);
         assert!(conf > 0.7);
+    }
+
+    #[test]
+    fn named_family_roster_and_classifier_agree() {
+        for family in WasmObfuscator::NAMED_FAMILIES {
+            assert!(
+                family.is_named_family(),
+                "{family:?} is listed in NAMED_FAMILIES but recovery() classifies it as not a family"
+            );
+        }
+        for stray in [WasmObfuscator::None, WasmObfuscator::Unknown] {
+            assert!(
+                !stray.is_named_family(),
+                "{stray:?} is a detection sentinel, not an obfuscator family"
+            );
+            assert!(
+                !WasmObfuscator::NAMED_FAMILIES.contains(&stray),
+                "{stray:?} must never enter the published family roster"
+            );
+        }
+        let mut seen: Vec<WasmObfuscator> =
+            Vec::with_capacity(WasmObfuscator::NAMED_FAMILIES.len());
+        for family in WasmObfuscator::NAMED_FAMILIES {
+            assert!(
+                !seen.contains(&family),
+                "{family:?} appears twice in NAMED_FAMILIES, which would inflate every count \
+                 derived from it"
+            );
+            seen.push(family);
+        }
+    }
+
+    #[test]
+    fn only_the_name_obfuscator_is_detect_and_classify_only() {
+        let detect_only: Vec<WasmObfuscator> = WasmObfuscator::NAMED_FAMILIES
+            .into_iter()
+            .filter(|f: &WasmObfuscator| f.recovery() == Some(WasmRecovery::DetectAndClassifyOnly))
+            .collect();
+        assert_eq!(
+            detect_only,
+            vec![WasmObfuscator::WasmNameObfuscator],
+            "hex renames destroy the original names, so wasm-name-obfuscator is the one family \
+             this crate detects and classifies without reversing; any other family joining it \
+             lowers the published reverser count"
+        );
     }
 }

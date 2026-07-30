@@ -211,14 +211,7 @@ fn recover_for_detection(
 }
 
 const fn is_named_obfuscator(obf: WasmObfuscator) -> bool {
-    matches!(
-        obf,
-        WasmObfuscator::WasmMixer
-            | WasmObfuscator::Wobfuscator
-            | WasmObfuscator::WasmNameObfuscator
-            | WasmObfuscator::JscramblerWasm
-            | WasmObfuscator::TigressEmscripten
-    )
+    obf.is_named_family()
 }
 
 fn lift_to_wat(bytes: &[u8]) -> CoreResult<String> {
@@ -623,6 +616,36 @@ mod tests {
         for e in &entries {
             assert!(!e.id().is_empty());
             assert!(!e.display_name().is_empty());
+        }
+    }
+
+    #[test]
+    fn catalog_entries_are_exactly_the_named_family_roster() {
+        assert_eq!(
+            CATALOG_COUNT,
+            WasmObfuscator::NAMED_FAMILIES.len(),
+            "the chain catalog feeds the published wasm_catalog_entries figure and the family \
+             roster in detect.rs feeds the published reverser count; they must describe the same \
+             population",
+        );
+        for family in WasmObfuscator::NAMED_FAMILIES {
+            assert!(
+                CATALOG
+                    .iter()
+                    .any(|e: &WasmObfuscatorEntry| e.obfuscator == family),
+                "{family:?} is in the family roster but has no catalog entry, so `disrobe catalog` \
+                 would under-report it",
+            );
+        }
+        for entry in &CATALOG {
+            assert!(
+                entry.obfuscator.is_named_family(),
+                "catalog entry {} carries {:?}, which the roster does not treat as a family",
+                entry.id,
+                entry.obfuscator,
+            );
+            assert!(!entry.id.is_empty());
+            assert!(!entry.display_name.is_empty());
         }
     }
 

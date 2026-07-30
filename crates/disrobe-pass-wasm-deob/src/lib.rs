@@ -70,7 +70,7 @@ pub use custom_page_sizes::{
     CustomPageSizeRecord, CustomPageSizeReport, DEFAULT_PAGE_SIZE_BYTES, DEFAULT_PAGE_SIZE_LOG2,
     scan_custom_page_sizes,
 };
-pub use detect::{WasmDetection, WasmObfuscator, detect};
+pub use detect::{WasmDetection, WasmObfuscator, WasmRecovery, detect};
 pub use eh::{
     EhConstruct, EhFunctionSummary, EhModuleSummary, EhTagSummary, lift_tag_to_rust_result,
     scan_module as scan_module_eh,
