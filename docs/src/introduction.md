@@ -38,7 +38,7 @@ Every figure below is produced by a committed test gate or a local measurement h
 
 | Ecosystem | Measured | Oracle |
 |---|---|---|
-| Python bytecode | <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per-code-object equivalence on the full CPython 3.14 stdlib (<!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m -->); <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> on the pinned 200-module corpus (<!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m -->) | recompile on CPython 3.14.5, opcode diff |
+| Python bytecode | <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per-code-object equivalence on the full CPython 3.14 stdlib (<!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m -->); <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> on the pinned 200-module corpus (<!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m -->). Whole-module exact, where a module counts only if all of its code objects pass: 54.5% on the pinned corpus | recompile on CPython 3.14.5, opcode diff |
 | CPython legacy 1.0-3.7 | <!-- m:py_legacy_count -->150 of 191<!-- /m --> proven-correct (CI floor); <!-- m:py_legacy_local_count -->166 of 191<!-- /m --> measured locally | recompile-equivalence or structural token-match |
 | WebAssembly | 133 of 133 corpus functions op-covered across the 38 parseable modules; 57 of 57 execution-eligible functions equivalent | execution differential under wasmtime |
 | JVM classfile | <!-- m:jvm_per_method_count -->131 of 131<!-- /m --> methods recompile error-free | real `javac` |
