@@ -78,7 +78,10 @@ pub struct SurfacedSecret {
     pub container_path: String,
     pub code: String,
     pub kind: String,
-    pub redacted_preview: String,
+    pub value: String,
+    #[serde(alias = "redacted_preview")]
+    pub preview: String,
+    pub offset: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -496,7 +499,7 @@ fn scan_text(
     endpoints: &mut Vec<SurfacedEndpoint>,
 ) {
     for f in scan_bytes(raw, Some(container_path)) {
-        push_secret(container_path, &f, secrets);
+        push_secret(container_path, Some(f.offset), &f, secrets);
     }
     for ind in ioc_extract(raw) {
         if ind.kind.is_network() {
@@ -514,7 +517,7 @@ fn scan_arsc_values(
     let joined: String = table.value_strings.join("\n");
     let raw: &[u8] = joined.as_bytes();
     for f in scan_bytes(raw, Some(container_path)) {
-        push_secret(container_path, &f, secrets);
+        push_secret(container_path, None, &f, secrets);
     }
     for ind in ioc_extract(raw) {
         if ind.kind.is_network() {
@@ -695,12 +698,19 @@ fn embedded_dex_len(raw: &[u8], offset: usize, xor_key: Option<u8>) -> Option<us
     }
 }
 
-fn push_secret(container_path: &str, f: &Finding, out: &mut Vec<SurfacedSecret>) {
+fn push_secret(
+    container_path: &str,
+    offset: Option<usize>,
+    f: &Finding,
+    out: &mut Vec<SurfacedSecret>,
+) {
     out.push(SurfacedSecret {
         container_path: container_path.to_owned(),
         code: f.code.clone(),
         kind: format!("{:?}", f.kind),
-        redacted_preview: f.preview.clone(),
+        value: f.value.clone(),
+        preview: f.preview.clone(),
+        offset,
     });
 }
 
@@ -738,12 +748,11 @@ fn dedup_secrets(out: &mut Vec<SurfacedSecret>) {
         a.container_path
             .cmp(&b.container_path)
             .then_with(|| a.code.cmp(&b.code))
-            .then_with(|| a.redacted_preview.cmp(&b.redacted_preview))
+            .then_with(|| a.value.cmp(&b.value))
+            .then_with(|| a.offset.cmp(&b.offset))
     });
     out.dedup_by(|a: &mut SurfacedSecret, b: &mut SurfacedSecret| {
-        a.container_path == b.container_path
-            && a.code == b.code
-            && a.redacted_preview == b.redacted_preview
+        a.container_path == b.container_path && a.code == b.code && a.value == b.value
     });
 }
 

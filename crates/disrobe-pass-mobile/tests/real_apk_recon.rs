@@ -3,7 +3,9 @@
 use std::io::{Cursor, Write as _};
 use std::path::PathBuf;
 
-use disrobe_pass_mobile::apk_recon::{AppProtector, ProtectorArtifactKind, RouteTarget, analyze};
+use disrobe_pass_mobile::apk_recon::{
+    AppProtector, ProtectorArtifactKind, RouteTarget, SurfacedSecret, analyze,
+};
 use disrobe_pass_mobile::pass::extract_android_dex_children;
 use zip::write::SimpleFileOptions;
 
@@ -102,6 +104,16 @@ fn clean_apk_with_no_secrets_yields_nothing() {
     );
 }
 
+fn real_manifest_bytes() -> Vec<u8> {
+    let apk: Vec<u8> = read_fixture("corpus/apk/fixture-v1-signed.apk");
+    let cur: Cursor<&[u8]> = Cursor::new(apk.as_slice());
+    let mut z = zip::ZipArchive::new(cur).expect("open");
+    let mut f = z.by_name("AndroidManifest.xml").expect("manifest");
+    let mut b: Vec<u8> = Vec::new();
+    std::io::Read::read_to_end(&mut f, &mut b).expect("read");
+    b
+}
+
 fn zip_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
     let cursor: Cursor<Vec<u8>> = Cursor::new(Vec::new());
     let mut zw: zip::ZipWriter<Cursor<Vec<u8>>> = zip::ZipWriter::new(cursor);
@@ -125,15 +137,7 @@ fn dex_blob(payload: &[u8]) -> Vec<u8> {
 
 #[test]
 fn embedded_secret_and_endpoint_are_surfaced() {
-    let manifest_xml: Vec<u8> = read_fixture("corpus/apk/fixture-v1-signed.apk");
-    let real_manifest: Vec<u8> = {
-        let cur: Cursor<&[u8]> = Cursor::new(manifest_xml.as_slice());
-        let mut z = zip::ZipArchive::new(cur).expect("open");
-        let mut f = z.by_name("AndroidManifest.xml").expect("manifest");
-        let mut b: Vec<u8> = Vec::new();
-        std::io::Read::read_to_end(&mut f, &mut b).expect("read");
-        b
-    };
+    let real_manifest: Vec<u8> = real_manifest_bytes();
 
     let config: &[u8] =
         b"{\"api\":\"https://api.evil.example.com/v1/track\",\"aws\":\"AKIA4ZXCV7QWPLMN2BGT\"}";
@@ -178,15 +182,7 @@ fn embedded_secret_and_endpoint_are_surfaced() {
 
 #[test]
 fn clean_control_apk_without_planted_data_yields_nothing() {
-    let real_manifest: Vec<u8> = {
-        let apk: Vec<u8> = read_fixture("corpus/apk/fixture-v1-signed.apk");
-        let cur: Cursor<&[u8]> = Cursor::new(apk.as_slice());
-        let mut z = zip::ZipArchive::new(cur).expect("open");
-        let mut f = z.by_name("AndroidManifest.xml").expect("manifest");
-        let mut b: Vec<u8> = Vec::new();
-        std::io::Read::read_to_end(&mut f, &mut b).expect("read");
-        b
-    };
+    let real_manifest: Vec<u8> = real_manifest_bytes();
     let benign: &[u8] = b"{\"theme\":\"dark\",\"count\":3,\"label\":\"hello world\"}";
     let apk: Vec<u8> = zip_of(&[
         ("AndroidManifest.xml", &real_manifest),
@@ -204,15 +200,7 @@ fn clean_control_apk_without_planted_data_yields_nothing() {
 
 #[test]
 fn commercial_shield_walls_honestly() {
-    let real_manifest: Vec<u8> = {
-        let apk: Vec<u8> = read_fixture("corpus/apk/fixture-v1-signed.apk");
-        let cur: Cursor<&[u8]> = Cursor::new(apk.as_slice());
-        let mut z = zip::ZipArchive::new(cur).expect("open");
-        let mut f = z.by_name("AndroidManifest.xml").expect("manifest");
-        let mut b: Vec<u8> = Vec::new();
-        std::io::Read::read_to_end(&mut f, &mut b).expect("read");
-        b
-    };
+    let real_manifest: Vec<u8> = real_manifest_bytes();
     let elf_so: &[u8] = &[0x7f, b'E', b'L', b'F', 2, 1, 1, 0];
     let embedded_dex: Vec<u8> = dex_blob(b"payload");
     let mut packed_payload: Vec<u8> = b"wrapped:".to_vec();
@@ -269,15 +257,7 @@ fn commercial_shield_walls_honestly() {
 
 #[test]
 fn commercial_shield_xor_payload_extracts_real_child_dex() {
-    let real_manifest: Vec<u8> = {
-        let apk: Vec<u8> = read_fixture("corpus/apk/fixture-v1-signed.apk");
-        let cur: Cursor<&[u8]> = Cursor::new(apk.as_slice());
-        let mut z = zip::ZipArchive::new(cur).expect("open");
-        let mut f = z.by_name("AndroidManifest.xml").expect("manifest");
-        let mut b: Vec<u8> = Vec::new();
-        std::io::Read::read_to_end(&mut f, &mut b).expect("read");
-        b
-    };
+    let real_manifest: Vec<u8> = real_manifest_bytes();
     let clean_dex: Vec<u8> = dex_blob(b"xor-payload");
     let encrypted_payload: Vec<u8> = clean_dex.iter().map(|b: &u8| *b ^ 0x5a).collect();
     let apk: Vec<u8> = zip_of(&[
@@ -314,5 +294,64 @@ fn commercial_shield_xor_payload_extracts_real_child_dex() {
         child.1.as_slice(),
         clean_dex.as_slice(),
         "decoded child dex must be byte-exact"
+    );
+}
+
+#[test]
+fn two_distinct_keys_in_one_asset_survive_with_whole_values() {
+    let first: String = format!("{}{}", "AKIA", "2QWERTYUIOPLKJHG");
+    let second: String = format!("{}{}", "AKIA", "9ZXCVBNMASDFGHJK");
+    let config: String = format!("{{\"primary\":\"{first}\",\"fallback\":\"{second}\"}}");
+    let apk: Vec<u8> = zip_of(&[
+        ("AndroidManifest.xml", &real_manifest_bytes()),
+        ("classes.dex", b"dex\n035\0"),
+        ("assets/config.json", config.as_bytes()),
+    ]);
+
+    let report = analyze(&apk).expect("analyze");
+    let keys: Vec<&SurfacedSecret> = report
+        .secrets
+        .iter()
+        .filter(|s: &&SurfacedSecret| {
+            s.container_path == "assets/config.json" && s.kind == "AwsAccessKeyId"
+        })
+        .collect();
+
+    assert_eq!(
+        keys.len(),
+        2,
+        "two different access key ids in one file must stay two findings: {:?}",
+        report.secrets
+    );
+    let previews: Vec<&str> = keys
+        .iter()
+        .map(|s: &&SurfacedSecret| s.preview.as_str())
+        .collect();
+    assert_eq!(
+        previews[0], previews[1],
+        "the fixture only detects a preview-keyed merge while both previews are indistinguishable: {previews:?}"
+    );
+    let values: Vec<&str> = keys
+        .iter()
+        .map(|s: &&SurfacedSecret| s.value.as_str())
+        .collect();
+    assert!(
+        values.contains(&first.as_str()) && values.contains(&second.as_str()),
+        "each finding must keep its own whole value: {values:?}"
+    );
+    for s in &keys {
+        let offset: usize = s.offset.expect("byte offset into the scanned entry");
+        let end: usize = offset + s.value.len();
+        assert_eq!(
+            config.as_bytes().get(offset..end),
+            Some(s.value.as_bytes()),
+            "offset must locate the value inside assets/config.json: {s:?}"
+        );
+    }
+
+    let wire: String = serde_json::to_string(&report).expect("serialize report");
+    assert!(
+        wire.contains(first.as_str()) && wire.contains(second.as_str()),
+        "the emitted report must carry both values in full, not a prefix: {wire}"
     );
 }
