@@ -27,17 +27,17 @@ const WHOLE_BODY_POPULATION_PERMILLE: u32 = 1000;
 
 const REAL_APK_METHOD_TOTAL: usize = 89_516;
 
-const SELF_REPORTED_BODY_FLOOR: usize = 82_788;
+const SELF_REPORTED_BODIES: usize = 82_788;
 
-const CANDIDATE_BODY_FLOOR: usize = 82_756;
+const CANDIDATE_BODIES: usize = 82_756;
 
-const SAMPLED_BODY_FLOOR: usize = 8_343;
+const SAMPLED_BODIES: usize = 8_343;
 
 const ATTESTED_PRESENTED: usize = 2_994;
 
-const ATTESTED_CLEAN_FLOOR: usize = 2_960;
+const ATTESTED_CLEAN: usize = 2_960;
 
-const ATTESTED_FAIL_CEILING: usize = 34;
+const ATTESTED_REJECTED: usize = 34;
 
 struct BodyAttest {
     self_reported_bodies: usize,
@@ -189,28 +189,30 @@ fn realworld_dalvik_body_lowering_is_verifier_attested() {
              at {}; a different input is being measured under the published figure",
             apk.file, attest.method_total, apk.method_total
         );
-        assert!(
-            attest.self_reported_bodies >= apk.self_reported_bodies_floor,
-            "{}: the lifter self-reports {}/{} lowered bodies, below the pinned {}/{}",
+        assert_eq!(
+            attest.self_reported_bodies,
+            apk.self_reported_bodies_pinned,
+            "{}: the lifter self-reports {}/{} lowered bodies against the pinned {}/{}. The apk is a \
+             fixed file and the translation is deterministic, so this count cannot move on its own: \
+             fewer is a regression and more is an improvement the published figure has to state",
             apk.file,
             attest.self_reported_bodies,
             attest.method_total,
-            apk.self_reported_bodies_floor,
+            apk.self_reported_bodies_pinned,
             apk.method_total
         );
-        assert!(
-            attest.candidate_bodies >= apk.candidate_bodies_floor,
-            "{}: {} non-stub candidate bodies reached the sampler, below the pinned {}",
-            apk.file,
-            attest.candidate_bodies,
-            apk.candidate_bodies_floor
+        assert_eq!(
+            attest.candidate_bodies, apk.candidate_bodies_pinned,
+            "{}: {} non-stub candidate bodies reached the sampler against the pinned {}; the \
+             sampler's input population fixes which bodies the published ratio can cover",
+            apk.file, attest.candidate_bodies, apk.candidate_bodies_pinned
         );
-        assert!(
-            attest.sampled_bodies >= apk.sampled_bodies_floor,
-            "{}: the {SAMPLE_PERMILLE}-permille sample selected {} bodies, below the pinned {}",
-            apk.file,
-            attest.sampled_bodies,
-            apk.sampled_bodies_floor
+        assert_eq!(
+            attest.sampled_bodies, apk.sampled_bodies_pinned,
+            "{}: the {SAMPLE_PERMILLE}-permille sample selected {} bodies against the pinned {}; the \
+             selection is a hash of each body's own name, so it is the same set every run and a \
+             different size means the population underneath it moved",
+            apk.file, attest.sampled_bodies, apk.sampled_bodies_pinned
         );
         assert_eq!(
             attest.presented,
@@ -229,21 +231,23 @@ fn realworld_dalvik_body_lowering_is_verifier_attested() {
              leaving the old one beside a different population",
             apk.file, attest.presented, apk.presented_bodies
         );
-        assert!(
-            attest.clean >= apk.attested_clean_floor,
-            "{}: the real jvm verifier accepted {}/{} re-hosted bodies, below the pinned {}/{}",
+        assert_eq!(
+            attest.clean,
+            apk.attested_clean_pinned,
+            "{}: the real jvm verifier accepted {}/{} re-hosted bodies against the pinned {}/{}; \
+             every input to this figure is fixed, so it is an equality and not a floor, and a floor \
+             is what lets the truth climb past the number the documents state",
             apk.file,
             attest.clean,
             attest.presented,
-            apk.attested_clean_floor,
+            apk.attested_clean_pinned,
             apk.presented_bodies
         );
-        assert!(
-            attest.fail <= apk.attested_fail_ceiling,
-            "{}: the real jvm verifier rejected {} re-hosted bodies, above the pinned ceiling {}",
-            apk.file,
-            attest.fail,
-            apk.attested_fail_ceiling
+        assert_eq!(
+            attest.fail, apk.attested_rejected_pinned,
+            "{}: the real jvm verifier rejected {} re-hosted bodies against the pinned {}; a \
+             rejection that disappears is a fix the attested figure has to state",
+            apk.file, attest.fail, apk.attested_rejected_pinned
         );
         total_clean += attest.clean;
         total_fail += attest.fail;
@@ -274,30 +278,31 @@ fn realworld_dalvik_body_lowering_is_verifier_attested() {
         "{total_presented} recovered bodies reached the real jvm verifier but the published \
          attested denominator is pinned at {ATTESTED_PRESENTED}"
     );
-    assert!(
-        total_candidates >= CANDIDATE_BODY_FLOOR,
-        "{total_candidates} non-stub candidate bodies reached the sampler, below the pinned \
-         {CANDIDATE_BODY_FLOOR}"
+    assert_eq!(
+        total_candidates, CANDIDATE_BODIES,
+        "{total_candidates} non-stub candidate bodies reached the sampler against the pinned \
+         {CANDIDATE_BODIES}"
     );
-    assert!(
-        total_sampled >= SAMPLED_BODY_FLOOR,
-        "the deterministic sample selected {total_sampled} bodies, below the pinned \
-         {SAMPLED_BODY_FLOOR}"
+    assert_eq!(
+        total_sampled, SAMPLED_BODIES,
+        "the deterministic sample selected {total_sampled} bodies against the pinned \
+         {SAMPLED_BODIES}"
     );
-    assert!(
-        total_fail <= ATTESTED_FAIL_CEILING,
-        "the real jvm verifier rejected {total_fail} re-hosted real-apk bodies, above the pinned \
-         ceiling {ATTESTED_FAIL_CEILING}"
+    assert_eq!(
+        total_fail, ATTESTED_REJECTED,
+        "the real jvm verifier rejected {total_fail} re-hosted real-apk bodies against the pinned \
+         {ATTESTED_REJECTED}"
     );
-    assert!(
-        total_clean >= ATTESTED_CLEAN_FLOOR,
-        "verifier-attested real-apk bodies {total_clean}/{total_presented} fell below the pinned \
-         {ATTESTED_CLEAN_FLOOR}/{ATTESTED_PRESENTED}"
+    assert_eq!(
+        total_clean, ATTESTED_CLEAN,
+        "verifier-attested real-apk bodies {total_clean}/{total_presented} against the pinned \
+         {ATTESTED_CLEAN}/{ATTESTED_PRESENTED}. Nothing feeding this number varies between runs, so \
+         a change either way has to reach the bar this gate binds"
     );
-    assert!(
-        total_self >= SELF_REPORTED_BODY_FLOOR,
-        "self-reported recovered bodies {total_self}/{total_methods} fell below the pinned \
-         {SELF_REPORTED_BODY_FLOOR}/{REAL_APK_METHOD_TOTAL}"
+    assert_eq!(
+        total_self, SELF_REPORTED_BODIES,
+        "self-reported recovered bodies {total_self}/{total_methods} against the pinned \
+         {SELF_REPORTED_BODIES}/{REAL_APK_METHOD_TOTAL}"
     );
 }
 
@@ -350,15 +355,15 @@ fn dalvik_body_attest_bar_matches_the_pins_this_gate_enforces() {
     let methods: usize = REAL_APKS.iter().map(|apk: &RealApk| apk.method_total).sum();
     let bodies: usize = REAL_APKS
         .iter()
-        .map(|apk: &RealApk| apk.self_reported_bodies_floor)
+        .map(|apk: &RealApk| apk.self_reported_bodies_pinned)
         .sum();
     let candidates: usize = REAL_APKS
         .iter()
-        .map(|apk: &RealApk| apk.candidate_bodies_floor)
+        .map(|apk: &RealApk| apk.candidate_bodies_pinned)
         .sum();
     let sampled: usize = REAL_APKS
         .iter()
-        .map(|apk: &RealApk| apk.sampled_bodies_floor)
+        .map(|apk: &RealApk| apk.sampled_bodies_pinned)
         .sum();
     let presented: usize = REAL_APKS
         .iter()
@@ -366,30 +371,26 @@ fn dalvik_body_attest_bar_matches_the_pins_this_gate_enforces() {
         .sum();
     let clean: usize = REAL_APKS
         .iter()
-        .map(|apk: &RealApk| apk.attested_clean_floor)
+        .map(|apk: &RealApk| apk.attested_clean_pinned)
         .sum();
     let rejected: usize = REAL_APKS
         .iter()
-        .map(|apk: &RealApk| apk.attested_fail_ceiling)
+        .map(|apk: &RealApk| apk.attested_rejected_pinned)
         .sum();
     assert_eq!(
         (methods, bodies, candidates, sampled),
         (
             REAL_APK_METHOD_TOTAL,
-            SELF_REPORTED_BODY_FLOOR,
-            CANDIDATE_BODY_FLOOR,
-            SAMPLED_BODY_FLOOR
+            SELF_REPORTED_BODIES,
+            CANDIDATE_BODIES,
+            SAMPLED_BODIES
         ),
         "the per-apk pins in common::REAL_APKS no longer sum to the corpus totals this file \
          publishes, so one apk could regress while the total held"
     );
     assert_eq!(
         (presented, clean, rejected),
-        (
-            ATTESTED_PRESENTED,
-            ATTESTED_CLEAN_FLOOR,
-            ATTESTED_FAIL_CEILING
-        ),
+        (ATTESTED_PRESENTED, ATTESTED_CLEAN, ATTESTED_REJECTED),
         "the per-apk verifier-attested pins no longer sum to the corpus totals this file publishes"
     );
     assert!(
@@ -407,18 +408,15 @@ fn dalvik_body_attest_bar_matches_the_pins_this_gate_enforces() {
     let attested_den: u64 = required_count(bar, "attested_den");
     assert_eq!(
         (num, den),
-        (
-            SELF_REPORTED_BODY_FLOOR as u64,
-            REAL_APK_METHOD_TOTAL as u64
-        ),
+        (SELF_REPORTED_BODIES as u64, REAL_APK_METHOD_TOTAL as u64),
         "recovery.json publishes {num}/{den} self-reported lowered bodies but this gate pins \
-         {SELF_REPORTED_BODY_FLOOR}/{REAL_APK_METHOD_TOTAL}"
+         {SELF_REPORTED_BODIES}/{REAL_APK_METHOD_TOTAL}"
     );
     assert_eq!(
         (attested_num, attested_den),
-        (ATTESTED_CLEAN_FLOOR as u64, ATTESTED_PRESENTED as u64),
+        (ATTESTED_CLEAN as u64, ATTESTED_PRESENTED as u64),
         "recovery.json publishes {attested_num}/{attested_den} verifier-attested bodies but this \
-         gate pins {ATTESTED_CLEAN_FLOOR}/{ATTESTED_PRESENTED}"
+         gate pins {ATTESTED_CLEAN}/{ATTESTED_PRESENTED}"
     );
     assert_ne!(
         (attested_num, attested_den),
@@ -445,11 +443,11 @@ fn dalvik_body_attest_bar_matches_the_pins_this_gate_enforces() {
             [
                 format!(
                     "{} {} of {}",
-                    apk.short, apk.self_reported_bodies_floor, apk.method_total
+                    apk.short, apk.self_reported_bodies_pinned, apk.method_total
                 ),
                 format!(
                     "{} {} of {}",
-                    apk.short, apk.attested_clean_floor, apk.presented_bodies
+                    apk.short, apk.attested_clean_pinned, apk.presented_bodies
                 ),
             ]
             .into_iter()
@@ -458,11 +456,11 @@ fn dalvik_body_attest_bar_matches_the_pins_this_gate_enforces() {
     }
     unstated.extend(
         [
-            format!("{SELF_REPORTED_BODY_FLOOR} of {REAL_APK_METHOD_TOTAL}"),
-            format!("{ATTESTED_CLEAN_FLOOR} of {ATTESTED_PRESENTED}"),
-            format!("{CANDIDATE_BODY_FLOOR} non-stub candidate bodies"),
-            SAMPLED_BODY_FLOOR.to_string(),
-            (SAMPLED_BODY_FLOOR - ATTESTED_PRESENTED).to_string(),
+            format!("{SELF_REPORTED_BODIES} of {REAL_APK_METHOD_TOTAL}"),
+            format!("{ATTESTED_CLEAN} of {ATTESTED_PRESENTED}"),
+            format!("{CANDIDATE_BODIES} non-stub candidate bodies"),
+            SAMPLED_BODIES.to_string(),
+            (SAMPLED_BODIES - ATTESTED_PRESENTED).to_string(),
             "ungraded".to_string(),
         ]
         .into_iter()
