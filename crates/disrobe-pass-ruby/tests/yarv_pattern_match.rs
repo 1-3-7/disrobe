@@ -6,19 +6,27 @@
     clippy::literal_string_with_formatting_args
 )]
 
+#[path = "support/ruby_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod ruby_toolchain;
+
 use std::path::PathBuf;
 use std::process::Command;
 
 use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::analyze_bytes;
+use ruby_toolchain::require_mri_measured_series;
 
-fn ruby_pattern_oracle_available() -> bool {
-    let Ok(out): Result<std::process::Output, std::io::Error> =
-        Command::new("ruby").arg("--version").output()
-    else {
-        return false;
-    };
-    out.status.success() && String::from_utf8_lossy(&out.stdout).contains("ruby 3.4")
+const GRADED: &str = "the case/in pattern reconstruction from real yarv images";
+
+fn recovered_or_fail(source: &str, tag: &str) -> String {
+    recover(source, tag).unwrap_or_else(|| {
+        panic!(
+            "ruby is usable here but could not compile the {tag} pattern source into a yarv image, \
+             so this case compared nothing; an interpreter that is present and then fails to build \
+             the input is a defect, never a skip"
+        )
+    })
 }
 
 fn compile_to_yarb(source: &str, tag: &str) -> Option<Vec<u8>> {
@@ -108,17 +116,11 @@ fn opcode_multiset_pct(original: &str, recovered: &str, tag: &str) -> Option<u32
 
 #[test]
 fn array_pattern_recovers_bracket_bindings_from_real_yarv() {
-    if !ruby_pattern_oracle_available() {
-        eprintln!(
-            "skip: pattern-match oracle needs ruby 3.4.x; its yarv pattern opcodes are version-specific"
-        );
+    if require_mri_measured_series(GRADED).is_none() {
         return;
     }
     let source: &str = "arr = [1, 2]\ncase arr\nin [a, b]\n  puts a\nend\n";
-    let Some(src): Option<String> = recover(source, "array") else {
-        eprintln!("skip: ruby could not compile the pattern source");
-        return;
-    };
+    let src: String = recovered_or_fail(source, "array");
     assert!(src.contains("case arr"), "expected `case arr`, got:\n{src}");
     assert!(
         src.contains("in [a, b]"),
@@ -141,17 +143,11 @@ fn array_pattern_recovers_bracket_bindings_from_real_yarv() {
 
 #[test]
 fn hash_pattern_recovers_brace_bindings_from_real_yarv() {
-    if !ruby_pattern_oracle_available() {
-        eprintln!(
-            "skip: pattern-match oracle needs ruby 3.4.x; its yarv pattern opcodes are version-specific"
-        );
+    if require_mri_measured_series(GRADED).is_none() {
         return;
     }
     let source: &str = "h = {name: 1}\ncase h\nin {name:}\n  puts name\nend\n";
-    let Some(src): Option<String> = recover(source, "hash") else {
-        eprintln!("skip: ruby could not compile the pattern source");
-        return;
-    };
+    let src: String = recovered_or_fail(source, "hash");
     assert!(src.contains("case h"), "expected case h, got:\n{src}");
     assert!(
         src.contains("in {name:}"),
@@ -165,18 +161,12 @@ fn hash_pattern_recovers_brace_bindings_from_real_yarv() {
 
 #[test]
 fn mixed_array_and_hash_arms_both_reconstruct_from_real_yarv() {
-    if !ruby_pattern_oracle_available() {
-        eprintln!(
-            "skip: pattern-match oracle needs ruby 3.4.x; its yarv pattern opcodes are version-specific"
-        );
+    if require_mri_measured_series(GRADED).is_none() {
         return;
     }
     let source: &str =
         "arr = [1, 2]\ncase arr\nin [a, b]\n  puts a\nin {name:}\n  puts name\nend\n";
-    let Some(src): Option<String> = recover(source, "mixed") else {
-        eprintln!("skip: ruby could not compile the pattern source");
-        return;
-    };
+    let src: String = recovered_or_fail(source, "mixed");
     assert!(
         src.contains("in [a, b]"),
         "expected the array arm `in [a, b]`, got:\n{src}"
@@ -217,14 +207,10 @@ const STRUCTURAL_GAUNTLET: &str = concat!(
 
 #[test]
 fn structural_pattern_gauntlet_recompiles_to_matching_opcode_multiset() {
-    if !ruby_pattern_oracle_available() {
-        eprintln!("skip: pattern-match oracle needs ruby 3.4.x");
+    if require_mri_measured_series(GRADED).is_none() {
         return;
     }
-    let Some(src): Option<String> = recover(STRUCTURAL_GAUNTLET, "gauntlet") else {
-        eprintln!("skip: ruby could not compile the gauntlet source");
-        return;
-    };
+    let src: String = recovered_or_fail(STRUCTURAL_GAUNTLET, "gauntlet");
 
     for needle in [
         "case value",
@@ -279,15 +265,11 @@ const CONST_DECONSTRUCT: &str = concat!(
 
 #[test]
 fn const_deconstruct_pattern_recompiles_to_matching_opcode_multiset() {
-    if !ruby_pattern_oracle_available() {
-        eprintln!("skip: pattern-match oracle needs ruby 3.4.x");
+    if require_mri_measured_series(GRADED).is_none() {
         return;
     }
     let prelude: String = format!("Point = Struct.new(:x, :y)\n{CONST_DECONSTRUCT}");
-    let Some(src): Option<String> = recover(&prelude, "constpat") else {
-        eprintln!("skip: ruby could not compile the const-pattern source");
-        return;
-    };
+    let src: String = recovered_or_fail(&prelude, "constpat");
     for needle in [
         "in Point(x:, y:) if x == y",
         "in Point(x: 0, y:)",

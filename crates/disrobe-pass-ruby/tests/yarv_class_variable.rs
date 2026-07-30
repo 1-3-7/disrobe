@@ -5,18 +5,18 @@
     clippy::print_stderr
 )]
 
+#[path = "support/ruby_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod ruby_toolchain;
+
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
 use disrobe_pass_ruby::{RubyAnalysis, YarvAnalysis, analyze_bytes};
+use ruby_toolchain::require_mri;
 
-fn ruby_available() -> bool {
-    Command::new("ruby")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
-}
+const GRADED: &str = "the class-variable recompile check";
 
 fn compile_to_ibf(src: &str) -> Option<Vec<u8>> {
     let mut child = Command::new("ruby")
@@ -49,10 +49,7 @@ fn opcode_multiset(bytes: &[u8]) -> BTreeMap<String, usize> {
 
 #[test]
 fn class_variable_reads_and_writes_survive_a_recompile() {
-    if !ruby_available() {
-        eprintln!(
-            "skip: ruby not on PATH; install ruby 3.4.x to run the class-variable recompile check"
-        );
+    if require_mri(GRADED).is_none() {
         return;
     }
     let src: &str = "class Registry\n  @@items = []\n  def self.push(x)\n    @@items = @@items + [x]\n    @@items\n  end\nend\n";

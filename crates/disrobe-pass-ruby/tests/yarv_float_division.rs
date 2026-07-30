@@ -6,11 +6,18 @@
     clippy::print_stdout
 )]
 
+#[path = "support/ruby_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod ruby_toolchain;
+
 use std::path::PathBuf;
 use std::process::Command;
 
 use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::{RubyAnalysis, YarvAnalysis, analyze_bytes};
+use ruby_toolchain::require_mri;
+
+const GRADED: &str = "the float-division value check over the recovered source";
 
 fn fixture_path(rel: &str) -> PathBuf {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -46,13 +53,6 @@ fn float_division_operands_recover_their_real_values() {
     );
 }
 
-fn ruby_available() -> bool {
-    Command::new("ruby")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
-}
-
 fn ruby_eval_stdout(source: &str) -> String {
     let (scratch, file): (ScratchFile, std::fs::File) =
         ScratchFile::create("disrobe_ruby_float_division_eval", "rb")
@@ -74,10 +74,7 @@ fn ruby_eval_stdout(source: &str) -> String {
 
 #[test]
 fn recovered_float_division_evaluates_to_the_same_values() {
-    if !ruby_available() {
-        eprintln!(
-            "skip: ruby not on PATH; install ruby 3.4.x to run the float-division value oracle"
-        );
+    if require_mri(GRADED).is_none() {
         return;
     }
     let original: String = std::fs::read_to_string(fixture_path("float_division.rb"))

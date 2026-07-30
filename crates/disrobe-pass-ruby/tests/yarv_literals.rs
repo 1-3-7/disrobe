@@ -5,11 +5,19 @@
     clippy::print_stderr
 )]
 
+#[path = "support/ruby_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod ruby_toolchain;
+
 use std::path::PathBuf;
 use std::process::Command;
 
 use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::analyze_bytes;
+use ruby_toolchain::require_mri;
+
+const LITERALS_YARVC: &str = "mri/yarv/literals.rb.yarvc";
+const GRADED: &str = "the literals recompile comparison against real ruby";
 
 fn corpus_dir() -> PathBuf {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -28,18 +36,27 @@ fn corpus_path(rel: &str) -> PathBuf {
     path
 }
 
-fn recovered_source(rel: &str) -> Option<String> {
-    let bytes: Vec<u8> = std::fs::read(corpus_path(rel)).ok()?;
-    let analysis = analyze_bytes(&bytes, rel).ok()?;
-    Some(analysis.yarv?.decompiled.source)
+fn recovered_source(rel: &str) -> String {
+    let path: PathBuf = corpus_path(rel);
+    let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|e: std::io::Error| {
+        panic!(
+            "corpus/ruby/{rel} is tracked in this repository but could not be read here ({e}); an \
+             absent or unreadable fixture is never a skip, because that is how a check stops \
+             comparing anything without saying so"
+        )
+    });
+    let analysis =
+        analyze_bytes(&bytes, rel).unwrap_or_else(|e| panic!("analyze corpus/ruby/{rel}: {e}"));
+    analysis
+        .yarv
+        .unwrap_or_else(|| panic!("corpus/ruby/{rel} produced no YARV analysis"))
+        .decompiled
+        .source
 }
 
 #[test]
 fn literals_iseq_recovers_immediates_collections_and_ranges() {
-    let Some(source): Option<String> = recovered_source("mri/yarv/literals.rb.yarvc") else {
-        eprintln!("skip: mri/yarv/literals.rb.yarvc fixture absent");
-        return;
-    };
+    let source: String = recovered_source(LITERALS_YARVC);
 
     assert!(
         !source.contains("obj["),
@@ -70,23 +87,12 @@ fn literals_iseq_recovers_immediates_collections_and_ranges() {
     );
 }
 
-fn ruby_available() -> bool {
-    Command::new("ruby")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
-}
-
 #[test]
 fn literals_iseq_recompiles_to_identical_opcode_multiset() {
-    if !ruby_available() {
-        eprintln!("skip: ruby not on PATH; install ruby 3.4.x for the non-circular oracle");
+    if require_mri(GRADED).is_none() {
         return;
     }
-    let Some(source): Option<String> = recovered_source("mri/yarv/literals.rb.yarvc") else {
-        eprintln!("skip: mri/yarv/literals.rb.yarvc fixture absent");
-        return;
-    };
+    let source: String = recovered_source(LITERALS_YARVC);
 
     let (scratch, file): (ScratchFile, std::fs::File) =
         ScratchFile::create("disrobe_yarv_literals_recovered", "rb")
