@@ -198,6 +198,7 @@ fn decompile_one(
             } else {
                 decompile_method_named(&header_sig, &folded_body, &namer, &names, lang)
             };
+            structured.token = m.token;
             if let Some(sm) = state_machine
                 && is_sm_move_next
             {
