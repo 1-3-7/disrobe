@@ -1517,8 +1517,9 @@ Emission then lowers the structured `Node` tree into the typed AST. `node_to_cst
 `CExpr::Ternary`, and `CExpr::Unary`. Every statement is rendered through `render_stmt`,
 which is the typed printer of Sections 2.2 and 2.3. The Rust emitter (`emit_rust`,
 `pseudo_c.rs`) walks the same structured tree and produces the pure-safe Rust subset,
-returning `None` for constructs it does not model as safe Rust (struct returns and block
-string operations), which is how the two targets stay independent while sharing one lift.
+returning `None` for constructs it does not model as safe Rust (struct returns, block
+string operations, and any vector operand or vector-typed signature), which is how the two targets
+stay independent while sharing one lift.
 
 The emitter is a hybrid: statement
 and top-level expression nodes are typed AST values, but some composite subexpression
@@ -1633,9 +1634,9 @@ the host-native class gated to Windows and the cross-platform System V floor car
 What the native leaf path does not do is equally on the record. It recovers single-exit leaf
 functions: the lifter requires a `ret` and treats a function it cannot reduce to a single
 structured exit as out of class. It targets x86-64 only. The Rust emitter is a strict subset
-of the C emitter; it declines struct-returning functions and block string operations by
-returning `None`, so a function can be C-recoverable without being in the pure-safe Rust
-class. Recovery of instructions outside the modeled set, of irreducible control flow, and of
+of the C emitter; it declines struct-returning functions, block string operations, and anything
+carrying a vector operand by returning `None`, so a function can be C-recoverable without being in
+the pure-safe Rust class. Recovery of instructions outside the modeled set, of irreducible control flow, and of
 anything the soundness guards reject is reported as `Err`, which the harness records as a
 skip. The path makes no claim to recover whole stripped programs, obfuscated or virtualized
 code, or functions whose behavior is not present in the static instruction stream. Its claim
@@ -2250,7 +2251,7 @@ The oracles are run under a three-operating-system matrix so that a platform-spe
 ```
 `.github/workflows/ci.yml`, the `check` job matrix
 
-The full test job runs on the same three-way matrix (`.github/workflows/ci.yml`, the `test` job matrix) with the language runtimes the differentials need provisioned in the environment, including CPython 3.8 through 3.14, Temurin JDK 25, Ruby 3.4, and the uv toolchain (`.github/workflows/ci.yml`, the `test` job provisioning steps). A separate `execution-differentials` job installs Lua 5.4, LuaJIT, luau, PHP 8.3 with opcache, and Node 24 so that the re-execution oracles run against genuine interpreters rather than stubs (`.github/workflows/ci.yml`, the `execution-differentials` job). Lint runs under `-D warnings` with `unreachable_pub`, `missing_debug_implementations`, and `unused` promoted to errors (`.github/workflows/ci.yml`, the `lint` job), and a minimum-supported-Rust job pins the toolchain to 1.95.0 so that a portability regression in the language edition is caught as well (`.github/workflows/ci.yml`, the `msrv` job).
+The full test job runs on the same three-way matrix (`.github/workflows/ci.yml`, the `test` job matrix) with the language runtimes the differentials need provisioned in the environment, including CPython 3.8 through 3.14, Temurin JDK 25, Ruby 3.4, and the uv toolchain (`.github/workflows/ci.yml`, the `test` job provisioning steps). A separate `execution-differentials` job installs Lua 5.4, LuaJIT, luau, PHP 8.3 with opcache, and Node 24 so that the re-execution oracles run against genuine interpreters rather than stubs (`.github/workflows/ci.yml`, the `execution-differentials` job). Lint runs under `-D warnings` with `unreachable_pub`, `missing_debug_implementations`, and `unused` promoted to errors (`.github/workflows/ci.yml`, the `clippy` job), and a minimum-supported-Rust job pins the toolchain to 1.95.0 so that a portability regression in the language edition is caught as well (`.github/workflows/ci.yml`, the `msrv` job).
 
 #### 4.4.2 Platform gates instead of platform lies
 
