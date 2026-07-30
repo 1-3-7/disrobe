@@ -356,7 +356,7 @@ fn writes_register_in(insns: &[DalvikInsn], reg: u16, start_idx: usize, before_i
 }
 
 #[must_use]
-fn writes_register(insn: &DalvikInsn, reg: u16) -> bool {
+pub(crate) fn writes_register(insn: &DalvikInsn, reg: u16) -> bool {
     if const_int_to(insn).map(|(dst, _): (u16, i32)| dst) == Some(reg) {
         return true;
     }
