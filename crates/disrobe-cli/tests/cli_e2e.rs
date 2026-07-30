@@ -782,13 +782,12 @@ console.log(msg);
 #[test]
 fn auto_native_deobf_json_surfaces_copyprop_and_mba_on_unpacked_image() {
     let packed: PathBuf = corpus_path("native/packers/aspack/Clockres.packed.aspack.exe");
-    if !packed.exists() {
-        eprintln!(
-            "skip: aspack Clockres fixture absent at {}",
-            packed.display()
-        );
-        return;
-    }
+    assert!(
+        packed.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        packed.display()
+    );
     let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("native-deobf-surface");
     let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     let r: Run = run_disrobe(&[
@@ -1451,9 +1450,12 @@ const APK_V2V3_SIGNER_SHA256: &str =
 #[test]
 fn mobile_recon_surfaces_the_signer_cert_fingerprint_on_a_signed_apk() {
     let apk: PathBuf = corpus_path("apk/fixture-v2v3-signed.apk");
-    if !apk.is_file() {
-        return;
-    }
+    assert!(
+        apk.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        apk.display()
+    );
     let r: Run = run_disrobe(&["mobile", "recon", apk.to_str().unwrap()]);
     assert_eq!(r.code, 0, "stderr: {}", r.stderr);
     assert!(
@@ -1471,9 +1473,12 @@ fn mobile_recon_surfaces_the_signer_cert_fingerprint_on_a_signed_apk() {
 #[test]
 fn mobile_recon_json_carries_the_signer_fingerprint_machine_clean() {
     let apk: PathBuf = corpus_path("apk/fixture-v2v3-signed.apk");
-    if !apk.is_file() {
-        return;
-    }
+    assert!(
+        apk.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        apk.display()
+    );
     let r: Run = run_disrobe(&["mobile", "recon", apk.to_str().unwrap(), "--json"]);
     assert_eq!(r.code, 0, "stderr: {}", r.stderr);
     let parsed: serde_json::Value =
@@ -1493,9 +1498,12 @@ fn mobile_recon_json_carries_the_signer_fingerprint_machine_clean() {
 #[test]
 fn jvm_retrace_maps_an_inlined_obfuscated_frame_to_the_original() {
     let mapping: PathBuf = corpus_path("jvm/proguard/mapping.txt");
-    if !mapping.is_file() {
-        return;
-    }
+    assert!(
+        mapping.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        mapping.display()
+    );
     let r: Run = run_disrobe(&[
         "jvm",
         "retrace",
@@ -1519,9 +1527,12 @@ fn jvm_retrace_maps_an_inlined_obfuscated_frame_to_the_original() {
 #[test]
 fn jvm_retrace_json_carries_the_retraced_frames() {
     let mapping: PathBuf = corpus_path("jvm/proguard/mapping.txt");
-    if !mapping.is_file() {
-        return;
-    }
+    assert!(
+        mapping.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        mapping.display()
+    );
     let r: Run = run_disrobe(&[
         "jvm",
         "retrace",
@@ -1582,9 +1593,12 @@ fn wasm_lift_gc_emits_reconstructed_gc_struct_and_array_types() {
 #[test]
 fn dotnet_recover_iterators_surfaces_the_move_next_bodies() {
     let dll: PathBuf = corpus_path("dotnet/constructs/Constructs.dll");
-    if !dll.is_file() {
-        return;
-    }
+    assert!(
+        dll.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        dll.display()
+    );
     let r: Run = run_disrobe(&[
         "dotnet",
         "decompile",
@@ -1607,9 +1621,12 @@ fn dotnet_recover_iterators_surfaces_the_move_next_bodies() {
 #[test]
 fn dotnet_recover_iterators_json_carries_yield_and_await_bodies() {
     let dll: PathBuf = corpus_path("dotnet/constructs/Constructs.dll");
-    if !dll.is_file() {
-        return;
-    }
+    assert!(
+        dll.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        dll.display()
+    );
     let r: Run = run_disrobe(&[
         "dotnet",
         "decompile",
@@ -1704,9 +1721,12 @@ fn go_fixture(name: &str) -> PathBuf {
 #[test]
 fn js_recover_sources_reconstructs_the_deployed_tree_byte_identical() {
     let bundle: PathBuf = corpus_path("js/esbuild/bundle.js");
-    if !bundle.is_file() {
-        return;
-    }
+    assert!(
+        bundle.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        bundle.display()
+    );
     let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("js-recover-sources");
     let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     let r: Run = run_disrobe(&[
@@ -1749,9 +1769,12 @@ fn js_recover_sources_reconstructs_the_deployed_tree_byte_identical() {
 #[test]
 fn sourcedefender_modern_body_decrypts_with_a_supplied_known_key() {
     let pye: PathBuf = corpus_path("python/sourcedefender/crafted_modern_aesgcm_known_key.pye");
-    if !pye.is_file() {
-        return;
-    }
+    assert!(
+        pye.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        pye.display()
+    );
     let (_out_py_scratch, out_py): (disrobe_core::scratch::ScratchDir, PathBuf) =
         temp_path("sdef-modern", "py");
     let key_hex: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
@@ -1785,9 +1808,12 @@ fn sourcedefender_modern_body_decrypts_with_a_supplied_known_key() {
 #[test]
 fn sourcedefender_modern_body_without_key_walls_honestly() {
     let pye: PathBuf = corpus_path("python/sourcedefender/known_v16_trial.pye");
-    if !pye.is_file() {
-        return;
-    }
+    assert!(
+        pye.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        pye.display()
+    );
     let r: Run = run_disrobe(&["py", "sourcedefender", pye.to_str().unwrap()]);
     assert_ne!(
         r.code, 0,
@@ -1849,9 +1875,12 @@ fn go_recover_renders_build_info_matching_the_embedded_blob() {
 #[test]
 fn go_info_renders_build_info_settings() {
     let exe: PathBuf = go_fixture("hello_normal.exe");
-    if !exe.is_file() {
-        return;
-    }
+    assert!(
+        exe.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        exe.display()
+    );
     let r: Run = run_disrobe(&["go", "info", exe.to_str().unwrap()]);
     assert_eq!(r.code, 0, "stderr: {}", r.stderr);
     assert!(

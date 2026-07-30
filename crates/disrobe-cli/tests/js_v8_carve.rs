@@ -259,13 +259,12 @@ fn workspace_root() -> PathBuf {
 #[test]
 fn v8_out_carves_real_sea_main_code_to_disk() {
     let blob: PathBuf = workspace_root().join("corpus/js/sea/sea-prep.blob");
-    if !blob.exists() {
-        eprintln!(
-            "SKIP: real sea-prep.blob fixture missing at {}",
-            blob.display()
-        );
-        return;
-    }
+    assert!(
+        blob.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its absence is a \
+         damaged checkout rather than an optional dependency",
+        blob.display()
+    );
     let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("sea-out");
     let out: PathBuf = out_scratch.path().to_path_buf();
     let run: common::Run = run_disrobe(&[

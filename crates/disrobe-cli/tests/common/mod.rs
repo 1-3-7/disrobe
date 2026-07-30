@@ -8,6 +8,7 @@
     unreachable_pub
 )]
 
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
@@ -15,6 +16,47 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+
+pub const REQUIRE_UNCOMMITTED_CORPUS: &str = "DISROBE_REQUIRE_UNCOMMITTED_CORPUS";
+pub const REQUIRE_UPX: &str = "DISROBE_REQUIRE_UPX";
+
+pub fn required_by_env(variable: &str) -> bool {
+    let Some(raw): Option<OsString> = std::env::var_os(variable) else {
+        return false;
+    };
+    !matches!(
+        raw.to_string_lossy().trim().to_ascii_lowercase().as_str(),
+        "" | "0" | "false" | "no" | "off" | "optional"
+    )
+}
+
+pub fn unmeasured(graded: &str, absent: &str, variable: &str) {
+    assert!(
+        !required_by_env(variable),
+        "{variable} makes this input mandatory for this run, so {graded} was measured against \
+         nothing and this case must not report success: {absent}. To permit a run that grades \
+         nothing here, clear {variable}."
+    );
+    eprintln!(
+        "\nNOT MEASURED: {graded} graded nothing, because {absent}. Set {variable}=1 to fail \
+         instead of skipping.\n"
+    );
+}
+
+pub fn uncommitted_corpus_is_absent(path: &Path, graded: &str) -> bool {
+    if path.exists() {
+        return false;
+    }
+    unmeasured(
+        graded,
+        &format!(
+            "{} is kept out of git by a blanket .gitignore rule and is not in this checkout",
+            path.display()
+        ),
+        REQUIRE_UNCOMMITTED_CORPUS,
+    );
+    true
+}
 
 pub fn cli_binary() -> PathBuf {
     let mut p: PathBuf = env_target_dir();

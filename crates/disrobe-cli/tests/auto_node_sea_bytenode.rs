@@ -96,10 +96,12 @@ fn collect_files(dir: &Path, out: &mut Vec<u8>) {
 #[test]
 fn test_chain_node_sea_blob_dispatches_js_deob_and_recovers_flags() {
     let fixture: PathBuf = corpus_path("js/sea/sea-prep.blob");
-    if !fixture.exists() {
-        eprintln!("SKIP: fixture missing: {fixture:?}");
-        return;
-    }
+    assert!(
+        fixture.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        fixture.display()
+    );
     let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("node-sea");
     let out: PathBuf = out_scratch.path().to_path_buf();
     let proc_out: std::process::Output = run_chain_cli(&fixture, &out, "auto:8");
@@ -131,10 +133,12 @@ fn test_chain_node_sea_blob_dispatches_js_deob_and_recovers_flags() {
 #[test]
 fn test_chain_bytenode_jsc_dispatches_js_deob_and_recovers_v8_header() {
     let fixture: PathBuf = corpus_path("v8/node-22/hello-22.jsc");
-    if !fixture.exists() {
-        eprintln!("SKIP: fixture missing: {fixture:?}");
-        return;
-    }
+    assert!(
+        fixture.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        fixture.display()
+    );
     let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("bytenode-jsc");
     let out: PathBuf = out_scratch.path().to_path_buf();
     let proc_out: std::process::Output = run_chain_cli(&fixture, &out, "auto:8");

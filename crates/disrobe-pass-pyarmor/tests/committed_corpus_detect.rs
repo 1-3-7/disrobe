@@ -118,22 +118,20 @@ fn assert_real_wrapper_detects(path: &Path, expected: PyarmorVersion) {
 
 fn run_version_corpus(version_subdir: &str, expected: PyarmorVersion) {
     let dir: PathBuf = corpus_dir(version_subdir);
-    if !dir.is_dir() {
-        eprintln!(
-            "skipped: committed pyarmor corpus absent at {} (gitignored large fixture; bake the pyarmor corpus fixtures)",
-            dir.display()
-        );
-        return;
-    }
+    assert!(
+        dir.is_dir(),
+        "the {version_subdir} wrapper corpus is tracked in git and is what this case reads, so its \
+         absence is a damaged checkout rather than an optional dependency: {}",
+        dir.display()
+    );
     let mut wrappers: Vec<PathBuf> = Vec::new();
     collect_wrappers(&dir, &mut wrappers);
-    if wrappers.is_empty() {
-        eprintln!(
-            "skipped: no .py wrappers under {} (corpus dir present but empty)",
-            dir.display()
-        );
-        return;
-    }
+    assert!(
+        !wrappers.is_empty(),
+        "{} holds no .py wrapper, so this case would sweep an empty set and report success \
+         without detecting anything",
+        dir.display()
+    );
     for wrapper in &wrappers {
         assert_real_wrapper_detects(wrapper, expected);
     }

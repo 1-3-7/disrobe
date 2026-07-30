@@ -17,14 +17,18 @@ fn corpus(rel: &str) -> PathBuf {
 #[test]
 fn cli_peels_static_table_class_and_substitutes_plaintext() {
     let class: PathBuf = corpus("corpus/jvm/zkmshape/StaticTableCrypt.class");
-    if !class.exists() {
-        eprintln!("SKIP: missing fixture {class:?}");
-        return;
-    }
-    if !cli_binary().exists() {
-        eprintln!("SKIP: disrobe binary not built");
-        return;
-    }
+    assert!(
+        class.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        class.display()
+    );
+    assert!(
+        cli_binary().exists(),
+        "cargo builds the disrobe binary before this test binary runs, so a missing \
+         {} would leave this case driving nothing",
+        cli_binary().display()
+    );
 
     let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("zkm-peel");
 
@@ -72,14 +76,18 @@ fn cli_peels_static_table_class_and_substitutes_plaintext() {
 #[test]
 fn cli_dex_decompile_surfaces_recovered_dexguard_strings() {
     let dex: PathBuf = corpus("corpus/jvm/dexguard/DexGuardReflectStrings.dex");
-    if !dex.exists() {
-        eprintln!("SKIP: missing fixture {dex:?}");
-        return;
-    }
-    if !cli_binary().exists() {
-        eprintln!("SKIP: disrobe binary not built");
-        return;
-    }
+    assert!(
+        dex.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        dex.display()
+    );
+    assert!(
+        cli_binary().exists(),
+        "cargo builds the disrobe binary before this test binary runs, so a missing \
+         {} would leave this case driving nothing",
+        cli_binary().display()
+    );
 
     let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("dexguard-peel");
 

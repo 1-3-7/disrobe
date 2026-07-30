@@ -153,10 +153,12 @@ fn grpc_serve_ports_are_offset_by_one() {
 #[test]
 fn install_deps_requires_subcommand_or_all() {
     let bin: PathBuf = cli_binary();
-    if !bin.exists() {
-        eprintln!("disrobe binary missing; skip");
-        return;
-    }
+    assert!(
+        bin.exists(),
+        "cargo builds the disrobe binary before this test binary runs, so a missing \
+         {} would leave this case driving nothing",
+        bin.display()
+    );
     let out: std::process::Output = Command::new(&bin)
         .args(["install-deps"])
         .stdout(Stdio::piped())
@@ -177,10 +179,12 @@ fn install_deps_requires_subcommand_or_all() {
 #[test]
 fn install_deps_ghidra_dry_run_does_not_touch_network() {
     let bin: PathBuf = cli_binary();
-    if !bin.exists() {
-        eprintln!("disrobe binary missing; skip");
-        return;
-    }
+    assert!(
+        bin.exists(),
+        "cargo builds the disrobe binary before this test binary runs, so a missing \
+         {} would leave this case driving nothing",
+        bin.display()
+    );
     let out: std::process::Output = Command::new(&bin)
         .args(["install-deps", "ghidra", "--dry-run"])
         .stdout(Stdio::piped())
@@ -202,10 +206,12 @@ fn install_deps_ghidra_dry_run_does_not_touch_network() {
 #[test]
 fn self_update_dry_run_does_not_touch_network() {
     let bin: PathBuf = cli_binary();
-    if !bin.exists() {
-        eprintln!("disrobe binary missing; skip");
-        return;
-    }
+    assert!(
+        bin.exists(),
+        "cargo builds the disrobe binary before this test binary runs, so a missing \
+         {} would leave this case driving nothing",
+        bin.display()
+    );
     let out: std::process::Output = Command::new(&bin)
         .args(["self-update", "--dry-run"])
         .stdout(Stdio::piped())
@@ -227,10 +233,12 @@ fn self_update_dry_run_does_not_touch_network() {
 #[test]
 fn cli_global_flags_parse_without_error() {
     let bin: PathBuf = cli_binary();
-    if !bin.exists() {
-        eprintln!("disrobe binary missing; skip");
-        return;
-    }
+    assert!(
+        bin.exists(),
+        "cargo builds the disrobe binary before this test binary runs, so a missing \
+         {} would leave this case driving nothing",
+        bin.display()
+    );
     let out: std::process::Output = Command::new(&bin)
         .args([
             "--threads",
@@ -256,10 +264,12 @@ fn cli_global_flags_parse_without_error() {
 #[test]
 fn cli_dry_run_global_flag_overrides_subcommand_default() {
     let bin: PathBuf = cli_binary();
-    if !bin.exists() {
-        eprintln!("disrobe binary missing; skip");
-        return;
-    }
+    assert!(
+        bin.exists(),
+        "cargo builds the disrobe binary before this test binary runs, so a missing \
+         {} would leave this case driving nothing",
+        bin.display()
+    );
     let tmp_scratch: disrobe_core::scratch::ScratchDir = temp_dir("dry-auto");
     let tmp: PathBuf = tmp_scratch.path().to_path_buf();
     let input: PathBuf = tmp.join("hello.py");
@@ -280,10 +290,12 @@ fn cli_dry_run_global_flag_overrides_subcommand_default() {
 #[test]
 fn progress_mode_invalid_value_rejected() {
     let bin: PathBuf = cli_binary();
-    if !bin.exists() {
-        eprintln!("disrobe binary missing; skip");
-        return;
-    }
+    assert!(
+        bin.exists(),
+        "cargo builds the disrobe binary before this test binary runs, so a missing \
+         {} would leave this case driving nothing",
+        bin.display()
+    );
     let out: std::process::Output = Command::new(&bin)
         .args(["--progress", "sometimes", "passes"])
         .stdout(Stdio::piped())

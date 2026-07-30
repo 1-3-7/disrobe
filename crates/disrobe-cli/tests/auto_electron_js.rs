@@ -114,10 +114,12 @@ fn synth_asar(files: &[(&str, &[u8])]) -> Vec<u8> {
 #[test]
 fn auto_electron_asar_unpack_then_js_deob_recovers_identifier() {
     let bin: PathBuf = cargo_bin();
-    if !bin.exists() {
-        eprintln!("SKIP: disrobe binary missing at {bin:?}; run `cargo build -p disrobe-cli`");
-        return;
-    }
+    assert!(
+        bin.exists(),
+        "cargo builds the disrobe binary before this test binary runs, so a missing \
+         {} would leave this case driving nothing",
+        bin.display()
+    );
 
     let index_js: Vec<u8> = obfuscated_index_js();
     let package_json: &[u8] =
