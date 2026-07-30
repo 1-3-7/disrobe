@@ -58,9 +58,9 @@ beam disasm: OK
 
 ## Coverage and fidelity
 
-When a `Dbgi` chunk is present the original forms are recovered directly and labelled `AbstractCode` (Erlang) or `ElixirDbgiForm` (Elixir). Each lift records where its source came from in `recovered_from`, so a caller can tell a recovered original from a lift.
+When a `Dbgi` chunk is present the original forms are recovered directly and labeled `AbstractCode` (Erlang) or `ElixirDbgiForm` (Elixir). Each lift records where its source came from in `recovered_from`, so a caller can tell a recovered original from a lift.
 
 ## Limits
 
-- Without a `Dbgi` chunk the original source is not in the file. The output is then a best-effort Core Erlang lift labelled `CoreLifted`, not the original text.
+- Without a `Dbgi` chunk the original source is not in the file. The output is then a best-effort Core Erlang lift labeled `CoreLifted`, not the original text.
 - An opcode beyond the known table fails with an explicit `DR-BEAM-0012` error naming the offending opcode rather than silently skipping bytes.

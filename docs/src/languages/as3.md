@@ -38,7 +38,7 @@ as3 disasm: OK
 
 ## Coverage and fidelity
 
-The source lifter reconstructs class skeletons with property access, calls, arithmetic, and `if` / `goto` control flow by abstractly interpreting the operand stack. Any method the lifter could not fully model is prefixed with a `/// DR-AS3-PARTIAL:` line naming the unmodelled opcodes or fabricated operands; a partial recovery is never silently presented as complete.
+The source lifter reconstructs class skeletons with property access, calls, arithmetic, and `if` / `goto` control flow by abstractly interpreting the operand stack. Any method the lifter could not fully model is prefixed with a `/// DR-AS3-PARTIAL:` line naming the unmodeled opcodes or fabricated operands; a partial recovery is never silently presented as complete.
 
 `disrobe` fingerprints commercial AS3 obfuscators (secureSWF, DoSWF, Kindi, Irrfuscator, swfLock) and flags techniques: string encryption, name mangling, control-flow flattening, register and stack shuffle, string-pool-rebuild candidates. Each finding carries a confidence score.
 
