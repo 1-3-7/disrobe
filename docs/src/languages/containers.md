@@ -1,8 +1,16 @@
 # Containers and archives
 
-Before `disrobe` can decompile anything, it often has to get inside a container. The `disrobe-binfmt` layer detects <!-- m:containers_formats -->100<!-- /m --> archive, installer, filesystem, and firmware formats and writes member bytes in-tree for all <!-- m:containers_formats -->100<!-- /m -->, with auto-detection, recursive chaining through nested layers, and shared zip-slip and decompression-bomb guards.
+Before `disrobe` can decompile anything, it often has to get inside a container. The `disrobe-binfmt` layer detects and writes member bytes in-tree for every format below, with auto-detection, recursive chaining through nested layers, and shared zip-slip and decompression-bomb guards.
 
-A recursive carve-everything engine scans for every known magic, models chunked payloads, recurses by depth, and uses entropy to separate code from padding.
+## At a glance
+
+| Surface | Support |
+|---|---|
+| Formats | <!-- m:containers_formats -->100<!-- /m --> archive, installer, filesystem, and firmware formats detected, with member bytes written in-tree for all <!-- m:containers_formats -->100<!-- /m --> |
+| Carve engine | A recursive carve-everything scan for every known magic, modelling chunked payloads, recursing by depth, and using entropy to separate code from padding |
+| Nesting | Container-in-container chaining, governed by `--max-depth` (default 8) |
+| Directory input | Batch-processed recursively, bounded by `--batch-max-depth` |
+| Guards | Per-entry and aggregate size caps, recursion-depth cap, zip-slip path sanitization, on every format |
 
 ## Supported formats
 
@@ -18,7 +26,7 @@ A recursive carve-everything engine scans for every known magic, models chunked 
 | Standalone executables | Bun `--compile` binaries (embedded JS module graph + sourcemaps), Unity AssetBundle (UnityFS) |
 | App / runtime | Electron `.asar`, Docker image tarball, OCI image manifest + layers, ISO 9660 + Joliet (extracted in-tree) |
 
-## Extraction
+## Commands
 
 Most extraction happens implicitly inside `disrobe auto`, which detects a container, extracts it, and recurses into the contents. Archive-shaped inputs are also available directly:
 
@@ -26,19 +34,22 @@ Most extraction happens implicitly inside `disrobe auto`, which detects a contai
 disrobe py extract package.whl --out extracted/
 disrobe auto installer.msi --out extracted/
 disrobe auto firmware-dir/ --out extracted/ --batch-max-depth 6
+disrobe extract crash.dmp --out carved/
 ```
 
 Directory inputs are batch-processed recursively; `--batch-max-depth` limits directory descent. Container nesting inside a detected artifact is governed by `--max-depth` (default 8).
 
-## Windows crash dumps
+## Coverage and fidelity
+
+### Windows crash dumps
 
 `disrobe extract crash.dmp` (or `disrobe auto crash.dmp`) carves the loaded PE modules out of a Windows minidump. It parses the stream directory, reads the module and memory lists, and for each module rebuilds an in-memory PE image by copying whatever memory the dump actually captured into a buffer at the correct RVAs, rewriting each section's file-offset field to match its virtual address so downstream PE parsers read the result as a well-formed image. Coverage is reported per page: the summary records how many bytes were recovered, which ranges the dump truncated, and which it never captured, with a reason for each gap, so a partially captured module is never presented as complete. The carve is graded by wrapping a real on-disk PE into a minidump and confirming the carved `.text` comes back byte-identical (`minidump_real_pe.rs`); each carved module and a `.disrobe-minidump.json` coverage summary land in the output directory.
 
-## Deno eszip archives
+### Deno eszip archives
 
 The `disrobe-binfmt` eszip reader (`disrobe_binfmt::containers::eszip`) parses a Deno eszip module-graph archive, versions 2 through 2.3, including one embedded inside a `deno compile` standalone executable, and reconstructs the module graph: each module's specifier, kind, and source bytes, plus redirects and npm specifiers, with per-module source-hash verification that drops any module whose stored hash does not match. It is exercised by a build-then-parse round-trip that also confirms a corrupted source hash is rejected.
 
-## Safety guards
+### Safety guards
 
 Every extractor shares the quota machinery in `crates/disrobe-binfmt/src/quota.rs`:
 
@@ -47,3 +58,13 @@ Every extractor shares the quota machinery in `crates/disrobe-binfmt/src/quota.r
 - **Zip-slip path sanitization** (`sanitize_entry_path`): every entry path is sanitized so no extraction can escape the output directory, on every format.
 
 Bypasses of any of these are treated as security issues; see the [security policy](../security.md).
+
+## Limits
+
+Where a format's payload is not decoded in-tree, the table above names it per entry rather than implying full extraction:
+
+- Compressed RAR4 (RAR 2.9/3.x LZ) is named per-entry, not decoded.
+- Inno Setup splits per file only through a version-specific `TSetupHeader` parse; that is the documented limit.
+- arj method 4, arc methods 5-7, StuffIt compressed forks, and erofs microlzma and compact index are carved verbatim rather than decoded.
+- OTP-AES Airoha firmware is an information-theoretic wall and is carved verbatim.
+- A minidump only contains the memory it captured. Truncated and never-captured ranges are reported with a reason per gap instead of being filled in.

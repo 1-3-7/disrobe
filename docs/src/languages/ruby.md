@@ -1,6 +1,6 @@
 # Ruby
 
-`disrobe` is the only active Ruby bytecode decompiler with a measured fidelity grade. It analyzes every major Ruby artifact format and decompiles YARV and mruby bytecode toward source, verified by a recompile-equivalence oracle on a real MRI interpreter.
+`disrobe` analyzes every major Ruby artifact format and decompiles YARV and mruby bytecode toward source, verified by a recompile-equivalence oracle on a real MRI interpreter. It is the only active Ruby bytecode decompiler with a measured fidelity grade.
 
 ## At a glance
 
@@ -12,7 +12,7 @@
 | Fidelity | <!-- m:ruby_greeter_pct -->100%<!-- /m --> opcode-multiset equivalence on a greeter fixture; <!-- m:ruby_megafile_pct -->98%<!-- /m --> on a mixed-construct megafile (gate floor, CI-enforced) |
 | Output | Analysis JSON plus a `.rb` source file carrying the decompiled body and a YARV disassembly trailer |
 
-## Analyzing an artifact
+## Commands
 
 ```sh
 disrobe ruby decompile app.bin --out app-ruby.json
@@ -39,12 +39,15 @@ ruby decompile: OK
   wrote:        ./out/app-ruby.json
 ```
 
-For MRI source the summary reports token and definition counts. For YARV it adds the IBF header fields, iseq and object counts, instruction count, decompile fidelity, and statement count. For mruby it reports the compiler version string, irep count, instruction count, and whether a body was recovered.
+## Coverage and fidelity
 
-## Fidelity measurement
+For MRI source the summary reports token and definition counts. For YARV it adds the IBF header fields, iseq and object counts, instruction count, decompile fidelity, and statement count. For mruby it reports the compiler version string, irep count, instruction count, and whether a body was recovered.
 
 A committed recompile-equivalence oracle compiles the recovered YARV source on the matching interpreter and diffs the opcode multiset. The gate asserts 100% equivalence on the greeter fixture and at least 98% on the megafile fixture; both run in CI.
 
-## Wrappers
+Ruby2Exe and Ocra self-extracting packages are detected as their own flavors so the chain layer can route the embedded payload onward.
 
-Ruby2Exe and Ocra self-extracting packages are detected as their own flavors so the chain layer can route the embedded payload onward. JRuby `.class` files and TruffleRuby AOT images are classified but not decompiled here: JVM-class material belongs to the [JVM guide](./jvm-android.md), and AOT-compiled native code has no recoverable Ruby body.
+## Limits
+
+- JRuby `.class` files are classified but not decompiled here. JVM-class material belongs to the [JVM guide](./jvm-android.md).
+- TruffleRuby AOT images are classified but not decompiled: AOT-compiled native code has no recoverable Ruby body.

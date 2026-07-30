@@ -1,6 +1,6 @@
 # Go
 
-`disrobe` recovers symbols from stripped and garbled Go binaries across PE, ELF, and Mach-O by parsing the Go runtime's own metadata tables. The deliverable is symbols, types, and embedded data, not source bodies.
+`disrobe` recovers symbols from stripped and garbled Go binaries across PE, ELF, and Mach-O by parsing the Go runtime's own metadata tables.
 
 ## At a glance
 
@@ -14,11 +14,12 @@
 | Embedded data | `embed.FS` usage report and directive extraction |
 | Debug info | DWARF report when the sections survive |
 
-## Recovering a binary
+## Commands
 
 ```sh
 disrobe go recover app --out app-go.json
 disrobe go info app
+disrobe auto packed-app --out recovered/    # unpack the UPX layer first, then recover the Go symbols
 ```
 
 `recover` writes the full analysis JSON (default `./out/<stem>-go.json`); `info` prints the fingerprint without writing anything. Output shape (illustrative):
@@ -39,12 +40,16 @@ go recover: OK
 
 `info` adds the stripped-binary fingerprint: whether the symbol table was stripped, how many functions were still recovered from `pclntab`, and the stdlib-name ratio that feeds the garble grading.
 
-## Garble
+UPX-on-Go chains automatically: `disrobe auto` unpacks the UPX layer first, then recovers the Go symbols underneath.
 
-The garble report separates a real wall from a tooling boundary. Standard-library names survive in `pclntab` and are recovered, while hashed user identifiers stay walled: garble hashes them with a keyed HMAC-SHA256 over a build seed that is not in the binary, so the original names are information-theoretically gone and are reported as a `name_recovery_wall` rather than guessed at.
+## Coverage and fidelity
 
-`garble -literals` is handled separately from names. Simple rodata schemes are recovered by pairing adjacent key/data blobs and applying the inverse XOR/ADD/SUB or repeating-key operation. Full-key literals are recovered when their code and ciphertext are present: the thunk scanner follows bounded x86-64 init thunks or inline materializers, emulates the decrypt path, and accepts only UTF-8/readable plaintext. The tests assert the source strings are absent as cleartext before requiring byte-exact recovery, so the oracle is not circular. Remaining limits are concrete: missing bytes, runtime-only key material, unsupported architectures, exhausted budgets, or ambiguous short plaintext.
+The garble report separates a real wall from a tooling boundary. `garble -literals` is handled separately from names. Simple rodata schemes are recovered by pairing adjacent key/data blobs and applying the inverse XOR/ADD/SUB or repeating-key operation. Full-key literals are recovered when their code and ciphertext are present: the thunk scanner follows bounded x86-64 init thunks or inline materializers, emulates the decrypt path, and accepts only UTF-8/readable plaintext. The tests assert the source strings are absent as cleartext before requiring byte-exact recovery, so the oracle is not circular.
 
-## Validation and chaining
+The pass is validated against a go1.26.3 fixture, and the test suite gates type-name recovery at >= <!-- m:go_typename_pct -->85%<!-- /m --> on that fixture; <!-- m:go_typename_count -->838 of 838<!-- /m --> type names (100%) are recovered at HEAD, a count the gate now pins by equality, since the `typelinks` and `moduledata` tables survive `-s -w` stripping. Big-endian recovery has its own oracle: a cross-built stripped linux/s390x binary is parsed as a big-endian ELF and its named type and itab pairs are recovered by back-searching the metadata tables, graded against the build (`go_bigendian_recovery.rs`).
 
-The pass is validated against a go1.26.3 fixture, and the test suite gates type-name recovery at >= <!-- m:go_typename_pct -->85%<!-- /m --> on that fixture; <!-- m:go_typename_count -->838 of 838<!-- /m --> type names (100%) are recovered at HEAD, a count the gate now pins by equality, since the `typelinks` and `moduledata` tables survive `-s -w` stripping. Big-endian recovery has its own oracle: a cross-built stripped linux/s390x binary is parsed as a big-endian ELF and its named type and itab pairs are recovered by back-searching the metadata tables, graded against the build (`go_bigendian_recovery.rs`). UPX-on-Go chains automatically: `disrobe auto` unpacks the UPX layer first, then recovers the Go symbols underneath.
+## Limits
+
+- The deliverable is symbols, types, and embedded data, not source bodies.
+- garble's hashed user identifiers stay walled. garble hashes them with a keyed HMAC-SHA256 over a build seed that is not in the binary, so the original names are information-theoretically gone and are reported as a `name_recovery_wall` rather than guessed at. Standard-library names survive in `pclntab` and are recovered.
+- The remaining limits on literal recovery are concrete: missing bytes, runtime-only key material, unsupported architectures, exhausted budgets, or ambiguous short plaintext.
