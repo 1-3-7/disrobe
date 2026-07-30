@@ -18,6 +18,15 @@ use crate::VERSION;
 
 const PASS: &str = "disrobe-pass-py-decompile";
 
+fn published_roundtrip_status(label: &str) -> &'static str {
+    match label {
+        "perfect" | "semantic" | "pass" => "pass",
+        "code-diff" | "partial" => "partial",
+        "recompile-failed" | "fail" => "fail",
+        _ => "skipped",
+    }
+}
+
 pub const METADATA_CAPABILITY: MetadataCapability = MetadataCapability::new(
     PASS,
     VERSION,
@@ -224,11 +233,12 @@ impl LlmMetadataEmitter for PyDecompileLlmInput {
     }
 
     fn emit_roundtrip_verdict(&self) -> Option<Json> {
-        let status: &str = self.roundtrip_status.as_deref().unwrap_or("skipped");
+        let label: &str = self.roundtrip_status.as_deref().unwrap_or("skipped");
+        let status: &str = published_roundtrip_status(label);
         let stage: Json = shape::make_roundtrip_stage(
             "py-decompile",
             status == "pass",
-            Some(format!("backend={}", self.backend)),
+            Some(format!("backend={}, roundtrip={label}", self.backend)),
         );
         Some(shape::make_roundtrip_value(status, vec![stage], None))
     }

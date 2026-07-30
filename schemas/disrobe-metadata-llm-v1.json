@@ -152,7 +152,7 @@
 
     "PerPassEnvelope": {
       "type": "object",
-      "description": "Wrapper that every per-category payload uses so a downstream LLM can attribute facts to a producing pass.",
+      "description": "Wrapper that every per-category payload uses so a downstream LLM can attribute facts to a producing pass. A pass that declares no support for the category reports applicable false, a null value, and a reason; a pass that does support it reports a non-null value of the type its category defines.",
       "required": ["pass", "pass_version", "applicable", "value"],
       "additionalProperties": false,
       "properties": {
@@ -161,7 +161,16 @@
         "applicable": { "type": "boolean" },
         "reason": { "type": ["string", "null"] },
         "value": {}
-      }
+      },
+      "if": { "required": ["applicable"], "properties": { "applicable": { "const": false } } },
+      "then": {
+        "required": ["reason"],
+        "properties": {
+          "value": { "type": "null" },
+          "reason": { "type": "string" }
+        }
+      },
+      "else": { "properties": { "value": { "not": { "type": "null" } } } }
     },
 
     "AstCategory": {
@@ -176,7 +185,7 @@
       "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
       "properties": {
         "value": {
-          "type": "object",
+          "type": ["object", "null"],
           "required": ["dialect", "root"],
           "properties": {
             "dialect": { "type": "string", "description": "e.g. python.3.12, javascript.es2022, ruby.3.3, java.21, ..." },
@@ -226,7 +235,7 @@
       "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
       "properties": {
         "value": {
-          "type": "object",
+          "type": ["object", "null"],
           "required": ["bytecode_version", "instructions"],
           "properties": {
             "bytecode_version": { "type": "string" },
@@ -275,7 +284,7 @@
       "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
       "properties": {
         "value": {
-          "type": "object",
+          "type": ["object", "null"],
           "required": ["function", "blocks", "edges"],
           "properties": {
             "function": { "type": "string" },
@@ -333,7 +342,7 @@
       "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
       "properties": {
         "value": {
-          "type": "object",
+          "type": ["object", "null"],
           "required": ["function", "defs", "uses"],
           "properties": {
             "function": { "type": "string" },
@@ -377,7 +386,7 @@
       "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
       "properties": {
         "value": {
-          "type": "array",
+          "type": ["array", "null"],
           "items": {
             "type": "object",
             "required": ["mangled"],
@@ -405,7 +414,7 @@
       "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
       "properties": {
         "value": {
-          "type": "array",
+          "type": ["array", "null"],
           "items": {
             "type": "object",
             "required": ["text"],
@@ -440,7 +449,7 @@
       "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
       "properties": {
         "value": {
-          "type": "object",
+          "type": ["object", "null"],
           "properties": {
             "named_types": {
               "type": "array",
@@ -493,7 +502,7 @@
       "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
       "properties": {
         "value": {
-          "type": "array",
+          "type": ["array", "null"],
           "items": {
             "type": "object",
             "required": ["module"],
@@ -519,7 +528,7 @@
       "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
       "properties": {
         "value": {
-          "type": "array",
+          "type": ["array", "null"],
           "items": {
             "type": "object",
             "required": ["index", "kind", "literal"],
@@ -544,7 +553,7 @@
       "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
       "properties": {
         "value": {
-          "type": "array",
+          "type": ["array", "null"],
           "items": {
             "type": "object",
             "required": ["function", "parameters"],
@@ -599,7 +608,7 @@
       "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
       "properties": {
         "value": {
-          "type": "object",
+          "type": ["object", "null"],
           "required": ["status", "stages"],
           "properties": {
             "status": { "type": "string", "enum": ["pass", "fail", "skipped", "partial"] },
@@ -639,7 +648,7 @@
       "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
       "properties": {
         "value": {
-          "type": "object",
+          "type": ["object", "null"],
           "required": ["mappings"],
           "properties": {
             "format":  { "type": "string", "enum": ["sourcemap-v3", "disrobe-linemap-v1"] },
@@ -735,7 +744,7 @@
             "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
             "properties": {
               "value": {
-                "type": "array",
+                "type": ["array", "null"],
                 "items": {
                   "type": "object",
                   "required": ["detection", "score"],
@@ -763,7 +772,7 @@
             "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
             "properties": {
               "value": {
-                "type": "object",
+                "type": ["object", "null"],
                 "required": ["bytecode_version", "seen", "unknown"],
                 "properties": {
                   "bytecode_version": { "type": "string" },
@@ -796,7 +805,7 @@
             "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
             "properties": {
               "value": {
-                "type": "array",
+                "type": ["array", "null"],
                 "items": {
                   "type": "object",
                   "required": ["category", "placeholder", "span"],

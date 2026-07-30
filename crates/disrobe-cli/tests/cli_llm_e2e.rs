@@ -44,22 +44,25 @@ fn temp_path(stem: &str, ext: &str) -> (disrobe_core::scratch::ScratchDir, PathB
     (scratch, path)
 }
 
-fn write_minimal_pyc(path: &PathBuf) {
-    let mut bytes: Vec<u8> = Vec::new();
-    bytes.extend_from_slice(&[0xa7, 0x0d, 0x0d, 0x0a]);
-    bytes.extend_from_slice(&[0u8; 12]);
-    let code_marker: u8 = b'c';
-    bytes.push(code_marker);
-    bytes.extend_from_slice(&0_i32.to_le_bytes());
-    bytes.extend_from_slice(&0_i32.to_le_bytes());
-    bytes.extend_from_slice(&0_i32.to_le_bytes());
-    bytes.extend_from_slice(&0_i32.to_le_bytes());
-    bytes.extend_from_slice(&0_i32.to_le_bytes());
-    let null_marker: u8 = b'N';
-    for _ in 0..8 {
-        bytes.push(null_marker);
-    }
-    std::fs::write(path, bytes).expect("write minimal pyc");
+const REAL_PYC: &str =
+    "corpus/python/decompile/playground/__pycache__/edge_cases_3_12.cpython-312.pyc";
+
+fn workspace_root() -> PathBuf {
+    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    p.pop();
+    p.pop();
+    p
+}
+
+fn write_decodable_pyc(path: &PathBuf) {
+    let source: PathBuf = workspace_root().join(REAL_PYC);
+    assert!(
+        source.is_file(),
+        "{REAL_PYC} is tracked in git and every case here decompiles it, so its absence is a \
+         damaged checkout rather than an optional dependency: {}",
+        source.display()
+    );
+    std::fs::copy(&source, path).expect("stage the committed pyc");
 }
 
 fn run_disrobe(args: &[&str]) -> (i32, String, String) {
@@ -134,14 +137,18 @@ fn decryption_keys_without_auth_errors_with_dr_cli_0420() {
 fn no_llm_flags_writes_no_bundle() {
     let (_pyc_scratch, pyc): (disrobe_core::scratch::ScratchDir, PathBuf) =
         temp_path("noflag", "pyc");
-    write_minimal_pyc(&pyc);
+    write_decodable_pyc(&pyc);
     let (_out_dir_scratch, out_dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
         temp_path("noflag-out", "dir");
-    let (_pyc_scratch, pyc): (disrobe_core::scratch::ScratchDir, PathBuf) = temp_path("llm", "pyc");
     let pyc_str: String = pyc.to_string_lossy().into_owned();
     let out_str: String = out_dir.to_string_lossy().into_owned();
-    let (_code, _stdout, _stderr): (i32, String, String) =
+    let (code, stdout, stderr): (i32, String, String) =
         run_disrobe(&["py", "decompile", &pyc_str, "--out", &out_str]);
+    assert_eq!(
+        code, 0,
+        "the run must succeed, or this case proves nothing about what a successful run writes \
+         without the flags:\nstdout=\n{stdout}\nstderr=\n{stderr}"
+    );
     let bundle_path: PathBuf = out_dir.join("py-decompile.disrobe.llm.json");
     assert!(
         !bundle_path.exists(),
@@ -153,7 +160,7 @@ fn no_llm_flags_writes_no_bundle() {
 fn llm_briefs_writes_agents_and_skill_markdown() {
     let (_pyc_scratch, pyc): (disrobe_core::scratch::ScratchDir, PathBuf) =
         temp_path("briefs", "pyc");
-    write_minimal_pyc(&pyc);
+    write_decodable_pyc(&pyc);
     let (_out_dir_scratch, out_dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
         temp_path("briefs-out", "dir");
     let (_bundle_out_scratch, bundle_out): (disrobe_core::scratch::ScratchDir, PathBuf) =
@@ -173,12 +180,17 @@ fn llm_briefs_writes_agents_and_skill_markdown() {
         "--out",
         &out_str,
     ]);
-    if code != 0 {
-        eprintln!("stdout=\n{stdout}\nstderr=\n{stderr}");
-    }
-    if !bundle_out.exists() {
-        return;
-    }
+    assert_eq!(
+        code, 0,
+        "the run this case grades must succeed, or the bundle it inspects never exists and the \
+         case reports success while checking nothing:\nstdout=\n{stdout}\nstderr=\n{stderr}"
+    );
+    assert!(
+        bundle_out.exists(),
+        "the run was asked to write {} and this case reads it, so a missing bundle is the defect \
+         this case exists to catch:\nstdout=\n{stdout}\nstderr=\n{stderr}",
+        bundle_out.display()
+    );
 
     let bundle_dir: &std::path::Path = bundle_out.parent().expect("bundle parent");
     let agents_path: PathBuf = bundle_dir.join("AGENTS.md");
@@ -223,7 +235,7 @@ fn llm_briefs_writes_agents_and_skill_markdown() {
 #[test]
 fn llm_flag_writes_schema_conforming_bundle() {
     let (_pyc_scratch, pyc): (disrobe_core::scratch::ScratchDir, PathBuf) = temp_path("llm", "pyc");
-    write_minimal_pyc(&pyc);
+    write_decodable_pyc(&pyc);
     let (_out_dir_scratch, out_dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
         temp_path("llm-out", "dir");
     let (_bundle_out_scratch, bundle_out): (disrobe_core::scratch::ScratchDir, PathBuf) =
@@ -244,12 +256,17 @@ fn llm_flag_writes_schema_conforming_bundle() {
         "--out",
         &out_str,
     ]);
-    if code != 0 {
-        eprintln!("stdout=\n{stdout}\nstderr=\n{stderr}");
-    }
-    if !bundle_out.exists() {
-        return;
-    }
+    assert_eq!(
+        code, 0,
+        "the run this case grades must succeed, or the bundle it inspects never exists and the \
+         case reports success while checking nothing:\nstdout=\n{stdout}\nstderr=\n{stderr}"
+    );
+    assert!(
+        bundle_out.exists(),
+        "the run was asked to write {} and this case reads it, so a missing bundle is the defect \
+         this case exists to catch:\nstdout=\n{stdout}\nstderr=\n{stderr}",
+        bundle_out.display()
+    );
     let bytes: Vec<u8> = std::fs::read(&bundle_out).expect("read bundle");
     let bundle: Json = serde_json::from_slice(&bytes).expect("parse bundle");
     assert_eq!(
