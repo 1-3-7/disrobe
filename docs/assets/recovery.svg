@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="920" height="1265" viewBox="0 0 920 1265" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"><desc>generated from recovery.json sha256:21b55749af3c1e2aad1d8b784170c2bb</desc>
-  <rect x="0" y="0" width="920" height="1265" rx="10" fill="#0a0a0a"/>
-  <rect x="0.5" y="0.5" width="919" height="1264" rx="9.5" fill="none" stroke="#262626"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="1292" viewBox="0 0 920 1292" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"><desc>generated from recovery.json sha256:bb447b8ea662c92e07906fa4ec44369a</desc>
+  <rect x="0" y="0" width="920" height="1292" rx="10" fill="#0a0a0a"/>
+  <rect x="0.5" y="0.5" width="919" height="1291" rx="9.5" fill="none" stroke="#262626"/>
   <text x="28.00" y="40.00" font-size="19" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Measured recovery by ecosystem</text>
   <text x="28.00" y="61.00" font-size="12.5" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">measured numbers, disrobe&#39;s own except where a row names another tool; sources cited per value in this file</text>
   <line x1="28.00" y1="74.00" x2="892.00" y2="74.00" stroke="#333333" stroke-width="1"/>
@@ -14,8 +14,8 @@
   <text x="106.00" y="121.00" font-size="10.5" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">recompile-only</text>
   <rect x="195.00" y="113.50" width="9.00" height="9.00" rx="2.00" fill="#828282"/>
   <text x="209.00" y="121.00" font-size="10.5" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">self-reported coverage</text>
-<svg x="28.00" y="130.00" width="864" height="745" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" baseProfile="full" viewBox="0 0 864 745">
-<rect width="864" height="745" x="0" y="0" fill="none"></rect>
+<svg x="28.00" y="130.00" width="864" height="772" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" baseProfile="full" viewBox="0 0 864 772">
+<rect width="864" height="772" x="0" y="0" fill="none"></rect>
 <text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;" xml:space="preserve" transform="translate(196 21.5)" fill="#a1a1a1">python 574-mod stdlib</text>
 <text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;" xml:space="preserve" transform="translate(196 48.5)" fill="#a1a1a1">python 200-mod corpus</text>
 <text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;" xml:space="preserve" transform="translate(196 75.5)" fill="#a1a1a1">python CPython 3.10</text>
@@ -43,6 +43,7 @@
 <text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;" xml:space="preserve" transform="translate(196 669.5)" fill="#a1a1a1">planted apk disrobe frisk</text>
 <text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;" xml:space="preserve" transform="translate(196 696.5)" fill="#a1a1a1">planted apk apkleaks 2.6.3</text>
 <text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;" xml:space="preserve" transform="translate(196 723.5)" fill="#a1a1a1">planted non-secret IOC categories</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;" xml:space="preserve" transform="translate(196 750.5)" fill="#a1a1a1">pickle pickletools-graded fixtures</text>
 <path d="M207 15L796 15A3 3 0 0 1 799 18L799 25A3 3 0 0 1 796 28L207 28A3 3 0 0 1 204 25L204 18A3 3 0 0 1 207 15Z" fill="#101010" ecmeta_series_index="0" ecmeta_data_index="0" ecmeta_ssr_type="chart" class="zr0-cls-0"></path>
 <path d="M207 42L796 42A3 3 0 0 1 799 45L799 52A3 3 0 0 1 796 55L207 55A3 3 0 0 1 204 52L204 45A3 3 0 0 1 207 42Z" fill="#101010" ecmeta_series_index="0" ecmeta_data_index="1" ecmeta_ssr_type="chart" class="zr0-cls-0"></path>
 <path d="M207 69L796 69A3 3 0 0 1 799 72L799 79A3 3 0 0 1 796 82L207 82A3 3 0 0 1 204 79L204 72A3 3 0 0 1 207 69Z" fill="#101010" ecmeta_series_index="0" ecmeta_data_index="2" ecmeta_ssr_type="chart" class="zr0-cls-0"></path>
@@ -70,6 +71,7 @@
 <path d="M207 663L796 663A3 3 0 0 1 799 666L799 673A3 3 0 0 1 796 676L207 676A3 3 0 0 1 204 673L204 666A3 3 0 0 1 207 663Z" fill="#101010" ecmeta_series_index="0" ecmeta_data_index="24" ecmeta_ssr_type="chart" class="zr0-cls-0"></path>
 <path d="M207 690L796 690A3 3 0 0 1 799 693L799 700A3 3 0 0 1 796 703L207 703A3 3 0 0 1 204 700L204 693A3 3 0 0 1 207 690Z" fill="#101010" ecmeta_series_index="0" ecmeta_data_index="25" ecmeta_ssr_type="chart" class="zr0-cls-0"></path>
 <path d="M207 717L796 717A3 3 0 0 1 799 720L799 727A3 3 0 0 1 796 730L207 730A3 3 0 0 1 204 727L204 720A3 3 0 0 1 207 717Z" fill="#101010" ecmeta_series_index="0" ecmeta_data_index="26" ecmeta_ssr_type="chart" class="zr0-cls-0"></path>
+<path d="M207 744L796 744A3 3 0 0 1 799 747L799 754A3 3 0 0 1 796 757L207 757A3 3 0 0 1 204 754L204 747A3 3 0 0 1 207 744Z" fill="#101010" ecmeta_series_index="0" ecmeta_data_index="27" ecmeta_ssr_type="chart" class="zr0-cls-0"></path>
 <text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 21.5)" fill="#ededed">95.09%</text>
 <text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 48.5)" fill="#ededed">96.60%</text>
 <text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 75.5)" fill="#ededed">91.50%</text>
@@ -97,6 +99,7 @@
 <text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 669.5)" fill="#ededed">100.00%</text>
 <text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 696.5)" fill="#ededed">62.50%</text>
 <text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 723.5)" fill="#ededed">100.00%</text>
+<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 750.5)" fill="#ededed">100.00%</text>
 <path d="M207 15L766.8 15A3 3 0 0 1 769.8 18L769.8 25A3 3 0 0 1 766.8 28L207 28A3 3 0 0 1 204 25L204 18A3 3 0 0 1 207 15Z" fill="#8fb3d9" ecmeta_series_index="1" ecmeta_data_index="0" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
 <path d="M207 42L775.8 42A3 3 0 0 1 778.8 45L778.8 52A3 3 0 0 1 775.8 55L207 55A3 3 0 0 1 204 52L204 45A3 3 0 0 1 207 42Z" fill="#8fb3d9" ecmeta_series_index="1" ecmeta_data_index="1" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
 <path d="M207 69L745.4 69A3 3 0 0 1 748.4 72L748.4 79A3 3 0 0 1 745.4 82L207 82A3 3 0 0 1 204 79L204 72A3 3 0 0 1 207 69Z" fill="#8fb3d9" ecmeta_series_index="1" ecmeta_data_index="2" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
@@ -124,6 +127,7 @@
 <path d="M207 663L796 663A3 3 0 0 1 799 666L799 673A3 3 0 0 1 796 676L207 676A3 3 0 0 1 204 673L204 666A3 3 0 0 1 207 663Z" fill="#8fb3d9" ecmeta_series_index="1" ecmeta_data_index="24" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
 <path d="M207 690L572.9 690A3 3 0 0 1 575.9 693L575.9 700A3 3 0 0 1 572.9 703L207 703A3 3 0 0 1 204 700L204 693A3 3 0 0 1 207 690Z" fill="#8fb3d9" ecmeta_series_index="1" ecmeta_data_index="25" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
 <path d="M207 717L796 717A3 3 0 0 1 799 720L799 727A3 3 0 0 1 796 730L207 730A3 3 0 0 1 204 727L204 720A3 3 0 0 1 207 717Z" fill="#8fb3d9" ecmeta_series_index="1" ecmeta_data_index="26" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M207 744L796 744A3 3 0 0 1 799 747L799 754A3 3 0 0 1 796 757L207 757A3 3 0 0 1 204 754L204 747A3 3 0 0 1 207 744Z" fill="#8fb3d9" ecmeta_series_index="1" ecmeta_data_index="27" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
 <style ><![CDATA[
 .zr0-cls-0:hover {
 cursor:pointer;
@@ -146,10 +150,10 @@ fill:rgba(143,143,143,1);
 
 </style>
 </svg>
-  <rect x="28.00" y="888.00" width="3.50" height="12.00" fill="#8fb3d9"/>
-  <text x="39.00" y="897.00" font-size="12" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">detection and coverage breadth</text>
-  <text x="892.00" y="897.00" font-size="10.5" fill="#828282" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="400">delivered / detected</text>
-<svg x="28.00" y="909.00" width="864" height="194" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" baseProfile="full" viewBox="0 0 864 194">
+  <rect x="28.00" y="915.00" width="3.50" height="12.00" fill="#8fb3d9"/>
+  <text x="39.00" y="924.00" font-size="12" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">detection and coverage breadth</text>
+  <text x="892.00" y="924.00" font-size="10.5" fill="#828282" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="400">delivered / detected</text>
+<svg x="28.00" y="936.00" width="864" height="194" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" baseProfile="full" viewBox="0 0 864 194">
 <rect width="864" height="194" x="0" y="0" fill="none"></rect>
 <text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;" transform="translate(151 22)" fill="#a1a1a1">containers</text>
 <text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;" xml:space="preserve" transform="translate(151 52)" fill="#a1a1a1">.net protectors</text>
@@ -189,18 +193,18 @@ fill:rgba(157,196,238,1);
 
 </style>
 </svg>
-  <rect x="28.00" y="1118.00" width="3.50" height="12.00" fill="#8fb3d9"/>
-  <text x="39.00" y="1127.00" font-size="12" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">families and scale</text>
-  <text x="28.00" y="1147.00" font-size="15" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="600">11</text>
-  <text x="58.00" y="1147.00" font-size="12" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">js bundlers</text>
-  <text x="28.00" y="1171.00" font-size="15" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="600">16</text>
-  <text x="58.00" y="1171.00" font-size="12" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">lua chain entries</text>
-  <text x="28.00" y="1195.00" font-size="15" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="600">2</text>
-  <text x="49.00" y="1195.00" font-size="12" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">lua vm-devirt</text>
-  <text x="460.00" y="1147.00" font-size="15" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="600">4</text>
-  <text x="481.00" y="1147.00" font-size="12" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">wasm reversers</text>
-  <text x="460.00" y="1171.00" font-size="15" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="600">122,633</text>
-  <text x="535.00" y="1171.00" font-size="12" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">hermes fns parsed</text>
-  <line x1="28.00" y1="1221.00" x2="892.00" y2="1221.00" stroke="#333333" stroke-width="1"/>
-  <text x="28.00" y="1233.00" font-size="10" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">Every value here is produced by a committed test gate or a local measurement harness.</text>
+  <rect x="28.00" y="1145.00" width="3.50" height="12.00" fill="#8fb3d9"/>
+  <text x="39.00" y="1154.00" font-size="12" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">families and scale</text>
+  <text x="28.00" y="1174.00" font-size="15" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="600">11</text>
+  <text x="58.00" y="1174.00" font-size="12" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">js bundlers</text>
+  <text x="28.00" y="1198.00" font-size="15" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="600">16</text>
+  <text x="58.00" y="1198.00" font-size="12" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">lua chain entries</text>
+  <text x="28.00" y="1222.00" font-size="15" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="600">2</text>
+  <text x="49.00" y="1222.00" font-size="12" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">lua vm-devirt</text>
+  <text x="460.00" y="1174.00" font-size="15" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="600">4</text>
+  <text x="481.00" y="1174.00" font-size="12" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">wasm reversers</text>
+  <text x="460.00" y="1198.00" font-size="15" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="600">122,633</text>
+  <text x="535.00" y="1198.00" font-size="12" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">hermes fns parsed</text>
+  <line x1="28.00" y1="1248.00" x2="892.00" y2="1248.00" stroke="#333333" stroke-width="1"/>
+  <text x="28.00" y="1260.00" font-size="10" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">Every value here is produced by a committed test gate or a local measurement harness.</text>
 </svg>
