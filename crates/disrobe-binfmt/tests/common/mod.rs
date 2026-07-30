@@ -3,6 +3,14 @@ pub mod requirement;
 
 use std::path::PathBuf;
 
+pub fn repository_root() -> PathBuf {
+    let manifest_dir: &str = env!("CARGO_MANIFEST_DIR");
+    let mut p: PathBuf = PathBuf::from(manifest_dir);
+    p.pop();
+    p.pop();
+    p
+}
+
 pub fn corpus_binfmt_root() -> PathBuf {
     let manifest_dir: &str = env!("CARGO_MANIFEST_DIR");
     let mut p: PathBuf = PathBuf::from(manifest_dir);

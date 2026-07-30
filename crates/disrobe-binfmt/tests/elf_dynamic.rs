@@ -8,15 +8,13 @@ use disrobe_binfmt::{ElfDynamic, NativeFile, parse_elf_dynamic, parse_native};
 
 use common::fixture_path;
 use common::requirement::{
-    READELF, corpus_path, find_on_path, required_corpus, required_fixture, unmeasured,
+    READELF, corpus_path, locate, required_corpus, required_fixture, unmeasured,
 };
 
 const NIM_ELF: &str = "native/nim/hello.nim.elf";
 
 const PYARMOR_RUNTIME: &str =
     "python/pyarmor/v9/platform_linux/pyarmor_runtime_000000/pyarmor_runtime.so";
-
-const READELF_CANDIDATES: [&str; 3] = ["readelf", "llvm-readelf", "eu-readelf"];
 
 const DYNAMIC_SECTION_BANNER: &str = "Dynamic section at offset";
 
@@ -27,12 +25,6 @@ struct ReadelfDynamic {
     rpath: Option<String>,
     runpath: Option<String>,
     entry_count: usize,
-}
-
-fn find_readelf() -> Option<PathBuf> {
-    READELF_CANDIDATES
-        .into_iter()
-        .find_map(|program: &str| find_on_path(program))
 }
 
 fn carries_tag(line: &str, tag: &str) -> bool {
@@ -130,14 +122,19 @@ fn readelf_dynamic(tool: &Path, file: &Path, graded: &str) -> ReadelfDynamic {
 }
 
 fn agrees_with_readelf(file: &Path, ours: &ElfDynamic, graded: &str) {
-    let Some(tool): Option<PathBuf> = find_readelf() else {
-        unmeasured(
-            &READELF,
-            graded,
-            "none of readelf, llvm-readelf or eu-readelf is on PATH, so the expectations below \
-             stand on nothing but the last person who typed them",
-        );
-        return;
+    let tool: PathBuf = match locate(&READELF) {
+        Ok(path) => path,
+        Err(reason) => {
+            unmeasured(
+                &READELF,
+                graded,
+                &format!(
+                    "{reason}, so the expectations below stand on nothing but the last person who \
+                     typed them"
+                ),
+            );
+            return;
+        }
     };
     let reference: ReadelfDynamic = readelf_dynamic(&tool, file, graded);
     assert!(

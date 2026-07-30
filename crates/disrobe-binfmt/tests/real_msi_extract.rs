@@ -7,26 +7,7 @@ use std::process::Command;
 use disrobe_binfmt::container::ContainerKind;
 use disrobe_binfmt::extract::{ExtractedEntry, ExtractionResult, extract_to};
 
-use common::requirement::{WIX, find_on_path, unmeasured};
-
-fn find_wix() -> Option<PathBuf> {
-    if let Some(found) = find_on_path("wix") {
-        return Some(found);
-    }
-    if cfg!(windows) {
-        for root in [
-            r"C:\Program Files\WiX Toolset v7.0\bin\wix.exe",
-            r"C:\Program Files\WiX Toolset v6.0\bin\wix.exe",
-            r"C:\Program Files (x86)\WiX Toolset v7.0\bin\wix.exe",
-        ] {
-            let candidate: PathBuf = PathBuf::from(root);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
+use common::requirement::{WIX, locate, unmeasured};
 
 fn seed_files(dir: &Path) -> Vec<(String, Vec<u8>)> {
     let mut text: Vec<u8> = Vec::new();
@@ -105,14 +86,17 @@ fn push_line(out: &mut String, line: &str) {
 
 #[test]
 fn real_msi_embedded_cab_round_trips() {
-    let Some(wix): Option<PathBuf> = find_wix() else {
-        unmeasured(
-            &WIX,
-            "byte-exact recovery of the cabinet embedded in an installer built by the \
-             real WiX toolset",
-            "no wix binary is on PATH or in the standard install directories",
-        );
-        return;
+    let wix: PathBuf = match locate(&WIX) {
+        Ok(path) => path,
+        Err(reason) => {
+            unmeasured(
+                &WIX,
+                "byte-exact recovery of the cabinet embedded in an installer built by the \
+                 real WiX toolset",
+                &reason,
+            );
+            return;
+        }
     };
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_msi_seed")

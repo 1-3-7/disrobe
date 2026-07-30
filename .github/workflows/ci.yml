@@ -201,10 +201,12 @@ jobs:
             demand php DISROBE_REQUIRE_PHP
             seven=""
             for candidate in 7z 7za 7zz 7zr; do
-              if command -v "$candidate" >/dev/null 2>&1; then
-                seven="$candidate"
+              command -v "$candidate" >/dev/null 2>&1 || continue
+              if ("$candidate" </dev/null 2>&1 || true) | grep -q "^7-Zip"; then
+                seven="$(command -v "$candidate")"
                 break
               fi
+              echo "$candidate resolves here but does not run and name itself 7-Zip, so it cannot write the reference archives"
             done
             if [ -z "$seven" ]; then
               echo "no 7-zip executable on $RUNNER_OS, so the archive round-trips would grade nothing"

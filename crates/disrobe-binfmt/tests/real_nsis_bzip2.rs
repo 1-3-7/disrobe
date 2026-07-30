@@ -9,24 +9,7 @@ use disrobe_binfmt::containers::nsis::{
     slice_solid_file,
 };
 
-use common::requirement::{MAKENSIS, find_on_path, unmeasured};
-
-fn find_makensis() -> Option<PathBuf> {
-    if let Some(found) = find_on_path("makensis") {
-        return Some(found);
-    }
-    if cfg!(windows) {
-        let candidates: [&str; 2] = [
-            r"C:\Program Files (x86)\NSIS\makensis.exe",
-            r"C:\Program Files\NSIS\makensis.exe",
-        ];
-        return candidates
-            .iter()
-            .map(PathBuf::from)
-            .find(|p: &PathBuf| p.exists());
-    }
-    None
-}
+use common::requirement::{MAKENSIS, locate, unmeasured};
 
 fn build_installer(
     makensis: &Path,
@@ -82,14 +65,17 @@ fn make_payloads() -> Vec<(&'static str, Vec<u8>)> {
 
 #[test]
 fn makensis_bzip2_non_solid_round_trips() {
-    let Some(makensis): Option<PathBuf> = find_makensis() else {
-        unmeasured(
-            &MAKENSIS,
-            "byte-exact recovery of a bzip2 non-solid installer built by the real \
-             NSIS compiler",
-            "no makensis binary is on PATH or in the standard install directories",
-        );
-        return;
+    let makensis: PathBuf = match locate(&MAKENSIS) {
+        Ok(path) => path,
+        Err(reason) => {
+            unmeasured(
+                &MAKENSIS,
+                "byte-exact recovery of a bzip2 non-solid installer built by the real \
+                 NSIS compiler",
+                &reason,
+            );
+            return;
+        }
     };
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_nsis_bz2_nonsolid")
@@ -118,14 +104,17 @@ fn makensis_bzip2_non_solid_round_trips() {
 
 #[test]
 fn makensis_bzip2_solid_round_trips() {
-    let Some(makensis): Option<PathBuf> = find_makensis() else {
-        unmeasured(
-            &MAKENSIS,
-            "byte-exact recovery of a bzip2 solid installer built by the real \
-             NSIS compiler",
-            "no makensis binary is on PATH or in the standard install directories",
-        );
-        return;
+    let makensis: PathBuf = match locate(&MAKENSIS) {
+        Ok(path) => path,
+        Err(reason) => {
+            unmeasured(
+                &MAKENSIS,
+                "byte-exact recovery of a bzip2 solid installer built by the real \
+                 NSIS compiler",
+                &reason,
+            );
+            return;
+        }
     };
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_nsis_bz2_solid")
