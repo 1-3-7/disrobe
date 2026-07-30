@@ -44,12 +44,12 @@ Try it in your browser at [`1-3-7.github.io/disrobe/playground`](https://1-3-7.g
 |---|---|---|---|---|
 | Python bytecode | Recover | <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> per code object, 54.5% whole module | strong `[CI]` | [python](docs/src/languages/python.md) |
 | PyArmor | Recover | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> free-mode samples | strong `[CI]` | [python](docs/src/languages/python.md) |
-| Python pickle | Recover | 340 / 340 re-execute equal | strong `[CI]` | [pickle](docs/src/languages/pickle.md) |
+| Python pickle | Recover | 470 / 470 re-execute equal | strong `[CI]` | [pickle](docs/src/languages/pickle.md) |
 | JVM classfile | Recover | 131 / 131 methods recompile | recompile-only `[CI]` | [jvm](docs/src/languages/jvm-android.md) |
 | Android DEX | Recover | 118 / 118 presentable classes | strong `[CI]` | [android](docs/src/languages/jvm-android.md) |
 | .NET CIL | Recover | Eazfuscator VM and KoiVM lifted | strong `[CI]` | [dotnet](docs/src/languages/dotnet.md) |
 | JavaScript, TypeScript | Recover | obfuscator.io, JS-Confuser, Jscrambler | pass-gated | [js](docs/src/languages/javascript.md) |
-| WebAssembly | Recover | <!-- m:wasm_opcoverage_count -->133 of 133<!-- /m --> functions op-covered | strong `[CI]` | [wasm](docs/src/languages/wasm.md) |
+| WebAssembly | Recover | 57 / 57 eligible functions execute equal | strong `[CI]` | [wasm](docs/src/languages/wasm.md) |
 | Native symbols, disasm, IR | Recover | DWARF, PDB, STABS, demangle, RTTI | pass-gated | [native](docs/src/languages/native.md) |
 | Native decompile | Recover | C and Rust output re-executes equal | pass-gated | [decompile](docs/src/languages/native-decompile.md) |
 | Native packers | Recover | UPX `.text` and `.pdata` byte-identical | strong `[CI]` | [unpack](docs/src/languages/native-unpack.md) |
@@ -99,18 +99,17 @@ The Oracle column names the independent reference in a few words. What that refe
 
 | Metric | Measured | Oracle | Reproduce |
 |---|---|---|---|
-| Python `.pyc`, full 3.14 stdlib | <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per code object `[local]` | recompile-equivalence | `crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py` |
+| Python `.pyc`, full 3.14 stdlib | <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per code object `[local]` | recompile-equivalence, over a population CI does not run | `crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py` |
 | Python `.pyc`, pinned 200-module corpus | <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> per object, floor 96.60% `[CI]` | recompile-equivalence | `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs` |
 | Python `.pyc`, whole-module exact | 54.5% of modules recompile whole `[CI]` | recompile-equivalence | `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs` |
 | Python legacy 1.0-3.7 | <!-- m:py_legacy_count -->150 of 191<!-- /m --> gate-verified `[CI]` | recompile or token match | `crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs` |
 | PyArmor v6-v9-pro | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> real-corpus samples `[CI]` | declared build match | `crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs` |
 | Pickle safety | 102 / 102 fixtures classify `[CI]` | pickletools semantics | `crates/disrobe-pass-pickle/tests/corpus.rs` |
-| Pickle reconstruction roundtrip | 340 / 340 re-execute equal, floor 100% `[CI]` | CPython re-execution | `crates/disrobe-pass-pickle/tests/roundtrip.rs` |
+| Pickle reconstruction roundtrip | 470 / 470 re-execute equal, floor 100% `[CI]` | CPython re-execution | `crates/disrobe-pass-pickle/tests/roundtrip.rs` |
 | Android DEX, committed corpus | 118 / 118 presentable classes clean, 317 re-hosted bodies clean `[CI]` | real JVM verifier | `crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs` |
 | .NET Eazfuscator VM | 57 / 57 instructions lifted, ordered-CIL match `[CI]` | independent clean DLL | `crates/disrobe-pass-dotnet/tests/real_eazvm.rs` |
 | .NET KoiVM | 6 / 6 bodies lifted, structural recovery >= 75% `[CI]` | independent clean build | `crates/disrobe-pass-dotnet/tests/real_koivm.rs` |
 | .NET protectors | <!-- m:dotnet_protectors -->23<!-- /m --> classified, ConfuserEx2 decrypted `[CI]` | plaintext-absent check | `crates/disrobe-pass-dotnet/tests/confuserex2_full.rs` |
-| WebAssembly, op-coverage | <!-- m:wasm_opcoverage_count -->133 of 133<!-- /m --> corpus functions `[CI]` | operator lowering | `crates/disrobe-pass-wasm-deob/tests/semantic_recovery_corpus.rs` |
 | WebAssembly, execution-equiv | 57 / 57 eligible functions equal, 6 byte-identical `[CI]` | wasmtime differential | `crates/disrobe-pass-wasm-deob/tests/semantic_differential.rs` |
 | WebAssembly obfuscator reversers | <!-- m:wasm_reversers -->4<!-- /m --> reverser families `[CI]` | parser and execution gates | `crates/disrobe-pass-wasm-deob/tests/obfuscators_e2e.rs` |
 | Lua IronBrew2 2.7.0 devirt | runs equal, standard and MAX mode `[CI]` | real-`lua` differential | `crates/disrobe-pass-lua/tests/ironbrew2_real_oracle.rs` |
@@ -138,7 +137,7 @@ The Oracle column names the independent reference in a few words. What that refe
 
 The Python figures count code objects, not modules. The full-stdlib row covers <!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m --> objects across <!-- m:py_stdlib_full_modules -->574<!-- /m --> modules; the pinned row covers <!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m --> objects across <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules, and the same legacy gate reaches <!-- m:py_legacy_local_count -->166 of 191<!-- /m --> locally. The Go row is measured on a stripped go1.26.3 fixture, its gate pins the count and holds the ratio above a <!-- m:go_typename_pct -->85%<!-- /m --> floor, and `go_garble_undo.rs` covers the garble leg beside it.
 
-The Android committed-corpus row is measured on small methods; 37 of 155 classes are link-skipped and ungraded, and the real-apk row further down carries the production scale. The WebAssembly op-coverage figure is 100% of the 38 parseable modules, and the other 2 of the 40 corpus files are skipped on wat-parse or signature-extraction failure, with the gate pinning both counts. The .NET Eazfuscator row has a second leg, `[local]`, in which the recovered CIL re-injects to byte-identical stdout; it needs a .NET runtime that CI does not provision.
+The Android committed-corpus row is measured on small methods; 37 of 155 classes are link-skipped and ungraded, and the real-apk row further down carries the production scale. The WebAssembly execution row covers the functions that can be run at all, which is a smaller population than the 133-function corpus: a function needs a callable signature and no host imports before wasmtime can be handed it. The .NET Eazfuscator row has a second leg, `[local]`, in which the recovered CIL re-injects to byte-identical stdout; it needs a .NET runtime that CI does not provision.
 
 The Swift row is pinned against a committed fixture's own symbol table; the parity leg against the reference `swift-demangle` runs only where that tool is installed, which CI does not provide. HashLink also parses the whole HLB image byte-exact, 336 functions and 421 types on the committed fixture. The PyArmor row draws its samples from a corpus of 289 committed files. The container row's assertion is `every_real_format_extracts_in_tree`. The six planted IOC categories frisk is graded on are endpoints, manifest findings, URLs, IPv4, email, and `.onion`.
 
@@ -158,10 +157,13 @@ Nothing asserts bytecode-equivalence for that row. The recovered source compiles
 |---|---|---|---|
 | Android DEX, real APKs `coverage-self-reported` | <!-- m:dalvik_body_pct -->92.5%<!-- /m --> of defined methods `[local]` | self-reported, gitignored apks | `crates/disrobe-pass-jvm/tests/dex2jar_realworld_apks.rs` |
 | Android DEX, real APKs, count `coverage-self-reported` | <!-- m:dalvik_body_frac -->82788 / 89516<!-- /m --> `[local]` | self-reported, gitignored apks | `crates/disrobe-pass-jvm/tests/dalvik_realworld_body_attest.rs` |
+| WebAssembly, op-coverage `coverage-self-reported` | <!-- m:wasm_opcoverage_count -->1034 of 1034<!-- /m --> opcodes across 38 parseable modules `[CI]` | wasm-tools 1.250.0 supplies the denominator; lowering is self-counted | `crates/disrobe-pass-wasm-deob/tests/external_op_denominator.rs` |
 
 That figure is the total across all three apks and not any one of them. The per-apk split, and a separate verifier-attested population with its own smaller denominator, are in the [Android guide](docs/src/languages/jvm-android.md).
 
 The recovered bodies that can be presented to the verifier are attested at <!-- m:dalvik_body_attested_frac -->2960 of 2994<!-- /m -->, graded by real `java -Xverify:all` over bodies rather than methods, which is a different and smaller population than the method-coverage figure above.
+
+The WebAssembly denominator is external and frozen: `wasm-tools 1.250.0` disassembles each committed `.wat` and its per-function instruction inventory is checked in, keyed by the fixture's BLAKE3, so a decoder that stops seeing opcodes scores lower rather than shrinking the population it is divided by. The two decoders agree instruction for instruction, 1034 accounted against 1034 counted. The row stays self-reported because the numerator is still disrobe counting the opcodes it lowered, and a lowering rule firing is not the same as the lowering being right; the 2 corpus files outside the 38 are the ones `wasm-tools` rejects too, pinned with its own error text.
 
 <details>
 <summary>Reproduce every number</summary>
