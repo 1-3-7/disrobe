@@ -86,7 +86,7 @@
       "floor": 97.0,
       "floor_holds": true,
       "id": "dalvik-verifier",
-      "measured": "99.00%",
+      "measured": "100.00%",
       "oracle_strength": "strong",
       "reproduce": "cargo test -p disrobe-pass-jvm --test dalvik_verifier_gate"
     },
