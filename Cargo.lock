@@ -2215,6 +2215,7 @@ dependencies = [
  "lzma-rs",
  "miette",
  "object",
+ "pbkdf2",
  "serde",
  "serde_json",
  "sha1",
