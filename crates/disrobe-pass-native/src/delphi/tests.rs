@@ -904,6 +904,94 @@ fn init_addresses_are_reported_as_monotonic_only_when_they_are() {
     );
 }
 
+fn build_record_blob(rec_size: u32, managed: usize, bad_offset: bool) -> Vec<u8> {
+    let mut b: Blob = Blob::new(data_va(), 4);
+    let cn: u64 = b.put_ss("THolder");
+    let ti_int: u64 = b.put_simple_typeinfo(1, "Integer");
+    let first: u32 = if bad_offset { rec_size + 0x40 } else { 0 };
+    let ti_rec: u64 = b.put_record_typeinfo(
+        "TPoint3",
+        rec_size,
+        managed,
+        &[
+            ("X", first, 0, ti_int),
+            ("Y", 4, 0, ti_int),
+            ("Z", 8, 2, ti_int),
+        ],
+    );
+    let ti_holder: u64 = b.put_class_typeinfo("THolder", "Unit1", &[("Origin", ti_rec)]);
+    let _va: u64 = b.put_vmt(
+        T_MODERN32,
+        &VmtSpec {
+            class_name_va: cn,
+            type_info_va: ti_holder,
+            instance_size: 0x20,
+            ..VmtSpec::default()
+        },
+    );
+    b.buf
+}
+
+fn recovered_record(pe: &[u8]) -> Option<DelphiTypeInfo> {
+    analyze(pe)
+        .types
+        .into_iter()
+        .find(|t: &DelphiTypeInfo| t.name == "TPoint3")
+}
+
+#[test]
+fn record_fields_are_recovered_with_names_offsets_and_visibility() {
+    let pe: Vec<u8> = pe_with_code_and_data(build_record_blob(12, 0, false));
+    let record: DelphiTypeInfo = recovered_record(&pe).expect("TPoint3 recovered");
+    assert_eq!(record.kind, "record");
+    assert_eq!(record.min_value, Some(12));
+    assert_eq!(record.record_fields.len(), 3);
+    assert_eq!(record.record_fields[0].name, "X");
+    assert_eq!(record.record_fields[0].offset, 0);
+    assert_eq!(record.record_fields[0].visibility, 0);
+    assert_eq!(
+        record.record_fields[0].type_name.as_deref(),
+        Some("Integer")
+    );
+    assert_eq!(record.record_fields[2].name, "Z");
+    assert_eq!(record.record_fields[2].offset, 8);
+    assert_eq!(record.record_fields[2].visibility, 2);
+}
+
+#[test]
+fn record_fields_are_recovered_past_a_managed_field_run() {
+    let pe: Vec<u8> = pe_with_code_and_data(build_record_blob(12, 3, false));
+    let record: DelphiTypeInfo = recovered_record(&pe).expect("TPoint3 recovered");
+    assert_eq!(record.record_fields.len(), 3);
+    assert_eq!(record.record_fields[1].name, "Y");
+}
+
+#[test]
+fn record_fields_are_refused_whole_when_one_offset_escapes_the_record() {
+    let pe: Vec<u8> = pe_with_code_and_data(build_record_blob(12, 0, true));
+    let record: DelphiTypeInfo = recovered_record(&pe).expect("TPoint3 still described");
+    assert!(
+        record.record_fields.is_empty(),
+        "one out-of-range field offset must reject the whole record, got {:?}",
+        record.record_fields
+    );
+    assert!(record.record_field_evidence.is_none());
+}
+
+#[test]
+fn recovered_record_fields_carry_their_grading_tier() {
+    let pe: Vec<u8> = pe_with_code_and_data(build_record_blob(12, 0, false));
+    let record: DelphiTypeInfo = recovered_record(&pe).expect("TPoint3 recovered");
+    let evidence: &str = record
+        .record_field_evidence
+        .as_deref()
+        .expect("field names must ship with their grading tier attached");
+    assert!(
+        evidence.contains("not against a source tree"),
+        "the tier must state what it was NOT checked against, got {evidence:?}"
+    );
+}
+
 fn find_class<'a>(classes: &'a [DelphiClass], name: &str) -> &'a DelphiClass {
     classes
         .iter()
@@ -1424,6 +1512,33 @@ impl Blob {
         let at: u64 = self.va(self.buf.len());
         self.put_bytes(text.as_bytes());
         self.put_u8(b'!');
+        at
+    }
+
+    fn put_record_typeinfo(
+        &mut self,
+        name: &str,
+        rec_size: u32,
+        managed: usize,
+        fields: &[(&str, u32, u8, u64)],
+    ) -> u64 {
+        self.align(4);
+        let at: u64 = self.va(self.buf.len());
+        self.put_u8(14);
+        self.put_bytes(&short_string(name));
+        self.put_u32(rec_size);
+        self.put_u32(managed as u32);
+        for index in 0..managed {
+            self.put_ptr(0);
+            self.put_u32(index as u32 * 4);
+        }
+        self.put_u32(fields.len() as u32);
+        for (fname, offset, visibility, type_ref) in fields {
+            self.put_ptr(*type_ref);
+            self.put_u32(*offset);
+            self.put_u8(*visibility);
+            self.put_bytes(&short_string(fname));
+        }
         at
     }
 

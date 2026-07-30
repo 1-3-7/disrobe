@@ -19,7 +19,7 @@ use image::PeView;
 
 pub use init_table::{DelphiInitTable, DelphiUnitEntry};
 pub use strings::{DelphiString, DelphiStringKind};
-pub use typeinfo::DelphiTypeInfo;
+pub use typeinfo::{DelphiRecordField, DelphiTypeInfo};
 pub use units::{DelphiOrigin, classify_unit};
 pub use version::{DelphiSignalKind, DelphiVersion, DelphiVersionSignal};
 

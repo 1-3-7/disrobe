@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use super::image::{MAX_SHORTSTRING_LEN, PeView, is_plausible_symbol};
+use super::image::{
+    MAX_SHORTSTRING_LEN, PeView, is_plausible_symbol, is_plausible_symbol_of_length,
+};
 
 pub(super) const TK_INTEGER: u8 = 1;
 pub(super) const TK_CHAR: u8 = 2;
@@ -11,12 +13,22 @@ pub(super) const TK_SET: u8 = 6;
 pub(super) const TK_CLASS: u8 = 7;
 pub(super) const TK_METHOD: u8 = 8;
 pub(super) const TK_WCHAR: u8 = 9;
+pub(super) const TK_RECORD: u8 = 14;
 pub(super) const TK_INT64: u8 = 16;
 pub(super) const TK_DYNARRAY: u8 = 17;
 pub(super) const TK_MIN: u8 = 1;
 pub(super) const TK_MAX: u8 = 22;
 
 const MAX_ENUM_MEMBERS: i64 = 4096;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DelphiRecordField {
+    pub name: String,
+    pub offset: u32,
+    pub visibility: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_name: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DelphiTypeInfo {
@@ -32,6 +44,10 @@ pub struct DelphiTypeInfo {
     pub max_value: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub element_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub record_fields: Vec<DelphiRecordField>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_field_evidence: Option<String>,
 }
 
 pub(super) const fn kind_label(kind: u8) -> &'static str {
@@ -130,6 +146,8 @@ pub(super) fn describe_at(view: &PeView<'_>, off: usize, ptr: usize) -> Option<D
         min_value: None,
         max_value: None,
         element_type: None,
+        record_fields: Vec::new(),
+        record_field_evidence: None,
     };
     let body: usize = header.body;
 
@@ -151,6 +169,7 @@ pub(super) fn describe_at(view: &PeView<'_>, off: usize, ptr: usize) -> Option<D
         }
         TK_SET => fill_set(view, body, ptr, &mut info),
         TK_DYNARRAY => fill_dynarray(view, body, ptr, &mut info),
+        TK_RECORD => fill_record(view, body, ptr, &mut info),
         TK_CLASS => fill_class(view, body, ptr, &mut info),
         _ => {}
     }
@@ -274,4 +293,97 @@ fn fill_class(view: &PeView<'_>, body: usize, ptr: usize, info: &mut DelphiTypeI
     {
         info.unit_name = Some(unit);
     }
+}
+
+const MAX_RECORD_SIZE: i32 = 1 << 20;
+const MAX_MANAGED_FIELDS: i32 = 4096;
+const MAX_RECORD_FIELDS: i32 = 4096;
+const MAX_RECORD_OPERATORS: u8 = 64;
+const MAX_FIELD_VISIBILITY: u8 = 3;
+
+const RECORD_EVIDENCE: &str = "layout read from the documented extended record RTTI; field names are graded against that specification only, not against a source tree";
+
+fn parse_record_fields(
+    view: &PeView<'_>,
+    mut cursor: usize,
+    ptr: usize,
+    rec_size: i32,
+) -> Option<Vec<DelphiRecordField>> {
+    let count: i32 = view.read_i32(cursor)?;
+    if count <= 0 || count > MAX_RECORD_FIELDS {
+        return None;
+    }
+    cursor = cursor.checked_add(4)?;
+
+    let mut fields: Vec<DelphiRecordField> = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let type_ref: u64 = view.read_ptr(cursor)?;
+        let offset: i32 = view.read_i32(cursor.checked_add(ptr)?)?;
+        let visibility: u8 = *view.bytes.get(cursor.checked_add(ptr)?.checked_add(4)?)?;
+        let name_at: usize = cursor.checked_add(ptr)?.checked_add(5)?;
+        let (name, consumed): (String, usize) =
+            view.read_shortstring(name_at, MAX_SHORTSTRING_LEN)?;
+        if !(0..rec_size).contains(&offset) {
+            return None;
+        }
+        if visibility > MAX_FIELD_VISIBILITY {
+            return None;
+        }
+        if !is_plausible_symbol_of_length(&name, 1) {
+            return None;
+        }
+        fields.push(DelphiRecordField {
+            name,
+            offset: offset as u32,
+            visibility,
+            type_name: resolve_name(view, type_ref),
+        });
+        cursor = name_at.checked_add(consumed)?;
+    }
+    Some(fields)
+}
+
+fn fill_record(view: &PeView<'_>, body: usize, ptr: usize, info: &mut DelphiTypeInfo) {
+    let Some(rec_size): Option<i32> = view.read_i32(body) else {
+        return;
+    };
+    if rec_size <= 0 || rec_size > MAX_RECORD_SIZE {
+        return;
+    }
+    info.min_value = Some(i64::from(rec_size));
+
+    let Some(managed_count): Option<i32> = view.read_i32(body + 4) else {
+        return;
+    };
+    if !(0..=MAX_MANAGED_FIELDS).contains(&managed_count) {
+        return;
+    }
+    let managed_entry: usize = ptr + 4;
+    let Some(after_managed): Option<usize> = (managed_count as usize)
+        .checked_mul(managed_entry)
+        .and_then(|span: usize| body.checked_add(8)?.checked_add(span))
+    else {
+        return;
+    };
+
+    let without_operators: Option<Vec<DelphiRecordField>> =
+        parse_record_fields(view, after_managed, ptr, rec_size);
+
+    let with_operators: Option<Vec<DelphiRecordField>> = view
+        .bytes
+        .get(after_managed)
+        .copied()
+        .filter(|ops: &u8| *ops <= MAX_RECORD_OPERATORS)
+        .and_then(|ops: u8| {
+            let skip: usize = 1usize.checked_add((ops as usize).checked_mul(ptr)?)?;
+            parse_record_fields(view, after_managed.checked_add(skip)?, ptr, rec_size)
+        });
+
+    let chosen: Vec<DelphiRecordField> = match (without_operators, with_operators) {
+        (Some(only), None) | (None, Some(only)) => only,
+        _ => return,
+    };
+
+    info.record_fields = chosen;
+    info.record_field_evidence = Some(RECORD_EVIDENCE.to_owned());
 }

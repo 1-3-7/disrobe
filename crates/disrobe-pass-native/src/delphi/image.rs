@@ -135,8 +135,12 @@ impl<'a> PeView<'a> {
 }
 
 pub(super) fn is_plausible_symbol(name: &str) -> bool {
+    is_plausible_symbol_of_length(name, 2)
+}
+
+pub(super) fn is_plausible_symbol_of_length(name: &str, min_len: usize) -> bool {
     let bytes: &[u8] = name.as_bytes();
-    if bytes.len() < 2 || bytes.len() > MAX_SHORTSTRING_LEN {
+    if bytes.len() < min_len || bytes.len() > MAX_SHORTSTRING_LEN {
         return false;
     }
     let first: u8 = bytes[0];
