@@ -142,9 +142,9 @@ export function CodeEditor({
   }, [code]);
 
   useEffect((): (() => void) => {
-    let cancelled: boolean = false;
+    let canceled: boolean = false;
     void loadLanguage(language).then((extension: readonly Extension[]): void => {
-      if (cancelled) {
+      if (canceled) {
         return;
       }
       viewRef.current?.dispatch({
@@ -152,7 +152,7 @@ export function CodeEditor({
       });
     });
     return (): void => {
-      cancelled = true;
+      canceled = true;
     };
   }, [language, languageCompartment]);
 

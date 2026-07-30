@@ -1046,7 +1046,7 @@ from). The full-stdlib figure comes from the same harness pointed at
 The legacy line has its own gate over a corpus of 191 vendored fixtures spanning 1.x through 3.x. It
 grades by a two-verdict union: recompile-equivalence for versions with an available interpreter, and
 structural token-match otherwise. The proven-correct count measured locally with the full period
-interpreter set installed is 166 of 191, and it is labelled local because it depends on which 1.0
+interpreter set installed is 166 of 191, and it is labeled local because it depends on which 1.0
 through 3.7 interpreters are present on the machine; no gate asserts it. The two halves
 are not equally strong: 67 of those are recompile-equivalent (the strong, behavioral guarantee) and
 99 rest on structural token-match (a strictly weaker guarantee that the recovered token stream matches
@@ -2477,7 +2477,7 @@ answer. Every figure in this paper cites the committed source, test, or data fil
 Section 4.4.4 states, for each one, what a reader needs beyond a clone to reach the same result. Three
 are weaker than that standard: the two large UPX floors need an input the repository does not carry,
 and the 54.5% whole-module rate is a percentage with no committed count behind it. All three are
-labelled as such where they appear rather than folded in with the rest.
+labeled as such where they appear rather than folded in with the rest.
 
 ## References
 
