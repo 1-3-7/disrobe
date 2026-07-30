@@ -22,7 +22,9 @@ use disrobe_pass_native::packers::{
     PeSection, PetitePhase2EmulatedOutput, parse_nspack_layout, parse_pe_image, unpack_fsg,
     unpack_nspack_emulated_with_baseline, unpack_petite_phase2_emulated,
 };
-use packer_fixture::{PackerFixture, load_fixture};
+use packer_fixture::{
+    CommittedFixture, PackerFixture, committed_fixture_defect, declared_fixture, load_fixture,
+};
 
 #[derive(Debug, Clone, Copy)]
 struct ContentFloor {
@@ -147,12 +149,43 @@ const TEXT_AND_DATA: &[&str] = &[".text", ".data"];
 
 const DATA_ONLY: &[&str] = &[".data"];
 
+const FLOORS_PINNED_AGAINST: &[(&str, &str)] = &[
+    ("fsg", "Hash.packed.fsg.exe"),
+    ("fsg", "Hash.original.exe"),
+    ("nspack", "hash.packed.nspack.exe"),
+    ("nspack", "hash.original.exe"),
+    ("petite", "hello.exe"),
+    ("petite", "hello.original.exe"),
+];
+
 fn fixture(decoder: &str, family: &str, name: &str) -> Option<Vec<u8>> {
     load_fixture(PackerFixture {
         decoder,
         family,
         name,
     })
+}
+
+#[test]
+fn every_pinned_floor_is_bound_to_declared_and_intact_fixture_bytes() {
+    let mut defects: Vec<String> = Vec::new();
+    for (family, name) in FLOORS_PINNED_AGAINST {
+        let Some(declared): Option<&CommittedFixture> = declared_fixture(family, name) else {
+            defects.push(format!(
+                "{family}/{name} carries pinned floors in this file but is absent from the fixture \
+                 registry, so nothing checks that the bytes graded are the bytes those floors were \
+                 measured from"
+            ));
+            continue;
+        };
+        defects.extend(committed_fixture_defect(declared));
+    }
+    assert!(
+        defects.is_empty(),
+        "a pinned floor only means something against the exact fixture bytes it was measured \
+         from, so this file must reject a fixture whose bytes have moved: {}",
+        defects.join("; ")
+    );
 }
 
 fn loaded_span(original: &[u8]) -> usize {

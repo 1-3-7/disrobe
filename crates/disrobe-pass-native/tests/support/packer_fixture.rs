@@ -280,10 +280,14 @@ pub(crate) fn fixture_path(family: &str, name: &str) -> PathBuf {
     path
 }
 
-pub(crate) fn is_committed(family: &str, name: &str) -> bool {
+pub(crate) fn declared_fixture(family: &str, name: &str) -> Option<&'static CommittedFixture> {
     COMMITTED_FIXTURES
         .iter()
-        .any(|f: &CommittedFixture| f.family == family && f.name == name)
+        .find(|f: &&CommittedFixture| f.family == family && f.name == name)
+}
+
+pub(crate) fn is_committed(family: &str, name: &str) -> bool {
+    declared_fixture(family, name).is_some()
 }
 
 pub(crate) fn fixture_role(name: &str) -> &'static str {
@@ -347,7 +351,10 @@ pub(crate) fn load_fixture_with_requirement(
 ) -> Option<Vec<u8>> {
     let path: PathBuf = fixture_path(fixture.family, fixture.name);
     match fs::read(&path) {
-        Ok(bytes) => Some(bytes),
+        Ok(bytes) => {
+            enforce_declared_bytes(&fixture, &bytes);
+            Some(bytes)
+        }
         Err(err) if err.kind() == ErrorKind::NotFound => {
             let committed: bool = is_committed(fixture.family, fixture.name);
             enforce_fixture_requirement(&fixture, committed, requirement);
@@ -384,6 +391,45 @@ pub(crate) fn enforce_something_was_graded(decoder: &str, graded: usize, family:
     );
 }
 
+pub(crate) fn declared_byte_defect(fixture: &CommittedFixture, bytes: &[u8]) -> Option<String> {
+    if bytes.len() as u64 != fixture.size_bytes {
+        return Some(format!(
+            "{}/{} is {} bytes, expected {}",
+            fixture.family,
+            fixture.name,
+            bytes.len(),
+            fixture.size_bytes
+        ));
+    }
+    let mut hasher: crc32fast::Hasher = crc32fast::Hasher::new();
+    hasher.update(bytes);
+    let crc: u32 = hasher.finalize();
+    (crc != fixture.crc32).then(|| {
+        format!(
+            "{}/{} has crc32 {crc:#010x}, expected {:#010x}; the measured floors were taken \
+             against the declared bytes",
+            fixture.family, fixture.name, fixture.crc32
+        )
+    })
+}
+
+fn enforce_declared_bytes(fixture: &PackerFixture<'_>, bytes: &[u8]) {
+    let Some(declared): Option<&CommittedFixture> = declared_fixture(fixture.family, fixture.name)
+    else {
+        return;
+    };
+    let Some(defect): Option<String> = declared_byte_defect(declared, bytes) else {
+        return;
+    };
+    panic!(
+        "{} fixture corpus/native/packers/{}/{} is not the fixture every pinned figure for it was \
+         measured against, so grading it would measure a different binary and the floors could not \
+         fail: {defect}. Restore the declared bytes, or re-measure the floors and update the \
+         registry in the same change",
+        fixture.decoder, fixture.family, fixture.name
+    );
+}
+
 pub(crate) fn committed_fixture_defect(fixture: &CommittedFixture) -> Option<String> {
     let path: PathBuf = fixture_path(fixture.family, fixture.name);
     let bytes: Vec<u8> = match fs::read(&path) {
@@ -395,23 +441,5 @@ pub(crate) fn committed_fixture_defect(fixture: &CommittedFixture) -> Option<Str
             ));
         }
     };
-    if bytes.len() as u64 != fixture.size_bytes {
-        return Some(format!(
-            "{}/{} is {} bytes, expected {}",
-            fixture.family,
-            fixture.name,
-            bytes.len(),
-            fixture.size_bytes
-        ));
-    }
-    let mut hasher: crc32fast::Hasher = crc32fast::Hasher::new();
-    hasher.update(&bytes);
-    let crc: u32 = hasher.finalize();
-    (crc != fixture.crc32).then(|| {
-        format!(
-            "{}/{} has crc32 {crc:#010x}, expected {:#010x}; the measured floors were taken \
-             against the declared bytes",
-            fixture.family, fixture.name, fixture.crc32
-        )
-    })
+    declared_byte_defect(fixture, &bytes)
 }
