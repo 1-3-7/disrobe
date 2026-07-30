@@ -432,3 +432,167 @@ pub(crate) fn tool_catalog() -> Vec<ToolEntry> {
     });
     v
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod published_roster_tests {
+    use std::collections::BTreeSet;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use super::tool_catalog;
+    use crate::cli::doctor::{ToolEntry, ToolKind, ToolStatus, probe_entry};
+
+    const BASE_TOOLS: usize = 46;
+    const WINDOWS_ONLY_TOOLS: usize = 2;
+    const MACOS_ONLY_TOOLS: usize = 5;
+
+    const README: &str = "README.md";
+    const README_PHRASE: &str = "probe 46 to 51 external tools depending on the platform";
+
+    fn expected_tools() -> usize {
+        let mut total: usize = BASE_TOOLS;
+        if cfg!(target_os = "windows") {
+            total = total.saturating_add(WINDOWS_ONLY_TOOLS);
+        }
+        if cfg!(target_os = "macos") {
+            total = total.saturating_add(MACOS_ONLY_TOOLS);
+        }
+        total
+    }
+
+    fn repo_root() -> PathBuf {
+        let manifest: &Path = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let Some(root): Option<&Path> = manifest.parent().and_then(Path::parent) else {
+            panic!(
+                "the doctor roster figure is published in {README}, two directories above this crate"
+            )
+        };
+        root.to_path_buf()
+    }
+
+    #[test]
+    fn the_probed_roster_is_the_size_the_readme_publishes_for_this_platform() {
+        let catalog: Vec<ToolEntry> = tool_catalog();
+        assert_eq!(
+            catalog.len(),
+            expected_tools(),
+            "the doctor catalog probes {} tools on this platform against the {} the published \
+             split states; the roster is {BASE_TOOLS} everywhere plus {WINDOWS_ONLY_TOOLS} on \
+             Windows and {MACOS_ONLY_TOOLS} on macOS, so a single number cannot describe it and \
+             each leg is pinned by equality",
+            catalog.len(),
+            expected_tools()
+        );
+
+        let keys: BTreeSet<&str> = catalog.iter().map(|entry: &ToolEntry| entry.key).collect();
+        assert_eq!(
+            keys.len(),
+            catalog.len(),
+            "two catalog entries share a key, so `disrobe doctor` reports fewer distinct tools than \
+             the published count claims"
+        );
+
+        let path: PathBuf = repo_root().join(README);
+        let doc: String = fs::read_to_string(&path).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "{README} publishes the doctor roster size: {error} at {}",
+                path.display()
+            )
+        });
+        assert!(
+            doc.contains(README_PHRASE),
+            "{README} must state `{README_PHRASE}`; the catalog probes {BASE_TOOLS} tools on Linux, \
+             {} on Windows and {} on macOS, so an approximate figure leaves the number a reader is \
+             given bound to nothing",
+            BASE_TOOLS + WINDOWS_ONLY_TOOLS,
+            BASE_TOOLS + MACOS_ONLY_TOOLS
+        );
+    }
+
+    #[test]
+    fn every_catalog_entry_is_probed_and_answers_for_itself() {
+        let catalog: Vec<ToolEntry> = tool_catalog();
+        let mut answered: BTreeSet<String> = BTreeSet::new();
+
+        for entry in &catalog {
+            assert!(
+                !entry.probe_names.is_empty(),
+                "`{}` is counted in the published roster but names no executable to probe, so it \
+                 can never be found",
+                entry.key
+            );
+            assert!(
+                !entry.version_args.is_empty(),
+                "`{}` names no version arguments, so a present tool would report no version",
+                entry.key
+            );
+            assert!(
+                !entry.used_by.trim().is_empty(),
+                "`{}` states no pass that uses it, so a reader cannot tell why it is probed",
+                entry.key
+            );
+
+            let status: ToolStatus = probe_entry(entry);
+            assert_eq!(
+                status.name, entry.key,
+                "probing `{}` returned a status named `{}`, so the row a reader sees is attributed \
+                 to a different tool",
+                entry.key, status.name
+            );
+            assert_eq!(
+                status.used_by, entry.used_by,
+                "probing `{}` lost the passes it is used by",
+                entry.key
+            );
+            if status.available {
+                assert!(
+                    status.path.is_some(),
+                    "`{}` is reported available with no path, so nothing says what was found",
+                    entry.key
+                );
+            } else {
+                assert!(
+                    status.install_hint.is_some(),
+                    "`{}` is reported missing with no install hint, so the row tells a reader \
+                     nothing they can act on",
+                    entry.key
+                );
+            }
+            answered.insert(status.name);
+        }
+
+        assert_eq!(
+            answered.len(),
+            expected_tools(),
+            "the probe answered for {} tools against the {} this platform declares, so a tool that \
+             stopped being probed could be replaced by one that started and the count would not \
+             move",
+            answered.len(),
+            expected_tools()
+        );
+    }
+
+    #[test]
+    fn a_tool_that_cannot_be_found_is_reported_missing_rather_than_present() {
+        let absent: ToolEntry = ToolEntry {
+            key: "disrobe-doctor-roster-control",
+            probe_names: &["disrobe-tool-that-is-not-installed-anywhere"],
+            env_overrides: &[],
+            kind: ToolKind::Optional,
+            used_by: "the control that proves an absent tool is reported absent",
+            version_args: &["--version"],
+        };
+        let status: ToolStatus = probe_entry(&absent);
+        assert!(
+            !status.available,
+            "the probe reported a tool that does not exist as available, so every availability \
+             answer above would be worthless"
+        );
+        assert!(status.path.is_none(), "an absent tool must carry no path");
+        assert!(
+            status.install_hint.is_some(),
+            "an absent tool must carry an install hint"
+        );
+    }
+}
