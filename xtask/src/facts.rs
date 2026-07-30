@@ -38,6 +38,8 @@ struct VerifiedBy {
     conditional: Option<String>,
 }
 
+const CITABLE_ROOTS: [&str; 2] = ["crates/", "benches/"];
+
 const SKIP_SHAPES: [(&str, &str); 5] = [
     ("return ;", "a bare early return"),
     ("return;", "a bare early return"),
@@ -161,10 +163,11 @@ fn verify_citation(root: &Path, bar: &Bar, cited: &VerifiedBy, issues: &mut Vec<
     let label: &str = &bar.label;
     let rel: &str = &cited.path;
 
-    if !rel.starts_with("crates/") {
+    if !CITABLE_ROOTS.iter().any(|root: &&str| rel.starts_with(root)) {
         issues.push(format!(
-            "bar `{label}` is verified by `{rel}`, which is not under crates/; a claim must be \
-             checked by code the workspace builds, never by a document or a generated artifact"
+            "bar `{label}` is verified by `{rel}`, which is under none of {CITABLE_ROOTS:?}; a claim \
+             must be checked by code the workspace builds, never by a document or a generated \
+             artifact"
         ));
         return;
     }
