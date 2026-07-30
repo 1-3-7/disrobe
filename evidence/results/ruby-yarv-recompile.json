@@ -5,7 +5,7 @@
   "detail": "real MRI recompiles the recovered source and the YARV opcode multiset matches 23648 of 23966 opcodes, which is 98.67%. The plotted 98 is the floor this gate enforces, not the measurement, so the bar shows the guaranteed minimum and the measured value is asserted at or above it.",
   "disrobe_leads": null,
   "ecosystem": "ruby",
-  "floor": 96.0,
+  "floor": 98.0,
   "floor_holds": true,
   "gate_source": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs (megafile >= 98)",
   "id": "ruby-yarv-recompile",

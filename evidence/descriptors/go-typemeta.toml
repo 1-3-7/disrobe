@@ -13,4 +13,4 @@ reproduce = "cargo test -p disrobe-pass-go --test go_typemeta"
 [source]
 recovery_group = "Go type-name recovery (go1.26.3 fixture)"
 recovery_bar = "type names"
-floor = 84.0
+floor = 100.0

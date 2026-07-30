@@ -14,8 +14,7 @@ note = "Coverage over the committed corpus is strong (the malicious/benign split
 [measured]
 result_file = "gate-harvest.json"
 gate_id = "pickle-corpus-coverage"
-disrobe_floor = 99.0
-
+disrobe_floor = 100.0
 [source]
 recovery_group = "Pickle corpus (committed fixtures graded against the CPython pickletools reference)"
 recovery_bar = "pickletools-graded fixtures"

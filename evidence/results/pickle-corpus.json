@@ -5,7 +5,7 @@
   "detail": "pickletools-semantics equivalence: every committed fixture must disassemble to a STOP, symbolically execute, and classify (benign vs malicious) correctly",
   "disrobe_leads": null,
   "ecosystem": "pickle",
-  "floor": 99.0,
+  "floor": 100.0,
   "floor_holds": true,
   "gate_source": "cargo test -p disrobe-pass-pickle --test corpus (gate pickle-corpus-coverage, harvested by cargo run -p disrobe-bench-head-to-head)",
   "id": "pickle-corpus",
