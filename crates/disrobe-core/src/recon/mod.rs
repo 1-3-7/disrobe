@@ -25,7 +25,6 @@ pub const RECON_SCHEMA: &str = "disrobe.recon/v0";
 const REGEX_SIZE_LIMIT: usize = 16 << 20;
 const MAX_FILE_BYTES: u64 = 64 << 20;
 const MAX_TREE_FILES: usize = 200_000;
-const MAX_VALUE_LEN: usize = 512;
 const ZIP_LOCAL_HEADER: [u8; 4] = [0x50, 0x4b, 0x03, 0x04];
 const ZIP_EMPTY_HEADER: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
 const MAX_ZIP_ENTRIES: usize = 50_000;
@@ -583,19 +582,6 @@ fn line_col(bytes: &[u8], offset: usize) -> (usize, usize) {
     (line, col)
 }
 
-#[inline]
-fn truncate_value(value: &str) -> String {
-    if value.len() <= MAX_VALUE_LEN {
-        value.to_owned()
-    } else {
-        let mut end: usize = MAX_VALUE_LEN;
-        while end > 0 && !value.is_char_boundary(end) {
-            end -= 1;
-        }
-        format!("{}\u{2026}", &value[..end])
-    }
-}
-
 fn endpoint_paths(text: &str, bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>) {
     for caps in ENDPOINT_PATH_RE.captures_iter(text) {
         let Some(g): Option<regex::Match<'_>> = caps.get(1) else {
@@ -610,7 +596,7 @@ fn endpoint_paths(text: &str, bytes: &[u8], path: Option<&str>, out: &mut Vec<Re
         out.push(ReconFinding {
             category: ReconCategory::Endpoint,
             rule_id: "DR-RECON-URI-PATH".to_owned(),
-            value: truncate_value(value),
+            value: value.to_owned(),
             path: path.map(str::to_owned),
             line,
             column,
@@ -637,7 +623,7 @@ fn push_capture(
         out.push(ReconFinding {
             category: ReconCategory::Endpoint,
             rule_id: rule_id.to_owned(),
-            value: truncate_value(g.as_str()),
+            value: g.as_str().to_owned(),
             path: path.map(str::to_owned),
             line,
             column,
@@ -660,7 +646,7 @@ fn endpoint_rules(text: &str, bytes: &[u8], path: Option<&str>, out: &mut Vec<Re
             out.push(ReconFinding {
                 category: rule.category,
                 rule_id: rule.rule_id.to_owned(),
-                value: truncate_value(m.as_str()),
+                value: m.as_str().to_owned(),
                 path: path.map(str::to_owned),
                 line,
                 column,
@@ -685,7 +671,7 @@ fn custom_rules(
             out.push(ReconFinding {
                 category: ReconCategory::Custom,
                 rule_id: format!("DR-RECON-CUSTOM-{}", rule.name.to_uppercase()),
-                value: truncate_value(m.as_str()),
+                value: m.as_str().to_owned(),
                 path: path.map(str::to_owned),
                 line,
                 column,
@@ -703,7 +689,7 @@ fn onion_findings(text: &str, bytes: &[u8], path: Option<&str>, out: &mut Vec<Re
         out.push(ReconFinding {
             category: ReconCategory::Onion,
             rule_id: "DR-RECON-ONION".to_owned(),
-            value: truncate_value(m.as_str()),
+            value: m.as_str().to_owned(),
             path: path.map(str::to_owned),
             line,
             column,
@@ -760,10 +746,18 @@ fn ioc_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>) {
             _ => Severity::Note,
         };
         let (line, column): (usize, usize) = line_col(bytes, ind.offset);
+        let encoding_suffix: &str = if ind.encoding == ioc::Encoding::Utf16Le {
+            WIDE_ENCODING_SUFFIX
+        } else {
+            ""
+        };
         out.push(ReconFinding {
             category,
-            rule_id: format!("DR-RECON-{}", ind.kind.label().to_uppercase()),
-            value: truncate_value(&ind.value),
+            rule_id: format!(
+                "DR-RECON-{}{encoding_suffix}",
+                ind.kind.label().to_uppercase()
+            ),
+            value: ind.value.clone(),
             path: path.map(str::to_owned),
             line,
             column,
@@ -826,7 +820,7 @@ fn push_malware_field(
     out.push(ReconFinding {
         category: ReconCategory::MalwareConfig,
         rule_id: format!("DR-RECON-MALCFG-{}-{}", family.label().to_uppercase(), key),
-        value: truncate_value(value),
+        value: value.to_owned(),
         path: path.map(str::to_owned),
         line,
         column,
@@ -862,12 +856,17 @@ fn njrat_findings(text: &str, path: Option<&str>, out: &mut Vec<ReconFinding>) {
     if !text.contains("|'|'|") {
         return;
     }
-    for line in text.lines() {
+    let mut line_start: usize = 0usize;
+    for raw_line in text.split_inclusive('\n') {
+        let line: &str = raw_line.trim_end_matches(['\n', '\r']);
         if !line.contains("|'|'|") {
+            line_start = line_start.saturating_add(raw_line.len());
             continue;
         }
-        let fields: Vec<malware_config::ConfigField> = malware_config::njrat_split(line, 0);
+        let fields: Vec<malware_config::ConfigField> =
+            malware_config::njrat_split(line, line_start);
         if fields.len() < 3 {
+            line_start = line_start.saturating_add(raw_line.len());
             continue;
         }
         for field in &fields {
@@ -876,7 +875,7 @@ fn njrat_findings(text: &str, path: Option<&str>, out: &mut Vec<ReconFinding>) {
                 &field.key.to_uppercase(),
                 &field.value,
                 text.as_bytes(),
-                0,
+                field.offset,
                 path,
                 out,
             );
@@ -899,8 +898,7 @@ fn remcos_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>
     let Some(plain): Option<Vec<u8>> = malware_config::remcos_settings_decode(blob) else {
         return;
     };
-    let summary: String = String::from_utf8_lossy(&plain[..plain.len().min(MAX_VALUE_LEN)])
-        .replace(|c: char| c.is_control(), " ");
+    let summary: String = String::from_utf8_lossy(&plain).replace(|c: char| c.is_control(), " ");
     push_malware_field(
         malware_config::MalwareFamily::Remcos,
         "SETTINGS",
@@ -1006,27 +1004,47 @@ fn first_self_describing_rc4(region: &[u8]) -> Option<usize> {
     None
 }
 
-fn extract_utf16le_ascii_strings(bytes: &[u8]) -> String {
-    let mut out: String = String::new();
+const MIN_WIDE_RUN_CHARS: usize = 4;
+const WIDE_ENCODING_SUFFIX: &str = "-UTF16LE";
+
+fn extract_utf16le_ascii_runs(bytes: &[u8]) -> Vec<(usize, String)> {
+    let mut runs: Vec<(usize, String)> = Vec::new();
     let mut i: usize = 0;
     while i + 1 < bytes.len() {
         let lo: u8 = bytes[i];
         let hi: u8 = bytes[i + 1];
         if (0x20..=0x7E).contains(&lo) && hi == 0x00 {
+            let start: usize = i;
             let mut chars: Vec<char> = Vec::new();
             while i + 1 < bytes.len() && (0x20..=0x7E).contains(&bytes[i]) && bytes[i + 1] == 0x00 {
                 chars.push(bytes[i] as char);
                 i += 2;
             }
-            if chars.len() >= 4 {
-                out.extend(chars);
-                out.push('\n');
+            if chars.len() >= MIN_WIDE_RUN_CHARS {
+                runs.push((start, chars.into_iter().collect()));
             }
         } else {
             i += 1;
         }
     }
-    out
+    runs
+}
+
+fn anchor_wide_findings(
+    out: &mut [ReconFinding],
+    first_new: usize,
+    bytes: &[u8],
+    run_start: usize,
+) {
+    let (line, column): (usize, usize) = line_col(bytes, run_start);
+    for finding in out.iter_mut().skip(first_new) {
+        finding.offset = run_start;
+        finding.line = line;
+        finding.column = column;
+        if !finding.rule_id.ends_with(WIDE_ENCODING_SUFFIX) {
+            finding.rule_id.push_str(WIDE_ENCODING_SUFFIX);
+        }
+    }
 }
 
 #[must_use]
@@ -1037,7 +1055,6 @@ pub fn scan_bytes(
 ) -> (Vec<ReconFinding>, bool) {
     let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(bytes);
     let valid_utf8: bool = matches!(text, std::borrow::Cow::Borrowed(_));
-    let wide_text: String = extract_utf16le_ascii_strings(bytes);
 
     let mut out: Vec<ReconFinding> = Vec::new();
     secret_findings(bytes, path, &mut out);
@@ -1046,11 +1063,12 @@ pub fn scan_bytes(
     endpoint_paths(&text, bytes, path, &mut out);
     endpoint_calls(&text, bytes, path, &mut out);
     onion_findings(&text, bytes, path, &mut out);
-    if !wide_text.is_empty() {
-        let wide_bytes: &[u8] = wide_text.as_bytes();
-        endpoint_rules(&wide_text, wide_bytes, path, &mut out);
-        onion_findings(&wide_text, wide_bytes, path, &mut out);
-        ioc_findings(wide_bytes, path, &mut out);
+    for (run_start, run) in extract_utf16le_ascii_runs(bytes) {
+        let first_new: usize = out.len();
+        let run_bytes: &[u8] = run.as_bytes();
+        endpoint_rules(&run, run_bytes, path, &mut out);
+        onion_findings(&run, run_bytes, path, &mut out);
+        anchor_wide_findings(&mut out, first_new, bytes, run_start);
     }
     malware_config_findings(bytes, &text, path, &mut out);
     custom_rules(&text, bytes, path, config, &mut out);
@@ -1870,6 +1888,60 @@ mod tests {
         assert!(
             values.contains(&first.as_str()) && values.contains(&second.as_str()),
             "dedup keys on the value, so two distinct keys must not collapse into one: {values:?}"
+        );
+    }
+
+    #[test]
+    fn two_long_values_sharing_a_512_byte_prefix_both_survive_dedup() {
+        let shared: String = "abcdefgh".repeat(80);
+        assert!(shared.len() > 512, "shared prefix = {}", shared.len());
+        let first: String = format!("https://example.com/{shared}/alpha");
+        let second: String = format!("https://example.com/{shared}/omega");
+        let report: ReconReport = report_bytes(
+            format!("one {first}\ntwo {second}\n").as_bytes(),
+            Some("c2.txt"),
+            &ReconConfig::default(),
+        );
+        let values: Vec<&str> = report
+            .findings
+            .iter()
+            .map(|f: &ReconFinding| f.value.as_str())
+            .collect();
+        assert!(
+            values.contains(&first.as_str()),
+            "the first long value must be reported whole, not as a prefix: {values:?}"
+        );
+        assert!(
+            values.contains(&second.as_str()),
+            "the second long value must be reported whole, not as a prefix: {values:?}"
+        );
+    }
+
+    #[test]
+    fn a_wide_finding_is_anchored_in_the_real_file_and_names_its_encoding() {
+        const LEAD: &[u8] = b"MZ\x90\x00 plain header text padding here ";
+        let mut buffer: Vec<u8> = LEAD.to_vec();
+        let run_start: usize = buffer.len();
+        for b in b"http://wide.example.com/c2" {
+            buffer.push(*b);
+            buffer.push(0x00);
+        }
+        buffer.extend_from_slice(b"\x00\x00trailing plain bytes");
+        let report: ReconReport =
+            report_bytes(&buffer, Some("sample.bin"), &ReconConfig::default());
+        let wide: &ReconFinding = report
+            .findings
+            .iter()
+            .find(|f: &&ReconFinding| f.value.contains("wide.example.com"))
+            .unwrap_or_else(|| panic!("utf-16le url not reported: {:?}", report.findings));
+        assert_eq!(
+            wide.offset, run_start,
+            "the offset must point at the wide run in the real file: {wide:?}"
+        );
+        assert!(
+            wide.rule_id.ends_with(WIDE_ENCODING_SUFFIX),
+            "a finding lifted out of a utf-16le run must name that encoding in its rule id \
+             rather than read as a plain-text hit: {wide:?}"
         );
     }
 
