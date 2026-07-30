@@ -1,273 +1,22 @@
-#![allow(
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unwrap_used,
-    clippy::format_push_string,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap
-)]
-use std::collections::BTreeMap;
+#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+
+#[path = "support/dvm1_reference.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod dvm1_reference;
+
+use std::fmt::Write as _;
 
 use disrobe_pass_lua::decompile::lift::{LiftedProto, lift_proto_dialect};
 use disrobe_pass_lua::obfuscator::vm_devirt::{
-    BUILDER_MAGIC, BootstrapKeys, DevirtReport, Devirtualized, PB_ADD, PB_AND, PB_EMIT_MAP,
-    PB_HALT, PB_MUL, PB_PUSH_IMM, PB_PUSH_SEED, PB_SET_XORKEY, VM_KIND_IRONBREW2, VM_MAGIC,
-    VOP_ADD, VOP_CALL, VOP_GETGLOBAL, VOP_LOADK, VOP_MOVE, VOP_RETURN, devirtualize,
-    emulate_perm_builder,
+    BootstrapKeys, DevirtReport, Devirtualized, VM_KIND_IRONBREW2, devirtualize,
 };
-use disrobe_pass_lua::reader::common::{LuaConstant, LuaDialect, LuaProto};
-
-const VK_NIL: u8 = 0;
-const VK_BOOL: u8 = 1;
-const VK_NUMBER: u8 = 3;
-const VK_STRING: u8 = 4;
-
-struct VmInsn {
-    vop: u8,
-    a: u32,
-    b: u32,
-    c: u32,
-}
-
-struct VmModule {
-    max_stack: u8,
-    num_params: u8,
-    is_vararg: u8,
-    constants: Vec<LuaConstant>,
-    code: Vec<VmInsn>,
-}
-
-struct PermRecipe {
-    seed: u32,
-    step: u32,
-    base: u32,
-    key_mask: u32,
-}
-
-const CANONICAL_HANDLERS: [u8; 6] = [
-    VOP_MOVE,
-    VOP_LOADK,
-    VOP_GETGLOBAL,
-    VOP_ADD,
-    VOP_CALL,
-    VOP_RETURN,
-];
-
-fn push_u32(out: &mut Vec<u8>, value: u32) {
-    out.extend_from_slice(&value.to_le_bytes());
-}
-
-fn build_permutation_program(recipe: &PermRecipe) -> Vec<u8> {
-    let mut program: Vec<u8> = Vec::new();
-    program.extend_from_slice(BUILDER_MAGIC);
-    program.push(PB_PUSH_SEED);
-    program.push(PB_PUSH_IMM);
-    push_u32(&mut program, recipe.key_mask);
-    program.push(PB_AND);
-    program.push(PB_SET_XORKEY);
-    for (slot, canonical) in CANONICAL_HANDLERS.iter().enumerate() {
-        program.push(PB_PUSH_IMM);
-        push_u32(&mut program, slot as u32);
-        program.push(PB_PUSH_IMM);
-        push_u32(&mut program, recipe.step);
-        program.push(PB_MUL);
-        program.push(PB_PUSH_IMM);
-        push_u32(&mut program, recipe.base);
-        program.push(PB_ADD);
-        program.push(PB_PUSH_SEED);
-        program.push(PB_ADD);
-        program.push(PB_PUSH_IMM);
-        push_u32(&mut program, 0xFF);
-        program.push(PB_AND);
-        program.push(PB_PUSH_IMM);
-        push_u32(&mut program, u32::from(*canonical));
-        program.push(PB_EMIT_MAP);
-    }
-    program.push(PB_HALT);
-    program
-}
-
-const fn reference_encoded(slot: u32, recipe: &PermRecipe) -> u8 {
-    let computed: u32 = slot
-        .wrapping_mul(recipe.step)
-        .wrapping_add(recipe.base)
-        .wrapping_add(recipe.seed);
-    (computed & 0xFF) as u8
-}
-
-fn solved_permutation(recipe: &PermRecipe) -> BootstrapKeys {
-    let program: Vec<u8> = build_permutation_program(recipe);
-    emulate_perm_builder(&program, recipe.seed).expect("emulate the permutation builder")
-}
-
-const fn vop_for_index(idx: usize) -> u8 {
-    CANONICAL_HANDLERS[idx]
-}
-
-fn encoded_for_vop(opmap: &BTreeMap<u8, u8>, vop: u8) -> u8 {
-    opmap
-        .iter()
-        .find(|(_, v): &(&u8, &u8)| **v == vop)
-        .map(|(k, _): (&u8, &u8)| *k)
-        .expect("canonical op present in solved permutation")
-}
-
-fn encode_module(module: &VmModule, opmap: &BTreeMap<u8, u8>, xor_key: u8) -> Vec<u8> {
-    let mut body: Vec<u8> = Vec::new();
-    body.push(module.max_stack);
-    body.push(module.num_params);
-    body.push(module.is_vararg);
-    push_u32(&mut body, module.constants.len() as u32);
-    for k in &module.constants {
-        match k {
-            LuaConstant::Nil => body.push(VK_NIL),
-            LuaConstant::Bool(b) => {
-                body.push(VK_BOOL);
-                body.push(u8::from(*b));
-            }
-            LuaConstant::Number(n) => {
-                body.push(VK_NUMBER);
-                body.extend_from_slice(&n.to_le_bytes());
-            }
-            LuaConstant::Integer(i) => {
-                body.push(VK_NUMBER);
-                body.extend_from_slice(&(*i as f64).to_le_bytes());
-            }
-            LuaConstant::Str(s) => {
-                body.push(VK_STRING);
-                push_u32(&mut body, s.len() as u32);
-                body.extend_from_slice(s.as_bytes());
-            }
-            _ => panic!("unsupported constant in encoder"),
-        }
-    }
-    push_u32(&mut body, module.code.len() as u32);
-    for insn in &module.code {
-        body.push(encoded_for_vop(opmap, insn.vop));
-        push_u32(&mut body, insn.a);
-        push_u32(&mut body, insn.b);
-        push_u32(&mut body, insn.c);
-    }
-    for byte in &mut body {
-        *byte ^= xor_key;
-    }
-    let mut payload: Vec<u8> = Vec::with_capacity(body.len() + 6);
-    payload.extend_from_slice(VM_MAGIC);
-    payload.push(VM_KIND_IRONBREW2);
-    payload.push(xor_key);
-    payload.extend_from_slice(&body);
-    payload
-}
-
-fn to_hex(bytes: &[u8]) -> String {
-    let mut out: String = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push_str(&format!("{b:02x}"));
-    }
-    out
-}
-
-fn to_lua_decimal_escape(bytes: &[u8]) -> String {
-    let mut out: String = String::new();
-    for byte in bytes {
-        out.push('\\');
-        out.push_str(&byte.to_string());
-    }
-    out
-}
-
-fn to_lua_byte_table(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|byte: &u8| byte.to_string())
-        .collect::<Vec<String>>()
-        .join(",")
-}
-
-fn render_bootstrap(recipe: &PermRecipe, family_header: &str) -> String {
-    let program: Vec<u8> = build_permutation_program(recipe);
-    let mut out: String = String::new();
-    out.push_str(family_header);
-    out.push('\n');
-    out.push_str(&format!("SEED={}\n", recipe.seed));
-    out.push_str(&format!("PERMBUILD={}\n", to_hex(&program)));
-    out
-}
-
-fn assert_no_answer_key_in_bootstrap(bootstrap: &str, keys: &BootstrapKeys, xor_key: u8) {
-    assert!(
-        !bootstrap.contains("OPMAP"),
-        "bootstrap must not contain a plaintext opcode table"
-    );
-    assert!(
-        !bootstrap.contains("XORKEY"),
-        "bootstrap must not contain a plaintext xor key marker"
-    );
-    let dec_key: String = format!("{xor_key}");
-    assert!(
-        !bootstrap.contains(&format!("XORKEY={dec_key}")),
-        "bootstrap must not spell out the xor key"
-    );
-    for (encoded, canonical) in &keys.opmap {
-        let pair_decimal: String = format!("[{encoded}]={canonical}");
-        assert!(
-            !bootstrap.contains(&pair_decimal),
-            "bootstrap must not contain the cleartext mapping {pair_decimal}"
-        );
-    }
-}
-
-fn known_module() -> VmModule {
-    VmModule {
-        max_stack: 4,
-        num_params: 0,
-        is_vararg: 2,
-        constants: vec![
-            LuaConstant::Str("print".to_owned()),
-            LuaConstant::Number(40.0),
-            LuaConstant::Number(2.0),
-        ],
-        code: vec![
-            VmInsn {
-                vop: VOP_GETGLOBAL,
-                a: 0,
-                b: 0,
-                c: 0,
-            },
-            VmInsn {
-                vop: VOP_LOADK,
-                a: 1,
-                b: 1,
-                c: 0,
-            },
-            VmInsn {
-                vop: VOP_LOADK,
-                a: 2,
-                b: 2,
-                c: 0,
-            },
-            VmInsn {
-                vop: VOP_ADD,
-                a: 1,
-                b: 1,
-                c: 2,
-            },
-            VmInsn {
-                vop: VOP_CALL,
-                a: 0,
-                b: 2,
-                c: 1,
-            },
-            VmInsn {
-                vop: VOP_RETURN,
-                a: 0,
-                b: 1,
-                c: 0,
-            },
-        ],
-    }
-}
+use disrobe_pass_lua::reader::common::{LuaDialect, LuaProto};
+use dvm1_reference::{
+    CANONICAL_HANDLERS, PermRecipe, VmModule, assert_no_answer_key_in_bootstrap,
+    build_permutation_program, encode_module, encoded_for_vop, known_module, reference_encoded,
+    render_bootstrap, solved_permutation, to_hex, to_lua_byte_table, to_lua_decimal_escape,
+    vop_for_index,
+};
 
 #[test]
 fn devirt_recovers_handlers_and_constants() {
@@ -488,7 +237,7 @@ fn ironbrew2_peel_devirtualizes_embedded_payload() {
     let payload: Vec<u8> = encode_module(&module, &keys.opmap, xor_key);
     let mut bootstrap: String = render_bootstrap(&recipe, "-- IronBrew2\nIRONBREW_VM");
     assert_no_answer_key_in_bootstrap(&bootstrap, &keys, xor_key);
-    bootstrap.push_str(&format!("VMPAYLOAD={} \n", to_hex(&payload)));
+    let _ = writeln!(bootstrap, "VMPAYLOAD={} ", to_hex(&payload));
 
     let opts: DeobfOptions = DeobfOptions {
         i_have_authorization: true,
@@ -529,7 +278,7 @@ fn moonsec_v3_peel_devirtualizes_embedded_payload() {
     let payload: Vec<u8> = encode_module(&module, &keys.opmap, xor_key);
     let mut bootstrap: String = render_bootstrap(&recipe, "-- MoonSec v3\nMS_VM_ENTRY");
     assert_no_answer_key_in_bootstrap(&bootstrap, &keys, xor_key);
-    bootstrap.push_str(&format!("VMPAYLOAD={} \n", to_hex(&payload)));
+    let _ = writeln!(bootstrap, "VMPAYLOAD={} ", to_hex(&payload));
 
     let opts: DeobfOptions = DeobfOptions {
         i_have_authorization: true,

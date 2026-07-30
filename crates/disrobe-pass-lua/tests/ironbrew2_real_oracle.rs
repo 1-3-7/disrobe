@@ -1,12 +1,14 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+
+#[path = "support/lua_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod lua_toolchain;
+
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use disrobe_pass_lua::ironbrew2_recover::recover_runnable;
-
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+use lua_toolchain::{LuaInterpreter, require_interpreter, run_lua};
 
 fn corpus_dir() -> PathBuf {
     let manifest_dir: &str = env!("CARGO_MANIFEST_DIR");
@@ -27,53 +29,22 @@ fn load(rel: &str) -> String {
     fs::read_to_string(&p).unwrap_or_else(|_| panic!("missing fixture {rel}"))
 }
 
-fn find_lua() -> Option<String> {
-    let candidates: [&str; 6] = ["lua", "lua5.4", "lua5.1", "luajit", "lua54", "lua51"];
-    for c in candidates {
-        if Command::new(c)
-            .arg("-v")
-            .output()
-            .is_ok_and(|o| o.status.success() || !o.stderr.is_empty())
-        {
-            return Some(c.to_owned());
-        }
-    }
-    None
-}
-
-fn run_lua(interp: &str, source: &str) -> Option<String> {
-    let unique: u64 = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let purpose: String = format!("ib2_oracle_{}_{unique}", std::process::id());
-    let (scratch, file): (disrobe_core::scratch::ScratchFile, fs::File) =
-        disrobe_core::scratch::ScratchFile::create(&purpose, "lua").ok()?;
-    drop(file);
-    let tmp: PathBuf = scratch.path().to_path_buf();
-    fs::write(&tmp, source).ok()?;
-    let out = Command::new(interp).arg(&tmp).output().ok()?;
-    if !out.status.success() {
-        eprintln!("lua run failed: {}", String::from_utf8_lossy(&out.stderr));
-        return None;
-    }
-    Some(String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n"))
-}
-
 fn oracle_mode(name: &str, mode: &str) {
-    let Some(interp): Option<String> = find_lua() else {
-        eprintln!("no lua interpreter on PATH; skipping execution oracle for {name}.{mode}");
+    let graded: String = format!("the IronBrew2 execution differential for {name}.{mode}");
+    let Some(interp): Option<LuaInterpreter> = require_interpreter(&graded) else {
         return;
     };
     let original_src: String = load(&format!("original/{name}.lua"));
     let obf_src: String = load(&format!("obfuscated/{name}.{mode}.lua"));
 
-    let expected: String = run_lua(&interp, &original_src)
-        .unwrap_or_else(|| panic!("original {name}.lua failed to run under {interp}"));
+    let expected: String = run_lua(&interp, &format!("original/{name}.lua"), &original_src);
+    assert!(
+        !expected.trim().is_empty(),
+        "original {name}.lua prints nothing, so comparing stdout would accept any recovered program"
+    );
 
     let recovered: String = recover_runnable(&obf_src).expect("recover runnable");
-    let actual: String = run_lua(&interp, &recovered).unwrap_or_else(|| {
-        panic!(
-            "recovered {name}.{mode} failed to run under {interp}\n--- recovered ---\n{recovered}"
-        )
-    });
+    let actual: String = run_lua(&interp, &format!("{name}.{mode}.lua"), &recovered);
 
     assert_eq!(
         actual.trim_end(),
