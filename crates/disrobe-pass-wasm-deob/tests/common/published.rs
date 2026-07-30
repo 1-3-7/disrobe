@@ -19,7 +19,7 @@ pub fn recovery_json_path() -> PathBuf {
         .join("recovery.json")
 }
 
-pub fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {
+fn recovery_document() -> serde_json::Value {
     let path: PathBuf = recovery_json_path();
     let raw: String = fs::read_to_string(&path).unwrap_or_else(|error: std::io::Error| {
         panic!(
@@ -28,20 +28,37 @@ pub fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {
             path.display()
         )
     });
-    let doc: serde_json::Value = serde_json::from_str(&raw)
-        .unwrap_or_else(|error: serde_json::Error| panic!("parse {}: {error}", path.display()));
+    serde_json::from_str(&raw)
+        .unwrap_or_else(|error: serde_json::Error| panic!("parse {}: {error}", path.display()))
+}
+
+pub fn published_group(heading_needle: &str) -> serde_json::Value {
+    let doc: serde_json::Value = recovery_document();
     let mut found: Vec<serde_json::Value> = Vec::new();
     for group in doc["groups"].as_array().expect("groups array") {
         let heading_matches: bool = group["heading"]
             .as_str()
             .is_some_and(|heading: &str| heading.contains(heading_needle));
-        if !heading_matches {
-            continue;
+        if heading_matches {
+            found.push(group.clone());
         }
-        for bar in group["bars"].as_array().unwrap_or(&Vec::new()) {
-            if bar["label"].as_str() == Some(label) {
-                found.push(bar.clone());
-            }
+    }
+    assert_eq!(
+        found.len(),
+        1,
+        "xtask/data/recovery.json must carry exactly one group whose heading contains \
+         `{heading_needle}`, found {}; a figure that cannot be located is never a pass",
+        found.len()
+    );
+    found.remove(0)
+}
+
+pub fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {
+    let group: serde_json::Value = published_group(heading_needle);
+    let mut found: Vec<serde_json::Value> = Vec::new();
+    for bar in group["bars"].as_array().unwrap_or(&Vec::new()) {
+        if bar["label"].as_str() == Some(label) {
+            found.push(bar.clone());
         }
     }
     assert_eq!(
