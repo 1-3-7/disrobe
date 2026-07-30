@@ -1,5 +1,5 @@
 {
-  "descriptor_count": 21,
+  "descriptor_count": 22,
   "descriptors": [
     {
       "ci_attested": true,
@@ -190,6 +190,20 @@
       "measured": "100.00%",
       "oracle_strength": "strong",
       "reproduce": "cargo test -p disrobe-pass-mobile --test real_hermes_sample"
+    },
+    {
+      "ci_attested": true,
+      "claim": "disrobe decompiles JVM bytecode to Java whose observable per-method behaviour under a real JVM matches the original, across the EdgeCases corpus.",
+      "competitors": [],
+      "disrobe_leads": null,
+      "ecosystem": "jvm",
+      "external_oracle": "real javac (JDK 25) plus a real JVM: the original and the recovered source are each compiled and run, and every observable per-method result is compared",
+      "floor": 89.31,
+      "floor_holds": true,
+      "id": "jvm-execution-differential",
+      "measured": "89.31%",
+      "oracle_strength": "strong",
+      "reproduce": "cargo test -p disrobe-pass-jvm --test edgecases_execution_differential"
     },
     {
       "ci_attested": true,

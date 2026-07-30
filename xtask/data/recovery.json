@@ -119,7 +119,7 @@
     },
     {
       "heading": "JVM classfile (EdgeCases corpus, per-method real-javac recompile)",
-      "axis_label": "methods that recompile error-free under javac, %",
+      "axis_label": "methods over the 131-method EdgeCases corpus, %; read each bar's own grading tier, because recompile-acceptance and execution-equivalence are different standards",
       "kind": "percent",
       "bars": [
         {
@@ -133,6 +133,18 @@
           "source": "crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs (report_per_method_javac_recompile asserts ok >= PER_METHOD_JAVAC_OK_FLOOR 131 of PER_METHOD_JAVAC_TOTAL 131); CI runs it via the test job with actions/setup-java (JDK 25); floor measured 2026-06-22 after fixing the pickWord-unmasked defects",
           "num": 131,
           "den": 131
+        },
+        {
+          "label": "per-method, execution-verified",
+          "value": 89.31,
+          "num": 117,
+          "den": 131,
+          "verified_by": {
+            "path": "crates/disrobe-pass-jvm/tests/edgecases_execution_differential.rs",
+            "function": "recovered_methods_execute_equivalently_under_a_real_jvm"
+          },
+          "detail": "117 of the same 131 top-level methods are EXECUTION-equivalent, which is a strictly stronger standard than the recompile bar beside it: the original and the recovered source are each compiled by real javac, both are run under a real JVM, and every observable per-method result is compared. Read the residual 14 as the two separate populations it is, never as one: 8 methods are javac-clean and measurably DIVERGENT, and 6 are javac-clean but not executable in isolation (5 measure a nested-type stub, 1 is not self-reproducible), so those 6 are ungraded rather than passing. The distinction is not academic in this crate, which once emitted a method that compiled cleanly and incremented a counter twice on its exception path.",
+          "source": "crates/disrobe-pass-jvm/tests/edgecases_execution_differential.rs (EXECUTION_EQUIVALENT_FLOOR 117 of PER_METHOD_TOTAL 131, with the equivalent set pinned as a membership list of method names rather than a count, so a method cannot leave it silently and the pinned-divergent lists only ever shrink); the reference is real javac plus a real JVM comparing observable behaviour, never the decompiler's own output; the_execution_differential_reports_a_double_counted_exception_path injects a second counter increment on divSafe's recovered exception path and requires this differential to report divergence while javac still accepts the file; measured 117 equivalent, 8 divergent, 6 not driven on JDK 25"
         }
       ]
     },
