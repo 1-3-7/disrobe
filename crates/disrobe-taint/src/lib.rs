@@ -11,9 +11,11 @@ mod config;
 mod engine;
 mod report;
 mod summary;
+mod thunks;
 
 pub use config::TaintConfig;
-pub use engine::analyze;
+pub use engine::{analyze, analyze_with_import_thunks};
 pub use report::{TaintFinding, TaintReport, TaintStep, UnresolvedCall, UnresolvedCallKind};
+pub use thunks::ImportThunks;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

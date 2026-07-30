@@ -12,6 +12,7 @@ use crate::report::{TaintFinding, TaintReport, TaintStep, UnresolvedCall, Unreso
 use crate::summary::{
     Arena, FeatureSet, FunctionSummary, KindSet, OutPort, PathId, SinkFrame, SummaryKey,
 };
+use crate::thunks::ImportThunks;
 
 const MAX_PATH_STEPS: usize = 128;
 const MAX_RECORDED_UNRESOLVED_CALLS: usize = 4096;
@@ -67,6 +68,7 @@ struct ResolvedModule<'a> {
     module: &'a NirModule,
     symbol_by_addr: BTreeMap<u64, &'a NirSymbol>,
     function_at: BTreeMap<u64, usize>,
+    thunks: &'a ImportThunks,
     abi: CallAbi,
 }
 
@@ -89,7 +91,7 @@ const fn direct_call(instr: &NirInstr) -> Option<DirectCall> {
 }
 
 impl<'a> ResolvedModule<'a> {
-    fn new(module: &'a NirModule) -> Self {
+    fn new(module: &'a NirModule, thunks: &'a ImportThunks) -> Self {
         let symbol_by_addr: BTreeMap<u64, &'a NirSymbol> = module
             .symbols
             .iter()
@@ -106,8 +108,16 @@ impl<'a> ResolvedModule<'a> {
             module,
             symbol_by_addr,
             function_at,
+            thunks,
             abi,
         }
+    }
+
+    fn named_at(&self, addr: u64) -> Option<String> {
+        self.symbol_by_addr
+            .get(&addr)
+            .map(|s: &&'a NirSymbol| s.name.clone())
+            .or_else(|| self.thunks.name_at(addr).map(str::to_owned))
     }
 
     fn callee_symbol(&self, instr: &NirInstr) -> Option<String> {
@@ -117,15 +127,16 @@ impl<'a> ResolvedModule<'a> {
         let DirectCall::ToAddress(addr) = direct_call(instr)? else {
             return None;
         };
-        self.symbol_by_addr
-            .get(&addr)
-            .map(|s: &&'a NirSymbol| s.name.clone())
+        self.named_at(addr)
     }
 
     fn callee_internal(&self, instr: &NirInstr) -> Option<u64> {
         let DirectCall::ToAddress(addr) = direct_call(instr)? else {
             return None;
         };
+        if self.thunks.name_at(addr).is_some() {
+            return None;
+        }
         self.function_at.contains_key(&addr).then_some(addr)
     }
 
@@ -143,9 +154,7 @@ impl<'a> ResolvedModule<'a> {
             _ => match direct_call(instr)? {
                 DirectCall::ToUnknown => (UnresolvedCallKind::IndirectTarget, None),
                 DirectCall::ToAddress(addr) => {
-                    if self.function_at.contains_key(&addr)
-                        || self.symbol_by_addr.contains_key(&addr)
-                    {
+                    if self.function_at.contains_key(&addr) || self.named_at(addr).is_some() {
                         return None;
                     }
                     (UnresolvedCallKind::UnnamedTarget, Some(addr))
@@ -178,10 +187,19 @@ struct Ctx<'a> {
 
 #[must_use]
 pub fn analyze(module: &NirModule, config: &TaintConfig) -> TaintReport {
+    analyze_with_import_thunks(module, config, &ImportThunks::new())
+}
+
+#[must_use]
+pub fn analyze_with_import_thunks(
+    module: &NirModule,
+    config: &TaintConfig,
+    thunks: &ImportThunks,
+) -> TaintReport {
     if config.is_empty() {
         return TaintReport::empty();
     }
-    let resolved: ResolvedModule<'_> = ResolvedModule::new(module);
+    let resolved: ResolvedModule<'_> = ResolvedModule::new(module, thunks);
     let mut arena: Arena = Arena::default();
     let mut summaries: Summaries = Summaries::new();
 
