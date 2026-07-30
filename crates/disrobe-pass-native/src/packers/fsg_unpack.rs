@@ -1,8 +1,13 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::packers::pe_resource::{
+    ResourceDirectoryRecovery, ResourceLeaf, ResourceTree, parse_resource_tree,
+    recover_resource_directory,
+};
 use crate::packers::pe_sections::{
-    PeImage, PeSection, parse_pe_image, read_u16 as read_u16_le, read_u32 as read_u32_le,
+    DataDirectory, PeImage, PeSection, parse_pe_image, read_u16 as read_u16_le,
+    read_u32 as read_u32_le,
 };
 
 const FSG_MIN_STUB_BYTES: usize = 0x26;
@@ -45,6 +50,7 @@ pub struct FsgUnpackOutput {
     pub import_descriptor_va: Option<u32>,
     pub import_descriptor_block: Vec<u8>,
     pub iat_entries: Vec<FsgImport>,
+    pub resource_recovery: Option<ResourceDirectoryRecovery>,
     pub residual_note: String,
 }
 
@@ -69,9 +75,11 @@ pub fn unpack_fsg(packed_bytes: &[u8]) -> Result<FsgUnpackOutput> {
     let pe: PeImage = parse_fsg_pe(packed_bytes)?;
     let stub_raw_off: usize = find_entry_stub_raw_offset(&pe, packed_bytes)?;
     let anchors: StubAnchors = decode_stub_anchors(&pe, packed_bytes, stub_raw_off)?;
-    let depacked: DepackedImage = depack_all_blocks(&pe, packed_bytes, &anchors)?;
+    let mut depacked: DepackedImage = depack_all_blocks(&pe, packed_bytes, &anchors)?;
     let iat_entries: Vec<FsgImport> =
         parse_import_meta(packed_bytes, &pe, &anchors).unwrap_or_default();
+    let resource_recovery: Option<ResourceDirectoryRecovery> =
+        restore_resource_section(&pe, packed_bytes, &depacked.blocks, &mut depacked.image);
     Ok(FsgUnpackOutput {
         raw_image: depacked.image,
         blocks: depacked.blocks,
@@ -82,6 +90,7 @@ pub fn unpack_fsg(packed_bytes: &[u8]) -> Result<FsgUnpackOutput> {
         import_descriptor_va: depacked.import_descriptor_va,
         import_descriptor_block: depacked.import_descriptor_block,
         iat_entries,
+        resource_recovery,
         residual_note: "residual byte-diffs fall inside the original IAT / import directory: loader-resolved absolute import addresses are written at load time and were never in the packed stream; import names and ordinals are recovered".to_owned(),
     })
 }
@@ -162,6 +171,47 @@ fn depack_all_blocks(pe: &PeImage, bytes: &[u8], anchors: &StubAnchors) -> Resul
         import_descriptor_va,
         import_descriptor_block,
     })
+}
+
+const PE_RESOURCE_DIRECTORY_INDEX: usize = 2;
+
+fn restore_resource_section(
+    pe: &PeImage,
+    bytes: &[u8],
+    blocks: &[FsgBlock],
+    image: &mut Vec<u8>,
+) -> Option<ResourceDirectoryRecovery> {
+    let dir: &DataDirectory = pe.data_directories.get(PE_RESOURCE_DIRECTORY_INDEX)?;
+    if dir.virtual_address == 0 || dir.size == 0 {
+        return None;
+    }
+    let dir_off: usize = rva_to_file_offset(pe, bytes, dir.virtual_address).ok()?;
+    let tree: ResourceTree =
+        parse_resource_tree(bytes, dir_off, dir.virtual_address, dir.size as usize).ok()?;
+    let original_base: u32 = original_resource_base(blocks, &tree, dir.size)?;
+    let resolve = |rva: u32| -> Option<usize> { rva_to_file_offset(pe, bytes, rva).ok() };
+    recover_resource_directory(bytes, &tree, dir.size, original_base, 0, &resolve, image).ok()
+}
+
+fn original_resource_base(blocks: &[FsgBlock], tree: &ResourceTree, dir_bytes: u32) -> Option<u32> {
+    let mut hits: Vec<u32> = blocks
+        .iter()
+        .filter(|b: &&FsgBlock| !b.stub_metadata)
+        .map(|b: &FsgBlock| b.dest_rva)
+        .filter(|&dest: &u32| {
+            tree.leaves.iter().any(|l: &ResourceLeaf| {
+                l.data_rva
+                    .checked_sub(dest)
+                    .is_some_and(|rel: u32| rel < dir_bytes)
+            })
+        })
+        .collect();
+    hits.sort_unstable();
+    hits.dedup();
+    match hits.as_slice() {
+        [only] => Some(*only),
+        _ => None,
+    }
 }
 
 fn header_span(pe: &PeImage, bytes: &[u8]) -> usize {
