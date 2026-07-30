@@ -227,7 +227,8 @@ pub use warzone_crypter_unpack::{
 pub mod recovered_image;
 
 pub use recovered_image::{
-    CarvedSectionArtifact, RecoveredImage, RecoveryOracle, recover_detected,
+    CarvedSectionArtifact, RecoveredImage, RecoveryOracle, RecoveryRoute, recover_detected,
+    recovery_route,
 };
 
 pub mod loader_generators;
@@ -865,6 +866,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+    use crate::packers::recovered_image::status_emits_recovered_image;
 
     const EVERY_PACKER: [Packer; 29] = [
         Packer::Donut,
@@ -1049,6 +1051,54 @@ mod tests {
                 + DELEGATED.len(),
             EVERY_PACKER.len(),
             "the published tiers must partition the enum with nothing left over"
+        );
+    }
+
+    #[test]
+    fn every_recovery_route_reaches_a_roster_entry_its_tier_lets_run() {
+        let roster: BTreeSet<&'static str> = EVERY_PACKER
+            .iter()
+            .map(|packer: &Packer| packer.label())
+            .collect();
+        for packer in Packer::ALL {
+            if recovery_route(*packer).is_none() {
+                continue;
+            }
+            assert!(
+                roster.contains(packer.label()),
+                "{} has a recovery route in packers/recovered_image.rs but no roster entry, so \
+                 every published packer total understates this crate by at least one",
+                packer.label(),
+            );
+            assert!(
+                status_emits_recovered_image(packer.unpacker_status()),
+                "{} has a recovery route in packers/recovered_image.rs but its {:?} tier stops \
+                 recover_detected from ever calling it: the route is unreachable and the published \
+                 tier split credits the recovery to the wrong tier",
+                packer.label(),
+                packer.unpacker_status(),
+            );
+        }
+    }
+
+    #[test]
+    fn the_tiers_that_promise_a_recovered_image_route_to_one() {
+        let unrouted: Vec<&'static str> = EVERY_PACKER
+            .into_iter()
+            .filter(|packer: &Packer| status_emits_recovered_image(packer.unpacker_status()))
+            .filter(|packer: &Packer| recovery_route(*packer).is_none())
+            .map(Packer::label)
+            .collect();
+        assert_eq!(
+            unrouted,
+            vec!["yodas-crypter", "yodas-protector"],
+            "recover_detected attempts a recovery for the Implemented and \
+             GreyZoneDetectAndCarve tiers, so every packer in them needs a route in \
+             packers/recovered_image.rs. Two are on record without one: yodas-crypter, whose \
+             packed-only carve hands back the input image unchanged, and yodas-protector, whose \
+             carve needs the original image alongside the packed one. Any other name here is a \
+             tier promising a recovery that nothing performs; a name missing from here is a route \
+             that landed without the tier moving with it"
         );
     }
 
