@@ -14,4 +14,4 @@ note = "Op-coverage (133/133) means every operator lowered and the output re-par
 [source]
 recovery_group = "WebAssembly (committed 133-fn corpus: op-coverage, 57 execution-verified under wasmtime)"
 recovery_bar = "op-coverage"
-floor = 76.0
+floor = 100.0

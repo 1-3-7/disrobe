@@ -8,5 +8,5 @@
 - CI-attested: yes [CI]
 - external oracle: real MRI (ruby): recompile the recovered source, compare the YARV opcode multiset
 - reproduce: `cargo test -p disrobe-pass-ruby --test yarv_recompile_oracle`
-- floor: 96.00 (holds)
+- floor: 98.00 (holds)
 - gate source: crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs (megafile >= 98)

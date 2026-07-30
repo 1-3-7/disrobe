@@ -14,4 +14,4 @@ note = "Oracle strength is recompile-only: the recovered source compiling is nec
 [source]
 recovery_group = "JVM classfile (EdgeCases corpus, per-method real-javac recompile)"
 recovery_bar = "per-method"
-floor = 98.0
+floor = 100.0

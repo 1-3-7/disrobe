@@ -78,24 +78,24 @@ Floors sit a declared margin below the measured value so a regression masked by 
 | apkleaks-planted-apk-secret-recall | 62.50% | n/a | n/a |
 | binfmt-extract | 100 extracted / 100 detected | n/a | n/a |
 | dalvik-realapk-coverage | 92.50% | 92.50 | yes |
-| dalvik-verifier | 100.00% | 97.00 | yes |
+| dalvik-verifier | 100.00% | 100.00 | yes |
 | dotnet-eazvm | 3 reversed on real samples / 23 detected | n/a | n/a |
 | dotnet-koivm | 3 reversed on real samples / 23 detected | n/a | n/a |
 | frisk-apkleaks | disrobe 100.0% vs best competitor 62.5% | 87.50 | yes |
 | frisk-planted | 6/6 (100.0%) | 100.00 | yes |
 | frisk-planted-apk-secret-recall | 100.00% | n/a | n/a |
 | frisk-planted-ioc-categories | 100.00% | n/a | n/a |
-| go-typemeta | 100.00% | 84.00 | yes |
+| go-typemeta | 100.00% | 100.00 | yes |
 | hermes-opcoverage | 100.00% | 100.00 | yes |
 | jvm-execution-differential | 89.31% | 89.31 | yes |
-| jvm-javac-recompile | 100.00% | 98.00 | yes |
+| jvm-javac-recompile | 100.00% | 100.00 | yes |
 | lua-ironbrew | 2 families | n/a | n/a |
 | native-packer-byterecovery | byte-identity table, see results_md | n/a | n/a |
-| pickle-corpus | 102/102 (100.0%) | 99.00 | yes |
+| pickle-corpus | 102/102 (100.0%) | 100.00 | yes |
 | py-legacy-recompile | 78.50% | 78.00 | yes |
 | py-stdlib-full | 95.09% | 95.00 | yes |
-| py-stdlib-recompile | 96.60% | 90.00 | yes |
+| py-stdlib-recompile | 96.60% | 96.60 | yes |
 | pyarmor-corpus | 72 recovered / 72 detected | n/a | n/a |
-| ruby-yarv-recompile | 98.00% | 96.00 | yes |
+| ruby-yarv-recompile | 98.00% | 98.00 | yes |
 | swift-demangle | 37/37 (100.0%) | 95.00 | yes |
-| wasm-wasmtime-diff | 100.00% | 76.00 | yes |
+| wasm-wasmtime-diff | 100.00% | 100.00 | yes |

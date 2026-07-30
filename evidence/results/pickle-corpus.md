@@ -8,6 +8,6 @@
 - CI-attested: yes [CI]
 - external oracle: pickletools-semantics equivalence: every committed fixture must disassemble to a STOP, symbolically execute, and classify correctly (benign fixtures never flagged malicious, malicious fixtures always flagged)
 - reproduce: `cargo test -p disrobe-pass-pickle --test corpus  (harvested by cargo run -p disrobe-bench-head-to-head)`
-- floor: 99.00 (holds)
+- floor: 100.00 (holds)
 - gate source: cargo test -p disrobe-pass-pickle --test corpus (gate pickle-corpus-coverage, harvested by cargo run -p disrobe-bench-head-to-head)
 - note: Coverage over the committed corpus is strong (the malicious/benign split is the ground truth). The fickling competitor column is a later phase; this surfaces the existing gate's number.

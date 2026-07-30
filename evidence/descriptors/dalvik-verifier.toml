@@ -13,4 +13,4 @@ reproduce = "cargo test -p disrobe-pass-jvm --test dalvik_verifier_gate"
 [source]
 recovery_group = "Dalvik recovered bodies (committed dex corpus, real JVM verifier)"
 recovery_bar = "verifier-clean (committed, CI)"
-floor = 97.0
+floor = 100.0
