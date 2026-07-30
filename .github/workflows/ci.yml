@@ -281,7 +281,7 @@ jobs:
         run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
       - name: build the disrobe cli the harness drives
         run: cargo build --release -p disrobe-cli --bin disrobe
-      - name: per-code-object recompile-equivalence floor (>= 90% on the pinned 3.14 corpus)
+      - name: per-code-object recompile-equivalence floor (>= 96.60% on the pinned 3.14 corpus)
         run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate -- --nocapture
 
   execution-differentials:
