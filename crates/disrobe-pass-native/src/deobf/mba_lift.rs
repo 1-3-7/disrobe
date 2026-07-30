@@ -228,7 +228,8 @@ fn mem_addr_expr(regs: &mut RegFile, insn: &Instruction) -> Expr {
     }
 }
 
-fn mem_access_width(insn: &Instruction) -> Width {
+#[must_use]
+pub fn mem_access_width(insn: &Instruction) -> Width {
     match insn.memory_size().size() {
         1 => Width::W8,
         2 => Width::W16,
@@ -295,6 +296,25 @@ pub fn operand_expr(regs: &mut RegFile, insn: &Instruction, operand: u32) -> Opt
         }),
         _ => read_immediate(insn, operand).map(Expr::konst),
     }
+}
+
+#[must_use]
+pub fn lift_operand_pair(prefix: &[Instruction], insn: &Instruction) -> Option<(Expr, Expr)> {
+    if prefix.len() > MAX_LIFT_INSNS {
+        return None;
+    }
+    let mut regs: RegFile = RegFile::new();
+    for step in prefix {
+        if !apply_arith(&mut regs, step) {
+            return None;
+        }
+    }
+    let left: Expr = operand_expr(&mut regs, insn, 0)?;
+    let right: Expr = operand_expr(&mut regs, insn, 1)?;
+    if regs.capped {
+        return None;
+    }
+    Some((left, right))
 }
 
 #[must_use]
