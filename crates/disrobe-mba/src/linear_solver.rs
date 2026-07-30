@@ -67,29 +67,29 @@ fn is_affine_signature_faithful(expr: &Expr, width: Width) -> bool {
     faithful_value(expr, width, true)
 }
 
-fn faithful_value(expr: &Expr, width: Width, affine_constants: bool) -> bool {
+fn faithful_value(expr: &Expr, width: Width, face_value_constants: bool) -> bool {
     match expr {
-        Expr::Const(value) => {
-            let masked: u64 = value & width.mask();
-            affine_constants || masked == 0 || masked == width.mask()
-        }
+        Expr::Const(value) => face_value_constants || value & width.mask() == 0,
         Expr::Var(_) => true,
-        Expr::Unary(UnOp::Not, inner) => faithful_bitwise(inner, width),
-        Expr::Unary(UnOp::Neg, inner) => faithful_value(inner, width, affine_constants),
+        Expr::Unary(UnOp::Not, inner) => faithful_bitwise(inner, width, face_value_constants),
+        Expr::Unary(UnOp::Neg, inner) => faithful_value(inner, width, face_value_constants),
         Expr::Binary(BinOp::Add | BinOp::Sub, left, right) => {
-            faithful_value(left, width, affine_constants)
-                && faithful_value(right, width, affine_constants)
+            faithful_value(left, width, face_value_constants)
+                && faithful_value(right, width, face_value_constants)
         }
         Expr::Binary(BinOp::Mul, left, right) => match (&**left, &**right) {
-            (Expr::Const(_), other) | (other, Expr::Const(_)) => faithful_bitwise(other, width),
+            (Expr::Const(_), other) | (other, Expr::Const(_)) => {
+                faithful_bitwise(other, width, face_value_constants)
+            }
             _ => false,
         },
         Expr::Binary(BinOp::Shl, left, right) => {
             matches!(&**right, Expr::Const(amount) if *amount < u64::from(width.bits()))
-                && faithful_bitwise(left, width)
+                && faithful_bitwise(left, width, face_value_constants)
         }
         Expr::Binary(BinOp::And | BinOp::Or | BinOp::Xor, left, right) => {
-            faithful_bitwise(left, width) && faithful_bitwise(right, width)
+            faithful_bitwise(left, width, face_value_constants)
+                && faithful_bitwise(right, width, face_value_constants)
         }
         Expr::Binary(BinOp::Shr, _, _)
         | Expr::Ite(_, _, _)
@@ -99,16 +99,17 @@ fn faithful_value(expr: &Expr, width: Width, affine_constants: bool) -> bool {
     }
 }
 
-fn faithful_bitwise(expr: &Expr, width: Width) -> bool {
+fn faithful_bitwise(expr: &Expr, width: Width, face_value_constants: bool) -> bool {
     match expr {
         Expr::Const(value) => {
             let masked: u64 = value & width.mask();
-            masked == 0 || masked == width.mask()
+            masked == 0 || (face_value_constants && masked == width.mask())
         }
         Expr::Var(_) => true,
-        Expr::Unary(UnOp::Not, inner) => faithful_bitwise(inner, width),
+        Expr::Unary(UnOp::Not, inner) => faithful_bitwise(inner, width, face_value_constants),
         Expr::Binary(BinOp::And | BinOp::Or | BinOp::Xor, left, right) => {
-            faithful_bitwise(left, width) && faithful_bitwise(right, width)
+            faithful_bitwise(left, width, face_value_constants)
+                && faithful_bitwise(right, width, face_value_constants)
         }
         _ => false,
     }

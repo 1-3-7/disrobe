@@ -256,7 +256,7 @@ pub(crate) fn simplify_l0_l5(expr: &Expr, width: Width, var_count: u32) -> (Expr
     best
 }
 
-fn expr_is_eval_faithful(expr: &Expr) -> bool {
+pub(crate) fn expr_is_eval_faithful(expr: &Expr) -> bool {
     match expr {
         Expr::Mem(_, _) => false,
         Expr::Const(_) | Expr::Var(_) => true,
@@ -816,7 +816,11 @@ fn verify_equivalent(
     original_is_mba: bool,
 ) -> Verification {
     let budget_width: Width = largest_verifiable_width(var_count);
-    if width.is_exhaustible() && width.bits() <= budget_width.bits() {
+    let enumerable: bool = expr_is_eval_faithful(original)
+        && expr_is_eval_faithful(candidate)
+        && width.is_exhaustible()
+        && width.bits() <= budget_width.bits();
+    if enumerable {
         if equivalent_exhaustive(original, candidate, width, var_count) {
             return Verification::ExhaustiveAtWidth(width);
         }
