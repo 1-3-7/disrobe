@@ -122,7 +122,11 @@ fn describe_types(
         let Some(info): Option<DelphiTypeInfo> = typeinfo::describe_at(view, *off, ptr_size) else {
             continue;
         };
-        if info.members.is_empty() && info.min_value.is_none() && info.element_type.is_none() {
+        if info.members.is_empty()
+            && info.min_value.is_none()
+            && info.element_type.is_none()
+            && info.record_size.is_none()
+        {
             continue;
         }
         if seen.insert(info.name.clone()) {
