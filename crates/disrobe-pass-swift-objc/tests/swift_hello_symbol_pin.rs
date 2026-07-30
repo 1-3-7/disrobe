@@ -13,6 +13,11 @@ const FIXTURE_NAME: &str = "SwiftHello.original";
 const FIXTURE_SIZE_BYTES: usize = 61_816;
 const FIXTURE_BLAKE3: &str = "49f667381558ef2fc3688c323ff13e502e46e3c464f1df03788114553fb5015c";
 
+const PUBLISHED_HEADING: &str = "Swift symbol recovery";
+const PUBLISHED_SYMBOL_BAR: &str = "mangled symbols recovered";
+const PUBLISHED_REFERENCE_BAR: &str = "exact agreement with swift-demangle";
+const PUBLISHED_VALUE_TOLERANCE: f64 = 0.05;
+
 #[derive(Debug, Clone, Copy)]
 struct PinnedSymbol {
     mangled: &'static str,
@@ -497,6 +502,175 @@ fn pinned_reference_column_matches_live_swift_demangle() {
             tool.display()
         );
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PinnedBar {
+    num: u64,
+    den: u64,
+    value: f64,
+}
+
+fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {
+    let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("xtask")
+        .join("data")
+        .join("recovery.json");
+    let raw: String = fs::read_to_string(&path)
+        .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", path.display()));
+    let doc: serde_json::Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|e: serde_json::Error| panic!("parse {}: {e}", path.display()));
+    let mut found: Vec<serde_json::Value> = Vec::new();
+    for group in doc["groups"].as_array().expect("groups array") {
+        let heading_matches: bool = group["heading"]
+            .as_str()
+            .is_some_and(|h: &str| h.contains(heading_needle));
+        if !heading_matches {
+            continue;
+        }
+        for bar in group["bars"].as_array().unwrap_or(&Vec::new()) {
+            if bar["label"].as_str() == Some(label) {
+                found.push(bar.clone());
+            }
+        }
+    }
+    assert_eq!(
+        found.len(),
+        1,
+        "xtask/data/recovery.json must carry exactly one bar labeled `{label}` under a heading \
+         containing `{heading_needle}`, found {}",
+        found.len()
+    );
+    found.remove(0)
+}
+
+fn pinned_bar(label: &str) -> PinnedBar {
+    let bar: serde_json::Value = published_bar(PUBLISHED_HEADING, label);
+    let num: u64 = bar["num"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("the `{label}` bar must publish a numerator"));
+    let den: u64 = bar["den"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("the `{label}` bar must publish a denominator"));
+    let value: f64 = bar["value"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("the `{label}` bar must publish the percentage it plots"));
+    PinnedBar { num, den, value }
+}
+
+fn bar_defects(label: &str, hit: usize, total: usize, bar: PinnedBar) -> Vec<String> {
+    let mut defects: Vec<String> = Vec::new();
+    let measured_total: u64 = u64::try_from(total).expect("the graded population fits u64");
+    let measured_hit: u64 = u64::try_from(hit).expect("the measured count fits u64");
+    if measured_total != bar.den {
+        defects.push(format!(
+            "{label}: xtask/data/recovery.json publishes a denominator of {} and every document \
+             renders that number, but this run measured {measured_total}. A run that inspects fewer \
+             symbols must score worse, never shrink what it is measured against",
+            bar.den
+        ));
+    }
+    if measured_hit < bar.num {
+        defects.push(format!(
+            "{label}: recovery.json publishes {} of {}; this run measured {measured_hit}. Raise the \
+             recovery or correct the published figure, never the reverse",
+            bar.num, bar.den
+        ));
+    }
+    let derived: f64 = 100.0 * bar.num as f64 / bar.den as f64;
+    if (derived - bar.value).abs() >= PUBLISHED_VALUE_TOLERANCE {
+        defects.push(format!(
+            "{label}: the plotted value {} must equal its own {}/{} = {derived:.4}",
+            bar.value, bar.num, bar.den
+        ));
+    }
+    defects
+}
+
+#[test]
+fn published_swift_symbol_bars_are_pinned_to_the_measured_membership() {
+    let symbol_bar: PinnedBar = pinned_bar(PUBLISHED_SYMBOL_BAR);
+    let reference_bar: PinnedBar = pinned_bar(PUBLISHED_REFERENCE_BAR);
+
+    let bytes: Vec<u8> = load_pinned_fixture();
+    let (slice, parsed): (Vec<u8>, ParsedSlice) = thin_slice(&bytes);
+    let observed: Vec<String> = extract_swift_symbols(&slice, &parsed);
+    let mut defects: Vec<String> = symbol_set_defects(&observed);
+
+    let recovered: usize = PINNED
+        .iter()
+        .filter(|entry: &&PinnedSymbol| {
+            let present: bool = observed.iter().any(|s: &String| s == entry.mangled);
+            present && rendered(entry.mangled) == entry.ours
+        })
+        .count();
+    defects.extend(bar_defects(
+        PUBLISHED_SYMBOL_BAR,
+        recovered,
+        observed.len(),
+        symbol_bar,
+    ));
+
+    let agreeing: usize = PINNED
+        .iter()
+        .filter(|entry: &&PinnedSymbol| entry.ours == entry.reference)
+        .count();
+    defects.extend(bar_defects(
+        PUBLISHED_REFERENCE_BAR,
+        agreeing,
+        PINNED.len(),
+        reference_bar,
+    ));
+
+    eprintln!(
+        "{FIXTURE_NAME}: {recovered} of {} Swift-mangled symbols recovered and demangled to pinned \
+         text (published {}/{} = {}); {agreeing} of {} agree exactly with swift-demangle (published \
+         {}/{} = {})",
+        observed.len(),
+        symbol_bar.num,
+        symbol_bar.den,
+        symbol_bar.value,
+        PINNED.len(),
+        reference_bar.num,
+        reference_bar.den,
+        reference_bar.value
+    );
+    assert!(
+        defects.is_empty(),
+        "the published Swift symbol figures name this set of symbols rather than a bare count:\n{}",
+        defects.join("\n")
+    );
+}
+
+#[test]
+fn the_pinned_symbol_bar_check_rejects_a_dropped_symbol_and_a_shrunken_denominator() {
+    let bar: PinnedBar = pinned_bar(PUBLISHED_SYMBOL_BAR);
+    let hit: usize = usize::try_from(bar.num).expect("the published numerator fits usize");
+    let total: usize = usize::try_from(bar.den).expect("the published denominator fits usize");
+    assert!(
+        bar_defects(PUBLISHED_SYMBOL_BAR, hit, total, bar).is_empty(),
+        "the check must accept the published measurement unchanged"
+    );
+
+    let dropped: Vec<String> = bar_defects(PUBLISHED_SYMBOL_BAR, hit - 1, total, bar);
+    assert!(
+        dropped
+            .iter()
+            .any(|d: &String| d.contains("this run measured")),
+        "losing one recovered symbol must be reported as a shortfall against the published \
+         numerator, got {dropped:?}"
+    );
+
+    let shrunk: Vec<String> = bar_defects(PUBLISHED_SYMBOL_BAR, hit - 1, total - 1, bar);
+    assert!(
+        shrunk
+            .iter()
+            .any(|d: &String| d.contains("never shrink what it is measured against")),
+        "dropping a symbol from the graded population must be rejected on the denominator rather \
+         than absorbed as a better ratio, got {shrunk:?}"
+    );
 }
 
 #[test]
