@@ -6,6 +6,7 @@
 
 - [Installation](./installation.md)
 - [Quickstart](./quickstart.md)
+- [Reading a result](./reading-a-result.md)
 
 # Architecture
 
