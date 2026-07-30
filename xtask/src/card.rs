@@ -283,9 +283,10 @@ fn find_dex_clean(doc: &VerificationDoc) -> Result<u64> {
 
 fn approximate_loc(lines: usize) -> String {
     if lines >= 1_000_000 {
-        format!("{:.2}M", lines as f64 / 1_000_000.0)
+        let tenths: usize = lines / 100_000;
+        format!("{}.{}M+", tenths / 10, tenths % 10)
     } else {
-        format!("{}k", lines / 1_000)
+        format!("{}k+", lines / 10_000 * 10)
     }
 }
 
