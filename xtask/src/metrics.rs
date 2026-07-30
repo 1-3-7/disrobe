@@ -978,19 +978,41 @@ fn f64_to_u64_exact(value: f64, label: &str) -> Result<u64> {
     Ok(value as u64)
 }
 
-fn manifest(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut files: Vec<PathBuf> = vec![root.join("README.md")];
-    let docs_src: PathBuf = root.join("docs").join("src");
-    if docs_src.is_dir() {
-        for entry in walkdir::WalkDir::new(&docs_src) {
-            let dirent: walkdir::DirEntry =
-                entry.wrap_err_with(|| format!("walking {}", docs_src.display()))?;
-            let path: &Path = dirent.path();
-            if path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("md") {
-                files.push(path.to_path_buf());
-            }
+const MARKER_TREE: [&str; 2] = ["docs", "src"];
+const MARKER_FLAT: [&str; 1] = ["evidence"];
+
+fn markdown_in(dir: &Path, recursive: bool) -> Result<Vec<PathBuf>> {
+    if !dir.is_dir() {
+        bail!(
+            "{} is not a directory, so every marker it holds would go unchecked",
+            dir.display()
+        );
+    }
+    let depth: usize = if recursive { usize::MAX } else { 1 };
+    let mut found: Vec<PathBuf> = Vec::new();
+    for entry in walkdir::WalkDir::new(dir).max_depth(depth) {
+        let dirent: walkdir::DirEntry =
+            entry.wrap_err_with(|| format!("walking {}", dir.display()))?;
+        let path: &Path = dirent.path();
+        if path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("md") {
+            found.push(path.to_path_buf());
         }
     }
+    Ok(found)
+}
+
+fn manifest(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut files: Vec<PathBuf> = vec![root.join("README.md")];
+    let mut tree: PathBuf = root.to_path_buf();
+    for part in MARKER_TREE {
+        tree.push(part);
+    }
+    files.extend(markdown_in(&tree, true)?);
+    let mut flat: PathBuf = root.to_path_buf();
+    for part in MARKER_FLAT {
+        flat.push(part);
+    }
+    files.extend(markdown_in(&flat, false)?);
     files.sort();
     Ok(files)
 }
