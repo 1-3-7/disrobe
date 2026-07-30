@@ -138,4 +138,5 @@ extend-exclude = [
     "**/*.nm_eq.txt",
     "**/*.nm_itab.txt",
     "**/*.govm.txt",
+    "**/*.b64",
 ]
