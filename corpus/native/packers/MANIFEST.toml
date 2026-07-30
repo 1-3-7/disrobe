@@ -226,7 +226,7 @@ pre-packed corpus, Petite subset; it ships packed upstream and no original count
 Match it by packed_sha256 E94CF282... at 4242387 B. Anyone can refetch it; it stays out of the tree
 on size.
 """
-sample_coverage = "two x86 samples are staged and they do not carry the same result, so the two figures stay separate and are never averaged into one Petite number. hello.exe reaches 97.80% content-section recovery through the emulated phase-two path. megafile_DirCmp.exe does not reach its original entry point: the emulator now drives all four of the stub's descriptor blocks to their exact declared output sizes and follows the stub into its own exception handler, and the run stops inside that handler. See the per-run rows."
+sample_coverage = "two x86 samples are staged and they do not carry the same result, so the two figures stay separate and are never averaged into one Petite number. They also do not carry the same weight: hello.exe is committed and reaches 97.05% content-section recovery through the emulated phase-two path, so any reader re-derives it, while megafile_DirCmp.exe is local and carries no recovery figure at all. megafile_DirCmp.exe does not reach its original entry point: the emulator now drives all four of the stub's descriptor blocks to their exact declared output sizes and follows the stub into its own exception handler, and the run stops inside that handler. The non-zero-byte percentage that test_petite_dircmp_phase2_emulated_smoke prints for it is a diagnostic, not a recovery figure: it counts bytes that are not zero in the recovered image and never compares them against the original, so no assertion reads it and it must not be published as recovery. See the per-run rows."
 
 [[packers.runs]]
 input = "hello32.exe (x86)"
