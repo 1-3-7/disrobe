@@ -580,8 +580,9 @@ fn blackobfuscator_annotation(
         crate::dalvik_blackobf::deflatten_blackobfuscator(insns, switch_payloads, strings);
     match deflatten {
         Some(d) if d.resolved_cases > 0 => format!(
-            "        // BlackObfuscator control-flow flattening removed: {} dispatcher case(s) deflattened to linear block order [{}]\n",
+            "        // BlackObfuscator control-flow flattening: {} of {} dispatcher case(s) mapped back to their block, linear block order [{}]; the body below is still rendered from the flattened graph\n",
             d.resolved_cases,
+            d.resolved_cases + d.unresolved_cases,
             d.linear_block_pcs
                 .iter()
                 .map(u32::to_string)
