@@ -11,30 +11,36 @@ use toml::Value;
 struct PathKey {
     path: &'static str,
     provenance: &'static str,
+    reason: &'static str,
 }
 
 const PATH_KEYS: [PathKey; 4] = [
     PathKey {
         path: "packed_path",
         provenance: "packed_provenance",
+        reason: "packed_unobtainable_reason",
     },
     PathKey {
         path: "unpacked_path",
         provenance: "unpacked_provenance",
+        reason: "unpacked_unobtainable_reason",
     },
     PathKey {
         path: "original_path",
         provenance: "original_provenance",
+        reason: "original_unobtainable_reason",
     },
     PathKey {
         path: "disrobe_original_path",
         provenance: "disrobe_original_provenance",
+        reason: "disrobe_original_unobtainable_reason",
     },
 ];
 
 const CORPUS_PREFIX: &str = "corpus/native/packers/";
 const COMMITTED_WORD: &str = "committed";
 const LOCAL_WORD: &str = "local";
+const UNOBTAINABLE_WORD: &str = "local-unobtainable";
 const RECIPE_KEY: &str = "local_fixture_recipe";
 
 fn repo_root() -> PathBuf {
@@ -60,12 +66,14 @@ fn manifest() -> toml::Table {
 enum Provenance {
     Committed,
     Local,
+    Unobtainable,
 }
 
 fn parse_provenance(raw: &str) -> Option<Provenance> {
     match raw.trim() {
         COMMITTED_WORD => Some(Provenance::Committed),
         LOCAL_WORD => Some(Provenance::Local),
+        UNOBTAINABLE_WORD => Some(Provenance::Unobtainable),
         _ => None,
     }
 }
@@ -75,8 +83,10 @@ struct DeclaredPath {
     label: String,
     key: &'static str,
     provenance_key: &'static str,
+    reason_key: &'static str,
     declared: String,
     provenance: Option<String>,
+    reason: Option<String>,
     recipe: Option<String>,
     absent_is_recorded: bool,
 }
@@ -117,9 +127,14 @@ fn declared_paths(manifest: &toml::Table) -> Vec<DeclaredPath> {
                     label: format!("{family} / {input}"),
                     key: key.path,
                     provenance_key: key.provenance,
+                    reason_key: key.reason,
                     declared: value.as_str().unwrap_or("").to_owned(),
                     provenance: run
                         .get(key.provenance)
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    reason: run
+                        .get(key.reason)
                         .and_then(Value::as_str)
                         .map(str::to_owned),
                     recipe: recipe.clone(),
@@ -146,6 +161,7 @@ struct ProvenanceAudit {
     defects: Vec<String>,
     committed: usize,
     local: usize,
+    unobtainable: usize,
 }
 
 fn audit_provenance(manifest: &toml::Table, root: &Path) -> ProvenanceAudit {
@@ -156,7 +172,8 @@ fn audit_provenance(manifest: &toml::Table, root: &Path) -> ProvenanceAudit {
         };
         let Some(raw): Option<&String> = entry.provenance.as_ref() else {
             audit.defects.push(format!(
-                "{}: {} = {:?} states no provenance; set {} to {COMMITTED_WORD:?} or {LOCAL_WORD:?}",
+                "{}: {} = {:?} states no provenance; set {} to {COMMITTED_WORD:?}, {LOCAL_WORD:?} \
+                 or {UNOBTAINABLE_WORD:?}",
                 entry.label, entry.key, entry.declared, entry.provenance_key
             ));
             continue;
@@ -164,7 +181,7 @@ fn audit_provenance(manifest: &toml::Table, root: &Path) -> ProvenanceAudit {
         let Some(provenance): Option<Provenance> = parse_provenance(raw) else {
             audit.defects.push(format!(
                 "{}: {} = {raw:?} is not a provenance this check knows; the only values are \
-                 {COMMITTED_WORD:?} and {LOCAL_WORD:?}",
+                 {COMMITTED_WORD:?}, {LOCAL_WORD:?} and {UNOBTAINABLE_WORD:?}",
                 entry.label, entry.provenance_key
             ));
             continue;
@@ -191,13 +208,19 @@ fn audit_provenance(manifest: &toml::Table, root: &Path) -> ProvenanceAudit {
                     ));
                 }
             }
-            Provenance::Local => {
-                audit.local += 1;
+            Provenance::Local | Provenance::Unobtainable => {
+                let word: &str = if provenance == Provenance::Unobtainable {
+                    audit.unobtainable += 1;
+                    UNOBTAINABLE_WORD
+                } else {
+                    audit.local += 1;
+                    LOCAL_WORD
+                };
                 if is_committed(family, name) {
                     audit.defects.push(format!(
-                        "{}: {} = {:?} is declared {LOCAL_WORD}, but the committed-fixture \
-                         registry tracks {family}/{name}; a tracked input reproduces for every \
-                         reader and must say so",
+                        "{}: {} = {:?} is declared {word}, but the committed-fixture registry \
+                         tracks {family}/{name}; a tracked input reproduces for every reader and \
+                         must say so",
                         entry.label, entry.key, entry.declared
                     ));
                     continue;
@@ -208,20 +231,39 @@ fn audit_provenance(manifest: &toml::Table, root: &Path) -> ProvenanceAudit {
                     .filter(|r: &&String| !r.trim().is_empty())
                 else {
                     audit.defects.push(format!(
-                        "{}: {} = {:?} is declared {LOCAL_WORD}, but its packer carries no \
-                         {RECIPE_KEY}, so nothing records how to rebuild or refetch it",
+                        "{}: {} = {:?} is declared {word}, but its packer carries no {RECIPE_KEY}, \
+                         so nothing records where it came from",
                         entry.label, entry.key, entry.declared
                     ));
                     continue;
                 };
                 if !recipe.contains(base_name(name)) {
                     audit.defects.push(format!(
-                        "{}: {} = {:?} is declared {LOCAL_WORD}, and its packer's {RECIPE_KEY} \
-                         never names {}, so the recipe covers some other input",
+                        "{}: {} = {:?} is declared {word}, and its packer's {RECIPE_KEY} never \
+                         names {}, so the recipe covers some other input",
                         entry.label,
                         entry.key,
                         entry.declared,
                         base_name(name)
+                    ));
+                }
+                let stated: bool = entry
+                    .reason
+                    .as_ref()
+                    .is_some_and(|r: &String| !r.trim().is_empty());
+                if provenance == Provenance::Unobtainable && !stated {
+                    audit.defects.push(format!(
+                        "{}: {} = {:?} is declared {UNOBTAINABLE_WORD} but carries no {}. The \
+                         weakest input a figure can rest on is one no reader can obtain, so that \
+                         row must say in its own words why the recipe cannot be followed to the end",
+                        entry.label, entry.key, entry.declared, entry.reason_key
+                    ));
+                }
+                if provenance == Provenance::Local && stated {
+                    audit.defects.push(format!(
+                        "{}: {} = {:?} is declared {LOCAL_WORD}, which says a reader can obtain it, \
+                         yet it carries {}. One of the two is wrong",
+                        entry.label, entry.key, entry.declared, entry.reason_key
                     ));
                 }
             }
@@ -328,20 +370,23 @@ fn every_manifest_path_says_whether_its_input_is_committed_or_local() {
         audit.defects.is_empty(),
         "a row measured against an input nobody else has must be distinguishable from one measured \
          against a fixture in the tree, or a figure that no reader can reproduce reads exactly like \
-         one that every reader can. Each declared path states {COMMITTED_WORD:?} or {LOCAL_WORD:?} \
-         beside it. {COMMITTED_WORD:?} means the committed-fixture registry carries it and the file \
-         is here, so a rename or a deletion fails this check. {LOCAL_WORD:?} means the file is \
-         deliberately out of the tree, and it is only accepted when the packer's {RECIPE_KEY} names \
-         that file and records how to rebuild or refetch it, so declaring an input local can never \
-         be a way to silence this. Offending paths:\n  {}",
+         one that every reader can. Each declared path states one of three words beside it. \
+         {COMMITTED_WORD:?}: the committed-fixture registry carries it and the file is here, so a \
+         rename or a deletion fails this check. {LOCAL_WORD:?}: the file is deliberately out of the \
+         tree but a reader can obtain it, accepted only when the packer's {RECIPE_KEY} names that \
+         file and records how to rebuild or refetch it, so declaring an input local can never be a \
+         way to silence this. {UNOBTAINABLE_WORD:?}: the recipe records where it came from but no \
+         reader can follow it to the end, which additionally requires that path's own \
+         *_unobtainable_reason. Offending paths:\n  {}",
         audit.defects.join("\n  ")
     );
     assert!(
-        audit.committed > 0 && audit.local > 0,
-        "this check saw {} committed and {} local path(s), so one of its two halves graded nothing; \
-         it must run against the real manifest, which carries both kinds",
+        audit.committed > 0 && audit.local > 0 && audit.unobtainable > 0,
+        "this check saw {} committed, {} local and {} unobtainable path(s), so one of its three \
+         branches graded nothing; it must run against the real manifest, which carries all three",
         audit.committed,
-        audit.local
+        audit.local,
+        audit.unobtainable
     );
 }
 
@@ -426,7 +471,8 @@ fn a_committed_path_that_is_present_and_registered_is_clean() -> Result<(), toml
         ProvenanceAudit {
             defects: Vec::new(),
             committed: 1,
-            local: 0
+            local: 0,
+            unobtainable: 0
         }
     );
     Ok(())
@@ -480,9 +526,66 @@ fn a_local_path_its_recipe_names_is_clean_even_when_absent() -> Result<(), toml:
         ProvenanceAudit {
             defects: Vec::new(),
             committed: 0,
-            local: 1
+            local: 1,
+            unobtainable: 0
         },
         "an input the recipe names is clean whether or not this machine happens to hold it"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_unobtainable_path_without_a_reason_is_a_defect() -> Result<(), toml::de::Error> {
+    let table: toml::Table = one_run(
+        "local_fixture_recipe = \"rg.packed.upx.exe came from a machine\"",
+        &format!("packed_path = {ABSENT_SAMPLE:?}\npacked_provenance = \"local-unobtainable\"\n"),
+    )?;
+    let audit: ProvenanceAudit = audit_provenance(&table, &repo_root());
+    assert_eq!(audit.defects.len(), 1, "got {:?}", audit.defects);
+    assert!(
+        audit.defects[0].contains("packed_unobtainable_reason"),
+        "the weakest kind of input must state why nobody can obtain it, got {:?}",
+        audit.defects
+    );
+    Ok(())
+}
+
+#[test]
+fn an_unobtainable_path_with_a_reason_is_counted_apart_from_local() -> Result<(), toml::de::Error> {
+    let table: toml::Table = one_run(
+        "local_fixture_recipe = \"rg.packed.upx.exe came from a machine\"",
+        &format!(
+            "packed_path = {ABSENT_SAMPLE:?}\npacked_provenance = \"local-unobtainable\"\npacked_unobtainable_reason = \"the packer input was never versioned\"\n"
+        ),
+    )?;
+    let audit: ProvenanceAudit = audit_provenance(&table, &repo_root());
+    assert_eq!(
+        audit,
+        ProvenanceAudit {
+            defects: Vec::new(),
+            committed: 0,
+            local: 0,
+            unobtainable: 1
+        },
+        "an unobtainable input is never counted as one a reader can fetch"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_local_path_claiming_a_reason_it_does_not_need_is_a_defect() -> Result<(), toml::de::Error> {
+    let table: toml::Table = one_run(
+        "local_fixture_recipe = \"rg.packed.upx.exe is upx --best over ripgrep 15.1.0\"",
+        &format!(
+            "packed_path = {ABSENT_SAMPLE:?}\npacked_provenance = \"local\"\npacked_unobtainable_reason = \"nobody can get this\"\n"
+        ),
+    )?;
+    let audit: ProvenanceAudit = audit_provenance(&table, &repo_root());
+    assert_eq!(audit.defects.len(), 1, "got {:?}", audit.defects);
+    assert!(
+        audit.defects[0].contains("One of the two is wrong"),
+        "a path cannot both be obtainable and carry a reason it is not, got {:?}",
+        audit.defects
     );
     Ok(())
 }

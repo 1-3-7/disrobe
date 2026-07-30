@@ -1,21 +1,30 @@
-schema_version = 3
+schema_version = 4
 generated_utc = "2026-05-25T16:48:00Z"
 description = "Category C 'EASY' packer corpus - real-binary round-trip testing (megafile + hello-baseline)"
 path_provenance = """
-Schema 3 requires every declared path key to carry a sibling provenance key: packed_path pairs with
-packed_provenance, unpacked_path with unpacked_provenance, original_path with original_provenance,
-disrobe_original_path with disrobe_original_provenance. Two values are allowed.
+Every declared path key carries a sibling provenance key: packed_path pairs with packed_provenance,
+unpacked_path with unpacked_provenance, original_path with original_provenance, and
+disrobe_original_path with disrobe_original_provenance. Three values are allowed.
 
   committed: the file is in the repository and in the committed-fixture registry
     (crates/disrobe-pass-native/tests/support/packer_fixture.rs), so every reader has the same
     bytes and every figure beside it re-derives from a clean checkout.
 
-  local: the file is deliberately out of the tree, on size or on licence. The figures on that row
-    were measured here and no clean checkout re-derives them. A local path is only accepted when
-    its packer carries a local_fixture_recipe that names that file and records how to rebuild or
-    refetch it, so marking an input local can never be a way to silence the check.
+  local: the file is deliberately out of the tree, on size or on licence, but a reader can obtain
+    it. The figures on that row were measured here and no clean checkout re-derives them. Accepted
+    only when the packer carries a local_fixture_recipe that names that file and records how to
+    rebuild or refetch it, so marking an input local can never be a way to silence the check.
 
-Enforced by crates/disrobe-pass-native/tests/packer_manifest_paths.rs
+  local-unobtainable: out of the tree, and the recipe records where the file came from but no
+    reader can follow it to the end, because the packer input was a system file, a licence-bound
+    artifact, or a build whose version was never recorded. Additionally requires that path's own
+    *_unobtainable_reason. These are the weakest inputs any figure could rest on, so they are
+    counted apart from local rather than blended into it. Schema 4 added this third value; before
+    it, an input a reader could rebuild and one nobody could obtain read identically.
+
+A local path may not carry an *_unobtainable_reason and a local-unobtainable path may not omit one,
+so the two cannot drift into each other. Enforced by
+crates/disrobe-pass-native/tests/packer_manifest_paths.rs
 (every_manifest_path_says_whether_its_input_is_committed_or_local).
 """
 
@@ -79,9 +88,8 @@ release; the two 4 MB artifacts stay out of the tree on size.
 
 git.packed.upx.exe and git.unpacked.upx.exe are built the same way from the git.exe of a Git for
 Windows MSVC install (sha256 CAB4C4EE..., 4422544 B) staged at .developer/big-binaries/git.exe.
-This manifest never recorded WHICH Git for Windows release shipped that git.exe, so the input can
-be matched by hash but not refetched by version. It is the one input in this family that a reader
-cannot obtain from the recipe alone.
+This manifest never recorded WHICH Git for Windows release shipped that git.exe, so this recipe
+stops short of reproducing them: both are local-unobtainable and carry their own reason.
 """
 
 [[packers.runs]]
@@ -133,13 +141,15 @@ notes = "round-trip byte-identical modulo 261 bytes (0.01%) across 4.27 MB - con
 input = "git.exe (megafile, 4.22 MB)"
 input_sha256 = "CAB4C4EEA1D869CF9F7BE73868DC9A90AD2DF1B1B673E5F8C8714A576C25EA96"
 packed_path = "corpus/native/packers/upx/git.packed.upx.exe"
-packed_provenance = "local"
+packed_provenance = "local-unobtainable"
+packed_unobtainable_reason = "the packer input was a git.exe from a Git for Windows install whose release version was never recorded, only its sha256 CAB4C4EE... and its 4422544 B size. Without the version nobody can refetch that exact git.exe, so nobody can re-run `upx --best` and land on this file. It can only be matched byte-for-byte against a copy that already exists."
 packed_sha256 = "A9B4892FFE9A26CEE4E23AC9BA571FEFC7C515AEDAB05F458620ADA6573808DE"
 packed_size_bytes = 1812368
 compression_ratio_pct = 40.98
 runtime_ok = "unverifiable-missing-dlls"
 unpacked_path = "corpus/native/packers/upx/git.unpacked.upx.exe"
-unpacked_provenance = "local"
+unpacked_provenance = "local-unobtainable"
+unpacked_unobtainable_reason = "this is `upx -d` over git.packed.upx.exe, which is itself unobtainable for the reason recorded above, so the whole round trip rests on an input no reader can get."
 unpacked_sha256 = "8E571F09286B5F64955DB0E6D52ACE80D27F464B8A4E849C9A60FD1695492A16"
 unpacked_size_bytes = 4422544
 unpacked_byte_diff_count = 1301
@@ -161,8 +171,8 @@ wayback URL in install_method. Anyone can re-derive it.
 
 taskmgr.packed.mpress.exe is `mpress -q taskmgr.exe` over C:\\Windows\\System32\\Taskmgr.exe from a
 Windows 11 install whose copy hashes to 67012F45... . That system file is not redistributable and
-its bytes differ between Windows builds, so this input can be matched by hash but cannot be
-refetched from any public source. It is the one input in this family a reader cannot obtain.
+its bytes differ between Windows builds, so this recipe stops short of reproducing it: it is
+local-unobtainable and carries its own reason.
 """
 
 [[packers.runs]]
@@ -192,7 +202,8 @@ input = "taskmgr.exe (megafile, Windows System32 PE)"
 input_sha256 = "67012F45B7AD6EA6243AB3A9C8BF3ADAD32CEC432994840A2968BCA54944E379"
 input_size_bytes = 5621104
 packed_path = "corpus/native/packers/mpress/taskmgr.packed.mpress.exe"
-packed_provenance = "local"
+packed_provenance = "local-unobtainable"
+packed_unobtainable_reason = "the packer input is C:\\Windows\\System32\\Taskmgr.exe from one Windows 11 install, sha256 67012F45... . That file is not redistributable and its bytes differ between Windows builds, so a reader on any other machine cannot obtain the input and cannot rebuild this artifact. Matching by hash is the only check available."
 packed_sha256 = "886605FA11BC754FFDEB48DFB64A3499F65D427EE7CB8FD667F177D525DD5441"
 packed_size_bytes = 1061376
 compression_ratio_pct = 18.88
