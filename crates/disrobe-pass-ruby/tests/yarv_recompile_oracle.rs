@@ -12,6 +12,15 @@ use std::process::Command;
 use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::analyze_bytes;
 
+const HELLO_FLOOR_PCT: u32 = 100;
+const GREETER_FLOOR_PCT: u32 = 100;
+const MEGAFILE_FLOOR_PCT: u32 = 98;
+const MEGAFILE_MATCHED_FLOOR: u32 = 23580;
+
+const PUBLISHED_HEADING: &str = "Ruby YARV";
+const PUBLISHED_GREETER_BAR: &str = "greeter";
+const PUBLISHED_MEGAFILE_BAR: &str = "megafile";
+
 fn corpus_dir() -> PathBuf {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.pop();
@@ -19,6 +28,64 @@ fn corpus_dir() -> PathBuf {
     p.push("corpus");
     p.push("ruby");
     p
+}
+
+fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {
+    let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.pop();
+    path.pop();
+    path.push("xtask");
+    path.push("data");
+    path.push("recovery.json");
+    let raw: String = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", path.display()));
+    let doc: serde_json::Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|e: serde_json::Error| panic!("parse {}: {e}", path.display()));
+    let mut found: Vec<serde_json::Value> = Vec::new();
+    for group in doc["groups"].as_array().expect("groups array") {
+        let heading_matches: bool = group["heading"]
+            .as_str()
+            .is_some_and(|h: &str| h.contains(heading_needle));
+        if !heading_matches {
+            continue;
+        }
+        for bar in group["bars"].as_array().unwrap_or(&Vec::new()) {
+            if bar["label"].as_str() == Some(label) {
+                found.push(bar.clone());
+            }
+        }
+    }
+    assert_eq!(
+        found.len(),
+        1,
+        "xtask/data/recovery.json must carry exactly one bar labelled `{label}` under a heading \
+         containing `{heading_needle}`, found {}",
+        found.len()
+    );
+    found.remove(0)
+}
+
+fn published_value(label: &str) -> f64 {
+    let bar: serde_json::Value = published_bar(PUBLISHED_HEADING, label);
+    bar["value"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("the {label} bar must carry a numeric value"))
+}
+
+#[test]
+fn published_yarv_bars_match_the_floors_this_crate_enforces() {
+    let greeter: f64 = published_value(PUBLISHED_GREETER_BAR);
+    let megafile: f64 = published_value(PUBLISHED_MEGAFILE_BAR);
+    assert!(
+        (greeter - f64::from(GREETER_FLOOR_PCT)).abs() < f64::EPSILON,
+        "xtask/data/recovery.json publishes greeter at {greeter}% and every document renders that \
+         number, but this gate enforces {GREETER_FLOOR_PCT}%"
+    );
+    assert!(
+        (megafile - f64::from(MEGAFILE_FLOOR_PCT)).abs() < f64::EPSILON,
+        "xtask/data/recovery.json publishes megafile at {megafile}% and every document renders \
+         that number, but this gate enforces {MEGAFILE_FLOOR_PCT}%"
+    );
 }
 
 fn corpus_path(rel: &str) -> PathBuf {
@@ -103,23 +170,35 @@ fn yarv_recompile_equivalence_is_reproducible() {
         .expect("megafile recompile oracle produced a rate");
 
     assert!(
-        hello >= 100,
-        "hello opcode-equivalence regressed below 100%, got {hello}%"
+        hello >= HELLO_FLOOR_PCT,
+        "hello opcode-equivalence regressed below {HELLO_FLOOR_PCT}%, got {hello}%"
     );
     assert!(
-        greeter >= 100,
-        "greeter opcode-equivalence regressed below 100%, got {greeter}%"
+        greeter >= GREETER_FLOOR_PCT,
+        "greeter opcode-equivalence regressed below {GREETER_FLOOR_PCT}%, got {greeter}%"
     );
     assert!(
-        megafile >= 98,
-        "megafile opcode-equivalence regressed below 98%, got {megafile}%"
+        megafile >= MEGAFILE_FLOOR_PCT,
+        "megafile opcode-equivalence regressed below {MEGAFILE_FLOOR_PCT}%, got {megafile}%"
     );
 
     let megafile_matched: u32 =
         measure_matched("megafile/edge_cases.rb", "mri/yarv/edge_cases.rb.yarvc")
             .expect("megafile recompile oracle produced a matched count");
     assert!(
-        megafile_matched >= 23580,
-        "megafile matched-opcode count regressed below the locked floor 23580, got {megafile_matched}"
+        megafile_matched >= MEGAFILE_MATCHED_FLOOR,
+        "megafile matched-opcode count regressed below the locked floor \
+         {MEGAFILE_MATCHED_FLOOR}, got {megafile_matched}"
+    );
+
+    assert!(
+        f64::from(greeter) >= published_value(PUBLISHED_GREETER_BAR),
+        "recovery.json publishes greeter at {}%; this run measured {greeter}%",
+        published_value(PUBLISHED_GREETER_BAR)
+    );
+    assert!(
+        f64::from(megafile) >= published_value(PUBLISHED_MEGAFILE_BAR),
+        "recovery.json publishes megafile at {}%; this run measured {megafile}%",
+        published_value(PUBLISHED_MEGAFILE_BAR)
     );
 }

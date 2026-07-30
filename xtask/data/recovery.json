@@ -23,6 +23,10 @@
           "num": 6072,
           "den": 6286,
           "modules": 200,
+          "verified_by": {
+            "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs",
+            "function": "published_pinned_bar_agrees_with_the_enforced_floor"
+          },
           "detail": "6072 / 6286 code objects; CI floor 96.60%, pinned at the figure this corpus measures rather than a round number beneath it, so the gate has no slack to absorb a regression; a curated subset that runs higher than the full stdlib",
           "source": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:17 (OBJECT_PCT_FLOOR 96.60); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 96.6 (6072 of 6286 code objects, 200 of 200 modules) on CPython 3.14.5 (a pure-or if-guard whose short-circuit exits reach an inlined terminator reassembles into a single if a or b: body, and a loop after a with recurses through the statement structurer instead of collapsing to a tuple assignment)"
         }
@@ -75,6 +79,10 @@
         {
           "label": "proven-correct",
           "value": 78.5,
+          "verified_by": {
+            "path": "crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs",
+            "function": "legacy_recompile_correctness_oracle"
+          },
           "detail": "CI floor 150 / 191 (asserted, token-match alone holds when the 1.0-3.7 interpreter zoo is absent); 166 / 191 measured locally with the full period interpreter zoo (67 recompile-equiv + 99 token-match)",
           "source": "crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs:31 (PROVEN_CORRECT_FLOOR 150, CI-enforced via the test job); 166/191 measured locally 2026-06-12 with python 1.0-3.12 present",
           "num": 150,
@@ -98,6 +106,10 @@
         {
           "label": "op-coverage",
           "value": 100.0,
+          "verified_by": {
+            "path": "crates/disrobe-pass-wasm-deob/tests/semantic_recovery_corpus.rs",
+            "function": "corpus_recovery_requires_full_op_coverage_not_just_parseability"
+          },
           "detail": "133 of 133 functions in the 38 PARSEABLE corpus modules are fully op-covered (every operator lowered, output re-parses); 2 corpus modules are skipped on wat-parse/sig-extract failure (malformed corpus source the reference assembler also rejects), so this is 100% of the supported subset, NOT of all wasm; separately, 57 of 57 execution-eligible functions are EXECUTION-EQUIVALENT under wasmtime (original vs recovered: return values, trap parity, linear memory; 6 byte-identical), the remainder op-coverage-only",
           "source": "crates/disrobe-pass-wasm-deob/tests/semantic_recovery_corpus.rs measure() = 38 modules parsed / 2 skipped / 133 functions / fully_recovered==133, with the module count and function total pinned by equality and the recovered count floored at 133; tests/semantic_differential.rs = wasmtime execution differential, 57/57 execution-eligible equivalent (6 byte-identical), CI-runnable under --features sandbox; op-coverage is NOT execution-equivalence except for those 57",
           "num": 133,
@@ -113,6 +125,10 @@
         {
           "label": "per-method",
           "value": 100.0,
+          "verified_by": {
+            "path": "crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs",
+            "function": "published_per_method_bar_matches_the_floors_this_crate_enforces"
+          },
           "detail": "CI floor 131 of 131 (every top-level method recompiles error-free) measured under real javac attribution; the pickWord switch-expression lift (9afa2306) unmasked 25 latent defects previously hidden by javac parse-masking from the __unresolved__ token, all fixed by class: pattern-switch subject resolved to its source parameter (sealed-subtype exhaustiveness), sealed/permits emitted on inner type stubs, typed default initializers on final inner-stub fields, the Exceptions attribute threaded into a real throws clause, the loop-exhausted terminal emitted after a while loop whose exit is a shared pure-return tail, loop-captured locals hoisted to a fresh final declaration, and the shared return tail of an instanceof if-else-if chain duplicated under a Region-tree fall-through analysis",
           "source": "crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs (report_per_method_javac_recompile asserts ok >= PER_METHOD_JAVAC_OK_FLOOR 131 of PER_METHOD_JAVAC_TOTAL 131); CI runs it via the test job with actions/setup-java (JDK 25); floor measured 2026-06-22 after fixing the pickWord-unmasked defects",
           "num": 131,
@@ -128,6 +144,10 @@
         {
           "label": "type names",
           "value": 85.0,
+          "verified_by": {
+            "path": "crates/disrobe-pass-go/tests/go_typemeta.rs",
+            "function": "typemeta_recovers_real_type_names_on_go126"
+          },
           "detail": "CI floor >= 85% on the committed stripped fixture; 838 of 838 (100%) measured, with the type count and the recovered count both pinned in the gate so a change to either forces a re-measure (typelinks/moduledata survive -s -w stripping)",
           "source": "crates/disrobe-pass-go/tests/go_typemeta.rs (typemeta_recovers_real_type_names_on_go126 asserts the type total equals 838 and the recovered count is at least 838 on common::HELLO_STRIPPED, with ratio >= 0.85 kept as a secondary guard); the stripped fixture is force-committed (git add -f, overriding the crates/disrobe-pass-go/tests/fixtures/*.exe gitignore) so the gate runs in CI; the garble/embed/generics/magic-stomp fixtures are force-committed the same way so those gates also run; 528/528 measured on go1.26.3 2026-06-12",
           "num": 838,
@@ -177,6 +197,10 @@
           "detected": 23,
           "delivered": 3,
           "delivered_label": "reversed on real samples",
+          "verified_by": {
+            "path": "crates/disrobe-pass-dotnet/src/protectors.rs",
+            "function": "published_dotnet_detected_protector_count_matches_this_enum"
+          },
           "source": "crates/disrobe-pass-dotnet/src/protectors.rs detect_all ([Protector; 23]); ConfuserEx2 constant decryption is reversed on a REAL committed sample - confuserex2_full.rs:53 recovers the encrypted plaintext from SampleConstants.confuserex2.dll with a plaintext-absent oracle; its encrypted-resource layer is carved byte-exact but runtime-key-walled (real_confuserex2_resources.rs:54 BlobExtractedKeyedWall) and full ConfuserEx2 cleanup delegates to de4dot (confuserex2_full.rs:47); the Eazfuscator VM-tier is devirtualized on a committed assembly - real_eazvm.rs devirtualizes_every_method_to_ordered_cil recovers the per-build opcode table from the in-assembly dispatch, decrypts the position-keyed stream and lifts all five virtualized bodies to CIL, graded against the independently compiled clean DLL by an ordered instruction comparison (opcode and operand, branch targets resolved to instruction index) at 57/57 = 100%, with recovered_cil_reinjects_and_runs_identically rebuilding a runnable assembly from the recovered CIL whose stdout is byte-identical to the clean baseline (skipped only when no .NET runtime is on PATH, never silently passed); the KoiVM (ConfuserEx-lineage) VM-tier is devirtualized on a committed sample produced by the real KoiVM tool (TheProxyRE fork driven through its public Virtualizer api over a benign self-authored exe, not a self-made encoder) - real_koivm.rs lifts all six virtualized bodies out of the #Koi stream back to CIL and grades them against the independently compiled KoiSample.clean.exe (peel_delivered_bodies_recover_known_originals: Add and Square recover fully, aggregate structural recovery >= 75% vs hand-derived ground-truth ops in koivm/grade.rs, a non-circular oracle), with clean_baseline_has_no_koivm_summary asserting the unobfuscated baseline yields no KoiVM summary; ILProtector and MaxToCode are detected and structurally enumerated with their method bodies walled on the native-runtime key, derived in the loader and absent from the assembly, never fabricated (ilprotector_bodies.rs NativeRuntimeWall, maxtocode_bodies.rs NativeStubWall); remainder detected + classified"
         },
         {
@@ -184,13 +208,21 @@
           "detected": 72,
           "delivered": 72,
           "delivered_label": "recovered",
-          "source": "crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs:10 (RECOVERY_FLOOR 72) and :172 (recovered >= 72 of 72); measured 72/72 locally 2026-06-11"
+          "verified_by": {
+            "path": "crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs",
+            "function": "recovers_real_source_from_v8_and_v9_corpus"
+          },
+          "source": "crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs (RECOVERY_FLOOR 72; recovers_real_source_from_v8_and_v9_corpus counts the committed v8 and v9 wrappers and asserts the recovered count against this pair); measured 72/72 locally 2026-06-11"
         },
         {
           "label": "Python source obfuscators",
           "detected": 20,
           "delivered": 17,
           "delivered_label": "recovered to source",
+          "verified_by": {
+            "path": "crates/disrobe-pass-py-deob/src/auto_route.rs",
+            "function": "published_detected_source_obfuscator_count_matches_the_registered_passes"
+          },
           "source": "crates/disrobe-pass-py-deob/src/auto_route.rs describe_obfuscator (20 Obfuscator variants); the roster is pinned by name, not by count, in auto_route.rs test published_source_obfuscator_roster_matches_the_registered_passes, so adding or removing a pass fails until the published figure moves with it"
         },
         {
@@ -198,7 +230,11 @@
           "detected": 10,
           "delivered": 2,
           "delivered_label": "recovered",
-          "source": "crates/disrobe-pass-jvm/src/obfuscators.rs Protector enum carries 9 detected protectors (ProGuard/R8, Zelix KlassMaster, Allatori, Stringer, DashO, DexGuard, yGuard, SkidSuite2, JBCO); BlackObfuscator is the tenth family, handled by the separate DEX deflattening path in crates/disrobe-pass-jvm/src/dalvik_blackobf.rs and recognised by chain_detector.rs rather than by the Protector enum. Counted as 10 addressed families. NOT yet pinned by a roster test the way py_source_obfuscators is: the crate was held by another lane when this key was added"
+          "verified_by": {
+            "path": "crates/disrobe-pass-jvm/src/chain_detector.rs",
+            "function": "published_jvm_android_family_count_matches_this_catalog"
+          },
+          "source": "crates/disrobe-pass-jvm/src/obfuscators.rs Protector enum carries 9 detected protectors (ProGuard/R8, Zelix KlassMaster, Allatori, Stringer, DashO, DexGuard, yGuard, SkidSuite2, JBCO); BlackObfuscator is the tenth family, handled by the separate DEX deflattening path in crates/disrobe-pass-jvm/src/dalvik_blackobf.rs and recognised by chain_detector.rs rather than by the Protector enum. Counted as 10 addressed families, and the detected leg is pinned against the chain catalog by chain_detector.rs test published_jvm_android_family_count_matches_this_catalog; the delivered leg has no declaration in the crate to check it against"
         },
         {
           "label": "Shell obfuscation modes",
@@ -226,6 +262,10 @@
         {
           "label": "Lua chain catalog entries",
           "value": 16,
+          "verified_by": {
+            "path": "crates/disrobe-pass-lua/src/chain_detector.rs",
+            "function": "published_lua_catalog_count_matches_this_catalog"
+          },
           "source": "crates/disrobe-pass-lua/src/chain_detector.rs:169 (CATALOG_COUNT = 16; 14 obfuscator entries plus Luau and GLua dialect detectors)"
         },
         {
@@ -249,12 +289,20 @@
           "label": "greeter",
           "value": 100.0,
           "detail": "gate floor (>= 100%)",
+          "verified_by": {
+            "path": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs",
+            "function": "published_yarv_bars_match_the_floors_this_crate_enforces"
+          },
           "source": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs:105 (greeter >= 100)"
         },
         {
           "label": "megafile",
           "value": 98.0,
           "detail": "gate floor (>= 98%)",
+          "verified_by": {
+            "path": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs",
+            "function": "published_yarv_bars_match_the_floors_this_crate_enforces"
+          },
           "source": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs (megafile >= 98)"
         }
       ]
@@ -267,6 +315,10 @@
         {
           "label": "op-coverage",
           "value": 100.0,
+          "verified_by": {
+            "path": "crates/disrobe-pass-mobile/tests/real_hermes_sample.rs",
+            "function": "hbc_v96_sample_recovers_every_function_at_full_op_coverage"
+          },
           "detail": "self-authored sample.js compiled with the real hermesc (HBC v96); all 8 functions lift with correct names and source-matching bodies at 0 fallback ops; CI-gated",
           "source": "crates/disrobe-pass-mobile/tests/real_hermes_sample.rs (hbc_v96_sample_recovers_every_function_at_full_op_coverage asserts total_fallback_ops == 0)",
           "num": 8,

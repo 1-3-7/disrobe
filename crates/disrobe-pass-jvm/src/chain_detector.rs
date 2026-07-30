@@ -923,6 +923,70 @@ mod tests {
         );
     }
 
+    fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {
+        let path: std::path::PathBuf = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("xtask")
+            .join("data")
+            .join("recovery.json");
+        let raw: String = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", path.display()));
+        let doc: serde_json::Value = serde_json::from_str(&raw)
+            .unwrap_or_else(|e: serde_json::Error| panic!("parse {}: {e}", path.display()));
+        let mut found: Vec<serde_json::Value> = Vec::new();
+        for group in doc["groups"].as_array().expect("groups array") {
+            let heading_matches: bool = group["heading"]
+                .as_str()
+                .is_some_and(|h: &str| h.contains(heading_needle));
+            if !heading_matches {
+                continue;
+            }
+            for bar in group["bars"].as_array().unwrap_or(&Vec::new()) {
+                if bar["label"].as_str() == Some(label) {
+                    found.push(bar.clone());
+                }
+            }
+        }
+        assert_eq!(
+            found.len(),
+            1,
+            "xtask/data/recovery.json must carry exactly one bar labelled `{label}` under a \
+             heading containing `{heading_needle}`, found {}",
+            found.len()
+        );
+        found.remove(0)
+    }
+
+    #[test]
+    fn published_jvm_android_family_count_matches_this_catalog() {
+        const BAR: &str = "JVM / Android families";
+        let bar: serde_json::Value = published_bar("Detection and extraction breadth", BAR);
+        let detected: u64 = bar["detected"]
+            .as_u64()
+            .expect("the JVM / Android families bar must carry a detected count");
+        let entries: Vec<&'static dyn CatalogEntry> = ObfuscatorCatalog::catalog(&JvmDetector);
+        assert_eq!(
+            usize::try_from(detected).expect("detected fits usize"),
+            entries.len(),
+            "xtask/data/recovery.json publishes {detected} addressed JVM and Android families and \
+             every document renders that number, but this catalog carries {}. This asserts the \
+             detected leg; the delivered leg counts the families whose bodies are recovered and \
+             has no declaration in this crate to check it against",
+            entries.len()
+        );
+        let protector_entries: usize = entries
+            .iter()
+            .filter(|e: &&&'static dyn CatalogEntry| e.id() != "jvm-blackobfuscator")
+            .count();
+        assert_eq!(
+            protector_entries,
+            entries.len() - 1,
+            "the tenth family is the DEX deflattening path, which is not a Protector variant; if \
+             that stops holding the published split needs re-deriving"
+        );
+    }
+
     #[test]
     fn catalog_lists_known_jvm_families() {
         let entries: Vec<&'static dyn CatalogEntry> = ObfuscatorCatalog::catalog(&JvmDetector);

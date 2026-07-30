@@ -11,6 +11,42 @@ const RECOVERY_FLOOR: usize = 72;
 const KNOWN_MARKER: &[u8] = b"try_except_basic";
 const PY312: PyVersion = PyVersion::new(3, 12);
 
+const PUBLISHED_HEADING: &str = "Detection and extraction breadth";
+const PUBLISHED_BAR: &str = "PyArmor samples";
+
+fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {
+    let path: PathBuf = workspace_root()
+        .join("xtask")
+        .join("data")
+        .join("recovery.json");
+    let raw: String = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", path.display()));
+    let doc: serde_json::Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|e: serde_json::Error| panic!("parse {}: {e}", path.display()));
+    let mut found: Vec<serde_json::Value> = Vec::new();
+    for group in doc["groups"].as_array().expect("groups array") {
+        let heading_matches: bool = group["heading"]
+            .as_str()
+            .is_some_and(|h: &str| h.contains(heading_needle));
+        if !heading_matches {
+            continue;
+        }
+        for bar in group["bars"].as_array().unwrap_or(&Vec::new()) {
+            if bar["label"].as_str() == Some(label) {
+                found.push(bar.clone());
+            }
+        }
+    }
+    assert_eq!(
+        found.len(),
+        1,
+        "xtask/data/recovery.json must carry exactly one bar labelled `{label}` under a heading \
+         containing `{heading_needle}`, found {}",
+        found.len()
+    );
+    found.remove(0)
+}
+
 #[test]
 fn rejects_zero_bytes() {
     let err: bool = unpack_static(&[]).is_err();
@@ -79,14 +115,17 @@ struct Fixture {
 #[test]
 fn recovers_real_source_from_v8_and_v9_corpus() {
     let corpus_dir: PathBuf = workspace_root().join("corpus/python/pyarmor");
-    if !corpus_dir.is_dir() {
-        return;
-    }
+    assert!(
+        corpus_dir.is_dir(),
+        "the v8 and v9 wrapper corpus is committed and is the evidence behind the published \
+         PyArmor samples figure; expected it at {}",
+        corpus_dir.display()
+    );
 
     let fixtures: Vec<Fixture> = collect_fixtures(&corpus_dir);
     assert!(
-        fixtures.len() >= 72,
-        "expected the full committed corpus (>= 72 wrappers), found {}",
+        fixtures.len() >= RECOVERY_FLOOR,
+        "expected the full committed corpus (>= {RECOVERY_FLOOR} wrappers), found {}",
         fixtures.len()
     );
 
@@ -171,6 +210,26 @@ fn recovers_real_source_from_v8_and_v9_corpus() {
     assert!(
         recovered >= RECOVERY_FLOOR,
         "expected >= {RECOVERY_FLOOR}/72 real source recoveries on the committed corpus, got {recovered}"
+    );
+
+    let bar: serde_json::Value = published_bar(PUBLISHED_HEADING, PUBLISHED_BAR);
+    let detected: u64 = bar["detected"]
+        .as_u64()
+        .expect("the PyArmor samples bar must carry a detected count");
+    let delivered: u64 = bar["delivered"]
+        .as_u64()
+        .expect("the PyArmor samples bar must carry a delivered count");
+    assert_eq!(
+        u64::try_from(fixtures.len()).expect("fixture count fits u64"),
+        detected,
+        "xtask/data/recovery.json publishes {detected} PyArmor corpus samples and every document \
+         renders that number, but the committed v8 and v9 corpus carries {}",
+        fixtures.len()
+    );
+    assert!(
+        u64::try_from(recovered).expect("recovered fits u64") >= delivered,
+        "recovery.json publishes {delivered} of {detected} samples recovered to source; this run \
+         recovered {recovered}"
     );
 }
 

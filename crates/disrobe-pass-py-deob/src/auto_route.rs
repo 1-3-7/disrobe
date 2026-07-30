@@ -313,6 +313,59 @@ mod tests {
         }
     }
 
+    fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {
+        let path: std::path::PathBuf = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("xtask")
+            .join("data")
+            .join("recovery.json");
+        let raw: String = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", path.display()));
+        let doc: serde_json::Value = serde_json::from_str(&raw)
+            .unwrap_or_else(|e: serde_json::Error| panic!("parse {}: {e}", path.display()));
+        let mut found: Vec<serde_json::Value> = Vec::new();
+        for group in doc["groups"].as_array().expect("groups array") {
+            let heading_matches: bool = group["heading"]
+                .as_str()
+                .is_some_and(|h: &str| h.contains(heading_needle));
+            if !heading_matches {
+                continue;
+            }
+            for bar in group["bars"].as_array().unwrap_or(&Vec::new()) {
+                if bar["label"].as_str() == Some(label) {
+                    found.push(bar.clone());
+                }
+            }
+        }
+        assert_eq!(
+            found.len(),
+            1,
+            "xtask/data/recovery.json must carry exactly one bar labelled `{label}` under a \
+             heading containing `{heading_needle}`, found {}",
+            found.len()
+        );
+        found.remove(0)
+    }
+
+    #[test]
+    fn published_detected_source_obfuscator_count_matches_the_registered_passes() {
+        const BAR: &str = "Python source obfuscators";
+        let bar: serde_json::Value = published_bar("Detection and extraction breadth", BAR);
+        let detected: u64 = bar["detected"]
+            .as_u64()
+            .expect("the Python source obfuscators bar must carry a detected count");
+        let registered: usize = supported_obfuscators().len();
+        assert_eq!(
+            usize::try_from(detected).expect("detected fits usize"),
+            registered,
+            "xtask/data/recovery.json publishes {detected} detected Python source obfuscators and \
+             every document renders that number, but {registered} passes are registered. This \
+             asserts the detected leg; the delivered leg counts the passes that reach real source \
+             and has no declaration in this crate to check it against"
+        );
+    }
+
     #[test]
     fn published_source_obfuscator_roster_matches_the_registered_passes() {
         const PUBLISHED: [&str; 20] = [
@@ -345,7 +398,8 @@ mod tests {
         registered.sort_unstable();
         published.sort_unstable();
         assert_eq!(
-            registered, published,
+            registered,
+            published,
             "README and docs/src/catalog.md publish py_source_obfuscators as {}; the registered \
              roster must name exactly these passes, so adding or removing one has to move the \
              published figure in the same change",

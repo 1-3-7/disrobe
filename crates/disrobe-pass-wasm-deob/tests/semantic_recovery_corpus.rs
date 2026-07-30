@@ -13,6 +13,44 @@ const CORPUS_MODULES: usize = 38;
 const CORPUS_FUNCTIONS: usize = 133;
 const CORPUS_FULLY_RECOVERED: usize = 133;
 
+const PUBLISHED_HEADING: &str = "WebAssembly (committed 133-fn corpus";
+const PUBLISHED_BAR: &str = "op-coverage";
+
+fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {
+    let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("xtask")
+        .join("data")
+        .join("recovery.json");
+    let raw: String = fs::read_to_string(&path)
+        .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", path.display()));
+    let doc: serde_json::Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|e: serde_json::Error| panic!("parse {}: {e}", path.display()));
+    let mut found: Vec<serde_json::Value> = Vec::new();
+    for group in doc["groups"].as_array().expect("groups array") {
+        let heading_matches: bool = group["heading"]
+            .as_str()
+            .is_some_and(|h: &str| h.contains(heading_needle));
+        if !heading_matches {
+            continue;
+        }
+        for bar in group["bars"].as_array().unwrap_or(&Vec::new()) {
+            if bar["label"].as_str() == Some(label) {
+                found.push(bar.clone());
+            }
+        }
+    }
+    assert_eq!(
+        found.len(),
+        1,
+        "xtask/data/recovery.json must carry exactly one bar labelled `{label}` under a heading \
+         containing `{heading_needle}`, found {}",
+        found.len()
+    );
+    found.remove(0)
+}
+
 fn corpus_dirs() -> Vec<PathBuf> {
     let root: &Path = Path::new(env!("CARGO_MANIFEST_DIR"));
     vec![
@@ -215,6 +253,34 @@ fn corpus_recovery_requires_full_op_coverage_not_just_parseability() {
          functions, the figure the docs publish; got {}/{}",
         tally.fully_recovered,
         tally.total_functions
+    );
+
+    let bar: serde_json::Value = published_bar(PUBLISHED_HEADING, PUBLISHED_BAR);
+    let num: u64 = bar["num"]
+        .as_u64()
+        .expect("the wasm op-coverage bar must carry a numerator");
+    let den: u64 = bar["den"]
+        .as_u64()
+        .expect("the wasm op-coverage bar must carry a denominator");
+    let value: f64 = bar["value"]
+        .as_f64()
+        .expect("the wasm op-coverage bar must carry a numeric value");
+    assert_eq!(
+        u64::try_from(tally.total_functions).expect("function total fits u64"),
+        den,
+        "xtask/data/recovery.json publishes a denominator of {den} functions and every document \
+         renders that number, but this corpus carries {}",
+        tally.total_functions
+    );
+    assert!(
+        u64::try_from(tally.fully_recovered).expect("recovered fits u64") >= num,
+        "recovery.json publishes {num} of {den} fully op-covered functions; this run recovered {}",
+        tally.fully_recovered
+    );
+    let derived: f64 = 100.0 * num as f64 / den as f64;
+    assert!(
+        (derived - value).abs() < 0.05,
+        "the published value {value} disagrees with its own {num}/{den} = {derived:.4}"
     );
 }
 

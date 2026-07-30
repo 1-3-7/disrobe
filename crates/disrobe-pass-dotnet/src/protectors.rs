@@ -53,6 +53,32 @@ pub enum Handling {
 }
 
 impl Protector {
+    pub const ALL: [Self; 23] = [
+        Self::ConfuserEx,
+        Self::ConfuserEx2,
+        Self::Dotfuscator,
+        Self::DotfuscatorCe,
+        Self::SmartAssembly,
+        Self::BabelDotnet,
+        Self::DeepSea,
+        Self::SpicesNet,
+        Self::Goliath,
+        Self::Skater,
+        Self::DotnetReactor,
+        Self::EazfuscatorNet,
+        Self::CryptoObfuscator,
+        Self::ArmDot,
+        Self::AgileNet,
+        Self::DotNetPatcher,
+        Self::NetCryptor,
+        Self::Obfuscar,
+        Self::ThemidaDotnet,
+        Self::Ilprotector,
+        Self::MaxToCode,
+        Self::KoiVm,
+        Self::BitMono,
+    ];
+
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -219,32 +245,7 @@ pub fn detect_all(image: &[u8]) -> DetectionReport {
         };
     }
     let mut matches: BTreeMap<Protector, Vec<u32>> = BTreeMap::new();
-    let all: [Protector; 23] = [
-        Protector::ConfuserEx,
-        Protector::ConfuserEx2,
-        Protector::Dotfuscator,
-        Protector::DotfuscatorCe,
-        Protector::SmartAssembly,
-        Protector::BabelDotnet,
-        Protector::DeepSea,
-        Protector::SpicesNet,
-        Protector::Goliath,
-        Protector::Skater,
-        Protector::DotnetReactor,
-        Protector::EazfuscatorNet,
-        Protector::CryptoObfuscator,
-        Protector::ArmDot,
-        Protector::AgileNet,
-        Protector::DotNetPatcher,
-        Protector::NetCryptor,
-        Protector::Obfuscar,
-        Protector::ThemidaDotnet,
-        Protector::Ilprotector,
-        Protector::MaxToCode,
-        Protector::KoiVm,
-        Protector::BitMono,
-    ];
-    for protector in all {
+    for protector in Protector::ALL {
         let mut offsets: Vec<u32> = Vec::new();
         for needle in protector.signatures() {
             let mut cursor: usize = 0;
@@ -393,6 +394,67 @@ pub const fn plan_execution(protector: Protector, options: ExecuteOptions) -> Ex
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {
+        let path: std::path::PathBuf = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("xtask")
+            .join("data")
+            .join("recovery.json");
+        let raw: String =
+            std::fs::read_to_string(&path).expect("xtask/data/recovery.json is readable");
+        let doc: serde_json::Value =
+            serde_json::from_str(&raw).expect("xtask/data/recovery.json parses as JSON");
+        let mut found: Vec<serde_json::Value> = Vec::new();
+        for group in doc["groups"].as_array().expect("groups array") {
+            let heading_matches: bool = group["heading"]
+                .as_str()
+                .is_some_and(|h: &str| h.contains(heading_needle));
+            if !heading_matches {
+                continue;
+            }
+            for bar in group["bars"].as_array().unwrap_or(&Vec::new()) {
+                if bar["label"].as_str() == Some(label) {
+                    found.push(bar.clone());
+                }
+            }
+        }
+        assert_eq!(
+            found.len(),
+            1,
+            "xtask/data/recovery.json must carry exactly one bar labelled `{label}` under a \
+             heading containing `{heading_needle}`, found {}",
+            found.len()
+        );
+        found.remove(0)
+    }
+
+    #[test]
+    fn published_dotnet_detected_protector_count_matches_this_enum() {
+        const BAR: &str = ".NET protectors";
+        let bar: serde_json::Value = published_bar("Detection and extraction breadth", BAR);
+        let detected: u64 = bar["detected"]
+            .as_u64()
+            .expect("the .NET protectors bar must carry a detected count");
+        assert_eq!(
+            usize::try_from(detected).expect("detected fits usize"),
+            Protector::ALL.len(),
+            "xtask/data/recovery.json publishes {detected} detected .NET protectors and every \
+             document renders that number, but the roster detect_all walks carries {}. This \
+             asserts the detected leg; the delivered leg is a per-sample recovery claim carried \
+             by the real-sample tests the bar's source names",
+            Protector::ALL.len()
+        );
+        assert_eq!(
+            Protector::ALL.len(),
+            Protector::ALL
+                .iter()
+                .collect::<std::collections::BTreeSet<&Protector>>()
+                .len(),
+            "the walked roster must not repeat a protector, or the published count is inflated"
+        );
+    }
 
     fn native_pe_with_marker(marker: &[u8]) -> Vec<u8> {
         let mut img: Vec<u8> = vec![0u8; 0x400];
