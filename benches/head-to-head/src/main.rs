@@ -1,5 +1,6 @@
 #![deny(unreachable_pub)]
 pub mod apk;
+pub mod apkleaks_capture;
 pub mod frisk;
 pub mod gate;
 #[cfg(test)]

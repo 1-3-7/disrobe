@@ -27,5 +27,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 eyre = { workspace = true }
 regex = { workspace = true }
+sha2 = { workspace = true }
 walkdir = { workspace = true }
 zip = { workspace = true }
