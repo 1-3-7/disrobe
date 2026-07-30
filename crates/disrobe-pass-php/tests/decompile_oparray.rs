@@ -173,7 +173,7 @@ fn push_opt_string(out: &mut Vec<u8>, s: Option<&str>) {
 }
 
 #[test]
-fn operand_type_wire_mapping_matches_zend_is_constants() {
+fn operand_type_wire_values_are_the_single_bit_lattice_the_container_declares() {
     assert_eq!(OperandType::from_wire(T_UNUSED), Some(OperandType::Unused));
     assert_eq!(OperandType::from_wire(T_CONST), Some(OperandType::Const));
     assert_eq!(OperandType::from_wire(T_TMP), Some(OperandType::TmpVar));
@@ -181,10 +181,18 @@ fn operand_type_wire_mapping_matches_zend_is_constants() {
     assert_eq!(OperandType::from_wire(T_CV), Some(OperandType::Cv));
     assert_eq!(OperandType::from_wire(3), None);
     assert_eq!(OperandType::from_wire(255), None);
+    for (wire, next) in [(T_CONST, T_TMP), (T_TMP, T_VAR), (T_VAR, T_CV)] {
+        assert_eq!(
+            wire * 2,
+            next,
+            "the operand kinds occupy one bit each and ascend in order, so a value that is not \
+             twice its predecessor would collide with a combination of the others"
+        );
+    }
 }
 
 #[test]
-fn opcode_names_match_zend_vm_opcodes_header() {
+fn every_opcode_constant_is_named_with_its_zend_mnemonic_in_this_table() {
     assert_eq!(opcode_name(op::ECHO), "ZEND_ECHO");
     assert_eq!(opcode_name(op::ASSIGN), "ZEND_ASSIGN");
     assert_eq!(opcode_name(op::JMPZ), "ZEND_JMPZ");

@@ -36,6 +36,13 @@ pub const MAKENSIS: Toolchain = Toolchain {
     install_hint: "install NSIS and put makensis on PATH",
 };
 
+pub const READELF: Toolchain = Toolchain {
+    program: "readelf",
+    require_var: "DISROBE_REQUIRE_READELF",
+    install_hint: "install binutils (readelf), llvm (llvm-readelf) or elfutils (eu-readelf) and put \
+                   it on PATH",
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Requirement {
     Optional,
@@ -117,11 +124,15 @@ pub fn required_fixture(format_dir: &str, filename: &str) -> Vec<u8> {
     })
 }
 
+pub fn corpus_path(relative: &str) -> PathBuf {
+    let mut root: PathBuf = corpus_binfmt_root();
+    root.pop();
+    root.join(relative)
+}
+
 #[allow(clippy::panic)]
 pub fn required_corpus(relative: &str) -> Vec<u8> {
-    let mut path: PathBuf = corpus_binfmt_root();
-    path.pop();
-    let path: PathBuf = path.join(relative);
+    let path: PathBuf = corpus_path(relative);
     std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
         panic!(
             "corpus/{relative} is tracked in git and this case grades nothing without it, so its \
