@@ -1,0 +1,17 @@
+id = "jvm-execution-differential"
+ecosystem = "jvm"
+title = "JVM classfile decompilation, per-method execution differential"
+claim = "disrobe decompiles JVM bytecode to Java whose observable per-method behaviour under a real JVM matches the original, across the EdgeCases corpus."
+oracle_strength = "strong"
+ci = true
+
+[oracle]
+kind = "recovery-import"
+external = "real javac (JDK 25) plus a real JVM: the original and the recovered source are each compiled and run, and every observable per-method result is compared"
+reproduce = "cargo test -p disrobe-pass-jvm --test edgecases_execution_differential"
+note = "This is the strong companion to jvm-javac-recompile, which is recompile-only over the same 131-method denominator. Recompile-acceptance proves the recovered Java compiles, not that it behaves the same; this crate once emitted a method that compiled cleanly and incremented a counter twice on its exception path. The equivalent set is pinned as a membership list of method names rather than a count, so a method cannot leave it silently. The residual 14 is two populations: 8 javac-clean but measurably divergent, and 6 javac-clean but not executable in isolation, which are ungraded rather than passing. Publish both bars; do not blend them."
+
+[source]
+recovery_group = "JVM classfile (EdgeCases corpus, per-method real-javac recompile)"
+recovery_bar = "per-method, execution-verified"
+floor = 89.31
