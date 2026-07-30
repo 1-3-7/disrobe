@@ -24,8 +24,8 @@
 mod php_toolchain;
 
 use disrobe_pass_php::{
-    Decompilation, Error, OPARRAY_MAX_VERSION, OPARRAY_MIN_VERSION, decompile_oparray,
-    parse_oparray,
+    Decompilation, Error, OPARRAY_MAX_VERSION, OPARRAY_MIN_VERSION, Op, OpArray, decompile_oparray,
+    opcode_name, parse_oparray,
 };
 use php_toolchain::{PHP_OPCACHE, PhpRuntime, require_php, unmeasured};
 use std::collections::BTreeSet;
@@ -349,6 +349,218 @@ fn keyed_foreach_oparray_roundtrips_behaviorally() {
 #[test]
 fn variable_variable_oparray_roundtrips_behaviorally() {
     behavioral_roundtrip("variable_variable");
+}
+
+const MAIN_BLOCK_HEADER: &str = "$_main:";
+
+const EMITTER_SEND_FAMILY_TARGET: &str = "ZEND_SEND_VAL";
+
+const EMITTER_ASSIGN_OP_TARGET: &str = "ZEND_ASSIGN_OP";
+
+const EMITTER_ASSIGN_OP_BINOPS: [&str; 12] = [
+    "ADD", "SUB", "MUL", "DIV", "MOD", "CONCAT", "POW", "SL", "SR", "BW_OR", "BW_AND", "BW_XOR",
+];
+
+fn mnemonic_of(line: &str) -> Option<String> {
+    let (address, rest): (&str, &str) = line.split_once(' ')?;
+    if address.len() != 4 || !address.bytes().all(|byte: u8| byte.is_ascii_digit()) {
+        return None;
+    }
+    let body: &str = rest.trim_start();
+    let after_result: &str = match body.split_once(" = ") {
+        Some((head, tail)) if !head.contains(' ') => tail.trim_start(),
+        _ => body,
+    };
+    let token: &str = after_result.split_whitespace().next()?;
+    if !token
+        .bytes()
+        .all(|byte: u8| byte.is_ascii_uppercase() || byte == b'_' || byte.is_ascii_digit())
+    {
+        return None;
+    }
+    Some(token.to_owned())
+}
+
+fn main_block_mnemonics(text: &str) -> Option<Vec<String>> {
+    let mut inside: bool = false;
+    let mut mnemonics: Vec<String> = Vec::new();
+    for raw in text.lines() {
+        let line: &str = raw.trim();
+        if line == MAIN_BLOCK_HEADER {
+            inside = true;
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        if line.starts_with("LIVE RANGES") || line.starts_with("EXCEPTION TABLE") {
+            break;
+        }
+        if line.ends_with(':') && !line.starts_with(';') && mnemonic_of(line).is_none() {
+            break;
+        }
+        if let Some(mnemonic) = mnemonic_of(line) {
+            mnemonics.push(mnemonic);
+        }
+    }
+    inside.then_some(mnemonics)
+}
+
+fn expected_zend_name(mnemonic: &str) -> String {
+    if mnemonic.starts_with("SEND_") {
+        return EMITTER_SEND_FAMILY_TARGET.to_owned();
+    }
+    if mnemonic == "FAST_CONCAT" {
+        return "ZEND_CONCAT".to_owned();
+    }
+    if let Some(rest) = mnemonic.strip_prefix("ASSIGN_")
+        && EMITTER_ASSIGN_OP_BINOPS.contains(&rest)
+    {
+        return EMITTER_ASSIGN_OP_TARGET.to_owned();
+    }
+    format!("ZEND_{mnemonic}")
+}
+
+fn opcache_dump_text(php: &Path, dll: &str, src: &Path) -> Option<String> {
+    let output: std::process::Output = Command::new(php)
+        .args(["-d", "opcache.error_log="])
+        .arg("-d")
+        .arg(format!("zend_extension={dll}"))
+        .args([
+            "-d",
+            "opcache.enable=1",
+            "-d",
+            "opcache.enable_cli=1",
+            "-d",
+            "opcache.jit=disable",
+            "-d",
+            "opcache.jit_buffer_size=0",
+            "-d",
+            "opcache.opt_debug_level=0x10000",
+        ])
+        .arg(src)
+        .output()
+        .ok()?;
+    let stdout: String = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr: String = String::from_utf8_lossy(&output.stderr).into_owned();
+    if stderr.contains(MAIN_BLOCK_HEADER) {
+        return Some(stderr);
+    }
+    if stdout.contains(MAIN_BLOCK_HEADER) {
+        return Some(stdout);
+    }
+    None
+}
+
+fn opcode_naming_agrees_with_real_php(sample: &str) {
+    let graded: String =
+        format!("the {sample} op_array opcode names against the mnemonics real php prints");
+    let Some(php): Option<PathBuf> = find_php(&graded) else {
+        return;
+    };
+    let Some(dll): Option<String> = find_opcache(&php, &graded) else {
+        return;
+    };
+    let src: PathBuf = required_sample(sample);
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_oparray_mnemonics")
+            .expect("mkdir mnemonic scratch");
+    let dzoa: PathBuf = scratch.path().join(format!("{sample}.dzoa"));
+    if let Err(diag) = emit_dzoa(&php, &dll, &src, &dzoa) {
+        unmeasured(
+            &PHP_OPCACHE,
+            &graded,
+            &format!(
+                "this php and opcache build emits no op_array dump for {sample}\n{diag}\n\n{}",
+                environment_diagnostics(&php)
+            ),
+        );
+        return;
+    }
+    let Some(text): Option<String> = opcache_dump_text(&php, &dll, &src) else {
+        unmeasured(
+            &PHP_OPCACHE,
+            &graded,
+            "the opcache textual dump carried no $_main block on either stream",
+        );
+        return;
+    };
+    let Some(reference): Option<Vec<String>> = main_block_mnemonics(&text) else {
+        panic!("the dump for {sample} names $_main and then loses it:\n{text}");
+    };
+    assert!(
+        !reference.is_empty(),
+        "real php printed no opcode for {sample}, so comparing names against it would accept any \
+         naming at all"
+    );
+
+    let bytes: Vec<u8> = std::fs::read(&dzoa).expect("read dzoa");
+    let parsed: OpArray = parse_oparray(&bytes).expect("disrobe parse real op_array");
+    let ours: Vec<String> = parsed
+        .ops
+        .iter()
+        .map(|op: &Op| opcode_name(op.opcode).to_owned())
+        .collect();
+    let expected: Vec<String> = reference
+        .iter()
+        .map(|mnemonic: &String| expected_zend_name(mnemonic))
+        .collect();
+
+    assert_eq!(
+        ours.len(),
+        expected.len(),
+        "{sample}: real php printed {} opcodes for $_main and the container carries {}, so the two \
+         streams cannot be compared name by name\n--- php ---\n{reference:?}\n--- ours ---\n{ours:?}",
+        expected.len(),
+        ours.len()
+    );
+    assert_eq!(
+        ours, expected,
+        "{sample}: the opcode name this crate reports is not the mnemonic real php printed for that \
+         position"
+    );
+
+    let passthrough: usize = reference
+        .iter()
+        .filter(|mnemonic: &&String| expected_zend_name(mnemonic) == format!("ZEND_{mnemonic}"))
+        .count();
+    assert!(
+        passthrough * 2 > reference.len(),
+        "{sample}: {passthrough} of {} opcodes survive the emitter unrenamed. Below half, the \
+         comparison is mostly checking the rename table rather than the opcode names",
+        reference.len()
+    );
+}
+
+#[test]
+fn opcode_names_are_the_mnemonics_real_php_prints() {
+    for sample in BEHAVIORALLY_GRADED_SAMPLES {
+        opcode_naming_agrees_with_real_php(sample);
+    }
+}
+
+#[test]
+fn the_mnemonic_reader_takes_the_opcode_and_not_the_result_slot() {
+    assert_eq!(
+        mnemonic_of("0000 ASSIGN CV0($a) int(6)").as_deref(),
+        Some("ASSIGN")
+    );
+    assert_eq!(
+        mnemonic_of("0002 T11 = ADD CV0($a) CV1($b)").as_deref(),
+        Some("ADD")
+    );
+    assert_eq!(mnemonic_of("  ; (lines=39, args=0)"), None);
+    assert_eq!(mnemonic_of("LIVE RANGES (1):"), None);
+    assert_eq!(mnemonic_of("\")"), None);
+    assert_eq!(
+        expected_zend_name("SEND_VAR"),
+        EMITTER_SEND_FAMILY_TARGET,
+        "the emitter folds the whole SEND family into one opcode, so the comparison must expect \
+         that rather than report a mismatch the container cannot carry"
+    );
+    assert_eq!(expected_zend_name("ASSIGN_ADD"), EMITTER_ASSIGN_OP_TARGET);
+    assert_eq!(expected_zend_name("ASSIGN_DIM"), "ZEND_ASSIGN_DIM");
+    assert_eq!(expected_zend_name("ECHO"), "ZEND_ECHO");
 }
 
 struct RealDump {
