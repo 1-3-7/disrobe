@@ -168,7 +168,7 @@ Every release ships three additional pieces of supply-chain evidence beyond the 
 
 `.github/workflows/verify-release.yml` is a separate workflow triggered by `release: published`. A manual `workflow_dispatch` with a `tag` input re-checks an older release. The workflow re-verifies a published release the way an outside stranger would: `contents: read` only, no signing credentials. It downloads the public release assets with `gh release download` and checks every archive and the SBOM against `SHA256SUMS`. It verifies every cosign bundle with `cosign verify-blob`, and it verifies the build-provenance attestation on each archive and the SBOM with `gh attestation verify`. Because it runs as its own separately-triggered job rather than a step appended to the `release.yml` run, it exercises the actual downloadable, publicly-verifiable artifacts, not the same run's internal runner state and credentials.
 
-## Acknowledgements
+## Acknowledgments
 
 When a reported issue ships a fix, we add the reporter (with their preferred handle) to the GitHub Security Advisory page and to the release notes for the version that contains the fix.
 

@@ -1,6 +1,6 @@
 {
   "ci_attested": true,
-  "claim": "disrobe decompiles JVM bytecode to Java whose observable per-method behaviour under a real JVM matches the original, across the EdgeCases corpus.",
+  "claim": "disrobe decompiles JVM bytecode to Java whose observable per-method behavior under a real JVM matches the original, across the EdgeCases corpus.",
   "competitors": [],
   "detail": "117 of the same 131 top-level methods are EXECUTION-equivalent, which is a strictly stronger standard than the recompile bar beside it: the original and the recovered source are each compiled by real javac, both are run under a real JVM, and every observable per-method result is compared. Read the residual 14 as the two separate populations it is, never as one: 8 methods are javac-clean and measurably DIVERGENT, and 6 are javac-clean but not executable in isolation (5 measure a nested-type stub, 1 is not self-reproducible), so those 6 are ungraded rather than passing. The distinction is not academic in this crate, which once emitted a method that compiled cleanly and incremented a counter twice on its exception path.",
   "disrobe_leads": null,

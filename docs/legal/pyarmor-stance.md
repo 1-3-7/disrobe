@@ -2,7 +2,7 @@
 
 > This page records the project's legal posture toward PyArmor-protected input and the engineering defaults that posture produces. If your use of `disrobe` against PyArmor output may implicate copyright, anti-circumvention, or contract law in your jurisdiction, you are responsible for obtaining your own counsel. See the project-wide [Responsible use](https://github.com/1-3-7/disrobe/blob/main/LEGAL.md) document for the general framing this page specializes.
 
-PyArmor (by Dashingsoft) is the most widely deployed commercial Python obfuscator. It ships a free tier and several paid tiers. `disrobe` ships PyArmor recognizers and peels, so the project owes an explicit account of *when* it acts on PyArmor input and *why*. The [Legal](../src/legal.md) page commits the project to a written stance in `docs/legal/<protector>-stance.md` before any grey-zone protector escalates from recognition to a full peel. This file is that stance for PyArmor.
+PyArmor (by Dashingsoft) is the most widely deployed commercial Python obfuscator. It ships a free tier and several paid tiers. `disrobe` ships PyArmor recognizers and peels, so the project owes an explicit account of *when* it acts on PyArmor input and *why*. The [Legal](../src/legal.md) page commits the project to a written stance in `docs/legal/<protector>-stance.md` before any gray-zone protector escalates from recognition to a full peel. This file is that stance for PyArmor.
 
 ## Traffic-light verdict: AMBER
 
@@ -47,7 +47,7 @@ Comparable interoperability and study provisions exist in the United Kingdom (CD
 The stance is wired into the CLI defaults:
 
 - **Free-tier PyArmor: detect and deobfuscate by default.** The v8 and v9-pro static peels need no authorization gate.
-- **Paid-tier and grey-zone PyArmor: gated.** Paid-tier peels run only with `--i-have-authorization`.
+- **Paid-tier and gray-zone PyArmor: gated.** Paid-tier peels run only with `--i-have-authorization`.
 - **The same flag gates the `decryption-keys` LLM category.** If you request that category without `--i-have-authorization`, `disrobe` fails fast with an authorization-required diagnostic instead of running the peel.
 - **Dynamic execution is doubly gated.** PyArmor v6/v7 dynamic-hook and BCC native-body lift each additionally require `--allow-dynamic` / `--allow-bcc` and run under a watchdog. See the [Forensics and malware-safety posture](../src/forensics-safety.md).
 - **No third-party PyArmor bytecode in the public corpus.** Fixtures are self-generated or hash-referenced only; the repository ships the *parser*, not protected sample bytes.

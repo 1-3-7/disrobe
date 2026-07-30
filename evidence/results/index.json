@@ -193,7 +193,7 @@
     },
     {
       "ci_attested": true,
-      "claim": "disrobe decompiles JVM bytecode to Java whose observable per-method behaviour under a real JVM matches the original, across the EdgeCases corpus.",
+      "claim": "disrobe decompiles JVM bytecode to Java whose observable per-method behavior under a real JVM matches the original, across the EdgeCases corpus.",
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "jvm",

@@ -2,7 +2,7 @@
 
 > This page records the project's legal posture toward JSDefender-protected JavaScript input and the engineering defaults that posture produces. If your use of `disrobe` against JSDefender output may implicate copyright, anti-circumvention, or contract law in your jurisdiction, you are responsible for obtaining your own counsel. See the project-wide [Responsible use](https://github.com/1-3-7/disrobe/blob/main/LEGAL.md) document for the general framing this page specializes.
 
-PreEmptive Solutions licenses JSDefender as a commercial JavaScript protector. `disrobe` ships a JSDefender recognizer and a static-layer peel, so the project owes an explicit account of *what* it acts on, *when*, and *why*. The [Legal](../src/legal.md) page commits the project to a written stance in `docs/legal/<protector>-stance.md` before any grey-zone protector escalates from recognition to a peel; this is that file for JSDefender.
+PreEmptive Solutions licenses JSDefender as a commercial JavaScript protector. `disrobe` ships a JSDefender recognizer and a static-layer peel, so the project owes an explicit account of *what* it acts on, *when*, and *why*. The [Legal](../src/legal.md) page commits the project to a written stance in `docs/legal/<protector>-stance.md` before any gray-zone protector escalates from recognition to a peel; this is that file for JSDefender.
 
 ## What `disrobe` does to JSDefender input
 
@@ -44,7 +44,7 @@ Unflattening a dispatcher and inlining a string array surfaces the underlying ap
 
 In the European Union, Article 6 of Directive 2009/24/EC (the Software Directive) permits decompilation of a computer program where decompilation is indispensable to obtain the information necessary to achieve the **interoperability** of an independently created program with other programs. Art. 6(1)(a)-(c) sets the conditions: the act is performed by a lawful acquirer (or an authorized person), the interoperability information was not previously readily available, and the acts are confined to the parts of the program necessary for interoperability.
 
-Article 6 is non-overridable by contract within its scope (Art. 8): a EULA clause purporting to forbid the decompilation that Art. 6 permits is, to that extent, ineffective under the Directive's own terms. This is the EU analogue to the §1201(f) reasoning. Separately, **Art. 5(3)** lets a lawful acquirer observe, study, and test a program's functioning to determine its underlying ideas and principles while performing acts they are entitled to perform. That provision is the statutory basis for static study of JSDefender-protected JavaScript short of full decompilation, which is what the static-layer peel supports. Directive text: <https://eur-lex.europa.eu/eli/dir/2009/24>.
+Article 6 is non-overridable by contract within its scope (Art. 8): a EULA clause purporting to forbid the decompilation that Art. 6 permits is, to that extent, ineffective under the Directive's own terms. This is the EU analog to the §1201(f) reasoning. Separately, **Art. 5(3)** lets a lawful acquirer observe, study, and test a program's functioning to determine its underlying ideas and principles while performing acts they are entitled to perform. That provision is the statutory basis for static study of JSDefender-protected JavaScript short of full decompilation, which is what the static-layer peel supports. Directive text: <https://eur-lex.europa.eu/eli/dir/2009/24>.
 
 ## Other jurisdictions
 
