@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::abc::{AbcFile, InstanceInfo, MethodBody, MethodInfo, TraitInfo};
+use crate::abc::{AbcFile, ClassInfo, InstanceInfo, MethodBody, MethodInfo, TraitInfo};
 use crate::error::Result;
 use crate::lifter::{LiftedBody, LocalNames, lift_body, local_names_for, render_body};
 
@@ -28,7 +28,17 @@ fn body_index(abc: &AbcFile) -> BTreeMap<u32, usize> {
         .collect()
 }
 
-fn render_method_signature(abc: &AbcFile, method_idx: u32, name: &str, kind: u8) -> String {
+const fn static_modifier(is_static: bool) -> &'static str {
+    if is_static { "static " } else { "" }
+}
+
+fn render_method_signature(
+    abc: &AbcFile,
+    method_idx: u32,
+    name: &str,
+    kind: u8,
+    is_static: bool,
+) -> String {
     let info: Option<&MethodInfo> = abc.methods.get(method_idx as usize);
     let ret: String = info.map_or_else(
         || "*".to_owned(),
@@ -40,10 +50,11 @@ fn render_method_signature(abc: &AbcFile, method_idx: u32, name: &str, kind: u8)
     );
     let params: String =
         info.map_or_else(String::new, |mi: &MethodInfo| render_param_list(abc, mi));
+    let modifier: &str = static_modifier(is_static);
     match kind {
-        TRAIT_KIND_GETTER => format!("public function get {name}(): {ret}"),
-        TRAIT_KIND_SETTER => format!("public function set {name}({params}): {ret}"),
-        _ => format!("public function {name}({params}): {ret}"),
+        TRAIT_KIND_GETTER => format!("public {modifier}function get {name}(): {ret}"),
+        TRAIT_KIND_SETTER => format!("public {modifier}function set {name}({params}): {ret}"),
+        _ => format!("public {modifier}function {name}({params}): {ret}"),
     }
 }
 
@@ -105,10 +116,26 @@ pub fn render_class_skeleton(abc: &AbcFile, instance: &InstanceInfo) -> Result<S
         write_constructor(&mut out, abc, instance, &name, &bodies);
     }
     for trait_info in &instance.traits {
-        write_trait(&mut out, abc, trait_info, &bodies)?;
+        write_trait(&mut out, abc, trait_info, &bodies, false)?;
+    }
+    for trait_info in static_traits_for(abc, instance) {
+        write_trait(&mut out, abc, trait_info, &bodies, true)?;
     }
     out.push_str("}\n");
     Ok(out)
+}
+
+fn static_traits_for<'a>(abc: &'a AbcFile, instance: &InstanceInfo) -> &'a [TraitInfo] {
+    let Some(position): Option<usize> = abc
+        .instances
+        .iter()
+        .position(|candidate: &InstanceInfo| std::ptr::eq(candidate, instance))
+    else {
+        return &[];
+    };
+    abc.classes
+        .get(position)
+        .map_or(&[], |class: &ClassInfo| class.traits.as_slice())
 }
 
 fn write_constructor(
@@ -165,20 +192,28 @@ fn write_trait(
     abc: &AbcFile,
     trait_info: &TraitInfo,
     bodies: &BTreeMap<u32, usize>,
+    is_static: bool,
 ) -> Result<()> {
     let raw_name: String = abc.cpool.render_multiname(trait_info.name_index)?;
     let kind: u8 = trait_info.kind & 0x0F;
+    let modifier: &str = static_modifier(is_static);
     match kind {
         0 => {
             let ty: String = render_type_or_star(abc, trait_info.type_name);
-            push_format(out, format_args!("    public var {raw_name}: {ty};\n"));
+            push_format(
+                out,
+                format_args!("    public {modifier}var {raw_name}: {ty};\n"),
+            );
         }
         6 => {
             let ty: String = render_type_or_star(abc, trait_info.type_name);
-            push_format(out, format_args!("    public const {raw_name}: {ty};\n"));
+            push_format(
+                out,
+                format_args!("    public {modifier}const {raw_name}: {ty};\n"),
+            );
         }
         TRAIT_KIND_METHOD | TRAIT_KIND_GETTER | TRAIT_KIND_SETTER | TRAIT_KIND_FUNCTION => {
-            write_method_trait(out, abc, trait_info, &raw_name, kind, bodies);
+            write_method_trait(out, abc, trait_info, &raw_name, kind, bodies, is_static);
         }
         4 => {
             push_format(
@@ -212,8 +247,9 @@ fn write_method_trait(
     name: &str,
     kind: u8,
     bodies: &BTreeMap<u32, usize>,
+    is_static: bool,
 ) {
-    let sig: String = render_method_signature(abc, trait_info.method_index, name, kind);
+    let sig: String = render_method_signature(abc, trait_info.method_index, name, kind, is_static);
     match lifted_method_body(abc, trait_info.method_index, bodies) {
         Some(body) if !body.trim().is_empty() => {
             push_format(out, format_args!("    {sig} {{\n"));
