@@ -9,6 +9,7 @@ import {
   thousands,
   firstSentence,
 } from "../lib/kit.mjs";
+import { TIERS, percentBarTiers, tierFor } from "../lib/tiers.mjs";
 
 const WIDTH = 920;
 const LEFT = 28;
@@ -58,17 +59,29 @@ function parentheticalHint(label) {
   return words[0] ? words[0].toLowerCase() : "";
 }
 
+function tierLegend(svg, y) {
+  let x = LEFT;
+  for (const tier of TIERS) {
+    svg.rect(x, y - 7.5, 9, 9, { rx: 2, fill: tier.color });
+    svg.text(x + 14, y, tier.label, { size: 10.5, fill: C.muted });
+    x += 14 + Math.ceil(sansWidth(tier.label, 10.5)) + 20;
+  }
+}
+
 export function renderRecovery(doc) {
+  const tiers = percentBarTiers(doc);
   const percentBars = [];
   for (const group of doc.groups) {
     if (group.kind !== "percent") continue;
     const eco = ecoShort(group.heading);
     for (const bar of group.bars) {
       const qual = qualShort(bar.label);
+      const resolved = tiers.resolved.get(tiers.key(group.heading, bar.label));
       percentBars.push({
         label: `${eco} ${qual}`.trim(),
         hint: parentheticalHint(bar.label),
         value: bar.value,
+        color: tierFor(resolved.strength).color,
       });
     }
   }
@@ -146,9 +159,12 @@ export function renderRecovery(doc) {
     series: [
       {
         type: "bar",
-        data: percentBars.map((b) => b.value),
+        data: percentBars.map((b) => ({
+          value: b.value,
+          itemStyle: { color: b.color },
+        })),
         barWidth: 13,
-        itemStyle: { color: C.accent, borderRadius: 3 },
+        itemStyle: { borderRadius: 3 },
         showBackground: true,
         backgroundStyle: { color: C.panel, borderRadius: 3 },
         label: {
@@ -218,8 +234,10 @@ export function renderRecovery(doc) {
   svg.header(doc.title, doc.subtitle);
 
   let y = 104;
-  sectionLabel(svg, y, "measured recovery", "recompile / verifier / execution graded, %");
-  y += 12;
+  sectionLabel(svg, y, "measured recovery", "bar colour = how the number was checked, %");
+  y += 17;
+  tierLegend(svg, y);
+  y += 9;
   svg.embed(chartA, LEFT, y);
   y += chartAh + 22;
 
