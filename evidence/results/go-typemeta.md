@@ -3,7 +3,7 @@
 - id: `go-typemeta`
 - ecosystem: go
 - claim: disrobe recovers Go type names from a -s -w stripped binary by walking typelinks and moduledata, verified against the real go1.26.3 toolchain's own type metadata.
-- measured: 85.00%
+- measured: 100.00%
 - oracle strength: strong
 - CI-attested: yes [CI]
 - external oracle: real go1.26.3 toolchain output (recovered type names compared against the toolchain's own typelinks/moduledata)

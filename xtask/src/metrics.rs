@@ -45,6 +45,8 @@ struct Bar {
     delivered: Option<u64>,
     #[serde(default)]
     modules: Option<u64>,
+    #[serde(default)]
+    floor_pct: Option<f64>,
 }
 
 impl Recovery {
@@ -67,6 +69,17 @@ impl Bar {
         let raw: f64 = self
             .value
             .ok_or_else(|| eyre!("bar `{}` has no percent value", self.label))?;
+        Ok(MetricValue::Percent(raw))
+    }
+
+    fn floor_percent(&self) -> Result<MetricValue> {
+        let raw: f64 = self.floor_pct.ok_or_else(|| {
+            eyre!(
+                "bar `{}` publishes a floor in prose but carries no `floor_pct`, so the documents \
+                 that state that floor are checked against nothing",
+                self.label
+            )
+        })?;
         Ok(MetricValue::Percent(raw))
     }
 
@@ -286,7 +299,7 @@ const KEYS: &[KeySpec] = &[
         name: "go_typename_pct",
         formatter: Formatter::Pct,
         nouns: &[],
-        extract: |r: &Recovery| r.bar("Go type-name", "type names")?.percent(),
+        extract: |r: &Recovery| r.bar("Go type-name", "type names")?.floor_percent(),
     },
     KeySpec {
         name: "dalvik_verifier_pct",
