@@ -45,7 +45,7 @@ The lifter is validated end-to-end on a self-authored Tigress-shape bytecode VM:
 
 ## Limits
 
-- FSG, NSPack, and Petite decode through their in-house decoders but ship no committed fixture (their samples live under the gitignored `.developer/` tree), so no number reproduces from a checkout.
+- FSG, NSPack, and Petite each ship one committed packed-and-original pair, and the published figures for them are measured on those pairs alone. Their larger samples, and the extra MPRESS and UPX megafiles beside them, are kept out of the tree on size or licence; every such path is marked `local` in `corpus/native/packers/MANIFEST.toml` with a recipe for rebuilding or refetching it, and no figure is published for any of them, because nothing in a checkout re-derives one.
 - Yoda's Protector is detect + resource-carve, its stream key being a runtime-only value absent from the file.
 - On UPX and NSPack the whole-image residual is the loader-rebuilt zone (bound import address table and base relocations): those addresses are resolved by the OS loader at run time and are not present in the packed stream, not a decoder gap.
 - The virtualizing protector tier (VMProtect, Themida, Enigma, and 15+ others) is detect-and-carve: the stub is still driven through the emulator, but the original code is decrypted only by a per-machine key assembled after the stub validates an un-instrumented host (RDTSC deltas, debugger-handler identity, BOUND/FPU exception fingerprints). That key is not present in the file, so faithful recovery is an information-theoretic wall; `disrobe` carves what survives in place and reports the wall rather than fabricating an unpack.
