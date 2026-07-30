@@ -1150,37 +1150,41 @@ fn collect_reflective_sites(
     let mut sites: Vec<ReflectiveCallSite> = Vec::new();
     for code in code_items {
         let insns: Vec<DalvikInsn> = dalvik::decode_method(&code.insns);
-        let mut pending_member: Option<String> = None;
-        let mut saw_get_declared: bool = false;
+        let mut string_regs: BTreeMap<u16, String> = BTreeMap::new();
+        let mut members: Vec<String> = Vec::new();
         let mut saw_invoke: bool = false;
         for ins in &insns {
-            match ins.op {
-                0x1A | 0x1B => {
-                    if let Some(idx) = ins.index {
-                        pending_member = dex.strings.get(idx as usize).cloned();
-                    }
-                }
-                0x6E | 0x70 | 0x71 | 0x72 | 0x6F | 0x74..=0x78 => {
-                    if let Some(method) =
-                        ins.index.and_then(|i: u32| dex.method_ids.get(i as usize))
-                    {
-                        if method.class == "Ljava/lang/Class;"
-                            && (method.name == "getDeclaredMethod" || method.name == "getMethod")
-                        {
-                            saw_get_declared = true;
-                        }
-                        if method.class == "Ljava/lang/reflect/Method;" && method.name == "invoke" {
-                            saw_invoke = true;
-                        }
-                    }
-                }
-                _ => {}
+            if matches!(ins.op, 0x1A | 0x1B) {
+                let Some(dst): Option<u16> = ins.regs.first().copied() else {
+                    continue;
+                };
+                match ins.index.and_then(|i: u32| dex.strings.get(i as usize)) {
+                    Some(text) => string_regs.insert(dst, text.clone()),
+                    None => string_regs.remove(&dst),
+                };
+                continue;
             }
+            if matches!(ins.op, 0x6E..=0x72 | 0x74..=0x78)
+                && let Some(method) = ins.index.and_then(|i: u32| dex.method_ids.get(i as usize))
+            {
+                if method.class == "Ljava/lang/Class;"
+                    && (method.name == "getDeclaredMethod" || method.name == "getMethod")
+                    && let Some(name) = ins.regs.get(1).and_then(|r: &u16| string_regs.get(r))
+                {
+                    members.push(name.clone());
+                }
+                if method.class == "Ljava/lang/reflect/Method;" && method.name == "invoke" {
+                    saw_invoke = true;
+                }
+            }
+            string_regs.retain(|reg: &u16, _: &mut String| {
+                !crate::dalvik_dexguard::writes_register(ins, *reg)
+            });
         }
-        if saw_get_declared
-            && saw_invoke
-            && let Some(member) = pending_member
-        {
+        if !saw_invoke {
+            continue;
+        }
+        for member in members {
             let resolved: String = if member == decrypt.method_name {
                 format!("{class}.{}", decrypt.method_name)
             } else {
