@@ -1,20 +1,20 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use disrobe_nir::{
-    DefUse, NirBlock, NirFunction, NirInstr, NirModule, NirOp, NirSymbol, SourceLang, ValueId,
-    basic_blocks, def_use,
+    DefUse, NirBlock, NirClass, NirFunction, NirInstr, NirModule, NirOp, NirSymbol, SourceLang,
+    ValueId, basic_blocks, def_use,
 };
 
+use crate::abi::CallAbi;
 use crate::callgraph::scc_bottom_up;
 use crate::config::{ResolvedSinkPolicy, TaintConfig};
-use crate::report::{TaintFinding, TaintReport, TaintStep};
+use crate::report::{TaintFinding, TaintReport, TaintStep, UnresolvedCall, UnresolvedCallKind};
 use crate::summary::{
     Arena, FeatureSet, FunctionSummary, KindSet, OutPort, PathId, SinkFrame, SummaryKey,
 };
 
-const ARG_REGISTERS: [&str; 6] = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
-const RETURN_REGISTER: &str = "rax";
 const MAX_PATH_STEPS: usize = 128;
+const MAX_RECORDED_UNRESOLVED_CALLS: usize = 4096;
 
 type Summaries = BTreeMap<u64, FunctionSummary>;
 type FactMap = BTreeMap<FactKey, Fact>;
@@ -67,6 +67,25 @@ struct ResolvedModule<'a> {
     module: &'a NirModule,
     symbol_by_addr: BTreeMap<u64, &'a NirSymbol>,
     function_at: BTreeMap<u64, usize>,
+    abi: CallAbi,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirectCall {
+    ToAddress(u64),
+    ToUnknown,
+}
+
+const fn direct_call(instr: &NirInstr) -> Option<DirectCall> {
+    match instr.op {
+        NirOp::Call { target } | NirOp::TailCall { target } | NirOp::NoReturnCall { target } => {
+            Some(match target {
+                Some(address) => DirectCall::ToAddress(address),
+                None => DirectCall::ToUnknown,
+            })
+        }
+        _ => None,
+    }
 }
 
 impl<'a> ResolvedModule<'a> {
@@ -82,31 +101,32 @@ impl<'a> ResolvedModule<'a> {
             .enumerate()
             .map(|(idx, f): (usize, &'a NirFunction)| (f.address, idx))
             .collect();
+        let abi: CallAbi = CallAbi::detect(module);
         Self {
             module,
             symbol_by_addr,
             function_at,
+            abi,
         }
     }
 
     fn callee_symbol(&self, instr: &NirInstr) -> Option<String> {
-        match &instr.op {
-            NirOp::ExternCall { symbol } => Some(symbol.clone()),
-            NirOp::Call { target: Some(addr) } => self
-                .symbol_by_addr
-                .get(addr)
-                .map(|s: &&'a NirSymbol| s.name.clone()),
-            _ => None,
+        if let NirOp::ExternCall { symbol } = &instr.op {
+            return Some(symbol.clone());
         }
+        let DirectCall::ToAddress(addr) = direct_call(instr)? else {
+            return None;
+        };
+        self.symbol_by_addr
+            .get(&addr)
+            .map(|s: &&'a NirSymbol| s.name.clone())
     }
 
     fn callee_internal(&self, instr: &NirInstr) -> Option<u64> {
-        match &instr.op {
-            NirOp::Call { target: Some(addr) } if self.function_at.contains_key(addr) => {
-                Some(*addr)
-            }
-            _ => None,
-        }
+        let DirectCall::ToAddress(addr) = direct_call(instr)? else {
+            return None;
+        };
+        self.function_at.contains_key(&addr).then_some(addr)
     }
 
     fn external_symbol(&self, instr: &NirInstr) -> Option<String> {
@@ -114,6 +134,31 @@ impl<'a> ResolvedModule<'a> {
             return None;
         }
         self.callee_symbol(instr)
+    }
+
+    fn unresolved_call(&self, function: &NirFunction, instr: &NirInstr) -> Option<UnresolvedCall> {
+        let (kind, target): (UnresolvedCallKind, Option<u64>) = match &instr.op {
+            NirOp::ExternCall { .. } => return None,
+            NirOp::IndirectCall => (UnresolvedCallKind::IndirectTarget, None),
+            _ => match direct_call(instr)? {
+                DirectCall::ToUnknown => (UnresolvedCallKind::IndirectTarget, None),
+                DirectCall::ToAddress(addr) => {
+                    if self.function_at.contains_key(&addr)
+                        || self.symbol_by_addr.contains_key(&addr)
+                    {
+                        return None;
+                    }
+                    (UnresolvedCallKind::UnnamedTarget, Some(addr))
+                }
+            },
+        };
+        Some(UnresolvedCall {
+            function: function.name.clone(),
+            function_address: function.address,
+            site: instr.address,
+            kind,
+            target,
+        })
     }
 
     fn function_name(&self, addr: u64) -> Option<&str> {
@@ -174,7 +219,34 @@ pub fn analyze(module: &NirModule, config: &TaintConfig) -> TaintReport {
             && a.sink_symbol == b.sink_symbol
             && a.sink_site == b.sink_site
     });
+    let (unresolved_calls, unresolved_call_count): (Vec<UnresolvedCall>, usize) =
+        collect_unresolved_calls(&resolved);
     TaintReport::new_with_truncated(findings, truncated)
+        .with_unresolved_calls(unresolved_calls, unresolved_call_count)
+}
+
+fn collect_unresolved_calls(resolved: &ResolvedModule<'_>) -> (Vec<UnresolvedCall>, usize) {
+    let mut recorded: Vec<UnresolvedCall> = Vec::new();
+    let mut total: usize = 0;
+    for function in &resolved.module.functions {
+        for instr in &function.instructions {
+            let Some(call): Option<UnresolvedCall> = resolved.unresolved_call(function, instr)
+            else {
+                continue;
+            };
+            total = total.saturating_add(1);
+            if recorded.len() < MAX_RECORDED_UNRESOLVED_CALLS {
+                recorded.push(call);
+            }
+        }
+    }
+    recorded.sort_by(|a: &UnresolvedCall, b: &UnresolvedCall| {
+        a.function_address
+            .cmp(&b.function_address)
+            .then(a.site.cmp(&b.site))
+            .then(a.function.cmp(&b.function))
+    });
+    (recorded, total)
 }
 
 fn call_adjacency(resolved: &ResolvedModule<'_>) -> Vec<Vec<usize>> {
@@ -356,7 +428,7 @@ fn terminator_target_outside_blocks(block: &NirBlock, index_of: &BTreeMap<u64, u
 }
 
 fn seed_formals(ctx: &Ctx<'_>, arena: &mut Arena, state: &mut BlockState) {
-    for (index, register) in ARG_REGISTERS.iter().enumerate() {
+    for (index, register) in ctx.resolved.abi.argument_registers().iter().enumerate() {
         let arg: u16 = index as u16;
         let fact: Fact = formal_fact(ctx.function, arg);
         let loc: PathId = reg_loc(arena, register);
@@ -387,7 +459,7 @@ fn walk_block(
 ) -> BlockState {
     let mut state: BlockState = incoming;
     for instr in &block.instructions {
-        let defuse: DefUse = taint_def_use(instr);
+        let defuse: DefUse = taint_def_use(ctx.resolved.abi, instr);
         if let Some(callee) = ctx.resolved.callee_internal(instr) {
             instantiate_callee(ctx, arena, mode, instr, callee, &mut state, out);
         } else if let Some(symbol) = ctx.resolved.external_symbol(instr) {
@@ -406,130 +478,53 @@ fn walk_block(
             propagate(arena, instr, &defuse, &mut state);
         }
         if mode == WalkMode::Summarize && matches!(instr.op, NirOp::Return) {
-            extract_outputs(arena, instr, &state, &mut out.summary);
+            extract_outputs(ctx.resolved.abi, arena, instr, &state, &mut out.summary);
         }
         if severs_wasm_stack_value(instr) {
             state.flag.clear();
-            let rax: PathId = reg_loc(arena, RETURN_REGISTER);
-            state.values.remove(&rax);
+            let returned: PathId = reg_loc(arena, ctx.resolved.abi.return_register());
+            state.values.remove(&returned);
         }
     }
     state
 }
 
-fn taint_def_use(instr: &NirInstr) -> DefUse {
-    native_register_move_def_use(instr).unwrap_or_else(|| def_use(instr))
+fn taint_def_use(abi: CallAbi, instr: &NirInstr) -> DefUse {
+    if matches!(instr.op, NirOp::Nop)
+        && let Some(moved) = abi.register_move(instr)
+    {
+        return moved;
+    }
+    let defuse: DefUse = abi.normalize_def_use(def_use(instr));
+    if instr.op.class() == NirClass::Call {
+        return DefUse {
+            defs: vec![ValueId::register(abi.return_register())],
+            uses: defuse.uses,
+        };
+    }
+    defuse
 }
 
 fn external_taint_def_use(ctx: &Ctx<'_>, instr: &NirInstr, symbol: &str, defuse: DefUse) -> DefUse {
     let configured: bool = ctx.config.source_kind(symbol).is_some()
         || ctx.config.sink_policy(symbol).is_some()
         || ctx.config.sanitizer_feature(symbol).is_some();
-    if instr.source.lang != SourceLang::NativeX86
-        || !matches!(instr.op, NirOp::Call { target: Some(_) })
+    if !crate::abi::is_native(instr.source.lang)
+        || !matches!(direct_call(instr), Some(DirectCall::ToAddress(_)))
         || !configured
     {
         return defuse;
     }
     DefUse {
         defs: defuse.defs,
-        uses: ARG_REGISTERS
+        uses: ctx
+            .resolved
+            .abi
+            .argument_registers()
             .iter()
             .map(|register: &&str| ValueId::register(register))
             .collect(),
     }
-}
-
-fn native_register_move_def_use(instr: &NirInstr) -> Option<DefUse> {
-    if instr.source.lang != SourceLang::NativeX86
-        || !matches!(instr.op, NirOp::Nop)
-        || !instr.mnemonic.eq_ignore_ascii_case("mov")
-        || instr.operands.len() != 2
-    {
-        return None;
-    }
-    let dst: ValueId = native_register_value(&instr.operands[0])?;
-    let src: Option<ValueId> = native_register_value(&instr.operands[1]);
-    Some(DefUse {
-        defs: vec![dst],
-        uses: src.into_iter().collect(),
-    })
-}
-
-fn native_register_value(operand: &str) -> Option<ValueId> {
-    let register: String = operand.trim().to_ascii_lowercase();
-    matches!(
-        register.as_str(),
-        "rax"
-            | "eax"
-            | "ax"
-            | "al"
-            | "ah"
-            | "rbx"
-            | "ebx"
-            | "bx"
-            | "bl"
-            | "bh"
-            | "rcx"
-            | "ecx"
-            | "cx"
-            | "cl"
-            | "ch"
-            | "rdx"
-            | "edx"
-            | "dx"
-            | "dl"
-            | "dh"
-            | "rsi"
-            | "esi"
-            | "si"
-            | "sil"
-            | "rdi"
-            | "edi"
-            | "di"
-            | "dil"
-            | "rbp"
-            | "ebp"
-            | "bp"
-            | "bpl"
-            | "rsp"
-            | "esp"
-            | "sp"
-            | "spl"
-            | "r8"
-            | "r8d"
-            | "r8w"
-            | "r8b"
-            | "r9"
-            | "r9d"
-            | "r9w"
-            | "r9b"
-            | "r10"
-            | "r10d"
-            | "r10w"
-            | "r10b"
-            | "r11"
-            | "r11d"
-            | "r11w"
-            | "r11b"
-            | "r12"
-            | "r12d"
-            | "r12w"
-            | "r12b"
-            | "r13"
-            | "r13d"
-            | "r13w"
-            | "r13b"
-            | "r14"
-            | "r14d"
-            | "r14w"
-            | "r14b"
-            | "r15"
-            | "r15d"
-            | "r15w"
-            | "r15b"
-    )
-    .then(|| ValueId::register(&register))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -682,7 +677,10 @@ fn instantiate_callee(
         .function_name(callee)
         .unwrap_or("<callee>")
         .to_owned();
-    let arg_locs: Vec<PathId> = ARG_REGISTERS
+    let arg_locs: Vec<PathId> = ctx
+        .resolved
+        .abi
+        .argument_registers()
         .iter()
         .map(|register: &&str| reg_loc(arena, register))
         .collect();
@@ -691,8 +689,8 @@ fn instantiate_callee(
         .map(|loc: &PathId| state.values.get(loc).cloned().unwrap_or_default())
         .collect();
     let flag_facts: FactMap = state.flag.clone();
-    let rax: PathId = reg_loc(arena, RETURN_REGISTER);
-    state.values.remove(&rax);
+    let returned: PathId = reg_loc(arena, ctx.resolved.abi.return_register());
+    state.values.remove(&returned);
 
     let Some(summary): Option<&FunctionSummary> = ctx.summaries.get(&callee) else {
         return;
@@ -700,7 +698,7 @@ fn instantiate_callee(
     let summary: FunctionSummary = summary.clone();
 
     for (port, generation) in &summary.generations {
-        let Some(loc): Option<PathId> = out_port_location(&arg_locs, rax, *port) else {
+        let Some(loc): Option<PathId> = out_port_location(&arg_locs, returned, *port) else {
             continue;
         };
         let fact: Fact = Fact {
@@ -724,7 +722,7 @@ fn instantiate_callee(
             continue;
         };
         for (port, propagation) in outs {
-            let Some(loc): Option<PathId> = out_port_location(&arg_locs, rax, *port) else {
+            let Some(loc): Option<PathId> = out_port_location(&arg_locs, returned, *port) else {
                 continue;
             };
             for source_fact in sources.values() {
@@ -809,21 +807,22 @@ fn instantiate_frame(
     }
 }
 
-fn out_port_location(arg_locs: &[PathId], rax: PathId, port: OutPort) -> Option<PathId> {
+fn out_port_location(arg_locs: &[PathId], returned: PathId, port: OutPort) -> Option<PathId> {
     match port {
-        OutPort::Return => Some(rax),
+        OutPort::Return => Some(returned),
         OutPort::Argument(index) => arg_locs.get(index as usize).copied(),
     }
 }
 
 fn extract_outputs(
+    abi: CallAbi,
     arena: &mut Arena,
     instr: &NirInstr,
     state: &BlockState,
     summary: &mut FunctionSummary,
 ) {
-    let rax: PathId = reg_loc(arena, RETURN_REGISTER);
-    if let Some(map) = state.values.get(&rax) {
+    let returned: PathId = reg_loc(arena, abi.return_register());
+    if let Some(map) = state.values.get(&returned) {
         for fact in map.values() {
             record_output(summary, OutPort::Return, fact, instr);
         }
@@ -833,7 +832,7 @@ fn extract_outputs(
             record_output(summary, OutPort::Return, fact, instr);
         }
     }
-    for (index, register) in ARG_REGISTERS.iter().enumerate() {
+    for (index, register) in abi.argument_registers().iter().enumerate() {
         let loc: PathId = reg_loc(arena, register);
         let Some(map): Option<&FactMap> = state.values.get(&loc) else {
             continue;
