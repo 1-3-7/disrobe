@@ -73,12 +73,12 @@ const CLAIMS: [FloorClaim; 6] = [
         )],
     },
     FloorClaim {
-        constant: "VERIFY_CLEAN_CLASS_FLOOR",
+        constant: "COMMITTED_VERIFY_CLEAN_CLASSES",
         source: DALVIK_VERIFIER_GATE,
         sites: &[("README.md", "{} / {} presentable classes clean")],
     },
     FloorClaim {
-        constant: "BODY_VERIFY_CLEAN_FLOOR",
+        constant: "COMMITTED_BODY_VERIFY_CLEAN",
         source: DALVIK_VERIFIER_GATE,
         sites: &[
             ("README.md", "{} re-hosted bodies clean"),
