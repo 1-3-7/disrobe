@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::code_signature::{self, CodeSignature};
 use crate::error::Error;
 use crate::fairplay::{self, FairPlayStatus};
 use crate::ipa::{self, IpaInventory};
@@ -37,6 +38,7 @@ pub struct SliceReport {
     pub swift: SwiftClassDump,
     pub objc: ObjcClassDump,
     pub fairplay: FairPlayStatus,
+    pub code_signature: Option<CodeSignature>,
     pub native_bodies: NativeBodyReport,
 }
 
@@ -268,6 +270,27 @@ fn build_slice_report(slice: &[u8], parsed: &ParsedSlice) -> SliceReport {
     });
     let fp: FairPlayStatus = fairplay::detect(parsed);
     crate::debug::dbg_kv("fairplay", || format!("{fp:?}"));
+    let signature: Option<CodeSignature> = code_signature::parse(slice, parsed);
+    crate::debug::dbg_kv("code-signature", || {
+        signature.as_ref().map_or_else(
+        || "absent or not an embedded signature superblob".to_owned(),
+        |sig: &CodeSignature| format!(
+            "slots={} identifier={:?} team={:?} adhoc={} cms={} entitlements={} covers_image={} pages={}",
+            sig.slot_count,
+            sig.code_directory
+                .as_ref()
+                .and_then(|d: &crate::code_signature::CodeDirectory| d.identifier.clone()),
+            sig.code_directory
+                .as_ref()
+                .and_then(|d: &crate::code_signature::CodeDirectory| d.team_id.clone()),
+            sig.is_adhoc_signed,
+            sig.has_cms_signature,
+            sig.entitlements_xml.is_some(),
+            sig.coverage.covers_all_bytes_before_signature,
+            sig.page_hashes.verdict.label(),
+        ),
+        )
+    });
     let bits: u32 = match parsed.header.bitness {
         macho::Bitness::Bits32 => 32,
         macho::Bitness::Bits64 => 64,
@@ -293,6 +316,7 @@ fn build_slice_report(slice: &[u8], parsed: &ParsedSlice) -> SliceReport {
         swift: swift_dump,
         objc: objc_dump,
         fairplay: fp,
+        code_signature: signature,
         native_bodies: native,
     }
 }
