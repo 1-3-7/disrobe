@@ -599,17 +599,51 @@ fn real_compiler_carry_substitution_folds_back_to_addition() {
     println!("graded {graded} real compiler-emitted carry-substitution functions");
 }
 
+fn compares_against_zero(insn: &iced_x86::Instruction) -> bool {
+    use iced_x86::{Mnemonic, OpKind};
+    match insn.mnemonic() {
+        Mnemonic::Test => {
+            insn.op0_kind() == OpKind::Register
+                && insn.op1_kind() == OpKind::Register
+                && insn.op0_register() == insn.op1_register()
+        }
+        Mnemonic::Cmp => {
+            insn.op0_kind() == OpKind::Register
+                && insn.try_immediate(1).is_ok_and(|value: u64| value == 0)
+        }
+        _ => false,
+    }
+}
+
 fn expected_even_predicate_outcome(block: &[u8]) -> OpaqueResult {
     use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic};
     let mut decoder: Decoder<'_> = Decoder::with_ip(64, block, BASE, DecoderOptions::NONE);
     let mut insn: Instruction = Instruction::default();
     let mut branch: Option<Mnemonic> = None;
+    let mut flag_setter: Option<Instruction> = None;
     while decoder.can_decode() {
         decoder.decode_out(&mut insn);
+        if matches!(insn.mnemonic(), Mnemonic::Cmp | Mnemonic::Test) {
+            flag_setter = Some(insn);
+        }
         if insn.flow_control() == FlowControl::ConditionalBranch {
             branch = Some(insn.mnemonic());
         }
     }
+    let Some(setter): Option<Instruction> = flag_setter else {
+        panic!(
+            "the emitted always-even predicate must settle the branch on a CMP or TEST that this \
+             grade can read, and the compiler emitted none over {} bytes: {block:02x?}",
+            block.len()
+        );
+    };
+    assert!(
+        compares_against_zero(&setter),
+        "this grade reads the emitted condition code as the outcome only because the low bit of \
+         x * (x + 1) is zero and the flag-setting instruction weighs that value against zero; the \
+         compiler settled the branch on {setter} instead, which does not carry that reading, so \
+         the expected outcome must be derived for that spelling rather than assumed"
+    );
     match branch {
         Some(Mnemonic::Je) => OpaqueResult::AlwaysTaken,
         Some(Mnemonic::Jne) => OpaqueResult::AlwaysNotTaken,
@@ -689,6 +723,88 @@ fn real_compiler_opaque_even_predicate_folds_and_a_data_dependent_branch_survive
         rejected.join(" | ")
     );
     println!("graded {graded} real compiler-emitted predicate pairs");
+}
+
+const GCC_13_2_0_ALWAYS_EVEN_PREDICATE: &[u8] = &[
+    0x55, 0x48, 0x89, 0xe5, 0x89, 0x4d, 0x10, 0x8b, 0x45, 0x10, 0x0f, 0xaf, 0xc0, 0x89, 0xc2, 0x8b,
+    0x45, 0x10, 0x01, 0xd0, 0x83, 0xe0, 0x01, 0x85, 0xc0, 0x75, 0x07,
+];
+
+#[test]
+fn a_committed_gcc_spelling_of_the_always_even_predicate_folds_where_no_compiler_is_installed() {
+    let expected: OpaqueResult = expected_even_predicate_outcome(GCC_13_2_0_ALWAYS_EVEN_PREDICATE);
+    let Some(branch): Option<BogusBranch> =
+        strip_ollvm_bcf(DeobfBits::Bits64, BASE, GCC_13_2_0_ALWAYS_EVEN_PREDICATE)
+    else {
+        panic!("the committed gcc 13.2.0 always_even_predicate must fold, got None");
+    };
+    assert_eq!(
+        branch.result, expected,
+        "these are the bytes gcc 13.2.0 emitted for always_even_predicate at -O0. It spills the \
+         argument, reloads it around a register-copied IMUL, and settles the branch on TEST \
+         EAX, EAX rather than the CMP EAX, 0 that clang picks. That TEST spelling is what used to \
+         come back NotAnalyzable, so this leg keeps the regression pinned on a host that has no C \
+         compiler for real_compiler_opaque_even_predicate_folds_and_a_data_dependent_branch_survives \
+         to use: {branch:?}"
+    );
+    assert!(
+        branch.dead_target.is_some() && branch.live_target.is_some(),
+        "folding must name both the dead edge and the surviving live edge: {branch:?}"
+    );
+}
+
+const UNKNOWN_LOAD_BRANCHES: &[(&str, &[u8])] = &[
+    (
+        "mov al, [rcx+0x40]; test al, al; je",
+        &[0x8a, 0x41, 0x40, 0x84, 0xc0, 0x74, 0x05],
+    ),
+    (
+        "mov al, [rcx+0x40]; cmp al, 0; je",
+        &[0x8a, 0x41, 0x40, 0x3c, 0x00, 0x74, 0x05],
+    ),
+    (
+        "mov ax, [rcx+0x40]; cmp ax, 0; je",
+        &[0x66, 0x8b, 0x41, 0x40, 0x66, 0x83, 0xf8, 0x00, 0x74, 0x05],
+    ),
+    (
+        "mov eax, [rcx+0x40]; test eax, eax; je",
+        &[0x8b, 0x41, 0x40, 0x85, 0xc0, 0x74, 0x05],
+    ),
+];
+
+#[test]
+fn a_branch_on_a_value_loaded_from_unknown_memory_names_no_dead_edge() {
+    for &(spelling, code) in UNKNOWN_LOAD_BRANCHES {
+        let verdict: Option<BogusBranch> = strip_ollvm_bcf(DeobfBits::Bits64, BASE, code);
+        println!("{spelling}: {verdict:?}");
+        assert!(
+            !verdict.as_ref().is_some_and(|found: &BogusBranch| matches!(
+                found.result,
+                OpaqueResult::AlwaysTaken | OpaqueResult::AlwaysNotTaken
+            )),
+            "[rcx+0x40] holds whatever the caller put there, so {spelling} decides nothing and no \
+             edge may be named dead. The evaluator reads an unresolved load as zero, and at 8 and \
+             16 bits the requested width is already exhaustible, so the scan settles a constant \
+             without the certification step that catches this at 32 bits: {verdict:?}"
+        );
+    }
+}
+
+#[test]
+fn a_branch_on_an_untracked_stack_slot_stays_analyzable() {
+    let code: &[u8] = &[0x8a, 0x45, 0xf8, 0x84, 0xc0, 0x74, 0x05];
+    let Some(branch): Option<BogusBranch> = strip_ollvm_bcf(DeobfBits::Bits64, BASE, code) else {
+        panic!(
+            "a stack slot the block never wrote already carries a symbolic value, so giving \
+             unknown loads an unconstrained value of their own must leave this block analyzable"
+        );
+    };
+    assert_eq!(
+        branch.result,
+        OpaqueResult::DataDependent,
+        "mov al, [rbp-8] reads an argument the caller spilled, so the branch on it is decided by \
+         data and must be reported as such rather than folded or dropped: {branch:?}"
+    );
 }
 
 fn seed_xor_to_or_defect(code: &[u8]) -> Option<Vec<u8>> {

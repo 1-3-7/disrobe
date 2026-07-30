@@ -3,7 +3,7 @@ use disrobe_mba::{
 };
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind, Register};
 
-use super::mba_lift::{RegFile, lift_arith_value};
+use super::mba_lift::{lift_operand_pair, mem_access_width};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -32,7 +32,7 @@ pub fn analyze_block(bitness: u32, base: u64, bytes: &[u8]) -> Option<BogusBranc
     let cmp: &Instruction = &insns[cmp_index];
     let (raw, width): (Predicate, Width) =
         build_predicate(&insns[..cmp_index], cmp, branch.mnemonic())?;
-    let predicate: Predicate = raw.compact();
+    let predicate: Predicate = LoadAbstraction::over(&raw).compact();
     let verdict: OpaqueVerdict = classify(&predicate, width);
     let fold: BranchFold = fold_branch(&predicate, width);
     let taken: u64 = branch.near_branch_target();
@@ -119,12 +119,7 @@ fn build_cmp_predicate(
     cmp: &Instruction,
     branch: Mnemonic,
 ) -> Option<Predicate> {
-    if cmp.op0_kind() != OpKind::Register {
-        return None;
-    }
-    let dest: Register = cmp.op0_register();
-    let (lhs, _): (Expr, Width) = lift_with_prefix(prefix, dest)?;
-    let rhs: Expr = operand_expr(prefix, cmp, 1)?;
+    let (lhs, rhs): (Expr, Expr) = lift_comparison_operands(prefix, cmp)?;
     let op: CmpOp = branch_to_cmp(branch)?;
     Some(Predicate::Compare {
         op,
@@ -133,27 +128,122 @@ fn build_cmp_predicate(
     })
 }
 
+fn lift_comparison_operands(prefix: &[Instruction], cmp: &Instruction) -> Option<(Expr, Expr)> {
+    if !matches!(cmp.op0_kind(), OpKind::Register | OpKind::Memory) {
+        return None;
+    }
+    lift_operand_pair(prefix, cmp)
+}
+
 fn build_test_predicate(
     prefix: &[Instruction],
     cmp: &Instruction,
     branch: Mnemonic,
 ) -> Option<(Predicate, Width)> {
-    if cmp.op0_kind() != OpKind::Register {
-        return None;
-    }
-    let dest: Register = cmp.op0_register();
-    if let Some((flag, width)) = build_flag_predicate(prefix, dest, branch) {
+    if cmp.op0_kind() == OpKind::Register
+        && let Some((flag, width)) = build_flag_predicate(prefix, cmp.op0_register(), branch)
+    {
         return Some((flag, width));
     }
-    let (lhs, _): (Expr, Width) = lift_with_prefix(prefix, dest)?;
-    let rhs: Expr = operand_expr(prefix, cmp, 1)?;
-    let masked: Expr = Expr::and(lhs, rhs);
+    let (lhs, rhs): (Expr, Expr) = lift_comparison_operands(prefix, cmp)?;
+    let masked: Expr = tested_value(lhs, rhs);
     let predicate: Predicate = match branch {
         Mnemonic::Je => Predicate::eq(masked, Expr::konst(0)),
         Mnemonic::Jne => Predicate::nonzero(masked),
         _ => return None,
     };
     Some((predicate, predicate_width(cmp)))
+}
+
+fn highest_var(predicate: &Predicate) -> Option<u32> {
+    match predicate {
+        Predicate::Nonzero(inner) => inner.max_var(),
+        Predicate::Compare { left, right, .. } => left.max_var().max(right.max_var()),
+        Predicate::Or(left, right) | Predicate::And(left, right) => {
+            highest_var(left).max(highest_var(right))
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct LoadAbstraction {
+    assigned: Vec<(Expr, u32)>,
+    next_var: u32,
+}
+
+impl LoadAbstraction {
+    fn over(predicate: &Predicate) -> Predicate {
+        let mut abstraction: Self = Self {
+            assigned: Vec::new(),
+            next_var: highest_var(predicate).map_or(0, |highest: u32| highest.saturating_add(1)),
+        };
+        abstraction.rewrite_predicate(predicate)
+    }
+
+    fn variable_for(&mut self, load: &Expr, width: Width) -> Expr {
+        let existing: Option<u32> = self
+            .assigned
+            .iter()
+            .find(|(seen, _): &&(Expr, u32)| seen == load)
+            .map(|(_, index): &(Expr, u32)| *index);
+        let index: u32 = existing.unwrap_or_else(|| {
+            let fresh: u32 = self.next_var;
+            self.next_var = self.next_var.saturating_add(1);
+            self.assigned.push((load.clone(), fresh));
+            fresh
+        });
+        Expr::and(Expr::var(index), Expr::konst(width.mask()))
+    }
+
+    fn rewrite_expr(&mut self, expr: &Expr) -> Expr {
+        match expr {
+            Expr::Mem(_, width) => self.variable_for(expr, *width),
+            Expr::Const(_) | Expr::Var(_) => expr.clone(),
+            Expr::Unary(op, inner) => Expr::Unary(*op, Box::new(self.rewrite_expr(inner))),
+            Expr::Binary(op, left, right) => Expr::Binary(
+                *op,
+                Box::new(self.rewrite_expr(left)),
+                Box::new(self.rewrite_expr(right)),
+            ),
+            Expr::Ite(condition, consequent, alternate) => Expr::Ite(
+                Box::new(self.rewrite_expr(condition)),
+                Box::new(self.rewrite_expr(consequent)),
+                Box::new(self.rewrite_expr(alternate)),
+            ),
+            Expr::Slice(inner, high, low) => {
+                Expr::Slice(Box::new(self.rewrite_expr(inner)), *high, *low)
+            }
+            Expr::Compose(low, high, low_bits) => Expr::Compose(
+                Box::new(self.rewrite_expr(low)),
+                Box::new(self.rewrite_expr(high)),
+                *low_bits,
+            ),
+        }
+    }
+
+    fn rewrite_predicate(&mut self, predicate: &Predicate) -> Predicate {
+        match predicate {
+            Predicate::Nonzero(inner) => Predicate::nonzero(self.rewrite_expr(inner)),
+            Predicate::Compare { op, left, right } => Predicate::Compare {
+                op: *op,
+                left: self.rewrite_expr(left),
+                right: self.rewrite_expr(right),
+            },
+            Predicate::Or(left, right) => {
+                Predicate::or(self.rewrite_predicate(left), self.rewrite_predicate(right))
+            }
+            Predicate::And(left, right) => {
+                Predicate::and(self.rewrite_predicate(left), self.rewrite_predicate(right))
+            }
+        }
+    }
+}
+
+fn tested_value(left: Expr, right: Expr) -> Expr {
+    if left == right {
+        return left;
+    }
+    Expr::and(left, right)
 }
 
 fn full_reg(reg: Register) -> Register {
@@ -268,35 +358,11 @@ const fn negate_cmp(op: CmpOp) -> CmpOp {
     }
 }
 
-fn lift_with_prefix(prefix: &[Instruction], dest: Register) -> Option<(Expr, Width)> {
-    if prefix.is_empty() {
-        let mut regs: RegFile = RegFile::new();
-        let value: Expr = regs.current(dest);
-        return Some((value, register_width(dest)));
-    }
-    lift_arith_value(prefix, dest)
-}
-
-fn operand_expr(prefix: &[Instruction], cmp: &Instruction, operand: u32) -> Option<Expr> {
-    match cmp.op_kind(operand) {
-        OpKind::Register => lift_with_prefix(prefix, cmp.op_register(operand)).map(|(e, _)| e),
-        OpKind::Immediate8 => Some(Expr::konst(u64::from(cmp.immediate8()))),
-        OpKind::Immediate16 => Some(Expr::konst(u64::from(cmp.immediate16()))),
-        OpKind::Immediate32 => Some(Expr::konst(u64::from(cmp.immediate32()))),
-        OpKind::Immediate64 => Some(Expr::konst(cmp.immediate64())),
-        OpKind::Immediate8to16 => Some(Expr::konst(cmp.immediate8to16().cast_unsigned().into())),
-        OpKind::Immediate8to32 => Some(Expr::konst(cmp.immediate8to32().cast_unsigned().into())),
-        OpKind::Immediate8to64 => Some(Expr::konst(cmp.immediate8to64().cast_unsigned())),
-        OpKind::Immediate32to64 => Some(Expr::konst(cmp.immediate32to64().cast_unsigned())),
-        _ => None,
-    }
-}
-
 fn predicate_width(cmp: &Instruction) -> Width {
-    if cmp.op0_kind() == OpKind::Register {
-        register_width(cmp.op0_register())
-    } else {
-        Width::W32
+    match cmp.op0_kind() {
+        OpKind::Register => register_width(cmp.op0_register()),
+        OpKind::Memory => mem_access_width(cmp),
+        _ => Width::W32,
     }
 }
 
