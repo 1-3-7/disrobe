@@ -6,7 +6,6 @@ use super::image::PeView;
 const MAX_STUB_INSTRUCTIONS: usize = 48;
 const MAX_STUB_BYTES: usize = 256;
 const MAX_UNITS: i32 = 8192;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DelphiUnitEntry {
     pub init: u64,
@@ -20,6 +19,7 @@ pub struct DelphiInitTable {
     pub unit_count: usize,
     pub initialized_units: usize,
     pub finalized_units: usize,
+    pub monotonic_init_addresses: bool,
     pub units: Vec<DelphiUnitEntry>,
 }
 
@@ -111,12 +111,26 @@ fn parse_at(view: &PeView<'_>, table_va: u64, pointer_offset: usize) -> Option<D
         return None;
     }
 
+    let mut previous: u64 = 0;
+    let mut monotonic_init_addresses: bool = true;
+    for entry in &units {
+        if entry.init == 0 {
+            continue;
+        }
+        if entry.init <= previous {
+            monotonic_init_addresses = false;
+            break;
+        }
+        previous = entry.init;
+    }
+
     Some(DelphiInitTable {
         va: table_va,
         unit_table_va,
         unit_count: unit_count as usize,
         initialized_units,
         finalized_units,
+        monotonic_init_addresses,
         units,
     })
 }

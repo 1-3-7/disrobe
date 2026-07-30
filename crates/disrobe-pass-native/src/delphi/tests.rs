@@ -821,6 +821,89 @@ fn a_reachable_init_table_leaves_no_complaint() {
     );
 }
 
+fn all_executable_pe(stub: &[u8], blob: Vec<u8>) -> Vec<u8> {
+    let mut text: Vec<u8> = vec![0x90u8; 0x200];
+    text[..stub.len()].copy_from_slice(stub);
+    build_pe_sections(
+        false,
+        FLAT_BASE32,
+        &[
+            Section {
+                name: ".text".to_owned(),
+                rva: TEXT_RVA,
+                data: text,
+                characteristics: SCN_CODE_EXEC_READ,
+            },
+            Section {
+                name: ".data".to_owned(),
+                rva: DATA_RVA,
+                data: blob,
+                characteristics: SCN_CODE_EXEC_READ,
+            },
+        ],
+        None,
+    )
+}
+
+#[test]
+fn an_image_flagged_executable_throughout_reports_that_the_code_check_cannot_discriminate() {
+    let units: [(u64, u64); 2] = [(code_va() + 0x40, code_va() + 0x60), (code_va() + 0x80, 0)];
+    let (blob, table_va): (Vec<u8>, u64) = build_init_table_blob(&units);
+    let pe: Vec<u8> = all_executable_pe(&delphi_entry_stub(table_va), blob);
+    let report: DelphiReport = analyze(&pe);
+    assert!(report.init_table.is_some());
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n: &String| n.contains("cannot discriminate here")),
+        "an all-executable image must say the code check proves nothing, notes were {:?}",
+        report.notes
+    );
+}
+
+#[test]
+fn a_normal_image_does_not_claim_the_code_check_is_useless() {
+    let units: [(u64, u64); 2] = [(code_va() + 0x40, code_va() + 0x60), (code_va() + 0x80, 0)];
+    let report: DelphiReport = analyze(&init_table_pe(&units));
+    assert!(report.init_table.is_some());
+    assert!(
+        !report
+            .notes
+            .iter()
+            .any(|n: &String| n.contains("cannot discriminate here"))
+    );
+}
+
+#[test]
+fn init_addresses_are_reported_as_monotonic_only_when_they_are() {
+    let rising: [(u64, u64); 3] = [
+        (code_va() + 0x40, 0),
+        (code_va() + 0x80, 0),
+        (code_va() + 0xC0, 0),
+    ];
+    let report: DelphiReport = analyze(&init_table_pe(&rising));
+    assert!(
+        report
+            .init_table
+            .as_ref()
+            .is_some_and(|t: &DelphiInitTable| t.monotonic_init_addresses)
+    );
+
+    let shuffled: [(u64, u64); 3] = [
+        (code_va() + 0xC0, 0),
+        (code_va() + 0x40, 0),
+        (code_va() + 0x80, 0),
+    ];
+    let report: DelphiReport = analyze(&init_table_pe(&shuffled));
+    assert!(
+        report
+            .init_table
+            .as_ref()
+            .is_some_and(|t: &DelphiInitTable| !t.monotonic_init_addresses)
+    );
+}
+
 fn find_class<'a>(classes: &'a [DelphiClass], name: &str) -> &'a DelphiClass {
     classes
         .iter()
