@@ -15,6 +15,7 @@ const REGEX_SIZE_LIMIT: usize = 32 << 20;
 const MIN_CODEC_TOKEN: usize = 16;
 const MAX_CODEC_TOKEN: usize = 1 << 20;
 const CODEC_PRINTABLE_RATIO: f64 = 0.85;
+const MIN_WIDE_RUN_CHARS: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -82,6 +83,7 @@ pub enum Encoding {
     Base64,
     Hex,
     Codec,
+    Utf16Le,
 }
 
 impl Encoding {
@@ -93,6 +95,7 @@ impl Encoding {
             Self::Base64 => "base64",
             Self::Hex => "hex",
             Self::Codec => "codec",
+            Self::Utf16Le => "utf16le",
         }
     }
 }
@@ -802,7 +805,7 @@ fn scan_text_layer(text: &str, encoding: Encoding, base_offset: usize, out: &mut
     }
 }
 
-fn decode_and_recurse(text: &str, out: &mut Vec<Indicator>) {
+fn decode_and_recurse(text: &str, base_offset: usize, out: &mut Vec<Indicator>) {
     for m in B64_BLOB_RE.find_iter(text) {
         if out.len() >= MAX_INDICATORS {
             return;
@@ -816,7 +819,12 @@ fn decode_and_recurse(text: &str, out: &mut Vec<Indicator>) {
             continue;
         };
         if let Some(inner) = printable_utf8(&decoded) {
-            scan_text_layer(&inner, Encoding::Base64, m.start(), out);
+            scan_text_layer(
+                &inner,
+                Encoding::Base64,
+                base_offset.saturating_add(m.start()),
+                out,
+            );
         }
     }
     for m in HEX_BLOB_RE.find_iter(text) {
@@ -831,10 +839,15 @@ fn decode_and_recurse(text: &str, out: &mut Vec<Indicator>) {
             continue;
         };
         if let Some(inner) = printable_utf8(&decoded) {
-            scan_text_layer(&inner, Encoding::Hex, m.start(), out);
+            scan_text_layer(
+                &inner,
+                Encoding::Hex,
+                base_offset.saturating_add(m.start()),
+                out,
+            );
         }
     }
-    decode_codecs_and_recurse(text, out);
+    decode_codecs_and_recurse(text, base_offset, out);
 }
 
 #[inline]
@@ -842,7 +855,7 @@ const fn is_codec_token_byte(b: u8) -> bool {
     matches!(b, 0x21..=0x7e)
 }
 
-fn decode_codecs_and_recurse(text: &str, out: &mut Vec<Indicator>) {
+fn decode_codecs_and_recurse(text: &str, base_offset: usize, out: &mut Vec<Indicator>) {
     let bytes: &[u8] = text.as_bytes();
     let n: usize = bytes.len();
     let mut i: usize = 0;
@@ -876,7 +889,12 @@ fn decode_codecs_and_recurse(text: &str, out: &mut Vec<Indicator>) {
             let Some(inner): Option<String> = codec_printable(&decoded) else {
                 continue;
             };
-            scan_text_layer(&inner, Encoding::Codec, start, out);
+            scan_text_layer(
+                &inner,
+                Encoding::Codec,
+                base_offset.saturating_add(start),
+                out,
+            );
         }
     }
 }
@@ -967,36 +985,47 @@ pub fn extract(bytes: &[u8]) -> Vec<Indicator> {
     extract_with_extra(bytes, &[])
 }
 
-fn decode_utf16le_runs(bytes: &[u8]) -> String {
-    let mut out: String = String::with_capacity(bytes.len() / 2);
+fn decode_utf16le_runs(bytes: &[u8]) -> Vec<(usize, String)> {
+    let mut runs: Vec<(usize, String)> = Vec::new();
     let mut i: usize = 0;
     let limit: usize = bytes.len().saturating_sub(1);
     while i < limit {
         let lo: u8 = bytes[i];
         let hi: u8 = bytes[i + 1];
         if hi == 0x00 && matches!(lo, 0x09 | 0x0a | 0x0d | 0x20..=0x7e) {
-            out.push(lo as char);
-            i += 2;
-        } else {
-            if !out.ends_with('\n') {
-                out.push('\n');
+            let start: usize = i;
+            let mut run: String = String::new();
+            while i < limit
+                && bytes[i + 1] == 0x00
+                && matches!(bytes[i], 0x09 | 0x0a | 0x0d | 0x20..=0x7e)
+            {
+                run.push(bytes[i] as char);
+                i += 2;
             }
+            if run.len() >= MIN_WIDE_RUN_CHARS {
+                runs.push((start, run));
+            }
+        } else {
             i += 1;
         }
     }
-    out
+    runs
 }
 
 fn scan_wide(bytes: &[u8], out: &mut Vec<Indicator>) {
     if bytes.len() < 8 {
         return;
     }
-    let decoded: String = decode_utf16le_runs(bytes);
-    if decoded.trim().is_empty() {
-        return;
+    for (start, run) in decode_utf16le_runs(bytes) {
+        if out.len() >= MAX_INDICATORS {
+            return;
+        }
+        if run.trim().is_empty() {
+            continue;
+        }
+        scan_text_layer(&run, Encoding::Utf16Le, start, out);
+        decode_and_recurse(&run, start, out);
     }
-    scan_text_layer(&decoded, Encoding::Plain, 0, out);
-    decode_and_recurse(&decoded, out);
 }
 
 #[must_use]
@@ -1005,7 +1034,7 @@ pub fn extract_with_extra(bytes: &[u8], extra_text: &[&str]) -> Vec<Indicator> {
     let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(bytes);
     scan_text_layer(&text, Encoding::Plain, 0, &mut out);
     collect_crypto_constants(bytes, &mut out);
-    decode_and_recurse(&text, &mut out);
+    decode_and_recurse(&text, 0usize, &mut out);
     scan_wide(bytes, &mut out);
     for (idx, extra) in extra_text.iter().enumerate() {
         if out.len() >= MAX_INDICATORS {
@@ -1013,7 +1042,7 @@ pub fn extract_with_extra(bytes: &[u8], extra_text: &[&str]) -> Vec<Indicator> {
         }
         let synthetic_base: usize = bytes.len().saturating_add(idx);
         scan_text_layer(extra, Encoding::Plain, synthetic_base, &mut out);
-        decode_and_recurse(extra, &mut out);
+        decode_and_recurse(extra, 0usize, &mut out);
     }
     dedup_and_sort(out)
 }
@@ -1050,7 +1079,7 @@ pub fn defang(value: &str, kind: IocKind) -> String {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -1353,6 +1382,39 @@ mod tests {
                 .iter()
                 .any(|u: &&str| u.contains("wide.example.com")),
             "utf-16le url not recovered: {ind:?}"
+        );
+    }
+
+    #[test]
+    fn a_wide_indicator_carries_the_offset_of_its_run_and_discloses_the_encoding() {
+        const LEAD: &[u8] = b"MZ\x90\x00 plain header text padding here ";
+        let mut buffer: Vec<u8> = LEAD.to_vec();
+        let run_start: usize = buffer.len();
+        for b in b"http://wide.example.com/c2" {
+            buffer.push(*b);
+            buffer.push(0x00);
+        }
+        buffer.extend_from_slice(b"\x00\x00trailing plain bytes");
+        let indicators: Vec<Indicator> = extract(&buffer);
+        let wide: &Indicator = indicators
+            .iter()
+            .find(|i: &&Indicator| i.value.contains("wide.example.com"))
+            .unwrap_or_else(|| panic!("utf-16le url not recovered: {indicators:?}"));
+        assert_eq!(
+            wide.encoding,
+            Encoding::Utf16Le,
+            "a value decoded out of a utf-16le run must disclose that encoding rather than \
+             present itself as plain text: {wide:?}"
+        );
+        assert_eq!(
+            wide.offset, run_start,
+            "the offset must point at the wide run in the real input, not at a position in a \
+             concatenated decode buffer: {wide:?}"
+        );
+        assert_eq!(
+            &buffer[wide.offset..wide.offset + 2],
+            b"h\x00",
+            "the reported offset must actually hold the start of the wide run"
         );
     }
 
