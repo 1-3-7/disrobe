@@ -20,7 +20,7 @@ use disrobe_pass_native::packers::aspack_phase2::{
 use disrobe_pass_native::packers::pecompact_phase2::{
     PecompactPhaseTwoOutput, unpack_pecompact_phase2_emulated,
 };
-use packer_fixture::{PackerFixture, load_fixture};
+use packer_fixture::{PackerFixture, enforce_something_was_graded, load_fixture};
 
 fn decoder_for(family: &str) -> &'static str {
     if family == "aspack" {
@@ -191,7 +191,7 @@ fn emulated_beats_structural_zero_on_all_fixtures() {
             "AccessEnum.original.exe",
         ),
     ];
-    let mut tested: usize = 0;
+    let mut aspack_tested: usize = 0;
     for (label, p, o) in aspack {
         let (Some(packed), Some(orig)): (Option<Vec<u8>>, Option<Vec<u8>>) =
             (corpus("aspack", p), corpus("aspack", o))
@@ -200,12 +200,13 @@ fn emulated_beats_structural_zero_on_all_fixtures() {
         };
         let out: AspackPhaseTwoOutput =
             unpack_aspack_phase2_emulated(&packed, Some(&orig)).expect("aspack");
-        tested += 1;
+        aspack_tested += 1;
         assert!(
             out.content_recovery_pct.unwrap_or(0.0) > 50.0,
             "aspack {label}: emulated content recovery must materially beat 0%",
         );
     }
+    let mut pecompact_tested: usize = 0;
     for (label, p, o) in pecompact {
         let (Some(packed), Some(orig)): (Option<Vec<u8>>, Option<Vec<u8>>) =
             (corpus("pecompact", p), corpus("pecompact", o))
@@ -214,15 +215,14 @@ fn emulated_beats_structural_zero_on_all_fixtures() {
         };
         let out: PecompactPhaseTwoOutput =
             unpack_pecompact_phase2_emulated(&packed, Some(&orig)).expect("pecompact");
-        tested += 1;
+        pecompact_tested += 1;
         assert!(
             out.content_recovery_pct.unwrap_or(0.0) > 50.0,
             "pecompact {label}: emulated content recovery must materially beat 0%",
         );
     }
-    if tested == 0 {
-        eprintln!("no aspack/pecompact fixtures present; recovery check skipped");
-    }
+    enforce_something_was_graded("ASPack", aspack_tested, "aspack");
+    enforce_something_was_graded("PECompact", pecompact_tested, "pecompact");
 }
 
 fn assert_iat_byte_identical_to_original(
@@ -446,7 +446,5 @@ fn aspack_section_report_isolates_residual_to_non_text() {
         );
         tested += 1;
     }
-    if tested == 0 {
-        eprintln!("no aspack fixtures present; section report check skipped");
-    }
+    enforce_something_was_graded("ASPack", tested, "aspack");
 }
