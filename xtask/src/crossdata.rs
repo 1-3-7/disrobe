@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use eyre::{Result, bail};
 use serde::Deserialize;
 
+use crate::datamodel::{VerificationDoc, VerificationRow};
 use crate::fileio::read_text_bounded;
 
 const MAX_DATA_JSON_BYTES: u64 = 4 * 1024 * 1024;
@@ -42,18 +43,6 @@ struct EcosystemCell {
     label: String,
     #[serde(default)]
     note: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct Verification {
-    rows: Vec<VerificationRow>,
-}
-
-#[derive(Debug, Deserialize)]
-struct VerificationRow {
-    ecosystem: String,
-    #[serde(default)]
-    result: String,
 }
 
 enum Expected {
@@ -211,7 +200,7 @@ pub(crate) fn run(root: &Path) -> Result<()> {
         &data.join("ecosystems.json"),
         MAX_DATA_JSON_BYTES,
     )?)?;
-    let verification: Verification = serde_json::from_str(&read_text_bounded(
+    let verification: VerificationDoc = serde_json::from_str(&read_text_bounded(
         &data.join("verification.json"),
         MAX_DATA_JSON_BYTES,
     )?)?;

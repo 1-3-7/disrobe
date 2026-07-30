@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use eyre::{Result, WrapErr, bail};
 use sha2::{Digest, Sha256};
 
+use crate::datamodel::{VerificationDoc, load_verification};
 use crate::fileio::read_bytes_bounded;
 
 const MAX_ASSET_BYTES: u64 = 4 * 1024 * 1024;
@@ -29,6 +30,8 @@ const MAX_DATA_BYTES: u64 = 4 * 1024 * 1024;
 
 const MIRRORED: [&str; 2] = ["recovery.svg", "social-card.png"];
 
+const VERIFICATION_CHART: &str = "verification.svg";
+
 pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
     let assets_dir: PathBuf = root.join("docs").join("assets");
     for name in ASSETS {
@@ -44,14 +47,20 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         {
             svg_reflects_its_data(root, name, data_file, rendered)?;
         }
+        if name == VERIFICATION_CHART {
+            verification_cells_are_rendered(root, name, rendered)?;
+        }
     }
     for name in MIRRORED {
         published_copy_matches(root, name)?;
     }
     if check {
         println!(
-            "xtask graphs --check: {} committed chart assets present and well-formed",
-            ASSETS.len()
+            "xtask graphs --check: {} committed chart assets well-formed, and each of the {} \
+             data-backed ones carries the digest of the committed data file it was rendered from, \
+             so a chart cannot show numbers its data no longer states",
+            ASSETS.len(),
+            DATA_BACKED.len()
         );
     } else {
         println!(
@@ -107,6 +116,39 @@ fn svg_reflects_its_data(root: &Path, asset: &str, data_file: &str, rendered: &s
         );
     }
     Ok(())
+}
+
+fn verification_cells_are_rendered(root: &Path, asset: &str, rendered: &str) -> Result<()> {
+    let doc: VerificationDoc = load_verification(root)?;
+    let mut missing: Vec<String> = Vec::new();
+    for row in &doc.rows {
+        for cell in [row.ecosystem.as_str(), row.result.as_str()] {
+            if cell.is_empty() {
+                continue;
+            }
+            let escaped: String = escape_svg_text(cell);
+            if !rendered.contains(&escaped) {
+                missing.push(format!("{} -> {cell:?}", row.ecosystem));
+            }
+        }
+    }
+    if !missing.is_empty() {
+        bail!(
+            "docs/assets/{asset} does not render {} cell(s) that verification.json states, so the \
+             published chart shows something other than the data behind it: {}. the digest stamp \
+             cannot catch this on its own, because editing the chart text by hand leaves the data \
+             file untouched. regenerate with `node xtask/graphgen/build.mjs`",
+            missing.len(),
+            missing.join("; ")
+        );
+    }
+    Ok(())
+}
+
+fn escape_svg_text(raw: &str) -> String {
+    raw.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn validate_svg(path: &Path, bytes: &[u8]) -> Result<()> {

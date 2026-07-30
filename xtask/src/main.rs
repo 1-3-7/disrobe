@@ -10,6 +10,7 @@ mod card;
 mod catalog_counts;
 mod codegen;
 mod crossdata;
+mod datamodel;
 mod demo;
 mod errdocs;
 mod evidence;
