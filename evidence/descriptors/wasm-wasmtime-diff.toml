@@ -1,17 +1,17 @@
 id = "wasm-wasmtime-diff"
 ecosystem = "wasm"
-title = "WebAssembly recovery, op-coverage and wasmtime execution differential"
-claim = "disrobe lifts WebAssembly to structured source that re-parses with every operator lowered, and the execution-eligible functions execute equivalently to the original under wasmtime."
+title = "WebAssembly recovery, wasmtime execution differential"
+claim = "the execution-eligible functions of the committed WebAssembly corpus execute equivalently to the original under wasmtime after disrobe lifts and re-emits them."
 oracle_strength = "strong"
 ci = true
 
 [oracle]
 kind = "recovery-import"
-external = "wasmtime execution differential (original vs recovered: return values, trap parity, linear memory) for the 57 execution-eligible functions; output re-parse for op-coverage"
-reproduce = "cargo test -p disrobe-pass-wasm-deob --test semantic_differential --features sandbox  (op-coverage: cargo test -p disrobe-pass-wasm-deob --test semantic_recovery_corpus)"
-note = "Op-coverage (133/133) means every operator lowered and the output re-parses; it is NOT execution-equivalence. The 57/57 wasmtime figure is the execution-equivalence number and is the stronger of the two. They are distinct and labeled distinctly."
+external = "wasmtime runs the original module and the recovered one on the same inputs and compares return values, trap parity, and the first 4096 bytes of linear memory, for the 57 execution-eligible functions"
+reproduce = "cargo test -p disrobe-pass-wasm-deob --test semantic_differential --features sandbox"
+note = "Execution-eligibility is narrower than op-coverage: a function needs a callable signature and no host imports before it can be run at all, so 57 is a smaller population than the 133-function corpus. The op-coverage figure beside this one is a different and weaker measurement and is graded by its own descriptor, wasm-external-op-inventory."
 
 [source]
 recovery_group = "WebAssembly (committed 133-fn corpus: op-coverage, 57 execution-verified under wasmtime)"
-recovery_bar = "op-coverage"
+recovery_bar = "execution-equivalence"
 floor = 100.0

@@ -1,0 +1,1465 @@
+{
+  "tool": "wasm-tools",
+  "tool_version": "wasm-tools 1.250.0",
+  "command": "wasm-tools dump <corpus>.wat",
+  "instruction_unit": "body_instructions = decoded_instructions minus the single 0x0B that terminates each function body, which the binary format carries as the body delimiter rather than as an instruction of the body",
+  "modules": [
+    {
+      "path": "corpus/src/wasm/edge_cases/br_table_large.wat",
+      "source_blake3": "b011e7346c5e7942900471362607df30e15484c19892e075ea2a296232427119",
+      "assembles": false,
+      "reject_reason": "error: expected `(`",
+      "functions": [],
+      "decoded_instructions": 0,
+      "body_instructions": 0,
+      "mnemonics": {}
+    },
+    {
+      "path": "corpus/src/wasm/edge_cases/branch_hints.wat",
+      "source_blake3": "e1c4066db69370bc3cd8426b452e1a689e695eebe61ad49d6908c517f0078c25",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 18,
+          "body_instructions": 17
+        }
+      ],
+      "decoded_instructions": 18,
+      "body_instructions": 17,
+      "mnemonics": {
+        "br": 1,
+        "end": 3,
+        "i32_add": 2,
+        "i32_const": 1,
+        "i32_lt_s": 1,
+        "if": 1,
+        "local_get": 6,
+        "local_set": 2,
+        "loop": 1
+      }
+    },
+    {
+      "path": "corpus/src/wasm/edge_cases/bulk_memory.wat",
+      "source_blake3": "54452510cd9e3da3d44c88bd51534980c406741b35cedbd5fe3a9c13771c930e",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 5,
+          "body_instructions": 4
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 5,
+          "body_instructions": 4
+        },
+        {
+          "index": 2,
+          "decoded_instructions": 5,
+          "body_instructions": 4
+        },
+        {
+          "index": 3,
+          "decoded_instructions": 5,
+          "body_instructions": 4
+        },
+        {
+          "index": 4,
+          "decoded_instructions": 2,
+          "body_instructions": 1
+        }
+      ],
+      "decoded_instructions": 22,
+      "body_instructions": 17,
+      "mnemonics": {
+        "data_drop": 1,
+        "end": 5,
+        "i32_const": 3,
+        "local_get": 9,
+        "memory_copy": 1,
+        "memory_fill": 1,
+        "memory_init": 2
+      }
+    },
+    {
+      "path": "corpus/src/wasm/edge_cases/component_adapter.wat",
+      "source_blake3": "57cc51b2db453e7e04f599d58341fcd081adc6956fc2aa7c05cbd1122e9ebc5a",
+      "assembles": false,
+      "reject_reason": "error: unknown core instance: failed to find name `$i`",
+      "functions": [],
+      "decoded_instructions": 0,
+      "body_instructions": 0,
+      "mnemonics": {}
+    },
+    {
+      "path": "corpus/src/wasm/edge_cases/component_preamble.wat",
+      "source_blake3": "21f9e5fe3e2f06d59b94ef934e2973e5499268316559caa6990e5d9d1b7d0813",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        }
+      ],
+      "decoded_instructions": 4,
+      "body_instructions": 3,
+      "mnemonics": {
+        "end": 1,
+        "i32_add": 1,
+        "local_get": 2
+      }
+    },
+    {
+      "path": "corpus/src/wasm/edge_cases/dwarf_custom_section.wat",
+      "source_blake3": "9a4688b68fda4fbb029d83fc617a17906feaeb8607d067ffbf09e85d73b8fc15",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 2,
+          "body_instructions": 1
+        }
+      ],
+      "decoded_instructions": 2,
+      "body_instructions": 1,
+      "mnemonics": {
+        "end": 1,
+        "i32_const": 1
+      }
+    },
+    {
+      "path": "corpus/src/wasm/edge_cases/eh_try_table.wat",
+      "source_blake3": "eb8480af4fee5cf53425a29e1bb68f21f2324cd54bbad1a88d2dcf19da55d376",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 16,
+          "body_instructions": 15
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 9,
+          "body_instructions": 8
+        },
+        {
+          "index": 2,
+          "decoded_instructions": 11,
+          "body_instructions": 10
+        }
+      ],
+      "decoded_instructions": 36,
+      "body_instructions": 33,
+      "mnemonics": {
+        "block": 2,
+        "call": 2,
+        "drop": 1,
+        "end": 9,
+        "i32_const": 7,
+        "i32_eq": 2,
+        "i64_const": 1,
+        "if": 2,
+        "local_get": 4,
+        "return": 2,
+        "throw": 2,
+        "try_table": 2
+      }
+    },
+    {
+      "path": "corpus/src/wasm/edge_cases/gc_types.wat",
+      "source_blake3": "beef08e61f38f7168a6ebf4b828b7cb0b6bb53a6dcbac085f4725a6f4ea46288",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 3,
+          "body_instructions": 2
+        },
+        {
+          "index": 2,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 3,
+          "decoded_instructions": 3,
+          "body_instructions": 2
+        },
+        {
+          "index": 4,
+          "decoded_instructions": 3,
+          "body_instructions": 2
+        }
+      ],
+      "decoded_instructions": 17,
+      "body_instructions": 12,
+      "mnemonics": {
+        "array_new": 1,
+        "end": 5,
+        "i31_get_s": 1,
+        "local_get": 7,
+        "ref_i31": 1,
+        "struct_get": 1,
+        "struct_new": 1
+      }
+    },
+    {
+      "path": "corpus/src/wasm/edge_cases/memory64.wat",
+      "source_blake3": "0df47892613122da90bed5e8c84bff07a62217d7a74f64075305fd260c48125e",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 3,
+          "body_instructions": 2
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 2,
+          "decoded_instructions": 2,
+          "body_instructions": 1
+        }
+      ],
+      "decoded_instructions": 9,
+      "body_instructions": 6,
+      "mnemonics": {
+        "end": 3,
+        "i32_load8_u": 1,
+        "i32_store8": 1,
+        "local_get": 3,
+        "memory_size": 1
+      }
+    },
+    {
+      "path": "corpus/src/wasm/edge_cases/multi_memory.wat",
+      "source_blake3": "4f3f17df8d3fbd0c692c09d1697049f427091114cf45a4c869e88abccf6720f2",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 3,
+          "body_instructions": 2
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 3,
+          "body_instructions": 2
+        },
+        {
+          "index": 2,
+          "decoded_instructions": 5,
+          "body_instructions": 4
+        }
+      ],
+      "decoded_instructions": 11,
+      "body_instructions": 8,
+      "mnemonics": {
+        "end": 3,
+        "i32_load8_u": 2,
+        "local_get": 5,
+        "memory_copy": 1
+      }
+    },
+    {
+      "path": "corpus/src/wasm/edge_cases/reference_types.wat",
+      "source_blake3": "e2a10bf95ef1345d0d9d923163ff4bb189e4eb341671c7cb14fc6d4ac3dce17b",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 2,
+          "decoded_instructions": 3,
+          "body_instructions": 2
+        },
+        {
+          "index": 3,
+          "decoded_instructions": 3,
+          "body_instructions": 2
+        },
+        {
+          "index": 4,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        }
+      ],
+      "decoded_instructions": 18,
+      "body_instructions": 13,
+      "mnemonics": {
+        "call_indirect": 1,
+        "end": 5,
+        "i32_const": 1,
+        "i32_mul": 1,
+        "local_get": 7,
+        "ref_is_null": 1,
+        "table_get": 1,
+        "table_set": 1
+      }
+    },
+    {
+      "path": "corpus/src/wasm/edge_cases/segments_modes.wat",
+      "source_blake3": "65060a9dd13355d11a97f924cd8a321c77dd82f4f15b9bfcb102c5a101770397",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 2,
+          "body_instructions": 1
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 2,
+          "body_instructions": 1
+        },
+        {
+          "index": 2,
+          "decoded_instructions": 2,
+          "body_instructions": 1
+        },
+        {
+          "index": 3,
+          "decoded_instructions": 5,
+          "body_instructions": 4
+        },
+        {
+          "index": 4,
+          "decoded_instructions": 2,
+          "body_instructions": 1
+        },
+        {
+          "index": 5,
+          "decoded_instructions": 2,
+          "body_instructions": 1
+        }
+      ],
+      "decoded_instructions": 15,
+      "body_instructions": 9,
+      "mnemonics": {
+        "data_drop": 1,
+        "elem_drop": 1,
+        "end": 6,
+        "i32_const": 3,
+        "local_get": 3,
+        "table_init": 1
+      }
+    },
+    {
+      "path": "corpus/src/wasm/edge_cases/simd128.wat",
+      "source_blake3": "b4447956f16ddc9d2081050e83ab560a9381a5779a289538d784e603b8e1acc6",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 2,
+          "decoded_instructions": 3,
+          "body_instructions": 2
+        },
+        {
+          "index": 3,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 4,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 5,
+          "decoded_instructions": 5,
+          "body_instructions": 4
+        }
+      ],
+      "decoded_instructions": 24,
+      "body_instructions": 18,
+      "mnemonics": {
+        "end": 6,
+        "f32x4_mul": 1,
+        "f32x4_relaxed_madd": 1,
+        "i32x4_add": 1,
+        "i32x4_splat": 1,
+        "i8x16_shuffle": 1,
+        "local_get": 12,
+        "v128_load32_lane": 1
+      }
+    },
+    {
+      "path": "corpus/src/wasm/edge_cases/table_ops.wat",
+      "source_blake3": "761cda09a46ffe814d7656ea10419673ff215bf82524d4e4a693a84613b4c68c",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 2,
+          "body_instructions": 1
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 2,
+          "body_instructions": 1
+        },
+        {
+          "index": 2,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 3,
+          "decoded_instructions": 5,
+          "body_instructions": 4
+        },
+        {
+          "index": 4,
+          "decoded_instructions": 5,
+          "body_instructions": 4
+        },
+        {
+          "index": 5,
+          "decoded_instructions": 2,
+          "body_instructions": 1
+        }
+      ],
+      "decoded_instructions": 20,
+      "body_instructions": 14,
+      "mnemonics": {
+        "end": 6,
+        "i32_const": 2,
+        "local_get": 8,
+        "table_copy": 1,
+        "table_fill": 1,
+        "table_grow": 1,
+        "table_size": 1
+      }
+    },
+    {
+      "path": "corpus/src/wasm/edge_cases/tail_calls.wat",
+      "source_blake3": "0b00a37a521c6ecae322d35feca7ef1ee6d478dc2ce2a53cabb3042f58a86d54",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 14,
+          "body_instructions": 13
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 2,
+          "decoded_instructions": 5,
+          "body_instructions": 4
+        }
+      ],
+      "decoded_instructions": 23,
+      "body_instructions": 20,
+      "mnemonics": {
+        "end": 4,
+        "i32_add": 1,
+        "i32_const": 3,
+        "i32_eqz": 1,
+        "i32_sub": 1,
+        "if": 1,
+        "local_get": 8,
+        "return": 1,
+        "return_call": 2,
+        "return_call_indirect": 1
+      }
+    },
+    {
+      "path": "corpus/src/wasm/edge_cases/threads_atomics.wat",
+      "source_blake3": "231cf004906e9d98492ef5e84eefa9754b4223478b2494b5a296af8d5d03042a",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 5,
+          "body_instructions": 4
+        },
+        {
+          "index": 2,
+          "decoded_instructions": 3,
+          "body_instructions": 2
+        },
+        {
+          "index": 3,
+          "decoded_instructions": 5,
+          "body_instructions": 4
+        },
+        {
+          "index": 4,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        }
+      ],
+      "decoded_instructions": 21,
+      "body_instructions": 16,
+      "mnemonics": {
+        "end": 5,
+        "i32_atomic_load": 1,
+        "i32_atomic_rmw_add": 1,
+        "i32_atomic_rmw_cmpxchg": 1,
+        "local_get": 11,
+        "memory_atomic_notify": 1,
+        "memory_atomic_wait32": 1
+      }
+    },
+    {
+      "path": "corpus/src/wasm/sources/add.wat",
+      "source_blake3": "afd7cdcac5210d6e2813f6a80947235cf03f5d47b6318b3725a319f762ab7f98",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 6,
+          "body_instructions": 5
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 6,
+          "body_instructions": 5
+        },
+        {
+          "index": 2,
+          "decoded_instructions": 11,
+          "body_instructions": 10
+        }
+      ],
+      "decoded_instructions": 23,
+      "body_instructions": 20,
+      "mnemonics": {
+        "else": 1,
+        "end": 4,
+        "i32_add": 2,
+        "i32_const": 2,
+        "i32_lt_s": 1,
+        "i32_mul": 1,
+        "i32_sub": 1,
+        "if": 1,
+        "local_get": 9,
+        "local_set": 1
+      }
+    },
+    {
+      "path": "corpus/src/wasm/sources/branching.wat",
+      "source_blake3": "b96794504fc25df9d442092fe0cf2e91a7057c0ec43e9ad56b7c37919f99ed57",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 22,
+          "body_instructions": 21
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 23,
+          "body_instructions": 22
+        }
+      ],
+      "decoded_instructions": 45,
+      "body_instructions": 43,
+      "mnemonics": {
+        "block": 6,
+        "br": 1,
+        "br_if": 1,
+        "br_table": 1,
+        "end": 9,
+        "i32_add": 2,
+        "i32_const": 8,
+        "i32_ge_s": 1,
+        "local_get": 7,
+        "local_set": 4,
+        "loop": 1,
+        "return": 4
+      }
+    },
+    {
+      "path": "corpus/src/wasm/sources/exceptions.wat",
+      "source_blake3": "4234bfc3c7b694436ee291c254471883d08653ec7ac2890f706a0a5ea2388542",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 11,
+          "body_instructions": 10
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 9,
+          "body_instructions": 8
+        }
+      ],
+      "decoded_instructions": 20,
+      "body_instructions": 18,
+      "mnemonics": {
+        "block": 1,
+        "call": 1,
+        "end": 5,
+        "i32_const": 2,
+        "i32_lt_s": 1,
+        "i32_mul": 1,
+        "if": 1,
+        "local_get": 4,
+        "return": 1,
+        "throw": 1,
+        "try_table": 1,
+        "unreachable": 1
+      }
+    },
+    {
+      "path": "corpus/src/wasm/sources/gc_types.wat",
+      "source_blake3": "8cb83348650d5b76eed2befc0c31a52ecb1a6b9a1095c3b2c95b11c4b8aa5b41",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 2,
+          "decoded_instructions": 3,
+          "body_instructions": 2
+        },
+        {
+          "index": 3,
+          "decoded_instructions": 3,
+          "body_instructions": 2
+        }
+      ],
+      "decoded_instructions": 14,
+      "body_instructions": 10,
+      "mnemonics": {
+        "array_new": 1,
+        "end": 4,
+        "i32_const": 5,
+        "local_get": 1,
+        "ref_i31": 1,
+        "struct_get": 1,
+        "struct_new": 1
+      }
+    },
+    {
+      "path": "corpus/src/wasm/sources/idiomatic_control.wat",
+      "source_blake3": "df0f34bce300d491b227313701a83c942a174fef211b45611f75fc6393811b21",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 9,
+          "body_instructions": 8
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 16,
+          "body_instructions": 15
+        },
+        {
+          "index": 2,
+          "decoded_instructions": 18,
+          "body_instructions": 17
+        },
+        {
+          "index": 3,
+          "decoded_instructions": 15,
+          "body_instructions": 14
+        },
+        {
+          "index": 4,
+          "decoded_instructions": 13,
+          "body_instructions": 12
+        },
+        {
+          "index": 5,
+          "decoded_instructions": 9,
+          "body_instructions": 8
+        }
+      ],
+      "decoded_instructions": 80,
+      "body_instructions": 74,
+      "mnemonics": {
+        "else": 5,
+        "end": 13,
+        "f64_gt": 1,
+        "i32_and": 1,
+        "i32_const": 7,
+        "i32_gt_s": 3,
+        "i32_gt_u": 1,
+        "i32_lt_s": 2,
+        "i32_shl": 1,
+        "i64_add": 1,
+        "i64_const": 2,
+        "i64_extend_i32_s": 1,
+        "i64_mul": 2,
+        "if": 7,
+        "local_get": 27,
+        "local_set": 6
+      }
+    },
+    {
+      "path": "corpus/src/wasm/sources/memory.wat",
+      "source_blake3": "c687287a10ac8d5034e042d628cc5fe610c46e68e3e5c1ecef49a07387dc2062",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 3,
+          "body_instructions": 2
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 2,
+          "decoded_instructions": 29,
+          "body_instructions": 28
+        }
+      ],
+      "decoded_instructions": 36,
+      "body_instructions": 33,
+      "mnemonics": {
+        "block": 1,
+        "br": 1,
+        "br_if": 1,
+        "end": 5,
+        "i32_add": 2,
+        "i32_const": 4,
+        "i32_ge_s": 1,
+        "i32_load": 2,
+        "i32_mul": 1,
+        "i32_store": 1,
+        "i32_xor": 1,
+        "local_get": 10,
+        "local_set": 4,
+        "local_tee": 1,
+        "loop": 1
+      }
+    },
+    {
+      "path": "corpus/wasm/plugins/busyloop_timeout.wat",
+      "source_blake3": "f76ddaac48d6bd03bd6d6b8e106a05392f8d51c73dad30b896078d25f3f36663",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 5,
+          "body_instructions": 4
+        }
+      ],
+      "decoded_instructions": 5,
+      "body_instructions": 4,
+      "mnemonics": {
+        "br": 1,
+        "end": 2,
+        "i32_const": 1,
+        "loop": 1
+      }
+    },
+    {
+      "path": "corpus/wasm/plugins/compute_xor.wat",
+      "source_blake3": "28a986a735022c39c03c4016c023470a1bc39d09508673e38167559328f3c4c1",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 21,
+          "body_instructions": 20
+        }
+      ],
+      "decoded_instructions": 21,
+      "body_instructions": 20,
+      "mnemonics": {
+        "block": 1,
+        "br": 1,
+        "br_if": 1,
+        "end": 3,
+        "i32_add": 1,
+        "i32_const": 2,
+        "i32_ge_u": 1,
+        "i32_load8_u": 1,
+        "i32_store8": 1,
+        "i32_xor": 1,
+        "local_get": 6,
+        "local_set": 1,
+        "loop": 1
+      }
+    },
+    {
+      "path": "corpus/wasm/plugins/deny_fs_fd_write.wat",
+      "source_blake3": "d79f04e1899e208513a368074e644ca91279dd366a4e3c68fb8aafb4bbfe92fb",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 2,
+          "decoded_instructions": 8,
+          "body_instructions": 7
+        }
+      ],
+      "decoded_instructions": 8,
+      "body_instructions": 7,
+      "mnemonics": {
+        "call": 1,
+        "drop": 1,
+        "end": 1,
+        "i32_const": 5
+      }
+    },
+    {
+      "path": "corpus/wasm/plugins/deny_net_sock_open.wat",
+      "source_blake3": "1a33a953e2491dcb9e6626ae1b738a0cd541626ea9f5790c06f07c910c62fce5",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 1,
+          "decoded_instructions": 7,
+          "body_instructions": 6
+        }
+      ],
+      "decoded_instructions": 7,
+      "body_instructions": 6,
+      "mnemonics": {
+        "call": 1,
+        "drop": 1,
+        "end": 1,
+        "i32_const": 4
+      }
+    },
+    {
+      "path": "corpus/wasm/plugins/memgrow_bomb.wat",
+      "source_blake3": "dd50fab7fefcae5e65347a000e4aeda88f0ffc7bf7898ba90a403ffdf4a1168e",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 11,
+          "body_instructions": 10
+        }
+      ],
+      "decoded_instructions": 11,
+      "body_instructions": 10,
+      "mnemonics": {
+        "br_if": 1,
+        "end": 2,
+        "i32_const": 2,
+        "i32_ne": 1,
+        "local_get": 1,
+        "local_set": 1,
+        "loop": 1,
+        "memory_grow": 1,
+        "unreachable": 1
+      }
+    },
+    {
+      "path": "corpus/wasm/wat/custom_page_size.wat",
+      "source_blake3": "83cda2d16c88f9ae53e18e1a20c80c05a51847f6b7bcc4ca147c109210d6f1d5",
+      "assembles": true,
+      "functions": [],
+      "decoded_instructions": 0,
+      "body_instructions": 0,
+      "mnemonics": {}
+    },
+    {
+      "path": "corpus/wasm/wat/eh_numeric_roundtrip.wat",
+      "source_blake3": "ed91ed21de039facba8109a472a4d21b9ac0d1594ed7404d72483c412530a9f7",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 17,
+          "body_instructions": 16
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 18,
+          "body_instructions": 17
+        },
+        {
+          "index": 2,
+          "decoded_instructions": 24,
+          "body_instructions": 23
+        },
+        {
+          "index": 3,
+          "decoded_instructions": 17,
+          "body_instructions": 16
+        },
+        {
+          "index": 4,
+          "decoded_instructions": 15,
+          "body_instructions": 14
+        },
+        {
+          "index": 5,
+          "decoded_instructions": 16,
+          "body_instructions": 15
+        },
+        {
+          "index": 6,
+          "decoded_instructions": 23,
+          "body_instructions": 22
+        },
+        {
+          "index": 7,
+          "decoded_instructions": 11,
+          "body_instructions": 10
+        },
+        {
+          "index": 8,
+          "decoded_instructions": 19,
+          "body_instructions": 18
+        },
+        {
+          "index": 9,
+          "decoded_instructions": 22,
+          "body_instructions": 21
+        }
+      ],
+      "decoded_instructions": 182,
+      "body_instructions": 172,
+      "mnemonics": {
+        "block": 6,
+        "catch": 6,
+        "catch_all": 1,
+        "delegate": 1,
+        "drop": 6,
+        "else": 9,
+        "end": 38,
+        "i32_add": 5,
+        "i32_const": 29,
+        "i32_eq": 5,
+        "i32_gt_s": 1,
+        "i32_lt_s": 2,
+        "i32_mul": 4,
+        "i32_sub": 1,
+        "i64_add": 1,
+        "i64_const": 2,
+        "i64_lt_s": 1,
+        "if": 9,
+        "local_get": 24,
+        "rethrow": 1,
+        "return": 5,
+        "throw": 11,
+        "try": 8,
+        "try_table": 6
+      }
+    },
+    {
+      "path": "corpus/wasm/wat/eh_try_table_modern.wat",
+      "source_blake3": "aa3e64db84207ce66a2551aecc03cf55b58235fc2127f438d53795d5fdd784b1",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 22,
+          "body_instructions": 21
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 21,
+          "body_instructions": 20
+        },
+        {
+          "index": 2,
+          "decoded_instructions": 31,
+          "body_instructions": 30
+        },
+        {
+          "index": 3,
+          "decoded_instructions": 20,
+          "body_instructions": 19
+        }
+      ],
+      "decoded_instructions": 94,
+      "body_instructions": 90,
+      "mnemonics": {
+        "block": 9,
+        "br": 5,
+        "drop": 2,
+        "else": 5,
+        "end": 22,
+        "i32_add": 4,
+        "i32_const": 12,
+        "i32_eq": 3,
+        "i32_lt_s": 2,
+        "i32_mul": 1,
+        "i32_wrap_i64": 1,
+        "i64_const": 1,
+        "if": 5,
+        "local_get": 12,
+        "throw": 5,
+        "throw_ref": 1,
+        "try_table": 4
+      }
+    },
+    {
+      "path": "corpus/wasm/wat/funcref_numeric.wat",
+      "source_blake3": "94af64d533c11b2ff44855a31263d3cfbc87a1579fcb6fb7c1b8addac9823744",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 2,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 3,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 4,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 5,
+          "decoded_instructions": 5,
+          "body_instructions": 4
+        },
+        {
+          "index": 6,
+          "decoded_instructions": 6,
+          "body_instructions": 5
+        }
+      ],
+      "decoded_instructions": 31,
+      "body_instructions": 24,
+      "mnemonics": {
+        "call_ref": 5,
+        "end": 7,
+        "i32_add": 1,
+        "i32_const": 1,
+        "i32_mul": 1,
+        "i32_sub": 1,
+        "local_get": 10,
+        "ref_func": 5
+      }
+    },
+    {
+      "path": "corpus/wasm/wat/function_refs.wat",
+      "source_blake3": "562cf9b9185a4b891137f3b4910c7526961ab061f57db228f2db0a3e2132e9aa",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        }
+      ],
+      "decoded_instructions": 8,
+      "body_instructions": 6,
+      "mnemonics": {
+        "call_ref": 1,
+        "end": 2,
+        "i32_mul": 1,
+        "local_get": 3,
+        "ref_func": 1
+      }
+    },
+    {
+      "path": "corpus/wasm/wat/gc_extern_convert.wat",
+      "source_blake3": "921393d6c33a6fe8d8139635302529df324060e656908588b2b5373df77893c9",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        }
+      ],
+      "decoded_instructions": 4,
+      "body_instructions": 3,
+      "mnemonics": {
+        "any_convert_extern": 1,
+        "end": 1,
+        "extern_convert_any": 1,
+        "local_get": 1
+      }
+    },
+    {
+      "path": "corpus/wasm/wat/gc_numeric_roundtrip.wat",
+      "source_blake3": "152f132cd1ac2c7c26217d35fa47ff62aecb98d164e8ff5df7f143cfc9815e8e",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 20,
+          "body_instructions": 19
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 22,
+          "body_instructions": 21
+        },
+        {
+          "index": 2,
+          "decoded_instructions": 14,
+          "body_instructions": 13
+        },
+        {
+          "index": 3,
+          "decoded_instructions": 8,
+          "body_instructions": 7
+        },
+        {
+          "index": 4,
+          "decoded_instructions": 12,
+          "body_instructions": 11
+        },
+        {
+          "index": 5,
+          "decoded_instructions": 5,
+          "body_instructions": 4
+        },
+        {
+          "index": 6,
+          "decoded_instructions": 8,
+          "body_instructions": 7
+        },
+        {
+          "index": 7,
+          "decoded_instructions": 17,
+          "body_instructions": 16
+        },
+        {
+          "index": 8,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 9,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 10,
+          "decoded_instructions": 7,
+          "body_instructions": 6
+        }
+      ],
+      "decoded_instructions": 121,
+      "body_instructions": 110,
+      "mnemonics": {
+        "array_get": 6,
+        "array_len": 1,
+        "array_new": 4,
+        "array_new_fixed": 1,
+        "array_set": 1,
+        "end": 11,
+        "i31_get_s": 1,
+        "i31_get_u": 1,
+        "i32_add": 6,
+        "i32_const": 4,
+        "i32_mul": 2,
+        "i64_add": 2,
+        "local_get": 51,
+        "local_set": 9,
+        "ref_i31": 2,
+        "ref_is_null": 1,
+        "struct_get": 11,
+        "struct_new": 5,
+        "struct_set": 2
+      }
+    },
+    {
+      "path": "corpus/wasm/wat/gc_selfref_field.wat",
+      "source_blake3": "3c134517de830375eeb8439dbecae24ee22dd863d49f586dfd09dc9f98c660ae",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 16,
+          "body_instructions": 15
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 37,
+          "body_instructions": 36
+        },
+        {
+          "index": 2,
+          "decoded_instructions": 8,
+          "body_instructions": 7
+        },
+        {
+          "index": 3,
+          "decoded_instructions": 11,
+          "body_instructions": 10
+        }
+      ],
+      "decoded_instructions": 72,
+      "body_instructions": 68,
+      "mnemonics": {
+        "array_len": 1,
+        "array_new": 1,
+        "block": 2,
+        "br": 2,
+        "br_if": 2,
+        "end": 8,
+        "i32_add": 2,
+        "i32_const": 4,
+        "i32_le_s": 1,
+        "i32_sub": 1,
+        "local_get": 17,
+        "local_set": 10,
+        "loop": 2,
+        "ref_as_non_null": 2,
+        "ref_is_null": 2,
+        "ref_null": 5,
+        "struct_get": 5,
+        "struct_new": 5
+      }
+    },
+    {
+      "path": "corpus/wasm/wat/gc_subtype_roundtrip.wat",
+      "source_blake3": "a0f0fe843d558e111ef6744ad787118cba2cc0b0cf89c13a623f757e60ddb944",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 9,
+          "body_instructions": 8
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 11,
+          "body_instructions": 10
+        },
+        {
+          "index": 2,
+          "decoded_instructions": 3,
+          "body_instructions": 2
+        },
+        {
+          "index": 3,
+          "decoded_instructions": 10,
+          "body_instructions": 9
+        },
+        {
+          "index": 4,
+          "decoded_instructions": 13,
+          "body_instructions": 12
+        },
+        {
+          "index": 5,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 6,
+          "decoded_instructions": 8,
+          "body_instructions": 7
+        },
+        {
+          "index": 7,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        }
+      ],
+      "decoded_instructions": 62,
+      "body_instructions": 54,
+      "mnemonics": {
+        "array_fill": 1,
+        "array_get": 2,
+        "array_len": 1,
+        "array_new": 1,
+        "array_new_default": 1,
+        "array_new_fixed": 1,
+        "block": 1,
+        "br_on_cast": 1,
+        "drop": 1,
+        "end": 9,
+        "i31_get_s": 1,
+        "i32_const": 3,
+        "i32_mul": 1,
+        "i64_add": 1,
+        "local_get": 23,
+        "local_set": 4,
+        "ref_i31": 1,
+        "ref_test_non_null": 1,
+        "return": 1,
+        "struct_get": 5,
+        "struct_new": 2
+      }
+    },
+    {
+      "path": "corpus/wasm/wat/js_string_builtins.wat",
+      "source_blake3": "a2b2697c730e5b72b5514b1723fd2d561a96ee11dd4bc685014969accde93721",
+      "assembles": true,
+      "functions": [],
+      "decoded_instructions": 0,
+      "body_instructions": 0,
+      "mnemonics": {}
+    },
+    {
+      "path": "corpus/wasm/wat/multi_memory.wat",
+      "source_blake3": "61db200e35b4303a0c0b53513f778dca37d2f387de469280b6dda205d97332fb",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 10,
+          "body_instructions": 9
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 4,
+          "body_instructions": 3
+        },
+        {
+          "index": 2,
+          "decoded_instructions": 3,
+          "body_instructions": 2
+        },
+        {
+          "index": 3,
+          "decoded_instructions": 14,
+          "body_instructions": 13
+        }
+      ],
+      "decoded_instructions": 31,
+      "body_instructions": 27,
+      "mnemonics": {
+        "data_drop": 1,
+        "end": 4,
+        "i32_add": 2,
+        "i32_const": 1,
+        "i32_load": 2,
+        "i32_store": 1,
+        "local_get": 13,
+        "memory_copy": 1,
+        "memory_fill": 1,
+        "memory_grow": 1,
+        "memory_init": 1,
+        "memory_size": 2,
+        "return": 1
+      }
+    },
+    {
+      "path": "corpus/wasm/wat/stack_switching.wat",
+      "source_blake3": "7dcd233449234f69d6ed41f9d8438bca0c72bd04ab8a75b5385ad5150d049e9e",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 6,
+          "body_instructions": 5
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 16,
+          "body_instructions": 15
+        }
+      ],
+      "decoded_instructions": 22,
+      "body_instructions": 20,
+      "mnemonics": {
+        "block": 1,
+        "br": 1,
+        "cont_new": 1,
+        "end": 4,
+        "i32_add": 1,
+        "i32_const": 3,
+        "local_get": 2,
+        "local_set": 3,
+        "loop": 1,
+        "ref_func": 1,
+        "resume": 1,
+        "return": 1,
+        "suspend": 2
+      }
+    },
+    {
+      "path": "corpus/wasm/wat/stack_switching_bind_throw.wat",
+      "source_blake3": "02555fcab2f5ae0d1f5f9dcce30659bf1c6dab500825f7ef57fc52aae27d7d97",
+      "assembles": true,
+      "functions": [
+        {
+          "index": 0,
+          "decoded_instructions": 6,
+          "body_instructions": 5
+        },
+        {
+          "index": 1,
+          "decoded_instructions": 24,
+          "body_instructions": 23
+        }
+      ],
+      "decoded_instructions": 30,
+      "body_instructions": 28,
+      "mnemonics": {
+        "block": 3,
+        "br": 1,
+        "cont_bind": 1,
+        "cont_new": 1,
+        "drop": 3,
+        "end": 5,
+        "i32_add": 1,
+        "i32_const": 2,
+        "local_get": 5,
+        "local_set": 2,
+        "ref_func": 1,
+        "resume": 1,
+        "resume_throw": 1,
+        "return": 2,
+        "suspend": 1
+      }
+    }
+  ]
+}

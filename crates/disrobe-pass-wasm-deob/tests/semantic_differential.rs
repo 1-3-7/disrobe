@@ -21,6 +21,7 @@ use wasmtime::{Config, Engine, Linker, Module, Store, Val};
 
 const PUBLISHED_HEADING: &str = "WebAssembly (committed 133-fn corpus";
 const PUBLISHED_BAR: &str = "op-coverage";
+const PUBLISHED_EXECUTION_BAR: &str = "execution-equivalence";
 const HEADING_ANCHOR: &str = " execution-verified under wasmtime";
 const DETAIL_RATIO_ANCHOR: &str = " execution-eligible functions are EXECUTION-EQUIVALENT";
 const SOURCE_RATIO_ANCHOR: &str = " execution-eligible equivalent (";
@@ -1133,6 +1134,25 @@ fn published_execution_differential() -> ExecutionDifferential {
         detail_byte_identical, source_byte_identical,
         "the byte-identical count differs between the bar detail and the bar source, so the \
          documents cut from them disagree with each other"
+    );
+
+    let plotted: serde_json::Value = published_bar(PUBLISHED_HEADING, PUBLISHED_EXECUTION_BAR);
+    let plotted_equivalent: u64 = plotted["num"]
+        .as_u64()
+        .expect("the execution-equivalence bar must carry a numerator");
+    let plotted_eligible: u64 = plotted["den"]
+        .as_u64()
+        .expect("the execution-equivalence bar must carry a denominator");
+    assert_eq!(
+        plotted_eligible, detail_eligible,
+        "the plotted execution-equivalence bar and the op-coverage bar detail state different \
+         execution-eligible populations, so the chart and the prose cut from the same file \
+         disagree"
+    );
+    assert_eq!(
+        plotted_equivalent, detail_equivalent,
+        "the plotted execution-equivalence bar and the op-coverage bar detail state different \
+         equivalent counts, so the chart and the prose cut from the same file disagree"
     );
 
     ExecutionDifferential {

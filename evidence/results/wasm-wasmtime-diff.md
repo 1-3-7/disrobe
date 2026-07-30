@@ -1,13 +1,13 @@
-# WebAssembly recovery, op-coverage and wasmtime execution differential
+# WebAssembly recovery, wasmtime execution differential
 
 - id: `wasm-wasmtime-diff`
 - ecosystem: wasm
-- claim: disrobe lifts WebAssembly to structured source that re-parses with every operator lowered, and the execution-eligible functions execute equivalently to the original under wasmtime.
+- claim: the execution-eligible functions of the committed WebAssembly corpus execute equivalently to the original under wasmtime after disrobe lifts and re-emits them.
 - measured: 100.00%
 - oracle strength: strong
 - CI-attested: yes [CI]
-- external oracle: wasmtime execution differential (original vs recovered: return values, trap parity, linear memory) for the 57 execution-eligible functions; output re-parse for op-coverage
-- reproduce: `cargo test -p disrobe-pass-wasm-deob --test semantic_differential --features sandbox  (op-coverage: cargo test -p disrobe-pass-wasm-deob --test semantic_recovery_corpus)`
+- external oracle: wasmtime runs the original module and the recovered one on the same inputs and compares return values, trap parity, and the first 4096 bytes of linear memory, for the 57 execution-eligible functions
+- reproduce: `cargo test -p disrobe-pass-wasm-deob --test semantic_differential --features sandbox`
 - floor: 100.00 (holds)
-- gate source: crates/disrobe-pass-wasm-deob/tests/semantic_recovery_corpus.rs measure() = 38 modules parsed / 2 skipped / 133 functions / fully_recovered==133, with the module count and function total pinned by equality and the recovered count floored at 133; tests/semantic_differential.rs = wasmtime execution differential, 57/57 execution-eligible equivalent (6 byte-identical), CI-runnable under --features sandbox; op-coverage is NOT execution-equivalence except for those 57
-- note: Op-coverage (133/133) means every operator lowered and the output re-parses; it is NOT execution-equivalence. The 57/57 wasmtime figure is the execution-equivalence number and is the stronger of the two. They are distinct and labeled distinctly.
+- gate source: crates/disrobe-pass-wasm-deob/tests/semantic_differential.rs, CI-runnable under --features sandbox; this is the execution-equivalence leg and it is a different, smaller population than the 1034-opcode coverage bar beside it
+- note: Execution-eligibility is narrower than op-coverage: a function needs a callable signature and no host imports before it can be run at all, so 57 is a smaller population than the 133-function corpus. The op-coverage figure beside this one is a different and weaker measurement and is graded by its own descriptor, wasm-external-op-inventory.
