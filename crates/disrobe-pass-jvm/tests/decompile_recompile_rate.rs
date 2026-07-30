@@ -39,6 +39,76 @@ const INVALIDITY_MARKERS: &[&str] = &[
 const PER_METHOD_JAVAC_OK_FLOOR: usize = 131;
 const PER_METHOD_JAVAC_TOTAL: usize = 131;
 
+const PUBLISHED_HEADING: &str = "JVM classfile (EdgeCases corpus, per-method real-javac recompile)";
+const PUBLISHED_BAR: &str = "per-method";
+
+fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {
+    let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.pop();
+    path.pop();
+    path.push("xtask");
+    path.push("data");
+    path.push("recovery.json");
+    let raw: String = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", path.display()));
+    let doc: serde_json::Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|e: serde_json::Error| panic!("parse {}: {e}", path.display()));
+    let mut found: Vec<serde_json::Value> = Vec::new();
+    for group in doc["groups"].as_array().expect("groups array") {
+        let heading_matches: bool = group["heading"]
+            .as_str()
+            .is_some_and(|h: &str| h.contains(heading_needle));
+        if !heading_matches {
+            continue;
+        }
+        for bar in group["bars"].as_array().unwrap_or(&Vec::new()) {
+            if bar["label"].as_str() == Some(label) {
+                found.push(bar.clone());
+            }
+        }
+    }
+    assert_eq!(
+        found.len(),
+        1,
+        "xtask/data/recovery.json must carry exactly one bar labelled `{label}` under a heading \
+         containing `{heading_needle}`, found {}",
+        found.len()
+    );
+    found.remove(0)
+}
+
+#[test]
+fn published_per_method_bar_matches_the_floors_this_crate_enforces() {
+    let bar: serde_json::Value = published_bar(PUBLISHED_HEADING, PUBLISHED_BAR);
+    let num: u64 = bar["num"]
+        .as_u64()
+        .expect("the per-method bar must carry a numerator");
+    let den: u64 = bar["den"]
+        .as_u64()
+        .expect("the per-method bar must carry a denominator");
+    let value: f64 = bar["value"]
+        .as_f64()
+        .expect("the per-method bar must carry a numeric value");
+    assert_eq!(
+        num,
+        u64::try_from(PER_METHOD_JAVAC_OK_FLOOR).expect("floor fits u64"),
+        "xtask/data/recovery.json publishes {num} methods recompiling clean and every document \
+         renders that number, but this crate enforces {PER_METHOD_JAVAC_OK_FLOOR}"
+    );
+    assert_eq!(
+        den,
+        u64::try_from(PER_METHOD_JAVAC_TOTAL).expect("total fits u64"),
+        "recovery.json publishes a denominator of {den} top-level methods; this crate pins \
+         {PER_METHOD_JAVAC_TOTAL}, and report_per_method_javac_recompile fails if the corpus \
+         drifts from it"
+    );
+    let derived: f64 = 100.0 * num as f64 / den as f64;
+    assert!(
+        (derived - value).abs() < 0.05,
+        "the published value {value} disagrees with its own {num}/{den} = {derived:.4}"
+    );
+}
+
 const GAP_METHOD_TOTAL: usize = 7;
 const GAP_METHOD_OK_FLOOR: usize = 7;
 const FLOOR_PROVENANCE: &str = "floor is the honest count of top-level methods that recompile clean \

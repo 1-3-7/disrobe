@@ -9,6 +9,46 @@ use disrobe_pass_go::{GoAnalysis, GoItab, GoTypeRef, analyze};
 const STRIPPED_GO126_TYPES: usize = 838;
 const STRIPPED_GO126_NAMED: usize = 838;
 
+const PUBLISHED_HEADING: &str = "Go type-name recovery";
+const PUBLISHED_BAR: &str = "type names";
+const PUBLISHED_RATIO_GUARD: f64 = 0.85;
+const PUBLISHED_RATIO_GUARD_PCT: f64 = 85.0;
+
+fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {
+    let path: PathBuf = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("xtask")
+        .join("data")
+        .join("recovery.json");
+    let raw: String = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", path.display()));
+    let doc: serde_json::Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|e: serde_json::Error| panic!("parse {}: {e}", path.display()));
+    let mut found: Vec<serde_json::Value> = Vec::new();
+    for group in doc["groups"].as_array().expect("groups array") {
+        let heading_matches: bool = group["heading"]
+            .as_str()
+            .is_some_and(|h: &str| h.contains(heading_needle));
+        if !heading_matches {
+            continue;
+        }
+        for bar in group["bars"].as_array().unwrap_or(&Vec::new()) {
+            if bar["label"].as_str() == Some(label) {
+                found.push(bar.clone());
+            }
+        }
+    }
+    assert_eq!(
+        found.len(),
+        1,
+        "xtask/data/recovery.json must carry exactly one bar labelled `{label}` under a heading \
+         containing `{heading_needle}`, found {}",
+        found.len()
+    );
+    found.remove(0)
+}
+
 const TYPEMETA_SOURCE: &str = r#"package main
 
 import (
@@ -198,9 +238,35 @@ fn typemeta_recovers_real_type_names_on_go126() {
          {STRIPPED_GO126_NAMED}/{STRIPPED_GO126_TYPES}; got {named}/{total} = {ratio:.4}"
     );
     assert!(
-        ratio >= 0.85,
+        ratio >= PUBLISHED_RATIO_GUARD,
         "expected >= 85% type-name recovery on the stripped go1.26.3 fixture \
          (got {named}/{total} = {ratio:.3})"
+    );
+
+    let bar: serde_json::Value = published_bar(PUBLISHED_HEADING, PUBLISHED_BAR);
+    let num: u64 = bar["num"]
+        .as_u64()
+        .expect("the type names bar must carry a numerator");
+    let den: u64 = bar["den"]
+        .as_u64()
+        .expect("the type names bar must carry a denominator");
+    let value: f64 = bar["value"]
+        .as_f64()
+        .expect("the type names bar must carry a numeric value");
+    assert_eq!(
+        u64::try_from(total).expect("type total fits u64"),
+        den,
+        "xtask/data/recovery.json publishes a denominator of {den} types on this fixture and every \
+         document renders that number, but the typelinks walk sees {total}"
+    );
+    assert!(
+        u64::try_from(named).expect("named fits u64") >= num,
+        "recovery.json publishes {num} of {den} named types; this run recovered {named}"
+    );
+    assert!(
+        (value - PUBLISHED_RATIO_GUARD_PCT).abs() < f64::EPSILON,
+        "the published value {value} is the ratio guard this gate enforces \
+         ({PUBLISHED_RATIO_GUARD_PCT}%), while the measured pair is carried by num and den"
     );
 
     let names: Vec<&str> = analysis

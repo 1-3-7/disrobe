@@ -524,6 +524,60 @@ mod tests {
         }
     }
 
+    fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {
+        let path: std::path::PathBuf = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("xtask")
+            .join("data")
+            .join("recovery.json");
+        let raw: String = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", path.display()));
+        let doc: serde_json::Value = serde_json::from_str(&raw)
+            .unwrap_or_else(|e: serde_json::Error| panic!("parse {}: {e}", path.display()));
+        let mut found: Vec<serde_json::Value> = Vec::new();
+        for group in doc["groups"].as_array().expect("groups array") {
+            let heading_matches: bool = group["heading"]
+                .as_str()
+                .is_some_and(|h: &str| h.contains(heading_needle));
+            if !heading_matches {
+                continue;
+            }
+            for bar in group["bars"].as_array().unwrap_or(&Vec::new()) {
+                if bar["label"].as_str() == Some(label) {
+                    found.push(bar.clone());
+                }
+            }
+        }
+        assert_eq!(
+            found.len(),
+            1,
+            "xtask/data/recovery.json must carry exactly one bar labelled `{label}` under a \
+             heading containing `{heading_needle}`, found {}",
+            found.len()
+        );
+        found.remove(0)
+    }
+
+    #[test]
+    fn published_lua_catalog_count_matches_this_catalog() {
+        const BAR: &str = "Lua chain catalog entries";
+        let bar: serde_json::Value = published_bar("Obfuscator and bundler family coverage", BAR);
+        let published: f64 = bar["value"]
+            .as_f64()
+            .expect("the Lua chain catalog entries bar must carry a numeric value");
+        let entries: usize = LuaDetector.catalog().len();
+        assert!(
+            (published - entries as f64).abs() < f64::EPSILON,
+            "xtask/data/recovery.json publishes {published} Lua chain catalog entries and every \
+             document renders that number, but this catalog carries {entries}"
+        );
+        assert_eq!(
+            entries, CATALOG_COUNT,
+            "the catalog length and its declared count must not drift"
+        );
+    }
+
     #[test]
     fn detector_id_is_stable() {
         assert_eq!(LuaDetector.id(), PASS_ID);

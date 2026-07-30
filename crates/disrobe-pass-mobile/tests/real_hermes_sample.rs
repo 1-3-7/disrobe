@@ -12,6 +12,44 @@ use disrobe_pass_mobile::{
     DecompileReport, DecompiledFunction, HermesModule, decompile_hermes_module, parse_hermes_module,
 };
 
+const PUBLISHED_HEADING: &str = "React Native Hermes (committed hermesc-built HBC v96 sample";
+const PUBLISHED_BAR: &str = "op-coverage";
+
+fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {
+    let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("xtask")
+        .join("data")
+        .join("recovery.json");
+    let raw: String = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", path.display()));
+    let doc: serde_json::Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|e: serde_json::Error| panic!("parse {}: {e}", path.display()));
+    let mut found: Vec<serde_json::Value> = Vec::new();
+    for group in doc["groups"].as_array().expect("groups array") {
+        let heading_matches: bool = group["heading"]
+            .as_str()
+            .is_some_and(|h: &str| h.contains(heading_needle));
+        if !heading_matches {
+            continue;
+        }
+        for bar in group["bars"].as_array().unwrap_or(&Vec::new()) {
+            if bar["label"].as_str() == Some(label) {
+                found.push(bar.clone());
+            }
+        }
+    }
+    assert_eq!(
+        found.len(),
+        1,
+        "xtask/data/recovery.json must carry exactly one bar labelled `{label}` under a heading \
+         containing `{heading_needle}`, found {}",
+        found.len()
+    );
+    found.remove(0)
+}
+
 fn sample(file: &str) -> PathBuf {
     let manifest_dir: &str = env!("CARGO_MANIFEST_DIR");
     Path::new(manifest_dir)
@@ -96,6 +134,39 @@ fn hbc_v96_sample_recovers_every_function_at_full_op_coverage() {
                 .collect::<Vec<&str>>()
         );
     }
+
+    let fully_covered: usize = report
+        .functions
+        .iter()
+        .filter(|f: &&DecompiledFunction| f.fallback_ops == 0)
+        .count();
+    let bar: serde_json::Value = published_bar(PUBLISHED_HEADING, PUBLISHED_BAR);
+    let num: u64 = bar["num"]
+        .as_u64()
+        .expect("the hermes op-coverage bar must carry a numerator");
+    let den: u64 = bar["den"]
+        .as_u64()
+        .expect("the hermes op-coverage bar must carry a denominator");
+    let value: f64 = bar["value"]
+        .as_f64()
+        .expect("the hermes op-coverage bar must carry a numeric value");
+    assert_eq!(
+        u64::try_from(report.function_count).expect("function count fits u64"),
+        den,
+        "xtask/data/recovery.json publishes a denominator of {den} functions on this sample and \
+         every document renders that number, but the module carries {}",
+        report.function_count
+    );
+    assert!(
+        u64::try_from(fully_covered).expect("covered fits u64") >= num,
+        "recovery.json publishes {num} of {den} functions at full op coverage; this run lifted \
+         {fully_covered} with zero fallback ops"
+    );
+    let derived: f64 = 100.0 * num as f64 / den as f64;
+    assert!(
+        (derived - value).abs() < 0.05,
+        "the published value {value} disagrees with its own {num}/{den} = {derived:.4}"
+    );
 }
 
 #[test]

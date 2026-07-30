@@ -8,5 +8,5 @@
 - CI-attested: no [local]
 - external oracle: static unpack + decompile of each committed PyArmor sample (real corpus; BCC and super mode remain a shared native wall)
 - reproduce: `cargo test -p disrobe-pass-pyarmor --test static_unpack_corpus (local-only: license-restricted and large samples live outside the tree)`
-- gate source: crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs:10 (RECOVERY_FLOOR 72) and :172 (recovered >= 72 of 72); measured 72/72 locally 2026-06-11
+- gate source: crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs (RECOVERY_FLOOR 72; recovers_real_source_from_v8_and_v9_corpus counts the committed v8 and v9 wrappers and asserts the recovered count against this pair); measured 72/72 locally 2026-06-11
 - note: BCC and super mode lower the body into native code and are an information-theoretic wall shared by every static tool; the free-mode corpus is what this number covers.

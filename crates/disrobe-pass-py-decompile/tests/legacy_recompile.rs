@@ -31,6 +31,44 @@ const SCRATCH_DIR: &str = "../../target/py-legacy-recompile";
 const PROVEN_CORRECT_FLOOR: usize = 150;
 const SOURCE_TOKEN_FLOOR: usize = 86;
 
+const PUBLISHED_HEADING: &str = "CPython legacy 1.0-3.7";
+const PUBLISHED_BAR: &str = "proven-correct";
+
+fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {
+    let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("xtask")
+        .join("data")
+        .join("recovery.json");
+    let raw: String = fs::read_to_string(&path)
+        .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", path.display()));
+    let doc: serde_json::Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|e: serde_json::Error| panic!("parse {}: {e}", path.display()));
+    let mut found: Vec<serde_json::Value> = Vec::new();
+    for group in doc["groups"].as_array().expect("groups array") {
+        let heading_matches: bool = group["heading"]
+            .as_str()
+            .is_some_and(|h: &str| h.contains(heading_needle));
+        if !heading_matches {
+            continue;
+        }
+        for bar in group["bars"].as_array().unwrap_or(&Vec::new()) {
+            if bar["label"].as_str() == Some(label) {
+                found.push(bar.clone());
+            }
+        }
+    }
+    assert_eq!(
+        found.len(),
+        1,
+        "xtask/data/recovery.json must carry exactly one bar labelled `{label}` under a heading \
+         containing `{heading_needle}`, found {}",
+        found.len()
+    );
+    found.remove(0)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Outcome {
     RecompileEquiv,
@@ -395,6 +433,39 @@ fn legacy_recompile_correctness_oracle() {
         no_interp_no_src, 0,
         "recovery regressed: {no_interp_no_src} fixture(s) with a present interpreter neither \
          recompiled nor token-matched their source"
+    );
+
+    let bar: serde_json::Value = published_bar(PUBLISHED_HEADING, PUBLISHED_BAR);
+    let num: u64 = bar["num"]
+        .as_u64()
+        .expect("the legacy proven-correct bar must carry a numerator");
+    let den: u64 = bar["den"]
+        .as_u64()
+        .expect("the legacy proven-correct bar must carry a denominator");
+    let value: f64 = bar["value"]
+        .as_f64()
+        .expect("the legacy proven-correct bar must carry a numeric value");
+    assert_eq!(
+        u64::try_from(files.len()).expect("fixture count fits u64"),
+        den,
+        "xtask/data/recovery.json publishes a denominator of {den} legacy fixtures and every \
+         document renders that number, but the committed corpus carries {}",
+        files.len()
+    );
+    assert_eq!(
+        u64::try_from(PROVEN_CORRECT_FLOOR).expect("floor fits u64"),
+        num,
+        "recovery.json publishes {num} of {den} proven correct; this crate enforces \
+         {PROVEN_CORRECT_FLOOR}, and the published number is the floor the gate holds"
+    );
+    assert!(
+        u64::try_from(proven_correct).expect("proven correct fits u64") >= num,
+        "recovery.json publishes {num} of {den} proven correct; this run proved {proven_correct}"
+    );
+    let derived: f64 = 100.0 * num as f64 / den as f64;
+    assert!(
+        (derived - value).abs() < 0.05,
+        "the published value {value} disagrees with its own {num}/{den} = {derived:.4}"
     );
 
     if recompile_eligible == 0 {

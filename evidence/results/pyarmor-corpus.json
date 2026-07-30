@@ -7,7 +7,7 @@
   "ecosystem": "pyarmor",
   "floor": null,
   "floor_holds": null,
-  "gate_source": "crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs:10 (RECOVERY_FLOOR 72) and :172 (recovered >= 72 of 72); measured 72/72 locally 2026-06-11",
+  "gate_source": "crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs (RECOVERY_FLOOR 72; recovers_real_source_from_v8_and_v9_corpus counts the committed v8 and v9 wrappers and asserts the recovered count against this pair); measured 72/72 locally 2026-06-11",
   "id": "pyarmor-corpus",
   "measured": "72 recovered / 72 detected",
   "oracle": {

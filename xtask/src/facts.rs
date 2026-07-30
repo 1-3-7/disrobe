@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use eyre::{Result, bail};
@@ -8,7 +9,7 @@ use crate::fileio::read_text_bounded;
 const MAX_RECOVERY_JSON_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 const IGNORE_LOOKBACK_BYTES: usize = 256;
-const VERIFIED_FLOOR: usize = 2;
+const VERIFIED_FLOOR: usize = 15;
 
 #[derive(Debug, Deserialize)]
 struct Recovery {
@@ -38,7 +39,10 @@ struct VerifiedBy {
 fn provenance_cites_documentation(source: &str) -> Option<String> {
     for token in source.split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == ';') {
         let trimmed: &str = token.trim_matches(|c: char| c == ',' || c == '`' || c == '"');
-        if trimmed.ends_with(".md") || trimmed.ends_with(".mdx") {
+        let is_doc: bool = Path::new(trimmed).extension().is_some_and(|ext: &OsStr| {
+            ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("mdx")
+        });
+        if is_doc {
             return Some(trimmed.to_owned());
         }
     }
