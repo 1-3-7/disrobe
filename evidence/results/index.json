@@ -68,12 +68,12 @@
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "binfmt",
-      "external_oracle": "per-format in-tree member-byte extraction count (every detected format writes real bytes)",
+      "external_oracle": "per-format in-tree member-byte extraction count, which is disrobe counting that it wrote bytes for every format it detected rather than an independent check. A member-byte diff against an external extractor is the proof this row does not yet have",
       "floor": null,
       "floor_holds": null,
       "id": "binfmt-extract",
       "measured": "100 extracted / 100 detected",
-      "oracle_strength": "strong",
+      "oracle_strength": "coverage-self-reported",
       "reproduce": "cargo test -p disrobe-binfmt every_real_format_extracts_in_tree"
     },
     {
