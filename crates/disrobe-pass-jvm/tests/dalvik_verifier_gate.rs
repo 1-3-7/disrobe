@@ -10,7 +10,7 @@ pub mod common;
 
 use std::path::PathBuf;
 
-use common::{JvmVerifier, VerifyScope, lines_with_prefix, parse_metric};
+use common::{JvmVerifier, VerifyScope, assert_permille, lines_with_prefix, parse_metric};
 use disrobe_pass_jvm::assemble_jar;
 use disrobe_pass_jvm::dex2jar::{Dex2JarResult, translate_dex_bytes};
 
@@ -28,6 +28,8 @@ const COMMITTED_DEXES: &[(&str, &[u8])] = &[
         include_bytes!("../../../corpus/jvm/dex/Hello.dex"),
     ),
 ];
+
+const WHOLE_BODY_POPULATION_PERMILLE: u32 = 1000;
 
 const VERIFY_CLEAN_CLASS_FLOOR: usize = 102;
 
@@ -93,8 +95,14 @@ fn recovered_dalvik_bodies_pass_the_real_jvm_verifier() {
         let jar: Vec<u8> = assemble_jar(&result).expect("assemble jar");
         let jar_path: PathBuf = verifier.write_jar(label, &jar);
 
-        let counts: VerifyCounts =
-            counts_from(&verifier.run(VerifyScope::Classes, jar_path.as_path()));
+        let stdout: String = verifier.run(
+            VerifyScope::Classes {
+                permille: WHOLE_BODY_POPULATION_PERMILLE,
+            },
+            jar_path.as_path(),
+        );
+        assert_permille(&stdout, WHOLE_BODY_POPULATION_PERMILLE);
+        let counts: VerifyCounts = counts_from(&stdout);
         let verifiable: usize = counts.clean_classes + counts.lifter_fail_classes;
         let pct: f64 = counts.clean_classes as f64 * 100.0 / verifiable.max(1) as f64;
         eprintln!(

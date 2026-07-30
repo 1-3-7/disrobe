@@ -39,9 +39,99 @@ pub fn parse_metric(stdout: &str, key: &str) -> usize {
         .unwrap_or(0)
 }
 
+pub fn assert_permille(stdout: &str, expected: u32) {
+    let seen: Option<u32> = stdout
+        .split_whitespace()
+        .find_map(|tok: &str| tok.strip_prefix("permille="))
+        .and_then(|value: &str| value.parse::<u32>().ok());
+    assert_eq!(
+        seen,
+        Some(expected),
+        "the jvm helper reported a body sample of {seen:?} permille but this gate's pinned counts \
+         were recorded at {expected}; a caller that changes the sample rate changes the population \
+         behind every figure the gate asserts"
+    );
+}
+
+#[derive(Debug)]
+pub struct RealApk {
+    pub file: &'static str,
+    pub short: &'static str,
+    pub golden: &'static str,
+    pub method_total: usize,
+    pub self_reported_bodies_floor: usize,
+    pub candidate_bodies_floor: usize,
+    pub sampled_bodies_floor: usize,
+    pub presented_bodies: usize,
+    pub attested_clean_floor: usize,
+    pub attested_fail_ceiling: usize,
+}
+
+pub const REAL_APKS: &[RealApk] = &[
+    RealApk {
+        file: "transmissionic-ionic.apk",
+        short: "transmissionic",
+        golden: "transmissionic-ionic.txt",
+        method_total: 27_805,
+        self_reported_bodies_floor: 26_192,
+        candidate_bodies_floor: 26_192,
+        sampled_bodies_floor: 2_673,
+        presented_bodies: 993,
+        attested_clean_floor: 980,
+        attested_fail_ceiling: 13,
+    },
+    RealApk {
+        file: "rustdesk-flutter.apk",
+        short: "rustdesk",
+        golden: "rustdesk-flutter.txt",
+        method_total: 32_410,
+        self_reported_bodies_floor: 29_376,
+        candidate_bodies_floor: 29_345,
+        sampled_bodies_floor: 2_850,
+        presented_bodies: 1216,
+        attested_clean_floor: 1205,
+        attested_fail_ceiling: 11,
+    },
+    RealApk {
+        file: "enrecipes-nativescript.apk",
+        short: "enrecipes",
+        golden: "enrecipes-nativescript.txt",
+        method_total: 29_301,
+        self_reported_bodies_floor: 27_220,
+        candidate_bodies_floor: 27_219,
+        sampled_bodies_floor: 2_820,
+        presented_bodies: 785,
+        attested_clean_floor: 775,
+        attested_fail_ceiling: 10,
+    },
+];
+
+pub fn real_apk_inbox() -> PathBuf {
+    let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.pop();
+    path.pop();
+    path.push("corpus");
+    path.push("mobile");
+    path.push("apk");
+    path.push("inbox");
+    path
+}
+
+pub fn real_apk_path(file: &str) -> PathBuf {
+    real_apk_inbox().join(file)
+}
+
+pub fn real_apks_absent() -> Vec<&'static str> {
+    REAL_APKS
+        .iter()
+        .filter(|apk: &&RealApk| !real_apk_path(apk.file).is_file())
+        .map(|apk: &RealApk| apk.file)
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifyScope {
-    Classes,
+    Classes { permille: u32 },
     Bodies { permille: u32 },
 }
 
@@ -90,8 +180,8 @@ impl JvmVerifier {
         let mut cmd: Command = Command::new(&self.java);
         cmd.arg("-Xverify:all").arg("-cp").arg(self.dir()).arg("V");
         match scope {
-            VerifyScope::Classes => {
-                cmd.arg("classes").arg(jar);
+            VerifyScope::Classes { permille } => {
+                cmd.arg("classes").arg(permille.to_string()).arg(jar);
             }
             VerifyScope::Bodies { permille } => {
                 cmd.arg("bodies").arg(permille.to_string()).arg(jar);
