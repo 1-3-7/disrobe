@@ -7,24 +7,22 @@
     clippy::uninlined_format_args
 )]
 
+#[path = "support/hermes_production_bundle.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code, clippy::panic)]
+mod hermes_production_bundle;
+
 use std::path::{Path, PathBuf};
 
 use disrobe_pass_mobile::{
     DecompileReport, DecompiledFunction, HermesModule, decompile_hermes_function,
     decompile_hermes_module, parse_hermes_module,
 };
+use hermes_production_bundle::{PUBLISHED_FUNCTION_COUNT, load_bundle};
 
-fn discord_fixture() -> PathBuf {
-    let manifest_dir: &str = env!("CARGO_MANIFEST_DIR");
-    Path::new(manifest_dir)
-        .join("..")
-        .join("..")
-        .join("corpus")
-        .join("mobile")
-        .join("hermes")
-        .join("discord")
-        .join("index.android.bundle")
-}
+const SAMPLED_FUNCTIONS: usize = 2_000;
+const SAMPLE_FALLBACK_OP_CEILING: usize = 19;
+const MODULE_OP_TOTAL: usize = 5_765_066;
+const MODULE_FALLBACK_OP_CEILING: usize = 9_531;
 
 fn hello_fixture() -> PathBuf {
     let manifest_dir: &str = env!("CARGO_MANIFEST_DIR");
@@ -125,15 +123,18 @@ fn hello_call2_argument_is_the_real_register_value() {
 
 #[test]
 fn discord_bundle_decompiles_most_functions() {
-    let path: PathBuf = discord_fixture();
-    if !path.exists() {
-        eprintln!("skip: discord fixture missing at {:?}", path);
+    let Some(bytes): Option<Vec<u8>> = load_bundle("the sampled production-bundle decompile")
+    else {
         return;
-    }
-    let bytes: Vec<u8> = std::fs::read(&path).expect("read discord bundle");
+    };
     let module: HermesModule = parse_hermes_module(&bytes).expect("parse discord module");
+    assert_eq!(
+        module.functions.len(),
+        PUBLISHED_FUNCTION_COUNT,
+        "the sampled figures below were measured over this exact bundle"
+    );
 
-    let sample: usize = 2_000.min(module.functions.len());
+    let sample: usize = SAMPLED_FUNCTIONS;
     let mut emitted: usize = 0;
     let mut with_if: usize = 0;
     let mut with_loop: usize = 0;
@@ -163,37 +164,50 @@ fn discord_bundle_decompiles_most_functions() {
         reconstructed,
         fallback
     );
-    assert!(
-        ratio >= 0.99,
-        "expected >=99% of sampled functions to emit pseudo-JS, got {:.1}%",
-        ratio * 100.0
+    assert_eq!(
+        emitted, sample,
+        "every one of the {sample} sampled functions emitted pseudo-JS when this figure was \
+         measured, so anything short of all of them is a regression"
     );
-    let op_total: usize = reconstructed + fallback;
-    let op_ratio: f64 = reconstructed as f64 / op_total as f64;
     assert!(
-        op_ratio >= 0.999,
-        "expected >=99.9% op reconstruction over sample, got {:.2}%",
-        op_ratio * 100.0
+        fallback <= SAMPLE_FALLBACK_OP_CEILING,
+        "the sampled window left {SAMPLE_FALLBACK_OP_CEILING} ops unlowered when this figure was \
+         measured, got {fallback} of {} total",
+        reconstructed + fallback
     );
     assert!(with_if > 0, "expected some functions with conditionals");
 }
 
 #[test]
 fn discord_decompile_module_report_consistent() {
-    let path: PathBuf = discord_fixture();
-    if !path.exists() {
-        eprintln!("skip: discord fixture missing");
+    let Some(bytes): Option<Vec<u8>> = load_bundle("the whole-module production-bundle decompile")
+    else {
         return;
-    }
-    let bytes: Vec<u8> = std::fs::read(&path).expect("read");
+    };
     let module: HermesModule = parse_hermes_module(&bytes).expect("parse");
     let report: DecompileReport = decompile_hermes_module(&module);
+    assert_eq!(report.function_count, PUBLISHED_FUNCTION_COUNT);
     assert_eq!(report.function_count, module.functions.len());
     assert_eq!(report.functions.len(), module.functions.len());
-    assert!(report.functions_with_body > 0);
+    assert_eq!(
+        report.functions_with_body, PUBLISHED_FUNCTION_COUNT,
+        "every function header in this bundle owns a non-empty body, so a report that bodies fewer \
+         of them has lost some"
+    );
     assert!(report.total_reconstructed_ops > report.total_fallback_ops);
+    assert!(
+        report.total_fallback_ops <= MODULE_FALLBACK_OP_CEILING,
+        "the whole-module decompile left {MODULE_FALLBACK_OP_CEILING} ops unlowered when this \
+         figure was measured, got {}",
+        report.total_fallback_ops
+    );
 
     let total_ops: usize = report.total_reconstructed_ops + report.total_fallback_ops;
+    assert_eq!(
+        total_ops, MODULE_OP_TOTAL,
+        "the op denominator is pinned to this bundle, so a run that decodes fewer instructions \
+         scores worse instead of shrinking what it is measured against"
+    );
     let ratio: f64 = report.total_reconstructed_ops as f64 / total_ops as f64;
     eprintln!(
         "discord full-module op-reconstruction: {}r/{}f ratio={:.2}%",
