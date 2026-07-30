@@ -5,6 +5,7 @@ use disrobe_core::recon::{ReconConfig, ReconFinding, ReconReport, report_tree};
 use eyre::{Result, WrapErr, bail};
 use serde_json::{Value, json};
 
+use crate::apkleaks_capture::{self, FrozenApkleaks};
 use crate::tool::{
     MAX_FIXTURE_BYTES, MAX_TEXT_BYTES, MAX_TREE_FILES, MAX_TREE_TEXT_BYTES, MAX_ZIP_ENTRIES,
     MAX_ZIP_ENTRY_BYTES, MAX_ZIP_TOTAL_BYTES, find_on_path, read_bounded_file, read_bounded_string,
@@ -74,13 +75,15 @@ pub fn measure(root: &Path) -> Result<(String, Value)> {
         .join("apk")
         .join("planted-secrets.apk");
     if !apk.is_file() {
-        return Ok((
-            id,
-            skipped("corpus/recon/apk/planted-secrets.apk is missing"),
-        ));
+        bail!(
+            "{} is committed and both tools read it; without it neither side of this row is \
+             measured against anything",
+            apk.display()
+        );
     }
     let apk_bytes: Vec<u8> = read_bounded_file(&apk, MAX_FIXTURE_BYTES)
         .wrap_err_with(|| format!("reading {}", apk.display()))?;
+    let frozen: FrozenApkleaks = apkleaks_capture::load(root, &apk).map_err(|e| eyre::eyre!(e))?;
 
     let tree: PathBuf =
         std::env::temp_dir().join(format!("disrobe_h2h_frisk_{}", std::process::id()));
@@ -100,19 +103,25 @@ pub fn measure(root: &Path) -> Result<(String, Value)> {
     );
 
     let apkleaks_result: ApkleaksResult = run_apkleaks(root, &apk);
-    let apkleaks_tool: Value = match &apkleaks_result {
+    let frozen_hits: Vec<usize> = frozen_recall(&frozen)?;
+    let (apkleaks_hits, apkleaks_tool): (Vec<usize>, Value) = match &apkleaks_result {
         ApkleaksResult::Ok { version, hits, via } => {
             let detail: String = if via == "cli" {
                 "apkleaks CLI".to_owned()
             } else {
                 "apkleaks 2.6.3 pinned rule set applied over the same jadx output it scans internally (its CLI shells out and fails on some Windows hosts); identical rules, identical result".to_owned()
             };
-            tool_json("apkleaks", version, hits, "ok", Some(&detail))
+            (
+                hits.clone(),
+                tool_json("apkleaks", version, hits, "ok", Some(&detail)),
+            )
         }
-        ApkleaksResult::Skipped(reason) => skipped_tool("apkleaks", reason),
-        ApkleaksResult::Error { version, reason } => {
-            tool_json("apkleaks", version, &[], "error", Some(reason))
-        }
+        ApkleaksResult::Skipped(reason) => frozen_leg(&frozen, &frozen_hits, reason),
+        ApkleaksResult::Error { version, reason } => frozen_leg(
+            &frozen,
+            &frozen_hits,
+            &format!("apkleaks `{version}` ran and failed here: {reason}"),
+        ),
     };
 
     let _ = std::fs::remove_dir_all(&tree);
@@ -124,10 +133,7 @@ pub fn measure(root: &Path) -> Result<(String, Value)> {
             json!({
                 "label": s.label,
                 "found_by_disrobe": disrobe_hits.contains(&secret_index(s)),
-                "found_by_apkleaks": match &apkleaks_result {
-                    ApkleaksResult::Ok { hits, .. } => hits.contains(&secret_index(s)),
-                    _ => false,
-                },
+                "found_by_apkleaks": apkleaks_hits.contains(&secret_index(s)),
             })
         })
         .collect();
@@ -533,26 +539,23 @@ fn extract_apk_with_limits(
     Ok(())
 }
 
-fn skipped(reason: &str) -> Value {
-    json!({
-        "title": "Secret / IOC recall: disrobe frisk vs apkleaks (same APK, hand-verified planted ground truth)",
-        "status": "skipped",
-        "reason": reason,
-        "ecosystem": "secrets",
-        "reproduce": "cargo run -p disrobe-bench-head-to-head",
-        "tools": [],
-    })
+fn frozen_leg(frozen: &FrozenApkleaks, hits: &[usize], why: &str) -> (Vec<usize>, Value) {
+    let detail: String = format!("{}; no live run on this host: {why}", frozen.attribution());
+    (
+        hits.to_vec(),
+        tool_json("apkleaks", &frozen.version_line, hits, "ok", Some(&detail)),
+    )
 }
 
-fn skipped_tool(name: &str, reason: &str) -> Value {
-    json!({
-        "name": name,
-        "version": "n/a",
-        "metric": "recall %",
-        "display": "skipped",
-        "status": "skipped",
-        "detail": reason,
-    })
+fn frozen_recall(frozen: &FrozenApkleaks) -> Result<Vec<usize>> {
+    let Some(hits): Option<Vec<usize>> = recall_indices_apkleaks(&frozen.raw) else {
+        bail!(
+            "the committed apkleaks capture does not carry the result shape apkleaks writes, so the \
+             comparison row would grade against nothing: {}",
+            frozen.attribution()
+        );
+    };
+    Ok(hits)
 }
 
 #[cfg(test)]
@@ -563,7 +566,7 @@ mod tests {
 
     use super::*;
     use crate::published::{
-        CompetitorTool, PublishedBar, ToolRequirement, assert_published_membership_is_exact,
+        CompetitorTool, PublishedBar, assert_published_membership_is_exact,
         assert_published_membership_is_recovered, checked_workspace_root, enforce_requirement,
         published_bar, requirement_for,
     };
@@ -572,8 +575,8 @@ mod tests {
     const PUBLISHED_DISROBE_BAR: &str = "disrobe frisk";
     const PUBLISHED_APKLEAKS_BAR: &str = "apkleaks 2.6.3";
     const APKLEAKS_MEASURED_VERSION: &str = "2.6.3";
-    const APKLEAKS_GRADED: &str =
-        "the apkleaks side of the planted-APK secret recall row published in recovery.json";
+    const APKLEAKS_GRADED: &str = "the live re-run that confirms the committed apkleaks capture still matches what the tool \
+         produces (the published row itself is graded against that capture on every machine)";
 
     const APKLEAKS: CompetitorTool = CompetitorTool {
         program: "apkleaks",
@@ -589,7 +592,8 @@ mod tests {
     }
 
     #[test]
-    fn published_planted_apk_secret_bars_are_pinned_by_membership() {
+    fn published_planted_apk_secret_bars_are_pinned_by_membership()
+    -> core::result::Result<(), String> {
         assert!(
             PUBLISHED_APKLEAKS_BAR.ends_with(APKLEAKS_MEASURED_VERSION),
             "the published apkleaks bar label must name the version this row grades, so the label \
@@ -639,11 +643,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tree);
         let disrobe_found: BTreeSet<String> = planted_labels(&disrobe_hits);
 
-        let apkleaks_result: ApkleaksResult = run_apkleaks(&root, &apk);
-        let apkleaks_found: BTreeSet<String> = match &apkleaks_result {
-            ApkleaksResult::Ok { hits, .. } => planted_labels(hits),
-            ApkleaksResult::Skipped(_) | ApkleaksResult::Error { .. } => BTreeSet::new(),
-        };
+        let frozen: FrozenApkleaks = apkleaks_capture::load(&root, &apk)?;
+        let frozen_hits: Vec<usize> = recall_indices_apkleaks(&frozen.raw).ok_or_else(|| {
+            format!(
+                "the committed apkleaks capture must carry the result shape apkleaks writes: {}",
+                frozen.attribution()
+            )
+        })?;
+        let apkleaks_found: BTreeSet<String> = planted_labels(&frozen_hits);
+        eprintln!("apkleaks graded from {}", frozen.attribution());
 
         for (index, secret) in GROUND_TRUTH.iter().enumerate() {
             eprintln!(
@@ -668,29 +676,40 @@ mod tests {
         );
         assert_published_membership_is_recovered(&disrobe_bar, &disrobe_found, GROUND_TRUTH.len());
 
-        match &apkleaks_result {
-            ApkleaksResult::Ok { version, via, .. } => {
-                eprintln!(
-                    "apkleaks `{version}` graded via {via}; measured {measured}/{total} {found:?}",
-                    measured = apkleaks_found.len(),
-                    total = GROUND_TRUTH.len(),
-                    found = apkleaks_found,
-                );
-                let requirement: ToolRequirement = requirement_for(&APKLEAKS);
+        assert!(
+            frozen.version_line.contains(APKLEAKS_MEASURED_VERSION),
+            "the committed capture records apkleaks `{}`, which is not the \
+             {APKLEAKS_MEASURED_VERSION} series this comparison row publishes",
+            frozen.version_line
+        );
+        let apkleaks_bar: PublishedBar = published_bar(PUBLISHED_HEADING, PUBLISHED_APKLEAKS_BAR);
+        eprintln!(
+            "published `{label}` {num}/{den} = {value}; captured {measured}/{total} {found:?}",
+            label = apkleaks_bar.label,
+            num = apkleaks_bar.num,
+            den = apkleaks_bar.den,
+            value = apkleaks_bar.value,
+            measured = apkleaks_found.len(),
+            total = GROUND_TRUTH.len(),
+            found = apkleaks_found,
+        );
+        assert_published_membership_is_exact(&apkleaks_bar, &apkleaks_found, GROUND_TRUTH.len());
+
+        match &run_apkleaks(&root, &apk) {
+            ApkleaksResult::Ok { version, hits, via } => {
+                let live: BTreeSet<String> = planted_labels(hits);
+                eprintln!("apkleaks `{version}` re-ran via {via}; measured {live:?}");
                 if version.contains(APKLEAKS_MEASURED_VERSION) {
-                    let apkleaks_bar: PublishedBar =
-                        published_bar(PUBLISHED_HEADING, PUBLISHED_APKLEAKS_BAR);
-                    eprintln!(
-                        "published `{label}` {num}/{den} = {value}",
-                        label = apkleaks_bar.label,
-                        num = apkleaks_bar.num,
-                        den = apkleaks_bar.den,
-                        value = apkleaks_bar.value,
-                    );
-                    assert_published_membership_is_exact(
-                        &apkleaks_bar,
-                        &apkleaks_found,
-                        GROUND_TRUTH.len(),
+                    assert_eq!(
+                        live,
+                        apkleaks_found,
+                        "apkleaks `{version}` now recalls {live:?} from the same committed apk, but \
+                         the capture this row publishes recorded {apkleaks_found:?}. Re-capture \
+                         with the recorded command and republish the row, never grade one and \
+                         publish the other. The capture used {decompiler} {decompiler_version}, \
+                         which is the usual reason a re-run diverges",
+                        decompiler = frozen.decompiler,
+                        decompiler_version = frozen.decompiler_version,
                     );
                 } else {
                     enforce_requirement(
@@ -700,7 +719,7 @@ mod tests {
                             "it reports `{version}`, which is not the {APKLEAKS_MEASURED_VERSION} \
                              series this comparison row publishes"
                         ),
-                        requirement,
+                        requirement_for(&APKLEAKS),
                     );
                 }
             }
@@ -717,6 +736,7 @@ mod tests {
                 requirement_for(&APKLEAKS),
             ),
         }
+        Ok(())
     }
 
     #[test]
