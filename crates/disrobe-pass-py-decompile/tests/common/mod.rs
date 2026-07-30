@@ -6,6 +6,7 @@
 )]
 
 pub(crate) mod band;
+pub(crate) mod stdlib_measure;
 pub(crate) mod tokenize;
 
 use disrobe_pass_py_decompile::ast::{ConstValue, Expr, ExprCtx};
