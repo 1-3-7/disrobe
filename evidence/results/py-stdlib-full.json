@@ -1,11 +1,11 @@
 {
   "ci_attested": false,
-  "claim": "disrobe recovers recompile-equivalent source for the majority of code objects across the entire CPython 3.14 standard library, measured honestly over all 571 modules rather than a curated subset.",
+  "claim": "disrobe recovers recompile-equivalent source for the majority of code objects across the entire CPython 3.14 standard library, measured over all 574 modules rather than a curated subset.",
   "competitors": [],
   "detail": "17378 / 18276 code objects across the entire CPython 3.14 Lib; the honest representative number (the 200-module pinned corpus over-represents recoverable modules). The module list is committed at tests/harness/full_modules_314.txt so the figure is reproducible.",
   "disrobe_leads": null,
   "ecosystem": "python",
-  "floor": 88.0,
+  "floor": 95.0,
   "floor_holds": true,
   "gate_source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over crates/disrobe-pass-py-decompile/tests/harness/full_modules_314.txt (574 modules, 18276 code objects, CPython 3.14.5)",
   "id": "py-stdlib-full",
