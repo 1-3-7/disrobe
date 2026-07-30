@@ -1,4 +1,4 @@
-use disrobe_core::chain::{Ecosystem, SupportQuality};
+use disrobe_core::chain::{Ecosystem, ObfuscatorCatalog, SupportQuality};
 use serde::Serialize;
 
 use super::catalog_registry::registry;
@@ -43,13 +43,32 @@ pub(crate) fn run(ecosystem: Option<String>, fmt: OutputFormat) -> miette::Resul
         })?),
     };
 
+    let catalogs: Vec<&'static dyn ObfuscatorCatalog> = registry();
+    let report: CatalogReport = build_report(&catalogs, filter);
+
+    if filter.is_some() && report.ecosystems.is_empty() {
+        let valid: Vec<&'static str> = Ecosystem::all().iter().map(|e| e.slug()).collect();
+        return Err(miette::miette!(
+            "DR-CATALOG-0002: no obfuscator/packer families registered for ecosystem `{}`; ecosystems with families: {}",
+            filter.map_or("?", Ecosystem::slug),
+            valid.join(", ")
+        ));
+    }
+
+    output::emit(fmt, &report, || print_text(&report))
+}
+
+fn build_report(
+    catalogs: &[&'static dyn ObfuscatorCatalog],
+    filter: Option<Ecosystem>,
+) -> CatalogReport {
     let mut groups: Vec<EcosystemGroup> = Vec::new();
     for eco in Ecosystem::all() {
         if filter.is_some_and(|f: Ecosystem| f != *eco) {
             continue;
         }
         let mut families: Vec<CatalogRow> = Vec::new();
-        for catalog in registry() {
+        for catalog in catalogs {
             if catalog.ecosystem() != *eco {
                 continue;
             }
@@ -79,27 +98,16 @@ pub(crate) fn run(ecosystem: Option<String>, fmt: OutputFormat) -> miette::Resul
         });
     }
 
-    if filter.is_some() && groups.is_empty() {
-        let valid: Vec<&'static str> = Ecosystem::all().iter().map(|e| e.slug()).collect();
-        return Err(miette::miette!(
-            "DR-CATALOG-0002: no obfuscator/packer families registered for ecosystem `{}`; ecosystems with families: {}",
-            filter.map_or("?", Ecosystem::slug),
-            valid.join(", ")
-        ));
-    }
-
     let family_count: usize = groups
         .iter()
         .map(|g: &EcosystemGroup| g.families.len())
         .sum();
-    let report: CatalogReport = CatalogReport {
+    CatalogReport {
         filter: filter.map(Ecosystem::slug),
         family_count,
         ecosystem_count: groups.len(),
         ecosystems: groups,
-    };
-
-    output::emit(fmt, &report, || print_text(&report))
+    }
 }
 
 fn print_text(report: &CatalogReport) {
@@ -159,6 +167,8 @@ fn display_label(row: &CatalogRow) -> String {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
     use super::*;
 
     fn collect(eco: Ecosystem) -> Vec<CatalogRow> {
@@ -230,32 +240,263 @@ mod tests {
         );
     }
 
-    #[test]
-    fn registry_spans_multiple_ecosystems() {
-        let mut distinct: std::collections::BTreeSet<Ecosystem> = std::collections::BTreeSet::new();
-        for catalog in registry() {
-            if !catalog.catalog().is_empty() {
-                distinct.insert(catalog.ecosystem());
+    const PUBLISHED_FAMILY_TOTAL: usize = 169;
+
+    const PUBLISHED_ECOSYSTEM_SLUGS: [&str; 15] = [
+        "as3",
+        "beam",
+        "dotnet",
+        "go",
+        "javascript",
+        "jvm",
+        "lua",
+        "mobile",
+        "native",
+        "php",
+        "python",
+        "ruby",
+        "shell",
+        "swift",
+        "wasm",
+    ];
+
+    #[derive(Debug, Clone, Copy)]
+    struct CatalogExpectation {
+        pass: &'static str,
+        ecosystem: &'static str,
+        families: usize,
+        enabled: bool,
+    }
+
+    const REGISTRY_EXPECTATIONS: [CatalogExpectation; 16] = [
+        CatalogExpectation {
+            pass: "native.packer-unpack",
+            ecosystem: "native",
+            families: 27,
+            enabled: true,
+        },
+        CatalogExpectation {
+            pass: "py.deob",
+            ecosystem: "python",
+            families: 20,
+            enabled: true,
+        },
+        CatalogExpectation {
+            pass: "pyarmor.unpack",
+            ecosystem: "python",
+            families: 7,
+            enabled: true,
+        },
+        CatalogExpectation {
+            pass: "wasm.deob",
+            ecosystem: "wasm",
+            families: 5,
+            enabled: cfg!(feature = "wasm"),
+        },
+        CatalogExpectation {
+            pass: "js.deob",
+            ecosystem: "javascript",
+            families: 10,
+            enabled: cfg!(feature = "js"),
+        },
+        CatalogExpectation {
+            pass: "lua.deob",
+            ecosystem: "lua",
+            families: 16,
+            enabled: cfg!(feature = "lua"),
+        },
+        CatalogExpectation {
+            pass: "php.peel",
+            ecosystem: "php",
+            families: 3,
+            enabled: cfg!(feature = "php"),
+        },
+        CatalogExpectation {
+            pass: "dotnet.classify",
+            ecosystem: "dotnet",
+            families: 22,
+            enabled: cfg!(feature = "dotnet"),
+        },
+        CatalogExpectation {
+            pass: "shell.deob",
+            ecosystem: "shell",
+            families: 20,
+            enabled: cfg!(feature = "shell"),
+        },
+        CatalogExpectation {
+            pass: "jvm.classify",
+            ecosystem: "jvm",
+            families: 10,
+            enabled: cfg!(feature = "jvm"),
+        },
+        CatalogExpectation {
+            pass: "go.classify",
+            ecosystem: "go",
+            families: 1,
+            enabled: cfg!(feature = "go"),
+        },
+        CatalogExpectation {
+            pass: "ruby.classify",
+            ecosystem: "ruby",
+            families: 6,
+            enabled: cfg!(feature = "ruby"),
+        },
+        CatalogExpectation {
+            pass: "beam.classify",
+            ecosystem: "beam",
+            families: 2,
+            enabled: cfg!(feature = "beam"),
+        },
+        CatalogExpectation {
+            pass: "as3.classify",
+            ecosystem: "as3",
+            families: 7,
+            enabled: cfg!(feature = "as3"),
+        },
+        CatalogExpectation {
+            pass: "mobile.classify",
+            ecosystem: "mobile",
+            families: 11,
+            enabled: cfg!(feature = "mobile"),
+        },
+        CatalogExpectation {
+            pass: "swift-objc.classify",
+            ecosystem: "swift",
+            families: 2,
+            enabled: cfg!(feature = "swift"),
+        },
+    ];
+
+    fn observed_counts(report: &CatalogReport) -> BTreeMap<(&'static str, &'static str), usize> {
+        let mut counts: BTreeMap<(&'static str, &'static str), usize> = BTreeMap::new();
+        for group in &report.ecosystems {
+            for row in &group.families {
+                *counts.entry((row.ecosystem, row.pass)).or_default() += 1;
             }
         }
-        assert!(
-            distinct.len() >= 14,
-            "registry must span at least 14 ecosystems, got {} {distinct:?}",
-            distinct.len()
-        );
-        for eco in [
-            Ecosystem::Python,
-            Ecosystem::Native,
-            Ecosystem::Jvm,
-            Ecosystem::Go,
-            Ecosystem::Ruby,
-            Ecosystem::Beam,
-            Ecosystem::As3,
-            Ecosystem::Mobile,
-            Ecosystem::Swift,
-        ] {
-            assert!(distinct.contains(&eco), "missing ecosystem {eco:?}");
+        counts
+    }
+
+    fn expectation_mismatches(report: &CatalogReport) -> Vec<String> {
+        let observed: BTreeMap<(&'static str, &'static str), usize> = observed_counts(report);
+        let mut pinned: BTreeMap<(&'static str, &'static str), usize> = BTreeMap::new();
+        for exp in REGISTRY_EXPECTATIONS
+            .iter()
+            .filter(|e: &&CatalogExpectation| e.enabled)
+        {
+            pinned.insert((exp.ecosystem, exp.pass), exp.families);
         }
+
+        let mut findings: Vec<String> = Vec::new();
+        for (key, want) in &pinned {
+            match observed.get(key) {
+                None => findings.push(format!(
+                    "{} / {} is absent from the registry, pinned at {want} families",
+                    key.0, key.1
+                )),
+                Some(got) if got != want => findings.push(format!(
+                    "{} / {} lists {got} families, pinned at {want}",
+                    key.0, key.1
+                )),
+                Some(_) => {}
+            }
+        }
+        for (key, got) in &observed {
+            if !pinned.contains_key(key) {
+                findings.push(format!(
+                    "{} / {} lists {got} families and is not pinned",
+                    key.0, key.1
+                ));
+            }
+        }
+        findings
+    }
+
+    #[test]
+    fn published_catalog_totals_match_the_registry() {
+        let full_total: usize = REGISTRY_EXPECTATIONS
+            .iter()
+            .map(|e: &CatalogExpectation| e.families)
+            .sum();
+        assert_eq!(
+            full_total, PUBLISHED_FAMILY_TOTAL,
+            "docs/src/catalog.md and docs/src/cli/reference.md publish {PUBLISHED_FAMILY_TOTAL} families for the `full` feature set; the pinned per-pass table sums to {full_total}"
+        );
+        let full_ecosystems: Vec<&'static str> = REGISTRY_EXPECTATIONS
+            .iter()
+            .map(|e: &CatalogExpectation| e.ecosystem)
+            .collect::<BTreeSet<&'static str>>()
+            .into_iter()
+            .collect();
+        assert_eq!(
+            full_ecosystems, PUBLISHED_ECOSYSTEM_SLUGS,
+            "the published ecosystem list must be exactly the ecosystems the `full` registry covers"
+        );
+
+        let catalogs: Vec<&'static dyn ObfuscatorCatalog> = registry();
+        let report: CatalogReport = build_report(&catalogs, None);
+        let mismatches: Vec<String> = expectation_mismatches(&report);
+        assert!(
+            mismatches.is_empty(),
+            "registry no longer matches the pinned catalog table: {mismatches:#?}"
+        );
+
+        let active_total: usize = REGISTRY_EXPECTATIONS
+            .iter()
+            .filter(|e: &&CatalogExpectation| e.enabled)
+            .map(|e: &CatalogExpectation| e.families)
+            .sum();
+        assert_eq!(
+            report.family_count, active_total,
+            "`disrobe catalog` must report {active_total} families for this feature set"
+        );
+        let active_ecosystems: BTreeSet<&'static str> = REGISTRY_EXPECTATIONS
+            .iter()
+            .filter(|e: &&CatalogExpectation| e.enabled)
+            .map(|e: &CatalogExpectation| e.ecosystem)
+            .collect();
+        let reported_ecosystems: BTreeSet<&'static str> = report
+            .ecosystems
+            .iter()
+            .map(|g: &EcosystemGroup| g.ecosystem)
+            .collect();
+        assert_eq!(reported_ecosystems, active_ecosystems);
+        assert_eq!(report.ecosystem_count, active_ecosystems.len());
+    }
+
+    #[test]
+    fn catalog_pin_reports_a_dropped_registry_catalog() {
+        let dropped: &'static str = disrobe_pass_native::chain_detector::PASS_ID;
+        let dropped_families: usize = REGISTRY_EXPECTATIONS
+            .iter()
+            .find(|e: &&CatalogExpectation| e.pass == dropped)
+            .expect("native catalog is pinned")
+            .families;
+
+        let catalogs: Vec<&'static dyn ObfuscatorCatalog> = registry();
+        let thinned: Vec<&'static dyn ObfuscatorCatalog> = catalogs
+            .iter()
+            .copied()
+            .filter(|c: &&'static dyn ObfuscatorCatalog| c.pass_id() != dropped)
+            .collect();
+
+        let intact: CatalogReport = build_report(&catalogs, None);
+        let mutated: CatalogReport = build_report(&thinned, None);
+        assert_eq!(
+            intact.family_count - mutated.family_count,
+            dropped_families,
+            "dropping {dropped} must remove exactly its {dropped_families} families"
+        );
+        assert!(
+            expectation_mismatches(&intact).is_empty(),
+            "control requires the intact registry to pass"
+        );
+
+        let mismatches: Vec<String> = expectation_mismatches(&mutated);
+        assert!(
+            mismatches.iter().any(|m: &String| m.contains(dropped)),
+            "the pin must name {dropped} once it leaves the registry, got {mismatches:#?}"
+        );
     }
 
     #[test]
