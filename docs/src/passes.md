@@ -13,7 +13,7 @@ Run `disrobe passes` for the live list. As of the current release:
 | `pyfreeze` | cx_Freeze / py2exe / shiv / pex / PyOxidizer / Briefcase detect + extract. |
 | `nuitka` | `--onefile` payload extract (zstd) + symbol / constants scan. |
 | `py` | Deobfuscate (peel + cleanup) / disassemble / decompile / extract / SourceDefender decrypt. |
-| `js` | Deobfuscate (string-array + unminify + scope-aware rename) / unbundle <!-- m:js_bundlers -->11<!-- /m --> bundlers. |
+| `js` | Deobfuscate (string-array + unminify + scope-aware rename) / unbundle, detecting <!-- m:js_bundlers -->11<!-- /m --> bundler families. |
 | `wasm` | Analyze / decompile (JSON / Rust / TypeScript / WAT / C) / reverse <!-- m:wasm_reversers -->4<!-- /m --> obfuscator families (plus wasm-name-obfuscator detect + classify). |
 | `envelope` | `.dr` create / inspect / verify / diff / migrate-check. |
 | `query` | Query a Disasm- or Mir-rung `.dr` IR: functions / calls-to / xrefs-to / string-decoders / complexity-over / capability sites. |
