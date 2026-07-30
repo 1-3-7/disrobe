@@ -40,9 +40,7 @@ method with verbatim code, and an evaluation graded by an independent oracle, wi
 limitations stated beside the results rather than in a footnote.
 
 Every number in this document is read directly from committed sources, a committed test, a
-committed data file, or a commit in the repository's own history; none is estimated. The one
-exception is called out where it appears: the 54.5% whole-module Python rate is a harness output that
-no committed file records the count for. Figures
+committed data file, or a commit in the repository's own history; none is estimated. Figures
 are per code object, per method, or per function unless stated otherwise, and a percentage is given
 with the counts behind it wherever those counts exist. Where a measurement
 depends on a compiler's code generation, the number reported is a CI-enforced floor set below
@@ -984,18 +982,15 @@ crate's own provenance record labels the full-stdlib number as "the honest repre
 200-module pinned corpus over-represents recoverable modules)".
 
 The whole-module exact figure, where a module counts only if every one of its code objects is
-equivalent, is 54.5% of the <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules in the pinned corpus, and it is measured only on that corpus.
-That figure is weaker evidence than the per-object one in two ways. It is a local measurement: the
-gate reads the harness's `module_pct` field and prints it, but no floor asserts it, so unlike the
-per-object rate it is not CI-enforced. It is also the one figure in this paper with no numerator on
-record: the harness computes `module_pct` as a rounded percentage
-(`tests/harness/py_arbitrary_measure.py`, the JSON summary), the gate prints it without storing the
-module count behind it, and no committed data file publishes that count, so the figure is
-reproducible by re-running the harness but is not readable from a data file the way the per-object
-counts are. There is no
+equivalent, is 122 of the <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules in the pinned corpus, 61.0%, and it is measured only on that corpus.
+That figure is weaker evidence than the per-object one in one way rather than two. It carries its own
+numerator: `MODULES_EXACT_FLOOR = 122` in `tests/arbitrary_recompile_gate.rs` floors the count of
+modules whose every code object came back equivalent, in the same CI gate that floors the per-object
+rate, so a whole-module regression fails the run instead of being printed and forgotten. What stays
+weaker is the population: it is measured on the pinned 200 rather than on the full stdlib. There is no
 full-stdlib whole-module figure; since the pinned corpus over-represents recoverable modules, the
 full-stdlib whole-module rate would be lower still, not higher. The gap between the <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per-object
-rate and the 54.5% per-module rate is the honest center of the evaluation, not a footnote, and the
+rate and the 61.0% per-module rate is the honest center of the evaluation, not a footnote, and the
 two numbers are not even on the same corpus: a module passes only when all of its typically dozens of
 code objects pass, so a small per-object miss rate compounds into a large per-module miss rate. A
 module with fifty functions and a 92% per-object rate carries under a 2% chance that all fifty pass,
@@ -1006,7 +1001,7 @@ improvement because it is granular and monotonic; the per-module figure is the e
 deliberately reported as the harder, lower number. These figures are not re-measured here.
 
 The per-object measurement is enforced as a regression gate, not asserted. The CI gate runs the same harness
-over the 200-module pinned corpus (the corpus behind both the <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> and the 54.5% figures), parses its JSON, and
+over the 200-module pinned corpus (the corpus behind both the <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> and the 61.0% figures), parses its JSON, and
 holds the per-object rate above a floor of 96.60%; the full-stdlib <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> comes from running that
 harness over the entire Lib rather than the pinned list:
 
@@ -2365,7 +2360,7 @@ Where a measurement varies with compiler version or optimization but has a prova
 - **PyArmor: 72 of the 72-sample committed corpus.** `RECOVERY_FLOOR = 72` in `crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs`, so this floor too is the whole corpus, and a second assertion requires the corpus itself to still hold 72 wrappers.
 - **BEAM: 18 equivalent, out of the modules the corpus directory holds.** `crates/disrobe-pass-beam/tests/erlc_recompile_equivalence.rs` sets `EQUIVALENCE_FLOOR = 18`. The denominator is a directory scan of `corpus/beam/recompile_oracle`, which holds 19 committed `.erl` files today, not a pinned constant; the test guards only that the scan finds at least 17, and it skips outright when `erlc` and `erl` are absent from `PATH`. So 18 of 19 as committed, and the denominator can move without tripping an assertion.
 - **Lua, re-execution: every fixture the lane measures.** `crates/disrobe-pass-lua/tests/reexec_diff_oracle.rs` sets `REEXEC_FLOOR_NUM = 29`, which is the numerator of a ratio whose denominator is the 29-entry `CORPUS`, so the floor is 29 over 29, a full 1.0. The assertion compares that ratio against the fixtures the lane measured rather than against 29 directly, so what it requires is that every fixture it measured re-executes identically, on the 5.1 and the 5.4 lane alike.
-- **Python, whole module on a different corpus: 57.1% of 42 graded fixtures.** `WHOLE_MODULE_FLOOR_PCT = 57.1` against `GRADED_FIXTURE_COUNT = 42` in `crates/disrobe-pass-py-decompile/tests/roundtrip_metric.rs`, so the floor is 24 of 42 fixtures round-tripping whole. The denominator is pinned by equality rather than counted, and the test fails outright if a graded fixture has no recompiler available, because a missing interpreter would otherwise shrink the denominator and inflate the percentage. This corpus is the edge_cases monolith over CPython 3.8 through 3.14, a different population from the 200-module pinned stdlib behind the 54.5% whole-module figure; neither is a floor on the other and the two must not be conflated. The UPX content floors of 96.0% and 98.0% from section 4.2.4 belong to this class as well, with the availability caveat stated there.
+- **Python, whole module on a different corpus: 57.1% of 42 graded fixtures.** `WHOLE_MODULE_FLOOR_PCT = 57.1` against `GRADED_FIXTURE_COUNT = 42` in `crates/disrobe-pass-py-decompile/tests/roundtrip_metric.rs`, so the floor is 24 of 42 fixtures round-tripping whole. The denominator is pinned by equality rather than counted, and the test fails outright if a graded fixture has no recompiler available, because a missing interpreter would otherwise shrink the denominator and inflate the percentage. This corpus is the edge_cases monolith over CPython 3.8 through 3.14, a different population from the 200-module pinned stdlib behind the 61.0% whole-module figure; neither is a floor on the other and the two must not be conflated. The UPX content floors of 96.0% and 98.0% from section 4.2.4 belong to this class as well, with the availability caveat stated there.
 
 Each floor is a promise of the form "at least this much recovery is reproducible wherever the input and the toolchain the floor names are present." It is deliberately weaker than the best local number and deliberately stronger than zero, because the honest claim is a guaranteed lower bound, not a lucky maximum. That qualifier matters: several of the floors above need a runtime or a fixture that is not on every leg of the matrix, and 4.4.4 states which. The recompile-execute-diff oracles that do run, such as the leaf behavioral differential and the Eazfuscator re-injection, are exact rather than floored, because behavioral equivalence over a shared input battery either holds or does not; there is no honest partial credit for a program that computes the wrong answer.
 
@@ -2423,8 +2418,8 @@ body (Section 3.4).
 Whole-module Python recovery is far below the per-object figure. The representative
 per-code-object recompile-equivalence on the CPython 3.14 standard library is <!-- m:py_stdlib_full_pct -->95.09%<!-- /m -->, but the
 whole-module exact rate, where a module counts only if every one of its code objects is
-equivalent, is 54.5% of the <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules in the pinned corpus, a locally measured figure that no CI
-floor asserts and the one figure here with no numerator on any committed file; a module passes only
+equivalent, is 122 of the <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules in the pinned corpus, 61.0%, a count the same CI
+gate floors at 122 rather than printing; a module passes only
 when all of its typically
 dozens of code objects pass, so a small per-object miss rate compounds into a large
 per-module one (Section 1.5). The per-object number is the granular headline and the
@@ -2474,10 +2469,9 @@ therefore narrow and checkable: within the
 class each pass proves it handles, disrobe recovers source, IL, or bytes that an independent
 toolchain confirms, and outside that class it rejects the input rather than fabricating an
 answer. Every figure in this paper cites the committed source, test, or data file behind it, and
-Section 4.4.4 states, for each one, what a reader needs beyond a clone to reach the same result. Three
-are weaker than that standard: the two large UPX floors need an input the repository does not carry,
-and the 54.5% whole-module rate is a percentage with no committed count behind it. All three are
-labeled as such where they appear rather than folded in with the rest.
+Section 4.4.4 states, for each one, what a reader needs beyond a clone to reach the same result. Two
+are weaker than that standard: the two large UPX floors need an input the repository does not carry.
+Both are labeled as such where they appear rather than folded in with the rest.
 
 ## References
 
