@@ -392,3 +392,4 @@ scripts/*
 !corpus/mobile/flutter/disrobe_sample/libapp_arm64.so
 !corpus/mobile/flutter/disrobe_sample/BUILD.txt
 !corpus/mobile/flutter/disrobe_sample/SHA256SUMS
+erl_crash.dump
