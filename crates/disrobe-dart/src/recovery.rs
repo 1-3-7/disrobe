@@ -4,8 +4,9 @@ use crate::error::Result;
 use crate::graph::{SnapshotRole, SnapshotSummary, parse_graph};
 use crate::header::{SnapshotHeader, SupportStatus, parse_snapshot_header, support_status};
 use crate::inventory::{
-    DartInventory, FieldInventory, InventoryCounts, LibraryInventory, MethodInventory,
-    NameEvidence, build_inventory, classify_name_evidence,
+    AttributionResidue, DartInventory, DeclaredObjects, FieldInventory, InventoryCounts,
+    LibraryInventory, MethodInventory, NameEvidence, build_inventory, classify_name_evidence,
+    declared_objects,
 };
 use crate::layout::{LayoutDescriptor, layout_descriptor};
 use crate::limits::RecoveryLimits;
@@ -223,7 +224,8 @@ fn recover_data_blobs(
         descriptor,
         options.limits,
     )?;
-    let inventory: DartInventory = build_inventory(&isolate_graph.nodes, descriptor);
+    let declared: DeclaredObjects = declared_objects(&vm_graph.summary, &isolate_graph.summary);
+    let inventory: DartInventory = build_inventory(&isolate_graph.nodes, descriptor, declared);
     let (status, name_mode, name_mode_reason): (RecoveryStatus, NameMode, String) =
         classify_names(&inventory, options.obfuscation_hint);
     let warnings: Vec<String> = match name_mode {
@@ -328,6 +330,8 @@ fn unsupported_report(
                 named_methods: 0,
                 named_fields: 0,
             },
+            declared: DeclaredObjects::default(),
+            residue: AttributionResidue::default(),
             libraries: Vec::new(),
         },
         warnings: vec![reason.to_owned()],

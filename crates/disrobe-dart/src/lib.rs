@@ -19,8 +19,8 @@ pub use header::{
     SupportStatus, parse_snapshot_header, support_status,
 };
 pub use inventory::{
-    ClassInventory, DartInventory, FieldInventory, InventoryCounts, LibraryInventory,
-    MethodInventory,
+    AttributionResidue, ClassInventory, DartInventory, DeclaredObjects, FieldInventory,
+    InventoryCounts, LibraryInventory, MethodInventory,
 };
 pub use layout::{
     ClassDeclarationLayout, ClusterLayout, ClusterLayoutEntry,
