@@ -116,6 +116,12 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         &mut stale,
     );
     run_one(
+        "source-comments",
+        check,
+        || crate::comments::run(root),
+        &mut stale,
+    );
+    run_one(
         "dotnet-string-evidence",
         check,
         || crate::dotnet_string_evidence::run(root, region_mode(check)),
@@ -125,7 +131,7 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
     if check {
         if stale.is_empty() {
             println!(
-                "xtask regen --check: every generated artifact is byte-fresh (schemas, bindings, error docs, demo, card, plugins, evidence), every documentation count inside a marker span matches recovery.json or the catalog tables the binary carries, the charts match the digest of the data they were rendered from and the copies mdbook serves, no published markdown document carries a long dash or an emoji, and the README stat, attack-surface, fuzz-scope and tiered-results cross-checks all hold"
+                "xtask regen --check: every generated artifact is byte-fresh (schemas, bindings, error docs, demo, card, plugins, evidence), every documentation count inside a marker span matches recovery.json or the catalog tables the binary carries, the charts match the digest of the data they were rendered from and the copies mdbook serves, no published markdown document carries a long dash or an emoji, no rust source opens a comment, and the README stat, attack-surface, fuzz-scope and tiered-results cross-checks all hold"
             );
             Ok(())
         } else {
@@ -137,7 +143,7 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         }
     } else {
         println!(
-            "xtask regen: schemas, bindings, error docs, graphs, demo, card, plugins, evidence, and the documentation counts inside marker spans regenerated; README stat, attack-surface, fuzz-scope, tiered-results, and published-markdown typography cross-checks ok"
+            "xtask regen: schemas, bindings, error docs, graphs, demo, card, plugins, evidence, and the documentation counts inside marker spans regenerated; README stat, attack-surface, fuzz-scope, tiered-results, published-markdown typography, and source-comment cross-checks ok"
         );
         Ok(())
     }

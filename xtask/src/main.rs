@@ -9,6 +9,7 @@ mod attack_surface;
 mod card;
 mod catalog_counts;
 mod codegen;
+mod comments;
 mod crossdata;
 mod datamodel;
 mod demo;
