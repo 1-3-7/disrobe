@@ -1,5 +1,6 @@
 param(
     [string]$Flutter = "flutter",
+    [string]$Cargo = "cargo",
     [string]$Workspace = (Join-Path ([System.IO.Path]::GetTempPath()) ("disrobe-dart-flutter-" + [System.Guid]::NewGuid().ToString("N")))
 )
 
@@ -94,6 +95,74 @@ foreach ($build in $oracle.builds) {
     $actual = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actual -ne $build.sha256) {
         throw "Artifact hash mismatch: $($build.artifact)"
+    }
+}
+
+function Get-DeclaredTotal {
+    param(
+        [object[]]$Clusters,
+        [string]$Layout
+    )
+
+    $total = 0
+    foreach ($cluster in $Clusters) {
+        if ($cluster.layout -eq $Layout) {
+            $total += $cluster.object_count
+        }
+    }
+    return $total
+}
+
+function Assert-Count {
+    param(
+        [string]$Artifact,
+        [string]$Field,
+        [int]$Actual,
+        [int]$Expected
+    )
+
+    if ($Actual -ne $Expected) {
+        throw "$Artifact reports $Field = $Actual, oracle.json records $Expected"
+    }
+}
+
+$crateRoot = (Resolve-Path (Join-Path $fixtureRoot "../../..")).Path
+foreach ($build in $oracle.builds) {
+    $artifactPath = Join-Path $outputRoot $build.artifact
+    $report = & $Cargo run --quiet --manifest-path (Join-Path $crateRoot "Cargo.toml") -- --names $build.names elf $artifactPath | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0) {
+        throw "Recovery failed: $($build.artifact)"
+    }
+
+    $vmClusters = $report.vm_snapshot.clusters
+    $isolateClusters = $report.isolate_snapshot.clusters
+    if ($null -eq $vmClusters -or $null -eq $isolateClusters) {
+        throw "$($build.artifact) recovered without cluster headers, so its counts cannot be re-derived"
+    }
+
+    $declaredLayouts = [ordered]@{
+        "library"     = "libraries"
+        "class"       = "classes"
+        "patch-class" = "patch_classes"
+        "function"    = "functions"
+        "field"       = "fields"
+    }
+    foreach ($layout in $declaredLayouts.Keys) {
+        $key = $declaredLayouts[$layout]
+        Assert-Count -Artifact $build.artifact -Field "declared.vm.$key" `
+            -Actual (Get-DeclaredTotal -Clusters $vmClusters -Layout $layout) -Expected $build.declared.vm.$key
+        Assert-Count -Artifact $build.artifact -Field "declared.isolate.$key" `
+            -Actual (Get-DeclaredTotal -Clusters $isolateClusters -Layout $layout) -Expected $build.declared.isolate.$key
+    }
+
+    Assert-Count -Artifact $build.artifact -Field "libraries" -Actual $report.inventory.counts.libraries -Expected $build.libraries
+    Assert-Count -Artifact $build.artifact -Field "classes" -Actual $report.inventory.counts.classes -Expected $build.classes
+    Assert-Count -Artifact $build.artifact -Field "methods" -Actual $report.inventory.counts.methods -Expected $build.methods
+    Assert-Count -Artifact $build.artifact -Field "fields" -Actual $report.inventory.counts.fields -Expected $build.fields
+
+    foreach ($key in @("unattributed_classes", "unattributed_methods", "unattributed_fields", "synthesized_libraries")) {
+        Assert-Count -Artifact $build.artifact -Field "attribution_residue.$key" `
+            -Actual $report.inventory.residue.$key -Expected $build.attribution_residue.$key
     }
 }
 

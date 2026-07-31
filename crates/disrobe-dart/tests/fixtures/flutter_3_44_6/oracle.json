@@ -8,6 +8,17 @@
   "snapshot_compatibility_hash": "ace654289f5abc240509fc941453ebc5",
   "target": "android-arm64",
   "application_library": "package:disrobe_dart_fixture/main.dart",
+  "counts_provenance": {
+    "summary": "classes, methods and fields are the snapshot's own declared cluster totals, not a number copied out of a past disrobe run.",
+    "derivation": [
+      "Every clustered snapshot section opens with a declared total object count, then a run of cluster headers. Each header names a class id and declares how many objects of that class follow. The parser sums what the headers declare and refuses the snapshot unless that sum equals the declared total, so no header total can shrink without the file contradicting itself.",
+      "declared.vm and declared.isolate below are those cluster header totals, split by snapshot and by declaration class id: Library, Class, PatchClass, Function and Field.",
+      "The inventory walk is a separate pass. It reads each Class, Function and Field object and attaches it to an owning class and library. classes, methods and fields are what that walk attaches. attribution_residue is what it could not attach, counted where each object is dropped rather than inferred by subtraction, so attached plus residue has to equal what the headers declared.",
+      "methods is one below the declared Function total because the VM snapshot declares exactly one Function and declares zero Class and zero PatchClass objects. Isolate classes are allocated above the VM object range, so a VM function reference cannot reach one, and that single function has no owner to attach to.",
+      "libraries is one above the declared Library total because the Never class carries a null library reference, so the walk opens one library entry that no Library object backs. attribution_residue.synthesized_libraries counts those entries."
+    ],
+    "toolchain_alternative": "Flutter and Dart ship no report of class, method and field counts for a built snapshot. dart compile aot-snapshot can write a V8 heap profile with --write-v8-snapshot-profile-to, which would count objects independently, but it changes the emitted snapshot and would break the artifact hashes pinned here. Rebuilding with that flag is the way to add a second toolchain-side count if these figures are ever disputed."
+  },
   "perturbation": {
     "from": "ReceiptValidator",
     "to": "VoucherValidator"
@@ -19,9 +30,37 @@
       "source": "receipt_validator.dart",
       "artifact": "receipt_validator_arm64.so",
       "sha256": "ed36ebd571c8705ef68c881f6303da4aa337ae11d26458e7ff27ccce98d81859",
+      "names": "source",
+      "libraries": 299,
       "classes": 2182,
       "methods": 7148,
       "fields": 400,
+      "declared": {
+        "vm": {
+          "objects": 1081,
+          "base_objects": 99,
+          "libraries": 0,
+          "classes": 0,
+          "patch_classes": 0,
+          "functions": 1,
+          "fields": 0
+        },
+        "isolate": {
+          "objects": 49997,
+          "base_objects": 1081,
+          "libraries": 298,
+          "classes": 2182,
+          "patch_classes": 344,
+          "functions": 7148,
+          "fields": 400
+        }
+      },
+      "attribution_residue": {
+        "unattributed_classes": 0,
+        "unattributed_methods": 1,
+        "unattributed_fields": 0,
+        "synthesized_libraries": 1
+      },
       "known_classes": ["FixtureApp", "ReceiptValidator"],
       "known_methods": [
         {"name": "FixtureApp.build", "parameter_count": null},
@@ -36,9 +75,37 @@
       "source": "voucher_validator.dart",
       "artifact": "voucher_validator_arm64.so",
       "sha256": "4b768825925a694edbd3a937347a7a08079261c962e13f76b028dc78c5f25a48",
+      "names": "source",
+      "libraries": 299,
       "classes": 2182,
       "methods": 7148,
       "fields": 400,
+      "declared": {
+        "vm": {
+          "objects": 1081,
+          "base_objects": 99,
+          "libraries": 0,
+          "classes": 0,
+          "patch_classes": 0,
+          "functions": 1,
+          "fields": 0
+        },
+        "isolate": {
+          "objects": 49997,
+          "base_objects": 1081,
+          "libraries": 298,
+          "classes": 2182,
+          "patch_classes": 344,
+          "functions": 7148,
+          "fields": 400
+        }
+      },
+      "attribution_residue": {
+        "unattributed_classes": 0,
+        "unattributed_methods": 1,
+        "unattributed_fields": 0,
+        "synthesized_libraries": 1
+      },
       "known_classes": ["FixtureApp", "VoucherValidator"],
       "known_methods": [
         {"name": "FixtureApp.build", "parameter_count": null},
@@ -53,10 +120,37 @@
       "source": "receipt_validator.dart",
       "artifact": "receipt_validator_obfuscated_arm64.so",
       "sha256": "672d85a787ea0354682b2c2f8815895db50a670ad3b9913c81194f38eb71c94a",
+      "names": "opaque",
+      "libraries": 286,
       "classes": 2132,
       "methods": 1459,
       "fields": 346,
-      "name_mode": "opaque"
+      "declared": {
+        "vm": {
+          "objects": 1081,
+          "base_objects": 99,
+          "libraries": 0,
+          "classes": 0,
+          "patch_classes": 0,
+          "functions": 1,
+          "fields": 0
+        },
+        "isolate": {
+          "objects": 28894,
+          "base_objects": 1081,
+          "libraries": 285,
+          "classes": 2132,
+          "patch_classes": 272,
+          "functions": 1459,
+          "fields": 346
+        }
+      },
+      "attribution_residue": {
+        "unattributed_classes": 0,
+        "unattributed_methods": 1,
+        "unattributed_fields": 0,
+        "synthesized_libraries": 1
+      }
     }
   ]
 }

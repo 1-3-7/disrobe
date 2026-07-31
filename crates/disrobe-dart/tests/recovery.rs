@@ -1,7 +1,11 @@
+#![allow(clippy::panic, clippy::unwrap_used)]
+
+#[path = "support/fixture_manifest.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod fixture_manifest;
+
 use std::collections::BTreeMap;
 use std::error::Error as StdError;
-use std::fs;
-use std::path::{Path, PathBuf};
 
 use disrobe_dart::{
     ClassInventory, DART_3_12_2_ANDROID_ARM64_PRODUCT_DWARF_FEATURES,
@@ -10,74 +14,20 @@ use disrobe_dart::{
     SnapshotBlob, SnapshotHeader, locate_snapshot_blobs, parse_snapshot_header, recover_elf,
     recover_standalone,
 };
-use serde::Deserialize;
+
+use fixture_manifest::{
+    KnownMethod, RecoveryBuild, RecoveryOracle, oracle_build, read_tracked, recovery_oracle,
+};
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn StdError>>;
 
-#[derive(Debug, Clone, Deserialize)]
-struct RecoveryOracle {
-    snapshot_compatibility_hash: String,
-    application_library: String,
-    perturbation: Perturbation,
-    builds: Vec<RecoveryBuild>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct Perturbation {
-    from: String,
-    to: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct RecoveryBuild {
-    name: String,
-    artifact: String,
-    classes: usize,
-    methods: usize,
-    fields: usize,
-    #[serde(default)]
-    known_classes: Vec<String>,
-    #[serde(default)]
-    known_methods: Vec<KnownMethod>,
-    #[serde(default)]
-    known_fields: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct KnownMethod {
-    name: String,
-    parameter_count: Option<usize>,
-}
-
-fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("flutter_3_44_6")
-        .join(name)
-}
-
 fn recover_fixture(name: &str, hint: ObfuscationHint) -> TestResult<RecoveryReport> {
-    let bytes: Vec<u8> = fs::read(fixture(name))?;
+    let bytes: Vec<u8> = read_tracked(name);
     let options: RecoveryOptions = RecoveryOptions {
         obfuscation_hint: hint,
         ..RecoveryOptions::default()
     };
     Ok(recover_elf(&bytes, &options)?)
-}
-
-fn recovery_oracle() -> TestResult<RecoveryOracle> {
-    let bytes: Vec<u8> = fs::read(fixture("oracle.json"))?;
-    Ok(serde_json::from_slice(&bytes)?)
-}
-
-fn oracle_build(oracle: &RecoveryOracle, name: &str) -> TestResult<RecoveryBuild> {
-    oracle
-        .builds
-        .iter()
-        .find(|build: &&RecoveryBuild| build.name == name)
-        .cloned()
-        .ok_or_else(|| std::io::Error::other("oracle build is absent").into())
 }
 
 fn application_library<'report>(
@@ -119,8 +69,8 @@ fn declaration_parts(value: &str) -> TestResult<(&str, &str)> {
 
 #[test]
 fn recovers_known_declarations_from_real_flutter_apk() -> TestResult {
-    let oracle: RecoveryOracle = recovery_oracle()?;
-    let build: RecoveryBuild = oracle_build(&oracle, "source")?;
+    let oracle: RecoveryOracle = recovery_oracle();
+    let build: RecoveryBuild = oracle_build(&oracle, "source");
     let report: RecoveryReport = recover_fixture(&build.artifact, ObfuscationHint::SourceNames)?;
     assert_eq!(report.status, RecoveryStatus::Recovered);
     assert_eq!(report.name_mode, NameMode::Source);
@@ -208,9 +158,9 @@ fn recovers_known_declarations_from_real_flutter_apk() -> TestResult {
 
 #[test]
 fn recovers_supported_standalone_snapshot_blobs() -> TestResult {
-    let oracle: RecoveryOracle = recovery_oracle()?;
-    let build: RecoveryBuild = oracle_build(&oracle, "source")?;
-    let bytes: Vec<u8> = fs::read(fixture(&build.artifact))?;
+    let oracle: RecoveryOracle = recovery_oracle();
+    let build: RecoveryBuild = oracle_build(&oracle, "source");
+    let bytes: Vec<u8> = read_tracked(&build.artifact);
     let blobs: BTreeMap<DartBlobKind, SnapshotBlob<'_>> = locate_snapshot_blobs(&bytes)?;
     let vm_data: SnapshotBlob<'_> = required_blob(&blobs, DartBlobKind::VmData)?;
     let vm_instructions: SnapshotBlob<'_> = required_blob(&blobs, DartBlobKind::VmInstructions)?;
@@ -245,9 +195,9 @@ fn recovers_supported_standalone_snapshot_blobs() -> TestResult {
 
 #[test]
 fn class_rename_changes_recovered_snapshot_inventory() -> TestResult {
-    let oracle: RecoveryOracle = recovery_oracle()?;
-    let source_build: RecoveryBuild = oracle_build(&oracle, "source")?;
-    let renamed_build: RecoveryBuild = oracle_build(&oracle, "renamed")?;
+    let oracle: RecoveryOracle = recovery_oracle();
+    let source_build: RecoveryBuild = oracle_build(&oracle, "source");
+    let renamed_build: RecoveryBuild = oracle_build(&oracle, "renamed");
     let source: RecoveryReport =
         recover_fixture(&source_build.artifact, ObfuscationHint::SourceNames)?;
     let renamed: RecoveryReport =
@@ -262,8 +212,8 @@ fn class_rename_changes_recovered_snapshot_inventory() -> TestResult {
 
 #[test]
 fn obfuscated_flutter_build_reports_structure_only() -> TestResult {
-    let oracle: RecoveryOracle = recovery_oracle()?;
-    let build: RecoveryBuild = oracle_build(&oracle, "obfuscated")?;
+    let oracle: RecoveryOracle = recovery_oracle();
+    let build: RecoveryBuild = oracle_build(&oracle, "obfuscated");
     let report: RecoveryReport = recover_fixture(&build.artifact, ObfuscationHint::OpaqueNames)?;
     assert_eq!(report.status, RecoveryStatus::StructureOnly);
     assert_eq!(report.name_mode, NameMode::Opaque);
@@ -281,8 +231,8 @@ fn obfuscated_flutter_build_reports_structure_only() -> TestResult {
 
 #[test]
 fn obfuscated_auto_mode_never_claims_source_names() -> TestResult {
-    let oracle: RecoveryOracle = recovery_oracle()?;
-    let build: RecoveryBuild = oracle_build(&oracle, "obfuscated")?;
+    let oracle: RecoveryOracle = recovery_oracle();
+    let build: RecoveryBuild = oracle_build(&oracle, "obfuscated");
     let report: RecoveryReport = recover_fixture(&build.artifact, ObfuscationHint::Auto)?;
     assert_ne!(report.name_mode, NameMode::Source);
     Ok(())
@@ -290,9 +240,9 @@ fn obfuscated_auto_mode_never_claims_source_names() -> TestResult {
 
 #[test]
 fn unknown_version_returns_status_without_cluster_reads() -> TestResult {
-    let oracle: RecoveryOracle = recovery_oracle()?;
-    let build: RecoveryBuild = oracle_build(&oracle, "source")?;
-    let bytes: Vec<u8> = fs::read(fixture(&build.artifact))?;
+    let oracle: RecoveryOracle = recovery_oracle();
+    let build: RecoveryBuild = oracle_build(&oracle, "source");
+    let bytes: Vec<u8> = read_tracked(&build.artifact);
     let blobs: BTreeMap<DartBlobKind, SnapshotBlob<'_>> = locate_snapshot_blobs(&bytes)?;
     let vm_blob: SnapshotBlob<'_> = required_blob(&blobs, DartBlobKind::VmData)?;
     let vm_instructions: SnapshotBlob<'_> = required_blob(&blobs, DartBlobKind::VmInstructions)?;
@@ -321,9 +271,9 @@ fn unknown_version_returns_status_without_cluster_reads() -> TestResult {
 
 #[test]
 fn unknown_feature_tuple_returns_status_without_cluster_reads() -> TestResult {
-    let oracle: RecoveryOracle = recovery_oracle()?;
-    let build: RecoveryBuild = oracle_build(&oracle, "source")?;
-    let bytes: Vec<u8> = fs::read(fixture(&build.artifact))?;
+    let oracle: RecoveryOracle = recovery_oracle();
+    let build: RecoveryBuild = oracle_build(&oracle, "source");
+    let bytes: Vec<u8> = read_tracked(&build.artifact);
     let blobs: BTreeMap<DartBlobKind, SnapshotBlob<'_>> = locate_snapshot_blobs(&bytes)?;
     let vm_blob: SnapshotBlob<'_> = required_blob(&blobs, DartBlobKind::VmData)?;
     let vm_instructions: SnapshotBlob<'_> = required_blob(&blobs, DartBlobKind::VmInstructions)?;
@@ -359,9 +309,9 @@ fn unknown_feature_tuple_returns_status_without_cluster_reads() -> TestResult {
 
 #[test]
 fn cluster_limit_stops_real_snapshot_before_allocation() -> TestResult {
-    let oracle: RecoveryOracle = recovery_oracle()?;
-    let build: RecoveryBuild = oracle_build(&oracle, "source")?;
-    let bytes: Vec<u8> = fs::read(fixture(&build.artifact))?;
+    let oracle: RecoveryOracle = recovery_oracle();
+    let build: RecoveryBuild = oracle_build(&oracle, "source");
+    let bytes: Vec<u8> = read_tracked(&build.artifact);
     let mut options: RecoveryOptions = RecoveryOptions::default();
     options.limits.clusters = 1;
     let error: Error = recover_elf(&bytes, &options)
@@ -379,9 +329,9 @@ fn cluster_limit_stops_real_snapshot_before_allocation() -> TestResult {
 
 #[test]
 fn configured_limits_cannot_exceed_hard_ceiling() -> TestResult {
-    let oracle: RecoveryOracle = recovery_oracle()?;
-    let build: RecoveryBuild = oracle_build(&oracle, "source")?;
-    let bytes: Vec<u8> = fs::read(fixture(&build.artifact))?;
+    let oracle: RecoveryOracle = recovery_oracle();
+    let build: RecoveryBuild = oracle_build(&oracle, "source");
+    let bytes: Vec<u8> = read_tracked(&build.artifact);
     let mut options: RecoveryOptions = RecoveryOptions::default();
     options.limits.objects = 2_000_001;
     let error: Error = recover_elf(&bytes, &options)

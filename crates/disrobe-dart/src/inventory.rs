@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 
 use serde::{Deserialize, Serialize};
 
-use crate::graph::{Node, NodeKind};
-use crate::layout::{DeclarationLayouts, LayoutDescriptor};
+use crate::graph::{ClusterSummary, Node, NodeKind, SnapshotSummary};
+use crate::layout::{ClusterLayout, DeclarationLayouts, LayoutDescriptor};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InventoryCounts {
@@ -16,9 +17,28 @@ pub struct InventoryCounts {
     pub named_fields: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct DeclaredObjects {
+    pub libraries: usize,
+    pub classes: usize,
+    pub patch_classes: usize,
+    pub functions: usize,
+    pub fields: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AttributionResidue {
+    pub unattributed_classes: usize,
+    pub unattributed_methods: usize,
+    pub unattributed_fields: usize,
+    pub synthesized_libraries: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DartInventory {
     pub counts: InventoryCounts,
+    pub declared: DeclaredObjects,
+    pub residue: AttributionResidue,
     pub libraries: Vec<LibraryInventory>,
 }
 
@@ -53,11 +73,44 @@ pub struct FieldInventory {
     pub name: Option<String>,
 }
 
-pub(super) fn build_inventory(nodes: &[Node], descriptor: LayoutDescriptor) -> DartInventory {
+pub(super) fn declared_objects(vm: &SnapshotSummary, isolate: &SnapshotSummary) -> DeclaredObjects {
+    DeclaredObjects {
+        libraries: declared_layout(vm, isolate, ClusterLayout::Library),
+        classes: declared_layout(vm, isolate, ClusterLayout::Class),
+        patch_classes: declared_layout(vm, isolate, ClusterLayout::PatchClass),
+        functions: declared_layout(vm, isolate, ClusterLayout::Function),
+        fields: declared_layout(vm, isolate, ClusterLayout::Field),
+    }
+}
+
+fn declared_layout(
+    vm: &SnapshotSummary,
+    isolate: &SnapshotSummary,
+    layout: ClusterLayout,
+) -> usize {
+    cluster_objects(vm, layout).saturating_add(cluster_objects(isolate, layout))
+}
+
+fn cluster_objects(summary: &SnapshotSummary, layout: ClusterLayout) -> usize {
+    summary
+        .clusters
+        .iter()
+        .filter(|cluster: &&ClusterSummary| cluster.layout == layout)
+        .fold(0_usize, |total: usize, cluster: &ClusterSummary| {
+            total.saturating_add(cluster.object_count)
+        })
+}
+
+pub(super) fn build_inventory(
+    nodes: &[Node],
+    descriptor: LayoutDescriptor,
+    declared: DeclaredObjects,
+) -> DartInventory {
     let layouts: DeclarationLayouts = descriptor.declarations;
     let mut libraries: BTreeMap<u32, LibraryInventory> = BTreeMap::new();
     let mut classes: BTreeMap<u32, (u32, ClassInventory)> = BTreeMap::new();
     let mut patch_owners: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut residue: AttributionResidue = AttributionResidue::default();
 
     for (index, node) in nodes.iter().enumerate().skip(1) {
         let reference_id: u32 = u32::try_from(index).unwrap_or(u32::MAX);
@@ -100,11 +153,13 @@ pub(super) fn build_inventory(nodes: &[Node], descriptor: LayoutDescriptor) -> D
             .get(layouts.class.library_reference)
             .copied()
         else {
+            residue.unattributed_classes = residue.unattributed_classes.saturating_add(1);
             continue;
         };
         let Some(name_reference): Option<u32> =
             node.references.get(layouts.class.name_reference).copied()
         else {
+            residue.unattributed_classes = residue.unattributed_classes.saturating_add(1);
             continue;
         };
         let reference_id: u32 = u32::try_from(index).unwrap_or(u32::MAX);
@@ -133,6 +188,7 @@ pub(super) fn build_inventory(nodes: &[Node], descriptor: LayoutDescriptor) -> D
                     .get(layouts.function.owner_reference)
                     .copied()
                 else {
+                    residue.unattributed_methods = residue.unattributed_methods.saturating_add(1);
                     continue;
                 };
                 let Some(name_reference): Option<u32> = node
@@ -140,6 +196,7 @@ pub(super) fn build_inventory(nodes: &[Node], descriptor: LayoutDescriptor) -> D
                     .get(layouts.function.name_reference)
                     .copied()
                 else {
+                    residue.unattributed_methods = residue.unattributed_methods.saturating_add(1);
                     continue;
                 };
                 let Some(signature_reference): Option<u32> = node
@@ -147,10 +204,12 @@ pub(super) fn build_inventory(nodes: &[Node], descriptor: LayoutDescriptor) -> D
                     .get(layouts.function.signature_reference)
                     .copied()
                 else {
+                    residue.unattributed_methods = residue.unattributed_methods.saturating_add(1);
                     continue;
                 };
                 let owner: u32 = resolve_owner(owner_reference, &patch_owners);
                 let Some((_library, class)) = classes.get_mut(&owner) else {
+                    residue.unattributed_methods = residue.unattributed_methods.saturating_add(1);
                     continue;
                 };
                 let name: Option<String> = text_at(nodes, name_reference).map(str::to_owned);
@@ -170,15 +229,18 @@ pub(super) fn build_inventory(nodes: &[Node], descriptor: LayoutDescriptor) -> D
                 let Some(owner_reference): Option<u32> =
                     node.references.get(layouts.field.owner_reference).copied()
                 else {
+                    residue.unattributed_fields = residue.unattributed_fields.saturating_add(1);
                     continue;
                 };
                 let Some(name_reference): Option<u32> =
                     node.references.get(layouts.field.name_reference).copied()
                 else {
+                    residue.unattributed_fields = residue.unattributed_fields.saturating_add(1);
                     continue;
                 };
                 let owner: u32 = resolve_owner(owner_reference, &patch_owners);
                 let Some((_library, class)) = classes.get_mut(&owner) else {
+                    residue.unattributed_fields = residue.unattributed_fields.saturating_add(1);
                     continue;
                 };
                 let name: Option<String> = text_at(nodes, name_reference).map(str::to_owned);
@@ -205,15 +267,18 @@ pub(super) fn build_inventory(nodes: &[Node], descriptor: LayoutDescriptor) -> D
                     .cmp(&right.name.as_deref())
                     .then(left.reference_id.cmp(&right.reference_id))
             });
-        let library: &mut LibraryInventory =
-            libraries
-                .entry(library_reference)
-                .or_insert_with(|| LibraryInventory {
+        let library: &mut LibraryInventory = match libraries.entry(library_reference) {
+            Entry::Occupied(occupied) => occupied.into_mut(),
+            Entry::Vacant(vacant) => {
+                residue.synthesized_libraries = residue.synthesized_libraries.saturating_add(1);
+                vacant.insert(LibraryInventory {
                     reference_id: library_reference,
                     name: None,
                     url: None,
                     classes: Vec::new(),
-                });
+                })
+            }
+        };
         library.classes.push(class);
     }
 
@@ -237,6 +302,8 @@ pub(super) fn build_inventory(nodes: &[Node], descriptor: LayoutDescriptor) -> D
     let counts: InventoryCounts = count_inventory(&library_values);
     DartInventory {
         counts,
+        declared,
+        residue,
         libraries: library_values,
     }
 }
