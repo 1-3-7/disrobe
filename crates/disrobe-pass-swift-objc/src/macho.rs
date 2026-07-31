@@ -1,3 +1,4 @@
+use disrobe_bytes::read_uleb128_at;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -34,6 +35,8 @@ pub const LC_VERSION_MIN_WATCHOS: u32 = 0x30;
 pub const LC_BUILD_VERSION: u32 = 0x32;
 pub const LC_DYLD_EXPORTS_TRIE: u32 = 0x33;
 pub const LC_DYLD_CHAINED_FIXUPS: u32 = 0x34;
+pub const LC_DYLD_INFO: u32 = 0x22;
+pub const LC_DYLD_INFO_ONLY: u32 = 0x8000_0022;
 pub const LC_ENCRYPTION_INFO: u32 = 0x21;
 pub const LC_ENCRYPTION_INFO_64: u32 = 0x2C;
 pub const LC_CODE_SIGNATURE: u32 = 0x1D;
@@ -225,6 +228,221 @@ pub fn readable_section_bytes<'a>(
     section_bytes(slice, section)
 }
 
+const MAX_FUNCTION_STARTS: usize = 1 << 22;
+const MAX_EXPORT_NODES: usize = 1 << 20;
+const MAX_EXPORT_DEPTH: usize = 128;
+const MAX_EXPORT_NAME: usize = 4096;
+
+const EXPORT_SYMBOL_FLAGS_KIND_MASK: u64 = 0x03;
+const EXPORT_SYMBOL_FLAGS_REEXPORT: u64 = 0x08;
+const EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER: u64 = 0x10;
+
+#[must_use]
+pub fn function_starts(slice: &[u8], parsed: &ParsedSlice) -> Vec<u64> {
+    let mut out: Vec<u64> = Vec::new();
+    let Some(location): Option<&LinkeditData> = parsed.function_starts.as_ref() else {
+        return out;
+    };
+    let Some(data): Option<&[u8]> = linkedit_bytes(slice, *location) else {
+        return out;
+    };
+    let Some(base): Option<u64> = image_base(parsed) else {
+        return out;
+    };
+    let mut address: u64 = base;
+    let mut cursor: usize = 0;
+    while cursor < data.len() && out.len() < MAX_FUNCTION_STARTS {
+        let Ok((delta, consumed)): core::result::Result<(u64, usize), _> =
+            read_uleb128_at(data, cursor)
+        else {
+            break;
+        };
+        if consumed == 0 || delta == 0 {
+            break;
+        }
+        cursor = cursor.saturating_add(consumed);
+        address = address.wrapping_add(delta);
+        out.push(address);
+    }
+    out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExportKind {
+    Regular,
+    ThreadLocal,
+    Absolute,
+    Reexport,
+    StubAndResolver,
+}
+
+impl ExportKind {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Regular => "regular",
+            Self::ThreadLocal => "thread-local",
+            Self::Absolute => "absolute",
+            Self::Reexport => "reexport",
+            Self::StubAndResolver => "stub-and-resolver",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExportedSymbol {
+    pub name: String,
+    pub kind: ExportKind,
+    pub address: Option<u64>,
+    pub reexport_from_dylib_ordinal: Option<u64>,
+    pub reexport_name: Option<String>,
+}
+
+#[must_use]
+pub fn exported_symbols(slice: &[u8], parsed: &ParsedSlice) -> Vec<ExportedSymbol> {
+    let mut out: Vec<ExportedSymbol> = Vec::new();
+    let Some(location): Option<&LinkeditData> = parsed
+        .exports_trie
+        .as_ref()
+        .or(parsed.dyld_info_exports.as_ref())
+    else {
+        return out;
+    };
+    let Some(data): Option<&[u8]> = linkedit_bytes(slice, *location) else {
+        return out;
+    };
+    let base: u64 = image_base(parsed).unwrap_or(0);
+    let mut visited: usize = 0;
+    walk_export_node(data, 0, &mut String::new(), base, 0, &mut visited, &mut out);
+    out.sort_by(|a: &ExportedSymbol, b: &ExportedSymbol| a.name.cmp(&b.name));
+    out.dedup_by(|a: &mut ExportedSymbol, b: &mut ExportedSymbol| a.name == b.name);
+    out
+}
+
+fn linkedit_bytes(slice: &[u8], location: LinkeditData) -> Option<&[u8]> {
+    let start: usize = location.offset as usize;
+    let size: usize = usize::try_from(location.size).ok()?;
+    if size == 0 {
+        return None;
+    }
+    slice.get(start..start.checked_add(size)?)
+}
+
+fn walk_export_node(
+    data: &[u8],
+    node_off: usize,
+    prefix: &mut String,
+    base: u64,
+    depth: usize,
+    visited: &mut usize,
+    out: &mut Vec<ExportedSymbol>,
+) {
+    if depth > MAX_EXPORT_DEPTH || *visited >= MAX_EXPORT_NODES || node_off >= data.len() {
+        return;
+    }
+    *visited += 1;
+    let Ok((terminal_size, mut cursor)): core::result::Result<(u64, usize), _> =
+        read_uleb128_at(data, node_off)
+            .map(|(value, consumed): (u64, usize)| (value, node_off.saturating_add(consumed)))
+    else {
+        return;
+    };
+    if terminal_size > 0 {
+        if let Some(symbol) = read_export_terminal(data, cursor, prefix, base) {
+            out.push(symbol);
+        }
+        let Some(after): Option<usize> = usize::try_from(terminal_size)
+            .ok()
+            .and_then(|size: usize| cursor.checked_add(size))
+        else {
+            return;
+        };
+        cursor = after;
+    }
+    let Some(&child_count): Option<&u8> = data.get(cursor) else {
+        return;
+    };
+    cursor = cursor.saturating_add(1);
+    for _ in 0..child_count {
+        let Some(edge): Option<&str> = cstr_in(data, cursor, MAX_EXPORT_NAME) else {
+            return;
+        };
+        cursor = cursor.saturating_add(edge.len()).saturating_add(1);
+        let Ok((child_off, consumed)): core::result::Result<(u64, usize), _> =
+            read_uleb128_at(data, cursor)
+        else {
+            return;
+        };
+        cursor = cursor.saturating_add(consumed);
+        if prefix.len().saturating_add(edge.len()) > MAX_EXPORT_NAME {
+            continue;
+        }
+        let restore: usize = prefix.len();
+        prefix.push_str(edge);
+        if let Ok(child) = usize::try_from(child_off)
+            && child != node_off
+        {
+            walk_export_node(data, child, prefix, base, depth + 1, visited, out);
+        }
+        prefix.truncate(restore);
+    }
+}
+
+fn read_export_terminal(data: &[u8], at: usize, name: &str, base: u64) -> Option<ExportedSymbol> {
+    if name.is_empty() {
+        return None;
+    }
+    let (flags, consumed): (u64, usize) = read_uleb128_at(data, at).ok()?;
+    let mut cursor: usize = at.checked_add(consumed)?;
+    if flags & EXPORT_SYMBOL_FLAGS_REEXPORT != 0 {
+        let (ordinal, used): (u64, usize) = read_uleb128_at(data, cursor).ok()?;
+        cursor = cursor.checked_add(used)?;
+        let imported: &str = cstr_in(data, cursor, MAX_EXPORT_NAME)?;
+        return Some(ExportedSymbol {
+            name: name.to_owned(),
+            kind: ExportKind::Reexport,
+            address: None,
+            reexport_from_dylib_ordinal: Some(ordinal),
+            reexport_name: (!imported.is_empty()).then(|| imported.to_owned()),
+        });
+    }
+    if flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER != 0 {
+        let (stub, used): (u64, usize) = read_uleb128_at(data, cursor).ok()?;
+        return Some(ExportedSymbol {
+            name: name.to_owned(),
+            kind: ExportKind::StubAndResolver,
+            address: Some(base.wrapping_add(stub)),
+            reexport_from_dylib_ordinal: None,
+            reexport_name: None,
+        })
+        .filter(|_| cursor.checked_add(used).is_some());
+    }
+    let (offset, _): (u64, usize) = read_uleb128_at(data, cursor).ok()?;
+    let kind: ExportKind = match flags & EXPORT_SYMBOL_FLAGS_KIND_MASK {
+        1 => ExportKind::ThreadLocal,
+        2 => ExportKind::Absolute,
+        _ => ExportKind::Regular,
+    };
+    let address: u64 = match kind {
+        ExportKind::Absolute => offset,
+        _ => base.wrapping_add(offset),
+    };
+    Some(ExportedSymbol {
+        name: name.to_owned(),
+        kind,
+        address: Some(address),
+        reexport_from_dylib_ordinal: None,
+        reexport_name: None,
+    })
+}
+
+fn cstr_in(data: &[u8], at: usize, max_len: usize) -> Option<&str> {
+    let end: usize = at.checked_add(max_len)?.min(data.len());
+    let window: &[u8] = data.get(at..end)?;
+    let nul: usize = window.iter().position(|byte: &u8| *byte == 0)?;
+    std::str::from_utf8(&window[..nul]).ok()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DylibKind {
     Load,
@@ -376,6 +594,7 @@ pub struct ParsedSlice {
     pub data_in_code: Option<LinkeditData>,
     pub chained_fixups: Option<LinkeditData>,
     pub exports_trie: Option<LinkeditData>,
+    pub dyld_info_exports: Option<LinkeditData>,
 }
 
 impl Default for ParsedSlice {
@@ -408,6 +627,7 @@ impl Default for ParsedSlice {
             data_in_code: None,
             chained_fixups: None,
             exports_trie: None,
+            dyld_info_exports: None,
         }
     }
 }
@@ -698,6 +918,7 @@ pub fn parse_slice(slice: &[u8]) -> Result<ParsedSlice> {
     let mut data_in_code: Option<LinkeditData> = None;
     let mut chained_fixups: Option<LinkeditData> = None;
     let mut exports_trie: Option<LinkeditData> = None;
+    let mut dyld_info_exports: Option<LinkeditData> = None;
     let mut cursor: usize = header_size;
 
     for idx in 0..ncmds {
@@ -851,6 +1072,12 @@ pub fn parse_slice(slice: &[u8]) -> Result<ParsedSlice> {
             LC_DYLD_EXPORTS_TRIE => {
                 exports_trie = Some(read_linkedit(slice, cursor, read_u32)?);
             }
+            LC_DYLD_INFO | LC_DYLD_INFO_ONLY => {
+                dyld_info_exports = Some(LinkeditData {
+                    offset: read_u32(slice, cursor + 40)?,
+                    size: read_u32(slice, cursor + 44)?,
+                });
+            }
             _ => {}
         }
         cursor += cmdsize_usize;
@@ -876,6 +1103,7 @@ pub fn parse_slice(slice: &[u8]) -> Result<ParsedSlice> {
         data_in_code,
         chained_fixups,
         exports_trie,
+        dyld_info_exports,
     })
 }
 

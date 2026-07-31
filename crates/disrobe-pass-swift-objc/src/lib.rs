@@ -46,11 +46,12 @@ pub use ipa::{
 };
 pub use macho::{
     Bitness, CpuKind, DylibKind, DylibReference, DysymtabInfo, EncryptedRegion, EncryptionInfo,
-    Endian, EntryPoint, FatArchEntry, FunctionSymbol, ImportThunk, LinkeditData, LoadCommand,
-    MachoKind, PackedVersion, ParsedSlice, PlatformVersion, Section, Segment, SliceHeader,
-    SymtabInfo, detect_magic, encrypted_region, find_section, function_symbols, import_thunks,
-    parse_slice, readable_section_bytes, section_bytes, section_is_encrypted_at_rest, slice_bytes,
-    symbol_names, walk_fat,
+    Endian, EntryPoint, ExportKind, ExportedSymbol, FatArchEntry, FunctionSymbol, ImportThunk,
+    LinkeditData, LoadCommand, MachoKind, PackedVersion, ParsedSlice, PlatformVersion, Section,
+    Segment, SliceHeader, SymtabInfo, detect_magic, encrypted_region, exported_symbols,
+    find_section, function_starts, function_symbols, import_thunks, parse_slice,
+    readable_section_bytes, section_bytes, section_is_encrypted_at_rest, slice_bytes, symbol_names,
+    walk_fat,
 };
 pub use native_bodies::{
     DisasmInstruction, FunctionBody, NativeBodyReport, ReconstructedMember,
