@@ -33,6 +33,7 @@ mod readme_stats;
 mod regen;
 mod roster_breadth;
 mod sync;
+mod typography;
 
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -1,5 +1,5 @@
 import { renderChart } from "../lib/echart.mjs";
-import { Svg, C, MONO, SANS, wrapSans } from "../lib/kit.mjs";
+import { Svg, C, MONO, SANS, sansWidth, wrapSans } from "../lib/kit.mjs";
 
 const WIDTH = 920;
 const LEFT = 28;
@@ -169,7 +169,7 @@ export function renderPython(doc) {
       svg.rect(lx, y - 9, 16, 10, { rx: 2, fill: color });
     }
     svg.text(lx + 22, y, entry.label, { size: 10.5, fill: C.muted });
-    lx += 22 + Math.ceil(entry.label.length * 6.4) + 26;
+    lx += 22 + Math.ceil(sansWidth(entry.label, 10.5)) + 26;
   }
 
   const footEnd = svg.footnote(y + 22, doc.footnote);
