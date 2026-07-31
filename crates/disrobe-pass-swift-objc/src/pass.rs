@@ -4,7 +4,7 @@ use crate::code_signature::{self, CodeSignature};
 use crate::error::Error;
 use crate::fairplay::{self, FairPlayStatus};
 use crate::ipa::{self, EmbeddedImage, EmbeddedImageRole, IpaInventory};
-use crate::macho::{self, FatArchEntry, MachoKind, ParsedSlice};
+use crate::macho::{self, ExportedSymbol, FatArchEntry, MachoKind, ParsedSlice};
 use crate::native_bodies::{self, NativeBodyReport};
 use crate::objc::{self, ObjcClassDump};
 use crate::objc_records;
@@ -53,6 +53,8 @@ pub struct SliceReport {
     pub cpu_label: String,
     pub bitness_bits: u32,
     pub metadata_summary: MetadataSummary,
+    pub function_starts: Vec<u64>,
+    pub exports: Vec<ExportedSymbol>,
     pub swift: SwiftClassDump,
     pub objc: ObjcClassDump,
     pub fairplay: FairPlayStatus,
@@ -67,6 +69,9 @@ pub struct MetadataSummary {
     pub objc_interfaces_recovered: usize,
     pub objc_categories_recovered: usize,
     pub objc_protocols_recovered: usize,
+    pub function_starts_recovered: usize,
+    pub function_symbols_recovered: usize,
+    pub exported_symbols_recovered: usize,
     pub objc_methods_recovered: usize,
     pub objc_typed_methods: usize,
     pub objc_unique_selectors: usize,
@@ -426,7 +431,23 @@ fn build_slice_report(slice: &[u8], parsed: &ParsedSlice) -> SliceReport {
         macho::Bitness::Bits32 => 32,
         macho::Bitness::Bits64 => 64,
     };
-    let metadata_summary: MetadataSummary = summarize(&swift_dump, &objc_dump);
+    let function_starts: Vec<u64> = macho::function_starts(slice, parsed);
+    let exports: Vec<ExportedSymbol> = macho::exported_symbols(slice, parsed);
+    let function_symbol_count: usize = macho::function_symbols(slice, parsed).len();
+    crate::debug::dbg_kv("linkedit-recovery", || {
+        format!(
+            "function_starts={} function_symbols={function_symbol_count} exports={}",
+            function_starts.len(),
+            exports.len()
+        )
+    });
+    let metadata_summary: MetadataSummary = summarize(
+        &swift_dump,
+        &objc_dump,
+        function_starts.len(),
+        function_symbol_count,
+        exports.len(),
+    );
     let native: NativeBodyReport = native_bodies::recover_native_bodies(slice, parsed);
     crate::debug::dbg_kv("native-bodies", || {
         format!(
@@ -444,6 +465,8 @@ fn build_slice_report(slice: &[u8], parsed: &ParsedSlice) -> SliceReport {
         cpu_label: parsed.header.cpu.label().to_owned(),
         bitness_bits: bits,
         metadata_summary,
+        function_starts,
+        exports,
         swift: swift_dump,
         objc: objc_dump,
         fairplay: fp,
@@ -453,7 +476,13 @@ fn build_slice_report(slice: &[u8], parsed: &ParsedSlice) -> SliceReport {
     }
 }
 
-fn summarize(swift: &SwiftClassDump, objc: &ObjcClassDump) -> MetadataSummary {
+fn summarize(
+    swift: &SwiftClassDump,
+    objc: &ObjcClassDump,
+    function_starts_recovered: usize,
+    function_symbols_recovered: usize,
+    exported_symbols_recovered: usize,
+) -> MetadataSummary {
     let objc_methods_recovered: usize = objc
         .interfaces
         .iter()
@@ -479,6 +508,9 @@ fn summarize(swift: &SwiftClassDump, objc: &ObjcClassDump) -> MetadataSummary {
         objc_interfaces_recovered: objc.interfaces.len(),
         objc_categories_recovered: objc.categories.len(),
         objc_protocols_recovered: objc.protocols.len(),
+        function_starts_recovered,
+        function_symbols_recovered,
+        exported_symbols_recovered,
         objc_methods_recovered,
         objc_typed_methods,
         objc_unique_selectors: objc.unique_selectors.len(),
