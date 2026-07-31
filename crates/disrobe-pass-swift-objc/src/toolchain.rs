@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::macho::{DylibReference, DysymtabInfo, ParsedSlice, PlatformVersion, SymtabInfo};
+use crate::objc_dispatch::{self, ChainedPointerFormat};
 
 const SWIFT_RUNTIME_PREFIX: &str = "/usr/lib/swift/libswift";
 const OBJC_RUNTIME: &str = "/usr/lib/libobjc.A.dylib";
@@ -92,11 +93,12 @@ pub struct ToolchainReport {
     pub dylib_count: usize,
     pub has_uuid: bool,
     pub has_chained_fixups: bool,
+    pub chained_pointer_formats: Vec<ChainedPointerFormat>,
     pub has_exports_trie: bool,
 }
 
 #[must_use]
-pub fn report(parsed: &ParsedSlice) -> ToolchainReport {
+pub fn report(slice: &[u8], parsed: &ParsedSlice) -> ToolchainReport {
     let symbol_state: SymbolState = symbol_state_for(parsed);
     let swift_runtime_dylibs: Vec<String> = parsed
         .dylibs
@@ -136,6 +138,7 @@ pub fn report(parsed: &ParsedSlice) -> ToolchainReport {
         dylib_count: parsed.dylibs.len(),
         has_uuid: parsed.uuid.is_some(),
         has_chained_fixups: parsed.chained_fixups.is_some(),
+        chained_pointer_formats: objc_dispatch::chained_pointer_formats(slice, parsed),
         has_exports_trie: parsed.exports_trie.is_some(),
     }
 }
@@ -278,7 +281,7 @@ mod tests {
             ],
             ..ParsedSlice::default()
         };
-        let report: ToolchainReport = report(&parsed);
+        let report: ToolchainReport = report(&[], &parsed);
         assert!(report.links_swift_runtime);
         assert!(report.links_objc_runtime);
         assert_eq!(report.swift_runtime_dylibs.len(), 1);

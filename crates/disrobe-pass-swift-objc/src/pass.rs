@@ -400,7 +400,15 @@ fn build_slice_report(slice: &[u8], parsed: &ParsedSlice) -> SliceReport {
         ),
         )
     });
-    let toolchain_report: ToolchainReport = toolchain::report(parsed);
+    let toolchain_report: ToolchainReport = toolchain::report(slice, parsed);
+    crate::debug::dbg_kv("chained-fixups", || {
+        toolchain_report
+            .chained_pointer_formats
+            .iter()
+            .map(|format: &crate::objc_dispatch::ChainedPointerFormat| format.label())
+            .collect::<Vec<&'static str>>()
+            .join(",")
+    });
     crate::debug::dbg_kv("toolchain", || {
         format!(
             "filetype={} platform={:?} minos={:?} sdk={:?} swift_runtime={} objc_runtime={} symbols={} dylibs={}",

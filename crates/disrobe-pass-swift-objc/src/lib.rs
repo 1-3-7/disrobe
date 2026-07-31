@@ -61,8 +61,8 @@ pub use objc::{
     index_selectors,
 };
 pub use objc_dispatch::{
-    DispatchArch, DispatchMaps, ObjcMessageSend, ObjcSend, annotate_instructions,
-    bound_symbols_by_slot, build_dispatch_maps,
+    ChainedPointerFormat, DispatchArch, DispatchMaps, ObjcMessageSend, ObjcSend,
+    annotate_instructions, bound_symbols_by_slot, build_dispatch_maps, chained_pointer_formats,
 };
 pub use objc_records::{
     OBJC_IMAGE_HAS_CATEGORY_CLASS_PROPERTIES, ObjcCategory, ObjcInterface, ObjcIvar, ObjcMethod,

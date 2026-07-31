@@ -13,8 +13,8 @@ use macho_corpus::{
 
 fn swift_hello_report() -> ToolchainReport {
     let bytes: Vec<u8> = read_tracked(SWIFT_HELLO_ORIGINAL);
-    let (_, parsed): (Vec<u8>, ParsedSlice) = first_slice(SWIFT_HELLO_ORIGINAL, &bytes);
-    toolchain::report(&parsed)
+    let (slice, parsed): (Vec<u8>, ParsedSlice) = first_slice(SWIFT_HELLO_ORIGINAL, &bytes);
+    toolchain::report(&slice, &parsed)
 }
 
 #[test]
@@ -84,11 +84,12 @@ fn an_unstripped_image_says_its_local_symbols_are_present() {
 #[test]
 fn each_slice_of_a_fat_binary_reports_its_own_toolchain() {
     let bytes: Vec<u8> = read_tracked(EDGE_CASES_FAT);
-    let (_, x86): (Vec<u8>, ParsedSlice) =
+    let (x86_slice, x86): (Vec<u8>, ParsedSlice) =
         slice_preferring(EDGE_CASES_FAT, &bytes, CpuKind::X86_64);
-    let (_, arm): (Vec<u8>, ParsedSlice) = slice_preferring(EDGE_CASES_FAT, &bytes, CpuKind::Arm64);
-    let x86_report: ToolchainReport = toolchain::report(&x86);
-    let arm_report: ToolchainReport = toolchain::report(&arm);
+    let (arm_slice, arm): (Vec<u8>, ParsedSlice) =
+        slice_preferring(EDGE_CASES_FAT, &bytes, CpuKind::Arm64);
+    let x86_report: ToolchainReport = toolchain::report(&x86_slice, &x86);
+    let arm_report: ToolchainReport = toolchain::report(&arm_slice, &arm);
     assert_eq!(x86_report.file_type, "executable");
     assert_eq!(arm_report.file_type, "executable");
     assert_eq!(
