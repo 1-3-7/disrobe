@@ -324,7 +324,7 @@ fn canonicalized_module_executes_identically_to_the_clean_original() {
     assert_eq!(
         run_export_i32(&mutated, "f", &args),
         want,
-        "the mutated fixture must already be behaviourally equal to the clean original"
+        "the mutated fixture must already be behaviorally equal to the clean original"
     );
     assert_eq!(
         run_export_i32(&reversed, "f", &args),

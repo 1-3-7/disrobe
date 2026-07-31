@@ -47,9 +47,9 @@ impl PackerFamily {
     }
 
     fn spellings(&self) -> Vec<String> {
-        let mut out: Vec<String> = vec![normalise(&self.ident), normalise(&self.label)];
+        let mut out: Vec<String> = vec![normalize(&self.ident), normalize(&self.label)];
         if let Some(display) = self.display_name.as_deref() {
-            out.push(normalise(display));
+            out.push(normalize(display));
         }
         out.sort();
         out.dedup();
@@ -113,7 +113,7 @@ impl PackerRoster {
     }
 }
 
-fn normalise(text: &str) -> String {
+fn normalize(text: &str) -> String {
     text.chars()
         .filter(char::is_ascii_alphanumeric)
         .map(|c: char| c.to_ascii_lowercase())
@@ -490,7 +490,7 @@ fn check_region(
             ));
             continue;
         }
-        match resolver.get(&normalise(cleaned)) {
+        match resolver.get(&normalize(cleaned)) {
             Some(ident) => {
                 if !named.insert(ident.clone()) {
                     issues.push(format!(

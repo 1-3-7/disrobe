@@ -370,7 +370,7 @@ mod tests {
         let err: Option<Error> = extract_pyz(&bytes).err();
         assert!(
             matches!(err, Some(Error::UnknownPyzMagic(m)) if m == bogus),
-            "an unrecognised pyc magic must surface explicitly, never silently assume 3.12",
+            "an unrecognized pyc magic must surface explicitly, never silently assume 3.12",
         );
     }
 
@@ -460,7 +460,7 @@ mod tests {
             extract_pyz(&pyz).expect("zero-length entry path must still parse the toc");
         assert!(
             entries.is_empty(),
-            "a zero-length entry is skipped, but the unicode name itself must have been recognised",
+            "a zero-length entry is skipped, but the unicode name itself must have been recognized",
         );
         assert_eq!(
             string_value(&Object::Unicode {

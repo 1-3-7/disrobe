@@ -158,7 +158,7 @@ fn excel_authored_workbooks_decode_to_the_authored_formulas() {
                 fixture.expected_from.as_str(),
                 "excel-readback" | "authored"
             ),
-            "{} has an unrecognised expectation source {}",
+            "{} has an unrecognized expectation source {}",
             fixture.file,
             fixture.expected_from
         );

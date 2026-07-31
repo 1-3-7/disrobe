@@ -998,7 +998,7 @@ mod tests {
         assert!(html.contains("class=\"chip\""), "status chips must render");
         assert!(
             html.contains("class=\"dot\""),
-            "chips must carry a colour dot for non-colour status encoding"
+            "chips must carry a color dot for non-color status encoding"
         );
         assert!(
             html.contains(">semantic<"),

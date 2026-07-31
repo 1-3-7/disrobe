@@ -1333,7 +1333,7 @@ fn an_lzop_block_declaring_four_gibibytes_is_refused_by_size_not_by_allocating_i
     );
     assert!(
         bytes.len() < 64,
-        "the refusing input is {} bytes, so the refusal cannot be a size artefact",
+        "the refusing input is {} bytes, so the refusal cannot be a size artifact",
         bytes.len()
     );
 }

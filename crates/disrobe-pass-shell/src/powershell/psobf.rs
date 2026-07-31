@@ -31,12 +31,12 @@ pub fn reverse_psobf(input: &str) -> Result<PsobfReport> {
     if PSOBF_HEADER.is_match(input) {
         stages.push("detect-psobf-banner".to_owned());
     }
-    let normalised: String = normalise_wide_chars(input);
-    if normalised != input {
-        stages.push("normalise-utf16-wide-chars".to_owned());
+    let normalized: String = normalize_wide_chars(input);
+    if normalized != input {
+        stages.push("normalize-utf16-wide-chars".to_owned());
     }
-    if OBFUS_WRAP.is_match(&normalised) {
-        let stripped: String = strip_obfus_wrappers(&normalised);
+    if OBFUS_WRAP.is_match(&normalized) {
+        let stripped: String = strip_obfus_wrappers(&normalized);
         stages.push("strip-obfus-percent-insertion".to_owned());
         return Ok(PsobfReport {
             stages,
@@ -92,7 +92,7 @@ fn decode_base64_bounded(b64: &str) -> Result<Vec<u8>> {
     .map_err(|source: disrobe_core::codec::DecodeError| base64_error(b64.as_bytes(), source))
 }
 
-fn normalise_wide_chars(input: &str) -> String {
+fn normalize_wide_chars(input: &str) -> String {
     let nul_count: usize = input.chars().filter(|c: &char| *c == '\u{0}').count();
     if nul_count == 0 {
         return input.to_owned();

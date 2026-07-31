@@ -225,17 +225,17 @@ fn apply_param_modifiers(value: &str, modifiers: &str) -> String {
     if modifiers.contains('f') {
         return value.to_owned();
     }
-    let normalised: String = value.replace('/', "\\");
-    let (dir, file): (&str, &str) = match normalised.rfind('\\') {
-        Some(at) => (&normalised[..=at], &normalised[at + 1..]),
-        None => ("", normalised.as_str()),
+    let normalized: String = value.replace('/', "\\");
+    let (dir, file): (&str, &str) = match normalized.rfind('\\') {
+        Some(at) => (&normalized[..=at], &normalized[at + 1..]),
+        None => ("", normalized.as_str()),
     };
     let (stem, ext): (&str, &str) = match file.rfind('.') {
         Some(at) if at > 0 => (&file[..at], &file[at..]),
         _ => (file, ""),
     };
-    let drive: &str = if normalised.len() >= 2 && &normalised[1..2] == ":" {
-        &normalised[..2]
+    let drive: &str = if normalized.len() >= 2 && &normalized[1..2] == ":" {
+        &normalized[..2]
     } else {
         ""
     };

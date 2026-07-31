@@ -56,7 +56,7 @@ pub enum RubyError {
     #[error("DR-RUBY-0040: JRuby .class delegation requires disrobe-pass-jvm in the pipeline")]
     JrubyDelegationRequired,
 
-    #[error("DR-RUBY-0050: TruffleRuby AOT image header not recognised")]
+    #[error("DR-RUBY-0050: TruffleRuby AOT image header not recognized")]
     TruffleRubyUnknownImage,
 
     #[error("DR-RUBY-0060: ruby2exe/ocra wrapper signature not found")]

@@ -341,7 +341,7 @@ fn the_recovered_class_passes_the_real_jvm_verifier_and_runs() {
         stdout.contains("pick0=null") && stdout.contains("pick1=picked"),
         "pick() takes the branch that leaves the zero constant in place when its argument is zero \
          and the branch that assigns the string otherwise, so the recovered method is checked for \
-         behaviour and not only for a frame the verifier accepts: {stdout}"
+         behavior and not only for a frame the verifier accepts: {stdout}"
     );
     assert!(
         stdout.contains("count0=0") && stdout.contains("count1=7"),

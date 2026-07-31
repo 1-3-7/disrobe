@@ -35,12 +35,12 @@ fn re_evals_equivalent(label: &str, recovered: &str) {
         .unwrap_or_else(|| panic!("{label}: recovered must re-evaluate; src=\n{recovered}"));
     assert_eq!(
         want, got,
-        "{label}: recovered behaviour diverged from ground truth\n--want--\n{want}\n--got--\n{got}"
+        "{label}: recovered behavior diverged from ground truth\n--want--\n{want}\n--got--\n{got}"
     );
 }
 
 #[test]
-fn ground_truth_and_packed_samples_are_behaviourally_identical() {
+fn ground_truth_and_packed_samples_are_behaviorally_identical() {
     let truth: String = eval_console(GROUND_TRUTH).expect("ground truth evals");
     let single_live: String = eval_console(SINGLE).expect("single-layer evals");
     let double_live: String = eval_console(DOUBLE).expect("double-layer evals");

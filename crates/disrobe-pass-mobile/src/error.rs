@@ -51,7 +51,7 @@ pub enum Error {
     )]
     DartBadMagic,
 
-    #[error("DR-MOB-0012: Dart AOT snapshot version {0:?} unknown (recognised: 2.10..3.5)")]
+    #[error("DR-MOB-0012: Dart AOT snapshot version {0:?} unknown (recognized: 2.10..3.5)")]
     DartUnknownVersion(String),
 
     #[error("DR-MOB-0013: Dart AOT snapshot section {0} missing")]
@@ -81,8 +81,8 @@ pub enum Error {
     #[error("DR-MOB-0020: envelope decode failed: {0}")]
     EnvelopeDecode(String),
 
-    #[error("DR-MOB-0021: input does not match any recognised mobile bundle format")]
-    Unrecognised,
+    #[error("DR-MOB-0021: input does not match any recognized mobile bundle format")]
+    Unrecognized,
 
     #[error("DR-MOB-0023: Dart kernel magic mismatch (expected 0x90abcdef, bytes 90 ab cd ef)")]
     DartKernelBadMagic,

@@ -130,7 +130,7 @@ fn stringer_self_checksum_keyed_class_is_detected_but_walled_honestly() {
     assert_eq!(
         detect_protector_family(&cf),
         Some(ProtectorFamilyKind::Stringer),
-        "the real Stringer decrypt descriptor must be recognised as Stringer"
+        "the real Stringer decrypt descriptor must be recognized as Stringer"
     );
     let peeled: PeeledClass =
         peel_and_decompile_classfile(&cf).expect("Stringer class still decompiles");

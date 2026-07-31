@@ -200,7 +200,7 @@ pub(crate) fn run_inner(bytes: &[u8]) -> crate::error::Result<MobilePassOutput> 
         DetectedKind::ReactNativeApk | DetectedKind::ReactNativeIpa => {
             let rn: RnExtractionReport = extract_from_apk_or_ipa(bytes)?;
             if rn.bundles.is_empty() {
-                return Err(crate::error::Error::Unrecognised);
+                return Err(crate::error::Error::Unrecognized);
             }
             output.react_native = Some(rn);
         }
@@ -212,7 +212,7 @@ pub(crate) fn run_inner(bytes: &[u8]) -> crate::error::Result<MobilePassOutput> 
             output.detected = match web.kind {
                 WebviewBundleKind::Cordova => DetectedKind::CordovaApk,
                 WebviewBundleKind::Capacitor => DetectedKind::CapacitorApk,
-                WebviewBundleKind::Unknown => return Err(crate::error::Error::Unrecognised),
+                WebviewBundleKind::Unknown => return Err(crate::error::Error::Unrecognized),
             };
             output.cordova = Some(web);
         }
@@ -222,7 +222,7 @@ pub(crate) fn run_inner(bytes: &[u8]) -> crate::error::Result<MobilePassOutput> 
         DetectedKind::AndroidDexApk => {
             let dex_children: Vec<(String, Vec<u8>)> = extract_android_dex_children(bytes)?;
             if dex_children.is_empty() {
-                return Err(crate::error::Error::Unrecognised);
+                return Err(crate::error::Error::Unrecognized);
             }
             let dex_entries: Vec<AndroidDexEntry> = dex_children
                 .into_iter()
@@ -235,10 +235,10 @@ pub(crate) fn run_inner(bytes: &[u8]) -> crate::error::Result<MobilePassOutput> 
         }
         DetectedKind::AndroidBundle => {
             let format: BundleFormat =
-                detect_bundle_format(bytes).ok_or(crate::error::Error::Unrecognised)?;
+                detect_bundle_format(bytes).ok_or(crate::error::Error::Unrecognized)?;
             let children: Vec<(String, Vec<u8>)> = extract_android_bundle_children(bytes)?;
             if children.is_empty() {
-                return Err(crate::error::Error::Unrecognised);
+                return Err(crate::error::Error::Unrecognized);
             }
             let (apks, dex_entries): (Vec<AndroidDexEntry>, Vec<AndroidDexEntry>) = children
                 .iter()
@@ -255,7 +255,7 @@ pub(crate) fn run_inner(bytes: &[u8]) -> crate::error::Result<MobilePassOutput> 
         }
         DetectedKind::Unknown => {
             dbg_line(|| "wall: input matched no mobile container or bytecode signature".to_owned());
-            return Err(crate::error::Error::Unrecognised);
+            return Err(crate::error::Error::Unrecognized);
         }
     }
     Ok(output)
@@ -763,9 +763,9 @@ mod tests {
     }
 
     #[test]
-    fn run_inner_rejects_unrecognised_input() {
+    fn run_inner_rejects_unrecognized_input() {
         let bytes: Vec<u8> = vec![0u8; 32];
         let err: crate::error::Error = run_inner(&bytes).expect_err("must fail");
-        assert!(matches!(err, crate::error::Error::Unrecognised));
+        assert!(matches!(err, crate::error::Error::Unrecognized));
     }
 }

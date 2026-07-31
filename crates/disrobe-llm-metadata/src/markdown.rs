@@ -590,7 +590,7 @@ pub fn render_agents_md(bundle: &Json) -> String {
     push_line!(
         md,
         "- The control-flow shape table is ground truth recovered from bytecode; \
-         match branch & loop structure, not just behaviour."
+         match branch & loop structure, not just behavior."
     );
     if !view.confidence.is_empty() {
         push_line!(
@@ -677,7 +677,7 @@ pub fn render_skill_md(bundle: &Json) -> String {
     );
     push_line!(
         md,
-        "4. Keep every observed import & capability wired; removing one changes the artifact's behaviour."
+        "4. Keep every observed import & capability wired; removing one changes the artifact's behavior."
     );
     if !view.pii_categories.is_empty() {
         push_line!(
@@ -718,7 +718,7 @@ pub fn render_skill_md(bundle: &Json) -> String {
     if let Some("fail" | "partial") = view.roundtrip_status {
         push_line!(
             md,
-            "- Roundtrip is not byte-perfect; verify behaviour against the disasm before trusting the source."
+            "- Roundtrip is not byte-perfect; verify behavior against the disasm before trusting the source."
         );
     }
     push_line!(md);

@@ -1497,7 +1497,7 @@ mod tests {
             measured,
             "recovery.json publishes a delivered count of {delivered} for the Containers bar, but \
              {BREADTH_EVIDENCE} records {measured} format(s) writing member bytes from a committed \
-             input. Delivered is a behavioural claim, so it is bound to that run and never to \
+             input. Delivered is a behavioral claim, so it is bound to that run and never to \
              ContainerKind::payload_extractor_count, which only counts the arms of a hand-written \
              match and would make the claim true with no extraction code executed."
         );

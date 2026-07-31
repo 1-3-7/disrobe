@@ -48,7 +48,7 @@ fn unknown_pyc_magic_yields_explicit_signal_not_a_default() {
     let bogus_magic: u32 = 0xDEAD_BEEF;
     tampered[4..8].copy_from_slice(&bogus_magic.to_le_bytes());
     let err: Error = extract_pyz(&tampered)
-        .expect_err("an unrecognised pyc magic must error rather than silently assume 3.12");
+        .expect_err("an unrecognized pyc magic must error rather than silently assume 3.12");
     match err {
         Error::UnknownPyzMagic(magic) => assert_eq!(
             magic, bogus_magic,

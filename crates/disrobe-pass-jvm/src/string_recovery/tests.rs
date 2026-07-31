@@ -550,7 +550,7 @@ fn recovers_allatori_object_signature_decrypt() {
     assert_eq!(
         stubs.len(),
         1,
-        "the (Object)->String entry point must be recognised"
+        "the (Object)->String entry point must be recognized"
     );
     let report: StringRecoveryReport = recover_strings(&cf);
     assert_eq!(report.decrypt_methods, 1);

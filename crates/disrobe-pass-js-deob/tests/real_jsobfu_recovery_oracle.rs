@@ -95,7 +95,7 @@ fn real_jsobfu_recovery_folds_fromcharcode_chains() {
 }
 
 #[test]
-fn recovered_jsobfu_is_behaviourally_identical_to_ground_truth() {
+fn recovered_jsobfu_is_behaviorally_identical_to_ground_truth() {
     let Some(obf): Option<String> = load("jsobfu/obfuscated.js") else {
         eprintln!("SKIP: jsobfu/obfuscated.js fixture missing");
         return;
@@ -135,7 +135,7 @@ fn raw_obfuscated_and_recovered_agree_under_boa() {
     {
         assert_eq!(
             rec, raw,
-            "recovery must preserve the obfuscated program's runtime behaviour"
+            "recovery must preserve the obfuscated program's runtime behavior"
         );
     }
 }

@@ -1612,7 +1612,7 @@ fn extract_dmg(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
     let mut violations: Vec<String> = Vec::new();
     for ty in &summary.unsupported_chunk_types {
         violations.push(format!(
-            "dmg-chunk-unknown: unrecognised UDIF chunk type 0x{ty:08x} skipped (raw/zero/ignore/ADC/zlib/bzip2/LZFSE/LZMA are all decoded in-tree)"
+            "dmg-chunk-unknown: unrecognized UDIF chunk type 0x{ty:08x} skipped (raw/zero/ignore/ADC/zlib/bzip2/LZFSE/LZMA are all decoded in-tree)"
         ));
     }
     let image_size: u64 = image.len() as u64;

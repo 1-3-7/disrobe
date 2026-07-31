@@ -65,7 +65,7 @@ fn real_vbaproject_module1_source_and_pcode_agree() -> disrobe_pass_shell::Resul
     );
     assert!(
         module1.pcode_only_strings.is_empty() && module1.pcode_only_calls.is_empty(),
-        "non-stomped module must have no p-code-exclusive behaviour; report={module1:?}"
+        "non-stomped module must have no p-code-exclusive behavior; report={module1:?}"
     );
     assert!(!report.any_stomped, "clean fixture must not flag a stomp");
     Ok(())
@@ -100,7 +100,7 @@ fn synthetic_stomp_flags_stripped_source_but_recovers_pcode() -> disrobe_pass_sh
         module1
             .pcode_only_strings
             .contains(&"hello world".to_owned()),
-        "stomp report must surface the behaviour the attacker stripped; report={module1:?}"
+        "stomp report must surface the behavior the attacker stripped; report={module1:?}"
     );
     assert!(
         module1.recovered_source.contains("MsgBox \"hello world\""),

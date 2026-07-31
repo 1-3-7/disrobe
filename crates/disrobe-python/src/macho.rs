@@ -21,7 +21,7 @@ struct MachoReport {
 #[pyo3(text_signature = "(macho_bytes)")]
 fn macho_dump(macho_bytes: &[u8]) -> PyResult<PyMachoReport> {
     let kind: MachoKind = detect_magic(macho_bytes).ok_or_else(|| {
-        DisrobeError::new_err("not a Mach-O image (no recognised magic)".to_owned())
+        DisrobeError::new_err("not a Mach-O image (no recognized magic)".to_owned())
     })?;
     let (fat_entries, slices): (Vec<FatArchEntry>, Vec<ParsedSlice>) = match kind {
         MachoKind::Fat32 | MachoKind::Fat64 => {

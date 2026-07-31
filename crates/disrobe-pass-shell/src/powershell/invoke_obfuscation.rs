@@ -39,9 +39,9 @@ pub fn reverse_token(input: &str) -> ReverseReport {
             out = unticked;
         }
     }
-    if let Some(decased) = normalise_invoke_expression_aliases(&out) {
+    if let Some(decased) = normalize_invoke_expression_aliases(&out) {
         if decased != out {
-            transformations.push("normalise-iex-aliases".to_owned());
+            transformations.push("normalize-iex-aliases".to_owned());
             out = decased;
         }
     }
@@ -274,7 +274,7 @@ static IEX_ALIAS: LazyLock<Regex> = LazyLock::new(|| {
     )
 });
 
-fn normalise_invoke_expression_aliases(s: &str) -> Option<String> {
+fn normalize_invoke_expression_aliases(s: &str) -> Option<String> {
     if !IEX_ALIAS.is_match(s) {
         return None;
     }
@@ -1075,6 +1075,6 @@ mod tests {
     #[test]
     fn unused_error_variant_is_constructible() {
         let e: crate::error::Error = crate::error::Error::UnknownObfuscationLevel;
-        assert_eq!(format!("{e}"), "invoke-obfuscation level not recognised");
+        assert_eq!(format!("{e}"), "invoke-obfuscation level not recognized");
     }
 }

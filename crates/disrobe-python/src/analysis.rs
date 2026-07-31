@@ -262,7 +262,7 @@ fn native_patch<'py>(
 #[pyo3(text_signature = "(data, out_dir)")]
 fn extract(data: &[u8], out_dir: &str) -> PyResult<PyExtractionResult> {
     let kind: ContainerKind = detect_container(data)
-        .ok_or_else(|| DisrobeError::new_err("input is not a recognised container".to_owned()))?;
+        .ok_or_else(|| DisrobeError::new_err("input is not a recognized container".to_owned()))?;
     let result: BinExtractionResult =
         extract_to(kind, data, Path::new(out_dir)).map_err(map("extract"))?;
     PyExtractionResult::from_serialize(&result)

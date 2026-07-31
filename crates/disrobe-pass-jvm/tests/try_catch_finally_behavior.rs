@@ -313,7 +313,7 @@ fn jdk() -> Option<Jdk> {
         (find_on_path("javac"), find_on_path("java"))
     else {
         eprintln!(
-            "SKIP: javac/java not on PATH; the try-catch-finally behaviour gate is NOT enforced \
+            "SKIP: javac/java not on PATH; the try-catch-finally behavior gate is NOT enforced \
              on this machine. A green result here is a SKIP, not a measured pass."
         );
         return None;
@@ -322,11 +322,11 @@ fn jdk() -> Option<Jdk> {
 }
 
 #[test]
-fn try_catch_finally_recovers_with_the_same_observable_behaviour() {
+fn try_catch_finally_recovers_with_the_same_observable_behavior() {
     let Some(jdk): Option<Jdk> = jdk() else {
         return;
     };
-    let purpose: String = format!("disrobe_tcf_behaviour_{}", std::process::id());
+    let purpose: String = format!("disrobe_tcf_behavior_{}", std::process::id());
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
     let root: PathBuf = scratch.path().to_path_buf();
@@ -376,7 +376,7 @@ fn try_catch_finally_recovers_with_the_same_observable_behaviour() {
 }
 
 #[test]
-fn the_behaviour_gate_reports_a_double_counted_exception_path() {
+fn the_behavior_gate_reports_a_double_counted_exception_path() {
     let Some(jdk): Option<Jdk> = jdk() else {
         return;
     };
