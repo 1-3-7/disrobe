@@ -115,6 +115,111 @@ pub fn bound_symbols_by_slot(slice: &[u8], parsed: &ParsedSlice) -> BTreeMap<u64
     out
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChainedPointerFormat {
+    Arm64e,
+    Arm64eKernel,
+    Arm64eUserland,
+    Arm64eUserland24,
+    Pointer64,
+    Pointer64Offset,
+    Unsupported(u16),
+}
+
+impl ChainedPointerFormat {
+    #[must_use]
+    pub const fn from_raw(raw: u16) -> Self {
+        match raw {
+            CHAINED_PTR_ARM64E => Self::Arm64e,
+            CHAINED_PTR_ARM64E_KERNEL => Self::Arm64eKernel,
+            CHAINED_PTR_ARM64E_USERLAND => Self::Arm64eUserland,
+            CHAINED_PTR_ARM64E_USERLAND24 => Self::Arm64eUserland24,
+            CHAINED_PTR_64 => Self::Pointer64,
+            CHAINED_PTR_64_OFFSET => Self::Pointer64Offset,
+            other => Self::Unsupported(other),
+        }
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Arm64e => "arm64e",
+            Self::Arm64eKernel => "arm64e-kernel",
+            Self::Arm64eUserland => "arm64e-userland",
+            Self::Arm64eUserland24 => "arm64e-userland24",
+            Self::Pointer64 => "ptr64",
+            Self::Pointer64Offset => "ptr64-offset",
+            Self::Unsupported(_) => "unsupported",
+        }
+    }
+
+    #[must_use]
+    pub const fn is_authenticated(self) -> bool {
+        matches!(
+            self,
+            Self::Arm64e | Self::Arm64eKernel | Self::Arm64eUserland | Self::Arm64eUserland24
+        )
+    }
+}
+
+#[must_use]
+pub fn chained_pointer_formats(slice: &[u8], parsed: &ParsedSlice) -> Vec<ChainedPointerFormat> {
+    let mut out: Vec<ChainedPointerFormat> = Vec::new();
+    let Some(chain_data): Option<&[u8]> = chained_fixup_data(slice, parsed) else {
+        return out;
+    };
+    let Ok(starts_offset): Result<u32, _> = read_u32_le_at(chain_data, 4) else {
+        return out;
+    };
+    for seg_info_at in chained_segment_infos(chain_data, starts_offset as usize) {
+        let Ok(raw): Result<u16, _> = read_u16_le_at(chain_data, seg_info_at.saturating_add(6))
+        else {
+            continue;
+        };
+        let format: ChainedPointerFormat = ChainedPointerFormat::from_raw(raw);
+        if !out.contains(&format) {
+            out.push(format);
+        }
+    }
+    out
+}
+
+fn chained_fixup_data<'a>(slice: &'a [u8], parsed: &ParsedSlice) -> Option<&'a [u8]> {
+    let location: &LinkeditData = parsed.chained_fixups.as_ref()?;
+    let start: usize = location.offset as usize;
+    let size: usize = usize::try_from(location.size).ok()?;
+    let data: &[u8] = slice.get(start..start.checked_add(size)?)?;
+    (data.len() >= CHAINED_HEADER_SIZE).then_some(data)
+}
+
+fn chained_segment_infos(chain_data: &[u8], starts_offset: usize) -> Vec<usize> {
+    let mut out: Vec<usize> = Vec::new();
+    let Ok(seg_count): Result<u32, _> = read_u32_le_at(chain_data, starts_offset) else {
+        return out;
+    };
+    let segments: usize = usize::try_from(seg_count)
+        .unwrap_or(0)
+        .min(MAX_CHAINED_SEGMENTS);
+    for index in 0..segments {
+        let Some(entry_off): Option<usize> = index
+            .checked_mul(4)
+            .and_then(|delta: usize| starts_offset.checked_add(4)?.checked_add(delta))
+        else {
+            return out;
+        };
+        let Ok(seg_info_offset): Result<u32, _> = read_u32_le_at(chain_data, entry_off) else {
+            return out;
+        };
+        if seg_info_offset == 0 {
+            continue;
+        }
+        if let Some(seg_info_at) = starts_offset.checked_add(seg_info_offset as usize) {
+            out.push(seg_info_at);
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ChainedPointerShape {
     stride: u64,
@@ -125,37 +230,37 @@ struct ChainedPointerShape {
 }
 
 impl ChainedPointerShape {
-    const fn for_format(pointer_format: u16) -> Option<Self> {
-        match pointer_format {
-            CHAINED_PTR_ARM64E | CHAINED_PTR_ARM64E_USERLAND => Some(Self {
+    const fn for_format(format: ChainedPointerFormat) -> Option<Self> {
+        match format {
+            ChainedPointerFormat::Arm64e | ChainedPointerFormat::Arm64eUserland => Some(Self {
                 stride: 8,
                 next_shift: 51,
                 next_bits: 11,
                 bind_bit: 62,
                 ordinal_bits: 16,
             }),
-            CHAINED_PTR_ARM64E_USERLAND24 => Some(Self {
+            ChainedPointerFormat::Arm64eUserland24 => Some(Self {
                 stride: 8,
                 next_shift: 51,
                 next_bits: 11,
                 bind_bit: 62,
                 ordinal_bits: 24,
             }),
-            CHAINED_PTR_ARM64E_KERNEL => Some(Self {
+            ChainedPointerFormat::Arm64eKernel => Some(Self {
                 stride: 4,
                 next_shift: 51,
                 next_bits: 11,
                 bind_bit: 62,
                 ordinal_bits: 16,
             }),
-            CHAINED_PTR_64 | CHAINED_PTR_64_OFFSET => Some(Self {
+            ChainedPointerFormat::Pointer64 | ChainedPointerFormat::Pointer64Offset => Some(Self {
                 stride: 4,
                 next_shift: 51,
                 next_bits: 12,
                 bind_bit: 63,
                 ordinal_bits: 24,
             }),
-            _ => None,
+            ChainedPointerFormat::Unsupported(_) => None,
         }
     }
 
@@ -178,22 +283,9 @@ fn parse_chained_binds(
     view: &SliceView<'_>,
 ) -> BTreeMap<u64, String> {
     let mut out: BTreeMap<u64, String> = BTreeMap::new();
-    let Some(location): Option<&LinkeditData> = parsed.chained_fixups.as_ref() else {
+    let Some(chain_data): Option<&[u8]> = chained_fixup_data(slice, parsed) else {
         return out;
     };
-    let start: usize = location.offset as usize;
-    let Ok(size): Result<usize, _> = usize::try_from(location.size) else {
-        return out;
-    };
-    let Some(chain_data): Option<&[u8]> = start
-        .checked_add(size)
-        .and_then(|end: usize| slice.get(start..end))
-    else {
-        return out;
-    };
-    if chain_data.len() < CHAINED_HEADER_SIZE {
-        return out;
-    }
     let Ok(starts_offset): Result<u32, _> = read_u32_le_at(chain_data, 4) else {
         return out;
     };
@@ -287,29 +379,7 @@ fn walk_chained_segments(
     imports: &[String],
     out: &mut BTreeMap<u64, String>,
 ) {
-    let Ok(seg_count): Result<u32, _> = read_u32_le_at(chain_data, starts_offset) else {
-        return;
-    };
-    let segments: usize = usize::try_from(seg_count)
-        .unwrap_or(0)
-        .min(MAX_CHAINED_SEGMENTS);
-    for index in 0..segments {
-        let Some(entry_off): Option<usize> = index
-            .checked_mul(4)
-            .and_then(|delta: usize| starts_offset.checked_add(4)?.checked_add(delta))
-        else {
-            return;
-        };
-        let Ok(seg_info_offset): Result<u32, _> = read_u32_le_at(chain_data, entry_off) else {
-            return;
-        };
-        if seg_info_offset == 0 {
-            continue;
-        }
-        let Some(seg_info_at): Option<usize> = starts_offset.checked_add(seg_info_offset as usize)
-        else {
-            continue;
-        };
+    for seg_info_at in chained_segment_infos(chain_data, starts_offset) {
         walk_chained_pages(
             chain_data,
             seg_info_at,
@@ -343,7 +413,8 @@ fn walk_chained_pages(
     ) else {
         return;
     };
-    let Some(shape): Option<ChainedPointerShape> = ChainedPointerShape::for_format(pointer_format)
+    let Some(shape): Option<ChainedPointerShape> =
+        ChainedPointerShape::for_format(ChainedPointerFormat::from_raw(pointer_format))
     else {
         return;
     };
@@ -1874,9 +1945,15 @@ mod tests {
         assert!(chained_symbol_table(9).is_empty());
     }
 
-    #[test]
-    fn a_chained_bind_chain_resolves_every_slot_it_links() {
-        const CHAIN_DATA_AT: usize = 0x1000;
+    const CHAIN_DATA_AT: usize = 0x1000;
+    const CHAIN_PAGE_START: u16 = 0x10;
+    const AUTH_BIT: u64 = 1 << 63;
+
+    fn chained_slice(
+        pointer_format: u16,
+        words: &[(usize, u64)],
+        declared_size: Option<u32>,
+    ) -> (Vec<u8>, ParsedSlice) {
         let mut parsed: ParsedSlice = wide_data_segment();
         let blob: ChainedBlob = chained_blob(
             CHAINED_IMPORT,
@@ -1892,25 +1969,41 @@ mod tests {
         data.extend_from_slice(&8u32.to_le_bytes());
         data.extend_from_slice(&24u32.to_le_bytes());
         data.extend_from_slice(&0x1000u16.to_le_bytes());
-        data.extend_from_slice(&CHAINED_PTR_64.to_le_bytes());
+        data.extend_from_slice(&pointer_format.to_le_bytes());
         data.extend_from_slice(&0u64.to_le_bytes());
         data.extend_from_slice(&0u32.to_le_bytes());
         data.extend_from_slice(&1u16.to_le_bytes());
-        data.extend_from_slice(&0x10u16.to_le_bytes());
+        data.extend_from_slice(&CHAIN_PAGE_START.to_le_bytes());
         parsed.chained_fixups = Some(LinkeditData {
             offset: u32::try_from(CHAIN_DATA_AT).expect("offset fits"),
-            size: u32::try_from(data.len()).expect("size fits"),
+            size: declared_size.unwrap_or_else(|| u32::try_from(data.len()).expect("size fits")),
         });
 
         let mut slice: Vec<u8> = vec![0u8; CHAIN_DATA_AT + data.len()];
+        for (at, word) in words {
+            slice[*at..*at + 8].copy_from_slice(&word.to_le_bytes());
+        }
+        slice[CHAIN_DATA_AT..CHAIN_DATA_AT + data.len()].copy_from_slice(&data);
+        (slice, parsed)
+    }
+
+    fn chained_binds_of(
+        pointer_format: u16,
+        words: &[(usize, u64)],
+        declared_size: Option<u32>,
+    ) -> BTreeMap<u64, String> {
+        let (slice, parsed): (Vec<u8>, ParsedSlice) =
+            chained_slice(pointer_format, words, declared_size);
+        let view: SliceView<'_> = SliceView::new(&slice, &parsed).expect("view");
+        parse_chained_binds(&slice, &parsed, &view)
+    }
+
+    #[test]
+    fn a_chained_bind_chain_resolves_every_slot_it_links() {
         let first: u64 = 1u64 << 63 | 2u64 << 51 | 1;
         let second: u64 = 1u64 << 63;
-        slice[0x10..0x18].copy_from_slice(&first.to_le_bytes());
-        slice[0x18..0x20].copy_from_slice(&second.to_le_bytes());
-        slice[CHAIN_DATA_AT..CHAIN_DATA_AT + data.len()].copy_from_slice(&data);
-
-        let view: SliceView<'_> = SliceView::new(&slice, &parsed).expect("view");
-        let binds: BTreeMap<u64, String> = parse_chained_binds(&slice, &parsed, &view);
+        let binds: BTreeMap<u64, String> =
+            chained_binds_of(CHAINED_PTR_64, &[(0x10, first), (0x18, second)], None);
         assert_eq!(
             binds.get(&0x1010).map(String::as_str),
             Some("_OBJC_CLASS_$_NSBundle"),
@@ -1926,6 +2019,115 @@ mod tests {
             strip_class_symbol("_OBJC_CLASS_$_NSBundle"),
             Some("NSBundle")
         );
+    }
+
+    #[test]
+    fn an_authenticated_bind_names_the_same_import_as_a_plain_one() {
+        for pointer_format in [CHAINED_PTR_ARM64E, CHAINED_PTR_ARM64E_USERLAND24] {
+            let plain: u64 = 1u64 << 62 | 1;
+            let authenticated: u64 = AUTH_BIT | plain;
+            let plain_binds: BTreeMap<u64, String> =
+                chained_binds_of(pointer_format, &[(0x10, plain)], None);
+            let auth_binds: BTreeMap<u64, String> =
+                chained_binds_of(pointer_format, &[(0x10, authenticated)], None);
+            assert_eq!(
+                plain_binds.get(&0x1010).map(String::as_str),
+                Some("_OBJC_CLASS_$_NSBundle"),
+                "format {pointer_format} must resolve a plain bind"
+            );
+            assert_eq!(
+                auth_binds, plain_binds,
+                "format {pointer_format} carries the authentication bits above the bind bit, and \
+                 the diversity and key an authenticated pointer adds do not move the ordinal, so \
+                 signing a pointer must not change which import it names"
+            );
+        }
+    }
+
+    #[test]
+    fn an_authenticated_rebase_is_never_read_as_a_bind() {
+        for pointer_format in [CHAINED_PTR_ARM64E, CHAINED_PTR_ARM64E_USERLAND24] {
+            let rebase: u64 = AUTH_BIT | 1;
+            let binds: BTreeMap<u64, String> =
+                chained_binds_of(pointer_format, &[(0x10, rebase)], None);
+            assert!(
+                binds.is_empty(),
+                "format {pointer_format}: this word has the authentication bit set and the bind \
+                 bit clear, so it rebases a pointer inside this image and names no import. \
+                 Reading the authentication bit as the bind bit would take its low bits for an \
+                 ordinal and attach a real symbol name to a slot that never imported anything, \
+                 which is the kind of wrong answer that reads as a correct one"
+            );
+        }
+    }
+
+    #[test]
+    fn a_chain_that_leaves_the_mapped_image_stops_instead_of_inventing_a_slot() {
+        let runaway: u64 = 1u64 << 63 | 0x7FFu64 << 51 | 1;
+        let binds: BTreeMap<u64, String> =
+            chained_binds_of(CHAINED_PTR_64, &[(0x10, runaway)], None);
+        assert_eq!(
+            binds.get(&0x1010).map(String::as_str),
+            Some("_OBJC_CLASS_$_NSBundle"),
+            "the slot that is present is still resolved"
+        );
+        assert_eq!(
+            binds.len(),
+            1,
+            "the next link lands outside every mapped segment, so the walk stops there rather \
+             than reading whatever byte follows and reporting a slot the image does not have"
+        );
+    }
+
+    #[test]
+    fn an_ordinal_past_the_import_table_names_nothing() {
+        let out_of_range: u64 = 1u64 << 63 | 0x00FF_FFFF;
+        let binds: BTreeMap<u64, String> =
+            chained_binds_of(CHAINED_PTR_64, &[(0x10, out_of_range)], None);
+        assert!(
+            binds.is_empty(),
+            "the import table holds two entries, so an ordinal past it must leave the slot \
+             unnamed rather than wrap onto a name that happens to be in range"
+        );
+    }
+
+    #[test]
+    fn a_fixup_blob_that_runs_past_the_file_yields_nothing() {
+        let word: u64 = 1u64 << 63 | 1;
+        let binds: BTreeMap<u64, String> =
+            chained_binds_of(CHAINED_PTR_64, &[(0x10, word)], Some(1 << 20));
+        assert!(
+            binds.is_empty(),
+            "the load command declares more fixup bytes than the file holds, so the table is not \
+             there to be read and no part of it may be reported as read"
+        );
+    }
+
+    #[test]
+    fn an_unknown_pointer_format_yields_nothing_rather_than_a_guess() {
+        let word: u64 = 1u64 << 63 | 1;
+        let binds: BTreeMap<u64, String> = chained_binds_of(99, &[(0x10, word)], None);
+        assert!(binds.is_empty());
+        assert_eq!(
+            ChainedPointerFormat::from_raw(99),
+            ChainedPointerFormat::Unsupported(99)
+        );
+        assert!(!ChainedPointerFormat::Unsupported(99).is_authenticated());
+    }
+
+    #[test]
+    fn the_arm64e_formats_are_the_authenticated_ones() {
+        for raw in [
+            CHAINED_PTR_ARM64E,
+            CHAINED_PTR_ARM64E_KERNEL,
+            CHAINED_PTR_ARM64E_USERLAND,
+            CHAINED_PTR_ARM64E_USERLAND24,
+        ] {
+            assert!(ChainedPointerFormat::from_raw(raw).is_authenticated());
+        }
+        for raw in [CHAINED_PTR_64, CHAINED_PTR_64_OFFSET] {
+            assert!(!ChainedPointerFormat::from_raw(raw).is_authenticated());
+        }
     }
 
     fn push_uleb(buf: &mut Vec<u8>, mut value: u64) {
