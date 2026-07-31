@@ -37,7 +37,7 @@ fn jvm_classfile_header(bytes: &[u8]) -> bool {
     bytes.starts_with(&[0xca, 0xfe, 0xba, 0xbe])
 }
 
-fn source_text(bytes: &[u8]) -> bool {
+const fn source_text(bytes: &[u8]) -> bool {
     std::str::from_utf8(bytes).is_ok()
 }
 
@@ -362,8 +362,10 @@ fn the_recorded_misdetections_only_ever_shrink() {
         .iter()
         .filter(|(_, status, _): &&(String, String, String)| status == STATUS_MISDETECT)
         .collect();
-    assert!(
-        misdetected.len() <= KNOWN_MISDETECTIONS,
+    let over_ceiling: usize = misdetected.len().saturating_sub(KNOWN_MISDETECTIONS);
+    assert_eq!(
+        over_ceiling,
+        0,
         "{EVIDENCE} records {} formats claiming a source file they cannot contain, against a \
          ceiling of {KNOWN_MISDETECTIONS}. A detector that started firing on unrelated bytes must \
          fail here rather than be absorbed into the golden as an expected row: {misdetected:?}",
