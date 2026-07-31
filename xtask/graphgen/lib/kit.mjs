@@ -9,7 +9,7 @@ export const C = {
   faint: "#828282",
   accent: "#8fb3d9",
   teal: "#9cc2c4",
-  blue: "#92b4d6",
+  blue: "#b0a2d0",
   amber: "#c9a98e",
   orange: "#cfc9a8",
   red: "#d08c8c",

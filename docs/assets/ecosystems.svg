@@ -10,15 +10,15 @@
   <text x="42.00" y="113.00" font-size="12.5" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Python pyc</text>
   <text x="42.00" y="130.00" font-size="10.5" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">1.0-3.15 supported</text>
   <rect x="321.33" y="92.00" width="277.33" height="50.00" rx="7.00" fill="#161616" stroke="#262626" stroke-width="1"/>
-  <rect x="321.33" y="92.00" width="3.50" height="50.00" fill="#92b4d6"/>
+  <rect x="321.33" y="92.00" width="3.50" height="50.00" fill="#b0a2d0"/>
   <text x="335.33" y="113.00" font-size="12.5" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">PyArmor</text>
   <text x="335.33" y="130.00" font-size="10.5" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">v6-v9 static-key</text>
   <rect x="614.67" y="92.00" width="277.33" height="50.00" rx="7.00" fill="#161616" stroke="#262626" stroke-width="1"/>
-  <rect x="614.67" y="92.00" width="3.50" height="50.00" fill="#92b4d6"/>
+  <rect x="614.67" y="92.00" width="3.50" height="50.00" fill="#b0a2d0"/>
   <text x="628.67" y="113.00" font-size="12.5" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">PyInstaller</text>
   <text x="628.67" y="130.00" font-size="10.5" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">onefile + onedir</text>
   <rect x="28.00" y="152.00" width="277.33" height="50.00" rx="7.00" fill="#161616" stroke="#262626" stroke-width="1"/>
-  <rect x="28.00" y="152.00" width="3.50" height="50.00" fill="#92b4d6"/>
+  <rect x="28.00" y="152.00" width="3.50" height="50.00" fill="#b0a2d0"/>
   <text x="42.00" y="173.00" font-size="12.5" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Nuitka</text>
   <text x="42.00" y="190.00" font-size="10.5" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">onefile, C-bounded body</text>
   <rect x="321.33" y="152.00" width="277.33" height="50.00" rx="7.00" fill="#161616" stroke="#262626" stroke-width="1"/>
@@ -86,7 +86,7 @@
   <text x="335.33" y="473.00" font-size="12.5" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Shell / PowerShell</text>
   <text x="335.33" y="490.00" font-size="10.5" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">deobfuscate</text>
   <rect x="614.67" y="452.00" width="277.33" height="50.00" rx="7.00" fill="#161616" stroke="#262626" stroke-width="1"/>
-  <rect x="614.67" y="452.00" width="3.50" height="50.00" fill="#92b4d6"/>
+  <rect x="614.67" y="452.00" width="3.50" height="50.00" fill="#b0a2d0"/>
   <text x="628.67" y="473.00" font-size="12.5" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Native PE/ELF/Mach-O</text>
   <text x="628.67" y="490.00" font-size="10.5" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">stub-emu unpack</text>
   <rect x="28.00" y="512.00" width="277.33" height="50.00" rx="7.00" fill="#161616" stroke="#262626" stroke-width="1"/>
@@ -101,7 +101,7 @@
   <text x="50.00" y="580.00" font-size="10.5" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">recovers source</text>
   <rect x="152.00" y="571.00" width="16.00" height="10.00" rx="2.00" fill="#9cc2c4"/>
   <text x="174.00" y="580.00" font-size="10.5" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">bytecode to source</text>
-  <rect x="288.00" y="571.00" width="16.00" height="10.00" rx="2.00" fill="#92b4d6"/>
+  <rect x="288.00" y="571.00" width="16.00" height="10.00" rx="2.00" fill="#b0a2d0"/>
   <text x="310.00" y="580.00" font-size="10.5" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">unpack / extract</text>
   <rect x="411.00" y="571.00" width="16.00" height="10.00" rx="2.00" fill="#c9a98e"/>
   <text x="433.00" y="580.00" font-size="10.5" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">symbols + metadata</text>

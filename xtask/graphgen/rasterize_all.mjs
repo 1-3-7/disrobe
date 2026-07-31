@@ -11,7 +11,7 @@ if (!OUT) {
 const ROOT = join(import.meta.dirname, "..", "..");
 const TARGETS = [
   ["docs/assets/recovery.svg", "recovery.png"],
-  ["docs/assets/python.svg", "python.png"],
+  ["docs/assets/python-versions.svg", "python-versions.png"],
   ["docs/assets/ecosystems.svg", "ecosystems.png"],
   ["docs/assets/verification.svg", "verification.png"],
   ["docs/assets/architecture.svg", "architecture.png"],
