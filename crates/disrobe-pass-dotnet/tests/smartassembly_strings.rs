@@ -24,7 +24,7 @@ const EXPECTED_PLAINTEXTS: &[&str] = &[
     "AKIA5EXAMPLEKEYID1234",
 ];
 
-fn forward_encrypt(plain: &str, key: u32) -> Vec<u16> {
+fn encrypt_per_published_algorithm(plain: &str, key: u32) -> Vec<u16> {
     let key_bytes: [u8; 4] = key.to_le_bytes();
     plain
         .encode_utf16()
@@ -37,20 +37,20 @@ fn forward_encrypt(plain: &str, key: u32) -> Vec<u16> {
         .collect()
 }
 
-fn build_sample() -> Vec<u8> {
+fn build_modelled_image() -> Vec<u8> {
     let mut spec: DotnetPeSpec =
         DotnetPeSpec::new(&["SmartAssembly.Attributes", "PoweredByAttribute"]);
     spec.cctor_body = Some(ldc_i4_store_cctor(KEY, 0x0400_0001));
     spec.us_entries = EXPECTED_PLAINTEXTS
         .iter()
-        .map(|p: &&str| forward_encrypt(p, KEY))
+        .map(|p: &&str| encrypt_per_published_algorithm(p, KEY))
         .collect();
     build_dotnet_pe(&spec)
 }
 
 #[test]
-fn cctor_key_drives_byte_exact_string_recovery_against_expected_vector() {
-    let image: Vec<u8> = build_sample();
+fn cctor_key_drives_byte_exact_string_recovery_on_a_modelled_image() {
+    let image: Vec<u8> = build_modelled_image();
     let recovery: SmartAssemblyStrings = recover_smartassembly_strings(&image).expect("recover");
     assert_eq!(
         recovery.key,
@@ -68,7 +68,7 @@ fn cctor_key_drives_byte_exact_string_recovery_against_expected_vector() {
 
 #[test]
 fn on_disk_us_heap_holds_only_ciphertext_never_plaintext() {
-    let image: Vec<u8> = build_sample();
+    let image: Vec<u8> = build_modelled_image();
     for expected in EXPECTED_PLAINTEXTS {
         let plain_le: Vec<u8> = expected
             .encode_utf16()
@@ -84,8 +84,8 @@ fn on_disk_us_heap_holds_only_ciphertext_never_plaintext() {
 }
 
 #[test]
-fn peel_reports_recovered_strings_and_promotes_strategy() {
-    let image: Vec<u8> = build_sample();
+fn peel_reports_recovered_strings_and_promotes_strategy_on_a_modelled_image() {
+    let image: Vec<u8> = build_modelled_image();
     let report: PeelReport = peel_smartassembly(&image).expect("peel");
     assert_eq!(report.strategy, PeelStrategy::EncryptedResourceExtracted);
     assert_eq!(report.recovered_strings.len(), EXPECTED_PLAINTEXTS.len());
@@ -95,7 +95,7 @@ fn peel_reports_recovered_strings_and_promotes_strategy() {
 fn wrong_cctor_key_yields_no_false_recovery() {
     let mut spec: DotnetPeSpec = DotnetPeSpec::new(&["SmartAssembly.Attributes"]);
     spec.cctor_body = Some(ldc_i4_store_cctor(KEY ^ 0x00FF_0000, 0x0400_0001));
-    spec.us_entries = vec![forward_encrypt(EXPECTED_PLAINTEXTS[0], KEY)];
+    spec.us_entries = vec![encrypt_per_published_algorithm(EXPECTED_PLAINTEXTS[0], KEY)];
     let image: Vec<u8> = build_dotnet_pe(&spec);
     let recovery: SmartAssemblyStrings = recover_smartassembly_strings(&image).expect("recover");
     assert!(

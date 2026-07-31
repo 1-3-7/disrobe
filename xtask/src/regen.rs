@@ -109,6 +109,12 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         || crate::roster_breadth::run(root, region_mode(check)),
         &mut stale,
     );
+    run_one(
+        "dotnet-string-evidence",
+        check,
+        || crate::dotnet_string_evidence::run(root, region_mode(check)),
+        &mut stale,
+    );
 
     if check {
         if stale.is_empty() {

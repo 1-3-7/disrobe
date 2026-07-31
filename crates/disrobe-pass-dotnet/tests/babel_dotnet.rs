@@ -70,7 +70,7 @@ fn babel_resource_with_cipher(key: [u8; 8], iv: [u8; 8], cipher: &[u8]) -> Vec<u
     resource
 }
 
-fn build_babel_resource(plaintexts: &[&str]) -> Vec<u8> {
+fn build_modelled_babel_resource(plaintexts: &[&str]) -> Vec<u8> {
     let plain_blob: Vec<u8> = binaryreader_string_blob(plaintexts);
     let cipher: Vec<u8> = des_cbc_encrypt_pkcs7(BABEL_KEY, BABEL_IV, &plain_blob);
     babel_resource_with_cipher(BABEL_KEY, BABEL_IV, &cipher)
@@ -106,13 +106,13 @@ const PLAINTEXTS: &[&str] = &[
     "https://license.example.net/validate",
 ];
 
-fn babel_sample() -> Vec<u8> {
-    babel_image_with_resource(build_babel_resource(PLAINTEXTS))
+fn modelled_babel_sample() -> Vec<u8> {
+    babel_image_with_resource(build_modelled_babel_resource(PLAINTEXTS))
 }
 
 #[test]
 fn babel_recovers_known_plaintext_from_self_built_des_resource() {
-    let image: Vec<u8> = babel_sample();
+    let image: Vec<u8> = modelled_babel_sample();
     let report: PeelReport = peel_babel_net(&image).expect("peel");
     let recovered: Vec<&str> = report
         .recovered_strings
@@ -150,7 +150,7 @@ fn babel_rejects_a_header_shaped_blob_that_is_not_a_string_resource() {
 
 #[test]
 fn babel_rejects_a_resource_whose_embedded_key_is_off_by_one_byte() {
-    let good: Vec<u8> = build_babel_resource(PLAINTEXTS);
+    let good: Vec<u8> = build_modelled_babel_resource(PLAINTEXTS);
     let recovered: ResourceStringRecovery = babel_recovery(good.clone());
     assert_eq!(recovered.strings.len(), PLAINTEXTS.len());
 
@@ -226,7 +226,7 @@ fn babel_reports_nothing_for_a_real_non_babel_assembly() {
 #[test]
 fn babel_still_recovers_literals_carrying_tabs_and_newlines() {
     let literals: &[&str] = &["path\tname", "line one\r\nline two", ""];
-    let recovery: ResourceStringRecovery = babel_recovery(build_babel_resource(literals));
+    let recovery: ResourceStringRecovery = babel_recovery(build_modelled_babel_resource(literals));
     assert_eq!(recovery.strings, literals);
     assert_eq!(recovery.dynamic_wall, None);
 }
