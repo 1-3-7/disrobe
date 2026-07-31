@@ -1,13 +1,13 @@
 # Containers and archives
 
-Before `disrobe` can decompile anything, it often has to get inside a container. The `disrobe-binfmt` layer detects and writes member bytes in-tree for every format below, with auto-detection, recursive chaining through nested layers, and shared zip-slip and decompression-bomb guards.
+Before `disrobe` can decompile anything, it often has to get inside a container. The `disrobe-binfmt` layer detects every format below and carries an in-tree member-byte extractor for each, with auto-detection, recursive chaining through nested layers, and shared zip-slip and decompression-bomb guards. A committed input drives 33 of them to member bytes on disk; the rest are unverified rather than shown to fail, because no committed input reaches them.
 
 ## At a glance
 
 | Surface | Support |
 |---|---|
 | Formats declared | <!-- roster-breadth:containers-declared -->100<!-- /roster-breadth --> archive, installer, filesystem, and firmware formats, each carrying an in-tree extractor |
-| Formats exercised | <!-- roster-breadth:containers-exercised -->33<!-- /roster-breadth --> of them are driven to member bytes on disk by an input this repository commits, measured by `crates/disrobe-cli/tests/container_breadth.rs` and pinned in `crates/disrobe-cli/tests/golden/container_breadth.txt`. The rest carry an extractor that no committed input reaches, so the declared roster is a capability list rather than a measurement |
+| Formats exercised | <!-- roster-breadth:containers-exercised -->33<!-- /roster-breadth --> of them are driven to member bytes on disk by an input this repository commits, measured by `crates/disrobe-cli/tests/container_breadth.rs` and pinned in `crates/disrobe-cli/tests/golden/container_breadth.txt`. The rest carry an extractor that no committed input reaches, so they are unverified rather than shown to fail and the declared roster is a capability list rather than a measurement |
 | Carve engine | A recursive carve-everything scan for every known magic, modeling chunked payloads, recursing by depth, and using entropy to separate code from padding |
 | Nesting | Container-in-container chaining, governed by `--max-depth` (default 8) |
 | Directory input | Batch-processed recursively, bounded by `--batch-max-depth` |

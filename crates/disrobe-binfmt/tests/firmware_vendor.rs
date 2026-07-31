@@ -10,6 +10,12 @@ use disrobe_binfmt::{ExtractionResult, extract_to};
 
 const SQUASHFS_MAGIC: [u8; 4] = [0x68, 0x73, 0x71, 0x73];
 
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+}
+
 fn temp_dir(name: &str) -> disrobe_core::scratch::ScratchDir {
     let purpose: String = format!("disrobe-firmware-{name}");
     disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
@@ -117,17 +123,8 @@ fn alpha_mangle(signature: &[u8], data: &[u8]) -> Vec<u8> {
 
 #[test]
 fn dlink_alpha_v1_spec_constructed_decrypts_with_device_table() {
-    let signature: &[u8] = b"wrgac43s_dlink.2015_dir822c1";
-    let key: [u8; 32] = *b"KNpsEntCcsep1jdFIs3wnXySKRGNCGmf";
-    let iv: [u8; 16] = *b"uph587JdKHrtAUlr";
-
-    let mut mkey: [u8; 32] = [0u8; 32];
-    mkey.copy_from_slice(&alpha_mangle(signature, &key));
-    let mut miv: [u8; 16] = [0u8; 16];
-    miv.copy_from_slice(&alpha_mangle(signature, &iv));
-
     let plaintext: Vec<u8> = inner_plaintext(80);
-    let ciphertext: Vec<u8> = aes256_cbc_encrypt(&mkey, &miv, &plaintext);
+    let ciphertext: Vec<u8> = alpha_v1_dir822c1_image(&plaintext);
 
     assert_eq!(
         detect_firmware(&ciphertext),
@@ -137,6 +134,73 @@ fn dlink_alpha_v1_spec_constructed_decrypts_with_device_table() {
         extract_firmware(FirmwareKind::DlinkAlphaV1, &ciphertext).expect("alpha v1 decrypt");
     assert_eq!(out.members[0].data, plaintext);
     assert_eq!(out.inner_kind_hint.as_deref(), Some("squashfs"));
+}
+
+const ALPHA_V1_DIR822C1_SIGNATURE: &[u8] = b"wrgac43s_dlink.2015_dir822c1";
+const ALPHA_V1_DIR822C1_KEY: [u8; 32] = *b"KNpsEntCcsep1jdFIs3wnXySKRGNCGmf";
+const ALPHA_V1_DIR822C1_IV: [u8; 16] = *b"uph587JdKHrtAUlr";
+
+fn alpha_v1_dir822c1_image(plaintext: &[u8]) -> Vec<u8> {
+    let mut mkey: [u8; 32] = [0u8; 32];
+    mkey.copy_from_slice(&alpha_mangle(
+        ALPHA_V1_DIR822C1_SIGNATURE,
+        &ALPHA_V1_DIR822C1_KEY,
+    ));
+    let mut miv: [u8; 16] = [0u8; 16];
+    miv.copy_from_slice(&alpha_mangle(
+        ALPHA_V1_DIR822C1_SIGNATURE,
+        &ALPHA_V1_DIR822C1_IV,
+    ));
+    aes256_cbc_encrypt(&mkey, &miv, plaintext)
+}
+
+fn gzip_member(method: u8, flags: u8) -> Vec<u8> {
+    let mut plaintext: Vec<u8> = vec![0x1f, 0x8b, method, flags];
+    plaintext.resize(64, 0x41);
+    plaintext
+}
+
+#[test]
+fn dlink_alpha_v1_accepts_a_gzip_inner_whose_deflate_and_flag_fields_are_what_rfc_1952_defines() {
+    let image: Vec<u8> = alpha_v1_dir822c1_image(&gzip_member(0x08, 0x00));
+    assert_eq!(detect_firmware(&image), Some(FirmwareKind::DlinkAlphaV1));
+}
+
+#[test]
+fn dlink_alpha_v1_refuses_a_two_byte_gzip_prefix_over_fields_no_gzip_stream_carries() {
+    for (method, flags) in [(0x07u8, 0x00u8), (0x08, 0xe0), (0x00, 0x20)] {
+        let image: Vec<u8> = alpha_v1_dir822c1_image(&gzip_member(method, flags));
+        assert_eq!(
+            detect_firmware(&image),
+            None,
+            "a first block decrypting to the two-byte gzip prefix with compression method \
+             {method:#04x} and flag byte {flags:#04x} is not a gzip header, and accepting it on \
+             the prefix alone is how one coincidence in 2^16 per device key becomes a published \
+             firmware detection"
+        );
+    }
+}
+
+#[test]
+fn dlink_alpha_v1_refuses_a_cpython_bytecode_file() {
+    let path: PathBuf =
+        repo_root().join("corpus/python/decompile/legacy/compiled/unicode_future.3.3.pyc");
+    let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "{} is the committed input whose first block decrypts to a gzip prefix under the \
+             dap1720 device key; without it this check cannot tell whether the detector still \
+             claims a CPython bytecode file as D-Link firmware: {error}",
+            path.display()
+        )
+    });
+    assert_eq!(
+        &bytes[2..4],
+        b"\r\n",
+        "a CPython bytecode header carries a carriage return and line feed at offset 2, so a file \
+         without them is not the input this check was written against"
+    );
+    assert_eq!(detect_firmware(&bytes), None);
+    assert_eq!(detect_container(&bytes), None);
 }
 
 #[test]

@@ -344,6 +344,8 @@ fn decrypt_dlink_encrpted_img(bytes: &[u8]) -> Result<FirmwareExtraction> {
     ))
 }
 
+const AES_BLOCK_LEN: usize = 16;
+const ALPHA_PROBE_BLOCKS: usize = 2;
 const DLINK_ALPHA_XOR_RANGE: usize = 0xfc;
 const DLINK_ALPHA_V2_HEADER_LEN: usize = 0xa0;
 const DLINK_ALPHA_V2_KEY: [u8; 32] = *b"oVhq0hvXHdfaGFLdubM4/QvuVHdKee7v";
@@ -413,13 +415,18 @@ fn alpha_v1_device_for(enc_start: &[u8]) -> Option<&'static AlphaDevice> {
         .find(|d: &&AlphaDevice| enc_start.len() >= 4 && enc_start[..4] == d.enc_start)
 }
 
+const fn alpha_ciphertext_shape(bytes: &[u8]) -> bool {
+    bytes.len() >= AES_BLOCK_LEN && bytes.len().is_multiple_of(AES_BLOCK_LEN)
+}
+
 fn alpha_v1_detect(bytes: &[u8]) -> bool {
-    if bytes.len() < 16 {
+    if !alpha_ciphertext_shape(bytes) {
         return false;
     }
-    ALPHA_V1_DEVICES
-        .iter()
-        .any(|d: &AlphaDevice| alpha_v1_first_block_matches(d, bytes))
+    alpha_v1_device_for(bytes).is_some()
+        || ALPHA_V1_DEVICES
+            .iter()
+            .any(|d: &AlphaDevice| alpha_v1_first_block_matches(d, bytes))
 }
 
 fn alpha_mangle(signature: &[u8], data: &[u8]) -> Vec<u8> {
@@ -446,18 +453,23 @@ fn alpha_mangled_iv(signature: &[u8], iv: &[u8; 16]) -> [u8; 16] {
     out
 }
 
+fn alpha_probe_plaintext(key: &[u8; 32], iv: &[u8; 16], ciphertext: &[u8]) -> Option<Vec<u8>> {
+    let blocks: usize = (ciphertext.len() / AES_BLOCK_LEN).min(ALPHA_PROBE_BLOCKS);
+    if blocks == 0 {
+        return None;
+    }
+    aes256_cbc_decrypt(key, iv, &ciphertext[..blocks * AES_BLOCK_LEN]).ok()
+}
+
 fn alpha_v2_header_shape(bytes: &[u8]) -> bool {
     let signature: &[u8] = signature_from_wrgg(bytes);
     let key: [u8; 32] = alpha_mangled_key32(signature, &DLINK_ALPHA_V2_KEY);
     let iv: [u8; 16] = alpha_mangled_iv(signature, &DLINK_ALPHA_V2_IV);
     let body: &[u8] = match bytes.get(DLINK_ALPHA_V2_HEADER_LEN..) {
-        Some(b) if !b.is_empty() && b.len().is_multiple_of(16) => b,
+        Some(b) if alpha_ciphertext_shape(b) => b,
         _ => return false,
     };
-    let probe_len: usize = body.len().min(16);
-    aes256_cbc_decrypt(&key, &iv, &body[..probe_len])
-        .ok()
-        .is_some_and(|p: Vec<u8>| inner_magic_present(&p))
+    alpha_probe_plaintext(&key, &iv, body).is_some_and(|p: Vec<u8>| inner_header_credible(&p))
 }
 
 fn signature_from_wrgg(bytes: &[u8]) -> &[u8] {
@@ -470,14 +482,9 @@ fn signature_from_wrgg(bytes: &[u8]) -> &[u8] {
 }
 
 fn alpha_v1_first_block_matches(device: &AlphaDevice, bytes: &[u8]) -> bool {
-    if bytes.len() < 16 {
-        return false;
-    }
     let key: [u8; 32] = alpha_mangled_key32(device.signature, &device.key);
     let iv: [u8; 16] = alpha_mangled_iv(device.signature, &device.iv);
-    aes256_cbc_decrypt(&key, &iv, &bytes[..16])
-        .ok()
-        .is_some_and(|p: Vec<u8>| inner_magic_present(&p))
+    alpha_probe_plaintext(&key, &iv, bytes).is_some_and(|p: Vec<u8>| inner_header_credible(&p))
 }
 
 fn select_alpha_v1_device(bytes: &[u8]) -> Option<&'static AlphaDevice> {
@@ -1087,8 +1094,25 @@ const INNER_MAGICS: &[(&[u8], &str)] = &[
     (b"SHRS", "dlink-shrs"),
 ];
 
-fn inner_magic_present(plaintext: &[u8]) -> bool {
-    inner_magic_label(plaintext).is_some()
+const DETECTION_MAGIC_MIN_LEN: usize = 4;
+const GZIP_DEFLATE_METHOD: u8 = 0x08;
+const GZIP_RESERVED_FLAGS: u8 = 0xe0;
+
+fn inner_header_credible(plaintext: &[u8]) -> bool {
+    INNER_MAGICS.iter().any(|(magic, _): &(&[u8], &str)| {
+        plaintext.starts_with(magic)
+            && (magic.len() >= DETECTION_MAGIC_MIN_LEN || short_magic_fields_valid(plaintext))
+    })
+}
+
+fn short_magic_fields_valid(plaintext: &[u8]) -> bool {
+    match plaintext {
+        [0x1f, 0x8b, method, flags, ..] => {
+            *method == GZIP_DEFLATE_METHOD && *flags & GZIP_RESERVED_FLAGS == 0
+        }
+        [b'B', b'Z', b'h', level, ..] => matches!(*level, b'1'..=b'9'),
+        _ => false,
+    }
 }
 
 fn inner_magic_label(plaintext: &[u8]) -> Option<String> {
