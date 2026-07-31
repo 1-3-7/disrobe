@@ -300,14 +300,24 @@ fn tor_framework_recovers_both_categories_with_their_class_properties() {
     assert_every_pointer_dereferences("Tor.framework", dump);
 
     assert_eq!(dump.category_count, 2);
+    let pairs: BTreeSet<(&str, &str)> = dump
+        .categories
+        .iter()
+        .filter_map(|category: &ObjcCategory| {
+            category
+                .class_name
+                .as_deref()
+                .map(|class: &str| (class, category.name.as_str()))
+        })
+        .collect();
     assert_eq!(
-        dump.categories
-            .iter()
-            .map(|category: &ObjcCategory| category.name.as_str())
-            .collect::<BTreeSet<&str>>(),
-        ["GeoIP", "PredefinedSets"]
+        pairs,
+        [("NSBundle", "GeoIP"), ("NSCharacterSet", "PredefinedSets")]
             .into_iter()
-            .collect::<BTreeSet<&str>>()
+            .collect::<BTreeSet<(&str, &str)>>(),
+        "Tor.framework binds its category classes through chained fixups rather than through a \
+         dyld info bind stream, so naming these two classes means the chained import table was \
+         read rather than skipped"
     );
     assert_eq!(category_methods(dump), 5);
     assert_ne!(
@@ -343,6 +353,14 @@ fn onion_browser_main_binary_recovers_every_protocol_it_declares() {
     assert_eq!(protocol_methods(dump), 616);
     assert_eq!(protocol_properties(dump), 13);
     assert_eq!(dump.category_count, 1);
+    let category: &ObjcCategory = &dump.categories[0];
+    assert_eq!(category.name, "OnionBrowser");
+    assert_eq!(
+        category.class_name.as_deref(),
+        Some("NSURL"),
+        "the main binary binds its category class through chained fixups, and reporting the \
+         category without the class it extends would be a partial record"
+    );
     let inherits: usize = dump
         .protocols
         .iter()
@@ -366,6 +384,53 @@ fn feather_main_binary_recovers_every_protocol_it_declares() {
     assert_eq!(protocol_methods(dump), 407);
     assert_eq!(protocol_properties(dump), 21);
     assert_eq!(dump.category_count, 0);
+}
+
+#[test]
+fn every_category_in_every_pinned_ipa_names_the_class_it_extends() {
+    let mut graded: usize = 0;
+    let mut total: usize = 0;
+    for fixture in [FEATHER_IPA, PPSSPP_IPA, ONION_BROWSER_IPA] {
+        let Some(report): Option<SwiftObjcReport> = analyzed_ipa(fixture) else {
+            continue;
+        };
+        graded += 1;
+        let categories: Vec<&ObjcCategory> = report
+            .slices
+            .iter()
+            .chain(
+                report
+                    .embedded_images
+                    .iter()
+                    .flat_map(|image: &EmbeddedImageReport| image.slices.iter()),
+            )
+            .flat_map(|slice: &SliceReport| slice.objc.categories.iter())
+            .collect();
+        total += categories.len();
+        let unnamed: Vec<&str> = categories
+            .iter()
+            .filter(|category: &&&ObjcCategory| category.class_name.is_none())
+            .map(|category: &&ObjcCategory| category.name.as_str())
+            .collect();
+        assert!(
+            unnamed.is_empty(),
+            "{} leaves {} of its {} categories without the class they extend: {unnamed:?}. A \
+             category whose class is bound at load time is still named in the image, through the \
+             dyld info bind stream on older builds and through the chained fixup import table on \
+             newer ones, so an unnamed class here is a read this pass did not make rather than \
+             something the file does not carry",
+            fixture.relative(),
+            unnamed.len(),
+            categories.len()
+        );
+    }
+    if graded == 3 {
+        assert_eq!(
+            total, 18,
+            "the three pinned archives carry 18 categories between their main binaries and their \
+             embedded images, and every one of them names its class"
+        );
+    }
 }
 
 #[test]
