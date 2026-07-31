@@ -13,6 +13,7 @@ mod crossdata;
 mod datamodel;
 mod demo;
 mod doc_region;
+mod dotnet_string_evidence;
 mod errdocs;
 mod evidence;
 mod evidence_tiers;

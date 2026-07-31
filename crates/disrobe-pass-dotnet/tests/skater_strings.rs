@@ -47,25 +47,25 @@ fn base64_encode(data: &[u8]) -> String {
     out
 }
 
-fn forward_encode(plain: &str, key: u8) -> Vec<u16> {
+fn encode_per_published_algorithm(plain: &str, key: u8) -> Vec<u16> {
     let cipher_bytes: Vec<u8> = plain.bytes().map(|b: u8| b ^ key).collect();
     let b64: String = base64_encode(&cipher_bytes);
     b64.encode_utf16().collect()
 }
 
-fn build_sample() -> Vec<u8> {
+fn build_modelled_image() -> Vec<u8> {
     let mut spec: DotnetPeSpec = DotnetPeSpec::new(&["RustemSoft.Skater", "SkaterObfuscator"]);
     spec.cctor_body = Some(ldc_i4_store_cctor(u32::from(KEY), 0x0400_0001));
     spec.us_entries = EXPECTED
         .iter()
-        .map(|p: &&str| forward_encode(p, KEY))
+        .map(|p: &&str| encode_per_published_algorithm(p, KEY))
         .collect();
     build_dotnet_pe(&spec)
 }
 
 #[test]
-fn base64_xor_recovery_grades_against_expected_vector() {
-    let image: Vec<u8> = build_sample();
+fn base64_xor_recovery_grades_against_a_modelled_image() {
+    let image: Vec<u8> = build_modelled_image();
     let recovery: SkaterStrings = recover_skater_strings(&image).expect("recover");
     assert_eq!(
         recovery.key,
@@ -82,8 +82,8 @@ fn base64_xor_recovery_grades_against_expected_vector() {
 }
 
 #[test]
-fn peel_promotes_strategy_on_recovery() {
-    let image: Vec<u8> = build_sample();
+fn peel_promotes_strategy_on_a_modelled_image() {
+    let image: Vec<u8> = build_modelled_image();
     let report: PeelReport = peel_skater(&image).expect("peel");
     assert_eq!(report.strategy, PeelStrategy::EncryptedResourceExtracted);
     assert_eq!(report.recovered_strings.len(), EXPECTED.len());

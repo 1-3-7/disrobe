@@ -77,7 +77,7 @@ fn deflate(data: &[u8]) -> Vec<u8> {
     encoder.finish().expect("deflate finish")
 }
 
-fn build_crypto_obfuscator_resource(plaintexts: &[&str]) -> Vec<u8> {
+fn build_modelled_crypto_obfuscator_resource(plaintexts: &[&str]) -> Vec<u8> {
     let key: [u8; 8] = [0x13, 0x37, 0xC0, 0xDE, 0xBA, 0xBE, 0xF0, 0x0D];
     let iv: [u8; 8] = [0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07, 0x18];
     let plain_blob: Vec<u8> = unicode_record_blob(plaintexts);
@@ -90,7 +90,7 @@ fn build_crypto_obfuscator_resource(plaintexts: &[&str]) -> Vec<u8> {
     resource
 }
 
-fn build_crypto_obfuscator_mixed_flag_non_utf16_resource() -> Vec<u8> {
+fn build_modelled_crypto_obfuscator_mixed_flag_non_utf16_resource() -> Vec<u8> {
     let garbage: Vec<u8> = vec![0xFFu8; 7];
     let compressed: Vec<u8> = deflate(&garbage);
     let mut resource: Vec<u8> = Vec::new();
@@ -105,15 +105,18 @@ const PLAINTEXTS: &[&str] = &[
     "LICENSE-KEY-7F3A-9C21-EE05",
 ];
 
-fn crypto_obfuscator_sample() -> Vec<u8> {
+fn modelled_crypto_obfuscator_sample() -> Vec<u8> {
     let mut spec: DotnetPeSpec = DotnetPeSpec::new(&["CryptoObfuscator", "LogicNP"]);
-    spec.resource = Some(("AppApp", build_crypto_obfuscator_resource(PLAINTEXTS)));
+    spec.resource = Some((
+        "AppApp",
+        build_modelled_crypto_obfuscator_resource(PLAINTEXTS),
+    ));
     build_dotnet_pe(&spec)
 }
 
 #[test]
 fn crypto_obfuscator_recovers_known_plaintext_from_self_built_des_resource() {
-    let image: Vec<u8> = crypto_obfuscator_sample();
+    let image: Vec<u8> = modelled_crypto_obfuscator_sample();
     let report: PeelReport = peel_crypto_obfuscator(&image).expect("peel");
     let recovered: Vec<&str> = report
         .recovered_strings
@@ -135,7 +138,7 @@ fn crypto_obfuscator_mixed_flag_decoding_to_non_utf16_walls_not_fakes() {
     let mut spec: DotnetPeSpec = DotnetPeSpec::new(&["CryptoObfuscator"]);
     spec.resource = Some((
         "AppApp",
-        build_crypto_obfuscator_mixed_flag_non_utf16_resource(),
+        build_modelled_crypto_obfuscator_mixed_flag_non_utf16_resource(),
     ));
     let image: Vec<u8> = build_dotnet_pe(&spec);
     let report: PeelReport = peel_crypto_obfuscator(&image).expect("peel");

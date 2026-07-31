@@ -23,26 +23,26 @@ const EXPECTED: &[&str] = &[
     "HKEY_LOCAL_MACHINE\\Software\\Spices",
 ];
 
-fn forward_rot(plain: &str, shift: u16) -> Vec<u16> {
+fn rot_per_published_algorithm(plain: &str, shift: u16) -> Vec<u16> {
     plain
         .encode_utf16()
         .map(|u: u16| u.wrapping_add(shift))
         .collect()
 }
 
-fn build_sample() -> Vec<u8> {
+fn build_modelled_image() -> Vec<u8> {
     let mut spec: DotnetPeSpec = DotnetPeSpec::new(&["9rays.Net", "Spices.Net"]);
     spec.cctor_body = Some(ldc_i4_store_cctor(u32::from(SHIFT), 0x0400_0001));
     spec.us_entries = EXPECTED
         .iter()
-        .map(|p: &&str| forward_rot(p, SHIFT))
+        .map(|p: &&str| rot_per_published_algorithm(p, SHIFT))
         .collect();
     build_dotnet_pe(&spec)
 }
 
 #[test]
-fn rot_n_recovery_grades_against_expected_vector() {
-    let image: Vec<u8> = build_sample();
+fn rot_n_recovery_grades_against_a_modelled_image() {
+    let image: Vec<u8> = build_modelled_image();
     let recovery: SpicesRecovery = recover_spices(&image).expect("recover");
     assert_eq!(
         recovery.rot_shift,
@@ -63,8 +63,8 @@ fn rot_n_recovery_grades_against_expected_vector() {
 }
 
 #[test]
-fn peel_promotes_strategy_on_rot_recovery() {
-    let image: Vec<u8> = build_sample();
+fn peel_promotes_strategy_on_a_modelled_rot_image() {
+    let image: Vec<u8> = build_modelled_image();
     let report: PeelReport = peel_spices_net(&image).expect("peel");
     assert_eq!(report.strategy, PeelStrategy::EncryptedResourceExtracted);
     let texts: Vec<&str> = report

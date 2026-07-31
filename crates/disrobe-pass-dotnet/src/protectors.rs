@@ -52,6 +52,29 @@ pub enum Handling {
     DetectOnly,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StringEvidence {
+    NotClaimed,
+    RealSample(&'static str),
+    ModelledAlgorithm,
+    RuntimeKeyed,
+}
+
+impl StringEvidence {
+    #[must_use]
+    pub const fn committed_sample(self) -> Option<&'static str> {
+        match self {
+            Self::RealSample(path) => Some(path),
+            Self::NotClaimed | Self::ModelledAlgorithm | Self::RuntimeKeyed => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn decrypts_strings(self) -> bool {
+        matches!(self, Self::RealSample(_) | Self::ModelledAlgorithm)
+    }
+}
+
 impl Protector {
     pub const ALL: [Self; 23] = [
         Self::ConfuserEx,
@@ -171,6 +194,41 @@ impl Protector {
                 | Self::ArmDot
                 | Self::AgileNet
         )
+    }
+
+    #[must_use]
+    pub const fn string_evidence(self) -> StringEvidence {
+        match self {
+            Self::ConfuserEx2 => {
+                StringEvidence::RealSample("corpus/dotnet/SampleConstants.confuserex2.dll")
+            }
+            Self::Obfuscar => StringEvidence::RealSample(
+                "corpus/dotnet/obfuscators/obfuscar/gauntlet/GauntletSample.obfuscar.dll",
+            ),
+            Self::BitMono => StringEvidence::RealSample(
+                "corpus/dotnet/obfuscators/bitmono/gauntlet/GauntletBitMono.bitmono.dll",
+            ),
+            Self::SmartAssembly
+            | Self::BabelDotnet
+            | Self::SpicesNet
+            | Self::Skater
+            | Self::DotnetReactor
+            | Self::EazfuscatorNet
+            | Self::CryptoObfuscator => StringEvidence::ModelledAlgorithm,
+            Self::ThemidaDotnet | Self::Ilprotector | Self::MaxToCode => {
+                StringEvidence::RuntimeKeyed
+            }
+            Self::ConfuserEx
+            | Self::Dotfuscator
+            | Self::DotfuscatorCe
+            | Self::DeepSea
+            | Self::Goliath
+            | Self::ArmDot
+            | Self::AgileNet
+            | Self::DotNetPatcher
+            | Self::NetCryptor
+            | Self::KoiVm => StringEvidence::NotClaimed,
+        }
     }
 
     #[must_use]
