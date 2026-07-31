@@ -655,6 +655,9 @@ fn carve<'a>(slice: &'a [u8], parsed: &ParsedSlice, start: u64, end: u64) -> Opt
         for sect in &seg.sections {
             let sec_end: u64 = sect.addr.saturating_add(sect.size);
             if start >= sect.addr && end <= sec_end {
+                if crate::macho::section_is_encrypted_at_rest(parsed, sect) {
+                    return None;
+                }
                 let rel: usize = usize::try_from(start - sect.addr).ok()?;
                 let file_start: usize = (sect.offset as usize).checked_add(rel)?;
                 let span: usize = usize::try_from(len).ok()?;

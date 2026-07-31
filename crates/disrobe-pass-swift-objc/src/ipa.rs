@@ -131,6 +131,85 @@ pub fn inventory(image: &[u8]) -> Result<IpaInventory> {
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EmbeddedImageRole {
+    Framework,
+    PlugIn,
+}
+
+impl EmbeddedImageRole {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Framework => "framework",
+            Self::PlugIn => "plugin",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmbeddedImage {
+    pub path: String,
+    pub role: EmbeddedImageRole,
+    pub size: u64,
+}
+
+pub fn embedded_images(image: &[u8], inv: &IpaInventory) -> Result<Vec<EmbeddedImage>> {
+    let mut archive: ZipArchive<Cursor<&[u8]>> = ZipArchive::new(Cursor::new(image))
+        .map_err(|e: zip::result::ZipError| Error::Ipa(e.to_string()))?;
+    let mut out: Vec<EmbeddedImage> = Vec::new();
+    let roles: [(&Vec<String>, EmbeddedImageRole); 2] = [
+        (&inv.frameworks, EmbeddedImageRole::Framework),
+        (&inv.plugins, EmbeddedImageRole::PlugIn),
+    ];
+    for (paths, role) in roles {
+        for path in paths {
+            let Some(size): Option<u64> = macho_entry_size(&mut archive, path)? else {
+                continue;
+            };
+            out.push(EmbeddedImage {
+                path: path.clone(),
+                role,
+                size,
+            });
+        }
+    }
+    Ok(out)
+}
+
+fn macho_entry_size(archive: &mut ZipArchive<Cursor<&[u8]>>, name: &str) -> Result<Option<u64>> {
+    if name.ends_with('/') || !is_macho_candidate(name) {
+        return Ok(None);
+    }
+    let entry: zip::read::ZipFile<'_> = match archive.by_name(name) {
+        Ok(entry) => entry,
+        Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+        Err(e) => return Err(Error::Ipa(e.to_string())),
+    };
+    let size: u64 = entry.size();
+    if size < MACHO_MAGIC_LEN {
+        return Ok(None);
+    }
+    let mut head: Vec<u8> = Vec::with_capacity(MACHO_MAGIC_LEN as usize);
+    entry.take(MACHO_MAGIC_LEN).read_to_end(&mut head)?;
+    let Ok(magic): core::result::Result<[u8; 4], _> = <[u8; 4]>::try_from(head.as_slice()) else {
+        return Ok(None);
+    };
+    Ok(MACHO_MAGICS
+        .contains(&u32::from_be_bytes(magic))
+        .then_some(size))
+}
+
+const MACHO_MAGIC_LEN: u64 = 4;
+const MACHO_MAGICS: [u32; 6] = [
+    0xfeed_face,
+    0xfeed_facf,
+    0xcefa_edfe,
+    0xcffa_edfe,
+    0xcafe_babe,
+    0xbeba_feca,
+];
+
 pub fn extract(image: &[u8]) -> Result<IpaExtract> {
     let inv: IpaInventory = inventory(image)?;
     let mut archive: ZipArchive<Cursor<&[u8]>> = ZipArchive::new(Cursor::new(image))

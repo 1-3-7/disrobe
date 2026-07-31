@@ -37,15 +37,19 @@ pub use dyld_cache::{
     reconstruct_image as reconstruct_dyld_image,
 };
 pub use error::{Error, Result};
-pub use fairplay::{FairPlayStatus, detect as detect_fairplay};
+pub use fairplay::{
+    EncryptedTextNotice, FairPlayStatus, detect as detect_fairplay, encrypted_text_notice,
+};
 pub use ipa::{
-    IpaEntry, IpaExtract, IpaInventory, extract as extract_ipa, inventory as ipa_inventory,
+    EmbeddedImage, EmbeddedImageRole, IpaEntry, IpaExtract, IpaInventory,
+    embedded_images as ipa_embedded_images, extract as extract_ipa, inventory as ipa_inventory,
 };
 pub use macho::{
-    Bitness, CpuKind, DylibKind, DylibReference, DysymtabInfo, EncryptionInfo, Endian, EntryPoint,
-    FatArchEntry, FunctionSymbol, ImportThunk, LinkeditData, LoadCommand, MachoKind, PackedVersion,
-    ParsedSlice, PlatformVersion, Section, Segment, SliceHeader, SymtabInfo, detect_magic,
-    find_section, function_symbols, import_thunks, parse_slice, section_bytes, slice_bytes,
+    Bitness, CpuKind, DylibKind, DylibReference, DysymtabInfo, EncryptedRegion, EncryptionInfo,
+    Endian, EntryPoint, FatArchEntry, FunctionSymbol, ImportThunk, LinkeditData, LoadCommand,
+    MachoKind, PackedVersion, ParsedSlice, PlatformVersion, Section, Segment, SliceHeader,
+    SymtabInfo, detect_magic, encrypted_region, find_section, function_symbols, import_thunks,
+    parse_slice, readable_section_bytes, section_bytes, section_is_encrypted_at_rest, slice_bytes,
     symbol_names, walk_fat,
 };
 pub use native_bodies::{
@@ -58,13 +62,17 @@ pub use objc::{
 };
 pub use objc_dispatch::{
     DispatchArch, DispatchMaps, ObjcMessageSend, ObjcSend, annotate_instructions,
-    build_dispatch_maps,
+    bound_symbols_by_slot, build_dispatch_maps,
 };
 pub use objc_records::{
-    ObjcInterface, ObjcIvar, ObjcMethod, ObjcProperty,
-    recover_interfaces as recover_objc_interfaces,
+    OBJC_IMAGE_HAS_CATEGORY_CLASS_PROPERTIES, ObjcCategory, ObjcInterface, ObjcIvar, ObjcMethod,
+    ObjcProperty, ObjcProtocol, recover_categories as recover_objc_categories,
+    recover_interfaces as recover_objc_interfaces, recover_protocols as recover_objc_protocols,
 };
-pub use pass::{ContainerKind, MetadataSummary, SliceReport, SwiftObjcReport, analyze};
+pub use pass::{
+    ContainerKind, EmbeddedImageReport, MetadataSummary, SliceReport, SwiftObjcReport,
+    UnanalyzedEmbeddedImage, analyze,
+};
 pub use plist_decode::{
     EntitlementValue, EntitlementsDecode, InfoPlistSummary,
     decode_entitlements_from_code_signature, decode_entitlements_xml, parse_info_plist,

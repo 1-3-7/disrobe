@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::code_signature::{self, CodeSignature};
 use crate::error::Error;
 use crate::fairplay::{self, FairPlayStatus};
-use crate::ipa::{self, IpaInventory};
+use crate::ipa::{self, EmbeddedImage, EmbeddedImageRole, IpaInventory};
 use crate::macho::{self, FatArchEntry, MachoKind, ParsedSlice};
 use crate::native_bodies::{self, NativeBodyReport};
 use crate::objc::{self, ObjcClassDump};
@@ -20,7 +20,24 @@ pub struct SwiftObjcReport {
     pub ipa: Option<IpaInventory>,
     pub fat_entries: Vec<FatArchEntry>,
     pub slices: Vec<SliceReport>,
+    pub embedded_images: Vec<EmbeddedImageReport>,
+    pub unanalyzed_embedded_images: Vec<UnanalyzedEmbeddedImage>,
     pub swift_module: Option<SwiftModuleDecls>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddedImageReport {
+    pub path: String,
+    pub role: EmbeddedImageRole,
+    pub fat_entries: Vec<FatArchEntry>,
+    pub slices: Vec<SliceReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnanalyzedEmbeddedImage {
+    pub path: String,
+    pub role: EmbeddedImageRole,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +65,8 @@ pub struct SliceReport {
 pub struct MetadataSummary {
     pub objc_classes: usize,
     pub objc_interfaces_recovered: usize,
+    pub objc_categories_recovered: usize,
+    pub objc_protocols_recovered: usize,
     pub objc_methods_recovered: usize,
     pub objc_typed_methods: usize,
     pub objc_unique_selectors: usize,
@@ -104,11 +123,17 @@ pub fn analyze(bytes: &[u8]) -> crate::error::Result<SwiftObjcReport> {
             });
         }
         recover_interface_field_names(bytes, &inv, &mut slices);
+        let (embedded_images, unanalyzed_embedded_images): (
+            Vec<EmbeddedImageReport>,
+            Vec<UnanalyzedEmbeddedImage>,
+        ) = analyze_embedded_images(bytes, &inv);
         return Ok(SwiftObjcReport {
             container: ContainerKind::Ipa,
             ipa: Some(inv),
             fat_entries,
             slices,
+            embedded_images,
+            unanalyzed_embedded_images,
             swift_module: None,
         });
     }
@@ -120,6 +145,8 @@ pub fn analyze(bytes: &[u8]) -> crate::error::Result<SwiftObjcReport> {
             ipa: None,
             fat_entries,
             slices,
+            embedded_images: Vec::new(),
+            unanalyzed_embedded_images: Vec::new(),
             swift_module: None,
         });
     }
@@ -133,6 +160,8 @@ pub fn analyze(bytes: &[u8]) -> crate::error::Result<SwiftObjcReport> {
             ipa: None,
             fat_entries: Vec::new(),
             slices: Vec::new(),
+            embedded_images: Vec::new(),
+            unanalyzed_embedded_images: Vec::new(),
             swift_module: Some(decls),
         });
     }
@@ -144,8 +173,73 @@ pub fn analyze(bytes: &[u8]) -> crate::error::Result<SwiftObjcReport> {
         ipa: None,
         fat_entries: Vec::new(),
         slices: Vec::new(),
+        embedded_images: Vec::new(),
+        unanalyzed_embedded_images: Vec::new(),
         swift_module: None,
     })
+}
+
+const MAX_EMBEDDED_IMAGES: usize = 256;
+
+fn analyze_embedded_images(
+    image: &[u8],
+    inv: &IpaInventory,
+) -> (Vec<EmbeddedImageReport>, Vec<UnanalyzedEmbeddedImage>) {
+    let mut reports: Vec<EmbeddedImageReport> = Vec::new();
+    let mut unanalyzed: Vec<UnanalyzedEmbeddedImage> = Vec::new();
+    let embedded: Vec<EmbeddedImage> = match ipa::embedded_images(image, inv) {
+        Ok(found) => found,
+        Err(error) => {
+            crate::debug::dbg_kv("ipa-embedded-images", || {
+                format!("enumeration failed: {error}")
+            });
+            return (reports, unanalyzed);
+        }
+    };
+    crate::debug::dbg_kv("ipa-embedded-images", || {
+        format!(
+            "mach-o images under Frameworks/ and PlugIns/: {}",
+            embedded.len()
+        )
+    });
+    for entry in embedded.iter().take(MAX_EMBEDDED_IMAGES) {
+        match read_zip_entry_bytes(image, &entry.path) {
+            Ok(Some(bytes)) => match analyze_macho(&bytes) {
+                Ok((fat_entries, slices)) => reports.push(EmbeddedImageReport {
+                    path: entry.path.clone(),
+                    role: entry.role,
+                    fat_entries,
+                    slices,
+                }),
+                Err(error) => unanalyzed.push(UnanalyzedEmbeddedImage {
+                    path: entry.path.clone(),
+                    role: entry.role,
+                    reason: format!("the slice does not parse as Mach-O: {error}"),
+                }),
+            },
+            Ok(None) => unanalyzed.push(UnanalyzedEmbeddedImage {
+                path: entry.path.clone(),
+                role: entry.role,
+                reason: "the archive no longer lists this entry".to_owned(),
+            }),
+            Err(error) => unanalyzed.push(UnanalyzedEmbeddedImage {
+                path: entry.path.clone(),
+                role: entry.role,
+                reason: format!("the entry could not be read out of the archive: {error}"),
+            }),
+        }
+    }
+    for entry in embedded.iter().skip(MAX_EMBEDDED_IMAGES) {
+        unanalyzed.push(UnanalyzedEmbeddedImage {
+            path: entry.path.clone(),
+            role: entry.role,
+            reason: format!(
+                "the archive carries more than the {MAX_EMBEDDED_IMAGES} embedded images this pass \
+                 analyzes in one run"
+            ),
+        });
+    }
+    (reports, unanalyzed)
 }
 
 fn analyze_macho(bytes: &[u8]) -> crate::error::Result<(Vec<FatArchEntry>, Vec<SliceReport>)> {
@@ -266,10 +360,23 @@ fn build_slice_report(slice: &[u8], parsed: &ParsedSlice) -> SliceReport {
         .sum();
     crate::debug::dbg_kv("objc-interfaces", || {
         format!(
-            "recovered={} methods={objc_methods} ivars={objc_ivars}",
-            objc_dump.interfaces.len()
+            "recovered={} methods={objc_methods} ivars={objc_ivars} categories={} protocols={}",
+            objc_dump.interfaces.len(),
+            objc_dump.categories.len(),
+            objc_dump.protocols.len()
         )
     });
+    if let Some(notice) = objc_dump.encrypted_text.as_ref() {
+        crate::debug::dbg_kv("encrypted-at-rest", || {
+            format!(
+                "cryptid={} range={}..{} withheld_sections={}",
+                notice.crypt_id,
+                notice.file_off,
+                notice.file_end,
+                notice.withheld_sections.len()
+            )
+        });
+    }
     let fp: FairPlayStatus = fairplay::detect(parsed);
     crate::debug::dbg_kv("fairplay", || format!("{fp:?}"));
     let signature: Option<CodeSignature> = code_signature::parse(slice, parsed);
@@ -362,6 +469,8 @@ fn summarize(swift: &SwiftClassDump, objc: &ObjcClassDump) -> MetadataSummary {
     MetadataSummary {
         objc_classes: objc.class_count,
         objc_interfaces_recovered: objc.interfaces.len(),
+        objc_categories_recovered: objc.categories.len(),
+        objc_protocols_recovered: objc.protocols.len(),
         objc_methods_recovered,
         objc_typed_methods,
         objc_unique_selectors: objc.unique_selectors.len(),
