@@ -24,7 +24,7 @@ fn lifted(name: &str) -> NirModule {
     lift_lua_chunk(&fixture_bytes(name)).expect("lift lua chunk to NIR")
 }
 
-struct OracleFacts {
+struct DecodedFacts {
     callees: BTreeSet<String>,
     string_constants: BTreeSet<String>,
     accesses: BTreeSet<String>,
@@ -74,7 +74,7 @@ fn get_name(slots: &[Option<String>], reg: u32) -> Option<String> {
     slots.get(reg as usize).and_then(Clone::clone)
 }
 
-fn scan_proto(proto: &LuaProto, dialect: LuaDialect, facts: &mut OracleFacts) {
+fn scan_proto(proto: &LuaProto, dialect: LuaDialect, facts: &mut DecodedFacts) {
     let decoded: Vec<Decoded> = proto.code.iter().map(|raw| decode(*raw, dialect)).collect();
     let mut names: Vec<Option<String>> = vec![None; 256];
 
@@ -127,9 +127,9 @@ fn scan_proto(proto: &LuaProto, dialect: LuaDialect, facts: &mut OracleFacts) {
     }
 }
 
-fn independent_oracle(name: &str) -> OracleFacts {
+fn same_decoder_facts(name: &str) -> DecodedFacts {
     let chunk: LuaChunk = read_auto(&fixture_bytes(name)).expect("decode lua chunk");
-    let mut facts: OracleFacts = OracleFacts {
+    let mut facts: DecodedFacts = DecodedFacts {
         callees: BTreeSet::new(),
         string_constants: BTreeSet::new(),
         accesses: BTreeSet::new(),
@@ -217,97 +217,97 @@ fn input_is_a_real_compiled_lua_image() {
 }
 
 #[test]
-fn lifted_callees_equal_the_independent_lua_decode() {
-    let oracle: OracleFacts = independent_oracle("hello.5_4.luac");
+fn lifted_callees_equal_a_direct_walk_of_the_same_lua_decode() {
+    let decoded: DecodedFacts = same_decoder_facts("hello.5_4.luac");
     let lifted: BTreeSet<String> = lifted_callees(&lifted("hello.5_4.luac"));
     assert!(
-        !oracle.callees.is_empty(),
+        !decoded.callees.is_empty(),
         "hello.lua issues a real global call"
     );
     assert_eq!(
-        lifted, oracle.callees,
-        "lifted Mir call targets must equal the independently decoded callee-name set exactly"
+        lifted, decoded.callees,
+        "lifted Mir call targets must equal the directly re-walked callee-name set exactly"
     );
     assert!(
-        oracle.callees.iter().any(|c: &String| c == "print"),
+        decoded.callees.iter().any(|c: &String| c == "print"),
         "hello.lua calls print: {:?}",
-        oracle.callees
+        decoded.callees
     );
 }
 
 #[test]
-fn lifted_string_constants_equal_the_independent_lua_decode() {
-    let oracle: OracleFacts = independent_oracle("hello.5_4.luac");
+fn lifted_string_constants_equal_a_direct_walk_of_the_same_lua_decode() {
+    let decoded: DecodedFacts = same_decoder_facts("hello.5_4.luac");
     let lifted: BTreeSet<String> = lifted_string_constants(&lifted("hello.5_4.luac"));
     assert!(
-        !oracle.string_constants.is_empty(),
+        !decoded.string_constants.is_empty(),
         "hello.lua has at least one string literal"
     );
     assert_eq!(
-        lifted, oracle.string_constants,
-        "lifted Mir LOADK string operands must equal the independently decoded string-constant set exactly"
+        lifted, decoded.string_constants,
+        "lifted Mir LOADK string operands must equal the directly re-walked string-constant set exactly"
     );
     assert!(
-        oracle
+        decoded
             .string_constants
             .iter()
             .any(|s: &String| s == "hello world"),
         "hello.lua loads the literal \"hello world\": {:?}",
-        oracle.string_constants
+        decoded.string_constants
     );
 }
 
 #[test]
-fn lifted_accesses_equal_the_independent_lua_decode() {
-    let oracle: OracleFacts = independent_oracle("edge_cases.5_4.luac");
+fn lifted_accesses_equal_a_direct_walk_of_the_same_lua_decode() {
+    let decoded: DecodedFacts = same_decoder_facts("edge_cases.5_4.luac");
     let lifted: BTreeSet<String> = lifted_accesses(&lifted("edge_cases.5_4.luac"));
     assert!(
-        !oracle.accesses.is_empty(),
+        !decoded.accesses.is_empty(),
         "edge_cases touches many global/field names"
     );
     assert_eq!(
-        lifted, oracle.accesses,
-        "lifted Mir global/field accesses must equal the independently decoded access-name set exactly"
+        lifted, decoded.accesses,
+        "lifted Mir global/field accesses must equal the directly re-walked access-name set exactly"
     );
     for expected in ["math", "table", "string"] {
         assert!(
-            oracle.accesses.iter().any(|s: &String| s == expected),
+            decoded.accesses.iter().any(|s: &String| s == expected),
             "edge_cases references the {expected} library: {:?}",
-            oracle.accesses
+            decoded.accesses
         );
     }
 }
 
 #[test]
-fn lifted_branch_count_equals_the_independent_lua_decode() {
-    let oracle: OracleFacts = independent_oracle("edge_cases.5_4.luac");
+fn lifted_branch_count_equals_a_direct_walk_of_the_same_lua_decode() {
+    let decoded: DecodedFacts = same_decoder_facts("edge_cases.5_4.luac");
     assert!(
-        oracle.branch_count >= 50,
+        decoded.branch_count >= 50,
         "edge_cases compiles to many branch and loop-control instructions: {}",
-        oracle.branch_count
+        decoded.branch_count
     );
     assert_eq!(
         lifted_branch_count(&lifted("edge_cases.5_4.luac")),
-        oracle.branch_count,
-        "lifted Mir branch/cond-branch count must equal the independently decoded branch-instruction count exactly"
+        decoded.branch_count,
+        "lifted Mir branch/cond-branch count must equal the directly re-walked branch-instruction count exactly"
     );
 }
 
 #[test]
 fn lua51_dialect_also_lifts_and_resolves_print() {
-    let oracle: OracleFacts = independent_oracle("hello.5_1.luac");
+    let decoded: DecodedFacts = same_decoder_facts("hello.5_1.luac");
     let nir: NirModule = lifted("hello.5_1.luac");
     assert_eq!(nir.lang, SourceLang::Lua);
     assert_eq!(
         lifted_callees(&nir),
-        oracle.callees,
-        "the 5.1 GETGLOBAL path resolves the same callee set as the independent decode"
+        decoded.callees,
+        "the 5.1 GETGLOBAL path resolves the same callee set as a direct walk of the same decode"
     );
-    assert!(oracle.callees.iter().any(|c: &String| c == "print"));
+    assert!(decoded.callees.iter().any(|c: &String| c == "print"));
     assert_eq!(
         lifted_string_constants(&nir),
-        oracle.string_constants,
-        "5.1 string constants match the independent decode"
+        decoded.string_constants,
+        "5.1 string constants match a direct walk of the same decode"
     );
 }
 

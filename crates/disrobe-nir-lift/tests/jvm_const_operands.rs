@@ -27,7 +27,7 @@ fn ldc_render(class: &ClassFile, index: u16) -> Option<String> {
     }
 }
 
-fn independent_const_pairs(class: &ClassFile) -> Vec<(String, String)> {
+fn same_decoder_const_pairs(class: &ClassFile) -> Vec<(String, String)> {
     let mut pairs: Vec<(String, String)> = Vec::new();
     for method in &class.methods {
         for attribute in &method.attributes {
@@ -76,9 +76,9 @@ fn lifted_const_pairs(nir: &NirModule) -> Vec<(String, String)> {
 }
 
 #[test]
-fn lifted_constants_match_the_independent_classfile_decode() {
+fn lifted_constants_match_a_direct_walk_of_the_same_classfile_decode() {
     let class: ClassFile = parse_classfile(STRINGER).expect("parse StringerClassic.class");
-    let oracle: Vec<(String, String)> = independent_const_pairs(&class);
+    let oracle: Vec<(String, String)> = same_decoder_const_pairs(&class);
     let nir: NirModule = lift_classfile(STRINGER).expect("lift StringerClassic.class");
     let lifted: Vec<(String, String)> = lifted_const_pairs(&nir);
 
@@ -95,7 +95,7 @@ fn lifted_constants_match_the_independent_classfile_decode() {
 #[test]
 fn string_and_numeric_constants_are_not_dropped() {
     let class: ClassFile = parse_classfile(STRINGER).expect("parse StringerClassic.class");
-    let oracle: Vec<(String, String)> = independent_const_pairs(&class);
+    let oracle: Vec<(String, String)> = same_decoder_const_pairs(&class);
 
     let ldc_strings: usize = oracle
         .iter()

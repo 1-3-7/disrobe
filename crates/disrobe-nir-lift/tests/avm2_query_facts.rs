@@ -452,15 +452,15 @@ fn invalid_avm2_local_registers_refuse_the_lift() {
     }
 }
 
-struct OracleFacts {
+struct DecodedFacts {
     callees: BTreeSet<String>,
     pushstrings: BTreeSet<String>,
     property_accesses: BTreeSet<String>,
     branch_edges: usize,
 }
 
-fn independent_oracle() -> OracleFacts {
-    let abc: AbcFile = abc::parse(&build_abc()).expect("oracle abc parse");
+fn same_decoder_facts() -> DecodedFacts {
+    let abc: AbcFile = abc::parse(&build_abc()).expect("decoded abc parse");
     let mut callees: BTreeSet<String> = BTreeSet::new();
     let mut pushstrings: BTreeSet<String> = BTreeSet::new();
     let mut property_accesses: BTreeSet<String> = BTreeSet::new();
@@ -468,7 +468,7 @@ fn independent_oracle() -> OracleFacts {
 
     for body in &abc.method_bodies {
         let body: &MethodBody = body;
-        let lines: Vec<DisasmLine> = abc::disasm(&body.code).expect("oracle disasm");
+        let lines: Vec<DisasmLine> = abc::disasm(&body.code).expect("decoded disasm");
         for line in &lines {
             match line.opcode {
                 0x46 | 0x4F | 0x4C | 0x4A | 0x45 | 0x4E => {
@@ -519,7 +519,7 @@ fn independent_oracle() -> OracleFacts {
         }
     }
 
-    OracleFacts {
+    DecodedFacts {
         callees,
         pushstrings,
         property_accesses,
@@ -615,67 +615,70 @@ fn methods_are_recovered_as_named_functions() {
 }
 
 #[test]
-fn lifted_callees_match_the_independent_abc_decode() {
-    let oracle: OracleFacts = independent_oracle();
+fn lifted_callees_match_a_direct_walk_of_the_same_abc_decode() {
+    let decoded: DecodedFacts = same_decoder_facts();
     let nir: NirModule = lifted_nir();
     let lifted: BTreeSet<String> = lifted_callees(&nir);
     assert!(
-        !oracle.callees.is_empty(),
+        !decoded.callees.is_empty(),
         "the source body issues callpropvoid sites"
     );
     assert_eq!(
-        lifted, oracle.callees,
+        lifted, decoded.callees,
         "lifted Mir call targets must equal the ABC's actual callproperty set"
     );
     assert!(
-        oracle.callees.contains("trace") && oracle.callees.contains("push"),
+        decoded.callees.contains("trace") && decoded.callees.contains("push"),
         "source calls trace and push: {:?}",
-        oracle.callees
+        decoded.callees
     );
 }
 
 #[test]
-fn lifted_pushstrings_match_the_independent_abc_decode() {
-    let oracle: OracleFacts = independent_oracle();
+fn lifted_pushstrings_match_a_direct_walk_of_the_same_abc_decode() {
+    let decoded: DecodedFacts = same_decoder_facts();
     let nir: NirModule = lifted_nir();
     let lifted: BTreeSet<String> = lifted_pushstrings(&nir);
     assert_eq!(
-        lifted, oracle.pushstrings,
+        lifted, decoded.pushstrings,
         "lifted pushstring literals must equal the ABC's actual string constant set"
     );
     for literal in ["hello world", "banner"] {
         assert!(
-            oracle.pushstrings.iter().any(|s: &String| s == literal),
+            decoded.pushstrings.iter().any(|s: &String| s == literal),
             "source pushes {literal:?}: {:?}",
-            oracle.pushstrings
+            decoded.pushstrings
         );
     }
 }
 
 #[test]
-fn lifted_property_accesses_match_the_independent_abc_decode() {
-    let oracle: OracleFacts = independent_oracle();
+fn lifted_property_accesses_match_a_direct_walk_of_the_same_abc_decode() {
+    let decoded: DecodedFacts = same_decoder_facts();
     let nir: NirModule = lifted_nir();
     let lifted: BTreeSet<String> = lifted_property_accesses(&nir);
     assert_eq!(
-        lifted, oracle.property_accesses,
+        lifted, decoded.property_accesses,
         "lifted property-access multinames must equal the ABC's actual get/set property set"
     );
     assert!(
-        oracle.property_accesses.contains("label"),
+        decoded.property_accesses.contains("label"),
         "source reads and writes label: {:?}",
-        oracle.property_accesses
+        decoded.property_accesses
     );
 }
 
 #[test]
-fn lifted_branch_edge_count_matches_the_independent_abc_decode() {
-    let oracle: OracleFacts = independent_oracle();
+fn lifted_branch_edge_count_matches_a_direct_walk_of_the_same_abc_decode() {
+    let decoded: DecodedFacts = same_decoder_facts();
     let nir: NirModule = lifted_nir();
-    assert!(oracle.branch_edges >= 2, "source has an iffalse and a jump");
+    assert!(
+        decoded.branch_edges >= 2,
+        "source has an iffalse and a jump"
+    );
     assert_eq!(
         lifted_branch_edges(&nir),
-        oracle.branch_edges,
+        decoded.branch_edges,
         "lifted Mir branch/cond-branch count must equal the ABC's actual branch instruction count"
     );
 }

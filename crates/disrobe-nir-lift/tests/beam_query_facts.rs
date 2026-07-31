@@ -25,7 +25,7 @@ fn lifted() -> NirModule {
     lift_beam_module(&fixture_bytes()).expect("lift BEAM module to NIR")
 }
 
-struct OracleFacts {
+struct DecodedFacts {
     callees: BTreeSet<String>,
     constants: BTreeSet<String>,
     branch_count: usize,
@@ -189,7 +189,7 @@ fn move_constant(chunks: &Chunks, op: Option<&Operand>) -> Option<String> {
     }
 }
 
-fn independent_oracle() -> OracleFacts {
+fn same_decoder_facts() -> DecodedFacts {
     let bytes: Vec<u8> = fixture_bytes();
     let beam: BeamFile = BeamFile::parse(&bytes).expect("parse probe beam");
     let chunks: &Chunks = &beam.chunks;
@@ -249,7 +249,7 @@ fn independent_oracle() -> OracleFacts {
         }
     }
 
-    OracleFacts {
+    DecodedFacts {
         callees,
         constants,
         branch_count,
@@ -309,62 +309,62 @@ fn input_is_a_real_compiled_beam_module() {
 }
 
 #[test]
-fn lifted_callees_equal_the_independent_beam_decode() {
-    let oracle: OracleFacts = independent_oracle();
+fn lifted_callees_equal_a_direct_walk_of_the_same_beam_decode() {
+    let decoded: DecodedFacts = same_decoder_facts();
     let lifted: BTreeSet<String> = lifted_callees(&lifted());
     assert!(
-        !oracle.callees.is_empty(),
+        !decoded.callees.is_empty(),
         "the source issues real local and external calls"
     );
     assert_eq!(
-        lifted, oracle.callees,
+        lifted, decoded.callees,
         "lifted Mir call targets must equal the BEAM resolved MFA set exactly"
     );
     for expected in ["probe:fac/1", "erlang:++/2", "lists:foldl/3"] {
         assert!(
-            oracle.callees.iter().any(|c: &String| c == expected),
+            decoded.callees.iter().any(|c: &String| c == expected),
             "the source calls {expected}: {:?}",
-            oracle.callees
+            decoded.callees
         );
     }
 }
 
 #[test]
-fn lifted_constants_equal_the_independent_beam_decode() {
-    let oracle: OracleFacts = independent_oracle();
+fn lifted_constants_equal_a_direct_walk_of_the_same_beam_decode() {
+    let decoded: DecodedFacts = same_decoder_facts();
     let lifted: BTreeSet<String> = lifted_constants(&lifted());
     assert!(
-        !oracle.constants.is_empty(),
+        !decoded.constants.is_empty(),
         "the source moves atom and literal constants into registers"
     );
     assert_eq!(
-        lifted, oracle.constants,
+        lifted, decoded.constants,
         "lifted Mir move constants must equal the BEAM move-operand literal set exactly"
     );
     for expected in ["integer", "atom", "other", "default"] {
         assert!(
-            oracle.constants.iter().any(|c: &String| c == expected),
+            decoded.constants.iter().any(|c: &String| c == expected),
             "the source moves atom {expected}: {:?}",
-            oracle.constants
+            decoded.constants
         );
     }
     assert!(
-        oracle.constants.iter().any(|c: &String| c == "hello "),
+        decoded.constants.iter().any(|c: &String| c == "hello "),
         "greet/1 moves the literal string \"hello \": {:?}",
-        oracle.constants
+        decoded.constants
     );
 }
 
 #[test]
-fn lifted_branch_count_equals_the_independent_beam_decode() {
-    let oracle: OracleFacts = independent_oracle();
+fn lifted_branch_count_equals_a_direct_walk_of_the_same_beam_decode() {
+    let decoded: DecodedFacts = same_decoder_facts();
     assert!(
-        oracle.branch_count >= 4,
+        decoded.branch_count >= 4,
         "fac/classify/mapkv compile to several type tests"
     );
     assert_eq!(
         lifted_branch_count(&lifted()),
-        oracle.branch_count,
+        decoded.branch_count,
         "lifted Mir branch/cond-branch count must equal the BEAM test/jump/select count exactly"
     );
 }

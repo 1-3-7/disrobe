@@ -83,14 +83,14 @@ fn xrefs_to(module: &Module, symbol: &str) -> Vec<XrefMatch> {
     }
 }
 
-struct OracleFacts {
+struct DecodedFacts {
     callees: BTreeSet<String>,
     ldstr_values: BTreeSet<String>,
     field_accesses: BTreeSet<String>,
     branch_edges: usize,
 }
 
-fn independent_oracle() -> OracleFacts {
+fn same_decoder_facts() -> DecodedFacts {
     let pe: PeImage = parse_pe(CIL_PROBE).expect("pe");
     let clr: ClrHeader = parse_clr_header(CIL_PROBE, &pe).expect("clr");
     let root: MetadataRoot = parse_metadata_root(CIL_PROBE, &pe, &clr).expect("root");
@@ -133,7 +133,7 @@ fn independent_oracle() -> OracleFacts {
         }
     }
 
-    OracleFacts {
+    DecodedFacts {
         callees,
         ldstr_values,
         field_accesses,
@@ -213,84 +213,84 @@ fn methods_are_recovered_as_functions_with_visibility() {
 }
 
 #[test]
-fn lifted_callees_match_the_independent_il_decode() {
-    let oracle: OracleFacts = independent_oracle();
+fn lifted_callees_match_a_direct_walk_of_the_same_il_decode() {
+    let decoded: DecodedFacts = same_decoder_facts();
     let nir: NirModule = lifted_nir();
     let lifted: BTreeSet<String> = lifted_callees(&nir);
     assert!(
-        !oracle.callees.is_empty(),
+        !decoded.callees.is_empty(),
         "the source method bodies do contain calls"
     );
     assert_eq!(
-        lifted, oracle.callees,
+        lifted, decoded.callees,
         "lifted Mir call targets must equal the IL's actual call set (no dropped or invented calls)"
     );
     assert!(
-        oracle
+        decoded
             .callees
             .iter()
             .any(|c: &String| c.contains("WriteLine")),
         "Emit calls Console.WriteLine in the source: {:?}",
-        oracle.callees
+        decoded.callees
     );
 }
 
 #[test]
-fn lifted_string_constants_match_the_independent_il_decode() {
-    let oracle: OracleFacts = independent_oracle();
+fn lifted_string_constants_match_a_direct_walk_of_the_same_il_decode() {
+    let decoded: DecodedFacts = same_decoder_facts();
     let nir: NirModule = lifted_nir();
     let lifted: BTreeSet<String> = lifted_consts(&nir);
     assert_eq!(
-        lifted, oracle.ldstr_values,
+        lifted, decoded.ldstr_values,
         "lifted ldstr literals must equal the IL's actual user-string set"
     );
     for literal in ["large value seen", "small value seen"] {
         assert!(
-            oracle.ldstr_values.iter().any(|s: &String| s == literal),
+            decoded.ldstr_values.iter().any(|s: &String| s == literal),
             "source declares the literal {literal:?}: {:?}",
-            oracle.ldstr_values
+            decoded.ldstr_values
         );
     }
 }
 
 #[test]
-fn lifted_field_accesses_match_the_independent_il_decode() {
-    let oracle: OracleFacts = independent_oracle();
+fn lifted_field_accesses_match_a_direct_walk_of_the_same_il_decode() {
+    let decoded: DecodedFacts = same_decoder_facts();
     let nir: NirModule = lifted_nir();
     let lifted: BTreeSet<String> = lifted_field_accesses(&nir);
     assert_eq!(
-        lifted, oracle.field_accesses,
+        lifted, decoded.field_accesses,
         "lifted field-access targets must equal the IL's actual field set"
     );
     assert!(
-        oracle
+        decoded
             .field_accesses
             .iter()
             .any(|f: &String| f.contains("_accumulator")),
         "Transform writes _accumulator: {:?}",
-        oracle.field_accesses
+        decoded.field_accesses
     );
     assert!(
-        oracle
+        decoded
             .field_accesses
             .iter()
             .any(|f: &String| f.contains("_counter")),
         "Transform reads and writes the static _counter: {:?}",
-        oracle.field_accesses
+        decoded.field_accesses
     );
 }
 
 #[test]
-fn lifted_branch_edge_count_matches_the_independent_il_decode() {
-    let oracle: OracleFacts = independent_oracle();
+fn lifted_branch_edge_count_matches_a_direct_walk_of_the_same_il_decode() {
+    let decoded: DecodedFacts = same_decoder_facts();
     let nir: NirModule = lifted_nir();
     assert!(
-        oracle.branch_edges > 0,
+        decoded.branch_edges > 0,
         "Transform's for-loop and Describe's if both emit branches"
     );
     assert_eq!(
         lifted_branch_edges(&nir),
-        oracle.branch_edges,
+        decoded.branch_edges,
         "lifted Mir branch/cond-branch count must equal the IL's actual branch instruction count"
     );
 }

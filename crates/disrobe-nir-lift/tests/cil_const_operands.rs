@@ -26,7 +26,7 @@ fn is_numeric_const(name: &str) -> bool {
     matches!(name, "ldc.i4" | "ldc.i4.s" | "ldc.i8" | "ldc.r4" | "ldc.r8")
 }
 
-fn independent_const_pairs() -> Vec<(String, String)> {
+fn same_decoder_const_pairs() -> Vec<(String, String)> {
     let pe: PeImage = parse_pe(CONST_PROBE).expect("pe");
     let clr: ClrHeader = parse_clr_header(CONST_PROBE, &pe).expect("clr");
     let root: MetadataRoot = parse_metadata_root(CONST_PROBE, &pe, &clr).expect("root");
@@ -69,8 +69,8 @@ fn lifted_const_pairs(nir: &NirModule) -> Vec<(String, String)> {
 }
 
 #[test]
-fn lifted_numeric_constants_match_the_independent_il_decode() {
-    let oracle: Vec<(String, String)> = independent_const_pairs();
+fn lifted_numeric_constants_match_a_direct_walk_of_the_same_il_decode() {
+    let oracle: Vec<(String, String)> = same_decoder_const_pairs();
     let nir: NirModule = lift_dotnet_pe(CONST_PROBE).expect("lift ConstProbe.dll");
     let lifted: Vec<(String, String)> = lifted_const_pairs(&nir);
 
@@ -86,7 +86,7 @@ fn lifted_numeric_constants_match_the_independent_il_decode() {
 
 #[test]
 fn float_and_signed_short_constants_are_not_dropped_or_unsigned() {
-    let oracle: Vec<(String, String)> = independent_const_pairs();
+    let oracle: Vec<(String, String)> = same_decoder_const_pairs();
 
     let has_float: bool = oracle
         .iter()

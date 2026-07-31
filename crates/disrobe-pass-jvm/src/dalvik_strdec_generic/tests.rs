@@ -36,7 +36,7 @@ fn legacy_recovery_report_defaults_to_incomplete_code_scan() {
 }
 
 #[test]
-fn recovers_multiple_distinct_byte_array_xor_call_sites_from_a_real_dex() {
+fn recovers_multiple_distinct_byte_array_xor_call_sites_from_a_dex_we_build() {
     let pairs: [(&str, u8); 3] = [
         ("https://api.example.com/v2/session", 0x37),
         ("X-Correlation-Id", 0x37),
