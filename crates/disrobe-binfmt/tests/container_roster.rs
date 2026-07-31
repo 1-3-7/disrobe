@@ -97,7 +97,7 @@ fn the_roster_names_every_container_the_enum_declares() {
 }
 
 #[test]
-fn the_published_container_figures_are_the_roster_counted_by_name() {
+fn the_published_detected_count_is_the_roster_counted_by_name() {
     let pinned: Vec<String> = roster_rows();
     let payload: usize = pinned
         .iter()
@@ -112,10 +112,20 @@ fn the_published_container_figures_are_the_roster_counted_by_name() {
         pinned.len()
     );
     assert_eq!(
-        u64::try_from(payload).expect("payload count fits u64"),
-        published("delivered"),
-        "recovery.json publishes a delivered count that no longer matches the {payload} formats \
-         {ROSTER} names as extracting in-tree"
+        payload,
+        pinned.len(),
+        "{ROSTER} names {payload} of its {} formats as declaring a payload extractor; the roster \
+         proves what the binary carries, so any other mode has to be named here rather than \
+         absorbed into a total",
+        pinned.len()
+    );
+    assert!(
+        published("delivered") <= u64::try_from(payload).expect("payload count fits u64"),
+        "recovery.json publishes a delivered count above the {payload} formats {ROSTER} names as \
+         carrying an extractor. Delivered is measured by \
+         crates/disrobe-cli/tests/container_breadth.rs over committed inputs and is bound to that \
+         run by published_container_counts_match_this_enum; this roster counts declarations and \
+         must never be what makes the delivered figure true"
     );
 }
 

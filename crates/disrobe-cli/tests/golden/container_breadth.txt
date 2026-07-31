@@ -31,5 +31,4 @@ lz	extract	corpus/binfmt/bare-stream/payload.lz
 lz4	extract	corpus/binfmt/bare-stream/payload-legacy.lz4
 zlib	extract	corpus/binfmt/bare-stream/payload.zlib
 Z	extract	corpus/binfmt/bare-stream/payload.Z
-dlink-alpha-v1	misdetect	corpus/python/decompile/legacy/compiled/unicode_future.3.3.pyc
 uefi-fv	extract	crates/disrobe-binfmt/tests/fixtures/uefi_fv/inner.fv

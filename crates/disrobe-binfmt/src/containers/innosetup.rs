@@ -111,49 +111,70 @@ pub enum InnoFilter {
     Zlib,
 }
 
-pub fn detect_innosetup(bytes: &[u8]) -> Option<InnoSetupInfo> {
-    let loader: Option<SetupLoaderOffsets> = locate_setup_loader(bytes);
-    let id_at: usize = match loader {
-        Some(l) if (l.header_offset as usize) < bytes.len() => {
-            let candidate: usize = l.header_offset as usize;
-            if bytes
-                .get(candidate..candidate + INNO_DATA_ID_PREFIX.len())
-                .is_some_and(|w: &[u8]| w == INNO_DATA_ID_PREFIX)
-            {
-                candidate
-            } else {
-                find_subslice(bytes, INNO_DATA_ID_PREFIX)?
-            }
-        }
-        _ => find_subslice(bytes, INNO_DATA_ID_PREFIX)?,
-    };
+fn inno_id_field(bytes: &[u8], id_at: usize) -> Option<String> {
     let id_block: &[u8] = bytes.get(id_at..id_at + INNO_HEADER_ID_LEN)?;
-    let version_string: String = id_block
+    let terminator: usize = id_block.iter().position(|b: &u8| *b == 0)?;
+    if id_block[terminator..].iter().any(|b: &u8| *b != 0) {
+        return None;
+    }
+    let version_string: String = id_block[..terminator]
         .iter()
-        .take_while(|&&b: &&u8| b != 0)
         .map(|&b: &u8| char::from(b))
         .collect::<String>()
         .trim()
         .to_owned();
-    if !version_string.starts_with("Inno Setup") {
-        return None;
-    }
+    version_string
+        .starts_with("Inno Setup")
+        .then_some(version_string)
+}
+
+fn inno_info_at(
+    bytes: &[u8],
+    id_at: usize,
+    loader: Option<SetupLoaderOffsets>,
+) -> Option<InnoSetupInfo> {
+    let version_string: String = inno_id_field(bytes, id_at)?;
+    let (version, unicode): (Option<(u16, u16, u16)>, bool) = parse_inno_version(&version_string);
+    version?;
     let stream_at: usize = id_at + INNO_HEADER_ID_LEN;
     let header: &[u8] = bytes.get(stream_at..stream_at + 9)?;
     let stored_size: u32 = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
-    let compression_flag: u8 = header[8];
-    let compression: InnoCompression = infer_compression(bytes, stream_at + 9, compression_flag);
-    let (version, unicode): (Option<(u16, u16, u16)>, bool) = parse_inno_version(&version_string);
+    let block_at: usize = stream_at + 9;
+    if block_at.checked_add(stored_size as usize)? > bytes.len() {
+        return None;
+    }
+    let compression: InnoCompression = infer_compression(bytes, block_at, header[8]);
     Some(InnoSetupInfo {
         version_string,
         version,
         unicode,
         data_id_offset: id_at as u64,
-        block_stream_offset: (stream_at + 9) as u64,
+        block_stream_offset: block_at as u64,
         compression,
         stored_size,
         loader,
     })
+}
+
+pub fn detect_innosetup(bytes: &[u8]) -> Option<InnoSetupInfo> {
+    let loader: Option<SetupLoaderOffsets> = locate_setup_loader(bytes);
+    if let Some(offsets) = loader
+        && let Some(info) = usize::try_from(offsets.header_offset)
+            .ok()
+            .and_then(|at: usize| inno_info_at(bytes, at, loader))
+    {
+        return Some(info);
+    }
+    let mut from: usize = 0;
+    while let Some(rest) = bytes.get(from..) {
+        let offset: usize = find_subslice(rest, INNO_DATA_ID_PREFIX)?;
+        let id_at: usize = from + offset;
+        if let Some(info) = inno_info_at(bytes, id_at, loader) {
+            return Some(info);
+        }
+        from = id_at + 1;
+    }
+    None
 }
 
 fn infer_compression(bytes: &[u8], chunk_start: usize, flag: u8) -> InnoCompression {

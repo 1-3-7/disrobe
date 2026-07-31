@@ -509,7 +509,7 @@ impl ContainerKind {
     }
 
     #[must_use]
-    pub fn extracted_in_tree_count() -> usize {
+    pub fn payload_extractor_count() -> usize {
         Self::ALL
             .iter()
             .filter(|kind: &&Self| matches!(kind.extraction_mode(), ExtractionMode::Payload))
@@ -537,7 +537,6 @@ const RPM_MAGIC: &[u8; 4] = &[0xed, 0xab, 0xee, 0xdb];
 const DEB_MAGIC: &[u8; 8] = b"!<arch>\n";
 const DEB_MEMBER: &[u8; 14] = b"debian-binary ";
 const XZ_MAGIC: &[u8; 6] = &[0xfd, b'7', b'z', b'X', b'Z', 0x00];
-const DMG_TRAILER_MAGIC: &[u8; 4] = b"koly";
 const ASAR_HEADER_PREFIX: &[u8; 4] = &[0x04, 0x00, 0x00, 0x00];
 const PKG_XAR_MAGIC: &[u8; 4] = b"xar!";
 const TAR_USTAR_OFFSET: usize = 257;
@@ -722,7 +721,7 @@ fn detect_by_magic(bytes: &[u8]) -> Option<ContainerKind> {
     if bytes.starts_with(RPM_MAGIC) {
         return Some(ContainerKind::Rpm);
     }
-    if smells_like_dmg(bytes) {
+    if crate::containers::detect_dmg(bytes) {
         return Some(ContainerKind::Dmg);
     }
     if crate::containers::bare_stream::detect_lzip(bytes) {
@@ -965,16 +964,6 @@ fn smells_like_iso(bytes: &[u8]) -> bool {
         return false;
     }
     &bytes[ISO_PRIMARY_OFFSET..ISO_PRIMARY_OFFSET + ISO_PRIMARY_TAG.len()] == ISO_PRIMARY_TAG
-}
-
-fn smells_like_dmg(bytes: &[u8]) -> bool {
-    if bytes.len() < 512 {
-        return false;
-    }
-    let tail_start: usize = bytes.len() - 512;
-    bytes[tail_start..]
-        .windows(4)
-        .any(|w| w == DMG_TRAILER_MAGIC)
 }
 
 fn smells_like_asar(bytes: &[u8]) -> bool {
@@ -1440,16 +1429,41 @@ mod tests {
         assert_eq!(ContainerKind::ALL.len(), 100);
     }
 
+    const BREADTH_EVIDENCE: &str = "crates/disrobe-cli/tests/golden/container_breadth.txt";
+    const BREADTH_STATUS_EXTRACT: &str = "extract";
+
+    fn repo_root() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+    }
+
+    fn formats_a_committed_input_drives_to_member_bytes() -> usize {
+        let evidence: std::path::PathBuf = repo_root().join(BREADTH_EVIDENCE);
+        let raw: String = std::fs::read_to_string(&evidence).unwrap_or_else(|e: std::io::Error| {
+            panic!(
+                "{BREADTH_EVIDENCE} is the measurement the delivered count is taken from, so \
+                     without it the published figure would rest on the roster that declares the \
+                     extractors rather than on a run that used them: {e} at {}",
+                evidence.display()
+            )
+        });
+        let reached: usize = raw
+            .lines()
+            .filter(|line: &&str| line.split('\t').nth(1) == Some(BREADTH_STATUS_EXTRACT))
+            .count();
+        assert!(
+            reached > 0,
+            "{BREADTH_EVIDENCE} credits no format with writing member bytes from a committed \
+             input, so the delivered count would be compared against nothing"
+        );
+        reached
+    }
+
     #[test]
     fn published_container_counts_match_this_enum() {
         const BAR: &str = "Containers";
-        let manifest: &str = env!("CARGO_MANIFEST_DIR");
-        let data: std::path::PathBuf = std::path::Path::new(manifest)
-            .join("..")
-            .join("..")
-            .join("xtask")
-            .join("data")
-            .join("recovery.json");
+        let data: std::path::PathBuf = repo_root().join("xtask").join("data").join("recovery.json");
         let raw: String = std::fs::read_to_string(&data)
             .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", data.display()));
         let parsed: serde_json::Value = serde_json::from_str(&raw)
@@ -1477,17 +1491,26 @@ mod tests {
              until this assertion passes.",
             ContainerKind::ALL.len()
         );
+        let measured: usize = formats_a_committed_input_drives_to_member_bytes();
         assert_eq!(
             usize::try_from(delivered).expect("delivered fits usize"),
-            ContainerKind::extracted_in_tree_count(),
-            "recovery.json publishes {delivered} formats extracting in-tree; the real count is {}",
-            ContainerKind::extracted_in_tree_count()
+            measured,
+            "recovery.json publishes a delivered count of {delivered} for the Containers bar, but \
+             {BREADTH_EVIDENCE} records {measured} format(s) writing member bytes from a committed \
+             input. Delivered is a behavioural claim, so it is bound to that run and never to \
+             ContainerKind::payload_extractor_count, which only counts the arms of a hand-written \
+             match and would make the claim true with no extraction code executed."
+        );
+        assert!(
+            measured <= ContainerKind::payload_extractor_count(),
+            "{BREADTH_EVIDENCE} credits {measured} format(s) with writing member bytes against the \
+             {} the roster declares an extractor for, so a format is counted twice or named twice",
+            ContainerKind::payload_extractor_count()
         );
     }
 
     #[test]
-    fn every_real_format_extracts_in_tree() {
-        assert_eq!(ContainerKind::extracted_in_tree_count(), 100);
+    fn every_declared_format_carries_a_payload_extractor() {
         let metadata_only: usize = ContainerKind::ALL
             .iter()
             .filter(|k: &&ContainerKind| {
@@ -1503,8 +1526,11 @@ mod tests {
         assert_eq!(metadata_only, 0);
         assert_eq!(external, 0);
         assert_eq!(
-            ContainerKind::extracted_in_tree_count() + metadata_only + external,
-            100
+            ContainerKind::payload_extractor_count() + metadata_only + external,
+            100,
+            "this counts what the roster declares, not what any input reached; the delivered figure \
+             is measured in {BREADTH_EVIDENCE} and asserted by \
+             published_container_counts_match_this_enum"
         );
     }
 

@@ -7,6 +7,10 @@ use crate::error::{Error, Result};
 
 const KOLY_MAGIC: &[u8; 4] = b"koly";
 const KOLY_LEN: usize = 512;
+const KOLY_HEADER_SIZE: u32 = 512;
+const KOLY_VERSION: u32 = 4;
+const KOLY_VERSION_OFFSET: usize = 4;
+const KOLY_HEADER_SIZE_OFFSET: usize = 8;
 const MISH_MAGIC: u32 = 0x6D69_7368;
 const CHUNK_HEADER_OFFSET: usize = 204;
 const CHUNK_LEN: usize = 40;
@@ -55,10 +59,12 @@ fn read_u64_be(bytes: &[u8], at: usize) -> Option<u64> {
 }
 
 pub fn detect_dmg(bytes: &[u8]) -> bool {
-    bytes.len() >= KOLY_LEN
-        && bytes
-            .get(bytes.len() - KOLY_LEN..bytes.len() - KOLY_LEN + 4)
-            .is_some_and(|m: &[u8]| m == KOLY_MAGIC)
+    let Some(base): Option<usize> = bytes.len().checked_sub(KOLY_LEN) else {
+        return false;
+    };
+    bytes.get(base..base + 4) == Some(KOLY_MAGIC.as_slice())
+        && read_u32_be(bytes, base + KOLY_VERSION_OFFSET) == Some(KOLY_VERSION)
+        && read_u32_be(bytes, base + KOLY_HEADER_SIZE_OFFSET) == Some(KOLY_HEADER_SIZE)
 }
 
 pub fn parse_koly(bytes: &[u8]) -> Result<KolyTrailer> {
@@ -560,6 +566,10 @@ mod tests {
 
         let mut koly: Vec<u8> = vec![0u8; KOLY_LEN];
         koly[0..4].copy_from_slice(KOLY_MAGIC);
+        koly[KOLY_VERSION_OFFSET..KOLY_VERSION_OFFSET + 4]
+            .copy_from_slice(&KOLY_VERSION.to_be_bytes());
+        koly[KOLY_HEADER_SIZE_OFFSET..KOLY_HEADER_SIZE_OFFSET + 4]
+            .copy_from_slice(&KOLY_HEADER_SIZE.to_be_bytes());
         koly[24..32].copy_from_slice(&0u64.to_be_bytes());
         koly[32..40].copy_from_slice(&(data_fork.len() as u64).to_be_bytes());
         koly[216..224].copy_from_slice(&xml_offset.to_be_bytes());

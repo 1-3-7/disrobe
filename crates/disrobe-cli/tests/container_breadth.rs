@@ -18,9 +18,62 @@ const STATUS_EXTRACT: &str = "extract";
 const STATUS_DETECT: &str = "detect-only";
 const STATUS_MISDETECT: &str = "misdetect";
 
-const KNOWN_MISDETECTIONS: usize = 1;
+const KNOWN_MISDETECTIONS: usize = 0;
 
 const MISDETECTED_SOURCE_SUFFIXES: [&str; 2] = [".rs", ".pyc"];
+
+#[derive(Debug, Clone, Copy)]
+struct ForeignFamily {
+    suffix: &'static str,
+    family: &'static str,
+    header_matches: fn(&[u8]) -> bool,
+}
+
+fn cpython_bytecode_header(bytes: &[u8]) -> bool {
+    bytes.get(2..4) == Some(b"\r\n".as_slice())
+}
+
+fn jvm_classfile_header(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0xca, 0xfe, 0xba, 0xbe])
+}
+
+fn source_text(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes).is_ok()
+}
+
+const FOREIGN_FAMILIES: [ForeignFamily; 5] = [
+    ForeignFamily {
+        suffix: ".pyc",
+        family: "CPython bytecode",
+        header_matches: cpython_bytecode_header,
+    },
+    ForeignFamily {
+        suffix: ".pyo",
+        family: "CPython bytecode",
+        header_matches: cpython_bytecode_header,
+    },
+    ForeignFamily {
+        suffix: ".class",
+        family: "JVM classfile",
+        header_matches: jvm_classfile_header,
+    },
+    ForeignFamily {
+        suffix: ".rs",
+        family: "Rust source",
+        header_matches: source_text,
+    },
+    ForeignFamily {
+        suffix: ".py",
+        family: "Python source",
+        header_matches: source_text,
+    },
+];
+
+fn foreign_family(relative: &str, bytes: &[u8]) -> Option<&'static ForeignFamily> {
+    FOREIGN_FAMILIES.iter().find(|family: &&ForeignFamily| {
+        relative.ends_with(family.suffix) && (family.header_matches)(bytes)
+    })
+}
 
 fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -71,6 +124,14 @@ fn is_source_text(relative: &str) -> bool {
         .any(|suffix: &&str| relative.ends_with(suffix))
 }
 
+fn relative_to(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+        .replace('\\', "/")
+}
+
 #[derive(Debug, Clone)]
 struct Reached {
     status: &'static str,
@@ -99,12 +160,7 @@ fn measure() -> BTreeMap<&'static str, Reached> {
             continue;
         };
         let label: &'static str = kind.label();
-        let relative: String = path
-            .strip_prefix(&root)
-            .unwrap_or(&path)
-            .display()
-            .to_string()
-            .replace('\\', "/");
+        let relative: String = relative_to(&root, &path);
         seen += 1;
 
         let out_dir: PathBuf = temp.path().join(format!("{label}-{seen}"));
@@ -312,5 +368,87 @@ fn the_recorded_misdetections_only_ever_shrink() {
          ceiling of {KNOWN_MISDETECTIONS}. A detector that started firing on unrelated bytes must \
          fail here rather than be absorbed into the golden as an expected row: {misdetected:?}",
         misdetected.len()
+    );
+}
+
+#[test]
+fn no_recorded_row_credits_a_format_with_a_file_of_another_family() {
+    let root: PathBuf = repo_root();
+    let mut wrong: Vec<String> = Vec::new();
+    for (kind, status, input) in parse(&committed_evidence()) {
+        let path: PathBuf = root.join(&input);
+        let Ok(bytes): Result<Vec<u8>, std::io::Error> = std::fs::read(&path) else {
+            panic!(
+                "{EVIDENCE} names `{input}` as what reaches `{kind}`, but that path cannot be read \
+                 from {}, so the row rests on a file this check cannot inspect",
+                root.display()
+            )
+        };
+        if let Some(family) = foreign_family(&input, &bytes) {
+            wrong.push(format!(
+                "`{kind}` ({status}) is credited to `{input}`, whose `{}` extension and header are \
+                 a {} file",
+                family.suffix, family.family
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{EVIDENCE} is written by the same measurement this suite re-runs, so a misclassification \
+         lands in it as the expected value and every row-by-row comparison then passes over it. \
+         This is the rule that measurement cannot write for itself: a format may not be credited \
+         to a file whose extension and header both belong to another family. {} row(s) break it: \
+         {}",
+        wrong.len(),
+        wrong.join("; ")
+    );
+}
+
+#[test]
+fn no_committed_source_or_bytecode_file_is_claimed_as_a_container() {
+    let root: PathBuf = repo_root();
+    let mut claimed: Vec<String> = Vec::new();
+    let mut inspected: usize = 0;
+    for path in tracked_files(&root) {
+        let relative: String = relative_to(&root, &path);
+        if !FOREIGN_FAMILIES
+            .iter()
+            .any(|family: &ForeignFamily| relative.ends_with(family.suffix))
+        {
+            continue;
+        }
+        let Ok(meta): Result<std::fs::Metadata, std::io::Error> = std::fs::metadata(&path) else {
+            continue;
+        };
+        if !meta.is_file() || meta.len() > MAX_INPUT_BYTES || meta.len() < MIN_INPUT_BYTES {
+            continue;
+        }
+        let Ok(bytes): Result<Vec<u8>, std::io::Error> = std::fs::read(&path) else {
+            continue;
+        };
+        let Some(family): Option<&ForeignFamily> = foreign_family(&relative, &bytes) else {
+            continue;
+        };
+        inspected += 1;
+        if let Some(kind) = detect_container_with_hint(&bytes, Some(path.as_path())) {
+            claimed.push(format!(
+                "`{relative}` is a {} file and the roster claims it as `{}`",
+                family.family,
+                kind.label()
+            ));
+        }
+    }
+    assert!(
+        inspected >= FOREIGN_FAMILIES.len(),
+        "only {inspected} committed file(s) match a family this check knows, which is too few for \
+         it to have exercised the detector at all; the suffix table or the committed tree moved"
+    );
+    assert!(
+        claimed.is_empty(),
+        "the container roster claims {} committed file(s) whose extension and header both belong \
+         to another family, so a published breadth figure counts a coincidence as a format: {}. \
+         Tighten the detector rather than excluding the file",
+        claimed.len(),
+        claimed.join("; ")
     );
 }

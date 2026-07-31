@@ -513,7 +513,7 @@ const KEYS: &[KeySpec] = &[
         extract: |r: &Recovery| {
             Ok(MetricValue::Int(
                 r.bar("Detection and extraction breadth", "Containers")?
-                    .delivered()?,
+                    .detected()?,
             ))
         },
     },
