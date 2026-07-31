@@ -57,7 +57,7 @@ const SEED_NAME_RESIDUAL: &str = "complete static recovery: stdlib structure is 
 
 const INCOMPLETE_RESIDUAL: &str = "recovery is partial: some stdlib structure or obfuscated literals were not fully \
      reconstructed (e.g. a -tiny build that strips the function table the thunk scan keys on, \
-     or an unrecognised literal-derivation shape); this is a tooling-depth boundary, not an \
+     or an unrecognized literal-derivation shape); this is a tooling-depth boundary, not an \
      information-theoretic one.";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

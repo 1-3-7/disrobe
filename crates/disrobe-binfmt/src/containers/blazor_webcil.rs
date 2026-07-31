@@ -1297,7 +1297,7 @@ mod tests {
                 data: &webcil,
             },
         ];
-        assert!(detect_blazor_bundle(&files), "must recognise a real bundle");
+        assert!(detect_blazor_bundle(&files), "must recognize a real bundle");
         let boot_parsed: BlazorBoot = parse_blazor_boot(&boot).expect("parse real boot manifest");
         assert_eq!(boot_parsed.main_assembly_name.as_deref(), Some("Bz"));
         let entries: Vec<DotnetBundleEntry> =

@@ -129,7 +129,7 @@ fn extract_from_ole(data: &[u8]) -> Result<ExtractedProject> {
     let stream_paths: Vec<String> = comp
         .walk()
         .filter(|e: &cfb::Entry| e.is_stream())
-        .map(|e: cfb::Entry| normalise_cfb_path(&e.path().display().to_string()))
+        .map(|e: cfb::Entry| normalize_cfb_path(&e.path().display().to_string()))
         .collect();
     let module_refs: Vec<ModuleRef> = read_module_refs(&mut comp, &stream_paths);
     let mut modules: Vec<ExtractedModule> = Vec::new();
@@ -329,7 +329,7 @@ fn locate_module_stream(stream_paths: &[String], stream_name: &str) -> String {
     format!("/VBA/{stream_name}")
 }
 
-fn normalise_cfb_path(p: &str) -> String {
+fn normalize_cfb_path(p: &str) -> String {
     let unified: String = p.replace('\\', "/");
     if unified.starts_with('/') {
         unified

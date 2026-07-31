@@ -75,7 +75,7 @@ static EXIT_SCRIPT: LazyLock<Regex> =
 static IF_PREFIX: LazyLock<Regex> =
     LazyLock::new(|| crate::regex_util::safe_regex(r"(?i)^\s*if\b"));
 
-fn normalise_target(raw: &str) -> Option<String> {
+fn normalize_target(raw: &str) -> Option<String> {
     let trimmed: &str = raw.trim().trim_start_matches(':');
     if trimmed.is_empty() {
         return None;
@@ -101,7 +101,7 @@ fn parse_statement(line: usize, text: &str) -> Statement {
     for cap in CALL_LABEL.captures_iter(trimmed) {
         let target: Option<String> = cap
             .get(1)
-            .and_then(|m: regex::Match<'_>| normalise_target(m.as_str()));
+            .and_then(|m: regex::Match<'_>| normalize_target(m.as_str()));
         transfers.push(Transfer {
             kind: EdgeKind::Call,
             target,
@@ -116,7 +116,7 @@ fn parse_statement(line: usize, text: &str) -> Statement {
             if raw.eq_ignore_ascii_case(":eof") || raw.eq_ignore_ascii_case("eof") {
                 None
             } else {
-                normalise_target(raw)
+                normalize_target(raw)
             };
         let kind: EdgeKind = if raw.eq_ignore_ascii_case(":eof") || raw.eq_ignore_ascii_case("eof")
         {

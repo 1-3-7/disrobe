@@ -114,12 +114,12 @@ impl Pass for ContainerPass {
         };
         if ContainerDetector.detect(&ctx).is_none() {
             return Err(CoreError::PassFailure(
-                "DR-BINFMT-0901: binfmt.container: input is not a recognised container".to_string(),
+                "DR-BINFMT-0901: binfmt.container: input is not a recognized container".to_string(),
             ));
         }
         let Some(tag): Option<&'static str> = sniff_container_tag(bytes) else {
             return Err(CoreError::PassFailure(
-                "DR-BINFMT-0901: binfmt.container: input is not a recognised container".to_string(),
+                "DR-BINFMT-0901: binfmt.container: input is not a recognized container".to_string(),
             ));
         };
         let manifest: String = render_container_manifest(tag, bytes);

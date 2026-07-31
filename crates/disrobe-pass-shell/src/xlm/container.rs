@@ -221,10 +221,10 @@ fn is_index_content_type(declared: &str) -> bool {
 }
 
 fn content_type_of<'a>(part: &str, content_types: &'a [(String, String)]) -> Option<&'a str> {
-    let normalised: String = normalise_part_name(part);
+    let normalized: String = normalize_part_name(part);
     content_types
         .iter()
-        .find(|(name, _ctype): &&(String, String)| normalise_part_name(name) == normalised)
+        .find(|(name, _ctype): &&(String, String)| normalize_part_name(name) == normalized)
         .map(|(_name, ctype): &(String, String)| ctype.as_str())
 }
 
@@ -253,7 +253,7 @@ fn classify_part(part: &str, content_types: &[(String, String)]) -> SheetKindHin
     SheetKindHint::Unknown
 }
 
-fn normalise_part_name(name: &str) -> String {
+fn normalize_part_name(name: &str) -> String {
     name.trim_start_matches('/').to_ascii_lowercase()
 }
 
@@ -285,7 +285,7 @@ fn resolve_workbook_part(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Option<Stri
         .find(|(rel_type, _target): &(String, String)| {
             relationship_kind(rel_type).eq_ignore_ascii_case(OFFICE_DOCUMENT_REL)
         })
-        .map(|(_rel_type, target): (String, String)| normalise_target(&target, ""))
+        .map(|(_rel_type, target): (String, String)| normalize_target(&target, ""))
 }
 
 fn read_part_rels(archive: &mut ZipArchive<Cursor<&[u8]>>, part: &str) -> Vec<PartRelationship> {
@@ -304,7 +304,7 @@ fn read_part_rels(archive: &mut ZipArchive<Cursor<&[u8]>>, part: &str) -> Vec<Pa
             |(id, rel_type, target): (String, String, String)| PartRelationship {
                 id,
                 kind: relationship_kind(&rel_type).to_owned(),
-                target: normalise_target(&target, dir),
+                target: normalize_target(&target, dir),
             },
         )
         .collect()
@@ -341,7 +341,7 @@ fn split_dir(part: &str) -> (&str, &str) {
     }
 }
 
-fn normalise_target(target: &str, base_dir: &str) -> String {
+fn normalize_target(target: &str, base_dir: &str) -> String {
     if let Some(stripped) = target.strip_prefix('/') {
         return stripped.to_owned();
     }

@@ -54,7 +54,7 @@ fn a_clean_wasm_module_reports_no_capabilities() {
     let summary = capability_summary(&module);
     assert!(
         summary.tags.is_empty(),
-        "pure arithmetic touches no external behaviour: {summary:?}"
+        "pure arithmetic touches no external behavior: {summary:?}"
     );
 }
 

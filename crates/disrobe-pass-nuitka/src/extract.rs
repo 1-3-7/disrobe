@@ -66,7 +66,7 @@ pub fn extract_for_classification(
         }),
         NuitkaVariant::SignedPe => extract_signed_pe(image, classification),
         NuitkaVariant::Unknown => Ok(VariantExtraction::NotExtractable {
-            reason: "unrecognised variant".to_owned(),
+            reason: "unrecognized variant".to_owned(),
         }),
     }
 }

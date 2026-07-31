@@ -58,7 +58,7 @@ fn container_members(container_bytes: &[u8]) -> PyResult<ContainerMembers> {
     ensure_container_input_within_cap(container_bytes.len(), MAX_CONTAINER_INPUT_BYTES)?;
     if detect_container(container_bytes).is_none() {
         return Err(DisrobeError::new_err(
-            "input is not a recognised container".to_owned(),
+            "input is not a recognized container".to_owned(),
         ));
     }
     let root_hash: [u8; 32] = *blake3::hash(container_bytes).as_bytes();

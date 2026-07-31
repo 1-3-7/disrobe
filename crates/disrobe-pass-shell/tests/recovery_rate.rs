@@ -227,7 +227,7 @@ fn oracle_rejects_still_encoded_and_passthrough() {
     );
     assert!(
         produced("ECHO   HELLO    WORLD", "echo hello world"),
-        "oracle normalises whitespace and case for the plaintext match"
+        "oracle normalizes whitespace and case for the plaintext match"
     );
 }
 

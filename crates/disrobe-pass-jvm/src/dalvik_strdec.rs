@@ -1249,7 +1249,7 @@ mod tests {
         assert_eq!(
             reports.len(),
             1,
-            "the class-name-seeded table decryptor must be recognised and run"
+            "the class-name-seeded table decryptor must be recognized and run"
         );
         let report: &DexStringRecovery = &reports[0];
         let recovered: Vec<String> = report

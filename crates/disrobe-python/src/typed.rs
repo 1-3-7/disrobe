@@ -1112,7 +1112,7 @@ typed_report!(
 typed_report!(
     ContainerDetection,
     "ContainerDetection",
-    "Container-format detection: whether a container was recognised, its kind, and zip-family membership.",
+    "Container-format detection: whether a container was recognized, its kind, and zip-family membership.",
     llm,
     accessors {
         detected -> bool : |d| field_bool(d, "detected"),

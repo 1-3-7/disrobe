@@ -1129,7 +1129,7 @@ mod tests {
                 && cli_equivalent
                     .iter()
                     .any(|m: &RecoveredVbaModule| m.source.contains("MsgBox")),
-            "the shared p-code fallback the CLI uses must also recover the behaviour"
+            "the shared p-code fallback the CLI uses must also recover the behavior"
         );
     }
 

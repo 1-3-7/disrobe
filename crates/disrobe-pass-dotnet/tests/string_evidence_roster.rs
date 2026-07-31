@@ -112,7 +112,7 @@ fn a_real_sample_tier_names_a_committed_artifact_that_recovers_plaintext() {
         let report: DetectionReport = detect_all(&image);
         assert!(
             report.matches.contains_key(&protector),
-            "{} names {} as its committed sample, but the detector does not recognise that \
+            "{} names {} as its committed sample, but the detector does not recognize that \
              artifact as {}",
             protector.label(),
             path.display(),

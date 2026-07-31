@@ -1,6 +1,6 @@
 [package]
 name = "disrobe-irsummary"
-description = "IR-driven summaries over the architecture-neutral normalized IR (the Mir rung): a per-function control-flow-graph summary (basic blocks, successor edges, cyclomatic complexity), an intra-function memory data-flow summary (write-to-read def-use edges over the block graph), and a module-level capability roll-up that classifies every resolved external call into the network / crypto / filesystem / process behaviour families, each serializable to the JSON the LLM-metadata bundle consumes through emit_cfg / emit_dfg."
+description = "IR-driven summaries over the architecture-neutral normalized IR (the Mir rung): a per-function control-flow-graph summary (basic blocks, successor edges, cyclomatic complexity), an intra-function memory data-flow summary (write-to-read def-use edges over the block graph), and a module-level capability roll-up that classifies every resolved external call into the network / crypto / filesystem / process behavior families, each serializable to the JSON the LLM-metadata bundle consumes through emit_cfg / emit_dfg."
 version.workspace = true
 readme.workspace = true
 edition.workspace = true

@@ -67,7 +67,7 @@ struct ProtectorFamily {
 
 impl ProtectorFamily {
     fn spellings(&self) -> Vec<String> {
-        let mut out: Vec<String> = vec![normalise(&self.ident), normalise(&self.label)];
+        let mut out: Vec<String> = vec![normalize(&self.ident), normalize(&self.label)];
         out.sort();
         out.dedup();
         out
@@ -127,7 +127,7 @@ impl EvidenceRoster {
     }
 }
 
-fn normalise(text: &str) -> String {
+fn normalize(text: &str) -> String {
     text.chars()
         .filter(char::is_ascii_alphanumeric)
         .map(|c: char| c.to_ascii_lowercase())
@@ -466,7 +466,7 @@ fn check_committed_sample(
     let statements: Vec<String> = tool_statements(&manifest, entry);
     let wanted: Vec<String> = family.spellings();
     let named: bool = statements.iter().any(|statement: &String| {
-        let flattened: String = normalise(statement);
+        let flattened: String = normalize(statement);
         wanted
             .iter()
             .any(|spelling: &String| flattened.contains(spelling.as_str()))
@@ -529,7 +529,7 @@ fn check_region(
             ));
             continue;
         }
-        match resolver.get(&normalise(cleaned)) {
+        match resolver.get(&normalize(cleaned)) {
             Some(ident) => {
                 if !named.insert(ident.clone()) {
                     issues.push(format!(

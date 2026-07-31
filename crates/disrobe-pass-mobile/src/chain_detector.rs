@@ -92,7 +92,7 @@ impl Pass for MobilePassAdapter {
         let output: MobilePassOutput = run_inner(bytes)
             .map_err(|e: crate::error::Error| CoreError::PassFailure(format!("{e}")))?;
         let encoded: Vec<u8> = serde_json::to_vec(&output).map_err(|e: serde_json::Error| {
-            CoreError::PassFailure(format!("DR-MOB-PASS: serialise: {e}"))
+            CoreError::PassFailure(format!("DR-MOB-PASS: serialize: {e}"))
         })?;
         let mut next: Artifact = Artifact::new(Rung::Disasm, encoded, artifact.root_hash);
         next.add_capability(Capability::produces("mobile.bundle.extracted", 1));
@@ -459,8 +459,8 @@ mod tests {
         let msg: String = format!("{err}");
         assert!(
             msg.contains("DR-MOB")
-                || msg.contains("Unrecognised")
-                || msg.contains("recognised")
+                || msg.contains("Unrecognized")
+                || msg.contains("recognized")
                 || msg.contains("Flutter")
                 || msg.contains("flutter")
         );

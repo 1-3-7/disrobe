@@ -19,10 +19,10 @@ pub fn normalize(input: &str) -> NormalizeReport {
 }
 
 fn join_continuations(input: &str) -> (String, usize) {
-    let normalised: String = input.replace("\r\n", "\n").replace('\r', "\n");
-    let mut out: String = String::with_capacity(normalised.len());
+    let normalized: String = input.replace("\r\n", "\n").replace('\r', "\n");
+    let mut out: String = String::with_capacity(normalized.len());
     let mut joins: usize = 0;
-    let bytes: &[u8] = normalised.as_bytes();
+    let bytes: &[u8] = normalized.as_bytes();
     let mut i: usize = 0;
     while i < bytes.len() {
         let b: u8 = bytes[i];

@@ -104,7 +104,7 @@ pub fn disassemble_pcode(stream: &[u8]) -> Result<PCodeDisasm> {
     if endian_marker != BIG_ENDIAN_MARKER && endian_marker != 0 {
         walls.push(PCodeWallDetail {
             kind: PCodeWall::UnknownEndianMarker,
-            reason: format!("unrecognised endian marker {endian_marker:#06x}"),
+            reason: format!("unrecognized endian marker {endian_marker:#06x}"),
         });
     }
     Ok(PCodeDisasm {

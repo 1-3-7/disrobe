@@ -275,7 +275,7 @@ fn run_nuitka(entry: &CorpusEntry, bytes: &[u8], blake_in: &str) -> Vec<SampleMe
                 disrobe_pass_nuitka::NuitkaVariant::Wheel => {
                     "wheel: route via the pyfreeze wheel extractor"
                 }
-                _ => "unrecognised nuitka variant",
+                _ => "unrecognized nuitka variant",
             };
             vec![SampleMetrics {
                 entry: entry.clone(),

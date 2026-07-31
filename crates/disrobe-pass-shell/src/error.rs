@@ -31,13 +31,13 @@ pub enum Error {
         max_bytes: usize,
     },
 
-    #[error("unrecognised shell dialect")]
+    #[error("unrecognized shell dialect")]
     UnknownDialect,
 
     #[error("input is empty")]
     EmptyInput,
 
-    #[error("invoke-obfuscation level not recognised")]
+    #[error("invoke-obfuscation level not recognized")]
     UnknownObfuscationLevel,
 }
 
