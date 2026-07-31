@@ -334,6 +334,9 @@ impl ObfuscatorCatalog for MobileDetector {
 mod tests {
     use super::*;
     use disrobe_core::Rung;
+    use std::path::{Path, PathBuf};
+
+    const FLUTTER_AOT_IMAGE: &str = "mobile/flutter/disrobe_sample/libapp_arm64.so";
 
     fn ctx(bytes: &[u8]) -> DetectContext<'_> {
         DetectContext {
@@ -342,6 +345,25 @@ mod tests {
             parent_hint: None,
             depth: 0,
         }
+    }
+
+    fn corpus_path(relative: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("corpus")
+            .join(relative)
+    }
+
+    fn flutter_aot_image() -> Vec<u8> {
+        let path: PathBuf = corpus_path(FLUTTER_AOT_IMAGE);
+        std::fs::read(&path).unwrap_or_else(|e: std::io::Error| {
+            panic!(
+                "{FLUTTER_AOT_IMAGE} is tracked in git, so failing to read it at {} means an \
+                 incomplete checkout and the mapping below would be graded against nothing: {e}",
+                path.display()
+            )
+        })
     }
 
     #[test]
@@ -373,7 +395,7 @@ mod tests {
 
     #[test]
     fn catalog_detect_maps_flutter_elf() {
-        let bytes: Vec<u8> = vec![0x7f, b'E', b'L', b'F', 2, 1, 1, 0];
+        let bytes: Vec<u8> = flutter_aot_image();
         let out: DetectorOutput =
             ObfuscatorCatalog::detect(&MobileDetector, &ctx(&bytes)).expect("flutter aot detect");
         assert_eq!(out.entry_id, "mobile-flutter-aot");
@@ -387,10 +409,21 @@ mod tests {
 
     #[test]
     fn detect_elf_as_flutter() {
-        let bytes: Vec<u8> = vec![0x7f, b'E', b'L', b'F', 2, 1, 1, 0];
+        let bytes: Vec<u8> = flutter_aot_image();
         let v: DetectVerdict =
             Detector::detect(&MobileDetector, &ctx(&bytes)).expect("must detect");
         assert_eq!(v.format_tag, TAG_FLUTTER_AOT);
+    }
+
+    #[test]
+    fn detect_refuses_a_bare_elf_header_as_flutter() {
+        let bytes: Vec<u8> = vec![0x7f, b'E', b'L', b'F', 2, 1, 1, 0];
+        assert!(
+            Detector::detect(&MobileDetector, &ctx(&bytes)).is_none(),
+            "elf magic carries no Dart evidence, so routing it to {TAG_FLUTTER_AOT} through the \
+             chain would report every linux binary as a Flutter app"
+        );
+        assert!(ObfuscatorCatalog::detect(&MobileDetector, &ctx(&bytes)).is_none());
     }
 
     #[test]
