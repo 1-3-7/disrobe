@@ -625,3 +625,138 @@ fn lowered_nir_matches_independent_pcode_semantics_on_random_states() {
         }
     }
 }
+
+fn std_unsigned_overflow(left: u64, right: u64, size_bytes: u32) -> bool {
+    match size_bytes {
+        1 => u8::try_from(left & 0xff)
+            .and_then(|l: u8| u8::try_from(right & 0xff).map(|r: u8| l.overflowing_add(r).1))
+            .unwrap_or(false),
+        2 => u16::try_from(left & 0xffff)
+            .and_then(|l: u16| u16::try_from(right & 0xffff).map(|r: u16| l.overflowing_add(r).1))
+            .unwrap_or(false),
+        4 => u32::try_from(left & 0xffff_ffff)
+            .and_then(|l: u32| {
+                u32::try_from(right & 0xffff_ffff).map(|r: u32| l.overflowing_add(r).1)
+            })
+            .unwrap_or(false),
+        _ => left.overflowing_add(right).1,
+    }
+}
+
+fn std_signed_overflow(left: u64, right: u64, size_bytes: u32) -> bool {
+    match size_bytes {
+        1 => i8::try_from(pcode_signed_value(left, 1))
+            .and_then(|l: i8| {
+                i8::try_from(pcode_signed_value(right, 1)).map(|r: i8| l.overflowing_add(r).1)
+            })
+            .unwrap_or(false),
+        2 => i16::try_from(pcode_signed_value(left, 2))
+            .and_then(|l: i16| {
+                i16::try_from(pcode_signed_value(right, 2)).map(|r: i16| l.overflowing_add(r).1)
+            })
+            .unwrap_or(false),
+        4 => i32::try_from(pcode_signed_value(left, 4))
+            .and_then(|l: i32| {
+                i32::try_from(pcode_signed_value(right, 4)).map(|r: i32| l.overflowing_add(r).1)
+            })
+            .unwrap_or(false),
+        _ => i64::try_from(pcode_signed_value(left, 8))
+            .and_then(|l: i64| {
+                i64::try_from(pcode_signed_value(right, 8)).map(|r: i64| l.overflowing_add(r).1)
+            })
+            .unwrap_or(false),
+    }
+}
+
+fn carry_flag_under_both_models(
+    op: &PcodeOp,
+    left: u64,
+    right: u64,
+    size_bytes: u32,
+) -> (u64, u64) {
+    let operations: Vec<PcodeOp> = vec![op.clone()];
+    let mut pcode: PcodeState = PcodeState::default();
+    pcode.write(node(Space::Register, 0, size_bytes), left);
+    pcode.write(node(Space::Register, 8, size_bytes), right);
+    execute_pcode(&operations, &mut pcode);
+
+    let config: PcodeLiftConfig = PcodeLiftConfig::new(
+        SourceLang::NativeX86,
+        vec![
+            RegisterCell::new(0, size_bytes, "lhs", None),
+            RegisterCell::new(8, size_bytes, "rhs", None),
+            RegisterCell::new(0x200, 1, "flag", None),
+        ],
+    );
+    let lowered: NirFunction =
+        lower_pcode_block(&decoded(&operations), "carry", &config).expect("lower carry op");
+    let mut nir: NirState = NirState::default();
+    nir.assign("lhs", left, size_bytes);
+    nir.assign("rhs", right, size_bytes);
+    nir.assign("flag", 0, 1);
+    execute_nir(&lowered, &mut nir);
+
+    (
+        pcode.read(node(Space::Register, 0x200, 1)),
+        nir.value("flag"),
+    )
+}
+
+#[test]
+fn both_carry_models_agree_with_the_standard_library_at_every_width() {
+    let mut random: u64 = 0xbb67_ae85_84ca_a73b;
+    let mut checked: u32 = 0;
+    for size_bytes in [1_u32, 2, 4, 8] {
+        let lhs: Varnode = node(Space::Register, 0, size_bytes);
+        let rhs: Varnode = node(Space::Register, 8, size_bytes);
+        let flag: Varnode = node(Space::Register, 0x200, 1);
+        let unsigned: PcodeOp = PcodeOp::IntCarry {
+            output: flag,
+            left: lhs,
+            right: rhs,
+        };
+        let signed: PcodeOp = PcodeOp::IntSignedCarry {
+            output: flag,
+            left: lhs,
+            right: rhs,
+        };
+        for _ in 0_u32..512 {
+            let left: u64 = pcode_truncate(next_random(&mut random), size_bytes);
+            let right: u64 = pcode_truncate(next_random(&mut random), size_bytes);
+
+            let (pcode_flag, nir_flag): (u64, u64) =
+                carry_flag_under_both_models(&unsigned, left, right, size_bytes);
+            let expected: u64 = u64::from(std_unsigned_overflow(left, right, size_bytes));
+            assert_eq!(
+                pcode_flag, expected,
+                "IntCarry at {size_bytes} bytes: our p-code model says {pcode_flag} for \
+                 {left:#x} + {right:#x}, the standard library reports {expected}"
+            );
+            assert_eq!(
+                nir_flag, expected,
+                "IntCarry at {size_bytes} bytes: the lowered NIR says {nir_flag} for \
+                 {left:#x} + {right:#x}, the standard library reports {expected}"
+            );
+
+            let (pcode_flag, nir_flag): (u64, u64) =
+                carry_flag_under_both_models(&signed, left, right, size_bytes);
+            let expected: u64 = u64::from(std_signed_overflow(left, right, size_bytes));
+            assert_eq!(
+                pcode_flag, expected,
+                "IntSignedCarry at {size_bytes} bytes: our p-code model says {pcode_flag} for \
+                 {left:#x} + {right:#x}, the standard library reports {expected}"
+            );
+            assert_eq!(
+                nir_flag, expected,
+                "IntSignedCarry at {size_bytes} bytes: the lowered NIR says {nir_flag} for \
+                 {left:#x} + {right:#x}, the standard library reports {expected}"
+            );
+            checked = checked.saturating_add(1);
+        }
+    }
+    assert_eq!(
+        checked, 2048,
+        "every width must contribute 512 operand pairs, otherwise this anchors fewer cases than \
+         it reports"
+    );
+}
