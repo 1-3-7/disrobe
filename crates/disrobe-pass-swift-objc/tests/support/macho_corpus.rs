@@ -35,7 +35,10 @@ pub(crate) struct BytesPin {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Provenance {
     TrackedInGit(Option<BytesPin>),
-    SourcedOnTheHost(&'static str),
+    SourcedOnTheHost {
+        hint: &'static str,
+        pin: Option<BytesPin>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,7 +87,23 @@ pub(crate) const fn host_sourced(
     CorpusFixture {
         dir,
         name,
-        provenance: Provenance::SourcedOnTheHost(hint),
+        provenance: Provenance::SourcedOnTheHost { hint, pin: None },
+    }
+}
+
+pub(crate) const fn host_sourced_pinned(
+    dir: &'static str,
+    name: &'static str,
+    hint: &'static str,
+    pin: BytesPin,
+) -> CorpusFixture {
+    CorpusFixture {
+        dir,
+        name,
+        provenance: Provenance::SourcedOnTheHost {
+            hint,
+            pin: Some(pin),
+        },
     }
 }
 
@@ -177,9 +196,35 @@ pub(crate) const fn homebrew_binary(name: &'static str) -> CorpusFixture {
     host_sourced(MACHO_MAC_DIR, name, HOMEBREW_HINT)
 }
 
-pub(crate) const fn released_ipa(name: &'static str) -> CorpusFixture {
-    host_sourced(IPA_DIR, name, IPA_HINT)
-}
+pub(crate) const FEATHER_IPA: CorpusFixture = host_sourced_pinned(
+    IPA_DIR,
+    "Feather-2.8.2.ipa",
+    IPA_HINT,
+    BytesPin {
+        size_bytes: 14_242_031,
+        blake3: "d71fb74a13d533d55fd27f6369f279f68111eb1a363ca11811e4890d3bf6320a",
+    },
+);
+
+pub(crate) const PPSSPP_IPA: CorpusFixture = host_sourced_pinned(
+    IPA_DIR,
+    "PPSSPP-v1.20.4.ipa",
+    IPA_HINT,
+    BytesPin {
+        size_bytes: 31_124_277,
+        blake3: "8d2e601460ecdaf6c88b7c29279afceff6e3b332cc12d775d528dc78104a1d17",
+    },
+);
+
+pub(crate) const ONION_BROWSER_IPA: CorpusFixture = host_sourced_pinned(
+    IPA_DIR,
+    "OnionBrowser-3.3.8.ipa",
+    IPA_HINT,
+    BytesPin {
+        size_bytes: 36_180_209,
+        blake3: "4968af2cb284ee4b4c17ef738dcc276e9846ab79628bd6013a0e9cdd80a212ca",
+    },
+);
 
 pub(crate) fn corpus_root() -> PathBuf {
     let manifest_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -271,7 +316,7 @@ pub(crate) fn read_host_sourced_with_requirement(
     fixture: CorpusFixture,
     requirement: CorpusRequirement,
 ) -> Option<Vec<u8>> {
-    let Provenance::SourcedOnTheHost(hint): Provenance = fixture.provenance else {
+    let Provenance::SourcedOnTheHost { hint, pin }: Provenance = fixture.provenance else {
         panic!(
             "{} is tracked in this repository, so it must be loaded through read_tracked; treating \
              a committed fixture as optional is how a graded figure turns into a skip nobody reads",
@@ -288,6 +333,9 @@ pub(crate) fn read_host_sourced_with_requirement(
                 fixture.relative(),
                 path.display()
             );
+            if let Some(pin) = pin {
+                enforce_pin(&fixture, pin, &bytes);
+            }
             Some(bytes)
         }
         Err(error) if error.kind() == ErrorKind::NotFound => {

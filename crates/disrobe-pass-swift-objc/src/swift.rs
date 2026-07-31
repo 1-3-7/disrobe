@@ -108,7 +108,7 @@ fn section_pointers(
     name: &str,
 ) -> Option<SwiftSectionPointers> {
     let section: &Section = macho::find_section(parsed, seg, name)?;
-    let bytes: &[u8] = macho::section_bytes(slice, section)?;
+    let bytes: &[u8] = macho::readable_section_bytes(slice, parsed, section)?;
     let pointer_count: usize = bytes.len() / 4;
     let mut pointers: Vec<SwiftRelativePointer> = Vec::with_capacity(pointer_count);
     for i in 0..pointer_count {
@@ -138,7 +138,7 @@ fn section_strings(
     name: &str,
 ) -> Option<SwiftReflectionStrings> {
     let section: &Section = macho::find_section(parsed, seg, name)?;
-    let bytes: &[u8] = macho::section_bytes(slice, section)?;
+    let bytes: &[u8] = macho::readable_section_bytes(slice, parsed, section)?;
     let strings: Vec<String> = split_cstrings(bytes);
     Some(SwiftReflectionStrings {
         seg: seg.to_owned(),

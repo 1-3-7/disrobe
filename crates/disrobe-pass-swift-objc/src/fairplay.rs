@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::macho::{EncryptionInfo, ParsedSlice};
+use crate::macho::{self, EncryptedRegion, EncryptionInfo, ParsedSlice, Section, Segment};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FairPlayStatus {
@@ -11,6 +11,41 @@ pub struct FairPlayStatus {
     pub is_encrypted: bool,
     pub method: String,
     pub residual_note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EncryptedTextNotice {
+    pub crypt_id: u32,
+    pub file_off: u64,
+    pub file_end: u64,
+    pub withheld_sections: Vec<String>,
+    pub statement: String,
+}
+
+#[must_use]
+pub fn encrypted_text_notice(parsed: &ParsedSlice) -> Option<EncryptedTextNotice> {
+    let region: EncryptedRegion = macho::encrypted_region(parsed)?;
+    let withheld_sections: Vec<String> = parsed
+        .segments
+        .iter()
+        .flat_map(|segment: &Segment| segment.sections.iter())
+        .filter(|section: &&Section| macho::section_is_encrypted_at_rest(parsed, section))
+        .map(|section: &Section| format!("{}/{}", section.seg, section.name))
+        .collect();
+    Some(EncryptedTextNotice {
+        crypt_id: region.crypt_id,
+        file_off: region.file_off,
+        file_end: region.end(),
+        withheld_sections,
+        statement: format!(
+            "LC_ENCRYPTION_INFO[_64] declares cryptid {}, so file bytes {}..{} are encrypted at \
+             rest. The key is wrapped to the device and is absent from this file, so nothing in \
+             that range is recoverable from these bytes and no text read out of it is reported.",
+            region.crypt_id,
+            region.file_off,
+            region.end()
+        ),
+    })
 }
 
 #[must_use]

@@ -175,6 +175,57 @@ pub struct EncryptionInfo {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EncryptedRegion {
+    pub file_off: u64,
+    pub size: u64,
+    pub crypt_id: u32,
+}
+
+impl EncryptedRegion {
+    #[must_use]
+    pub const fn end(self) -> u64 {
+        self.file_off.saturating_add(self.size)
+    }
+
+    #[must_use]
+    pub const fn overlaps(self, off: u64, len: u64) -> bool {
+        off < self.end() && self.file_off < off.saturating_add(len)
+    }
+}
+
+#[must_use]
+pub fn encrypted_region(parsed: &ParsedSlice) -> Option<EncryptedRegion> {
+    let info: &EncryptionInfo = parsed.encryption.as_ref()?;
+    if info.crypt_id == 0 || info.crypt_size == 0 {
+        return None;
+    }
+    Some(EncryptedRegion {
+        file_off: u64::from(info.crypt_off),
+        size: u64::from(info.crypt_size),
+        crypt_id: info.crypt_id,
+    })
+}
+
+#[must_use]
+pub fn section_is_encrypted_at_rest(parsed: &ParsedSlice, section: &Section) -> bool {
+    encrypted_region(parsed).is_some_and(|region: EncryptedRegion| {
+        region.overlaps(u64::from(section.offset), section.size)
+    })
+}
+
+#[must_use]
+pub fn readable_section_bytes<'a>(
+    slice: &'a [u8],
+    parsed: &ParsedSlice,
+    section: &Section,
+) -> Option<&'a [u8]> {
+    if section_is_encrypted_at_rest(parsed, section) {
+        return None;
+    }
+    section_bytes(slice, section)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DylibKind {
     Load,
     LoadWeak,
@@ -1192,6 +1243,7 @@ pub struct SliceView<'a> {
     bytes: &'a [u8],
     base: u64,
     endian: Endian,
+    encrypted: Option<EncryptedRegion>,
 }
 
 impl<'a> SliceView<'a> {
@@ -1201,7 +1253,23 @@ impl<'a> SliceView<'a> {
             bytes,
             base: image_base(parsed)?,
             endian: parsed.header.endian,
+            encrypted: encrypted_region(parsed),
         })
+    }
+
+    #[must_use]
+    pub const fn encrypted(&self) -> Option<EncryptedRegion> {
+        self.encrypted
+    }
+
+    #[must_use]
+    pub fn readable(&self, off: usize, len: usize) -> bool {
+        let Some(region): Option<EncryptedRegion> = self.encrypted else {
+            return true;
+        };
+        let start: u64 = u64::try_from(off).unwrap_or(u64::MAX);
+        let span: u64 = u64::try_from(len).unwrap_or(u64::MAX);
+        !region.overlaps(start, span)
     }
 
     #[must_use]
@@ -1222,6 +1290,9 @@ impl<'a> SliceView<'a> {
     #[must_use]
     pub fn read_u32_at(&self, off: usize) -> Option<u32> {
         let end: usize = off.checked_add(4)?;
+        if !self.readable(off, 4) {
+            return None;
+        }
         let raw: &[u8] = self.bytes.get(off..end)?;
         let arr: [u8; 4] = [raw[0], raw[1], raw[2], raw[3]];
         Some(match self.endian {
@@ -1233,6 +1304,9 @@ impl<'a> SliceView<'a> {
     #[must_use]
     pub fn read_u64_at(&self, off: usize) -> Option<u64> {
         let end: usize = off.checked_add(8)?;
+        if !self.readable(off, 8) {
+            return None;
+        }
         let raw: &[u8] = self.bytes.get(off..end)?;
         let mut arr: [u8; 8] = [0u8; 8];
         arr.copy_from_slice(raw);
@@ -1297,6 +1371,9 @@ impl<'a> SliceView<'a> {
         let end_cap: usize = off.checked_add(max_len)?.min(self.bytes.len());
         let window: &[u8] = self.bytes.get(off..end_cap)?;
         let nul: usize = window.iter().position(|b: &u8| *b == 0)?;
+        if !self.readable(off, nul.saturating_add(1)) {
+            return None;
+        }
         std::str::from_utf8(&window[..nul]).ok().map(str::to_owned)
     }
 
@@ -1310,6 +1387,9 @@ impl<'a> SliceView<'a> {
         while i < window.len() {
             let b: u8 = window[i];
             if b == 0 {
+                if !self.readable(off, i.saturating_add(1)) {
+                    return None;
+                }
                 return Some(MangledName { raw, refs });
             }
             if (0x01..=0x17).contains(&b) {
@@ -1420,11 +1500,13 @@ mod tests {
             bytes: &bytes,
             base: 0,
             endian: Endian::Little,
+            encrypted: None,
         };
         let be: SliceView<'_> = SliceView {
             bytes: &bytes,
             base: 0,
             endian: Endian::Big,
+            encrypted: None,
         };
         assert_eq!(le.read_u32_at(0), Some(0x7856_3412));
         assert_eq!(be.read_u32_at(0), Some(0x1234_5678));
@@ -1457,6 +1539,7 @@ mod tests {
             bytes: &bytes,
             base: 0,
             endian: Endian::Little,
+            encrypted: None,
         };
         assert_eq!(view.read_u32_at(usize::MAX - 1), None);
         assert_eq!(view.read_u64_at(usize::MAX - 2), None);
@@ -1477,11 +1560,13 @@ mod tests {
             bytes: &le_bytes,
             base: 0,
             endian: Endian::Little,
+            encrypted: None,
         };
         let be: SliceView<'_> = SliceView {
             bytes: &be_bytes,
             base: 0,
             endian: Endian::Big,
+            encrypted: None,
         };
         assert_eq!(le.resolve_relative(0), Some(4));
         assert_eq!(be.resolve_relative(0), Some(4));
@@ -1498,6 +1583,7 @@ mod tests {
             bytes: &bytes,
             base: 0,
             endian: Endian::Little,
+            encrypted: None,
         };
         let (target, indirect): (usize, bool) =
             view.resolve_indirectable_relative(0).expect("resolves");

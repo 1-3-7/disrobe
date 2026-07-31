@@ -2,8 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::fairplay::{self, EncryptedTextNotice};
 use crate::macho::{self, ParsedSlice, Section};
-use crate::objc_records::{self, ObjcInterface};
+use crate::objc_dispatch;
+use crate::objc_records::{self, ObjcCategory, ObjcInterface, ObjcProtocol};
 
 pub const SEG_DATA: &str = "__DATA";
 pub const SEG_DATA_CONST: &str = "__DATA_CONST";
@@ -17,6 +19,7 @@ pub const SECT_OBJC_METHTYPE: &str = "__objc_methtype";
 pub const SECT_OBJC_CLASSNAME: &str = "__objc_classname";
 pub const SECT_OBJC_SELREFS: &str = "__objc_selrefs";
 pub const SECT_OBJC_CONST: &str = "__objc_const";
+pub const SECT_OBJC_IMAGEINFO: &str = "__objc_imageinfo";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObjcPointerList {
@@ -49,6 +52,10 @@ pub struct ObjcClassDump {
     pub unique_class_names: BTreeSet<String>,
     pub unique_method_types: BTreeSet<String>,
     pub interfaces: Vec<ObjcInterface>,
+    pub categories: Vec<ObjcCategory>,
+    pub protocols: Vec<ObjcProtocol>,
+    pub image_info_flags: u32,
+    pub encrypted_text: Option<EncryptedTextNotice>,
 }
 
 #[must_use]
@@ -114,6 +121,25 @@ pub fn class_dump(slice: &[u8], parsed: &ParsedSlice) -> ObjcClassDump {
         .as_ref()
         .map(|cl: &ObjcPointerList| objc_records::recover_interfaces(slice, parsed, &cl.pointers))
         .unwrap_or_default();
+    let image_info_flags: u32 = image_info_flags(slice, parsed).unwrap_or(0);
+    let categories: Vec<ObjcCategory> =
+        catlist
+            .as_ref()
+            .map_or_else(Vec::new, |cl: &ObjcPointerList| {
+                let bound_symbols: BTreeMap<u64, String> =
+                    objc_dispatch::bound_symbols_by_slot(slice, parsed);
+                objc_records::recover_categories(
+                    slice,
+                    parsed,
+                    &cl.pointers,
+                    image_info_flags,
+                    &bound_symbols,
+                )
+            });
+    let protocols: Vec<ObjcProtocol> = protolist
+        .as_ref()
+        .map(|pl: &ObjcPointerList| objc_records::recover_protocols(slice, parsed, &pl.pointers))
+        .unwrap_or_default();
 
     ObjcClassDump {
         classlist,
@@ -130,7 +156,20 @@ pub fn class_dump(slice: &[u8], parsed: &ParsedSlice) -> ObjcClassDump {
         unique_class_names,
         unique_method_types,
         interfaces,
+        categories,
+        protocols,
+        image_info_flags,
+        encrypted_text: fairplay::encrypted_text_notice(parsed),
     }
+}
+
+fn image_info_flags(slice: &[u8], parsed: &ParsedSlice) -> Option<u32> {
+    let section: &Section = [SEG_DATA, SEG_DATA_CONST]
+        .iter()
+        .find_map(|seg: &&str| macho::find_section(parsed, seg, SECT_OBJC_IMAGEINFO))?;
+    let bytes: &[u8] = macho::readable_section_bytes(slice, parsed, section)?;
+    let raw: &[u8] = bytes.get(4..8)?;
+    Some(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
 }
 
 fn section_pointers_any_seg(
@@ -141,7 +180,7 @@ fn section_pointers_any_seg(
 ) -> Option<ObjcPointerList> {
     for seg in segs {
         if let Some(s) = macho::find_section(parsed, seg, name) {
-            return section_pointers_in(slice, s);
+            return section_pointers_in(slice, parsed, s);
         }
     }
     None
@@ -155,7 +194,7 @@ fn section_strings_any_seg(
 ) -> Option<ObjcStringTable> {
     for seg in segs {
         if let Some(s) = macho::find_section(parsed, seg, name) {
-            let bytes: &[u8] = macho::section_bytes(slice, s)?;
+            let bytes: &[u8] = macho::readable_section_bytes(slice, parsed, s)?;
             return Some(ObjcStringTable {
                 seg: (*seg).to_owned(),
                 name: name.to_owned(),
@@ -166,8 +205,12 @@ fn section_strings_any_seg(
     None
 }
 
-fn section_pointers_in(slice: &[u8], section: &Section) -> Option<ObjcPointerList> {
-    let bytes: &[u8] = macho::section_bytes(slice, section)?;
+fn section_pointers_in(
+    slice: &[u8],
+    parsed: &ParsedSlice,
+    section: &Section,
+) -> Option<ObjcPointerList> {
+    let bytes: &[u8] = macho::readable_section_bytes(slice, parsed, section)?;
     let count: usize = bytes.len() / 8;
     let mut pointers: Vec<u64> = Vec::with_capacity(count);
     for i in 0..count {
@@ -294,6 +337,10 @@ mod tests {
             unique_class_names: class_names,
             unique_method_types: BTreeSet::new(),
             interfaces: Vec::new(),
+            categories: Vec::new(),
+            protocols: Vec::new(),
+            image_info_flags: 0,
+            encrypted_text: None,
         }
     }
 

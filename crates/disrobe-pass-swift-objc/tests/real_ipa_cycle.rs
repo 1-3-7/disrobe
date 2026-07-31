@@ -13,11 +13,11 @@ use disrobe_pass_swift_objc::objc::{self as objc_dump, ObjcClassDump};
 use disrobe_pass_swift_objc::plist_decode::{self, InfoPlistSummary};
 use disrobe_pass_swift_objc::swift::{self, SwiftClassDump, looks_like_swift_mangled};
 
-use macho_corpus::{CorpusFixture, read_host_sourced, released_ipa};
+use macho_corpus::{CorpusFixture, FEATHER_IPA, ONION_BROWSER_IPA, PPSSPP_IPA, read_host_sourced};
 
-const FEATHER: CorpusFixture = released_ipa("Feather-2.8.2.ipa");
-const ONION_BROWSER: CorpusFixture = released_ipa("OnionBrowser-3.3.8.ipa");
-const PPSSPP: CorpusFixture = released_ipa("PPSSPP-v1.20.4.ipa");
+const FEATHER: CorpusFixture = FEATHER_IPA;
+const ONION_BROWSER: CorpusFixture = ONION_BROWSER_IPA;
+const PPSSPP: CorpusFixture = PPSSPP_IPA;
 
 fn assert_full_ipa_cycle(fixture: CorpusFixture, expected_bundle: &str) {
     let Some(bytes): Option<Vec<u8>> = read_host_sourced(fixture) else {

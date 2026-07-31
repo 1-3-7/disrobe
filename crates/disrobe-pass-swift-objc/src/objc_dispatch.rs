@@ -87,6 +87,14 @@ pub fn build_dispatch_maps(slice: &[u8], parsed: &ParsedSlice, arch: DispatchArc
     }
 }
 
+#[must_use]
+pub fn bound_symbols_by_slot(slice: &[u8], parsed: &ParsedSlice) -> BTreeMap<u64, String> {
+    let Some(view): Option<SliceView<'_>> = SliceView::new(slice, parsed) else {
+        return BTreeMap::new();
+    };
+    parse_binds(slice, parsed, &view)
+}
+
 fn find_section_any<'a>(parsed: &'a ParsedSlice, segs: &[&str], name: &str) -> Option<&'a Section> {
     segs.iter()
         .find_map(|seg: &&str| macho::find_section(parsed, seg, name))
@@ -150,14 +158,18 @@ fn build_classref_map(
     out
 }
 
-fn strip_class_symbol(symbol: &str) -> Option<&str> {
+pub(crate) fn strip_class_symbol(symbol: &str) -> Option<&str> {
     symbol
         .strip_prefix(CLASS_PREFIX)
         .or_else(|| symbol.strip_prefix(METACLASS_PREFIX))
         .filter(|name: &&str| !name.is_empty())
 }
 
-fn local_class_name(parsed: &ParsedSlice, view: &SliceView<'_>, class_va: u64) -> Option<String> {
+pub(crate) fn local_class_name(
+    parsed: &ParsedSlice,
+    view: &SliceView<'_>,
+    class_va: u64,
+) -> Option<String> {
     let class_off: usize = macho::vmaddr_to_offset(parsed, class_va)?;
     let bits: u64 = view.read_u64_at(class_off.checked_add(CLASS_DATA_OFF)?)?;
     let data_va: u64 = macho::decode_bound_pointer(bits & macho::FAST_DATA_MASK, view.base());
@@ -177,7 +189,7 @@ fn build_stub_map(
     let Some(section): Option<&Section> = macho::find_section(parsed, SEG_TEXT, SECT_STUBS) else {
         return out;
     };
-    let Some(bytes): Option<&[u8]> = macho::section_bytes(slice, section) else {
+    let Some(bytes): Option<&[u8]> = macho::readable_section_bytes(slice, parsed, section) else {
         return out;
     };
     match arch {
