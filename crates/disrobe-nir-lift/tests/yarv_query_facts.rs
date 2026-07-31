@@ -26,7 +26,7 @@ fn lifted() -> NirModule {
     lift_ruby_iseq(&fixture_bytes()).expect("lift YARV ISeq image to NIR")
 }
 
-struct OracleFacts {
+struct DecodedFacts {
     callees: BTreeSet<String>,
     string_constants: BTreeSet<String>,
     ivars: BTreeSet<String>,
@@ -50,7 +50,7 @@ fn calldata_method(s: &str) -> Option<String> {
     Some(rest[..end].to_owned())
 }
 
-fn independent_oracle() -> OracleFacts {
+fn same_decoder_facts() -> DecodedFacts {
     let analysis: YarvAnalysis = analyze_bytes(&fixture_bytes(), "opassign.rb.yarvc")
         .expect("analyze YARV fixture")
         .yarv
@@ -65,7 +65,7 @@ fn independent_oracle() -> OracleFacts {
 
     for body in &analysis.ibf.iseqs {
         let body: &YarvIseqBody = body;
-        let disasm: YarvDisasm = disassemble_body(body, analysis.version, "<oracle>");
+        let disasm: YarvDisasm = disassemble_body(body, analysis.version, "<decoded>");
         for instr in &disasm.instructions {
             let instr: &YarvInstruction = instr;
             let name: &str = instr.mnemonic.as_str();
@@ -106,7 +106,7 @@ fn independent_oracle() -> OracleFacts {
         }
     }
 
-    OracleFacts {
+    DecodedFacts {
         callees,
         string_constants,
         ivars,
@@ -181,99 +181,102 @@ fn input_is_a_real_compiled_ruby_yarv_image() {
 }
 
 #[test]
-fn lifted_callees_equal_the_independent_yarv_decode() {
-    let oracle: OracleFacts = independent_oracle();
+fn lifted_callees_equal_a_direct_walk_of_the_same_yarv_decode() {
+    let decoded: DecodedFacts = same_decoder_facts();
     let lifted: BTreeSet<String> = lifted_callees(&lifted());
     assert!(
-        !oracle.callees.is_empty(),
+        !decoded.callees.is_empty(),
         "the source issues real method sends"
     );
     assert_eq!(
-        lifted, oracle.callees,
+        lifted, decoded.callees,
         "lifted Mir call targets must equal the YARV calldata method-id set exactly"
     );
     for expected in ["new", "value", "value="] {
         assert!(
-            oracle.callees.iter().any(|c: &String| c == expected),
+            decoded.callees.iter().any(|c: &String| c == expected),
             "the source calls {expected}: {:?}",
-            oracle.callees
+            decoded.callees
         );
     }
 }
 
 #[test]
-fn lifted_string_constants_equal_the_independent_yarv_decode() {
-    let oracle: OracleFacts = independent_oracle();
+fn lifted_string_constants_equal_a_direct_walk_of_the_same_yarv_decode() {
+    let decoded: DecodedFacts = same_decoder_facts();
     let lifted: BTreeSet<String> = lifted_string_constants(&lifted());
     assert!(
-        !oracle.string_constants.is_empty(),
+        !decoded.string_constants.is_empty(),
         "the source has at least one string literal"
     );
     assert_eq!(
-        lifted, oracle.string_constants,
+        lifted, decoded.string_constants,
         "lifted Mir string constants must equal the YARV put-string literal set exactly"
     );
     assert!(
-        oracle.string_constants.iter().any(|s: &String| s == "x"),
+        decoded.string_constants.iter().any(|s: &String| s == "x"),
         "the source assigns $global the literal \"x\": {:?}",
-        oracle.string_constants
+        decoded.string_constants
     );
 }
 
 #[test]
-fn lifted_ivar_accesses_equal_the_independent_yarv_decode() {
-    let oracle: OracleFacts = independent_oracle();
+fn lifted_ivar_accesses_equal_a_direct_walk_of_the_same_yarv_decode() {
+    let decoded: DecodedFacts = same_decoder_facts();
     let lifted: BTreeSet<String> =
         lifted_access(&lifted(), &["getinstancevariable", "setinstancevariable"]);
-    assert!(!oracle.ivars.is_empty(), "the source touches @store");
+    assert!(!decoded.ivars.is_empty(), "the source touches @store");
     assert_eq!(
-        lifted, oracle.ivars,
+        lifted, decoded.ivars,
         "lifted Mir ivar accesses must equal the YARV get/set-instancevariable set exactly"
     );
     assert!(
-        oracle.ivars.iter().any(|s: &String| s == "@store"),
+        decoded.ivars.iter().any(|s: &String| s == "@store"),
         "the source reads and writes @store: {:?}",
-        oracle.ivars
+        decoded.ivars
     );
 }
 
 #[test]
-fn lifted_gvar_accesses_equal_the_independent_yarv_decode() {
-    let oracle: OracleFacts = independent_oracle();
+fn lifted_gvar_accesses_equal_a_direct_walk_of_the_same_yarv_decode() {
+    let decoded: DecodedFacts = same_decoder_facts();
     let lifted: BTreeSet<String> = lifted_access(&lifted(), &["getglobal", "setglobal"]);
-    assert!(!oracle.gvars.is_empty(), "the source touches $global");
+    assert!(!decoded.gvars.is_empty(), "the source touches $global");
     assert_eq!(
-        lifted, oracle.gvars,
+        lifted, decoded.gvars,
         "lifted Mir global accesses must equal the YARV get/set-global set exactly"
     );
     assert!(
-        oracle.gvars.iter().any(|s: &String| s == "$global"),
+        decoded.gvars.iter().any(|s: &String| s == "$global"),
         "the source reads and writes $global: {:?}",
-        oracle.gvars
+        decoded.gvars
     );
 }
 
 #[test]
-fn lifted_constant_accesses_equal_the_independent_yarv_decode() {
-    let oracle: OracleFacts = independent_oracle();
+fn lifted_constant_accesses_equal_a_direct_walk_of_the_same_yarv_decode() {
+    let decoded: DecodedFacts = same_decoder_facts();
     let lifted: BTreeSet<String> = lifted_access(&lifted(), &["opt_getconstant_path"]);
-    assert!(!oracle.constants.is_empty(), "the source references Object");
+    assert!(
+        !decoded.constants.is_empty(),
+        "the source references Object"
+    );
     assert_eq!(
-        lifted, oracle.constants,
+        lifted, decoded.constants,
         "lifted Mir constant-path accesses must equal the YARV opt_getconstant_path set exactly"
     );
 }
 
 #[test]
-fn lifted_branch_count_equals_the_independent_yarv_decode() {
-    let oracle: OracleFacts = independent_oracle();
+fn lifted_branch_count_equals_a_direct_walk_of_the_same_yarv_decode() {
+    let decoded: DecodedFacts = same_decoder_facts();
     assert!(
-        oracle.branch_count >= 3,
+        decoded.branch_count >= 3,
         "the ||= / &&= forms compile to several branches"
     );
     assert_eq!(
         lifted_branch_count(&lifted()),
-        oracle.branch_count,
+        decoded.branch_count,
         "lifted Mir branch/cond-branch count must equal the YARV branch-instruction count exactly"
     );
 }

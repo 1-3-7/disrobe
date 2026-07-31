@@ -22,7 +22,7 @@ const fn is_const(op: u8) -> bool {
     matches!(op, 0x12..=0x1C)
 }
 
-fn independent_operand(insn: &DalvikInsn, dex: &DexFile) -> Vec<String> {
+fn same_decoder_operand(insn: &DalvikInsn, dex: &DexFile) -> Vec<String> {
     match insn.op {
         0x15 => insn
             .literal
@@ -57,7 +57,7 @@ fn oracle_operands(bytes: &[u8]) -> BTreeMap<u64, Vec<String>> {
             let insn: DalvikInsn = insn;
             if is_const(insn.op) {
                 let address: u64 = base.saturating_add(u64::from(insn.pc));
-                out.insert(address, independent_operand(&insn, &dex));
+                out.insert(address, same_decoder_operand(&insn, &dex));
             }
         }
     }

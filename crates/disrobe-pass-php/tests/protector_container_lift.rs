@@ -66,7 +66,7 @@ fn sourceguardian_container_with_declared_len(declared_len: u32, payload: &[u8])
 }
 
 #[test]
-fn ioncube_container_lifts_real_opcode_stream_to_source() {
+fn an_ioncube_shaped_container_we_build_lifts_its_real_opcode_stream_to_source() {
     let envelope: Vec<u8> =
         build_ioncube_container(b"<?php //004F", 9, 0, HELLO_DZOA, false).expect("build");
     let report: RecoveryReport = recover_php(&envelope, auth()).expect("recover");
@@ -118,7 +118,7 @@ fn ioncube_container_lifts_through_zlib_layer() {
 }
 
 #[test]
-fn sourceguardian_container_lifts_real_opcode_stream_to_source() {
+fn a_sourceguardian_shaped_container_we_build_lifts_its_real_opcode_stream_to_source() {
     let envelope: Vec<u8> =
         build_sourceguardian_container(12, 0, FUNCS_DZOA, false).expect("build");
     let report: RecoveryReport = recover_php(&envelope, auth()).expect("recover");
@@ -250,7 +250,7 @@ fn wrong_key_corrupted_opcode_body_walls_no_fabrication() {
 }
 
 #[test]
-fn zend_optimizer_obfuscation_key_lifts_real_opcode_stream() {
+fn a_zend_guard_shaped_container_we_build_lifts_its_real_opcode_stream() {
     let key: &[u8] = b"ZENDOPTKEY01";
     let envelope: Vec<u8> = build_zend_guard_obfuscated(b'4', key, FUNCS_DZOA).expect("build");
     let report: RecoveryReport = recover_php(&envelope, auth()).expect("recover");
