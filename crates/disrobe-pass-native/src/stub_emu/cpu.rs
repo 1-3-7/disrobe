@@ -88,6 +88,7 @@ impl Cpu {
     const DISPATCHER_HANDLER_MARKER: u64 = 0x7FF1_0000;
     const DISPATCH_FRAME_GAP: u64 = 0x20;
     const SEH_NESTING_CAP: usize = 4096;
+    const REGISTRATION_RECORD_SIZE: u64 = 8;
     const CONTEXT_SIZE: u64 = 0x2cc;
     const EXCEPTION_RECORD_SIZE: u64 = 0x50;
     const CTX_EDI: u64 = 0x9C;
@@ -244,11 +245,12 @@ impl Cpu {
                 .iter()
                 .any(|d: &SehDispatch| d.frame == record);
             if self.mem.is_mapped(handler) && !already_dispatching {
+                let fault_esp: u64 = self.regs.get(Reg::Rsp) & 0xFFFF_FFFF;
                 let entered: bool =
                     self.enter_structured_handler(handler, record, next, resume_ip, exception_code);
                 crate::debug::dbg_line(|| {
                     format!(
-                        "seh: fault 0x{exception_code:08x} at 0x{resume_ip:08x} -> handler 0x{handler:08x} frame 0x{record:08x} entered={entered}"
+                        "seh: fault 0x{exception_code:08x} at 0x{resume_ip:08x} esp 0x{fault_esp:08x} -> handler 0x{handler:08x} frame 0x{record:08x} entered={entered}"
                     )
                 });
                 return entered;
@@ -271,6 +273,14 @@ impl Cpu {
         false
     }
 
+    const fn continue_execution_esp(fault_esp: u64, establisher_frame: u64) -> u64 {
+        if fault_esp == establisher_frame {
+            fault_esp.wrapping_add(Self::REGISTRATION_RECORD_SIZE) & 0xFFFF_FFFF
+        } else {
+            fault_esp
+        }
+    }
+
     fn enter_structured_handler(
         &mut self,
         handler: u64,
@@ -283,10 +293,11 @@ impl Cpu {
             return false;
         }
         let fault_esp: u64 = self.regs.get(Reg::Rsp) & 0xFFFF_FFFF;
+        let resume_esp: u64 = Self::continue_execution_esp(fault_esp, frame);
         let ctx: u64 = (fault_esp.wrapping_sub(Self::CONTEXT_SIZE + 0x40)) & !0xFu64;
         let exc_rec: u64 = (ctx.wrapping_sub(Self::EXCEPTION_RECORD_SIZE)) & !0xFu64;
         if self
-            .write_context_record(ctx, resume_ip, fault_esp)
+            .write_context_record(ctx, resume_ip, resume_esp)
             .is_err()
         {
             return false;
@@ -2583,7 +2594,11 @@ mod tests {
             "the establisher record itself must survive dispatch untouched",
         );
         assert_eq!(
-            u64::from(cpu.mem.read_u32(frame + 4).expect("frame handler must read")),
+            u64::from(
+                cpu.mem
+                    .read_u32(frame + 4)
+                    .expect("frame handler must read")
+            ),
             HANDLER,
             "the handler address in the establisher record must survive dispatch untouched",
         );
@@ -2665,6 +2680,142 @@ mod tests {
         assert_eq!(
             cpu.regs.rip, HANDLER,
             "a software INT3 breakpoint trap under SEH dispatch must transfer to the handler",
+        );
+    }
+
+    fn cpu_installing_its_own_registration_then_trapping(extra_push: bool) -> (Cpu, u64) {
+        const TEB: u64 = 0x7EFD_E000;
+        const HANDLER: u64 = 0x0050_0000;
+        const STACK_TOP: u64 = 0x2_3F00;
+        let mut cpu: Cpu = Cpu::new(CpuMode::Bits32);
+        cpu.enable_seh_dispatch();
+        cpu.mem
+            .map(0x4000, 0x1000, Perm::RWX)
+            .expect("test map within ceiling");
+        cpu.mem
+            .map(0x2_0000, 0x4000, Perm::RW)
+            .expect("test map within ceiling");
+        cpu.mem
+            .map(TEB, 0x2000, Perm::RW)
+            .expect("test map within ceiling");
+        cpu.mem
+            .map(HANDLER, 0x1000, Perm::RWX)
+            .expect("test map within ceiling");
+        cpu.set_fs_base(TEB);
+        cpu.mem.write_u32(TEB, 0xFFFF_FFFF).unwrap();
+        cpu.mem.write_u32(STACK_TOP, HANDLER as u32).unwrap();
+        let mut prog: Vec<u8> = vec![0x33, 0xC0, 0x64, 0xFF, 0x30, 0x64, 0x89, 0x20];
+        if extra_push {
+            prog.push(0x50);
+        }
+        prog.extend_from_slice(&[0xCC, 0xEB, 0xFE]);
+        cpu.mem.write_unchecked(0x4000, &prog);
+        cpu.mem.write_unchecked(HANDLER, &[0xC3]);
+        cpu.regs.rip = 0x4000;
+        cpu.regs.set(Reg::Rsp, STACK_TOP);
+        let resume_ip: u64 = 0x4000 + prog.len() as u64 - 2;
+        (cpu, resume_ip)
+    }
+
+    #[test]
+    fn a_trap_taken_on_the_registration_record_resumes_past_the_record() {
+        let (mut cpu, resume_ip): (Cpu, u64) =
+            cpu_installing_its_own_registration_then_trapping(false);
+        let mut host: NoopHost = NoopHost;
+        let exit: ExitReason = cpu.run(&mut host, 64).expect("run must not error");
+        assert!(
+            matches!(exit, ExitReason::StepCap(_)),
+            "the resumed instruction spins, so the run must end on the step cap, got {exit:?}",
+        );
+        assert_eq!(
+            cpu.regs.rip, resume_ip,
+            "a handler that returns to the dispatcher must resume the instruction after the trap",
+        );
+        assert_eq!(
+            cpu.regs.read_sized(Reg::Rsp, 32),
+            0x2_3F00 + 4,
+            "the stub raised the trap with its registration record as the whole live stack, so the \
+             record is dead on resume; leaving the stack on top of it makes the next pop read the \
+             saved chain head as if it were program data",
+        );
+    }
+
+    #[test]
+    fn a_trap_taken_below_the_registration_record_resumes_on_the_faulting_stack() {
+        let (mut cpu, resume_ip): (Cpu, u64) =
+            cpu_installing_its_own_registration_then_trapping(true);
+        let mut host: NoopHost = NoopHost;
+        let exit: ExitReason = cpu.run(&mut host, 64).expect("run must not error");
+        assert!(
+            matches!(exit, ExitReason::StepCap(_)),
+            "the resumed instruction spins, so the run must end on the step cap, got {exit:?}",
+        );
+        assert_eq!(cpu.regs.rip, resume_ip);
+        assert_eq!(
+            cpu.regs.read_sized(Reg::Rsp, 32),
+            0x2_3F00 - 8,
+            "the fault happened below the registration record, so the frame between the record and \
+             the faulting instruction is live and the resume must land on the exact faulting stack",
+        );
+    }
+
+    #[test]
+    fn a_fault_with_no_registered_handler_still_ends_the_run_under_seh_dispatch() {
+        const TEB: u64 = 0x7EFD_E000;
+        let mut cpu: Cpu = Cpu::new(CpuMode::Bits32);
+        cpu.enable_seh_dispatch();
+        cpu.mem
+            .map(0x4000, 0x1000, Perm::RWX)
+            .expect("test map within ceiling");
+        cpu.mem
+            .map(0x2_0000, 0x4000, Perm::RW)
+            .expect("test map within ceiling");
+        cpu.mem
+            .map(TEB, 0x2000, Perm::RW)
+            .expect("test map within ceiling");
+        cpu.set_fs_base(TEB);
+        cpu.mem.write_u32(TEB, 0xFFFF_FFFF).unwrap();
+        cpu.mem.write_unchecked(0x4000, &[0x33, 0xC0, 0x89, 0x08]);
+        cpu.regs.rip = 0x4000;
+        cpu.regs.set(Reg::Rsp, 0x2_3F00);
+        let mut host: NoopHost = NoopHost;
+        let exit: ExitReason = cpu.run(&mut host, 100).expect("run must not error");
+        assert!(
+            matches!(exit, ExitReason::GuestFault(_)),
+            "the chain is empty, so a null write has nothing to dispatch to and must surface as a \
+             fault; resuming or stepping over it would hide a real memory error from the caller, \
+             got {exit:?}",
+        );
+    }
+
+    #[test]
+    fn a_trap_whose_registered_handler_is_unmapped_still_ends_the_run() {
+        const TEB: u64 = 0x7EFD_E000;
+        let mut cpu: Cpu = Cpu::new(CpuMode::Bits32);
+        cpu.enable_seh_dispatch();
+        cpu.mem
+            .map(0x4000, 0x1000, Perm::RWX)
+            .expect("test map within ceiling");
+        cpu.mem
+            .map(0x2_0000, 0x4000, Perm::RW)
+            .expect("test map within ceiling");
+        cpu.mem
+            .map(TEB, 0x2000, Perm::RW)
+            .expect("test map within ceiling");
+        cpu.set_fs_base(TEB);
+        let frame: u64 = 0x2_2000;
+        cpu.mem.write_u32(frame, 0xFFFF_FFFF).unwrap();
+        cpu.mem.write_u32(frame + 4, 0x00DE_AD00).unwrap();
+        cpu.mem.write_u32(TEB, frame as u32).unwrap();
+        cpu.mem.write_unchecked(0x4000, &[0xCC, 0xEB, 0xFE]);
+        cpu.regs.rip = 0x4000;
+        cpu.regs.set(Reg::Rsp, 0x2_3F00);
+        let mut host: NoopHost = NoopHost;
+        let exit: ExitReason = cpu.run(&mut host, 100).expect("run must not error");
+        assert!(
+            matches!(exit, ExitReason::UnsupportedInstr { ip, .. } if ip == 0x4000),
+            "the only registered handler is unmapped, so the trap has nowhere to go and must \
+             surface at the trap address instead of resuming the instruction after it, got {exit:?}",
         );
     }
 
