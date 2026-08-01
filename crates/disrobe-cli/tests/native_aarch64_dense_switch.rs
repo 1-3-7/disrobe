@@ -176,6 +176,44 @@ fn build_aarch64_image(
     Ok(image_path)
 }
 
+#[test]
+fn cli_rejects_relocatable_aarch64_before_writing_output() {
+    let (clang, _linker): (String, PathBuf) =
+        aarch64_toolchain().expect("the CI-provisioned clang with ld.lld must be available");
+    let directory: TempDir = tempfile::tempdir().expect("temporary directory must be available");
+    let object: PathBuf = build_aarch64_object(directory.path(), &clang)
+        .expect("clang must compile the aarch64 dense-switch object");
+    let out_dir: PathBuf = directory.path().join("out-object");
+    let _guard: MutexGuard<'static, ()> = AARCH64_DECOMPILE_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let run: common::Run = common::run_disrobe(&[
+        "native",
+        "decompile",
+        &object.display().to_string(),
+        "--backend",
+        "native",
+        "--format",
+        "c",
+        "--out",
+        &out_dir.display().to_string(),
+    ]);
+    assert_ne!(
+        run.code, 0,
+        "stdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    let diagnostic: String = format!("{}\n{}", run.stdout, run.stderr);
+    assert!(
+        diagnostic.contains("DR-NATIVE-0175"),
+        "missing ET_REL diagnostic:\n{diagnostic}"
+    );
+    assert!(
+        !out_dir.exists(),
+        "rejected AArch64 ET_REL must not create the output directory"
+    );
+}
+
 fn rodata_file_range(image: &[u8]) -> (usize, usize) {
     let file: object::File<'_> = object::File::parse(image).expect("fixture must parse");
     let section: object::Section<'_, '_> = file
