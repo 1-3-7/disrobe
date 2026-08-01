@@ -1086,6 +1086,33 @@ fn wasm_decompile_help_documents_target_flag() {
 }
 
 #[test]
+fn wasm_cli_copy_distinguishes_transform_and_classify_only_families() {
+    let deob_help: Run = run_disrobe(&["wasm", "deob", "--help"]);
+    assert_eq!(deob_help.code, 0, "stderr: {}", deob_help.stderr);
+    assert!(
+        deob_help.stdout.contains("transforms 3 families")
+            && deob_help
+                .stdout
+                .contains("Tigress -> Emscripten classify-only")
+            && deob_help
+                .stdout
+                .contains("wasm-name-obfuscator classify-only"),
+        "wasm deob help must distinguish transformed and classify-only families:\n{}",
+        deob_help.stdout
+    );
+
+    let passes: Run = run_disrobe(&["passes"]);
+    assert_eq!(passes.code, 0, "stderr: {}", passes.stderr);
+    assert!(
+        passes.stdout.contains("3 transform families")
+            && passes.stdout.contains("Tigress classify-only")
+            && passes.stdout.contains("wasm-name-obfuscator classify-only"),
+        "passes output must distinguish transformed and classify-only families:\n{}",
+        passes.stdout
+    );
+}
+
+#[test]
 fn native_identify_qualifies_pyoxidizer_output_without_changing_json_name() {
     let (_input_scratch, input): (disrobe_core::scratch::ScratchDir, PathBuf) =
         temp_path("native-identify-pyoxidizer", "exe");

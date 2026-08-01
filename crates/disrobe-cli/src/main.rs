@@ -2004,7 +2004,7 @@ fn print_passes() -> miette::Result<()> {
         "  js            deobfuscate (string-array + unminify + scope-aware rename) / unbundle"
     );
     println!(
-        "  wasm          analyze / decompile (JSON | Rust | TypeScript | WAT | C) / deobfuscate (5 families)"
+        "  wasm          analyze / decompile (JSON | Rust | TypeScript | WAT | C) / deobfuscate (3 transform families; Tigress classify-only; wasm-name-obfuscator classify-only)"
     );
     println!("  envelope      .dr create / inspect / verify");
     println!(

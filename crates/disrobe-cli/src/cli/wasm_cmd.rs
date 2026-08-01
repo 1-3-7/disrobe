@@ -27,7 +27,7 @@ pub(crate) enum WasmCmd {
         emit: Vec<String>,
     },
     #[command(
-        about = "deobfuscate a WebAssembly module (wasm-name-obfuscator, Jscrambler-WASM, Wobfuscator, Tigress -> Emscripten, Wasmixer)"
+        about = "deobfuscate a WebAssembly module: transforms 3 families (Jscrambler-WASM, Wobfuscator, Wasmixer); Tigress -> Emscripten classify-only; wasm-name-obfuscator classify-only"
     )]
     Deob {
         #[arg(help = ".wasm input module")]
@@ -41,7 +41,7 @@ pub(crate) enum WasmCmd {
         emit_wasm: Option<PathBuf>,
         #[arg(
             long,
-            help = "list the WebAssembly obfuscators disrobe can detect and deobfuscate, then exit"
+            help = "list WebAssembly obfuscators and whether they transform or classify only, then exit"
         )]
         list: bool,
     },
