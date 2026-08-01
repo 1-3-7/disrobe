@@ -6,7 +6,7 @@ use disrobe_sleigh::compiler::{
     CompiledSpec, ConflictPolicy, ContextState, DecodeMatch, DecodeOutcome, compile_spec,
     compile_spec_with_policy,
 };
-use disrobe_sleigh::syntax::{SleighSpec, parse_spec};
+use disrobe_sleigh::syntax::{PatternExpr, SleighSpec, parse_spec};
 use disrobe_sleigh::vendor::preprocessed_aarch64_source;
 
 fn compile_source(source: &str) -> Option<disrobe_sleigh::compiler::CompiledSpec> {
@@ -140,6 +140,24 @@ define token instruction(8) high=(4,7) low=(0,3);
 }
 
 #[test]
+fn impossible_equality_branch_does_not_hide_exact_containment() {
+    let source: &str = r"
+define endian=little;
+define token instruction(8) high=(4,7) low=(0,3);
+:general is high=1 { export high; }
+:special is high=16 | (high=1 & low=2) { export low; }
+";
+    let Some(compiled) = compile_source(source) else {
+        return;
+    };
+    let outcome: DecodeOutcome = compiled.decode(&[0x12], 0, &BTreeMap::new());
+    assert!(matches!(
+        outcome,
+        DecodeOutcome::Matched(DecodeMatch { ref mnemonic, .. }) if mnemonic == "special"
+    ));
+}
+
+#[test]
 fn equal_specificity_subtable_overlap_is_ambiguous() {
     let source: &str = r#"
 define endian=little;
@@ -240,6 +258,50 @@ fn compiler_rejects_residual_and_undefined_patterns() {
         let compiled: Result<CompiledSpec, SleighError> = compile_spec(spec);
         assert!(compiled.is_err());
     }
+}
+
+#[test]
+fn compiler_rejects_invalid_branch_after_table_analysis_abstains() {
+    let source: &str = r#"
+define endian=little;
+define token instruction(8) op=(0,7);
+choice: "cycle" is choice { export op; }
+:root is choice | missing { export op; }
+"#;
+    let parsed: Result<SleighSpec, SleighError> = parse_spec(source);
+    assert!(parsed.is_ok(), "{parsed:?}");
+    let Ok(spec) = parsed else {
+        return;
+    };
+    let compiled: Result<CompiledSpec, SleighError> = compile_spec(spec);
+    assert!(matches!(
+        compiled,
+        Err(SleighError::Parse { message, .. }) if message == "undefined pattern symbol missing"
+    ));
+}
+
+#[test]
+fn compiler_rejects_structural_pattern_nesting() {
+    let source: &str = r"
+define endian=little;
+define token instruction(8) op=(0,7);
+:root is op=1 { export op; }
+";
+    let parsed: Result<SleighSpec, SleighError> = parse_spec(source);
+    assert!(parsed.is_ok(), "{parsed:?}");
+    let Ok(mut spec) = parsed else {
+        return;
+    };
+    let mut pattern: PatternExpr = spec.constructors[0].pattern.clone();
+    for _ in 0_usize..128 {
+        pattern = PatternExpr::All(vec![pattern]);
+    }
+    spec.constructors[0].pattern = pattern;
+    let compiled: Result<CompiledSpec, SleighError> = compile_spec(spec);
+    assert!(matches!(
+        compiled,
+        Err(SleighError::Parse { message, .. }) if message == "pattern nesting limit exceeded"
+    ));
 }
 
 #[test]

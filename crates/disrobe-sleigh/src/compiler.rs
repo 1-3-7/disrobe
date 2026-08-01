@@ -132,6 +132,12 @@ struct ClauseCompiler<'a> {
     tables: &'a BTreeMap<String, Vec<usize>>,
 }
 
+enum ComparisonCompilation {
+    Exact(BTreeSet<PatternConstraint>),
+    Impossible,
+    Unavailable,
+}
+
 pub fn compile_spec(spec: SleighSpec) -> Result<CompiledSpec, SleighError> {
     compile_spec_with_policy(spec, ConflictPolicy::Strict)
 }
@@ -212,16 +218,6 @@ pub fn compile_spec_with_policy(
         .iter()
         .map(|register| register.name.clone())
         .collect();
-    for constructor in &spec.constructors {
-        validate_pattern(
-            &constructor.pattern,
-            &fields,
-            &contexts,
-            &registers,
-            &tables,
-            0,
-        )?;
-    }
     let clause_compiler: ClauseCompiler<'_> = ClauseCompiler {
         constructors: &spec.constructors,
         contexts: &contexts,
@@ -229,11 +225,13 @@ pub fn compile_spec_with_policy(
         registers: &registers,
         tables: &tables,
     };
-    let pattern_clauses: Vec<Option<Vec<PatternClause>>> = spec
-        .constructors
-        .iter()
-        .map(|constructor: &Constructor| clause_compiler.compile(&constructor.pattern, 0, 0))
-        .collect();
+    let mut pattern_clauses: Vec<Option<Vec<PatternClause>>> =
+        Vec::with_capacity(spec.constructors.len());
+    for constructor in &spec.constructors {
+        let clauses: Option<Vec<PatternClause>> =
+            clause_compiler.compile(&constructor.pattern, 0, 0)?;
+        pattern_clauses.push(clauses);
+    }
     let roots: Vec<usize> = tables.get("instruction").cloned().unwrap_or_default();
     if roots.is_empty() {
         return Err(SleighError::Parse {
@@ -286,102 +284,15 @@ pub fn compile_spec_with_policy(
     })
 }
 
-fn validate_pattern(
-    pattern: &PatternExpr,
-    fields: &BTreeMap<String, CompiledField>,
-    contexts: &BTreeSet<String>,
-    registers: &BTreeSet<String>,
-    tables: &BTreeMap<String, Vec<usize>>,
-    depth: usize,
-) -> Result<(), SleighError> {
-    if depth >= MAX_EVALUATION_DEPTH {
-        return Err(SleighError::Parse {
-            message: "pattern nesting limit exceeded".to_owned(),
-            offset: 0,
-        });
-    }
-    let validate_value: &dyn Fn(&str) -> Result<(), SleighError> = &|name: &str| {
-        if fields.contains_key(name) || contexts.contains(name) {
-            Ok(())
-        } else {
-            Err(SleighError::Parse {
-                message: format!("undefined pattern value {name}"),
-                offset: 0,
-            })
-        }
-    };
-    match pattern {
-        PatternExpr::All(parts) | PatternExpr::Any(parts) => {
-            for part in parts {
-                validate_pattern(
-                    part,
-                    fields,
-                    contexts,
-                    registers,
-                    tables,
-                    depth.saturating_add(1),
-                )?;
-            }
-            Ok(())
-        }
-        PatternExpr::Atom(PatternAtom::Compare { left, right, .. }) => {
-            validate_value(left)?;
-            match right {
-                PatternValue::Add { identifier, .. } | PatternValue::Identifier(identifier) => {
-                    validate_value(identifier)
-                }
-                PatternValue::Integer(_) => Ok(()),
-            }
-        }
-        PatternExpr::Atom(PatternAtom::Residual(text)) => Err(SleighError::Parse {
-            message: format!("unsupported pattern expression {text}"),
-            offset: 0,
-        }),
-        PatternExpr::Atom(PatternAtom::Symbol(name)) => {
-            if fields.contains_key(name)
-                || contexts.contains(name)
-                || registers.contains(name)
-                || tables.contains_key(name)
-            {
-                Ok(())
-            } else {
-                Err(SleighError::Parse {
-                    message: format!("undefined pattern symbol {name}"),
-                    offset: 0,
-                })
-            }
-        }
-        PatternExpr::Next(left, right) => {
-            validate_pattern(
-                left,
-                fields,
-                contexts,
-                registers,
-                tables,
-                depth.saturating_add(1),
-            )?;
-            validate_pattern(
-                right,
-                fields,
-                contexts,
-                registers,
-                tables,
-                depth.saturating_add(1),
-            )
-        }
-        PatternExpr::True => Ok(()),
-    }
-}
-
 impl ClauseCompiler<'_> {
     fn compile(
         &self,
         pattern: &PatternExpr,
         position: usize,
-        depth: usize,
-    ) -> Option<Vec<PatternClause>> {
+        structural_depth: usize,
+    ) -> Result<Option<Vec<PatternClause>>, SleighError> {
         let mut visiting: BTreeSet<String> = BTreeSet::new();
-        self.compile_inner(pattern, position, depth, &mut visiting)
+        self.compile_inner(pattern, position, structural_depth, 0, &mut visiting)
     }
 
     fn can_match_empty(
@@ -439,29 +350,47 @@ impl ClauseCompiler<'_> {
         &self,
         pattern: &PatternExpr,
         position: usize,
-        depth: usize,
+        structural_depth: usize,
+        expanded_depth: usize,
         visiting: &mut BTreeSet<String>,
-    ) -> Option<Vec<PatternClause>> {
-        if depth >= MAX_EVALUATION_DEPTH {
-            return None;
+    ) -> Result<Option<Vec<PatternClause>>, SleighError> {
+        if structural_depth >= MAX_EVALUATION_DEPTH {
+            return Err(SleighError::Parse {
+                message: "pattern nesting limit exceeded".to_owned(),
+                offset: 0,
+            });
+        }
+        if expanded_depth >= MAX_EVALUATION_DEPTH {
+            return Ok(None);
         }
         match pattern {
-            PatternExpr::All(parts) => {
-                self.compile_all(parts, position, depth.saturating_add(1), visiting)
-            }
-            PatternExpr::Any(parts) => {
-                self.compile_any(parts, position, depth.saturating_add(1), visiting)
-            }
-            PatternExpr::Atom(atom) => {
-                self.compile_atom(atom, position, depth.saturating_add(1), visiting)
-            }
-            PatternExpr::Next(left, right) => {
-                self.compile_next(left, right, position, depth.saturating_add(1), visiting)
-            }
-            PatternExpr::True => Some(vec![PatternClause {
+            PatternExpr::All(parts) => self.compile_all(
+                parts,
+                position,
+                structural_depth.saturating_add(1),
+                expanded_depth,
+                visiting,
+            ),
+            PatternExpr::Any(parts) => self.compile_any(
+                parts,
+                position,
+                structural_depth.saturating_add(1),
+                expanded_depth,
+                visiting,
+            ),
+            PatternExpr::Atom(atom) => self.compile_atom(atom, position, expanded_depth, visiting),
+            PatternExpr::Next(left, right) => self.compile_next(
+                left,
+                right,
+                position,
+                structural_depth.saturating_add(1),
+                expanded_depth,
+                visiting,
+            ),
+            PatternExpr::True => Ok(Some(vec![PatternClause {
                 constraints: BTreeSet::new(),
                 span: 0,
-            }]),
+            }])),
         }
     }
 
@@ -469,54 +398,82 @@ impl ClauseCompiler<'_> {
         &self,
         parts: &[PatternExpr],
         position: usize,
-        depth: usize,
+        structural_depth: usize,
+        expanded_depth: usize,
         visiting: &mut BTreeSet<String>,
-    ) -> Option<Vec<PatternClause>> {
-        let mut combined: Vec<PatternClause> = vec![PatternClause {
+    ) -> Result<Option<Vec<PatternClause>>, SleighError> {
+        let mut combined: Option<Vec<PatternClause>> = Some(vec![PatternClause {
             constraints: BTreeSet::new(),
             span: 0,
-        }];
+        }]);
         for part in parts {
-            let additions: Vec<PatternClause> =
-                self.compile_inner(part, position, depth, visiting)?;
-            let product: usize = combined.len().checked_mul(additions.len())?;
+            let additions: Option<Vec<PatternClause>> =
+                self.compile_inner(part, position, structural_depth, expanded_depth, visiting)?;
+            let Some(additions) = additions else {
+                combined = None;
+                continue;
+            };
+            let Some(current) = combined.take() else {
+                continue;
+            };
+            let Some(product) = current.len().checked_mul(additions.len()) else {
+                continue;
+            };
             if product > MAX_PATTERN_CLAUSES {
-                return None;
+                continue;
             }
             let mut next: Vec<PatternClause> = Vec::with_capacity(product);
-            for current in &combined {
+            for current_clause in &current {
                 for addition in &additions {
-                    let mut constraints: BTreeSet<PatternConstraint> = current.constraints.clone();
+                    let mut constraints: BTreeSet<PatternConstraint> =
+                        current_clause.constraints.clone();
                     constraints.extend(addition.constraints.iter().cloned());
                     next.push(PatternClause {
                         constraints,
-                        span: current.span.max(addition.span),
+                        span: current_clause.span.max(addition.span),
                     });
                 }
             }
-            combined = deduplicate_pattern_clauses(next);
+            combined = Some(deduplicate_pattern_clauses(next));
         }
-        Some(combined)
+        Ok(combined)
     }
 
     fn compile_any(
         &self,
         parts: &[PatternExpr],
         position: usize,
-        depth: usize,
+        structural_depth: usize,
+        expanded_depth: usize,
         visiting: &mut BTreeSet<String>,
-    ) -> Option<Vec<PatternClause>> {
+    ) -> Result<Option<Vec<PatternClause>>, SleighError> {
         let mut clauses: Vec<PatternClause> = Vec::new();
+        let mut unavailable: bool = false;
         for part in parts {
-            let additions: Vec<PatternClause> =
-                self.compile_inner(part, position, depth, visiting)?;
-            let total: usize = clauses.len().checked_add(additions.len())?;
+            let additions: Option<Vec<PatternClause>> =
+                self.compile_inner(part, position, structural_depth, expanded_depth, visiting)?;
+            let Some(additions) = additions else {
+                unavailable = true;
+                continue;
+            };
+            if unavailable {
+                continue;
+            }
+            let Some(total) = clauses.len().checked_add(additions.len()) else {
+                unavailable = true;
+                continue;
+            };
             if total > MAX_PATTERN_CLAUSES {
-                return None;
+                unavailable = true;
+                continue;
             }
             clauses.extend(additions);
         }
-        Some(deduplicate_pattern_clauses(clauses))
+        if unavailable {
+            Ok(None)
+        } else {
+            Ok(Some(deduplicate_pattern_clauses(clauses)))
+        }
     }
 
     fn compile_next(
@@ -524,58 +481,103 @@ impl ClauseCompiler<'_> {
         left: &PatternExpr,
         right: &PatternExpr,
         position: usize,
-        depth: usize,
+        structural_depth: usize,
+        expanded_depth: usize,
         visiting: &mut BTreeSet<String>,
-    ) -> Option<Vec<PatternClause>> {
-        let left_clauses: Vec<PatternClause> =
-            self.compile_inner(left, position, depth, visiting)?;
+    ) -> Result<Option<Vec<PatternClause>>, SleighError> {
+        let left_clauses: Option<Vec<PatternClause>> =
+            self.compile_inner(left, position, structural_depth, expanded_depth, visiting)?;
+        let Some(left_clauses) = left_clauses else {
+            self.compile_inner(right, position, structural_depth, expanded_depth, visiting)?;
+            return Ok(None);
+        };
+        if left_clauses.is_empty() {
+            self.compile_inner(right, position, structural_depth, expanded_depth, visiting)?;
+            return Ok(Some(Vec::new()));
+        }
         let mut clauses: Vec<PatternClause> = Vec::new();
+        let mut unavailable: bool = false;
         for left_clause in left_clauses {
-            let right_position: usize = position.checked_add(left_clause.span)?;
-            let right_clauses: Vec<PatternClause> =
-                self.compile_inner(right, right_position, depth, visiting)?;
-            let total: usize = clauses.len().checked_add(right_clauses.len())?;
+            let Some(right_position) = position.checked_add(left_clause.span) else {
+                unavailable = true;
+                continue;
+            };
+            let right_clauses: Option<Vec<PatternClause>> = self.compile_inner(
+                right,
+                right_position,
+                structural_depth,
+                expanded_depth,
+                visiting,
+            )?;
+            let Some(right_clauses) = right_clauses else {
+                unavailable = true;
+                continue;
+            };
+            if unavailable {
+                continue;
+            }
+            let Some(total) = clauses.len().checked_add(right_clauses.len()) else {
+                unavailable = true;
+                continue;
+            };
             if total > MAX_PATTERN_CLAUSES {
-                return None;
+                unavailable = true;
+                continue;
             }
             for right_clause in right_clauses {
                 let mut constraints: BTreeSet<PatternConstraint> = left_clause.constraints.clone();
                 constraints.extend(right_clause.constraints);
-                clauses.push(PatternClause {
-                    constraints,
-                    span: left_clause.span.checked_add(right_clause.span)?,
-                });
+                let Some(span) = left_clause.span.checked_add(right_clause.span) else {
+                    unavailable = true;
+                    break;
+                };
+                clauses.push(PatternClause { constraints, span });
             }
         }
-        Some(deduplicate_pattern_clauses(clauses))
+        if unavailable {
+            Ok(None)
+        } else {
+            Ok(Some(deduplicate_pattern_clauses(clauses)))
+        }
     }
 
     fn compile_atom(
         &self,
         atom: &PatternAtom,
         position: usize,
-        depth: usize,
+        expanded_depth: usize,
         visiting: &mut BTreeSet<String>,
-    ) -> Option<Vec<PatternClause>> {
-        let clause: PatternClause = match atom {
+    ) -> Result<Option<Vec<PatternClause>>, SleighError> {
+        match atom {
             PatternAtom::Compare { left, op, right } => {
-                let left_span: usize = self.symbol_span(left)?;
-                let right_span: usize = self.value_span(right)?;
-                PatternClause {
-                    constraints: self.comparison_constraints(left, *op, right, position)?,
-                    span: left_span.max(right_span),
+                let left_span: usize = self.required_value_span(left)?;
+                let right_span: usize = self.required_pattern_value_span(right)?;
+                let constraints: ComparisonCompilation =
+                    self.comparison_constraints(left, *op, right, position);
+                match constraints {
+                    ComparisonCompilation::Exact(constraints) => Ok(Some(vec![PatternClause {
+                        constraints,
+                        span: left_span.max(right_span),
+                    }])),
+                    ComparisonCompilation::Impossible => Ok(Some(Vec::new())),
+                    ComparisonCompilation::Unavailable => Ok(None),
                 }
             }
             PatternAtom::Symbol(name) if self.tables.contains_key(name) => {
-                return self.compile_table(name, position, depth, visiting);
+                self.compile_table(name, position, expanded_depth, visiting)
             }
-            PatternAtom::Symbol(name) => PatternClause {
-                constraints: BTreeSet::new(),
-                span: self.symbol_span(name)?,
-            },
-            PatternAtom::Residual(_) => return None,
-        };
-        Some(vec![clause])
+            PatternAtom::Symbol(name) => {
+                let span: usize = self.required_symbol_span(name)?;
+                Ok(Some(vec![PatternClause {
+                    constraints: BTreeSet::new(),
+                    span,
+                }]))
+            }
+            PatternAtom::Residual(text) => Err(SleighError::Parse {
+                message: format!("unsupported pattern expression {text}"),
+                offset: 0,
+            }),
+        }
     }
 
     fn comparison_constraints(
@@ -584,39 +586,59 @@ impl ClauseCompiler<'_> {
         op: CompareOp,
         right: &PatternValue,
         position: usize,
-    ) -> Option<BTreeSet<PatternConstraint>> {
+    ) -> ComparisonCompilation {
         if op == CompareOp::Equal
             && let PatternValue::Integer(value) = right
             && let Some(field) = self.fields.get(left)
         {
-            let width: u8 = field.high_bit.checked_sub(field.low_bit)?.checked_add(1)?;
+            let Some(span) = field.high_bit.checked_sub(field.low_bit) else {
+                return ComparisonCompilation::Unavailable;
+            };
+            let Some(width) = span.checked_add(1) else {
+                return ComparisonCompilation::Unavailable;
+            };
             let raw: u64 = if field.signed {
-                let minimum: i128 = -(1_i128.checked_shl(u32::from(width.saturating_sub(1)))?);
+                let Some(limit) = 1_i128.checked_shl(u32::from(width.saturating_sub(1))) else {
+                    return ComparisonCompilation::Unavailable;
+                };
+                let minimum: i128 = -limit;
                 let maximum: i128 = -minimum - 1;
                 let value_i128: i128 = i128::from(*value);
                 if value_i128 < minimum || value_i128 > maximum {
-                    return None;
+                    return ComparisonCompilation::Impossible;
                 }
                 u64::from_ne_bytes(value.to_ne_bytes()) & width_mask(width)
             } else {
-                let raw: u64 = u64::try_from(*value).ok()?;
+                let Ok(raw) = u64::try_from(*value) else {
+                    return ComparisonCompilation::Impossible;
+                };
                 if raw > width_mask(width) {
-                    return None;
+                    return ComparisonCompilation::Impossible;
                 }
                 raw
             };
-            let position_bits: usize = position.checked_mul(8)?;
+            let Some(position_bits) = position.checked_mul(8) else {
+                return ComparisonCompilation::Unavailable;
+            };
             let mut constraints: BTreeSet<PatternConstraint> = BTreeSet::new();
             for relative in 0..width {
-                let logical_bit: u32 = u32::from(field.low_bit.checked_add(relative)?);
+                let Some(logical_bit) = field.low_bit.checked_add(relative) else {
+                    return ComparisonCompilation::Unavailable;
+                };
+                let logical_bit: u32 = u32::from(logical_bit);
                 let stream_bit: usize = usize::from(decision_bit(field, logical_bit));
-                let bit: usize = position_bits.checked_add(stream_bit)?;
-                let value: bool = raw & (1_u64.checked_shl(u32::from(relative))?) != 0;
+                let Some(bit) = position_bits.checked_add(stream_bit) else {
+                    return ComparisonCompilation::Unavailable;
+                };
+                let Some(mask) = 1_u64.checked_shl(u32::from(relative)) else {
+                    return ComparisonCompilation::Unavailable;
+                };
+                let value: bool = raw & mask != 0;
                 constraints.insert(PatternConstraint::Bit { bit, value });
             }
-            return Some(constraints);
+            return ComparisonCompilation::Exact(constraints);
         }
-        Some(BTreeSet::from([PatternConstraint::Compare {
+        ComparisonCompilation::Exact(BTreeSet::from([PatternConstraint::Compare {
             left: left.to_owned(),
             op,
             position,
@@ -628,33 +650,64 @@ impl ClauseCompiler<'_> {
         &self,
         name: &str,
         position: usize,
-        depth: usize,
+        expanded_depth: usize,
         visiting: &mut BTreeSet<String>,
-    ) -> Option<Vec<PatternClause>> {
+    ) -> Result<Option<Vec<PatternClause>>, SleighError> {
         if !visiting.insert(name.to_owned()) {
-            return None;
+            return Ok(None);
         }
-        let constructor_ids: &Vec<usize> = self.tables.get(name)?;
+        let result: Result<Option<Vec<PatternClause>>, SleighError> =
+            self.compile_table_contents(name, position, expanded_depth, visiting);
+        visiting.remove(name);
+        result
+    }
+
+    fn compile_table_contents(
+        &self,
+        name: &str,
+        position: usize,
+        expanded_depth: usize,
+        visiting: &mut BTreeSet<String>,
+    ) -> Result<Option<Vec<PatternClause>>, SleighError> {
+        let Some(constructor_ids) = self.tables.get(name) else {
+            return Ok(None);
+        };
         let mut clauses: Vec<PatternClause> = Vec::new();
+        let mut unavailable: bool = false;
         for constructor_id in constructor_ids {
-            let constructor: &Constructor = self.constructors.get(*constructor_id)?;
-            let additions: Vec<PatternClause> = self.compile_inner(
+            let Some(constructor) = self.constructors.get(*constructor_id) else {
+                unavailable = true;
+                continue;
+            };
+            let additions: Option<Vec<PatternClause>> = self.compile_inner(
                 &constructor.pattern,
                 position,
-                depth.saturating_add(1),
+                0,
+                expanded_depth.saturating_add(1),
                 visiting,
             )?;
-            let total: usize = clauses.len().checked_add(additions.len())?;
+            let Some(additions) = additions else {
+                unavailable = true;
+                continue;
+            };
+            if unavailable {
+                continue;
+            }
+            let Some(total) = clauses.len().checked_add(additions.len()) else {
+                unavailable = true;
+                continue;
+            };
             if total > MAX_PATTERN_CLAUSES {
-                return None;
+                unavailable = true;
+                continue;
             }
             clauses.extend(additions);
         }
-        let removed: bool = visiting.remove(name);
-        if !removed {
-            return None;
+        if unavailable {
+            Ok(None)
+        } else {
+            Ok(Some(deduplicate_pattern_clauses(clauses)))
         }
-        Some(deduplicate_pattern_clauses(clauses))
     }
 
     fn symbol_span(&self, name: &str) -> Option<usize> {
@@ -662,6 +715,42 @@ impl ClauseCompiler<'_> {
             || (self.contexts.contains(name) || self.registers.contains(name)).then_some(0),
             |field: &CompiledField| usize::try_from(field.token_bits / 8).ok(),
         )
+    }
+
+    fn required_symbol_span(&self, name: &str) -> Result<usize, SleighError> {
+        self.symbol_span(name).ok_or_else(|| SleighError::Parse {
+            message: format!("undefined pattern symbol {name}"),
+            offset: 0,
+        })
+    }
+
+    fn required_value_span(&self, name: &str) -> Result<usize, SleighError> {
+        self.fields.get(name).map_or_else(
+            || {
+                self.contexts
+                    .contains(name)
+                    .then_some(0)
+                    .ok_or_else(|| SleighError::Parse {
+                        message: format!("undefined pattern value {name}"),
+                        offset: 0,
+                    })
+            },
+            |field: &CompiledField| {
+                usize::try_from(field.token_bits / 8).map_err(|_| SleighError::Parse {
+                    message: format!("unsupported pattern value span {name}"),
+                    offset: 0,
+                })
+            },
+        )
+    }
+
+    fn required_pattern_value_span(&self, value: &PatternValue) -> Result<usize, SleighError> {
+        match value {
+            PatternValue::Add { identifier, .. } | PatternValue::Identifier(identifier) => {
+                self.required_value_span(identifier)
+            }
+            PatternValue::Integer(_) => Ok(0),
+        }
     }
 
     fn value_span(&self, value: &PatternValue) -> Option<usize> {
@@ -888,16 +977,17 @@ impl CompiledSpec {
 }
 
 fn pattern_contained(special: &[PatternClause], general: &[PatternClause]) -> bool {
-    !special.is_empty()
-        && !general.is_empty()
-        && special.iter().all(|special_clause: &PatternClause| {
-            general.iter().any(|general_clause: &PatternClause| {
-                special_clause.span == general_clause.span
-                    && general_clause
-                        .constraints
-                        .is_subset(&special_clause.constraints)
-            })
+    if general.is_empty() {
+        return special.is_empty();
+    }
+    special.iter().all(|special_clause: &PatternClause| {
+        general.iter().any(|general_clause: &PatternClause| {
+            special_clause.span == general_clause.span
+                && general_clause
+                    .constraints
+                    .is_subset(&special_clause.constraints)
         })
+    })
 }
 
 impl Evaluator<'_> {
