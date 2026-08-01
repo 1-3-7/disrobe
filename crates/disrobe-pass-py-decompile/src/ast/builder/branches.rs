@@ -1661,7 +1661,7 @@ fn collect_break_cond_jumps(
     }
 }
 
-fn first_jump_value_lo(stream: &DecodedStream, lo: usize, first_jump: usize) -> usize {
+pub(super) fn first_jump_value_lo(stream: &DecodedStream, lo: usize, first_jump: usize) -> usize {
     let mut start: usize = lo;
     for k in lo..first_jump {
         let is_boundary: bool = (is_statement_boundary_op(&stream.ops[k])
