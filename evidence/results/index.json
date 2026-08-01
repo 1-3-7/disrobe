@@ -1,5 +1,5 @@
 {
-  "descriptor_count": 26,
+  "descriptor_count": 27,
   "descriptors": [
     {
       "ci_attested": true,
@@ -61,6 +61,20 @@
       "measured": "62.50%",
       "oracle_strength": "strong",
       "reproduce": "cargo test -p disrobe-bench-head-to-head published_planted_apk_secret_bars_are_pinned_by_membership, defined in benches/head-to-head/src/frisk.rs"
+    },
+    {
+      "ci_attested": true,
+      "claim": "On 18 of 19 committed Erlang modules, disrobe's stripped-Dbgi Core Erlang lift emits source that recompiles with the original exports and returns the same test/0 result under Erlang/OTP 27.3.4.",
+      "competitors": [],
+      "disrobe_leads": null,
+      "ecosystem": "beam",
+      "external_oracle": "real erlc and erl from Erlang/OTP 27.3.4: compile the original source, strip Dbgi and Docs, recover through disrobe's Core Erlang path, recompile, compare exports, then compare test/0 exit status and stdout",
+      "floor": 94.73684210526316,
+      "floor_holds": true,
+      "id": "beam-erlang-recompile",
+      "measured": "94.74%",
+      "oracle_strength": "strong",
+      "reproduce": "DISROBE_REQUIRE_ERLANG=1 cargo test -p disrobe-pass-beam --test erlc_recompile_equivalence -- --nocapture"
     },
     {
       "ci_attested": true,
@@ -419,6 +433,7 @@
   "disrobe_loss_count": 0,
   "ecosystems": [
     "android",
+    "beam",
     "binfmt",
     "dotnet",
     "go",
