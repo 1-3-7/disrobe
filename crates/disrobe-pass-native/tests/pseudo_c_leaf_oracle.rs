@@ -8403,6 +8403,39 @@ fn compile_sysv_cross_extra(
     })
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn clang_o0_sysv_incoming_stack_argument_is_not_modeled_as_a_local() {
+    let source: &str = "__attribute__((noinline)) long long rsp_arg7(long long a0, long long a1, long long a2, long long a3, long long a4, long long a5, long long a6){ volatile long long local = a0 + a1; return local ^ a6; }";
+    let objects: SysvCrossObjects =
+        compile_sysv_cross_extra("rsp_arg7", source, &["-O0", "-fomit-frame-pointer"])
+            .expect("clang must emit the Linux x86-64 fixed-RSP stack-argument regression object");
+    let (code, base): (Vec<u8>, u64) =
+        function_code(&objects.sysv_object, "rsp_arg7").expect("rsp_arg7 symbol");
+    let insns: Vec<DisasmInsn> =
+        disassemble(Arch::X86_64, base, &code).expect("disassemble clang rsp_arg7");
+    assert!(
+        insns.first().is_some_and(|insn: &DisasmInsn| {
+            insn.mnemonic == "sub" && insn.operands.starts_with("rsp,")
+        }),
+        "clang must allocate a fixed RSP frame before reading the seventh argument: {insns:?}"
+    );
+    assert!(
+        insns
+            .iter()
+            .any(|insn: &DisasmInsn| insn.operands.contains("[rsp+")),
+        "clang must address the incoming seventh argument through the fixed RSP frame: {insns:?}"
+    );
+    let error: disrobe_pass_native::Error = recover_leaf_function_abi(&code, base, PseudoAbi::SysV)
+        .expect_err("a caller-owned seventh argument must not become a recovered local");
+    let message: String = error.to_string();
+    assert!(
+        message.contains("bytes this frame owns")
+            && message.contains("caller owns the frame above it"),
+        "the compiler-emitted incoming stack argument must fail the frame-ownership check: {message}"
+    );
+}
+
 #[test]
 fn scalar_sqrt_leaf_functions_recompile_to_behavioral_equivalence() {
     if !cfg!(windows) {
