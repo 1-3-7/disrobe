@@ -203,6 +203,16 @@ pub fn resolve_with_noreturn(
     entries: &[u64],
     noreturn_seeds: &BTreeSet<u64>,
 ) -> Result<DesyncReport> {
+    Ok(resolve_with_noreturn_status(bitness, base, bytes, entries, noreturn_seeds)?.into_value())
+}
+
+pub fn resolve_with_noreturn_status(
+    bitness: Bitness,
+    base: u64,
+    bytes: &[u8],
+    entries: &[u64],
+    noreturn_seeds: &BTreeSet<u64>,
+) -> Result<NoreturnInferenceOutcome<DesyncReport>> {
     if bytes.is_empty() {
         return Err(Error::Truncated { needed: 1, had: 0 });
     }
@@ -233,8 +243,10 @@ pub fn resolve_with_noreturn(
         seeds: starts.clone(),
         noreturn: noreturn_seeds.clone(),
     };
-    let noreturn: BTreeSet<u64> =
+    let inference: NoreturnInference =
         noreturn_closure(&inference_input, &candidates, noreturn_seeds.clone());
+    let termination: NoreturnInferenceTermination = inference.termination();
+    let noreturn: BTreeSet<u64> = inference.into_known();
 
     let recursive: TraversalResult = recursive_traversal(bitness, base, bytes, &starts, &noreturn);
     let linear: usize = linear_sweep_count(bitness, base, bytes);
@@ -251,14 +263,17 @@ pub fn resolve_with_noreturn(
     let mut unresolved: Vec<UnresolvedTarget> = recursive.unresolved;
     unresolved.sort_by_key(|target: &UnresolvedTarget| target.address);
 
-    Ok(DesyncReport {
-        recursive_count: recovered.len(),
-        recovered,
-        unresolved,
-        junk_ranges,
-        overlap_addresses,
-        linear_sweep_count: linear,
-    })
+    Ok(NoreturnInferenceOutcome::new(
+        DesyncReport {
+            recursive_count: recovered.len(),
+            recovered,
+            unresolved,
+            junk_ranges,
+            overlap_addresses,
+            linear_sweep_count: linear,
+        },
+        termination,
+    ))
 }
 
 struct TraversalResult {
@@ -386,7 +401,16 @@ fn enqueue_successors(
 ) {
     let in_range = |target: u64| target >= base && target < end_addr;
     match insn.flow_control() {
-        FlowControl::Next | FlowControl::XbeginXabortXend => {
+        FlowControl::Next => {
+            if in_range(fallthrough) {
+                queue.push_back(fallthrough);
+            }
+        }
+        FlowControl::XbeginXabortXend => {
+            let target: u64 = insn.near_branch_target();
+            if in_range(target) {
+                queue.push_back(target);
+            }
             if in_range(fallthrough) {
                 queue.push_back(fallthrough);
             }
@@ -515,6 +539,47 @@ pub struct DiscoveryInput<'a> {
     pub noreturn: BTreeSet<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
+pub enum NoreturnInferenceTermination {
+    Complete,
+    DecodedInstructionBudget,
+    IterationLimit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoreturnInferenceOutcome<T> {
+    value: T,
+    termination: NoreturnInferenceTermination,
+}
+
+impl<T> NoreturnInferenceOutcome<T> {
+    fn new(value: T, termination: NoreturnInferenceTermination) -> Self {
+        Self { value, termination }
+    }
+
+    #[must_use]
+    pub const fn termination(&self) -> NoreturnInferenceTermination {
+        self.termination
+    }
+
+    #[must_use]
+    pub fn value(&self) -> &T {
+        &self.value
+    }
+
+    #[must_use]
+    pub fn into_value(self) -> T {
+        self.value
+    }
+
+    #[must_use]
+    pub fn into_parts(self) -> (T, NoreturnInferenceTermination) {
+        (self.value, self.termination)
+    }
+}
+
 const NORETURN_IMPORT_NAMES: &[&str] = &[
     "ExitProcess",
     "ExitThread",
@@ -625,19 +690,26 @@ enum StartOrigin {
 
 #[must_use]
 pub fn discover_functions(input: &DiscoveryInput<'_>) -> DiscoveredFunctions {
+    discover_functions_with_status(input).into_value()
+}
+
+#[must_use]
+pub fn discover_functions_with_status(
+    input: &DiscoveryInput<'_>,
+) -> NoreturnInferenceOutcome<DiscoveredFunctions> {
     discover_functions_impl(input, false)
 }
 
-pub(crate) fn discover_functions_with_direct_call_sweep(
+pub(crate) fn discover_functions_with_direct_call_sweep_status(
     input: &DiscoveryInput<'_>,
-) -> DiscoveredFunctions {
+) -> NoreturnInferenceOutcome<DiscoveredFunctions> {
     discover_functions_impl(input, true)
 }
 
 fn discover_functions_impl(
     input: &DiscoveryInput<'_>,
     enable_direct_call_sweep: bool,
-) -> DiscoveredFunctions {
+) -> NoreturnInferenceOutcome<DiscoveredFunctions> {
     let mut starts: BTreeMap<u64, StartOrigin> = BTreeMap::new();
     for seed in &input.seeds {
         if window_for(&input.code, *seed).is_some() {
@@ -660,8 +732,10 @@ fn discover_functions_impl(
     }
 
     let candidate_entries: BTreeSet<u64> = starts.keys().copied().collect();
-    let noreturn: BTreeSet<u64> =
+    let inference: NoreturnInference =
         noreturn_closure(input, &candidate_entries, input.noreturn.clone());
+    let termination: NoreturnInferenceTermination = inference.termination();
+    let noreturn: BTreeSet<u64> = inference.into_known();
 
     let mut jump_tables: Vec<JumpTableHit> = Vec::new();
     let mut unresolved: Vec<UnresolvedTarget> = Vec::new();
@@ -702,15 +776,18 @@ fn discover_functions_impl(
     let from_call_target: usize = count_origin(&starts, StartOrigin::CallTarget);
     let from_jump_table: usize = count_origin(&starts, StartOrigin::JumpTable);
 
-    DiscoveredFunctions {
-        starts: starts.keys().copied().collect(),
-        jump_tables,
-        unresolved,
-        from_seed,
-        from_prologue,
-        from_call_target,
-        from_jump_table,
-    }
+    NoreturnInferenceOutcome::new(
+        DiscoveredFunctions {
+            starts: starts.keys().copied().collect(),
+            jump_tables,
+            unresolved,
+            from_seed,
+            from_prologue,
+            from_call_target,
+            from_jump_table,
+        },
+        termination,
+    )
 }
 
 pub(crate) fn discover_aarch64_functions(
@@ -1144,7 +1221,14 @@ fn traverse_function(
         }
 
         match insn.flow_control() {
-            FlowControl::Next | FlowControl::XbeginXabortXend => {
+            FlowControl::Next => {
+                local.push_back(insn_end);
+            }
+            FlowControl::XbeginXabortXend => {
+                let target: u64 = insn.near_branch_target();
+                if target >= base && target < end_addr {
+                    local.push_back(target);
+                }
                 local.push_back(insn_end);
             }
             FlowControl::Call => {
@@ -1205,15 +1289,82 @@ fn traverse_function(
 }
 
 const MAX_NORETURN_ITERATIONS: usize = 64;
+const MAX_NORETURN_DECODED_INSTRUCTIONS: usize = 262_144;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NoreturnInference {
+    Complete(BTreeSet<u64>),
+    Exhausted {
+        known: BTreeSet<u64>,
+        termination: NoreturnInferenceTermination,
+    },
+}
+
+impl NoreturnInference {
+    const fn termination(&self) -> NoreturnInferenceTermination {
+        match self {
+            Self::Complete(_) => NoreturnInferenceTermination::Complete,
+            Self::Exhausted { termination, .. } => *termination,
+        }
+    }
+
+    fn into_known(self) -> BTreeSet<u64> {
+        match self {
+            Self::Complete(known) | Self::Exhausted { known, .. } => known,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NoreturnCandidates {
+    Complete(BTreeSet<u64>),
+    Exhausted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoreturnFunctionOutcome {
+    Proven,
+    Unproven,
+    Exhausted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NoreturnInstructionBudget {
+    remaining: usize,
+}
+
+impl NoreturnInstructionBudget {
+    const fn new(limit: usize) -> Self {
+        Self { remaining: limit }
+    }
+
+    fn consume(&mut self) -> bool {
+        let Some(remaining): Option<usize> = self.remaining.checked_sub(1) else {
+            return false;
+        };
+        self.remaining = remaining;
+        true
+    }
+}
 
 fn noreturn_closure(
     input: &DiscoveryInput<'_>,
     seed_candidates: &BTreeSet<u64>,
     seeds: BTreeSet<u64>,
-) -> BTreeSet<u64> {
+) -> NoreturnInference {
+    let mut budget: NoreturnInstructionBudget =
+        NoreturnInstructionBudget::new(MAX_NORETURN_DECODED_INSTRUCTIONS);
     let mut candidates: BTreeSet<u64> = seed_candidates.clone();
     for window in &input.code {
-        candidates.extend(direct_call_targets(input.bitness, window));
+        match direct_call_targets(input.bitness, window, &mut budget) {
+            NoreturnCandidates::Complete(targets) => candidates.extend(targets),
+            NoreturnCandidates::Exhausted => {
+                return NoreturnInference::Exhausted {
+                    known: seeds,
+                    termination: NoreturnInferenceTermination::DecodedInstructionBudget,
+                };
+            }
+        }
     }
     let mut known: BTreeSet<u64> = seeds;
     for _ in 0..MAX_NORETURN_ITERATIONS {
@@ -1222,18 +1373,37 @@ fn noreturn_closure(
             if known.contains(entry) {
                 continue;
             }
-            if let Some(window) = window_for(&input.code, *entry)
-                && function_is_noreturn(input.bitness, window, *entry, &known)
-            {
-                known.insert(*entry);
-                changed = true;
+            if let Some(window) = window_for(&input.code, *entry) {
+                match function_is_noreturn(input.bitness, window, *entry, &known, &mut budget) {
+                    NoreturnFunctionOutcome::Proven => {
+                        known.insert(*entry);
+                        changed = true;
+                    }
+                    NoreturnFunctionOutcome::Unproven => {}
+                    NoreturnFunctionOutcome::Exhausted => {
+                        return NoreturnInference::Exhausted {
+                            known,
+                            termination: NoreturnInferenceTermination::DecodedInstructionBudget,
+                        };
+                    }
+                }
             }
         }
         if !changed {
-            break;
+            return NoreturnInference::Complete(known);
         }
     }
-    known
+    if candidates
+        .iter()
+        .any(|entry: &u64| !known.contains(entry) && window_for(&input.code, *entry).is_some())
+    {
+        NoreturnInference::Exhausted {
+            known,
+            termination: NoreturnInferenceTermination::IterationLimit,
+        }
+    } else {
+        NoreturnInference::Complete(known)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1248,11 +1418,12 @@ fn function_is_noreturn(
     window: &CodeWindow<'_>,
     entry: u64,
     known: &BTreeSet<u64>,
-) -> bool {
+    budget: &mut NoreturnInstructionBudget,
+) -> NoreturnFunctionOutcome {
     let base: u64 = window.address;
     let end_addr: u64 = base.saturating_add(window.bytes.len() as u64);
     if entry < base || entry >= end_addr {
-        return false;
+        return NoreturnFunctionOutcome::Unproven;
     }
     let mut local: VecDeque<u64> = VecDeque::new();
     local.push_back(entry);
@@ -1261,10 +1432,13 @@ fn function_is_noreturn(
 
     while let Some(address) = local.pop_front() {
         if address < base || address >= end_addr {
-            return false;
+            return NoreturnFunctionOutcome::Unproven;
         }
         if !seen.insert(address) {
             continue;
+        }
+        if !budget.consume() {
+            return NoreturnFunctionOutcome::Exhausted;
         }
         let offset: usize = (address - base) as usize;
         let mut decoder: Decoder<'_> = Decoder::with_ip(
@@ -1274,24 +1448,28 @@ fn function_is_noreturn(
             DecoderOptions::NONE,
         );
         if !decoder.can_decode() {
-            return false;
+            return NoreturnFunctionOutcome::Unproven;
         }
         let mut insn: Instruction = Instruction::default();
         decoder.decode_out(&mut insn);
         if insn.is_invalid() {
-            return false;
+            return NoreturnFunctionOutcome::Unproven;
         }
         let insn_end: u64 = address.saturating_add(insn.len() as u64);
         if insn_end > end_addr {
-            return false;
+            return NoreturnFunctionOutcome::Unproven;
         }
         match step_kind(&insn, insn_end, base, end_addr, known, &mut local) {
             StepKind::Continue => {}
             StepKind::Sink => saw_sink = true,
-            StepKind::Escape => return false,
+            StepKind::Escape => return NoreturnFunctionOutcome::Unproven,
         }
     }
-    saw_sink
+    if saw_sink {
+        NoreturnFunctionOutcome::Proven
+    } else {
+        NoreturnFunctionOutcome::Unproven
+    }
 }
 
 fn step_kind(
@@ -1303,11 +1481,11 @@ fn step_kind(
     local: &mut VecDeque<u64>,
 ) -> StepKind {
     let in_range = |target: u64| target >= base && target < end_addr;
-    if is_noreturn_trap(insn) {
-        return StepKind::Sink;
+    if insn.code() == Code::Hlt {
+        return StepKind::Escape;
     }
     match insn.flow_control() {
-        FlowControl::Next | FlowControl::XbeginXabortXend => {
+        FlowControl::Next => {
             local.push_back(insn_end);
             StepKind::Continue
         }
@@ -1337,6 +1515,9 @@ fn step_kind(
             if !in_range(target) {
                 return StepKind::Escape;
             }
+            if target == insn.ip() {
+                return StepKind::Sink;
+            }
             local.push_back(target);
             StepKind::Continue
         }
@@ -1344,15 +1525,16 @@ fn step_kind(
         | FlowControl::IndirectBranch
         | FlowControl::IndirectCall
         | FlowControl::Interrupt
-        | FlowControl::Exception => StepKind::Escape,
+        | FlowControl::Exception
+        | FlowControl::XbeginXabortXend => StepKind::Escape,
     }
 }
 
-fn is_noreturn_trap(insn: &Instruction) -> bool {
-    matches!(insn.code(), Code::Int3 | Code::Ud2 | Code::Hlt | Code::Int1)
-}
-
-fn direct_call_targets(bitness: Bitness, window: &CodeWindow<'_>) -> BTreeSet<u64> {
+fn direct_call_targets(
+    bitness: Bitness,
+    window: &CodeWindow<'_>,
+    budget: &mut NoreturnInstructionBudget,
+) -> NoreturnCandidates {
     let base: u64 = window.address;
     let end_addr: u64 = base.saturating_add(window.bytes.len() as u64);
     let mut decoder: Decoder<'_> =
@@ -1360,6 +1542,9 @@ fn direct_call_targets(bitness: Bitness, window: &CodeWindow<'_>) -> BTreeSet<u6
     let mut insn: Instruction = Instruction::default();
     let mut targets: BTreeSet<u64> = BTreeSet::new();
     while decoder.can_decode() {
+        if !budget.consume() {
+            return NoreturnCandidates::Exhausted;
+        }
         decoder.decode_out(&mut insn);
         if insn.is_invalid() {
             continue;
@@ -1376,7 +1561,7 @@ fn direct_call_targets(bitness: Bitness, window: &CodeWindow<'_>) -> BTreeSet<u6
             }
         }
     }
-    targets
+    NoreturnCandidates::Complete(targets)
 }
 
 fn record_call_target(
@@ -1643,7 +1828,8 @@ mod tests {
             seeds: vec![0x1000],
             noreturn: BTreeSet::new(),
         };
-        let out: DiscoveredFunctions = discover_functions_with_direct_call_sweep(&input);
+        let out: DiscoveredFunctions =
+            discover_functions_with_direct_call_sweep_status(&input).into_value();
         assert_eq!(out.starts, vec![0x1000, 0x1018]);
         assert_eq!(out.from_seed, 1);
         assert_eq!(out.from_call_target, 1);
@@ -1741,7 +1927,8 @@ mod tests {
             seeds: vec![0x1000],
             noreturn: BTreeSet::new(),
         };
-        let discovered: DiscoveredFunctions = discover_functions_with_direct_call_sweep(&input);
+        let discovered: DiscoveredFunctions =
+            discover_functions_with_direct_call_sweep_status(&input).into_value();
         assert_eq!(discovered.starts, vec![0x1000, 0x2000]);
         assert_eq!(discovered.from_call_target, 1);
     }
@@ -2254,19 +2441,36 @@ mod tests {
 
     const NORETURN_BASE: u64 = 0x1000;
 
-    fn noreturn_fixture(callee_terminator: u8) -> [u8; 10] {
-        [
-            0xE8,
-            0x04,
-            0x00,
-            0x00,
-            0x00,
-            0x90,
-            0x90,
-            0x90,
-            0x90,
-            callee_terminator,
-        ]
+    fn noreturn_fixture(callee: &[u8]) -> Vec<u8> {
+        let mut bytes: Vec<u8> = vec![0xE8, 0x04, 0x00, 0x00, 0x00, 0x90, 0x90, 0x90, 0x90];
+        bytes.extend_from_slice(callee);
+        bytes
+    }
+
+    fn noreturn_budget_fixture() -> Vec<u8> {
+        let mut bytes: Vec<u8> = vec![0x90; 262_153];
+        bytes[..5].copy_from_slice(&[0xE8, 0x0B, 0x00, 0x00, 0x00]);
+        bytes[5] = 0xC3;
+        bytes[6..11].copy_from_slice(&[0xE8, 0x0A, 0x00, 0x00, 0x00]);
+        bytes[11] = 0xCC;
+        bytes[16] = 0xCC;
+        bytes[21] = 0xCC;
+        bytes
+    }
+
+    fn noreturn_iteration_limit_fixture(count: usize) -> (Vec<u8>, Vec<u64>) {
+        const FUNCTION_WIDTH: usize = 6;
+        let mut bytes: Vec<u8> = Vec::with_capacity((count - 1) * FUNCTION_WIDTH + 1);
+        let mut entries: Vec<u64> = Vec::with_capacity(count);
+        for index in 0..count {
+            entries.push(NORETURN_BASE + (index * FUNCTION_WIDTH) as u64);
+            if index + 1 == count {
+                bytes.extend_from_slice(&[0xEB, 0xFE]);
+            } else {
+                bytes.extend_from_slice(&[0xE8, 0x01, 0x00, 0x00, 0x00, 0xC3]);
+            }
+        }
+        (bytes, entries)
     }
 
     fn recovered_addresses(report: &DesyncReport) -> Vec<u64> {
@@ -2278,8 +2482,8 @@ mod tests {
     }
 
     #[test]
-    fn dead_bytes_after_noreturn_call_are_not_decoded() {
-        let bytes: [u8; 10] = noreturn_fixture(0xCC);
+    fn dead_bytes_after_self_loop_call_are_not_decoded() {
+        let bytes: Vec<u8> = noreturn_fixture(&[0xEB, 0xFE]);
         let report: DesyncReport =
             resolve(Bitness::Bits64, NORETURN_BASE, &bytes, &[NORETURN_BASE]).expect("resolve");
         let addresses: Vec<u64> = recovered_addresses(&report);
@@ -2289,7 +2493,7 @@ mod tests {
         );
         assert!(
             addresses.contains(&0x1009),
-            "the int3-terminated noreturn callee must be recovered: {addresses:x?}"
+            "the self-looping noreturn callee must be recovered: {addresses:x?}"
         );
         for dead in 0x1005u64..0x1009 {
             assert!(
@@ -2308,8 +2512,26 @@ mod tests {
     }
 
     #[test]
+    fn resolve_status_reports_a_complete_noreturn_inference() {
+        let bytes: Vec<u8> = noreturn_fixture(&[0xEB, 0xFE]);
+        let outcome: NoreturnInferenceOutcome<DesyncReport> = resolve_with_noreturn_status(
+            Bitness::Bits64,
+            NORETURN_BASE,
+            &bytes,
+            &[NORETURN_BASE],
+            &BTreeSet::new(),
+        )
+        .expect("resolve");
+        assert_eq!(
+            outcome.termination(),
+            NoreturnInferenceTermination::Complete,
+            "a converged no-return inference must report completion"
+        );
+    }
+
+    #[test]
     fn returning_call_keeps_its_fallthrough() {
-        let bytes: [u8; 10] = noreturn_fixture(0xC3);
+        let bytes: Vec<u8> = noreturn_fixture(&[0xC3]);
         let report: DesyncReport =
             resolve(Bitness::Bits64, NORETURN_BASE, &bytes, &[NORETURN_BASE]).expect("resolve");
         let addresses: Vec<u64> = recovered_addresses(&report);
@@ -2323,6 +2545,300 @@ mod tests {
             report.junk_ranges.is_empty(),
             "a returning callee leaves no dead fallthrough: {:?}",
             report.junk_ranges
+        );
+    }
+
+    #[test]
+    fn exception_and_interrupt_traps_keep_call_fallthrough() {
+        let traps: [(&str, &[u8]); 4] = [
+            ("int3", &[0xCC]),
+            ("int1", &[0xF1]),
+            ("ud2", &[0x0F, 0x0B]),
+            ("hlt", &[0xF4]),
+        ];
+        for (name, trap) in traps {
+            let bytes: Vec<u8> = noreturn_fixture(trap);
+            let report: DesyncReport =
+                resolve(Bitness::Bits64, NORETURN_BASE, &bytes, &[NORETURN_BASE]).expect("resolve");
+            let addresses: Vec<u64> = recovered_addresses(&report);
+            for live in 0x1005u64..0x1009 {
+                assert!(
+                    addresses.contains(&live),
+                    "{name} may resume execution, so byte {live:#x} must remain fallthrough: {addresses:x?}"
+                );
+            }
+            assert!(
+                report.junk_ranges.is_empty(),
+                "{name} must not turn call fallthrough into junk: {:?}",
+                report.junk_ranges
+            );
+        }
+    }
+
+    #[test]
+    fn traps_do_not_make_a_reachable_self_loop_noreturn() {
+        let traps: [(&str, &[u8]); 4] = [
+            ("int3", &[0xCC]),
+            ("int1", &[0xF1]),
+            ("ud2", &[0x0F, 0x0B]),
+            ("hlt", &[0xF4]),
+        ];
+        let known: BTreeSet<u64> = BTreeSet::new();
+        for (name, trap) in traps {
+            let mut bytes: Vec<u8> = trap.to_vec();
+            bytes.extend_from_slice(&[0xEB, 0xFE]);
+            let window: CodeWindow<'_> = CodeWindow {
+                address: NORETURN_BASE,
+                bytes: &bytes,
+            };
+            let mut budget: NoreturnInstructionBudget = NoreturnInstructionBudget::new(8);
+            let outcome: NoreturnFunctionOutcome =
+                function_is_noreturn(Bitness::Bits64, &window, NORETURN_BASE, &known, &mut budget);
+            assert_eq!(
+                outcome,
+                NoreturnFunctionOutcome::Unproven,
+                "{name} may resume before the self-loop"
+            );
+        }
+    }
+
+    #[test]
+    fn transactional_abort_fallback_prevents_noreturn_inference() {
+        let bytes: [u8; 9] = [0xC7, 0xF8, 0x02, 0x00, 0x00, 0x00, 0xEB, 0xFE, 0xC3];
+        let window: CodeWindow<'_> = CodeWindow {
+            address: NORETURN_BASE,
+            bytes: &bytes,
+        };
+        let known: BTreeSet<u64> = BTreeSet::new();
+        let mut budget: NoreturnInstructionBudget = NoreturnInstructionBudget::new(8);
+        let outcome: NoreturnFunctionOutcome =
+            function_is_noreturn(Bitness::Bits64, &window, NORETURN_BASE, &known, &mut budget);
+        assert_eq!(outcome, NoreturnFunctionOutcome::Unproven);
+    }
+
+    #[test]
+    fn transactional_abort_fallback_is_recovered() {
+        let bytes: [u8; 9] = [0xC7, 0xF8, 0x02, 0x00, 0x00, 0x00, 0xEB, 0xFE, 0xC3];
+        let report: DesyncReport =
+            resolve(Bitness::Bits64, NORETURN_BASE, &bytes, &[NORETURN_BASE]).expect("resolve");
+        let addresses: Vec<u64> = recovered_addresses(&report);
+        assert!(
+            addresses.contains(&(NORETURN_BASE + 8)),
+            "the XBEGIN abort fallback must remain reachable: {addresses:x?}"
+        );
+    }
+
+    #[test]
+    fn transactional_abort_handler_call_target_is_discovered() {
+        let bytes: [u8; 17] = [
+            0xC7, 0xF8, 0x02, 0x00, 0x00, 0x00, 0xC3, 0xCC, 0xE8, 0x03, 0x00, 0x00, 0x00, 0xC3,
+            0xCC, 0xCC, 0xC3,
+        ];
+        let input: DiscoveryInput<'_> = DiscoveryInput {
+            bitness: Bitness::Bits64,
+            code: vec![CodeWindow {
+                address: NORETURN_BASE,
+                bytes: &bytes,
+            }],
+            rodata: Vec::new(),
+            seeds: vec![NORETURN_BASE],
+            noreturn: BTreeSet::new(),
+        };
+        let discovered: DiscoveredFunctions = discover_functions(&input);
+        assert_eq!(discovered.starts, vec![NORETURN_BASE, NORETURN_BASE + 16]);
+        assert_eq!(discovered.from_seed, 1);
+        assert_eq!(discovered.from_call_target, 1);
+        assert_eq!(discovered.from_prologue, 0);
+        assert_eq!(discovered.from_jump_table, 0);
+    }
+
+    #[test]
+    fn exhausted_noreturn_inference_preserves_unproven_fallthrough() {
+        let bytes: Vec<u8> = noreturn_budget_fixture();
+        let seeded_target: u64 = NORETURN_BASE + 21;
+        let mut seeds: BTreeSet<u64> = BTreeSet::new();
+        seeds.insert(seeded_target);
+        let outcome: NoreturnInferenceOutcome<DesyncReport> = resolve_with_noreturn_status(
+            Bitness::Bits64,
+            NORETURN_BASE,
+            &bytes,
+            &[NORETURN_BASE, NORETURN_BASE + 6],
+            &seeds,
+        )
+        .expect("resolve");
+        assert_eq!(
+            outcome.termination(),
+            NoreturnInferenceTermination::DecodedInstructionBudget,
+            "the status API must expose a bounded direct-call scan"
+        );
+        let report: DesyncReport = outcome.into_value();
+        let addresses: Vec<u64> = recovered_addresses(&report);
+        assert!(
+            addresses.contains(&(NORETURN_BASE + 5)),
+            "an unproven callee must retain its fallthrough when noreturn inference exhausts; recovered {} instruction starts",
+            addresses.len()
+        );
+        assert!(
+            !addresses.contains(&(NORETURN_BASE + 11)),
+            "an explicitly seeded noreturn callee must still suppress its fallthrough; recovered {} instruction starts",
+            addresses.len()
+        );
+    }
+
+    #[test]
+    fn function_is_noreturn_stops_when_its_budget_is_depleted() {
+        let bytes: [u8; 2] = [0x90, 0xCC];
+        let window: CodeWindow<'_> = CodeWindow {
+            address: NORETURN_BASE,
+            bytes: &bytes,
+        };
+        let known: BTreeSet<u64> = BTreeSet::new();
+        let mut budget: NoreturnInstructionBudget = NoreturnInstructionBudget::new(0);
+        let outcome: NoreturnFunctionOutcome =
+            function_is_noreturn(Bitness::Bits64, &window, NORETURN_BASE, &known, &mut budget);
+        assert_eq!(outcome, NoreturnFunctionOutcome::Exhausted);
+    }
+
+    #[test]
+    fn function_walk_exhausts_just_below_the_default_budget() {
+        assert!(
+            MAX_NORETURN_DECODED_INSTRUCTIONS >= 262_144,
+            "the default no-return inference budget must not fall below 262144 decoded instructions"
+        );
+        let bytes: Vec<u8> = vec![0x90; MAX_NORETURN_DECODED_INSTRUCTIONS - 1];
+        let input: DiscoveryInput<'_> = DiscoveryInput {
+            bitness: Bitness::Bits64,
+            code: vec![CodeWindow {
+                address: NORETURN_BASE,
+                bytes: &bytes,
+            }],
+            rodata: Vec::new(),
+            seeds: vec![NORETURN_BASE],
+            noreturn: BTreeSet::new(),
+        };
+        let candidates: BTreeSet<u64> = BTreeSet::from([NORETURN_BASE]);
+        let result: NoreturnInference = noreturn_closure(&input, &candidates, BTreeSet::new());
+        assert!(
+            matches!(result, NoreturnInference::Exhausted { ref known, termination: NoreturnInferenceTermination::DecodedInstructionBudget } if known.is_empty()),
+            "the function walk must report exhaustion after the direct-call scan consumes all but one default-budget slot: {result:?}"
+        );
+    }
+
+    #[test]
+    fn noreturn_iteration_limit_reports_exhaustion_after_a_changed_final_pass() {
+        let (bytes, entries): (Vec<u8>, Vec<u64>) = noreturn_iteration_limit_fixture(65);
+        assert_eq!(
+            MAX_NORETURN_ITERATIONS, 64,
+            "the iteration-limit regression pins the 64/65 propagation boundary"
+        );
+        let input: DiscoveryInput<'_> = DiscoveryInput {
+            bitness: Bitness::Bits64,
+            code: vec![CodeWindow {
+                address: NORETURN_BASE,
+                bytes: &bytes,
+            }],
+            rodata: Vec::new(),
+            seeds: Vec::new(),
+            noreturn: BTreeSet::new(),
+        };
+        let candidates: BTreeSet<u64> = entries.iter().copied().collect();
+        let result: NoreturnInference = noreturn_closure(&input, &candidates, BTreeSet::new());
+        assert!(
+            matches!(result, NoreturnInference::Exhausted { ref known, termination: NoreturnInferenceTermination::IterationLimit } if known.len() == MAX_NORETURN_ITERATIONS && !known.contains(&NORETURN_BASE)),
+            "a changed final pass must report incomplete no-return inference: {result:?}"
+        );
+    }
+
+    #[test]
+    fn discovery_status_reports_the_noreturn_iteration_limit() {
+        let (bytes, entries): (Vec<u8>, Vec<u64>) = noreturn_iteration_limit_fixture(65);
+        let input: DiscoveryInput<'_> = DiscoveryInput {
+            bitness: Bitness::Bits64,
+            code: vec![CodeWindow {
+                address: NORETURN_BASE,
+                bytes: &bytes,
+            }],
+            rodata: Vec::new(),
+            seeds: entries,
+            noreturn: BTreeSet::new(),
+        };
+        let outcome: NoreturnInferenceOutcome<DiscoveredFunctions> =
+            discover_functions_with_status(&input);
+        assert_eq!(
+            outcome.termination(),
+            NoreturnInferenceTermination::IterationLimit,
+            "function discovery must expose an incomplete no-return inference"
+        );
+    }
+
+    #[test]
+    fn direct_call_sweep_status_distinguishes_completed_and_bounded_inference() {
+        let cases: [(usize, NoreturnInferenceTermination); 2] = [
+            (64, NoreturnInferenceTermination::Complete),
+            (65, NoreturnInferenceTermination::IterationLimit),
+        ];
+        for (count, expected) in cases {
+            let (bytes, entries): (Vec<u8>, Vec<u64>) = noreturn_iteration_limit_fixture(count);
+            let input: DiscoveryInput<'_> = DiscoveryInput {
+                bitness: Bitness::Bits64,
+                code: vec![CodeWindow {
+                    address: NORETURN_BASE,
+                    bytes: &bytes,
+                }],
+                rodata: Vec::new(),
+                seeds: entries,
+                noreturn: BTreeSet::new(),
+            };
+            let outcome: NoreturnInferenceOutcome<DiscoveredFunctions> =
+                discover_functions_with_direct_call_sweep_status(&input);
+            assert_eq!(
+                outcome.termination(),
+                expected,
+                "direct call sweep status must preserve the {count}-node boundary"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_status_reports_the_noreturn_iteration_limit() {
+        let (bytes, entries): (Vec<u8>, Vec<u64>) = noreturn_iteration_limit_fixture(65);
+        let outcome: NoreturnInferenceOutcome<DesyncReport> = resolve_with_noreturn_status(
+            Bitness::Bits64,
+            NORETURN_BASE,
+            &bytes,
+            &entries,
+            &BTreeSet::new(),
+        )
+        .expect("resolve");
+        assert_eq!(
+            outcome.termination(),
+            NoreturnInferenceTermination::IterationLimit,
+            "resolution must expose an incomplete no-return inference"
+        );
+    }
+
+    #[test]
+    fn noreturn_iteration_limit_completes_when_the_final_pass_proves_every_candidate() {
+        let (bytes, entries): (Vec<u8>, Vec<u64>) = noreturn_iteration_limit_fixture(64);
+        assert_eq!(
+            MAX_NORETURN_ITERATIONS, 64,
+            "the iteration-limit regression pins the 64/65 propagation boundary"
+        );
+        let input: DiscoveryInput<'_> = DiscoveryInput {
+            bitness: Bitness::Bits64,
+            code: vec![CodeWindow {
+                address: NORETURN_BASE,
+                bytes: &bytes,
+            }],
+            rodata: Vec::new(),
+            seeds: Vec::new(),
+            noreturn: BTreeSet::new(),
+        };
+        let candidates: BTreeSet<u64> = entries.iter().copied().collect();
+        let result: NoreturnInference = noreturn_closure(&input, &candidates, BTreeSet::new());
+        assert!(
+            matches!(result, NoreturnInference::Complete(ref known) if known.len() == MAX_NORETURN_ITERATIONS && known.contains(&NORETURN_BASE)),
+            "a final changed pass that proves every candidate must complete: {result:?}"
         );
     }
 
@@ -2363,11 +2879,11 @@ mod tests {
     }
 
     #[test]
-    fn noreturn_call_halts_under_emulation() {
+    fn self_loop_call_reaches_the_execution_cap_under_emulation() {
         use crate::stub_emu::cpu::{ExitReason, NoopHost};
         use crate::stub_emu::{Cpu, CpuMode, Perm, Reg};
 
-        let bytes: [u8; 10] = noreturn_fixture(0xCC);
+        let bytes: Vec<u8> = noreturn_fixture(&[0xEB, 0xFE]);
         let mut image: Vec<u8> = vec![0x00; 0x1000];
         image.extend_from_slice(&bytes);
         let mut cpu: Cpu = Cpu::new(CpuMode::Bits64);
@@ -2377,16 +2893,9 @@ mod tests {
         cpu.regs.set(Reg::Rsp, 0x800);
         let mut host: NoopHost = NoopHost;
         let reason: ExitReason = cpu.run(&mut host, 4096).expect("emulate");
-        let trapped_at_callee: bool = match reason {
-            ExitReason::HostHalt(_)
-            | ExitReason::JumpedOutOfRange { .. }
-            | ExitReason::GuestFault(_) => true,
-            ExitReason::UnsupportedInstr { ip, .. } => ip == 0x1009,
-            _ => false,
-        };
         assert!(
-            trapped_at_callee,
-            "emulation must reach the int3 at the noreturn callee (0x1009) and never fall through to 0x1005: {reason:?}"
+            matches!(reason, ExitReason::StepCap(_)),
+            "a direct self-loop must consume the execution cap rather than return: {reason:?}"
         );
     }
 }

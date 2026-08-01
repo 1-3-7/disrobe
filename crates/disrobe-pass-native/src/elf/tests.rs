@@ -169,6 +169,80 @@ fn truncated_and_non_elf_inputs_yield_none_not_panic() {
 }
 
 #[test]
+fn extended_program_header_count_reads_section_zero_info() {
+    let section_offset: usize = 64;
+    let section_offset_u64: u64 = 64;
+    let mut bytes: Vec<u8> = vec![0u8; section_offset + 64];
+    bytes[section_offset + 44..section_offset + 48]
+        .copy_from_slice(&u32::from(PN_XNUM).to_le_bytes());
+    let count: Option<SectionTableValidation> = validate_section_table(
+        &bytes,
+        ElfClass::Elf64,
+        Endian { little: true },
+        section_offset_u64,
+        64,
+        1,
+        0,
+        PN_XNUM,
+    );
+    assert!(matches!(
+        count,
+        Some(SectionTableValidation::ExtendedProgramCount(value)) if value == usize::from(PN_XNUM)
+    ));
+    bytes[section_offset + 44..section_offset + 48]
+        .copy_from_slice(&(u32::from(PN_XNUM) - 1).to_le_bytes());
+    let malformed: Option<SectionTableValidation> = validate_section_table(
+        &bytes,
+        ElfClass::Elf64,
+        Endian { little: true },
+        section_offset_u64,
+        64,
+        1,
+        0,
+        PN_XNUM,
+    );
+    assert_eq!(malformed, None);
+}
+
+#[test]
+fn extended_section_name_index_uses_section_zero_link() {
+    const SECTION_OFFSET: usize = 64;
+    const SECTION_ENTRY_SIZE: usize = 64;
+    const SECTION_COUNT: usize = 0xff01;
+    let mut bytes: Vec<u8> = vec![0u8; SECTION_OFFSET + SECTION_ENTRY_SIZE * SECTION_COUNT];
+    bytes[SECTION_OFFSET + 32..SECTION_OFFSET + 40]
+        .copy_from_slice(&(SECTION_COUNT as u64).to_le_bytes());
+    bytes[SECTION_OFFSET + 40..SECTION_OFFSET + 44]
+        .copy_from_slice(&u32::from(SHN_LORESERVE).to_le_bytes());
+    let valid: Option<SectionTableValidation> = validate_section_table(
+        &bytes,
+        ElfClass::Elf64,
+        Endian { little: true },
+        SECTION_OFFSET as u64,
+        64,
+        0,
+        SHN_XINDEX,
+        1,
+    );
+    assert!(matches!(
+        valid,
+        Some(SectionTableValidation::NoExtendedProgramCount)
+    ));
+    bytes[SECTION_OFFSET + 40..SECTION_OFFSET + 44].copy_from_slice(&0xffu32.to_le_bytes());
+    let malformed: Option<SectionTableValidation> = validate_section_table(
+        &bytes,
+        ElfClass::Elf64,
+        Endian { little: true },
+        SECTION_OFFSET as u64,
+        64,
+        0,
+        SHN_XINDEX,
+        1,
+    );
+    assert_eq!(malformed, None);
+}
+
+#[test]
 fn fuzz_truncations_never_panic() {
     let Some(full): Option<Vec<u8>> =
         read_corpus("python/pyarmor/v9/platform_linux/pyarmor_runtime_000000/pyarmor_runtime.so")
