@@ -42,11 +42,149 @@ const MAX_BLOCKS: usize = 1 << 16;
 const MAX_BRUTE_FORCE_OFFSETS: usize = 1 << 16;
 const MAX_VERIFY_CANDIDATES: usize = 4096;
 const MAX_VERIFY_EXPANSION: u64 = 64;
+const MAX_TOTAL_DECOMPRESSED_OUTPUT: usize = MAX_DECOMPRESSED * 2;
+const MAX_DECOMPRESSION_ATTEMPTS: usize = 4096;
+const MAX_STRUCTURAL_CHECKSUM_BYTES: usize = 64 * 1024 * 1024;
+const ADLER_MODULUS: i128 = 65_521;
 const L_INFO_MAGIC_TO_FIRST_BLOCK: usize = 20;
 const L_INFO_MAGIC_TO_FILESIZE: usize = 12;
 const MAX_L_INFO_SCAN: usize = 64 * 1024;
 const MAX_TAIL_SCAN: usize = 4096;
 const MAX_RESYNC_OFFSETS: usize = 1 << 16;
+
+#[derive(Debug, Clone, Copy)]
+enum DecodeRoute {
+    ElfExtents,
+    Generic,
+}
+
+#[derive(Debug)]
+struct DecodeQuota {
+    remaining_attempts: usize,
+    remaining_output_bytes: usize,
+    attempts: usize,
+}
+
+impl DecodeQuota {
+    const fn new(remaining_attempts: usize, remaining_output_bytes: usize) -> Self {
+        Self {
+            remaining_attempts,
+            remaining_output_bytes,
+            attempts: 0,
+        }
+    }
+
+    fn reserve(&mut self, output_bytes: usize) -> Option<DecompressionPermit> {
+        let remaining_attempts: usize = self.remaining_attempts.checked_sub(1)?;
+        let remaining_output_bytes: usize =
+            self.remaining_output_bytes.checked_sub(output_bytes)?;
+        self.remaining_attempts = remaining_attempts;
+        self.remaining_output_bytes = remaining_output_bytes;
+        self.attempts += 1;
+        Some(DecompressionPermit { output_bytes })
+    }
+}
+
+#[derive(Debug)]
+struct DecompressionBudget {
+    elf_extents: DecodeQuota,
+    generic: DecodeQuota,
+}
+
+#[derive(Debug)]
+struct DecompressionPermit {
+    output_bytes: usize,
+}
+
+#[derive(Debug)]
+struct ChecksumBudget {
+    remaining_bytes: usize,
+}
+
+impl ChecksumBudget {
+    const fn new() -> Self {
+        Self {
+            remaining_bytes: MAX_STRUCTURAL_CHECKSUM_BYTES,
+        }
+    }
+
+    #[cfg(test)]
+    const fn with_remaining_bytes(remaining_bytes: usize) -> Self {
+        Self { remaining_bytes }
+    }
+
+    fn reserve(&mut self, bytes: usize) -> bool {
+        let Some(remaining_bytes): Option<usize> = self.remaining_bytes.checked_sub(bytes) else {
+            return false;
+        };
+        self.remaining_bytes = remaining_bytes;
+        true
+    }
+}
+
+impl DecompressionBudget {
+    const fn new() -> Self {
+        Self::with_quotas(
+            DecodeQuota::new(
+                MAX_DECOMPRESSION_ATTEMPTS / 2,
+                MAX_TOTAL_DECOMPRESSED_OUTPUT / 2,
+            ),
+            DecodeQuota::new(
+                MAX_DECOMPRESSION_ATTEMPTS / 2,
+                MAX_TOTAL_DECOMPRESSED_OUTPUT / 2,
+            ),
+        )
+    }
+
+    const fn with_quotas(elf_extents: DecodeQuota, generic: DecodeQuota) -> Self {
+        Self {
+            elf_extents,
+            generic,
+        }
+    }
+
+    fn reserve(&mut self, route: DecodeRoute, output_bytes: usize) -> Option<DecompressionPermit> {
+        self.quota_mut(route).reserve(output_bytes)
+    }
+
+    fn quota_mut(&mut self, route: DecodeRoute) -> &mut DecodeQuota {
+        match route {
+            DecodeRoute::ElfExtents => &mut self.elf_extents,
+            DecodeRoute::Generic => &mut self.generic,
+        }
+    }
+
+    #[cfg(test)]
+    const fn quota(&self, route: DecodeRoute) -> &DecodeQuota {
+        match route {
+            DecodeRoute::ElfExtents => &self.elf_extents,
+            DecodeRoute::Generic => &self.generic,
+        }
+    }
+
+    #[cfg(test)]
+    const fn attempts(&self, route: DecodeRoute) -> usize {
+        self.quota(route).attempts
+    }
+
+    #[cfg(test)]
+    const fn remaining_output_bytes(&self, route: DecodeRoute) -> usize {
+        self.quota(route).remaining_output_bytes
+    }
+}
+
+#[derive(Debug)]
+struct VerifiedStream {
+    image: Vec<u8>,
+    data_off: usize,
+    block_count: usize,
+}
+
+#[derive(Debug)]
+struct LocatedPackHeader {
+    header: UpxPackHeader,
+    verified: Option<VerifiedStream>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UpxPackHeader {
@@ -66,22 +204,38 @@ pub struct UpxPackHeader {
 
 impl UpxPackHeader {
     pub fn locate_and_parse(packed: &[u8]) -> Result<Self> {
+        let mut budget: DecompressionBudget = DecompressionBudget::new();
+        Ok(Self::locate_for_unpack(packed, &mut budget)?.header)
+    }
+
+    fn locate_for_unpack(
+        packed: &[u8],
+        budget: &mut DecompressionBudget,
+    ) -> Result<LocatedPackHeader> {
         let mut search_from: usize = 0;
         while let Some(rel) = find_subsequence(&packed[search_from..], UPX_MAGIC) {
             let offset: usize = search_from + rel;
             if let Some(header) = Self::parse_at(packed, offset) {
-                return Ok(header);
+                return Ok(LocatedPackHeader {
+                    header,
+                    verified: None,
+                });
             }
             search_from = offset + 1;
         }
-        Self::locate_structural(packed).ok_or_else(|| Error::UpxDecode {
+        let mut checksums: ChecksumBudget = ChecksumBudget::new();
+        Self::locate_structural(packed, budget, &mut checksums).ok_or_else(|| Error::UpxDecode {
             stage: "packheader",
             detail: "no UPX! magic and no structurally valid PackHeader window found in input"
                 .to_owned(),
         })
     }
 
-    fn locate_structural(packed: &[u8]) -> Option<Self> {
+    fn locate_structural(
+        packed: &[u8],
+        budget: &mut DecompressionBudget,
+        checksums: &mut ChecksumBudget,
+    ) -> Option<LocatedPackHeader> {
         if packed.len() < PACK_HEADER_LEN {
             return None;
         }
@@ -105,10 +259,15 @@ impl UpxPackHeader {
                 break;
             }
         }
-        version_plausible
-            .into_iter()
-            .chain(version_tampered)
-            .find(|header: &Self| header.verifies_by_decompression(packed))
+        for header in version_plausible.into_iter().chain(version_tampered) {
+            if let Some(verified) = header.verify_by_decompression(packed, budget, checksums) {
+                return Some(LocatedPackHeader {
+                    header,
+                    verified: Some(verified),
+                });
+            }
+        }
+        None
     }
 
     fn is_length_consistent(&self, file_len: usize) -> bool {
@@ -121,31 +280,55 @@ impl UpxPackHeader {
         u64::from(self.u_len) <= u64::from(self.c_len).saturating_mul(MAX_VERIFY_EXPANSION)
     }
 
-    fn verifies_by_decompression(&self, packed: &[u8]) -> bool {
+    fn verify_by_decompression(
+        &self,
+        packed: &[u8],
+        budget: &mut DecompressionBudget,
+        checksums: &mut ChecksumBudget,
+    ) -> Option<VerifiedStream> {
         let target: usize = self.u_len as usize;
         let mut bases: Vec<usize> = Vec::with_capacity(2);
         if let Some(off) = section_data_offset(packed) {
             bases.push(off);
         }
         bases.push(0);
-        let single_ok: bool = bases
-            .iter()
-            .flat_map(|&base: &usize| [base, base.saturating_add(B_INFO_LEN)])
-            .filter(|&start: &usize| start < packed.len())
-            .any(|start: usize| {
-                decompress_block(self.method, &packed[start..], target).is_ok_and(|out: Vec<u8>| {
-                    out.len() == target && ucl_adler32(1, &out) == self.u_adler
-                })
-            });
-        if single_ok {
-            return true;
+        for &base in &bases {
+            for start in [base, base.saturating_add(B_INFO_LEN)] {
+                if !output_is_affordable(packed, start, target) {
+                    continue;
+                }
+                let Some(comp): Option<&[u8]> = compressed_window(packed, start, self) else {
+                    continue;
+                };
+                if !checksums.reserve(comp.len()) {
+                    return None;
+                }
+                if ucl_adler32(1, comp) != self.c_adler {
+                    continue;
+                }
+                let permit: DecompressionPermit = budget.reserve(DecodeRoute::Generic, target)?;
+                if let Ok(image) = decompress_block(self.method, comp, permit)
+                    && image.len() == target
+                    && ucl_adler32(1, &image) == self.u_adler
+                {
+                    return Some(VerifiedStream {
+                        image,
+                        data_off: start,
+                        block_count: 1,
+                    });
+                }
+            }
         }
         bases
             .into_iter()
             .filter(|&start: &usize| start < packed.len())
-            .any(|start: usize| {
-                walk_block_chain(packed, self, start).is_some_and(
-                    |(image, _, _): (Vec<u8>, usize, usize)| ucl_adler32(1, &image) == self.u_adler,
+            .find_map(|start: usize| {
+                walk_block_chain(packed, self, start, budget, DecodeRoute::Generic).map(
+                    |(image, data_off, block_count): (Vec<u8>, usize, usize)| VerifiedStream {
+                        image,
+                        data_off,
+                        block_count,
+                    },
                 )
             })
     }
@@ -216,17 +399,30 @@ pub struct UpxUnpackOutput {
 
 pub fn unpack_upx(packed: &[u8]) -> Result<UpxUnpackOutput> {
     crate::debug::dbg_section("upx unpack");
+    let mut budget: DecompressionBudget = DecompressionBudget::new();
+    unpack_upx_with_budget(packed, &mut budget)
+}
+
+fn unpack_upx_with_budget(
+    packed: &[u8],
+    budget: &mut DecompressionBudget,
+) -> Result<UpxUnpackOutput> {
     if packed.starts_with(ELF_MAGIC)
-        && let Some(out) = unpack_upx_elf(packed)
+        && let Some(recovered) = unpack_upx_elf(packed, budget)?
     {
-        return Ok(out);
+        return Ok(recovered);
     }
-    let header: UpxPackHeader =
-        UpxPackHeader::locate_and_parse(packed).inspect_err(|e: &Error| {
+    unpack_upx_generic(packed, budget)
+}
+
+fn unpack_upx_generic(packed: &[u8], budget: &mut DecompressionBudget) -> Result<UpxUnpackOutput> {
+    let located: LocatedPackHeader =
+        UpxPackHeader::locate_for_unpack(packed, budget).inspect_err(|e: &Error| {
             crate::debug::dbg_kv("upx-wall", || {
                 format!("pack-header locate/parse failed: {e}")
             });
         })?;
+    let header: UpxPackHeader = located.header;
     crate::debug::dbg_kv("upx-header", || {
         format!(
             "method={:?} version={} format={} level={} u_len={} c_len={} u_adler={:#x} \
@@ -243,10 +439,24 @@ pub fn unpack_upx(packed: &[u8]) -> Result<UpxUnpackOutput> {
             header.header_offset
         )
     });
-    let (mut image, data_off, block_count): (Vec<u8>, usize, usize) = decode_image(packed, &header)
-        .inspect_err(|e: &Error| {
-            crate::debug::dbg_kv("upx-wall", || format!("decode_image failed: {e}"));
-        })?;
+    let VerifiedStream {
+        mut image,
+        data_off,
+        block_count,
+    }: VerifiedStream = match located.verified {
+        Some(verified) => verified,
+        None => {
+            let (image, data_off, block_count): (Vec<u8>, usize, usize) =
+                decode_image_with_budget(packed, &header, budget).inspect_err(|e: &Error| {
+                    crate::debug::dbg_kv("upx-wall", || format!("decode_image failed: {e}"));
+                })?;
+            VerifiedStream {
+                image,
+                data_off,
+                block_count,
+            }
+        }
+    };
     crate::debug::dbg_kv("upx-decode", || {
         format!(
             "blocks={block_count} data_offset={data_off:#x} decoded_bytes={}",
@@ -318,23 +528,31 @@ fn elf_block_at(
     offset: usize,
     remaining: usize,
     method: UpxMethod,
+    budget: &mut DecompressionBudget,
 ) -> Option<ElfBlock> {
     let info: BInfo = BInfo::parse_at(packed, offset)?;
     let u_len: usize = info.u_len as usize;
     let c_len: usize = info.c_len as usize;
-    if u_len == 0 || u_len > remaining || c_len == 0 || c_len > u_len || info.extra != 0 {
+    if u_len == 0
+        || u_len > remaining
+        || c_len == 0
+        || c_len > u_len
+        || !output_matches_compressed_extent(u_len, c_len)
+        || info.extra != 0
+    {
+        return None;
+    }
+    if c_len < u_len && info.method != method.id() {
         return None;
     }
     let data_start: usize = offset.checked_add(B_INFO_LEN)?;
     let data_end: usize = data_start.checked_add(c_len)?;
     let comp: &[u8] = packed.get(data_start..data_end)?;
+    let permit: DecompressionPermit = budget.reserve(DecodeRoute::ElfExtents, u_len)?;
     let mut bytes: Vec<u8> = if c_len == u_len {
         comp.to_vec()
     } else {
-        if info.method != method.id() {
-            return None;
-        }
-        let decoded: Vec<u8> = decompress_block(method, comp, u_len).ok()?;
+        let decoded: Vec<u8> = decompress_block(method, comp, permit).ok()?;
         if decoded.len() != u_len {
             return None;
         }
@@ -349,20 +567,161 @@ fn elf_block_at(
     })
 }
 
+fn output_is_affordable(packed: &[u8], start: usize, target: usize) -> bool {
+    let Some(available): Option<usize> = packed.len().checked_sub(start) else {
+        return false;
+    };
+    let Ok(available): core::result::Result<u64, _> = u64::try_from(available) else {
+        return false;
+    };
+    let Ok(target): core::result::Result<u64, _> = u64::try_from(target) else {
+        return false;
+    };
+    target <= available.saturating_mul(MAX_VERIFY_EXPANSION)
+}
+
+fn output_matches_compressed_extent(output: usize, compressed: usize) -> bool {
+    let Ok(output): core::result::Result<u64, _> = u64::try_from(output) else {
+        return false;
+    };
+    let Ok(compressed): core::result::Result<u64, _> = u64::try_from(compressed) else {
+        return false;
+    };
+    output <= compressed.saturating_mul(MAX_VERIFY_EXPANSION)
+}
+
+fn compressed_window<'a>(
+    packed: &'a [u8],
+    start: usize,
+    header: &UpxPackHeader,
+) -> Option<&'a [u8]> {
+    let c_len: usize = header.c_len as usize;
+    let end: usize = start.checked_add(c_len)?;
+    packed.get(start..end)
+}
+
+#[derive(Debug)]
+struct Adler32Window<'a> {
+    packed: &'a [u8],
+    width: usize,
+    start: usize,
+    end_exclusive: usize,
+    s1: u32,
+    s2: u32,
+}
+
+impl<'a> Adler32Window<'a> {
+    fn new(packed: &'a [u8], width: usize, end_exclusive: usize) -> Option<Self> {
+        if width == 0 {
+            return None;
+        }
+        let last_start: usize = packed.len().checked_sub(width)?.checked_add(1)?;
+        let end_exclusive: usize = end_exclusive.min(last_start);
+        if end_exclusive == 0 {
+            return None;
+        }
+        let checksum: u32 = ucl_adler32(1, packed.get(..width)?);
+        Some(Self {
+            packed,
+            width,
+            start: 0,
+            end_exclusive,
+            s1: checksum & 0xffff,
+            s2: checksum >> 16,
+        })
+    }
+
+    const fn checksum(&self) -> u32 {
+        (self.s2 << 16) | self.s1
+    }
+
+    const fn start(&self) -> usize {
+        self.start
+    }
+
+    fn advance(&mut self) -> bool {
+        if self.start.checked_add(1) >= Some(self.end_exclusive) {
+            return false;
+        }
+        let outgoing: u32 = u32::from(self.packed[self.start]);
+        let incoming: u32 = u32::from(self.packed[self.start + self.width]);
+        let Ok(width): core::result::Result<i128, _> = i128::try_from(self.width) else {
+            return false;
+        };
+        let s1: i128 = (i128::from(self.s1) - i128::from(outgoing) + i128::from(incoming))
+            .rem_euclid(ADLER_MODULUS);
+        let s2: i128 =
+            (i128::from(self.s2) - width * i128::from(outgoing) + s1 - 1).rem_euclid(ADLER_MODULUS);
+        let Ok(s1): core::result::Result<u32, _> = u32::try_from(s1) else {
+            return false;
+        };
+        let Ok(s2): core::result::Result<u32, _> = u32::try_from(s2) else {
+            return false;
+        };
+        self.start += 1;
+        self.s1 = s1;
+        self.s2 = s2;
+        true
+    }
+}
+
+fn matching_compressed_starts(
+    packed: &[u8],
+    header: &UpxPackHeader,
+    scan_limit: usize,
+) -> Vec<usize> {
+    let mut matches: Vec<usize> = Vec::new();
+    let Some(mut window): Option<Adler32Window<'_>> =
+        Adler32Window::new(packed, header.c_len as usize, scan_limit)
+    else {
+        return matches;
+    };
+    loop {
+        let start: usize = window.start();
+        if output_is_affordable(packed, start, header.u_len as usize)
+            && window.checksum() == header.c_adler
+        {
+            matches.push(start);
+        }
+        if !window.advance() {
+            return matches;
+        }
+    }
+}
+
+#[cfg(test)]
 fn decode_elf_extents(packed: &[u8], header: &UpxPackHeader) -> Option<(Vec<u8>, usize)> {
+    let mut budget: DecompressionBudget = DecompressionBudget::new();
+    decode_elf_extents_with_budget(packed, header, &mut budget)
+}
+
+fn decode_elf_extents_with_budget(
+    packed: &[u8],
+    header: &UpxPackHeader,
+    budget: &mut DecompressionBudget,
+) -> Option<(Vec<u8>, usize)> {
+    if !header.is_verification_affordable() {
+        return None;
+    }
     let target: usize = header.u_len as usize;
     let start: usize = elf_first_block_offset(packed, header.u_len)?;
-    let mut image: Vec<u8> = Vec::with_capacity(target.min(MAX_DECOMPRESSED));
+    if !output_is_affordable(packed, start, target) {
+        return None;
+    }
+    let mut image: Vec<u8> = Vec::new();
     let mut cursor: usize = start;
     let mut blocks: usize = 0;
     let mut scanned: usize = 0;
     while image.len() < target {
         let remaining: usize = target - image.len();
-        let mut block: Option<ElfBlock> = elf_block_at(packed, cursor, remaining, header.method);
+        let mut block: Option<ElfBlock> =
+            elf_block_at(packed, cursor, remaining, header.method, budget);
         if block.is_none() {
             let mut probe: usize = (cursor + 4) & !3usize;
             while probe + B_INFO_LEN <= packed.len() && scanned < MAX_RESYNC_OFFSETS {
-                if let Some(candidate) = elf_block_at(packed, probe, remaining, header.method) {
+                if let Some(candidate) =
+                    elf_block_at(packed, probe, remaining, header.method, budget)
+                {
                     block = Some(candidate);
                     break;
                 }
@@ -479,9 +838,40 @@ fn relayout_elf_extents(stream: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn unpack_upx_elf(packed: &[u8]) -> Option<UpxUnpackOutput> {
-    let header: UpxPackHeader = tail_pack_header(packed)?;
-    let (image, blocks): (Vec<u8>, usize) = decode_elf_extents(packed, &header)?;
+fn unpack_upx_elf(
+    packed: &[u8],
+    budget: &mut DecompressionBudget,
+) -> Result<Option<UpxUnpackOutput>> {
+    let valid_elf: bool = crate::elf::is_well_formed_elf_executable(packed);
+    let Some(header): Option<UpxPackHeader> = tail_pack_header(packed) else {
+        if valid_elf {
+            return Ok(None);
+        }
+        return Err(Error::UpxDecode {
+            stage: "elf-extents",
+            detail: String::from("invalid ELF before UPX generic fallback"),
+        });
+    };
+    if elf_first_block_offset(packed, header.u_len).is_none() {
+        if valid_elf {
+            return Ok(None);
+        }
+        return Err(Error::UpxDecode {
+            stage: "elf-extents",
+            detail: String::from("invalid ELF before UPX generic fallback"),
+        });
+    }
+    let Some((image, blocks)): Option<(Vec<u8>, usize)> =
+        decode_elf_extents_with_budget(packed, &header, budget)
+    else {
+        if valid_elf {
+            return Ok(None);
+        }
+        return Err(Error::UpxDecode {
+            stage: "elf-extents",
+            detail: String::from("recognized UPX ELF extents could not be decoded"),
+        });
+    };
     let adler: u32 = ucl_adler32(1, &image);
     crate::debug::dbg_kv("upx-elf", || {
         format!(
@@ -492,19 +882,41 @@ fn unpack_upx_elf(packed: &[u8]) -> Option<UpxUnpackOutput> {
         )
     });
     if adler != header.u_adler {
-        return None;
+        if valid_elf {
+            return Ok(None);
+        }
+        return Err(Error::UpxDecode {
+            stage: "elf-extents",
+            detail: String::from("UPX ELF extents failed checksum verification"),
+        });
     }
     let recovered_image: Vec<u8> = relayout_elf_extents(&image).unwrap_or(image);
-    Some(UpxUnpackOutput {
+    Ok(Some(UpxUnpackOutput {
         method: header.method,
         filter_id: header.filter_id,
         recovered_image,
         block_count: blocks,
         adler_verified: true,
-    })
+    }))
 }
 
+#[cfg(test)]
 fn decode_image(packed: &[u8], header: &UpxPackHeader) -> Result<(Vec<u8>, usize, usize)> {
+    let mut budget: DecompressionBudget = DecompressionBudget::new();
+    decode_image_with_budget(packed, header, &mut budget)
+}
+
+fn decode_image_with_budget(
+    packed: &[u8],
+    header: &UpxPackHeader,
+    budget: &mut DecompressionBudget,
+) -> Result<(Vec<u8>, usize, usize)> {
+    if !header.is_verification_affordable() {
+        return Err(Error::UpxDecode {
+            stage: "block-stream",
+            detail: String::from("declared expansion exceeds the verification cap"),
+        });
+    }
     let target: usize = header.u_len as usize;
     let mut candidates: Vec<usize> = Vec::new();
     if let Some(off) = section_data_offset(packed) {
@@ -513,13 +925,27 @@ fn decode_image(packed: &[u8], header: &UpxPackHeader) -> Result<(Vec<u8>, usize
     candidates.push(0);
     for base in candidates {
         for skip in [0usize, B_INFO_LEN] {
-            let start: usize = base + skip;
-            if start >= packed.len() {
+            let Some(start): Option<usize> = base.checked_add(skip) else {
+                continue;
+            };
+            if !output_is_affordable(packed, start, target) {
                 continue;
             }
-            let Ok(out): Result<Vec<u8>> =
-                decompress_block(header.method, &packed[start..], target)
+            let Some(comp): Option<&[u8]> = compressed_window(packed, start, header) else {
+                continue;
+            };
+            if ucl_adler32(1, comp) != header.c_adler {
+                continue;
+            }
+            let Some(permit): Option<DecompressionPermit> =
+                budget.reserve(DecodeRoute::Generic, target)
             else {
+                return Err(Error::UpxDecode {
+                    stage: "block-stream",
+                    detail: String::from("decompression budget exhausted"),
+                });
+            };
+            let Ok(out): Result<Vec<u8>> = decompress_block(header.method, comp, permit) else {
                 continue;
             };
             if out.len() == target && ucl_adler32(1, &out) == header.u_adler {
@@ -527,22 +953,36 @@ fn decode_image(packed: &[u8], header: &UpxPackHeader) -> Result<(Vec<u8>, usize
             }
         }
     }
-    let scan_limit: usize = packed.len().saturating_sub(16).min(MAX_BRUTE_FORCE_OFFSETS);
-    for start in 0..scan_limit {
-        let affordable: u64 =
-            (packed.len().saturating_sub(start) as u64).saturating_mul(MAX_VERIFY_EXPANSION);
-        if (target as u64) > affordable {
+    let scan_limit: usize = packed
+        .len()
+        .saturating_sub(header.c_len as usize)
+        .saturating_add(1)
+        .min(MAX_BRUTE_FORCE_OFFSETS);
+    let checksum_matches: Vec<usize> = matching_compressed_starts(packed, header, scan_limit);
+    let brute_force_starts: Vec<usize> = if checksum_matches.is_empty() {
+        (0..scan_limit)
+            .filter(|&start: &usize| output_is_affordable(packed, start, target))
+            .collect()
+    } else {
+        checksum_matches
+    };
+    for start in brute_force_starts {
+        let Some(comp): Option<&[u8]> = compressed_window(packed, start, header) else {
             continue;
-        }
-        let Ok(out): Result<Vec<u8>> = decompress_block(header.method, &packed[start..], target)
+        };
+        let Some(permit): Option<DecompressionPermit> =
+            budget.reserve(DecodeRoute::Generic, target)
         else {
+            break;
+        };
+        let Ok(out): Result<Vec<u8>> = decompress_block(header.method, comp, permit) else {
             continue;
         };
         if out.len() == target && ucl_adler32(1, &out) == header.u_adler {
             return Ok((out, start, 1));
         }
     }
-    if let Some((image, start, blocks)) = decode_multiblock(packed, header) {
+    if let Some((image, start, blocks)) = decode_multiblock_with_budget(packed, header, budget) {
         return Ok((image, start, blocks));
     }
     Err(Error::UpxDecode {
@@ -555,7 +995,17 @@ fn decode_image(packed: &[u8], header: &UpxPackHeader) -> Result<(Vec<u8>, usize
     })
 }
 
+#[cfg(test)]
 fn decode_multiblock(packed: &[u8], header: &UpxPackHeader) -> Option<(Vec<u8>, usize, usize)> {
+    let mut budget: DecompressionBudget = DecompressionBudget::new();
+    decode_multiblock_with_budget(packed, header, &mut budget)
+}
+
+fn decode_multiblock_with_budget(
+    packed: &[u8],
+    header: &UpxPackHeader,
+    budget: &mut DecompressionBudget,
+) -> Option<(Vec<u8>, usize, usize)> {
     let target: usize = header.u_len as usize;
     let mut starts: Vec<usize> = Vec::new();
     if let Some(off) = section_data_offset(packed) {
@@ -563,7 +1013,8 @@ fn decode_multiblock(packed: &[u8], header: &UpxPackHeader) -> Option<(Vec<u8>, 
     }
     starts.push(0);
     for start in starts {
-        if let Some(result) = walk_block_chain(packed, header, start) {
+        if let Some(result) = walk_block_chain(packed, header, start, budget, DecodeRoute::Generic)
+        {
             return Some(result);
         }
     }
@@ -583,7 +1034,8 @@ fn decode_multiblock(packed: &[u8], header: &UpxPackHeader) -> Option<(Vec<u8>, 
         {
             continue;
         }
-        if let Some(result) = walk_block_chain(packed, header, start) {
+        if let Some(result) = walk_block_chain(packed, header, start, budget, DecodeRoute::Generic)
+        {
             return Some(result);
         }
     }
@@ -594,26 +1046,37 @@ fn walk_block_chain(
     packed: &[u8],
     header: &UpxPackHeader,
     start: usize,
+    budget: &mut DecompressionBudget,
+    route: DecodeRoute,
 ) -> Option<(Vec<u8>, usize, usize)> {
     let target: usize = header.u_len as usize;
-    let mut image: Vec<u8> = Vec::with_capacity(target);
+    if !output_is_affordable(packed, start, target) {
+        return None;
+    }
+    let mut image: Vec<u8> = Vec::new();
     let mut cursor: usize = start;
     let mut blocks: usize = 0;
     while image.len() < target {
         let info: BInfo = BInfo::parse_at(packed, cursor)?;
         let u_len: usize = info.u_len as usize;
         let c_len: usize = info.c_len as usize;
-        if u_len == 0 || c_len == 0 || image.len() + u_len > target {
+        if u_len == 0
+            || c_len == 0
+            || !output_matches_compressed_extent(u_len, c_len)
+            || image.len().checked_add(u_len)? > target
+        {
             return None;
         }
         let data_start: usize = cursor.checked_add(B_INFO_LEN)?;
         let data_end: usize = data_start.checked_add(c_len)?;
         let comp: &[u8] = packed.get(data_start..data_end)?;
         if c_len >= u_len {
+            let _permit: DecompressionPermit = budget.reserve(route, u_len)?;
             image.extend_from_slice(comp.get(..u_len)?);
         } else {
             let method: UpxMethod = UpxMethod::from_id(info.method)?;
-            let decoded: Vec<u8> = decompress_block(method, comp, u_len).ok()?;
+            let permit: DecompressionPermit = budget.reserve(route, u_len)?;
+            let decoded: Vec<u8> = decompress_block(method, comp, permit).ok()?;
             if decoded.len() != u_len {
                 return None;
             }
@@ -653,7 +1116,8 @@ fn section_data_offset(packed: &[u8]) -> Option<usize> {
     best
 }
 
-fn decompress_block(method: UpxMethod, src: &[u8], out_len: usize) -> Result<Vec<u8>> {
+fn decompress_block(method: UpxMethod, src: &[u8], permit: DecompressionPermit) -> Result<Vec<u8>> {
+    let out_len: usize = permit.output_bytes;
     match method {
         UpxMethod::Nrv2b => nrv2b_decompress(src, out_len),
         UpxMethod::Nrv2d => nrv2d_decompress(src, out_len),
@@ -706,7 +1170,7 @@ impl<'a> Nrv2Bits<'a> {
 
 fn nrv2b_decompress(src: &[u8], out_len: usize) -> Result<Vec<u8>> {
     let mut bits: Nrv2Bits<'_> = Nrv2Bits::new(src);
-    let mut out: Vec<u8> = Vec::with_capacity(out_len);
+    let mut out: Vec<u8> = Vec::new();
     let mut last_m_off: usize = 1;
     while out.len() < out_len {
         if bits.get_bit()? == 1 {
@@ -756,7 +1220,7 @@ fn nrv2b_decompress(src: &[u8], out_len: usize) -> Result<Vec<u8>> {
 
 fn nrv2d_decompress(src: &[u8], out_len: usize) -> Result<Vec<u8>> {
     let mut bits: Nrv2Bits<'_> = Nrv2Bits::new(src);
-    let mut out: Vec<u8> = Vec::with_capacity(out_len);
+    let mut out: Vec<u8> = Vec::new();
     let mut last_m_off: usize = 1;
     while out.len() < out_len {
         if bits.get_bit()? == 1 {
@@ -805,7 +1269,7 @@ fn nrv2d_decompress(src: &[u8], out_len: usize) -> Result<Vec<u8>> {
 
 fn nrv2e_decompress(src: &[u8], out_len: usize) -> Result<Vec<u8>> {
     let mut bits: Nrv2Bits<'_> = Nrv2Bits::new(src);
-    let mut out: Vec<u8> = Vec::with_capacity(out_len);
+    let mut out: Vec<u8> = Vec::new();
     let mut last_m_off: usize = 1;
     while out.len() < out_len {
         if bits.get_bit()? == 1 {
@@ -995,9 +1459,364 @@ mod tests {
     }
 
     #[test]
+    fn rolling_adler_matches_scalar_windows() {
+        let bytes: Vec<u8> = (0u8..=u8::MAX).collect();
+        for width in [1usize, 2, 5, 31, 64, 255, 256] {
+            let mut window: Adler32Window<'_> =
+                Adler32Window::new(&bytes, width, bytes.len()).expect("window must initialize");
+            loop {
+                let start: usize = window.start();
+                assert_eq!(
+                    window.checksum(),
+                    ucl_adler32(1, &bytes[start..start + width])
+                );
+                if !window.advance() {
+                    break;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn structural_header_verification_respects_checksum_byte_budget() {
+        let stream: [u8; 5] = [0, 0, 0, 0x80, b'a'];
+        let mut header: UpxPackHeader = header_with_lengths(1, stream.len() as u32, 1);
+        header.u_adler = ucl_adler32(1, b"a");
+        header.c_adler = ucl_adler32(1, &stream);
+        let mut decompression: DecompressionBudget =
+            DecompressionBudget::with_quotas(DecodeQuota::new(0, 0), DecodeQuota::new(1, 1));
+        let mut checksums: ChecksumBudget = ChecksumBudget::with_remaining_bytes(stream.len() - 1);
+        assert!(
+            header
+                .verify_by_decompression(&stream, &mut decompression, &mut checksums)
+                .is_none()
+        );
+        assert_eq!(checksums.remaining_bytes, stream.len() - 1);
+        assert_eq!(decompression.attempts(DecodeRoute::Generic), 0);
+    }
+
+    #[test]
     fn packheader_rejects_input_without_magic() {
         let buf: Vec<u8> = vec![0u8; 256];
         assert!(UpxPackHeader::locate_and_parse(&buf).is_err());
+    }
+
+    fn generic_elf_fixture(valid_header: bool) -> Vec<u8> {
+        generic_elf_fixture_with_layout(valid_header, 56, 1)
+    }
+
+    fn generic_elf_fixture_with_layout(
+        valid_header: bool,
+        program_header_size: u16,
+        program_header_count: u16,
+    ) -> Vec<u8> {
+        let program_table_offset: usize = 64;
+        let stream_offset: usize = program_table_offset
+            + usize::from(program_header_size) * usize::from(program_header_count);
+        let header_offset: usize = stream_offset + 8;
+        let mut packed: Vec<u8> = vec![0u8; header_offset + PACK_HEADER_LEN];
+        packed[..ELF_MAGIC.len()].copy_from_slice(ELF_MAGIC);
+        if valid_header {
+            packed[4] = 2;
+            packed[5] = 1;
+            packed[6] = 1;
+            packed[16..18].copy_from_slice(&2u16.to_le_bytes());
+            packed[18..20].copy_from_slice(&62u16.to_le_bytes());
+            packed[20..24].copy_from_slice(&1u32.to_le_bytes());
+            packed[24..32].copy_from_slice(&0x400000u64.to_le_bytes());
+            packed[32..40].copy_from_slice(&(program_table_offset as u64).to_le_bytes());
+            packed[52..54].copy_from_slice(&64u16.to_le_bytes());
+            packed[54..56].copy_from_slice(&program_header_size.to_le_bytes());
+            packed[56..58].copy_from_slice(&program_header_count.to_le_bytes());
+            packed[64..68].copy_from_slice(&1u32.to_le_bytes());
+            packed[68..72].copy_from_slice(&5u32.to_le_bytes());
+            packed[80..88].copy_from_slice(&0x400000u64.to_le_bytes());
+            packed[88..96].copy_from_slice(&0x400000u64.to_le_bytes());
+            let size: u64 = packed.len() as u64;
+            packed[96..104].copy_from_slice(&size.to_le_bytes());
+            packed[104..112].copy_from_slice(&size.to_le_bytes());
+            packed[112..120].copy_from_slice(&0x1000u64.to_le_bytes());
+        }
+        let stream: [u8; 5] = [0, 0, 0, 0x80, b'a'];
+        packed[stream_offset..stream_offset + stream.len()].copy_from_slice(&stream);
+        let header: &mut [u8] = &mut packed[header_offset..];
+        header[..UPX_MAGIC.len()].copy_from_slice(UPX_MAGIC);
+        header[4] = 1;
+        header[6] = UpxMethod::Nrv2b.id();
+        header[8..12].copy_from_slice(&ucl_adler32(1, b"a").to_le_bytes());
+        header[12..16].copy_from_slice(&ucl_adler32(1, &stream).to_le_bytes());
+        header[16..20].copy_from_slice(&1u32.to_le_bytes());
+        header[20..24].copy_from_slice(&(stream.len() as u32).to_le_bytes());
+        header[24..28].copy_from_slice(&1u32.to_le_bytes());
+        packed
+    }
+
+    #[test]
+    fn malformed_elf_does_not_fall_back_to_generic_upx_decode() {
+        let packed: Vec<u8> = generic_elf_fixture(false);
+        let parsed: UpxPackHeader = tail_pack_header(&packed).expect("tail header must parse");
+        let generic: (Vec<u8>, usize, usize) =
+            decode_image(&packed, &parsed).expect("generic decode must recover the literal stream");
+        assert_eq!(generic.0, b"a");
+        let result: Result<UpxUnpackOutput> = unpack_upx(&packed);
+        assert!(matches!(
+            result,
+            Err(Error::UpxDecode {
+                stage: "elf-extents",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn valid_unsupported_elf_falls_back_to_generic_upx_decode() {
+        let packed: Vec<u8> = generic_elf_fixture(true);
+        let parsed: object::File<'_> =
+            object::File::parse(&*packed).expect("fixture must parse as an ELF object");
+        assert!(crate::elf::is_well_formed_elf_executable(&packed));
+        assert!(
+            parsed.format() == object::BinaryFormat::Elf,
+            "fixture must be a structurally valid ELF before generic fallback is permitted"
+        );
+        let recovered: UpxUnpackOutput =
+            unpack_upx(&packed).expect("valid unsupported ELF must retain generic UPX recovery");
+        assert_eq!(recovered.recovered_image, b"a");
+        assert!(recovered.adler_verified);
+    }
+
+    #[test]
+    fn valid_elf_with_extended_program_header_entries_falls_back_to_generic_upx_decode() {
+        let packed: Vec<u8> = generic_elf_fixture_with_layout(true, 64, 1);
+        assert!(crate::elf::is_well_formed_elf_executable(&packed));
+        let recovered: UpxUnpackOutput = unpack_upx(&packed).expect(
+            "valid ELF with extended program header entries must retain generic UPX recovery",
+        );
+        assert_eq!(recovered.recovered_image, b"a");
+    }
+
+    #[test]
+    fn valid_elf_without_an_entry_point_falls_back_to_generic_upx_decode() {
+        let mut packed: Vec<u8> = generic_elf_fixture(true);
+        packed[24..32].copy_from_slice(&0u64.to_le_bytes());
+        assert!(crate::elf::is_well_formed_elf_executable(&packed));
+        let recovered: UpxUnpackOutput =
+            unpack_upx(&packed).expect("an entry-less valid ELF must retain generic UPX recovery");
+        assert_eq!(recovered.recovered_image, b"a");
+    }
+
+    #[test]
+    fn malformed_elf_without_a_tail_header_does_not_fall_back_to_generic_upx_decode() {
+        let mut packed: Vec<u8> = generic_elf_fixture(false);
+        packed.resize(packed.len() + MAX_TAIL_SCAN + PACK_HEADER_LEN + 1, 0);
+        assert!(tail_pack_header(&packed).is_none());
+        let parsed: UpxPackHeader =
+            UpxPackHeader::locate_and_parse(&packed).expect("generic header must remain visible");
+        let generic: (Vec<u8>, usize, usize) =
+            decode_image(&packed, &parsed).expect("generic decoder must accept the literal stream");
+        assert_eq!(generic.0, b"a");
+        let result: Result<UpxUnpackOutput> = unpack_upx(&packed);
+        assert!(matches!(
+            result,
+            Err(Error::UpxDecode {
+                stage: "elf-extents",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn elf_with_noncanonical_header_size_does_not_fall_back_to_generic_upx_decode() {
+        let mut packed: Vec<u8> = generic_elf_fixture(true);
+        packed[52..54].copy_from_slice(&65u16.to_le_bytes());
+        assert!(
+            !crate::elf::is_well_formed_elf_executable(&packed),
+            "an ELF header that overlaps its program table must not use generic UPX fallback"
+        );
+        let parsed: UpxPackHeader = tail_pack_header(&packed).expect("tail header must parse");
+        let generic: (Vec<u8>, usize, usize) =
+            decode_image(&packed, &parsed).expect("generic decoder must accept the literal stream");
+        assert_eq!(generic.0, b"a");
+        let result: Result<UpxUnpackOutput> = unpack_upx(&packed);
+        assert!(matches!(
+            result,
+            Err(Error::UpxDecode {
+                stage: "elf-extents",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn elf_with_program_table_inside_its_header_does_not_fall_back_to_generic_upx_decode() {
+        let mut packed: Vec<u8> = generic_elf_fixture(true);
+        packed[32..40].copy_from_slice(&63u64.to_le_bytes());
+        assert!(!crate::elf::is_well_formed_elf_executable(&packed));
+        let parsed: UpxPackHeader = tail_pack_header(&packed).expect("tail header must parse");
+        let generic: (Vec<u8>, usize, usize) =
+            decode_image(&packed, &parsed).expect("generic decoder must accept the literal stream");
+        assert_eq!(generic.0, b"a");
+        let result: Result<UpxUnpackOutput> = unpack_upx(&packed);
+        assert!(matches!(
+            result,
+            Err(Error::UpxDecode {
+                stage: "elf-extents",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn elf_with_out_of_file_section_table_does_not_fall_back_to_generic_upx_decode() {
+        let mut packed: Vec<u8> = generic_elf_fixture(true);
+        let section_table_offset: u64 = packed.len() as u64;
+        packed[40..48].copy_from_slice(&section_table_offset.to_le_bytes());
+        packed[58..60].copy_from_slice(&64u16.to_le_bytes());
+        packed[60..62].copy_from_slice(&1u16.to_le_bytes());
+        assert!(!crate::elf::is_well_formed_elf_executable(&packed));
+        let parsed: UpxPackHeader = tail_pack_header(&packed).expect("tail header must parse");
+        let generic: (Vec<u8>, usize, usize) =
+            decode_image(&packed, &parsed).expect("generic decoder must accept the literal stream");
+        assert_eq!(generic.0, b"a");
+        let result: Result<UpxUnpackOutput> = unpack_upx(&packed);
+        assert!(matches!(
+            result,
+            Err(Error::UpxDecode {
+                stage: "elf-extents",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn valid_elf_with_a_false_extent_probe_falls_back_to_generic_upx_decode() {
+        let mut packed: Vec<u8> = generic_elf_fixture(true);
+        let header: UpxPackHeader = tail_pack_header(&packed).expect("tail header must parse");
+        packed[header.header_offset + 12..header.header_offset + 16]
+            .copy_from_slice(&header.u_len.to_le_bytes());
+        let mutated: UpxPackHeader =
+            tail_pack_header(&packed).expect("mutated tail header must parse");
+        assert!(crate::elf::is_well_formed_elf_executable(&packed));
+        assert!(elf_first_block_offset(&packed, mutated.u_len).is_some());
+        let recovered: UpxUnpackOutput =
+            unpack_upx(&packed).expect("a false extent probe must retain generic UPX recovery");
+        assert_eq!(recovered.recovered_image, b"a");
+    }
+
+    #[test]
+    fn valid_elf_with_a_corrupted_checksum_falls_back_to_generic_upx_decode() {
+        let mut packed: Vec<u8> = generic_elf_fixture(true);
+        let header: UpxPackHeader = tail_pack_header(&packed).expect("tail header must parse");
+        packed[header.header_offset + 12..header.header_offset + 16]
+            .copy_from_slice(&header.u_len.to_le_bytes());
+        let mutated: UpxPackHeader =
+            tail_pack_header(&packed).expect("mutated tail header must parse");
+        assert!(crate::elf::is_well_formed_elf_executable(&packed));
+        assert!(matching_compressed_starts(&packed, &mutated, packed.len()).is_empty());
+        let recovered: UpxUnpackOutput =
+            unpack_upx(&packed).expect("a corrupted checksum must retain generic UPX recovery");
+        assert_eq!(recovered.recovered_image, b"a");
+    }
+
+    #[test]
+    fn unaffordable_elf_extents_are_rejected_before_output_allocation() {
+        let header: UpxPackHeader = header_with_lengths(65, 1, 1);
+        let mut packed: Vec<u8> = vec![0u8; 20 + B_INFO_LEN + 65];
+        packed[..UPX_MAGIC.len()].copy_from_slice(UPX_MAGIC);
+        packed[12..16].copy_from_slice(&header.u_len.to_le_bytes());
+        packed[20..24].copy_from_slice(&65u32.to_le_bytes());
+        packed[24..28].copy_from_slice(&65u32.to_le_bytes());
+        packed[28] = header.method.id();
+        packed[32..].fill(b'a');
+        assert!(elf_first_block_offset(&packed, header.u_len).is_some());
+        assert!(!header.is_verification_affordable());
+        assert!(decode_elf_extents(&packed, &header).is_none());
+    }
+
+    #[test]
+    fn malformed_elf_program_headers_do_not_fall_back_to_generic_upx_decode() {
+        let mut packed: Vec<u8> = generic_elf_fixture_with_layout(true, 56, 2);
+        packed[120..124].copy_from_slice(&5u32.to_le_bytes());
+        assert!(
+            !crate::elf::is_well_formed_elf_executable(&packed),
+            "an ELF with PT_SHLIB must not use generic UPX fallback"
+        );
+        let parsed: UpxPackHeader = tail_pack_header(&packed).expect("tail header must parse");
+        let generic: (Vec<u8>, usize, usize) =
+            decode_image(&packed, &parsed).expect("generic decoder must accept the literal stream");
+        assert_eq!(generic.0, b"a");
+        let result: Result<UpxUnpackOutput> = unpack_upx(&packed);
+        assert!(matches!(
+            result,
+            Err(Error::UpxDecode {
+                stage: "elf-extents",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn elf_with_header_mapping_and_later_load_falls_back_to_generic_upx_decode() {
+        let mut packed: Vec<u8> = generic_elf_fixture_with_layout(true, 56, 3);
+        let load: Vec<u8> = packed[64..120].to_vec();
+        packed[120..176].copy_from_slice(&load);
+        packed[64..68].copy_from_slice(&6u32.to_le_bytes());
+        packed[72..80].copy_from_slice(&64u64.to_le_bytes());
+        packed[80..88].copy_from_slice(&0x400040u64.to_le_bytes());
+        packed[96..104].copy_from_slice(&168u64.to_le_bytes());
+        packed[104..112].copy_from_slice(&168u64.to_le_bytes());
+        packed[112..120].copy_from_slice(&8u64.to_le_bytes());
+        packed[176..180].copy_from_slice(&1u32.to_le_bytes());
+        packed[180..184].copy_from_slice(&5u32.to_le_bytes());
+        packed[184..192].copy_from_slice(&240u64.to_le_bytes());
+        packed[192..200].copy_from_slice(&0x401000u64.to_le_bytes());
+        packed[200..208].copy_from_slice(&0x401000u64.to_le_bytes());
+        packed[208..216].copy_from_slice(&1u64.to_le_bytes());
+        packed[216..224].copy_from_slice(&1u64.to_le_bytes());
+        packed[224..232].copy_from_slice(&1u64.to_le_bytes());
+        let parsed: object::File<'_> =
+            object::File::parse(&*packed).expect("fixture must parse as an ELF object");
+        assert_eq!(parsed.format(), object::BinaryFormat::Elf);
+        assert!(crate::elf::is_well_formed_elf_executable(&packed));
+        let recovered: UpxUnpackOutput = unpack_upx(&packed)
+            .expect("an ELF with a later unrelated load must retain generic UPX recovery");
+        assert_eq!(recovered.recovered_image, b"a");
+    }
+
+    #[test]
+    fn misaligned_elf_program_header_mapping_does_not_fall_back_to_generic_upx_decode() {
+        let mut packed: Vec<u8> = generic_elf_fixture_with_layout(true, 56, 2);
+        let load: Vec<u8> = packed[64..120].to_vec();
+        packed[120..176].copy_from_slice(&load);
+        packed[64..68].copy_from_slice(&6u32.to_le_bytes());
+        packed[72..80].copy_from_slice(&64u64.to_le_bytes());
+        packed[80..88].copy_from_slice(&0x400040u64.to_le_bytes());
+        packed[96..104].copy_from_slice(&112u64.to_le_bytes());
+        packed[104..112].copy_from_slice(&112u64.to_le_bytes());
+        packed[112..120].copy_from_slice(&8u64.to_le_bytes());
+        assert!(
+            crate::elf::is_well_formed_elf_executable(&packed),
+            "a correctly mapped PT_PHDR must retain generic UPX recovery"
+        );
+        let baseline: UpxUnpackOutput =
+            unpack_upx(&packed).expect("mapped PT_PHDR fixture must recover through generic UPX");
+        assert_eq!(baseline.recovered_image, b"a");
+        packed[80..88].copy_from_slice(&0x400041u64.to_le_bytes());
+        assert!(
+            !crate::elf::is_well_formed_elf_executable(&packed),
+            "a PT_PHDR virtual address outside the load translation must not use generic fallback"
+        );
+        let parsed: UpxPackHeader = tail_pack_header(&packed).expect("tail header must parse");
+        let generic: (Vec<u8>, usize, usize) =
+            decode_image(&packed, &parsed).expect("generic decoder must accept the literal stream");
+        assert_eq!(generic.0, b"a");
+        let result: Result<UpxUnpackOutput> = unpack_upx(&packed);
+        assert!(matches!(
+            result,
+            Err(Error::UpxDecode {
+                stage: "elf-extents",
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -1062,6 +1881,20 @@ mod tests {
     }
 
     #[test]
+    fn decode_image_rejects_unaffordable_header_before_output_allocation() {
+        let header: UpxPackHeader = header_with_lengths(65, 1, 1);
+        let packed: Vec<u8> = vec![0u8; PACK_HEADER_LEN];
+        let result: Result<(Vec<u8>, usize, usize)> = decode_image(&packed, &header);
+        assert!(matches!(
+            result,
+            Err(Error::UpxDecode {
+                stage: "block-stream",
+                detail,
+            }) if detail == "declared expansion exceeds the verification cap"
+        ));
+    }
+
+    #[test]
     fn version_byte_is_not_a_locate_gate() {
         let tampered_version: UpxPackHeader = header_with_lengths(116_810, 49_950, 0xFF);
         assert!(tampered_version.is_length_consistent(usize::MAX));
@@ -1069,20 +1902,126 @@ mod tests {
     }
 
     #[test]
-    fn brute_force_decode_does_not_amplify_on_huge_u_len() {
-        let header: UpxPackHeader = header_with_lengths(MAX_DECOMPRESSED as u32, 4096, 1);
-        let packed: Vec<u8> = vec![0u8; 8192];
-        let start: std::time::Instant = std::time::Instant::now();
-        let r: Result<(Vec<u8>, usize, usize)> = decode_image(&packed, &header);
-        assert!(
-            r.is_err(),
-            "a 256MB declared u_len over an 8KB packed input cannot decode and must fault"
+    fn generic_budget_stops_affordable_brute_force_candidates() {
+        let c_len: usize = MAX_DECOMPRESSED / MAX_VERIFY_EXPANSION as usize;
+        let mut header: UpxPackHeader =
+            header_with_lengths(MAX_DECOMPRESSED as u32, c_len as u32, 1);
+        header.method = UpxMethod::Lzma;
+        let packed: Vec<u8> = vec![0xff; c_len + MAX_BRUTE_FORCE_OFFSETS];
+        header.c_adler = ucl_adler32(1, &packed[..c_len]);
+        let mut budget: DecompressionBudget = DecompressionBudget::new();
+        let result: Result<(Vec<u8>, usize, usize)> =
+            decode_image_with_budget(&packed, &header, &mut budget);
+        assert!(result.is_err());
+        assert_eq!(budget.attempts(DecodeRoute::Generic), 1);
+        assert_eq!(budget.remaining_output_bytes(DecodeRoute::Generic), 0);
+    }
+
+    #[test]
+    fn checksum_matched_later_stream_skips_decoys() {
+        let stream: [u8; 5] = [0, 0, 0, 0x80, b'a'];
+        let mut header: UpxPackHeader = header_with_lengths(1, stream.len() as u32, 1);
+        header.u_adler = ucl_adler32(1, b"a");
+        header.c_adler = ucl_adler32(1, &stream);
+        let mut packed: Vec<u8> = vec![0xff; 17];
+        packed.extend_from_slice(&stream);
+        packed.resize(packed.len() + 16, 0);
+        assert_eq!(
+            matching_compressed_starts(&packed, &header, packed.len()),
+            vec![17]
         );
+        let mut budget: DecompressionBudget =
+            DecompressionBudget::with_quotas(DecodeQuota::new(0, 0), DecodeQuota::new(1, 1));
+        let recovered: (Vec<u8>, usize, usize) =
+            decode_image_with_budget(&packed, &header, &mut budget)
+                .expect("matched later stream must use the sole generic attempt");
+        assert_eq!(recovered.0, b"a");
+        assert_eq!(recovered.1, 17);
+        assert_eq!(budget.attempts(DecodeRoute::Generic), 1);
+    }
+
+    #[test]
+    fn decode_image_cannot_read_beyond_declared_compressed_window() {
+        let stream: [u8; 5] = [0, 0, 0, 0x80, b'a'];
+        let mut header: UpxPackHeader = header_with_lengths(1, 4, 1);
+        header.u_adler = ucl_adler32(1, b"a");
+        header.c_adler = ucl_adler32(1, &stream[..4]);
+        assert!(decode_image(&stream, &header).is_err());
+    }
+
+    #[test]
+    fn block_chain_rejects_overexpanded_block_without_charging_budget() {
+        let header: UpxPackHeader = header_with_lengths(65, 1, 1);
+        let mut packed: Vec<u8> = vec![0u8; B_INFO_LEN + 1];
+        packed[..4].copy_from_slice(&65u32.to_le_bytes());
+        packed[4..8].copy_from_slice(&1u32.to_le_bytes());
+        packed[8] = UpxMethod::Nrv2b.id();
+        let mut budget: DecompressionBudget =
+            DecompressionBudget::with_quotas(DecodeQuota::new(0, 0), DecodeQuota::new(1, 65));
+        assert!(walk_block_chain(&packed, &header, 0, &mut budget, DecodeRoute::Generic).is_none());
+        assert_eq!(budget.attempts(DecodeRoute::Generic), 0);
+    }
+
+    #[test]
+    fn invalid_block_metadata_does_not_spend_the_next_recovery_attempt() {
+        let mut header: UpxPackHeader = header_with_lengths(2, 2, 1);
+        header.u_adler = ucl_adler32(1, b"ab");
+        let mut packed: Vec<u8> = vec![0u8; 16 + B_INFO_LEN + 2];
+        packed[..4].copy_from_slice(&2u32.to_le_bytes());
+        packed[4..8].copy_from_slice(&1u32.to_le_bytes());
+        packed[8] = 0xff;
+        packed[16..20].copy_from_slice(&2u32.to_le_bytes());
+        packed[20..24].copy_from_slice(&2u32.to_le_bytes());
+        packed[24] = UpxMethod::Nrv2b.id();
+        packed[28] = b'a';
+        packed[29] = b'b';
+        let mut budget: DecompressionBudget =
+            DecompressionBudget::with_quotas(DecodeQuota::new(0, 0), DecodeQuota::new(1, 2));
+        let recovered: (Vec<u8>, usize, usize) =
+            decode_multiblock_with_budget(&packed, &header, &mut budget)
+                .expect("later valid block must retain the sole generic attempt");
+        assert_eq!(recovered.0, b"ab");
+        assert_eq!(recovered.1, 16);
+        assert_eq!(budget.attempts(DecodeRoute::Generic), 1);
+    }
+
+    #[test]
+    fn structural_recovery_reuses_verified_stream() {
+        let intact: Vec<u8> =
+            include_bytes!("../../../../corpus/native/packers/upx/hello.packed.nrv2b.exe").to_vec();
+        let header: UpxPackHeader =
+            UpxPackHeader::locate_and_parse(&intact).expect("fixture header must parse");
+        let baseline: UpxUnpackOutput = unpack_upx(&intact).expect("fixture must unpack");
+        let mut scrambled: Vec<u8> = intact;
+        for offset in 0..=scrambled.len() - UPX_MAGIC.len() {
+            if scrambled[offset..offset + UPX_MAGIC.len()] == UPX_MAGIC[..] {
+                scrambled[offset..offset + UPX_MAGIC.len()].copy_from_slice(b"ZZZZ");
+            }
+        }
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(10),
-            "the brute-force fallback must skip offsets that cannot affordably expand to u_len, \
-             never run thousands of 256MB decompress allocations"
+            !scrambled
+                .windows(UPX_MAGIC.len())
+                .any(|window: &[u8]| window == UPX_MAGIC)
         );
+        let mut budget: DecompressionBudget = DecompressionBudget::with_quotas(
+            DecodeQuota::new(0, 0),
+            DecodeQuota::new(1, header.u_len as usize),
+        );
+        let recovered: UpxUnpackOutput = unpack_upx_with_budget(&scrambled, &mut budget)
+            .expect("structural locate must retain its sole verified decode");
+        assert_eq!(recovered.recovered_image, baseline.recovered_image);
+        assert_eq!(budget.attempts(DecodeRoute::Generic), 1);
+    }
+
+    #[test]
+    fn route_quotas_preserve_generic_capacity_after_elf_extent_failure() {
+        let mut budget: DecompressionBudget =
+            DecompressionBudget::with_quotas(DecodeQuota::new(1, 1), DecodeQuota::new(1, 1));
+
+        assert!(budget.reserve(DecodeRoute::ElfExtents, 1).is_some());
+        assert!(budget.reserve(DecodeRoute::Generic, 1).is_some());
+        assert!(budget.reserve(DecodeRoute::ElfExtents, 1).is_none());
+        assert!(budget.reserve(DecodeRoute::Generic, 1).is_none());
     }
 
     #[test]

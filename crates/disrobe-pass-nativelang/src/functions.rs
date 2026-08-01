@@ -1,7 +1,8 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use disrobe_pass_native::{
-    Bitness, DesyncReport, UnresolvedKind, UnresolvedTarget, resolve_desync,
+    Bitness, DesyncReport, NoreturnInferenceOutcome, NoreturnInferenceTermination, UnresolvedKind,
+    UnresolvedTarget, resolve_desync_with_noreturn_status,
 };
 use gimli::{BaseAddresses, CieOrFde, EhFrame, EndianSlice, RunTimeEndian, UnwindSection};
 use serde::{Deserialize, Serialize};
@@ -64,6 +65,11 @@ const MAX_TRAVERSAL_TEXT: usize = 16 * 1024 * 1024;
 const MAX_RECOVERED_FUNCTIONS: usize = 1 << 18;
 const MAX_EH_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const MAX_EH_FRAME_FDES: usize = 1 << 20;
+
+enum TraversalRun {
+    Complete(DesyncReport),
+    Incomplete,
+}
 
 #[must_use]
 pub fn recover_functions(
@@ -199,44 +205,46 @@ pub fn recover_functions(
 
     if stripped
         && arch_supported
-        && let Some(report) = run_traversal(image)
+        && let Some(result) = run_traversal(image)
     {
         traversal_attempted = true;
-        if let Some(text) = image.text_section() {
-            debug::dbg_hex("traversal-text-head", text.data, 32);
-        }
-        let entries: Vec<u64> = traversal_entry_points(&report, image.entry);
-        debug::dbg_kv("traversal-entries", || entries.len().to_string());
-        for start in entries {
-            if by_start.len() >= MAX_RECOVERED_FUNCTIONS {
-                break;
+        if let TraversalRun::Complete(report) = result {
+            if let Some(text) = image.text_section() {
+                debug::dbg_hex("traversal-text-head", text.data, 32);
             }
-            if by_start.contains_key(&start) {
-                continue;
-            }
-            by_start.insert(
-                start,
-                RecoveredFunction {
-                    name: format!("sub_{start:x}"),
-                    demangled: None,
-                    signature: None,
+            let entries: Vec<u64> = traversal_entry_points(&report, image.entry);
+            debug::dbg_kv("traversal-entries", || entries.len().to_string());
+            for start in entries {
+                if by_start.len() >= MAX_RECOVERED_FUNCTIONS {
+                    break;
+                }
+                if by_start.contains_key(&start) {
+                    continue;
+                }
+                by_start.insert(
                     start,
-                    end: None,
-                    source_lines: None,
-                    params: Vec::new(),
-                    origin: FunctionOrigin::RecursiveTraversal,
-                    address_assigned: true,
-                },
-            );
-            from_traversal += 1;
+                    RecoveredFunction {
+                        name: format!("sub_{start:x}"),
+                        demangled: None,
+                        signature: None,
+                        start,
+                        end: None,
+                        source_lines: None,
+                        params: Vec::new(),
+                        origin: FunctionOrigin::RecursiveTraversal,
+                        address_assigned: true,
+                    },
+                );
+                from_traversal += 1;
+            }
+            unresolved_targets = report.unresolved;
+            unresolved_targets.retain(|t: &UnresolvedTarget| {
+                matches!(
+                    t.kind,
+                    UnresolvedKind::IndirectCall | UnresolvedKind::IndirectBranch
+                )
+            });
         }
-        unresolved_targets = report.unresolved;
-        unresolved_targets.retain(|t: &UnresolvedTarget| {
-            matches!(
-                t.kind,
-                UnresolvedKind::IndirectCall | UnresolvedKind::IndirectBranch
-            )
-        });
     }
 
     debug::dbg_kv("from-traversal", || from_traversal.to_string());
@@ -370,7 +378,7 @@ fn apply_lines(target: &mut RecoveredFunction, func: &DwarfFunction) {
     }
 }
 
-fn run_traversal(image: &NativeImage<'_>) -> Option<DesyncReport> {
+fn run_traversal(image: &NativeImage<'_>) -> Option<TraversalRun> {
     let text = image.text_section()?;
     if text.data.is_empty() || text.data.len() > MAX_TRAVERSAL_TEXT {
         return None;
@@ -388,7 +396,17 @@ fn run_traversal(image: &NativeImage<'_>) -> Option<DesyncReport> {
     if entries.is_empty() {
         entries.push(base);
     }
-    resolve_desync(bitness, base, text.data, &entries).ok()
+    let outcome: NoreturnInferenceOutcome<DesyncReport> =
+        resolve_desync_with_noreturn_status(bitness, base, text.data, &entries, &BTreeSet::new())
+            .ok()?;
+    if matches!(
+        outcome.termination(),
+        NoreturnInferenceTermination::Complete
+    ) {
+        Some(TraversalRun::Complete(outcome.into_value()))
+    } else {
+        Some(TraversalRun::Incomplete)
+    }
 }
 
 fn traversal_entry_points(report: &DesyncReport, image_entry: u64) -> Vec<u64> {
@@ -434,6 +452,39 @@ mod tests {
             entry: 0,
             raw: &[],
             sections: Vec::new(),
+            symbols: Vec::new(),
+            func_symbols: Vec::new(),
+        }
+    }
+
+    fn noreturn_chain_code(count: usize) -> Vec<u8> {
+        const FUNCTION_WIDTH: usize = 6;
+        let capacity: usize = (count - 1).saturating_mul(FUNCTION_WIDTH).saturating_add(2);
+        let mut code: Vec<u8> = Vec::with_capacity(capacity);
+        for index in 0..count {
+            if index + 1 == count {
+                code.extend_from_slice(&[0xEB, 0xFE]);
+            } else {
+                code.extend_from_slice(&[0xE8, 0x01, 0x00, 0x00, 0x00, 0xC3]);
+            }
+        }
+        code
+    }
+
+    fn stripped_text_image<'a>(code: &'a [u8]) -> NativeImage<'a> {
+        NativeImage {
+            kind: ImageKind::Elf,
+            relocatable: false,
+            arch: CodeArch::X86_64,
+            ptr_size: 8,
+            entry: 0x1000,
+            raw: code,
+            sections: vec![Section {
+                name: ".text".to_owned(),
+                address: 0x1000,
+                kind: SectionKind::Text,
+                data: code,
+            }],
             symbols: Vec::new(),
             func_symbols: Vec::new(),
         }
@@ -669,6 +720,29 @@ mod tests {
                 .iter()
                 .all(|f: &RecoveredFunction| f.origin == FunctionOrigin::RecursiveTraversal)
         );
+    }
+
+    #[test]
+    fn complete_noreturn_inference_surfaces_all_64_traversal_functions() {
+        let code: Vec<u8> = noreturn_chain_code(64);
+        let image: NativeImage<'_> = stripped_text_image(&code);
+        let rec: FunctionRecovery =
+            recover_functions(&image, NativeLang::Nim, &DwarfReport::absent());
+        assert!(rec.traversal_attempted);
+        assert_eq!(rec.from_traversal, 64);
+        assert_eq!(rec.functions.len(), 64);
+    }
+
+    #[test]
+    fn incomplete_noreturn_inference_does_not_surface_traversal_functions() {
+        let code: Vec<u8> = noreturn_chain_code(65);
+        let image: NativeImage<'_> = stripped_text_image(&code);
+        let rec: FunctionRecovery =
+            recover_functions(&image, NativeLang::Nim, &DwarfReport::absent());
+        assert!(rec.traversal_attempted);
+        assert_eq!(rec.from_traversal, 0);
+        assert!(rec.functions.is_empty());
+        assert!(rec.unresolved_targets.is_empty());
     }
 
     #[test]

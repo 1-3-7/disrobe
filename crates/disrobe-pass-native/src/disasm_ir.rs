@@ -19,8 +19,9 @@ use object::{
 use crate::arch::{Arch as DisasmArch, DisasmInsn, decode_one_x86, disassemble};
 use crate::cxx_recovery::parse_windows_seh_scope_table;
 use crate::desync::{
-    Bitness, CodeWindow, DiscoveredFunctions, DiscoveryInput, ReadOnlyWindow,
-    discover_aarch64_functions, discover_functions, discover_functions_with_direct_call_sweep,
+    Bitness, CodeWindow, DiscoveredFunctions, DiscoveryInput, NoreturnInferenceOutcome,
+    NoreturnInferenceTermination, ReadOnlyWindow, discover_aarch64_functions,
+    discover_functions_with_direct_call_sweep_status, discover_functions_with_status,
     is_noreturn_import_name,
 };
 use crate::error::{Error, Result};
@@ -250,11 +251,19 @@ fn inject_discovered_functions(
             seeds,
             noreturn,
         };
-        if matches!(native.format, NativeFormat::Elf64) {
-            discover_functions_with_direct_call_sweep(&input)
-        } else {
-            discover_functions(&input)
+        let outcome: NoreturnInferenceOutcome<DiscoveredFunctions> =
+            if matches!(native.format, NativeFormat::Elf64) {
+                discover_functions_with_direct_call_sweep_status(&input)
+            } else {
+                discover_functions_with_status(&input)
+            };
+        if !matches!(
+            outcome.termination(),
+            NoreturnInferenceTermination::Complete
+        ) {
+            return BTreeSet::new();
         }
+        outcome.into_value()
     };
 
     let mut seen: BTreeSet<u64> = symbol_table
@@ -1287,6 +1296,7 @@ pub fn is_disassemblable_format(format: NativeFormat) -> bool {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
+    use crate::desync::discover_functions;
     use object::write::{
         Object as WriteObject, StandardSection, Symbol as WriteSymbol,
         SymbolFlags as WriteSymbolFlags, SymbolKind as WriteSymbolKind, SymbolScope, SymbolSection,
@@ -1566,6 +1576,61 @@ mod tests {
         obj.write().expect("elf write")
     }
 
+    fn bounded_noreturn_chain_elf(count: usize) -> Vec<u8> {
+        const FIRST_FUNCTION: usize = 0x10;
+        const FUNCTION_WIDTH: usize = 6;
+        let main_bytes: usize = (count - 1).saturating_mul(FUNCTION_WIDTH).saturating_add(2);
+        let duplicate_bytes: usize = count.saturating_sub(1).saturating_mul(FUNCTION_WIDTH);
+        let mut code: Vec<u8> = vec![0x90; FIRST_FUNCTION];
+        code.reserve(main_bytes.saturating_add(duplicate_bytes));
+        for index in 0..count {
+            let at: usize = FIRST_FUNCTION + index.saturating_mul(FUNCTION_WIDTH);
+            if index + 1 == count {
+                code.extend_from_slice(&[0xEB, 0xFE]);
+            } else {
+                code.extend_from_slice(&[0xE8, 0x00, 0x00, 0x00, 0x00, 0xC3]);
+                call_rel32(
+                    &mut code,
+                    at,
+                    (FIRST_FUNCTION + (index + 1).saturating_mul(FUNCTION_WIDTH)) as i64,
+                );
+            }
+        }
+        for index in 1..count {
+            let at: usize = code.len();
+            code.extend_from_slice(&[0xE8, 0x00, 0x00, 0x00, 0x00, 0xC3]);
+            call_rel32(
+                &mut code,
+                at,
+                (FIRST_FUNCTION + index.saturating_mul(FUNCTION_WIDTH)) as i64,
+            );
+        }
+
+        let mut obj: WriteObject<'_> =
+            WriteObject::new(BinaryFormat::Elf, Architecture::X86_64, Endianness::Little);
+        let text: object::write::SectionId = obj.section_id(StandardSection::Text);
+        let _: u64 = obj.append_section_data(text, &code, 16);
+        let mut elf: Vec<u8> = obj.write().expect("elf write");
+        elf.get_mut(24..32)
+            .expect("elf64 entry field")
+            .copy_from_slice(&(FIRST_FUNCTION as u64).to_le_bytes());
+        elf
+    }
+
+    fn discovered_symbol_starts(payload: &DisasmPayload) -> Vec<u64> {
+        payload
+            .symbol_table
+            .iter()
+            .filter(|symbol: &&DisasmSymbol| {
+                matches!(
+                    symbol.kind,
+                    DisasmSymbolKind::Function | DisasmSymbolKind::Export
+                )
+            })
+            .map(|symbol: &DisasmSymbol| symbol.address)
+            .collect()
+    }
+
     fn aarch64_object_with_entry_and_internal_bl() -> Vec<u8> {
         let words: [u32; 5] = [
             0xd503_201f,
@@ -1651,6 +1716,36 @@ mod tests {
             .find(|i: &&DisasmInstruction| i.mnemonic == "call")
             .expect("a call instruction");
         assert!(!call.operands.is_empty());
+    }
+
+    #[test]
+    fn complete_noreturn_inference_keeps_discovered_function_symbols() {
+        let elf: Vec<u8> = bounded_noreturn_chain_elf(64);
+        let payload: DisasmPayload = build_disasm_payload(&elf).expect("build payload");
+        let starts: Vec<u64> = discovered_symbol_starts(&payload);
+        assert_eq!(starts.len(), 64, "all 64 verified starts must be injected");
+        assert_eq!(starts[0], 0x10);
+        assert_eq!(starts[63], 0x10 + 63 * 6);
+    }
+
+    #[test]
+    fn incomplete_noreturn_inference_preserves_disassembly_without_function_symbols() {
+        let elf: Vec<u8> = bounded_noreturn_chain_elf(65);
+        let payload: DisasmPayload = build_disasm_payload(&elf).expect("build payload");
+        let starts: Vec<u64> = discovered_symbol_starts(&payload);
+        assert!(
+            starts.is_empty(),
+            "incomplete no-return inference must not inject derived function symbols: {starts:?}"
+        );
+        assert!(
+            payload
+                .instructions
+                .iter()
+                .any(|instruction: &DisasmInstruction| {
+                    instruction.offset == 0x10 + 64 * 6 && instruction.mnemonic == "jmp"
+                }),
+            "the raw decoded instruction stream must keep the terminal self-loop"
+        );
     }
 
     #[test]

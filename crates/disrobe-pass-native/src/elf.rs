@@ -7,9 +7,17 @@ const ELFCLASS32: u8 = 1;
 const ELFCLASS64: u8 = 2;
 const ELFDATA2LSB: u8 = 1;
 const ELFDATA2MSB: u8 = 2;
+const PT_NULL: u32 = 0;
 const PT_LOAD: u32 = 1;
 const PT_DYNAMIC: u32 = 2;
 const PT_INTERP: u32 = 3;
+const PT_SHLIB: u32 = 5;
+const PT_PHDR: u32 = 6;
+const PN_XNUM: u16 = u16::MAX;
+const SHN_LORESERVE: u16 = 0xff00;
+const SHN_UNDEF: u16 = 0;
+const SHN_XINDEX: u16 = u16::MAX;
+const SHT_NULL: u32 = 0;
 
 const DT_NULL: u64 = 0;
 const DT_NEEDED: u64 = 1;
@@ -46,6 +54,7 @@ const MAX_SYMBOLS: usize = 256 * 1024;
 const MAX_RELOCATIONS: usize = 512 * 1024;
 const MAX_STRING_BYTES: usize = 64 * 1024;
 const MAX_GNU_HASH_BUCKETS: usize = 1 << 20;
+const MAX_ELF_PROGRAM_HEADERS: usize = 1_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -333,6 +342,482 @@ pub fn analyze(bytes: &[u8]) -> Option<ElfDynamicReport> {
     report.relocations = read_all_relocations(bytes, &header, &segments, &entries, &symbol_names);
 
     Some(report)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SectionTableValidation {
+    NoExtendedProgramCount,
+    ExtendedProgramCount(usize),
+}
+
+fn validate_section_table(
+    bytes: &[u8],
+    class: ElfClass,
+    endian: Endian,
+    section_offset: u64,
+    section_entry_size: u16,
+    encoded_section_count: u16,
+    encoded_string_table_index: u16,
+    encoded_program_count: u16,
+) -> Option<SectionTableValidation> {
+    if section_offset == 0 {
+        return (encoded_section_count == SHN_UNDEF
+            && encoded_string_table_index == SHN_UNDEF
+            && encoded_program_count != PN_XNUM)
+            .then_some(SectionTableValidation::NoExtendedProgramCount);
+    }
+    let known_section_header_size: usize = match class {
+        ElfClass::Elf32 => 40,
+        ElfClass::Elf64 => 64,
+    };
+    if usize::from(section_entry_size) < known_section_header_size {
+        return None;
+    }
+    let section_offset: usize = usize::try_from(section_offset).ok()?;
+    let section: &[u8] = read_slice(bytes, section_offset, known_section_header_size)?;
+    let (name, kind, flags, address, file_offset, size, link, info, alignment, entry_size): (
+        u32,
+        u32,
+        u64,
+        u64,
+        u64,
+        u64,
+        u32,
+        u32,
+        u64,
+        u64,
+    ) = match class {
+        ElfClass::Elf32 => (
+            endian.u32(&section[0..])?,
+            endian.u32(&section[4..])?,
+            u64::from(endian.u32(&section[8..])?),
+            u64::from(endian.u32(&section[12..])?),
+            u64::from(endian.u32(&section[16..])?),
+            u64::from(endian.u32(&section[20..])?),
+            endian.u32(&section[24..])?,
+            endian.u32(&section[28..])?,
+            u64::from(endian.u32(&section[32..])?),
+            u64::from(endian.u32(&section[36..])?),
+        ),
+        ElfClass::Elf64 => (
+            endian.u32(&section[0..])?,
+            endian.u32(&section[4..])?,
+            endian.u64(&section[8..])?,
+            endian.u64(&section[16..])?,
+            endian.u64(&section[24..])?,
+            endian.u64(&section[32..])?,
+            endian.u32(&section[40..])?,
+            endian.u32(&section[44..])?,
+            endian.u64(&section[48..])?,
+            endian.u64(&section[56..])?,
+        ),
+    };
+    if name != 0
+        || kind != SHT_NULL
+        || flags != 0
+        || address != 0
+        || file_offset != 0
+        || alignment != 0
+        || entry_size != 0
+    {
+        return None;
+    }
+    if encoded_section_count >= SHN_LORESERVE {
+        return None;
+    }
+    let section_count: usize = if encoded_section_count == 0 {
+        if size < u64::from(SHN_LORESERVE) {
+            return None;
+        }
+        usize::try_from(size).ok()?
+    } else {
+        if size != 0 {
+            return None;
+        }
+        usize::from(encoded_section_count)
+    };
+    let section_table_size: usize = section_count.checked_mul(usize::from(section_entry_size))?;
+    let section_table_end: usize = section_offset.checked_add(section_table_size)?;
+    if section_table_end > bytes.len() {
+        return None;
+    }
+    if encoded_string_table_index == SHN_XINDEX {
+        let string_table_index: usize = usize::try_from(link).ok()?;
+        if string_table_index < usize::from(SHN_LORESERVE) || string_table_index >= section_count {
+            return None;
+        }
+    } else if encoded_string_table_index >= SHN_LORESERVE
+        || (encoded_string_table_index != 0
+            && usize::from(encoded_string_table_index) >= section_count)
+        || link != 0
+    {
+        return None;
+    }
+    if encoded_program_count == PN_XNUM {
+        let count: usize = usize::try_from(info).ok()?;
+        if count < usize::from(PN_XNUM) || count > MAX_ELF_PROGRAM_HEADERS {
+            return None;
+        }
+        Some(SectionTableValidation::ExtendedProgramCount(count))
+    } else if info == 0 {
+        Some(SectionTableValidation::NoExtendedProgramCount)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn is_well_formed_elf_executable(bytes: &[u8]) -> bool {
+    let Some(magic): Option<&[u8]> = bytes.get(..ELF_MAGIC.len()) else {
+        return false;
+    };
+    if magic != ELF_MAGIC || bytes.get(6) != Some(&1) {
+        return false;
+    }
+    let Some(class_byte): Option<&u8> = bytes.get(EI_CLASS) else {
+        return false;
+    };
+    let class: ElfClass = match *class_byte {
+        ELFCLASS32 => ElfClass::Elf32,
+        ELFCLASS64 => ElfClass::Elf64,
+        _ => return false,
+    };
+    let Some(data_byte): Option<&u8> = bytes.get(EI_DATA) else {
+        return false;
+    };
+    let endian: Endian = match *data_byte {
+        ELFDATA2LSB => Endian { little: true },
+        ELFDATA2MSB => Endian { little: false },
+        _ => return false,
+    };
+    let (header_size, program_header_size): (usize, usize) = match class {
+        ElfClass::Elf32 => (52, 32),
+        ElfClass::Elf64 => (64, 56),
+    };
+    let Some(header): Option<&[u8]> = bytes.get(..header_size) else {
+        return false;
+    };
+    let Some(file_type): Option<u16> = endian.u16(&header[16..]) else {
+        return false;
+    };
+    let Some(machine): Option<u16> = endian.u16(&header[18..]) else {
+        return false;
+    };
+    let Some(version): Option<u32> = endian.u32(&header[20..]) else {
+        return false;
+    };
+    if !matches!(file_type, 2 | 3) || machine == 0 || version != 1 {
+        return false;
+    }
+    let (
+        entry,
+        program_offset,
+        entry_size,
+        encoded_entry_count,
+        section_offset,
+        section_entry_size,
+        encoded_section_count,
+        encoded_string_table_index,
+    ): (u64, u64, u16, u16, u64, u16, u16, u16) = match class {
+        ElfClass::Elf32 => {
+            let Some(entry): Option<u32> = endian.u32(&header[24..]) else {
+                return false;
+            };
+            let Some(program_offset): Option<u32> = endian.u32(&header[28..]) else {
+                return false;
+            };
+            let Some(entry_size): Option<u16> = endian.u16(&header[42..]) else {
+                return false;
+            };
+            let Some(entry_count): Option<u16> = endian.u16(&header[44..]) else {
+                return false;
+            };
+            let Some(section_offset): Option<u32> = endian.u32(&header[32..]) else {
+                return false;
+            };
+            let Some(section_entry_size): Option<u16> = endian.u16(&header[46..]) else {
+                return false;
+            };
+            let Some(section_count): Option<u16> = endian.u16(&header[48..]) else {
+                return false;
+            };
+            let Some(string_table_index): Option<u16> = endian.u16(&header[50..]) else {
+                return false;
+            };
+            (
+                u64::from(entry),
+                u64::from(program_offset),
+                entry_size,
+                entry_count,
+                u64::from(section_offset),
+                section_entry_size,
+                section_count,
+                string_table_index,
+            )
+        }
+        ElfClass::Elf64 => {
+            let Some(entry): Option<u64> = endian.u64(&header[24..]) else {
+                return false;
+            };
+            let Some(program_offset): Option<u64> = endian.u64(&header[32..]) else {
+                return false;
+            };
+            let Some(entry_size): Option<u16> = endian.u16(&header[54..]) else {
+                return false;
+            };
+            let Some(entry_count): Option<u16> = endian.u16(&header[56..]) else {
+                return false;
+            };
+            let Some(section_offset): Option<u64> = endian.u64(&header[40..]) else {
+                return false;
+            };
+            let Some(section_entry_size): Option<u16> = endian.u16(&header[58..]) else {
+                return false;
+            };
+            let Some(section_count): Option<u16> = endian.u16(&header[60..]) else {
+                return false;
+            };
+            let Some(string_table_index): Option<u16> = endian.u16(&header[62..]) else {
+                return false;
+            };
+            (
+                entry,
+                program_offset,
+                entry_size,
+                entry_count,
+                section_offset,
+                section_entry_size,
+                section_count,
+                string_table_index,
+            )
+        }
+    };
+    let Some(declared_header_size): Option<u16> = endian.u16(
+        &header[match class {
+            ElfClass::Elf32 => 40..,
+            ElfClass::Elf64 => 52..,
+        }],
+    ) else {
+        return false;
+    };
+    let declared_header_size: usize = usize::from(declared_header_size);
+    let program_entry_size: usize = usize::from(entry_size);
+    let Some(section_table): Option<SectionTableValidation> = validate_section_table(
+        bytes,
+        class,
+        endian,
+        section_offset,
+        section_entry_size,
+        encoded_section_count,
+        encoded_string_table_index,
+        encoded_entry_count,
+    ) else {
+        return false;
+    };
+    let entry_count: usize = if encoded_entry_count == PN_XNUM {
+        match section_table {
+            SectionTableValidation::ExtendedProgramCount(count) => count,
+            SectionTableValidation::NoExtendedProgramCount => return false,
+        }
+    } else {
+        usize::from(encoded_entry_count)
+    };
+    if declared_header_size != header_size
+        || program_entry_size < program_header_size
+        || entry_count == 0
+        || entry_count > MAX_ELF_PROGRAM_HEADERS
+    {
+        return false;
+    }
+    let Ok(program_offset): Result<usize, _> = usize::try_from(program_offset) else {
+        return false;
+    };
+    if program_offset < declared_header_size {
+        return false;
+    }
+    let Some(table_size): Option<usize> = entry_count.checked_mul(program_entry_size) else {
+        return false;
+    };
+    let Some(table_end): Option<usize> = program_offset.checked_add(table_size) else {
+        return false;
+    };
+    if table_end > bytes.len() {
+        return false;
+    }
+    let Ok(program_offset_u64): Result<u64, _> = u64::try_from(program_offset) else {
+        return false;
+    };
+    let Ok(table_size_u64): Result<u64, _> = u64::try_from(table_size) else {
+        return false;
+    };
+    let Ok(file_len): Result<u64, _> = u64::try_from(bytes.len()) else {
+        return false;
+    };
+    let mut has_load: bool = false;
+    let mut entry_covered: bool = false;
+    let mut previous_load_address: Option<u64> = None;
+    let mut interpreter_seen: bool = false;
+    let mut program_header_seen: bool = false;
+    let mut program_header_virtual: Option<u64> = None;
+    let mut program_header_covered: bool = false;
+    for index in 0..entry_count {
+        let Some(entry_offset): Option<usize> = index.checked_mul(program_entry_size) else {
+            return false;
+        };
+        let Some(offset): Option<usize> = program_offset.checked_add(entry_offset) else {
+            return false;
+        };
+        let Some(program_end): Option<usize> = offset.checked_add(program_header_size) else {
+            return false;
+        };
+        let Some(program): Option<&[u8]> = bytes.get(offset..program_end) else {
+            return false;
+        };
+        let Some(kind): Option<u32> = endian.u32(&program[0..]) else {
+            return false;
+        };
+        if kind == PT_NULL {
+            continue;
+        }
+        let (file_offset, virtual_address, file_size, memory_size, alignment): (
+            u64,
+            u64,
+            u64,
+            u64,
+            u64,
+        ) = match class {
+            ElfClass::Elf32 => {
+                let Some(file_offset): Option<u32> = endian.u32(&program[4..]) else {
+                    return false;
+                };
+                let Some(virtual_address): Option<u32> = endian.u32(&program[8..]) else {
+                    return false;
+                };
+                let Some(file_size): Option<u32> = endian.u32(&program[16..]) else {
+                    return false;
+                };
+                let Some(memory_size): Option<u32> = endian.u32(&program[20..]) else {
+                    return false;
+                };
+                let Some(alignment): Option<u32> = endian.u32(&program[28..]) else {
+                    return false;
+                };
+                (
+                    u64::from(file_offset),
+                    u64::from(virtual_address),
+                    u64::from(file_size),
+                    u64::from(memory_size),
+                    u64::from(alignment),
+                )
+            }
+            ElfClass::Elf64 => {
+                let Some(file_offset): Option<u64> = endian.u64(&program[8..]) else {
+                    return false;
+                };
+                let Some(virtual_address): Option<u64> = endian.u64(&program[16..]) else {
+                    return false;
+                };
+                let Some(file_size): Option<u64> = endian.u64(&program[32..]) else {
+                    return false;
+                };
+                let Some(memory_size): Option<u64> = endian.u64(&program[40..]) else {
+                    return false;
+                };
+                let Some(alignment): Option<u64> = endian.u64(&program[48..]) else {
+                    return false;
+                };
+                (
+                    file_offset,
+                    virtual_address,
+                    file_size,
+                    memory_size,
+                    alignment,
+                )
+            }
+        };
+        let Some(file_end): Option<u64> = file_offset.checked_add(file_size) else {
+            return false;
+        };
+        if file_end > file_len {
+            return false;
+        }
+        match kind {
+            PT_LOAD => {
+                let Some(memory_end): Option<u64> = virtual_address.checked_add(memory_size) else {
+                    return false;
+                };
+                if file_size > memory_size
+                    || (alignment > 1
+                        && (!alignment.is_power_of_two()
+                            || file_offset % alignment != virtual_address % alignment))
+                {
+                    return false;
+                }
+                if let Some(previous) = previous_load_address
+                    && virtual_address < previous
+                {
+                    return false;
+                }
+                has_load = true;
+                previous_load_address = Some(virtual_address);
+                entry_covered |= entry >= virtual_address && entry < memory_end;
+                let current_program_header_virtual: Option<u64> = program_header_virtual;
+                if let Some(program_virtual) = current_program_header_virtual {
+                    let Some(program_table_end): Option<u64> =
+                        program_offset_u64.checked_add(table_size_u64)
+                    else {
+                        return false;
+                    };
+                    if file_offset <= program_offset_u64 && program_table_end <= file_end {
+                        let Some(table_delta): Option<u64> =
+                            program_offset_u64.checked_sub(file_offset)
+                        else {
+                            return false;
+                        };
+                        let Some(mapped_program_virtual): Option<u64> =
+                            virtual_address.checked_add(table_delta)
+                        else {
+                            return false;
+                        };
+                        program_header_covered |= mapped_program_virtual == program_virtual;
+                    }
+                }
+            }
+            PT_INTERP => {
+                let Ok(interpreter_start): Result<usize, _> = usize::try_from(file_offset) else {
+                    return false;
+                };
+                let Ok(interpreter_end): Result<usize, _> = usize::try_from(file_end) else {
+                    return false;
+                };
+                if interpreter_seen
+                    || has_load
+                    || file_size == 0
+                    || bytes
+                        .get(interpreter_start..interpreter_end)
+                        .and_then(|interpreter: &[u8]| interpreter.last())
+                        != Some(&0)
+                {
+                    return false;
+                }
+                interpreter_seen = true;
+            }
+            PT_PHDR => {
+                if program_header_seen
+                    || has_load
+                    || file_offset != program_offset_u64
+                    || file_size != table_size_u64
+                    || memory_size < file_size
+                {
+                    return false;
+                }
+                program_header_seen = true;
+                program_header_virtual = Some(virtual_address);
+            }
+            PT_SHLIB => return false,
+            _ => {}
+        }
+    }
+    has_load && (entry == 0 || entry_covered) && (!program_header_seen || program_header_covered)
 }
 
 fn parse_header(bytes: &[u8]) -> Option<Header> {

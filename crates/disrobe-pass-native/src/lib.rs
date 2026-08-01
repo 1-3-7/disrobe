@@ -135,10 +135,12 @@ pub use deobf::{
 };
 pub use desync::{
     Bitness, ByteRange, CodeWindow, DesyncReport, DiscoveredFunctions, DiscoveryInput,
-    JumpTableHit, ReadOnlyWindow, RecoveredInsn, UnresolvedKind, UnresolvedTarget,
-    VmwareBackdoorHit, cleaned_listing as desync_cleaned_listing, discover_functions,
+    JumpTableHit, NoreturnInferenceOutcome, NoreturnInferenceTermination, ReadOnlyWindow,
+    RecoveredInsn, UnresolvedKind, UnresolvedTarget, VmwareBackdoorHit,
+    cleaned_listing as desync_cleaned_listing, discover_functions, discover_functions_with_status,
     is_noreturn_import_name, noreturn_import_seeds, resolve as resolve_desync,
-    resolve_with_noreturn as resolve_desync_with_noreturn, scan_vmware_backdoor,
+    resolve_with_noreturn as resolve_desync_with_noreturn,
+    resolve_with_noreturn_status as resolve_desync_with_noreturn_status, scan_vmware_backdoor,
     vmware_backdoor_port,
 };
 pub use disasm_ir::{

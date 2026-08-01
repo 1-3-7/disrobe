@@ -99,7 +99,7 @@ pub fn decode_mpress_lzma(stream: &[u8], decompressed_size: usize) -> Result<Vec
     }
     let props: MpressLzmaProps = MpressLzmaProps::from_stream(stream)?;
     let mut model: Vec<u16> = vec![PROB_INIT_VAL; props.total_probs()];
-    let mut out: Vec<u8> = Vec::with_capacity(decompressed_size);
+    let mut out: Vec<u8> = Vec::new();
     let mut decoder: Decoder = Decoder::new(&stream[2..], props, &mut model);
     decoder.init_range_coder()?;
     decoder.decode_loop(&mut out, decompressed_size)?;
