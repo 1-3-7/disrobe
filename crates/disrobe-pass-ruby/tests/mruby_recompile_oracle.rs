@@ -170,7 +170,7 @@ fn if_and_while_control_flow_is_structured() {
 }
 
 #[test]
-fn rescue_control_flow_stays_honestly_marked() {
+fn rescue_control_flow_withholds_partial_reconstruction() {
     let dec: MrubyDecompiled = recover("exceptions");
     assert!(
         dec.unmodeled_opcodes > 0,
@@ -185,6 +185,16 @@ fn rescue_control_flow_stays_honestly_marked() {
         dec.source.contains("# unmodeled"),
         "unmodeled opcodes must surface as visible markers in the recovered source"
     );
+    assert!(
+        !dec.has_body,
+        "a protected IREP with unmodeled control flow must not be handed out as executable ruby"
+    );
+    let body: String = reconstructed_body(&dec);
+    assert!(
+        body.lines()
+            .all(|line: &str| line.trim().is_empty() || line.trim_start().starts_with('#')),
+        "withheld reconstruction must not contain executable ruby: {body}"
+    );
 }
 
 #[test]
@@ -195,10 +205,16 @@ fn mrbc_recompile_and_semantic_equivalence_oracle() {
 
     let mut recompiled: u32 = 0;
     let mut equivalent: u32 = 0;
+    let mut withheld: u32 = 0;
     let total: u32 = BREADTH_SET.len() as u32;
 
     for name in BREADTH_SET {
         let dec: MrubyDecompiled = recover(name);
+        if !dec.has_body {
+            withheld += 1;
+            println!("[{name}] source withheld");
+            continue;
+        }
         let body: String = reconstructed_body(&dec);
         let (_recovered_scratch, recovered_path): (ScratchFile, PathBuf) = write_temp(name, &body);
         let original_path: PathBuf = corpus_path(name, "rb");
@@ -220,7 +236,7 @@ fn mrbc_recompile_and_semantic_equivalence_oracle() {
     }
 
     println!(
-        "mruby oracle: recompiled {recompiled}/{total}, semantically equivalent {equivalent}/{total}"
+        "mruby oracle: recompiled {recompiled}/{total}, semantically equivalent {equivalent}/{total}, source withheld {withheld}/{total}"
     );
 
     for name in EQUIVALENT_SET {
@@ -241,12 +257,17 @@ fn mrbc_recompile_and_semantic_equivalence_oracle() {
         );
     }
 
-    assert!(
-        recompiled >= 8,
-        "every recovered program must be valid, mrbc-recompilable ruby, got {recompiled}/{total}"
+    assert_eq!(
+        withheld, 1,
+        "the committed protected-control-flow fixture must abstain instead of emitting partial ruby"
     );
-    assert!(
-        equivalent >= 7,
-        "the straight-line, block, and if/while programs must be semantically equivalent, got {equivalent}/{total}"
+    let eligible: u32 = total.saturating_sub(withheld);
+    assert_eq!(
+        recompiled, eligible,
+        "every source-eligible recovered program must be mrbc-recompilable, got {recompiled}/{eligible}"
+    );
+    assert_eq!(
+        equivalent, eligible,
+        "every source-eligible recovered program must produce the original mruby output, got {equivalent}/{eligible}"
     );
 }

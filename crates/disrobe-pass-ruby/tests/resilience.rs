@@ -161,6 +161,35 @@ fn mruby_with_iseq(iseq: &[u8], pool_count: u16, sym_count: u16, tail: &[u8]) ->
     common::synth_rite(*b"0300", &sections)
 }
 
+fn mruby_with_iseq_and_pool_string(iseq: &[u8], value: &str) -> Vec<u8> {
+    let mut rec: Vec<u8> = Vec::new();
+    rec.extend_from_slice(&0u32.to_be_bytes());
+    rec.extend_from_slice(&1u16.to_be_bytes());
+    rec.extend_from_slice(&4u16.to_be_bytes());
+    rec.extend_from_slice(&0u16.to_be_bytes());
+    rec.extend_from_slice(&0u16.to_be_bytes());
+    rec.extend_from_slice(&(iseq.len() as u32).to_be_bytes());
+    rec.extend_from_slice(iseq);
+    rec.extend_from_slice(&1u16.to_be_bytes());
+    rec.push(0);
+    rec.extend_from_slice(
+        &u16::try_from(value.len())
+            .expect("pool string length fits u16")
+            .to_be_bytes(),
+    );
+    rec.extend_from_slice(value.as_bytes());
+    rec.push(0);
+    rec.extend_from_slice(&0u16.to_be_bytes());
+    let mut body: Vec<u8> = Vec::new();
+    body.extend_from_slice(&0u32.to_be_bytes());
+    body.extend_from_slice(&rec);
+    let sections: Vec<Vec<u8>> = vec![
+        common::synth_section(*b"IREP", &body),
+        common::synth_section(*b"END\0", &[]),
+    ];
+    common::synth_rite(*b"0300", &sections)
+}
+
 #[test]
 fn mruby_unknown_opcode_in_body_is_rejected() {
     let bytes: Vec<u8> = mruby_with_iseq(&[0xFE, 0xFF], 0, 0, &[]);
@@ -199,14 +228,24 @@ fn mruby_truncated_jump_operand_in_body_is_clean() {
 }
 
 #[test]
-fn mruby_send_with_symbol_index_past_table_is_placeholdered() {
+fn mruby_send_with_symbol_index_past_table_withholds_source() {
     let iseq: [u8; 8] = [0x12, 0x01, 0x2f, 0x01, 0xff, 0x00, 0x38, 0x01];
     let bytes: Vec<u8> = mruby_with_iseq(&iseq, 0, 0, &[]);
     let analysis = analyze_bytes(&bytes, "x.mrb").expect("analyze must not panic");
     let mrb = analysis.mruby.expect("mruby");
     assert!(
-        mrb.decompiled.source.contains("sym255"),
-        "method symbol index 255 is past the empty symbol table, so it renders as the `sym255` placeholder; got:\n{}",
+        mrb.irep.is_some(),
+        "the parser must preserve structural IREP analysis for an invalid symbol selector"
+    );
+    assert!(
+        !mrb.decompiled.has_body,
+        "an invalid symbol selector must withhold reconstructed source"
+    );
+    assert!(
+        mrb.decompiled
+            .source
+            .contains("reconstructed source withheld: an IREP reference is invalid"),
+        "the abstention reason must remain visible; got:\n{}",
         mrb.decompiled.source
     );
     assert!(
@@ -216,19 +255,141 @@ fn mruby_send_with_symbol_index_past_table_is_placeholdered() {
 }
 
 #[test]
-fn mruby_loadl_pool_index_past_table_is_placeholdered() {
+fn mruby_loadl_pool_index_past_table_withholds_source() {
     let iseq: [u8; 5] = [0x02, 0x01, 0xff, 0x38, 0x01];
     let bytes: Vec<u8> = mruby_with_iseq(&iseq, 0, 0, &[]);
     let analysis = analyze_bytes(&bytes, "x.mrb").expect("analyze must not panic");
     let mrb = analysis.mruby.expect("mruby");
     assert!(
-        mrb.decompiled.source.contains('_'),
-        "pool index 255 is past the empty pool, so the loaded value renders as the `_` unknown placeholder; got:\n{}",
+        mrb.irep.is_some(),
+        "the parser must preserve structural IREP analysis for an invalid pool selector"
+    );
+    assert!(
+        !mrb.decompiled.has_body,
+        "an invalid pool selector must withhold reconstructed source"
+    );
+    assert!(
+        mrb.decompiled
+            .source
+            .contains("reconstructed source withheld: an IREP reference is invalid"),
+        "the abstention reason must remain visible; got:\n{}",
         mrb.decompiled.source
     );
     assert!(
         mrb.decompiled.recovered_strings.is_empty(),
         "an out-of-range pool index must not fabricate a recovered literal"
+    );
+}
+
+fn has_only_comment_or_empty_lines(text: &str) -> bool {
+    text.lines()
+        .all(|line: &str| line.trim().is_empty() || line.trim_start().starts_with('#'))
+}
+
+#[test]
+fn mruby_withheld_output_escapes_newline_symbols() {
+    let symbol: &str = "actual_symbol\nputs(\"attacker\")";
+    let mut tail: Vec<u8> = Vec::new();
+    tail.extend_from_slice(
+        &u16::try_from(symbol.len())
+            .expect("symbol length fits u16")
+            .to_be_bytes(),
+    );
+    tail.extend_from_slice(symbol.as_bytes());
+    tail.push(0);
+    let iseq: [u8; 8] = [0x12, 0x01, 0x2f, 0x01, 0xff, 0x00, 0x38, 0x01];
+    let bytes: Vec<u8> = mruby_with_iseq(&iseq, 0, 1, &tail);
+    let analysis = analyze_bytes(&bytes, "newline-symbol.mrb").expect("analyze must not panic");
+    let mrb = analysis.mruby.expect("mruby");
+
+    assert!(mrb.irep.is_some(), "the IREP fixture must parse");
+    assert_eq!(mrb.decompiled.recovered_symbols, vec![symbol.to_owned()]);
+    assert!(!mrb.decompiled.has_body);
+    assert!(
+        mrb.decompiled
+            .source
+            .contains("reconstructed source withheld: an IREP reference is invalid"),
+        "source: {}",
+        mrb.decompiled.source
+    );
+    assert!(
+        mrb.decompiled.source.contains(&format!("{symbol:?}")),
+        "the display must retain an escaped representation of the matched symbol: {}",
+        mrb.decompiled.source
+    );
+    assert!(
+        !mrb.decompiled.source.contains(symbol),
+        "a raw newline-bearing symbol must not enter the human source output: {}",
+        mrb.decompiled.source
+    );
+    assert!(
+        has_only_comment_or_empty_lines(&mrb.decompiled.source),
+        "withheld output must not contain an executable line: {}",
+        mrb.decompiled.source
+    );
+}
+
+#[test]
+fn mruby_valid_newline_send_symbol_withholds_source() {
+    let symbol: &str = "actual_symbol\nputs(\"attacker\")";
+    let mut tail: Vec<u8> = Vec::new();
+    tail.extend_from_slice(
+        &u16::try_from(symbol.len())
+            .expect("symbol length fits u16")
+            .to_be_bytes(),
+    );
+    tail.extend_from_slice(symbol.as_bytes());
+    tail.push(0);
+    let iseq: [u8; 8] = [0x12, 0x01, 0x2f, 0x01, 0x00, 0x00, 0x38, 0x01];
+    let bytes: Vec<u8> = mruby_with_iseq(&iseq, 0, 1, &tail);
+    let analysis =
+        analyze_bytes(&bytes, "valid-newline-symbol.mrb").expect("analyze must not panic");
+    let mrb = analysis.mruby.expect("mruby");
+
+    assert!(mrb.irep.is_some(), "the IREP fixture must parse");
+    assert_eq!(mrb.decompiled.recovered_symbols, vec![symbol.to_owned()]);
+    assert!(!mrb.decompiled.has_body);
+    assert!(
+        mrb.decompiled
+            .source
+            .contains("reconstructed source withheld: an IREP reference is invalid"),
+        "source: {}",
+        mrb.decompiled.source
+    );
+    assert!(
+        !mrb.decompiled.source.contains(symbol),
+        "a valid newline-bearing call symbol must not enter recovered source: {}",
+        mrb.decompiled.source
+    );
+    assert!(
+        has_only_comment_or_empty_lines(&mrb.decompiled.source),
+        "withheld output must not contain an executable line: {}",
+        mrb.decompiled.source
+    );
+}
+
+#[test]
+fn mruby_intern_escapes_newline_pool_string() {
+    let payload: &str = "flavor\nputs(\"attacker\")";
+    let iseq: [u8; 7] = [0x51, 0x01, 0x00, 0x4f, 0x01, 0x38, 0x01];
+    let bytes: Vec<u8> = mruby_with_iseq_and_pool_string(&iseq, payload);
+    let analysis =
+        analyze_bytes(&bytes, "intern-newline-pool.mrb").expect("analyze must not panic");
+    let mrb = analysis.mruby.expect("mruby");
+
+    assert!(mrb.irep.is_some(), "the IREP fixture must parse");
+    assert!(mrb.decompiled.has_body);
+    assert!(
+        mrb.decompiled
+            .source
+            .contains(":\"flavor\\nputs(\\\"attacker\\\")\""),
+        "interned symbol must use an escaped Ruby literal: {}",
+        mrb.decompiled.source
+    );
+    assert!(
+        !mrb.decompiled.source.contains(payload),
+        "a raw pool string must not become a second executable source line: {}",
+        mrb.decompiled.source
     );
 }
 

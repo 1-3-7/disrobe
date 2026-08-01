@@ -1,6 +1,7 @@
 #![allow(clippy::needless_pass_by_value)]
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
 
@@ -36,6 +37,30 @@ pub(crate) enum RubyCmd {
     },
 }
 
+struct RubyOutputPaths {
+    analysis_json: PathBuf,
+    recovered_source: PathBuf,
+}
+
+impl RubyOutputPaths {
+    fn from_analysis_json(analysis_json: PathBuf) -> miette::Result<Self> {
+        if analysis_json
+            .extension()
+            .and_then(OsStr::to_str)
+            .is_some_and(|extension: &str| extension.eq_ignore_ascii_case("rb"))
+        {
+            return Err(miette::miette!(
+                "DR-CLI-0606: analysis output cannot use the .rb source extension"
+            ));
+        }
+        let recovered_source: PathBuf = analysis_json.with_extension("rb");
+        Ok(Self {
+            analysis_json,
+            recovered_source,
+        })
+    }
+}
+
 pub(crate) fn run(action: RubyCmd) -> miette::Result<()> {
     match action {
         RubyCmd::Decompile { input, out, emit } => decompile(input, out, emit),
@@ -55,29 +80,41 @@ fn decompile(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> miette:
         .and_then(OsStr::to_str)
         .unwrap_or("ruby-decompile")
         .to_owned();
-    let out_path: PathBuf = out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}-ruby.json")));
+    let output_paths: RubyOutputPaths = RubyOutputPaths::from_analysis_json(
+        out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}-ruby.json"))),
+    )?;
     if g.dry_run {
         println!("ruby decompile: DRY-RUN");
         println!("  input:        {}", input.display());
         println!("  flavor:       {:?}", analysis.flavor);
         return Ok(());
     }
-    if let Some(parent) = out_path.parent() {
+    if let Some(parent) = output_paths.analysis_json.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| miette::miette!("DR-CLI-0602: cannot create dir: {e}"))?;
     }
     let bytes_out: Vec<u8> = serde_json::to_vec_pretty(&analysis)
         .map_err(|e| miette::miette!("DR-CLI-0603: serialize: {e}"))?;
-    std::fs::write(&out_path, bytes_out)
+    std::fs::write(&output_paths.analysis_json, bytes_out)
         .map_err(|e| miette::miette!("DR-CLI-0604: cannot write output: {e}"))?;
-    let stub_dir: &std::path::Path = out_path
+    let stub_dir: &Path = output_paths
+        .analysis_json
         .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
-    let rb_path: PathBuf = out_path.with_extension("rb");
+        .unwrap_or_else(|| Path::new("."));
     let (rb_text, rb_kind): (Option<String>, &str) = render_decompiled_ruby(&analysis);
     if let Some(text) = rb_text.as_ref() {
-        std::fs::write(&rb_path, text.as_bytes())
+        std::fs::write(&output_paths.recovered_source, text.as_bytes())
             .map_err(|e| miette::miette!("DR-CLI-0605: cannot write decompiled ruby: {e}"))?;
+    } else {
+        match std::fs::remove_file(&output_paths.recovered_source) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(miette::miette!(
+                    "DR-CLI-0605: cannot remove stale decompiled ruby: {error}"
+                ));
+            }
+        }
     }
     super::emit::apply_not_applicable_stubs(
         &emit,
@@ -117,10 +154,13 @@ fn decompile(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> miette:
         println!("  mruby body:   {}", mruby.decompiled.has_body);
     }
     match (rb_text.as_ref(), rb_kind) {
-        (Some(_), kind) => println!("  decompiled:   {} ({kind})", rb_path.display()),
+        (Some(_), kind) => println!(
+            "  decompiled:   {} ({kind})",
+            output_paths.recovered_source.display()
+        ),
         (None, kind) => println!("  decompiled:   none ({kind})"),
     }
-    println!("  wrote:        {}", out_path.display());
+    println!("  wrote:        {}", output_paths.analysis_json.display());
     Ok(())
 }
 
@@ -146,7 +186,10 @@ fn render_decompiled_ruby(analysis: &RubyAnalysis) -> (Option<String>, &'static 
         return (Some(out), "yarv");
     }
     if let Some(mruby) = analysis.mruby.as_ref() {
-        return (Some(mruby.decompiled.source.clone()), "mruby");
+        if mruby.decompiled.has_body {
+            return (Some(mruby.decompiled.source.clone()), "mruby");
+        }
+        return (None, "mruby");
     }
     (None, "no-bytecode-body")
 }
@@ -198,6 +241,86 @@ mod tests {
         assert!(
             rb.contains("def greet") && rb.contains("def initialize"),
             "decompiled ruby must contain recovered method definitions: {rb}"
+        );
+        let _ = std::fs::remove_dir_all(&out_dir);
+    }
+
+    #[test]
+    fn render_withholds_incomplete_mruby_source() {
+        let input: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("corpus")
+            .join("ruby")
+            .join("mruby")
+            .join("breadth")
+            .join("exceptions.mrb");
+        let bytes: Vec<u8> = std::fs::read(&input)
+            .unwrap_or_else(|error: std::io::Error| panic!("read {}: {error}", input.display()));
+        let analysis: RubyAnalysis = analyze_bytes(&bytes, "exceptions.mrb").expect("analyze");
+        let (source, kind): (Option<String>, &str) = render_decompiled_ruby(&analysis);
+        assert_eq!(kind, "mruby");
+        assert!(
+            source.is_none(),
+            "partial mruby recovery must not write a source file"
+        );
+    }
+
+    #[test]
+    fn decompile_removes_stale_source_when_mruby_recovery_is_withheld() {
+        let input: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("corpus")
+            .join("ruby")
+            .join("mruby")
+            .join("breadth")
+            .join("exceptions.mrb");
+        let out_dir: PathBuf = std::env::current_dir()
+            .expect("cwd")
+            .join("tmp")
+            .join("ruby-decompile-stale-source-test");
+        let _ = std::fs::remove_dir_all(&out_dir);
+        std::fs::create_dir_all(&out_dir).expect("mk out dir");
+        let out_path: PathBuf = out_dir.join("exceptions.json");
+        let rb_path: PathBuf = out_path.with_extension("rb");
+        std::fs::write(&rb_path, b"puts 'stale'\n").expect("write stale ruby");
+
+        decompile(input, Some(out_path.clone()), Vec::new()).expect("decompile ok");
+
+        assert!(out_path.is_file(), "analysis JSON must still be written");
+        assert!(
+            !rb_path.exists(),
+            "an abstaining rerun must remove the exact stale sibling source file"
+        );
+        let _ = std::fs::remove_dir_all(&out_dir);
+    }
+
+    #[test]
+    fn decompile_rejects_ruby_extension_for_analysis_output() {
+        let input: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("corpus")
+            .join("ruby")
+            .join("mruby")
+            .join("breadth")
+            .join("exceptions.mrb");
+        let out_dir: PathBuf = std::env::current_dir()
+            .expect("cwd")
+            .join("tmp")
+            .join("ruby-decompile-output-collision-test");
+        let _ = std::fs::remove_dir_all(&out_dir);
+        std::fs::create_dir_all(&out_dir).expect("mk out dir");
+        let out_path: PathBuf = out_dir.join("analysis.RB");
+
+        let error: miette::Report = decompile(input, Some(out_path.clone()), Vec::new())
+            .expect_err("a Ruby source extension cannot hold analysis JSON");
+
+        assert!(error.to_string().contains("DR-CLI-0606"));
+        assert!(
+            !out_path.exists(),
+            "preflight must not write analysis output"
         );
         let _ = std::fs::remove_dir_all(&out_dir);
     }

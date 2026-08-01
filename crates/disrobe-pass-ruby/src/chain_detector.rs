@@ -146,7 +146,7 @@ fn render_recovered_ruby(analysis: &RubyAnalysis) -> Option<String> {
         return Some(out);
     }
     if let Some(mruby) = analysis.mruby.as_ref() {
-        if mruby.decompiled.source.trim().is_empty() {
+        if !mruby.decompiled.has_body {
             return None;
         }
         return Some(mruby.decompiled.source.clone());
@@ -397,6 +397,29 @@ mod tests {
         assert!(
             !s.contains("\"flavor\""),
             "must be ruby source, not analysis json"
+        );
+    }
+
+    #[test]
+    fn pass_withholds_incomplete_mruby_source() {
+        let path: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("corpus")
+            .join("ruby")
+            .join("mruby")
+            .join("breadth")
+            .join("exceptions.mrb");
+        let bytes: Vec<u8> = std::fs::read(&path)
+            .unwrap_or_else(|error: std::io::Error| panic!("read {}: {error}", path.display()));
+        let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+        let output: Artifact = RUBY_PASS.run(&artifact).expect("classify must succeed");
+        assert_eq!(output.rung, Rung::Disasm);
+        let text: &str = std::str::from_utf8(&output.envelope).expect("analysis JSON utf8");
+        assert!(text.contains("\"has_body\": false"), "got: {text}");
+        assert!(
+            !text.contains("def safe_div"),
+            "a partial reconstruction must not enter the chain surface: {text}"
         );
     }
 
