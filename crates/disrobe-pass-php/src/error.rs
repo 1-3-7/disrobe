@@ -61,6 +61,11 @@ pub enum Error {
         ceiling: usize,
     },
 
+    #[error(
+        "DR-PHP-0037: phar archive declares {declared} recovered bytes, exceeding archive quota {cap}"
+    )]
+    PharArchiveQuotaExceeded { declared: usize, cap: usize },
+
     #[error("DR-PHP-0030: FOPO peel failed: {0}")]
     FopoPeel(&'static str),
 

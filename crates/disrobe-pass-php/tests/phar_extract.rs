@@ -69,9 +69,7 @@ fn forged_uncompressed_size_is_refused_rather_than_trusted() {
     let payload: &[u8] = b"<?php return 42;";
     let compressed: Vec<u8> = common::deflate(payload);
     let phar: Vec<u8> = deflate_entry_phar(u32::MAX, &compressed);
-    let archive: PharArchive = parse_phar(&phar).expect("parse forged size archive");
-    let err: Error =
-        extract_phar_entry(&archive, &phar, "bounded.php").expect_err("forged size must refuse");
+    let err: Error = parse_phar(&phar).expect_err("forged size must refuse during parsing");
     let msg: String = format!("{err}");
     assert!(msg.contains("DR-PHP-0029"), "got: {msg}");
     match err {
@@ -189,6 +187,31 @@ fn rejects_entry_metadata_outside_declared_manifest() {
     let err: Error = parse_phar(&phar).expect_err("metadata past manifest must fail");
     let msg: String = format!("{err}");
     assert!(msg.contains("DR-PHP-0022"), "got: {msg}");
+}
+
+#[test]
+fn malformed_later_manifest_record_precedes_earlier_payload_failure() {
+    let first_name: &str = "first.php";
+    let second_name: &str = "second.php";
+    let mut phar: Vec<u8> = common::build_tiny_phar(
+        &common::default_phar_stub(),
+        &[(first_name, b"a"), (second_name, b"b")],
+    );
+    let manifest_offset: usize = common::default_phar_stub().len() + 1;
+    let manifest_header_len: usize = 4 + 4 + 2 + 4 + 4 + "test.phar".len() + 4;
+    let first_record_offset: usize = manifest_offset + manifest_header_len;
+    let first_stored_size_offset: usize = first_record_offset + 4 + first_name.len() + 4 + 4;
+    let record_len: usize = 4 + first_name.len() + 4 + 4 + 4 + 4 + 4 + 4;
+    let second_record_offset: usize = first_record_offset + record_len;
+    phar[first_stored_size_offset..first_stored_size_offset + 4]
+        .copy_from_slice(&u32::MAX.to_le_bytes());
+    phar[second_record_offset..second_record_offset + 4].copy_from_slice(&(4097u32).to_le_bytes());
+
+    let error: Error = parse_phar(&phar).expect_err("malformed manifest must refuse");
+    assert!(
+        matches!(error, Error::PharManifestTruncated { .. }),
+        "a malformed later manifest entry must win over an earlier payload failure, got {error:?}"
+    );
 }
 
 #[test]

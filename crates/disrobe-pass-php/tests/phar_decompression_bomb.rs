@@ -18,8 +18,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::{PHAR_FLAG_DEFLATE, PharFixtureEntry};
 use disrobe_pass_php::{
-    Error, PHAR_DECOMPRESS_CAP, PharArchive, extract_phar_entry, parse_phar,
-    phar_decompress_ceiling,
+    Error, PHAR_DECOMPRESS_CAP, PharArchive, parse_phar, phar_decompress_ceiling,
 };
 use flate2::Compression;
 use flate2::read::DeflateDecoder;
@@ -120,8 +119,6 @@ fn declared_length_past_what_the_compressed_bytes_support_is_refused_without_all
             flags: PHAR_FLAG_DEFLATE,
         }],
     );
-    let archive: PharArchive = parse_phar(&phar).expect("bomb archive parses");
-
     let ceiling: usize = phar_decompress_ceiling(bomb.len());
     assert!(
         ceiling < BOMB_EXPANDED,
@@ -131,7 +128,7 @@ fn declared_length_past_what_the_compressed_bytes_support_is_refused_without_all
 
     let baseline: usize = LIVE_BYTES.load(Ordering::Relaxed);
     PEAK_BYTES.store(baseline, Ordering::Relaxed);
-    let outcome: Result<Vec<u8>, Error> = extract_phar_entry(&archive, &phar, "bomb.php");
+    let outcome: Result<PharArchive, Error> = parse_phar(&phar);
     let peak: usize = PEAK_BYTES.load(Ordering::Relaxed).saturating_sub(baseline);
 
     match outcome {

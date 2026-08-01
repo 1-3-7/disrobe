@@ -98,8 +98,7 @@ pub fn parse(bytes: &[u8]) -> Result<PharArchive> {
     if alias_len > PHAR_ALIAS_CAP {
         return Err(Error::PharAliasOversize(alias_len));
     }
-    let alias: Vec<u8> =
-        take_bytes_within(bytes, &mut cursor, alias_len as usize, manifest_end)?.to_vec();
+    let alias: &[u8] = take_bytes_within(bytes, &mut cursor, alias_len as usize, manifest_end)?;
     let metadata_len: u32 = read_u32_le_within(bytes, &mut cursor, manifest_end)?;
     if metadata_len > PHAR_META_CAP {
         return Err(Error::PharManifestTruncated {
@@ -107,18 +106,18 @@ pub fn parse(bytes: &[u8]) -> Result<PharArchive> {
             need: metadata_len as usize,
         });
     }
-    let metadata: Vec<u8> =
-        take_bytes_within(bytes, &mut cursor, metadata_len as usize, manifest_end)?.to_vec();
-
-    let mut entries_meta: Vec<PharEntryMeta> =
-        Vec::with_capacity((entry_count as usize).min(1 << 16));
-    for _ in 0..entry_count {
-        entries_meta.push(read_entry_meta(bytes, &mut cursor, manifest_end)?);
-    }
+    let metadata: &[u8] =
+        take_bytes_within(bytes, &mut cursor, metadata_len as usize, manifest_end)?;
+    let entries_offset: usize = cursor;
+    validate_manifest_entries(bytes, &mut cursor, manifest_end, entry_count)?;
+    cursor = entries_offset;
+    preflight_entries(bytes, &mut cursor, manifest_end, entry_count)?;
+    cursor = entries_offset;
 
     let mut data_cursor: usize = manifest_end;
     let mut entries: BTreeMap<String, PharEntry> = BTreeMap::new();
-    for meta in entries_meta {
+    for _ in 0..entry_count {
+        let meta: PharEntryMeta = read_entry_meta(bytes, &mut cursor, manifest_end)?;
         let stored_size: usize = meta.stored_size as usize;
         let Some(payload_end): Option<usize> = data_cursor.checked_add(stored_size) else {
             return Err(Error::PharEntryPayloadTruncated {
@@ -134,7 +133,7 @@ pub fn parse(bytes: &[u8]) -> Result<PharArchive> {
                 got: bytes.len().saturating_sub(data_cursor),
             });
         }
-        let compression: PharCompression = decode_compression(&meta)?;
+        let compression: PharCompression = decode_compression(&meta.name, meta.flags)?;
         let entry: PharEntry = PharEntry {
             name: meta.name.clone(),
             uncompressed_size: meta.uncompressed_size,
@@ -164,8 +163,8 @@ pub fn parse(bytes: &[u8]) -> Result<PharArchive> {
         manifest_offset,
         api_version,
         global_flags,
-        alias,
-        metadata,
+        alias: alias.to_vec(),
+        metadata: metadata.to_vec(),
         entries,
     })
 }
@@ -233,19 +232,35 @@ pub const fn decompress_ceiling(stored_len: usize) -> usize {
 }
 
 fn declared_output_len(entry: &PharEntry, name: &str, stored_len: usize) -> Result<usize> {
+    let declared: usize = declared_output_len_from_parts(
+        name,
+        entry.uncompressed_size,
+        entry.stored_size,
+        stored_len,
+    )?;
     let ceiling: usize = decompress_ceiling(stored_len);
-    let declared: usize = entry.uncompressed_size as usize;
-    if declared > ceiling {
-        return Err(Error::PharDeclaredSizeImplausible {
-            name: name.to_string(),
-            declared: entry.uncompressed_size,
-            stored: entry.stored_size,
-            ceiling,
-        });
-    }
     dbg_kv("phar-decompress-budget", || {
         format!("{name} declared={declared} ceiling={ceiling}")
     });
+    Ok(declared)
+}
+
+fn declared_output_len_from_parts(
+    name: &str,
+    declared_size: u32,
+    stored_size: u32,
+    stored_len: usize,
+) -> Result<usize> {
+    let ceiling: usize = decompress_ceiling(stored_len);
+    let declared: usize = declared_size as usize;
+    if declared > ceiling {
+        return Err(Error::PharDeclaredSizeImplausible {
+            name: name.to_string(),
+            declared: declared_size,
+            stored: stored_size,
+            ceiling,
+        });
+    }
     Ok(declared)
 }
 
@@ -331,15 +346,127 @@ fn try_bounded<R: Read>(
     }
 }
 
-fn decode_compression(meta: &PharEntryMeta) -> Result<PharCompression> {
-    let bits: u32 = meta.flags;
+fn validate_manifest_entries(
+    bytes: &[u8],
+    cursor: &mut usize,
+    manifest_end: usize,
+    entry_count: u32,
+) -> Result<()> {
+    for _ in 0..entry_count {
+        let name_len: u32 = read_u32_le_within(bytes, cursor, manifest_end)?;
+        if name_len > PHAR_ENTRY_NAME_CAP {
+            return Err(Error::PharManifestTruncated {
+                offset: *cursor,
+                need: name_len as usize,
+            });
+        }
+        take_bytes_within(bytes, cursor, name_len as usize, manifest_end)?;
+        let _uncompressed_size: u32 = read_u32_le_within(bytes, cursor, manifest_end)?;
+        let _timestamp: u32 = read_u32_le_within(bytes, cursor, manifest_end)?;
+        let _stored_size: u32 = read_u32_le_within(bytes, cursor, manifest_end)?;
+        let _crc32: u32 = read_u32_le_within(bytes, cursor, manifest_end)?;
+        let _flags: u32 = read_u32_le_within(bytes, cursor, manifest_end)?;
+        let entry_meta_len: u32 = read_u32_le_within(bytes, cursor, manifest_end)?;
+        if entry_meta_len > PHAR_META_CAP {
+            return Err(Error::PharManifestTruncated {
+                offset: *cursor,
+                need: entry_meta_len as usize,
+            });
+        }
+        take_bytes_within(bytes, cursor, entry_meta_len as usize, manifest_end)?;
+    }
+    Ok(())
+}
+
+fn preflight_entries(
+    bytes: &[u8],
+    cursor: &mut usize,
+    manifest_end: usize,
+    entry_count: u32,
+) -> Result<()> {
+    let mut payload_cursor: usize = manifest_end;
+    let mut total_output: usize = 0;
+    for _ in 0..entry_count {
+        let name_len: u32 = read_u32_le_within(bytes, cursor, manifest_end)?;
+        if name_len > PHAR_ENTRY_NAME_CAP {
+            return Err(Error::PharManifestTruncated {
+                offset: *cursor,
+                need: name_len as usize,
+            });
+        }
+        let name_bytes: &[u8] = take_bytes_within(bytes, cursor, name_len as usize, manifest_end)?;
+        let name: std::borrow::Cow<'_, str> = String::from_utf8_lossy(name_bytes);
+        let uncompressed_size: u32 = read_u32_le_within(bytes, cursor, manifest_end)?;
+        let _timestamp: u32 = read_u32_le_within(bytes, cursor, manifest_end)?;
+        let stored_size: u32 = read_u32_le_within(bytes, cursor, manifest_end)?;
+        if stored_size > PHAR_PAYLOAD_CAP {
+            return Err(Error::PharEntryPayloadTruncated {
+                name: name.into_owned(),
+                need: stored_size,
+                got: 0,
+            });
+        }
+        let stored_len: usize = stored_size as usize;
+        let payload_end: usize = payload_cursor.checked_add(stored_len).ok_or_else(|| {
+            Error::PharEntryPayloadTruncated {
+                name: name.to_string(),
+                need: stored_size,
+                got: bytes.len().saturating_sub(payload_cursor),
+            }
+        })?;
+        if payload_end > bytes.len() {
+            return Err(Error::PharEntryPayloadTruncated {
+                name: name.into_owned(),
+                need: stored_size,
+                got: bytes.len().saturating_sub(payload_cursor),
+            });
+        }
+        payload_cursor = payload_end;
+        let _crc32: u32 = read_u32_le_within(bytes, cursor, manifest_end)?;
+        let flags: u32 = read_u32_le_within(bytes, cursor, manifest_end)?;
+        let entry_meta_len: u32 = read_u32_le_within(bytes, cursor, manifest_end)?;
+        if entry_meta_len > PHAR_META_CAP {
+            return Err(Error::PharManifestTruncated {
+                offset: *cursor,
+                need: entry_meta_len as usize,
+            });
+        }
+        take_bytes_within(bytes, cursor, entry_meta_len as usize, manifest_end)?;
+        let compression: PharCompression = decode_compression(name.as_ref(), flags)?;
+        let entry_output: usize = match compression {
+            PharCompression::None => stored_len,
+            PharCompression::Deflate | PharCompression::Bzip2 => declared_output_len_from_parts(
+                name.as_ref(),
+                uncompressed_size,
+                stored_size,
+                stored_len,
+            )?,
+        };
+        let Some(projected_output): Option<usize> = total_output.checked_add(entry_output) else {
+            return Err(Error::PharArchiveQuotaExceeded {
+                declared: usize::MAX,
+                cap: PHAR_DECOMPRESS_CAP,
+            });
+        };
+        if projected_output > PHAR_DECOMPRESS_CAP {
+            return Err(Error::PharArchiveQuotaExceeded {
+                declared: projected_output,
+                cap: PHAR_DECOMPRESS_CAP,
+            });
+        }
+        total_output = projected_output;
+    }
+    Ok(())
+}
+
+fn decode_compression(name: &str, bits: u32) -> Result<PharCompression> {
     let masked: u32 = bits & 0x0000_f000;
     match masked {
         0 => Ok(PharCompression::None),
         FLAG_COMPRESSED_GZ => Ok(PharCompression::Deflate),
         FLAG_COMPRESSED_BZ => Ok(PharCompression::Bzip2),
         _ => Err(Error::PharUnsupportedCompression {
-            name: meta.name.clone(),
+            name: name.to_string(),
             bits,
         }),
     }
