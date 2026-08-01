@@ -562,6 +562,29 @@ fn rename_emitted_function(source: &str, from: &str, to: &str) -> String {
 }
 
 #[cfg(feature = "nir-lift")]
+fn aarch64_recover_image_source(
+    code: &[u8],
+    address: u64,
+    emitted_name: &str,
+    obj: &object::File<'_>,
+) -> Result<String, String> {
+    use disrobe_pass_native::{LeafRecovery, recover_aarch64_function_with_image};
+
+    let recovered: LeafRecovery = recover_aarch64_function_with_image(
+        code,
+        address,
+        &|image_address: u64| aarch64_image_slice(obj, image_address),
+        &|_: u64| None,
+    )
+    .map_err(|error: disrobe_pass_native::Error| error.to_string())?;
+    Ok(rename_emitted_function(
+        &recovered.source,
+        "recovered",
+        emitted_name,
+    ))
+}
+
+#[cfg(feature = "nir-lift")]
 fn devirt_folded_edges(report: &serde_json::Value) -> u64 {
     report
         .get("edges_folded")
@@ -579,12 +602,14 @@ fn decompile_native_aarch64<'data>(
     format: DecompileLang,
     devirt: bool,
 ) -> miette::Result<()> {
-    use disrobe_pass_native::{
-        LeafRecovery, RecoveredFunction, RecoveredProgram, recover_aarch64_function_with_image,
-        recover_aarch64_program,
-    };
+    use disrobe_pass_native::{RecoveredFunction, RecoveredProgram, recover_aarch64_program};
     use std::fmt::Write as _;
 
+    if matches!(format, DecompileLang::Rust) {
+        return Err(miette::miette!(
+            "DR-NATIVE-0174: `--format rust` is unavailable for aarch64 native recovery; retry with `--format c` to emit pseudo-C"
+        ));
+    }
     let stem: String = input
         .file_stem()
         .and_then(OsStr::to_str)
@@ -596,11 +621,16 @@ fn decompile_native_aarch64<'data>(
         .map_err(|e| miette::miette!("DR-NATIVE-0170: cannot create out dir: {e}"))?;
 
     let program: RecoveredProgram = recover_aarch64_program(bytes);
-    let whole_program: BTreeMap<u64, &RecoveredFunction> = program
-        .recovered
-        .iter()
-        .map(|rec: &RecoveredFunction| (rec.address, rec))
-        .collect();
+    let whole_program: BTreeMap<u64, &RecoveredFunction> =
+        if matches!(obj.kind(), object::ObjectKind::Relocatable) {
+            BTreeMap::new()
+        } else {
+            program
+                .recovered
+                .iter()
+                .map(|function: &RecoveredFunction| (function.address, function))
+                .collect()
+        };
 
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut bodies: String = String::new();
@@ -614,8 +644,12 @@ fn decompile_native_aarch64<'data>(
     let mut devirt_none: usize = 0;
     let mut devirt_edges: usize = 0;
     #[cfg(feature = "devirt")]
+    let devirt_active: bool = devirt;
+    #[cfg(not(feature = "devirt"))]
+    let devirt_active: bool = false;
+    #[cfg(feature = "devirt")]
     let binary_budget: Option<disrobe_mba::BinaryBudget> =
-        devirt.then(|| disrobe_mba::BinaryBudget::new(std::time::Duration::from_mins(1)));
+        devirt_active.then(|| disrobe_mba::BinaryBudget::new(std::time::Duration::from_mins(1)));
     #[cfg(feature = "devirt")]
     let mut devirt_self_disabled: bool = false;
 
@@ -630,7 +664,7 @@ fn decompile_native_aarch64<'data>(
         let effective_devirt: bool = {
             #[cfg(feature = "devirt")]
             {
-                devirt
+                devirt_active
                     && match &binary_budget {
                         Some(budget) if budget.exhausted() => {
                             devirt_self_disabled = true;
@@ -658,26 +692,16 @@ fn decompile_native_aarch64<'data>(
         } else {
             whole_program
                 .get(&f.address)
-                .map(|rec: &&RecoveredFunction| {
+                .map(|function: &&RecoveredFunction| {
                     (
-                        rename_emitted_function(&rec.source, &rec.name, &emitted_name),
+                        rename_emitted_function(&function.source, &function.name, &emitted_name),
                         "whole-program",
                     )
                 })
                 .or_else(|| {
-                    recover_aarch64_function_with_image(
-                        &code,
-                        f.address,
-                        &|address: u64| aarch64_image_slice(obj, address),
-                        &|_: u64| None,
-                    )
-                    .ok()
-                    .map(|leaf: LeafRecovery| {
-                        (
-                            rename_emitted_function(&leaf.source, "recovered", &emitted_name),
-                            "image-leaf",
-                        )
-                    })
+                    aarch64_recover_image_source(&code, f.address, &emitted_name, obj)
+                        .ok()
+                        .map(|source: String| (source, "image-leaf"))
                 })
         };
         let (source, structured, engine, devirt_report): (String, bool, &str, serde_json::Value) =
@@ -685,14 +709,17 @@ fn decompile_native_aarch64<'data>(
                 (Some((source, engine)), _) => {
                     match engine {
                         "whole-program" => whole_program_count += 1,
-                        _ => image_leaf_count += 1,
+                        "image-leaf" => image_leaf_count += 1,
+                        _ => {}
                     }
                     (source, true, engine, serde_json::Value::Null)
                 }
                 (None, Ok((source, structured, report))) => (source, structured, "nir", report),
                 (None, Err(reason)) => {
                     unrecovered.push(serde_json::json!({
-                        "name": f.name, "address": f.address, "reason": reason
+                        "name": f.name,
+                        "address": f.address,
+                        "reason": reason,
                     }));
                     continue;
                 }
@@ -748,7 +775,7 @@ fn decompile_native_aarch64<'data>(
             false
         }
     };
-    let devirt_summary: serde_json::Value = if devirt {
+    let devirt_summary: serde_json::Value = if devirt_active {
         serde_json::json!({
             "enabled": true,
             "applied": "opaque-predicate fold (proven-dead conditional arms), transactional",
@@ -759,8 +786,14 @@ fn decompile_native_aarch64<'data>(
             "edges_folded": devirt_edges,
             "deferred": ["control-flow-flattening deflatten", "jump-table edge rewrite"],
         })
-    } else {
+    } else if cfg!(feature = "devirt") {
         serde_json::json!({ "enabled": false })
+    } else {
+        serde_json::json!({
+            "enabled": false,
+            "available": false,
+            "reason": "devirt feature is not built",
+        })
     };
 
     let total: usize = module.functions().len();
@@ -797,7 +830,7 @@ fn decompile_native_aarch64<'data>(
         image_leaf_count,
         src_path.display()
     );
-    if devirt {
+    if devirt_active {
         println!(
             "  devirt:       {devirt_full} full, {devirt_partial} partial, {devirt_none} none; {devirt_edges} dead arm(s) folded"
         );

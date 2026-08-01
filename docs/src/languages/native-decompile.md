@@ -1,6 +1,6 @@
-# Native decompile (x86-64 / AArch64 to C or Rust)
+# Native decompile (x86-64 to C or Rust; AArch64 to pseudo-C)
 
-`disrobe`'s own x86-64 and AArch64 decompiler lifts native machine code to C or idiomatic Rust with no external tool and no install step, and can drive Ghidra headlessly instead when you want its whole-program recovery.
+`disrobe`'s own x86-64 decompiler lifts native machine code to C or idiomatic Rust, while its AArch64 decompiler emits pseudo-C. Neither requires an external tool or install step. Ghidra can run headlessly instead when you want its whole-program recovery.
 
 For symbol recovery, disassembly, and identification see the [native guide](./native.md); for packers and VM protectors see [native unpacking](./native-unpack.md).
 
@@ -8,17 +8,17 @@ For symbol recovery, disassembly, and identification see the [native guide](./na
 
 | Surface | Support |
 |---|---|
-| Architectures | x86-64 and AArch64, both lifting to full pseudo-code through the same shared IR |
-| Output formats | C (default) or idiomatic Rust |
-| Call resolution | Whole-program: each callee's real name and integer arity resolved against the sibling function set, then the caller re-recovered with that call graph stitched in |
+| Architectures | x86-64 uses the shared IR pipeline and emits C or Rust; AArch64 uses object-context and NIR recovery to emit pseudo-C |
+| Output formats | C (default) for x86-64 and AArch64; idiomatic Rust for x86-64 only |
+| Call resolution | Whole-program for validated direct same-image calls in linked ELF inputs whose sibling target resolves unambiguously; unresolved, indirect, external, ambiguous, and relocatable-object calls abstain |
 | Switch dispatch | Dense switch recovered from the binary's own jump table |
-| Type recovery | Structs from fixed-offset access (`p->field_8`), arrays from scaled indexing (`a[i]`), unions from conflicting widths, integer width and signedness per frame slot |
-| API types | Resolved imports propagated backward into caller locals from a curated libc, kernel32, and ws2_32 prototype database, each tagged with `library!function` provenance |
-| Calling convention | Inferred per function, including x86 `thiscall` and `vectorcall` |
-| Vectorized loops | SSE/AVX reduction and pointer-walk map kernels lowered back to the equivalent scalar loop |
+| Type recovery | x86-64 structs from fixed-offset access (`p->field_8`), arrays from scaled indexing (`a[i]`), unions from conflicting widths, integer width and signedness per frame slot |
+| API types | x86-64 resolved imports propagated backward into caller locals from a curated libc, kernel32, and ws2_32 prototype database, each tagged with `library!function` provenance |
+| Calling convention | x86-64 inferred per function, including `thiscall` and `vectorcall` |
+| Vectorized loops | x86-64 SSE/AVX reduction and pointer-walk map kernels lowered back to the equivalent scalar loop |
 | AArch64 devirtualizer | Symbolic, on by default in a full build, `--no-devirt` to disable; transactional, reverts on any proof miss |
-| Grading | Execution-differential recompilation against real gcc, clang, or rustc, never against disrobe's own prior output |
-| Sidecars | `manifest.json` (schema `disrobe.native.decompile/v1`) and `types.json` (schema `disrobe.native.types/v1`) |
+| Grading | C output is execution-differentially recompiled with real gcc or clang; x86-64 Rust output with rustc |
+| Sidecars | `manifest.json` (schema `disrobe.native.decompile/v1`) for both architectures; x86-64 also emits `types.json` (schema `disrobe.native.types/v1`) |
 | Optional backend | Ghidra headless via `--backend ghidra` |
 
 ## Commands
@@ -31,15 +31,15 @@ disrobe native decompile app_arm64 --no-devirt --out decompiled/   # aarch64 wit
 disrobe native decompile app.exe --backend ghidra --out decompiled/
 ```
 
-Output lands at `<out>/<stem>.c` or `<out>/<stem>.rs` alongside a `manifest.json` (schema `disrobe.native.decompile/v1`) listing which functions recovered, which did not and why, and the emitted symbol name for each, plus the `types.json` sidecar.
+Output lands at `<out>/<stem>.c` or `<out>/<stem>.rs` alongside a `manifest.json` (schema `disrobe.native.decompile/v1`) listing which functions recovered, which did not and why, and the emitted symbol name for each. x86-64 output also carries the `types.json` sidecar.
 
 ## Coverage and fidelity
 
 ### Call resolution and structure
 
-`--backend native` (the default) is disrobe's own x86-64 and AArch64 decompiler: no external tool, no install step. It performs whole-program call resolution over every function the module discovers, not isolated per-function guessing. Each function is leaf-recovered in the object's context, its outgoing calls are walked to resolve each callee's real name and integer arity against the sibling function set (falling back to the object's own relocations when a call target is a link-time placeholder in an unlinked object), then the caller is re-recovered with that call graph stitched in. Dense switch dispatch is recovered from the binary's own jump table rather than guessed. A function with no outgoing calls degrades to a plain leaf recovery, so stitching only ever improves recovery, never regresses it. AArch64 function bodies lift to full pseudo-code through the same shared IR, not disassembly alone.
+`--backend native` (the default) is disrobe's own x86-64 and AArch64 decompiler: no external tool, no install step. It performs whole-program call resolution over every function the module discovers, not isolated per-function guessing. For linked ELF inputs, a validated direct same-image call resolves its callee's real name and integer arity only when the sibling target is unambiguous. Indirect, external, malformed, unsupported, ambiguous, and relocatable-object calls abstain. Dense switch dispatch is recovered from the binary's own jump table rather than guessed. A function with no validated outgoing calls degrades to a plain leaf recovery, so stitching only ever improves recovery, never regresses it. AArch64 uses object-context recovery first, with the NIR lift and image-backed recovery available as narrower fallbacks.
 
-### Type recovery
+### x86-64 type recovery
 
 Types are inferred from the access shape rather than left as raw registers. A pointer walked at several fixed offsets recovers as a struct with named fields (`p->field_8`), a base indexed by a scaled register recovers as an array (`a[i]`), and offsets read at conflicting widths recover as a union. The calling convention is inferred per function, including x86 `thiscall` (implicit `this` in `ecx`) and `vectorcall` (SSE/AVX register arguments), so the recovered signature matches how the function is actually called.
 
@@ -59,7 +59,7 @@ Auto-vectorized loops are recovered to their scalar meaning: the C backend recog
 
 ### Grading
 
-Every recovered function is graded by execution-differential recompilation against real gcc, clang, or rustc, never against disrobe's own prior output. The AArch64 lift is held to the same bar against real `clang -O2` machine code, and the struct, array, and union recovery is asserted on recompiled-and-executed fixtures rather than by inspection. The vectorized-loop recovery is held to the same bar: the recovered scalar loop is recompiled and its output compared bit-for-bit against the original compiled kernel across a spread of input lengths, and on Linux at least one gcc `-O3` pointer-walk reduction must recover and execute-prove (`simd_devirt_oracle.rs`).
+C output is graded by execution-differential recompilation against real gcc or clang, and x86-64 Rust output against rustc, never against disrobe's own prior output. The AArch64 pseudo-C lift is held to the C bar against real `clang -O2` machine code, and the struct, array, and union recovery is asserted on recompiled-and-executed fixtures rather than by inspection. The vectorized-loop recovery is held to the same C bar: the recovered scalar loop is recompiled and its output compared bit-for-bit against the original compiled kernel across a spread of input lengths, and on Linux at least one gcc `-O3` pointer-walk reduction must recover and execute-prove (`simd_devirt_oracle.rs`).
 
 ### Ghidra backend
 
@@ -69,7 +69,8 @@ Every recovered function is graded by execution-differential recompilation again
 
 - AArch64 function discovery is symbol-table-based today (the linear-sweep function finder is x86-only), so a stripped AArch64 binary surfaces fewer functions than its unstripped sibling, which enumerates and decompiles in full.
 - On the AArch64 path, control-flow-flattening deflatten and jump-table edge rewrite are noted as deferred in the `devirt` manifest section.
-- Where the byte stream carries no sign signal for a frame slot, the `types.json` sidecar reports it as unknown rather than guessing.
+- AArch64 Rust emission is unsupported. `--format rust` fails before native recovery writes output.
+- On x86-64, where the byte stream carries no sign signal for a frame slot, the `types.json` sidecar reports it as unknown rather than guessing.
 - An unresolved import, an ordinal-only import, or a call whose backpropagated type conflicts abstains rather than guessing an API-derived type.
 - Reassociation-unsafe floating-point vector loops are rejected rather than lowered to a wrong scalar form.
 - Reach for `--backend ghidra` on large, deeply nested binaries where Ghidra's whole-program type and structure recovery still leads: `disrobe`'s job there is to hand it a clean, unpacked, symbol-rich input.
