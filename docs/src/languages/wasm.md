@@ -11,7 +11,7 @@
 | Name recovery | DWARF and source-map names where debug info is present |
 | Op-coverage grade | Every operator in the function lowered, and the re-emitted WAT re-parsed by an independent parser |
 | Execution grade | Return values, trap parity, and linear memory compared against the original under wasmtime |
-| Obfuscators | Jscrambler-WASM, Wobfuscator, Tigress-via-Emscripten, and Wasmixer reversed; wasm-name-obfuscator detected only |
+| Obfuscators | Jscrambler-WASM, Wobfuscator, and Wasmixer reversed; Tigress-via-Emscripten and wasm-name-obfuscator detected and classified only |
 | Envelopes | Component Model, threads, memory64, and the GC type graph parsed by dedicated scanners |
 
 ## Commands
@@ -43,11 +43,12 @@ That regeneration demands `wasm-tools 1.250.0` and fails without it. The check i
 
 Op-coverage is not the same as execution-equivalence. Separately, all **57** of the 57 execution-eligible functions (a numeric or nullable-reference ABI the harness can isolate per-function or drive as a whole faithful module) are execution-equivalent to the original under wasmtime: the `semantic_differential` test compares return values, trap parity, and linear memory between the original and the recovered module, and 6 are byte-identical in memory.
 
-`wasm deob` reverses four Wasm obfuscator families with byte- or IR-transforming passes: Jscrambler-WASM (strip integrity imports, fold opaque predicates), Wobfuscator (recover the eval op-table and lift each handler), Tigress-via-Emscripten (unflatten the dispatcher, demangle `_Z` names), and Wasmixer (unwrap the XOR decrypt stub, defragment).
+`wasm deob` reverses three Wasm obfuscator families with byte- or IR-transforming passes: Jscrambler-WASM (strip integrity imports, fold opaque predicates), Wobfuscator (recover the eval op-table and lift each handler), and Wasmixer (unwrap the XOR decrypt stub, defragment). Tigress-via-Emscripten is detected from its Emscripten-marked exports, but `wasm deob` does not run its separate dispatcher-unflattening or `_Z` name helper.
 
 ## Limits
 
 - Two corpus modules are skipped on wat-parse or signature-extraction failure, so the op-coverage figure covers the supported subset, not all of wasm.
 - Functions outside the execution-eligible set are op-coverage-only; their behavior is not compared against the original.
 - The Component Model envelope, threads, memory64, and the GC type graph are parsed and decoded by dedicated scanners. That is distinct from lifting their per-instruction semantics to source.
+- Tigress-via-Emscripten is detected and classified only. Its standalone dispatcher-unflattening and name helpers are not on the `wasm deob` run path.
 - A fifth obfuscator family, wasm-name-obfuscator, is detected and its rename strategy classified, but its high-entropy hex renames destroy the original names, so there is nothing to reverse.

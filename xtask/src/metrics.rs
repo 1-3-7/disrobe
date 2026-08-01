@@ -551,13 +551,13 @@ const KEYS: &[KeySpec] = &[
         },
     },
     KeySpec {
-        name: "wasm_reversers",
+        name: "wasm_direct_helpers",
         formatter: Formatter::Int,
         nouns: &[],
         extract: |r: &Recovery| {
             r.bar(
                 "Obfuscator and bundler family coverage",
-                "WASM obfuscator reversers",
+                "WASM direct transformation helper families",
             )?
             .count()
         },
