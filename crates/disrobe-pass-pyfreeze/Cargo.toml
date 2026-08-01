@@ -34,3 +34,4 @@ chain = ["disrobe-core/chain"]
 
 [dev-dependencies]
 disrobe-testkit = { workspace = true }
+jsonschema = "0.28"

@@ -2,7 +2,7 @@
 
 This is the authoritative per-ecosystem list of every packer, obfuscator, protector, freezer, and bundler `disrobe` recognizes, with the support tier for each. The live CLI view is `disrobe catalog [ecosystem]`; a default build, which turns the `full` feature on, reports <!-- m:catalog_family_total -->169<!-- /m --> families across <!-- m:catalog_ecosystems -->15<!-- /m --> ecosystems, and the totals on this page are the `full` ones. Most catalogs sit behind a cargo feature, so a build with features trimmed registers fewer catalogs and reports a smaller total.
 
-`cargo run -p xtask -- regen --check` re-derives the headline total, the native tier split, and the per-pass counts in the tables below from the tables the binary itself carries (`Packer` in `crates/disrobe-pass-native/src/packers/mod.rs`, `CATALOG_COUNT` in each pass `chain_detector.rs`, `Protector::ALL` in `crates/disrobe-pass-dotnet/src/protectors.rs`, and `RaspVendor` in `crates/disrobe-pass-jvm/src/rasp.rs`), so a family added to the binary without this page moving with it fails that check. Two rows count something no catalog table holds, `Freezers / packagers` and `JS bundlers (unbundler)`; for those the check compares the published count against the family list beside it, which keeps the two halves of a row consistent but proves neither against the binary.
+`cargo run -p xtask -- regen --check` re-derives the headline total, the native tier split, and the per-pass counts in the tables below from the tables the binary itself carries (`Packer` in `crates/disrobe-pass-native/src/packers/mod.rs`, `CATALOG_COUNT` in each pass `chain_detector.rs`, `Protector::ALL` in `crates/disrobe-pass-dotnet/src/protectors.rs`, and `RaspVendor` in `crates/disrobe-pass-jvm/src/rasp.rs`), so a family added to the binary without this page moving with it fails that check. Three rows count something no catalog table holds, `Freezers / packagers`, `Freezers / packagers (experimental, unvalidated)`, and `JS bundlers (unbundler)`; for those the check compares the published count against the family list beside it, which keeps the two halves of a row consistent but proves neither against the binary.
 
 ```sh
 disrobe catalog
@@ -44,7 +44,8 @@ The recover tier is scored byte-for-byte against real committed originals: UPX `
 
 | Surface | Count | Families |
 |---|---|---|
-| **Freezers / packagers** | 9 | PyInstaller 2.x-6.20+, Nuitka (onefile / standalone / module / wheel), cx_Freeze, py2exe, PyOxidizer, shiv, pex, Briefcase, SourceDefender `.pye` |
+| **Freezers / packagers** | 8 | PyInstaller 2.x-6.20+, Nuitka (onefile / standalone / module / wheel), cx_Freeze, py2exe, shiv, pex, Briefcase, SourceDefender `.pye` |
+| **Freezers / packagers (experimental, unvalidated)** | 1 | PyOxidizer (experimental, unvalidated) |
 | **Protector (PyArmor)** | <!-- m:pyarmor_catalog_versions -->7<!-- /m --> versions | PyArmor v6-v9-pro (default / super / no-wrap); recovered <!-- m:pyarmor_samples -->72<!-- /m --> of 72 real-corpus samples. The v3-v5 RSA-wrapped-key tier is a runtime-key wall. |
 | **Source obfuscators (AST-evaluator)** | <!-- m:py_source_obfuscators -->20<!-- /m --> | Kramer/Specter, Berserker, Jawbreaker, BlankOBF, PlusOBF, Wodx, pyobfuscate.com, pyobfuscate.com (2026 XOR/lambda), PyObfuscator (mauricelambert), python-obfuscator (PyPI), ObfuXtreme, Manglify, Oxyry, pyminifier, online-obfuscator family, Xindex, pyobfus, Pypacker, Patchwork, pyc-zipper |
 

@@ -6,7 +6,8 @@ class FreezerManifest(TypedDict, total=False):
     entries: list[dict[str, Any]]
     entry_count: int
     interpreter_hint: None | str
-    kind: Literal["cx-freeze", "py2exe", "shiv", "pex", "py-oxidizer", "briefcase", "unknown"]
+    kind: Literal["cx-freeze", "py2exe", "bbfreeze", "shiv", "pex", "zipapp", "pyc", "py-oxidizer", "briefcase", "unknown"]
+    module_inventory: list[dict[str, Any]]
     primary_module: None | str
     python_major: None | int
     python_minor: None | int

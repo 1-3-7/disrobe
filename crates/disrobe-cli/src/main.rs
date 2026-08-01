@@ -205,7 +205,7 @@ enum Cmd {
         action: PyinstallerCmd,
     },
     #[command(
-        about = "detect & extract cx_Freeze / py2exe / shiv / pex / PyOxidizer / Briefcase containers"
+        about = "detect & extract cx_Freeze / py2exe / shiv / pex / PyOxidizer (experimental, unvalidated) / Briefcase containers"
     )]
     Pyfreeze {
         #[command(subcommand)]
@@ -1994,7 +1994,7 @@ fn print_passes() -> miette::Result<()> {
     println!("  pyarmor       v6 / v7 (dynamic-hook) + v8 / v9-pro static unpack");
     println!("  pyinstaller   PyInstaller 2.1 .. 6.x extract + AES-CTR / CFB decrypt");
     println!(
-        "  pyfreeze      cx_Freeze / py2exe / shiv / pex / PyOxidizer / Briefcase detect + extract"
+        "  pyfreeze      cx_Freeze / py2exe / shiv / pex / PyOxidizer (experimental, unvalidated) / Briefcase detect + extract"
     );
     println!("  nuitka        --onefile payload extract (kax / kay + zstd) + symbol scan");
     println!(

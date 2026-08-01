@@ -1973,13 +1973,20 @@ pub(crate) fn identify(input: PathBuf, out: Option<PathBuf>) -> miette::Result<(
         println!(
             "  - {:?} {} ({}%) -> {}",
             hit.kind,
-            hit.name,
+            identity_display_name(hit),
             hit.confidence,
             hit.support.command()
         );
     }
     println!("  wrote:        {}", out_path.display());
     Ok(())
+}
+
+fn identity_display_name(hit: &disrobe_pass_native::IdentityHit) -> &str {
+    match hit.name.as_str() {
+        "PyOxidizer" => "PyOxidizer (experimental, unvalidated)",
+        _ => &hit.name,
+    }
 }
 
 pub(crate) fn graph(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {

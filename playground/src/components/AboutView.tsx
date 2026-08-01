@@ -4,7 +4,7 @@ import type { ReactElement, ReactNode } from "react";
 const CLI_ONLY: readonly string[] = [
   "Native code: x86-64 to pseudo-C and pseudo-Rust, packer / unpacker stub emulation, bytecode-VM devirtualization, and format / compiler / protector identification.",
   "Compiled-binary language recovery: Go, .NET / CIL, JVM and Android / Dalvik from real binaries, Swift / Objective-C class-dump, and native languages (Nim, Zig, Crystal, D).",
-  "Python packaging: PyArmor detect / classify, PyInstaller, Nuitka, PyOxidizer, and Cython native-body recovery.",
+  "Python packaging: PyArmor detect / classify, PyInstaller, Nuitka, cx_Freeze, py2exe, shiv, pex, PyOxidizer (experimental, unvalidated), Briefcase, and Cython native-body recovery.",
   "Recon over trees and bundles: frisk secrets / IOC and prowl over whole directories, archives, and APK / IPA bundles.",
   "Whole-pipeline workflows: disrobe auto chaining, batch directory runs, and the self-contained offline HTML forensic report.",
 ];

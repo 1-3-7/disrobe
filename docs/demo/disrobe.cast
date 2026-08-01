@@ -18,7 +18,7 @@
 [1.260, "o", "registered passes:\r\n"]
 [1.282, "o", "  pyarmor       v6 / v7 (dynamic-hook) + v8 / v9-pro static unpack\r\n"]
 [1.311, "o", "  pyinstaller   PyInstaller 2.1 .. 6.x extract + AES-CTR / CFB decrypt\r\n"]
-[1.344, "o", "  pyfreeze      cx_Freeze / py2exe / shiv / pex / PyOxidizer / Briefcase detect + extract\r\n"]
+[1.344, "o", "  pyfreeze      cx_Freeze / py2exe / shiv / pex / PyOxidizer (experimental, unvalidated) / Briefcase detect + extract\r\n"]
 [1.379, "o", "  nuitka        --onefile payload extract (kax / kay + zstd) + symbol scan\r\n"]
 [1.414, "o", "  py            deobfuscate (peel + cleanup) / disassemble / decompile / extract / sourcedefender decrypt\r\n"]
 [1.437, "o", "  js            deobfuscate (string-array + unminify + scope-aware rename) / unbundle\r\n"]

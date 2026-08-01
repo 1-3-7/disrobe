@@ -1,12 +1,12 @@
 # DR-PYFRZ-0019
 
-**PyOxidizer config block missing**
+**experimental, unvalidated PyOxidizer parser config block missing**
 
-no embedded Python configuration was located in the PyOxidizer build.
+the experimental, unvalidated PyOxidizer parser found no embedded Python configuration.
 
 ## Common causes
 
-- older PyOxidizer build
+- artifact unsupported by the experimental, unvalidated PyOxidizer parser
 
 ## Common fixes
 
