@@ -10,7 +10,7 @@
 | Decompilers | In-house classfile and Dalvik decompilers, the Dalvik one default on `.dex` and `.apk`; CFR, Vineflower, Procyon, JADX, and others via `--backend` |
 | Language surface | Records, sealed types, pattern matching, enum constant bodies, declaration and member annotations, enhanced `for`, multi-`catch`, plus Kotlin and Scala idioms |
 | Obfuscators reversed | Zelix KlassMaster, Allatori, Stringer, DashO, DexGuard control flow, BlackObfuscator flattening; ProGuard/R8 names replayed from `mapping.txt` |
-| Families detected (9) | ProGuard/R8, Zelix KlassMaster, Allatori, Stringer, DashO, DexGuard, yGuard, SkidSuite2, JBCO (the last three detect-only) |
+| Families detected (<!-- m:jvm_families -->10<!-- /m -->) | ProGuard/R8, Zelix KlassMaster, Allatori, Stringer, DashO, DexGuard, BlackObfuscator, yGuard, SkidSuite2, JBCO (the last three detect-only) |
 | RASP vendors (<!-- m:rasp_vendors -->8<!-- /m -->) | Promon SHIELD, Guardsquare DexGuard RASP and ThreatCast, Appdome, OneSpan, Arxan/Digital.ai, Zimperium zShield, Licel DexProtector |
 | Signatures | APK signature schemes v1 (JAR) through v4 verified |
 
@@ -43,7 +43,7 @@ The in-house Dalvik decompiler, the default for `disrobe jvm decompile` on `.dex
 
 ### Obfuscator reversal
 
-`disrobe` reverses JVM obfuscators that the raw decompilers cannot (Zelix KlassMaster, Allatori, Stringer, DashO, and DexGuard control-flow obfuscation on the Android side) and replays ProGuard/R8 mapping files to restore original names. It detects nine obfuscator and protector families in total: ProGuard/R8, Zelix KlassMaster, Allatori, Stringer, DashO, DexGuard, yGuard, SkidSuite2, and JBCO (the last three detect-only, identified by marker strings and, for JBCO, its `jsr`/`ret` control flow).
+`disrobe` reverses JVM obfuscators that the raw decompilers cannot (Zelix KlassMaster, Allatori, Stringer, DashO, and DexGuard control-flow obfuscation on the Android side) and replays ProGuard/R8 mapping files to restore original names. It detects <!-- m:jvm_families -->10<!-- /m --> obfuscator and protector families in total: ProGuard/R8, Zelix KlassMaster, Allatori, Stringer, DashO, DexGuard, BlackObfuscator, yGuard, SkidSuite2, and JBCO (the last three detect-only, identified by marker strings and, for JBCO, its `jsr`/`ret` control flow).
 
 On the Android side it also fingerprints eight runtime application self-protection (RASP) vendors so an analyst knows what the app does at run time: Promon SHIELD, Guardsquare DexGuard RASP and ThreatCast, Appdome, OneSpan, Arxan/Digital.ai, Zimperium zShield, and Licel DexProtector. APK signatures are verified across schemes v1 (JAR) through v4.
 
