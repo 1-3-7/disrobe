@@ -16,9 +16,27 @@ pub enum WasmObfuscator {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WasmTransformSupport {
+    DirectHelper,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WasmRecovery {
     Reversed,
     DetectAndClassifyOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WasmPipelineSupport {
+    Delivered,
+    NotDelivered,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WasmFamilySupport {
+    pub transform: WasmTransformSupport,
+    pub pipeline: WasmPipelineSupport,
 }
 
 impl WasmObfuscator {
@@ -30,19 +48,40 @@ impl WasmObfuscator {
         Self::WasmNameObfuscator,
     ];
 
-    pub const fn recovery(self) -> Option<WasmRecovery> {
+    pub const fn support(self) -> Option<WasmFamilySupport> {
         match self {
             Self::None | Self::Unknown => None,
-            Self::WasmNameObfuscator => Some(WasmRecovery::DetectAndClassifyOnly),
-            Self::JscramblerWasm
-            | Self::Wobfuscator
-            | Self::TigressEmscripten
-            | Self::WasmMixer => Some(WasmRecovery::Reversed),
+            Self::JscramblerWasm | Self::Wobfuscator | Self::WasmMixer => Some(WasmFamilySupport {
+                transform: WasmTransformSupport::DirectHelper,
+                pipeline: WasmPipelineSupport::Delivered,
+            }),
+            Self::TigressEmscripten => Some(WasmFamilySupport {
+                transform: WasmTransformSupport::DirectHelper,
+                pipeline: WasmPipelineSupport::NotDelivered,
+            }),
+            Self::WasmNameObfuscator => Some(WasmFamilySupport {
+                transform: WasmTransformSupport::Unavailable,
+                pipeline: WasmPipelineSupport::NotDelivered,
+            }),
+        }
+    }
+
+    pub const fn recovery(self) -> Option<WasmRecovery> {
+        match self.support() {
+            Some(WasmFamilySupport {
+                transform: WasmTransformSupport::DirectHelper,
+                ..
+            }) => Some(WasmRecovery::Reversed),
+            Some(WasmFamilySupport {
+                transform: WasmTransformSupport::Unavailable,
+                ..
+            }) => Some(WasmRecovery::DetectAndClassifyOnly),
+            None => None,
         }
     }
 
     pub const fn is_named_family(self) -> bool {
-        self.recovery().is_some()
+        self.support().is_some()
     }
 }
 
@@ -344,7 +383,7 @@ mod tests {
         for family in WasmObfuscator::NAMED_FAMILIES {
             assert!(
                 family.is_named_family(),
-                "{family:?} is listed in NAMED_FAMILIES but recovery() classifies it as not a family"
+                "{family:?} is listed in NAMED_FAMILIES but support() classifies it as not a family"
             );
         }
         for stray in [WasmObfuscator::None, WasmObfuscator::Unknown] {
@@ -370,17 +409,33 @@ mod tests {
     }
 
     #[test]
-    fn only_the_name_obfuscator_is_detect_and_classify_only() {
-        let detect_only: Vec<WasmObfuscator> = WasmObfuscator::NAMED_FAMILIES
+    fn only_the_name_obfuscator_has_no_direct_helper() {
+        let unavailable: Vec<WasmObfuscator> = WasmObfuscator::NAMED_FAMILIES
             .into_iter()
-            .filter(|f: &WasmObfuscator| f.recovery() == Some(WasmRecovery::DetectAndClassifyOnly))
+            .filter(|f: &WasmObfuscator| {
+                f.support().is_some_and(|support: WasmFamilySupport| {
+                    support.transform == WasmTransformSupport::Unavailable
+                })
+            })
             .collect();
         assert_eq!(
-            detect_only,
+            unavailable,
             vec![WasmObfuscator::WasmNameObfuscator],
             "hex renames destroy the original names, so wasm-name-obfuscator is the one family \
-             this crate detects and classifies without reversing; any other family joining it \
-             lowers the published reverser count"
+             without a direct helper; any other family joining it lowers the published helper count"
         );
+    }
+
+    #[test]
+    fn legacy_recovery_projects_transform_support() {
+        assert_eq!(
+            WasmObfuscator::TigressEmscripten.recovery(),
+            Some(WasmRecovery::Reversed)
+        );
+        assert_eq!(
+            WasmObfuscator::WasmNameObfuscator.recovery(),
+            Some(WasmRecovery::DetectAndClassifyOnly)
+        );
+        assert_eq!(WasmObfuscator::Unknown.recovery(), None);
     }
 }

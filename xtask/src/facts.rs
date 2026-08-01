@@ -9,7 +9,7 @@ use crate::fileio::read_text_bounded;
 const MAX_RECOVERY_JSON_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 
-const UNPINNED_BARS: [(&str, &str); 9] = [
+const UNPINNED_BARS: [(&str, &str); 8] = [
     (
         "CPython 3.10 (161 of the pinned modules)",
         "the interpreter-band figures are measured by the python harness under each interpreter in \
@@ -41,11 +41,6 @@ const UNPINNED_BARS: [(&str, &str); 9] = [
         "Lua VM-devirt (IronBrew2 real, MoonSec synthetic)",
         "a prose description of which lineage is reversed on real output and which is not, rather \
          than a number a test can pin",
-    ),
-    (
-        "WASM direct transformation helper families",
-        "a family count whose members are named across two test files with no single declaration to \
-         compare it against",
     ),
     (
         "functions parsed",

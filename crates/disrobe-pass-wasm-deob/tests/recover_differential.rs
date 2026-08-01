@@ -2,7 +2,10 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use std::path::{Path, PathBuf};
 
-use disrobe_pass_wasm_deob::{RecoveredModule, RecoveryReport, recover_module};
+use disrobe_pass_wasm_deob::{
+    RecoveredModule, RecoveryReport, WasmFamilySupport, WasmObfuscator, WasmPipelineSupport,
+    recover_module,
+};
 use wasmtime::{Config, Engine, Linker, Module, Store, Val};
 
 const FUEL_BUDGET: u64 = 5_000_000;
@@ -241,6 +244,7 @@ fn opaque_predicate_o0_folds_interprocedurally_and_stays_intact() {
 }
 
 struct FamilyCase {
+    family: WasmObfuscator,
     clean: &'static str,
     obf: &'static str,
     exports: &'static [(&'static str, usize)],
@@ -250,6 +254,7 @@ struct FamilyCase {
 fn family_cases() -> Vec<FamilyCase> {
     vec![
         FamilyCase {
+            family: WasmObfuscator::WasmMixer,
             clean: "wasmixer_inflate.clean.wat",
             obf: "wasmixer_inflate.obf.wat",
             exports: &[("run", 2)],
@@ -258,6 +263,7 @@ fn family_cases() -> Vec<FamilyCase> {
             },
         },
         FamilyCase {
+            family: WasmObfuscator::Wobfuscator,
             clean: "wobfuscator_import.clean.wat",
             obf: "wobfuscator_import.obf.wat",
             exports: &[("mix", 2)],
@@ -266,6 +272,7 @@ fn family_cases() -> Vec<FamilyCase> {
             },
         },
         FamilyCase {
+            family: WasmObfuscator::JscramblerWasm,
             clean: "jscrambler_guard.clean.wat",
             obf: "jscrambler_guard.obf.wat",
             exports: &[("f", 2)],
@@ -277,7 +284,33 @@ fn family_cases() -> Vec<FamilyCase> {
 #[test]
 fn named_obfuscator_families_recover_to_clean_behavior_under_wasmtime() {
     let eng: Engine = engine();
-    for case in family_cases() {
+    let cases: Vec<FamilyCase> = family_cases();
+    let pipeline_delivered: Vec<WasmObfuscator> = WasmObfuscator::NAMED_FAMILIES
+        .into_iter()
+        .filter(|family: &WasmObfuscator| {
+            family.support().is_some_and(|support: WasmFamilySupport| {
+                support.pipeline == WasmPipelineSupport::Delivered
+            })
+        })
+        .collect();
+    let fixture_families: Vec<WasmObfuscator> =
+        cases.iter().map(|case: &FamilyCase| case.family).collect();
+    assert_eq!(pipeline_delivered.len(), 3);
+    assert_eq!(fixture_families.len(), pipeline_delivered.len());
+    for family in &pipeline_delivered {
+        assert!(
+            fixture_families.contains(family),
+            "the catalog calls {family:?} pipeline delivered, but no fixture drives its recovery path"
+        );
+    }
+    for family in &fixture_families {
+        assert!(
+            pipeline_delivered.contains(family),
+            "the recovery fixture for {family:?} must be represented in the pipeline-delivery catalog"
+        );
+    }
+
+    for case in cases {
         let clean_bytes: Vec<u8> = assemble(case.clean);
         let obf_bytes: Vec<u8> = assemble(case.obf);
 
