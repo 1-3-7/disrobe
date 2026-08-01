@@ -80,7 +80,7 @@ The authoritative source is always `disrobe <command> --help`. This page is a co
 | `disrobe ruby decompile\|detect <input>` | Ruby artifact analysis / flavor detection. |
 | `disrobe beam parse\|lift\|disasm <beam>` | BEAM chunk parse / Core Erlang lift / Code disasm. |
 | `disrobe pickle disasm\|decompile\|safety\|trace\|polyglot\|ml-detect <input>` | Pickle static analysis suite. |
-| `disrobe swift classdump\|shield-undo\|confidential-decrypt <input>` | Swift/ObjC class-dump, SwiftShield rename-undo, Confidential XOR-decrypt. |
+| `disrobe swift classdump\|shield-undo\|xor-decrypt <input>` | Swift/ObjC class-dump, SwiftShield rename-undo, explicit-key XOR blob decode. |
 | `disrobe macho dump\|classdump\|fat <input>` | Mach-O / fat / `.ipa` inspection. |
 | `disrobe as3 disasm\|tags <swf>` | AS3 DoABC disasm / SWF tag list. |
 | `disrobe hermes decompile\|disasm\|info <bundle>` | Hermes JS-surface lift / disasm / header. |

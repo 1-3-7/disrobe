@@ -149,7 +149,7 @@
       <g opacity="0">
         <animate attributeName="opacity" dur="117.014s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.016374"/>
         <text x="16.00" y="484.88" fill="#8fb3d9" xml:space="preserve" textLength="40.00" lengthAdjust="spacing">swift</text>
-        <text x="56.00" y="484.88" fill="#a1a1a1" xml:space="preserve" textLength="624.00" lengthAdjust="spacing">         Swift / ObjC class-dump + SwiftShield undo + Confidential XOR-decrypt</text>
+        <text x="56.00" y="484.88" fill="#a1a1a1" xml:space="preserve" textLength="672.00" lengthAdjust="spacing">         Swift / ObjC class-dump + SwiftShield undo + explicit-key XOR blob decoding</text>
       </g>
       <g opacity="0">
         <animate attributeName="opacity" dur="117.014s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.016579"/>

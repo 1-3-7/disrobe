@@ -55,7 +55,7 @@ The workspace has 61 crates under `crates/`, layered core -> ir -> passes -> sur
 - `disrobe-pass-dotnet` - in-house PE/CLR/table-stream parse, obfuscator reversers (ConfuserEx2 constant decrypt, ...), and R2R header classify, with headless ILSpy / dnSpyEx / de4dot wraps.
 - `disrobe-pass-native` - PE / ELF / Mach-O symbol recovery and in-house packer decoders (UPX / Petite / kkrunchy / MEW via a stub emulator), with a headless Ghidra wrap.
 - `disrobe-pass-go` - Go binary recovery: pclntab, moduledata, garble report, and `embed.FS` extraction.
-- `disrobe-pass-swift-objc` - Swift and Objective-C class-dump, SwiftShield undo, and Confidential XOR-decrypt.
+- `disrobe-pass-swift-objc` - Swift and Objective-C class-dump, SwiftShield undo, and explicit-key single-byte XOR blob decoding.
 - `disrobe-pass-mobile` - React Native / Hermes / Flutter / Cordova / Capacitor / NativeScript / Xamarin.
 - `disrobe-pass-lua` - Lua 5.1 through 5.4 / LuaJIT / Luau / GLua decompile and obfuscator peel.
 - `disrobe-pass-php` - encoder decode (phar / ionCube / SourceGuardian / Zend Guard) and eval-chain peel.

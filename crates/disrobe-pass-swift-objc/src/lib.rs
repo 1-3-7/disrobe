@@ -83,11 +83,10 @@ pub use provenance_header::{
     swift_class_dump_header,
 };
 pub use swift::{
-    ConfidentialDecryptResult, ConfidentialKeyRecovery, MIN_RECOVERABLE_CIPHERTEXT_LEN,
     SwiftClassDump, SwiftReflectionStrings, SwiftSectionPointers, SwiftShieldUndoMap,
-    class_dump as swift_class_dump, confidential_recover, confidential_recover_key,
-    confidential_recover_strings, confidential_xor_decrypt, demangle as swift_demangle,
-    looks_like_swift_mangled, swiftshield_undo_from_dsym_text,
+    XorBlobDecodeResult, class_dump as swift_class_dump, demangle as swift_demangle,
+    looks_like_swift_mangled, swiftshield_undo_from_dsym_text, xor_decode,
+    xor_decode_printable_strings,
 };
 pub use swift_reflect::{
     FieldDescriptorKind, SwiftField, SwiftTypeReflection,

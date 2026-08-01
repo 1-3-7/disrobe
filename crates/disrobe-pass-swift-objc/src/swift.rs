@@ -190,148 +190,26 @@ pub fn demangle(symbol: &str) -> Result<String> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConfidentialDecryptResult {
+pub struct XorBlobDecodeResult {
     pub recovered: Vec<String>,
     pub key: u8,
-    pub candidates_scanned: usize,
+    pub bytes_scanned: usize,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConfidentialKeyRecovery {
-    pub key: u8,
-    pub score: i64,
-    pub keys_tried: u16,
-    pub unambiguous: bool,
-    pub recovered: Vec<String>,
-}
-
-pub const MIN_RECOVERABLE_CIPHERTEXT_LEN: usize = 8;
 
 #[must_use]
-pub fn confidential_xor_decrypt(payload: &[u8], key: u8) -> Vec<u8> {
+pub fn xor_decode(payload: &[u8], key: u8) -> Vec<u8> {
     payload.iter().map(|b: &u8| b ^ key).collect()
 }
 
 #[must_use]
-pub fn confidential_recover_strings(blob: &[u8], key: u8) -> ConfidentialDecryptResult {
-    let decrypted: Vec<u8> = confidential_xor_decrypt(blob, key);
+pub fn xor_decode_printable_strings(blob: &[u8], key: u8) -> XorBlobDecodeResult {
+    let decrypted: Vec<u8> = xor_decode(blob, key);
     let strings: Vec<String> = split_printable_runs(&decrypted, MIN_PRINTABLE_RUN_LEN);
-    ConfidentialDecryptResult {
+    XorBlobDecodeResult {
         recovered: strings,
         key,
-        candidates_scanned: blob.len(),
+        bytes_scanned: blob.len(),
     }
-}
-
-#[must_use]
-pub fn confidential_recover_key(ciphertext: &[u8]) -> Option<ConfidentialKeyRecovery> {
-    if ciphertext.is_empty() {
-        return None;
-    }
-    crate::debug::dbg_section("swiftconfidential xor brute-force");
-    crate::debug::dbg_kv("ciphertext-len", || ciphertext.len().to_string());
-    let mut best_key: u8 = 0;
-    let mut best_score: i64 = i64::MIN;
-    let mut scratch: Vec<u8> = vec![0u8; ciphertext.len()];
-    let trace: bool = crate::debug::dbg_enabled();
-    let mut top: Vec<(u8, i64)> = Vec::new();
-    for candidate in 0u16..=255 {
-        let key: u8 = candidate as u8;
-        for (dst, src) in scratch.iter_mut().zip(ciphertext.iter()) {
-            *dst = src ^ key;
-        }
-        let score: i64 = score_plaintext(&scratch);
-        if trace {
-            top.push((key, score));
-        }
-        if score > best_score {
-            best_score = score;
-            best_key = key;
-        }
-    }
-    if trace {
-        top.sort_unstable_by(|a: &(u8, i64), b: &(u8, i64)| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        crate::debug::dbg_kv("candidate-keys-top5", || {
-            top.iter()
-                .take(5)
-                .map(|(k, s): &(u8, i64)| format!("{k:#04x}:{s}"))
-                .collect::<Vec<String>>()
-                .join(" ")
-        });
-    }
-    let recovered: Vec<String> = split_printable_runs(
-        &confidential_xor_decrypt(ciphertext, best_key),
-        MIN_PRINTABLE_RUN_LEN,
-    );
-    crate::debug::dbg_kv("chosen-key", || {
-        format!(
-            "{best_key:#04x} score={best_score} recovered_strings={}",
-            recovered.len()
-        )
-    });
-    if let Some(first) = recovered.first() {
-        crate::debug::dbg_kv_guarded("first-recovered", || first.clone());
-    }
-    Some(ConfidentialKeyRecovery {
-        key: best_key,
-        score: best_score,
-        keys_tried: 256,
-        unambiguous: ciphertext.len() >= MIN_RECOVERABLE_CIPHERTEXT_LEN,
-        recovered,
-    })
-}
-
-#[must_use]
-pub fn confidential_recover(ciphertext: &[u8]) -> Option<ConfidentialDecryptResult> {
-    let recovery: ConfidentialKeyRecovery = confidential_recover_key(ciphertext)?;
-    Some(ConfidentialDecryptResult {
-        recovered: recovery.recovered,
-        key: recovery.key,
-        candidates_scanned: ciphertext.len(),
-    })
-}
-
-fn score_plaintext(bytes: &[u8]) -> i64 {
-    let mut score: i64 = 0;
-    let mut run_len: usize = 0;
-    for &b in bytes {
-        let is_ident: bool =
-            b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'/' | b':');
-        let is_text: bool = b.is_ascii_graphic() || b == b' ';
-        if is_ident {
-            score += 3;
-        } else if is_text || b == 0 {
-            score += 1;
-        } else {
-            score -= 6;
-        }
-        if is_text {
-            run_len += 1;
-            if run_len >= MIN_PRINTABLE_RUN_LEN {
-                score += 1;
-            }
-        } else {
-            run_len = 0;
-        }
-    }
-    for marker in CONFIDENTIAL_MARKERS {
-        if window_contains(bytes, marker) {
-            score += 40;
-        }
-    }
-    score
-}
-
-const CONFIDENTIAL_MARKERS: &[&[u8]] = &[
-    b"key", b"token", b"api", b"http", b"://", b"_id", b"secret", b"auth", b"bearer", b"session",
-    b"pwd", b"pass", b"grant",
-];
-
-fn window_contains(haystack: &[u8], needle: &[u8]) -> bool {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return false;
-    }
-    haystack.windows(needle.len()).any(|w: &[u8]| w == needle)
 }
 
 const MIN_PRINTABLE_RUN_LEN: usize = 2;
@@ -407,56 +285,15 @@ mod tests {
     }
 
     #[test]
-    fn confidential_xor_roundtrip() {
+    fn xor_decode_roundtrip() {
         let plain: &[u8] = b"secret\0literal\0";
         let key: u8 = 0x5A;
-        let enc: Vec<u8> = confidential_xor_decrypt(plain, key);
-        let dec: ConfidentialDecryptResult = confidential_recover_strings(&enc, key);
+        let enc: Vec<u8> = xor_decode(plain, key);
+        let dec: XorBlobDecodeResult = xor_decode_printable_strings(&enc, key);
         assert_eq!(
             dec.recovered,
             vec!["secret".to_owned(), "literal".to_owned()]
         );
-    }
-
-    #[test]
-    fn confidential_recover_key_derives_unknown_key_from_ciphertext() {
-        let plain: &[u8] = b"api_key_for_v1_prod_use\0bearer_access_grant_x\0";
-        let true_key: u8 = 0x55;
-        let cipher: Vec<u8> = confidential_xor_decrypt(plain, true_key);
-        let recovery: ConfidentialKeyRecovery =
-            confidential_recover_key(&cipher).expect("recovery");
-        assert_eq!(
-            recovery.key, true_key,
-            "pass must derive the key from ciphertext alone"
-        );
-        assert_eq!(recovery.keys_tried, 256);
-        assert!(
-            recovery
-                .recovered
-                .iter()
-                .any(|s: &String| s == "api_key_for_v1_prod_use")
-        );
-    }
-
-    #[test]
-    fn confidential_recover_key_handles_arbitrary_keys() {
-        for true_key in [0x00u8, 0x13, 0x7f, 0xa5, 0xff] {
-            let plain: &[u8] = b"https://api.example.com/v1/auth/login\0refresh_token_abcdef123\0";
-            let cipher: Vec<u8> = confidential_xor_decrypt(plain, true_key);
-            let recovery: ConfidentialKeyRecovery =
-                confidential_recover_key(&cipher).expect("recovery");
-            assert_eq!(
-                recovery.key, true_key,
-                "recovered key {:#04x} != true key {true_key:#04x}",
-                recovery.key
-            );
-        }
-    }
-
-    #[test]
-    fn confidential_recover_returns_none_on_empty() {
-        assert!(confidential_recover_key(&[]).is_none());
-        assert!(confidential_recover(&[]).is_none());
     }
 
     #[test]

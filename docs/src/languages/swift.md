@@ -1,6 +1,6 @@
 # Swift / Objective-C
 
-`disrobe` extracts the type metadata the Objective-C and Swift runtimes leave in a native binary, demangles it, and reverses the two dominant rename obfuscators so a dump of a shielded binary reads with its original names.
+`disrobe` extracts the type metadata the Objective-C and Swift runtimes leave in a native binary, demangles it, and reverses SwiftShield rename mappings so a dump of a shielded binary reads with its original names.
 
 ## At a glance
 
@@ -9,7 +9,8 @@
 | Objective-C metadata | `__objc_classlist`, `__objc_catlist`, `__objc_protolist`: classes, categories, protocols, ivars, properties, method selectors with type encodings |
 | Swift metadata | `__swift5_types`, `__swift5_fieldmd`, `__swift5_proto`: type names, stored fields, conformances, symbols demangled |
 | Containers | Single slice via `disrobe swift classdump`; fat binaries and `.ipa` via `disrobe macho classdump`, which walks every slice |
-| Rename obfuscators | SwiftShield mapping replay, SwiftConfidential single-byte XOR string blobs |
+| Rename obfuscators | SwiftShield mapping replay |
+| String blobs | Explicit-key single-byte XOR blob decoding for model fixtures |
 | Message dispatch | `objc_msgSend`, `objc_msgSendSuper`, `objc_alloc`, and `objc_alloc_init` sites resolved to selector, receiver class, and a rendered message expression |
 | Mach-O surface | Header, load commands, segments, sections, fat slices, `LC_ENCRYPTION_INFO` records |
 
@@ -18,7 +19,7 @@
 ```sh
 disrobe swift classdump App.app/App --out dump.json
 disrobe swift shield-undo map.txt --out renames.json
-disrobe swift confidential-decrypt blob.bin --key 0x55 --out strings.json
+disrobe swift xor-decrypt blob.bin --key 0x55 --out strings.json
 
 disrobe macho classdump App.ipa --out dump.json
 disrobe macho dump App.app/App
@@ -27,7 +28,7 @@ disrobe macho slices universal.bin
 
 `classdump` reconstructs the type interface from the two metadata sources the runtime leaves in the binary, writing a header-style interface listing. Beside the JSON it writes a `.swift` source file with all recovered type declarations.
 
-`shield-undo` reverses a SwiftShield run. SwiftShield renames symbols to high-entropy identifiers and emits an `obf ==> original` mapping in the `.dSYM`. `disrobe` parses that mapping and builds the undo lookup, so a subsequent class-dump of the shielded binary reads with the original names. `confidential-decrypt` recovers plaintext strings from a SwiftConfidential XOR-obfuscated blob given its single-byte key (`--key`, default `0x55`).
+`shield-undo` reverses a SwiftShield run. SwiftShield renames symbols to high-entropy identifiers and emits an `obf ==> original` mapping in the `.dSYM`. `disrobe` parses that mapping and builds the undo lookup, so a subsequent class-dump of the shielded binary reads with the original names. `xor-decrypt` decodes printable strings from a single-byte XOR blob when the caller supplies `--key`. Its tests cover hand-authored model fixtures, not SwiftConfidential output.
 
 `macho dump` reports the header, load commands, segments, sections, and any `LC_ENCRYPTION_INFO` or `LC_ENCRYPTION_INFO_64` records. `macho slices` walks a fat binary and reports each slice's CPU type, subtype, and offset.
 

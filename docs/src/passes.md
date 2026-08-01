@@ -39,7 +39,7 @@ Run `disrobe passes` for the live list. As of the current release:
 | `beam` | `.beam` IFF parse + Core Erlang lift + Code chunk disasm. |
 | `pickle` | Disasm + decompile + safety + symbolic trace + polyglot + ML model detect. |
 | `go` | pclntab + moduledata + garble report + embed.FS extraction. |
-| `swift` | Swift / ObjC class-dump + SwiftShield undo + Confidential XOR-decrypt. |
+| `swift` | Swift / ObjC class-dump + SwiftShield undo + explicit-key XOR blob decode. |
 | `as3` | ActionScript 3 `.swf` DoABC tag disasm. |
 | `flutter` | Dart AOT / libapp.so dump + obfuscation_map parse. |
 | `catalog` | List the live obfuscator, packer, protector, freezer, and bundler registry by ecosystem and recovery tier. |
