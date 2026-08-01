@@ -345,7 +345,11 @@
         {
           "label": "WASM direct transformation helper families",
           "value": 4,
-          "source": "crates/disrobe-pass-wasm-deob/tests/obfuscators_e2e.rs and reverse_oracle.rs: four cataloged families have direct transformation helpers tested on hand-authored modules that model their output, with no artifact from the tools themselves committed: Jscrambler-WASM strip+fold, Wobfuscator optable lift, Tigress-via-Emscripten standalone unflatten and name helpers, and Wasmixer stub-unwrap. Only Jscrambler-WASM, Wobfuscator, and Wasmixer transformations are wired into the wasm deob pipeline. Tigress-via-Emscripten is detected from Emscripten markers, but its standalone helpers are not on that run path. wasm-name-obfuscator is detect+classify only and excluded from the count because hex renames destroy the original names"
+          "verified_by": {
+            "path": "crates/disrobe-pass-wasm-deob/tests/published_wasm_reverser_roster.rs",
+            "function": "published_wasm_direct_helper_count_matches_this_crate_roster"
+          },
+          "source": "This is a source catalog count, not a measured claim about output from the named upstream tools. crates/disrobe-pass-wasm-deob/src/detect.rs declares exhaustive per-family support with separate direct-transformation-helper and wasm-deob-pipeline-delivery axes. crates/disrobe-pass-wasm-deob/tests/published_wasm_reverser_roster.rs derives four helper families from that catalog and pins their named membership against this bar: Jscrambler-WASM strip+fold, Wobfuscator optable lift, Tigress-via-Emscripten standalone unflatten and name helpers, and Wasmixer stub-unwrap. crates/disrobe-pass-wasm-deob/tests/obfuscators_e2e.rs exercises each direct helper on hand-authored modules. crates/disrobe-pass-wasm-deob/tests/recover_differential.rs runs the three pipeline-delivered transformations, Jscrambler-WASM, Wobfuscator, and Wasmixer, against fixture-backed recovery and wasmtime behavior differentials. Tigress-via-Emscripten helpers are standalone and not on that path. wasm-name-obfuscator is excluded from the helper count because it has neither a direct helper nor pipeline delivery and hex renames destroy the original names"
         }
       ]
     },

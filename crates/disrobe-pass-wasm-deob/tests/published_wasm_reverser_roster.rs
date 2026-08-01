@@ -5,7 +5,10 @@ mod published;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use disrobe_pass_wasm_deob::{WasmDetection, WasmObfuscator, WasmRecovery, detect};
+use disrobe_pass_wasm_deob::{
+    WasmDetection, WasmFamilySupport, WasmObfuscator, WasmPipelineSupport, WasmTransformSupport,
+    detect,
+};
 use published::{published_bar, published_count};
 
 const PUBLISHED_HEADING: &str = "Obfuscator and bundler family coverage";
@@ -20,7 +23,13 @@ const EXPECTED_DIRECT_HELPERS: [WasmObfuscator; 4] = [
     WasmObfuscator::WasmMixer,
 ];
 
-const EXCLUDED_DETECT_AND_CLASSIFY_ONLY: [WasmObfuscator; 1] = [WasmObfuscator::WasmNameObfuscator];
+const EXPECTED_PIPELINE_DELIVERED: [WasmObfuscator; 3] = [
+    WasmObfuscator::JscramblerWasm,
+    WasmObfuscator::Wobfuscator,
+    WasmObfuscator::WasmMixer,
+];
+
+const EXCLUDED_FROM_HELPER_AND_PIPELINE: [WasmObfuscator; 1] = [WasmObfuscator::WasmNameObfuscator];
 
 const PUBLISHED_FAMILY_TOKENS: [(WasmObfuscator, &str); NAMED_FAMILY_POPULATION] = [
     (WasmObfuscator::JscramblerWasm, "Jscrambler"),
@@ -72,20 +81,34 @@ const FAMILY_EVIDENCE: [FamilyEvidence; NAMED_FAMILY_POPULATION] = [
     },
 ];
 
-type RosterEntry = (WasmObfuscator, Option<WasmRecovery>);
+type RosterEntry = (WasmObfuscator, WasmFamilySupport);
 
 fn crate_roster() -> Vec<RosterEntry> {
     WasmObfuscator::NAMED_FAMILIES
         .into_iter()
-        .map(|family: WasmObfuscator| (family, family.recovery()))
+        .map(|family: WasmObfuscator| {
+            let Some(support): Option<WasmFamilySupport> = family.support() else {
+                panic!("{family:?} is named but carries no catalog support declaration")
+            };
+            (family, support)
+        })
         .collect()
 }
 
-fn families_at(roster: &[RosterEntry], depth: WasmRecovery) -> Vec<WasmObfuscator> {
+fn transform_helper_families(roster: &[RosterEntry]) -> Vec<WasmObfuscator> {
     roster
         .iter()
         .copied()
-        .filter(|entry: &RosterEntry| entry.1 == Some(depth))
+        .filter(|entry: &RosterEntry| entry.1.transform == WasmTransformSupport::DirectHelper)
+        .map(|entry: RosterEntry| entry.0)
+        .collect()
+}
+
+fn pipeline_delivered_families(roster: &[RosterEntry]) -> Vec<WasmObfuscator> {
+    roster
+        .iter()
+        .copied()
+        .filter(|entry: &RosterEntry| entry.1.pipeline == WasmPipelineSupport::Delivered)
         .map(|entry: RosterEntry| entry.0)
         .collect()
 }
@@ -203,14 +226,22 @@ fn published_wasm_direct_helper_count_matches_this_crate_roster() {
         roster.len(),
         NAMED_FAMILY_POPULATION,
         "the named-family population is the denominator both published wasm figures are cut from, \
-         the catalog entry count and the reverser count, so it is pinned by equality: this crate \
+         the catalog entry count and the helper count, so it is pinned by equality: this crate \
          now carries {} families",
         roster.len()
     );
 
-    let direct_helpers: Vec<WasmObfuscator> = families_at(&roster, WasmRecovery::Reversed);
-    let detect_only: Vec<WasmObfuscator> =
-        families_at(&roster, WasmRecovery::DetectAndClassifyOnly);
+    let direct_helpers: Vec<WasmObfuscator> = transform_helper_families(&roster);
+    let pipeline_delivered: Vec<WasmObfuscator> = pipeline_delivered_families(&roster);
+    let excluded: Vec<WasmObfuscator> = roster
+        .iter()
+        .copied()
+        .filter(|entry: &RosterEntry| {
+            entry.1.transform == WasmTransformSupport::Unavailable
+                && entry.1.pipeline == WasmPipelineSupport::NotDelivered
+        })
+        .map(|entry: RosterEntry| entry.0)
+        .collect();
 
     assert!(
         same_members(&direct_helpers, &EXPECTED_DIRECT_HELPERS),
@@ -220,18 +251,21 @@ fn published_wasm_direct_helper_count_matches_this_crate_roster() {
          while the families changed"
     );
     assert!(
-        same_members(&detect_only, &EXCLUDED_DETECT_AND_CLASSIFY_ONLY),
-        "the published count excludes {EXCLUDED_DETECT_AND_CLASSIFY_ONLY:?} because hex renames \
-         destroy the original names, but this crate now treats {detect_only:?} as detect and \
-         classify only"
+        same_members(&pipeline_delivered, &EXPECTED_PIPELINE_DELIVERED),
+        "the wasm deob pipeline must deliver exactly {EXPECTED_PIPELINE_DELIVERED:?}, but the \
+         catalog marks {pipeline_delivered:?}; Tigress helpers are standalone and must not count \
+         as runtime delivery"
     );
     assert_eq!(
-        direct_helpers.len() + detect_only.len(),
-        NAMED_FAMILY_POPULATION,
-        "every named family is either a direct helper or detect and classify only; {} direct helpers plus {} \
-         detect-only does not account for the whole roster",
-        direct_helpers.len(),
-        detect_only.len()
+        pipeline_delivered.len(),
+        3,
+        "the runtime-delivered count is derived from the same family support declarations as the \
+         published helper count"
+    );
+    assert!(
+        same_members(&excluded, &EXCLUDED_FROM_HELPER_AND_PIPELINE),
+        "the direct-helper and pipeline exclusions must be declared together, but the catalog has \
+         {excluded:?}"
     );
     assert_eq!(
         published,
@@ -252,7 +286,7 @@ fn published_wasm_direct_helper_count_matches_this_crate_roster() {
              `{token}` in {source}"
         );
     }
-    for family in detect_only {
+    for family in excluded {
         let token: &str = published_token(family);
         assert!(
             source.contains(token),
@@ -289,9 +323,12 @@ fn the_excluded_family_is_still_detected_and_classified() {
          family excluded from the `{PUBLISHED_BAR}` count is not covered at all"
     );
     assert_eq!(
-        detection.obfuscator.recovery(),
-        Some(WasmRecovery::DetectAndClassifyOnly),
-        "the excluded family must be classified as detect and classify only"
+        detection.obfuscator.support(),
+        Some(WasmFamilySupport {
+            transform: WasmTransformSupport::Unavailable,
+            pipeline: WasmPipelineSupport::NotDelivered,
+        }),
+        "the excluded family must declare neither a direct helper nor pipeline delivery"
     );
     assert!(
         !EXPECTED_DIRECT_HELPERS.contains(&detection.obfuscator),
@@ -306,13 +343,15 @@ fn moving_the_excluded_family_into_the_direct_helper_set_breaks_the_pin() {
     let published: u64 = published_count(PUBLISHED_HEADING, PUBLISHED_BAR);
     let mutated: Vec<RosterEntry> = crate_roster()
         .into_iter()
-        .map(|entry: RosterEntry| match entry.1 {
-            Some(WasmRecovery::DetectAndClassifyOnly) => (entry.0, Some(WasmRecovery::Reversed)),
-            other => (entry.0, other),
+        .map(|(family, mut support): RosterEntry| {
+            if support.transform == WasmTransformSupport::Unavailable {
+                support.transform = WasmTransformSupport::DirectHelper;
+            }
+            (family, support)
         })
         .collect();
 
-    let direct_helpers: Vec<WasmObfuscator> = families_at(&mutated, WasmRecovery::Reversed);
+    let direct_helpers: Vec<WasmObfuscator> = transform_helper_families(&mutated);
     assert_eq!(
         direct_helpers.len(),
         NAMED_FAMILY_POPULATION,
@@ -330,13 +369,15 @@ fn moving_the_excluded_family_into_the_direct_helper_set_breaks_the_pin() {
          equal to {EXPECTED_DIRECT_HELPERS:?}"
     );
     assert!(
-        families_at(&mutated, WasmRecovery::DetectAndClassifyOnly).is_empty(),
-        "the control roster must leave nothing behind in the excluded set"
+        mutated
+            .iter()
+            .all(|entry: &RosterEntry| entry.1.transform == WasmTransformSupport::DirectHelper),
+        "the control roster must leave no family outside the direct-helper set"
     );
 }
 
 #[test]
-fn every_named_family_has_a_live_evidence_test_that_calls_its_recovery_entry_point() {
+fn every_named_family_has_a_live_evidence_test_that_calls_its_declared_entry_point() {
     let published: u64 = published_count(PUBLISHED_HEADING, PUBLISHED_BAR);
     let roster: Vec<RosterEntry> = crate_roster();
     let source: String = evidence_source();
@@ -387,7 +428,7 @@ fn every_named_family_has_a_live_evidence_test_that_calls_its_recovery_entry_poi
         assert!(
             !window.contains(IGNORE_ATTRIBUTE),
             "`{}` is named as the evidence for {:?} but is marked {IGNORE_ATTRIBUTE}, so the \
-             published {published} would survive a recovery path that stopped working",
+             published {published} would survive a declared support path that stopped working",
             row.test_fn,
             row.family
         );
@@ -395,9 +436,9 @@ fn every_named_family_has_a_live_evidence_test_that_calls_its_recovery_entry_poi
         let region: &str = evidence_region(&source, row.test_fn);
         assert!(
             calls(region, row.exercised_symbol),
-            "`{}` is the evidence that {:?} is recovered, but its body never calls \
+            "`{}` is the evidence that {:?} has its declared support, but its body never calls \
              `{}`; a test gutted to a no-op would leave the published {published} green while the \
-             recovery path was gone",
+             declared support path was gone",
             row.test_fn,
             row.family,
             row.exercised_symbol
