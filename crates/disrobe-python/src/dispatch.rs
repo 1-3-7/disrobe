@@ -632,8 +632,12 @@ fn ruby_recovered_source(analysis: &RubyAnalysis) -> PyResult<(String, f64)> {
         return Ok((yarv.decompiled.source.clone(), confidence));
     }
     if let Some(mruby) = analysis.mruby.as_ref() {
-        let confidence: f64 = if mruby.decompiled.has_body { 0.7 } else { 0.3 };
-        return Ok((mruby.decompiled.source.clone(), confidence));
+        if mruby.decompiled.has_body {
+            return Ok((mruby.decompiled.source.clone(), 0.7));
+        }
+        return Err(DisrobeError::new_err(
+            "mruby input has no fully recovered source; use disrobe.parse('ruby', bytes) for the structural analysis",
+        ));
     }
     Err(DisrobeError::new_err(format!(
         "ruby input is `{flavor:?}`, which carries no bytecode body to decompile; \

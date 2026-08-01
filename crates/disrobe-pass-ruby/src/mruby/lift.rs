@@ -50,7 +50,7 @@ impl RegVal {
             Self::True => "true".to_owned(),
             Self::False => "false".to_owned(),
             Self::Int(v) => v.to_string(),
-            Self::Sym(s) => format!(":{s}"),
+            Self::Sym(s) => format!(":{}", ruby_string_literal(s)),
             Self::Str(s) => ruby_string_literal(s),
             Self::PoolLit(s) => s.clone(),
             Self::Expr(s) | Self::Local(s) => s.clone(),
@@ -78,6 +78,8 @@ pub(crate) struct LiftOutput {
     pub(crate) unmodeled_opcodes: u32,
     pub(crate) total_opcodes: u32,
     pub(crate) unmodeled_mnemonics: Vec<String>,
+    pub(crate) full_irep_coverage: bool,
+    pub(crate) has_invalid_references: bool,
 }
 
 struct PendingDefs {
@@ -181,18 +183,25 @@ struct Lifter<'a> {
     stats: LiftStats,
     scopes: Vec<u32>,
     branch_value_reg: Option<u32>,
+    covered_ireps: BTreeSet<u32>,
+    coverage_complete: bool,
 }
 
 pub(crate) fn lift_tree(tree: &IrepTree) -> Result<LiftOutput> {
     let cap: usize = lift_output_prealloc(tree.total_insn_bytes);
     let mut out: String = String::with_capacity(cap);
+    let has_invalid_references: bool = tree_has_invalid_references(tree);
     let mut lifter: Lifter<'_> = Lifter {
         tree,
         stats: LiftStats::default(),
         scopes: Vec::new(),
         branch_value_reg: None,
+        covered_ireps: BTreeSet::new(),
+        coverage_complete: true,
     };
     lifter.record(0, 0, 0, &mut out)?;
+    let full_irep_coverage: bool =
+        lifter.coverage_complete && lifter.covered_ireps.len() == tree.records.len();
     let modeled: u32 = lifter.stats.total.saturating_sub(lifter.stats.unmodeled);
     Ok(LiftOutput {
         source: out,
@@ -200,6 +209,8 @@ pub(crate) fn lift_tree(tree: &IrepTree) -> Result<LiftOutput> {
         unmodeled_opcodes: lifter.stats.unmodeled,
         total_opcodes: lifter.stats.total,
         unmodeled_mnemonics: lifter.stats.unmodeled_ops.into_iter().collect(),
+        full_irep_coverage,
+        has_invalid_references,
     })
 }
 
@@ -210,15 +221,199 @@ fn lift_output_prealloc(total_insn_bytes: u32) -> usize {
         .min(MAX_LIFT_OUTPUT_PREALLOC)
 }
 
+fn tree_has_invalid_references(tree: &IrepTree) -> bool {
+    let record_count: usize = tree.records.len();
+    tree.records.iter().any(|record: &IrepRecord| {
+        let Ok(instructions): Result<Vec<MrubyInstruction>> = disassemble_iseq(&record.iseq) else {
+            return true;
+        };
+        instructions.iter().any(|instruction: &MrubyInstruction| {
+            let a: Option<u32> = instruction.operands.first().copied();
+            let b: Option<u32> = instruction.operands.get(1).copied();
+            let valid: bool = match instruction.op {
+                MrubyOp::LoadL => valid_pool_reference(record, b),
+                MrubyOp::Strng => valid_string_pool_reference(record, b),
+                MrubyOp::LoadSym | MrubyOp::Symbol => {
+                    valid_symbol_reference(record, b, SourceSymbolUse::Literal)
+                }
+                MrubyOp::GetGv | MrubyOp::SetGv | MrubyOp::GetSv | MrubyOp::SetSv => {
+                    valid_symbol_reference(record, b, SourceSymbolUse::Global)
+                }
+                MrubyOp::GetIv | MrubyOp::SetIv => {
+                    valid_symbol_reference(record, b, SourceSymbolUse::Instance)
+                }
+                MrubyOp::GetCv | MrubyOp::SetCv => {
+                    valid_symbol_reference(record, b, SourceSymbolUse::Class)
+                }
+                MrubyOp::GetConst
+                | MrubyOp::SetConst
+                | MrubyOp::GetMCnst
+                | MrubyOp::SetMCnst
+                | MrubyOp::Class
+                | MrubyOp::Module => valid_symbol_reference(record, b, SourceSymbolUse::Constant),
+                MrubyOp::SSend
+                | MrubyOp::SSendB
+                | MrubyOp::Send
+                | MrubyOp::SendB
+                | MrubyOp::Def => valid_symbol_reference(record, b, SourceSymbolUse::Method),
+                MrubyOp::Karg => valid_symbol_reference(record, b, SourceSymbolUse::Local),
+                MrubyOp::Alias => {
+                    valid_symbol_reference(record, a, SourceSymbolUse::Method)
+                        && valid_symbol_reference(record, b, SourceSymbolUse::Method)
+                }
+                MrubyOp::Undef => valid_symbol_reference(record, a, SourceSymbolUse::Method),
+                MrubyOp::Lambda | MrubyOp::Block | MrubyOp::Method | MrubyOp::Exec => {
+                    valid_child_reference(record, b, record_count)
+                }
+                _ => true,
+            };
+            !valid
+        })
+    })
+}
+
+#[derive(Clone, Copy)]
+enum SourceSymbolUse {
+    Literal,
+    Method,
+    Local,
+    Global,
+    Instance,
+    Class,
+    Constant,
+}
+
+fn valid_pool_reference(record: &IrepRecord, index: Option<u32>) -> bool {
+    index
+        .and_then(|index: u32| usize::try_from(index).ok())
+        .and_then(|index: usize| record.pool.get(index))
+        .is_some_and(|entry: &PoolEntry| entry.value.is_some())
+}
+
+fn valid_string_pool_reference(record: &IrepRecord, index: Option<u32>) -> bool {
+    index
+        .and_then(|index: u32| usize::try_from(index).ok())
+        .and_then(|index: usize| record.pool.get(index))
+        .is_some_and(|entry: &PoolEntry| entry.kind == PoolKind::String && entry.value.is_some())
+}
+
+fn valid_symbol_reference(record: &IrepRecord, index: Option<u32>, usage: SourceSymbolUse) -> bool {
+    index
+        .and_then(|index: u32| usize::try_from(index).ok())
+        .and_then(|index: usize| record.symbols.get(index))
+        .is_some_and(|symbol: &String| source_symbol_is_safe(symbol, usage))
+}
+
+fn source_symbol_is_safe(symbol: &str, usage: SourceSymbolUse) -> bool {
+    match usage {
+        SourceSymbolUse::Literal => !symbol.is_empty(),
+        SourceSymbolUse::Method => is_method_identifier(symbol),
+        SourceSymbolUse::Local => is_local_identifier(symbol),
+        SourceSymbolUse::Global => symbol.strip_prefix('$').is_some_and(is_local_identifier),
+        SourceSymbolUse::Instance => symbol.strip_prefix('@').is_some_and(is_local_identifier),
+        SourceSymbolUse::Class => symbol.strip_prefix("@@").is_some_and(is_local_identifier),
+        SourceSymbolUse::Constant => is_constant_identifier(symbol),
+    }
+}
+
+fn is_method_identifier(symbol: &str) -> bool {
+    let base: &str = symbol
+        .strip_suffix('?')
+        .or_else(|| symbol.strip_suffix('!'))
+        .map_or(symbol, |base: &str| base);
+    is_local_identifier(base) && !is_ruby_keyword(base)
+}
+
+fn is_local_identifier(symbol: &str) -> bool {
+    let Some(first): Option<u8> = symbol.as_bytes().first().copied() else {
+        return false;
+    };
+    (first == b'_' || first.is_ascii_lowercase())
+        && symbol
+            .as_bytes()
+            .iter()
+            .all(|byte: &u8| *byte == b'_' || byte.is_ascii_alphanumeric())
+}
+
+fn is_constant_identifier(symbol: &str) -> bool {
+    let Some(first): Option<u8> = symbol.as_bytes().first().copied() else {
+        return false;
+    };
+    first.is_ascii_uppercase()
+        && symbol
+            .as_bytes()
+            .iter()
+            .all(|byte: &u8| *byte == b'_' || byte.is_ascii_alphanumeric())
+}
+
+fn is_ruby_keyword(symbol: &str) -> bool {
+    matches!(
+        symbol,
+        "alias"
+            | "and"
+            | "begin"
+            | "break"
+            | "case"
+            | "class"
+            | "def"
+            | "defined?"
+            | "do"
+            | "else"
+            | "elsif"
+            | "end"
+            | "ensure"
+            | "false"
+            | "for"
+            | "if"
+            | "in"
+            | "module"
+            | "next"
+            | "nil"
+            | "not"
+            | "or"
+            | "redo"
+            | "rescue"
+            | "retry"
+            | "return"
+            | "self"
+            | "super"
+            | "then"
+            | "true"
+            | "undef"
+            | "unless"
+            | "until"
+            | "when"
+            | "while"
+            | "yield"
+    )
+}
+
+fn valid_child_reference(record: &IrepRecord, selector: Option<u32>, record_count: usize) -> bool {
+    selector
+        .and_then(|selector: u32| usize::try_from(selector).ok())
+        .and_then(|selector: usize| record.child_indices.get(selector))
+        .and_then(|child: &u32| usize::try_from(*child).ok())
+        .is_some_and(|child: usize| child < record_count)
+}
+
 impl Lifter<'_> {
     fn record(&mut self, index: u32, indent: u32, depth: u32, out: &mut String) -> Result<()> {
         if depth > MAX_LIFT_DEPTH {
+            self.coverage_complete = false;
             return Ok(());
         }
         let Some(rec): Option<&IrepRecord> = self.tree.records.get(index as usize) else {
+            self.coverage_complete = false;
             return Ok(());
         };
-        let ins: Vec<MrubyInstruction> = disassemble_iseq(&rec.iseq)?;
+        self.covered_ireps.insert(index);
+        let ins: Vec<MrubyInstruction> = match disassemble_iseq(&rec.iseq) {
+            Ok(instructions) => instructions,
+            Err(error) => {
+                self.coverage_complete = false;
+                return Err(error);
+            }
+        };
         let nargs: u32 = arg_count(rec);
         let nlocals: u32 = u32::from(rec.nlocals);
         let mut dests: Vec<Option<u32>> = Vec::with_capacity(ins.len());
@@ -690,9 +885,10 @@ impl Lifter<'_> {
                     .saturating_add(argc)
                     .saturating_add(kwargc.saturating_mul(2))
                     .saturating_add(1);
-                let child: u32 = match regs.get(block_reg) {
-                    RegVal::BlockProc(idx) | RegVal::MethodProc(idx) => idx,
-                    _ => u32::MAX,
+                let Some(child): Option<u32> = static_block_child(&regs.get(block_reg)) else {
+                    self.mark(instr, &pad, out);
+                    regs.set(a, RegVal::Unknown);
+                    return Ok(());
                 };
                 let block: String = self.render_block(child, frame.depth);
                 self.place(
@@ -876,11 +1072,12 @@ impl Lifter<'_> {
                 );
             }
             MrubyOp::Intern => {
-                let sym: String = match regs.get(a) {
-                    RegVal::Str(text) => format!(":{text}"),
-                    other => format!(":{}", other.render()),
+                let RegVal::Str(text) = regs.get(a) else {
+                    self.mark(instr, &pad, out);
+                    regs.set(a, RegVal::Unknown);
+                    return Ok(());
                 };
-                self.place(regs, frame, i, a, RegVal::Expr(sym), false, indent, out);
+                self.place(regs, frame, i, a, RegVal::Sym(text), false, indent, out);
             }
             MrubyOp::Super => {
                 let argc: u32 = b & 0x0f;
@@ -911,11 +1108,11 @@ impl Lifter<'_> {
                 );
             }
             MrubyOp::Lambda => {
-                let child: u32 = nth_child(rec, b);
+                let child: u32 = nth_child(rec, b).unwrap_or(u32::MAX);
                 regs.set(a, RegVal::BlockProc(child));
             }
             MrubyOp::Block => {
-                let child: u32 = nth_child(rec, b);
+                let child: u32 = nth_child(rec, b).unwrap_or(u32::MAX);
                 regs.set(a, RegVal::BlockProc(child));
             }
             MrubyOp::Break => {
@@ -1000,7 +1197,7 @@ impl Lifter<'_> {
             | MrubyOp::Ext2
             | MrubyOp::Ext3 => {}
             MrubyOp::Method => {
-                let child: u32 = nth_child(rec, b);
+                let child: u32 = nth_child(rec, b).unwrap_or(u32::MAX);
                 regs.set(a, RegVal::MethodProc(child));
             }
             MrubyOp::Def => {
@@ -1031,7 +1228,7 @@ impl Lifter<'_> {
                 pending.set_pending(a, "class", "<<self".to_owned());
             }
             MrubyOp::Exec => {
-                let child: u32 = nth_child(rec, b);
+                let child: u32 = nth_child(rec, b).unwrap_or(u32::MAX);
                 match pending.take_pending(a) {
                     Some((keyword, name)) => {
                         self.emit_block(keyword, &name, child, indent, frame.depth, out)?;
@@ -1059,9 +1256,6 @@ impl Lifter<'_> {
     }
 
     fn render_block(&mut self, child: u32, depth: u32) -> String {
-        if child == u32::MAX {
-            return " { }".to_owned();
-        }
         let nargs: u32 = self.tree.records.get(child as usize).map_or(0, arg_count);
         let params: String = if nargs == 0 {
             String::new()
@@ -1212,6 +1406,13 @@ fn jump_target_index(ins: &[MrubyInstruction], k: usize) -> Option<usize> {
     let next_pc: i64 = i64::from(ins.get(k.saturating_add(1))?.pc);
     let target: u32 = u32::try_from(next_pc.checked_add(offset)?).ok()?;
     ins.binary_search_by_key(&target, |instr| instr.pc).ok()
+}
+
+const fn static_block_child(value: &RegVal) -> Option<u32> {
+    match value {
+        RegVal::BlockProc(child) | RegVal::MethodProc(child) => Some(*child),
+        _ => None,
+    }
 }
 
 fn build_regions(ins: &[MrubyInstruction]) -> Vec<Region> {
@@ -1579,12 +1780,8 @@ fn symbol(rec: &IrepRecord, idx: u32) -> String {
         .unwrap_or_else(|| format!("sym{idx}"))
 }
 
-fn nth_child(rec: &IrepRecord, n: u32) -> u32 {
-    rec.child_indices
-        .get(n as usize)
-        .copied()
-        .or_else(|| rec.child_indices.first().copied())
-        .unwrap_or(u32::MAX)
+fn nth_child(rec: &IrepRecord, n: u32) -> Option<u32> {
+    rec.child_indices.get(n as usize).copied()
 }
 
 fn arg_count(rec: &IrepRecord) -> u32 {
@@ -1874,7 +2071,7 @@ mod tests {
             value: Some("flavor".to_owned()),
         }];
         let src: String = lift_single(iseq, pool, vec![]);
-        assert!(src.contains(":flavor"), "got: {src}");
+        assert!(src.contains(":\"flavor\""), "got: {src}");
     }
 
     #[test]
@@ -1982,6 +2179,30 @@ mod tests {
         let symbols: Vec<String> = vec!["call".to_owned()];
         let src: String = lift_single(iseq, vec![], symbols);
         assert!(src.contains("yield(1)"), "got: {src}");
+    }
+
+    #[test]
+    fn withholds_dynamic_block_sendb() {
+        let iseq: Vec<u8> = asm(&[
+            ("LOADSELF", &[1]),
+            ("BLKPUSH", &[2, 0]),
+            ("SENDB", &[1, 0, 0]),
+            ("RETURN", &[1]),
+        ]);
+        let tree: IrepTree = IrepTree {
+            total_insn_bytes: u32::try_from(iseq.len()).unwrap_or(0),
+            total_symbols: 1,
+            total_pool_entries: 0,
+            records: vec![rec(iseq, vec![], vec!["tap".to_owned()], vec![])],
+        };
+        let output: LiftOutput = lift_tree(&tree).expect("lift");
+
+        assert!(output.unmodeled_mnemonics.contains(&"SENDB".to_owned()));
+        assert!(
+            !output.source.contains("tap { }"),
+            "a dynamic block must not become an empty static block: {}",
+            output.source
+        );
     }
 
     #[test]

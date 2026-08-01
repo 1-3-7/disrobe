@@ -96,13 +96,21 @@ pub fn decompile(r: &RiteBinary, irep: Option<&IrepTree>) -> MrubyDecompiled {
                         unmodeled_opcodes: unmodeled,
                         total_opcodes: total,
                         unmodeled_mnemonics: mnemonics,
+                        full_irep_coverage,
+                        has_invalid_references,
                     } = lifted;
                     instruction_count = tree.total_insn_bytes;
                     modeled_opcodes = modeled;
                     unmodeled_opcodes = unmodeled;
                     lifted_opcodes = total;
                     unmodeled_mnemonics = mnemonics;
-                    has_body = !body.trim().is_empty();
+                    has_body = source_is_eligible(
+                        &body,
+                        tree,
+                        unmodeled,
+                        full_irep_coverage,
+                        has_invalid_references,
+                    );
                     let pct: u32 = modeled.saturating_mul(100).checked_div(total).unwrap_or(0);
                     push_line(
                         &mut s,
@@ -120,8 +128,13 @@ pub fn decompile(r: &RiteBinary, irep: Option<&IrepTree>) -> MrubyDecompiled {
                     if has_body {
                         s.push_str(&body);
                     } else {
-                        s.push_str(
-                            "# (empty body: top-level iseq carried no emitted statements)\n",
+                        append_source_withheld_reason(
+                            &mut s,
+                            tree,
+                            unmodeled,
+                            full_irep_coverage,
+                            has_invalid_references,
+                            &body,
                         );
                     }
                 }
@@ -141,7 +154,7 @@ pub fn decompile(r: &RiteBinary, irep: Option<&IrepTree>) -> MrubyDecompiled {
     if !recovered_symbols.is_empty() {
         s.push_str("# symbols:\n");
         for sym in &recovered_symbols {
-            push_line(&mut s, format_args!("#   :{sym}"));
+            push_line(&mut s, format_args!("#   :{sym:?}"));
         }
     }
     if !recovered_strings.is_empty() {
@@ -177,6 +190,57 @@ pub fn decompile(r: &RiteBinary, irep: Option<&IrepTree>) -> MrubyDecompiled {
     }
 }
 
+fn source_is_eligible(
+    body: &str,
+    tree: &IrepTree,
+    unmodeled_opcodes: u32,
+    full_irep_coverage: bool,
+    has_invalid_references: bool,
+) -> bool {
+    full_irep_coverage
+        && unmodeled_opcodes == 0
+        && !has_invalid_references
+        && tree.records.iter().all(|record| record.catch_count == 0)
+        && body
+            .lines()
+            .any(|line: &str| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
+}
+
+fn append_source_withheld_reason(
+    out: &mut String,
+    tree: &IrepTree,
+    unmodeled_opcodes: u32,
+    full_irep_coverage: bool,
+    has_invalid_references: bool,
+    body: &str,
+) {
+    if !full_irep_coverage {
+        out.push_str("# reconstructed source withheld: nested IREP coverage is incomplete\n");
+    }
+    if unmodeled_opcodes > 0 {
+        push_line(
+            out,
+            format_args!(
+                "# reconstructed source withheld: {unmodeled_opcodes} opcode(s) are unmodeled"
+            ),
+        );
+    }
+    if has_invalid_references {
+        out.push_str("# reconstructed source withheld: an IREP reference is invalid\n");
+    }
+    if tree.records.iter().any(|record| record.catch_count > 0) {
+        out.push_str(
+            "# reconstructed source withheld: catch handlers are not structurally recovered\n",
+        );
+    }
+    if !body
+        .lines()
+        .any(|line: &str| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
+    {
+        out.push_str("# reconstructed source withheld: no executable statements were recovered\n");
+    }
+}
+
 fn ascii_or_hex(b: [u8; 4]) -> String {
     if b.iter().all(|c| c.is_ascii_graphic() || *c == b' ') {
         String::from_utf8_lossy(b.as_slice()).into_owned()
@@ -190,6 +254,8 @@ fn ascii_or_hex(b: [u8; 4]) -> String {
 mod tests {
     use super::*;
     use crate::detect::RITE_MAGIC;
+    use crate::mruby::irep::{IrepRecord, PoolEntry, PoolKind};
+    use crate::mruby::ops::OPS;
     use crate::mruby::reader::{RITE_HEADER_SIZE, RiteBinary, read_rite};
 
     fn synth() -> Vec<u8> {
@@ -210,6 +276,46 @@ mod tests {
         v
     }
 
+    fn puts_iseq() -> Vec<u8> {
+        vec![
+            0x12, 0x01, 0x51, 0x02, 0x00, 0x2f, 0x01, 0x00, 0x01, 0x38, 0x01,
+        ]
+    }
+
+    fn opcode(mnemonic: &str) -> u8 {
+        u8::try_from(
+            OPS.iter()
+                .position(|entry| entry.mnemonic == mnemonic)
+                .expect("opcode present"),
+        )
+        .expect("opcode fits u8")
+    }
+
+    fn source_tree(iseq: Vec<u8>, catch_count: u16) -> IrepTree {
+        let insn_len: u32 = u32::try_from(iseq.len()).expect("iseq length");
+        IrepTree {
+            records: vec![IrepRecord {
+                depth: 0,
+                index: 0,
+                nlocals: 1,
+                nregs: 4,
+                child_count: 0,
+                catch_count,
+                insn_len,
+                iseq,
+                pool: vec![PoolEntry {
+                    kind: PoolKind::String,
+                    value: Some("hi".to_owned()),
+                }],
+                symbols: vec!["puts".to_owned()],
+                child_indices: Vec::new(),
+            }],
+            total_insn_bytes: insn_len,
+            total_symbols: 1,
+            total_pool_entries: 1,
+        }
+    }
+
     #[test]
     fn decompiles_structure_without_irep_body() {
         let bytes: Vec<u8> = synth();
@@ -224,42 +330,237 @@ mod tests {
 
     #[test]
     fn decompiles_synthetic_irep_symbols_and_body() {
-        use crate::mruby::irep::{IrepRecord, IrepTree, PoolEntry, PoolKind};
         let bytes: Vec<u8> = synth();
         let r: RiteBinary = read_rite(&bytes).expect("rite");
-        let iseq: Vec<u8> = vec![
-            0x12, 0x01, 0x51, 0x02, 0x00, 0x2f, 0x01, 0x00, 0x01, 0x38, 0x01,
-        ];
-        let tree: IrepTree = IrepTree {
-            records: vec![IrepRecord {
-                depth: 0,
-                index: 0,
-                nlocals: 1,
-                nregs: 4,
-                child_count: 0,
-                catch_count: 0,
-                insn_len: u32::try_from(iseq.len()).expect("fits"),
-                iseq,
-                pool: vec![PoolEntry {
-                    kind: PoolKind::String,
-                    value: Some("hi".to_owned()),
-                }],
-                symbols: vec!["puts".to_owned()],
-                child_indices: vec![],
-            }],
-            total_insn_bytes: 11,
-            total_symbols: 1,
-            total_pool_entries: 1,
-        };
+        let tree: IrepTree = source_tree(puts_iseq(), 0);
         let out: MrubyDecompiled = decompile(&r, Some(&tree));
         assert!(out.recovered_symbols.contains(&"puts".to_owned()));
         assert!(out.recovered_strings.contains(&"hi".to_owned()));
-        assert!(out.source.contains(":puts"));
+        assert!(out.source.contains(":\"puts\""));
         assert!(out.source.contains("irep records: 1"));
         assert!(out.has_body);
         assert!(
             out.source.contains("puts(\"hi\")"),
             "source: {}",
+            out.source
+        );
+    }
+
+    #[test]
+    fn withholds_source_when_nested_irep_coverage_is_incomplete() {
+        let bytes: Vec<u8> = synth();
+        let rite: RiteBinary = read_rite(&bytes).expect("rite");
+        let child_iseq: Vec<u8> = vec![0x38, 0x00];
+        let mut tree: IrepTree = source_tree(puts_iseq(), 0);
+        {
+            let root: &mut IrepRecord = tree.records.first_mut().expect("root record");
+            root.child_count = 1;
+            root.child_indices = vec![1];
+        }
+        tree.records.push(IrepRecord {
+            depth: 1,
+            index: 1,
+            nlocals: 1,
+            nregs: 1,
+            child_count: 0,
+            catch_count: 0,
+            insn_len: u32::try_from(child_iseq.len()).expect("child iseq length"),
+            iseq: child_iseq,
+            pool: Vec::new(),
+            symbols: Vec::new(),
+            child_indices: Vec::new(),
+        });
+        tree.total_insn_bytes = 13;
+        let out: MrubyDecompiled = decompile(&rite, Some(&tree));
+        assert!(!out.has_body);
+        assert!(
+            out.source
+                .contains("reconstructed source withheld: nested IREP coverage is incomplete"),
+            "source: {}",
+            out.source
+        );
+        assert!(
+            !out.source.contains("puts(\"hi\")"),
+            "partial nested recovery must not be emitted: {}",
+            out.source
+        );
+    }
+
+    #[test]
+    fn withholds_source_without_executable_statements() {
+        let bytes: Vec<u8> = synth();
+        let rite: RiteBinary = read_rite(&bytes).expect("rite");
+        let tree: IrepTree = source_tree(vec![0x00], 0);
+        let out: MrubyDecompiled = decompile(&rite, Some(&tree));
+        assert!(!out.has_body);
+        assert!(
+            out.source
+                .contains("reconstructed source withheld: no executable statements were recovered"),
+            "source: {}",
+            out.source
+        );
+    }
+
+    #[test]
+    fn withholds_source_when_an_opcode_is_unmodeled() {
+        let bytes: Vec<u8> = synth();
+        let rite: RiteBinary = read_rite(&bytes).expect("rite");
+        let jump_opcode: u8 = opcode("JMP");
+        let mut iseq: Vec<u8> = puts_iseq();
+        iseq.truncate(9);
+        iseq.extend_from_slice(&[jump_opcode, 0x00, 0x00, 0x38, 0x01]);
+        let tree: IrepTree = source_tree(iseq, 0);
+        let out: MrubyDecompiled = decompile(&rite, Some(&tree));
+        assert!(!out.has_body);
+        assert!(
+            out.source
+                .contains("reconstructed source withheld: 1 opcode(s) are unmodeled"),
+            "source: {}",
+            out.source
+        );
+        assert!(
+            !out.source.contains("puts(\"hi\")"),
+            "partial opcode recovery must not be emitted: {}",
+            out.source
+        );
+    }
+
+    #[test]
+    fn withholds_source_when_a_catch_handler_is_present() {
+        let bytes: Vec<u8> = synth();
+        let rite: RiteBinary = read_rite(&bytes).expect("rite");
+        let tree: IrepTree = source_tree(puts_iseq(), 1);
+        let out: MrubyDecompiled = decompile(&rite, Some(&tree));
+        assert!(!out.has_body);
+        assert!(
+            out.source.contains(
+                "reconstructed source withheld: catch handlers are not structurally recovered"
+            ),
+            "source: {}",
+            out.source
+        );
+        assert!(
+            !out.source.contains("puts(\"hi\")"),
+            "protected recovery must not be emitted: {}",
+            out.source
+        );
+    }
+
+    #[test]
+    fn withholds_source_when_a_pool_reference_is_invalid() {
+        let bytes: Vec<u8> = synth();
+        let rite: RiteBinary = read_rite(&bytes).expect("rite");
+        let mut iseq: Vec<u8> = puts_iseq();
+        let return_instruction: Vec<u8> = iseq.split_off(iseq.len().saturating_sub(2));
+        iseq.extend_from_slice(&[opcode("LOADL"), 3, 1]);
+        iseq.extend(return_instruction);
+        let tree: IrepTree = source_tree(iseq, 0);
+        let out: MrubyDecompiled = decompile(&rite, Some(&tree));
+        assert!(!out.has_body);
+        assert!(
+            out.source
+                .contains("reconstructed source withheld: an IREP reference is invalid"),
+            "source: {}",
+            out.source
+        );
+        assert!(
+            !out.source.contains("puts(\"hi\")"),
+            "a malformed pool lookup must not leave a recovered source body: {}",
+            out.source
+        );
+    }
+
+    #[test]
+    fn withholds_source_when_a_symbol_reference_is_invalid() {
+        let bytes: Vec<u8> = synth();
+        let rite: RiteBinary = read_rite(&bytes).expect("rite");
+        let iseq: Vec<u8> = vec![
+            opcode("LOADSELF"),
+            1,
+            opcode("STRING"),
+            2,
+            0,
+            opcode("SEND"),
+            1,
+            1,
+            1,
+            opcode("RETURN"),
+            1,
+        ];
+        let tree: IrepTree = source_tree(iseq, 0);
+        let out: MrubyDecompiled = decompile(&rite, Some(&tree));
+        assert!(!out.has_body);
+        assert!(
+            out.source
+                .contains("reconstructed source withheld: an IREP reference is invalid"),
+            "source: {}",
+            out.source
+        );
+        assert!(
+            !out.source.contains("sym1(\"hi\")"),
+            "a malformed symbol lookup must not synthesize a method name: {}",
+            out.source
+        );
+    }
+
+    #[test]
+    fn withholds_source_when_a_child_selector_is_invalid() {
+        let bytes: Vec<u8> = synth();
+        let rite: RiteBinary = read_rite(&bytes).expect("rite");
+        let root_iseq: Vec<u8> = vec![
+            opcode("LOADSELF"),
+            1,
+            opcode("STRING"),
+            2,
+            0,
+            opcode("BLOCK"),
+            3,
+            1,
+            opcode("SENDB"),
+            1,
+            0,
+            1,
+            opcode("RETURN"),
+            1,
+        ];
+        let child_iseq: Vec<u8> = vec![opcode("RETURN"), 0];
+        let mut tree: IrepTree = source_tree(root_iseq, 0);
+        {
+            let root: &mut IrepRecord = tree.records.first_mut().expect("root record");
+            root.child_count = 1;
+            root.child_indices = vec![1];
+        }
+        tree.records.push(IrepRecord {
+            depth: 1,
+            index: 1,
+            nlocals: 1,
+            nregs: 1,
+            child_count: 0,
+            catch_count: 0,
+            insn_len: u32::try_from(child_iseq.len()).expect("child iseq length"),
+            iseq: child_iseq,
+            pool: Vec::new(),
+            symbols: Vec::new(),
+            child_indices: Vec::new(),
+        });
+        tree.total_insn_bytes = tree
+            .records
+            .iter()
+            .map(|record: &IrepRecord| record.insn_len)
+            .sum();
+
+        let out: MrubyDecompiled = decompile(&rite, Some(&tree));
+
+        assert!(!out.has_body);
+        assert!(
+            out.source
+                .contains("reconstructed source withheld: an IREP reference is invalid"),
+            "source: {}",
+            out.source
+        );
+        assert!(
+            !out.source.contains("puts(\"hi\")"),
+            "a malformed child selector must not borrow another child body: {}",
             out.source
         );
     }
