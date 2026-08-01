@@ -13,6 +13,7 @@ use super::stmts::{
     append_handler_loop_jump, detect_inline_comprehension, first_significant,
     last_significant_back, loads_none, resolve_jump_target, structure_stmts,
     test_is_polarity_sensitive, then_continues_to_loop, then_terminating_jump,
+    trailing_loop_jump_stmt,
 };
 use super::{
     DecodedStream, PY_CO_FLAG_FUNCTION_SCOPE, StructureHiCapGuard, ThenArmEndCapGuard,
@@ -5214,8 +5215,29 @@ fn structure_pre311_try_except(
                 pre311_handler_swallow_target(stream, region.handler_start, jt)
                     .map(|t: usize| pre311_skip_jumps(stream, t, region_bound))
                     .filter(|&t: &usize| t > else_start && t <= region_bound);
+            let handler_reaches_else: bool = (region.handler_start..jt).any(|k: usize| {
+                matches!(
+                    stream.ops[k],
+                    CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+                ) && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|target: usize| {
+                    pre311_skip_jumps(stream, target, region_bound) == else_start
+                })
+            });
+            let handler_breaks: bool = (region.handler_start..jt).any(|k: usize| {
+                matches!(
+                    stream.ops[k],
+                    CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+                ) && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|target: usize| {
+                    target >= jt
+                        && matches!(
+                            trailing_loop_jump_stmt(stream, region.handler_start, k + 1),
+                            Some(Stmt::Break)
+                        )
+                })
+            });
             let real_else: bool = !pre311_enclosed_by_finally(stream, region)
-                && pre311_else_is_real(code, stream, else_start, else_end);
+                && (pre311_else_is_real(code, stream, else_start, else_end)
+                    || handler_breaks && !handler_reaches_else);
             if let Some(hj) = handler_join
                 && !pre311_enclosed_by_finally(stream, region)
                 && !pre311_span_is_implicit_none_exit(stream, hj, region_bound)
@@ -7960,6 +7982,7 @@ fn parse_pre311_except_handlers(
             let body_end: usize = pre311_handler_body_end(stream, body_start, region_end);
             let next: usize = pre311_advance_after_handler(stream, body_end, region_end);
             let body: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
+            let body: Vec<Stmt> = append_handler_loop_jump(stream, body, body_start, body_end);
             handlers.push(ExceptHandler {
                 typ: None,
                 name: None,
@@ -8041,6 +8064,8 @@ fn parse_pre311_except_handlers(
         if let Some(bound) = name.as_deref() {
             strip_named_exc_cleanup(&mut handler_body, bound);
         }
+        let handler_body: Vec<Stmt> =
+            append_handler_loop_jump(stream, handler_body, body_start, body_end);
         handlers.push(ExceptHandler {
             typ: exc_type,
             name,
@@ -8124,6 +8149,9 @@ fn pre311_handler_body_end(stream: &DecodedStream, lo: usize, hi: usize) -> usiz
             )
         )
     {
+        if matches!(trailing_loop_jump_stmt(stream, lo, end), Some(Stmt::Break)) {
+            return end;
+        }
         end -= 1;
     }
     end

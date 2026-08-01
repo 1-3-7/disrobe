@@ -1,5 +1,6 @@
 use super::branches::{
-    CondOperand, collect_value_boolop_merges, collect_value_boolop_sc, parse_cond_range,
+    CondOperand, collect_value_boolop_merges, collect_value_boolop_sc, first_jump_value_lo,
+    parse_cond_range,
 };
 use super::exprs::{build_linear_stmts_sim, is_chain_cond_jump, local_target, name_at};
 use super::stmts::{
@@ -1356,6 +1357,62 @@ fn unconditional_back_edge_is_infinite(
     (header..first_cond).any(|k: usize| completes_body_stmt(stream, k))
 }
 
+fn legacy_guarded_continue_region(
+    stream: &DecodedStream,
+    header: usize,
+    early_back_edge: usize,
+    hi: usize,
+    conds: &[usize],
+) -> Option<LoopRegion> {
+    if !stream.is_pre_311() || conds.len() < 2 {
+        return None;
+    }
+    let first_exit: usize = resolve_jump_target(stream, conds[0], &stream.ops[conds[0]])
+        .filter(|target: &usize| *target > early_back_edge)?;
+    if first_exit > hi {
+        return None;
+    }
+    for &nested_cond in &conds[1..] {
+        if nested_cond >= early_back_edge || is_value_form_shortcircuit(&stream.ops, nested_cond) {
+            continue;
+        }
+        let reentry: usize = first_jump_value_lo(stream, conds[0] + 1, nested_cond);
+        if reentry <= header {
+            continue;
+        }
+        let false_entry: usize =
+            resolve_jump_target(stream, nested_cond, &stream.ops[nested_cond])?;
+        if false_entry <= early_back_edge {
+            continue;
+        }
+        for latch in early_back_edge + 1..first_exit {
+            if !(is_cond_back_edge(&stream.ops[latch])
+                || is_cond_jump_with_backward_target(stream, latch))
+                || resolve_jump_target(stream, latch, &stream.ops[latch]) != Some(reentry)
+            {
+                continue;
+            }
+            let bottom_start: usize = bottom_test_span_start(stream, header, latch);
+            if false_entry >= bottom_start
+                || !(false_entry..bottom_start).any(|k: usize| completes_body_stmt(stream, k))
+                || (bottom_start..=latch).any(|k: usize| completes_body_stmt(stream, k))
+            {
+                continue;
+            }
+            return Some(LoopRegion {
+                kind: LoopKind::While,
+                header,
+                body_start: reentry,
+                body_end: bottom_start,
+                back_edge: latch,
+                exit: first_exit.min(hi),
+                infinite: false,
+            });
+        }
+    }
+    None
+}
+
 pub(super) fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<LoopRegion> {
     if let Some(region) = find_async_for_loop(stream, lo, hi) {
         return Some(region);
@@ -1422,35 +1479,43 @@ pub(super) fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<
                 })
                 .collect();
             let region: LoopRegion =
-                if unconditional_back_edge_is_infinite(stream, lo, header, back_edge, &conds) {
-                    let legacy_exit: usize = conds
-                        .first()
-                        .and_then(|&c: &usize| resolve_jump_target(stream, c, &stream.ops[c]))
-                        .filter(|&t: &usize| t > back_edge)
-                        .unwrap_or_else(|| (back_edge + 1).min(hi));
-                    let exit: usize =
-                        infinite_loop_reach_exit(stream, header, legacy_exit, lo, hi).min(hi);
-                    LoopRegion {
-                        kind: LoopKind::While,
-                        header,
-                        body_start: header,
-                        body_end: back_edge,
-                        back_edge,
-                        exit: exit.min(hi),
-                        infinite: true,
-                    }
-                } else {
-                    let bottom_cond: Option<usize> = conds
-                        .last()
-                        .copied()
-                        .filter(|&c: &usize| is_bottom_test(stream, c, back_edge));
-                    let effective: Vec<usize> = if bottom_cond.is_some() {
-                        conds.clone()
-                    } else {
-                        top_test_run(stream, &conds, header)
-                    };
-                    while_region(stream, header, back_edge, hi, &effective, bottom_cond)
-                };
+                legacy_guarded_continue_region(stream, header, back_edge, hi, &conds)
+                    .unwrap_or_else(|| {
+                        if unconditional_back_edge_is_infinite(
+                            stream, lo, header, back_edge, &conds,
+                        ) {
+                            let legacy_exit: usize = conds
+                                .first()
+                                .and_then(|&c: &usize| {
+                                    resolve_jump_target(stream, c, &stream.ops[c])
+                                })
+                                .filter(|&t: &usize| t > back_edge)
+                                .unwrap_or_else(|| (back_edge + 1).min(hi));
+                            let exit: usize =
+                                infinite_loop_reach_exit(stream, header, legacy_exit, lo, hi)
+                                    .min(hi);
+                            LoopRegion {
+                                kind: LoopKind::While,
+                                header,
+                                body_start: header,
+                                body_end: back_edge,
+                                back_edge,
+                                exit: exit.min(hi),
+                                infinite: true,
+                            }
+                        } else {
+                            let bottom_cond: Option<usize> = conds
+                                .last()
+                                .copied()
+                                .filter(|&c: &usize| is_bottom_test(stream, c, back_edge));
+                            let effective: Vec<usize> = if bottom_cond.is_some() {
+                                conds.clone()
+                            } else {
+                                top_test_run(stream, &conds, header)
+                            };
+                            while_region(stream, header, back_edge, hi, &effective, bottom_cond)
+                        }
+                    });
             if best.is_none_or(|b: LoopRegion| header < b.header) {
                 best = Some(region);
             }

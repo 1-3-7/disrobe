@@ -2160,7 +2160,6 @@ pub(super) fn structure_stmts(
     };
     let none_jump: bool = stream.none_jump_kind.contains_key(&jump_idx);
     if then_arm_is_bare_continue
-        && jumped.is_empty()
         && !fallthrough.is_empty()
         && !matches!(
             fallthrough.last(),
@@ -2184,6 +2183,7 @@ pub(super) fn structure_stmts(
             orelse: Vec::new(),
             line: None,
         });
+        out.extend(jumped);
         out.extend(structure_stmts(code, stream, join, hi)?);
         return Ok(out);
     }
@@ -2540,7 +2540,11 @@ pub(super) fn append_handler_loop_jump(
 }
 
 #[deny(clippy::indexing_slicing)]
-fn trailing_loop_jump_stmt(stream: &DecodedStream, lo: usize, hi: usize) -> Option<Stmt> {
+pub(super) fn trailing_loop_jump_stmt(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Option<Stmt> {
     let last_idx: usize = (lo..hi).rev().find(|&k: &usize| {
         stream.ops.get(k).is_some_and(|op: &CanonicalOp| {
             !matches!(
