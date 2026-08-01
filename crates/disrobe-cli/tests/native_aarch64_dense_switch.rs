@@ -5,6 +5,7 @@ mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use object::{Object as _, ObjectSection as _};
 use tempfile::TempDir;
@@ -55,6 +56,8 @@ const CASE_BODIES: [(i64, &[&str]); 16] = [
     (15, &["- (r_a64_x2)", "(uint64_t)(int64_t)1LL"]),
 ];
 
+static AARCH64_DECOMPILE_LOCK: Mutex<()> = Mutex::new(());
+
 fn tool_path(clang: &str, tool: &str) -> Result<PathBuf, String> {
     let output: Output = Command::new(clang)
         .arg(format!("--print-prog-name={tool}"))
@@ -95,15 +98,9 @@ fn aarch64_toolchain() -> Result<(String, PathBuf), String> {
     Ok((clang, linker))
 }
 
-fn build_aarch64_image(
-    directory: &Path,
-    clang: &str,
-    linker: &Path,
-    stripped: bool,
-) -> Result<PathBuf, String> {
+fn build_aarch64_object(directory: &Path, clang: &str) -> Result<PathBuf, String> {
     let source_path: PathBuf = directory.join("dense.c");
     let object_path: PathBuf = directory.join("dense.o");
-    let image_path: PathBuf = directory.join("dense.so");
     std::fs::write(&source_path, DENSE_SWITCH_C).expect("fixture source must be writable");
     let compiled: Output = Command::new(clang)
         .arg("--target=aarch64-unknown-linux-gnu")
@@ -127,6 +124,23 @@ fn build_aarch64_image(
             String::from_utf8_lossy(&compiled.stderr)
         ));
     }
+    if !object_path.is_file() {
+        return Err(format!(
+            "`{clang}` reported success but did not create {}",
+            object_path.display()
+        ));
+    }
+    Ok(object_path)
+}
+
+fn build_aarch64_image(
+    directory: &Path,
+    clang: &str,
+    linker: &Path,
+    stripped: bool,
+) -> Result<PathBuf, String> {
+    let object_path: PathBuf = build_aarch64_object(directory, clang)?;
+    let image_path: PathBuf = directory.join("dense.so");
     let mut link: Command = Command::new(linker);
     link.arg("-shared");
     if stripped {
@@ -176,6 +190,9 @@ fn rodata_file_range(image: &[u8]) -> (usize, usize) {
 }
 
 fn decompiled_source(image: &Path, out_dir: &Path) -> String {
+    let _guard: MutexGuard<'static, ()> = AARCH64_DECOMPILE_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     let run: common::Run = common::run_disrobe(&[
         "native",
         "decompile",
@@ -227,6 +244,23 @@ fn recovered_function<'manifest>(
             entry.get("name").and_then(serde_json::Value::as_str) == Some(name)
         })
         .unwrap_or_else(|| panic!("{name} must have a recovered manifest entry: {manifest}"))
+}
+
+fn unrecovered_function<'manifest>(
+    manifest: &'manifest serde_json::Value,
+    name: &str,
+) -> &'manifest serde_json::Value {
+    let unrecovered: &[serde_json::Value] = manifest
+        .get("unrecovered")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .expect("manifest unrecovered entries must be an array");
+    unrecovered
+        .iter()
+        .find(|entry: &&serde_json::Value| {
+            entry.get("name").and_then(serde_json::Value::as_str) == Some(name)
+        })
+        .unwrap_or_else(|| panic!("{name} must have an unrecovered manifest entry: {manifest}"))
 }
 
 #[test]
@@ -296,11 +330,31 @@ fn cli_recovers_every_dense_switch_case_from_the_object() {
         Some(true),
         "{manifest}"
     );
+    let plain_add: &serde_json::Value = recovered_function(&manifest, "plain_add");
+    assert_eq!(
+        plain_add.get("engine").and_then(serde_json::Value::as_str),
+        Some("whole-program"),
+        "{manifest}"
+    );
+    assert_eq!(
+        plain_add
+            .get("structured")
+            .and_then(serde_json::Value::as_bool),
+        Some(true),
+        "{manifest}"
+    );
     assert_eq!(
         manifest
             .get("functions_whole_program")
             .and_then(serde_json::Value::as_u64),
         Some(2),
+        "{manifest}"
+    );
+    assert_eq!(
+        manifest
+            .get("functions_image_leaf")
+            .and_then(serde_json::Value::as_u64),
+        Some(0),
         "{manifest}"
     );
     assert_eq!(
@@ -353,13 +407,19 @@ fn cli_recovers_the_dense_switch_from_a_stripped_image() {
         manifest
             .get("functions_image_leaf")
             .and_then(serde_json::Value::as_u64),
-        Some(2),
+        Some(1),
+        "{manifest}"
+    );
+    let plain_add: &serde_json::Value = recovered_function(&manifest, "plain_add");
+    assert_eq!(
+        plain_add.get("engine").and_then(serde_json::Value::as_str),
+        Some("nir"),
         "{manifest}"
     );
 }
 
 #[test]
-fn cli_refuses_a_corrupted_jump_table() {
+fn cli_reports_a_corrupted_jump_table_as_unrecovered() {
     let (clang, linker): (String, PathBuf) =
         aarch64_toolchain().expect("the CI-provisioned clang with ld.lld must be available");
     let directory: TempDir = tempfile::tempdir().expect("temporary directory must be available");
@@ -379,31 +439,94 @@ fn cli_refuses_a_corrupted_jump_table() {
 
     let out_dir: PathBuf = directory.path().join("out-corrupt");
     let source: String = decompiled_source(&corrupted, &out_dir);
-    let body: &str = dense_switch_body(&source);
-
     assert!(
-        !body.contains("switch ("),
-        "a jump table whose every entry leaves the function must not produce a switch:\n{body}"
-    );
-    assert!(
-        body.contains("(unstructured control flow)"),
-        "dense_switch must fall back to the unstructured rendering:\n{body}"
+        !source.contains("dense_switch("),
+        "a corrupted image-backed jump table must not fall through to raw lowering:\n{source}"
     );
 
     let manifest: serde_json::Value = decompile_manifest(&out_dir);
-    let dense_switch: &serde_json::Value = recovered_function(&manifest, "dense_switch");
-    assert_eq!(
+    let dense_switch: &serde_json::Value = unrecovered_function(&manifest, "dense_switch");
+    assert!(
         dense_switch
-            .get("engine")
-            .and_then(serde_json::Value::as_str),
-        Some("nir"),
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(
+                |reason: &str| reason.starts_with("image-backed recovery rejected the function:")
+            ),
+        "{manifest}"
+    );
+}
+
+#[cfg(feature = "nir-lift")]
+#[test]
+fn cli_rejects_rust_for_aarch64_until_a_rust_renderer_exists() {
+    let (clang, linker): (String, PathBuf) =
+        aarch64_toolchain().expect("the CI-provisioned clang with ld.lld must be available");
+    let directory: TempDir = tempfile::tempdir().expect("temporary directory must be available");
+    let image: PathBuf = build_aarch64_image(directory.path(), &clang, &linker, false)
+        .expect("clang must compile and link the aarch64 dense-switch image");
+    let out_dir: PathBuf = directory.path().join("out-rust");
+    let _guard: MutexGuard<'static, ()> = AARCH64_DECOMPILE_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let run: common::Run = common::run_disrobe(&[
+        "native",
+        "decompile",
+        &image.display().to_string(),
+        "--backend",
+        "native",
+        "--format",
+        "rust",
+        "--out",
+        &out_dir.display().to_string(),
+    ]);
+    assert_ne!(
+        run.code, 0,
+        "stdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    let diagnostic: String = format!("{}\n{}", run.stdout, run.stderr);
+    assert!(
+        diagnostic.contains("DR-NATIVE-0174"),
+        "the format mismatch must fail with a stable diagnostic: {diagnostic}"
+    );
+    assert!(
+        !out_dir.exists(),
+        "a rejected Rust request must not create a pseudo-C output directory"
+    );
+}
+
+#[cfg(all(feature = "nir-lift", not(feature = "devirt")))]
+#[test]
+fn cli_reports_devirt_unavailable_when_the_build_omits_it() {
+    let (clang, linker): (String, PathBuf) =
+        aarch64_toolchain().expect("the CI-provisioned clang with ld.lld must be available");
+    let directory: TempDir = tempfile::tempdir().expect("temporary directory must be available");
+    let image: PathBuf = build_aarch64_image(directory.path(), &clang, &linker, false)
+        .expect("clang must compile and link the aarch64 dense-switch image");
+
+    let out_dir: PathBuf = directory.path().join("out-no-devirt");
+    let _: String = decompiled_source(&image, &out_dir);
+    let manifest: serde_json::Value = decompile_manifest(&out_dir);
+    let devirt: &serde_json::Value = manifest.get("devirt").expect("manifest devirt summary");
+
+    assert_eq!(
+        devirt.get("enabled").and_then(serde_json::Value::as_bool),
+        Some(false),
         "{manifest}"
     );
     assert_eq!(
-        dense_switch
-            .get("structured")
-            .and_then(serde_json::Value::as_bool),
+        devirt.get("available").and_then(serde_json::Value::as_bool),
         Some(false),
         "{manifest}"
+    );
+    assert_eq!(
+        devirt.get("reason").and_then(serde_json::Value::as_str),
+        Some("devirt feature is not built"),
+        "{manifest}"
+    );
+    assert!(
+        devirt.get("applied").is_none(),
+        "an unavailable feature must not report an applied transform: {manifest}"
     );
 }

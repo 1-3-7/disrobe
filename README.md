@@ -51,7 +51,7 @@ Try it in your browser at [`1-3-7.github.io/disrobe/playground`](https://1-3-7.g
 | JavaScript, TypeScript | Recover | obfuscator.io, JS-Confuser, Jscrambler | pass-gated | [js](docs/src/languages/javascript.md) |
 | WebAssembly | Recover | 57 / 57 eligible functions execute equal | strong `[CI]` | [wasm](docs/src/languages/wasm.md) |
 | Native symbols, disasm, IR | Recover | DWARF, PDB, STABS, demangle, RTTI | pass-gated | [native](docs/src/languages/native.md) |
-| Native decompile | Recover | C and Rust output re-executes equal | pass-gated | [decompile](docs/src/languages/native-decompile.md) |
+| Native decompile | Recover | x86-64 C and Rust output re-executes equal; AArch64 emits pseudo-C | pass-gated | [decompile](docs/src/languages/native-decompile.md) |
 | Native packers | Recover | UPX `.text` and `.pdata` byte-identical | strong `[CI]` | [unpack](docs/src/languages/native-unpack.md) |
 | Native VM protectors | Detect-only | handler stream carved, not lifted | pass-gated | [unpack](docs/src/languages/native-unpack.md) |
 | Go | Recover | <!-- m:go_typename_count -->838 of 838<!-- /m --> stripped type names | strong `[CI]` | [go](docs/src/languages/go.md) |
@@ -138,7 +138,7 @@ The Oracle column names the independent reference in a few words. What that refe
 
 The Python figures count code objects, not modules. The full-stdlib row covers <!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m --> objects across <!-- m:py_stdlib_full_modules -->574<!-- /m --> modules; the pinned row covers <!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m --> objects across <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules, and the same legacy gate reaches <!-- m:py_legacy_local_count -->166 of 191<!-- /m --> locally. The Go row is measured on a stripped go1.26.3 fixture, its gate pins the count and holds the ratio above a <!-- m:go_typename_pct -->85%<!-- /m --> floor, and `go_garble_undo.rs` covers the garble leg beside it.
 
-The Android committed-corpus row is measured on small methods; 37 of 155 classes are link-skipped and ungraded, and the real-apk row further down carries the production scale. The WebAssembly execution row covers the functions that can be run at all, which is a smaller population than the 133-function corpus: a function needs a callable signature and no host imports before wasmtime can run it. The .NET Eazfuscator row has a second leg, `[local]`, in which the recovered CIL re-injects to byte-identical stdout; it needs a .NET runtime that CI does not provision.
+The Android committed-corpus row is measured on small methods; 37 of 155 classes are link-skipped and ungraded, and the real-apk row further down carries the production scale. The WebAssembly execution row covers the functions that can be run at all, which is a smaller population than the 133-function corpus: a function needs a callable signature and no host imports before wasmtime can run it. The .NET Eazfuscator row has a second `[CI]` leg in which the recovered CIL re-injects to byte-identical stdout; CI provisions the required .NET runtime.
 
 The BEAM figure is scoped to the committed `test/0` observation in each case. The test compiles the original Erlang source with OTP 27.3.4, strips both `Dbgi` and `Docs`, recovers through the Core Erlang path, recompiles the recovered source, compares exports, and then compares `test/0` exit status and stdout under real `erl`. It does not claim equivalence for every input to every export. CI enforces this gate on Linux; macOS and Windows report it as unmeasured when Erlang is absent.
 
@@ -244,7 +244,7 @@ disrobe wasm decompile module.wasm --target rust            # also ts, wat, c
 disrobe jvm decompile app.apk --out src/                    # in-house Dalvik decompiler is the default
 disrobe dotnet decompile App.dll --out src/                 # in-house CIL to C#/F#/VB
 disrobe native unpack packed.exe --out unpacked.bin         # in-house decoders plus x86 stub emulator
-disrobe native decompile app.exe --backend native           # x86-64/AArch64 to C, --format rust for Rust
+disrobe native decompile app.exe --backend native           # x86-64 to C or Rust; AArch64 to pseudo-C
 disrobe native disasm stripped.bin --emit cfg-dot           # function discovery plus per-function CFG
 disrobe native export packed.exe --format ghidra            # rebuilt PE plus a Ghidra/IDA/JSON symbol map
 disrobe query packed.exe string-decoders                    # queryable IR over stripped code
