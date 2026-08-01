@@ -5,9 +5,8 @@ use std::path::PathBuf;
 use clap::Subcommand;
 
 use disrobe_pass_swift_objc::{
-    ConfidentialDecryptResult, MachoKind, ParsedSlice, SwiftClassDump, SwiftShieldUndoMap,
-    confidential_recover_strings, detect_magic, parse_slice, swift_class_dump,
-    swiftshield_undo_from_dsym_text,
+    MachoKind, ParsedSlice, SwiftClassDump, SwiftShieldUndoMap, XorBlobDecodeResult, detect_magic,
+    parse_slice, swift_class_dump, swiftshield_undo_from_dsym_text, xor_decode_printable_strings,
 };
 
 use super::globals;
@@ -40,20 +39,20 @@ pub(crate) enum SwiftCmd {
         )]
         out: Option<PathBuf>,
     },
-    #[command(about = "recover printable strings from a SwiftConfidential XOR-encrypted blob")]
-    ConfidentialDecrypt {
+    #[command(about = "decode printable strings from a single-byte XOR blob with an explicit key")]
+    XorDecrypt {
         #[arg(help = "input XOR-encrypted blob")]
         input: PathBuf,
         #[arg(
             long,
-            default_value_t = 0x55,
-            help = "single-byte XOR key (decimal or 0xHH)"
+            value_parser = crate::parse_u8_auto,
+            help = "required single-byte XOR key (decimal or 0xHH)"
         )]
         key: u8,
         #[arg(
             short,
             long,
-            help = "output path for the recovered strings JSON (default: ./out/<stem>-confidential.json)"
+            help = "output path for the decoded strings JSON (default: ./out/<stem>-xor.json)"
         )]
         out: Option<PathBuf>,
     },
@@ -63,7 +62,7 @@ pub(crate) fn run(action: SwiftCmd) -> miette::Result<()> {
     match action {
         SwiftCmd::Classdump { input, out } => classdump(input, out),
         SwiftCmd::ShieldUndo { input, out } => shield_undo(input, out),
-        SwiftCmd::ConfidentialDecrypt { input, key, out } => confidential_decrypt(input, key, out),
+        SwiftCmd::XorDecrypt { input, key, out } => xor_decrypt(input, key, out),
     }
 }
 
@@ -169,13 +168,13 @@ fn shield_undo(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
     Ok(())
 }
 
-fn confidential_decrypt(input: PathBuf, key: u8, out: Option<PathBuf>) -> miette::Result<()> {
+fn xor_decrypt(input: PathBuf, key: u8, out: Option<PathBuf>) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0720: cannot read input: {e}"))?;
     let g: globals::Globals = globals::current();
-    let result: ConfidentialDecryptResult = confidential_recover_strings(&bytes, key);
+    let result: XorBlobDecodeResult = xor_decode_printable_strings(&bytes, key);
     if g.dry_run {
-        println!("swift confidential-decrypt: DRY-RUN");
+        println!("swift xor-decrypt: DRY-RUN");
         println!("  input:        {}", input.display());
         println!("  key:          0x{key:02x}");
         return Ok(());
@@ -183,10 +182,9 @@ fn confidential_decrypt(input: PathBuf, key: u8, out: Option<PathBuf>) -> miette
     let stem: String = input
         .file_stem()
         .and_then(OsStr::to_str)
-        .unwrap_or("swift-confidential")
+        .unwrap_or("swift-xor")
         .to_owned();
-    let out_path: PathBuf =
-        out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}-confidential.json")));
+    let out_path: PathBuf = out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}-xor.json")));
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| miette::miette!("DR-CLI-0721: cannot create dir: {e}"))?;
@@ -195,11 +193,11 @@ fn confidential_decrypt(input: PathBuf, key: u8, out: Option<PathBuf>) -> miette
         .map_err(|e| miette::miette!("DR-CLI-0722: serialize: {e}"))?;
     std::fs::write(&out_path, bytes_out)
         .map_err(|e| miette::miette!("DR-CLI-0723: cannot write output: {e}"))?;
-    println!("swift confidential-decrypt: OK");
+    println!("swift xor-decrypt: OK");
     println!("  input:        {}", input.display());
     println!("  key:          0x{key:02x}");
     println!("  recovered:    {} string(s)", result.recovered.len());
-    println!("  scanned:      {} candidates", result.candidates_scanned);
+    println!("  scanned:      {} bytes", result.bytes_scanned);
     println!("  wrote:        {}", out_path.display());
     Ok(())
 }

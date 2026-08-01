@@ -9,7 +9,6 @@ pub(crate) const REQUIRE_CORPUS_VAR: &str = "DISROBE_REQUIRE_MACHO_CORPUS";
 
 const MACHO_MAC_DIR: &str = "mobile/macho-mac";
 const SWIFTSHIELD_EDGE_DIR: &str = "mobile/macho-mac/swiftshield-edgecases";
-const CONFIDENTIAL_EDGE_DIR: &str = "mobile/macho-mac/confidential-edgecases";
 const MEGAFILE_DIR: &str = "mac/megafile";
 const IPA_DIR: &str = "mobile/ipa";
 const ZIG_DIR: &str = "native/zig";
@@ -20,8 +19,6 @@ const HOMEBREW_HINT: &str = "install the tool with Homebrew on a macOS host and 
                              binary into corpus/mobile/macho-mac";
 const SWIFT_DRIVER_HINT: &str = "copy swift-driver out of an installed Xcode toolchain on a macOS \
                                  host into corpus/mobile/macho-mac";
-const CONFIDENTIAL_HINT: &str = "rebuild the Confidential sample on a macOS host as described in \
-                                 corpus/mobile/macho-mac/confidential-edgecases";
 const LIPO_THIN_HINT: &str = "carve the slice out of the committed EdgeCases.fat with \
                               `lipo -thin <arch> EdgeCases.fat -output <name>` on a macOS host";
 const IPA_HINT: &str = "download the release .ipa named in corpus/mobile/ipa/MANIFEST.toml";
@@ -179,14 +176,6 @@ pub(crate) const EDGE_CASES_X86_64: CorpusFixture =
 
 pub(crate) const SWIFT_DRIVER: CorpusFixture =
     host_sourced(MACHO_MAC_DIR, "swift-driver", SWIFT_DRIVER_HINT);
-
-pub(crate) const CONFIDENTIAL_APP: CorpusFixture =
-    host_sourced(MACHO_MAC_DIR, "ConfidentialApp.bin", CONFIDENTIAL_HINT);
-pub(crate) const CONFIDENTIAL_EDGE_BEFORE: CorpusFixture = host_sourced(
-    CONFIDENTIAL_EDGE_DIR,
-    "ConfidentialEdgeCases.before.bin",
-    CONFIDENTIAL_HINT,
-);
 
 pub(crate) const fn macos_system_binary(name: &'static str) -> CorpusFixture {
     host_sourced(MACHO_MAC_DIR, name, MACOS_SYSTEM_HINT)

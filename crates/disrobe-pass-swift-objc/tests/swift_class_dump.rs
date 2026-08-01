@@ -80,12 +80,12 @@ fn swift_demangle_handles_class_and_struct_kinds() {
 }
 
 #[test]
-fn confidential_decrypt_xor_roundtrip() {
+fn explicit_key_xor_decode_roundtrip() {
     let secret: &[u8] = b"flag{example}\0";
     let key: u8 = 0xA5;
-    let encrypted: Vec<u8> = swift::confidential_xor_decrypt(secret, key);
-    let recovered: swift::ConfidentialDecryptResult =
-        swift::confidential_recover_strings(&encrypted, key);
+    let encrypted: Vec<u8> = swift::xor_decode(secret, key);
+    let recovered: swift::XorBlobDecodeResult =
+        swift::xor_decode_printable_strings(&encrypted, key);
     assert_eq!(recovered.recovered, vec!["flag{example}".to_owned()]);
     assert_eq!(recovered.key, key);
 }

@@ -107,7 +107,7 @@ Stacked eval-chain obfuscation (FOPO, Better PHP Obfuscator, and the base64/gzin
 | **Go** | garble report graded None / Detected / Partial / Full; `garble -literals` simple and full-key literals recovered through static blob pairing plus bounded x86-64 thunk/inline emulation. Type names resolved above an <!-- m:go_typename_pct -->85%<!-- /m --> floor on the committed go1.26.3 fixture. |
 | **Ruby** | MRI/YARV 2.6-3.4 and mruby recompile-equivalence decompile; Ruby2Exe and Ocra freezers detected; JRuby and TruffleRuby AOT classified. |
 | **BEAM** | `.beam` and `.ez` chunk parse, Core Erlang lift, Elixir `Dbgi` quoted-AST recovery. |
-| **Swift / Obj-C** | Mach-O class-dump plus SwiftConfidential and SwiftShield rename-undo; `objc_msgSend` call sites in recovered native bodies resolved to selector and receiver class. |
+| **Swift / Obj-C** | Mach-O class-dump plus SwiftShield rename-undo and explicit-key single-byte XOR blob decoding; `objc_msgSend` call sites in recovered native bodies resolved to selector and receiver class. |
 | **ActionScript 3** | SWF parse and AVM2 disasm; commercial obfuscators (secureSWF, DoSWF, Kindi, Irrfuscator, swfLock) detect-only. |
 | **Hermes / Flutter** | Hermes bytecode v60-v96 lift; Flutter Dart kernel byte-exact body recovery and ARM64 AOT disasm. |
 | **Containers / archives / filesystems / firmware** | <!-- m:containers_formats -->100<!-- /m --> formats detected, all <!-- m:containers_formats -->100<!-- /m --> carrying an in-tree extractor. <!-- roster-breadth:containers-exercised -->33<!-- /roster-breadth --> of them are driven to member bytes by an input this repository commits; the remainder are declared rather than measured. |

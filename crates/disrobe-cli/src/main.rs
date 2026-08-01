@@ -698,7 +698,7 @@ enum Cmd {
     },
     #[cfg(feature = "swift")]
     #[command(
-        about = "Swift / Objective-C class-dump, SwiftShield undo, SwiftConfidential XOR-decrypt"
+        about = "Swift / Objective-C class-dump, SwiftShield undo, explicit-key XOR blob decoding"
     )]
     Swift {
         #[command(subcommand)]
@@ -1496,6 +1496,11 @@ fn parse_u64_auto(s: &str) -> Result<u64, String> {
         )
 }
 
+fn parse_u8_auto(s: &str) -> Result<u8, String> {
+    let value: u64 = parse_u64_auto(s)?;
+    u8::try_from(value).map_err(|e: std::num::TryFromIntError| e.to_string())
+}
+
 fn install_crash_reporter() {
     if cfg!(debug_assertions) || std::env::var_os("RUST_BACKTRACE").is_some() {
         return;
@@ -2033,7 +2038,7 @@ fn print_passes() -> miette::Result<()> {
     );
     println!("  go            Go binary recovery: pclntab + moduledata + garble + embed.FS");
     println!(
-        "  swift         Swift / ObjC class-dump + SwiftShield undo + Confidential XOR-decrypt"
+        "  swift         Swift / ObjC class-dump + SwiftShield undo + explicit-key XOR blob decoding"
     );
     println!("  as3           ActionScript 3 .swf DoABC tag disasm");
     println!("  flutter       Dart AOT / libapp.so dump + obfuscation_map parse");
@@ -2046,6 +2051,15 @@ fn print_passes() -> miette::Result<()> {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_u8_auto_accepts_decimal_and_hexadecimal_values() {
+        assert_eq!(parse_u8_auto("85"), Ok(85));
+        assert_eq!(parse_u8_auto("0x55"), Ok(85));
+        assert_eq!(parse_u8_auto("0X55"), Ok(85));
+        assert!(parse_u8_auto("256").is_err());
+        assert!(parse_u8_auto("0x100").is_err());
+    }
 
     #[test]
     fn prowl_help_lists_virustotal_source() {

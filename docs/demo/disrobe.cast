@@ -38,7 +38,7 @@
 [1.834, "o", "  beam          .beam IFF parse + Core Erlang lift + Code chunk disasm\r\n"]
 [1.864, "o", "  pickle        Python pickle disasm + decompile + safety + trace + polyglot + ML detect\r\n"]
 [1.894, "o", "  go            Go binary recovery: pclntab + moduledata + garble + embed.FS\r\n"]
-[1.916, "o", "  swift         Swift / ObjC class-dump + SwiftShield undo + Confidential XOR-decrypt\r\n"]
+[1.916, "o", "  swift         Swift / ObjC class-dump + SwiftShield undo + explicit-key XOR blob decoding\r\n"]
 [1.940, "o", "  as3           ActionScript 3 .swf DoABC tag disasm\r\n"]
 [1.964, "o", "  flutter       Dart AOT / libapp.so dump + obfuscation_map parse\r\n"]
 [1.993, "o", "  chain         explicit pass pipeline orchestrator\r\n"]
