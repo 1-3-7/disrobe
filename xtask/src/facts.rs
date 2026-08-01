@@ -43,7 +43,7 @@ const UNPINNED_BARS: [(&str, &str); 9] = [
          than a number a test can pin",
     ),
     (
-        "WASM obfuscator reversers",
+        "WASM direct transformation helper families",
         "a family count whose members are named across two test files with no single declaration to \
          compare it against",
     ),

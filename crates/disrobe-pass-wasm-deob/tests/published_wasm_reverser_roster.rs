@@ -9,11 +9,11 @@ use disrobe_pass_wasm_deob::{WasmDetection, WasmObfuscator, WasmRecovery, detect
 use published::{published_bar, published_count};
 
 const PUBLISHED_HEADING: &str = "Obfuscator and bundler family coverage";
-const PUBLISHED_BAR: &str = "WASM obfuscator reversers";
+const PUBLISHED_BAR: &str = "WASM direct transformation helper families";
 
 const NAMED_FAMILY_POPULATION: usize = 5;
 
-const EXPECTED_REVERSED: [WasmObfuscator; 4] = [
+const EXPECTED_DIRECT_HELPERS: [WasmObfuscator; 4] = [
     WasmObfuscator::JscramblerWasm,
     WasmObfuscator::Wobfuscator,
     WasmObfuscator::TigressEmscripten,
@@ -195,7 +195,7 @@ fn bar_source() -> String {
 }
 
 #[test]
-fn published_wasm_reverser_count_matches_this_crate_roster() {
+fn published_wasm_direct_helper_count_matches_this_crate_roster() {
     let published: u64 = published_count(PUBLISHED_HEADING, PUBLISHED_BAR);
     let roster: Vec<RosterEntry> = crate_roster();
 
@@ -208,15 +208,15 @@ fn published_wasm_reverser_count_matches_this_crate_roster() {
         roster.len()
     );
 
-    let reversed: Vec<WasmObfuscator> = families_at(&roster, WasmRecovery::Reversed);
+    let direct_helpers: Vec<WasmObfuscator> = families_at(&roster, WasmRecovery::Reversed);
     let detect_only: Vec<WasmObfuscator> =
         families_at(&roster, WasmRecovery::DetectAndClassifyOnly);
 
     assert!(
-        same_members(&reversed, &EXPECTED_REVERSED),
+        same_members(&direct_helpers, &EXPECTED_DIRECT_HELPERS),
         "xtask/data/recovery.json publishes {published} `{PUBLISHED_BAR}` and the README and the \
-         pass table render that number, but this crate reverses {reversed:?} where the published \
-         roster is {EXPECTED_REVERSED:?}; a swap that keeps the count would leave the number green \
+         pass table render that number, but this crate's direct helper catalog is {direct_helpers:?} \
+         where the published roster is {EXPECTED_DIRECT_HELPERS:?}; a swap that keeps the count would leave the number green \
          while the families changed"
     );
     assert!(
@@ -226,25 +226,25 @@ fn published_wasm_reverser_count_matches_this_crate_roster() {
          classify only"
     );
     assert_eq!(
-        reversed.len() + detect_only.len(),
+        direct_helpers.len() + detect_only.len(),
         NAMED_FAMILY_POPULATION,
-        "every named family is either reversed or detect and classify only; {} reversed plus {} \
+        "every named family is either a direct helper or detect and classify only; {} direct helpers plus {} \
          detect-only does not account for the whole roster",
-        reversed.len(),
+        direct_helpers.len(),
         detect_only.len()
     );
     assert_eq!(
         published,
-        reversed.len() as u64,
+        direct_helpers.len() as u64,
         "xtask/data/recovery.json publishes {published} `{PUBLISHED_BAR}` and metrics.rs renders \
-         that value into README.md and docs/src/passes.md, but this crate reverses {} of the {} \
+         that value into README.md and docs/src/passes.md, but this crate catalogs direct helpers for {} of the {} \
          named families",
-        reversed.len(),
+        direct_helpers.len(),
         NAMED_FAMILY_POPULATION
     );
 
     let source: String = bar_source();
-    for family in reversed {
+    for family in direct_helpers {
         let token: &str = published_token(family);
         assert!(
             source.contains(token),
@@ -294,15 +294,15 @@ fn the_excluded_family_is_still_detected_and_classified() {
         "the excluded family must be classified as detect and classify only"
     );
     assert!(
-        !EXPECTED_REVERSED.contains(&detection.obfuscator),
-        "{:?} is excluded from the published reverser count and must never appear in the reversed \
-         roster",
+        !EXPECTED_DIRECT_HELPERS.contains(&detection.obfuscator),
+        "{:?} is excluded from the published direct helper count and must never appear in the \
+         direct helper roster",
         detection.obfuscator
     );
 }
 
 #[test]
-fn moving_the_excluded_family_into_the_reversed_set_breaks_the_pin() {
+fn moving_the_excluded_family_into_the_direct_helper_set_breaks_the_pin() {
     let published: u64 = published_count(PUBLISHED_HEADING, PUBLISHED_BAR);
     let mutated: Vec<RosterEntry> = crate_roster()
         .into_iter()
@@ -312,22 +312,22 @@ fn moving_the_excluded_family_into_the_reversed_set_breaks_the_pin() {
         })
         .collect();
 
-    let reversed: Vec<WasmObfuscator> = families_at(&mutated, WasmRecovery::Reversed);
+    let direct_helpers: Vec<WasmObfuscator> = families_at(&mutated, WasmRecovery::Reversed);
     assert_eq!(
-        reversed.len(),
+        direct_helpers.len(),
         NAMED_FAMILY_POPULATION,
-        "the control must promote every named family to reversed"
+        "the control must promote every named family into the direct helper set"
     );
     assert_ne!(
         published,
-        reversed.len() as u64,
-        "the published `{PUBLISHED_BAR}` figure must disagree with a roster that claims a reverser \
+        direct_helpers.len() as u64,
+        "the published `{PUBLISHED_BAR}` figure must disagree with a roster that claims a direct helper \
          for the detect-only family, otherwise the equality assertion above proves nothing"
     );
     assert!(
-        !same_members(&reversed, &EXPECTED_REVERSED),
-        "the membership assertion above must reject a padded roster, but {reversed:?} compared \
-         equal to {EXPECTED_REVERSED:?}"
+        !same_members(&direct_helpers, &EXPECTED_DIRECT_HELPERS),
+        "the membership assertion above must reject a padded roster, but {direct_helpers:?} compared \
+         equal to {EXPECTED_DIRECT_HELPERS:?}"
     );
     assert!(
         families_at(&mutated, WasmRecovery::DetectAndClassifyOnly).is_empty(),

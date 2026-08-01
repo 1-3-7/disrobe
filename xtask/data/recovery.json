@@ -343,9 +343,9 @@
           "source": "crates/disrobe-pass-lua/tests/ironbrew2_real_oracle.rs - IronBrew2 2.7.0 is reversed on REAL committed output (corpus/lua/ironbrew2/obfuscated/*.{min,max}.lua carry the genuine 'IronBrew:tm: obfuscation; Version 2.7.0' bootstrap), graded by a real-Lua execution differential (recover_runnable output executed under real Lua, asserted equal to the original) across hello/arith/control/tables/edge in standard and MAX mode, run in the execution-differentials CI job; MoonSec-shape recovery remains synthetic-bootstrap-only (vm_devirt_ironbrew.rs DVM1 self-authored fixture) pending a real public sample"
         },
         {
-          "label": "WASM obfuscator reversers",
+          "label": "WASM direct transformation helper families",
           "value": 4,
-          "source": "crates/disrobe-pass-wasm-deob/tests/obfuscators_e2e.rs and reverse_oracle.rs: four families' transforms undone on hand-authored modules that model their output, no artifact from the tools themselves is committed; byte/IR transforms (Jscrambler-WASM strip+fold, Wobfuscator optable lift, Tigress-via-Emscripten unflatten+demangle, Wasmixer stub-unwrap); wasm-name-obfuscator is detect+classify only (hex renames destroy the original names), so it is excluded from the reverser count"
+          "source": "crates/disrobe-pass-wasm-deob/tests/obfuscators_e2e.rs and reverse_oracle.rs: four cataloged families have direct transformation helpers tested on hand-authored modules that model their output, with no artifact from the tools themselves committed: Jscrambler-WASM strip+fold, Wobfuscator optable lift, Tigress-via-Emscripten standalone unflatten and name helpers, and Wasmixer stub-unwrap. Only Jscrambler-WASM, Wobfuscator, and Wasmixer transformations are wired into the wasm deob pipeline. Tigress-via-Emscripten is detected from Emscripten markers, but its standalone helpers are not on that run path. wasm-name-obfuscator is detect+classify only and excluded from the count because hex renames destroy the original names"
         }
       ]
     },
