@@ -10,7 +10,7 @@ For symbol recovery, disassembly, and identification see the [native guide](./na
 |---|---|
 | Architectures | x86-64 uses the shared IR pipeline and emits C or Rust; AArch64 uses object-context and NIR recovery to emit pseudo-C |
 | Output formats | C (default) for x86-64 and AArch64; idiomatic Rust for x86-64 only |
-| Call resolution | Whole-program for validated direct same-image calls in linked ELF inputs whose sibling target resolves unambiguously; unresolved, indirect, external, ambiguous, and relocatable-object calls abstain |
+| Call resolution | Whole-program for validated direct same-image calls in linked AArch64 ELF inputs whose sibling target resolves unambiguously; unresolved, indirect, external, and ambiguous calls abstain. Relocatable AArch64 objects fail before output. |
 | Switch dispatch | Dense switch recovered from the binary's own jump table |
 | Type recovery | x86-64 structs from fixed-offset access (`p->field_8`), arrays from scaled indexing (`a[i]`), unions from conflicting widths, integer width and signedness per frame slot |
 | API types | x86-64 resolved imports propagated backward into caller locals from a curated libc, kernel32, and ws2_32 prototype database, each tagged with `library!function` provenance |
@@ -37,7 +37,7 @@ Output lands at `<out>/<stem>.c` or `<out>/<stem>.rs` alongside a `manifest.json
 
 ### Call resolution and structure
 
-`--backend native` (the default) is disrobe's own x86-64 and AArch64 decompiler: no external tool, no install step. It performs whole-program call resolution over every function the module discovers, not isolated per-function guessing. For linked ELF inputs, a validated direct same-image call resolves its callee's real name and integer arity only when the sibling target is unambiguous. Indirect, external, malformed, unsupported, ambiguous, and relocatable-object calls abstain. Dense switch dispatch is recovered from the binary's own jump table rather than guessed. A function with no validated outgoing calls degrades to a plain leaf recovery, so stitching only ever improves recovery, never regresses it. AArch64 uses object-context recovery first, with the NIR lift and image-backed recovery available as narrower fallbacks.
+`--backend native` (the default) is disrobe's own x86-64 and AArch64 decompiler: no external tool, no install step. It performs whole-program call resolution over every function the module discovers, not isolated per-function guessing. For linked AArch64 ELF inputs, a validated direct same-image call resolves its callee's real name and integer arity only when the sibling target is unambiguous. Indirect, external, malformed, unsupported, and ambiguous calls abstain. Relocatable AArch64 objects fail before output because section-qualified function identity is not yet carried through the CLI. Dense switch dispatch is recovered from the binary's own jump table rather than guessed. A function with no validated outgoing calls degrades to a plain leaf recovery, so stitching only ever improves recovery, never regresses it. AArch64 uses object-context recovery first, with the NIR lift and image-backed recovery available as narrower fallbacks.
 
 ### x86-64 type recovery
 

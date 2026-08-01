@@ -610,6 +610,11 @@ fn decompile_native_aarch64<'data>(
             "DR-NATIVE-0174: `--format rust` is unavailable for aarch64 native recovery; retry with `--format c` to emit pseudo-C"
         ));
     }
+    if matches!(obj.kind(), object::ObjectKind::Relocatable) {
+        return Err(miette::miette!(
+            "DR-NATIVE-0175: aarch64 relocatable-object recovery requires section-qualified function identity; link the object before native decompile"
+        ));
+    }
     let stem: String = input
         .file_stem()
         .and_then(OsStr::to_str)
@@ -622,7 +627,7 @@ fn decompile_native_aarch64<'data>(
 
     let program: RecoveredProgram = recover_aarch64_program(bytes);
     let whole_program: BTreeMap<u64, &RecoveredFunction> =
-        if matches!(obj.kind(), object::ObjectKind::Relocatable) {
+        if obj.format() != object::BinaryFormat::Elf {
             BTreeMap::new()
         } else {
             program
