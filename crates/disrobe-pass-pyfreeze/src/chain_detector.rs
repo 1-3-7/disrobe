@@ -290,6 +290,16 @@ mod tests {
     }
 
     #[test]
+    fn pyoxidizer_verdict_preserves_serialized_marker() {
+        let bytes: &[u8] = b"PyOxidizer\0pyembed\0python312.dll";
+        let verdict: DetectVerdict = PyfreezeDetector
+            .detect(&ctx(bytes))
+            .expect("PyOxidizer markers must detect");
+        assert_eq!(verdict.format_tag, TAG_PYOXIDIZER);
+        assert_eq!(verdict.markers, vec!["pyoxidizer-symbol"]);
+    }
+
+    #[test]
     fn pass_output_kind_is_mixed() {
         let a: Artifact = Artifact::new(Rung::Raw, vec![], [0u8; 32]);
         match PYFREEZE_PASS.output_kind(&a) {

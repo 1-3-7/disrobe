@@ -14,7 +14,7 @@ The authoritative source is always `disrobe <command> --help`. This page is a co
 | `disrobe pyarmor unpack <py>` | Unpack PyArmor v6-v9-pro. `--allow-dynamic` permits the dynamic-hook fallback (trusted/sandboxed samples only). `--dynamic-timeout <SECS>`. `--mode auto\|standard\|super`. `--target <PYVER>`. `--allow-bcc`. `--strict`. `--no-cextract` / `--cextract-only`. `--all-emits` writes stubs for all 12 emit kinds. `--cache <DIR>`. |
 | `disrobe pyinstaller extract <exe>` | Extract a PyInstaller build (2.x-6.20+, AES decrypt). |
 | `disrobe pyinstaller detect <exe>` | Report cookie / Python version / TOC offsets without extracting. |
-| `disrobe pyfreeze extract <exe>` | Extract cx_Freeze / py2exe / shiv / pex / PyOxidizer / Briefcase. |
+| `disrobe pyfreeze extract <exe>` | Extract cx_Freeze / py2exe / shiv / pex / PyOxidizer (experimental, unvalidated) / Briefcase. |
 | `disrobe pyfreeze detect <exe>` | Identify the freezer without extracting. |
 | `disrobe nuitka detect\|extract\|symbols\|decompile\|const <input>` | Nuitka flavor detect, `--onefile` extract, symbol scan, constants decompile, single `.const` decode. |
 

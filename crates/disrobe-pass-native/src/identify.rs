@@ -611,7 +611,7 @@ const SIGNATURES: &[ByteSig] = &[
         kind: IdentityKind::Compiler,
         name: "PyOxidizer",
         pattern: b"pyoxidizer",
-        detail: "PyOxidizer embedded interpreter marker",
+        detail: "experimental, unvalidated PyOxidizer embedded interpreter marker",
         confidence: 85,
         support: SupportRoute::PyDecompile,
     },

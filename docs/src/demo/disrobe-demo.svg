@@ -44,7 +44,7 @@
       <g opacity="0">
         <animate attributeName="opacity" dur="117.014s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.011486"/>
         <text x="16.00" y="85.88" fill="#8fb3d9" xml:space="preserve" textLength="64.00" lengthAdjust="spacing">pyfreeze</text>
-        <text x="80.00" y="85.88" fill="#a1a1a1" xml:space="preserve" textLength="632.00" lengthAdjust="spacing">      cx_Freeze / py2exe / shiv / pex / PyOxidizer / Briefcase detect + extract</text>
+        <text x="80.00" y="85.88" fill="#a1a1a1" xml:space="preserve" textLength="856.00" lengthAdjust="spacing">      cx_Freeze / py2exe / shiv / pex / PyOxidizer (experimental, unvalidated) / Briefcase detect + extract</text>
       </g>
       <g opacity="0">
         <animate attributeName="opacity" dur="117.014s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.011785"/>

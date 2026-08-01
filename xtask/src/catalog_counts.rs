@@ -232,7 +232,11 @@ const ROSTER_ROWS: [RosterClaim; 2] = [
     },
 ];
 
-const ROSTERLESS_ROWS: [&str; 2] = ["**Freezers / packagers**", "**JS bundlers (unbundler)**"];
+const ROSTERLESS_ROWS: [&str; 3] = [
+    "**Freezers / packagers**",
+    "**Freezers / packagers (experimental, unvalidated)**",
+    "**JS bundlers (unbundler)**",
+];
 
 #[derive(Debug)]
 struct DerivedPhrase {
@@ -999,9 +1003,9 @@ mod tests {
     fn family_lists_count_parenthesised_detail_as_one_item() {
         assert_eq!(
             cell_item_count(
-                "PyInstaller 2.x-6.20+, Nuitka (onefile / standalone / module / wheel), cx_Freeze, py2exe, PyOxidizer, shiv, pex, Briefcase, SourceDefender `.pye`"
+                "PyInstaller 2.x-6.20+, Nuitka (onefile / standalone / module / wheel), cx_Freeze, py2exe, shiv, pex, Briefcase, SourceDefender `.pye`"
             ),
-            9
+            8
         );
         assert_eq!(
             cell_item_count("Promon SHIELD, Arxan / Digital.ai, Licel DexProtector"),

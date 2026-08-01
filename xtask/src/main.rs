@@ -618,11 +618,33 @@ fn freezer_manifest_schema() -> Value {
             }
         }
     });
+    let module_inventory_schema: Value = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+            "name",
+            "is_package",
+            "has_source",
+            "has_bytecode",
+            "has_bytecode_opt1",
+            "has_bytecode_opt2",
+            "has_extension"
+        ],
+        "properties": {
+            "name": {"type": "string"},
+            "is_package": {"type": "boolean"},
+            "has_source": {"type": "boolean"},
+            "has_bytecode": {"type": "boolean"},
+            "has_bytecode_opt1": {"type": "boolean"},
+            "has_bytecode_opt2": {"type": "boolean"},
+            "has_extension": {"type": "boolean"}
+        }
+    });
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "https://disrobe.dev/schemas/v0/freezer-manifest.schema.json",
         "title": "FreezerManifest",
-        "description": "Normalized manifest emitted by pyfreeze passes (cx_freeze, py2exe, shiv, pex, pyoxidizer, briefcase).",
+        "description": "Normalized manifest emitted by pyfreeze passes. The py-oxidizer kind is experimental and unvalidated.",
         "type": "object",
         "additionalProperties": false,
         "required": ["schema", "kind", "source_path", "entry_count", "entries"],
@@ -633,8 +655,11 @@ fn freezer_manifest_schema() -> Value {
                 "enum": [
                     "cx-freeze",
                     "py2exe",
+                    "bbfreeze",
                     "shiv",
                     "pex",
+                    "zipapp",
+                    "pyc",
                     "py-oxidizer",
                     "briefcase",
                     "unknown"
@@ -646,7 +671,8 @@ fn freezer_manifest_schema() -> Value {
             "interpreter_hint": {"type": ["string", "null"]},
             "entry_count": {"type": "integer", "minimum": 0},
             "primary_module": {"type": ["string", "null"]},
-            "entries": {"type": "array", "items": entry_schema}
+            "entries": {"type": "array", "items": entry_schema},
+            "module_inventory": {"type": "array", "items": module_inventory_schema}
         }
     })
 }

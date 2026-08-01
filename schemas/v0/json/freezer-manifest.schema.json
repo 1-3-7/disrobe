@@ -2,7 +2,7 @@
   "$id": "https://disrobe.dev/schemas/v0/freezer-manifest.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Normalized manifest emitted by pyfreeze passes (cx_freeze, py2exe, shiv, pex, pyoxidizer, briefcase).",
+  "description": "Normalized manifest emitted by pyfreeze passes. The py-oxidizer kind is experimental and unvalidated.",
   "properties": {
     "entries": {
       "items": {
@@ -90,13 +90,55 @@
       "enum": [
         "cx-freeze",
         "py2exe",
+        "bbfreeze",
         "shiv",
         "pex",
+        "zipapp",
+        "pyc",
         "py-oxidizer",
         "briefcase",
         "unknown"
       ],
       "type": "string"
+    },
+    "module_inventory": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "has_bytecode": {
+            "type": "boolean"
+          },
+          "has_bytecode_opt1": {
+            "type": "boolean"
+          },
+          "has_bytecode_opt2": {
+            "type": "boolean"
+          },
+          "has_extension": {
+            "type": "boolean"
+          },
+          "has_source": {
+            "type": "boolean"
+          },
+          "is_package": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "is_package",
+          "has_source",
+          "has_bytecode",
+          "has_bytecode_opt1",
+          "has_bytecode_opt2",
+          "has_extension"
+        ],
+        "type": "object"
+      },
+      "type": "array"
     },
     "primary_module": {
       "type": [

@@ -40,7 +40,7 @@ The workspace has 61 crates under `crates/`, layered core -> ir -> passes -> sur
 - `disrobe-pyarmor-cextract` - C-level `PyEval_EvalCode` intercept (PEP 669 / settrace) for v6/v7 user-code capture.
 - `disrobe-pyarmor-pytrace` - Python-level audit-hook and `sys.settrace` companion to cextract.
 - `disrobe-pass-pyinstaller` - PyInstaller 2.1 through 6.x extract plus AES-CTR/CFB decrypt.
-- `disrobe-pass-pyfreeze` - cx_Freeze / py2exe / shiv / pex / PyOxidizer / Briefcase detect and extract.
+- `disrobe-pass-pyfreeze` - cx_Freeze / py2exe / shiv / pex / PyOxidizer (experimental, unvalidated) / Briefcase detect and extract.
 - `disrobe-pass-nuitka` - `--onefile` and `--standalone` payload extract plus symbol scan.
 - `disrobe-pass-py-deob` - obfuscator peel plus AST constant-fold and dead-branch cleanup.
 - `disrobe-pass-py-disasm` - the `.pyc` disassembler (CPython 1.0 through 3.15 plus PyPy / MicroPython / Jython / IronPython).

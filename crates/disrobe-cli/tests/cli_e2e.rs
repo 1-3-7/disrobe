@@ -1013,6 +1013,50 @@ fn pyfreeze_help_lists_detect_and_extract() {
     assert_eq!(r.code, 0);
     assert!(r.stdout.contains("detect"));
     assert!(r.stdout.contains("extract"));
+    assert!(
+        r.stdout.contains("PyOxidizer (experimental, unvalidated)"),
+        "PyOxidizer must be qualified in pyfreeze help:\n{}",
+        r.stdout
+    );
+}
+
+#[test]
+fn pyfreeze_extract_qualifies_pyoxidizer_success_output() {
+    let (_input_scratch, input): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("pyoxidizer-output-label", "exe");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("pyoxidizer-output-label-out");
+    let out_dir: PathBuf = out_scratch.path().to_path_buf();
+    let mut container: Vec<u8> = b"MZ\0PyOxidizer\0python312.dll\0pyembed\x03".to_vec();
+    container.push(0);
+    container.extend_from_slice(&1u32.to_le_bytes());
+    container.extend_from_slice(&0u32.to_le_bytes());
+    container.extend_from_slice(&1u32.to_le_bytes());
+    container.push(0);
+    container.push(0);
+    write_bytes(&input, &container);
+
+    let r: Run = run_disrobe(&[
+        "pyfreeze",
+        "extract",
+        input.to_str().unwrap(),
+        "--out",
+        out_dir.to_str().unwrap(),
+    ]);
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    assert!(
+        r.stdout
+            .contains("kind:            PyOxidizer (experimental, unvalidated)"),
+        "PyOxidizer must be qualified in successful extraction output:\n{}",
+        r.stdout
+    );
+    let manifest_bytes: Vec<u8> =
+        std::fs::read(out_dir.join("manifest.json")).expect("read pyfreeze manifest");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&manifest_bytes).expect("parse pyfreeze manifest");
+    assert_eq!(
+        manifest.get("kind").and_then(serde_json::Value::as_str),
+        Some("py-oxidizer")
+    );
 }
 
 #[test]
@@ -1038,6 +1082,49 @@ fn wasm_decompile_help_documents_target_flag() {
         r.stdout.contains("--target") && r.stdout.contains("rust") && r.stdout.contains("wat"),
         "wasm decompile help missing --target options:\n{}",
         r.stdout
+    );
+}
+
+#[test]
+fn native_identify_qualifies_pyoxidizer_output_without_changing_json_name() {
+    let (_input_scratch, input): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("native-identify-pyoxidizer", "exe");
+    let (_report_scratch, report_path): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("native-identify-pyoxidizer-report", "json");
+    write_bytes(&input, b"MZ\0pyoxidizer\0embedded-python-runtime");
+
+    let r: Run = run_disrobe(&[
+        "native",
+        "identify",
+        input.to_str().unwrap(),
+        "--out",
+        report_path.to_str().unwrap(),
+    ]);
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    assert!(
+        r.stdout.contains("PyOxidizer (experimental, unvalidated)"),
+        "PyOxidizer must be qualified in native identify output:\n{}",
+        r.stdout
+    );
+
+    let report_bytes: Vec<u8> = std::fs::read(&report_path).expect("read identity report");
+    let report: serde_json::Value =
+        serde_json::from_slice(&report_bytes).expect("parse identity report");
+    let hits: &[serde_json::Value] = report
+        .get("hits")
+        .and_then(serde_json::Value::as_array)
+        .expect("identity report hits");
+    let pyoxidizer: &serde_json::Value = hits
+        .iter()
+        .find(|hit: &&serde_json::Value| {
+            hit.get("name")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|name: &str| name.contains("PyOxidizer"))
+        })
+        .expect("PyOxidizer identity hit");
+    assert_eq!(
+        pyoxidizer.get("name").and_then(serde_json::Value::as_str),
+        Some("PyOxidizer")
     );
 }
 

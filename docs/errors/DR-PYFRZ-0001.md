@@ -2,7 +2,7 @@
 
 **not a recognized python freezer container**
 
-input did not look like cx_Freeze / py2exe / shiv / pex / PyOxidizer / Briefcase.
+input did not look like cx_Freeze / py2exe / shiv / pex / PyOxidizer (experimental, unvalidated) / Briefcase.
 
 ## Common causes
 

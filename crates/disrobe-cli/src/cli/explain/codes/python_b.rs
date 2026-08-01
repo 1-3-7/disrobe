@@ -164,7 +164,7 @@ pub(super) const PYTHON_B: &[CodeEntry] = &[
     CodeEntry {
         code: "DR-PYFRZ-0001",
         title: "not a recognized python freezer container",
-        description: "input did not look like cx_Freeze / py2exe / shiv / pex / PyOxidizer / Briefcase.",
+        description: "input did not look like cx_Freeze / py2exe / shiv / pex / PyOxidizer (experimental, unvalidated) / Briefcase.",
         common_causes: &["wrong tool", "unknown freezer"],
         common_fixes: &["try other passes"],
         crate_path: "crates/disrobe-pass-pyfreeze/src/error.rs",
@@ -307,9 +307,9 @@ pub(super) const PYTHON_B: &[CodeEntry] = &[
     },
     CodeEntry {
         code: "DR-PYFRZ-0019",
-        title: "PyOxidizer config block missing",
-        description: "no embedded Python configuration was located in the PyOxidizer build.",
-        common_causes: &["older PyOxidizer build"],
+        title: "experimental, unvalidated PyOxidizer parser config block missing",
+        description: "the experimental, unvalidated PyOxidizer parser found no embedded Python configuration.",
+        common_causes: &["artifact unsupported by the experimental, unvalidated PyOxidizer parser"],
         common_fixes: &["report sample"],
         crate_path: "crates/disrobe-pass-pyfreeze/src/error.rs",
     },

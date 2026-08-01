@@ -2561,6 +2561,7 @@ dependencies = [
  "disrobe-pass-py-decompile",
  "disrobe-py-marshal",
  "disrobe-testkit",
+ "jsonschema",
  "miette",
  "object",
  "serde",

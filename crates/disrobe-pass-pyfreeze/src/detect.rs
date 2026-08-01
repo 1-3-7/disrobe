@@ -90,9 +90,12 @@ pub fn detect_bytes(bytes: &[u8], source_path: Option<&Path>) -> Detection {
 
     if looks_like_pyoxidizer(bytes) {
         dbg_kv("classify", || {
-            "PyOxidizer (pyembed runtime markers)".to_owned()
+            "PyOxidizer (experimental, unvalidated pyembed runtime markers)".to_owned()
         });
-        reasons.push("pyembed/PyOxidizer runtime markers present".to_owned());
+        reasons.push(
+            "experimental, unvalidated PyOxidizer classification from pyembed runtime markers"
+                .to_owned(),
+        );
         return Detection {
             kind: FreezerKind::PyOxidizer,
             confidence: 0.88,
@@ -170,7 +173,8 @@ pub fn detect_bytes(bytes: &[u8], source_path: Option<&Path>) -> Detection {
         kind: FreezerKind::Unknown,
         confidence: 0.0,
         reasons: vec![
-            "no cx_freeze / py2exe / shiv / pex / pyoxidizer / briefcase marker matched".to_owned(),
+            "no cx_freeze / py2exe / shiv / pex / PyOxidizer (experimental, unvalidated) / briefcase marker matched"
+                .to_owned(),
         ],
     }
 }

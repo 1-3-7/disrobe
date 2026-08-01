@@ -6,7 +6,7 @@ pub type Result<T> = core::result::Result<T, Error>;
 #[derive(Debug, Error, Diagnostic)]
 pub enum Error {
     #[error(
-        "DR-PYFRZ-0001: input is not a recognized Python freezer/wheel-pack container (cx_Freeze, py2exe, shiv, pex, zipapp, pyc)"
+        "DR-PYFRZ-0001: input is not a recognized Python freezer/wheel-pack container (cx_Freeze, py2exe, shiv, pex, PyOxidizer (experimental, unvalidated), Briefcase, zipapp, pyc)"
     )]
     UnknownFormat,
 
@@ -68,7 +68,9 @@ pub enum Error {
     #[error("DR-PYFRZ-0018: extraction quota exceeded on entry `{entry}`: {reason}")]
     QuotaExceeded { entry: String, reason: String },
 
-    #[error("DR-PYFRZ-0019: PyOxidizer detection found no embedded Python configuration block")]
+    #[error(
+        "DR-PYFRZ-0019: experimental, unvalidated PyOxidizer parser found no embedded Python configuration block"
+    )]
     PyOxidizerConfigMissing,
 
     #[error(
@@ -96,7 +98,9 @@ pub enum Error {
     #[error("DR-PYFRZ-0025: zipapp archive has no Python module entry")]
     ZipappPythonEntryMissing,
 
-    #[error("DR-PYFRZ-0026: PyOxidizer packed-resources module index malformed: {0}")]
+    #[error(
+        "DR-PYFRZ-0026: experimental, unvalidated PyOxidizer packed-resources parser found a malformed module index: {0}"
+    )]
     PyOxidizerResourceIndex(String),
 
     #[error(

@@ -153,7 +153,7 @@ Each `DR-<DOMAIN>-<NNNN>` code in the in-tree registry (`crates/disrobe-cli/src/
 | [DR-PYFRZ-0016](./DR-PYFRZ-0016.md) | payload decompression failed |
 | [DR-PYFRZ-0017](./DR-PYFRZ-0017.md) | json manifest parse failed |
 | [DR-PYFRZ-0018](./DR-PYFRZ-0018.md) | pyfreeze quota exceeded |
-| [DR-PYFRZ-0019](./DR-PYFRZ-0019.md) | PyOxidizer config block missing |
+| [DR-PYFRZ-0019](./DR-PYFRZ-0019.md) | experimental, unvalidated PyOxidizer parser config block missing |
 | [DR-PYFRZ-0020](./DR-PYFRZ-0020.md) | Briefcase missing sibling layout |
 | [DR-PYINST-0001](./DR-PYINST-0001.md) | PyInstaller MEI cookie not found |
 | [DR-PYINST-0002](./DR-PYINST-0002.md) | PyInstaller cookie truncated |

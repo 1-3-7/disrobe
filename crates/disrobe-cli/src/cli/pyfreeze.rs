@@ -6,14 +6,14 @@ use clap::Subcommand;
 #[derive(Subcommand, Debug)]
 pub(crate) enum PyfreezeCmd {
     #[command(
-        about = "detect which Python freezer produced the input (cx_Freeze, py2exe, shiv, pex, PyOxidizer, Briefcase) without extracting"
+        about = "detect which Python freezer produced the input (cx_Freeze, py2exe, shiv, pex, PyOxidizer (experimental, unvalidated), Briefcase) without extracting"
     )]
     Detect {
         #[arg(help = "executable to inspect")]
         input: PathBuf,
     },
     #[command(
-        about = "extract a cx_Freeze / py2exe / shiv / pex / PyOxidizer / Briefcase container"
+        about = "extract a cx_Freeze / py2exe / shiv / pex / PyOxidizer (experimental, unvalidated) / Briefcase container"
     )]
     Extract {
         #[arg(help = "executable to extract")]
@@ -39,7 +39,7 @@ fn detect(input: PathBuf) -> miette::Result<()> {
         disrobe_pass_pyfreeze::detect(&input).map_err(|e| miette::miette!("{e}"))?;
     println!("pyfreeze detect: OK");
     println!("  input:      {}", input.display());
-    println!("  kind:       {:?}", det.kind);
+    println!("  kind:       {}", human_kind(det.kind));
     println!("  confidence: {:.2}", det.confidence);
     for r in &det.reasons {
         println!("  reason:     {r}");
@@ -66,7 +66,7 @@ fn extract(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
         .map_err(|e| miette::miette!("DR-CLI-0061: cannot write manifest: {e}"))?;
     println!("pyfreeze extract: OK");
     println!("  input:           {}", input.display());
-    println!("  kind:            {:?}", result.detection.kind);
+    println!("  kind:            {}", human_kind(result.detection.kind));
     println!("  entries:         {}", result.extracted_count);
     if !result.manifest.module_inventory.is_empty() {
         println!(
@@ -111,4 +111,13 @@ fn extract(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
     println!("  out dir:         {}", out_dir.display());
     println!("  manifest:        {}", manifest_path.display());
     Ok(())
+}
+
+fn human_kind(kind: disrobe_pass_pyfreeze::FreezerKind) -> String {
+    match kind {
+        disrobe_pass_pyfreeze::FreezerKind::PyOxidizer => {
+            "PyOxidizer (experimental, unvalidated)".to_owned()
+        }
+        other => format!("{other:?}"),
+    }
 }

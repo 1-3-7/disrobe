@@ -10,7 +10,7 @@ Run `disrobe passes` for the live list. As of the current release:
 |---|---|
 | `pyarmor` | PyArmor v6 / v7 (dynamic-hook) + v8 / v9-pro static unpack. |
 | `pyinstaller` | PyInstaller 2.x-6.20+ extract + AES-CTR / CFB decrypt. |
-| `pyfreeze` | cx_Freeze / py2exe / shiv / pex / PyOxidizer / Briefcase detect + extract. |
+| `pyfreeze` | cx_Freeze / py2exe / shiv / pex / PyOxidizer (experimental, unvalidated) / Briefcase detect + extract. |
 | `nuitka` | `--onefile` payload extract (zstd) + symbol / constants scan. |
 | `py` | Deobfuscate (peel + cleanup) / disassemble / decompile / extract / SourceDefender decrypt. |
 | `js` | Deobfuscate (string-array + unminify + scope-aware rename) / unbundle, detecting <!-- m:js_bundlers -->11<!-- /m --> bundler families. |
