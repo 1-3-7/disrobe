@@ -171,3 +171,22 @@ fn otp_release(erl: &Path) -> Result<String, String> {
         )),
     }
 }
+
+pub fn otp_version(erl: &Path) -> Result<String, String> {
+    let expression: &str = "Release = erlang:system_info(otp_release), Path = filename:join([code:root_dir(), \"releases\", Release, \"OTP_VERSION\"]), case file:read_file(Path) of {ok, Version} -> io:format(\"~s\", [string:trim(binary_to_list(Version))]), halt(0); {error, Reason} -> io:format(standard_error, \"~p\", [Reason]), halt(1) end.";
+    let mut cmd: Command = Command::new(erl);
+    cmd.arg("-noshell").arg("-eval").arg(expression);
+    match run_bounded(cmd) {
+        Some((true, so, _)) if !so.trim().is_empty() => Ok(so.trim().to_owned()),
+        Some((_, so, se)) => Err(format!(
+            "`erl` is present at {} but could not read its OTP_VERSION file (stdout {:?}, stderr {:?})",
+            erl.display(),
+            so.trim(),
+            se.trim()
+        )),
+        None => Err(format!(
+            "`erl` at {} did not report its full OTP version within {CALL_TIMEOUT:?}",
+            erl.display()
+        )),
+    }
+}

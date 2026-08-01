@@ -59,7 +59,7 @@ Try it in your browser at [`1-3-7.github.io/disrobe/playground`](https://1-3-7.g
 | Lua | Recover | IronBrew2 devirt runs equal | strong `[CI]` | [lua](docs/src/languages/lua.md) |
 | Ruby | Recover | greeter <!-- m:ruby_greeter_pct -->100%<!-- /m --> under MRI recompile | strong `[CI]` | [ruby](docs/src/languages/ruby.md) |
 | PHP | Partial | eval-chain peel, Phar decode | pass-gated | [php](docs/src/languages/php.md) |
-| BEAM | Recover | Core Erlang and Elixir `Dbgi` AST | pass-gated | [beam](docs/src/languages/beam.md) |
+| BEAM | Recover | 18 / 19 stripped Core Erlang cases match `test/0` | strong `[CI]` | [beam](docs/src/languages/beam.md) |
 | AS3, Flash | Recover | ABC method-body source | pass-gated | [as3](docs/src/languages/as3.md) |
 | Hermes, React Native | Recover | <!-- m:hermes_opcoverage_count -->8 of 8<!-- /m --> functions, no fallback ops | strong `[CI]` | [mobile](docs/src/languages/mobile.md) |
 | Flutter Dart AOT | Partial | class and method attribution | pass-gated | [mobile](docs/src/languages/mobile.md) |
@@ -111,6 +111,7 @@ The Oracle column names the independent reference in a few words. What that refe
 | .NET KoiVM | 6 / 6 bodies lifted, structural recovery >= 75% `[CI]` | independent clean build | `crates/disrobe-pass-dotnet/tests/real_koivm.rs` |
 | .NET protectors | <!-- m:dotnet_protectors -->23<!-- /m --> classified, ConfuserEx2 decrypted `[CI]` | plaintext-absent check | `crates/disrobe-pass-dotnet/tests/confuserex2_full.rs` |
 | WebAssembly, execution-equiv | 57 / 57 eligible functions equal, 6 byte-identical `[CI]` | wasmtime differential | `crates/disrobe-pass-wasm-deob/tests/semantic_differential.rs` |
+| BEAM, stripped Core Erlang | 18 / 19 committed cases recompile, preserve exports, and match `test/0` `[CI]` | real `erlc` and `erl`, OTP 27.3.4 | `crates/disrobe-pass-beam/tests/erlc_recompile_equivalence.rs` |
 | WebAssembly obfuscator transforms | <!-- m:wasm_reversers -->4<!-- /m --> families' transforms undone on modules modelling their output `[CI]` | parser and execution gates | `crates/disrobe-pass-wasm-deob/tests/obfuscators_e2e.rs` |
 | Lua IronBrew2 2.7.0 devirt | runs equal, standard and MAX mode `[CI]` | real-`lua` differential | `crates/disrobe-pass-lua/tests/ironbrew2_real_oracle.rs` |
 | Ruby YARV, greeter | <!-- m:ruby_greeter_pct -->100%<!-- /m --> `[CI]` | MRI recompile, opcode multiset | `crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs` |
@@ -138,6 +139,8 @@ The Oracle column names the independent reference in a few words. What that refe
 The Python figures count code objects, not modules. The full-stdlib row covers <!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m --> objects across <!-- m:py_stdlib_full_modules -->574<!-- /m --> modules; the pinned row covers <!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m --> objects across <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules, and the same legacy gate reaches <!-- m:py_legacy_local_count -->166 of 191<!-- /m --> locally. The Go row is measured on a stripped go1.26.3 fixture, its gate pins the count and holds the ratio above a <!-- m:go_typename_pct -->85%<!-- /m --> floor, and `go_garble_undo.rs` covers the garble leg beside it.
 
 The Android committed-corpus row is measured on small methods; 37 of 155 classes are link-skipped and ungraded, and the real-apk row further down carries the production scale. The WebAssembly execution row covers the functions that can be run at all, which is a smaller population than the 133-function corpus: a function needs a callable signature and no host imports before wasmtime can run it. The .NET Eazfuscator row has a second leg, `[local]`, in which the recovered CIL re-injects to byte-identical stdout; it needs a .NET runtime that CI does not provision.
+
+The BEAM figure is scoped to the committed `test/0` observation in each case. The test compiles the original Erlang source with OTP 27.3.4, strips both `Dbgi` and `Docs`, recovers through the Core Erlang path, recompiles the recovered source, compares exports, and then compares `test/0` exit status and stdout under real `erl`. It does not claim equivalence for every input to every export. CI enforces this gate on Linux; macOS and Windows report it as unmeasured when Erlang is absent.
 
 The Swift row is pinned against a committed fixture's own symbol table; the parity leg against the reference `swift-demangle` runs only where that tool is installed, which CI does not provide. HashLink also parses the whole HLB image byte-exact, 336 functions and 421 types on the committed fixture. The PyArmor row draws its samples from a corpus of 289 committed files. The container row's assertion is `published_container_counts_match_this_enum`, which binds the 33 to the formats a committed input drives to member bytes rather than to the roster that declares the extractors; the rest have no committed input, so they are unverified rather than shown to fail. The six planted IOC categories frisk is graded on are endpoints, manifest findings, URLs, IPv4, email, and `.onion`.
 
@@ -182,6 +185,7 @@ To re-run an individual gate, use the `Reproduce` command in its row, for exampl
 cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate   # Python .pyc recompile-equivalence
 cargo test -p disrobe-pass-jvm --test dalvik_verifier_gate                # Android -Xverify:all
 cargo test -p disrobe-pass-wasm-deob --test semantic_differential --features sandbox   # WASM wasmtime differential
+DISROBE_REQUIRE_ERLANG=1 cargo test -p disrobe-pass-beam --test erlc_recompile_equivalence -- --nocapture   # BEAM OTP differential
 cargo run  -p disrobe-bench-native-unpack                                 # native packer byte-recovery table
 ```
 

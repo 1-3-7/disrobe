@@ -177,11 +177,19 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          if ! command -v erlc >/dev/null 2>&1; then
-            echo "erlc is not callable after provisioning, so the beam differentials would grade nothing"
+          for probe in erlc erl; do
+            if ! command -v "$probe" >/dev/null 2>&1; then
+              echo "$probe is not callable after provisioning, so the beam differentials would grade nothing"
+              exit 1
+            fi
+          done
+          expected_otp_version="27.3.4"
+          otp_version="$(erl -noshell -eval 'Release = erlang:system_info(otp_release), {ok, Version} = file:read_file(filename:join([code:root_dir(), "releases", Release, "OTP_VERSION"])), io:format("~s", [string:trim(binary_to_list(Version))]), halt().')"
+          if [ "$otp_version" != "$expected_otp_version" ]; then
+            echo "setup-beam provisioned OTP $otp_version, expected exactly $expected_otp_version"
             exit 1
           fi
-          erl -noshell -eval 'io:format("otp ~s~n",[erlang:system_info(otp_release)]),halt().'
+          echo "otp $otp_version"
           echo "DISROBE_REQUIRE_ERLANG=1" >> "$GITHUB_ENV"
       - name: require the interpreters and archivers this runner already carries, so an absent one fails instead of skipping
         shell: bash
@@ -227,12 +235,6 @@ jobs:
       - name: confirm the dotnet sdk is callable before the suite depends on it
         shell: bash
         run: dotnet --info
-      - name: confirm erlc is callable before the suite depends on it
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          erl -noshell -eval 'io:format("otp ~s~n",[erlang:system_info(otp_release)]),halt().'
-          erlc -v
       - name: provision the installer and elf toolchains so their round trips run instead of returning early
         shell: bash
         run: |
@@ -258,6 +260,18 @@ jobs:
             sudo apt-get install -y nsis
             demand makensis DISROBE_REQUIRE_MAKENSIS
           fi
+      - name: provision LLVM 18 for the aarch64 dense-switch CLI differential
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes clang-18 lld-18
+          echo "/usr/lib/llvm-18/bin" >> "$GITHUB_PATH"
+          export PATH="/usr/lib/llvm-18/bin:$PATH"
+          clang --version
+          ld.lld --version
+          clang --target=aarch64-unknown-linux-gnu -x c -c -o /dev/null - <<< 'int dense_switch_probe(void) { return 0; }'
       - run: cargo test --workspace --all-features
       - name: stage this OS leg's cross-platform determinism hash file
         shell: bash
@@ -276,6 +290,12 @@ jobs:
       - name: aarch64 decompiler recompile-execution differential (one leg only)
         if: matrix.os == 'ubuntu-latest'
         run: cargo test -p disrobe-pass-native --test aarch64_recovery_grade -- --ignored --nocapture
+      - name: aarch64 dense-switch CLI differential (one explicitly provisioned leg)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p disrobe-cli --test native_aarch64_dense_switch -- --nocapture
 
   determinism-cross-platform:
     name: determinism cross-platform proof
