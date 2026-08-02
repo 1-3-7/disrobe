@@ -32,7 +32,7 @@ disrobe py decompile module.pyc --out src/            # recover Python source fr
 disrobe native unpack packed.exe --out unpacked.bin   # stub-emulator unpack, byte-recovery graded
 ```
 
-`disrobe auto` fingerprints the input and composes the whole pipeline in one call: `PE -> UPX -> demangle`, `APK -> dex -> Java`, `PyInstaller -> PyArmor -> .pyc decompile`. With `--capture-stages` each stage lands in `out/01-*/`, `out/02-*/`, ..., `out/final/`. It always produces at least what the dedicated pass would, plus the cross-cutting recon, capability, string, and disassembly analysis.
+For recognized inputs with a viable chain, `disrobe auto` fingerprints the input and composes the whole pipeline in one call: `PE -> UPX -> demangle`, `APK -> dex -> Java`, `PyInstaller -> PyArmor -> .pyc decompile`. With `--capture-stages` each stage lands in `out/01-*/`, `out/02-*/`, ..., `out/final/`. If it recovers no files, it reports that limit and directs you to `disrobe detect` and the relevant dedicated command.
 
 Try it in your browser at [`1-3-7.github.io/disrobe/playground`](https://1-3-7.github.io/disrobe/playground/): the passes compile to WebAssembly and run client-side, and nothing is uploaded.
 
