@@ -1,0 +1,57 @@
+name: native ms x64 fp oracle
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  four-double-parameters:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.96.1
+      - uses: Swatinem/rust-cache@v2
+      - name: install LLVM 21.1.6
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installerPath = Join-Path $env:RUNNER_TEMP "LLVM-21.1.6-win64.exe"
+          $installRoot = Join-Path $env:RUNNER_TEMP "llvm-21.1.6"
+          Invoke-WebRequest -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.6/LLVM-21.1.6-win64.exe" -OutFile $installerPath
+          $actualSha256 = (Get-FileHash -Algorithm SHA256 -Path $installerPath).Hash.ToLowerInvariant()
+          $expectedSha256 = "11d721f66d46b216f69a4a9db75ac8b36933c50c59da83c67129a06740af22fc"
+          if ($actualSha256 -ne $expectedSha256) { throw "LLVM installer checksum mismatch: $actualSha256" }
+          & $installerPath /S "/D=$installRoot"
+          if ($LASTEXITCODE -ne 0) { throw "LLVM installer failed with exit code $LASTEXITCODE" }
+          $clangPath = Join-Path $installRoot "bin\clang.exe"
+          if (-not (Test-Path -LiteralPath $clangPath -PathType Leaf)) { throw "LLVM installer did not provide clang.exe" }
+          "DISROBE_MS_X64_CLANG=$clangPath" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
+      - name: verify clang MS x64 target
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $clangBin = Split-Path -Parent $env:DISROBE_MS_X64_CLANG
+          $env:Path = "$clangBin;$env:Path"
+          $version = (& $env:DISROBE_MS_X64_CLANG --version)[0]
+          if ($LASTEXITCODE -ne 0) { throw "clang version probe failed" }
+          if ($version -notmatch "^clang version 21\.1\.6") { throw "expected clang 21.1.6, found $version" }
+          $target = (& $env:DISROBE_MS_X64_CLANG -print-target-triple).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "clang target probe failed" }
+          if ($target -notmatch "^x86_64-.*-windows-msvc$") { throw "expected an MS x64 clang target, found $target" }
+          Write-Host "$version target: $target"
+      - name: grade four double parameter recovery
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $clangBin = Split-Path -Parent $env:DISROBE_MS_X64_CLANG
+          $env:Path = "$clangBin;$env:Path"
+          $log = Join-Path $env:RUNNER_TEMP "native-ms-x64-fp-oracle.log"
+          & cargo test -p disrobe-pass-native --test pseudo_c_leaf_oracle --all-features -- --exact ms_x64_four_double_parameters_recompile_with_mutation_control --nocapture 2>&1 | Tee-Object -FilePath $log
+          $testExitCode = $LASTEXITCODE
+          $ErrorActionPreference = "Stop"
+          if ($testExitCode -ne 0) { exit $testExitCode }
+          if (-not (Select-String -Path $log -SimpleMatch "running 1 test" -Quiet)) { throw "the MS x64 four-double parameter test did not run" }
