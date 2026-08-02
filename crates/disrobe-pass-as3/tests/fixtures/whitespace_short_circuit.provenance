@@ -1,0 +1,3 @@
+compiler=haxe 4.3.7
+command=haxe -cp crates/disrobe-pass-as3/tests/fixtures -main WhitespaceShortCircuit -swf crates/disrobe-pass-as3/tests/fixtures/whitespace_short_circuit.swf
+generated=2026-08-01
