@@ -2,9 +2,11 @@
 
 use std::collections::BTreeSet;
 
-use disrobe_pass_as3::abc::{self, AbcFile, DisasmLine, MethodBody, MethodInfo, TraitInfo, disasm};
+use disrobe_pass_as3::abc::{
+    self, AbcFile, ClassInfo, DisasmLine, MethodBody, MethodInfo, TraitInfo, disasm,
+};
 use disrobe_pass_as3::lifter::{Expr, LiftedBody, Stmt, lift_body};
-use disrobe_pass_as3::swf::{self, DoAbc, Swf, SwfCompression};
+use disrobe_pass_as3::swf::{self, DoAbc, Swf, SwfCompression, SymbolClassEntry};
 
 const CLASS_NAME: &str = "WhitespaceShortCircuit";
 const METHOD_NAME: &str = "isWhiteSpace";
@@ -41,7 +43,7 @@ fn parse_fixture() -> AbcFile {
             .action_script3,
         "the committed fixture must remain ActionScript 3"
     );
-    let symbols = swf.symbol_classes();
+    let symbols: Vec<SymbolClassEntry> = swf.symbol_classes();
     assert_eq!(
         symbols.len(),
         1,
@@ -83,7 +85,7 @@ fn target_method(abc: &AbcFile) -> (&MethodBody, &MethodInfo) {
     let class_index: usize = *class_indices
         .first()
         .expect("the pinned class index must exist");
-    let class = abc
+    let class: &ClassInfo = abc
         .classes
         .get(class_index)
         .expect("the pinned class must have static traits");
