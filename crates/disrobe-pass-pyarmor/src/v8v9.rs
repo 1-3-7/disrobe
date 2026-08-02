@@ -275,6 +275,10 @@ pub(crate) fn parse_plaintext_header(plaintext: &[u8]) -> Result<PlaintextHeader
     })
 }
 
+pub fn marshal_stream_start(plaintext: &[u8]) -> Result<usize> {
+    Ok(parse_plaintext_header(plaintext)?.marshal_offset)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -306,6 +310,14 @@ mod tests {
         assert_eq!(h.code_object_offset, 0x20);
         assert_eq!(h.xor_key_procedure_length, 0x10);
         assert_eq!(h.marshal_offset, 0x30);
+    }
+
+    #[test]
+    fn marshal_stream_start_uses_plaintext_header() {
+        let mut data: Vec<u8> = vec![0u8; 64];
+        data[..4].copy_from_slice(&0x20u32.to_le_bytes());
+        data[4..8].copy_from_slice(&0x10u32.to_le_bytes());
+        assert_eq!(marshal_stream_start(&data).expect("header parses"), 0x30);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 {
   "ci_attested": true,
   "claim": "disrobe recovers Python source whose recompiled bytecode is equivalent to the original, per code object, across the CPython 3.14 stdlib.",
+  "comparison_basis": null,
   "competitors": [],
   "detail": "6072 / 6286 code objects; CI floor 96.60%, pinned at the figure this corpus measures rather than a round number beneath it, so the gate has no slack to absorb a regression; a curated subset that runs higher than the full stdlib",
   "disrobe_leads": null,
@@ -16,6 +17,7 @@
     "note": null
   },
   "oracle_strength": "strong",
+  "pairs": [],
   "reproduce": "cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate",
   "title": "Python .pyc decompilation, per-code-object recompile-equivalence"
 }

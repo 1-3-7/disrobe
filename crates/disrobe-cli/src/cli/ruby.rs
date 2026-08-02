@@ -255,8 +255,7 @@ mod tests {
             .join("mruby")
             .join("breadth")
             .join("exceptions.mrb");
-        let bytes: Vec<u8> = std::fs::read(&input)
-            .unwrap_or_else(|error: std::io::Error| panic!("read {}: {error}", input.display()));
+        let bytes: Vec<u8> = std::fs::read(&input).expect("read mruby corpus fixture");
         let analysis: RubyAnalysis = analyze_bytes(&bytes, "exceptions.mrb").expect("analyze");
         let (source, kind): (Option<String>, &str) = render_decompiled_ruby(&analysis);
         assert_eq!(kind, "mruby");

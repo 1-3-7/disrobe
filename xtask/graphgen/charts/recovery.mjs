@@ -19,6 +19,13 @@ const VALUE_LABEL_SIZE = 11.5;
 const PERCENT_LABEL_GAP = 8;
 const PAIR_LABEL_GAP = 10;
 const LABEL_GUTTER_PAD = 8;
+const MIN_PAIR_PLOT_WIDTH = 300;
+const PERCENT_GRID_TOP = 8;
+const PERCENT_GRID_BOTTOM = 8;
+const PERCENT_ROW_HEIGHT = 27;
+const PAIR_GRID_TOP = 7;
+const PAIR_GRID_BOTTOM = 7;
+const PAIR_ROW_HEIGHT = 30;
 
 function labelGutter(labels, gap) {
   const widest = Math.max(
@@ -27,7 +34,7 @@ function labelGutter(labels, gap) {
   return Math.ceil(widest + gap + LABEL_GUTTER_PAD);
 }
 
-function trackSeries(rowCount, color, labels, gap) {
+function trackSeries(rowCount, color) {
   return {
     type: "bar",
     data: Array.from({ length: rowCount }, () => 100),
@@ -35,17 +42,22 @@ function trackSeries(rowCount, color, labels, gap) {
     barWidth: BAR_WIDTH,
     itemStyle: { color, borderRadius: BAR_RADIUS },
     z: 1,
-    label: {
-      show: true,
-      position: "right",
-      distance: gap,
-      color: C.text,
-      fontFamily: MONO,
-      fontSize: VALUE_LABEL_SIZE,
-      fontWeight: 500,
-      formatter: (p) => labels[p.dataIndex],
-    },
   };
+}
+
+function emitValueLabels(svg, labels, x, chartTop, gridTop, rowHeight, prefix) {
+  labels.forEach((label, index) => {
+    svg.text(x, chartTop + gridTop + (index + 0.5) * rowHeight, label, {
+      size: VALUE_LABEL_SIZE,
+      fill: C.text,
+      mono: true,
+      weight: 500,
+      anchor: "start",
+      id: `${prefix}${index}`,
+      dominantBaseline: "central",
+      preserveSpace: true,
+    });
+  });
 }
 
 function ecoShort(heading) {
@@ -103,7 +115,60 @@ function tierLegend(svg, y) {
   }
 }
 
+function countPairLabel(group, bar, field, fallback) {
+  const raw = bar[field];
+  if (raw === undefined || raw === null) return fallback;
+  if (group.kind !== "count_pair") {
+    throw new Error(
+      `recovery.json bar ${bar.label} has ${field} outside a count_pair group`,
+    );
+  }
+  if (
+    typeof raw !== "string" ||
+    !raw ||
+    raw.trim() !== raw ||
+    /[\u0000-\u001F\u007F-\u009F|]/.test(raw)
+  ) {
+    throw new Error(`recovery.json bar ${bar.label} has an invalid ${field}`);
+  }
+  return raw;
+}
+
+function countPairDeliveredLabel(group, bar) {
+  return countPairLabel(group, bar, "delivered_label", "delivered");
+}
+
+function countPairDenominatorLabel(group, bar) {
+  return countPairLabel(group, bar, "denominator_label", "detected");
+}
+
+function validateCountPairValues(group, bar) {
+  if (group.kind !== "count_pair") return;
+  if (
+    !Number.isSafeInteger(bar.delivered) ||
+    bar.delivered < 0 ||
+    !Number.isSafeInteger(bar.detected) ||
+    bar.detected <= 0 ||
+    bar.delivered > bar.detected
+  ) {
+    throw new Error(
+      `recovery.json bar ${bar.label} must carry a non-negative delivered count and a positive detected count no smaller than delivered for a count_pair group`,
+    );
+  }
+}
+
+function validateCountPairBars(doc) {
+  for (const group of doc.groups) {
+    for (const bar of group.bars) {
+      validateCountPairValues(group, bar);
+      countPairDeliveredLabel(group, bar);
+      countPairDenominatorLabel(group, bar);
+    }
+  }
+}
+
 export function renderRecovery(doc) {
+  validateCountPairBars(doc);
   const tiers = percentBarTiers(doc);
   const percentBars = [];
   for (const group of doc.groups) {
@@ -149,12 +214,15 @@ export function renderRecovery(doc) {
   for (const group of doc.groups) {
     if (group.kind !== "count_pair") continue;
     for (const bar of group.bars) {
-      const verb = (bar.delivered_label || "delivered").split(" ")[0];
+      const denominatorLabel = countPairDenominatorLabel(group, bar);
+      const deliveredLabel = countPairDeliveredLabel(group, bar);
+      const pairLabel = `${thousands(bar.delivered)} ${deliveredLabel} / ${thousands(bar.detected)}`;
       pairBars.push({
         label: bar.label.toLowerCase(),
         detected: bar.detected,
         delivered: bar.delivered,
-        verb,
+        denominatorLabel,
+        pairLabel,
       });
     }
   }
@@ -180,14 +248,13 @@ export function renderRecovery(doc) {
   const labelMax = Math.max(...percentBars.map((b) => sansWidth(b.label, 12)));
   const gridLeftA = Math.min(240, Math.max(150, Math.ceil(labelMax) + 18));
   const gridRightA = labelGutter(percentLabels, PERCENT_LABEL_GAP);
-  const rowA = 27;
-  const chartAh = 16 + percentBars.length * rowA;
+  const chartAh = 16 + percentBars.length * PERCENT_ROW_HEIGHT;
   const chartA = renderChart(INNER, chartAh, {
     grid: {
       left: gridLeftA,
       right: gridRightA,
-      top: 8,
-      bottom: 8,
+      top: PERCENT_GRID_TOP,
+      bottom: PERCENT_GRID_BOTTOM,
       containLabel: false,
     },
     xAxis: { type: "value", min: 0, max: 100, show: false },
@@ -200,12 +267,7 @@ export function renderRecovery(doc) {
       axisLabel: { color: C.muted, fontSize: 12 },
     },
     series: [
-      trackSeries(
-        percentBars.length,
-        C.panel,
-        percentLabels,
-        PERCENT_LABEL_GAP,
-      ),
+      trackSeries(percentBars.length, C.panel),
       {
         type: "bar",
         data: percentBars.map((b) => ({
@@ -219,20 +281,20 @@ export function renderRecovery(doc) {
     ],
   });
 
-  const pairLabels = pairBars.map(
-    (b) => `${thousands(b.delivered)} / ${thousands(b.detected)} ${b.verb}`,
-  );
+  const pairLabels = pairBars.map((b) => b.pairLabel);
   const pairLabelMax = Math.max(...pairBars.map((b) => sansWidth(b.label, 12)));
   const gridLeftB = Math.min(200, Math.max(120, Math.ceil(pairLabelMax) + 18));
   const gridRightB = labelGutter(pairLabels, PAIR_LABEL_GAP);
-  const rowB = 30;
-  const chartBh = 14 + pairBars.length * rowB;
+  if (gridLeftB + gridRightB + MIN_PAIR_PLOT_WIDTH > INNER) {
+    throw new Error("recovery count-pair labels leave too little plot width");
+  }
+  const chartBh = 14 + pairBars.length * PAIR_ROW_HEIGHT;
   const chartB = renderChart(INNER, chartBh, {
     grid: {
       left: gridLeftB,
       right: gridRightB,
-      top: 7,
-      bottom: 7,
+      top: PAIR_GRID_TOP,
+      bottom: PAIR_GRID_BOTTOM,
       containLabel: false,
     },
     xAxis: { type: "value", min: 0, max: 100, show: false },
@@ -245,7 +307,7 @@ export function renderRecovery(doc) {
       axisLabel: { color: C.muted, fontSize: 12 },
     },
     series: [
-      trackSeries(pairBars.length, C.subtle, pairLabels, PAIR_LABEL_GAP),
+      trackSeries(pairBars.length, C.subtle),
       {
         type: "bar",
         data: pairBars.map((b) =>
@@ -267,11 +329,32 @@ export function renderRecovery(doc) {
   tierLegend(svg, y);
   y += 9;
   svg.embed(chartA, LEFT, y);
+  emitValueLabels(
+    svg,
+    percentLabels,
+    LEFT + INNER - gridRightA + PERCENT_LABEL_GAP,
+    y,
+    PERCENT_GRID_TOP,
+    PERCENT_ROW_HEIGHT,
+    "disrobe-recovery-percent-value-",
+  );
   y += chartAh + 22;
 
-  sectionLabel(svg, y, "detection and coverage breadth", "delivered / detected");
+  const pairUnit = pairBars.some((b) => b.denominatorLabel !== "detected")
+    ? "numerator / denominator"
+    : "delivered / detected";
+  sectionLabel(svg, y, "detection and coverage breadth", pairUnit);
   y += 12;
   svg.embed(chartB, LEFT, y);
+  emitValueLabels(
+    svg,
+    pairLabels,
+    LEFT + INNER - gridRightB + PAIR_LABEL_GAP,
+    y,
+    PAIR_GRID_TOP,
+    PAIR_ROW_HEIGHT,
+    "disrobe-recovery-count-pair-value-",
+  );
   y += chartBh + 24;
 
   sectionLabel(svg, y, "families and scale", null);

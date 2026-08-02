@@ -1,14 +1,14 @@
 # Head-to-head
 
-Each comparison gives `disrobe` and the leading tool the same input, same oracle, and same denominator. Missing or crashing tools count as misses, not dropped samples. Losses stay in the table.
+Each leg gives `disrobe` and its leading tool the same input and scoring rule. The DEX and JAR legs use their respective committed inputs. Missing or crashing tools remain explicit result statuses, never dropped samples. Losses stay in the table.
 
-Regenerate with `cargo run -p disrobe-bench-head-to-head`; `--check` fails if the committed measured JSON or this table drifts from a fresh run. The numbers are surfaced into the public evidence report by `cargo run -p xtask -- evidence` (the `headtohead-import` and `gate-test-harvest` oracle kinds).
+Regenerate with `cargo run -p disrobe-bench-head-to-head`; `--check` fails if the committed measured JSON or this table drifts from a fresh run. `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr` checks only the APK result without writing it. The numbers are surfaced into the public evidence report by `cargo run -p xtask -- evidence` (the `headtohead-import` and `gate-test-harvest` oracle kinds).
 
 ## APK / DEX decompilation: disrobe vs JADX vs CFR (recompile-clean main-class methods under real javac)
 
-- dataset: corpus/jvm/dex/EdgeCases.dex (SHA-256 fdc012bd...) for the DEX leg; corpus/jvm/megafile/EdgeCases-baseline.jar (SHA-256 9e68bd13...) for the JAR leg; both committed, fully offline
+- dataset: corpus/jvm/dex/EdgeCases.dex (SHA-256 fdc012bd9b9596256ee2bb319ef3e215a34b6d58c3b0856d7ea8bdb290910e26) for the DEX leg; corpus/jvm/megafile/EdgeCases-baseline.jar (SHA-256 9e68bd1344b5a0143966d80a7b53fe71b23809c18dac139b38e41edc9dd413a6) for the JAR leg; both committed, fully offline
 - oracle: real javac (JDK), per-method recompile error-free against a STUBBED (empty) classpath so a wrong recovered signature cannot resolve against the original classes
-- reproduce: `cargo run -p disrobe-bench-head-to-head  (needs javac + jadx + cfr on PATH)`
+- reproduce: `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`
 
 | tool | version | metric | value | status |
 |---|---|---|---|---|

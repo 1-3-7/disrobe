@@ -3,9 +3,11 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@11.10.0",
   "description": "renders docs assets from xtask/data via echarts SSR + resvg",
   "scripts": {
-    "build": "node build.mjs"
+    "build": "node build.mjs",
+    "test": "node --test charts/*.test.mjs"
   },
   "dependencies": {
     "@resvg/resvg-js": "^2.6.2",

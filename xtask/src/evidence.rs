@@ -8,6 +8,8 @@ use eyre::{Result, WrapErr, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::doc_region::{self, RegionSyntax};
+
 const KNOWN_ORACLE_KINDS: &[&str] = &[
     "recovery-import",
     "bench-native-unpack",
@@ -17,6 +19,11 @@ const KNOWN_ORACLE_KINDS: &[&str] = &[
 const KNOWN_STRENGTHS: &[&str] = &["strong", "recompile-only", "coverage-self-reported"];
 const MAX_DESCRIPTOR_BYTES: u64 = 1 << 20;
 const MAX_EVIDENCE_TEXT_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+const README_PAIR_SYNTAX: RegionSyntax = RegionSyntax {
+    open_prefix: "<!-- evidence-pair:",
+    close: "<!-- /evidence-pair -->",
+};
 
 macro_rules! push_line {
     ($output:expr, $($arg:tt)*) => {
@@ -61,6 +68,18 @@ struct MeasuredBinding {
     gate_id: Option<String>,
     #[serde(default)]
     disrobe_floor: Option<f64>,
+    #[serde(default)]
+    pairs: Vec<MeasuredPair>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MeasuredPair {
+    id: String,
+    label: String,
+    metric: String,
+    disrobe: String,
+    competitor: String,
+    competitor_label: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,6 +126,8 @@ struct RecoveryBar {
     delivered: Option<u64>,
     #[serde(default)]
     delivered_label: Option<String>,
+    #[serde(default)]
+    denominator_label: Option<String>,
     source: String,
 }
 
@@ -129,6 +150,8 @@ struct Resolved {
     detail: Option<String>,
     competitors: Vec<CompetitorRow>,
     disrobe_leads: Option<bool>,
+    comparison_basis: Option<String>,
+    pairs: Vec<ResolvedPair>,
 }
 
 #[derive(Debug, Clone)]
@@ -138,7 +161,32 @@ struct CompetitorRow {
     metric: String,
     display: String,
     status: String,
+    has_status: bool,
     is_disrobe: bool,
+    leg: Option<String>,
+    role: Option<String>,
+    clean: Option<u64>,
+    emitted: Option<u64>,
+    value: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedPair {
+    id: String,
+    label: String,
+    metric: String,
+    competitor_label: String,
+    disrobe: PairScore,
+    competitor: PairScore,
+}
+
+#[derive(Debug, Clone)]
+struct PairScore {
+    name: String,
+    version: String,
+    clean: u64,
+    emitted: u64,
+    value: f64,
 }
 
 #[derive(Debug)]
@@ -219,6 +267,11 @@ pub(crate) fn run(root: &Path, mode: Mode) -> Result<()> {
         check,
         &mut stale,
     )?;
+    let readme_path: PathBuf = root.join("README.md");
+    let readme_source: String = doc_region::read_doc(&readme_path)?;
+    let expected_readme_pairs: BTreeMap<String, String> = expected_readme_pair_rows(&resolved)?;
+    let rendered_readme: String = rewrite_readme_pairs(&readme_source, &expected_readme_pairs)?;
+    sync_file(&readme_path, &rendered_readme, check, &mut stale)?;
 
     let mut produced: BTreeSet<String> = BTreeSet::new();
     produced.extend(per_descriptor.keys().cloned());
@@ -236,7 +289,7 @@ pub(crate) fn run(root: &Path, mode: Mode) -> Result<()> {
             Ok(())
         } else {
             bail!(
-                "xtask evidence --check: {} result file(s) stale; run `cargo run -p xtask -- evidence` to regenerate:\n  {}",
+                "xtask evidence --check: {} artifact(s) stale; run `cargo run -p xtask -- evidence` to regenerate:\n  {}",
                 stale.len(),
                 stale.join("\n  ")
             )
@@ -342,6 +395,8 @@ struct ResolvedCore {
     detail: Option<String>,
     competitors: Vec<CompetitorRow>,
     disrobe_leads: Option<bool>,
+    comparison_basis: Option<String>,
+    pairs: Vec<ResolvedPair>,
 }
 
 fn resolve(descriptor: &Descriptor, recovery: &RecoveryDoc, root: &Path) -> Result<Resolved> {
@@ -363,6 +418,8 @@ fn resolve(descriptor: &Descriptor, recovery: &RecoveryDoc, root: &Path) -> Resu
                 detail: None,
                 competitors: Vec::new(),
                 disrobe_leads: None,
+                comparison_basis: None,
+                pairs: Vec::new(),
             }
         }
         "headtohead-import" => resolve_headtohead(descriptor, root)?,
@@ -391,6 +448,8 @@ fn resolve(descriptor: &Descriptor, recovery: &RecoveryDoc, root: &Path) -> Resu
         detail: core.detail,
         competitors: core.competitors,
         disrobe_leads: core.disrobe_leads,
+        comparison_basis: core.comparison_basis,
+        pairs: core.pairs,
     })
 }
 
@@ -411,7 +470,7 @@ fn resolve_recovery_import(
                 binding.recovery_bar
             )
         })?;
-    let measured: String = format_measured(group, bar);
+    let measured: String = format_measured(group, bar)?;
     let floor_holds: Option<bool> = match (binding.floor, bar.value) {
         (Some(floor), Some(value)) => Some(value >= floor),
         _ => None,
@@ -424,6 +483,8 @@ fn resolve_recovery_import(
         detail: bar.detail.clone(),
         competitors: Vec::new(),
         disrobe_leads: None,
+        comparison_basis: None,
+        pairs: Vec::new(),
     })
 }
 
@@ -444,28 +505,90 @@ fn resolve_headtohead(descriptor: &Descriptor, root: &Path) -> Result<ResolvedCo
         )
     })?;
     let competitors: Vec<CompetitorRow> = tools.iter().map(competitor_row).collect();
-    let disrobe_best: Option<f64> = best_value(&competitors, true)?;
-    let competitor_best: Option<f64> = best_value(&competitors, false)?;
-    let disrobe_leads: Option<bool> = match (disrobe_best, competitor_best) {
-        (Some(d), Some(c)) => Some(d >= c - 1e-9),
-        (Some(_), None) => Some(true),
-        _ => None,
+    let pairs: Vec<ResolvedPair> = if binding.pairs.is_empty() {
+        Vec::new()
+    } else {
+        let declared_status: &str = doc.get("status").and_then(Value::as_str).ok_or_else(|| {
+            eyre::eyre!(
+                "head-to-head measured result {} has no explicit status",
+                binding.result_file
+            )
+        })?;
+        if declared_status != "ok" {
+            bail!(
+                "head-to-head measured result {} has status `{declared_status}`, but its declared pairs require `ok`",
+                binding.result_file
+            );
+        }
+        let measured_reproduce: &str =
+            doc.get("reproduce")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    eyre::eyre!(
+                        "head-to-head measured result {} has no `reproduce` command",
+                        binding.result_file
+                    )
+                })?;
+        if measured_reproduce != descriptor.oracle.reproduce {
+            bail!(
+                "head-to-head measured result {} has reproduce command `{measured_reproduce}`, expected `{}`",
+                binding.result_file,
+                descriptor.oracle.reproduce
+            );
+        }
+        resolve_pairs(binding, &competitors)?
     };
-    let measured: String = match status {
-        "ok" => disrobe_best.map_or_else(
-            || "no disrobe result".to_owned(),
-            |d: f64| {
-                competitor_best.map_or_else(
-                    || format!("disrobe {d:.1}% (no competitor measured)"),
-                    |c: f64| format!("disrobe {d:.1}% vs best competitor {c:.1}%"),
-                )
-            },
-        ),
-        other => format!("skipped ({other})"),
-    };
-    let floor_holds: Option<bool> = match (binding.disrobe_floor, disrobe_best) {
-        (Some(floor), Some(value)) => Some(value >= floor),
-        _ => None,
+    let (measured, floor_holds, disrobe_leads, comparison_basis): (
+        String,
+        Option<bool>,
+        Option<bool>,
+        Option<String>,
+    ) = if pairs.is_empty() {
+        let disrobe_best: Option<f64> = best_value(&competitors, true)?;
+        let competitor_best: Option<f64> = best_value(&competitors, false)?;
+        let disrobe_leads: Option<bool> = match (disrobe_best, competitor_best) {
+            (Some(d), Some(c)) => Some(d >= c - 1e-9),
+            (Some(_), None) => Some(true),
+            _ => None,
+        };
+        let measured: String = match status {
+            "ok" => disrobe_best.map_or_else(
+                || "no disrobe result".to_owned(),
+                |d: f64| {
+                    competitor_best.map_or_else(
+                        || format!("disrobe {d:.1}% (no competitor measured)"),
+                        |c: f64| format!("disrobe {d:.1}% vs best competitor {c:.1}%"),
+                    )
+                },
+            ),
+            other => format!("skipped ({other})"),
+        };
+        let floor_holds: Option<bool> = match (binding.disrobe_floor, disrobe_best) {
+            (Some(floor), Some(value)) => Some(value >= floor),
+            _ => None,
+        };
+        (
+            measured,
+            floor_holds,
+            disrobe_leads,
+            (status == "ok").then(|| "highest reported numeric value".to_owned()),
+        )
+    } else {
+        let floor_holds: Option<bool> = binding.disrobe_floor.map(|floor: f64| {
+            pairs
+                .iter()
+                .all(|pair: &ResolvedPair| pair.disrobe.value >= floor)
+        });
+        (
+            format_pair_summary(&pairs),
+            floor_holds,
+            Some(
+                pairs
+                    .iter()
+                    .all(|pair: &ResolvedPair| pair.disrobe.clean >= pair.competitor.clean),
+            ),
+            Some("clean-method count within each declared leg".to_owned()),
+        )
     };
     let note: Option<String> = doc
         .get("honest_note")
@@ -482,6 +605,272 @@ fn resolve_headtohead(descriptor: &Descriptor, root: &Path) -> Result<ResolvedCo
         detail: note,
         competitors,
         disrobe_leads,
+        comparison_basis,
+        pairs,
+    })
+}
+
+fn resolve_pairs(binding: &MeasuredBinding, rows: &[CompetitorRow]) -> Result<Vec<ResolvedPair>> {
+    let mut ids: BTreeSet<&str> = BTreeSet::new();
+    let mut names: BTreeSet<&str> = BTreeSet::new();
+    let mut out: Vec<ResolvedPair> = Vec::with_capacity(binding.pairs.len());
+    for pair in &binding.pairs {
+        if !ids.insert(&pair.id) {
+            bail!("head-to-head measured pair id `{}` is duplicated", pair.id);
+        }
+        if !names.insert(&pair.disrobe) || !names.insert(&pair.competitor) {
+            bail!(
+                "head-to-head measured pair `{}` reuses a tool name across declared roles",
+                pair.id
+            );
+        }
+        let disrobe: PairScore = pair_score(
+            find_unique_row(rows, &pair.disrobe)?,
+            &pair.id,
+            "disrobe",
+            &pair.metric,
+        )?;
+        let competitor: PairScore = pair_score(
+            find_unique_row(rows, &pair.competitor)?,
+            &pair.id,
+            "competitor",
+            &pair.metric,
+        )?;
+        if disrobe.clean < competitor.clean {
+            bail!(
+                "head-to-head declared pair `{}` violates its clean-method claim: disrobe {} < {} {}",
+                pair.id,
+                disrobe.clean,
+                pair.competitor_label,
+                competitor.clean
+            );
+        }
+        out.push(ResolvedPair {
+            id: pair.id.clone(),
+            label: pair.label.clone(),
+            metric: pair.metric.clone(),
+            competitor_label: pair.competitor_label.clone(),
+            disrobe,
+            competitor,
+        });
+    }
+    for row in rows {
+        if !names.contains(row.name.as_str()) {
+            bail!(
+                "head-to-head measured result has unpaired tool row `{}`",
+                row.name
+            );
+        }
+    }
+    Ok(out)
+}
+
+fn find_unique_row<'a>(rows: &'a [CompetitorRow], name: &str) -> Result<&'a CompetitorRow> {
+    let mut matches = rows.iter().filter(|row: &&CompetitorRow| row.name == name);
+    let Some(row): Option<&CompetitorRow> = matches.next() else {
+        bail!("head-to-head measured result has no row named `{name}`");
+    };
+    if matches.next().is_some() {
+        bail!("head-to-head measured result has multiple rows named `{name}`");
+    }
+    Ok(row)
+}
+
+fn pair_score(row: &CompetitorRow, leg: &str, role: &str, metric: &str) -> Result<PairScore> {
+    if row.status != "ok" {
+        bail!(
+            "head-to-head row `{}` for {leg}/{role} is not publishable: {}",
+            row.name,
+            row.status
+        );
+    }
+    if !row.has_status {
+        bail!("head-to-head row `{}` has no explicit status", row.name);
+    }
+    if row.leg.as_deref() != Some(leg) {
+        bail!(
+            "head-to-head row `{}` has leg {:?}, expected `{leg}`",
+            row.name,
+            row.leg
+        );
+    }
+    if row.role.as_deref() != Some(role) {
+        bail!(
+            "head-to-head row `{}` has role {:?}, expected `{role}`",
+            row.name,
+            row.role
+        );
+    }
+    if row.metric != metric {
+        bail!(
+            "head-to-head row `{}` has metric `{}`, expected `{metric}`",
+            row.name,
+            row.metric
+        );
+    }
+    let clean: u64 = row
+        .clean
+        .ok_or_else(|| eyre::eyre!("head-to-head row `{}` has no raw clean count", row.name))?;
+    let emitted: u64 = row
+        .emitted
+        .ok_or_else(|| eyre::eyre!("head-to-head row `{}` has no raw emitted count", row.name))?;
+    let value: f64 = row
+        .value
+        .ok_or_else(|| eyre::eyre!("head-to-head row `{}` has no numeric rate", row.name))?;
+    if emitted == 0 || clean > emitted {
+        bail!(
+            "head-to-head row `{}` has invalid raw counts {clean} / {emitted}",
+            row.name
+        );
+    }
+    let calculated: f64 = 100.0 * clean as f64 / emitted as f64;
+    if !value.is_finite() || (value - calculated).abs() > 1e-9 {
+        bail!(
+            "head-to-head row `{}` has rate {value} inconsistent with {clean} / {emitted}",
+            row.name
+        );
+    }
+    let expected_display: String = format!("{clean} clean / {emitted} emitted ({calculated:.1}%)");
+    if row.display != expected_display {
+        bail!(
+            "head-to-head row `{}` has display `{}`, expected `{expected_display}`",
+            row.name,
+            row.display
+        );
+    }
+    Ok(PairScore {
+        name: row.name.clone(),
+        version: row.version.clone(),
+        clean,
+        emitted,
+        value,
+    })
+}
+
+fn format_pair_summary(pairs: &[ResolvedPair]) -> String {
+    pairs
+        .iter()
+        .map(|pair: &ResolvedPair| {
+            format!(
+                "{}: `disrobe` {} / {} ({:.1}%) vs {} {} / {} ({:.1}%)",
+                pair.label,
+                pair.disrobe.clean,
+                pair.disrobe.emitted,
+                pair.disrobe.value,
+                pair.competitor_label,
+                pair.competitor.clean,
+                pair.competitor.emitted,
+                pair.competitor.value,
+            )
+        })
+        .collect::<Vec<String>>()
+        .join("; ")
+}
+
+fn expected_readme_pair_rows(resolved: &[Resolved]) -> Result<BTreeMap<String, String>> {
+    let mut rows: BTreeMap<String, String> = BTreeMap::new();
+    for record in resolved {
+        for pair in &record.pairs {
+            let slug: String = format!("{}:{}", record.id, pair.id);
+            let row: String = render_readme_pair(record, pair);
+            if rows.insert(slug.clone(), row).is_some() {
+                bail!("README evidence pair marker `{slug}` is declared more than once");
+            }
+        }
+    }
+    Ok(rows)
+}
+
+fn render_readme_pair(record: &Resolved, pair: &ResolvedPair) -> String {
+    format!(
+        "{} | {} / {} methods recompile | {}: {} / {} | {} | `{}`",
+        pair.label,
+        pair.disrobe.clean,
+        pair.disrobe.emitted,
+        competitor_display(pair),
+        pair.competitor.clean,
+        pair.competitor.emitted,
+        pair_verdict(pair),
+        record.reproduce,
+    )
+}
+
+fn competitor_display(pair: &ResolvedPair) -> String {
+    let prefix: String = format!("{} ", pair.competitor_label);
+    if pair.competitor.version.starts_with(&prefix) {
+        pair.competitor.version.clone()
+    } else {
+        format!("{} {}", pair.competitor_label, pair.competitor.version)
+    }
+}
+
+fn pair_verdict(pair: &ResolvedPair) -> String {
+    let count: String = match pair.disrobe.clean.cmp(&pair.competitor.clean) {
+        std::cmp::Ordering::Greater => format!(
+            "`disrobe` recovers {} more clean {}",
+            method_count(pair.disrobe.clean - pair.competitor.clean),
+            method_noun(pair.disrobe.clean - pair.competitor.clean)
+        ),
+        std::cmp::Ordering::Less => format!(
+            "{} recovers {} more clean {}",
+            pair.competitor_label,
+            method_count(pair.competitor.clean - pair.disrobe.clean),
+            method_noun(pair.competitor.clean - pair.disrobe.clean)
+        ),
+        std::cmp::Ordering::Equal => "the tools recover the same clean-method count".to_owned(),
+    };
+    let rate: String = if (pair.disrobe.value - pair.competitor.value).abs() <= 1e-9 {
+        "the clean rates are equal".to_owned()
+    } else if pair.disrobe.value > pair.competitor.value {
+        "`disrobe` has the higher clean rate".to_owned()
+    } else {
+        format!("{} has the higher clean rate", pair.competitor_label)
+    };
+    if count.starts_with("`disrobe`") && rate.starts_with("`disrobe`") {
+        "`disrobe` leads on clean methods and clean rate".to_owned()
+    } else if count.starts_with("`disrobe`") || rate.starts_with("`disrobe`") {
+        format!("mixed: {count}; {rate}")
+    } else {
+        format!("{count}; {rate}")
+    }
+}
+
+const fn method_noun(amount: u64) -> &'static str {
+    if amount == 1 { "method" } else { "methods" }
+}
+
+fn method_count(amount: u64) -> String {
+    if amount == 1 {
+        "one".to_owned()
+    } else {
+        amount.to_string()
+    }
+}
+
+fn rewrite_readme_pairs(source: &str, expected: &BTreeMap<String, String>) -> Result<String> {
+    let regions: Vec<doc_region::Region> = doc_region::parse(README_PAIR_SYNTAX, source)?;
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for region in &regions {
+        if !expected.contains_key(&region.slug) {
+            bail!("README has unknown evidence pair marker `{}`", region.slug);
+        }
+        if !seen.insert(&region.slug) {
+            bail!(
+                "README has duplicate evidence pair marker `{}`",
+                region.slug
+            );
+        }
+    }
+    for slug in expected.keys() {
+        if !seen.contains(slug.as_str()) {
+            bail!("README is missing evidence pair marker `{slug}`");
+        }
+    }
+    doc_region::rewrite(README_PAIR_SYNTAX, source, &|slug: &str| {
+        expected
+            .get(slug)
+            .cloned()
+            .ok_or_else(|| eyre::eyre!("README has unknown evidence pair marker `{slug}`"))
     })
 }
 
@@ -548,6 +937,8 @@ fn resolve_gate_harvest(descriptor: &Descriptor, root: &Path) -> Result<Resolved
         detail,
         competitors: Vec::new(),
         disrobe_leads: None,
+        comparison_basis: None,
+        pairs: Vec::new(),
     })
 }
 
@@ -557,6 +948,7 @@ fn competitor_row(tool: &Value) -> CompetitorRow {
         .and_then(Value::as_str)
         .unwrap_or("?")
         .to_owned();
+    let status: Option<&str> = tool.get("status").and_then(Value::as_str);
     CompetitorRow {
         is_disrobe: name.starts_with("disrobe"),
         name,
@@ -575,11 +967,13 @@ fn competitor_row(tool: &Value) -> CompetitorRow {
             .and_then(Value::as_str)
             .unwrap_or("?")
             .to_owned(),
-        status: tool
-            .get("status")
-            .and_then(Value::as_str)
-            .unwrap_or("ok")
-            .to_owned(),
+        status: status.unwrap_or("ok").to_owned(),
+        has_status: status.is_some(),
+        leg: tool.get("leg").and_then(Value::as_str).map(str::to_owned),
+        role: tool.get("role").and_then(Value::as_str).map(str::to_owned),
+        clean: tool.get("clean").and_then(Value::as_u64),
+        emitted: tool.get("emitted").and_then(Value::as_u64),
+        value: tool.get("value").and_then(Value::as_f64),
     }
 }
 
@@ -640,8 +1034,8 @@ fn find_bar<'a>(
     None
 }
 
-fn format_measured(group: &RecoveryGroup, bar: &RecoveryBar) -> String {
-    match group.kind.as_str() {
+fn format_measured(group: &RecoveryGroup, bar: &RecoveryBar) -> Result<String> {
+    let measured: String = match group.kind.as_str() {
         "percent" => bar
             .value
             .map_or_else(|| "n/a".to_owned(), |v: f64| format!("{v:.2}%")),
@@ -658,15 +1052,27 @@ fn format_measured(group: &RecoveryGroup, bar: &RecoveryBar) -> String {
             |v: f64| format!("{} functions", v as i64),
         ),
         "count_pair" => {
+            let delivered: u64 = bar.delivered.ok_or_else(|| {
+                eyre::eyre!(
+                    "recovery.json: `{}` / `{}` has no delivered count for a count_pair",
+                    group.heading,
+                    bar.label
+                )
+            })?;
+            let detected: u64 = bar.detected.ok_or_else(|| {
+                eyre::eyre!(
+                    "recovery.json: `{}` / `{}` has no detected count for a count_pair",
+                    group.heading,
+                    bar.label
+                )
+            })?;
             let verb: &str = bar.delivered_label.as_deref().unwrap_or("delivered");
-            format!(
-                "{} {verb} / {} detected",
-                bar.delivered.unwrap_or(0),
-                bar.detected.unwrap_or(0)
-            )
+            let denominator: &str = bar.denominator_label.as_deref().unwrap_or("detected");
+            format!("{delivered} {verb} / {detected} {denominator}")
         }
         other => format!("({other})"),
-    }
+    };
+    Ok(measured)
 }
 
 fn enforce_floors(resolved: &[Resolved]) -> Result<()> {
@@ -736,9 +1142,40 @@ fn render_descriptor_json(r: &Resolved) -> Result<String> {
         "gate_source": r.gate_source,
         "detail": r.detail,
         "disrobe_leads": r.disrobe_leads,
+        "comparison_basis": r.comparison_basis,
+        "pairs": pairs_json(&r.pairs),
         "competitors": competitors_json(&r.competitors),
     });
     to_pretty(&value)
+}
+
+fn pairs_json(pairs: &[ResolvedPair]) -> Vec<Value> {
+    pairs
+        .iter()
+        .map(|pair: &ResolvedPair| {
+            json!({
+                "id": pair.id,
+                "label": pair.label,
+                "comparison_basis": "clean-method count",
+                "metric": pair.metric,
+                "disrobe": {
+                    "name": pair.disrobe.name,
+                    "version": pair.disrobe.version,
+                    "clean": pair.disrobe.clean,
+                    "emitted": pair.disrobe.emitted,
+                    "value": pair.disrobe.value,
+                },
+                "competitor": {
+                    "name": pair.competitor.name,
+                    "label": pair.competitor_label,
+                    "version": pair.competitor.version,
+                    "clean": pair.competitor.clean,
+                    "emitted": pair.competitor.emitted,
+                    "value": pair.competitor.value,
+                },
+            })
+        })
+        .collect()
 }
 
 fn competitors_json(rows: &[CompetitorRow]) -> Vec<Value> {
@@ -751,6 +1188,11 @@ fn competitors_json(rows: &[CompetitorRow]) -> Vec<Value> {
                 "result": c.display,
                 "status": c.status,
                 "is_disrobe": c.is_disrobe,
+                "leg": c.leg,
+                "role": c.role,
+                "clean": c.clean,
+                "emitted": c.emitted,
+                "value": c.value,
             })
         })
         .collect()
@@ -772,6 +1214,8 @@ fn render_index(resolved: &[Resolved], failures: &Failures) -> Result<String> {
                 "floor": r.floor,
                 "floor_holds": r.floor_holds,
                 "disrobe_leads": r.disrobe_leads,
+                "comparison_basis": r.comparison_basis,
+                "pairs": pairs_json(&r.pairs),
                 "competitors": competitors_json(&r.competitors),
             })
         })
@@ -795,7 +1239,7 @@ fn render_index(resolved: &[Resolved], failures: &Failures) -> Result<String> {
         .count();
     let value: Value = json!({
         "schema": "disrobe.evidence.index/v1",
-        "note": "Generated by `cargo run -p xtask -- evidence`. recovery-import values are read VERBATIM from xtask/data/recovery.json; headtohead-import and gate-test-harvest values are read VERBATIM from evidence/results/measured/*.json (written by `cargo run -p disrobe-bench-head-to-head`). This harness never recomputes or rounds a number. `cargo xtask evidence --check` is the CI drift gate.",
+        "note": "Generated by `cargo run -p xtask -- evidence`. recovery-import values are read from xtask/data/recovery.json; headtohead-import and gate-test-harvest values are read from evidence/results/measured/*.json (written by `cargo run -p disrobe-bench-head-to-head`). The renderer derives displayed summaries from those records and validates declared paired counts, rates, and display text. `cargo xtask evidence --check` is the CI drift gate.",
         "descriptor_count": resolved.len(),
         "head_to_head_count": head_to_head,
         "disrobe_loss_count": disrobe_losses,
@@ -863,8 +1307,9 @@ fn render_report(resolved: &[Resolved]) -> String {
         "Generated by `cargo run -p xtask -- evidence`. Every measured value below is read \
          from its source: recovery-import rows from `xtask/data/recovery.json`, \
          head-to-head and gate-harvest rows from `evidence/results/measured/*.json` (written by \
-         `cargo run -p disrobe-bench-head-to-head`). This report does not recompute or round any \
-         number. Each row states the claim, the measured number, its evidence strength, the \
+         `cargo run -p disrobe-bench-head-to-head`). The report derives summaries from those \
+         records and validates declared paired counts, rates, and display text. Each row states \
+         the claim, the measured number, its evidence strength, the \
          source or external oracle it relies on, and the exact command a stranger runs to \
          reproduce it. \
          `cargo run -p xtask -- evidence --check` is the CI drift gate that fails if any rendered \
@@ -961,18 +1406,21 @@ fn render_head_to_head(mut md: &mut String, resolved: &[Resolved]) {
     }
     md.push_str("## Head-to-head comparisons\n\n");
     md.push_str(
-        "`disrobe` and the leading competing tool both receive the byte-identical input and are \
-         graded by the same external oracle. The `disrobe` row is bold. Losses are rendered in the \
-         same table as wins, never filtered. A skipped or errored tool counts its samples as misses, \
-         never a dropped sample.\n\n",
+        "Within each declared leg, `disrobe` and the competing tool receive byte-identical input and \
+         the same external oracle. The `disrobe` row is bold. Losses are rendered in the same table \
+         as wins, never filtered. A declared comparison with a skipped or errored tool fails closed, \
+         never dropping the tool from its claim.\n\n",
     );
     for r in &h2h {
         push_line!(md, "### {}\n", r.title);
         push_line!(md, "{}\n", r.claim);
-        let lead: &str = match r.disrobe_leads {
-            Some(true) => "`disrobe` leads or ties on this dataset.",
-            Some(false) => "`disrobe` trails a competitor on this dataset (published as-is).",
-            None => "comparison incomplete on this run (see tool statuses).",
+        let lead: &str = match (r.disrobe_leads, r.pairs.is_empty()) {
+            (Some(true), false) => {
+                "`disrobe` meets the declared clean-count comparison on every required leg."
+            }
+            (Some(true), true) => "`disrobe` leads or ties on this dataset.",
+            (Some(false), _) => "`disrobe` trails a competitor on this dataset (published as-is).",
+            (None, _) => "comparison incomplete on this run (see tool statuses).",
         };
         push_line!(
             md,
@@ -1001,7 +1449,90 @@ fn render_head_to_head(mut md: &mut String, resolved: &[Resolved]) {
 fn load_recovery(path: &Path) -> Result<RecoveryDoc> {
     let raw: String = read_text_bounded(path, MAX_EVIDENCE_TEXT_BYTES)
         .wrap_err_with(|| format!("reading {}", path.display()))?;
-    serde_json::from_str(&raw).wrap_err_with(|| format!("parsing {}", path.display()))
+    let recovery: RecoveryDoc =
+        serde_json::from_str(&raw).wrap_err_with(|| format!("parsing {}", path.display()))?;
+    validate_recovery(&recovery)?;
+    Ok(recovery)
+}
+
+fn validate_recovery(recovery: &RecoveryDoc) -> Result<()> {
+    for group in &recovery.groups {
+        for bar in &group.bars {
+            if group.kind == "count_pair" {
+                let Some(delivered): Option<u64> = bar.delivered else {
+                    bail!(
+                        "recovery.json: `{}` / `{}` must carry delivered and detected counts for a count_pair",
+                        group.heading,
+                        bar.label
+                    );
+                };
+                let Some(detected): Option<u64> = bar.detected else {
+                    bail!(
+                        "recovery.json: `{}` / `{}` must carry delivered and detected counts for a count_pair",
+                        group.heading,
+                        bar.label
+                    );
+                };
+                if delivered > MAX_JAVASCRIPT_SAFE_INTEGER || detected > MAX_JAVASCRIPT_SAFE_INTEGER
+                {
+                    bail!(
+                        "recovery.json: `{}` / `{}` exceeds the JavaScript safe-integer ceiling",
+                        group.heading,
+                        bar.label
+                    );
+                }
+                if detected == 0 || delivered > detected {
+                    bail!(
+                        "recovery.json: `{}` / `{}` must carry a positive detected count no smaller than delivered",
+                        group.heading,
+                        bar.label
+                    );
+                }
+            }
+            validate_count_pair_label(
+                group,
+                bar,
+                "delivered_label",
+                bar.delivered_label.as_deref(),
+            )?;
+            validate_count_pair_label(
+                group,
+                bar,
+                "denominator_label",
+                bar.denominator_label.as_deref(),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_count_pair_label(
+    group: &RecoveryGroup,
+    bar: &RecoveryBar,
+    field: &str,
+    value: Option<&str>,
+) -> Result<()> {
+    let Some(label): Option<&str> = value else {
+        return Ok(());
+    };
+    if group.kind != "count_pair" {
+        bail!(
+            "recovery.json: `{}` / `{}` has {field} outside a count_pair group",
+            group.heading,
+            bar.label
+        );
+    }
+    let unsafe_cell: bool = label
+        .chars()
+        .any(|character: char| character.is_control() || character == '|');
+    if label.is_empty() || label.trim() != label || unsafe_cell {
+        bail!(
+            "recovery.json: `{}` / `{}` has an invalid {field}",
+            group.heading,
+            bar.label
+        );
+    }
+    Ok(())
 }
 
 fn load_failures(path: &Path) -> Result<Failures> {
@@ -1139,7 +1670,15 @@ mod tests {
             detected: None,
             delivered: None,
             delivered_label: None,
+            denominator_label: None,
             source: "s".to_owned(),
+        }
+    }
+
+    fn recovery_validation_error(doc: &RecoveryDoc) -> Result<String> {
+        match validate_recovery(doc) {
+            Ok(()) => bail!("expected recovery validation to fail"),
+            Err(error) => Ok(error.to_string()),
         }
     }
 
@@ -1162,7 +1701,332 @@ mod tests {
             detail: None,
             competitors: Vec::new(),
             disrobe_leads: None,
+            comparison_basis: None,
+            pairs: Vec::new(),
         }
+    }
+
+    fn pair_score(name: &str, version: &str, clean: u64, emitted: u64) -> PairScore {
+        PairScore {
+            name: name.to_owned(),
+            version: version.to_owned(),
+            clean,
+            emitted,
+            value: 100.0 * clean as f64 / emitted as f64,
+        }
+    }
+
+    fn apk_record() -> Resolved {
+        let mut record: Resolved = resolved(Some(95.0), Some(true));
+        record.id = "apk-jadx-cfr".to_owned();
+        record.reproduce =
+            "cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr"
+                .to_owned();
+        record.comparison_basis = Some("clean-method count within each declared leg".to_owned());
+        record.pairs = vec![
+            ResolvedPair {
+                id: "dex".to_owned(),
+                label: "Android DEX".to_owned(),
+                metric: "recompile-clean main-class methods (clean / emitted)".to_owned(),
+                competitor_label: "JADX".to_owned(),
+                disrobe: pair_score(
+                    "disrobe (in-house Dalvik, DEX input)",
+                    "n/a (in-process)",
+                    129,
+                    132,
+                ),
+                competitor: pair_score("jadx (DEX input)", "1.5.5", 128, 130),
+            },
+            ResolvedPair {
+                id: "jar".to_owned(),
+                label: "JVM classfile".to_owned(),
+                metric: "recompile-clean main-class methods (clean / emitted)".to_owned(),
+                competitor_label: "CFR".to_owned(),
+                disrobe: pair_score(
+                    "disrobe (in-house JVM, JAR input)",
+                    "n/a (in-process)",
+                    131,
+                    131,
+                ),
+                competitor: pair_score("cfr (JAR input)", "CFR 0.152", 105, 106),
+            },
+        ];
+        record
+    }
+
+    fn paired_rows() -> Vec<CompetitorRow> {
+        vec![
+            CompetitorRow {
+                name: "disrobe (in-house Dalvik, DEX input)".to_owned(),
+                version: "n/a (in-process)".to_owned(),
+                metric: "recompile-clean main-class methods (clean / emitted)".to_owned(),
+                display: "129 clean / 132 emitted (97.7%)".to_owned(),
+                status: "ok".to_owned(),
+                has_status: true,
+                is_disrobe: true,
+                leg: Some("dex".to_owned()),
+                role: Some("disrobe".to_owned()),
+                clean: Some(129),
+                emitted: Some(132),
+                value: Some(100.0 * 129.0 / 132.0),
+            },
+            CompetitorRow {
+                name: "jadx (DEX input)".to_owned(),
+                version: "1.5.5".to_owned(),
+                metric: "recompile-clean main-class methods (clean / emitted)".to_owned(),
+                display: "128 clean / 130 emitted (98.5%)".to_owned(),
+                status: "ok".to_owned(),
+                has_status: true,
+                is_disrobe: false,
+                leg: Some("dex".to_owned()),
+                role: Some("competitor".to_owned()),
+                clean: Some(128),
+                emitted: Some(130),
+                value: Some(100.0 * 128.0 / 130.0),
+            },
+            CompetitorRow {
+                name: "disrobe (in-house JVM, JAR input)".to_owned(),
+                version: "n/a (in-process)".to_owned(),
+                metric: "recompile-clean main-class methods (clean / emitted)".to_owned(),
+                display: "131 clean / 131 emitted (100.0%)".to_owned(),
+                status: "ok".to_owned(),
+                has_status: true,
+                is_disrobe: true,
+                leg: Some("jar".to_owned()),
+                role: Some("disrobe".to_owned()),
+                clean: Some(131),
+                emitted: Some(131),
+                value: Some(100.0),
+            },
+            CompetitorRow {
+                name: "cfr (JAR input)".to_owned(),
+                version: "CFR 0.152".to_owned(),
+                metric: "recompile-clean main-class methods (clean / emitted)".to_owned(),
+                display: "105 clean / 106 emitted (99.1%)".to_owned(),
+                status: "ok".to_owned(),
+                has_status: true,
+                is_disrobe: false,
+                leg: Some("jar".to_owned()),
+                role: Some("competitor".to_owned()),
+                clean: Some(105),
+                emitted: Some(106),
+                value: Some(100.0 * 105.0 / 106.0),
+            },
+        ]
+    }
+
+    fn apk_binding() -> MeasuredBinding {
+        MeasuredBinding {
+            result_file: "apk-jadx-cfr.json".to_owned(),
+            gate_id: None,
+            disrobe_floor: Some(95.0),
+            pairs: vec![
+                MeasuredPair {
+                    id: "dex".to_owned(),
+                    label: "Android DEX".to_owned(),
+                    metric: "recompile-clean main-class methods (clean / emitted)".to_owned(),
+                    disrobe: "disrobe (in-house Dalvik, DEX input)".to_owned(),
+                    competitor: "jadx (DEX input)".to_owned(),
+                    competitor_label: "JADX".to_owned(),
+                },
+                MeasuredPair {
+                    id: "jar".to_owned(),
+                    label: "JVM classfile".to_owned(),
+                    metric: "recompile-clean main-class methods (clean / emitted)".to_owned(),
+                    disrobe: "disrobe (in-house JVM, JAR input)".to_owned(),
+                    competitor: "cfr (JAR input)".to_owned(),
+                    competitor_label: "CFR".to_owned(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn declared_pairs_use_raw_counts_and_require_every_leg() -> Result<()> {
+        let binding: MeasuredBinding = apk_binding();
+        let pairs: Vec<ResolvedPair> = resolve_pairs(&binding, &paired_rows())?;
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0].id, "dex");
+        assert_eq!(pairs[0].disrobe.clean, 129);
+        assert!(
+            pairs
+                .iter()
+                .all(|pair: &ResolvedPair| { pair.disrobe.clean >= pair.competitor.clean })
+        );
+
+        let mut trailing: Vec<CompetitorRow> = paired_rows();
+        trailing.push(CompetitorRow {
+            name: "unpaired".to_owned(),
+            version: "test".to_owned(),
+            metric: "recompile-clean main-class methods (clean / emitted)".to_owned(),
+            display: "0 clean / 1 emitted (0.0%)".to_owned(),
+            status: "ok".to_owned(),
+            has_status: true,
+            is_disrobe: false,
+            leg: Some("dex".to_owned()),
+            role: Some("competitor".to_owned()),
+            clean: Some(0),
+            emitted: Some(1),
+            value: Some(0.0),
+        });
+        let error: eyre::Report = match resolve_pairs(&binding, &trailing) {
+            Ok(_) => bail!("an unpaired row must fail"),
+            Err(error) => error,
+        };
+        let error: String = error.to_string();
+        assert!(error.contains("unpaired tool row"), "{error}");
+
+        let mut trailing: Vec<CompetitorRow> = paired_rows();
+        trailing[0].clean = Some(127);
+        trailing[0].value = Some(100.0 * 127.0 / 132.0);
+        trailing[0].display = "127 clean / 132 emitted (96.2%)".to_owned();
+        let error: eyre::Report = match resolve_pairs(&binding, &trailing) {
+            Ok(_) => bail!("a clean-count loss must fail"),
+            Err(error) => error,
+        };
+        let error: String = error.to_string();
+        assert!(error.contains("violates its clean-method claim"), "{error}");
+
+        let mut missing_status: Vec<CompetitorRow> = paired_rows();
+        missing_status[0].has_status = false;
+        let error: eyre::Report = match resolve_pairs(&binding, &missing_status) {
+            Ok(_) => bail!("a paired row without status must fail"),
+            Err(error) => error,
+        };
+        let error: String = error.to_string();
+        assert!(error.contains("has no explicit status"), "{error}");
+
+        let mut bad_display: Vec<CompetitorRow> = paired_rows();
+        bad_display[0].display = "130 clean / 132 emitted (98.5%)".to_owned();
+        let error: eyre::Report = match resolve_pairs(&binding, &bad_display) {
+            Ok(_) => bail!("a raw/display mismatch must fail"),
+            Err(error) => error,
+        };
+        let error: String = error.to_string();
+        assert!(error.contains("has display"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn declared_pairs_reject_a_skipped_measurement() -> Result<()> {
+        let dir: tempfile::TempDir = tempfile::tempdir()?;
+        let measured: PathBuf = dir.path().join("evidence").join("results").join("measured");
+        fs::create_dir_all(&measured)?;
+        fs::write(
+            measured.join("apk-jadx-cfr.json"),
+            r#"{"status":"skipped","tools":[]}"#,
+        )?;
+        let mut item: Descriptor = descriptor("headtohead-import", "recompile-only", false);
+        item.measured = Some(apk_binding());
+        let error: String = match resolve_headtohead(&item, dir.path()) {
+            Ok(_) => bail!("declared pairs must not fall back from a skipped result"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("declared pairs require `ok`"), "{error}");
+        fs::write(measured.join("apk-jadx-cfr.json"), r#"{"tools":[]}"#)?;
+        let error: String = match resolve_headtohead(&item, dir.path()) {
+            Ok(_) => bail!("declared pairs must require an explicit status"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("has no explicit status"), "{error}");
+        fs::write(
+            measured.join("apk-jadx-cfr.json"),
+            r#"{"status":"ok","reproduce":"other","tools":[]}"#,
+        )?;
+        let error: String = match resolve_headtohead(&item, dir.path()) {
+            Ok(_) => bail!("declared pairs must reject a mismatched reproduce command"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("has reproduce command `other`"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn readme_pair_rows_render_from_resolved_measurements() -> Result<()> {
+        let record: Resolved = apk_record();
+        let expected: BTreeMap<String, String> = expected_readme_pair_rows(&[record])?;
+        let source: &str = concat!(
+            "| <!-- evidence-pair:apk-jadx-cfr:jar -->stale<!-- /evidence-pair --> |\n",
+            "| <!-- evidence-pair:apk-jadx-cfr:dex -->stale<!-- /evidence-pair --> |\n",
+            "| APK secrets | 8 / 8 | apkleaks | win | command |\n",
+        );
+        let once: String = rewrite_readme_pairs(source, &expected)?;
+        assert_eq!(
+            once,
+            concat!(
+                "| <!-- evidence-pair:apk-jadx-cfr:jar -->JVM classfile | 131 / 131 methods recompile | CFR 0.152: 105 / 106 | `disrobe` leads on clean methods and clean rate | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |\n",
+                "| <!-- evidence-pair:apk-jadx-cfr:dex -->Android DEX | 129 / 132 methods recompile | JADX 1.5.5: 128 / 130 | mixed: `disrobe` recovers one more clean method; JADX has the higher clean rate | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |\n",
+                "| APK secrets | 8 / 8 | apkleaks | win | command |\n",
+            )
+        );
+        let twice: String = rewrite_readme_pairs(&once, &expected)?;
+        assert_eq!(once, twice);
+        Ok(())
+    }
+
+    #[test]
+    fn readme_pair_markers_require_the_exact_declared_set() -> Result<()> {
+        let expected: BTreeMap<String, String> = expected_readme_pair_rows(&[apk_record()])?;
+        let cases: [(&str, &str); 3] = [
+            (
+                "| <!-- evidence-pair:apk-jadx-cfr:dex -->stale<!-- /evidence-pair --> |\n",
+                "missing evidence pair marker `apk-jadx-cfr:jar`",
+            ),
+            (
+                "| <!-- evidence-pair:apk-jadx-cfr:dex -->stale<!-- /evidence-pair --> |\n| <!-- evidence-pair:apk-jadx-cfr:dex -->stale<!-- /evidence-pair --> |\n| <!-- evidence-pair:apk-jadx-cfr:jar -->stale<!-- /evidence-pair --> |\n",
+                "duplicate evidence pair marker `apk-jadx-cfr:dex`",
+            ),
+            (
+                "| <!-- evidence-pair:apk-jadx-cfr:dex -->stale<!-- /evidence-pair --> |\n| <!-- evidence-pair:apk-jadx-cfr:other -->stale<!-- /evidence-pair --> |\n| <!-- evidence-pair:apk-jadx-cfr:jar -->stale<!-- /evidence-pair --> |\n",
+                "unknown evidence pair marker `apk-jadx-cfr:other`",
+            ),
+        ];
+        for (source, needle) in cases {
+            let error: eyre::Report = match rewrite_readme_pairs(source, &expected) {
+                Ok(_) => bail!("invalid README marker set must fail"),
+                Err(error) => error,
+            };
+            let error: String = error.to_string();
+            assert!(error.contains(needle), "{error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn readme_pair_numeric_mutation_is_stale() -> Result<()> {
+        let expected: BTreeMap<String, String> = expected_readme_pair_rows(&[apk_record()])?;
+        let source: &str = concat!(
+            "| <!-- evidence-pair:apk-jadx-cfr:jar -->JVM classfile | 131 / 131 methods recompile | CFR 0.152: 105 / 106 | `disrobe` leads on clean methods and clean rate | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |\n",
+            "| <!-- evidence-pair:apk-jadx-cfr:dex -->Android DEX | 130 / 132 methods recompile | JADX 1.5.5: 128 / 130 | mixed: `disrobe` recovers two more clean methods; JADX has the higher clean rate | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |\n",
+        );
+        let rendered: String = rewrite_readme_pairs(source, &expected)?;
+        let dir: tempfile::TempDir = tempfile::tempdir()?;
+        let path: PathBuf = dir.path().join("README.md");
+        fs::write(&path, source)?;
+        let mut stale: Vec<String> = Vec::new();
+        sync_file(&path, &rendered, true, &mut stale)?;
+        assert_eq!(stale, vec![path.display().to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn paired_serialization_declares_its_clean_count_basis() -> Result<()> {
+        let rendered: String = render_descriptor_json(&apk_record())?;
+        let value: Value = serde_json::from_str(&rendered)?;
+        assert_eq!(
+            value["comparison_basis"],
+            "clean-method count within each declared leg"
+        );
+        let pairs: &Vec<Value> = value["pairs"]
+            .as_array()
+            .ok_or_else(|| eyre::eyre!("paired serialization has no pairs array"))?;
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0]["id"], "dex");
+        assert_eq!(pairs[0]["disrobe"]["clean"], 129);
+        assert_eq!(pairs[0]["competitor"]["name"], "jadx (DEX input)");
+        assert_eq!(pairs[1]["id"], "jar");
+        assert_eq!(pairs[1]["competitor"]["emitted"], 106);
+        Ok(())
     }
 
     fn validate_error(descriptor: Descriptor) -> core::result::Result<String, String> {
@@ -1241,6 +2105,7 @@ mod tests {
             result_file: "bad.json".to_owned(),
             gate_id: None,
             disrobe_floor: Some(90.0),
+            pairs: Vec::new(),
         });
         let err: String = match resolve_headtohead(&item, dir.path()) {
             Ok(_) => return Err("malformed ok row must fail".to_owned()),
@@ -1266,21 +2131,21 @@ mod tests {
     }
 
     #[test]
-    fn format_measured_renders_each_recovery_kind() {
+    fn format_measured_renders_each_recovery_kind() -> Result<()> {
         let percent: RecoveryGroup = RecoveryGroup {
             heading: "h".to_owned(),
             kind: "percent".to_owned(),
             bars: Vec::new(),
         };
-        assert_eq!(format_measured(&percent, &bar(Some(94.18))), "94.18%");
+        assert_eq!(format_measured(&percent, &bar(Some(94.18)))?, "94.18%");
 
         let count: RecoveryGroup = RecoveryGroup {
             heading: "h".to_owned(),
             kind: "count".to_owned(),
             bars: Vec::new(),
         };
-        assert_eq!(format_measured(&count, &bar(Some(1.0))), "1 family");
-        assert_eq!(format_measured(&count, &bar(Some(2.0))), "2 families");
+        assert_eq!(format_measured(&count, &bar(Some(1.0)))?, "1 family");
+        assert_eq!(format_measured(&count, &bar(Some(2.0)))?, "2 families");
 
         let pair: RecoveryGroup = RecoveryGroup {
             heading: "h".to_owned(),
@@ -1292,9 +2157,149 @@ mod tests {
         pair_bar.delivered = Some(98);
         pair_bar.delivered_label = Some("extracted".to_owned());
         assert_eq!(
-            format_measured(&pair, &pair_bar),
+            format_measured(&pair, &pair_bar)?,
             "98 extracted / 98 detected"
         );
+
+        pair_bar.denominator_label = Some("manifest-named trial wrappers".to_owned());
+        assert_eq!(
+            format_measured(&pair, &pair_bar)?,
+            "98 extracted / 98 manifest-named trial wrappers"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_rejects_blank_count_pair_denominator_label() -> Result<()> {
+        let mut pair_bar: RecoveryBar = bar(None);
+        pair_bar.detected = Some(1);
+        pair_bar.delivered = Some(1);
+        pair_bar.denominator_label = Some("   ".to_owned());
+        let doc: RecoveryDoc = RecoveryDoc {
+            groups: vec![RecoveryGroup {
+                heading: "h".to_owned(),
+                kind: "count_pair".to_owned(),
+                bars: vec![pair_bar],
+            }],
+        };
+        let error: String = recovery_validation_error(&doc)?;
+        assert!(error.contains("denominator_label"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_rejects_denominator_label_outside_count_pair() -> Result<()> {
+        let mut percent_bar: RecoveryBar = bar(Some(1.0));
+        percent_bar.denominator_label = Some("trial wrappers".to_owned());
+        let doc: RecoveryDoc = RecoveryDoc {
+            groups: vec![RecoveryGroup {
+                heading: "h".to_owned(),
+                kind: "percent".to_owned(),
+                bars: vec![percent_bar],
+            }],
+        };
+        let error: String = recovery_validation_error(&doc)?;
+        assert!(error.contains("count_pair"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_rejects_unsafe_denominator_label() -> Result<()> {
+        for label in ["named\nwrappers", "named\twrappers", "named|wrappers"] {
+            let mut pair_bar: RecoveryBar = bar(None);
+            pair_bar.detected = Some(1);
+            pair_bar.delivered = Some(1);
+            pair_bar.denominator_label = Some(label.to_owned());
+            let doc: RecoveryDoc = RecoveryDoc {
+                groups: vec![RecoveryGroup {
+                    heading: "h".to_owned(),
+                    kind: "count_pair".to_owned(),
+                    bars: vec![pair_bar],
+                }],
+            };
+            let error: String = recovery_validation_error(&doc)?;
+            assert!(error.contains("denominator_label"), "{error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_rejects_unsafe_delivered_label() -> Result<()> {
+        let mut pair_bar: RecoveryBar = bar(None);
+        pair_bar.detected = Some(1);
+        pair_bar.delivered = Some(1);
+        pair_bar.delivered_label = Some("decoded\tobjects".to_owned());
+        let doc: RecoveryDoc = RecoveryDoc {
+            groups: vec![RecoveryGroup {
+                heading: "h".to_owned(),
+                kind: "count_pair".to_owned(),
+                bars: vec![pair_bar],
+            }],
+        };
+        let error: String = recovery_validation_error(&doc)?;
+        assert!(error.contains("delivered_label"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_rejects_count_pair_without_both_counts() -> Result<()> {
+        let mut missing_delivered: RecoveryBar = bar(None);
+        missing_delivered.detected = Some(1);
+        let missing_delivered_doc: RecoveryDoc = RecoveryDoc {
+            groups: vec![RecoveryGroup {
+                heading: "h".to_owned(),
+                kind: "count_pair".to_owned(),
+                bars: vec![missing_delivered],
+            }],
+        };
+        let missing_delivered_error: String = recovery_validation_error(&missing_delivered_doc)?;
+        assert!(
+            missing_delivered_error.contains("delivered and detected counts"),
+            "{missing_delivered_error}"
+        );
+
+        let mut missing_detected: RecoveryBar = bar(None);
+        missing_detected.delivered = Some(1);
+        let missing_detected_doc: RecoveryDoc = RecoveryDoc {
+            groups: vec![RecoveryGroup {
+                heading: "h".to_owned(),
+                kind: "count_pair".to_owned(),
+                bars: vec![missing_detected],
+            }],
+        };
+        let missing_detected_error: String = recovery_validation_error(&missing_detected_doc)?;
+        assert!(
+            missing_detected_error.contains("delivered and detected counts"),
+            "{missing_detected_error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_rejects_invalid_count_pair_values() -> Result<()> {
+        for (delivered, detected, expected) in [
+            (Some(0), Some(0), "positive detected count"),
+            (Some(2), Some(1), "no smaller than delivered"),
+            (
+                Some(1),
+                Some(MAX_JAVASCRIPT_SAFE_INTEGER + 1),
+                "safe-integer ceiling",
+            ),
+        ] {
+            let mut pair_bar: RecoveryBar = bar(None);
+            pair_bar.delivered = delivered;
+            pair_bar.detected = detected;
+            let doc: RecoveryDoc = RecoveryDoc {
+                groups: vec![RecoveryGroup {
+                    heading: "h".to_owned(),
+                    kind: "count_pair".to_owned(),
+                    bars: vec![pair_bar],
+                }],
+            };
+            let error: String = recovery_validation_error(&doc)?;
+            assert!(error.contains(expected), "{error}");
+        }
+        Ok(())
     }
 
     #[test]

@@ -1,6 +1,7 @@
 {
   "ci_attested": true,
   "claim": "disrobe decompiles legacy CPython bytecode (1.0 through 3.7) to source that is proven correct by recompile-equivalence or, where the period interpreter is absent, a structural token-match against the original .py.",
+  "comparison_basis": null,
   "competitors": [],
   "detail": "CI floor 150 / 191 (asserted, token-match alone holds when the 1.0-3.7 interpreter zoo is absent); 166 / 191 measured locally with the full period interpreter zoo (67 recompile-equiv + 99 token-match)",
   "disrobe_leads": null,
@@ -16,6 +17,7 @@
     "note": null
   },
   "oracle_strength": "strong",
+  "pairs": [],
   "reproduce": "cargo test -p disrobe-pass-py-decompile --test legacy_recompile",
   "title": "CPython legacy 1.0-3.7 proven-correct decompilation"
 }

@@ -1,6 +1,7 @@
 {
   "ci_attested": true,
   "claim": "disrobe decompiles Ruby YARV bytecode to source whose recompiled instruction multiset matches the original under the real MRI interpreter.",
+  "comparison_basis": null,
   "competitors": [],
   "detail": "real MRI recompiles the recovered source and the YARV opcode multiset matches 23648 of 23966 opcodes, which is 98.67%. The plotted 98 is the floor this gate enforces, not the measurement, so the bar shows the guaranteed minimum and the measured value is asserted at or above it.",
   "disrobe_leads": null,
@@ -16,6 +17,7 @@
     "note": "The floor equals the measurement rather than trailing it, because yarv_recompile_oracle.rs already pins the megafile at 23648 matched of 23966 compared by equality and rejects a plotted rate its own counts do not produce. A floor beneath that pinned fraction could only absorb a change the crate gate already refuses, so the slack would be decoration."
   },
   "oracle_strength": "strong",
+  "pairs": [],
   "reproduce": "cargo test -p disrobe-pass-ruby --test yarv_recompile_oracle",
   "title": "Ruby YARV decompilation, MRI recompile-equivalence"
 }

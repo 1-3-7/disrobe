@@ -91,6 +91,6 @@ An oracle that can reject a wrong answer (a compiler, a runtime, a verifier, exh
 
 ## Runtime-keyed protection
 
-PyArmor v6-v9 static decryption succeeds when the `pyarmor_runtime` is supplied. With no runtime, the verdict routes to the dynamic-capture path (opt-in, sandboxed) rather than emitting fabricated plaintext. ionCube, SourceGuardian, Zend Guard, ILProtector, and MaxToCode derive their key in a native loader or live process absent from the artifact, so they are walled and reported absent.
+With a matching `pyarmor_runtime`, the static path is used where supported. Its published 72-of-72 structural result is limited to manifest-named v8/v9 default-trial wrappers that decode to complete header-anchored root `CodeObject` values. It does not establish source recovery, original `.pyc` identity, execution, or semantic equivalence. v6/v7 may need the opt-in, sandboxed dynamic-capture path rather than emitting fabricated plaintext. ionCube, SourceGuardian, Zend Guard, ILProtector, and MaxToCode derive their key in a native loader or live process absent from the artifact, so they are walled and reported absent.
 
 See the [forensics and malware-safety posture](./forensics-safety.md) for how the default static path stays safe on untrusted input.

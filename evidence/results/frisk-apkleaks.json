@@ -1,21 +1,32 @@
 {
   "ci_attested": true,
   "claim": "On the identical planted APK, disrobe frisk recalls more of the hand-verified planted secrets than apkleaks (it catches the AWS secret key, the Basic-auth credential, and the JWT that apkleaks's rule set misses).",
+  "comparison_basis": "highest reported numeric value",
   "competitors": [
     {
+      "clean": null,
+      "emitted": null,
       "is_disrobe": true,
+      "leg": null,
       "metric": "recall %",
       "name": "disrobe frisk (in-process recon engine)",
       "result": "8/8 (100.0%)",
+      "role": null,
       "status": "ok",
+      "value": 100.0,
       "version": "n/a (in-process)"
     },
     {
+      "clean": null,
+      "emitted": null,
       "is_disrobe": false,
+      "leg": null,
       "metric": "recall %",
       "name": "apkleaks",
       "result": "5/8 (62.5%)",
+      "role": null,
       "status": "ok",
+      "value": 62.5,
       "version": "v2.6.3"
     }
   ],
@@ -33,6 +44,7 @@
     "note": "Recall is strong (the planted secrets are ground truth). Precision against a real non-secret tree is a separate, weaker number not claimed here. apkleaks scans its own jadx-decompiled output tree; disrobe frisk scans the extracted member tree (its real product path); both see the byte-identical APK."
   },
   "oracle_strength": "strong",
+  "pairs": [],
   "reproduce": "cargo run -p disrobe-bench-head-to-head  (apkleaks 2.6.3 via evidence/competitors/install-linux.sh; rule set pinned at evidence/competitors/apkleaks-regexes.json; needs jadx for apkleaks's decompile step)",
   "title": "Secret / IOC recall: disrobe frisk vs apkleaks"
 }

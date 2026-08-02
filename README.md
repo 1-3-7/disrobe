@@ -43,7 +43,7 @@ Try it in your browser at [`1-3-7.github.io/disrobe/playground`](https://1-3-7.g
 | Ecosystem | Tier | Headline measured figure | Oracle | Guide |
 |---|---|---|---|---|
 | Python bytecode | Recover | <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> per code object, 122 of <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules whole | strong `[CI]` | [python](docs/src/languages/python.md) |
-| PyArmor | Recover | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> free-mode samples | strong `[CI]` | [python](docs/src/languages/python.md) |
+| PyArmor | Recover | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> manifest-named v8/v9 default-trial wrappers decode one complete header-anchored root `CodeObject` | coverage-self-reported `[CI]` | [python](docs/src/languages/python.md) |
 | Python pickle | Recover | 470 / 470 re-execute equal | strong `[CI]` | [pickle](docs/src/languages/pickle.md) |
 | JVM classfile | Recover | 131 / 131 methods recompile | recompile-only `[CI]` | [jvm](docs/src/languages/jvm-android.md) |
 | Android DEX | Recover | 118 / 118 verifier-presented classes | strong `[CI]` | [android](docs/src/languages/jvm-android.md) |
@@ -103,7 +103,6 @@ The Oracle column names the independent reference in a few words. What that refe
 | Python `.pyc`, pinned 200-module corpus | <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> per object, floor 96.60% `[CI]` | recompile-equivalence | `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs` |
 | Python `.pyc`, whole-module exact | 122 of <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules recompile whole, floor 122 `[CI]` | recompile-equivalence | `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs` |
 | Python legacy 1.0-3.7 | <!-- m:py_legacy_count -->150 of 191<!-- /m --> gate-verified `[CI]` | recompile or token match | `crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs` |
-| PyArmor v6-v9-pro | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> real-corpus samples `[CI]` | declared build match | `crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs` |
 | Pickle safety | 102 / 102 fixtures classify `[CI]` | pickletools semantics | `crates/disrobe-pass-pickle/tests/corpus.rs` |
 | Pickle reconstruction roundtrip | 470 / 470 re-execute equal, floor 100% `[CI]` | CPython re-execution | `crates/disrobe-pass-pickle/tests/roundtrip.rs` |
 | Android DEX, committed corpus | 118 / 118 verifier-presented classes clean, 317 re-hosted bodies clean `[CI]` | real JVM verifier | `crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs` |
@@ -143,7 +142,7 @@ The Android committed-corpus row is measured on small methods; <!-- m:dalvik_lin
 
 The BEAM figure is scoped to the committed `test/0` observation in each case. The test compiles the original Erlang source with OTP 27.3.4, strips both `Dbgi` and `Docs`, recovers through the Core Erlang path, recompiles the recovered source, compares exports, and then compares `test/0` exit status and stdout under real `erl`. It does not claim equivalence for every input to every export. CI enforces this gate on Linux; macOS and Windows report it as unmeasured when Erlang is absent.
 
-The Swift row is pinned against a committed fixture's own symbol table and expected in-process renderings. The parity leg against the reference `swift-demangle` runs only where that tool is installed; CI neither requires nor provisions it, so it is not a guaranteed CI-graded public comparison. HashLink also parses the whole HLB image byte-exact, 336 functions and 421 types on the committed fixture. The PyArmor row draws its samples from a corpus of 289 committed files. The container row's assertion is `published_container_counts_match_this_enum`, which binds the 33 to the formats a committed input drives to member bytes rather than to the roster that declares the extractors; the rest have no committed input, so they are unverified rather than shown to fail. The six planted IOC categories frisk is graded on are endpoints, manifest findings, URLs, IPv4, email, and `.onion`.
+The Swift row is pinned against a committed fixture's own symbol table and expected in-process renderings. The parity leg against the reference `swift-demangle` runs only where that tool is installed; CI neither requires nor provisions it, so it is not a guaranteed CI-graded public comparison. HashLink also parses the whole HLB image byte-exact, 336 functions and 421 types on the committed fixture. The PyArmor row is limited to 72 manifest-named v8/v9 default-trial wrapper/runtime pairs. Its test statically decrypts each body and requires its header-anchored marshal stream to decode as one complete root `CodeObject`; it does not compare source, emitted `.pyc` bytes, semantic or execution behavior, or external-tool output. The container row's assertion is `published_container_counts_match_this_enum`, which binds the 33 to the formats a committed input drives to member bytes rather than to the roster that declares the extractors; the rest have no committed input, so they are unverified rather than shown to fail. The six planted IOC categories frisk is graded on are endpoints, manifest findings, URLs, IPv4, email, and `.onion`.
 
 Native UPX recovers about 96% of the whole image beyond the two byte-identical sections. For the committed packer pairs, `.text` and `.data` are byte-identical for all three families, and nspack's `.rdata` is byte-identical too. One packed-and-original pair per family is committed, so each figure reproduces from a clean checkout. The same decoders score lower on the whole-image measure over larger uncommitted vendor samples, with the content sections holding up far better than the whole image; `fsg_unpack.rs` and `nspack_byte_recovery.rs` sit beside the cited petite test, and no figure is published for any of them because nothing there reproduces or is pinned. Determinism is also checked across worker-pool sizes: the same fixtures run through `disrobe auto <dir>`'s batch runner at `--jobs 1` and `--jobs 4` produce identical bytes, and that batch runner is the one real concurrent code path in the CLI.
 
@@ -163,6 +162,7 @@ Nothing asserts bytecode-equivalence for that row. The recovered source compiles
 | Android DEX, real APKs, count `coverage-self-reported` | <!-- m:dalvik_body_frac -->82788 / 89516<!-- /m --> `[local]` | self-reported, gitignored apks | `crates/disrobe-pass-jvm/tests/dalvik_realworld_body_attest.rs` |
 | WebAssembly, op-coverage `coverage-self-reported` | <!-- m:wasm_opcoverage_count -->1034 of 1034<!-- /m --> opcodes across 38 parseable modules `[CI]` | wasm-tools 1.250.0 supplies the denominator; lowering is self-counted | `crates/disrobe-pass-wasm-deob/tests/external_op_denominator.rs` |
 | Swift symbol rendering `coverage-self-reported` | committed symbols produce pinned renderings `[CI]` | binary `LC_SYMTAB` membership with pinned in-process output | `crates/disrobe-pass-swift-objc/tests/swift_hello_symbol_pin.rs` |
+| PyArmor v8/v9 default-trial wrappers `coverage-self-reported` | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> manifest-named wrappers decode one complete header-anchored root `CodeObject` `[CI]` | self-reported structural check | `crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs` |
 
 That figure is the total across all three apks and not any one of them. The per-apk split, and a separate verifier-attested population with its own smaller denominator, are in the [Android guide](docs/src/languages/jvm-android.md).
 
@@ -203,8 +203,8 @@ Most tools specialize in one layer. `disrobe` chains unpacking, bytecode and nat
 
 | Surface | `disrobe` | Leading tool | Result | Reproduce |
 |---|---|---|---|---|
-| JVM classfile | 131 / 131 methods recompile | CFR 0.152: 105 / 106 | `disrobe` leads on clean methods and clean rate | `cargo run -p disrobe-bench-head-to-head` |
-| Android DEX | 129 / 132 methods recompile | JADX 1.5.5: 128 / 130 | mixed: `disrobe` emits one more clean method; JADX has the higher clean rate | `cargo run -p disrobe-bench-head-to-head` |
+| <!-- evidence-pair:apk-jadx-cfr:jar -->JVM classfile | 131 / 131 methods recompile | CFR 0.152: 105 / 106 | `disrobe` leads on clean methods and clean rate | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |
+| <!-- evidence-pair:apk-jadx-cfr:dex -->Android DEX | 129 / 132 methods recompile | JADX 1.5.5: 128 / 130 | mixed: `disrobe` recovers one more clean method; JADX has the higher clean rate | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |
 | APK secrets | 8 / 8 planted secrets | apkleaks 2.6.3: 5 / 8 | `disrobe` catches the AWS secret key, Basic credential, and JWT apkleaks misses | `cargo run -p disrobe-bench-head-to-head` |
 
 Missing rows are not implied wins. Every surface without a same-input runner stays in the edge table below until one exists.

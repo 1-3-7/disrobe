@@ -1,6 +1,7 @@
 {
   "ci_attested": true,
   "claim": "disrobe recovers Go type names from a -s -w stripped binary by walking typelinks and moduledata, verified against the real go1.26.3 toolchain's own type metadata.",
+  "comparison_basis": null,
   "competitors": [],
   "detail": "CI floor >= 85% on the committed stripped fixture; 838 of 838 (100%) measured, with the type count and the recovered count both pinned in the gate so a change to either forces a re-measure (typelinks/moduledata survive -s -w stripping)",
   "disrobe_leads": null,
@@ -16,6 +17,7 @@
     "note": null
   },
   "oracle_strength": "strong",
+  "pairs": [],
   "reproduce": "cargo test -p disrobe-pass-go --test go_typemeta",
   "title": "Go type-name recovery on a stripped go1.26.3 binary"
 }

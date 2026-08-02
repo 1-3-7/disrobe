@@ -4,6 +4,7 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_jvm::{
     AndroidDecompileOutput, BackendPreference, ClassFile, DecompiledClass, android_decompile_dex,
     decompile_class_with_inners, parse_classfile, run_jadx_on_bytes,
@@ -11,6 +12,7 @@ use disrobe_pass_jvm::{
 use eyre::{Result, WrapErr};
 use serde_json::{Value, json};
 
+use crate::apkleaks_capture::sha256_hex;
 use crate::tool::{
     MAX_FIXTURE_BYTES, MAX_TEXT_BYTES, MAX_ZIP_ENTRIES, MAX_ZIP_ENTRY_BYTES, MAX_ZIP_TOTAL_BYTES,
     find_on_path, read_bounded_file, read_bounded_string, run, version_of,
@@ -45,11 +47,15 @@ pub fn measure(root: &Path) -> Result<(String, Value)> {
         .wrap_err_with(|| format!("reading {}", dex_path.display()))?;
     let jar_bytes: Vec<u8> = read_bounded_file(&jar_path, MAX_FIXTURE_BYTES)
         .wrap_err_with(|| format!("reading {}", jar_path.display()))?;
+    let dex_sha256: String = sha256_hex(&dex_bytes);
+    let jar_sha256: String = sha256_hex(&jar_bytes);
+    let dataset: String = dataset_description(&dex_sha256, &jar_sha256);
     let original: String = read_bounded_string(&original_src, MAX_TEXT_BYTES)
         .wrap_err_with(|| format!("reading {}", original_src.display()))?;
     let denominator: usize = main_class_method_ranges(&original).len().max(1);
 
     let dex_leg: Leg = Leg {
+        key: "dex",
         label: "DEX leg",
         disrobe_name: "disrobe (in-house Dalvik, DEX input)",
         disrobe: score_disrobe_dex(&javac, &dex_bytes, denominator),
@@ -59,6 +65,7 @@ pub fn measure(root: &Path) -> Result<(String, Value)> {
     };
 
     let jar_leg: Leg = Leg {
+        key: "jar",
         label: "JAR leg",
         disrobe_name: "disrobe (in-house JVM, JAR input)",
         disrobe: score_disrobe_jar(&javac, &jar_bytes, denominator),
@@ -75,10 +82,10 @@ pub fn measure(root: &Path) -> Result<(String, Value)> {
         "title": "APK / DEX decompilation: disrobe vs JADX vs CFR (recompile-clean main-class methods under real javac)",
         "status": "ok",
         "ecosystem": "android",
-        "dataset": "corpus/jvm/dex/EdgeCases.dex (SHA-256 fdc012bd...) for the DEX leg; corpus/jvm/megafile/EdgeCases-baseline.jar (SHA-256 9e68bd13...) for the JAR leg; both committed, fully offline",
+        "dataset": dataset,
         "oracle": "real javac (JDK), per-method recompile error-free against a STUBBED (empty) classpath so a wrong recovered signature cannot resolve against the original classes",
         "metric": format!("clean / emitted main-EdgeCases methods. The original main class declares {denominator} methods (counted at runtime); each decompiler also emits synthetic accessor/lambda/bridge methods, so the per-tool EMITTED count differs by design. The honest comparable number is the recompile-clean RATE (clean/emitted) plus the absolute clean-method count, both shown."),
-        "reproduce": "cargo run -p disrobe-bench-head-to-head  (needs javac + jadx + cfr on PATH)",
+        "reproduce": "cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr",
         "fairness": [
             "identical input bytes per leg: disrobe and jadx both decompile EdgeCases.dex; disrobe and cfr both decompile the EdgeCases-baseline.jar (cfr cannot read DEX)",
             "same oracle scores every tool: the same javac error-line map over each tool's recovered MAIN EdgeCases class",
@@ -96,6 +103,14 @@ const IN_PROCESS_VERSION: &str = "n/a (in-process)";
 const OK_STATUS: &str = "ok";
 const SHARED_ORACLE: &str =
     "All rows use the same stubbed real-`javac` oracle and are recompile-only.";
+
+fn dataset_description(dex_sha256: &str, jar_sha256: &str) -> String {
+    format!(
+        "corpus/jvm/dex/EdgeCases.dex (SHA-256 {dex_sha256}) for the DEX leg; \
+         corpus/jvm/megafile/EdgeCases-baseline.jar (SHA-256 {jar_sha256}) for the JAR leg; both \
+         committed, fully offline"
+    )
+}
 
 #[derive(Debug)]
 enum CompetitorOutcome {
@@ -136,6 +151,7 @@ fn cfr_outcome(
 
 #[derive(Debug)]
 struct Leg {
+    key: &'static str,
     label: &'static str,
     disrobe_name: &'static str,
     disrobe: ToolScore,
@@ -146,16 +162,18 @@ struct Leg {
 
 impl Leg {
     fn to_json_rows(&self) -> Vec<Value> {
-        let competitor: Value = match &self.competitor {
+        let mut competitor: Value = match &self.competitor {
             CompetitorOutcome::Scored { version, score } => {
                 score.to_json(self.competitor_name, version)
             }
             CompetitorOutcome::Absent { reason } => skipped_tool(self.competitor_name, reason),
         };
-        vec![
-            self.disrobe.to_json(self.disrobe_name, IN_PROCESS_VERSION),
-            competitor,
-        ]
+        competitor["leg"] = Value::String(self.key.to_owned());
+        competitor["role"] = Value::String("competitor".to_owned());
+        let mut disrobe: Value = self.disrobe.to_json(self.disrobe_name, IN_PROCESS_VERSION);
+        disrobe["leg"] = Value::String(self.key.to_owned());
+        disrobe["role"] = Value::String("disrobe".to_owned());
+        vec![disrobe, competitor]
     }
 
     fn sentence(&self) -> String {
@@ -302,7 +320,7 @@ fn score_disrobe_dex(javac: &Path, dex_bytes: &[u8], denominator: usize) -> Tool
         );
     };
     let source: String = main_edgecases_source(&out.sources);
-    score_source(javac, &source, "disrobe-dex", denominator)
+    score_source(javac, &source, denominator)
 }
 
 fn score_disrobe_jar(javac: &Path, jar_bytes: &[u8], denominator: usize) -> ToolScore {
@@ -332,7 +350,7 @@ fn score_disrobe_jar(javac: &Path, jar_bytes: &[u8], denominator: usize) -> Tool
         .filter_map(|(n, b)| parse_classfile(b).ok().map(|c| (n.clone(), c)))
         .collect();
     let d: DecompiledClass = decompile_class_with_inners(&cf, &inners);
-    score_source(javac, &d.source, "disrobe-jar", denominator)
+    score_source(javac, &d.source, denominator)
 }
 
 fn score_jadx(javac: &Path, dex_bytes: &[u8], denominator: usize) -> ToolScore {
@@ -353,7 +371,7 @@ fn score_jadx(javac: &Path, dex_bytes: &[u8], denominator: usize) -> ToolScore {
     if source.is_empty() {
         return ToolScore::miss(denominator, "jadx produced no EdgeCases source".to_owned());
     }
-    score_source(javac, &source, "jadx", denominator)
+    score_source(javac, &source, denominator)
 }
 
 fn score_cfr(javac: &Path, jar_path: &Path, cfr: &CfrInvoke, denominator: usize) -> ToolScore {
@@ -366,7 +384,7 @@ fn score_cfr(javac: &Path, jar_path: &Path, cfr: &CfrInvoke, denominator: usize)
     let out_dir: PathBuf = work.join("out");
     let result: Result<String, String> = cfr.run(jar_path, &out_dir);
     let score: ToolScore = match result {
-        Ok(source) if !source.is_empty() => score_source(javac, &source, "cfr", denominator),
+        Ok(source) if !source.is_empty() => score_source(javac, &source, denominator),
         Ok(_) => ToolScore::miss(denominator, "cfr produced no EdgeCases source".to_owned()),
         Err(e) => ToolScore::miss(denominator, format!("cfr failed: {e}")),
     };
@@ -374,12 +392,39 @@ fn score_cfr(javac: &Path, jar_path: &Path, cfr: &CfrInvoke, denominator: usize)
     score
 }
 
-fn score_source(javac: &Path, source: &str, label: &str, original: usize) -> ToolScore {
+fn score_source(javac: &Path, source: &str, original: usize) -> ToolScore {
     if source.trim().is_empty() {
         return ToolScore::miss(original, "empty recovered source".to_owned());
     }
-    let errors: Vec<usize> = javac_error_lines(javac, source, label);
     let ranges: Vec<(usize, usize)> = main_class_method_ranges(source);
+    if ranges.is_empty() {
+        return ToolScore::miss(
+            original,
+            "recovered source contains no main-EdgeCases methods".to_owned(),
+        );
+    }
+    score_method_ranges(original, &ranges, javac_error_lines(javac, source))
+}
+
+fn score_method_ranges(
+    original: usize,
+    ranges: &[(usize, usize)],
+    diagnostics: std::result::Result<Vec<usize>, String>,
+) -> ToolScore {
+    let errors: Vec<usize> = match diagnostics {
+        Ok(errors) => errors,
+        Err(error) => return ToolScore::miss(original, format!("javac oracle failed: {error}")),
+    };
+    if let Some(line) = errors.iter().copied().find(|line: &usize| {
+        !ranges
+            .iter()
+            .any(|(start, end): &(usize, usize)| *line >= *start && *line < *end)
+    }) {
+        return ToolScore::miss(
+            original,
+            format!("javac reported a diagnostic outside a recovered method at line {line}"),
+        );
+    }
     let emitted: usize = ranges.len();
     let clean: usize = ranges
         .iter()
@@ -479,43 +524,79 @@ fn classes_from_jar_with_limits(
     Some(out)
 }
 
-fn javac_error_lines(javac: &Path, source: &str, label: &str) -> Vec<usize> {
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_h2h_{label}_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    if std::fs::create_dir_all(&dir).is_err() {
-        return Vec::new();
-    }
+fn javac_error_lines(javac: &Path, source: &str) -> std::result::Result<Vec<usize>, String> {
+    let scratch: ScratchDir = ScratchDir::create("disrobe_h2h_javac")
+        .map_err(|error: std::io::Error| format!("could not create javac workspace: {error}"))?;
+    let dir: &Path = scratch.path();
     let path: PathBuf = dir.join("EdgeCases.java");
-    if std::fs::write(&path, source).is_err() {
-        return Vec::new();
-    }
+    std::fs::write(&path, source)
+        .map_err(|error: std::io::Error| format!("could not write javac source: {error}"))?;
     let stub: PathBuf = dir.join("cp");
-    let _ = std::fs::create_dir_all(&stub);
-    let out: Option<std::process::Output> = Command::new(javac)
+    std::fs::create_dir(&stub)
+        .map_err(|error: std::io::Error| format!("could not create javac classpath: {error}"))?;
+    let out: std::process::Output = Command::new(javac)
         .arg("-nowarn")
         .arg("-proc:none")
         .arg("-cp")
         .arg(&stub)
         .arg("-d")
-        .arg(&dir)
+        .arg(dir)
         .arg(&path)
         .output()
-        .ok();
-    let mut error_lines: Vec<usize> = Vec::new();
-    if let Some(out) = out {
-        let stderr: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&out.stderr);
-        for line in stderr.lines() {
-            if let Some(rest) = line.split("EdgeCases.java:").nth(1)
-                && let Some(num) = rest.split(':').next()
-                && let Ok(n) = num.parse::<usize>()
-            {
-                error_lines.push(n);
-            }
+        .map_err(|error: std::io::Error| format!("could not start javac: {error}"))?;
+    if out.status.success() {
+        require_emitted_edgecases_class(dir)?;
+        return Ok(Vec::new());
+    }
+    let stderr: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&out.stderr);
+    let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&out.stdout);
+    let diagnostics: String = format!("{stderr}\n{stdout}");
+    failed_javac_error_lines(&diagnostics)
+        .map_err(|error: String| format!("javac exited with {}: {error}", out.status))
+}
+
+fn require_emitted_edgecases_class(dir: &Path) -> std::result::Result<(), String> {
+    for entry in walkdir::WalkDir::new(dir) {
+        let entry: walkdir::DirEntry = entry
+            .map_err(|error: walkdir::Error| format!("could not inspect javac output: {error}"))?;
+        let path: &Path = entry.path();
+        if entry.file_type().is_file()
+            && path
+                .file_name()
+                .and_then(|name: &std::ffi::OsStr| name.to_str())
+                == Some("EdgeCases.class")
+        {
+            return Ok(());
         }
     }
-    let _ = std::fs::remove_dir_all(&dir);
-    error_lines
+    Err("javac exited successfully without emitting EdgeCases.class".to_owned())
+}
+
+fn failed_javac_error_lines(diagnostics: &str) -> std::result::Result<Vec<usize>, String> {
+    let mut error_lines: Vec<usize> = Vec::new();
+    for line in diagnostics.lines() {
+        let Some((_before, rest)): Option<(&str, &str)> = line.rsplit_once("EdgeCases.java:")
+        else {
+            continue;
+        };
+        let Some((number, _after)): Option<(&str, &str)> = rest.split_once(':') else {
+            return Err("unparseable EdgeCases.java diagnostic".to_owned());
+        };
+        let parsed: usize =
+            number
+                .trim()
+                .parse::<usize>()
+                .map_err(|error: std::num::ParseIntError| {
+                    format!("unparseable EdgeCases.java diagnostic line: {error}")
+                })?;
+        error_lines.push(parsed);
+    }
+    error_lines.sort_unstable();
+    error_lines.dedup();
+    if error_lines.is_empty() {
+        return Err("javac emitted no parseable EdgeCases.java diagnostic".to_owned());
+    }
+    Ok(error_lines)
 }
 
 fn main_class_method_ranges(src: &str) -> Vec<(usize, usize)> {
@@ -565,7 +646,7 @@ fn skipped(reason: &str) -> Value {
         "status": "skipped",
         "reason": reason,
         "ecosystem": "android",
-        "reproduce": "cargo run -p disrobe-bench-head-to-head  (needs javac + jadx + cfr on PATH)",
+        "reproduce": "cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr",
         "tools": [],
     })
 }
@@ -650,6 +731,17 @@ mod tests {
     const SAMPLE: &str = "package p;\npublic class EdgeCases {\n  public int a() {\n    return 1;\n  }\n  static class Inner {\n    void hidden() {}\n  }\n  private void b(int x) {\n    System.out.println(x);\n  }\n}\nclass EdgeCases$1 {\n  void synthetic() {}\n}\n";
 
     #[test]
+    fn dataset_description_tracks_each_fixture_digest() {
+        let first: String = dataset_description("dex-a", "jar-a");
+        let changed_dex: String = dataset_description("dex-b", "jar-a");
+        let changed_jar: String = dataset_description("dex-a", "jar-b");
+        assert!(first.contains("SHA-256 dex-a"));
+        assert!(first.contains("SHA-256 jar-a"));
+        assert_ne!(first, changed_dex);
+        assert_ne!(first, changed_jar);
+    }
+
+    #[test]
     fn main_class_method_ranges_counts_only_depth_one_members() -> core::result::Result<(), String>
     {
         let Some(block): Option<String> = extract_main_edgecases_block(SAMPLE) else {
@@ -685,8 +777,87 @@ mod tests {
         assert!(miss.rate().abs() < f64::EPSILON);
     }
 
+    #[test]
+    fn apk_rows_carry_stable_leg_and_role_identities() {
+        let rows: Vec<Value> = dex_leg(
+            ToolScore::measured(129, 132, 106, "measured".to_owned()),
+            scored("1.5.5", 128, 130),
+        )
+        .to_json_rows();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["leg"], "dex");
+        assert_eq!(rows[0]["role"], "disrobe");
+        assert_eq!(rows[1]["leg"], "dex");
+        assert_eq!(rows[1]["role"], "competitor");
+    }
+
+    #[test]
+    fn an_unavailable_javac_is_a_miss() -> core::result::Result<(), String> {
+        let scratch: ScratchDir = ScratchDir::create("disrobe_h2h_missing_javac")
+            .map_err(|error: std::io::Error| error.to_string())?;
+        let missing: PathBuf = scratch.path().join("javac-that-does-not-exist");
+        let score: ToolScore = score_source(&missing, SAMPLE, 2);
+        assert_eq!(score.status, "miss");
+        assert_eq!(score.clean, 0);
+        assert_eq!(score.emitted, 0);
+        assert!(
+            score.detail.contains("could not start javac"),
+            "a failed compiler spawn must not be counted as all-clean: {}",
+            score.detail
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn compiler_success_requires_an_emitted_main_class() -> core::result::Result<(), String> {
+        let scratch: ScratchDir = ScratchDir::create("disrobe_h2h_compiler_output")
+            .map_err(|error: std::io::Error| error.to_string())?;
+        assert!(
+            require_emitted_edgecases_class(scratch.path()).is_err(),
+            "an empty compiler output directory cannot certify recovered source"
+        );
+        let package: PathBuf = scratch.path().join("p");
+        std::fs::create_dir(&package).map_err(|error: std::io::Error| error.to_string())?;
+        std::fs::write(package.join("EdgeCases.class"), b"class")
+            .map_err(|error: std::io::Error| error.to_string())?;
+        require_emitted_edgecases_class(scratch.path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn failed_javac_requires_parseable_edgecases_lines() -> core::result::Result<(), String> {
+        assert!(
+            failed_javac_error_lines("error: compilation failed").is_err(),
+            "a nonzero compiler result with no source diagnostic cannot score clean methods"
+        );
+        assert!(
+            failed_javac_error_lines("EdgeCases.java:not-a-line: error").is_err(),
+            "an unparseable source diagnostic cannot score clean methods"
+        );
+        let lines: Vec<usize> = failed_javac_error_lines(
+            "/tmp/EdgeCases.java:3: error: incompatible types\nC:\\tmp\\EdgeCases.java:11: error: cannot find symbol",
+        )?;
+        assert_eq!(lines, vec![3, 11]);
+        Ok(())
+    }
+
+    #[test]
+    fn only_method_bound_javac_failures_are_scored_partially() {
+        let ranges: Vec<(usize, usize)> = vec![(3, 6), (10, 13)];
+        let partial: ToolScore = score_method_ranges(2, &ranges, Ok(vec![3]));
+        assert_eq!(partial.status, "ok");
+        assert_eq!(partial.clean, 1);
+        assert_eq!(partial.emitted, 2);
+
+        let outside: ToolScore = score_method_ranges(2, &ranges, Ok(vec![2]));
+        assert_eq!(outside.status, "miss");
+        assert_eq!(outside.clean, 0);
+        assert_eq!(outside.emitted, 0);
+    }
+
     fn dex_leg(disrobe: ToolScore, competitor: CompetitorOutcome) -> Leg {
         Leg {
+            key: "dex",
             label: "DEX leg",
             disrobe_name: "disrobe (in-house Dalvik, DEX input)",
             disrobe,
@@ -744,6 +915,7 @@ mod tests {
                 scored("1.5.5", 128, 130),
             ),
             Leg {
+                key: "jar",
                 label: "JAR leg",
                 disrobe_name: "disrobe (in-house JVM, JAR input)",
                 disrobe: ToolScore::measured(131, 131, 106, "measured".to_owned()),

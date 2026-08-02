@@ -1,6 +1,7 @@
 {
   "ci_attested": true,
   "claim": "All 6 planted non-secret IOC categories are represented in frisk's scan of the committed planted tree, and the 6 are named individually so the published row cannot describe a different set than the one graded.",
+  "comparison_basis": null,
   "competitors": [],
   "detail": "All 6 planted non-secret IOC categories are represented in the scan of corpus/recon/planted: endpoint, manifest, url, ipv4, email, and onion, with 31 findings in total across them (endpoint 13, manifest 7, url 7, email 2, ipv4 1, onion 1). Read this as category presence and not as per-item recall: a category counts once it yields at least one finding, so this figure says frisk covers every planted category, not that it finds every planted item inside one. The six are named individually and the denominator is pinned by equality against the category list the gate grades.",
   "disrobe_leads": null,
@@ -16,6 +17,7 @@
     "note": "Read this as category presence and not as per-item recall. A category counts as covered once it yields at least one finding, so 6 of 6 says frisk reaches every planted category, not that it finds every planted item within one. The measured findings behind it are endpoint 13, manifest 7, url 7, email 2, ipv4 1 and onion 1, which is 31 in total. A per-item recall figure for these categories is a stronger claim and this row does not make it."
   },
   "oracle_strength": "strong",
+  "pairs": [],
   "reproduce": "cargo test -p disrobe-bench-head-to-head published_planted_ioc_category_bar_is_pinned_by_membership",
   "title": "frisk non-secret IOC category coverage on the committed planted tree"
 }

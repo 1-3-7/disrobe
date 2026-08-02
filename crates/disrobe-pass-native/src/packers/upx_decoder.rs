@@ -1523,15 +1523,15 @@ mod tests {
             packed[16..18].copy_from_slice(&2u16.to_le_bytes());
             packed[18..20].copy_from_slice(&62u16.to_le_bytes());
             packed[20..24].copy_from_slice(&1u32.to_le_bytes());
-            packed[24..32].copy_from_slice(&0x400000u64.to_le_bytes());
+            packed[24..32].copy_from_slice(&0x0040_0000_u64.to_le_bytes());
             packed[32..40].copy_from_slice(&(program_table_offset as u64).to_le_bytes());
             packed[52..54].copy_from_slice(&64u16.to_le_bytes());
             packed[54..56].copy_from_slice(&program_header_size.to_le_bytes());
             packed[56..58].copy_from_slice(&program_header_count.to_le_bytes());
             packed[64..68].copy_from_slice(&1u32.to_le_bytes());
             packed[68..72].copy_from_slice(&5u32.to_le_bytes());
-            packed[80..88].copy_from_slice(&0x400000u64.to_le_bytes());
-            packed[88..96].copy_from_slice(&0x400000u64.to_le_bytes());
+            packed[80..88].copy_from_slice(&0x0040_0000_u64.to_le_bytes());
+            packed[88..96].copy_from_slice(&0x0040_0000_u64.to_le_bytes());
             let size: u64 = packed.len() as u64;
             packed[96..104].copy_from_slice(&size.to_le_bytes());
             packed[104..112].copy_from_slice(&size.to_le_bytes());
@@ -1761,15 +1761,15 @@ mod tests {
         packed[120..176].copy_from_slice(&load);
         packed[64..68].copy_from_slice(&6u32.to_le_bytes());
         packed[72..80].copy_from_slice(&64u64.to_le_bytes());
-        packed[80..88].copy_from_slice(&0x400040u64.to_le_bytes());
+        packed[80..88].copy_from_slice(&0x0040_0040_u64.to_le_bytes());
         packed[96..104].copy_from_slice(&168u64.to_le_bytes());
         packed[104..112].copy_from_slice(&168u64.to_le_bytes());
         packed[112..120].copy_from_slice(&8u64.to_le_bytes());
         packed[176..180].copy_from_slice(&1u32.to_le_bytes());
         packed[180..184].copy_from_slice(&5u32.to_le_bytes());
         packed[184..192].copy_from_slice(&240u64.to_le_bytes());
-        packed[192..200].copy_from_slice(&0x401000u64.to_le_bytes());
-        packed[200..208].copy_from_slice(&0x401000u64.to_le_bytes());
+        packed[192..200].copy_from_slice(&0x0040_1000_u64.to_le_bytes());
+        packed[200..208].copy_from_slice(&0x0040_1000_u64.to_le_bytes());
         packed[208..216].copy_from_slice(&1u64.to_le_bytes());
         packed[216..224].copy_from_slice(&1u64.to_le_bytes());
         packed[224..232].copy_from_slice(&1u64.to_le_bytes());
@@ -1789,7 +1789,7 @@ mod tests {
         packed[120..176].copy_from_slice(&load);
         packed[64..68].copy_from_slice(&6u32.to_le_bytes());
         packed[72..80].copy_from_slice(&64u64.to_le_bytes());
-        packed[80..88].copy_from_slice(&0x400040u64.to_le_bytes());
+        packed[80..88].copy_from_slice(&0x0040_0040_u64.to_le_bytes());
         packed[96..104].copy_from_slice(&112u64.to_le_bytes());
         packed[104..112].copy_from_slice(&112u64.to_le_bytes());
         packed[112..120].copy_from_slice(&8u64.to_le_bytes());
@@ -1800,7 +1800,7 @@ mod tests {
         let baseline: UpxUnpackOutput =
             unpack_upx(&packed).expect("mapped PT_PHDR fixture must recover through generic UPX");
         assert_eq!(baseline.recovered_image, b"a");
-        packed[80..88].copy_from_slice(&0x400041u64.to_le_bytes());
+        packed[80..88].copy_from_slice(&0x0040_0041_u64.to_le_bytes());
         assert!(
             !crate::elf::is_well_formed_elf_executable(&packed),
             "a PT_PHDR virtual address outside the load translation must not use generic fallback"
