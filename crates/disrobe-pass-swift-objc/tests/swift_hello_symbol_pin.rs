@@ -23,9 +23,8 @@ const FIXTURE_NAME: &str = SWIFT_HELLO_ORIGINAL.name;
 const REFERENCE_COLUMN_GRADED: &str =
     "the pinned reference column, byte for byte against the real swift-demangle";
 
-const PUBLISHED_HEADING: &str = "Swift symbol recovery";
-const PUBLISHED_SYMBOL_BAR: &str = "mangled symbols recovered";
-const PUBLISHED_REFERENCE_BAR: &str = "exact agreement with swift-demangle";
+const PUBLISHED_HEADING: &str = "Swift symbol rendering on the committed SwiftHello Mach-O";
+const PUBLISHED_SYMBOL_BAR: &str = "pinned symbol renderings";
 const PUBLISHED_VALUE_TOLERANCE: f64 = 0.05;
 
 #[derive(Debug, Clone, Copy)]
@@ -343,7 +342,7 @@ fn swift_hello_reference_agreement_is_pinned_at_measured_floor() {
         diverging, REFERENCE_DIVERGENCES,
         "the set of symbols where the recovered text differs from the reference demangler is \
          pinned, so neither a new divergence nor a fixed one may land without updating this list \
-         and the published figure together"
+         and the pinned reference column together"
     );
 }
 
@@ -436,10 +435,10 @@ fn bar_defects(label: &str, hit: usize, total: usize, bar: PinnedBar) -> Vec<Str
             bar.den
         ));
     }
-    if measured_hit < bar.num {
+    if measured_hit != bar.num {
         defects.push(format!(
             "{label}: recovery.json publishes {} of {}; this run measured {measured_hit}. Raise the \
-             recovery or correct the published figure, never the reverse",
+             recovery or correct the published figure, never merely floor the measured recovery",
             bar.num, bar.den
         ));
     }
@@ -454,18 +453,44 @@ fn bar_defects(label: &str, hit: usize, total: usize, bar: PinnedBar) -> Vec<Str
 }
 
 #[test]
-fn published_swift_symbol_bars_are_pinned_to_the_measured_membership() {
+fn published_swift_symbol_rendering_is_pinned_to_the_measured_membership() {
     let symbol_bar: PinnedBar = pinned_bar(PUBLISHED_SYMBOL_BAR);
-    let reference_bar: PinnedBar = pinned_bar(PUBLISHED_REFERENCE_BAR);
 
     let (slice, parsed): (Vec<u8>, ParsedSlice) = pinned_slice();
     let observed: Vec<String> = extract_swift_symbols(&slice, &parsed);
-    let mut defects: Vec<String> = symbol_set_defects(&observed);
-
+    let defects: Vec<String> = symbol_rendering_defects(&observed, symbol_bar);
     let recovered: usize = PINNED
         .iter()
         .filter(|entry: &&PinnedSymbol| {
             let present: bool = observed.iter().any(|s: &String| s == entry.mangled);
+            present && rendered(entry.mangled) == entry.ours
+        })
+        .count();
+
+    eprintln!(
+        "{FIXTURE_NAME}: {recovered} of {} Swift-mangled symbols render to pinned text (published \
+         {}/{} = {})",
+        observed.len(),
+        symbol_bar.num,
+        symbol_bar.den,
+        symbol_bar.value
+    );
+    assert!(
+        defects.is_empty(),
+        "the published Swift symbol rendering figure names this set of symbols rather than a bare \
+         count:\n{}",
+        defects.join("\n")
+    );
+}
+
+fn symbol_rendering_defects(observed: &[String], symbol_bar: PinnedBar) -> Vec<String> {
+    let mut defects: Vec<String> = symbol_set_defects(observed);
+    let recovered: usize = PINNED
+        .iter()
+        .filter(|entry: &&PinnedSymbol| {
+            let present: bool = observed
+                .iter()
+                .any(|symbol: &String| symbol == entry.mangled);
             present && rendered(entry.mangled) == entry.ours
         })
         .count();
@@ -475,90 +500,39 @@ fn published_swift_symbol_bars_are_pinned_to_the_measured_membership() {
         observed.len(),
         symbol_bar,
     ));
-
-    let agreeing: usize = PINNED
-        .iter()
-        .filter(|entry: &&PinnedSymbol| entry.ours == entry.reference)
-        .count();
-    defects.extend(bar_defects(
-        PUBLISHED_REFERENCE_BAR,
-        agreeing,
-        PINNED.len(),
-        reference_bar,
-    ));
-
-    eprintln!(
-        "{FIXTURE_NAME}: {recovered} of {} Swift-mangled symbols recovered and demangled to pinned \
-         text (published {}/{} = {}); {agreeing} of {} agree exactly with swift-demangle (published \
-         {}/{} = {})",
-        observed.len(),
-        symbol_bar.num,
-        symbol_bar.den,
-        symbol_bar.value,
-        PINNED.len(),
-        reference_bar.num,
-        reference_bar.den,
-        reference_bar.value
-    );
-    assert!(
-        defects.is_empty(),
-        "the published Swift symbol figures name this set of symbols rather than a bare count:\n{}",
-        defects.join("\n")
-    );
+    defects
 }
 
 #[test]
-fn the_pinned_symbol_bar_check_rejects_a_dropped_symbol_and_a_shrunken_denominator() {
+fn the_pinned_symbol_rendering_check_rejects_a_dropped_symbol() {
     let bar: PinnedBar = pinned_bar(PUBLISHED_SYMBOL_BAR);
-    let hit: usize = usize::try_from(bar.num).expect("the published numerator fits usize");
-    let total: usize = usize::try_from(bar.den).expect("the published denominator fits usize");
-    assert!(
-        bar_defects(PUBLISHED_SYMBOL_BAR, hit, total, bar).is_empty(),
-        "the check must accept the published measurement unchanged"
-    );
-
-    let dropped: Vec<String> = bar_defects(PUBLISHED_SYMBOL_BAR, hit - 1, total, bar);
-    assert!(
-        dropped
-            .iter()
-            .any(|d: &String| d.contains("this run measured")),
-        "losing one recovered symbol must be reported as a shortfall against the published \
-         numerator, got {dropped:?}"
-    );
-
-    let shrunk: Vec<String> = bar_defects(PUBLISHED_SYMBOL_BAR, hit - 1, total - 1, bar);
-    assert!(
-        shrunk
-            .iter()
-            .any(|d: &String| d.contains("never shrink what it is measured against")),
-        "dropping a symbol from the graded population must be rejected on the denominator rather \
-         than absorbed as a better ratio, got {shrunk:?}"
-    );
-}
-
-#[test]
-fn symbol_set_checker_reports_a_seeded_symbol_drop() {
-    let intact: Vec<String> = pinned_mangled()
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<String>>();
-    assert!(
-        symbol_set_defects(&intact).is_empty(),
-        "the checker must accept the pinned set unchanged"
-    );
-    let dropped: &'static str = PINNED[0].mangled;
-    let seeded: Vec<String> = intact
+    let (slice, parsed): (Vec<u8>, ParsedSlice) = pinned_slice();
+    let observed: Vec<String> = extract_swift_symbols(&slice, &parsed);
+    let dropped: &str = PINNED[0].mangled;
+    let corrupted: Vec<String> = observed
         .iter()
-        .filter(|s: &&String| s.as_str() != dropped)
+        .filter(|symbol: &&String| symbol.as_str() != dropped)
         .cloned()
         .collect();
-    let defects: Vec<String> = symbol_set_defects(&seeded);
+    let defects: Vec<String> = symbol_rendering_defects(&corrupted, bar);
     assert!(
-        defects.iter().any(|d: &String| d.contains(dropped)),
+        defects
+            .iter()
+            .any(|defect: &String| defect.contains(dropped)),
         "dropping {dropped} must be reported by name, got {defects:?}"
     );
     assert!(
-        defects.iter().any(|d: &String| d.contains("must stay")),
-        "dropping a symbol must also fail the denominator, got {defects:?}"
+        defects
+            .iter()
+            .any(|defect: &String| defect.contains("this run measured")),
+        "losing one recovered symbol must be reported as a shortfall against the published \
+         numerator, got {defects:?}"
+    );
+    assert!(
+        defects
+            .iter()
+            .any(|defect: &String| defect.contains("never shrink what it is measured against")),
+        "dropping a symbol from the graded population must be rejected on the denominator rather \
+         than absorbed as a better ratio, got {defects:?}"
     );
 }

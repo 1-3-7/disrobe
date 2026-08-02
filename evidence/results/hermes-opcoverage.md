@@ -6,7 +6,7 @@
 - measured: 100.00%
 - oracle strength: strong
 - CI-attested: yes [CI]
-- external oracle: self-authored sample.js compiled by the real hermesc; every function lifts at 0 fallback ops with source-matching bodies
+- evidence basis: self-authored sample.js compiled by the real hermesc; every function lifts at 0 fallback ops with source-matching bodies
 - reproduce: `cargo test -p disrobe-pass-mobile --test real_hermes_sample`
 - floor: 100.00 (holds)
 - gate source: crates/disrobe-pass-mobile/tests/real_hermes_sample.rs (hbc_v96_sample_recovers_every_function_at_full_op_coverage asserts total_fallback_ops == 0)

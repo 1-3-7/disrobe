@@ -32,7 +32,7 @@ Built for forensic and recovery work where reproducibility matters:
 
 ## Measured recovery
 
-Every figure below is produced by a committed test gate or a local measurement harness graded against an independent oracle, never the tool's own output. The full per-value sourcing lives in [`xtask/data/recovery.json`](https://github.com/1-3-7/disrobe/blob/main/xtask/data/recovery.json).
+Every figure below comes from a committed test gate or a local measurement harness. `strong` figures are graded against an independent oracle; `coverage-self-reported` figures state the inspected population and count disrobe's own output. The full per-value sourcing lives in [`xtask/data/recovery.json`](https://github.com/1-3-7/disrobe/blob/main/xtask/data/recovery.json).
 
 ![Measured recovery by ecosystem](./assets/recovery.svg)
 

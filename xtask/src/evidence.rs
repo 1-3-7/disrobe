@@ -822,7 +822,7 @@ fn render_descriptor_md(r: &Resolved) -> String {
         "- CI-attested: {}",
         if r.ci { "yes [CI]" } else { "no [local]" }
     );
-    push_line!(md, "- external oracle: {}", r.oracle_external);
+    push_line!(md, "- evidence basis: {}", r.oracle_external);
     push_line!(md, "- reproduce: `{}`", r.reproduce);
     if let Some(floor) = r.floor {
         let holds: &str = match r.floor_holds {
@@ -864,8 +864,9 @@ fn render_report(resolved: &[Resolved]) -> String {
          from its source: recovery-import rows from `xtask/data/recovery.json`, \
          head-to-head and gate-harvest rows from `evidence/results/measured/*.json` (written by \
          `cargo run -p disrobe-bench-head-to-head`). This report does not recompute or round any \
-         number. Each row states the claim, the measured number, the external oracle that can \
-         reject a wrong answer, and the exact command a stranger runs to reproduce it. \
+         number. Each row states the claim, the measured number, its evidence strength, the \
+         source or external oracle it relies on, and the exact command a stranger runs to \
+         reproduce it. \
          `cargo run -p xtask -- evidence --check` is the CI drift gate that fails if any rendered \
          number drifts from its source or any floor is violated.\n\n",
     );
@@ -880,7 +881,7 @@ fn render_report(resolved: &[Resolved]) -> String {
         .count();
     push_line!(
         md,
-        "{} oracle(s) surfaced ({ci_count} CI-attested, {} local), {h2h_count} head-to-head comparison(s) (`disrobe` trails on {loss_count}).\n",
+        "{} evidence record(s) surfaced ({ci_count} CI-attested, {} local), {h2h_count} head-to-head comparison(s) (`disrobe` trails on {loss_count}).\n",
         resolved.len(),
         resolved.len() - ci_count,
     );
@@ -891,7 +892,7 @@ fn render_report(resolved: &[Resolved]) -> String {
          `recompile-only` = the recovered source compiles but byte-equivalence is not asserted; \
          `coverage-self-reported` = a coverage count graded against nothing external.\n\n",
     );
-    md.push_str("| ecosystem | claim | measured | strength | CI | external oracle | reproduce |\n");
+    md.push_str("| ecosystem | claim | measured | strength | CI | evidence basis | reproduce |\n");
     md.push_str("|---|---|---|---|---|---|---|\n");
     for r in resolved {
         push_line!(

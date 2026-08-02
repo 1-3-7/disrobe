@@ -1,17 +1,15 @@
 id = "swift-demangle"
 ecosystem = "swift"
-title = "Swift symbol demangle recall vs the binary's own symbol table"
-claim = "disrobe demangles the Swift-mangled symbols carried in a real Mach-O's own LC_SYMTAB, recovering class names, type metadata, and field offsets that match the reference swift-demangle."
-oracle_strength = "strong"
+title = "Pinned Swift symbol renderings from the committed SwiftHello Mach-O"
+claim = "disrobe recognizes and renders every Swift-mangled symbol in the committed SwiftHello Mach-O against pinned in-process output. No external demangler grades output correctness in this gate."
+oracle_strength = "coverage-self-reported"
 ci = true
 
 [oracle]
-kind = "gate-test-harvest"
-external = "the binary's own LC_SYMTAB Swift-mangled symbols, an in-artifact ground truth the tool does not author; the committed fixture pins all 37 by name, and reference parity against the swift-demangle tool runs only where that tool is installed, which CI does not provide"
-reproduce = "cargo test -p disrobe-pass-swift-objc --test real_swift_demangle  (harvested by cargo run -p disrobe-bench-head-to-head)"
-note = "Local: the SwiftHello.original Mach-O fixture is LEGAL.md sourcing-gated, so this is [local] until the Swift toolchain + fixture run in a Swift CI lane. The number is the in-process demangle of the binary's own symbols."
+kind = "recovery-import"
+external = "the committed SwiftHello Mach-O LC_SYMTAB fixes the named Swift-mangled symbol population; expected renderings are committed regression pins, not an external correctness oracle"
+reproduce = "cargo test -p disrobe-pass-swift-objc --test swift_hello_symbol_pin"
 
-[measured]
-result_file = "gate-harvest.json"
-gate_id = "swift-demangle-recall"
-disrobe_floor = 95.0
+[source]
+recovery_group = "Swift symbol rendering on the committed SwiftHello Mach-O"
+recovery_bar = "pinned symbol renderings"

@@ -6,7 +6,7 @@
 - measured: 98.67%
 - oracle strength: strong
 - CI-attested: yes [CI]
-- external oracle: real MRI (ruby): recompile the recovered source, compare the YARV opcode multiset
+- evidence basis: real MRI (ruby): recompile the recovered source, compare the YARV opcode multiset
 - reproduce: `cargo test -p disrobe-pass-ruby --test yarv_recompile_oracle`
 - floor: 98.67 (holds)
 - gate source: crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs (megafile >= 98)

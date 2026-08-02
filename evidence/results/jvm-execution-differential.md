@@ -6,7 +6,7 @@
 - measured: 89.31%
 - oracle strength: strong
 - CI-attested: yes [CI]
-- external oracle: real javac (JDK 25) plus a real JVM: the original and the recovered source are each compiled and run, and every observable per-method result is compared
+- evidence basis: real javac (JDK 25) plus a real JVM: the original and the recovered source are each compiled and run, and every observable per-method result is compared
 - reproduce: `cargo test -p disrobe-pass-jvm --test edgecases_execution_differential`
 - floor: 89.31 (holds)
 - gate source: crates/disrobe-pass-jvm/tests/edgecases_execution_differential.rs (EXECUTION_EQUIVALENT_FLOOR 117 of PER_METHOD_TOTAL 131, with the equivalent set pinned as a membership list of method names rather than a count, so a method cannot leave it silently and the pinned-divergent lists only ever shrink); the reference is real javac plus a real JVM comparing observable behavior, never the decompiler's own output; the_execution_differential_reports_a_double_counted_exception_path injects a second counter increment on divSafe's recovered exception path and requires this differential to report divergence while javac still accepts the file; measured 117 equivalent, 8 divergent, 6 not driven on JDK 25

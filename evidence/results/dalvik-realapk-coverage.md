@@ -6,7 +6,7 @@
 - measured: 92.50%
 - oracle strength: coverage-self-reported
 - CI-attested: no [local]
-- external oracle: two populations with different denominators: the 82788 of 89516 body-lowering count is the lifter counting its own output, and the 2960 of 2994 figure beside it is graded by real java -Xverify:all over bodies presented to the verifier, not over methods
+- evidence basis: two populations with different denominators: the 82788 of 89516 body-lowering count is the lifter counting its own output, and the 2960 of 2994 figure beside it is graded by real java -Xverify:all over bodies presented to the verifier, not over methods
 - reproduce: `DISROBE_RUN_REAL_APK_TESTS=1 cargo test -p disrobe-pass-jvm --test dalvik_realworld_body_attest --test dex2jar_realworld_apks (local-only: the apks are gitignored)`
 - floor: 92.40 (holds)
 - gate source: crates/disrobe-pass-jvm/tests/dalvik_realworld_body_attest.rs (REAL_APK_METHOD_TOTAL 89516, SELF_REPORTED_BODIES 82788, CANDIDATE_BODIES 82756, SAMPLED_BODIES 8343, ATTESTED_PRESENTED 2994, ATTESTED_CLEAN 2960, ATTESTED_REJECTED 34, every one an equality rather than a floor, with the same counts pinned per apk in common::REAL_APKS and all 2994 verdicts pinned by name in tests/golden/dalvik_body_attest) and crates/disrobe-pass-jvm/tests/dex2jar_realworld_apks.rs (the same per-apk self-reported counts, also by equality); reference for the attested figure = java -Xverify:all rejecting malformed bytecode, not the lifter self-report

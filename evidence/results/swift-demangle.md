@@ -1,13 +1,11 @@
-# Swift symbol demangle recall vs the binary's own symbol table
+# Pinned Swift symbol renderings from the committed SwiftHello Mach-O
 
 - id: `swift-demangle`
 - ecosystem: swift
-- claim: disrobe demangles the Swift-mangled symbols carried in a real Mach-O's own LC_SYMTAB, recovering class names, type metadata, and field offsets that match the reference swift-demangle.
-- measured: 37/37 (100.0%)
-- oracle strength: strong
+- claim: disrobe recognizes and renders every Swift-mangled symbol in the committed SwiftHello Mach-O against pinned in-process output. No external demangler grades output correctness in this gate.
+- measured: 100.00%
+- oracle strength: coverage-self-reported
 - CI-attested: yes [CI]
-- external oracle: the binary's own LC_SYMTAB Swift-mangled symbols, an in-artifact ground truth the tool does not author; the committed fixture pins all 37 by name, and reference parity against the swift-demangle tool runs only where that tool is installed, which CI does not provide
-- reproduce: `cargo test -p disrobe-pass-swift-objc --test real_swift_demangle  (harvested by cargo run -p disrobe-bench-head-to-head)`
-- floor: 95.00 (holds)
-- gate source: cargo test -p disrobe-pass-swift-objc --test real_swift_demangle (gate swift-demangle-recall, harvested by cargo run -p disrobe-bench-head-to-head)
-- note: Local: the SwiftHello.original Mach-O fixture is LEGAL.md sourcing-gated, so this is [local] until the Swift toolchain + fixture run in a Swift CI lane. The number is the in-process demangle of the binary's own symbols.
+- evidence basis: the committed SwiftHello Mach-O LC_SYMTAB fixes the named Swift-mangled symbol population; expected renderings are committed regression pins, not an external correctness oracle
+- reproduce: `cargo test -p disrobe-pass-swift-objc --test swift_hello_symbol_pin`
+- gate source: crates/disrobe-pass-swift-objc/tests/swift_hello_symbol_pin.rs test published_swift_symbol_rendering_is_pinned_to_the_measured_membership, which pins the 37-symbol LC_SYMTAB membership, denominator and in-process rendering text against the committed fixture

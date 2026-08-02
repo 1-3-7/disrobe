@@ -2,7 +2,7 @@
 
 disrobe is one static Rust binary that decompiles, deobfuscates, and unpacks compiled software across 20+ ecosystems: Python, JVM and Android, .NET, JavaScript and WebAssembly, Lua, Go, Ruby, PHP, shell, and native x86-64/AArch64. By default it never executes the sample, runs no model, and produces byte-identical output on every machine.
 
-Every published number comes from a committed test graded against an independent reference, never against disrobe's own output: recovered Python must recompile to equivalent bytecode, recovered Android classes must pass the real JVM verifier, unpacked sections must byte-compare to the original. Where the data is absent from the artifact, disrobe reports the limit instead of guessing past it. Numbers, oracles, and reproduce commands live in [evidence/](evidence/).
+Every `strong` published number comes from a committed test graded against an independent reference: recovered Python must recompile to equivalent bytecode, recovered Android classes must pass the real JVM verifier, unpacked sections must byte-compare to the original. `coverage-self-reported` rows visibly state when they count disrobe's own output and pin the population they inspect. Where the data is absent from the artifact, disrobe reports the limit instead of guessing past it. Numbers, evidence classes, and reproduce commands live in [evidence/](evidence/).
 
 [![CI](https://github.com/1-3-7/disrobe/actions/workflows/ci.yml/badge.svg)](https://github.com/1-3-7/disrobe/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/1-3-7/disrobe?sort=semver)](https://github.com/1-3-7/disrobe/releases)
@@ -55,7 +55,7 @@ Try it in your browser at [`1-3-7.github.io/disrobe/playground`](https://1-3-7.g
 | Native packers | Recover | UPX `.text` and `.pdata` byte-identical | strong `[CI]` | [unpack](docs/src/languages/native-unpack.md) |
 | Native VM protectors | Detect-only | handler stream carved, not lifted | pass-gated | [unpack](docs/src/languages/native-unpack.md) |
 | Go | Recover | <!-- m:go_typename_count -->838 of 838<!-- /m --> stripped type names | strong `[CI]` | [go](docs/src/languages/go.md) |
-| Swift, Objective-C | Recover | 37 / 37 mangled symbols | strong `[CI]` | [swift](docs/src/languages/swift.md) |
+| Swift, Objective-C | Recover | committed symbols produce pinned renderings | coverage-self-reported `[CI]` | [swift](docs/src/languages/swift.md) |
 | Lua | Recover | IronBrew2 devirt runs equal | strong `[CI]` | [lua](docs/src/languages/lua.md) |
 | Ruby | Recover | greeter <!-- m:ruby_greeter_pct -->100%<!-- /m --> under MRI recompile | strong `[CI]` | [ruby](docs/src/languages/ruby.md) |
 | PHP | Partial | eval-chain peel, Phar decode | pass-gated | [php](docs/src/languages/php.md) |
@@ -118,7 +118,6 @@ The Oracle column names the independent reference in a few words. What that refe
 | Ruby YARV, megafile | <!-- m:ruby_megafile_pct -->98.67%<!-- /m --> of 23966 opcodes `[CI]` | MRI recompile, opcode multiset | `crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs` |
 | Go type-name recovery | <!-- m:go_typename_count -->838 of 838<!-- /m --> type names, stripped `[CI]` | typelinks survive `-s -w` | `crates/disrobe-pass-go/tests/go_typemeta.rs` |
 | Go BuildInfo and garble undo | BuildInfo recovered, `-literals` rebuilt `[CI]` | real toolchain output | `crates/disrobe-pass-go/tests/go_buildinfo_oracle.rs` |
-| Swift symbol demangle | 37 / 37 mangled symbols `[CI]` | binary `LC_SYMTAB` symbols | `crates/disrobe-pass-swift-objc/tests/real_swift_demangle.rs` |
 | HashLink (Haxe `.hl`) | class names 100%, method names floor 75% `[CI]` | names vs the original `.hx` | `crates/disrobe-pass-scriptlang/tests/real_hashlink_decompile.rs` |
 | Native UPX | `.text` and `.pdata` byte-identical, floor 96% `[CI]` | byte-identity | `crates/disrobe-pass-native/tests/upx_unpack_all.rs`, `nrv2b_content_section_byte_recovery_meets_floor` |
 | Native packers, MPRESS | `.text` >= 90%, `.rdata` >= 85% `[CI]` | RVA-aligned recovery | `crates/disrobe-pass-native/tests/mpress_gauntlet.rs` |
@@ -144,7 +143,7 @@ The Android committed-corpus row is measured on small methods; <!-- m:dalvik_lin
 
 The BEAM figure is scoped to the committed `test/0` observation in each case. The test compiles the original Erlang source with OTP 27.3.4, strips both `Dbgi` and `Docs`, recovers through the Core Erlang path, recompiles the recovered source, compares exports, and then compares `test/0` exit status and stdout under real `erl`. It does not claim equivalence for every input to every export. CI enforces this gate on Linux; macOS and Windows report it as unmeasured when Erlang is absent.
 
-The Swift row is pinned against a committed fixture's own symbol table; the parity leg against the reference `swift-demangle` runs only where that tool is installed, which CI does not provide. HashLink also parses the whole HLB image byte-exact, 336 functions and 421 types on the committed fixture. The PyArmor row draws its samples from a corpus of 289 committed files. The container row's assertion is `published_container_counts_match_this_enum`, which binds the 33 to the formats a committed input drives to member bytes rather than to the roster that declares the extractors; the rest have no committed input, so they are unverified rather than shown to fail. The six planted IOC categories frisk is graded on are endpoints, manifest findings, URLs, IPv4, email, and `.onion`.
+The Swift row is pinned against a committed fixture's own symbol table and expected in-process renderings. The parity leg against the reference `swift-demangle` runs only where that tool is installed; CI neither requires nor provisions it, so it is not a guaranteed CI-graded public comparison. HashLink also parses the whole HLB image byte-exact, 336 functions and 421 types on the committed fixture. The PyArmor row draws its samples from a corpus of 289 committed files. The container row's assertion is `published_container_counts_match_this_enum`, which binds the 33 to the formats a committed input drives to member bytes rather than to the roster that declares the extractors; the rest have no committed input, so they are unverified rather than shown to fail. The six planted IOC categories frisk is graded on are endpoints, manifest findings, URLs, IPv4, email, and `.onion`.
 
 Native UPX recovers about 96% of the whole image beyond the two byte-identical sections. For the committed packer pairs, `.text` and `.data` are byte-identical for all three families, and nspack's `.rdata` is byte-identical too. One packed-and-original pair per family is committed, so each figure reproduces from a clean checkout. The same decoders score lower on the whole-image measure over larger uncommitted vendor samples, with the content sections holding up far better than the whole image; `fsg_unpack.rs` and `nspack_byte_recovery.rs` sit beside the cited petite test, and no figure is published for any of them because nothing there reproduces or is pinned. Determinism is also checked across worker-pool sizes: the same fixtures run through `disrobe auto <dir>`'s batch runner at `--jobs 1` and `--jobs 4` produce identical bytes, and that batch runner is the one real concurrent code path in the CLI.
 
@@ -163,6 +162,7 @@ Nothing asserts bytecode-equivalence for that row. The recovered source compiles
 | Android DEX, real APKs `coverage-self-reported` | <!-- m:dalvik_body_pct -->92.5%<!-- /m --> of defined methods `[local]` | self-reported, gitignored apks | `crates/disrobe-pass-jvm/tests/dex2jar_realworld_apks.rs` |
 | Android DEX, real APKs, count `coverage-self-reported` | <!-- m:dalvik_body_frac -->82788 / 89516<!-- /m --> `[local]` | self-reported, gitignored apks | `crates/disrobe-pass-jvm/tests/dalvik_realworld_body_attest.rs` |
 | WebAssembly, op-coverage `coverage-self-reported` | <!-- m:wasm_opcoverage_count -->1034 of 1034<!-- /m --> opcodes across 38 parseable modules `[CI]` | wasm-tools 1.250.0 supplies the denominator; lowering is self-counted | `crates/disrobe-pass-wasm-deob/tests/external_op_denominator.rs` |
+| Swift symbol rendering `coverage-self-reported` | committed symbols produce pinned renderings `[CI]` | binary `LC_SYMTAB` membership with pinned in-process output | `crates/disrobe-pass-swift-objc/tests/swift_hello_symbol_pin.rs` |
 
 That figure is the total across all three apks and not any one of them. The per-apk split, and a separate verifier-attested population with its own smaller denominator, are in the [Android guide](docs/src/languages/jvm-android.md).
 

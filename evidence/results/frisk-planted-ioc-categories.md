@@ -6,7 +6,7 @@
 - measured: 100.00%
 - oracle strength: strong
 - CI-attested: yes [CI]
-- external oracle: the committed category list the gate grades against, which is independent of frisk's output; the gate requires the published membership to equal that list exactly
+- evidence basis: the committed category list the gate grades against, which is independent of frisk's output; the gate requires the published membership to equal that list exactly
 - reproduce: `cargo test -p disrobe-bench-head-to-head published_planted_ioc_category_bar_is_pinned_by_membership`
 - gate source: benches/head-to-head/src/gate.rs test published_planted_ioc_category_bar_is_pinned_by_membership, which requires the published membership to equal the category list it grades so the row cannot describe a different six than the one measured
 - note: Read this as category presence and not as per-item recall. A category counts as covered once it yields at least one finding, so 6 of 6 says frisk reaches every planted category, not that it finds every planted item within one. The measured findings behind it are endpoint 13, manifest 7, url 7, email 2, ipv4 1 and onion 1, which is 31 in total. A per-item recall figure for these categories is a stronger claim and this row does not make it.
