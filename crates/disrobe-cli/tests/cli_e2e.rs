@@ -1,6 +1,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+use std::io::{Cursor, Write};
 use std::path::PathBuf;
 use std::process::Command;
+
+use zip::write::{FileOptions, ZipWriter};
 
 fn cli_binary() -> PathBuf {
     let mut p: PathBuf = env_target_dir();
@@ -36,6 +39,43 @@ fn temp_path(stem: &str, ext: &str) -> (disrobe_core::scratch::ScratchDir, PathB
 fn temp_dir(stem: &str) -> disrobe_core::scratch::ScratchDir {
     let purpose: String = format!("disrobe-cli-e2e-{stem}");
     disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
+}
+
+fn workspace_root() -> PathBuf {
+    let mut root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    assert!(root.pop(), "crate manifest directory must have a parent");
+    assert!(root.pop(), "crates directory must have a parent");
+    root
+}
+
+fn ipa_with_swift_hello() -> (disrobe_core::scratch::ScratchDir, PathBuf) {
+    let fixture: PathBuf = workspace_root()
+        .join("corpus")
+        .join("mobile")
+        .join("macho-mac")
+        .join("SwiftHello.original");
+    let original: Vec<u8> = std::fs::read(&fixture).expect("read committed SwiftHello Mach-O");
+    let cursor: Cursor<Vec<u8>> = Cursor::new(Vec::with_capacity(original.len() + 1024));
+    let mut archive: ZipWriter<Cursor<Vec<u8>>> = ZipWriter::new(cursor);
+    let options: FileOptions<'_, ()> =
+        FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    archive
+        .start_file("Payload/SwiftHello.app/Info.plist", options)
+        .expect("start Info.plist entry");
+    archive
+        .write_all(
+            br#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleExecutable</key><string>SwiftHello</string></dict></plist>"#,
+        )
+        .expect("write Info.plist entry");
+    archive
+        .start_file("Payload/SwiftHello.app/SwiftHello", options)
+        .expect("start Mach-O entry");
+    archive.write_all(&original).expect("write Mach-O entry");
+    let ipa_bytes: Vec<u8> = archive.finish().expect("finish IPA archive").into_inner();
+    let (scratch, ipa_path): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("swift-ipa-boundary", "ipa");
+    write_bytes(&ipa_path, &ipa_bytes);
+    (scratch, ipa_path)
 }
 
 fn write_bytes(path: &PathBuf, bytes: &[u8]) {
@@ -97,6 +137,101 @@ fn top_level_help_lists_every_pass_subcommand() {
             r.stdout
         );
     }
+}
+
+#[test]
+fn ipa_is_limited_to_macho_dump_not_classdump() {
+    let (scratch, ipa_path): (disrobe_core::scratch::ScratchDir, PathBuf) = ipa_with_swift_hello();
+    let ipa: &str = ipa_path.to_str().expect("IPA path must be valid UTF-8");
+
+    let swift: Run = run_disrobe(&["swift", "classdump", ipa]);
+    assert_ne!(
+        swift.code, 0,
+        "swift classdump unexpectedly accepted an IPA"
+    );
+    assert!(
+        swift.stderr.contains("DR-CLI-0701"),
+        "swift classdump must refuse IPA archive bytes: {}",
+        swift.stderr
+    );
+
+    let classdump_out: PathBuf = scratch.path().join("classdump-out");
+    let classdump_out_text: &str = classdump_out
+        .to_str()
+        .expect("classdump output path must be valid UTF-8");
+    let classdump: Run = run_disrobe(&["macho", "classdump", ipa, "--out", classdump_out_text]);
+    assert_ne!(
+        classdump.code, 0,
+        "macho classdump unexpectedly accepted an IPA"
+    );
+    assert!(
+        classdump.stderr.contains("DR-CLI-0510"),
+        "macho classdump must refuse IPA archive bytes: {}",
+        classdump.stderr
+    );
+
+    let dump_path: PathBuf = scratch.path().join("macho-dump.json");
+    let dump_path_text: &str = dump_path.to_str().expect("dump path must be valid UTF-8");
+    let dump: Run = run_disrobe(&["macho", "dump", ipa, "--out", dump_path_text]);
+    assert_eq!(
+        dump.code, 0,
+        "macho dump rejected a valid IPA: {}",
+        dump.stderr
+    );
+    let report_raw: String = std::fs::read_to_string(&dump_path).expect("read Mach-O dump JSON");
+    let report: serde_json::Value =
+        serde_json::from_str(&report_raw).expect("parse Mach-O dump JSON");
+    assert_eq!(
+        report["container"],
+        serde_json::Value::String("Ipa".to_owned()),
+        "macho dump must report the IPA container"
+    );
+}
+
+#[test]
+fn swift_and_macho_help_distinguish_ipa_and_mapping_parsing() {
+    let swift_help: Run = run_disrobe(&["swift", "classdump", "--help"]);
+    assert_eq!(swift_help.code, 0, "stderr: {}", swift_help.stderr);
+    assert!(swift_help.stdout.contains("thin Mach-O"));
+    assert!(
+        !swift_help.stdout.contains(".ipa"),
+        "swift classdump help must not advertise IPA support: {}",
+        swift_help.stdout
+    );
+
+    let macho_classdump_help: Run = run_disrobe(&["macho", "classdump", "--help"]);
+    assert_eq!(
+        macho_classdump_help.code, 0,
+        "stderr: {}",
+        macho_classdump_help.stderr
+    );
+    assert!(
+        !macho_classdump_help.stdout.contains(".ipa"),
+        "macho classdump help must not advertise IPA support: {}",
+        macho_classdump_help.stdout
+    );
+
+    let macho_dump_help: Run = run_disrobe(&["macho", "dump", "--help"]);
+    assert_eq!(
+        macho_dump_help.code, 0,
+        "stderr: {}",
+        macho_dump_help.stderr
+    );
+    assert!(
+        macho_dump_help.stdout.contains(".ipa"),
+        "macho dump help must retain IPA support: {}",
+        macho_dump_help.stdout
+    );
+
+    let shield_help: Run = run_disrobe(&["swift", "shield-undo", "--help"]);
+    assert_eq!(shield_help.code, 0, "stderr: {}", shield_help.stderr);
+    assert!(shield_help.stdout.contains("parse a SwiftShield"));
+    assert!(shield_help.stdout.contains("rename mapping"));
+    assert!(
+        !shield_help.stdout.contains("reverse a SwiftShield"),
+        "shield-undo help must describe parsing rather than automatic undo: {}",
+        shield_help.stdout
+    );
 }
 
 #[test]

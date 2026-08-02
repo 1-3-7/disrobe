@@ -1787,7 +1787,6 @@ dependencies = [
  "disrobe-core",
  "disrobe-pass-jvm",
  "disrobe-pass-pickle",
- "disrobe-pass-swift-objc",
  "eyre",
  "regex",
  "serde",

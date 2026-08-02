@@ -1,6 +1,6 @@
 # Swift / Objective-C
 
-`disrobe` extracts the type metadata the Objective-C and Swift runtimes leave in a native binary, demangles it, and reverses SwiftShield rename mappings so a dump of a shielded binary reads with its original names.
+`disrobe` extracts the type metadata the Objective-C and Swift runtimes leave in a native binary, demangles it, and parses SwiftShield rename mappings into a lookup for downstream use.
 
 ## At a glance
 
@@ -8,8 +8,8 @@
 |---|---|
 | Objective-C metadata | `__objc_classlist`, `__objc_catlist`, `__objc_protolist`: classes, categories, protocols, ivars, properties, method selectors with type encodings |
 | Swift metadata | `__swift5_types`, `__swift5_fieldmd`, `__swift5_proto`: type names, stored fields, conformances, symbols demangled |
-| Containers | Single slice via `disrobe swift classdump`; fat binaries and `.ipa` via `disrobe macho classdump`, which walks every slice |
-| Rename obfuscators | SwiftShield mapping replay |
+| Containers | Single slice via `disrobe swift classdump`; raw thin and fat Mach-O binaries via `disrobe macho classdump`, which walks every slice |
+| Rename obfuscators | SwiftShield mapping parser |
 | String blobs | Explicit-key single-byte XOR blob decoding for model fixtures |
 | Message dispatch | `objc_msgSend`, `objc_msgSendSuper`, `objc_alloc`, and `objc_alloc_init` sites resolved to selector, receiver class, and a rendered message expression |
 | Mach-O surface | Header, load commands, segments, sections, fat slices, `LC_ENCRYPTION_INFO` records |
@@ -21,16 +21,16 @@ disrobe swift classdump App.app/App --out dump.json
 disrobe swift shield-undo map.txt --out renames.json
 disrobe swift xor-decrypt blob.bin --key 0x55 --out strings.json
 
-disrobe macho classdump App.ipa --out dump.json
+disrobe macho classdump universal.bin --out dump
 disrobe macho dump App.app/App
-disrobe macho slices universal.bin
+disrobe macho fat universal.bin
 ```
 
-`classdump` reconstructs the type interface from the two metadata sources the runtime leaves in the binary, writing a header-style interface listing. Beside the JSON it writes a `.swift` source file with all recovered type declarations.
+`classdump` reconstructs the type interface from the two metadata sources the runtime leaves in the binary, writing a header-style interface listing. Beside the JSON it writes a `.swift` declaration file with recovered type signatures; source-level function bodies do not survive in this metadata.
 
-`shield-undo` reverses a SwiftShield run. SwiftShield renames symbols to high-entropy identifiers and emits an `obf ==> original` mapping in the `.dSYM`. `disrobe` parses that mapping and builds the undo lookup, so a subsequent class-dump of the shielded binary reads with the original names. `xor-decrypt` decodes printable strings from a single-byte XOR blob when the caller supplies `--key`. Its tests cover hand-authored model fixtures, not SwiftConfidential output.
+`shield-undo` parses a SwiftShield mapping. SwiftShield renames symbols to high-entropy identifiers and emits an `obf ==> original` mapping in the `.dSYM`. `disrobe` writes that mapping as a lookup for downstream use; class-dump does not apply it automatically. `xor-decrypt` decodes printable strings from a single-byte XOR blob when the caller supplies `--key`. Its tests cover hand-authored model fixtures, not SwiftConfidential output.
 
-`macho dump` reports the header, load commands, segments, sections, and any `LC_ENCRYPTION_INFO` or `LC_ENCRYPTION_INFO_64` records. `macho slices` walks a fat binary and reports each slice's CPU type, subtype, and offset.
+`macho dump` reports the header, load commands, segments, sections, and any `LC_ENCRYPTION_INFO` or `LC_ENCRYPTION_INFO_64` records. `macho fat` walks a fat binary and reports each slice's CPU type, subtype, and offset.
 
 Output shape (illustrative):
 
@@ -42,7 +42,7 @@ swift classdump: OK
   reflected:    18
   mangled syms: 312
   demangled:    312
-  swift source: ./out/App-swift.swift
+  swift declarations: ./out/App-swift.swift
   wrote:        ./out/App-swift.json
 ```
 
@@ -56,6 +56,6 @@ The resolution is graded on real clang-compiled fixtures for both arm64 and x86-
 
 ## Limits
 
-- Swift and Objective-C compile to native machine code, so function bodies are gone at compile time. What survives in the binary is the type metadata the runtimes need at run time; that metadata is what this pass recovers.
+- Swift and Objective-C compile to native machine code. Source-level function bodies are not part of the runtime metadata; native code can still be analyzed by the native pass. This pass recovers the metadata the runtimes need at run time.
 - A dispatch site whose selector or class cannot be traced within the backward-walk window is left unannotated rather than guessed, so a spurious annotation counts as a soundness failure.
 - FairPlay-encrypted regions (App Store DRM) are reported detect-only via `LC_ENCRYPTION_INFO`: the decryption key is not present in the binary, so class-dump of those regions is an information-theoretic wall.

@@ -2,8 +2,6 @@ use std::path::{Path, PathBuf};
 
 use disrobe_core::recon::{ReconCategory, ReconConfig, ReconFinding, ReconReport, report_tree};
 use disrobe_pass_pickle::{Disassembly, VmTrace, analyze_safety, disassemble, execute};
-use disrobe_pass_swift_objc::demangle;
-use disrobe_pass_swift_objc::macho::{self, MachoKind, ParsedSlice};
 use eyre::Result;
 use serde_json::{Value, json};
 
@@ -20,73 +18,16 @@ const REQUIRED_PLANTED_CATEGORIES: &[ReconCategory] = &[
 
 pub fn measure(root: &Path) -> (String, Value) {
     let id: String = "gate-harvest".to_owned();
-    let gates: Vec<Value> = vec![
-        swift_demangle_gate(root),
-        frisk_gauntlet_gate(root),
-        pickle_corpus_gate(root),
-    ];
+    let gates: Vec<Value> = vec![frisk_gauntlet_gate(root), pickle_corpus_gate(root)];
     let value: Value = json!({
         "id": id,
         "title": "Gate-test harvest: real oracle gates with no recovery.json number, surfaced",
         "status": "ok",
         "ecosystem": "cross-ecosystem",
-        "note": "These three gates already prove disrobe correct against an external reference or a planted ground truth, but their numbers were not in recovery.json. This bench runs each gate's measurement in-process (the same public API the committed test exercises) and records the number so the evidence report can surface it. A gate whose fixture is sourcing-gated on this box is recorded skipped-with-reason, never a silent pass.",
+        "note": "These two gates already prove disrobe correct against an external reference or a planted ground truth, but their numbers were not in recovery.json. This bench runs each gate's measurement in-process (the same public API the committed test exercises) and records the number so the evidence report can surface it. A gate whose fixture is sourcing-gated on this box is recorded skipped-with-reason, never a silent pass.",
         "gates": gates,
     });
     (id, value)
-}
-
-fn swift_demangle_gate(root: &Path) -> Value {
-    let id: &str = "swift-demangle-recall";
-    let fixture: PathBuf = root
-        .join("corpus")
-        .join("mobile")
-        .join("macho-mac")
-        .join("SwiftHello.original");
-    if !fixture.is_file() {
-        return gate_skipped(
-            id,
-            "Swift mangled-symbol demangle recall vs the binary's own symbol table",
-            "corpus/mobile/macho-mac/SwiftHello.original absent (LEGAL.md sourcing-gated)",
-            "cargo test -p disrobe-pass-swift-objc --test real_swift_demangle",
-        );
-    }
-    let Ok(bytes): Result<Vec<u8>, _> = read_bounded_file(&fixture, MAX_FIXTURE_BYTES) else {
-        return gate_skipped(
-            id,
-            "Swift mangled-symbol demangle recall vs the binary's own symbol table",
-            "corpus/mobile/macho-mac/SwiftHello.original unreadable or above the fixture cap",
-            "cargo test -p disrobe-pass-swift-objc --test real_swift_demangle",
-        );
-    };
-    let Some((slice, parsed)): Option<(Vec<u8>, ParsedSlice)> = thin_slice(&bytes) else {
-        return gate_skipped(
-            id,
-            "Swift mangled-symbol demangle recall vs the binary's own symbol table",
-            "SwiftHello.original did not parse as a Mach-O slice on this host",
-            "cargo test -p disrobe-pass-swift-objc --test real_swift_demangle",
-        );
-    };
-    let mut symbols: Vec<String> = macho::symbol_names(&slice, &parsed)
-        .into_iter()
-        .filter(|s: &String| demangle::looks_like_swift_mangled(s))
-        .collect();
-    symbols.sort_unstable();
-    symbols.dedup();
-    let total: usize = symbols.len();
-    let demangled: usize = symbols
-        .iter()
-        .filter(|s: &&String| demangle::demangle(s).is_ok())
-        .count();
-    gate_measured(
-        id,
-        "Swift mangled-symbol demangle recall vs the binary's own symbol table",
-        "the binary's own LC_SYMTAB Swift-mangled symbols (a non-circular, in-artifact ground truth); reference parity is swift-demangle",
-        demangled,
-        total,
-        "% of the binary's own Swift symbols recovered",
-        "cargo test -p disrobe-pass-swift-objc --test real_swift_demangle",
-    )
 }
 
 fn frisk_gauntlet_gate(root: &Path) -> Value {
@@ -220,22 +161,6 @@ fn gate_skipped(id: &str, title: &str, reason: &str, reproduce: &str) -> Value {
         "reason": reason,
         "reproduce": reproduce,
     })
-}
-
-fn thin_slice(bytes: &[u8]) -> Option<(Vec<u8>, ParsedSlice)> {
-    match macho::detect_magic(bytes)? {
-        MachoKind::Fat32 | MachoKind::Fat64 => {
-            let entries: Vec<macho::FatArchEntry> = macho::walk_fat(bytes).ok()?;
-            let entry: &macho::FatArchEntry = entries.first()?;
-            let inner: &[u8] = macho::slice_bytes(bytes, entry)?;
-            let parsed: ParsedSlice = macho::parse_slice(inner).ok()?;
-            Some((inner.to_vec(), parsed))
-        }
-        _ => {
-            let parsed: ParsedSlice = macho::parse_slice(bytes).ok()?;
-            Some((bytes.to_vec(), parsed))
-        }
-    }
 }
 
 fn collect_pkl(

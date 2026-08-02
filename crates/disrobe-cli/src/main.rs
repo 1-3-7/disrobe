@@ -635,7 +635,9 @@ enum Cmd {
         action: HermesCmd,
     },
     #[cfg(feature = "swift")]
-    #[command(about = "Mach-O / Fat-Mach-O / .ipa dump, ObjC + Swift class-dump, fat slice walker")]
+    #[command(
+        about = "Mach-O / Fat-Mach-O / .ipa dump, raw-Mach-O ObjC + Swift class-dump, fat slice walker"
+    )]
     Macho {
         #[command(subcommand)]
         action: MachoCmd,
@@ -698,7 +700,7 @@ enum Cmd {
     },
     #[cfg(feature = "swift")]
     #[command(
-        about = "Swift / Objective-C class-dump, SwiftShield undo, explicit-key XOR blob decoding"
+        about = "Swift / Objective-C class-dump, SwiftShield mapping parser, explicit-key XOR blob decoding"
     )]
     Swift {
         #[command(subcommand)]
@@ -2024,7 +2026,7 @@ fn print_passes() -> miette::Result<()> {
         "  dotnet        .NET PE decompile via ILSpy / dnSpyEx / de4dot + protector detection"
     );
     println!("  hermes        React Native Hermes bundle disasm + JS surface lift");
-    println!("  macho         Mach-O / fat / .ipa dump + ObjC + Swift class-dump");
+    println!("  macho         Mach-O / fat / .ipa dump + raw Mach-O ObjC + Swift class-dump");
     println!(
         "  lua           Lua 5.1 / 5.2 / 5.3 / 5.4 / LuaJIT / Luau / GLua decompile + obfuscator peel"
     );
@@ -2038,7 +2040,7 @@ fn print_passes() -> miette::Result<()> {
     );
     println!("  go            Go binary recovery: pclntab + moduledata + garble + embed.FS");
     println!(
-        "  swift         Swift / ObjC class-dump + SwiftShield undo + explicit-key XOR blob decoding"
+        "  swift         Swift / ObjC class-dump + SwiftShield mapping parser + explicit-key XOR blob decoding"
     );
     println!("  as3           ActionScript 3 .swf DoABC tag disasm");
     println!("  flutter       Dart AOT / libapp.so dump + obfuscation_map parse");

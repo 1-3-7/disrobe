@@ -22,7 +22,7 @@ read as a measured comparison.
 | Native unpacking | UPX and seven packer families recover bytes against committed originals | `upx -d`, unipacker, Detect It Easy plugins | same packer corpus, section-byte identity |
 | Native deobfuscation | OLLVM, stack strings, MBA, path predicates, and VM handler lifting have real or exhaustive gates | Ghidra, IDA, Binary Ninja plus deobfuscation scripts | same binaries, emulator or trace-equivalence gate |
 | Go | <!-- m:go_typename_count -->838 of 838<!-- /m --> stripped type names; garble literals rebuilt from init-thunk emulation | GoReSym, redress, gore | same stripped binaries, type-name and literal recall |
-| Swift / ObjC | 37 / 37 Swift symbols recover against the binary's own symbol table and `swift-demangle` | `swift-demangle`, class-dump, jtool2 | ObjC record recall against class-dump |
+| Swift / ObjC | committed Swift symbols produce pinned in-process renderings; no same-input `swift-demangle` comparison is CI-graded | `swift-demangle`, class-dump, jtool2 | ObjC record recall against class-dump |
 | Lua | real IronBrew2 2.7.0 output runs equal under `lua` after devirt | unluac, luadec, LuaDec51 | same `.luac` and VM-obfuscated set, execution differential |
 | Ruby YARV | greeter <!-- m:ruby_greeter_pct -->100%<!-- /m -->, megafile <!-- m:ruby_megafile_pct -->98.67%<!-- /m --> of 23966 opcodes under MRI recompile | MRI disasm, ruby_decompiler | same `.iseq` set, opcode multiset gate |
 | PHP | recursive eval-chain and encoded-container lifts have pass gates and length guards | php-decoder, de4php, php-malware-finder | same encoded corpus, parser plus runtime-output gate |

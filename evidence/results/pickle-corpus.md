@@ -6,7 +6,7 @@
 - measured: 102/102 (100.0%)
 - oracle strength: strong
 - CI-attested: yes [CI]
-- external oracle: pickletools-semantics equivalence: every committed fixture must disassemble to a STOP, symbolically execute, and classify correctly (benign fixtures never flagged malicious, malicious fixtures always flagged)
+- evidence basis: pickletools-semantics equivalence: every committed fixture must disassemble to a STOP, symbolically execute, and classify correctly (benign fixtures never flagged malicious, malicious fixtures always flagged)
 - reproduce: `cargo test -p disrobe-pass-pickle --test corpus  (harvested by cargo run -p disrobe-bench-head-to-head)`
 - floor: 100.00 (holds)
 - gate source: cargo test -p disrobe-pass-pickle --test corpus (gate pickle-corpus-coverage, harvested by cargo run -p disrobe-bench-head-to-head)

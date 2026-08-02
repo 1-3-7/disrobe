@@ -14,10 +14,10 @@ use super::globals;
 #[derive(Subcommand, Debug)]
 pub(crate) enum SwiftCmd {
     #[command(
-        about = "Swift / ObjC class-dump from a Mach-O / .ipa (best-effort, single slice; use `disrobe macho classdump` for fat binaries)"
+        about = "Swift / ObjC class-dump from a thin Mach-O (best-effort; use `disrobe macho classdump` for fat binaries)"
     )]
     Classdump {
-        #[arg(help = "input Mach-O / .ipa")]
+        #[arg(help = "input thin Mach-O binary")]
         input: PathBuf,
         #[arg(
             short,
@@ -26,16 +26,14 @@ pub(crate) enum SwiftCmd {
         )]
         out: Option<PathBuf>,
     },
-    #[command(
-        about = "reverse a SwiftShield obfuscation map from a .dSYM symbol-mapping text file"
-    )]
+    #[command(about = "parse a SwiftShield .dSYM rename mapping into JSON")]
     ShieldUndo {
         #[arg(help = "input .dSYM mapping text (one `obf ==> original` pair per line)")]
         input: PathBuf,
         #[arg(
             short,
             long,
-            help = "output path for the undo map JSON (default: ./out/<stem>-swiftshield.json)"
+            help = "output path for the parsed rename-map JSON (default: ./out/<stem>-swiftshield.json)"
         )]
         out: Option<PathBuf>,
     },
@@ -94,11 +92,11 @@ fn classdump(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
         .map_err(|e| miette::miette!("DR-CLI-0705: serialize: {e}"))?;
     std::fs::write(&out_path, bytes_out)
         .map_err(|e| miette::miette!("DR-CLI-0706: cannot write output: {e}"))?;
-    let swift_source: String = render_swift_source(&dump);
-    let source_path: PathBuf = out_path.with_extension("swift");
-    if !swift_source.is_empty() {
-        std::fs::write(&source_path, swift_source.as_bytes())
-            .map_err(|e| miette::miette!("DR-CLI-0707: cannot write swift source: {e}"))?;
+    let declarations: String = render_swift_declarations(&dump);
+    let declarations_path: PathBuf = out_path.with_extension("swift");
+    if !declarations.is_empty() {
+        std::fs::write(&declarations_path, declarations.as_bytes())
+            .map_err(|e| miette::miette!("DR-CLI-0707: cannot write swift declarations: {e}"))?;
     }
     println!("swift classdump: OK");
     println!("  input:        {}", input.display());
@@ -114,16 +112,16 @@ fn classdump(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
     println!("  reflected:    {}", dump.reflected_types.len());
     println!("  mangled syms: {}", dump.mangled_symbols.len());
     println!("  demangled:    {}", dump.demangled.len());
-    if swift_source.is_empty() {
-        println!("  swift source: none (no reflection metadata recovered)");
+    if declarations.is_empty() {
+        println!("  swift declarations: none (no reflection metadata recovered)");
     } else {
-        println!("  swift source: {}", source_path.display());
+        println!("  swift declarations: {}", declarations_path.display());
     }
     println!("  wrote:        {}", out_path.display());
     Ok(())
 }
 
-fn render_swift_source(dump: &SwiftClassDump) -> String {
+fn render_swift_declarations(dump: &SwiftClassDump) -> String {
     if !dump.type_dump.is_empty() {
         let mut out: String =
             String::from("// disrobe swift class-dump (recovered reflection metadata)\n\n");
@@ -161,7 +159,7 @@ fn shield_undo(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
         .map_err(|e| miette::miette!("DR-CLI-0712: serialize: {e}"))?;
     std::fs::write(&out_path, bytes_out)
         .map_err(|e| miette::miette!("DR-CLI-0713: cannot write output: {e}"))?;
-    println!("swift shield-undo: OK");
+    println!("swift shield-undo: mapping parsed");
     println!("  input:        {}", input.display());
     println!("  mappings:     {}", map.mappings.len());
     println!("  wrote:        {}", out_path.display());
@@ -208,7 +206,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classdump_writes_real_swift_source() {
+    fn classdump_writes_swift_declarations() {
         let input: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
@@ -229,14 +227,15 @@ mod tests {
 
         classdump(input, Some(out_path.clone())).expect("classdump ok");
 
-        let source_path: PathBuf = out_path.with_extension("swift");
-        let text: String = std::fs::read_to_string(&source_path).expect("read swift source");
+        let declarations_path: PathBuf = out_path.with_extension("swift");
+        let text: String =
+            std::fs::read_to_string(&declarations_path).expect("read swift declarations");
         assert!(
             text.contains("class ")
                 || text.contains("struct ")
                 || text.contains("enum ")
                 || text.contains("protocol "),
-            "swift source must contain recovered type declarations: {text}"
+            "swift declarations must contain recovered type declarations: {text}"
         );
         let _ = std::fs::remove_dir_all(&out_dir);
     }

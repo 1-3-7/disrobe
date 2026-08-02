@@ -1,9 +1,10 @@
 # Evidence and benchmark harness
 
-Public, reproducible proof for every recovery claim `disrobe` makes. The core principle is credibility,
-not scope: for each claim there is a dataset, a script, a result, and an external oracle that can
-reject a wrong answer. A stranger runs one command and regenerates the report; a public CI log proves
-it.
+Public, reproducible evidence for every recovery claim `disrobe` makes. The core principle is
+credibility, not scope: each claim has a dataset, a script, and a result; `strong` claims also name an
+external oracle that can reject a wrong answer. `coverage-self-reported` claims identify the population
+they count and do not present that count as external correctness. A stranger runs one command and
+regenerates the report; a public CI log proves the CI-attested rows.
 
 This tree contains no second repository. Everything lives in the `disrobe` repo: inputs in `corpus/`,
 per-ecosystem runner logic in `benches/`, descriptors and rendered results here.
@@ -29,8 +30,8 @@ cargo run -p xtask -- evidence --list     # list discovered descriptors, strengt
 
 ## What it renders
 
-- `evidence/results/EVIDENCE.md` - the public report: the oracle table (claim, measured number,
-  external oracle, reproduce command), proven head-to-head rows, and floors.
+- `evidence/results/EVIDENCE.md` - the public report: the evidence table (claim, measured number,
+  evidence basis, reproduce command), proven head-to-head rows, and floors.
 - `evidence/results/index.json` - the machine rollup the README reads (descriptor count, ecosystems,
   floor status, per-descriptor rows).
 - `evidence/results/<id>.{json,md}` - one structured + one human result per descriptor.
@@ -107,9 +108,9 @@ ci = true                              # true => CI-attested [CI]; false => [loc
 
 [oracle]
 kind = "recovery-import"               # recovery-import | bench-native-unpack | headtohead-import | gate-test-harvest
-external = "the EXTERNAL oracle that can reject a wrong answer"
+external = "an external oracle, or the stated self-reported evidence basis"
 reproduce = "the exact cargo test command a stranger runs"
-note = "optional caveat (e.g. recompile-only vs equivalence)"
+note = "optional scope caveat (e.g. recompile-only, equivalence, or self-reported)"
 
 [source]                               # required for kind = recovery-import
 recovery_group = "<exact heading in recovery.json>"
@@ -139,8 +140,8 @@ sides with the same external oracle:
   real `javac` against a stubbed classpath (no original-jar leak).
 - `frisk-apkleaks.json` - `disrobe frisk` vs apkleaks, secret/IOC recall against the hand-verified
   planted ground truth in `corpus/recon/apk/planted-secrets.apk`.
-- `gate-harvest.json` - real gate oracles with no `recovery.json` number (swift demangle recall,
-  frisk planted-category recall, pickle corpus coverage), each run in-process via the same public API
+- `gate-harvest.json` - real gate oracles with no `recovery.json` number (frisk planted-category
+  recall, pickle corpus coverage), each run in-process via the same public API
   its committed test exercises.
 
 Honest losses are published in the same table as wins. A competitor that is absent or crashes counts

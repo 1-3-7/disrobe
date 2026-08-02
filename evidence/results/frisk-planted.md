@@ -6,7 +6,7 @@
 - measured: 6/6 (100.0%)
 - oracle strength: strong
 - CI-attested: yes [CI]
-- external oracle: deliberately planted findings committed under corpus/recon/planted - the ground truth the frisk_gauntlet test asserts
+- evidence basis: deliberately planted findings committed under corpus/recon/planted - the ground truth the frisk_gauntlet test asserts
 - reproduce: `cargo test -p disrobe-core --test frisk_gauntlet  (harvested by cargo run -p disrobe-bench-head-to-head)`
 - floor: 100.00 (holds)
 - gate source: cargo test -p disrobe-core --test frisk_gauntlet (gate frisk-planted-recall, harvested by cargo run -p disrobe-bench-head-to-head)

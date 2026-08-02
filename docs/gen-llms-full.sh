@@ -10,7 +10,7 @@ base="https://1-3-7.github.io/disrobe/latest"
   echo
   echo "> One tool to decompile, deobfuscate, and unpack compiled software, deterministically, in a single Rust binary. This file concatenates the full disrobe documentation in reading order for retrieval and ingestion. Canonical hosted docs: ${base}/. Source repository: https://github.com/1-3-7/disrobe."
   echo
-  echo "Recovery is always measured against an independent reference, never the tool's own output, and lossy results are reported as measured."
+  echo "Strong recovery claims are measured against independent references. Coverage self-reports are labeled, scoped to their inspected populations, and never presented as external correctness."
   echo
 } > "$out"
 

@@ -1,21 +1,21 @@
 {
   "ci_attested": true,
-  "claim": "disrobe demangles the Swift-mangled symbols carried in a real Mach-O's own LC_SYMTAB, recovering class names, type metadata, and field offsets that match the reference swift-demangle.",
+  "claim": "disrobe recognizes and renders every Swift-mangled symbol in the committed SwiftHello Mach-O against pinned in-process output. No external demangler grades output correctness in this gate.",
   "competitors": [],
-  "detail": "the binary's own LC_SYMTAB Swift-mangled symbols (a non-circular, in-artifact ground truth); reference parity is swift-demangle",
+  "detail": "All 37 Swift-mangled symbols in the committed, hash-pinned SwiftHello.original Mach-O appear in LC_SYMTAB and render to their pinned in-process text. LC_SYMTAB fixes the named population and denominator. This is a regression rendering check, not an external-demangler correctness measurement.",
   "disrobe_leads": null,
   "ecosystem": "swift",
-  "floor": 95.0,
-  "floor_holds": true,
-  "gate_source": "cargo test -p disrobe-pass-swift-objc --test real_swift_demangle (gate swift-demangle-recall, harvested by cargo run -p disrobe-bench-head-to-head)",
+  "floor": null,
+  "floor_holds": null,
+  "gate_source": "crates/disrobe-pass-swift-objc/tests/swift_hello_symbol_pin.rs test published_swift_symbol_rendering_is_pinned_to_the_measured_membership, which pins the 37-symbol LC_SYMTAB membership, denominator and in-process rendering text against the committed fixture",
   "id": "swift-demangle",
-  "measured": "37/37 (100.0%)",
+  "measured": "100.00%",
   "oracle": {
-    "external": "the binary's own LC_SYMTAB Swift-mangled symbols, an in-artifact ground truth the tool does not author; the committed fixture pins all 37 by name, and reference parity against the swift-demangle tool runs only where that tool is installed, which CI does not provide",
-    "kind": "gate-test-harvest",
-    "note": "Local: the SwiftHello.original Mach-O fixture is LEGAL.md sourcing-gated, so this is [local] until the Swift toolchain + fixture run in a Swift CI lane. The number is the in-process demangle of the binary's own symbols."
+    "external": "the committed SwiftHello Mach-O LC_SYMTAB fixes the named Swift-mangled symbol population; expected renderings are committed regression pins, not an external correctness oracle",
+    "kind": "recovery-import",
+    "note": null
   },
-  "oracle_strength": "strong",
-  "reproduce": "cargo test -p disrobe-pass-swift-objc --test real_swift_demangle  (harvested by cargo run -p disrobe-bench-head-to-head)",
-  "title": "Swift symbol demangle recall vs the binary's own symbol table"
+  "oracle_strength": "coverage-self-reported",
+  "reproduce": "cargo test -p disrobe-pass-swift-objc --test swift_hello_symbol_pin",
+  "title": "Pinned Swift symbol renderings from the committed SwiftHello Mach-O"
 }

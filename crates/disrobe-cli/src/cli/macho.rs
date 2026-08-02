@@ -17,7 +17,7 @@ use super::globals;
 #[derive(Subcommand, Debug)]
 pub(crate) enum MachoCmd {
     #[command(
-        about = "dump Mach-O / Fat-Mach-O / .ipa / .framework header, segments, sections, & encryption-info"
+        about = "dump Mach-O / Fat-Mach-O / .ipa header, segments, sections, & encryption-info"
     )]
     Dump {
         #[arg(help = "input Mach-O binary, fat binary, framework binary, or .ipa")]
@@ -29,9 +29,9 @@ pub(crate) enum MachoCmd {
         )]
         out: Option<PathBuf>,
     },
-    #[command(about = "ObjC / Swift class-dump across every slice in a Mach-O / Fat-Mach-O / .ipa")]
+    #[command(about = "ObjC / Swift class-dump across every slice in a raw Mach-O / Fat-Mach-O")]
     Classdump {
-        #[arg(help = "input Mach-O / .ipa")]
+        #[arg(help = "input raw Mach-O or Fat-Mach-O binary")]
         input: PathBuf,
         #[arg(
             short,
@@ -193,7 +193,7 @@ fn classdump(input: PathBuf, out: Option<PathBuf>, emit_kinds: Vec<String>) -> m
     let slice_reports: Vec<DirectSliceReport> = classdump_all(&bytes)?;
     let manifest_path: PathBuf = out_dir.join("manifest.json");
     let mut objc_header_files: usize = 0;
-    let mut swift_source_files: usize = 0;
+    let mut swift_declaration_files: usize = 0;
     for (i, sr) in slice_reports.iter().enumerate() {
         let stem_slice: String = format!("{stem}.slice-{i:02}-{}", sr.cpu_label);
         let objc_path: PathBuf = out_dir.join(format!("{stem_slice}.objc.json"));
@@ -214,12 +214,13 @@ fn classdump(input: PathBuf, out: Option<PathBuf>, emit_kinds: Vec<String>) -> m
                 .map_err(|e| miette::miette!("DR-CLI-0498: cannot write objc header: {e}"))?;
             objc_header_files += 1;
         }
-        let swift_source: String = render_swift_source(&sr.swift);
-        if !swift_source.is_empty() {
-            let source_path: PathBuf = out_dir.join(format!("{stem_slice}.swift"));
-            std::fs::write(&source_path, swift_source.as_bytes())
-                .map_err(|e| miette::miette!("DR-CLI-0499: cannot write swift source: {e}"))?;
-            swift_source_files += 1;
+        let swift_declarations: String = render_swift_declarations(&sr.swift);
+        if !swift_declarations.is_empty() {
+            let declarations_path: PathBuf = out_dir.join(format!("{stem_slice}.swift"));
+            std::fs::write(&declarations_path, swift_declarations.as_bytes()).map_err(|e| {
+                miette::miette!("DR-CLI-0499: cannot write swift declarations: {e}")
+            })?;
+            swift_declaration_files += 1;
         }
     }
     let manifest: serde_json::Value = serde_json::json!({
@@ -244,7 +245,7 @@ fn classdump(input: PathBuf, out: Option<PathBuf>, emit_kinds: Vec<String>) -> m
     println!("  input:        {}", input.display());
     println!("  slices:       {}", slice_reports.len());
     println!("  objc headers: {objc_header_files}");
-    println!("  swift source: {swift_source_files}");
+    println!("  swift declarations: {swift_declaration_files}");
     for sr in &slice_reports {
         println!(
             "    - {} ({}-bit): {} objc class(es), {} swift type(s)",
@@ -361,7 +362,7 @@ fn render_objc_header(objc: &ObjcClassDump) -> String {
     out
 }
 
-fn render_swift_source(swift: &SwiftClassDump) -> String {
+fn render_swift_declarations(swift: &SwiftClassDump) -> String {
     if !swift.type_dump.is_empty() {
         let mut out: String =
             String::from("// disrobe swift class-dump (recovered reflection metadata)\n\n");
@@ -435,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn classdump_writes_real_objc_header_and_swift_source() {
+    fn classdump_writes_real_objc_header_and_swift_declarations() {
         let input: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
@@ -471,13 +472,13 @@ mod tests {
             .iter()
             .find(|p: &&PathBuf| p.extension().and_then(|e| e.to_str()) == Some("swift"))
             .expect("a recovered .swift must land");
-        let swift_text: String = std::fs::read_to_string(swift).expect("read swift");
+        let swift_text: String = std::fs::read_to_string(swift).expect("read swift declarations");
         assert!(
             swift_text.contains("class ")
                 || swift_text.contains("struct ")
                 || swift_text.contains("enum ")
                 || swift_text.contains("protocol "),
-            "swift source must contain recovered type declarations: {swift_text}"
+            "swift declarations must contain recovered type declarations: {swift_text}"
         );
         let _ = std::fs::remove_dir_all(&out_dir);
     }

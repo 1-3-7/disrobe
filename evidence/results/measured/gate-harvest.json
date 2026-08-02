@@ -2,18 +2,6 @@
   "ecosystem": "cross-ecosystem",
   "gates": [
     {
-      "display": "37/37 (100.0%)",
-      "id": "swift-demangle-recall",
-      "metric": "% of the binary's own Swift symbols recovered",
-      "ok": 37,
-      "oracle": "the binary's own LC_SYMTAB Swift-mangled symbols (a non-circular, in-artifact ground truth); reference parity is swift-demangle",
-      "reproduce": "cargo test -p disrobe-pass-swift-objc --test real_swift_demangle",
-      "status": "ok",
-      "title": "Swift mangled-symbol demangle recall vs the binary's own symbol table",
-      "total": 37,
-      "value": 100.0
-    },
-    {
       "display": "6/6 (100.0%)",
       "id": "frisk-planted-recall",
       "metric": "% of the planted committed (non-secret) IOC categories detected",
@@ -39,7 +27,7 @@
     }
   ],
   "id": "gate-harvest",
-  "note": "These three gates already prove disrobe correct against an external reference or a planted ground truth, but their numbers were not in recovery.json. This bench runs each gate's measurement in-process (the same public API the committed test exercises) and records the number so the evidence report can surface it. A gate whose fixture is sourcing-gated on this box is recorded skipped-with-reason, never a silent pass.",
+  "note": "These two gates already prove disrobe correct against an external reference or a planted ground truth, but their numbers were not in recovery.json. This bench runs each gate's measurement in-process (the same public API the committed test exercises) and records the number so the evidence report can surface it. A gate whose fixture is sourcing-gated on this box is recorded skipped-with-reason, never a silent pass.",
   "status": "ok",
   "title": "Gate-test harvest: real oracle gates with no recovery.json number, surfaced"
 }

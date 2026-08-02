@@ -620,6 +620,25 @@
           "source": "crates/disrobe-pass-pickle/tests/corpus.rs test published_pickle_corpus_bar_is_pinned_to_the_graded_fixture_set, with the_pinned_corpus_check_rejects_a_dropped_fixture_and_a_shrunken_denominator refuting both weakenings; reference = the opcode and argument tables CPython's pickletools emits, committed beside the corpus"
         }
       ]
+    },
+    {
+      "heading": "Swift symbol rendering on the committed SwiftHello Mach-O",
+      "axis_label": "pinned renderings from the LC_SYMTAB symbol population, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "pinned symbol renderings",
+          "value": 100.0,
+          "num": 37,
+          "den": 37,
+          "verified_by": {
+            "path": "crates/disrobe-pass-swift-objc/tests/swift_hello_symbol_pin.rs",
+            "function": "published_swift_symbol_rendering_is_pinned_to_the_measured_membership"
+          },
+          "detail": "All 37 Swift-mangled symbols in the committed, hash-pinned SwiftHello.original Mach-O appear in LC_SYMTAB and render to their pinned in-process text. LC_SYMTAB fixes the named population and denominator. This is a regression rendering check, not an external-demangler correctness measurement.",
+          "source": "crates/disrobe-pass-swift-objc/tests/swift_hello_symbol_pin.rs test published_swift_symbol_rendering_is_pinned_to_the_measured_membership, which pins the 37-symbol LC_SYMTAB membership, denominator and in-process rendering text against the committed fixture"
+        }
+      ]
     }
   ]
 }

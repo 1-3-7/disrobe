@@ -6,7 +6,7 @@
 - measured: 100.00%
 - oracle strength: recompile-only
 - CI-attested: yes [CI]
-- external oracle: real javac (JDK 25): recovered Java must recompile error-free per method
+- evidence basis: real javac (JDK 25): recovered Java must recompile error-free per method
 - reproduce: `cargo test -p disrobe-pass-jvm --test decompile_recompile_rate`
 - floor: 100.00 (holds)
 - gate source: crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs (report_per_method_javac_recompile asserts ok >= PER_METHOD_JAVAC_OK_FLOOR 131 of PER_METHOD_JAVAC_TOTAL 131); CI runs it via the test job with actions/setup-java (JDK 25); floor measured 2026-06-22 after fixing the pickWord-unmasked defects

@@ -9,7 +9,7 @@
           "is_disrobe": true,
           "metric": "recompile-clean main-class methods (clean / emitted)",
           "name": "disrobe (in-house Dalvik, DEX input)",
-          "result": "129 clean / 132 emitted (97.7%)",
+          "result": "130 clean / 132 emitted (98.5%)",
           "status": "ok",
           "version": "n/a (in-process)"
         },
@@ -361,17 +361,17 @@
     },
     {
       "ci_attested": true,
-      "claim": "disrobe demangles the Swift-mangled symbols carried in a real Mach-O's own LC_SYMTAB, recovering class names, type metadata, and field offsets that match the reference swift-demangle.",
+      "claim": "disrobe recognizes and renders every Swift-mangled symbol in the committed SwiftHello Mach-O against pinned in-process output. No external demangler grades output correctness in this gate.",
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "swift",
-      "external_oracle": "the binary's own LC_SYMTAB Swift-mangled symbols, an in-artifact ground truth the tool does not author; the committed fixture pins all 37 by name, and reference parity against the swift-demangle tool runs only where that tool is installed, which CI does not provide",
-      "floor": 95.0,
-      "floor_holds": true,
+      "external_oracle": "the committed SwiftHello Mach-O LC_SYMTAB fixes the named Swift-mangled symbol population; expected renderings are committed regression pins, not an external correctness oracle",
+      "floor": null,
+      "floor_holds": null,
       "id": "swift-demangle",
-      "measured": "37/37 (100.0%)",
-      "oracle_strength": "strong",
-      "reproduce": "cargo test -p disrobe-pass-swift-objc --test real_swift_demangle  (harvested by cargo run -p disrobe-bench-head-to-head)"
+      "measured": "100.00%",
+      "oracle_strength": "coverage-self-reported",
+      "reproduce": "cargo test -p disrobe-pass-swift-objc --test swift_hello_symbol_pin"
     },
     {
       "ci_attested": true,

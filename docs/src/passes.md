@@ -32,14 +32,14 @@ Run `disrobe passes` for the live list. As of the current release:
 | `apk` | AndroidManifest.xml decode + resource id-to-name map + signer-cert SHA-256. |
 | `dotnet` | .NET PE decompile via ILSpy / dnSpyEx / de4dot + protector detection. |
 | `hermes` | React Native Hermes bundle disasm + JS surface lift. |
-| `macho` | Mach-O / fat / `.ipa` dump + ObjC + Swift class-dump. |
+| `macho` | Mach-O / fat / `.ipa` dump + ObjC + Swift class-dump on raw thin and fat Mach-O. |
 | `lua` | Lua 5.1-5.4 / LuaJIT / Luau / GLua decompile + obfuscator peel. |
 | `php` | Encoder decode (phar / ionCube / SourceGuardian / ZendGuard) + eval-chain peel. |
 | `ruby` | MRI / YARV / mruby / JRuby / TruffleRuby / Ruby2Exe / Ocra analysis. |
 | `beam` | `.beam` IFF parse + Core Erlang lift + Code chunk disasm. |
 | `pickle` | Disasm + decompile + safety + symbolic trace + polyglot + ML model detect. |
 | `go` | pclntab + moduledata + garble report + embed.FS extraction. |
-| `swift` | Swift / ObjC class-dump + SwiftShield undo + explicit-key XOR blob decode. |
+| `swift` | Swift / ObjC class-dump + SwiftShield mapping parser + explicit-key XOR blob decode. |
 | `as3` | ActionScript 3 `.swf` DoABC tag disasm. |
 | `flutter` | Dart AOT / libapp.so dump + obfuscation_map parse. |
 | `catalog` | List the live obfuscator, packer, protector, freezer, and bundler registry by ecosystem and recovery tier. |
