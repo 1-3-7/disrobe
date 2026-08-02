@@ -7122,6 +7122,142 @@ fn scalar_float_oracle_has_teeth_swapping_op_and_width_diverges() {
     println!("scalar float oracle teeth confirmed: add/sub swap diverges");
 }
 
+#[cfg(all(windows, target_arch = "x86_64"))]
+#[test]
+fn ms_x64_four_double_parameters_recompile_with_mutation_control() {
+    let target: std::process::Output = Command::new("clang")
+        .arg("-print-target-triple")
+        .output()
+        .expect("clang must be installed for the MS x64 four-double parameter oracle");
+    assert!(
+        target.status.success(),
+        "clang target probe failed: {}",
+        String::from_utf8_lossy(&target.stderr)
+    );
+    let target_text: String = String::from_utf8_lossy(&target.stdout).trim().to_owned();
+    assert!(
+        target_text.contains("x86_64")
+            && target_text.contains("windows")
+            && target_text.contains("msvc"),
+        "the four-double parameter oracle requires an MS x64 clang target, found {target_text}"
+    );
+
+    let case: &FpCase = FP_BATTERY
+        .iter()
+        .find(|candidate: &&FpCase| candidate.name == "fv_arg4d")
+        .expect("the four-double parameter case must remain in the scalar FP battery");
+    assert!(
+        case.args.len() == 4
+            && case
+                .args
+                .iter()
+                .all(|argument: &FpArg| *argument == FpArg::Double),
+        "fv_arg4d must retain four double parameters"
+    );
+    assert!(
+        case.ret == FpRet::Double,
+        "fv_arg4d must retain its double return"
+    );
+
+    let scratch: ScratchDir = scratch_dir();
+    let directory: PathBuf = scratch.path().to_path_buf();
+    let source_path: PathBuf = directory.join("ms_x64_four_double.c");
+    let object_path: PathBuf = directory.join("ms_x64_four_double.obj");
+    std::fs::write(&source_path, case.c_source.as_bytes())
+        .expect("write MS x64 four-double source");
+    let compile: std::process::Output = Command::new("clang")
+        .args(["-O1", "-fno-stack-protector", "-c", "-o"])
+        .arg(&object_path)
+        .arg(&source_path)
+        .output()
+        .expect("invoke clang for the MS x64 four-double source");
+    assert!(
+        compile.status.success(),
+        "MS x64 four-double compile failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let object_bytes: Vec<u8> =
+        std::fs::read(&object_path).expect("read MS x64 four-double object");
+    let (code, base): (Vec<u8>, u64) =
+        function_code(&object_bytes, case.name).expect("locate MS x64 four-double function");
+    let insns: Vec<DisasmInsn> =
+        disassemble(Arch::X86_64, base, &code).expect("disassemble MS x64 four-double function");
+    for register in ["xmm0", "xmm1", "xmm2", "xmm3"] {
+        assert!(
+            insns.iter().any(|insn: &DisasmInsn| {
+                insn.operands
+                    .split(',')
+                    .any(|operand: &str| operand.trim() == register)
+            }),
+            "the MS x64 four-double function must consume {register}: {insns:?}"
+        );
+    }
+
+    let (recovery, renamed, recovered_name): (LeafRecovery, String, String) =
+        fp_lift(case, &object_bytes, PseudoAbi::MsX64)
+            .expect("MS x64 four-double function must recover");
+    assert_eq!(
+        recovery.returns_fp,
+        Some(ScalarType::Double),
+        "the MS x64 four-double function must retain its double ABI return: {}",
+        recovery.source
+    );
+    assert_eq!(
+        recovery.fp_params,
+        vec![
+            ScalarType::Double,
+            ScalarType::Double,
+            ScalarType::Double,
+            ScalarType::Double,
+        ],
+        "the MS x64 four-double function must recover all four floating-point parameters: {}",
+        recovery.source
+    );
+
+    let build_driver = |candidate: &str| -> String {
+        let declarations: String = format!("{candidate}\n{}\n", fp_extern_decl(case));
+        let body: String = fp_driver_snippet(case, &recovered_name);
+        build_fp_driver(&declarations, &body)
+    };
+    let compile_and_run = |tag: &str, candidate: &str| -> std::process::Output {
+        let driver_path: PathBuf = directory.join(format!("ms_x64_four_double_{tag}.c"));
+        let executable_path: PathBuf = directory.join(format!("ms_x64_four_double_{tag}.exe"));
+        let driver: String = build_driver(candidate);
+        std::fs::write(&driver_path, driver.as_bytes()).expect("write MS x64 four-double driver");
+        let compile_driver: std::process::Output = Command::new("clang")
+            .args(["-O1", "-fno-stack-protector", "-o"])
+            .arg(&executable_path)
+            .arg(&driver_path)
+            .arg(&object_path)
+            .output()
+            .expect("compile MS x64 four-double driver");
+        assert!(
+            compile_driver.status.success(),
+            "MS x64 four-double driver compile failed: {}",
+            String::from_utf8_lossy(&compile_driver.stderr)
+        );
+        Command::new(&executable_path)
+            .output()
+            .expect("run MS x64 four-double driver")
+    };
+
+    let pristine: std::process::Output = compile_and_run("pristine", &renamed);
+    assert!(
+        pristine.status.success() && String::from_utf8_lossy(&pristine.stdout).contains("OK"),
+        "MS x64 four-double recovery must match the original function: {}",
+        String::from_utf8_lossy(&pristine.stdout)
+    );
+    let sabotaged: String = format!(
+        "double {recovered_name}(double a0, double a1, double a2, double a3){{ return a0 * a1 + a2 + a3; }}"
+    );
+    let broken: std::process::Output = compile_and_run("sabotaged", &sabotaged);
+    assert!(
+        !broken.status.success() && String::from_utf8_lossy(&broken.stdout).contains("MISMATCH"),
+        "the MS x64 four-double mutation control must detect an incorrect fourth parameter operation: {}",
+        String::from_utf8_lossy(&broken.stdout)
+    );
+}
+
 #[test]
 fn sysv_scalar_float_leaf_functions_recompile_to_behavioral_equivalence() {
     if !sysv_host_can_run() {
