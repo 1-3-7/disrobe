@@ -52,6 +52,10 @@ struct Bar {
     attested_num: Option<u64>,
     #[serde(default)]
     attested_den: Option<u64>,
+    #[serde(default)]
+    link_skipped_num: Option<u64>,
+    #[serde(default)]
+    link_skipped_den: Option<u64>,
 }
 
 impl Recovery {
@@ -139,6 +143,16 @@ impl Bar {
         let den: u64 = self
             .attested_den
             .ok_or_else(|| eyre!("bar `{}` has no `attested_den` count", self.label))?;
+        Ok(MetricValue::Ratio { num, den })
+    }
+
+    fn link_skipped_ratio(&self) -> Result<MetricValue> {
+        let num: u64 = self
+            .link_skipped_num
+            .ok_or_else(|| eyre!("bar `{}` has no `link_skipped_num` count", self.label))?;
+        let den: u64 = self
+            .link_skipped_den
+            .ok_or_else(|| eyre!("bar `{}` has no `link_skipped_den` count", self.label))?;
         Ok(MetricValue::Ratio { num, den })
     }
 }
@@ -350,6 +364,15 @@ const KEYS: &[KeySpec] = &[
         extract: |r: &Recovery| {
             r.bar("Dalvik recovered bodies", "verifier-clean (committed, CI)")?
                 .count_ratio()
+        },
+    },
+    KeySpec {
+        name: "dalvik_link_skipped_count",
+        formatter: Formatter::OfPlain,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            r.bar("Dalvik recovered bodies", "verifier-clean (committed, CI)")?
+                .link_skipped_ratio()
         },
     },
     KeySpec {
@@ -1113,6 +1136,12 @@ mod tests {
                     "bars": [
                         {"label": "functions parsed", "value": 122633}
                     ]
+                },
+                {
+                    "heading": "Dalvik recovered bodies (committed dex corpus, real JVM verifier)",
+                    "bars": [
+                        {"label": "verifier-clean (committed, CI)", "value": 100.0, "num": 118, "den": 118, "link_skipped_num": 37, "link_skipped_den": 155}
+                    ]
                 }
             ]
         }"#;
@@ -1168,6 +1197,27 @@ mod tests {
         assert!(once.contains("-->6051 of 6286<!-- /m -->"));
         assert!(once.contains("-->6,051 of 6,286<!-- /m --> code objects"));
         assert_eq!(once, twice);
+        Ok(())
+    }
+
+    #[test]
+    fn dalvik_link_skipped_marker_renders_and_rejects_a_stale_value() -> Result<()> {
+        let sources: MetricSources = test_sources()?;
+        let stale: &str =
+            "<!-- m:dalvik_link_skipped_count -->53 of 155<!-- /m --> classes are link-skipped.\n";
+        let rewritten: String = rewrite_text(stale, &sources)?;
+        assert_eq!(
+            rewritten,
+            "<!-- m:dalvik_link_skipped_count -->37 of 155<!-- /m --> classes are link-skipped.\n"
+        );
+        let mut issues: Vec<String> = Vec::new();
+        check_text(stale, &sources, "fixture.md", &mut issues)?;
+        assert_eq!(
+            issues.len(),
+            1,
+            "expected one stale-marker issue: {issues:?}"
+        );
+        assert!(issues[0].contains("expected `37 of 155` found `53 of 155`"));
         Ok(())
     }
 
