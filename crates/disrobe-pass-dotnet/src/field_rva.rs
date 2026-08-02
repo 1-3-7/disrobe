@@ -101,6 +101,14 @@ fn field_ownership(tables: &Tables) -> Vec<bool> {
         return owned;
     };
     let one_past_last: u32 = field_count.saturating_add(1);
+    let mut previous: u32 = 1;
+    for type_def in &tables.type_defs {
+        let current: u32 = type_def.field_list;
+        if current == 0 || current < previous || current > one_past_last {
+            return owned;
+        }
+        previous = current;
+    }
     for (index, type_def) in tables.type_defs.iter().enumerate() {
         let next: u32 = tables
             .type_defs
@@ -144,7 +152,7 @@ fn exact_field_rva_size(
     let type_rid: u32 = type_def_rid(token)?;
     let tables: &Tables = resolver.tables();
     let type_index: usize = usize::try_from(type_rid.checked_sub(1)?).ok()?;
-    let type_def = tables.type_defs.get(type_index)?;
+    let type_def: &crate::tables::TypeDefRow = tables.type_defs.get(type_index)?;
     if type_def.flags & TYPE_LAYOUT_MASK != TYPE_EXPLICIT_LAYOUT {
         return None;
     }
@@ -170,11 +178,54 @@ mod tests {
     use super::*;
     use crate::metadata::{metadata_slice, parse_metadata_root};
     use crate::pe::{parse, parse_clr_header};
+    use crate::tables::{FieldRow, TypeDefRow};
 
     const EDGECASES_DLL: &str = "../../corpus/dotnet/megafile/EdgeCases.baseline.dll";
 
     fn fixture_path() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(EDGECASES_DLL)
+    }
+
+    #[test]
+    fn non_monotonic_field_lists_have_no_accepted_ownership() {
+        let tables: Tables = Tables {
+            fields: vec![
+                FieldRow {
+                    flags: 0,
+                    name: 0,
+                    signature: 0,
+                };
+                3
+            ],
+            type_defs: vec![
+                TypeDefRow {
+                    flags: 0,
+                    name: 0,
+                    namespace: 0,
+                    extends: None,
+                    field_list: 1,
+                    method_list: 1,
+                },
+                TypeDefRow {
+                    flags: 0,
+                    name: 0,
+                    namespace: 0,
+                    extends: None,
+                    field_list: 3,
+                    method_list: 1,
+                },
+                TypeDefRow {
+                    flags: 0,
+                    name: 0,
+                    namespace: 0,
+                    extends: None,
+                    field_list: 2,
+                    method_list: 1,
+                },
+            ],
+            ..Tables::default()
+        };
+        assert_eq!(field_ownership(&tables), vec![false, false, false]);
     }
 
     #[test]

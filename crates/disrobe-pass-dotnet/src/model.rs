@@ -1874,7 +1874,13 @@ impl Resolver {
         let Some(assembly) = self.tables.assembly_refs.get(index) else {
             return false;
         };
-        let Some(public_key_token): Option<&[u8]> = self.blob(assembly.public_key_or_token) else {
+        let Some(public_key_or_token): Option<&[u8]> = self.blob(assembly.public_key_or_token)
+        else {
+            return false;
+        };
+        let Some(public_key_token): Option<[u8; 8]> =
+            assembly_public_key_token(public_key_or_token, assembly.flags)
+        else {
             return false;
         };
         matches!(
@@ -1973,6 +1979,20 @@ impl Resolver {
         }
         out
     }
+}
+
+const ASSEMBLY_REF_PUBLIC_KEY: u32 = 0x0001;
+
+fn assembly_public_key_token(public_key_or_token: &[u8], flags: u32) -> Option<[u8; 8]> {
+    if flags & ASSEMBLY_REF_PUBLIC_KEY == 0 {
+        return public_key_or_token.try_into().ok();
+    }
+    let digest: [u8; 20] = crate::peel::dotnet_crypto::sha1_digest(public_key_or_token);
+    let mut token: [u8; 8] = [0u8; 8];
+    for (index, byte) in digest[12..].iter().rev().enumerate() {
+        *token.get_mut(index)? = *byte;
+    }
+    Some(token)
 }
 
 fn pop_receiver_fact(state: &mut ReceiverState) -> ReceiverFact {
@@ -2188,6 +2208,20 @@ mod tests {
         assert_eq!(generic_arity("Dictionary`2"), 2);
         assert_eq!(generic_arity("Enumerator"), 0);
         assert_eq!(generic_arity("Weird`x"), 0);
+    }
+
+    #[test]
+    fn full_assembly_public_key_normalizes_to_its_known_token() {
+        let key: [u8; 16] = [
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00,
+        ];
+        let token: [u8; 8] = [0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89];
+        assert_eq!(
+            assembly_public_key_token(&key, ASSEMBLY_REF_PUBLIC_KEY),
+            Some(token)
+        );
+        assert_eq!(assembly_public_key_token(&token, 0), Some(token));
     }
 
     #[test]
