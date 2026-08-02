@@ -1290,6 +1290,8 @@ fn traverse_function(
 
 const MAX_NORETURN_ITERATIONS: usize = 64;
 const MAX_NORETURN_DECODED_INSTRUCTIONS: usize = 262_144;
+const MIN_NORETURN_DECODED_INSTRUCTIONS: usize = 262_144;
+const _: () = assert!(MAX_NORETURN_DECODED_INSTRUCTIONS >= MIN_NORETURN_DECODED_INSTRUCTIONS);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum NoreturnInference {
@@ -2701,10 +2703,6 @@ mod tests {
 
     #[test]
     fn function_walk_exhausts_just_below_the_default_budget() {
-        assert!(
-            MAX_NORETURN_DECODED_INSTRUCTIONS >= 262_144,
-            "the default no-return inference budget must not fall below 262144 decoded instructions"
-        );
         let bytes: Vec<u8> = vec![0x90; MAX_NORETURN_DECODED_INSTRUCTIONS - 1];
         let input: DiscoveryInput<'_> = DiscoveryInput {
             bitness: Bitness::Bits64,

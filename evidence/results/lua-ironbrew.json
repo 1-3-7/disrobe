@@ -1,6 +1,7 @@
 {
   "ci_attested": true,
   "claim": "disrobe devirtualizes real IronBrew2 2.7.0 obfuscator output back to runnable Lua whose execution under the real Lua interpreter matches the original, in both standard and MAX mode.",
+  "comparison_basis": null,
   "competitors": [],
   "detail": null,
   "disrobe_leads": null,
@@ -16,6 +17,7 @@
     "note": null
   },
   "oracle_strength": "strong",
+  "pairs": [],
   "reproduce": "cargo test -p disrobe-pass-lua --test ironbrew2_real_oracle",
   "title": "Lua IronBrew2 2.7.0 devirtualization, real-Lua execution differential"
 }

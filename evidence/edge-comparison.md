@@ -12,7 +12,7 @@ read as a measured comparison.
 |---|---|---|---|
 | Python `.pyc` | <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> full CPython 3.14 stdlib; <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> pinned corpus, both recompile-equivalence | pycdc, pylingual, uncompyle6, decompyle3 | same `.pyc` corpus, same recompile oracle |
 | Python freezers | PyInstaller and freezer chains extract `.pyc` payloads before the Python gate | pyinstxtractor-ng, pydecipher | shared onefile corpus, byte-exact `.pyc` carve, then source gate |
-| PyArmor | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> static free-mode samples recover locally | Pyarmor-Static-Unpack-1shot | public subset or SHA-pinned external corpus |
+| PyArmor | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> manifest-named v8/v9 default-trial wrappers statically decrypt and decode one complete header-anchored root `CodeObject` `[CI]` | Pyarmor-Static-Unpack-1shot | same named wrappers plus an external source, emitted-`.pyc`, or execution comparison |
 | Pickle safety | 102 / 102 fixtures disassemble, trace, and classify by pickletools semantics | fickling | same malicious and benign corpus, safety-label agreement |
 | JavaScript and source maps | obfuscator and bundler recovery is pass-gated; <!-- m:js_bundlers -->11<!-- /m --> bundler families are cataloged | webcrack, wakaru, synchrony, REstringer, sourcemapper | same deployed bundle set, recovered-tree diff |
 | WebAssembly | 1034 / 1034 opcodes lowered on a `wasm-tools` instruction inventory; 57 / 57 execution-eligible functions match under wasmtime | wabt `wasm-decompile`, Binaryen | same module set, parse plus wasmtime differential |

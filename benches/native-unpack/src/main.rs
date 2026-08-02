@@ -21,6 +21,7 @@ const UPX_IMAGE_BASE_RVA: usize = 0x1000;
 const MAX_BENCH_FILE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_TEXT_FILE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_PE_SECTIONS: usize = 256;
+const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 fn main() -> std::process::ExitCode {
     let check: bool = std::env::args().any(|a: String| a == "--check");
@@ -43,7 +44,7 @@ fn run(check: bool) -> Result<()> {
 
     let recovery_doc: RecoveryDoc =
         load_recovery(&root.join("xtask").join("data").join("recovery.json"))?;
-    let quality_md: String = render_quality(&recovery_doc);
+    let quality_md: String = render_quality(&recovery_doc)?;
 
     let unpack_out: PathBuf = bench_dir.join("results.md");
     let quality_out: PathBuf = root
@@ -984,12 +985,97 @@ struct RecoveryBar {
     delivered: Option<u64>,
     #[serde(default)]
     delivered_label: Option<String>,
+    #[serde(default)]
+    denominator_label: Option<String>,
     source: String,
 }
 
 fn load_recovery(path: &Path) -> Result<RecoveryDoc> {
     let raw: String = read_bounded_string(path, MAX_TEXT_FILE_BYTES)?;
-    serde_json::from_str(&raw).wrap_err_with(|| format!("parsing {}", path.display()))
+    let recovery: RecoveryDoc =
+        serde_json::from_str(&raw).wrap_err_with(|| format!("parsing {}", path.display()))?;
+    validate_recovery(&recovery)?;
+    Ok(recovery)
+}
+
+fn validate_recovery(recovery: &RecoveryDoc) -> Result<()> {
+    for group in &recovery.groups {
+        for bar in &group.bars {
+            if group.kind == "count_pair" {
+                let Some(delivered): Option<u64> = bar.delivered else {
+                    bail!(
+                        "recovery.json: `{}` / `{}` must carry delivered and detected counts for a count_pair",
+                        group.heading,
+                        bar.label
+                    );
+                };
+                let Some(detected): Option<u64> = bar.detected else {
+                    bail!(
+                        "recovery.json: `{}` / `{}` must carry delivered and detected counts for a count_pair",
+                        group.heading,
+                        bar.label
+                    );
+                };
+                if delivered > MAX_JAVASCRIPT_SAFE_INTEGER || detected > MAX_JAVASCRIPT_SAFE_INTEGER
+                {
+                    bail!(
+                        "recovery.json: `{}` / `{}` exceeds the JavaScript safe-integer ceiling",
+                        group.heading,
+                        bar.label
+                    );
+                }
+                if detected == 0 || delivered > detected {
+                    bail!(
+                        "recovery.json: `{}` / `{}` must carry a positive detected count no smaller than delivered",
+                        group.heading,
+                        bar.label
+                    );
+                }
+            }
+            validate_count_pair_label(
+                group,
+                bar,
+                "delivered_label",
+                bar.delivered_label.as_deref(),
+            )?;
+            validate_count_pair_label(
+                group,
+                bar,
+                "denominator_label",
+                bar.denominator_label.as_deref(),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_count_pair_label(
+    group: &RecoveryGroup,
+    bar: &RecoveryBar,
+    field: &str,
+    value: Option<&str>,
+) -> Result<()> {
+    let Some(label): Option<&str> = value else {
+        return Ok(());
+    };
+    if group.kind != "count_pair" {
+        bail!(
+            "recovery.json: `{}` / `{}` has {field} outside a count_pair group",
+            group.heading,
+            bar.label
+        );
+    }
+    let unsafe_cell: bool = label
+        .chars()
+        .any(|character: char| character.is_control() || character == '|');
+    if label.is_empty() || label.trim() != label || unsafe_cell {
+        bail!(
+            "recovery.json: `{}` / `{}` has an invalid {field}",
+            group.heading,
+            bar.label
+        );
+    }
+    Ok(())
 }
 
 fn read_bounded_string(path: &Path, limit: u64) -> Result<String> {
@@ -1018,7 +1104,7 @@ fn read_bounded_file(path: &Path, limit: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn render_quality(doc: &RecoveryDoc) -> String {
+fn render_quality(doc: &RecoveryDoc) -> Result<String> {
     const FOCUS: &[&str] = &["Python", "JVM", "Dalvik", ".NET", "WebAssembly"];
     let mut md: String = String::with_capacity(8192);
     md.push_str("# Decompile and recovery quality (CI-gated numbers)\n\n");
@@ -1044,7 +1130,7 @@ fn render_quality(doc: &RecoveryDoc) -> String {
                 .iter()
                 .any(|f: &&str| group.heading.contains(f) || bar.label.contains(f));
             if hit {
-                md.push_str(&render_quality_row(group, bar));
+                md.push_str(&render_quality_row(group, bar)?);
             }
         }
     }
@@ -1055,7 +1141,7 @@ fn render_quality(doc: &RecoveryDoc) -> String {
     md.push_str("|---|---|---|---|\n");
     for group in &doc.groups {
         for bar in &group.bars {
-            md.push_str(&render_quality_row(group, bar));
+            md.push_str(&render_quality_row(group, bar)?);
         }
     }
     md.push('\n');
@@ -1063,7 +1149,7 @@ fn render_quality(doc: &RecoveryDoc) -> String {
         "The headline section is a filtered view of the full set; both are generated from the same \
          committed JSON in one pass, so they cannot disagree.\n",
     );
-    md
+    Ok(md)
 }
 
 fn push_line(out: &mut String, line: &str) {
@@ -1071,19 +1157,19 @@ fn push_line(out: &mut String, line: &str) {
     out.push('\n');
 }
 
-fn render_quality_row(group: &RecoveryGroup, bar: &RecoveryBar) -> String {
-    let value_cell: String = quality_value(group, bar);
+fn render_quality_row(group: &RecoveryGroup, bar: &RecoveryBar) -> Result<String> {
+    let value_cell: String = quality_value(group, bar)?;
     let source_cell: String = esc_cell(&bar.source);
-    format!(
+    Ok(format!(
         "| {} | {} | {} | {} |\n",
         esc_cell(&group.heading),
         esc_cell(&bar.label),
         value_cell,
         source_cell,
-    )
+    ))
 }
 
-fn quality_value(group: &RecoveryGroup, bar: &RecoveryBar) -> String {
+fn quality_value(group: &RecoveryGroup, bar: &RecoveryBar) -> Result<String> {
     let base: String = match group.kind.as_str() {
         "percent" => bar
             .value
@@ -1100,18 +1186,29 @@ fn quality_value(group: &RecoveryGroup, bar: &RecoveryBar) -> String {
             .value
             .map_or_else(|| "n/a".to_owned(), |v: f64| format!("{} fns", v as i64)),
         "count_pair" => {
+            let delivered: u64 = bar.delivered.ok_or_else(|| {
+                eyre::eyre!(
+                    "recovery.json: `{}` / `{}` has no delivered count for a count_pair",
+                    group.heading,
+                    bar.label
+                )
+            })?;
+            let detected: u64 = bar.detected.ok_or_else(|| {
+                eyre::eyre!(
+                    "recovery.json: `{}` / `{}` has no detected count for a count_pair",
+                    group.heading,
+                    bar.label
+                )
+            })?;
             let verb: &str = bar.delivered_label.as_deref().unwrap_or("delivered");
-            format!(
-                "{} {verb} / {} detected",
-                bar.delivered.unwrap_or(0),
-                bar.detected.unwrap_or(0),
-            )
+            let denominator: &str = bar.denominator_label.as_deref().unwrap_or("detected");
+            format!("{delivered} {verb} / {detected} {denominator}")
         }
         other => format!("({other})"),
     };
     match &bar.detail {
-        Some(detail) => format!("{base} - {}", esc_cell(detail)),
-        None => base,
+        Some(detail) => Ok(format!("{base} - {}", esc_cell(detail))),
+        None => Ok(base),
     }
 }
 
@@ -1235,7 +1332,7 @@ mod tests {
     }
 
     #[test]
-    fn quality_value_formats_each_kind_from_committed_fields() {
+    fn quality_value_formats_each_kind_from_committed_fields() -> Result<()> {
         let percent: RecoveryGroup = RecoveryGroup {
             heading: "h".to_owned(),
             kind: "percent".to_owned(),
@@ -1248,9 +1345,10 @@ mod tests {
             detected: None,
             delivered: None,
             delivered_label: None,
+            denominator_label: None,
             source: "s".to_owned(),
         };
-        assert_eq!(quality_value(&percent, &bar), "92.76%");
+        assert_eq!(quality_value(&percent, &bar)?, "92.76%");
 
         let count: RecoveryGroup = RecoveryGroup {
             heading: "h".to_owned(),
@@ -1264,6 +1362,7 @@ mod tests {
             detected: None,
             delivered: None,
             delivered_label: None,
+            denominator_label: None,
             source: "s".to_owned(),
         };
         let two_families: RecoveryBar = RecoveryBar {
@@ -1273,10 +1372,11 @@ mod tests {
             detected: None,
             delivered: None,
             delivered_label: None,
+            denominator_label: None,
             source: "s".to_owned(),
         };
-        assert_eq!(quality_value(&count, &one_family), "1 family");
-        assert_eq!(quality_value(&count, &two_families), "2 families");
+        assert_eq!(quality_value(&count, &one_family)?, "1 family");
+        assert_eq!(quality_value(&count, &two_families)?, "2 families");
 
         let pair: RecoveryGroup = RecoveryGroup {
             heading: "h".to_owned(),
@@ -1290,12 +1390,187 @@ mod tests {
             detected: Some(47),
             delivered: Some(44),
             delivered_label: Some("extracted".to_owned()),
+            denominator_label: None,
             source: "s".to_owned(),
         };
         assert_eq!(
-            quality_value(&pair, &pair_bar),
+            quality_value(&pair, &pair_bar)?,
             "44 extracted / 47 detected"
         );
+        let custom_pair_bar: RecoveryBar = RecoveryBar {
+            denominator_label: Some("manifest-named trial wrappers".to_owned()),
+            ..pair_bar
+        };
+        assert_eq!(
+            quality_value(&pair, &custom_pair_bar)?,
+            "44 extracted / 47 manifest-named trial wrappers"
+        );
+        assert_eq!(
+            render_quality_row(&pair, &custom_pair_bar)?,
+            "| h | Containers | 44 extracted / 47 manifest-named trial wrappers | s |\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_validation_rejects_unsafe_denominator_labels() {
+        for label in [
+            "  ",
+            "named\rwrappers",
+            "named\nwrappers",
+            "named\twrappers",
+            "named|wrappers",
+        ] {
+            let bar: RecoveryBar = RecoveryBar {
+                label: "pair".to_owned(),
+                value: None,
+                detail: None,
+                detected: Some(1),
+                delivered: Some(1),
+                delivered_label: None,
+                denominator_label: Some(label.to_owned()),
+                source: "s".to_owned(),
+            };
+            let recovery: RecoveryDoc = RecoveryDoc {
+                title: "t".to_owned(),
+                subtitle: "s".to_owned(),
+                note: "n".to_owned(),
+                groups: vec![RecoveryGroup {
+                    heading: "h".to_owned(),
+                    kind: "count_pair".to_owned(),
+                    bars: vec![bar],
+                }],
+            };
+            assert!(validate_recovery(&recovery).is_err(), "{label:?}");
+        }
+    }
+
+    #[test]
+    fn recovery_validation_rejects_unsafe_delivered_label() {
+        let bar: RecoveryBar = RecoveryBar {
+            label: "pair".to_owned(),
+            value: None,
+            detail: None,
+            detected: Some(1),
+            delivered: Some(1),
+            delivered_label: Some("decoded\tobjects".to_owned()),
+            denominator_label: None,
+            source: "s".to_owned(),
+        };
+        let recovery: RecoveryDoc = RecoveryDoc {
+            title: "t".to_owned(),
+            subtitle: "s".to_owned(),
+            note: "n".to_owned(),
+            groups: vec![RecoveryGroup {
+                heading: "h".to_owned(),
+                kind: "count_pair".to_owned(),
+                bars: vec![bar],
+            }],
+        };
+        assert!(validate_recovery(&recovery).is_err());
+    }
+
+    #[test]
+    fn recovery_validation_rejects_denominator_label_outside_count_pair() {
+        let bar: RecoveryBar = RecoveryBar {
+            label: "percent".to_owned(),
+            value: Some(1.0),
+            detail: None,
+            detected: None,
+            delivered: None,
+            delivered_label: None,
+            denominator_label: Some("trial wrappers".to_owned()),
+            source: "s".to_owned(),
+        };
+        let recovery: RecoveryDoc = RecoveryDoc {
+            title: "t".to_owned(),
+            subtitle: "s".to_owned(),
+            note: "n".to_owned(),
+            groups: vec![RecoveryGroup {
+                heading: "h".to_owned(),
+                kind: "percent".to_owned(),
+                bars: vec![bar],
+            }],
+        };
+        assert!(validate_recovery(&recovery).is_err());
+    }
+
+    #[test]
+    fn recovery_validation_rejects_count_pair_without_both_counts() {
+        let missing_delivered: RecoveryBar = RecoveryBar {
+            label: "pair".to_owned(),
+            value: None,
+            detail: None,
+            detected: Some(1),
+            delivered: None,
+            delivered_label: None,
+            denominator_label: None,
+            source: "s".to_owned(),
+        };
+        let missing_delivered_doc: RecoveryDoc = RecoveryDoc {
+            title: "t".to_owned(),
+            subtitle: "s".to_owned(),
+            note: "n".to_owned(),
+            groups: vec![RecoveryGroup {
+                heading: "h".to_owned(),
+                kind: "count_pair".to_owned(),
+                bars: vec![missing_delivered],
+            }],
+        };
+        assert!(validate_recovery(&missing_delivered_doc).is_err());
+
+        let missing_detected: RecoveryBar = RecoveryBar {
+            label: "pair".to_owned(),
+            value: None,
+            detail: None,
+            detected: None,
+            delivered: Some(1),
+            delivered_label: None,
+            denominator_label: None,
+            source: "s".to_owned(),
+        };
+        let missing_detected_doc: RecoveryDoc = RecoveryDoc {
+            title: "t".to_owned(),
+            subtitle: "s".to_owned(),
+            note: "n".to_owned(),
+            groups: vec![RecoveryGroup {
+                heading: "h".to_owned(),
+                kind: "count_pair".to_owned(),
+                bars: vec![missing_detected],
+            }],
+        };
+        assert!(validate_recovery(&missing_detected_doc).is_err());
+    }
+
+    #[test]
+    fn recovery_validation_rejects_invalid_count_pair_values() {
+        for (delivered, detected) in [
+            (Some(0), Some(0)),
+            (Some(2), Some(1)),
+            (Some(1), Some(MAX_JAVASCRIPT_SAFE_INTEGER + 1)),
+        ] {
+            let bar: RecoveryBar = RecoveryBar {
+                label: "pair".to_owned(),
+                value: None,
+                detail: None,
+                detected,
+                delivered,
+                delivered_label: None,
+                denominator_label: None,
+                source: "s".to_owned(),
+            };
+            let recovery: RecoveryDoc = RecoveryDoc {
+                title: "t".to_owned(),
+                subtitle: "s".to_owned(),
+                note: "n".to_owned(),
+                groups: vec![RecoveryGroup {
+                    heading: "h".to_owned(),
+                    kind: "count_pair".to_owned(),
+                    bars: vec![bar],
+                }],
+            };
+            assert!(validate_recovery(&recovery).is_err());
+        }
     }
 
     #[test]
@@ -1312,7 +1587,7 @@ mod tests {
         let unpack_md: String = render_unpack(&unpack_rows);
         let recovery: RecoveryDoc =
             load_recovery(&root.join("xtask").join("data").join("recovery.json")).unwrap();
-        let quality_md: String = render_quality(&recovery);
+        let quality_md: String = render_quality(&recovery).unwrap();
 
         let unpack_disk: String = fs::read_to_string(bench_dir.join("results.md")).unwrap();
         let quality_disk: String = fs::read_to_string(

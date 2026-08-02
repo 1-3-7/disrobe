@@ -1,6 +1,7 @@
 {
   "ci_attested": true,
   "claim": "disrobe recognizes and renders every Swift-mangled symbol in the committed SwiftHello Mach-O against pinned in-process output. No external demangler grades output correctness in this gate.",
+  "comparison_basis": null,
   "competitors": [],
   "detail": "All 37 Swift-mangled symbols in the committed, hash-pinned SwiftHello.original Mach-O appear in LC_SYMTAB and render to their pinned in-process text. LC_SYMTAB fixes the named population and denominator. This is a regression rendering check, not an external-demangler correctness measurement.",
   "disrobe_leads": null,
@@ -16,6 +17,7 @@
     "note": null
   },
   "oracle_strength": "coverage-self-reported",
+  "pairs": [],
   "reproduce": "cargo test -p disrobe-pass-swift-objc --test swift_hello_symbol_pin",
   "title": "Pinned Swift symbol renderings from the committed SwiftHello Mach-O"
 }

@@ -7,10 +7,15 @@ on:
   push:
     branches: [main]
     paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'evidence/**'
       - 'corpus/**'
       - 'xtask/src/evidence.rs'
       - 'benches/head-to-head/**'
+      - 'crates/disrobe-core/**'
+      - 'crates/disrobe-pass-jvm/**'
+      - 'crates/disrobe-pass-pickle/**'
       - '.github/workflows/evidence.yml'
 
 concurrency:
@@ -42,28 +47,14 @@ jobs:
           command -v javac
           command -v jadx
           test -f evidence/competitors/jars/cfr.jar
-      - name: run apk head-to-head
-        run: cargo run -p disrobe-bench-head-to-head
-      - name: assert disrobe leads and every tool was scored (no silent skip)
-        run: |
-          python3 - <<'PY'
-          import json
-          d = json.load(open("evidence/results/measured/apk-jadx-cfr.json"))
-          assert d["status"] == "ok", d
-          tools = d["tools"]
-          dis = [t for t in tools if t["status"] == "ok" and t["name"].startswith("disrobe")]
-          comp = [t for t in tools if t["status"] == "ok" and not t["name"].startswith("disrobe")]
-          assert dis, "no disrobe tool produced an ok result"
-          assert comp, "no competitor produced an ok result; the lane proved nothing"
-          best_dis = max(t["value"] for t in dis)
-          best_comp = max(t["value"] for t in comp)
-          print("apk head-to-head:", [(t["name"], t["display"]) for t in tools])
-          assert best_dis >= best_comp - 1e-9, f"disrobe {best_dis} trails competitor {best_comp}"
-          PY
-      - uses: actions/upload-artifact@v4
+      - name: verify committed apk head-to-head measurement
+        run: cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr
+      - name: upload verified apk measurement
+        uses: actions/upload-artifact@v4
         with:
           name: evidence-apk-jadx-cfr
           path: evidence/results/measured/apk-jadx-cfr.json
+          if-no-files-found: error
 
   frisk-apkleaks:
     name: head-to-head (frisk vs apkleaks)

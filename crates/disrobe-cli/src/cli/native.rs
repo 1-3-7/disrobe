@@ -627,14 +627,14 @@ fn decompile_native_aarch64<'data>(
 
     let program: RecoveredProgram = recover_aarch64_program(bytes);
     let whole_program: BTreeMap<u64, &RecoveredFunction> =
-        if obj.format() != object::BinaryFormat::Elf {
-            BTreeMap::new()
-        } else {
+        if obj.format() == object::BinaryFormat::Elf {
             program
                 .recovered
                 .iter()
                 .map(|function: &RecoveredFunction| (function.address, function))
                 .collect()
+        } else {
+            BTreeMap::new()
         };
 
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();

@@ -51,7 +51,7 @@ disrobe pyarmor unpack protected.py --out out/
 disrobe pyarmor unpack protected.py --out out/ --allow-dynamic --dynamic-timeout 60
 ```
 
-`unpack` unpacks a PyArmor wrapper back to its original `.pyc`. v8 and v9-pro are handled by a pure-static path (no code execution). v6/v7 can optionally use a dynamic-hook fallback that runs the obfuscated wrapper in a watched subprocess to capture marshal streams; this is opt-in and unsafe on untrusted input.
+`unpack` extracts a decrypted payload and can reconstruct a `.pyc`; reconstructed output is not claimed byte-identical to an original `.pyc`. The published 72/72 result is narrower: it covers manifest-named v8/v9 default-trial wrappers and requires one complete header-anchored root `CodeObject`, not source recovery, emitted `.pyc` identity, semantic or execution equivalence, or external agreement. v6/v7 can optionally use a dynamic-hook fallback that runs the obfuscated wrapper in a watched subprocess to capture marshal streams; this is opt-in and unsafe on untrusted input.
 
 > The `--allow-dynamic` path executes the sample. Only enable it on trusted samples or inside an isolated sandbox. See [Forensics and malware-safety posture](../forensics-safety.md).
 
@@ -87,4 +87,4 @@ Recovery is graded against real compiled Cython fixtures (unstripped, stripped, 
 
 - A Cython module's Python source is gone once compiled. Only the import surface described above is recoverable, not the `.pyx` bodies.
 - The legacy 1.0-3.7 band asserts a lower floor in CI than the count measured locally, because the period interpreter zoo the local run uses is not present in CI. Of that local count, 67 are proven by recompile-equivalence and 99 by structural token-match.
-- PyArmor v6/v7 may need the opt-in dynamic-hook fallback, which executes the sample. v8 and v9-pro recover on a pure-static path.
+- PyArmor v6/v7 may need the opt-in dynamic-hook fallback, which executes the sample. The manifest-named v8/v9 default-trial result is a pure-static structural decoding check only; it does not establish recovery for other variants.

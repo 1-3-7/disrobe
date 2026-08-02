@@ -1,6 +1,7 @@
 {
   "ci_attested": true,
   "claim": "the execution-eligible functions of the committed WebAssembly corpus execute equivalently to the original under wasmtime after disrobe lifts and re-emits them.",
+  "comparison_basis": null,
   "competitors": [],
   "detail": "57 of 57 execution-eligible functions in the same 38 parseable modules run equivalently under wasmtime: original against recovered on the same inputs, compared on return values, trap parity, and the first 4096 bytes of linear memory, 6 of them byte-identical. Eligibility is narrower than the op-coverage population because a function needs a callable signature and no host imports to be run at all",
   "disrobe_leads": null,
@@ -16,6 +17,7 @@
     "note": "Execution-eligibility is narrower than op-coverage: a function needs a callable signature and no host imports before it can be run at all, so 57 is a smaller population than the 133-function corpus. The op-coverage figure beside this one is a different and weaker measurement and is graded by its own descriptor, wasm-external-op-inventory."
   },
   "oracle_strength": "strong",
+  "pairs": [],
   "reproduce": "cargo test -p disrobe-pass-wasm-deob --test semantic_differential --features sandbox",
   "title": "WebAssembly recovery, wasmtime execution differential"
 }

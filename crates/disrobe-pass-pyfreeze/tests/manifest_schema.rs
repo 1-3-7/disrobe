@@ -5,12 +5,15 @@ use jsonschema::Validator;
 use serde_json::{Value, json};
 
 fn published_schema() -> Value {
-    serde_json::from_str(include_str!("../../../schemas/v0/json/freezer-manifest.schema.json"))
-        .expect("parse published freezer manifest schema")
+    serde_json::from_str(include_str!(
+        "../../../schemas/v0/json/freezer-manifest.schema.json"
+    ))
+    .expect("parse published freezer manifest schema")
 }
 
 fn validator() -> Validator {
-    jsonschema::validator_for(&published_schema()).expect("compile published freezer manifest schema")
+    jsonschema::validator_for(&published_schema())
+        .expect("compile published freezer manifest schema")
 }
 
 fn manifest_value(kind: FreezerKind, with_inventory: bool) -> Value {
@@ -34,7 +37,10 @@ fn assert_valid(validator: &Validator, manifest: &Value) {
         .iter_errors(manifest)
         .map(|error: jsonschema::ValidationError<'_>| error.to_string())
         .collect();
-    assert!(errors.is_empty(), "schema rejected emitted manifest: {errors:?}");
+    assert!(
+        errors.is_empty(),
+        "schema rejected emitted manifest: {errors:?}"
+    );
 }
 
 #[test]

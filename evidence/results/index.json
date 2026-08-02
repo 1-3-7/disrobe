@@ -3,38 +3,59 @@
   "descriptors": [
     {
       "ci_attested": true,
-      "claim": "On the identical EdgeCases input, disrobe recovers at least as many recompile-clean main-class methods under real javac as JADX and CFR, with no original-jar classpath leak.",
+      "claim": "On their respective committed EdgeCases inputs, disrobe recovers at least as many recompile-clean main-class methods as JADX on DEX and CFR on JAR under real javac, with no original-jar classpath leak.",
+      "comparison_basis": "clean-method count within each declared leg",
       "competitors": [
         {
+          "clean": 129,
+          "emitted": 132,
           "is_disrobe": true,
+          "leg": "dex",
           "metric": "recompile-clean main-class methods (clean / emitted)",
           "name": "disrobe (in-house Dalvik, DEX input)",
-          "result": "130 clean / 132 emitted (98.5%)",
+          "result": "129 clean / 132 emitted (97.7%)",
+          "role": "disrobe",
           "status": "ok",
+          "value": 97.72727272727272,
           "version": "n/a (in-process)"
         },
         {
+          "clean": 128,
+          "emitted": 130,
           "is_disrobe": false,
+          "leg": "dex",
           "metric": "recompile-clean main-class methods (clean / emitted)",
           "name": "jadx (DEX input)",
           "result": "128 clean / 130 emitted (98.5%)",
+          "role": "competitor",
           "status": "ok",
+          "value": 98.46153846153848,
           "version": "1.5.5"
         },
         {
+          "clean": 131,
+          "emitted": 131,
           "is_disrobe": true,
+          "leg": "jar",
           "metric": "recompile-clean main-class methods (clean / emitted)",
           "name": "disrobe (in-house JVM, JAR input)",
           "result": "131 clean / 131 emitted (100.0%)",
+          "role": "disrobe",
           "status": "ok",
+          "value": 100.0,
           "version": "n/a (in-process)"
         },
         {
+          "clean": 105,
+          "emitted": 106,
           "is_disrobe": false,
+          "leg": "jar",
           "metric": "recompile-clean main-class methods (clean / emitted)",
           "name": "cfr (JAR input)",
           "result": "105 clean / 106 emitted (99.1%)",
+          "role": "competitor",
           "status": "ok",
+          "value": 99.05660377358492,
           "version": "CFR 0.152"
         }
       ],
@@ -44,13 +65,58 @@
       "floor": 95.0,
       "floor_holds": true,
       "id": "apk-jadx-cfr",
-      "measured": "disrobe 100.0% vs best competitor 99.1%",
+      "measured": "Android DEX: `disrobe` 129 / 132 (97.7%) vs JADX 128 / 130 (98.5%); JVM classfile: `disrobe` 131 / 131 (100.0%) vs CFR 105 / 106 (99.1%)",
       "oracle_strength": "recompile-only",
-      "reproduce": "cargo run -p disrobe-bench-head-to-head  (needs javac + jadx + cfr on PATH; cfr.jar via evidence/competitors/install-linux.sh)"
+      "pairs": [
+        {
+          "comparison_basis": "clean-method count",
+          "competitor": {
+            "clean": 128,
+            "emitted": 130,
+            "label": "JADX",
+            "name": "jadx (DEX input)",
+            "value": 98.46153846153848,
+            "version": "1.5.5"
+          },
+          "disrobe": {
+            "clean": 129,
+            "emitted": 132,
+            "name": "disrobe (in-house Dalvik, DEX input)",
+            "value": 97.72727272727272,
+            "version": "n/a (in-process)"
+          },
+          "id": "dex",
+          "label": "Android DEX",
+          "metric": "recompile-clean main-class methods (clean / emitted)"
+        },
+        {
+          "comparison_basis": "clean-method count",
+          "competitor": {
+            "clean": 105,
+            "emitted": 106,
+            "label": "CFR",
+            "name": "cfr (JAR input)",
+            "value": 99.05660377358492,
+            "version": "CFR 0.152"
+          },
+          "disrobe": {
+            "clean": 131,
+            "emitted": 131,
+            "name": "disrobe (in-house JVM, JAR input)",
+            "value": 100.0,
+            "version": "n/a (in-process)"
+          },
+          "id": "jar",
+          "label": "JVM classfile",
+          "metric": "recompile-clean main-class methods (clean / emitted)"
+        }
+      ],
+      "reproduce": "cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr"
     },
     {
       "ci_attested": true,
       "claim": "apkleaks 2.6.3 recalls 5 of the 8 planted secrets in the committed planted-secrets.apk, measured by running the tool rather than by quoting its documentation.",
+      "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "recon",
@@ -60,11 +126,13 @@
       "id": "apkleaks-planted-apk-secret-recall",
       "measured": "62.50%",
       "oracle_strength": "strong",
+      "pairs": [],
       "reproduce": "cargo test -p disrobe-bench-head-to-head published_planted_apk_secret_bars_are_pinned_by_membership, defined in benches/head-to-head/src/frisk.rs"
     },
     {
       "ci_attested": true,
       "claim": "On 18 of 19 committed Erlang modules, disrobe's stripped-Dbgi Core Erlang lift emits source that recompiles with the original exports and returns the same test/0 result under Erlang/OTP 27.3.4.",
+      "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "beam",
@@ -74,11 +142,13 @@
       "id": "beam-erlang-recompile",
       "measured": "94.74%",
       "oracle_strength": "strong",
+      "pairs": [],
       "reproduce": "DISROBE_REQUIRE_ERLANG=1 cargo test -p disrobe-pass-beam --test erlc_recompile_equivalence -- --nocapture"
     },
     {
       "ci_attested": true,
       "claim": "disrobe declares 100 container, archive, and firmware formats and carries an in-tree payload extractor for each, with no metadata-only or external-tool-gated formats. 33 of the 100 are driven to member bytes on disk by an input this repository commits. The other 67 have no committed input, so they are unverified rather than shown to fail.",
+      "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "binfmt",
@@ -88,11 +158,13 @@
       "id": "binfmt-extract",
       "measured": "33 extracted from a committed input / 100 detected",
       "oracle_strength": "coverage-self-reported",
+      "pairs": [],
       "reproduce": "cargo test -p disrobe-binfmt published_container_counts_match_this_enum"
     },
     {
       "ci_attested": false,
       "claim": "disrobe lowers a Dalvik method body rather than a throw-stub for 82788 of 89516 defined methods across three real FOSS apks, and the real JVM verifier accepts 2960 of the 2994 recovered bodies that can be presented to it.",
+      "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "android",
@@ -102,11 +174,13 @@
       "id": "dalvik-realapk-coverage",
       "measured": "92.50%",
       "oracle_strength": "coverage-self-reported",
+      "pairs": [],
       "reproduce": "DISROBE_RUN_REAL_APK_TESTS=1 cargo test -p disrobe-pass-jvm --test dalvik_realworld_body_attest --test dex2jar_realworld_apks (local-only: the apks are gitignored)"
     },
     {
       "ci_attested": true,
       "claim": "disrobe re-hosts Dalvik method bodies into class bytecode that the real JVM bytecode verifier accepts under -Xverify:all, on the committed dex corpus.",
+      "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "android",
@@ -116,26 +190,38 @@
       "id": "dalvik-verifier",
       "measured": "100.00%",
       "oracle_strength": "strong",
+      "pairs": [],
       "reproduce": "cargo test -p disrobe-pass-jvm --test dalvik_verifier_gate"
     },
     {
       "ci_attested": true,
       "claim": "On the identical planted APK, disrobe frisk recalls more of the hand-verified planted secrets than apkleaks (it catches the AWS secret key, the Basic-auth credential, and the JWT that apkleaks's rule set misses).",
+      "comparison_basis": "highest reported numeric value",
       "competitors": [
         {
+          "clean": null,
+          "emitted": null,
           "is_disrobe": true,
+          "leg": null,
           "metric": "recall %",
           "name": "disrobe frisk (in-process recon engine)",
           "result": "8/8 (100.0%)",
+          "role": null,
           "status": "ok",
+          "value": 100.0,
           "version": "n/a (in-process)"
         },
         {
+          "clean": null,
+          "emitted": null,
           "is_disrobe": false,
+          "leg": null,
           "metric": "recall %",
           "name": "apkleaks",
           "result": "5/8 (62.5%)",
+          "role": null,
           "status": "ok",
+          "value": 62.5,
           "version": "v2.6.3"
         }
       ],
@@ -147,11 +233,13 @@
       "id": "frisk-apkleaks",
       "measured": "disrobe 100.0% vs best competitor 62.5%",
       "oracle_strength": "strong",
+      "pairs": [],
       "reproduce": "cargo run -p disrobe-bench-head-to-head  (apkleaks 2.6.3 via evidence/competitors/install-linux.sh; rule set pinned at evidence/competitors/apkleaks-regexes.json; needs jadx for apkleaks's decompile step)"
     },
     {
       "ci_attested": true,
       "claim": "disrobe frisk detects every planted (non-secret) IOC category - endpoints, manifest findings, URLs, IPv4, email, .onion - on the committed planted ground-truth tree.",
+      "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "secrets",
@@ -161,11 +249,13 @@
       "id": "frisk-planted",
       "measured": "6/6 (100.0%)",
       "oracle_strength": "strong",
+      "pairs": [],
       "reproduce": "cargo test -p disrobe-core --test frisk_gauntlet  (harvested by cargo run -p disrobe-bench-head-to-head)"
     },
     {
       "ci_attested": true,
       "claim": "disrobe frisk recalls all 8 planted secrets in the committed planted-secrets.apk, and each of the 8 is named individually so one cannot lapse while another starts being found.",
+      "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "recon",
@@ -175,11 +265,13 @@
       "id": "frisk-planted-apk-secret-recall",
       "measured": "100.00%",
       "oracle_strength": "strong",
+      "pairs": [],
       "reproduce": "cargo test -p disrobe-bench-head-to-head published_planted_apk_secret_bars_are_pinned_by_membership"
     },
     {
       "ci_attested": true,
       "claim": "All 6 planted non-secret IOC categories are represented in frisk's scan of the committed planted tree, and the 6 are named individually so the published row cannot describe a different set than the one graded.",
+      "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "recon",
@@ -189,11 +281,13 @@
       "id": "frisk-planted-ioc-categories",
       "measured": "100.00%",
       "oracle_strength": "strong",
+      "pairs": [],
       "reproduce": "cargo test -p disrobe-bench-head-to-head published_planted_ioc_category_bar_is_pinned_by_membership"
     },
     {
       "ci_attested": true,
       "claim": "disrobe recovers Go type names from a -s -w stripped binary by walking typelinks and moduledata, verified against the real go1.26.3 toolchain's own type metadata.",
+      "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "go",
@@ -203,11 +297,13 @@
       "id": "go-typemeta",
       "measured": "100.00%",
       "oracle_strength": "strong",
+      "pairs": [],
       "reproduce": "cargo test -p disrobe-pass-go --test go_typemeta"
     },
     {
       "ci_attested": true,
       "claim": "disrobe lifts every function of a real hermesc-built HBC v96 bundle with correct names and source-matching bodies at zero fallback ops.",
+      "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "hermes",
@@ -217,11 +313,13 @@
       "id": "hermes-opcoverage",
       "measured": "100.00%",
       "oracle_strength": "strong",
+      "pairs": [],
       "reproduce": "cargo test -p disrobe-pass-mobile --test real_hermes_sample"
     },
     {
       "ci_attested": true,
       "claim": "disrobe decompiles JVM bytecode to Java whose observable per-method behavior under a real JVM matches the original, across the EdgeCases corpus.",
+      "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "jvm",
@@ -231,11 +329,13 @@
       "id": "jvm-execution-differential",
       "measured": "89.31%",
       "oracle_strength": "strong",
+      "pairs": [],
       "reproduce": "cargo test -p disrobe-pass-jvm --test edgecases_execution_differential"
     },
     {
       "ci_attested": true,
       "claim": "disrobe decompiles JVM bytecode to Java that recompiles error-free under the real javac, per method, across the EdgeCases corpus.",
+      "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "jvm",
@@ -245,11 +345,13 @@
       "id": "jvm-javac-recompile",
       "measured": "100.00%",
       "oracle_strength": "recompile-only",
+      "pairs": [],
       "reproduce": "cargo test -p disrobe-pass-jvm --test decompile_recompile_rate"
     },
     {
       "ci_attested": true,
       "claim": "disrobe devirtualizes real IronBrew2 2.7.0 obfuscator output back to runnable Lua whose execution under the real Lua interpreter matches the original, in both standard and MAX mode.",
+      "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "lua",
@@ -259,11 +361,13 @@
       "id": "lua-ironbrew",
       "measured": "1 family",
       "oracle_strength": "strong",
+      "pairs": [],
       "reproduce": "cargo test -p disrobe-pass-lua --test ironbrew2_real_oracle"
     },
     {
       "ci_attested": true,
       "claim": "disrobe unpacks PE packers (UPX, ASPack, PECompact, MEW, kkrunchy, Yoda's Crypter) through its own stub emulator and recovers section bytes that are byte-identical to the committed original, with no external tool participating.",
+      "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "native",
@@ -273,11 +377,13 @@
       "id": "native-packer-byterecovery",
       "measured": "byte-identity table, see results_md",
       "oracle_strength": "strong",
+      "pairs": [],
       "reproduce": "cargo run -p disrobe-bench-native-unpack  (CI gates: cargo test -p disrobe-pass-native --test upx_unpack_all)"
     },
     {
       "ci_attested": true,
       "claim": "disrobe disassembles every committed pickle fixture to a STOP, symbolically executes it, and classifies benign vs malicious, matching pickletools semantics across the whole corpus.",
+      "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "pickle",
@@ -287,11 +393,13 @@
       "id": "pickle-corpus",
       "measured": "102/102 (100.0%)",
       "oracle_strength": "strong",
+      "pairs": [],
       "reproduce": "cargo test -p disrobe-pass-pickle --test corpus  (harvested by cargo run -p disrobe-bench-head-to-head)"
     },
     {
       "ci_attested": true,
       "claim": "disrobe decompiles legacy CPython bytecode (1.0 through 3.7) to source that is proven correct by recompile-equivalence or, where the period interpreter is absent, a structural token-match against the original .py.",
+      "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "python",
@@ -301,11 +409,13 @@
       "id": "py-legacy-recompile",
       "measured": "78.50%",
       "oracle_strength": "strong",
+      "pairs": [],
       "reproduce": "cargo test -p disrobe-pass-py-decompile --test legacy_recompile"
     },
     {
       "ci_attested": false,
       "claim": "disrobe recovers recompile-equivalent source for the majority of code objects across the entire CPython 3.14 standard library, measured over all 574 modules rather than a curated subset.",
+      "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "python",
@@ -315,11 +425,13 @@
       "id": "py-stdlib-full",
       "measured": "95.09%",
       "oracle_strength": "strong",
+      "pairs": [],
       "reproduce": "python crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the full CPython 3.14 Lib, the population crates/disrobe-pass-py-decompile/tests/full_stdlib_recompile_gate.rs measures under --ignored; CI does not run that gate and re-derives only the 115-module slice beside it"
     },
     {
       "ci_attested": true,
       "claim": "disrobe recovers Python source whose recompiled bytecode is equivalent to the original, per code object, across the CPython 3.14 stdlib.",
+      "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "python",
@@ -329,25 +441,29 @@
       "id": "py-stdlib-recompile",
       "measured": "96.60%",
       "oracle_strength": "strong",
+      "pairs": [],
       "reproduce": "cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate"
     },
     {
       "ci_attested": true,
-      "claim": "disrobe statically unpacks every PyArmor sample in the committed free-mode corpus.",
+      "claim": "On 72 manifest-named PyArmor v8/v9 default-trial wrappers, disrobe statically decrypts each body and decodes one complete root CodeObject from its header-anchored marshal stream.",
+      "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "pyarmor",
-      "external_oracle": "static unpack + decompile of each committed PyArmor sample (real corpus; BCC and super mode remain a shared native wall)",
+      "external_oracle": "none: the typed manifest and discovered v8/v9 wrapper set define the population; file identities, static decryption, and complete root-CodeObject parsing are checked in-tree. No external source, emitted pyc, execution, or tool comparison grades the result.",
       "floor": null,
       "floor_holds": null,
       "id": "pyarmor-corpus",
-      "measured": "72 recovered / 72 detected",
-      "oracle_strength": "strong",
-      "reproduce": "cargo test -p disrobe-pass-pyarmor --test static_unpack_corpus (the 72 wrappers behind this figure are committed, so it reproduces from a clean checkout; a further 17 license-restricted and large samples live outside the tree and are not counted here)"
+      "measured": "72 decoded root CodeObjects / 72 named v8/v9 default-trial wrappers",
+      "oracle_strength": "coverage-self-reported",
+      "pairs": [],
+      "reproduce": "cargo test -p disrobe-pass-pyarmor --test static_unpack_corpus"
     },
     {
       "ci_attested": true,
       "claim": "disrobe decompiles Ruby YARV bytecode to source whose recompiled instruction multiset matches the original under the real MRI interpreter.",
+      "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "ruby",
@@ -357,11 +473,13 @@
       "id": "ruby-yarv-recompile",
       "measured": "98.67%",
       "oracle_strength": "strong",
+      "pairs": [],
       "reproduce": "cargo test -p disrobe-pass-ruby --test yarv_recompile_oracle"
     },
     {
       "ci_attested": true,
       "claim": "disrobe recognizes and renders every Swift-mangled symbol in the committed SwiftHello Mach-O against pinned in-process output. No external demangler grades output correctness in this gate.",
+      "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "swift",
@@ -371,11 +489,13 @@
       "id": "swift-demangle",
       "measured": "100.00%",
       "oracle_strength": "coverage-self-reported",
+      "pairs": [],
       "reproduce": "cargo test -p disrobe-pass-swift-objc --test swift_hello_symbol_pin"
     },
     {
       "ci_attested": true,
       "claim": "disrobe lowers 1034 of the 1034 opcodes that wasm-tools counts across the 38 parseable modules of the committed corpus, and the WAT it emits re-assembles.",
+      "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "wasm",
@@ -385,11 +505,13 @@
       "id": "wasm-external-op-inventory",
       "measured": "100.00%",
       "oracle_strength": "coverage-self-reported",
+      "pairs": [],
       "reproduce": "cargo test -p disrobe-pass-wasm-deob --test external_op_denominator --test semantic_recovery_corpus"
     },
     {
       "ci_attested": true,
       "claim": "the execution-eligible functions of the committed WebAssembly corpus execute equivalently to the original under wasmtime after disrobe lifts and re-emits them.",
+      "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "wasm",
@@ -399,6 +521,7 @@
       "id": "wasm-wasmtime-diff",
       "measured": "100.00%",
       "oracle_strength": "strong",
+      "pairs": [],
       "reproduce": "cargo test -p disrobe-pass-wasm-deob --test semantic_differential --features sandbox"
     }
   ],
@@ -424,7 +547,7 @@
   "failure_count": 12,
   "hard_case_count": 4,
   "head_to_head_count": 2,
-  "note": "Generated by `cargo run -p xtask -- evidence`. recovery-import values are read VERBATIM from xtask/data/recovery.json; headtohead-import and gate-test-harvest values are read VERBATIM from evidence/results/measured/*.json (written by `cargo run -p disrobe-bench-head-to-head`). This harness never recomputes or rounds a number. `cargo xtask evidence --check` is the CI drift gate.",
+  "note": "Generated by `cargo run -p xtask -- evidence`. recovery-import values are read from xtask/data/recovery.json; headtohead-import and gate-test-harvest values are read from evidence/results/measured/*.json (written by `cargo run -p disrobe-bench-head-to-head`). The renderer derives displayed summaries from those records and validates declared paired counts, rates, and display text. `cargo xtask evidence --check` is the CI drift gate.",
   "schema": "disrobe.evidence.index/v1",
   "wall_count": 8
 }

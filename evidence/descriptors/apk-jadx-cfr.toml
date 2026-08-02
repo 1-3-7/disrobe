@@ -1,16 +1,32 @@
 id = "apk-jadx-cfr"
 ecosystem = "android"
 title = "APK / DEX decompilation: disrobe vs JADX vs CFR"
-claim = "On the identical EdgeCases input, disrobe recovers at least as many recompile-clean main-class methods under real javac as JADX and CFR, with no original-jar classpath leak."
+claim = "On their respective committed EdgeCases inputs, disrobe recovers at least as many recompile-clean main-class methods as JADX on DEX and CFR on JAR under real javac, with no original-jar classpath leak."
 oracle_strength = "recompile-only"
 ci = true
 
 [oracle]
 kind = "headtohead-import"
 external = "real javac (JDK), per-method recompile error-free against a STUBBED (empty) classpath so a wrong recovered signature cannot resolve against the original classes; the SAME oracle scores every tool"
-reproduce = "cargo run -p disrobe-bench-head-to-head  (needs javac + jadx + cfr on PATH; cfr.jar via evidence/competitors/install-linux.sh)"
-note = "recompile-only: each method body compiles clean, not asserted byte-equivalent. The STRONG asserted JVM number is the 131/131 per-method recompile gate (jvm-javac descriptor). Both decompilers emit synthetic accessor/lambda/bridge methods, so the per-tool emitted-method count differs by design; the comparable number is the recompile-clean rate plus the absolute clean-method count."
+reproduce = "cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr"
+note = "Needs javac, jadx, and cfr on PATH, with cfr.jar provisioned by evidence/competitors/install-linux.sh. Recompile-only: each method body compiles clean, not asserted byte-equivalent. The DEX leg compares disrobe with JADX on EdgeCases.dex; the JAR leg compares disrobe with CFR on EdgeCases-baseline.jar, because CFR cannot read DEX. The STRONG asserted JVM number is the 131/131 per-method recompile gate (jvm-javac descriptor). Both decompilers emit synthetic accessor/lambda/bridge methods, so the per-tool emitted-method count differs by design; the claim therefore compares clean-method counts within each leg while reporting recompile-clean rates alongside them."
 
 [measured]
 result_file = "apk-jadx-cfr.json"
 disrobe_floor = 95.0
+
+[[measured.pairs]]
+id = "dex"
+label = "Android DEX"
+metric = "recompile-clean main-class methods (clean / emitted)"
+disrobe = "disrobe (in-house Dalvik, DEX input)"
+competitor = "jadx (DEX input)"
+competitor_label = "JADX"
+
+[[measured.pairs]]
+id = "jar"
+label = "JVM classfile"
+metric = "recompile-clean main-class methods (clean / emitted)"
+disrobe = "disrobe (in-house JVM, JAR input)"
+competitor = "cfr (JAR input)"
+competitor_label = "CFR"

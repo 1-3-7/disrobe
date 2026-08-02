@@ -145,7 +145,7 @@ pub use unpack::{
     UserCodeCandidate, unpack_wrapper_text, unpack_wrapper_text_with_options,
 };
 pub use v3v4v5::{LegacyAnalysis, LegacyFormat};
-pub use v8v9::{BccArch, BccBlob};
+pub use v8v9::{BccArch, BccBlob, marshal_stream_start};
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

@@ -78,6 +78,15 @@ jobs:
           python-version: "3.12"
       - uses: dtolnay/rust-toolchain@1.96.1
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: install graph renderer test dependencies
+        working-directory: xtask/graphgen
+        run: corepack enable && pnpm install --frozen-lockfile
+      - name: test graph renderer contracts
+        working-directory: xtask/graphgen
+        run: pnpm test
       - name: export PYO3_PYTHON
         run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
       - name: every generated artifact is byte-fresh (schemas, bindings, error docs, graphs, demo, card, plugins, evidence, README stat cross-check)
@@ -118,6 +127,49 @@ jobs:
           java-version: "25"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: provision Go 1.26.3 for graded Go fixtures
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.26.3'
+          check-latest: false
+          cache: false
+      - name: require Go 1.26.3 for cross-architecture grading
+        shell: bash
+        env:
+          GO_VERSION: '1.26.3'
+        run: |
+          set -euo pipefail
+          if [ "$(go env GOVERSION)" != "go${GO_VERSION}" ]; then
+            echo "setup-go did not provide Go ${GO_VERSION}"
+            go version
+            exit 1
+          fi
+          go version
+          echo "DISROBE_REQUIRE_GO=1" >> "$GITHUB_ENV"
+      - name: provision UPX and require the Linux auto-UPX differential tools
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          UPX_VERSION: '5.1.1'
+          UPX_SHA256: '1ff660454227861e00772f743f66b900072116b9dc24f6ee28b97cce88a7828a'
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/upx-${UPX_VERSION}-amd64_linux.tar.xz"
+          curl --proto '=https' --tlsv1.2 --retry 5 --retry-connrefused --location --silent \
+            --show-error --fail --output "$archive" \
+            "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_linux.tar.xz"
+          printf '%s  %s\n' "$UPX_SHA256" "$archive" | sha256sum --check --strict
+          stage="$RUNNER_TEMP/upx-${UPX_VERSION}"
+          mkdir -p "$stage"
+          tar -xJf "$archive" -C "$stage"
+          upx_bin="$(find "$stage" -type f -name upx -perm -u+x -print -quit)"
+          if [ -z "$upx_bin" ]; then
+            echo "the pinned UPX archive contained no executable"
+            exit 1
+          fi
+          "$upx_bin" --version
+          dirname "$upx_bin" >> "$GITHUB_PATH"
+          echo "DISROBE_REQUIRE_UPX=1" >> "$GITHUB_ENV"
       - name: export PYO3_PYTHON
         shell: bash
         run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"

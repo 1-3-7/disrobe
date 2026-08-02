@@ -1,18 +1,28 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+#[path = "support/pyarmor_corpus_manifest.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod pyarmor_corpus_manifest;
+
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use disrobe_pass_pyarmor::{
-    Detection, PyarmorVersion, StaticDecryptStatus, StaticUnpackConfig, StaticUnpackOutput,
-    WrapperMagic, detect_from_wrapper, unpack_static, unpack_static_with_config,
+    PyarmorVersion, SerialKind, StaticDecryptStatus, StaticRuntimeInfoSummary, StaticUnpackConfig,
+    StaticUnpackOutput, WrapperMagic, classify_serial, detect_from_wrapper, marshal_stream_start,
+    unpack_static, unpack_static_with_config,
 };
-use disrobe_py_marshal::{CodeObject, Object, PyVersion, load};
+use disrobe_py_marshal::{Object, PyVersion, RefTableDump, load_with_reftable};
+use pyarmor_corpus_manifest::{
+    CorpusManifest, CorpusVersion, ResolvedFixture, read_manifest, verified_fixtures,
+};
 
-const RECOVERY_FLOOR: usize = 72;
-const KNOWN_MARKER: &[u8] = b"try_except_basic";
+const STRUCTURAL_CODE_OBJECT_FLOOR: usize = 72;
+const DEFAULT_TRIAL_SERIAL: &str = "000000";
 const PY312: PyVersion = PyVersion::new(3, 12);
 
-const PUBLISHED_HEADING: &str = "Detection and extraction breadth";
-const PUBLISHED_BAR: &str = "PyArmor samples";
+const PUBLISHED_HEADING: &str = "PyArmor structural marshal coverage";
+const PUBLISHED_BAR: &str = "v8/v9 default-trial wrappers";
 
 fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {
     let path: PathBuf = workspace_root()
@@ -20,18 +30,21 @@ fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {
         .join("data")
         .join("recovery.json");
     let raw: String = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", path.display()));
+        .unwrap_or_else(|error: std::io::Error| panic!("read {}: {error}", path.display()));
     let doc: serde_json::Value = serde_json::from_str(&raw)
-        .unwrap_or_else(|e: serde_json::Error| panic!("parse {}: {e}", path.display()));
+        .unwrap_or_else(|error: serde_json::Error| panic!("parse {}: {error}", path.display()));
     let mut found: Vec<serde_json::Value> = Vec::new();
     for group in doc["groups"].as_array().expect("groups array") {
         let heading_matches: bool = group["heading"]
             .as_str()
-            .is_some_and(|h: &str| h.contains(heading_needle));
+            .is_some_and(|heading: &str| heading.contains(heading_needle));
         if !heading_matches {
             continue;
         }
-        for bar in group["bars"].as_array().unwrap_or(&Vec::new()) {
+        let bars: &Vec<serde_json::Value> = group["bars"]
+            .as_array()
+            .expect("each recovery group must carry a bars array");
+        for bar in bars {
             if bar["label"].as_str() == Some(label) {
                 found.push(bar.clone());
             }
@@ -40,8 +53,7 @@ fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {
     assert_eq!(
         found.len(),
         1,
-        "xtask/data/recovery.json must carry exactly one bar labelled `{label}` under a heading \
-         containing `{heading_needle}`, found {}",
+        "xtask/data/recovery.json must carry exactly one bar labelled `{label}` under a heading containing `{heading_needle}`, found {}",
         found.len()
     );
     found.remove(0)
@@ -89,8 +101,7 @@ fn corpus_pyc_smoke_does_not_panic() {
     let corpus_dir: PathBuf = workspace_root().join("corpus/python/pyarmor");
     assert!(
         corpus_dir.is_dir(),
-        "the pyarmor corpus is tracked in git and is what this case sweeps, so its absence is a \
-         damaged checkout rather than an optional dependency: {}",
+        "the pyarmor corpus is tracked in git and is what this case sweeps, so its absence is a damaged checkout rather than an optional dependency: {}",
         corpus_dir.display()
     );
     let mut swept: usize = 0;
@@ -98,8 +109,9 @@ fn corpus_pyc_smoke_does_not_panic() {
         if path.extension().and_then(std::ffi::OsStr::to_str) != Some("pyc") {
             return;
         }
-        let bytes: Vec<u8> = std::fs::read(path)
-            .unwrap_or_else(|e: std::io::Error| panic!("{} is unreadable: {e}", path.display()));
+        let bytes: Vec<u8> = std::fs::read(path).unwrap_or_else(|error: std::io::Error| {
+            panic!("{} is unreadable: {error}", path.display())
+        });
         let cfg: StaticUnpackConfig = StaticUnpackConfig {
             emit_llm_metadata: true,
             ..StaticUnpackConfig::default()
@@ -109,277 +121,258 @@ fn corpus_pyc_smoke_does_not_panic() {
     });
     assert!(
         swept > 0,
-        "{} carries no .pyc, so this case swept nothing and would report success without running \
-         the unpacker over a single sample",
+        "{} carries no .pyc, so this case swept nothing and would report success without running the unpacker over a single sample",
         corpus_dir.display()
     );
-}
-
-struct Fixture {
-    wrapper_py: PathBuf,
-    runtime: PathBuf,
-    expected_version: PyarmorVersion,
-    relative_id: String,
-    carries_marker: bool,
 }
 
 #[test]
-fn recovers_real_source_from_v8_and_v9_corpus() {
-    let corpus_dir: PathBuf = workspace_root().join("corpus/python/pyarmor");
-    assert!(
-        corpus_dir.is_dir(),
-        "the v8 and v9 wrapper corpus is committed and is the evidence behind the published \
-         PyArmor samples figure; expected it at {}",
-        corpus_dir.display()
+fn named_v8_v9_default_trial_wrappers_decode_complete_root_code_objects() {
+    let fixtures: &Vec<ResolvedFixture> = verified_corpus();
+    assert_eq!(
+        fixtures.len(),
+        STRUCTURAL_CODE_OBJECT_FLOOR,
+        "the structural corpus floor must remain pinned to the validated named wrapper population"
     );
 
-    let fixtures: Vec<Fixture> = collect_fixtures(&corpus_dir);
-    assert!(
-        fixtures.len() >= RECOVERY_FLOOR,
-        "expected the full committed corpus (>= {RECOVERY_FLOOR} wrappers), found {}",
-        fixtures.len()
-    );
-
-    let mut recovered: usize = 0;
-    let mut markers_seen: usize = 0;
-
-    for fx in &fixtures {
-        let text: String =
-            std::fs::read_to_string(&fx.wrapper_py).expect("wrapper .py is readable");
-        let (_detection, payload): (Detection, Vec<u8>) =
-            detect_from_wrapper(&text).expect("wrapper carries an extractable payload literal");
-        let runtime_bytes: Vec<u8> =
-            std::fs::read(&fx.runtime).expect("runtime binary is readable");
-
-        let cfg: StaticUnpackConfig = StaticUnpackConfig {
-            runtime_bytes: Some(runtime_bytes),
-            strict: true,
-            ..StaticUnpackConfig::default()
+    let mut decoded: usize = 0;
+    for fixture in fixtures {
+        let output: StaticUnpackOutput = decrypt_fixture(fixture);
+        let Some(header_serial): Option<&str> = output.header_metadata.serial.as_deref() else {
+            panic!(
+                "{}: the static-unpack header must carry a serial so the trial classification is bound to decrypted inputs",
+                fixture.relative_id
+            )
         };
-        let out: StaticUnpackOutput =
-            unpack_static_with_config(&payload, &cfg).expect("in-house decrypt+unpack succeeds");
-
         assert_eq!(
-            out.pyarmor_version, fx.expected_version,
-            "{}: runtime-descriptor discrimination must override the serial-000000 default",
-            fx.relative_id
+            header_serial, DEFAULT_TRIAL_SERIAL,
+            "{}: the static-unpack header must carry the default-trial serial claimed by the named corpus",
+            fixture.relative_id
         );
         assert_eq!(
-            out.status,
-            StaticDecryptStatus::Functional,
-            "{}: AES body must decrypt (Functional)",
-            fx.relative_id
+            output.serial.as_deref(),
+            Some(header_serial),
+            "{}: the static-unpack output serial must agree with the parsed header serial",
+            fixture.relative_id
         );
-
         assert_eq!(
-            out.plaintext.first(),
-            Some(&0x20u8),
-            "{}: decrypted body starts with the PyArmor 0x20 structural header",
-            fx.relative_id
+            classify_serial(header_serial).kind,
+            SerialKind::DefaultTrial,
+            "{}: the canonical serial classifier must recognize the static-unpack header serial as default-trial",
+            fixture.relative_id
         );
-
-        let (offset, code): (usize, Box<CodeObject>) = locate_real_code_object(&out.plaintext)
-            .unwrap_or_else(|| {
+        let runtime: &StaticRuntimeInfoSummary =
+            output.runtime_info.as_ref().unwrap_or_else(|| {
                 panic!(
-                    "{}: decrypted body must contain a genuine marshalled CodeObject",
-                    fx.relative_id
+                    "{}: strict static unpack must retain the runtime summary used for decryption",
+                    fixture.relative_id
                 )
             });
-        assert!(
-            offset >= 0x20,
-            "{}: marshal stream lives at or beyond the structural header",
-            fx.relative_id
+        assert_eq!(
+            runtime.serial.as_str(),
+            header_serial,
+            "{}: the runtime serial must agree with the static-unpack header serial",
+            fixture.relative_id
         );
-        assert!(
-            !code.names.is_empty(),
-            "{}: recovered CodeObject must carry real co_names",
-            fx.relative_id
+        assert_eq!(
+            runtime.descriptor_version,
+            Some(expected_version(fixture.pyarmor_version)),
+            "{}: the runtime descriptor must agree with the manifest's v8/v9 corpus label",
+            fixture.relative_id
         );
-
-        if fx.carries_marker {
-            markers_seen += 1;
-            assert!(
-                contains_subslice(&out.plaintext, KNOWN_MARKER),
-                "{}: original identifier `try_except_basic` survives in the decrypted source bytes",
-                fx.relative_id
-            );
-            assert!(
-                co_names_contains(&code, "try_except_basic"),
-                "{}: recovered co_names carry the pre-obfuscation identifier `try_except_basic`",
-                fx.relative_id
-            );
-        }
-
-        recovered += 1;
+        assert_eq!(
+            output.pyarmor_version,
+            expected_version(fixture.pyarmor_version),
+            "{}: runtime-descriptor discrimination must agree with the manifest's v8/v9 corpus label",
+            fixture.relative_id
+        );
+        assert_eq!(
+            output.status,
+            StaticDecryptStatus::Functional,
+            "{}: static decryption must finish functionally",
+            fixture.relative_id
+        );
+        assert_eq!(
+            output.plaintext.first(),
+            Some(&0x20u8),
+            "{}: decrypted body must start with the v8/v9 plaintext structural header",
+            fixture.relative_id
+        );
+        let version: PyVersion = python_version(&output, fixture);
+        grade_anchored_marshaled_code_object(&output.plaintext, version).unwrap_or_else(
+            |error: String| {
+                panic!(
+                    "{}: the header-anchored marshal stream must decode as one complete root CodeObject: {error}",
+                    fixture.relative_id
+                )
+            },
+        );
+        decoded += 1;
     }
-
-    assert!(
-        markers_seen >= 36,
-        "expected the chunk_00 `try_except_basic` source marker across both versions, saw {markers_seen}"
-    );
-    eprintln!("recovered {recovered}/{} fixtures", fixtures.len());
-    assert!(
-        recovered >= RECOVERY_FLOOR,
-        "expected >= {RECOVERY_FLOOR}/72 real source recoveries on the committed corpus, got {recovered}"
-    );
 
     let bar: serde_json::Value = published_bar(PUBLISHED_HEADING, PUBLISHED_BAR);
     let detected: u64 = bar["detected"]
         .as_u64()
-        .expect("the PyArmor samples bar must carry a detected count");
+        .expect("the structural PyArmor bar must carry a detected count");
     let delivered: u64 = bar["delivered"]
         .as_u64()
-        .expect("the PyArmor samples bar must carry a delivered count");
+        .expect("the structural PyArmor bar must carry a delivered count");
+    let total: u64 = u64::try_from(fixtures.len()).expect("fixture count fits u64");
+    let successful: u64 = u64::try_from(decoded).expect("decoded count fits u64");
     assert_eq!(
-        u64::try_from(fixtures.len()).expect("fixture count fits u64"),
-        detected,
-        "xtask/data/recovery.json publishes {detected} PyArmor corpus samples and every document \
-         renders that number, but the committed v8 and v9 corpus carries {}",
-        fixtures.len()
+        total, detected,
+        "xtask/data/recovery.json must publish the complete named v8/v9 wrapper population"
     );
+    assert_eq!(
+        successful, delivered,
+        "xtask/data/recovery.json must publish exactly the fixtures whose anchored marshal streams decoded"
+    );
+}
+
+#[test]
+fn non_code_anchored_marshaled_root_is_rejected() {
+    let fixtures: &Vec<ResolvedFixture> = verified_corpus();
+    let fixture: &ResolvedFixture = fixtures
+        .first()
+        .expect("the pinned PyArmor corpus contains at least one fixture");
+    let output: StaticUnpackOutput = decrypt_fixture(fixture);
+    let baseline_version: PyVersion = python_version(&output, fixture);
+    grade_anchored_marshaled_code_object(&output.plaintext, baseline_version)
+        .expect("the unmodified real fixture must satisfy the complete root-CodeObject grader");
+    let version: PyVersion = python_version(&output, fixture);
+    let start: usize = declared_marshaled_start(&output.plaintext)
+        .expect("the unmodified fixture carries a bounded plaintext marshal offset");
+    let end: usize = start
+        .checked_add(1)
+        .expect("the marshal root type tag has an addressable byte after the header");
+    let mut non_code: Vec<u8> = output.plaintext;
+    non_code[start] = b'N';
+    non_code.truncate(end);
     assert!(
-        u64::try_from(recovered).expect("recovered fits u64") >= delivered,
-        "recovery.json publishes {delivered} of {detected} samples recovered to source; this run \
-         recovered {recovered}"
+        grade_anchored_marshaled_code_object(&non_code, version).is_err(),
+        "the structural grader must reject a complete header-anchored marshal value whose root is not a CodeObject"
     );
 }
 
-fn collect_fixtures(corpus_dir: &Path) -> Vec<Fixture> {
-    let mut fixtures: Vec<Fixture> = Vec::new();
-    for version_dir in ["v8", "v9"] {
-        let expected_version: PyarmorVersion = if version_dir == "v8" {
-            PyarmorVersion::V8
-        } else {
-            PyarmorVersion::V9
-        };
-        gather(
-            &corpus_dir.join(version_dir),
-            corpus_dir,
-            expected_version,
-            &mut fixtures,
-        );
-    }
-    fixtures.sort_by(|a: &Fixture, b: &Fixture| a.wrapper_py.cmp(&b.wrapper_py));
-    fixtures
-}
-
-fn gather(dir: &Path, corpus_dir: &Path, expected_version: PyarmorVersion, out: &mut Vec<Fixture>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut wrappers: Vec<PathBuf> = Vec::new();
-    let mut subdirs: Vec<PathBuf> = Vec::new();
-    for entry in entries.flatten() {
-        let path: PathBuf = entry.path();
-        if path.is_dir() {
-            subdirs.push(path);
-        } else if is_chunk_wrapper(&path) {
-            wrappers.push(path);
-        }
-    }
-
-    if let Some(runtime) = find_runtime(dir)
-        && !wrappers.is_empty()
-    {
-        for wrapper_py in wrappers {
-            let relative_id: String = wrapper_py
-                .parent()
-                .and_then(|p: &Path| p.strip_prefix(corpus_dir).ok())
-                .map(|p: &Path| p.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_default();
-            let carries_marker: bool = wrapper_py
-                .file_name()
-                .and_then(std::ffi::OsStr::to_str)
-                .is_some_and(|n: &str| n.starts_with("chunk_00_"));
-            out.push(Fixture {
-                wrapper_py,
-                runtime: runtime.clone(),
-                expected_version,
-                relative_id,
-                carries_marker,
-            });
-        }
-        return;
-    }
-
-    for subdir in subdirs {
-        gather(&subdir, corpus_dir, expected_version, out);
-    }
-}
-
-fn is_chunk_wrapper(path: &Path) -> bool {
-    let Some(name): Option<&str> = path.file_name().and_then(std::ffi::OsStr::to_str) else {
-        return false;
-    };
-    name.starts_with("chunk")
-        && path
-            .extension()
-            .and_then(std::ffi::OsStr::to_str)
-            .is_some_and(|ext: &str| ext.eq_ignore_ascii_case("py"))
-}
-
-fn find_runtime(dir: &Path) -> Option<PathBuf> {
-    let entries: std::fs::ReadDir = std::fs::read_dir(dir).ok()?;
-    let mut subdirs: Vec<PathBuf> = Vec::new();
-    for entry in entries.flatten() {
-        let path: PathBuf = entry.path();
-        if path.is_dir() {
-            subdirs.push(path);
-        } else if is_runtime_binary(&path) {
-            return Some(path);
-        }
-    }
-    for subdir in subdirs {
-        if let Some(found) = find_runtime(&subdir) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-fn is_runtime_binary(path: &Path) -> bool {
-    let Some(name): Option<&str> = path.file_name().and_then(std::ffi::OsStr::to_str) else {
-        return false;
-    };
-    name.starts_with("pyarmor_runtime")
-        && matches!(
-            path.extension().and_then(std::ffi::OsStr::to_str),
-            Some("pyd" | "so" | "dylib")
+fn decrypt_fixture(fixture: &ResolvedFixture) -> StaticUnpackOutput {
+    let text: &str = std::str::from_utf8(&fixture.wrapper.bytes).unwrap_or_else(|error| {
+        panic!(
+            "{} is not valid UTF-8 after manifest identity verification: {error}",
+            fixture.relative_id
         )
+    });
+    let (_detection, payload): (_, Vec<u8>) = detect_from_wrapper(text).unwrap_or_else(|error| {
+        panic!(
+            "{} has no extractable payload literal: {error}",
+            fixture.relative_id
+        )
+    });
+    let cfg: StaticUnpackConfig = StaticUnpackConfig {
+        runtime_bytes: Some(fixture.runtime.bytes.to_vec()),
+        strict: true,
+        ..StaticUnpackConfig::default()
+    };
+    unpack_static_with_config(&payload, &cfg)
+        .unwrap_or_else(|error| panic!("{} static decrypt failed: {error}", fixture.relative_id))
 }
 
-fn locate_real_code_object(plaintext: &[u8]) -> Option<(usize, Box<CodeObject>)> {
-    for (i, &b) in plaintext.iter().enumerate() {
-        if b == 0xE3
-            && let Ok(Object::Code(code)) = load(&plaintext[i..], PY312)
-        {
-            return Some((i, code));
-        }
-    }
-    None
-}
-
-fn co_names_contains(code: &CodeObject, needle: &str) -> bool {
-    code.names.iter().any(|name: &Object| match name {
-        Object::Unicode { value, .. }
-        | Object::ShortAscii { value, .. }
-        | Object::String { value, .. } => value == needle,
-        _ => false,
+fn verified_corpus() -> &'static Vec<ResolvedFixture> {
+    static FIXTURES: OnceLock<Vec<ResolvedFixture>> = OnceLock::new();
+    FIXTURES.get_or_init(|| {
+        let manifest: CorpusManifest = read_manifest();
+        verified_fixtures(&manifest)
     })
 }
 
-fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
-    needle.len() <= haystack.len()
-        && haystack
-            .windows(needle.len())
-            .any(|window: &[u8]| window == needle)
+const fn expected_version(version: CorpusVersion) -> PyarmorVersion {
+    match version {
+        CorpusVersion::V8 => PyarmorVersion::V8,
+        CorpusVersion::V9 => PyarmorVersion::V9,
+    }
+}
+
+fn python_version(output: &StaticUnpackOutput, fixture: &ResolvedFixture) -> PyVersion {
+    let Some((major, minor)): Option<(u8, u8)> = output.python_version else {
+        panic!(
+            "{} has no declared Python version after static decrypt",
+            fixture.relative_id
+        )
+    };
+    assert_eq!(
+        (major, minor),
+        (PY312.major, PY312.minor),
+        "{} must remain pinned to the Python 3.12 marshal format declared by the committed corpus",
+        fixture.relative_id
+    );
+    PyVersion::new(major, minor)
+}
+
+fn declared_marshaled_start(plaintext: &[u8]) -> Result<usize, String> {
+    let code_object_offset: usize = usize::try_from(read_u32_le(plaintext, 0)?)
+        .map_err(|error| format!("code-object offset does not fit usize: {error}"))?;
+    let xor_procedure_len: usize = usize::try_from(read_u32_le(plaintext, 4)?)
+        .map_err(|error| format!("xor procedure length does not fit usize: {error}"))?;
+    let start: usize = code_object_offset
+        .checked_add(xor_procedure_len)
+        .ok_or_else(|| "plaintext header marshal offset overflows usize".to_owned())?;
+    if start > plaintext.len() {
+        return Err(format!(
+            "plaintext header declares marshal start {start} beyond {} decrypted bytes",
+            plaintext.len()
+        ));
+    }
+    Ok(start)
+}
+
+fn read_u32_le(plaintext: &[u8], offset: usize) -> Result<u32, String> {
+    let end: usize = offset
+        .checked_add(4)
+        .ok_or_else(|| "plaintext header field end overflows usize".to_owned())?;
+    let bytes: &[u8] = plaintext
+        .get(offset..end)
+        .ok_or_else(|| format!("plaintext header omits bytes {offset}..{end}"))?;
+    let array: [u8; 4] = bytes
+        .try_into()
+        .map_err(|_| format!("plaintext header field {offset}..{end} is not four bytes"))?;
+    Ok(u32::from_le_bytes(array))
+}
+
+fn grade_anchored_marshaled_code_object(
+    plaintext: &[u8],
+    version: PyVersion,
+) -> Result<usize, String> {
+    let declared_start: usize = declared_marshaled_start(plaintext)?;
+    let start: usize = marshal_stream_start(plaintext)
+        .map_err(|error| format!("plaintext header has no bounded marshal start: {error}"))?;
+    if start != declared_start {
+        return Err(format!(
+            "public marshal-start helper returned {start}, but the plaintext header declares {declared_start}"
+        ));
+    }
+    let stream: &[u8] = plaintext
+        .get(start..)
+        .filter(|stream: &&[u8]| !stream.is_empty())
+        .ok_or_else(|| "plaintext header points to an empty marshal stream".to_owned())?;
+    let (object, trace): (Object, RefTableDump) = load_with_reftable(stream, version)
+        .map_err(|error| format!("marshal reader rejected the header-anchored stream: {error}"))?;
+    if !matches!(object, Object::Code(_)) {
+        return Err("header-anchored marshal root is not a CodeObject".to_owned());
+    }
+    if trace.total_bytes != stream.len() {
+        return Err(format!(
+            "marshal reader consumed {} of {} bytes from the header-anchored stream",
+            trace.total_bytes,
+            stream.len()
+        ));
+    }
+    Ok(trace.total_bytes)
 }
 
 fn workspace_root() -> PathBuf {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.pop();
-    p.pop();
-    p
+    let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.pop();
+    path.pop();
+    path
 }
 
 fn walk_files(dir: &Path, visitor: &mut dyn FnMut(&Path)) {

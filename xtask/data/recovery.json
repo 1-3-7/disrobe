@@ -262,17 +262,25 @@
             "function": "published_container_counts_match_this_enum"
           },
           "source": "ContainerKind enum crates/disrobe-binfmt/src/container.rs (ContainerKind::ALL is [Self; 100], 100 real variants excluding None), asserted in detected_count_is_one_hundred; every one of the 100 declares a payload extractor rather than a metadata summary or an external-tool hand-off, asserted in every_declared_format_carries_a_payload_extractor, which is a roster declaration and not a run. The delivered count is the measured leg: 33 of the 100 are driven to member bytes on disk by an input this repository commits, measured by crates/disrobe-cli/tests/container_breadth.rs over `git ls-files`, pinned in crates/disrobe-cli/tests/golden/container_breadth.txt and read back by published_container_counts_match_this_enum. The remaining 67 carry an extractor no committed input reaches, so they are unverified rather than shown to fail: absence of an input is not evidence of a broken extractor, and nothing here claims they work. The declared superset spans archives/installers (ZIP/tar/7z/RAR/cab/MSI/NSIS/deb/rpm/Docker/OCI/ISO), bare single-stream compression (gz/bz2/zst/lzma/lzip/lz4-frame/zlib/.Z), legacy archives (ar/arj/arc/lzh/lzop/uzip/xamarin-xalz/par2/ELF-overlay carve), embedded-linux filesystems (squashfs/cramfs/ext4/romfs/minixfs/jffs2/ubi-ubifs/yaffs/erofs/ntfs/android-sparse/btrfs-send), disk-image/partition containers (GPT/MBR/VHD/VHDX/WIM walked through FAT), and vendor firmware decryptors (D-Link AES/EnGenius XOR/Autel table/QNAP PC1 plus CRC-verified Netgear/Xiaomi/Tesla carves); a recursive carve-everything engine (multi-magic scan, chunk model, depth recursion, entropy gating) drives nested extraction. InnoSetup writes the decoded setup-data block stream (per-file split via the version-specific TSetupHeader parse is the documented limit) and InstallShield writes its stored and zlib members; the arj/arc/stuffit/partclone heavy codecs are carved verbatim with a documented note"
-        },
+        }
+      ]
+    },
+    {
+      "heading": "PyArmor structural marshal coverage",
+      "axis_label": "decoded root CodeObjects / named v8/v9 default-trial wrappers",
+      "kind": "count_pair",
+      "bars": [
         {
-          "label": "PyArmor samples",
+          "label": "v8/v9 default-trial wrappers",
           "detected": 72,
           "delivered": 72,
-          "delivered_label": "recovered",
+          "delivered_label": "decoded root CodeObjects",
+          "denominator_label": "named v8/v9 default-trial wrappers",
           "verified_by": {
             "path": "crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs",
-            "function": "recovers_real_source_from_v8_and_v9_corpus"
+            "function": "named_v8_v9_default_trial_wrappers_decode_complete_root_code_objects"
           },
-          "source": "crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs (RECOVERY_FLOOR 72; recovers_real_source_from_v8_and_v9_corpus counts the committed v8 and v9 wrappers and asserts the recovered count against this pair); measured 72/72 locally 2026-06-11"
+          "source": "crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs named_v8_v9_default_trial_wrappers_decode_complete_root_code_objects binds the typed MANIFEST.toml roster to the discovered v8/v9 chunk-wrapper set, verifies each manifest-declared wrapper/runtime pair, checks the default-trial serial, statically decrypts every named wrapper, computes the header-declared marshal start, requires the public helper to agree, and requires disrobe-py-marshal to decode one complete root CodeObject. This self-reported structural check does not compare source, emitted pyc bytes, execution, semantic equivalence, or external-tool output."
         }
       ]
     },
@@ -450,7 +458,7 @@
             "function": "published_go_function_name_bars_are_pinned_per_platform"
           },
           "detail": "1869 / 1969 function names recovered from the stripped build. The unstripped build of the same source recovers all 1969. The shortfall is assembly ABI0 entry points and platform linker symbols that carry no distinct pclntab entry, so a stripped image does not contain them to recover.",
-          "source": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs grades the committed stripped image for this platform against the committed `go tool nm` symbol dump beside it, pinning the denominator by equality and the recovered count as a floor, and it needs no toolchain; crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs re-derives the same names from a live build of the same source, but it returns without grading anything when go1.26.3 is not installed and its own floors are coarser than this figure, so it is a second leg rather than what holds this number"
+          "source": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs grades the committed stripped image for this platform against the committed `go tool nm` symbol dump beside it, pinning the denominator by equality and the recovered count as a floor, and it needs no toolchain; crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs re-derives the same names from a live build of the same source. CI provisions exact go1.26.3 for this second leg; outside CI, an absent `go` executable skips it while a mismatched installed version fails. Its floors are coarser than this figure, so it is a second leg rather than what holds this number"
         },
         {
           "label": "windows/386",
@@ -462,7 +470,7 @@
             "function": "published_go_function_name_bars_are_pinned_per_platform"
           },
           "detail": "1994 / 1994 function names recovered from the stripped build. The unstripped build of the same source recovers all 1994. The shortfall is assembly ABI0 entry points and platform linker symbols that carry no distinct pclntab entry, so a stripped image does not contain them to recover.",
-          "source": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs grades the committed stripped image for this platform against the committed `go tool nm` symbol dump beside it, pinning the denominator by equality and the recovered count as a floor, and it needs no toolchain; crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs re-derives the same names from a live build of the same source, but it returns without grading anything when go1.26.3 is not installed and its own floors are coarser than this figure, so it is a second leg rather than what holds this number"
+          "source": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs grades the committed stripped image for this platform against the committed `go tool nm` symbol dump beside it, pinning the denominator by equality and the recovered count as a floor, and it needs no toolchain; crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs re-derives the same names from a live build of the same source. CI provisions exact go1.26.3 for this second leg; outside CI, an absent `go` executable skips it while a mismatched installed version fails. Its floors are coarser than this figure, so it is a second leg rather than what holds this number"
         },
         {
           "label": "linux/amd64",
@@ -474,7 +482,7 @@
             "function": "published_go_function_name_bars_are_pinned_per_platform"
           },
           "detail": "1836 / 1957 function names recovered from the stripped build. The unstripped build of the same source recovers all 1957. The shortfall is assembly ABI0 entry points and platform linker symbols that carry no distinct pclntab entry, so a stripped image does not contain them to recover.",
-          "source": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs grades the committed stripped image for this platform against the committed `go tool nm` symbol dump beside it, pinning the denominator by equality and the recovered count as a floor, and it needs no toolchain; crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs re-derives the same names from a live build of the same source, but it returns without grading anything when go1.26.3 is not installed and its own floors are coarser than this figure, so it is a second leg rather than what holds this number"
+          "source": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs grades the committed stripped image for this platform against the committed `go tool nm` symbol dump beside it, pinning the denominator by equality and the recovered count as a floor, and it needs no toolchain; crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs re-derives the same names from a live build of the same source. CI provisions exact go1.26.3 for this second leg; outside CI, an absent `go` executable skips it while a mismatched installed version fails. Its floors are coarser than this figure, so it is a second leg rather than what holds this number"
         },
         {
           "label": "linux/386",
@@ -486,7 +494,7 @@
             "function": "published_go_function_name_bars_are_pinned_per_platform"
           },
           "detail": "1978 / 1979 function names recovered from the stripped build. The unstripped build of the same source recovers all 1979. The shortfall is assembly ABI0 entry points and platform linker symbols that carry no distinct pclntab entry, so a stripped image does not contain them to recover.",
-          "source": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs grades the committed stripped image for this platform against the committed `go tool nm` symbol dump beside it, pinning the denominator by equality and the recovered count as a floor, and it needs no toolchain; crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs re-derives the same names from a live build of the same source, but it returns without grading anything when go1.26.3 is not installed and its own floors are coarser than this figure, so it is a second leg rather than what holds this number"
+          "source": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs grades the committed stripped image for this platform against the committed `go tool nm` symbol dump beside it, pinning the denominator by equality and the recovered count as a floor, and it needs no toolchain; crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs re-derives the same names from a live build of the same source. CI provisions exact go1.26.3 for this second leg; outside CI, an absent `go` executable skips it while a mismatched installed version fails. Its floors are coarser than this figure, so it is a second leg rather than what holds this number"
         },
         {
           "label": "linux/arm64",
@@ -498,7 +506,7 @@
             "function": "published_go_function_name_bars_are_pinned_per_platform"
           },
           "detail": "1807 / 1919 function names recovered from the stripped build. The unstripped build of the same source recovers all 1919. The shortfall is assembly ABI0 entry points and platform linker symbols that carry no distinct pclntab entry, so a stripped image does not contain them to recover.",
-          "source": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs grades the committed stripped image for this platform against the committed `go tool nm` symbol dump beside it, pinning the denominator by equality and the recovered count as a floor, and it needs no toolchain; crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs re-derives the same names from a live build of the same source, but it returns without grading anything when go1.26.3 is not installed and its own floors are coarser than this figure, so it is a second leg rather than what holds this number"
+          "source": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs grades the committed stripped image for this platform against the committed `go tool nm` symbol dump beside it, pinning the denominator by equality and the recovered count as a floor, and it needs no toolchain; crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs re-derives the same names from a live build of the same source. CI provisions exact go1.26.3 for this second leg; outside CI, an absent `go` executable skips it while a mismatched installed version fails. Its floors are coarser than this figure, so it is a second leg rather than what holds this number"
         },
         {
           "label": "darwin/amd64",
@@ -510,7 +518,7 @@
             "function": "published_go_function_name_bars_are_pinned_per_platform"
           },
           "detail": "1845 / 2078 function names recovered from the stripped build. The unstripped build of the same source recovers all 2078. The shortfall is assembly ABI0 entry points and platform linker symbols that carry no distinct pclntab entry, so a stripped image does not contain them to recover.",
-          "source": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs grades the committed stripped image for this platform against the committed `go tool nm` symbol dump beside it, pinning the denominator by equality and the recovered count as a floor, and it needs no toolchain; crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs re-derives the same names from a live build of the same source, but it returns without grading anything when go1.26.3 is not installed and its own floors are coarser than this figure, so it is a second leg rather than what holds this number"
+          "source": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs grades the committed stripped image for this platform against the committed `go tool nm` symbol dump beside it, pinning the denominator by equality and the recovered count as a floor, and it needs no toolchain; crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs re-derives the same names from a live build of the same source. CI provisions exact go1.26.3 for this second leg; outside CI, an absent `go` executable skips it while a mismatched installed version fails. Its floors are coarser than this figure, so it is a second leg rather than what holds this number"
         },
         {
           "label": "darwin/arm64",
@@ -522,7 +530,7 @@
             "function": "published_go_function_name_bars_are_pinned_per_platform"
           },
           "detail": "1839 / 2043 function names recovered from the stripped build. The unstripped build of the same source recovers all 2043. The shortfall is assembly ABI0 entry points and platform linker symbols that carry no distinct pclntab entry, so a stripped image does not contain them to recover.",
-          "source": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs grades the committed stripped image for this platform against the committed `go tool nm` symbol dump beside it, pinning the denominator by equality and the recovered count as a floor, and it needs no toolchain; crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs re-derives the same names from a live build of the same source, but it returns without grading anything when go1.26.3 is not installed and its own floors are coarser than this figure, so it is a second leg rather than what holds this number"
+          "source": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs grades the committed stripped image for this platform against the committed `go tool nm` symbol dump beside it, pinning the denominator by equality and the recovered count as a floor, and it needs no toolchain; crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs re-derives the same names from a live build of the same source. CI provisions exact go1.26.3 for this second leg; outside CI, an absent `go` executable skips it while a mismatched installed version fails. Its floors are coarser than this figure, so it is a second leg rather than what holds this number"
         }
       ]
     },

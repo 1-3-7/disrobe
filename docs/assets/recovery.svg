@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="920" height="1301" viewBox="0 0 920 1301" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"><desc>generated from recovery.json sha256:a0b9313f3038d647845296c0870ed135</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="1301" viewBox="0 0 920 1301" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"><desc>generated from recovery.json sha256:b9fea6a879021ee3d4a616db36d9ea5e</desc>
   <rect x="0" y="0" width="920" height="1301" rx="10" fill="#0a0a0a"/>
   <rect x="0.5" y="0.5" width="919" height="1300" rx="9.5" fill="none" stroke="#262626"/>
   <text x="28.00" y="40.00" font-size="19" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Measured recovery by ecosystem</text>
@@ -78,37 +78,6 @@
 <path d="M207 771L796 771A3 3 0 0 1 799 774L799 781A3 3 0 0 1 796 784L207 784A3 3 0 0 1 204 781L204 774A3 3 0 0 1 207 771Z" fill="#101010" ecmeta_series_index="0" ecmeta_data_index="28" ecmeta_ssr_type="chart" class="zr0-cls-0"></path>
 <path d="M207 798L796 798A3 3 0 0 1 799 801L799 808A3 3 0 0 1 796 811L207 811A3 3 0 0 1 204 808L204 801A3 3 0 0 1 207 798Z" fill="#101010" ecmeta_series_index="0" ecmeta_data_index="29" ecmeta_ssr_type="chart" class="zr0-cls-0"></path>
 <path d="M207 825L796 825A3 3 0 0 1 799 828L799 835A3 3 0 0 1 796 838L207 838A3 3 0 0 1 204 835L204 828A3 3 0 0 1 207 825Z" fill="#101010" ecmeta_series_index="0" ecmeta_data_index="30" ecmeta_ssr_type="chart" class="zr0-cls-0"></path>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 21.5)" fill="#ededed">95.09%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 48.5)" fill="#ededed">96.60%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 75.5)" fill="#ededed">91.50%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 102.5)" fill="#ededed">95.41%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 129.5)" fill="#ededed">96.60%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 156.5)" fill="#ededed">96.03%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 183.5)" fill="#ededed">78.50%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 210.5)" fill="#ededed">86.91%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 237.5)" fill="#ededed">100.00%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 264.5)" fill="#ededed">100.00%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 291.5)" fill="#ededed">100.00%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 318.5)" fill="#ededed">89.31%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 345.5)" fill="#ededed">94.74%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 372.5)" fill="#ededed">100.00%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 399.5)" fill="#ededed">100.00%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 426.5)" fill="#ededed">92.50%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 453.5)" fill="#ededed">100.00%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 480.5)" fill="#ededed">98.67%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 507.5)" fill="#ededed">100.00%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 534.5)" fill="#ededed">94.92%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 561.5)" fill="#ededed">100.00%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 588.5)" fill="#ededed">93.81%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 615.5)" fill="#ededed">99.94%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 642.5)" fill="#ededed">94.16%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 669.5)" fill="#ededed">88.78%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 696.5)" fill="#ededed">90.01%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 723.5)" fill="#ededed">100.00%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 750.5)" fill="#ededed">62.50%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 777.5)" fill="#ededed">100.00%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 804.5)" fill="#ededed">100.00%</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" transform="translate(807 831.5)" fill="#ededed">100.00%</text>
 <path d="M207 15L766.8 15A3 3 0 0 1 769.8 18L769.8 25A3 3 0 0 1 766.8 28L207 28A3 3 0 0 1 204 25L204 18A3 3 0 0 1 207 15Z" fill="#8fb3d9" ecmeta_series_index="1" ecmeta_data_index="0" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
 <path d="M207 42L775.8 42A3 3 0 0 1 778.8 45L778.8 52A3 3 0 0 1 775.8 55L207 55A3 3 0 0 1 204 52L204 45A3 3 0 0 1 207 42Z" fill="#8fb3d9" ecmeta_series_index="1" ecmeta_data_index="1" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
 <path d="M207 69L745.4 69A3 3 0 0 1 748.4 72L748.4 79A3 3 0 0 1 745.4 82L207 82A3 3 0 0 1 204 79L204 72A3 3 0 0 1 207 69Z" fill="#8fb3d9" ecmeta_series_index="1" ecmeta_data_index="2" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
@@ -140,55 +109,54 @@
 <path d="M207 771L796 771A3 3 0 0 1 799 774L799 781A3 3 0 0 1 796 784L207 784A3 3 0 0 1 204 781L204 774A3 3 0 0 1 207 771Z" fill="#8fb3d9" ecmeta_series_index="1" ecmeta_data_index="28" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
 <path d="M207 798L796 798A3 3 0 0 1 799 801L799 808A3 3 0 0 1 796 811L207 811A3 3 0 0 1 204 808L204 801A3 3 0 0 1 207 798Z" fill="#8fb3d9" ecmeta_series_index="1" ecmeta_data_index="29" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
 <path d="M207 825L796 825A3 3 0 0 1 799 828L799 835A3 3 0 0 1 796 838L207 838A3 3 0 0 1 204 835L204 828A3 3 0 0 1 207 825Z" fill="#828282" ecmeta_series_index="1" ecmeta_data_index="30" ecmeta_ssr_type="chart" class="zr0-cls-2"></path>
-<style ><![CDATA[
-.zr0-cls-0:hover {
-cursor:pointer;
-fill:rgba(17,17,17,1);
-}
-.zr0-cls-1:hover {
-cursor:pointer;
-fill:rgba(157,196,238,1);
-}
-.zr0-cls-2:hover {
-cursor:pointer;
-fill:rgba(143,143,143,1);
-}
-.zr0-cls-3:hover {
-cursor:pointer;
-fill:rgba(221,185,156,1);
-}
 
-]]>
-
-</style>
 </svg>
+  <text x="835.00" y="151.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-0" dominant-baseline="central" xml:space="preserve">95.09%</text>
+  <text x="835.00" y="178.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-1" dominant-baseline="central" xml:space="preserve">96.60%</text>
+  <text x="835.00" y="205.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-2" dominant-baseline="central" xml:space="preserve">91.50%</text>
+  <text x="835.00" y="232.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-3" dominant-baseline="central" xml:space="preserve">95.41%</text>
+  <text x="835.00" y="259.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-4" dominant-baseline="central" xml:space="preserve">96.60%</text>
+  <text x="835.00" y="286.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-5" dominant-baseline="central" xml:space="preserve">96.03%</text>
+  <text x="835.00" y="313.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-6" dominant-baseline="central" xml:space="preserve">78.50%</text>
+  <text x="835.00" y="340.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-7" dominant-baseline="central" xml:space="preserve">86.91%</text>
+  <text x="835.00" y="367.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-8" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="835.00" y="394.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-9" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="835.00" y="421.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-10" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="835.00" y="448.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-11" dominant-baseline="central" xml:space="preserve">89.31%</text>
+  <text x="835.00" y="475.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-12" dominant-baseline="central" xml:space="preserve">94.74%</text>
+  <text x="835.00" y="502.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-13" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="835.00" y="529.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-14" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="835.00" y="556.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-15" dominant-baseline="central" xml:space="preserve">92.50%</text>
+  <text x="835.00" y="583.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-16" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="835.00" y="610.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-17" dominant-baseline="central" xml:space="preserve">98.67%</text>
+  <text x="835.00" y="637.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-18" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="835.00" y="664.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-19" dominant-baseline="central" xml:space="preserve">94.92%</text>
+  <text x="835.00" y="691.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-20" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="835.00" y="718.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-21" dominant-baseline="central" xml:space="preserve">93.81%</text>
+  <text x="835.00" y="745.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-22" dominant-baseline="central" xml:space="preserve">99.94%</text>
+  <text x="835.00" y="772.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-23" dominant-baseline="central" xml:space="preserve">94.16%</text>
+  <text x="835.00" y="799.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-24" dominant-baseline="central" xml:space="preserve">88.78%</text>
+  <text x="835.00" y="826.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-25" dominant-baseline="central" xml:space="preserve">90.01%</text>
+  <text x="835.00" y="853.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-26" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="835.00" y="880.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-27" dominant-baseline="central" xml:space="preserve">62.50%</text>
+  <text x="835.00" y="907.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-28" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="835.00" y="934.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-29" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="835.00" y="961.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-30" dominant-baseline="central" xml:space="preserve">100.00%</text>
   <rect x="28.00" y="996.00" width="3.50" height="12.00" fill="#8fb3d9"/>
   <text x="39.00" y="1005.00" font-size="12" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">detection and coverage breadth</text>
-  <text x="892.00" y="1005.00" font-size="10.5" fill="#828282" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="400">delivered / detected</text>
+  <text x="892.00" y="1005.00" font-size="10.5" fill="#828282" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="400">numerator / denominator</text>
 <svg x="28.00" y="1017.00" width="864" height="74" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" baseProfile="full" viewBox="0 0 864 74">
 <rect width="864" height="74" x="0" y="0" fill="none"></rect>
-<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;" transform="translate(112 22)" fill="#a1a1a1">containers</text>
-<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;" xml:space="preserve" transform="translate(112 52)" fill="#a1a1a1">pyarmor samples</text>
-<path d="M123 15.5L718 15.5A3 3 0 0 1 721 18.5L721 25.5A3 3 0 0 1 718 28.5L123 28.5A3 3 0 0 1 120 25.5L120 18.5A3 3 0 0 1 123 15.5Z" fill="#333333" ecmeta_series_index="0" ecmeta_data_index="0" ecmeta_ssr_type="chart" class="zr1-cls-4"></path>
-<path d="M123 45.5L718 45.5A3 3 0 0 1 721 48.5L721 55.5A3 3 0 0 1 718 58.5L123 58.5A3 3 0 0 1 120 55.5L120 48.5A3 3 0 0 1 123 45.5Z" fill="#333333" ecmeta_series_index="0" ecmeta_data_index="1" ecmeta_ssr_type="chart" class="zr1-cls-4"></path>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" xml:space="preserve" transform="translate(731 22)" fill="#ededed">33 / 100 extracted</text>
-<text dominant-baseline="central" text-anchor="start" style="font-size:11.5px;font-family:'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace;font-weight:500;" xml:space="preserve" transform="translate(731 52)" fill="#ededed">72 / 72 recovered</text>
-<path d="M123 15.5L315.3 15.5A3 3 0 0 1 318.3 18.5L318.3 25.5A3 3 0 0 1 315.3 28.5L123 28.5A3 3 0 0 1 120 25.5L120 18.5A3 3 0 0 1 123 15.5Z" fill="#8fb3d9" ecmeta_series_index="1" ecmeta_data_index="0" ecmeta_ssr_type="chart" class="zr1-cls-5"></path>
-<path d="M123 45.5L718 45.5A3 3 0 0 1 721 48.5L721 55.5A3 3 0 0 1 718 58.5L123 58.5A3 3 0 0 1 120 55.5L120 48.5A3 3 0 0 1 123 45.5Z" fill="#8fb3d9" ecmeta_series_index="1" ecmeta_data_index="1" ecmeta_ssr_type="chart" class="zr1-cls-5"></path>
-<style ><![CDATA[
-.zr1-cls-4:hover {
-cursor:pointer;
-fill:rgba(56,56,56,1);
-}
-.zr1-cls-5:hover {
-cursor:pointer;
-fill:rgba(157,196,238,1);
-}
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;" transform="translate(158 22)" fill="#a1a1a1">containers</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;" xml:space="preserve" transform="translate(158 52)" fill="#a1a1a1">v8/v9 default-trial wrappers</text>
+<path d="M169 15.5L560 15.5A3 3 0 0 1 563 18.5L563 25.5A3 3 0 0 1 560 28.5L169 28.5A3 3 0 0 1 166 25.5L166 18.5A3 3 0 0 1 169 15.5Z" fill="#333333" ecmeta_series_index="0" ecmeta_data_index="0" ecmeta_ssr_type="chart" class="zr1-cls-4"></path>
+<path d="M169 45.5L560 45.5A3 3 0 0 1 563 48.5L563 55.5A3 3 0 0 1 560 58.5L169 58.5A3 3 0 0 1 166 55.5L166 48.5A3 3 0 0 1 169 45.5Z" fill="#333333" ecmeta_series_index="0" ecmeta_data_index="1" ecmeta_ssr_type="chart" class="zr1-cls-4"></path>
+<path d="M169 15.5L294 15.5A3 3 0 0 1 297 18.5L297 25.5A3 3 0 0 1 294 28.5L169 28.5A3 3 0 0 1 166 25.5L166 18.5A3 3 0 0 1 169 15.5Z" fill="#8fb3d9" ecmeta_series_index="1" ecmeta_data_index="0" ecmeta_ssr_type="chart" class="zr1-cls-5"></path>
+<path d="M169 45.5L560 45.5A3 3 0 0 1 563 48.5L563 55.5A3 3 0 0 1 560 58.5L169 58.5A3 3 0 0 1 166 55.5L166 48.5A3 3 0 0 1 169 45.5Z" fill="#8fb3d9" ecmeta_series_index="1" ecmeta_data_index="1" ecmeta_ssr_type="chart" class="zr1-cls-5"></path>
 
-]]>
-
-</style>
 </svg>
+  <text x="601.00" y="1039.00" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-count-pair-value-0" dominant-baseline="central" xml:space="preserve">33 extracted from a committed input / 100</text>
+  <text x="601.00" y="1069.00" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-count-pair-value-1" dominant-baseline="central" xml:space="preserve">72 decoded root CodeObjects / 72</text>
   <rect x="28.00" y="1106.00" width="3.50" height="12.00" fill="#8fb3d9"/>
   <text x="39.00" y="1115.00" font-size="12" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">families and scale</text>
   <text x="28.00" y="1135.00" font-size="15" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="600">23</text>

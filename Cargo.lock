@@ -2545,7 +2545,9 @@ dependencies = [
  "object",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
+ "toml 0.9.12+spec-1.1.0",
  "tracing",
 ]
 
@@ -7524,6 +7526,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "323c417e1d9665a65b263ec744ba09030cfb277e9daa0b018a4ab62e57bc8189"
 
 [[package]]
+name = "roxmltree"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1964b10c76125c36f8afe190065a4bf9a87bf324842c05701330bba9f1cacbb"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "rpassword"
 version = "7.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10467,6 +10478,7 @@ dependencies = [
  "disrobe-playground",
  "eyre",
  "iced-x86",
+ "roxmltree",
  "serde",
  "serde_json",
  "sha2",

@@ -199,6 +199,9 @@ export class Svg {
       mono = false,
       letterSpacing = null,
       opacity = null,
+      id = null,
+      dominantBaseline = null,
+      preserveSpace = false,
     } = opts;
     const attrs = [
       `x="${x.toFixed(2)}"`,
@@ -211,6 +214,10 @@ export class Svg {
     ];
     if (letterSpacing !== null) attrs.push(`letter-spacing="${letterSpacing}"`);
     if (opacity !== null) attrs.push(`opacity="${opacity}"`);
+    if (id !== null) attrs.push(`id="${esc(id)}"`);
+    if (dominantBaseline !== null)
+      attrs.push(`dominant-baseline="${esc(dominantBaseline)}"`);
+    if (preserveSpace) attrs.push('xml:space="preserve"');
     return this.push(`  <text ${attrs.join(" ")}>${esc(content)}</text>`);
   }
 

@@ -813,9 +813,11 @@ payload_size: int | None = detection.payload_size
 
 ### `pyarmor_unpack`
 
-Statically unpacks a PyArmor wrapper image. <!-- m:pyarmor_samples -->72<!-- /m --> of 72 PyArmor samples (v6-v9)
-recover. The bindings expose only the static path; there is no
-`--allow-dynamic` equivalent.
+Statically unpacks a PyArmor wrapper image. On the <!-- m:pyarmor_frac -->72 / 72<!-- /m --> manifest-named
+v8/v9 default-trial wrappers, the static path decrypts each body and decodes one complete root `CodeObject`
+from its header-anchored marshal stream. This structural check does not compare source, emitted `.pyc` bytes,
+semantic or execution behavior, or external-tool output. The bindings expose only the static path; there is
+no `--allow-dynamic` equivalent.
 
 ```python
 import disrobe

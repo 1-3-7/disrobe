@@ -23,9 +23,15 @@ use serde_json::Value;
 
 use crate::tool::{MAX_TEXT_BYTES, read_bounded_string};
 
+#[derive(Debug, Eq, PartialEq)]
+struct Options {
+    check: bool,
+    only: Option<String>,
+}
+
 fn main() -> std::process::ExitCode {
-    let check: bool = std::env::args().any(|a: String| a == "--check");
-    match run(check) {
+    let options: Result<Options> = parse_options(std::env::args());
+    match options.and_then(run) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("disrobe-bench-head-to-head: {err:?}");
@@ -34,29 +40,55 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-fn run(check: bool) -> Result<()> {
+fn parse_options<I>(args: I) -> Result<Options>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut args = args.into_iter();
+    let _program: Option<String> = args.next();
+    let mut options: Options = Options {
+        check: false,
+        only: None,
+    };
+    while let Some(argument) = args.next() {
+        match argument.as_str() {
+            "--check" if options.check => bail!("--check was supplied more than once"),
+            "--check" => options.check = true,
+            "--only" => {
+                let Some(id) = args.next() else {
+                    bail!("--only requires a measured result id");
+                };
+                if options.only.replace(id).is_some() {
+                    bail!("--only was supplied more than once");
+                }
+            }
+            other => bail!("unknown argument `{other}`"),
+        }
+    }
+    if options.only.is_some() && !options.check {
+        bail!("--only is supported only with --check");
+    }
+    Ok(options)
+}
+
+fn run(options: Options) -> Result<()> {
     let bench_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let root: PathBuf = workspace_root(&bench_dir)?;
     let measured_dir: PathBuf = root.join("evidence").join("results").join("measured");
 
-    let outputs: Vec<(String, Value)> = vec![
-        apk::measure(&root)?,
-        frisk::measure(&root)?,
-        gate::measure(&root),
-    ];
-
-    let report_md: String = render_report(&outputs);
-
-    if check {
+    let outputs: Vec<(String, Value)> = measure_outputs(&root, options.only.as_deref())?;
+    if options.check {
         for (id, value) in &outputs {
             verify_json(&measured_dir.join(format!("{id}.json")), value)?;
         }
-        verify_text(&bench_dir.join("results.md"), &report_md)?;
-        println!(
-            "disrobe-bench-head-to-head --check: {} measured result(s) match regeneration",
-            outputs.len()
-        );
+        if options.only.is_none() {
+            let report_md: String = render_report(&outputs);
+            verify_text(&bench_dir.join("results.md"), &report_md)?;
+        }
+        let scope: &str = options.only.as_deref().unwrap_or("all results");
+        println!("disrobe-bench-head-to-head --check: {scope} match regeneration");
     } else {
+        let report_md: String = render_report(&outputs);
         for (id, value) in &outputs {
             write_json(&measured_dir.join(format!("{id}.json")), value)?;
         }
@@ -68,6 +100,20 @@ fn run(check: bool) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn measure_outputs(root: &Path, only: Option<&str>) -> Result<Vec<(String, Value)>> {
+    match only {
+        None => Ok(vec![
+            apk::measure(root)?,
+            frisk::measure(root)?,
+            gate::measure(root),
+        ]),
+        Some("apk-jadx-cfr") => Ok(vec![apk::measure(root)?]),
+        Some("frisk-apkleaks") => Ok(vec![frisk::measure(root)?]),
+        Some("gate-harvest") => Ok(vec![gate::measure(root)]),
+        Some(id) => bail!("unknown measured result id `{id}`"),
+    }
 }
 
 fn workspace_root(bench_dir: &Path) -> Result<PathBuf> {
@@ -84,15 +130,16 @@ fn render_report(outputs: &[(String, Value)]) -> String {
     let mut md: String = String::with_capacity(8192);
     md.push_str("# Head-to-head\n\n");
     md.push_str(
-        "Each comparison gives `disrobe` and the leading tool the same input, same oracle, and same \
-         denominator. Missing or crashing tools count as misses, not dropped samples. Losses stay in \
-         the table.\n\n",
+        "Each leg gives `disrobe` and its leading tool the same input and scoring rule. The DEX and \
+         JAR legs use their respective committed inputs. Missing or crashing tools remain explicit \
+         result statuses, never dropped samples. Losses stay in the table.\n\n",
     );
     md.push_str(
         "Regenerate with `cargo run -p disrobe-bench-head-to-head`; `--check` fails if the committed \
-         measured JSON or this table drifts from a fresh run. The numbers are surfaced into the \
-         public evidence report by `cargo run -p xtask -- evidence` (the `headtohead-import` and \
-         `gate-test-harvest` oracle kinds).\n\n",
+         measured JSON or this table drifts from a fresh run. `cargo run --locked -p \
+         disrobe-bench-head-to-head -- --check --only apk-jadx-cfr` checks only the APK result \
+         without writing it. The numbers are surfaced into the public evidence report by `cargo run \
+         -p xtask -- evidence` (the `headtohead-import` and `gate-test-harvest` oracle kinds).\n\n",
     );
     for (id, value) in outputs {
         md.push_str(&render_block(id, value));
@@ -198,5 +245,48 @@ fn verify_text(path: &Path, expected: &str) -> Result<()> {
             path.display()
         ),
         Err(err) => bail!("{} unreadable: {err}", path.display()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(values: &[&str]) -> Result<Options> {
+        parse_options(values.iter().map(|value: &&str| (*value).to_owned()))
+    }
+
+    #[test]
+    fn targeted_check_selects_one_measured_result() -> Result<()> {
+        assert_eq!(
+            parse(&[
+                "disrobe-bench-head-to-head",
+                "--check",
+                "--only",
+                "apk-jadx-cfr",
+            ])?,
+            Options {
+                check: true,
+                only: Some("apk-jadx-cfr".to_owned()),
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn target_selection_requires_a_non_mutating_check() {
+        assert!(parse(&["disrobe-bench-head-to-head", "--only", "apk-jadx-cfr"]).is_err());
+        assert!(parse(&["disrobe-bench-head-to-head", "--check", "--only"]).is_err());
+        assert!(
+            parse(&[
+                "disrobe-bench-head-to-head",
+                "--check",
+                "--only",
+                "apk-jadx-cfr",
+                "--only",
+                "frisk-apkleaks",
+            ])
+            .is_err()
+        );
     }
 }

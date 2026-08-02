@@ -471,7 +471,7 @@ mod tests {
         code
     }
 
-    fn stripped_text_image<'a>(code: &'a [u8]) -> NativeImage<'a> {
+    fn stripped_text_image(code: &[u8]) -> NativeImage<'_> {
         NativeImage {
             kind: ImageKind::Elf,
             relocatable: false,

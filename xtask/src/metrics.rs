@@ -13,6 +13,8 @@ const OPEN_PREFIX: &str = "<!-- m:";
 const OPEN_SUFFIX: &str = " -->";
 const CLOSE: &str = "<!-- /m -->";
 const IGNORE_MARKER: &str = "<!-- m:ignore -->";
+const PYARMOR_STRUCTURAL_GROUP: &str = "PyArmor structural marshal coverage";
+const PYARMOR_STRUCTURAL_BAR: &str = "v8/v9 default-trial wrappers";
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Mode {
@@ -471,7 +473,7 @@ const KEYS: &[KeySpec] = &[
         nouns: &[],
         extract: |r: &Recovery| {
             Ok(MetricValue::Int(
-                r.bar("Detection and extraction breadth", "PyArmor samples")?
+                r.bar(PYARMOR_STRUCTURAL_GROUP, PYARMOR_STRUCTURAL_BAR)?
                     .delivered()?,
             ))
         },
@@ -508,7 +510,7 @@ const KEYS: &[KeySpec] = &[
         formatter: Formatter::Frac,
         nouns: &[],
         extract: |r: &Recovery| {
-            let bar: &Bar = r.bar("Detection and extraction breadth", "PyArmor samples")?;
+            let bar: &Bar = r.bar(PYARMOR_STRUCTURAL_GROUP, PYARMOR_STRUCTURAL_BAR)?;
             Ok(MetricValue::Ratio {
                 num: bar.delivered()?,
                 den: bar.detected()?,
@@ -967,7 +969,7 @@ pub(crate) fn format_percent(percent: f64) -> String {
     format!("{trimmed}%")
 }
 
-fn group_thousands(value: u64) -> String {
+pub(crate) fn group_thousands(value: u64) -> String {
     let digits: String = value.to_string();
     let len: usize = digits.len();
     let mut out: String = String::with_capacity(len + len / 3);
@@ -1105,8 +1107,13 @@ mod tests {
                 {
                     "heading": "Detection and extraction breadth (counts, not percentages)",
                     "bars": [
-                        {"label": "PyArmor samples", "detected": 72, "delivered": 72},
                         {"label": "Containers", "detected": 98, "delivered": 98}
+                    ]
+                },
+                {
+                    "heading": "PyArmor structural marshal coverage",
+                    "bars": [
+                        {"label": "v8/v9 default-trial wrappers", "detected": 72, "delivered": 72}
                     ]
                 },
                 {
@@ -1227,6 +1234,20 @@ mod tests {
         assert!(once.contains("-->98 / 98<!-- /m --> formats"));
         assert!(once.contains("-->122,633<!-- /m -->-function"));
         assert_eq!(once, twice);
+        Ok(())
+    }
+
+    #[test]
+    fn pyarmor_markers_render_the_structural_count_pair() -> Result<()> {
+        let sources: MetricSources = test_sources()?;
+        let source: &str = "PyArmor has <!-- m:pyarmor_samples -->0<!-- /m --> samples \
+             (<!-- m:pyarmor_frac -->0 / 0<!-- /m -->).\n";
+        let rendered: String = rewrite_text(source, &sources)?;
+        assert_eq!(
+            rendered,
+            "PyArmor has <!-- m:pyarmor_samples -->72<!-- /m --> samples \
+             (<!-- m:pyarmor_frac -->72 / 72<!-- /m -->).\n"
+        );
         Ok(())
     }
 

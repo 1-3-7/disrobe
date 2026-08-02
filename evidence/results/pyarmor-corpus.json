@@ -1,21 +1,23 @@
 {
   "ci_attested": true,
-  "claim": "disrobe statically unpacks every PyArmor sample in the committed free-mode corpus.",
+  "claim": "On 72 manifest-named PyArmor v8/v9 default-trial wrappers, disrobe statically decrypts each body and decodes one complete root CodeObject from its header-anchored marshal stream.",
+  "comparison_basis": null,
   "competitors": [],
   "detail": null,
   "disrobe_leads": null,
   "ecosystem": "pyarmor",
   "floor": null,
   "floor_holds": null,
-  "gate_source": "crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs (RECOVERY_FLOOR 72; recovers_real_source_from_v8_and_v9_corpus counts the committed v8 and v9 wrappers and asserts the recovered count against this pair); measured 72/72 locally 2026-06-11",
+  "gate_source": "crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs named_v8_v9_default_trial_wrappers_decode_complete_root_code_objects binds the typed MANIFEST.toml roster to the discovered v8/v9 chunk-wrapper set, verifies each manifest-declared wrapper/runtime pair, checks the default-trial serial, statically decrypts every named wrapper, computes the header-declared marshal start, requires the public helper to agree, and requires disrobe-py-marshal to decode one complete root CodeObject. This self-reported structural check does not compare source, emitted pyc bytes, execution, semantic equivalence, or external-tool output.",
   "id": "pyarmor-corpus",
-  "measured": "72 recovered / 72 detected",
+  "measured": "72 decoded root CodeObjects / 72 named v8/v9 default-trial wrappers",
   "oracle": {
-    "external": "static unpack + decompile of each committed PyArmor sample (real corpus; BCC and super mode remain a shared native wall)",
+    "external": "none: the typed manifest and discovered v8/v9 wrapper set define the population; file identities, static decryption, and complete root-CodeObject parsing are checked in-tree. No external source, emitted pyc, execution, or tool comparison grades the result.",
     "kind": "recovery-import",
-    "note": "BCC and super mode lower the body into native code and are an information-theoretic wall shared by every static tool; the free-mode corpus is what this number covers."
+    "note": "The result is limited to manifest-named v8/v9 default-trial wrappers. It does not cover v6/v7, unlisted v8/v9 wrappers, registered-license/pro, BCC, or super mode."
   },
-  "oracle_strength": "strong",
-  "reproduce": "cargo test -p disrobe-pass-pyarmor --test static_unpack_corpus (the 72 wrappers behind this figure are committed, so it reproduces from a clean checkout; a further 17 license-restricted and large samples live outside the tree and are not counted here)",
-  "title": "PyArmor static unpack across the real-corpus free modes"
+  "oracle_strength": "coverage-self-reported",
+  "pairs": [],
+  "reproduce": "cargo test -p disrobe-pass-pyarmor --test static_unpack_corpus",
+  "title": "PyArmor structural marshal decoding"
 }

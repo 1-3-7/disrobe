@@ -1,6 +1,7 @@
 {
   "ci_attested": true,
   "claim": "disrobe decompiles JVM bytecode to Java that recompiles error-free under the real javac, per method, across the EdgeCases corpus.",
+  "comparison_basis": null,
   "competitors": [],
   "detail": "CI floor 131 of 131 (every top-level method recompiles error-free) measured under real javac attribution; the pickWord switch-expression lift (9afa2306) unmasked 25 latent defects previously hidden by javac parse-masking from the __unresolved__ token, all fixed by class: pattern-switch subject resolved to its source parameter (sealed-subtype exhaustiveness), sealed/permits emitted on inner type stubs, typed default initializers on final inner-stub fields, the Exceptions attribute threaded into a real throws clause, the loop-exhausted terminal emitted after a while loop whose exit is a shared pure-return tail, loop-captured locals hoisted to a fresh final declaration, and the shared return tail of an instanceof if-else-if chain duplicated under a Region-tree fall-through analysis",
   "disrobe_leads": null,
@@ -16,6 +17,7 @@
     "note": "Oracle strength is recompile-only: the recovered source compiling is necessary but not sufficient for equivalence (a dropped branch can still compile). The .pyc gate is the stronger standard (recompile-equivalent). Upgrade to bytecode-equivalence is tracked for a later phase."
   },
   "oracle_strength": "recompile-only",
+  "pairs": [],
   "reproduce": "cargo test -p disrobe-pass-jvm --test decompile_recompile_rate",
   "title": "JVM classfile decompilation, per-method javac recompile"
 }
