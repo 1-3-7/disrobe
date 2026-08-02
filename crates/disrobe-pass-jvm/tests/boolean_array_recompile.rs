@@ -182,6 +182,11 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
     None
 }
 
+fn require_javac() -> PathBuf {
+    find_on_path("javac")
+        .unwrap_or_else(|| panic!("boolean-array typing gate requires javac on PATH"))
+}
+
 fn canon_insn(cf: &ClassFile, insn: &Instruction) -> String {
     let m: &str = insn.mnemonic;
     for ty in ['a', 'i', 'l', 'f', 'd'] {
@@ -326,13 +331,7 @@ fn recovered_stream_divergence(
 
 #[test]
 fn boolean_array_elements_recompile_to_equivalent_bytecode() {
-    let Some(javac_path): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!(
-            "SKIP: javac not on PATH; boolean-array element-typing byte-equivalence gate NOT \
-             enforced. CORPUS-BLOCKED for boolean[] indexed and for-each element recovery."
-        );
-        return;
-    };
+    let javac_path: PathBuf = require_javac();
     let purpose: String = format!("disrobe_bool_arr_{}", std::process::id());
     let (diverged, recovered): (Vec<String>, String) = recovered_stream_divergence(
         &javac_path,
@@ -351,13 +350,7 @@ fn boolean_array_elements_recompile_to_equivalent_bytecode() {
 
 #[test]
 fn conditional_derived_booleans_recompile_to_equivalent_bytecode() {
-    let Some(javac_path): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!(
-            "SKIP: javac not on PATH; the conditional-derived boolean typing gate is NOT \
-             enforced. A green result here is a SKIP, not a measured pass."
-        );
-        return;
-    };
+    let javac_path: PathBuf = require_javac();
     let purpose: String = format!("disrobe_bool_cond_{}", std::process::id());
     let (diverged, recovered): (Vec<String>, String) = recovered_stream_divergence(
         &javac_path,
@@ -376,10 +369,7 @@ fn conditional_derived_booleans_recompile_to_equivalent_bytecode() {
 
 #[test]
 fn the_boolean_typing_gate_reports_an_int_local_standing_in_for_a_boolean() {
-    let Some(javac_path): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!("SKIP: javac not on PATH; the boolean-typing control is NOT enforced.");
-        return;
-    };
+    let javac_path: PathBuf = require_javac();
     let mutant: String = BOOL_COND_FIXTURE.replace(
         "    static boolean gt(int a, int b) {\n        boolean r = a > b;\n        return r;\n",
         "    static boolean gt(int a, int b) {\n        int r = a > b ? 1 : 0;\n        return r \
@@ -410,5 +400,27 @@ fn the_boolean_typing_gate_reports_an_int_local_standing_in_for_a_boolean() {
         diverged.iter().any(|m: &String| m == "gt"),
         "a boolean local replaced by an int local was NOT reported as divergent, so this gate \
          measures nothing; diffs were: {diverged:?}"
+    );
+}
+
+#[test]
+fn boolean_array_gate_fails_when_javac_is_unavailable() {
+    let test_binary: PathBuf = std::env::current_exe().expect("current test binary");
+    let output: std::process::Output = Command::new(test_binary)
+        .arg("--exact")
+        .arg("boolean_array_elements_recompile_to_equivalent_bytecode")
+        .arg("--test-threads=1")
+        .env("PATH", "")
+        .output()
+        .expect("run boolean-array gate without javac");
+    let stdout: String = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr: String = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        !output.status.success(),
+        "the boolean-array gate passed without javac; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        format!("{stdout}\n{stderr}").contains("boolean-array typing gate requires javac on PATH"),
+        "the boolean-array gate failed for an unrelated reason; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }
