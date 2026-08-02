@@ -1,0 +1,3 @@
+compiler=haxe 4.3.7
+command=haxe -cp crates/disrobe-pass-as3/tests/fixtures -main JsonTokenizer -swf crates/disrobe-pass-as3/tests/fixtures/json_tokenizer_postincrement.swf
+generated=2026-08-01
