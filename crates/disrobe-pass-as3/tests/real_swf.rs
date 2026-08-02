@@ -19,7 +19,7 @@ use disrobe_pass_as3::{AbcFile, DoAbc, abc, decompile, swf};
 #[derive(Debug, Default, Clone, Copy)]
 struct StructureTotals {
     bodies: usize,
-    fully_recovered: usize,
+    structurally_recovered: usize,
     for_loops: usize,
     for_each_loops: usize,
     for_in_loops: usize,
@@ -136,8 +136,8 @@ fn structure_corpus() -> Option<StructureTotals> {
                 if !lifted.dropped_opcodes.is_empty() {
                     totals.bodies_with_dropped_opcodes += 1;
                 }
-                if lifted.fully_recovered {
-                    totals.fully_recovered += 1;
+                if lifted.structurally_recovered {
+                    totals.structurally_recovered += 1;
                     if has_residual_goto(&lifted.statements) {
                         totals.residual_goto_in_recovered += 1;
                     }
@@ -170,7 +170,7 @@ fn corpus_control_flow_restructuring_is_sound_and_productive() {
     );
     assert_eq!(
         totals.residual_goto_in_recovered, 0,
-        "a body marked fully_recovered must never carry residual goto/label/raw-if scaffolding"
+        "a structurally recovered body must never carry residual goto/label/raw-if scaffolding"
     );
     assert_eq!(
         totals.bodies_with_dropped_opcodes, 0,
@@ -188,7 +188,7 @@ fn rendered_corpus_bodies() -> Option<(usize, usize, String)> {
     let dir: PathBuf = corpus_root();
     let entries: std::fs::ReadDir = std::fs::read_dir(&dir).ok()?;
     let mut bodies: usize = 0;
-    let mut fully_recovered: usize = 0;
+    let mut structurally_recovered: usize = 0;
     let mut sample_leak: String = String::new();
     let mut seen: usize = 0;
     for entry in entries {
@@ -211,8 +211,8 @@ fn rendered_corpus_bodies() -> Option<(usize, usize, String)> {
                     continue;
                 };
                 bodies += 1;
-                if lifted.fully_recovered {
-                    fully_recovered += 1;
+                if lifted.structurally_recovered {
+                    structurally_recovered += 1;
                 }
                 let names: LocalNames = local_names_for(&abc, info);
                 let text: String = render_body(&lifted, &names, "");
@@ -228,7 +228,7 @@ fn rendered_corpus_bodies() -> Option<(usize, usize, String)> {
     if seen == 0 {
         return None;
     }
-    Some((bodies, fully_recovered, sample_leak))
+    Some((bodies, structurally_recovered, sample_leak))
 }
 
 #[test]
@@ -276,7 +276,7 @@ fn body_render_has_phi(text: &str) -> bool {
 }
 
 #[test]
-fn no_fully_recovered_body_renders_a_phi_placeholder() {
+fn no_structurally_recovered_body_renders_a_phi_placeholder() {
     let dir: PathBuf = corpus_root();
     let Ok(entries): Result<std::fs::ReadDir, _> = std::fs::read_dir(&dir) else {
         eprintln!("skip: corpus absent");
@@ -307,7 +307,7 @@ fn no_fully_recovered_body_renders_a_phi_placeholder() {
                     continue;
                 };
                 bodies += 1;
-                if !lifted.fully_recovered {
+                if !lifted.structurally_recovered {
                     continue;
                 }
                 recovered += 1;
@@ -327,10 +327,13 @@ fn no_fully_recovered_body_renders_a_phi_placeholder() {
         return;
     }
     assert!(bodies > 1000, "corpus must lift many bodies");
-    assert!(recovered > 1000, "corpus must fully recover many bodies");
+    assert!(
+        recovered > 1000,
+        "corpus must structurally recover many bodies"
+    );
     assert_eq!(
         inflated, 0,
-        "a body marked fully_recovered must never render an unresolved phi stack-join placeholder (soundness: a surviving phi must count against recovery); leaked body:\n{sample}"
+        "a structurally recovered body must never render an unresolved phi stack-join placeholder (soundness: a surviving phi must count against structural recovery); leaked body:\n{sample}"
     );
 }
 

@@ -519,7 +519,7 @@ pub struct SwitchCase {
 #[derive(Debug, Clone)]
 pub struct LiftedBody {
     pub statements: Vec<Stmt>,
-    pub fully_recovered: bool,
+    pub structurally_recovered: bool,
     pub fully_structured: bool,
     pub reached_terminator: bool,
     pub dropped_opcodes: Vec<u8>,
@@ -529,7 +529,7 @@ pub struct LiftedBody {
 impl LiftedBody {
     #[must_use]
     pub fn fidelity_warning(&self) -> Option<String> {
-        if self.fully_recovered {
+        if self.structurally_recovered {
             return None;
         }
         let mut reasons: Vec<String> = Vec::new();
@@ -4497,7 +4497,7 @@ pub fn lift_body(
     let opaque_operands: usize = lift_opaque.saturating_add(stmts_phi_count(&statements));
     let reached_terminator: bool = statements.iter().any(stmt_reaches_terminator);
     let fully_structured: bool = statements_fully_structured(&statements);
-    let fully_recovered: bool = reached_terminator
+    let structurally_recovered: bool = reached_terminator
         && fully_structured
         && dropped_opcodes.is_empty()
         && opaque_operands == 0;
@@ -4520,14 +4520,14 @@ pub fn lift_body(
         }
         dbg_kv("classify", || {
             format!(
-                "fully_recovered={fully_recovered} reached_terminator={reached_terminator} fully_structured={fully_structured} stmts={}",
+                "structurally_recovered={structurally_recovered} reached_terminator={reached_terminator} fully_structured={fully_structured} stmts={}",
                 statements.len()
             )
         });
     }
     Ok(LiftedBody {
         statements,
-        fully_recovered,
+        structurally_recovered,
         fully_structured,
         reached_terminator,
         dropped_opcodes,
@@ -5097,7 +5097,7 @@ mod tests {
             traits: Vec::new(),
         };
         let lifted: LiftedBody = lift_body(&abc, &body, None).expect("lift");
-        assert!(lifted.fully_recovered);
+        assert!(lifted.structurally_recovered);
         assert!(lifted.reached_terminator);
         assert!(lifted.dropped_opcodes.is_empty());
         assert_eq!(lifted.opaque_operands, 0);
@@ -5107,7 +5107,7 @@ mod tests {
     }
 
     #[test]
-    fn unmodelled_opcode_marks_not_fully_recovered() {
+    fn unmodelled_opcode_marks_not_structurally_recovered() {
         let abc: AbcFile = AbcFile {
             minor: 16,
             major: 46,
@@ -5132,8 +5132,8 @@ mod tests {
         let lifted: LiftedBody = lift_body(&abc, &body, None).expect("lift");
         assert!(lifted.reached_terminator, "returnvoid still emitted");
         assert!(
-            !lifted.fully_recovered,
-            "bkpt (0x01) is unmodelled so the body must not claim full recovery"
+            !lifted.structurally_recovered,
+            "bkpt (0x01) is unmodelled so the body must not claim structural recovery"
         );
         assert_eq!(lifted.dropped_opcodes, vec![0x01]);
         let warning: String = lifted.fidelity_warning().expect("warning present");
@@ -5189,7 +5189,11 @@ mod tests {
             "an if whose target is the next statement is a dead effect-free no-op and must collapse: {:?}",
             lifted.statements
         );
-        assert!(lifted.fully_recovered, "{:?}", lifted.fidelity_warning());
+        assert!(
+            lifted.structurally_recovered,
+            "{:?}",
+            lifted.fidelity_warning()
+        );
         let rendered: String = render_body(&lifted, &names(), "");
         assert!(
             !rendered.contains("goto"),
@@ -5468,7 +5472,7 @@ mod tests {
         let lifted: LiftedBody = lift_body(&abc, &body, None).expect("lift");
         assert!(lifted.reached_terminator);
         assert!(
-            !lifted.fully_recovered,
+            !lifted.structurally_recovered,
             "returnvalue with empty stack underflows"
         );
         assert_eq!(lifted.opaque_operands, 1);

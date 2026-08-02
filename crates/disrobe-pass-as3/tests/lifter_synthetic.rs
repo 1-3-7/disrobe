@@ -290,8 +290,8 @@ fn lifts_property_call_with_string_literal() {
         "expected void return: {rendered}"
     );
     assert!(
-        lifted.fully_recovered,
-        "body must be marked fully recovered (no dropped/opaque ops): {:?}",
+        lifted.structurally_recovered,
+        "body must be marked structurally recovered (no dropped/opaque ops): {:?}",
         lifted.fidelity_warning()
     );
 }
@@ -353,8 +353,8 @@ fn lifts_e4x_attribute_getproperty_with_at_sigil() {
         "the attribute accessor must not collapse to a child-property access, got:\n{rendered}"
     );
     assert!(
-        lifted.fully_recovered,
-        "attribute getproperty body must fully recover: {:?}",
+        lifted.structurally_recovered,
+        "attribute getproperty body must be structurally recovered: {:?}",
         lifted.fidelity_warning()
     );
 }
@@ -720,14 +720,14 @@ fn measures_method_body_recovery_rate() {
     };
 
     let abc: AbcFile = parse_fixture(&assemble(&spec));
-    let mut fully_recovered: usize = 0;
+    let mut structurally_recovered: usize = 0;
     let mut with_residual_goto: usize = 0;
     let total: usize = abc.method_bodies.len();
     for (i, body) in abc.method_bodies.iter().enumerate() {
         let info: Option<&disrobe_pass_as3::abc::MethodInfo> = abc.methods.get(i + 1);
         let lifted: LiftedBody = lift_body(&abc, body, info).expect("lift");
-        if lifted.fully_recovered {
-            fully_recovered += 1;
+        if lifted.structurally_recovered {
+            structurally_recovered += 1;
         }
         if !lifted.fully_structured {
             with_residual_goto += 1;
@@ -744,8 +744,8 @@ fn measures_method_body_recovery_rate() {
         "the degenerate zero-displacement branch now collapses as a dead effect-free no-op"
     );
     assert_eq!(
-        fully_recovered, total,
-        "every body lifts with full fidelity once the dead zero-displacement branch is elided"
+        structurally_recovered, total,
+        "every body meets the structural recovery conditions once the dead zero-displacement branch is elided"
     );
 
     let skel: String = render_class_skeleton(&abc, &abc.instances[0]).expect("skeleton");
@@ -923,7 +923,7 @@ fn lifts_getsuper_and_setsuper() {
         "getsuper must render super read: {rendered}"
     );
     assert!(
-        lifted.fully_recovered,
+        lifted.structurally_recovered,
         "no ops dropped: {:?}",
         lifted.fidelity_warning()
     );
@@ -944,7 +944,7 @@ fn lifts_deleteproperty() {
         rendered.contains("return delete this.field;"),
         "deleteproperty must render delete: {rendered}"
     );
-    assert!(lifted.fully_recovered);
+    assert!(lifted.structurally_recovered);
 }
 
 #[test]
@@ -962,7 +962,7 @@ fn lifts_getdescendants_e4x() {
         rendered.contains("return this..item;"),
         "getdescendants must render E4X descendants: {rendered}"
     );
-    assert!(lifted.fully_recovered);
+    assert!(lifted.structurally_recovered);
 }
 
 #[test]
@@ -980,7 +980,7 @@ fn lifts_applytype_vector() {
         rendered.contains("Vector.<int>"),
         "applytype must render generic application: {rendered}"
     );
-    assert!(lifted.fully_recovered);
+    assert!(lifted.structurally_recovered);
 }
 
 #[test]
@@ -998,7 +998,7 @@ fn lifts_newfunction_closure() {
         rendered.contains("function()") && rendered.contains("closure method #0"),
         "newfunction must render a closure marker: {rendered}"
     );
-    assert!(lifted.fully_recovered);
+    assert!(lifted.structurally_recovered);
 }
 
 #[test]
@@ -1016,7 +1016,7 @@ fn lifts_istype_and_istypelate() {
         rendered.contains("return (arg1 is String);"),
         "istype must render an `is` test: {rendered}"
     );
-    assert!(lifted.fully_recovered);
+    assert!(lifted.structurally_recovered);
 
     let code_late: Vec<u8> = vec![0xD1, 0x60, 0x02, 0xB3, 0x48];
     let abc2: AbcFile = mk_abc(
@@ -1031,7 +1031,7 @@ fn lifts_istype_and_istypelate() {
         rendered2.contains("return (arg1 is String);"),
         "istypelate must render an `is` test: {rendered2}"
     );
-    assert!(lifted2.fully_recovered);
+    assert!(lifted2.structurally_recovered);
 }
 
 #[test]
@@ -1058,7 +1058,7 @@ fn resolves_getslot_setslot_to_trait_names() {
         !rendered.contains("slot5"),
         "resolved slot must not fall back to slotN: {rendered}"
     );
-    assert!(lifted.fully_recovered);
+    assert!(lifted.structurally_recovered);
 }
 
 #[test]
@@ -1076,7 +1076,7 @@ fn unresolved_getslot_falls_back_honestly() {
         rendered.contains("slot9"),
         "an undeclared slot must stay slotN, not invent a name: {rendered}"
     );
-    assert!(lifted.fully_recovered, "getslot itself is modelled");
+    assert!(lifted.structurally_recovered, "getslot itself is modelled");
 }
 
 #[test]
@@ -1300,7 +1300,7 @@ fn lifts_inclocal_i_to_in_place_increment() {
         "inclocal_i must lower to an in-place increment: {rendered}"
     );
     assert!(
-        lifted.fully_recovered,
+        lifted.structurally_recovered,
         "inclocal_i must be modelled, not dropped: {:?}",
         lifted.fidelity_warning()
     );
@@ -1321,7 +1321,11 @@ fn lifts_declocal_to_in_place_decrement() {
         rendered.contains("arg1 = (arg1 - 1);"),
         "declocal must lower to an in-place decrement: {rendered}"
     );
-    assert!(lifted.fully_recovered, "{:?}", lifted.fidelity_warning());
+    assert!(
+        lifted.structurally_recovered,
+        "{:?}",
+        lifted.fidelity_warning()
+    );
 }
 
 #[test]
@@ -1339,7 +1343,11 @@ fn lifts_astypelate_to_as_cast() {
         rendered.contains("return (arg1 as String);"),
         "astypelate must render an `as` cast: {rendered}"
     );
-    assert!(lifted.fully_recovered, "{:?}", lifted.fidelity_warning());
+    assert!(
+        lifted.structurally_recovered,
+        "{:?}",
+        lifted.fidelity_warning()
+    );
 }
 
 #[test]
@@ -1357,7 +1365,11 @@ fn lifts_callsupervoid_to_super_call() {
         rendered.contains("super.render("),
         "callsupervoid must render a super.method() call: {rendered}"
     );
-    assert!(lifted.fully_recovered, "{:?}", lifted.fidelity_warning());
+    assert!(
+        lifted.structurally_recovered,
+        "{:?}",
+        lifted.fidelity_warning()
+    );
 }
 
 #[test]
@@ -1391,7 +1403,11 @@ fn lifts_dynamic_index_property_access() {
         !rendered.contains("[name]"),
         "the [name] sentinel must not leak into source: {rendered}"
     );
-    assert!(lifted.fully_recovered, "{:?}", lifted.fidelity_warning());
+    assert!(
+        lifted.structurally_recovered,
+        "{:?}",
+        lifted.fidelity_warning()
+    );
 }
 
 #[test]
@@ -1421,7 +1437,11 @@ fn lifts_dynamic_index_property_assignment() {
         rendered.contains("this[arg1] = true;"),
         "runtime-name setproperty must synthesize a computed-index assignment: {rendered}"
     );
-    assert!(lifted.fully_recovered, "{:?}", lifted.fidelity_warning());
+    assert!(
+        lifted.structurally_recovered,
+        "{:?}",
+        lifted.fidelity_warning()
+    );
 }
 
 #[test]
@@ -1444,7 +1464,11 @@ fn lifts_runtime_namespace_getproperty() {
         !rendered.contains("[ns]") && !rendered.contains("[name]"),
         "runtime multiname sentinels must not leak into source: {rendered}"
     );
-    assert!(lifted.fully_recovered, "{:?}", lifted.fidelity_warning());
+    assert!(
+        lifted.structurally_recovered,
+        "{:?}",
+        lifted.fidelity_warning()
+    );
 }
 
 #[test]
@@ -1463,7 +1487,11 @@ fn lifts_runtime_namespace_and_name_getproperty() {
         rendered.contains("return this[(arg1 :: loc2)];"),
         "runtime ns+name getproperty must pop both operands and the object: {rendered}"
     );
-    assert!(lifted.fully_recovered, "{:?}", lifted.fidelity_warning());
+    assert!(
+        lifted.structurally_recovered,
+        "{:?}",
+        lifted.fidelity_warning()
+    );
 }
 
 #[test]
@@ -1482,7 +1510,11 @@ fn lifts_runtime_namespace_setproperty() {
         rendered.contains("this[(arg1 :: field)] = true;"),
         "runtime-namespace setproperty must keep the qualifier and stack balance: {rendered}"
     );
-    assert!(lifted.fully_recovered, "{:?}", lifted.fidelity_warning());
+    assert!(
+        lifted.structurally_recovered,
+        "{:?}",
+        lifted.fidelity_warning()
+    );
 }
 
 #[test]
@@ -1506,7 +1538,11 @@ fn lifts_runtime_name_computed_call() {
         !rendered.contains("[name]"),
         "the [name] sentinel must not leak into a computed call: {rendered}"
     );
-    assert!(lifted.fully_recovered, "{:?}", lifted.fidelity_warning());
+    assert!(
+        lifted.structurally_recovered,
+        "{:?}",
+        lifted.fidelity_warning()
+    );
 }
 
 #[test]
@@ -1526,7 +1562,11 @@ fn lifts_runtime_name_computed_construct() {
         rendered.contains("return new this[arg1]();"),
         "runtime-name constructprop must recover a computed new-expression: {rendered}"
     );
-    assert!(lifted.fully_recovered, "{:?}", lifted.fidelity_warning());
+    assert!(
+        lifted.structurally_recovered,
+        "{:?}",
+        lifted.fidelity_warning()
+    );
 }
 
 #[test]
@@ -1546,7 +1586,7 @@ fn getscopeobject_slot_renders_as_unqualified_name() {
         "a slot read off the scope object is an unqualified identifier: {rendered}"
     );
     assert!(
-        lifted.fully_recovered,
+        lifted.structurally_recovered,
         "getscopeobject must be modelled, not dropped: {:?}",
         lifted.fidelity_warning()
     );
@@ -1567,7 +1607,11 @@ fn lifts_alchemy_memory_load_and_store() {
         rendered.contains("return li32(arg1);"),
         "li32 must lower to an intrinsic load call: {rendered}"
     );
-    assert!(lifted.fully_recovered, "{:?}", lifted.fidelity_warning());
+    assert!(
+        lifted.structurally_recovered,
+        "{:?}",
+        lifted.fidelity_warning()
+    );
 
     let store: Vec<u8> = vec![0x24, 0x2A, 0xD1, 0x3C, 0x47];
     let abc2: AbcFile = mk_abc(
@@ -1582,7 +1626,11 @@ fn lifts_alchemy_memory_load_and_store() {
         rendered2.contains("si32(42, arg1);"),
         "si32 must lower to an intrinsic store with value then address: {rendered2}"
     );
-    assert!(lifted2.fully_recovered, "{:?}", lifted2.fidelity_warning());
+    assert!(
+        lifted2.structurally_recovered,
+        "{:?}",
+        lifted2.fidelity_warning()
+    );
 }
 
 #[test]
@@ -1635,8 +1683,8 @@ fn lifts_float_constants_as_explicit_opaque_values() {
     );
     assert_eq!(lifted.opaque_operands, 1);
     assert!(
-        !lifted.fully_recovered,
-        "opaque float constant must not claim full recovery"
+        !lifted.structurally_recovered,
+        "opaque float constant must not claim structural recovery"
     );
 }
 
@@ -1689,7 +1737,7 @@ fn lifts_callmethod_to_indexed_dispatch() {
         "callmethod must dispatch through the receiver at its disp_id, not drop: {rendered}"
     );
     assert!(
-        lifted.fully_recovered,
+        lifted.structurally_recovered,
         "callmethod must be modelled, not dropped: {:?}",
         lifted.fidelity_warning()
     );
@@ -1714,7 +1762,7 @@ fn lifts_callstatic_to_indexed_dispatch() {
         "callstatic must dispatch through the method-pool index, not drop: {rendered}"
     );
     assert!(
-        lifted.fully_recovered,
+        lifted.structurally_recovered,
         "callstatic must be modelled, not dropped: {:?}",
         lifted.fidelity_warning()
     );
@@ -1813,7 +1861,7 @@ fn structures_if_else_nested_in_while_loop() {
         "a fully reducible loop+if/else must leave no goto/label residue: {rendered}"
     );
     assert!(
-        lifted.fully_recovered,
+        lifted.structurally_recovered,
         "nested structuring drops nothing: {:?}",
         lifted.fidelity_warning()
     );
@@ -1837,7 +1885,7 @@ fn lifts_global_slot_access_with_resolved_trait_name() {
         "getglobalslot must read off the global object with the resolved trait name: {rendered}"
     );
     assert!(
-        lifted.fully_recovered,
+        lifted.structurally_recovered,
         "getglobalslot must be modelled, not dropped: {:?}",
         lifted.fidelity_warning()
     );
@@ -1858,7 +1906,7 @@ fn lifts_global_slot_access_with_resolved_trait_name() {
         "setglobalslot must assign to the global object slot: {rendered2}"
     );
     assert!(
-        lifted2.fully_recovered,
+        lifted2.structurally_recovered,
         "setglobalslot must be modelled, not dropped: {:?}",
         lifted2.fidelity_warning()
     );
@@ -1900,7 +1948,7 @@ fn lifts_pushnamespace_with_uri() {
         "pushnamespace must materialize the namespace uri, not drop it: {rendered}"
     );
     assert!(
-        lifted.fully_recovered,
+        lifted.structurally_recovered,
         "pushnamespace must be modelled, not dropped: {:?}",
         lifted.fidelity_warning()
     );
@@ -1922,7 +1970,7 @@ fn lifts_forin_iteration_primitives() {
         "nextvalue must lower to a nextValue() call: {rendered}"
     );
     assert!(
-        lifted.fully_recovered,
+        lifted.structurally_recovered,
         "for-in primitives must be modelled, not dropped: {:?}",
         lifted.fidelity_warning()
     );
@@ -2009,7 +2057,7 @@ fn structures_for_each_iterator_loop_into_for_each_block() {
         "the iterator scaffolding must be fully consumed: {rendered}"
     );
     assert!(
-        lifted.fully_recovered && lifted.fully_structured,
+        lifted.structurally_recovered && lifted.fully_structured,
         "for-each lift drops nothing and leaves no residual graph: {:?}",
         lifted.fidelity_warning()
     );
@@ -2068,7 +2116,7 @@ fn structures_for_in_iterator_loop_into_for_in_block() {
         "the iterator scaffolding must be fully consumed: {rendered}"
     );
     assert!(
-        lifted.fully_recovered && lifted.fully_structured,
+        lifted.structurally_recovered && lifted.fully_structured,
         "for-in lift drops nothing: {:?}",
         lifted.fidelity_warning()
     );
@@ -2137,7 +2185,7 @@ fn structures_counted_loop_into_c_style_for() {
         "a counted loop must not fall back to while/goto: {rendered}"
     );
     assert!(
-        lifted.fully_recovered && lifted.fully_structured,
+        lifted.structurally_recovered && lifted.fully_structured,
         "counted-for lift is fully structured: {:?}",
         lifted.fidelity_warning()
     );
@@ -2222,7 +2270,7 @@ fn structures_if_else_diamond_into_nested_blocks() {
         "a reducible if/else must leave no goto/label residue: {rendered}"
     );
     assert!(
-        lifted.fully_recovered,
+        lifted.structurally_recovered,
         "if/else lift drops nothing: {:?}",
         lifted.fidelity_warning()
     );
@@ -2279,7 +2327,7 @@ fn models_pushwith_as_with_block_and_resolves_findproperty() {
         "the lexical scope-object shorthand must not leak inside a with: {rendered}"
     );
     assert!(
-        lifted.fully_recovered,
+        lifted.structurally_recovered,
         "pushwith/popscope/findpropstrict are modelled, not dropped: {:?}",
         lifted.fidelity_warning()
     );
@@ -2312,7 +2360,7 @@ fn findproperty_without_with_stays_lexical_call() {
         "a plain pushscope must not synthesize a with block: {rendered}"
     );
     assert!(
-        lifted.fully_recovered,
+        lifted.structurally_recovered,
         "plain pushscope plus lexical call drops nothing: {:?}",
         lifted.fidelity_warning()
     );
@@ -2385,7 +2433,7 @@ fn structures_do_while_back_edge_into_do_loop() {
         "a reducible do/while must leave no goto/label residue: {rendered}"
     );
     assert!(
-        lifted.fully_recovered,
+        lifted.structurally_recovered,
         "do/while lift drops nothing: {:?}",
         lifted.fidelity_warning()
     );
@@ -2468,7 +2516,7 @@ fn structures_while_with_conditional_break_into_break_statement() {
         "a while+break must leave no goto/label residue: {rendered}"
     );
     assert!(
-        lifted.fully_recovered,
+        lifted.structurally_recovered,
         "while+break lift drops nothing: {:?}",
         lifted.fidelity_warning()
     );
@@ -2550,7 +2598,7 @@ fn structures_while_with_conditional_continue_into_continue_statement() {
         "a while+continue must leave no goto/label residue: {rendered}"
     );
     assert!(
-        lifted.fully_recovered,
+        lifted.structurally_recovered,
         "while+continue lift drops nothing: {:?}",
         lifted.fidelity_warning()
     );
