@@ -9,7 +9,7 @@ use crate::fileio::read_text_bounded;
 const MAX_RECOVERY_JSON_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 
-const UNPINNED_BARS: [(&str, &str); 8] = [
+const UNPINNED_BARS: [(&str, &str); 6] = [
     (
         "CPython 3.10 (161 of the pinned modules)",
         "the interpreter-band figures are measured by the python harness under each interpreter in \
@@ -33,16 +33,6 @@ const UNPINNED_BARS: [(&str, &str); 8] = [
          which is pinned",
     ),
     (
-        "Shell obfuscation modes",
-        "counted per obfuscation mode across the shell pass sources, with no roster declaration in \
-         the crate to compare the published count against",
-    ),
-    (
-        "Lua VM-devirt (IronBrew2 real, MoonSec synthetic)",
-        "a prose description of which lineage is reversed on real output and which is not, rather \
-         than a number a test can pin",
-    ),
-    (
         "functions parsed",
         "the production Hermes bundle is not redistributable, so the count is asserted in a test \
          that cannot run without it",
@@ -58,26 +48,7 @@ const MEASUREMENTS_NOT_RUN: [(&str, &str); 1] = [(
      publishes it is tagged [local] for exactly this reason",
 )];
 
-const UNGRADED_DELIVERED_LEGS: [(&str, &str); 3] = [
-    (
-        ".NET protectors",
-        "the cited check counts the roster detect_all walks, which is the detected leg. The 3 it \
-         publishes as delivered is a per-sample recovery claim spread across the real-sample tests \
-         the bar's source names, and no declaration in the crate collects it into one number",
-    ),
-    (
-        "Python source obfuscators",
-        "the cited check counts the registered passes, which is the detected leg. Nothing in the \
-         crate marks which passes reach real source, so the 17 it publishes as delivered is \
-         counted by hand",
-    ),
-    (
-        "JVM / Android families",
-        "the cited check counts the chain catalog, which is the detected leg. The 2 it publishes \
-         as delivered names the families whose bodies are recovered and has no declaration in the \
-         crate to compare against",
-    ),
-];
+const UNGRADED_DELIVERED_LEGS: [(&str, &str); 0] = [];
 
 #[derive(Debug, Deserialize)]
 struct Recovery {

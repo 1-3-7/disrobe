@@ -349,20 +349,18 @@ mod tests {
     }
 
     #[test]
-    fn published_detected_source_obfuscator_count_matches_the_registered_passes() {
+    fn published_source_obfuscator_roster_count_matches_the_registered_passes() {
         const BAR: &str = "Python source obfuscators";
-        let bar: serde_json::Value = published_bar("Detection and extraction breadth", BAR);
-        let detected: u64 = bar["detected"]
+        let bar: serde_json::Value = published_bar("Detection and routing rosters", BAR);
+        let count: u64 = bar["value"]
             .as_u64()
-            .expect("the Python source obfuscators bar must carry a detected count");
+            .expect("the Python source obfuscators bar must carry a roster count");
         let registered: usize = supported_obfuscators().len();
         assert_eq!(
-            usize::try_from(detected).expect("detected fits usize"),
+            usize::try_from(count).expect("roster count fits usize"),
             registered,
-            "xtask/data/recovery.json publishes {detected} detected Python source obfuscators and \
-             every document renders that number, but {registered} passes are registered. This \
-             asserts the detected leg; the delivered leg counts the passes that reach real source \
-             and has no declaration in this crate to check it against"
+            "xtask/data/recovery.json publishes {count} Python source obfuscators in its routing \
+             roster and every document renders that number, but {registered} passes are registered"
         );
     }
 

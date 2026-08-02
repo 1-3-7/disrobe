@@ -461,10 +461,8 @@ const KEYS: &[KeySpec] = &[
         formatter: Formatter::Int,
         nouns: &["protectors", "protector"],
         extract: |r: &Recovery| {
-            Ok(MetricValue::Int(
-                r.bar("Detection and extraction breadth", ".NET protectors")?
-                    .detected()?,
-            ))
+            r.bar("Detection and routing rosters", ".NET protectors")?
+                .count()
         },
     },
     KeySpec {
@@ -483,13 +481,8 @@ const KEYS: &[KeySpec] = &[
         formatter: Formatter::Int,
         nouns: &[],
         extract: |r: &Recovery| {
-            Ok(MetricValue::Int(
-                r.bar(
-                    "Detection and extraction breadth",
-                    "Python source obfuscators",
-                )?
-                .detected()?,
-            ))
+            r.bar("Detection and routing rosters", "Python source obfuscators")?
+                .count()
         },
     },
     KeySpec {
@@ -497,10 +490,8 @@ const KEYS: &[KeySpec] = &[
         formatter: Formatter::Int,
         nouns: &[],
         extract: |r: &Recovery| {
-            Ok(MetricValue::Int(
-                r.bar("Detection and extraction breadth", "JVM / Android families")?
-                    .detected()?,
-            ))
+            r.bar("Detection and routing rosters", "JVM / Android families")?
+                .count()
         },
     },
     KeySpec {
@@ -508,13 +499,8 @@ const KEYS: &[KeySpec] = &[
         formatter: Formatter::Int,
         nouns: &[],
         extract: |r: &Recovery| {
-            Ok(MetricValue::Int(
-                r.bar(
-                    "Detection and extraction breadth",
-                    "Shell obfuscation modes",
-                )?
-                .detected()?,
-            ))
+            r.bar("Detection and routing rosters", "Shell obfuscation modes")?
+                .count()
         },
     },
     KeySpec {
@@ -1119,9 +1105,17 @@ mod tests {
                 {
                     "heading": "Detection and extraction breadth (counts, not percentages)",
                     "bars": [
-                        {"label": ".NET protectors", "detected": 23, "delivered": 3},
                         {"label": "PyArmor samples", "detected": 72, "delivered": 72},
                         {"label": "Containers", "detected": 98, "delivered": 98}
+                    ]
+                },
+                {
+                    "heading": "Detection and routing rosters (counts)",
+                    "bars": [
+                        {"label": ".NET protectors", "value": 23},
+                        {"label": "Python source obfuscators", "value": 20},
+                        {"label": "JVM / Android families", "value": 10},
+                        {"label": "Shell obfuscation modes", "value": 19}
                     ]
                 },
                 {

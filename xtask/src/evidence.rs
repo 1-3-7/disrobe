@@ -647,7 +647,11 @@ fn format_measured(group: &RecoveryGroup, bar: &RecoveryBar) -> String {
             .map_or_else(|| "n/a".to_owned(), |v: f64| format!("{v:.2}%")),
         "count" => bar.value.map_or_else(
             || "n/a".to_owned(),
-            |v: f64| format!("{} families", v as i64),
+            |v: f64| {
+                let amount: i64 = v as i64;
+                let unit: &str = if amount == 1 { "family" } else { "families" };
+                format!("{amount} {unit}")
+            },
         ),
         "scalar" => bar.value.map_or_else(
             || "n/a".to_owned(),
@@ -1268,6 +1272,14 @@ mod tests {
             bars: Vec::new(),
         };
         assert_eq!(format_measured(&percent, &bar(Some(94.18))), "94.18%");
+
+        let count: RecoveryGroup = RecoveryGroup {
+            heading: "h".to_owned(),
+            kind: "count".to_owned(),
+            bars: Vec::new(),
+        };
+        assert_eq!(format_measured(&count, &bar(Some(1.0))), "1 family");
+        assert_eq!(format_measured(&count, &bar(Some(2.0))), "2 families");
 
         let pair: RecoveryGroup = RecoveryGroup {
             heading: "h".to_owned(),

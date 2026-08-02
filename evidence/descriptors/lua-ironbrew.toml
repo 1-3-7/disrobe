@@ -12,4 +12,4 @@ reproduce = "cargo test -p disrobe-pass-lua --test ironbrew2_real_oracle"
 
 [source]
 recovery_group = "Obfuscator and bundler family coverage (counts)"
-recovery_bar = "Lua VM-devirt (IronBrew2 real, MoonSec synthetic)"
+recovery_bar = "Lua VM-devirt on real tool output (IronBrew2 2.7.0)"

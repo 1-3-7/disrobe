@@ -248,7 +248,7 @@
     },
     {
       "heading": "Detection and extraction breadth (counts, not percentages)",
-      "axis_label": "families detected vs reversed or extracted in-tree",
+      "axis_label": "measured delivery / detected roster",
       "kind": "count_pair",
       "bars": [
         {
@@ -264,17 +264,6 @@
           "source": "ContainerKind enum crates/disrobe-binfmt/src/container.rs (ContainerKind::ALL is [Self; 100], 100 real variants excluding None), asserted in detected_count_is_one_hundred; every one of the 100 declares a payload extractor rather than a metadata summary or an external-tool hand-off, asserted in every_declared_format_carries_a_payload_extractor, which is a roster declaration and not a run. The delivered count is the measured leg: 33 of the 100 are driven to member bytes on disk by an input this repository commits, measured by crates/disrobe-cli/tests/container_breadth.rs over `git ls-files`, pinned in crates/disrobe-cli/tests/golden/container_breadth.txt and read back by published_container_counts_match_this_enum. The remaining 67 carry an extractor no committed input reaches, so they are unverified rather than shown to fail: absence of an input is not evidence of a broken extractor, and nothing here claims they work. The declared superset spans archives/installers (ZIP/tar/7z/RAR/cab/MSI/NSIS/deb/rpm/Docker/OCI/ISO), bare single-stream compression (gz/bz2/zst/lzma/lzip/lz4-frame/zlib/.Z), legacy archives (ar/arj/arc/lzh/lzop/uzip/xamarin-xalz/par2/ELF-overlay carve), embedded-linux filesystems (squashfs/cramfs/ext4/romfs/minixfs/jffs2/ubi-ubifs/yaffs/erofs/ntfs/android-sparse/btrfs-send), disk-image/partition containers (GPT/MBR/VHD/VHDX/WIM walked through FAT), and vendor firmware decryptors (D-Link AES/EnGenius XOR/Autel table/QNAP PC1 plus CRC-verified Netgear/Xiaomi/Tesla carves); a recursive carve-everything engine (multi-magic scan, chunk model, depth recursion, entropy gating) drives nested extraction. InnoSetup writes the decoded setup-data block stream (per-file split via the version-specific TSetupHeader parse is the documented limit) and InstallShield writes its stored and zlib members; the arj/arc/stuffit/partclone heavy codecs are carved verbatim with a documented note"
         },
         {
-          "label": ".NET protectors",
-          "detected": 23,
-          "delivered": 3,
-          "delivered_label": "reversed on real samples",
-          "verified_by": {
-            "path": "crates/disrobe-pass-dotnet/src/protectors.rs",
-            "function": "published_dotnet_detected_protector_count_matches_this_enum"
-          },
-          "source": "crates/disrobe-pass-dotnet/src/protectors.rs detect_all ([Protector; 23]); ConfuserEx2 constant decryption is reversed on a REAL committed sample - confuserex2_full.rs:53 recovers the encrypted plaintext from SampleConstants.confuserex2.dll with a plaintext-absent oracle; its encrypted-resource layer is carved byte-exact but runtime-key-walled (real_confuserex2_resources.rs:54 BlobExtractedKeyedWall) and full ConfuserEx2 cleanup delegates to de4dot (confuserex2_full.rs:47); the Eazfuscator VM-tier is devirtualized on a committed assembly - real_eazvm.rs devirtualizes_every_method_to_ordered_cil recovers the per-build opcode table from the in-assembly dispatch, decrypts the position-keyed stream and lifts all five virtualized bodies to CIL, graded against the independently compiled clean DLL by an ordered instruction comparison (opcode and operand, branch targets resolved to instruction index) at 57/57 = 100%, with recovered_cil_reinjects_and_runs_identically rebuilding a runnable assembly from the recovered CIL whose stdout is byte-identical to the clean baseline (skipped only when no .NET runtime is on PATH, never silently passed); the KoiVM (ConfuserEx-lineage) VM-tier is devirtualized on a committed sample produced by the real KoiVM tool (TheProxyRE fork driven through its public Virtualizer api over a benign self-authored exe, not a self-made encoder) - real_koivm.rs lifts all six virtualized bodies out of the #Koi stream back to CIL and grades them against the independently compiled KoiSample.clean.exe (peel_delivered_bodies_recover_known_originals: Add and Square recover fully, aggregate structural recovery >= 75% vs hand-derived ground-truth ops in koivm/grade.rs, a non-circular oracle), with clean_baseline_has_no_koivm_summary asserting the unobfuscated baseline yields no KoiVM summary; ILProtector and MaxToCode are detected and structurally enumerated with their method bodies walled on the native-runtime key, derived in the loader and absent from the assembly, never fabricated (ilprotector_bodies.rs NativeRuntimeWall, maxtocode_bodies.rs NativeStubWall); remainder detected + classified"
-        },
-        {
           "label": "PyArmor samples",
           "detected": 72,
           "delivered": 72,
@@ -284,35 +273,49 @@
             "function": "recovers_real_source_from_v8_and_v9_corpus"
           },
           "source": "crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs (RECOVERY_FLOOR 72; recovers_real_source_from_v8_and_v9_corpus counts the committed v8 and v9 wrappers and asserts the recovered count against this pair); measured 72/72 locally 2026-06-11"
+        }
+      ]
+    },
+    {
+      "heading": "Detection and routing rosters (counts)",
+      "axis_label": "families routed or detected by the named catalog",
+      "kind": "count",
+      "bars": [
+        {
+          "label": ".NET protectors",
+          "value": 23,
+          "verified_by": {
+            "path": "crates/disrobe-pass-dotnet/src/protectors.rs",
+            "function": "published_dotnet_protector_roster_count_matches_this_enum"
+          },
+          "source": "crates/disrobe-pass-dotnet/src/protectors.rs detect_all walks the 23-member Protector::ALL roster. This is a detection roster, not an aggregate claim about source or CIL recovery. Per-sample recovery evidence remains scoped to the tests that grade it."
         },
         {
           "label": "Python source obfuscators",
-          "detected": 20,
-          "delivered": 17,
-          "delivered_label": "recovered to source",
+          "value": 20,
           "verified_by": {
             "path": "crates/disrobe-pass-py-deob/src/auto_route.rs",
-            "function": "published_detected_source_obfuscator_count_matches_the_registered_passes"
+            "function": "published_source_obfuscator_roster_count_matches_the_registered_passes"
           },
-          "source": "crates/disrobe-pass-py-deob/src/auto_route.rs describe_obfuscator (20 Obfuscator variants); the roster is pinned by name, not by count, in auto_route.rs test published_source_obfuscator_roster_matches_the_registered_passes, so adding or removing a pass fails until the published figure moves with it"
+          "source": "crates/disrobe-pass-py-deob/src/auto_route.rs describes 20 registered source-obfuscator passes. This is a routing roster, not an aggregate source-recovery measurement. The named membership test forces this figure to move with the registered passes."
         },
         {
           "label": "JVM / Android families",
-          "detected": 10,
-          "delivered": 2,
-          "delivered_label": "recovered",
+          "value": 10,
           "verified_by": {
             "path": "crates/disrobe-pass-jvm/src/chain_detector.rs",
-            "function": "published_jvm_android_family_count_matches_this_catalog"
+            "function": "published_jvm_android_roster_count_matches_this_catalog"
           },
-          "source": "crates/disrobe-pass-jvm/src/obfuscators.rs Protector enum carries 9 detected protectors (ProGuard/R8, Zelix KlassMaster, Allatori, Stringer, DashO, DexGuard, yGuard, SkidSuite2, JBCO); BlackObfuscator is the tenth family, handled by the separate DEX deflattening path in crates/disrobe-pass-jvm/src/dalvik_blackobf.rs and recognized by chain_detector.rs rather than by the Protector enum. Counted as 10 addressed families, and the detected leg is pinned against the chain catalog by chain_detector.rs test published_jvm_android_family_count_matches_this_catalog; the delivered leg has no declaration in the crate to check it against"
+          "source": "crates/disrobe-pass-jvm/src/obfuscators.rs carries nine Protector variants, and the separate BlackObfuscator DEX path is the tenth catalogued family. This is a routing roster, not an aggregate recovered-body measurement."
         },
         {
           "label": "Shell obfuscation modes",
-          "detected": 19,
-          "delivered": 19,
-          "delivered_label": "reversed",
-          "source": "counted per obfuscation mode across crates/disrobe-pass-shell/src: powershell (invoke_obfuscation.rs token/AST/string/encoding/compress/launcher = 6, invoke_stealth.rs, powerhell.rs, chameleon.rs, psobf, isesteroids.rs = 11), bash (bashfuscator.rs token/string/obfuscate/compress = 4, indirect.rs IFS/eval, node_bash_obfuscate.rs = 17), batch (%random%, set-indirection = 19). The VBA p-code decompiler and the Excel 4.0 XLM reader are scripting FORMATS covered alongside these and are deliberately excluded from this count. The previous published pair was contradictory: README said 19 over a population including VBA and XLM, while the catalog said 20 over a list that enumerated 19. NOT yet pinned by a roster test"
+          "value": 19,
+          "verified_by": {
+            "path": "crates/disrobe-pass-shell/tests/published_family_count.rs",
+            "function": "published_shell_obfuscation_mode_count_matches_this_catalog"
+          },
+          "source": "The shell chain catalog carries 19 named PowerShell, bash, and batch obfuscation modes after excluding scripting formats handled alongside them. This is a routing roster, not a reversal rate; the count test pins all 19 identifiers, and a companion test records the 17 full plus 2 partial support split."
         }
       ]
     },
@@ -340,9 +343,22 @@
           "source": "crates/disrobe-pass-lua/src/chain_detector.rs:169 (CATALOG_COUNT = 16; 14 obfuscator entries plus Luau and GLua dialect detectors)"
         },
         {
-          "label": "Lua VM-devirt (IronBrew2 real, MoonSec synthetic)",
-          "value": 2,
-          "source": "crates/disrobe-pass-lua/tests/ironbrew2_real_oracle.rs - IronBrew2 2.7.0 is reversed on REAL committed output (corpus/lua/ironbrew2/obfuscated/*.{min,max}.lua carry the genuine 'IronBrew:tm: obfuscation; Version 2.7.0' bootstrap), graded by a real-Lua execution differential (recover_runnable output executed under real Lua, asserted equal to the original) across hello/arith/control/tables/edge in standard and MAX mode, run in the execution-differentials CI job; MoonSec-shape recovery remains synthetic-bootstrap-only (vm_devirt_ironbrew.rs DVM1 self-authored fixture) pending a real public sample"
+          "label": "Lua VM-devirt on real tool output (IronBrew2 2.7.0)",
+          "value": 1,
+          "verified_by": {
+            "path": "crates/disrobe-pass-lua/tests/published_lua_vm_devirt_legs.rs",
+            "function": "published_real_tool_vm_devirt_leg_matches_the_real_ironbrew2_corpus"
+          },
+          "source": "IronBrew2 2.7.0 is the one Lua VM-devirtualization family graded on committed output from the real obfuscator. The real-Lua execution differential runs the recovered output against the original across hello, arith, control, tables, and edge samples in standard and MAX mode."
+        },
+        {
+          "label": "Lua VM-devirt on an in-house sample only (MoonSec shape, no real sample)",
+          "value": 1,
+          "verified_by": {
+            "path": "crates/disrobe-pass-lua/tests/published_lua_vm_devirt_legs.rs",
+            "function": "published_in_house_leg_matches_the_families_with_no_real_sample"
+          },
+          "source": "This in-house, not real, no real sample leg covers aztup_brew, boronide, darksec, hercules, luraph, moonsec_v1, moonsec_v2, moonsec_v3, and psu reference containers. It records shape recovery only and is not evidence that any named obfuscator's own output was reversed."
         },
         {
           "label": "WASM direct transformation helper families",
