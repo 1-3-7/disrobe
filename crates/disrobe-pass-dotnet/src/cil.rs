@@ -1338,7 +1338,7 @@ pub(crate) fn fold_null_conditional_call(body: &MethodBody) -> MethodBody {
         nop_instruction(&mut out.instructions[window.dup]);
         nop_instruction(&mut out.instructions[window.brtrue]);
         nop_instruction(&mut out.instructions[window.pop]);
-        nop_instruction(&mut out.instructions[window.br]);
+        nop_instruction(&mut out.instructions[window.skip]);
         out.instructions.insert(
             window.call,
             null_cond_marker(out.instructions[window.call].offset),
@@ -1352,7 +1352,7 @@ struct CondCallWindow {
     dup: usize,
     brtrue: usize,
     pop: usize,
-    br: usize,
+    skip: usize,
     call: usize,
 }
 
@@ -1373,28 +1373,49 @@ fn match_cond_call_window(instrs: &[Instruction], dup: usize) -> Option<CondCall
     if instrs.get(pop)?.name != "pop" {
         return None;
     }
-    let br: usize = pop + 1;
-    let branch: &Instruction = instrs.get(br)?;
-    if !matches!(branch.name.as_str(), "br" | "br.s") {
+    let skip: usize = pop + 1;
+    let guard_tail: &Instruction = instrs.get(skip)?;
+    let call_start: usize = skip + 1;
+    if instrs.get(call_start)?.offset != call_off {
         return None;
     }
-    let merge_off: u32 = match branch.operand {
-        OperandValue::BrTarget(rel) => (i64::from(branch.offset) + i64::from(rel)) as u32,
+    let (call_end, early_return): (usize, bool) = match guard_tail.name.as_str() {
+        "br" | "br.s" => {
+            let merge_off: u32 = match guard_tail.operand {
+                OperandValue::BrTarget(rel) => {
+                    (i64::from(guard_tail.offset) + i64::from(rel)) as u32
+                }
+                _ => return None,
+            };
+            (
+                instrs
+                    .iter()
+                    .position(|i: &Instruction| i.offset == merge_off)?,
+                false,
+            )
+        }
+        "ret" if guard_tail.flow == FlowControl::Return => (
+            instrs.iter().enumerate().skip(call_start).find_map(
+                |(index, instruction): (usize, &Instruction)| {
+                    (instruction.name == "ret" && instruction.flow == FlowControl::Return)
+                        .then_some(index)
+                },
+            )?,
+            true,
+        ),
         _ => return None,
     };
-    let l1: usize = br + 1;
-    if instrs.get(l1)?.offset != call_off {
+    if call_end <= call_start {
         return None;
     }
-    let merge: usize = instrs
-        .iter()
-        .position(|i: &Instruction| i.offset == merge_off)?;
-    if merge <= l1 {
-        return None;
-    }
-    let block: &[Instruction] = &instrs[l1..merge];
+    let block: &[Instruction] = &instrs[call_start..call_end];
     let (last, head): (&Instruction, &[Instruction]) = block.split_last()?;
     if !matches!(last.name.as_str(), "call" | "callvirt" | "calli") {
+        return None;
+    }
+    if early_return
+        && (last.name != "callvirt" || !head.iter().all(null_conditional_early_return_load))
+    {
         return None;
     }
     if !head.iter().all(|ins: &Instruction| {
@@ -1409,9 +1430,18 @@ fn match_cond_call_window(instrs: &[Instruction], dup: usize) -> Option<CondCall
         dup,
         brtrue,
         pop,
-        br,
-        call: merge - 1,
+        skip,
+        call: call_end - 1,
     })
+}
+
+fn null_conditional_early_return_load(ins: &Instruction) -> bool {
+    matches!(
+        ins.name.as_str(),
+        "nop" | "ldnull" | "ldstr" | "ldtoken" | "ldftn" | "ldsfld" | "ldsflda" | "sizeof"
+    ) || ins.name.starts_with("ldarg")
+        || ins.name.starts_with("ldloc")
+        || ins.name.starts_with("ldc.")
 }
 
 fn null_cond_marker(offset: u32) -> Instruction {
@@ -1867,6 +1897,70 @@ mod tests {
         );
     }
 
+    fn cond_call_early_return_body() -> MethodBody {
+        MethodBody {
+            max_stack: 8,
+            code_size: 20,
+            local_var_sig_tok: 0,
+            init_locals: false,
+            instructions: vec![
+                ins(0, "ldarg.0", OperandValue::None, FlowControl::Next),
+                ins(
+                    1,
+                    "ldfld",
+                    OperandValue::Token(0x0400_0001),
+                    FlowControl::Next,
+                ),
+                ins(6, "dup", OperandValue::None, FlowControl::Next),
+                ins(
+                    7,
+                    "brtrue.s",
+                    OperandValue::BrTarget(4),
+                    FlowControl::CondBranch,
+                ),
+                ins(9, "pop", OperandValue::None, FlowControl::Next),
+                ins(10, "ret", OperandValue::None, FlowControl::Return),
+                ins(11, "ldarg.0", OperandValue::None, FlowControl::Next),
+                ins(12, "ldarg.1", OperandValue::None, FlowControl::Next),
+                ins(
+                    13,
+                    "callvirt",
+                    OperandValue::Token(0x0A00_0002),
+                    FlowControl::Call,
+                ),
+                ins(18, "ret", OperandValue::None, FlowControl::Return),
+            ],
+            exception_clauses: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn fold_null_conditional_call_collapses_dup_brtrue_pop_early_return_call_idiom() {
+        let folded: MethodBody = fold_null_conditional_call(&cond_call_early_return_body());
+        let names: Vec<&str> = folded
+            .instructions
+            .iter()
+            .map(|i: &Instruction| i.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "ldarg.0",
+                "ldfld",
+                "nop",
+                "nop",
+                "nop",
+                "nop",
+                "ldarg.0",
+                "ldarg.1",
+                "__null_cond",
+                "callvirt",
+                "ret",
+            ],
+            "the dup/brtrue/pop/ret guard collapses to a straight-line guarded call"
+        );
+    }
+
     #[test]
     fn fold_null_conditional_call_ignores_missing_trailing_branch() {
         let mut body: MethodBody = cond_call_body();
@@ -1878,6 +1972,107 @@ mod tests {
                 .iter()
                 .all(|i: &Instruction| i.name != "__null_cond"),
             "without the br.s over the call the pattern is not a null-conditional call"
+        );
+    }
+
+    #[test]
+    fn fold_null_conditional_call_ignores_early_return_without_a_terminal_call_return() {
+        let mut body: MethodBody = cond_call_early_return_body();
+        body.instructions[9] = ins(18, "nop", OperandValue::None, FlowControl::Next);
+        let folded: MethodBody = fold_null_conditional_call(&body);
+        assert!(
+            folded
+                .instructions
+                .iter()
+                .all(|i: &Instruction| i.name != "__null_cond"),
+            "the early-exit form requires the call path to terminate at its own ret"
+        );
+    }
+
+    fn early_return_static_call_body() -> MethodBody {
+        MethodBody {
+            max_stack: 8,
+            code_size: 12,
+            local_var_sig_tok: 0,
+            init_locals: false,
+            instructions: vec![
+                ins(0, "ldarg.0", OperandValue::None, FlowControl::Next),
+                ins(1, "dup", OperandValue::None, FlowControl::Next),
+                ins(
+                    2,
+                    "brtrue.s",
+                    OperandValue::BrTarget(4),
+                    FlowControl::CondBranch,
+                ),
+                ins(4, "pop", OperandValue::None, FlowControl::Next),
+                ins(5, "ret", OperandValue::None, FlowControl::Return),
+                ins(
+                    6,
+                    "call",
+                    OperandValue::Token(0x0600_0001),
+                    FlowControl::Call,
+                ),
+                ins(11, "ret", OperandValue::None, FlowControl::Return),
+            ],
+            exception_clauses: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn fold_null_conditional_call_ignores_early_return_static_call_that_consumes_the_guarded_value()
+    {
+        let folded: MethodBody = fold_null_conditional_call(&early_return_static_call_body());
+        assert!(
+            folded
+                .instructions
+                .iter()
+                .all(|i: &Instruction| i.name != "__null_cond"),
+            "a static call that consumes the guarded value is not a null-conditional call"
+        );
+    }
+
+    fn early_return_unrelated_instance_call_body() -> MethodBody {
+        MethodBody {
+            max_stack: 8,
+            code_size: 14,
+            local_var_sig_tok: 0,
+            init_locals: false,
+            instructions: vec![
+                ins(0, "ldarg.0", OperandValue::None, FlowControl::Next),
+                ins(1, "dup", OperandValue::None, FlowControl::Next),
+                ins(
+                    2,
+                    "brtrue.s",
+                    OperandValue::BrTarget(4),
+                    FlowControl::CondBranch,
+                ),
+                ins(4, "pop", OperandValue::None, FlowControl::Next),
+                ins(5, "ret", OperandValue::None, FlowControl::Return),
+                ins(6, "pop", OperandValue::None, FlowControl::Next),
+                ins(7, "ldarg.1", OperandValue::None, FlowControl::Next),
+                ins(
+                    8,
+                    "callvirt",
+                    OperandValue::Token(0x0600_0001),
+                    FlowControl::Call,
+                ),
+                ins(13, "ret", OperandValue::None, FlowControl::Return),
+            ],
+            exception_clauses: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn fold_null_conditional_call_ignores_early_return_instance_call_that_discards_the_guarded_value()
+     {
+        let folded: MethodBody =
+            fold_null_conditional_call(&early_return_unrelated_instance_call_body());
+        assert!(
+            folded
+                .instructions
+                .iter()
+                .all(|i: &Instruction| i.name != "__null_cond"),
+            "a guarded early return followed by an unrelated instance call is not a null-conditional call"
         );
     }
 
