@@ -1828,7 +1828,10 @@ impl Resolver {
     }
 
     #[must_use]
-    pub fn field_rva_primitive(&self, token: u32) -> Option<FieldRvaPrimitive> {
+    pub(crate) fn field_rva_primitive_from_type_ref(
+        &self,
+        token: u32,
+    ) -> Option<FieldRvaPrimitive> {
         let table_index: u8 = u8::try_from(token >> 24).ok()?;
         if TableId::from_index(table_index) != Some(TableId::TypeRef) {
             return None;
