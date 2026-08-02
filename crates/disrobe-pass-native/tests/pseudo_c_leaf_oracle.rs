@@ -8436,6 +8436,154 @@ fn clang_o0_sysv_incoming_stack_argument_is_not_modeled_as_a_local() {
     );
 }
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn gcc_o0_frame_reload_compare_returns_integer() {
+    let version: std::process::Output = Command::new("gcc-13")
+        .arg("-dumpfullversion")
+        .output()
+        .expect("gcc-13 must be installed for the frame-reload return-class oracle");
+    assert!(
+        version.status.success(),
+        "gcc-13 version probe failed: {}",
+        String::from_utf8_lossy(&version.stderr)
+    );
+    let version_text: String = String::from_utf8_lossy(&version.stdout).trim().to_owned();
+    assert!(
+        version_text.starts_with("13."),
+        "the frame-reload return-class oracle requires gcc-13, found {version_text}"
+    );
+
+    let case: FpCase = FpCase {
+        name: "feq",
+        args: &[FpArg::Double, FpArg::Double],
+        ret: FpRet::LongLong,
+        c_source: "__attribute__((noinline)) long long feq(double a, double b){ return a == b; }",
+    };
+    let scratch: ScratchDir = scratch_dir();
+    let directory: PathBuf = scratch.path().to_path_buf();
+    let source_path: PathBuf = directory.join("gcc_o0_frame_reload.c");
+    let object_path: PathBuf = directory.join("gcc_o0_frame_reload.o");
+    std::fs::write(&source_path, case.c_source.as_bytes()).expect("write gcc frame-reload source");
+    let compile: std::process::Output = Command::new("gcc-13")
+        .args([
+            "-O0",
+            "-fno-omit-frame-pointer",
+            "-fno-stack-protector",
+            "-fcf-protection=none",
+            "-c",
+            "-o",
+        ])
+        .arg(&object_path)
+        .arg(&source_path)
+        .output()
+        .expect("invoke gcc-13 for frame-reload source");
+    assert!(
+        compile.status.success(),
+        "gcc-13 frame-reload compile failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let object_bytes: Vec<u8> = std::fs::read(&object_path).expect("read gcc frame-reload object");
+    let (code, base): (Vec<u8>, u64) =
+        function_code(&object_bytes, case.name).expect("locate gcc frame-reload function");
+    let insns: Vec<DisasmInsn> =
+        disassemble(Arch::X86_64, base, &code).expect("disassemble gcc frame-reload function");
+    let reloads: Vec<(usize, String)> = insns
+        .iter()
+        .enumerate()
+        .filter_map(|(index, insn): (usize, &DisasmInsn)| {
+            if insn.mnemonic != "movsd" {
+                return None;
+            }
+            let (destination, source): (&str, &str) = insn.operands.split_once(',')?;
+            let destination: &str = destination.trim();
+            let source: &str = source.trim();
+            (destination.starts_with("xmm")
+                && (source.contains("[rbp-") || source.contains("[rbp -")))
+            .then(|| (index, destination.to_owned()))
+        })
+        .collect();
+    assert!(
+        !reloads.is_empty(),
+        "gcc-13 must reload a double from a negative rbp frame slot: {insns:?}"
+    );
+    assert!(
+        reloads
+            .iter()
+            .any(|(reload_index, register): &(usize, String)| {
+                insns
+                    .iter()
+                    .skip(reload_index.saturating_add(1))
+                    .any(|insn: &DisasmInsn| {
+                        matches!(insn.mnemonic.as_str(), "ucomisd" | "comisd")
+                            && insn
+                                .operands
+                                .split(',')
+                                .any(|operand: &str| operand.trim() == register)
+                    })
+            }),
+        "gcc-13 must compare a frame-reloaded double before returning: {insns:?}"
+    );
+    let (recovery, renamed, recovered_name): (LeafRecovery, String, String) =
+        fp_lift(&case, &object_bytes, PseudoAbi::SysV)
+            .expect("gcc-13 frame-reload comparison must recover");
+    assert_eq!(
+        recovery.returns_fp, None,
+        "the frame-reloaded comparison must retain an integer ABI return: {}",
+        recovery.source
+    );
+    assert_eq!(
+        recovery.return_width_bits, 64,
+        "the frame-reloaded comparison must retain a 64-bit integer ABI return: {}",
+        recovery.source
+    );
+
+    let build_driver = |candidate: &str| -> String {
+        format!(
+            "#include <stdint.h>\n#include <string.h>\n#include <stdio.h>\n#include <stddef.h>\nstatic inline double fp_d_from_bits(uint64_t b){{ double v; memcpy(&v,&b,8); return v; }}\nstatic inline uint64_t fp_d_to_bits(double v){{ uint64_t b; memcpy(&b,&v,8); return b; }}\nstatic inline float fp_f_from_bits(uint32_t b){{ float v; memcpy(&v,&b,4); return v; }}\nstatic inline uint32_t fp_f_to_bits(float v){{ uint32_t b; memcpy(&b,&v,4); return b; }}\n{}\n{}\n{}\nint main(void){{\n    double nan = fp_d_from_bits(UINT64_C(0x7ff8000000000001));\n    double pairs[][2] = {{ {{2.0,2.0}}, {{2.0,3.0}}, {{-0.0,0.0}}, {{nan,nan}}, {{nan,1.0}} }};\n    size_t count = sizeof(pairs)/sizeof(pairs[0]);\n    for (size_t index = 0; index < count; index++) {{\n        long long want = feq(pairs[index][0], pairs[index][1]);\n        uint64_t got = {recovered_name}(pairs[index][0], pairs[index][1]);\n        if ((uint64_t)want != got) {{ printf(\"MISMATCH %zu want=%lld got=%llu\\n\", index, want, (unsigned long long)got); return 1; }}\n    }}\n    puts(\"OK\");\n    return 0;\n}}\n",
+            fp_semantics::prelude_source(),
+            fp_extern_decl(&case),
+            candidate,
+        )
+    };
+    let compile_and_run = |tag: &str, candidate: &str| -> std::process::Output {
+        let driver_path: PathBuf = directory.join(format!("gcc_o0_frame_reload_{tag}.c"));
+        let executable_path: PathBuf = directory.join(format!("gcc_o0_frame_reload_{tag}"));
+        std::fs::write(&driver_path, build_driver(candidate).as_bytes())
+            .expect("write gcc frame-reload driver");
+        let compile_driver: std::process::Output = Command::new("gcc-13")
+            .args(["-O0", "-fno-stack-protector", "-fcf-protection=none", "-o"])
+            .arg(&executable_path)
+            .arg(&driver_path)
+            .arg(&object_path)
+            .output()
+            .expect("compile gcc frame-reload driver");
+        assert!(
+            compile_driver.status.success(),
+            "gcc-13 frame-reload driver compile failed: {}",
+            String::from_utf8_lossy(&compile_driver.stderr)
+        );
+        Command::new(&executable_path)
+            .output()
+            .expect("run gcc frame-reload driver")
+    };
+    let pristine: std::process::Output = compile_and_run("pristine", &renamed);
+    assert!(
+        pristine.status.success() && String::from_utf8_lossy(&pristine.stdout).contains("OK"),
+        "gcc frame-reload recovery must match equal, unequal, signed-zero, and NaN inputs: {}",
+        String::from_utf8_lossy(&pristine.stdout)
+    );
+    let sabotaged: String = format!(
+        "uint64_t {recovered_name}(double a0, double a1){{ return a0 == a1 ? UINT64_C(0) : UINT64_C(1); }}"
+    );
+    let broken: std::process::Output = compile_and_run("sabotaged", &sabotaged);
+    assert!(
+        !broken.status.success() && String::from_utf8_lossy(&broken.stdout).contains("MISMATCH"),
+        "the frame-reload behavior control must detect a defined wrong integer candidate: {}",
+        String::from_utf8_lossy(&broken.stdout)
+    );
+}
+
 #[test]
 fn scalar_sqrt_leaf_functions_recompile_to_behavioral_equivalence() {
     if !cfg!(windows) {

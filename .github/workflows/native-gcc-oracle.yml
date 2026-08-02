@@ -1,0 +1,28 @@
+name: native gcc oracle
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gcc-o0-frame-reload:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.96.1
+      - uses: Swatinem/rust-cache@v2
+      - name: install gcc 13
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gcc-13
+          gcc-13 --version
+      - name: grade gcc frame-reload return classification
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/native-gcc-oracle.log"
+          CARGO_TERM_COLOR=never cargo test -p disrobe-pass-native --test pseudo_c_leaf_oracle --all-features -- --exact gcc_o0_frame_reload_compare_returns_integer --nocapture 2>&1 | tee "$log"
+          grep -F "running 1 test" "$log"
