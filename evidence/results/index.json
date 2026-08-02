@@ -1,5 +1,5 @@
 {
-  "descriptor_count": 27,
+  "descriptor_count": 25,
   "descriptors": [
     {
       "ci_attested": true,
@@ -117,34 +117,6 @@
       "measured": "100.00%",
       "oracle_strength": "strong",
       "reproduce": "cargo test -p disrobe-pass-jvm --test dalvik_verifier_gate"
-    },
-    {
-      "ci_attested": true,
-      "claim": "disrobe devirtualizes every method of an in-repo reimplementation of Eazfuscator's EazVM scheme (the committed assembly is encoded by our own virtualizer, not the shipping Eazfuscator.NET product) back to CIL, graded against an independently compiled clean DLL by ordered instruction compare; the recovered CIL also re-injects to byte-identical stdout wherever a .NET runtime is on PATH.",
-      "competitors": [],
-      "disrobe_leads": null,
-      "ecosystem": "dotnet",
-      "external_oracle": "independently compiled clean DLL (ordered CIL compare: opcode and operand, branch targets resolved to instruction index) + byte-identical stdout on reinjection",
-      "floor": null,
-      "floor_holds": null,
-      "id": "dotnet-eazvm",
-      "measured": "3 reversed on real samples / 23 detected",
-      "oracle_strength": "strong",
-      "reproduce": "cargo test -p disrobe-pass-dotnet --test real_eazvm"
-    },
-    {
-      "ci_attested": true,
-      "claim": "disrobe lifts every virtualized body out of the #Koi stream back to CIL on a sample produced by the real KoiVM tool, graded against an independently compiled clean exe with a hand-derived ground-truth instruction set.",
-      "competitors": [],
-      "disrobe_leads": null,
-      "ecosystem": "dotnet",
-      "external_oracle": "independently compiled KoiSample.clean.exe + hand-derived ground-truth ops (non-circular structural compare >= 75%)",
-      "floor": null,
-      "floor_holds": null,
-      "id": "dotnet-koivm",
-      "measured": "3 reversed on real samples / 23 detected",
-      "oracle_strength": "strong",
-      "reproduce": "cargo test -p disrobe-pass-dotnet --test real_koivm"
     },
     {
       "ci_attested": true,
@@ -285,7 +257,7 @@
       "floor": null,
       "floor_holds": null,
       "id": "lua-ironbrew",
-      "measured": "2 families",
+      "measured": "1 family",
       "oracle_strength": "strong",
       "reproduce": "cargo test -p disrobe-pass-lua --test ironbrew2_real_oracle"
     },
@@ -435,7 +407,6 @@
     "android",
     "beam",
     "binfmt",
-    "dotnet",
     "go",
     "hermes",
     "jvm",

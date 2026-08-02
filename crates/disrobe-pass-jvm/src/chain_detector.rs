@@ -959,20 +959,18 @@ mod tests {
     }
 
     #[test]
-    fn published_jvm_android_family_count_matches_this_catalog() {
+    fn published_jvm_android_roster_count_matches_this_catalog() {
         const BAR: &str = "JVM / Android families";
-        let bar: serde_json::Value = published_bar("Detection and extraction breadth", BAR);
-        let detected: u64 = bar["detected"]
+        let bar: serde_json::Value = published_bar("Detection and routing rosters", BAR);
+        let count: u64 = bar["value"]
             .as_u64()
-            .expect("the JVM / Android families bar must carry a detected count");
+            .expect("the JVM / Android families bar must carry a roster count");
         let entries: Vec<&'static dyn CatalogEntry> = ObfuscatorCatalog::catalog(&JvmDetector);
         assert_eq!(
-            usize::try_from(detected).expect("detected fits usize"),
+            usize::try_from(count).expect("roster count fits usize"),
             entries.len(),
-            "xtask/data/recovery.json publishes {detected} addressed JVM and Android families and \
-             every document renders that number, but this catalog carries {}. This asserts the \
-             detected leg; the delivered leg counts the families whose bodies are recovered and \
-             has no declaration in this crate to check it against",
+            "xtask/data/recovery.json publishes {count} addressed JVM and Android families in its \
+             routing roster and every document renders that number, but this catalog carries {}",
             entries.len()
         );
         let protector_entries: usize = entries

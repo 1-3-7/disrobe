@@ -615,19 +615,17 @@ mod tests {
     }
 
     #[test]
-    fn published_dotnet_detected_protector_count_matches_this_enum() {
+    fn published_dotnet_protector_roster_count_matches_this_enum() {
         const BAR: &str = ".NET protectors";
-        let bar: serde_json::Value = published_bar("Detection and extraction breadth", BAR);
-        let detected: u64 = bar["detected"]
+        let bar: serde_json::Value = published_bar("Detection and routing rosters", BAR);
+        let count: u64 = bar["value"]
             .as_u64()
-            .expect("the .NET protectors bar must carry a detected count");
+            .expect("the .NET protectors bar must carry a roster count");
         assert_eq!(
-            usize::try_from(detected).expect("detected fits usize"),
+            usize::try_from(count).expect("roster count fits usize"),
             Protector::ALL.len(),
-            "xtask/data/recovery.json publishes {detected} detected .NET protectors and every \
-             document renders that number, but the roster detect_all walks carries {}. This \
-             asserts the detected leg; the delivered leg is a per-sample recovery claim carried \
-             by the real-sample tests the bar's source names",
+            "xtask/data/recovery.json publishes {count} .NET protectors in its routing roster and \
+             every document renders that number, but the roster detect_all walks carries {}",
             Protector::ALL.len()
         );
         assert_eq!(

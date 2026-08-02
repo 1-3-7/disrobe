@@ -7,9 +7,9 @@
   "ecosystem": "lua",
   "floor": null,
   "floor_holds": null,
-  "gate_source": "crates/disrobe-pass-lua/tests/ironbrew2_real_oracle.rs - IronBrew2 2.7.0 is reversed on REAL committed output (corpus/lua/ironbrew2/obfuscated/*.{min,max}.lua carry the genuine 'IronBrew:tm: obfuscation; Version 2.7.0' bootstrap), graded by a real-Lua execution differential (recover_runnable output executed under real Lua, asserted equal to the original) across hello/arith/control/tables/edge in standard and MAX mode, run in the execution-differentials CI job; MoonSec-shape recovery remains synthetic-bootstrap-only (vm_devirt_ironbrew.rs DVM1 self-authored fixture) pending a real public sample",
+  "gate_source": "IronBrew2 2.7.0 is the one Lua VM-devirtualization family graded on committed output from the real obfuscator. The real-Lua execution differential runs the recovered output against the original across hello, arith, control, tables, and edge samples in standard and MAX mode.",
   "id": "lua-ironbrew",
-  "measured": "2 families",
+  "measured": "1 family",
   "oracle": {
     "external": "real Lua interpreter execution differential (recovered output executed under real Lua, asserted equal to the original)",
     "kind": "recovery-import",

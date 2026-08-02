@@ -19,7 +19,7 @@ use disrobe_core::chain::{
 use disrobe_pass_shell::chain_detector::ShellDetector;
 use disrobe_pass_shell::{Detection, Dialect, XlmCell, XlmRecovery, XlmSheet, detect, recover_xlm};
 
-const PUBLISHED_GROUP: &str = "Detection and extraction breadth";
+const PUBLISHED_GROUP: &str = "Detection and routing rosters";
 const PUBLISHED_BAR: &str = "Shell obfuscation modes";
 
 const PUBLISHED_MODE_IDS: [&str; 19] = [
@@ -87,7 +87,7 @@ fn recovery_json_path() -> PathBuf {
         .join("recovery.json")
 }
 
-fn published_bar_legs() -> (u64, u64) {
+fn published_bar_value() -> u64 {
     let path: PathBuf = recovery_json_path();
     let raw: String = std::fs::read_to_string(&path)
         .unwrap_or_else(|err: std::io::Error| panic!("read {}: {err}", path.display()));
@@ -97,7 +97,7 @@ fn published_bar_legs() -> (u64, u64) {
         .as_array()
         .unwrap_or_else(|| panic!("{} must carry a groups array", path.display()));
 
-    let mut legs: Option<(u64, u64)> = None;
+    let mut value: Option<u64> = None;
     for group in groups {
         let heading: &str = group["heading"]
             .as_str()
@@ -112,16 +112,13 @@ fn published_bar_legs() -> (u64, u64) {
             if bar["label"].as_str() != Some(PUBLISHED_BAR) {
                 continue;
             }
-            let detected: u64 = bar["detected"].as_u64().unwrap_or_else(|| {
-                panic!("bar `{PUBLISHED_BAR}` must record an integer detected leg")
-            });
-            let delivered: u64 = bar["delivered"].as_u64().unwrap_or_else(|| {
-                panic!("bar `{PUBLISHED_BAR}` must record an integer delivered leg")
-            });
-            legs = Some((detected, delivered));
+            value =
+                Some(bar["value"].as_u64().unwrap_or_else(|| {
+                    panic!("bar `{PUBLISHED_BAR}` must record an integer value")
+                }));
         }
     }
-    legs.unwrap_or_else(|| {
+    value.unwrap_or_else(|| {
         panic!(
             "{} must carry a `{PUBLISHED_BAR}` bar under `{PUBLISHED_GROUP}`; README.md and \
              docs/src/catalog.md render that bar through the shell_families metric key, so its \
@@ -170,7 +167,7 @@ fn golden_xlm_workbook(name: &str) -> Vec<u8> {
 
 #[test]
 fn published_shell_obfuscation_mode_count_matches_this_catalog() {
-    let (detected, delivered): (u64, u64) = published_bar_legs();
+    let value: u64 = published_bar_value();
     let catalog: Vec<&'static str> = catalog_ids();
     let observed: BTreeSet<&'static str> = catalog.iter().copied().collect();
     assert_eq!(
@@ -197,7 +194,7 @@ fn published_shell_obfuscation_mode_count_matches_this_catalog() {
     for id in PUBLISHED_MODE_IDS {
         assert!(
             observed.contains(id),
-            "the published figure counts `{id}` as a reversed shell obfuscation mode, but the \
+            "the published routing roster counts `{id}` as a shell obfuscation mode, but the \
              shell chain catalog no longer carries that entry; the catalog now reads {catalog:?}"
         );
     }
@@ -238,24 +235,16 @@ fn published_shell_obfuscation_mode_count_matches_this_catalog() {
         PUBLISHED_MODE_IDS.len()
     );
 
-    let detected_usize: usize = usize::try_from(detected).expect("detected leg fits usize");
+    let roster_count: usize = usize::try_from(value).expect("roster count fits usize");
     assert_eq!(
-        detected_usize,
+        roster_count,
         expected,
-        "xtask/data/recovery.json publishes {detected} shell obfuscation modes on the `{PUBLISHED_BAR}` \
+        "xtask/data/recovery.json publishes {value} shell obfuscation modes on the `{PUBLISHED_BAR}` \
          bar, and README.md plus docs/src/catalog.md render that number through the shell_families \
          metric key, but this crate's chain catalog carries {} entries of which {:?} are scripting \
          formats covered alongside the obfuscators rather than counted as one, giving {expected}",
         catalog.len(),
         EXCLUDED_SCRIPTING_FORMAT_IDS
-    );
-
-    let delivered_usize: usize = usize::try_from(delivered).expect("delivered leg fits usize");
-    assert_eq!(
-        delivered_usize, detected_usize,
-        "the `{PUBLISHED_BAR}` bar publishes {delivered} of {detected} modes reversed; a delivered \
-         leg that no longer equals the detected leg must be re-derived against this catalog rather \
-         than left to render as a rate nobody measured"
     );
 }
 
@@ -270,8 +259,8 @@ fn published_modes_declaring_partial_reversal_stay_named() {
         partial,
         declared,
         "the shell chain catalog declares {} of the {} published modes only partially reversed, \
-         and this test names {:?}. The `{PUBLISHED_BAR}` bar publishes every published mode as \
-         reversed, so when this split moves the delivered leg has to move with it",
+         and this test names {:?}. The routing roster must retain every mode regardless of \
+         recovery depth",
         partial.len(),
         PUBLISHED_MODE_IDS.len(),
         PARTIALLY_REVERSED_MODE_IDS
@@ -285,8 +274,8 @@ fn published_modes_declaring_partial_reversal_stay_named() {
         full,
         FULLY_REVERSED_MODES,
         "the shell chain catalog declares {full} of the {} published modes fully reversed, not \
-         {FULLY_REVERSED_MODES}; raise the published delivered leg to match a real gain, never \
-         lower this figure to absorb a loss",
+         {FULLY_REVERSED_MODES}; any future delivery figure must be independently graded rather \
+         than inferred from the routing roster",
         PUBLISHED_MODE_IDS.len()
     );
 }

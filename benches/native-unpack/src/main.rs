@@ -1090,7 +1090,11 @@ fn quality_value(group: &RecoveryGroup, bar: &RecoveryBar) -> String {
             .map_or_else(|| "n/a".to_owned(), |v: f64| format!("{v:.2}%")),
         "count" => bar.value.map_or_else(
             || "n/a".to_owned(),
-            |v: f64| format!("{} families", v as i64),
+            |v: f64| {
+                let amount: i64 = v as i64;
+                let unit: &str = if amount == 1 { "family" } else { "families" };
+                format!("{amount} {unit}")
+            },
         ),
         "scalar" => bar
             .value
@@ -1247,6 +1251,32 @@ mod tests {
             source: "s".to_owned(),
         };
         assert_eq!(quality_value(&percent, &bar), "92.76%");
+
+        let count: RecoveryGroup = RecoveryGroup {
+            heading: "h".to_owned(),
+            kind: "count".to_owned(),
+            bars: Vec::new(),
+        };
+        let one_family: RecoveryBar = RecoveryBar {
+            label: "one".to_owned(),
+            value: Some(1.0),
+            detail: None,
+            detected: None,
+            delivered: None,
+            delivered_label: None,
+            source: "s".to_owned(),
+        };
+        let two_families: RecoveryBar = RecoveryBar {
+            label: "two".to_owned(),
+            value: Some(2.0),
+            detail: None,
+            detected: None,
+            delivered: None,
+            delivered_label: None,
+            source: "s".to_owned(),
+        };
+        assert_eq!(quality_value(&count, &one_family), "1 family");
+        assert_eq!(quality_value(&count, &two_families), "2 families");
 
         let pair: RecoveryGroup = RecoveryGroup {
             heading: "h".to_owned(),
