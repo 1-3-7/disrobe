@@ -1564,40 +1564,8 @@ fn exact_field_rva_bytes(
 }
 
 fn exact_file_backed_rva_offset(image: &[u8], pe: &PeImage, rva: u32, len: usize) -> Option<usize> {
-    if len == 0 {
-        return None;
-    }
-    let length: u32 = u32::try_from(len).ok()?;
-    let end_rva: u32 = rva.checked_add(length)?;
-    let mut unique_offset: Option<usize> = None;
-    let mut intersections: usize = 0;
-    for section in &pe.sections {
-        let mapped_size: u32 = section.virtual_size.max(section.raw_size);
-        let mapped_end: u32 = section.virtual_address.checked_add(mapped_size)?;
-        if section.virtual_address < end_rva && rva < mapped_end {
-            intersections = intersections.checked_add(1)?;
-        }
-        let raw_end: u32 = section.virtual_address.checked_add(section.raw_size)?;
-        if rva < section.virtual_address || end_rva > raw_end {
-            continue;
-        }
-        let delta: u32 = rva.checked_sub(section.virtual_address)?;
-        let offset_u32: u32 = section.raw_pointer.checked_add(delta)?;
-        let offset: usize = usize::try_from(offset_u32).ok()?;
-        let end_offset: usize = offset.checked_add(len)?;
-        if end_offset > image.len() || unique_offset.replace(offset).is_some() {
-            return None;
-        }
-    }
-    let offset: usize = unique_offset?;
-    if intersections != 1 {
-        return None;
-    }
-    let last_delta: usize = len.checked_sub(1)?;
-    let last_rva: u32 = rva.checked_add(u32::try_from(last_delta).ok()?)?;
-    let last_offset: usize = offset.checked_add(last_delta)?;
-    (pe.rva_to_offset(rva) == Some(offset) && pe.rva_to_offset(last_rva) == Some(last_offset))
-        .then_some(offset)
+    let bytes: &[u8] = pe.slice_exact_file_backed_rva(image, rva, len)?;
+    (bytes.as_ptr() as usize).checked_sub(image.as_ptr() as usize)
 }
 
 fn recover_reactor_candidate(

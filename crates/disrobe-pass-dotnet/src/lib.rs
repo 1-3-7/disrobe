@@ -14,6 +14,7 @@ pub mod decompile;
 pub mod devirt;
 pub mod error;
 pub mod format_wire;
+pub(crate) mod field_rva;
 pub mod iterator_reverse;
 pub mod lambda_reverse;
 pub(crate) mod list_switch_reverse;

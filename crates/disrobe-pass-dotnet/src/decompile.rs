@@ -4,13 +4,66 @@ use serde::{Deserialize, Serialize};
 
 use crate::cil::{FlowControl, Instruction, MethodBody, OperandValue, parse_method_body};
 use crate::error::Result;
-use crate::metadata::{MetadataRoot, parse_metadata_root};
+use crate::metadata::{MetadataRoot, metadata_slice, parse_metadata_root};
 use crate::model::{MethodModel, Resolver, TypeModel};
 use crate::names::NameTable;
 use crate::pe::{ClrHeader, PeImage, parse, parse_clr_header};
 use crate::structurize::{
-    MethodNamer, StructuredMethod, TargetLang, decompile_method_named, decompile_move_next_named,
+    CallInfo, MetadataTokenKind, MethodNamer, StructuredMethod, TargetLang, TokenNamer,
+    decompile_method_named, decompile_move_next_named,
 };
+
+struct AssemblyNamer<'a> {
+    method: MethodNamer<'a>,
+    field_rvas: &'a crate::field_rva::FieldRvaData,
+    initialize_array_tokens: &'a BTreeSet<u32>,
+}
+
+impl TokenNamer for AssemblyNamer<'_> {
+    fn name(&self, token: u32) -> String {
+        self.method.name(token)
+    }
+
+    fn token_kind(&self, token: u32) -> MetadataTokenKind {
+        self.method.token_kind(token)
+    }
+
+    fn field_rva_bytes(&self, token: u32) -> Option<&[u8]> {
+        self.field_rvas.bytes(token)
+    }
+
+    fn is_initialize_array(&self, token: u32) -> bool {
+        self.initialize_array_tokens.contains(&token)
+    }
+
+    fn call_info(&self, token: u32) -> Option<CallInfo> {
+        self.method.call_info(token)
+    }
+
+    fn enum_param_type(&self, token: u32, param_index: usize) -> Option<String> {
+        self.method.enum_param_type(token, param_index)
+    }
+
+    fn param_type_name(&self, token: u32, param_index: usize) -> Option<String> {
+        self.method.param_type_name(token, param_index)
+    }
+
+    fn field_type_name(&self, token: u32) -> Option<String> {
+        self.method.field_type_name(token)
+    }
+
+    fn callee_is_virtual_definition(&self, token: u32) -> bool {
+        self.method.callee_is_virtual_definition(token)
+    }
+
+    fn enclosing_type(&self) -> Option<&str> {
+        self.method.enclosing_type()
+    }
+
+    fn outer_has_this(&self) -> bool {
+        self.method.outer_has_this()
+    }
+}
 
 fn push_format(out: &mut String, args: std::fmt::Arguments<'_>) {
     let result: std::result::Result<(), std::fmt::Error> = std::fmt::write(out, args);
@@ -45,6 +98,21 @@ pub fn decompile_assembly_in(image: &[u8], lang: TargetLang) -> Result<Decompile
     let clr: ClrHeader = parse_clr_header(image, &pe)?;
     let root: MetadataRoot = parse_metadata_root(image, &pe, &clr)?;
     let resolver: Resolver = Resolver::build(image, &pe, &clr, &root)?;
+    let field_rvas: crate::field_rva::FieldRvaData =
+        crate::field_rva::FieldRvaData::build(image, &pe, &resolver);
+    let metadata: &[u8] = metadata_slice(image, &pe, &clr, &root)?;
+    let initialize_array_tokens: BTreeSet<u32> = root
+        .streams
+        .get("#Blob")
+        .and_then(|stream| {
+            let start: usize = usize::try_from(stream.offset).ok()?;
+            let length: usize = usize::try_from(stream.size).ok()?;
+            let end: usize = start.checked_add(length)?;
+            metadata.get(start..end)
+        })
+        .map_or_else(BTreeSet::new, |blob| {
+            crate::peel::deflatten::decrypt::init_array_tokens(&resolver, blob)
+        });
     let model: crate::model::AssemblyModel = resolver.model();
 
     let mut methods: Vec<StructuredMethod> = Vec::new();
@@ -59,6 +127,8 @@ pub fn decompile_assembly_in(image: &[u8], lang: TargetLang) -> Result<Decompile
                 &pe,
                 image,
                 &resolver,
+                &field_rvas,
+                &initialize_array_tokens,
                 ty,
                 m,
                 state_machine.as_ref(),
@@ -104,6 +174,8 @@ fn decompile_one(
     pe: &PeImage,
     image: &[u8],
     resolver: &Resolver,
+    field_rvas: &crate::field_rva::FieldRvaData,
+    initialize_array_tokens: &BTreeSet<u32>,
     ty: &TypeModel,
     m: &MethodModel,
     state_machine: Option<&crate::state_machine::StateMachine>,
@@ -160,10 +232,14 @@ fn decompile_one(
                 }
             };
             let resolved_sig: String = resolver.resolve_type_tokens(&raw_sig);
-            let namer: MethodNamer<'_> = MethodNamer {
-                resolver,
-                has_this: !m.is_static(),
-                enclosing_type: Some(ty.full_name.as_str()),
+            let namer: AssemblyNamer<'_> = AssemblyNamer {
+                method: MethodNamer {
+                    resolver,
+                    has_this: !m.is_static(),
+                    enclosing_type: Some(ty.full_name.as_str()),
+                },
+                field_rvas,
+                initialize_array_tokens,
             };
             let names: NameTable = build_name_table(resolver, m, &devirtualized_body, lang);
             let header_sig: String = if lang == TargetLang::CSharp {

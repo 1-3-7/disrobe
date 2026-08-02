@@ -15,6 +15,14 @@ pub enum TargetLang {
     VbNet,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetadataTokenKind {
+    Type,
+    Field,
+    Method,
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructuredMethod {
     pub token: u32,
@@ -49,6 +57,18 @@ impl CallInfo {
 pub trait TokenNamer {
     fn name(&self, token: u32) -> String;
 
+    fn token_kind(&self, _token: u32) -> MetadataTokenKind {
+        MetadataTokenKind::Unknown
+    }
+
+    fn field_rva_bytes(&self, _token: u32) -> Option<&[u8]> {
+        None
+    }
+
+    fn is_initialize_array(&self, _token: u32) -> bool {
+        false
+    }
+
     fn call_info(&self, _token: u32) -> Option<CallInfo> {
         None
     }
@@ -82,6 +102,11 @@ impl TokenNamer for Resolver {
     #[inline]
     fn name(&self, token: u32) -> String {
         self.resolve_token(token)
+    }
+
+    #[inline]
+    fn token_kind(&self, token: u32) -> MetadataTokenKind {
+        self.metadata_token_kind(token)
     }
 
     fn call_info(&self, token: u32) -> Option<CallInfo> {
@@ -137,6 +162,11 @@ impl TokenNamer for MethodNamer<'_> {
     #[inline]
     fn name(&self, token: u32) -> String {
         self.resolver.resolve_token(token)
+    }
+
+    #[inline]
+    fn token_kind(&self, token: u32) -> MetadataTokenKind {
+        self.resolver.metadata_token_kind(token)
     }
 
     #[inline]
@@ -221,11 +251,17 @@ enum Expr {
         receiver: Option<Box<Self>>,
         method: String,
     },
+    TypeHandle(String),
+    FieldHandle(u32),
+    MethodHandle(u32),
+    OpaqueHandle(u32),
+    TypeOf(String),
     Raw(String),
 }
 
 const MAX_EXPR_DEPTH: usize = 256;
 const UNRECOVERED_EXPRESSION: &str = "__unrecovered_expression";
+const UNRECONSTRUCTED_RUNTIME_HANDLE: &str = "__unreconstructed_runtime_handle";
 
 impl Expr {
     fn render(&self, lang: TargetLang, names: &NameTable) -> String {
@@ -271,6 +307,11 @@ impl Expr {
             | Self::StringLit(_)
             | Self::Null
             | Self::This
+            | Self::TypeHandle(_)
+            | Self::FieldHandle(_)
+            | Self::MethodHandle(_)
+            | Self::OpaqueHandle(_)
+            | Self::TypeOf(_)
             | Self::Raw(_) => {}
         }
     }
@@ -292,6 +333,7 @@ impl Expr {
                 | Self::LoadElem(_, _)
                 | Self::LoadLen(_)
                 | Self::MethodPtr { .. }
+                | Self::TypeOf(_)
         )
     }
 }
@@ -355,6 +397,11 @@ fn expression_depth(expression: &Expr) -> usize {
             | Expr::Null
             | Expr::This
             | Expr::MethodPtr { receiver: None, .. }
+            | Expr::TypeHandle(_)
+            | Expr::FieldHandle(_)
+            | Expr::MethodHandle(_)
+            | Expr::OpaqueHandle(_)
+            | Expr::TypeOf(_)
             | Expr::Raw(_) => {}
         }
     }
@@ -411,6 +458,24 @@ fn render_expr(initial: RenderAction<'_>, lang: TargetLang, names: &NameTable) -
             RenderAction::Expr(expression) => match expression {
                 Expr::Const(text) | Expr::Field(text) | Expr::Raw(text) => {
                     output.push_str(text);
+                }
+                Expr::TypeHandle(_) => {
+                    output.push_str("throw new System.NotSupportedException(\"");
+                    output.push_str(UNRECONSTRUCTED_RUNTIME_HANDLE);
+                    output.push_str("\")");
+                }
+                Expr::FieldHandle(token)
+                | Expr::MethodHandle(token)
+                | Expr::OpaqueHandle(token) => {
+                    let _ = write!(
+                        output,
+                        "throw new System.NotSupportedException(\"{UNRECONSTRUCTED_RUNTIME_HANDLE}: 0x{token:08X}\")"
+                    );
+                }
+                Expr::TypeOf(ty) => {
+                    output.push_str("typeof(");
+                    output.push_str(ty);
+                    output.push(')');
                 }
                 Expr::Local(index) => output.push_str(&NameTable::local_name(*index)),
                 Expr::Arg(index) => output.push_str(&names.arg_name(*index)),
@@ -602,6 +667,67 @@ fn render_expr(initial: RenderAction<'_>, lang: TargetLang, names: &NameTable) -
 }
 
 const MAX_ARRAY_LITERAL_ELEMENTS: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FieldRvaPrimitive {
+    Boolean,
+    Char,
+    I1,
+    U1,
+    I2,
+    U2,
+    I4,
+    U4,
+    I8,
+    U8,
+}
+
+impl FieldRvaPrimitive {
+    const fn width(self) -> usize {
+        match self {
+            Self::Boolean | Self::I1 | Self::U1 => 1,
+            Self::Char | Self::I2 | Self::U2 => 2,
+            Self::I4 | Self::U4 => 4,
+            Self::I8 | Self::U8 => 8,
+        }
+    }
+
+    fn from_type_name(ty: &str) -> Option<Self> {
+        match ty {
+            "bool" | "System.Boolean" => Some(Self::Boolean),
+            "char" | "System.Char" => Some(Self::Char),
+            "sbyte" | "System.SByte" => Some(Self::I1),
+            "byte" | "System.Byte" => Some(Self::U1),
+            "short" | "System.Int16" => Some(Self::I2),
+            "ushort" | "System.UInt16" => Some(Self::U2),
+            "int" | "System.Int32" => Some(Self::I4),
+            "uint" | "System.UInt32" => Some(Self::U4),
+            "long" | "System.Int64" => Some(Self::I8),
+            "ulong" | "System.UInt64" => Some(Self::U8),
+            _ => None,
+        }
+    }
+
+    fn decode(self, bytes: &[u8]) -> Option<Expr> {
+        let literal: String = match self {
+            Self::Boolean => match bytes {
+                [0] => "false".to_owned(),
+                [1] => "true".to_owned(),
+                _ => return None,
+            },
+            Self::Char => char_literal(&u16::from_le_bytes(bytes.try_into().ok()?).to_string())?,
+            Self::I1 => i8::from_le_bytes(bytes.try_into().ok()?).to_string(),
+            Self::U1 => u8::from_le_bytes(bytes.try_into().ok()?).to_string(),
+            Self::I2 => i16::from_le_bytes(bytes.try_into().ok()?).to_string(),
+            Self::U2 => u16::from_le_bytes(bytes.try_into().ok()?).to_string(),
+            Self::I4 => i32::from_le_bytes(bytes.try_into().ok()?).to_string(),
+            Self::U4 => format!("{}U", u32::from_le_bytes(bytes.try_into().ok()?)),
+            Self::I8 => format!("{}L", i64::from_le_bytes(bytes.try_into().ok()?)),
+            Self::U8 => format!("{}UL", u64::from_le_bytes(bytes.try_into().ok()?)),
+        };
+        Some(Expr::Const(literal))
+    }
+}
 
 const fn boolean_literal(text: &str) -> Option<&'static str> {
     match text.as_bytes() {
@@ -1113,6 +1239,78 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         Ok(())
     }
 
+    fn populate_field_rva_duplicate_array(&mut self, array: &Expr, field_token: u32) -> bool {
+        if self.lang != TargetLang::CSharp {
+            return false;
+        }
+        let Expr::NewArr {
+            ty,
+            length,
+            elements,
+        } = array
+        else {
+            return false;
+        };
+        if !elements.is_empty() {
+            return false;
+        }
+        let Some(capacity): Option<usize> = const_operand_value(length) else {
+            return false;
+        };
+        if capacity == 0 || capacity > MAX_ARRAY_LITERAL_ELEMENTS {
+            return false;
+        }
+        let Some(primitive): Option<FieldRvaPrimitive> = FieldRvaPrimitive::from_type_name(ty)
+        else {
+            return false;
+        };
+        let Some(expected_bytes): Option<usize> = capacity.checked_mul(primitive.width()) else {
+            return false;
+        };
+        let Some(bytes): Option<&[u8]> = self.namer.field_rva_bytes(field_token) else {
+            return false;
+        };
+        if bytes.len() != expected_bytes {
+            return false;
+        }
+        let mut decoded: Vec<Expr> = Vec::with_capacity(capacity);
+        for chunk in bytes.chunks_exact(primitive.width()) {
+            let Some(value): Option<Expr> = primitive.decode(chunk) else {
+                return false;
+            };
+            decoded.push(value);
+        }
+        let duplicated: bool = match self.stack.last() {
+            Some(Expr::NewArr {
+                ty: twin_ty,
+                length: twin_length,
+                elements: twin_elements,
+            }) => {
+                twin_ty == ty
+                    && twin_elements.is_empty()
+                    && const_operand_value(twin_length).is_some_and(|len: usize| len == capacity)
+            }
+            _ => false,
+        };
+        if !duplicated {
+            return false;
+        }
+        let Some(Expr::NewArr {
+            elements: twin_elements,
+            ..
+        }) = self.stack.last_mut()
+        else {
+            return false;
+        };
+        twin_elements.extend(decoded);
+        if let Some(top) = self.stack.last()
+            && let Some(depth) = self.stack_depths.last_mut()
+        {
+            *depth = expression_depth(top);
+        }
+        true
+    }
+
     fn binary(&mut self, op: &'static str) {
         let (b, b_depth): (Expr, usize) = self.pop_with_depth();
         let (a, a_depth): (Expr, usize) = self.pop_with_depth();
@@ -1302,6 +1500,16 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 }
             }
         }
+        if ins.name == "call"
+            && info.is_some_and(|call: CallInfo| {
+                call.arg_count == 2 && !call.has_this && !call.returns_value
+            })
+            && self.namer.is_initialize_array(token)
+            && let [array, Expr::FieldHandle(field_token)] = args.as_slice()
+            && self.populate_field_rva_duplicate_array(array, *field_token)
+        {
+            return;
+        }
         if !has_this
             && let Some(op) = binary_operator_special_name(member)
             && args.len() == 2
@@ -1333,13 +1541,15 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             }
             return;
         }
-        if member == "GetTypeFromHandle"
-            && args.len() == 1
-            && let Expr::Raw(inner) = &args[0]
-            && inner.starts_with("typeof(")
-        {
-            let typeof_expr: Expr = args.pop().unwrap_or(Expr::Null);
-            self.push(typeof_expr);
+        if member == "GetTypeFromHandle" && args.len() == 1 {
+            let handle: Expr = args.pop().unwrap_or(Expr::Null);
+            let type_expression: Expr = match &handle {
+                Expr::TypeHandle(ty) => Expr::TypeOf(ty.clone()),
+                _ => Expr::Raw(format!(
+                    "throw new System.NotSupportedException(\"{UNRECONSTRUCTED_RUNTIME_HANDLE}\")"
+                )),
+            };
+            self.push(type_expression);
             return;
         }
         if !has_this
@@ -1656,10 +1866,19 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                     value: format!("default({ty})"),
                 });
             }
-            "ldtoken" => self.push(Expr::Raw(format!(
-                "typeof({})",
-                short(&self.token_name(ins))
-            ))),
+            "ldtoken" => {
+                let token: u32 = match ins.operand {
+                    OperandValue::Token(token) => token,
+                    _ => 0,
+                };
+                let handle: Expr = match self.namer.token_kind(token) {
+                    MetadataTokenKind::Type => Expr::TypeHandle(short(&self.token_name(ins))),
+                    MetadataTokenKind::Field => Expr::FieldHandle(token),
+                    MetadataTokenKind::Method => Expr::MethodHandle(token),
+                    MetadataTokenKind::Unknown => Expr::OpaqueHandle(token),
+                };
+                self.push(handle);
+            }
             "ldftn" => {
                 let method: String = self.token_name(ins);
                 self.push(Expr::MethodPtr {
@@ -2661,6 +2880,112 @@ mod tests {
                 byref_param_mask: 0,
             })
         }
+    }
+
+    struct RuntimeHandleNamer;
+
+    impl TokenNamer for RuntimeHandleNamer {
+        fn name(&self, token: u32) -> String {
+            match token {
+                0x0400_0001 => "<PrivateImplementationDetails>::Data".to_owned(),
+                0x0A00_0001 => "System.Type::GetTypeFromHandle".to_owned(),
+                other => format!("token_{other:08X}"),
+            }
+        }
+
+        fn token_kind(&self, token: u32) -> MetadataTokenKind {
+            match token {
+                0x0400_0001 => MetadataTokenKind::Field,
+                0x0A00_0001 => MetadataTokenKind::Method,
+                _ => MetadataTokenKind::Unknown,
+            }
+        }
+
+        fn call_info(&self, token: u32) -> Option<CallInfo> {
+            (token == 0x0A00_0001).then_some(CallInfo {
+                arg_count: 1,
+                returns_value: true,
+                has_this: false,
+                byref_param_mask: 0,
+            })
+        }
+    }
+
+    #[test]
+    fn field_handle_never_lifts_as_a_typeof_expression() {
+        let mut code: Vec<u8> = vec![0xD0];
+        code.extend_from_slice(&0x0400_0001u32.to_le_bytes());
+        code.push(0x28);
+        code.extend_from_slice(&0x0A00_0001u32.to_le_bytes());
+        code.push(0x2A);
+        let body: MethodBody = body_from(&code);
+        let out: StructuredMethod = decompile_method("Type M()", &body, &RuntimeHandleNamer);
+        assert!(
+            out.body.contains("__unreconstructed_runtime_handle"),
+            "field handles must remain explicitly unreconstructed; got:\n{}",
+            out.body
+        );
+    }
+
+    struct FieldRvaNamer;
+
+    impl TokenNamer for FieldRvaNamer {
+        fn name(&self, token: u32) -> String {
+            match token {
+                0x0100_0001 => "System.Int32".to_owned(),
+                0x0400_0001 => "<PrivateImplementationDetails>::Data".to_owned(),
+                0x0A00_0001 => {
+                    "System.Runtime.CompilerServices.RuntimeHelpers::InitializeArray".to_owned()
+                }
+                other => format!("token_{other:08X}"),
+            }
+        }
+
+        fn token_kind(&self, token: u32) -> MetadataTokenKind {
+            match token {
+                0x0100_0001 => MetadataTokenKind::Type,
+                0x0400_0001 => MetadataTokenKind::Field,
+                0x0A00_0001 => MetadataTokenKind::Method,
+                _ => MetadataTokenKind::Unknown,
+            }
+        }
+
+        fn call_info(&self, token: u32) -> Option<CallInfo> {
+            (token == 0x0A00_0001).then_some(CallInfo {
+                arg_count: 2,
+                returns_value: false,
+                has_this: false,
+                byref_param_mask: 0,
+            })
+        }
+
+        fn field_rva_bytes(&self, token: u32) -> Option<&[u8]> {
+            (token == 0x0400_0001).then_some(&[1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0][..])
+        }
+
+        fn is_initialize_array(&self, token: u32) -> bool {
+            token == 0x0A00_0001
+        }
+    }
+
+    #[test]
+    fn authenticated_initialize_array_lifts_a_fixed_width_literal() {
+        let mut code: Vec<u8> = vec![0x19, 0x8D];
+        code.extend_from_slice(&0x0100_0001u32.to_le_bytes());
+        code.push(0x25);
+        code.push(0xD0);
+        code.extend_from_slice(&0x0400_0001u32.to_le_bytes());
+        code.push(0x28);
+        code.extend_from_slice(&0x0A00_0001u32.to_le_bytes());
+        code.extend_from_slice(&[0x0A, 0x2A]);
+        let body: MethodBody = body_from(&code);
+        let out: StructuredMethod = decompile_method("void M()", &body, &FieldRvaNamer);
+        assert!(
+            out.body
+                .contains("local0 = new System.Int32[3] { 1, 2, 3 };"),
+            "authenticated FieldRVA bytes must become the literal initializer; got:\n{}",
+            out.body
+        );
     }
 
     #[test]

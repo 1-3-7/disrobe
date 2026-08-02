@@ -7,10 +7,10 @@ use crate::error::{Error, Result};
 use crate::metadata::{MetadataRoot, decompress_uint};
 use crate::pe::{ClrHeader, PeImage};
 use crate::signature::{
-    FieldSig, MethodSig, TypeSig, parse_field_sig, parse_field_sig_with_modifiers,
-    parse_method_sig, parse_method_sig_strict,
+    FieldSig, MethodSig, TypeSig, parse_field_sig, parse_field_sig_strict,
+    parse_field_sig_with_modifiers, parse_method_sig, parse_method_sig_strict,
 };
-use crate::structurize::TargetLang;
+use crate::structurize::{MetadataTokenKind, TargetLang};
 use crate::tables::{
     FieldRow, GenericParamRow, InterfaceImplRow, MemberRefRow, MethodDefRow, MethodSpecRow, RowRef,
     TableId, Tables, TypeDefRow, TypeRefRow, TypeSpecRow, parse_tables,
@@ -1781,6 +1781,55 @@ impl Resolver {
         };
         let blob: &[u8] = self.blob(blob_index)?;
         parse_method_sig(blob).ok()
+    }
+
+    #[must_use]
+    pub fn metadata_token_kind(&self, token: u32) -> MetadataTokenKind {
+        let table_idx: u8 = u8::try_from(token >> 24).unwrap_or(0xFF);
+        let Some(table): Option<TableId> = TableId::from_index(table_idx) else {
+            return MetadataTokenKind::Unknown;
+        };
+        let Some(rid): Option<usize> = (token & 0x00FF_FFFF)
+            .checked_sub(1)
+            .map(|value: u32| value as usize)
+        else {
+            return MetadataTokenKind::Unknown;
+        };
+        match table {
+            TableId::TypeRef if self.tables.type_refs.get(rid).is_some() => MetadataTokenKind::Type,
+            TableId::TypeDef if self.tables.type_defs.get(rid).is_some() => MetadataTokenKind::Type,
+            TableId::TypeSpec if self.tables.type_specs.get(rid).is_some() => {
+                MetadataTokenKind::Type
+            }
+            TableId::Field if self.tables.fields.get(rid).is_some() => MetadataTokenKind::Field,
+            TableId::MethodDef if self.tables.methods.get(rid).is_some() => {
+                MetadataTokenKind::Method
+            }
+            TableId::MethodSpec if self.tables.method_specs.get(rid).is_some() => {
+                MetadataTokenKind::Method
+            }
+            TableId::MemberRef => {
+                let Some(row): Option<&MemberRefRow> = self.tables.member_refs.get(rid) else {
+                    return MetadataTokenKind::Unknown;
+                };
+                let Some(blob): Option<&[u8]> = self.blob(row.signature) else {
+                    return MetadataTokenKind::Unknown;
+                };
+                if parse_field_sig_strict(blob).is_ok() {
+                    MetadataTokenKind::Field
+                } else if parse_method_sig_strict(blob).is_ok() {
+                    MetadataTokenKind::Method
+                } else {
+                    MetadataTokenKind::Unknown
+                }
+            }
+            _ => MetadataTokenKind::Unknown,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn strict_field_signature(&self, blob_index: u32) -> Option<TypeSig> {
+        parse_field_sig_strict(self.blob(blob_index)?).ok()
     }
 
     #[must_use]

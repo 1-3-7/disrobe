@@ -1304,6 +1304,7 @@ const EDGECASES_TYPES: &[(&str, bool)] = &[
 
 const EDGECASES_RECOMPILE_MEMBERS: &[&str] = &[
     "Cat",
+    "CollectionPlayground",
     "ConditionalCompilation",
     "DisposableScope",
     "Dog",
@@ -1462,6 +1463,114 @@ fn whole_type_recompile_check_rejects_deliberately_broken_source() {
     assert!(
         broken_dll.is_none() && !broken_errors.is_empty(),
         "csc accepted recovered source carrying raw state-machine plumbing, so this check cannot separate recovered C# from builder plumbing"
+    );
+}
+
+fn write_collection_runner_project(dir: &Path) {
+    let project: &str = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <TargetFramework>net9.0</TargetFramework>\n    <Nullable>disable</Nullable>\n    <ImplicitUsings>disable</ImplicitUsings>\n    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>\n    <Deterministic>true</Deterministic>\n    <Optimize>true</Optimize>\n    <DebugType>none</DebugType>\n  </PropertyGroup>\n</Project>\n";
+    std::fs::write(dir.join("oracle.csproj"), project).expect("write runner project");
+}
+
+fn run_field_rva_arrays(dir: &Path, head: &str, tail: &str) -> std::process::Output {
+    let runner: String = format!(
+        "{PREAMBLE}public static class Program\n{{\n    public static void Main()\n    {{\n        int[] head = {head};\n        int[] tail = {tail};\n        System.IO.File.WriteAllText(\"collection-output.txt\", string.Join(\",\", head.Concat(tail)));\n    }}\n}}\n"
+    );
+    std::fs::write(dir.join("host.cs"), runner).expect("write runner source");
+    let build: std::process::Output = Command::new("dotnet")
+        .args(["build", "-c", "Release", "-v", "q", "-nologo"])
+        .current_dir(dir)
+        .output()
+        .expect("build recovered collection program");
+    if !build.status.success() {
+        return build;
+    }
+    Command::new(dir.join("bin/Release/net9.0/oracle.exe"))
+        .current_dir(dir)
+        .output()
+        .expect("run recovered collection program")
+}
+
+fn fixed_int32_array_initializers(source: &str) -> Vec<String> {
+    let mut initializers: Vec<String> = Vec::new();
+    let mut remaining: &str = source;
+    while let Some(start) = remaining.find("new System.Int32[3]") {
+        let candidate: &str = &remaining[start..];
+        let Some(end): Option<usize> = candidate.find('}') else {
+            break;
+        };
+        initializers.push(candidate[..=end].to_owned());
+        remaining = &candidate[end + 1..];
+    }
+    initializers
+}
+
+#[test]
+fn collection_field_rva_recovery_recompiles_and_preserves_runtime_values() {
+    assert!(
+        dotnet_available(),
+        "dotnet SDK is required for the CollectionPlayground compiler/runtime oracle"
+    );
+    let path: PathBuf = manifest(EDGECASES_DLL)
+        .canonicalize()
+        .expect("canonicalize");
+    let bytes: Vec<u8> = std::fs::read(&path).expect("read fixture");
+    let asm: DecompiledAssembly = decompile_assembly(&bytes).expect("decompile");
+    let methods: Vec<UserMethod> = asm
+        .methods
+        .iter()
+        .filter_map(|method: &StructuredMethod| {
+            user_method_for(&method.body, "CollectionPlayground")
+        })
+        .filter(|method: &UserMethod| method.name == "CollectionExpression")
+        .collect();
+    assert_eq!(
+        methods.len(),
+        1,
+        "recover CollectionExpression exactly once"
+    );
+    let initializers: Vec<String> = fixed_int32_array_initializers(&methods[0].source);
+    assert_eq!(
+        initializers,
+        vec![
+            "new System.Int32[3] { 1, 2, 3 }".to_owned(),
+            "new System.Int32[3] { 9, 10, 11 }".to_owned(),
+        ],
+        "the runner must compile the recovered FieldRVA expressions"
+    );
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_collection_field_rva").expect("mk tmp");
+    let tmp: PathBuf = scratch.path().to_path_buf();
+    write_collection_runner_project(&tmp);
+    let clean: std::process::Output =
+        run_field_rva_arrays(&tmp, &initializers[0], &initializers[1]);
+    assert!(
+        clean.status.success(),
+        "recovered CollectionExpression must compile and run:\n{}",
+        String::from_utf8_lossy(&clean.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(tmp.join("collection-output.txt"))
+            .expect("read collection runtime output"),
+        "1,2,3,9,10,11",
+        "the recovered collection must retain both initialized FieldRVA spans"
+    );
+    let mutated_head: String = initializers[0].replacen("1, 2, 3", "2, 2, 3", 1);
+    assert_ne!(
+        mutated_head, initializers[0],
+        "the element mutation must change recovered source"
+    );
+    let mutated_run: std::process::Output =
+        run_field_rva_arrays(&tmp, &mutated_head, &initializers[1]);
+    assert!(
+        mutated_run.status.success(),
+        "the one-element mutation must stay compilable:\n{}",
+        String::from_utf8_lossy(&mutated_run.stderr)
+    );
+    assert_ne!(
+        std::fs::read_to_string(tmp.join("collection-output.txt"))
+            .expect("read mutated collection runtime output"),
+        "1,2,3,9,10,11",
+        "the runtime oracle must reject a changed FieldRVA element"
     );
 }
 

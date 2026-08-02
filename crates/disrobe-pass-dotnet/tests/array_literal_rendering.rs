@@ -137,3 +137,18 @@ fn boxed_boolean_constant_recovers_as_a_boolean_literal() {
         "a bool boxed into an object parameter must render as a boolean literal, not as its integer encoding:\n{body}"
     );
 }
+
+#[test]
+fn collection_expression_recovers_the_two_field_rva_integer_literals() {
+    let asm: DecompiledAssembly = decompile();
+    let body: String = body_of(&asm, "CollectionPlayground", "CollectionExpression");
+    assert!(
+        body.contains("new System.Int32[3] { 1, 2, 3 }")
+            && body.contains("new System.Int32[3] { 9, 10, 11 }"),
+        "the compiled FieldRVA blocks must recover their little-endian Int32 values:\n{body}"
+    );
+    assert!(
+        !body.contains("__unreconstructed_runtime_handle"),
+        "the authenticated collection initializers must not retain a runtime-handle refusal:\n{body}"
+    );
+}
