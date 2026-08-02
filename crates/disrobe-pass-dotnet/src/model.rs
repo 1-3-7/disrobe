@@ -10,7 +10,7 @@ use crate::signature::{
     FieldSig, MethodSig, TypeSig, parse_field_sig, parse_field_sig_strict,
     parse_field_sig_with_modifiers, parse_method_sig, parse_method_sig_strict,
 };
-use crate::structurize::{MetadataTokenKind, TargetLang};
+use crate::structurize::{FieldRvaPrimitive, MetadataTokenKind, TargetLang};
 use crate::tables::{
     FieldRow, GenericParamRow, InterfaceImplRow, MemberRefRow, MethodDefRow, MethodSpecRow, RowRef,
     TableId, Tables, TypeDefRow, TypeRefRow, TypeSpecRow, parse_tables,
@@ -1825,6 +1825,71 @@ impl Resolver {
             }
             _ => MetadataTokenKind::Unknown,
         }
+    }
+
+    #[must_use]
+    pub fn field_rva_primitive(&self, token: u32) -> Option<FieldRvaPrimitive> {
+        let table_index: u8 = u8::try_from(token >> 24).ok()?;
+        if TableId::from_index(table_index) != Some(TableId::TypeRef) {
+            return None;
+        }
+        let type_ref_index: usize = usize::try_from((token & 0x00FF_FFFF).checked_sub(1)?).ok()?;
+        let type_ref: &TypeRefRow = self.tables.type_refs.get(type_ref_index)?;
+        if self.string(type_ref.namespace) != "System" {
+            return None;
+        }
+        let scope: RowRef = type_ref.resolution_scope?;
+        if !self.is_corelib_assembly_ref(scope) {
+            return None;
+        }
+        match self.string(type_ref.name).as_str() {
+            "Boolean" => Some(FieldRvaPrimitive::Boolean),
+            "Char" => Some(FieldRvaPrimitive::Char),
+            "SByte" => Some(FieldRvaPrimitive::I1),
+            "Byte" => Some(FieldRvaPrimitive::U1),
+            "Int16" => Some(FieldRvaPrimitive::I2),
+            "UInt16" => Some(FieldRvaPrimitive::U2),
+            "Int32" => Some(FieldRvaPrimitive::I4),
+            "UInt32" => Some(FieldRvaPrimitive::U4),
+            "Int64" => Some(FieldRvaPrimitive::I8),
+            "UInt64" => Some(FieldRvaPrimitive::U8),
+            _ => None,
+        }
+    }
+
+    fn is_corelib_assembly_ref(&self, scope: RowRef) -> bool {
+        if scope.table != TableId::AssemblyRef || scope.row == 0 {
+            return false;
+        }
+        let Some(index): Option<usize> = scope
+            .row
+            .checked_sub(1)
+            .and_then(|row: u32| usize::try_from(row).ok())
+        else {
+            return false;
+        };
+        let Some(assembly) = self.tables.assembly_refs.get(index) else {
+            return false;
+        };
+        let Some(public_key_token): Option<&[u8]> = self.blob(assembly.public_key_or_token) else {
+            return false;
+        };
+        matches!(
+            (self.string(assembly.name).as_str(), public_key_token),
+            ("mscorlib", [0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89])
+                | (
+                    "System.Runtime",
+                    [0xB0, 0x3F, 0x5F, 0x7F, 0x11, 0xD5, 0x0A, 0x3A]
+                )
+                | (
+                    "netstandard",
+                    [0xCC, 0x7B, 0x13, 0xFF, 0xCD, 0x2D, 0xDD, 0x51]
+                )
+                | (
+                    "System.Private.CoreLib",
+                    [0x7C, 0xEC, 0x85, 0xD7, 0xBE, 0xA7, 0x79, 0x8E]
+                )
+        )
     }
 
     #[must_use]

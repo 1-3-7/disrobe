@@ -65,6 +65,10 @@ pub trait TokenNamer {
         None
     }
 
+    fn field_rva_primitive(&self, _token: u32) -> Option<FieldRvaPrimitive> {
+        None
+    }
+
     fn is_initialize_array(&self, _token: u32) -> bool {
         false
     }
@@ -107,6 +111,11 @@ impl TokenNamer for Resolver {
     #[inline]
     fn token_kind(&self, token: u32) -> MetadataTokenKind {
         self.metadata_token_kind(token)
+    }
+
+    #[inline]
+    fn field_rva_primitive(&self, token: u32) -> Option<FieldRvaPrimitive> {
+        Resolver::field_rva_primitive(self, token)
     }
 
     fn call_info(&self, token: u32) -> Option<CallInfo> {
@@ -167,6 +176,11 @@ impl TokenNamer for MethodNamer<'_> {
     #[inline]
     fn token_kind(&self, token: u32) -> MetadataTokenKind {
         self.resolver.metadata_token_kind(token)
+    }
+
+    #[inline]
+    fn field_rva_primitive(&self, token: u32) -> Option<FieldRvaPrimitive> {
+        self.resolver.field_rva_primitive(token)
     }
 
     #[inline]
@@ -239,6 +253,8 @@ enum Expr {
     LoadLen(Box<Self>),
     NewArr {
         ty: String,
+        element_token: u32,
+        allocation_id: u64,
         length: Box<Self>,
         elements: Vec<Self>,
     },
@@ -262,6 +278,20 @@ enum Expr {
 const MAX_EXPR_DEPTH: usize = 256;
 const UNRECOVERED_EXPRESSION: &str = "__unrecovered_expression";
 const UNRECONSTRUCTED_RUNTIME_HANDLE: &str = "__unreconstructed_runtime_handle";
+
+fn runtime_handle_refusal(lang: TargetLang, handle_type: &str, detail: &str) -> String {
+    match lang {
+        TargetLang::CSharp => format!(
+            "(new System.Func<{handle_type}>(() => {{ throw new System.NotSupportedException(\"{detail}\"); }}))()"
+        ),
+        TargetLang::FSharp => format!(
+            "((fun () -> raise (System.NotSupportedException(\"{detail}\")))() : {handle_type})"
+        ),
+        TargetLang::VbNet => format!(
+            "(New System.Func(Of {handle_type})(Function()\nThrow New System.NotSupportedException(\"{detail}\")\nEnd Function)).Invoke()"
+        ),
+    }
+}
 
 impl Expr {
     fn render(&self, lang: TargetLang, names: &NameTable) -> String {
@@ -460,17 +490,32 @@ fn render_expr(initial: RenderAction<'_>, lang: TargetLang, names: &NameTable) -
                     output.push_str(text);
                 }
                 Expr::TypeHandle(_) => {
-                    output.push_str("throw new System.NotSupportedException(\"");
-                    output.push_str(UNRECONSTRUCTED_RUNTIME_HANDLE);
-                    output.push_str("\")");
+                    output.push_str(&runtime_handle_refusal(
+                        lang,
+                        "System.RuntimeTypeHandle",
+                        UNRECONSTRUCTED_RUNTIME_HANDLE,
+                    ));
                 }
-                Expr::FieldHandle(token)
-                | Expr::MethodHandle(token)
-                | Expr::OpaqueHandle(token) => {
-                    let _ = write!(
-                        output,
-                        "throw new System.NotSupportedException(\"{UNRECONSTRUCTED_RUNTIME_HANDLE}: 0x{token:08X}\")"
-                    );
+                Expr::FieldHandle(token) => {
+                    output.push_str(&runtime_handle_refusal(
+                        lang,
+                        "System.RuntimeFieldHandle",
+                        &format!("{UNRECONSTRUCTED_RUNTIME_HANDLE}: 0x{token:08X}"),
+                    ));
+                }
+                Expr::MethodHandle(token) => {
+                    output.push_str(&runtime_handle_refusal(
+                        lang,
+                        "System.RuntimeMethodHandle",
+                        &format!("{UNRECONSTRUCTED_RUNTIME_HANDLE}: 0x{token:08X}"),
+                    ));
+                }
+                Expr::OpaqueHandle(token) => {
+                    output.push_str(&runtime_handle_refusal(
+                        lang,
+                        "System.RuntimeTypeHandle",
+                        &format!("{UNRECONSTRUCTED_RUNTIME_HANDLE}: 0x{token:08X}"),
+                    ));
                 }
                 Expr::TypeOf(ty) => {
                     output.push_str("typeof(");
@@ -593,6 +638,7 @@ fn render_expr(initial: RenderAction<'_>, lang: TargetLang, names: &NameTable) -
                     ty,
                     length,
                     elements,
+                    ..
                 } => {
                     output.push_str("new ");
                     output.push_str(ty);
@@ -669,7 +715,7 @@ fn render_expr(initial: RenderAction<'_>, lang: TargetLang, names: &NameTable) -
 const MAX_ARRAY_LITERAL_ELEMENTS: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FieldRvaPrimitive {
+pub enum FieldRvaPrimitive {
     Boolean,
     Char,
     I1,
@@ -689,22 +735,6 @@ impl FieldRvaPrimitive {
             Self::Char | Self::I2 | Self::U2 => 2,
             Self::I4 | Self::U4 => 4,
             Self::I8 | Self::U8 => 8,
-        }
-    }
-
-    fn from_type_name(ty: &str) -> Option<Self> {
-        match ty {
-            "bool" | "System.Boolean" => Some(Self::Boolean),
-            "char" | "System.Char" => Some(Self::Char),
-            "sbyte" | "System.SByte" => Some(Self::I1),
-            "byte" | "System.Byte" => Some(Self::U1),
-            "short" | "System.Int16" => Some(Self::I2),
-            "ushort" | "System.UInt16" => Some(Self::U2),
-            "int" | "System.Int32" => Some(Self::I4),
-            "uint" | "System.UInt32" => Some(Self::U4),
-            "long" | "System.Int64" => Some(Self::I8),
-            "ulong" | "System.UInt64" => Some(Self::U8),
-            _ => None,
         }
     }
 
@@ -1124,6 +1154,7 @@ struct Lifter<'a, N: TokenNamer> {
     locals_used: BTreeSet<u32>,
     locals_assigned: BTreeSet<u32>,
     pending_null_cond: bool,
+    next_array_id: u64,
 }
 
 impl<'a, N: TokenNamer> Lifter<'a, N> {
@@ -1138,6 +1169,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             locals_used: BTreeSet::new(),
             locals_assigned: BTreeSet::new(),
             pending_null_cond: false,
+            next_array_id: 0,
         }
     }
 
@@ -1194,8 +1226,10 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         }
         let Expr::NewArr {
             ty,
+            allocation_id,
             length,
             elements,
+            ..
         } = array
         else {
             return Err(value);
@@ -1211,10 +1245,13 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         let duplicated: bool = match self.stack.last() {
             Some(Expr::NewArr {
                 ty: twin_ty,
+                allocation_id: twin_allocation_id,
                 length: twin_length,
                 elements: twin_elements,
+                ..
             }) => {
                 twin_ty == ty
+                    && twin_allocation_id == allocation_id
                     && twin_elements.len() == elements.len()
                     && const_operand_value(twin_length).is_some_and(|len: usize| len == capacity)
             }
@@ -1244,9 +1281,11 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             return false;
         }
         let Expr::NewArr {
-            ty,
+            element_token,
+            allocation_id,
             length,
             elements,
+            ..
         } = array
         else {
             return false;
@@ -1260,7 +1299,8 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         if capacity == 0 || capacity > MAX_ARRAY_LITERAL_ELEMENTS {
             return false;
         }
-        let Some(primitive): Option<FieldRvaPrimitive> = FieldRvaPrimitive::from_type_name(ty)
+        let Some(primitive): Option<FieldRvaPrimitive> =
+            self.namer.field_rva_primitive(*element_token)
         else {
             return false;
         };
@@ -1282,11 +1322,14 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         }
         let duplicated: bool = match self.stack.last() {
             Some(Expr::NewArr {
-                ty: twin_ty,
+                element_token: twin_element_token,
+                allocation_id: twin_allocation_id,
                 length: twin_length,
                 elements: twin_elements,
+                ..
             }) => {
-                twin_ty == ty
+                twin_element_token == element_token
+                    && twin_allocation_id == allocation_id
                     && twin_elements.is_empty()
                     && const_operand_value(twin_length).is_some_and(|len: usize| len == capacity)
             }
@@ -1791,8 +1834,16 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             "newarr" => {
                 let len: Expr = self.pop();
                 let ty: String = qualified_type_name(&self.token_name(ins), self.lang);
+                let element_token: u32 = match ins.operand {
+                    OperandValue::Token(token) => token,
+                    _ => 0,
+                };
+                let allocation_id: u64 = self.next_array_id;
+                self.next_array_id = self.next_array_id.saturating_add(1);
                 self.push(Expr::NewArr {
                     ty,
+                    element_token,
+                    allocation_id,
                     length: Box::new(len),
                     elements: Vec::new(),
                 });
@@ -2927,6 +2978,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn runtime_handle_refusal_compiles_in_return_assignment_and_argument_positions() {
+        let expression: String = runtime_handle_refusal(
+            TargetLang::CSharp,
+            "System.RuntimeFieldHandle",
+            UNRECONSTRUCTED_RUNTIME_HANDLE,
+        );
+        let source: String = format!(
+            "public static class RuntimeHandleProbe\n{{\n    public static System.RuntimeFieldHandle ReturnHandle()\n    {{\n        return {expression};\n    }}\n\n    public static void AssignHandle()\n    {{\n        System.RuntimeFieldHandle value = {expression};\n    }}\n\n    public static void PassHandle()\n    {{\n        Accept({expression});\n    }}\n\n    private static void Accept(System.RuntimeFieldHandle value)\n    {{\n    }}\n}}\n"
+        );
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("disrobe_runtime_handle_refusal")
+                .expect("create runtime-handle compiler scratch directory");
+        let directory: &std::path::Path = scratch.path();
+        std::fs::write(
+            directory.join("RuntimeHandleProbe.csproj"),
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net9.0</TargetFramework><Nullable>disable</Nullable><ImplicitUsings>disable</ImplicitUsings><GenerateAssemblyInfo>false</GenerateAssemblyInfo></PropertyGroup></Project>",
+        )
+        .expect("write runtime-handle compiler project");
+        std::fs::write(directory.join("RuntimeHandleProbe.cs"), source)
+            .expect("write runtime-handle compiler source");
+        let output: std::process::Output = std::process::Command::new("dotnet")
+            .args(["build", "-c", "Release", "-v", "q", "-nologo"])
+            .current_dir(directory)
+            .output()
+            .expect("run runtime-handle compiler");
+        assert!(
+            output.status.success(),
+            "runtime-handle refusal must compile in every C# expression position:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     struct FieldRvaNamer;
 
     impl TokenNamer for FieldRvaNamer {
@@ -2963,6 +3047,10 @@ mod tests {
             (token == 0x0400_0001).then_some(&[1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0][..])
         }
 
+        fn field_rva_primitive(&self, token: u32) -> Option<FieldRvaPrimitive> {
+            (token == 0x0100_0001).then_some(FieldRvaPrimitive::I4)
+        }
+
         fn is_initialize_array(&self, token: u32) -> bool {
             token == 0x0A00_0001
         }
@@ -2984,6 +3072,69 @@ mod tests {
             out.body
                 .contains("local0 = new System.Int32[3] { 1, 2, 3 };"),
             "authenticated FieldRVA bytes must become the literal initializer; got:\n{}",
+            out.body
+        );
+    }
+
+    #[test]
+    fn initialize_array_without_duplicate_never_mutates_another_equal_array() {
+        let mut code: Vec<u8> = vec![0x19, 0x8D];
+        code.extend_from_slice(&0x0100_0001u32.to_le_bytes());
+        code.extend_from_slice(&[0x19, 0x8D]);
+        code.extend_from_slice(&0x0100_0001u32.to_le_bytes());
+        code.push(0xD0);
+        code.extend_from_slice(&0x0400_0001u32.to_le_bytes());
+        code.push(0x28);
+        code.extend_from_slice(&0x0A00_0001u32.to_le_bytes());
+        code.push(0x2A);
+        let body: MethodBody = body_from(&code);
+        let out: StructuredMethod = decompile_method("int[] M()", &body, &FieldRvaNamer);
+        assert!(
+            !out.body.contains("new System.Int32[3] { 1, 2, 3 }"),
+            "InitializeArray without dup must not mutate the unrelated retained array; got:\n{}",
+            out.body
+        );
+    }
+
+    struct SpoofedPrimitiveNamer;
+
+    impl TokenNamer for SpoofedPrimitiveNamer {
+        fn name(&self, token: u32) -> String {
+            FieldRvaNamer.name(token)
+        }
+
+        fn token_kind(&self, token: u32) -> MetadataTokenKind {
+            FieldRvaNamer.token_kind(token)
+        }
+
+        fn call_info(&self, token: u32) -> Option<CallInfo> {
+            FieldRvaNamer.call_info(token)
+        }
+
+        fn field_rva_bytes(&self, token: u32) -> Option<&[u8]> {
+            FieldRvaNamer.field_rva_bytes(token)
+        }
+
+        fn is_initialize_array(&self, token: u32) -> bool {
+            FieldRvaNamer.is_initialize_array(token)
+        }
+    }
+
+    #[test]
+    fn rendered_primitive_name_without_corelib_identity_does_not_fold_field_rva() {
+        let mut code: Vec<u8> = vec![0x19, 0x8D];
+        code.extend_from_slice(&0x0100_0001u32.to_le_bytes());
+        code.push(0x25);
+        code.push(0xD0);
+        code.extend_from_slice(&0x0400_0001u32.to_le_bytes());
+        code.push(0x28);
+        code.extend_from_slice(&0x0A00_0001u32.to_le_bytes());
+        code.extend_from_slice(&[0x0A, 0x2A]);
+        let body: MethodBody = body_from(&code);
+        let out: StructuredMethod = decompile_method("void M()", &body, &SpoofedPrimitiveNamer);
+        assert!(
+            !out.body.contains("new System.Int32[3] { 1, 2, 3 }"),
+            "a rendered System.Int32 name without authenticated corelib identity must not fold FieldRVA bytes; got:\n{}",
             out.body
         );
     }
