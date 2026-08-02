@@ -115,7 +115,7 @@ impl TokenNamer for Resolver {
 
     #[inline]
     fn field_rva_primitive(&self, token: u32) -> Option<FieldRvaPrimitive> {
-        Resolver::field_rva_primitive(self, token)
+        self.field_rva_primitive_from_type_ref(token)
     }
 
     fn call_info(&self, token: u32) -> Option<CallInfo> {
@@ -180,7 +180,7 @@ impl TokenNamer for MethodNamer<'_> {
 
     #[inline]
     fn field_rva_primitive(&self, token: u32) -> Option<FieldRvaPrimitive> {
-        self.resolver.field_rva_primitive(token)
+        self.resolver.field_rva_primitive_from_type_ref(token)
     }
 
     #[inline]
