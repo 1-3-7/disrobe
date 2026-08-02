@@ -11,47 +11,116 @@ const TYPE_LAYOUT_MASK: u32 = 0x0018;
 const TYPE_EXPLICIT_LAYOUT: u32 = 0x0010;
 const MAX_FIELD_RVA_BYTES: u32 = 512;
 
-#[derive(Debug, Default)]
-pub(crate) struct FieldRvaData {
-    fields: BTreeMap<u32, Vec<u8>>,
+#[derive(Debug, Clone, Copy)]
+struct FieldRvaLocation {
+    rva: u32,
+    size: usize,
 }
 
-impl FieldRvaData {
+#[derive(Debug)]
+pub(crate) struct FieldRvaData<'a> {
+    image: &'a [u8],
+    pe: &'a PeImage,
+    fields: BTreeMap<u32, FieldRvaLocation>,
+}
+
+impl<'a> FieldRvaData<'a> {
     #[must_use]
-    pub(crate) fn build(image: &[u8], pe: &PeImage, resolver: &Resolver) -> Self {
-        let mut fields: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
-        for (index, field) in resolver.tables().fields.iter().enumerate() {
+    pub(crate) fn build(image: &'a [u8], pe: &'a PeImage, resolver: &Resolver) -> Self {
+        let tables: &Tables = resolver.tables();
+        let field_rvas: BTreeMap<u32, Option<u32>> = unique_field_rvas(tables);
+        let class_layouts: BTreeMap<u32, Option<u32>> = unique_class_layouts(tables);
+        let field_ownership: Vec<bool> = field_ownership(tables);
+        let mut fields: BTreeMap<u32, FieldRvaLocation> = BTreeMap::new();
+        for (index, field) in tables.fields.iter().enumerate() {
             let Some(rid): Option<u32> = u32::try_from(index + 1).ok() else {
                 continue;
             };
-            let Some(size): Option<usize> =
-                exact_field_rva_size(resolver, rid, field.flags, field.signature)
-            else {
+            let Some(size): Option<usize> = exact_field_rva_size(
+                resolver,
+                rid,
+                field.flags,
+                field.signature,
+                &field_ownership,
+                &class_layouts,
+            ) else {
                 continue;
             };
-            let matching: Vec<u32> = resolver
-                .tables()
-                .field_rvas
-                .iter()
-                .filter(|row| row.field == rid)
-                .map(|row| row.rva)
-                .collect();
-            let [rva] = matching.as_slice() else {
+            let Some(Some(rva)): Option<&Option<u32>> = field_rvas.get(&rid) else {
                 continue;
             };
-            let Some(bytes): Option<&[u8]> = pe.slice_exact_file_backed_rva(image, *rva, size)
-            else {
+            if pe.slice_exact_file_backed_rva(image, *rva, size).is_none() {
                 continue;
-            };
-            fields.insert(0x0400_0000 | rid, bytes.to_vec());
+            }
+            fields.insert(0x0400_0000 | rid, FieldRvaLocation { rva: *rva, size });
         }
-        Self { fields }
+        Self { image, pe, fields }
     }
 
     #[must_use]
-    pub(crate) fn bytes(&self, field_token: u32) -> Option<&[u8]> {
-        self.fields.get(&field_token).map(Vec::as_slice)
+    pub(crate) fn bytes(&self, field_token: u32) -> Option<&'a [u8]> {
+        let location: FieldRvaLocation = *self.fields.get(&field_token)?;
+        self.pe
+            .slice_exact_file_backed_rva(self.image, location.rva, location.size)
     }
+}
+
+fn unique_field_rvas(tables: &Tables) -> BTreeMap<u32, Option<u32>> {
+    let mut indexed: BTreeMap<u32, Option<u32>> = BTreeMap::new();
+    for row in &tables.field_rvas {
+        match indexed.entry(row.field) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(Some(row.rva));
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                entry.insert(None);
+            }
+        }
+    }
+    indexed
+}
+
+fn unique_class_layouts(tables: &Tables) -> BTreeMap<u32, Option<u32>> {
+    let mut indexed: BTreeMap<u32, Option<u32>> = BTreeMap::new();
+    for row in &tables.class_layouts {
+        match indexed.entry(row.parent) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(Some(row.class_size));
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                entry.insert(None);
+            }
+        }
+    }
+    indexed
+}
+
+fn field_ownership(tables: &Tables) -> Vec<bool> {
+    let mut owned: Vec<bool> = vec![false; tables.fields.len()];
+    let Some(field_count): Option<u32> = u32::try_from(owned.len()).ok() else {
+        return owned;
+    };
+    let one_past_last: u32 = field_count.saturating_add(1);
+    for (index, type_def) in tables.type_defs.iter().enumerate() {
+        let next: u32 = tables
+            .type_defs
+            .get(index.saturating_add(1))
+            .map_or(one_past_last, |row| row.field_list);
+        let start: u32 = type_def.field_list;
+        if start == 0 || start > next || next > one_past_last {
+            continue;
+        }
+        let Some(start_index): Option<usize> = usize::try_from(start.saturating_sub(1)).ok() else {
+            continue;
+        };
+        let Some(end_index): Option<usize> = usize::try_from(next.saturating_sub(1)).ok() else {
+            continue;
+        };
+        if let Some(slice) = owned.get_mut(start_index..end_index) {
+            slice.fill(true);
+        }
+    }
+    owned
 }
 
 fn exact_field_rva_size(
@@ -59,6 +128,8 @@ fn exact_field_rva_size(
     field_rid: u32,
     field_flags: u16,
     field_signature: u32,
+    field_ownership: &[bool],
+    class_layouts: &BTreeMap<u32, Option<u32>>,
 ) -> Option<usize> {
     if field_flags & (FIELD_STATIC | FIELD_HAS_RVA) != (FIELD_STATIC | FIELD_HAS_RVA) {
         return None;
@@ -72,25 +143,19 @@ fn exact_field_rva_size(
     };
     let type_rid: u32 = type_def_rid(token)?;
     let tables: &Tables = resolver.tables();
-    let type_def = tables.type_defs.get(type_rid.checked_sub(1)? as usize)?;
+    let type_index: usize = usize::try_from(type_rid.checked_sub(1)?).ok()?;
+    let type_def = tables.type_defs.get(type_index)?;
     if type_def.flags & TYPE_LAYOUT_MASK != TYPE_EXPLICIT_LAYOUT {
         return None;
     }
-    if !field_belongs_to_a_type(tables, field_rid) {
+    let field_index: usize = usize::try_from(field_rid.checked_sub(1)?).ok()?;
+    if !field_ownership.get(field_index).copied().unwrap_or(false) {
         return None;
     }
-    let layouts: Vec<u32> = tables
-        .class_layouts
-        .iter()
-        .filter(|layout| layout.parent == type_rid)
-        .map(|layout| layout.class_size)
-        .collect();
-    let [class_size] = layouts.as_slice() else {
-        return None;
-    };
+    let class_size: u32 = (*class_layouts.get(&type_rid)?)?;
     (1..=MAX_FIELD_RVA_BYTES)
-        .contains(class_size)
-        .then_some(*class_size as usize)
+        .contains(&class_size)
+        .then_some(class_size as usize)
 }
 
 fn type_def_rid(token: u32) -> Option<u32> {
@@ -99,27 +164,8 @@ fn type_def_rid(token: u32) -> Option<u32> {
         .filter(|rid| *rid != 0)
 }
 
-fn field_belongs_to_a_type(tables: &Tables, field_rid: u32) -> bool {
-    let declared: u32 = u32::try_from(tables.fields.len()).unwrap_or(u32::MAX);
-    if field_rid == 0 || field_rid > declared {
-        return false;
-    }
-    tables
-        .type_defs
-        .iter()
-        .enumerate()
-        .any(|(index, type_def)| {
-            let start: u32 = type_def.field_list;
-            let end: u32 = tables
-                .type_defs
-                .get(index.saturating_add(1))
-                .map_or(declared.saturating_add(1), |next| next.field_list);
-            start <= field_rid && field_rid < end
-        })
-}
-
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::metadata::{metadata_slice, parse_metadata_root};
@@ -188,7 +234,7 @@ mod tests {
                 .contains("RuntimeHelpers::InitializeArray")),
             "the exact RuntimeHelpers.InitializeArray member reference must be identified"
         );
-        let field_data: FieldRvaData = FieldRvaData::build(&image, &pe, &resolver);
+        let field_data: FieldRvaData<'_> = FieldRvaData::build(&image, &pe, &resolver);
         assert_eq!(field_data.bytes(0x0400_0089), Some(raw));
     }
 }

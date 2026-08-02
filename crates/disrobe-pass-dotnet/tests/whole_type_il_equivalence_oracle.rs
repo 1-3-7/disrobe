@@ -1484,7 +1484,8 @@ fn run_field_rva_arrays(dir: &Path, head: &str, tail: &str) -> std::process::Out
     if !build.status.success() {
         return build;
     }
-    Command::new(dir.join("bin/Release/net9.0/oracle.exe"))
+    Command::new("dotnet")
+        .arg(dir.join("bin/Release/net9.0/oracle.dll"))
         .current_dir(dir)
         .output()
         .expect("run recovered collection program")

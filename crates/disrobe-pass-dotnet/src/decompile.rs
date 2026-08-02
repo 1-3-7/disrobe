@@ -9,13 +9,13 @@ use crate::model::{MethodModel, Resolver, TypeModel};
 use crate::names::NameTable;
 use crate::pe::{ClrHeader, PeImage, parse, parse_clr_header};
 use crate::structurize::{
-    CallInfo, MetadataTokenKind, MethodNamer, StructuredMethod, TargetLang, TokenNamer,
-    decompile_method_named, decompile_move_next_named,
+    CallInfo, FieldRvaPrimitive, MetadataTokenKind, MethodNamer, StructuredMethod, TargetLang,
+    TokenNamer, decompile_method_named, decompile_move_next_named,
 };
 
 struct AssemblyNamer<'a> {
     method: MethodNamer<'a>,
-    field_rvas: &'a crate::field_rva::FieldRvaData,
+    field_rvas: &'a crate::field_rva::FieldRvaData<'a>,
     initialize_array_tokens: &'a BTreeSet<u32>,
 }
 
@@ -30,6 +30,10 @@ impl TokenNamer for AssemblyNamer<'_> {
 
     fn field_rva_bytes(&self, token: u32) -> Option<&[u8]> {
         self.field_rvas.bytes(token)
+    }
+
+    fn field_rva_primitive(&self, token: u32) -> Option<FieldRvaPrimitive> {
+        self.method.field_rva_primitive(token)
     }
 
     fn is_initialize_array(&self, token: u32) -> bool {
@@ -98,7 +102,7 @@ pub fn decompile_assembly_in(image: &[u8], lang: TargetLang) -> Result<Decompile
     let clr: ClrHeader = parse_clr_header(image, &pe)?;
     let root: MetadataRoot = parse_metadata_root(image, &pe, &clr)?;
     let resolver: Resolver = Resolver::build(image, &pe, &clr, &root)?;
-    let field_rvas: crate::field_rva::FieldRvaData =
+    let field_rvas: crate::field_rva::FieldRvaData<'_> =
         crate::field_rva::FieldRvaData::build(image, &pe, &resolver);
     let metadata: &[u8] = metadata_slice(image, &pe, &clr, &root)?;
     let initialize_array_tokens: BTreeSet<u32> = root
@@ -174,7 +178,7 @@ fn decompile_one(
     pe: &PeImage,
     image: &[u8],
     resolver: &Resolver,
-    field_rvas: &crate::field_rva::FieldRvaData,
+    field_rvas: &crate::field_rva::FieldRvaData<'_>,
     initialize_array_tokens: &BTreeSet<u32>,
     ty: &TypeModel,
     m: &MethodModel,
