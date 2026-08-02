@@ -183,9 +183,9 @@ fn expected_statements(shape: RecoveryShape) -> Vec<Stmt> {
 }
 
 fn check_recovery(lifted: &LiftedBody, expected: &[Stmt]) -> Result<(), String> {
-    if !lifted.fully_recovered {
+    if !lifted.structurally_recovered {
         return Err(format!(
-            "recovery was partial: {:?}",
+            "structural recovery was partial: {:?}",
             lifted.fidelity_warning()
         ));
     }
@@ -253,7 +253,7 @@ fn committed_swf_recovery_matches_the_pinned_member_contract() {
 
         for body in &abc.method_bodies {
             let lifted: LiftedBody = lift(&abc, body);
-            if lifted.fully_recovered {
+            if lifted.structurally_recovered {
                 recovered.insert(format!("{fixture}::{}", member_label(&abc, body)));
             }
         }

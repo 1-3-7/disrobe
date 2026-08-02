@@ -472,7 +472,7 @@ fn body_is_undecompiled(lx: &Lexed, from: usize, to: usize) -> bool {
 struct MethodRecord {
     facts: MethodFacts,
     text: String,
-    self_reported_full: bool,
+    structurally_recovered: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -541,7 +541,7 @@ fn parse_class_body(lx: &Lexed, from: usize, to: usize) -> ClassFacts {
                 MethodRecord {
                     facts: facts_of(lx, open + 1, close),
                     text: lx.text(open + 1, close),
-                    self_reported_full: false,
+                    structurally_recovered: false,
                 },
             );
         }
@@ -857,10 +857,10 @@ fn lifted_record(
         return Some(MethodRecord {
             facts: MethodFacts::default(),
             text: "<disrobe lift returned an error for this body>".to_owned(),
-            self_reported_full: false,
+            structurally_recovered: false,
         });
     };
-    let self_reported_full: bool = lifted.fully_recovered;
+    let structurally_recovered: bool = lifted.structurally_recovered;
     lifted.statements = strip_stmts(&lifted.statements);
     let names: LocalNames = local_names_for(abc_file, info);
     let text: String = render_body(&lifted, &names, "");
@@ -869,7 +869,7 @@ fn lifted_record(
     Some(MethodRecord {
         facts: facts_of(&lx, 0, end),
         text,
-        self_reported_full,
+        structurally_recovered,
     })
 }
 
@@ -1064,8 +1064,8 @@ struct Tally {
     reference_only_classes: usize,
     disrobe_only_classes: usize,
     shared_classes: usize,
-    self_reported_full: usize,
-    self_reported_full_agreed: usize,
+    structurally_recovered: usize,
+    structurally_recovered_agreed: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -1273,14 +1273,14 @@ fn measure(dimensions: GradedDimensions) -> Option<Measurement> {
                     disrobe_class.methods.get(key),
                 ) {
                     (Some(reference), Some(disrobe)) => {
-                        if disrobe.self_reported_full {
-                            tally.self_reported_full += 1;
+                        if disrobe.structurally_recovered {
+                            tally.structurally_recovered += 1;
                         }
                         match compare_method(&reference.facts, &disrobe.facts, &dimensions) {
                             None => {
                                 tally.agreed += 1;
-                                if disrobe.self_reported_full {
-                                    tally.self_reported_full_agreed += 1;
+                                if disrobe.structurally_recovered {
+                                    tally.structurally_recovered_agreed += 1;
                                 }
                             }
                             Some(reason) => {
@@ -1296,8 +1296,8 @@ fn measure(dimensions: GradedDimensions) -> Option<Measurement> {
                                     (false, false, true) => control_only_failures += 1,
                                     _ => {}
                                 }
-                                let claim: &str = if disrobe.self_reported_full {
-                                    " [disrobe self-reports this body fully recovered]"
+                                let claim: &str = if disrobe.structurally_recovered {
+                                    " [disrobe reports this body structurally recovered]"
                                 } else {
                                     ""
                                 };
@@ -1390,16 +1390,16 @@ fn report(m: &Measurement) -> f64 {
         m.accounting.unnamed_bodies
     );
     eprintln!("disrobe lift errors       : {}", m.accounting.lift_errors);
-    let claimed: usize = m.tally.self_reported_full;
-    let claimed_rate: f64 = if claimed == 0 {
+    let reported_count: usize = m.tally.structurally_recovered;
+    let reported_agreement_rate: f64 = if reported_count == 0 {
         0.0
     } else {
-        100.0 * m.tally.self_reported_full_agreed as f64 / claimed as f64
+        100.0 * m.tally.structurally_recovered_agreed as f64 / reported_count as f64
     };
     eprintln!(
-        "bodies disrobe calls fully recovered: {claimed} (agreed {} => {claimed_rate:.2}%, disagreed {})",
-        m.tally.self_reported_full_agreed,
-        claimed.saturating_sub(m.tally.self_reported_full_agreed)
+        "bodies disrobe reports structurally recovered: {reported_count} (agreed {} => {reported_agreement_rate:.2}%, disagreed {})",
+        m.tally.structurally_recovered_agreed,
+        reported_count.saturating_sub(m.tally.structurally_recovered_agreed)
     );
     eprintln!(
         "disagreement breakdown    : strings-only {} | calls-only {} | control-only {} | mixed {} | missing {} | extra {}",
@@ -1474,15 +1474,15 @@ fn as3_lift_agrees_with_an_independent_reference_decompiler() {
         m.tally.graded
     );
     assert!(
-        m.tally.self_reported_full_agreed * 1000 >= m.tally.self_reported_full * 952,
-        "bodies disrobe calls fully recovered must hold their measured agreement floor (>=95.2%); got {}/{}",
-        m.tally.self_reported_full_agreed,
-        m.tally.self_reported_full
+        m.tally.structurally_recovered_agreed * 1000 >= m.tally.structurally_recovered * 952,
+        "bodies reported structurally recovered must hold their measured agreement floor (>=95.2%); got {}/{}",
+        m.tally.structurally_recovered_agreed,
+        m.tally.structurally_recovered
     );
     assert!(
-        m.tally.self_reported_full_agreed >= 11874,
-        "the count of bodies disrobe calls fully recovered that also agree with the reference must not shrink; got {}",
-        m.tally.self_reported_full_agreed
+        m.tally.structurally_recovered_agreed >= 11874,
+        "the count of bodies reported structurally recovered that also agree with the reference must not shrink; got {}",
+        m.tally.structurally_recovered_agreed
     );
 }
 
