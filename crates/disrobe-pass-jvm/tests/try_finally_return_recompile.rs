@@ -146,7 +146,29 @@ fn javap_code(javap: &PathBuf, class_dir: &PathBuf, class: &str) -> String {
         .arg(class)
         .output()
         .expect("javap");
-    String::from_utf8_lossy(&out.stdout).into_owned()
+    let stdout: String = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr: String = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        out.status.success(),
+        "javap failed for {class}; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("Code:"),
+        "javap produced no bytecode for {class}; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    stdout
+}
+
+#[test]
+fn javap_code_fails_closed_when_the_tool_rejects_its_arguments() {
+    let test_binary: PathBuf = std::env::current_exe().expect("current test binary");
+    let class_dir: PathBuf = std::env::temp_dir();
+    let result: Result<String, Box<dyn std::any::Any + Send>> =
+        std::panic::catch_unwind(|| javap_code(&test_binary, &class_dir, "NoSuchClass"));
+    assert!(
+        result.is_err(),
+        "a failing javap process returned an empty comparison input instead of failing the gate"
+    );
 }
 
 #[test]
