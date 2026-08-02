@@ -111,6 +111,44 @@ impl PeImage {
         Ok(&image[off..off + len])
     }
 
+    #[must_use]
+    pub fn slice_exact_file_backed_rva<'a>(
+        &self,
+        image: &'a [u8],
+        rva: u32,
+        len: usize,
+    ) -> Option<&'a [u8]> {
+        let length: u32 = u32::try_from(len).ok()?;
+        if length == 0 {
+            return None;
+        }
+        let end: u32 = rva.checked_add(length)?;
+        let mut matching: Option<&SectionHeader> = None;
+        for section in &self.sections {
+            let virtual_end: u32 = section
+                .virtual_address
+                .checked_add(section.virtual_size.max(section.raw_size))?;
+            let intersects: bool = rva < virtual_end && end > section.virtual_address;
+            if !intersects {
+                continue;
+            }
+            if matching.is_some() {
+                return None;
+            }
+            matching = Some(section);
+        }
+        let section: &SectionHeader = matching?;
+        let raw_end: u32 = section.virtual_address.checked_add(section.raw_size)?;
+        if rva < section.virtual_address || end > raw_end {
+            return None;
+        }
+        let delta: u32 = rva.checked_sub(section.virtual_address)?;
+        let start: usize =
+            usize::try_from(u64::from(section.raw_pointer) + u64::from(delta)).ok()?;
+        let file_end: usize = start.checked_add(len)?;
+        image.get(start..file_end)
+    }
+
     pub fn slice_at_rva_to_end<'a>(&self, image: &'a [u8], rva: u32) -> Result<&'a [u8]> {
         let off: usize = self.rva_to_offset(rva).ok_or(Error::Truncated {
             offset: rva as usize,
@@ -304,6 +342,49 @@ mod tests {
         };
         assert_eq!(img.rva_to_offset(0x2050), Some(0x250));
         assert_eq!(img.rva_to_offset(0x9999), None);
+    }
+
+    #[test]
+    fn exact_file_backed_rva_slice_rejects_cross_section_and_truncation() {
+        let img: PeImage = PeImage {
+            bitness: PeBitness::Pe32,
+            machine: 0x14C,
+            number_of_sections: 2,
+            timestamp: 0,
+            characteristics: 0,
+            entry_point_rva: 0,
+            image_base: 0x40_0000,
+            data_directories: vec![],
+            sections: vec![
+                SectionHeader {
+                    name: ".data".to_owned(),
+                    virtual_size: 4,
+                    virtual_address: 0x2000,
+                    raw_size: 4,
+                    raw_pointer: 0x10,
+                    characteristics: 0,
+                },
+                SectionHeader {
+                    name: ".next".to_owned(),
+                    virtual_size: 4,
+                    virtual_address: 0x2004,
+                    raw_size: 4,
+                    raw_pointer: 0x20,
+                    characteristics: 0,
+                },
+            ],
+        };
+        let bytes: Vec<u8> = (0u8..40).collect();
+        assert_eq!(
+            img.slice_exact_file_backed_rva(&bytes, 0x2001, 3),
+            Some(&bytes[0x11..0x14])
+        );
+        assert_eq!(img.slice_exact_file_backed_rva(&bytes, 0x2001, 4), None);
+        assert_eq!(img.slice_exact_file_backed_rva(&bytes, 0x2000, 0), None);
+        assert_eq!(
+            img.slice_exact_file_backed_rva(&bytes[..0x13], 0x2000, 4),
+            None
+        );
     }
 
     #[test]

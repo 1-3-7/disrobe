@@ -236,8 +236,12 @@ pub(crate) fn is_corelib_type_ref(
         (assembly_name.as_str(), public_key_token),
         ("mscorlib", [0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89])
             | (
-                "System.Runtime" | "netstandard",
+                "System.Runtime",
                 [0xB0, 0x3F, 0x5F, 0x7F, 0x11, 0xD5, 0x0A, 0x3A]
+            )
+            | (
+                "netstandard",
+                [0xCC, 0x7B, 0x13, 0xFF, 0xCD, 0x2D, 0xDD, 0x51]
             )
             | (
                 "System.Private.CoreLib",
