@@ -98,6 +98,14 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
     None
 }
 
+fn require_jdk_tools() -> (PathBuf, PathBuf) {
+    let javac: PathBuf = find_on_path("javac")
+        .unwrap_or_else(|| panic!("try-finally return gate requires javac and javap on PATH"));
+    let javap: PathBuf = find_on_path("javap")
+        .unwrap_or_else(|| panic!("try-finally return gate requires javac and javap on PATH"));
+    (javac, javap)
+}
+
 fn normalize_javap(raw: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for line in raw.lines() {
@@ -143,14 +151,7 @@ fn javap_code(javap: &PathBuf, class_dir: &PathBuf, class: &str) -> String {
 
 #[test]
 fn try_finally_with_return_recompiles_to_equivalent_bytecode() {
-    let (Some(javac), Some(javap)): (Option<PathBuf>, Option<PathBuf>) =
-        (find_on_path("javac"), find_on_path("javap"))
-    else {
-        eprintln!(
-            "skip: javac/javap not on PATH; try/finally-return equivalence gate not enforced"
-        );
-        return;
-    };
+    let (javac, javap): (PathBuf, PathBuf) = require_jdk_tools();
 
     let purpose: String = format!("disrobe_tf_return_{}", std::process::id());
     let scratch: disrobe_core::scratch::ScratchDir =
@@ -217,5 +218,28 @@ fn try_finally_with_return_recompiles_to_equivalent_bytecode() {
         "recompiled try/finally bytecode is not instruction/exception-table equivalent to the \
          original.\n--- recovered source ---\n{}",
         decompiled.source
+    );
+}
+
+#[test]
+fn try_finally_return_gate_fails_when_jdk_tools_are_unavailable() {
+    let test_binary: PathBuf = std::env::current_exe().expect("current test binary");
+    let output: std::process::Output = Command::new(test_binary)
+        .arg("--exact")
+        .arg("try_finally_with_return_recompiles_to_equivalent_bytecode")
+        .arg("--test-threads=1")
+        .env("PATH", "")
+        .output()
+        .expect("run try-finally return gate without JDK tools");
+    let stdout: String = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr: String = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        !output.status.success(),
+        "the try-finally return gate passed without JDK tools; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        format!("{stdout}\n{stderr}")
+            .contains("try-finally return gate requires javac and javap on PATH"),
+        "the try-finally return gate failed for an unrelated reason; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }
