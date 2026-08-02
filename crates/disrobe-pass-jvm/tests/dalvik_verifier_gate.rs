@@ -35,6 +35,8 @@ const COMMITTED_VERIFY_CLEAN_CLASSES: usize = 118;
 
 const COMMITTED_LIFTER_VERIFY_FAILURES: usize = 0;
 
+const COMMITTED_LINK_SKIPPED_CLASSES: usize = 37;
+
 const COMMITTED_CORPUS_CLASSES: usize = 155;
 
 const COMMITTED_BODY_VERIFY_CLEAN: usize = 317;
@@ -76,13 +78,10 @@ fn recovered_dalvik_bodies_pass_the_real_jvm_verifier() {
         std::process::id()
     )) {
         Ok(v) => v,
-        Err(why) => {
-            eprintln!(
-                "SKIP dalvik verifier gate: {why}; \
-                 the headline verifier-clean number cannot be attested in this environment"
-            );
-            return;
-        }
+        Err(why) => panic!(
+            "the Dalvik verifier gate requires a usable JDK: {why}; \
+             the cited verifier-clean measurement must not pass without its external reference"
+        ),
     };
 
     let mut total_clean: usize = 0;
@@ -109,11 +108,11 @@ fn recovered_dalvik_bodies_pass_the_real_jvm_verifier() {
         );
         assert_permille(&stdout, WHOLE_BODY_POPULATION_PERMILLE);
         let counts: VerifyCounts = counts_from(&stdout);
-        let verifiable: usize = counts.clean_classes + counts.lifter_fail_classes;
-        let pct: f64 = counts.clean_classes as f64 * 100.0 / verifiable.max(1) as f64;
+        let verifier_presented: usize = counts.clean_classes + counts.lifter_fail_classes;
+        let pct: f64 = counts.clean_classes as f64 * 100.0 / verifier_presented.max(1) as f64;
         eprintln!(
             "DALVIK VERIFY {label}: clean={} lifter_fail={} link_skipped={} \
-             ({pct:.1}% of verifiable classes pass -Xverify:all); methods_in_clean_classes={} methods_in_failed_classes={} \
+             ({pct:.1}% of verifier-presented classes pass -Xverify:all); methods_in_clean_classes={} methods_in_failed_classes={} \
              body_clean={} body_fail={}",
             counts.clean_classes,
             counts.lifter_fail_classes,
@@ -135,12 +134,12 @@ fn recovered_dalvik_bodies_pass_the_real_jvm_verifier() {
         all_errors.extend(counts.errors);
     }
 
-    let verifiable: usize = total_clean + total_lifter_fail;
-    let class_pct: f64 = total_clean as f64 * 100.0 / verifiable.max(1) as f64;
+    let verifier_presented: usize = total_clean + total_lifter_fail;
+    let class_pct: f64 = total_clean as f64 * 100.0 / verifier_presented.max(1) as f64;
     eprintln!(
         "DALVIK VERIFY TOTAL: verifier_clean_classes={total_clean} lifter_verify_fail_classes={total_lifter_fail} \
          link_skipped_classes={total_link_skipped} \
-         => {class_pct:.1}% of verifiable classes pass the real JVM verifier on the committed dex corpus \
+         => {class_pct:.1}% of verifier-presented classes pass the real JVM verifier on the committed dex corpus \
          (methods in clean classes={total_methods_clean}, in failed classes={total_methods_in_failed}); \
          RE-HOSTED BODY VERIFY: body_clean={total_body_clean} body_fail={total_body_fail} \
          (every non-stub recovered method body re-hosted into an Object carrier and run through -Xverify:all)"
@@ -163,6 +162,12 @@ fn recovered_dalvik_bodies_pass_the_real_jvm_verifier() {
          {COMMITTED_LIFTER_VERIFY_FAILURES}; every rejection is malformed bytecode the lifter \
          emitted:\n{}",
         all_errors.join("\n")
+    );
+    assert_eq!(
+        total_link_skipped, COMMITTED_LINK_SKIPPED_CLASSES,
+        "the JVM link-skipped {total_link_skipped} classes against the pinned \
+         {COMMITTED_LINK_SKIPPED_CLASSES}; these classes never reached the verifier because their \
+         required supertypes are absent from the committed harness"
     );
     assert_eq!(
         total_link_unstable, 0,
@@ -200,6 +205,28 @@ fn recovered_dalvik_bodies_pass_the_real_jvm_verifier() {
     );
 }
 
+fn link_skipped_metric_matches_pins(num: u64, den: u64) -> bool {
+    let Ok(num): Result<usize, _> = usize::try_from(num) else {
+        return false;
+    };
+    let Ok(den): Result<usize, _> = usize::try_from(den) else {
+        return false;
+    };
+    num == COMMITTED_LINK_SKIPPED_CLASSES && den == COMMITTED_CORPUS_CLASSES
+}
+
+#[test]
+fn link_skipped_metric_counter_mutation_is_rejected() {
+    assert!(
+        !link_skipped_metric_matches_pins(
+            u64::try_from(COMMITTED_LINK_SKIPPED_CLASSES + 1)
+                .expect("mutated link-skipped count fits u64"),
+            u64::try_from(COMMITTED_CORPUS_CLASSES).expect("corpus count fits u64"),
+        ),
+        "the published link-skipped metric must reject a corrupted numerator"
+    );
+}
+
 #[test]
 fn published_dalvik_verifier_bar_matches_the_floors_this_gate_enforces() {
     const BAR: &str = "verifier-clean (committed, CI)";
@@ -229,6 +256,12 @@ fn published_dalvik_verifier_bar_matches_the_floors_this_gate_enforces() {
 
     let num: u64 = bar["num"].as_u64().expect("the bar records a numerator");
     let den: u64 = bar["den"].as_u64().expect("the bar records a denominator");
+    let link_skipped_num: u64 = bar["link_skipped_num"]
+        .as_u64()
+        .expect("the bar records link-skipped numerator");
+    let link_skipped_den: u64 = bar["link_skipped_den"]
+        .as_u64()
+        .expect("the bar records link-skipped denominator");
     let value: f64 = bar["value"].as_f64().expect("the bar records a percentage");
     let detail: &str = bar["detail"].as_str().expect("the bar records a detail");
 
@@ -241,13 +274,19 @@ fn published_dalvik_verifier_bar_matches_the_floors_this_gate_enforces() {
     );
     assert_eq!(
         num, den,
-        "the plotted figure is the presentable ratio, so a denominator of {den} against {num} \
+        "the plotted figure is the verifier-presented ratio, so a denominator of {den} against {num} \
          clean classes means the bar no longer plots what its label says"
     );
     assert!(
         (value - 100.0).abs() < f64::EPSILON,
         "recovery.json plots {value}% for {num} of {den} classes; the percentage and the counts \
          beside it have drifted apart"
+    );
+    assert!(
+        link_skipped_metric_matches_pins(link_skipped_num, link_skipped_den),
+        "recovery.json publishes {link_skipped_num} of {link_skipped_den} link-skipped classes, \
+         but the committed verifier gate pins {COMMITTED_LINK_SKIPPED_CLASSES} of \
+         {COMMITTED_CORPUS_CLASSES}"
     );
     let bodies: String =
         format!("{COMMITTED_BODY_VERIFY_CLEAN} re-hosted method bodies verify clean");
@@ -263,17 +302,14 @@ fn published_dalvik_verifier_bar_matches_the_floors_this_gate_enforces() {
     );
     assert!(
         detail.contains(&attested),
-        "the `{BAR}` detail does not state `{attested}`. The plotted ratio is over presentable \
+        "the `{BAR}` detail does not state `{attested}`. The plotted ratio is over verifier-presented \
          classes, so the corpus denominator only exists in this prose, and it is the number that \
          went stale last time"
     );
-    let skipped: String = format!(
-        "{} of them are link-skipped",
-        COMMITTED_CORPUS_CLASSES - COMMITTED_VERIFY_CLEAN_CLASSES
-    );
+    let skipped: String = format!("{COMMITTED_LINK_SKIPPED_CLASSES} of them are link-skipped");
     assert!(
         detail.contains(&skipped),
         "the `{BAR}` detail does not state `{skipped}`; the ungraded remainder is what the \
-         presentable ratio leaves out, so it cannot be left to drift"
+         verifier-presented ratio leaves out, so it cannot be left to drift"
     );
 }
