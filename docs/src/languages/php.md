@@ -1,6 +1,6 @@
 # PHP
 
-`disrobe` decodes all three dominant encoders fully offline: nothing is uploaded anywhere. It also peels stacked eval-chain obfuscation and walks Phar archives.
+`disrobe` surfaces the three supported commercial encoder envelopes fully offline, recovering statically available layers and reporting when loader-resident keys keep payloads sealed; nothing is uploaded anywhere. It also peels stacked eval-chain obfuscation and walks Phar archives.
 
 ## At a glance
 
