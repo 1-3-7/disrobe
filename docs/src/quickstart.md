@@ -69,7 +69,7 @@ disrobe beam parse module.beam
 
 ## Structured output
 
-Every command accepts the global `--json`, `--ndjson`, or `--sarif` flags for machine-readable output. SARIF 2.1.0 drops straight into GitHub code scanning:
+`disrobe scan` accepts the global `--json`, `--ndjson`, and `--sarif` flags for machine-readable output. Its SARIF 2.1.0 output drops straight into GitHub code scanning:
 
 ```sh
 disrobe scan firmware.bin --sarif > findings.sarif
