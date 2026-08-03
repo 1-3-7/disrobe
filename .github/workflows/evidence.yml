@@ -98,6 +98,7 @@ jobs:
         with:
           name: evidence-frisk-apkleaks
           path: evidence/results/measured/frisk-apkleaks.json
+          if-no-files-found: error
 
   gate-harvest:
     name: gate-test harvest (committed corpora)
@@ -124,6 +125,7 @@ jobs:
         with:
           name: evidence-gate-harvest
           path: evidence/results/measured/gate-harvest.json
+          if-no-files-found: error
 
   rollup:
     name: rollup + drift gate
@@ -134,14 +136,52 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: drift gate (committed report matches committed measured + recovery.json)
-        run: cargo run -p xtask -- evidence --check
-      - name: collect lane artifacts for publication
+      - name: stage producer artifacts for validation
         uses: actions/download-artifact@v4
         with:
           pattern: evidence-*
-          merge-multiple: true
-          path: ci-measured
+          merge-multiple: false
+          path: ci-measured-staging
+      - name: require exactly the three producer payloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=(
+            ci-measured-staging/evidence-apk-jadx-cfr/apk-jadx-cfr.json
+            ci-measured-staging/evidence-frisk-apkleaks/frisk-apkleaks.json
+            ci-measured-staging/evidence-gate-harvest/gate-harvest.json
+          )
+          mapfile -t actual < <(find ci-measured-staging -type f -print | sort)
+          if [ "${#actual[@]}" -ne "${#expected[@]}" ]; then
+            printf 'expected exactly three producer payloads, found %s\n' "${#actual[@]}"
+            printf 'found: %s\n' "${actual[@]}"
+            exit 1
+          fi
+          for index in "${!expected[@]}"; do
+            if [ "${actual[$index]}" != "${expected[$index]}" ]; then
+              printf 'expected payload %s, found %s\n' "${expected[$index]}" "${actual[$index]}"
+              exit 1
+            fi
+          done
+          mkdir -p ci-measured
+          for source in "${expected[@]}"; do
+            if [ ! -s "$source" ]; then
+              printf 'producer payload is empty: %s\n' "$source"
+              exit 1
+            fi
+            python3 -m json.tool "$source" >/dev/null
+            name="${source##*/}"
+            cp -- "$source" "ci-measured/$name"
+            cp -- "$source" "evidence/results/measured/$name"
+          done
+      - name: reject measured-data drift from producer jobs
+        run: |
+          git diff --exit-code -- \
+            evidence/results/measured/apk-jadx-cfr.json \
+            evidence/results/measured/frisk-apkleaks.json \
+            evidence/results/measured/gate-harvest.json
+      - name: verify the committed report against measured data
+        run: cargo run --locked -p xtask -- evidence --check
       - uses: actions/upload-artifact@v4
         with:
           name: evidence-report
