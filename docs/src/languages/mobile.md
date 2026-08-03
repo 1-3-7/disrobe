@@ -31,7 +31,7 @@ disrobe flutter disasm libapp.so --emit-listing
 disrobe flutter map obfuscation_map.json --out map.json
 ```
 
-`mobile detect` classifies the package; `mobile extract` pulls bundles out of the container and writes a `manifest.json` listing each artifact.
+`mobile detect` classifies the package; `mobile extract` pulls bundles out of the container. It writes a `manifest.json` for React Native, Flutter, Cordova/Capacitor, NativeScript, and Xamarin extraction; Android APK/Dex and Android bundle paths write child files directly without a manifest.
 
 `hermes decompile` lifts each function back to pseudo-JavaScript. `hermes disasm` emits a per-function summary without a JS surface. `hermes info` prints the version, function count, string count, and identifier count.
 
