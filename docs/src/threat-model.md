@@ -88,14 +88,15 @@ This is the boundary an analyst can choose to *not* cross at all. Two distinct s
 
 **Subprocess backends over the artifact (not the sample's logic).** Optional external tools (Ghidra, CFR, Vineflower, jadx, ILSpy, dnSpy, de4dot, Rizin) run as subprocesses over the *derived artifact*. They never execute the sample's own entry point. The exposure here is command-line construction: command lines are built from configuration and sometimes from user input, so command injection and argument smuggling are the in-scope threats, mitigated by constructing argument vectors directly rather than shelling out through a string.
 
-**Dynamic execution of the sample.** A small number of paths *can* run adversarial code, and **none is on by default.** Each sits behind a named flag:
+**Dynamic execution of the sample.** One path *can* run adversarial code. It is **not enabled by default** and sits behind a named flag:
 
 | Path | Gate | What runs |
 |---|---|---|
 | PyArmor v6/v7 dynamic-hook | `--allow-dynamic` | The obfuscated wrapper, in a watched subprocess, to capture marshal streams. Watchdog via `--dynamic-timeout` (default 60s). |
-| PyArmor BCC native-body lift | `--allow-bcc` | Ghidra-headless over the native body: the analysis tool runs, not the sample's logic in-process. |
 
-The default static paths (pickle symbolic VM, the v8 and v9-pro PyArmor peels) need no such gate: they parse and walk, they do not detonate. When dynamic execution is unavoidable, **run it inside a disposable, network-isolated sandbox**. `disrobe` gives you a watchdog and a captured-marshal manifest, but a dynamic hook is, by definition, executing attacker code.
+`--allow-bcc` is a separate static-analysis gate and does not cross this execution boundary. Once wrapper and runtime discovery succeeds, omitting the flag makes the unpack return `DR-PYARM-0050` before version-specific unpacking. With the flag, native builds can analyze extracted BCC objects in-process and attempt x86-64 pseudo-C analysis. This path does not execute the sample or invoke Ghidra. Windows x64 and Linux x64 have explicit ABI models; the library returns Darwin arm64 with no lifted functions, unknown architecture IDs are attempted with the Microsoft x64 ABI, and wasm builds do not lift BCC bodies. The CLI does not serialize BCC blobs, lift results, or lift notes.
+
+The default static paths (the pickle symbolic VM and non-BCC v8/v9 PyArmor peels) need no execution opt-in: they parse and walk, they do not detonate. BCC analysis is also static but separately gated. When dynamic execution is unavoidable, **run it inside a disposable, network-isolated sandbox**. `disrobe` gives you a watchdog and a captured-marshal manifest, but a dynamic hook is, by definition, executing attacker code.
 
 ## Non-execution stance (restated as an invariant)
 

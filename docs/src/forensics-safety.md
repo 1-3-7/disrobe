@@ -8,16 +8,18 @@ By default, `disrobe` does not execute the sample. Every default path is pure st
 
 This holds for the entire pickle suite in particular. `disrobe pickle trace` runs a **symbolic** VM: it walks the opcode stream and builds the object graph without instantiating a single real object or resolving a single real global. `disrobe pickle safety` grades danger statically. You can audit a downloaded `.pt` or `.pkl` for what it *would* do on load without ever letting it load.
 
-## The opt-in execution paths
+## Opt-in gated paths
 
-Two paths can execute code. Each one sits behind an explicit, named flag. Neither is on by default.
+Only `--allow-dynamic` executes sample code. `--allow-bcc` enables additional static analysis. Neither path is enabled by default.
 
 | Path | Gate | What it does |
 |---|---|---|
 | PyArmor v6/v7 dynamic-hook | `--allow-dynamic` | Runs the obfuscated wrapper in a watched subprocess to capture marshal streams. Watchdog timeout via `--dynamic-timeout` (default 60s). |
-| PyArmor BCC native-body lift | `--allow-bcc` | Lifts BCC-protected native bodies via Ghidra-headless on PATH (Ghidra runs, not the sample's logic in-process). |
+| PyArmor BCC native-body analysis | `--allow-bcc` | Parses extracted BCC objects in-process and attempts x86-64 pseudo-C analysis. It does not execute the sample or invoke Ghidra. |
 
-If you must use `--allow-dynamic`, **do it inside an isolated sandbox** (a disposable VM or container with no network and no access to anything you care about). `disrobe` gives you the watchdog timeout and a captured-marshal manifest, but a dynamic hook is, by definition, executing adversarial code. The pure-static paths (v8, v9-pro) need no such gate.
+Once wrapper and runtime discovery succeeds, omitting `--allow-bcc` makes a detected BCC unpack return `DR-PYARM-0050` before version-specific unpacking. On native builds, Windows x64 and Linux x64 have explicit ABI models; the library returns Darwin arm64 with no lifted functions, unknown architecture IDs are attempted with the Microsoft x64 ABI, and wasm builds do not lift BCC bodies. The CLI does not serialize BCC blobs, lift results, or lift notes.
+
+If you must use `--allow-dynamic`, **do it inside an isolated sandbox** (a disposable VM or container with no network and no access to anything you care about). `disrobe` gives you the watchdog timeout and a captured-marshal manifest, but a dynamic hook is, by definition, executing adversarial code. The non-BCC v8/v9 paths remain static and need no execution opt-in. BCC analysis is also static but separately gated.
 
 ## Subprocess backends
 
