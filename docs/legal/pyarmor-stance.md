@@ -49,7 +49,7 @@ The stance is wired into the CLI defaults:
 - **Free-tier PyArmor: detect and deobfuscate by default.** The v8 and v9-pro static peels need no authorization gate.
 - **Paid-tier and gray-zone PyArmor: gated.** Paid-tier peels run only with `--i-have-authorization`.
 - **The same flag gates the `decryption-keys` LLM category.** If you request that category without `--i-have-authorization`, `disrobe` fails fast with an authorization-required diagnostic instead of running the peel.
-- **Dynamic execution is doubly gated.** PyArmor v6/v7 dynamic-hook and BCC native-body lift each additionally require `--allow-dynamic` / `--allow-bcc` and run under a watchdog. See the [Forensics and malware-safety posture](../src/forensics-safety.md).
+- **Dynamic execution is confined to the v6/v7 fallback.** That fallback requires `--allow-dynamic` and runs the protected wrapper in a watchdog-controlled subprocess. BCC native-body lifting separately requires `--allow-bcc`, but the lift statically analyzes native blobs in-process. The current CLI does not serialize the resulting BCC lift or emit recovered BCC pseudo-C or source. See the [Forensics and malware-safety posture](../src/forensics-safety.md).
 - **No third-party PyArmor bytecode in the public corpus.** Fixtures are self-generated or hash-referenced only; the repository ships the *parser*, not protected sample bytes.
 
 ## Takedown and rights contact
