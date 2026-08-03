@@ -12,7 +12,7 @@ Every `strong` published number comes from a committed test graded against an in
 
 ## Install
 
-Prebuilt binaries for Windows, Linux (glibc and musl), and macOS, each for x86-64 and ARM64, are on the [Releases page](https://github.com/1-3-7/disrobe/releases) with `SHA256SUMS` and a cosign bundle per archive. Building from source needs Rust 1.95+ stable and nothing else. At run time `disrobe` links or invokes no Python, Node, JVM, wasmtime, Lua, or external tool.
+Prebuilt binaries for Windows, Linux (glibc and musl), and macOS, each for x86-64 and ARM64, are on the [Releases page](https://github.com/1-3-7/disrobe/releases) with `SHA256SUMS` and a cosign bundle per archive. Building from source needs Rust 1.95+ stable and nothing else. The in-house paths launch no external programs; backend-capable commands can invoke installed tools when selected explicitly or through `--backend auto`.
 
 ```sh
 cargo install --git https://github.com/1-3-7/disrobe disrobe-cli
@@ -21,7 +21,7 @@ cargo build --release              # about 4-6 minutes
 ./target/release/disrobe doctor    # optional: probe 46 to 51 external tools depending on the platform
 ```
 
-Optional external backends (Ghidra, CFR, jadx, ILSpy, de4dot) are off by default; every pass has an in-house default that runs without them. The slim build, the per-OS notes, and the split between build-time dependencies and the separate toolchains the graded numbers need are in the [installation guide](docs/src/installation.md) and [evidence/README.md](evidence/README.md).
+Optional external backends (Ghidra, CFR, jadx, ILSpy, de4dot) are not required. For `.class` and `.jar` inputs, `jvm decompile --backend auto` uses the first available JVM backend on `PATH`; DEX and APK inputs stay on the in-house path unless an Android backend is selected. `dotnet decompile` also defaults to `--backend auto`, selecting the first installed ILSpy, dnSpy, dnSpyEx, or de4dot backend and continuing with its native CIL decompiler when none is available. Ghidra is used only through an explicit native backend selection. The slim build, the per-OS notes, and the split between build-time dependencies and the separate toolchains the graded numbers need are in the [installation guide](docs/src/installation.md) and [evidence/README.md](evidence/README.md).
 
 ## Quickstart
 
