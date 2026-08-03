@@ -130,20 +130,32 @@ fn extract_swf(bytes: &[u8]) -> CoreResult<As3Extract> {
     })?;
     let mut source: String = String::new();
     for tag in &swf.tags {
-        let parsed: Option<crate::swf::DoAbc> = if tag.code == TagCode::DO_ABC {
-            parse_do_abc(tag).ok()
-        } else if tag.code == TagCode::DO_ABC_DEFINE {
-            parse_do_abc_legacy(tag).ok()
-        } else {
-            None
+        let parsed: crate::error::Result<crate::swf::DoAbc> = match tag.code {
+            TagCode::DO_ABC => parse_do_abc(tag),
+            TagCode::DO_ABC_DEFINE => parse_do_abc_legacy(tag),
+            _ => continue,
         };
-        let Some(doabc): Option<crate::swf::DoAbc> = parsed else {
-            continue;
-        };
-        let Ok(abc): crate::error::Result<AbcFile> = parse_abc(&doabc.abc_bytes) else {
-            continue;
-        };
-        let rendered: String = render_program(&abc).unwrap_or_default();
+        let tag_kind: &'static str = tag.code.name();
+        let doabc: crate::swf::DoAbc = parsed.map_err(|error: crate::error::Error| {
+            CoreError::PassFailure(format!(
+                "DR-AS3-0908: swf {tag_kind} tag parse failed at logical SWF tag offset {}: \
+                 {error}",
+                tag.offset,
+            ))
+        })?;
+        let abc: AbcFile = parse_abc(&doabc.abc_bytes).map_err(|error: crate::error::Error| {
+            CoreError::PassFailure(format!(
+                "DR-AS3-0909: swf {tag_kind} ABC parse failed at logical SWF tag offset {}: \
+                 {error}",
+                tag.offset,
+            ))
+        })?;
+        let rendered: String = render_program(&abc).map_err(|error: crate::error::Error| {
+            CoreError::PassFailure(format!(
+                "DR-AS3-0910: swf {tag_kind} render failed at logical SWF tag offset {}: {error}",
+                tag.offset,
+            ))
+        })?;
         source.push_str(&rendered);
         source.push('\n');
     }
