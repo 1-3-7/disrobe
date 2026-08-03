@@ -1,6 +1,6 @@
 # Ruby
 
-`disrobe` analyzes every major Ruby artifact format and decompiles YARV and mruby bytecode toward source, verified by a recompile-equivalence oracle on a real MRI interpreter. It is the only active Ruby bytecode decompiler with a measured fidelity grade.
+`disrobe` analyzes the Ruby artifact formats listed below and decompiles YARV and mruby bytecode toward source. A recompile-equivalence gate on a real MRI interpreter measures YARV recovery.
 
 ## At a glance
 
@@ -19,7 +19,7 @@ disrobe ruby decompile app.bin --out app-ruby.json
 disrobe ruby detect app.bin
 ```
 
-`decompile` sniffs the flavor, runs the matching reader and decompiler, and writes the analysis JSON (default `./out/<stem>-ruby.json`). For YARV, or for mruby when a body is recovered, it also writes a `.rb` source file beside the JSON; YARV output includes a disassembly trailer when available. `detect` reports the flavor and exits without writing output.
+`decompile` sniffs the flavor, runs the matching analyzer, and writes the analysis JSON (default `./out/<stem>-ruby.json`). For YARV, or for mruby when a body is recovered, it also writes a `.rb` source file beside the JSON; YARV output includes a disassembly trailer when available. `detect` reports the flavor and exits without writing output.
 
 Output shape (illustrative):
 
@@ -45,9 +45,9 @@ For MRI source the summary reports token and definition counts. For YARV it adds
 
 A committed recompile-equivalence oracle compiles the recovered YARV source on the matching interpreter and diffs the opcode multiset. The gate asserts 100% equivalence on the greeter fixture and at least 98% on the megafile fixture; both run in CI.
 
-Ruby2Exe and Ocra self-extracting packages are detected as their own flavors so the chain layer can route the embedded payload onward.
+Ruby2Exe and Ocra self-extracting packages are detected as their own flavors. Analysis records their embedded-payload offsets and lengths; for Ocra opcode streams it also parses contained file records.
 
 ## Limits
 
 - JRuby `.class` files are classified but not decompiled here. JVM-class material belongs to the [JVM guide](./jvm-android.md).
-- TruffleRuby AOT images are classified but not decompiled: AOT-compiled native code has no recoverable Ruby body.
+- TruffleRuby AOT images are classified but not decompiled here. Their native code belongs to the [native guide](./native.md).
