@@ -5,7 +5,7 @@ use object::Object as _;
 use object::ObjectSection as _;
 use object::read::File as ObjFile;
 
-use disrobe_pass_go::{GoAnalysis, analyze};
+use disrobe_pass_go::{GoAnalysis, GoFunc, analyze};
 
 fn carve_in_memory_image(pe_bytes: &[u8]) -> Vec<u8> {
     let file: ObjFile<'_, &[u8]> = ObjFile::parse(pe_bytes).expect("parse reference pe");
@@ -116,6 +116,30 @@ fn recovers_symbols_and_embed_from_headerless_unpacked_image() {
         note.data, b"disrobe embed fixture payload alpha\n",
         "carved embed bytes from the headerless image must be byte-exact",
     );
+}
+
+#[test]
+fn flat_386_function_va_matches_go_tool_nm() {
+    let pe: Vec<u8> = common::fixture(common::HELLO_386);
+    let path: std::path::PathBuf = common::fixture_path(common::HELLO_386);
+    let nm: String = common::go_tool_nm_output(&path).expect("go tool nm on 386 fixture");
+    let truth: u64 = common::parse_nm_text_symbol_vas(&nm)
+        .into_iter()
+        .find_map(|(name, va): (String, u64)| (name == "main.main").then_some(va))
+        .expect("main.main in go tool nm output");
+
+    let flat: Vec<u8> = carve_in_memory_image(&pe);
+    let recovered: GoAnalysis = analyze(&flat).expect("analyze headerless 386 image");
+    assert_eq!(recovered.ptr_size, 4);
+    let got: u64 = recovered
+        .symbols
+        .funcs
+        .iter()
+        .find(|func: &&GoFunc| func.name == "main.main")
+        .and_then(|func: &GoFunc| func.va)
+        .expect("recovered main.main va");
+
+    assert_eq!(got, truth);
 }
 
 fn garble_undo_parity(name: &str) {

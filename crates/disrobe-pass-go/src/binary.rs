@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use object::Endianness as ObjEndianness;
 use object::Object as _;
 use object::ObjectSection as _;
@@ -108,10 +106,16 @@ impl<'a> GoImage<'a> {
         dbg_section("go.flat-image");
         dbg_line(|| "no container header (MZ/PE/ELF/MachO): trying headerless go image".to_owned());
         let provisional: Self = Self::flat_with_base(bytes, FLAT_IMAGE_BASE, 8)?;
-        let located_off: Option<(usize, u8)> = locate_flat_pclntab_offset(&provisional);
-        let (pclntab_off, ptr_size): (Option<usize>, u8) = if let Some((off, ps)) = located_off {
-            dbg_line(|| format!("flat pclntab at file-offset {off:#x} ptr_size={ps}"));
-            (Some(off), ps)
+        let located: Option<(usize, crate::pclntab::PclntabHeader)> =
+            locate_flat_pclntab(&provisional);
+        let ptr_size: u8 = if let Some((off, header)) = &located {
+            dbg_line(|| {
+                format!(
+                    "flat pclntab at file-offset {off:#x} ptr_size={}",
+                    header.ptr_size
+                )
+            });
+            header.ptr_size
         } else {
             let hits: usize = marker_hits(bytes);
             dbg_kv("flat_marker_hits", || hits.to_string());
@@ -121,11 +125,13 @@ impl<'a> GoImage<'a> {
                 });
                 return Err(Error::UnrecognizedContainer);
             }
-            (None, 8)
+            8
         };
-        let address: u64 = pclntab_off
-            .filter(|_| ptr_size == 8)
-            .and_then(|off: usize| infer_flat_base(bytes, off))
+        let address: u64 = located
+            .as_ref()
+            .and_then(|(off, header): &(usize, crate::pclntab::PclntabHeader)| {
+                infer_flat_base(bytes, *off, header)
+            })
             .unwrap_or(FLAT_IMAGE_BASE);
         dbg_kv("flat_base", || format!("{address:#x}"));
         Self::flat_with_base(bytes, address, ptr_size)
@@ -317,7 +323,9 @@ fn normalize_symbol_name(kind: ImageKind, raw: &str) -> String {
     raw.to_owned()
 }
 
-fn locate_flat_pclntab_offset(provisional: &GoImage<'_>) -> Option<(usize, u8)> {
+fn locate_flat_pclntab(
+    provisional: &GoImage<'_>,
+) -> Option<(usize, crate::pclntab::PclntabHeader)> {
     let located: crate::pclntab::LocatedPclntab<'_> =
         crate::pclntab::locate_pclntab(provisional).ok()?;
     let base: u64 = provisional
@@ -325,76 +333,148 @@ fn locate_flat_pclntab_offset(provisional: &GoImage<'_>) -> Option<(usize, u8)> 
         .first()
         .map(|s: &Section<'_>| s.address)?;
     let off: usize = usize::try_from(located.header.section_addr.checked_sub(base)?).ok()?;
-    Some((off, located.header.ptr_size))
+    Some((off, located.header))
 }
 
 const FLAT_PAGE_MASK: u64 = 0xfff;
 const FLAT_MIN_BASE: u64 = 0x1_0000;
 const FLAT_MAX_BASE: u64 = 1 << 48;
-const FLAT_MAX_BASE_CANDIDATES: usize = 64;
+const FLAT_32_ADDRESS_LIMIT: u64 = 1 << 32;
 
-const MD_WORD_FTAB_PTR: usize = 1;
+const MD_WORD_FUNCNAMETAB_PTR: usize = 1;
+const MD_WORD_FUNCNAMETAB_LEN: usize = 2;
+const MD_WORD_FUNCNAMETAB_CAP: usize = 3;
+const MD_WORD_PCLNTABLE_PTR: usize = 13;
+const MD_WORD_PCLNTABLE_LEN: usize = 14;
+const MD_WORD_PCLNTABLE_CAP: usize = 15;
+const MD_WORD_FTAB_PTR: usize = 16;
+const MD_WORD_FTAB_LEN: usize = 17;
+const MD_WORD_FTAB_CAP: usize = 18;
+const MD_WORD_MIN_PC: usize = 20;
+const MD_WORD_MAX_PC: usize = 21;
 const MD_WORD_TEXT: usize = 22;
 const MD_WORD_ETEXT: usize = 23;
-const MD_WORD_TYPES: usize = 37;
-const MD_WORD_ETYPES: usize = 38;
 
-fn infer_flat_base(bytes: &[u8], pclntab_off: usize) -> Option<u64> {
-    let span: u64 = bytes.len() as u64;
-    let pclntab_off_u64: u64 = pclntab_off as u64;
-    let mut candidates: BTreeSet<u64> = BTreeSet::new();
-    let mut moduledata_exact: BTreeSet<u64> = BTreeSet::new();
+fn infer_flat_base(
+    bytes: &[u8],
+    pclntab_off: usize,
+    header: &crate::pclntab::PclntabHeader,
+) -> Option<u64> {
+    if header.version == crate::pclntab::PclntabVersion::Go12 || header.endian != Endian::Little {
+        return None;
+    }
+    let ptr_size: u8 = header.ptr_size;
+    let step: usize = match ptr_size {
+        4 => 4,
+        8 => 8,
+        _ => return None,
+    };
+    let address_limit: u64 = if ptr_size == 4 {
+        FLAT_32_ADDRESS_LIMIT
+    } else {
+        FLAT_MAX_BASE
+    };
+    let span: u64 = u64::try_from(bytes.len()).ok()?;
+    let pclntab_off_u64: u64 = u64::try_from(pclntab_off).ok()?;
+    let mut moduledata_base: Option<u64> = None;
+    let mut moduledata_ambiguous: bool = false;
     let mut off: usize = 0;
-    while off + 8 <= bytes.len() {
-        let value: u64 = read_u64_le(bytes, off);
+    while off
+        .checked_add(step)
+        .is_some_and(|end: usize| end <= bytes.len())
+    {
+        let value: u64 = read_flat_word(bytes, off, ptr_size)?;
         if let Some(base) = value.checked_sub(pclntab_off_u64)
-            && (FLAT_MIN_BASE..FLAT_MAX_BASE).contains(&base)
+            && (FLAT_MIN_BASE..address_limit).contains(&base)
             && base & FLAT_PAGE_MASK == 0
-            && value < base.saturating_add(span)
+            && let Some(end) = base.checked_add(span)
+            && end <= address_limit
+            && value < end
+            && moduledata_is_consistent(bytes, off, base, span, pclntab_off_u64, header)
         {
-            if candidates.len() < FLAT_MAX_BASE_CANDIDATES {
-                candidates.insert(base);
-            }
-            if moduledata_exact.len() < FLAT_MAX_BASE_CANDIDATES
-                && moduledata_is_consistent(bytes, off, base, span)
-            {
-                moduledata_exact.insert(base);
+            match moduledata_base {
+                None => moduledata_base = Some(base),
+                Some(previous) if previous != base => moduledata_ambiguous = true,
+                Some(_) => {}
             }
         }
-        off += 8;
+        off = off.checked_add(step)?;
     }
-    dbg_kv("flat_base_candidates", || candidates.len().to_string());
     dbg_kv("flat_base_moduledata_exact", || {
-        moduledata_exact.len().to_string()
+        match (moduledata_base, moduledata_ambiguous) {
+            (_, true) => "ambiguous".to_owned(),
+            (Some(_), false) => "1".to_owned(),
+            (None, false) => "0".to_owned(),
+        }
     });
-    if moduledata_exact.len() == 1 {
+    if moduledata_ambiguous {
+        dbg_line(|| "flat base inference rejected ambiguous moduledata candidates".to_owned());
+        return None;
+    }
+    if let Some(base) = moduledata_base {
         dbg_line(|| "base inferred from a single moduledata-consistent slot".to_owned());
-        return moduledata_exact.into_iter().next();
+        return Some(base);
     }
-    if !moduledata_exact.is_empty() {
-        dbg_line(|| "base inferred from the densest moduledata-consistent candidate".to_owned());
-        return moduledata_exact
-            .into_iter()
-            .max_by_key(|&base: &u64| flat_pointer_density(bytes, base, span));
-    }
-    if candidates.len() == 1 {
-        dbg_line(|| "base inferred from a single pclntab-pointer candidate".to_owned());
-        return candidates.into_iter().next();
-    }
-    dbg_line(|| "base inferred from the densest pclntab-pointer candidate".to_owned());
-    candidates
-        .into_iter()
-        .max_by_key(|&base: &u64| flat_pointer_density(bytes, base, span))
+    dbg_line(|| "flat base inference found no validated moduledata slot".to_owned());
+    None
 }
 
-fn moduledata_is_consistent(bytes: &[u8], md_off: usize, base: u64, span: u64) -> bool {
-    let hi: u64 = base.saturating_add(span);
+fn moduledata_is_consistent(
+    bytes: &[u8],
+    md_off: usize,
+    base: u64,
+    span: u64,
+    pclntab_off: u64,
+    header: &crate::pclntab::PclntabHeader,
+) -> bool {
+    let Some(hi): Option<u64> = base.checked_add(span) else {
+        return false;
+    };
+    let ptr_size: u8 = header.ptr_size;
+    let step: usize = usize::from(ptr_size);
     let word = |index: usize| -> Option<u64> {
-        let at: usize = md_off + index * 8;
-        (at + 8 <= bytes.len()).then(|| read_u64_le(bytes, at))
+        let delta: usize = index.checked_mul(step)?;
+        let at: usize = md_off.checked_add(delta)?;
+        read_flat_word(bytes, at, ptr_size)
     };
     let in_image = |va: u64| -> bool { base <= va && va < hi };
+    let Some(expected_pclntab): Option<u64> = base.checked_add(pclntab_off) else {
+        return false;
+    };
+    if word(0) != Some(expected_pclntab) {
+        return false;
+    }
+    let Some(funcnametab_ptr): Option<u64> = word(MD_WORD_FUNCNAMETAB_PTR) else {
+        return false;
+    };
+    let Some(funcnametab_len): Option<u64> = word(MD_WORD_FUNCNAMETAB_LEN) else {
+        return false;
+    };
+    let Some(funcnametab_cap): Option<u64> = word(MD_WORD_FUNCNAMETAB_CAP) else {
+        return false;
+    };
+    let Some(pclntable_ptr): Option<u64> = word(MD_WORD_PCLNTABLE_PTR) else {
+        return false;
+    };
+    let Some(pclntable_len): Option<u64> = word(MD_WORD_PCLNTABLE_LEN) else {
+        return false;
+    };
+    let Some(pclntable_cap): Option<u64> = word(MD_WORD_PCLNTABLE_CAP) else {
+        return false;
+    };
     let Some(ftab_ptr): Option<u64> = word(MD_WORD_FTAB_PTR) else {
+        return false;
+    };
+    let Some(ftab_len): Option<u64> = word(MD_WORD_FTAB_LEN) else {
+        return false;
+    };
+    let Some(ftab_cap): Option<u64> = word(MD_WORD_FTAB_CAP) else {
+        return false;
+    };
+    let Some(min_pc): Option<u64> = word(MD_WORD_MIN_PC) else {
+        return false;
+    };
+    let Some(max_pc): Option<u64> = word(MD_WORD_MAX_PC) else {
         return false;
     };
     let Some(text_va): Option<u64> = word(MD_WORD_TEXT) else {
@@ -403,47 +483,67 @@ fn moduledata_is_consistent(bytes: &[u8], md_off: usize, base: u64, span: u64) -
     let Some(etext_va): Option<u64> = word(MD_WORD_ETEXT) else {
         return false;
     };
-    let Some(types_va): Option<u64> = word(MD_WORD_TYPES) else {
+    let Some(ftab_expected_len): Option<u64> = header.n_funcs.checked_add(1) else {
         return false;
     };
-    let Some(etypes_va): Option<u64> = word(MD_WORD_ETYPES) else {
+    let Some(ftab_entry_size): Option<u64> = (match header.version {
+        crate::pclntab::PclntabVersion::Go116 => u64::from(ptr_size).checked_mul(2),
+        crate::pclntab::PclntabVersion::Go118 | crate::pclntab::PclntabVersion::Go120 => Some(8),
+        crate::pclntab::PclntabVersion::Go12 => None,
+    }) else {
         return false;
     };
-    in_image(ftab_ptr)
+    flat_slice_is_consistent(
+        funcnametab_ptr,
+        funcnametab_len,
+        funcnametab_cap,
+        1,
+        base,
+        hi,
+    ) && flat_slice_is_consistent(pclntable_ptr, pclntable_len, pclntable_cap, 1, base, hi)
+        && ftab_len == ftab_expected_len
+        && flat_slice_is_consistent(ftab_ptr, ftab_len, ftab_cap, ftab_entry_size, base, hi)
+        && in_image(expected_pclntab)
         && in_image(text_va)
+        && text_va <= min_pc
+        && min_pc < max_pc
+        && max_pc <= etext_va
         && text_va < etext_va
         && etext_va <= hi
-        && in_image(types_va)
-        && types_va < etypes_va
-        && etypes_va <= hi
+        && (header.text_start == 0 || header.text_start == text_va)
 }
 
-fn flat_pointer_density(bytes: &[u8], base: u64, span: u64) -> usize {
-    let hi: u64 = base.saturating_add(span);
-    let mut resolvable: usize = 0;
-    let mut off: usize = 0;
-    while off + 8 <= bytes.len() {
-        let value: u64 = read_u64_le(bytes, off);
-        if value >= base && value < hi {
-            resolvable += 1;
-        }
-        off += 8;
+const fn flat_slice_is_consistent(
+    ptr: u64,
+    len: u64,
+    cap: u64,
+    elem_size: u64,
+    base: u64,
+    hi: u64,
+) -> bool {
+    if len > cap || elem_size == 0 {
+        return false;
     }
-    resolvable
+    if cap == 0 {
+        return len == 0;
+    }
+    let Some(span): Option<u64> = cap.checked_mul(elem_size) else {
+        return false;
+    };
+    let Some(end): Option<u64> = ptr.checked_add(span) else {
+        return false;
+    };
+    base <= ptr && ptr < hi && end <= hi
 }
 
-#[inline]
-fn read_u64_le(bytes: &[u8], off: usize) -> u64 {
-    u64::from_le_bytes([
-        bytes[off],
-        bytes[off + 1],
-        bytes[off + 2],
-        bytes[off + 3],
-        bytes[off + 4],
-        bytes[off + 5],
-        bytes[off + 6],
-        bytes[off + 7],
-    ])
+fn read_flat_word(bytes: &[u8], off: usize, ptr_size: u8) -> Option<u64> {
+    match ptr_size {
+        4 => crate::pclntab::read_u32(bytes, off, Endian::Little)
+            .ok()
+            .map(u64::from),
+        8 => crate::pclntab::read_u64(bytes, off, Endian::Little).ok(),
+        _ => None,
+    }
 }
 
 fn marker_hits(bytes: &[u8]) -> usize {
@@ -460,7 +560,67 @@ fn marker_hits(bytes: &[u8]) -> usize {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::{FLAT_MIN_BASE, infer_flat_base};
+    use super::{
+        Endian, FLAT_MIN_BASE, MD_WORD_ETEXT, MD_WORD_FTAB_CAP, MD_WORD_FTAB_LEN, MD_WORD_FTAB_PTR,
+        MD_WORD_FUNCNAMETAB_CAP, MD_WORD_FUNCNAMETAB_LEN, MD_WORD_FUNCNAMETAB_PTR, MD_WORD_MAX_PC,
+        MD_WORD_MIN_PC, MD_WORD_PCLNTABLE_CAP, MD_WORD_PCLNTABLE_LEN, MD_WORD_PCLNTABLE_PTR,
+        MD_WORD_TEXT, infer_flat_base, moduledata_is_consistent,
+    };
+    use crate::pclntab::{PclntabHeader, PclntabVersion};
+
+    fn set_moduledata_word(bytes: &mut [u8], index: usize, value: u64) {
+        let start: usize = index * 8;
+        let end: usize = start + 8;
+        bytes[start..end].copy_from_slice(&value.to_le_bytes());
+    }
+
+    #[test]
+    fn go116_64bit_ftab_span_uses_pointer_width() {
+        let base: u64 = 0x1_0000;
+        let pclntab_off: u64 = 0x100;
+        let span: u64 = 0x200;
+        let mut bytes: Vec<u8> = vec![0; 0x200];
+        let hi: u64 = base + span;
+        set_moduledata_word(&mut bytes, 0, base + pclntab_off);
+        set_moduledata_word(&mut bytes, MD_WORD_FUNCNAMETAB_PTR, base + 0x100);
+        set_moduledata_word(&mut bytes, MD_WORD_FUNCNAMETAB_LEN, 1);
+        set_moduledata_word(&mut bytes, MD_WORD_FUNCNAMETAB_CAP, 1);
+        set_moduledata_word(&mut bytes, MD_WORD_PCLNTABLE_PTR, base + 0x100);
+        set_moduledata_word(&mut bytes, MD_WORD_PCLNTABLE_LEN, 1);
+        set_moduledata_word(&mut bytes, MD_WORD_PCLNTABLE_CAP, 1);
+        set_moduledata_word(&mut bytes, MD_WORD_FTAB_PTR, hi - 24);
+        set_moduledata_word(&mut bytes, MD_WORD_FTAB_LEN, 2);
+        set_moduledata_word(&mut bytes, MD_WORD_FTAB_CAP, 2);
+        set_moduledata_word(&mut bytes, MD_WORD_MIN_PC, base + 0x10);
+        set_moduledata_word(&mut bytes, MD_WORD_MAX_PC, base + 0x20);
+        set_moduledata_word(&mut bytes, MD_WORD_TEXT, base + 0x10);
+        set_moduledata_word(&mut bytes, MD_WORD_ETEXT, base + 0x30);
+        let header: PclntabHeader = PclntabHeader {
+            version: PclntabVersion::Go116,
+            quantum: 1,
+            ptr_size: 8,
+            endian: Endian::Little,
+            n_funcs: 1,
+            n_files: 0,
+            text_start: 0,
+            funcname_off: 0,
+            cu_off: 0,
+            filetab_off: 0,
+            pctab_off: 0,
+            funcdata_off: 0,
+            section_addr: 0,
+            section_len: bytes.len(),
+        };
+
+        assert!(!moduledata_is_consistent(
+            &bytes,
+            0,
+            base,
+            span,
+            pclntab_off,
+            &header,
+        ));
+    }
 
     #[test]
     fn infer_flat_base_bounds_distinct_candidate_explosion() {
@@ -472,8 +632,24 @@ mod tests {
             let value: u64 = base + pclntab_off as u64;
             bytes.extend_from_slice(&value.to_le_bytes());
         }
+        let header: PclntabHeader = PclntabHeader {
+            version: PclntabVersion::Go120,
+            quantum: 1,
+            ptr_size: 8,
+            endian: Endian::Little,
+            n_funcs: 1,
+            n_files: 0,
+            text_start: 0,
+            funcname_off: 0,
+            cu_off: 0,
+            filetab_off: 0,
+            pctab_off: 0,
+            funcdata_off: 0,
+            section_addr: 0,
+            section_len: bytes.len(),
+        };
         let start: Instant = Instant::now();
-        let inferred: Option<u64> = infer_flat_base(&bytes, pclntab_off);
+        let inferred: Option<u64> = infer_flat_base(&bytes, pclntab_off, &header);
         let elapsed: Duration = start.elapsed();
         assert!(
             elapsed < Duration::from_secs(5),
