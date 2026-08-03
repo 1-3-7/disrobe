@@ -1,23 +1,23 @@
 # .NET / CIL
 
-`disrobe` parses the full .NET PE + CLR metadata surface, decompiles CIL to C#, F#, and VB pseudo-source, detects <!-- m:dotnet_protectors -->23<!-- /m --> protectors, and handles ReadyToRun and Native AOT images.
+`disrobe` parses .NET PE and CLR metadata, decompiles CIL to C#, F#, and VB pseudo-source, registers detection and routing for <!-- m:dotnet_protectors -->23<!-- /m --> protector families, and probes ReadyToRun and Native AOT images.
 
 ## At a glance
 
 | Surface | Support |
 |---|---|
-| Decompile | In-house CIL disassembler (full opcode table) and CIL-to-C#/F#/VB lowering, so the structural recovery is disrobe's own even when a rendering backend is used |
+| Decompile | In-house CIL disassembler and CIL-to-C#/F#/VB lowering, so the structural recovery is disrobe's own even when a rendering backend is used |
 | Rendering backends | ILSpy, dnSpy, dnSpyEx, de4dot via `--backend` |
-| Images | ReadyToRun (R2R) and Native AOT probed, with symbol recovery on AOT builds; single-file bundles extracted member by member |
+| Images | ReadyToRun (R2R) and Native AOT detection; the library AOT report recovers names and metadata attribution on committed fixtures, while CLI analysis currently reports detection only; single-file bundles extracted member by member |
 | ConfuserEx2 | Constant decryption and control-flow deflattening recovered in-house on real committed output; the encrypted-resource layer is carved byte-exact but walled on the runtime key; runtime-string and anti-tamper cleanup delegates to `--backend de4dot` |
 | Eazfuscator.NET | String decryptor emulated over the `#US` table, graded on a fixture built to the published algorithm; VM tier devirtualized at all 57 instructions against an in-repo EazVM virtualizer of our own, not the shipping product |
 | KoiVM | Devirtualized on a committed sample produced by the real KoiVM tool, all six virtualized bodies lifted back to CIL |
 | SmartAssembly, .NET Reactor | Embedded-assembly resource decompressed and encrypted-string table decrypted, graded against Roslyn-built fixtures we build to the published algorithm; no assembly produced by either product is committed |
 | Obfuscar | Dedicated in-house peeler: NameMaker odometer classification plus HideStrings recovery |
-| ILProtector, MaxToCode | Detected and structurally enumerated; method bodies walled on the native-runtime key the assembly never carries |
+| ILProtector, MaxToCode | Invoke-stub and zero-RVA structures enumerated on in-repo fixtures; native-keyed configurations remain report-only |
 | Themida .NET, ArmDot | Detected; no native-VM devirtualizer ships |
 
-None of the walled bodies is fabricated. The rest of the detected set is reported with watermark-strip and encrypted-resource classification.
+None of the walled bodies is fabricated. Other registered families have protector-specific reports and only the static recovery their corresponding peel paths can substantiate.
 
 ## Commands
 
@@ -30,17 +30,17 @@ disrobe dotnet backends                  # report available .NET backends on PAT
 disrobe auto App.exe --out recovered/     # ConfuserEx2 PE -> de4dot -> ILSpy -> C#
 ```
 
-`decompile` routes a .NET PE (`.dll` / `.exe`) through ILSpy, dnSpy, dnSpyEx, or de4dot. `analyze` reports the PE header, CLR metadata, protector detection, and probes for ReadyToRun (R2R) and Native AOT images, with symbol recovery on AOT builds.
+`decompile` routes a .NET PE (`.dll` / `.exe`) through ILSpy, dnSpy, dnSpyEx, or de4dot. `analyze` reports the PE and CLR summary, protector detection, and whether ReadyToRun (R2R) or Native AOT is detected. Detailed AOT names and metadata attribution are exposed by the library AOT report, not the current CLI summary.
 
 ## Coverage and fidelity
 
 ### Single-file bundles
 
-A .NET single-file deployment packs the managed assemblies and their native runtime into one host executable. The `disrobe-binfmt` bundle reader (`disrobe_binfmt::containers::dotnet_bundle`) locates the bundle marker inside an MZ, ELF, or Mach-O host, parses the manifest, and extracts each embedded member (managed assemblies, native libraries, `deps.json`, `runtimeconfig.json`, and symbol files) to its recorded relative path, raw-inflating the deflate-compressed members that version 6 and later carry. Manifest major versions 1, 2, and 6 through 64 are read; the intermediate 3 to 5 range, which no shipping SDK emits, is rejected. Extraction is exercised by a round-trip that reconstructs every member byte-for-byte, and a declared member size that runs past the buffer is rejected rather than read out of bounds.
+A .NET single-file deployment packs application files into a host executable; self-contained deployments can also include native runtime components. The `disrobe-binfmt` bundle reader (`disrobe_binfmt::containers::dotnet_bundle`) locates the bundle marker inside an MZ, ELF, or Mach-O host, parses the manifest, and returns each embedded member (managed assemblies, native libraries, `deps.json`, `runtimeconfig.json`, and symbol files) with its sanitized recorded relative path, raw-inflating any deflate-compressed member. Manifest major versions 1, 2, and 6 through 64 are read, while the intermediate 3 to 5 range is rejected. A synthetic round-trip fixture reconstructs its three members byte-for-byte, and a declared member size that runs past the buffer is rejected rather than read out of bounds.
 
 ### Obfuscator reversal
 
-`disrobe` detects <!-- m:dotnet_protectors -->23<!-- /m --> protector families. Recovery depth varies by protector and by what is statically present in the artifact. The model for in-house recovery is the same one used by the JVM and Lua passes: locate the decryptor method or key inside the assembly and emulate it over the encrypted data through the in-house CIL stack-machine, never a re-derived or hard-coded key.
+`disrobe` registers detection rules for <!-- m:dotnet_protectors -->23<!-- /m --> protector families. Recovery depth varies by protector and by what is statically present in the artifact. The per-family evidence below states what artifact is graded, what data is recovered, and where static recovery stops.
 
 Detection and string decryption are separate claims, and the evidence behind the second one differs by family. [String decryption evidence](#string-decryption-evidence) below states which families are graded on an assembly the protector itself produced and which are graded on a fixture we build to the published algorithm.
 
@@ -50,14 +50,14 @@ Reversed on a real committed sample (plaintext recovered from the artifact, plai
 
 In-assembly-decryptor recovery, graded by round-trip against the pre-encryption original. This list is grouped by how recovery works, not by who produced the sample, so a family in it also appears in [String decryption evidence](#string-decryption-evidence) below: the round-trip proves the decoder inverts the encryption, and the table below states whether the encrypted input came from the protector's own tool or from a fixture built to its published algorithm.
 
-- **Eazfuscator.NET**: locates the static `char[]`/`byte[]` string-decryptor method and emulates its CIL over the encrypted `#US` literal table to recover the pre-VM plaintext strings, graded on a fixture built to the published algorithm rather than on Eazfuscator.NET output, which is why the family also sits in the modelled row below. The VM-tier is devirtualized against an in-repo EazVM virtualizer of our own: the committed assembly is encoded by that virtualizer, not the shipping Eazfuscator.NET product. `disrobe` reads the embedded resource, recovers the per-build opcode map from the in-assembly dispatch table by fingerprinting each handler, decrypts the position-keyed instruction stream, and lifts every virtualized method body back to CIL, then grades that CIL against the clean DLL. The grade is an ordered instruction comparison (opcode and operand, with branch targets resolved to instruction index, not raw token): 57 of 57 instructions match in sequence across the five bodies (100%). A second gate rebuilds a runnable assembly from the recovered CIL and asserts its stdout is byte-identical to the clean baseline (run wherever a .NET runtime is on `PATH`). Per-build randomization is fully recovered; only a runtime-only homomorphic key, not present statically, would bound a given build.
+- **Eazfuscator.NET**: locates the static `char[]`/`byte[]` string-decryptor method and emulates its CIL over the encrypted `#US` literal table to recover the pre-VM plaintext strings, graded on a fixture built to the published algorithm rather than on Eazfuscator.NET output, which is why the family also sits in the modelled row below. The VM-tier is devirtualized against an in-repo EazVM virtualizer of our own: the committed assembly is encoded by that virtualizer, not the shipping Eazfuscator.NET product. `disrobe` reads the embedded resource, recovers the per-build opcode map from the in-assembly dispatch table by fingerprinting each handler, decrypts the position-keyed instruction stream, and lifts every virtualized method body back to CIL, then grades that CIL against the clean DLL. The grade is an ordered instruction comparison (opcode and operand, with branch targets resolved to instruction index, not raw token): 57 of 57 instructions match in sequence across the five bodies (100%). A second gate rebuilds a runnable assembly from the recovered CIL and asserts its stdout is byte-identical to the clean baseline; CI provisions .NET, while local runs require `dotnet` on `PATH`. For the committed seeded build, the randomized opcode map is recovered from the assembly rather than read from its sidecar.
 - **KoiVM (ConfuserEx VM)**: located by `#Koi` stream and `VMDispatcher` markers, then devirtualized on a committed sample produced by the **real KoiVM tool** (the TheProxyRE KoiVM fork driven through its public Virtualizer API over a benign self-authored exe, not a self-made encoder). `disrobe` reads the `#Koi` stream, fingerprints the VM-dispatch handler table, decodes the per-method instruction stream, and lifts all six virtualized bodies back to CIL through the same in-house CIL stack-machine used for Eazfuscator. The recovered bodies are graded against the independently compiled `KoiSample.clean.exe`: Add and Square recover fully and aggregate structural recovery stays at or above 75% against hand-derived ground-truth ops (a non-circular oracle), and the unobfuscated baseline correctly yields no KoiVM summary.
 - **SmartAssembly (embedded assemblies)**: the mode-1 chunked raw-DEFLATE resource that carries a merged or embedded dependent assembly is decompressed back to the original assembly bytes, graded byte-for-byte against a committed Roslyn-built fixture (one recovered resource on the sample). The payload inside it is a real assembly; the mode-1 framing around it is built to the published algorithm, not taken from a SmartAssembly build. Non-mode-1 carriers are marked Unknown and malformed mode-1 is Rejected, never fabricated. String encryption is a separate axis (below).
 - **.NET Reactor (encrypted-resource strings)**: the AES key and IV are read from the reachable encrypted-string resource and the string table is decrypted back to the original literals, graded against the runtime-validated originals of committed Roslyn-built fixtures carrying the .NET Reactor v4 static-string resource shape (astral-plane, embedded-nul, empty, and CJK strings all round-trip). No assembly produced by .NET Reactor is committed. An ambiguous or disconnected decoy key/IV tuple is Rejected as report-only, never guessed.
-- **ILProtector / MaxToCode**: classified by Invoke-stub and zero-RVA method enumeration, runtime-resource and `.mtc`/`.text1` section location, and container-framing parse. Real builds derive the per-method key inside the native loader (`Protect32/64.dll`) at run time, not in the managed assembly, so the encrypted bodies are walled and reported absent, never fabricated.
+- **ILProtector / MaxToCode**: classified on in-repo structural fixtures by Invoke-stub and zero-RVA method enumeration, runtime-resource and `.mtc`/`.text1` section location, and container-framing parse. For native-keyed configurations, the managed assembly does not carry the per-method key used by the runtime loader, so the encrypted bodies remain report-only.
 - **Obfuscar**: dedicated in-house peeler (NameMaker odometer classification plus HideStrings recovery: the hidden `ldstr` literals are read back to their original bytes from the in-assembly FieldRVA carrier through the generated accessor, 15/15 on the gauntlet sample).
 
-Detected and classified, with no dedicated string decryptor: **Dotfuscator (Pro), Goliath, DeepSea, Agile.NET (CV tier)**. The string key (per-string XOR lane, AES/Rijndael resource key, RC4(SHA1(resource)), or 3DES) is embedded in the assembly, so the data is present and not a wall. These carry watermark-strip, identifier, and encrypted-resource classification, and the generic static decoder opportunistically recovers in-lined integer and string constants where the decoder is a pure transform.
+Detected and classified without a family-specific string fidelity claim: **Dotfuscator (Pro), Goliath, DeepSea, Agile.NET**. Their peel paths report matched watermarks, identifier characteristics, and relevant encrypted-resource details. They also run the generic static decoder, which may recover inlined integer or string constants when it can prove a pure transform.
 
 ### String decryption evidence
 
@@ -77,8 +77,8 @@ The second row is the one to read before pointing `disrobe` at a real protected 
 
 Genuine walls (the key or the original code is not in the static artifact):
 
-- **Themida / .NET wrapper**: managed methods are lifted into the Oreans native VM; per project policy `disrobe` does not ship a native-VM devirtualizer.
-- **ArmDot**: custom per-method VM with LCG-encrypted opcodes; static devirtualization is not performed.
+- **Themida / .NET wrapper**: native VM bodies are outside the current recovery scope; `disrobe` does not ship a native-VM devirtualizer.
+- **ArmDot**: detected and reported, but no static devirtualizer ships.
 - **ILProtector / MaxToCode native-keyed configurations**: when the per-method key is computed inside the native stub, the original CIL is not statically present.
 - **Obfuscar renames**: the rename itself embeds no in-PE name map, so original identifier names stay walled behind the out-of-band Mapping.txt.
 
