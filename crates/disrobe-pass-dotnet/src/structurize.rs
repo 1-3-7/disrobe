@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 use serde::{Deserialize, Serialize};
 
 use crate::cil::{FlowControl, Instruction, MethodBody, OperandValue};
-use crate::model::Resolver;
+use crate::model::{IsInstTargetKind, Resolver};
 use crate::names::NameTable;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -61,6 +61,14 @@ pub trait TokenNamer {
         MetadataTokenKind::Unknown
     }
 
+    fn isinst_target_kind(&self, _token: u32) -> IsInstTargetKind {
+        IsInstTargetKind::Unsupported
+    }
+
+    fn unbox_any_target_name(&self, _token: u32) -> Option<String> {
+        None
+    }
+
     fn field_rva_bytes(&self, _token: u32) -> Option<&[u8]> {
         None
     }
@@ -111,6 +119,16 @@ impl TokenNamer for Resolver {
     #[inline]
     fn token_kind(&self, token: u32) -> MetadataTokenKind {
         self.metadata_token_kind(token)
+    }
+
+    #[inline]
+    fn isinst_target_kind(&self, token: u32) -> IsInstTargetKind {
+        Resolver::isinst_target_kind(self, token)
+    }
+
+    #[inline]
+    fn unbox_any_target_name(&self, token: u32) -> Option<String> {
+        Resolver::unbox_any_target_name(self, token)
     }
 
     #[inline]
@@ -176,6 +194,16 @@ impl TokenNamer for MethodNamer<'_> {
     #[inline]
     fn token_kind(&self, token: u32) -> MetadataTokenKind {
         self.resolver.metadata_token_kind(token)
+    }
+
+    #[inline]
+    fn isinst_target_kind(&self, token: u32) -> IsInstTargetKind {
+        Resolver::isinst_target_kind(self.resolver, token)
+    }
+
+    #[inline]
+    fn unbox_any_target_name(&self, token: u32) -> Option<String> {
+        Resolver::unbox_any_target_name(self.resolver, token)
     }
 
     #[inline]
@@ -248,7 +276,16 @@ enum Expr {
     Tuple(Vec<Self>),
     Coalesce(Box<Self>, Box<Self>),
     Cast(String, Box<Self>),
-    IsInst(String, Box<Self>),
+    IsInst {
+        ty: String,
+        kind: IsInstTargetKind,
+        operand: Box<Self>,
+        capture: Option<String>,
+    },
+    UnboxAny {
+        target: Option<String>,
+        operand: Box<Self>,
+    },
     LoadElem(Box<Self>, Box<Self>),
     LoadLen(Box<Self>),
     NewArr {
@@ -278,6 +315,8 @@ enum Expr {
 const MAX_EXPR_DEPTH: usize = 256;
 const UNRECOVERED_EXPRESSION: &str = "__unrecovered_expression";
 const UNRECONSTRUCTED_RUNTIME_HANDLE: &str = "__unreconstructed_runtime_handle";
+const UNRESOLVED_ISINST_TARGET: &str = "__unresolved_isinst_target";
+const UNRESOLVED_UNBOX_ANY_TARGET: &str = "__unresolved_unbox_any_target";
 
 fn runtime_handle_refusal(lang: TargetLang, handle_type: &str, detail: &str) -> String {
     match lang {
@@ -302,7 +341,8 @@ impl Expr {
         match self {
             Self::Unary(_, child)
             | Self::Cast(_, child)
-            | Self::IsInst(_, child)
+            | Self::IsInst { operand: child, .. }
+            | Self::UnboxAny { operand: child, .. }
             | Self::LoadLen(child)
             | Self::AddressOf(child)
             | Self::Deref(child) => {
@@ -394,7 +434,8 @@ fn expression_depth(expression: &Expr) -> usize {
         match current {
             Expr::Unary(_, child)
             | Expr::Cast(_, child)
-            | Expr::IsInst(_, child)
+            | Expr::IsInst { operand: child, .. }
+            | Expr::UnboxAny { operand: child, .. }
             | Expr::LoadLen(child)
             | Expr::AddressOf(child)
             | Expr::Deref(child)
@@ -603,10 +644,79 @@ fn render_expr(initial: RenderAction<'_>, lang: TargetLang, names: &NameTable) -
                         pending.push(RenderAction::Text("CType("));
                     }
                 },
-                Expr::IsInst(ty, operand) => match lang {
+                Expr::UnboxAny { target, operand } => match lang {
                     TargetLang::CSharp => {
+                        match target {
+                            Some(target) => {
+                                output.push('(');
+                                output.push_str(target);
+                                output.push_str(")((object)");
+                            }
+                            None => {
+                                output.push_str(
+                                    "(new System.Func<object, dynamic>((object _) => { throw new System.NotSupportedException(\"",
+                                );
+                                output.push_str(UNRESOLVED_UNBOX_ANY_TARGET);
+                                output.push_str("\"); }))((object)");
+                            }
+                        }
+                        pending.push(RenderAction::Text(")"));
+                        pending.push(RenderAction::Paren(operand));
+                    }
+                    TargetLang::FSharp => {
+                        output.push_str(&runtime_handle_refusal(
+                            lang,
+                            "obj",
+                            UNRESOLVED_UNBOX_ANY_TARGET,
+                        ));
+                    }
+                    TargetLang::VbNet => {
+                        output.push_str(&runtime_handle_refusal(
+                            lang,
+                            "Object",
+                            UNRESOLVED_UNBOX_ANY_TARGET,
+                        ));
+                    }
+                },
+                Expr::IsInst {
+                    ty,
+                    kind,
+                    operand,
+                    capture,
+                } => match lang {
+                    TargetLang::CSharp
+                        if matches!(
+                            *kind,
+                            IsInstTargetKind::ValueType | IsInstTargetKind::RenderableUnknown
+                        ) =>
+                    {
+                        let capture: &str = capture.as_deref().unwrap_or("__disrobe_isinst");
+                        output.push_str("((object)");
+                        pending.push(RenderAction::Text(" : null)"));
+                        pending.push(RenderAction::Text(capture));
+                        pending.push(RenderAction::Text(" ? "));
+                        pending.push(RenderAction::Text(ty));
+                        pending.push(RenderAction::Text(" is "));
+                        pending.push(RenderAction::Text(capture));
+                        pending.push(RenderAction::Text(" && "));
+                        pending.push(RenderAction::Text(capture));
+                        pending.push(RenderAction::Text(" is var "));
+                        pending.push(RenderAction::Paren(operand));
+                    }
+                    TargetLang::CSharp if *kind == IsInstTargetKind::Unsupported => {
+                        output.push_str(
+                            "(new System.Func<object, dynamic>((object _) => { throw new System.NotSupportedException(\"",
+                        );
+                        output.push_str(UNRESOLVED_ISINST_TARGET);
+                        output.push_str("\"); }))((object)");
+                        pending.push(RenderAction::Text(")"));
+                        pending.push(RenderAction::Paren(operand));
+                    }
+                    TargetLang::CSharp => {
+                        output.push_str("((object)");
                         pending.push(RenderAction::Text(ty));
                         pending.push(RenderAction::Text(" as "));
+                        pending.push(RenderAction::Text(")"));
                         pending.push(RenderAction::Paren(operand));
                     }
                     TargetLang::FSharp => {
@@ -1395,6 +1505,27 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         }
     }
 
+    fn isinst_capture_name(&self, offset: u32) -> String {
+        let base: String = format!("__disrobe_isinst_{offset:04X}");
+        let mut suffix: usize = 0;
+        loop {
+            let candidate: String = if suffix == 0 {
+                base.clone()
+            } else {
+                format!("{base}_{suffix}")
+            };
+            if self
+                .names
+                .param_names()
+                .iter()
+                .all(|name: &String| name != &candidate)
+            {
+                return candidate;
+            }
+            suffix = suffix.saturating_add(1);
+        }
+    }
+
     fn stored_field_type(&self, ins: &Instruction) -> Option<String> {
         match ins.operand {
             OperandValue::Token(t) => self.namer.field_type_name(t),
@@ -1879,8 +2010,24 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             }
             "isinst" => {
                 let e: Expr = self.pop();
+                let token: u32 = match ins.operand {
+                    OperandValue::Token(value) => value,
+                    _ => 0,
+                };
                 let ty: String = short(&self.token_name(ins));
-                self.push(Expr::IsInst(ty, Box::new(e)));
+                let kind: IsInstTargetKind = self.namer.isinst_target_kind(token);
+                let capture: Option<String> = (self.lang == TargetLang::CSharp
+                    && matches!(
+                        kind,
+                        IsInstTargetKind::ValueType | IsInstTargetKind::RenderableUnknown
+                    ))
+                .then(|| self.isinst_capture_name(ins.offset));
+                self.push(Expr::IsInst {
+                    ty,
+                    kind,
+                    operand: Box::new(e),
+                    capture,
+                });
             }
             "box" => {
                 let literal: Option<&'static str> = (self.lang == TargetLang::CSharp
@@ -1894,6 +2041,20 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                     let (_, depth): (Expr, usize) = self.pop_with_depth();
                     self.push_with_depth(Expr::Const(literal.to_owned()), depth);
                 }
+            }
+            "unbox.any" if self.lang == TargetLang::CSharp => {
+                let operand: Expr = self.pop();
+                let token: u32 = match ins.operand {
+                    OperandValue::Token(value) => value,
+                    _ => 0,
+                };
+                self.push(Expr::UnboxAny {
+                    target: self
+                        .namer
+                        .unbox_any_target_name(token)
+                        .map(|target: String| short(&target)),
+                    operand: Box::new(operand),
+                });
             }
             "unbox.any" | "unbox" | "readonly." | "volatile." | "tail." | "constrained."
             | "no." => {}
@@ -2472,6 +2633,28 @@ fn classify_cond_kind(e: &Expr, names: &NameTable) -> CondKind {
 }
 
 fn branch_condition(e: Expr, brtrue: bool, lang: TargetLang, names: &NameTable) -> String {
+    if lang == TargetLang::CSharp
+        && let Expr::IsInst {
+            ty, kind, operand, ..
+        } = &e
+    {
+        let predicate: String = match kind {
+            IsInstTargetKind::Unsupported => format!(
+                "(new System.Func<object, bool>((object _) => {{ throw new System.NotSupportedException(\"{UNRESOLVED_ISINST_TARGET}\"); }}))((object){})",
+                paren(operand, lang, names)
+            ),
+            IsInstTargetKind::ValueType
+            | IsInstTargetKind::ReferenceType
+            | IsInstTargetKind::RenderableUnknown => {
+                format!("((object){}) is {ty}", paren(operand, lang, names))
+            }
+        };
+        return if brtrue {
+            predicate
+        } else {
+            format!("!({predicate})")
+        };
+    }
     let kind: CondKind = if lang == TargetLang::CSharp {
         classify_cond_kind(&e, names)
     } else {
@@ -2855,7 +3038,7 @@ fn auto_property_backing_name(short_name: &str) -> Option<&str> {
         .filter(|p: &&str| !p.is_empty() && is_simple_identifier(p))
 }
 
-fn is_simple_identifier(s: &str) -> bool {
+pub(crate) fn is_simple_identifier(s: &str) -> bool {
     let mut chars = s.chars();
     chars
         .next()
@@ -3008,6 +3191,285 @@ mod tests {
             output.status.success(),
             "runtime-handle refusal must compile in every C# expression position:\n{}",
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    struct UnboxAnyNamer;
+
+    impl TokenNamer for UnboxAnyNamer {
+        fn name(&self, token: u32) -> String {
+            match token {
+                0x0100_0001 => "Target".to_owned(),
+                other => format!("token_{other:08X}"),
+            }
+        }
+
+        fn unbox_any_target_name(&self, token: u32) -> Option<String> {
+            (token == 0x0100_0001).then_some("Target".to_owned())
+        }
+
+        fn outer_has_this(&self) -> bool {
+            false
+        }
+    }
+
+    struct UnsupportedUnboxAnyNamer;
+
+    impl TokenNamer for UnsupportedUnboxAnyNamer {
+        fn name(&self, token: u32) -> String {
+            match token {
+                0x0100_0001 => "!!0".to_owned(),
+                0x0A00_0001 => "Program::Next".to_owned(),
+                other => format!("token_{other:08X}"),
+            }
+        }
+
+        fn call_info(&self, token: u32) -> Option<CallInfo> {
+            (token == 0x0A00_0001).then_some(CallInfo {
+                arg_count: 0,
+                returns_value: true,
+                has_this: false,
+                byref_param_mask: 0,
+            })
+        }
+
+        fn isinst_target_kind(&self, _token: u32) -> IsInstTargetKind {
+            IsInstTargetKind::Unsupported
+        }
+
+        fn outer_has_this(&self) -> bool {
+            false
+        }
+    }
+
+    struct NullableUnboxAnyNamer;
+
+    impl TokenNamer for NullableUnboxAnyNamer {
+        fn name(&self, token: u32) -> String {
+            match token {
+                0x0100_0001 => "int?".to_owned(),
+                other => format!("token_{other:08X}"),
+            }
+        }
+
+        fn unbox_any_target_name(&self, token: u32) -> Option<String> {
+            (token == 0x0100_0001).then_some("int?".to_owned())
+        }
+
+        fn outer_has_this(&self) -> bool {
+            false
+        }
+    }
+
+    fn run_unbox_any_probe(source: &str, suffix: &str) -> std::process::Output {
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create(&format!("disrobe_unbox_any_{suffix}"))
+                .expect("create unbox.any compiler scratch directory");
+        let directory: &std::path::Path = scratch.path();
+        std::fs::write(
+            directory.join("UnboxAnyProbe.csproj"),
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net9.0</TargetFramework><Nullable>disable</Nullable><ImplicitUsings>disable</ImplicitUsings><GenerateAssemblyInfo>false</GenerateAssemblyInfo></PropertyGroup></Project>",
+        )
+        .expect("write unbox.any compiler project");
+        std::fs::write(directory.join("UnboxAnyProbe.cs"), source)
+            .expect("write unbox.any compiler source");
+        std::process::Command::new("dotnet")
+            .args(["run", "-c", "Release", "-v", "q", "-nologo"])
+            .current_dir(directory)
+            .output()
+            .expect("run unbox.any compiler oracle")
+    }
+
+    #[test]
+    fn unbox_any_preserves_the_object_boundary_before_a_user_defined_csharp_cast() {
+        let mut code: Vec<u8> = vec![0x02, 0xA5];
+        code.extend_from_slice(&0x0100_0001u32.to_le_bytes());
+        code.push(0x2A);
+        let body: MethodBody = body_from(&code);
+        let recovered: StructuredMethod =
+            decompile_method("Target Probe(Source arg1)", &body, &UnboxAnyNamer);
+        let recovered_unbox: StructuredMethod =
+            decompile_method("Target Unbox(object arg1)", &body, &UnboxAnyNamer);
+        assert!(
+            recovered.body.contains("return (Target)((object)arg1);"),
+            "unbox.any must force the CLR object boundary before a target cast, got:\n{}",
+            recovered.body
+        );
+        assert!(
+            recovered_unbox
+                .body
+                .contains("return (Target)((object)arg1);"),
+            "unbox.any must accept a boxed target through the same object boundary, got:\n{}",
+            recovered_unbox.body
+        );
+        let source: String = format!(
+            "public sealed class Source {{ }}\npublic struct Target\n{{\n    public int Value;\n    public static int Conversions;\n\n    public static explicit operator Target(Source source)\n    {{\n        Conversions += 1;\n        return default;\n    }}\n}}\n\npublic static class Program\n{{\n    public static {recovered}\n\n    public static {recovered_unbox}\n\n    public static int Main()\n    {{\n        Target unboxed = Unbox(new Target {{ Value = 37 }});\n        if (unboxed.Value != 37)\n        {{\n            return 4;\n        }}\n        try\n        {{\n            _ = Probe(new Source());\n            return Target.Conversions == 0 ? 1 : 2;\n        }}\n        catch (System.InvalidCastException)\n        {{\n            return Target.Conversions == 0 ? 0 : 3;\n        }}\n    }}\n}}\n",
+            recovered = recovered.body,
+            recovered_unbox = recovered_unbox.body
+        );
+        let clean: std::process::Output = run_unbox_any_probe(&source, "clean");
+        assert!(
+            clean.status.success(),
+            "the recovered unbox.any source must throw before calling a user conversion:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&clean.stdout),
+            String::from_utf8_lossy(&clean.stderr)
+        );
+        let mutated: String = source.replacen("(Target)((object)arg1)", "(Target)arg1", 1);
+        assert_ne!(mutated, source, "the object-boundary mutation must apply");
+        let mutated_output: std::process::Output = run_unbox_any_probe(&mutated, "mutated");
+        assert_eq!(
+            mutated_output.status.code(),
+            Some(2),
+            "without the object boundary, the user conversion must run:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&mutated_output.stdout),
+            String::from_utf8_lossy(&mutated_output.stderr)
+        );
+    }
+
+    #[test]
+    fn unsupported_isinst_evaluates_its_operand_before_refusing() {
+        let mut result_code: Vec<u8> = vec![0x28];
+        result_code.extend_from_slice(&0x0A00_0001u32.to_le_bytes());
+        result_code.push(0x75);
+        result_code.extend_from_slice(&0x0100_0001u32.to_le_bytes());
+        result_code.push(0x2A);
+        let result: StructuredMethod = decompile_method(
+            "object Result()",
+            &body_from(&result_code),
+            &UnsupportedUnboxAnyNamer,
+        );
+
+        let mut branch_code: Vec<u8> = vec![0x28];
+        branch_code.extend_from_slice(&0x0A00_0001u32.to_le_bytes());
+        branch_code.push(0x75);
+        branch_code.extend_from_slice(&0x0100_0001u32.to_le_bytes());
+        branch_code.extend_from_slice(&[0x2C, 0x02, 0x17, 0x2A, 0x16, 0x2A]);
+        let branch: StructuredMethod = decompile_method(
+            "int Branch()",
+            &body_from(&branch_code),
+            &UnsupportedUnboxAnyNamer,
+        );
+
+        assert!(
+            result.body.contains(UNRESOLVED_ISINST_TARGET)
+                && branch.body.contains(UNRESOLVED_ISINST_TARGET),
+            "unsupported isinst must retain an explicit refusal:\nresult:\n{}\nbranch:\n{}",
+            result.body,
+            branch.body
+        );
+        let source: String = format!(
+            "public static class Program\n{{\n    public static int Count;\n\n    public static object Next()\n    {{\n        Count += 1;\n        return new object();\n    }}\n\n    public static {result}\n\n    public static {branch}\n\n    public static int Main()\n    {{\n        try\n        {{\n            _ = Result();\n            return 1;\n        }}\n        catch (System.NotSupportedException)\n        {{\n            if (Count != 1)\n            {{\n                return 2;\n            }}\n        }}\n        try\n        {{\n            _ = Branch();\n            return 3;\n        }}\n        catch (System.NotSupportedException)\n        {{\n            return Count == 2 ? 0 : 4;\n        }}\n    }}\n}}\n",
+            result = result.body,
+            branch = branch.body
+        );
+        let output: std::process::Output = run_unbox_any_probe(&source, "unsupported_isinst");
+        assert!(
+            output.status.success(),
+            "unsupported isinst must evaluate then refuse in value and branch paths:\nstdout:\n{}\nstderr:\n{}\nsource:\n{source}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn unsupported_unbox_any_evaluates_its_operand_before_refusing() {
+        let mut code: Vec<u8> = vec![0x28];
+        code.extend_from_slice(&0x0A00_0001u32.to_le_bytes());
+        code.push(0xA5);
+        code.extend_from_slice(&0x0100_0001u32.to_le_bytes());
+        code.push(0x2A);
+        let body: MethodBody = body_from(&code);
+        let recovered: StructuredMethod =
+            decompile_method("object Probe()", &body, &UnsupportedUnboxAnyNamer);
+        assert!(
+            recovered.body.contains("__unresolved_unbox_any_target")
+                && !recovered.body.contains("!!0"),
+            "unsupported unbox.any must avoid an unrenderable target, got:\n{}",
+            recovered.body
+        );
+        let source: String = format!(
+            "public static class Program\n{{\n    public static int Count;\n\n    public static object Next()\n    {{\n        Count += 1;\n        return new object();\n    }}\n\n    public static {recovered}\n\n    public static int Main()\n    {{\n        try\n        {{\n            _ = Probe();\n            return Count == 1 ? 1 : 2;\n        }}\n        catch (System.NotSupportedException)\n        {{\n            return Count == 1 ? 0 : 3;\n        }}\n    }}\n}}\n",
+            recovered = recovered.body
+        );
+        let output: std::process::Output = run_unbox_any_probe(&source, "unsupported");
+        assert!(
+            output.status.success(),
+            "unsupported unbox.any must evaluate then refuse:\nstdout:\n{}\nstderr:\n{}\nsource:\n{source}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn nullable_unbox_any_preserves_boxing_behavior() {
+        let mut code: Vec<u8> = vec![0x02, 0xA5];
+        code.extend_from_slice(&0x0100_0001u32.to_le_bytes());
+        code.push(0x2A);
+        let body: MethodBody = body_from(&code);
+        let recovered: StructuredMethod =
+            decompile_method("int? Probe(object arg1)", &body, &NullableUnboxAnyNamer);
+        assert!(
+            recovered.body.contains("return (int?)((object)arg1);"),
+            "nullable unbox.any must preserve its validated target and object boundary, got:\n{}",
+            recovered.body
+        );
+        let source: String = format!(
+            "public static class Program\n{{\n    public static {recovered}\n\n    public static int Main()\n    {{\n        int? boxed = Probe(37);\n        if (boxed != 37)\n        {{\n            return 1;\n        }}\n        int? absent = Probe(null);\n        if (absent.HasValue)\n        {{\n            return 2;\n        }}\n        try\n        {{\n            _ = Probe(\"not an integer\");\n            return 3;\n        }}\n        catch (System.InvalidCastException)\n        {{\n            return 0;\n        }}\n    }}\n}}\n",
+            recovered = recovered.body
+        );
+        let output: std::process::Output = run_unbox_any_probe(&source, "nullable");
+        assert!(
+            output.status.success(),
+            "nullable unbox.any must retain CLR boxing behavior:\nstdout:\n{}\nstderr:\n{}\nsource:\n{source}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    struct RetainedValueTypeIsInstNamer;
+
+    impl TokenNamer for RetainedValueTypeIsInstNamer {
+        fn name(&self, token: u32) -> String {
+            match token {
+                0x0100_0001 => "Money".to_owned(),
+                other => format!("token_{other:08X}"),
+            }
+        }
+
+        fn isinst_target_kind(&self, token: u32) -> IsInstTargetKind {
+            match token {
+                0x0100_0001 => IsInstTargetKind::ValueType,
+                _ => IsInstTargetKind::Unsupported,
+            }
+        }
+
+        fn outer_has_this(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn retained_value_type_isinst_captures_the_boxed_reference_in_its_expression() {
+        let mut code: Vec<u8> = vec![0x02, 0x75];
+        code.extend_from_slice(&0x0100_0001u32.to_le_bytes());
+        code.push(0x2A);
+        let body: MethodBody = body_from(&code);
+        let recovered: StructuredMethod = decompile_method(
+            "object Probe(object arg1)",
+            &body,
+            &RetainedValueTypeIsInstNamer,
+        );
+        assert!(
+            recovered
+                .body
+                .contains("return ((object)arg1 is var __disrobe_isinst_0001 && __disrobe_isinst_0001 is Money ? __disrobe_isinst_0001 : null);"),
+            "retained value-type isinst must capture its operand once and return the original boxed reference or null, got:\n{}",
+            recovered.body
+        );
+        assert!(
+            !recovered.body.contains("arg1 as Money"),
+            "value-type isinst must not use an invalid C# as-expression, got:\n{}",
+            recovered.body
         );
     }
 

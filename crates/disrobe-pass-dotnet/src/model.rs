@@ -10,7 +10,10 @@ use crate::signature::{
     FieldSig, MethodSig, TypeSig, parse_field_sig, parse_field_sig_strict,
     parse_field_sig_with_modifiers, parse_method_sig, parse_method_sig_strict,
 };
-use crate::structurize::{FieldRvaPrimitive, MetadataTokenKind, TargetLang};
+use crate::structurize::{
+    FieldRvaPrimitive, MetadataTokenKind, TargetLang, csharp_escape_identifier,
+    is_simple_identifier,
+};
 use crate::tables::{
     FieldRow, GenericParamRow, InterfaceImplRow, MemberRefRow, MethodDefRow, MethodSpecRow, RowRef,
     TableId, Tables, TypeDefRow, TypeRefRow, TypeSpecRow, parse_tables,
@@ -26,6 +29,29 @@ pub struct TypeModel {
     pub base_type: Option<String>,
     pub fields: Vec<FieldModel>,
     pub methods: Vec<MethodModel>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IsInstTargetKind {
+    ValueType,
+    ReferenceType,
+    RenderableUnknown,
+    #[default]
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CSharpTypeCategory {
+    ValueType,
+    ReferenceType,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CSharpTypeTarget {
+    rendered: String,
+    category: CSharpTypeCategory,
+    nullable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1142,14 +1168,55 @@ impl Resolver {
         let Some(type_row): Option<&TypeDefRow> = self.tables.type_defs.get(index) else {
             return false;
         };
+        if self.type_def_is_corelib_value_root(type_rid) {
+            return false;
+        }
         let Some(parent): Option<RowRef> = type_row.extends else {
             return false;
         };
-        if parent.table != TableId::TypeRef {
+        self.is_corelib_value_type_parent(parent)
+    }
+
+    fn is_corelib_value_type_parent(&self, parent: RowRef) -> bool {
+        match parent.table {
+            TableId::TypeDef => self.type_def_is_corelib_value_root(parent.row),
+            TableId::TypeRef => self.type_ref_is_corelib_value_root(parent.row),
+            _ => false,
+        }
+    }
+
+    fn type_def_is_corelib_value_root(&self, rid: u32) -> bool {
+        if !self.is_corelib_definition_assembly() {
             return false;
         }
-        self.type_ref_name(parent.row)
-            .is_some_and(|name: String| name == "System.ValueType" || name == "System.Enum")
+        let Some(index): Option<usize> = rid
+            .checked_sub(1)
+            .and_then(|row: u32| usize::try_from(row).ok())
+        else {
+            return false;
+        };
+        let Some(type_def): Option<&TypeDefRow> = self.tables.type_defs.get(index) else {
+            return false;
+        };
+        self.string(type_def.namespace) == "System"
+            && matches!(self.string(type_def.name).as_str(), "ValueType" | "Enum")
+    }
+
+    fn type_ref_is_corelib_value_root(&self, rid: u32) -> bool {
+        let Some(index): Option<usize> = rid
+            .checked_sub(1)
+            .and_then(|row: u32| usize::try_from(row).ok())
+        else {
+            return false;
+        };
+        let Some(type_ref): Option<&TypeRefRow> = self.tables.type_refs.get(index) else {
+            return false;
+        };
+        self.string(type_ref.namespace) == "System"
+            && matches!(self.string(type_ref.name).as_str(), "ValueType" | "Enum")
+            && type_ref
+                .resolution_scope
+                .is_some_and(|scope: RowRef| self.is_corelib_assembly_ref(scope))
     }
 
     fn type_flags(&self, type_rid: u32) -> Option<u32> {
@@ -1344,6 +1411,254 @@ impl Resolver {
     }
 
     #[must_use]
+    pub fn isinst_target_kind(&self, token: u32) -> IsInstTargetKind {
+        self.csharp_type_target(token)
+            .map_or(IsInstTargetKind::Unsupported, |target: CSharpTypeTarget| {
+                self.isinst_target_kind_for_csharp_type(&target)
+            })
+    }
+
+    #[must_use]
+    pub fn unbox_any_target_name(&self, token: u32) -> Option<String> {
+        self.csharp_type_target(token)
+            .map(|target: CSharpTypeTarget| target.rendered)
+    }
+
+    fn csharp_type_target(&self, token: u32) -> Option<CSharpTypeTarget> {
+        let Some(table): Option<TableId> = token_table(token) else {
+            return None;
+        };
+        let Some(rid): Option<u32> = token_rid(token) else {
+            return None;
+        };
+        match table {
+            TableId::TypeDef => {
+                (self.csharp_named_type_arity(token) == Some(0)).then_some(())?;
+                let rendered: String = self.type_def_name(rid)?;
+                let category: CSharpTypeCategory = if self.type_is_value_type(rid) {
+                    CSharpTypeCategory::ValueType
+                } else {
+                    CSharpTypeCategory::ReferenceType
+                };
+                Some(CSharpTypeTarget {
+                    rendered,
+                    category,
+                    nullable: false,
+                })
+            }
+            TableId::TypeRef => {
+                (self.csharp_named_type_arity(token) == Some(0)).then_some(())?;
+                Some(CSharpTypeTarget {
+                    rendered: self.type_ref_name(rid)?,
+                    category: CSharpTypeCategory::Unknown,
+                    nullable: false,
+                })
+            }
+            TableId::TypeSpec => self
+                .type_spec_signature(rid)
+                .as_ref()
+                .and_then(|signature: &TypeSig| self.csharp_type_target_from_signature(signature)),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn isinst_target_kind_from_signature(&self, signature: &TypeSig) -> IsInstTargetKind {
+        self.csharp_type_target_from_signature(signature)
+            .map_or(IsInstTargetKind::Unsupported, |target: CSharpTypeTarget| {
+                self.isinst_target_kind_for_csharp_type(&target)
+            })
+    }
+
+    #[cfg(test)]
+    fn unbox_any_target_name_from_signature(&self, signature: &TypeSig) -> Option<String> {
+        self.csharp_type_target_from_signature(signature)
+            .map(|target: CSharpTypeTarget| target.rendered)
+    }
+
+    fn isinst_target_kind_for_csharp_type(&self, target: &CSharpTypeTarget) -> IsInstTargetKind {
+        if target.nullable {
+            return IsInstTargetKind::Unsupported;
+        }
+        match target.category {
+            CSharpTypeCategory::ValueType => IsInstTargetKind::ValueType,
+            CSharpTypeCategory::ReferenceType => IsInstTargetKind::ReferenceType,
+            CSharpTypeCategory::Unknown => IsInstTargetKind::RenderableUnknown,
+        }
+    }
+
+    fn csharp_type_target_from_signature(&self, signature: &TypeSig) -> Option<CSharpTypeTarget> {
+        if !self.csharp_signature_is_renderable(signature) {
+            return None;
+        }
+        let (category, nullable): (CSharpTypeCategory, bool) = match signature {
+            TypeSig::Boolean
+            | TypeSig::Char
+            | TypeSig::I1
+            | TypeSig::U1
+            | TypeSig::I2
+            | TypeSig::U2
+            | TypeSig::I4
+            | TypeSig::U4
+            | TypeSig::I8
+            | TypeSig::U8
+            | TypeSig::R4
+            | TypeSig::R8
+            | TypeSig::IntPtr
+            | TypeSig::UIntPtr => (CSharpTypeCategory::ValueType, false),
+            TypeSig::String | TypeSig::Object | TypeSig::SzArray(_) | TypeSig::Array { .. } => {
+                (CSharpTypeCategory::ReferenceType, false)
+            }
+            TypeSig::NamedType { is_value_type, .. } => {
+                if *is_value_type {
+                    (CSharpTypeCategory::ValueType, false)
+                } else {
+                    (CSharpTypeCategory::ReferenceType, false)
+                }
+            }
+            TypeSig::GenericInst { base, .. } => match base.as_ref() {
+                TypeSig::NamedType {
+                    is_value_type,
+                    token,
+                } => {
+                    if *is_value_type {
+                        (
+                            CSharpTypeCategory::ValueType,
+                            self.isinst_nullable_type(*token),
+                        )
+                    } else {
+                        (
+                            CSharpTypeCategory::ReferenceType,
+                            self.isinst_nullable_type(*token),
+                        )
+                    }
+                }
+                _ => return None,
+            },
+            TypeSig::Void
+            | TypeSig::TypedByRef
+            | TypeSig::Ptr(_)
+            | TypeSig::ByRef(_)
+            | TypeSig::Pinned(_)
+            | TypeSig::Var(_)
+            | TypeSig::MVar(_)
+            | TypeSig::FnPtr
+            | TypeSig::Unknown => return None,
+        };
+        Some(CSharpTypeTarget {
+            rendered: self.render_type(signature, TargetLang::CSharp),
+            category,
+            nullable,
+        })
+    }
+
+    fn isinst_nullable_type(&self, token: u32) -> bool {
+        let Some(table): Option<TableId> = token_table(token) else {
+            return false;
+        };
+        let Some(rid): Option<u32> = token_rid(token) else {
+            return false;
+        };
+        let name: Option<String> = match table {
+            TableId::TypeDef => self.type_def_name(rid),
+            TableId::TypeRef => self.type_ref_name(rid),
+            _ => None,
+        };
+        name.is_some_and(|value: String| value == "System.Nullable")
+    }
+
+    fn csharp_signature_is_renderable(&self, signature: &TypeSig) -> bool {
+        match signature {
+            TypeSig::Boolean
+            | TypeSig::Char
+            | TypeSig::I1
+            | TypeSig::U1
+            | TypeSig::I2
+            | TypeSig::U2
+            | TypeSig::I4
+            | TypeSig::U4
+            | TypeSig::I8
+            | TypeSig::U8
+            | TypeSig::R4
+            | TypeSig::R8
+            | TypeSig::String
+            | TypeSig::IntPtr
+            | TypeSig::UIntPtr
+            | TypeSig::Object => true,
+            TypeSig::NamedType { token, .. } => self.csharp_named_type_arity(*token) == Some(0),
+            TypeSig::SzArray(element) => self.csharp_signature_is_renderable(element),
+            TypeSig::Array { element, rank } => {
+                (2..=32).contains(rank) && self.csharp_signature_is_renderable(element)
+            }
+            TypeSig::GenericInst { base, args } => {
+                let TypeSig::NamedType { token, .. } = base.as_ref() else {
+                    return false;
+                };
+                self.csharp_named_type_arity(*token) == Some(args.len())
+                    && args
+                        .iter()
+                        .all(|arg: &TypeSig| self.csharp_signature_is_renderable(arg))
+            }
+            TypeSig::Void
+            | TypeSig::TypedByRef
+            | TypeSig::Ptr(_)
+            | TypeSig::ByRef(_)
+            | TypeSig::Pinned(_)
+            | TypeSig::Var(_)
+            | TypeSig::MVar(_)
+            | TypeSig::FnPtr
+            | TypeSig::Unknown => false,
+        }
+    }
+
+    fn csharp_named_type_arity(&self, token: u32) -> Option<usize> {
+        let Some(table): Option<TableId> = token_table(token) else {
+            return None;
+        };
+        let Some(rid): Option<u32> = token_rid(token) else {
+            return None;
+        };
+        let Some(index): Option<usize> = rid
+            .checked_sub(1)
+            .and_then(|value: u32| usize::try_from(value).ok())
+        else {
+            return None;
+        };
+        match table {
+            TableId::TypeDef => {
+                let row: &TypeDefRow = self.tables.type_defs.get(index)?;
+                let arity: usize = type_name_arity(&self.string(row.name))?;
+                let generic_params: usize = self
+                    .tables
+                    .generic_params
+                    .iter()
+                    .filter(|parameter: &&GenericParamRow| {
+                        parameter.owner.is_some_and(|owner: RowRef| {
+                            owner.table == TableId::TypeDef && owner.row == rid
+                        })
+                    })
+                    .count();
+                let rendered: String = self.type_def_name(rid)?;
+                (arity == generic_params && csharp_type_name_is_renderable(&rendered))
+                    .then_some(arity)
+            }
+            TableId::TypeRef => {
+                let row: &TypeRefRow = self.tables.type_refs.get(index)?;
+                if row
+                    .resolution_scope
+                    .is_some_and(|scope: RowRef| scope.table == TableId::TypeRef)
+                {
+                    return None;
+                }
+                let arity: usize = type_name_arity(&self.string(row.name))?;
+                let rendered: String = self.type_ref_name(rid)?;
+                csharp_type_name_is_renderable(&rendered).then_some(arity)
+            }
+            _ => None,
+        }
+    }
+
+    #[must_use]
     fn type_def_name(&self, rid: u32) -> Option<String> {
         let row: &TypeDefRow = self.tables.type_defs.get(rid.checked_sub(1)? as usize)?;
         Some(Self::qualify(
@@ -1420,10 +1735,17 @@ impl Resolver {
 
     #[must_use]
     fn type_spec_name(&self, rid: u32) -> Option<String> {
-        let row: &TypeSpecRow = self.tables.type_specs.get(rid.checked_sub(1)? as usize)?;
-        let blob: &[u8] = self.blob(row.signature)?;
-        let sig: crate::signature::TypeSig = crate::signature::parse_type_spec_sig(blob).ok()?;
+        let sig: TypeSig = self.type_spec_signature(rid)?;
         Some(self.substitute_type_tokens(&sig.render()))
+    }
+
+    fn type_spec_signature(&self, rid: u32) -> Option<TypeSig> {
+        let index: usize = rid
+            .checked_sub(1)
+            .and_then(|value: u32| usize::try_from(value).ok())?;
+        let row: &TypeSpecRow = self.tables.type_specs.get(index)?;
+        let blob: &[u8] = self.blob(row.signature)?;
+        crate::signature::parse_type_spec_sig(blob).ok()
     }
 
     #[must_use]
@@ -1883,8 +2205,32 @@ impl Resolver {
         else {
             return false;
         };
+        let name: String = self.string(assembly.name);
+        self.is_corelib_identity(&name, public_key_token)
+    }
+
+    fn is_corelib_definition_assembly(&self) -> bool {
+        let Some(assembly) = self.tables.assembly.as_ref() else {
+            return false;
+        };
+        if assembly.flags & ASSEMBLY_REF_PUBLIC_KEY == 0 {
+            return false;
+        }
+        let Some(public_key): Option<&[u8]> = self.blob(assembly.public_key) else {
+            return false;
+        };
+        let Some(public_key_token): Option<[u8; 8]> =
+            assembly_public_key_token(public_key, assembly.flags)
+        else {
+            return false;
+        };
+        let name: String = self.string(assembly.name);
+        self.is_corelib_definition_identity(&name, public_key_token)
+    }
+
+    fn is_corelib_identity(&self, name: &str, public_key_token: [u8; 8]) -> bool {
         matches!(
-            (self.string(assembly.name).as_str(), public_key_token),
+            (name, public_key_token),
             ("mscorlib", [0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89])
                 | (
                     "System.Runtime",
@@ -1894,6 +2240,17 @@ impl Resolver {
                     "netstandard",
                     [0xCC, 0x7B, 0x13, 0xFF, 0xCD, 0x2D, 0xDD, 0x51]
                 )
+                | (
+                    "System.Private.CoreLib",
+                    [0x7C, 0xEC, 0x85, 0xD7, 0xBE, 0xA7, 0x79, 0x8E]
+                )
+        )
+    }
+
+    fn is_corelib_definition_identity(&self, name: &str, public_key_token: [u8; 8]) -> bool {
+        matches!(
+            (name, public_key_token),
+            ("mscorlib", [0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89])
                 | (
                     "System.Private.CoreLib",
                     [0x7C, 0xEC, 0x85, 0xD7, 0xBE, 0xA7, 0x79, 0x8E]
@@ -2174,6 +2531,24 @@ fn strip_generic_arity(name: &str) -> String {
     }
 }
 
+fn type_name_arity(name: &str) -> Option<usize> {
+    let (base, arity): (&str, usize) = match name.split_once('`') {
+        Some((base, suffix)) => (
+            base,
+            suffix.parse::<usize>().ok().filter(|arity| *arity != 0)?,
+        ),
+        None => (name, 0),
+    };
+    (is_simple_identifier(base) && csharp_escape_identifier(base) == base).then_some(arity)
+}
+
+fn csharp_type_name_is_renderable(name: &str) -> bool {
+    !name.is_empty()
+        && name.split('.').all(|segment: &str| {
+            is_simple_identifier(segment) && csharp_escape_identifier(segment) == segment
+        })
+}
+
 fn generic_arity(name: &str) -> usize {
     match name.split_once('`') {
         Some((_, rest)) => rest.parse::<usize>().unwrap_or(0),
@@ -2191,6 +2566,13 @@ mod tests {
         let mut path: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         path.push(rel);
         std::fs::read(&path).expect("fixture")
+    }
+
+    fn push_heap_string(heap: &mut Vec<u8>, value: &str) -> u32 {
+        let index: u32 = u32::try_from(heap.len()).expect("string heap index");
+        heap.extend_from_slice(value.as_bytes());
+        heap.push(0);
+        index
     }
 
     fn resolver_for(rel: &str) -> Resolver {
@@ -2406,5 +2788,531 @@ mod tests {
             .filter(|t: &&TypeModel| !t.name.is_empty())
             .count();
         assert!(named_types > 5, "most types resolve a name");
+    }
+
+    #[test]
+    fn isinst_target_kind_uses_typedef_metadata_and_safe_typeref_patterns() {
+        let resolver: Resolver =
+            resolver_for("../../corpus/dotnet/megafile/EdgeCases.baseline.dll");
+        let model: AssemblyModel = resolver.model();
+        let money: &TypeModel = model
+            .types
+            .iter()
+            .find(|ty: &&TypeModel| ty.full_name == "EdgeCases.Money")
+            .expect("Money TypeDef");
+        let event_source: &TypeModel = model
+            .types
+            .iter()
+            .find(|ty: &&TypeModel| ty.full_name == "EdgeCases.EventSource")
+            .expect("EventSource TypeDef");
+        assert_eq!(
+            resolver.isinst_target_kind(money.token),
+            IsInstTargetKind::ValueType
+        );
+        assert_eq!(
+            resolver.isinst_target_kind(event_source.token),
+            IsInstTargetKind::ReferenceType
+        );
+        assert_eq!(
+            resolver.isinst_target_kind((u32::from(TableId::TypeRef as u8) << 24) | 1),
+            IsInstTargetKind::RenderableUnknown
+        );
+        assert_eq!(
+            resolver.isinst_target_kind(0),
+            IsInstTargetKind::Unsupported
+        );
+    }
+
+    #[test]
+    fn isinst_target_kind_requires_corelib_value_type_identity() {
+        let mut strings_heap: Vec<u8> = vec![0];
+        let system: u32 = push_heap_string(&mut strings_heap, "System");
+        let value_type: u32 = push_heap_string(&mut strings_heap, "ValueType");
+        let enum_type: u32 = push_heap_string(&mut strings_heap, "Enum");
+        let object: u32 = push_heap_string(&mut strings_heap, "Object");
+        let money: u32 = push_heap_string(&mut strings_heap, "Money");
+        let color: u32 = push_heap_string(&mut strings_heap, "Color");
+        let base: u32 = push_heap_string(&mut strings_heap, "Base");
+        let derived: u32 = push_heap_string(&mut strings_heap, "Derived");
+        let spoofed_money: u32 = push_heap_string(&mut strings_heap, "SpoofedMoney");
+        let corelib: u32 = push_heap_string(&mut strings_heap, "System.Private.CoreLib");
+        let system_runtime: u32 = push_heap_string(&mut strings_heap, "System.Runtime");
+        let untrusted_money: u32 = push_heap_string(&mut strings_heap, "UntrustedMoney");
+        let corelib_scope: RowRef = RowRef {
+            table: TableId::AssemblyRef,
+            row: 1,
+        };
+        let tables: Tables = Tables {
+            assembly_refs: vec![
+                crate::tables::AssemblyRefRow {
+                    major: 0,
+                    minor: 0,
+                    build: 0,
+                    revision: 0,
+                    flags: 0,
+                    public_key_or_token: 1,
+                    name: corelib,
+                    culture: 0,
+                    hash_value: 0,
+                },
+                crate::tables::AssemblyRefRow {
+                    major: 0,
+                    minor: 0,
+                    build: 0,
+                    revision: 0,
+                    flags: 0,
+                    public_key_or_token: 10,
+                    name: system_runtime,
+                    culture: 0,
+                    hash_value: 0,
+                },
+            ],
+            type_refs: vec![
+                TypeRefRow {
+                    resolution_scope: Some(corelib_scope),
+                    name: value_type,
+                    namespace: system,
+                },
+                TypeRefRow {
+                    resolution_scope: Some(corelib_scope),
+                    name: enum_type,
+                    namespace: system,
+                },
+                TypeRefRow {
+                    resolution_scope: Some(corelib_scope),
+                    name: object,
+                    namespace: system,
+                },
+                TypeRefRow {
+                    resolution_scope: Some(RowRef {
+                        table: TableId::AssemblyRef,
+                        row: 2,
+                    }),
+                    name: value_type,
+                    namespace: system,
+                },
+            ],
+            type_defs: vec![
+                TypeDefRow {
+                    flags: 0,
+                    name: money,
+                    namespace: 0,
+                    extends: Some(RowRef {
+                        table: TableId::TypeRef,
+                        row: 1,
+                    }),
+                    field_list: 1,
+                    method_list: 1,
+                },
+                TypeDefRow {
+                    flags: 0,
+                    name: color,
+                    namespace: 0,
+                    extends: Some(RowRef {
+                        table: TableId::TypeRef,
+                        row: 2,
+                    }),
+                    field_list: 1,
+                    method_list: 1,
+                },
+                TypeDefRow {
+                    flags: 0,
+                    name: base,
+                    namespace: 0,
+                    extends: Some(RowRef {
+                        table: TableId::TypeRef,
+                        row: 3,
+                    }),
+                    field_list: 1,
+                    method_list: 1,
+                },
+                TypeDefRow {
+                    flags: 0,
+                    name: derived,
+                    namespace: 0,
+                    extends: Some(RowRef {
+                        table: TableId::TypeDef,
+                        row: 3,
+                    }),
+                    field_list: 1,
+                    method_list: 1,
+                },
+                TypeDefRow {
+                    flags: 0,
+                    name: value_type,
+                    namespace: system,
+                    extends: Some(RowRef {
+                        table: TableId::TypeRef,
+                        row: 3,
+                    }),
+                    field_list: 1,
+                    method_list: 1,
+                },
+                TypeDefRow {
+                    flags: 0,
+                    name: spoofed_money,
+                    namespace: 0,
+                    extends: Some(RowRef {
+                        table: TableId::TypeDef,
+                        row: 5,
+                    }),
+                    field_list: 1,
+                    method_list: 1,
+                },
+                TypeDefRow {
+                    flags: 0,
+                    name: untrusted_money,
+                    namespace: 0,
+                    extends: Some(RowRef {
+                        table: TableId::TypeRef,
+                        row: 4,
+                    }),
+                    field_list: 1,
+                    method_list: 1,
+                },
+            ],
+            ..Tables::default()
+        };
+        let resolver: Resolver = Resolver {
+            tables,
+            method_impl_types: BTreeSet::new(),
+            strings_heap,
+            blob: vec![
+                0, 8, 0x7C, 0xEC, 0x85, 0xD7, 0xBE, 0xA7, 0x79, 0x8E, 8, 0, 0, 0, 0, 0, 0, 0, 0,
+            ],
+            us: Vec::new(),
+        };
+        let type_def_token: u32 = u32::from(TableId::TypeDef as u8) << 24;
+        assert_eq!(
+            resolver.isinst_target_kind(type_def_token | 2),
+            IsInstTargetKind::ValueType
+        );
+        assert_eq!(
+            resolver.isinst_target_kind(type_def_token | 6),
+            IsInstTargetKind::ReferenceType
+        );
+        assert_eq!(
+            resolver.isinst_target_kind(type_def_token | 7),
+            IsInstTargetKind::ReferenceType
+        );
+        assert_eq!(
+            resolver.isinst_target_kind(type_def_token | 5),
+            IsInstTargetKind::ReferenceType
+        );
+        assert_eq!(
+            resolver.isinst_target_kind(type_def_token | 4),
+            IsInstTargetKind::ReferenceType
+        );
+        assert_eq!(
+            resolver.isinst_target_kind(type_def_token | 1),
+            IsInstTargetKind::ReferenceType
+        );
+    }
+
+    #[test]
+    fn isinst_target_kind_recognizes_genuine_corelib_type_defs() {
+        let mut strings_heap: Vec<u8> = vec![0];
+        let system: u32 = push_heap_string(&mut strings_heap, "System");
+        let value_type: u32 = push_heap_string(&mut strings_heap, "ValueType");
+        let enum_type: u32 = push_heap_string(&mut strings_heap, "Enum");
+        let money: u32 = push_heap_string(&mut strings_heap, "Money");
+        let color: u32 = push_heap_string(&mut strings_heap, "Color");
+        let mscorlib: u32 = push_heap_string(&mut strings_heap, "mscorlib");
+        let tables: Tables = Tables {
+            assembly: Some(crate::tables::AssemblyRow {
+                hash_alg_id: 0,
+                major: 0,
+                minor: 0,
+                build: 0,
+                revision: 0,
+                flags: ASSEMBLY_REF_PUBLIC_KEY,
+                public_key: 1,
+                name: mscorlib,
+                culture: 0,
+            }),
+            type_defs: vec![
+                TypeDefRow {
+                    flags: 0,
+                    name: value_type,
+                    namespace: system,
+                    extends: None,
+                    field_list: 1,
+                    method_list: 1,
+                },
+                TypeDefRow {
+                    flags: 0,
+                    name: enum_type,
+                    namespace: system,
+                    extends: Some(RowRef {
+                        table: TableId::TypeDef,
+                        row: 1,
+                    }),
+                    field_list: 1,
+                    method_list: 1,
+                },
+                TypeDefRow {
+                    flags: 0,
+                    name: money,
+                    namespace: 0,
+                    extends: Some(RowRef {
+                        table: TableId::TypeDef,
+                        row: 1,
+                    }),
+                    field_list: 1,
+                    method_list: 1,
+                },
+                TypeDefRow {
+                    flags: 0,
+                    name: color,
+                    namespace: 0,
+                    extends: Some(RowRef {
+                        table: TableId::TypeDef,
+                        row: 2,
+                    }),
+                    field_list: 1,
+                    method_list: 1,
+                },
+            ],
+            ..Tables::default()
+        };
+        let resolver: Resolver = Resolver {
+            tables,
+            method_impl_types: BTreeSet::new(),
+            strings_heap,
+            blob: vec![0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0],
+            us: Vec::new(),
+        };
+        let type_def_token: u32 = u32::from(TableId::TypeDef as u8) << 24;
+        assert_eq!(
+            resolver.isinst_target_kind(type_def_token | 1),
+            IsInstTargetKind::ReferenceType
+        );
+        assert_eq!(
+            resolver.isinst_target_kind(type_def_token | 2),
+            IsInstTargetKind::ReferenceType
+        );
+        assert_eq!(
+            resolver.isinst_target_kind(type_def_token | 3),
+            IsInstTargetKind::ValueType
+        );
+        assert_eq!(
+            resolver.isinst_target_kind(type_def_token | 4),
+            IsInstTargetKind::ValueType
+        );
+    }
+
+    #[test]
+    fn isinst_target_kind_uses_typespec_category_and_refuses_generic_parameters() {
+        let mut tables: Tables = Tables::default();
+        tables.type_refs = vec![
+            TypeRefRow {
+                resolution_scope: None,
+                name: 1,
+                namespace: 0,
+            },
+            TypeRefRow {
+                resolution_scope: None,
+                name: 13,
+                namespace: 0,
+            },
+            TypeRefRow {
+                resolution_scope: None,
+                name: 29,
+                namespace: 0,
+            },
+            TypeRefRow {
+                resolution_scope: None,
+                name: 75,
+                namespace: 68,
+            },
+        ];
+        tables.type_defs = vec![
+            TypeDefRow {
+                flags: 0,
+                name: 42,
+                namespace: 0,
+                extends: None,
+                field_list: 1,
+                method_list: 1,
+            },
+            TypeDefRow {
+                flags: 0,
+                name: 53,
+                namespace: 0,
+                extends: None,
+                field_list: 1,
+                method_list: 1,
+            },
+        ];
+        tables.type_specs = vec![
+            TypeSpecRow { signature: 1 },
+            TypeSpecRow { signature: 4 },
+            TypeSpecRow { signature: 7 },
+            TypeSpecRow { signature: 10 },
+            TypeSpecRow { signature: 13 },
+        ];
+        let resolver: Resolver = Resolver {
+            tables,
+            method_impl_types: BTreeSet::new(),
+            strings_heap:
+                b"\0ValueTarget\0ReferenceTarget\0GenericBox`1\0LocalValue\0LocalReference\0System\0Nullable`1\0"
+                    .to_vec(),
+            blob: vec![
+                0, 2, 0x11, 0x05, 2, 0x12, 0x09, 2, 0x1E, 0, 2, 0x11, 0x11, 5, 0x15, 0x11, 0x0D, 1,
+                0x0E,
+            ],
+            us: Vec::new(),
+        };
+        let type_spec_token: u32 = u32::from(TableId::TypeSpec as u8) << 24;
+        assert_eq!(
+            resolver.isinst_target_kind(type_spec_token | 1),
+            IsInstTargetKind::ValueType
+        );
+        assert_eq!(
+            resolver.isinst_target_kind(type_spec_token | 2),
+            IsInstTargetKind::ReferenceType
+        );
+        assert_eq!(
+            resolver.isinst_target_kind(type_spec_token | 3),
+            IsInstTargetKind::Unsupported
+        );
+        assert_eq!(
+            resolver.isinst_target_kind(type_spec_token | 4),
+            IsInstTargetKind::Unsupported
+        );
+        assert_eq!(
+            resolver.isinst_target_kind(type_spec_token | 5),
+            IsInstTargetKind::ValueType
+        );
+        assert_eq!(
+            resolver.resolve_token(type_spec_token | 5),
+            "GenericBox<string>"
+        );
+        let type_ref_token: u32 = u32::from(TableId::TypeRef as u8) << 24;
+        assert_eq!(
+            resolver.isinst_target_kind(type_ref_token | 1),
+            IsInstTargetKind::RenderableUnknown
+        );
+        assert_eq!(
+            resolver.isinst_target_kind(type_ref_token | 3),
+            IsInstTargetKind::Unsupported
+        );
+
+        let value: TypeSig = TypeSig::NamedType {
+            is_value_type: true,
+            token: 0x0100_0001,
+        };
+        let reference: TypeSig = TypeSig::NamedType {
+            is_value_type: false,
+            token: 0x0100_0002,
+        };
+        let generic_value: TypeSig = TypeSig::GenericInst {
+            base: Box::new(TypeSig::NamedType {
+                is_value_type: true,
+                token: 0x0100_0003,
+            }),
+            args: vec![TypeSig::String],
+        };
+        let nullable_value: TypeSig = TypeSig::GenericInst {
+            base: Box::new(TypeSig::NamedType {
+                is_value_type: true,
+                token: 0x0100_0004,
+            }),
+            args: vec![TypeSig::I4],
+        };
+        assert_eq!(
+            resolver.isinst_target_kind_from_signature(&value),
+            IsInstTargetKind::ValueType
+        );
+        assert_eq!(
+            resolver.isinst_target_kind_from_signature(&reference),
+            IsInstTargetKind::ReferenceType
+        );
+        assert_eq!(
+            resolver.isinst_target_kind_from_signature(&generic_value),
+            IsInstTargetKind::ValueType
+        );
+        assert_eq!(
+            resolver.isinst_target_kind_from_signature(&TypeSig::SzArray(Box::new(TypeSig::I4))),
+            IsInstTargetKind::ReferenceType
+        );
+        assert_eq!(
+            resolver.unbox_any_target_name_from_signature(&TypeSig::SzArray(Box::new(TypeSig::I4))),
+            Some("int[]".to_owned())
+        );
+        assert_eq!(
+            resolver.isinst_target_kind_from_signature(&TypeSig::Array {
+                element: Box::new(TypeSig::I4),
+                rank: 1,
+            }),
+            IsInstTargetKind::Unsupported
+        );
+        assert_eq!(
+            resolver.unbox_any_target_name_from_signature(&TypeSig::Array {
+                element: Box::new(TypeSig::I4),
+                rank: 1,
+            }),
+            None
+        );
+        assert_eq!(
+            resolver.isinst_target_kind_from_signature(&TypeSig::Array {
+                element: Box::new(TypeSig::I4),
+                rank: 2,
+            }),
+            IsInstTargetKind::ReferenceType
+        );
+        assert_eq!(
+            resolver.unbox_any_target_name_from_signature(&TypeSig::Array {
+                element: Box::new(TypeSig::I4),
+                rank: 2,
+            }),
+            Some("int[,]".to_owned())
+        );
+        assert_eq!(
+            resolver.unbox_any_target_name_from_signature(&TypeSig::Array {
+                element: Box::new(TypeSig::I4),
+                rank: 33,
+            }),
+            None
+        );
+        assert_eq!(
+            resolver.isinst_target_kind_from_signature(&TypeSig::MVar(0)),
+            IsInstTargetKind::Unsupported
+        );
+        assert_eq!(
+            resolver.isinst_target_kind_from_signature(&nullable_value),
+            IsInstTargetKind::Unsupported
+        );
+        assert_eq!(
+            resolver.unbox_any_target_name_from_signature(&nullable_value),
+            Some("System.Nullable<int>".to_owned())
+        );
+        assert_eq!(
+            resolver.isinst_target_kind_from_signature(&TypeSig::NamedType {
+                is_value_type: true,
+                token: 0x0200_0003,
+            }),
+            IsInstTargetKind::Unsupported
+        );
+        assert_eq!(
+            resolver.isinst_target_kind_from_signature(&TypeSig::GenericInst {
+                base: Box::new(TypeSig::NamedType {
+                    is_value_type: true,
+                    token: 0x0100_0003,
+                }),
+                args: Vec::new(),
+            }),
+            IsInstTargetKind::Unsupported
+        );
+        assert_eq!(
+            resolver.isinst_target_kind_from_signature(&TypeSig::GenericInst {
+                base: Box::new(TypeSig::NamedType {
+                    is_value_type: true,
+                    token: 0x0100_0003,
+                }),
+                args: vec![TypeSig::String, TypeSig::I4],
+            }),
+            IsInstTargetKind::Unsupported
+        );
     }
 }

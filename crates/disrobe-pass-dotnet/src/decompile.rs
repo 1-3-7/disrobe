@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::cil::{FlowControl, Instruction, MethodBody, OperandValue, parse_method_body};
 use crate::error::Result;
 use crate::metadata::{MetadataRoot, metadata_slice, parse_metadata_root};
-use crate::model::{MethodModel, Resolver, TypeModel};
+use crate::model::{IsInstTargetKind, MethodModel, Resolver, TypeModel};
 use crate::names::NameTable;
 use crate::pe::{ClrHeader, PeImage, parse, parse_clr_header};
 use crate::structurize::{
@@ -26,6 +26,14 @@ impl TokenNamer for AssemblyNamer<'_> {
 
     fn token_kind(&self, token: u32) -> MetadataTokenKind {
         self.method.token_kind(token)
+    }
+
+    fn isinst_target_kind(&self, token: u32) -> IsInstTargetKind {
+        self.method.isinst_target_kind(token)
+    }
+
+    fn unbox_any_target_name(&self, token: u32) -> Option<String> {
+        self.method.unbox_any_target_name(token)
     }
 
     fn field_rva_bytes(&self, token: u32) -> Option<&[u8]> {
