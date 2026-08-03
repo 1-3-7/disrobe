@@ -22,7 +22,7 @@ Subcommand inference is enabled: unambiguous prefixes work (`disrobe dec ...` re
 
 ## Output formats
 
-The output format is a global flag, so it applies to any command:
+`disrobe scan` supports these global output flags:
 
 | Flag | Output |
 |---|---|
@@ -33,7 +33,6 @@ The output format is a global flag, so it applies to any command:
 
 ```sh
 disrobe scan firmware.bin --sarif > findings.sarif
-disrobe py decompile m.pyc --json
 ```
 
 ## The standard recovery loop
