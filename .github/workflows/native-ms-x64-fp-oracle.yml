@@ -2,7 +2,6 @@ name: native ms x64 fp oracle
 
 on:
   push:
-  pull_request:
 
 permissions:
   contents: read

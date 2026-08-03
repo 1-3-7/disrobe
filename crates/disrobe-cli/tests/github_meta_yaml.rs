@@ -90,6 +90,8 @@ fn github_yaml_set_is_exact() {
         "workflows/docs.yml",
         "workflows/evidence.yml",
         "workflows/fuzz.yml",
+        "workflows/native-gcc-oracle.yml",
+        "workflows/native-ms-x64-fp-oracle.yml",
         "workflows/release.yml",
         "workflows/verify-release.yml",
         "workflows/wiki-sync.yml",
