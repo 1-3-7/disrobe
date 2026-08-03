@@ -26,7 +26,7 @@ disrobe macho dump App.app/App
 disrobe macho fat universal.bin
 ```
 
-`classdump` reconstructs the type interface from the two metadata sources the runtime leaves in the binary, writing a header-style interface listing. Beside the JSON it writes a `.swift` declaration file with recovered type signatures; source-level function bodies do not survive in this metadata.
+`classdump` reconstructs the type interface from the two metadata sources the runtime leaves in the binary. Beside the JSON, it writes a `.swift` declaration file with recovered type signatures when reflection metadata yields declarations; source-level function bodies do not survive in this metadata.
 
 `shield-undo` parses a SwiftShield mapping. SwiftShield renames symbols to high-entropy identifiers and emits an `obf ==> original` mapping in the `.dSYM`. `disrobe` writes that mapping as a lookup for downstream use; class-dump does not apply it automatically. `xor-decrypt` decodes printable strings from a single-byte XOR blob when the caller supplies `--key`. Its tests cover hand-authored model fixtures, not SwiftConfidential output.
 
