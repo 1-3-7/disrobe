@@ -55,7 +55,11 @@ disrobe pyarmor unpack protected.py --out out/ --allow-dynamic --dynamic-timeout
 
 > The `--allow-dynamic` path executes the sample. Only enable it on trusted samples or inside an isolated sandbox. See [Forensics and malware-safety posture](../forensics-safety.md).
 
-Other useful flags: `--mode auto|standard|super`, `--target 3.11` (rewrite emitted `.pyc` magic), `--allow-bcc` (BCC native-body lift via Ghidra-headless), `--strict` (exit non-zero on any partial decode), and `--all-emits`.
+Other useful flags: `--mode auto|standard|super`, `--target 3.11` (rewrite emitted `.pyc` magic), `--allow-bcc`, `--strict`, and `--all-emits`.
+
+BCC input is refused with `DR-PYARM-0050` unless `--allow-bcc` is set. With that opt-in, the pass makes an in-tree static lift attempt over extracted native blobs; it does not execute them or invoke Ghidra. The lift models x86-64 only, using the Microsoft x64 or System V calling convention. Its in-memory result carries no lifted functions for Darwin ARM64, and x64 functions that depend on the PyArmor/CPython runtime dispatch remain unmodeled native disassembly. The current CLI does not serialize the BCC lift result or emit a recovered BCC pseudo-C or source artifact.
+
+`--strict` returns `DR-PYARM-0052` when unpacking produces no `.pyc`, records a fallback reason, or records a marshal decode error. It does not add a separate failure condition for incomplete BCC lifting.
 
 ### End to end
 
