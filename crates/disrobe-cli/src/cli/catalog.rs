@@ -241,6 +241,9 @@ mod tests {
     }
 
     const PUBLISHED_FAMILY_TOTAL: usize = 169;
+    const CATALOG_REFERENCE: &str = include_str!("../../../../docs/src/cli/reference.md");
+    const CATALOG_CHAIN_BUILD_SCOPE: &str =
+        "Builds that include the `chain` feature report the registry compiled into that binary.";
 
     const PUBLISHED_ECOSYSTEM_SLUGS: [&str; 15] = [
         "as3",
@@ -422,6 +425,18 @@ mod tests {
             full_total, PUBLISHED_FAMILY_TOTAL,
             "docs/src/catalog.md and docs/src/cli/reference.md publish {PUBLISHED_FAMILY_TOTAL} families for the `full` feature set; the pinned per-pass table sums to {full_total}"
         );
+        let reference_claim: String = format!(
+            "The default `full` build's live binary reports <!-- m:catalog_family_total -->{PUBLISHED_FAMILY_TOTAL}<!-- /m --> families across <!-- m:catalog_ecosystems -->{}<!-- /m --> ecosystems.",
+            PUBLISHED_ECOSYSTEM_SLUGS.len()
+        );
+        assert!(
+            CATALOG_REFERENCE.contains(&reference_claim),
+            "docs/src/cli/reference.md must scope the {PUBLISHED_FAMILY_TOTAL}-family catalog claim to the default `full` build"
+        );
+        assert!(
+            CATALOG_REFERENCE.contains(CATALOG_CHAIN_BUILD_SCOPE),
+            "docs/src/cli/reference.md must state that `chain` builds report their compiled registry"
+        );
         let full_ecosystems: Vec<&'static str> = REGISTRY_EXPECTATIONS
             .iter()
             .map(|e: &CatalogExpectation| e.ecosystem)
@@ -462,6 +477,24 @@ mod tests {
             .collect();
         assert_eq!(reported_ecosystems, active_ecosystems);
         assert_eq!(report.ecosystem_count, active_ecosystems.len());
+        if !cfg!(any(
+            feature = "as3",
+            feature = "beam",
+            feature = "dotnet",
+            feature = "go",
+            feature = "js",
+            feature = "jvm",
+            feature = "lua",
+            feature = "mobile",
+            feature = "php",
+            feature = "ruby",
+            feature = "shell",
+            feature = "swift",
+            feature = "wasm",
+        )) {
+            assert_eq!(report.family_count, 54);
+            assert_eq!(report.ecosystem_count, 2);
+        }
     }
 
     #[test]
