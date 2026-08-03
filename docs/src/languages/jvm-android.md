@@ -1,6 +1,6 @@
 # JVM and Android
 
-`disrobe` decompiles JVM classfiles and Android DEX through a unified command, adding obfuscator reversal, ProGuard/R8 mapping replay, and chain auto-detection, and wrapping the best FOSS decompilers headlessly when you want one.
+`disrobe` decompiles JVM classfiles and Android DEX through a unified command, adding protector analysis, ProGuard/R8 mapping reports, and chain auto-detection, with headless wrappers for FOSS decompilers selected by the format's default routing or `--backend`.
 
 ## At a glance
 
@@ -9,25 +9,25 @@
 | Inputs | `.class`, `.jar`, `.dex`, `.apk`; the classfile itself validated in-house (format 1.0.2-25) |
 | Decompilers | In-house classfile and Dalvik decompilers, the Dalvik one default on `.dex` and `.apk`; CFR, Vineflower, Procyon, JADX, and others via `--backend` |
 | Language surface | Records, sealed types, pattern matching, enum constant bodies, declaration and member annotations, enhanced `for`, multi-`catch`, plus Kotlin and Scala idioms |
-| Obfuscators reversed | Zelix KlassMaster, Allatori, Stringer, DashO, DexGuard control flow, BlackObfuscator flattening; ProGuard/R8 names replayed from `mapping.txt` |
-| Families detected (<!-- m:jvm_families -->10<!-- /m -->) | ProGuard/R8, Zelix KlassMaster, Allatori, Stringer, DashO, DexGuard, BlackObfuscator, yGuard, SkidSuite2, JBCO (the last three detect-only) |
-| RASP vendors (<!-- m:rasp_vendors -->8<!-- /m -->) | Promon SHIELD, Guardsquare DexGuard RASP and ThreatCast, Appdome, OneSpan, Arxan/Digital.ai, Zimperium zShield, Licel DexProtector |
-| Signatures | APK signature schemes v1 (JAR) through v4 verified |
+| Obfuscator handling | String recovery for supported Zelix KlassMaster, Allatori, Stringer, and DashO patterns; DexGuard and BlackObfuscator control-flow analysis; ProGuard/R8 name reports from `mapping.txt` |
+| Detection and routing roster (<!-- m:jvm_families -->10<!-- /m -->) | ProGuard/R8, Zelix KlassMaster, Allatori, Stringer, DashO, DexGuard, BlackObfuscator, yGuard, SkidSuite2, JBCO (the last three detect-only) |
+| RASP fingerprints (<!-- m:rasp_vendors -->8<!-- /m -->) | Promon SHIELD, Guardsquare DexGuard RASP and ThreatCast, Appdome, OneSpan, Arxan/Digital.ai, Zimperium zShield, Licel DexProtector |
+| Signatures | v1 signing-material inventory; v2, v3, and v3.1 content-digest verification; v4 `.idsig` parsing with APK-digest matching to v2 or v3 |
 
 ## Commands
 
 ```sh
-disrobe jvm decompile App.class --out src/
+disrobe jvm decompile App.class --emit source --out src/          # write the in-house Java source
 disrobe jvm decompile app.jar --backend vineflower --out src/
 disrobe jvm decompile app.apk --backend jadx --out src/
 disrobe jvm decompile classes.dex --backend jadx --out src/
-disrobe jvm decompile app.jar --mapping mapping.txt --out src/   # replay ProGuard/R8 names
+disrobe jvm decompile app.jar --mapping mapping.txt --out src/   # write name-restoration.json
 disrobe jvm extract app.apk --out classes/    # extract a .jar / .apk + dump classfile inventory
 disrobe jvm backends                          # report available JVM/Android backends on PATH
-disrobe auto app.apk --out recovered/         # APK -> dex -> JADX + Smali + manifest
+disrobe auto app.apk --out recovered/         # recursively process recognized payloads
 ```
 
-`decompile` routes a `.class`, `.jar`, `.dex`, or `.apk` through a JVM/Android backend: CFR, Vineflower, Procyon, JADX, and others. `disrobe` validates the classfile itself (format 1.0.2-25) and recovers records, sealed types, and pattern matching where the backend supports them, plus Kotlin and Scala idioms.
+Backend routing differs by format. `.dex` and `.apk` write in-house Dalvik source by default and invoke an Android backend only when `--backend jadx` or `--backend dex2jar` is selected. `.jar` writes in-house per-class source by default, and `--backend auto` also invokes the first available JVM backend. `.class` uses `--backend auto` for the first available JVM backend; add `--emit source` to write the in-house source. `disrobe` validates the classfile itself (format 1.0.2-25) and recovers records, sealed types, and pattern matching where the selected backend supports them, plus Kotlin and Scala idioms.
 
 ## Coverage and fidelity
 
@@ -41,15 +41,15 @@ The Dalvik lifter's recovered bodies are graded by the real JVM bytecode verifie
 
 The in-house Dalvik decompiler, the default for `disrobe jvm decompile` on `.dex` and `.apk`, is graded on the same corpus against the real `EdgeCases.java` source rather than its own output. A value computed in one basic block and consumed in another (an array length, or a wide argument to a call such as `Math.abs` or `charAt`) is materialized into a local at its real use site instead of being dropped across the block boundary, so all eight leaf methods reconstruct their call sites with full fidelity while every method's signature, control flow, and operators recover (`dalvik_decompile_oracle.rs`).
 
-### Obfuscator reversal
+### Obfuscator analysis and recovery
 
-`disrobe` reverses JVM obfuscators that the raw decompilers cannot (Zelix KlassMaster, Allatori, Stringer, DashO, and DexGuard control-flow obfuscation on the Android side) and replays ProGuard/R8 mapping files to restore original names. It detects <!-- m:jvm_families -->10<!-- /m --> obfuscator and protector families in total: ProGuard/R8, Zelix KlassMaster, Allatori, Stringer, DashO, DexGuard, BlackObfuscator, yGuard, SkidSuite2, and JBCO (the last three detect-only, identified by marker strings and, for JBCO, its `jsr`/`ret` control flow).
+For JVM classfiles, `disrobe` peels supported protector string patterns before in-house source emission. On Dalvik, it analyzes DexGuard-style control-flow flattening and BlackObfuscator dispatchers. `--mapping` parses ProGuard/R8 mappings and writes recovered class and member names to `name-restoration.json`; it does not rewrite emitted Java source. `disrobe` registers detection and routing for <!-- m:jvm_families -->10<!-- /m --> obfuscator and protector families: ProGuard/R8, Zelix KlassMaster, Allatori, Stringer, DashO, DexGuard, BlackObfuscator, yGuard, SkidSuite2, and JBCO (the last three detect-only, identified by marker strings and, for JBCO, its `jsr`/`ret` control flow).
 
-On the Android side it also fingerprints eight runtime application self-protection (RASP) vendors so an analyst knows what the app does at run time: Promon SHIELD, Guardsquare DexGuard RASP and ThreatCast, Appdome, OneSpan, Arxan/Digital.ai, Zimperium zShield, and Licel DexProtector. APK signatures are verified across schemes v1 (JAR) through v4.
+On the Android side it also applies eight runtime application self-protection (RASP) fingerprint rules: Promon SHIELD, Guardsquare DexGuard RASP and ThreatCast, Appdome, OneSpan, Arxan/Digital.ai, Zimperium zShield, and Licel DexProtector. For APK signatures, `disrobe` inventories v1 signing material, verifies v2, v3, and v3.1 content digests, and parses v4 `.idsig` files to match their APK digest to a computed v2 or v3 content digest.
 
-String-encryption protectors are decrypted by emulating each class's decrypt method on the encrypted constants rather than by guessing a key, so Allatori and DashO style `decrypt(String)` and `decrypt(int, String)` routines are recovered statically. The evaluator runs `<clinit>` for a per-class static key, constructs the receiver and runs `<init>` for an instance decrypt keyed on a field, synthesizes the calling frame for a caller/stack-trace-keyed key, and covers the long-accumulator arithmetic, `getfield`/`putfield`, and `switch`-dispatched keystreams these routines emit, all under a hard step cap. ProGuard and R8 names are restored from a `mapping.txt` with `disrobe jvm decompile --mapping mapping.txt`, disambiguating overloaded methods by their descriptor argument count.
+String-encryption protectors are decrypted by emulating each class's decrypt method on the encrypted constants rather than by guessing a key, so Allatori and DashO style `decrypt(String)` and `decrypt(int, String)` routines are recovered statically. The evaluator runs `<clinit>` for a per-class static key, constructs the receiver and runs `<init>` for an instance decrypt keyed on a field, synthesizes the calling frame for a caller/stack-trace-keyed key, and covers the long-accumulator arithmetic, `getfield`/`putfield`, and `switch`-dispatched keystreams these routines emit, all under a hard step cap. With `disrobe jvm decompile --mapping mapping.txt`, ProGuard and R8 names are written to `name-restoration.json`, with overloaded methods disambiguated by descriptor argument count; emitted Java identifiers are unchanged.
 
-On the Android side, `disrobe` deflattens BlackObfuscator control-flow flattening: it recognizes the `String.hashCode()` keyed dispatcher, matches each block's `const-string` block-name to its switch case, and recovers the original linear block order, annotating the deflattened sequence directly in the decompiled output. Obfuscator-planted out-of-range exception-table entries are dropped before structuring so they cannot poison the control-flow graph, and `jsr`/`ret` subroutines are inlined into a linear stream.
+On the Android side, the BlackObfuscator analyzer recognizes the `String.hashCode()` keyed dispatcher, matches each block's `const-string` block-name to its switch case, and reports the recovered linear block order in the decompiled output. The method body remains rendered from the flattened graph; the annotation records the recovered order rather than replacing that body. Separately, obfuscator-planted out-of-range exception-table entries are dropped before classfile structuring so they cannot poison the control-flow graph, and `jsr`/`ret` subroutines are inlined into a linear stream.
 
 DexGuard hides string constants in an encrypted static `String[]` decrypted at run time through `java.lang.reflect.Method.invoke` rather than a direct call. The key and ciphertext are present in the dex; only the dispatch is reflective. `disrobe` runs a constrained Dalvik register machine over the dex's own routine: it executes the class `<clinit>` to rebuild the encrypted table, then runs the `decrypt(int)` body for each index (read the table element, apply the per-char transform against the embedded key, rebuild the string) and emits the plaintext, with the `Class.getDeclaredMethod` + `Method.invoke` call sites resolved to their concrete target. `disrobe jvm decompile app.dex` surfaces the recovered strings and resolved sites in the manifest.
 
