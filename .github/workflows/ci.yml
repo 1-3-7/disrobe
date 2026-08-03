@@ -287,6 +287,11 @@ jobs:
       - name: confirm the dotnet sdk is callable before the suite depends on it
         shell: bash
         run: dotnet --info
+      - name: restore the pinned ilspy comparator before its floor runs
+        shell: bash
+        run: |
+          dotnet tool restore --tool-manifest .config/dotnet-tools.json
+          dotnet tool run ilspycmd --allow-roll-forward -- --version
       - name: provision the installer and elf toolchains so their round trips run instead of returning early
         shell: bash
         run: |
