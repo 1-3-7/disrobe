@@ -184,7 +184,7 @@ fn classify_atomic(op: &Operator<'_>) -> Option<AtomicOpRecord> {
         }
         _ => return None,
     };
-    let rust_lift: String = rust_lift_for(kind, mnemonic, &memarg);
+    let rust_lift: String = rust_lift_for(kind, mnemonic, &memarg)?;
     Some(AtomicOpRecord {
         kind,
         mnemonic,
@@ -195,39 +195,94 @@ fn classify_atomic(op: &Operator<'_>) -> Option<AtomicOpRecord> {
     })
 }
 
-fn rust_lift_for(kind: AtomicOpKind, mnemonic: &str, memarg: &MemArg) -> String {
+fn rust_lift_for(kind: AtomicOpKind, mnemonic: &str, memarg: &MemArg) -> Option<String> {
     let ordering: &str = "std::sync::atomic::Ordering::SeqCst";
-    let cell: &str = if mnemonic.starts_with("i64") {
-        "AtomicI64"
-    } else {
-        "AtomicI32"
-    };
     match kind {
-        AtomicOpKind::Load => format!(
-            "unsafe {{ (&*((ptr as *const std::sync::atomic::{cell})))).load({ordering}) /* offset={} */",
-            memarg.offset
-        ),
-        AtomicOpKind::Store => format!(
-            "unsafe {{ (&*((ptr as *const std::sync::atomic::{cell})))).store(val, {ordering}) /* offset={} */",
-            memarg.offset
-        ),
-        AtomicOpKind::Rmw => format!(
-            "unsafe {{ (&*((ptr as *const std::sync::atomic::{cell})))).fetch_op(val, {ordering}) /* {mnemonic} offset={} */",
-            memarg.offset
-        ),
-        AtomicOpKind::Cmpxchg => format!(
-            "unsafe {{ (&*((ptr as *const std::sync::atomic::{cell})))).compare_exchange(old, new, {ordering}, {ordering}) /* offset={} */",
-            memarg.offset
-        ),
-        AtomicOpKind::Wait32 | AtomicOpKind::Wait64 => format!(
+        AtomicOpKind::Load => {
+            let cell: &str = rust_atomic_cell(mnemonic)?;
+            let lift: String = format!(
+                "unsafe {{ (&*(ptr.add({}) as *const std::sync::atomic::{cell})).load({ordering}) /* offset={} */ }}",
+                memarg.offset, memarg.offset
+            );
+            match mnemonic {
+                "i32.atomic.load8_u" | "i32.atomic.load16_u" => Some(format!("i32::from({lift})")),
+                "i64.atomic.load8_u" | "i64.atomic.load16_u" | "i64.atomic.load32_u" => {
+                    Some(format!("i64::from({lift})"))
+                }
+                _ => Some(lift),
+            }
+        }
+        AtomicOpKind::Store => {
+            let cell: &str = rust_atomic_cell(mnemonic)?;
+            let value: &str = rust_atomic_store_value(mnemonic)?;
+            Some(format!(
+                "unsafe {{ (&*(ptr.add({}) as *const std::sync::atomic::{cell})).store({value}, {ordering}) /* offset={} */ }}",
+                memarg.offset, memarg.offset
+            ))
+        }
+        AtomicOpKind::Rmw => {
+            let cell: &str = rust_atomic_cell(mnemonic)?;
+            Some(format!(
+                "unsafe {{ (&*(ptr.add({}) as *const std::sync::atomic::{cell})).{}(val, {ordering}) /* {mnemonic} offset={} */ }}",
+                memarg.offset,
+                rust_rmw_method(mnemonic)?,
+                memarg.offset
+            ))
+        }
+        AtomicOpKind::Cmpxchg => {
+            let cell: &str = rust_atomic_cell(mnemonic)?;
+            Some(format!(
+                "match unsafe {{ (&*(ptr.add({}) as *const std::sync::atomic::{cell})).compare_exchange(old, new, {ordering}, {ordering}) /* offset={} */ }} {{ Ok(observed) | Err(observed) => observed }}",
+                memarg.offset, memarg.offset
+            ))
+        }
+        AtomicOpKind::Wait32 | AtomicOpKind::Wait64 => Some(format!(
             "wait_on_arc_mutex(memory.clone(), addr, expected, timeout_ns) /* {mnemonic} offset={} */",
             memarg.offset
-        ),
-        AtomicOpKind::Notify => format!(
+        )),
+        AtomicOpKind::Notify => Some(format!(
             "notify_arc_mutex(memory.clone(), addr, count) /* {mnemonic} offset={} */",
             memarg.offset
-        ),
-        AtomicOpKind::Fence => format!("std::sync::atomic::fence({ordering});"),
+        )),
+        AtomicOpKind::Fence => Some(format!("std::sync::atomic::fence({ordering});")),
+    }
+}
+
+fn rust_atomic_cell(mnemonic: &str) -> Option<&'static str> {
+    match mnemonic {
+        "i32.atomic.load8_u" | "i64.atomic.load8_u" | "i32.atomic.store8" | "i64.atomic.store8" => {
+            Some("AtomicU8")
+        }
+        "i32.atomic.load16_u"
+        | "i64.atomic.load16_u"
+        | "i32.atomic.store16"
+        | "i64.atomic.store16" => Some("AtomicU16"),
+        "i64.atomic.load32_u" | "i64.atomic.store32" => Some("AtomicU32"),
+        value if value.starts_with("i32.atomic.") => Some("AtomicI32"),
+        value if value.starts_with("i64.atomic.") => Some("AtomicI64"),
+        _ => None,
+    }
+}
+
+fn rust_atomic_store_value(mnemonic: &str) -> Option<&'static str> {
+    match mnemonic {
+        "i32.atomic.store" | "i64.atomic.store" => Some("val"),
+        "i32.atomic.store8" | "i64.atomic.store8" => Some("val as u8"),
+        "i32.atomic.store16" | "i64.atomic.store16" => Some("val as u16"),
+        "i64.atomic.store32" => Some("val as u32"),
+        _ => None,
+    }
+}
+
+fn rust_rmw_method(mnemonic: &str) -> Option<&'static str> {
+    match mnemonic {
+        "i32.atomic.rmw.add" | "i64.atomic.rmw.add" => Some("fetch_add"),
+        "i32.atomic.rmw.sub" | "i64.atomic.rmw.sub" => Some("fetch_sub"),
+        "i32.atomic.rmw.and" | "i64.atomic.rmw.and" => Some("fetch_and"),
+        "i32.atomic.rmw.or" | "i64.atomic.rmw.or" => Some("fetch_or"),
+        "i32.atomic.rmw.xor" | "i64.atomic.rmw.xor" => Some("fetch_xor"),
+        "i32.atomic.rmw.xchg" | "i64.atomic.rmw.xchg" => Some("swap"),
+        _ => None,
     }
 }
 
