@@ -10,7 +10,7 @@
 | YARV | IBF reader (iseqs, object table, literals) plus a decompiler driven by per-version opcode tables for Ruby 2.6 through 3.4 |
 | mruby | RITE reader covering format versions 0001-0007, 0030, 0200, and 0300, with irep disassembly and decompilation |
 | Fidelity | <!-- m:ruby_greeter_pct -->100%<!-- /m --> opcode-multiset equivalence on a greeter fixture; <!-- m:ruby_megafile_pct -->98.67%<!-- /m --> on a mixed-construct megafile (gate floor, CI-enforced) |
-| Output | Analysis JSON plus a `.rb` source file carrying the decompiled body and a YARV disassembly trailer |
+| Output | Analysis JSON; a `.rb` source file for YARV and recovered mruby bodies, with a YARV disassembly trailer when available |
 
 ## Commands
 
@@ -19,7 +19,7 @@ disrobe ruby decompile app.bin --out app-ruby.json
 disrobe ruby detect app.bin
 ```
 
-`decompile` sniffs the flavor, runs the matching reader and decompiler, and writes the analysis JSON (default `./out/<stem>-ruby.json`) plus a `.rb` source file beside it. `detect` reports the flavor and exits without writing output.
+`decompile` sniffs the flavor, runs the matching reader and decompiler, and writes the analysis JSON (default `./out/<stem>-ruby.json`). For YARV, or for mruby when a body is recovered, it also writes a `.rb` source file beside the JSON; YARV output includes a disassembly trailer when available. `detect` reports the flavor and exits without writing output.
 
 Output shape (illustrative):
 
