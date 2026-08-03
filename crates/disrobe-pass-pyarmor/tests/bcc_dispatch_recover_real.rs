@@ -184,7 +184,7 @@ fn recover_named(prep: &Prepared, qualname: &str) -> Option<RecoveredBody> {
     let consts: Vec<Option<i128>> = const_tuple(function);
     let mut options: RecoverOptions = RecoverOptions::new(
         qualname.to_owned(),
-        PyAbi::from_arch(BccArch::WinX64),
+        PyAbi::from_arch(BccArch::WinX64).expect("Windows x64 must have a BCC ABI"),
         record.signature.argcount as usize,
     );
     let names: Vec<String> = param_names(function);
