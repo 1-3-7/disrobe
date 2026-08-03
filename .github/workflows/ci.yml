@@ -329,7 +329,7 @@ jobs:
           clang --version
           ld.lld --version
           clang --target=aarch64-unknown-linux-gnu -x c -c -o /dev/null - <<< 'int dense_switch_probe(void) { return 0; }'
-      - run: cargo test --workspace --all-features
+      - run: cargo test --workspace --all-features --no-fail-fast
       - name: stage this OS leg's cross-platform determinism hash file
         shell: bash
         run: |
