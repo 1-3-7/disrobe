@@ -1,7 +1,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
 use disrobe_pass_dotnet::decompile::{DecompiledAssembly, decompile_assembly};
 use disrobe_pass_dotnet::metadata::{MetadataRoot, parse_metadata_root};
@@ -120,19 +120,68 @@ fn manifest(rel: &str) -> PathBuf {
     path
 }
 
-fn dotnet_available() -> bool {
-    Command::new("dotnet")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
+fn repository_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("canonicalize repository root")
 }
 
-fn ilspy_available() -> bool {
-    Command::new("ilspycmd")
-        .env("DOTNET_ROLL_FORWARD", "LatestMajor")
-        .arg("--version")
+fn checked_output(command: &mut Command, label: &str) -> Result<Output, String> {
+    let output: Output = command
         .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
+        .map_err(|error: std::io::Error| format!("{label} could not start: {error}"))?;
+    if output.status.success() {
+        return Ok(output);
+    }
+    let stdout: String = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr: String = String::from_utf8_lossy(&output.stderr).into_owned();
+    Err(format!(
+        "{label} exited {}. stdout:\n{stdout}\nstderr:\n{stderr}",
+        output.status
+    ))
+}
+
+fn ilspy_command() -> Command {
+    let mut command: Command = Command::new("dotnet");
+    command.current_dir(repository_root()).args([
+        "tool",
+        "run",
+        "ilspycmd",
+        "--allow-roll-forward",
+        "--",
+    ]);
+    command
+}
+
+fn require_dotnet() -> Result<(), String> {
+    let mut command: Command = Command::new("dotnet");
+    command.arg("--version");
+    checked_output(&mut command, "dotnet --version").map(|_: Output| ())
+}
+
+fn require_ilspy() -> Result<(), String> {
+    let mut command: Command = ilspy_command();
+    command.arg("--version");
+    let output: Output = checked_output(&mut command, "pinned ilspycmd --version").map_err(
+        |error: String| {
+            format!(
+                "{error}\nrestore the pinned comparator with: dotnet tool restore --tool-manifest .config/dotnet-tools.json"
+            )
+        },
+    )?;
+    if output.stdout.is_empty() {
+        return Err(
+            "pinned ilspycmd --version produced no output. restore the pinned comparator with: dotnet tool restore --tool-manifest .config/dotnet-tools.json"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn require_whole_type_tools() -> Result<(), String> {
+    require_dotnet()?;
+    require_ilspy()
 }
 
 fn declaring_type_of(body: &str) -> Option<String> {
@@ -538,13 +587,20 @@ fn compile_whole_type(dir: &Path, src: &str, type_name: &str) -> (Vec<String>, O
 }
 
 fn ilspy_il(dll: &Path, namespace: &str, type_name: &str) -> String {
-    let out: std::process::Output = Command::new("ilspycmd")
-        .env("DOTNET_ROLL_FORWARD", "LatestMajor")
+    let mut command: Command = ilspy_command();
+    command
         .args(["-il", "-t"])
         .arg(format!("{namespace}.{type_name}"))
-        .arg(dll)
-        .output()
-        .expect("ilspycmd");
+        .arg(dll);
+    let out: Output = checked_output(&mut command, "pinned ilspycmd IL comparison")
+        .unwrap_or_else(|error: String| panic!("{error}"));
+    assert!(
+        !out.stdout.is_empty(),
+        "pinned ilspycmd produced no IL for {}.{} from {}",
+        namespace,
+        type_name,
+        dll.display()
+    );
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
@@ -1153,10 +1209,8 @@ fn multiset_eq(a: &[Vec<String>], b: &[Vec<String>]) -> bool {
     remaining.is_empty()
 }
 
-fn run_oracle() -> Option<Vec<Outcome>> {
-    if !dotnet_available() || !ilspy_available() {
-        return None;
-    }
+fn run_oracle() -> Result<Vec<Outcome>, String> {
+    require_whole_type_tools()?;
     let mut outcomes: Vec<Outcome> = TARGETS.iter().map(|t: &Target| run_target(*t)).collect();
     outcomes.extend(
         RECORD_TARGETS
@@ -1168,7 +1222,7 @@ fn run_oracle() -> Option<Vec<Outcome>> {
             .iter()
             .map(|t: &RecordMethodTarget| run_record_method_target(*t)),
     );
-    Some(outcomes)
+    Ok(outcomes)
 }
 
 fn probe_il(back_edge: &str, arm_order: [&str; 3]) -> String {
@@ -1332,10 +1386,7 @@ fn error_code(line: &str) -> Option<&str> {
 
 #[test]
 fn edgecases_whole_type_recompile_fraction_is_published_as_measured() {
-    if !dotnet_available() {
-        eprintln!("SKIP EdgeCases whole-type recompile fraction: no dotnet SDK");
-        return;
-    }
+    require_dotnet().unwrap_or_else(|error: String| panic!("{error}"));
     let path: PathBuf = manifest(EDGECASES_DLL)
         .canonicalize()
         .expect("canonicalize");
@@ -1411,10 +1462,7 @@ fn edgecases_whole_type_recompile_fraction_is_published_as_measured() {
 
 #[test]
 fn whole_type_recompile_check_rejects_deliberately_broken_source() {
-    if !dotnet_available() {
-        eprintln!("SKIP whole-type recompile mutation control: no dotnet SDK");
-        return;
-    }
+    require_dotnet().unwrap_or_else(|error: String| panic!("{error}"));
     let target: Target = Target {
         dll: EDGECASES_DLL,
         origin_namespace: "EdgeCases",
@@ -1507,10 +1555,7 @@ fn fixed_int32_array_initializers(source: &str) -> Vec<String> {
 
 #[test]
 fn collection_field_rva_recovery_recompiles_and_preserves_runtime_values() {
-    assert!(
-        dotnet_available(),
-        "dotnet SDK is required for the CollectionPlayground compiler/runtime oracle"
-    );
+    require_dotnet().unwrap_or_else(|error: String| panic!("{error}"));
     let path: PathBuf = manifest(EDGECASES_DLL)
         .canonicalize()
         .expect("canonicalize");
@@ -1597,10 +1642,21 @@ fn percent(numerator: usize, denominator: usize) -> f64 {
 }
 
 #[test]
+fn external_command_requirement_rejects_a_missing_command() {
+    let missing: String = format!("disrobe_missing_tool_{}", std::process::id());
+    let mut command: Command = Command::new(&missing);
+    command.arg("--version");
+    let error: String = checked_output(&mut command, &missing)
+        .expect_err("a missing external command must not satisfy the whole-type prerequisites");
+    assert!(
+        error.contains(&missing),
+        "the missing command error must identify the unavailable prerequisite: {error}"
+    );
+}
+
+#[test]
 fn dog_recompiles_when_its_metadata_fields_are_emitted() {
-    if !dotnet_available() || !ilspy_available() {
-        return;
-    }
+    require_whole_type_tools().unwrap_or_else(|error: String| panic!("{error}"));
     let target: Target = Target {
         dll: "../../corpus/dotnet/megafile/EdgeCases.baseline.dll",
         origin_namespace: "EdgeCases",
@@ -1654,10 +1710,7 @@ fn metadata_constant_literals_escape_utf16_edge_cases() {
 
 #[test]
 fn whole_type_recompiles_to_equivalent_il() {
-    let Some(outcomes): Option<Vec<Outcome>> = run_oracle() else {
-        eprintln!("SKIP whole-type IL oracle: dotnet SDK or ilspycmd not available");
-        return;
-    };
+    let outcomes: Vec<Outcome> = run_oracle().unwrap_or_else(|error: String| panic!("{error}"));
     let mut equivalent: Vec<String> = Vec::new();
     let mut mismatched: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
