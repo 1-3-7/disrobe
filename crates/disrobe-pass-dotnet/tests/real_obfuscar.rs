@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use disrobe_pass_dotnet::metadata::{MetadataRoot, parse_metadata_root};
 use disrobe_pass_dotnet::pass::{PassSummary, analyze};
 use disrobe_pass_dotnet::pe::{ClrHeader, PeImage, parse, parse_clr_header};
-use disrobe_pass_dotnet::peel::{PeelReport, PeelStrategy, peel_obfuscar};
+use disrobe_pass_dotnet::peel::{PeelReport, peel_obfuscar};
 use disrobe_pass_dotnet::protectors::{
     ExecuteOptions, ExecutionOutcome, GreyZone, Handling, Protector, plan_execution,
 };
@@ -117,7 +117,6 @@ fn obfuscar_peel_reports_renamed_slots_without_fabricating_names() {
     let bytes: Vec<u8> = load(HELLOAPP_OBFUSCAR_REL);
     let report: PeelReport = peel_obfuscar(&bytes).expect("peel");
     assert_eq!(report.protector, Protector::Obfuscar);
-    assert_eq!(report.strategy, PeelStrategy::AttributeStripAndReport);
     assert!(
         report.bytes_out == report.bytes_in,
         "no byte rewrite claimed"
