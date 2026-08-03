@@ -389,7 +389,7 @@ fn real_pyarmor_bcc_body_degrades_honestly() {
         let code: &[u8] = &text[rel..rel + size];
         let options: RecoverOptions = RecoverOptions::new(
             record.source.qualname.clone(),
-            PyAbi::from_arch(BccArch::WinX64),
+            PyAbi::from_arch(BccArch::WinX64).expect("Windows x64 must have a BCC ABI"),
             record.signature.argcount as usize,
         );
         let empty: MapCallResolver = MapCallResolver::new();

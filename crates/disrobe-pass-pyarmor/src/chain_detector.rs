@@ -202,8 +202,8 @@ fn compute_limitations(out: &StaticUnpackOutput) -> Vec<String> {
     }
     if matches!(out.protection_kind, ProtectionKind::Bcc) {
         limits.push(
-            "BCC native body lift requires --allow-bcc; when enabled it is surfaced as recovered \
-             pseudo-C via the in-crate x86-64 decompiler."
+            "BCC protection was detected; this chain path does not perform or emit the optional \
+             in-crate native-body analysis."
                 .to_string(),
         );
     }

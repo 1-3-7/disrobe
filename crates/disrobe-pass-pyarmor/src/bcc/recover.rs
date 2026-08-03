@@ -16,10 +16,11 @@ pub enum PyAbi {
 
 impl PyAbi {
     #[must_use]
-    pub const fn from_arch(arch: BccArch) -> Self {
+    pub const fn from_arch(arch: BccArch) -> Option<Self> {
         match arch {
-            BccArch::LinuxX64 => Self::SysV,
-            BccArch::WinX64 | BccArch::DarwinArm64 | BccArch::Other(_) => Self::Win64,
+            BccArch::LinuxX64 => Some(Self::SysV),
+            BccArch::WinX64 => Some(Self::Win64),
+            BccArch::DarwinArm64 | BccArch::Other(_) => None,
         }
     }
 

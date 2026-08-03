@@ -11,16 +11,23 @@ use std::process::Command;
 
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_pyarmor::{
-    BccLinkOutput, FunctionRecord, UnpackOptions, link_bcc_from_unpack,
+    BccArch, BccLinkOutput, FunctionRecord, UnpackOptions, UnpackOutput, link_bcc_from_unpack,
     unpack_wrapper_text_with_options,
 };
 
-fn corpus_dir() -> Option<PathBuf> {
+fn corpus_dir() -> PathBuf {
     let dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()?
-        .parent()?
+        .parent()
+        .expect("crate directory must have a crates parent")
+        .parent()
+        .expect("workspace directory must have a parent")
         .join("corpus/python/pyarmor/v9-bcc/default");
-    dir.join("known_plaintext.py").is_file().then_some(dir)
+    assert!(
+        dir.join("known_plaintext.py").is_file(),
+        "tracked BCC corpus must be available at {}",
+        dir.display()
+    );
+    dir
 }
 
 fn python() -> Option<String> {
@@ -37,15 +44,22 @@ fn python() -> Option<String> {
 }
 
 fn link_corpus(dir: &Path) -> BccLinkOutput {
+    let (unpacked, wrapper_text, wrapper_path): (UnpackOutput, String, PathBuf) =
+        unpack_corpus(dir);
+    link_bcc_from_unpack(&unpacked, &wrapper_text, &wrapper_path).expect("link")
+}
+
+fn unpack_corpus(dir: &Path) -> (UnpackOutput, String, PathBuf) {
     let wrapper_path: PathBuf = dir.join("known_plaintext.py");
     let wrapper_text: String = std::fs::read_to_string(&wrapper_path).expect("read wrapper");
     let opts: UnpackOptions = UnpackOptions {
         allow_bcc: true,
         ..UnpackOptions::default()
     };
-    let unpacked = unpack_wrapper_text_with_options(&wrapper_text, &wrapper_path, &opts)
-        .expect("unpack committed BCC wrapper");
-    link_bcc_from_unpack(&unpacked, &wrapper_text, &wrapper_path).expect("link")
+    let unpacked: UnpackOutput =
+        unpack_wrapper_text_with_options(&wrapper_text, &wrapper_path, &opts)
+            .expect("unpack committed BCC wrapper");
+    (unpacked, wrapper_text, wrapper_path)
 }
 
 fn record<'a>(output: &'a BccLinkOutput, qualname: &str) -> &'a FunctionRecord {
@@ -72,10 +86,7 @@ fn def_params(recovered: &str) -> Vec<String> {
 
 #[test]
 fn bcc_pass_output_carries_recovered_bodies() {
-    let Some(dir): Option<PathBuf> = corpus_dir() else {
-        eprintln!("v9-bcc corpus absent; skipping");
-        return;
-    };
+    let dir: PathBuf = corpus_dir();
     let output: BccLinkOutput = link_corpus(&dir);
 
     let mix: &FunctionRecord = record(&output, "mix_add");
@@ -159,6 +170,52 @@ fn bcc_pass_output_carries_recovered_bodies() {
     };
     behavioral_match(&py, &dir, mix_body, poly_body, clamp_body);
     println!("recovered mix_add, poly, and clamp match the original CPython semantics end-to-end");
+}
+
+#[test]
+fn unsupported_bcc_architecture_cannot_populate_recovered_body() {
+    let dir: PathBuf = corpus_dir();
+    let (mut unpacked, wrapper_text, wrapper_path): (UnpackOutput, String, PathBuf) =
+        unpack_corpus(&dir);
+    let cases: [(BccArch, &str); 2] = [
+        (BccArch::DarwinArm64, "darwin-arm64"),
+        (BccArch::Other(0xdead), "other"),
+    ];
+    for (architecture, expected_arch) in cases {
+        for blob in &mut unpacked.bcc_blobs {
+            blob.architecture = architecture;
+        }
+        let output: BccLinkOutput = link_bcc_from_unpack(&unpacked, &wrapper_text, &wrapper_path)
+            .expect("unsupported BCC architecture must retain the native link");
+        let native_records: Vec<&FunctionRecord> = output
+            .map
+            .records
+            .iter()
+            .filter(|record: &&FunctionRecord| record.native.is_some())
+            .collect();
+        assert!(
+            !native_records.is_empty(),
+            "unsupported BCC architecture must retain native records"
+        );
+        for record in native_records {
+            let native = record
+                .native
+                .as_ref()
+                .expect("filtered record must retain native metadata");
+            assert_eq!(native.arch, expected_arch);
+            assert!(
+                record.recovered_body.is_none(),
+                "unsupported {expected_arch} body must not be interpreted as x86-64"
+            );
+        }
+        assert!(
+            !output
+                .skeleton
+                .lines()
+                .any(|line: &str| line.trim() == "@bcc_recovered"),
+            "unsupported {expected_arch} skeleton must not mark a recovered body"
+        );
+    }
 }
 
 fn behavioral_match(py: &str, dir: &Path, mix_body: &str, poly_body: &str, clamp_body: &str) {

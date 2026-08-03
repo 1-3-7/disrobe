@@ -104,7 +104,7 @@ pub fn lift_bcc_native(blob: &[u8], arch: BccArch) -> Result<BccLiftOutput> {
             unmodeled_count: 0,
             strings: Vec::new(),
             notes: vec![format!(
-                "BCC body targets {}; the in-crate pseudo-C lift models x86-64 only, so this AArch64 image is surfaced but not lifted",
+                "BCC body targets {}; unsupported architecture for the in-crate pseudo-C lift, which models x86-64 only; image is surfaced but not lifted",
                 arch.label()
             )],
         });
@@ -425,9 +425,9 @@ fn parse_hex_operand(operands: &str) -> Option<u64> {
 #[cfg(not(target_arch = "wasm32"))]
 const fn arch_to_abi(arch: BccArch) -> Option<PseudoAbi> {
     match arch {
-        BccArch::WinX64 | BccArch::Other(_) => Some(PseudoAbi::MsX64),
+        BccArch::WinX64 => Some(PseudoAbi::MsX64),
         BccArch::LinuxX64 => Some(PseudoAbi::SysV),
-        BccArch::DarwinArm64 => None,
+        BccArch::DarwinArm64 | BccArch::Other(_) => None,
     }
 }
 
@@ -620,6 +620,19 @@ mod tests {
     }
 
     #[test]
+    fn unknown_architecture_is_not_lifted_as_microsoft_x64() {
+        let blob: Vec<u8> = vec![0u8; 64];
+        let out: BccLiftOutput = lift_bcc_native(&blob, BccArch::Other(0xdead)).unwrap();
+        assert_eq!(out.modeled_count, 0);
+        assert!(out.functions.is_empty());
+        assert!(
+            out.notes
+                .iter()
+                .any(|n: &String| n.contains("unsupported architecture"))
+        );
+    }
+
+    #[test]
     fn non_elf_garbage_errors_with_parse() {
         let blob: Vec<u8> = vec![0x11u8; 128];
         let err: Error = lift_bcc_native(&blob, BccArch::WinX64).unwrap_err();
@@ -637,6 +650,7 @@ mod tests {
             Some(PseudoAbi::SysV)
         ));
         assert!(arch_to_abi(BccArch::DarwinArm64).is_none());
+        assert!(arch_to_abi(BccArch::Other(0xdead)).is_none());
     }
 
     #[test]

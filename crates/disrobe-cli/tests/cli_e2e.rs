@@ -1210,6 +1210,37 @@ fn pyarmor_help_documents_allow_dynamic_flag() {
 }
 
 #[test]
+fn pyarmor_help_describes_bcc_as_in_tree_static_analysis() {
+    let r: Run = run_disrobe(&["pyarmor", "unpack", "--help"]);
+    assert_eq!(r.code, 0);
+    let bcc_help: String = r
+        .stdout
+        .lines()
+        .skip_while(|line: &&str| line.trim() != "--allow-bcc")
+        .skip(1)
+        .take_while(|line: &&str| !line.starts_with("      --mode"))
+        .map(str::trim)
+        .collect::<Vec<&str>>()
+        .join(" ");
+    assert!(bcc_help.contains("in-tree static analysis"));
+    assert!(bcc_help.contains("does not execute the sample"));
+    assert!(
+        bcc_help.contains("does not execute the sample or invoke external tools"),
+        "BCC option description: {bcc_help}"
+    );
+    assert!(!bcc_help.to_ascii_lowercase().contains("ghidra"));
+    assert!(!bcc_help.contains("subprocess"));
+}
+
+#[test]
+fn pyarmor_help_describes_reconstructed_pyc() {
+    let r: Run = run_disrobe(&["pyarmor", "unpack", "--help"]);
+    assert_eq!(r.code, 0);
+    assert!(r.stdout.contains("reconstructed .pyc"));
+    assert!(!r.stdout.contains("original .pyc"));
+}
+
+#[test]
 fn wasm_decompile_help_documents_target_flag() {
     let r: Run = run_disrobe(&["wasm", "decompile", "--help"]);
     assert_eq!(r.code, 0);

@@ -9,6 +9,7 @@ use disrobe_core::chain::{OutputKind, Pass};
 use disrobe_pass_pyarmor::chain_detector::PYARMOR_PASS;
 
 const GAUNTLET_WRAPPER: &str = "corpus/python/pyarmor/gauntlet/dist/inventory.py";
+const BCC_WRAPPER: &str = "corpus/python/pyarmor/v9-bcc/default/known_plaintext.py";
 
 fn workspace_root() -> PathBuf {
     let mut dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -23,6 +24,11 @@ fn workspace_root() -> PathBuf {
 fn gauntlet_wrapper_bytes() -> Option<Vec<u8>> {
     let path: PathBuf = workspace_root().join(GAUNTLET_WRAPPER);
     std::fs::read(&path).ok()
+}
+
+fn bcc_wrapper_bytes() -> Vec<u8> {
+    let path: PathBuf = workspace_root().join(BCC_WRAPPER);
+    std::fs::read(&path).expect("tracked BCC wrapper must be available")
 }
 
 #[test]
@@ -84,6 +90,33 @@ fn extract_children_surfaces_manifest_sidecar_for_real_v8_sample() {
             .any(|l: &serde_json::Value| l.as_str().is_some_and(|s| s.contains("v8/v9 AES key"))),
         "without the sibling runtime the v8 body stays encrypted; the wall must be recorded, not a bare failure",
     );
+}
+
+#[test]
+fn extract_children_bcc_manifest_does_not_claim_an_unemitted_lift() {
+    let bytes: Vec<u8> = bcc_wrapper_bytes();
+    let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+    let children: Vec<ChildArtifact> = PYARMOR_PASS
+        .extract_children(&artifact)
+        .expect("tracked BCC wrapper must yield chain children");
+    let manifest: &ChildArtifact = children
+        .iter()
+        .find(|child: &&ChildArtifact| child.handle.relative_path == "pyarmor-manifest.json")
+        .expect("BCC chain output must include a manifest child");
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&manifest.bytes).expect("BCC manifest child must be valid json");
+    assert_eq!(parsed["protection"], "Bcc");
+    let limitations: &Vec<serde_json::Value> = parsed["limitations"]
+        .as_array()
+        .expect("BCC manifest must carry limitations");
+    let bcc_limitation: &str = limitations
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .find(|limitation: &&str| limitation.contains("BCC"))
+        .expect("BCC manifest must state the chain analysis boundary");
+    assert!(bcc_limitation.contains("does not perform or emit"));
+    assert!(bcc_limitation.contains("in-crate native-body analysis"));
+    assert!(!bcc_limitation.contains("recovered pseudo-C"));
 }
 
 #[test]

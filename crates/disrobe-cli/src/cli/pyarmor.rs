@@ -11,7 +11,7 @@ use super::progress_ui;
 #[derive(Subcommand, Debug)]
 pub(crate) enum PyarmorCmd {
     #[command(
-        about = "unpack a PyArmor-protected wrapper to its original .pyc (v6 / v7 dynamic-hook + v8 / v9-pro static)"
+        about = "unpack a PyArmor-protected wrapper to a reconstructed .pyc when recoverable (v6 / v7 dynamic-hook + v8 / v9-pro static)"
     )]
     Unpack {
         #[arg(help = "PyArmor wrapper .py file to unpack")]
@@ -48,7 +48,7 @@ pub(crate) enum PyarmorCmd {
         target: Option<String>,
         #[arg(
             long,
-            help = "permit BCC native-body lift via Ghidra-headless on PATH; without this flag, BCC protection returns DR-PYARM-0050",
+            help = "permit opt-in in-tree static analysis of embedded BCC native code; it does not execute the sample or invoke external tools; without this flag, BCC protection returns DR-PYARM-0050",
             default_value_t = false
         )]
         allow_bcc: bool,
@@ -68,7 +68,7 @@ pub(crate) enum PyarmorCmd {
         all_emits: bool,
         #[arg(
             long,
-            help = "exit non-zero on any partial / skeleton decode; default continues with degraded-confidence reporting",
+            help = "exit non-zero when no .pyc is emitted or the unpack reports a fallback or marshal error; BCC lift status is not a separate strict condition",
             default_value_t = false
         )]
         strict: bool,
@@ -566,10 +566,10 @@ fn compute_limitations(result: &disrobe_pass_pyarmor::UnpackOutput) -> Vec<Strin
         result.detection.protection,
         disrobe_pass_pyarmor::ProtectionKind::Bcc
     ) {
-        limits.push(
-            "BCC native body lift requires --allow-bcc & ghidra-headless on PATH; not lifted here."
-                .to_owned(),
-        );
+        limits.extend(bcc_limitations(
+            &result.bcc_lifts,
+            result.bcc_lift_skipped_reason.as_deref(),
+        ));
     }
     if let Some(stats) = result.inner_cipher_stats.as_ref()
         && stats.nine_pro_stage_2_bind_required > 0
@@ -578,6 +578,49 @@ fn compute_limitations(result: &disrobe_pass_pyarmor::UnpackOutput) -> Vec<Strin
             "9-Pro stage-2 segments require runtime bind credentials; {} segment(s) left wrapped.",
             stats.nine_pro_stage_2_bind_required
         ));
+    }
+    limits
+}
+
+fn bcc_limitations(
+    lifts: &[disrobe_pass_pyarmor::BccLiftOutput],
+    skipped_reason: Option<&str>,
+) -> Vec<String> {
+    let modeled_count: usize = lifts.iter().map(|lift| lift.modeled_count).sum();
+    let unmodeled_count: usize = lifts.iter().map(|lift| lift.unmodeled_count).sum();
+    let mut limits: Vec<String> = Vec::new();
+    if lifts.is_empty() {
+        limits.push(
+            "BCC in-tree static analysis produced no lift result; the CLI does not emit BCC pseudo-C or source artifacts."
+                .to_owned(),
+        );
+    } else if modeled_count == 0 && unmodeled_count == 0 {
+        limits.push(
+            "BCC in-tree static analysis recovered no native functions; the CLI does not emit BCC pseudo-C or source artifacts."
+                .to_owned(),
+        );
+    } else if modeled_count == 0 {
+        limits.push(format!(
+            "BCC in-tree static analysis surfaced {unmodeled_count} function(s) as native disassembly only; no function was modeled as pseudo-C, and the CLI does not emit BCC pseudo-C or source artifacts."
+        ));
+    } else if unmodeled_count == 0 {
+        limits.push(format!(
+            "BCC in-tree static analysis modeled {modeled_count} function(s) as pseudo-C; the CLI does not emit BCC pseudo-C or source artifacts."
+        ));
+    } else {
+        limits.push(format!(
+            "BCC in-tree static analysis modeled {modeled_count} function(s) as pseudo-C and surfaced {unmodeled_count} function(s) as native disassembly only; the CLI does not emit BCC pseudo-C or source artifacts."
+        ));
+    }
+    if let Some(reason) = skipped_reason {
+        limits.push(format!(
+            "BCC in-tree static analysis could not process every native blob: {reason}"
+        ));
+    }
+    for lift in lifts {
+        for note in &lift.notes {
+            limits.push(format!("BCC {}: {note}", lift.architecture.label()));
+        }
     }
     limits
 }

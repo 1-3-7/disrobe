@@ -31,16 +31,16 @@ pub(crate) fn populate(
         let Some(blob): Option<&BccBlob> = blobs.get(entry.container_index) else {
             continue;
         };
+        let Some(abi): Option<PyAbi> = PyAbi::from_arch(blob.architecture) else {
+            continue;
+        };
         let Some(code): Option<Vec<u8>> = code_at(&blob.bytes, native.offset, native.size) else {
             continue;
         };
         let argcount: usize = record.signature.argcount as usize;
         let artifact: Option<&FunctionArtifacts> = artifacts.get(&record.source.qualname);
-        let mut options: RecoverOptions = RecoverOptions::new(
-            bare_name(&record.source.qualname),
-            PyAbi::from_arch(blob.architecture),
-            argcount,
-        );
+        let mut options: RecoverOptions =
+            RecoverOptions::new(bare_name(&record.source.qualname), abi, argcount);
         options.param_names = param_names(record, artifact, argcount);
         let empty: &[Option<i128>] = &[];
         let consts: &[Option<i128>] =
