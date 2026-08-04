@@ -487,6 +487,10 @@ fn report_multi_class_javac_recompile() {
     );
 }
 
+const fn per_method_measurement_is_publishable(javac_ok: bool, total: usize, ok: usize) -> bool {
+    total > 0 && ok <= total && (javac_ok || ok < total)
+}
+
 #[test]
 fn report_per_method_javac_recompile() {
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
@@ -562,6 +566,13 @@ fn report_per_method_javac_recompile() {
         "PER-METHOD JAVAC RECOMPILE (EdgeCases top-level): {ok}/{total} methods error-free \
          ({pct:.1}%); total javac errors: {}",
         error_lines.len()
+    );
+    assert!(
+        per_method_measurement_is_publishable(out.status.success(), total, ok),
+        "javac exited {} yet every one of {total} top-level methods parsed clean, so the \
+         failure attributed to no method and {ok}/{total} is not a measurement anyone may \
+         publish; javac stderr:\n{stderr}",
+        out.status
     );
     assert_eq!(
         total, PER_METHOD_JAVAC_TOTAL,
