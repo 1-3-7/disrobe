@@ -1357,6 +1357,7 @@ const EDGECASES_TYPES: &[(&str, bool)] = &[
 ];
 
 const EDGECASES_RECOMPILE_MEMBERS: &[&str] = &[
+    "AsyncDisposableScope",
     "Cat",
     "CollectionPlayground",
     "ConditionalCompilation",
