@@ -25,20 +25,28 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         || crate::evidence::run(root, evidence_mode(check)),
         &mut stale,
     )?;
+    run_one(
+        "metrics",
+        check,
+        || crate::metrics::run(root, metrics_mode(check)),
+        &mut stale,
+    )?;
 
     if check {
         if stale.is_empty() {
-            println!("xtask sync --check: all artifacts are byte-fresh");
+            println!(
+                "xtask sync --check: generated artifacts and documentation metrics are byte-fresh"
+            );
             Ok(())
         } else {
             eyre::bail!(
-                "xtask sync --check: {} artifact(s) stale; run `cargo run -p xtask -- sync` to regenerate:\n  {}",
+                "xtask sync --check: {} synchronization step(s) stale; run `cargo run -p xtask -- sync` to regenerate:\n  {}",
                 stale.len(),
                 stale.join("\n  ")
             )
         }
     } else {
-        println!("xtask sync: all artifacts regenerated");
+        println!("xtask sync: generated artifacts and documentation metrics regenerated");
         Ok(())
     }
 }
@@ -48,6 +56,14 @@ const fn evidence_mode(check: bool) -> crate::evidence::Mode {
         crate::evidence::Mode::Check
     } else {
         crate::evidence::Mode::Render
+    }
+}
+
+const fn metrics_mode(check: bool) -> crate::metrics::Mode {
+    if check {
+        crate::metrics::Mode::Check
+    } else {
+        crate::metrics::Mode::Write
     }
 }
 
@@ -68,6 +84,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metrics_mode_tracks_sync_mode() {
+        assert!(matches!(metrics_mode(true), crate::metrics::Mode::Check));
+        assert!(matches!(metrics_mode(false), crate::metrics::Mode::Write));
+    }
 
     #[test]
     fn write_mode_propagates_an_injected_failure_with_its_step_name() -> Result<()> {
