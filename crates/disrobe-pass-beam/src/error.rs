@@ -97,6 +97,13 @@ pub enum Error {
         available: usize,
         min_record_size: usize,
     },
+
+    #[error("DR-BEAM-0025: atom #{index} has {scalars} Unicode scalar values; limit is {limit}")]
+    AtomTooLong {
+        index: u32,
+        scalars: usize,
+        limit: usize,
+    },
 }
 
 impl From<zip::result::ZipError> for Error {
