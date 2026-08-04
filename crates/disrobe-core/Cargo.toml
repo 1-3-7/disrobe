@@ -42,7 +42,7 @@ sha2 = { workspace = true }
 hmac = { workspace = true }
 pbkdf2 = { workspace = true }
 md5 = { workspace = true }
-scrypt = { version = "0.11.0", default-features = false }
+scrypt = { workspace = true }
 zip = { workspace = true }
 flate2 = { workspace = true }
 bzip2-rs = { workspace = true }
