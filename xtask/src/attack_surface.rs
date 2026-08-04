@@ -107,10 +107,6 @@ const NON_PARSER_ALLOWLIST: &[NonParserCrate] = &[
         rationale: "typed query evaluator over an already-loaded .dr envelope or IR module",
     },
     NonParserCrate {
-        package_name: "disrobe-rules",
-        rationale: "loader for disrobe's own serde-validated rewrite-rule DSL, not an adversarial-input format",
-    },
-    NonParserCrate {
         package_name: "disrobe-semdiff",
         rationale: "semantic diff over the already-lifted Mir-rung IR, downstream of the format parsers",
     },

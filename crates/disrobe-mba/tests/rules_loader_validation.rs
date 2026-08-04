@@ -1,5 +1,5 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
-use disrobe_rules::{LoadError, RuleSet, load_str, mba_peephole_rules};
+use disrobe_mba::rules::{LoadError, RuleSet, load_str, mba_peephole_rules};
 
 #[test]
 fn shipped_rules_load_and_have_six_migrated_rules() {

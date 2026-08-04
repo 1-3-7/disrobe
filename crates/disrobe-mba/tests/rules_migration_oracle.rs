@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 use disrobe_mba::{Expr, Width, canonicalize, equivalent_exhaustive};
-use disrobe_rules::{RuleHit, RuleSet, apply_root, mba_peephole_rules, rewrite_fixpoint};
+use disrobe_mba::rules::{RuleHit, RuleSet, apply_root, mba_peephole_rules, rewrite_fixpoint};
 
 const FIXPOINT_PASSES: u32 = 64;
 
