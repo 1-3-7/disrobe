@@ -45,7 +45,7 @@ Try it in your browser at [`1-3-7.github.io/disrobe/playground`](https://1-3-7.g
 | Python bytecode | Recover | <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> per code object, 122 of <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules whole | strong `[CI]` | [python](docs/src/languages/python.md) |
 | PyArmor | Recover | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> manifest-named v8/v9 default-trial wrappers decode one complete header-anchored root `CodeObject` | coverage-self-reported `[CI]` | [python](docs/src/languages/python.md) |
 | Python pickle | Recover | 470 / 470 re-execute equal | strong `[CI]` | [pickle](docs/src/languages/pickle.md) |
-| JVM classfile | Recover | 131 / 131 methods recompile | recompile-only `[CI]` | [jvm](docs/src/languages/jvm-android.md) |
+| JVM classfile | Recover | <!-- m:jvm_per_method_count -->131 of 131<!-- /m --> methods recompile | recompile-only `[CI]` | [jvm](docs/src/languages/jvm-android.md) |
 | Android DEX | Recover | 118 / 118 verifier-presented classes | strong `[CI]` | [android](docs/src/languages/jvm-android.md) |
 | .NET CIL | Recover | Eazfuscator VM and KoiVM lifted | strong `[CI]` | [dotnet](docs/src/languages/dotnet.md) |
 | JavaScript, TypeScript | Recover | obfuscator.io, JS-Confuser, Jscrambler | pass-gated | [js](docs/src/languages/javascript.md) |
@@ -150,7 +150,7 @@ Native UPX recovers about 96% of the whole image beyond the two byte-identical s
 
 | Metric | Measured | Oracle | Reproduce |
 |---|---|---|---|
-| JVM classfile `recompile-only` | 131 / 131 methods recompile error-free, floor 131 `[CI]` | real `javac`, JDK 25 | `crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs` |
+| JVM classfile `recompile-only` | <!-- m:jvm_per_method_count -->131 of 131<!-- /m --> methods recompile error-free, floor 131 `[CI]` | real `javac`, JDK 25 | `crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs` |
 
 Nothing asserts bytecode-equivalence for that row. The recovered source compiles, which is a weaker statement than the Strong tier makes.
 
