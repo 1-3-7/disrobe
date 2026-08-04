@@ -228,7 +228,7 @@ Recovery is bounded by what the compiler or protector left in the artifact. `dis
 
 **Vendor-firmware runtime key.** The Airoha OTP-AES key is not present in the carved firmware image, so the format is detected and its members carved, and nothing further.
 
-Two things look like walls but are not. PyArmor BCC/super-mode bodies and Nuitka/Nim/Zig/Crystal native bodies are compiled machine code, present in the artifact rather than absent, so `disrobe` carves them and lifts them to pseudo-C or pseudo-Rust with its in-house x86-64 decompiler. This carve path lifts each body on its own, without the cross-function call resolution `--backend native` applies when it walks a whole object. For PyArmor BCC it also links each compiled function back to its source module, qualified name, class, and arity, so you get a function-to-source map and a reconstructed `.py` skeleton. Straight-line and guarded-conditional bodies reconstruct to runnable Python verified against CPython, while loops degrade to the skeleton. The surrounding metadata, symbols, and names still recover fully.
+PyArmor BCC native blobs are carved and passed to an in-memory static lift attempt under `--allow-bcc`. The current CLI records the boundary and limitations in `manifest.json`; it does not serialize the lift or emit a function map, pseudo-C, or recovered Python. Nuitka, Nim, Zig, and Crystal native bodies are compiled machine code present in the artifact rather than absent; their dedicated recovery paths report what they can lift instead of inheriting a claim from the PyArmor path.
 
 Bytecode-to-source is structurally faithful but never byte-identical: `.class`, `.dex`, and CIL erase local names, generics, comments, and exact formatting. On large, deeply nested native binaries Ghidra and IDA still lead. Rather than compete there, `disrobe` unpacks, recovers symbols, and exports straight into them (`native export --format ghidra|ida|json`), and it can drive ghidra-headless itself (`native decompile --backend ghidra`).
 
@@ -290,7 +290,7 @@ The [architecture guide](https://1-3-7.github.io/disrobe/latest/architecture.htm
 
 ## Safety posture
 
-Every default path is pure static analysis and never executes the sample. The pickle suite is symbolic and never unpickles. The only code-execution paths, the PyArmor v6/v7 dynamic hook and the BCC native lift, sit behind explicit `--allow-dynamic` and `--allow-bcc` flags with a watchdog; run those inside a sandbox. The parsing surface is hardened against malformed and oversized input. See [Forensics and malware-safety posture](https://1-3-7.github.io/disrobe/latest/forensics-safety.html) and the [threat model](https://1-3-7.github.io/disrobe/latest/threat-model.html).
+Every default path is pure static analysis and never executes the sample. The pickle suite is symbolic and never unpickles. Only the PyArmor v6/v7 dynamic hook executes sample code, behind `--allow-dynamic` with a watchdog. `--allow-bcc` permits only in-tree static analysis and does not execute the sample or invoke external tools. Run the dynamic hook inside a sandbox. The parsing surface is hardened against malformed and oversized input. See [Forensics and malware-safety posture](https://1-3-7.github.io/disrobe/latest/forensics-safety.html) and the [threat model](https://1-3-7.github.io/disrobe/latest/threat-model.html).
 
 ## Documentation
 

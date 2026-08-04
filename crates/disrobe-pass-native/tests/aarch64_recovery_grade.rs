@@ -331,12 +331,8 @@ fn is_increment_nineteen_fp(name: &str) -> bool {
 #[test]
 #[ignore = "recompile-differential over the whole corpus; needs a host c compiler and is codegen-sensitive, so it is opt-in via --ignored until the ci platform matrix is verified green"]
 fn corpus_grade_report() {
-    let Some(compiler): Option<String> = cc() else {
-        eprintln!(
-            "SKIP corpus grade: no host C compiler (gcc/clang/cc) on PATH; cannot recompile-differential"
-        );
-        return;
-    };
+    let compiler: String =
+        cc().unwrap_or_else(|| panic!("corpus grade requires a host C compiler on PATH"));
     assert!(
         !ORACLE_FLAGS
             .iter()
@@ -656,11 +652,10 @@ fn corpus_grade_report() {
     }
 
     let dir: tempfile::TempDir = tempfile::tempdir().expect("scratch dir");
-    let Ok(battery_o): Result<PathBuf, String> = build_ground_truth_object(&compiler, dir.path())
-    else {
-        eprintln!("SKIP corpus grade: host compiler could not build the ground-truth battery");
-        return;
-    };
+    let battery_o: PathBuf =
+        build_ground_truth_object(&compiler, dir.path()).unwrap_or_else(|error: String| {
+            panic!("host compiler `{compiler}` could not build the ground-truth battery:\n{error}")
+        });
 
     let mut attempted: usize = 0;
     let mut recovered: usize = 0;
@@ -1338,5 +1333,30 @@ fn corpus_grade_report() {
     assert!(
         skips.is_empty(),
         "every recovered case must have a runnable, signature-matched driver"
+    );
+}
+
+#[test]
+fn corpus_grade_fails_when_host_compiler_is_unavailable() {
+    let test_binary: PathBuf = std::env::current_exe().expect("current test binary");
+    let output: std::process::Output = Command::new(test_binary)
+        .args([
+            "--ignored",
+            "--exact",
+            "corpus_grade_report",
+            "--test-threads=1",
+        ])
+        .env("PATH", "")
+        .output()
+        .expect("run corpus grade without a host compiler");
+    let stdout: String = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr: String = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        !output.status.success(),
+        "the corpus grade passed without a host compiler; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        format!("{stdout}\n{stderr}").contains("corpus grade requires a host C compiler on PATH"),
+        "the corpus grade failed for an unrelated reason; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }
