@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::{Command, ExitStatus};
 
 use eyre::{Result, WrapErr, bail};
 use serde::Deserialize;
@@ -9,6 +10,10 @@ use crate::fileio::{read_bytes_bounded, read_text_bounded};
 
 const MAX_DATA_JSON_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_SVG_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_PNG_BYTES: u64 = 8 * 1024 * 1024;
+const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
+const CARD_WIDTH: u32 = 1280;
+const CARD_HEIGHT: u32 = 640;
 
 #[derive(Debug, Deserialize)]
 struct RecoveryDoc {
@@ -39,8 +44,15 @@ struct CardStats {
     crate_count: usize,
 }
 
+#[derive(Debug)]
+struct CardArtifact {
+    path: PathBuf,
+    expected: Vec<u8>,
+    max_bytes: u64,
+}
+
 const TEMPLATE: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" font-family="ui-monospace, 'Cascadia Mono', 'JetBrains Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace">
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" font-family="'JetBrains Mono', ui-monospace, monospace">
   <title>disrobe</title>
   <desc>disrobe: decompile, deobfuscate, and unpack compiled software, deterministically, in a single Rust binary.</desc>
   <defs>
@@ -87,9 +99,9 @@ const TEMPLATE: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
   <rect x="70" y="262" width="417" height="3" fill="#8fb3d9"/>
   <text x="70" y="312" font-size="22" fill="#a1a1a1" letter-spacing="0.1">strip the obfuscation,</text>
   <text x="70" y="343" font-size="22" fill="#a1a1a1" letter-spacing="0.1">read the source.</text>
-  <text x="70" y="388" font-size="15" fill="#828282" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">deobfuscate, decompile, and unpack</text>
-  <text x="70" y="409" font-size="15" fill="#828282" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">compiled software, deterministically.</text>
-  <g font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <text x="70" y="388" font-size="15" fill="#828282" font-family="Inter, ui-sans-serif, sans-serif">deobfuscate, decompile, and unpack</text>
+  <text x="70" y="409" font-size="15" fill="#828282" font-family="Inter, ui-sans-serif, sans-serif">compiled software, deterministically.</text>
+  <g font-family="Inter, ui-sans-serif, sans-serif">
     <text x="70" y="456" font-size="13" fill="#828282" letter-spacing="0.3">RAW</text>
     <text x="113" y="456" font-size="13" fill="#828282">&#8594;</text>
     <text x="133" y="456" font-size="13" fill="#828282" letter-spacing="0.3">MIR</text>
@@ -149,12 +161,19 @@ const TEMPLATE: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
     let recovery_path: PathBuf = root.join("xtask").join("data").join("recovery.json");
     let verif_path: PathBuf = root.join("xtask").join("data").join("verification.json");
-    let targets: [PathBuf; 2] = [
+    let svg_targets: [PathBuf; 2] = [
         root.join("docs").join("assets").join("social-card.svg"),
         root.join("docs")
             .join("src")
             .join("assets")
             .join("social-card.svg"),
+    ];
+    let png_targets: [PathBuf; 2] = [
+        root.join("docs").join("assets").join("social-card.png"),
+        root.join("docs")
+            .join("src")
+            .join("assets")
+            .join("social-card.png"),
     ];
 
     let recovery_raw: String = read_text_bounded(&recovery_path, MAX_DATA_JSON_BYTES)
@@ -169,33 +188,150 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
 
     let stats: CardStats = collect_stats(root, &recovery_doc, &verif_doc)?;
     let svg: String = render(&stats);
+    let png: Vec<u8> = render_png(root, svg.as_bytes())?;
+    let artifacts: Vec<CardArtifact> = vec![
+        CardArtifact {
+            path: svg_targets[0].clone(),
+            expected: svg.as_bytes().to_vec(),
+            max_bytes: MAX_SVG_BYTES,
+        },
+        CardArtifact {
+            path: svg_targets[1].clone(),
+            expected: svg.into_bytes(),
+            max_bytes: MAX_SVG_BYTES,
+        },
+        CardArtifact {
+            path: png_targets[0].clone(),
+            expected: png.clone(),
+            max_bytes: MAX_PNG_BYTES,
+        },
+        CardArtifact {
+            path: png_targets[1].clone(),
+            expected: png,
+            max_bytes: MAX_PNG_BYTES,
+        },
+    ];
 
     if check {
-        for path in &targets {
-            match read_bytes_bounded(path, MAX_SVG_BYTES) {
-                Ok(on_disk) if on_disk == svg.as_bytes() => {
-                    println!(
-                        "xtask card --check: {} matches regeneration",
-                        path.display()
-                    );
-                }
-                Ok(_) => bail!(
-                    "committed social card is stale; run `cargo run -p xtask -- card`:\n  {} differs from regenerated output",
-                    path.display()
-                ),
-                Err(err) => bail!("{} unreadable: {err}", path.display()),
-            }
+        let stale: Vec<PathBuf> = stale_artifact_paths(&artifacts)?;
+        if !stale.is_empty() {
+            let paths: String = stale
+                .iter()
+                .map(|path: &PathBuf| format!("  {}", path.display()))
+                .collect::<Vec<String>>()
+                .join("\n");
+            bail!(
+                "committed social card artifacts are stale; run `cargo run -p xtask -- card`:\n{paths}"
+            );
+        }
+        for artifact in &artifacts {
+            println!(
+                "xtask card --check: {} matches regeneration",
+                artifact.path.display()
+            );
         }
     } else {
-        for path in &targets {
-            fs::create_dir_all(path.parent().unwrap_or(root))
-                .wrap_err_with(|| format!("creating parent of {}", path.display()))?;
-            fs::write(path, svg.as_bytes())
-                .wrap_err_with(|| format!("writing {}", path.display()))?;
-            println!("xtask card: wrote {}", path.display());
+        for artifact in &artifacts {
+            let Some(parent): Option<&Path> = artifact.path.parent() else {
+                bail!("{} has no parent directory", artifact.path.display());
+            };
+            fs::create_dir_all(parent)
+                .wrap_err_with(|| format!("creating parent of {}", artifact.path.display()))?;
+            fs::write(&artifact.path, &artifact.expected)
+                .wrap_err_with(|| format!("writing {}", artifact.path.display()))?;
+            println!("xtask card: wrote {}", artifact.path.display());
         }
     }
     Ok(())
+}
+
+fn render_png(root: &Path, svg: &[u8]) -> Result<Vec<u8>> {
+    let renderer: PathBuf = root
+        .join("xtask")
+        .join("graphgen")
+        .join("render_social_card.mjs");
+    if !renderer.is_file() {
+        bail!("social-card renderer missing: {}", renderer.display());
+    }
+    let temp_dir: tempfile::TempDir =
+        tempfile::tempdir().wrap_err("creating social-card render directory")?;
+    let svg_path: PathBuf = temp_dir.path().join("social-card.svg");
+    let png_path: PathBuf = temp_dir.path().join("social-card.png");
+    fs::write(&svg_path, svg)
+        .wrap_err_with(|| format!("writing temporary card SVG {}", svg_path.display()))?;
+    let status: ExitStatus = Command::new("node")
+        .arg(&renderer)
+        .arg(&svg_path)
+        .arg(&png_path)
+        .current_dir(root)
+        .status()
+        .wrap_err(
+            "spawning Node.js social-card renderer; install Node.js 24.16.0 and run `corepack enable && pnpm --dir xtask/graphgen install --frozen-lockfile`",
+        )?;
+    if !status.success() {
+        bail!(
+            "social-card renderer exited with {status}; run `corepack enable && pnpm --dir xtask/graphgen install --frozen-lockfile` and retry"
+        );
+    }
+    let png: Vec<u8> = read_bytes_bounded(&png_path, MAX_PNG_BYTES)
+        .wrap_err_with(|| format!("reading rendered card PNG {}", png_path.display()))?;
+    validate_png(&png)?;
+    Ok(png)
+}
+
+fn validate_png(png: &[u8]) -> Result<()> {
+    let signature: &[u8] = png
+        .get(..PNG_SIGNATURE.len())
+        .ok_or_else(|| eyre::eyre!("social-card renderer produced a truncated PNG"))?;
+    if signature != PNG_SIGNATURE {
+        bail!("social-card renderer output has an invalid PNG signature");
+    }
+    let ihdr: &[u8] = png
+        .get(8..24)
+        .ok_or_else(|| eyre::eyre!("social-card renderer output has a truncated IHDR"))?;
+    if ihdr.get(..4) != Some(13_u32.to_be_bytes().as_slice())
+        || ihdr.get(4..8) != Some(b"IHDR".as_slice())
+    {
+        bail!("social-card renderer output does not begin with a canonical IHDR");
+    }
+    let width_bytes: [u8; 4] = ihdr
+        .get(8..12)
+        .ok_or_else(|| eyre::eyre!("social-card renderer output has no width"))?
+        .try_into()
+        .map_err(|_| eyre::eyre!("social-card renderer output has an invalid width"))?;
+    let height_bytes: [u8; 4] = ihdr
+        .get(12..16)
+        .ok_or_else(|| eyre::eyre!("social-card renderer output has no height"))?
+        .try_into()
+        .map_err(|_| eyre::eyre!("social-card renderer output has an invalid height"))?;
+    let width: u32 = u32::from_be_bytes(width_bytes);
+    let height: u32 = u32::from_be_bytes(height_bytes);
+    if width != CARD_WIDTH || height != CARD_HEIGHT {
+        bail!(
+            "social-card renderer produced {width}x{height}, expected {CARD_WIDTH}x{CARD_HEIGHT}"
+        );
+    }
+    Ok(())
+}
+
+fn stale_artifact_paths(artifacts: &[CardArtifact]) -> Result<Vec<PathBuf>> {
+    let mut stale: Vec<PathBuf> = Vec::new();
+    for artifact in artifacts {
+        let exists: bool = artifact
+            .path
+            .try_exists()
+            .wrap_err_with(|| format!("checking {}", artifact.path.display()))?;
+        if !exists {
+            stale.push(artifact.path.clone());
+            continue;
+        }
+        let on_disk: Vec<u8> = read_bytes_bounded(&artifact.path, artifact.max_bytes)
+            .wrap_err_with(|| format!("reading {}", artifact.path.display()))?;
+        if on_disk != artifact.expected {
+            stale.push(artifact.path.clone());
+        }
+    }
+    Ok(stale)
 }
 
 fn collect_stats(
@@ -338,4 +474,41 @@ fn render(stats: &CardStats) -> String {
         .replace("__DEX_CLEAN__", &stats.dex_clean.to_string())
         .replace("__RUST_LOC__", &approximate_loc(stats.rust_loc))
         .replace("__CRATE_COUNT__", &stats.crate_count.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn card_check_rejects_one_byte_png_mutation() -> Result<()> {
+        let manifest_dir: &Path = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let Some(root): Option<&Path> = manifest_dir.parent() else {
+            bail!("xtask manifest directory has no repository parent");
+        };
+        let fixture: PathBuf = root.join("docs").join("assets").join("social-card.png");
+        let expected: Vec<u8> = read_bytes_bounded(&fixture, MAX_PNG_BYTES)?;
+        validate_png(&expected)?;
+        let dir: tempfile::TempDir = tempfile::tempdir()?;
+        let path: PathBuf = dir.path().join("social-card.png");
+        fs::write(&path, &expected)?;
+        let artifact: CardArtifact = CardArtifact {
+            path: path.clone(),
+            expected: expected.clone(),
+            max_bytes: MAX_PNG_BYTES,
+        };
+        assert!(stale_artifact_paths(std::slice::from_ref(&artifact))?.is_empty());
+
+        let mut corrupted: Vec<u8> = expected;
+        let Some(last_byte): Option<&mut u8> = corrupted.last_mut() else {
+            bail!("tracked social-card PNG is empty");
+        };
+        *last_byte ^= 1;
+        fs::write(&path, corrupted)?;
+        assert_eq!(
+            stale_artifact_paths(std::slice::from_ref(&artifact))?,
+            [path]
+        );
+        Ok(())
+    }
 }
