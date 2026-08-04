@@ -1,13 +1,19 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use std::collections::BTreeMap;
-use std::path::PathBuf;
-use std::process::Command;
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use disrobe_core::scratch::ScratchDir;
+use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_core::yara::parse_ruleset;
 use disrobe_core::yara_match::CompiledRuleset;
 
 type OffsetMap = BTreeMap<String, BTreeMap<String, Vec<u64>>>;
+
+const REQUIRE_YARA_VAR: &str = "DISROBE_REQUIRE_YARA";
+const YARA_TIMEOUT: Duration = Duration::from_secs(15);
+const YARA_CAPTURE_LIMIT: usize = 1024 * 1024;
 
 struct Case {
     name: &'static str,
@@ -53,28 +59,28 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "hex_wildcard",
-        rules: r"rule HexWild { strings: $x = { 41 ?? 43 } condition: $x }",
-        sample: b"AxC AyC AZZ",
+        rules: r"rule HexWild { strings: $x = { 41 ?? 43 44 45 46 } condition: $x }",
+        sample: b"AxCDEF AyCDEF AZZZZZ",
     },
     Case {
         name: "hex_nibble",
-        rules: r"rule HexNibble { strings: $x = { 4? 5A } condition: $x }",
-        sample: b"\x40\x5a\x4f\x5a\x30\x5a",
+        rules: r"rule HexNibble { strings: $x = { 4? 5A 61 62 63 64 } condition: $x }",
+        sample: b"\x40\x5aabcd\x4f\x5aabcd\x30\x5aabcd",
     },
     Case {
         name: "hex_jump_range",
-        rules: r"rule HexJump { strings: $x = { 41 [1-3] 5A } condition: $x }",
-        sample: b"A__Z AwwwwZ",
+        rules: r"rule HexJump { strings: $x = { 41 [1-3] 5A 61 62 63 64 } condition: $x }",
+        sample: b"A__Zabcd AwwwwZabcd",
     },
     Case {
         name: "hex_jump_exact",
-        rules: r"rule HexExact { strings: $x = { 41 [2] 5A } condition: $x }",
-        sample: b"A__Z A_Z",
+        rules: r"rule HexExact { strings: $x = { 41 [2] 5A 61 62 63 64 } condition: $x }",
+        sample: b"A__Zabcd A_Zabcd",
     },
     Case {
         name: "hex_alternation",
-        rules: r"rule HexAlt { strings: $x = { ( 41 42 | 43 44 ) 45 } condition: $x }",
-        sample: b"ABE__CDE__ABX",
+        rules: r"rule HexAlt { strings: $x = { ( 41 42 | 43 44 ) 45 46 47 48 } condition: $x }",
+        sample: b"ABEFGH__CDEFGH__ABX",
     },
     Case {
         name: "regex_simple",
@@ -83,13 +89,13 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "regex_overlap",
-        rules: r"rule RgxOverlap { strings: $x = /a.a/ condition: $x }",
-        sample: b"aaaa",
+        rules: r"rule RgxOverlap { strings: $x = /a.aaaaaaaa/ condition: $x }",
+        sample: b"aaaaaaaaaaaa",
     },
     Case {
         name: "regex_class",
-        rules: r"rule RgxClass { strings: $x = /[0-9]{3}/ condition: $x }",
-        sample: b"12 345 6789",
+        rules: r"rule RgxClass { strings: $x = /[0-9]{3}ABCD/ condition: $x }",
+        sample: b"12 345ABCD 6789ABCD",
     },
     Case {
         name: "cond_or_not",
@@ -128,8 +134,8 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "hex_jump_open",
-        rules: r"rule HexOpen { strings: $x = { 41 42 [2-] 5A } condition: $x }",
-        sample: b"AB____Z AB__Z",
+        rules: r"rule HexOpen { strings: $x = { 41 42 [2-] 5A 61 62 63 64 } condition: $x }",
+        sample: b"AB____Zabcd AB__Zabcd",
     },
     Case {
         name: "cond_none_of_them",
@@ -176,27 +182,110 @@ rule Second { strings: $b = "bar" condition: $b and filesize < 100 }
     },
     Case {
         name: "near_miss_count",
-        rules: r#"rule MissCount { strings: $x = "z" condition: #x == 5 }"#,
-        sample: b"only one z",
+        rules: r#"rule MissCount { strings: $x = "zzzz" condition: #x == 5 }"#,
+        sample: b"only one zzzz",
     },
 ];
 
-fn find_yara() -> Option<String> {
-    let mut candidates: Vec<String> = Vec::new();
-    if let Ok(explicit) = std::env::var("YARA") {
-        candidates.push(explicit);
+fn output_text(bytes: Vec<u8>, stream: &str, purpose: &str) -> String {
+    String::from_utf8(bytes).unwrap_or_else(|error: std::string::FromUtf8Error| {
+        panic!("{purpose} returned non-UTF-8 {stream}: {error}")
+    })
+}
+
+fn probe_yara(candidate: &Path) -> Result<PathBuf, String> {
+    let args: [&OsStr; 1] = [OsStr::new("--version")];
+    let output: CapturedOutput = run_captured(candidate, &args, YARA_TIMEOUT, YARA_CAPTURE_LIMIT)
+        .map_err(|error: std::io::Error| {
+            format!("could not start {}: {error}", candidate.display())
+        })?
+        .ok_or_else(|| {
+            format!(
+                "{} did not report its version within {YARA_TIMEOUT:?}",
+                candidate.display()
+            )
+        })?;
+    let stdout: String =
+        String::from_utf8(output.stdout).map_err(|error: std::string::FromUtf8Error| {
+            format!(
+                "{} returned a non-UTF-8 version: {error}",
+                candidate.display()
+            )
+        })?;
+    let stderr: String =
+        String::from_utf8(output.stderr).map_err(|error: std::string::FromUtf8Error| {
+            format!(
+                "{} returned non-UTF-8 stderr during its version probe: {error}",
+                candidate.display()
+            )
+        })?;
+    if output.exit_code != Some(0) {
+        return Err(format!(
+            "{} --version exited {:?}: {}",
+            candidate.display(),
+            output.exit_code,
+            stderr.trim()
+        ));
     }
-    candidates.push("yara".to_owned());
-    candidates.push("yara64".to_owned());
+    if !stderr.is_empty() {
+        return Err(format!(
+            "{} --version wrote to stderr: {}",
+            candidate.display(),
+            stderr.trim()
+        ));
+    }
+    let version: &str = stdout.trim();
+    let parts: Vec<&str> = version.split('.').collect();
+    if parts.len() != 3
+        || parts.iter().any(|part: &&str| {
+            part.is_empty() || !part.bytes().all(|byte: u8| byte.is_ascii_digit())
+        })
+    {
+        return Err(format!(
+            "{} --version returned {version:?}, not a numeric YARA version",
+            candidate.display()
+        ));
+    }
+    Ok(candidate.to_path_buf())
+}
+
+fn required_yara() -> bool {
+    let Some(raw): Option<OsString> = std::env::var_os(REQUIRE_YARA_VAR) else {
+        return false;
+    };
+    !matches!(
+        raw.to_string_lossy().trim().to_ascii_lowercase().as_str(),
+        "" | "0" | "false" | "no" | "off" | "optional"
+    )
+}
+
+fn find_yara() -> Option<PathBuf> {
+    let explicit: Option<OsString> = std::env::var_os("YARA");
+    if let Some(explicit) = explicit {
+        let candidate: PathBuf = PathBuf::from(explicit);
+        return Some(probe_yara(&candidate).unwrap_or_else(|defect: String| {
+            panic!(
+                "YARA names an unusable reference at {}: {defect}",
+                candidate.display()
+            )
+        }));
+    }
+    let candidates: [PathBuf; 2] = [PathBuf::from("yara"), PathBuf::from("yara64")];
+    let mut defects: Vec<String> = Vec::new();
     for candidate in candidates {
-        let ran: bool = Command::new(&candidate)
-            .arg("--version")
-            .output()
-            .is_ok_and(|out: std::process::Output| out.status.success());
-        if ran {
-            return Some(candidate);
+        match probe_yara(&candidate) {
+            Ok(path) => return Some(path),
+            Err(defect) => defects.push(defect),
         }
     }
+    let defect: String = defects.join("; ");
+    assert!(
+        !required_yara(),
+        "{REQUIRE_YARA_VAR} makes the real YARA CLI mandatory, so the matcher differential must not report success without it: {defect}"
+    );
+    eprintln!(
+        "NOT MEASURED: the real YARA CLI differential compared nothing because no usable yara or yara64 executable was found. Set {REQUIRE_YARA_VAR}=1 to make this fatal. Probes: {defect}"
+    );
     None
 }
 
@@ -215,41 +304,67 @@ fn engine_map(rules: &str, sample: &[u8]) -> (OffsetMap, Vec<String>) {
     (map, unevaluated)
 }
 
-fn parse_yara_output(stdout: &str) -> OffsetMap {
+fn parse_yara_output(stdout: &str, target: &Path) -> Result<OffsetMap, String> {
     let mut map: OffsetMap = BTreeMap::new();
     let mut current: Option<String> = None;
-    for line in stdout.lines() {
-        let line = line.trim_end();
+    let target_text: String = target.display().to_string();
+    for (line_index, raw_line) in stdout.lines().enumerate() {
+        let line: &str = raw_line.trim_end();
         if line.is_empty() {
-            continue;
+            return Err(format!("YARA emitted an empty line at {}", line_index + 1));
         }
         if let Some(rest) = line.strip_prefix("0x") {
-            let Some((offset_hex, tail)) = rest.split_once(':') else {
-                continue;
-            };
-            let Ok(offset) = u64::from_str_radix(offset_hex, 16) else {
-                continue;
-            };
-            let Some(id) = tail
-                .split(':')
-                .map(str::trim)
-                .find(|segment: &&str| segment.starts_with('$'))
-            else {
-                continue;
-            };
-            if let Some(rule) = current.as_ref() {
-                map.entry(rule.clone())
-                    .or_default()
-                    .entry(id.to_owned())
-                    .or_default()
-                    .push(offset);
+            let (offset_hex, tail): (&str, &str) = rest.split_once(':').ok_or_else(|| {
+                format!(
+                    "YARA match line {} has no offset delimiter: {line:?}",
+                    line_index + 1
+                )
+            })?;
+            let offset: u64 =
+                u64::from_str_radix(offset_hex, 16).map_err(|error: std::num::ParseIntError| {
+                    format!(
+                        "YARA match line {} has invalid offset {offset_hex:?}: {error}",
+                        line_index + 1
+                    )
+                })?;
+            let (id, _data): (&str, &str) = tail.split_once(':').ok_or_else(|| {
+                format!(
+                    "YARA match line {} has no data delimiter: {line:?}",
+                    line_index + 1
+                )
+            })?;
+            let id: &str = id.trim();
+            if !id.starts_with('$') || id.len() == 1 {
+                return Err(format!(
+                    "YARA match line {} has invalid string identifier {id:?}",
+                    line_index + 1
+                ));
             }
+            let rule: &String = current.as_ref().ok_or_else(|| {
+                format!(
+                    "YARA emitted match line {} before a rule header: {line:?}",
+                    line_index + 1
+                )
+            })?;
+            map.entry(rule.clone())
+                .or_default()
+                .entry(id.to_owned())
+                .or_default()
+                .push(offset);
         } else {
-            let name = line
-                .split_whitespace()
-                .next()
-                .unwrap_or_default()
-                .to_owned();
+            let (name, emitted_target): (&str, &str) = line.split_once(' ').ok_or_else(|| {
+                format!(
+                    "YARA rule header {} has no target path: {line:?}",
+                    line_index + 1
+                )
+            })?;
+            if name.is_empty() || emitted_target != target_text {
+                return Err(format!(
+                    "YARA rule header {} is not `<rule> {target_text}`: {line:?}",
+                    line_index + 1
+                ));
+            }
+            let name: String = name.to_owned();
             map.entry(name.clone()).or_default();
             current = Some(name);
         }
@@ -260,31 +375,53 @@ fn parse_yara_output(stdout: &str) -> OffsetMap {
             offsets.dedup();
         }
     }
-    map
+    Ok(map)
 }
 
-fn run_yara(bin: &str, dir: &PathBuf, rule_file: &str, sample_file: &str) -> OffsetMap {
-    let output = Command::new(bin)
-        .arg("-s")
-        .arg(rule_file)
-        .arg(sample_file)
-        .current_dir(dir)
-        .output()
-        .expect("yara must execute");
-    let stderr = String::from_utf8_lossy(&output.stderr);
+fn run_yara(bin: &Path, rule_file: &Path, sample_file: &Path) -> OffsetMap {
     assert!(
-        !stderr.contains("error:"),
-        "yara reported a rule error: {stderr}"
+        rule_file.is_absolute() && sample_file.is_absolute(),
+        "the bounded YARA runner requires absolute fixture paths"
     );
-    parse_yara_output(&String::from_utf8_lossy(&output.stdout))
+    let args: [&OsStr; 5] = [
+        OsStr::new("--print-strings"),
+        OsStr::new("--fail-on-warnings"),
+        OsStr::new("--timeout=5"),
+        rule_file.as_os_str(),
+        sample_file.as_os_str(),
+    ];
+    let output: CapturedOutput = run_captured(bin, &args, YARA_TIMEOUT, YARA_CAPTURE_LIMIT)
+        .unwrap_or_else(|error: std::io::Error| {
+            panic!("could not start YARA at {}: {error}", bin.display())
+        })
+        .unwrap_or_else(|| panic!("YARA at {} exceeded {YARA_TIMEOUT:?}", bin.display()));
+    let stdout: String = output_text(output.stdout, "stdout", "YARA scan");
+    let stderr: String = output_text(output.stderr, "stderr", "YARA scan");
+    assert_eq!(
+        output.exit_code,
+        Some(0),
+        "YARA at {} exited {:?}: {stderr}",
+        bin.display(),
+        output.exit_code
+    );
+    assert!(
+        stderr.is_empty(),
+        "YARA at {} wrote to stderr despite --fail-on-warnings: {stderr}",
+        bin.display()
+    );
+    parse_yara_output(&stdout, sample_file).unwrap_or_else(|defect: String| {
+        panic!("YARA at {} emitted invalid output: {defect}", bin.display())
+    })
+}
+
+fn compare_maps(case_name: &str, expected: &OffsetMap, actual: &OffsetMap) -> Option<String> {
+    (expected != actual)
+        .then(|| format!("case {case_name}\n  YARA:   {expected:?}\n  engine: {actual:?}"))
 }
 
 #[test]
 fn engine_agrees_with_real_yara() {
-    let Some(bin) = find_yara() else {
-        eprintln!(
-            "SKIPPED engine_agrees_with_real_yara: the real yara CLI was not found on PATH or via the YARA env var; install VirusTotal yara to run this comparison"
-        );
+    let Some(bin): Option<PathBuf> = find_yara() else {
         return;
     };
 
@@ -293,16 +430,15 @@ fn engine_agrees_with_real_yara() {
 
     let mut mismatches: Vec<String> = Vec::new();
     let mut compared: usize = 0;
+    let mut mutation_controls: usize = 0;
 
     for case in CASES {
         let rule_file: PathBuf = dir.join(format!("{}.yar", case.name));
-        let sample_name: String = format!("{}.bin", case.name);
-        let sample_file: PathBuf = dir.join(&sample_name);
+        let sample_file: PathBuf = dir.join(format!("{}.bin", case.name));
         std::fs::write(&rule_file, case.rules).expect("write rule");
         std::fs::write(&sample_file, case.sample).expect("write sample");
 
-        let rule_file_name: String = format!("{}.yar", case.name);
-        let expected: OffsetMap = run_yara(&bin, &dir, &rule_file_name, &sample_name);
+        let expected: OffsetMap = run_yara(&bin, &rule_file, &sample_file);
         let (actual, unevaluated) = engine_map(case.rules, case.sample);
 
         assert!(
@@ -311,18 +447,36 @@ fn engine_agrees_with_real_yara() {
             case.name
         );
 
-        if expected != actual {
-            mismatches.push(format!(
-                "case {}\n  yara:   {expected:?}\n  engine: {actual:?}",
-                case.name
-            ));
+        if let Some(mismatch) = compare_maps(case.name, &expected, &actual) {
+            mismatches.push(mismatch);
+        } else if case.name == "hex_fixed" {
+            let mut mutant: OffsetMap = actual.clone();
+            let offsets: &mut Vec<u64> = mutant
+                .get_mut("HexFixed")
+                .and_then(|strings: &mut BTreeMap<String, Vec<u64>>| strings.get_mut("$x"))
+                .expect("the real baseline must contain HexFixed/$x offsets");
+            let offset_index: usize = offsets
+                .iter()
+                .position(|offset: &u64| *offset == 2)
+                .expect("the real baseline must contain the first match at offset 2");
+            offsets.remove(offset_index);
+            let control: String = compare_maps(case.name, &expected, &mutant)
+                .expect("dropping a real YARA offset must make the comparator reject the map");
+            assert!(
+                control.contains("hex_fixed")
+                    && control.contains("HexFixed")
+                    && control.contains("$x")
+                    && control.contains('2'),
+                "the mutation diagnostic must name the case and removed match: {control}"
+            );
+            mutation_controls += 1;
         }
         compared += 1;
     }
 
     assert!(
         mismatches.is_empty(),
-        "{} of {compared} cases disagreed with the real yara CLI:\n{}",
+        "{} of {compared} cases disagreed with the real YARA CLI:\n{}",
         mismatches.len(),
         mismatches.join("\n")
     );
@@ -330,5 +484,11 @@ fn engine_agrees_with_real_yara() {
         compared >= CASES.len(),
         "expected every case to be compared"
     );
-    eprintln!("engine matched the real yara CLI on all {compared} cases");
+    assert_eq!(
+        mutation_controls, 1,
+        "exactly one dropped-offset mutation control must run"
+    );
+    eprintln!(
+        "[evidence] YARA differential matched all {compared} cases; dropped-offset mutation control rejected"
+    );
 }
