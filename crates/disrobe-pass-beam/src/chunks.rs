@@ -127,7 +127,11 @@ impl AtomTable {
             let len: u8 = reader.u8()?;
             let bytes: &[u8] = reader.take(usize::from(len))?;
             let atom: String = if utf8 {
-                String::from_utf8_lossy(bytes).into_owned()
+                let index: u32 = u32::try_from(atoms.len())
+                    .map_err(|_| Error::IntOverflow("atom table index"))?
+                    .checked_add(1)
+                    .ok_or(Error::IntOverflow("atom table index"))?;
+                etf::decode_atom_utf8(bytes, index)?
             } else {
                 bytes.iter().map(|&b| b as char).collect()
             };
@@ -150,15 +154,23 @@ impl AtomTable {
             checked_table_count("AtU8", count, reader.remaining(), ATOM_ENTRY_MIN_SIZE)?;
         let mut atoms: Vec<String> = Vec::with_capacity(cap);
         for _ in 0..cap {
-            let tagged: TaggedNumber = read_tagged(&mut reader)?;
+            let offset: usize = reader.position();
+            let tagged: TaggedNumber =
+                read_tagged(&mut reader).map_err(|error: Error| match error {
+                    Error::BadCompactTerm(_) => Error::BadCompactTerm(offset),
+                    other => other,
+                })?;
             if tagged.tag != TAG_U || tagged.size != 0 {
-                let index: u32 = atoms.len() as u32;
-                return Err(Error::BadAtomUtf8 { index });
+                return Err(Error::BadCompactTerm(offset));
             }
             let len: usize = usize::try_from(tagged.word_value)
                 .map_err(|_| Error::IntOverflow("AtU8 long-form length"))?;
             let bytes: &[u8] = reader.take(len)?;
-            let atom: String = String::from_utf8_lossy(bytes).into_owned();
+            let index: u32 = u32::try_from(atoms.len())
+                .map_err(|_| Error::IntOverflow("AtU8 long-form index"))?
+                .checked_add(1)
+                .ok_or(Error::IntOverflow("AtU8 long-form index"))?;
+            let atom: String = etf::decode_atom_utf8(bytes, index)?;
             atoms.push(atom);
         }
         Ok(Self { atoms })

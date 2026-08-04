@@ -55,7 +55,7 @@ pub enum Error {
         max_known: u32,
     },
 
-    #[error("DR-BEAM-0013: malformed compact term at code offset {0}")]
+    #[error("DR-BEAM-0013: malformed compact term at input offset {0}")]
     BadCompactTerm(usize),
 
     #[error("DR-BEAM-0014: ETF magic byte wrong: expected 131, got {0}")]

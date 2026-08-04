@@ -31,12 +31,26 @@ pub const TAG_EXPORT: u8 = 113;
 pub const TAG_COMPRESSED: u8 = 80;
 
 pub(crate) const MAX_ETF_INFLATE: usize = 256 * 1024 * 1024;
+const MAX_ATOM_SCALARS: usize = 255;
 const MAX_DEPRECATED_ATOM_LATIN1_CHARS: usize = 255;
 const MAX_ETF_DEPTH: usize = 500;
 const MAX_ETF_CONTAINER_PREALLOC: usize = 1 << 16;
 const MIN_TERM_TAG_BYTES: usize = 1;
 const MIN_MAP_PAIR_BYTES: usize = 2;
 const REFERENCE_ID_BYTES: usize = 4;
+
+pub(crate) fn decode_atom_utf8(bytes: &[u8], index: u32) -> Result<String> {
+    let atom: &str = core::str::from_utf8(bytes).map_err(|_| Error::BadAtomUtf8 { index })?;
+    let scalars: usize = atom.chars().count();
+    if scalars > MAX_ATOM_SCALARS {
+        return Err(Error::AtomTooLong {
+            index,
+            scalars,
+            limit: MAX_ATOM_SCALARS,
+        });
+    }
+    Ok(atom.to_owned())
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Term {
@@ -199,14 +213,12 @@ fn decode_term_after_first(reader: &mut Reader<'_>, tag: u8, depth: usize) -> Re
         TAG_ATOM_UTF8 => {
             let len: u16 = reader.u16()?;
             let bytes: &[u8] = reader.take(usize::from(len))?;
-            let s: String = String::from_utf8_lossy(bytes).into_owned();
-            Ok(Term::Atom(s))
+            Ok(Term::Atom(decode_atom_utf8(bytes, 0)?))
         }
         TAG_SMALL_ATOM_UTF8 => {
             let len: u8 = reader.u8()?;
             let bytes: &[u8] = reader.take(usize::from(len))?;
-            let s: String = String::from_utf8_lossy(bytes).into_owned();
-            Ok(Term::Atom(s))
+            Ok(Term::Atom(decode_atom_utf8(bytes, 0)?))
         }
         TAG_ATOM_DEPRECATED => {
             let len: usize = usize::from(reader.u16()?);

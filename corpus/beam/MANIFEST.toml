@@ -15,6 +15,14 @@ Real BEAM bytecode generated on Windows 11 with Erlang/OTP 29 (erts-17.0)
   .ez archive built by zipping ebin/ tree (zip-of-beams format).
 """
 
+[[fixture]]
+name = "otp28-long-atu8-source"
+path = "otp28_long_atu8/otp28_long_atu8.erl"
+kind = "source"
+provenance = "self-authored"
+source_tool = "Erlang/OTP 28.5.0.3 erlc +deterministic"
+description = "OTP 28 long AtU8 boundary source: one atom with 255 two-byte UTF-8 characters."
+
 [[sample]]
 name = "erlang/hello.beam"
 source_tool = "Erlang/OTP 29 erlc +debug_info"
