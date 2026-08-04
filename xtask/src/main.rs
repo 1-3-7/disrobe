@@ -23,6 +23,7 @@ mod fileio;
 mod floors;
 mod fuzz_scope;
 mod graphs;
+mod health;
 mod local_tags;
 mod metrics;
 mod packer_roster;
@@ -117,6 +118,10 @@ enum Cmd {
         #[arg(long, action = clap::ArgAction::SetTrue)]
         full: bool,
     },
+    Health {
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        json: bool,
+    },
     SetupHooks,
     #[cfg(feature = "playground")]
     Playground {
@@ -147,6 +152,7 @@ fn main() -> ExitCode {
         Cmd::Sync { check } => run_sync(check),
         Cmd::Evidence { check, list } => run_evidence(check, list),
         Cmd::Prepush { full } => run_prepush(full),
+        Cmd::Health { json } => run_health(json),
         Cmd::SetupHooks => run_setup_hooks(),
         #[cfg(feature = "playground")]
         Cmd::Playground {
@@ -170,6 +176,11 @@ fn workspace_root() -> Result<PathBuf> {
         bail!("xtask manifest dir has no parent: {}", here.display());
     };
     Ok(parent.to_path_buf())
+}
+
+fn run_health(as_json: bool) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    health::run(&root, as_json)
 }
 
 fn run_bake_fixtures(dry_run: bool, edge_cases: bool) -> Result<()> {
