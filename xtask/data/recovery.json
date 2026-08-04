@@ -328,6 +328,37 @@
       ]
     },
     {
+      "heading": "Dotnet protector sample recovery",
+      "axis_label": "graded outputs recovered, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "Obfuscar hidden strings",
+          "value": 100.0,
+          "num": 15,
+          "den": 15,
+          "verified_by": {
+            "path": "crates/disrobe-pass-dotnet/tests/obfuscar_gauntlet.rs",
+            "function": "published_obfuscar_hidden_strings_bar_matches_real_grader"
+          },
+          "detail": "15 of 15 unique ldstr values removed by Obfuscar HideStrings are recovered byte-for-byte from the real gauntlet sample's FieldRVA carrier.",
+          "source": "crates/disrobe-pass-dotnet/tests/obfuscar_gauntlet.rs derives the denominator from the committed clean and Obfuscar-produced assemblies, requires the complete recovered method-token-to-byte map to equal the independently generated CLR runtime accessor map, and flips a real FieldRVA carrier byte as the grader mutation control."
+        },
+        {
+          "label": "SmartAssembly embedded resources",
+          "value": 100.0,
+          "num": 1,
+          "den": 1,
+          "verified_by": {
+            "path": "crates/disrobe-pass-dotnet/tests/smartassembly_resources.rs",
+            "function": "published_smartassembly_embedded_resources_bar_matches_real_grader"
+          },
+          "detail": "The one named payload resource in the committed SmartAssembly mode-1 compatibility fixture is recovered byte-for-byte.",
+          "source": "crates/disrobe-pass-dotnet/tests/smartassembly_resources.rs requires exactly one [z]payload resource, byte equality with the independently compiled clean DLL, and the encrypted-resource extraction strategy. A separate mutation control flips bytes inside the real ManifestResource carrier and requires the clean payload comparison to fail. The framing fixture implements the published algorithm and is not output from the SmartAssembly product."
+        }
+      ]
+    },
+    {
       "heading": "Luau opcode lifting (disrobe declared table)",
       "axis_label": "declared opcode entries lifted, %",
       "kind": "percent",
