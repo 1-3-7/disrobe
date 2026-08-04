@@ -95,6 +95,7 @@ fn github_yaml_set_is_exact() {
         "workflows/release.yml",
         "workflows/verify-release.yml",
         "workflows/wiki-sync.yml",
+        "workflows/yara-reference.yml",
     ]
     .into_iter()
     .map(String::from)
