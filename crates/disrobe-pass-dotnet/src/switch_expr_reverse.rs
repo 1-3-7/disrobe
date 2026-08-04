@@ -147,7 +147,7 @@ fn detect_type_ladder(lines: &[&str]) -> Option<LadderMatch> {
         }
         let (cond, value, next): (String, String, usize) =
             parse_if_arm(lines, cursor, level_indent, &assigned)?;
-        let disc: String = type_discriminant(&cond)?;
+        let disc: String = type_discriminant(&cond, lines, decl_index)?;
         match &discriminant {
             Some(prev) if prev != &disc => return None,
             _ => discriminant = Some(disc),
@@ -184,29 +184,96 @@ fn detect_type_ladder(lines: &[&str]) -> Option<LadderMatch> {
     })
 }
 
-fn type_discriminant(cond: &str) -> Option<String> {
-    let (lhs, _rhs): (&str, &str) = cond.split_once(" as ")?;
-    let lhs: &str = lhs.trim();
+fn type_discriminant(cond: &str, lines: &[&str], before: usize) -> Option<String> {
+    let (lhs, _rhs): (&str, &str) = type_test_parts(cond)?;
+    if cond.contains(" is ") {
+        return (is_identifier(lhs) && object_parameter_exists(lines, before, lhs))
+            .then(|| lhs.to_owned());
+    }
     is_simple_discriminant(lhs).then(|| lhs.to_owned())
 }
 
 fn type_pattern(cond: &str) -> Option<String> {
-    let (_lhs, rhs): (&str, &str) = cond.split_once(" as ")?;
-    let ty: &str = rhs.trim();
+    let (_lhs, ty): (&str, &str) = type_test_parts(cond)?;
     is_type_name(ty).then(|| keyword_type(ty).to_owned())
 }
 
+fn type_test_parts(cond: &str) -> Option<(&str, &str)> {
+    let as_parts: Option<(&str, &str)> = cond.split_once(" as ");
+    if let Some((lhs, rhs)) = as_parts {
+        return Some((lhs.trim(), rhs.trim()));
+    }
+    let (lhs, rhs): (&str, &str) = cond.split_once(" is ")?;
+    let discriminant: &str = lhs
+        .trim()
+        .strip_prefix("((object)")?
+        .strip_suffix(')')?
+        .trim();
+    Some((discriminant, rhs.trim()))
+}
+
 fn is_type_name(s: &str) -> bool {
-    !s.is_empty()
-        && s.bytes()
+    !s.is_empty() && s.split('.').all(is_identifier)
+}
+
+fn is_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
             .next()
-            .is_some_and(|b: u8| b.is_ascii_alphabetic() || b == b'_')
-        && s.bytes()
-            .all(|b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'.')
+            .is_some_and(|byte: u8| byte.is_ascii_alphabetic() || byte == b'_')
+        && value
+            .bytes()
+            .all(|byte: u8| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+fn object_parameter_exists(lines: &[&str], before: usize, name: &str) -> bool {
+    method_parameters(lines, before).is_some_and(|parameters: &str| {
+        parameters
+            .split(',')
+            .any(|parameter: &str| object_parameter_matches(parameter, name))
+    })
+}
+
+fn method_parameters<'a>(lines: &[&'a str], before: usize) -> Option<&'a str> {
+    let body_open: usize = lines
+        .iter()
+        .take(before)
+        .position(|line: &&str| line.trim() == "{")?;
+    let declaration_index: usize = (0..body_open)
+        .rev()
+        .find(|index: &usize| !lines[*index].trim().is_empty())?;
+    let declaration: &str = lines[declaration_index].trim();
+    let open: usize = declaration.find('(')?;
+    let close: usize = declaration.rfind(')')?;
+    if close <= open || close != declaration.len().saturating_sub(1) {
+        return None;
+    }
+    let prefix: &str = declaration.get(..open)?.trim();
+    let method_name: &str = prefix
+        .rsplit_once(' ')
+        .map_or(prefix, |(_, name): (&str, &str)| name);
+    if !is_identifier(method_name) {
+        return None;
+    }
+    declaration.get(open + 1..close)
+}
+
+fn object_parameter_matches(parameter: &str, name: &str) -> bool {
+    let Some((ty, parameter_name)): Option<(&str, &str)> = parameter.trim().rsplit_once(' ') else {
+        return false;
+    };
+    parameter_name == name && matches!(ty.trim(), "object" | "System.Object")
 }
 
 fn keyword_type(ty: &str) -> &str {
-    let short: &str = ty.rsplit('.').next().unwrap_or(ty);
+    let system_type: Option<&str> = ty.strip_prefix("System.");
+    let short: &str = match system_type {
+        Some(system_type) if !system_type.contains('.') => system_type,
+        Some(_) => return ty,
+        None if ty.contains('.') => return ty,
+        None => ty,
+    };
     match short {
         "Boolean" => "bool",
         "Byte" => "byte",
@@ -961,6 +1028,89 @@ mod tests {
         assert!(!body.contains("string local0;"), "body:\n{body}");
     }
 
+    const TYPED_IS_LADDER: &str = "// Sample.Probe\npublic string Describe(object value)\n{\n    string local0;\n\n    if (((object)value) is Int32)\n    {\n        local0 = \"int\";\n    }\n    else\n    {\n        if (((object)value) is String)\n        {\n            local0 = \"text\";\n        }\n        else\n        {\n            local0 = \"other\";\n        }\n    }\n    return local0;\n}\n";
+
+    #[test]
+    fn rewrites_typed_is_pattern_ladder() {
+        let mut methods: Vec<StructuredMethod> = vec![method(TYPED_IS_LADDER)];
+        let rewritten: u32 = reconstruct_switch_expressions(&mut methods);
+        assert_eq!(rewritten, 1);
+        let body: &str = &methods[0].body;
+        assert!(body.contains("return value switch"), "body:\n{body}");
+        assert!(body.contains("int => \"int\","), "body:\n{body}");
+        assert!(body.contains("string => \"text\","), "body:\n{body}");
+        assert!(body.contains("_ => \"other\","), "body:\n{body}");
+    }
+
+    #[test]
+    fn refuses_unwrapped_typed_is_ladder() {
+        let source: String = TYPED_IS_LADDER.replace("((object)value)", "value");
+        let mut methods: Vec<StructuredMethod> = vec![method(&source)];
+        let rewritten: u32 = reconstruct_switch_expressions(&mut methods);
+        assert_eq!(rewritten, 0);
+        assert_eq!(methods[0].body, source);
+    }
+
+    #[test]
+    fn refuses_typed_is_property_ladder() {
+        let source: String = TYPED_IS_LADDER
+            .replacen("object value", "Holder holder", 1)
+            .replace("((object)value)", "((object)holder.Value)");
+        let mut methods: Vec<StructuredMethod> = vec![method(&source)];
+        let rewritten: u32 = reconstruct_switch_expressions(&mut methods);
+        assert_eq!(rewritten, 0);
+    }
+
+    #[test]
+    fn refuses_typed_is_call_ladder() {
+        let source: String = TYPED_IS_LADDER.replace("((object)value)", "((object)getValue())");
+        let mut methods: Vec<StructuredMethod> = vec![method(&source)];
+        let rewritten: u32 = reconstruct_switch_expressions(&mut methods);
+        assert_eq!(rewritten, 0);
+    }
+
+    #[test]
+    fn refuses_typed_is_ladder_for_non_object_parameter() {
+        let source: String = TYPED_IS_LADDER.replacen("object value", "int value", 1);
+        let mut methods: Vec<StructuredMethod> = vec![method(&source)];
+        let rewritten: u32 = reconstruct_switch_expressions(&mut methods);
+        assert_eq!(rewritten, 0);
+    }
+
+    #[test]
+    fn refuses_comment_spoofed_object_parameter() {
+        let source: String = TYPED_IS_LADDER
+            .replacen("object value", "int value", 1)
+            .replacen("// Sample.Probe", "// Marker(object value)", 1);
+        let mut methods: Vec<StructuredMethod> = vec![method(&source)];
+        let rewritten: u32 = reconstruct_switch_expressions(&mut methods);
+        assert_eq!(rewritten, 0);
+    }
+
+    #[test]
+    fn refuses_typed_is_ladder_with_malformed_type() {
+        let source: String = TYPED_IS_LADDER.replacen(" is Int32", " is Acme.", 1);
+        let mut methods: Vec<StructuredMethod> = vec![method(&source)];
+        let rewritten: u32 = reconstruct_switch_expressions(&mut methods);
+        assert_eq!(rewritten, 0);
+    }
+
+    #[test]
+    fn preserves_namespaced_type_patterns() {
+        let source: String =
+            TYPED_IS_LADDER
+                .replacen("Int32", "Acme.Int32", 1)
+                .replacen("String", "Acme.String", 1);
+        let mut methods: Vec<StructuredMethod> = vec![method(&source)];
+        let rewritten: u32 = reconstruct_switch_expressions(&mut methods);
+        assert_eq!(rewritten, 1);
+        let body: &str = &methods[0].body;
+        assert!(body.contains("Acme.Int32 => \"int\","), "body:\n{body}");
+        assert!(body.contains("Acme.String => \"text\","), "body:\n{body}");
+        assert!(!body.contains("int => \"int\","), "body:\n{body}");
+        assert!(!body.contains("string => \"text\","), "body:\n{body}");
+    }
+
     #[test]
     fn ignores_single_arm_type_test() {
         let single: &str = "// Sample.X\npublic string F(object o)\n{\n    string local0;\n\n    if (o as Int32)\n    {\n        local0 = \"int\";\n    }\n    else\n    {\n        local0 = \"other\";\n    }\n    return local0;\n}\n";
@@ -984,6 +1134,7 @@ mod tests {
         assert_eq!(keyword_type("Boolean"), "bool");
         assert_eq!(keyword_type("Box"), "Box");
         assert_eq!(keyword_type("Sample.Box"), "Sample.Box");
+        assert!(!is_type_name("Foo."));
     }
 
     #[test]
