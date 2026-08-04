@@ -5,7 +5,11 @@ interfaces so it needs no Apple SDK, and it covers the cases that make receiver
 resolution hard: a receiver register clobbered by an earlier send, a chained
 send whose receiver is the previous send's result, a class send following an
 instance send, one class reference used from two branches, [[NSObject alloc]
-init], and an @implementation method dispatching through super.
+init], and an @implementation method dispatching through super. A 24-byte
+integer struct adds class, dynamic-instance, and super returns with four
+selector arguments. Clang emits the x86-64 calls through objc_msgSend_stret and
+objc_msgSendSuper2_stret, while arm64 keeps objc_msgSend and objc_msgSendSuper2
+and carries the indirect result address in x8.
 
 Compiler and linker: clang 22.1.8 with ld64.lld 22.1.8 (LLVM
 ca7933e47d3a3451d81e72ac174dcb5aa28b59d1). Each Mach-O records

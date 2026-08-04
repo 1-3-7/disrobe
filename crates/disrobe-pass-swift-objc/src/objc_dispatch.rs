@@ -864,24 +864,114 @@ impl WriteSet {
     }
 }
 
-const ARM_SEL_REG: u8 = 1;
-const ARM_RECV_REG: u8 = 0;
-const X86_SEL_REG: u8 = 6;
-const X86_RECV_REG: u8 = 7;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TrackedRegister(u8);
 
-const MSGSEND_SYMBOLS: [&str; 5] = [
-    "_objc_msgSend",
-    "_objc_msgSendSuper",
-    "_objc_msgSendSuper2",
-    "_objc_msgSend_stret",
-    "_objc_msgSendSuper2_stret",
-];
+impl TrackedRegister {
+    const fn index(self) -> u8 {
+        self.0
+    }
+}
 
-fn dispatch_kind(symbol: &str) -> Option<Dispatch> {
-    if MSGSEND_SYMBOLS.contains(&symbol) {
-        return Some(Dispatch::MsgSend {
-            is_super: symbol.contains("Super"),
-        });
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiverMode {
+    Object,
+    Super,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeadingResultMode {
+    Direct,
+    Hidden(TrackedRegister),
+}
+
+impl LeadingResultMode {
+    const fn register(self) -> Option<TrackedRegister> {
+        match self {
+            Self::Direct => None,
+            Self::Hidden(register) => Some(register),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MessageAbiProfile {
+    selector: TrackedRegister,
+    receiver: TrackedRegister,
+    unresolved_receiver: &'static str,
+    arguments: &'static [&'static str],
+    receiver_mode: ReceiverMode,
+    leading_result: LeadingResultMode,
+}
+
+const ARM_SEL_REG: TrackedRegister = TrackedRegister(1);
+const ARM_RECV_REG: TrackedRegister = TrackedRegister(0);
+const X86_SEL_REG: TrackedRegister = TrackedRegister(6);
+const X86_RECV_REG: TrackedRegister = TrackedRegister(7);
+const X86_STRET_SEL_REG: TrackedRegister = TrackedRegister(2);
+const X86_STRET_RECV_REG: TrackedRegister = TrackedRegister(6);
+const X86_STRET_RESULT_REG: TrackedRegister = TrackedRegister(7);
+
+const ARM_ARGUMENT_REGISTERS: [&str; 6] = ["x2", "x3", "x4", "x5", "x6", "x7"];
+const X86_ARGUMENT_REGISTERS: [&str; 4] = ["rdx", "rcx", "r8", "r9"];
+const X86_STRET_ARGUMENT_REGISTERS: [&str; 3] = ["rcx", "r8", "r9"];
+
+const fn arm_message_abi(receiver_mode: ReceiverMode) -> MessageAbiProfile {
+    MessageAbiProfile {
+        selector: ARM_SEL_REG,
+        receiver: ARM_RECV_REG,
+        unresolved_receiver: "x0",
+        arguments: &ARM_ARGUMENT_REGISTERS,
+        receiver_mode,
+        leading_result: LeadingResultMode::Direct,
+    }
+}
+
+const fn x86_message_abi(receiver_mode: ReceiverMode) -> MessageAbiProfile {
+    MessageAbiProfile {
+        selector: X86_SEL_REG,
+        receiver: X86_RECV_REG,
+        unresolved_receiver: "rdi",
+        arguments: &X86_ARGUMENT_REGISTERS,
+        receiver_mode,
+        leading_result: LeadingResultMode::Direct,
+    }
+}
+
+const fn x86_stret_message_abi(receiver_mode: ReceiverMode) -> MessageAbiProfile {
+    MessageAbiProfile {
+        selector: X86_STRET_SEL_REG,
+        receiver: X86_STRET_RECV_REG,
+        unresolved_receiver: "rsi",
+        arguments: &X86_STRET_ARGUMENT_REGISTERS,
+        receiver_mode,
+        leading_result: LeadingResultMode::Hidden(X86_STRET_RESULT_REG),
+    }
+}
+
+fn message_abi_profile(arch: DispatchArch, symbol: &str) -> Option<MessageAbiProfile> {
+    match (arch, symbol) {
+        (DispatchArch::Arm64, "_objc_msgSend") => Some(arm_message_abi(ReceiverMode::Object)),
+        (DispatchArch::Arm64, "_objc_msgSendSuper" | "_objc_msgSendSuper2") => {
+            Some(arm_message_abi(ReceiverMode::Super))
+        }
+        (DispatchArch::X86_64, "_objc_msgSend") => Some(x86_message_abi(ReceiverMode::Object)),
+        (DispatchArch::X86_64, "_objc_msgSendSuper" | "_objc_msgSendSuper2") => {
+            Some(x86_message_abi(ReceiverMode::Super))
+        }
+        (DispatchArch::X86_64, "_objc_msgSend_stret") => {
+            Some(x86_stret_message_abi(ReceiverMode::Object))
+        }
+        (DispatchArch::X86_64, "_objc_msgSendSuper_stret" | "_objc_msgSendSuper2_stret") => {
+            Some(x86_stret_message_abi(ReceiverMode::Super))
+        }
+        _ => None,
+    }
+}
+
+fn dispatch_kind(arch: DispatchArch, symbol: &str) -> Option<Dispatch> {
+    if let Some(profile) = message_abi_profile(arch, symbol) {
+        return Some(Dispatch::Message(profile));
     }
     match symbol {
         "_objc_alloc" => Some(Dispatch::Alloc),
@@ -892,7 +982,7 @@ fn dispatch_kind(symbol: &str) -> Option<Dispatch> {
 
 #[derive(Debug, Clone, Copy)]
 enum Dispatch {
-    MsgSend { is_super: bool },
+    Message(MessageAbiProfile),
     Alloc,
     AllocInit,
 }
@@ -931,7 +1021,7 @@ pub fn annotate_instructions(
         let Some(symbol): Option<&String> = call_symbol(&steps, index, call, arch, maps) else {
             continue;
         };
-        let Some(kind): Option<Dispatch> = dispatch_kind(symbol) else {
+        let Some(kind): Option<Dispatch> = dispatch_kind(arch, symbol) else {
             continue;
         };
         if let Some(send) = resolve_send(&steps, index, arch, maps, &cfg, kind) {
@@ -971,20 +1061,20 @@ fn resolve_send(
     cfg: &Cfg,
     kind: Dispatch,
 ) -> Option<ObjcSend> {
-    let (sel_reg, recv_reg): (u8, u8) = match arch {
-        DispatchArch::Arm64 => (ARM_SEL_REG, ARM_RECV_REG),
-        DispatchArch::X86_64 => (X86_SEL_REG, X86_RECV_REG),
-    };
     match kind {
-        Dispatch::MsgSend { is_super } => {
-            let selector: String = trace_selector(steps, cfg, index, sel_reg, arch, maps)?;
-            let receiver_class: Option<String> = if is_super {
+        Dispatch::Message(profile) => {
+            if profile.leading_result.register() == Some(profile.receiver) {
+                return None;
+            }
+            let selector: String =
+                trace_selector(steps, cfg, index, profile.selector.index(), arch, maps)?;
+            let receiver_class: Option<String> = if profile.receiver_mode == ReceiverMode::Super {
                 None
             } else {
-                trace_receiver_class(steps, cfg, index, recv_reg, arch, maps)
+                trace_receiver_class(steps, cfg, index, profile.receiver.index(), arch, maps)
             };
-            let recv_token: String = receiver_token(receiver_class.as_deref(), is_super, arch);
-            let rendered: String = render_message(&selector, &recv_token, arch);
+            let recv_token: String = receiver_token(receiver_class.as_deref(), profile);
+            let rendered: String = render_message(&selector, &recv_token, profile.arguments);
             Some(ObjcSend {
                 selector,
                 receiver_class,
@@ -992,9 +1082,13 @@ fn resolve_send(
             })
         }
         Dispatch::Alloc => {
+            let profile: MessageAbiProfile = match arch {
+                DispatchArch::Arm64 => arm_message_abi(ReceiverMode::Object),
+                DispatchArch::X86_64 => x86_message_abi(ReceiverMode::Object),
+            };
             let receiver_class: Option<String> =
-                trace_receiver_class(steps, cfg, index, recv_reg, arch, maps);
-            let recv_token: String = receiver_token(receiver_class.as_deref(), false, arch);
+                trace_receiver_class(steps, cfg, index, profile.receiver.index(), arch, maps);
+            let recv_token: String = receiver_token(receiver_class.as_deref(), profile);
             Some(ObjcSend {
                 selector: "alloc".to_owned(),
                 rendered: format!("[{recv_token} alloc]"),
@@ -1002,9 +1096,13 @@ fn resolve_send(
             })
         }
         Dispatch::AllocInit => {
+            let profile: MessageAbiProfile = match arch {
+                DispatchArch::Arm64 => arm_message_abi(ReceiverMode::Object),
+                DispatchArch::X86_64 => x86_message_abi(ReceiverMode::Object),
+            };
             let receiver_class: Option<String> =
-                trace_receiver_class(steps, cfg, index, recv_reg, arch, maps);
-            let recv_token: String = receiver_token(receiver_class.as_deref(), false, arch);
+                trace_receiver_class(steps, cfg, index, profile.receiver.index(), arch, maps);
+            let recv_token: String = receiver_token(receiver_class.as_deref(), profile);
             Some(ObjcSend {
                 selector: "init".to_owned(),
                 rendered: format!("[[{recv_token} alloc] init]"),
@@ -1014,31 +1112,20 @@ fn resolve_send(
     }
 }
 
-fn receiver_token(receiver_class: Option<&str>, is_super: bool, arch: DispatchArch) -> String {
-    if is_super {
+fn receiver_token(receiver_class: Option<&str>, profile: MessageAbiProfile) -> String {
+    if profile.receiver_mode == ReceiverMode::Super {
         return "super".to_owned();
     }
     if let Some(name) = receiver_class {
         return name.to_owned();
     }
-    match arch {
-        DispatchArch::Arm64 => "x0".to_owned(),
-        DispatchArch::X86_64 => "rdi".to_owned(),
-    }
+    profile.unresolved_receiver.to_owned()
 }
 
-const fn arg_registers(arch: DispatchArch) -> &'static [&'static str] {
-    match arch {
-        DispatchArch::Arm64 => &["x2", "x3", "x4", "x5", "x6", "x7"],
-        DispatchArch::X86_64 => &["rdx", "rcx", "r8", "r9"],
-    }
-}
-
-fn render_message(selector: &str, recv: &str, arch: DispatchArch) -> String {
+fn render_message(selector: &str, recv: &str, args: &[&str]) -> String {
     if !selector.contains(':') {
         return format!("[{recv} {selector}]");
     }
-    let args: &[&str] = arg_registers(arch);
     let mut rendered: String = String::from("[");
     rendered.push_str(recv);
     let mut arg_index: usize = 0;
@@ -1834,6 +1921,138 @@ mod tests {
     use super::*;
     use crate::macho::{Bitness, CpuKind, Endian, SliceHeader};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn message_abi_profiles_pin_every_supported_entry_point() {
+        let cases: [(DispatchArch, &str, MessageAbiProfile); 9] = [
+            (
+                DispatchArch::Arm64,
+                "_objc_msgSend",
+                MessageAbiProfile {
+                    selector: TrackedRegister(1),
+                    receiver: TrackedRegister(0),
+                    unresolved_receiver: "x0",
+                    arguments: &["x2", "x3", "x4", "x5", "x6", "x7"],
+                    receiver_mode: ReceiverMode::Object,
+                    leading_result: LeadingResultMode::Direct,
+                },
+            ),
+            (
+                DispatchArch::Arm64,
+                "_objc_msgSendSuper",
+                MessageAbiProfile {
+                    selector: TrackedRegister(1),
+                    receiver: TrackedRegister(0),
+                    unresolved_receiver: "x0",
+                    arguments: &["x2", "x3", "x4", "x5", "x6", "x7"],
+                    receiver_mode: ReceiverMode::Super,
+                    leading_result: LeadingResultMode::Direct,
+                },
+            ),
+            (
+                DispatchArch::Arm64,
+                "_objc_msgSendSuper2",
+                MessageAbiProfile {
+                    selector: TrackedRegister(1),
+                    receiver: TrackedRegister(0),
+                    unresolved_receiver: "x0",
+                    arguments: &["x2", "x3", "x4", "x5", "x6", "x7"],
+                    receiver_mode: ReceiverMode::Super,
+                    leading_result: LeadingResultMode::Direct,
+                },
+            ),
+            (
+                DispatchArch::X86_64,
+                "_objc_msgSend",
+                MessageAbiProfile {
+                    selector: TrackedRegister(6),
+                    receiver: TrackedRegister(7),
+                    unresolved_receiver: "rdi",
+                    arguments: &["rdx", "rcx", "r8", "r9"],
+                    receiver_mode: ReceiverMode::Object,
+                    leading_result: LeadingResultMode::Direct,
+                },
+            ),
+            (
+                DispatchArch::X86_64,
+                "_objc_msgSendSuper",
+                MessageAbiProfile {
+                    selector: TrackedRegister(6),
+                    receiver: TrackedRegister(7),
+                    unresolved_receiver: "rdi",
+                    arguments: &["rdx", "rcx", "r8", "r9"],
+                    receiver_mode: ReceiverMode::Super,
+                    leading_result: LeadingResultMode::Direct,
+                },
+            ),
+            (
+                DispatchArch::X86_64,
+                "_objc_msgSendSuper2",
+                MessageAbiProfile {
+                    selector: TrackedRegister(6),
+                    receiver: TrackedRegister(7),
+                    unresolved_receiver: "rdi",
+                    arguments: &["rdx", "rcx", "r8", "r9"],
+                    receiver_mode: ReceiverMode::Super,
+                    leading_result: LeadingResultMode::Direct,
+                },
+            ),
+            (
+                DispatchArch::X86_64,
+                "_objc_msgSend_stret",
+                MessageAbiProfile {
+                    selector: TrackedRegister(2),
+                    receiver: TrackedRegister(6),
+                    unresolved_receiver: "rsi",
+                    arguments: &["rcx", "r8", "r9"],
+                    receiver_mode: ReceiverMode::Object,
+                    leading_result: LeadingResultMode::Hidden(TrackedRegister(7)),
+                },
+            ),
+            (
+                DispatchArch::X86_64,
+                "_objc_msgSendSuper_stret",
+                MessageAbiProfile {
+                    selector: TrackedRegister(2),
+                    receiver: TrackedRegister(6),
+                    unresolved_receiver: "rsi",
+                    arguments: &["rcx", "r8", "r9"],
+                    receiver_mode: ReceiverMode::Super,
+                    leading_result: LeadingResultMode::Hidden(TrackedRegister(7)),
+                },
+            ),
+            (
+                DispatchArch::X86_64,
+                "_objc_msgSendSuper2_stret",
+                MessageAbiProfile {
+                    selector: TrackedRegister(2),
+                    receiver: TrackedRegister(6),
+                    unresolved_receiver: "rsi",
+                    arguments: &["rcx", "r8", "r9"],
+                    receiver_mode: ReceiverMode::Super,
+                    leading_result: LeadingResultMode::Hidden(TrackedRegister(7)),
+                },
+            ),
+        ];
+        for (arch, symbol, expected) in cases {
+            assert_eq!(
+                message_abi_profile(arch, symbol),
+                Some(expected),
+                "{symbol}"
+            );
+        }
+        for symbol in [
+            "_objc_msgSend_stret",
+            "_objc_msgSendSuper_stret",
+            "_objc_msgSendSuper2_stret",
+        ] {
+            assert_eq!(message_abi_profile(DispatchArch::Arm64, symbol), None);
+        }
+        assert_eq!(
+            message_abi_profile(DispatchArch::X86_64, "_objc_msgSend_unknown"),
+            None
+        );
+    }
 
     fn wide_data_segment() -> ParsedSlice {
         ParsedSlice {
