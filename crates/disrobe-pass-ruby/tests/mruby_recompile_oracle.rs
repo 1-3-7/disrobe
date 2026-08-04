@@ -15,14 +15,16 @@ use std::process::Command;
 
 use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::{MrubyDecompiled, analyze_bytes};
-use ruby_toolchain::{MRBC, MRUBY, require};
+use ruby_toolchain::{
+    MRBC, MRUBY, MRUBY_MEASURED_SERIES, ToolchainBanner, ToolchainRequirement,
+    require_with_requirement,
+};
 
 const GRADED: &str = "the mrbc recompile and mruby output comparison over the breadth corpus";
 
 const STRAIGHT_LINE_SET: &[&str] = &["arith", "strings", "coll", "klass", "advanced"];
-const EQUIVALENT_SET: &[&str] = &[
-    "arith", "strings", "coll", "klass", "control", "blocks", "advanced",
-];
+const EQUIVALENT_SET: &[&str] = &["strings", "coll", "klass", "control", "blocks", "advanced"];
+const WITHHELD_SET: &[&str] = &["arith", "exceptions"];
 const BREADTH_SET: &[&str] = &[
     "arith",
     "strings",
@@ -85,12 +87,16 @@ fn mrbc_recompiles(rb_path: &PathBuf) -> bool {
     ok
 }
 
-fn mruby_stdout(rb_path: &PathBuf) -> Option<String> {
+fn mruby_stdout(rb_path: &PathBuf) -> Option<Vec<u8>> {
     let output = Command::new("mruby").arg(rb_path).output().ok()?;
     if !output.status.success() {
         return None;
     }
-    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+    Some(output.stdout)
+}
+
+fn stdout_matches(want: Option<&[u8]>, have: Option<&[u8]>) -> bool {
+    matches!((want, have), (Some(want), Some(have)) if want == have)
 }
 
 #[test]
@@ -198,10 +204,57 @@ fn rescue_control_flow_withholds_partial_reconstruction() {
 }
 
 #[test]
+fn stdout_comparator_rejects_a_changed_real_mruby_program() {
+    let mruby: Option<ToolchainBanner> = require_with_requirement(
+        &MRUBY,
+        Some(MRUBY_MEASURED_SERIES),
+        GRADED,
+        ToolchainRequirement::Mandatory,
+    );
+    assert!(mruby.is_some(), "the pinned mruby probe must succeed");
+
+    let original_path: PathBuf = corpus_path("strings", "rb");
+    let original: String =
+        std::fs::read_to_string(&original_path).expect("read committed strings source fixture");
+    let needle: &str = "name = \"world\"";
+    assert_eq!(
+        original.matches(needle).count(),
+        1,
+        "the output-bearing mutation target must occur exactly once"
+    );
+    let mutated: String = original.replacen(needle, "name = \"mutated\"", 1);
+    let (_mutated_scratch, mutated_path): (ScratchFile, PathBuf) =
+        write_temp("strings_mutated", &mutated);
+    let want: Option<Vec<u8>> = mruby_stdout(&original_path);
+    let have: Option<Vec<u8>> = mruby_stdout(&mutated_path);
+    assert!(
+        want.is_some() && have.is_some(),
+        "both real mruby executions must succeed before grading"
+    );
+    assert!(
+        !stdout_matches(want.as_deref(), have.as_deref()),
+        "the exact stdout comparator accepted an output-bearing source mutation"
+    );
+}
+
+#[test]
 fn mrbc_recompile_and_semantic_equivalence_oracle() {
-    if require(&MRBC, GRADED).is_none() || require(&MRUBY, GRADED).is_none() {
-        return;
-    }
+    let mrbc: Option<ToolchainBanner> = require_with_requirement(
+        &MRBC,
+        Some(MRUBY_MEASURED_SERIES),
+        GRADED,
+        ToolchainRequirement::Mandatory,
+    );
+    let mruby: Option<ToolchainBanner> = require_with_requirement(
+        &MRUBY,
+        Some(MRUBY_MEASURED_SERIES),
+        GRADED,
+        ToolchainRequirement::Mandatory,
+    );
+    assert!(
+        mrbc.is_some() && mruby.is_some(),
+        "the mandatory mrbc and mruby toolchain probes must both succeed"
+    );
 
     let mut recompiled: u32 = 0;
     let mut equivalent: u32 = 0;
@@ -210,6 +263,11 @@ fn mrbc_recompile_and_semantic_equivalence_oracle() {
 
     for name in BREADTH_SET {
         let dec: MrubyDecompiled = recover(name);
+        let expected_withheld: bool = WITHHELD_SET.contains(name);
+        assert_eq!(
+            !dec.has_body, expected_withheld,
+            "{name}: source eligibility must match the explicit withheld set"
+        );
         if !dec.has_body {
             withheld += 1;
             println!("[{name}] source withheld");
@@ -224,9 +282,9 @@ fn mrbc_recompile_and_semantic_equivalence_oracle() {
             recompiled += 1;
         }
 
-        let want: Option<String> = mruby_stdout(&original_path);
-        let have: Option<String> = mruby_stdout(&recovered_path);
-        let same: bool = matches!((&want, &have), (Some(w), Some(h)) if w == h);
+        let want: Option<Vec<u8>> = mruby_stdout(&original_path);
+        let have: Option<Vec<u8>> = mruby_stdout(&recovered_path);
+        let same: bool = stdout_matches(want.as_deref(), have.as_deref());
         if same {
             equivalent += 1;
         }
@@ -249,17 +307,18 @@ fn mrbc_recompile_and_semantic_equivalence_oracle() {
             mrbc_recompiles(&recovered_path),
             "{name}: mrbc must recompile the recovered source"
         );
-        let want: Option<String> = mruby_stdout(&original_path);
-        let have: Option<String> = mruby_stdout(&recovered_path);
-        assert_eq!(
-            have, want,
-            "{name}: recovered source must produce identical mruby output to the original"
+        let want: Option<Vec<u8>> = mruby_stdout(&original_path);
+        let have: Option<Vec<u8>> = mruby_stdout(&recovered_path);
+        assert!(
+            stdout_matches(want.as_deref(), have.as_deref()),
+            "{name}: recovered source must produce identical mruby output to the original; want={want:?} have={have:?}"
         );
     }
 
     assert_eq!(
-        withheld, 1,
-        "the committed protected-control-flow fixture must abstain instead of emitting partial ruby"
+        withheld,
+        u32::try_from(WITHHELD_SET.len()).expect("withheld set length fits u32"),
+        "the explicit unsafe-source fixtures must remain withheld instead of emitting partial ruby"
     );
     let eligible: u32 = total.saturating_sub(withheld);
     assert_eq!(

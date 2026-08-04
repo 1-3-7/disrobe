@@ -560,6 +560,65 @@ jobs:
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4"
+      - name: provision pinned mruby 3.3.0
+        shell: bash
+        env:
+          MRUBY_COMMIT: "32279e4128527bab4c961854b9cce727a060abea"
+          MRUBY_ARCHIVE_SHA256: "c15bf94a6103380034b5617d24649790b09ac68a2477024f6990b2255e3995d3"
+          MRUBY_VERSION: "3.3.0"
+          MRUBY_BANNER: "mruby 3.3.0 (2024-02-14)"
+        run: |
+          set -euo pipefail
+
+          archive="${RUNNER_TEMP}/mruby-${MRUBY_COMMIT}.tar.gz"
+          source_dir="${RUNNER_TEMP}/mruby-${MRUBY_COMMIT}"
+          prefix="${RUNNER_TEMP}/mruby-${MRUBY_VERSION}"
+
+          curl \
+            --fail \
+            --show-error \
+            --location \
+            --retry 5 \
+            --retry-all-errors \
+            --proto '=https' \
+            --tlsv1.2 \
+            --output "$archive" \
+            "https://codeload.github.com/mruby/mruby/tar.gz/${MRUBY_COMMIT}"
+
+          printf '%s  %s\n' "$MRUBY_ARCHIVE_SHA256" "$archive" |
+            sha256sum --check --strict -
+
+          mkdir -p "$source_dir" "$prefix/bin"
+          tar \
+            --extract \
+            --gzip \
+            --file "$archive" \
+            --directory "$source_dir" \
+            --strip-components=1 \
+            --no-same-owner \
+            --no-same-permissions
+
+          (
+            cd "$source_dir"
+            MRUBY_CONFIG=default ruby -S rake all
+          )
+
+          install -m 0755 "$source_dir/build/host/bin/mrbc" "$prefix/bin/mrbc"
+          install -m 0755 "$source_dir/build/host/bin/mruby" "$prefix/bin/mruby"
+
+          mrbc_banner="$("$prefix/bin/mrbc" --version)"
+          mruby_banner="$("$prefix/bin/mruby" --version)"
+
+          if [[ "$mrbc_banner" != "$MRUBY_BANNER" ]]; then
+            printf 'mrbc reported %q, expected %q\n' "$mrbc_banner" "$MRUBY_BANNER" >&2
+            exit 1
+          fi
+          if [[ "$mruby_banner" != "$MRUBY_BANNER" ]]; then
+            printf 'mruby reported %q, expected %q\n' "$mruby_banner" "$MRUBY_BANNER" >&2
+            exit 1
+          fi
+
+          printf '%s\n' "$prefix/bin" >> "$GITHUB_PATH"
       - uses: shivammathur/setup-php@v2
         with:
           php-version: "8.3"
@@ -592,6 +651,10 @@ jobs:
         run: cargo test -p disrobe-pass-lua --test luau_decompile_oracle -- --nocapture
       - name: ruby yarv recompile differential
         run: cargo test -p disrobe-pass-ruby --test yarv_recompile_oracle -- --nocapture
+      - name: mruby 3.3.0 recompile and execution differential
+        env:
+          DISROBE_REQUIRE_MRUBY: "1"
+        run: cargo test -p disrobe-pass-ruby --test mruby_recompile_oracle -- --nocapture
       - name: php op_array behavioral differential
         run: cargo test -p disrobe-pass-php --test oparray_behavioral -- --nocapture
       - name: php loader re-execution differential
