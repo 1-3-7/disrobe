@@ -4,14 +4,6 @@ use eyre::{Result, bail};
 
 use crate::sync::run_one;
 
-const fn metrics_mode(check: bool) -> crate::metrics::Mode {
-    if check {
-        crate::metrics::Mode::Check
-    } else {
-        crate::metrics::Mode::Write
-    }
-}
-
 const fn region_mode(check: bool) -> crate::doc_region::Mode {
     if check {
         crate::doc_region::Mode::Check
@@ -37,12 +29,6 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         &mut stale,
     )?;
     run_one("sync", check, || crate::sync::run(root, check), &mut stale)?;
-    run_one(
-        "metrics",
-        check,
-        || crate::metrics::run(root, metrics_mode(check)),
-        &mut stale,
-    )?;
     run_one(
         "readme-stats",
         check,
