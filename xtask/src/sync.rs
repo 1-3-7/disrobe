@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use eyre::Result;
+use eyre::{Result, WrapErr};
 
 pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
     let mut stale: Vec<String> = Vec::new();
@@ -10,21 +10,21 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         check,
         || crate::graphs::run(root, check),
         &mut stale,
-    );
-    run_one("card", check, || crate::card::run(root, check), &mut stale);
-    run_one("demo", check, || crate::demo::run(root, check), &mut stale);
+    )?;
+    run_one("card", check, || crate::card::run(root, check), &mut stale)?;
+    run_one("demo", check, || crate::demo::run(root, check), &mut stale)?;
     run_one(
         "plugins",
         check,
         || crate::plugins::run(root, check),
         &mut stale,
-    );
+    )?;
     run_one(
         "evidence",
         check,
         || crate::evidence::run(root, evidence_mode(check)),
         &mut stale,
-    );
+    )?;
 
     if check {
         if stale.is_empty() {
@@ -51,18 +51,75 @@ const fn evidence_mode(check: bool) -> crate::evidence::Mode {
     }
 }
 
-pub(crate) fn run_one<F>(name: &str, check: bool, f: F, stale: &mut Vec<String>)
+pub(crate) fn run_one<F>(name: &str, check: bool, f: F, stale: &mut Vec<String>) -> Result<()>
 where
     F: FnOnce() -> Result<()>,
 {
     match f() {
-        Ok(()) => {}
-        Err(err) => {
-            if check {
-                stale.push(format!("{name}: {err}"));
-            } else {
-                eprintln!("xtask sync: {name} failed: {err:?}");
-            }
+        Ok(()) => Ok(()),
+        Err(error) if check => {
+            stale.push(format!("{name}: {error}"));
+            Ok(())
         }
+        Err(error) => Err(error).wrap_err_with(|| format!("generation step `{name}` failed")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_mode_propagates_an_injected_failure_with_its_step_name() -> Result<()> {
+        let mut failures: Vec<String> = Vec::new();
+        let result: Result<()> = run_one(
+            "injected-writer",
+            false,
+            || Err(eyre::eyre!("sentinel write failure")),
+            &mut failures,
+        );
+        let error: eyre::Report = match result {
+            Ok(()) => eyre::bail!("write mode returned success after an injected failure"),
+            Err(error) => error,
+        };
+        let message: String = format!("{error:?}");
+        assert!(message.contains("generation step `injected-writer` failed"));
+        assert!(message.contains("sentinel write failure"));
+        assert!(failures.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn check_mode_retains_two_failures_without_short_circuiting() {
+        let mut failures: Vec<String> = Vec::new();
+        let mut invocations: usize = 0;
+        let first_result: Result<()> = run_one(
+            "first-check",
+            true,
+            || {
+                invocations += 1;
+                Err(eyre::eyre!("first sentinel failure"))
+            },
+            &mut failures,
+        );
+        assert!(first_result.is_ok());
+        let second_result: Result<()> = run_one(
+            "second-check",
+            true,
+            || {
+                invocations += 1;
+                Err(eyre::eyre!("second sentinel failure"))
+            },
+            &mut failures,
+        );
+        assert!(second_result.is_ok());
+        assert_eq!(invocations, 2);
+        assert_eq!(
+            failures,
+            [
+                "first-check: first sentinel failure".to_owned(),
+                "second-check: second sentinel failure".to_owned()
+            ]
+        );
     }
 }
