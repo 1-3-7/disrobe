@@ -1,6 +1,6 @@
 [package]
 name = "disrobe-bytes"
-version = "0.10.3"
+version.workspace = true
 description = "zero-dependency bounds-checked byte reader and alignment primitives shared across disrobe passes"
 readme.workspace = true
 edition.workspace = true

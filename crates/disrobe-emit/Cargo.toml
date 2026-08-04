@@ -1,6 +1,6 @@
 [package]
 name = "disrobe-emit"
-version = "0.10.3"
+version.workspace = true
 readme.workspace = true
 edition.workspace = true
 rust-version.workspace = true

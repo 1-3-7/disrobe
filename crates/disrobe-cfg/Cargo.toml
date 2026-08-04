@@ -1,6 +1,6 @@
 [package]
 name = "disrobe-cfg"
-version = "0.10.3"
+version.workspace = true
 description = "target-agnostic control-flow-graph structuring core (dominators, loop forest, region tree, condition pool) shared across disrobe decompiler backends"
 readme.workspace = true
 edition.workspace = true
