@@ -10,7 +10,7 @@
 
 > **Try it in your browser: [the `disrobe` playground](https://1-3-7.github.io/disrobe/playground/).** Decompile a `.pyc`, scan a pickle for malicious reduce callables, and summarize a `.wasm` module, all client-side, with the core passes compiled to WebAssembly. Nothing is uploaded.
 
-`disrobe` reverses the bytecode, packers, freezers, and protectors layered onto compiled and frozen software across 20+ ecosystems: Python, JavaScript/TypeScript, WebAssembly, JVM and Android, .NET, native PE/ELF/Mach-O, Go, Lua, PHP, Ruby, Erlang/Elixir (BEAM), Swift/Objective-C, ActionScript 3, React Native Hermes, Flutter Dart AOT, and the native packer tier layered on top of them (<!-- packer-roster:implemented -->Donut, sRDI, UPX, ASPack, Petite, MPRESS, FSG, PECompact, Yoda's Crypter, NSPack, MEW, kkrunchy<!-- /packer-roster -->). It ships as a single static Rust binary.
+`disrobe` reverses the bytecode, packers, freezers, and protectors layered onto compiled and frozen software across <!-- m:catalog_ecosystems -->15<!-- /m --> ecosystems: Python, JavaScript/TypeScript, WebAssembly, JVM and Android, .NET, native PE/ELF/Mach-O, Go, Lua, PHP, Ruby, Erlang/Elixir (BEAM), Swift/Objective-C, ActionScript 3, React Native Hermes, Flutter Dart AOT, and the native packer tier layered on top of them (<!-- packer-roster:implemented -->Donut, sRDI, UPX, ASPack, Petite, MPRESS, FSG, PECompact, Yoda's Crypter, NSPack, MEW, kkrunchy<!-- /packer-roster -->). It ships as a single static Rust binary.
 
 Built for forensic and recovery work where reproducibility matters:
 

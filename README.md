@@ -1,6 +1,6 @@
 ![disrobe: decompile, deobfuscate, and unpack compiled software, deterministically](docs/assets/social-card.svg)
 
-disrobe is one static Rust binary that decompiles, deobfuscates, and unpacks compiled software across 20+ ecosystems: Python, JVM and Android, .NET, JavaScript and WebAssembly, Lua, Go, Ruby, PHP, shell, and native x86-64/AArch64. By default it never executes the sample, runs no model, and produces byte-identical output on every machine.
+disrobe is one static Rust binary that decompiles, deobfuscates, and unpacks compiled software across <!-- m:catalog_ecosystems -->15<!-- /m --> ecosystems: Python, JVM and Android, .NET, JavaScript and WebAssembly, Lua, Go, Ruby, PHP, shell, and native x86-64/AArch64. By default it never executes the sample, runs no model, and produces byte-identical output on every machine.
 
 Every `strong` published number comes from a committed test graded against an independent reference: recovered Python must recompile to equivalent bytecode, recovered Android classes must pass the real JVM verifier, unpacked sections must byte-compare to the original. `coverage-self-reported` rows visibly state when they count disrobe's own output and pin the population they inspect. Where the data is absent from the artifact, disrobe reports the limit instead of guessing past it. Numbers, evidence classes, and reproduce commands live in [evidence/](evidence/).
 
