@@ -31,6 +31,7 @@ pub const TAG_EXPORT: u8 = 113;
 pub const TAG_COMPRESSED: u8 = 80;
 
 pub(crate) const MAX_ETF_INFLATE: usize = 256 * 1024 * 1024;
+const MAX_DEPRECATED_ATOM_LATIN1_CHARS: usize = 255;
 const MAX_ETF_DEPTH: usize = 500;
 const MAX_ETF_CONTAINER_PREALLOC: usize = 1 << 16;
 const MIN_TERM_TAG_BYTES: usize = 1;
@@ -208,8 +209,15 @@ fn decode_term_after_first(reader: &mut Reader<'_>, tag: u8, depth: usize) -> Re
             Ok(Term::Atom(s))
         }
         TAG_ATOM_DEPRECATED => {
-            let len: u16 = reader.u16()?;
-            let bytes: &[u8] = reader.take(usize::from(len))?;
+            let len: usize = usize::from(reader.u16()?);
+            if len > MAX_DEPRECATED_ATOM_LATIN1_CHARS {
+                return Err(Error::AtomTooLong {
+                    index: 0,
+                    scalars: len,
+                    limit: MAX_DEPRECATED_ATOM_LATIN1_CHARS,
+                });
+            }
+            let bytes: &[u8] = reader.take(len)?;
             let s: String = bytes.iter().map(|&b| b as char).collect();
             Ok(Term::Atom(s))
         }
