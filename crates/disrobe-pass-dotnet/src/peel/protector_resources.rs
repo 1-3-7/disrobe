@@ -8,7 +8,9 @@ use crate::metadata::{
     MetadataRoot, StreamHeader, decompress_uint, parse_metadata_root, read_strings_heap,
 };
 use crate::pe::{ClrHeader, PeImage, parse, parse_clr_header};
-use crate::peel::dotnet_crypto::{CryptoError, des_cbc_decrypt, strip_pkcs7};
+#[cfg(test)]
+use crate::peel::dotnet_crypto::strip_pkcs7;
+use crate::peel::dotnet_crypto::{CryptoError, des_cbc_decrypt};
 use crate::tables::{
     AssemblyRow, ManifestResourceRow, Tables, parse_single_assembly_row, parse_tables,
 };
@@ -37,7 +39,6 @@ struct ImageView {
     clr: ClrHeader,
     tables: Tables,
     strings: BTreeMap<u32, String>,
-    blob: Vec<u8>,
 }
 
 fn load_image(image: &[u8]) -> Result<ImageView> {
@@ -56,33 +57,12 @@ fn load_image(image: &[u8]) -> Result<ImageView> {
         .get("#Strings")
         .map(|h: &StreamHeader| read_strings_heap(metadata_slice, *h))
         .unwrap_or_default();
-    let blob: Vec<u8> = root
-        .streams
-        .get("#Blob")
-        .map_or_else(Vec::new, |h: &StreamHeader| {
-            let off: usize = h.offset as usize;
-            let end: usize = off
-                .saturating_add(h.size as usize)
-                .min(metadata_slice.len());
-            metadata_slice
-                .get(off..end)
-                .map(<[u8]>::to_vec)
-                .unwrap_or_default()
-        });
     Ok(ImageView {
         pe,
         clr,
         tables,
         strings,
-        blob,
     })
-}
-
-fn blob_at(blob: &[u8], offset: u32) -> Option<&[u8]> {
-    let off: usize = offset as usize;
-    let (len, consumed): (u32, usize) = decompress_uint(blob.get(off..)?)?;
-    let start: usize = off + consumed;
-    blob.get(start..start + len as usize)
 }
 
 fn string_at(strings: &BTreeMap<u32, String>, off: u32) -> Option<String> {
@@ -373,6 +353,7 @@ fn read_unicode_records_int32_strict(blob: &[u8]) -> Option<Vec<String>> {
     (!out.is_empty()).then_some(out)
 }
 
+#[cfg(test)]
 fn read_7bit_encoded_len(blob: &[u8], pos: &mut usize) -> Option<usize> {
     let mut byte_len: usize = 0;
     let mut shift: u32 = 0;
@@ -393,11 +374,13 @@ fn read_7bit_encoded_len(blob: &[u8], pos: &mut usize) -> Option<usize> {
     }
 }
 
+#[cfg(test)]
 fn is_plausible_literal(text: &str) -> bool {
     text.chars()
         .all(|c: char| !c.is_control() || matches!(c, '\t' | '\n' | '\r'))
 }
 
+#[cfg(test)]
 fn read_binaryreader_strings_utf8_strict(blob: &[u8]) -> Option<Vec<String>> {
     let mut out: Vec<String> = Vec::new();
     let mut pos: usize = 0;
@@ -578,40 +561,12 @@ fn inflate_raw_to_limit(data: &[u8], limit: usize) -> std::result::Result<Vec<u8
 }
 
 #[must_use]
-pub fn recover_babel_strings(image: &[u8]) -> Option<ResourceStringRecovery> {
-    let view: ImageView = load_image(image).ok()?;
-    let row: &ManifestResourceRow = first_resource(&view)?;
-    let resource_name: String = string_at(&view.strings, row.name).unwrap_or_default();
-    let blob: &[u8] = embedded_resource_bytes(image, &view, row)?;
-    let resource_size: u32 = u32::try_from(blob.len()).unwrap_or(u32::MAX);
-    let mut recovery: ResourceStringRecovery = ResourceStringRecovery {
-        resource_name,
-        resource_size,
-        scheme: "Babel DES-CBC resource (header IV+embedded key), BinaryReader UTF-8 records"
-            .to_string(),
-        strings: Vec::new(),
-        dynamic_wall: None,
-    };
-    match babel_decrypt_blob(blob, assembly_public_key(&view).as_deref()) {
-        Ok(strings) => {
-            recovery.strings = strings;
-        }
-        Err(reason) => {
-            recovery.dynamic_wall = Some(reason);
-        }
-    }
-    Some(recovery)
+#[allow(clippy::missing_const_for_fn)]
+pub fn recover_babel_strings(_image: &[u8]) -> Option<ResourceStringRecovery> {
+    None
 }
 
-fn assembly_public_key(view: &ImageView) -> Option<Vec<u8>> {
-    let asm: &AssemblyRow = view.tables.assembly.as_ref()?;
-    if asm.public_key == 0 {
-        return None;
-    }
-    let pk: &[u8] = blob_at(&view.blob, asm.public_key)?;
-    (!pk.is_empty()).then(|| pk.to_vec())
-}
-
+#[cfg(test)]
 fn babel_decrypt_blob(
     blob: &[u8],
     public_key: Option<&[u8]>,
@@ -710,6 +665,9 @@ mod tests {
 
     use super::*;
 
+    const BABEL_HEADER_SELF_AUTHENTICATING: &[u8] =
+        include!("../../tests/fixtures/babel_header_self_authenticating.rs.inc");
+
     fn deflate(data: &[u8]) -> Vec<u8> {
         let mut encoder: DeflateEncoder<Vec<u8>> =
             DeflateEncoder::new(Vec::new(), Compression::default());
@@ -769,6 +727,23 @@ mod tests {
         blob.extend_from_slice(&[0u8; 8]);
         let err: String = babel_decrypt_blob(&blob, None).unwrap_err();
         assert!(err.contains("PublicKey"));
+    }
+
+    #[test]
+    fn babel_legacy_decoder_accepts_fixture_and_rejects_truncated_ciphertext() {
+        let expected: Vec<String> = vec![
+            "fabricated-from-header-selected-ciphertext".to_string(),
+            "OAuthClientSecret=zZ9-qP1-rT4".to_string(),
+            "https://license.example.net/validate".to_string(),
+        ];
+        let decoded: Vec<String> = babel_decrypt_blob(BABEL_HEADER_SELF_AUTHENTICATING, None)
+            .expect("legacy Babel decoder accepts the self-authenticating fixture");
+        assert_eq!(decoded, expected);
+
+        let mut truncated: Vec<u8> = BABEL_HEADER_SELF_AUTHENTICATING.to_vec();
+        let removed: Option<u8> = truncated.pop();
+        assert!(removed.is_some());
+        assert!(babel_decrypt_blob(&truncated, None).is_err());
     }
 
     #[test]

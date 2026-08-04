@@ -381,7 +381,7 @@ impl Cfg {
                     continue;
                 }
                 let mut new_ipdom: BlockId = undefined;
-                for &p in &rpreds[b] {
+                for &p in &rsuccs[b] {
                     if ipdom[p] == undefined {
                         continue;
                     }
@@ -592,6 +592,46 @@ mod tests {
         Cfg::build(&normalize_branches_pub(&body))
     }
 
+    fn cfg_from_terminators(terminators: Vec<Terminator>) -> Cfg {
+        let count: usize = terminators.len();
+        let successors: Vec<Vec<BlockId>> = terminators.iter().map(term_successors).collect();
+        let mut predecessors: Vec<Vec<BlockId>> = vec![Vec::new(); count];
+        for (source, targets) in successors.iter().enumerate() {
+            for &target in targets {
+                predecessors[target].push(source);
+            }
+        }
+        let blocks: Vec<BasicBlock> = successors
+            .into_iter()
+            .zip(predecessors)
+            .enumerate()
+            .map(
+                |(index, (succs, preds)): (usize, (Vec<BlockId>, Vec<BlockId>))| BasicBlock {
+                    start: u32::try_from(index).expect("block index fits u32") * 10,
+                    first: index,
+                    last: index,
+                    succs,
+                    preds,
+                },
+            )
+            .collect();
+        let start_to_block: BTreeMap<u32, BlockId> = blocks
+            .iter()
+            .enumerate()
+            .map(|(index, block): (usize, &BasicBlock)| (block.start, index))
+            .collect();
+        Cfg {
+            blocks,
+            terminators,
+            start_to_block,
+            idom: Vec::new(),
+            postorder_num: Vec::new(),
+            rpo: Vec::new(),
+            loops: Vec::new(),
+            entry: 0,
+        }
+    }
+
     #[test]
     fn straight_line_is_single_block() {
         let cfg: Cfg = cfg_from(&[0x16, 0x17, 0x58, 0x2A]);
@@ -632,5 +672,39 @@ mod tests {
         );
         let lp: &NaturalLoop = &cfg.loops[0];
         assert!(cfg.dominates(lp.header, *lp.latches.first().expect("latch")));
+    }
+
+    #[test]
+    fn diamond_uses_its_merge_as_the_immediate_post_dominator() {
+        let cfg: Cfg = cfg_from_terminators(vec![
+            Terminator::Cond {
+                taken: 1,
+                fallthrough: 2,
+            },
+            Terminator::Goto(3),
+            Terminator::Goto(3),
+            Terminator::Return,
+        ]);
+        let immediate: Vec<BlockId> = cfg.immediate_post_dominators();
+        assert_eq!(immediate, vec![3, 3, 3, usize::MAX]);
+    }
+
+    #[test]
+    fn looped_sibling_branches_use_the_later_merge_not_the_loop_header() {
+        let cfg: Cfg = cfg_from_terminators(vec![
+            Terminator::Cond {
+                taken: 1,
+                fallthrough: 4,
+            },
+            Terminator::Cond {
+                taken: 3,
+                fallthrough: 2,
+            },
+            Terminator::Goto(3),
+            Terminator::Goto(0),
+            Terminator::Return,
+        ]);
+        let immediate: Vec<BlockId> = cfg.immediate_post_dominators();
+        assert_eq!(immediate, vec![4, 3, 3, 0, usize::MAX]);
     }
 }

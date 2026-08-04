@@ -392,7 +392,7 @@ fn peel_eazfuscator_surfaces_emulated_recovery_and_flips_strategy() {
 }
 
 #[test]
-fn newly_wired_protectors_recover_plaintext_from_a_pure_cil_string_transform() {
+fn newly_wired_protectors_distinguish_recovery_from_babel_wall() {
     use disrobe_pass_dotnet::error::Result;
     use disrobe_pass_dotnet::peel::{
         PeelReport, PeelStrategy, peel_babel_net, peel_crypto_obfuscator, peel_deepsea,
@@ -412,10 +412,9 @@ fn newly_wired_protectors_recover_plaintext_from_a_pure_cil_string_transform() {
     let cil: Vec<u8> = xor_char_array_decrypt_cil(key);
     let image: Vec<u8> = build_pe(&cil, &encrypted);
 
-    let peels: [(&str, Peel); 5] = [
+    let peels: [(&str, Peel); 4] = [
         ("Dotfuscator", peel_dotfuscator),
         ("DeepSea", peel_deepsea),
-        ("Babel.NET", peel_babel_net),
         ("CryptoObfuscator", peel_crypto_obfuscator),
         (".NET Reactor", peel_dotnet_reactor),
     ];
@@ -437,4 +436,20 @@ fn newly_wired_protectors_recover_plaintext_from_a_pure_cil_string_transform() {
                 .collect::<Vec<String>>()
         );
     }
+
+    let babel: PeelReport = peel_babel_net(&image).expect("Babel peel ok on managed PE");
+    assert_eq!(
+        babel.strategy,
+        PeelStrategy::ReportOnlyEncryptedResource,
+        "Babel must not promote a synthetic CIL transform into a string-recovery claim"
+    );
+    assert!(
+        babel.recovered_strings.is_empty(),
+        "Babel must not emit recovered strings without an authentic protected/plain sample; got {:?}",
+        babel
+            .recovered_strings
+            .iter()
+            .map(|r| r.text.clone())
+            .collect::<Vec<String>>()
+    );
 }
