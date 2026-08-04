@@ -1,10 +1,17 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+use std::ffi::OsStr;
+use std::path::Path;
+use std::time::Duration;
+
 use boa_engine::{Context, Source};
+use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_js_deob::{AstUnminifyStats, unminify_ast};
 
 const LOOP_LIMIT: u64 = 2_000_000;
 const RECURSION_LIMIT: usize = 1_500;
 const STACK_LIMIT: usize = 50_000;
+const NODE_TIMEOUT: Duration = Duration::from_secs(30);
+const NODE_CAPTURE: usize = 1usize << 18;
 
 fn eval_capture(program: &str) -> Option<String> {
     let mut context: Context = Context::default();
@@ -123,8 +130,8 @@ fn void_literal_folds_to_undefined() {
         "the void 0 form must be gone: {recovered}"
     );
     assert!(
-        recovered.contains("x;") && !recovered.contains("x = undefined"),
-        "after folding to undefined the redundant initializer is dropped, leaving a bare declaration: {recovered}"
+        recovered.contains("const x = undefined"),
+        "a const initializer must remain after folding: {recovered}"
     );
     assert_recovered_equivalent("void", ORIG_VOID, &recovered);
 }
@@ -150,6 +157,83 @@ fn void_with_side_effecting_operand_is_left_intact() {
     assert_eq!(want, got, "behavior + side effect preserved");
 }
 
+const SAFETY_VOID_SHADOWED_UNDEFINED: &str = r"
+function read(undefined) { return void 0; }
+var marker = !0;
+print(read(7));
+print(marker);
+";
+
+#[test]
+fn void_literal_does_not_become_a_shadowed_undefined_binding() {
+    let want: String =
+        eval_capture(SAFETY_VOID_SHADOWED_UNDEFINED).expect("shadowed input evaluates");
+    assert_eq!(want, "undefined\u{1}true");
+    let (recovered, stats): (String, AstUnminifyStats) =
+        unminify_ast(SAFETY_VOID_SHADOWED_UNDEFINED);
+    assert_eq!(stats.void_undefineds_normalized, 0, "{recovered}");
+    assert!(recovered.contains("void 0"), "{recovered}");
+    assert_eq!(stats.boolean_shorthands_normalized, 1, "{recovered}");
+    assert!(recovered.contains("marker = true"), "{recovered}");
+    let got: String = eval_capture(&recovered).expect("recovered shadowed input evaluates");
+    assert_eq!(want, got, "{recovered}");
+}
+
+const SAFETY_VOID_DIRECT_EVAL: &str = r"
+function read() {
+  (eval)('var undefined = 7');
+  return void 0;
+}
+process.stdout.write(String(read()));
+";
+
+#[test]
+fn void_literal_does_not_become_a_direct_eval_binding() {
+    let expected: String = node_capture(SAFETY_VOID_DIRECT_EVAL);
+    assert_eq!(expected, "undefined");
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(SAFETY_VOID_DIRECT_EVAL);
+    assert_eq!(stats.void_undefineds_normalized, 0, "{recovered}");
+    assert!(recovered.contains("void 0"), "{recovered}");
+    assert_eq!(node_capture(&recovered), expected, "{recovered}");
+}
+
+const SAFETY_COMMENT_BEARING_LITERALS: &str = r"
+let numeric = 1 /* numeric */ + 2;
+let string = 'a' /* string */ + 'b';
+let voided = void /* void */ 0;
+process.stdout.write(String(numeric) + '\u0001' + string + '\u0001' + String(voided));
+";
+
+#[test]
+fn comment_bearing_literal_expressions_remain_byte_intact() {
+    let expected: String = node_capture(SAFETY_COMMENT_BEARING_LITERALS);
+    assert_eq!(expected, "3\u{1}ab\u{1}undefined");
+    let (recovered, stats): (String, AstUnminifyStats) =
+        unminify_ast(SAFETY_COMMENT_BEARING_LITERALS);
+    assert_eq!(stats.numeric_constants_folded, 0, "{recovered}");
+    assert_eq!(stats.string_concats_folded, 0, "{recovered}");
+    assert_eq!(stats.void_undefineds_normalized, 0, "{recovered}");
+    assert_eq!(recovered, SAFETY_COMMENT_BEARING_LITERALS, "{recovered}");
+    assert_eq!(node_capture(&recovered), expected, "{recovered}");
+}
+
+fn node_capture(source: &str) -> String {
+    let args: [&OsStr; 2] = [OsStr::new("-e"), OsStr::new(source)];
+    let output: CapturedOutput = run_captured(Path::new("node"), &args, NODE_TIMEOUT, NODE_CAPTURE)
+        .expect("node is required for the direct-eval semantic reference")
+        .expect("direct-eval semantic reference must finish within the timeout");
+    assert_eq!(
+        output.exit_code,
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("Node output is utf-8")
+        .trim()
+        .to_owned()
+}
+
 const ORIG_DOUBLE_NOT: &str = r"
 function truthy(v) { return Boolean(v); }
 print(truthy(3));
@@ -167,20 +251,29 @@ print(truthy('x'));
 ";
 
 #[test]
-fn double_not_becomes_boolean_coercion() {
+fn double_not_preserves_the_operator() {
     assert_faithful_input("double_not", ORIG_DOUBLE_NOT, INPUT_DOUBLE_NOT);
     let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(INPUT_DOUBLE_NOT);
-    assert!(
-        stats.double_not_coercions_normalized >= 1,
-        "!!v must become Boolean(v); got {}",
-        stats.double_not_coercions_normalized
-    );
-    assert!(recovered.contains("Boolean(v)"), "got: {recovered}");
-    assert!(
-        !recovered.contains("!!v"),
-        "the doubled not must be gone:\n{recovered}"
-    );
+    assert_eq!(stats.double_not_coercions_normalized, 0, "{recovered}");
+    assert!(recovered.contains("!!v"), "{recovered}");
+    assert!(!recovered.contains("Boolean(v)"), "{recovered}");
     assert_recovered_equivalent("double_not", ORIG_DOUBLE_NOT, &recovered);
+}
+
+const SAFETY_DOUBLE_NOT_SHADOWED_BOOLEAN: &str = r"
+function read(Boolean, value) { return !!value; }
+process.stdout.write(String(read(function () { return 42; }, 0)));
+";
+
+#[test]
+fn double_not_does_not_call_a_shadowed_boolean_binding() {
+    let expected: String = node_capture(SAFETY_DOUBLE_NOT_SHADOWED_BOOLEAN);
+    assert_eq!(expected, "false");
+    let (recovered, stats): (String, AstUnminifyStats) =
+        unminify_ast(SAFETY_DOUBLE_NOT_SHADOWED_BOOLEAN);
+    assert_eq!(stats.double_not_coercions_normalized, 0, "{recovered}");
+    assert!(recovered.contains("!!value"), "{recovered}");
+    assert_eq!(node_capture(&recovered), expected, "{recovered}");
 }
 
 const SAFETY_DOUBLE_NOT_DROPS_COERCION: &str = r"
@@ -229,6 +322,55 @@ fn adjacent_string_literals_fold() {
     );
     assert!(recovered.contains("foobar"), "got: {recovered}");
     assert_recovered_equivalent("concat", ORIG_CONCAT, &recovered);
+}
+
+const SAFETY_CONCAT_DIRECTIVE: &str = r"
+function read() {
+  'use ' + 'strict';
+  return this === undefined;
+}
+process.stdout.write(String(read()));
+";
+
+#[test]
+fn string_concat_does_not_create_a_directive_prologue() {
+    let expected: String = node_capture(SAFETY_CONCAT_DIRECTIVE);
+    assert_eq!(expected, "false");
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(SAFETY_CONCAT_DIRECTIVE);
+    assert_eq!(stats.string_concats_folded, 0, "{recovered}");
+    assert!(recovered.contains("'use ' + 'strict'"), "{recovered}");
+    assert_eq!(node_capture(&recovered), expected, "{recovered}");
+}
+
+const SAFETY_TOP_LEVEL_CONCAT_DIRECTIVE: &str = r"
+'use ' + 'strict';
+undeclared = 7;
+process.stdout.write(String(undeclared));
+";
+
+#[test]
+fn top_level_string_concat_does_not_create_a_directive_prologue() {
+    let expected: String = node_capture(SAFETY_TOP_LEVEL_CONCAT_DIRECTIVE);
+    assert_eq!(expected, "7");
+    let (recovered, stats): (String, AstUnminifyStats) =
+        unminify_ast(SAFETY_TOP_LEVEL_CONCAT_DIRECTIVE);
+    assert_eq!(stats.string_concats_folded, 0, "{recovered}");
+    assert!(recovered.contains("'use ' + 'strict'"), "{recovered}");
+    assert_eq!(node_capture(&recovered), expected, "{recovered}");
+}
+
+const SAFETY_NEGATIVE_ZERO: &str = r"
+process.stdout.write(String(Object.is(0 * -1, -0)) + '\u0001' + String(1 / (0 * -1)));
+";
+
+#[test]
+fn numeric_fold_preserves_negative_zero() {
+    let expected: String = node_capture(SAFETY_NEGATIVE_ZERO);
+    assert_eq!(expected, "true\u{1}-Infinity");
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(SAFETY_NEGATIVE_ZERO);
+    assert_eq!(stats.numeric_constants_folded, 2, "{recovered}");
+    assert!(recovered.contains("-0"), "{recovered}");
+    assert_eq!(node_capture(&recovered), expected, "{recovered}");
 }
 
 const SAFETY_CONCAT_PLUS_IN_STRING: &str = r#"

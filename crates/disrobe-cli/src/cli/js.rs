@@ -1274,14 +1274,9 @@ fn deob(
             "    indirect calls:        {}",
             stats.indirect_calls_simplified
         );
-        println!("    apply -> spread:       {}", stats.apply_calls_spread);
         println!(
             "    bracket -> dot:        {}",
             stats.bracket_accesses_dotted
-        );
-        println!(
-            "    template literals:     {}",
-            stats.template_literals_rebuilt
         );
         println!(
             "    optional chains:       {}",

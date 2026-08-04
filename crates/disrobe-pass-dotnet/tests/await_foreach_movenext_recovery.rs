@@ -76,6 +76,10 @@ fn await_foreach_dispose_rethrow_recovers_the_captured_exception() {
     let asm: DecompiledAssembly = decompile();
     let body: String = move_next_body(&asm, "ConsumeAsync");
     assert!(
+        body.contains("if (local6 != null)\n        {\n            throw local6;\n        }"),
+        "the <ConsumeAsync> DisposeAsync captured exception must rethrow as `throw local6;`:\n{body}"
+    );
+    assert!(
         !body.contains("Capture(__stack_underflow)"),
         "the DisposeAsync exception-dispatch-info rethrow must recover its captured exception, not lift to __stack_underflow:\n{body}"
     );

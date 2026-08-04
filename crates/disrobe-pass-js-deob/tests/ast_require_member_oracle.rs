@@ -1,37 +1,6 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 use boa_engine::{Context, Source};
-use disrobe_pass_js_deob::{AstPipeline, AstUnminifyStats, unminify_ast};
-
-const AST_TRANSFORM_FLOOR: usize = 45;
-
-fn distinct_enabled_transforms() -> usize {
-    let rendered: String = format!("{:?}", AstPipeline::default());
-    let start: usize = rendered
-        .find("enabled: [")
-        .map(|i: usize| i + "enabled: [".len())
-        .expect("pipeline debug lists enabled rules");
-    let end: usize = rendered[start..]
-        .find(']')
-        .map(|i: usize| start + i)
-        .expect("enabled list is bracketed");
-    let mut names: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-    for token in rendered[start..end].split(',') {
-        let name: &str = token.trim();
-        if !name.is_empty() {
-            names.insert(name);
-        }
-    }
-    names.len()
-}
-
-#[test]
-fn ast_unminify_transform_count_holds_its_floor() {
-    let count: usize = distinct_enabled_transforms();
-    assert!(
-        count >= AST_TRANSFORM_FLOOR,
-        "the AST unminify pipeline regressed below its transform floor: {count} < {AST_TRANSFORM_FLOOR}"
-    );
-}
+use disrobe_pass_js_deob::{AstUnminifyStats, unminify_ast};
 
 const LOOP_LIMIT: u64 = 2_000_000;
 const RECURSION_LIMIT: usize = 1_500;

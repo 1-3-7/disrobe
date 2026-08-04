@@ -1,12 +1,13 @@
 use oxc_allocator::Allocator;
 use oxc_ast::Visit;
 use oxc_ast::ast::{
-    BindingPatternKind, Expression, Program, VariableDeclaration, VariableDeclarationKind,
+    BindingPatternKind, CallExpression, Expression, Program, VariableDeclaration,
+    VariableDeclarationKind, WithStatement,
 };
 use oxc_parser::Parser;
 use oxc_span::SourceType;
 
-use super::{Edit, RuleOutcome};
+use super::{Edit, RuleOutcome, edit_overlaps_comments};
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct UndefinedInitStats {
@@ -22,12 +23,15 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, UndefinedInitStats) {
     }
     let program: &Program<'_> = &parsed.program;
 
-    if binding_named_undefined_exists(program) {
+    if !undefined_lookup_is_stable(program) {
         return (RuleOutcome::empty(), UndefinedInitStats::default());
     }
 
     let mut collector: Collector = Collector { edits: Vec::new() };
     collector.visit_program(program);
+    collector
+        .edits
+        .retain(|edit: &Edit| !edit_overlaps_comments(edit, &program.comments));
 
     if collector.edits.is_empty() {
         return (RuleOutcome::empty(), UndefinedInitStats::default());
@@ -41,10 +45,14 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, UndefinedInitStats) {
     )
 }
 
-fn binding_named_undefined_exists(program: &Program<'_>) -> bool {
+pub(super) fn binding_named_undefined_exists(program: &Program<'_>) -> bool {
     let mut probe: BindingProbe = BindingProbe { found: false };
     probe.visit_program(program);
     probe.found
+}
+
+pub(super) fn undefined_lookup_is_stable(program: &Program<'_>) -> bool {
+    !binding_named_undefined_exists(program) && !dynamic_undefined_lookup_exists(program)
 }
 
 struct BindingProbe {
@@ -59,13 +67,45 @@ impl<'a> Visit<'a> for BindingProbe {
     }
 }
 
+fn dynamic_undefined_lookup_exists(program: &Program<'_>) -> bool {
+    let mut probe: DynamicLookupProbe = DynamicLookupProbe { found: false };
+    probe.visit_program(program);
+    probe.found
+}
+
+struct DynamicLookupProbe {
+    found: bool,
+}
+
+impl<'a> Visit<'a> for DynamicLookupProbe {
+    fn visit_call_expression(&mut self, call: &CallExpression<'a>) {
+        if is_direct_eval_callee(&call.callee) {
+            self.found = true;
+            return;
+        }
+        oxc_ast::visit::walk::walk_call_expression(self, call);
+    }
+
+    fn visit_with_statement(&mut self, _statement: &WithStatement<'a>) {
+        self.found = true;
+    }
+}
+
+fn is_direct_eval_callee(callee: &Expression<'_>) -> bool {
+    match callee {
+        Expression::Identifier(identifier) => identifier.name == "eval",
+        Expression::ParenthesizedExpression(paren) => is_direct_eval_callee(&paren.expression),
+        _ => false,
+    }
+}
+
 struct Collector {
     edits: Vec<Edit>,
 }
 
 impl<'a> Visit<'a> for Collector {
     fn visit_variable_declaration(&mut self, decl: &VariableDeclaration<'a>) {
-        if decl.kind != VariableDeclarationKind::Const {
+        if decl.kind == VariableDeclarationKind::Let {
             for declarator in &decl.declarations {
                 if let Some(edit) = try_drop(declarator) {
                     self.edits.push(edit);
@@ -117,9 +157,13 @@ mod tests {
     }
 
     #[test]
-    fn drops_undefined_init_from_let_and_var() {
+    fn drops_undefined_init_from_let() {
         assert_eq!(apply("let x = undefined;"), "let x;");
-        assert_eq!(apply("var y = undefined;"), "var y;");
+    }
+
+    #[test]
+    fn retains_undefined_init_from_var() {
+        assert_eq!(apply("var y = undefined;"), "var y = undefined;");
     }
 
     #[test]
@@ -157,10 +201,19 @@ mod tests {
     }
 
     #[test]
-    fn drops_undefined_init_inside_nested_function() {
+    fn refuses_when_with_can_resolve_undefined() {
+        let source: &str = "with ({ undefined: 7 }) { let value = undefined; }";
+        let (outcome, stats): (RuleOutcome, super::UndefinedInitStats) = recover(source);
+        assert!(outcome.edits.is_empty());
+        assert_eq!(stats.inits_dropped, 0);
+        assert_eq!(apply(source), source);
+    }
+
+    #[test]
+    fn drops_undefined_init_from_let_inside_nested_function() {
         assert_eq!(
-            apply("function g() { var z = undefined; return z; }"),
-            "function g() { var z; return z; }"
+            apply("function g() { let z = undefined; return z; }"),
+            "function g() { let z; return z; }"
         );
     }
 }

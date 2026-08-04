@@ -3,9 +3,11 @@ use oxc_ast::ast::{
     BinaryOperator, Expression, NumberBase, Program, Statement, UnaryExpression, UnaryOperator,
 };
 use oxc_parser::Parser;
-use oxc_span::{GetSpan, SourceType};
+use oxc_span::SourceType;
 
-use super::{Edit, RuleOutcome};
+use super::{
+    Edit, RuleOutcome, edit_overlaps_comments, undefined_init::undefined_lookup_is_stable,
+};
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct LiteralNormalizeStats {
@@ -55,13 +57,24 @@ fn single_pass(source: &str) -> Option<(String, LiteralNormalizeStats)> {
         return None;
     }
     let program: &Program<'_> = &parsed.program;
+    let allow_void_undefined: bool = undefined_lookup_is_stable(program);
 
     let mut edits: Vec<Edit> = Vec::new();
     let mut stats: LiteralNormalizeStats = LiteralNormalizeStats::default();
-    for stmt in &program.body {
-        walk_statement(stmt, source, &mut edits, &mut stats);
+    for (index, stmt) in program.body.iter().enumerate() {
+        walk_statement(
+            stmt,
+            &mut edits,
+            &mut stats,
+            allow_void_undefined,
+            index == 0,
+        );
     }
-    if edits.is_empty() {
+    if edits.is_empty()
+        || edits
+            .iter()
+            .any(|edit: &Edit| edit_overlaps_comments(edit, &program.comments))
+    {
         return None;
     }
     let next: String = apply_local_edits(source, &edits)?;
@@ -70,69 +83,80 @@ fn single_pass(source: &str) -> Option<(String, LiteralNormalizeStats)> {
 
 fn walk_statement(
     stmt: &Statement<'_>,
-    source: &str,
     edits: &mut Vec<Edit>,
     stats: &mut LiteralNormalizeStats,
+    allow_void_undefined: bool,
+    directive_position: bool,
 ) {
     match stmt {
-        Statement::ExpressionStatement(s) => walk_expression(&s.expression, source, edits, stats),
+        Statement::ExpressionStatement(s) => {
+            walk_expression(
+                &s.expression,
+                edits,
+                stats,
+                allow_void_undefined,
+                directive_position,
+            );
+        }
         Statement::ReturnStatement(s) => {
             if let Some(arg) = s.argument.as_ref() {
-                walk_expression(arg, source, edits, stats);
+                walk_expression(arg, edits, stats, allow_void_undefined, false);
             }
         }
-        Statement::ThrowStatement(s) => walk_expression(&s.argument, source, edits, stats),
+        Statement::ThrowStatement(s) => {
+            walk_expression(&s.argument, edits, stats, allow_void_undefined, false);
+        }
         Statement::VariableDeclaration(s) => {
             for d in &s.declarations {
                 if let Some(init) = d.init.as_ref() {
-                    walk_expression(init, source, edits, stats);
+                    walk_expression(init, edits, stats, allow_void_undefined, false);
                 }
             }
         }
         Statement::IfStatement(s) => {
-            walk_expression(&s.test, source, edits, stats);
-            walk_statement(&s.consequent, source, edits, stats);
+            walk_expression(&s.test, edits, stats, allow_void_undefined, false);
+            walk_statement(&s.consequent, edits, stats, allow_void_undefined, false);
             if let Some(alt) = s.alternate.as_ref() {
-                walk_statement(alt, source, edits, stats);
+                walk_statement(alt, edits, stats, allow_void_undefined, false);
             }
         }
         Statement::BlockStatement(s) => {
             for inner in &s.body {
-                walk_statement(inner, source, edits, stats);
+                walk_statement(inner, edits, stats, allow_void_undefined, false);
             }
         }
         Statement::ForStatement(s) => {
             if let Some(test) = s.test.as_ref() {
-                walk_expression(test, source, edits, stats);
+                walk_expression(test, edits, stats, allow_void_undefined, false);
             }
             if let Some(update) = s.update.as_ref() {
-                walk_expression(update, source, edits, stats);
+                walk_expression(update, edits, stats, allow_void_undefined, false);
             }
-            walk_statement(&s.body, source, edits, stats);
+            walk_statement(&s.body, edits, stats, allow_void_undefined, false);
         }
         Statement::WhileStatement(s) => {
-            walk_expression(&s.test, source, edits, stats);
-            walk_statement(&s.body, source, edits, stats);
+            walk_expression(&s.test, edits, stats, allow_void_undefined, false);
+            walk_statement(&s.body, edits, stats, allow_void_undefined, false);
         }
         Statement::DoWhileStatement(s) => {
-            walk_expression(&s.test, source, edits, stats);
-            walk_statement(&s.body, source, edits, stats);
+            walk_expression(&s.test, edits, stats, allow_void_undefined, false);
+            walk_statement(&s.body, edits, stats, allow_void_undefined, false);
         }
         Statement::FunctionDeclaration(f) => {
             if let Some(body) = f.body.as_ref() {
-                for inner in &body.statements {
-                    walk_statement(inner, source, edits, stats);
+                for (index, inner) in body.statements.iter().enumerate() {
+                    walk_statement(inner, edits, stats, allow_void_undefined, index == 0);
                 }
             }
         }
         Statement::SwitchStatement(s) => {
-            walk_expression(&s.discriminant, source, edits, stats);
+            walk_expression(&s.discriminant, edits, stats, allow_void_undefined, false);
             for case in &s.cases {
                 if let Some(test) = case.test.as_ref() {
-                    walk_expression(test, source, edits, stats);
+                    walk_expression(test, edits, stats, allow_void_undefined, false);
                 }
                 for inner in &case.consequent {
-                    walk_statement(inner, source, edits, stats);
+                    walk_statement(inner, edits, stats, allow_void_undefined, false);
                 }
             }
         }
@@ -142,9 +166,10 @@ fn walk_statement(
 
 fn walk_expression(
     expr: &Expression<'_>,
-    source: &str,
     edits: &mut Vec<Edit>,
     stats: &mut LiteralNormalizeStats,
+    allow_void_undefined: bool,
+    directive_position: bool,
 ) {
     if let Expression::UnaryExpression(unary) = expr {
         if let Some(edit) = try_boolean_shorthand(unary) {
@@ -152,21 +177,16 @@ fn walk_expression(
             stats.boolean_shorthands += 1;
             return;
         }
-        if let Some(edit) = try_void_undefined(unary) {
+        if allow_void_undefined && let Some(edit) = try_void_undefined(unary) {
             edits.push(edit);
             stats.void_undefineds += 1;
             return;
         }
-        if let Some(edit) = try_double_not(unary, source) {
-            edits.push(edit);
-            stats.double_not_coercions += 1;
-            return;
-        }
-        walk_expression(&unary.argument, source, edits, stats);
+        walk_expression(&unary.argument, edits, stats, allow_void_undefined, false);
         return;
     }
     if let Expression::BinaryExpression(bin) = expr {
-        if let Some(edit) = try_string_concat(expr) {
+        if !directive_position && let Some(edit) = try_string_concat(expr) {
             edits.push(edit);
             stats.string_concat_folds += 1;
             return;
@@ -176,54 +196,56 @@ fn walk_expression(
             stats.numeric_folds += 1;
             return;
         }
-        walk_expression(&bin.left, source, edits, stats);
-        walk_expression(&bin.right, source, edits, stats);
+        walk_expression(&bin.left, edits, stats, allow_void_undefined, false);
+        walk_expression(&bin.right, edits, stats, allow_void_undefined, false);
         return;
     }
     match expr {
         Expression::LogicalExpression(b) => {
-            walk_expression(&b.left, source, edits, stats);
-            walk_expression(&b.right, source, edits, stats);
+            walk_expression(&b.left, edits, stats, allow_void_undefined, false);
+            walk_expression(&b.right, edits, stats, allow_void_undefined, false);
         }
         Expression::ParenthesizedExpression(p) => {
-            walk_expression(&p.expression, source, edits, stats);
+            walk_expression(&p.expression, edits, stats, allow_void_undefined, false);
         }
         Expression::ConditionalExpression(c) => {
-            walk_expression(&c.test, source, edits, stats);
-            walk_expression(&c.consequent, source, edits, stats);
-            walk_expression(&c.alternate, source, edits, stats);
+            walk_expression(&c.test, edits, stats, allow_void_undefined, false);
+            walk_expression(&c.consequent, edits, stats, allow_void_undefined, false);
+            walk_expression(&c.alternate, edits, stats, allow_void_undefined, false);
         }
         Expression::CallExpression(c) => {
-            walk_expression(&c.callee, source, edits, stats);
+            walk_expression(&c.callee, edits, stats, allow_void_undefined, false);
             for arg in &c.arguments {
                 if let Some(inner) = arg.as_expression() {
-                    walk_expression(inner, source, edits, stats);
+                    walk_expression(inner, edits, stats, allow_void_undefined, false);
                 }
             }
         }
         Expression::NewExpression(n) => {
             for arg in &n.arguments {
                 if let Some(inner) = arg.as_expression() {
-                    walk_expression(inner, source, edits, stats);
+                    walk_expression(inner, edits, stats, allow_void_undefined, false);
                 }
             }
         }
-        Expression::AssignmentExpression(a) => walk_expression(&a.right, source, edits, stats),
+        Expression::AssignmentExpression(a) => {
+            walk_expression(&a.right, edits, stats, allow_void_undefined, false);
+        }
         Expression::SequenceExpression(s) => {
             for inner in &s.expressions {
-                walk_expression(inner, source, edits, stats);
+                walk_expression(inner, edits, stats, allow_void_undefined, false);
             }
         }
         Expression::ArrayExpression(a) => {
             for el in &a.elements {
                 if let Some(inner) = el.as_expression() {
-                    walk_expression(inner, source, edits, stats);
+                    walk_expression(inner, edits, stats, allow_void_undefined, false);
                 }
             }
         }
         Expression::TemplateLiteral(t) => {
             for inner in &t.expressions {
-                walk_expression(inner, source, edits, stats);
+                walk_expression(inner, edits, stats, allow_void_undefined, false);
             }
         }
         _ => {}
@@ -262,31 +284,6 @@ fn try_void_undefined(unary: &UnaryExpression<'_>) -> Option<Edit> {
         start: unary.span.start as usize,
         end: unary.span.end as usize,
         replacement: "undefined".to_owned(),
-    })
-}
-
-fn try_double_not(unary: &UnaryExpression<'_>, source: &str) -> Option<Edit> {
-    if unary.operator != UnaryOperator::LogicalNot {
-        return None;
-    }
-    let Expression::UnaryExpression(inner): &Expression<'_> = &unary.argument else {
-        return None;
-    };
-    if inner.operator != UnaryOperator::LogicalNot {
-        return None;
-    }
-    let operand: &Expression<'_> = &inner.argument;
-    if matches!(
-        operand,
-        Expression::NumericLiteral(_) | Expression::BooleanLiteral(_)
-    ) {
-        return None;
-    }
-    let operand_src: &str = operand.span().source_text(source);
-    Some(Edit {
-        start: unary.span.start as usize,
-        end: unary.span.end as usize,
-        replacement: format!("Boolean({operand_src})"),
     })
 }
 
@@ -336,7 +333,11 @@ fn try_numeric_fold(expr: &Expression<'_>) -> Option<Edit> {
     if folded.abs() > 9_007_199_254_740_992.0 {
         return None;
     }
-    let rendered: String = format!("{}", folded as i64);
+    let rendered: String = if folded == 0.0 && folded.is_sign_negative() {
+        "-0".to_owned()
+    } else {
+        format!("{}", folded as i64)
+    };
     Some(Edit {
         start: bin.span.start as usize,
         end: bin.span.end as usize,

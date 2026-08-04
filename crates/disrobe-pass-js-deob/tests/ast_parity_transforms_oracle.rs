@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 use boa_engine::{Context, Source};
-use disrobe_pass_js_deob::{AstUnminifyStats, unminify_ast};
+use disrobe_pass_js_deob::{AstPipeline, AstRuleId, AstUnminifyStats, unminify_ast};
 
 const LOOP_LIMIT: u64 = 2_000_000;
 const RECURSION_LIMIT: usize = 1_500;
@@ -45,14 +45,14 @@ fn assert_recovered_equivalent(label: &str, original: &str, recovered: &str) {
 }
 
 const ORIG_INDIRECT: &str = r"
-var obj = { greet: function(n) { return 'hi ' + n; } };
-function run() { return obj.greet('a'); }
+function greet(n) { return 'hi ' + n; }
+function run() { return greet('a'); }
 print(run());
 ";
 
 const INPUT_INDIRECT: &str = r"
-var obj = { greet: function(n) { return 'hi ' + n; } };
-function run() { return (0, obj.greet)('a'); }
+function greet(n) { return 'hi ' + n; }
+function run() { return (0, greet)('a'); }
 print(run());
 ";
 
@@ -62,11 +62,11 @@ fn indirect_call_unwraps_zero_sequence() {
     let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(INPUT_INDIRECT);
     assert!(
         stats.indirect_calls_simplified >= 1,
-        "the (0, obj.greet)() call must simplify; got {}",
+        "the (0, greet)() call must simplify; got {}",
         stats.indirect_calls_simplified
     );
     assert!(
-        recovered.contains("obj.greet('a')") && !recovered.contains("(0, obj.greet)"),
+        recovered.contains("greet('a')") && !recovered.contains("(0, greet)"),
         "indirect call must collapse:\n{recovered}"
     );
     assert_recovered_equivalent("indirect", ORIG_INDIRECT, &recovered);
@@ -85,19 +85,50 @@ print(sum.apply(void 0, nums));
 ";
 
 #[test]
-fn argument_spread_rewrites_apply() {
+fn argument_spread_preserves_apply_call() {
     assert_faithful_input("apply", ORIG_APPLY, INPUT_APPLY);
     let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(INPUT_APPLY);
+    assert_eq!(stats.apply_calls_spread, 0, "{recovered}");
     assert!(
-        stats.apply_calls_spread >= 1,
-        "sum.apply(void 0, nums) must become spread; got {}",
-        stats.apply_calls_spread
-    );
-    assert!(
-        recovered.contains("sum(...nums)"),
-        "apply must become spread call:\n{recovered}"
+        recovered.contains("sum.apply("),
+        "apply call must remain unchanged without intrinsic identity proof:\n{recovered}"
     );
     assert_recovered_equivalent("apply", ORIG_APPLY, &recovered);
+}
+
+#[test]
+fn disabled_argument_spread_and_template_literal_selectors_are_noops() {
+    let default_debug: String = format!("{:?}", AstPipeline::default());
+    assert!(!default_debug.contains("ArgumentSpread"), "{default_debug}");
+    assert!(
+        !default_debug.contains("TemplateLiteral"),
+        "{default_debug}"
+    );
+
+    let input: String = format!("{INPUT_APPLY}\n{INPUT_TEMPLATE}");
+    let disabled_pipeline: AstPipeline = AstPipeline::default()
+        .with_rule(AstRuleId::ArgumentSpread, false)
+        .with_rule(AstRuleId::TemplateLiteral, false);
+    let enabled_pipeline: AstPipeline = AstPipeline::default()
+        .with_rule(AstRuleId::ArgumentSpread, true)
+        .with_rule(AstRuleId::TemplateLiteral, true);
+    let enabled_debug: String = format!("{enabled_pipeline:?}");
+
+    assert!(enabled_debug.contains("ArgumentSpread"), "{enabled_debug}");
+    assert!(enabled_debug.contains("TemplateLiteral"), "{enabled_debug}");
+
+    let (disabled_output, disabled_stats): (String, AstUnminifyStats) = disabled_pipeline
+        .try_run(&input)
+        .expect("disabled selector pipeline runs");
+    let (enabled_output, enabled_stats): (String, AstUnminifyStats) = enabled_pipeline
+        .try_run(&input)
+        .expect("enabled selector pipeline runs");
+
+    assert_eq!(enabled_output, disabled_output);
+    assert_eq!(enabled_stats.apply_calls_spread, 0usize);
+    assert_eq!(enabled_stats.template_literals_rebuilt, 0usize);
+    assert_eq!(disabled_stats.apply_calls_spread, 0usize);
+    assert_eq!(disabled_stats.template_literals_rebuilt, 0usize);
 }
 
 const ORIG_BRACKET: &str = r"
@@ -189,21 +220,10 @@ print(build('bob', 0));
 const INPUT_TEMPLATE: &str = ORIG_TEMPLATE;
 
 #[test]
-fn template_literal_rebuilds_string_concat() {
+fn template_literal_leaves_string_concat_intact() {
     let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(INPUT_TEMPLATE);
-    assert!(
-        stats.template_literals_rebuilt >= 1,
-        "the string-rooted concat chain must become a template literal; got {}",
-        stats.template_literals_rebuilt
-    );
-    assert!(
-        recovered.contains("${name}") && recovered.contains("${count}"),
-        "interpolations must appear:\n{recovered}"
-    );
-    assert!(
-        recovered.contains('`'),
-        "a template literal must be emitted:\n{recovered}"
-    );
+    assert_eq!(stats.template_literals_rebuilt, 0, "{recovered}");
+    assert_eq!(recovered, INPUT_TEMPLATE, "{recovered}");
     assert_recovered_equivalent("template", ORIG_TEMPLATE, &recovered);
 }
 
@@ -227,19 +247,13 @@ fn template_literal_leaves_numeric_addition() {
 
 const ORIG_OPTIONAL: &str = r"
 function pick(o) { if (o && o.value) { return o.value; } return 'none'; }
-function get(o) { return o == null ? undefined : o.value; }
+function get(o) { return o === null || o === void 0 ? void 0 : o.value; }
 print(get({ value: 7 }));
 print(get(null));
 print(get(undefined));
 ";
 
-const INPUT_OPTIONAL: &str = r"
-function pick(o) { if (o && o.value) { return o.value; } return 'none'; }
-function get(o) { return o == null ? void 0 : o.value; }
-print(get({ value: 7 }));
-print(get(null));
-print(get(undefined));
-";
+const INPUT_OPTIONAL: &str = ORIG_OPTIONAL;
 
 #[test]
 fn optional_chaining_rebuilds_null_guard() {
@@ -247,7 +261,7 @@ fn optional_chaining_rebuilds_null_guard() {
     let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(INPUT_OPTIONAL);
     assert!(
         stats.optional_chains_rebuilt >= 1,
-        "the o == null ? void 0 : o.value guard must become o?.value; got {}",
+        "the strict null/void guard must become o?.value; got {}",
         stats.optional_chains_rebuilt
     );
     assert!(
@@ -258,7 +272,7 @@ fn optional_chaining_rebuilds_null_guard() {
 }
 
 const ORIG_NULLISH: &str = r"
-function def(x) { return x == null ? 'fallback' : x; }
+function def(x) { return x === null || x === void 0 ? 'fallback' : x; }
 print(def('value'));
 print(def(null));
 print(def(undefined));
@@ -273,7 +287,7 @@ fn nullish_coalescing_rebuilds_null_default() {
     let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(INPUT_NULLISH);
     assert!(
         stats.nullish_coalesces_rebuilt >= 1,
-        "x == null ? 'fallback' : x must become x ?? 'fallback'; got {}",
+        "the strict null/void guard must become x ?? 'fallback'; got {}",
         stats.nullish_coalesces_rebuilt
     );
     assert!(
@@ -281,6 +295,26 @@ fn nullish_coalescing_rebuilds_null_default() {
         "nullish coalescing must be emitted:\n{recovered}"
     );
     assert_recovered_equivalent("nullish", ORIG_NULLISH, &recovered);
+}
+
+const LOOSE_NULLISH_GUARDS: &str = r"
+function read(value) {
+  var optional = value == null ? void 0 : value.field;
+  var fallback = value != null ? value : 42;
+  return String(optional) + ':' + String(fallback);
+}
+print(read({ field: 7 }));
+print(read(null));
+";
+
+#[test]
+fn loose_nullish_guards_are_preserved() {
+    let want: String = eval_capture(LOOSE_NULLISH_GUARDS).expect("loose input evaluates");
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(LOOSE_NULLISH_GUARDS);
+    assert_eq!(stats.optional_chains_rebuilt, 0, "{recovered}");
+    assert_eq!(stats.nullish_coalesces_rebuilt, 0, "{recovered}");
+    let got: String = eval_capture(&recovered).expect("recovered loose input evaluates");
+    assert_eq!(want, got, "behavior preserved");
 }
 
 const ORIG_NULLISH_STRICT: &str = r"

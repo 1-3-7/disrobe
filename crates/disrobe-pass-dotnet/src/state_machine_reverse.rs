@@ -1358,19 +1358,13 @@ struct RethrowSpan {
 
 fn match_dispatch_info_rethrow(lines: &[String], idx: usize) -> Option<RethrowSpan> {
     let guard: &str = lines.get(idx)?.trim();
-    let captured: &str = guard
-        .strip_prefix("if (!(")?
-        .strip_suffix(" as Exception))")?
-        .trim();
-    if captured.is_empty() {
-        return None;
-    }
+    let captured: &str = captured_rethrow_guard_local(guard)?;
     let open: usize = idx + 1;
     if lines.get(open)?.trim() != "{" {
         return None;
     }
     let throw_line: &str = lines.get(idx + 2)?.trim();
-    let thrown: &str = throw_line.strip_prefix("throw ")?.strip_suffix(';')?.trim();
+    let thrown: &str = thrown_local_name(throw_line)?;
     if thrown != captured {
         return None;
     }
@@ -1378,13 +1372,29 @@ fn match_dispatch_info_rethrow(lines: &[String], idx: usize) -> Option<RethrowSp
         return None;
     }
     let rethrow: &str = lines.get(idx + 4)?.trim();
-    if !is_dispatch_info_throw(rethrow) {
+    if !is_matching_dispatch_info_rethrow(rethrow, captured) {
         return None;
     }
     Some(RethrowSpan {
         captured: captured.to_owned(),
         end: idx + 4,
     })
+}
+
+fn captured_rethrow_guard_local(guard: &str) -> Option<&str> {
+    let legacy: Option<&str> = guard
+        .strip_prefix("if (!(")
+        .and_then(|value: &str| value.strip_suffix(" as Exception))"))
+        .map(str::trim)
+        .filter(|value: &&str| !value.is_empty());
+    let candidate: Option<&str> = legacy.or_else(|| {
+        guard
+            .strip_prefix("if (!(((object)")
+            .and_then(|value: &str| value.strip_suffix(") is Exception))"))
+            .map(str::trim)
+            .filter(|value: &&str| !value.is_empty())
+    });
+    candidate.and_then(local_identifier)
 }
 
 fn match_bare_dispatch_info_throw(line: &str) -> Option<(String, String)> {
@@ -1405,8 +1415,10 @@ fn dispatch_info_capture_body(t: &str) -> Option<&str> {
     stripped.strip_prefix("Capture(")
 }
 
-fn is_dispatch_info_throw(t: &str) -> bool {
-    dispatch_info_capture_body(t).is_some() && t.contains(").Throw()") && t.ends_with(';')
+fn is_matching_dispatch_info_rethrow(t: &str, captured: &str) -> bool {
+    let rethrown: Option<&str> =
+        dispatch_info_capture_body(t).and_then(|value: &str| value.strip_suffix(").Throw();"));
+    matches!(rethrown, Some(value) if value == captured || value == "__stack_underflow")
 }
 
 fn leading_whitespace(line: &str) -> &str {
@@ -1419,15 +1431,19 @@ fn thrown_local_name(line: &str) -> Option<&str> {
         .strip_prefix("throw ")?
         .strip_suffix(';')?
         .trim();
-    let is_ident: bool = !thrown.is_empty()
-        && thrown
+    local_identifier(thrown)
+}
+
+fn local_identifier(value: &str) -> Option<&str> {
+    let is_ident: bool = !value.is_empty()
+        && value
             .bytes()
             .next()
             .is_some_and(|b: u8| b.is_ascii_alphabetic() || b == b'_')
-        && thrown
+        && value
             .bytes()
             .all(|b: u8| b.is_ascii_alphanumeric() || b == b'_');
-    is_ident.then_some(thrown)
+    is_ident.then_some(value)
 }
 
 fn object_decl_name(line: &str) -> Option<&str> {
@@ -2609,6 +2625,49 @@ mod tests {
             !joined.contains("__stack_underflow"),
             "underflow eliminated:\n{joined}"
         );
+    }
+
+    #[test]
+    fn dispatch_info_rethrow_recovers_isinst_rendered_exception() {
+        let lines: Vec<String> = vec![
+            "    if (!(((object)local6) is Exception))".to_owned(),
+            "    {".to_owned(),
+            "        throw local6;".to_owned(),
+            "    }".to_owned(),
+            "    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(__stack_underflow).Throw();"
+                .to_owned(),
+        ];
+        let out: Vec<String> = collapse_dispatch_info_rethrow(&lines);
+        assert_eq!(out.join("\n"), "    throw local6;");
+    }
+
+    #[test]
+    fn dispatch_info_rethrow_keeps_different_captured_exception() {
+        let lines: Vec<String> = vec![
+            "    if (!(((object)local6) is Exception))".to_owned(),
+            "    {".to_owned(),
+            "        throw local6;".to_owned(),
+            "    }".to_owned(),
+            "    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(local7).Throw();"
+                .to_owned(),
+        ];
+        let out: Vec<String> = collapse_dispatch_info_rethrow(&lines);
+        assert_eq!(&out[..4], &lines[..4]);
+        assert_eq!(out[4], "    throw local7;");
+    }
+
+    #[test]
+    fn dispatch_info_rethrow_keeps_non_local_guard_operand() {
+        let lines: Vec<String> = vec![
+            "    if (!(((object)GetValue()) is Exception))".to_owned(),
+            "    {".to_owned(),
+            "        throw GetValue();".to_owned(),
+            "    }".to_owned(),
+            "    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(__stack_underflow).Throw();"
+                .to_owned(),
+        ];
+        let out: Vec<String> = collapse_dispatch_info_rethrow(&lines);
+        assert_eq!(out, lines);
     }
 
     #[test]

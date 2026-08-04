@@ -2,7 +2,7 @@
 use boa_engine::{Context, Source};
 use disrobe_pass_js_deob::{AstPipeline, AstUnminifyStats, unminify_ast};
 
-const AST_TRANSFORM_FLOOR: usize = 47;
+const AST_TRANSFORM_FLOOR: usize = 44;
 
 fn distinct_enabled_transforms() -> usize {
     let rendered: String = format!("{:?}", AstPipeline::default());
