@@ -10,6 +10,13 @@ const OPS_CONCISE: &[u8] = include_bytes!("fixtures/ops.concise.txt");
 const OPS_PL: &str = include_str!("fixtures/ops.pl");
 const CTL_CONCISE: &[u8] = include_bytes!("fixtures/ctl.concise.txt");
 const CTL_PL: &str = include_str!("fixtures/ctl.pl");
+const NESTED_CALL_CONCISE: &[u8] = include_bytes!("fixtures/nested_call.concise.txt");
+const NESTED_CALL_PL: &str = include_str!("fixtures/nested_call.pl");
+const NESTED_BARE_CALL_CONCISE: &[u8] = include_bytes!("fixtures/nested_bare_call.concise.txt");
+const NESTED_BARE_CALL_PL: &str = include_str!("fixtures/nested_bare_call.pl");
+const NESTED_CALL_ARGUMENTS_CONCISE: &[u8] =
+    include_bytes!("fixtures/nested_call_arguments.concise.txt");
+const NESTED_CALL_ARGUMENTS_PL: &str = include_str!("fixtures/nested_call_arguments.pl");
 
 fn decompile(bytes: &[u8]) -> PerlSource {
     let tree: PerlOpTree = read_concise(bytes).expect("parse real perl 5.42 concise");
@@ -189,6 +196,42 @@ fn ctl_recovers_bare_if_and_unless_against_source() {
 fn ctl_recovery_is_total_on_this_corpus() {
     let src: PerlSource = decompile(CTL_CONCISE);
     assert_eq!(src.statements_recovered, src.statements_total);
+}
+
+#[test]
+fn nested_call_keeps_the_inner_result_as_the_outer_argument() {
+    assert!(NESTED_CALL_PL.contains("my $value = outer(inner(7));"));
+    let src: PerlSource = decompile(NESTED_CALL_CONCISE);
+    let main: &PerlSubSource = sub(&src, "main program");
+    assert!(
+        has_stmt(main, "my $value = outer(inner(7));"),
+        "nested call recovery must preserve both calls and their argument edge: {:?}",
+        main.statements
+    );
+}
+
+#[test]
+fn nested_bare_call_keeps_the_inner_result_as_the_outer_argument() {
+    assert!(NESTED_BARE_CALL_PL.contains("outer(inner(7));"));
+    let src: PerlSource = decompile(NESTED_BARE_CALL_CONCISE);
+    let main: &PerlSubSource = sub(&src, "main program");
+    assert!(
+        has_stmt(main, "outer(inner(7));"),
+        "bare nested call recovery must preserve both calls and their argument edge: {:?}",
+        main.statements
+    );
+}
+
+#[test]
+fn nested_call_keeps_sibling_arguments_in_source_order() {
+    assert!(NESTED_CALL_ARGUMENTS_PL.contains("my $value = outer(1, inner(7), 2);"));
+    let src: PerlSource = decompile(NESTED_CALL_ARGUMENTS_CONCISE);
+    let main: &PerlSubSource = sub(&src, "main program");
+    assert!(
+        has_stmt(main, "my $value = outer(1, inner(7), 2);"),
+        "nested call recovery must retain sibling arguments on both sides of the inner result: {:?}",
+        main.statements
+    );
 }
 
 #[test]

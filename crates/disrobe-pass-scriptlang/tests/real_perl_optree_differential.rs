@@ -47,6 +47,21 @@ const FIXTURES: &[Fixture] = &[
         committed_concise: include_bytes!("fixtures/ctl.concise.txt"),
     },
     Fixture {
+        name: "nested_call",
+        source: include_str!("fixtures/nested_call.pl"),
+        committed_concise: include_bytes!("fixtures/nested_call.concise.txt"),
+    },
+    Fixture {
+        name: "nested_bare_call",
+        source: include_str!("fixtures/nested_bare_call.pl"),
+        committed_concise: include_bytes!("fixtures/nested_bare_call.concise.txt"),
+    },
+    Fixture {
+        name: "nested_call_arguments",
+        source: include_str!("fixtures/nested_call_arguments.pl"),
+        committed_concise: include_bytes!("fixtures/nested_call_arguments.concise.txt"),
+    },
+    Fixture {
         name: "sample1",
         source: include_str!("fixtures/sample1.pl"),
         committed_concise: include_bytes!("fixtures/sample1.concise.txt"),
@@ -57,6 +72,7 @@ const FIXTURES: &[Fixture] = &[
 struct Expectation {
     fixture: &'static str,
     subs: &'static [&'static str],
+    committed_subs: &'static [&'static str],
     min_reference_lines: usize,
 }
 
@@ -64,6 +80,7 @@ const EXPECTED: &[Expectation] = &[
     Expectation {
         fixture: "hello",
         subs: &["main::greet", "main::add", "main program"],
+        committed_subs: &["main::greet", "main::add", "main program"],
         min_reference_lines: 64,
     },
     Expectation {
@@ -74,26 +91,54 @@ const EXPECTED: &[Expectation] = &[
             "main::loop_sum",
             "main program",
         ],
+        committed_subs: &[
+            "main::classify",
+            "main::total",
+            "main::loop_sum",
+            "main program",
+        ],
         min_reference_lines: 130,
     },
     Expectation {
         fixture: "ops",
         subs: &["main::cmps", "main::assigns", "main program"],
+        committed_subs: &["main::cmps", "main::assigns", "main program"],
         min_reference_lines: 90,
     },
     Expectation {
         fixture: "ctl",
         subs: &["main::bare_if", "main::use_unless", "main program"],
+        committed_subs: &["main::bare_if", "main::use_unless"],
         min_reference_lines: 66,
+    },
+    Expectation {
+        fixture: "nested_call",
+        subs: &["main::inner", "main::outer", "main program"],
+        committed_subs: &["main::inner", "main::outer", "main program"],
+        min_reference_lines: 50,
+    },
+    Expectation {
+        fixture: "nested_bare_call",
+        subs: &["main::inner", "main::outer", "main program"],
+        committed_subs: &["main::inner", "main::outer", "main program"],
+        min_reference_lines: 44,
+    },
+    Expectation {
+        fixture: "nested_call_arguments",
+        subs: &["main::inner", "main::outer", "main program"],
+        committed_subs: &["main::inner", "main::outer", "main program"],
+        min_reference_lines: 54,
     },
     Expectation {
         fixture: "sample1",
         subs: &["main::greet", "main::add", "main::area", "main program"],
+        committed_subs: &["main::greet", "main::add", "main::area", "main program"],
         min_reference_lines: 83,
     },
 ];
 
-const TOTAL_REFERENCE_LINE_FLOOR: usize = 433;
+const TOTAL_REFERENCE_LINE_FLOOR: usize = 581;
+const COMMITTED_SUB_DUMP_FLOOR: usize = 25;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Verdict {
@@ -175,22 +220,22 @@ impl FixtureOutcome {
 
 fn perl_binary() -> Option<PathBuf> {
     let candidate: PathBuf = PathBuf::from("perl");
-    let args: [OsString; 2] = [OsString::from("-e"), OsString::from("exit 0")];
+    let args: [OsString; 3] = [
+        OsString::from("-MB::Concise"),
+        OsString::from("-e"),
+        OsString::from("exit 0"),
+    ];
     match run_captured(&candidate, &args, PERL_TIMEOUT, PERL_CAPTURE_LIMIT) {
         Ok(Some(out)) if out.exit_code == Some(0) => Some(candidate),
         _ => None,
     }
 }
 
-fn announce_missing_perl(test_name: &str) {
-    eprintln!("################################################################");
-    eprintln!("SKIPPED {test_name}");
-    eprintln!("No working `perl` was found on PATH.");
-    eprintln!("This test re-compiles the RECOVERED Perl source with the real");
-    eprintln!("interpreter and compares its op tree against the original's.");
-    eprintln!("Without perl there is no differential and this test asserts");
-    eprintln!("NOTHING. Install perl 5 and re-run before trusting a green run.");
-    eprintln!("################################################################");
+fn require_perl(test_name: &str) -> PathBuf {
+    let Some(perl): Option<PathBuf> = perl_binary() else {
+        panic!("{test_name} requires a callable Perl with B::Concise on PATH");
+    };
+    perl
 }
 
 fn run_concise(perl: &Path, script: &Path, subs: &[String]) -> Result<ConciseDump, String> {
@@ -599,16 +644,15 @@ fn measure(perl: &Path, scratch: &Path, fixture: Fixture) -> FixtureOutcome {
     }
 }
 
-fn measure_all() -> Option<Vec<FixtureOutcome>> {
-    let perl: PathBuf = perl_binary()?;
+fn measure_all(perl: &Path) -> Vec<FixtureOutcome> {
     let scratch: ScratchDir =
         ScratchDir::create("disrobe-perl-optree").expect("create scratch directory");
     let outcomes: Vec<FixtureOutcome> = FIXTURES
         .iter()
-        .map(|fixture: &Fixture| measure(&perl, scratch.path(), *fixture))
+        .map(|fixture: &Fixture| measure(perl, scratch.path(), *fixture))
         .collect();
     scratch.close().expect("remove scratch directory");
-    Some(outcomes)
+    outcomes
 }
 
 fn report(outcomes: &[FixtureOutcome]) {
@@ -657,10 +701,8 @@ fn report(outcomes: &[FixtureOutcome]) {
 
 #[test]
 fn recovered_perl_recompiles_to_the_original_op_tree() {
-    let Some(outcomes): Option<Vec<FixtureOutcome>> = measure_all() else {
-        announce_missing_perl("recovered_perl_recompiles_to_the_original_op_tree");
-        return;
-    };
+    let perl: PathBuf = require_perl("recovered_perl_recompiles_to_the_original_op_tree");
+    let outcomes: Vec<FixtureOutcome> = measure_all(&perl);
     report(&outcomes);
 
     assert_eq!(
@@ -727,14 +769,17 @@ fn recovered_perl_recompiles_to_the_original_op_tree() {
 
 #[test]
 fn committed_concise_fixtures_still_match_the_installed_perl() {
-    let Some(perl): Option<PathBuf> = perl_binary() else {
-        announce_missing_perl("committed_concise_fixtures_still_match_the_installed_perl");
-        return;
-    };
+    let perl: PathBuf = require_perl("committed_concise_fixtures_still_match_the_installed_perl");
     let scratch: ScratchDir =
         ScratchDir::create("disrobe-perl-fixture").expect("create scratch directory");
     let mut checked: usize = 0usize;
-    for fixture in FIXTURES {
+    assert_eq!(
+        FIXTURES.len(),
+        EXPECTED.len(),
+        "every fixture must declare its expected live and committed subroutine sets"
+    );
+    for (fixture, expected) in FIXTURES.iter().zip(EXPECTED) {
+        assert_eq!(fixture.name, expected.fixture);
         let path: PathBuf = scratch.path().join(format!("{}.pl", fixture.name));
         std::fs::write(&path, fixture.source).expect("write fixture source");
         let declared: Vec<String> = declared_sub_names(fixture.source);
@@ -744,6 +789,15 @@ fn committed_concise_fixtures_still_match_the_installed_perl() {
         let committed_text: String =
             String::from_utf8_lossy(fixture.committed_concise).into_owned();
         let committed_subs: Vec<NormalizedSub> = normalize_dump(&committed_text);
+        let committed_names: Vec<&str> = committed_subs
+            .iter()
+            .map(|sub: &NormalizedSub| sub.name.as_str())
+            .collect();
+        assert_eq!(
+            committed_names, expected.committed_subs,
+            "{}: committed subroutine set drifted",
+            fixture.name
+        );
         assert!(
             !committed_subs.is_empty(),
             "{}: the committed dump parsed to nothing",
@@ -771,15 +825,15 @@ fn committed_concise_fixtures_still_match_the_installed_perl() {
     }
     scratch.close().expect("remove scratch directory");
     eprintln!("[perl-optree] {checked} committed sub dumps re-derived from the installed perl");
-    assert!(checked >= 15, "expected every committed sub to be checked");
+    assert!(
+        checked >= COMMITTED_SUB_DUMP_FLOOR,
+        "checked {checked} committed sub dumps, below the measured floor of {COMMITTED_SUB_DUMP_FLOOR}"
+    );
 }
 
 #[test]
 fn the_normalized_comparison_rejects_real_op_tree_changes() {
-    let Some(perl): Option<PathBuf> = perl_binary() else {
-        announce_missing_perl("the_normalized_comparison_rejects_real_op_tree_changes");
-        return;
-    };
+    let perl: PathBuf = require_perl("the_normalized_comparison_rejects_real_op_tree_changes");
     let scratch: ScratchDir =
         ScratchDir::create("disrobe-perl-mutate").expect("create scratch directory");
     let mut checked: usize = 0usize;
