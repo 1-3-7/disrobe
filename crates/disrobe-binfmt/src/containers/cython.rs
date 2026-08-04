@@ -4,7 +4,7 @@ use object::read::{Object, ObjectSection, ObjectSymbol, ObjectSymbolTable};
 use object::{File as ObjFile, RelocationTarget, SectionKind};
 use serde::{Deserialize, Serialize};
 
-use crate::container::memchr_find;
+use crate::container::find_subslice;
 use crate::error::{Error, Result};
 
 const INIT_PREFIX: &[u8] = b"PyInit_";
@@ -176,7 +176,7 @@ impl<'d> AddressSpace<'d> {
 
     fn scan_for_marker(&self, needle: &[u8]) -> bool {
         self.sections.iter().any(|sec: &LoadedSection<'d>| {
-            sec.readable && memchr_find(sec.data, needle, 0).is_some()
+            sec.readable && find_subslice(sec.data, needle, 0).is_some()
         })
     }
 }
@@ -683,7 +683,7 @@ fn find_doc_starting_with(space: &AddressSpace<'_>, prefix: &[u8]) -> Option<Str
             continue;
         }
         let mut from: usize = 0;
-        while let Some(start) = memchr_find(sec.data, prefix, from) {
+        while let Some(start) = find_subslice(sec.data, prefix, from) {
             let at_string_start: bool = start == 0 || sec.data.get(start - 1) == Some(&0);
             if at_string_start {
                 let tail: &[u8] = &sec.data[start..];

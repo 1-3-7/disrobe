@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::container::find_subslice;
+
 const PE_MAGIC: &[u8; 2] = b"MZ";
 const EOCD_SIGNATURE: u32 = 0x0605_4b50;
 const CDFH_SIGNATURE: u32 = 0x0201_4b50;
@@ -29,7 +31,7 @@ pub fn detect_squirrel(bytes: &[u8]) -> Option<SquirrelLayout> {
     }
     let marker_present: bool = SQUIRREL_MARKERS
         .iter()
-        .any(|m: &&[u8]| find_subslice(bytes, m).is_some());
+        .any(|m: &&[u8]| find_subslice(bytes, m, 0).is_some());
     let embedded: Option<EmbeddedNupkg> = locate_embedded_nupkg(bytes);
     if !marker_present && embedded.is_none() {
         return None;
@@ -156,22 +158,6 @@ fn find_eocd(bytes: &[u8]) -> Option<usize> {
                 return Some(off);
             }
         }
-    }
-    None
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return None;
-    }
-    let first: u8 = needle[0];
-    let mut from: usize = 0;
-    while let Some(rel) = haystack[from..].iter().position(|&b: &u8| b == first) {
-        let at: usize = from + rel;
-        if haystack[at..].starts_with(needle) {
-            return Some(at);
-        }
-        from = at + 1;
     }
     None
 }

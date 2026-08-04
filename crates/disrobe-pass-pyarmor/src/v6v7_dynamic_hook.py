@@ -185,7 +185,7 @@ def main() -> int:
                 importlib.util.MAGIC_NUMBER,
                 None,
             )
-            cextract_installed = cextract_backend in ("modern", "legacy")
+            cextract_installed = True
         except Exception as e:
             exceptions.append({
                 "phase": "cextract-install",

@@ -7,6 +7,9 @@ use disrobe_pass_native::{
     CallSiteReturnProof, CallSiteSignatureProof, PseudoReg as Reg, PseudoScalarType as ScalarType,
     RecoveredFunction, RecoveredProgram, recover_aarch64_program,
 };
+use object::{
+    Object as _, ObjectSection as _, ObjectSymbol as _, RelocationFlags, RelocationTarget,
+};
 use tempfile::TempDir;
 
 const OPTIMIZATION_LEVELS: [&str; 5] = ["O0", "O1", "O2", "O3", "Os"];
@@ -68,6 +71,25 @@ target:
     ret
 .size target, .-target
 ";
+const AMBIGUOUS_CALLEE_C: &str = r"
+__attribute__((noinline)) float fp_id_f(float x) { return x; }
+";
+const RETURNING_CALLER_C: &str = r"
+extern float fp_id_f(float);
+__attribute__((noinline, disable_tail_calls))
+float ambiguous(const float *p) { return fp_id_f(*p); }
+";
+const DISCARDING_CALLER_C: &str = r"
+extern float fp_id_f(float);
+__attribute__((noinline, disable_tail_calls))
+void ambiguous(const float *p) { (void)fp_id_f(*p); }
+";
+
+#[derive(Debug, PartialEq, Eq)]
+struct CompiledFunctionShape {
+    code: Vec<u8>,
+    relocations: Vec<(u64, u32, i64, String)>,
+}
 
 fn command_output(command: &mut Command) -> Output {
     let output: Output = command
@@ -166,6 +188,77 @@ fn compile_single_asm(source: &str) -> Vec<u8> {
     let object_path: PathBuf =
         compile_translation_unit(directory.path(), "fixture", "s", source, "O1");
     fs::read(object_path).expect("fixture object must be readable")
+}
+
+fn compiled_function_shape(object_bytes: &[u8], name: &str) -> CompiledFunctionShape {
+    let file: object::File<'_> =
+        object::File::parse(object_bytes).expect("compiled object must parse");
+    let symbol: object::Symbol<'_, '_> = file
+        .symbols()
+        .find(|symbol: &object::Symbol<'_, '_>| {
+            symbol.is_definition() && symbol.name().is_ok_and(|candidate: &str| candidate == name)
+        })
+        .unwrap_or_else(|| panic!("compiled object lacks function symbol {name}"));
+    let section_index: object::SectionIndex = symbol
+        .section_index()
+        .unwrap_or_else(|| panic!("function symbol {name} lacks a section"));
+    let section: object::Section<'_, '_> = file
+        .section_by_index(section_index)
+        .unwrap_or_else(|error: object::Error| panic!("function section is unavailable: {error}"));
+    let section_data: &[u8] = section
+        .data()
+        .expect("function section data must be readable");
+    let section_address: u64 = section.address();
+    let function_address: u64 = symbol.address();
+    let function_size: u64 = symbol.size();
+    assert!(
+        function_size > 0,
+        "function symbol {name} has no bounded body"
+    );
+    let function_end_address: u64 = function_address
+        .checked_add(function_size)
+        .expect("function address range must fit in u64");
+    let function_offset: u64 = function_address
+        .checked_sub(section_address)
+        .expect("function address must not precede its section");
+    let start: usize = usize::try_from(function_offset).expect("function offset must fit in usize");
+    let size: usize = usize::try_from(function_size).expect("function size must fit in usize");
+    let end: usize = start
+        .checked_add(size)
+        .expect("function byte range must fit in usize");
+    let code: Vec<u8> = section_data
+        .get(start..end)
+        .unwrap_or_else(|| panic!("function {name} exceeds its section"))
+        .to_vec();
+    let mut relocations: Vec<(u64, u32, i64, String)> = Vec::new();
+    for (section_offset, relocation) in section.relocations() {
+        let relocation_address: u64 = section_address
+            .checked_add(section_offset)
+            .expect("relocation address must fit in u64");
+        if relocation_address < function_address || relocation_address >= function_end_address {
+            continue;
+        }
+        let relative_offset: u64 = relocation_address
+            .checked_sub(function_address)
+            .expect("function relocation offset must be non-negative");
+        let r_type: u32 = match relocation.flags() {
+            RelocationFlags::Elf { r_type } => r_type,
+            flags => panic!("function relocation must use ELF flags, got {flags:?}"),
+        };
+        let target_index: object::SymbolIndex = match relocation.target() {
+            RelocationTarget::Symbol(index) => index,
+            target => panic!("function relocation must target a symbol, got {target:?}"),
+        };
+        let target: object::Symbol<'_, '_> = file
+            .symbol_by_index(target_index)
+            .unwrap_or_else(|error: object::Error| panic!("relocation target is invalid: {error}"));
+        let target_name: String = target
+            .name()
+            .expect("relocation target name must be valid UTF-8")
+            .to_owned();
+        relocations.push((relative_offset, r_type, relocation.addend(), target_name));
+    }
+    CompiledFunctionShape { code, relocations }
 }
 
 fn recovered<'a>(program: &'a RecoveredProgram, name: &str) -> &'a RecoveredFunction {
@@ -311,6 +404,38 @@ fn call_site_signature_matrix_recompiles_equivalently() {
         graded += 4;
     }
     assert_eq!(graded, 20);
+}
+
+#[test]
+#[ignore = "requires clang and ld.lld"]
+fn bare_call_does_not_prove_a_floating_point_return() {
+    for optimization in ["O1", "O2", "O3", "Os"] {
+        let returning_object: Vec<u8> =
+            compile_c_pair(AMBIGUOUS_CALLEE_C, RETURNING_CALLER_C, optimization);
+        let discarding_object: Vec<u8> =
+            compile_c_pair(AMBIGUOUS_CALLEE_C, DISCARDING_CALLER_C, optimization);
+        let returning_shape: CompiledFunctionShape =
+            compiled_function_shape(&returning_object, "ambiguous");
+        let discarding_shape: CompiledFunctionShape =
+            compiled_function_shape(&discarding_object, "ambiguous");
+        assert_eq!(
+            returning_shape, discarding_shape,
+            "returning and discarding callers must be indistinguishable at {optimization}"
+        );
+        assert_eq!(returning_shape.relocations.len(), 1);
+        assert_eq!(
+            returning_shape.relocations[0].1,
+            object::elf::R_AARCH64_CALL26
+        );
+        assert_eq!(returning_shape.relocations[0].3, "fp_id_f");
+        let returning_program: RecoveredProgram = recover_aarch64_program(&returning_object);
+        let discarding_program: RecoveredProgram = recover_aarch64_program(&discarding_object);
+        let returning_reason: String = refused_reason(&returning_program, "fp_id_f");
+        let discarding_reason: String = refused_reason(&discarding_program, "fp_id_f");
+        assert_eq!(returning_reason, discarding_reason);
+        assert!(returning_reason.contains("every attributed caller ignores the result"));
+        assert!(returning_reason.contains("return type remains underdetermined"));
+    }
 }
 
 #[test]

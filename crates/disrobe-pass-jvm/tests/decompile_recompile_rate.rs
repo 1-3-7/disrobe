@@ -109,6 +109,15 @@ fn published_per_method_bar_matches_the_floors_this_crate_enforces() {
     );
 }
 
+#[test]
+fn per_method_publication_rejects_a_failed_javac_even_when_all_methods_are_clean() {
+    assert!(!per_method_measurement_is_publishable(
+        false,
+        PER_METHOD_JAVAC_TOTAL,
+        PER_METHOD_JAVAC_OK_FLOOR,
+    ));
+}
+
 const GAP_METHOD_TOTAL: usize = 7;
 const GAP_METHOD_OK_FLOOR: usize = 7;
 const FLOOR_PROVENANCE: &str = "floor is the honest count of top-level methods that recompile clean \

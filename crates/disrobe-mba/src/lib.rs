@@ -2,6 +2,7 @@
 #![deny(unreachable_pub)]
 
 pub mod bitwise_synth;
+#[cfg(any(feature = "smt-verify", test))]
 pub mod boolean;
 #[cfg(feature = "cfg-recovery")]
 pub mod cff;
