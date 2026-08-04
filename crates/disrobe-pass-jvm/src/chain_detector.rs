@@ -62,6 +62,10 @@ pub struct JvmPass;
 
 impl Pass for JvmPass {
     #[inline]
+    fn meta(&self) -> disrobe_core::chain::PassMeta {
+        META
+    }
+    #[inline]
     fn id(&self) -> PassId {
         PASS_ID
     }
@@ -113,6 +117,14 @@ impl Pass for JvmPass {
         }
     }
 }
+
+pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
+    PASS_ID,
+    disrobe_core::chain::Ecosystem::Jvm,
+    disrobe_core::chain::SupportQuality::Full,
+    disrobe_core::chain::Determinism::Deterministic,
+    disrobe_core::chain::SafetyClass::Static,
+);
 
 pub static JVM_PASS: JvmPass = JvmPass;
 

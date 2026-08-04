@@ -74,6 +74,10 @@ pub struct RubyPass;
 
 impl Pass for RubyPass {
     #[inline]
+    fn meta(&self) -> disrobe_core::chain::PassMeta {
+        META
+    }
+    #[inline]
     fn id(&self) -> PassId {
         PASS_ID
     }
@@ -129,6 +133,14 @@ impl Pass for RubyPass {
         Ok(Artifact::new(Rung::Disasm, payload, artifact.root_hash))
     }
 }
+
+pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
+    PASS_ID,
+    disrobe_core::chain::Ecosystem::Ruby,
+    disrobe_core::chain::SupportQuality::Full,
+    disrobe_core::chain::Determinism::Deterministic,
+    disrobe_core::chain::SafetyClass::Static,
+);
 
 pub static RUBY_PASS: RubyPass = RubyPass;
 

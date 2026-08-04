@@ -1,0 +1,102 @@
+[package]
+name = "disrobe-passes"
+description = "Single assembly point that constructs the disrobe chain pass registry from every pass crate, one feature per pass."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["full"]
+full = [
+    "pyarmor",
+    "native",
+    "py-deob",
+    "container",
+    "sourcedefender",
+    "pyfreeze",
+    "nuitka",
+    "py-disasm",
+    "py-decompile",
+    "pyinstaller",
+    "pickle",
+    "js",
+    "wasm",
+    "php",
+    "ruby",
+    "shell",
+    "mobile",
+    "lua",
+    "swift",
+    "jvm",
+    "dotnet",
+    "go",
+    "beam",
+    "as3",
+    "scriptlang",
+    "nativelang",
+]
+
+pyarmor = ["dep:disrobe-pass-pyarmor", "disrobe-pass-pyarmor/chain"]
+native = ["dep:disrobe-pass-native", "disrobe-pass-native/chain"]
+py-deob = ["dep:disrobe-pass-py-deob", "disrobe-pass-py-deob/chain"]
+container = ["dep:disrobe-binfmt", "disrobe-binfmt/chain"]
+sourcedefender = ["dep:disrobe-pass-sourcedefender", "disrobe-pass-sourcedefender/chain"]
+pyfreeze = ["dep:disrobe-pass-pyfreeze", "disrobe-pass-pyfreeze/chain"]
+nuitka = ["dep:disrobe-pass-nuitka", "disrobe-pass-nuitka/chain"]
+py-disasm = ["dep:disrobe-pass-py-disasm", "disrobe-pass-py-disasm/chain"]
+py-decompile = ["dep:disrobe-pass-py-decompile", "disrobe-pass-py-decompile/chain"]
+pyinstaller = ["dep:disrobe-pass-pyinstaller", "disrobe-pass-pyinstaller/chain"]
+pickle = ["dep:disrobe-pass-pickle", "disrobe-pass-pickle/chain"]
+js = ["dep:disrobe-pass-js-deob", "disrobe-pass-js-deob/chain"]
+wasm = ["dep:disrobe-pass-wasm-deob", "disrobe-pass-wasm-deob/chain"]
+php = ["dep:disrobe-pass-php", "disrobe-pass-php/chain"]
+ruby = ["dep:disrobe-pass-ruby", "disrobe-pass-ruby/chain"]
+shell = ["dep:disrobe-pass-shell", "disrobe-pass-shell/chain"]
+mobile = ["dep:disrobe-pass-mobile", "disrobe-pass-mobile/chain"]
+lua = ["dep:disrobe-pass-lua", "disrobe-pass-lua/chain"]
+swift = ["dep:disrobe-pass-swift-objc", "disrobe-pass-swift-objc/chain"]
+jvm = ["dep:disrobe-pass-jvm", "disrobe-pass-jvm/chain"]
+dotnet = ["dep:disrobe-pass-dotnet", "disrobe-pass-dotnet/chain"]
+go = ["dep:disrobe-pass-go", "disrobe-pass-go/chain"]
+beam = ["dep:disrobe-pass-beam", "disrobe-pass-beam/chain"]
+as3 = ["dep:disrobe-pass-as3", "disrobe-pass-as3/chain"]
+scriptlang = ["dep:disrobe-pass-scriptlang", "disrobe-pass-scriptlang/chain"]
+nativelang = ["dep:disrobe-pass-nativelang", "disrobe-pass-nativelang/chain"]
+
+[dependencies]
+disrobe-core = { workspace = true, features = ["chain"] }
+disrobe-pass-pyarmor = { workspace = true, optional = true }
+disrobe-pass-native = { workspace = true, optional = true }
+disrobe-pass-py-deob = { workspace = true, optional = true }
+disrobe-binfmt = { workspace = true, optional = true }
+disrobe-pass-sourcedefender = { workspace = true, optional = true }
+disrobe-pass-pyfreeze = { workspace = true, optional = true }
+disrobe-pass-nuitka = { workspace = true, optional = true }
+disrobe-pass-py-disasm = { workspace = true, optional = true }
+disrobe-pass-py-decompile = { workspace = true, optional = true }
+disrobe-pass-pyinstaller = { workspace = true, optional = true }
+disrobe-pass-pickle = { workspace = true, optional = true }
+disrobe-pass-js-deob = { workspace = true, optional = true }
+disrobe-pass-wasm-deob = { workspace = true, optional = true }
+disrobe-pass-php = { workspace = true, optional = true }
+disrobe-pass-ruby = { workspace = true, optional = true }
+disrobe-pass-shell = { workspace = true, optional = true }
+disrobe-pass-mobile = { workspace = true, optional = true }
+disrobe-pass-lua = { workspace = true, optional = true }
+disrobe-pass-swift-objc = { workspace = true, optional = true }
+disrobe-pass-jvm = { workspace = true, optional = true }
+disrobe-pass-dotnet = { workspace = true, optional = true }
+disrobe-pass-go = { workspace = true, optional = true }
+disrobe-pass-beam = { workspace = true, optional = true }
+disrobe-pass-as3 = { workspace = true, optional = true }
+disrobe-pass-scriptlang = { workspace = true, optional = true }
+disrobe-pass-nativelang = { workspace = true, optional = true }

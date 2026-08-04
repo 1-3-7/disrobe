@@ -47,6 +47,10 @@ pub struct BeamPass;
 
 impl Pass for BeamPass {
     #[inline]
+    fn meta(&self) -> disrobe_core::chain::PassMeta {
+        META
+    }
+    #[inline]
     fn id(&self) -> PassId {
         PASS_ID
     }
@@ -190,6 +194,14 @@ fn recover_ez_source(bytes: &[u8]) -> CoreResult<String> {
     }
     Ok(out)
 }
+
+pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
+    PASS_ID,
+    disrobe_core::chain::Ecosystem::Beam,
+    disrobe_core::chain::SupportQuality::Full,
+    disrobe_core::chain::Determinism::Deterministic,
+    disrobe_core::chain::SafetyClass::Static,
+);
 
 pub static BEAM_PASS: BeamPass = BeamPass;
 

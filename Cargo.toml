@@ -35,6 +35,7 @@ members = [
     "crates/disrobe-pass-nuitka",
     "crates/disrobe-pass-php",
     "crates/disrobe-pass-pickle",
+    "crates/disrobe-passes",
     "crates/disrobe-playground",
     "crates/disrobe-prowl",
     "crates/disrobe-pass-py-decompile",
@@ -192,6 +193,7 @@ disrobe-pass-nativelang = { path = "crates/disrobe-pass-nativelang", version = "
 disrobe-pass-nuitka = { path = "crates/disrobe-pass-nuitka", version = "0.10.4" }
 disrobe-pass-php = { path = "crates/disrobe-pass-php", version = "0.10.4" }
 disrobe-pass-pickle = { path = "crates/disrobe-pass-pickle", version = "0.10.4" }
+disrobe-passes = { path = "crates/disrobe-passes", version = "0.10.4", default-features = false }
 disrobe-pass-py-decompile = { path = "crates/disrobe-pass-py-decompile", version = "0.10.4" }
 disrobe-pass-py-deob = { path = "crates/disrobe-pass-py-deob", version = "0.10.4" }
 disrobe-pass-py-disasm = { path = "crates/disrobe-pass-py-disasm", version = "0.10.4" }

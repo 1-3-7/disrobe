@@ -41,6 +41,8 @@ chain = [
     "disrobe-pass-go/chain",
     "disrobe-pass-beam/chain",
     "disrobe-pass-as3/chain",
+    "dep:disrobe-passes",
+    "disrobe-passes/full",
 ]
 
 [dependencies]
@@ -68,6 +70,7 @@ disrobe-pass-dotnet = { workspace = true }
 disrobe-pass-go = { workspace = true }
 disrobe-pass-beam = { workspace = true }
 disrobe-pass-as3 = { workspace = true }
+disrobe-passes = { workspace = true, optional = true }
 disrobe-py-marshal = { workspace = true }
 blake3 = { workspace = true }
 serde = { workspace = true }

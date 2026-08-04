@@ -67,26 +67,37 @@ binfmt = []
 
 nir-lift = ["dep:disrobe-nir-lift"]
 devirt = ["dep:disrobe-mba", "disrobe-mba/smt-solver", "nir-lift"]
-js = ["dep:disrobe-pass-js-deob", "disrobe-pass-js-deob/chain"]
-wasm = ["dep:disrobe-pass-wasm-deob", "nir-lift", "disrobe-nir-lift/wasm"]
-jvm = ["dep:disrobe-pass-jvm", "nir-lift"]
-dotnet = ["dep:disrobe-pass-dotnet", "disrobe-pass-dotnet/chain", "nir-lift"]
-mobile = ["dep:disrobe-pass-mobile"]
-lua = ["dep:disrobe-pass-lua", "disrobe-pass-lua/chain", "nir-lift"]
-php = ["dep:disrobe-pass-php", "disrobe-pass-php/chain"]
-ruby = ["dep:disrobe-pass-ruby", "nir-lift"]
-beam = ["dep:disrobe-pass-beam", "nir-lift"]
-swift = ["dep:disrobe-pass-swift-objc"]
-as3 = ["dep:disrobe-pass-as3", "nir-lift"]
-flutter = ["dep:disrobe-pass-mobile"]
-go = ["dep:disrobe-pass-go"]
-shell = ["dep:disrobe-pass-shell", "disrobe-pass-shell/chain"]
-pickle = ["dep:disrobe-pass-pickle"]
-scriptlang = ["dep:disrobe-pass-scriptlang"]
-nativelang = ["dep:disrobe-pass-nativelang", "disrobe-pass-nativelang/chain"]
+js = ["dep:disrobe-pass-js-deob", "disrobe-pass-js-deob/chain", "disrobe-passes?/js"]
+wasm = ["dep:disrobe-pass-wasm-deob", "nir-lift", "disrobe-nir-lift/wasm", "disrobe-passes?/wasm"]
+jvm = ["dep:disrobe-pass-jvm", "nir-lift", "disrobe-passes?/jvm"]
+dotnet = ["dep:disrobe-pass-dotnet", "disrobe-pass-dotnet/chain", "nir-lift", "disrobe-passes?/dotnet"]
+mobile = ["dep:disrobe-pass-mobile", "disrobe-passes?/mobile"]
+lua = ["dep:disrobe-pass-lua", "disrobe-pass-lua/chain", "nir-lift", "disrobe-passes?/lua"]
+php = ["dep:disrobe-pass-php", "disrobe-pass-php/chain", "disrobe-passes?/php"]
+ruby = ["dep:disrobe-pass-ruby", "nir-lift", "disrobe-passes?/ruby"]
+beam = ["dep:disrobe-pass-beam", "nir-lift", "disrobe-passes?/beam"]
+swift = ["dep:disrobe-pass-swift-objc", "disrobe-passes?/swift"]
+as3 = ["dep:disrobe-pass-as3", "nir-lift", "disrobe-passes?/as3"]
+flutter = ["dep:disrobe-pass-mobile", "disrobe-passes?/mobile"]
+go = ["dep:disrobe-pass-go", "disrobe-passes?/go"]
+shell = ["dep:disrobe-pass-shell", "disrobe-pass-shell/chain", "disrobe-passes?/shell"]
+pickle = ["dep:disrobe-pass-pickle", "disrobe-passes?/pickle"]
+scriptlang = ["dep:disrobe-pass-scriptlang", "disrobe-passes?/scriptlang"]
+nativelang = ["dep:disrobe-pass-nativelang", "disrobe-pass-nativelang/chain", "disrobe-passes?/nativelang"]
 
 chain = [
     "disrobe-core/chain",
+    "dep:disrobe-passes",
+    "disrobe-passes/pyarmor",
+    "disrobe-passes/native",
+    "disrobe-passes/py-deob",
+    "disrobe-passes/container",
+    "disrobe-passes/sourcedefender",
+    "disrobe-passes/pyfreeze",
+    "disrobe-passes/nuitka",
+    "disrobe-passes/py-disasm",
+    "disrobe-passes/py-decompile",
+    "disrobe-passes/pyinstaller",
     "disrobe-binfmt/chain",
     "disrobe-pass-pyarmor/chain",
     "disrobe-pass-native/chain",
@@ -145,6 +156,7 @@ disrobe-pass-as3 = { workspace = true, optional = true }
 disrobe-pass-pickle = { workspace = true, optional = true }
 disrobe-pass-scriptlang = { workspace = true, optional = true }
 disrobe-pass-nativelang = { workspace = true, optional = true }
+disrobe-passes = { workspace = true, optional = true }
 disrobe-pass-webview = { path = "../disrobe-pass-webview", version = "0.10.3" }
 disrobe-prowl = { workspace = true }
 disrobe-py-marshal = { workspace = true }

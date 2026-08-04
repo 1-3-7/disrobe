@@ -48,6 +48,33 @@ disrobe-pass-go = { workspace = true, features = ["chain", "llm-metadata"] }
 disrobe-pass-ruby = { workspace = true, features = ["chain"] }
 disrobe-pass-php = { workspace = true, features = ["chain"] }
 disrobe-pass-shell = { workspace = true, features = ["chain"] }
+disrobe-passes = { workspace = true, features = [
+    "pyarmor",
+    "native",
+    "py-deob",
+    "container",
+    "sourcedefender",
+    "pyfreeze",
+    "nuitka",
+    "py-disasm",
+    "py-decompile",
+    "pyinstaller",
+    "pickle",
+    "js",
+    "wasm",
+    "php",
+    "ruby",
+    "shell",
+    "mobile",
+    "lua",
+    "swift",
+    "jvm",
+    "dotnet",
+    "go",
+    "beam",
+    "as3",
+    "nativelang",
+] }
 disrobe-query = { workspace = true }
 
 [lints]

@@ -53,6 +53,10 @@ pub struct LuaPass;
 
 impl Pass for LuaPass {
     #[inline]
+    fn meta(&self) -> disrobe_core::chain::PassMeta {
+        META
+    }
+    #[inline]
     fn id(&self) -> PassId {
         PASS_ID
     }
@@ -129,6 +133,14 @@ fn recover(bytes: &[u8]) -> CoreResult<LuaRecovery> {
         decompiled_recovery(bytes)
     }
 }
+
+pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
+    PASS_ID,
+    disrobe_core::chain::Ecosystem::Lua,
+    disrobe_core::chain::SupportQuality::Full,
+    disrobe_core::chain::Determinism::Deterministic,
+    disrobe_core::chain::SafetyClass::Static,
+);
 
 pub static LUA_PASS: LuaPass = LuaPass;
 

@@ -10,6 +10,7 @@ pub mod registry;
 pub mod spec;
 pub mod state_machine;
 
+pub use crate::pass::{Determinism, PassMeta, SafetyClass};
 pub use chain_json::{
     ChainDocument, ChainInputDoc, ChainSpecDoc, ChainStats, DetectorPickDoc, NodeDoc,
     OutputKindDoc, SCHEMA_VERSION, Topology, VerdictDoc,

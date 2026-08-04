@@ -2046,7 +2046,23 @@ fn print_passes() -> miette::Result<()> {
     println!("  flutter       Dart AOT / libapp.so dump + obfuscation_map parse");
     println!("  chain         explicit pass pipeline orchestrator");
     println!("  serve         HTTP daemon + WebSocket stream + LSP-stdio + gRPC");
+    print_chain_registry();
     Ok(())
+}
+
+fn print_chain_registry() {
+    let registry: disrobe_core::chain::PassRegistry = disrobe_passes::build_registry();
+    println!();
+    println!("chain passes reachable from `disrobe auto` in this build:");
+    for pass in registry.iter_passes() {
+        let meta: disrobe_core::chain::PassMeta = pass.meta();
+        println!(
+            "  {id:<24} {ecosystem:<12} {support}",
+            id = pass.id(),
+            ecosystem = meta.ecosystem.label(),
+            support = meta.support.label()
+        );
+    }
 }
 
 #[cfg(test)]

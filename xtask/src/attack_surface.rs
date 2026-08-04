@@ -79,6 +79,10 @@ const NON_PARSER_ALLOWLIST: &[NonParserCrate] = &[
         rationale: "MCP stdio tool surface over already-produced envelopes, not a hostile binary-format parser",
     },
     NonParserCrate {
+        package_name: "disrobe-passes",
+        rationale: "assembles the chain pass registry from the pass crates and parses nothing itself; every parser it registers is listed in this table under its own crate",
+    },
+    NonParserCrate {
         package_name: "disrobe-playground",
         rationale: "test/bench-only accuracy harness, not shipped parsing surface",
     },

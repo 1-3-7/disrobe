@@ -40,6 +40,10 @@ pub struct SwiftObjcPassAdapter;
 
 impl Pass for SwiftObjcPassAdapter {
     #[inline]
+    fn meta(&self) -> disrobe_core::chain::PassMeta {
+        META
+    }
+    #[inline]
     fn id(&self) -> PassId {
         PASS_ID
     }
@@ -83,6 +87,14 @@ impl Pass for SwiftObjcPassAdapter {
         Ok(Artifact::new(Rung::Disasm, payload, artifact.root_hash))
     }
 }
+
+pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
+    PASS_ID,
+    disrobe_core::chain::Ecosystem::Swift,
+    disrobe_core::chain::SupportQuality::Full,
+    disrobe_core::chain::Determinism::Deterministic,
+    disrobe_core::chain::SafetyClass::Static,
+);
 
 pub static SWIFT_OBJC_PASS: SwiftObjcPassAdapter = SwiftObjcPassAdapter;
 

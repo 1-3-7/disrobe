@@ -43,6 +43,10 @@ pub struct PyInstallerPass;
 
 impl Pass for PyInstallerPass {
     #[inline]
+    fn meta(&self) -> disrobe_core::chain::PassMeta {
+        META
+    }
+    #[inline]
     fn id(&self) -> PassId {
         PASS_ID
     }
@@ -163,6 +167,14 @@ fn native_can_surface(entry: &ExtractedEntry) -> bool {
 fn is_native_image(bytes: &[u8]) -> bool {
     classify_native_image(bytes).is_some()
 }
+
+pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
+    PASS_ID,
+    disrobe_core::chain::Ecosystem::Python,
+    disrobe_core::chain::SupportQuality::Full,
+    disrobe_core::chain::Determinism::Deterministic,
+    disrobe_core::chain::SafetyClass::Static,
+);
 
 pub static PYINSTALLER_PASS: PyInstallerPass = PyInstallerPass;
 

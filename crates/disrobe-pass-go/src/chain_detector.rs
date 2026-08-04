@@ -70,6 +70,10 @@ pub struct GoPass;
 
 impl Pass for GoPass {
     #[inline]
+    fn meta(&self) -> disrobe_core::chain::PassMeta {
+        META
+    }
+    #[inline]
     fn id(&self) -> PassId {
         PASS_ID
     }
@@ -168,6 +172,14 @@ fn safe_embed_relpath(name: &str) -> Option<String> {
     }
     Some(format!("{EMBED_CARVE_ROOT}/{}", parts.join("/")))
 }
+
+pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
+    PASS_ID,
+    disrobe_core::chain::Ecosystem::Go,
+    disrobe_core::chain::SupportQuality::Full,
+    disrobe_core::chain::Determinism::Deterministic,
+    disrobe_core::chain::SafetyClass::Static,
+);
 
 pub static GO_PASS: GoPass = GoPass;
 

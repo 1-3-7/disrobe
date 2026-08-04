@@ -78,6 +78,11 @@ impl Pass for PyarmorPass {
     }
 
     #[inline]
+    fn meta(&self) -> disrobe_core::chain::PassMeta {
+        META
+    }
+
+    #[inline]
     fn detector(&self) -> &'static dyn Detector {
         &PyarmorDetector
     }
@@ -202,8 +207,8 @@ fn compute_limitations(out: &StaticUnpackOutput) -> Vec<String> {
     }
     if matches!(out.protection_kind, ProtectionKind::Bcc) {
         limits.push(
-            "BCC protection was detected; this chain path does not perform or emit the optional \
-             in-crate native-body analysis."
+            "BCC native body lift requires --allow-bcc; when enabled it is surfaced as recovered \
+             pseudo-C via the in-crate x86-64 decompiler."
                 .to_string(),
         );
     }
@@ -288,6 +293,14 @@ fn decode_wrapper_payload(bytes: &[u8]) -> Option<Vec<u8>> {
     let (_detection, payload): (Detection, Vec<u8>) = detect_from_wrapper(text).ok()?;
     Some(payload)
 }
+
+pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
+    PASS_ID,
+    disrobe_core::chain::Ecosystem::Python,
+    disrobe_core::chain::SupportQuality::Full,
+    disrobe_core::chain::Determinism::Deterministic,
+    disrobe_core::chain::SafetyClass::Static,
+);
 
 pub static PYARMOR_PASS: PyarmorPass = PyarmorPass;
 

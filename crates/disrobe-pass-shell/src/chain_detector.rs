@@ -54,6 +54,10 @@ pub struct ShellPass;
 
 impl Pass for ShellPass {
     #[inline]
+    fn meta(&self) -> disrobe_core::chain::PassMeta {
+        META
+    }
+    #[inline]
     fn id(&self) -> PassId {
         PASS_ID
     }
@@ -410,6 +414,14 @@ fn build_recovery_manifest(bytes: &[u8]) -> Option<serde_json::Value> {
         "pdf": pdf,
     }))
 }
+
+pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
+    PASS_ID,
+    disrobe_core::chain::Ecosystem::Shell,
+    disrobe_core::chain::SupportQuality::Full,
+    disrobe_core::chain::Determinism::Deterministic,
+    disrobe_core::chain::SafetyClass::Static,
+);
 
 pub static SHELL_PASS: ShellPass = ShellPass;
 
