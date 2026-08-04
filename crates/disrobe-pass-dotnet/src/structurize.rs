@@ -85,6 +85,10 @@ pub trait TokenNamer {
         None
     }
 
+    fn csharp_anonymous_object_member_names(&self, _token: u32) -> Option<Vec<String>> {
+        None
+    }
+
     fn call_returns_boolean(&self, _token: u32) -> bool {
         false
     }
@@ -165,6 +169,10 @@ impl TokenNamer for Resolver {
         })
     }
 
+    fn csharp_anonymous_object_member_names(&self, token: u32) -> Option<Vec<String>> {
+        self.csharp_anonymous_object_member_names(token)
+    }
+
     fn call_returns_boolean(&self, token: u32) -> bool {
         self.callee_signature(token).is_some_and(|sig| {
             matches!(
@@ -227,6 +235,10 @@ impl TokenNamer for MethodNamer<'_> {
     #[inline]
     fn call_info(&self, token: u32) -> Option<CallInfo> {
         self.resolver.call_info(token)
+    }
+
+    fn csharp_anonymous_object_member_names(&self, token: u32) -> Option<Vec<String>> {
+        self.resolver.csharp_anonymous_object_member_names(token)
     }
 
     #[inline]
@@ -294,6 +306,7 @@ enum Expr {
     NewObj {
         ctor: String,
         args: Vec<Self>,
+        member_names: Option<Vec<String>>,
     },
     Tuple(Vec<Self>),
     Coalesce(Box<Self>, Box<Self>),
@@ -563,6 +576,7 @@ enum RenderAction<'a> {
     Expr(&'a Expr),
     Paren(&'a Expr),
     Args(&'a [Expr], usize),
+    NamedArgs(&'a [String], &'a [Expr], usize),
     Text(&'a str),
     Short(&'a str),
 }
@@ -590,6 +604,19 @@ fn render_expr(initial: RenderAction<'_>, lang: TargetLang, names: &NameTable) -
                         pending.push(RenderAction::Text(", "));
                     }
                     pending.push(RenderAction::Expr(expression));
+                }
+            }
+            RenderAction::NamedArgs(member_names, args, index) => {
+                if let (Some(member_name), Some(expression)) =
+                    (member_names.get(index), args.get(index))
+                {
+                    if index + 1 < args.len() {
+                        pending.push(RenderAction::NamedArgs(member_names, args, index + 1));
+                        pending.push(RenderAction::Text(", "));
+                    }
+                    pending.push(RenderAction::Expr(expression));
+                    pending.push(RenderAction::Text(" = "));
+                    pending.push(RenderAction::Text(member_name));
                 }
             }
             RenderAction::Expr(expression) => match expression {
@@ -649,16 +676,33 @@ fn render_expr(initial: RenderAction<'_>, lang: TargetLang, names: &NameTable) -
                     pending.push(RenderAction::Text(")"));
                     pending.push(RenderAction::Args(args, 0));
                 }
-                Expr::NewObj { ctor, args } => {
-                    if lang == TargetLang::CSharp {
-                        output.push_str("new ");
-                    } else if lang == TargetLang::VbNet {
-                        output.push_str("New ");
+                Expr::NewObj {
+                    ctor,
+                    args,
+                    member_names,
+                } => {
+                    if lang == TargetLang::CSharp
+                        && let Some(member_names) = member_names
+                        && !member_names.is_empty()
+                        && member_names.len() == args.len()
+                    {
+                        output.push_str("new {");
+                        if !args.is_empty() {
+                            output.push(' ');
+                        }
+                        pending.push(RenderAction::Text(" }"));
+                        pending.push(RenderAction::NamedArgs(member_names, args, 0));
+                    } else {
+                        if lang == TargetLang::CSharp {
+                            output.push_str("new ");
+                        } else if lang == TargetLang::VbNet {
+                            output.push_str("New ");
+                        }
+                        output.push_str(ctor);
+                        output.push('(');
+                        pending.push(RenderAction::Text(")"));
+                        pending.push(RenderAction::Args(args, 0));
                     }
-                    output.push_str(ctor);
-                    output.push('(');
-                    pending.push(RenderAction::Text(")"));
-                    pending.push(RenderAction::Args(args, 0));
                 }
                 Expr::Tuple(elements) => {
                     output.push('(');
@@ -2082,9 +2126,20 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 } else if is_value_tuple_ctor(&ctor) && (2..=8).contains(&args.len()) {
                     self.push(Expr::Tuple(args));
                 } else {
+                    let member_names: Option<Vec<String>> = (self.lang == TargetLang::CSharp)
+                        .then(|| self.namer.csharp_anonymous_object_member_names(token))
+                        .flatten()
+                        .filter(|names: &Vec<String>| names.len() == args.len())
+                        .map(|names: Vec<String>| {
+                            names
+                                .into_iter()
+                                .map(|name: String| csharp_escape_identifier(&name))
+                                .collect()
+                        });
                     self.push(Expr::NewObj {
                         ctor: qualified_type_name(&declared, self.lang),
                         args,
+                        member_names,
                     });
                 }
             }
@@ -3150,6 +3205,42 @@ pub(crate) fn is_simple_identifier(s: &str) -> bool {
         .next()
         .is_some_and(|c: char| c == '_' || c.is_ascii_alphabetic())
         && chars.all(|c: char| c == '_' || c.is_ascii_alphanumeric())
+}
+
+pub(crate) fn split_csharp_parameter_declarations(parameters: &str) -> Option<Vec<&str>> {
+    let mut parts: Vec<&str> = Vec::new();
+    let mut start: usize = 0;
+    let mut angle_depth: usize = 0;
+    let mut bracket_depth: usize = 0;
+    let mut paren_depth: usize = 0;
+    for (index, character) in parameters.char_indices() {
+        match character {
+            '<' => angle_depth = angle_depth.checked_add(1)?,
+            '>' => angle_depth = angle_depth.checked_sub(1)?,
+            '[' => bracket_depth = bracket_depth.checked_add(1)?,
+            ']' => bracket_depth = bracket_depth.checked_sub(1)?,
+            '(' => paren_depth = paren_depth.checked_add(1)?,
+            ')' => paren_depth = paren_depth.checked_sub(1)?,
+            ',' if angle_depth == 0 && bracket_depth == 0 && paren_depth == 0 => {
+                let part: &str = parameters[start..index].trim();
+                if part.is_empty() {
+                    return None;
+                }
+                parts.push(part);
+                start = index.checked_add(character.len_utf8())?;
+            }
+            _ => {}
+        }
+    }
+    if angle_depth != 0 || bracket_depth != 0 || paren_depth != 0 {
+        return None;
+    }
+    let tail: &str = parameters[start..].trim();
+    if tail.is_empty() {
+        return None;
+    }
+    parts.push(tail);
+    Some(parts)
 }
 
 fn render_operand(op: &OperandValue) -> String {

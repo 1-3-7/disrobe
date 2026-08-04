@@ -12,7 +12,7 @@ use disrobe_pass_dotnet::{
     peel::confuserex_constants::peel_confuserex_constants,
     peel::static_decrypt::{DecodedValue, RecoveredConstant},
     peel::string_emu::RecoveredString as EmulatedString,
-    peel::{PeelReport, PeelStrategy, RecoveredMethod, peel_by},
+    peel::{PeelReport, RecoveredMethod, peel_by},
     protectors::{DetectionReport, Protector, detect_all},
 };
 
@@ -439,7 +439,7 @@ fn deobfuscate(input: PathBuf, out: Option<PathBuf>, forced: Option<String>) -> 
     std::fs::create_dir_all(&out_dir)
         .map_err(|e| miette::miette!("DR-CLI-0455: cannot create out dir: {e}"))?;
 
-    let walled: bool = report.strategy == PeelStrategy::DetectOnlyNativeOrVm;
+    let walled: bool = report.strategy.is_walled();
     let strings_path: PathBuf = out_dir.join(format!("{stem}.recovered-strings.txt"));
     let strings_written: usize = write_recovered_strings(
         &strings_path,
@@ -507,9 +507,7 @@ fn deobfuscate(input: PathBuf, out: Option<PathBuf>, forced: Option<String>) -> 
         println!("  watermarks:   {}", report.attributes_stripped.join(", "));
     }
     if walled {
-        println!(
-            "  WALL:         native-VM / runtime-key protection; methods detected, not fabricated"
-        );
+        println!("  WALL:         protected methods were detected but not emitted");
     }
     for note in &report.notes {
         println!("  note:         {note}");

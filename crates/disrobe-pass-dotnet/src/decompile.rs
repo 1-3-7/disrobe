@@ -52,6 +52,10 @@ impl TokenNamer for AssemblyNamer<'_> {
         self.method.call_info(token)
     }
 
+    fn csharp_anonymous_object_member_names(&self, token: u32) -> Option<Vec<String>> {
+        self.method.csharp_anonymous_object_member_names(token)
+    }
+
     fn call_returns_boolean(&self, token: u32) -> bool {
         self.method.call_returns_boolean(token)
     }
@@ -574,8 +578,16 @@ fn apply_inferred_param_names(signature: &str, names: &NameTable) -> String {
     let prefix: &str = &header[..=open];
     let suffix: &str = &header[close..];
     let params: &str = &header[open + 1..close];
-    let rewritten: Vec<String> = params
-        .split(',')
+    let Some(declarations): Option<Vec<&str>> =
+        crate::structurize::split_csharp_parameter_declarations(params)
+    else {
+        return signature.to_owned();
+    };
+    if declarations.len() != inferred.len() {
+        return signature.to_owned();
+    }
+    let rewritten: Vec<String> = declarations
+        .into_iter()
         .enumerate()
         .map(|(i, raw): (usize, &str)| rewrite_one_param(raw, inferred.get(i).map(String::as_str)))
         .collect();
@@ -591,9 +603,13 @@ fn rewrite_one_param(raw: &str, inferred: Option<&str>) -> String {
     let Some((ty, name)): Option<(&str, &str)> = trimmed.rsplit_once(' ') else {
         return trimmed.to_owned();
     };
-    if (name.starts_with("arg") || name.is_empty())
+    let invalid: bool = !crate::structurize::is_simple_identifier(name)
+        && !name
+            .strip_prefix('@')
+            .is_some_and(crate::structurize::is_simple_identifier);
+    if (name.starts_with("arg") || name.is_empty() || invalid)
         && !inferred.is_empty()
-        && (inferred.starts_with('@') || !inferred.starts_with("arg"))
+        && (invalid || inferred.starts_with('@') || !inferred.starts_with("arg"))
     {
         format!("{ty} {inferred}")
     } else {
@@ -615,13 +631,45 @@ fn build_name_table(
         .map(|p: &crate::signature::TypeSig| resolver.render_type(p, lang))
         .collect();
     if lang == TargetLang::CSharp {
+        canonicalize_csharp_parameter_names(&mut param_names);
         infer_param_names_from_field_stores(resolver, m, body, &mut param_names);
-        for name in &mut param_names {
-            *name = crate::structurize::csharp_escape_identifier(name);
-        }
+        canonicalize_csharp_parameter_names(&mut param_names);
     }
     let local_types: Vec<String> = resolver.local_types(body.local_var_sig_tok, lang);
     NameTable::new(!m.is_static(), param_names, param_types, local_types)
+}
+
+fn canonicalize_csharp_parameter_names(param_names: &mut [String]) {
+    let mut used: BTreeSet<String> = BTreeSet::new();
+    for (index, name) in param_names.iter_mut().enumerate() {
+        let base: String = csharp_parameter_name(name, index);
+        let mut candidate: String = base.clone();
+        let mut suffix: usize = 2;
+        while !used.insert(candidate.clone()) {
+            candidate = format!("{base}_{suffix}");
+            suffix = suffix.saturating_add(1);
+        }
+        *name = candidate;
+    }
+}
+
+fn csharp_parameter_name(name: &str, index: usize) -> String {
+    if let Some(suffix) = name.strip_prefix("<>h__TransparentIdentifier")
+        && !suffix.is_empty()
+        && suffix.bytes().all(|byte: u8| byte.is_ascii_digit())
+    {
+        return format!("transparentIdentifier{suffix}");
+    }
+    if crate::structurize::is_simple_identifier(name) {
+        return crate::structurize::csharp_escape_identifier(name);
+    }
+    if name
+        .strip_prefix('@')
+        .is_some_and(crate::structurize::is_simple_identifier)
+    {
+        return name.to_owned();
+    }
+    format!("arg{}", index.saturating_add(1))
 }
 
 fn infer_param_names_from_field_stores(
@@ -838,6 +886,60 @@ mod tests {
         let sig: &str = "// Sample.Box\npublic void .ctor(int arg1)";
         let out: String = apply_inferred_param_names(sig, &names);
         assert!(out.contains("(int count)"), "got:\n{out}");
+    }
+
+    #[test]
+    fn csharp_parameter_name_recovers_transparent_identifiers_and_refuses_invalid_metadata() {
+        assert_eq!(
+            csharp_parameter_name("<>h__TransparentIdentifier12", 0),
+            "transparentIdentifier12"
+        );
+        assert_eq!(csharp_parameter_name("bad-name", 1), "arg2");
+        assert_eq!(csharp_parameter_name("class", 2), "@class");
+    }
+
+    #[test]
+    fn csharp_parameter_names_are_deterministically_unique() {
+        let mut names: Vec<String> = vec![
+            "transparentIdentifier0".to_owned(),
+            "<>h__TransparentIdentifier0".to_owned(),
+            "arg4".to_owned(),
+            "bad-name".to_owned(),
+        ];
+        canonicalize_csharp_parameter_names(&mut names);
+        assert_eq!(
+            names,
+            [
+                "transparentIdentifier0",
+                "transparentIdentifier0_2",
+                "arg4",
+                "arg4_2",
+            ]
+        );
+    }
+
+    #[test]
+    fn inferred_parameter_name_replaces_invalid_metadata_identifier() {
+        assert_eq!(
+            rewrite_one_param(
+                "object <>h__TransparentIdentifier0",
+                Some("transparentIdentifier0")
+            ),
+            "object transparentIdentifier0"
+        );
+        let names: NameTable = NameTable::new(
+            false,
+            vec!["transparentIdentifier0".to_owned()],
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(
+            apply_inferred_param_names(
+                "public int F(Pair<int, int> <>h__TransparentIdentifier0)",
+                &names
+            ),
+            "public int F(Pair<int, int> transparentIdentifier0)"
+        );
     }
 
     #[test]

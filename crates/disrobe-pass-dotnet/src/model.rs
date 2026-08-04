@@ -101,9 +101,16 @@ const METHOD_VIRTUAL: u16 = 0x0040;
 const METHOD_HIDE_BY_SIG: u16 = 0x0080;
 const METHOD_NEW_SLOT: u16 = 0x0100;
 const METHOD_ABSTRACT: u16 = 0x0400;
+const METHOD_SPECIAL_NAME: u16 = 0x0800;
+const METHOD_RUNTIME_SPECIAL_NAME: u16 = 0x1000;
+const FIELD_PRIVATE_INIT_ONLY: u16 = 0x0021;
 const TYPE_ABSTRACT: u32 = 0x0080;
 const TYPE_SEALED: u32 = 0x0100;
 const TYPE_INTERFACE: u32 = 0x0020;
+const TYPE_BEFORE_FIELD_INIT: u32 = 0x0010_0000;
+const ANONYMOUS_TYPE_FLAGS: u32 = TYPE_SEALED | TYPE_BEFORE_FIELD_INIT;
+const ANONYMOUS_CONSTRUCTOR_FLAGS: u16 =
+    METHOD_PUBLIC | METHOD_HIDE_BY_SIG | METHOD_SPECIAL_NAME | METHOD_RUNTIME_SPECIAL_NAME;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReceiverFact {
@@ -1957,6 +1964,15 @@ impl Resolver {
         crate::signature::parse_type_spec_sig(blob).ok()
     }
 
+    fn type_spec_signature_strict(&self, rid: u32) -> Option<TypeSig> {
+        let index: usize = rid
+            .checked_sub(1)
+            .and_then(|value: u32| usize::try_from(value).ok())?;
+        let row: &TypeSpecRow = self.tables.type_specs.get(index)?;
+        let blob: &[u8] = self.blob(row.signature)?;
+        crate::signature::parse_type_spec_sig_strict(blob).ok()
+    }
+
     #[must_use]
     pub fn resolve_type_tokens(&self, rendered: &str) -> String {
         self.substitute_type_tokens(rendered)
@@ -2313,6 +2329,315 @@ impl Resolver {
         };
         let blob: &[u8] = self.blob(blob_index)?;
         parse_method_sig(blob).ok()
+    }
+
+    #[must_use]
+    pub fn csharp_anonymous_object_member_names(&self, token: u32) -> Option<Vec<String>> {
+        let member_ref_rid: u32 = token_rid(token)?;
+        (token_table(token) == Some(TableId::MemberRef)).then_some(())?;
+        let member_ref: &MemberRefRow = self
+            .tables
+            .member_refs
+            .get(member_ref_rid.checked_sub(1)? as usize)?;
+        (self.string(member_ref.name) == ".ctor").then_some(())?;
+        let parent: RowRef = member_ref.parent?;
+        (parent.table == TableId::TypeSpec).then_some(())?;
+        let signature: TypeSig = self.type_spec_signature_strict(parent.row)?;
+        let TypeSig::GenericInst { base, args } = signature else {
+            return None;
+        };
+        let TypeSig::NamedType {
+            is_value_type,
+            token: type_token,
+        } = base.as_ref()
+        else {
+            return None;
+        };
+        (!is_value_type).then_some(())?;
+        let type_rid: u32 = token_rid(*type_token)?;
+        (token_table(*type_token) == Some(TableId::TypeDef)).then_some(())?;
+        let type_def: &TypeDefRow = self
+            .tables
+            .type_defs
+            .get(type_rid.checked_sub(1)? as usize)?;
+        (type_def.flags == ANONYMOUS_TYPE_FLAGS && self.string(type_def.namespace).is_empty())
+            .then_some(())?;
+        (!self
+            .tables
+            .nested_classes
+            .iter()
+            .any(|nested: &crate::tables::NestedClassRow| nested.nested_class == type_rid))
+        .then_some(())?;
+        let base_type: RowRef = type_def.extends?;
+        let base_type_index: usize = base_type
+            .row
+            .checked_sub(1)
+            .and_then(|row: u32| usize::try_from(row).ok())?;
+        let base_type_ref: &TypeRefRow = (base_type.table == TableId::TypeRef)
+            .then(|| self.tables.type_refs.get(base_type_index))
+            .flatten()?;
+        (self.string(base_type_ref.namespace) == "System"
+            && self.string(base_type_ref.name) == "Object"
+            && base_type_ref
+                .resolution_scope
+                .is_some_and(|scope: RowRef| self.is_corelib_assembly_ref(scope)))
+        .then_some(())?;
+        let type_name: String = self.string(type_def.name);
+        let (stem, arity): (&str, &str) = type_name.rsplit_once('`')?;
+        let ordinal: &str = stem.strip_prefix("<>f__AnonymousType")?;
+        (!ordinal.is_empty() && ordinal.bytes().all(|byte: u8| byte.is_ascii_digit()))
+            .then_some(())?;
+        let arity: usize = arity.parse().ok()?;
+        (arity != 0 && arity == args.len() && self.type_has_compiler_generated_attribute(type_rid))
+            .then_some(())?;
+        let member_ref_signature: MethodSig =
+            parse_method_sig_strict(self.blob(member_ref.signature)?).ok()?;
+        (member_ref_signature.has_this
+            && member_ref_signature.calling_convention == (SIG_HASTHIS | SIG_DEFAULT)
+            && !member_ref_signature.explicit_this
+            && member_ref_signature.generic_param_count == 0
+            && matches!(member_ref_signature.return_type, TypeSigOrVoid::Void)
+            && member_ref_signature.params.len() == arity)
+            .then_some(())?;
+        let mut generic_params: Vec<(u16, u16, String)> = self
+            .tables
+            .generic_params
+            .iter()
+            .filter(|parameter: &&GenericParamRow| {
+                parameter.owner.is_some_and(|owner: RowRef| {
+                    owner.table == TableId::TypeDef && owner.row == type_rid
+                })
+            })
+            .map(|parameter: &GenericParamRow| {
+                (
+                    parameter.number,
+                    parameter.flags,
+                    self.string(parameter.name),
+                )
+            })
+            .collect();
+        generic_params.sort_by_key(|(number, _, _): &(u16, u16, String)| *number);
+        (generic_params.len() == arity
+            && generic_params.iter().enumerate().all(
+                |(index, (number, flags, _)): (usize, &(u16, u16, String))| {
+                    usize::from(*number) == index && *flags == 0
+                },
+            ))
+        .then_some(())?;
+        let member_names: Vec<String> = generic_params
+            .into_iter()
+            .map(|(_, _, name): (u16, u16, String)| {
+                name.strip_prefix('<')?
+                    .strip_suffix(">j__TPar")
+                    .filter(|member: &&str| is_simple_identifier(member))
+                    .map(str::to_owned)
+            })
+            .collect::<Option<Vec<String>>>()?;
+        let unique: BTreeSet<&str> = member_names.iter().map(String::as_str).collect();
+        (unique.len() == member_names.len()).then_some(())?;
+        (!self
+            .tables
+            .interface_impls
+            .iter()
+            .any(|implementation: &InterfaceImplRow| implementation.class_type == type_rid)
+            && !self.tables.method_impls.iter().any(
+                |implementation: &crate::tables::MethodImplRow| {
+                    implementation.class_type == type_rid
+                },
+            ))
+        .then_some(())?;
+        self.validate_anonymous_type_fields(type_rid, &member_names)?;
+        let (method_start, method_end): (u32, u32) = self.method_range(type_rid)?;
+        let constructors: Vec<(u32, &MethodDefRow)> = (method_start..method_end)
+            .filter_map(|rid: u32| {
+                self.tables
+                    .methods
+                    .get(rid.checked_sub(1)? as usize)
+                    .filter(|method: &&MethodDefRow| self.string(method.name) == ".ctor")
+                    .map(|method: &MethodDefRow| (rid, method))
+            })
+            .collect();
+        let [(constructor_rid, constructor)]: &[(u32, &MethodDefRow)] = constructors.as_slice()
+        else {
+            return None;
+        };
+        let constructor_signature: MethodSig =
+            parse_method_sig_strict(self.blob(constructor.signature)?).ok()?;
+        (constructor.flags == ANONYMOUS_CONSTRUCTOR_FLAGS
+            && constructor.impl_flags == 0
+            && constructor_signature.calling_convention == (SIG_HASTHIS | SIG_DEFAULT)
+            && constructor_signature.has_this
+            && !constructor_signature.explicit_this
+            && constructor_signature.generic_param_count == 0
+            && matches!(constructor_signature.return_type, TypeSigOrVoid::Void)
+            && constructor_signature.params.len() == arity
+            && constructor_signature.params == member_ref_signature.params
+            && constructor_signature
+                .params
+                .iter()
+                .enumerate()
+                .all(|(index, parameter): (usize, &TypeSig)| {
+                    matches!(parameter, TypeSig::Var(number) if usize::try_from(*number).ok() == Some(index))
+                }))
+        .then_some(())?;
+        let mut parameters: Vec<ParamModel> = self
+            .materialize_params(*constructor_rid)
+            .into_iter()
+            .filter(|parameter: &ParamModel| parameter.sequence != 0)
+            .collect();
+        self.anonymous_constructor_params_have_zero_flags(*constructor_rid)?;
+        parameters.sort_by_key(|parameter: &ParamModel| parameter.sequence);
+        (parameters.len() == arity
+            && parameters
+                .iter()
+                .enumerate()
+                .all(|(index, parameter): (usize, &ParamModel)| {
+                    usize::from(parameter.sequence) == index + 1
+                        && parameter.name == member_names[index]
+                }))
+        .then_some(member_names)
+    }
+
+    fn anonymous_constructor_params_have_zero_flags(&self, constructor_rid: u32) -> Option<()> {
+        let constructor_index: usize = constructor_rid
+            .checked_sub(1)
+            .and_then(|row: u32| usize::try_from(row).ok())?;
+        let constructor: &MethodDefRow = self.tables.methods.get(constructor_index)?;
+        let start: u32 = constructor.param_list;
+        let end: u32 = self
+            .tables
+            .methods
+            .get(constructor_index.checked_add(1)?)
+            .map_or_else(
+                || {
+                    u32::try_from(self.tables.params.len())
+                        .ok()
+                        .and_then(|count: u32| count.checked_add(1))
+                },
+                |next: &MethodDefRow| Some(next.param_list),
+            )?;
+        (start..end)
+            .map(|rid: u32| {
+                rid.checked_sub(1)
+                    .and_then(|row: u32| usize::try_from(row).ok())
+                    .and_then(|index: usize| self.tables.params.get(index))
+            })
+            .collect::<Option<Vec<&crate::tables::ParamRow>>>()?
+            .into_iter()
+            .filter(|parameter: &&crate::tables::ParamRow| parameter.sequence != 0)
+            .all(|parameter: &crate::tables::ParamRow| parameter.flags == 0)
+            .then_some(())
+    }
+
+    fn validate_anonymous_type_fields(&self, type_rid: u32, member_names: &[String]) -> Option<()> {
+        let type_index: usize = type_rid
+            .checked_sub(1)
+            .and_then(|row: u32| usize::try_from(row).ok())?;
+        let type_def: &TypeDefRow = self.tables.type_defs.get(type_index)?;
+        let field_start: u32 = type_def.field_list;
+        let field_end: u32 = self
+            .tables
+            .type_defs
+            .get(type_index.checked_add(1)?)
+            .map_or_else(
+                || {
+                    u32::try_from(self.tables.fields.len())
+                        .ok()
+                        .and_then(|count: u32| count.checked_add(1))
+                },
+                |next: &TypeDefRow| Some(next.field_list),
+            )?;
+        let fields: Vec<&FieldRow> = (field_start..field_end)
+            .map(|rid: u32| {
+                rid.checked_sub(1)
+                    .and_then(|row: u32| usize::try_from(row).ok())
+                    .and_then(|index: usize| self.tables.fields.get(index))
+            })
+            .collect::<Option<Vec<&FieldRow>>>()?;
+        (fields.len() == member_names.len()
+            && fields.iter().enumerate().all(
+                |(index, field): (usize, &&FieldRow)| {
+                    field.flags == FIELD_PRIVATE_INIT_ONLY
+                        && self.string(field.name) == format!("<{}>i__Field", member_names[index])
+                        && self
+                            .blob(field.signature)
+                            .and_then(|blob: &[u8]| parse_field_sig_strict(blob).ok())
+                            .is_some_and(|signature: TypeSig| {
+                                matches!(signature, TypeSig::Var(number) if usize::try_from(number).ok() == Some(index))
+                            })
+                },
+            ))
+        .then_some(())
+    }
+
+    fn type_has_compiler_generated_attribute(&self, type_rid: u32) -> bool {
+        self.tables
+            .custom_attributes
+            .iter()
+            .filter(|attribute: &&crate::tables::CustomAttributeRow| {
+                attribute.parent.is_some_and(|parent: RowRef| {
+                    parent.table == TableId::TypeDef && parent.row == type_rid
+                })
+            })
+            .any(|attribute: &crate::tables::CustomAttributeRow| {
+                self.blob(attribute.value) == Some([0x01, 0x00, 0x00, 0x00].as_slice())
+                    && attribute.attr_type.is_some_and(|constructor: RowRef| {
+                        self.is_compiler_generated_attribute_constructor(constructor)
+                    })
+            })
+    }
+
+    fn is_compiler_generated_attribute_constructor(&self, constructor: RowRef) -> bool {
+        if constructor.table != TableId::MemberRef {
+            return false;
+        }
+        let Some(member_index): Option<usize> = constructor
+            .row
+            .checked_sub(1)
+            .and_then(|row: u32| usize::try_from(row).ok())
+        else {
+            return false;
+        };
+        let Some(member): Option<&MemberRefRow> = self.tables.member_refs.get(member_index) else {
+            return false;
+        };
+        let Some(signature): Option<MethodSig> = self
+            .blob(member.signature)
+            .and_then(|blob: &[u8]| parse_method_sig_strict(blob).ok())
+        else {
+            return false;
+        };
+        if self.string(member.name) != ".ctor"
+            || signature.calling_convention != (SIG_HASTHIS | SIG_DEFAULT)
+            || !signature.has_this
+            || signature.explicit_this
+            || signature.generic_param_count != 0
+            || !matches!(signature.return_type, TypeSigOrVoid::Void)
+            || !signature.params.is_empty()
+        {
+            return false;
+        }
+        let Some(owner): Option<RowRef> = member.parent else {
+            return false;
+        };
+        if owner.table != TableId::TypeRef {
+            return false;
+        }
+        let Some(owner_index): Option<usize> = owner
+            .row
+            .checked_sub(1)
+            .and_then(|row: u32| usize::try_from(row).ok())
+        else {
+            return false;
+        };
+        let Some(row): Option<&TypeRefRow> = self.tables.type_refs.get(owner_index) else {
+            return false;
+        };
+        self.string(row.namespace) == "System.Runtime.CompilerServices"
+            && self.string(row.name) == "CompilerGeneratedAttribute"
+            && row
+                .resolution_scope
+                .is_some_and(|scope: RowRef| self.is_corelib_assembly_ref(scope))
     }
 
     #[must_use]

@@ -123,6 +123,16 @@ pub enum PeelStrategy {
     DetectOnlyNativeOrVm,
 }
 
+impl PeelStrategy {
+    #[must_use]
+    pub const fn is_walled(self) -> bool {
+        matches!(
+            self,
+            Self::ReportOnlyEncryptedResource | Self::DetectOnlyNativeOrVm
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StringHeapView {
     pub offsets: BTreeMap<u32, String>,
@@ -686,6 +696,15 @@ mod tests {
         let c: NameClassification = classify_names(&heap);
         assert_eq!(c.human, 3);
         assert_eq!(c.confuser_style, 0);
+    }
+
+    #[test]
+    fn recovery_boundaries_are_classified_consistently() {
+        assert!(PeelStrategy::ReportOnlyEncryptedResource.is_walled());
+        assert!(PeelStrategy::DetectOnlyNativeOrVm.is_walled());
+        assert!(!PeelStrategy::AttributeStripAndReport.is_walled());
+        assert!(!PeelStrategy::EncryptedResourceExtracted.is_walled());
+        assert!(!PeelStrategy::StaticStringRecovery.is_walled());
     }
 
     #[test]
