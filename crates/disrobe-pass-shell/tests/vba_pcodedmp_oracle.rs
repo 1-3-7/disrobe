@@ -389,6 +389,15 @@ struct Parity {
     mismatches: Vec<String>,
 }
 
+fn assert_same_modules(tag: &str, golden: &ModuleLines, disrobe: &ModuleLines) {
+    let golden_names: Vec<&str> = golden.keys().map(String::as_str).collect();
+    let disrobe_names: Vec<&str> = disrobe.keys().map(String::as_str).collect();
+    assert_eq!(
+        disrobe_names, golden_names,
+        "{tag}: disrobe and pcodedmp must report the same module set"
+    );
+}
+
 fn measure_parity(golden: &ModuleLines, disrobe: &ModuleLines, identifiers: &[String]) -> Parity {
     let mut p: Parity = Parity {
         matched_lines: 0,
@@ -490,6 +499,7 @@ fn assert_full_parity(
         .unwrap_or_else(|e: std::io::Error| panic!("read golden {golden_file}: {e}"));
     let golden: ModuleLines = parse_pcodedmp_golden(&golden_text);
     let disrobe: ModuleLines = disrobe_module_lines(&report);
+    assert_same_modules(tag, &golden, &disrobe);
     let p: Parity = measure_parity(&golden, &disrobe, &report.identifiers);
     assert!(
         p.total_instrs >= min_instrs,
@@ -535,6 +545,25 @@ fn assert_full_parity(
         "{tag}: the count of lines carrying a user-defined type name pcodedmp 1.2.6 could not \
          resolve is pinned; a change here means the type resolver moved, not the fixture"
     );
+}
+
+#[test]
+fn parity_rejects_a_fabricated_disrobe_module() {
+    let bin: Vec<u8> = vbaproject_from_docm("vba/hello.docm");
+    let report: RealPCodeReport = disassemble_pcode_real(&bin).expect("disasm real p-code");
+    let golden_text: String = std::fs::read_to_string(golden_path("hello.pcodedmp.txt"))
+        .expect("read hello pcodedmp golden");
+    let golden: ModuleLines = parse_pcodedmp_golden(&golden_text);
+    let mut disrobe: ModuleLines = disrobe_module_lines(&report);
+    assert_same_modules("hello baseline", &golden, &disrobe);
+    disrobe
+        .entry("FabricatedModule".to_owned())
+        .or_default()
+        .insert(0, vec!["LitDI2 0x0001".to_owned()]);
+    let failure: Result<(), Box<dyn std::any::Any + Send>> = std::panic::catch_unwind(|| {
+        assert_same_modules("hello mutation", &golden, &disrobe);
+    });
+    assert!(failure.is_err(), "a fabricated module must fail parity");
 }
 
 #[test]
