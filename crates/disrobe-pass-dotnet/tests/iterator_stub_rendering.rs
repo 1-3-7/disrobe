@@ -1,10 +1,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use std::path::PathBuf;
+use std::process::{Command, Output};
 
 use disrobe_pass_dotnet::decompile::{DecompiledAssembly, decompile_assembly};
-
-const AWAITER_TYPE: &str =
-    "System.Runtime.CompilerServices.ConfiguredValueTaskAwaitable.ConfiguredValueTaskAwaiter";
 
 fn load(rel: &str) -> Vec<u8> {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -96,6 +94,9 @@ fn an_unreversible_state_machine_states_the_refusal_instead_of_emitting_builder_
 fn an_async_kickoff_reverses_to_its_await_body_with_hoisted_locals_declared() {
     let asm: DecompiledAssembly = edgecases();
     let body: String = kickoff_body(&asm, "EdgeCases.AsyncPlayground", " SumAsync(");
+    let has_bare_await: bool = body
+        .lines()
+        .any(|line: &str| line.trim() == "await System.Threading.Tasks.Task.Yield();");
     assert!(
         body.contains(" async "),
         "the reversed kickoff must carry the async modifier; got:\n{body}"
@@ -105,7 +106,7 @@ fn an_async_kickoff_reverses_to_its_await_body_with_hoisted_locals_declared() {
         "the reversed kickoff must not leak builder plumbing; got:\n{body}"
     );
     assert!(
-        body.contains("await System.Threading.Tasks.Task.Yield();"),
+        has_bare_await,
         "the await from MoveNext must survive into the kickoff; got:\n{body}"
     );
     assert!(
@@ -123,25 +124,52 @@ fn an_async_kickoff_reverses_to_its_await_body_with_hoisted_locals_declared() {
 }
 
 #[test]
-fn dispose_async_declares_nested_awaiter_with_full_scope() {
+fn recovered_async_kickoff_compiles_with_real_csc() {
+    let asm: DecompiledAssembly = edgecases();
+    let body: String = kickoff_body(&asm, "EdgeCases.AsyncPlayground", " SumAsync(");
+    let source: String = format!(
+        "namespace EdgeCases\n{{\n    public static class AsyncPlayground\n    {{\n{body}\n    }}\n}}\n"
+    );
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_async_kickoff_recompile")
+            .expect("create compiler scratch directory");
+    let project: &str = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>net9.0</TargetFramework>\n    <Nullable>disable</Nullable>\n    <ImplicitUsings>disable</ImplicitUsings>\n    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>\n    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>\n  </PropertyGroup>\n  <ItemGroup>\n    <Compile Include=\"AsyncPlayground.cs\" />\n  </ItemGroup>\n</Project>\n";
+    std::fs::write(scratch.path().join("compile.csproj"), project).expect("write project");
+    std::fs::write(scratch.path().join("AsyncPlayground.cs"), &source)
+        .expect("write recovered source");
+    let compiled: Output = Command::new("dotnet")
+        .args(["build", "-c", "Release", "-v", "q", "-nologo"])
+        .current_dir(scratch.path())
+        .output()
+        .unwrap_or_else(|error: std::io::Error| {
+            panic!("the real dotnet SDK is required for this regression: {error}")
+        });
+    assert!(
+        compiled.status.success(),
+        "real csc rejected recovered AsyncPlayground.SumAsync\nsource:\n{source}\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compiled.stdout),
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+}
+
+#[test]
+fn dispose_async_preserves_the_configured_void_await() {
     let asm: DecompiledAssembly = edgecases();
     let body: String = kickoff_body(&asm, "EdgeCases.AsyncDisposableScope", " DisposeAsync(");
-    let has_scoped_declaration: bool = body.lines().any(|line: &str| {
-        let declaration: &str = line.trim();
-        declaration
-            .strip_prefix(AWAITER_TYPE)
-            .is_some_and(|tail: &str| tail.starts_with(" local") && tail.ends_with(';'))
+    let configured_await: bool = body.lines().any(|line: &str| {
+        let statement: &str = line.trim();
+        statement.starts_with("await ") && statement.ends_with(".ConfigureAwait(false);")
     });
-
     assert!(
-        has_scoped_declaration,
-        "AsyncDisposableScope.DisposeAsync must declare its awaiter with the full nested metadata scope:\n{body}"
+        configured_await,
+        "AsyncDisposableScope.DisposeAsync must preserve its configured void await:\n{body}"
     );
     assert!(
-        !body
-            .lines()
-            .any(|line: &str| line.trim().starts_with("ConfiguredValueTaskAwaiter local")),
-        "AsyncDisposableScope.DisposeAsync must not emit a bare nested awaiter declaration:\n{body}"
+        !body.lines().any(|line: &str| {
+            let declaration: &str = line.trim();
+            declaration.contains("ConfiguredValueTaskAwaiter") && declaration.ends_with(';')
+        }),
+        "the configured void await must not retain an unused result or awaiter declaration:\n{body}"
     );
 }
 

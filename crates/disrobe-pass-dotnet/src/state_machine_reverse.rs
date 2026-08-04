@@ -73,7 +73,13 @@ pub fn reverse_move_next(body: &str, sm: &StateMachine) -> (String, u32) {
         StateMachineKind::Iterator => yield_broken,
     };
     let no_bare: Vec<String> = drop_bare_value_statements(&hoisted);
-    let pruned: Vec<String> = drop_unreferenced_local_decls(&no_bare);
+    let collapsed_await_results: Vec<String> = match sm.kind {
+        StateMachineKind::Async | StateMachineKind::AsyncIterator => {
+            collapse_dead_awaiter_results(&no_bare)
+        }
+        StateMachineKind::Iterator => no_bare,
+    };
+    let pruned: Vec<String> = drop_unreferenced_local_decls(&collapsed_await_results);
     let collapsed: Vec<String> = drop_redundant_blank_runs(&pruned);
     let mut out: String = String::with_capacity(body.len());
     for line in &collapsed {
@@ -731,6 +737,92 @@ fn collapse_awaiter_deref(lines: &[String]) -> Vec<String> {
         i += 1;
     }
     out
+}
+
+fn collapse_dead_awaiter_results(lines: &[String]) -> Vec<String> {
+    let awaiter_results: std::collections::BTreeSet<String> = lines
+        .iter()
+        .filter_map(|line: &String| awaiter_decl_name(line))
+        .collect();
+    if awaiter_results.is_empty() {
+        return lines.to_vec();
+    }
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i: usize = 0;
+    while i < lines.len() {
+        if i + 1 < lines.len()
+            && let Some((indent, target, producer)) = match_await_of_local(&lines[i + 1])
+            && awaiter_results.contains(&target)
+            && leading_whitespace(&lines[i]) == indent
+            && !identifier_used_outside_pair(lines, &target, i, i + 1)
+            && !identifier_used_outside_pair(lines, &producer, i, i + 1)
+            && let Some(expression) = local_producer(&lines[i], &producer)
+        {
+            out.push(format!("{indent}await {expression};"));
+            i += 2;
+            continue;
+        }
+        out.push(lines[i].clone());
+        i += 1;
+    }
+    out
+}
+
+fn awaiter_decl_name(line: &str) -> Option<String> {
+    let declaration: &str = line.trim().strip_suffix(';')?;
+    let (ty, name): (&str, &str) = declaration.rsplit_once(' ')?;
+    if !is_local_name(name) || ty.contains('=') || ty.contains('(') {
+        return None;
+    }
+    let terminal: &str = terminal_type_name(ty)?;
+    terminal.ends_with("Awaiter").then(|| name.to_owned())
+}
+
+fn terminal_type_name(ty: &str) -> Option<&str> {
+    let mut generic_depth: usize = 0;
+    let mut terminal_start: usize = 0;
+    let mut generic_start: Option<usize> = None;
+    for (idx, ch) in ty.char_indices() {
+        match ch {
+            '<' => {
+                if generic_depth == 0 && generic_start.is_none() {
+                    generic_start = Some(idx);
+                }
+                generic_depth = generic_depth.checked_add(1)?;
+            }
+            '>' => generic_depth = generic_depth.checked_sub(1)?,
+            '.' | '+' | '/' if generic_depth == 0 => {
+                terminal_start = idx + ch.len_utf8();
+                generic_start = None;
+            }
+            _ => {}
+        }
+    }
+    if generic_depth != 0 {
+        return None;
+    }
+    let terminal_end: usize = generic_start.unwrap_or(ty.len());
+    (terminal_start < terminal_end).then(|| &ty[terminal_start..terminal_end])
+}
+
+fn identifier_used_outside_pair(
+    lines: &[String],
+    name: &str,
+    producer_idx: usize,
+    await_idx: usize,
+) -> bool {
+    lines
+        .iter()
+        .enumerate()
+        .any(|(idx, line): (usize, &String)| {
+            if idx == producer_idx || idx == await_idx {
+                return false;
+            }
+            if local_decl_name(line) == Some(name) {
+                return false;
+            }
+            line_references_identifier(line, name)
+        })
 }
 
 fn simplify_local_deref_assign(lines: &[String]) -> Vec<String> {
@@ -2366,6 +2458,85 @@ mod tests {
             "resume dispatch guard collapsed:\n{out}"
         );
         assert_eq!(points, 1);
+    }
+
+    #[test]
+    fn collapses_dead_awaiter_result_to_a_bare_await() {
+        let lines: Vec<String> = [
+            "System.Runtime.CompilerServices.TaskAwaiter<System.Collections.Generic.List<int>> local2;",
+            "System.Runtime.CompilerServices.YieldAwaitable local3;",
+            "    local3 = System.Threading.Tasks.Task.Yield();",
+            "    local2 = await local3;",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let out: Vec<String> = collapse_dead_awaiter_results(&lines);
+        assert_eq!(
+            out,
+            [
+                "System.Runtime.CompilerServices.TaskAwaiter<System.Collections.Generic.List<int>> local2;",
+                "System.Runtime.CompilerServices.YieldAwaitable local3;",
+                "    await System.Threading.Tasks.Task.Yield();",
+            ]
+        );
+    }
+
+    #[test]
+    fn keeps_awaiter_result_with_any_whole_body_read() {
+        for lines in [
+            [
+                "YieldAwaiter local2;",
+                "Use(local2);",
+                "local3 = Task.Yield();",
+                "local2 = await local3;",
+            ],
+            [
+                "YieldAwaiter local2;",
+                "local3 = Task.Yield();",
+                "local2 = await local3;",
+                "Use(local2);",
+            ],
+        ] {
+            let input: Vec<String> = lines.map(str::to_owned).to_vec();
+            assert_eq!(collapse_dead_awaiter_results(&input), input);
+        }
+    }
+
+    #[test]
+    fn keeps_await_when_the_producer_has_another_use() {
+        let lines: Vec<String> = [
+            "YieldAwaiter local2;",
+            "local3 = Task.Yield();",
+            "local2 = await local3;",
+            "Use(local3);",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        assert_eq!(collapse_dead_awaiter_results(&lines), lines);
+    }
+
+    #[test]
+    fn keeps_dead_await_result_without_an_awaiter_type() {
+        let lines: Vec<String> = [
+            "int local2;",
+            "local3 = ComputeAsync();",
+            "local2 = await local3;",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        assert_eq!(collapse_dead_awaiter_results(&lines), lines);
+    }
+
+    #[test]
+    fn keeps_await_pair_with_mismatched_indentation() {
+        let lines: Vec<String> = [
+            "YieldAwaiter local2;",
+            "    local3 = Task.Yield();",
+            "        local2 = await local3;",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        assert_eq!(collapse_dead_awaiter_results(&lines), lines);
     }
 
     #[test]
