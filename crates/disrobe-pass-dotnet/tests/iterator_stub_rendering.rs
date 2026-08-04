@@ -3,6 +3,9 @@ use std::path::PathBuf;
 
 use disrobe_pass_dotnet::decompile::{DecompiledAssembly, decompile_assembly};
 
+const AWAITER_TYPE: &str =
+    "System.Runtime.CompilerServices.ConfiguredValueTaskAwaitable.ConfiguredValueTaskAwaiter";
+
 fn load(rel: &str) -> Vec<u8> {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push(rel);
@@ -116,6 +119,29 @@ fn an_async_kickoff_reverses_to_its_await_body_with_hoisted_locals_declared() {
     assert!(
         body.contains("return local1;"),
         "the result register must still be returned; got:\n{body}"
+    );
+}
+
+#[test]
+fn dispose_async_declares_nested_awaiter_with_full_scope() {
+    let asm: DecompiledAssembly = edgecases();
+    let body: String = kickoff_body(&asm, "EdgeCases.AsyncDisposableScope", " DisposeAsync(");
+    let has_scoped_declaration: bool = body.lines().any(|line: &str| {
+        let declaration: &str = line.trim();
+        declaration
+            .strip_prefix(AWAITER_TYPE)
+            .is_some_and(|tail: &str| tail.starts_with(" local") && tail.ends_with(';'))
+    });
+
+    assert!(
+        has_scoped_declaration,
+        "AsyncDisposableScope.DisposeAsync must declare its awaiter with the full nested metadata scope:\n{body}"
+    );
+    assert!(
+        !body
+            .lines()
+            .any(|line: &str| line.trim().starts_with("ConfiguredValueTaskAwaiter local")),
+        "AsyncDisposableScope.DisposeAsync must not emit a bare nested awaiter declaration:\n{body}"
     );
 }
 

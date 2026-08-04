@@ -1874,6 +1874,10 @@ impl Resolver {
 
     #[must_use]
     fn type_ref_name(&self, rid: u32) -> Option<String> {
+        let token: u32 = (u32::from(TableId::TypeRef.index()) << 24) | rid;
+        if let Some(rendered) = self.render_nested_type_ref(token, &[], TargetLang::CSharp) {
+            return Some(rendered);
+        }
         let row: &TypeRefRow = self.tables.type_refs.get(rid.checked_sub(1)? as usize)?;
         Some(Self::qualify(
             self.string(row.namespace),
@@ -2191,7 +2195,7 @@ impl Resolver {
     pub fn render_type(&self, sig: &TypeSig, lang: TargetLang) -> String {
         if let TypeSig::GenericInst { base, args } = sig
             && let TypeSig::NamedType { token, .. } = base.as_ref()
-            && let Some(rendered) = self.render_nested_generic_inst(*token, args, lang)
+            && let Some(rendered) = self.render_nested_type_ref(*token, args, lang)
         {
             return rendered;
         }
@@ -2200,8 +2204,12 @@ impl Resolver {
 
     fn type_ref_nesting_chain(&self, rid: u32) -> Option<Vec<(String, String)>> {
         let mut chain: Vec<(String, String)> = Vec::new();
+        let mut visited: BTreeSet<u32> = BTreeSet::new();
         let mut cur: u32 = rid;
         loop {
+            if chain.len() >= 16 || !visited.insert(cur) {
+                return None;
+            }
             let row: &crate::tables::TypeRefRow =
                 self.tables.type_refs.get(cur.checked_sub(1)? as usize)?;
             chain.push((self.string(row.namespace), self.string(row.name)));
@@ -2209,15 +2217,12 @@ impl Resolver {
                 Some(scope) if scope.table == TableId::TypeRef => cur = scope.row,
                 _ => break,
             }
-            if chain.len() > 16 {
-                break;
-            }
         }
         chain.reverse();
         Some(chain)
     }
 
-    fn render_nested_generic_inst(
+    fn render_nested_type_ref(
         &self,
         token: u32,
         args: &[TypeSig],
@@ -2795,6 +2800,38 @@ mod tests {
         assert_eq!(generic_arity("Dictionary`2"), 2);
         assert_eq!(generic_arity("Enumerator"), 0);
         assert_eq!(generic_arity("Weird`x"), 0);
+    }
+
+    #[test]
+    fn type_ref_nesting_chain_rejects_cycles() {
+        let mut resolver: Resolver =
+            resolver_for("../../corpus/dotnet/megafile/EdgeCases.baseline.dll");
+        let outer: usize = resolver
+            .tables
+            .type_refs
+            .iter()
+            .position(|row: &TypeRefRow| {
+                resolver.string(row.name) == "ConfiguredValueTaskAwaitable"
+            })
+            .expect("ConfiguredValueTaskAwaitable TypeRef");
+        let nested: usize = resolver
+            .tables
+            .type_refs
+            .iter()
+            .position(|row: &TypeRefRow| resolver.string(row.name) == "ConfiguredValueTaskAwaiter")
+            .expect("ConfiguredValueTaskAwaiter TypeRef");
+        let outer_rid: u32 = u32::try_from(outer + 1).expect("outer TypeRef rid");
+        let nested_rid: u32 = u32::try_from(nested + 1).expect("nested TypeRef rid");
+        resolver.tables.type_refs[outer].resolution_scope = Some(RowRef {
+            table: TableId::TypeRef,
+            row: nested_rid,
+        });
+        resolver.tables.type_refs[nested].resolution_scope = Some(RowRef {
+            table: TableId::TypeRef,
+            row: outer_rid,
+        });
+
+        assert_eq!(resolver.type_ref_nesting_chain(nested_rid), None);
     }
 
     #[test]
