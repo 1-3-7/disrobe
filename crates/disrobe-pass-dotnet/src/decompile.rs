@@ -234,7 +234,13 @@ fn decompile_one(
             };
             let raw_sig: String = match lang {
                 TargetLang::CSharp => {
-                    format!("// {}{provenance}\n{}", ty.full_name, m.csharp_signature())
+                    let override_kind: Option<crate::model::CSharpOverrideKind> =
+                        resolver.csharp_value_type_override_kind(ty.token, m.token);
+                    format!(
+                        "// {}{provenance}\n{}",
+                        ty.full_name,
+                        m.csharp_signature_with_override(override_kind)
+                    )
                 }
                 TargetLang::FSharp => {
                     format!("// {}{provenance}\n{}", ty.full_name, m.fsharp_signature())
