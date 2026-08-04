@@ -14,12 +14,25 @@
 - (void)setValue:(id)v forKey:(id)k;
 @end
 
+struct DispatchRecord {
+    unsigned long first;
+    unsigned long second;
+    unsigned long third;
+};
+
 @interface Courier : NSObject
 - (id)describe;
+- (struct DispatchRecord)superSummaryFirst:(unsigned long)first second:(unsigned long)second third:(unsigned long)third fourth:(unsigned long)fourth;
 @end
 
 @interface FastCourier : Courier
 - (id)describe;
+- (struct DispatchRecord)superSummaryFirst:(unsigned long)first second:(unsigned long)second third:(unsigned long)third fourth:(unsigned long)fourth;
+@end
+
+@interface Parcel : NSObject
++ (struct DispatchRecord)classSummaryFirst:(unsigned long)first second:(unsigned long)second third:(unsigned long)third fourth:(unsigned long)fourth;
+- (struct DispatchRecord)instanceSummaryFirst:(unsigned long)first second:(unsigned long)second third:(unsigned long)third fourth:(unsigned long)fourth;
 @end
 
 id make_greeting(const char *raw) {
@@ -63,8 +76,20 @@ id branch_shared_classref(int flag, const char *raw) {
     return [NSString string];
 }
 
+struct DispatchRecord class_summary(unsigned long first, unsigned long second, unsigned long third, unsigned long fourth) {
+    return [Parcel classSummaryFirst:first second:second third:third fourth:fourth];
+}
+
+struct DispatchRecord dynamic_summary(Parcel *parcel, unsigned long first, unsigned long second, unsigned long third, unsigned long fourth) {
+    return [parcel instanceSummaryFirst:first second:second third:third fourth:fourth];
+}
+
 @implementation FastCourier
 - (id)describe {
     return [super describe];
+}
+
+- (struct DispatchRecord)superSummaryFirst:(unsigned long)first second:(unsigned long)second third:(unsigned long)third fourth:(unsigned long)fourth {
+    return [super superSummaryFirst:first second:second third:third fourth:fourth];
 }
 @end
