@@ -205,11 +205,22 @@ runs:
           read -r -a extra <<< "${DR_ARGS}"
         fi
 
+        declare -a outflag=()
+        if [ "${DR_COMMAND}" = "auto" ]; then
+          outflag=(--out "${DR_OUT}")
+        fi
+
         status=0
         "${DR_BIN}" "${DR_COMMAND}" "${DR_PATH}" \
           "${extra[@]}" \
           --sarif \
-          --out "${DR_OUT}" > "${DR_SARIF}" 2> disrobe.log || status=$?
+          "${outflag[@]}" > "${DR_SARIF}" 2> disrobe.log || status=$?
+
+        if grep -qiE '^error: (unexpected argument|unrecognized|invalid value|the following required)' disrobe.log; then
+          echo "::error::disrobe ${DR_COMMAND} rejected the arguments this action built"
+          sed -n '1,20p' disrobe.log
+          exit 1
+        fi
 
         if [ ! -s "${DR_SARIF}" ] || ! head -c 1 "${DR_SARIF}" | grep -q '{'; then
           printf '%s\n' '{"$schema":"https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json","version":"2.1.0","runs":[{"tool":{"driver":{"name":"disrobe","rules":[]}},"results":[]}]}' > "${DR_SARIF}"
