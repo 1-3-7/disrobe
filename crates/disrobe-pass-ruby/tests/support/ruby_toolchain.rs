@@ -28,6 +28,7 @@ pub(crate) const MRUBY: Toolchain = Toolchain {
 };
 
 pub(crate) const MRI_MEASURED_SERIES: &str = "ruby 3.4";
+pub(crate) const MRUBY_MEASURED_SERIES: &str = "mruby 3.3.0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ToolchainRequirement {
