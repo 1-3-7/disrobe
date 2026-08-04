@@ -273,10 +273,11 @@ fn lambda_params(signature: &str) -> Option<Vec<String>> {
     if inner.is_empty() {
         return Some(Vec::new());
     }
-    let names: Option<Vec<String>> = inner
-        .split(',')
-        .map(|p: &str| param_name(p.trim()))
-        .collect();
+    let names: Option<Vec<String>> =
+        crate::structurize::split_csharp_parameter_declarations(inner)?
+            .into_iter()
+            .map(|parameter: &str| param_name(parameter.trim()))
+            .collect();
     names
 }
 

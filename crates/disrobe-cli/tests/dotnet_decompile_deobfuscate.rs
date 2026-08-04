@@ -184,7 +184,7 @@ fn deobfuscate_obfuscar_classifies_renamable_identifiers() {
 }
 
 #[test]
-fn deobfuscate_forced_themida_surfaces_honest_wall() {
+fn deobfuscate_forced_themida_surfaces_recovery_boundary() {
     let input: PathBuf = corpus("HelloApp.dll");
     let out_scratch: disrobe_core::scratch::ScratchDir = out_dir("peel-wall");
     let out: PathBuf = out_scratch.path().to_path_buf();
@@ -199,8 +199,10 @@ fn deobfuscate_forced_themida_surfaces_honest_wall() {
     ]);
     assert_eq!(r.code, 0, "stdout:\n{}\nstderr:\n{}", r.stdout, r.stderr);
     assert!(
-        r.stdout.contains("WALL") && r.stdout.contains("not fabricated"),
-        "wall must be surfaced honestly, not as fake success:\n{}",
+        r.stdout.contains("WALL")
+            && r.stdout
+                .contains("protected methods were detected but not emitted"),
+        "the recovery boundary must be explicit:\n{}",
         r.stdout
     );
     let report: String = std::fs::read_to_string(out.join("peel.json")).expect("peel.json");

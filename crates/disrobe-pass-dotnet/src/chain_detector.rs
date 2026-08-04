@@ -17,7 +17,7 @@ use crate::pe::{DataDirectory, PeImage, parse as parse_pe};
 use crate::peel::confuserex_constants::{ConfuserConstantsRecovery, peel_confuserex_constants};
 use crate::peel::static_decrypt::{DecodedValue, RecoveredConstant};
 use crate::peel::string_emu::RecoveredString as EmulatedString;
-use crate::peel::{PeelReport, PeelStrategy, RecoveredMethod, RecoveredResource, peel_by};
+use crate::peel::{PeelReport, RecoveredMethod, RecoveredResource, peel_by};
 use crate::protectors::{DetectionReport, Handling, Protector, detect_all};
 use crate::structurize::StructuredMethod;
 
@@ -227,7 +227,7 @@ fn analyze_manifest(summary: &PassSummary) -> serde_json::Value {
 }
 
 fn peel_manifest(protector: Protector, report: &PeelReport) -> serde_json::Value {
-    let walled: bool = report.strategy == PeelStrategy::DetectOnlyNativeOrVm;
+    let walled: bool = report.strategy.is_walled();
     let recovered_resources: Vec<serde_json::Value> = report
         .recovered_resources
         .iter()
@@ -609,6 +609,7 @@ impl ObfuscatorCatalog for DotnetDetector {
 )]
 mod tests {
     use super::*;
+    use crate::peel::PeelStrategy;
     use disrobe_core::Rung;
 
     fn ctx(bytes: &[u8]) -> DetectContext<'_> {
@@ -652,6 +653,33 @@ mod tests {
             }
             _ => panic!("expected Source"),
         }
+    }
+
+    #[test]
+    fn report_only_peel_manifest_marks_the_recovery_boundary() {
+        let report: PeelReport = PeelReport {
+            protector: Protector::BabelDotnet,
+            strategy: PeelStrategy::ReportOnlyEncryptedResource,
+            attributes_stripped: Vec::new(),
+            strings_total: 0,
+            strings_obfuscated_count: 0,
+            us_strings_total: 0,
+            renamable_identifiers: 0,
+            unobfuscatable_identifiers: 0,
+            bytes_in: 0,
+            bytes_out: 0,
+            recovered_decoders: 0,
+            recovered_constants: Vec::new(),
+            recovered_strings: Vec::new(),
+            recovered_methods: Vec::new(),
+            recovered_resources: Vec::new(),
+            native_surface: None,
+            notes: Vec::new(),
+        };
+        assert_eq!(
+            peel_manifest(Protector::BabelDotnet, &report)["walled"],
+            true
+        );
     }
 
     #[test]

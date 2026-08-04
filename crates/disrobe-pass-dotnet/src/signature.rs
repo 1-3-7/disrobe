@@ -445,10 +445,16 @@ impl<'a> SigReader<'a> {
                 let element: TypeSig = self.type_sig()?;
                 let rank: u32 = self.compressed()?;
                 let num_sizes: u32 = self.compressed()?;
+                if self.reject_custom_modifiers && (rank == 0 || num_sizes > rank) {
+                    return Err(Error::BadCompressedUint(self.reader.position()));
+                }
                 for _ in 0..num_sizes {
                     let _ = self.compressed()?;
                 }
                 let num_lo: u32 = self.compressed()?;
+                if self.reject_custom_modifiers && num_lo > rank {
+                    return Err(Error::BadCompressedUint(self.reader.position()));
+                }
                 for _ in 0..num_lo {
                     let _ = self.compressed()?;
                 }
@@ -458,8 +464,15 @@ impl<'a> SigReader<'a> {
                 }
             }
             et::GENERICINST => {
+                let base_position: usize = self.reader.position();
                 let base: TypeSig = self.type_sig()?;
+                if self.reject_custom_modifiers && !matches!(base, TypeSig::NamedType { .. }) {
+                    return Err(Error::BadCompressedUint(base_position));
+                }
                 let argc: u32 = self.compressed()?;
+                if self.reject_custom_modifiers && argc == 0 {
+                    return Err(Error::BadCompressedUint(self.reader.position()));
+                }
                 let capacity: usize = self.signature_capacity(argc)?;
                 let mut args: Vec<TypeSig> = Vec::with_capacity(capacity);
                 for _ in 0..argc {
@@ -684,9 +697,75 @@ fn valid_strict_local_type(signature: &TypeSig) -> bool {
     }
 }
 
+fn valid_strict_generic_argument(signature: &TypeSig) -> bool {
+    match signature {
+        TypeSig::Boolean
+        | TypeSig::Char
+        | TypeSig::I1
+        | TypeSig::U1
+        | TypeSig::I2
+        | TypeSig::U2
+        | TypeSig::I4
+        | TypeSig::U4
+        | TypeSig::I8
+        | TypeSig::U8
+        | TypeSig::R4
+        | TypeSig::R8
+        | TypeSig::String
+        | TypeSig::IntPtr
+        | TypeSig::UIntPtr
+        | TypeSig::Object
+        | TypeSig::NamedType { .. }
+        | TypeSig::Var(_)
+        | TypeSig::MVar(_) => true,
+        TypeSig::Void
+        | TypeSig::TypedByRef
+        | TypeSig::Ptr(_)
+        | TypeSig::ByRef(_)
+        | TypeSig::Pinned(_)
+        | TypeSig::FnPtr
+        | TypeSig::Unknown => false,
+        TypeSig::SzArray(inner) => valid_strict_generic_argument(inner),
+        TypeSig::Array { element, rank } => *rank != 0 && valid_strict_generic_argument(element),
+        TypeSig::GenericInst { base, args } => {
+            matches!(base.as_ref(), TypeSig::NamedType { .. })
+                && !args.is_empty()
+                && args.iter().all(valid_strict_generic_argument)
+        }
+    }
+}
+
+fn valid_strict_type_spec(signature: &TypeSig) -> bool {
+    match signature {
+        TypeSig::SzArray(inner)
+        | TypeSig::Ptr(inner)
+        | TypeSig::ByRef(inner)
+        | TypeSig::Pinned(inner) => valid_strict_type_spec(inner),
+        TypeSig::Array { element, rank } => *rank != 0 && valid_strict_type_spec(element),
+        TypeSig::GenericInst { base, args } => {
+            matches!(base.as_ref(), TypeSig::NamedType { .. })
+                && args.iter().all(valid_strict_generic_argument)
+        }
+        _ => valid_strict_local_type(signature),
+    }
+}
+
 pub fn parse_type_spec_sig(blob: &[u8]) -> Result<TypeSig> {
     let mut r: SigReader<'_> = SigReader::new(blob);
-    r.type_sig()
+    let signature: TypeSig = r.type_sig()?;
+    if r.remaining() != 0 {
+        return Err(Error::BadCompressedUint(r.reader.position()));
+    }
+    Ok(signature)
+}
+
+pub(crate) fn parse_type_spec_sig_strict(blob: &[u8]) -> Result<TypeSig> {
+    let mut r: SigReader<'_> = SigReader::new_strict(blob);
+    let signature: TypeSig = r.type_sig()?;
+    if r.remaining() != 0 || !valid_strict_type_spec(&signature) {
+        return Err(Error::BadCompressedUint(r.reader.position()));
+    }
+    Ok(signature)
 }
 
 #[cfg(test)]
@@ -754,6 +833,111 @@ mod tests {
             result,
             Err(Error::SignatureTooDeep(MAX_SIG_DEPTH))
         ));
+    }
+
+    #[test]
+    fn type_spec_rejects_trailing_bytes_and_invalid_generic_instances() {
+        assert!(parse_type_spec_sig(&[element_type::I4, element_type::I8]).is_err());
+        assert!(
+            parse_type_spec_sig_strict(&[
+                element_type::GENERICINST,
+                element_type::I4,
+                0x01,
+                element_type::I4,
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_type_spec_sig_strict(&[
+                element_type::GENERICINST,
+                element_type::CLASS,
+                0x05,
+                0x01,
+                element_type::ARRAY,
+                element_type::I4,
+                0x01,
+                0x02,
+                0x01,
+                0x01,
+                0x00,
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_type_spec_sig_strict(&[
+                element_type::SZARRAY,
+                element_type::GENERICINST,
+                element_type::CLASS,
+                0x05,
+                0x01,
+                element_type::BYREF,
+                element_type::I4,
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_type_spec_sig_strict(&[
+                element_type::GENERICINST,
+                element_type::CLASS,
+                0x05,
+                0x01,
+                element_type::BYREF,
+                element_type::I4,
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_type_spec_sig_strict(&[
+                element_type::GENERICINST,
+                element_type::CLASS,
+                0x05,
+                0x00,
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_type_spec_sig_strict(&[
+                element_type::GENERICINST,
+                element_type::CLASS,
+                0x05,
+                0x01,
+                0xFF,
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_type_spec_sig_strict(&[
+                element_type::GENERICINST,
+                element_type::CLASS,
+                0x05,
+                0x01,
+                element_type::CMOD_OPT,
+                0x05,
+                element_type::I4,
+            ])
+            .is_err()
+        );
+        let valid: TypeSig = parse_type_spec_sig_strict(&[
+            element_type::GENERICINST,
+            element_type::CLASS,
+            0x05,
+            0x02,
+            element_type::VAR,
+            0x00,
+            element_type::VAR,
+            0x01,
+        ])
+        .expect("valid strict generic instance");
+        assert_eq!(
+            valid,
+            TypeSig::GenericInst {
+                base: Box::new(TypeSig::NamedType {
+                    is_value_type: false,
+                    token: 0x0100_0001,
+                }),
+                args: vec![TypeSig::Var(0), TypeSig::Var(1)],
+            }
+        );
     }
 
     #[test]

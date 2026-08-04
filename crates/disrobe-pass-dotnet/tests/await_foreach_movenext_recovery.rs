@@ -75,8 +75,11 @@ fn await_foreach_movenext_bodies_are_type_checkable() {
 fn await_foreach_dispose_rethrow_recovers_the_captured_exception() {
     let asm: DecompiledAssembly = decompile();
     let body: String = move_next_body(&asm, "ConsumeAsync");
+    let lines: Vec<&str> = body.lines().map(str::trim).collect();
     assert!(
-        body.contains("if (local6 != null)\n        {\n            throw local6;\n        }"),
+        lines.windows(4).any(|window: &[&str]| {
+            window == ["if (local6 != null)", "{", "throw local6;", "}"]
+        }),
         "the <ConsumeAsync> DisposeAsync captured exception must rethrow as `throw local6;`:\n{body}"
     );
     assert!(
