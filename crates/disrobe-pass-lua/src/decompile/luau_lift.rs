@@ -1,4 +1,4 @@
-use crate::decompile::luau_structure::{StructuredBlock, structure_blocks};
+use crate::decompile::luau_structure::{StructureResult, StructuredBlock, structure_blocks};
 use crate::decompile::{DecompiledChunk, Fidelity};
 use crate::error::Result;
 use crate::reader::common::{LuaChunk, LuaConstant, LuaProto};
@@ -491,8 +491,15 @@ fn lift_proto(
 
     let mut all: Vec<LiftedStmt> = pre;
     all.extend(state.stmts);
-    let blocks: Vec<StructuredBlock> = structure_blocks(&all, proto.code.len());
-    let body: String = render_blocks(&blocks, 1);
+    let structured: StructureResult = structure_blocks(&all, proto.code.len());
+    if structured.unresolved_jumps > 0 {
+        warnings.push(format!(
+            "{} unresolved luau control-flow jump(s) retained as markers",
+            structured.unresolved_jumps
+        ));
+        *fully_structured = false;
+    }
+    let body: String = render_blocks(&structured.blocks, 1);
 
     let mut out: String = String::new();
     out.push_str(&header);
@@ -1545,5 +1552,51 @@ mod tests {
         assert_eq!(op_length(LOP_GETIMPORT), 2);
         assert_eq!(op_length(LOP_NAMECALL), 2);
         assert_eq!(op_length(LOP_MOVE), 1);
+    }
+
+    #[test]
+    fn unresolved_jump_downgrades_fidelity() {
+        let jump: u32 = u32::from(LOP_JUMP) | (1 << 16);
+        let proto: LuaProto = LuaProto {
+            source: None,
+            line_defined: 0,
+            last_line_defined: 0,
+            num_params: 0,
+            is_vararg: 0,
+            max_stack_size: 2,
+            code: vec![jump, u32::from(LOP_RETURN)],
+            constants: Vec::new(),
+            protos: Vec::new(),
+            source_lines: Vec::new(),
+            locals: Vec::new(),
+            upvalues: Vec::new(),
+        };
+        let chunk: LuaChunk = LuaChunk {
+            dialect: crate::reader::common::LuaDialect::Luau,
+            version_byte: 11,
+            format: 0,
+            little_endian: true,
+            size_of_int: 4,
+            size_of_size_t: 8,
+            size_of_instruction: 4,
+            size_of_lua_integer: 8,
+            size_of_lua_number: 8,
+            integral_number: false,
+            main: proto,
+        };
+
+        let decompiled: DecompiledChunk = decompile(&chunk)
+            .unwrap_or_else(|error: crate::error::Error| panic!("decompile failed: {error}"));
+
+        assert_eq!(decompiled.fidelity, Fidelity::BestEffort);
+        assert_eq!(
+            decompiled.warnings,
+            vec!["1 unresolved luau control-flow jump(s) retained as markers"]
+        );
+        assert!(
+            decompiled
+                .source
+                .contains("error(\"disrobe: unresolved luau jump to pc 2\")")
+        );
     }
 }

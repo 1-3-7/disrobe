@@ -102,27 +102,25 @@ fn strip_src_locations(line: &str) -> String {
     result
 }
 
-fn recovered_source(name: &str) -> String {
+fn recovered_chunk(name: &str) -> DecompiledChunk {
     let bc_path: PathBuf = samples_dir().join(format!("{name}.luau"));
     let bytes: Vec<u8> = fs::read(&bc_path)
         .unwrap_or_else(|e| panic!("luau bytecode fixture {name}.luau must be tracked: {e}"));
     let chunk: LuaChunk = luau::read(&bytes).expect("parse luau bytecode");
-    let dc: DecompiledChunk = decompile_chunk(&chunk).expect("luau decompile");
-    dc.source
+    decompile_chunk(&chunk).expect("luau decompile")
 }
 
-fn oracle(name: &str) {
-    let Some(interp): Option<String> = find_tool(&["luau", "luau.exe"]) else {
-        eprintln!("no luau runtime on PATH; skipping execution oracle for {name}");
-        return;
-    };
+fn recovered_source(name: &str) -> String {
+    recovered_chunk(name).source
+}
+
+fn oracle_with_runtime(name: &str, interp: &str, recovered: String) {
     let src_path: PathBuf = samples_dir().join("src").join(format!("{name}.lua"));
     let original_src: String = fs::read_to_string(&src_path)
         .unwrap_or_else(|e| panic!("source fixture {name}.lua must be tracked: {e}"));
-    let expected: String = run_luau(&interp, &original_src)
+    let expected: String = run_luau(interp, &original_src)
         .unwrap_or_else(|| panic!("original {name}.lua failed to run under {interp}"));
-    let recovered: String = recovered_source(name);
-    let actual: String = run_luau(&interp, &recovered)
+    let actual: String = run_luau(interp, &recovered)
         .unwrap_or_else(|| panic!("recovered {name} failed to run under {interp}\n{recovered}"));
     assert_eq!(
         normalize(&actual),
@@ -130,6 +128,37 @@ fn oracle(name: &str) {
         "{name}: recovered output must match original\n--- recovered ---\n{recovered}"
     );
     eprintln!("luau oracle {name}: OK");
+}
+
+fn oracle(name: &str) {
+    let Some(interp): Option<String> = find_tool(&["luau", "luau.exe"]) else {
+        eprintln!("no luau runtime on PATH; skipping execution oracle for {name}");
+        return;
+    };
+    oracle_with_runtime(name, &interp, recovered_source(name));
+}
+
+fn require_tool(names: &[&str], purpose: &str) -> String {
+    find_tool(names).unwrap_or_else(|| {
+        panic!("Luau 0.725 {purpose} is required on PATH for the continue/else differential")
+    })
+}
+
+fn compile_fixture(compiler: &str, source: &PathBuf) -> Vec<u8> {
+    let output: std::process::Output = Command::new(compiler)
+        .arg("--binary")
+        .arg(source)
+        .output()
+        .unwrap_or_else(|error: std::io::Error| {
+            panic!("Luau 0.725 compiler failed to launch: {error}")
+        });
+    assert!(
+        output.status.success(),
+        "Luau 0.725 compiler exited {}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
 }
 
 #[test]
@@ -145,6 +174,30 @@ fn oracle_control_flow() {
 #[test]
 fn oracle_oop_functional() {
     oracle("oop_functional");
+}
+
+#[test]
+fn oracle_luau_continue_else() {
+    let name: &str = "luau_continue_else";
+    let runtime: String = require_tool(&["luau", "luau.exe"], "runtime");
+    let compiler: String = require_tool(&["luau-compile", "luau-compile.exe"], "compiler");
+    let source_path: PathBuf = samples_dir().join("src").join(format!("{name}.lua"));
+    let fixture_path: PathBuf = samples_dir().join(format!("{name}.luau"));
+    let fixture: Vec<u8> = fs::read(&fixture_path)
+        .unwrap_or_else(|error: std::io::Error| panic!("fixture must be tracked: {error}"));
+    let regenerated: Vec<u8> = compile_fixture(&compiler, &source_path);
+    assert_eq!(
+        regenerated, fixture,
+        "Luau 0.725 compiler must reproduce the committed continue/else fixture"
+    );
+    let recovered: DecompiledChunk = recovered_chunk(name);
+    assert_ne!(recovered.fidelity, disrobe_pass_lua::Fidelity::BestEffort);
+    assert!(
+        !recovered.source.contains("unresolved luau jump"),
+        "the compiler-generated branch delimiter must not survive as an unresolved jump\n{}",
+        recovered.source
+    );
+    oracle_with_runtime(name, &runtime, recovered.source);
 }
 
 #[test]
@@ -167,6 +220,7 @@ fn all_samples_parse_and_emit_source() {
         "control_flow",
         "closures_recursion",
         "oop_functional",
+        "luau_continue_else",
     ] {
         let recovered: String = recovered_source(name);
         assert!(

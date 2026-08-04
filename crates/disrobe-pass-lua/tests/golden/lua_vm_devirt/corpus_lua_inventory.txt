@@ -2,6 +2,7 @@ baseline/hello.lua
 decompile_samples/src/arith_loops.lua
 decompile_samples/src/closures_recursion.lua
 decompile_samples/src/control_flow.lua
+decompile_samples/src/luau_continue_else.lua
 decompile_samples/src/oop_functional.lua
 hercules/gauntlet/gauntlet_clean.lua
 hercules/gauntlet/gauntlet_obfuscated.lua
