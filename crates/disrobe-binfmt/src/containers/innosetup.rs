@@ -3,6 +3,7 @@ use std::io::Read as _;
 use disrobe_core::codec::crc32_ieee;
 use serde::{Deserialize, Serialize};
 
+use crate::container::find_subslice;
 use crate::error::{Error, Result};
 use crate::native_image::{NativeImage, parse_native_image};
 use disrobe_bytes::ByteReader;
@@ -167,7 +168,7 @@ pub fn detect_innosetup(bytes: &[u8]) -> Option<InnoSetupInfo> {
     }
     let mut from: usize = 0;
     while let Some(rest) = bytes.get(from..) {
-        let offset: usize = find_subslice(rest, INNO_DATA_ID_PREFIX)?;
+        let offset: usize = find_subslice(rest, INNO_DATA_ID_PREFIX, 0)?;
         let id_at: usize = from + offset;
         if let Some(info) = inno_info_at(bytes, id_at, loader) {
             return Some(info);
@@ -534,13 +535,13 @@ pub fn extract_inno_file_chunks(
     let mut chunks: Vec<InnoFileChunk> = Vec::new();
     let mut pos: usize = scan_floor;
     let mut total: u64 = 0;
-    while let Some(rel) = find_subslice(&bytes[pos..], &INNO_CHUNK_MAGIC) {
+    while let Some(rel) = find_subslice(&bytes[pos..], &INNO_CHUNK_MAGIC, 0) {
         let chunk_start: usize = pos + rel + INNO_CHUNK_MAGIC.len();
         let Some(body) = bytes.get(chunk_start..) else {
             break;
         };
         let next_magic: usize =
-            find_subslice(body, &INNO_CHUNK_MAGIC).map_or(body.len(), |rel: usize| rel);
+            find_subslice(body, &INNO_CHUNK_MAGIC, 0).map_or(body.len(), |rel: usize| rel);
         let budget: u64 = max_total.saturating_sub(total);
         let Some((decoded, consumed, compression)) = decode_inno_chunk(body, next_magic, budget)
         else {
@@ -690,22 +691,6 @@ fn bcj_x86_decode(data: &[u8]) -> Vec<u8> {
 
 fn crc32(data: &[u8]) -> u32 {
     crc32_ieee(data)
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return None;
-    }
-    let first: u8 = needle[0];
-    let mut from: usize = 0;
-    while let Some(rel) = haystack[from..].iter().position(|&b: &u8| b == first) {
-        let at: usize = from + rel;
-        if haystack[at..].starts_with(needle) {
-            return Some(at);
-        }
-        from = at + 1;
-    }
-    None
 }
 
 #[inline]

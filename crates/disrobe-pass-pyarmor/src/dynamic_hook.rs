@@ -595,6 +595,120 @@ mod tests {
     }
 
     #[test]
+    fn successful_hotpatch_session_is_uninstalled_and_drained() {
+        let spec: InterpreterSpec =
+            locate_python(Some((3, 12))).expect("Python 3.12 is required for the hotpatch gate");
+        let version: (u8, u8, u8) = python_version(&spec).expect("query Python version");
+        assert_eq!(
+            (version.0, version.1),
+            (3, 12),
+            "the hotpatch gate requires Python 3.12, got {version:?} from {}",
+            spec.display_label()
+        );
+
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("pyarmor-hotpatch-lifecycle")
+                .expect("create scratch dir");
+        let root: &Path = scratch.path();
+        let helper_path: PathBuf = root.join("v6v7_dynamic_hook.py");
+        let wrapper_path: PathBuf = root.join("wrapper.py");
+        let shim_path: PathBuf = root.join("disrobe_cextract.py");
+        let out_dir: PathBuf = root.join("out");
+        let marker_path: PathBuf = root.join("cextract-order.txt");
+        let shim: &str = r#"import marshal
+import os
+import pathlib
+
+__limitation__ = "hotpatch lifecycle test shim"
+capture_entry = None
+
+def install_intercept(out_dir, wrapper_stem, magic_number, prefer):
+    global capture_entry
+    destination = pathlib.Path(out_dir) / f"{wrapper_stem}.hotpatch.pyc"
+    body = marshal.dumps(compile("hotpatch_value = 42\n", "<hotpatch-shim>", "exec"))
+    destination.write_bytes(bytes(magic_number[:4]) + b"\x00" * 12 + body)
+    capture_entry = {
+        "pyc_path": str(destination),
+        "size": destination.stat().st_size,
+        "blake3": "protocol-shim",
+    }
+    return "hotpatch"
+
+def uninstall_intercept():
+    marker = pathlib.Path(os.environ["DISROBE_CEXTRACT_ORDER_MARKER"])
+    marker.write_text("uninstall\n", encoding="utf-8")
+    return 1
+
+def drain_into_manifest():
+    marker = pathlib.Path(os.environ["DISROBE_CEXTRACT_ORDER_MARKER"])
+    if not marker.is_file() or marker.read_text(encoding="utf-8") != "uninstall\n":
+        raise RuntimeError("drain called before uninstall")
+    marker.write_text("uninstall\ndrain\n", encoding="utf-8")
+    return [capture_entry]
+"#;
+        std::fs::write(&helper_path, HELPER_SCRIPT).expect("write dynamic-hook helper");
+        std::fs::write(&wrapper_path, "wrapper_value = 7\n").expect("write benign wrapper");
+        std::fs::write(&shim_path, shim).expect("write cextract protocol shim");
+
+        let mut command: Command = Command::new(&spec.exe);
+        command.args(&spec.version_args);
+        command
+            .arg(&helper_path)
+            .arg(&wrapper_path)
+            .arg(&out_dir)
+            .current_dir(root)
+            .env("PYTHONPATH", root)
+            .env("PYTHONIOENCODING", "utf-8")
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .env("DISROBE_DISABLE_PYTRACE", "1")
+            .env("DISROBE_DISABLE_CEXTRACT", "0")
+            .env("DISROBE_CEXTRACT_ORDER_MARKER", &marker_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let (success, stdout, stderr): (bool, Vec<u8>, Vec<u8>) =
+            run_probe_capped(&mut command, Duration::from_secs(30))
+                .expect("hotpatch helper must complete within the watchdog");
+        let stdout_text: String = String::from_utf8_lossy(&stdout).into_owned();
+        let stderr_text: String = String::from_utf8_lossy(&stderr).into_owned();
+        assert!(
+            success,
+            "hotpatch helper failed under Python {version:?}: stdout:\n{stdout_text}\nstderr:\n{stderr_text}"
+        );
+
+        let order: String = std::fs::read_to_string(&marker_path).unwrap_or_else(|error| {
+            panic!(
+                "successful hotpatch session did not run teardown and drain in order: {error}; stdout:\n{stdout_text}\nstderr:\n{stderr_text}"
+            )
+        });
+        assert_eq!(order, "uninstall\ndrain\n");
+        let manifest_bytes: Vec<u8> =
+            std::fs::read(out_dir.join("manifest.json")).expect("read helper manifest");
+        let manifest: CaptureManifest =
+            serde_json::from_slice(&manifest_bytes).expect("parse helper manifest");
+        assert_eq!(manifest.primary.as_deref(), Some("cextract"));
+        assert_eq!(manifest.captures.cextract.len(), 1);
+        assert_eq!(
+            manifest.captures.cextract[0].pyc_path,
+            out_dir
+                .join("cextract")
+                .join("wrapper.hotpatch.pyc")
+                .display()
+                .to_string()
+        );
+        let limitation: &CaptureLimitation = manifest
+            .limitations
+            .iter()
+            .find(|entry: &&CaptureLimitation| entry.id == "v6v7-c-eval-gap-cextract")
+            .expect("cextract limitation entry");
+        assert_eq!(limitation.channel, "cextract:hotpatch");
+        assert_eq!(limitation.severity, "active");
+        assert!(manifest.exceptions.iter().all(|entry: &serde_json::Value| {
+            entry.get("phase").and_then(serde_json::Value::as_str) != Some("cextract-drain")
+        }));
+    }
+
+    #[test]
     fn parse_version_handles_three_parts() {
         assert_eq!(parse_version("3.12.5"), Some((3, 12, 5)));
         assert_eq!(parse_version("3.9.0"), Some((3, 9, 0)));

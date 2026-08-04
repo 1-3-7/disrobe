@@ -883,26 +883,13 @@ fn smells_like_nsis(bytes: &[u8]) -> bool {
     if !bytes.starts_with(b"MZ") {
         return false;
     }
-    memchr_find(bytes, &NSIS_FIRSTHEADER_MAGIC, 0).is_some()
+    find_subslice(bytes, &NSIS_FIRSTHEADER_MAGIC, 0).is_some()
 }
 
-pub(crate) fn memchr_find(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
-    if needle.is_empty() || from >= haystack.len() || haystack.len() - from < needle.len() {
-        return None;
-    }
-    let first: u8 = needle[0];
-    let mut cursor: usize = from;
-    while let Some(rel) = haystack[cursor..].iter().position(|&b: &u8| b == first) {
-        let at: usize = cursor + rel;
-        if haystack[at..].starts_with(needle) {
-            return Some(at);
-        }
-        cursor = at + 1;
-        if cursor >= haystack.len() {
-            break;
-        }
-    }
-    None
+pub(crate) fn find_subslice(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    let tail: &[u8] = haystack.get(from..)?;
+    let relative: usize = disrobe_core::byte_search::find(tail, needle)?;
+    from.checked_add(relative)
 }
 
 #[cfg(test)]
@@ -1129,6 +1116,15 @@ mod tests {
     fn random_bytes_yield_none() {
         let bytes: Vec<u8> = (0u8..200).collect();
         assert!(detect_container(&bytes).is_none());
+    }
+
+    #[test]
+    fn subslice_finder_honors_start_and_empty_needle_contract() {
+        let bytes: &[u8] = b"prefix needle x needle";
+        assert_eq!(find_subslice(bytes, b"needle", 0), Some(7));
+        assert_eq!(find_subslice(bytes, b"needle", 8), Some(16));
+        assert_eq!(find_subslice(bytes, b"needle", bytes.len()), None);
+        assert_eq!(find_subslice(bytes, b"", 0), None);
     }
 
     #[test]

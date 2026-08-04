@@ -1,4 +1,5 @@
 use crate::bitwise_synth::{MAX_BITWISE_SYNTH_VARS, synthesize_bitwise_masked};
+#[cfg(any(feature = "smt-verify", test))]
 use crate::boolean::{Implicant, MAX_BOOLEAN_ATOMS, minimize_sop};
 use crate::expr::{
     BinOp, Expr, UnOp, Width, equivalent_exhaustive, equivalent_exhaustive_runnable,
@@ -7,8 +8,13 @@ use crate::linear_mba::synthesize_linear_basis;
 use crate::linear_solver::{
     MAX_SOLVER_VARS, columns_equal_mod_width, is_column_faithful, solve_linear_mba, truth_column,
 };
-use crate::opaque::{CmpOp, Predicate};
-use crate::rewrite::{canonicalize, order_key};
+#[cfg(feature = "smt-verify")]
+use crate::opaque::CmpOp;
+use crate::opaque::Predicate;
+use crate::rewrite::canonicalize;
+#[cfg(feature = "smt-verify")]
+use crate::rewrite::order_key;
+#[cfg(feature = "smt-verify")]
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -205,9 +211,12 @@ pub(crate) fn simplify_l0_l5(expr: &Expr, width: Width, var_count: u32) -> (Expr
         consider(folded);
     }
 
-    let minimized: Option<Expr> = minimize_boolean_verified(expr, width);
-    if let Some(minimized) = minimized {
-        consider(minimized);
+    #[cfg(feature = "smt-verify")]
+    {
+        let minimized: Option<Expr> = minimize_boolean_verified(expr, width);
+        if let Some(minimized) = minimized {
+            consider(minimized);
+        }
     }
 
     if var_count <= MAX_TEMPLATE_VARS {
@@ -333,21 +342,30 @@ pub fn simplify_predicate(predicate: &Predicate, width: Width) -> PredicateSimpl
             verification: Verification::Unverified,
         };
     }
-    let canonical: Predicate = canonicalize_predicate_candidate(predicate, width);
-    let minimized: Predicate = match predicate_minimization_candidate(&canonical, width) {
-        Some(candidate) if candidate.node_count() < canonical.node_count() => candidate,
-        _ => canonical,
-    };
-    if minimized == *predicate {
-        return PredicateSimplification {
+    #[cfg(not(feature = "smt-verify"))]
+    {
+        PredicateSimplification {
             original: predicate.clone(),
             simplified: predicate.clone(),
             width,
             verification: Verification::Unverified,
-        };
+        }
     }
     #[cfg(feature = "smt-verify")]
     {
+        let canonical: Predicate = canonicalize_predicate_candidate(predicate, width);
+        let minimized: Predicate = match predicate_minimization_candidate(&canonical, width) {
+            Some(candidate) if candidate.node_count() < canonical.node_count() => candidate,
+            _ => canonical,
+        };
+        if minimized == *predicate {
+            return PredicateSimplification {
+                original: predicate.clone(),
+                simplified: predicate.clone(),
+                width,
+                verification: Verification::Unverified,
+            };
+        }
         if let Some(minimized) = accept_predicate_candidate(predicate, minimized, width) {
             return PredicateSimplification {
                 original: predicate.clone(),
@@ -356,12 +374,12 @@ pub fn simplify_predicate(predicate: &Predicate, width: Width) -> PredicateSimpl
                 verification: Verification::SmtProvenAtWidth(width),
             };
         }
-    }
-    PredicateSimplification {
-        original: predicate.clone(),
-        simplified: predicate.clone(),
-        width,
-        verification: Verification::Unverified,
+        PredicateSimplification {
+            original: predicate.clone(),
+            simplified: predicate.clone(),
+            width,
+            verification: Verification::Unverified,
+        }
     }
 }
 
@@ -378,6 +396,7 @@ fn accept_predicate_candidate(
     }
 }
 
+#[cfg(feature = "smt-verify")]
 #[must_use]
 pub(crate) fn minimize_boolean_verified(expr: &Expr, width: Width) -> Option<Expr> {
     let candidate: Expr = boolean_minimization_candidate(expr, width)?;
@@ -401,6 +420,7 @@ fn accept_expression_candidate(_original: &Expr, _candidate: Expr, _width: Width
     None
 }
 
+#[cfg(any(feature = "smt-verify", test))]
 fn boolean_minimization_candidate(expr: &Expr, width: Width) -> Option<Expr> {
     if !contains_boolean_operator(expr) {
         return None;
@@ -422,6 +442,7 @@ fn boolean_minimization_candidate(expr: &Expr, width: Width) -> Option<Expr> {
     build_boolean_sop(&implicants, &atoms, width)
 }
 
+#[cfg(any(feature = "smt-verify", test))]
 const fn contains_boolean_operator(expr: &Expr) -> bool {
     match expr {
         Expr::Unary(UnOp::Not, _) | Expr::Binary(BinOp::And | BinOp::Or | BinOp::Xor, _, _) => true,
@@ -436,6 +457,7 @@ const fn contains_boolean_operator(expr: &Expr) -> bool {
     }
 }
 
+#[cfg(any(feature = "smt-verify", test))]
 fn collect_boolean_atoms(expr: &Expr, atoms: &mut Vec<Expr>) -> Option<()> {
     match expr {
         Expr::Unary(UnOp::Not, inner) => collect_boolean_atoms(inner, atoms),
@@ -455,6 +477,7 @@ fn collect_boolean_atoms(expr: &Expr, atoms: &mut Vec<Expr>) -> Option<()> {
     }
 }
 
+#[cfg(any(feature = "smt-verify", test))]
 fn boolean_row(expr: &Expr, atoms: &[Expr], row: usize) -> Option<bool> {
     match expr {
         Expr::Unary(UnOp::Not, inner) => Some(!boolean_row(inner, atoms, row)?),
@@ -474,6 +497,7 @@ fn boolean_row(expr: &Expr, atoms: &[Expr], row: usize) -> Option<bool> {
     }
 }
 
+#[cfg(any(feature = "smt-verify", test))]
 fn build_boolean_sop(implicants: &[Implicant], atoms: &[Expr], width: Width) -> Option<Expr> {
     if implicants.is_empty() {
         return Some(Expr::konst(0));
@@ -485,6 +509,7 @@ fn build_boolean_sop(implicants: &[Implicant], atoms: &[Expr], width: Width) -> 
     join_boolean_terms(terms, BinOp::Or)
 }
 
+#[cfg(any(feature = "smt-verify", test))]
 fn build_boolean_term(implicant: Implicant, atoms: &[Expr], width: Width) -> Option<Expr> {
     if implicant.care == 0 {
         return Some(Expr::konst(width.mask()));
@@ -508,6 +533,7 @@ fn build_boolean_term(implicant: Implicant, atoms: &[Expr], width: Width) -> Opt
     join_boolean_terms(factors, BinOp::And)
 }
 
+#[cfg(any(feature = "smt-verify", test))]
 fn join_boolean_terms(terms: Vec<Expr>, op: BinOp) -> Option<Expr> {
     let mut iterator: std::vec::IntoIter<Expr> = terms.into_iter();
     let first: Expr = iterator.next()?;
@@ -518,12 +544,14 @@ fn join_boolean_terms(terms: Vec<Expr>, op: BinOp) -> Option<Expr> {
     Some(combined)
 }
 
+#[cfg(feature = "smt-verify")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PredicateConnective {
     Or,
     And,
 }
 
+#[cfg(feature = "smt-verify")]
 fn canonicalize_predicate_candidate(predicate: &Predicate, width: Width) -> Predicate {
     match predicate {
         Predicate::Compare { op, left, right } => {
@@ -541,6 +569,7 @@ fn canonicalize_predicate_candidate(predicate: &Predicate, width: Width) -> Pred
     }
 }
 
+#[cfg(feature = "smt-verify")]
 fn canonicalize_predicate_chain(
     predicate: &Predicate,
     connective: PredicateConnective,
@@ -555,6 +584,7 @@ fn canonicalize_predicate_chain(
     combined
 }
 
+#[cfg(feature = "smt-verify")]
 fn collect_canonical_predicate_terms(
     predicate: &Predicate,
     connective: PredicateConnective,
@@ -574,6 +604,7 @@ fn collect_canonical_predicate_terms(
     }
 }
 
+#[cfg(feature = "smt-verify")]
 fn canonicalize_predicate_comparison(
     op: CmpOp,
     left: Expr,
@@ -607,6 +638,7 @@ fn canonicalize_predicate_comparison(
     Predicate::Compare { op, left, right }
 }
 
+#[cfg(feature = "smt-verify")]
 const fn predicate_rank(predicate: &Predicate) -> u8 {
     match predicate {
         Predicate::Compare { .. } => 0,
@@ -616,6 +648,7 @@ const fn predicate_rank(predicate: &Predicate) -> u8 {
     }
 }
 
+#[cfg(feature = "smt-verify")]
 fn compare_predicates(left: &Predicate, right: &Predicate) -> Ordering {
     let rank_order: Ordering = predicate_rank(left).cmp(&predicate_rank(right));
     if rank_order != Ordering::Equal {
@@ -659,6 +692,7 @@ fn compare_predicates(left: &Predicate, right: &Predicate) -> Ordering {
     }
 }
 
+#[cfg(feature = "smt-verify")]
 fn predicate_minimization_candidate(predicate: &Predicate, width: Width) -> Option<Predicate> {
     if !contains_predicate_boolean_operator(predicate) {
         return None;
@@ -681,10 +715,12 @@ fn predicate_minimization_candidate(predicate: &Predicate, width: Width) -> Opti
     Some(canonicalize_predicate_candidate(&candidate, width))
 }
 
+#[cfg(feature = "smt-verify")]
 const fn contains_predicate_boolean_operator(predicate: &Predicate) -> bool {
     matches!(predicate, Predicate::Or(_, _) | Predicate::And(_, _))
 }
 
+#[cfg(feature = "smt-verify")]
 fn collect_predicate_atoms(predicate: &Predicate, atoms: &mut Vec<Predicate>) -> Option<()> {
     match predicate {
         Predicate::Or(left, right) | Predicate::And(left, right) => {
@@ -704,6 +740,7 @@ fn collect_predicate_atoms(predicate: &Predicate, atoms: &mut Vec<Predicate>) ->
     }
 }
 
+#[cfg(feature = "smt-verify")]
 fn predicate_boolean_row(predicate: &Predicate, atoms: &[Predicate], row: usize) -> Option<bool> {
     match predicate {
         Predicate::Or(left, right) => Some(
@@ -721,6 +758,7 @@ fn predicate_boolean_row(predicate: &Predicate, atoms: &[Predicate], row: usize)
     }
 }
 
+#[cfg(feature = "smt-verify")]
 fn predicate_atom_parts(predicate: &Predicate) -> Option<(Predicate, bool)> {
     let Predicate::Compare { op, left, right } = predicate else {
         return None;
@@ -744,6 +782,7 @@ fn predicate_atom_parts(predicate: &Predicate) -> Option<(Predicate, bool)> {
     ))
 }
 
+#[cfg(feature = "smt-verify")]
 fn build_predicate_sop(implicants: &[Implicant], atoms: &[Predicate]) -> Option<Predicate> {
     if implicants.is_empty() {
         return Some(predicate_constant(false));
@@ -755,6 +794,7 @@ fn build_predicate_sop(implicants: &[Implicant], atoms: &[Predicate]) -> Option<
     join_predicate_terms(terms, PredicateConnective::Or)
 }
 
+#[cfg(feature = "smt-verify")]
 fn build_predicate_term(implicant: Implicant, atoms: &[Predicate]) -> Option<Predicate> {
     if implicant.care == 0 {
         return Some(predicate_constant(true));
@@ -774,6 +814,7 @@ fn build_predicate_term(implicant: Implicant, atoms: &[Predicate]) -> Option<Pre
     join_predicate_terms(factors, PredicateConnective::And)
 }
 
+#[cfg(feature = "smt-verify")]
 fn predicate_literal(atom: &Predicate, positive: bool) -> Option<Predicate> {
     let Predicate::Compare { op, left, right } = atom else {
         return None;
@@ -794,6 +835,7 @@ fn predicate_literal(atom: &Predicate, positive: bool) -> Option<Predicate> {
     })
 }
 
+#[cfg(feature = "smt-verify")]
 fn join_predicate_terms(
     terms: Vec<Predicate>,
     connective: PredicateConnective,
@@ -810,6 +852,7 @@ fn join_predicate_terms(
     Some(combined)
 }
 
+#[cfg(feature = "smt-verify")]
 const fn predicate_constant(value: bool) -> Predicate {
     let right: u64 = (!value) as u64;
     Predicate::eq(Expr::konst(0), Expr::konst(right))
@@ -1460,6 +1503,19 @@ mod tests {
         let result: Simplification = simplify(&input, Width::W8);
         assert!(!result.changed());
         assert_eq!(result.simplified, input);
+    }
+
+    #[cfg(not(feature = "smt-verify"))]
+    #[test]
+    fn predicate_minimization_is_discarded_without_bitblast_verifier() {
+        let atom: Predicate = Predicate::eq(Expr::var(0), Expr::konst(0));
+        let predicate: Predicate = Predicate::or(atom.clone(), atom);
+        let result: PredicateSimplification = simplify_predicate(&predicate, Width::W32);
+        assert_eq!(result.original, predicate);
+        assert_eq!(result.simplified, predicate);
+        assert_eq!(result.width, Width::W32);
+        assert_eq!(result.verification, Verification::Unverified);
+        assert!(!result.changed());
     }
 
     #[cfg(feature = "smt-verify")]

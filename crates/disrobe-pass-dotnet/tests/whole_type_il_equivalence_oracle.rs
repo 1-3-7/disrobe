@@ -211,14 +211,24 @@ fn signature_line(body: &str) -> Option<(usize, String)> {
 }
 
 fn method_name_of(decl: &str) -> Option<String> {
-    let before_paren: &str = decl.split('(').next()?;
-    let ident: &str = before_paren.split_whitespace().next_back()?;
-    let ident: &str = ident.split('<').next()?;
+    let ident: &str = declaration_identifier_of(decl)?;
     (!ident.is_empty()
         && ident
             .bytes()
             .all(|b: u8| b.is_ascii_alphanumeric() || b == b'_'))
     .then(|| ident.to_owned())
+}
+
+fn declaration_identifier_of(decl: &str) -> Option<&str> {
+    let ident: &str = raw_declaration_identifier_of(decl)?;
+    let ident: &str = ident.split('<').next()?;
+    (!ident.is_empty()).then_some(ident)
+}
+
+fn raw_declaration_identifier_of(decl: &str) -> Option<&str> {
+    let before_paren: &str = decl.split('(').next()?;
+    let ident: &str = before_paren.split_whitespace().next_back()?;
+    (!ident.is_empty()).then_some(ident)
 }
 
 fn promote_visibility_to_public(decl: &str) -> String {
@@ -246,13 +256,331 @@ struct UserMethod {
     source: String,
 }
 
-fn user_method_for(body: &str, target_type: &str) -> Option<UserMethod> {
-    let declaring_type: String = declaring_type_of(body)?;
-    if is_compiler_generated_type(&declaring_type) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConstructorPolicy {
+    Refuse,
+    ValueType,
+}
+
+#[test]
+fn user_method_admits_a_safe_instance_constructor() {
+    let body: &str =
+        "// EdgeCases.Money\npublic void .ctor(long pennies)\n{\n    this.Pennies = pennies;\n}";
+    let method: UserMethod = user_method_for(
+        body,
+        "EdgeCases.Money",
+        "Money",
+        ConstructorPolicy::ValueType,
+    )
+    .unwrap_or_else(|| panic!("the safe constructor should be admitted"));
+    assert_eq!(method.name, ".ctor");
+    assert_eq!(
+        method.source,
+        "    public Money(long pennies)\n{\n    this.Pennies = pennies;\n}\n"
+    );
+}
+
+#[test]
+fn user_method_refuses_unsafe_constructor_forms() {
+    let body: &str =
+        "// EdgeCases.Money\npublic void .ctor(long pennies)\n{\n    this.Pennies = pennies;\n}";
+    assert!(user_method_for(body, "EdgeCases.Money", "Money", ConstructorPolicy::Refuse).is_none());
+
+    let static_ctor: &str = "// EdgeCases.Money\npublic static void .ctor()\n{\n}";
+    assert!(
+        user_method_for(
+            static_ctor,
+            "EdgeCases.Money",
+            "Money",
+            ConstructorPolicy::ValueType
+        )
+        .is_none()
+    );
+
+    let generic_ctor: &str = "// EdgeCases.Money\npublic void .ctor<T>(long pennies)\n{\n}";
+    assert!(
+        user_method_for(
+            generic_ctor,
+            "EdgeCases.Money",
+            "Money",
+            ConstructorPolicy::ValueType
+        )
+        .is_none()
+    );
+
+    let non_void_ctor: &str = "// EdgeCases.Money\npublic int .ctor(long pennies)\n{\n}";
+    assert!(
+        user_method_for(
+            non_void_ctor,
+            "EdgeCases.Money",
+            "Money",
+            ConstructorPolicy::ValueType
+        )
+        .is_none()
+    );
+
+    let static_initializer: &str = "// EdgeCases.Money\nstatic void .cctor()\n{\n}";
+    assert!(
+        user_method_for(
+            static_initializer,
+            "EdgeCases.Money",
+            "Money",
+            ConstructorPolicy::ValueType
+        )
+        .is_none()
+    );
+
+    let chaining_ctor: &str =
+        "// EdgeCases.Money\npublic void .ctor(long pennies)\n{\n    base.ctor(pennies);\n}";
+    assert!(
+        user_method_for(
+            chaining_ctor,
+            "EdgeCases.Money",
+            "Money",
+            ConstructorPolicy::ValueType
+        )
+        .is_none()
+    );
+
+    let class_initializer_call: &str =
+        "// EdgeCases.Money\npublic void .ctor(long pennies)\n{\n    this.cctor();\n}";
+    assert!(
+        user_method_for(
+            class_initializer_call,
+            "EdgeCases.Money",
+            "Money",
+            ConstructorPolicy::ValueType
+        )
+        .is_none()
+    );
+
+    let unsupported_modifier: &str =
+        "// EdgeCases.Money\npublic virtual void .ctor(long pennies)\n{\n}";
+    assert!(
+        user_method_for(
+            unsupported_modifier,
+            "EdgeCases.Money",
+            "Money",
+            ConstructorPolicy::ValueType
+        )
+        .is_none()
+    );
+
+    let comment_tail: &str =
+        "// EdgeCases.Money\npublic void .ctor(long pennies)\n{\n    // call unresolved\n}";
+    assert!(
+        user_method_for(
+            comment_tail,
+            "EdgeCases.Money",
+            "Money",
+            ConstructorPolicy::ValueType
+        )
+        .is_none()
+    );
+
+    let unreconstructed_tail: &str = "// EdgeCases.Money\npublic void .ctor(long pennies)\n{\n    __unreconstructed_runtime_handle;\n}";
+    assert!(
+        user_method_for(
+            unreconstructed_tail,
+            "EdgeCases.Money",
+            "Money",
+            ConstructorPolicy::ValueType
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn user_methods_refuse_same_short_name_from_another_namespace() {
+    let body: &str =
+        "// Decoy.Money\npublic void .ctor(long pennies)\n{\n    this.Pennies = pennies;\n}";
+    assert!(
+        user_method_for(
+            body,
+            "EdgeCases.Money",
+            "Money",
+            ConstructorPolicy::ValueType
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn constructor_recovery_requires_exactly_one_admitted_definition() {
+    let no_methods: Vec<UserMethod> = Vec::new();
+    assert!(!constructor_recovery_is_complete(
+        ConstructorPolicy::ValueType,
+        &no_methods
+    ));
+    assert!(constructor_recovery_is_complete(
+        ConstructorPolicy::Refuse,
+        &no_methods
+    ));
+
+    let one_constructor: Vec<UserMethod> = vec![UserMethod {
+        name: ".ctor".to_owned(),
+        source: String::new(),
+    }];
+    assert!(constructor_recovery_is_complete(
+        ConstructorPolicy::ValueType,
+        &one_constructor
+    ));
+
+    let two_constructors: Vec<UserMethod> = vec![
+        UserMethod {
+            name: ".ctor".to_owned(),
+            source: String::new(),
+        },
+        UserMethod {
+            name: ".ctor".to_owned(),
+            source: String::new(),
+        },
+    ];
+    assert!(!constructor_recovery_is_complete(
+        ConstructorPolicy::ValueType,
+        &two_constructors
+    ));
+}
+
+#[test]
+fn constructor_policy_counts_all_metadata_definitions() {
+    let target: Target = Target {
+        dll: EDGECASES_DLL,
+        origin_namespace: "EdgeCases",
+        type_name: "Money",
+        is_static: false,
+    };
+    let path: PathBuf = manifest(target.dll)
+        .canonicalize()
+        .expect("canonicalize fixture");
+    let bytes: Vec<u8> = std::fs::read(&path).expect("read fixture");
+    let asm: DecompiledAssembly = decompile_assembly(&bytes).expect("decompile fixture");
+    let money: TypeModel = target_type_model(&bytes, target)
+        .unwrap_or_else(|| panic!("find EdgeCases.Money metadata"));
+    assert_eq!(money.base_type.as_deref(), Some("System.ValueType"));
+    assert_eq!(
+        constructor_policy_for_type(&money),
+        ConstructorPolicy::ValueType
+    );
+    let admitted: Vec<UserMethod> = user_methods_for(
+        &asm.methods,
+        &target_full_name(target),
+        target.type_name,
+        constructor_policy_for_type(&money),
+    );
+    assert!(constructor_recovery_is_complete(
+        ConstructorPolicy::ValueType,
+        &admitted
+    ));
+
+    let mut incomplete: TypeModel = money.clone();
+    let mut omitted: MethodModel = incomplete
+        .methods
+        .iter()
+        .find(|method: &&MethodModel| method.name == ".ctor")
+        .cloned()
+        .unwrap_or_else(|| panic!("find Money constructor"));
+    omitted.rva = 0;
+    incomplete.methods.push(omitted);
+    assert_eq!(
+        constructor_policy_for_type(&incomplete),
+        ConstructorPolicy::Refuse
+    );
+    let refused: Vec<UserMethod> = user_methods_for(
+        &asm.methods,
+        &target_full_name(target),
+        target.type_name,
+        constructor_policy_for_type(&incomplete),
+    );
+    assert!(
+        refused
+            .iter()
+            .all(|method: &UserMethod| method.name != ".ctor")
+    );
+
+    let mut spoofed: TypeModel = money.clone();
+    spoofed.base_type = Some("Fake.System.ValueType".to_owned());
+    assert_eq!(
+        constructor_policy_for_type(&spoofed),
+        ConstructorPolicy::Refuse
+    );
+
+    let mut reference: TypeModel = money.clone();
+    reference.base_type = Some("System.Object".to_owned());
+    assert_eq!(
+        constructor_policy_for_type(&reference),
+        ConstructorPolicy::Refuse
+    );
+
+    let mut without_constructor: TypeModel = money;
+    without_constructor
+        .methods
+        .retain(|method: &MethodModel| method.name != ".ctor");
+    assert_eq!(
+        constructor_policy_for_type(&without_constructor),
+        ConstructorPolicy::Refuse
+    );
+}
+
+fn safe_value_type_constructor_header(
+    decl: &str,
+    target_type: &str,
+    tail: &str,
+    constructor_policy: ConstructorPolicy,
+) -> Option<String> {
+    if !matches!(constructor_policy, ConstructorPolicy::ValueType) {
         return None;
     }
-    let short: &str = declaring_type.rsplit('.').next().unwrap_or(&declaring_type);
-    if short != target_type {
+    let raw_ident: &str = raw_declaration_identifier_of(decl)?;
+    if raw_ident != ".ctor"
+        || tail.contains(".ctor(")
+        || tail.contains(".cctor(")
+        || constructor_tail_states_refusal(tail)
+    {
+        return None;
+    }
+    let promoted: String = promote_visibility_to_public(decl);
+    let open: usize = promoted.find('(')?;
+    let before_paren: &str = promoted[..open].trim_end();
+    let promoted_ident: &str = raw_declaration_identifier_of(&promoted)?;
+    let before_ident: &str = before_paren.strip_suffix(promoted_ident)?.trim_end();
+    let return_type: &str = before_ident.split_whitespace().next_back()?;
+    if return_type != "void" {
+        return None;
+    }
+    let modifiers: &str = before_ident.strip_suffix(return_type)?.trim_end();
+    if modifiers != "public" {
+        return None;
+    }
+    Some(format!("{modifiers} {target_type}{}", &promoted[open..]))
+}
+
+fn constructor_tail_states_refusal(tail: &str) -> bool {
+    tail.lines()
+        .any(|line: &str| line.trim_start().starts_with("//"))
+        || tail
+            .contains(disrobe_pass_dotnet::iterator_reverse::UNRECONSTRUCTED_STATE_MACHINE_MARKER)
+        || tail.contains("__unrecovered_")
+        || tail.contains("__unreconstructed_")
+}
+
+fn is_target_owned_body(body: &str, target_full_name: &str) -> bool {
+    let Some(declaring_type): Option<String> = declaring_type_of(body) else {
+        return false;
+    };
+    if is_compiler_generated_type(&declaring_type) {
+        return false;
+    }
+    declaring_type == target_full_name
+}
+
+fn user_method_for(
+    body: &str,
+    target_full_name: &str,
+    target_type: &str,
+    constructor_policy: ConstructorPolicy,
+) -> Option<UserMethod> {
+    if !is_target_owned_body(body, target_full_name) {
         return None;
     }
     let first_line: &str = body.lines().next().unwrap_or_default();
@@ -260,15 +588,55 @@ fn user_method_for(body: &str, target_type: &str) -> Option<UserMethod> {
         return None;
     }
     let (decl_line, decl): (usize, String) = signature_line(body)?;
-    let name: String = method_name_of(&decl)?;
-    let promoted: String = promote_visibility_to_public(&decl);
     let tail: String = body
         .lines()
         .skip(decl_line + 1)
         .collect::<Vec<&str>>()
         .join("\n");
+    let (name, promoted): (String, String) = if let Some(header) =
+        safe_value_type_constructor_header(&decl, target_type, &tail, constructor_policy)
+    {
+        (".ctor".to_owned(), header)
+    } else {
+        (method_name_of(&decl)?, promote_visibility_to_public(&decl))
+    };
     let source: String = format!("    {promoted}\n{tail}\n");
     Some(UserMethod { name, source })
+}
+
+fn user_methods_for(
+    structured_methods: &[StructuredMethod],
+    target_full_name: &str,
+    target_type: &str,
+    constructor_policy: ConstructorPolicy,
+) -> Vec<UserMethod> {
+    structured_methods
+        .iter()
+        .filter_map(|method: &StructuredMethod| {
+            user_method_for(
+                &method.body,
+                target_full_name,
+                target_type,
+                constructor_policy,
+            )
+        })
+        .collect()
+}
+
+fn constructor_recovery_is_complete(
+    constructor_policy: ConstructorPolicy,
+    methods: &[UserMethod],
+) -> bool {
+    match constructor_policy {
+        ConstructorPolicy::Refuse => true,
+        ConstructorPolicy::ValueType => {
+            methods
+                .iter()
+                .filter(|method: &&UserMethod| method.name == ".ctor")
+                .count()
+                == 1
+        }
+    }
 }
 
 const PREAMBLE: &str = "using System;\nusing System.Text;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Threading.Tasks;\nusing System.Runtime.CompilerServices;\n\n";
@@ -311,19 +679,51 @@ fn field_declarations(bytes: &[u8], target: Target) -> Vec<String> {
         .collect()
 }
 
-fn is_value_type(bytes: &[u8], target: Target) -> bool {
+fn target_full_name(target: Target) -> String {
+    format!("{}.{}", target.origin_namespace, target.type_name)
+}
+
+fn target_type_model(bytes: &[u8], target: Target) -> Option<TypeModel> {
     let pe: PeImage = parse(bytes).expect("parse fixture PE");
     let clr: ClrHeader = parse_clr_header(bytes, &pe).expect("parse fixture CLR header");
     let root: MetadataRoot = parse_metadata_root(bytes, &pe, &clr).expect("parse fixture metadata");
     let resolver: Resolver = Resolver::build(bytes, &pe, &clr, &root).expect("build fixture model");
-    let full_name: String = format!("{}.{}", target.origin_namespace, target.type_name);
+    let full_name: String = target_full_name(target);
     resolver
         .model()
         .types
         .iter()
         .find(|candidate: &&TypeModel| candidate.full_name == full_name)
-        .and_then(|ty: &TypeModel| ty.base_type.clone())
-        .is_some_and(|base: String| base.ends_with("System.ValueType"))
+        .cloned()
+}
+
+fn is_value_type_model(ty: &TypeModel) -> bool {
+    ty.base_type
+        .as_deref()
+        .is_some_and(|base: &str| base == "System.ValueType")
+}
+
+fn is_value_type(bytes: &[u8], target: Target) -> bool {
+    target_type_model(bytes, target).is_some_and(|ty: TypeModel| is_value_type_model(&ty))
+}
+
+fn constructor_policy_for_type(ty: &TypeModel) -> ConstructorPolicy {
+    let constructor_count: usize = ty
+        .methods
+        .iter()
+        .filter(|method: &&MethodModel| method.name == ".ctor")
+        .count();
+    if is_value_type_model(ty) && constructor_count == 1 {
+        ConstructorPolicy::ValueType
+    } else {
+        ConstructorPolicy::Refuse
+    }
+}
+
+fn constructor_policy_for(bytes: &[u8], target: Target) -> ConstructorPolicy {
+    target_type_model(bytes, target).map_or(ConstructorPolicy::Refuse, |ty: TypeModel| {
+        constructor_policy_for_type(&ty)
+    })
 }
 
 fn csharp_field_declaration(resolver: &Resolver, field: &FieldModel) -> String {
@@ -826,11 +1226,22 @@ fn run_target(target: Target) -> Outcome {
     let dll_path: PathBuf = manifest(target.dll).canonicalize().expect("canonicalize");
     let bytes: Vec<u8> = std::fs::read(&dll_path).expect("read fixture");
     let asm: DecompiledAssembly = decompile_assembly(&bytes).expect("decompile");
-    let methods: Vec<UserMethod> = asm
-        .methods
-        .iter()
-        .filter_map(|m: &StructuredMethod| user_method_for(&m.body, target.type_name))
-        .collect();
+    let policy: ConstructorPolicy = constructor_policy_for(&bytes, target);
+    let full_name: String = target_full_name(target);
+    let methods: Vec<UserMethod> =
+        user_methods_for(&asm.methods, &full_name, target.type_name, policy);
+    if !constructor_recovery_is_complete(policy, &methods) {
+        return Outcome {
+            label: target.type_name.to_owned(),
+            compiled: false,
+            compile_errors: vec!["constructor recovery is incomplete".to_owned()],
+            equivalent: Vec::new(),
+            mismatched: Vec::new(),
+            missing: vec![qualify(target, ".ctor")],
+            branching: Vec::new(),
+            divergence: Vec::new(),
+        };
+    }
     assert!(
         !methods.is_empty(),
         "expected recovered user methods for {}",
@@ -1129,11 +1540,13 @@ fn run_record_method_target(target: RecordMethodTarget) -> Outcome {
             divergence: Vec::new(),
         };
     };
-    let methods: Vec<UserMethod> = asm
-        .methods
-        .iter()
-        .filter_map(|m: &StructuredMethod| user_method_for(&m.body, target.class_type))
-        .collect();
+    let full_name: String = format!("{NAMESPACE}.{}", target.class_type);
+    let methods: Vec<UserMethod> = user_methods_for(
+        &asm.methods,
+        &full_name,
+        target.class_type,
+        ConstructorPolicy::Refuse,
+    );
     assert!(
         !methods.is_empty(),
         "expected recovered user methods for {}",
@@ -1395,6 +1808,7 @@ fn edgecases_whole_type_recompile_fraction_is_published_as_measured() {
     let asm: DecompiledAssembly = decompile_assembly(&bytes).expect("decompile");
     let mut compiled: Vec<&str> = Vec::new();
     let mut refused: Vec<&str> = Vec::new();
+    let mut constructor_refused: Vec<&str> = Vec::new();
     let mut residual: BTreeMap<String, Vec<&str>> = BTreeMap::new();
     for (type_name, is_static) in EDGECASES_TYPES {
         let target: Target = Target {
@@ -1403,11 +1817,14 @@ fn edgecases_whole_type_recompile_fraction_is_published_as_measured() {
             type_name,
             is_static: *is_static,
         };
-        let methods: Vec<UserMethod> = asm
-            .methods
-            .iter()
-            .filter_map(|m: &StructuredMethod| user_method_for(&m.body, type_name))
-            .collect();
+        let policy: ConstructorPolicy = constructor_policy_for(&bytes, target);
+        let full_name: String = target_full_name(target);
+        let methods: Vec<UserMethod> =
+            user_methods_for(&asm.methods, &full_name, type_name, policy);
+        if !constructor_recovery_is_complete(policy, &methods) {
+            constructor_refused.push(type_name);
+            continue;
+        }
         let fields: Vec<String> = field_declarations(&bytes, target);
         if methods.is_empty() && fields.is_empty() {
             residual
@@ -1448,6 +1865,9 @@ fn edgecases_whole_type_recompile_fraction_is_published_as_measured() {
     eprintln!(
         "  parses but carries a stated refusal for at least one state machine, so it does not count as recovered: {refused:?}"
     );
+    eprintln!(
+        "  withheld because metadata requires one recovered value-type constructor: {constructor_refused:?}"
+    );
     for (code, types) in &residual {
         eprintln!("  first-error {code}: {types:?}");
     }
@@ -1475,11 +1895,10 @@ fn whole_type_recompile_check_rejects_deliberately_broken_source() {
         .expect("canonicalize");
     let bytes: Vec<u8> = std::fs::read(&path).expect("read fixture");
     let asm: DecompiledAssembly = decompile_assembly(&bytes).expect("decompile");
-    let methods: Vec<UserMethod> = asm
-        .methods
-        .iter()
-        .filter_map(|m: &StructuredMethod| user_method_for(&m.body, target.type_name))
-        .collect();
+    let policy: ConstructorPolicy = constructor_policy_for(&bytes, target);
+    let full_name: String = target_full_name(target);
+    let methods: Vec<UserMethod> =
+        user_methods_for(&asm.methods, &full_name, target.type_name, policy);
     let fields: Vec<String> = field_declarations(&bytes, target);
     let src: String = whole_type_source(&bytes, &fields, &methods, target);
 
@@ -1562,14 +1981,15 @@ fn collection_field_rva_recovery_recompiles_and_preserves_runtime_values() {
         .expect("canonicalize");
     let bytes: Vec<u8> = std::fs::read(&path).expect("read fixture");
     let asm: DecompiledAssembly = decompile_assembly(&bytes).expect("decompile");
-    let methods: Vec<UserMethod> = asm
-        .methods
-        .iter()
-        .filter_map(|method: &StructuredMethod| {
-            user_method_for(&method.body, "CollectionPlayground")
-        })
-        .filter(|method: &UserMethod| method.name == "CollectionExpression")
-        .collect();
+    let methods: Vec<UserMethod> = user_methods_for(
+        &asm.methods,
+        "EdgeCases.CollectionPlayground",
+        "CollectionPlayground",
+        ConstructorPolicy::Refuse,
+    )
+    .into_iter()
+    .filter(|method: &UserMethod| method.name == "CollectionExpression")
+    .collect();
     assert_eq!(
         methods.len(),
         1,
