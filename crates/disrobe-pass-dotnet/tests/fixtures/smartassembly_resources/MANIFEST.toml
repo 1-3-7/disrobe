@@ -40,7 +40,6 @@ source = "Host.csproj"
 
 [grade]
 resource_name = "[z]payload"
-resources_recovered_before = 0
-resources_recovered_after = 1
+recovery = "the named payload resource is recovered"
 comparison = "recovered bytes equal Payload.clean.dll"
 test = "smartassembly_static_resource_recovers_original_assembly_byte_for_byte"

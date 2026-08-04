@@ -40,8 +40,8 @@ provenance = "real"
 description = "the Obfuscar config used (paths normalized to the fixture directory): full rename + string hiding, ReuseNames disabled so the odometer block is dense and contiguous"
 
 [measured_recovery]
-source_identifiers_in_clean = "15 of 15 sampled originals present"
-source_identifiers_in_obfuscated = "0 of 15 sampled originals present (100% renamed away by the real tool)"
+source_identifiers_in_clean = "17 of 17 sampled originals present"
+source_identifiers_in_obfuscated = "0 of 17 sampled originals present (100% renamed away by the real tool)"
 obfuscar_detected = "true on obfuscated, false on clean (no false positive)"
 primary_protector = "Obfuscar"
 renamable_identifier_count = "clean 2 -> obfuscated 6 (rename raised the odometer-slot count)"

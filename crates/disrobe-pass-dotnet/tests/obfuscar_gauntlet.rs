@@ -24,6 +24,7 @@ const CLEAN_REL: &str =
     "../../corpus/dotnet/obfuscators/obfuscar/gauntlet/GauntletSample.clean.dll";
 const OBFUSCATED_REL: &str =
     "../../corpus/dotnet/obfuscators/obfuscar/gauntlet/GauntletSample.obfuscar.dll";
+const PUBLISHED_HIDDEN_STRINGS_BAR: &str = "Obfuscar hidden strings";
 
 const ORIGINAL_IDENTIFIERS: &[&str] = &[
     "InventoryLedger",
@@ -58,6 +59,43 @@ fn load(rel: &str) -> Vec<u8> {
     path.push(rel);
     std::fs::read(&path)
         .unwrap_or_else(|e: std::io::Error| panic!("fixture missing at {}: {e}", path.display()))
+}
+
+fn published_ratio(label: &str) -> (f64, u64, u64) {
+    let path: PathBuf = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("xtask")
+        .join("data")
+        .join("recovery.json");
+    let raw: String = std::fs::read_to_string(&path).expect("xtask/data/recovery.json is readable");
+    let doc: serde_json::Value =
+        serde_json::from_str(&raw).expect("xtask/data/recovery.json parses as JSON");
+    let mut found: Vec<serde_json::Value> = Vec::new();
+    for group in doc["groups"].as_array().expect("groups array") {
+        for bar in group["bars"].as_array().unwrap_or(&Vec::new()) {
+            if bar["label"].as_str() == Some(label) {
+                found.push(bar.clone());
+            }
+        }
+    }
+    assert_eq!(
+        found.len(),
+        1,
+        "xtask/data/recovery.json must carry exactly one bar labelled `{label}`, found {}",
+        found.len()
+    );
+    let bar: serde_json::Value = found.remove(0);
+    let value: f64 = bar["value"]
+        .as_f64()
+        .expect("the published ratio bar must carry a percentage value");
+    let num: u64 = bar["num"]
+        .as_u64()
+        .expect("the published ratio bar must carry a numerator");
+    let den: u64 = bar["den"]
+        .as_u64()
+        .expect("the published ratio bar must carry a denominator");
+    (value, num, den)
 }
 
 fn strings_heap(image: &[u8]) -> BTreeMap<u32, String> {
@@ -279,8 +317,7 @@ fn string_hiding_moved_literals_out_of_plaintext() {
     );
 }
 
-#[test]
-fn peel_recovers_every_hidden_string_from_real_obfuscar_field_rva_carrier() {
+fn obfuscar_hidden_string_grade() -> (u64, u64) {
     let clean: Vec<u8> = load(CLEAN_REL);
     let obf: Vec<u8> = load(OBFUSCATED_REL);
     let clean_literals: BTreeSet<String> = user_strings(&clean);
@@ -308,6 +345,12 @@ fn peel_recovers_every_hidden_string_from_real_obfuscar_field_rva_carrier() {
         recovered, expected_accessors,
         "the protected FieldRVA carrier must recover the runtime-verified accessor-token map byte-for-byte"
     );
+    let recovered_literals: BTreeSet<Vec<u8>> = recovered.values().cloned().collect();
+    assert_eq!(recovered_literals, expected_literals);
+    let recovered_count: u64 =
+        u64::try_from(recovered_literals.len()).expect("recovered string count fits u64");
+    let expected_count: u64 =
+        u64::try_from(expected_literals.len()).expect("expected string count fits u64");
     assert_eq!(report.strategy, PeelStrategy::StaticStringRecovery);
     assert!(
         report
@@ -316,6 +359,35 @@ fn peel_recovers_every_hidden_string_from_real_obfuscar_field_rva_carrier() {
             .any(|note: &String| note.contains("15/15")),
         "the peel report must expose the complete recovered/accessor count: {:?}",
         report.notes
+    );
+    (recovered_count, expected_count)
+}
+
+#[test]
+fn peel_recovers_every_hidden_string_from_real_obfuscar_field_rva_carrier() {
+    let _: (u64, u64) = obfuscar_hidden_string_grade();
+}
+
+#[test]
+fn published_obfuscar_hidden_strings_bar_matches_real_grader() {
+    let measured: (u64, u64) = obfuscar_hidden_string_grade();
+    let (published_value, published_num, published_den): (f64, u64, u64) =
+        published_ratio(PUBLISHED_HIDDEN_STRINGS_BAR);
+    assert_eq!(
+        (published_num, published_den),
+        measured,
+        "the `Obfuscar hidden strings` recovery bar must publish the recovered and expected counts derived from the real gauntlet fixture"
+    );
+    assert_ne!(measured.1, 0, "the measured denominator must be nonzero");
+    let measured_num: f64 =
+        f64::from(u32::try_from(measured.0).expect("measured numerator fits u32"));
+    let measured_den: f64 =
+        f64::from(u32::try_from(measured.1).expect("measured denominator fits u32"));
+    let measured_value: f64 = measured_num * 100.0 / measured_den;
+    assert_eq!(
+        published_value.to_bits(),
+        measured_value.to_bits(),
+        "the `Obfuscar hidden strings` recovery bar percentage must equal its real measured ratio"
     );
 }
 

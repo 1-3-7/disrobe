@@ -477,6 +477,36 @@ const KEYS: &[KeySpec] = &[
         },
     },
     KeySpec {
+        name: "dotnet_obfuscar_hidden_strings",
+        formatter: Formatter::Frac,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            let bar: &Bar = r.bar(
+                "Dotnet protector sample recovery",
+                "Obfuscar hidden strings",
+            )?;
+            Ok(MetricValue::Ratio {
+                num: bar.numerator()?,
+                den: bar.denominator()?,
+            })
+        },
+    },
+    KeySpec {
+        name: "dotnet_smartassembly_resources",
+        formatter: Formatter::Frac,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            let bar: &Bar = r.bar(
+                "Dotnet protector sample recovery",
+                "SmartAssembly embedded resources",
+            )?;
+            Ok(MetricValue::Ratio {
+                num: bar.numerator()?,
+                den: bar.denominator()?,
+            })
+        },
+    },
+    KeySpec {
         name: "pyarmor_samples",
         formatter: Formatter::Int,
         nouns: &[],
@@ -1135,6 +1165,13 @@ mod tests {
                     ]
                 },
                 {
+                    "heading": "Dotnet protector sample recovery",
+                    "bars": [
+                        {"label": "Obfuscar hidden strings", "value": 100.0, "num": 15, "den": 15},
+                        {"label": "SmartAssembly embedded resources", "value": 100.0, "num": 1, "den": 1}
+                    ]
+                },
+                {
                     "heading": "Python bytecode (CPython 3.14 stdlib)",
                     "bars": [
                         {"label": "full 574-module stdlib (representative)", "value": 92.43, "num": 16880, "den": 18262},
@@ -1256,6 +1293,20 @@ mod tests {
             rendered,
             "PyArmor has <!-- m:pyarmor_samples -->72<!-- /m --> samples \
              (<!-- m:pyarmor_frac -->72 / 72<!-- /m -->).\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dotnet_protector_sample_markers_render_the_graded_ratios() -> Result<()> {
+        let sources: MetricSources = test_sources()?;
+        let source: &str = "Obfuscar <!-- m:dotnet_obfuscar_hidden_strings -->0 / 0<!-- /m -->; \
+             SmartAssembly <!-- m:dotnet_smartassembly_resources -->0 / 0<!-- /m -->.\n";
+        let rendered: String = rewrite_text(source, &sources)?;
+        assert_eq!(
+            rendered,
+            "Obfuscar <!-- m:dotnet_obfuscar_hidden_strings -->15 / 15<!-- /m -->; \
+             SmartAssembly <!-- m:dotnet_smartassembly_resources -->1 / 1<!-- /m -->.\n"
         );
         Ok(())
     }

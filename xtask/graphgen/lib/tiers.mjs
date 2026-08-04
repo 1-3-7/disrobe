@@ -19,6 +19,18 @@ const DESCRIPTOR_DIR = join(ROOT, "evidence", "descriptors");
 
 const UNBOUND_INSTRUMENT_TIERS = [
   {
+    instrument: "crates/disrobe-pass-dotnet/tests/obfuscar_gauntlet.rs",
+    strength: STRONG,
+    quoted:
+      "requires the complete recovered method-token-to-byte map to equal the independently generated CLR runtime accessor map",
+  },
+  {
+    instrument: "crates/disrobe-pass-dotnet/tests/smartassembly_resources.rs",
+    strength: STRONG,
+    quoted:
+      "requires exactly one [z]payload resource, byte equality with the independently compiled clean DLL, and the encrypted-resource extraction strategy",
+  },
+  {
     instrument: "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs",
     strength: STRONG,
     quoted: "against the committed `go tool nm` symbol dump beside it",
