@@ -17,7 +17,7 @@ use disrobe_pass_wasm_deob::{
     extract_signatures, lift_function_body, rust_runtime_prelude, typescript_runtime_prelude,
 };
 use wasmparser::{FunctionBody, Parser, Payload, ValType};
-use wasmtime::{Config, Engine, Linker, Module, Store, Val};
+use wasmtime::{Config, Engine, Linker, Module, Store, Trap, Val};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lang {
@@ -45,6 +45,15 @@ impl Lang {
 }
 
 pub const ALL_LANGS: [Lang; 3] = [Lang::Rust, Lang::TypeScript, Lang::C];
+
+const TYPESCRIPT_STRIP_PREFLIGHT: &str = concat!(
+    "import { readFileSync } from 'node:fs'; ",
+    "import { stripTypeScriptTypes } from 'node:module'; ",
+    "import { SourceTextModule } from 'node:vm'; ",
+    "const path = process.argv[1]; ",
+    "const source = stripTypeScriptTypes(readFileSync(path, 'utf8'), { mode: 'strip', sourceUrl: path }); ",
+    "new SourceTextModule(source, { identifier: path });"
+);
 
 #[derive(Debug, Clone)]
 pub struct Export {
@@ -159,6 +168,45 @@ pub fn wasmtime_results(
         }
     }
     out
+}
+
+#[must_use]
+pub fn wasmtime_trap(
+    configure: fn(&mut Config),
+    bytes: &[u8],
+    export: &Export,
+    args: &[i32],
+) -> Trap {
+    assert_eq!(
+        export.arity,
+        args.len(),
+        "{}: expected {} argument(s), got {}",
+        export.name,
+        export.arity,
+        args.len()
+    );
+    let eng: Engine = engine(configure);
+    let module: Module = Module::new(&eng, bytes).expect("corpus compiles under wasmtime");
+    let mut store: Store<()> = Store::new(&eng, ());
+    let linker: Linker<()> = Linker::new(&eng);
+    let instance: wasmtime::Instance = linker
+        .instantiate(&mut store, &module)
+        .expect("corpus instantiates");
+    let func: wasmtime::Func = instance
+        .get_func(&mut store, &export.name)
+        .expect("export present in the corpus");
+    let argv: Vec<Val> = args.iter().map(|arg: &i32| Val::I32(*arg)).collect();
+    let mut result: [Val; 1] = [Val::I32(0)];
+    let error: wasmtime::Error = func
+        .call(&mut store, &argv, &mut result)
+        .expect_err("the selected Wasmtime trap case must not return");
+    let Some(trap): Option<&Trap> = error.downcast_ref::<Trap>() else {
+        panic!(
+            "{}: Wasmtime returned a non-trap call error: {error:#}",
+            export.name
+        );
+    };
+    *trap
 }
 
 #[must_use]
@@ -278,14 +326,13 @@ pub struct Run {
     pub values: BTreeMap<String, i32>,
 }
 
-#[must_use]
-pub fn execute(label: &str, lang: Lang, src: &str, tool: &PathBuf) -> Run {
+fn execute_process(label: &str, lang: Lang, src: &str, tool: &PathBuf) -> Output {
     let scratch: disrobe_core::scratch::ScratchDir = disrobe_core::scratch::ScratchDir::create(
         &format!("disrobe_wasm_{label}_{}", lang.label()),
     )
     .expect("scratch dir");
     let dir: PathBuf = scratch.path().to_path_buf();
-    let stdout: String = match lang {
+    match lang {
         Lang::Rust => {
             let rs: PathBuf = dir.join("lifted.rs");
             std::fs::write(&rs, src).expect("write rust source");
@@ -306,32 +353,34 @@ pub fn execute(label: &str, lang: Lang, src: &str, tool: &PathBuf) -> Run {
                 lang.label(),
                 String::from_utf8_lossy(&build.stderr)
             );
-            let run: Output = Command::new(&exe).output().expect("run lifted rust");
-            assert!(
-                run.status.success(),
-                "{label}/{}: lifted rust program exited {:?}\n{}",
-                lang.label(),
-                run.status.code(),
-                String::from_utf8_lossy(&run.stderr)
-            );
-            String::from_utf8_lossy(&run.stdout).to_string()
+            Command::new(&exe).output().expect("run lifted rust")
         }
         Lang::TypeScript => {
             let ts: PathBuf = dir.join("lifted.ts");
             std::fs::write(&ts, src).expect("write typescript source");
+            let preflight: Output = Command::new(tool)
+                .arg("--no-warnings")
+                .arg("--experimental-vm-modules")
+                .arg("--input-type=module")
+                .arg("--eval")
+                .arg(TYPESCRIPT_STRIP_PREFLIGHT)
+                .arg("--")
+                .arg(&ts)
+                .output()
+                .expect("preflight lifted typescript");
+            assert!(
+                preflight.status.success(),
+                "{label}/{}: Node rejected the lifted program during syntax preflight\n--- stderr ---\n{}\n--- source ---\n{src}",
+                lang.label(),
+                String::from_utf8_lossy(&preflight.stderr)
+            );
             let run: Output = Command::new(tool)
                 .arg("--experimental-strip-types")
                 .arg("--no-warnings")
                 .arg(&ts)
                 .output()
                 .expect("spawn node");
-            assert!(
-                run.status.success(),
-                "{label}/{}: node rejected or crashed on the lifted program\n--- stderr ---\n{}",
-                lang.label(),
-                String::from_utf8_lossy(&run.stderr)
-            );
-            String::from_utf8_lossy(&run.stdout).to_string()
+            run
         }
         Lang::C => {
             let c: PathBuf = dir.join("lifted.c");
@@ -353,35 +402,168 @@ pub fn execute(label: &str, lang: Lang, src: &str, tool: &PathBuf) -> Run {
                 lang.label(),
                 String::from_utf8_lossy(&built.stderr)
             );
-            let run: Output = Command::new(&exe).output().expect("run lifted c");
-            assert!(
-                run.status.success(),
-                "{label}/{}: lifted C program exited {:?}\n{}",
-                lang.label(),
-                run.status.code(),
-                String::from_utf8_lossy(&run.stderr)
-            );
-            String::from_utf8_lossy(&run.stdout).to_string()
+            Command::new(&exe).output().expect("run lifted c")
         }
-    };
+    }
+}
+
+#[must_use]
+pub fn execute(label: &str, lang: Lang, src: &str, tool: &PathBuf) -> Run {
+    let run: Output = execute_process(label, lang, src, tool);
+    assert!(
+        run.status.success(),
+        "{label}/{}: lifted program exited {:?}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        lang.label(),
+        run.status.code(),
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let stdout: String =
+        String::from_utf8(run.stdout).unwrap_or_else(|error: std::string::FromUtf8Error| {
+            panic!(
+                "{label}/{}: lifted program emitted non-UTF-8 stdout: {error}",
+                lang.label()
+            );
+        });
     let mut values: BTreeMap<String, i32> = BTreeMap::new();
-    for line in stdout.lines() {
+    for (line_number, line) in stdout.lines().enumerate() {
         let mut it: std::str::SplitWhitespace<'_> = line.split_whitespace();
         let Some(name): Option<&str> = it.next() else {
-            continue;
+            panic!(
+                "{label}/{}: empty output line {}",
+                lang.label(),
+                line_number + 1
+            );
         };
-        let Some(args): Option<&str> = it.next() else {
-            continue;
+        let Some(second): Option<&str> = it.next() else {
+            panic!("{label}/{}: incomplete output line {line:?}", lang.label());
         };
-        let Some(raw): Option<&str> = it.next() else {
-            continue;
-        };
+        let third: Option<&str> = it.next();
+        assert!(
+            it.next().is_none(),
+            "{label}/{}: output line has too many fields {line:?}",
+            lang.label()
+        );
+        let (key, raw): (String, &str) = third.map_or_else(
+            || (format!("{name} "), second),
+            |raw: &str| (format!("{name} {second}"), raw),
+        );
         let Ok(value): Result<i32, _> = raw.parse::<i32>() else {
             panic!("{label}/{}: unparsable result line {line:?}", lang.label());
         };
-        values.insert(format!("{name} {args}"), value);
+        assert!(
+            values.insert(key.clone(), value).is_none(),
+            "{label}/{}: duplicate output key {key:?}",
+            lang.label()
+        );
     }
     Run { values }
+}
+
+const TRAP_MARKER_NAMESPACE: &[u8] = b"DR-WASMDEOB-TRAP/1:";
+
+pub fn validate_trap_contract(
+    succeeded: bool,
+    stdout: &[u8],
+    stderr: &[u8],
+    marker: &str,
+) -> Result<(), String> {
+    if succeeded {
+        return Err("lifted program returned successfully instead of trapping".to_owned());
+    }
+    if !stdout.is_empty() {
+        return Err(format!(
+            "trapping lifted program wrote stdout: {}",
+            String::from_utf8_lossy(stdout)
+        ));
+    }
+    let marker_bytes: &[u8] = marker.as_bytes();
+    if !marker_bytes.starts_with(TRAP_MARKER_NAMESPACE)
+        || marker_bytes.len() == TRAP_MARKER_NAMESPACE.len()
+    {
+        return Err(format!(
+            "trap marker is outside the required namespace: {marker:?}"
+        ));
+    }
+    let lines: Vec<&[u8]> = stderr
+        .split(|byte: &u8| *byte == b'\n')
+        .map(|line: &[u8]| line.strip_suffix(b"\r").unwrap_or(line))
+        .collect();
+    let markers: Vec<&[u8]> = lines
+        .iter()
+        .copied()
+        .filter(|line: &&[u8]| *line == marker_bytes)
+        .collect();
+    if markers.len() != 1 {
+        return Err(format!(
+            "expected exactly one {marker:?} stderr line, found {}; stderr: {}",
+            markers.len(),
+            String::from_utf8_lossy(stderr)
+        ));
+    }
+    let namespaced: Vec<&[u8]> = lines
+        .iter()
+        .copied()
+        .filter(|line: &&[u8]| line.starts_with(TRAP_MARKER_NAMESPACE))
+        .collect();
+    if namespaced.len() != 1 || namespaced[0] != marker_bytes {
+        return Err(format!(
+            "expected the sole namespaced trap marker to equal {marker:?}; found {} marker line(s); stderr: {}",
+            namespaced.len(),
+            String::from_utf8_lossy(stderr)
+        ));
+    }
+    Ok(())
+}
+
+pub fn execute_trap(label: &str, lang: Lang, src: &str, tool: &PathBuf, marker: &str) {
+    assert!(
+        !src.contains(marker),
+        "{label}/{}: trap marker must not occur in generated source",
+        lang.label()
+    );
+    let run: Output = execute_process(label, lang, src, tool);
+    if let Err(reason) =
+        validate_trap_contract(run.status.success(), &run.stdout, &run.stderr, marker)
+    {
+        panic!(
+            "{label}/{}: trap contract failed: {reason}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            lang.label(),
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
+pub fn output_divergences(
+    expected: &[(String, Option<i32>)],
+    actual: &BTreeMap<String, i32>,
+    reference: &str,
+) -> Vec<String> {
+    let mut divergences: Vec<String> = Vec::new();
+    let mut expected_values: BTreeMap<&str, i32> = BTreeMap::new();
+    for (key, expected_value) in expected {
+        let Some(expected_value): Option<&i32> = expected_value.as_ref() else {
+            divergences.push(format!("{key}: {reference} trapped"));
+            continue;
+        };
+        expected_values.insert(key.as_str(), *expected_value);
+        match actual.get(key) {
+            Some(actual_value) if actual_value == expected_value => {}
+            Some(actual_value) => divergences.push(format!(
+                "{key}: {reference}={expected_value} lifted={actual_value}"
+            )),
+            None => divergences.push(format!("{key}: missing from the lifted output")),
+        }
+    }
+    for (key, actual_value) in actual {
+        if !expected_values.contains_key(key.as_str()) {
+            divergences.push(format!(
+                "{key}: unexpected lifted output value {actual_value}"
+            ));
+        }
+    }
+    divergences
 }
 
 pub struct Spec<'a> {
@@ -423,26 +605,15 @@ pub fn grade(spec: &Spec<'_>) {
     let mut graded_langs: Vec<&'static str> = Vec::new();
     for lang in spec.langs {
         let Some(tool): Option<PathBuf> = toolchain(*lang) else {
-            eprintln!(
-                "SKIP {}/{}: no toolchain on PATH for the execution differential",
+            panic!(
+                "{}/{}: required toolchain is absent for the execution differential",
                 spec.label,
                 lang.label()
             );
-            continue;
         };
         let src: String = lifted_source(&bytes, &sigs, &exps, *lang, spec.battery);
         let run: Run = execute(spec.label, *lang, &src, &tool);
-        let mut diverged: Vec<String> = Vec::new();
-        for (key, want_v) in &want {
-            let Some(w): Option<&i32> = want_v.as_ref() else {
-                continue;
-            };
-            match run.values.get(key) {
-                Some(got) if got == w => {}
-                Some(got) => diverged.push(format!("{key}: wasmtime={w} lifted={got}")),
-                None => diverged.push(format!("{key}: missing from the lifted output")),
-            }
-        }
+        let diverged: Vec<String> = output_divergences(&want, &run.values, "wasmtime");
         assert!(
             diverged.is_empty(),
             "{}/{}: lifted output diverged from wasmtime on {} of {} case(s):\n{}",
@@ -470,6 +641,72 @@ pub fn grade(spec: &Spec<'_>) {
         } else {
             format!(" (ungraded exports: {:?})", spec.ungraded)
         }
+    );
+}
+
+pub fn grade_traps(spec: &Spec<'_>, marker: &str, expected_trap: Trap) {
+    let bytes: Vec<u8> = wat::parse_str(spec.wat)
+        .unwrap_or_else(|e| panic!("assemble the {} corpus: {e}", spec.label));
+    let sigs: ModuleSignatures = extract_signatures(&bytes).expect("signatures");
+    let exps: Vec<Export> = exports(&sigs, spec.ungraded);
+    assert!(
+        exps.len() >= spec.min_exports,
+        "{}: expected at least {} graded exports, got {}",
+        spec.label,
+        spec.min_exports,
+        exps.len()
+    );
+    assert_eq!(
+        exps.len(),
+        1,
+        "{}: a trap differential must exercise exactly one export",
+        spec.label
+    );
+
+    assert!(
+        spec.battery.is_empty(),
+        "{}: a trap differential must use an empty argument battery",
+        spec.label
+    );
+    assert_eq!(
+        exps[0].arity, 0,
+        "{}: a trap differential must exercise exactly one zero-argument export",
+        spec.label
+    );
+    let trap: Trap = wasmtime_trap(spec.configure, &bytes, &exps[0], &[]);
+    assert_eq!(
+        trap, expected_trap,
+        "{}: Wasmtime reported an unexpected trap variant",
+        spec.label
+    );
+    assert!(
+        !spec.langs.is_empty(),
+        "{}: a trap differential must name at least one target",
+        spec.label
+    );
+
+    for lang in spec.langs {
+        let Some(tool): Option<PathBuf> = toolchain(*lang) else {
+            panic!(
+                "{}/{}: required toolchain is absent for the execution trap differential",
+                spec.label,
+                lang.label()
+            );
+        };
+        let src: String = lifted_source(&bytes, &sigs, &exps, *lang, spec.battery);
+        execute_trap(spec.label, *lang, &src, &tool, marker);
+    }
+
+    eprintln!(
+        "{} trap differential: {} exports, {} trap cases, targets: {}",
+        spec.label,
+        exps.len(),
+        1,
+        spec.langs
+            .iter()
+            .map(|lang: &Lang| lang.label())
+            .collect::<Vec<&str>>()
+            .join(", ")
     );
 }
 
@@ -523,26 +760,15 @@ pub fn grade_against_reference(spec: &ReferenceSpec<'_>) {
     let mut graded_langs: Vec<&'static str> = Vec::new();
     for lang in spec.langs {
         let Some(tool): Option<PathBuf> = toolchain(*lang) else {
-            eprintln!(
-                "SKIP {}/{}: no toolchain on PATH for the reference differential",
+            panic!(
+                "{}/{}: required toolchain is absent for the reference differential",
                 spec.label,
                 lang.label()
             );
-            continue;
         };
         let src: String = lifted_source(&bytes, &sigs, &exps, *lang, &BATTERY);
         let run: Run = execute(spec.label, *lang, &src, &tool);
-        let mut diverged: Vec<String> = Vec::new();
-        for (key, want_v) in &want {
-            let Some(w): Option<&i32> = want_v.as_ref() else {
-                continue;
-            };
-            match run.values.get(key) {
-                Some(got) if got == w => {}
-                Some(got) => diverged.push(format!("{key}: reference-wasmtime={w} lifted={got}")),
-                None => diverged.push(format!("{key}: missing from the lifted output")),
-            }
-        }
+        let diverged: Vec<String> = output_divergences(&want, &run.values, "reference-wasmtime");
         assert!(
             diverged.is_empty(),
             "{}/{}: lifted output diverged from the reference module on {} of {} case(s):\n{}",
@@ -582,30 +808,26 @@ pub fn cross_target_agreement(label: &str, wat: &str, min_exports: usize) {
     let mut runs: Vec<(Lang, BTreeMap<String, i32>)> = Vec::new();
     for lang in ALL_LANGS {
         let Some(tool): Option<PathBuf> = toolchain(lang) else {
-            eprintln!("SKIP {label}/{}: no toolchain on PATH", lang.label());
-            continue;
+            panic!(
+                "{label}/{}: required toolchain is absent for cross-target agreement",
+                lang.label()
+            );
         };
         let src: String = lifted_source(&bytes, &sigs, &exps, lang, &BATTERY);
         let run: Run = execute(label, lang, &src, &tool);
         runs.push((lang, run.values));
     }
     let Some((base_lang, base)): Option<&(Lang, BTreeMap<String, i32>)> = runs.first() else {
-        eprintln!("SKIP {label}: no toolchain available for any target");
-        return;
+        panic!("{label}: cross-target agreement has no target results");
     };
+    let expected: Vec<(String, Option<i32>)> = base
+        .iter()
+        .map(|(key, value): (&String, &i32)| (key.clone(), Some(*value)))
+        .collect();
     let mut diverged: Vec<String> = Vec::new();
     for (lang, values) in runs.iter().skip(1) {
-        for (key, base_v) in base {
-            match values.get(key) {
-                Some(got) if got == base_v => {}
-                Some(got) => diverged.push(format!(
-                    "{key}: {}={base_v} {}={got}",
-                    base_lang.label(),
-                    lang.label()
-                )),
-                None => diverged.push(format!("{key}: missing from the {} run", lang.label())),
-            }
-        }
+        let reference: String = format!("{} versus {}", base_lang.label(), lang.label());
+        diverged.extend(output_divergences(&expected, values, &reference));
     }
     assert!(
         diverged.is_empty(),

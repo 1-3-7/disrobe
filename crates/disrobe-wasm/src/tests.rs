@@ -4,6 +4,11 @@ use serde_json::Value;
 const SAMPLE_PYC: &[u8] = include_bytes!("../tests/fixtures/sample.pyc");
 const BENIGN_PICKLE: &[u8] = include_bytes!("../tests/fixtures/benign_list.pkl");
 const MALICIOUS_PICKLE: &[u8] = include_bytes!("../tests/fixtures/reduce_os_system.pkl");
+const UNSAFE_ATOMIC_WASM: &[u8] = &[
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x06, 0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f,
+    0x03, 0x02, 0x01, 0x00, 0x05, 0x04, 0x01, 0x03, 0x01, 0x02, 0x07, 0x08, 0x01, 0x04, 0x6c, 0x6f,
+    0x61, 0x64, 0x00, 0x00, 0x0a, 0x0a, 0x01, 0x08, 0x00, 0x20, 0x00, 0xfe, 0x10, 0x02, 0x00, 0x0b,
+];
 
 fn write_input(bytes: &[u8]) -> *mut u8 {
     let ptr: *mut u8 = super::disrobe_alloc(bytes.len());
@@ -178,6 +183,21 @@ fn wasm_analyze_reports_on_minimal_module() {
     let json: Value = run(super::wasm_analyze, module);
     assert_eq!(json["ok"], Value::Bool(true));
     assert_eq!(json["format"], "wasm");
+}
+
+#[test]
+fn wasm_lift_rust_reports_unsafe_atomic_state() {
+    let json: Value = run(super::wasm_lift_rust, UNSAFE_ATOMIC_WASM);
+    assert_eq!(json["ok"], Value::Bool(false));
+    let error: &str = json["error"].as_str().expect("error");
+    assert!(
+        error.contains("DR-WASMDEOB-0003"),
+        "unsafe atomic state returned the wrong diagnostic: {error}"
+    );
+    assert!(
+        json.get("source").is_none(),
+        "unsafe atomic state returned a stub"
+    );
 }
 
 #[test]

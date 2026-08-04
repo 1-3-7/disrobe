@@ -1,6 +1,7 @@
 use wasmparser::{FunctionBody, ValType};
 
-use crate::lift::{CalleeNames, HighLang, LiftResult, LiftTarget};
+use crate::error::{Error, Result};
+use crate::lift::{CalleeNames, HighLang, LiftResult, LiftTarget, atomic_memory_refusal_coverage};
 use crate::signature::FunctionSig;
 use crate::structured::lift_body_structured;
 
@@ -15,16 +16,20 @@ pub(crate) fn lift_function_body_c(
     sig: &FunctionSig,
     callees: &CalleeNames,
 ) -> LiftResult {
-    match lift_body_structured(body, sig, callees, HighLang::C) {
-        Ok((source, blocks_emitted, coverage)) => LiftResult {
+    match try_lift_function_body_c(body, sig, callees) {
+        Ok(result) => result,
+        Err(Error::AtomicMemoryModel(reason)) => LiftResult {
             target: LiftTarget::C,
-            pseudo_source: source,
-            blocks_emitted,
-            coverage,
+            pseudo_source: c_atomic_memory_refusal_stub(
+                sig,
+                &Error::AtomicMemoryModel(reason).to_string(),
+            ),
+            blocks_emitted: 0,
+            coverage: atomic_memory_refusal_coverage(),
         },
-        Err(e) => LiftResult {
+        Err(error) => LiftResult {
             target: LiftTarget::C,
-            pseudo_source: c_stub(sig, &e.to_string()),
+            pseudo_source: c_stub(sig, &error.to_string()),
             blocks_emitted: 0,
             coverage: crate::lift::LiftCoverage {
                 total_ops: 0,
@@ -33,6 +38,52 @@ pub(crate) fn lift_function_body_c(
             },
         },
     }
+}
+
+pub(crate) fn try_lift_function_body_c(
+    body: &FunctionBody<'_>,
+    sig: &FunctionSig,
+    callees: &CalleeNames,
+) -> Result<LiftResult> {
+    let (source, blocks_emitted, coverage): (String, usize, crate::lift::LiftCoverage) =
+        lift_body_structured(body, sig, callees, HighLang::C)?;
+    Ok(LiftResult {
+        target: LiftTarget::C,
+        pseudo_source: source,
+        blocks_emitted,
+        coverage,
+    })
+}
+
+fn c_atomic_memory_refusal_stub(sig: &FunctionSig, reason: &str) -> String {
+    let mut source: String = String::new();
+    let result: &str = sig
+        .results
+        .first()
+        .map_or("void", |ty: &ValType| c_type(*ty));
+    crate::push_string_fmt(&mut source, format_args!("{result} {}(", sig.name));
+    if sig.params.is_empty() {
+        source.push_str("void");
+    } else {
+        let params: std::iter::Enumerate<std::slice::Iter<'_, ValType>> =
+            sig.params.iter().enumerate();
+        for (index, ty) in params {
+            if index > 0 {
+                source.push_str(", ");
+            }
+            crate::push_string_fmt(&mut source, format_args!("{} p{index}", c_type(*ty)));
+        }
+    }
+    source.push_str(") {\n");
+    for index in 0..sig.params.len() {
+        crate::push_string_line(&mut source, format_args!("    (void)p{index};"));
+    }
+    crate::push_string_line(&mut source, format_args!("    fputs({reason:?}, stderr);"));
+    source.push_str("    fputc('\\n', stderr);\n");
+    source.push_str("    fflush(stderr);\n");
+    source.push_str("    abort();\n");
+    source.push_str("}\n");
+    source
 }
 
 fn c_stub(sig: &FunctionSig, reason: &str) -> String {

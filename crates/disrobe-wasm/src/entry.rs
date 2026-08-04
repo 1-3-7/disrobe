@@ -43,13 +43,13 @@ use disrobe_pass_shell::{
 };
 use disrobe_pass_swift_objc::{SwiftObjcReport, analyze as swift_objc_analyze};
 use disrobe_pass_wasm_deob::{
-    CalleeNames, ComponentBindings, ComponentManifest, EhModuleSummary, ExportAlias, FunctionCfg,
-    FunctionSig, GcHirModule, GcTypeGraph, LiftResult, LiftTarget, MemoryReport, ModuleSignatures,
+    ComponentBindings, ComponentManifest, EhModuleSummary, ExportAlias, FunctionCfg, FunctionSig,
+    GcHirModule, GcTypeGraph, LiftResult, LiftTarget, MemoryReport, ModuleSignatures,
     ModuleSummary, RecoveredModule, RecoveryReport, SourceMap, WasmDetection, analyze_module,
     build_function_cfg, c_runtime_prelude, extract_signatures, lift_component_manifest,
-    lift_function_body, lift_gc_module, lift_module_faithful_wat, lift_module_to_wat,
-    parse_component_manifest, parse_source_map, recover_gc_types, recover_module,
-    rust_runtime_prelude, scan_memories, scan_module_eh, typescript_runtime_prelude,
+    lift_gc_module, lift_module_faithful_wat, lift_module_to_wat, parse_component_manifest,
+    parse_source_map, recover_gc_types, recover_module, rust_runtime_prelude, scan_memories,
+    scan_module_eh, try_lift_functions_from_module, typescript_runtime_prelude,
 };
 use disrobe_py_marshal::{CodeObject, Object, PyVersion, PycFile, pyversion_from_magic, read_pyc};
 use serde::Serialize;
@@ -671,28 +671,16 @@ fn assemble_high_level(
     target: LiftTarget,
     target_label: &'static str,
 ) -> Result<WasmHighLevelResult, String> {
-    let sigs: ModuleSignatures =
-        extract_signatures(bytes).map_err(|e| format!("wasm signatures: {e}"))?;
-    let defined: &[FunctionSig] = sigs.defined();
-    let callees: CalleeNames = CalleeNames::with_signatures(
-        sigs.callee_names(),
-        sigs.call_signatures(),
-        sigs.call_signatures(),
-    );
     let mut source: String = match target {
         LiftTarget::Rust => rust_runtime_prelude().to_owned(),
         LiftTarget::TypeScript => typescript_runtime_prelude().to_owned(),
         LiftTarget::C => c_runtime_prelude().to_owned(),
         LiftTarget::Wat => String::new(),
     };
-    let bodies: Vec<FunctionBody<'_>> = collect_code_bodies(bytes)?;
-    for (idx, body) in bodies.iter().enumerate() {
-        let sig: FunctionSig = if let Some(sig) = defined.get(idx) {
-            sig.clone()
-        } else {
-            FunctionSig::placeholder(wasm_index(idx, "wasm function")?)
-        };
-        let result: LiftResult = lift_function_body(body, &sig, &callees, target);
+    let results: Vec<LiftResult> = try_lift_functions_from_module(bytes, target)
+        .map_err(|error| format!("wasm lift: {error}"))?;
+    let function_count: usize = results.len();
+    for result in results {
         source.push('\n');
         source.push_str(&result.pseudo_source);
         if !result.pseudo_source.ends_with('\n') {
@@ -703,7 +691,7 @@ fn assemble_high_level(
         ok: true,
         format: "wasm",
         target: target_label,
-        function_count: bodies.len(),
+        function_count,
         source,
     })
 }
