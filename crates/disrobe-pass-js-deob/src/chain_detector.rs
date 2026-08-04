@@ -142,6 +142,10 @@ pub struct JsObfPass;
 
 impl Pass for JsObfPass {
     #[inline]
+    fn meta(&self) -> disrobe_core::chain::PassMeta {
+        META
+    }
+    #[inline]
     fn id(&self) -> PassId {
         PASS_ID
     }
@@ -223,6 +227,14 @@ impl Pass for JsObfPass {
         }
     }
 }
+
+pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
+    PASS_ID,
+    disrobe_core::chain::Ecosystem::JavaScript,
+    disrobe_core::chain::SupportQuality::Full,
+    disrobe_core::chain::Determinism::Deterministic,
+    disrobe_core::chain::SafetyClass::GatedDynamic,
+);
 
 pub static JS_OBF_PASS: JsObfPass = JsObfPass;
 

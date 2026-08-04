@@ -144,9 +144,9 @@ pub fn ecosystem_for(pass_id: PassId) -> Ecosystem {
         "as3" => Ecosystem::As3,
         "mobile" => Ecosystem::Mobile,
         "swift-objc" | "swift" => Ecosystem::Swift,
-        "shell" => Ecosystem::Shell,
+        "shell" | "scriptlang" => Ecosystem::Shell,
         "binfmt" => Ecosystem::Container,
-        "pickle" | "scriptlang" => Ecosystem::Python,
+        "pickle" => Ecosystem::Python,
         _ => Ecosystem::Other,
     }
 }

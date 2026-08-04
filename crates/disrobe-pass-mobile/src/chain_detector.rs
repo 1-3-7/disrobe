@@ -64,6 +64,10 @@ pub struct MobilePassAdapter;
 
 impl Pass for MobilePassAdapter {
     #[inline]
+    fn meta(&self) -> disrobe_core::chain::PassMeta {
+        META
+    }
+    #[inline]
     fn id(&self) -> PassId {
         PASS_ID
     }
@@ -140,6 +144,14 @@ impl Pass for MobilePassAdapter {
         }
     }
 }
+
+pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
+    PASS_ID,
+    disrobe_core::chain::Ecosystem::Mobile,
+    disrobe_core::chain::SupportQuality::Full,
+    disrobe_core::chain::Determinism::Deterministic,
+    disrobe_core::chain::SafetyClass::Static,
+);
 
 pub static MOBILE_PASS: MobilePassAdapter = MobilePassAdapter;
 

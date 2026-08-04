@@ -79,7 +79,7 @@ pub use ioc::{
     extract as ioc_extract, extract_with_extra as ioc_extract_with_extra, report as ioc_report,
     report_with_extra as ioc_report_with_extra,
 };
-pub use pass::{Pass, PassId};
+pub use pass::{Determinism, Pass, PassId, PassMeta, SafetyClass};
 pub use progress::{CapturingProgress, NoopProgress, Progress, ProgressEvent};
 pub use provenance::{
     CommentStyle, Language, PROVENANCE_JSON_KEY, PROVENANCE_SCHEMA, Protocol, ProvenanceHeader,

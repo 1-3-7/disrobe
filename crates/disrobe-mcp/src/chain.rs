@@ -58,18 +58,7 @@ fn blake3_hash(bytes: &[u8]) -> [u8; 32] {
 }
 
 fn registry() -> PassRegistry {
-    let mut r: PassRegistry = PassRegistry::new();
-    r.register(&disrobe_pass_pyarmor::chain_detector::PYARMOR_PASS);
-    r.register(&disrobe_pass_native::chain_detector::PACKER_PASS);
-    r.register(&disrobe_pass_py_deob::chain_detector::PY_DEOB_PASS);
-    r.register(&disrobe_binfmt::chain_detector::CONTAINER_PASS);
-    r.register(&disrobe_pass_sourcedefender::chain_detector::SOURCEDEFENDER_PASS);
-    r.register(&disrobe_pass_pyfreeze::chain_detector::PYFREEZE_PASS);
-    r.register(&disrobe_pass_nuitka::chain_detector::NUITKA_PASS);
-    r.register(&disrobe_pass_py_disasm::chain_detector::PY_DISASM_PASS);
-    r.register(&disrobe_pass_py_decompile::chain_detector::PY_DECOMPILE_PASS);
-    r.register(&disrobe_pass_pyinstaller::chain_detector::PYINSTALLER_PASS);
-    r
+    disrobe_passes::build_registry()
 }
 
 #[derive(Debug)]
@@ -136,4 +125,45 @@ pub(crate) fn recovered_sources(plan: &ChainPlan) -> Vec<RecoveredSource> {
         });
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::registry;
+    use disrobe_core::chain::{ChainConfig, PassRegistry, SafetyClass};
+    use disrobe_core::pass::PassId;
+
+    #[test]
+    fn mcp_registry_matches_the_shared_assembly() {
+        let ids: Vec<PassId> = registry()
+            .iter_passes()
+            .map(disrobe_core::chain::Pass::id)
+            .collect();
+        assert_eq!(
+            ids,
+            disrobe_passes::registered_pass_ids(),
+            "the mcp registry diverged from the shared assembly"
+        );
+    }
+
+    #[test]
+    fn the_mcp_default_config_gates_off_the_dynamic_modes_its_registry_carries() {
+        let unauthorized: ChainConfig = ChainConfig::default();
+        assert!(
+            !unauthorized.i_have_authorization,
+            "mcp auto runs must default to no authorization"
+        );
+        let r: PassRegistry = registry();
+        let carries_a_gated_mode: bool = r
+            .iter_passes()
+            .any(|p: &dyn disrobe_core::chain::Pass| {
+                p.meta().safety == SafetyClass::GatedDynamic
+            });
+        assert!(
+            carries_a_gated_mode,
+            "no pass the mcp surface registers declares a gated-dynamic mode, so the default-off \
+             guarantee above proves nothing; either the registry lost a pass or SafetyClass \
+             stopped being set"
+        );
+    }
 }

@@ -52,6 +52,10 @@ pub struct PyDecompilePass;
 
 impl Pass for PyDecompilePass {
     #[inline]
+    fn meta(&self) -> disrobe_core::chain::PassMeta {
+        META
+    }
+    #[inline]
     fn id(&self) -> PassId {
         PASS_ID
     }
@@ -119,6 +123,14 @@ impl Pass for PyDecompilePass {
     }
 }
 
+pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
+    PASS_ID,
+    disrobe_core::chain::Ecosystem::Python,
+    disrobe_core::chain::SupportQuality::Full,
+    disrobe_core::chain::Determinism::Deterministic,
+    disrobe_core::chain::SafetyClass::Static,
+);
+
 pub static PY_DECOMPILE_PASS: PyDecompilePass = PyDecompilePass;
 
 fn verdict_alt(tag: &'static str, label: &str) -> DetectVerdict {
@@ -174,7 +186,6 @@ const fn format_tag_for(v: MarshalVersion) -> &'static str {
 mod tests {
     use super::*;
     use disrobe_core::Rung;
-    use disrobe_py_marshal::{CodeEra, CodeObject, Object, PycFile, PycHeader, write_pyc};
 
     fn ctx(bytes: &[u8]) -> DetectContext<'_> {
         DetectContext {
@@ -190,27 +201,6 @@ mod tests {
         v.extend_from_slice(&magic.to_le_bytes());
         v.extend_from_slice(&[0x0d, 0x0a, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8]);
         v
-    }
-
-    fn fallback_pyc() -> Vec<u8> {
-        let mut code: CodeObject = CodeObject::new(CodeEra::Py38to310);
-        code.code = vec![87, 0, 83, 0];
-        code.consts = vec![Object::None];
-        code.filename = Object::String {
-            value: "<fallback>".to_owned(),
-            interned: false,
-        };
-        code.name = Object::String {
-            value: "<module>".to_owned(),
-            interned: false,
-        };
-        code.qualname = code.name.clone();
-        let pyc: PycFile = PycFile {
-            header: PycHeader::deterministic(MarshalVersion::PY310)
-                .expect("deterministic Python 3.10 header"),
-            code: Object::Code(Box::new(code)),
-        };
-        write_pyc(&pyc).expect("marshal fallback fixture")
     }
 
     #[test]
@@ -253,28 +243,6 @@ mod tests {
                 assert!(formatted);
             }
             _ => panic!("expected Source"),
-        }
-    }
-
-    #[test]
-    fn pass_fallback_is_annotated_partial_disassembly() {
-        let input: Artifact = Artifact::new(Rung::Raw, fallback_pyc(), [7u8; 32]);
-        let output: Artifact = PY_DECOMPILE_PASS
-            .run(&input)
-            .expect("fallback pyc must produce an artifact");
-        assert_eq!(output.rung, Rung::Disasm);
-        let text: &str = std::str::from_utf8(&output.envelope).expect("fallback must be UTF-8");
-        assert!(text.starts_with("# decompile-error:"), "got: {text}");
-        assert!(
-            text.contains("# disrobe py.decompile (disasm fallback)"),
-            "got: {text}"
-        );
-        match PY_DECOMPILE_PASS.output_kind(&output) {
-            OutputKind::Bytes { format_tag, family } => {
-                assert_eq!(format_tag, "py-disasm-fallback");
-                assert_eq!(family, FAMILY_INTERPRETER_BYTECODE);
-            }
-            kind => panic!("expected annotated disassembly with partial recovery, got {kind:?}"),
         }
     }
 

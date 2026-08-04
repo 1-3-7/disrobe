@@ -1929,6 +1929,7 @@ dependencies = [
  "disrobe-pass-swift-objc",
  "disrobe-pass-wasm-deob",
  "disrobe-pass-webview",
+ "disrobe-passes",
  "disrobe-playground",
  "disrobe-prowl",
  "disrobe-py-marshal",
@@ -2127,6 +2128,7 @@ dependencies = [
  "disrobe-pass-pyfreeze",
  "disrobe-pass-pyinstaller",
  "disrobe-pass-sourcedefender",
+ "disrobe-passes",
  "miette",
  "rmcp",
  "serde",
@@ -2729,6 +2731,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "disrobe-passes"
+version = "0.10.4"
+dependencies = [
+ "disrobe-binfmt",
+ "disrobe-core",
+ "disrobe-pass-as3",
+ "disrobe-pass-beam",
+ "disrobe-pass-dotnet",
+ "disrobe-pass-go",
+ "disrobe-pass-js-deob",
+ "disrobe-pass-jvm",
+ "disrobe-pass-lua",
+ "disrobe-pass-mobile",
+ "disrobe-pass-native",
+ "disrobe-pass-nativelang",
+ "disrobe-pass-nuitka",
+ "disrobe-pass-php",
+ "disrobe-pass-pickle",
+ "disrobe-pass-py-decompile",
+ "disrobe-pass-py-deob",
+ "disrobe-pass-py-disasm",
+ "disrobe-pass-pyarmor",
+ "disrobe-pass-pyfreeze",
+ "disrobe-pass-pyinstaller",
+ "disrobe-pass-ruby",
+ "disrobe-pass-scriptlang",
+ "disrobe-pass-shell",
+ "disrobe-pass-sourcedefender",
+ "disrobe-pass-swift-objc",
+ "disrobe-pass-wasm-deob",
+]
+
+[[package]]
 name = "disrobe-playground"
 version = "0.10.4"
 dependencies = [
@@ -2757,6 +2792,7 @@ dependencies = [
  "disrobe-pass-sourcedefender",
  "disrobe-pass-swift-objc",
  "disrobe-pass-wasm-deob",
+ "disrobe-passes",
  "disrobe-py-marshal",
  "serde",
  "serde_json",
@@ -2866,6 +2902,7 @@ dependencies = [
  "disrobe-pass-shell",
  "disrobe-pass-swift-objc",
  "disrobe-pass-wasm-deob",
+ "disrobe-passes",
  "disrobe-py-marshal",
  "disrobe-query",
  "pyo3",

@@ -51,6 +51,10 @@ pub struct PyfreezePass;
 
 impl Pass for PyfreezePass {
     #[inline]
+    fn meta(&self) -> disrobe_core::chain::PassMeta {
+        META
+    }
+    #[inline]
     fn id(&self) -> PassId {
         PASS_ID
     }
@@ -122,6 +126,14 @@ impl Pass for PyfreezePass {
         Ok(children)
     }
 }
+
+pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
+    PASS_ID,
+    disrobe_core::chain::Ecosystem::Python,
+    disrobe_core::chain::SupportQuality::Full,
+    disrobe_core::chain::Determinism::Deterministic,
+    disrobe_core::chain::SafetyClass::Static,
+);
 
 pub static PYFREEZE_PASS: PyfreezePass = PyfreezePass;
 

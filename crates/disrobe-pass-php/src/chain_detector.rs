@@ -50,6 +50,10 @@ pub struct PhpPass;
 
 impl Pass for PhpPass {
     #[inline]
+    fn meta(&self) -> disrobe_core::chain::PassMeta {
+        META
+    }
+    #[inline]
     fn id(&self) -> PassId {
         PASS_ID
     }
@@ -217,6 +221,14 @@ fn build_peel_manifest(bytes: &[u8], detection: &PhpDetection) -> Option<serde_j
         "recovery": recovery_json,
     }))
 }
+
+pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
+    PASS_ID,
+    disrobe_core::chain::Ecosystem::Php,
+    disrobe_core::chain::SupportQuality::DetectOnly,
+    disrobe_core::chain::Determinism::Deterministic,
+    disrobe_core::chain::SafetyClass::Static,
+);
 
 pub static PHP_PASS: PhpPass = PhpPass;
 

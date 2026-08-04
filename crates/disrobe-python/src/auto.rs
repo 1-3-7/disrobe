@@ -60,21 +60,7 @@ fn blake3_hash(bytes: &[u8]) -> [u8; 32] {
 }
 
 fn build_registry() -> PassRegistry {
-    let mut r: PassRegistry = PassRegistry::new();
-    r.register(&disrobe_pass_pyarmor::chain_detector::PYARMOR_PASS);
-    r.register(&disrobe_pass_native::chain_detector::PACKER_PASS);
-    r.register(&disrobe_pass_js_deob::chain_detector::JS_OBF_PASS);
-    r.register(&disrobe_pass_py_deob::chain_detector::PY_DEOB_PASS);
-    r.register(&disrobe_binfmt::chain_detector::CONTAINER_PASS);
-    r.register(&disrobe_pass_nuitka::chain_detector::NUITKA_PASS);
-    r.register(&disrobe_pass_wasm_deob::chain_detector::WASM_DEOB_PASS);
-    r.register(&disrobe_pass_mobile::chain_detector::MOBILE_PASS);
-    r.register(&disrobe_pass_swift_objc::chain_detector::SWIFT_OBJC_PASS);
-    r.register(&disrobe_pass_py_decompile::chain_detector::PY_DECOMPILE_PASS);
-    r.register(&disrobe_pass_pyinstaller::chain_detector::PYINSTALLER_PASS);
-    r.register(&disrobe_pass_jvm::chain_detector::JVM_PASS);
-    r.register(&disrobe_pass_dotnet::chain_detector::DOTNET_PASS);
-    r
+    disrobe_passes::build_registry()
 }
 
 #[pyfunction]

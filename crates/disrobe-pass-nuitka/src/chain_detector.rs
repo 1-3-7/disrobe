@@ -44,6 +44,10 @@ pub struct NuitkaPass;
 
 impl Pass for NuitkaPass {
     #[inline]
+    fn meta(&self) -> disrobe_core::chain::PassMeta {
+        META
+    }
+    #[inline]
     fn id(&self) -> PassId {
         PASS_ID
     }
@@ -354,6 +358,14 @@ fn sanitize_component(name: &str) -> String {
         trimmed.to_owned()
     }
 }
+
+pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
+    PASS_ID,
+    disrobe_core::chain::Ecosystem::Python,
+    disrobe_core::chain::SupportQuality::Full,
+    disrobe_core::chain::Determinism::Deterministic,
+    disrobe_core::chain::SafetyClass::Static,
+);
 
 pub static NUITKA_PASS: NuitkaPass = NuitkaPass;
 

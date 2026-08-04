@@ -54,6 +54,10 @@ pub struct WasmDeobPass;
 
 impl Pass for WasmDeobPass {
     #[inline]
+    fn meta(&self) -> disrobe_core::chain::PassMeta {
+        META
+    }
+    #[inline]
     fn id(&self) -> PassId {
         PASS_ID
     }
@@ -254,6 +258,14 @@ fn defined_signature(defined: &[FunctionSig], idx: usize) -> CoreResult<Function
         ))
     })
 }
+
+pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
+    PASS_ID,
+    disrobe_core::chain::Ecosystem::Wasm,
+    disrobe_core::chain::SupportQuality::Partial,
+    disrobe_core::chain::Determinism::Deterministic,
+    disrobe_core::chain::SafetyClass::Static,
+);
 
 pub static WASM_DEOB_PASS: WasmDeobPass = WasmDeobPass;
 

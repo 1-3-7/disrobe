@@ -8,7 +8,7 @@ The chain runner is what turns a pile of single-purpose passes into a one-comman
 disrobe auto suspect.exe --out recovered/
 ```
 
-`disrobe auto` fingerprints the input, picks the highest-confidence pass, runs it, then re-fingerprints the output and repeats until no further pass clears the confidence threshold or the depth cap is hit. Detection spans 23 pass crates: native packer, PyArmor, JS deob, Python deob, container formats, SourceDefender, py-decompile, py-disasm, PyInstaller, JVM, .NET, Go, mobile, AS3, BEAM, Lua, Ruby, shell, PHP, Nuitka, Wasm, pyfreeze, and swift-objc. See [Pass selection](./passes.md#pass-selection) for exactly how the next pass is chosen.
+`disrobe auto` fingerprints the input, picks the highest-confidence pass, runs it, then re-fingerprints the output and repeats until no further pass clears the confidence threshold or the depth cap is hit. Detection spans 26 pass crates: native packer, PyArmor, JS deob, Python deob, container formats, SourceDefender, py-decompile, py-disasm, PyInstaller, pickle, JVM, .NET, Go, mobile, AS3, BEAM, Lua, Ruby, shell, scriptlang, nativelang, PHP, Nuitka, Wasm, pyfreeze, and swift-objc. `disrobe passes` prints the set this build actually registers, with each pass ecosystem and support tier, and is the live answer if this list ever lags. See [Pass selection](./passes.md#pass-selection) for exactly how the next pass is chosen.
 
 Representative chains:
 

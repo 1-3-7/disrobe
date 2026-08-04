@@ -54,6 +54,10 @@ pub struct PyDisasmPass;
 
 impl Pass for PyDisasmPass {
     #[inline]
+    fn meta(&self) -> disrobe_core::chain::PassMeta {
+        META
+    }
+    #[inline]
     fn id(&self) -> PassId {
         PASS_ID
     }
@@ -165,6 +169,14 @@ fn terminal_child(relative_path: String, bytes: Vec<u8>) -> ChildArtifact {
 }
 
 const ALT_RUNTIME_NOTE_PREFIX: &str = "; alt-runtime ";
+
+pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
+    PASS_ID,
+    disrobe_core::chain::Ecosystem::Python,
+    disrobe_core::chain::SupportQuality::Full,
+    disrobe_core::chain::Determinism::Deterministic,
+    disrobe_core::chain::SafetyClass::Static,
+);
 
 pub static PY_DISASM_PASS: PyDisasmPass = PyDisasmPass;
 

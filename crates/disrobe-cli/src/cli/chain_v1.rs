@@ -371,50 +371,7 @@ fn render_delphi_notes(report: &disrobe_pass_native::delphi::DelphiReport) {
 }
 
 fn build_registry() -> PassRegistry {
-    let mut r: PassRegistry = PassRegistry::new();
-    r.register(&disrobe_pass_pyarmor::chain_detector::PYARMOR_PASS);
-    r.register(&disrobe_pass_native::chain_detector::PACKER_PASS);
-    r.register(&disrobe_pass_py_deob::chain_detector::PY_DEOB_PASS);
-    r.register(&disrobe_binfmt::chain_detector::CONTAINER_PASS);
-    r.register(&disrobe_pass_sourcedefender::chain_detector::SOURCEDEFENDER_PASS);
-    r.register(&disrobe_pass_pyfreeze::chain_detector::PYFREEZE_PASS);
-    r.register(&disrobe_pass_nuitka::chain_detector::NUITKA_PASS);
-    r.register(&disrobe_pass_py_disasm::chain_detector::PY_DISASM_PASS);
-    r.register(&disrobe_pass_py_decompile::chain_detector::PY_DECOMPILE_PASS);
-    r.register(&disrobe_pass_pyinstaller::chain_detector::PYINSTALLER_PASS);
-    #[cfg(feature = "pickle")]
-    r.register(&disrobe_pass_pickle::chain_detector::PICKLE_PASS);
-    #[cfg(feature = "js")]
-    r.register(&disrobe_pass_js_deob::chain_detector::JS_OBF_PASS);
-    #[cfg(feature = "wasm")]
-    r.register(&disrobe_pass_wasm_deob::chain_detector::WASM_DEOB_PASS);
-    #[cfg(feature = "php")]
-    r.register(&disrobe_pass_php::chain_detector::PHP_PASS);
-    #[cfg(feature = "ruby")]
-    r.register(&disrobe_pass_ruby::chain_detector::RUBY_PASS);
-    #[cfg(feature = "shell")]
-    r.register(&disrobe_pass_shell::chain_detector::SHELL_PASS);
-    #[cfg(feature = "mobile")]
-    r.register(&disrobe_pass_mobile::chain_detector::MOBILE_PASS);
-    #[cfg(feature = "lua")]
-    r.register(&disrobe_pass_lua::chain_detector::LUA_PASS);
-    #[cfg(feature = "swift")]
-    r.register(&disrobe_pass_swift_objc::chain_detector::SWIFT_OBJC_PASS);
-    #[cfg(feature = "jvm")]
-    r.register(&disrobe_pass_jvm::chain_detector::JVM_PASS);
-    #[cfg(feature = "dotnet")]
-    r.register(&disrobe_pass_dotnet::chain_detector::DOTNET_PASS);
-    #[cfg(feature = "go")]
-    r.register(&disrobe_pass_go::chain_detector::GO_PASS);
-    #[cfg(feature = "beam")]
-    r.register(&disrobe_pass_beam::chain_detector::BEAM_PASS);
-    #[cfg(feature = "as3")]
-    r.register(&disrobe_pass_as3::chain_detector::AS3_PASS);
-    #[cfg(feature = "scriptlang")]
-    r.register(&disrobe_pass_scriptlang::chain_detector::SCRIPTLANG_PASS);
-    #[cfg(feature = "nativelang")]
-    r.register(&disrobe_pass_nativelang::chain_detector::NATIVELANG_PASS);
-    r
+    disrobe_passes::build_registry()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -919,6 +876,50 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     static OBSERVED_AUTHORIZATION: AtomicBool = AtomicBool::new(false);
+
+    #[test]
+    fn cli_chain_registry_matches_the_shared_assembly() {
+        let ids: Vec<PassId> = build_registry().iter_passes().map(Pass::id).collect();
+        assert_eq!(
+            ids,
+            disrobe_passes::expected_pass_ids(),
+            "the cli chain registry diverged from the shared assembly; a hand-edited registry here \
+             would drop or add a pass relative to disrobe-passes"
+        );
+        assert_eq!(
+            ids,
+            disrobe_passes::registered_pass_ids(),
+            "the cli chain registry diverged from what the shared assembly actually constructs"
+        );
+    }
+
+    #[test]
+    fn pass_meta_support_matches_each_catalog_ceiling() {
+        use disrobe_core::chain::SupportQuality;
+
+        let registry: PassRegistry = build_registry();
+        for catalog in crate::cli::catalog_registry::registry() {
+            let pass_id: &str = catalog.pass_id();
+            let Some(best): Option<SupportQuality> = catalog
+                .catalog()
+                .iter()
+                .map(|entry: &&'static dyn disrobe_core::chain::CatalogEntry| {
+                    entry.support_quality()
+                })
+                .min()
+            else {
+                continue;
+            };
+            let pass: &'static dyn Pass = registry
+                .get(pass_id)
+                .expect("catalogued pass must be registered");
+            assert_eq!(
+                pass.meta().support,
+                best,
+                "pass {pass_id} meta support must equal the strongest tier in its catalog"
+            );
+        }
+    }
 
     #[derive(Debug)]
     struct AuthorizationProbeDetector;
