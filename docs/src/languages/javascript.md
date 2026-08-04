@@ -28,6 +28,8 @@ disrobe auto app.asar --out recovered/        # Electron and Node packaging chai
 
 The default `deob` path runs string-array recovery and writes a `detection.json` sidecar naming the matched family. `--full` runs the complete obfuscator.io reversal pipeline and records per-stage statistics in a `pipeline.json` (string-array call sites inlined, dispatch blocks collapsed, opaque predicates folded, packed blocks expanded). `--legacy jsobfu|jscrambler-free|auto` targets the older families; `--unminify` adds the `!0`/`void 0`/string-concat peepholes.
 
+For Rust callers, `AstRuleId::AsyncRestore` is a selector-compatibility no-op: Babel-style async wrappers are preserved. Any call carrying an exact Babel async-helper specifier quarantines the entire AST and preset-env pass, without assuming the callee is CommonJS `require`. `AstRuleId::ArgumentSpread` and `AstRuleId::TemplateLiteral` are disabled-by-default selector-compatibility no-ops, with stable zero-valued report counters. `AstRuleId::RegeneratorRestore` is a disabled-by-default selector-compatibility no-op with a stable zero-valued report counter; regenerator state machines are preserved. `undo_preset_env` keeps `helpers_removed` empty and its spread, class, and async counters at zero; it currently reports only AST-proven optional-chain and nullish-coalescing restoration.
+
 `unbundle` auto-detects the bundler runtime from its markers (the full table above) or forces one with `--target auto|webpack|webpack4|webpack5|vite|rollup|esbuild|turbopack|bun`. Modules land as separate files with chunk and module identifiers preserved, plus a `manifest.json`. `--emit sourcemap` synthesizes per-chunk v3 source maps and decodes embedded data-url maps.
 
 ## Coverage and fidelity

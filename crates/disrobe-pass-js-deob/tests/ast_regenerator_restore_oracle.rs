@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 use boa_engine::{Context, Source};
-use disrobe_pass_js_deob::{AstUnminifyStats, unminify_ast};
+use disrobe_pass_js_deob::{AstPipeline, AstRuleId, AstUnminifyStats, unminify_ast};
 
 const LOOP_LIMIT: u64 = 2_000_000;
 const RECURSION_LIMIT: usize = 1_500;
@@ -22,29 +22,6 @@ fn eval_capture(program: &str) -> Option<String> {
         .as_string()
         .map(boa_engine::JsString::to_std_string_escaped)
 }
-
-fn assert_recovered_equivalent(label: &str, original: &str, recovered: &str) {
-    let want: String =
-        eval_capture(original).unwrap_or_else(|| panic!("{label}: original must evaluate"));
-    let got: String = eval_capture(recovered)
-        .unwrap_or_else(|| panic!("{label}: recovered must evaluate; src=\n{recovered}"));
-    assert_eq!(
-        want, got,
-        "{label}: recovered diverged\n--want--\n{want}\n--got--\n{got}\n--src--\n{recovered}"
-    );
-}
-
-const ORIG_GENERATOR: &str = r"
-function* simple() {
-  var x = yield 1;
-  var y = yield x + 1;
-  return x + y;
-}
-var it = simple();
-print(it.next().value);
-print(it.next(10).value);
-print(it.next(20).value);
-";
 
 const INPUT_GENERATOR_MODERN: &str = r"
 function simple() {
@@ -71,28 +48,17 @@ print(it.next(20).value);
 ";
 
 #[test]
-fn modern_regenerator_generator_restored_and_equivalent() {
+fn modern_regenerator_machine_is_preserved() {
     let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(INPUT_GENERATOR_MODERN);
+    assert_eq!(stats.regenerator_functions_restored, 0, "{recovered}");
     assert!(
-        stats.regenerator_functions_restored >= 1,
-        "the state-machine generator must be restored; got {}",
-        stats.regenerator_functions_restored
+        recovered.contains("_regenerator().w"),
+        "the helper-shaped state machine must remain:\n{recovered}"
     );
     assert!(
-        recovered.contains("function* simple"),
-        "must emit a real generator:\n{recovered}"
+        !recovered.contains("function* simple"),
+        "a generator must not be inferred from helper-shaped syntax:\n{recovered}"
     );
-    assert!(
-        recovered.contains("x = yield 1")
-            && recovered.contains("y = yield x + 1")
-            && recovered.contains("return x + y"),
-        "yields and abrupt return must be reconstructed:\n{recovered}"
-    );
-    assert!(
-        !recovered.contains("_context") && !recovered.contains("_regenerator"),
-        "the state machine and runtime indirection must be gone:\n{recovered}"
-    );
-    assert_recovered_equivalent("modern-generator", ORIG_GENERATOR, &recovered);
 }
 
 const INPUT_GENERATOR_CLASSIC: &str = r#"
@@ -123,32 +89,18 @@ print(it.next(20).value);
 "#;
 
 #[test]
-fn classic_regenerator_generator_restored_and_equivalent() {
+fn classic_regenerator_machine_is_preserved() {
     let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(INPUT_GENERATOR_CLASSIC);
+    assert_eq!(stats.regenerator_functions_restored, 0, "{recovered}");
     assert!(
-        stats.regenerator_functions_restored >= 1,
-        "the classic .prev/.next/.abrupt machine must be restored; got {}",
-        stats.regenerator_functions_restored
+        recovered.contains("regeneratorRuntime.wrap"),
+        "the helper-shaped state machine must remain:\n{recovered}"
     );
     assert!(
-        recovered.contains("function* simple"),
-        "must emit a real generator:\n{recovered}"
+        !recovered.contains("function* simple"),
+        "a generator must not be inferred from helper-shaped syntax:\n{recovered}"
     );
-    assert!(
-        recovered.contains("x = yield 1") && recovered.contains("return x + y"),
-        "yields and abrupt return must be reconstructed:\n{recovered}"
-    );
-    assert_recovered_equivalent("classic-generator", ORIG_GENERATOR, &recovered);
 }
-
-const ORIG_ASYNC: &str = r"
-async function load(n) {
-  var a = await Promise.resolve(n);
-  var b = await Promise.resolve(a + 1);
-  return a + b;
-}
-load(10).then(function (v) { print(v); });
-";
 
 const INPUT_ASYNC_MODERN: &str = r"
 function load(_x) {
@@ -178,26 +130,18 @@ load(10).then(function (v) { print(v); });
 ";
 
 #[test]
-fn modern_regenerator_async_pair_restored_and_equivalent() {
+fn modern_regenerator_async_pair_is_preserved() {
     let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(INPUT_ASYNC_MODERN);
+    assert_eq!(stats.async_functions_restored, 0);
+    assert_eq!(stats.regenerator_functions_restored, 0);
     assert!(
-        stats.async_functions_restored >= 1,
-        "the async wrapper pair must be restored; got {}",
-        stats.async_functions_restored
+        recovered.contains("_asyncToGenerator") && recovered.contains("_context2"),
+        "the async wrapper and state machine must remain:\n{recovered}"
     );
     assert!(
-        recovered.contains("async function load"),
-        "must emit a real async function:\n{recovered}"
+        !recovered.contains("async function load"),
+        "native async output must not be emitted:\n{recovered}"
     );
-    assert!(
-        recovered.contains("a = await Promise.resolve(n)") && recovered.contains("return a + b"),
-        "yields must become await and abrupt return a real return:\n{recovered}"
-    );
-    assert!(
-        !recovered.contains("_asyncToGenerator") && !recovered.contains("_context2"),
-        "the generator helper and state machine must be gone:\n{recovered}"
-    );
-    assert_recovered_equivalent("modern-async", ORIG_ASYNC, &recovered);
 }
 
 const NEG_BRANCHING: &str = r"
@@ -233,4 +177,64 @@ fn negative_branching_state_machine_left_unchanged() {
         recovered.contains("_context"),
         "the unhandled state machine must survive untouched:\n{recovered}"
     );
+}
+
+const COUNTERFEIT_GIFTWRAP: &str = r#"
+function giftwrap(callback) {
+  return 17;
+}
+function victim() {
+  return giftwrap(function (ctx) {
+    while (1) switch (ctx.next) {
+      case 0:
+        return ctx.abrupt("return", 99);
+    }
+  });
+}
+print(victim());
+"#;
+
+#[test]
+fn default_regenerator_rule_preserves_counterfeit_wrap_behavior() {
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(COUNTERFEIT_GIFTWRAP);
+    assert_eq!(recovered, COUNTERFEIT_GIFTWRAP);
+    assert_eq!(stats.regenerator_functions_restored, 0);
+    assert_eq!(
+        eval_capture(COUNTERFEIT_GIFTWRAP).expect("counterfeit input evaluates"),
+        "17"
+    );
+    assert_eq!(
+        eval_capture(&recovered).expect("counterfeit output evaluates"),
+        "17"
+    );
+}
+
+#[test]
+fn regenerator_selector_is_disabled_and_opt_in_is_a_compatibility_noop() {
+    let default_pipeline: AstPipeline = AstPipeline::default();
+    let default_debug: String = format!("{default_pipeline:?}");
+    assert!(
+        !default_debug.contains("RegeneratorRestore"),
+        "{default_debug}"
+    );
+
+    let enabled_pipeline: AstPipeline =
+        AstPipeline::default().with_rule(AstRuleId::RegeneratorRestore, true);
+    let enabled_debug: String = format!("{enabled_pipeline:?}");
+    assert!(
+        enabled_debug.contains("RegeneratorRestore"),
+        "{enabled_debug}"
+    );
+
+    let (default_output, default_stats): (String, AstUnminifyStats) = default_pipeline
+        .try_run(COUNTERFEIT_GIFTWRAP)
+        .expect("default selector pipeline runs");
+    let (enabled_output, enabled_stats): (String, AstUnminifyStats) = enabled_pipeline
+        .try_run(COUNTERFEIT_GIFTWRAP)
+        .expect("enabled selector pipeline runs");
+
+    assert_eq!(default_output, COUNTERFEIT_GIFTWRAP);
+    assert_eq!(enabled_output, default_output);
+    assert_eq!(default_stats.regenerator_functions_restored, 0usize);
+    assert_eq!(enabled_stats.regenerator_functions_restored, 0usize);
 }

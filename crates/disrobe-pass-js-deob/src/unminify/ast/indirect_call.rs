@@ -3,7 +3,7 @@ use oxc_ast::ast::{Expression, Program, SequenceExpression, Statement};
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType};
 
-use super::{Edit, RuleOutcome};
+use super::{Edit, RuleOutcome, edit_overlaps_comments};
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct IndirectCallStats {
@@ -12,7 +12,10 @@ pub(super) struct IndirectCallStats {
 
 pub(super) fn recover(source: &str) -> (RuleOutcome, IndirectCallStats) {
     let allocator: Allocator = Allocator::default();
-    let source_type: SourceType = SourceType::from_path("input.js").unwrap_or_default();
+    let source_type: SourceType = match SourceType::from_path("input.js") {
+        Ok(source_type) => source_type,
+        Err(_) => return (RuleOutcome::empty(), IndirectCallStats::default()),
+    };
     let parsed: oxc_parser::ParserReturn<'_> = Parser::new(&allocator, source, source_type).parse();
     if !parsed.errors.is_empty() || parsed.panicked {
         return (RuleOutcome::empty(), IndirectCallStats::default());
@@ -24,6 +27,8 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, IndirectCallStats) {
     for stmt in &program.body {
         walk_statement(stmt, source, &mut edits, &mut stats);
     }
+    edits.retain(|edit: &Edit| !edit_overlaps_comments(edit, &program.comments));
+    stats.calls_simplified = edits.len();
 
     if edits.is_empty() {
         return (RuleOutcome::empty(), stats);
@@ -38,7 +43,9 @@ fn walk_statement(
     stats: &mut IndirectCallStats,
 ) {
     match stmt {
-        Statement::ExpressionStatement(s) => walk_expression(&s.expression, source, edits, stats),
+        Statement::ExpressionStatement(s) => {
+            walk_expression(&s.expression, source, edits, stats);
+        }
         Statement::ReturnStatement(s) => {
             if let Some(arg) = s.argument.as_ref() {
                 walk_expression(arg, source, edits, stats);
@@ -84,7 +91,9 @@ fn walk_statement(
                 }
             }
         }
-        Statement::ThrowStatement(s) => walk_expression(&s.argument, source, edits, stats),
+        Statement::ThrowStatement(s) => {
+            walk_expression(&s.argument, source, edits, stats);
+        }
         Statement::SwitchStatement(s) => {
             walk_expression(&s.discriminant, source, edits, stats);
             for case in &s.cases {
@@ -140,7 +149,9 @@ fn walk_expression(
             walk_expression(&c.consequent, source, edits, stats);
             walk_expression(&c.alternate, source, edits, stats);
         }
-        Expression::AssignmentExpression(a) => walk_expression(&a.right, source, edits, stats),
+        Expression::AssignmentExpression(a) => {
+            walk_expression(&a.right, source, edits, stats);
+        }
         Expression::SequenceExpression(s) => {
             for inner in &s.expressions {
                 walk_expression(inner, source, edits, stats);
@@ -181,7 +192,7 @@ fn try_indirect(call: &oxc_ast::ast::CallExpression<'_>, source: &str) -> Option
     let Expression::SequenceExpression(seq): &Expression<'_> = callee else {
         return None;
     };
-    let real_callee: &Expression<'_> = guard_zero_then_member(seq)?;
+    let real_callee: &Expression<'_> = guard_zero_then_identifier(seq)?;
     let callee_src: &str = real_callee.span().source_text(source);
     let args_src: String = call_arguments_source(call, source)?;
     Some(Edit {
@@ -191,7 +202,7 @@ fn try_indirect(call: &oxc_ast::ast::CallExpression<'_>, source: &str) -> Option
     })
 }
 
-fn guard_zero_then_member<'a>(seq: &'a SequenceExpression<'a>) -> Option<&'a Expression<'a>> {
+fn guard_zero_then_identifier<'a>(seq: &'a SequenceExpression<'a>) -> Option<&'a Expression<'a>> {
     if seq.expressions.len() != 2 {
         return None;
     }
@@ -203,12 +214,13 @@ fn guard_zero_then_member<'a>(seq: &'a SequenceExpression<'a>) -> Option<&'a Exp
         return None;
     }
     let second: &Expression<'_> = &seq.expressions[1];
-    match second {
-        Expression::StaticMemberExpression(_) | Expression::ComputedMemberExpression(_) => {
-            Some(second)
-        }
-        _ => None,
+    let Expression::Identifier(identifier): &Expression<'_> = second else {
+        return None;
+    };
+    if identifier.name.as_str() == "eval" {
+        return None;
     }
+    Some(second)
 }
 
 fn call_arguments_source(call: &oxc_ast::ast::CallExpression<'_>, source: &str) -> Option<String> {

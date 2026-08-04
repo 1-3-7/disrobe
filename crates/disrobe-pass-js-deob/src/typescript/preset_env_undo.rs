@@ -1,7 +1,14 @@
 use std::collections::BTreeMap;
 
-use regex::Regex;
+use oxc_allocator::Allocator;
+use oxc_parser::Parser;
+use oxc_span::SourceType;
 use serde::Serialize;
+
+use crate::unminify::{
+    PresetEnvExpressionRestore, has_preset_env_async_protection,
+    requires_preset_env_async_quarantine, restore_preset_env_expressions,
+};
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct PresetEnvUndoResult {
@@ -14,131 +21,66 @@ pub struct PresetEnvUndoResult {
     pub nullish_coalesce_restored: usize,
 }
 
-fn try_replace(text: &str, pattern: &str, replacement: &str) -> (String, usize) {
-    let re: Regex = match Regex::new(pattern) {
-        Ok(r) => r,
-        Err(_) => return (text.to_owned(), 0),
+fn reparses_javascript(source: &str) -> bool {
+    let allocator: Allocator = Allocator::default();
+    let source_type: SourceType = match SourceType::from_path("input.js") {
+        Ok(value) => value,
+        Err(_) => return false,
     };
-    let count: usize = re.find_iter(text).count();
-    if count == 0 {
-        return (text.to_owned(), 0);
-    }
-    (re.replace_all(text, replacement).into_owned(), count)
-}
-
-fn collapse_optional_chains(text: &str) -> (String, usize) {
-    let outer: Regex = match Regex::new(
-        r"\(\s*([A-Za-z_$][\w$]*)\s*===?\s*null\s*\|\|\s*([A-Za-z_$][\w$]*)\s*===?\s*void 0\s*\)\s*\?\s*void 0\s*:\s*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)",
-    ) {
-        Ok(r) => r,
-        Err(_) => return (text.to_owned(), 0),
-    };
-    let mut count: usize = 0;
-    let result: std::borrow::Cow<'_, str> =
-        outer.replace_all(text, |caps: &regex::Captures<'_>| {
-            let a: &str = caps.get(1).map_or("", |m| m.as_str());
-            let b: &str = caps.get(2).map_or("", |m| m.as_str());
-            let c: &str = caps.get(3).map_or("", |m| m.as_str());
-            let field: &str = caps.get(4).map_or("", |m| m.as_str());
-            if a == b && b == c {
-                count = count.saturating_add(1);
-                return format!("{a}?.{field}");
-            }
-            caps.get(0).map_or(String::new(), |m| m.as_str().to_owned())
-        });
-    (result.into_owned(), count)
-}
-
-fn collapse_nullish_coalesce(text: &str) -> (String, usize) {
-    let outer: Regex = match Regex::new(
-        r"([A-Za-z_$][\w$]*)\s*!==?\s*null\s*&&\s*([A-Za-z_$][\w$]*)\s*!==?\s*void 0\s*\?\s*([A-Za-z_$][\w$]*)\s*:\s*([A-Za-z_$][\w$]*)",
-    ) {
-        Ok(r) => r,
-        Err(_) => return (text.to_owned(), 0),
-    };
-    let mut count: usize = 0;
-    let result: std::borrow::Cow<'_, str> =
-        outer.replace_all(text, |caps: &regex::Captures<'_>| {
-            let a: &str = caps.get(1).map_or("", |m| m.as_str());
-            let b: &str = caps.get(2).map_or("", |m| m.as_str());
-            let c: &str = caps.get(3).map_or("", |m| m.as_str());
-            let fallback: &str = caps.get(4).map_or("", |m| m.as_str());
-            if a == b && b == c {
-                count = count.saturating_add(1);
-                return format!("{a} ?? {fallback}");
-            }
-            caps.get(0).map_or(String::new(), |m| m.as_str().to_owned())
-        });
-    (result.into_owned(), count)
+    let parsed: oxc_parser::ParserReturn<'_> = Parser::new(&allocator, source, source_type).parse();
+    parsed.errors.is_empty() && !parsed.panicked
 }
 
 #[must_use]
 pub fn undo_preset_env(source: &str) -> PresetEnvUndoResult {
-    let mut out: String = source.to_owned();
-    let mut helpers_removed: BTreeMap<String, usize> = BTreeMap::new();
-
-    let helpers: &[&str] = &[
-        "_toConsumableArray",
-        "_classCallCheck",
-        "_createClass",
-        "_inherits",
-        "_possibleConstructorReturn",
-        "_getPrototypeOf",
-        "_defineProperty",
-        "_objectSpread",
-        "_objectWithoutProperties",
-        "_asyncToGenerator",
-        "_regeneratorRuntime",
-        "_typeof",
-        "_slicedToArray",
-        "_toArray",
-        "_iterableToArray",
-        "_arrayLikeToArray",
-        "_assertThisInitialized",
-        "_setPrototypeOf",
-        "_construct",
-        "_wrapNativeSuper",
-    ];
-    for helper in helpers {
-        let pattern: String = format!(
-            r"(?ms)function\s+{}\s*\([^)]*\)\s*\{{(?:[^{{}}]|\{{[^{{}}]*\}})*?\}}\s*",
-            regex::escape(helper)
-        );
-        let (next, count): (String, usize) = try_replace(&out, &pattern, "");
-        out = next;
-        if count > 0 {
-            helpers_removed.insert((*helper).to_owned(), count);
-        }
+    if requires_preset_env_async_quarantine(source) {
+        return PresetEnvUndoResult {
+            rewritten: source.to_owned(),
+            helpers_removed: BTreeMap::new(),
+            spreads_restored: 0,
+            classes_restored: 0,
+            async_restored: 0,
+            optional_chains_restored: 0,
+            nullish_coalesce_restored: 0,
+        };
     }
+    if has_preset_env_async_protection(source) {
+        let expression_result: PresetEnvExpressionRestore = restore_preset_env_expressions(source);
+        return PresetEnvUndoResult {
+            rewritten: expression_result.rewritten,
+            helpers_removed: BTreeMap::new(),
+            spreads_restored: 0,
+            classes_restored: 0,
+            async_restored: 0,
+            optional_chains_restored: expression_result.optional_chains_restored,
+            nullish_coalesce_restored: expression_result.nullish_coalesce_restored,
+        };
+    }
+    let async_base: String = source.to_owned();
+    let async_restored: usize = 0;
+    let mut out: String = source.to_owned();
+    let expression_result: PresetEnvExpressionRestore = restore_preset_env_expressions(&out);
+    out = expression_result.rewritten;
+    let optional_chains_restored: usize = expression_result.optional_chains_restored;
+    let nullish_coalesce_restored: usize = expression_result.nullish_coalesce_restored;
 
-    let (next, spreads_restored): (String, usize) = try_replace(
-        &out,
-        r"_toConsumableArray\s*\(\s*([A-Za-z_$][\w$]*)\s*\)",
-        "...$1",
-    );
-    out = next;
-    let (next, classes_restored): (String, usize) = try_replace(
-        &out,
-        r"_classCallCheck\s*\(\s*this\s*,\s*[A-Za-z_$][\w$]*\s*\)\s*;\s*",
-        "",
-    );
-    out = next;
-    let (next, async_restored): (String, usize) = try_replace(
-        &out,
-        r"_asyncToGenerator\s*\(\s*function\s*\*\s*\(\s*\)",
-        "async function()",
-    );
-    out = next;
-    let (next, optional_chains_restored): (String, usize) = collapse_optional_chains(&out);
-    out = next;
-    let (next, nullish_coalesce_restored): (String, usize) = collapse_nullish_coalesce(&out);
-    out = next;
+    if out != async_base && !reparses_javascript(&out) {
+        return PresetEnvUndoResult {
+            rewritten: async_base,
+            helpers_removed: BTreeMap::new(),
+            spreads_restored: 0,
+            classes_restored: 0,
+            async_restored,
+            optional_chains_restored: 0,
+            nullish_coalesce_restored: 0,
+        };
+    }
 
     PresetEnvUndoResult {
         rewritten: out,
-        helpers_removed,
-        spreads_restored,
-        classes_restored,
+        helpers_removed: BTreeMap::new(),
+        spreads_restored: 0,
+        classes_restored: 0,
         async_restored,
         optional_chains_restored,
         nullish_coalesce_restored,
@@ -151,32 +93,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn restores_array_spread() {
+    fn preserves_unverified_array_spread() {
         let src: &str = "var b = [].concat(_toConsumableArray(a), [1]);";
         let r: PresetEnvUndoResult = undo_preset_env(src);
-        assert!(r.spreads_restored >= 1);
-        assert!(r.rewritten.contains("...a"));
+        assert_eq!(r.spreads_restored, 0);
+        assert_eq!(r.rewritten, src);
     }
 
     #[test]
-    fn removes_class_call_check() {
+    fn preserves_unverified_class_call_check() {
         let src: &str = "function Foo() { _classCallCheck(this, Foo); this.x = 1; }";
         let r: PresetEnvUndoResult = undo_preset_env(src);
-        assert!(r.classes_restored >= 1);
-        assert!(!r.rewritten.contains("_classCallCheck"));
+        assert_eq!(r.classes_restored, 0);
+        assert_eq!(r.rewritten, src);
     }
 
     #[test]
-    fn detects_async_to_generator() {
-        let src: &str = "var f = _asyncToGenerator(function* () { yield 1; });";
+    fn preserves_direct_async_to_generator_assignment() {
+        let src: &str = "import babelAsync from '@babel/runtime/helpers/asyncToGenerator'; var f = babelAsync(function* () { yield 1; });";
         let r: PresetEnvUndoResult = undo_preset_env(src);
-        assert!(r.async_restored >= 1);
-        assert!(r.rewritten.contains("async function()"));
+        assert_eq!(r.async_restored, 0);
+        assert_eq!(r.rewritten, src);
     }
 
     #[test]
     fn restores_optional_chain() {
-        let src: &str = "var v = (obj === null || obj === void 0) ? void 0 : obj.field;";
+        let src: &str =
+            "const obj = {}; var v = (obj === null || obj === void 0) ? void 0 : obj.field;";
         let r: PresetEnvUndoResult = undo_preset_env(src);
         assert!(r.optional_chains_restored >= 1);
         assert!(r.rewritten.contains("obj?.field"));
@@ -184,17 +127,17 @@ mod tests {
 
     #[test]
     fn restores_nullish_coalesce() {
-        let src: &str = "var x = (val !== null && val !== void 0 ? val : fallback);";
+        let src: &str = "const val = 7; var x = (val !== null && val !== void 0 ? val : fallback);";
         let r: PresetEnvUndoResult = undo_preset_env(src);
         assert!(r.nullish_coalesce_restored >= 1);
         assert!(r.rewritten.contains("val ?? fallback"));
     }
 
     #[test]
-    fn strips_helper_definitions() {
+    fn preserves_unverified_helper_definitions() {
         let src: &str = "function _classCallCheck(a, b) { if (!(a instanceof b)) throw new TypeError('x'); } function Foo() {}";
         let r: PresetEnvUndoResult = undo_preset_env(src);
-        assert_eq!(r.helpers_removed.get("_classCallCheck"), Some(&1));
-        assert!(!r.rewritten.contains("function _classCallCheck"));
+        assert!(r.helpers_removed.is_empty());
+        assert_eq!(r.rewritten, src);
     }
 }

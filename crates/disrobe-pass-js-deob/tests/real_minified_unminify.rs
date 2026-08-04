@@ -42,9 +42,9 @@ fn real_minified_fixture_recovers_and_preserves_behavior() {
 
     let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(PARITY_FIXTURE);
 
-    assert!(
-        stats.indirect_calls_simplified >= 1,
-        "(0, mod.render)(...) indirect call must be simplified; got {}",
+    assert_eq!(
+        stats.indirect_calls_simplified, 0,
+        "member indirect calls must retain their unbound receiver; got {}",
         stats.indirect_calls_simplified
     );
     assert!(
@@ -52,34 +52,27 @@ fn real_minified_fixture_recovers_and_preserves_behavior() {
         "this[\"total\"] and o[\"label\"] must become dot access; got {}",
         stats.bracket_accesses_dotted
     );
-    assert!(
-        stats.template_literals_rebuilt >= 1,
-        "the \"row \" + n + \" of \" + this.total concat must become a template literal; got {}",
-        stats.template_literals_rebuilt
-    );
+    assert_eq!(stats.template_literals_rebuilt, 0, "{recovered}");
     assert!(
         stats.optional_chains_rebuilt >= 1,
-        "o == null ? void 0 : o[\"label\"] must become o?.label; got {}",
+        "the strict null/void guard around o[\"label\"] must become o?.label; got {}",
         stats.optional_chains_rebuilt
     );
-    assert!(
-        stats.apply_calls_spread >= 1,
-        "joinAll.apply(void 0, parts) must become joinAll(...parts); got {}",
-        stats.apply_calls_spread
-    );
+    assert_eq!(stats.apply_calls_spread, 0, "{recovered}");
 
     assert!(
-        recovered.contains("mod.render(items[i])"),
-        "indirect call must collapse:\n{recovered}"
+        recovered.contains("(0,mod.render)(items[i])"),
+        "member indirect call must remain unbound:\n{recovered}"
     );
     assert!(
         recovered.contains("o?.label"),
         "optional chain expected:\n{recovered}"
     );
     assert!(
-        recovered.contains("joinAll(...parts)"),
-        "spread call expected:\n{recovered}"
+        recovered.contains("\"row \"+n+\" of \"+counters.total"),
+        "string concatenation must remain intact:\n{recovered}"
     );
+    assert!(recovered.contains("joinAll.apply("), "{recovered}");
 
     let got: String = eval_capture(&recovered, PROBE)
         .unwrap_or_else(|| panic!("recovered must evaluate:\n{recovered}"));

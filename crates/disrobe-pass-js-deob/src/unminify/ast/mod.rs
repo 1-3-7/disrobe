@@ -1,7 +1,7 @@
 mod alias_inline;
 mod arg_rest;
 mod argument_spread;
-mod async_restore;
+mod async_protection;
 mod block_statement;
 mod bracket_to_dot;
 mod builtin_prototype;
@@ -33,7 +33,6 @@ mod numeric_literal;
 mod object_param;
 mod object_shorthand;
 mod optional_chaining;
-mod regenerator_restore;
 mod rename_scope;
 mod require_alias;
 mod require_destructure;
@@ -49,14 +48,18 @@ mod undefined_init;
 mod var_to_block;
 
 use oxc_allocator::Allocator;
+use oxc_ast::{
+    AstKind,
+    ast::{Expression, IdentifierReference},
+};
 use oxc_parser::Parser;
+use oxc_semantic::{ReferenceId, Semantic, SymbolFlags, SymbolId};
 use oxc_span::SourceType;
 use serde::Serialize;
 
 use alias_inline::AliasInlineStats;
 use arg_rest::ArgRestStats;
 use argument_spread::ArgumentSpreadStats;
-use async_restore::AsyncRestoreStats;
 use block_statement::BlockStatementStats;
 use bracket_to_dot::BracketToDotStats;
 use builtin_prototype::BuiltinPrototypeStats;
@@ -88,7 +91,6 @@ use numeric_literal::NumericLiteralStats;
 use object_param::ObjectParamStats;
 use object_shorthand::ObjectShorthandStats;
 use optional_chaining::OptionalChainingStats;
-use regenerator_restore::RegeneratorRestoreStats;
 use require_alias::RequireAliasStats;
 use require_destructure::RequireDestructureStats;
 use require_member::RequireMemberStats;
@@ -102,12 +104,84 @@ use type_constructor::TypeConstructorStats;
 use undefined_init::UndefinedInitStats;
 use var_to_block::VarToBlockStats;
 
+pub(super) fn repeated_checked_identifiers<'a>(
+    test: &'a Expression<'a>,
+) -> Option<(&'a IdentifierReference<'a>, &'a IdentifierReference<'a>)> {
+    let Expression::LogicalExpression(logical) = test else {
+        return None;
+    };
+    Some((
+        comparison_identifier(&logical.left)?,
+        comparison_identifier(&logical.right)?,
+    ))
+}
+
+pub(super) fn same_repeatable_binding(
+    first: &IdentifierReference<'_>,
+    second: &IdentifierReference<'_>,
+    third: &IdentifierReference<'_>,
+    semantic: &Semantic<'_>,
+) -> bool {
+    let Some(first_symbol): Option<SymbolId> = repeatable_binding_symbol(first, semantic) else {
+        return false;
+    };
+    let Some(second_symbol): Option<SymbolId> = repeatable_binding_symbol(second, semantic) else {
+        return false;
+    };
+    let Some(third_symbol): Option<SymbolId> = repeatable_binding_symbol(third, semantic) else {
+        return false;
+    };
+    first_symbol == second_symbol && second_symbol == third_symbol
+}
+
+fn comparison_identifier<'a>(
+    expression: &'a Expression<'a>,
+) -> Option<&'a IdentifierReference<'a>> {
+    let Expression::BinaryExpression(binary) = expression else {
+        return None;
+    };
+    match (&binary.left, &binary.right) {
+        (Expression::Identifier(identifier), _) | (_, Expression::Identifier(identifier)) => {
+            Some(identifier)
+        }
+        _ => None,
+    }
+}
+
+fn repeatable_binding_symbol(
+    identifier: &IdentifierReference<'_>,
+    semantic: &Semantic<'_>,
+) -> Option<SymbolId> {
+    let reference_id: ReferenceId = identifier.reference_id.get()?;
+    let symbols: &oxc_semantic::SymbolTable = semantic.symbols();
+    let reference: &oxc_semantic::Reference = symbols.get_reference(reference_id);
+    if !reference.is_read()
+        || reference.is_write()
+        || semantic
+            .nodes()
+            .ancestor_kinds(reference.node_id())
+            .any(|kind: AstKind<'_>| matches!(kind, AstKind::WithStatement(_)))
+    {
+        return None;
+    }
+    let symbol_id: SymbolId = reference.symbol_id()?;
+    let declared_at_root: bool =
+        symbols.get_scope_id(symbol_id) == semantic.scopes().root_scope_id();
+    let flags: SymbolFlags = symbols.get_flags(symbol_id);
+    if declared_at_root
+        && (flags.contains(SymbolFlags::FunctionScopedVariable)
+            || flags.contains(SymbolFlags::Function))
+    {
+        return None;
+    }
+    Some(symbol_id)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum RuleStage {
     IifeUnwrap = 0,
     IndirectCall = 1,
     ArgumentSpread = 2,
-    AsyncRestore = 3,
     ClassReconstruction = 4,
     SpreadRebuild = 5,
     ObjectParam = 6,
@@ -119,11 +193,11 @@ enum RuleStage {
     MergeElseIf = 12,
     DeMorgan = 13,
     LiteralLogic = 14,
-    LiteralNormalize = 15,
-    BracketToDot = 16,
-    TemplateLiteral = 17,
-    OptionalChaining = 18,
-    NullishCoalescing = 19,
+    BracketToDot = 15,
+    TemplateLiteral = 16,
+    OptionalChaining = 17,
+    NullishCoalescing = 18,
+    LiteralNormalize = 19,
     ObjectShorthand = 20,
     ForOf = 21,
     AliasInline = 22,
@@ -212,6 +286,20 @@ struct Edit {
     replacement: String,
 }
 
+fn edit_overlaps_comments(edit: &Edit, comments: &[oxc_ast::ast::Comment]) -> bool {
+    comments.iter().any(|comment: &oxc_ast::ast::Comment| {
+        let start: usize = match usize::try_from(comment.span.start) {
+            Ok(value) => value,
+            Err(_) => return true,
+        };
+        let end: usize = match usize::try_from(comment.span.end) {
+            Ok(value) => value,
+            Err(_) => return true,
+        };
+        start < edit.end && edit.start < end
+    })
+}
+
 struct RuleOutcome {
     edits: Vec<Edit>,
 }
@@ -220,6 +308,69 @@ impl RuleOutcome {
     const fn empty() -> Self {
         Self { edits: Vec::new() }
     }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PresetEnvExpressionRestore {
+    pub(crate) rewritten: String,
+    pub(crate) optional_chains_restored: usize,
+    pub(crate) nullish_coalesce_restored: usize,
+}
+
+fn conservative_preset_env_expression_restore(source: &str) -> PresetEnvExpressionRestore {
+    PresetEnvExpressionRestore {
+        rewritten: source.to_owned(),
+        optional_chains_restored: 0,
+        nullish_coalesce_restored: 0,
+    }
+}
+
+fn apply_preset_env_expression_edits(source: &str, outcome: &RuleOutcome) -> Option<String> {
+    let rewritten: String = apply_edits(source, &outcome.edits)?;
+    if syntax_limit_error(&rewritten).is_some() || !reparses(&rewritten) {
+        return None;
+    }
+    Some(rewritten)
+}
+
+pub(crate) fn restore_preset_env_expressions(source: &str) -> PresetEnvExpressionRestore {
+    if syntax_limit_error(source).is_some() {
+        return conservative_preset_env_expression_restore(source);
+    }
+    let mut restored: PresetEnvExpressionRestore =
+        conservative_preset_env_expression_restore(source);
+    let (optional_outcome, optional_stats): (RuleOutcome, OptionalChainingStats) =
+        optional_chaining::recover_preset_env(&restored.rewritten);
+    if !optional_outcome.edits.is_empty()
+        && !async_protection::analyze(&restored.rewritten).blocks_edits(&optional_outcome.edits)
+        && let Some(rewritten) =
+            apply_preset_env_expression_edits(&restored.rewritten, &optional_outcome)
+    {
+        restored.rewritten = rewritten;
+        restored.optional_chains_restored = optional_stats.chains_rebuilt;
+    }
+    let (nullish_outcome, nullish_stats): (RuleOutcome, NullishCoalescingStats) =
+        nullish_coalescing::recover_preset_env(&restored.rewritten);
+    if !nullish_outcome.edits.is_empty()
+        && !async_protection::analyze(&restored.rewritten).blocks_edits(&nullish_outcome.edits)
+        && let Some(rewritten) =
+            apply_preset_env_expression_edits(&restored.rewritten, &nullish_outcome)
+    {
+        restored.rewritten = rewritten;
+        restored.nullish_coalesce_restored = nullish_stats.coalesces_rebuilt;
+    }
+    restored
+}
+
+pub(crate) fn requires_preset_env_async_quarantine(source: &str) -> bool {
+    matches!(
+        async_protection::analyze(source),
+        async_protection::AsyncProtection::Global
+    )
+}
+
+pub(crate) fn has_preset_env_async_protection(source: &str) -> bool {
+    async_protection::analyze(source).is_active()
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -317,7 +468,7 @@ enum RuleStats {
     IifeUnwrap(IifeUnwrapStats),
     IndirectCall(IndirectCallStats),
     ArgumentSpread(ArgumentSpreadStats),
-    Async(AsyncRestoreStats),
+    Noop,
     Class(ClassRecoveryStats),
     SpreadRebuild(SpreadRebuildStats),
     SplitVar(SplitVarStats),
@@ -357,7 +508,6 @@ enum RuleStats {
     LogicalAssign(LogicalAssignStats),
     LiteralLength(LiteralLengthStats),
     SpreadClone(SpreadCloneStats),
-    RegeneratorRestore(RegeneratorRestoreStats),
     RequireAlias(RequireAliasStats),
     RequireDestructure(RequireDestructureStats),
     RequireMember(RequireMemberStats),
@@ -409,13 +559,7 @@ impl Default for AstPipeline {
                     id: AstRuleId::ArgumentSpread,
                     stage: RuleStage::ArgumentSpread,
                     requires: &[],
-                    enabled: true,
-                },
-                Rule {
-                    id: AstRuleId::AsyncRestore,
-                    stage: RuleStage::AsyncRestore,
-                    requires: &[],
-                    enabled: true,
+                    enabled: false,
                 },
                 Rule {
                     id: AstRuleId::Es6Class,
@@ -487,7 +631,7 @@ impl Default for AstPipeline {
                     id: AstRuleId::TemplateLiteral,
                     stage: RuleStage::TemplateLiteral,
                     requires: &[],
-                    enabled: true,
+                    enabled: false,
                 },
                 Rule {
                     id: AstRuleId::OptionalChaining,
@@ -655,7 +799,7 @@ impl Default for AstPipeline {
                     id: AstRuleId::RegeneratorRestore,
                     stage: RuleStage::RegeneratorRestore,
                     requires: &[],
-                    enabled: true,
+                    enabled: false,
                 },
                 Rule {
                     id: AstRuleId::RequireAlias,
@@ -730,6 +874,14 @@ impl AstPipeline {
         for rule in self.ordered() {
             let (outcome, rule_stats): (RuleOutcome, RuleStats) = apply_rule(rule.id, &current);
             if outcome.edits.is_empty() {
+                continue;
+            }
+            let async_protection: async_protection::AsyncProtection =
+                async_protection::analyze(&current);
+            if async_protection.blocks_edits(&outcome.edits) {
+                crate::debug::dbg_kv("rule-rejected", || {
+                    format!("{:?} reason=async-wrapper-protected", rule.id)
+                });
                 continue;
             }
             let edit_count: usize = outcome.edits.len();
@@ -917,10 +1069,8 @@ fn apply_rule(id: AstRuleId, source: &str) -> (RuleOutcome, RuleStats) {
                 spread_clone::recover(source);
             (outcome, RuleStats::SpreadClone(clone_stats))
         }
-        AstRuleId::RegeneratorRestore => {
-            let (outcome, regen_stats): (RuleOutcome, RegeneratorRestoreStats) =
-                regenerator_restore::recover(source);
-            (outcome, RuleStats::RegeneratorRestore(regen_stats))
+        AstRuleId::RegeneratorRestore | AstRuleId::AsyncRestore => {
+            (RuleOutcome::empty(), RuleStats::Noop)
         }
         AstRuleId::RequireAlias => {
             let (outcome, require_stats): (RuleOutcome, RequireAliasStats) =
@@ -950,11 +1100,6 @@ fn apply_rule(id: AstRuleId, source: &str) -> (RuleOutcome, RuleStats) {
             let (outcome, alias_stats): (RuleOutcome, AliasInlineStats) =
                 alias_inline::recover(source);
             (outcome, RuleStats::AliasInline(alias_stats))
-        }
-        AstRuleId::AsyncRestore => {
-            let (outcome, async_stats): (RuleOutcome, AsyncRestoreStats) =
-                async_restore::recover(source);
-            (outcome, RuleStats::Async(async_stats))
         }
         AstRuleId::Es6Class => {
             let (outcome, class_stats): (RuleOutcome, ClassRecoveryStats) =
@@ -1116,10 +1261,6 @@ const fn merge_stats(stats: &mut AstUnminifyStats, rule_stats: &RuleStats) {
         RuleStats::SpreadClone(clone_stats) => {
             stats.spread_clones_merged += clone_stats.clones_merged;
         }
-        RuleStats::RegeneratorRestore(regen_stats) => {
-            stats.regenerator_functions_restored += regen_stats.generators_restored;
-            stats.async_functions_restored += regen_stats.async_functions_restored;
-        }
         RuleStats::RequireAlias(require_stats) => {
             stats.require_aliases_renamed += require_stats.requires_renamed;
         }
@@ -1140,10 +1281,7 @@ const fn merge_stats(stats: &mut AstUnminifyStats, rule_stats: &RuleStats) {
             stats.aliases_inlined += alias_stats.aliases_inlined;
             stats.alias_references_rewritten += alias_stats.references_rewritten;
         }
-        RuleStats::Async(async_stats) => {
-            stats.async_functions_restored += async_stats.async_to_generator;
-            stats.regenerator_functions_restored += async_stats.regenerator;
-        }
+        RuleStats::Noop => {}
         RuleStats::Class(class_stats) => {
             stats.classes_reconstructed += class_stats.babel_helper + class_stats.prototype;
             stats.babel_helper_classes += class_stats.babel_helper;
@@ -1273,7 +1411,10 @@ const fn is_word_char(c: char) -> bool {
 
 fn reparses(source: &str) -> bool {
     let allocator: Allocator = Allocator::default();
-    let source_type: SourceType = SourceType::from_path("input.js").unwrap_or_default();
+    let source_type: SourceType = match SourceType::from_path("input.js") {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
     let parsed: oxc_parser::ParserReturn<'_> = Parser::new(&allocator, source, source_type).parse();
     parsed.errors.is_empty() && !parsed.panicked
 }

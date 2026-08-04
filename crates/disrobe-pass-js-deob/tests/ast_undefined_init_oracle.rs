@@ -1,10 +1,17 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+use std::ffi::OsStr;
+use std::path::Path;
+use std::time::Duration;
+
 use boa_engine::{Context, Source};
+use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_js_deob::{AstUnminifyStats, unminify_ast};
 
 const LOOP_LIMIT: u64 = 2_000_000;
 const RECURSION_LIMIT: usize = 1_500;
 const STACK_LIMIT: usize = 50_000;
+const NODE_TIMEOUT: Duration = Duration::from_secs(30);
+const NODE_CAPTURE: usize = 1usize << 18;
 
 fn eval_capture(program: &str) -> Option<String> {
     let mut context: Context = Context::default();
@@ -34,7 +41,7 @@ fn assert_recovered_equivalent(label: &str, original: &str, recovered: &str) {
 }
 
 const ORIG_UNDEF: &str = r"
-var a = undefined;
+let a = undefined;
 let b = undefined;
 print(a);
 print(b);
@@ -58,7 +65,7 @@ fn redundant_undefined_init_is_dropped_without_behavior_change() {
 }
 
 const ORIG_VOID_INIT: &str = r"
-var x = void 0;
+let x = void 0;
 print(x);
 print(typeof x);
 ";
@@ -68,7 +75,7 @@ fn void_zero_init_normalizes_then_drops() {
     let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(ORIG_VOID_INIT);
     assert!(
         stats.undefined_inits_dropped >= 1,
-        "`var x = void 0` should normalize to `= undefined` then drop; got {}",
+        "`let x = void 0` should normalize to `= undefined` then drop; got {}",
         stats.undefined_inits_dropped
     );
     assert!(
@@ -80,22 +87,114 @@ fn void_zero_init_normalizes_then_drops() {
 
 const SAFETY_SHADOWED_UNDEFINED: &str = r"
 function f(undefined) {
-  var x = undefined;
+  let x = undefined;
   return x;
 }
-print(f(42));
+process.stdout.write(String(f(42)));
 ";
 
 #[test]
 fn shadowed_undefined_binding_blocks_the_drop() {
-    let want: String = eval_capture(SAFETY_SHADOWED_UNDEFINED).expect("evaluates");
+    let want: String = node_capture(SAFETY_SHADOWED_UNDEFINED);
+    assert_eq!(want, "42");
     let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(SAFETY_SHADOWED_UNDEFINED);
     assert_eq!(
         stats.undefined_inits_dropped, 0,
-        "when `undefined` is a local parameter, `var x = undefined` reads that binding (42), not the global; dropping the init would change f(42) from 42 to undefined"
+        "when `undefined` is a local parameter, `let x = undefined` reads that binding (42), not the global; dropping the init would change f(42) from 42 to undefined"
     );
-    let got: String = eval_capture(&recovered).expect("recovered evaluates");
+    let got: String = node_capture(&recovered);
     assert_eq!(want, got, "behavior preserved when undefined is shadowed");
+}
+
+const SAFETY_PRIOR_VAR_ASSIGNMENT: &str = r"
+var retained = 7;
+var retained = undefined;
+process.stdout.write(String(retained));
+";
+
+#[test]
+fn prior_var_assignment_retains_undefined_initializer() {
+    let expected: String = node_capture(SAFETY_PRIOR_VAR_ASSIGNMENT);
+    assert_eq!(expected, "undefined");
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(SAFETY_PRIOR_VAR_ASSIGNMENT);
+    assert_eq!(stats.undefined_inits_dropped, 0, "{recovered}");
+    assert!(
+        recovered.contains("var retained = undefined"),
+        "{recovered}"
+    );
+    assert_eq!(node_capture(&recovered), expected, "{recovered}");
+}
+
+const SAFETY_DIRECT_EVAL_UNDEFINED_INIT: &str = r"
+function read() {
+  (eval)('var undefined = 7');
+  let value = undefined;
+  return value;
+}
+process.stdout.write(String(read()));
+";
+
+#[test]
+fn direct_eval_binding_blocks_the_drop() {
+    let expected: String = node_capture(SAFETY_DIRECT_EVAL_UNDEFINED_INIT);
+    assert_eq!(expected, "7");
+    let (recovered, stats): (String, AstUnminifyStats) =
+        unminify_ast(SAFETY_DIRECT_EVAL_UNDEFINED_INIT);
+    assert_eq!(stats.undefined_inits_dropped, 0, "{recovered}");
+    assert!(recovered.contains("value = undefined"), "{recovered}");
+    assert_eq!(node_capture(&recovered), expected, "{recovered}");
+}
+
+const SAFETY_WITH_UNDEFINED_INIT: &str = r"
+with ({ undefined: 7 }) {
+  let value = undefined;
+  process.stdout.write(String(value));
+}
+";
+
+#[test]
+fn with_binding_blocks_the_drop() {
+    let expected: String = node_capture(SAFETY_WITH_UNDEFINED_INIT);
+    assert_eq!(expected, "7");
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(SAFETY_WITH_UNDEFINED_INIT);
+    assert_eq!(stats.undefined_inits_dropped, 0, "{recovered}");
+    assert!(recovered.contains("value = undefined"), "{recovered}");
+    assert_eq!(node_capture(&recovered), expected, "{recovered}");
+}
+
+const SAFETY_COMMENTED_LET_UNDEFINED_INIT: &str = r"
+let before /* retain-before */ = undefined;
+let after = /* retain-after */ undefined;
+process.stdout.write(String(before) + ':' + String(after));
+";
+
+#[test]
+fn comment_bearing_let_initializers_are_preserved() {
+    let expected: String = node_capture(SAFETY_COMMENTED_LET_UNDEFINED_INIT);
+    assert_eq!(expected, "undefined:undefined");
+    let (recovered, stats): (String, AstUnminifyStats) =
+        unminify_ast(SAFETY_COMMENTED_LET_UNDEFINED_INIT);
+    assert_eq!(stats.undefined_inits_dropped, 0, "{recovered}");
+    assert!(recovered.contains("/* retain-before */"), "{recovered}");
+    assert!(recovered.contains("/* retain-after */"), "{recovered}");
+    assert_eq!(node_capture(&recovered), expected, "{recovered}");
+}
+
+fn node_capture(source: &str) -> String {
+    let args: [&OsStr; 2] = [OsStr::new("-e"), OsStr::new(source)];
+    let output: CapturedOutput = run_captured(Path::new("node"), &args, NODE_TIMEOUT, NODE_CAPTURE)
+        .expect("node is required for the undefined initializer semantic reference")
+        .expect("undefined initializer semantic reference must finish within the timeout");
+    assert_eq!(
+        output.exit_code,
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("Node output is utf-8")
+        .trim()
+        .to_owned()
 }
 
 const SAFETY_REAL_INIT: &str = r"

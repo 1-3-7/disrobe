@@ -8,6 +8,10 @@ mod self_defending;
 mod string_split;
 
 pub use ast::{AstPipeline, AstRuleId, AstUnminifyStats, try_unminify_ast, unminify_ast};
+pub(crate) use ast::{
+    PresetEnvExpressionRestore, has_preset_env_async_protection,
+    requires_preset_env_async_quarantine, restore_preset_env_expressions,
+};
 
 use serde::Serialize;
 
