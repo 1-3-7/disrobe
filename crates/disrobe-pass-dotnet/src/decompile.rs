@@ -52,6 +52,10 @@ impl TokenNamer for AssemblyNamer<'_> {
         self.method.call_info(token)
     }
 
+    fn call_returns_boolean(&self, token: u32) -> bool {
+        self.method.call_returns_boolean(token)
+    }
+
     fn enum_param_type(&self, token: u32, param_index: usize) -> Option<String> {
         self.method.enum_param_type(token, param_index)
     }

@@ -85,6 +85,10 @@ pub trait TokenNamer {
         None
     }
 
+    fn call_returns_boolean(&self, _token: u32) -> bool {
+        false
+    }
+
     fn enum_param_type(&self, _token: u32, _param_index: usize) -> Option<String> {
         None
     }
@@ -161,6 +165,15 @@ impl TokenNamer for Resolver {
         })
     }
 
+    fn call_returns_boolean(&self, token: u32) -> bool {
+        self.callee_signature(token).is_some_and(|sig| {
+            matches!(
+                sig.return_type,
+                crate::signature::TypeSigOrVoid::Type(crate::signature::TypeSig::Boolean)
+            )
+        })
+    }
+
     fn enum_param_type(&self, token: u32, param_index: usize) -> Option<String> {
         self.enum_param_type_name(token, param_index)
     }
@@ -217,6 +230,11 @@ impl TokenNamer for MethodNamer<'_> {
     }
 
     #[inline]
+    fn call_returns_boolean(&self, token: u32) -> bool {
+        self.resolver.call_returns_boolean(token)
+    }
+
+    #[inline]
     fn enum_param_type(&self, token: u32, param_index: usize) -> Option<String> {
         self.resolver.enum_param_type_name(token, param_index)
     }
@@ -262,12 +280,16 @@ enum Expr {
     Const(String),
     Local(u32),
     Arg(u32),
-    Field(String),
+    Field {
+        text: String,
+        is_boolean: bool,
+    },
     Unary(&'static str, Box<Self>),
     Binary(&'static str, Box<Self>, Box<Self>),
     Call {
         target: String,
         args: Vec<Self>,
+        returns_boolean: bool,
     },
     NewObj {
         ctor: String,
@@ -373,7 +395,7 @@ impl Expr {
             Self::Const(_)
             | Self::Local(_)
             | Self::Arg(_)
-            | Self::Field(_)
+            | Self::Field { .. }
             | Self::StringLit(_)
             | Self::Null
             | Self::This
@@ -392,7 +414,7 @@ impl Expr {
             Self::Const(_)
                 | Self::Local(_)
                 | Self::Arg(_)
-                | Self::Field(_)
+                | Self::Field { .. }
                 | Self::Raw(_)
                 | Self::StringLit(_)
                 | Self::Null
@@ -405,6 +427,50 @@ impl Expr {
                 | Self::MethodPtr { .. }
                 | Self::TypeOf(_)
         )
+    }
+
+    fn is_known_boolean(&self, names: &NameTable) -> bool {
+        match self {
+            Self::Const(value) => matches!(value.as_str(), "true" | "false"),
+            Self::Local(slot) => names.local_type(*slot).is_some_and(is_bool_type_name),
+            Self::Arg(slot) => names.arg_type(*slot).is_some_and(is_bool_type_name),
+            Self::Field { is_boolean, .. } => *is_boolean,
+            Self::Unary(op, _) => *op == "!",
+            Self::Binary(op, lhs, rhs) => {
+                is_comparison_or_logical(op)
+                    || matches!(*op, "&" | "|" | "^")
+                        && lhs.is_known_boolean(names)
+                        && rhs.is_known_boolean(names)
+            }
+            Self::Call {
+                returns_boolean, ..
+            } => *returns_boolean,
+            Self::Coalesce(lhs, rhs) => lhs.is_known_boolean(names) && rhs.is_known_boolean(names),
+            Self::Cast(ty, _)
+            | Self::UnboxAny {
+                target: Some(ty), ..
+            } => is_bool_type_name(ty),
+            Self::LoadElem(array, _) => array_element_type(array, names)
+                .as_deref()
+                .is_some_and(is_bool_type_name),
+            Self::Deref(operand) | Self::AddressOf(operand) => operand.is_known_boolean(names),
+            Self::NewArr { .. }
+            | Self::LoadLen(_)
+            | Self::NewObj { .. }
+            | Self::Tuple(_)
+            | Self::IsInst { .. }
+            | Self::UnboxAny { target: None, .. }
+            | Self::StringLit(_)
+            | Self::Null
+            | Self::This
+            | Self::MethodPtr { .. }
+            | Self::TypeHandle(_)
+            | Self::FieldHandle(_)
+            | Self::MethodHandle(_)
+            | Self::OpaqueHandle(_)
+            | Self::TypeOf(_)
+            | Self::Raw(_) => false,
+        }
     }
 }
 
@@ -463,7 +529,7 @@ fn expression_depth(expression: &Expr) -> usize {
             Expr::Const(_)
             | Expr::Local(_)
             | Expr::Arg(_)
-            | Expr::Field(_)
+            | Expr::Field { .. }
             | Expr::StringLit(_)
             | Expr::Null
             | Expr::This
@@ -527,9 +593,10 @@ fn render_expr(initial: RenderAction<'_>, lang: TargetLang, names: &NameTable) -
                 }
             }
             RenderAction::Expr(expression) => match expression {
-                Expr::Const(text) | Expr::Field(text) | Expr::Raw(text) => {
+                Expr::Const(text) | Expr::Raw(text) => {
                     output.push_str(text);
                 }
+                Expr::Field { text, .. } => output.push_str(text),
                 Expr::TypeHandle(_) => {
                     output.push_str(&runtime_handle_refusal(
                         lang,
@@ -576,7 +643,7 @@ fn render_expr(initial: RenderAction<'_>, lang: TargetLang, names: &NameTable) -
                     pending.push(RenderAction::Text(" "));
                     pending.push(RenderAction::Paren(lhs));
                 }
-                Expr::Call { target, args } => {
+                Expr::Call { target, args, .. } => {
                     output.push_str(target);
                     output.push('(');
                     pending.push(RenderAction::Text(")"));
@@ -1468,6 +1535,22 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         self.push_with_depth(Expr::Binary(op, Box::new(a), Box::new(b)), depth);
     }
 
+    fn equality(&mut self) {
+        let (mut rhs, rhs_depth): (Expr, usize) = self.pop_with_depth();
+        let (mut lhs, lhs_depth): (Expr, usize) = self.pop_with_depth();
+        if self.lang == TargetLang::CSharp {
+            let lhs_is_boolean: bool = lhs.is_known_boolean(self.names);
+            let rhs_is_boolean: bool = rhs.is_known_boolean(self.names);
+            if lhs_is_boolean && !rhs_is_boolean {
+                rhs = coerce_constant(rhs, Some("bool"), self.lang);
+            } else if rhs_is_boolean && !lhs_is_boolean {
+                lhs = coerce_constant(lhs, Some("bool"), self.lang);
+            }
+        }
+        let depth: usize = lhs_depth.max(rhs_depth).saturating_add(1);
+        self.push_with_depth(Expr::Binary("==", Box::new(lhs), Box::new(rhs)), depth);
+    }
+
     fn unary(&mut self, op: &'static str) {
         let (a, a_depth): (Expr, usize) = self.pop_with_depth();
         let depth: usize = a_depth.saturating_add(1);
@@ -1640,6 +1723,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         let info: Option<CallInfo> = self.namer.call_info(token);
         let arg_count: usize = info.map_or(0, |c: CallInfo| c.arg_count);
         let returns_value: bool = info.map_or(!is_ctor, |c: CallInfo| c.returns_value);
+        let returns_boolean: bool = self.namer.call_returns_boolean(token);
         let has_this: bool = info.map_or_else(|| raw.contains("::"), |c: CallInfo| c.has_this);
         let base_call: bool = self.lang == TargetLang::CSharp
             && ins.name == "call"
@@ -1736,14 +1820,17 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         {
             if has_this && args.len() == 1 {
                 let recv: Expr = args.pop().unwrap_or(Expr::Null);
-                self.push(Expr::Field(format!(
-                    "{}.{prop}",
-                    self.receiver_text(&recv, base_call)
-                )));
+                self.push(Expr::Field {
+                    text: format!("{}.{prop}", self.receiver_text(&recv, base_call)),
+                    is_boolean: returns_boolean,
+                });
                 return;
             }
             if !has_this && args.is_empty() {
-                self.push(Expr::Field(prop.to_owned()));
+                self.push(Expr::Field {
+                    text: prop.to_owned(),
+                    is_boolean: returns_boolean,
+                });
                 return;
             }
             if has_this
@@ -1754,10 +1841,10 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let indices: Vec<Expr> = args.split_off(1);
                 let recv: Expr = args.pop().unwrap_or(Expr::Null);
                 let subscript: String = self.render_subscript(indices);
-                self.push(Expr::Field(format!(
-                    "{}[{subscript}]",
-                    self.receiver_text(&recv, base_call)
-                )));
+                self.push(Expr::Field {
+                    text: format!("{}[{subscript}]", self.receiver_text(&recv, base_call)),
+                    is_boolean: returns_boolean,
+                });
                 return;
             }
         }
@@ -1813,11 +1900,13 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                     short(&raw)
                 ),
                 args: rendered_args,
+                returns_boolean,
             }
         } else {
             Expr::Call {
                 target: static_call_target(&raw, self.lang),
                 args: rendered_args,
+                returns_boolean,
             }
         };
         if is_ctor || !returns_value {
@@ -1867,7 +1956,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         }
         let bound: Option<Box<Expr>> = match target {
             Expr::Null => None,
-            Expr::Field(f) if is_singleton_field(f) => None,
+            Expr::Field { text, .. } if is_singleton_field(text) => None,
             other => Some(Box::new(other.clone())),
         };
         Some(Expr::MethodPtr {
@@ -1946,7 +2035,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             "shr.un" => self.binary(">>>"),
             "neg" => self.unary("-"),
             "not" => self.unary("~"),
-            "ceq" => self.binary("=="),
+            "ceq" => self.equality(),
             "cgt" | "cgt.un" => self.binary(">"),
             "clt" | "clt.un" => self.binary("<"),
             "ldlen" => {
@@ -2119,28 +2208,48 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             "ldfld" => {
                 let obj: Expr = self.pop();
                 let fld: String = field_name(&self.token_name(ins));
-                self.push(Expr::Field(format!(
-                    "{}.{}",
-                    paren(&obj, self.lang, self.names),
-                    fld
-                )));
+                let is_boolean: bool = self
+                    .stored_field_type(ins)
+                    .as_deref()
+                    .is_some_and(is_bool_type_name);
+                self.push(Expr::Field {
+                    text: format!("{}.{}", paren(&obj, self.lang, self.names), fld),
+                    is_boolean,
+                });
             }
             "ldflda" => {
                 let obj: Expr = self.pop();
                 let fld: String = field_name(&self.token_name(ins));
-                self.push(Expr::AddressOf(Box::new(Expr::Field(format!(
-                    "{}.{}",
-                    paren(&obj, self.lang, self.names),
-                    fld
-                )))));
+                let is_boolean: bool = self
+                    .stored_field_type(ins)
+                    .as_deref()
+                    .is_some_and(is_bool_type_name);
+                self.push(Expr::AddressOf(Box::new(Expr::Field {
+                    text: format!("{}.{}", paren(&obj, self.lang, self.names), fld),
+                    is_boolean,
+                })));
             }
             "ldsfld" => {
                 let fld: String = field_name(&self.token_name(ins));
-                self.push(Expr::Field(fld));
+                let is_boolean: bool = self
+                    .stored_field_type(ins)
+                    .as_deref()
+                    .is_some_and(is_bool_type_name);
+                self.push(Expr::Field {
+                    text: fld,
+                    is_boolean,
+                });
             }
             "ldsflda" => {
                 let fld: String = field_name(&self.token_name(ins));
-                self.push(Expr::AddressOf(Box::new(Expr::Field(fld))));
+                let is_boolean: bool = self
+                    .stored_field_type(ins)
+                    .as_deref()
+                    .is_some_and(is_bool_type_name);
+                self.push(Expr::AddressOf(Box::new(Expr::Field {
+                    text: fld,
+                    is_boolean,
+                })));
             }
             "stfld" => {
                 let val: Expr = self.pop();
@@ -4098,7 +4207,10 @@ mod tests {
         let names: NameTable = NameTable::default();
         let recv: Expr = Expr::AddressOf(Box::new(Expr::Local(2)));
         assert_eq!(call_receiver(&recv, TargetLang::CSharp, &names), "local2");
-        let field_recv: Expr = Expr::AddressOf(Box::new(Expr::Field("this.x".to_owned())));
+        let field_recv: Expr = Expr::AddressOf(Box::new(Expr::Field {
+            text: "this.x".to_owned(),
+            is_boolean: false,
+        }));
         assert_eq!(
             call_receiver(&field_recv, TargetLang::CSharp, &names),
             "this.x"
@@ -4161,6 +4273,71 @@ mod tests {
         let body: MethodBody = body_from(code);
         let out: StructuredMethod = decompile_method(sig, &body, &HexNamer);
         out.body
+    }
+
+    struct BooleanCeqNamer;
+
+    impl TokenNamer for BooleanCeqNamer {
+        fn name(&self, token: u32) -> String {
+            match token {
+                0x0A00_0001 => "Flag".to_owned(),
+                0x0A00_0002 => "Count".to_owned(),
+                other => format!("token_{other:08X}"),
+            }
+        }
+
+        fn call_info(&self, token: u32) -> Option<CallInfo> {
+            matches!(token, 0x0A00_0001 | 0x0A00_0002).then_some(CallInfo {
+                arg_count: 0,
+                returns_value: true,
+                has_this: false,
+                byref_param_mask: 0,
+            })
+        }
+
+        fn call_returns_boolean(&self, token: u32) -> bool {
+            token == 0x0A00_0001
+        }
+
+        fn outer_has_this(&self) -> bool {
+            false
+        }
+    }
+
+    fn call_ceq_zero(token: u32) -> MethodBody {
+        let mut code: Vec<u8> = vec![0x28];
+        code.extend_from_slice(&token.to_le_bytes());
+        code.extend_from_slice(&[0x16, 0xFE, 0x01, 0x2A]);
+        body_from(&code)
+    }
+
+    #[test]
+    fn ceq_uses_boolean_literals_only_for_metadata_boolean_operands() {
+        let boolean: StructuredMethod = decompile_method(
+            "bool BooleanProbe()",
+            &call_ceq_zero(0x0A00_0001),
+            &BooleanCeqNamer,
+        );
+        let integer: StructuredMethod = decompile_method(
+            "bool IntegerProbe()",
+            &call_ceq_zero(0x0A00_0002),
+            &BooleanCeqNamer,
+        );
+        assert!(
+            boolean.body.contains("return Flag() == false;"),
+            "a Boolean call compared with the CIL false representation must use a C# Boolean literal, got:\n{}",
+            boolean.body
+        );
+        assert!(
+            integer.body.contains("return Count() == 0;"),
+            "an integer call compared with zero must remain an integer equality, got:\n{}",
+            integer.body
+        );
+        assert!(
+            !integer.body.contains("false"),
+            "integer ceq must not be coerced to Boolean equality, got:\n{}",
+            integer.body
+        );
     }
 
     #[test]
