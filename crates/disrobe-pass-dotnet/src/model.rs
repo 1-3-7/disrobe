@@ -3005,7 +3005,7 @@ mod tests {
         );
         assert_eq!(
             resolver.isinst_target_kind(type_def_token | 1),
-            IsInstTargetKind::ReferenceType
+            IsInstTargetKind::ValueType
         );
     }
 
