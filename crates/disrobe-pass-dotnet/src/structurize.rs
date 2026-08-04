@@ -123,12 +123,12 @@ impl TokenNamer for Resolver {
 
     #[inline]
     fn isinst_target_kind(&self, token: u32) -> IsInstTargetKind {
-        Resolver::isinst_target_kind(self, token)
+        Self::isinst_target_kind(self, token)
     }
 
     #[inline]
     fn unbox_any_target_name(&self, token: u32) -> Option<String> {
-        Resolver::unbox_any_target_name(self, token)
+        Self::unbox_any_target_name(self, token)
     }
 
     #[inline]
@@ -646,19 +646,16 @@ fn render_expr(initial: RenderAction<'_>, lang: TargetLang, names: &NameTable) -
                 },
                 Expr::UnboxAny { target, operand } => match lang {
                     TargetLang::CSharp => {
-                        match target {
-                            Some(target) => {
-                                output.push('(');
-                                output.push_str(target);
-                                output.push_str(")((object)");
-                            }
-                            None => {
-                                output.push_str(
-                                    "(new System.Func<object, dynamic>((object _) => { throw new System.NotSupportedException(\"",
-                                );
-                                output.push_str(UNRESOLVED_UNBOX_ANY_TARGET);
-                                output.push_str("\"); }))((object)");
-                            }
+                        if let Some(target) = target {
+                            output.push('(');
+                            output.push_str(target);
+                            output.push_str(")((object)");
+                        } else {
+                            output.push_str(
+                                "(new System.Func<object, dynamic>((object _) => { throw new System.NotSupportedException(\"",
+                            );
+                            output.push_str(UNRESOLVED_UNBOX_ANY_TARGET);
+                            output.push_str("\"); }))((object)");
                         }
                         pending.push(RenderAction::Text(")"));
                         pending.push(RenderAction::Paren(operand));

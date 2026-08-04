@@ -7,8 +7,9 @@ use crate::error::{Error, Result};
 use crate::metadata::{MetadataRoot, decompress_uint};
 use crate::pe::{ClrHeader, PeImage};
 use crate::signature::{
-    FieldSig, MethodSig, TypeSig, parse_field_sig, parse_field_sig_strict,
-    parse_field_sig_with_modifiers, parse_method_sig, parse_method_sig_strict,
+    FieldSig, MethodSig, SIG_DEFAULT, SIG_HASTHIS, TypeSig, TypeSigOrVoid, parse_field_sig,
+    parse_field_sig_strict, parse_field_sig_with_modifiers, parse_method_sig,
+    parse_method_sig_strict,
 };
 use crate::structurize::{
     FieldRvaPrimitive, MetadataTokenKind, TargetLang, csharp_escape_identifier,
@@ -81,6 +82,11 @@ pub struct MethodModel {
     pub parameters: Vec<ParamModel>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CSharpOverrideKind {
+    Override,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParamModel {
     pub sequence: u16,
@@ -90,9 +96,13 @@ pub struct ParamModel {
 const METHOD_STATIC: u16 = 0x0010;
 const METHOD_ACCESS_MASK: u16 = 0x0007;
 const METHOD_PUBLIC: u16 = 0x0006;
+const METHOD_FINAL: u16 = 0x0020;
 const METHOD_VIRTUAL: u16 = 0x0040;
+const METHOD_HIDE_BY_SIG: u16 = 0x0080;
 const METHOD_NEW_SLOT: u16 = 0x0100;
 const METHOD_ABSTRACT: u16 = 0x0400;
+const TYPE_ABSTRACT: u32 = 0x0080;
+const TYPE_SEALED: u32 = 0x0100;
 const TYPE_INTERFACE: u32 = 0x0020;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +135,14 @@ impl MethodModel {
     #[must_use]
     pub fn csharp_signature(&self) -> String {
         self.signature_in(TargetLang::CSharp)
+    }
+
+    #[must_use]
+    pub(crate) fn csharp_signature_with_override(
+        &self,
+        override_kind: Option<CSharpOverrideKind>,
+    ) -> String {
+        self.csharp_header_with_override(override_kind)
     }
 
     #[must_use]
@@ -172,6 +190,10 @@ impl MethodModel {
     }
 
     fn csharp_header(&self) -> String {
+        self.csharp_header_with_override(None)
+    }
+
+    fn csharp_header_with_override(&self, override_kind: Option<CSharpOverrideKind>) -> String {
         let vis: &str = match self.flags & METHOD_ACCESS_MASK {
             0x0001 => "private ",
             0x0002 => "private protected ",
@@ -182,6 +204,10 @@ impl MethodModel {
             _ => "",
         };
         let stat: &str = if self.is_static() { "static " } else { "" };
+        let override_modifier: &str = match override_kind {
+            Some(CSharpOverrideKind::Override) => "override ",
+            None => "",
+        };
         let ret: String = self.signature.return_type.render_in(TargetLang::CSharp);
         let display_name: String = self.display_name();
         let mut rendered: Vec<String> = Vec::with_capacity(self.signature.params.len());
@@ -192,7 +218,10 @@ impl MethodModel {
                 crate::structurize::csharp_escape_identifier(&self.param_name(i))
             ));
         }
-        format!("{vis}{stat}{ret} {display_name}({})", rendered.join(", "))
+        format!(
+            "{vis}{stat}{override_modifier}{ret} {display_name}({})",
+            rendered.join(", ")
+        )
     }
 
     fn fsharp_header(&self) -> String {
@@ -267,7 +296,7 @@ pub struct AssemblyModel {
 #[derive(Debug)]
 pub struct Resolver {
     tables: Tables,
-    method_impl_types: BTreeSet<u32>,
+    method_impl_indices_by_type: BTreeMap<u32, Vec<usize>>,
     strings_heap: Vec<u8>,
     blob: Vec<u8>,
     us: Vec<u8>,
@@ -283,11 +312,8 @@ impl Resolver {
             .copied()
             .ok_or_else(|| Error::UnknownStream("#~".to_owned()))?;
         let tables: Tables = parse_tables(metadata_slice, table_header)?;
-        let method_impl_types: BTreeSet<u32> = tables
-            .method_impls
-            .iter()
-            .map(|mapping| mapping.class_type)
-            .collect();
+        let method_impl_indices_by_type: BTreeMap<u32, Vec<usize>> =
+            Self::index_method_impls_by_type(&tables.method_impls);
         let strings_heap: Vec<u8> = root
             .streams
             .get("#Strings")
@@ -329,7 +355,7 @@ impl Resolver {
             .unwrap_or_default();
         Ok(Self {
             tables,
-            method_impl_types,
+            method_impl_indices_by_type,
             strings_heap,
             blob,
             us,
@@ -339,6 +365,25 @@ impl Resolver {
     #[must_use]
     pub const fn tables(&self) -> &Tables {
         &self.tables
+    }
+
+    fn index_method_impls_by_type(
+        method_impls: &[crate::tables::MethodImplRow],
+    ) -> BTreeMap<u32, Vec<usize>> {
+        let mut indices_by_type: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+        for (index, mapping) in method_impls.iter().enumerate() {
+            indices_by_type
+                .entry(mapping.class_type)
+                .or_default()
+                .push(index);
+        }
+        indices_by_type
+    }
+
+    fn method_impl_indices_for_type(&self, class_type: u32) -> &[usize] {
+        self.method_impl_indices_by_type
+            .get(&class_type)
+            .map_or(&[], Vec::as_slice)
     }
 
     #[must_use]
@@ -892,7 +937,7 @@ impl Resolver {
         let mut current: u32 = receiver_type;
         let mut visited: BTreeSet<u32> = BTreeSet::new();
         while visited.insert(current) {
-            if self.method_impl_types.contains(&current) {
+            if self.method_impl_indices_by_type.contains_key(&current) {
                 return true;
             }
             let Some(base): Option<u32> = self.base_type_rid(current) else {
@@ -1177,6 +1222,177 @@ impl Resolver {
         self.is_corelib_value_type_parent(parent)
     }
 
+    #[must_use]
+    pub(crate) fn csharp_value_type_override_kind(
+        &self,
+        declaring_type_token: u32,
+        method_token: u32,
+    ) -> Option<CSharpOverrideKind> {
+        if token_table(declaring_type_token)? != TableId::TypeDef
+            || token_table(method_token)? != TableId::MethodDef
+        {
+            return None;
+        }
+        let declaring_type_rid: u32 = token_rid(declaring_type_token)?;
+        let method_rid: u32 = token_rid(method_token)?;
+        if !self.is_csharp_struct_override_declaring_type(declaring_type_rid) {
+            return None;
+        }
+        let (method_start, method_end): (u32, u32) = self.method_range(declaring_type_rid)?;
+        if !(method_start..method_end).contains(&method_rid) {
+            return None;
+        }
+        let method: &MethodDefRow = self
+            .tables
+            .methods
+            .get(method_rid.checked_sub(1)? as usize)?;
+        if method.rva == 0
+            || (method.flags & !METHOD_FINAL)
+                != (METHOD_PUBLIC | METHOD_VIRTUAL | METHOD_HIDE_BY_SIG)
+            || !self.method_matches_csharp_object_override_signature(method)
+        {
+            return None;
+        }
+        if self.method_has_explicit_impl_body(declaring_type_rid, method_rid) {
+            return None;
+        }
+        Some(CSharpOverrideKind::Override)
+    }
+
+    fn is_csharp_struct_override_declaring_type(&self, type_rid: u32) -> bool {
+        let Some(index): Option<usize> = type_rid
+            .checked_sub(1)
+            .and_then(|value: u32| usize::try_from(value).ok())
+        else {
+            return false;
+        };
+        let Some(type_def): Option<&TypeDefRow> = self.tables.type_defs.get(index) else {
+            return false;
+        };
+        type_def.flags & TYPE_SEALED != 0
+            && type_def.flags & (TYPE_ABSTRACT | TYPE_INTERFACE) == 0
+            && type_def
+                .extends
+                .is_some_and(|parent: RowRef| self.is_corelib_value_type_parent_exact(parent))
+    }
+
+    fn is_corelib_value_type_parent_exact(&self, parent: RowRef) -> bool {
+        match parent.table {
+            TableId::TypeDef => self.type_def_is_corelib_value_type(parent.row),
+            TableId::TypeRef => self.type_ref_is_corelib_value_type(parent.row),
+            _ => false,
+        }
+    }
+
+    fn type_def_is_corelib_value_type(&self, rid: u32) -> bool {
+        if !self.is_corelib_definition_assembly() {
+            return false;
+        }
+        let Some(index): Option<usize> = rid
+            .checked_sub(1)
+            .and_then(|value: u32| usize::try_from(value).ok())
+        else {
+            return false;
+        };
+        let Some(type_def): Option<&TypeDefRow> = self.tables.type_defs.get(index) else {
+            return false;
+        };
+        self.string(type_def.namespace) == "System" && self.string(type_def.name) == "ValueType"
+    }
+
+    fn type_ref_is_corelib_value_type(&self, rid: u32) -> bool {
+        let Some(index): Option<usize> = rid
+            .checked_sub(1)
+            .and_then(|value: u32| usize::try_from(value).ok())
+        else {
+            return false;
+        };
+        let Some(type_ref): Option<&TypeRefRow> = self.tables.type_refs.get(index) else {
+            return false;
+        };
+        self.string(type_ref.namespace) == "System"
+            && self.string(type_ref.name) == "ValueType"
+            && type_ref
+                .resolution_scope
+                .is_some_and(|scope: RowRef| self.is_corelib_assembly_ref(scope))
+    }
+
+    fn method_has_explicit_impl_body(&self, declaring_type_rid: u32, method_rid: u32) -> bool {
+        self.method_impl_indices_for_type(declaring_type_rid)
+            .iter()
+            .any(|index: &usize| {
+                let Some(mapping): Option<&crate::tables::MethodImplRow> =
+                    self.tables.method_impls.get(*index)
+                else {
+                    return true;
+                };
+                let Some(body): Option<RowRef> = mapping.method_body else {
+                    return true;
+                };
+                match body.table {
+                    TableId::MethodDef => body.row == method_rid,
+                    TableId::MemberRef => self
+                        .member_ref_targets_method(body.row, declaring_type_rid, method_rid)
+                        .unwrap_or(true),
+                    _ => true,
+                }
+            })
+    }
+
+    fn member_ref_targets_method(
+        &self,
+        member_ref_rid: u32,
+        declaring_type_rid: u32,
+        method_rid: u32,
+    ) -> Option<bool> {
+        let member_ref_index: usize = member_ref_rid
+            .checked_sub(1)
+            .and_then(|value: u32| usize::try_from(value).ok())?;
+        let member_ref: &MemberRefRow = self.tables.member_refs.get(member_ref_index)?;
+        let parent: RowRef = member_ref.parent?;
+        if parent.table != TableId::TypeDef {
+            return None;
+        }
+        if parent.row != declaring_type_rid {
+            return Some(false);
+        }
+        let method_index: usize = method_rid
+            .checked_sub(1)
+            .and_then(|value: u32| usize::try_from(value).ok())?;
+        let method: &MethodDefRow = self.tables.methods.get(method_index)?;
+        Some(
+            self.string(member_ref.name) == self.string(method.name)
+                && self.method_signature(member_ref.signature)?
+                    == self.method_signature(method.signature)?,
+        )
+    }
+
+    fn method_matches_csharp_object_override_signature(&self, method: &MethodDefRow) -> bool {
+        let Some(signature): Option<MethodSig> = self.method_signature(method.signature) else {
+            return false;
+        };
+        if signature.calling_convention != (SIG_HASTHIS | SIG_DEFAULT)
+            || !signature.has_this
+            || signature.explicit_this
+            || signature.generic_param_count != 0
+        {
+            return false;
+        }
+        matches!(
+            (
+                self.string(method.name).as_str(),
+                &signature.return_type,
+                signature.params.as_slice(),
+            ),
+            (
+                "Equals",
+                TypeSigOrVoid::Type(TypeSig::Boolean),
+                [TypeSig::Object]
+            ) | ("GetHashCode", TypeSigOrVoid::Type(TypeSig::I4), [])
+                | ("ToString", TypeSigOrVoid::Type(TypeSig::String), [])
+        )
+    }
+
     fn is_corelib_value_type_parent(&self, parent: RowRef) -> bool {
         match parent.table {
             TableId::TypeDef => self.type_def_is_corelib_value_root(parent.row),
@@ -1414,7 +1630,7 @@ impl Resolver {
     pub fn isinst_target_kind(&self, token: u32) -> IsInstTargetKind {
         self.csharp_type_target(token)
             .map_or(IsInstTargetKind::Unsupported, |target: CSharpTypeTarget| {
-                self.isinst_target_kind_for_csharp_type(&target)
+                Self::isinst_target_kind_for_csharp_type(&target)
             })
     }
 
@@ -1425,12 +1641,8 @@ impl Resolver {
     }
 
     fn csharp_type_target(&self, token: u32) -> Option<CSharpTypeTarget> {
-        let Some(table): Option<TableId> = token_table(token) else {
-            return None;
-        };
-        let Some(rid): Option<u32> = token_rid(token) else {
-            return None;
-        };
+        let table: TableId = token_table(token)?;
+        let rid: u32 = token_rid(token)?;
         match table {
             TableId::TypeDef => {
                 (self.csharp_named_type_arity(token) == Some(0)).then_some(())?;
@@ -1466,7 +1678,7 @@ impl Resolver {
     fn isinst_target_kind_from_signature(&self, signature: &TypeSig) -> IsInstTargetKind {
         self.csharp_type_target_from_signature(signature)
             .map_or(IsInstTargetKind::Unsupported, |target: CSharpTypeTarget| {
-                self.isinst_target_kind_for_csharp_type(&target)
+                Self::isinst_target_kind_for_csharp_type(&target)
             })
     }
 
@@ -1476,7 +1688,7 @@ impl Resolver {
             .map(|target: CSharpTypeTarget| target.rendered)
     }
 
-    fn isinst_target_kind_for_csharp_type(&self, target: &CSharpTypeTarget) -> IsInstTargetKind {
+    const fn isinst_target_kind_for_csharp_type(target: &CSharpTypeTarget) -> IsInstTargetKind {
         if target.nullable {
             return IsInstTargetKind::Unsupported;
         }
@@ -1612,18 +1824,11 @@ impl Resolver {
     }
 
     fn csharp_named_type_arity(&self, token: u32) -> Option<usize> {
-        let Some(table): Option<TableId> = token_table(token) else {
-            return None;
-        };
-        let Some(rid): Option<u32> = token_rid(token) else {
-            return None;
-        };
-        let Some(index): Option<usize> = rid
+        let table: TableId = token_table(token)?;
+        let rid: u32 = token_rid(token)?;
+        let index: usize = rid
             .checked_sub(1)
-            .and_then(|value: u32| usize::try_from(value).ok())
-        else {
-            return None;
-        };
+            .and_then(|value: u32| usize::try_from(value).ok())?;
         match table {
             TableId::TypeDef => {
                 let row: &TypeDefRow = self.tables.type_defs.get(index)?;
@@ -2206,7 +2411,7 @@ impl Resolver {
             return false;
         };
         let name: String = self.string(assembly.name);
-        self.is_corelib_identity(&name, public_key_token)
+        Self::is_corelib_identity(&name, public_key_token)
     }
 
     fn is_corelib_definition_assembly(&self) -> bool {
@@ -2225,10 +2430,10 @@ impl Resolver {
             return false;
         };
         let name: String = self.string(assembly.name);
-        self.is_corelib_definition_identity(&name, public_key_token)
+        Self::is_corelib_definition_identity(&name, public_key_token)
     }
 
-    fn is_corelib_identity(&self, name: &str, public_key_token: [u8; 8]) -> bool {
+    fn is_corelib_identity(name: &str, public_key_token: [u8; 8]) -> bool {
         matches!(
             (name, public_key_token),
             ("mscorlib", [0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89])
@@ -2247,7 +2452,7 @@ impl Resolver {
         )
     }
 
-    fn is_corelib_definition_identity(&self, name: &str, public_key_token: [u8; 8]) -> bool {
+    fn is_corelib_definition_identity(name: &str, public_key_token: [u8; 8]) -> bool {
         matches!(
             (name, public_key_token),
             ("mscorlib", [0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89])
@@ -2664,7 +2869,7 @@ mod tests {
     fn strict_user_strings_reject_malformed_utf16_and_trailers() {
         let resolver: fn(Vec<u8>) -> Resolver = |us: Vec<u8>| Resolver {
             tables: Tables::default(),
-            method_impl_types: BTreeSet::new(),
+            method_impl_indices_by_type: BTreeMap::new(),
             strings_heap: Vec::new(),
             blob: Vec::new(),
             us,
@@ -2824,6 +3029,567 @@ mod tests {
     }
 
     #[test]
+    fn csharp_value_type_overrides_require_the_verified_corelib_contract() {
+        let resolver: Resolver =
+            resolver_for("../../corpus/dotnet/megafile/EdgeCases.baseline.dll");
+        let model: AssemblyModel = resolver.model();
+        let money: &TypeModel = model
+            .types
+            .iter()
+            .find(|ty: &&TypeModel| ty.full_name == "EdgeCases.Money")
+            .expect("Money TypeDef");
+        let object_equals: &MethodModel = money
+            .methods
+            .iter()
+            .find(|method: &&MethodModel| {
+                method.display_name() == "Equals" && method.signature.params == [TypeSig::Object]
+            })
+            .expect("Money.Equals(object)");
+        let get_hash_code: &MethodModel = money
+            .methods
+            .iter()
+            .find(|method: &&MethodModel| method.display_name() == "GetHashCode")
+            .expect("Money.GetHashCode");
+        let to_string: &MethodModel = money
+            .methods
+            .iter()
+            .find(|method: &&MethodModel| method.display_name() == "ToString")
+            .expect("Money.ToString");
+        let value_equals: &MethodModel = money
+            .methods
+            .iter()
+            .find(|method: &&MethodModel| {
+                method.display_name() == "Equals" && method.signature.params != [TypeSig::Object]
+            })
+            .expect("Money.Equals(Money)");
+
+        for method in [object_equals, get_hash_code, to_string] {
+            assert_eq!(
+                resolver.csharp_value_type_override_kind(money.token, method.token),
+                Some(CSharpOverrideKind::Override),
+                "{}",
+                method.name
+            );
+            assert!(
+                method
+                    .csharp_signature_with_override(Some(CSharpOverrideKind::Override))
+                    .contains(" override "),
+                "{}",
+                method.name
+            );
+        }
+        assert_eq!(
+            resolver.csharp_value_type_override_kind(money.token, value_equals.token),
+            None
+        );
+    }
+
+    fn money_method_tokens(resolver: &Resolver) -> (u32, u32, u32, u32) {
+        let model: AssemblyModel = resolver.model();
+        let money: &TypeModel = model
+            .types
+            .iter()
+            .find(|ty: &&TypeModel| ty.full_name == "EdgeCases.Money")
+            .expect("Money TypeDef");
+        let object_equals: &MethodModel = money
+            .methods
+            .iter()
+            .find(|method: &&MethodModel| {
+                method.display_name() == "Equals" && method.signature.params == [TypeSig::Object]
+            })
+            .expect("Money.Equals(object)");
+        let value_equals: &MethodModel = money
+            .methods
+            .iter()
+            .find(|method: &&MethodModel| {
+                method.display_name() == "Equals" && method.signature.params != [TypeSig::Object]
+            })
+            .expect("Money.Equals(Money)");
+        let get_hash_code: &MethodModel = money
+            .methods
+            .iter()
+            .find(|method: &&MethodModel| method.display_name() == "GetHashCode")
+            .expect("Money.GetHashCode");
+        (
+            money.token,
+            object_equals.token,
+            value_equals.token,
+            get_hash_code.token,
+        )
+    }
+
+    fn token_row_index(token: u32) -> usize {
+        let rid: u32 = token_rid(token).expect("metadata row id");
+        usize::try_from(rid - 1).expect("metadata row index")
+    }
+
+    fn add_method_impl_mapping(resolver: &mut Resolver, mapping: crate::tables::MethodImplRow) {
+        let index: usize = resolver.tables.method_impls.len();
+        resolver
+            .method_impl_indices_by_type
+            .entry(mapping.class_type)
+            .or_default()
+            .push(index);
+        resolver.tables.method_impls.push(mapping);
+    }
+
+    fn add_object_method_declaration(resolver: &mut Resolver, method_token: u32) -> RowRef {
+        let method_index: usize = token_row_index(method_token);
+        let (name, signature): (u32, u32) = {
+            let method: &MethodDefRow = resolver
+                .tables
+                .methods
+                .get(method_index)
+                .expect("Money MethodDef row");
+            (method.name, method.signature)
+        };
+        let object_type_ref_index: usize = resolver
+            .tables
+            .type_refs
+            .iter()
+            .position(|type_ref: &TypeRefRow| {
+                resolver.string(type_ref.namespace) == "System"
+                    && resolver.string(type_ref.name) == "Object"
+            })
+            .expect("System.Object TypeRef");
+        resolver
+            .tables
+            .member_refs
+            .push(crate::tables::MemberRefRow {
+                parent: Some(RowRef {
+                    table: TableId::TypeRef,
+                    row: u32::try_from(object_type_ref_index + 1).expect("Object TypeRef rid"),
+                }),
+                name,
+                signature,
+            });
+        RowRef {
+            table: TableId::MemberRef,
+            row: u32::try_from(resolver.tables.member_refs.len()).expect("MemberRef rid"),
+        }
+    }
+
+    fn add_local_method_reference(
+        resolver: &mut Resolver,
+        declaring_type_token: u32,
+        method_token: u32,
+    ) -> RowRef {
+        let method_index: usize = token_row_index(method_token);
+        let method: &MethodDefRow = resolver
+            .tables
+            .methods
+            .get(method_index)
+            .expect("local MethodDef row");
+        resolver
+            .tables
+            .member_refs
+            .push(crate::tables::MemberRefRow {
+                parent: Some(RowRef {
+                    table: TableId::TypeDef,
+                    row: token_rid(declaring_type_token).expect("declaring TypeDef rid"),
+                }),
+                name: method.name,
+                signature: method.signature,
+            });
+        RowRef {
+            table: TableId::MemberRef,
+            row: u32::try_from(resolver.tables.member_refs.len()).expect("MemberRef rid"),
+        }
+    }
+
+    fn add_unresolved_type_ref_method_reference(
+        resolver: &mut Resolver,
+        method_token: u32,
+    ) -> RowRef {
+        let method_index: usize = token_row_index(method_token);
+        let method: &MethodDefRow = resolver
+            .tables
+            .methods
+            .get(method_index)
+            .expect("local MethodDef row");
+        resolver
+            .tables
+            .member_refs
+            .push(crate::tables::MemberRefRow {
+                parent: Some(RowRef {
+                    table: TableId::TypeRef,
+                    row: u32::MAX,
+                }),
+                name: method.name,
+                signature: method.signature,
+            });
+        RowRef {
+            table: TableId::MemberRef,
+            row: u32::try_from(resolver.tables.member_refs.len()).expect("MemberRef rid"),
+        }
+    }
+
+    #[test]
+    fn method_impl_index_limits_lookup_to_the_requested_class() {
+        let rows: Vec<crate::tables::MethodImplRow> = vec![
+            crate::tables::MethodImplRow {
+                class_type: 7,
+                method_body: Some(RowRef {
+                    table: TableId::MethodDef,
+                    row: 11,
+                }),
+                method_declaration: None,
+            },
+            crate::tables::MethodImplRow {
+                class_type: 3,
+                method_body: Some(RowRef {
+                    table: TableId::MethodDef,
+                    row: 12,
+                }),
+                method_declaration: None,
+            },
+            crate::tables::MethodImplRow {
+                class_type: 7,
+                method_body: Some(RowRef {
+                    table: TableId::MethodDef,
+                    row: 13,
+                }),
+                method_declaration: None,
+            },
+        ];
+        let tables: Tables = Tables {
+            method_impls: rows,
+            ..Tables::default()
+        };
+        let method_impl_indices_by_type: BTreeMap<u32, Vec<usize>> =
+            Resolver::index_method_impls_by_type(&tables.method_impls);
+        let resolver: Resolver = Resolver {
+            tables,
+            method_impl_indices_by_type,
+            strings_heap: Vec::new(),
+            blob: Vec::new(),
+            us: Vec::new(),
+        };
+
+        assert_eq!(resolver.method_impl_indices_for_type(7), &[0, 2]);
+        assert_eq!(resolver.method_impl_indices_for_type(3), &[1]);
+        assert!(resolver.method_impl_indices_for_type(99).is_empty());
+        assert!(
+            resolver
+                .method_impl_indices_for_type(7)
+                .iter()
+                .all(|index: &usize| resolver.tables.method_impls[*index].class_type == 7)
+        );
+    }
+
+    #[test]
+    fn csharp_value_type_override_accepts_final_on_a_reused_slot() {
+        let mut resolver: Resolver =
+            resolver_for("../../corpus/dotnet/megafile/EdgeCases.baseline.dll");
+        let (money_token, object_equals_token, _, _): (u32, u32, u32, u32) =
+            money_method_tokens(&resolver);
+        let method_index: usize = token_row_index(object_equals_token);
+        resolver
+            .tables
+            .methods
+            .get_mut(method_index)
+            .expect("Money.Equals(object) MethodDef row")
+            .flags |= METHOD_FINAL;
+        assert_eq!(
+            resolver.csharp_value_type_override_kind(money_token, object_equals_token),
+            Some(CSharpOverrideKind::Override)
+        );
+    }
+
+    #[test]
+    fn csharp_value_type_override_rejects_non_csharp_slot_flags() {
+        let mut resolver: Resolver =
+            resolver_for("../../corpus/dotnet/megafile/EdgeCases.baseline.dll");
+        let (money_token, object_equals_token, _, _): (u32, u32, u32, u32) =
+            money_method_tokens(&resolver);
+        let method_index: usize = token_row_index(object_equals_token);
+        let original_flags: u16 = resolver
+            .tables
+            .methods
+            .get(method_index)
+            .expect("Money.Equals(object) MethodDef row")
+            .flags;
+        let special_name: u16 = 0x0800;
+        let cases: [(&str, u16); 8] = [
+            (
+                "private visibility",
+                (original_flags & !METHOD_ACCESS_MASK) | 0x0001,
+            ),
+            ("static", original_flags | METHOD_STATIC),
+            ("abstract", original_flags | METHOD_ABSTRACT),
+            ("special name", original_flags | special_name),
+            ("new slot", original_flags | METHOD_NEW_SLOT),
+            (
+                "final new slot",
+                original_flags | METHOD_FINAL | METHOD_NEW_SLOT,
+            ),
+            ("non-virtual", original_flags & !METHOD_VIRTUAL),
+            (
+                "not hide by signature",
+                original_flags & !METHOD_HIDE_BY_SIG,
+            ),
+        ];
+        for (case, flags) in cases {
+            resolver
+                .tables
+                .methods
+                .get_mut(method_index)
+                .expect("Money.Equals(object) MethodDef row")
+                .flags = flags;
+            assert_eq!(
+                resolver.csharp_value_type_override_kind(money_token, object_equals_token),
+                None,
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn csharp_value_type_override_rejects_invalid_declaring_type_shapes() {
+        let mut resolver: Resolver =
+            resolver_for("../../corpus/dotnet/megafile/EdgeCases.baseline.dll");
+        let (money_token, object_equals_token, _, _): (u32, u32, u32, u32) =
+            money_method_tokens(&resolver);
+        let type_index: usize = token_row_index(money_token);
+        let original_flags: u32 = resolver
+            .tables
+            .type_defs
+            .get(type_index)
+            .expect("Money TypeDef row")
+            .flags;
+        let cases: [(&str, u32); 3] = [
+            ("unsealed", original_flags & !TYPE_SEALED),
+            ("abstract", original_flags | TYPE_ABSTRACT),
+            ("interface", original_flags | TYPE_INTERFACE),
+        ];
+        for (case, flags) in cases {
+            resolver
+                .tables
+                .type_defs
+                .get_mut(type_index)
+                .expect("Money TypeDef row")
+                .flags = flags;
+            assert_eq!(
+                resolver.csharp_value_type_override_kind(money_token, object_equals_token),
+                None,
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn csharp_value_type_override_rejects_wrong_scope_value_type_parent() {
+        let mut resolver: Resolver =
+            resolver_for("../../corpus/dotnet/megafile/EdgeCases.baseline.dll");
+        let (money_token, object_equals_token, _, _): (u32, u32, u32, u32) =
+            money_method_tokens(&resolver);
+        let type_index: usize = token_row_index(money_token);
+        let parent: RowRef = resolver
+            .tables
+            .type_defs
+            .get(type_index)
+            .expect("Money TypeDef row")
+            .extends
+            .expect("Money base type");
+        assert_eq!(parent.table, TableId::TypeRef);
+        let parent_index: usize =
+            usize::try_from(parent.row.checked_sub(1).expect("base TypeRef rid"))
+                .expect("base TypeRef index");
+        let base_type_ref: &mut TypeRefRow = resolver
+            .tables
+            .type_refs
+            .get_mut(parent_index)
+            .expect("Money base TypeRef row");
+        base_type_ref.resolution_scope = Some(RowRef {
+            table: TableId::Module,
+            row: 1,
+        });
+        assert_eq!(
+            resolver.csharp_value_type_override_kind(money_token, object_equals_token),
+            None
+        );
+    }
+
+    #[test]
+    fn csharp_value_type_override_rejects_wrong_method_owner() {
+        let resolver: Resolver =
+            resolver_for("../../corpus/dotnet/megafile/EdgeCases.baseline.dll");
+        let (money_token, object_equals_token, _, _): (u32, u32, u32, u32) =
+            money_method_tokens(&resolver);
+        let model: AssemblyModel = resolver.model();
+        let other_type_token: u32 = model
+            .types
+            .iter()
+            .find(|ty: &&TypeModel| ty.token != money_token)
+            .expect("non-Money TypeDef")
+            .token;
+        assert_eq!(
+            resolver.csharp_value_type_override_kind(other_type_token, object_equals_token),
+            None
+        );
+    }
+
+    #[test]
+    fn csharp_value_type_override_rejects_a_method_without_a_body() {
+        let mut resolver: Resolver =
+            resolver_for("../../corpus/dotnet/megafile/EdgeCases.baseline.dll");
+        let (money_token, object_equals_token, _, _): (u32, u32, u32, u32) =
+            money_method_tokens(&resolver);
+        resolver
+            .tables
+            .methods
+            .get_mut(token_row_index(object_equals_token))
+            .expect("Money.Equals(object) MethodDef row")
+            .rva = 0;
+        assert_eq!(
+            resolver.csharp_value_type_override_kind(money_token, object_equals_token),
+            None
+        );
+    }
+
+    #[test]
+    fn csharp_value_type_override_rejects_a_non_contract_signature() {
+        let mut resolver: Resolver =
+            resolver_for("../../corpus/dotnet/megafile/EdgeCases.baseline.dll");
+        let (money_token, object_equals_token, value_equals_token, _): (u32, u32, u32, u32) =
+            money_method_tokens(&resolver);
+        let value_signature: u32 = resolver
+            .tables
+            .methods
+            .get(token_row_index(value_equals_token))
+            .expect("Money.Equals(Money) MethodDef row")
+            .signature;
+        resolver
+            .tables
+            .methods
+            .get_mut(token_row_index(object_equals_token))
+            .expect("Money.Equals(object) MethodDef row")
+            .signature = value_signature;
+        assert_eq!(
+            resolver.csharp_value_type_override_kind(money_token, object_equals_token),
+            None
+        );
+    }
+
+    #[test]
+    fn csharp_value_type_override_rejects_a_methoddef_methodimpl_body() {
+        let mut resolver: Resolver =
+            resolver_for("../../corpus/dotnet/megafile/EdgeCases.baseline.dll");
+        let (money_token, object_equals_token, _, _): (u32, u32, u32, u32) =
+            money_method_tokens(&resolver);
+        let declaration: RowRef = add_object_method_declaration(&mut resolver, object_equals_token);
+        add_method_impl_mapping(
+            &mut resolver,
+            crate::tables::MethodImplRow {
+                class_type: token_rid(money_token).expect("Money TypeDef rid"),
+                method_body: Some(RowRef {
+                    table: TableId::MethodDef,
+                    row: token_rid(object_equals_token).expect("Equals MethodDef rid"),
+                }),
+                method_declaration: Some(declaration),
+            },
+        );
+        assert_eq!(
+            resolver.csharp_value_type_override_kind(money_token, object_equals_token),
+            None
+        );
+    }
+
+    #[test]
+    fn csharp_value_type_override_ignores_an_unrelated_methodimpl_body() {
+        let mut resolver: Resolver =
+            resolver_for("../../corpus/dotnet/megafile/EdgeCases.baseline.dll");
+        let (money_token, object_equals_token, _, get_hash_code_token): (u32, u32, u32, u32) =
+            money_method_tokens(&resolver);
+        let declaration: RowRef = add_object_method_declaration(&mut resolver, get_hash_code_token);
+        add_method_impl_mapping(
+            &mut resolver,
+            crate::tables::MethodImplRow {
+                class_type: token_rid(money_token).expect("Money TypeDef rid"),
+                method_body: Some(RowRef {
+                    table: TableId::MethodDef,
+                    row: token_rid(get_hash_code_token).expect("GetHashCode MethodDef rid"),
+                }),
+                method_declaration: Some(declaration),
+            },
+        );
+        assert_eq!(
+            resolver.csharp_value_type_override_kind(money_token, object_equals_token),
+            Some(CSharpOverrideKind::Override)
+        );
+    }
+
+    #[test]
+    fn csharp_value_type_override_rejects_a_memberref_methodimpl_body() {
+        let mut resolver: Resolver =
+            resolver_for("../../corpus/dotnet/megafile/EdgeCases.baseline.dll");
+        let (money_token, object_equals_token, _, _): (u32, u32, u32, u32) =
+            money_method_tokens(&resolver);
+        let declaration: RowRef = add_object_method_declaration(&mut resolver, object_equals_token);
+        let body: RowRef =
+            add_local_method_reference(&mut resolver, money_token, object_equals_token);
+        add_method_impl_mapping(
+            &mut resolver,
+            crate::tables::MethodImplRow {
+                class_type: token_rid(money_token).expect("Money TypeDef rid"),
+                method_body: Some(body),
+                method_declaration: Some(declaration),
+            },
+        );
+        assert_eq!(
+            resolver.csharp_value_type_override_kind(money_token, object_equals_token),
+            None
+        );
+    }
+
+    #[test]
+    fn csharp_value_type_override_rejects_an_unresolved_memberref_methodimpl_body() {
+        let mut resolver: Resolver =
+            resolver_for("../../corpus/dotnet/megafile/EdgeCases.baseline.dll");
+        let (money_token, object_equals_token, _, _): (u32, u32, u32, u32) =
+            money_method_tokens(&resolver);
+        let declaration: RowRef = add_object_method_declaration(&mut resolver, object_equals_token);
+        add_method_impl_mapping(
+            &mut resolver,
+            crate::tables::MethodImplRow {
+                class_type: token_rid(money_token).expect("Money TypeDef rid"),
+                method_body: Some(RowRef {
+                    table: TableId::MemberRef,
+                    row: u32::MAX,
+                }),
+                method_declaration: Some(declaration),
+            },
+        );
+        assert_eq!(
+            resolver.csharp_value_type_override_kind(money_token, object_equals_token),
+            None
+        );
+    }
+
+    #[test]
+    fn csharp_value_type_override_rejects_a_typeref_parent_methodimpl_body() {
+        let mut resolver: Resolver =
+            resolver_for("../../corpus/dotnet/megafile/EdgeCases.baseline.dll");
+        let (money_token, object_equals_token, _, _): (u32, u32, u32, u32) =
+            money_method_tokens(&resolver);
+        let declaration: RowRef = add_object_method_declaration(&mut resolver, object_equals_token);
+        let body: RowRef =
+            add_unresolved_type_ref_method_reference(&mut resolver, object_equals_token);
+        add_method_impl_mapping(
+            &mut resolver,
+            crate::tables::MethodImplRow {
+                class_type: token_rid(money_token).expect("Money TypeDef rid"),
+                method_body: Some(body),
+                method_declaration: Some(declaration),
+            },
+        );
+        assert_eq!(
+            resolver.csharp_value_type_override_kind(money_token, object_equals_token),
+            None
+        );
+    }
+
+    #[test]
     fn isinst_target_kind_requires_corelib_value_type_identity() {
         let mut strings_heap: Vec<u8> = vec![0];
         let system: u32 = push_heap_string(&mut strings_heap, "System");
@@ -2975,7 +3741,7 @@ mod tests {
         };
         let resolver: Resolver = Resolver {
             tables,
-            method_impl_types: BTreeSet::new(),
+            method_impl_indices_by_type: BTreeMap::new(),
             strings_heap,
             blob: vec![
                 0, 8, 0x7C, 0xEC, 0x85, 0xD7, 0xBE, 0xA7, 0x79, 0x8E, 8, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -3077,7 +3843,7 @@ mod tests {
         };
         let resolver: Resolver = Resolver {
             tables,
-            method_impl_types: BTreeSet::new(),
+            method_impl_indices_by_type: BTreeMap::new(),
             strings_heap,
             blob: vec![0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0],
             us: Vec::new(),
@@ -3103,57 +3869,59 @@ mod tests {
 
     #[test]
     fn isinst_target_kind_uses_typespec_category_and_refuses_generic_parameters() {
-        let mut tables: Tables = Tables::default();
-        tables.type_refs = vec![
-            TypeRefRow {
-                resolution_scope: None,
-                name: 1,
-                namespace: 0,
-            },
-            TypeRefRow {
-                resolution_scope: None,
-                name: 13,
-                namespace: 0,
-            },
-            TypeRefRow {
-                resolution_scope: None,
-                name: 29,
-                namespace: 0,
-            },
-            TypeRefRow {
-                resolution_scope: None,
-                name: 75,
-                namespace: 68,
-            },
-        ];
-        tables.type_defs = vec![
-            TypeDefRow {
-                flags: 0,
-                name: 42,
-                namespace: 0,
-                extends: None,
-                field_list: 1,
-                method_list: 1,
-            },
-            TypeDefRow {
-                flags: 0,
-                name: 53,
-                namespace: 0,
-                extends: None,
-                field_list: 1,
-                method_list: 1,
-            },
-        ];
-        tables.type_specs = vec![
-            TypeSpecRow { signature: 1 },
-            TypeSpecRow { signature: 4 },
-            TypeSpecRow { signature: 7 },
-            TypeSpecRow { signature: 10 },
-            TypeSpecRow { signature: 13 },
-        ];
+        let tables: Tables = Tables {
+            type_refs: vec![
+                TypeRefRow {
+                    resolution_scope: None,
+                    name: 1,
+                    namespace: 0,
+                },
+                TypeRefRow {
+                    resolution_scope: None,
+                    name: 13,
+                    namespace: 0,
+                },
+                TypeRefRow {
+                    resolution_scope: None,
+                    name: 29,
+                    namespace: 0,
+                },
+                TypeRefRow {
+                    resolution_scope: None,
+                    name: 75,
+                    namespace: 68,
+                },
+            ],
+            type_defs: vec![
+                TypeDefRow {
+                    flags: 0,
+                    name: 42,
+                    namespace: 0,
+                    extends: None,
+                    field_list: 1,
+                    method_list: 1,
+                },
+                TypeDefRow {
+                    flags: 0,
+                    name: 53,
+                    namespace: 0,
+                    extends: None,
+                    field_list: 1,
+                    method_list: 1,
+                },
+            ],
+            type_specs: vec![
+                TypeSpecRow { signature: 1 },
+                TypeSpecRow { signature: 4 },
+                TypeSpecRow { signature: 7 },
+                TypeSpecRow { signature: 10 },
+                TypeSpecRow { signature: 13 },
+            ],
+            ..Default::default()
+        };
         let resolver: Resolver = Resolver {
             tables,
-            method_impl_types: BTreeSet::new(),
+            method_impl_indices_by_type: BTreeMap::new(),
             strings_heap:
                 b"\0ValueTarget\0ReferenceTarget\0GenericBox`1\0LocalValue\0LocalReference\0System\0Nullable`1\0"
                     .to_vec(),
