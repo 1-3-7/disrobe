@@ -2105,6 +2105,7 @@ dependencies = [
  "oxiz",
  "proptest",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "toml 0.9.12+spec-1.1.0",
 ]
@@ -2925,14 +2926,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "disrobe-rules"
-version = "0.10.4"
-dependencies = [
- "disrobe-mba",
- "serde_json",
 ]
 
 [[package]]

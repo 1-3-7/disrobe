@@ -23,10 +23,6 @@ const KNOWN_UNWIRED_CRATES: &[(&str, &str)] = &[
         "the wasmtime plugin sandbox is complete and tested but the CLI cannot dispatch a plugin pass yet, tracked as a wiring item",
     ),
     (
-        "disrobe-rules",
-        "rule engine kept separate from disrobe-capabilities; consumer not written yet, tracked as a wiring item",
-    ),
-    (
         "disrobe-semdiff",
         "semantic diff over NIR; no consumer has been written yet, tracked as a wiring item",
     ),
