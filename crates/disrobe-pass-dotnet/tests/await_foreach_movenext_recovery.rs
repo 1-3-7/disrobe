@@ -92,6 +92,17 @@ fn await_foreach_dispose_rethrow_recovers_the_captured_exception() {
 fn async_iterator_yield_break_does_not_leak_movenext_bool_contract() {
     let asm: DecompiledAssembly = decompile();
     let body: String = move_next_body(&asm, "RangeAsync");
+    let has_bare_await: bool = body
+        .lines()
+        .any(|line: &str| line.trim() == "await System.Threading.Tasks.Task.Yield();");
+    assert!(
+        has_bare_await,
+        "RangeAsync must retain its qualified await:\n{body}"
+    );
+    assert!(
+        body.contains("yield return"),
+        "RangeAsync must retain its yielded values:\n{body}"
+    );
     assert!(
         body.contains("yield break;"),
         "expected yield break:\n{body}"

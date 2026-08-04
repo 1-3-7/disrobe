@@ -165,13 +165,12 @@ const STATEMENT_LEADERS: [&str; 8] = [
 fn local_decl_name(line: &str) -> Option<String> {
     let t: &str = line.trim();
     let inner: &str = t.strip_suffix(';')?;
-    let leader: &str = inner.split_whitespace().next()?;
-    if STATEMENT_LEADERS.contains(&leader) {
+    let (ty, name): (&str, &str) = inner.rsplit_once([' ', '\t'])?;
+    let leader: &str = ty.split_whitespace().next()?;
+    if STATEMENT_LEADERS.contains(&leader) || ty.contains('=') || ty.contains('(') {
         return None;
     }
-    let name: &str = inner.rsplit([' ', '\t']).next()?;
-    let is_decl: bool = inner.split_whitespace().count() >= 2
-        && name.starts_with("local")
+    let is_decl: bool = name.starts_with("local")
         && name[5..].bytes().all(|b: u8| b.is_ascii_digit())
         && name.len() > 5;
     is_decl.then(|| name.to_owned())
@@ -532,4 +531,22 @@ fn rewrap_method(original: &str, recovered_inner: &str) -> String {
         .collect::<Vec<&str>>()
         .join("\n");
     format!("{header}\n{{\n{recovered_inner}\n}}\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn await_assignment_is_not_parsed_as_a_local_declaration() {
+        let assignment: &str = "    local2 = await local3;";
+        assert_eq!(local_decl_name(assignment), None);
+
+        let body: &str = concat!(
+            "    System.Runtime.CompilerServices.YieldAwaitable local3;\n",
+            "    local3 = System.Threading.Tasks.Task.Yield();\n",
+            "    local2 = await local3;"
+        );
+        assert_eq!(drop_unused_local_decls(body), body);
+    }
 }
