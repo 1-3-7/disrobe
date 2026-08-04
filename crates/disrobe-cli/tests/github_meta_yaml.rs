@@ -8,6 +8,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 
 use serde_yaml_ng::Value;
 
@@ -69,6 +70,36 @@ fn every_github_yaml_parses() {
     }
 }
 
+fn tracked_yaml_under_github() -> BTreeSet<String> {
+    let root: PathBuf = workspace_root();
+    let output: std::process::Output = Command::new("git")
+        .args(["ls-files", "-z", "--", ".github"])
+        .current_dir(&root)
+        .output()
+        .unwrap_or_else(|e: std::io::Error| {
+            panic!("running git ls-files in {}: {e}", root.display())
+        });
+    assert!(
+        output.status.success(),
+        "git ls-files exited with {} in {}",
+        output.status,
+        root.display()
+    );
+    let raw: String = String::from_utf8(output.stdout).expect("git ls-files output is utf-8");
+    let tracked: BTreeSet<String> = raw
+        .split('\0')
+        .filter(|entry: &&str| entry.ends_with(".yml") || entry.ends_with(".yaml"))
+        .filter_map(|entry: &str| entry.strip_prefix(".github/"))
+        .map(String::from)
+        .collect();
+    assert!(
+        tracked.contains("workflows/ci.yml"),
+        "git ls-files returned no workflows/ci.yml under .github, so the tracked set is not \
+         trustworthy: {tracked:?}"
+    );
+    tracked
+}
+
 #[test]
 fn github_yaml_set_is_exact() {
     let mut names: BTreeSet<String> = BTreeSet::new();
@@ -80,27 +111,12 @@ fn github_yaml_set_is_exact() {
             .replace('\\', "/");
         names.insert(rel);
     }
-    let expected: BTreeSet<String> = [
-        "FUNDING.yml",
-        "ISSUE_TEMPLATE/bug_report.yml",
-        "ISSUE_TEMPLATE/config.yml",
-        "ISSUE_TEMPLATE/feature_request.yml",
-        "workflows/benchmark.yml",
-        "workflows/ci.yml",
-        "workflows/docs.yml",
-        "workflows/evidence.yml",
-        "workflows/fuzz.yml",
-        "workflows/native-gcc-oracle.yml",
-        "workflows/native-ms-x64-fp-oracle.yml",
-        "workflows/release.yml",
-        "workflows/verify-release.yml",
-        "workflows/wiki-sync.yml",
-        "workflows/yara-reference.yml",
-    ]
-    .into_iter()
-    .map(String::from)
-    .collect();
-    assert_eq!(names, expected, ".github yaml set drifted");
+    let expected: BTreeSet<String> = tracked_yaml_under_github();
+    assert_eq!(
+        names, expected,
+        ".github yaml set on disk drifted from the git index: a yaml file under .github is \
+         untracked, or a tracked one is missing from the checkout"
+    );
 }
 
 #[test]
