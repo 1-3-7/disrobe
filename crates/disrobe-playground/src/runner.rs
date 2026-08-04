@@ -246,7 +246,11 @@ fn verdict_for_byte_recovery(recovered: &[u8], baseline: &[u8]) -> OracleVerdict
         .take(common)
         .filter(|(a, b): &(&u8, &u8)| a == b)
         .count();
-    let residual_bp: u32 = (((total - matching) as f64 / total as f64) * 10_000.0).round() as u32;
+    let Some(residual_bp): Option<u32> = residual_basis_points(total - matching, total) else {
+        return OracleVerdict::NoRecovery {
+            note: "invalid byte-comparison totals".to_owned(),
+        };
+    };
     OracleVerdict::Lossy {
         residual_bp,
         note: format!(
@@ -259,7 +263,7 @@ fn verdict_for_byte_recovery(recovered: &[u8], baseline: &[u8]) -> OracleVerdict
 struct RecoveredImage {
     image: Vec<u8>,
     rva_indexed: bool,
-    integrity_verified: bool,
+    internal_checksum_verified: bool,
 }
 
 fn recover_packed(fixture_id: &str, packed: &[u8]) -> Result<RecoveredImage, String> {
@@ -269,7 +273,7 @@ fn recover_packed(fixture_id: &str, packed: &[u8]) -> Result<RecoveredImage, Str
         return Ok(RecoveredImage {
             image: out.recovered_image,
             rva_indexed: true,
-            integrity_verified: out.adler_verified,
+            internal_checksum_verified: out.adler_verified,
         });
     }
     if fixture_id.starts_with("fsg:") {
@@ -278,7 +282,7 @@ fn recover_packed(fixture_id: &str, packed: &[u8]) -> Result<RecoveredImage, Str
         return Ok(RecoveredImage {
             image: out.raw_image,
             rva_indexed: false,
-            integrity_verified: false,
+            internal_checksum_verified: false,
         });
     }
     if fixture_id.starts_with("mew:") {
@@ -287,7 +291,7 @@ fn recover_packed(fixture_id: &str, packed: &[u8]) -> Result<RecoveredImage, Str
         return Ok(RecoveredImage {
             image: out.raw_image,
             rva_indexed: false,
-            integrity_verified: false,
+            internal_checksum_verified: false,
         });
     }
     Err(format!(
@@ -323,17 +327,12 @@ fn parse_pe_sections(pe: &[u8]) -> Option<Vec<PeSection>> {
     let possible_sections: usize = pe.len().saturating_sub(sec_off) / 0x28;
     let mut out: Vec<PeSection> = Vec::with_capacity(nsec.min(possible_sections));
     for i in 0..nsec {
-        let Some(so): Option<usize> = 0x28usize
+        let so: usize = 0x28usize
             .checked_mul(i)
-            .and_then(|delta| sec_off.checked_add(delta))
-        else {
-            break;
-        };
-        let Some(section_end): Option<usize> = so.checked_add(0x28) else {
-            break;
-        };
+            .and_then(|delta| sec_off.checked_add(delta))?;
+        let section_end: usize = so.checked_add(0x28)?;
         if section_end > pe.len() {
-            break;
+            return None;
         }
         let vs: u32 = u32::from_le_bytes(pe.get(so + 8..so + 12)?.try_into().ok()?);
         let rva: u32 = u32::from_le_bytes(pe.get(so + 12..so + 16)?.try_into().ok()?);
@@ -343,11 +342,12 @@ fn parse_pe_sections(pe: &[u8]) -> Option<Vec<PeSection>> {
         ))
         .ok()?;
         let take: usize = usize::try_from(rs.min(vs)).ok()?;
-        let Some(raw_end): Option<usize> = ro.checked_add(take) else {
+        let raw_end: usize = ro.checked_add(take)?;
+        if take == 0 {
             continue;
-        };
-        if take == 0 || raw_end > pe.len() {
-            continue;
+        }
+        if raw_end > pe.len() {
+            return None;
         }
         let name: String = pe.get(so..so + 8).map_or_else(String::new, |raw: &[u8]| {
             String::from_utf8_lossy(raw)
@@ -363,94 +363,469 @@ fn parse_pe_sections(pe: &[u8]) -> Option<Vec<PeSection>> {
     if out.is_empty() { None } else { Some(out) }
 }
 
-fn is_loader_rebuilt_zone(name: &str) -> bool {
+fn is_loader_affected_section(name: &str) -> bool {
     matches!(name, ".reloc" | ".rdata" | ".data" | ".idata")
 }
 
-fn verdict_for_section_witness(
+fn residual_basis_points(residual: usize, total: usize) -> Option<u32> {
+    if total == 0 || residual > total {
+        return None;
+    }
+    if residual == 0 {
+        return Some(0);
+    }
+    let numerator: u128 = u128::try_from(residual).ok()?.checked_mul(10_000)?;
+    let denominator: u128 = u128::try_from(total).ok()?;
+    let mut low: u32 = 1;
+    let mut high: u32 = 10_000;
+    while low < high {
+        let midpoint: u32 = low + (high - low) / 2;
+        if u128::from(midpoint).saturating_mul(denominator) >= numerator {
+            high = midpoint;
+        } else {
+            low = midpoint + 1;
+        }
+    }
+    Some(low)
+}
+
+#[derive(Clone, Copy)]
+struct NonRvaCandidate {
+    offset: Option<usize>,
+    end: usize,
+    residual: usize,
+}
+
+struct NonRvaPlan {
+    placements: Vec<Option<usize>>,
+    residual: usize,
+}
+
+struct NonRvaSearchState {
+    assigned: Vec<bool>,
+    placements: Vec<Option<usize>>,
+    claimed: Vec<(usize, usize)>,
+    states: usize,
+    work_units: usize,
+    best: NonRvaPlan,
+}
+
+const MAX_NON_RVA_CANDIDATE_BYTES: usize = 64 * 1024 * 1024;
+
+fn candidate_is_available(
+    candidate: NonRvaCandidate,
+    claimed: &[(usize, usize)],
+    work_units: &mut usize,
+) -> Result<bool, ()> {
+    const MAX_SEARCH_WORK_UNITS: usize = 2_000_000;
+
+    *work_units = work_units
+        .checked_add(claimed.len().saturating_add(1))
+        .ok_or(())?;
+    if *work_units > MAX_SEARCH_WORK_UNITS {
+        return Err(());
+    }
+    Ok(candidate.offset.is_none_or(|offset: usize| {
+        claimed
+            .iter()
+            .all(|(start, end): &(usize, usize)| candidate.end <= *start || offset >= *end)
+    }))
+}
+
+fn enumerate_non_rva_candidates(
+    image: &[u8],
+    section: &PeSection,
+    examined_windows: &mut usize,
+    candidate_bytes_compared: &mut usize,
+) -> Result<Vec<NonRvaCandidate>, &'static str> {
+    const MAX_CANDIDATES_PER_SECTION: usize = 256;
+    const MAX_EXAMINED_WINDOWS: usize = 1_000_000;
+
+    let probe: &[u8] = &section.bytes[..section.bytes.len().min(64)];
+    if probe.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut candidates: Vec<NonRvaCandidate> = Vec::new();
+    for (offset, window) in image.windows(probe.len()).enumerate() {
+        *examined_windows = examined_windows
+            .checked_add(1)
+            .ok_or("non-RVA section assignment exceeded its scan budget")?;
+        if *examined_windows > MAX_EXAMINED_WINDOWS {
+            return Err("non-RVA section assignment exceeded its scan budget");
+        }
+        if window != probe {
+            continue;
+        }
+        let end: usize = offset
+            .checked_add(section.bytes.len())
+            .ok_or("non-RVA section candidate range overflowed")?;
+        let Some(recovered): Option<&[u8]> = image.get(offset..end) else {
+            continue;
+        };
+        *candidate_bytes_compared = candidate_bytes_compared
+            .checked_add(section.bytes.len())
+            .ok_or("non-RVA section assignment exceeded its comparison budget")?;
+        if *candidate_bytes_compared > MAX_NON_RVA_CANDIDATE_BYTES {
+            return Err("non-RVA section assignment exceeded its comparison budget");
+        }
+        let residual: usize = recovered
+            .iter()
+            .zip(section.bytes.iter())
+            .filter(|(left, right): &(&u8, &u8)| left != right)
+            .count();
+        candidates.push(NonRvaCandidate {
+            offset: Some(offset),
+            end,
+            residual,
+        });
+        if candidates.len() > MAX_CANDIDATES_PER_SECTION {
+            return Err("non-RVA section assignment exceeded its candidate budget");
+        }
+    }
+    candidates.push(NonRvaCandidate {
+        offset: None,
+        end: 0,
+        residual: section.bytes.len(),
+    });
+    candidates.sort_by_key(|candidate: &NonRvaCandidate| {
+        (candidate.residual, candidate.offset.unwrap_or(usize::MAX))
+    });
+    Ok(candidates)
+}
+
+fn search_non_rva_plan(
+    sections: &[&PeSection],
+    candidates: &[Vec<NonRvaCandidate>],
+    accumulated: usize,
+    state: &mut NonRvaSearchState,
+) -> Result<bool, ()> {
+    const MAX_SEARCH_STATES: usize = 200_000;
+
+    state.states = state.states.checked_add(1).ok_or(())?;
+    if state.states > MAX_SEARCH_STATES {
+        return Err(());
+    }
+    let mut lower_bound: usize = accumulated;
+    for (index, section_candidates) in candidates.iter().enumerate() {
+        if state.assigned[index] {
+            continue;
+        }
+        let mut minimum: usize = sections[index].bytes.len();
+        for candidate in section_candidates {
+            if candidate_is_available(*candidate, &state.claimed, &mut state.work_units)? {
+                minimum = minimum.min(candidate.residual);
+            }
+        }
+        lower_bound = lower_bound.saturating_add(minimum);
+    }
+    if lower_bound > state.best.residual {
+        return Ok(false);
+    }
+    if state.assigned.iter().all(|value: &bool| *value) {
+        if accumulated < state.best.residual
+            || (accumulated == state.best.residual
+                && state.placements.as_slice() < state.best.placements.as_slice())
+        {
+            state.best.residual = accumulated;
+            state.best.placements.clone_from_slice(&state.placements);
+        }
+        return Ok(accumulated == 0);
+    }
+    let mut selected: Option<(usize, usize)> = None;
+    for (index, section_candidates) in candidates.iter().enumerate() {
+        if state.assigned[index] {
+            continue;
+        }
+        let mut viable: usize = 0;
+        for candidate in section_candidates {
+            if candidate_is_available(*candidate, &state.claimed, &mut state.work_units)? {
+                viable = viable.saturating_add(1);
+            }
+        }
+        let replace: bool = selected.is_none_or(|(current, current_viable): (usize, usize)| {
+            viable < current_viable
+                || (viable == current_viable
+                    && (sections[index].bytes.len() > sections[current].bytes.len()
+                        || (sections[index].bytes.len() == sections[current].bytes.len()
+                            && index < current)))
+        });
+        if replace {
+            selected = Some((index, viable));
+        }
+    }
+    let Some((index, _)): Option<(usize, usize)> = selected else {
+        return Ok(false);
+    };
+    state.assigned[index] = true;
+    for candidate in candidates[index].iter().copied() {
+        if !candidate_is_available(candidate, &state.claimed, &mut state.work_units)? {
+            continue;
+        }
+        state.placements[index] = candidate.offset;
+        let claimed_range: bool = candidate.offset.is_some();
+        if let Some(offset) = candidate.offset {
+            let offset: usize = offset;
+            state.claimed.push((offset, candidate.end));
+        }
+        let found_zero: bool = search_non_rva_plan(
+            sections,
+            candidates,
+            accumulated.saturating_add(candidate.residual),
+            state,
+        )?;
+        if claimed_range {
+            state.claimed.pop();
+        }
+        if found_zero {
+            state.assigned[index] = false;
+            return Ok(true);
+        }
+    }
+    state.placements[index] = None;
+    state.assigned[index] = false;
+    Ok(false)
+}
+
+fn optimize_non_rva_sections(
+    image: &[u8],
+    sections: &[PeSection],
+) -> Result<NonRvaPlan, &'static str> {
+    const MAX_NON_RVA_SECTIONS: usize = 32;
+    const MAX_TOTAL_CANDIDATES: usize = 2_048;
+
+    let expected: Vec<&PeSection> = sections
+        .iter()
+        .filter(|section: &&PeSection| !section.bytes.is_empty())
+        .collect();
+    if expected.is_empty() || expected.len() > MAX_NON_RVA_SECTIONS {
+        return Err("non-RVA section assignment exceeded its section budget");
+    }
+    let mut candidate_sets: Vec<Vec<NonRvaCandidate>> = Vec::with_capacity(expected.len());
+    let mut total_candidates: usize = 0;
+    let mut examined_windows: usize = 0;
+    let mut candidate_bytes_compared: usize = 0;
+    for section in &expected {
+        let candidates: Vec<NonRvaCandidate> = enumerate_non_rva_candidates(
+            image,
+            section,
+            &mut examined_windows,
+            &mut candidate_bytes_compared,
+        )?;
+        total_candidates = total_candidates.saturating_add(candidates.len());
+        if total_candidates > MAX_TOTAL_CANDIDATES {
+            return Err("non-RVA section assignment exceeded its candidate budget");
+        }
+        candidate_sets.push(candidates);
+    }
+    let initial_residual: usize = expected
+        .iter()
+        .map(|section: &&PeSection| section.bytes.len())
+        .fold(0usize, usize::saturating_add);
+    let mut state: NonRvaSearchState = NonRvaSearchState {
+        assigned: vec![false; expected.len()],
+        placements: vec![None; expected.len()],
+        claimed: Vec::new(),
+        states: 0,
+        work_units: 0,
+        best: NonRvaPlan {
+            placements: vec![None; expected.len()],
+            residual: initial_residual,
+        },
+    };
+    search_non_rva_plan(&expected, &candidate_sets, 0, &mut state)
+        .map_err(|()| "non-RVA section assignment exceeded its search budget")?;
+    Ok(state.best)
+}
+
+fn verdict_for_non_rva_sections(
     recovered: &RecoveredImage,
     sections: &[PeSection],
 ) -> OracleVerdict {
-    let image_base_rva: usize = sections
+    let expected: Vec<&PeSection> = sections
         .iter()
-        .map(|s: &PeSection| usize::try_from(s.rva).map_or(usize::MAX, std::convert::identity))
-        .min()
-        .unwrap_or(0);
-    let mut content_total: usize = 0;
-    let mut content_diffs: usize = 0;
-    let mut loader_total: usize = 0;
-    let mut loader_diffs: usize = 0;
-    let mut witnessed: usize = 0;
-    for sec in sections {
-        let off: usize = if recovered.rva_indexed {
-            usize::try_from(sec.rva)
-                .map_or(usize::MAX, std::convert::identity)
-                .saturating_sub(image_base_rva)
-        } else {
-            let Some(found): Option<usize> = best_offset(&recovered.image, &sec.bytes) else {
-                continue;
+        .filter(|section: &&PeSection| !section.bytes.is_empty())
+        .collect();
+    let plan: NonRvaPlan = match optimize_non_rva_sections(&recovered.image, sections) {
+        Ok(plan) => plan,
+        Err(note) => {
+            return OracleVerdict::NoRecovery {
+                note: note.to_owned(),
             };
-            found
-        };
-        if off >= recovered.image.len() {
-            continue;
         }
-        let avail: usize = recovered.image.len() - off;
-        let take: usize = avail.min(sec.bytes.len());
-        if take == 0 {
-            continue;
-        }
-        let rec: &[u8] = &recovered.image[off..off + take];
-        let orig: &[u8] = &sec.bytes[..take];
-        let sec_diff: usize = rec
-            .iter()
-            .zip(orig.iter())
-            .filter(|(a, b): &(&u8, &u8)| a != b)
-            .count();
-        if is_loader_rebuilt_zone(&sec.name) {
-            loader_total += take;
-            loader_diffs += sec_diff;
+    };
+    let mut content_total: usize = 0;
+    let mut content_residual: usize = 0;
+    let mut loader_total: usize = 0;
+    let mut loader_residual: usize = 0;
+    let mut fully_compared_sections: usize = 0;
+    let mut compared_bytes: usize = 0;
+    let mut unlocated_sections: usize = 0;
+    for (section, placement) in expected.iter().zip(plan.placements.iter()) {
+        let loader_affected: bool = is_loader_affected_section(&section.name);
+        let section_residual: usize = placement.map_or(section.bytes.len(), |offset: usize| {
+            let end: usize = offset + section.bytes.len();
+            let recovered_section: &[u8] = &recovered.image[offset..end];
+            recovered_section
+                .iter()
+                .zip(section.bytes.iter())
+                .filter(|(left, right): &(&u8, &u8)| left != right)
+                .count()
+        });
+        if placement.is_some() {
+            fully_compared_sections += 1;
+            compared_bytes += section.bytes.len();
         } else {
-            content_total += take;
-            content_diffs += sec_diff;
+            unlocated_sections += 1;
         }
-        witnessed += 1;
+        if loader_affected {
+            loader_total += section.bytes.len();
+            loader_residual += section_residual;
+        } else {
+            content_total += section.bytes.len();
+            content_residual += section_residual;
+        }
     }
     let total: usize = content_total + loader_total;
-    if witnessed == 0 || total == 0 {
+    if compared_bytes == 0 || total == 0 {
         return OracleVerdict::NoRecovery {
-            note: "no original PE sections witnessed in recovered image".to_owned(),
+            note: "no baseline PE section probe was located in the recovered image".to_owned(),
         };
     }
-    let diffs: usize = content_diffs + loader_diffs;
-    if diffs == 0 {
+    if plan.residual == 0 && fully_compared_sections == expected.len() {
         return OracleVerdict::ByteIdentical;
     }
-    if content_diffs == 0 && recovered.integrity_verified {
-        return OracleVerdict::ByteIdentical;
-    }
-    let residual_bp: u32 = ((diffs as f64 / total as f64) * 10_000.0).round() as u32;
-    let adler_note: &str = if recovered.integrity_verified {
-        "; unpacker self-checksum passed yet baseline content sections differ"
+    let Some(residual_bp): Option<u32> = residual_basis_points(plan.residual, total) else {
+        return OracleVerdict::NoRecovery {
+            note: "invalid section-comparison totals".to_owned(),
+        };
+    };
+    let checksum_note: &str = if recovered.internal_checksum_verified {
+        "; internal unpacker checksum passed"
     } else {
         ""
     };
     OracleVerdict::Lossy {
         residual_bp,
         note: format!(
-            "section-witnessed {witnessed} section(s): content {content_diffs}/{content_total} B, loader-rebuilt {loader_diffs}/{loader_total} B differ (residual {residual_bp}bp){adler_note}",
+            "baseline sections fully compared {fully_compared_sections}/{}; content residual {content_residual}/{content_total} B; loader-affected residual {loader_residual}/{loader_total} B; probe-unlocated {unlocated_sections}, truncated 0; residual {residual_bp}bp{checksum_note}",
+            expected.len(),
         ),
     }
 }
 
-fn best_offset(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    let probe: &[u8] = &needle[..needle.len().min(64)];
-    if probe.is_empty() {
-        return None;
+fn verdict_for_section_witness(
+    recovered: &RecoveredImage,
+    sections: &[PeSection],
+) -> OracleVerdict {
+    if !recovered.rva_indexed {
+        return verdict_for_non_rva_sections(recovered, sections);
     }
-    haystack
-        .windows(probe.len())
-        .position(|w: &[u8]| w == probe)
+    let image_base_rva: usize = sections
+        .iter()
+        .map(|s: &PeSection| usize::try_from(s.rva).map_or(usize::MAX, std::convert::identity))
+        .min()
+        .unwrap_or(0);
+    let mut content_total: usize = 0;
+    let mut content_residual: usize = 0;
+    let mut loader_total: usize = 0;
+    let mut loader_residual: usize = 0;
+    let mut expected_sections: usize = 0;
+    let mut fully_compared_sections: usize = 0;
+    let mut compared_bytes: usize = 0;
+    let mut unlocated_sections: usize = 0;
+    let mut truncated_sections: usize = 0;
+    for sec in sections {
+        if sec.bytes.is_empty() {
+            continue;
+        }
+        expected_sections += 1;
+        let loader_affected: bool = is_loader_affected_section(&sec.name);
+        if loader_affected {
+            loader_total += sec.bytes.len();
+        } else {
+            content_total += sec.bytes.len();
+        }
+        let offset: Option<usize> = Some(
+            usize::try_from(sec.rva)
+                .map_or(usize::MAX, std::convert::identity)
+                .saturating_sub(image_base_rva),
+        );
+        let Some(off): Option<usize> = offset else {
+            unlocated_sections += 1;
+            if loader_affected {
+                loader_residual += sec.bytes.len();
+            } else {
+                content_residual += sec.bytes.len();
+            }
+            continue;
+        };
+        if off >= recovered.image.len() {
+            unlocated_sections += 1;
+            if loader_affected {
+                loader_residual += sec.bytes.len();
+            } else {
+                content_residual += sec.bytes.len();
+            }
+            continue;
+        }
+        let avail: usize = recovered.image.len() - off;
+        let take: usize = avail.min(sec.bytes.len());
+        if take == 0 {
+            unlocated_sections += 1;
+            if loader_affected {
+                loader_residual += sec.bytes.len();
+            } else {
+                content_residual += sec.bytes.len();
+            }
+            continue;
+        }
+        let rec: &[u8] = &recovered.image[off..off + take];
+        let orig: &[u8] = &sec.bytes[..take];
+        let compared_diffs: usize = rec
+            .iter()
+            .zip(orig.iter())
+            .filter(|(a, b): &(&u8, &u8)| a != b)
+            .count();
+        let unavailable: usize = sec.bytes.len() - take;
+        let section_residual: usize = compared_diffs + unavailable;
+        compared_bytes += take;
+        if unavailable == 0 {
+            fully_compared_sections += 1;
+        } else {
+            truncated_sections += 1;
+        }
+        if loader_affected {
+            loader_residual += section_residual;
+        } else {
+            content_residual += section_residual;
+        }
+    }
+    let total: usize = content_total + loader_total;
+    if compared_bytes == 0 || total == 0 {
+        return OracleVerdict::NoRecovery {
+            note: "no baseline PE section bytes were located in the recovered image".to_owned(),
+        };
+    }
+    let residual_bytes: usize = content_residual + loader_residual;
+    if residual_bytes == 0 && fully_compared_sections == expected_sections {
+        return OracleVerdict::ByteIdentical;
+    }
+    let Some(residual_bp): Option<u32> = residual_basis_points(residual_bytes, total) else {
+        return OracleVerdict::NoRecovery {
+            note: "invalid section-comparison totals".to_owned(),
+        };
+    };
+    let checksum_note: &str = if recovered.internal_checksum_verified {
+        "; internal unpacker checksum passed"
+    } else {
+        ""
+    };
+    OracleVerdict::Lossy {
+        residual_bp,
+        note: format!(
+            "baseline sections fully compared {fully_compared_sections}/{expected_sections}; content residual {content_residual}/{content_total} B; loader-affected residual {loader_residual}/{loader_total} B; unlocated {unlocated_sections}, truncated {truncated_sections}; residual {residual_bp}bp{checksum_note}",
+        ),
+    }
 }
 
 fn extract_root_code(pyc_bytes: &[u8]) -> Option<CodeObject> {
@@ -609,8 +984,9 @@ fn registry_full() -> PassRegistry {
 #[cfg(test)]
 mod tests {
     use super::{
-        OracleVerdict, PeSection, RecoveredImage, best_offset, parse_pe_sections,
-        read_bounded_fixture, verdict_for_section_witness,
+        MAX_NON_RVA_CANDIDATE_BYTES, OracleVerdict, PeSection, RecoveredImage,
+        enumerate_non_rva_candidates, parse_pe_sections, read_bounded_fixture,
+        verdict_for_byte_recovery, verdict_for_section_witness,
     };
 
     fn write_u16(bytes: &mut [u8], offset: usize, value: u16) {
@@ -661,6 +1037,19 @@ mod tests {
     }
 
     #[test]
+    fn pe_sections_reject_partial_declared_section_set() {
+        let mut pe: Vec<u8> = pe_with_section(0x180, 4, 4);
+        let pe_offset: usize = 0x80;
+        write_u16(&mut pe, pe_offset + 6, 2);
+        let second: usize = pe_offset + 0x18 + 0x28;
+        write_u32(&mut pe, second + 8, 0x40);
+        write_u32(&mut pe, second + 12, 0x1100);
+        write_u32(&mut pe, second + 16, 0x40);
+        write_u32(&mut pe, second + 20, 0x1f0);
+        assert!(parse_pe_sections(&pe).is_none());
+    }
+
+    #[test]
     fn bounded_fixture_reader_rejects_over_limit_input() {
         let tmp_result: Result<tempfile::TempDir, std::io::Error> = tempfile::tempdir();
         assert!(tmp_result.is_ok());
@@ -680,13 +1069,13 @@ mod tests {
     }
 
     #[test]
-    fn self_checksum_does_not_force_byte_identical_when_baseline_differs() {
+    fn internal_unpacker_checksum_does_not_override_baseline_difference() {
         let mut image: Vec<u8> = vec![0u8; 0x20];
         image[0x00..0x04].copy_from_slice(&[0x09, 0x09, 0x09, 0x09]);
         let recovered: RecoveredImage = RecoveredImage {
             image,
             rva_indexed: true,
-            integrity_verified: true,
+            internal_checksum_verified: true,
         };
         let sections: Vec<PeSection> = vec![PeSection {
             name: ".text".to_owned(),
@@ -696,9 +1085,60 @@ mod tests {
         let verdict: OracleVerdict = verdict_for_section_witness(&recovered, &sections);
         assert!(
             !verdict.is_byte_identical(),
-            "a passing unpacker self-checksum must not grade byte-identical against a differing content section: {verdict:?}",
+            "a passing internal unpacker checksum must not grade byte-identical against a differing content section: {verdict:?}",
         );
         assert!(matches!(verdict, OracleVerdict::Lossy { .. }));
+    }
+
+    #[test]
+    fn real_upx_loader_residual_is_never_byte_identical() -> Result<(), String> {
+        const PACKED: &[u8] =
+            include_bytes!("../../../corpus/native/packers/upx/hello.packed.nrv2b.exe");
+        const ORIGINAL: &[u8] =
+            include_bytes!("../../../corpus/native/packers/upx/hello.original.exe");
+
+        let recovered: RecoveredImage =
+            super::recover_packed("upx:hello.packed.nrv2b.exe", PACKED)?;
+        assert!(recovered.internal_checksum_verified);
+        let sections: Vec<PeSection> = parse_pe_sections(ORIGINAL)
+            .ok_or_else(|| "parse original UPX fixture sections".to_owned())?;
+        let image_base_rva: usize = sections
+            .iter()
+            .map(|section: &PeSection| {
+                usize::try_from(section.rva).map_or(usize::MAX, std::convert::identity)
+            })
+            .min()
+            .ok_or_else(|| "original UPX fixture has no sections".to_owned())?;
+        assert!(
+            sections
+                .iter()
+                .filter(|section: &&PeSection| {
+                    matches!(
+                        section.name.as_str(),
+                        ".reloc" | ".rdata" | ".data" | ".idata"
+                    )
+                })
+                .any(|section: &PeSection| {
+                    let offset: usize = usize::try_from(section.rva)
+                        .map_or(usize::MAX, std::convert::identity)
+                        .saturating_sub(image_base_rva);
+                    offset
+                        .checked_add(section.bytes.len())
+                        .and_then(|end: usize| recovered.image.get(offset..end))
+                        .is_some_and(|actual: &[u8]| actual != section.bytes.as_slice())
+                }),
+            "the committed UPX pair must contain a witnessed loader-affected residual",
+        );
+        let verdict: OracleVerdict = verdict_for_section_witness(&recovered, &sections);
+
+        assert!(
+            matches!(
+                &verdict,
+                OracleVerdict::Lossy { residual_bp, .. } if *residual_bp > 0
+            ),
+            "loader-affected bytes differ from the original, so the result cannot be byte-identical: {verdict:?}",
+        );
+        Ok(())
     }
 
     #[test]
@@ -708,7 +1148,7 @@ mod tests {
         let recovered: RecoveredImage = RecoveredImage {
             image,
             rva_indexed: true,
-            integrity_verified: false,
+            internal_checksum_verified: false,
         };
         let sections: Vec<PeSection> = vec![PeSection {
             name: ".text".to_owned(),
@@ -720,7 +1160,336 @@ mod tests {
     }
 
     #[test]
-    fn loader_rebuilt_zone_residual_is_excused_only_with_verified_integrity() {
+    fn complete_exact_sections_are_byte_identical() {
+        let mut image: Vec<u8> = vec![0u8; 0x104];
+        image[0..4].copy_from_slice(&[0x01, 0x02, 0x03, 0x04]);
+        image[0x100..0x104].copy_from_slice(&[0xaa, 0xbb, 0xcc, 0xdd]);
+        let recovered: RecoveredImage = RecoveredImage {
+            image,
+            rva_indexed: true,
+            internal_checksum_verified: false,
+        };
+        let sections: Vec<PeSection> = vec![
+            PeSection {
+                name: ".text".to_owned(),
+                rva: 0x1000,
+                bytes: vec![0x01, 0x02, 0x03, 0x04],
+            },
+            PeSection {
+                name: ".rdata".to_owned(),
+                rva: 0x1100,
+                bytes: vec![0xaa, 0xbb, 0xcc, 0xdd],
+            },
+        ];
+        assert_eq!(
+            verdict_for_section_witness(&recovered, &sections),
+            OracleVerdict::ByteIdentical
+        );
+    }
+
+    #[test]
+    fn truncated_matching_section_is_lossy() {
+        let recovered: RecoveredImage = RecoveredImage {
+            image: vec![0x01, 0x02],
+            rva_indexed: true,
+            internal_checksum_verified: false,
+        };
+        let sections: Vec<PeSection> = vec![PeSection {
+            name: ".text".to_owned(),
+            rva: 0x1000,
+            bytes: vec![0x01, 0x02, 0x03, 0x04],
+        }];
+        assert!(matches!(
+            verdict_for_section_witness(&recovered, &sections),
+            OracleVerdict::Lossy {
+                residual_bp: 5000,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn missing_section_prevents_byte_identical() {
+        let recovered: RecoveredImage = RecoveredImage {
+            image: vec![0x01, 0x02, 0x03, 0x04],
+            rva_indexed: true,
+            internal_checksum_verified: false,
+        };
+        let sections: Vec<PeSection> = vec![
+            PeSection {
+                name: ".text".to_owned(),
+                rva: 0x1000,
+                bytes: vec![0x01, 0x02, 0x03, 0x04],
+            },
+            PeSection {
+                name: ".rdata".to_owned(),
+                rva: 0x1100,
+                bytes: vec![0xaa, 0xbb, 0xcc, 0xdd],
+            },
+        ];
+        assert!(matches!(
+            verdict_for_section_witness(&recovered, &sections),
+            OracleVerdict::Lossy {
+                residual_bp: 5000,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn unlocated_section_prevents_byte_identical() {
+        let recovered: RecoveredImage = RecoveredImage {
+            image: vec![0x01, 0x02, 0x03, 0x04],
+            rva_indexed: false,
+            internal_checksum_verified: false,
+        };
+        let sections: Vec<PeSection> = vec![
+            PeSection {
+                name: ".text".to_owned(),
+                rva: 0,
+                bytes: vec![0x01, 0x02, 0x03, 0x04],
+            },
+            PeSection {
+                name: ".data".to_owned(),
+                rva: 0,
+                bytes: vec![0xaa, 0xbb, 0xcc, 0xdd],
+            },
+        ];
+        assert!(matches!(
+            verdict_for_section_witness(&recovered, &sections),
+            OracleVerdict::Lossy {
+                residual_bp: 5000,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn non_rva_section_matches_cannot_reuse_recovered_bytes() {
+        let recovered: RecoveredImage = RecoveredImage {
+            image: vec![0x01, 0x02, 0x03, 0x04],
+            rva_indexed: false,
+            internal_checksum_verified: false,
+        };
+        let sections: Vec<PeSection> = vec![
+            PeSection {
+                name: ".text".to_owned(),
+                rva: 0,
+                bytes: vec![0x01, 0x02, 0x03, 0x04],
+            },
+            PeSection {
+                name: ".text2".to_owned(),
+                rva: 0,
+                bytes: vec![0x01, 0x02, 0x03, 0x04],
+            },
+        ];
+        assert!(matches!(
+            verdict_for_section_witness(&recovered, &sections),
+            OracleVerdict::Lossy {
+                residual_bp: 5000,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn non_rva_assignment_avoids_greedy_false_loss() {
+        let recovered: RecoveredImage = RecoveredImage {
+            image: vec![1, 2, 3, 1, 2],
+            rva_indexed: false,
+            internal_checksum_verified: false,
+        };
+        let sections: Vec<PeSection> = vec![
+            PeSection {
+                name: ".first".to_owned(),
+                rva: 0,
+                bytes: vec![1, 2],
+            },
+            PeSection {
+                name: ".second".to_owned(),
+                rva: 0,
+                bytes: vec![2, 3],
+            },
+        ];
+        assert_eq!(
+            verdict_for_section_witness(&recovered, &sections),
+            OracleVerdict::ByteIdentical
+        );
+    }
+
+    #[test]
+    fn non_rva_assignment_backtracks_to_complete_placement() {
+        let section_a: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let mut image: Vec<u8> = vec![0u8; 30];
+        image[0] = 10;
+        image[1..11].copy_from_slice(&section_a);
+        image[11] = 1;
+        image[20..30].copy_from_slice(&section_a);
+        let recovered: RecoveredImage = RecoveredImage {
+            image,
+            rva_indexed: false,
+            internal_checksum_verified: false,
+        };
+        let sections: Vec<PeSection> = vec![
+            PeSection {
+                name: ".wide".to_owned(),
+                rva: 0,
+                bytes: section_a,
+            },
+            PeSection {
+                name: ".pair".to_owned(),
+                rva: 0,
+                bytes: vec![10, 1],
+            },
+        ];
+        assert_eq!(
+            verdict_for_section_witness(&recovered, &sections),
+            OracleVerdict::ByteIdentical
+        );
+    }
+
+    #[test]
+    fn non_rva_assignment_considers_later_repeated_probe() {
+        let mut section_bytes: Vec<u8> = vec![1u8; 65];
+        section_bytes[64] = 2;
+        let mut image: Vec<u8> = vec![1u8; 131];
+        image[64] = 9;
+        image[65] = 0;
+        image[66..131].copy_from_slice(&section_bytes);
+        let recovered: RecoveredImage = RecoveredImage {
+            image,
+            rva_indexed: false,
+            internal_checksum_verified: false,
+        };
+        let sections: Vec<PeSection> = vec![PeSection {
+            name: ".text".to_owned(),
+            rva: 0,
+            bytes: section_bytes,
+        }];
+        assert_eq!(
+            verdict_for_section_witness(&recovered, &sections),
+            OracleVerdict::ByteIdentical
+        );
+    }
+
+    #[test]
+    fn non_rva_residual_is_section_order_independent() {
+        let recovered: RecoveredImage = RecoveredImage {
+            image: vec![1, 2, 3, 4],
+            rva_indexed: false,
+            internal_checksum_verified: false,
+        };
+        let short: PeSection = PeSection {
+            name: ".short".to_owned(),
+            rva: 0,
+            bytes: vec![2, 3],
+        };
+        let long: PeSection = PeSection {
+            name: ".long".to_owned(),
+            rva: 0,
+            bytes: vec![1, 2, 3, 4],
+        };
+        let short_first: OracleVerdict = verdict_for_section_witness(&recovered, &[short, long]);
+        let long_first: OracleVerdict = verdict_for_section_witness(
+            &recovered,
+            &[
+                PeSection {
+                    name: ".long".to_owned(),
+                    rva: 0,
+                    bytes: vec![1, 2, 3, 4],
+                },
+                PeSection {
+                    name: ".short".to_owned(),
+                    rva: 0,
+                    bytes: vec![2, 3],
+                },
+            ],
+        );
+        assert!(matches!(
+            short_first,
+            OracleVerdict::Lossy {
+                residual_bp: 3334,
+                ..
+            }
+        ));
+        assert!(matches!(
+            long_first,
+            OracleVerdict::Lossy {
+                residual_bp: 3334,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn non_rva_scan_budget_fails_closed() {
+        let recovered: RecoveredImage = RecoveredImage {
+            image: vec![0u8; 1_000_001],
+            rva_indexed: false,
+            internal_checksum_verified: false,
+        };
+        let sections: Vec<PeSection> = vec![PeSection {
+            name: ".text".to_owned(),
+            rva: 0,
+            bytes: vec![1],
+        }];
+        assert_eq!(
+            verdict_for_section_witness(&recovered, &sections),
+            OracleVerdict::NoRecovery {
+                note: "non-RVA section assignment exceeded its scan budget".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn non_rva_candidate_comparison_budget_fails_closed() {
+        let section: PeSection = PeSection {
+            name: ".text".to_owned(),
+            rva: 0,
+            bytes: vec![1, 2, 3, 4],
+        };
+        let mut examined_windows: usize = 0;
+        let mut compared_bytes: usize = MAX_NON_RVA_CANDIDATE_BYTES;
+        let result: Result<Vec<super::NonRvaCandidate>, &'static str> =
+            enumerate_non_rva_candidates(
+                &[1, 2, 3, 4],
+                &section,
+                &mut examined_windows,
+                &mut compared_bytes,
+            );
+        assert!(matches!(
+            result,
+            Err("non-RVA section assignment exceeded its comparison budget")
+        ));
+    }
+
+    #[test]
+    fn nonzero_residual_rounds_up_to_one_basis_point() {
+        let mut recovered_bytes: Vec<u8> = vec![0u8; 20_001];
+        let baseline: Vec<u8> = vec![0u8; 20_001];
+        recovered_bytes[20_000] = 1;
+        assert!(matches!(
+            verdict_for_byte_recovery(&recovered_bytes, &baseline),
+            OracleVerdict::Lossy { residual_bp: 1, .. }
+        ));
+        let recovered: RecoveredImage = RecoveredImage {
+            image: recovered_bytes,
+            rva_indexed: true,
+            internal_checksum_verified: false,
+        };
+        let sections: Vec<PeSection> = vec![PeSection {
+            name: ".text".to_owned(),
+            rva: 0x1000,
+            bytes: baseline,
+        }];
+        assert!(matches!(
+            verdict_for_section_witness(&recovered, &sections),
+            OracleVerdict::Lossy { residual_bp: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn loader_affected_residual_stays_lossy_with_internal_checksum() {
         let mut image: Vec<u8> = vec![0u8; 0x200];
         image[0x00..0x04].copy_from_slice(&[0x01, 0x02, 0x03, 0x04]);
         image[0x100..0x104].copy_from_slice(&[0xaa, 0xbb, 0xcc, 0xdd]);
@@ -736,30 +1505,29 @@ mod tests {
                 bytes: vec![0x00, 0x00, 0x00, 0x00],
             },
         ];
-        let with_witness: OracleVerdict = verdict_for_section_witness(
+        let checksum_verified: OracleVerdict = verdict_for_section_witness(
             &RecoveredImage {
                 image: image.clone(),
                 rva_indexed: true,
-                integrity_verified: true,
-            },
-            &sections,
-        );
-        assert_eq!(
-            with_witness,
-            OracleVerdict::ByteIdentical,
-            "content byte-identical plus a verified decompression witness must grade byte-identical even when a loader-rebuilt zone differs: {with_witness:?}",
-        );
-        let no_witness: OracleVerdict = verdict_for_section_witness(
-            &RecoveredImage {
-                image,
-                rva_indexed: true,
-                integrity_verified: false,
+                internal_checksum_verified: true,
             },
             &sections,
         );
         assert!(
-            matches!(no_witness, OracleVerdict::Lossy { .. }),
-            "without a decompression witness a differing loader-rebuilt zone must stay lossy: {no_witness:?}",
+            matches!(checksum_verified, OracleVerdict::Lossy { .. }),
+            "an internal unpacker checksum must not excuse loader-affected bytes that differ from the original: {checksum_verified:?}",
+        );
+        let checksum_unverified: OracleVerdict = verdict_for_section_witness(
+            &RecoveredImage {
+                image,
+                rva_indexed: true,
+                internal_checksum_verified: false,
+            },
+            &sections,
+        );
+        assert!(
+            matches!(checksum_unverified, OracleVerdict::Lossy { .. }),
+            "without an internal unpacker checksum a differing loader-affected zone must stay lossy: {checksum_unverified:?}",
         );
     }
 
@@ -770,7 +1538,7 @@ mod tests {
         let recovered: RecoveredImage = RecoveredImage {
             image,
             rva_indexed: false,
-            integrity_verified: false,
+            internal_checksum_verified: false,
         };
         let sections: Vec<PeSection> = vec![PeSection {
             name: ".text".to_owned(),
@@ -781,19 +1549,6 @@ mod tests {
         assert!(
             matches!(verdict, OracleVerdict::NoRecovery { .. }),
             "an absent section must not be counted as witnessed at a fabricated offset: {verdict:?}",
-        );
-    }
-
-    #[test]
-    fn best_offset_is_none_when_probe_absent() {
-        assert_eq!(best_offset(&[0x01, 0x02, 0x03], &[0x09, 0x09]), None);
-    }
-
-    #[test]
-    fn best_offset_locates_present_probe() {
-        assert_eq!(
-            best_offset(&[0x01, 0x02, 0x03, 0x04], &[0x03, 0x04]),
-            Some(2)
         );
     }
 }
