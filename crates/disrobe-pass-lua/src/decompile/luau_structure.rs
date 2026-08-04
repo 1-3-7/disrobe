@@ -37,6 +37,12 @@ pub(crate) enum StructuredBlock {
     },
 }
 
+#[derive(Debug)]
+pub(crate) struct StructureResult {
+    pub blocks: Vec<StructuredBlock>,
+    pub unresolved_jumps: usize,
+}
+
 #[derive(Debug, Clone)]
 enum Node {
     Raw(String),
@@ -69,7 +75,7 @@ struct PcNode {
 }
 
 #[must_use]
-pub(crate) fn structure_blocks(stmts: &[LiftedStmt], code_len: usize) -> Vec<StructuredBlock> {
+pub(crate) fn structure_blocks(stmts: &[LiftedStmt], code_len: usize) -> StructureResult {
     let nodes: Vec<PcNode> = build_nodes(stmts);
     let loops: Vec<BackEdge> = detect_back_edges(&nodes);
     let mut pos: usize = 0;
@@ -78,7 +84,12 @@ pub(crate) fn structure_blocks(stmts: &[LiftedStmt], code_len: usize) -> Vec<Str
         loops: &loops,
         active: Vec::new(),
     };
-    structure_seq(&mut ctx, &mut pos, code_len + 1, None)
+    let mut blocks: Vec<StructuredBlock> = structure_seq(&mut ctx, &mut pos, code_len + 1, None);
+    let unresolved_jumps: usize = finalize_unresolved_jumps(&mut blocks);
+    StructureResult {
+        blocks,
+        unresolved_jumps,
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -268,6 +279,8 @@ fn structure_seq(
                 *pos += 1;
                 if cur_loop.is_some_and(|l: LoopRef| l.exit == target) {
                     out.push(StructuredBlock::Break);
+                } else {
+                    out.push(StructuredBlock::Goto { pc: target });
                 }
             }
             Node::Cond { cond, target } => {
@@ -301,7 +314,7 @@ fn structure_seq(
                 match else_jump {
                     Some(else_end) if else_end > target => {
                         let mut then_trim: Vec<StructuredBlock> = then_body;
-                        then_trim.pop();
+                        pop_trailing_goto(&mut then_trim, else_end);
                         let else_body: Vec<StructuredBlock> =
                             structure_seq(ctx, pos, else_end, cur_loop);
                         out.push(StructuredBlock::If {
@@ -320,6 +333,43 @@ fn structure_seq(
         }
     }
     out
+}
+
+fn pop_trailing_goto(body: &mut Vec<StructuredBlock>, target: usize) {
+    let matches_target: bool =
+        matches!(body.last(), Some(StructuredBlock::Goto { pc }) if *pc == target);
+    if matches_target {
+        body.pop();
+    }
+}
+
+#[must_use]
+fn finalize_unresolved_jumps(blocks: &mut [StructuredBlock]) -> usize {
+    let mut unresolved: usize = 0;
+    for block in blocks {
+        let nested: usize = match block {
+            StructuredBlock::Goto { pc } => {
+                let target: usize = *pc;
+                *block = StructuredBlock::Raw(format!(
+                    "error(\"disrobe: unresolved luau jump to pc {target}\")"
+                ));
+                1
+            }
+            StructuredBlock::If {
+                then_body,
+                else_body,
+                ..
+            } => finalize_unresolved_jumps(then_body)
+                .saturating_add(finalize_unresolved_jumps(else_body)),
+            StructuredBlock::While { body, .. }
+            | StructuredBlock::Repeat { body, .. }
+            | StructuredBlock::NumericFor { body, .. }
+            | StructuredBlock::GenericFor { body, .. } => finalize_unresolved_jumps(body),
+            StructuredBlock::Raw(_) | StructuredBlock::Break | StructuredBlock::Label { .. } => 0,
+        };
+        unresolved = unresolved.saturating_add(nested);
+    }
+    unresolved
 }
 
 fn structure_loop(ctx: &mut SeqCtx<'_>, pos: &mut usize, edge: BackEdge) -> StructuredBlock {
@@ -417,4 +467,74 @@ fn pre_target_else(
         return Some(j);
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lifted(pc: usize, stmt: LStmt) -> LiftedStmt {
+        LiftedStmt { pc, stmt }
+    }
+
+    #[test]
+    fn forward_branch_jump_preserves_then_tail() {
+        let stmts: Vec<LiftedStmt> = vec![
+            lifted(
+                0,
+                LStmt::Cond {
+                    cond: "r0 == 3".to_owned(),
+                    target: 3,
+                },
+            ),
+            lifted(1, LStmt::Raw("r1 = r1 + 100".to_owned())),
+            lifted(2, LStmt::Jump { target: 5 }),
+            lifted(3, LStmt::Raw("r1 = r1 + r0".to_owned())),
+            lifted(4, LStmt::Raw("r1 = r1 + 10".to_owned())),
+        ];
+
+        let result: StructureResult = structure_blocks(&stmts, 5);
+
+        assert_eq!(result.unresolved_jumps, 0);
+        assert!(matches!(
+            result.blocks.as_slice(),
+            [StructuredBlock::If { then_body, .. }]
+                if matches!(
+                    then_body.as_slice(),
+                    [StructuredBlock::Raw(statement)] if statement == "r1 = r1 + 100"
+                )
+        ));
+        assert!(matches!(
+            result.blocks.as_slice(),
+            [StructuredBlock::If { else_body, .. }]
+                if matches!(
+                    else_body.as_slice(),
+                    [StructuredBlock::Raw(first), StructuredBlock::Raw(second)]
+                        if first == "r1 = r1 + r0" && second == "r1 = r1 + 10"
+                )
+        ));
+    }
+
+    #[test]
+    fn surviving_jump_hard_stops_and_counts_unresolved() {
+        let stmts: Vec<LiftedStmt> = vec![
+            lifted(0, LStmt::Raw("r0 = 1".to_owned())),
+            lifted(1, LStmt::Jump { target: 4 }),
+            lifted(2, LStmt::Raw("r0 = 2".to_owned())),
+        ];
+
+        let result: StructureResult = structure_blocks(&stmts, 4);
+
+        assert_eq!(result.unresolved_jumps, 1);
+        assert!(matches!(
+            result.blocks.as_slice(),
+            [
+                StructuredBlock::Raw(first),
+                StructuredBlock::Raw(marker),
+                StructuredBlock::Raw(last)
+            ] if first == "r0 = 1"
+                && marker == "error(\"disrobe: unresolved luau jump to pc 4\")"
+                && last == "r0 = 2"
+        ));
+    }
 }

@@ -1,11 +1,11 @@
 schema_version = "1"
 crate = "disrobe-pass-lua"
-description = "self-authored benign lua programs compiled to LuaJIT and Luau bytecode, used to grade the register lifters by running the original source and the recovered source through the matching interpreter and asserting identical stdout"
+description = "self-authored benign Lua and Luau programs compiled to matching LuaJIT or Luau bytecode, used to grade the register lifters by running the original source and the recovered source through the matching interpreter and asserting identical stdout"
 
 [toolchains]
 luajit = "LuaJIT 2.1.1720049189 (DEVCOM.LuaJIT)"
 luau = "luau-lang/luau 0.725 (luau.exe runtime + luau-compile.exe)"
-luac_reference = "n/a (sources are plain lua, not luac)"
+luac_reference = "n/a (inputs are source text, not luac bytecode)"
 
 [luajit]
 description = "compiled with `luajit -b src/<name>.lua <name>.luajit` (stripped, the -b default) and `luajit -b -s` for the .stripped variant; the .lj20 variant is the 2.1 chunk with its version byte set to 0x01 to exercise the LuaJIT 2.0 code path (the bc op encoding for these programs is identical between 2.0 and 2.1)"
@@ -75,8 +75,14 @@ input = "src/oop_functional.lua"
 sha256 = "adf975bf36040930fabf418ffd116583f6ac3337eb8fa0c3518c0dba369b0ff0"
 command = "luau-compile --binary src/oop_functional.lua"
 
+[[luau.fixtures]]
+path = "luau_continue_else.luau"
+input = "src/luau_continue_else.lua"
+sha256 = "bbe477d2c746043d6c493973e2314e934c096a0bb7b637288f02e4ffd5b0703a"
+command = "luau-compile --binary src/luau_continue_else.lua"
+
 [sources]
-description = "self-authored benign lua sources (functions, loops, conditionals, closures, recursion, oop via metatables, functional combinators, string/table library)"
+description = "self-authored benign Lua and Luau sources (functions, loops, conditionals, continue, closures, recursion, oop via metatables, functional combinators, string/table library)"
 
 [[sources.fixtures]]
 path = "src/arith_loops.lua"
@@ -93,3 +99,7 @@ sha256 = "47681a3a4c1910e56a38b804a2fde822440210bcf05d72603269c065cf7edbd0"
 [[sources.fixtures]]
 path = "src/oop_functional.lua"
 sha256 = "af99858150d73640208769c55e41061108b17dbcbb93adc3a42f3f3659305f12"
+
+[[sources.fixtures]]
+path = "src/luau_continue_else.lua"
+sha256 = "2f9483b9b273a70120ae70866a73feefa4a629416319031a07eb1311388fcf0f"
