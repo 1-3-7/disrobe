@@ -1,5 +1,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 
 use disrobe_pass_dotnet::decompile::{DecompiledAssembly, decompile_assembly};
 
@@ -42,6 +43,42 @@ fn body_of(asm: &DecompiledAssembly, needle: &str) -> String {
         .map_or_else(|| panic!("method {needle} not found"), |m| m.body.clone())
 }
 
+fn money_inequality(asm: &DecompiledAssembly) -> String {
+    body_in_type(asm, "EdgeCases.Money", " op_Inequality(")
+}
+
+fn money_inequality_source(body: &str) -> String {
+    format!(
+        "namespace EdgeCases\n{{\n    public readonly struct Money\n    {{\n        private readonly long pennies;\n\n        public Money(long pennies)\n        {{\n            this.pennies = pennies;\n        }}\n\n        public bool Equals(Money other)\n        {{\n            return pennies == other.pennies;\n        }}\n\n{body}\n    }}\n}}\n\npublic static class Program\n{{\n    public static int Main()\n    {{\n        EdgeCases.Money value = new EdgeCases.Money(37);\n        EdgeCases.Money equal = new EdgeCases.Money(37);\n        EdgeCases.Money different = new EdgeCases.Money(38);\n        if (EdgeCases.Money.op_Inequality(value, equal))\n        {{\n            return 1;\n        }}\n        if (!EdgeCases.Money.op_Inequality(value, different))\n        {{\n            return 2;\n        }}\n        return 0;\n    }}\n}}\n"
+    )
+}
+
+fn write_money_inequality_probe(directory: &Path, source: &str) {
+    std::fs::write(
+        directory.join("MoneyInequalityProbe.csproj"),
+        "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net9.0</TargetFramework><Nullable>disable</Nullable><ImplicitUsings>disable</ImplicitUsings><GenerateAssemblyInfo>false</GenerateAssemblyInfo><TreatWarningsAsErrors>true</TreatWarningsAsErrors></PropertyGroup></Project>",
+    )
+    .expect("write Money inequality compiler project");
+    std::fs::write(directory.join("MoneyInequalityProbe.cs"), source)
+        .expect("write Money inequality compiler source");
+}
+
+fn build_money_inequality_probe(directory: &Path) -> Output {
+    Command::new("dotnet")
+        .args(["build", "-c", "Release", "-v", "q", "-nologo"])
+        .current_dir(directory)
+        .output()
+        .expect("build Money inequality compiler probe")
+}
+
+fn run_money_inequality_probe(directory: &Path) -> Output {
+    Command::new("dotnet")
+        .args(["run", "-c", "Release", "-v", "q", "-nologo", "--no-build"])
+        .current_dir(directory)
+        .output()
+        .expect("run Money inequality compiler probe")
+}
+
 #[test]
 fn bool_methods_return_true_false_not_integer_literals() {
     let asm: DecompiledAssembly = decompile();
@@ -53,6 +90,61 @@ fn bool_methods_return_true_false_not_integer_literals() {
     assert!(
         !print_members.contains("return 1;") && !print_members.contains("return 0;"),
         "no bare integer-literal bool return may survive in a bool method; got:\n{print_members}"
+    );
+}
+
+#[test]
+fn nested_boolean_ceq_compiles_and_preserves_money_inequality() {
+    let asm: DecompiledAssembly = decompile_edgecases();
+    let body: String = money_inequality(&asm);
+    assert!(
+        body.contains("return left.Equals(right) == false;"),
+        "a Boolean call followed by ldc.i4.0 and ceq must render as Boolean equality, got:\n{body}"
+    );
+    assert!(
+        !body.contains("left.Equals(right) == 0"),
+        "a CIL false representation must not survive as an integer operand in C#, got:\n{body}"
+    );
+    let source: String = money_inequality_source(&body);
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_money_inequality_ceq")
+            .expect("create Money inequality compiler scratch directory");
+    write_money_inequality_probe(scratch.path(), &source);
+    let build_output: Output = build_money_inequality_probe(scratch.path());
+    assert!(
+        build_output.status.success(),
+        "the real EdgeCases Money inequality output must compile with warnings as errors:\nstdout:\n{}\nstderr:\n{}\nsource:\n{source}",
+        String::from_utf8_lossy(&build_output.stdout),
+        String::from_utf8_lossy(&build_output.stderr)
+    );
+    let output: Output = run_money_inequality_probe(scratch.path());
+    assert!(
+        output.status.success(),
+        "the real EdgeCases Money inequality output must distinguish equal and unequal values:\nstdout:\n{}\nstderr:\n{}\nsource:\n{source}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mutated: String = source.replacen(
+        "left.Equals(right) == false",
+        "left.Equals(right) == true",
+        1,
+    );
+    assert_ne!(mutated, source, "the Boolean equality mutation must apply");
+    write_money_inequality_probe(scratch.path(), &mutated);
+    let mutated_build: Output = build_money_inequality_probe(scratch.path());
+    assert!(
+        mutated_build.status.success(),
+        "the Boolean equality mutation must compile so its runtime result is observable:\nstdout:\n{}\nstderr:\n{}\nsource:\n{mutated}",
+        String::from_utf8_lossy(&mutated_build.stdout),
+        String::from_utf8_lossy(&mutated_build.stderr)
+    );
+    let mutated_output: Output = run_money_inequality_probe(scratch.path());
+    assert_eq!(
+        mutated_output.status.code(),
+        Some(1),
+        "the mutated real-metadata output must fail the equality case:\nstdout:\n{}\nstderr:\n{}\nsource:\n{mutated}",
+        String::from_utf8_lossy(&mutated_output.stdout),
+        String::from_utf8_lossy(&mutated_output.stderr)
     );
 }
 
