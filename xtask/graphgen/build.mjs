@@ -1,4 +1,3 @@
-import { Resvg } from "@resvg/resvg-js";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -46,20 +45,9 @@ for (const [name, dataFile, render] of graphs) {
   console.log("graphgen: wrote", name, `(${svg.length} bytes, ${dataFile} sha256:${digest})`);
 }
 
-const cardSvgPath = join(ASSETS_DIR, "social-card.svg");
-const cardPngPath = join(ASSETS_DIR, "social-card.png");
-const cardSvg = readFileSync(cardSvgPath, "utf8");
-const resvg = new Resvg(cardSvg, {
-  fitTo: { mode: "width", value: 1280 },
-  font: { loadSystemFonts: true, defaultFontFamily: "Segoe UI" },
-  background: "#0a0a0a",
-});
-writeFileSync(cardPngPath, resvg.render().asPng());
-console.log("graphgen: rasterized social-card.png from social-card.svg");
-
 const PUBLISHED_DIR = new URL("../../docs/src/assets/", import.meta.url);
 
-for (const name of ["recovery.svg", "social-card.png"]) {
+for (const name of ["recovery.svg"]) {
   const published = new URL(name, PUBLISHED_DIR);
   writeFileSync(published, readFileSync(join(ASSETS_DIR, name)));
   console.log("graphgen: published", name, "to docs/src/assets (the copy mdbook serves)");

@@ -16,7 +16,6 @@ const TARGETS = [
   ["docs/assets/verification.svg", "verification.png"],
   ["docs/assets/architecture.svg", "architecture.png"],
   ["docs/assets/ir-ladder.svg", "ir-ladder.png"],
-  ["docs/assets/social-card.svg", "social-card.png"],
 ];
 
 for (const [rel, name] of TARGETS) {

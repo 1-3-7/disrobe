@@ -31,7 +31,7 @@ const DATA_BACKED: [(&str, &str); 6] = [
 
 const MAX_DATA_BYTES: u64 = 4 * 1024 * 1024;
 
-const MIRRORED: [&str; 2] = ["recovery.svg", "social-card.png"];
+const MIRRORED: [&str; 1] = ["recovery.svg"];
 
 const VERIFICATION_CHART: &str = "verification.svg";
 const RECOVERY_CHART: &str = "recovery.svg";

@@ -9,7 +9,7 @@ importers:
   .:
     dependencies:
       '@resvg/resvg-js':
-        specifier: ^2.6.2
+        specifier: 2.6.2
         version: 2.6.2
       echarts:
         specifier: ^6.1.0
