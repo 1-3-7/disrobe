@@ -209,7 +209,6 @@ impl Protector {
                 "corpus/dotnet/obfuscators/bitmono/gauntlet/GauntletBitMono.bitmono.dll",
             ),
             Self::SmartAssembly
-            | Self::BabelDotnet
             | Self::SpicesNet
             | Self::Skater
             | Self::DotnetReactor
@@ -219,6 +218,7 @@ impl Protector {
                 StringEvidence::RuntimeKeyed
             }
             Self::ConfuserEx
+            | Self::BabelDotnet
             | Self::Dotfuscator
             | Self::DotfuscatorCe
             | Self::DeepSea
@@ -739,6 +739,15 @@ mod tests {
     #[test]
     fn reactor_requires_authorization() {
         assert!(Protector::DotnetReactor.requires_authorization());
+    }
+
+    #[test]
+    fn babel_does_not_claim_string_recovery_without_an_authentic_sample() {
+        assert_eq!(
+            Protector::BabelDotnet.string_evidence(),
+            StringEvidence::NotClaimed
+        );
+        assert!(!Protector::BabelDotnet.string_evidence().decrypts_strings());
     }
 
     #[test]

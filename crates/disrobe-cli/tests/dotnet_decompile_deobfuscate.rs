@@ -212,6 +212,34 @@ fn deobfuscate_forced_themida_surfaces_honest_wall() {
 }
 
 #[test]
+fn deobfuscate_forced_babel_report_only_surface_is_walled() {
+    let input: PathBuf = corpus("HelloApp.dll");
+    let out_scratch: disrobe_core::scratch::ScratchDir = out_dir("peel-babel-wall");
+    let out: PathBuf = out_scratch.path().to_path_buf();
+    let r: Run = run(&[
+        "dotnet",
+        "deobfuscate",
+        input.to_str().unwrap(),
+        "--protector",
+        "babel-dotnet",
+        "--out",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(r.code, 0, "stdout:\n{}\nstderr:\n{}", r.stdout, r.stderr);
+    assert!(
+        r.stdout.contains("DETECT + WALL"),
+        "a report-only Babel peel must not print a successful recovery:\n{}",
+        r.stdout
+    );
+    let report: String = std::fs::read_to_string(out.join("peel.json")).expect("peel.json");
+    assert!(
+        report.contains("\"walled\": true") && report.contains("report-only-encrypted-resource"),
+        "peel.json must identify the report-only Babel wall:\n{report}"
+    );
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
 fn deobfuscate_rejects_malformed_pe_without_panic() {
     let input_scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe-dotnet-junk")
