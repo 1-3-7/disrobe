@@ -162,6 +162,43 @@ fn wasm_mem_addr(addr: i32, offset: u64) -> usize {
     (addr as u32 as u64).wrapping_add(offset) as usize
 }
 
+fn wasm_atomic_trap(reason: &str) -> ! {
+    eprintln!("DR-WASMDEOB-TRAP/1:{reason}");
+    panic!("wasm atomic trap");
+}
+
+fn wasm_atomic_range(addr: u64, offset: u64, width: u64) {
+    if width == 0 || !width.is_power_of_two() {
+        wasm_atomic_trap("atomic-invalid-width");
+    }
+    let aligned_start: u64 = addr.wrapping_add(offset);
+    if aligned_start % width != 0 {
+        wasm_atomic_trap("atomic-unaligned");
+    }
+    let start: u64 = match addr.checked_add(offset) {
+        Some(value) => value,
+        None => wasm_atomic_trap("atomic-oob"),
+    };
+    let end: u64 = match start.checked_add(width) {
+        Some(value) => value,
+        None => wasm_atomic_trap("atomic-oob"),
+    };
+    let memory_len: u64 = WASM_MEMORY.with(|memory| memory.borrow().len() as u64);
+    if end > memory_len {
+        wasm_atomic_trap("atomic-oob");
+    }
+}
+
+fn wasm_atomic_addr(addr: i32, offset: u64, width: u64) -> i32 {
+    wasm_atomic_range(u64::from(addr as u32), offset, width);
+    addr
+}
+
+fn wasm_atomic_addr_a64(addr: i64, offset: u64, width: u64) -> i64 {
+    wasm_atomic_range(addr as u64, offset, width);
+    addr
+}
+
 fn wasm_load_i32(addr: i32, offset: u64) -> i32 {
     WASM_MEMORY.with(|m| {
         let m = m.borrow();
@@ -734,16 +771,16 @@ fn wasm_memory_grow(delta: i32) -> i32 {
 #[inline] fn wasm_i32_atomic_rmw_cmpxchg_a64(addr: i64, offset: u64, expected: i32, replacement: i32) -> i32 { let cur = wasm_load_i32_a64(addr, offset); if cur == expected { wasm_store_i32_a64(addr, offset, replacement); } cur }
 #[inline] fn wasm_i64_atomic_rmw_cmpxchg(addr: i32, offset: u64, expected: i64, replacement: i64) -> i64 { let cur = wasm_load_i64(addr, offset); if cur == expected { wasm_store_i64(addr, offset, replacement); } cur }
 #[inline] fn wasm_i64_atomic_rmw_cmpxchg_a64(addr: i64, offset: u64, expected: i64, replacement: i64) -> i64 { let cur = wasm_load_i64_a64(addr, offset); if cur == expected { wasm_store_i64_a64(addr, offset, replacement); } cur }
-#[inline] fn wasm_i32_atomic_rmw8_cmpxchg_u(addr: i32, offset: u64, expected: i32, replacement: i32) -> i32 { let cur = wasm_load_i32_8u(addr, offset); if cur == expected { wasm_store_i32_8(addr, offset, replacement); } cur }
-#[inline] fn wasm_i32_atomic_rmw8_cmpxchg_u_a64(addr: i64, offset: u64, expected: i32, replacement: i32) -> i32 { let cur = wasm_load_i32_8u_a64(addr, offset); if cur == expected { wasm_store_i32_8_a64(addr, offset, replacement); } cur }
-#[inline] fn wasm_i32_atomic_rmw16_cmpxchg_u(addr: i32, offset: u64, expected: i32, replacement: i32) -> i32 { let cur = wasm_load_i32_16u(addr, offset); if cur == expected { wasm_store_i32_16(addr, offset, replacement); } cur }
-#[inline] fn wasm_i32_atomic_rmw16_cmpxchg_u_a64(addr: i64, offset: u64, expected: i32, replacement: i32) -> i32 { let cur = wasm_load_i32_16u_a64(addr, offset); if cur == expected { wasm_store_i32_16_a64(addr, offset, replacement); } cur }
-#[inline] fn wasm_i64_atomic_rmw8_cmpxchg_u(addr: i32, offset: u64, expected: i64, replacement: i64) -> i64 { let cur = wasm_load_i64_8u(addr, offset); if cur == expected { wasm_store_i64_8(addr, offset, replacement); } cur }
-#[inline] fn wasm_i64_atomic_rmw8_cmpxchg_u_a64(addr: i64, offset: u64, expected: i64, replacement: i64) -> i64 { let cur = wasm_load_i64_8u_a64(addr, offset); if cur == expected { wasm_store_i64_8_a64(addr, offset, replacement); } cur }
-#[inline] fn wasm_i64_atomic_rmw16_cmpxchg_u(addr: i32, offset: u64, expected: i64, replacement: i64) -> i64 { let cur = wasm_load_i64_16u(addr, offset); if cur == expected { wasm_store_i64_16(addr, offset, replacement); } cur }
-#[inline] fn wasm_i64_atomic_rmw16_cmpxchg_u_a64(addr: i64, offset: u64, expected: i64, replacement: i64) -> i64 { let cur = wasm_load_i64_16u_a64(addr, offset); if cur == expected { wasm_store_i64_16_a64(addr, offset, replacement); } cur }
-#[inline] fn wasm_i64_atomic_rmw32_cmpxchg_u(addr: i32, offset: u64, expected: i64, replacement: i64) -> i64 { let cur = wasm_load_i64_32u(addr, offset); if cur == expected { wasm_store_i64_32(addr, offset, replacement); } cur }
-#[inline] fn wasm_i64_atomic_rmw32_cmpxchg_u_a64(addr: i64, offset: u64, expected: i64, replacement: i64) -> i64 { let cur = wasm_load_i64_32u_a64(addr, offset); if cur == expected { wasm_store_i64_32_a64(addr, offset, replacement); } cur }
+#[inline] fn wasm_i32_atomic_rmw8_cmpxchg_u(addr: i32, offset: u64, expected: i32, replacement: i32) -> i32 { let cur = wasm_load_i32_8u(addr, offset); if cur == (expected & 0xff) { wasm_store_i32_8(addr, offset, replacement); } cur }
+#[inline] fn wasm_i32_atomic_rmw8_cmpxchg_u_a64(addr: i64, offset: u64, expected: i32, replacement: i32) -> i32 { let cur = wasm_load_i32_8u_a64(addr, offset); if cur == (expected & 0xff) { wasm_store_i32_8_a64(addr, offset, replacement); } cur }
+#[inline] fn wasm_i32_atomic_rmw16_cmpxchg_u(addr: i32, offset: u64, expected: i32, replacement: i32) -> i32 { let cur = wasm_load_i32_16u(addr, offset); if cur == (expected & 0xffff) { wasm_store_i32_16(addr, offset, replacement); } cur }
+#[inline] fn wasm_i32_atomic_rmw16_cmpxchg_u_a64(addr: i64, offset: u64, expected: i32, replacement: i32) -> i32 { let cur = wasm_load_i32_16u_a64(addr, offset); if cur == (expected & 0xffff) { wasm_store_i32_16_a64(addr, offset, replacement); } cur }
+#[inline] fn wasm_i64_atomic_rmw8_cmpxchg_u(addr: i32, offset: u64, expected: i64, replacement: i64) -> i64 { let cur = wasm_load_i64_8u(addr, offset); if cur == (expected & 0xff) { wasm_store_i64_8(addr, offset, replacement); } cur }
+#[inline] fn wasm_i64_atomic_rmw8_cmpxchg_u_a64(addr: i64, offset: u64, expected: i64, replacement: i64) -> i64 { let cur = wasm_load_i64_8u_a64(addr, offset); if cur == (expected & 0xff) { wasm_store_i64_8_a64(addr, offset, replacement); } cur }
+#[inline] fn wasm_i64_atomic_rmw16_cmpxchg_u(addr: i32, offset: u64, expected: i64, replacement: i64) -> i64 { let cur = wasm_load_i64_16u(addr, offset); if cur == (expected & 0xffff) { wasm_store_i64_16(addr, offset, replacement); } cur }
+#[inline] fn wasm_i64_atomic_rmw16_cmpxchg_u_a64(addr: i64, offset: u64, expected: i64, replacement: i64) -> i64 { let cur = wasm_load_i64_16u_a64(addr, offset); if cur == (expected & 0xffff) { wasm_store_i64_16_a64(addr, offset, replacement); } cur }
+#[inline] fn wasm_i64_atomic_rmw32_cmpxchg_u(addr: i32, offset: u64, expected: i64, replacement: i64) -> i64 { let cur = wasm_load_i64_32u(addr, offset); if cur == (expected & 0xffff_ffff) { wasm_store_i64_32(addr, offset, replacement); } cur }
+#[inline] fn wasm_i64_atomic_rmw32_cmpxchg_u_a64(addr: i64, offset: u64, expected: i64, replacement: i64) -> i64 { let cur = wasm_load_i64_32u_a64(addr, offset); if cur == (expected & 0xffff_ffff) { wasm_store_i64_32_a64(addr, offset, replacement); } cur }
 #[inline] fn wasm_atomic_fence() { }
 
 

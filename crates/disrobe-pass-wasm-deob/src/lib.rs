@@ -78,7 +78,7 @@ pub use eh::{
     EhConstruct, EhFunctionSummary, EhModuleSummary, EhTagSummary, lift_tag_to_rust_result,
     scan_module as scan_module_eh,
 };
-pub use error::{Error, Result};
+pub use error::{AtomicMemoryRefusal, Error, Result};
 pub use fingerprint::{
     DEFAULT_FUZZY_THRESHOLD, DEFAULT_MIN_FUZZY_OPS, FingerprintDb, FunctionFingerprint,
     FunctionMatch, MINHASH_WIDTH, MatchConfig, MatchTier, NGRAM_WINDOW, canonical_label,
@@ -96,7 +96,7 @@ pub use js_string_builtins::{
 };
 pub use lift::{
     CalleeNames, LiftCoverage, LiftResult, LiftTarget, lift_function_body, rust_runtime_prelude,
-    typescript_runtime_prelude,
+    try_lift_function_from_module, try_lift_functions_from_module, typescript_runtime_prelude,
 };
 pub use lift_c::c_runtime_prelude;
 pub use lift_module_faithful::lift_module_faithful_wat;

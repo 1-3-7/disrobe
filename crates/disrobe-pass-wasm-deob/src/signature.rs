@@ -47,6 +47,7 @@ impl FunctionSig {
 #[derive(Debug, Clone, Default)]
 pub struct ModuleSignatures {
     sigs: Vec<FunctionSig>,
+    type_signatures: Vec<(Vec<ValType>, Vec<ValType>)>,
     imported_function_count: u32,
     export_aliases: Vec<ExportAlias>,
 }
@@ -90,6 +91,11 @@ impl ModuleSignatures {
             .iter()
             .map(|s| (s.params.clone(), s.results.clone()))
             .collect()
+    }
+
+    #[must_use]
+    pub fn type_signatures(&self) -> Vec<(Vec<ValType>, Vec<ValType>)> {
+        self.type_signatures.clone()
     }
 
     #[must_use]
@@ -301,9 +307,19 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
     }
 
     let export_aliases: Vec<ExportAlias> = dedup_export_aliases(&export_names);
+    let type_signatures: Vec<(Vec<ValType>, Vec<ValType>)> = func_types
+        .iter()
+        .map(|func_type: &RawFuncType| {
+            (
+                bounded_valtypes(&func_type.params),
+                bounded_valtypes(&func_type.results),
+            )
+        })
+        .collect();
 
     Ok(ModuleSignatures {
         sigs,
+        type_signatures,
         imported_function_count,
         export_aliases,
     })
@@ -470,6 +486,31 @@ mod tests {
         assert_eq!(mul.name, "mul_f64");
         assert_eq!(mul.params, vec![ValType::F64, ValType::F64]);
         assert_eq!(mul.results, vec![ValType::F64]);
+    }
+
+    #[test]
+    fn preserves_type_index_signatures_independently_of_function_order() {
+        let bytes: Vec<u8> = wat::parse_str(
+            r"(module
+              (type $unused (func (param f64) (result f32)))
+              (type $called (func (param i64) (result i32)))
+              (func (type $called)
+                local.get 0
+                i32.wrap_i64))",
+        )
+        .expect("wat");
+        let sigs: ModuleSignatures = extract_signatures(&bytes).expect("sigs");
+        assert_eq!(
+            sigs.type_signatures(),
+            vec![
+                (vec![ValType::F64], vec![ValType::F32]),
+                (vec![ValType::I64], vec![ValType::I32]),
+            ]
+        );
+        assert_eq!(
+            sigs.call_signatures(),
+            vec![(vec![ValType::I64], vec![ValType::I32])]
+        );
     }
 
     #[test]

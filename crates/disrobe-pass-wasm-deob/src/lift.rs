@@ -1,7 +1,8 @@
 use serde::Serialize;
-use wasmparser::ValType;
+use wasmparser::{FunctionBody, ValType};
 
-use crate::signature::FunctionSig;
+use crate::error::{AtomicMemoryRefusal, Error, Result};
+use crate::signature::{FunctionSig, ModuleSignatures, extract_signatures};
 use crate::ssa::{OpKind, UnOp};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -66,7 +67,7 @@ pub const fn typescript_runtime_prelude() -> &'static str {
 
 #[must_use]
 pub fn lift_function_body(
-    body: &wasmparser::FunctionBody<'_>,
+    body: &FunctionBody<'_>,
     sig: &FunctionSig,
     callees: &CalleeNames,
     target: LiftTarget,
@@ -85,23 +86,116 @@ pub fn lift_function_body(
     }
 }
 
+struct PreparedModuleLift {
+    signatures: ModuleSignatures,
+    callees: CalleeNames,
+}
+
+impl PreparedModuleLift {
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        let signatures: ModuleSignatures = extract_signatures(bytes)?;
+        let callees: CalleeNames = CalleeNames::from_signatures(bytes, &signatures);
+        Ok(Self {
+            signatures,
+            callees,
+        })
+    }
+
+    fn defined_function_count(&self) -> usize {
+        self.signatures.defined().len()
+    }
+
+    fn try_lift(
+        &self,
+        bytes: &[u8],
+        defined_function_index: usize,
+        target: LiftTarget,
+    ) -> Result<LiftResult> {
+        let sig: &FunctionSig = self
+            .signatures
+            .defined()
+            .get(defined_function_index)
+            .ok_or_else(|| {
+                Error::Parse(format!(
+                    "defined function index {defined_function_index} is unavailable"
+                ))
+            })?;
+        let module: &crate::structured::ModuleCtx = self
+            .callees
+            .module_ctx()
+            .ok_or(AtomicMemoryRefusal::MissingModuleContext)?;
+        let body: FunctionBody<'_> = module.function_body(bytes, defined_function_index)?;
+        try_lift_function_body(&body, sig, &self.callees, target)
+    }
+}
+
+pub fn try_lift_function_from_module(
+    bytes: &[u8],
+    defined_function_index: usize,
+    target: LiftTarget,
+) -> Result<LiftResult> {
+    PreparedModuleLift::from_bytes(bytes)?.try_lift(bytes, defined_function_index, target)
+}
+
+pub fn try_lift_functions_from_module(bytes: &[u8], target: LiftTarget) -> Result<Vec<LiftResult>> {
+    let prepared: PreparedModuleLift = PreparedModuleLift::from_bytes(bytes)?;
+    let function_count: usize = prepared.defined_function_count();
+    let mut results: Vec<LiftResult> = Vec::with_capacity(function_count);
+    for defined_function_index in 0..function_count {
+        results.push(prepared.try_lift(bytes, defined_function_index, target)?);
+    }
+    Ok(results)
+}
+
+fn try_lift_function_body(
+    body: &FunctionBody<'_>,
+    sig: &FunctionSig,
+    callees: &CalleeNames,
+    target: LiftTarget,
+) -> Result<LiftResult> {
+    let result: Result<LiftResult> = match target {
+        LiftTarget::Rust => {
+            try_lift_body_high(body, sig, callees, LiftTarget::Rust, HighLang::Rust)
+        }
+        LiftTarget::TypeScript => try_lift_body_high(
+            body,
+            sig,
+            callees,
+            LiftTarget::TypeScript,
+            HighLang::TypeScript,
+        ),
+        LiftTarget::C => crate::lift_c::try_lift_function_body_c(body, sig, callees),
+        LiftTarget::Wat => Ok(crate::lift_wat::lift_function_body_wat(body, sig)),
+    };
+    match result {
+        Ok(result) => Ok(result),
+        Err(error @ Error::AtomicMemoryModel(_)) => Err(error),
+        Err(_) => Ok(lift_function_body(body, sig, callees, target)),
+    }
+}
+
 fn lift_body_high(
-    body: &wasmparser::FunctionBody<'_>,
+    body: &FunctionBody<'_>,
     sig: &FunctionSig,
     callees: &CalleeNames,
     target: LiftTarget,
     lang: HighLang,
 ) -> LiftResult {
-    match crate::structured::lift_body_structured(body, sig, callees, lang) {
-        Ok((source, blocks_emitted, coverage)) => LiftResult {
+    match try_lift_body_high(body, sig, callees, target, lang) {
+        Ok(result) => result,
+        Err(Error::AtomicMemoryModel(reason)) => LiftResult {
             target,
-            pseudo_source: source,
-            blocks_emitted,
-            coverage,
+            pseudo_source: atomic_memory_refusal_stub(
+                sig,
+                target,
+                &Error::AtomicMemoryModel(reason).to_string(),
+            ),
+            blocks_emitted: 0,
+            coverage: atomic_memory_refusal_coverage(),
         },
-        Err(e) => LiftResult {
+        Err(error) => LiftResult {
             target,
-            pseudo_source: unliftable_stub(sig, target, &e.to_string()),
+            pseudo_source: unliftable_stub(sig, target, &error.to_string()),
             blocks_emitted: 0,
             coverage: LiftCoverage {
                 total_ops: 0,
@@ -110,6 +204,82 @@ fn lift_body_high(
             },
         },
     }
+}
+
+fn try_lift_body_high(
+    body: &FunctionBody<'_>,
+    sig: &FunctionSig,
+    callees: &CalleeNames,
+    target: LiftTarget,
+    lang: HighLang,
+) -> Result<LiftResult> {
+    let (source, blocks_emitted, coverage): (String, usize, LiftCoverage) =
+        crate::structured::lift_body_structured(body, sig, callees, lang)?;
+    Ok(LiftResult {
+        target,
+        pseudo_source: source,
+        blocks_emitted,
+        coverage,
+    })
+}
+
+pub(crate) fn atomic_memory_refusal_coverage() -> LiftCoverage {
+    LiftCoverage {
+        total_ops: 1,
+        translated_ops: 0,
+        untranslated: vec!["<unsupported-atomic-memory-model>".to_owned()],
+    }
+}
+
+fn atomic_memory_refusal_stub(sig: &FunctionSig, target: LiftTarget, reason: &str) -> String {
+    let mut source: String = String::new();
+    match target {
+        LiftTarget::Rust => {
+            crate::push_string_fmt(&mut source, format_args!("pub fn {}(", sig.name));
+            let params: std::iter::Enumerate<std::slice::Iter<'_, ValType>> =
+                sig.params.iter().enumerate();
+            for (index, ty) in params {
+                if index > 0 {
+                    source.push_str(", ");
+                }
+                crate::push_string_fmt(&mut source, format_args!("p{index}: {}", rust_type(*ty)));
+            }
+            source.push(')');
+            let result: Option<&ValType> = sig.results.first();
+            if let Some(result) = result {
+                crate::push_string_fmt(&mut source, format_args!(" -> {}", rust_type(*result)));
+            }
+            source.push_str(" {\n");
+            for index in 0..sig.params.len() {
+                crate::push_string_line(&mut source, format_args!("    let _ = p{index};"));
+            }
+            crate::push_string_line(&mut source, format_args!("    panic!({reason:?});"));
+            source.push_str("}\n");
+        }
+        LiftTarget::TypeScript => {
+            crate::push_string_fmt(&mut source, format_args!("export function {}(", sig.name));
+            let params: std::iter::Enumerate<std::slice::Iter<'_, ValType>> =
+                sig.params.iter().enumerate();
+            for (index, ty) in params {
+                if index > 0 {
+                    source.push_str(", ");
+                }
+                crate::push_string_fmt(&mut source, format_args!("p{index}: {}", ts_type(*ty)));
+            }
+            let result: &str = sig
+                .results
+                .first()
+                .map_or("void", |ty: &ValType| ts_type(*ty));
+            crate::push_string_line(&mut source, format_args!("): {result} {{"));
+            crate::push_string_line(
+                &mut source,
+                format_args!("    throw new Error({reason:?});"),
+            );
+            source.push_str("}\n");
+        }
+        LiftTarget::Wat | LiftTarget::C => unreachable!("handled separately"),
+    }
+    source
 }
 
 fn unliftable_stub(sig: &FunctionSig, target: LiftTarget, reason: &str) -> String {
@@ -177,6 +347,15 @@ pub struct CalleeNames {
 }
 
 impl CalleeNames {
+    fn from_signatures(bytes: &[u8], signatures: &ModuleSignatures) -> Self {
+        Self::from_module(
+            bytes,
+            signatures.callee_names(),
+            signatures.call_signatures(),
+            signatures.type_signatures(),
+        )
+    }
+
     #[inline]
     #[must_use]
     pub const fn new(names: Vec<String>) -> Self {

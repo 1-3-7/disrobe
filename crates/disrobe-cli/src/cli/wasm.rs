@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 use wasmparser::{Parser, Payload};
 
 use disrobe_pass_wasm_deob::{
-    CalleeNames, ComponentManifest, FunctionCfg, FunctionSig, GcHirModule, GcTypeGraph, LiftResult,
-    LiftTarget, ModuleSignatures, ModuleSummary, RecoveredModule, RecoveryReport, analyze_module,
-    build_function_cfg, c_runtime_prelude, extract_signatures, lift_function_body, lift_gc_module,
-    lift_module_to_wat, parse_component_manifest, recover_gc_types, recover_module,
-    rust_runtime_prelude, typescript_runtime_prelude,
+    ComponentManifest, FunctionCfg, FunctionSig, GcHirModule, GcTypeGraph, LiftResult, LiftTarget,
+    ModuleSignatures, ModuleSummary, RecoveredModule, RecoveryReport, analyze_module,
+    build_function_cfg, c_runtime_prelude, extract_signatures, lift_gc_module, lift_module_to_wat,
+    parse_component_manifest, recover_gc_types, recover_module, rust_runtime_prelude,
+    try_lift_functions_from_module, typescript_runtime_prelude,
 };
 
 use super::emit::{EmitKind, EmitSpec, write_applicable_payload, write_not_applicable_stub};
@@ -220,15 +220,17 @@ fn lift_module(
             .map_err(|e| miette::miette!("DR-CLI-0041: cannot create dir: {e}"))?;
     }
 
-    let sigs: ModuleSignatures =
-        extract_signatures(&bytes).map_err(|e| miette::miette!("DR-WASMDEOB-0001: {e}"))?;
-    let combined: String = match target {
-        LiftTarget::Wat => assemble_wat(&bytes, &sigs)?,
+    let (combined, func_count): (String, usize) = match target {
+        LiftTarget::Wat => {
+            let sigs: ModuleSignatures =
+                extract_signatures(&bytes).map_err(|e| miette::miette!("DR-WASMDEOB-0001: {e}"))?;
+            let combined: String = assemble_wat(&bytes, &sigs)?;
+            (combined, sigs.defined().len())
+        }
         LiftTarget::Rust | LiftTarget::TypeScript | LiftTarget::C => {
-            assemble_high_level(&bytes, &sigs, target)?
+            assemble_high_level(&bytes, target)?
         }
     };
-    let func_count: usize = sigs.defined().len();
 
     std::fs::write(&out_path, combined.as_bytes())
         .map_err(|e| miette::miette!("DR-CLI-0042: cannot write lifted output: {e}"))?;
@@ -242,46 +244,24 @@ fn lift_module(
     Ok(())
 }
 
-fn callee_resolver(sigs: &ModuleSignatures) -> CalleeNames {
-    CalleeNames::with_signatures(
-        sigs.callee_names(),
-        sigs.call_signatures(),
-        sigs.call_signatures(),
-    )
-}
-
-fn assemble_high_level(
-    bytes: &[u8],
-    sigs: &ModuleSignatures,
-    target: LiftTarget,
-) -> miette::Result<String> {
-    let callees: CalleeNames = callee_resolver(sigs);
-    let defined: &[FunctionSig] = sigs.defined();
+fn assemble_high_level(bytes: &[u8], target: LiftTarget) -> miette::Result<(String, usize)> {
     let mut combined: String = match target {
         LiftTarget::Rust => rust_runtime_prelude().to_owned(),
         LiftTarget::TypeScript => typescript_runtime_prelude().to_owned(),
         LiftTarget::C => c_runtime_prelude().to_owned(),
         LiftTarget::Wat => String::new(),
     };
-    let mut idx: usize = 0;
-    for payload in Parser::new(0).parse_all(bytes) {
-        let payload: Payload<'_> =
-            payload.map_err(|e| miette::miette!("DR-WASMDEOB-0001: parse: {e}"))?;
-        if let Payload::CodeSectionEntry(body) = payload {
-            let sig: FunctionSig = defined
-                .get(idx)
-                .cloned()
-                .unwrap_or_else(|| FunctionSig::placeholder(u32::try_from(idx).unwrap_or(0)));
-            let result: LiftResult = lift_function_body(&body, &sig, &callees, target);
+    let results: Vec<LiftResult> = try_lift_functions_from_module(bytes, target)
+        .map_err(|error| miette::miette!("{error}"))?;
+    let function_count: usize = results.len();
+    for result in results {
+        combined.push('\n');
+        combined.push_str(&result.pseudo_source);
+        if !result.pseudo_source.ends_with('\n') {
             combined.push('\n');
-            combined.push_str(&result.pseudo_source);
-            if !result.pseudo_source.ends_with('\n') {
-                combined.push('\n');
-            }
-            idx += 1;
         }
     }
-    Ok(combined)
+    Ok((combined, function_count))
 }
 
 fn assemble_wat(bytes: &[u8], sigs: &ModuleSignatures) -> miette::Result<String> {

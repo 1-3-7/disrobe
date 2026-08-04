@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use serde::Serialize;
-use wasmparser::{MemArg, Operator, Parser, Payload};
+use wasmparser::{MemArg, MemoryType, Operator, Parser, Payload, TypeRef};
 
 use crate::error::{Error, Result};
 
@@ -68,22 +68,19 @@ pub fn scan_threads(input: &[u8]) -> Result<ThreadsReport> {
     for payload in Parser::new(0).parse_all(input) {
         let payload: Payload<'_> = payload.map_err(|e| Error::Parse(format!("{e}")))?;
         match payload {
+            Payload::ImportSection(reader) => {
+                for import in reader.into_imports() {
+                    let import: wasmparser::Import<'_> =
+                        import.map_err(|e| Error::Parse(format!("{e}")))?;
+                    if let TypeRef::Memory(memory) = import.ty {
+                        record_memory(&mut report, &mut memory_index, memory);
+                    }
+                }
+            }
             Payload::MemorySection(reader) => {
                 for mem in reader {
-                    let mem: wasmparser::MemoryType =
-                        mem.map_err(|e| Error::Parse(format!("{e}")))?;
-                    if mem.shared {
-                        report.shared_memories.insert(
-                            memory_index,
-                            SharedMemoryRecord {
-                                memory_index,
-                                initial: mem.initial,
-                                maximum: mem.maximum,
-                                memory64: mem.memory64,
-                            },
-                        );
-                    }
-                    memory_index = memory_index.saturating_add(1);
+                    let mem: MemoryType = mem.map_err(|e| Error::Parse(format!("{e}")))?;
+                    record_memory(&mut report, &mut memory_index, mem);
                 }
             }
             Payload::CodeSectionEntry(body) => {
@@ -110,6 +107,21 @@ pub fn scan_threads(input: &[u8]) -> Result<ThreadsReport> {
         }
     }
     Ok(report)
+}
+
+fn record_memory(report: &mut ThreadsReport, memory_index: &mut u32, memory: MemoryType) {
+    if memory.shared {
+        report.shared_memories.insert(
+            *memory_index,
+            SharedMemoryRecord {
+                memory_index: *memory_index,
+                initial: memory.initial,
+                maximum: memory.maximum,
+                memory64: memory.memory64,
+            },
+        );
+    }
+    *memory_index = memory_index.saturating_add(1);
 }
 
 fn classify_atomic(op: &Operator<'_>) -> Option<AtomicOpRecord> {
@@ -176,11 +188,116 @@ fn classify_atomic(op: &Operator<'_>) -> Option<AtomicOpRecord> {
         Operator::I64AtomicRmwXchg { memarg } => {
             (AtomicOpKind::Rmw, "i64.atomic.rmw.xchg", *memarg)
         }
+        Operator::I32AtomicRmw8AddU { memarg } => {
+            (AtomicOpKind::Rmw, "i32.atomic.rmw8.add_u", *memarg)
+        }
+        Operator::I32AtomicRmw16AddU { memarg } => {
+            (AtomicOpKind::Rmw, "i32.atomic.rmw16.add_u", *memarg)
+        }
+        Operator::I64AtomicRmw8AddU { memarg } => {
+            (AtomicOpKind::Rmw, "i64.atomic.rmw8.add_u", *memarg)
+        }
+        Operator::I64AtomicRmw16AddU { memarg } => {
+            (AtomicOpKind::Rmw, "i64.atomic.rmw16.add_u", *memarg)
+        }
+        Operator::I64AtomicRmw32AddU { memarg } => {
+            (AtomicOpKind::Rmw, "i64.atomic.rmw32.add_u", *memarg)
+        }
+        Operator::I32AtomicRmw8SubU { memarg } => {
+            (AtomicOpKind::Rmw, "i32.atomic.rmw8.sub_u", *memarg)
+        }
+        Operator::I32AtomicRmw16SubU { memarg } => {
+            (AtomicOpKind::Rmw, "i32.atomic.rmw16.sub_u", *memarg)
+        }
+        Operator::I64AtomicRmw8SubU { memarg } => {
+            (AtomicOpKind::Rmw, "i64.atomic.rmw8.sub_u", *memarg)
+        }
+        Operator::I64AtomicRmw16SubU { memarg } => {
+            (AtomicOpKind::Rmw, "i64.atomic.rmw16.sub_u", *memarg)
+        }
+        Operator::I64AtomicRmw32SubU { memarg } => {
+            (AtomicOpKind::Rmw, "i64.atomic.rmw32.sub_u", *memarg)
+        }
+        Operator::I32AtomicRmw8AndU { memarg } => {
+            (AtomicOpKind::Rmw, "i32.atomic.rmw8.and_u", *memarg)
+        }
+        Operator::I32AtomicRmw16AndU { memarg } => {
+            (AtomicOpKind::Rmw, "i32.atomic.rmw16.and_u", *memarg)
+        }
+        Operator::I64AtomicRmw8AndU { memarg } => {
+            (AtomicOpKind::Rmw, "i64.atomic.rmw8.and_u", *memarg)
+        }
+        Operator::I64AtomicRmw16AndU { memarg } => {
+            (AtomicOpKind::Rmw, "i64.atomic.rmw16.and_u", *memarg)
+        }
+        Operator::I64AtomicRmw32AndU { memarg } => {
+            (AtomicOpKind::Rmw, "i64.atomic.rmw32.and_u", *memarg)
+        }
+        Operator::I32AtomicRmw8OrU { memarg } => {
+            (AtomicOpKind::Rmw, "i32.atomic.rmw8.or_u", *memarg)
+        }
+        Operator::I32AtomicRmw16OrU { memarg } => {
+            (AtomicOpKind::Rmw, "i32.atomic.rmw16.or_u", *memarg)
+        }
+        Operator::I64AtomicRmw8OrU { memarg } => {
+            (AtomicOpKind::Rmw, "i64.atomic.rmw8.or_u", *memarg)
+        }
+        Operator::I64AtomicRmw16OrU { memarg } => {
+            (AtomicOpKind::Rmw, "i64.atomic.rmw16.or_u", *memarg)
+        }
+        Operator::I64AtomicRmw32OrU { memarg } => {
+            (AtomicOpKind::Rmw, "i64.atomic.rmw32.or_u", *memarg)
+        }
+        Operator::I32AtomicRmw8XorU { memarg } => {
+            (AtomicOpKind::Rmw, "i32.atomic.rmw8.xor_u", *memarg)
+        }
+        Operator::I32AtomicRmw16XorU { memarg } => {
+            (AtomicOpKind::Rmw, "i32.atomic.rmw16.xor_u", *memarg)
+        }
+        Operator::I64AtomicRmw8XorU { memarg } => {
+            (AtomicOpKind::Rmw, "i64.atomic.rmw8.xor_u", *memarg)
+        }
+        Operator::I64AtomicRmw16XorU { memarg } => {
+            (AtomicOpKind::Rmw, "i64.atomic.rmw16.xor_u", *memarg)
+        }
+        Operator::I64AtomicRmw32XorU { memarg } => {
+            (AtomicOpKind::Rmw, "i64.atomic.rmw32.xor_u", *memarg)
+        }
+        Operator::I32AtomicRmw8XchgU { memarg } => {
+            (AtomicOpKind::Rmw, "i32.atomic.rmw8.xchg_u", *memarg)
+        }
+        Operator::I32AtomicRmw16XchgU { memarg } => {
+            (AtomicOpKind::Rmw, "i32.atomic.rmw16.xchg_u", *memarg)
+        }
+        Operator::I64AtomicRmw8XchgU { memarg } => {
+            (AtomicOpKind::Rmw, "i64.atomic.rmw8.xchg_u", *memarg)
+        }
+        Operator::I64AtomicRmw16XchgU { memarg } => {
+            (AtomicOpKind::Rmw, "i64.atomic.rmw16.xchg_u", *memarg)
+        }
+        Operator::I64AtomicRmw32XchgU { memarg } => {
+            (AtomicOpKind::Rmw, "i64.atomic.rmw32.xchg_u", *memarg)
+        }
         Operator::I32AtomicRmwCmpxchg { memarg } => {
             (AtomicOpKind::Cmpxchg, "i32.atomic.rmw.cmpxchg", *memarg)
         }
         Operator::I64AtomicRmwCmpxchg { memarg } => {
             (AtomicOpKind::Cmpxchg, "i64.atomic.rmw.cmpxchg", *memarg)
+        }
+        Operator::I32AtomicRmw8CmpxchgU { memarg } => {
+            (AtomicOpKind::Cmpxchg, "i32.atomic.rmw8.cmpxchg_u", *memarg)
+        }
+        Operator::I32AtomicRmw16CmpxchgU { memarg } => {
+            (AtomicOpKind::Cmpxchg, "i32.atomic.rmw16.cmpxchg_u", *memarg)
+        }
+        Operator::I64AtomicRmw8CmpxchgU { memarg } => {
+            (AtomicOpKind::Cmpxchg, "i64.atomic.rmw8.cmpxchg_u", *memarg)
+        }
+        Operator::I64AtomicRmw16CmpxchgU { memarg } => {
+            (AtomicOpKind::Cmpxchg, "i64.atomic.rmw16.cmpxchg_u", *memarg)
+        }
+        Operator::I64AtomicRmw32CmpxchgU { memarg } => {
+            (AtomicOpKind::Cmpxchg, "i64.atomic.rmw32.cmpxchg_u", *memarg)
         }
         _ => return None,
     };
@@ -222,34 +339,60 @@ fn rust_lift_for(kind: AtomicOpKind, mnemonic: &str, memarg: &MemArg) -> Option<
         }
         AtomicOpKind::Rmw => {
             let cell: &str = rust_atomic_cell(mnemonic)?;
-            Some(format!(
-                "unsafe {{ (&*(ptr.add({}) as *const std::sync::atomic::{cell})).{}(val, {ordering}) /* {mnemonic} offset={} */ }}",
+            let value: String = rust_atomic_operand(mnemonic, "val")?;
+            let lift: String = format!(
+                "unsafe {{ (&*(ptr.add({}) as *const std::sync::atomic::{cell})).{}({value}, {ordering}) /* {mnemonic} offset={} */ }}",
                 memarg.offset,
                 rust_rmw_method(mnemonic)?,
                 memarg.offset
-            ))
+            );
+            rust_atomic_result(mnemonic, lift)
         }
         AtomicOpKind::Cmpxchg => {
             let cell: &str = rust_atomic_cell(mnemonic)?;
-            Some(format!(
-                "match unsafe {{ (&*(ptr.add({}) as *const std::sync::atomic::{cell})).compare_exchange(old, new, {ordering}, {ordering}) /* offset={} */ }} {{ Ok(observed) | Err(observed) => observed }}",
+            let old: String = rust_atomic_operand(mnemonic, "old")?;
+            let new: String = rust_atomic_operand(mnemonic, "new")?;
+            let lift: String = format!(
+                "match unsafe {{ (&*(ptr.add({}) as *const std::sync::atomic::{cell})).compare_exchange({old}, {new}, {ordering}, {ordering}) /* offset={} */ }} {{ Ok(observed) | Err(observed) => observed }}",
                 memarg.offset, memarg.offset
+            );
+            rust_atomic_result(mnemonic, lift)
+        }
+        AtomicOpKind::Wait32 | AtomicOpKind::Wait64 => {
+            let effective_address: String = rust_effective_address(memarg.offset);
+            Some(format!(
+                "wait_on_arc_mutex(memory.clone(), {effective_address}, expected, timeout_ns) /* {mnemonic} offset={} */",
+                memarg.offset
             ))
         }
-        AtomicOpKind::Wait32 | AtomicOpKind::Wait64 => Some(format!(
-            "wait_on_arc_mutex(memory.clone(), addr, expected, timeout_ns) /* {mnemonic} offset={} */",
-            memarg.offset
-        )),
-        AtomicOpKind::Notify => Some(format!(
-            "notify_arc_mutex(memory.clone(), addr, count) /* {mnemonic} offset={} */",
-            memarg.offset
-        )),
+        AtomicOpKind::Notify => {
+            let effective_address: String = rust_effective_address(memarg.offset);
+            Some(format!(
+                "notify_arc_mutex(memory.clone(), {effective_address}, count) /* {mnemonic} offset={} */",
+                memarg.offset
+            ))
+        }
         AtomicOpKind::Fence => Some(format!("std::sync::atomic::fence({ordering});")),
     }
 }
 
+fn rust_effective_address(offset: u64) -> String {
+    format!(
+        "match addr.checked_add({offset}) {{ Some(effective_addr) => effective_addr, None => panic!(\"DR-WASMDEOB-THREADS: atomic effective address overflow\") }}"
+    )
+}
+
 fn rust_atomic_cell(mnemonic: &str) -> Option<&'static str> {
     match mnemonic {
+        value if value.starts_with("i32.atomic.rmw8.") || value.starts_with("i64.atomic.rmw8.") => {
+            Some("AtomicU8")
+        }
+        value
+            if value.starts_with("i32.atomic.rmw16.") || value.starts_with("i64.atomic.rmw16.") =>
+        {
+            Some("AtomicU16")
+        }
+        value if value.starts_with("i64.atomic.rmw32.") => Some("AtomicU32"),
         "i32.atomic.load8_u" | "i64.atomic.load8_u" | "i32.atomic.store8" | "i64.atomic.store8" => {
             Some("AtomicU8")
         }
@@ -260,6 +403,29 @@ fn rust_atomic_cell(mnemonic: &str) -> Option<&'static str> {
         "i64.atomic.load32_u" | "i64.atomic.store32" => Some("AtomicU32"),
         value if value.starts_with("i32.atomic.") => Some("AtomicI32"),
         value if value.starts_with("i64.atomic.") => Some("AtomicI64"),
+        _ => None,
+    }
+}
+
+fn rust_atomic_operand(mnemonic: &str, operand: &str) -> Option<String> {
+    match rust_atomic_cell(mnemonic)? {
+        "AtomicU8" => Some(format!("{operand} as u8")),
+        "AtomicU16" => Some(format!("{operand} as u16")),
+        "AtomicU32" => Some(format!("{operand} as u32")),
+        "AtomicI32" | "AtomicI64" => Some(operand.to_owned()),
+        _ => None,
+    }
+}
+
+fn rust_atomic_result(mnemonic: &str, lift: String) -> Option<String> {
+    match rust_atomic_cell(mnemonic)? {
+        "AtomicU8" | "AtomicU16" if mnemonic.starts_with("i32.") => {
+            Some(format!("i32::from({lift})"))
+        }
+        "AtomicU8" | "AtomicU16" | "AtomicU32" if mnemonic.starts_with("i64.") => {
+            Some(format!("i64::from({lift})"))
+        }
+        "AtomicI32" | "AtomicI64" => Some(lift),
         _ => None,
     }
 }
@@ -275,13 +441,13 @@ fn rust_atomic_store_value(mnemonic: &str) -> Option<&'static str> {
 }
 
 fn rust_rmw_method(mnemonic: &str) -> Option<&'static str> {
-    match mnemonic {
-        "i32.atomic.rmw.add" | "i64.atomic.rmw.add" => Some("fetch_add"),
-        "i32.atomic.rmw.sub" | "i64.atomic.rmw.sub" => Some("fetch_sub"),
-        "i32.atomic.rmw.and" | "i64.atomic.rmw.and" => Some("fetch_and"),
-        "i32.atomic.rmw.or" | "i64.atomic.rmw.or" => Some("fetch_or"),
-        "i32.atomic.rmw.xor" | "i64.atomic.rmw.xor" => Some("fetch_xor"),
-        "i32.atomic.rmw.xchg" | "i64.atomic.rmw.xchg" => Some("swap"),
+    match mnemonic.rsplit('.').next()? {
+        "add" | "add_u" => Some("fetch_add"),
+        "sub" | "sub_u" => Some("fetch_sub"),
+        "and" | "and_u" => Some("fetch_and"),
+        "or" | "or_u" => Some("fetch_or"),
+        "xor" | "xor_u" => Some("fetch_xor"),
+        "xchg" | "xchg_u" => Some("swap"),
         _ => None,
     }
 }

@@ -33,3 +33,40 @@ fn wasm_decompile_target_rust_smoke() {
         "missing rust banner in {txt}"
     );
 }
+
+#[test]
+fn wasm_decompile_target_rust_rejects_unsafe_atomic_state() {
+    let module: Vec<u8> = wat::parse_str(
+        r#"(module
+          (memory 1 2 shared)
+          (func (export "load") (param i32) (result i32)
+            local.get 0
+            i32.atomic.load))"#,
+    )
+    .expect("wat");
+    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("wasm-rust-unsafe-atomic", "wasm");
+    write_bytes(&src, &module);
+    let (_out_scratch, out): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("wasm-rust-unsafe-atomic-out", "rs");
+    let r: Run = run_disrobe(&[
+        "wasm",
+        "decompile",
+        src.to_str().unwrap(),
+        "--target",
+        "rust",
+        "--out",
+        out.to_str().unwrap(),
+    ]);
+    assert_ne!(r.code, 0, "stdout={} stderr={}", r.stdout, r.stderr);
+    assert!(
+        r.stderr.contains("DR-WASMDEOB-0003"),
+        "unsafe atomic state returned the wrong diagnostic: {}",
+        r.stderr
+    );
+    assert!(
+        !out.exists(),
+        "unsafe atomic state wrote a lifted stub at {}",
+        out.display()
+    );
+}

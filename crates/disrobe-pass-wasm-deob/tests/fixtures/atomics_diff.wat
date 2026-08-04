@@ -185,4 +185,29 @@
     (memory.atomic.wait64
       (i32.add (i32.mul (i32.and (local.get 0) (i32.const 15)) (i32.const 8)) (i32.const 1704))
       (i64.extend_i32_s (local.get 1))
-      (i64.const 0))))
+      (i64.const 0)))
+
+  (func (export "at_i32_rmw_add_wrap") (param i32) (result i32)
+    (i32.atomic.store (i32.const 1800) (i32.const 2147483647))
+    (drop (i32.atomic.rmw.add (i32.const 1800) (i32.const 1)))
+    (i32.atomic.load (i32.const 1800)))
+
+  (func (export "at_i32_rmw_sub_wrap") (param i32) (result i32)
+    (i32.atomic.store (i32.const 1804) (i32.const -2147483648))
+    (drop (i32.atomic.rmw.sub (i32.const 1804) (i32.const 1)))
+    (i32.atomic.load (i32.const 1804)))
+
+  (func (export "at_i64_rmw_add_wrap") (param i32) (result i32)
+    (i64.atomic.store (i32.const 1808) (i64.const 9223372036854775807))
+    (drop (i64.atomic.rmw.add (i32.const 1808) (i64.const 1)))
+    (i64.eq
+      (i64.atomic.load (i32.const 1808))
+      (i64.const -9223372036854775808)))
+
+  (func (export "at_i64_rmw_sub_wrap") (param i32) (result i32)
+    (i64.atomic.store (i32.const 1816) (i64.const -9223372036854775808))
+    (drop (i64.atomic.rmw.sub (i32.const 1816) (i64.const 1)))
+    (i64.eq
+      (i64.atomic.load (i32.const 1816))
+      (i64.const 9223372036854775807)))
+)

@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use disrobe_pass_wasm_deob::{
-    CalleeNames, FunctionSig, LiftResult, LiftTarget, ModuleSignatures, extract_signatures,
-    lift_function_body, rust_module_decls, rust_runtime_prelude,
+    AtomicMemoryRefusal, CalleeNames, Error, FunctionSig, LiftResult, LiftTarget, ModuleSignatures,
+    extract_signatures, lift_function_body, rust_module_decls, rust_runtime_prelude,
+    try_lift_function_from_module, try_lift_functions_from_module,
 };
 use wasmparser::{FunctionBody, Parser, Payload};
 
@@ -32,6 +33,21 @@ fn lift_index(wat: &str, function_index: usize, target: LiftTarget) -> LiftResul
     let sigs: ModuleSignatures = extract_signatures(&bytes).expect("signatures");
     let defined: &[FunctionSig] = sigs.defined();
     let callees: CalleeNames = callees_with_module(&bytes, &sigs);
+    let bodies: Vec<FunctionBody<'_>> = defined_bodies(&bytes);
+    let body: &FunctionBody<'_> = bodies.get(function_index).expect("body present");
+    let sig: &FunctionSig = defined.get(function_index).expect("sig present");
+    lift_function_body(body, sig, &callees, target)
+}
+
+fn lift_index_without_module(wat: &str, function_index: usize, target: LiftTarget) -> LiftResult {
+    let bytes: Vec<u8> = wat::parse_str(wat).expect("wat assembles to real wasm bytes");
+    let sigs: ModuleSignatures = extract_signatures(&bytes).expect("signatures");
+    let defined: &[FunctionSig] = sigs.defined();
+    let callees: CalleeNames = CalleeNames::with_signatures(
+        sigs.callee_names(),
+        sigs.call_signatures(),
+        sigs.call_signatures(),
+    );
     let bodies: Vec<FunctionBody<'_>> = defined_bodies(&bytes);
     let body: &FunctionBody<'_> = bodies.get(function_index).expect("body present");
     let sig: &FunctionSig = defined.get(function_index).expect("sig present");
@@ -83,6 +99,654 @@ fn memory32_load_stays_on_32bit_helper() {
     let out: LiftResult = lift_index(WAT, 0, LiftTarget::Rust);
     assert!(out.pseudo_source.contains("wasm_load_i32(p0, 4)"));
     assert!(!out.pseudo_source.contains("wasm_load_i32_a64"));
+}
+
+const DEFINED_MEM64_ATOMIC_WAT: &str = r#"
+    (module
+      (memory i64 1 1 shared)
+      (func (export "load") (param i64) (result i32)
+        local.get 0
+        i32.atomic.load offset=12))
+"#;
+
+#[test]
+fn defined_memory64_atomic_load_preserves_trapping_guards_for_each_target() {
+    let cases: [(LiftTarget, &str); 3] = [
+        (
+            LiftTarget::Rust,
+            "wasm_i32_atomic_load_a64(wasm_atomic_addr_a64(p0, 12, 4), 12)",
+        ),
+        (
+            LiftTarget::TypeScript,
+            "wasmI32AtomicLoadA64(wasmAtomicAddrA64(p0, 12n, 4), 12)",
+        ),
+        (
+            LiftTarget::C,
+            "wasm_i32_atomic_load_a64(wasm_atomic_addr_a64(p0, UINT64_C(12), 4), UINT64_C(12))",
+        ),
+    ];
+    for (target, expected) in cases {
+        let out: LiftResult = lift_index(DEFINED_MEM64_ATOMIC_WAT, 0, target);
+        assert!(
+            out.pseudo_source.contains(expected),
+            "{target:?} memory64 atomic lift must retain the offset, width, and 64-bit trapping guard in `{expected}`:\n{}",
+            out.pseudo_source
+        );
+        assert!(out.coverage.fully_recovered(), "no untranslated ops");
+    }
+}
+
+const ATOMIC_TRAP_GUARDS_WAT: &str = r#"
+    (module
+      (memory 1 1 shared)
+      (func (export "guarded") (param i32 i32 i64)
+        local.get 0
+        i32.atomic.load offset=12
+        drop
+        local.get 0
+        local.get 1
+        i32.atomic.store offset=12
+        local.get 0
+        local.get 1
+        i32.atomic.rmw16.add_u offset=12
+        drop
+        local.get 0
+        local.get 1
+        local.get 1
+        i32.atomic.rmw16.cmpxchg_u offset=12
+        drop
+        local.get 0
+        local.get 1
+        memory.atomic.notify offset=12
+        drop
+        local.get 0
+        local.get 1
+        local.get 2
+        memory.atomic.wait32 offset=12
+        drop))
+"#;
+
+#[test]
+fn every_atomic_shape_lifts_through_trapping_address_guards() {
+    let cases: [(LiftTarget, [&str; 6]); 3] = [
+        (
+            LiftTarget::Rust,
+            [
+                "wasm_i32_atomic_load(wasm_atomic_addr(p0, 12, 4), 12)",
+                "wasm_i32_atomic_store(wasm_atomic_addr(p0, 12, 4), 12, p1)",
+                "wasm_i32_atomic_rmw16_add_u(wasm_atomic_addr(p0, 12, 2), 12, p1)",
+                "wasm_i32_atomic_rmw16_cmpxchg_u(wasm_atomic_addr(p0, 12, 2), 12, p1, p1)",
+                "wasm_memory_atomic_notify(wasm_atomic_addr(p0, 12, 4), 12, p1)",
+                "wasm_memory_atomic_wait32(wasm_atomic_addr(p0, 12, 4), 12, p1, p2)",
+            ],
+        ),
+        (
+            LiftTarget::TypeScript,
+            [
+                "wasmI32AtomicLoad(wasmAtomicAddr(p0, 12n, 4), 12)",
+                "wasmI32AtomicStore(wasmAtomicAddr(p0, 12n, 4), 12, p1)",
+                "wasmI32AtomicRmw16AddU(wasmAtomicAddr(p0, 12n, 2), 12, p1)",
+                "wasmI32AtomicRmw16CmpxchgU(wasmAtomicAddr(p0, 12n, 2), 12, p1, p1)",
+                "wasmMemoryAtomicNotify(wasmAtomicAddr(p0, 12n, 4), 12, p1)",
+                "wasmMemoryAtomicWait32(wasmAtomicAddr(p0, 12n, 4), 12, p1, p2)",
+            ],
+        ),
+        (
+            LiftTarget::C,
+            [
+                "wasm_i32_atomic_load(wasm_atomic_addr(p0, UINT64_C(12), 4), UINT64_C(12))",
+                "wasm_i32_atomic_store(wasm_atomic_addr(p0, UINT64_C(12), 4), UINT64_C(12), p1)",
+                "wasm_i32_atomic_rmw16_add_u(wasm_atomic_addr(p0, UINT64_C(12), 2), UINT64_C(12), p1)",
+                "wasm_i32_atomic_rmw16_cmpxchg_u(wasm_atomic_addr(p0, UINT64_C(12), 2), UINT64_C(12), p1, p1)",
+                "wasm_memory_atomic_notify(wasm_atomic_addr(p0, UINT64_C(12), 4), UINT64_C(12), p1)",
+                "wasm_memory_atomic_wait32(wasm_atomic_addr(p0, UINT64_C(12), 4), UINT64_C(12), p1, p2)",
+            ],
+        ),
+    ];
+    for (target, expected_calls) in cases {
+        let out: LiftResult = lift_index(ATOMIC_TRAP_GUARDS_WAT, 0, target);
+        for expected in expected_calls {
+            assert!(
+                out.pseudo_source.contains(expected),
+                "{target:?} atomic lift omitted the offset, bounds, overflow, or natural-alignment guard in `{expected}`:\n{}",
+                out.pseudo_source
+            );
+        }
+        assert!(out.coverage.fully_recovered(), "no untranslated ops");
+    }
+}
+
+const SAFE_ATOMIC_WAT: &str = r#"
+    (module
+      (memory 1 1 shared)
+      (func (export "load") (param i32) (result i32)
+        local.get 0
+        i32.atomic.load))
+"#;
+
+const UNSAFE_ATOMIC_MEMORY_MODELS: [(&str, usize, &str); 16] = [
+    (
+        "missing memory",
+        0,
+        r#"(module
+          (func (export "load") (param i32) (result i32)
+            local.get 0
+            i32.atomic.load))"#,
+    ),
+    (
+        "multiple memories",
+        0,
+        r#"(module
+          (memory 1 1 shared)
+          (memory 1 1 shared)
+          (func (export "load") (param i32) (result i32)
+            local.get 0
+            i32.atomic.load))"#,
+    ),
+    (
+        "zero initial pages",
+        0,
+        r#"(module
+          (memory 0 1 shared)
+          (func (export "load") (param i32) (result i32)
+            local.get 0
+            i32.atomic.load))"#,
+    ),
+    (
+        "non-fixed maximum",
+        0,
+        r#"(module
+          (memory 1 2 shared)
+          (func (export "load") (param i32) (result i32)
+            local.get 0
+            i32.atomic.load))"#,
+    ),
+    (
+        "unshared memory",
+        0,
+        r#"(module
+          (memory 1 1)
+          (func (export "load") (param i32) (result i32)
+            local.get 0
+            i32.atomic.load))"#,
+    ),
+    (
+        "custom page size",
+        0,
+        r#"(module
+          (memory 1 1 shared (pagesize 1))
+          (func (export "load") (param i32) (result i32)
+            local.get 0
+            i32.atomic.load))"#,
+    ),
+    (
+        "module memory growth",
+        1,
+        r#"(module
+          (memory 1 1 shared)
+          (func (export "grow") (param i32) (result i32)
+            local.get 0
+            memory.grow)
+          (func (export "load") (param i32) (result i32)
+            local.get 0
+            i32.atomic.load))"#,
+    ),
+    (
+        "imported memory",
+        0,
+        r#"(module
+          (import "env" "memory" (memory 1 1 shared))
+          (func (export "load") (param i32) (result i32)
+            local.get 0
+            i32.atomic.load))"#,
+    ),
+    (
+        "data segment",
+        0,
+        r#"(module
+          (memory 1 1 shared)
+          (data (i32.const 0) "\01\00\00\00")
+          (func (export "load") (param i32) (result i32)
+            local.get 0
+            i32.atomic.load))"#,
+    ),
+    (
+        "start function",
+        1,
+        r#"(module
+          (memory 1 1 shared)
+          (func $start)
+          (start $start)
+          (func (export "load") (param i32) (result i32)
+            local.get 0
+            i32.atomic.load))"#,
+    ),
+    (
+        "imported global",
+        0,
+        r#"(module
+          (import "env" "value" (global i32))
+          (memory 1 1 shared)
+          (func (export "load") (param i32) (result i32)
+            local.get 0
+            i32.atomic.load))"#,
+    ),
+    (
+        "defined global",
+        0,
+        r#"(module
+          (memory 1 1 shared)
+          (global i32 (i32.const 0))
+          (func (export "load") (param i32) (result i32)
+            local.get 0
+            i32.atomic.load))"#,
+    ),
+    (
+        "defined tag",
+        0,
+        r#"(module
+          (tag $value (param i32))
+          (memory 1 1 shared)
+          (func (export "load") (param i32) (result i32)
+            local.get 0
+            i32.atomic.load))"#,
+    ),
+    (
+        "function import",
+        0,
+        r#"(module
+          (import "env" "value" (func (result i32)))
+          (memory 1 1 shared)
+          (func (export "load") (param i32) (result i32)
+            local.get 0
+            i32.atomic.load))"#,
+    ),
+    (
+        "defined table",
+        0,
+        r#"(module
+          (memory 1 1 shared)
+          (table 1 funcref)
+          (func (export "load") (param i32) (result i32)
+            local.get 0
+            i32.atomic.load))"#,
+    ),
+    (
+        "element segment",
+        1,
+        r#"(module
+          (memory 1 1 shared)
+          (table 1 funcref)
+          (func $target)
+          (elem (i32.const 0) func $target)
+          (func (export "load") (param i32) (result i32)
+            local.get 0
+            i32.atomic.load))"#,
+    ),
+];
+
+fn assert_trapping_atomic_refusal(out: &LiftResult, target: LiftTarget, label: &str) {
+    assert!(
+        out.pseudo_source.contains("DR-WASMDEOB-0003"),
+        "{target:?} must expose the stable refusal for {label}:\n{}",
+        out.pseudo_source
+    );
+    assert!(
+        out.coverage
+            .untranslated
+            .iter()
+            .any(|op: &String| op == "<unsupported-atomic-memory-model>"),
+        "{target:?} must report refused atomic coverage for {label}"
+    );
+    assert!(!out.coverage.fully_recovered());
+    assert!(!out.pseudo_source.contains("atomic_load("));
+    assert!(!out.pseudo_source.contains("AtomicLoad("));
+    match target {
+        LiftTarget::Rust => assert!(out.pseudo_source.contains("panic!(")),
+        LiftTarget::TypeScript => assert!(out.pseudo_source.contains("throw new Error(")),
+        LiftTarget::C => assert!(out.pseudo_source.contains("abort();")),
+        LiftTarget::Wat => panic!("high-level refusal target required"),
+    }
+    assert!(!out.pseudo_source.contains("return 0"));
+}
+
+#[test]
+fn unsafe_atomic_memory_models_emit_trapping_refusals() {
+    for (label, function_index, wat) in UNSAFE_ATOMIC_MEMORY_MODELS {
+        for target in [LiftTarget::Rust, LiftTarget::TypeScript, LiftTarget::C] {
+            let out: LiftResult = lift_index(wat, function_index, target);
+            assert_trapping_atomic_refusal(&out, target, label);
+        }
+    }
+}
+
+#[test]
+fn atomic_memory_lift_without_module_context_emits_trapping_refusal() {
+    for target in [LiftTarget::Rust, LiftTarget::TypeScript, LiftTarget::C] {
+        let out: LiftResult = lift_index_without_module(SAFE_ATOMIC_WAT, 0, target);
+        assert_trapping_atomic_refusal(&out, target, "missing module context");
+    }
+}
+
+#[test]
+fn atomic_fence_does_not_require_memory_context() {
+    const WAT: &str = r#"(module (func (export "fence") atomic.fence))"#;
+    let cases: [(LiftTarget, &str); 3] = [
+        (LiftTarget::Rust, "wasm_atomic_fence();"),
+        (LiftTarget::TypeScript, "wasmAtomicFence();"),
+        (LiftTarget::C, "wasm_atomic_fence();"),
+    ];
+    for (target, expected) in cases {
+        let out: LiftResult = lift_index_without_module(WAT, 0, target);
+        assert!(out.pseudo_source.contains(expected), "{target:?}");
+        assert!(out.coverage.fully_recovered(), "{target:?}");
+    }
+}
+
+#[test]
+fn strict_module_lift_propagates_typed_atomic_memory_refusal() {
+    const WAT: &str = r#"(module
+      (memory 1 2 shared)
+      (func (export "load") (param i32) (result i32)
+        local.get 0
+        i32.atomic.load))"#;
+    let bytes: Vec<u8> = wat::parse_str(WAT).expect("wat");
+    let error: Error = try_lift_functions_from_module(&bytes, LiftTarget::Rust)
+        .expect_err("unsafe atomic memory must be a typed refusal");
+    assert!(matches!(
+        error,
+        Error::AtomicMemoryModel(AtomicMemoryRefusal::MaximumPages {
+            memory_index: 0,
+            actual: Some(2),
+        })
+    ));
+}
+
+#[test]
+fn strict_module_lift_preserves_legacy_stub_for_invalid_non_atomic_opcode() {
+    let mut bytes: Vec<u8> = wat::parse_str(
+        r#"(module
+          (func (export "broken") (result i32)
+            i32.const 0)
+          (func (export "intact") (result i32)
+            i32.const 7))"#,
+    )
+    .expect("wat");
+    let body_range: std::ops::Range<usize> = defined_bodies(&bytes)
+        .first()
+        .expect("one function body")
+        .range();
+    let opcode_index: usize = body_range.start.checked_add(1).expect("opcode index");
+    assert_eq!(bytes.get(opcode_index), Some(&0x41));
+    bytes[opcode_index] = 0xff;
+
+    for target in [LiftTarget::Rust, LiftTarget::TypeScript, LiftTarget::C] {
+        let results: Vec<LiftResult> = try_lift_functions_from_module(&bytes, target)
+            .expect("non-atomic lift errors retain legacy stubs");
+        assert_eq!(results.len(), 2);
+        assert!(
+            results[0]
+                .pseudo_source
+                .contains("not lifted: DR-WASMDEOB-0001")
+        );
+        assert_eq!(
+            results[0].coverage.untranslated,
+            vec!["<parse-failure>".to_owned()]
+        );
+        assert!(results[1].pseudo_source.contains("intact"));
+        assert!(results[1].coverage.fully_recovered());
+    }
+}
+
+#[test]
+fn strict_module_lift_rejects_atomic_state_after_invalid_operator_scan() {
+    let mut bytes: Vec<u8> = wat::parse_str(
+        r#"(module
+          (memory 1 1 shared)
+          (func (export "broken") (result i32)
+            i32.const 0)
+          (func (export "load") (param i32) (result i32)
+            local.get 0
+            i32.atomic.load))"#,
+    )
+    .expect("wat");
+    let body_range: std::ops::Range<usize> = defined_bodies(&bytes)
+        .first()
+        .expect("one function body")
+        .range();
+    let opcode_index: usize = body_range.start.checked_add(1).expect("opcode index");
+    assert_eq!(bytes.get(opcode_index), Some(&0x41));
+    bytes[opcode_index] = 0xff;
+
+    let error: Error = try_lift_functions_from_module(&bytes, LiftTarget::Rust)
+        .expect_err("an incomplete grow scan must refuse atomic lifting");
+    assert!(matches!(
+        error,
+        Error::AtomicMemoryModel(AtomicMemoryRefusal::MemoryScanFailed)
+    ));
+}
+
+#[test]
+fn strict_module_call_indirect_uses_type_index_signatures() {
+    let bytes: Vec<u8> = wat::parse_str(
+        r#"(module
+          (type $unused (func (param i64 i64) (result i64)))
+          (type $callee (func (param f64) (result f32)))
+          (type $dispatch (func (param f64 i32) (result f32)))
+          (table 1 funcref)
+          (func $callee_impl (type $callee) (param f64) (result f32)
+            local.get 0
+            f32.demote_f64)
+          (elem (i32.const 0) func $callee_impl)
+          (func (export "dispatch") (type $dispatch) (param f64 i32) (result f32)
+            local.get 0
+            local.get 1
+            call_indirect (type $callee)))"#,
+    )
+    .expect("wat");
+    let result: LiftResult = try_lift_function_from_module(&bytes, 1, LiftTarget::Rust)
+        .expect("strict call_indirect lift");
+    assert!(
+        result
+            .pseudo_source
+            .contains("pub fn dispatch(p0: f64, p1: i32) -> f32")
+    );
+    assert!(
+        result
+            .pseudo_source
+            .contains("let t0: f32 = call_indirect_type1(p1, p0);")
+    );
+    assert!(!result.pseudo_source.contains("not lifted"));
+}
+
+fn strict_module_error(wat: &str, function_index: usize) -> Error {
+    let bytes: Vec<u8> = wat::parse_str(wat).expect("wat");
+    try_lift_function_from_module(&bytes, function_index, LiftTarget::Rust)
+        .expect_err("unsafe atomic module must be a typed refusal")
+}
+
+#[test]
+fn strict_module_lift_rejects_imported_atomic_memory() {
+    const WAT: &str = r#"(module
+      (import "env" "memory" (memory 1 1 shared))
+      (func (export "load") (param i32) (result i32)
+        local.get 0
+        i32.atomic.load))"#;
+    let error: Error = strict_module_error(WAT, 0);
+    assert!(matches!(
+        error,
+        Error::AtomicMemoryModel(AtomicMemoryRefusal::ImportedMemory { memory_index: 0 })
+    ));
+}
+
+#[test]
+fn strict_module_lift_rejects_atomic_memory_custom_page_size() {
+    const WAT: &str = r#"(module
+      (memory 1 1 shared (pagesize 1))
+      (func (export "load") (param i32) (result i32)
+        local.get 0
+        i32.atomic.load))"#;
+    let error: Error = strict_module_error(WAT, 0);
+    assert!(matches!(
+        error,
+        Error::AtomicMemoryModel(AtomicMemoryRefusal::PageSize {
+            memory_index: 0,
+            actual: 0,
+        })
+    ));
+}
+
+#[test]
+fn strict_module_lift_rejects_atomic_module_data_segments() {
+    const WAT: &str = r#"(module
+      (memory 1 1 shared)
+      (data (i32.const 0) "\01\00\00\00")
+      (func (export "load") (param i32) (result i32)
+        local.get 0
+        i32.atomic.load))"#;
+    let error: Error = strict_module_error(WAT, 0);
+    assert!(matches!(
+        error,
+        Error::AtomicMemoryModel(AtomicMemoryRefusal::DataSegments { actual: 1 })
+    ));
+}
+
+#[test]
+fn strict_module_lift_rejects_atomic_module_start_function() {
+    const WAT: &str = r#"(module
+      (memory 1 1 shared)
+      (func $start)
+      (start $start)
+      (func (export "load") (param i32) (result i32)
+        local.get 0
+        i32.atomic.load))"#;
+    let error: Error = strict_module_error(WAT, 1);
+    assert!(matches!(
+        error,
+        Error::AtomicMemoryModel(AtomicMemoryRefusal::StartFunction { function_index: 0 })
+    ));
+}
+
+#[test]
+fn strict_module_lift_rejects_atomic_module_imported_globals() {
+    const WAT: &str = r#"(module
+      (import "env" "value" (global i32))
+      (memory 1 1 shared)
+      (func (export "load") (param i32) (result i32)
+        local.get 0
+        i32.atomic.load))"#;
+    let error: Error = strict_module_error(WAT, 0);
+    assert!(matches!(
+        error,
+        Error::AtomicMemoryModel(AtomicMemoryRefusal::Imports { actual: 1 })
+    ));
+}
+
+#[test]
+fn strict_module_lift_rejects_atomic_module_defined_globals() {
+    const WAT: &str = r#"(module
+      (memory 1 1 shared)
+      (global i32 (i32.const 0))
+      (func (export "load") (param i32) (result i32)
+        local.get 0
+        i32.atomic.load))"#;
+    let error: Error = strict_module_error(WAT, 0);
+    assert!(matches!(
+        error,
+        Error::AtomicMemoryModel(AtomicMemoryRefusal::Globals { actual: 1 })
+    ));
+}
+
+#[test]
+fn strict_module_lift_rejects_atomic_module_defined_tags() {
+    const WAT: &str = r#"(module
+      (tag $value (param i32))
+      (memory 1 1 shared)
+      (func (export "load") (param i32) (result i32)
+        local.get 0
+        i32.atomic.load))"#;
+    let error: Error = strict_module_error(WAT, 0);
+    assert!(matches!(
+        error,
+        Error::AtomicMemoryModel(AtomicMemoryRefusal::Tags { actual: 1 })
+    ));
+}
+
+#[test]
+fn strict_module_lift_rejects_atomic_module_function_imports() {
+    const WAT: &str = r#"(module
+      (import "env" "value" (func (result i32)))
+      (memory 1 1 shared)
+      (func (export "load") (param i32) (result i32)
+        local.get 0
+        i32.atomic.load))"#;
+    let error: Error = strict_module_error(WAT, 0);
+    assert!(matches!(
+        error,
+        Error::AtomicMemoryModel(AtomicMemoryRefusal::Imports { actual: 1 })
+    ));
+}
+
+#[test]
+fn strict_module_lift_rejects_atomic_module_tables() {
+    const WAT: &str = r#"(module
+      (memory 1 1 shared)
+      (table 1 funcref)
+      (func (export "load") (param i32) (result i32)
+        local.get 0
+        i32.atomic.load))"#;
+    let error: Error = strict_module_error(WAT, 0);
+    assert!(matches!(
+        error,
+        Error::AtomicMemoryModel(AtomicMemoryRefusal::Tables { actual: 1 })
+    ));
+}
+
+#[test]
+fn strict_module_lift_rejects_atomic_module_element_segments() {
+    const WAT: &str = r#"(module
+      (memory 1 1 shared)
+      (table 1 funcref)
+      (func $target)
+      (elem (i32.const 0) func $target)
+      (func (export "load") (param i32) (result i32)
+        local.get 0
+        i32.atomic.load))"#;
+    let error: Error = strict_module_error(WAT, 1);
+    assert!(matches!(
+        error,
+        Error::AtomicMemoryModel(AtomicMemoryRefusal::ElementSegments { actual: 1 })
+    ));
+}
+
+#[test]
+fn strict_module_lift_derives_selection_signature_and_callees_from_module_bytes() {
+    const WAT: &str = r#"(module
+      (func (export "callee64") (param i64) (result i64)
+        local.get 0)
+      (func (export "distractor") (param f64) (result f64)
+        local.get 0)
+      (func (export "selected") (param i64) (result i64)
+        local.get 0
+        call 0))"#;
+    let bytes: Vec<u8> = wat::parse_str(WAT).expect("wat");
+    let out: LiftResult = try_lift_function_from_module(&bytes, 2, LiftTarget::Rust)
+        .expect("module-derived lift inputs");
+    assert!(
+        out.pseudo_source
+            .contains("pub fn selected(p0: i64) -> i64")
+    );
+    assert!(out.pseudo_source.contains("let t0: i64 = callee64(p0);"));
+    assert!(out.coverage.fully_recovered());
+}
+
+#[test]
+fn strict_module_lift_accepts_matching_safe_atomic_context() {
+    let bytes: Vec<u8> = wat::parse_str(SAFE_ATOMIC_WAT).expect("wat");
+    let out: LiftResult =
+        try_lift_function_from_module(&bytes, 0, LiftTarget::Rust).expect("safe atomic module");
+    assert!(out.coverage.fully_recovered());
+    assert!(out.pseudo_source.contains("wasm_i32_atomic_load("));
 }
 
 const FUNCREF_WAT: &str = r#"

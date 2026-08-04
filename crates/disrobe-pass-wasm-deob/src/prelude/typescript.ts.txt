@@ -4,6 +4,7 @@
 // Single-threaded runtime: memory.atomic.wait reports 1 (not-equal) or 2 (timed-out)
 // and never blocks, memory.atomic.notify wakes nobody, and atomic accesses share the
 // same storage as their plain counterparts.
+import { writeSync } from "node:fs";
 
 const WASM_MEMORY: Uint8Array = new Uint8Array(64 * 1024);
 const WASM_GLOBALS: bigint[] = new Array<bigint>(64).fill(0n);
@@ -158,6 +159,24 @@ const wasmI64ReinterpretF64 = (a: number): bigint => { WASM_MEM_VIEW.setFloat64(
 const wasmF32ReinterpretI32 = (a: number): number => { WASM_MEM_VIEW.setInt32(0, a, true); return WASM_MEM_VIEW.getFloat32(0, true); };
 const wasmF64ReinterpretI64 = (a: bigint): number => { WASM_MEM_VIEW.setBigInt64(0, a, true); return WASM_MEM_VIEW.getFloat64(0, true); };
 
+const wasmAtomicTrap = (reason: string): never => {
+  writeSync(2, "DR-WASMDEOB-" + "TRAP/1:" + reason + "\n");
+  throw new RangeError("wasm atomic trap");
+};
+const wasmAtomicRange = (addr: bigint, offset: bigint, width: number): void => {
+  if (!Number.isSafeInteger(width) || width <= 0 || (width & (width - 1)) !== 0) {
+    wasmAtomicTrap("atomic-invalid-width");
+  }
+  const alignedStart: bigint = BigInt.asUintN(64, addr + offset);
+  if ((alignedStart & (BigInt(width) - 1n)) !== 0n) { wasmAtomicTrap("atomic-unaligned"); }
+  if (addr > 18446744073709551615n - offset) { wasmAtomicTrap("atomic-oob"); }
+  const start: bigint = addr + offset;
+  if (start > 18446744073709551615n - BigInt(width)) { wasmAtomicTrap("atomic-oob"); }
+  const end: bigint = start + BigInt(width);
+  if (end > BigInt(WASM_MEMORY.length)) { wasmAtomicTrap("atomic-oob"); }
+};
+const wasmAtomicAddr = (addr: number, offset: bigint, width: number): number => { wasmAtomicRange(BigInt(u32(addr)), offset, width); return addr; };
+const wasmAtomicAddrA64 = (addr: bigint, offset: bigint, width: number): bigint => { wasmAtomicRange(BigInt.asUintN(64, addr), offset, width); return addr; };
 const wasmMemAddr = (addr: number, offset: number): number => u32(addr) + offset;
 const wasmLoadI32 = (addr: number, offset: number): number => WASM_MEM_VIEW.getInt32(wasmMemAddr(addr, offset), true);
 const wasmLoadI64 = (addr: number, offset: number): bigint => WASM_MEM_VIEW.getBigInt64(wasmMemAddr(addr, offset), true);
@@ -676,16 +695,16 @@ const wasmI32AtomicRmwCmpxchg = (addr: number, offset: number, expected: number,
 const wasmI32AtomicRmwCmpxchgA64 = (addr: bigint, offset: number, expected: number, replacement: number): number => { const cur = wasmLoadI32A64(addr, offset); if (cur === expected) wasmStoreI32A64(addr, offset, replacement); return cur; };
 const wasmI64AtomicRmwCmpxchg = (addr: number, offset: number, expected: bigint, replacement: bigint): bigint => { const cur = wasmLoadI64(addr, offset); if (cur === expected) wasmStoreI64(addr, offset, replacement); return cur; };
 const wasmI64AtomicRmwCmpxchgA64 = (addr: bigint, offset: number, expected: bigint, replacement: bigint): bigint => { const cur = wasmLoadI64A64(addr, offset); if (cur === expected) wasmStoreI64A64(addr, offset, replacement); return cur; };
-const wasmI32AtomicRmw8CmpxchgU = (addr: number, offset: number, expected: number, replacement: number): number => { const cur = wasmLoadI328u(addr, offset); if (cur === expected) wasmStoreI328(addr, offset, replacement); return cur; };
-const wasmI32AtomicRmw8CmpxchgUA64 = (addr: bigint, offset: number, expected: number, replacement: number): number => { const cur = wasmLoadI328uA64(addr, offset); if (cur === expected) wasmStoreI328A64(addr, offset, replacement); return cur; };
-const wasmI32AtomicRmw16CmpxchgU = (addr: number, offset: number, expected: number, replacement: number): number => { const cur = wasmLoadI3216u(addr, offset); if (cur === expected) wasmStoreI3216(addr, offset, replacement); return cur; };
-const wasmI32AtomicRmw16CmpxchgUA64 = (addr: bigint, offset: number, expected: number, replacement: number): number => { const cur = wasmLoadI3216uA64(addr, offset); if (cur === expected) wasmStoreI3216A64(addr, offset, replacement); return cur; };
-const wasmI64AtomicRmw8CmpxchgU = (addr: number, offset: number, expected: bigint, replacement: bigint): bigint => { const cur = wasmLoadI648u(addr, offset); if (cur === expected) wasmStoreI648(addr, offset, replacement); return cur; };
-const wasmI64AtomicRmw8CmpxchgUA64 = (addr: bigint, offset: number, expected: bigint, replacement: bigint): bigint => { const cur = wasmLoadI648uA64(addr, offset); if (cur === expected) wasmStoreI648A64(addr, offset, replacement); return cur; };
-const wasmI64AtomicRmw16CmpxchgU = (addr: number, offset: number, expected: bigint, replacement: bigint): bigint => { const cur = wasmLoadI6416u(addr, offset); if (cur === expected) wasmStoreI6416(addr, offset, replacement); return cur; };
-const wasmI64AtomicRmw16CmpxchgUA64 = (addr: bigint, offset: number, expected: bigint, replacement: bigint): bigint => { const cur = wasmLoadI6416uA64(addr, offset); if (cur === expected) wasmStoreI6416A64(addr, offset, replacement); return cur; };
-const wasmI64AtomicRmw32CmpxchgU = (addr: number, offset: number, expected: bigint, replacement: bigint): bigint => { const cur = wasmLoadI6432u(addr, offset); if (cur === expected) wasmStoreI6432(addr, offset, replacement); return cur; };
-const wasmI64AtomicRmw32CmpxchgUA64 = (addr: bigint, offset: number, expected: bigint, replacement: bigint): bigint => { const cur = wasmLoadI6432uA64(addr, offset); if (cur === expected) wasmStoreI6432A64(addr, offset, replacement); return cur; };
+const wasmI32AtomicRmw8CmpxchgU = (addr: number, offset: number, expected: number, replacement: number): number => { const cur = wasmLoadI328u(addr, offset); if (cur === (expected & 0xff)) wasmStoreI328(addr, offset, replacement); return cur; };
+const wasmI32AtomicRmw8CmpxchgUA64 = (addr: bigint, offset: number, expected: number, replacement: number): number => { const cur = wasmLoadI328uA64(addr, offset); if (cur === (expected & 0xff)) wasmStoreI328A64(addr, offset, replacement); return cur; };
+const wasmI32AtomicRmw16CmpxchgU = (addr: number, offset: number, expected: number, replacement: number): number => { const cur = wasmLoadI3216u(addr, offset); if (cur === (expected & 0xffff)) wasmStoreI3216(addr, offset, replacement); return cur; };
+const wasmI32AtomicRmw16CmpxchgUA64 = (addr: bigint, offset: number, expected: number, replacement: number): number => { const cur = wasmLoadI3216uA64(addr, offset); if (cur === (expected & 0xffff)) wasmStoreI3216A64(addr, offset, replacement); return cur; };
+const wasmI64AtomicRmw8CmpxchgU = (addr: number, offset: number, expected: bigint, replacement: bigint): bigint => { const cur = wasmLoadI648u(addr, offset); if (cur === (expected & 0xffn)) wasmStoreI648(addr, offset, replacement); return cur; };
+const wasmI64AtomicRmw8CmpxchgUA64 = (addr: bigint, offset: number, expected: bigint, replacement: bigint): bigint => { const cur = wasmLoadI648uA64(addr, offset); if (cur === (expected & 0xffn)) wasmStoreI648A64(addr, offset, replacement); return cur; };
+const wasmI64AtomicRmw16CmpxchgU = (addr: number, offset: number, expected: bigint, replacement: bigint): bigint => { const cur = wasmLoadI6416u(addr, offset); if (cur === (expected & 0xffffn)) wasmStoreI6416(addr, offset, replacement); return cur; };
+const wasmI64AtomicRmw16CmpxchgUA64 = (addr: bigint, offset: number, expected: bigint, replacement: bigint): bigint => { const cur = wasmLoadI6416uA64(addr, offset); if (cur === (expected & 0xffffn)) wasmStoreI6416A64(addr, offset, replacement); return cur; };
+const wasmI64AtomicRmw32CmpxchgU = (addr: number, offset: number, expected: bigint, replacement: bigint): bigint => { const cur = wasmLoadI6432u(addr, offset); if (cur === (expected & 0xffff_ffffn)) wasmStoreI6432(addr, offset, replacement); return cur; };
+const wasmI64AtomicRmw32CmpxchgUA64 = (addr: bigint, offset: number, expected: bigint, replacement: bigint): bigint => { const cur = wasmLoadI6432uA64(addr, offset); if (cur === (expected & 0xffff_ffffn)) wasmStoreI6432A64(addr, offset, replacement); return cur; };
 const wasmAtomicFence = (): void => { };
 
 

@@ -4,12 +4,13 @@ use std::fmt::Arguments;
 use wasmparser::{BlockType, FunctionBody, Operator, Parser, Payload, ValType};
 
 use crate::MAX_RENDER_INDENT;
-use crate::error::{Error, Result};
+use crate::custom_page_sizes::DEFAULT_PAGE_SIZE_LOG2;
+use crate::error::{AtomicMemoryRefusal, Error, Result};
 use crate::gc_types::{
     ArrayTypeRecord, GcStorageKind, GcTypeGraph, StructTypeRecord, recover_gc_types,
 };
 use crate::lift::{CalleeNames, HighLang, LiftCoverage, rust_op_fn_name, rust_unop_fn_name};
-use crate::memory64::scan_memories;
+use crate::memory64::{MemoryRecord, ModuleMemoryScan, scan_module_memories};
 use crate::op_names::operator_mnemonic;
 use crate::signature::{FunctionSig, MAX_FUNCTION_LOCALS};
 
@@ -42,33 +43,144 @@ fn push_format_line(output: &mut impl std::fmt::Write, args: Arguments<'_>) {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ModuleCtx {
-    memory64: BTreeMap<u32, bool>,
+    module_bytes: Box<[u8]>,
+    memories: Option<ModuleMemoryScan>,
     gc: GcTypeGraph,
     tag_param_counts: Vec<usize>,
 }
 
 impl ModuleCtx {
     pub(crate) fn from_bytes(bytes: &[u8]) -> Self {
-        let memory64: BTreeMap<u32, bool> = scan_memories(bytes)
-            .map(|report| {
-                report
-                    .memories
-                    .iter()
-                    .map(|(idx, rec)| (*idx, rec.memory64))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let memories: Option<ModuleMemoryScan> = scan_module_memories(bytes).ok();
         let gc: GcTypeGraph = recover_gc_types(bytes).unwrap_or_default();
         let tag_param_counts: Vec<usize> = scan_tag_param_counts(bytes);
         Self {
-            memory64,
+            module_bytes: bytes.into(),
+            memories,
             gc,
             tag_param_counts,
         }
     }
 
     fn is_memory64(&self, index: u32) -> bool {
-        self.memory64.get(&index).copied().unwrap_or(false)
+        self.memories
+            .as_ref()
+            .and_then(|scan: &ModuleMemoryScan| scan.report.memories.get(&index))
+            .is_some_and(|record: &MemoryRecord| record.memory64)
+    }
+
+    pub(crate) fn function_body<'a>(
+        &self,
+        bytes: &'a [u8],
+        defined_function_index: usize,
+    ) -> Result<FunctionBody<'a>> {
+        if self.module_bytes.as_ref() != bytes {
+            return Err(AtomicMemoryRefusal::MismatchedModuleContext.into());
+        }
+        let scan: &ModuleMemoryScan = self
+            .memories
+            .as_ref()
+            .ok_or(AtomicMemoryRefusal::MemoryScanFailed)?;
+        let (start, end): (usize, usize) = scan
+            .function_body_ranges
+            .get(defined_function_index)
+            .copied()
+            .ok_or_else(|| {
+                Error::Parse(format!(
+                    "defined function index {defined_function_index} is unavailable"
+                ))
+            })?;
+        let body_bytes: &'a [u8] = bytes
+            .get(start..end)
+            .ok_or_else(|| Error::Parse("function body range is outside the module".to_owned()))?;
+        let reader: wasmparser::BinaryReader<'a> = wasmparser::BinaryReader::new(body_bytes, start);
+        Ok(FunctionBody::new(reader))
+    }
+
+    fn atomic_memory(
+        &self,
+        memory_index: u32,
+    ) -> core::result::Result<&MemoryRecord, AtomicMemoryRefusal> {
+        let scan: &ModuleMemoryScan = self
+            .memories
+            .as_ref()
+            .ok_or(AtomicMemoryRefusal::MemoryScanFailed)?;
+        if scan.memory_grow_scan_error.is_some() {
+            return Err(AtomicMemoryRefusal::MemoryScanFailed);
+        }
+        let report: &crate::memory64::MemoryReport = &scan.report;
+        let actual: usize = report.memory_count();
+        if actual != 1 {
+            return Err(AtomicMemoryRefusal::MemoryCount { actual });
+        }
+        let record: &MemoryRecord = report
+            .memories
+            .get(&memory_index)
+            .ok_or(AtomicMemoryRefusal::MissingMemory { memory_index })?;
+        if scan.imported_memories.contains(&memory_index) {
+            return Err(AtomicMemoryRefusal::ImportedMemory { memory_index });
+        }
+        if scan.import_count != 0 {
+            return Err(AtomicMemoryRefusal::Imports {
+                actual: scan.import_count,
+            });
+        }
+        if !record.shared {
+            return Err(AtomicMemoryRefusal::UnsharedMemory { memory_index });
+        }
+        if record.initial != 1 {
+            return Err(AtomicMemoryRefusal::InitialPages {
+                memory_index,
+                actual: record.initial,
+            });
+        }
+        if record.maximum != Some(1) {
+            return Err(AtomicMemoryRefusal::MaximumPages {
+                memory_index,
+                actual: record.maximum,
+            });
+        }
+        let page_size_log2: u32 = record.page_size_log2.unwrap_or(DEFAULT_PAGE_SIZE_LOG2);
+        if page_size_log2 != DEFAULT_PAGE_SIZE_LOG2 {
+            return Err(AtomicMemoryRefusal::PageSize {
+                memory_index,
+                actual: page_size_log2,
+            });
+        }
+        if scan.data_segment_count != 0 {
+            return Err(AtomicMemoryRefusal::DataSegments {
+                actual: scan.data_segment_count,
+            });
+        }
+        if scan.global_count != 0 {
+            return Err(AtomicMemoryRefusal::Globals {
+                actual: scan.global_count,
+            });
+        }
+        if scan.tag_count != 0 {
+            return Err(AtomicMemoryRefusal::Tags {
+                actual: scan.tag_count,
+            });
+        }
+        if scan.element_segment_count != 0 {
+            return Err(AtomicMemoryRefusal::ElementSegments {
+                actual: scan.element_segment_count,
+            });
+        }
+        if scan.table_count != 0 {
+            return Err(AtomicMemoryRefusal::Tables {
+                actual: scan.table_count,
+            });
+        }
+        if let Some(function_index) = scan.start_function {
+            return Err(AtomicMemoryRefusal::StartFunction { function_index });
+        }
+        if let Some(grown_memory_index) = report.memory_grows.first().copied() {
+            return Err(AtomicMemoryRefusal::MemoryGrow {
+                memory_index: grown_memory_index,
+            });
+        }
+        Ok(record)
     }
 
     fn struct_record(&self, type_index: u32) -> Option<&StructTypeRecord> {
@@ -769,51 +881,57 @@ impl Translator<'_> {
             self.coverage.record_translated();
             return Ok(true);
         }
-        let memarg: wasmparser::MemArg =
-            crate::op_lift::atomic_memarg(op).unwrap_or(wasmparser::MemArg {
-                align: 0,
-                max_align: 0,
-                offset: 0,
-                memory: 0,
-            });
-        let wide: bool = self.memory_is_64(memarg.memory);
+        let memarg: wasmparser::MemArg = crate::op_lift::atomic_memarg(op).ok_or_else(|| {
+            Error::Parse("DR-WASMDEOB-ATOMIC: descriptor is missing memory arguments".to_owned())
+        })?;
+        let wide: bool = self.atomic_memory_is_64(memarg.memory)?;
+        let access_width: u64 = 1u64
+            .checked_shl(u32::from(memarg.max_align))
+            .ok_or_else(|| {
+                Error::Parse("DR-WASMDEOB-ATOMIC: invalid natural access width".to_owned())
+            })?;
         let suffix: String = if wide {
             format!("{}_a64", desc.helper)
         } else {
             desc.helper.to_owned()
         };
         let fname: String = self.helper(&suffix);
+        let offset_text: String = self.atomic_helper_offset_literal(memarg.offset);
         match desc.shape {
             crate::op_lift::AtomicShape::Load => {
                 let addr: Operand = self.pop("atomic.load")?;
-                let addr_text: String = self.addr_operand(&addr, wide);
-                let expr: String = format!("{fname}({addr_text}, {})", memarg.offset);
+                let addr_text: String =
+                    self.atomic_addr_operand(&addr, wide, memarg.offset, access_width);
+                let expr: String = format!("{fname}({addr_text}, {offset_text})");
                 self.spill(&expr, desc.result);
             }
             crate::op_lift::AtomicShape::Store => {
                 let val: Operand = self.pop("atomic.store")?;
                 let addr: Operand = self.pop("atomic.store")?;
-                let addr_text: String = self.addr_operand(&addr, wide);
+                let addr_text: String =
+                    self.atomic_addr_operand(&addr, wide, memarg.offset, access_width);
                 self.emit_stmt(&format!(
-                    "{fname}({addr_text}, {}, {});",
-                    memarg.offset, val.text
+                    "{fname}({addr_text}, {offset_text}, {});",
+                    val.text
                 ));
             }
             crate::op_lift::AtomicShape::Rmw => {
                 let val: Operand = self.pop("atomic.rmw")?;
                 let addr: Operand = self.pop("atomic.rmw")?;
-                let addr_text: String = self.addr_operand(&addr, wide);
-                let expr: String = format!("{fname}({addr_text}, {}, {})", memarg.offset, val.text);
+                let addr_text: String =
+                    self.atomic_addr_operand(&addr, wide, memarg.offset, access_width);
+                let expr: String = format!("{fname}({addr_text}, {offset_text}, {})", val.text);
                 self.spill(&expr, desc.result);
             }
             crate::op_lift::AtomicShape::Cmpxchg => {
                 let replacement: Operand = self.pop("atomic.cmpxchg")?;
                 let expected: Operand = self.pop("atomic.cmpxchg")?;
                 let addr: Operand = self.pop("atomic.cmpxchg")?;
-                let addr_text: String = self.addr_operand(&addr, wide);
+                let addr_text: String =
+                    self.atomic_addr_operand(&addr, wide, memarg.offset, access_width);
                 let expr: String = format!(
-                    "{fname}({addr_text}, {}, {}, {})",
-                    memarg.offset, expected.text, replacement.text
+                    "{fname}({addr_text}, {offset_text}, {}, {})",
+                    expected.text, replacement.text
                 );
                 self.spill(&expr, desc.result);
             }
@@ -821,19 +939,20 @@ impl Translator<'_> {
                 let timeout: Operand = self.pop("atomic.wait")?;
                 let expected: Operand = self.pop("atomic.wait")?;
                 let addr: Operand = self.pop("atomic.wait")?;
-                let addr_text: String = self.addr_operand(&addr, wide);
+                let addr_text: String =
+                    self.atomic_addr_operand(&addr, wide, memarg.offset, access_width);
                 let expr: String = format!(
-                    "{fname}({addr_text}, {}, {}, {})",
-                    memarg.offset, expected.text, timeout.text
+                    "{fname}({addr_text}, {offset_text}, {}, {})",
+                    expected.text, timeout.text
                 );
                 self.spill(&expr, ValType::I32);
             }
             crate::op_lift::AtomicShape::Notify => {
                 let count: Operand = self.pop("atomic.notify")?;
                 let addr: Operand = self.pop("atomic.notify")?;
-                let addr_text: String = self.addr_operand(&addr, wide);
-                let expr: String =
-                    format!("{fname}({addr_text}, {}, {})", memarg.offset, count.text);
+                let addr_text: String =
+                    self.atomic_addr_operand(&addr, wide, memarg.offset, access_width);
+                let expr: String = format!("{fname}({addr_text}, {offset_text}, {})", count.text);
                 self.spill(&expr, ValType::I32);
             }
             crate::op_lift::AtomicShape::Fence => {}
@@ -1319,6 +1438,14 @@ impl Translator<'_> {
             .is_some_and(|ctx: &ModuleCtx| ctx.is_memory64(memory_index))
     }
 
+    fn atomic_memory_is_64(&self, memory_index: u32) -> Result<bool> {
+        let module: &ModuleCtx = self
+            .module
+            .ok_or(AtomicMemoryRefusal::MissingModuleContext)?;
+        let memory: &MemoryRecord = module.atomic_memory(memory_index)?;
+        Ok(memory.memory64)
+    }
+
     fn addr_operand(&self, addr: &Operand, wide: bool) -> String {
         if wide {
             match (self.lang, addr.ty) {
@@ -1328,6 +1455,38 @@ impl Translator<'_> {
             }
         } else {
             addr.text.clone()
+        }
+    }
+
+    fn atomic_addr_operand(
+        &self,
+        addr: &Operand,
+        wide: bool,
+        offset: u64,
+        access_width: u64,
+    ) -> String {
+        let helper: String = self.helper(if wide {
+            "wasm_atomic_addr_a64"
+        } else {
+            "wasm_atomic_addr"
+        });
+        let addr_text: String = self.addr_operand(addr, wide);
+        let offset_text: String = self.atomic_guard_offset_literal(offset);
+        format!("{helper}({addr_text}, {offset_text}, {access_width})")
+    }
+
+    fn atomic_guard_offset_literal(&self, offset: u64) -> String {
+        match self.lang {
+            HighLang::TypeScript => format!("{offset}n"),
+            HighLang::C => format!("UINT64_C({offset})"),
+            HighLang::Rust => offset.to_string(),
+        }
+    }
+
+    fn atomic_helper_offset_literal(&self, offset: u64) -> String {
+        match self.lang {
+            HighLang::C => format!("UINT64_C({offset})"),
+            HighLang::Rust | HighLang::TypeScript => offset.to_string(),
         }
     }
 
