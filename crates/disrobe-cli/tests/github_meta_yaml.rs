@@ -88,7 +88,14 @@ fn tracked_yaml_under_github() -> BTreeSet<String> {
     let raw: String = String::from_utf8(output.stdout).expect("git ls-files output is utf-8");
     let tracked: BTreeSet<String> = raw
         .split('\0')
-        .filter(|entry: &&str| entry.ends_with(".yml") || entry.ends_with(".yaml"))
+        .filter(|entry: &&str| {
+            matches!(
+                Path::new(entry)
+                    .extension()
+                    .and_then(|s: &std::ffi::OsStr| s.to_str()),
+                Some("yml" | "yaml")
+            )
+        })
         .filter_map(|entry: &str| entry.strip_prefix(".github/"))
         .map(String::from)
         .collect();
