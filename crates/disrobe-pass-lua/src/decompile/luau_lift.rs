@@ -140,7 +140,6 @@ pub(crate) enum LStmt {
     Jump {
         target: usize,
     },
-    Break,
     ForNum {
         var: String,
         init: String,
@@ -674,13 +673,13 @@ fn handle(
     fully_structured: &mut bool,
 ) -> usize {
     match inst.op {
-        LOP_NOP | LOP_BREAK | LOP_COVERAGE | LOP_CAPTURE | LOP_PREPVARARGS | LOP_CLOSEUPVALS
-        | LOP_NATIVECALL => {
-            if inst.op == LOP_BREAK {
-                state.push_stmt(LStmt::Break);
-            }
+        LOP_BREAK => {
+            warnings.push(format!("unresolved luau debugger breakpoint at pc={pc}"));
+            *fully_structured = false;
             1
         }
+        LOP_NOP | LOP_COVERAGE | LOP_CAPTURE | LOP_PREPVARARGS | LOP_CLOSEUPVALS
+        | LOP_NATIVECALL => 1,
         LOP_LOADNIL => {
             state.declare_local(u32::from(inst.a), "nil");
             1
