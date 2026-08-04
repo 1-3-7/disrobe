@@ -348,6 +348,15 @@ const KEYS: &[KeySpec] = &[
         extract: |r: &Recovery| r.bar("WebAssembly", "op-coverage")?.count_ratio(),
     },
     KeySpec {
+        name: "luau_opcode_lift_count",
+        formatter: Formatter::OfPlain,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            r.bar("Luau opcode lifting", "Luau declared-table opcodes lifted")?
+                .count_ratio()
+        },
+    },
+    KeySpec {
         name: "jvm_per_method_count",
         formatter: Formatter::OfPlain,
         nouns: &[],

@@ -328,6 +328,25 @@
       ]
     },
     {
+      "heading": "Luau opcode lifting (disrobe declared table)",
+      "axis_label": "declared opcode entries lifted, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "Luau declared-table opcodes lifted",
+          "value": 97.72727272727273,
+          "num": 86,
+          "den": 88,
+          "verified_by": {
+            "path": "crates/disrobe-pass-lua/tests/published_luau_opcode_roster.rs",
+            "function": "published_luau_opcode_lift_ratio_matches_this_lifter"
+          },
+          "detail": "86 of the 88 opcode entries in disrobe's declared Luau table are lifted. BREAK debugger instrumentation and NEWCLASSMEMBER are decoded and reported as unresolved rather than lifted.",
+          "source": "crates/disrobe-pass-lua/tests/published_luau_opcode_roster.rs enumerates all 88 declared opcode values through the real lifter, pins the exact two-entry unresolved set, and checks an undeclared opcode as the mutation-kill control. This is coverage of disrobe's declared table, not an external claim about every opcode in an upstream Luau release."
+        }
+      ]
+    },
+    {
       "heading": "Obfuscator and bundler family coverage (counts)",
       "axis_label": "families covered",
       "kind": "count",

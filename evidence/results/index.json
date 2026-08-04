@@ -1,5 +1,5 @@
 {
-  "descriptor_count": 25,
+  "descriptor_count": 26,
   "descriptors": [
     {
       "ci_attested": true,
@@ -363,6 +363,22 @@
       "oracle_strength": "strong",
       "pairs": [],
       "reproduce": "cargo test -p disrobe-pass-lua --test ironbrew2_real_oracle"
+    },
+    {
+      "ci_attested": true,
+      "claim": "disrobe lifts 86 of the 88 opcode entries in its declared Luau table; BREAK and NEWCLASSMEMBER are decoded and reported as unresolved.",
+      "comparison_basis": null,
+      "competitors": [],
+      "disrobe_leads": null,
+      "ecosystem": "lua",
+      "external_oracle": "none: the committed test enumerates disrobe's own declared opcode table and counts entries that avoid its unresolved-reporting path. No external semantic or upstream-format reference grades the result.",
+      "floor": null,
+      "floor_holds": null,
+      "id": "lua-luau-opcode-coverage",
+      "measured": "97.73%",
+      "oracle_strength": "coverage-self-reported",
+      "pairs": [],
+      "reproduce": "cargo test -p disrobe-pass-lua --test published_luau_opcode_roster"
     },
     {
       "ci_attested": true,

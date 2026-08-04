@@ -1920,7 +1920,7 @@ fn rename_ident_in_stmts(stmts: &mut [LiftedStmt], from: &str, to: &str) {
                 *step = replace_ident(step, from, to);
             }
             LStmt::ForGen { iter, .. } => *iter = replace_ident(iter, from, to),
-            LStmt::Jump { .. } | LStmt::Break | LStmt::BlockEnd => {}
+            LStmt::Jump { .. } | LStmt::BlockEnd => {}
         }
     }
 }
@@ -1960,7 +1960,7 @@ fn stmt_references(stmt: &LStmt, name: &str) -> bool {
             contains_ident(init, name) || contains_ident(limit, name) || contains_ident(step, name)
         }
         LStmt::ForGen { iter, .. } => contains_ident(iter, name),
-        LStmt::Jump { .. } | LStmt::Break | LStmt::BlockEnd => false,
+        LStmt::Jump { .. } | LStmt::BlockEnd => false,
     }
 }
 

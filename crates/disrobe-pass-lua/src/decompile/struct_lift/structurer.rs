@@ -213,10 +213,6 @@ fn build_nodes(stmts: &[LiftedStmt]) -> Vec<PcNode> {
                     });
                 }
             }
-            LStmt::Break => nodes.push(PcNode {
-                pc: item.pc,
-                node: Node::Jump { target: usize::MAX },
-            }),
             LStmt::Cond { cond, target } => nodes.push(PcNode {
                 pc: item.pc,
                 node: Node::Cond {

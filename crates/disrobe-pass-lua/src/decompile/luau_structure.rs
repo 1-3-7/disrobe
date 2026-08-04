@@ -40,7 +40,6 @@ pub(crate) enum StructuredBlock {
 #[derive(Debug, Clone)]
 enum Node {
     Raw(String),
-    Break,
     Cond {
         cond: String,
         target: usize,
@@ -144,10 +143,6 @@ fn build_nodes(stmts: &[LiftedStmt]) -> Vec<PcNode> {
                     });
                 }
             }
-            LStmt::Break => nodes.push(PcNode {
-                pc: item.pc,
-                node: Node::Break,
-            }),
             LStmt::Cond { cond, target } => nodes.push(PcNode {
                 pc: item.pc,
                 node: Node::Cond {
@@ -232,10 +227,6 @@ fn structure_seq(
         match cur.node {
             Node::Raw(s) => {
                 out.push(StructuredBlock::Raw(s));
-                *pos += 1;
-            }
-            Node::Break => {
-                out.push(StructuredBlock::Break);
                 *pos += 1;
             }
             Node::BlockEnd => {

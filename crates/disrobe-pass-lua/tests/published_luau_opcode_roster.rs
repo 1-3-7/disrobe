@@ -5,21 +5,31 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use disrobe_pass_lua::{
-    DecompiledChunk, LuaChunk, LuaDialect, LuaProto, decompile::decompile_chunk,
+    DecompiledChunk, Fidelity, LuaChunk, LuaDialect, LuaProto,
+    decompile::{decompile_chunk, luau_lift::test_op_length},
+    reader::luau,
 };
 
 const DECLARED_OPCODES: usize = 88;
 const HIGHEST_OPCODE: u8 = 87;
-const LIFTED_OPCODES: usize = 87;
+const LIFTED_OPCODES: usize = 86;
+const LOP_BREAK: u8 = 1;
 
-const DECODED_NOT_LIFTED: [(&str, u8); 1] = [("NEWCLASSMEMBER", 86)];
+const DECODED_NOT_LIFTED: [(&str, u8); 2] = [("BREAK", LOP_BREAK), ("NEWCLASSMEMBER", 86)];
 
 const LIFTER_SOURCE: &str = "src/decompile/luau_lift.rs";
+const REAL_LUAU_FIXTURE: &str = "corpus/lua/decompile_samples/arith_loops.luau";
 const OPCODE_PREFIX: &str = "const LOP_";
 const UNKNOWN_WARNING: &str = "unknown luau opcode";
+const DEBUGGER_BREAK_WARNING: &str = "unresolved luau debugger breakpoint";
 
 const DIALECT_DOC: &str = "docs/src/languages/lua.md";
-const DIALECT_PHRASE: &str = "Luau (87 of the 88 opcodes its table declares are lifted";
+const DIALECT_PHRASE: &str = "Luau (<!-- m:luau_opcode_lift_count -->86 of 88<!-- /m --> opcodes in disrobe's declared table are lifted";
+const RECOVERY_DATA: &str = "xtask/data/recovery.json";
+const RECOVERY_HEADING: &str = "Luau opcode lifting";
+const RECOVERY_BAR: &str = "Luau declared-table opcodes lifted";
+const RECOVERY_TEST_PATH: &str = "crates/disrobe-pass-lua/tests/published_luau_opcode_roster.rs";
+const RECOVERY_TEST_FUNCTION: &str = "published_luau_opcode_lift_ratio_matches_this_lifter";
 
 const UNDECLARED_PROBE: u8 = 200;
 
@@ -45,6 +55,79 @@ fn lifter_source() -> String {
             path.display()
         )
     })
+}
+
+fn real_luau_fixture() -> LuaChunk {
+    let path: PathBuf = repo_root().join(REAL_LUAU_FIXTURE);
+    let bytes: Vec<u8> = fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "the BREAK proof requires the tracked luau-compile fixture {REAL_LUAU_FIXTURE}: {error} at {}",
+            path.display()
+        )
+    });
+    luau::read(&bytes).unwrap_or_else(|error| {
+        panic!(
+            "the tracked luau-compile fixture {REAL_LUAU_FIXTURE} must parse before its instruction stream can grade BREAK: {error}"
+        )
+    })
+}
+
+fn replace_last_single_word_instruction_with_break(chunk: &mut LuaChunk) -> usize {
+    let code: &mut [u32] = &mut chunk.main.code;
+    let mut pc: usize = 0;
+    let mut candidate: Option<usize> = None;
+    while pc < code.len() {
+        let op: u8 =
+            u8::try_from(code[pc] & u32::from(u8::MAX)).expect("a Luau opcode occupies one byte");
+        let width: usize = test_op_length(op);
+        assert!(width > 0, "Luau instruction width must be positive");
+        if width == 1 && op != LOP_BREAK {
+            candidate = Some(pc);
+        }
+        pc = pc
+            .checked_add(width)
+            .expect("the tracked Luau fixture instruction index must fit usize");
+    }
+    assert_eq!(
+        pc,
+        code.len(),
+        "the tracked Luau fixture must end on an instruction boundary"
+    );
+    let Some(selected): Option<usize> = candidate else {
+        panic!("the tracked Luau fixture contains no single-word instruction to mutate")
+    };
+    code[selected] = (code[selected] & !u32::from(u8::MAX)) | u32::from(LOP_BREAK);
+    selected
+}
+
+fn language_break_count(source: &str) -> usize {
+    source
+        .lines()
+        .filter(|line: &&str| line.trim() == "break")
+        .count()
+}
+
+fn real_break_mutation_output() -> (usize, usize, DecompiledChunk) {
+    let mut chunk: LuaChunk = real_luau_fixture();
+    let baseline: DecompiledChunk = decompile_chunk(&chunk)
+        .expect("the tracked luau-compile fixture must decompile before mutation");
+    let baseline_breaks: usize = language_break_count(&baseline.source);
+    let pc: usize = replace_last_single_word_instruction_with_break(&mut chunk);
+    let mutated: DecompiledChunk = decompile_chunk(&chunk)
+        .expect("the tracked luau-compile fixture must decompile after the BREAK mutation");
+    (pc, baseline_breaks, mutated)
+}
+
+fn real_break_is_not_lifted() -> bool {
+    let (pc, baseline_breaks, mutated): (usize, usize, DecompiledChunk) =
+        real_break_mutation_output();
+    let expected_warning: String = format!("{DEBUGGER_BREAK_WARNING} at pc={pc}");
+    mutated
+        .warnings
+        .iter()
+        .any(|warning: &String| warning == &expected_warning)
+        && language_break_count(&mutated.source) == baseline_breaks
+        && mutated.fidelity == Fidelity::BestEffort
 }
 
 fn declared_opcodes(source: &str) -> Vec<(String, u8)> {
@@ -98,17 +181,45 @@ fn luau_chunk_carrying(op: u8) -> LuaChunk {
     }
 }
 
-fn reports_unknown(op: u8) -> bool {
+fn reports_not_lifted(op: u8) -> bool {
+    if op == LOP_BREAK {
+        return real_break_is_not_lifted();
+    }
     let chunk: LuaChunk = luau_chunk_carrying(op);
     let decompiled: DecompiledChunk = decompile_chunk(&chunk).unwrap_or_else(|error| {
         panic!("the Luau lifter must accept a one-instruction chunk carrying opcode {op}: {error}")
     });
     let needle: String = format!("{UNKNOWN_WARNING} {op}");
-    decompiled
+    decompiled.warnings.iter().any(|warning: &String| {
+        warning.contains(&needle) || warning.contains(DEBUGGER_BREAK_WARNING)
+    }) || decompiled.source.contains(&format!("unknown luau op {op}"))
+}
+
+#[test]
+fn real_luau_fixture_break_mutation_stays_unresolved_in_lifted_output() {
+    let (pc, baseline_breaks, mutated): (usize, usize, DecompiledChunk) =
+        real_break_mutation_output();
+    let expected_warning: String = format!("{DEBUGGER_BREAK_WARNING} at pc={pc}");
+    let matching_warnings: usize = mutated
         .warnings
         .iter()
-        .any(|warning: &String| warning.contains(&needle))
-        || decompiled.source.contains(&format!("unknown luau op {op}"))
+        .filter(|warning: &&String| *warning == &expected_warning)
+        .count();
+
+    assert_eq!(
+        matching_warnings, 1,
+        "the real fixture mutation must report exactly one unresolved BREAK at its actual pc"
+    );
+    assert_eq!(
+        language_break_count(&mutated.source),
+        baseline_breaks,
+        "a debugger BREAK mutation must not add a source-language break to real lifted output"
+    );
+    assert_eq!(
+        mutated.fidelity,
+        Fidelity::BestEffort,
+        "a lift carrying unresolved debugger instrumentation must not claim full fidelity"
+    );
 }
 
 fn published_doc() -> String {
@@ -120,6 +231,46 @@ fn published_doc() -> String {
             path.display()
         )
     })
+}
+
+fn published_recovery_bar() -> serde_json::Value {
+    let path: PathBuf = repo_root().join(RECOVERY_DATA);
+    let raw: String = fs::read_to_string(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "{RECOVERY_DATA} owns the public Luau opcode ratio, so a run that cannot read it must fail rather than leave the documentation unchecked: {error} at {}",
+            path.display()
+        )
+    });
+    let recovery: serde_json::Value =
+        serde_json::from_str(&raw).unwrap_or_else(|error: serde_json::Error| {
+            panic!("{RECOVERY_DATA} must parse as JSON: {error}")
+        });
+    let groups: &Vec<serde_json::Value> = recovery["groups"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{RECOVERY_DATA} must carry a groups array"));
+    let mut found: Vec<serde_json::Value> = groups
+        .iter()
+        .filter(|chart: &&serde_json::Value| {
+            chart["heading"]
+                .as_str()
+                .is_some_and(|heading: &str| heading.contains(RECOVERY_HEADING))
+        })
+        .flat_map(|chart: &serde_json::Value| {
+            chart["bars"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|bar: &&serde_json::Value| bar["label"].as_str() == Some(RECOVERY_BAR))
+                .cloned()
+        })
+        .collect();
+    assert_eq!(
+        found.len(),
+        1,
+        "{RECOVERY_DATA} must carry exactly one `{RECOVERY_BAR}` bar under a heading containing `{RECOVERY_HEADING}`, found {}",
+        found.len()
+    );
+    found.remove(0)
 }
 
 #[test]
@@ -168,14 +319,14 @@ fn the_declared_opcode_table_is_contiguous_and_the_size_the_page_publishes() {
 }
 
 #[test]
-fn every_declared_opcode_is_lifted_rather_than_reported_unknown() {
+fn published_luau_opcode_lift_ratio_matches_this_lifter() {
     let source: String = lifter_source();
     let declared: Vec<(String, u8)> = declared_opcodes(&source);
 
     let handled: BTreeSet<u8> = declared
         .iter()
         .map(|entry: &(String, u8)| entry.1)
-        .filter(|op: &u8| !reports_unknown(*op))
+        .filter(|op: &u8| !reports_not_lifted(*op))
         .collect();
     let all: BTreeSet<u8> = declared
         .iter()
@@ -191,7 +342,7 @@ fn every_declared_opcode_is_lifted_rather_than_reported_unknown() {
     assert_eq!(
         unhandled, published_unhandled,
         "{DIALECT_DOC} names {DECODED_NOT_LIFTED:?} as the opcodes this lifter decodes without \
-         lifting, but the lifter falls through to its unknown-opcode arm for {unhandled:?}; the \
+         lifting, but the lifter reports {unhandled:?} as unresolved; the \
          page must name the residual set rather than a count, so an opcode that stops lifting shows \
          up here and an opcode that starts forces the page to be rewritten"
     );
@@ -223,6 +374,46 @@ fn every_declared_opcode_is_lifted_rather_than_reported_unknown() {
         handled.len(),
         unhandled.len()
     );
+
+    let bar: serde_json::Value = published_recovery_bar();
+    let published_num: u64 = bar["num"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("the `{RECOVERY_BAR}` bar must carry a raw integer num"));
+    let published_den: u64 = bar["den"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("the `{RECOVERY_BAR}` bar must carry a raw integer den"));
+    let published_value: f64 = bar["value"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("the `{RECOVERY_BAR}` bar must carry a numeric value"));
+    let derived_value: f64 = 100.0 * published_num as f64 / published_den as f64;
+    assert_eq!(
+        usize::try_from(published_num).expect("the published Luau numerator must fit usize"),
+        handled.len(),
+        "{RECOVERY_DATA} publishes {published_num} lifted Luau opcodes, but the lifter handles {}",
+        handled.len()
+    );
+    assert_eq!(
+        usize::try_from(published_den).expect("the published Luau denominator must fit usize"),
+        all.len(),
+        "{RECOVERY_DATA} publishes {published_den} declared Luau opcodes, but the lifter declares {}",
+        all.len()
+    );
+    assert_eq!(
+        published_value.to_bits(),
+        derived_value.to_bits(),
+        "{RECOVERY_DATA} publishes {published_value} percent for `{RECOVERY_BAR}`, but its raw \
+         {published_num} of {published_den} ratio derives {derived_value} percent"
+    );
+    assert_eq!(
+        bar["verified_by"]["path"].as_str(),
+        Some(RECOVERY_TEST_PATH),
+        "the `{RECOVERY_BAR}` bar must cite its owning test file"
+    );
+    assert_eq!(
+        bar["verified_by"]["function"].as_str(),
+        Some(RECOVERY_TEST_FUNCTION),
+        "the `{RECOVERY_BAR}` bar must cite `{RECOVERY_TEST_FUNCTION}`"
+    );
 }
 
 #[test]
@@ -237,7 +428,7 @@ fn the_unknown_opcode_check_fires_on_a_value_the_table_does_not_declare() {
         "the control probe {UNDECLARED_PROBE} must be an opcode the table does not declare"
     );
     assert!(
-        reports_unknown(UNDECLARED_PROBE),
+        reports_not_lifted(UNDECLARED_PROBE),
         "the lifter must report opcode {UNDECLARED_PROBE} as unknown; if it reported nothing, the \
          assertion above would pass for every opcode whether or not it was handled"
     );
