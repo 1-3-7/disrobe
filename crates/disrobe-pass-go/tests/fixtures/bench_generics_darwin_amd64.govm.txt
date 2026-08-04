@@ -1,5 +1,5 @@
-C:\Users\-\Documents\Projects\disrobe\.claude\worktrees\agent-ac67bb49811236552\crates\disrobe-pass-go\tests\fixtures\bench_generics_darwin_amd64: go1.26.3
-	path	_/C_/Users/-/Documents/Projects/disrobe/.claude/worktrees/go/crates/disrobe-pass-go/tests/fixtures/benchsrc
+C:\Users\-\Documents\Projects\disrobe\crates\disrobe-pass-go\tests\fixtures\bench_generics_darwin_amd64: go1.26.3
+	path	_/C_/Users/-/Documents/Projects/disrobe/crates/disrobe-pass-go/tests/fixtures/benchsrc
 	build	-buildmode=exe
 	build	-compiler=gc
 	build	-trimpath=true

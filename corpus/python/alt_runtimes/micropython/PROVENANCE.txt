@@ -83,4 +83,4 @@ fun_data[0]; viper/asm functions carry no prelude (the whole fun_data is code).
 
 Checksums (sha256)
 ------------------
-hello.mpy 925d1cdb45dae0c53bfc39a145080d88fa8605aabc61e66e7ae4c4b5fce08f2c
+hello.mpy 7d0a3203c2ccb0e4f3e88ee5e6c971d50df886e3d31cb4a0ca64073cacda13c3
