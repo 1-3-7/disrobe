@@ -301,6 +301,7 @@ jobs:
             ("$probe" --version 2>&1 || true) | head -1
             echo "$var=1" >> "$GITHUB_ENV"
           }
+          perl -MB::Concise -e 'print $^V, qq(\n)'
           demand ruby DISROBE_REQUIRE_RUBY
           if [ "$RUNNER_OS" != "macOS" ]; then
             demand php DISROBE_REQUIRE_PHP

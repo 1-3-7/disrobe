@@ -500,10 +500,9 @@ fn reconstruct_my_call_assignment(seg: &[PerlOp]) -> Option<PerlStatement> {
         .as_deref()
         .and_then(first_pad_name)
         .unwrap_or_else(|| "$_".to_owned());
-    let callee: String = called_name(seg)?;
-    let args: String = call_arguments(seg);
+    let call: String = reconstruct_call(seg)?;
     Some(PerlStatement {
-        text: format!("my {lhs} = {callee}({args});"),
+        text: format!("my {lhs} = {call};"),
         recovered: true,
     })
 }
@@ -512,12 +511,159 @@ fn reconstruct_bare_call(seg: &[PerlOp]) -> Option<PerlStatement> {
     if !seg.iter().any(|o: &PerlOp| o.name == "entersub") {
         return None;
     }
-    let callee: String = called_name(seg)?;
-    let args: String = call_arguments(seg);
+    let call: String = reconstruct_call(seg)?;
     Some(PerlStatement {
-        text: format!("{callee}({args});"),
+        text: format!("{call};"),
         recovered: true,
     })
+}
+
+enum NestedCallRecovery {
+    NotNested,
+    Recovered(String),
+    Unsupported,
+}
+
+struct NestedCallSpan {
+    entered_at: usize,
+    callee_at: Option<usize>,
+    parent: Option<usize>,
+    name: Option<String>,
+}
+
+fn reconstruct_call(seg: &[PerlOp]) -> Option<String> {
+    match recover_nested_call(seg) {
+        NestedCallRecovery::Recovered(call) => Some(call),
+        NestedCallRecovery::Unsupported => None,
+        NestedCallRecovery::NotNested => {
+            let callee: String = called_name(seg)?;
+            let args: String = call_arguments(seg);
+            Some(format!("{callee}({args})"))
+        }
+    }
+}
+
+fn recover_nested_call(seg: &[PerlOp]) -> NestedCallRecovery {
+    if !seg.iter().any(|op: &PerlOp| op.name == "entersub") {
+        return NestedCallRecovery::NotNested;
+    }
+    let Some(spans): Option<Vec<NestedCallSpan>> = nested_call_spans(seg) else {
+        return NestedCallRecovery::Unsupported;
+    };
+    if !spans
+        .iter()
+        .any(|span: &NestedCallSpan| span.parent.is_some())
+    {
+        return NestedCallRecovery::NotNested;
+    }
+    let roots: Vec<usize> = spans
+        .iter()
+        .enumerate()
+        .filter_map(|(index, span): (usize, &NestedCallSpan)| {
+            span.parent.is_none().then_some(index)
+        })
+        .collect();
+    if roots.len() != 1 {
+        return NestedCallRecovery::Unsupported;
+    }
+    let Some(root): Option<&usize> = roots.first() else {
+        return NestedCallRecovery::Unsupported;
+    };
+    match render_nested_call(seg, &spans, *root) {
+        Some(call) => NestedCallRecovery::Recovered(call),
+        None => NestedCallRecovery::Unsupported,
+    }
+}
+
+fn nested_call_spans(seg: &[PerlOp]) -> Option<Vec<NestedCallSpan>> {
+    let mut spans: Vec<NestedCallSpan> = Vec::new();
+    let mut open: Vec<usize> = Vec::new();
+    for (index, op) in seg.iter().enumerate() {
+        if op.name == "entersub" {
+            let parent: Option<usize> = open.last().copied();
+            let span_index: usize = spans.len();
+            spans.push(NestedCallSpan {
+                entered_at: index,
+                callee_at: None,
+                parent,
+                name: None,
+            });
+            open.push(span_index);
+        } else if let Some(name) = nested_callee_name(seg, index)
+            && let Some(span_index) = open.pop()
+        {
+            let span: &mut NestedCallSpan = spans.get_mut(span_index)?;
+            span.callee_at = Some(index);
+            span.name = Some(name);
+        }
+    }
+    if !open.is_empty()
+        || spans
+            .iter()
+            .any(|span: &NestedCallSpan| span.callee_at.is_none() || span.name.is_none())
+    {
+        return None;
+    }
+    Some(spans)
+}
+
+fn nested_callee_name(seg: &[PerlOp], index: usize) -> Option<String> {
+    let op: &PerlOp = seg.get(index)?;
+    let name: String = gv_call_name(op)?;
+    let previous: &PerlOp = index
+        .checked_sub(1)
+        .and_then(|before: usize| seg.get(before))?;
+    matches!(previous.name.as_str(), "ex-rv2cv" | "rv2cv").then_some(name)
+}
+
+fn render_nested_call(
+    seg: &[PerlOp],
+    spans: &[NestedCallSpan],
+    span_index: usize,
+) -> Option<String> {
+    let span: &NestedCallSpan = spans.get(span_index)?;
+    let callee_at: usize = span.callee_at?;
+    let name: &str = span.name.as_deref()?;
+    let mut args: Vec<String> = Vec::new();
+    let mut cursor: usize = span.entered_at.checked_add(1)?;
+    for (child_index, child) in spans.iter().enumerate() {
+        if child.parent != Some(span_index) {
+            continue;
+        }
+        if cursor > child.entered_at {
+            return None;
+        }
+        append_nested_call_arguments(seg, cursor, child.entered_at, &mut args)?;
+        let child_call: String = render_nested_call(seg, spans, child_index)?;
+        args.push(child_call);
+        cursor = child.callee_at?.checked_add(1)?;
+    }
+    if cursor > callee_at {
+        return None;
+    }
+    append_nested_call_arguments(seg, cursor, callee_at, &mut args)?;
+    Some(format!("{name}({})", args.join(", ")))
+}
+
+fn append_nested_call_arguments(
+    seg: &[PerlOp],
+    start: usize,
+    end: usize,
+    args: &mut Vec<String>,
+) -> Option<()> {
+    let ops: &[PerlOp] = seg.get(start..end)?;
+    for op in ops {
+        match op.name.as_str() {
+            "pushmark" | "ex-pushmark" => args.clear(),
+            "const" => args.push(op.detail.as_deref().and_then(const_literal)?),
+            "padsv" | "padav" | "padhv" => {
+                args.push(op.detail.as_deref().and_then(first_pad_name)?);
+            }
+            "ex-list" | "ex-rv2cv" | "rv2cv" => {}
+            _ => return None,
+        }
+    }
+    Some(())
 }
 
 fn recover_expression(seg: &[PerlOp]) -> Option<String> {
@@ -626,7 +772,9 @@ fn gv_call_name(op: &PerlOp) -> Option<String> {
     }
     let detail: &str = op.detail.as_deref()?;
     let inner: &str = detail.trim_start_matches('[').trim_end_matches(']');
-    let name: &str = inner.trim_start_matches('*');
+    let name: &str = inner
+        .strip_prefix('*')
+        .or_else(|| inner.strip_prefix(r"IV \&"))?;
     if name.is_empty() || name == "_" {
         None
     } else {
@@ -1121,6 +1269,47 @@ mod tests {
             flags: flags.to_owned(),
             detail: detail.map(str::to_owned),
         }
+    }
+
+    #[test]
+    fn nested_call_normalizes_iv_subroutine_references() {
+        let seg: Vec<PerlOp> = vec![
+            op("padsv_store", "vKS/LVINTRO", Some("[$value:1,2]")),
+            op("entersub", "sKS/STRICT", None),
+            op("ex-list", "sK", None),
+            op("pushmark", "s", None),
+            op("entersub", "lKMS/LVINTRO,STRICT,INARGS", None),
+            op("ex-list", "lK", None),
+            op("pushmark", "s", None),
+            op("const", "sM", Some("[IV 7]")),
+            op("ex-rv2cv", "sK/STRICT,1", None),
+            op("gv", "s", Some(r"[IV \&main::inner]")),
+            op("ex-rv2cv", "sK/STRICT,1", None),
+            op("gv", "s", Some(r"[IV \&main::outer]")),
+        ];
+        let statement: Option<PerlStatement> = reconstruct_my_call_assignment(&seg);
+        let recovered: Option<&str> = statement
+            .as_ref()
+            .map(|value: &PerlStatement| value.text.as_str());
+        assert_eq!(recovered, Some("my $value = main::outer(main::inner(7));"));
+    }
+
+    #[test]
+    fn nested_call_with_missing_outer_callee_is_not_recovered() {
+        let seg: Vec<PerlOp> = vec![
+            op("padsv_store", "vKS/LVINTRO", Some("[$value:1,2]")),
+            op("entersub", "sKS/STRICT", None),
+            op("ex-list", "sK", None),
+            op("pushmark", "s", None),
+            op("entersub", "lKMS/LVINTRO,STRICT,INARGS", None),
+            op("ex-list", "lK", None),
+            op("pushmark", "s", None),
+            op("const", "sM", Some("[IV 7]")),
+            op("ex-rv2cv", "sK/STRICT,1", None),
+            op("gv", "s", Some(r"[IV \&main::inner]")),
+            op("ex-rv2cv", "sK/STRICT,1", None),
+        ];
+        assert!(reconstruct_my_call_assignment(&seg).is_none());
     }
 
     #[test]
