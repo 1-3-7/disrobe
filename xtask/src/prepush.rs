@@ -12,25 +12,16 @@ const REGEN_TRIGGER_PREFIXES: &[&str] = &[
     "schemas/",
     "bindings/",
     "evidence/",
-    "assets/graphs/",
     "docs/assets/",
     "docs/errors/",
     "docs/demo/",
-    "docs/src/demo/",
+    "docs/src/",
     "crates/disrobe-cli/src/cli/explain/codes/",
 ];
 
 const SELF_CRATE: &str = "xtask";
 
 const REGEN_TRIGGER_FILES: &[&str] = &["README.md"];
-
-const METRICS_TRIGGER_FILES: &[&str] = &[
-    "README.md",
-    "xtask/data/recovery.json",
-    "xtask/src/metrics.rs",
-];
-
-const METRICS_TRIGGER_PREFIXES: &[&str] = &["docs/src/"];
 
 #[derive(Debug)]
 enum Scope {
@@ -63,7 +54,6 @@ pub(crate) fn run(root: &Path, full: bool) -> Result<()> {
     let mut total: Duration = Duration::ZERO;
     total += gate("fmt", || gate_fmt(root, &scope))?;
     total += gate("regen", || gate_regen(root, &scope))?;
-    total += gate("metrics", || gate_metrics(root, &scope))?;
     total += gate("clippy", || gate_clippy(root))?;
     total += gate("test", || gate_test(root, &scope))?;
     println!(
@@ -146,22 +136,6 @@ fn gate_regen(root: &Path, scope: &Scope) -> Result<GateOutcome> {
     Ok(GateOutcome::Ran)
 }
 
-fn gate_metrics(root: &Path, scope: &Scope) -> Result<GateOutcome> {
-    let triggered: bool = match scope {
-        Scope::All => true,
-        Scope::Changed(paths) => paths.iter().any(touches_metrics),
-        Scope::Skip => false,
-    };
-    if !triggered {
-        return Ok(GateOutcome::Skipped(
-            "no metrics-relevant changes".to_owned(),
-        ));
-    }
-    crate::metrics::run(root, crate::metrics::Mode::Check)
-        .wrap_err("documentation metric markers are stale or bare")?;
-    Ok(GateOutcome::Ran)
-}
-
 fn gate_clippy(root: &Path) -> Result<GateOutcome> {
     run_checked(
         root,
@@ -216,14 +190,6 @@ fn touches_regen(path: &Utf8PathBuf) -> bool {
     let text: &str = path.as_str();
     REGEN_TRIGGER_FILES.contains(&text)
         || REGEN_TRIGGER_PREFIXES
-            .iter()
-            .any(|prefix: &&str| text.starts_with(prefix))
-}
-
-fn touches_metrics(path: &Utf8PathBuf) -> bool {
-    let text: &str = path.as_str();
-    METRICS_TRIGGER_FILES.contains(&text)
-        || METRICS_TRIGGER_PREFIXES
             .iter()
             .any(|prefix: &&str| text.starts_with(prefix))
 }

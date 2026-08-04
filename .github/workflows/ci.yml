@@ -89,10 +89,8 @@ jobs:
         run: pnpm test
       - name: export PYO3_PYTHON
         run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
-      - name: every generated artifact is byte-fresh (schemas, bindings, error docs, graphs, demo, card, plugins, evidence, README stat cross-check)
+      - name: every generated artifact is byte-fresh (schemas, bindings, error docs, graphs, demo, card, plugins, evidence, metric markers, README stat cross-check)
         run: cargo run -p xtask -- regen --check
-      - name: documentation metric markers match xtask/data/recovery.json (README + mdBook)
-        run: cargo run -p xtask -- metrics --check
 
   test:
     name: test (${{ matrix.os }})
@@ -269,7 +267,7 @@ jobs:
       - name: provision erlang so the beam differentials run instead of returning early
         uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
-          otp-version: "27.3.4"
+          otp-version: "27.3.4.15"
           version-type: strict
       - name: require erlang so a beam differential fails instead of grading nothing
         shell: bash
@@ -280,7 +278,7 @@ jobs:
               exit 1
             fi
           done
-          expected_otp_version="27.3.4"
+          expected_otp_version="27.3.4.15"
           otp_version="$(erl -noshell -eval 'Release = erlang:system_info(otp_release), {ok, Version} = file:read_file(filename:join([code:root_dir(), "releases", Release, "OTP_VERSION"])), io:format("~s", [string:trim(binary_to_list(Version))]), halt().')"
           if [ "$otp_version" != "$expected_otp_version" ]; then
             echo "setup-beam provisioned OTP $otp_version, expected exactly $expected_otp_version"
@@ -512,8 +510,8 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - name: provision cpython 3.14 (pinned corpus interpreter)
-        run: uv python install 3.14
+      - name: provision cpython 3.14.5 (pinned corpus interpreter)
+        run: uv python install 3.14.5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: export PYO3_PYTHON
@@ -675,15 +673,6 @@ jobs:
       - uses: taiki-e/install-action@cargo-deny
       - run: cargo deny --all-features check
 
-  audit:
-    name: audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.96.1
-      - uses: taiki-e/install-action@cargo-deny
-      - run: cargo deny --all-features check advisories
-
   typos:
     name: typos
     runs-on: ubuntu-latest
@@ -716,12 +705,12 @@ jobs:
       - name: source comment count stays at or below the string-literal baseline
         shell: bash
         run: |
-          baseline=30
+          baseline=31
           files=$(git ls-files -- crates xtask | grep '\.rs$')
           count=$(printf '%s\n' "$files" | xargs grep -nE '^[[:space:]]*(//|/\*)' | wc -l)
           echo "line-leading comment-shaped lines: $count (baseline $baseline)"
           if [ "$count" -gt "$baseline" ]; then
-            echo "this tree carries no source comments. Every one of the $baseline baseline matches is comment-shaped text INSIDE a string literal: embedded Java, Go build pragmas, YARA rule fixtures, and emitted IDE plugin templates."
+            echo "this tree carries no source comments. Every one of the $baseline baseline matches is comment-shaped text INSIDE a string literal: embedded Java, Go build pragmas, YARA rule fixtures, emitted IDE plugin templates, and the JS fixture text in the js-deob preset-env tests."
             echo "the count rose, so a real comment was added. Full list:"
             printf '%s\n' "$files" | xargs grep -nE '^[[:space:]]*(//|/\*)'
             exit 1

@@ -1,24 +1,11 @@
 [committed]
-style = "conventional"
+style = "none"
 
-allowed_types = [
-    "feat",
-    "fix",
-    "refactor",
-    "perf",
-    "test",
-    "docs",
-    "chore",
-    "build",
-    "ci",
-    "revert",
-]
-
-subject_capitalization = "lower"
-
-subject_punctuation = false
-
+subject_length = 72
 line_length = 72
 
-ignore_merge_commits = true
-ignore_fixup_commits = true
+subject_capitalized = false
+subject_not_punctuated = true
+imperative_subject = false
+
+no_fixup = false
