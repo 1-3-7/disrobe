@@ -669,7 +669,38 @@ fn csharp_parameter_name(name: &str, index: usize) -> String {
     {
         return name.to_owned();
     }
+    if let Some(readable) = compiler_generated_parameter_name(name) {
+        return readable;
+    }
     format!("arg{}", index.saturating_add(1))
+}
+
+fn compiler_generated_parameter_name(name: &str) -> Option<String> {
+    let rest: &str = name.strip_prefix('<')?;
+    let close: usize = rest.find('>')?;
+    let inner: &str = rest.get(..close)?;
+    let after: &str = rest.get(close.saturating_add(1)..)?;
+    let core: &str = if inner.is_empty() {
+        let digits: usize = after.bytes().take_while(u8::is_ascii_digit).count();
+        if digits == 0 {
+            return None;
+        }
+        let tail: &str = after.get(digits..)?;
+        let underscores: usize = tail.bytes().take_while(|byte: &u8| *byte == b'_').count();
+        if underscores < 2 {
+            return None;
+        }
+        tail.get(underscores..)?
+    } else {
+        inner
+    };
+    if !crate::structurize::is_simple_identifier(core) {
+        return None;
+    }
+    let mut chars: std::str::Chars<'_> = core.chars();
+    let first: char = chars.next()?;
+    let lowered: String = first.to_ascii_lowercase().to_string() + chars.as_str();
+    Some(crate::structurize::csharp_escape_identifier(&lowered))
 }
 
 fn infer_param_names_from_field_stores(
@@ -896,6 +927,35 @@ mod tests {
         );
         assert_eq!(csharp_parameter_name("bad-name", 1), "arg2");
         assert_eq!(csharp_parameter_name("class", 2), "@class");
+    }
+
+    #[test]
+    fn csharp_parameter_name_reads_a_compiler_generated_metadata_name() {
+        assert_eq!(csharp_parameter_name("<>1__state", 0), "state");
+        assert_eq!(csharp_parameter_name("<>2__current", 0), "current");
+        assert_eq!(csharp_parameter_name("<>7__wrap1", 0), "wrap1");
+        assert_eq!(
+            csharp_parameter_name("<Length>k__BackingField", 0),
+            "length"
+        );
+        assert_eq!(csharp_parameter_name("<>1__object", 0), "@object");
+    }
+
+    #[test]
+    fn compiler_generated_parameter_name_refuses_a_shape_it_cannot_read() {
+        for name in [
+            "state",
+            "<>1state",
+            "<>__state",
+            "<>1__",
+            "<>1__two words",
+            "<>1__9leading",
+            "<unclosed",
+            "<>",
+            "",
+        ] {
+            assert_eq!(compiler_generated_parameter_name(name), None, "{name}");
+        }
     }
 
     #[test]
