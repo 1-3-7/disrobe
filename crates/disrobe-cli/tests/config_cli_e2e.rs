@@ -13,6 +13,70 @@ fn write_config(dir: &std::path::Path, body: &str) -> PathBuf {
 }
 
 #[test]
+fn a_removed_determinism_seed_is_refused_on_both_surfaces() {
+    let rejected: Run = run_disrobe(&["--seed", "42", "config", "show"]);
+    assert_ne!(
+        rejected.code, 0,
+        "a script still passing --seed must fail visibly rather than run with different behaviour"
+    );
+
+    let dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("cfg-seed-removed");
+    let dir: PathBuf = dir_scratch.path().to_path_buf();
+    let path: PathBuf = write_config(&dir, "[execution]\nseed = 42\n");
+    let stale: Run = run_disrobe(&["config", "show", "--config", path.to_str().unwrap()]);
+    assert_ne!(
+        stale.code, 0,
+        "an existing .disrobe.toml carrying execution.seed must fail to parse, not be ignored"
+    );
+
+    let clean: Run = run_disrobe(&["config", "show"]);
+    assert_eq!(
+        clean.code, 0,
+        "config show must still succeed: {}",
+        clean.stderr
+    );
+    assert!(
+        !clean.stdout.contains("seed"),
+        "config show must not print a key the binary no longer reads; got: {}",
+        clean.stdout
+    );
+}
+
+#[test]
+fn every_global_flag_the_binary_parses_reaches_a_consumer() {
+    let source: &str = include_str!("../src/cli/config_merge.rs");
+    let declared: Vec<String> = source
+        .match_indices("Arg::new(\"")
+        .filter_map(|(at, needle): (usize, &str)| {
+            source
+                .get(at + needle.len()..)
+                .and_then(|rest: &str| rest.split('"').next())
+                .map(str::to_owned)
+        })
+        .collect();
+    assert!(
+        declared.len() >= 8,
+        "the global flag table declares only {} flag(s), so this check is reading the wrong shape \
+         and would pass over an orphan it cannot see: {declared:?}",
+        declared.len()
+    );
+    let effective: &str = source
+        .split("pub(crate) struct EffectiveGlobals {")
+        .nth(1)
+        .and_then(|tail: &str| tail.split('}').next())
+        .expect("EffectiveGlobals must be declared");
+    let orphans: Vec<&String> = declared
+        .iter()
+        .filter(|name: &&String| !effective.contains(name.as_str()))
+        .collect();
+    assert!(
+        orphans.is_empty(),
+        "these global flags are parsed and merged but reach no consumer, so they document \
+         behaviour the binary does not have: {orphans:?}"
+    );
+}
+
+#[test]
 fn config_show_reports_builtin_defaults_without_file() {
     let dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("cfg-defaults");
     let dir: PathBuf = dir_scratch.path().to_path_buf();

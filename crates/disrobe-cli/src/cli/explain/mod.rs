@@ -26,6 +26,7 @@ pub(crate) struct CodeEntry {
     pub(crate) crate_path: &'static str,
 }
 
+#[cfg(feature = "server")]
 pub(crate) fn lookup_for_serve(code: &str) -> Option<&'static CodeEntry> {
     let normalized: String = normalize(code);
     lookup(&normalized)

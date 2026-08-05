@@ -18,7 +18,6 @@ These flags are accepted on every subcommand (they are declared `global = true` 
 
 | Flag | Effect |
 |---|---|
-| `--seed <N>` | RNG seed for any non-deterministic backend (keeps runs reproducible). |
 | `--config <PATH>` | Load a `.disrobe.toml` config file. Without it, `disrobe` walks up from the CWD to discover one. See [project configuration](./config.md). |
 | `--in-place` | Rewrite the input file in place. |
 | `--force` | Overwrite existing outputs without prompting. |

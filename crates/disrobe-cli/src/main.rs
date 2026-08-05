@@ -93,6 +93,7 @@ use cli::report::{self, ReportFormat};
 use cli::ruby::{self, RubyCmd};
 use cli::scan;
 use cli::self_update as self_update_cmd;
+#[cfg(feature = "server")]
 use cli::serve;
 #[cfg(feature = "shell")]
 use cli::shell::{self, ShellCmd};
@@ -138,14 +139,6 @@ struct Cli {
         help = "emit SARIF 2.1.0 (for GitHub code scanning, etc.)"
     )]
     sarif: bool,
-
-    #[arg(
-        long,
-        global = true,
-        value_name = "N",
-        help = "RNG seed for non-deterministic backends"
-    )]
-    seed: Option<u64>,
 
     #[arg(
         long,
@@ -893,6 +886,7 @@ enum Cmd {
         action: GuardCmd,
     },
     #[command(about = "run disrobe as an HTTP daemon, gRPC server, or LSP-over-stdio")]
+    #[cfg_attr(not(feature = "server"), command(hide = true))]
     Serve {
         #[arg(long, default_value = "127.0.0.1:7373", help = "HTTP bind address")]
         bind: String,
@@ -1546,7 +1540,6 @@ fn main() -> miette::Result<()> {
         json: cli.json,
         ndjson: cli.ndjson,
         sarif: cli.sarif,
-        seed: cli.seed,
         in_place: cli.in_place,
         force: cli.force,
         threads: cli.threads,
@@ -1917,6 +1910,7 @@ fn main() -> miette::Result<()> {
             }
             GuardCmd::Check { path, root } => guard::run_check(path, root, fmt),
         },
+        #[cfg(feature = "server")]
         Cmd::Serve {
             bind,
             stdio,
@@ -1925,6 +1919,12 @@ fn main() -> miette::Result<()> {
             cors_origin,
             max_body_size,
         } => serve::run(bind, stdio, mcp, grpc, cors_origin, max_body_size),
+        #[cfg(not(feature = "server"))]
+        Cmd::Serve { .. } => Err(miette::miette!(
+            "DR-CLI-0326: this binary was built without the `server` feature, so it carries no HTTP \
+             daemon, no gRPC surface and no LSP-over-stdio. rebuild with `--features server`, or \
+             use the default build which enables it"
+        )),
         Cmd::InstallDeps {
             action,
             all,

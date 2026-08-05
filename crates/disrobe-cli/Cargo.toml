@@ -59,7 +59,8 @@ required-features = ["full"]
 
 [features]
 default = ["full"]
-full = ["chain", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle", "scriptlang", "nativelang", "nir-lift", "devirt"]
+full = ["server", "chain", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle", "scriptlang", "nativelang", "nir-lift", "devirt"]
+server = ["dep:axum", "dep:tower-http", "dep:utoipa", "dep:lsp-server", "dep:lsp-types", "dep:tokio-util", "dep:tonic", "dep:tonic-health", "dep:tonic-reflection", "dep:prost", "dep:tonic-build", "dep:protoc-bin-vendored"]
 
 py = []
 native = []
@@ -185,17 +186,17 @@ serde_json = { workspace = true }
 toml = { workspace = true }
 wasmparser = { workspace = true }
 object = { workspace = true }
-axum = { workspace = true }
+axum = { workspace = true, optional = true }
 tokio = { workspace = true }
-tower-http = { workspace = true }
-utoipa = { workspace = true }
-lsp-server = { workspace = true }
-lsp-types = { workspace = true }
-tokio-util = { version = "0.7", features = ["rt"] }
-tonic = { workspace = true }
-tonic-health = { workspace = true }
-tonic-reflection = { workspace = true }
-prost = { workspace = true }
+tower-http = { workspace = true, optional = true }
+utoipa = { workspace = true, optional = true }
+lsp-server = { workspace = true, optional = true }
+lsp-types = { workspace = true, optional = true }
+tokio-util = { version = "0.7", features = ["rt"], optional = true }
+tonic = { workspace = true, optional = true }
+tonic-health = { workspace = true, optional = true }
+tonic-reflection = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
 reqwest = { workspace = true }
 num_cpus = { workspace = true }
 rayon = { workspace = true }
@@ -205,9 +206,24 @@ tar = { workspace = true }
 zstd = { workspace = true }
 sha2 = { workspace = true }
 
+[[test]]
+name = "grpc_e2e"
+path = "tests/grpc_e2e.rs"
+required-features = ["server"]
+
+[[test]]
+name = "serve_http_e2e"
+path = "tests/serve_http_e2e.rs"
+required-features = ["server"]
+
+[[test]]
+name = "serve_stdio_protocol_e2e"
+path = "tests/serve_stdio_protocol_e2e.rs"
+required-features = ["server"]
+
 [build-dependencies]
-tonic-build = { workspace = true }
-protoc-bin-vendored = { workspace = true }
+tonic-build = { workspace = true, optional = true }
+protoc-bin-vendored = { workspace = true, optional = true }
 
 [dev-dependencies]
 base64 = { workspace = true }

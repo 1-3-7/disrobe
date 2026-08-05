@@ -1,6 +1,7 @@
-use std::path::PathBuf;
+#[cfg(feature = "server")]
+fn compile_protos() -> std::io::Result<()> {
+    use std::path::PathBuf;
 
-fn main() -> std::io::Result<()> {
     let protoc: PathBuf = protoc_bin_vendored::protoc_bin_path()
         .map_err(|e| std::io::Error::other(format!("protoc-bin-vendored: {e}")))?;
     unsafe {
@@ -27,4 +28,15 @@ fn main() -> std::io::Result<()> {
         descriptor_path.display()
     );
     Ok(())
+}
+
+#[cfg(feature = "server")]
+fn main() -> std::io::Result<()> {
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_SERVER");
+    compile_protos()
+}
+
+#[cfg(not(feature = "server"))]
+fn main() {
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_SERVER");
 }
