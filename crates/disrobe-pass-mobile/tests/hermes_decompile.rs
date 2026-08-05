@@ -14,7 +14,7 @@ mod hermes_production_bundle;
 use std::path::{Path, PathBuf};
 
 use disrobe_pass_mobile::{
-    DecompileReport, DecompiledFunction, HermesModule, decompile_hermes_function,
+    DeclineCount, DecompileReport, DecompiledFunction, HermesModule, decompile_hermes_function,
     decompile_hermes_module, parse_hermes_module,
 };
 use hermes_production_bundle::{PUBLISHED_FUNCTION_COUNT, load_bundle};
@@ -220,4 +220,35 @@ fn discord_decompile_module_report_consistent() {
         "expected >=99.8% whole-module op-coverage (a lowering rule is present; this is coverage, not decompile correctness), got {:.2}%",
         ratio * 100.0
     );
+
+    let declined: usize = report
+        .structure_declines
+        .iter()
+        .map(|count: &DeclineCount| count.functions)
+        .sum();
+    assert_eq!(
+        report.structured_functions + declined,
+        report.functions_with_body,
+        "structured plus declined accounts for every bodied function, so a body can never fall out \
+         of both columns; declines {:?}",
+        report.structure_declines
+    );
+    let structured_ratio: f64 =
+        report.structured_functions as f64 / report.functions_with_body as f64;
+    eprintln!(
+        "discord full-module structuring: {} of {} bodied functions reach structured control flow ({:.2}%); declined by reason {:?}",
+        report.structured_functions,
+        report.functions_with_body,
+        structured_ratio * 100.0,
+        report.structure_declines
+    );
+    for recovered in &report.functions {
+        if recovered.structure_decline.is_none() {
+            assert!(
+                !recovered.source.contains("goto "),
+                "{}: claims structure while carrying goto edges",
+                recovered.name
+            );
+        }
+    }
 }

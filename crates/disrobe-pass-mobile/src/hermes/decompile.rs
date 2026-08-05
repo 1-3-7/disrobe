@@ -5,7 +5,8 @@ use std::fmt::Arguments;
 use serde::{Deserialize, Serialize};
 
 use super::literals::{BufferKind, LiteralValue, decode_literals, render_key, render_value};
-use super::{HermesModule, SmallFunctionHeader};
+use super::structure::{StructureDecline, structure_function};
+use super::{HERMES_LIFT_VERSION, HermesModule, SmallFunctionHeader};
 
 const MAX_RENDERED_CALL_ARGS: u64 = 256;
 
@@ -440,10 +441,40 @@ pub(crate) fn is_conditional_jump(name: &str) -> bool {
 }
 
 #[must_use]
+pub(crate) fn is_switch(name: &str) -> bool {
+    matches!(name, "SwitchImm")
+}
+
+#[must_use]
 pub(crate) fn is_terminator(name: &str) -> bool {
     matches!(name, "Ret" | "Throw" | "Unreachable")
         || is_unconditional_jump(name)
         || is_conditional_jump(name)
+        || is_switch(name)
+}
+
+#[must_use]
+fn switch_case_targets(code: &[u8], inst: &Instruction) -> Vec<(i64, usize)> {
+    if !is_switch(&inst.name) {
+        return Vec::new();
+    }
+    let table_offset: u64 = uint_of(inst.operands.get(1));
+    let min_val: u64 = uint_of(inst.operands.get(3));
+    let max_val: u64 = uint_of(inst.operands.get(4));
+    switch_table_entries(code, inst.offset, table_offset, min_val, max_val)
+}
+
+#[must_use]
+pub(crate) fn block_edges(inst: &Instruction, code: &[u8]) -> Vec<usize> {
+    if !is_switch(&inst.name) {
+        return instruction_targets(inst);
+    }
+    let mut edges: Vec<usize> = switch_case_targets(code, inst)
+        .into_iter()
+        .map(|(_, target): (i64, usize)| target)
+        .collect();
+    edges.extend(instruction_targets(inst));
+    edges
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -461,7 +492,7 @@ pub(crate) struct Cfg {
 }
 
 #[must_use]
-pub(crate) fn build_cfg(instructions: &[Instruction]) -> Cfg {
+pub(crate) fn build_cfg(instructions: &[Instruction], code: &[u8]) -> Cfg {
     if instructions.is_empty() {
         return Cfg {
             blocks: Vec::new(),
@@ -472,7 +503,7 @@ pub(crate) fn build_cfg(instructions: &[Instruction]) -> Cfg {
     leaders.insert(instructions[0].offset);
     for (i, inst) in instructions.iter().enumerate() {
         if is_terminator(&inst.name) {
-            for t in instruction_targets(inst) {
+            for t in block_edges(inst, code) {
                 leaders.insert(t);
             }
             if let Some(next) = instructions.get(i + 1) {
@@ -520,7 +551,15 @@ pub(crate) fn build_cfg(instructions: &[Instruction]) -> Cfg {
             let (_s, e): (usize, usize) = block.instr_range;
             let last: &Instruction = &instructions[e - 1];
             let mut succ: Vec<usize> = Vec::new();
-            if is_unconditional_jump(&last.name) {
+            if is_switch(&last.name) {
+                for t in block_edges(last, code) {
+                    if let Some(b) = offset_to_block.get(&t)
+                        && !succ.contains(b)
+                    {
+                        succ.push(*b);
+                    }
+                }
+            } else if is_unconditional_jump(&last.name) {
                 for t in instruction_targets(last) {
                     if let Some(b) = offset_to_block.get(&t) {
                         succ.push(*b);
@@ -819,64 +858,74 @@ impl<'a> LiftCtx<'a> {
         min_val: u64,
         max_val: u64,
     ) -> Vec<(i64, usize)> {
-        if max_val < min_val {
-            return Vec::new();
-        }
-        let entry_count: u64 = max_val - min_val + 1;
-        if entry_count > MAX_SWITCH_CASES {
-            return Vec::new();
-        }
-        let Some(table_offset_usize): Option<usize> = usize::try_from(table_offset).ok() else {
-            return Vec::new();
-        };
-        let Some(table_base): Option<usize> = inst_offset.checked_add(table_offset_usize) else {
-            return Vec::new();
-        };
-        let Some(aligned_base): Option<usize> =
-            table_base.checked_add(3).map(|base: usize| base & !3usize)
-        else {
-            return Vec::new();
-        };
-        let Some(entry_count_usize): Option<usize> = usize::try_from(entry_count).ok() else {
-            return Vec::new();
-        };
-        let Ok(inst_offset_raw): Result<i128, _> = i128::try_from(inst_offset) else {
-            return Vec::new();
-        };
-        let mut cases: Vec<(i64, usize)> = Vec::with_capacity(entry_count_usize);
-        for k in 0..entry_count_usize {
-            let Some(entry_delta): Option<usize> = k.checked_mul(core::mem::size_of::<u32>())
-            else {
-                break;
-            };
-            let Some(entry_at): Option<usize> = aligned_base.checked_add(entry_delta) else {
-                break;
-            };
-            let Some(entry_end): Option<usize> = entry_at.checked_add(core::mem::size_of::<u32>())
-            else {
-                break;
-            };
-            let Some(raw): Option<&[u8]> = self.code.get(entry_at..entry_end) else {
-                break;
-            };
-            let rel: i32 = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
-            let target_raw: i128 = (inst_offset_raw + i128::from(rel)).max(0);
-            let Ok(target): Result<usize, _> = usize::try_from(target_raw) else {
-                break;
-            };
-            let Ok(k_u64): Result<u64, _> = u64::try_from(k) else {
-                break;
-            };
-            let Some(case_value_raw): Option<u64> = min_val.checked_add(k_u64) else {
-                break;
-            };
-            let Ok(case_value): Result<i64, _> = i64::try_from(case_value_raw) else {
-                break;
-            };
-            cases.push((case_value, target));
-        }
-        cases
+        switch_table_entries(self.code, inst_offset, table_offset, min_val, max_val)
     }
+}
+
+#[must_use]
+fn switch_table_entries(
+    code: &[u8],
+    inst_offset: usize,
+    table_offset: u64,
+    min_val: u64,
+    max_val: u64,
+) -> Vec<(i64, usize)> {
+    if max_val < min_val {
+        return Vec::new();
+    }
+    let entry_count: u64 = max_val - min_val + 1;
+    if entry_count > MAX_SWITCH_CASES {
+        return Vec::new();
+    }
+    let Some(table_offset_usize): Option<usize> = usize::try_from(table_offset).ok() else {
+        return Vec::new();
+    };
+    let Some(table_base): Option<usize> = inst_offset.checked_add(table_offset_usize) else {
+        return Vec::new();
+    };
+    let Some(aligned_base): Option<usize> =
+        table_base.checked_add(3).map(|base: usize| base & !3usize)
+    else {
+        return Vec::new();
+    };
+    let Some(entry_count_usize): Option<usize> = usize::try_from(entry_count).ok() else {
+        return Vec::new();
+    };
+    let Ok(inst_offset_raw): Result<i128, _> = i128::try_from(inst_offset) else {
+        return Vec::new();
+    };
+    let mut cases: Vec<(i64, usize)> = Vec::with_capacity(entry_count_usize);
+    for k in 0..entry_count_usize {
+        let Some(entry_delta): Option<usize> = k.checked_mul(core::mem::size_of::<u32>()) else {
+            break;
+        };
+        let Some(entry_at): Option<usize> = aligned_base.checked_add(entry_delta) else {
+            break;
+        };
+        let Some(entry_end): Option<usize> = entry_at.checked_add(core::mem::size_of::<u32>())
+        else {
+            break;
+        };
+        let Some(raw): Option<&[u8]> = code.get(entry_at..entry_end) else {
+            break;
+        };
+        let rel: i32 = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+        let target_raw: i128 = (inst_offset_raw + i128::from(rel)).max(0);
+        let Ok(target): Result<usize, _> = usize::try_from(target_raw) else {
+            break;
+        };
+        let Ok(k_u64): Result<u64, _> = u64::try_from(k) else {
+            break;
+        };
+        let Some(case_value_raw): Option<u64> = min_val.checked_add(k_u64) else {
+            break;
+        };
+        let Ok(case_value): Result<i64, _> = i64::try_from(case_value_raw) else {
+            break;
+        };
+        cases.push((case_value, target));
+    }
+    cases
 }
 
 #[must_use]
@@ -1051,9 +1100,9 @@ pub(crate) enum BlockStmt {
 }
 
 #[derive(Debug, Clone)]
-struct LiftedBlock {
-    start: usize,
-    stmts: Vec<BlockStmt>,
+pub(crate) struct LiftedBlock {
+    pub start: usize,
+    pub stmts: Vec<BlockStmt>,
 }
 
 fn lift_block(
@@ -1916,16 +1965,27 @@ pub struct DecompiledFunction {
     pub has_loop: bool,
     pub has_try_catch: bool,
     pub is_generator: bool,
+    pub structured: bool,
+    pub structure_decline: Option<StructureDecline>,
     pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeclineCount {
+    pub reason: StructureDecline,
+    pub functions: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecompileReport {
     pub hermes_version: u32,
+    pub lift_supported: bool,
     pub function_count: usize,
     pub functions_with_body: usize,
     pub total_reconstructed_ops: usize,
     pub total_fallback_ops: usize,
+    pub structured_functions: usize,
+    pub structure_declines: Vec<DeclineCount>,
     pub functions: Vec<DecompiledFunction>,
     pub regexps: Vec<super::regex::RecoveredRegExp>,
 }
@@ -1979,7 +2039,7 @@ fn decompile_function_inlined(
         .unwrap_or_else(|| format!("$func{index}"));
     let code: &[u8] = module.function_code(index);
     let instructions: Vec<Instruction> = decode_instructions(code);
-    let cfg: Cfg = build_cfg(&instructions);
+    let cfg: Cfg = build_cfg(&instructions, code);
 
     let window_consumed: BTreeSet<u32> = call_window_consumed(&instructions);
     let materialized: BTreeSet<u32> = compute_materialized(&instructions);
@@ -1991,7 +2051,18 @@ fn decompile_function_inlined(
         .map(|b: &BasicBlock| lift_block(&mut ctx, &instructions, b, &cfg))
         .collect();
 
-    let body: String = render_structured(&lifted, &cfg, &instructions);
+    let (body, structure_decline): (String, Option<StructureDecline>) =
+        match structure_function(&lifted, &cfg) {
+            Ok(structured) => (structured, None),
+            Err(reason) => {
+                let mut fallback: String = format!(
+                    "  /* unstructured ({}): edges below are goto form, not JavaScript */\n",
+                    reason.as_str()
+                );
+                fallback.push_str(&render_structured(&lifted, &cfg, &instructions));
+                (fallback, Some(reason))
+            }
+        };
     let has_loop: bool = cfg_has_back_edge(&cfg);
     let has_if: bool = lifted
         .iter()
@@ -2042,6 +2113,8 @@ fn decompile_function_inlined(
         has_loop,
         has_try_catch,
         is_generator,
+        structured: structure_decline.is_none(),
+        structure_decline,
         source,
     }
 }
@@ -2181,7 +2254,7 @@ fn compute_materialized(instructions: &[Instruction]) -> BTreeSet<u32> {
 }
 
 #[must_use]
-fn negate_cond(cond: &str) -> String {
+pub(crate) fn negate_cond(cond: &str) -> String {
     if let Some(inner) = cond.strip_prefix("!(")
         && let Some(inner) = inner.strip_suffix(')')
         && is_balanced(inner)
@@ -2527,22 +2600,67 @@ fn inlined_source(
 }
 
 #[must_use]
+fn declined_function(module: &HermesModule, index: usize) -> DecompiledFunction {
+    let header: Option<&SmallFunctionHeader> = module.functions.get(index);
+    let name: String = header
+        .and_then(|h: &SmallFunctionHeader| module.string_by_global_id(h.function_name_id))
+        .filter(|s: &&str| !s.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("$func{index}"));
+    let version: u32 = module.header.version;
+    DecompiledFunction {
+        index,
+        source: format!(
+            "/* hbc v{version}: no opcode table, bodies are not lifted at this bytecode version \
+             (lifting covers v{HERMES_LIFT_VERSION}) */"
+        ),
+        name,
+        param_count: header.map_or(0, |h: &SmallFunctionHeader| h.param_count),
+        frame_size: header.map_or(0, |h: &SmallFunctionHeader| h.frame_size),
+        bytecode_size: header.map_or(0, |h: &SmallFunctionHeader| h.bytecode_size_bytes),
+        instruction_count: 0,
+        block_count: 0,
+        reconstructed_ops: 0,
+        fallback_ops: 0,
+        has_if: false,
+        has_loop: false,
+        has_try_catch: header.is_some_and(|h: &SmallFunctionHeader| h.has_exception_handler),
+        is_generator: false,
+        structured: false,
+        structure_decline: Some(StructureDecline::UnsupportedBytecodeVersion),
+    }
+}
+
+#[must_use]
 pub fn decompile_module(module: &HermesModule) -> DecompileReport {
+    let lift_supported: bool = module.header.version == HERMES_LIFT_VERSION;
     let mut functions: Vec<DecompiledFunction> = Vec::with_capacity(module.functions.len());
     let mut total_reconstructed: usize = 0;
     let mut total_fallback: usize = 0;
     let mut with_body: usize = 0;
+    let mut structured_functions: usize = 0;
+    let mut declines: BTreeMap<StructureDecline, usize> = BTreeMap::new();
     let mut cache: BTreeMap<usize, String> = BTreeMap::new();
     for i in 0..module.functions.len() {
-        let mut visiting: BTreeSet<usize> = BTreeSet::new();
-        visiting.insert(i);
-        let child_bodies: BTreeMap<u32, String> =
-            inlined_closure_bodies(module, i, &mut visiting, &mut cache, 0);
-        let f: DecompiledFunction = decompile_function_inlined(module, i, &child_bodies);
+        let f: DecompiledFunction = if lift_supported {
+            let mut visiting: BTreeSet<usize> = BTreeSet::new();
+            visiting.insert(i);
+            let child_bodies: BTreeMap<u32, String> =
+                inlined_closure_bodies(module, i, &mut visiting, &mut cache, 0);
+            decompile_function_inlined(module, i, &child_bodies)
+        } else {
+            declined_function(module, i)
+        };
         total_reconstructed += f.reconstructed_ops;
         total_fallback += f.fallback_ops;
         if f.instruction_count > 0 {
             with_body += 1;
+            if f.structured {
+                structured_functions += 1;
+            }
+        }
+        if let Some(reason) = f.structure_decline {
+            *declines.entry(reason).or_insert(0) += 1;
         }
         functions.push(f);
     }
@@ -2550,10 +2668,18 @@ pub fn decompile_module(module: &HermesModule) -> DecompileReport {
         super::regex::recover_regexps(&module.reg_exp_table, &module.reg_exp_storage);
     DecompileReport {
         hermes_version: module.header.version,
+        lift_supported,
         function_count: module.functions.len(),
         functions_with_body: with_body,
         total_reconstructed_ops: total_reconstructed,
         total_fallback_ops: total_fallback,
+        structured_functions,
+        structure_declines: declines
+            .into_iter()
+            .map(
+                |(reason, functions): (StructureDecline, usize)| DeclineCount { reason, functions },
+            )
+            .collect(),
         functions,
         regexps,
     }
@@ -2773,7 +2899,7 @@ mod tests {
         code.push(opcode_byte("Ret"));
         code.push(0u8);
         let instructions: Vec<Instruction> = decode_instructions(&code);
-        let cfg: Cfg = build_cfg(&instructions);
+        let cfg: Cfg = build_cfg(&instructions, &code);
         assert!(cfg.blocks.len() >= 2, "blocks: {}", cfg.blocks.len());
     }
 
@@ -2857,7 +2983,7 @@ mod tests {
             other => panic!("expected target operand, got {other:?}"),
         };
         assert_eq!(target, 0);
-        let cfg: Cfg = build_cfg(&instructions);
+        let cfg: Cfg = build_cfg(&instructions, &code);
         assert!(!cfg.blocks.is_empty());
     }
 
@@ -3683,5 +3809,211 @@ mod tests {
                 f.source
             );
         }
+    }
+
+    #[test]
+    fn structured_counted_loop_recovers_a_loop_keyword() {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("LoadParam"));
+        code.extend_from_slice(&[1u8, 1u8]);
+        code.push(opcode_byte("LoadConstZero"));
+        code.push(0u8);
+        code.push(opcode_byte("JNotLess"));
+        code.extend_from_slice(&[9u8, 0u8, 1u8]);
+        code.push(opcode_byte("Inc"));
+        code.extend_from_slice(&[0u8, 0u8]);
+        code.push(opcode_byte("Jmp"));
+        code.push((-7i8) as u8);
+        code.push(opcode_byte("Ret"));
+        code.push(0u8);
+        let module: HermesModule = module_with(&["counted"], &[], code, 2);
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert!(
+            f.structured,
+            "declined: {:?}; src: {}",
+            f.structure_decline, f.source
+        );
+        assert!(
+            f.source.contains("while (") || f.source.contains("for (;;)"),
+            "counted loop must recover a loop keyword; src: {}",
+            f.source
+        );
+        assert!(
+            !f.source.contains("goto "),
+            "a structured body carries no goto edges; src: {}",
+            f.source
+        );
+    }
+
+    #[test]
+    fn structured_branch_recovers_an_if_without_goto_edges() {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("LoadParam"));
+        code.extend_from_slice(&[1u8, 1u8]);
+        code.push(opcode_byte("LoadConstZero"));
+        code.push(2u8);
+        code.push(opcode_byte("JNotLess"));
+        code.extend_from_slice(&[6u8, 1u8, 2u8]);
+        code.push(opcode_byte("Ret"));
+        code.push(1u8);
+        code.push(opcode_byte("Ret"));
+        code.push(2u8);
+        let module: HermesModule = module_with(&["cmp"], &[], code, 2);
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert!(
+            f.structured,
+            "declined: {:?}; src: {}",
+            f.structure_decline, f.source
+        );
+        assert!(f.source.contains("if ("), "src: {}", f.source);
+        assert!(
+            !f.source.contains("goto "),
+            "a structured body carries no goto edges; src: {}",
+            f.source
+        );
+    }
+
+    fn switch_imm_fixture() -> Vec<u8> {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("LoadParam"));
+        code.extend_from_slice(&[1u8, 1u8]);
+        let switch_at: i64 = code.len() as i64;
+        code.push(opcode_byte("SwitchImm"));
+        code.push(1u8);
+        code.extend_from_slice(&30u32.to_le_bytes());
+        code.extend_from_slice(&28i32.to_le_bytes());
+        code.extend_from_slice(&0u32.to_le_bytes());
+        code.extend_from_slice(&1u32.to_le_bytes());
+        code.push(opcode_byte("LoadConstUInt8"));
+        code.extend_from_slice(&[0u8, 10u8]);
+        code.push(opcode_byte("Jmp"));
+        code.push(7u8);
+        code.push(opcode_byte("LoadConstUInt8"));
+        code.extend_from_slice(&[0u8, 20u8]);
+        code.push(opcode_byte("Jmp"));
+        code.push(2u8);
+        code.push(opcode_byte("Ret"));
+        code.push(0u8);
+        while code.len() % 4 != 0 {
+            code.push(opcode_byte("Debugger"));
+        }
+        for target in [21i64, 26] {
+            let rel: i32 = (target - switch_at) as i32;
+            code.extend_from_slice(&rel.to_le_bytes());
+        }
+        code
+    }
+
+    #[test]
+    fn switch_imm_case_targets_become_block_leaders() {
+        let code: Vec<u8> = switch_imm_fixture();
+        let instructions: Vec<Instruction> = decode_instructions(&code);
+        let cfg: Cfg = build_cfg(&instructions, &code);
+        for leader in [21usize, 26, 31] {
+            assert!(
+                cfg.offset_to_block.contains_key(&leader),
+                "switch edge {leader:#x} must start a block; leaders: {:?}",
+                cfg.offset_to_block.keys().collect::<Vec<&usize>>()
+            );
+        }
+        let switch_block: usize = cfg.offset_to_block[&0];
+        assert_eq!(
+            cfg.blocks[switch_block].successors.len(),
+            3,
+            "two case targets plus the default are three edges; got {:?}",
+            cfg.blocks[switch_block].successors
+        );
+    }
+
+    #[test]
+    fn structured_switch_imm_recovers_a_switch_statement() {
+        let module: HermesModule = module_with(&["dispatch"], &[], switch_imm_fixture(), 2);
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert!(
+            f.structured,
+            "declined: {:?}; src: {}",
+            f.structure_decline, f.source
+        );
+        for expected in ["switch (", "case 0:", "case 1:", "default:", "break;"] {
+            assert!(
+                f.source.contains(expected),
+                "expected `{expected}`; src: {}",
+                f.source
+            );
+        }
+        assert!(
+            !f.source.contains("goto "),
+            "a structured switch carries no goto edges; src: {}",
+            f.source
+        );
+    }
+
+    #[test]
+    fn irreducible_control_flow_is_declined_by_name() {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("LoadParam"));
+        code.extend_from_slice(&[1u8, 1u8]);
+        code.push(opcode_byte("JmpTrue"));
+        code.extend_from_slice(&[8u8, 1u8]);
+        code.push(opcode_byte("Inc"));
+        code.extend_from_slice(&[0u8, 0u8]);
+        code.push(opcode_byte("Jmp"));
+        code.push(2u8);
+        code.push(opcode_byte("JmpTrue"));
+        code.extend_from_slice(&[5u8, 1u8]);
+        code.push(opcode_byte("Jmp"));
+        code.push((-8i8) as u8);
+        code.push(opcode_byte("Ret"));
+        code.push(0u8);
+        let module: HermesModule = module_with(&["twoentry"], &[], code, 2);
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert_eq!(
+            f.structure_decline,
+            Some(StructureDecline::Irreducible),
+            "a two-entry cycle must be declined by name; src: {}",
+            f.source
+        );
+        assert!(!f.structured);
+        assert!(
+            f.source.contains("unstructured (irreducible)"),
+            "a declined body must say so rather than read as JavaScript; src: {}",
+            f.source
+        );
+    }
+
+    #[test]
+    fn a_bytecode_version_without_an_opcode_table_is_declined_by_number() {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("LoadParam"));
+        code.extend_from_slice(&[1u8, 1u8]);
+        code.push(opcode_byte("Ret"));
+        code.push(1u8);
+        let mut module: HermesModule = module_with(&["add"], &[], code, 2);
+        module.header.version = 84;
+        let report: DecompileReport = decompile_module(&module);
+        assert!(!report.lift_supported);
+        assert_eq!(report.function_count, 1);
+        assert_eq!(report.functions_with_body, 0);
+        assert_eq!(report.total_reconstructed_ops, 0);
+        assert_eq!(report.total_fallback_ops, 0);
+        assert_eq!(report.structured_functions, 0);
+        assert_eq!(
+            report.functions[0].structure_decline,
+            Some(StructureDecline::UnsupportedBytecodeVersion)
+        );
+        assert!(
+            report.functions[0].source.contains("hbc v84")
+                && report.functions[0].source.contains("not lifted"),
+            "a version the opcode table does not cover states so; src: {}",
+            report.functions[0].source
+        );
+        assert_eq!(report.functions[0].name, "add", "names still resolve");
+
+        module.header.version = HERMES_LIFT_VERSION;
+        let lifted: DecompileReport = decompile_module(&module);
+        assert!(lifted.lift_supported);
+        assert_eq!(lifted.functions_with_body, 1);
+        assert_eq!(lifted.structured_functions, 1);
+        assert!(lifted.structure_declines.is_empty());
     }
 }
