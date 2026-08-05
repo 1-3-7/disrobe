@@ -40,15 +40,18 @@ struct Ctx<'a> {
     guard: usize,
     repeats: Vec<RepeatEdge>,
     active_repeats: Vec<usize>,
-    unresolved: usize,
     label_candidates: std::collections::BTreeSet<usize>,
     placed_labels: std::collections::BTreeSet<usize>,
+    total_jumps: usize,
+    placed_jumps: std::collections::BTreeSet<usize>,
+    truncated_regions: usize,
 }
 
 #[derive(Debug)]
 pub(super) struct StructureResult {
     pub blocks: Vec<StructuredBlock>,
     pub unresolved_jumps: usize,
+    pub truncated_regions: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -69,22 +72,30 @@ pub(super) fn structure_standard(stmts: &[LiftedStmt], code_len: usize) -> Struc
             _ => None,
         })
         .collect();
+    let total_jumps: usize = nodes
+        .iter()
+        .filter(|n: &&PcNode| matches!(n.node, Node::Jump { .. }))
+        .count();
     let mut ctx: Ctx<'_> = Ctx {
         nodes: &nodes,
         end_pc: code_len + 1,
         guard: 0,
         repeats,
         active_repeats: Vec::new(),
-        unresolved: 0,
         label_candidates,
         placed_labels: std::collections::BTreeSet::new(),
+        total_jumps,
+        placed_jumps: std::collections::BTreeSet::new(),
+        truncated_regions: 0,
     };
     let mut pos: usize = 0;
     let mut blocks: Vec<StructuredBlock> = structure_seq(&mut ctx, &mut pos, code_len + 1, None);
-    let dangling: usize = finalize_gotos(&mut blocks, &ctx.placed_labels);
+    let surviving_jumps: usize = finalize_gotos(&mut blocks, &ctx.placed_labels);
+    let unplaced_jumps: usize = ctx.total_jumps.saturating_sub(ctx.placed_jumps.len());
     StructureResult {
         blocks,
-        unresolved_jumps: ctx.unresolved.saturating_add(dangling),
+        unresolved_jumps: surviving_jumps.saturating_add(unplaced_jumps),
+        truncated_regions: ctx.truncated_regions,
     }
 }
 
@@ -93,9 +104,9 @@ fn finalize_gotos(
     placed: &std::collections::BTreeSet<usize>,
 ) -> usize {
     let mut surviving: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
-    let dangling: usize = convert_dangling_gotos(blocks, placed, &mut surviving);
+    let carried: usize = convert_dangling_gotos(blocks, placed, &mut surviving);
     prune_unreferenced_labels(blocks, &surviving);
-    dangling
+    carried
 }
 
 fn convert_dangling_gotos(
@@ -103,15 +114,15 @@ fn convert_dangling_gotos(
     placed: &std::collections::BTreeSet<usize>,
     surviving: &mut std::collections::BTreeSet<usize>,
 ) -> usize {
-    let mut dangling: usize = 0;
+    let mut carried: usize = 0;
     for b in blocks.iter_mut() {
         match b {
             StructuredBlock::Goto { pc } => {
+                carried += 1;
                 if placed.contains(pc) {
                     surviving.insert(*pc);
                 } else {
                     let target: usize = *pc;
-                    dangling += 1;
                     *b = StructuredBlock::Raw(format!("-- unresolved jump to pc {target}"));
                 }
             }
@@ -120,19 +131,19 @@ fn convert_dangling_gotos(
                 else_body,
                 ..
             } => {
-                dangling += convert_dangling_gotos(then_body, placed, surviving);
-                dangling += convert_dangling_gotos(else_body, placed, surviving);
+                carried += convert_dangling_gotos(then_body, placed, surviving);
+                carried += convert_dangling_gotos(else_body, placed, surviving);
             }
             StructuredBlock::While { body, .. }
             | StructuredBlock::Repeat { body, .. }
             | StructuredBlock::NumericFor { body, .. }
             | StructuredBlock::GenericFor { body, .. } => {
-                dangling += convert_dangling_gotos(body, placed, surviving);
+                carried += convert_dangling_gotos(body, placed, surviving);
             }
             _ => {}
         }
     }
-    dangling
+    carried
 }
 
 fn prune_unreferenced_labels(
@@ -274,10 +285,12 @@ fn structure_seq(
     let mut out: Vec<StructuredBlock> = Vec::new();
     ctx.guard += 1;
     if ctx.guard > MAX_STRUCT_RECURSION {
+        ctx.truncated_regions = ctx.truncated_regions.saturating_add(1);
         return out;
     }
     while *pos < ctx.nodes.len() {
         let cur: PcNode = ctx.nodes[*pos].clone();
+        let cur_index: usize = *pos;
         if cur.pc >= stop_pc {
             break;
         }
@@ -342,12 +355,12 @@ fn structure_seq(
             }
             Node::Jump { target } => {
                 *pos += 1;
+                ctx.placed_jumps.insert(cur_index);
                 let is_break: bool =
                     target == usize::MAX || cur_loop.is_some_and(|l: LoopCtx| target == l.exit);
                 if is_break {
                     out.push(StructuredBlock::Break);
                 } else {
-                    ctx.unresolved += 1;
                     out.push(StructuredBlock::Goto { pc: target });
                 }
             }
@@ -391,8 +404,8 @@ fn emit_branch(
         *pos += 1;
         let mut body: Vec<StructuredBlock> =
             structure_seq(ctx, pos, target, Some(LoopCtx { exit }));
-        pop_trailing_goto(ctx, &mut body);
-        consume_back_jump(ctx.nodes, pos);
+        pop_trailing_goto(&mut body, head);
+        consume_back_jump(ctx, pos, head);
         out.push(StructuredBlock::While {
             cond: cond.to_owned(),
             body,
@@ -408,7 +421,7 @@ fn emit_branch(
     match else_jump {
         Some(else_end) if else_end > target && else_end <= ctx.end_pc => {
             let mut then_trim: Vec<StructuredBlock> = then_body;
-            if !pop_trailing_goto(ctx, &mut then_trim)
+            if !pop_trailing_goto(&mut then_trim, else_end)
                 && matches!(then_trim.last(), Some(StructuredBlock::Break))
             {
                 then_trim.pop();
@@ -466,12 +479,14 @@ fn preceding_forward_jump(
     None
 }
 
-fn pop_trailing_goto(ctx: &mut Ctx<'_>, body: &mut Vec<StructuredBlock>) -> bool {
-    if !matches!(body.last(), Some(StructuredBlock::Goto { .. })) {
+fn pop_trailing_goto(body: &mut Vec<StructuredBlock>, absorbed_target: usize) -> bool {
+    let Some(StructuredBlock::Goto { pc }) = body.last() else {
+        return false;
+    };
+    if *pc != absorbed_target {
         return false;
     }
     body.pop();
-    ctx.unresolved = ctx.unresolved.saturating_sub(1);
     true
 }
 
@@ -481,12 +496,13 @@ fn consume_cond(nodes: &[PcNode], pos: &mut usize) {
     }
 }
 
-fn consume_back_jump(nodes: &[PcNode], pos: &mut usize) {
-    if *pos < nodes.len()
-        && let Node::Jump { target } = nodes[*pos].node
-        && target != usize::MAX
-        && target <= nodes[*pos].pc
+fn consume_back_jump(ctx: &mut Ctx<'_>, pos: &mut usize, head: usize) {
+    if *pos < ctx.nodes.len()
+        && let Node::Jump { target } = ctx.nodes[*pos].node
+        && target == head
+        && target <= ctx.nodes[*pos].pc
     {
+        ctx.placed_jumps.insert(*pos);
         *pos += 1;
     }
 }
@@ -494,5 +510,223 @@ fn consume_back_jump(nodes: &[PcNode], pos: &mut usize) {
 fn skip_block_end(nodes: &[PcNode], pos: &mut usize) {
     if *pos < nodes.len() && matches!(nodes[*pos].node, Node::BlockEnd) {
         *pos += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lifted(pc: usize, stmt: LStmt) -> LiftedStmt {
+        LiftedStmt { pc, stmt }
+    }
+
+    fn branch_ladder(branches: usize) -> Vec<LiftedStmt> {
+        let mut stmts: Vec<LiftedStmt> = Vec::with_capacity(branches * 2);
+        let mut pc: usize = 0;
+        for i in 0..branches {
+            stmts.push(lifted(
+                pc,
+                LStmt::Cond {
+                    cond: format!("a < {i}"),
+                    target: pc + 2,
+                },
+            ));
+            stmts.push(lifted(pc + 1, LStmt::Raw(format!("b = b + {i}"))));
+            pc += 2;
+        }
+        stmts
+    }
+
+    fn count_conditionals(blocks: &[StructuredBlock]) -> usize {
+        blocks
+            .iter()
+            .map(|b: &StructuredBlock| match b {
+                StructuredBlock::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => 1 + count_conditionals(then_body) + count_conditionals(else_body),
+                StructuredBlock::While { body, .. }
+                | StructuredBlock::Repeat { body, .. }
+                | StructuredBlock::NumericFor { body, .. }
+                | StructuredBlock::GenericFor { body, .. } => count_conditionals(body),
+                _ => 0,
+            })
+            .sum()
+    }
+
+    fn empty_conditionals(blocks: &[StructuredBlock]) -> usize {
+        blocks
+            .iter()
+            .map(|b: &StructuredBlock| match b {
+                StructuredBlock::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    let here: usize = usize::from(then_body.is_empty() && else_body.is_empty());
+                    here + empty_conditionals(then_body) + empty_conditionals(else_body)
+                }
+                StructuredBlock::While { body, .. }
+                | StructuredBlock::Repeat { body, .. }
+                | StructuredBlock::NumericFor { body, .. }
+                | StructuredBlock::GenericFor { body, .. } => empty_conditionals(body),
+                _ => 0,
+            })
+            .sum()
+    }
+
+    #[test]
+    fn a_forward_jump_that_reaches_a_statement_is_placed_and_counted_unresolved() {
+        let stmts: Vec<LiftedStmt> = vec![
+            lifted(0, LStmt::Raw("r0 = 1".to_owned())),
+            lifted(1, LStmt::Jump { target: 4 }),
+            lifted(2, LStmt::Raw("r0 = 2".to_owned())),
+        ];
+
+        let result: StructureResult = structure_standard(&stmts, 4);
+
+        assert_eq!(result.truncated_regions, 0);
+        assert_eq!(
+            result.unresolved_jumps, 1,
+            "a jump the structure does not absorb survives as a goto and is reported once, not \
+             once per accounting pass"
+        );
+    }
+
+    #[test]
+    fn a_sentinel_jump_target_is_placed_and_leaves_the_report_clean() {
+        let stmts: Vec<LiftedStmt> = vec![
+            lifted(0, LStmt::Raw("r0 = 1".to_owned())),
+            lifted(1, LStmt::Jump { target: usize::MAX }),
+        ];
+
+        let result: StructureResult = structure_standard(&stmts, 2);
+
+        assert_eq!(
+            result.unresolved_jumps, 0,
+            "the sentinel target means the jump has no successor, so discarding it is correct and \
+             must not read as a lost edge"
+        );
+        assert_eq!(result.truncated_regions, 0);
+    }
+
+    fn carries_goto_to(blocks: &[StructuredBlock], target: usize) -> bool {
+        blocks.iter().any(|b: &StructuredBlock| match b {
+            StructuredBlock::Goto { pc } => *pc == target,
+            StructuredBlock::Raw(text) => text == &format!("-- unresolved jump to pc {target}"),
+            StructuredBlock::If {
+                then_body,
+                else_body,
+                ..
+            } => carries_goto_to(then_body, target) || carries_goto_to(else_body, target),
+            StructuredBlock::While { body, .. }
+            | StructuredBlock::Repeat { body, .. }
+            | StructuredBlock::NumericFor { body, .. }
+            | StructuredBlock::GenericFor { body, .. } => carries_goto_to(body, target),
+            _ => false,
+        })
+    }
+
+    #[test]
+    fn a_loop_absorbs_only_the_back_edge_that_closes_it() {
+        let stmts: Vec<LiftedStmt> = vec![
+            lifted(
+                0,
+                LStmt::Cond {
+                    cond: "r0 < 10".to_owned(),
+                    target: 4,
+                },
+            ),
+            lifted(1, LStmt::Raw("r0 = r0 + 1".to_owned())),
+            lifted(2, LStmt::Raw("r2 = r0".to_owned())),
+            lifted(3, LStmt::Jump { target: 0 }),
+            lifted(3, LStmt::Jump { target: 9 }),
+            lifted(4, LStmt::Raw("r1 = r0".to_owned())),
+        ];
+
+        let result: StructureResult = structure_standard(&stmts, 9);
+
+        assert!(
+            carries_goto_to(&result.blocks, 9),
+            "the loop closes on the back edge to pc 0, so the jump to pc 9 is a separate edge and \
+             must survive rather than be deleted for sitting last; blocks: {:?}",
+            result.blocks
+        );
+        assert!(
+            result.unresolved_jumps > 0,
+            "an edge the structure does not carry has to be reported; blocks: {:?}",
+            result.blocks
+        );
+    }
+
+    #[test]
+    fn a_backward_jump_that_is_not_the_loop_head_is_not_swallowed_after_the_loop() {
+        let stmts: Vec<LiftedStmt> = vec![
+            lifted(
+                0,
+                LStmt::Cond {
+                    cond: "r0 < 10".to_owned(),
+                    target: 4,
+                },
+            ),
+            lifted(1, LStmt::Raw("r0 = r0 + 1".to_owned())),
+            lifted(2, LStmt::Raw("r2 = r0".to_owned())),
+            lifted(3, LStmt::Jump { target: 0 }),
+            lifted(4, LStmt::Jump { target: 1 }),
+            lifted(5, LStmt::Raw("r1 = r0".to_owned())),
+        ];
+
+        let result: StructureResult = structure_standard(&stmts, 6);
+
+        assert!(
+            carries_goto_to(&result.blocks, 1),
+            "the jump at pc 4 goes back to pc 1, which is not the head the loop closed on, so it \
+             is a live edge and must survive rather than be consumed as that loop's back edge; \
+             blocks: {:?}",
+            result.blocks
+        );
+    }
+
+    #[test]
+    fn a_ladder_inside_the_budget_nests_every_statement_in_its_own_branch() {
+        let branches: usize = 8;
+        let stmts: Vec<LiftedStmt> = branch_ladder(branches);
+
+        let result: StructureResult = structure_standard(&stmts, branches * 2);
+
+        assert_eq!(result.truncated_regions, 0);
+        assert_eq!(count_conditionals(&result.blocks), branches);
+        assert_eq!(
+            empty_conditionals(&result.blocks),
+            0,
+            "inside the budget every branch keeps its own statement"
+        );
+    }
+
+    #[test]
+    fn a_ladder_past_the_budget_flattens_its_branches_and_says_so() {
+        let branches: usize = MAX_STRUCT_RECURSION + 64;
+        let stmts: Vec<LiftedStmt> = branch_ladder(branches);
+
+        let result: StructureResult = structure_standard(&stmts, branches * 2);
+
+        assert!(
+            result.truncated_regions > 0,
+            "the structuring budget counts calls rather than depth, so a ladder longer than it \
+             leaves regions unstructured and the count must say how many"
+        );
+        let emptied: usize = empty_conditionals(&result.blocks);
+        assert!(
+            emptied > 0,
+            "a truncated branch renders with an empty body while its statement moves out of the \
+             branch, which is the loss the count above reports"
+        );
+        assert_eq!(
+            result.truncated_regions, emptied,
+            "every truncated region is one branch that lost its body, so the reported count is the \
+             measured loss rather than an estimate"
+        );
     }
 }
