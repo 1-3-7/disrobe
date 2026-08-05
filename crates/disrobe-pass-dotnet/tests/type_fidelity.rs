@@ -718,10 +718,20 @@ fn no_clean_baseline_body_abstains_on_the_operand_stack() {
     );
 }
 
+const POSITIONAL_PARAMETER_RULE: &str = "a signature position keeps a positional argN name when, \
+     and only when, the Param table carries no usable name for it: either no Param row exists with \
+     that sequence, or the row exists with an empty name, and the body does not store the argument \
+     straight into a field whose name can be read instead. Sequence 0 is the return value and is \
+     never a parameter, and `this` occupies no Param row, so an instance method is read the same \
+     way as a static one.";
+
 const BASELINE_UNNAMED_PARAMS: [(u32, &str); 1] = [(
     0x0600_0010,
-    "the compiler-embedded System.Runtime.CompilerServices.NullableAttribute constructor, whose \
-     single parameter has no Param row at all, so metadata carries no name to recover",
+    "System.Runtime.CompilerServices.NullableAttribute::.ctor(byte), compiler-embedded, whose \
+     single parameter has no Param row at all. Its three sibling embedded attribute constructors \
+     0x06000011, 0x06000012 and 0x06000013 also carry no Param row, and they do recover a name \
+     because each stores its argument straight into a field; this one wraps the argument in an \
+     array first, so no field store names it",
 )];
 
 fn is_positional_parameter_name(name: &str) -> bool {
@@ -730,8 +740,12 @@ fn is_positional_parameter_name(name: &str) -> bool {
     })
 }
 
-fn positional_parameters(signature: &str) -> Vec<(usize, String)> {
-    let Some(header): Option<&str> = signature.lines().next_back() else {
+fn signature_header(signature: &str) -> Option<&str> {
+    signature.lines().next_back()
+}
+
+fn parameter_declarations(signature: &str) -> Vec<(usize, &str)> {
+    let Some(header): Option<&str> = signature_header(signature) else {
         return Vec::new();
     };
     let (Some(open), Some(close)): (Option<usize>, Option<usize>) =
@@ -750,8 +764,21 @@ fn positional_parameters(signature: &str) -> Vec<(usize, String)> {
     declarations
         .into_iter()
         .enumerate()
-        .filter_map(|(index, raw): (usize, &str)| {
-            let (_, name): (&str, &str) = raw.trim().rsplit_once(' ')?;
+        .map(|(index, raw): (usize, &str)| (index, raw.trim()))
+        .collect()
+}
+
+fn declared_parameter_name(declaration: &str) -> Option<&str> {
+    declaration
+        .rsplit_once(' ')
+        .map(|(_, name): (&str, &str)| name)
+}
+
+fn positional_parameters(signature: &str) -> Vec<(usize, String)> {
+    parameter_declarations(signature)
+        .into_iter()
+        .filter_map(|(index, declaration): (usize, &str)| {
+            let name: &str = declared_parameter_name(declaration)?;
             is_positional_parameter_name(name).then(|| (index, name.to_owned()))
         })
         .collect()
@@ -838,11 +865,220 @@ fn typed_local_rate_is_total_on_clean_baseline() {
         observed,
         recorded,
         "the clean baseline methods that keep a positional parameter are recorded one by one with \
-         the reason no name exists, so the set is pinned rather than counted. Recorded:\n{}",
+         the reason no name exists, so the set is pinned rather than counted. The rule is: \
+         {POSITIONAL_PARAMETER_RULE}\nRecorded:\n{}",
         BASELINE_UNNAMED_PARAMS
             .iter()
             .map(|(token, reason): &(u32, &str)| format!("  0x{token:08x} is {reason}"))
             .collect::<Vec<String>>()
             .join("\n")
+    );
+}
+
+const PARAMETER_NAME_BASELINES: [&str; 3] = [
+    "megafile/EdgeCases.baseline.dll",
+    "megafile/EdgeCases.obfuscar.dll",
+    "megafile/EdgeCases.confuserex2.dll",
+];
+
+fn corpus_model_and_assembly(rel: &str) -> (AssemblyModel, DecompiledAssembly) {
+    let mut path: PathBuf = PathBuf::from(CORPUS_ROOT_REL);
+    path.push(rel);
+    let bytes: Vec<u8> = load(&path.to_string_lossy());
+    let pe: PeImage = parse(&bytes).unwrap_or_else(|e| panic!("parse {rel} as a PE image: {e}"));
+    let clr: ClrHeader =
+        parse_clr_header(&bytes, &pe).unwrap_or_else(|e| panic!("{rel} carries a CLR header: {e}"));
+    let root: MetadataRoot = parse_metadata_root(&bytes, &pe, &clr)
+        .unwrap_or_else(|e| panic!("{rel} carries a metadata root: {e}"));
+    let model: AssemblyModel = Resolver::build(&bytes, &pe, &clr, &root)
+        .unwrap_or_else(|e| panic!("build a resolver over {rel}: {e}"))
+        .model();
+    let asm: DecompiledAssembly =
+        decompile_assembly(&bytes).unwrap_or_else(|e| panic!("decompile {rel}: {e}"));
+    (model, asm)
+}
+
+#[test]
+fn every_recovered_parameter_position_binds_an_identifier() {
+    let mut offenders: Vec<String> = Vec::new();
+    for rel in PARAMETER_NAME_BASELINES {
+        let (_, asm): (AssemblyModel, DecompiledAssembly) = corpus_model_and_assembly(rel);
+        for m in &asm.methods {
+            for (index, declaration) in parameter_declarations(&m.signature) {
+                if declared_parameter_name(declaration).is_some() {
+                    continue;
+                }
+                offenders.push(format!(
+                    "  {rel} 0x{:08x} position {index} renders `{declaration}` with no identifier, \
+                     so the emitted signature declares a parameter the body cannot refer to",
+                    m.token
+                ));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a parameter whose Param row exists with an empty name is still a parameter and has to \
+         keep a positional name rather than render as a bare type; {} do not:\n{}",
+        offenders.len(),
+        offenders.join("\n")
+    );
+}
+
+#[test]
+fn a_parameter_name_metadata_carries_is_never_replaced_by_a_positional_one() {
+    let mut lost: Vec<String> = Vec::new();
+    for rel in PARAMETER_NAME_BASELINES {
+        let (model, asm): (AssemblyModel, DecompiledAssembly) = corpus_model_and_assembly(rel);
+        for m in &asm.methods {
+            let Some(meta): Option<&MethodModel> = model
+                .types
+                .iter()
+                .flat_map(|t: &TypeModel| t.methods.iter())
+                .find(|candidate: &&MethodModel| candidate.token == m.token)
+            else {
+                continue;
+            };
+            for (index, declaration) in parameter_declarations(&m.signature) {
+                let Some(rendered): Option<&str> = declared_parameter_name(declaration) else {
+                    continue;
+                };
+                if !is_positional_parameter_name(rendered) {
+                    continue;
+                }
+                let Some(recorded): Option<&ParamModel> = meta
+                    .parameters
+                    .iter()
+                    .find(|p: &&ParamModel| usize::from(p.sequence) == index.saturating_add(1))
+                else {
+                    continue;
+                };
+                if recorded.name.is_empty() {
+                    continue;
+                }
+                lost.push(format!(
+                    "  {rel} 0x{:08x} position {index} renders `{rendered}` while its Param row \
+                     names it `{}`",
+                    m.token, recorded.name
+                ));
+            }
+        }
+    }
+    assert!(
+        lost.is_empty(),
+        "{POSITIONAL_PARAMETER_RULE} {} positions break it:\n{}",
+        lost.len(),
+        lost.join("\n")
+    );
+}
+
+#[test]
+fn the_return_value_param_row_is_never_read_as_a_parameter() {
+    let (model, asm): (AssemblyModel, DecompiledAssembly) =
+        corpus_model_and_assembly("megafile/EdgeCases.baseline.dll");
+    let mut sequence_zero_rows: usize = 0;
+    let mut checked: usize = 0;
+    let mut wrong: Vec<String> = Vec::new();
+    for m in &asm.methods {
+        let Some(meta): Option<&MethodModel> = model
+            .types
+            .iter()
+            .flat_map(|t: &TypeModel| t.methods.iter())
+            .find(|candidate: &&MethodModel| candidate.token == m.token)
+        else {
+            continue;
+        };
+        let Some(zero): Option<&ParamModel> = meta
+            .parameters
+            .iter()
+            .find(|p: &&ParamModel| p.sequence == 0)
+        else {
+            continue;
+        };
+        sequence_zero_rows += 1;
+        if zero.name.is_empty() {
+            continue;
+        }
+        checked += 1;
+        for (index, declaration) in parameter_declarations(&m.signature) {
+            if declared_parameter_name(declaration) == Some(zero.name.as_str()) {
+                wrong.push(format!(
+                    "  0x{:08x} position {index} took the sequence 0 return-value name `{}`",
+                    m.token, zero.name
+                ));
+            }
+        }
+    }
+    assert!(
+        sequence_zero_rows > 0,
+        "the clean baseline has to carry sequence 0 Param rows for this to prove anything"
+    );
+    assert!(
+        wrong.is_empty(),
+        "sequence 0 names the return value, never a parameter, so a method that carries one must \
+         still read its first parameter from sequence 1; {} did not ({sequence_zero_rows} rows \
+         seen, {checked} of them named):\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+#[test]
+fn an_instance_method_reads_its_first_parameter_from_sequence_one() {
+    let (model, asm): (AssemblyModel, DecompiledAssembly) =
+        corpus_model_and_assembly("megafile/EdgeCases.baseline.dll");
+    let mut instance_checked: usize = 0;
+    let mut static_checked: usize = 0;
+    let mut wrong: Vec<String> = Vec::new();
+    for m in &asm.methods {
+        let Some(meta): Option<&MethodModel> = model
+            .types
+            .iter()
+            .flat_map(|t: &TypeModel| t.methods.iter())
+            .find(|candidate: &&MethodModel| candidate.token == m.token)
+        else {
+            continue;
+        };
+        let Some(first): Option<&ParamModel> = meta
+            .parameters
+            .iter()
+            .find(|p: &&ParamModel| p.sequence == 1)
+        else {
+            continue;
+        };
+        if first.name.is_empty() || !first.name.bytes().all(|b: u8| b.is_ascii_alphanumeric()) {
+            continue;
+        }
+        if meta.is_static() {
+            static_checked += 1;
+        } else {
+            instance_checked += 1;
+        }
+        let Some((_, declaration)): Option<(usize, &str)> =
+            parameter_declarations(&m.signature).into_iter().next()
+        else {
+            continue;
+        };
+        let rendered: Option<&str> = declared_parameter_name(declaration);
+        if rendered != Some(first.name.as_str()) {
+            wrong.push(format!(
+                "  0x{:08x} static={} renders `{declaration}` first while sequence 1 names `{}`",
+                m.token,
+                meta.is_static(),
+                first.name
+            ));
+        }
+    }
+    assert!(
+        instance_checked > 0 && static_checked > 0,
+        "both an instance and a static method must be covered for the off-by-one to be provable; \
+         saw {instance_checked} instance and {static_checked} static"
+    );
+    assert!(
+        wrong.is_empty(),
+        "`this` occupies no Param row, so sequence 1 is the first declared parameter on an \
+         instance method exactly as it is on a static one; {} disagree:\n{}",
+        wrong.len(),
+        wrong.join("\n")
     );
 }

@@ -188,6 +188,11 @@ impl MethodModel {
             .collect()
     }
 
+    #[must_use]
+    pub fn display_param_names(&self, lang: TargetLang) -> Vec<String> {
+        crate::names::canonical_parameter_names(&self.param_names(), lang)
+    }
+
     fn signature_in(&self, lang: TargetLang) -> String {
         match lang {
             TargetLang::CSharp => self.csharp_header(),
@@ -217,12 +222,15 @@ impl MethodModel {
         };
         let ret: String = self.signature.return_type.render_in(TargetLang::CSharp);
         let display_name: String = self.display_name();
+        let names: Vec<String> = self.display_param_names(TargetLang::CSharp);
         let mut rendered: Vec<String> = Vec::with_capacity(self.signature.params.len());
         for (i, p) in self.signature.params.iter().enumerate() {
             rendered.push(format!(
                 "{} {}",
                 p.render_in(TargetLang::CSharp),
-                crate::structurize::csharp_escape_identifier(&self.param_name(i))
+                names
+                    .get(i)
+                    .map_or_else(|| crate::names::positional_parameter_name(i), String::clone)
             ));
         }
         format!(
@@ -239,11 +247,14 @@ impl MethodModel {
         };
         let ret: String = self.signature.return_type.render_in(TargetLang::FSharp);
         let display_name: String = self.display_name();
+        let names: Vec<String> = self.display_param_names(TargetLang::FSharp);
         let mut rendered: Vec<String> = Vec::with_capacity(self.signature.params.len());
         for (i, p) in self.signature.params.iter().enumerate() {
             rendered.push(format!(
                 "{}: {}",
-                self.param_name(i),
+                names
+                    .get(i)
+                    .map_or_else(|| crate::names::positional_parameter_name(i), String::clone),
                 p.render_in(TargetLang::FSharp)
             ));
         }
@@ -267,11 +278,14 @@ impl MethodModel {
         );
         let keyword: &str = if returns_value { "Function" } else { "Sub" };
         let display_name: String = self.display_name();
+        let names: Vec<String> = self.display_param_names(TargetLang::VbNet);
         let mut rendered: Vec<String> = Vec::with_capacity(self.signature.params.len());
         for (i, p) in self.signature.params.iter().enumerate() {
             rendered.push(format!(
                 "{} As {}",
-                self.param_name(i),
+                names
+                    .get(i)
+                    .map_or_else(|| crate::names::positional_parameter_name(i), String::clone),
                 p.render_in(TargetLang::VbNet)
             ));
         }

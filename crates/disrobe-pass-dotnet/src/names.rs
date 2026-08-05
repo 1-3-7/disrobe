@@ -1,7 +1,95 @@
-use crate::structurize::TargetLang;
+use std::collections::BTreeSet;
+
+use crate::structurize::{TargetLang, csharp_escape_identifier, is_simple_identifier};
 
 fn is_managed_byref_type(ty: &str) -> bool {
     ty.starts_with("ref ") || ty.starts_with("byref<") || ty.starts_with("ByRef ")
+}
+
+#[must_use]
+pub fn positional_parameter_name(index: usize) -> String {
+    format!("arg{}", index.saturating_add(1))
+}
+
+#[must_use]
+pub fn is_positional_parameter_name(name: &str) -> bool {
+    name.strip_prefix("arg").is_some_and(|digits: &str| {
+        !digits.is_empty() && digits.bytes().all(|byte: u8| byte.is_ascii_digit())
+    })
+}
+
+#[must_use]
+pub fn csharp_parameter_name(name: &str, index: usize) -> String {
+    if let Some(suffix) = name.strip_prefix("<>h__TransparentIdentifier")
+        && !suffix.is_empty()
+        && suffix.bytes().all(|byte: u8| byte.is_ascii_digit())
+    {
+        return format!("transparentIdentifier{suffix}");
+    }
+    if is_simple_identifier(name) {
+        return csharp_escape_identifier(name);
+    }
+    if name.strip_prefix('@').is_some_and(is_simple_identifier) {
+        return name.to_owned();
+    }
+    if let Some(readable) = compiler_generated_parameter_name(name) {
+        return readable;
+    }
+    positional_parameter_name(index)
+}
+
+fn compiler_generated_parameter_name(name: &str) -> Option<String> {
+    let rest: &str = name.strip_prefix('<')?;
+    let close: usize = rest.find('>')?;
+    let inner: &str = rest.get(..close)?;
+    let after: &str = rest.get(close.saturating_add(1)..)?;
+    let core: &str = if inner.is_empty() {
+        let digits: usize = after.bytes().take_while(u8::is_ascii_digit).count();
+        if digits == 0 {
+            return None;
+        }
+        let tail: &str = after.get(digits..)?;
+        let underscores: usize = tail.bytes().take_while(|byte: &u8| *byte == b'_').count();
+        if underscores < 2 {
+            return None;
+        }
+        tail.get(underscores..)?
+    } else {
+        inner
+    };
+    if !is_simple_identifier(core) {
+        return None;
+    }
+    let mut chars: std::str::Chars<'_> = core.chars();
+    let first: char = chars.next()?;
+    let lowered: String = first.to_ascii_lowercase().to_string() + chars.as_str();
+    Some(csharp_escape_identifier(&lowered))
+}
+
+#[must_use]
+pub fn canonical_parameter_names(raw: &[String], lang: TargetLang) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(raw.len());
+    let mut used: BTreeSet<String> = BTreeSet::new();
+    for (index, name) in raw.iter().enumerate() {
+        let base: String = match lang {
+            TargetLang::CSharp => csharp_parameter_name(name, index),
+            TargetLang::FSharp | TargetLang::VbNet => {
+                if is_simple_identifier(name) {
+                    name.clone()
+                } else {
+                    positional_parameter_name(index)
+                }
+            }
+        };
+        let mut candidate: String = base.clone();
+        let mut suffix: usize = 2;
+        while !used.insert(candidate.clone()) {
+            candidate = format!("{base}_{suffix}");
+            suffix = suffix.saturating_add(1);
+        }
+        out.push(candidate);
+    }
+    out
 }
 
 #[derive(Debug, Clone, Default)]
@@ -87,7 +175,7 @@ impl NameTable {
     pub fn named_params_count(&self) -> u32 {
         self.param_names
             .iter()
-            .filter(|n: &&String| !n.is_empty() && !n.starts_with("arg"))
+            .filter(|n: &&String| !n.is_empty() && !is_positional_parameter_name(n))
             .count()
             .try_into()
             .unwrap_or(u32::MAX)
@@ -115,6 +203,103 @@ impl NameTable {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn csharp_parameter_name_recovers_transparent_identifiers_and_refuses_invalid_metadata() {
+        assert_eq!(
+            csharp_parameter_name("<>h__TransparentIdentifier12", 0),
+            "transparentIdentifier12"
+        );
+        assert_eq!(csharp_parameter_name("bad-name", 1), "arg2");
+        assert_eq!(csharp_parameter_name("class", 2), "@class");
+    }
+
+    #[test]
+    fn csharp_parameter_name_reads_a_compiler_generated_metadata_name() {
+        assert_eq!(csharp_parameter_name("<>1__state", 0), "state");
+        assert_eq!(csharp_parameter_name("<>2__current", 0), "current");
+        assert_eq!(csharp_parameter_name("<>7__wrap1", 0), "wrap1");
+        assert_eq!(
+            csharp_parameter_name("<Length>k__BackingField", 0),
+            "length"
+        );
+        assert_eq!(csharp_parameter_name("<>1__object", 0), "@object");
+    }
+
+    #[test]
+    fn compiler_generated_parameter_name_refuses_a_shape_it_cannot_read() {
+        for name in [
+            "state",
+            "<>1state",
+            "<>__state",
+            "<>1__",
+            "<>1__two words",
+            "<>1__9leading",
+            "<unclosed",
+            "<>",
+            "",
+        ] {
+            assert_eq!(compiler_generated_parameter_name(name), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn csharp_parameter_names_are_deterministically_unique() {
+        let names: Vec<String> = canonical_parameter_names(
+            &[
+                "transparentIdentifier0".to_owned(),
+                "<>h__TransparentIdentifier0".to_owned(),
+                "arg4".to_owned(),
+                "bad-name".to_owned(),
+            ],
+            TargetLang::CSharp,
+        );
+        assert_eq!(
+            names,
+            [
+                "transparentIdentifier0",
+                "transparentIdentifier0_2",
+                "arg4",
+                "arg4_2",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_empty_metadata_name_becomes_a_positional_name_in_every_language() {
+        for lang in [TargetLang::CSharp, TargetLang::FSharp, TargetLang::VbNet] {
+            assert_eq!(
+                canonical_parameter_names(
+                    &[String::new(), "count".to_owned(), String::new()],
+                    lang
+                ),
+                ["arg1", "count", "arg3"],
+                "{lang:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_canonical_name_is_a_usable_identifier() {
+        let raw: Vec<String> = vec![
+            String::new(),
+            "<>1__state".to_owned(),
+            "bad-name".to_owned(),
+            "\u{202e}".to_owned(),
+            "9leading".to_owned(),
+            "@object".to_owned(),
+        ];
+        for lang in [TargetLang::CSharp, TargetLang::FSharp, TargetLang::VbNet] {
+            for name in canonical_parameter_names(&raw, lang) {
+                let core: &str = name.strip_prefix('@').unwrap_or(&name);
+                let base: &str = core.rsplit_once('_').map_or(core, |(head, _)| head);
+                assert!(
+                    is_simple_identifier(core) || is_simple_identifier(base),
+                    "{lang:?} produced an unusable identifier {name:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn arg_name_uses_recovered_param_name() {
