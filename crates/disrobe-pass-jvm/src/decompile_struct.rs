@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use disrobe_core::DiGraph;
+use disrobe_cfg::{Flow, FlowGraph};
 use serde::{Deserialize, Serialize};
 
 use crate::bytecode::{CodeAttribute, ExceptionEntry, Instruction, Operands, branch_target};
@@ -330,102 +330,58 @@ pub enum StructureError {
     StructuringDepthExceeded,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Dominators {
-    pub idom: Vec<Option<BlockId>>,
+    flow: Option<FlowGraph<BlockId>>,
     pub order: Vec<BlockId>,
 }
 
 #[must_use]
 pub fn compute_dominators(cfg: &Cfg) -> Dominators {
-    let n: usize = cfg.blocks.len();
-    let order: Vec<BlockId> = reverse_postorder(cfg);
-    let entry_idx: usize = cfg.entry.0 as usize;
-    let graph: BlockGraph<'_> = BlockGraph { cfg };
-    let doms: disrobe_core::Dominators = disrobe_core::Dominators::compute(&graph);
-    let idom: Vec<Option<BlockId>> = (0..n)
-        .map(|i: usize| {
-            if i == entry_idx {
-                Some(cfg.entry)
-            } else {
-                doms.immediate_dominator(i as u32).map(BlockId)
-            }
-        })
+    let flow: Option<FlowGraph<BlockId>> = block_flow(cfg);
+    let order: Vec<BlockId> = block_order(cfg, flow.as_ref());
+    Dominators { flow, order }
+}
+
+fn block_order(cfg: &Cfg, flow: Option<&FlowGraph<BlockId>>) -> Vec<BlockId> {
+    let count: usize = cfg.blocks.len();
+    let Some(flow): Option<&FlowGraph<BlockId>> = flow else {
+        return (0..count as u32).rev().map(BlockId).collect();
+    };
+    let mut order: Vec<BlockId> = (0..count as u32)
+        .rev()
+        .map(BlockId)
+        .filter(|block: &BlockId| !flow.is_reachable(*block))
         .collect();
-    Dominators { idom, order }
-}
-
-struct BlockGraph<'a> {
-    cfg: &'a Cfg,
-}
-
-impl DiGraph for BlockGraph<'_> {
-    fn node_count(&self) -> usize {
-        self.cfg.blocks.len()
-    }
-
-    fn entry(&self) -> u32 {
-        self.cfg.entry.0
-    }
-
-    fn for_each_successor(&self, node: u32, visit: &mut dyn FnMut(u32)) {
-        for edge in &self.cfg.blocks[node as usize].successors {
-            visit(edge.target.0);
-        }
-    }
-}
-
-fn reverse_postorder(cfg: &Cfg) -> Vec<BlockId> {
-    let n: usize = cfg.blocks.len();
-    let mut visited: Vec<bool> = vec![false; n];
-    let mut order: Vec<BlockId> = Vec::with_capacity(n);
-    let mut stack: Vec<(BlockId, usize)> = Vec::new();
-    visited[cfg.entry.0 as usize] = true;
-    stack.push((cfg.entry, 0));
-    while let Some(&mut (b, ref mut i)) = stack.last_mut() {
-        let block: &BasicBlock = &cfg.blocks[b.0 as usize];
-        if *i < block.successors.len() {
-            let next: BlockId = block.successors[*i].target;
-            *i += 1;
-            let ni: usize = next.0 as usize;
-            if !visited[ni] {
-                visited[ni] = true;
-                stack.push((next, 0));
-            }
-        } else {
-            order.push(b);
-            stack.pop();
-        }
-    }
-    for (i, seen) in visited.iter().enumerate().take(n) {
-        if !seen {
-            order.push(BlockId(i as u32));
-        }
-    }
-    order.reverse();
+    order.extend(flow.reverse_postorder());
     order
 }
 
 #[must_use]
+pub fn block_flow(cfg: &Cfg) -> Option<FlowGraph<BlockId>> {
+    FlowGraph::build(
+        (0..cfg.blocks.len() as u32).map(BlockId),
+        cfg.entry,
+        |node: BlockId, emit: &mut dyn FnMut(Flow<BlockId>)| {
+            let Some(block): Option<&BasicBlock> = cfg.blocks.get(node.0 as usize) else {
+                return;
+            };
+            if block.successors.is_empty() {
+                emit(Flow::Exit);
+            }
+            for edge in &block.successors {
+                emit(Flow::To(edge.target));
+            }
+        },
+    )
+    .ok()
+}
+
+#[must_use]
 pub fn dominates(dom: &Dominators, ancestor: BlockId, child: BlockId) -> bool {
-    let mut cur: Option<BlockId> = Some(child);
-    let mut steps: usize = 0;
-    while let Some(c) = cur {
-        if c == ancestor {
-            return true;
-        }
-        let idom: Option<BlockId> = dom.idom.get(c.0 as usize).copied().flatten();
-        match idom {
-            Some(parent) if parent == c => return false,
-            Some(parent) => cur = Some(parent),
-            None => return false,
-        }
-        steps += 1;
-        if steps > MAX_STRUCTURE_DEPTH {
-            return false;
-        }
-    }
-    false
+    dom.flow
+        .as_ref()
+        .is_some_and(|flow: &FlowGraph<BlockId>| flow.dominates(ancestor, child))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

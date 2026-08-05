@@ -571,6 +571,8 @@ revalidated: bool = patch_report.revalidated
 
 deob: NativeDeobfuscation = disrobe.native_deobfuscate(data, bits=64, base=0x400000)
 recovered_blocks: int | None = deob.recovered_blocks
+covered_states: int | None = deob.covered_states
+dispatcher_states: int | None = deob.dispatcher_states
 fully_recovered: bool = deob.fully_recovered
 ```
 
@@ -591,7 +593,7 @@ fully_recovered: bool = deob.fully_recovered
 | `NativeFormat` | `kind: str \| None`, `bits: int \| None`, `subsystem: str \| None` |
 | `DetectionList` | `count: int` |
 | `BackendList` | `count: int`, `available_count: int` |
-| `NativeDeobfuscation` | `bits: int \| None`, `recovered_blocks: int \| None`, `original_blocks: int \| None`, `fully_recovered: bool` |
+| `NativeDeobfuscation` | `bits: int \| None`, `recovered_blocks: int \| None`, `original_blocks: int \| None`, `dispatcher_states: int \| None`, `covered_states: int \| None`, `fully_recovered: bool` |
 
 ## Query IR
 

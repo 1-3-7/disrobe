@@ -22,6 +22,7 @@ chain = ["disrobe-core/chain"]
 
 [dependencies]
 disrobe-bytes = { workspace = true }
+disrobe-cfg = { workspace = true }
 disrobe-core = { workspace = true }
 disrobe-mba = { workspace = true }
 blake3 = { workspace = true }

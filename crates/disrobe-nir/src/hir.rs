@@ -1,9 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use disrobe_core::{AdjGraph, Dominators, immediate_post_dominators};
+use disrobe_cfg::{Flow, FlowGraph};
 use serde::Serialize;
 
 use crate::cfg::{BlockKind, NirBlock, basic_blocks};
+use crate::reducible::{
+    HirDecline, SplitBudget, SplitRefusal, StructureFailure, split_irreducible,
+};
 use crate::types::{
     BinaryOp, NirClass, NirFunction, NirInstr, NirModule, NirOp, NirSymbol, SourceLang, SourceRef,
     ValueOp,
@@ -212,6 +215,7 @@ pub struct HirFunction {
     pub is_export: bool,
     pub body: HirStmt,
     pub structured: bool,
+    pub decline: Option<HirDecline>,
     pub source: SourceRef,
 }
 
@@ -287,6 +291,14 @@ pub fn structurize_module(module: &NirModule) -> HirModule {
 
 #[must_use]
 pub fn structurize_function(function: &NirFunction) -> HirFunction {
+    structurize_function_with_budget(function, SplitBudget::TightForGraph)
+}
+
+#[must_use]
+pub fn structurize_function_with_budget(
+    function: &NirFunction,
+    budget: SplitBudget,
+) -> HirFunction {
     let blocks: Vec<NirBlock> = basic_blocks(function);
     let lang: SourceLang = function.source.lang;
     if blocks.is_empty() {
@@ -297,20 +309,16 @@ pub fn structurize_function(function: &NirFunction) -> HirFunction {
             is_export: function.is_export,
             body: HirStmt::Empty,
             structured: true,
+            decline: None,
             source: function.source.clone(),
         };
     }
-    let index: BlockIndex = BlockIndex::build(&blocks);
-    let mut structurer: Structurer<'_> = Structurer::new(&index, lang);
     let entry: u64 = blocks[0].start;
-    let body: HirStmt = structurer.region(entry, &Bounds::default(), 0);
-    let reachable: BTreeSet<u64> = index.reachable_from(entry);
-    let structured: bool = structurer.structured && structurer.placed == reachable.len();
-    let body: HirStmt = if structured {
-        append_unreachable_blocks(body, &index, &reachable, lang)
-    } else {
-        fallback_from_index(function, &index)
-    };
+    let (body, structured, decline): (HirStmt, bool, Option<HirDecline>) =
+        match structure_blocks(&blocks, entry, lang) {
+            Ok(structured_body) => (structured_body, true, None),
+            Err(failure) => refine_by_splitting(function, &blocks, entry, lang, budget, failure),
+        };
     HirFunction {
         name: function.name.clone(),
         address: function.address,
@@ -318,8 +326,55 @@ pub fn structurize_function(function: &NirFunction) -> HirFunction {
         is_export: function.is_export,
         body,
         structured,
+        decline,
         source: function.source.clone(),
     }
+}
+
+fn structure_blocks(
+    blocks: &[NirBlock],
+    entry: u64,
+    lang: SourceLang,
+) -> Result<HirStmt, StructureFailure> {
+    let index: BlockIndex<'_> = BlockIndex::build(blocks);
+    let mut structurer: Structurer<'_> = Structurer::new(&index, lang);
+    let body: HirStmt = structurer.region(entry, &Bounds::default(), 0);
+    let reachable: BTreeSet<u64> = index.reachable_from(entry);
+    if let Some(failure) = structurer.failure {
+        return Err(failure);
+    }
+    if structurer.placed != reachable.len() {
+        return Err(StructureFailure::IncompleteCover);
+    }
+    Ok(append_unreachable_blocks(body, &index, &reachable, lang))
+}
+
+fn refine_by_splitting(
+    function: &NirFunction,
+    blocks: &[NirBlock],
+    entry: u64,
+    lang: SourceLang,
+    budget: SplitBudget,
+    failure: StructureFailure,
+) -> (HirStmt, bool, Option<HirDecline>) {
+    let (refusal, after_split): (SplitRefusal, Option<StructureFailure>) =
+        match split_irreducible(blocks, entry, budget) {
+            Ok(split) => match structure_blocks(&split, entry, lang) {
+                Ok(body) => return (body, true, None),
+                Err(still) => (SplitRefusal::StillUnstructured, Some(still)),
+            },
+            Err(reason) => (reason, None),
+        };
+    let index: BlockIndex<'_> = BlockIndex::build(blocks);
+    (
+        fallback_from_index(function, &index),
+        false,
+        Some(HirDecline {
+            failure,
+            refusal,
+            after_split,
+        }),
+    )
 }
 
 pub(crate) fn complete_fallback_body(function: &NirFunction) -> HirStmt {
@@ -343,9 +398,7 @@ struct BlockIndex<'a> {
     blocks: BTreeMap<u64, &'a NirBlock>,
     order: Vec<u64>,
     predecessors: BTreeMap<u64, Vec<u64>>,
-    node_ids: BTreeMap<u64, u32>,
-    dominators: Dominators,
-    post_dominators: Vec<Option<u32>>,
+    flow: Option<FlowGraph<u64>>,
     natural_loops: BTreeMap<u64, BTreeSet<u64>>,
 }
 
@@ -370,48 +423,37 @@ impl<'a> BlockIndex<'a> {
             preds.sort_unstable();
             preds.dedup();
         }
-        let node_ids: BTreeMap<u64, u32> = order
-            .iter()
-            .enumerate()
-            .filter_map(|(index, start): (usize, &u64)| {
-                u32::try_from(index).ok().map(|node: u32| (*start, node))
-            })
-            .collect();
-        let adjacency: Vec<Vec<u32>> = order
-            .iter()
-            .map(|start: &u64| {
-                by_start
-                    .get(start)
-                    .map_or_else(Vec::new, |block: &&NirBlock| {
-                        block
-                            .successors
-                            .iter()
-                            .filter_map(|successor: &u64| node_ids.get(successor).copied())
-                            .collect()
-                    })
-            })
-            .collect();
-        let node_count: usize = order.len();
-        let post_dominators: Vec<Option<u32>> =
-            immediate_post_dominators(node_count, |node: u32, visit: &mut dyn FnMut(u32)| {
-                match adjacency.get(node as usize) {
-                    Some(successors) if !successors.is_empty() => {
-                        for &successor in successors {
-                            visit(successor);
-                        }
+        let flow: Option<FlowGraph<u64>> = order.first().copied().and_then(|entry: u64| {
+            FlowGraph::build(
+                order.iter().copied(),
+                entry,
+                |start: u64, emit: &mut dyn FnMut(Flow<u64>)| {
+                    let targets: Vec<u64> =
+                        by_start
+                            .get(&start)
+                            .map_or_else(Vec::new, |block: &&NirBlock| {
+                                block
+                                    .successors
+                                    .iter()
+                                    .copied()
+                                    .filter(|successor: &u64| by_start.contains_key(successor))
+                                    .collect()
+                            });
+                    if targets.is_empty() {
+                        emit(Flow::Exit);
                     }
-                    _ => visit(node_count as u32),
-                }
-            });
-        let graph: AdjGraph = AdjGraph::new(0, adjacency);
-        let dominators: Dominators = Dominators::compute(&graph);
+                    for target in targets {
+                        emit(Flow::To(target));
+                    }
+                },
+            )
+            .ok()
+        });
         let mut index: Self = Self {
             blocks: by_start,
             order,
             predecessors,
-            node_ids,
-            dominators,
-            post_dominators,
+            flow,
             natural_loops: BTreeMap::new(),
         };
         let headers: Vec<u64> = index
@@ -452,43 +494,26 @@ impl<'a> BlockIndex<'a> {
     }
 
     fn dominates(&self, candidate: u64, node: u64) -> bool {
-        let Some(candidate_node): Option<u32> = self.node_ids.get(&candidate).copied() else {
-            return false;
-        };
-        let Some(node_id): Option<u32> = self.node_ids.get(&node).copied() else {
-            return false;
-        };
-        self.dominators.dominates(candidate_node, node_id)
+        self.flow
+            .as_ref()
+            .is_some_and(|flow: &FlowGraph<u64>| flow.dominates(candidate, node))
     }
 
     fn immediate_post_dominator(&self, start: u64) -> Option<u64> {
-        let node: u32 = self.node_ids.get(&start).copied()?;
-        let post: u32 = self.post_dominators.get(node as usize).copied().flatten()?;
-        if post as usize >= self.order.len() {
-            return None;
-        }
-        self.order.get(post as usize).copied()
+        self.flow.as_ref()?.immediate_post_dominator(start).node()
     }
 
     fn compute_natural_loop(&self, header: u64) -> BTreeSet<u64> {
-        let mut nodes: BTreeSet<u64> = BTreeSet::from([header]);
-        let mut pending: Vec<u64> = self
+        let Some(flow): Option<&FlowGraph<u64>> = self.flow.as_ref() else {
+            return BTreeSet::from([header]);
+        };
+        let latches: Vec<u64> = self
             .predecessors(header)
             .iter()
             .copied()
-            .filter(|predecessor: &u64| self.dominates(header, *predecessor))
+            .filter(|predecessor: &u64| flow.dominates(header, *predecessor))
             .collect();
-        while let Some(node) = pending.pop() {
-            if !nodes.insert(node) || node == header {
-                continue;
-            }
-            for predecessor in self.predecessors(node) {
-                if self.dominates(header, *predecessor) && !nodes.contains(predecessor) {
-                    pending.push(*predecessor);
-                }
-            }
-        }
-        nodes
+        flow.natural_loop_body(header, &latches)
     }
 
     fn reachable_from(&self, entry: u64) -> BTreeSet<u64> {
@@ -564,7 +589,7 @@ struct Structurer<'a> {
     index: &'a BlockIndex<'a>,
     lang: SourceLang,
     visited: BTreeSet<u64>,
-    structured: bool,
+    failure: Option<StructureFailure>,
     placed: usize,
 }
 
@@ -574,14 +599,20 @@ impl<'a> Structurer<'a> {
             index,
             lang,
             visited: BTreeSet::new(),
-            structured: true,
+            failure: None,
             placed: 0,
+        }
+    }
+
+    const fn fail(&mut self, failure: StructureFailure) {
+        if self.failure.is_none() {
+            self.failure = Some(failure);
         }
     }
 
     fn region(&mut self, start: u64, bounds: &Bounds, depth: usize) -> HirStmt {
         if depth >= MAX_REGION_DEPTH {
-            self.structured = false;
+            self.fail(StructureFailure::RegionDepthExceeded);
             return HirStmt::Empty;
         }
         if let Some(label) = bounds.loop_follow_label(start) {
@@ -594,11 +625,11 @@ impl<'a> Structurer<'a> {
             return HirStmt::Continue { label };
         }
         let Some(block): Option<&'a NirBlock> = self.index.block(start) else {
-            self.structured = false;
+            self.fail(StructureFailure::MissingBlock);
             return HirStmt::Empty;
         };
         if !self.visited.insert(start) {
-            self.structured = false;
+            self.fail(StructureFailure::BlockReachedTwice);
             return HirStmt::Empty;
         }
         self.placed += 1;
@@ -615,7 +646,7 @@ impl<'a> Structurer<'a> {
             LoopFollow::None => None,
             LoopFollow::Single(target) => Some(target),
             LoopFollow::Multiple => {
-                self.structured = false;
+                self.fail(StructureFailure::LoopHasManyExits);
                 return HirStmt::Empty;
             }
         };
@@ -642,7 +673,7 @@ impl<'a> Structurer<'a> {
             BlockKind::FallThrough => self.fallthrough_tail(block, bounds, depth),
             BlockKind::Return => terminal_tail(block, self.lang),
             BlockKind::Indirect => {
-                self.structured = false;
+                self.fail(StructureFailure::IndirectTransfer);
                 HirStmt::Empty
             }
         };
@@ -651,7 +682,7 @@ impl<'a> Structurer<'a> {
 
     fn conditional_tail(&mut self, block: &'a NirBlock, bounds: &Bounds, depth: usize) -> HirStmt {
         let Some(last): Option<&NirInstr> = block.instructions.last() else {
-            self.structured = false;
+            self.fail(StructureFailure::MissingTerminator);
             return HirStmt::Empty;
         };
         let taken: Option<u64> = last.direct_target();
@@ -694,7 +725,7 @@ impl<'a> Structurer<'a> {
 
     fn jump_tail(&mut self, block: &'a NirBlock, bounds: &Bounds, depth: usize) -> HirStmt {
         let Some(target): Option<u64> = block.successors.first().copied() else {
-            self.structured = false;
+            self.fail(StructureFailure::JumpWithoutTarget);
             return HirStmt::Empty;
         };
         self.region(target, bounds, depth + 1)
@@ -1360,6 +1391,7 @@ fn collect_instructions(stmt: &HirStmt, out: &mut Vec<NirInstr>) {
 #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::reducible::CnsBudget;
     use crate::types::{NirOp, SourceLang, SourceRef};
 
     fn instr(address: u64, op: NirOp, mnemonic: &str, operands: &[&str]) -> NirInstr {
@@ -1630,9 +1662,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn irreducible_two_entry_loop_degrades_to_goto_graph_emitting_every_block_once() {
-        let f: NirFunction = function(
+    fn two_entry_irreducible_loop() -> NirFunction {
+        function(
             vec![
                 instr(0, NirOp::CondBranch { target: Some(4) }, "je", &["4"]),
                 instr(2, NirOp::Branch { target: Some(4) }, "jmp", &["4"]),
@@ -1640,23 +1671,100 @@ mod tests {
                 instr(6, NirOp::Return, "ret", &[]),
             ],
             7,
-        );
-        let hir: HirFunction = structurize_function(&f);
+        )
+    }
+
+    fn loop_labels(stmt: &HirStmt, found: &mut Vec<u64>) {
+        match stmt {
+            HirStmt::Loop { label, body } => {
+                found.push(*label);
+                loop_labels(body, found);
+            }
+            HirStmt::Seq { body } => {
+                for child in body {
+                    loop_labels(child, found);
+                }
+            }
+            HirStmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                loop_labels(then_branch, found);
+                loop_labels(else_branch, found);
+            }
+            HirStmt::Leaf { .. }
+            | HirStmt::Break { .. }
+            | HirStmt::Continue { .. }
+            | HirStmt::Return { .. }
+            | HirStmt::Dispatch { .. }
+            | HirStmt::GotoGraph { .. }
+            | HirStmt::Empty => {}
+        }
+    }
+
+    #[test]
+    fn a_two_entry_irreducible_loop_recovers_as_a_real_loop_rather_than_a_goto_graph() {
+        let hir: HirFunction = structurize_function(&two_entry_irreducible_loop());
         assert!(
-            !hir.structured,
-            "a two-entry shared-header loop is irreducible and must not report as structured: {:?}",
+            hir.structured,
+            "capped splitting must make a two-entry loop reducible: {:?}",
+            hir.decline
+        );
+        assert_eq!(hir.decline, None, "a structured function declines nothing");
+        assert!(
+            !matches!(
+                hir.body,
+                HirStmt::GotoGraph { .. } | HirStmt::Dispatch { .. }
+            ),
+            "the flat fallback must not be reached: {:?}",
             hir.body
+        );
+        let mut labels: Vec<u64> = Vec::new();
+        loop_labels(&hir.body, &mut labels);
+        assert_eq!(
+            labels,
+            vec![4],
+            "the shared header becomes a single reducible loop"
+        );
+        assert_eq!(
+            hir.instruction_addresses(),
+            BTreeSet::from([0, 2, 4, 6]),
+            "splitting must not drop or invent an instruction"
+        );
+        let starts: BTreeSet<u64> = hir.block_starts();
+        assert!(
+            starts.is_superset(&BTreeSet::from([0, 2, 4, 6])),
+            "every original block keeps its own address: {starts:?}"
+        );
+        assert_eq!(
+            starts.len(),
+            5,
+            "exactly one secondary entry is cloned, at an address no original block owns: {starts:?}"
+        );
+    }
+
+    #[test]
+    fn disabling_the_split_budget_restores_the_goto_graph_and_names_the_reason() {
+        let hir: HirFunction =
+            structurize_function_with_budget(&two_entry_irreducible_loop(), SplitBudget::Disabled);
+        assert!(!hir.structured);
+        assert_eq!(
+            hir.decline,
+            Some(HirDecline {
+                failure: StructureFailure::BlockReachedTwice,
+                refusal: SplitRefusal::Disabled,
+                after_split: None,
+            }),
+            "the decline names both what the structurer hit and why splitting did not run"
         );
         let HirStmt::GotoGraph { entry, blocks }: &HirStmt = &hir.body else {
             panic!(
-                "irreducible control must fall back to a goto graph: {:?}",
+                "an unsplit irreducible graph must fall back to a goto graph: {:?}",
                 hir.body
             );
         };
-        assert_eq!(
-            *entry, 0,
-            "the goto-graph fallback must enter at the first block"
-        );
+        assert_eq!(*entry, 0);
         let starts: Vec<u64> = blocks
             .iter()
             .map(|case: &HirDispatchCase| case.block_start)
@@ -1678,8 +1786,77 @@ mod tests {
         assert_eq!(
             hir.instruction_addresses(),
             BTreeSet::from([0, 2, 4, 6]),
-            "no instruction may be dropped by the degradation path"
+            "no instruction may be dropped by the fallback path"
         );
+    }
+
+    #[test]
+    fn an_exhausted_split_budget_falls_back_and_records_that_the_budget_ran_out() {
+        let hir: HirFunction = structurize_function_with_budget(
+            &two_entry_irreducible_loop(),
+            SplitBudget::Explicit(CnsBudget {
+                max_cloned_blocks: 0,
+                max_iterations: 4,
+            }),
+        );
+        assert!(!hir.structured);
+        assert_eq!(
+            hir.decline.map(|decline: HirDecline| decline.refusal),
+            Some(SplitRefusal::BudgetExhausted)
+        );
+        assert!(matches!(hir.body, HirStmt::GotoGraph { entry: 0, .. }));
+    }
+
+    #[test]
+    fn a_dense_multi_entry_region_terminates_inside_its_budget() {
+        const WIDTH: u64 = 24;
+        let mut instructions: Vec<NirInstr> = Vec::new();
+        instructions.push(instr(
+            0,
+            NirOp::CondBranch { target: Some(2) },
+            "je",
+            &["2"],
+        ));
+        for index in 0..WIDTH {
+            let address: u64 = 2 + index * 2;
+            let target: u64 = 2 + ((index + 1) % WIDTH) * 2;
+            let text: String = target.to_string();
+            instructions.push(instr(
+                address,
+                NirOp::CondBranch {
+                    target: Some(target),
+                },
+                "je",
+                &[text.as_str()],
+            ));
+        }
+        let tail: u64 = 2 + WIDTH * 2;
+        instructions.push(instr(tail, NirOp::Return, "ret", &[]));
+        let dense: NirFunction = function(instructions, tail + 1);
+        let hir: HirFunction = structurize_function(&dense);
+        assert_eq!(
+            hir.instruction_addresses().len(),
+            usize::try_from(WIDTH).expect("width fits") + 2,
+            "a dense region must keep every instruction whichever path it takes"
+        );
+        if hir.structured {
+            assert_eq!(hir.decline, None);
+        } else {
+            assert!(
+                hir.decline.is_some(),
+                "a dense region that cannot be split must name why"
+            );
+        }
+    }
+
+    #[test]
+    fn structuring_the_same_function_twice_produces_byte_identical_hir() {
+        let function: NirFunction = two_entry_irreducible_loop();
+        let first: HirFunction = structurize_function(&function);
+        let second: HirFunction = structurize_function(&function);
+        assert_eq!(first.body, second.body);
+        assert_eq!(first.structured, second.structured);
+        assert_eq!(first.decline, second.decline);
     }
 
     fn branch_chain(depth: usize) -> NirFunction {

@@ -1,0 +1,16 @@
+id = "native-cff-dispatcher-cover"
+ecosystem = "native"
+title = "OLLVM control-flow-flattening dispatcher cover"
+claim = "disrobe reaches 9 of the 9 states the dispatchers of the two committed ollvm-16 -fla functions can select, and reports a named reason for any state it does not reach rather than dropping it."
+oracle_strength = "coverage-self-reported"
+ci = true
+
+[oracle]
+kind = "recovery-import"
+external = "both sides of this ratio are disrobe's. The denominator is read out of the sample's own compare tree rather than typed into the gate, and a second pass re-derives it by scanning every equality compare against the state register in a linear decode of the whole function, so a tree walk that stopped early is caught instead of shrinking its own denominator. That makes the count harder to fake, not externally graded: no other tool supplies the state list. Behavior is graded separately and more narrowly, by executing the flattened bytes and the re-emitted recovered bytes under the in-house x86 interpreter and comparing the return value against corpus/native/ollvm/probe_src.c, the committed C source the fixtures were built from."
+reproduce = "cargo test -p disrobe-pass-native --test cff_dispatcher_cover"
+note = "The tier is coverage-self-reported because reaching a dispatcher state is not the same as recovering it correctly. Two seeded defects keep the gates from being vacuous: retargeting one state store in classify_fla.bin drops the cover to 3 of 4 and the gate must name the missing state, and retargeting one recovered edge must make the differential disagree on exactly the 6 arguments above ten. The population is two functions from one compiler at one optimization level, 9 dispatcher states in total, and the differential covers 15 arguments per function under a 200000-step and 16 KiB-stack budget. Nothing here states anything about a flattened function this repository does not commit."
+
+[source]
+recovery_group = "OLLVM control-flow-flattening dispatcher cover (committed two-function corpus)"
+recovery_bar = "OLLVM -fla dispatcher states"

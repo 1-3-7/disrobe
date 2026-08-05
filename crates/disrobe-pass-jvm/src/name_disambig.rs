@@ -209,6 +209,118 @@ fn unique_renamed(
     }
 }
 
+const IDENTIFIER_ESCAPE: char = '_';
+const JVM_SPECIAL_METHOD_NAMES: [&str; 2] = ["<init>", "<clinit>"];
+
+#[derive(Debug, Default)]
+struct WritableIdentifiers {
+    taken: BTreeSet<String>,
+    map: BTreeMap<String, String>,
+}
+
+thread_local! {
+    static WRITABLE_IDENTIFIERS: RefCell<Option<WritableIdentifiers>> =
+        const { RefCell::new(None) };
+}
+
+fn escape_unwritable(raw: &str) -> String {
+    let mut out: String = String::with_capacity(raw.len() + 2);
+    for (index, ch) in raw.chars().enumerate() {
+        let usable: bool = if index == 0 {
+            ch == '_' || ch == '$' || ch.is_ascii_alphabetic()
+        } else {
+            ch == '_' || ch == '$' || ch.is_ascii_alphanumeric()
+        };
+        if usable {
+            out.push(ch);
+            continue;
+        }
+        if index == 0 && (ch.is_ascii_digit() || ch == '$') {
+            out.push(IDENTIFIER_ESCAPE);
+            out.push(ch);
+            continue;
+        }
+        let _ = std::fmt::Write::write_fmt(
+            &mut out,
+            format_args!("{IDENTIFIER_ESCAPE}u{:04X}{IDENTIFIER_ESCAPE}", ch as u32),
+        );
+    }
+    if out.is_empty() {
+        out.push(IDENTIFIER_ESCAPE);
+    }
+    out
+}
+
+fn distinct_candidate(base: &str, taken: &BTreeSet<String>) -> String {
+    if !taken.contains(base) && is_java_source_identifier(base) {
+        return base.to_owned();
+    }
+    let mut attempt: usize = 0;
+    loop {
+        let candidate: String = format!("{base}{IDENTIFIER_ESCAPE}{attempt}");
+        if !taken.contains(&candidate) && is_java_source_identifier(&candidate) {
+            return candidate;
+        }
+        attempt = attempt.saturating_add(1);
+    }
+}
+
+pub(crate) fn ensure_writable_identifier_scope<T, I, S>(existing: I, body: impl FnOnce() -> T) -> T
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let already_active: bool = WRITABLE_IDENTIFIERS
+        .with(|slot: &RefCell<Option<WritableIdentifiers>>| slot.borrow().is_some());
+    if already_active {
+        return body();
+    }
+    with_writable_identifier_scope(existing, body)
+}
+
+fn with_writable_identifier_scope<T, I, S>(existing: I, body: impl FnOnce() -> T) -> T
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let taken: BTreeSet<String> = existing
+        .into_iter()
+        .map(|name: S| name.as_ref().to_owned())
+        .filter(|name: &String| is_java_source_identifier(name))
+        .collect();
+    let scope: WritableIdentifiers = WritableIdentifiers {
+        taken,
+        map: BTreeMap::new(),
+    };
+    WRITABLE_IDENTIFIERS.with(|slot: &RefCell<Option<WritableIdentifiers>>| {
+        let previous: Option<WritableIdentifiers> = slot.borrow_mut().replace(scope);
+        let result: T = body();
+        *slot.borrow_mut() = previous;
+        result
+    })
+}
+
+#[must_use]
+pub(crate) fn writable_identifier(raw: &str) -> String {
+    if JVM_SPECIAL_METHOD_NAMES.contains(&raw) || is_java_source_identifier(raw) {
+        return raw.to_owned();
+    }
+    let base: String = escape_unwritable(raw);
+    WRITABLE_IDENTIFIERS.with(|slot: &RefCell<Option<WritableIdentifiers>>| {
+        let mut borrowed: std::cell::RefMut<'_, Option<WritableIdentifiers>> = slot.borrow_mut();
+        let Some(scope): Option<&mut WritableIdentifiers> = borrowed.as_mut() else {
+            return distinct_candidate(&base, &BTreeSet::new());
+        };
+        if let Some(existing) = scope.map.get(raw) {
+            return existing.clone();
+        }
+        let chosen: String = distinct_candidate(&base, &scope.taken);
+        scope.taken.insert(chosen.clone());
+        scope.map.insert(raw.to_owned(), chosen.clone());
+        chosen
+    })
+}
+
 #[derive(Debug, Clone, Default)]
 struct RenameScope {
     map: BTreeMap<String, String>,
@@ -489,6 +601,68 @@ pub fn classify(names: &BTreeSet<String>) -> CollisionReport {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_writable_name_is_returned_untouched() {
+        for name in ["foo", "$bar", "_baz", "a1", "synthLambda$run", "<init>"] {
+            assert_eq!(
+                writable_identifier(name),
+                name,
+                "a name java can already parse must not be rewritten, or every legal identifier in \
+                 the output would churn"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unwritable_name_becomes_writable() {
+        for name in ["-$$Nest$sfgetCTR", "a-b", "0lead", "class", "a b", ""] {
+            let rewritten: String = writable_identifier(name);
+            assert!(
+                is_java_source_identifier(&rewritten),
+                "`{name}` rewrote to `{rewritten}`, which java still cannot parse"
+            );
+        }
+    }
+
+    #[test]
+    fn two_unwritable_names_never_share_one_rewrite() {
+        with_writable_identifier_scope(Vec::<String>::new(), || {
+            let first: String = writable_identifier("a-b");
+            let second: String = writable_identifier("a+b");
+            let third: String = writable_identifier("a b");
+            assert_ne!(first, second);
+            assert_ne!(second, third);
+            assert_ne!(first, third);
+        });
+    }
+
+    #[test]
+    fn a_rewrite_steps_around_a_name_the_class_already_declares() {
+        let occupied: String = escape_unwritable("a-b");
+        with_writable_identifier_scope([occupied.clone()], || {
+            let rewritten: String = writable_identifier("a-b");
+            assert_ne!(
+                rewritten, occupied,
+                "the class already declares `{occupied}`, so rewriting `a-b` onto it would merge \
+                 two distinct members into one"
+            );
+            assert!(is_java_source_identifier(&rewritten));
+        });
+    }
+
+    #[test]
+    fn the_same_name_rewrites_the_same_way_every_time_it_is_asked() {
+        with_writable_identifier_scope(Vec::<String>::new(), || {
+            let first: String = writable_identifier("-$$Nest$sfgetCTR");
+            let again: String = writable_identifier("-$$Nest$sfgetCTR");
+            assert_eq!(
+                first, again,
+                "a declaration and its references ask separately, so an unstable answer would emit \
+                 a call to a method that does not exist"
+            );
+        });
+    }
 
     #[test]
     fn detects_package_class_collision() {

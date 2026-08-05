@@ -90,7 +90,7 @@ fn predecessors<G: DiGraph>(graph: &G) -> Vec<Vec<u32>> {
     preds
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dominators {
     entry: u32,
     idom: Vec<Option<u32>>,
@@ -209,41 +209,6 @@ fn intersect(mut a: u32, mut b: u32, idom: &[Option<u32>], rpo_num: &[u32]) -> u
         }
     }
     a
-}
-
-#[must_use]
-pub fn dominator_sets<G: DiGraph>(graph: &G) -> Vec<BTreeSet<u32>> {
-    let count: usize = graph.node_count();
-    let entry: u32 = graph.entry();
-    let preds: Vec<Vec<u32>> = predecessors(graph);
-    let all: BTreeSet<u32> = (0..count as u32).collect();
-    let mut dom: Vec<BTreeSet<u32>> = vec![all; count];
-    if (entry as usize) < count {
-        dom[entry as usize] = BTreeSet::from([entry]);
-    }
-    let mut changed: bool = true;
-    while changed {
-        changed = false;
-        for node in 0..count as u32 {
-            if node == entry {
-                continue;
-            }
-            let mut new_dom: Option<BTreeSet<u32>> = None;
-            for &pred in &preds[node as usize] {
-                new_dom = Some(new_dom.map_or_else(
-                    || dom[pred as usize].clone(),
-                    |acc: BTreeSet<u32>| acc.intersection(&dom[pred as usize]).copied().collect(),
-                ));
-            }
-            let mut new_dom: BTreeSet<u32> = new_dom.unwrap_or_default();
-            new_dom.insert(node);
-            if new_dom != dom[node as usize] {
-                dom[node as usize] = new_dom;
-                changed = true;
-            }
-        }
-    }
-    dom
 }
 
 pub fn natural_loop_body<T: Ord + Copy>(
@@ -493,17 +458,17 @@ mod tests {
     }
 
     #[test]
-    fn dominator_sets_match_naive_on_connected_graphs() {
+    fn dominator_set_matches_naive_on_connected_graphs() {
         let mut rng: SeededRng = seeded(0xABCD_1234);
         for _ in 0..400 {
             let count: usize = 1 + (rng.random::<u32>() % 12) as usize;
             let succ: Vec<Vec<u32>> = connected_graph(&mut rng, count);
             let graph: AdjGraph = AdjGraph::new(0, succ.clone());
-            let sets: Vec<BTreeSet<u32>> = dominator_sets(&graph);
+            let doms: Dominators = Dominators::compute(&graph);
             let oracle: Vec<Option<BTreeSet<u32>>> = naive_dominators(0, &succ);
             for node in 0..count {
                 assert_eq!(
-                    Some(&sets[node]),
+                    Some(&doms.dominator_set(node as u32)),
                     oracle[node].as_ref(),
                     "dom-set mismatch node {node} succ={succ:?}"
                 );
@@ -586,15 +551,24 @@ mod tests {
     }
 
     #[test]
-    fn dominator_sets_order_independent_with_dead_block_into_live() {
+    fn a_dead_block_flowing_into_a_live_one_does_not_remove_its_dominator() {
         let succ: Vec<Vec<u32>> = vec![vec![1], vec![], vec![1]];
-        let graph: AdjGraph = AdjGraph::new(0, succ);
-        let sets: Vec<BTreeSet<u32>> = dominator_sets(&graph);
-        assert_eq!(sets[1], BTreeSet::from([1]));
-        let mut counts: BTreeMap<u32, usize> = BTreeMap::new();
-        for set in &sets {
-            *counts.entry(set.len() as u32).or_default() += 1;
-        }
+        let graph: AdjGraph = AdjGraph::new(0, succ.clone());
+        let doms: Dominators = Dominators::compute(&graph);
+        let oracle: Vec<Option<BTreeSet<u32>>> = naive_dominators(0, &succ);
+        assert_eq!(doms.dominator_set(1), BTreeSet::from([0, 1]));
+        assert_eq!(Some(&doms.dominator_set(1)), oracle[1].as_ref());
+        assert!(!doms.is_reachable(2));
+        let counts: BTreeMap<u32, usize> = (0..3u32)
+            .filter(|node: &u32| doms.is_reachable(*node))
+            .map(|node: u32| doms.dominator_set(node).len() as u32)
+            .fold(
+                BTreeMap::new(),
+                |mut acc: BTreeMap<u32, usize>, len: u32| {
+                    *acc.entry(len).or_default() += 1;
+                    acc
+                },
+            );
         assert!(counts.contains_key(&1));
     }
 }

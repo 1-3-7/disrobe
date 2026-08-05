@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
 
+use disrobe_mba::cff::CffAbstain;
+
 use crate::api_hash::{ApiHashHit, resolve_imports_by_hash};
 use crate::deobf::{
     AbiInference, Bits as DeobfBits, BlockCopyProp, BlockDeadFlags, BogusBranch, BranchFoldFinding,
@@ -136,7 +138,8 @@ fn analyze_deobf(
         return None;
     }
 
-    let cff: Option<CffRecovery> = recover_first_cff(bits, &sections, entry);
+    let cff_scan: CffScan = recover_first_cff(bits, &sections, entry);
+    let cff: Option<CffRecovery> = cff_scan.recovery;
     let bogus_branches: Vec<BogusBranch> = scan_bogus_branches(bits, &sections);
     let substitutions: Vec<SubstitutionResult> = scan_substitutions(bits, &sections);
     let copyprop_report: Vec<BlockCopyProp> = scan_copyprop(bits, &sections);
@@ -188,14 +191,26 @@ fn analyze_deobf(
     }
 
     let mut notes: Vec<String> = Vec::new();
+    if let Some(reason) = cff_scan.abstain {
+        notes.push(format!(
+            "a flattening dispatcher was found but recovery abstained: {reason:?}"
+        ));
+    }
+    if let Some(recovery) = cff.as_ref() {
+        notes.push(format!(
+            "dispatcher cover {} of {} states",
+            recovery.cover.covered_states, recovery.cover.dispatcher_states
+        ));
+    }
     if cff.is_none()
+        && cff_scan.abstain.is_none()
         && jump_tables.is_empty()
         && obfuscators
             .iter()
             .any(|h: &ObfuscatorHit| h.indicator.contains("CFF") || h.indicator.contains("flatten"))
     {
         notes.push(
-            "CFF signature present but no cmp-chain dispatcher recovered in .text \
+            "CFF signature present but no dispatcher recovered in .text \
              (jump-table dispatch form is detected but not yet linearized)"
                 .to_owned(),
         );
@@ -522,22 +537,35 @@ fn append_recovery_annotations(mut listing: String, findings: &RecoveryAnnotatio
     listing
 }
 
-fn recover_first_cff(
-    bits: DeobfBits,
-    sections: &[CodeSection],
-    entry: Option<u64>,
-) -> Option<CffRecovery> {
+#[derive(Debug, Default)]
+struct CffScan {
+    recovery: Option<CffRecovery>,
+    abstain: Option<CffAbstain>,
+}
+
+fn recover_first_cff(bits: DeobfBits, sections: &[CodeSection], entry: Option<u64>) -> CffScan {
+    let mut abstain: Option<CffAbstain> = None;
     for section in sections {
         let section_end: u64 = section.va.saturating_add(section.bytes.len() as u64);
         let start: u64 = match entry {
             Some(e) if e >= section.va && e < section_end => e,
             _ => section.va,
         };
-        if let CffOutcome::Recovered(rec) = defeat_cff(bits, section.va, &section.bytes, start) {
-            return Some(rec);
+        match defeat_cff(bits, section.va, &section.bytes, start) {
+            CffOutcome::Recovered(rec) => {
+                return CffScan {
+                    recovery: Some(*rec),
+                    abstain,
+                };
+            }
+            CffOutcome::Abstained(reason) => abstain = abstain.or(Some(reason)),
+            CffOutcome::NotFlattened => {}
         }
     }
-    None
+    CffScan {
+        recovery: None,
+        abstain,
+    }
 }
 
 fn scan_bogus_branches(bits: DeobfBits, sections: &[CodeSection]) -> Vec<BogusBranch> {

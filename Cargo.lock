@@ -2058,6 +2058,7 @@ dependencies = [
 name = "disrobe-irsummary"
 version = "0.10.4"
 dependencies = [
+ "disrobe-cfg",
  "disrobe-core",
  "disrobe-llm-metadata",
  "disrobe-mba",
@@ -2143,6 +2144,7 @@ dependencies = [
 name = "disrobe-nir"
 version = "0.10.4"
 dependencies = [
+ "disrobe-cfg",
  "disrobe-core",
  "rkyv",
  "serde",
@@ -2213,6 +2215,7 @@ dependencies = [
  "des",
  "disrobe-binfmt",
  "disrobe-bytes",
+ "disrobe-cfg",
  "disrobe-core",
  "disrobe-llm-metadata",
  "disrobe-pass-native",
@@ -2274,6 +2277,7 @@ version = "0.10.4"
 dependencies = [
  "disrobe-binfmt",
  "disrobe-bytes",
+ "disrobe-cfg",
  "disrobe-core",
  "disrobe-llm-metadata",
  "encoding_rs",
@@ -2700,6 +2704,7 @@ version = "0.10.4"
 dependencies = [
  "blake3",
  "disrobe-bytes",
+ "disrobe-cfg",
  "disrobe-core",
  "disrobe-llm-metadata",
  "disrobe-mba",

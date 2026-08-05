@@ -3,7 +3,7 @@
 - id: `binfmt-extract`
 - ecosystem: binfmt
 - claim: disrobe declares 100 container, archive, and firmware formats and carries an in-tree payload extractor for each, with no metadata-only or external-tool-gated formats. 33 of the 100 are driven to member bytes on disk by an input this repository commits. The other 67 have no committed input, so they are unverified rather than shown to fail.
-- measured: 33 extracted from a committed input / 100 detected
+- measured: 34 extracted from a committed input / 100 detected
 - oracle strength: coverage-self-reported
 - CI-attested: yes [CI]
 - evidence basis: the delivered count is disrobe extracting from its own committed corpus and counting the formats that wrote bytes, not an independent check. A member-byte diff against an external extractor is the proof this row does not yet have, and the 67 formats with no committed input carry no measurement at all

@@ -34,6 +34,31 @@ const MAX_RENDER_BYTES: usize = 4 * 1024 * 1024;
 
 #[must_use]
 pub fn decompile_dex(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
+    crate::name_disambig::ensure_writable_identifier_scope(dex_declared_identifiers(dex), || {
+        decompile_dex_scoped(dex, bytes)
+    })
+}
+
+fn dex_declared_identifiers(dex: &DexFile) -> std::collections::BTreeSet<String> {
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for method in &dex.method_ids {
+        names.insert(method.name.clone());
+    }
+    for field in &dex.field_ids {
+        names.insert(field.name.clone());
+    }
+    for descriptor_name in &dex.class_descriptors {
+        let trimmed: &str = descriptor_name
+            .trim_start_matches('L')
+            .trim_end_matches(';');
+        for segment in trimmed.rsplit('/').take(1).flat_map(|s: &str| s.split('$')) {
+            names.insert(segment.to_owned());
+        }
+    }
+    names
+}
+
+fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
     let code_report: CodeItemsReport = parse_code_items(dex, bytes);
     let code_scan_complete: bool = code_report.is_fully_decoded();
     let decode_error_count: usize = code_report.error_count();
@@ -344,7 +369,10 @@ fn render_unavailable_method(
             || "void".to_string(),
             |descriptor| descriptor.returns.render(),
         );
-        format!("    {modifier} {result} {}({params})", method.method_name)
+        format!(
+            "    {modifier} {result} {}({params})",
+            crate::descriptor::java_writable_identifier(&method.method_name)
+        )
     };
     let Some(reason): Option<&str> = refusal else {
         signature.push(';');
@@ -441,7 +469,7 @@ fn render_method(
         let _ = write!(
             signature,
             "    {modifier}{ret} {}({params})",
-            item.method_name
+            crate::descriptor::java_writable_identifier(&item.method_name)
         );
     }
 

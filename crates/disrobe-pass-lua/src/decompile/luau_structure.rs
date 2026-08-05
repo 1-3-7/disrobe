@@ -1,5 +1,7 @@
 use crate::decompile::luau_lift::{LStmt, LiftedStmt};
 
+const MAX_STRUCTURE_DEPTH: usize = 256;
+
 #[derive(Debug, Clone)]
 pub(crate) enum StructuredBlock {
     Raw(String),
@@ -41,6 +43,7 @@ pub(crate) enum StructuredBlock {
 pub(crate) struct StructureResult {
     pub blocks: Vec<StructuredBlock>,
     pub unresolved_jumps: usize,
+    pub refused_regions: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -83,12 +86,15 @@ pub(crate) fn structure_blocks(stmts: &[LiftedStmt], code_len: usize) -> Structu
         nodes: &nodes,
         loops: &loops,
         active: Vec::new(),
+        depth: 0,
+        refused_regions: 0,
     };
     let mut blocks: Vec<StructuredBlock> = structure_seq(&mut ctx, &mut pos, code_len + 1, None);
     let unresolved_jumps: usize = finalize_unresolved_jumps(&mut blocks);
     StructureResult {
         blocks,
         unresolved_jumps,
+        refused_regions: ctx.refused_regions,
     }
 }
 
@@ -102,6 +108,8 @@ struct SeqCtx<'a> {
     nodes: &'a [PcNode],
     loops: &'a [BackEdge],
     active: Vec<usize>,
+    depth: usize,
+    refused_regions: usize,
 }
 
 #[must_use]
@@ -223,6 +231,14 @@ fn structure_seq(
     cur_loop: Option<LoopRef>,
 ) -> Vec<StructuredBlock> {
     let mut out: Vec<StructuredBlock> = Vec::new();
+    if ctx.depth >= MAX_STRUCTURE_DEPTH {
+        ctx.refused_regions = ctx.refused_regions.saturating_add(1);
+        out.push(StructuredBlock::Raw(format!(
+            "error(\"disrobe: nesting deeper than {MAX_STRUCTURE_DEPTH} left this region unstructured\")"
+        )));
+        return out;
+    }
+    ctx.depth += 1;
     while *pos < ctx.nodes.len() {
         let cur: PcNode = ctx.nodes[*pos].clone();
         if cur.pc >= stop_pc {
@@ -332,6 +348,7 @@ fn structure_seq(
             }
         }
     }
+    ctx.depth -= 1;
     out
 }
 
@@ -470,11 +487,150 @@ fn pre_target_else(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 
     fn lifted(pc: usize, stmt: LStmt) -> LiftedStmt {
         LiftedStmt { pc, stmt }
+    }
+
+    fn nested_conditionals(depth: usize) -> Vec<LiftedStmt> {
+        let span: usize = depth * 2;
+        let mut stmts: Vec<LiftedStmt> = Vec::with_capacity(span);
+        for i in 0..depth {
+            stmts.push(lifted(
+                i,
+                LStmt::Cond {
+                    cond: format!("r0 == {i}"),
+                    target: span - i,
+                },
+            ));
+        }
+        stmts.push(lifted(depth, LStmt::Raw("r1 = 1".to_owned())));
+        stmts
+    }
+
+    fn sibling_conditionals(count: usize) -> Vec<LiftedStmt> {
+        let mut stmts: Vec<LiftedStmt> = Vec::with_capacity(count * 2);
+        let mut pc: usize = 0;
+        for i in 0..count {
+            stmts.push(lifted(
+                pc,
+                LStmt::Cond {
+                    cond: format!("r0 == {i}"),
+                    target: pc + 2,
+                },
+            ));
+            stmts.push(lifted(pc + 1, LStmt::Raw(format!("r1 = {i}"))));
+            pc += 2;
+        }
+        stmts
+    }
+
+    fn nesting_of(blocks: &[StructuredBlock]) -> usize {
+        blocks
+            .iter()
+            .map(|b: &StructuredBlock| match b {
+                StructuredBlock::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => 1 + nesting_of(then_body).max(nesting_of(else_body)),
+                StructuredBlock::While { body, .. }
+                | StructuredBlock::Repeat { body, .. }
+                | StructuredBlock::NumericFor { body, .. }
+                | StructuredBlock::GenericFor { body, .. } => 1 + nesting_of(body),
+                _ => 0,
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn carries_depth_marker(blocks: &[StructuredBlock]) -> bool {
+        blocks.iter().any(|b: &StructuredBlock| match b {
+            StructuredBlock::Raw(text) => text.contains("nesting deeper than"),
+            StructuredBlock::If {
+                then_body,
+                else_body,
+                ..
+            } => carries_depth_marker(then_body) || carries_depth_marker(else_body),
+            StructuredBlock::While { body, .. }
+            | StructuredBlock::Repeat { body, .. }
+            | StructuredBlock::NumericFor { body, .. }
+            | StructuredBlock::GenericFor { body, .. } => carries_depth_marker(body),
+            _ => false,
+        })
+    }
+
+    #[test]
+    fn nesting_far_past_the_limit_returns_instead_of_exhausting_the_stack() {
+        let depth: usize = MAX_STRUCTURE_DEPTH * 24;
+        let stmts: Vec<LiftedStmt> = nested_conditionals(depth);
+
+        let worker: std::thread::JoinHandle<StructureResult> = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || structure_blocks(&stmts, depth * 2))
+            .expect("spawn a thread whose stack this walk overflowed before the limit existed");
+        let result: StructureResult = worker.join().expect("the walk must return, never overflow");
+
+        assert!(
+            result.refused_regions > 0,
+            "nesting {depth} deep is past the limit, so the walk must refuse and count it"
+        );
+        assert!(
+            nesting_of(&result.blocks) <= MAX_STRUCTURE_DEPTH,
+            "the recovered tree must not nest past the limit that bounds the walk building it, \
+             because every consumer of that tree walks it to the same depth; got {}",
+            nesting_of(&result.blocks)
+        );
+        assert!(
+            carries_depth_marker(&result.blocks),
+            "a reader of the recovered source has to see where structure stopped, not only a \
+             counter the caller may never print"
+        );
+    }
+
+    #[test]
+    fn the_limit_counts_nesting_and_not_total_work() {
+        let count: usize = MAX_STRUCTURE_DEPTH * 20;
+        let stmts: Vec<LiftedStmt> = sibling_conditionals(count);
+
+        let result: StructureResult = structure_blocks(&stmts, count * 2);
+
+        assert_eq!(
+            result.refused_regions, 0,
+            "{count} sibling regions nest one deep, so a limit on nesting must not refuse any of \
+             them; a counter that never decrements would refuse everything past its value"
+        );
+        assert_eq!(
+            nesting_of(&result.blocks),
+            1,
+            "the shape under test is flat by construction"
+        );
+        assert_eq!(
+            result.blocks.len(),
+            count,
+            "every sibling region is recovered"
+        );
+    }
+
+    #[test]
+    fn nesting_inside_the_limit_is_recovered_whole() {
+        let depth: usize = MAX_STRUCTURE_DEPTH - 8;
+        let stmts: Vec<LiftedStmt> = nested_conditionals(depth);
+
+        let result: StructureResult = structure_blocks(&stmts, depth * 2);
+
+        assert_eq!(
+            result.refused_regions, 0,
+            "a body that fits the limit must not be refused"
+        );
+        assert_eq!(
+            nesting_of(&result.blocks),
+            depth,
+            "and it must be recovered at its real depth rather than flattened"
+        );
     }
 
     #[test]

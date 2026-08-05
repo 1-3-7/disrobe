@@ -34,7 +34,9 @@ fn cfg_build_on_empty_method_body_does_not_panic() {
     let cfg: Cfg = Cfg::build(&empty);
     assert!(cfg.blocks.is_empty());
     assert!(cfg.rpo.is_empty());
-    assert!(cfg.idom.is_empty());
+    assert!(cfg.immediate_dominator(0).is_none());
+    assert!(!cfg.dominates(0, 0));
+    assert!(cfg.immediate_post_dominators().is_empty());
 }
 
 fn hammer(base: &[u8], seed: u32, flips: usize, iters: usize) {

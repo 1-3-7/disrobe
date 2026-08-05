@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use disrobe_core::DiGraph;
+use disrobe_cfg::{Flow, FlowGraph, PostDominator};
 
 use crate::cil::{ExceptionClause, FlowControl, Instruction, MethodBody, OperandValue};
 use crate::debug::dbg_kv;
@@ -56,7 +56,7 @@ pub struct Cfg {
 
     pub start_to_block: BTreeMap<u32, BlockId>,
 
-    pub idom: Vec<BlockId>,
+    flow: Option<FlowGraph<BlockId>>,
 
     pub postorder_num: Vec<usize>,
 
@@ -75,7 +75,7 @@ impl Cfg {
             blocks,
             terminators: Vec::new(),
             start_to_block,
-            idom: Vec::new(),
+            flow: None,
             postorder_num: Vec::new(),
             rpo: Vec::new(),
             loops: Vec::new(),
@@ -226,38 +226,22 @@ impl Cfg {
     }
 
     fn compute_dominators(&mut self) {
-        let count: usize = self.blocks.len();
-        let graph: BlockGraph<'_> = BlockGraph {
-            blocks: &self.blocks,
-            entry: self.entry,
-        };
-        let doms: disrobe_core::Dominators = disrobe_core::Dominators::compute(&graph);
-        let mut idom: Vec<BlockId> = vec![self.entry; count];
-        for (b, slot) in idom.iter_mut().enumerate() {
-            if let Some(d) = doms.immediate_dominator(b as u32) {
-                *slot = d as usize;
-            }
-        }
-        self.idom = idom;
+        let flow: Option<FlowGraph<BlockId>> = block_flow(self);
+        self.flow = flow;
+    }
+
+    #[must_use]
+    pub fn immediate_dominator(&self, b: BlockId) -> Option<BlockId> {
+        self.flow
+            .as_ref()
+            .and_then(|flow: &FlowGraph<BlockId>| flow.immediate_dominator(b))
     }
 
     #[must_use]
     pub fn dominates(&self, a: BlockId, b: BlockId) -> bool {
-        if a == b {
-            return true;
-        }
-        let mut cur: BlockId = b;
-        while cur != self.entry {
-            let up: BlockId = self.idom[cur];
-            if up == cur {
-                break;
-            }
-            cur = up;
-            if cur == a {
-                return true;
-            }
-        }
-        a == self.entry && self.is_reachable(b)
+        self.flow
+            .as_ref()
+            .is_some_and(|flow: &FlowGraph<BlockId>| flow.dominates(a, b))
     }
 
     #[must_use]
@@ -276,7 +260,7 @@ impl Cfg {
             }
             for &succ in &self.blocks[bid].succs {
                 if self.dominates(succ, bid) {
-                    let body: BTreeSet<BlockId> = self.natural_loop_body(succ, bid);
+                    let body: BTreeSet<BlockId> = self.natural_loop_body(succ, &[bid]);
                     if let Some(idx) = header_to_loop.get(&succ).copied() {
                         loops[idx].body.extend(body);
                         loops[idx].latches.push(bid);
@@ -294,16 +278,12 @@ impl Cfg {
         self.loops = loops;
     }
 
-    fn natural_loop_body(&self, header: BlockId, latch: BlockId) -> BTreeSet<BlockId> {
-        disrobe_core::dominators::natural_loop_body(
-            header,
-            &[latch],
-            |node: BlockId, emit: &mut dyn FnMut(BlockId)| {
-                for &predecessor in &self.blocks[node].preds {
-                    emit(predecessor);
-                }
-            },
-        )
+    fn natural_loop_body(&self, header: BlockId, latches: &[BlockId]) -> BTreeSet<BlockId> {
+        self.flow
+            .as_ref()
+            .map_or_else(BTreeSet::new, |flow: &FlowGraph<BlockId>| {
+                flow.natural_loop_body(header, latches)
+            })
     }
 
     #[must_use]
@@ -351,123 +331,38 @@ impl Cfg {
     #[must_use]
     pub fn immediate_post_dominators(&self) -> Vec<BlockId> {
         let count: usize = self.blocks.len();
-        let virtual_exit: BlockId = count;
-        let total: usize = count + 1;
-        let mut rsuccs: Vec<Vec<BlockId>> = vec![Vec::new(); total];
-        for (bid, block) in self.blocks.iter().enumerate() {
-            match &self.terminators[bid] {
-                Terminator::Return | Terminator::Throw | Terminator::EndFinally => {
-                    rsuccs[bid].push(virtual_exit);
-                }
-                _ => rsuccs[bid].extend(block.succs.iter().copied()),
-            }
-        }
-        let mut rpreds: Vec<Vec<BlockId>> = vec![Vec::new(); total];
-        for (n, succs) in rsuccs.iter().enumerate() {
-            for &s in succs {
-                rpreds[s].push(n);
-            }
-        }
-        let (post_num, rpo): (Vec<usize>, Vec<BlockId>) =
-            reverse_postorder(virtual_exit, &rpreds, total);
-        let undefined: BlockId = usize::MAX;
-        let mut ipdom: Vec<BlockId> = vec![undefined; total];
-        ipdom[virtual_exit] = virtual_exit;
-        let mut changed: bool = true;
-        while changed {
-            changed = false;
-            for &b in &rpo {
-                if b == virtual_exit {
-                    continue;
-                }
-                let mut new_ipdom: BlockId = undefined;
-                for &p in &rsuccs[b] {
-                    if ipdom[p] == undefined {
-                        continue;
-                    }
-                    new_ipdom = if new_ipdom == undefined {
-                        p
-                    } else {
-                        intersect_by(p, new_ipdom, &ipdom, &post_num)
-                    };
-                }
-                if new_ipdom != undefined && ipdom[b] != new_ipdom {
-                    ipdom[b] = new_ipdom;
-                    changed = true;
-                }
-            }
-        }
-        ipdom.truncate(count);
-        for d in &mut ipdom {
-            if *d == virtual_exit {
-                *d = usize::MAX;
-            }
-        }
-        ipdom
+        let Some(flow): Option<&FlowGraph<BlockId>> = self.flow.as_ref() else {
+            return vec![usize::MAX; count];
+        };
+        (0..count)
+            .map(|bid: BlockId| match flow.immediate_post_dominator(bid) {
+                PostDominator::Node(target) => target,
+                PostDominator::FunctionExit | PostDominator::Undefined => usize::MAX,
+            })
+            .collect()
     }
 }
 
-struct BlockGraph<'a> {
-    blocks: &'a [BasicBlock],
-    entry: BlockId,
-}
-
-impl DiGraph for BlockGraph<'_> {
-    fn node_count(&self) -> usize {
-        self.blocks.len()
-    }
-
-    fn entry(&self) -> u32 {
-        self.entry as u32
-    }
-
-    fn for_each_successor(&self, node: u32, visit: &mut dyn FnMut(u32)) {
-        for &s in &self.blocks[node as usize].succs {
-            visit(s as u32);
-        }
-    }
-}
-
-fn reverse_postorder(
-    entry: BlockId,
-    succs: &[Vec<BlockId>],
-    total: usize,
-) -> (Vec<usize>, Vec<BlockId>) {
-    let mut visited: Vec<bool> = vec![false; total];
-    let mut order: Vec<BlockId> = Vec::with_capacity(total);
-    let mut stack: Vec<(BlockId, usize)> = vec![(entry, 0)];
-    visited[entry] = true;
-    while let Some(&mut (node, ref mut idx)) = stack.last_mut() {
-        if *idx < succs[node].len() {
-            let child: BlockId = succs[node][*idx];
-            *idx += 1;
-            if !visited[child] {
-                visited[child] = true;
-                stack.push((child, 0));
+fn block_flow(cfg: &Cfg) -> Option<FlowGraph<BlockId>> {
+    FlowGraph::build(
+        0..cfg.blocks.len(),
+        cfg.entry,
+        |node: BlockId, emit: &mut dyn FnMut(Flow<BlockId>)| {
+            let Some(block): Option<&BasicBlock> = cfg.blocks.get(node) else {
+                return;
+            };
+            for &successor in &block.succs {
+                emit(Flow::To(successor));
             }
-        } else {
-            order.push(node);
-            stack.pop();
-        }
-    }
-    let mut post_num: Vec<usize> = vec![usize::MAX; total];
-    for (i, &b) in order.iter().enumerate() {
-        post_num[b] = i;
-    }
-    order.reverse();
-    (post_num, order)
-}
-
-fn intersect_by(mut a: BlockId, mut b: BlockId, idom: &[BlockId], post_num: &[usize]) -> BlockId {
-    while a != b {
-        while post_num[a] < post_num[b] {
-            a = idom[a];
-        }
-        while post_num[b] < post_num[a] {
-            b = idom[b];
-        }
-    }
-    a
+            if matches!(
+                cfg.terminators.get(node),
+                Some(Terminator::Return | Terminator::Throw | Terminator::EndFinally)
+            ) {
+                emit(Flow::Exit);
+            }
+        },
+    )
+    .ok()
 }
 
 fn fallthrough_or_return(next_block: Option<BlockId>) -> Terminator {
@@ -620,16 +515,18 @@ mod tests {
             .enumerate()
             .map(|(index, block): (usize, &BasicBlock)| (block.start, index))
             .collect();
-        Cfg {
+        let mut cfg: Cfg = Cfg {
             blocks,
             terminators,
             start_to_block,
-            idom: Vec::new(),
+            flow: None,
             postorder_num: Vec::new(),
             rpo: Vec::new(),
             loops: Vec::new(),
             entry: 0,
-        }
+        };
+        cfg.recompute_derived();
+        cfg
     }
 
     #[test]

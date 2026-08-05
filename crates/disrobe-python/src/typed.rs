@@ -921,6 +921,8 @@ typed_report!(
         bits -> Option<u64> : |d| field_u64(d, "bits"),
         recovered_blocks -> Option<u64> : |d| field(d, "cff").and_then(|c: &Json| field_u64(c, "recovered_blocks")),
         original_blocks -> Option<u64> : |d| field(d, "cff").and_then(|c: &Json| field_u64(c, "original_blocks")),
+        dispatcher_states -> Option<u64> : |d| field(d, "cff").and_then(|c: &Json| field_u64(c, "dispatcher_states")),
+        covered_states -> Option<u64> : |d| field(d, "cff").and_then(|c: &Json| field_u64(c, "covered_states")),
         fully_recovered -> bool : |d| field(d, "cff").is_some_and(|c: &Json| field_bool(c, "fully_recovered")),
     }
 );

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::io::Read as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use disrobe_core::Artifact;
@@ -170,7 +170,38 @@ impl Runner {
                 note: "pass produced empty normalized token stream".to_owned(),
             };
         }
-        OracleVerdict::Recovered
+        let Some(baseline): Option<&PathBuf> = fx.baseline_path.as_ref() else {
+            return OracleVerdict::Recovered;
+        };
+        let Ok(clean): Result<String, std::io::Error> = std::fs::read_to_string(baseline) else {
+            return OracleVerdict::NoRecovery {
+                note: format!(
+                    "declared clean-source baseline is unreadable: {}",
+                    baseline.display()
+                ),
+            };
+        };
+        let Some(text): Option<&String> = doc.recovered_text.as_ref() else {
+            return OracleVerdict::NoRecovery {
+                note: "recovered capture is not utf-8, so it cannot be compared to the baseline"
+                    .to_owned(),
+            };
+        };
+        let missing: Vec<String> = baseline_anchors(&clean)
+            .into_iter()
+            .filter(|anchor: &String| !text.contains(anchor.as_str()))
+            .collect();
+        if missing.is_empty() {
+            OracleVerdict::Recovered
+        } else {
+            OracleVerdict::NoRecovery {
+                note: format!(
+                    "recovered output is missing {} baseline anchor(s) the clean source defines: {}",
+                    missing.len(),
+                    missing.join(", ")
+                ),
+            }
+        }
     }
 
     fn eval_detection(&self, fx: &ResolvedFixture, bytes: &[u8]) -> OracleVerdict {
@@ -466,6 +497,7 @@ struct ChainDocumentLite {
     first_pass: Option<String>,
     completed: bool,
     recovered_token_count: usize,
+    recovered_text: Option<String>,
     error: Option<String>,
 }
 
@@ -547,23 +579,47 @@ fn run_chain_capture(
         .nodes
         .iter()
         .find_map(|n: &disrobe_core::chain::NodeDoc| n.error.clone());
-    let recovered_token_count: usize = {
+    let widest: Option<Vec<u8>> = {
         let guard: std::sync::MutexGuard<'_, BTreeMap<String, Vec<u8>>> = runner
             .captured
             .lock()
             .map_err(|_| "capture mutex poisoned".to_owned())?;
         guard
             .values()
-            .map(|v: &Vec<u8>| count_tokens(v))
-            .max()
-            .map_or(0, |value: usize| value)
+            .max_by_key(|v: &&Vec<u8>| count_tokens(v))
+            .cloned()
     };
+    let recovered_token_count: usize = widest.as_ref().map_or(0, |v: &Vec<u8>| count_tokens(v));
+    let recovered_text: Option<String> = widest.and_then(|v: Vec<u8>| String::from_utf8(v).ok());
     Ok(ChainDocumentLite {
         first_pass,
         completed,
         recovered_token_count,
+        recovered_text,
         error,
     })
+}
+
+fn baseline_anchors(clean: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in clean.lines() {
+        let trimmed: &str = line.trim_start();
+        for keyword in ["def ", "class "] {
+            let Some(rest): Option<&str> = trimmed.strip_prefix(keyword) else {
+                continue;
+            };
+            let name: &str = rest
+                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .next()
+                .unwrap_or_default();
+            if name.len() >= 4 && !name.starts_with("__") {
+                out.push(name.to_owned());
+            }
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 fn count_tokens(bytes: &[u8]) -> usize {

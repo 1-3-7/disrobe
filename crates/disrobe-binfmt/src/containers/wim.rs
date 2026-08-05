@@ -201,37 +201,45 @@ fn decode_utf16le_lossy(bytes: &[u8]) -> String {
 
 fn extract_tag<'a>(xml: &'a str, tag: &str, from: usize) -> Option<(&'a str, usize)> {
     let open: String = format!("<{tag}");
-    let open_pos: usize = xml[from..].find(&open)? + from;
-    let after_open: usize = xml[open_pos..].find('>')? + open_pos + 1;
+    let open_pos: usize = xml.get(from..)?.find(&open)? + from;
+    let after_open: usize = xml.get(open_pos..)?.find('>')? + open_pos + 1;
     let close: String = format!("</{tag}>");
-    let close_pos: usize = xml[after_open..].find(&close)? + after_open;
-    Some((xml[after_open..close_pos].trim(), close_pos))
+    let close_pos: usize = xml.get(after_open..)?.find(&close)? + after_open;
+    Some((xml.get(after_open..close_pos)?.trim(), close_pos))
 }
+
+const IMAGE_OPEN_TAG: &str = "<IMAGE";
+const IMAGE_CLOSE_TAG: &str = "</IMAGE>";
+const IMAGE_INDEX_ATTRIBUTE: &str = "INDEX=\"";
 
 fn parse_xml_images(xml: &str, image_count: u32) -> Vec<WimImageEntry> {
     let mut images: Vec<WimImageEntry> = Vec::new();
     let mut cursor: usize = 0;
-    while let Some(image_open) = xml[cursor..].find("<IMAGE") {
+    while let Some(image_open) = xml
+        .get(cursor..)
+        .and_then(|rest: &str| rest.find(IMAGE_OPEN_TAG))
+    {
         let image_start: usize = cursor + image_open;
-        let header_end: usize = match xml[image_start..].find('>') {
+        let header_end: usize = match xml.get(image_start..).and_then(|rest: &str| rest.find('>')) {
             Some(pos) => image_start + pos + 1,
             None => break,
         };
-        let image_tag: &str = &xml[image_start..header_end];
+        let image_tag: &str = xml.get(image_start..header_end).unwrap_or_default();
         let index: u32 = image_tag
-            .find("INDEX=\"")
+            .find(IMAGE_INDEX_ATTRIBUTE)
             .and_then(|p: usize| {
-                let value_start: usize = image_start + p + "INDEX=\"".len();
-                xml[value_start..]
-                    .find('"')
-                    .map(|q: usize| &xml[value_start..value_start + q])
+                let value_start: usize = image_start + p + IMAGE_INDEX_ATTRIBUTE.len();
+                let rest: &str = xml.get(value_start..)?;
+                rest.find('"').and_then(|q: usize| rest.get(..q))
             })
             .and_then(|s: &str| s.parse::<u32>().ok())
             .map_or(images.len() as u32 + 1, |value: u32| value);
-        let block_end: usize = xml[header_end..]
-            .find("</IMAGE>")
-            .map_or(xml.len(), |p: usize| header_end + p);
-        let block: &str = &xml[header_end..block_end];
+        let closing: Option<usize> = xml
+            .get(header_end..)
+            .and_then(|rest: &str| rest.find(IMAGE_CLOSE_TAG))
+            .map(|p: usize| header_end + p);
+        let block_end: usize = closing.unwrap_or(xml.len());
+        let block: &str = xml.get(header_end..block_end).unwrap_or_default();
         let name: Option<String> = extract_tag(block, "NAME", 0)
             .map(|(value, _)| value.to_owned())
             .or_else(|| extract_tag(block, "DISPLAYNAME", 0).map(|(value, _)| value.to_owned()));
@@ -248,7 +256,12 @@ fn parse_xml_images(xml: &str, image_count: u32) -> Vec<WimImageEntry> {
             file_count,
             total_bytes,
         });
-        cursor = block_end + "</IMAGE>".len();
+        let Some(next_cursor): Option<usize> =
+            closing.and_then(|end: usize| end.checked_add(IMAGE_CLOSE_TAG.len()))
+        else {
+            break;
+        };
+        cursor = next_cursor;
         if images.len() as u32 >= image_count && image_count > 0 {
             break;
         }
@@ -527,5 +540,49 @@ mod tests {
     #[test]
     fn rejects_truncated() {
         assert!(parse_wim(&[0u8; 32]).is_err());
+    }
+
+    #[test]
+    fn an_image_element_that_is_never_closed_stops_the_walk_instead_of_running_off_the_xml() {
+        let xml: Vec<u8> = encode_utf16le_with_bom("<WIM><IMAGE INDEX=\"1\"><NAME>only</NAME>");
+        let image: Vec<u8> = build_wim(&xml);
+
+        let parsed: WimArchive = parse_wim(&image).expect("parse wim");
+        assert_eq!(
+            parsed.header.image_count, 2,
+            "the header must still claim two images, so the walk cannot stop because it was satisfied"
+        );
+        assert_eq!(
+            parsed.images.len(),
+            1,
+            "the one unterminated IMAGE element is the last one the walk can read: {:?}",
+            parsed.images
+        );
+        assert_eq!(parsed.images[0].name.as_deref(), Some("only"));
+    }
+
+    #[test]
+    fn an_unclosed_image_element_followed_by_more_xml_still_stops_at_that_element() {
+        let xml: Vec<u8> = encode_utf16le_with_bom(
+            "<WIM><IMAGE INDEX=\"1\"><NAME>first</NAME><IMAGE INDEX=\"2\"><NAME>second</NAME>",
+        );
+        let image: Vec<u8> = build_wim(&xml);
+
+        let parsed: WimArchive = parse_wim(&image).expect("parse wim");
+        assert_eq!(parsed.images.len(), 1);
+        assert_eq!(parsed.images[0].index, 1);
+    }
+
+    #[test]
+    fn a_multibyte_xml_body_around_an_unclosed_image_does_not_split_a_character() {
+        let xml: Vec<u8> = encode_utf16le_with_bom(
+            "<WIM><NAME>日本語のテキスト</NAME><IMAGE INDEX=\"7\"><NAME>ünïcode</NAME>",
+        );
+        let image: Vec<u8> = build_wim(&xml);
+
+        let parsed: WimArchive = parse_wim(&image).expect("parse wim");
+        assert_eq!(parsed.images.len(), 1);
+        assert_eq!(parsed.images[0].index, 7);
+        assert_eq!(parsed.images[0].name.as_deref(), Some("ünïcode"));
     }
 }

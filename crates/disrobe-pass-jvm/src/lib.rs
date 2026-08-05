@@ -170,8 +170,8 @@ pub use decompile_struct::{
     PrecomputedSwitch, Region, Structurer, SwitchKey, compute_dominators, find_natural_loops,
 };
 pub use descriptor::{
-    JavaType, MethodDescriptor, binary_to_source, parse_field as parse_field_descriptor,
-    parse_method as parse_method_descriptor,
+    JavaType, MethodDescriptor, binary_to_source, java_writable_identifier,
+    parse_field as parse_field_descriptor, parse_method as parse_method_descriptor,
 };
 pub use dex::{
     ACC_ABSTRACT, ACC_NATIVE, CodeItem, CodeItemsReport, DEX_ENDIAN_TAG, DEX_MAGIC_PREFIX,

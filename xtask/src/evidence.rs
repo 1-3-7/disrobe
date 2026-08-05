@@ -81,6 +81,10 @@ struct MeasuredPair {
     disrobe: String,
     competitor: String,
     competitor_label: String,
+    #[serde(default)]
+    disrobe_floor: Option<f64>,
+    #[serde(default)]
+    floor_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -180,6 +184,7 @@ struct ResolvedPair {
     competitor_label: String,
     disrobe: PairScore,
     competitor: PairScore,
+    disrobe_floor: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -645,13 +650,18 @@ fn resolve_headtohead(descriptor: &Descriptor, root: &Path) -> Result<ResolvedCo
             (status == "ok").then(|| "highest reported numeric value".to_owned()),
         )
     } else {
-        let certified_rates: Vec<f64> = pairs
+        let floored: Vec<(f64, f64)> = pairs
             .iter()
-            .filter_map(|pair: &ResolvedPair| pair.disrobe.certified_value())
+            .filter_map(|pair: &ResolvedPair| {
+                let rate: f64 = pair.disrobe.certified_value()?;
+                let floor: f64 = pair.disrobe_floor.or(binding.disrobe_floor)?;
+                Some((rate, floor))
+            })
             .collect();
-        let floor_holds: Option<bool> = binding.disrobe_floor.and_then(|floor: f64| {
-            (!certified_rates.is_empty())
-                .then(|| certified_rates.iter().all(|rate: &f64| *rate >= floor))
+        let floor_holds: Option<bool> = (!floored.is_empty()).then(|| {
+            floored
+                .iter()
+                .all(|(rate, floor): &(f64, f64)| rate >= floor)
         });
         let every_leg_certified: bool = pairs.iter().all(ResolvedPair::both_certified);
         let disrobe_leads: Option<bool> = every_leg_certified.then(|| {
@@ -697,6 +707,12 @@ fn resolve_pairs(binding: &MeasuredBinding, rows: &[CompetitorRow]) -> Result<Ve
     let mut names: BTreeSet<&str> = BTreeSet::new();
     let mut out: Vec<ResolvedPair> = Vec::with_capacity(binding.pairs.len());
     for pair in &binding.pairs {
+        if pair.disrobe_floor.is_some() != pair.floor_reason.is_some() {
+            bail!(
+                "head-to-head pair `{}` sets a per-leg floor without the reason it sits there, or a                  reason without a floor; a floor a reader cannot account for is a number nobody can                  check",
+                pair.id
+            );
+        }
         if !ids.insert(&pair.id) {
             bail!("head-to-head measured pair id `{}` is duplicated", pair.id);
         }
@@ -736,6 +752,7 @@ fn resolve_pairs(binding: &MeasuredBinding, rows: &[CompetitorRow]) -> Result<Ve
             competitor_label: pair.competitor_label.clone(),
             disrobe,
             competitor,
+            disrobe_floor: pair.disrobe_floor,
         });
     }
     for row in rows {
@@ -1953,6 +1970,7 @@ mod tests {
                     132,
                 ),
                 competitor: pair_score("jadx (DEX input)", "1.5.5", 128, 130),
+                disrobe_floor: None,
             },
             ResolvedPair {
                 id: "jar".to_owned(),
@@ -1966,6 +1984,7 @@ mod tests {
                     131,
                 ),
                 competitor: pair_score("cfr (JAR input)", "CFR 0.152", 105, 106),
+                disrobe_floor: None,
             },
         ];
         record
@@ -2049,6 +2068,8 @@ mod tests {
                     disrobe: "disrobe (in-house Dalvik, DEX input)".to_owned(),
                     competitor: "jadx (DEX input)".to_owned(),
                     competitor_label: "JADX".to_owned(),
+                    disrobe_floor: None,
+                    floor_reason: None,
                 },
                 MeasuredPair {
                     id: "jar".to_owned(),
@@ -2057,6 +2078,8 @@ mod tests {
                     disrobe: "disrobe (in-house JVM, JAR input)".to_owned(),
                     competitor: "cfr (JAR input)".to_owned(),
                     competitor_label: "CFR".to_owned(),
+                    disrobe_floor: None,
+                    floor_reason: None,
                 },
             ],
         }

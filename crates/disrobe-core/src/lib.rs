@@ -56,7 +56,7 @@ pub use codec::{
     classify_crypto_wall, decode as codec_decode,
 };
 pub use complexity::{Cfg, FunctionComplexity, cyclomatic_complexity, from_decision_points};
-pub use dominators::{AdjGraph, DiGraph, Dominators, dominator_sets, immediate_post_dominators};
+pub use dominators::{AdjGraph, DiGraph, Dominators, immediate_post_dominators};
 pub use error::{CoreError, Result};
 pub use format::{
     CClangFormatFormatter, CSharpDotnetFormatFormatter, CppClangFormatFormatter, DartFormatter,

@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum EdgeGuard {
     Direct,
     Branch,
@@ -20,7 +23,8 @@ pub enum BlockRole {
     Unresolved,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum DegradeReason {
     NextStateNotConstant,
     NextStateOutsideCaseMap,
@@ -48,7 +52,8 @@ pub struct RecoveredCfg {
     pub notes: Vec<DevirtNote>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum CanaryViolation {
     EdgeFromUnknownBlock { from: u64, to: u64 },
     EdgeToUnknownBlock { from: u64, to: u64 },
@@ -59,7 +64,8 @@ pub enum CanaryViolation {
     EntryNotACase { entry: u64 },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum CffAbstain {
     NotFlattened,
     DispatcherNotFound,
