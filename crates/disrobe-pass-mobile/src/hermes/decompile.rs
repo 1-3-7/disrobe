@@ -294,6 +294,80 @@ pub(crate) const OPCODES: &[OpcodeSpec] = &[
     op!("JStrictNotEqualLong", Addr32, Reg8, Reg8),
 ];
 
+const OPCODE_SLOTS: usize = 256;
+
+#[must_use]
+pub fn opcode_label(opcode: u8) -> Cow<'static, str> {
+    match OPCODES.get(opcode as usize) {
+        Some(spec) => Cow::Borrowed(spec.name),
+        None => Cow::Owned(format!("Unknown_0x{opcode:02x}")),
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct OpcodeTally {
+    reconstructed: u32,
+    declined: u32,
+    unaccounted: u32,
+}
+
+#[derive(Debug, Clone)]
+struct OpcodeHistogram {
+    slots: Box<[OpcodeTally; OPCODE_SLOTS]>,
+}
+
+impl OpcodeHistogram {
+    fn new() -> Self {
+        Self {
+            slots: Box::new([OpcodeTally::default(); OPCODE_SLOTS]),
+        }
+    }
+
+    fn slot_mut(&mut self, opcode: u8) -> &mut OpcodeTally {
+        &mut self.slots[opcode as usize]
+    }
+
+    fn merge(&mut self, other: &Self) {
+        for (into, from) in self.slots.iter_mut().zip(other.slots.iter()) {
+            into.reconstructed = into.reconstructed.saturating_add(from.reconstructed);
+            into.declined = into.declined.saturating_add(from.declined);
+            into.unaccounted = into.unaccounted.saturating_add(from.unaccounted);
+        }
+    }
+
+    fn counts(&self, pick: fn(&OpcodeTally) -> u32) -> Vec<OpcodeCount> {
+        let mut out: Vec<OpcodeCount> = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, tally): (usize, &OpcodeTally)| {
+                let occurrences: u32 = pick(tally);
+                if occurrences == 0 {
+                    return None;
+                }
+                let opcode: u8 = u8::try_from(index).ok()?;
+                Some(OpcodeCount {
+                    opcode: opcode_label(opcode).into_owned(),
+                    occurrences: occurrences as usize,
+                })
+            })
+            .collect();
+        out.sort_by(|left: &OpcodeCount, right: &OpcodeCount| {
+            right
+                .occurrences
+                .cmp(&left.occurrences)
+                .then_with(|| left.opcode.cmp(&right.opcode))
+        });
+        out
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpcodeCount {
+    pub opcode: String,
+    pub occurrences: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum OperandValue {
     Reg(u32),
@@ -607,6 +681,8 @@ struct LiftCtx<'a> {
     inline_bodies: &'a BTreeMap<u32, String>,
     reconstructed: usize,
     fallback: usize,
+    unaccounted: usize,
+    histogram: OpcodeHistogram,
 }
 
 impl<'a> LiftCtx<'a> {
@@ -628,6 +704,22 @@ impl<'a> LiftCtx<'a> {
             inline_bodies,
             reconstructed: 0,
             fallback: 0,
+            unaccounted: 0,
+            histogram: OpcodeHistogram::new(),
+        }
+    }
+
+    fn tally(&mut self, opcode: u8, before_reconstructed: usize, before_fallback: usize) {
+        let declined: bool = self.fallback > before_fallback;
+        let reconstructed: bool = self.reconstructed > before_reconstructed;
+        let slot: &mut OpcodeTally = self.histogram.slot_mut(opcode);
+        if declined {
+            slot.declined = slot.declined.saturating_add(1);
+        } else if reconstructed {
+            slot.reconstructed = slot.reconstructed.saturating_add(1);
+        } else {
+            slot.unaccounted = slot.unaccounted.saturating_add(1);
+            self.unaccounted = self.unaccounted.saturating_add(1);
         }
     }
 
@@ -1129,7 +1221,10 @@ fn lift_instruction(
     cfg: &Cfg,
     stmts: &mut Vec<BlockStmt>,
 ) {
+    let before_reconstructed: usize = ctx.reconstructed;
+    let before_fallback: usize = ctx.fallback;
     lift_instruction_inner(ctx, inst, instructions, cfg, stmts);
+    ctx.tally(inst.opcode, before_reconstructed, before_fallback);
     flush_materialized_value(ctx, inst, stmts);
 }
 
@@ -1336,8 +1431,7 @@ fn lift_instruction_inner(
             ctx.reconstructed += 1;
         }
         "StartGenerator" | "CompleteGenerator" => {
-            stmts.push(BlockStmt::Line(format!("{};", fallback_disasm(inst))));
-            ctx.fallback += 1;
+            ctx.reconstructed += 1;
         }
         "SaveGenerator" | "SaveGeneratorLong" => {
             stmts.push(BlockStmt::Line("yield;".to_owned()));
@@ -1961,6 +2055,7 @@ pub struct DecompiledFunction {
     pub block_count: usize,
     pub reconstructed_ops: usize,
     pub fallback_ops: usize,
+    pub unaccounted_ops: usize,
     pub has_if: bool,
     pub has_loop: bool,
     pub has_try_catch: bool,
@@ -1984,8 +2079,12 @@ pub struct DecompileReport {
     pub functions_with_body: usize,
     pub total_reconstructed_ops: usize,
     pub total_fallback_ops: usize,
+    pub total_unaccounted_ops: usize,
     pub structured_functions: usize,
     pub structure_declines: Vec<DeclineCount>,
+    pub reconstructed_opcodes: Vec<OpcodeCount>,
+    pub declined_opcodes: Vec<OpcodeCount>,
+    pub unaccounted_opcodes: Vec<OpcodeCount>,
     pub functions: Vec<DecompiledFunction>,
     pub regexps: Vec<super::regex::RecoveredRegExp>,
 }
@@ -2011,6 +2110,15 @@ fn decompile_function_inlined(
     index: usize,
     inline_bodies: &BTreeMap<u32, String>,
 ) -> DecompiledFunction {
+    decompile_function_tallied(module, index, inline_bodies).0
+}
+
+#[must_use]
+fn decompile_function_tallied(
+    module: &HermesModule,
+    index: usize,
+    inline_bodies: &BTreeMap<u32, String>,
+) -> (DecompiledFunction, OpcodeHistogram) {
     let header: SmallFunctionHeader =
         module
             .functions
@@ -2108,7 +2216,7 @@ fn decompile_function_inlined(
         params.join(", ")
     );
 
-    DecompiledFunction {
+    let decompiled: DecompiledFunction = DecompiledFunction {
         index,
         name,
         param_count: header.param_count,
@@ -2118,6 +2226,7 @@ fn decompile_function_inlined(
         block_count: cfg.blocks.len(),
         reconstructed_ops: ctx.reconstructed,
         fallback_ops: ctx.fallback,
+        unaccounted_ops: ctx.unaccounted,
         has_if,
         has_loop,
         has_try_catch,
@@ -2125,7 +2234,8 @@ fn decompile_function_inlined(
         structured: structure_decline.is_none(),
         structure_decline,
         source,
-    }
+    };
+    (decompiled, ctx.histogram)
 }
 
 #[must_use]
@@ -2631,6 +2741,7 @@ fn declined_function(module: &HermesModule, index: usize) -> DecompiledFunction 
         block_count: 0,
         reconstructed_ops: 0,
         fallback_ops: 0,
+        unaccounted_ops: 0,
         has_if: false,
         has_loop: false,
         has_try_catch: header.is_some_and(|h: &SmallFunctionHeader| h.has_exception_handler),
@@ -2646,22 +2757,28 @@ pub fn decompile_module(module: &HermesModule) -> DecompileReport {
     let mut functions: Vec<DecompiledFunction> = Vec::with_capacity(module.functions.len());
     let mut total_reconstructed: usize = 0;
     let mut total_fallback: usize = 0;
+    let mut total_unaccounted: usize = 0;
     let mut with_body: usize = 0;
     let mut structured_functions: usize = 0;
     let mut declines: BTreeMap<StructureDecline, usize> = BTreeMap::new();
     let mut cache: BTreeMap<usize, String> = BTreeMap::new();
+    let mut histogram: OpcodeHistogram = OpcodeHistogram::new();
     for i in 0..module.functions.len() {
         let f: DecompiledFunction = if lift_supported {
             let mut visiting: BTreeSet<usize> = BTreeSet::new();
             visiting.insert(i);
             let child_bodies: BTreeMap<u32, String> =
                 inlined_closure_bodies(module, i, &mut visiting, &mut cache, 0);
-            decompile_function_inlined(module, i, &child_bodies)
+            let (decompiled, tally): (DecompiledFunction, OpcodeHistogram) =
+                decompile_function_tallied(module, i, &child_bodies);
+            histogram.merge(&tally);
+            decompiled
         } else {
             declined_function(module, i)
         };
         total_reconstructed += f.reconstructed_ops;
         total_fallback += f.fallback_ops;
+        total_unaccounted += f.unaccounted_ops;
         if f.instruction_count > 0 {
             with_body += 1;
             if f.structured {
@@ -2682,6 +2799,7 @@ pub fn decompile_module(module: &HermesModule) -> DecompileReport {
         functions_with_body: with_body,
         total_reconstructed_ops: total_reconstructed,
         total_fallback_ops: total_fallback,
+        total_unaccounted_ops: total_unaccounted,
         structured_functions,
         structure_declines: declines
             .into_iter()
@@ -2689,6 +2807,9 @@ pub fn decompile_module(module: &HermesModule) -> DecompileReport {
                 |(reason, functions): (StructureDecline, usize)| DeclineCount { reason, functions },
             )
             .collect(),
+        reconstructed_opcodes: histogram.counts(|tally: &OpcodeTally| tally.reconstructed),
+        declined_opcodes: histogram.counts(|tally: &OpcodeTally| tally.declined),
+        unaccounted_opcodes: histogram.counts(|tally: &OpcodeTally| tally.unaccounted),
         functions,
         regexps,
     }
@@ -3333,6 +3454,168 @@ mod tests {
     }
 
     #[test]
+    fn the_opcode_histogram_accounts_for_every_decoded_instruction() {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("LoadParam"));
+        code.extend_from_slice(&[1u8, 1u8]);
+        code.push(opcode_byte("LoadParam"));
+        code.extend_from_slice(&[2u8, 2u8]);
+        code.push(opcode_byte("Add"));
+        code.extend_from_slice(&[0u8, 1u8, 2u8]);
+        code.push(opcode_byte("Ret"));
+        code.push(0u8);
+        let module: HermesModule = module_with(&["add"], &[], code, 3);
+        let report: DecompileReport = decompile_module(&module);
+        let instructions: usize = report
+            .functions
+            .iter()
+            .map(|f: &DecompiledFunction| f.instruction_count)
+            .sum();
+        assert_eq!(instructions, 4);
+        assert_eq!(
+            report.total_reconstructed_ops
+                + report.total_fallback_ops
+                + report.total_unaccounted_ops,
+            instructions,
+            "every decoded instruction lands in exactly one column, so a lifting rule that silently \
+             counts nothing cannot inflate the coverage ratio"
+        );
+        assert!(report.declined_opcodes.is_empty());
+        assert!(report.unaccounted_opcodes.is_empty());
+        let named: Vec<&str> = report
+            .reconstructed_opcodes
+            .iter()
+            .map(|count: &OpcodeCount| count.opcode.as_str())
+            .collect();
+        assert_eq!(named, ["LoadParam", "Add", "Ret"]);
+        assert_eq!(
+            report.reconstructed_opcodes[0].occurrences, 2,
+            "the histogram is ordered by descending occurrences so the long tail reads from the end"
+        );
+    }
+
+    #[test]
+    fn an_opcode_outside_the_table_is_named_by_its_byte_and_counted_as_declined() {
+        let unknown: u8 =
+            u8::try_from(OPCODES.len()).expect("the table is shorter than 256 entries");
+        let code: Vec<u8> = vec![unknown, opcode_byte("Ret"), 0u8];
+        let module: HermesModule = module_with(&["odd"], &[], code, 1);
+        let report: DecompileReport = decompile_module(&module);
+        assert_eq!(
+            report.declined_opcodes,
+            vec![OpcodeCount {
+                opcode: format!("Unknown_0x{unknown:02x}"),
+                occurrences: 1,
+            }],
+            "an opcode the table does not carry must be enumerated by its byte rather than vanish \
+             from the report"
+        );
+        assert_eq!(report.total_fallback_ops, 1);
+        assert_eq!(report.total_unaccounted_ops, 0);
+    }
+
+    #[test]
+    fn opcode_label_names_the_table_entry_and_falls_back_to_the_byte() {
+        assert_eq!(opcode_label(0), "Unreachable");
+        assert_eq!(opcode_label(22), "Add");
+        assert_eq!(opcode_label(u8::MAX), "Unknown_0xff");
+    }
+
+    fn loop_module(shape: &str) -> HermesModule {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("LoadParam"));
+        code.extend_from_slice(&[1u8, 1u8]);
+        code.push(opcode_byte("LoadConstZero"));
+        code.push(0u8);
+        match shape {
+            "head-test" => {
+                code.push(opcode_byte("JNotLess"));
+                code.extend_from_slice(&[9u8, 0u8, 1u8]);
+                code.push(opcode_byte("Inc"));
+                code.extend_from_slice(&[0u8, 0u8]);
+                code.push(opcode_byte("Jmp"));
+                code.push(0xf9u8);
+            }
+            "tail-test" => {
+                code.push(opcode_byte("Inc"));
+                code.extend_from_slice(&[0u8, 0u8]);
+                code.push(opcode_byte("JNotLess"));
+                code.extend_from_slice(&[6u8, 0u8, 1u8]);
+                code.push(opcode_byte("Jmp"));
+                code.push(0xf9u8);
+            }
+            _ => {
+                code.push(opcode_byte("Inc"));
+                code.extend_from_slice(&[0u8, 0u8]);
+                code.push(opcode_byte("JNotLess"));
+                code.extend_from_slice(&[9u8, 0u8, 1u8]);
+                code.push(opcode_byte("Inc"));
+                code.extend_from_slice(&[0u8, 0u8]);
+                code.push(opcode_byte("Jmp"));
+                code.push(0xf6u8);
+            }
+        }
+        code.push(opcode_byte("Ret"));
+        code.push(0u8);
+        module_with(&["counted"], &[], code, 2)
+    }
+
+    #[test]
+    fn a_head_tested_loop_recovers_as_a_while_loop() {
+        let module: HermesModule = loop_module("head-test");
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert_eq!(f.structure_decline, None, "src: {}", f.source);
+        assert!(
+            f.source.contains("while (v0 < arg0) {"),
+            "a loop whose only exit test sits at the header is a while loop, so that is the form \
+             recovery must produce rather than an infinite loop with an inner break; src: {}",
+            f.source
+        );
+        assert!(
+            !f.source.contains("for (;;)") && !f.source.contains("break;"),
+            "the unsugared infinite-loop form must not survive when the guard is recoverable; \
+             src: {}",
+            f.source
+        );
+        assert_eq!(f.fallback_ops, 0, "src: {}", f.source);
+    }
+
+    #[test]
+    fn a_tail_tested_loop_recovers_as_a_do_while_loop() {
+        let module: HermesModule = loop_module("tail-test");
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert_eq!(f.structure_decline, None, "src: {}", f.source);
+        assert!(
+            f.source.contains("do {") && f.source.contains("} while (v0 < arg0);"),
+            "a loop whose only exit test sits after the body is a do-while; src: {}",
+            f.source
+        );
+        assert!(!f.source.contains("for (;;)"), "src: {}", f.source);
+        assert_eq!(f.fallback_ops, 0, "src: {}", f.source);
+    }
+
+    #[test]
+    fn a_mid_tested_loop_stays_an_infinite_loop_with_a_named_break() {
+        let module: HermesModule = loop_module("mid-test");
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert_eq!(f.structure_decline, None, "src: {}", f.source);
+        assert!(
+            f.source.contains("for (;;) {") && f.source.contains("break;"),
+            "a loop whose exit test sits between two halves of the body is neither a while nor a \
+             do-while, so it must keep the infinite-loop form with an explicit break rather than \
+             be resugared into a guard it does not have; src: {}",
+            f.source
+        );
+        assert!(
+            !f.source.contains("while (v0 < arg0) {"),
+            "resugaring this shape into a head guard would drop the pre-test half of the body; \
+             src: {}",
+            f.source
+        );
+        assert_eq!(f.fallback_ops, 0, "src: {}", f.source);
+    }
+
+    #[test]
     fn decompile_generator_function() {
         let mut code: Vec<u8> = Vec::new();
         code.push(opcode_byte("StartGenerator"));
@@ -3359,9 +3642,16 @@ mod tests {
             f.source
         );
         assert_eq!(
-            f.fallback_ops, 2,
-            "StartGenerator and CompleteGenerator are skeleton markers that emit no JS \
-             and count as fallback, not reconstruction; src: {}",
+            f.fallback_ops, 0,
+            "StartGenerator and CompleteGenerator carry no statement of their own: the first is \
+             expressed by the function* keyword and the second by the function ending, so both are \
+             recovered rather than declined; src: {}",
+            f.source
+        );
+        assert!(
+            !f.source.contains("StartGenerator(") && !f.source.contains("CompleteGenerator("),
+            "a raw opcode mnemonic rendered as a call is not JavaScript and would throw if run; \
+             src: {}",
             f.source
         );
         assert!(

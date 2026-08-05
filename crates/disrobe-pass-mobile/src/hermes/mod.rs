@@ -15,8 +15,8 @@ pub mod structure;
 pub use bigint::{bigint_literal, recover_bigints};
 pub use builtins::{builtin_name, is_template_object_builtin};
 pub use decompile::{
-    DeclineCount, DecompileReport, DecompiledFunction, decompile_function, decompile_module,
-    disassemble_function_instructions,
+    DeclineCount, DecompileReport, DecompiledFunction, OpcodeCount, decompile_function,
+    decompile_module, disassemble_function_instructions, opcode_label,
 };
 pub use literals::{BufferKind, LiteralValue, decode_literals};
 pub use regex::{RecoveredRegExp, recover_regexp, recover_regexps};
