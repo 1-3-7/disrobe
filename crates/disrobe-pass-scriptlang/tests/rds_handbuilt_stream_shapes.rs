@@ -101,14 +101,14 @@ fn only_closure(obj: &RdsObject) -> &RdsClosure {
 }
 
 #[test]
-fn closure_round_trips_as_r_closure_root() {
+fn handbuilt_closure_stream_reports_a_closure_root() {
     let obj: RdsObject = read_rds(&closure_x_plus_y()).expect("parse closure rds");
     assert_eq!(obj.root_type, "closure");
     assert_eq!(obj.closures.len(), 1);
 }
 
 #[test]
-fn recovers_formal_names_from_closure_pairlist() {
+fn handbuilt_closure_pairlist_yields_formal_names_in_order() {
     let obj: RdsObject = read_rds(&closure_x_plus_y()).expect("parse");
     let c: &RdsClosure = only_closure(&obj);
     let names: Vec<&str> = c.formals.iter().map(|f| f.name.as_str()).collect();
@@ -121,15 +121,18 @@ fn recovers_formal_names_from_closure_pairlist() {
 }
 
 #[test]
-fn recovers_body_expression_losslessly() {
+fn handbuilt_language_body_renders_as_infix() {
     let obj: RdsObject = read_rds(&closure_x_plus_y()).expect("parse");
     let c: &RdsClosure = only_closure(&obj);
-    assert_eq!(c.body, "x + y", "body language object must deparse exactly");
+    assert_eq!(
+        c.body, "x + y",
+        "the hand-written language body must render as infix"
+    );
     assert_eq!(c.rendered, "function(x, y) x + y");
 }
 
 #[test]
-fn recovers_default_argument_and_numeric_literal() {
+fn handbuilt_default_argument_and_numeric_literal_render() {
     let obj: RdsObject = read_rds(&closure_default_and_literal()).expect("parse");
     let c: &RdsClosure = only_closure(&obj);
     assert_eq!(c.formals.len(), 1);
@@ -144,7 +147,7 @@ fn recovers_default_argument_and_numeric_literal() {
 }
 
 #[test]
-fn closure_environment_chain_is_recovered() {
+fn handbuilt_globalenv_singleton_marks_a_reference_environment() {
     let obj: RdsObject = read_rds(&closure_x_plus_y()).expect("parse");
     let c: &RdsClosure = only_closure(&obj);
     assert!(

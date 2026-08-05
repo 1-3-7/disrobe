@@ -22,6 +22,8 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 flate2 = { workspace = true }
+bzip2-rs = { workspace = true }
+liblzma = { workspace = true }
 zip = { workspace = true }
 
 [features]
@@ -30,3 +32,4 @@ chain = ["disrobe-core/chain"]
 
 [dev-dependencies]
 zip = { workspace = true }
+wait-timeout = { workspace = true }

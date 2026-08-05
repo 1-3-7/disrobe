@@ -2619,13 +2619,16 @@ dependencies = [
 name = "disrobe-pass-scriptlang"
 version = "0.10.4"
 dependencies = [
+ "bzip2-rs",
  "disrobe-bytes",
  "disrobe-core",
  "flate2",
+ "liblzma",
  "miette",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "wait-timeout",
  "zip",
 ]
 

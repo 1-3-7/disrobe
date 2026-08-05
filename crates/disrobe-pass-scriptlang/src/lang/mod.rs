@@ -279,6 +279,11 @@ fn looks_like_utf16le_sample(bytes: &[u8]) -> bool {
     sampled > 0 && zeros * 2 >= sampled
 }
 
+pub fn analyze_r(bytes: &[u8]) -> Result<r_rds::RdsObject> {
+    let rds_bytes: Cow<'_, [u8]> = maybe_gunzip_rds(bytes)?.ok_or(Error::Unrecognized)?;
+    r_rds::read_rds(rds_bytes.as_ref())
+}
+
 pub fn analyze_rcpp(bytes: &[u8]) -> Result<rcpp::RcppFingerprint> {
     let rds_bytes: Cow<'_, [u8]> = maybe_gunzip_rds(bytes)?.ok_or(Error::Unrecognized)?;
     let obj: r_rds::RdsObject = r_rds::read_rds(rds_bytes.as_ref())?;
@@ -298,6 +303,31 @@ fn maybe_gunzip_rds(bytes: &[u8]) -> Result<Option<Cow<'_, [u8]>>> {
     maybe_gunzip_rds_with_limit(bytes, MAX_RDS_BYTES)
 }
 
+const BZIP2_MAGIC: [u8; 3] = [b'B', b'Z', b'h'];
+const XZ_MAGIC: [u8; 6] = [0xfd, b'7', b'z', b'X', b'Z', 0x00];
+
+fn read_limit(max_bytes: usize) -> Result<u64> {
+    u64::try_from(max_bytes)
+        .map_err(|source: std::num::TryFromIntError| Error::RdsGzip {
+            source: std::io::Error::new(std::io::ErrorKind::InvalidInput, source),
+        })
+        .map(|value: u64| value.saturating_add(1u64))
+}
+
+fn read_bounded(
+    reader: impl Read,
+    max_bytes: usize,
+    wrap: fn(std::io::Error) -> Error,
+) -> Result<Option<Vec<u8>>> {
+    let mut out: Vec<u8> = Vec::new();
+    let mut limited: std::io::Take<_> = reader.take(read_limit(max_bytes)?);
+    let _: usize = limited.read_to_end(&mut out).map_err(wrap)?;
+    if out.len() > max_bytes {
+        return Ok(None);
+    }
+    Ok(Some(out))
+}
+
 fn maybe_gunzip_rds_with_limit(bytes: &[u8], max_bytes: usize) -> Result<Option<Cow<'_, [u8]>>> {
     if r_rds::is_rds(bytes) {
         if bytes.len() > max_bytes {
@@ -305,23 +335,31 @@ fn maybe_gunzip_rds_with_limit(bytes: &[u8], max_bytes: usize) -> Result<Option<
         }
         return Ok(Some(Cow::Borrowed(bytes)));
     }
-    if bytes.len() >= 2 && bytes[..2] == GZIP_MAGIC {
-        let read_limit: u64 = u64::try_from(max_bytes)
-            .map_err(|source: std::num::TryFromIntError| Error::RdsGzip {
-                source: std::io::Error::new(std::io::ErrorKind::InvalidInput, source),
-            })?
-            .saturating_add(1u64);
-        let reader: flate2::read::GzDecoder<&[u8]> = flate2::read::GzDecoder::new(bytes);
-        let mut out: Vec<u8> = Vec::new();
-        let mut limited: std::io::Take<flate2::read::GzDecoder<&[u8]>> = reader.take(read_limit);
-        let _: usize = limited
-            .read_to_end(&mut out)
-            .map_err(|source: std::io::Error| Error::RdsGzip { source })?;
-        if out.len() <= max_bytes && r_rds::is_rds(&out) {
-            return Ok(Some(Cow::Owned(out)));
-        }
+    let plain: Option<Vec<u8>> = if bytes.starts_with(&GZIP_MAGIC) {
+        read_bounded(
+            flate2::read::GzDecoder::new(bytes),
+            max_bytes,
+            |source: std::io::Error| Error::RdsGzip { source },
+        )?
+    } else if bytes.starts_with(&BZIP2_MAGIC) {
+        read_bounded(
+            bzip2_rs::DecoderReader::new(bytes),
+            max_bytes,
+            |source: std::io::Error| Error::RdsBzip2 { source },
+        )?
+    } else if bytes.starts_with(&XZ_MAGIC) {
+        read_bounded(
+            liblzma::read::XzDecoder::new(bytes),
+            max_bytes,
+            |source: std::io::Error| Error::RdsXz { source },
+        )?
+    } else {
+        None
+    };
+    match plain {
+        Some(out) if r_rds::is_rds(&out) => Ok(Some(Cow::Owned(out))),
+        _ => Ok(None),
     }
-    Ok(None)
 }
 
 #[cfg(test)]
