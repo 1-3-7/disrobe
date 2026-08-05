@@ -1,3 +1,6 @@
+use disrobe_bytes::{
+    ByteReadError, bounded_element_capacity, read_bytes_at, read_u32_le_at, read_u64_le_at,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -88,33 +91,25 @@ pub struct GptTable {
     pub entries_crc32_valid: bool,
 }
 
-fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes([
-        bytes[offset],
-        bytes[offset + 1],
-        bytes[offset + 2],
-        bytes[offset + 3],
-    ])
-}
+pub(crate) const MBR_ENTRY_LEN: usize = 16;
+pub(crate) const GPT_HEADER_MIN_LEN: usize = 92;
+pub(crate) const GPT_ENTRY_MIN_LEN: usize = 128;
+pub(crate) const GPT_ENTRY_ALIGNMENT: usize = 8;
 
-fn read_u64_le(bytes: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes([
-        bytes[offset],
-        bytes[offset + 1],
-        bytes[offset + 2],
-        bytes[offset + 3],
-        bytes[offset + 4],
-        bytes[offset + 5],
-        bytes[offset + 6],
-        bytes[offset + 7],
-    ])
+fn truncated(context: &'static str, e: &ByteReadError) -> Error {
+    Error::Decompression(format!(
+        "{context} truncated at offset {} (needed {}, available {})",
+        e.offset, e.needed, e.available
+    ))
 }
 
 pub fn parse_mbr(bytes: &[u8]) -> Result<MbrTable> {
     if bytes.len() < SECTOR_SIZE {
         return Err(Error::Decompression("mbr sector truncated".to_owned()));
     }
-    if &bytes[MBR_SIGNATURE_OFFSET..MBR_SIGNATURE_OFFSET + 2] != MBR_SIGNATURE {
+    let signature: &[u8] = read_bytes_at(bytes, MBR_SIGNATURE_OFFSET, 2)
+        .map_err(|e: ByteReadError| truncated("mbr boot signature", &e))?;
+    if signature != MBR_SIGNATURE {
         return Err(Error::Decompression(
             "mbr boot signature missing".to_owned(),
         ));
@@ -122,8 +117,11 @@ pub fn parse_mbr(bytes: &[u8]) -> Result<MbrTable> {
     let mut partitions: Vec<MbrPartition> = Vec::with_capacity(4);
     let mut is_protective: bool = false;
     for index in 0..4usize {
-        let entry_off: usize = MBR_PARTITION_TABLE_OFFSET + index * 16;
-        let entry: &[u8] = &bytes[entry_off..entry_off + 16];
+        let entry_off: usize = MBR_PARTITION_TABLE_OFFSET
+            .checked_add(index * MBR_ENTRY_LEN)
+            .ok_or_else(|| Error::Decompression("mbr entry offset overflow".to_owned()))?;
+        let entry: &[u8] = read_bytes_at(bytes, entry_off, MBR_ENTRY_LEN)
+            .map_err(|e: ByteReadError| truncated("mbr partition entry", &e))?;
         let partition_type: u8 = entry[4];
         if partition_type == 0 {
             continue;
@@ -136,8 +134,10 @@ pub fn parse_mbr(bytes: &[u8]) -> Result<MbrTable> {
             partition_type,
             start_chs: [entry[1], entry[2], entry[3]],
             end_chs: [entry[5], entry[6], entry[7]],
-            start_lba: read_u32_le(entry, 8),
-            sector_count: read_u32_le(entry, 12),
+            start_lba: read_u32_le_at(entry, 8)
+                .map_err(|e: ByteReadError| truncated("mbr start lba", &e))?,
+            sector_count: read_u32_le_at(entry, 12)
+                .map_err(|e: ByteReadError| truncated("mbr sector count", &e))?,
         });
     }
     Ok(MbrTable {
@@ -146,13 +146,16 @@ pub fn parse_mbr(bytes: &[u8]) -> Result<MbrTable> {
     })
 }
 
-fn gpt_header_crc32(header: &[u8], header_size: u32) -> u32 {
-    let span: usize = (header_size as usize).clamp(92, header.len());
+fn gpt_header_crc32(header: &[u8], header_size: u32) -> Option<u32> {
+    if header.len() < GPT_HEADER_MIN_LEN {
+        return None;
+    }
+    let span: usize = (header_size as usize).clamp(GPT_HEADER_MIN_LEN, header.len());
     let mut hasher: crc32fast::Hasher = crc32fast::Hasher::new();
-    hasher.update(&header[0..16]);
+    hasher.update(header.get(0..16)?);
     hasher.update(&[0u8, 0u8, 0u8, 0u8]);
-    hasher.update(&header[20..span]);
-    hasher.finalize()
+    hasher.update(header.get(20..span)?);
+    Some(hasher.finalize())
 }
 
 pub fn parse_gpt_header(bytes: &[u8], header_offset: usize) -> Result<GptHeader> {
@@ -161,31 +164,40 @@ pub fn parse_gpt_header(bytes: &[u8], header_offset: usize) -> Result<GptHeader>
     let size_field_end: usize = header_offset.checked_add(16).ok_or_else(overflowed)?;
     let stored_size: u32 = bytes
         .get(size_field_start..size_field_end)
-        .map_or(92, |s: &[u8]| u32::from_le_bytes([s[0], s[1], s[2], s[3]]));
-    let span: usize = (stored_size as usize).max(92);
+        .and_then(|s: &[u8]| read_u32_le_at(s, 0).ok())
+        .unwrap_or(GPT_HEADER_MIN_LEN as u32);
+    let span: usize = (stored_size as usize).max(GPT_HEADER_MIN_LEN);
     let span_end: usize = header_offset.checked_add(span).ok_or_else(overflowed)?;
-    let minimum_end: usize = header_offset.checked_add(92).ok_or_else(overflowed)?;
+    let minimum_end: usize = header_offset
+        .checked_add(GPT_HEADER_MIN_LEN)
+        .ok_or_else(overflowed)?;
     let header: &[u8] = bytes
         .get(header_offset..span_end)
         .or_else(|| bytes.get(header_offset..minimum_end))
         .ok_or_else(|| Error::Decompression("gpt header truncated".to_owned()))?;
-    if &header[0..8] != GPT_SIGNATURE {
+    let signature: &[u8] =
+        read_bytes_at(header, 0, 8).map_err(|e: ByteReadError| truncated("gpt signature", &e))?;
+    if signature != GPT_SIGNATURE {
         return Err(Error::Decompression("gpt signature mismatch".to_owned()));
     }
-    let revision: u32 = read_u32_le(header, 8);
-    let header_size: u32 = read_u32_le(header, 12);
-    let header_crc32: u32 = read_u32_le(header, 16);
-    let current_lba: u64 = read_u64_le(header, 24);
-    let backup_lba: u64 = read_u64_le(header, 32);
-    let first_usable_lba: u64 = read_u64_le(header, 40);
-    let last_usable_lba: u64 = read_u64_le(header, 48);
+    let field = |e: ByteReadError| truncated("gpt header field", &e);
+    let revision: u32 = read_u32_le_at(header, 8).map_err(field)?;
+    let header_size: u32 = read_u32_le_at(header, 12).map_err(field)?;
+    let header_crc32: u32 = read_u32_le_at(header, 16).map_err(field)?;
+    let current_lba: u64 = read_u64_le_at(header, 24).map_err(field)?;
+    let backup_lba: u64 = read_u64_le_at(header, 32).map_err(field)?;
+    let first_usable_lba: u64 = read_u64_le_at(header, 40).map_err(field)?;
+    let last_usable_lba: u64 = read_u64_le_at(header, 48).map_err(field)?;
     let mut disk_guid: [u8; 16] = [0u8; 16];
-    disk_guid.copy_from_slice(&header[56..72]);
-    let partition_entry_lba: u64 = read_u64_le(header, 72);
-    let partition_entry_count: u32 = read_u32_le(header, 80);
-    let partition_entry_size: u32 = read_u32_le(header, 84);
-    let partition_entry_array_crc32: u32 = read_u32_le(header, 88);
-    let header_crc32_valid: bool = gpt_header_crc32(header, header_size) == header_crc32;
+    disk_guid.copy_from_slice(
+        read_bytes_at(header, 56, 16).map_err(|e: ByteReadError| truncated("gpt disk guid", &e))?,
+    );
+    let partition_entry_lba: u64 = read_u64_le_at(header, 72).map_err(field)?;
+    let partition_entry_count: u32 = read_u32_le_at(header, 80).map_err(field)?;
+    let partition_entry_size: u32 = read_u32_le_at(header, 84).map_err(field)?;
+    let partition_entry_array_crc32: u32 = read_u32_le_at(header, 88).map_err(field)?;
+    let header_crc32_valid: bool =
+        gpt_header_crc32(header, header_size).is_some_and(|crc: u32| crc == header_crc32);
     Ok(GptHeader {
         revision,
         header_size,
@@ -205,14 +217,12 @@ pub fn parse_gpt_header(bytes: &[u8], header_offset: usize) -> Result<GptHeader>
 
 fn decode_partition_name(bytes: &[u8]) -> String {
     let mut units: Vec<u16> = Vec::with_capacity(bytes.len() / 2);
-    let mut index: usize = 0;
-    while index + 1 < bytes.len() {
-        let unit: u16 = u16::from_le_bytes([bytes[index], bytes[index + 1]]);
+    for pair in bytes.chunks_exact(2) {
+        let unit: u16 = u16::from_le_bytes([pair[0], pair[1]]);
         if unit == 0 {
             break;
         }
         units.push(unit);
-        index += 2;
     }
     String::from_utf16_lossy(&units)
 }
@@ -221,15 +231,26 @@ pub fn parse_gpt(bytes: &[u8]) -> Result<GptTable> {
     let header_offset: usize = GPT_HEADER_LBA * SECTOR_SIZE;
     let header: GptHeader = parse_gpt_header(bytes, header_offset)?;
     let entry_size: usize = header.partition_entry_size as usize;
-    if entry_size < 128 {
+    if entry_size < GPT_ENTRY_MIN_LEN {
         return Err(Error::Decompression(
             "gpt partition entry size too small".to_owned(),
         ));
+    }
+    if !entry_size.is_multiple_of(GPT_ENTRY_ALIGNMENT) {
+        return Err(Error::Decompression(format!(
+            "gpt partition entry size {entry_size} is not a multiple of {GPT_ENTRY_ALIGNMENT}"
+        )));
     }
     let array_offset: usize = usize::try_from(header.partition_entry_lba)
         .ok()
         .and_then(|lba: usize| lba.checked_mul(SECTOR_SIZE))
         .ok_or_else(|| Error::Decompression("gpt entry array offset overflow".to_owned()))?;
+    if array_offset > bytes.len() {
+        return Err(Error::Decompression(
+            "gpt entry array starts past the end of the image".to_owned(),
+        ));
+    }
+    let remaining: usize = bytes.len() - array_offset;
     let array_byte_len: usize = (header.partition_entry_count as usize)
         .checked_mul(entry_size)
         .ok_or_else(|| Error::Decompression("gpt entry array length overflow".to_owned()))?;
@@ -237,13 +258,22 @@ pub fn parse_gpt(bytes: &[u8]) -> Result<GptTable> {
         .checked_add(array_byte_len)
         .and_then(|end: usize| bytes.get(array_offset..end))
         .is_some_and(|array: &[u8]| crc32fast::hash(array) == header.partition_entry_array_crc32);
+    let walkable: usize = bounded_element_capacity(
+        u64::from(header.partition_entry_count),
+        entry_size,
+        remaining,
+    );
     let mut partitions: Vec<GptPartition> = Vec::new();
-    for index in 0..header.partition_entry_count as usize {
-        let entry_off: usize = match array_offset.checked_add(index * entry_size) {
-            Some(value) => value,
-            None => break,
+    for index in 0..walkable {
+        let Some(entry_off): Option<usize> = index
+            .checked_mul(entry_size)
+            .and_then(|delta: usize| array_offset.checked_add(delta))
+        else {
+            break;
         };
-        let Some(entry): Option<&[u8]> = bytes.get(entry_off..entry_off + 128) else {
+        let Ok(entry): std::result::Result<&[u8], ByteReadError> =
+            read_bytes_at(bytes, entry_off, GPT_ENTRY_MIN_LEN)
+        else {
             break;
         };
         let mut type_guid: [u8; 16] = [0u8; 16];
@@ -251,12 +281,13 @@ pub fn parse_gpt(bytes: &[u8]) -> Result<GptTable> {
         if type_guid == [0u8; 16] {
             continue;
         }
+        let field = |e: ByteReadError| truncated("gpt entry field", &e);
         let mut unique_guid: [u8; 16] = [0u8; 16];
         unique_guid.copy_from_slice(&entry[16..32]);
-        let start_lba: u64 = read_u64_le(entry, 32);
-        let end_lba: u64 = read_u64_le(entry, 40);
-        let attributes: u64 = read_u64_le(entry, 48);
-        let name: String = decode_partition_name(&entry[56..128]);
+        let start_lba: u64 = read_u64_le_at(entry, 32).map_err(field)?;
+        let end_lba: u64 = read_u64_le_at(entry, 40).map_err(field)?;
+        let attributes: u64 = read_u64_le_at(entry, 48).map_err(field)?;
+        let name: String = decode_partition_name(&entry[56..GPT_ENTRY_MIN_LEN]);
         partitions.push(GptPartition {
             type_guid,
             unique_guid,
@@ -317,6 +348,115 @@ mod tests {
         let table: MbrTable = parse_mbr(&disk).expect("parse protective mbr");
         assert!(table.is_protective);
         assert_eq!(table.partitions.len(), 1);
+    }
+
+    fn build_gpt_disk() -> Vec<u8> {
+        let mut disk: Vec<u8> = vec![0u8; SECTOR_SIZE * 40];
+        disk[MBR_SIGNATURE_OFFSET..MBR_SIGNATURE_OFFSET + 2].copy_from_slice(MBR_SIGNATURE);
+        write_mbr_entry(&mut disk, 0, 0x00, MBR_TYPE_GPT_PROTECTIVE, 1, 0xffff_ffff);
+        let header_off: usize = SECTOR_SIZE;
+        disk[header_off..header_off + 8].copy_from_slice(GPT_SIGNATURE);
+        disk[header_off + 8..header_off + 12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
+        disk[header_off + 12..header_off + 16].copy_from_slice(&92u32.to_le_bytes());
+        disk[header_off + 24..header_off + 32].copy_from_slice(&1u64.to_le_bytes());
+        disk[header_off + 32..header_off + 40].copy_from_slice(&39u64.to_le_bytes());
+        disk[header_off + 72..header_off + 80].copy_from_slice(&2u64.to_le_bytes());
+        disk[header_off + 80..header_off + 84].copy_from_slice(&128u32.to_le_bytes());
+        disk[header_off + 84..header_off + 88].copy_from_slice(&128u32.to_le_bytes());
+        let array_off: usize = SECTOR_SIZE * 2;
+        disk[array_off..array_off + 16].copy_from_slice(&[0x11u8; 16]);
+        disk[array_off + 32..array_off + 40].copy_from_slice(&34u64.to_le_bytes());
+        disk[array_off + 40..array_off + 48].copy_from_slice(&100u64.to_le_bytes());
+        finalize_gpt_crcs(&mut disk, header_off, array_off, 128 * 128);
+        disk
+    }
+
+    #[test]
+    fn gpt_parse_output_is_stable_for_a_spec_correct_disk() {
+        let disk: Vec<u8> = build_gpt_disk();
+        let table: GptTable = parse_gpt(&disk).expect("parse gpt");
+        let encoded: String = serde_json::to_string(&table).expect("encode gpt table");
+        assert_eq!(
+            encoded,
+            r#"{"header":{"revision":65536,"header_size":92,"header_crc32":2081731603,"header_crc32_valid":true,"current_lba":1,"backup_lba":39,"first_usable_lba":0,"last_usable_lba":0,"disk_guid":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"partition_entry_lba":2,"partition_entry_count":128,"partition_entry_size":128,"partition_entry_array_crc32":3986192648},"partitions":[{"type_guid":[17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17],"unique_guid":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"start_lba":34,"end_lba":100,"attributes":0,"name":""}],"entries_crc32_valid":true}"#
+        );
+    }
+
+    #[test]
+    fn gpt_rejects_a_zero_or_undersized_entry_size() {
+        for declared in [0u32, 1, 64, 127] {
+            let mut disk: Vec<u8> = build_gpt_disk();
+            disk[SECTOR_SIZE + 84..SECTOR_SIZE + 88].copy_from_slice(&declared.to_le_bytes());
+            let err: Error = parse_gpt(&disk).expect_err("entry size must be rejected");
+            assert!(
+                matches!(&err, Error::Decompression(m) if m.contains("entry size too small")),
+                "declared={declared} got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn gpt_rejects_a_misaligned_entry_size() {
+        let mut disk: Vec<u8> = build_gpt_disk();
+        disk[SECTOR_SIZE + 84..SECTOR_SIZE + 88].copy_from_slice(&129u32.to_le_bytes());
+        let err: Error = parse_gpt(&disk).expect_err("misaligned entry size must be rejected");
+        assert!(
+            matches!(&err, Error::Decompression(m) if m.contains("not a multiple of")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn gpt_entry_count_is_bounded_by_the_remaining_image() {
+        let mut disk: Vec<u8> = build_gpt_disk();
+        disk[SECTOR_SIZE + 80..SECTOR_SIZE + 84].copy_from_slice(&u32::MAX.to_le_bytes());
+        let table: GptTable = parse_gpt(&disk).expect("oversized entry count must stay parseable");
+        assert_eq!(table.header.partition_entry_count, u32::MAX);
+        assert!(
+            !table.entries_crc32_valid,
+            "an entry array that cannot fit must not validate"
+        );
+        let ceiling: usize = (disk.len() - SECTOR_SIZE * 2) / 128 + 1;
+        assert!(
+            table.partitions.len() <= ceiling,
+            "walked {} entries, image only holds {ceiling}",
+            table.partitions.len()
+        );
+    }
+
+    #[test]
+    fn gpt_entry_array_past_the_end_of_the_image_is_refused() {
+        let mut disk: Vec<u8> = build_gpt_disk();
+        disk[SECTOR_SIZE + 72..SECTOR_SIZE + 80].copy_from_slice(&4096u64.to_le_bytes());
+        let err: Error = parse_gpt(&disk).expect_err("array past eof must be refused");
+        assert!(
+            matches!(&err, Error::Decompression(m) if m.contains("past the end")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn backup_gpt_header_outside_a_truncated_image_errors_instead_of_panicking() {
+        let disk: Vec<u8> = build_gpt_disk();
+        let backup_offset: usize = 39 * SECTOR_SIZE;
+        assert!(parse_gpt_header(&disk, backup_offset).is_err());
+        let truncated: &[u8] = &disk[..SECTOR_SIZE * 3];
+        assert!(parse_gpt_header(truncated, backup_offset).is_err());
+        assert!(parse_gpt_header(&disk, usize::MAX).is_err());
+        assert!(parse_gpt_header(&disk, usize::MAX - 8).is_err());
+    }
+
+    #[test]
+    fn every_truncation_of_a_valid_disk_errors_without_panicking() {
+        let disk: Vec<u8> = build_gpt_disk();
+        for len in 0..disk.len() {
+            let view: &[u8] = &disk[..len];
+            let _: std::result::Result<MbrTable, Error> = parse_mbr(view);
+            let _: std::result::Result<GptTable, Error> = parse_gpt(view);
+            let _: std::result::Result<GptHeader, Error> = parse_gpt_header(view, SECTOR_SIZE);
+        }
+        assert!(parse_mbr(&disk[..SECTOR_SIZE - 1]).is_err());
+        assert!(parse_gpt(&disk[..SECTOR_SIZE + 91]).is_err());
     }
 
     #[test]
