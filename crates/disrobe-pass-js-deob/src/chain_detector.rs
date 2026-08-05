@@ -288,7 +288,7 @@ static CATALOG: [JsCatalogEntry; CATALOG_COUNT] = [
         id: TAG_JSCRAMBLER,
         display_name: "Jscrambler",
         aliases: &["jscrambler"],
-        quality: SupportQuality::Full,
+        quality: SupportQuality::Partial,
     },
     JsCatalogEntry {
         family: JsObfuscator::JsObfu,

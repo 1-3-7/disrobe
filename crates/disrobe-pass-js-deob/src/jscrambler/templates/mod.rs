@@ -4,6 +4,7 @@ use crate::error::Result;
 use crate::jscrambler::detect::JscramblerTransform;
 use crate::jscrambler::transforms::{TransformOpts, TransformStats};
 use crate::jscrambler::{TransformOutput, dispatch_reverse};
+use crate::scan_utils::reparses;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TemplateOutput {
@@ -114,13 +115,24 @@ fn run_chain(
     chain: &[JscramblerTransform],
 ) -> Result<TemplateOutput> {
     let bytes_in: usize = source.len();
+    let input_parses: bool = reparses(source);
     let mut current: String = source.to_owned();
     let mut per_transform: Vec<(JscramblerTransform, TransformStats)> =
         Vec::with_capacity(chain.len());
     for t in chain.iter().copied() {
         let out: TransformOutput = dispatch_reverse(t, &current, opts);
-        current = out.source;
-        per_transform.push((t, out.stats));
+        let mut stats: TransformStats = out.stats;
+        if input_parses && out.source != current && !reparses(&out.source) {
+            stats.skipped = stats.skipped.saturating_add(stats.reversed);
+            stats.reversed = 0;
+            stats.errors.push(format!(
+                "DR-JS-0930: {t:?} left the source unparseable, so the step was reverted and the \
+                 chain continued from the last well-formed text"
+            ));
+        } else {
+            current = out.source;
+        }
+        per_transform.push((t, stats));
     }
     Ok(TemplateOutput {
         bytes_in,
