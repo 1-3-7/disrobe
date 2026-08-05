@@ -6,7 +6,7 @@ use crate::cil::{ExceptionClause, ExceptionClauseKind, Instruction, MethodBody};
 use crate::names::NameTable;
 use crate::structurize::{
     BlockCode, Expr, LinearStmt, TargetLang, TokenNamer, lift_block, lift_block_with_entry,
-    lift_filter_condition,
+    lift_filter_condition, merge_arm_stack, rendered_expression,
 };
 
 #[derive(Debug, Clone)]
@@ -312,16 +312,14 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         }
     }
 
-    fn conditional_arm_join(&self, arm: BlockId, cond_block: BlockId) -> Option<BlockId> {
-        let code: &BlockCode = self.block_code.get(arm)?;
+    fn conditional_arm_stack(
+        &self,
+        arm: BlockId,
+        cond_block: BlockId,
+        carried: &[Expr],
+    ) -> Option<(BlockId, Vec<Expr>)> {
         let block: &BasicBlock = self.cfg.blocks.get(arm)?;
-        let arm_is_a_pure_push: bool = code.stmts.is_empty()
-            && code.condition.is_none()
-            && code.switch_selector.is_none()
-            && code.entry_deficit == 0
-            && code.exit_stack.len() == 1;
-        if !arm_is_a_pure_push
-            || self.visited[arm]
+        if self.visited[arm]
             || self.loop_header[arm]
             || !self.cfg.is_reachable(arm)
             || block.preds.as_slice() != [cond_block]
@@ -329,13 +327,51 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         {
             return None;
         }
-        match self.cfg.terminators.get(arm)? {
-            Terminator::FallThrough(next) | Terminator::Goto(next) => Some(*next),
+        let join: BlockId = match self.cfg.terminators.get(arm)? {
+            Terminator::FallThrough(next) | Terminator::Goto(next) => *next,
             Terminator::Cond { .. }
             | Terminator::Switch { .. }
             | Terminator::Return
             | Terminator::Throw
-            | Terminator::EndFinally => None,
+            | Terminator::EndFinally => return None,
+        };
+        let rebuilt: BlockCode = lift_block_with_entry(
+            self.namer,
+            self.names,
+            self.lang,
+            self.instrs,
+            block.first,
+            block.last,
+            carried.to_vec(),
+        );
+        let stack: Vec<Expr> = merge_arm_stack(&rebuilt, self.lang, self.names)?;
+        Some((join, stack))
+    }
+
+    fn conditional_arms(
+        &self,
+        bid: BlockId,
+        taken: BlockId,
+        fallthrough: BlockId,
+        carried: &[Expr],
+    ) -> Option<(BlockId, Vec<Expr>, Vec<Expr>)> {
+        let from_taken: Option<(BlockId, Vec<Expr>)> =
+            self.conditional_arm_stack(taken, bid, carried);
+        let from_fallthrough: Option<(BlockId, Vec<Expr>)> =
+            self.conditional_arm_stack(fallthrough, bid, carried);
+        match (from_taken, from_fallthrough) {
+            (Some((taken_join, taken_stack)), Some((fallthrough_join, fallthrough_stack)))
+                if taken_join == fallthrough_join =>
+            {
+                Some((taken_join, taken_stack, fallthrough_stack))
+            }
+            (Some((taken_join, taken_stack)), _) if taken_join == fallthrough => {
+                Some((fallthrough, taken_stack, carried.to_vec()))
+            }
+            (_, Some((fallthrough_join, fallthrough_stack))) if fallthrough_join == taken => {
+                Some((taken, carried.to_vec(), fallthrough_stack))
+            }
+            _ => None,
         }
     }
 
@@ -349,13 +385,25 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             return None;
         }
         let condition: String = self.block_code[bid].condition.clone()?;
-        let join: BlockId = self.conditional_arm_join(taken, bid)?;
-        if self.conditional_arm_join(fallthrough, bid)? != join {
+        let carried: Vec<Expr> = self.block_code[bid].exit_stack.clone();
+        let (join, when_true, when_false): (BlockId, Vec<Expr>, Vec<Expr>) =
+            self.conditional_arms(bid, taken, fallthrough, &carried)?;
+        if when_true.len() != when_false.len() || when_true.is_empty() {
             return None;
         }
-        let carried: Vec<Expr> = self.block_code[bid].exit_stack.clone();
+        let split: usize = when_true.len().checked_sub(1)?;
+        let carried_agrees: bool = when_true[..split]
+            .iter()
+            .zip(when_false[..split].iter())
+            .all(|(left, right): (&Expr, &Expr)| {
+                rendered_expression(left, self.lang, self.names)
+                    == rendered_expression(right, self.lang, self.names)
+            });
+        if !carried_agrees {
+            return None;
+        }
         let join_block: &BasicBlock = self.cfg.blocks.get(join)?;
-        if self.block_code[join].entry_deficit != carried.len() + 1
+        if self.block_code[join].entry_deficit > when_true.len()
             || join_block.preds.len() != 2
             || self.visited[join]
             || self.loop_header[join]
@@ -366,11 +414,11 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         }
         let folded: Expr = Expr::Cond {
             condition: Box::new(Expr::Raw(condition)),
-            when_true: Box::new(self.block_code[taken].exit_stack.first()?.clone()),
-            when_false: Box::new(self.block_code[fallthrough].exit_stack.first()?.clone()),
+            when_true: Box::new(when_true.get(split)?.clone()),
+            when_false: Box::new(when_false.get(split)?.clone()),
         };
         let (first, last): (usize, usize) = (join_block.first, join_block.last);
-        let mut entry_stack: Vec<Expr> = carried;
+        let mut entry_stack: Vec<Expr> = when_true[..split].to_vec();
         entry_stack.push(folded);
         let rebuilt: BlockCode = lift_block_with_entry(
             self.namer,
@@ -384,8 +432,12 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         if rebuilt.entry_deficit != 0 {
             return None;
         }
-        self.visited[taken] = true;
-        self.visited[fallthrough] = true;
+        if taken != join {
+            self.visited[taken] = true;
+        }
+        if fallthrough != join {
+            self.visited[fallthrough] = true;
+        }
         self.locals_used.extend(rebuilt.locals_used.iter().copied());
         self.block_code[join] = rebuilt;
         Some(join)

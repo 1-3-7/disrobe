@@ -630,7 +630,7 @@ fn shift_resolves_ldarga_to_named_param_not_positional() {
     );
 }
 
-const BASELINE_MERGE_RECOVERED: [(u32, &str); 4] = [
+const BASELINE_MERGE_RECOVERED: [(u32, &str); 7] = [
     (
         0x0600_0014,
         "a value live across a two-arm merge, stored to a field at the join",
@@ -647,20 +647,20 @@ const BASELINE_MERGE_RECOVERED: [(u32, &str); 4] = [
         0x0600_01bb,
         "two values live across two consecutive two-arm merges",
     ),
-];
-
-const BASELINE_MERGE_UNRECOVERED: [(u32, &str); 3] = [
     (
         0x0600_0006,
-        "a two-arm merge whose false arm writes a generic default through an address before pushing, so the arm is not a pure operand push",
+        "two nested merges whose arms each consume the address the condition tested, so each arm \
+         is re-read against the stack the condition block left",
     ),
     (
         0x0600_000c,
-        "a two-arm merge whose false arm writes a generic default through an address before pushing, so the arm is not a pure operand push",
+        "two nested merges whose arms each consume the address the condition tested, so each arm \
+         is re-read against the stack the condition block left",
     ),
     (
         0x0600_0223,
-        "a two-arm merge whose taken arm assigns the cached delegate field before pushing, so the arm is not a pure operand push",
+        "a merge whose taken edge reaches the join directly with the tested value, while the other \
+         arm stores one delegate to a local and to the cache field before pushing it",
     ),
 ];
 
@@ -692,26 +692,30 @@ fn clean_baseline_merge_bodies_recover_their_conditional_value() {
 }
 
 #[test]
-fn clean_baseline_merge_bodies_that_still_abstain_keep_their_recorded_cause() {
+fn no_clean_baseline_body_abstains_on_the_operand_stack() {
     let asm: DecompiledAssembly = baseline();
     let golden: Vec<RecoveredBody> = read_underflow_golden();
-    for (token, cause) in BASELINE_MERGE_UNRECOVERED {
-        let method: &StructuredMethod = baseline_method_by_token(&asm, token);
-        assert!(
-            method.body.contains(STACK_UNDERFLOW),
-            "0x{token:08x} was recorded as {cause}; if it now recovers, drop it from \
-             {} and from this list rather than leaving the cause on record:\n{}",
-            golden_path(STACK_UNDERFLOW_GOLDEN_REL).display(),
-            method.body
-        );
-        assert!(
-            golden
-                .iter()
-                .any(|b: &RecoveredBody| b.key() == ("megafile/EdgeCases.baseline.dll", token)),
-            "0x{token:08x} abstains because it is {cause}, so it has to stay listed in {}",
-            golden_path(STACK_UNDERFLOW_GOLDEN_REL).display()
-        );
-    }
+    let abstaining: Vec<&StructuredMethod> = asm
+        .methods
+        .iter()
+        .filter(|m: &&StructuredMethod| m.body.contains(STACK_UNDERFLOW))
+        .collect();
+    assert!(
+        abstaining.is_empty(),
+        "the clean baseline carries no protector, so every one of its bodies has to reconstruct \
+         from a stack model that agrees with the real one; {} still abstain, first:\n{}",
+        abstaining.len(),
+        abstaining
+            .first()
+            .map_or_else(String::new, |m: &&StructuredMethod| m.body.clone())
+    );
+    assert!(
+        !golden
+            .iter()
+            .any(|b: &RecoveredBody| b.image == "megafile/EdgeCases.baseline.dll"),
+        "{} still lists clean baseline bodies even though none abstains",
+        golden_path(STACK_UNDERFLOW_GOLDEN_REL).display()
+    );
 }
 
 const BASELINE_UNNAMED_PARAMS: [(u32, &str); 1] = [(

@@ -2964,6 +2964,64 @@ pub(crate) fn lift_block<N: TokenNamer>(
     lift_block_with_entry(namer, names, lang, instrs, first, last, Vec::new())
 }
 
+pub(crate) fn rendered_expression(
+    expression: &Expr,
+    lang: TargetLang,
+    names: &NameTable,
+) -> String {
+    expression.render(lang, names)
+}
+
+pub(crate) fn merge_arm_stack(
+    code: &BlockCode,
+    lang: TargetLang,
+    names: &NameTable,
+) -> Option<Vec<Expr>> {
+    if code.condition.is_some() || code.switch_selector.is_some() || code.entry_deficit != 0 {
+        return None;
+    }
+    let (pushed, head): (&Expr, &[Expr]) = code.exit_stack.split_last()?;
+    let folded: Expr = fold_arm_statements(&code.stmts, pushed, lang, names)?;
+    let mut stack: Vec<Expr> = head.to_vec();
+    stack.push(folded);
+    Some(stack)
+}
+
+fn fold_arm_statements(
+    stmts: &[LinearStmt],
+    pushed: &Expr,
+    lang: TargetLang,
+    names: &NameTable,
+) -> Option<Expr> {
+    if stmts.is_empty() {
+        return Some(pushed.clone());
+    }
+    if lang != TargetLang::CSharp {
+        return None;
+    }
+    let mut targets: Vec<&str> = Vec::with_capacity(stmts.len());
+    let mut shared: Option<&str> = None;
+    for stmt in stmts {
+        let LinearStmt::Assign { target, value } = stmt else {
+            return None;
+        };
+        if *shared.get_or_insert(value.as_str()) != value.as_str() {
+            return None;
+        }
+        targets.push(target.as_str());
+    }
+    let value: &str = shared?;
+    let rendered: String = pushed.render(lang, names);
+    if rendered != value && !targets.iter().any(|target: &&str| *target == rendered) {
+        return None;
+    }
+    let mut expression: String = value.to_owned();
+    for target in targets {
+        expression = format!("{target} = {expression}");
+    }
+    Some(Expr::Raw(format!("({expression})")))
+}
+
 pub(crate) fn lift_block_with_entry<N: TokenNamer>(
     namer: &N,
     names: &NameTable,
