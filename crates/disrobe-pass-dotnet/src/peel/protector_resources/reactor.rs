@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cil::{
-    FlowControl, Instruction, MethodBody, OperandValue, method_body_code_size, method_body_extent,
-    parse_method_body,
+    FlowControl, Instruction, MethodBody, OperandValue, SlotOp, method_body_code_size,
+    method_body_extent, parse_method_body, slot_index_of,
 };
 use crate::metadata::{MetadataRoot, StreamHeader, parse_metadata_root, parse_table_stream};
 use crate::model::{MethodModel, Resolver, TypeModel};
@@ -2959,34 +2959,15 @@ fn reactor_local_types(
 }
 
 fn local_load_index(instruction: &Instruction) -> Option<u16> {
-    local_index(instruction, "ldloc")
+    slot_index_of(instruction, SlotOp::LoadLocal)
 }
 
 fn local_store_index(instruction: &Instruction) -> Option<u16> {
-    local_index(instruction, "stloc")
+    slot_index_of(instruction, SlotOp::StoreLocal)
 }
 
 fn local_address_index(instruction: &Instruction) -> Option<u16> {
-    local_index(instruction, "ldloca")
-}
-
-fn local_index(instruction: &Instruction, base: &str) -> Option<u16> {
-    let suffix: &str = instruction.name.strip_prefix(base)?;
-    match suffix {
-        "" => match instruction.operand {
-            OperandValue::U16(value) => Some(value),
-            _ => None,
-        },
-        ".s" => match instruction.operand {
-            OperandValue::U8(value) => Some(u16::from(value)),
-            _ => None,
-        },
-        ".0" => Some(0),
-        ".1" => Some(1),
-        ".2" => Some(2),
-        ".3" => Some(3),
-        _ => None,
-    }
+    slot_index_of(instruction, SlotOp::LocalAddress)
 }
 
 const fn token_table(token: u32) -> Option<TableId> {

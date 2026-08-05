@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::cil::{Instruction, OperandValue};
+use crate::cil::{Instruction, OperandValue, SlotAccess, SlotDecodeError, decode_slot};
 
 use super::blocks::{BlockGraph, Dispatcher, absolute_target, int_literal};
 
@@ -30,6 +30,7 @@ pub enum ResolveError {
     StackUnderflow,
     NoBackEdge,
     UnresolvedKey,
+    UndecodableSlot,
     BadShape,
 }
 
@@ -198,7 +199,7 @@ pub fn resolve_header_key(
         if is_conditional_branch(name) || is_terminal(name) || name == "switch" {
             return None;
         }
-        step_data(&mut interp, ins);
+        step_data(&mut interp, ins).ok()?;
         idx += 1;
     }
     match interp.stack.last().copied() {
@@ -291,7 +292,7 @@ fn run_segment(
             let target: Target = interp.target_at_index(index_value)?;
             return Ok(Successors::One(target));
         }
-        step_data(interp, ins);
+        step_data(interp, ins)?;
         idx += 1;
     }
 }
@@ -395,7 +396,7 @@ fn run_key_path(
         if !in_header && (is_terminal(name) || is_conditional_branch(name)) {
             return Err(ResolveError::BadShape);
         }
-        step_data(&mut interp, ins);
+        step_data(&mut interp, ins)?;
         idx += 1;
     }
 }
@@ -423,11 +424,11 @@ fn ins_index(instrs: &[Instruction], offset: u32) -> Option<usize> {
         .ok()
 }
 
-fn step_data(interp: &mut Interp<'_>, ins: &Instruction) {
+fn step_data(interp: &mut Interp<'_>, ins: &Instruction) -> Result<(), ResolveError> {
     let name: &str = ins.name.as_str();
     if let Some(v) = int_literal(ins) {
         interp.stack.push(Sym::Const(v));
-        return;
+        return Ok(());
     }
     match name {
         "nop" | "break" | "conv.i4" | "conv.u4" | "conv.i" | "conv.u" | "conv.u2" | "conv.i2"
@@ -443,7 +444,7 @@ fn step_data(interp: &mut Interp<'_>, ins: &Instruction) {
             apply_call(interp, ins);
         }
         n if n.starts_with("ldloc") => {
-            let slot: u32 = local_slot(ins, n);
+            let slot: u32 = decoded_slot(ins)?;
             let value: Sym = interp.load_local(slot);
             interp.stack.push(value);
         }
@@ -491,7 +492,7 @@ fn step_data(interp: &mut Interp<'_>, ins: &Instruction) {
             interp.stack.push(Sym::Opaque);
         }
         n if n.starts_with("stloc") => {
-            let slot: u32 = local_slot(ins, n);
+            let slot: u32 = decoded_slot(ins)?;
             let v: Sym = interp.stack.pop().unwrap_or(Sym::Opaque);
             interp.store_local(slot, v);
         }
@@ -518,6 +519,7 @@ fn step_data(interp: &mut Interp<'_>, ins: &Instruction) {
             interp.stack.push(Sym::Opaque);
         }
     }
+    Ok(())
 }
 
 fn apply_call(interp: &mut Interp<'_>, ins: &Instruction) {
@@ -532,17 +534,10 @@ fn apply_call(interp: &mut Interp<'_>, ins: &Instruction) {
     interp.stack.push(folded);
 }
 
-fn local_slot(ins: &Instruction, name: &str) -> u32 {
-    if let Some(rest) = name.rsplit('.').next()
-        && let Ok(n) = rest.parse::<u32>()
-    {
-        return n;
-    }
-    match ins.operand {
-        OperandValue::U8(b) => u32::from(b),
-        OperandValue::U16(v) => u32::from(v),
-        _ => u32::MAX,
-    }
+fn decoded_slot(ins: &Instruction) -> Result<u32, ResolveError> {
+    decode_slot(ins)
+        .map(|access: SlotAccess| u32::from(access.index))
+        .map_err(|_: SlotDecodeError| ResolveError::UndecodableSlot)
 }
 
 const fn lower_sym(s: Sym, state: i64) -> Option<i64> {
@@ -576,5 +571,97 @@ mod tests {
         assert!(!is_conditional_branch("br"));
         assert!(is_unconditional_branch("br.s"));
         assert!(is_terminal("ret"));
+    }
+
+    fn ins(offset: u32, name: &str, operand: OperandValue) -> Instruction {
+        Instruction {
+            offset,
+            opcode: 0,
+            name: name.to_owned(),
+            operand,
+            flow: crate::cil::FlowControl::Next,
+        }
+    }
+
+    fn single_block_graph(instrs: &[Instruction]) -> BlockGraph {
+        BlockGraph {
+            blocks: vec![super::super::blocks::Block {
+                start: 0,
+                first: 0,
+                last: instrs.len().saturating_sub(1),
+            }],
+            start_to_block: BTreeMap::new(),
+            dispatcher: Dispatcher {
+                state_local: 0,
+                case_count: 1,
+                switch_index: 0,
+                switch_targets: vec![0],
+                header_entry: u32::MAX,
+            },
+        }
+    }
+
+    fn resolve_only_block(instrs: &[Instruction]) -> Result<Successors, ResolveError> {
+        let graph: BlockGraph = single_block_graph(instrs);
+        resolve_block(
+            &graph,
+            &NoOracle,
+            instrs,
+            u32::try_from(instrs.len()).unwrap_or(u32::MAX),
+            0,
+            instrs.len() - 1,
+            0,
+        )
+    }
+
+    #[test]
+    fn a_negative_load_operand_abstains_instead_of_reading_slot_zero() {
+        let instrs: Vec<Instruction> = vec![
+            ins(0, "ldloc", OperandValue::I32(-1)),
+            ins(1, "ret", OperandValue::None),
+        ];
+        assert_eq!(
+            resolve_only_block(&instrs),
+            Err(ResolveError::UndecodableSlot)
+        );
+    }
+
+    #[test]
+    fn a_negative_store_operand_abstains_instead_of_writing_slot_zero() {
+        let instrs: Vec<Instruction> = vec![
+            ins(0, "ldc.i4.5", OperandValue::None),
+            ins(1, "stloc", OperandValue::I32(-1)),
+            ins(2, "ret", OperandValue::None),
+        ];
+        assert_eq!(
+            resolve_only_block(&instrs),
+            Err(ResolveError::UndecodableSlot)
+        );
+    }
+
+    #[test]
+    fn every_encodable_local_form_still_resolves() {
+        for (name, operand, slot) in [
+            ("ldloc.0", OperandValue::None, 0_u32),
+            ("ldloc.3", OperandValue::None, 3),
+            ("ldloc.s", OperandValue::U8(255), 255),
+            ("ldloc", OperandValue::U16(65535), 65535),
+        ] {
+            let instrs: Vec<Instruction> =
+                vec![ins(0, name, operand), ins(1, "ret", OperandValue::None)];
+            let graph: BlockGraph = single_block_graph(&instrs);
+            let mut interp: Interp<'_> = Interp::new(&graph, &NoOracle, 7);
+            interp.locals.insert(slot, Sym::Const(i64::from(slot) + 1));
+            assert_eq!(
+                step_data(&mut interp, &instrs[0]),
+                Ok(()),
+                "{name} must decode"
+            );
+            assert_eq!(
+                interp.stack.last().copied(),
+                Some(Sym::Const(i64::from(slot) + 1)),
+                "{name} must read slot {slot}"
+            );
+        }
     }
 }
