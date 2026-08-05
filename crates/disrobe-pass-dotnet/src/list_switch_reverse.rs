@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cfg::{BlockId, Cfg, Terminator};
-use crate::cil::{FlowControl, Instruction, MethodBody, OperandValue};
+use crate::cil::{FlowControl, Instruction, MethodBody, OperandValue, SlotOp, slot_index_of};
 use crate::names::NameTable;
 use crate::structurize::{TargetLang, TokenNamer, csharp_string_literal};
 
@@ -835,45 +835,15 @@ fn is_noise(name: &str) -> bool {
 }
 
 fn ldarg_slot(ins: &Instruction) -> Option<u32> {
-    match ins.name.as_str() {
-        "ldarg.0" => Some(0),
-        "ldarg.1" => Some(1),
-        "ldarg.2" => Some(2),
-        "ldarg.3" => Some(3),
-        "ldarg" | "ldarg.s" => operand_index(ins),
-        _ => None,
-    }
+    slot_index_of(ins, SlotOp::LoadArgument).map(u32::from)
 }
 
 fn ldloc_slot(ins: &Instruction) -> Option<u32> {
-    match ins.name.as_str() {
-        "ldloc.0" => Some(0),
-        "ldloc.1" => Some(1),
-        "ldloc.2" => Some(2),
-        "ldloc.3" => Some(3),
-        "ldloc" | "ldloc.s" => operand_index(ins),
-        _ => None,
-    }
+    slot_index_of(ins, SlotOp::LoadLocal).map(u32::from)
 }
 
 fn stloc_slot(ins: &Instruction) -> Option<u32> {
-    match ins.name.as_str() {
-        "stloc.0" => Some(0),
-        "stloc.1" => Some(1),
-        "stloc.2" => Some(2),
-        "stloc.3" => Some(3),
-        "stloc" | "stloc.s" => operand_index(ins),
-        _ => None,
-    }
-}
-
-fn operand_index(ins: &Instruction) -> Option<u32> {
-    match ins.operand {
-        OperandValue::U8(v) => Some(u32::from(v)),
-        OperandValue::U16(v) => Some(u32::from(v)),
-        OperandValue::I32(v) => u32::try_from(v).ok(),
-        _ => None,
-    }
+    slot_index_of(ins, SlotOp::StoreLocal).map(u32::from)
 }
 
 fn int_const(ins: &Instruction, name: &str) -> i64 {
@@ -892,4 +862,87 @@ fn int_const(ins: &Instruction, name: &str) -> i64 {
         return i64::from(v);
     }
     0
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn slot_ins(name: &str, operand: OperandValue) -> Instruction {
+        Instruction {
+            offset: 0,
+            opcode: 0,
+            name: name.to_owned(),
+            operand,
+            flow: FlowControl::Next,
+        }
+    }
+
+    #[test]
+    fn subject_slots_read_every_encodable_form() {
+        assert_eq!(
+            ldarg_slot(&slot_ins("ldarg.2", OperandValue::None)),
+            Some(2)
+        );
+        assert_eq!(
+            ldarg_slot(&slot_ins("ldarg.s", OperandValue::U8(9))),
+            Some(9)
+        );
+        assert_eq!(
+            ldarg_slot(&slot_ins("ldarg", OperandValue::U16(300))),
+            Some(300)
+        );
+        assert_eq!(
+            ldloc_slot(&slot_ins("ldloc.3", OperandValue::None)),
+            Some(3)
+        );
+        assert_eq!(
+            ldloc_slot(&slot_ins("ldloc", OperandValue::U16(65_535))),
+            Some(65_535)
+        );
+        assert_eq!(
+            stloc_slot(&slot_ins("stloc.0", OperandValue::None)),
+            Some(0)
+        );
+        assert_eq!(
+            stloc_slot(&slot_ins("stloc.s", OperandValue::U8(255))),
+            Some(255)
+        );
+    }
+
+    #[test]
+    fn subject_slots_reject_an_operand_they_cannot_read_rather_than_reading_slot_zero() {
+        for operand in [
+            OperandValue::None,
+            OperandValue::I32(-1),
+            OperandValue::I32(5),
+            OperandValue::I64(1),
+            OperandValue::Token(0x0A00_0001),
+        ] {
+            assert_eq!(
+                ldarg_slot(&slot_ins("ldarg.s", operand.clone())),
+                None,
+                "{operand:?}"
+            );
+            assert_eq!(
+                ldloc_slot(&slot_ins("ldloc", operand.clone())),
+                None,
+                "{operand:?}"
+            );
+            assert_eq!(
+                stloc_slot(&slot_ins("stloc", operand.clone())),
+                None,
+                "{operand:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn subject_slots_do_not_cross_access_kinds() {
+        let load: Instruction = slot_ins("ldloc.s", OperandValue::U8(4));
+        assert_eq!(ldarg_slot(&load), None);
+        assert_eq!(stloc_slot(&load), None);
+        assert_eq!(ldloc_slot(&slot_ins("ldloca.s", OperandValue::U8(4))), None);
+    }
 }
