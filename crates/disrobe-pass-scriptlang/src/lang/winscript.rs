@@ -252,17 +252,32 @@ fn has_ps_var_assignment(lower: &str) -> bool {
 }
 
 fn is_vbscript(lower: &str) -> bool {
-    const MARKERS: &[&str] = &[
+    const STRONG: &[&str] = &[
         "createobject",
         "wscript.",
-        "dim ",
-        "set ",
         "executeglobal",
         "chrw(",
         "msgbox",
         "vbscript",
     ];
-    MARKERS.iter().any(|m: &&str| lower.contains(m))
+    const WEAK: &[&str] = &["dim ", "set ", "redim ", "end sub", "end function"];
+    if STRONG.iter().any(|m: &&str| lower.contains(m)) {
+        return true;
+    }
+    let weak_hits: usize = WEAK.iter().filter(|m: &&&str| lower.contains(**m)).count();
+    weak_hits >= 2 && has_vbscript_statement_shape(lower)
+}
+
+fn has_vbscript_statement_shape(lower: &str) -> bool {
+    lower.lines().any(|line: &str| {
+        let trimmed: &str = line.trim_start();
+        trimmed.starts_with("dim ")
+            || trimmed.starts_with("redim ")
+            || trimmed.starts_with("set ")
+            || trimmed.starts_with("sub ")
+            || trimmed.starts_with("function ")
+            || trimmed.starts_with("call ")
+    })
 }
 
 fn is_batch(lower: &str) -> bool {
@@ -275,7 +290,20 @@ fn is_batch(lower: &str) -> bool {
         "if exist ",
         "for /f ",
     ];
-    MARKERS.iter().any(|m: &&str| lower.contains(m)) || lower.contains('^')
+    MARKERS.iter().any(|m: &&str| lower.contains(m)) || has_caret_escape(lower)
+}
+
+fn has_caret_escape(lower: &str) -> bool {
+    const ESCAPABLE: &[u8] = b"^&|<>()\"%";
+    lower.lines().any(|line: &str| {
+        let bytes: &[u8] = line.as_bytes();
+        if bytes.last().is_some_and(|b: &u8| *b == b'^') {
+            return true;
+        }
+        bytes
+            .windows(2)
+            .any(|w: &[u8]| w[0] == b'^' && ESCAPABLE.contains(&w[1]))
+    })
 }
 
 #[must_use]
@@ -1747,6 +1775,48 @@ mod tests {
     #[test]
     fn classify_rejects_plain() {
         assert!(classify("the quick brown fox jumps over").is_none());
+    }
+
+    #[test]
+    fn classify_rejects_python_carrying_batch_and_vbscript_substrings() {
+        const PYTHON: &str = "import os\n\
+             def mix(a: int, b: int) -> int:\n\
+                 return a ^ b\n\
+             \n\
+             def build() -> set[str]:\n\
+                 seen = set()\n\
+                 for dim in (1, 2, 3):\n\
+                     seen.add(f\"dim {dim}\")\n\
+                 return seen\n\
+             \n\
+             print(mix(3, 5))\n";
+        assert_eq!(
+            classify(PYTHON),
+            None,
+            "python source carrying a xor caret and the dim and set substrings must not be claimed as a windows script"
+        );
+    }
+
+    #[test]
+    fn classify_still_claims_caret_escaped_batch() {
+        const ESCAPED: &str = "echo hello ^& echo world\r\n";
+        const CONTINUED: &str = "copy a.txt ^\r\n  b.txt\r\n";
+        assert_eq!(classify(ESCAPED), Some(WinScriptLang::Batch));
+        assert_eq!(classify(CONTINUED), Some(WinScriptLang::Batch));
+    }
+
+    #[test]
+    fn classify_still_claims_vbscript_declaring_variables() {
+        const VBS: &str = "Dim shell\r\nSet shell = CreateObject(\"WScript.Shell\")\r\n";
+        const NO_STRONG_MARKER: &str = "Dim total\r\nSet total = 0\r\nRedim buffer(4)\r\n";
+        assert_eq!(classify(VBS), Some(WinScriptLang::VbScript));
+        assert_eq!(classify(NO_STRONG_MARKER), Some(WinScriptLang::VbScript));
+    }
+
+    #[test]
+    fn classify_rejects_prose_mentioning_dim_and_set() {
+        const PROSE: &str = "The set of dim lights was reduced, and the set grew smaller.\n";
+        assert_eq!(classify(PROSE), None);
     }
 
     #[test]

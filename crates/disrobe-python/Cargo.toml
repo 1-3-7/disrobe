@@ -74,6 +74,7 @@ disrobe-passes = { workspace = true, features = [
     "beam",
     "as3",
     "nativelang",
+    "scriptlang",
 ] }
 disrobe-query = { workspace = true }
 

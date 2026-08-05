@@ -55,6 +55,7 @@ chain = [
     "disrobe-passes/beam",
     "disrobe-passes/as3",
     "disrobe-passes/nativelang",
+    "disrobe-passes/scriptlang",
 ]
 
 [dependencies]
