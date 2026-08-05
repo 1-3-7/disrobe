@@ -1,11 +1,14 @@
 use disrobe_lift_x86::decode_block_x86;
 use disrobe_nir::NirFunction;
 use disrobe_sleigh::lifter::{ArmMode, DecodedBlock, Language, decode_block_for_language};
+use disrobe_sleigh::pcode::{DecodeStatus, PcodeInstr};
 use disrobe_sleigh::syntax::Endian;
 
 use crate::error::{LiftError, Result};
 
 use super::{PcodeLiftConfig, lower_pcode_block};
+
+const MAX_REPORTED_GAPS: usize = 4096;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
@@ -18,11 +21,17 @@ pub enum PcodeArch {
     Mips32Le,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Decoder {
+    X86_64,
+    Sleigh(Language),
+}
+
 #[derive(Debug)]
 struct ArchEntry {
     arch: PcodeArch,
     label: &'static str,
-    decode: fn(&[u8], u64) -> DecodedBlock,
+    decoder: Decoder,
     config: fn() -> Result<PcodeLiftConfig>,
 }
 
@@ -30,38 +39,38 @@ const ARCHITECTURES: [ArchEntry; 6] = [
     ArchEntry {
         arch: PcodeArch::X86_64,
         label: "x86-64",
-        decode: decode_x86_64,
-        config: config_x86_64,
+        decoder: Decoder::X86_64,
+        config: || Ok(PcodeLiftConfig::x86_64()),
     },
     ArchEntry {
         arch: PcodeArch::AArch64,
         label: "aarch64",
-        decode: decode_aarch64,
-        config: config_aarch64,
+        decoder: Decoder::Sleigh(Language::AArch64),
+        config: || Ok(PcodeLiftConfig::aarch64()),
     },
     ArchEntry {
         arch: PcodeArch::Arm32A32,
         label: "arm32-a32",
-        decode: decode_arm32_a32,
+        decoder: Decoder::Sleigh(Language::Arm32(ArmMode::A32)),
         config: PcodeLiftConfig::arm32,
     },
     ArchEntry {
         arch: PcodeArch::Arm32Thumb,
         label: "arm32-thumb",
-        decode: decode_arm32_thumb,
+        decoder: Decoder::Sleigh(Language::Arm32(ArmMode::Thumb)),
         config: PcodeLiftConfig::arm32,
     },
     ArchEntry {
         arch: PcodeArch::Mips32Be,
         label: "mips32-be",
-        decode: decode_mips32_be,
-        config: config_mips32_be,
+        decoder: Decoder::Sleigh(Language::Mips32(Endian::Big)),
+        config: || PcodeLiftConfig::mips32(Endian::Big),
     },
     ArchEntry {
         arch: PcodeArch::Mips32Le,
         label: "mips32-le",
-        decode: decode_mips32_le,
-        config: config_mips32_le,
+        decoder: Decoder::Sleigh(Language::Mips32(Endian::Little)),
+        config: || PcodeLiftConfig::mips32(Endian::Little),
     },
 ];
 
@@ -88,7 +97,10 @@ impl PcodeArch {
     }
 
     pub fn decode(self, bytes: &[u8], address: u64) -> Result<DecodedBlock> {
-        Ok((self.resolved_entry()?.decode)(bytes, address))
+        Ok(match self.resolved_entry()?.decoder {
+            Decoder::X86_64 => decode_block_x86(bytes, address, 64),
+            Decoder::Sleigh(language) => decode_block_for_language(language, bytes, address),
+        })
     }
 
     fn entry(self) -> Option<&'static ArchEntry> {
@@ -105,55 +117,55 @@ impl PcodeArch {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiftGap {
+    pub address: u64,
+    pub mnemonic: String,
+    pub status: DecodeStatus,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArchLift {
+    pub arch: PcodeArch,
+    pub function: NirFunction,
+    pub gaps: Vec<LiftGap>,
+    pub consumed: usize,
+}
+
+#[must_use]
+pub fn block_gaps(block: &DecodedBlock) -> Vec<LiftGap> {
+    block
+        .instructions
+        .iter()
+        .filter(|instruction: &&PcodeInstr| instruction.status != DecodeStatus::Supported)
+        .take(MAX_REPORTED_GAPS)
+        .map(|instruction: &PcodeInstr| LiftGap {
+            address: instruction.address,
+            mnemonic: instruction.mnemonic.clone(),
+            status: instruction.status,
+        })
+        .collect()
+}
+
+pub fn lower_arch(arch: PcodeArch, bytes: &[u8], address: u64, name: &str) -> Result<ArchLift> {
+    let config: PcodeLiftConfig = arch.config()?;
+    let block: DecodedBlock = arch.decode(bytes, address)?;
+    let gaps: Vec<LiftGap> = block_gaps(&block);
+    let consumed: usize = block.consumed;
+    let function: NirFunction = lower_pcode_block(&block, name, &config)?;
+    Ok(ArchLift {
+        arch,
+        function,
+        gaps,
+        consumed,
+    })
+}
+
 pub fn lower_for_arch(
     arch: PcodeArch,
     bytes: &[u8],
     address: u64,
     name: &str,
 ) -> Result<NirFunction> {
-    let block: DecodedBlock = arch.decode(bytes, address)?;
-    let config: PcodeLiftConfig = arch.config()?;
-    lower_pcode_block(&block, name, &config)
-}
-
-fn decode_x86_64(bytes: &[u8], address: u64) -> DecodedBlock {
-    decode_block_x86(bytes, address, 64)
-}
-
-fn decode_aarch64(bytes: &[u8], address: u64) -> DecodedBlock {
-    decode_block_for_language(Language::AArch64, bytes, address)
-}
-
-fn decode_arm32_a32(bytes: &[u8], address: u64) -> DecodedBlock {
-    decode_block_for_language(Language::Arm32(ArmMode::A32), bytes, address)
-}
-
-fn decode_arm32_thumb(bytes: &[u8], address: u64) -> DecodedBlock {
-    decode_block_for_language(Language::Arm32(ArmMode::Thumb), bytes, address)
-}
-
-fn decode_mips32_be(bytes: &[u8], address: u64) -> DecodedBlock {
-    decode_block_for_language(Language::Mips32(Endian::Big), bytes, address)
-}
-
-fn decode_mips32_le(bytes: &[u8], address: u64) -> DecodedBlock {
-    decode_block_for_language(Language::Mips32(Endian::Little), bytes, address)
-}
-
-#[allow(clippy::unnecessary_wraps)]
-fn config_x86_64() -> Result<PcodeLiftConfig> {
-    Ok(PcodeLiftConfig::x86_64())
-}
-
-#[allow(clippy::unnecessary_wraps)]
-fn config_aarch64() -> Result<PcodeLiftConfig> {
-    Ok(PcodeLiftConfig::aarch64())
-}
-
-fn config_mips32_be() -> Result<PcodeLiftConfig> {
-    PcodeLiftConfig::mips32(Endian::Big)
-}
-
-fn config_mips32_le() -> Result<PcodeLiftConfig> {
-    PcodeLiftConfig::mips32(Endian::Little)
+    lower_arch(arch, bytes, address, name).map(|lift: ArchLift| lift.function)
 }
