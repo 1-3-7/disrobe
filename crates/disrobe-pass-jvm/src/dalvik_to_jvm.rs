@@ -227,6 +227,16 @@ fn class_file_max_stack(observed: i32) -> Option<u16> {
     u16::try_from(observed.max(2)).ok()
 }
 
+const fn frame_delta(previous: Option<usize>, offset: usize) -> Option<usize> {
+    match previous {
+        None => Some(offset),
+        Some(prev) => match offset.checked_sub(prev) {
+            Some(gap) => gap.checked_sub(1),
+            None => None,
+        },
+    }
+}
+
 #[must_use]
 pub(crate) fn emit_method_code(
     dex: &DexFile,
@@ -2386,12 +2396,18 @@ impl Emitter<'_> {
         body.extend_from_slice(&frame_count.to_be_bytes());
         let mut prev: Option<usize> = None;
         for (offset, locals, stack) in &frames {
-            let delta: usize = match prev {
-                None => *offset,
-                Some(p) => offset.checked_sub(p)?.checked_sub(1)?,
+            let Some(delta): Option<usize> = frame_delta(prev, *offset) else {
+                #[cfg(any(test, feature = "lifter-diag"))]
+                record_bail_kind("stackmap-frame-order");
+                return None;
+            };
+            let Ok(delta16): Result<u16, _> = u16::try_from(delta) else {
+                #[cfg(any(test, feature = "lifter-diag"))]
+                record_bail_kind("stackmap-frame-delta-limit");
+                return None;
             };
             body.push(255);
-            body.extend_from_slice(&u16::try_from(delta).ok()?.to_be_bytes());
+            body.extend_from_slice(&delta16.to_be_bytes());
             let Ok(local_count): Result<u16, _> = u16::try_from(locals.len()) else {
                 #[cfg(any(test, feature = "lifter-diag"))]
                 record_bail_kind("stackmap-local-count-limit");
@@ -2413,10 +2429,15 @@ impl Emitter<'_> {
             prev = Some(*offset);
         }
 
+        let Ok(body_len): Result<u32, _> = u32::try_from(body.len()) else {
+            #[cfg(any(test, feature = "lifter-diag"))]
+            record_bail_kind("stackmap-attribute-limit");
+            return None;
+        };
         let name_idx: u16 = self.cp.utf8("StackMapTable");
         let mut attr: Vec<u8> = Vec::with_capacity(body.len() + 6);
         attr.extend_from_slice(&name_idx.to_be_bytes());
-        attr.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        attr.extend_from_slice(&body_len.to_be_bytes());
         attr.extend_from_slice(&body);
         Some(attr)
     }
@@ -2437,8 +2458,16 @@ impl Emitter<'_> {
             RegType::Long => out.push(4),
             RegType::UninitializedThis => out.push(6),
             RegType::Uninitialized(new_pc) => {
-                let &offset: &usize = jvm_off.get(new_pc)?;
-                let offset16: u16 = u16::try_from(offset).ok()?;
+                let Some(&offset): Option<&usize> = jvm_off.get(new_pc) else {
+                    #[cfg(any(test, feature = "lifter-diag"))]
+                    record_bail_kind("uninitialized-offset-unmapped");
+                    return None;
+                };
+                let Ok(offset16): Result<u16, _> = u16::try_from(offset) else {
+                    #[cfg(any(test, feature = "lifter-diag"))]
+                    record_bail_kind("uninitialized-offset-limit");
+                    return None;
+                };
                 out.push(8);
                 out.extend_from_slice(&offset16.to_be_bytes());
             }
@@ -4969,6 +4998,33 @@ mod tests {
              the code overruns it"
         );
         assert_eq!(class_file_max_stack(i32::MAX), None);
+    }
+
+    #[test]
+    fn a_frame_delta_is_the_gap_to_the_previous_frame_less_one_and_never_wraps() {
+        assert_eq!(frame_delta(None, 0), Some(0));
+        assert_eq!(frame_delta(None, 900), Some(900));
+        assert_eq!(frame_delta(Some(6), 7), Some(0));
+        assert_eq!(frame_delta(Some(6), 20), Some(13));
+        assert_eq!(
+            frame_delta(Some(6), 6),
+            None,
+            "two frames at one offset have no representable delta; subtracting one from a zero gap \
+             is what the deduplication before this loop exists to prevent"
+        );
+        assert_eq!(
+            frame_delta(Some(20), 6),
+            None,
+            "frames are sorted by offset before this loop, so a backwards pair means the order \
+             broke rather than that the method is oversized"
+        );
+        let wide_delta: usize = frame_delta(Some(4), 70_010).expect("the gap is forwards");
+        assert_eq!(wide_delta, 70_005);
+        assert!(
+            u16::try_from(wide_delta).is_err(),
+            "a delta past the class-file width has to be rejected rather than truncated to a small \
+             gap the verifier reads as a different offset"
+        );
     }
 
     #[test]
