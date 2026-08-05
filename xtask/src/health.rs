@@ -279,7 +279,9 @@ fn check_internal_versions(
             if !root.join(path).join("Cargo.toml").is_file() {
                 report.fail(
                     "path-dependency-missing",
-                    format!("[workspace.dependencies] {name} points at {path}, which has no Cargo.toml"),
+                    format!(
+                        "[workspace.dependencies] {name} points at {path}, which has no Cargo.toml"
+                    ),
                 );
             }
             continue;
@@ -362,9 +364,9 @@ fn is_consumed_outside_rust(doc: &toml::Value) -> bool {
         .and_then(|l: &toml::Value| l.get("crate-type"))
         .and_then(toml::Value::as_array)
         .is_some_and(|kinds: &Vec<toml::Value>| {
-            kinds.iter().any(|k: &toml::Value| {
-                matches!(k.as_str(), Some("cdylib" | "staticlib" | "dylib"))
-            })
+            kinds
+                .iter()
+                .any(|k: &toml::Value| matches!(k.as_str(), Some("cdylib" | "staticlib" | "dylib")))
         })
 }
 
@@ -424,10 +426,7 @@ fn check_unwired_members(
         if has_bin_target(root, dir, doc) || is_consumed_outside_rust(doc) {
             continue;
         }
-        if KNOWN_UNWIRED_CRATES
-            .iter()
-            .any(|(known, _)| known == name)
-        {
+        if KNOWN_UNWIRED_CRATES.iter().any(|(known, _)| known == name) {
             known_unwired += 1;
             continue;
         }
