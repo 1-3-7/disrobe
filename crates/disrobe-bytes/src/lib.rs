@@ -8,8 +8,9 @@ mod capacity;
 mod cstr;
 mod leb128;
 mod reader;
+mod section_map;
 
-pub use address::{AddressError, FileOffset, Rva, SectionMap, SectionSpan, Size, Va};
+pub use address::{AddressError, FileOffset, Rva, Size, Va};
 pub use align::{
     align_down_u32, align_down_u64, align_down_usize, align_up_u32, align_up_u64, align_up_usize,
 };
@@ -41,3 +42,4 @@ pub use cstr::{
 };
 pub use leb128::{LebError, read_sleb128_at, read_uleb128_at};
 pub use reader::{ByteReadError, ByteReader, sign_extend_24};
+pub use section_map::{SectionMap, SectionSpan};
