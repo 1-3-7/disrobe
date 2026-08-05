@@ -1,0 +1,105 @@
+title = "Ground-truth sources for the mixed-boolean-arithmetic corpus"
+note = """
+Every entry in cases.jsonl is a triple: an obfuscated expression, a held-out original in
+truth.jsonl, and metadata naming the source, the seed, the bit width and the variable count. The
+producing code lives under evidence/generators/mba and shares no crate with disrobe-mba, so a bug in
+the recovery path cannot hide inside the thing that grades it. cargo run -p xtask -- health proves
+that disjointness over the resolved dependency graph.
+Sources are ranked. A real external obfuscator outranks a public dataset, which outranks the
+in-house forward rewriter. The in-house rows exist for width and variable-count coverage and are
+regression evidence, not proof of capability.
+"""
+
+[[source]]
+id = "external-obfuscator"
+rank = 1
+kind = "third-party obfuscator run over originals we chose"
+tool = "MBA-Obfuscator (Liu, Zhu, Zhao, Yu, ICICS 2021)"
+upstream = "https://github.com/nhpcc502/MBA-Obfuscator"
+commit = "8574ef8537f884ed7bd38da7b7bc630e8e8fc8f6"
+licence = "MIT"
+reproduce = "uv run --python 3.12 --with z3-solver --with sympy --with numpy python evidence/generators/mba/fetch_external.py"
+raw_input = "evidence/corpus/mba/external/mba-obfuscator.jsonl"
+transforms = ["l", "p", "np_zero", "np_recur", "np_replace"]
+widths = [8, 64]
+note = """
+The originals are twelve integer kernels this repository chose; the obfuscated forms are whatever the
+upstream tool emitted, so the ground truth is not disrobe-authored. Three-variable kernels exceeded a
+90 second per-case budget upstream and were skipped rather than waited out, which is why the kept set
+is fifty tool rows rather than sixty.
+"""
+
+[[source]]
+id = "public-dataset"
+rank = 2
+kind = "published datasets that ship their originals"
+reproduce = "python evidence/generators/mba/fetch_datasets.py && ./target/release/disrobe-evidence-mba datasets --input target/mba-datasets --out target/mba-dataset-corpus"
+note = """
+These files are fetched at a pinned sha256 and are never committed, because none of them carries a
+licence this repository may redistribute under. The fetch script holds the pins, the ingest path is
+the same one the committed sources use, and every pair is re-verified as an identity before it is
+accepted.
+"""
+
+[[source.file]]
+name = "mba-blast-dataset1.txt"
+dataset = "MBA-Blast (Liu, Zhu, Zhao, Yu, USENIX Security 2021)"
+sha256 = "f7e03e345f6464ca5e7f9cb0077761cddb9b463d0841b68be3ded2f8ca89120c"
+licence = "none published upstream"
+
+[[source.file]]
+name = "mba-solver-linear.txt"
+dataset = "MBA-Solver linear set"
+sha256 = "393f1d38eefc8c8a2a20a903e5365029709de67bda03915108df5caf0a4018bf"
+licence = "GPL-3.0"
+
+[[source.file]]
+name = "mba-solver-poly.txt"
+dataset = "MBA-Solver polynomial set"
+sha256 = "44742af8dc522f5200cf2b73976cbcea064b8d362707ee22671127358f345e5f"
+licence = "GPL-3.0"
+
+[[source.file]]
+name = "mba-solver-nonpoly.txt"
+dataset = "MBA-Solver non-polynomial set"
+sha256 = "752271469a742963b412f0ee851f8d126277d6430cc761fd45c76a9c9bf087b3"
+licence = "GPL-3.0"
+
+[[source.file]]
+name = "loki-add-depth1.txt"
+dataset = "Loki MBA formula set (Schloegel et al., USENIX Security 2022), addition at depth 1"
+sha256 = "f346a23d7f05203fee4b7043a2c3d4e5c269c1690bd6f4f64a728c7bef6e691d"
+licence = "AGPL-3.0"
+
+[[source.file]]
+name = "loki-add-depth2.txt"
+dataset = "Loki MBA formula set, addition at depth 2"
+sha256 = "22377511aafce2a73a473ebe608fb2bf55f38ec313621e7d6c64506302ce2185"
+licence = "AGPL-3.0"
+
+[[source]]
+id = "in-house"
+rank = 3
+kind = "forward rewriter written from the published identity tables"
+reproduce = "cargo run -p disrobe-evidence-mba -- generate --root ."
+widths = [2, 4, 8, 16, 32, 64]
+families = ["linear", "polynomial", "mixed"]
+note = """
+Eighteen kernels over one to eight variables, expanded by a rewriter that applies two-variable
+boolean-arithmetic identities from Zhou, Main, Gu and Johnson (WISA 2007) and Warren, Hacker's
+Delight. Every expansion is re-checked against the original before it is kept: exhaustively when the
+input space is at most twenty bits, otherwise over structured plus four thousand seeded vectors.
+This source proves regression, never capability, because the rewriter and the recovery path both
+draw on the same published identities even though they share no code.
+"""
+
+[unattempted]
+note = """
+Two stronger sources were attempted and did not land this round.
+Tigress is gated behind a registration form asking for a name, an institution and an email address,
+followed by a licence acceptance step, so it cannot be automated and needs the owner to register.
+o-mvll ships prebuilt plugins for Linux and macOS only; the Windows Subsystem for Linux on this
+machine reports HCS_E_SERVICE_NOT_AVAILABLE because the virtual machine platform feature is not
+installed, so the Linux plugin cannot run here. obfuscator-llvm is source only and needs a full LLVM
+build, which does not fit the disk ceiling this workspace runs under.
+"""

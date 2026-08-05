@@ -15,10 +15,6 @@ const NON_MEMBER_CRATE_ALLOWLIST: &[(&str, &str)] = &[(
 
 const KNOWN_UNWIRED_CRATES: &[(&str, &str)] = &[
     (
-        "disrobe-irsummary",
-        "summarizes lifted Mir-rung IR; no consumer has been written yet, tracked as a wiring item",
-    ),
-    (
         "disrobe-plugin-host",
         "the wasmtime plugin sandbox is complete and tested but the CLI cannot dispatch a plugin pass yet, tracked as a wiring item",
     ),
@@ -87,6 +83,7 @@ pub(crate) fn run(root: &Path, as_json: bool) -> Result<()> {
     );
     check_unused_workspace_deps(root, &root_doc, &member_manifests, &mut report);
     check_unwired_members(root, &member_manifests, &mut report);
+    check_generator_disjointness(root, &mut report);
 
     report.fact("workspace_members", json!(members.len()));
     report.fact("crate_directories", json!(crate_dirs.len()));
@@ -122,6 +119,45 @@ pub(crate) fn run(root: &Path, as_json: bool) -> Result<()> {
         "xtask health: {} coherence failure(s):\n  {rendered}",
         report.findings.len()
     )
+}
+
+fn check_generator_disjointness(root: &Path, report: &mut Report) {
+    const CHECK: &str = "corpus-generator-disjointness";
+    let verdicts: Vec<crate::graph_disjointness::Verdict> =
+        match crate::graph_disjointness::audit(root) {
+            Ok(found) => found,
+            Err(error) => {
+                report.fail(
+                    CHECK,
+                    format!("could not resolve the dependency graph: {error}"),
+                );
+                return;
+            }
+        };
+    let mut audited: Vec<Value> = Vec::with_capacity(verdicts.len());
+    for verdict in &verdicts {
+        let linked: Vec<String> = verdict
+            .linked_recovery_packages
+            .iter()
+            .cloned()
+            .collect::<Vec<String>>();
+        if !linked.is_empty() {
+            report.fail(
+                CHECK,
+                format!(
+                    "{} resolves to the recovery package(s) it grades: {}",
+                    verdict.generator,
+                    linked.join(", ")
+                ),
+            );
+        }
+        audited.push(json!({
+            "generator": verdict.generator,
+            "resolved_dependencies": verdict.resolved_dependencies,
+            "linked_recovery_packages": linked,
+        }));
+    }
+    report.fact("corpus_generators", json!(audited));
 }
 
 fn workspace_members(root_doc: &toml::Value) -> BTreeSet<String> {

@@ -1898,6 +1898,7 @@ dependencies = [
  "disrobe-capabilities",
  "disrobe-core",
  "disrobe-ir",
+ "disrobe-irsummary",
  "disrobe-llm-metadata",
  "disrobe-mba",
  "disrobe-mcp",
@@ -2035,6 +2036,15 @@ dependencies = [
  "proptest",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "disrobe-evidence-mba"
+version = "0.10.4"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2809,6 +2819,7 @@ dependencies = [
  "disrobe-py-marshal",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "toml 0.9.12+spec-1.1.0",
  "walkdir",

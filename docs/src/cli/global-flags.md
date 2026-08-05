@@ -38,7 +38,7 @@ This does not change scanner output: `scan` and `frisk` report full matched valu
 
 ## Metadata sidecar flags
 
-The metadata bundle flags are also global. See [metadata sidecar and provenance](../llm-sidecar.md) for the complete pack/category model. Summary:
+The metadata bundle flags are also global. They are accepted everywhere, but only the commands listed in [which commands write a bundle](../llm-sidecar.md#which-commands-write-a-bundle) act on them; every other subcommand ignores them, and `disrobe auto` rejects them with `DR-CLI-0843`. See [metadata sidecar and provenance](../llm-sidecar.md) for the complete pack/category model. Summary:
 
 | Flag | Effect |
 |---|---|

@@ -300,14 +300,28 @@ fn detection_oracle_floor_holds() {
 fn differential_oracle_recovers_obfuscated_python() {
     let sample: Vec<ResolvedFixture> = build_sample();
     let results: Vec<OracleResult> = run_sample(&sample);
+    let compared: usize = results
+        .iter()
+        .filter(|r: &&OracleResult| {
+            r.oracle == OracleKind::DifferentialVsSource && r.baseline_rel.is_some()
+        })
+        .count();
+    assert!(
+        compared > 0,
+        "the differential population must hold at least one fixture with a clean-source baseline. \
+         Without one, every fixture reports ungraded, the denominator empties, and this gate would \
+         pass while comparing nothing"
+    );
     let circ: CircularityReport = scan_circularity(&real_tree_scan_roots());
     let report: PlaygroundReport = PlaygroundReport::from_results(results, circ.count(), 1);
     let diff = report
         .row(OracleKind::DifferentialVsSource)
         .expect("differential row present");
     assert!(
-        diff.evaluated > 0,
-        "differential oracle must evaluate fixtures"
+        diff.evaluated >= u32::try_from(compared).unwrap_or(u32::MAX),
+        "every fixture carrying a baseline must reach the denominator: {} carry one, {} evaluated",
+        compared,
+        diff.evaluated
     );
     assert_eq!(
         diff.recovered, diff.evaluated,
@@ -419,7 +433,11 @@ fn pinned_fixtures_are_git_tracked_so_ci_matches_local() {
         (
             TRACKED_DIFFERENTIAL_PINS[1],
             OracleKind::DifferentialVsSource,
-            OracleVerdict::Recovered,
+            OracleVerdict::Ungraded {
+                reason: disrobe_playground::oracle::ungraded_differential_reason(
+                    TRACKED_DIFFERENTIAL_PINS[1],
+                ),
+            },
         ),
     ];
     for (id, kind, expected) in pins {

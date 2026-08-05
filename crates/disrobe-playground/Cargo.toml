@@ -73,6 +73,7 @@ disrobe-pass-as3 = { workspace = true }
 disrobe-passes = { workspace = true, optional = true }
 disrobe-py-marshal = { workspace = true }
 blake3 = { workspace = true }
+sha2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }

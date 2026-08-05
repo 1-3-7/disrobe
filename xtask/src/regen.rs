@@ -48,6 +48,12 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         &mut stale,
     )?;
     run_one(
+        "fuzz-surface",
+        check,
+        || crate::fuzz_surface::run(root, check),
+        &mut stale,
+    )?;
+    run_one(
         "tiered-results",
         check,
         || crate::evidence_tiers::run(root),

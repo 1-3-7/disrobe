@@ -40,6 +40,48 @@ Every measured value is read from `xtask/data/recovery.json`; the harness never 
 or rounds a number. recovery.json is itself sourced per-value from a committed test gate or a local
 measurement harness (the `source` field cites the exact `file:line`).
 
+## Ground-truth corpora (`corpus/`)
+
+A descriptor proves a number is reproducible. It does not prove the number was measured against
+something the tool did not produce itself. `evidence/corpus/` closes that gap for the families where
+no external tool grades us: every entry is a triple of an obfuscated input, an original held in a
+separate file, and metadata naming the source, the seed, the bit width and the variable count.
+
+The rule that makes it worth having: **the code that produces a case shares no crate with the code
+that recovers it.** `evidence/generators/` holds its own expression model, parser, evaluator and
+forward rewriter. `cargo run -p xtask -- health` resolves the dependency graph and fails if a
+generator links a recovery crate, so this cannot rot into a shared identity table where one bug
+hides another.
+
+Sources are ranked, and each entry records which one produced it. A real external obfuscator over an
+original we chose outranks a published dataset that ships its originals, which outranks the in-house
+rewriter. The last of those is width and variable-count coverage, and is regression evidence rather
+than proof of capability. `evidence/corpus/<family>/sources.toml` names the tool, the pinned commit
+or sha256, and the licence for each.
+
+The corpus has teeth only if a wrong answer fails it, so the gate proves that every run: it grades a
+deliberately unsound recovery alongside the real one and asserts the unsound one is rejected and
+named. It also asserts a floor on how many entries were actually graded, so a run that refuses its
+budget on nearly everything cannot pass by grading nothing.
+
+Present families:
+
+| Family | Entries | Sources | Gate |
+|---|---|---|---|
+| Mixed boolean arithmetic | 316 committed | MBA-Obfuscator (100), in-house rewriter (216) | `cargo test -p disrobe-mba --test evidence_corpus_gate` |
+
+A published dataset lane runs beside the committed one. MBA-Blast, MBA-Solver and Loki ship their
+originals, but none carries a licence this repository may redistribute, so the bytes are fetched at a
+pinned sha256 into `target/` rather than committed. Populate and run it with:
+
+```sh
+python evidence/generators/mba/fetch_datasets.py
+cargo run -p disrobe-evidence-mba --release -- datasets --input target/mba-datasets --out target/mba-dataset-corpus
+DISROBE_MBA_DATASET_CORPUS=$PWD/target/mba-dataset-corpus cargo test -p disrobe-mba --test evidence_dataset_gate
+```
+
+That lane is a `[local]` figure and is never presented as CI-attested.
+
 ## Dependency boundary (two disjoint sets)
 
 These are deliberately separate. The product needs the first set; only the evidence and oracle

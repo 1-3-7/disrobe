@@ -4,25 +4,33 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use disrobe_binfmt::containers::{
-    DmgSummary, VhdImage, VhdxImage, WimArchive, cab_uses_lzms, carve_elf_overlay,
-    carve_wim_resources, detect_apfs, detect_ar, detect_blazor_boot, detect_btrfs_send, detect_bun,
-    detect_cramfs, detect_cython, detect_dmg, detect_dotnet_bundle, detect_elf_overlay,
-    detect_erofs, detect_eszip, detect_ext4, detect_fat, detect_firmware, detect_flatpak_bundle,
-    detect_gzip, detect_hfsplus, detect_innosetup, detect_installshield, detect_iso, detect_jffs2,
-    detect_minidump, detect_minixfs, detect_nsis, detect_ntfs, detect_par2, detect_partclone,
-    detect_qnx, detect_romfs, detect_snap, detect_sparse, detect_squirrel, detect_stuffit,
-    detect_ubi, detect_ubifs, detect_uefi_fv, detect_unityfs, detect_xar, detect_yaffs2,
-    elf_image_end, extract_cab_lzms, extract_flatpak_bundle, extract_uefi_fv,
-    locate_embedded_nupkg, locate_hfsplus_volumes, minidump_extent, parse_apfs, parse_appimage,
-    parse_appx_manifest, parse_ar, parse_blazor_boot, parse_bpb, parse_bun, parse_docker_manifest,
-    parse_dotnet_bundle, parse_eszip, parse_fv_header, parse_gpt, parse_hfsplus, parse_koly,
-    parse_lzop, parse_mbr, parse_minidump, parse_msi_minimal, parse_oci_index, parse_oci_manifest,
-    parse_reshdr_at, parse_squashfs_superblock, parse_vhd, parse_vhd_footer, parse_vhdx,
-    parse_webcil_header, parse_wim, parse_xar, qnx_parse_startup, read_msi_extractable,
-    reconstruct_image, reconstruct_partclone, recover_cython, replay_btrfs_send, unsparse,
-    unwrap_webcil, vhd_materialize_logical_disk, vhdx_materialize_logical_disk, walk_cramfs,
-    walk_ext4, walk_fat, walk_installshield, walk_jffs2, walk_minixfs, walk_ntfs, walk_romfs,
-    walk_squashfs, walk_ubifs, walk_yaffs2,
+    ApfsContainer, AppImageLayout, ArArchive, BlazorBoot, BtrfsSendHeader, BtrfsSendReplay,
+    BunOffsets, BunStandalone, CramfsWalk, CythonIdentity, CythonModule, DmgSummary, DotnetBundle,
+    ElfOverlay, ElfOverlayCarve, ErofsSuperblock, EszipArchive, Ext4Walk, FatBpb, FatVolume,
+    FirmwareKind, FlatpakExtraction, FvExtraction, FvHeader, GptTable, HfsVolume, InnoSetupInfo,
+    InstallShieldHeader, Jffs2Endian, Jffs2Walk, KolyTrailer, MbrTable, MinidumpFile,
+    MinixSuperblock, MinixWalk, MsiExtractable, MsiSummary, MsixManifest, NsisHeader, NtfsVolume,
+    NtfsWalk, OciManifest, PartcloneImage, QnxKind, QnxStartup, RomfsHeader, RomfsWalk,
+    SparseHeader, SquashfsSuperblock, SquashfsWalk, SquirrelLayout, StuffItKind, UbifsWalk,
+    VhdFooter, VhdImage, VhdxImage, WebcilHeader, WimArchive, XarArchive, Yaffs2Endian, Yaffs2Walk,
+    cab_uses_lzms, carve_elf_overlay, carve_wim_resources, detect_apfs, detect_ar,
+    detect_blazor_boot, detect_btrfs_send, detect_bun, detect_cramfs, detect_cython, detect_dmg,
+    detect_dotnet_bundle, detect_elf_overlay, detect_erofs, detect_eszip, detect_ext4, detect_fat,
+    detect_firmware, detect_flatpak_bundle, detect_gzip, detect_hfsplus, detect_innosetup,
+    detect_installshield, detect_iso, detect_jffs2, detect_minidump, detect_minixfs, detect_nsis,
+    detect_ntfs, detect_par2, detect_partclone, detect_qnx, detect_romfs, detect_snap,
+    detect_sparse, detect_squirrel, detect_stuffit, detect_ubi, detect_ubifs, detect_uefi_fv,
+    detect_unityfs, detect_xar, detect_yaffs2, elf_image_end, extract_cab_lzms,
+    extract_flatpak_bundle, extract_uefi_fv, locate_embedded_nupkg, locate_hfsplus_volumes,
+    minidump_extent, parse_apfs, parse_appimage, parse_appx_manifest, parse_ar, parse_blazor_boot,
+    parse_bpb, parse_bun, parse_docker_manifest, parse_dotnet_bundle, parse_eszip, parse_fv_header,
+    parse_gpt, parse_hfsplus, parse_koly, parse_lzop, parse_mbr, parse_minidump, parse_msi_minimal,
+    parse_oci_index, parse_oci_manifest, parse_reshdr_at, parse_squashfs_superblock, parse_vhd,
+    parse_vhd_footer, parse_vhdx, parse_webcil_header, parse_wim, parse_xar, qnx_parse_startup,
+    read_msi_extractable, reconstruct_image, reconstruct_partclone, recover_cython,
+    replay_btrfs_send, unsparse, unwrap_webcil, vhd_materialize_logical_disk,
+    vhdx_materialize_logical_disk, walk_cramfs, walk_ext4, walk_fat, walk_installshield,
+    walk_jffs2, walk_minixfs, walk_ntfs, walk_romfs, walk_squashfs, walk_ubifs, walk_yaffs2,
 };
 use disrobe_binfmt::error::Result;
 use disrobe_binfmt::structural::{
@@ -803,15 +811,15 @@ impl Recognized for bool {
     }
 }
 
-impl<T> Recognized for Option<T> {
+impl<T: Recognized> Recognized for Option<T> {
     fn recognized(&self) -> bool {
-        self.is_some()
+        self.as_ref().is_some_and(Recognized::recognized)
     }
 }
 
-impl<T, E> Recognized for std::result::Result<T, E> {
+impl<T: Recognized, E> Recognized for std::result::Result<T, E> {
     fn recognized(&self) -> bool {
-        self.is_ok()
+        self.as_ref().is_ok_and(Recognized::recognized)
     }
 }
 
@@ -821,6 +829,137 @@ impl<T> Recognized for Vec<T> {
     }
 }
 
+impl Recognized for () {
+    fn recognized(&self) -> bool {
+        false
+    }
+}
+
+impl Recognized for &[u8] {
+    fn recognized(&self) -> bool {
+        !self.is_empty()
+    }
+}
+
+impl<A: Recognized, B> Recognized for (A, B) {
+    fn recognized(&self) -> bool {
+        self.0.recognized()
+    }
+}
+
+macro_rules! reached_when_not_empty {
+    ($($payload:ty => $collection:ident),+ $(,)?) => {
+        $(impl Recognized for $payload {
+            fn recognized(&self) -> bool {
+                !self.$collection.is_empty()
+            }
+        })+
+    };
+}
+
+macro_rules! reached_when_the_header_validates {
+    ($($payload:ty),+ $(,)?) => {
+        $(impl Recognized for $payload {
+            fn recognized(&self) -> bool {
+                true
+            }
+        })+
+    };
+}
+
+reached_when_not_empty! {
+    ApfsContainer => volume_oids,
+    ArArchive => members,
+    BlazorBoot => assemblies,
+    BtrfsSendReplay => files,
+    BunStandalone => modules,
+    CramfsWalk => files,
+    CythonModule => functions,
+    DotnetBundle => files,
+    ElfDynamic => needed,
+    disrobe_binfmt::containers::squirrel::EmbeddedNupkg => nuspec_names,
+    EszipArchive => modules,
+    Ext4Walk => files,
+    disrobe_binfmt::extract::ExtractionResult => entries,
+    FatVolume => files,
+    FlatpakExtraction => files,
+    FvExtraction => files,
+    GptTable => partitions,
+    HfsVolume => files,
+    Jffs2Walk => files,
+    MbrTable => partitions,
+    MinidumpFile => streams,
+    MinixWalk => files,
+    MsiExtractable => cabs,
+    MsiSummary => tables,
+    disrobe_binfmt::native::NativeFile => sections,
+    NtfsWalk => files,
+    disrobe_binfmt::containers::oci::OciIndex => manifests,
+    OciManifest => layers,
+    RomfsWalk => files,
+    SquashfsWalk => files,
+    SquirrelLayout => nuspec_names,
+    UbifsWalk => volumes,
+    VhdImage => allocated_block_sectors,
+    VhdxImage => regions,
+    WebcilHeader => sections,
+    WimArchive => images,
+    XarArchive => files,
+    Yaffs2Walk => files,
+}
+
+reached_when_the_header_validates! {
+    AppImageLayout,
+    BtrfsSendHeader,
+    BunOffsets,
+    ContainerKind,
+    disrobe_binfmt::containers::cramfs::CramfsHeader,
+    CythonIdentity,
+    ElfOverlay,
+    ElfOverlayCarve,
+    ErofsSuperblock,
+    disrobe_binfmt::containers::ext4::Ext4SuperblockSummary,
+    FatBpb,
+    FirmwareKind,
+    FvHeader,
+    InnoSetupInfo,
+    InstallShieldHeader,
+    Jffs2Endian,
+    KolyTrailer,
+    MinixSuperblock,
+    MsixManifest,
+    disrobe_binfmt::classify::NativeLangHint,
+    NsisHeader,
+    NtfsVolume,
+    PartcloneImage,
+    QnxKind,
+    QnxStartup,
+    RomfsHeader,
+    SparseHeader,
+    SquashfsSuperblock,
+    StructuralFormat,
+    StuffItKind,
+    VhdFooter,
+    Yaffs2Endian,
+}
+
+impl Recognized for usize {
+    fn recognized(&self) -> bool {
+        *self > 0usize
+    }
+}
+
+impl Recognized for u64 {
+    fn recognized(&self) -> bool {
+        *self > 0u64
+    }
+}
+
+impl Recognized for String {
+    fn recognized(&self) -> bool {
+        !self.is_empty()
+    }
+}
 #[derive(Debug, Default, Clone, Copy)]
 struct Hits {
     driven: u32,
@@ -1123,11 +1262,23 @@ fn every_shaped_seed_is_recognized_by_at_least_one_public_entry_point() {
             entry.name()
         );
         if SHAPELESS_SEEDS.contains(&entry.name()) {
+            println!(
+                "  {:<28} shapeless, {} entry point(s) driven",
+                entry.name(),
+                hits.driven
+            );
             continue;
         }
+        println!(
+            "  {:<28} {} of {} entry point(s) produced a structure",
+            entry.name(),
+            hits.recognized,
+            hits.driven
+        );
         assert!(
             hits.recognized > 0,
-            "the `{}` seed is inert: no detector, validator or parser recognizes it",
+            "the `{}` seed is inert: every entry point either refused it or returned a structure \
+             carrying nothing",
             entry.name()
         );
     }

@@ -41,6 +41,29 @@ disrobe py decompile m.pyc --metadata-pack-3 --metadata-exclude ast,symbols
 disrobe py decompile m.pyc --metadata-include cfg,types,provenance
 ```
 
+## Which commands write a bundle
+
+The metadata flags are declared on the root parser, so every subcommand accepts them, but only these commands act on them. Every other subcommand ignores the flags and writes no bundle, and `disrobe auto` rejects them with `DR-CLI-0843` because the chain engine writes a single `chain.json` instead.
+
+| Command | Contributes |
+|---|---|
+| `disrobe py decompile` | ast, disasm, symbols, strings, imports, constants, signatures, provenance, roundtrip-verdict, source-map, manifest, and cfg + dfg when the input reaches Mir |
+| `disrobe py deob` | symbols, strings, provenance, confidence, source-map, and cfg + dfg when the input reaches Mir |
+| `disrobe py disasm` | disasm, symbols, strings, constants, opcode-coverage, provenance, and cfg + dfg when the input reaches Mir |
+| `disrobe taint` | cfg + dfg |
+
+## Control flow and data flow
+
+The `cfg` and `dfg` categories are summaries of the normalized IR, so a command produces them only for an input that reaches the Mir rung. These input families reach it:
+
+- Native PE, ELF and Mach-O binaries, through the disassembler.
+- WebAssembly modules, JVM class files, Dalvik `.dex`, managed .NET PE, SWF and raw ABC, Ruby `YARB` bytecode, Lua chunks, BEAM modules, and CPython `.pyc`, each through its own lifter.
+- Any Disasm-rung or Mir-rung `.dr` envelope.
+
+Both categories are emitted as one entry describing the whole module. `function` names the unit, `blocks` carries every basic block with the `label` of the function it belongs to, and `edges` carries `from` and `to` block indices with a `kind` of `fallthrough`, `branch_true`, `branch_false` or `jump`. A `functions` array carries the per-function address, export flag, cyclomatic complexity and block count. The `dfg` value reports memory `defs`, the `uses` each def reaches, and `unreached_reads` for reads no write reaches.
+
+An input that never reaches Mir still gets an entry, reported as `applicable: false` with a `reason` naming the rung it did not reach. That is a different fact from a module that does reach Mir and genuinely has nothing to report, which is `applicable: true` with an empty array. A consumer must not treat the two as the same.
+
 ## Auth-gated categories
 
 The `decryption-keys` category exposes recovered keys and IVs and is gated: passing `--decryption-keys` without `--i-have-authorization` fails with `DR-CLI-0420`. Other legally sensitive recovery paths document their own authorization gate where the CLI exposes one.
