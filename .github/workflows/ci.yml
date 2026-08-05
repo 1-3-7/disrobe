@@ -266,10 +266,11 @@ jobs:
             fi
           done
           echo "DISROBE_REQUIRE_PACKER_FIXTURES=1" >> "$GITHUB_ENV"
-      - name: provision erlang so the beam differentials run instead of returning early
+      - name: provision erlang and elixir so the beam differentials run instead of returning early
         uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
           otp-version: "27.3.4.15"
+          elixir-version: "1.18.4"
           version-type: strict
       - name: require erlang so a beam differential fails instead of grading nothing
         shell: bash
@@ -288,6 +289,22 @@ jobs:
           fi
           echo "otp $otp_version"
           echo "DISROBE_REQUIRE_ERLANG=1" >> "$GITHUB_ENV"
+      - name: require elixir 1.18.4, the release corpus/beam/MANIFEST.toml records for the committed beam
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v elixirc >/dev/null 2>&1; then
+            echo "elixirc is not callable after provisioning, so the elixir recompile differential would grade nothing"
+            exit 1
+          fi
+          expected_elixir_version="1.18.4"
+          elixir_version="$(elixir -e 'IO.write(System.version())')"
+          if [ "$elixir_version" != "$expected_elixir_version" ]; then
+            echo "setup-beam provisioned Elixir $elixir_version, expected exactly $expected_elixir_version, which is the release corpus/beam/MANIFEST.toml records for Elixir.Hello.beam"
+            exit 1
+          fi
+          echo "elixir $elixir_version"
+          echo "DISROBE_REQUIRE_ELIXIR=1" >> "$GITHUB_ENV"
       - name: require the interpreters and archivers this runner already carries, so an absent one fails instead of skipping
         shell: bash
         run: |
@@ -386,6 +403,8 @@ jobs:
           clang --version
           ld.lld --version
           clang --target=aarch64-unknown-linux-gnu -x c -c -o /dev/null - <<< 'int dense_switch_probe(void) { return 0; }'
+      - name: elixir recompile differential, printing the graded export count
+        run: cargo test -p disrobe-pass-beam --test elixir_source_recover -- --nocapture
       - run: cargo test --workspace --all-features --no-fail-fast
       - name: stage this OS leg's cross-platform determinism hash file
         shell: bash
