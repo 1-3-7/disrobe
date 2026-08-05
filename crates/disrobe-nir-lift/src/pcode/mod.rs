@@ -80,6 +80,7 @@ pub struct PcodeLiftConfig {
     discarded_registers: BTreeSet<String>,
     fold_condition_codes: bool,
     big_endian_register_space: bool,
+    branch_delay_slots: bool,
 }
 
 impl PcodeLiftConfig {
@@ -97,6 +98,7 @@ impl PcodeLiftConfig {
             discarded_registers: BTreeSet::new(),
             fold_condition_codes: false,
             big_endian_register_space: false,
+            branch_delay_slots: false,
         }
     }
 
@@ -208,7 +210,8 @@ impl PcodeLiftConfig {
         };
         let mut config: Self = Self::new(SourceLang::Unknown, spec.cells)
             .with_return_value("v0")
-            .with_big_endian_register_space(spec.big_endian);
+            .with_big_endian_register_space(spec.big_endian)
+            .with_branch_delay_slots();
         config.require_registers(&["zero", "v0", "a0", "sp", "ra", "pc", "hi", "lo"])?;
         for name in MIPS32_DISCARDED {
             config.discarded_registers.insert(name.to_owned());
@@ -246,6 +249,12 @@ impl PcodeLiftConfig {
     #[must_use]
     pub const fn with_big_endian_register_space(mut self, big_endian: bool) -> Self {
         self.big_endian_register_space = big_endian;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_branch_delay_slots(mut self) -> Self {
+        self.branch_delay_slots = true;
         self
     }
 
@@ -367,6 +376,11 @@ pub fn lower_pcode_block(
         });
     }
     let end: u64 = validate_instruction_order(block)?;
+    let scheduled: Vec<PcodeInstr> = if config.branch_delay_slots {
+        schedule_delay_slots(&block.instructions)
+    } else {
+        block.instructions.clone()
+    };
     let mut operation_count: usize = 0;
     for instruction in &block.instructions {
         operation_count = operation_count.checked_add(instruction.ops.len()).ok_or(
@@ -387,14 +401,14 @@ pub fn lower_pcode_block(
     )?;
     let mut instructions: Vec<NirInstr> = Vec::new();
     let branch_targets: BTreeSet<u64> = explicit_branch_targets(block);
-    let has_indirect_branch: bool = block.instructions.iter().any(|instruction: &PcodeInstr| {
+    let has_indirect_branch: bool = scheduled.iter().any(|instruction: &PcodeInstr| {
         instruction
             .ops
             .iter()
             .any(|operation: &PcodeOp| matches!(operation, PcodeOp::BranchIndirect { .. }))
     });
     let mut previous_stops_fallthrough: bool = false;
-    for instruction in &block.instructions {
+    for instruction in &scheduled {
         let clear_registers: bool = has_indirect_branch
             || previous_stops_fallthrough
             || branch_targets.contains(&instruction.address);
@@ -418,6 +432,54 @@ pub fn lower_pcode_block(
         instructions,
         source: SourceRef::new(config.lang, first.address),
     })
+}
+
+fn schedule_delay_slots(instructions: &[PcodeInstr]) -> Vec<PcodeInstr> {
+    let mut scheduled: Vec<PcodeInstr> = instructions.to_vec();
+    let pairs: Vec<usize> = scheduled
+        .iter()
+        .enumerate()
+        .filter(|(index, transfer): &(usize, &PcodeInstr)| {
+            transfer.ops.last().is_some_and(is_delayed_transfer)
+                && u64::try_from(transfer.length).is_ok_and(|length: u64| {
+                    scheduled
+                        .get(index.saturating_add(1))
+                        .is_some_and(|slot: &PcodeInstr| {
+                            slot.address == transfer.address.wrapping_add(length)
+                                && !slot.ops.is_empty()
+                                && !slot.ops.iter().any(is_delayed_transfer)
+                        })
+                })
+        })
+        .map(|(index, _transfer): (usize, &PcodeInstr)| index)
+        .collect();
+    for index in pairs {
+        let Some(slot_ops): Option<Vec<PcodeOp>> = scheduled
+            .get_mut(index.saturating_add(1))
+            .map(|slot: &mut PcodeInstr| std::mem::take(&mut slot.ops))
+        else {
+            continue;
+        };
+        let Some(transfer): Option<&mut PcodeInstr> = scheduled.get_mut(index) else {
+            continue;
+        };
+        let mut merged: Vec<PcodeOp> = slot_ops;
+        merged.append(&mut transfer.ops);
+        transfer.ops = merged;
+    }
+    scheduled
+}
+
+const fn is_delayed_transfer(operation: &PcodeOp) -> bool {
+    matches!(
+        operation,
+        PcodeOp::Branch { .. }
+            | PcodeOp::BranchIndirect { .. }
+            | PcodeOp::CBranch { .. }
+            | PcodeOp::Call { .. }
+            | PcodeOp::CallIndirect { .. }
+            | PcodeOp::Return { .. }
+    )
 }
 
 fn explicit_branch_targets(block: &DecodedBlock) -> BTreeSet<u64> {
