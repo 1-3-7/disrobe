@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use disrobe_core::{AdjGraph, Dominators, immediate_post_dominators};
+use disrobe_cfg::{Flow, FlowGraph, PostDominator};
 use walrus::ir::{Instr, InstrSeqId, InstrSeqType, LoadKind, StoreKind, Value};
 use walrus::{LocalFunction, LocalId};
 
@@ -518,8 +518,7 @@ enum SNode {
 
 struct Analysis<'g> {
     graph: &'g Graph,
-    idom: BTreeMap<i32, i32>,
-    ipostdom: BTreeMap<NodeRef, NodeRef>,
+    flow: FlowGraph<i32>,
 }
 
 fn structure(graph: &Graph) -> Option<SNode> {
@@ -540,26 +539,12 @@ impl<'g> Analysis<'g> {
         if order.len() != graph.nodes.len() {
             return None;
         }
-        let idom: BTreeMap<i32, i32> = dominators(graph)?;
-        let ipostdom: BTreeMap<NodeRef, NodeRef> = post_dominators(graph, &order);
-        Some(Analysis {
-            graph,
-            idom,
-            ipostdom,
-        })
+        let flow: FlowGraph<i32> = state_flow(graph)?;
+        Some(Analysis { graph, flow })
     }
 
     fn dominates(&self, a: i32, b: i32) -> bool {
-        let mut cur: i32 = b;
-        loop {
-            if cur == a {
-                return true;
-            }
-            match self.idom.get(&cur) {
-                Some(&next) if next != cur => cur = next,
-                _ => return false,
-            }
-        }
+        self.flow.dominates(a, b)
     }
 
     fn is_header(&self, state: i32) -> bool {
@@ -727,9 +712,10 @@ impl<'g> Analysis<'g> {
     }
 
     fn merge_of(&self, state: i32, stop: NodeRef) -> NodeRef {
-        match self.ipostdom.get(&NodeRef::State(state)) {
-            Some(&merge) => merge,
-            None => stop,
+        match self.flow.immediate_post_dominator(state) {
+            PostDominator::Node(merge) => NodeRef::State(merge),
+            PostDominator::FunctionExit => NodeRef::Exit,
+            PostDominator::Undefined => stop,
         }
     }
 }
@@ -795,79 +781,22 @@ fn reverse_postorder(graph: &Graph) -> Vec<i32> {
     post
 }
 
-fn dominators(graph: &Graph) -> Option<BTreeMap<i32, i32>> {
-    let ids: Vec<i32> = graph.nodes.keys().copied().collect();
-    let index: BTreeMap<i32, u32> = ids
-        .iter()
-        .enumerate()
-        .map(|(i, &id): (usize, &i32)| (id, i as u32))
-        .collect();
-    let entry_dense: u32 = *index.get(&graph.entry)?;
-    let succ: Vec<Vec<u32>> = ids
-        .iter()
-        .map(|&id: &i32| {
-            successors(graph, id)
-                .into_iter()
-                .filter_map(|s: NodeRef| match s {
-                    NodeRef::State(v) => index.get(&v).copied(),
-                    NodeRef::Exit => None,
-                })
-                .collect()
-        })
-        .collect();
-    let adj: AdjGraph = AdjGraph::new(entry_dense, succ);
-    let doms: Dominators = Dominators::compute(&adj);
-    let mut idom: BTreeMap<i32, i32> = BTreeMap::new();
-    idom.insert(graph.entry, graph.entry);
-    for (i, &id) in ids.iter().enumerate() {
-        if id == graph.entry {
-            continue;
-        }
-        if let Some(d) = doms.immediate_dominator(i as u32) {
-            idom.insert(id, ids[d as usize]);
-        }
-    }
-    Some(idom)
-}
-
-fn post_dominators(graph: &Graph, order: &[i32]) -> BTreeMap<NodeRef, NodeRef> {
-    let index: BTreeMap<i32, u32> = order
-        .iter()
-        .enumerate()
-        .map(|(i, &state): (usize, &i32)| (state, i as u32))
-        .collect();
-    let node_count: usize = order.len();
-    let virtual_exit: u32 = node_count as u32;
-    let ipdom: Vec<Option<u32>> =
-        immediate_post_dominators(node_count, |from: u32, emit: &mut dyn FnMut(u32)| {
-            let Some(&state) = order.get(from as usize) else {
-                return;
-            };
+fn state_flow(graph: &Graph) -> Option<FlowGraph<i32>> {
+    FlowGraph::build(
+        graph.nodes.keys().copied(),
+        graph.entry,
+        |state: i32, emit: &mut dyn FnMut(Flow<i32>)| {
             for succ in successors(graph, state) {
                 match succ {
-                    NodeRef::State(next) => emit(index.get(&next).copied().unwrap_or(virtual_exit)),
-                    NodeRef::Exit => emit(virtual_exit),
+                    NodeRef::State(next) if graph.nodes.contains_key(&next) => {
+                        emit(Flow::To(next));
+                    }
+                    NodeRef::State(_) | NodeRef::Exit => emit(Flow::Exit),
                 }
             }
-        });
-    let mut out: BTreeMap<NodeRef, NodeRef> = BTreeMap::new();
-    for (dense, entry) in ipdom.into_iter().enumerate() {
-        let Some(target_dense) = entry else {
-            continue;
-        };
-        let Some(&node) = order.get(dense) else {
-            continue;
-        };
-        let target: NodeRef = if target_dense == virtual_exit {
-            NodeRef::Exit
-        } else if let Some(&target_state) = order.get(target_dense as usize) {
-            NodeRef::State(target_state)
-        } else {
-            continue;
-        };
-        out.insert(NodeRef::State(node), target);
-    }
-    out
+        },
+    )
+    .ok()
 }
 
 fn emit(func: &mut LocalFunction, disp: &Dispatcher, graph: &Graph, tree: &SNode) {
@@ -1040,6 +969,37 @@ mod tests {
         assert_eq!(items.len(), 2, "loop then exit case");
         assert!(matches!(items[0], SNode::Loop { header: 0, .. }));
         assert!(matches!(items[1], SNode::Work(4)));
+    }
+
+    #[test]
+    fn a_loop_header_below_the_entry_is_still_recognised() {
+        let g: Graph = graph(
+            0,
+            vec![
+                (0, Trans::Goto(1)),
+                (
+                    1,
+                    Trans::Cond {
+                        then_state: 2,
+                        else_state: 3,
+                    },
+                ),
+                (2, Trans::Goto(1)),
+                (3, Trans::Exit),
+            ],
+        );
+        let tree: SNode = structure(&g).expect("a loop headed below the entry structures");
+        let SNode::Seq(items): SNode = tree else {
+            panic!("expected sequence, got {tree:?}");
+        };
+        assert_eq!(items.len(), 3, "entry work, loop, then exit case: {items:?}");
+        assert!(matches!(items[0], SNode::Work(0)));
+        assert!(
+            matches!(items[1], SNode::Loop { header: 1, .. }),
+            "state 1 dominates its latch and must be the loop header: {:?}",
+            items[1]
+        );
+        assert!(matches!(items[2], SNode::Work(3)));
     }
 
     #[test]

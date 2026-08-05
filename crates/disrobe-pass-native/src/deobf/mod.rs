@@ -24,7 +24,10 @@ pub use bcf_dse::{
 pub use branchfold::{
     BranchFoldFinding, BranchFoldOutcome, FoldKind, FoldVerdict, fold_block as fold_branch_block,
 };
-pub use cff::{CffOutcome, CffRecovery, StateLoc, unflatten as unflatten_cff};
+pub use cff::{
+    BlockSpan, CffOutcome, CffRecovery, DispatcherCover, StateCoverGap, StateEdge, StateLoc,
+    StateRegion, UncoveredState, unflatten as unflatten_cff,
+};
 pub use copyprop::{
     CopyPropOutcome, CopyPropReport, clean_block as copy_propagate_block,
     clean_block_with_live_out as copy_propagate_block_live_out,

@@ -123,15 +123,16 @@ pub use delphi::{
     detect_delphi, recover_delphi_classes, recover_delphi_strings, recover_dfm_resources,
 };
 pub use deobf::{
-    AbiInference, ArgCount, Bits as DeobfBits, BlockCopyProp, BlockDeadFlags, BogusBranch,
-    BranchFoldFinding, BranchFoldOutcome, CallingConvention, CffOutcome, CffRecovery,
+    AbiInference, ArgCount, Bits as DeobfBits, BlockCopyProp, BlockDeadFlags, BlockSpan,
+    BogusBranch, BranchFoldFinding, BranchFoldOutcome, CallingConvention, CffOutcome, CffRecovery,
     CopyPropOutcome, CopyPropReport, DeadEdge, DeadFlagOutcome, DeadFlagReport, DeobfReport,
-    FoldKind, FoldVerdict, OpaquePredicateSimplification, OpaqueResult, PathSenseReport,
-    PathSenseWall, ReturnKind, StateLoc as CffStateLoc, SubstitutionResult,
-    analyze_path_constraints, clean_dead_flags, clean_register_copies,
-    clean_register_copies_live_out, copy_propagate_block, copy_propagate_block_live_out,
-    defeat_bogus_control_flow, defeat_cff, eliminate_dead_flags, eliminate_dead_flags_live_out,
-    fold_constant_branch, infer_function_abi, prove_dead_paths, undo_substitution,
+    DispatcherCover, FoldKind, FoldVerdict, OpaquePredicateSimplification, OpaqueResult,
+    PathSenseReport, PathSenseWall, ReturnKind, StateCoverGap, StateEdge, StateLoc as CffStateLoc,
+    StateRegion, SubstitutionResult, UncoveredState, analyze_path_constraints, clean_dead_flags,
+    clean_register_copies, clean_register_copies_live_out, copy_propagate_block,
+    copy_propagate_block_live_out, defeat_bogus_control_flow, defeat_cff, eliminate_dead_flags,
+    eliminate_dead_flags_live_out, fold_constant_branch, infer_function_abi, prove_dead_paths,
+    undo_substitution,
 };
 pub use desync::{
     Bitness, ByteRange, CodeWindow, DesyncReport, DiscoveredFunctions, DiscoveryInput,

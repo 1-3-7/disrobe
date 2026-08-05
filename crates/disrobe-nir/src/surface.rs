@@ -1090,6 +1090,7 @@ mod tests {
             is_export: false,
             body,
             structured: true,
+            decline: None,
             source: SourceRef::new(SourceLang::NativeX86, 0),
         }
     }

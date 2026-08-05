@@ -83,9 +83,22 @@ fn nested_separator_to_dot(name: &str) -> String {
                 .is_some_and(|c: char| c.is_alphabetic() || c == '_');
             out.push(if named { '.' } else { '$' });
         }
-        out.push_str(segment);
+        out.push_str(&writable_qualified_name(segment));
     }
     out
+}
+
+fn writable_qualified_name(segment: &str) -> String {
+    segment
+        .split('.')
+        .map(|part: &str| java_writable_identifier(part))
+        .collect::<Vec<String>>()
+        .join(".")
+}
+
+#[must_use]
+pub fn java_writable_identifier(raw: &str) -> String {
+    crate::name_disambig::writable_identifier(raw)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

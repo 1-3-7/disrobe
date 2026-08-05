@@ -248,12 +248,16 @@ fn push_obfuscator_entry(tool: &str, name: &str, entry: &Value, out: &mut Vec<Or
         return;
     }
     let pass: &str = if is_pyc { "py.decompile" } else { "py.deob" };
+    let baseline_rel: Option<String> = entry
+        .get("clean_source")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     out.push(OracleFixture {
         oracle: OracleKind::DifferentialVsSource,
         pass_under_test: pass.to_owned(),
         fixture_id: format!("{tool}:{name}"),
         input_rel: path.to_owned(),
-        baseline_rel: None,
+        baseline_rel,
         expected_detection: None,
         byte_identical_floor_bp: None,
     });

@@ -113,6 +113,7 @@ const ATTRIBUTION_PROBE_FILE: &str = "TypeCheckReached.java";
 const ATTRIBUTION_PROBE_SOURCE: &str = "final class TypeCheckReached {\n    static final Object \
                                         VALUE = typeCheckReachedSymbolThatCannotResolve;\n}\n";
 const ATTRIBUTION_PROBE_DIAGNOSTIC: &str = "TypeCheckReached.java:";
+const DIAGNOSTIC_LIMIT: &str = "1000000";
 
 fn dataset_description(dex_sha256: &str, jar_sha256: &str) -> String {
     format!(
@@ -731,6 +732,8 @@ fn compile(
     command
         .arg("-nowarn")
         .arg("-proc:none")
+        .arg("-Xmaxerrs")
+        .arg(DIAGNOSTIC_LIMIT)
         .arg("-cp")
         .arg(stub)
         .arg("-d")

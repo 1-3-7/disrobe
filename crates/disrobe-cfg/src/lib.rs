@@ -1,6 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use disrobe_core::{AdjGraph, DiGraph, Dominators, immediate_post_dominators};
+pub mod flow;
+
+pub use flow::{Flow, FlowError, FlowGraph, MAX_FLOW_NODES, PostDominator};
+
+mod reconverge;
+
+pub use reconverge::{reconvergent_joins, split_reconvergence};
 
 pub type NodeId = u32;
 pub type RegionId = u32;
@@ -37,6 +43,7 @@ pub enum CfgError {
     EmptyGraph,
     EntryOutOfRange,
     TargetOutOfRange,
+    TooManyNodes(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +56,9 @@ impl Cfg {
     pub fn new(entry: NodeId, nodes: Vec<CfgNode>) -> Result<Self, CfgError> {
         if nodes.is_empty() {
             return Err(CfgError::EmptyGraph);
+        }
+        if nodes.len() > MAX_FLOW_NODES {
+            return Err(CfgError::TooManyNodes(nodes.len()));
         }
         let count: u32 = nodes.len() as u32;
         if entry >= count {
@@ -124,55 +134,45 @@ fn term_successors(term: &Terminator) -> Vec<NodeId> {
     }
 }
 
-struct CfgGraph<'a> {
-    cfg: &'a Cfg,
-}
-
-impl DiGraph for CfgGraph<'_> {
-    fn node_count(&self) -> usize {
-        self.cfg.len()
-    }
-
-    fn entry(&self) -> u32 {
-        self.cfg.entry
-    }
-
-    fn for_each_successor(&self, node: u32, visit: &mut dyn FnMut(u32)) {
-        for s in self.cfg.successors(node) {
-            visit(s);
-        }
-    }
-}
-
-pub fn dominators(cfg: &Cfg) -> Dominators {
-    let graph: CfgGraph<'_> = CfgGraph { cfg };
-    Dominators::compute(&graph)
+fn flow_of(cfg: &Cfg) -> Result<FlowGraph<NodeId>, FlowError> {
+    FlowGraph::build(
+        0..cfg.len() as NodeId,
+        cfg.entry,
+        |node: NodeId, emit: &mut dyn FnMut(Flow<NodeId>)| match cfg
+            .nodes
+            .get(node as usize)
+            .map(|n: &CfgNode| &n.term)
+        {
+            Some(Terminator::Return | Terminator::Unreachable) | None => emit(Flow::Exit),
+            Some(other) => {
+                for successor in term_successors(other) {
+                    emit(Flow::To(successor));
+                }
+            }
+        },
+    )
 }
 
 #[derive(Debug, Clone)]
 pub struct PostDominators {
-    ipdom: Vec<Option<NodeId>>,
+    graph: FlowGraph<NodeId>,
     exit: NodeId,
 }
 
 impl PostDominators {
-    pub fn compute(cfg: &Cfg) -> Self {
-        let count: usize = cfg.len();
-        let exit: NodeId = count as NodeId;
-        let report = |node: u32, visit: &mut dyn FnMut(u32)| match &cfg.nodes[node as usize].term {
-            Terminator::Return | Terminator::Unreachable => visit(exit),
-            other => {
-                for s in term_successors(other) {
-                    visit(s);
-                }
-            }
-        };
-        let ipdom: Vec<Option<NodeId>> = immediate_post_dominators(count, report);
-        Self { ipdom, exit }
+    pub fn compute(cfg: &Cfg) -> Result<Self, FlowError> {
+        Ok(Self {
+            graph: flow_of(cfg)?,
+            exit: cfg.len() as NodeId,
+        })
     }
 
     pub fn immediate_post_dominator(&self, node: NodeId) -> Option<NodeId> {
-        self.ipdom.get(node as usize).copied().flatten()
+        match self.graph.immediate_post_dominator(node) {
+            PostDominator::Node(target) => Some(target),
+            PostDominator::FunctionExit => Some(self.exit),
+            PostDominator::Undefined => None,
+        }
     }
 
     pub const fn exit(&self) -> NodeId {
@@ -183,16 +183,10 @@ impl PostDominators {
         if a == b {
             return true;
         }
-        let mut cur: NodeId = b;
-        loop {
-            match self.immediate_post_dominator(cur) {
-                Some(next) if next == a => return true,
-                Some(next) if next == self.exit => return false,
-                Some(next) if next == cur => return false,
-                Some(next) => cur = next,
-                None => return false,
-            }
+        if a == self.exit {
+            return self.graph.exit_post_dominates(b);
         }
+        self.graph.post_dominates(a, b)
     }
 }
 
@@ -256,7 +250,12 @@ fn dfs_intervals(cfg: &Cfg) -> (Vec<u32>, Vec<u32>) {
 }
 
 pub fn loop_forest(cfg: &Cfg) -> LoopForest {
-    let dom: Dominators = dominators(cfg);
+    let Ok(dom): Result<FlowGraph<NodeId>, FlowError> = flow_of(cfg) else {
+        return LoopForest {
+            loops: Vec::new(),
+            irreducible: true,
+        };
+    };
     let reach: Vec<bool> = reachable(cfg);
     let (discover, finish): (Vec<u32>, Vec<u32>) = dfs_intervals(cfg);
     let is_ancestor = |a: NodeId, b: NodeId| -> bool {
@@ -699,7 +698,7 @@ fn is_dfs_ancestor(discover: &[u32], finish: &[u32], ancestor: NodeId, node: Nod
 }
 
 fn choose_primary_header(cfg: &Cfg, region: &IrreducibleEntry) -> Option<NodeId> {
-    let dom: Dominators = dominators(cfg);
+    let dom: FlowGraph<NodeId> = flow_of(cfg).ok()?;
     let (discover, finish): (Vec<u32>, Vec<u32>) = dfs_intervals(cfg);
     let mut chosen: Option<(NodeId, usize, usize)> = None;
     for &entry in &region.entries {
@@ -1930,21 +1929,23 @@ impl Collapse {
         )
     }
 
-    fn abstract_dominators(&self) -> Dominators {
-        let succ: Vec<Vec<NodeId>> = (0..self.flow.len() as NodeId)
-            .map(|n: NodeId| {
-                if self.alive[n as usize] {
-                    self.successors(n)
-                } else {
-                    Vec::new()
+    fn abstract_dominators(&self) -> Option<FlowGraph<NodeId>> {
+        FlowGraph::build(
+            0..self.flow.len() as NodeId,
+            self.entry,
+            |node: NodeId, emit: &mut dyn FnMut(Flow<NodeId>)| {
+                if !self.alive.get(node as usize).copied().unwrap_or(false) {
+                    return;
                 }
-            })
-            .collect();
-        let graph: AdjGraph = AdjGraph::new(self.entry, succ);
-        Dominators::compute(&graph)
+                for successor in self.successors(node) {
+                    emit(Flow::To(successor));
+                }
+            },
+        )
+        .ok()
     }
 
-    fn back_edges(&self, dom: &Dominators) -> Vec<(NodeId, NodeId)> {
+    fn back_edges(&self, dom: &FlowGraph<NodeId>) -> Vec<(NodeId, NodeId)> {
         let mut edges: Vec<(NodeId, NodeId)> = Vec::new();
         for u in self.alive_nodes() {
             for v in self.successors(u) {
@@ -1956,21 +1957,18 @@ impl Collapse {
         edges
     }
 
-    fn natural_loop_body(&self, header: NodeId, latches: &[NodeId]) -> BTreeSet<NodeId> {
-        let preds: Vec<Vec<NodeId>> = self.preds();
-        disrobe_core::dominators::natural_loop_body(
-            header,
-            latches,
-            |node: NodeId, emit: &mut dyn FnMut(NodeId)| {
-                for &pred in &preds[node as usize] {
-                    emit(pred);
-                }
-            },
-        )
+    fn natural_loop_body(
+        dom: &FlowGraph<NodeId>,
+        header: NodeId,
+        latches: &[NodeId],
+    ) -> BTreeSet<NodeId> {
+        dom.natural_loop_body(header, latches)
     }
 
     fn loop_boundary(&self) -> BTreeSet<NodeId> {
-        let dom: Dominators = self.abstract_dominators();
+        let Some(dom): Option<FlowGraph<NodeId>> = self.abstract_dominators() else {
+            return BTreeSet::new();
+        };
         let mut boundary: BTreeSet<NodeId> = BTreeSet::new();
         for (u, v) in self.back_edges(&dom) {
             boundary.insert(u);
@@ -1980,7 +1978,9 @@ impl Collapse {
     }
 
     fn reduce_one_cyclic(&mut self) -> bool {
-        let dom: Dominators = self.abstract_dominators();
+        let Some(dom): Option<FlowGraph<NodeId>> = self.abstract_dominators() else {
+            return false;
+        };
         let back: Vec<(NodeId, NodeId)> = self.back_edges(&dom);
         if back.is_empty() {
             if self.has_live_cycle() {
@@ -2002,7 +2002,7 @@ impl Collapse {
                 .filter(|(_, v): &&(NodeId, NodeId)| *v == header)
                 .map(|(u, _): &(NodeId, NodeId)| *u)
                 .collect();
-            let body: BTreeSet<NodeId> = self.natural_loop_body(header, &latches);
+            let body: BTreeSet<NodeId> = Self::natural_loop_body(&dom, header, &latches);
             let innermost: bool = !body
                 .iter()
                 .any(|n: &NodeId| *n != header && header_set.contains(n));
@@ -2517,7 +2517,7 @@ mod tests {
     #[test]
     fn post_dominators_route_multiple_returns_to_exit() {
         let cfg: Cfg = Cfg::new(0, vec![br(0, 1, 2), ret(), ret()]).unwrap();
-        let pdom: PostDominators = PostDominators::compute(&cfg);
+        let pdom: PostDominators = PostDominators::compute(&cfg).unwrap();
         assert_eq!(pdom.immediate_post_dominator(1), Some(pdom.exit()));
         assert_eq!(pdom.immediate_post_dominator(2), Some(pdom.exit()));
         assert_eq!(pdom.immediate_post_dominator(0), Some(pdom.exit()));
@@ -2530,7 +2530,7 @@ mod tests {
             pure: false,
         };
         let cfg: Cfg = Cfg::new(0, vec![br(0, 1, 2), abort, ret()]).unwrap();
-        let pdom: PostDominators = PostDominators::compute(&cfg);
+        let pdom: PostDominators = PostDominators::compute(&cfg).unwrap();
         assert_eq!(pdom.immediate_post_dominator(1), Some(pdom.exit()));
         let result: StructureResult = structure(&cfg);
         assert!(
@@ -2542,7 +2542,7 @@ mod tests {
     #[test]
     fn post_dominators_diamond_join() {
         let cfg: Cfg = Cfg::new(0, vec![br(0, 1, 2), goto(3), goto(3), ret()]).unwrap();
-        let pdom: PostDominators = PostDominators::compute(&cfg);
+        let pdom: PostDominators = PostDominators::compute(&cfg).unwrap();
         assert_eq!(pdom.immediate_post_dominator(0), Some(3));
         assert!(pdom.post_dominates(3, 0));
         assert!(!pdom.post_dominates(1, 0));

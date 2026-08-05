@@ -6,6 +6,7 @@ pub mod codec;
 pub mod defuse;
 pub mod emit;
 pub mod hir;
+pub mod reducible;
 pub mod surface;
 pub mod types;
 
@@ -15,8 +16,9 @@ pub use defuse::{DefUse, ValueId, def_use};
 pub use emit::{EmitError, emit_pseudo_source};
 pub use hir::{
     HirCond, HirDispatchCase, HirExpr, HirFunction, HirInstrStmt, HirLeafStmt, HirModule, HirStmt,
-    structurize_function, structurize_module,
+    structurize_function, structurize_function_with_budget, structurize_module,
 };
+pub use reducible::{CnsBudget, HirDecline, SplitBudget, SplitRefusal, StructureFailure};
 pub use surface::{
     SurfaceCase, SurfaceCondition, SurfaceExpr, SurfaceFunction, SurfaceLeaf, SurfaceLocal,
     SurfaceModule, SurfaceSignature, SurfaceStatement, SurfaceStmt, SurfaceType,

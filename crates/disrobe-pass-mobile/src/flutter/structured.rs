@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use disrobe_core::{AdjGraph, Dominators};
+use disrobe_cfg::{Flow, FlowError, FlowGraph};
 use disrobe_nir::{
     HirCond, HirFunction, HirStmt, NirBlock, NirFunction, NirInstr, NirOp, SourceLang, SourceRef,
     basic_blocks, structurize_function,
@@ -469,53 +469,44 @@ fn natural_loop_headers(blocks: &[NirBlock], reachable: &BTreeSet<u64>) -> BTree
     if order.is_empty() {
         return BTreeSet::new();
     }
-    let node_ids: BTreeMap<u64, u32> = order
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, start): (usize, &u64)| u32::try_from(idx).ok().map(|n: u32| (*start, n)))
-        .collect();
     let by_start: BTreeMap<u64, &NirBlock> =
         blocks.iter().map(|b: &NirBlock| (b.start, b)).collect();
-    let adjacency: Vec<Vec<u32>> = order
-        .iter()
-        .map(|start: &u64| {
-            by_start
-                .get(start)
-                .map_or_else(Vec::new, |block: &&NirBlock| {
-                    block
-                        .successors
-                        .iter()
-                        .filter_map(|s: &u64| node_ids.get(s).copied())
-                        .collect()
-                })
-        })
-        .collect();
     let entry: u64 = blocks
         .first()
         .map(|b: &NirBlock| b.start)
         .unwrap_or(order[0]);
-    let entry_id: u32 = node_ids.get(&entry).copied().unwrap_or(0);
-    let graph: AdjGraph = AdjGraph::new(entry_id, adjacency.clone());
-    let dominators: Dominators = Dominators::compute(&graph);
-    let mut predecessors: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
-    for (from, succs) in adjacency.iter().enumerate() {
-        for succ in succs {
-            if let Ok(from_id) = u32::try_from(from) {
-                predecessors.entry(*succ).or_default().push(from_id);
+    let entry: u64 = if reachable.contains(&entry) {
+        entry
+    } else {
+        order[0]
+    };
+    let Ok(graph): Result<FlowGraph<u64>, FlowError> = FlowGraph::build(
+        order.iter().copied(),
+        entry,
+        |start: u64, emit: &mut dyn FnMut(Flow<u64>)| {
+            let Some(block): Option<&&NirBlock> = by_start.get(&start) else {
+                emit(Flow::Exit);
+                return;
+            };
+            let mut sinks: bool = true;
+            for successor in &block.successors {
+                if reachable.contains(successor) {
+                    sinks = false;
+                    emit(Flow::To(*successor));
+                }
             }
-        }
-    }
-    let mut headers: BTreeSet<u64> = BTreeSet::new();
-    for (start, id) in &node_ids {
-        let is_header: bool = predecessors
-            .get(id)
-            .map(|preds: &Vec<u32>| preds.iter().any(|p: &u32| dominators.dominates(*id, *p)))
-            .unwrap_or(false);
-        if is_header {
-            headers.insert(*start);
-        }
-    }
-    headers
+            if sinks {
+                emit(Flow::Exit);
+            }
+        },
+    ) else {
+        return BTreeSet::new();
+    };
+    graph
+        .back_edges()
+        .into_iter()
+        .map(|(_, header): (u64, u64)| header)
+        .collect()
 }
 
 fn emit_dart(hir: &HirFunction, abi: &DartAbi<'_>, reachable: &BTreeSet<u64>) -> String {

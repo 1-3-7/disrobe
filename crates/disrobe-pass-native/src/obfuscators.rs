@@ -236,6 +236,9 @@ fn memmem(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 pub struct CffUnflattenReport {
     pub original_blocks: u32,
     pub recovered_blocks: u32,
+    pub dispatcher_states: u32,
+    pub covered_states: u32,
+    pub uncovered_states: Vec<u64>,
     pub dispatcher_address: Option<u64>,
     pub state_variable_register: Option<String>,
     pub fully_recovered: bool,
@@ -249,22 +252,70 @@ pub fn unflatten_ollvm(bits: DeobfBits, base: u64, code: &[u8], entry: u64) -> C
         CffOutcome::Recovered(rec) => CffUnflattenReport {
             original_blocks: rec.original_block_count,
             recovered_blocks: rec.recovered_block_count,
+            dispatcher_states: rec.cover.dispatcher_states,
+            covered_states: rec.cover.covered_states,
+            uncovered_states: rec
+                .cover
+                .uncovered
+                .iter()
+                .map(|state: &crate::deobf::cff::UncoveredState| state.state)
+                .collect(),
             dispatcher_address: Some(rec.dispatcher_address),
             state_variable_register: Some(rec.state_loc.render()),
             fully_recovered: rec.fully_recovered,
             linear_order: rec.linear_order,
-            notes: Vec::new(),
+            notes: cover_notes(&rec.cover),
         },
-        CffOutcome::NotFlattened => CffUnflattenReport {
+        CffOutcome::Abstained(reason) => CffUnflattenReport {
             original_blocks: 0,
             recovered_blocks: 0,
+            dispatcher_states: 0,
+            covered_states: 0,
+            uncovered_states: Vec::new(),
             dispatcher_address: None,
             state_variable_register: None,
             fully_recovered: false,
             linear_order: Vec::new(),
-            notes: vec!["no cmp-chain control-flow-flattening dispatcher found".to_owned()],
+            notes: vec![format!(
+                "a dispatcher was found but recovery abstained: {reason:?}"
+            )],
+        },
+        CffOutcome::NotFlattened => CffUnflattenReport {
+            original_blocks: 0,
+            recovered_blocks: 0,
+            dispatcher_states: 0,
+            covered_states: 0,
+            uncovered_states: Vec::new(),
+            dispatcher_address: None,
+            state_variable_register: None,
+            fully_recovered: false,
+            linear_order: Vec::new(),
+            notes: vec!["no control-flow-flattening dispatcher found".to_owned()],
         },
     }
+}
+
+fn cover_notes(cover: &crate::deobf::cff::DispatcherCover) -> Vec<String> {
+    let mut notes: Vec<String> = vec![format!(
+        "dispatcher cover {} of {} states",
+        cover.covered_states, cover.dispatcher_states
+    )];
+    for uncovered in &cover.uncovered {
+        notes.push(format!(
+            "state {:#x} at {:#x} is not covered: {:?}",
+            uncovered.state, uncovered.case_target, uncovered.gap
+        ));
+    }
+    for region in cover.unresolved_transitions() {
+        notes.push(format!(
+            "state {:#x} has an unresolved transition: {:?}",
+            region.state, region.degrade
+        ));
+    }
+    if let Some(violation) = cover.canary {
+        notes.push(format!("recovered edge set fails its check: {violation:?}"));
+    }
+    notes
 }
 
 #[must_use]

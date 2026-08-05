@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use disrobe_core::DiGraph;
+use disrobe_cfg::{Flow, FlowGraph};
 use disrobe_mba::{BinOp, CmpOp, Expr, Predicate, Width};
 use disrobe_nir::{BinaryOp, NirFunction, NirInstr, NirOp, SourceLang};
 
@@ -404,48 +404,40 @@ fn predecessors(region: &Region) -> Vec<Vec<usize>> {
     preds
 }
 
-struct RegionGraph<'a> {
-    region: &'a Region,
-}
-
-impl DiGraph for RegionGraph<'_> {
-    fn node_count(&self) -> usize {
-        self.region.blocks.len()
-    }
-
-    fn entry(&self) -> u32 {
-        self.region.entry_block as u32
-    }
-
-    fn for_each_successor(&self, node: u32, visit: &mut dyn FnMut(u32)) {
-        for succ in successors(&self.region.blocks[node as usize]) {
-            visit(succ as u32);
-        }
-    }
-}
-
-fn dominator_sets(region: &Region) -> Vec<BTreeSet<usize>> {
-    let graph: RegionGraph<'_> = RegionGraph { region };
-    disrobe_core::dominator_sets(&graph)
-        .into_iter()
-        .map(|set: BTreeSet<u32>| set.into_iter().map(|id: u32| id as usize).collect())
-        .collect()
+fn region_flow(region: &Region) -> Option<FlowGraph<usize>> {
+    FlowGraph::build(
+        0..region.blocks.len(),
+        region.entry_block,
+        |node: usize, emit: &mut dyn FnMut(Flow<usize>)| {
+            let Some(block): Option<&Block> = region.blocks.get(node) else {
+                return;
+            };
+            let targets: Vec<usize> = successors(block);
+            if targets.is_empty() {
+                emit(Flow::Exit);
+            }
+            for target in targets {
+                emit(Flow::To(target));
+            }
+        },
+    )
+    .ok()
 }
 
 fn merge_plan(
     region: &Region,
     join: Option<usize>,
     preds: &[usize],
-    dom: &[BTreeSet<usize>],
+    dom: &FlowGraph<usize>,
 ) -> Option<MergePlan> {
     if preds.len() != 2 {
         return None;
     }
-    let controller: usize = {
-        let mut common: BTreeSet<usize> = dom[preds[0]].clone();
-        common.retain(|node: &usize| dom[preds[1]].contains(node));
-        common.into_iter().max()?
-    };
+    let controller: usize = dom
+        .dominator_set(preds[0])
+        .into_iter()
+        .filter(|node: &usize| dom.dominates(*node, preds[1]))
+        .max()?;
     let Terminator::Conditional {
         taken, fallthrough, ..
     } = region.blocks[controller].terminator
@@ -453,7 +445,7 @@ fn merge_plan(
         return None;
     };
     let on_side = |pred: usize, head: usize| -> bool {
-        pred == head || dom[pred].contains(&head) || (Some(head) == join && pred == controller)
+        pred == head || dom.dominates(head, pred) || (Some(head) == join && pred == controller)
     };
     let side_of = |pred: usize| -> Option<Side> {
         if on_side(pred, taken) {
@@ -485,7 +477,7 @@ fn summarize_region(
 ) -> Option<NirSummary> {
     let insns: &[NirInstr] = &function.instructions;
     let preds: Vec<Vec<usize>> = predecessors(region);
-    let dom: Vec<BTreeSet<usize>> = dominator_sets(region);
+    let dom: FlowGraph<usize> = region_flow(region)?;
     let mut exit_states: Vec<Option<State>> = vec![None; region.blocks.len()];
     let mut branch_facts: BTreeMap<usize, BranchFact> = BTreeMap::new();
     let mut next_var: u32 = 0;
@@ -846,7 +838,7 @@ fn predicate_width(insns: &[NirInstr], predicate_index: Option<usize>) -> Width 
 
 fn finalize(
     region: &Region,
-    dom: &[BTreeSet<usize>],
+    dom: &FlowGraph<usize>,
     exit_states: &[Option<State>],
     branch_facts: &BTreeMap<usize, BranchFact>,
     input_seeds: BTreeMap<String, u32>,

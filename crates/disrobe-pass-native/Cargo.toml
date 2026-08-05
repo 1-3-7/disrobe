@@ -20,7 +20,7 @@ disrobe-cfg = { workspace = true }
 disrobe-core = { workspace = true }
 disrobe-ir = { workspace = true }
 disrobe-binfmt = { workspace = true }
-disrobe-mba = { workspace = true }
+disrobe-mba = { workspace = true, features = ["cfg-recovery"] }
 disrobe-similarity = { workspace = true }
 disrobe-emit = { workspace = true }
 disrobe-typerec = { workspace = true }
@@ -66,6 +66,7 @@ smt-solver = ["disrobe-mba/smt-solver"]
 [dev-dependencies]
 disrobe-query = { workspace = true }
 iced-x86 = { workspace = true, features = ["code_asm"] }
+object = { workspace = true, features = ["write"] }
 flate2 = { workspace = true }
 wait-timeout = { workspace = true }
 rand = { workspace = true }

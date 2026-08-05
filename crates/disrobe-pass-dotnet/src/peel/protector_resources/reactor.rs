@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use disrobe_cfg::{Flow, FlowGraph};
+
 use crate::cil::{
     FlowControl, Instruction, MethodBody, OperandValue, SlotOp, method_body_code_size,
     method_body_extent, parse_method_body, slot_index_of,
@@ -361,6 +363,41 @@ impl ReactorMetadataIndex {
 pub(super) struct ReactorFlow {
     pub(super) successors: Vec<Vec<usize>>,
     reachable: Vec<bool>,
+    dominance: Option<FlowGraph<usize>>,
+}
+
+fn derive(successors: &[Vec<usize>]) -> (Vec<bool>, Option<FlowGraph<usize>>) {
+    let mut reachable: Vec<bool> = vec![false; successors.len()];
+    let mut pending: Vec<usize> = vec![0];
+    while let Some(index) = pending.pop() {
+        let Some(slot): Option<&mut bool> = reachable.get_mut(index) else {
+            continue;
+        };
+        if *slot {
+            continue;
+        }
+        *slot = true;
+        if let Some(targets) = successors.get(index) {
+            pending.extend(targets.iter().copied());
+        }
+    }
+    let dominance: Option<FlowGraph<usize>> = FlowGraph::build(
+        0..successors.len(),
+        0,
+        |index: usize, emit: &mut dyn FnMut(Flow<usize>)| {
+            let Some(targets): Option<&Vec<usize>> = successors.get(index) else {
+                return;
+            };
+            if targets.is_empty() {
+                emit(Flow::Exit);
+            }
+            for target in targets {
+                emit(Flow::To(*target));
+            }
+        },
+    )
+    .ok();
+    (reachable, dominance)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -495,18 +532,11 @@ impl ReactorFlow {
             };
             successors[index] = targets;
         }
-        let mut reachable: Vec<bool> = vec![false; successors.len()];
-        let mut pending: Vec<usize> = vec![0];
-        while let Some(index) = pending.pop() {
-            if reachable[index] {
-                continue;
-            }
-            reachable[index] = true;
-            pending.extend(successors[index].iter().copied());
-        }
+        let (reachable, dominance): (Vec<bool>, Option<FlowGraph<usize>>) = derive(&successors);
         let flow: Self = Self {
             successors,
             reachable,
+            dominance,
         };
         if flow.has_reachable_cycle() {
             return Err("reachable control flow contains a cycle".to_string());
@@ -514,30 +544,26 @@ impl ReactorFlow {
         Ok(flow)
     }
 
+    #[cfg(test)]
+    pub(super) fn add_edge(&mut self, from: usize, to: usize) {
+        let Some(targets): Option<&mut Vec<usize>> = self.successors.get_mut(from) else {
+            return;
+        };
+        targets.push(to);
+        let (reachable, dominance): (Vec<bool>, Option<FlowGraph<usize>>) =
+            derive(&self.successors);
+        self.reachable = reachable;
+        self.dominance = dominance;
+    }
+
     fn is_reachable(&self, index: usize) -> bool {
         self.reachable.get(index).copied().unwrap_or(false)
     }
 
     fn dominates(&self, dominator: usize, target: usize) -> bool {
-        if !self.is_reachable(dominator) || !self.is_reachable(target) {
-            return false;
-        }
-        if dominator == target {
-            return true;
-        }
-        let mut visited: Vec<bool> = vec![false; self.successors.len()];
-        let mut pending: Vec<usize> = vec![0];
-        while let Some(index) = pending.pop() {
-            if index == dominator || visited[index] {
-                continue;
-            }
-            if index == target {
-                return false;
-            }
-            visited[index] = true;
-            pending.extend(self.successors[index].iter().copied());
-        }
-        true
+        self.dominance
+            .as_ref()
+            .is_some_and(|flow: &FlowGraph<usize>| flow.dominates(dominator, target))
     }
 
     fn has_edge(&self, from: usize, to: usize) -> bool {

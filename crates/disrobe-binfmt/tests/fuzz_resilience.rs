@@ -604,16 +604,31 @@ fn ext4_seed() -> Vec<u8> {
     bytes
 }
 
+const WIM_SEED_XML: &str = "<WIM><TOTALBYTES>4096</TOTALBYTES>\
+<IMAGE INDEX=\"1\"><NAME>seed</NAME><DIRCOUNT>3</DIRCOUNT><FILECOUNT>9</FILECOUNT>\
+<TOTALBYTES>2048</TOTALBYTES></IMAGE>\
+<IMAGE INDEX=\"2\"><NAME>seed alt</NAME><TOTALBYTES>1024</TOTALBYTES></IMAGE></WIM>";
+
 fn wim_seed() -> Vec<u8> {
-    const TOTAL: usize = 512;
-    let mut bytes: Vec<u8> = vec![0u8; TOTAL];
+    const HEADER_LEN: usize = 208;
+    let mut xml: Vec<u8> = vec![0xffu8, 0xfeu8];
+    for unit in WIM_SEED_XML.encode_utf16() {
+        xml.extend_from_slice(&unit.to_le_bytes());
+    }
+    let mut bytes: Vec<u8> = vec![0u8; HEADER_LEN];
     bytes.splice(0..8, b"MSWIM\0\0\0".iter().copied());
     write_u32_le(&mut bytes, 8, 208);
     write_u32_le(&mut bytes, 12, 0x0001_0D00);
     write_u32_le(&mut bytes, 16, 0x0002_0000);
-    write_u32_le(&mut bytes, 32, 32_768);
-    write_u32_le(&mut bytes, 36, 1);
-    write_u32_le(&mut bytes, 40, 1);
+    write_u32_le(&mut bytes, 20, 32_768);
+    write_u16_le(&mut bytes, 40, 1);
+    write_u16_le(&mut bytes, 42, 1);
+    write_u32_le(&mut bytes, 44, 2);
+    let xml_size: u64 = xml.len() as u64;
+    write_u64_le(&mut bytes, 72, xml_size);
+    write_u64_le(&mut bytes, 80, HEADER_LEN as u64);
+    write_u64_le(&mut bytes, 88, xml_size);
+    bytes.extend_from_slice(&xml);
     bytes
 }
 
@@ -1185,6 +1200,21 @@ fn the_seeded_asar_package_reads_back_the_payload_it_encodes() {
     let payload: &[u8] =
         asar::read_entry(&bytes, &layout, entry).expect("the a.txt entry reads back");
     assert_eq!(payload, b"hello");
+}
+
+#[test]
+fn the_seeded_wim_carries_an_xml_body_so_mutation_reaches_the_image_walk() {
+    let bytes: Vec<u8> = wim_seed();
+    let archive: WimArchive = parse_wim(&bytes).expect("the constructed wim must parse");
+    assert_eq!(
+        archive.images.len(),
+        2,
+        "a wim seed whose xml the image walk never reads leaves that walk unmutated, which is how \
+         an unterminated IMAGE element survived this suite: {:?}",
+        archive.images
+    );
+    assert_eq!(archive.images[0].name.as_deref(), Some("seed"));
+    assert_eq!(archive.images[1].index, 2);
 }
 
 #[test]

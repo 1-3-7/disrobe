@@ -499,6 +499,14 @@ fn lift_proto(
         ));
         *fully_structured = false;
     }
+    if structured.refused_regions > 0 {
+        warnings.push(format!(
+            "{} region(s) nested deeper than the structuring limit, so their statements stand \
+             outside the block that held them",
+            structured.refused_regions
+        ));
+        *fully_structured = false;
+    }
     let body: String = render_blocks(&structured.blocks, 1);
 
     let mut out: String = String::new();
@@ -1523,6 +1531,87 @@ fn bump(counts: &mut [u32], slot: usize) {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    fn luau_proto(code: Vec<u32>, stack: u8) -> LuaProto {
+        LuaProto {
+            source: None,
+            line_defined: 0,
+            last_line_defined: 0,
+            num_params: 0,
+            is_vararg: 0,
+            max_stack_size: stack,
+            code,
+            constants: Vec::new(),
+            protos: Vec::new(),
+            source_lines: Vec::new(),
+            locals: Vec::new(),
+            upvalues: Vec::new(),
+        }
+    }
+
+    fn nested_conditional_code(depth: usize) -> Vec<u32> {
+        let span: usize = depth * 2;
+        let mut code: Vec<u32> = Vec::with_capacity(span + 1);
+        for i in 0..depth {
+            let target: i64 = (span - i) as i64;
+            let offset: i64 = target - i as i64 - 1;
+            let d: u32 = u32::from(offset as u16);
+            code.push(u32::from(LOP_JUMPIF) | (d << 16));
+        }
+        for i in depth..span {
+            code.push(u32::from(LOP_LOADN) | (1 << 8) | ((i as u32 & 0xFFFF) << 16));
+        }
+        code.push(u32::from(LOP_RETURN));
+        code
+    }
+
+    fn lift_once(proto: &LuaProto) -> (String, Vec<String>, bool) {
+        let mut warnings: Vec<String> = Vec::new();
+        let mut fully_structured: bool = true;
+        let mut next_scope: usize = 1;
+        let body: String = lift_proto(
+            proto,
+            0,
+            0,
+            &[],
+            &mut next_scope,
+            &mut warnings,
+            &mut fully_structured,
+        );
+        (body, warnings, fully_structured)
+    }
+
+    #[test]
+    fn a_proto_nested_past_the_structuring_limit_refuses_to_claim_a_complete_structure() {
+        let proto: LuaProto = luau_proto(nested_conditional_code(400), 4);
+
+        let (body, warnings, fully_structured): (String, Vec<String>, bool) = lift_once(&proto);
+
+        assert!(
+            !fully_structured,
+            "nesting past the structuring limit leaves statements outside the block that held \
+             them, so the body must never report a complete structure; body:\n{body}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w: &String| w.contains("nested deeper than the structuring limit")),
+            "the refusal has to name what happened rather than leave a bare flag, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn a_proto_nested_inside_the_limit_still_reports_a_complete_structure() {
+        let proto: LuaProto = luau_proto(nested_conditional_code(32), 4);
+
+        let (body, warnings, fully_structured): (String, Vec<String>, bool) = lift_once(&proto);
+
+        assert!(
+            fully_structured,
+            "a body that fits the limit must keep its complete-structure report, or the limit is \
+             refusing ordinary input; warnings {warnings:?}; body:\n{body}"
+        );
+    }
 
     #[test]
     fn decode_basic_layout() {

@@ -99,6 +99,13 @@ pub fn member_access_keywords(flags: u16) -> String {
 
 #[must_use]
 pub fn decompile_class(cf: &ClassFile) -> DecompiledClass {
+    crate::name_disambig::ensure_writable_identifier_scope(
+        declared_identifiers(std::iter::once(cf)),
+        || decompile_class_scoped(cf),
+    )
+}
+
+fn decompile_class_scoped(cf: &ClassFile) -> DecompiledClass {
     let mut source: String = String::with_capacity(2048);
     let raw_name: &str = match cf.this_class_name() {
         Ok(name) => name,
@@ -116,7 +123,9 @@ pub fn decompile_class(cf: &ClassFile) -> DecompiledClass {
         }
     };
     let this_name: String = crate::name_disambig::rewrite_active(raw_name);
-    let simple: &str = this_name.rsplit('/').next().unwrap_or(&this_name);
+    let simple_raw: &str = this_name.rsplit('/').next().unwrap_or(&this_name);
+    let simple_writable: String = descriptor::java_writable_identifier(simple_raw);
+    let simple: &str = &simple_writable;
     let package: Option<&str> = this_name.rfind('/').map(|p| &this_name[..p]);
 
     if let Some(pkg) = package {
@@ -714,10 +723,11 @@ struct RenderedMethod {
 const RECOMPILE_SAFE_LAMBDA_PREFIX: &str = "synthLambda$";
 
 fn recompile_safe_method_name(name: &str) -> String {
-    name.strip_prefix("lambda$").map_or_else(
+    let delambdad: String = name.strip_prefix("lambda$").map_or_else(
         || name.to_string(),
         |rest: &str| format!("{RECOMPILE_SAFE_LAMBDA_PREFIX}{rest}"),
-    )
+    );
+    descriptor::java_writable_identifier(&delambdad)
 }
 
 fn refused_metadata_signature(name: &str, class_simple: &str) -> String {
@@ -1691,7 +1701,9 @@ impl Expr {
                 name,
                 ..
             } => render_field_access(receiver, owner, name),
-            Self::StaticField { owner, name, .. } => format!("{owner}.{name}"),
+            Self::StaticField { owner, name, .. } => {
+                format!("{owner}.{}", descriptor::java_writable_identifier(name))
+            }
             Self::Binary { op, lhs, rhs } => {
                 format!("({} {op} {})", lhs.render(), rhs.render())
             }
@@ -1742,9 +1754,10 @@ impl Expr {
                 }
                 let rendered_args: Vec<String> = args.iter().map(Self::render).collect();
                 let joined: String = rendered_args.join(", ");
+                let call_name: String = descriptor::java_writable_identifier(method);
                 match receiver {
-                    Some(r) => format!("{}.{method}({joined})", r.render()),
-                    None => format!("{owner}.{method}({joined})"),
+                    Some(r) => format!("{}.{call_name}({joined})", r.render()),
+                    None => format!("{owner}.{call_name}({joined})"),
                 }
             }
         }
@@ -1787,8 +1800,9 @@ const fn is_atomic_receiver(e: &Expr) -> bool {
 
 fn render_field_access(receiver: &Expr, owner: &str, name: &str) -> String {
     let owner_src: String = descriptor::binary_to_source(owner);
+    let field: String = descriptor::java_writable_identifier(name);
     if matches!(receiver, Expr::This) {
-        return format!("this.{name}");
+        return format!("this.{field}");
     }
     let receiver_type_known: bool = receiver
         .static_type()
@@ -1796,11 +1810,11 @@ fn render_field_access(receiver: &Expr, owner: &str, name: &str) -> String {
     if receiver_type_known {
         let rendered: String = receiver.render();
         if is_atomic_receiver(receiver) {
-            return format!("{rendered}.{name}");
+            return format!("{rendered}.{field}");
         }
-        return format!("({rendered}).{name}");
+        return format!("({rendered}).{field}");
     }
-    format!("(({owner_src}) {}).{name}", receiver.render())
+    format!("(({owner_src}) {}).{field}", receiver.render())
 }
 
 fn narrow_invoke_receiver(receiver: Expr, owner_src: &str, virtual_dispatch: bool) -> Expr {
@@ -7724,6 +7738,10 @@ thread_local! {
 }
 
 thread_local! {
+    static ANON_INLINE_STACK: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+thread_local! {
     static RECORD_ARITIES: RefCell<BTreeMap<String, usize>> =
         const { RefCell::new(BTreeMap::new()) };
 }
@@ -7898,6 +7916,32 @@ fn anon_inner_for(internal_name: &str) -> Option<ClassFile> {
     ANON_INNERS.with(|slot: &RefCell<BTreeMap<String, ClassFile>>| {
         slot.borrow().get(internal_name).cloned()
     })
+}
+
+const ANON_INLINE_MAX_DEPTH: usize = 16;
+
+fn inline_anonymous_class(type_name: &str, ctor_args: &[String]) -> Option<String> {
+    let admitted: bool = ANON_INLINE_STACK.with(|slot: &RefCell<Vec<String>>| {
+        let mut stack: std::cell::RefMut<'_, Vec<String>> = slot.borrow_mut();
+        if stack.len() >= ANON_INLINE_MAX_DEPTH
+            || stack.iter().any(|open: &String| open == type_name)
+        {
+            return false;
+        }
+        stack.push(type_name.to_owned());
+        true
+    });
+    if !admitted {
+        return None;
+    }
+    let rendered: Option<String> = anon_inner_for(type_name)
+        .and_then(|anon: ClassFile| render_anonymous_class(&anon, ctor_args));
+    ANON_INLINE_STACK.with(|slot: &RefCell<Vec<String>>| {
+        let mut stack: std::cell::RefMut<'_, Vec<String>> = slot.borrow_mut();
+        debug_assert_eq!(stack.last().map(String::as_str), Some(type_name));
+        stack.pop();
+    });
+    rendered
 }
 
 fn with_object_locals<T>(
@@ -8789,8 +8833,7 @@ fn invoke(cf: &ClassFile, insn: &Instruction, stack: &mut Vec<Expr>, op: u8) -> 
         let joined: String = ctor_args.join(", ");
         match receiver {
             Some(Expr::New(ty)) => {
-                let rendered: String = anon_inner_for(&ty)
-                    .and_then(|anon_cf: ClassFile| render_anonymous_class(&anon_cf, &ctor_args))
+                let rendered: String = inline_anonymous_class(&ty, &ctor_args)
                     .unwrap_or_else(|| format!("new {ty}({joined})"));
                 let folded: Expr = Expr::Opaque(rendered);
                 if matches!(stack.last(), Some(Expr::New(under)) if *under == ty) {
@@ -9336,6 +9379,40 @@ pub fn decompile_classfile_bytes(bytes: &[u8]) -> Result<DecompiledClass> {
 
 #[must_use]
 pub fn decompile_class_with_inners(
+    cf: &ClassFile,
+    inners: &std::collections::BTreeMap<String, ClassFile>,
+) -> DecompiledClass {
+    crate::name_disambig::ensure_writable_identifier_scope(
+        declared_identifiers(std::iter::once(cf).chain(inners.values())),
+        || decompile_class_with_inners_scoped(cf, inners),
+    )
+}
+
+fn declared_identifiers<'a>(
+    classes: impl Iterator<Item = &'a ClassFile>,
+) -> std::collections::BTreeSet<String> {
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for class in classes {
+        if let Ok(binary) = class.this_class_name() {
+            for segment in binary.rsplit('/').take(1).flat_map(|s: &str| s.split('$')) {
+                names.insert(segment.to_owned());
+            }
+        }
+        for method in &class.methods {
+            if let Ok(name) = class.utf8_at(method.name_index) {
+                names.insert(name.to_owned());
+            }
+        }
+        for field in &class.fields {
+            if let Ok(name) = class.utf8_at(field.name_index) {
+                names.insert(name.to_owned());
+            }
+        }
+    }
+    names
+}
+
+fn decompile_class_with_inners_scoped(
     cf: &ClassFile,
     inners: &std::collections::BTreeMap<String, ClassFile>,
 ) -> DecompiledClass {

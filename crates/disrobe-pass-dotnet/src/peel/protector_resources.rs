@@ -1031,11 +1031,7 @@ mod tests {
             .expect("key setter");
         let key_start: usize = key_call.checked_sub(2).expect("key operands");
         let mut bypassed_key: ReactorFlow = flow.clone();
-        bypassed_key
-            .successors
-            .get_mut(0)
-            .expect("entry successors")
-            .push(key_call);
+        bypassed_key.add_edge(0, key_call);
         assert!(!contiguous_dominating(
             &bypassed_key,
             &[key_start, key_start + 1, key_call],
@@ -1062,11 +1058,7 @@ mod tests {
         let initializer_store: usize = initializer_call.checked_add(1).expect("initializer store");
         let initializer_indices: Vec<usize> = (initializer_start..=initializer_store).collect();
         let mut bypassed_initializer: ReactorFlow = flow.clone();
-        bypassed_initializer
-            .successors
-            .get_mut(0)
-            .expect("entry successors")
-            .push(initializer_store);
+        bypassed_initializer.add_edge(0, initializer_store);
         assert!(!contiguous_dominating(
             &bypassed_initializer,
             &initializer_indices,
@@ -1080,11 +1072,7 @@ mod tests {
             .expect("return");
         let return_load: usize = return_index.checked_sub(1).expect("return load");
         let mut bypassed_return: ReactorFlow = flow.clone();
-        bypassed_return
-            .successors
-            .get_mut(0)
-            .expect("entry successors")
-            .push(return_index);
+        bypassed_return.add_edge(0, return_index);
         assert!(!contiguous_dominating(
             &bypassed_return,
             &[return_load, return_index],
@@ -1105,11 +1093,7 @@ mod tests {
             .map(|(index, _): (usize, &Instruction)| index)
             .expect("array reversal");
         let mut cyclic: ReactorFlow = flow.clone();
-        cyclic
-            .successors
-            .get_mut(reverse_index)
-            .expect("reverse successors")
-            .push(reverse_index);
+        cyclic.add_edge(reverse_index, reverse_index);
         assert!(cyclic.has_reachable_cycle());
         let resource_call: usize = body
             .instructions

@@ -337,8 +337,10 @@ fn no_recovered_body_falls_back_to_a_placeholder() {
     );
     assert!(
         sweep.methods >= CORPUS_METHOD_FLOOR,
-        "the sweep recovered {} bodies against a floor of {CORPUS_METHOD_FLOOR}; \
-         losing recovered bodies is a regression even when every remaining body is clean",
+        "the sweep emitted {} bodies against a floor of {CORPUS_METHOD_FLOOR}; losing an emitted \
+         body is a regression even when every remaining body is clean. This floor counts every \
+         body the pass emits, including the ones that state a refusal, so it is a population \
+         floor and never a count of bodies recovered into legal source",
         sweep.methods
     );
     assert!(

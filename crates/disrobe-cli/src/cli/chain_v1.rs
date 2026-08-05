@@ -681,6 +681,18 @@ fn recovered_anything(plan: &ChainPlan) -> bool {
             .any(|n: &Node| matches!(n.verdict, Verdict::Complete { .. }))
 }
 
+fn advisory_for_group(group: &str, tag: &str) -> String {
+    if crate::subcommand_names().contains(group) {
+        format!(
+            "note: auto recovered no files from this input. It looks like `{tag}`. Confirm with `disrobe detect <file>`, then run the dedicated command (see `disrobe {group} --help`)."
+        )
+    } else {
+        format!(
+            "note: auto recovered no files from this input. It looks like `{tag}`, which auto reaches through the `{group}` pass and which no dedicated subcommand exposes. Confirm with `disrobe detect <file>`, and see `disrobe catalog` for what this build covers."
+        )
+    }
+}
+
 fn identify_advisory(plan: &ChainPlan) -> String {
     let best: Option<&DetectorPick> = plan
         .nodes
@@ -693,10 +705,7 @@ fn identify_advisory(plan: &ChainPlan) -> String {
         || "note: auto recovered no files and could not identify the format. Run `disrobe detect <file>` to identify it, then the matching subcommand.".to_string(),
         |pick: &DetectorPick| {
             let group: &str = pick.verdict.pass_id.split('.').next().unwrap_or("detect");
-            format!(
-                "note: auto recovered no files from this input. It looks like `{tag}`. Confirm with `disrobe detect <file>`, then run the dedicated command (see `disrobe {group} --help`).",
-                tag = pick.verdict.format_tag,
-            )
+            advisory_for_group(group, pick.verdict.format_tag)
         },
     )
 }
@@ -1376,5 +1385,42 @@ mod tests {
         assert!(r.get("beam.classify").is_some());
         assert!(r.get("as3.classify").is_some());
         assert!(r.get("scriptlang.classify").is_some());
+    }
+
+    #[test]
+    fn no_advisory_names_a_subcommand_this_binary_does_not_have() {
+        let names: BTreeSet<String> = crate::subcommand_names();
+        assert!(
+            names.len() >= 8,
+            "clap reported only {} subcommand(s), so this check is reading the wrong shape and \
+             would pass over an advisory naming anything: {names:?}",
+            names.len()
+        );
+        let groups: BTreeSet<String> = build_registry()
+            .iter_passes()
+            .filter_map(|p: &dyn disrobe_core::chain::Pass| {
+                p.id().split('.').next().map(str::to_owned)
+            })
+            .collect();
+        assert!(
+            !groups.is_empty(),
+            "the registry declares no pass, so no advisory group can be checked"
+        );
+        let orphaned: Vec<&String> = groups
+            .iter()
+            .filter(|group: &&String| !names.contains(group.as_str()))
+            .collect();
+        assert!(
+            !orphaned.is_empty(),
+            "this check only means something while at least one pass group has no dedicated \
+             subcommand; if every group now has one, replace it with an assertion of that"
+        );
+        for group in orphaned {
+            assert!(
+                !advisory_for_group(group, "probe-tag")
+                    .contains(&format!("disrobe {group} --help")),
+                "the advisory sends a user to `disrobe {group}`, which this binary does not have"
+            );
+        }
     }
 }

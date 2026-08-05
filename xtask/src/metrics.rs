@@ -15,6 +15,8 @@ const CLOSE: &str = "<!-- /m -->";
 const IGNORE_MARKER: &str = "<!-- m:ignore -->";
 const PYARMOR_STRUCTURAL_GROUP: &str = "PyArmor structural marshal coverage";
 const PYARMOR_STRUCTURAL_BAR: &str = "v8/v9 default-trial wrappers";
+const NATIVE_CFF_GROUP: &str = "OLLVM control-flow-flattening dispatcher cover";
+const NATIVE_CFF_BAR: &str = "OLLVM -fla dispatcher states";
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Mode {
@@ -538,6 +540,26 @@ const KEYS: &[KeySpec] = &[
             Ok(MetricValue::Int(
                 r.bar(PYARMOR_STRUCTURAL_GROUP, PYARMOR_STRUCTURAL_BAR)?
                     .delivered()?,
+            ))
+        },
+    },
+    KeySpec {
+        name: "native_cff_dispatcher_states",
+        formatter: Formatter::Int,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            Ok(MetricValue::Int(
+                r.bar(NATIVE_CFF_GROUP, NATIVE_CFF_BAR)?.detected()?,
+            ))
+        },
+    },
+    KeySpec {
+        name: "native_cff_cover_states",
+        formatter: Formatter::Int,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            Ok(MetricValue::Int(
+                r.bar(NATIVE_CFF_GROUP, NATIVE_CFF_BAR)?.delivered()?,
             ))
         },
     },

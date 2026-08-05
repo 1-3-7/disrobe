@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use disrobe_core::{AdjGraph, dominator_sets, immediate_post_dominators};
+use disrobe_cfg::{Flow, FlowError, FlowGraph};
 
 use super::{BasicBlock, BlockId, Budget, DvIr, IrInstruction, Terminator, ValueId};
 
@@ -203,7 +203,8 @@ impl Cfg {
             ));
         }
         reject_irreducible(&successors, &predecessors, budget)?;
-        let dominators: Vec<BTreeSet<usize>> = dominators(&successors, budget)?;
+        let graph: FlowGraph<usize> = block_flow(&successors, budget)?;
+        let dominators: Vec<BTreeSet<usize>> = dominator_sets(&graph, budget)?;
         validate_value_dominance(&blocks, &dominators, budget)?;
         let loops: BTreeMap<usize, LoopInfo> = detect_loops(
             &blocks,
@@ -211,9 +212,10 @@ impl Cfg {
             &successors,
             &predecessors,
             &dominators,
+            &graph,
             budget,
         )?;
-        let post_dominators: Vec<Option<usize>> = post_dominators(&successors, budget)?;
+        let post_dominators: Vec<Option<usize>> = post_dominators(&graph, budget)?;
         Ok(Self {
             blocks,
             indices,
@@ -280,40 +282,42 @@ fn reachable_nodes(
     Ok(reachable)
 }
 
-fn dominators(
+fn block_flow(
     successors: &[Vec<usize>],
     budget: &mut Budget,
-) -> Result<Vec<BTreeSet<usize>>, StructureError> {
+) -> Result<FlowGraph<usize>, StructureError> {
     charge_shared_graph_analysis(successors.len(), budget)?;
-    let mut graph_successors: Vec<Vec<u32>> = Vec::with_capacity(successors.len());
-    for targets in successors {
-        StructureError::from_budget(budget)?;
-        let mut converted: Vec<u32> = Vec::with_capacity(targets.len());
-        for target in targets {
-            StructureError::from_budget(budget)?;
-            let value: u32 = u32::try_from(*target).map_err(|_| {
-                StructureError::new("control-flow index exceeds dominator capacity")
-            })?;
-            converted.push(value);
-        }
-        graph_successors.push(converted);
+    if successors.is_empty() {
+        return Err(StructureError::new("control-flow graph declares no blocks"));
     }
-    let graph: AdjGraph = AdjGraph::new(0, graph_successors);
-    StructureError::from_budget(budget)?;
-    let raw_sets: Vec<BTreeSet<u32>> = dominator_sets(&graph);
-    let mut converted_sets: Vec<BTreeSet<usize>> = Vec::with_capacity(raw_sets.len());
-    for raw_set in raw_sets {
+    FlowGraph::build(
+        0..successors.len(),
+        0,
+        |node: usize, emit: &mut dyn FnMut(Flow<usize>)| {
+            let Some(targets): Option<&Vec<usize>> = successors.get(node) else {
+                return;
+            };
+            if targets.is_empty() {
+                emit(Flow::Exit);
+            }
+            for target in targets {
+                emit(Flow::To(*target));
+            }
+        },
+    )
+    .map_err(|error: FlowError| StructureError::new(error.to_string()))
+}
+
+fn dominator_sets(
+    graph: &FlowGraph<usize>,
+    budget: &mut Budget,
+) -> Result<Vec<BTreeSet<usize>>, StructureError> {
+    let mut sets: Vec<BTreeSet<usize>> = Vec::with_capacity(graph.node_count());
+    for node in 0..graph.node_count() {
         StructureError::from_budget(budget)?;
-        let mut converted_set: BTreeSet<usize> = BTreeSet::new();
-        for node in raw_set {
-            StructureError::from_budget(budget)?;
-            let value: usize = usize::try_from(node)
-                .map_err(|_| StructureError::new("dominator index cannot be represented"))?;
-            converted_set.insert(value);
-        }
-        converted_sets.push(converted_set);
+        sets.push(graph.dominator_set(node));
     }
-    Ok(converted_sets)
+    Ok(sets)
 }
 
 fn validate_value_dominance(
@@ -573,51 +577,13 @@ fn validate_structured_value(
 }
 
 fn post_dominators(
-    successors: &[Vec<usize>],
+    graph: &FlowGraph<usize>,
     budget: &mut Budget,
 ) -> Result<Vec<Option<usize>>, StructureError> {
-    let node_count: usize = successors.len();
-    charge_shared_graph_analysis(node_count, budget)?;
-    let exit: u32 = u32::try_from(node_count)
-        .map_err(|_| StructureError::new("control-flow graph exceeds post-dominator capacity"))?;
-    let mut converted: Vec<Vec<u32>> = Vec::with_capacity(node_count);
-    for targets in successors {
+    let mut post_dominators: Vec<Option<usize>> = Vec::with_capacity(graph.node_count());
+    for node in 0..graph.node_count() {
         StructureError::from_budget(budget)?;
-        let mut values: Vec<u32> = Vec::with_capacity(targets.len());
-        for target in targets {
-            StructureError::from_budget(budget)?;
-            let value: u32 = u32::try_from(*target).map_err(|_| {
-                StructureError::new("control-flow index exceeds post-dominator capacity")
-            })?;
-            values.push(value);
-        }
-        converted.push(values);
-    }
-    StructureError::from_budget(budget)?;
-    let raw: Vec<Option<u32>> = immediate_post_dominators(node_count, |node, visit| {
-        let index: Option<usize> = usize::try_from(node).ok();
-        match index.and_then(|value: usize| converted.get(value)) {
-            Some(targets) if targets.is_empty() => visit(exit),
-            Some(targets) => {
-                for target in targets {
-                    visit(*target);
-                }
-            }
-            None => {}
-        }
-    });
-    let mut post_dominators: Vec<Option<usize>> = Vec::with_capacity(raw.len());
-    for candidate in raw {
-        StructureError::from_budget(budget)?;
-        let converted_candidate: Option<usize> =
-            match candidate {
-                Some(value) if value == exit => None,
-                Some(value) => Some(usize::try_from(value).map_err(|_| {
-                    StructureError::new("post-dominator index cannot be represented")
-                })?),
-                None => None,
-            };
-        post_dominators.push(converted_candidate);
+        post_dominators.push(graph.immediate_post_dominator(node).node());
     }
     Ok(post_dominators)
 }
@@ -731,6 +697,7 @@ fn detect_loops(
     successors: &[Vec<usize>],
     predecessors: &[Vec<usize>],
     dominators: &[BTreeSet<usize>],
+    graph: &FlowGraph<usize>,
     budget: &mut Budget,
 ) -> Result<BTreeMap<usize, LoopInfo>, StructureError> {
     let mut latches_by_header: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
@@ -749,7 +716,7 @@ fn detect_loops(
     let mut loops: BTreeMap<usize, LoopInfo> = BTreeMap::new();
     for (header, latches) in latches_by_header {
         StructureError::from_budget(budget)?;
-        let body: BTreeSet<usize> = natural_loop_body(header, &latches, predecessors, budget)?;
+        let body: BTreeSet<usize> = natural_loop_body(header, &latches, graph, budget)?;
         validate_loop_entries(header, &body, predecessors, budget)?;
         let shape: LoopShape =
             classify_loop(blocks, indices, successors, &body, header, &latches, budget)?;
@@ -783,28 +750,13 @@ fn detect_loops(
 fn natural_loop_body(
     header: usize,
     latches: &BTreeSet<usize>,
-    predecessors: &[Vec<usize>],
+    graph: &FlowGraph<usize>,
     budget: &mut Budget,
 ) -> Result<BTreeSet<usize>, StructureError> {
-    let mut body: BTreeSet<usize> = BTreeSet::from([header]);
-    let mut pending: Vec<usize> = Vec::new();
-    for latch in latches {
+    let latches: Vec<usize> = latches.iter().copied().collect();
+    let body: BTreeSet<usize> = graph.natural_loop_body(header, &latches);
+    for _ in &body {
         StructureError::from_budget(budget)?;
-        if body.insert(*latch) {
-            pending.push(*latch);
-        }
-    }
-    while let Some(node) = pending.pop() {
-        StructureError::from_budget(budget)?;
-        let entries: &Vec<usize> = predecessors
-            .get(node)
-            .ok_or_else(|| StructureError::new("predecessor index is out of range"))?;
-        for predecessor in entries {
-            StructureError::from_budget(budget)?;
-            if body.insert(*predecessor) {
-                pending.push(*predecessor);
-            }
-        }
     }
     Ok(body)
 }

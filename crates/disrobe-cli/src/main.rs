@@ -1504,6 +1504,14 @@ fn parse_u8_auto(s: &str) -> Result<u8, String> {
     u8::try_from(value).map_err(|e: std::num::TryFromIntError| e.to_string())
 }
 
+#[cfg(feature = "chain")]
+pub(crate) fn subcommand_names() -> std::collections::BTreeSet<String> {
+    <Cli as clap::CommandFactory>::command()
+        .get_subcommands()
+        .map(|sub: &clap::Command| sub.get_name().to_owned())
+        .collect()
+}
+
 fn install_crash_reporter() {
     if cfg!(debug_assertions) || std::env::var_os("RUST_BACKTRACE").is_some() {
         return;

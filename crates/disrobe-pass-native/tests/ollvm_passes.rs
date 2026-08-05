@@ -64,18 +64,29 @@ fn flattened_function() -> Vec<u8> {
 }
 
 #[test]
-fn ollvm_cff_unflatten_recovers_self_authored_linear_chain_shape() {
+fn ollvm_cff_unflatten_covers_every_state_of_the_self_authored_dispatcher() {
     let bytes: Vec<u8> = flattened_function();
     let report: CffUnflattenReport = unflatten_ollvm(DeobfBits::Bits64, BASE, &bytes, BASE);
+    assert_eq!(
+        (report.covered_states, report.dispatcher_states),
+        (3, 3),
+        "this test writes the dispatcher, so every one of its three states must be reached: \
+         {report:?}"
+    );
+    assert!(
+        report.uncovered_states.is_empty(),
+        "no state may be left out: {report:?}"
+    );
     assert!(
         report.fully_recovered,
-        "expected full recovery of the self-authored flattened function: {report:?}"
+        "cover is complete and every transition resolved, so the recovery is full: {report:?}"
     );
     assert_eq!(report.recovered_blocks, 3);
     assert!(report.dispatcher_address.is_some());
     assert!(
         report.linear_order.windows(2).all(|w| w[0] < w[1]),
-        "recovered blocks must be in source order: {:x?}",
+        "this fixture lays its own case blocks in state order, so the recovered order rises with \
+         the address here. That is a fact about this fixture, not about flattened code: {:x?}",
         report.linear_order
     );
 }
@@ -187,7 +198,7 @@ fn corpus(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn real_ollvm_cff_unflatten_round_trip() {
+fn real_ollvm_cff_covers_every_dispatcher_state_of_classify() {
     let Ok(flattened): std::io::Result<Vec<u8>> = std::fs::read(corpus("classify_fla.bin")) else {
         eprintln!("skip: real OLLVM classify_fla.bin absent");
         return;
@@ -209,9 +220,21 @@ fn real_ollvm_cff_unflatten_round_trip() {
 
     let base: u64 = 0x1000;
     let report: CffUnflattenReport = unflatten_ollvm(DeobfBits::Bits64, base, &flattened, base);
+    assert_eq!(
+        (report.covered_states, report.dispatcher_states),
+        (4, 4),
+        "ollvm-16 -fla gives classify() a four-state dispatcher, and the denominator is read back \
+         out of that compare tree rather than typed here, so a state the recovery never places \
+         stays in it: {report:?}"
+    );
+    assert!(
+        report.uncovered_states.is_empty(),
+        "the greater-than arm is one of the four states, and a recovery that walks only the \
+         fallthrough chain leaves it out: {report:?}"
+    );
     assert!(
         report.fully_recovered,
-        "disrobe must fully recover the REAL ollvm-16 -fla classify(): {report:?}"
+        "disrobe must reach every dispatcher state of the REAL ollvm-16 -fla classify(): {report:?}"
     );
     assert!(report.dispatcher_address.is_some());
     assert_eq!(
@@ -219,13 +242,13 @@ fn real_ollvm_cff_unflatten_round_trip() {
         Some("R9D"),
         "real OLLVM uses a register state variable, not a stack slot: {report:?}"
     );
-    assert!(
-        report.recovered_blocks >= 3,
-        "all three original classify blocks must be recovered: {report:?}"
-    );
-    assert!(
-        report.linear_order.windows(2).all(|w| w[0] < w[1]),
-        "recovered blocks must be in source order: {:x?}",
+    assert_eq!(
+        report.linear_order,
+        vec![0x104d, 0x1031, 0x1062, 0x106c],
+        "the recovered order is the reachable set walked from the entry state: the n > 10 test, \
+         then the n * 2 arm, then the n + 1 arm, then the return. ollvm assigns its state \
+         constants at random, so that order does not rise with the address and must not be graded \
+         as if it did: {:x?}",
         report.linear_order
     );
 }
@@ -238,10 +261,16 @@ fn real_ollvm_cff_recovers_a_flattened_loop() {
     };
     let base: u64 = 0x1000;
     let report: CffUnflattenReport = unflatten_ollvm(DeobfBits::Bits64, base, &flattened, base);
+    assert_eq!(
+        (report.covered_states, report.dispatcher_states),
+        (5, 5),
+        "the REAL ollvm-16 -fla for-loop sum_to() has a five-state dispatcher whose loop-back \
+         transition is a register copy fed by a cmov in another block (mov r9d,r10d; cmovg \
+         r10d,r8d), and every one of the five must be reached: {report:?}"
+    );
     assert!(
         report.fully_recovered,
-        "disrobe must fully recover the REAL ollvm-16 -fla for-loop sum_to() - the loop's \
-         register-copy + cmov state transition (mov r9d,r10d; cmovg r10d,r8d): {report:?}"
+        "cover is complete and every transition resolved: {report:?}"
     );
     assert!(
         report.recovered_blocks >= 4,
