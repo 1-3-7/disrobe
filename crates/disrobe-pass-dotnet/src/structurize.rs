@@ -3342,7 +3342,7 @@ pub(crate) fn is_simple_identifier(s: &str) -> bool {
         && chars.all(|c: char| c == '_' || c.is_ascii_alphanumeric())
 }
 
-pub(crate) fn split_csharp_parameter_declarations(parameters: &str) -> Option<Vec<&str>> {
+pub fn split_csharp_parameter_declarations(parameters: &str) -> Option<Vec<&str>> {
     let mut parts: Vec<&str> = Vec::new();
     let mut start: usize = 0;
     let mut angle_depth: usize = 0;

@@ -10,8 +10,11 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use disrobe_pass_dotnet::decompile::{DecompiledAssembly, decompile_assembly};
+use disrobe_pass_dotnet::metadata::{MetadataRoot, parse_metadata_root};
+use disrobe_pass_dotnet::model::{AssemblyModel, MethodModel, ParamModel, Resolver, TypeModel};
+use disrobe_pass_dotnet::pe::{ClrHeader, PeImage, parse, parse_clr_header};
 use disrobe_pass_dotnet::signature::{TypeSig, element_type, parse_local_sig};
-use disrobe_pass_dotnet::structurize::StructuredMethod;
+use disrobe_pass_dotnet::structurize::{StructuredMethod, split_csharp_parameter_declarations};
 
 const EDGECASES_BASELINE_REL: &str = "../../corpus/dotnet/megafile/EdgeCases.baseline.dll";
 const CORPUS_ROOT_REL: &str = "../../corpus/dotnet";
@@ -711,32 +714,131 @@ fn clean_baseline_merge_bodies_that_still_abstain_keep_their_recorded_cause() {
     }
 }
 
+const BASELINE_UNNAMED_PARAMS: [(u32, &str); 1] = [(
+    0x0600_0010,
+    "the compiler-embedded System.Runtime.CompilerServices.NullableAttribute constructor, whose \
+     single parameter has no Param row at all, so metadata carries no name to recover",
+)];
+
+fn is_positional_parameter_name(name: &str) -> bool {
+    name.strip_prefix("arg").is_some_and(|digits: &str| {
+        !digits.is_empty() && digits.bytes().all(|b: u8| b.is_ascii_digit())
+    })
+}
+
+fn positional_parameters(signature: &str) -> Vec<(usize, String)> {
+    let Some(header): Option<&str> = signature.lines().next_back() else {
+        return Vec::new();
+    };
+    let (Some(open), Some(close)): (Option<usize>, Option<usize>) =
+        (header.find('('), header.rfind(')'))
+    else {
+        return Vec::new();
+    };
+    if close <= open + 1 {
+        return Vec::new();
+    }
+    let Some(declarations): Option<Vec<&str>> =
+        split_csharp_parameter_declarations(&header[open + 1..close])
+    else {
+        return Vec::new();
+    };
+    declarations
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, raw): (usize, &str)| {
+            let (_, name): (&str, &str) = raw.trim().rsplit_once(' ')?;
+            is_positional_parameter_name(name).then(|| (index, name.to_owned()))
+        })
+        .collect()
+}
+
+fn baseline_model() -> AssemblyModel {
+    let bytes: Vec<u8> = load(EDGECASES_BASELINE_REL);
+    let pe: PeImage = parse(&bytes).expect("parse the clean baseline as a PE image");
+    let clr: ClrHeader =
+        parse_clr_header(&bytes, &pe).expect("clean baseline carries a CLR header");
+    let root: MetadataRoot =
+        parse_metadata_root(&bytes, &pe, &clr).expect("clean baseline carries a metadata root");
+    Resolver::build(&bytes, &pe, &clr, &root)
+        .expect("build a resolver over the clean baseline")
+        .model()
+}
+
+fn metadata_parameter_name(model: &AssemblyModel, token: u32, position: usize) -> Option<String> {
+    let sequence: u16 = u16::try_from(position.saturating_add(1)).ok()?;
+    model
+        .types
+        .iter()
+        .flat_map(|t: &TypeModel| t.methods.iter())
+        .find(|m: &&MethodModel| m.token == token)?
+        .parameters
+        .iter()
+        .find(|p: &&ParamModel| p.sequence == sequence)
+        .map(|p: &ParamModel| p.name.clone())
+        .filter(|name: &String| !name.is_empty())
+}
+
 #[test]
 fn typed_local_rate_is_total_on_clean_baseline() {
     let asm: DecompiledAssembly = baseline();
+    let model: AssemblyModel = baseline_model();
     let untyped_methods: usize = asm
         .methods
         .iter()
         .filter(|m: &&StructuredMethod| m.body.contains("var local"))
         .count();
-    let positional_methods: usize = asm
-        .methods
-        .iter()
-        .filter(|m: &&StructuredMethod| {
-            m.body.match_indices("arg").any(|(i, _): (usize, &str)| {
-                m.body[i + 3..]
-                    .chars()
-                    .next()
-                    .is_some_and(|c: char| c.is_ascii_digit())
-            })
-        })
-        .count();
     assert_eq!(
         untyped_methods, 0,
         "no method on the clean baseline may carry an untyped `var` local"
     );
+
+    let positional: Vec<(u32, Vec<(usize, String)>)> = asm
+        .methods
+        .iter()
+        .map(|m: &StructuredMethod| (m.token, positional_parameters(&m.signature)))
+        .filter(|(_, params): &(u32, Vec<(usize, String)>)| !params.is_empty())
+        .collect();
+
+    let mut name_carrying: Vec<String> = Vec::new();
+    for (token, params) in &positional {
+        for (position, rendered) in params {
+            let Some(recorded): Option<String> = metadata_parameter_name(&model, *token, *position)
+            else {
+                continue;
+            };
+            name_carrying.push(format!(
+                "  0x{token:08x} parameter {position} renders `{rendered}` while the Param table \
+                 names it `{recorded}`"
+            ));
+        }
+    }
     assert!(
-        positional_methods <= 8,
-        "only genuinely-unnamed compiler-generated params may keep argN; got {positional_methods} methods"
+        name_carrying.is_empty(),
+        "a parameter may only keep a positional `argN` when .NET metadata carries no name for it, \
+         and {} keep one anyway. A compiler-generated name such as `<>1__state` is still a name and \
+         has to be read through, not discarded:\n{}",
+        name_carrying.len(),
+        name_carrying.join("\n")
+    );
+
+    let observed: BTreeSet<u32> = positional
+        .iter()
+        .map(|(token, _): &(u32, Vec<(usize, String)>)| *token)
+        .collect();
+    let recorded: BTreeSet<u32> = BASELINE_UNNAMED_PARAMS
+        .iter()
+        .map(|(token, _): &(u32, &str)| *token)
+        .collect();
+    assert_eq!(
+        observed,
+        recorded,
+        "the clean baseline methods that keep a positional parameter are recorded one by one with \
+         the reason no name exists, so the set is pinned rather than counted. Recorded:\n{}",
+        BASELINE_UNNAMED_PARAMS
+            .iter()
+            .map(|(token, reason): &(u32, &str)| format!("  0x{token:08x} is {reason}"))
+            .collect::<Vec<String>>()
+            .join("\n")
     );
 }
