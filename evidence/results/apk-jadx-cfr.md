@@ -3,7 +3,7 @@
 - id: `apk-jadx-cfr`
 - ecosystem: android
 - claim: On their respective committed EdgeCases inputs, one real javac run scores every tool by the same rule, and a main-class method counts clean only from a recovered file that javac type-checked end to end. A leg publishes a lead only when the compiler certified both of its sides, so a file javac stopped parsing ends its leg for both tools instead of scoring either one.
-- measured: Android DEX: `disrobe` 20 / 132 (15.2%) vs JADX not certified (130 methods emitted; the compiler stopped on line 619); JVM classfile: `disrobe` 131 / 131 (100.0%) vs CFR not certified (106 methods emitted; the compiler stopped on line 173)
+- measured: Android DEX: `disrobe` 22 / 132 (16.7%) vs JADX not certified (130 methods emitted; the compiler stopped on line 619); JVM classfile: `disrobe` 131 / 131 (100.0%) vs CFR not certified (106 methods emitted; the compiler stopped on line 173)
 - oracle strength: recompile-only
 - CI-attested: yes [CI]
 - evidence basis: real javac (JDK), per-method recompile error-free against a STUBBED (empty) classpath so a wrong recovered signature cannot resolve against the original classes; the SAME oracle and the same certification rule score every tool, and a file the compiler stopped parsing certifies no method for either side
@@ -13,7 +13,7 @@
 
 | tool | version | metric | result | status |
 |---|---|---|---|---|
-| **disrobe (in-house Dalvik, DEX input)** | n/a (in-process) | recompile-clean main-class methods (clean / emitted) | 20 clean / 132 emitted (15.2%) | ok |
+| **disrobe (in-house Dalvik, DEX input)** | n/a (in-process) | recompile-clean main-class methods (clean / emitted) | 22 clean / 132 emitted (16.7%) | ok |
 | jadx (DEX input) | 1.5.5 | recompile-clean main-class methods (clean / emitted) | not certified: 130 methods emitted | uncertified |
 | **disrobe (in-house JVM, JAR input)** | n/a (in-process) | recompile-clean main-class methods (clean / emitted) | 131 clean / 131 emitted (100.0%) | ok |
 | cfr (JAR input) | CFR 0.152 | recompile-clean main-class methods (clean / emitted) | not certified: 106 methods emitted | uncertified |

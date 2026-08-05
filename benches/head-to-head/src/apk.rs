@@ -90,7 +90,7 @@ pub fn measure(root: &Path) -> Result<(String, Value)> {
             "identical input bytes per leg: disrobe and jadx both decompile EdgeCases.dex; disrobe and cfr both decompile the EdgeCases-baseline.jar (cfr cannot read DEX)",
             "same oracle scores every tool: the same javac run and the same error-line map over each tool's recovered MAIN EdgeCases class",
             "same certification rule for every tool: clean methods are counted only from a file javac type-checked, and a file javac stopped parsing certifies no method for either side and faults none either",
-            "only the main class is scored. disrobe emits its EdgeCases$N classes beside the main class and they are cut from the scored file, while jadx nests its synthetic types inside the main class and they stay in it, so a defect in a synthetic type can stop the compiler on the jadx side where the same defect could not on the disrobe side",
+            "every tool's whole emitted source set is compiled together, exactly as that tool wrote it, and only the main EdgeCases class's own methods are scored. Nothing is cut out of any tool's output before the compiler sees it, so a tool that emits its synthetic types beside the main class and a tool that nests them inside it are compiled on the same terms",
             "stubbed classpath: no original-jar leak (the section-0.4 #1 defect is fixed)",
             "a tool that produces no EdgeCases source at all is a miss, never an excluded sample"
         ],
@@ -424,8 +424,7 @@ fn score_disrobe_dex(javac: &Path, dex_bytes: &[u8], denominator: usize) -> Tool
             "disrobe in-house DEX decompile returned an error".to_owned(),
         );
     };
-    let source: String = main_edgecases_source(&out.sources);
-    score_source(javac, &source, denominator)
+    score_source_set(javac, &out.sources, denominator)
 }
 
 fn score_disrobe_jar(javac: &Path, jar_bytes: &[u8], denominator: usize) -> ToolScore {
@@ -465,17 +464,10 @@ fn score_jadx(javac: &Path, dex_bytes: &[u8], denominator: usize) -> ToolScore {
             "jadx crashed or produced no .java on EdgeCases.dex".to_owned(),
         );
     };
-    let source: String = main_class_file(&out.sources).cloned().unwrap_or_else(|| {
-        out.sources
-            .values()
-            .find(|s: &&String| s.contains("class EdgeCases"))
-            .cloned()
-            .unwrap_or_default()
-    });
-    if source.is_empty() {
+    if main_class_file(&out.sources).is_none() {
         return ToolScore::miss(denominator, "jadx produced no EdgeCases source".to_owned());
     }
-    score_source(javac, &source, denominator)
+    score_source_set(javac, &out.sources, denominator)
 }
 
 fn score_cfr(javac: &Path, jar_path: &Path, cfr: &CfrInvoke, denominator: usize) -> ToolScore {
@@ -508,6 +500,30 @@ fn score_source(javac: &Path, source: &str, original: usize) -> ToolScore {
         );
     }
     score_method_ranges(original, &ranges, javac_verdict(javac, source))
+}
+
+fn score_source_set(
+    javac: &Path,
+    sources: &BTreeMap<String, String>,
+    original: usize,
+) -> ToolScore {
+    let Some(main): Option<&String> = main_class_file(sources) else {
+        return ToolScore::miss(
+            original,
+            format!("no {MAIN_CLASS_FILE} among the recovered sources"),
+        );
+    };
+    if main.trim().is_empty() {
+        return ToolScore::miss(original, "empty recovered source".to_owned());
+    }
+    let ranges: Vec<(usize, usize)> = main_class_method_ranges(main);
+    if ranges.is_empty() {
+        return ToolScore::miss(
+            original,
+            "recovered source contains no main-EdgeCases methods".to_owned(),
+        );
+    }
+    score_method_ranges(original, &ranges, javac_verdict_over_set(javac, sources))
 }
 
 #[derive(Debug)]
@@ -592,42 +608,6 @@ fn main_class_file(sources: &BTreeMap<String, String>) -> Option<&String> {
         .map(|(_path, source): (&String, &String)| source)
 }
 
-fn main_edgecases_source(sources: &BTreeMap<String, String>) -> String {
-    let selected: String = main_class_file(sources).cloned().unwrap_or_else(|| {
-        sources
-            .values()
-            .find(|s: &&String| s.contains("class EdgeCases"))
-            .cloned()
-            .unwrap_or_else(|| sources.values().next().cloned().unwrap_or_default())
-    });
-    extract_main_edgecases_block(&selected).unwrap_or(selected)
-}
-
-fn extract_main_edgecases_block(src: &str) -> Option<String> {
-    let lines: Vec<&str> = src.lines().collect();
-    let start: usize = lines.iter().position(|l: &&str| {
-        let t: &str = l.trim_start();
-        (t.contains("class EdgeCases ") || t.contains("class EdgeCases{"))
-            && !t.contains("EdgeCases$")
-            && t.contains('{')
-    })?;
-    let mut depth: i32 = 0;
-    let mut end: usize = start;
-    let mut seen_open: bool = false;
-    for (idx, line) in lines.iter().enumerate().skip(start) {
-        depth += line.matches('{').count() as i32;
-        depth -= line.matches('}').count() as i32;
-        if depth > 0 {
-            seen_open = true;
-        }
-        if seen_open && depth == 0 {
-            end = idx;
-            break;
-        }
-    }
-    Some(lines[start..=end].join("\n"))
-}
-
 fn classes_from_jar(jar_bytes: &[u8]) -> Option<Vec<(String, Vec<u8>)>> {
     classes_from_jar_with_limits(
         jar_bytes,
@@ -681,16 +661,38 @@ fn classes_from_jar_with_limits(
 }
 
 fn javac_verdict(javac: &Path, source: &str) -> std::result::Result<OracleVerdict, String> {
+    let mut single: BTreeMap<String, String> = BTreeMap::new();
+    single.insert(MAIN_CLASS_FILE.to_owned(), source.to_owned());
+    javac_verdict_over_set(javac, &single)
+}
+
+fn javac_verdict_over_set(
+    javac: &Path,
+    sources: &BTreeMap<String, String>,
+) -> std::result::Result<OracleVerdict, String> {
     let scratch: ScratchDir = ScratchDir::create("disrobe_h2h_javac")
         .map_err(|error: std::io::Error| format!("could not create javac workspace: {error}"))?;
     let dir: &Path = scratch.path();
-    let path: PathBuf = dir.join("EdgeCases.java");
-    std::fs::write(&path, source)
-        .map_err(|error: std::io::Error| format!("could not write javac source: {error}"))?;
+    let mut written: Vec<PathBuf> = Vec::with_capacity(sources.len());
+    for (relative, text) in sources {
+        let path: PathBuf = dir.join(relative.replace('\\', "/"));
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error: std::io::Error| {
+                format!("could not create javac source directory: {error}")
+            })?;
+        }
+        std::fs::write(&path, text)
+            .map_err(|error: std::io::Error| format!("could not write javac source: {error}"))?;
+        written.push(path);
+    }
+    if written.is_empty() {
+        return Err("no recovered source to compile".to_owned());
+    }
     let stub: PathBuf = dir.join("cp");
     std::fs::create_dir(&stub)
         .map_err(|error: std::io::Error| format!("could not create javac classpath: {error}"))?;
-    let out: std::process::Output = compile(javac, &stub, &dir.join("out"), &[&path])?;
+    let borrowed: Vec<&Path> = written.iter().map(PathBuf::as_path).collect();
+    let out: std::process::Output = compile(javac, &stub, &dir.join("out"), &borrowed)?;
     if out.status.success() {
         require_emitted_edgecases_class(dir)?;
         return Ok(OracleVerdict {
@@ -701,7 +703,7 @@ fn javac_verdict(javac: &Path, source: &str) -> std::result::Result<OracleVerdic
     let diagnostics: String = combined_output(&out);
     let error_lines: Vec<usize> = failed_javac_error_lines(&diagnostics)
         .map_err(|error: String| format!("javac exited with {}: {error}", out.status))?;
-    let type_checked: bool = type_check_was_reached(javac, dir, &stub, &path)?;
+    let type_checked: bool = type_check_was_reached(javac, dir, &stub, &borrowed)?;
     Ok(OracleVerdict {
         error_lines,
         type_checked,
@@ -712,18 +714,15 @@ fn type_check_was_reached(
     javac: &Path,
     dir: &Path,
     stub: &Path,
-    source_path: &Path,
+    source_paths: &[&Path],
 ) -> std::result::Result<bool, String> {
     let probe_path: PathBuf = dir.join(ATTRIBUTION_PROBE_FILE);
     std::fs::write(&probe_path, ATTRIBUTION_PROBE_SOURCE).map_err(|error: std::io::Error| {
         format!("could not write the type-check probe: {error}")
     })?;
-    let out: std::process::Output = compile(
-        javac,
-        stub,
-        &dir.join("probe-out"),
-        &[source_path, &probe_path],
-    )?;
+    let mut with_probe: Vec<&Path> = source_paths.to_vec();
+    with_probe.push(&probe_path);
+    let out: std::process::Output = compile(javac, stub, &dir.join("probe-out"), &with_probe)?;
     if out.status.success() {
         return Err(
             "the type-check probe compiled without reporting its unresolvable symbol, so it can no \
@@ -953,6 +952,7 @@ mod tests {
     }
 
     const SAMPLE: &str = "package p;\npublic class EdgeCases {\n  public int a() {\n    return 1;\n  }\n  static class Inner {\n    void hidden() {}\n  }\n  private void b(int x) {\n    System.out.println(x);\n  }\n}\nclass EdgeCases$1 {\n  void synthetic() {}\n}\n";
+    const SAMPLE_MAIN_CLASS: &str = "public class EdgeCases {\n  public int a() {\n    return 1;\n  }\n  static class Inner {\n    void hidden() {}\n  }\n  private void b(int x) {\n    System.out.println(x);\n  }\n}\n";
 
     #[test]
     fn dataset_description_tracks_each_fixture_digest() {
@@ -966,18 +966,14 @@ mod tests {
     }
 
     #[test]
-    fn main_class_method_ranges_counts_only_depth_one_members() -> core::result::Result<(), String>
-    {
-        let Some(block): Option<String> = extract_main_edgecases_block(SAMPLE) else {
-            return Err("expected sample main class block".to_owned());
-        };
-        let ranges: Vec<(usize, usize)> = main_class_method_ranges(&block);
+    fn main_class_method_ranges_counts_only_depth_one_members() {
+        let ranges: Vec<(usize, usize)> = main_class_method_ranges(SAMPLE_MAIN_CLASS);
         assert_eq!(
             ranges.len(),
             2,
-            "only EdgeCases.a and EdgeCases.b are depth-1 members; Inner.hidden and the EdgeCases$1 sibling are excluded"
+            "only EdgeCases.a and EdgeCases.b are depth-1 members; Inner.hidden sits one level \
+             deeper and is not a main-class method"
         );
-        Ok(())
     }
 
     #[test]
@@ -993,7 +989,8 @@ mod tests {
             "public class EdgeCases {\n    public int real() {\n        return 2;\n    }\n}\n"
                 .to_owned(),
         );
-        let selected: String = main_edgecases_source(&sources);
+        let selected: &String = main_class_file(&sources)
+            .unwrap_or_else(|| unreachable!("the sample carries an EdgeCases.java"));
         assert!(
             selected.contains("public int real()"),
             "the scored file has to be the main class. `EdgeCases$_0.java` sorts first and its text \
@@ -1004,14 +1001,21 @@ mod tests {
     }
 
     #[test]
-    fn extract_main_block_drops_the_dollar_sibling_class() -> core::result::Result<(), String> {
-        let Some(block): Option<String> = extract_main_edgecases_block(SAMPLE) else {
-            return Err("expected sample main class block".to_owned());
-        };
-        assert!(block.contains("class EdgeCases {"));
+    fn a_source_set_without_the_main_class_is_a_miss() -> core::result::Result<(), String> {
+        let mut sources: BTreeMap<String, String> = BTreeMap::new();
+        sources.insert(
+            "Other.java".to_owned(),
+            "public class Other {\n    public int a() {\n        return 1;\n    }\n}\n".to_owned(),
+        );
+        let scratch: ScratchDir = ScratchDir::create("disrobe_h2h_no_main")
+            .map_err(|error: std::io::Error| error.to_string())?;
+        let missing: PathBuf = scratch.path().join("javac-that-does-not-exist");
+        let score: ToolScore = score_source_set(&missing, &sources, 2);
+        assert_eq!(score.status(), "miss");
         assert!(
-            !block.contains("EdgeCases$1"),
-            "the separately-emitted synthetic class must not leak into the main block"
+            score.detail().contains("EdgeCases.java"),
+            "the miss has to name the file it could not find: {}",
+            score.detail()
         );
         Ok(())
     }

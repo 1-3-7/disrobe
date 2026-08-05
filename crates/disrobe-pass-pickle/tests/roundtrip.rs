@@ -1,7 +1,5 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use std::collections::BTreeMap;
-use std::ffi::{OsStr, OsString};
-use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -13,8 +11,9 @@ const MIN_SUPPORTED: usize = 120;
 const FLOOR_PERCENT: usize = 100;
 const PINNED_FIXTURES: usize = 470;
 const PINNED_REEXECUTED: usize = 470;
-const REQUIRE_PYTHON_VAR: &str = "DISROBE_REQUIRE_PYTHON";
+const PYTHON_OVERRIDE_VAR: &str = "DISROBE_PYTHON";
 const GRADED: &str = "the pickle reconstruction roundtrip";
+const RECOVERY_BAR: &str = "reconstruction roundtrip, re-executed";
 const CPYTHON_SHARED_TUPLE_PROTOCOL2: &[u8] =
     b"\x80\x02]q\x00(K\x07]q\x01K\x08a\x86q\x02h\x02}q\x03X\x05\x00\x00\x00tupleq\x04h\x02se.";
 const CPYTHON_SHARED_TUPLE_PROTOCOL2_OPCODES: &[&str] = &[
@@ -90,38 +89,13 @@ fn probe(exe: &str) -> bool {
         .is_ok_and(|o: std::process::Output| o.status.success())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InterpreterRequirement {
-    Optional,
-    Mandatory,
-}
-
-fn requirement_from_value(value: Option<&OsStr>) -> InterpreterRequirement {
-    let Some(raw): Option<&OsStr> = value else {
-        return InterpreterRequirement::Optional;
-    };
-    let text: String = raw.to_string_lossy().trim().to_ascii_lowercase();
-    match text.as_str() {
-        "" | "0" | "false" | "no" | "off" | "optional" => InterpreterRequirement::Optional,
-        _ => InterpreterRequirement::Mandatory,
-    }
-}
-
-fn requirement() -> InterpreterRequirement {
-    let raw: Option<OsString> = std::env::var_os(REQUIRE_PYTHON_VAR);
-    requirement_from_value(raw.as_deref())
-}
-
-fn announce_unmeasured() {
-    let line: String = format!(
-        "\nNOT MEASURED: {GRADED} was compared against nothing and graded nothing, because no \
-         CPython interpreter is usable here. The published {PINNED_REEXECUTED}-fixture figure is \
-         not enforced on this host. Set DISROBE_PYTHON to a real interpreter, or set \
-         {REQUIRE_PYTHON_VAR}=1 to fail instead of skipping when CPython cannot be run.\n"
-    );
-    let mut sink: std::io::StdoutLock<'static> = std::io::stdout().lock();
-    drop(sink.write_all(line.as_bytes()));
-    drop(sink.flush());
+fn missing_interpreter_message() -> String {
+    format!(
+        "{GRADED} publishes {PINNED_REEXECUTED} of {PINNED_FIXTURES} in \
+         `{RECOVERY_BAR}`, and no CPython interpreter is usable here, so this run would compare \
+         the recovery against nothing. A case that grades nothing must fail rather than report \
+         success. Install CPython 3 and put it on PATH, or point {PYTHON_OVERRIDE_VAR} at one."
+    )
 }
 
 fn find_python() -> Option<String> {
@@ -136,53 +110,48 @@ fn find_python() -> Option<String> {
         .map(str::to_owned)
 }
 
-fn enforce_requirement(requirement: InterpreterRequirement) {
+fn demand_python_from(found: Option<String>) -> String {
+    let Some(python): Option<String> = found else {
+        panic!("{}", missing_interpreter_message());
+    };
+    python
+}
+
+fn demand_python() -> String {
+    demand_python_from(find_python())
+}
+
+#[test]
+fn the_missing_interpreter_message_names_the_bar_it_leaves_ungraded() {
+    let message: String = missing_interpreter_message();
     assert!(
-        requirement == InterpreterRequirement::Optional,
-        "{REQUIRE_PYTHON_VAR} makes a real CPython interpreter mandatory for this run, so {GRADED} \
-         cannot be measured and this case must not report success. Install CPython 3 and put it on \
-         PATH, or point DISROBE_PYTHON at one; to permit a run that measures nothing here, clear \
-         {REQUIRE_PYTHON_VAR}."
+        message.contains(RECOVERY_BAR),
+        "a host without CPython must be told which published bar goes ungraded, got {message:?}"
     );
-    announce_unmeasured();
-}
-
-fn require_python() -> Option<String> {
-    let found: Option<String> = find_python();
-    if found.is_some() {
-        return found;
-    }
-    enforce_requirement(requirement());
-    None
+    assert!(
+        message.contains(&PINNED_REEXECUTED.to_string())
+            && message.contains(&PINNED_FIXTURES.to_string()),
+        "the message must quote the numerator and the denominator it cannot check, got {message:?}"
+    );
+    assert!(
+        message.contains(PYTHON_OVERRIDE_VAR),
+        "the message must name the variable that points at an interpreter, got {message:?}"
+    );
 }
 
 #[test]
-fn the_python_requirement_reads_its_environment_variable() {
+#[should_panic(expected = "must fail rather than report success")]
+fn an_absent_interpreter_fails_rather_than_skipping() {
+    drop(demand_python_from(None));
+}
+
+#[test]
+fn a_located_interpreter_is_handed_back_unchanged() {
     assert_eq!(
-        requirement_from_value(None),
-        InterpreterRequirement::Optional,
-        "an unset {REQUIRE_PYTHON_VAR} leaves the interpreter optional"
+        demand_python_from(Some("python3".to_owned())),
+        "python3",
+        "the demand must return the interpreter it was given, not re-probe for another"
     );
-    for off in ["", "0", "false", "no", "off", "optional", "  OFF  "] {
-        assert_eq!(
-            requirement_from_value(Some(OsStr::new(off))),
-            InterpreterRequirement::Optional,
-            "{off:?} must read as optional"
-        );
-    }
-    for on in ["1", "true", "yes", "required", "on"] {
-        assert_eq!(
-            requirement_from_value(Some(OsStr::new(on))),
-            InterpreterRequirement::Mandatory,
-            "{on:?} must read as mandatory"
-        );
-    }
-}
-
-#[test]
-#[should_panic(expected = "makes a real CPython interpreter mandatory")]
-fn a_mandatory_python_requirement_fails_rather_than_skipping() {
-    enforce_requirement(InterpreterRequirement::Mandatory);
 }
 
 fn harness_path() -> PathBuf {
@@ -393,9 +362,7 @@ fn the_pinned_roundtrip_check_rejects_a_dropped_fixture_and_a_shrunken_denominat
 
 #[test]
 fn cpython_roundtrip_differential_oracle() {
-    let Some(python): Option<String> = require_python() else {
-        return;
-    };
+    let python: String = demand_python();
 
     let scratch: ScratchDir =
         ScratchDir::create("disrobe-pkl-rt").expect("create scratch directory");

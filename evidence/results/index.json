@@ -1,5 +1,5 @@
 {
-  "descriptor_count": 27,
+  "descriptor_count": 28,
   "descriptors": [
     {
       "ci_attested": true,
@@ -7,16 +7,16 @@
       "comparison_basis": "no comparison: at least one declared leg has a side the compiler never type-checked",
       "competitors": [
         {
-          "clean": 20,
+          "clean": 22,
           "emitted": 132,
           "is_disrobe": true,
           "leg": "dex",
           "metric": "recompile-clean main-class methods (clean / emitted)",
           "name": "disrobe (in-house Dalvik, DEX input)",
-          "result": "20 clean / 132 emitted (15.2%)",
+          "result": "22 clean / 132 emitted (16.7%)",
           "role": "disrobe",
           "status": "ok",
-          "value": 15.151515151515152,
+          "value": 16.666666666666668,
           "version": "n/a (in-process)"
         },
         {
@@ -67,7 +67,7 @@
       "floor": null,
       "floor_holds": true,
       "id": "apk-jadx-cfr",
-      "measured": "Android DEX: `disrobe` 20 / 132 (15.2%) vs JADX not certified (130 methods emitted; the compiler stopped on line 619); JVM classfile: `disrobe` 131 / 131 (100.0%) vs CFR not certified (106 methods emitted; the compiler stopped on line 173)",
+      "measured": "Android DEX: `disrobe` 22 / 132 (16.7%) vs JADX not certified (130 methods emitted; the compiler stopped on line 619); JVM classfile: `disrobe` 131 / 131 (100.0%) vs CFR not certified (106 methods emitted; the compiler stopped on line 173)",
       "oracle_strength": "recompile-only",
       "pairs": [
         {
@@ -82,10 +82,10 @@
           },
           "disrobe": {
             "certified": true,
-            "clean": 20,
+            "clean": 22,
             "emitted": 132,
             "name": "disrobe (in-house Dalvik, DEX input)",
-            "value": 15.151515151515152,
+            "value": 16.666666666666668,
             "version": "n/a (in-process)"
           },
           "id": "dex",
@@ -431,6 +431,22 @@
       "oracle_strength": "strong",
       "pairs": [],
       "reproduce": "cargo test -p disrobe-pass-pickle --test corpus  (harvested by cargo run -p disrobe-bench-head-to-head)"
+    },
+    {
+      "ci_attested": true,
+      "claim": "Every committed pickle fixture reconstructs to a value that re-executes equivalently under a real CPython interpreter, and a case walled as an information-theoretic ceiling is refused rather than counted toward the denominator.",
+      "comparison_basis": null,
+      "competitors": [],
+      "disrobe_leads": null,
+      "ecosystem": "pickle",
+      "external_oracle": "real CPython: the reconstructed value is written back out and executed by the interpreter, and the result is compared with the original fixture's execution. The reference is the interpreter, never disrobe's own reconstruction.",
+      "floor": 100.0,
+      "floor_holds": true,
+      "id": "pickle-roundtrip",
+      "measured": "100.00%",
+      "oracle_strength": "strong",
+      "pairs": [],
+      "reproduce": "cargo test -p disrobe-pass-pickle --test roundtrip"
     },
     {
       "ci_attested": true,

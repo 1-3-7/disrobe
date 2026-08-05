@@ -395,6 +395,15 @@ const KEYS: &[KeySpec] = &[
         extract: |r: &Recovery| r.bar("WebAssembly", "execution-equivalence")?.count_ratio(),
     },
     KeySpec {
+        name: "pickle_roundtrip_frac",
+        formatter: Formatter::Frac,
+        nouns: &["reconstructed fixtures"],
+        extract: |r: &Recovery| {
+            r.bar("Pickle corpus", "reconstruction roundtrip, re-executed")?
+                .count_ratio()
+        },
+    },
+    KeySpec {
         name: "beam_recompile_frac",
         formatter: Formatter::Frac,
         nouns: &["stripped Core Erlang cases"],
