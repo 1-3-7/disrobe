@@ -295,6 +295,10 @@ pub(crate) struct ConstantPool {
 }
 
 impl ConstantPool {
+    pub(crate) fn overflowed(&self) -> bool {
+        self.entries.len() >= usize::from(u16::MAX)
+    }
+
     const fn next_index(&self) -> u16 {
         (self.entries.len() + 1) as u16
     }

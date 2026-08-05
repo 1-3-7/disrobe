@@ -207,6 +207,26 @@ fn dedup_frames_by_offset(frames: Vec<StackMapFrame>) -> Option<Vec<StackMapFram
     Some(out)
 }
 
+const LINEAR_LOCAL_HEADROOM: u16 = 1;
+
+const BRANCH_LOCAL_HEADROOM: u16 = 2;
+
+fn class_file_max_locals(
+    first_param_reg: u16,
+    param_local_slots: u16,
+    headroom: u16,
+    floor: u16,
+) -> Option<u16> {
+    let reserved: u16 = first_param_reg
+        .checked_add(param_local_slots)?
+        .checked_add(headroom)?;
+    Some(reserved.max(param_local_slots).max(1).max(floor))
+}
+
+fn class_file_max_stack(observed: i32) -> Option<u16> {
+    u16::try_from(observed.max(2)).ok()
+}
+
 #[must_use]
 pub(crate) fn emit_method_code(
     dex: &DexFile,
@@ -246,11 +266,13 @@ pub(crate) fn emit_method_code(
             .iter()
             .map(|p: &JavaType| if p.category_two() { 2u16 } else { 1u16 })
             .sum::<u16>();
-    let max_locals: u16 = first_param_reg
-        .saturating_add(param_local_slots)
-        .saturating_add(1)
-        .max(param_local_slots)
-        .max(1);
+    let Some(max_locals): Option<u16> =
+        class_file_max_locals(first_param_reg, param_local_slots, LINEAR_LOCAL_HEADROOM, 1)
+    else {
+        #[cfg(any(test, feature = "lifter-diag"))]
+        record_bail_kind("max-locals-limit");
+        return None;
+    };
     let eager_new_pcs: BTreeSet<u32> = collect_eager_new_pcs(dex, &insns, &collect_leaders(&insns));
     let iinc_suppressed: BTreeSet<u32> = collect_iinc_suppressed(dex, &insns);
     let fill_payloads: BTreeMap<u32, crate::dalvik::ArrayDataPayload> =
@@ -288,7 +310,12 @@ pub(crate) fn emit_method_code(
     };
     emitter.seed_parameter_types(&parsed, is_static);
     for insn in &insns {
-        if emitter.bailed || emitter.code.len() > MAX_CODE_BYTES {
+        if emitter.code.len() > MAX_CODE_BYTES {
+            #[cfg(any(test, feature = "lifter-diag"))]
+            record_bail_kind("code-length-limit");
+            return None;
+        }
+        if emitter.bailed {
             return None;
         }
         emitter.translate(insn, &parsed);
@@ -312,9 +339,19 @@ pub(crate) fn emit_method_code(
     {
         return None;
     }
+    if emitter.cp.overflowed() {
+        #[cfg(any(test, feature = "lifter-diag"))]
+        record_bail_kind("constant-pool-limit");
+        return None;
+    }
+    let Some(max_stack): Option<u16> = class_file_max_stack(emitter.max_stack) else {
+        #[cfg(any(test, feature = "lifter-diag"))]
+        record_bail_kind("max-stack-limit");
+        return None;
+    };
     Some(EmittedCode {
         bytes: emitter.code,
-        max_stack: emitter.max_stack.max(2) as u16,
+        max_stack,
         max_locals: emitter.max_locals,
         attributes: Vec::new(),
         attribute_count: 0,
@@ -412,11 +449,16 @@ pub(crate) fn emit_branch_method_code(
             .iter()
             .map(|p: &JavaType| if p.category_two() { 2u16 } else { 1u16 })
             .sum::<u16>();
-    let base_max_locals: u16 = base_first_param_reg
-        .saturating_add(base_param_local_slots)
-        .saturating_add(2)
-        .max(base_param_local_slots)
-        .max(1);
+    let Some(base_max_locals): Option<u16> = class_file_max_locals(
+        base_first_param_reg,
+        base_param_local_slots,
+        BRANCH_LOCAL_HEADROOM,
+        1,
+    ) else {
+        #[cfg(any(test, feature = "lifter-diag"))]
+        record_bail_kind("max-locals-limit");
+        return None;
+    };
     let split: Option<crate::dalvik_split::SplitPlan> = crate::dalvik_split::plan_split(
         dex,
         &insns,
@@ -559,12 +601,16 @@ pub(crate) fn emit_branch_method_code(
             .iter()
             .map(|p: &JavaType| if p.category_two() { 2u16 } else { 1u16 })
             .sum::<u16>();
-    let max_locals: u16 = first_param_reg
-        .saturating_add(param_local_slots)
-        .saturating_add(2)
-        .max(param_local_slots)
-        .max(1)
-        .max(split_max_locals);
+    let Some(max_locals): Option<u16> = class_file_max_locals(
+        first_param_reg,
+        param_local_slots,
+        BRANCH_LOCAL_HEADROOM,
+        split_max_locals.max(1),
+    ) else {
+        #[cfg(any(test, feature = "lifter-diag"))]
+        record_bail_kind("max-locals-limit");
+        return None;
+    };
     let const_kind: BTreeMap<u16, Slot> = infer_const_kinds(dex, &insns, &parsed);
     let wide_double_pcs: BTreeSet<u32> = wide_const_double_pcs(dex, &insns, &parsed);
     let iinc_suppressed: BTreeSet<u32> = collect_iinc_suppressed(dex, &insns);
@@ -622,7 +668,12 @@ pub(crate) fn emit_branch_method_code(
         emitter.push(0x00);
     }
     for insn in &insns {
-        if emitter.bailed || emitter.code.len() > MAX_CODE_BYTES {
+        if emitter.code.len() > MAX_CODE_BYTES {
+            #[cfg(any(test, feature = "lifter-diag"))]
+            record_bail_kind("code-length-limit");
+            return None;
+        }
+        if emitter.bailed {
             return None;
         }
         emitter.translate(insn, &parsed);
@@ -652,9 +703,19 @@ pub(crate) fn emit_branch_method_code(
         (attr, 1)
     };
 
+    if emitter.cp.overflowed() {
+        #[cfg(any(test, feature = "lifter-diag"))]
+        record_bail_kind("constant-pool-limit");
+        return None;
+    }
+    let Some(max_stack): Option<u16> = class_file_max_stack(emitter.max_stack) else {
+        #[cfg(any(test, feature = "lifter-diag"))]
+        record_bail_kind("max-stack-limit");
+        return None;
+    };
     Some(EmittedCode {
         bytes: emitter.code,
-        max_stack: emitter.max_stack.max(2) as u16,
+        max_stack,
         max_locals: emitter.max_locals,
         attributes,
         attribute_count,
@@ -2212,6 +2273,11 @@ impl Emitter<'_> {
                 entries.push((start, end, handler, catch_idx));
             }
         }
+        let Ok(entry_count): Result<u16, _> = u16::try_from(entries.len()) else {
+            #[cfg(any(test, feature = "lifter-diag"))]
+            record_bail_kind("exception-table-limit");
+            return None;
+        };
         let mut out: Vec<u8> = Vec::with_capacity(entries.len() * 8);
         for (start, end, handler, catch) in &entries {
             out.extend_from_slice(&start.to_be_bytes());
@@ -2219,7 +2285,7 @@ impl Emitter<'_> {
             out.extend_from_slice(&handler.to_be_bytes());
             out.extend_from_slice(&catch.to_be_bytes());
         }
-        Some((out, u16::try_from(entries.len()).ok()?))
+        Some((out, entry_count))
     }
 
     fn build_stack_map_table(
@@ -4826,9 +4892,135 @@ fn primitive_atype(descriptor: &str) -> Option<u8> {
 mod tests {
     use super::*;
     use crate::dalvik_typestate::RegType;
+    use crate::dex_builder::{ClassDef, DexBuilder};
 
     fn frame(offset: usize, local: RegType, stack: Option<&str>) -> StackMapFrame {
         (offset, vec![local], stack.map(str::to_owned))
+    }
+
+    fn empty_dex() -> DexFile {
+        let mut builder: DexBuilder = DexBuilder::new();
+        builder.add_class(ClassDef {
+            class: "Lp/Holder;".to_owned(),
+            super_class: "Ljava/lang/Object;".to_owned(),
+            access_flags: 0x1,
+            static_fields: Vec::new(),
+            static_values: Vec::new(),
+            direct_methods: Vec::new(),
+            virtual_methods: Vec::new(),
+        });
+        crate::dex::parse(&builder.build()).expect("the crafted holder dex parses")
+    }
+
+    fn locals_item(registers_size: u16, insns: Vec<u16>) -> CodeItem {
+        CodeItem {
+            method_name: "wide".to_owned(),
+            method_descriptor: "()V".to_owned(),
+            class: "Lp/Holder;".to_owned(),
+            is_direct: true,
+            registers_size,
+            ins_size: 0,
+            outs_size: 0,
+            insns,
+            tries: Vec::new(),
+            param_names: Vec::new(),
+        }
+    }
+
+    fn straight_line_return() -> Vec<u16> {
+        vec![0x000E]
+    }
+
+    fn forward_goto_then_return() -> Vec<u16> {
+        vec![0x0128, 0x0000, 0x000E]
+    }
+
+    #[test]
+    fn a_register_file_past_the_class_file_local_limit_is_rejected_not_clamped() {
+        assert_eq!(
+            class_file_max_locals(10, 4, BRANCH_LOCAL_HEADROOM, 1),
+            Some(16)
+        );
+        assert_eq!(
+            class_file_max_locals(u16::MAX, 0, LINEAR_LOCAL_HEADROOM, 1),
+            None,
+            "a register file that fills u16 has no representable max_locals, and saturating to \
+             65535 hands every later slot index a bound that is too small"
+        );
+        assert_eq!(
+            class_file_max_locals(u16::MAX, 0, BRANCH_LOCAL_HEADROOM, 1),
+            None
+        );
+        assert_eq!(
+            class_file_max_locals(65_000, 600, BRANCH_LOCAL_HEADROOM, 1),
+            None
+        );
+    }
+
+    #[test]
+    fn an_observed_stack_depth_past_the_class_file_limit_is_rejected_not_truncated() {
+        assert_eq!(class_file_max_stack(0), Some(2));
+        assert_eq!(class_file_max_stack(-9), Some(2));
+        assert_eq!(class_file_max_stack(65_535), Some(65_535));
+        assert_eq!(
+            class_file_max_stack(65_536),
+            None,
+            "casting an i32 above 65535 to u16 wraps to a small depth the verifier accepts while \
+             the code overruns it"
+        );
+        assert_eq!(class_file_max_stack(i32::MAX), None);
+    }
+
+    #[test]
+    fn both_lifter_paths_reject_an_oversized_register_file_with_the_named_reason() {
+        let dex: DexFile = empty_dex();
+        let linear: CodeItem = locals_item(u16::MAX, straight_line_return());
+        let branch: CodeItem = locals_item(u16::MAX, forward_goto_then_return());
+
+        let mut cp: ConstantPool = ConstantPool::default();
+        reset_bail_op();
+        assert!(
+            emit_method_code(&dex, &mut cp, &linear, true).is_none(),
+            "the linear lifter emitted a method whose max_locals cannot be represented"
+        );
+        assert_eq!(
+            take_bail_kind(),
+            "max-locals-limit",
+            "an unrepresentable register file has to name the limit it hit, or triage cannot tell \
+             it apart from an opcode the lifter cannot model"
+        );
+
+        let mut cp: ConstantPool = ConstantPool::default();
+        reset_bail_op();
+        assert!(
+            emit_branch_method_code(&dex, &mut cp, &branch, true).is_none(),
+            "the branch lifter emitted a method whose max_locals cannot be represented"
+        );
+        assert_eq!(take_bail_kind(), "max-locals-limit");
+    }
+
+    #[test]
+    fn a_register_file_inside_the_limit_still_lifts_on_both_paths() {
+        let dex: DexFile = empty_dex();
+        let mut cp: ConstantPool = ConstantPool::default();
+        reset_bail_op();
+        let linear: EmittedCode =
+            emit_method_code(&dex, &mut cp, &locals_item(4, straight_line_return()), true)
+                .expect("a four-register void method lifts on the linear path");
+        assert_eq!(linear.max_locals, 5);
+        assert_eq!(linear.max_stack, 2);
+
+        let mut cp: ConstantPool = ConstantPool::default();
+        reset_bail_op();
+        let branch: EmittedCode = emit_branch_method_code(
+            &dex,
+            &mut cp,
+            &locals_item(4, forward_goto_then_return()),
+            true,
+        )
+        .expect("a four-register branching void method lifts on the branch path");
+        assert_eq!(branch.max_locals, 6);
+        assert_eq!(branch.max_stack, 2);
     }
 
     #[test]
