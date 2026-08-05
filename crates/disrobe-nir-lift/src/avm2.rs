@@ -658,9 +658,29 @@ fn classify(
         0x41 | 0x42 | 0x43 | 0x44 | 0x45 | 0x46 | 0x49 | 0x4A | 0x4C | 0x4E | 0x4F | 0x40 => {
             classify_call(entry, line, abc, imports)?
         }
-        _ => (NirOp::Nop, Vec::new()),
+        opcode if is_effect_free(opcode) => (NirOp::Nop, Vec::new()),
+        opcode => (
+            NirOp::Unmodeled {
+                opcode,
+                offset: usize_to_u32_saturating(line.offset),
+            },
+            Vec::new(),
+        ),
     };
     Ok(classified)
+}
+
+const EFFECT_FREE_OPCODES: [u8; 7] = [0x02, 0x09, 0xEF, 0xF0, 0xF1, 0xF2, 0xF3];
+
+const fn is_effect_free(opcode: u8) -> bool {
+    let mut index: usize = 0;
+    while index < EFFECT_FREE_OPCODES.len() {
+        if EFFECT_FREE_OPCODES[index] == opcode {
+            return true;
+        }
+        index = index.saturating_add(1);
+    }
+    false
 }
 
 fn classify_call(

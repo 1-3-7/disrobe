@@ -799,3 +799,58 @@ fn lift_is_deterministic() {
     let second: NirModule = lifted_nir();
     assert_eq!(first, second, "the AVM2 lift must be byte-stable");
 }
+
+const AVM2_EFFECT_FREE_MNEMONICS: [&str; 7] = [
+    "nop",
+    "label",
+    "debug",
+    "debugline",
+    "debugfile",
+    "bkptline",
+    "timestamp",
+];
+
+#[test]
+fn declined_avm2_opcodes_are_named_rather_than_collapsed_to_nop() {
+    let module: NirModule = lifted_nir();
+    let mut declined: BTreeSet<String> = BTreeSet::new();
+    let mut modelled: usize = 0;
+    let mut total: usize = 0;
+    for function in &module.functions {
+        for instruction in &function.instructions {
+            let instruction: &disrobe_nir::NirInstr = instruction;
+            total += 1;
+            match instruction.op {
+                NirOp::Nop => assert!(
+                    AVM2_EFFECT_FREE_MNEMONICS.contains(&instruction.mnemonic.as_str()),
+                    "only an effect-free AVM2 opcode may lift to Nop, saw {} in {}",
+                    instruction.mnemonic,
+                    function.name
+                ),
+                NirOp::Unmodeled { opcode, offset } => {
+                    assert_eq!(
+                        abc::opcode_mnemonic(opcode),
+                        instruction.mnemonic,
+                        "a declined AVM2 opcode must carry the opcode its mnemonic came from"
+                    );
+                    assert_eq!(
+                        u64::from(offset),
+                        instruction.address.saturating_sub(function.address),
+                        "a declined AVM2 opcode must carry its real byte offset"
+                    );
+                    declined.insert(instruction.mnemonic.clone());
+                }
+                _ => modelled += 1,
+            }
+        }
+    }
+    assert!(
+        total >= 10 && modelled > 0,
+        "the graded AVM2 body must be non-vacuous: {total} instructions, {modelled} modelled"
+    );
+    assert_eq!(
+        declined,
+        BTreeSet::from(["pushscope".to_owned()]),
+        "the declined AVM2 opcode set is pinned; growing it silently widens what the IR omits"
+    );
+}
