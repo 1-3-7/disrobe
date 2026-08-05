@@ -185,11 +185,39 @@ fn carves_go_embed_native_pe() {
         return;
     };
     let report: CarveReport = carve_report(&bytes).expect("carve go pe");
-    assert_eq!(report.family, WebviewFamily::Wails);
+    assert_eq!(
+        report.family,
+        WebviewFamily::Unknown,
+        "a bare go:embed image carries no Wails marker, so naming it Wails would be a guess"
+    );
     assert_eq!(
         assets_map(&report),
         expected_embed_map("web/", &web_tree()),
         "recovered go-embed PE tree must be byte-identical to the source dist"
+    );
+}
+
+#[test]
+fn wails_markers_promote_the_same_go_embed_image_to_the_wails_family() {
+    let Some(bytes) = build_go(None, None, false, "wailsapp.exe") else {
+        eprintln!("CORPUS: go toolchain unavailable; skipping wails family attribution");
+        return;
+    };
+    let plain: CarveReport = carve_report(&bytes).expect("carve go pe");
+    assert_eq!(plain.family, WebviewFamily::Unknown);
+
+    let mut marked: Vec<u8> = bytes;
+    marked.extend_from_slice(b"wails://wails.localhost /wails/runtime WailsInvoke");
+    let report: CarveReport = carve_report(&marked).expect("carve marked go pe");
+    assert_eq!(
+        report.family,
+        WebviewFamily::Wails,
+        "three Wails markers are positive evidence, not a fallback"
+    );
+    assert_eq!(
+        assets_map(&report),
+        expected_embed_map("web/", &web_tree()),
+        "family attribution must not perturb the recovered tree"
     );
 }
 
@@ -559,6 +587,247 @@ fn assert_encoder_round_trip(encode: fn(&[u8]) -> Vec<u8>, expected: Compression
              does not describe how the bytes were actually recovered",
             asset.compression
         );
+    }
+}
+
+const TAURI_TRAILER: &[u8] = b"tauri://localhost __TAURI_INTERNALS__ __TAURI__ wry";
+
+type Encoder = fn(&[u8]) -> Vec<u8>;
+type CodecChoice = (Encoder, Compression);
+
+fn tauri_asset_tree() -> Vec<(&'static str, Vec<u8>)> {
+    vec![
+        (
+            "/index.html",
+            "<!doctype html><html><head><title>app</title></head><body><div id=\"root\"></div>"
+                .repeat(6)
+                .into_bytes(),
+        ),
+        (
+            "/assets/index-a1b2c3.js",
+            "export function mount(el){el.innerHTML=\"<p>hi</p>\";}"
+                .repeat(14)
+                .into_bytes(),
+        ),
+        (
+            "/assets/index-d4e5f6.css",
+            ":root{--bg:#111;--fg:#eee}body{background:var(--bg);color:var(--fg)}"
+                .repeat(11)
+                .into_bytes(),
+        ),
+        (
+            "/assets/index-a1b2c3.js.map",
+            "{\"version\":3,\"sources\":[\"src/main.ts\"],\"mappings\":\"AAAA\"}"
+                .repeat(9)
+                .into_bytes(),
+        ),
+        ("/assets/vendor.wasm", b"\x00asm\x01\x00\x00\x00".repeat(40)),
+        ("/assets/logo.png", b"\x89PNG\r\n\x1a\n".repeat(48)),
+        ("/assets/inter.woff2", b"wOF2\x00\x01\x00\x00".repeat(52)),
+        (
+            "/manifest.json",
+            "{\"name\":\"app\",\"start_url\":\"/\",\"display\":\"standalone\"}"
+                .repeat(10)
+                .into_bytes(),
+        ),
+        (
+            "/robots.txt",
+            "user-agent: *\ndisallow:\n".repeat(20).into_bytes(),
+        ),
+        ("/empty.txt", Vec::new()),
+        ("/one.txt", b"x".to_vec()),
+    ]
+}
+
+fn expected_tauri_map(tree: &[(&'static str, Vec<u8>)]) -> BTreeMap<String, Vec<u8>> {
+    tree.iter()
+        .map(|(key, data): &(&'static str, Vec<u8>)| {
+            (key.trim_start_matches('/').to_owned(), data.clone())
+        })
+        .collect()
+}
+
+fn image_from_entries(entries: &[(&str, Vec<u8>)], trailer: &[u8]) -> Vec<u8> {
+    let records: Vec<(&str, &[u8], bool)> = entries
+        .iter()
+        .map(|(name, data): &(&str, Vec<u8>)| (*name, data.as_slice(), false))
+        .collect();
+    let mut image: Vec<u8> = build_elf64(&records, 32, false, 0);
+    image.extend_from_slice(trailer);
+    image
+}
+
+fn encode_tree(
+    tree: &[(&'static str, Vec<u8>)],
+    encode: fn(&[u8]) -> Vec<u8>,
+) -> Vec<(&'static str, Vec<u8>)> {
+    tree.iter()
+        .map(|(name, data): &(&'static str, Vec<u8>)| {
+            let blob: Vec<u8> = if data.is_empty() {
+                Vec::new()
+            } else {
+                encode(data)
+            };
+            (*name, blob)
+        })
+        .collect()
+}
+
+#[test]
+fn tauri_style_zstd_map_recovers_the_original_tree() {
+    let tree: Vec<(&'static str, Vec<u8>)> = tauri_asset_tree();
+    let encoded: Vec<(&str, Vec<u8>)> = encode_tree(&tree, zstd_encode);
+    let image: Vec<u8> = image_from_entries(&encoded, TAURI_TRAILER);
+
+    let report: CarveReport = carve_report(&image).expect("carve tauri-style map");
+    assert_eq!(
+        report.family,
+        WebviewFamily::Tauri,
+        "the Tauri markers in the image are the evidence, not a default"
+    );
+    assert_eq!(
+        assets_map(&report),
+        expected_tauri_map(&tree),
+        "every root-relative asset key must resolve to the byte-identical original file"
+    );
+    for asset in &report.assets {
+        let expected: Compression = if asset.bytes.is_empty() {
+            Compression::None
+        } else {
+            Compression::Zstd
+        };
+        assert_eq!(
+            asset.compression, expected,
+            "{}: reported encoding must describe how the bytes were recovered",
+            asset.path
+        );
+    }
+    assert_eq!(report.declared, tree.len());
+    assert_eq!(report.recovered, tree.len());
+}
+
+#[test]
+fn a_mixed_encoding_map_recovers_each_entry_under_its_own_codec() {
+    let tree: Vec<(&'static str, Vec<u8>)> = tauri_asset_tree();
+    let codecs: [CodecChoice; 3] = [
+        (gzip_encode, Compression::Gzip),
+        (zstd_encode, Compression::Zstd),
+        (brotli_encode, Compression::Brotli),
+    ];
+    let mut encoded: Vec<(&str, Vec<u8>)> = Vec::with_capacity(tree.len());
+    let mut wanted: BTreeMap<String, Compression> = BTreeMap::new();
+    for (index, (name, data)) in tree.iter().enumerate() {
+        let key: String = name.trim_start_matches('/').to_owned();
+        if data.is_empty() {
+            encoded.push((*name, Vec::new()));
+            wanted.insert(key, Compression::None);
+            continue;
+        }
+        if index.is_multiple_of(4) {
+            encoded.push((*name, data.clone()));
+            wanted.insert(key, Compression::None);
+            continue;
+        }
+        let (encode, label): CodecChoice = codecs[index % codecs.len()];
+        encoded.push((*name, encode(data)));
+        wanted.insert(key, label);
+    }
+    let image: Vec<u8> = image_from_entries(&encoded, TAURI_TRAILER);
+
+    let report: CarveReport = carve_report(&image).expect("carve mixed map");
+    assert_eq!(
+        assets_map(&report),
+        expected_tauri_map(&tree),
+        "a mixed archive must round-trip every entry, whatever codec produced it"
+    );
+    for asset in &report.assets {
+        assert_eq!(
+            Some(&asset.compression),
+            wanted.get(&asset.path),
+            "{}: wrong codec reported for the recovered bytes",
+            asset.path
+        );
+    }
+}
+
+#[test]
+fn a_traversal_key_is_dropped_while_the_rest_of_the_map_survives() {
+    let tree: Vec<(&'static str, Vec<u8>)> = tauri_asset_tree();
+    let mut encoded: Vec<(&str, Vec<u8>)> = encode_tree(&tree, zstd_encode);
+    encoded.push((
+        "/../../etc/passwd",
+        zstd_encode(b"root:x:0:0:".repeat(20).as_slice()),
+    ));
+    encoded.push((
+        "C:/windows/win.ini",
+        zstd_encode(b"[fonts]".repeat(30).as_slice()),
+    ));
+    let image: Vec<u8> = image_from_entries(&encoded, TAURI_TRAILER);
+
+    let report: CarveReport = carve_report(&image).expect("carve map with hostile keys");
+    assert_eq!(
+        assets_map(&report),
+        expected_tauri_map(&tree),
+        "a key that escapes the output root must never become a recovered asset"
+    );
+    assert_eq!(
+        report.declared - report.recovered,
+        2,
+        "the refused keys must still be counted as declared, so coverage stays honest"
+    );
+    assert!(report.coverage() < 1.0);
+}
+
+#[test]
+fn duplicate_keys_collapse_and_case_variants_stay_distinct() {
+    let mut entries: Vec<(&str, Vec<u8>)> = encode_tree(&tauri_asset_tree(), zstd_encode);
+    let duplicate: Vec<u8> = zstd_encode(b"a different body for the same key".repeat(9).as_slice());
+    entries.push(("/index.html", duplicate));
+    entries.push((
+        "/Index.HTML",
+        zstd_encode(b"the case variant body".repeat(9).as_slice()),
+    ));
+    let image: Vec<u8> = image_from_entries(&entries, TAURI_TRAILER);
+
+    let report: CarveReport = carve_report(&image).expect("carve map with duplicate keys");
+    let recovered: BTreeMap<String, Vec<u8>> = assets_map(&report);
+    assert_eq!(
+        recovered.get("index.html"),
+        expected_tauri_map(&tauri_asset_tree()).get("index.html"),
+        "the first record for a key wins, and the later duplicate must not overwrite it"
+    );
+    assert_eq!(
+        recovered
+            .keys()
+            .filter(|key: &&String| key.eq_ignore_ascii_case("index.html"))
+            .count(),
+        2,
+        "keys that differ only by case are distinct in the map and must both be reported"
+    );
+}
+
+#[test]
+fn a_decompression_bomb_is_refused_by_the_quota() {
+    let mut entries: Vec<(&str, Vec<u8>)> = encode_tree(&tauri_asset_tree(), zstd_encode);
+    let bomb: Vec<u8> = zstd_encode(&vec![0u8; 4 * 1024 * 1024]);
+    assert!(
+        bomb.len() < 4096,
+        "the bomb fixture must be small on disk to be a bomb at all, got {}",
+        bomb.len()
+    );
+    entries.push(("/assets/bomb.bin", bomb));
+    let image: Vec<u8> = image_from_entries(&entries, TAURI_TRAILER);
+
+    let err: Error = carve_report(&image).expect_err("the bomb must not be admitted");
+    match err {
+        Error::Quota { entry, reason } => {
+            assert_eq!(entry, "assets/bomb.bin");
+            assert!(
+                reason.contains("ratio"),
+                "the refusal must name the expansion ratio, got {reason}"
+            );
+        }
+        other => panic!("expected a quota refusal, got {other:?}"),
     }
 }
 

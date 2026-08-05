@@ -166,7 +166,9 @@ impl Walk<'_> {
         }
         let joined: String = path_stack.join("/");
         if let Some(target) = node.link.as_deref() {
-            if let Ok(safe) = sanitize_entry_path(&joined) {
+            if let Ok(safe) = sanitize_entry_path(&joined)
+                && resolve_symlink_target(&safe, target).is_some()
+            {
                 self.symlinks.push(SymlinkEntry {
                     path: safe,
                     target: target.to_owned(),
@@ -198,6 +200,34 @@ impl Walk<'_> {
         });
         Ok(())
     }
+}
+
+pub(crate) fn resolve_symlink_target(link_path: &str, target: &str) -> Option<String> {
+    let normalized: String = target.replace('\\', "/");
+    if normalized.is_empty() || normalized.starts_with('/') {
+        return None;
+    }
+    if normalized
+        .split('/')
+        .any(|component: &str| component.contains(':'))
+    {
+        return None;
+    }
+    let mut stack: Vec<&str> = link_path.split('/').collect();
+    stack.pop();
+    for component in normalized.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                stack.pop()?;
+            }
+            other => stack.push(other),
+        }
+    }
+    if stack.is_empty() {
+        return None;
+    }
+    Some(stack.join("/"))
 }
 
 fn verify_integrity(data: &[u8], integrity: Option<&Integrity>) -> IntegrityStatus {
@@ -322,6 +352,31 @@ mod tests {
     fn rejects_truncated_prefix() {
         assert!(locate_header(&[0x7b, 0x22, 0x66], 8).is_none());
         assert!(locate_header(b"{\"files\":", 8).is_none());
+    }
+
+    #[test]
+    fn symlink_targets_that_leave_the_tree_are_refused() {
+        assert_eq!(
+            resolve_symlink_target("node_modules/a/index.js", "../b/index.js").as_deref(),
+            Some("node_modules/b/index.js")
+        );
+        assert_eq!(
+            resolve_symlink_target("a/b/c.js", "./d.js").as_deref(),
+            Some("a/b/d.js")
+        );
+        for (link, target) in [
+            ("a/b.js", "../../etc/passwd"),
+            ("a/b.js", "/etc/passwd"),
+            ("a/b.js", "C:/Windows/win.ini"),
+            ("a/b.js", "..\\..\\windows\\system32"),
+            ("a/b.js", ".."),
+            ("a/b.js", ""),
+        ] {
+            assert!(
+                resolve_symlink_target(link, target).is_none(),
+                "symlink {link} -> {target} escapes the extraction root and must be refused"
+            );
+        }
     }
 
     #[test]

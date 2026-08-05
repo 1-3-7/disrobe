@@ -156,12 +156,15 @@ pub fn classify_all(bytes: &[u8]) -> Vec<FamilyEvidence> {
     ranked
 }
 
-pub(crate) fn family_guess(bytes: &[u8]) -> WebviewFamily {
-    if match_markers(bytes, &TAURI_MARKERS).1 > 0 {
-        WebviewFamily::Tauri
-    } else {
-        WebviewFamily::Wails
-    }
+pub(crate) fn embedded_family(bytes: &[u8]) -> WebviewFamily {
+    classify_all(bytes)
+        .into_iter()
+        .find(|evidence: &FamilyEvidence| {
+            matches!(evidence.family, WebviewFamily::Tauri | WebviewFamily::Wails)
+        })
+        .map_or(WebviewFamily::Unknown, |evidence: FamilyEvidence| {
+            evidence.family
+        })
 }
 
 fn marker_evidence(

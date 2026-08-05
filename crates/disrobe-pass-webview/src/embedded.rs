@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use disrobe_binfmt::containers::bare_stream::{detect_gzip, detect_zstd};
 use disrobe_binfmt::{QuotaGuard, sanitize_entry_path};
 use sha2::{Digest, Sha256};
 
@@ -15,7 +16,9 @@ const MAX_RECORD_BLOB: usize = 256 * 1024 * 1024;
 const HASH_LEN: usize = 16;
 const MAX_HASH_HAMMING: usize = 1;
 const COHERENT_PATH_PERCENT: usize = 80;
+const COMPRESSED_ANCHOR_PERCENT: usize = 80;
 const HASH_VERIFIED_SCORE: u64 = 1_000_000_000;
+const COMPRESSED_ANCHOR_SCORE: u64 = 1_000_000;
 const HASH_BUDGET_MULT: u64 = 16;
 const HASH_BUDGET_FLOOR: u64 = 1 << 20;
 const MAX_SCAN_RECORDS: usize = 2_000_000;
@@ -214,7 +217,7 @@ fn read_hash(map: &SectionMap<'_>, base: u64, stride: usize, ptr: usize) -> Opti
 
 fn valid_path(bytes: &[u8]) -> Option<&str> {
     let text: &str = core::str::from_utf8(bytes).ok()?;
-    if text.is_empty() || text.starts_with('/') || text.starts_with('\\') {
+    if text.is_empty() || text.starts_with('\\') || text.starts_with("//") {
         return None;
     }
     if text
@@ -236,10 +239,28 @@ fn score_run(run: &[Record<'_>], hash_budget: &mut u64) -> u64 {
     if hash_verified(run, hash_budget) {
         return HASH_VERIFIED_SCORE + run.len() as u64;
     }
-    if path_coherent(run) {
-        return run.len() as u64;
+    if !path_coherent(run) {
+        return 0;
     }
-    0
+    if compression_anchored(run) {
+        return COMPRESSED_ANCHOR_SCORE + run.len() as u64;
+    }
+    run.len() as u64
+}
+
+fn compression_anchored(run: &[Record<'_>]) -> bool {
+    let mut blobs: usize = 0;
+    let mut framed: usize = 0;
+    for record in run {
+        if record.is_dir || record.data.is_empty() {
+            continue;
+        }
+        blobs += 1;
+        if detect_zstd(record.data) || detect_gzip(record.data) {
+            framed += 1;
+        }
+    }
+    blobs >= MIN_CONSECUTIVE && framed * 100 >= blobs * COMPRESSED_ANCHOR_PERCENT
 }
 
 fn hash_verified(run: &[Record<'_>], budget: &mut u64) -> bool {
@@ -289,13 +310,12 @@ fn assemble(run: &[Record<'_>], cfg: &CarveConfig) -> Result<Assembled> {
     let mut recovered: usize = 0;
     for record in run {
         if record.is_dir {
-            let trimmed: &str = record.name.trim_end_matches('/');
-            if let Ok(safe) = sanitize_entry_path(trimmed) {
+            if let Some(safe) = normalize_key(record.name.trim_end_matches('/')) {
                 directories.insert(safe);
             }
             continue;
         }
-        let Ok(safe) = sanitize_entry_path(record.name) else {
+        let Some(safe) = normalize_key(record.name) else {
             declared += 1;
             continue;
         };
@@ -305,7 +325,7 @@ fn assemble(run: &[Record<'_>], cfg: &CarveConfig) -> Result<Assembled> {
         declared += 1;
         let (bytes, compression): (Vec<u8>, Compression) =
             decode_blob(record.data, cfg.quota.max_per_entry_uncompressed);
-        guard.admit_entry(&safe, record.data.len() as u64, bytes.len() as u64)?;
+        guard.admit_entry(&safe, bytes.len() as u64, record.data.len() as u64)?;
         recovered += 1;
         assets.push(RecoveredAsset {
             path: safe,
@@ -321,6 +341,11 @@ fn assemble(run: &[Record<'_>], cfg: &CarveConfig) -> Result<Assembled> {
         declared,
         recovered,
     })
+}
+
+fn normalize_key(name: &str) -> Option<String> {
+    let root_relative: &str = name.strip_prefix('/').unwrap_or(name);
+    sanitize_entry_path(root_relative).ok()
 }
 
 fn word_va(base: u64, index: usize, ptr: usize) -> Option<u64> {
@@ -349,6 +374,77 @@ mod tests {
         let mut prefix: [u8; HASH_LEN] = [0u8; HASH_LEN];
         prefix.copy_from_slice(&digest[..HASH_LEN]);
         prefix
+    }
+
+    #[test]
+    fn root_relative_keys_normalize_without_escaping_the_output_root() {
+        assert_eq!(
+            normalize_key("/assets/index-abc.js").as_deref(),
+            Some("assets/index-abc.js"),
+            "an embedded asset key is root-relative to the bundle, not to the filesystem"
+        );
+        assert_eq!(normalize_key("dist/app.js").as_deref(), Some("dist/app.js"));
+        assert_eq!(normalize_key("/index.html").as_deref(), Some("index.html"));
+        for hostile in [
+            "/../../etc/passwd",
+            "../outside.js",
+            "a/../../b",
+            "C:/Windows/win.ini",
+            "/C:/Windows/win.ini",
+            "/",
+            "",
+        ] {
+            assert!(
+                normalize_key(hostile).is_none(),
+                "{hostile} must not survive normalization"
+            );
+        }
+    }
+
+    #[test]
+    fn valid_path_still_refuses_the_shapes_that_cannot_be_bundle_keys() {
+        assert!(valid_path(b"\\\\server\\share").is_none());
+        assert!(valid_path(b"//double/slash").is_none());
+        assert!(valid_path(b"with\x00nul").is_none());
+        assert!(valid_path(b"").is_none());
+        assert!(valid_path(b"/assets/app.js").is_some());
+    }
+
+    #[test]
+    fn compression_anchor_needs_a_full_run_of_framed_blobs() {
+        let zstd_frame: [u8; 8] = [0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x00, 0x00, 0x00];
+        let plain: [u8; 8] = [b'p'; 8];
+        let framed: Vec<Record<'_>> = (0..MIN_CONSECUTIVE)
+            .map(|_index: usize| Record {
+                name: "/assets/a.js",
+                is_dir: false,
+                data: zstd_frame.as_slice(),
+                hash: None,
+            })
+            .collect();
+        assert!(compression_anchored(&framed));
+
+        let mut mostly_plain: Vec<Record<'_>> = framed;
+        for record in mostly_plain.iter_mut().take(3) {
+            record.data = plain.as_slice();
+        }
+        assert!(
+            !compression_anchored(&mostly_plain),
+            "a run with three raw blobs is not a compressed asset map"
+        );
+
+        let short: Vec<Record<'_>> = (0..MIN_CONSECUTIVE - 1)
+            .map(|_index: usize| Record {
+                name: "/assets/a.js",
+                is_dir: false,
+                data: zstd_frame.as_slice(),
+                hash: None,
+            })
+            .collect();
+        assert!(
+            !compression_anchored(&short),
+            "fewer than the consecutive-record floor must not anchor a table"
+        );
     }
 
     #[test]
