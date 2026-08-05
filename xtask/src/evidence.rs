@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use eyre::{Result, WrapErr, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::doc_region::{self, RegionSyntax};
 
@@ -302,6 +303,29 @@ pub(crate) fn run(root: &Path, mode: Mode) -> Result<()> {
         );
         Ok(())
     }
+}
+
+pub(crate) fn chart_binding_digest(root: &Path) -> Result<String> {
+    let descriptors: Vec<Descriptor> = discover(&root.join("evidence").join("descriptors"))?;
+    let mut lines: Vec<String> = Vec::with_capacity(descriptors.len());
+    for descriptor in &descriptors {
+        let Some(binding): Option<&SourceBinding> = descriptor.source.as_ref() else {
+            continue;
+        };
+        lines.push(format!(
+            "{} :: {} {} {}\n",
+            binding.recovery_group, binding.recovery_bar, descriptor.oracle_strength, descriptor.ci
+        ));
+    }
+    lines.sort();
+    let mut hasher: Sha256 = Sha256::new();
+    for line in &lines {
+        hasher.update(line.as_bytes());
+    }
+    Ok(format!("{:x}", hasher.finalize())
+        .chars()
+        .take(32)
+        .collect())
 }
 
 fn discover(dir: &Path) -> Result<Vec<Descriptor>> {

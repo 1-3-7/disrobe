@@ -48,17 +48,33 @@ const RECOVERY_VALUE_LABEL_SIZE: f64 = 11.5;
 const RECOVERY_PERCENT_LABEL_GAP: f64 = 8.0;
 const RECOVERY_PAIR_LABEL_GAP: f64 = 10.0;
 const RECOVERY_LABEL_GUTTER_PAD: f64 = 8.0;
-const RECOVERY_PERCENT_CHART_TOP: f64 = 130.0;
+const RECOVERY_PERCENT_CHART_TOP: f64 = 145.0;
 const RECOVERY_PERCENT_GRID_TOP: f64 = 8.0;
 const RECOVERY_PERCENT_ROW_HEIGHT: f64 = 27.0;
 const RECOVERY_PAIR_GRID_TOP: f64 = 7.0;
-const RECOVERY_PAIR_ROW_HEIGHT: f64 = 30.0;
+const RECOVERY_PAIR_ROW_HEIGHT: f64 = 36.0;
+const RECOVERY_PAIR_STACKED_OFFSET: f64 = 8.0;
+const RECOVERY_TAG_SIZE: f64 = 9.5;
+const RECOVERY_TAG_MARKER: f64 = 8.0;
+const RECOVERY_TAG_MARKER_GAP: f64 = 5.0;
+const RECOVERY_TAG_GUTTER_PAD: f64 = 10.0;
+const RECOVERY_STRENGTH_TAGS: [&str; 4] = ["strong", "recompile", "pass-gated", "self-reported"];
+const RECOVERY_STRENGTH_NAMES: [&str; 4] = [
+    "strong",
+    "recompile-only",
+    "pass-gated",
+    "coverage-self-reported",
+];
+const RECOVERY_REPRODUCIBILITY_TAGS: [&str; 2] = ["CI", "local"];
 const RECOVERY_PERCENT_CHART_BASE_HEIGHT: f64 = 16.0;
 const RECOVERY_PAIR_SECTION_GAP: f64 = 34.0;
 const RECOVERY_MONO_FONT: &str = "'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace";
 const RECOVERY_VALUE_ID_PREFIX: &str = "disrobe-recovery-";
 const RECOVERY_PERCENT_VALUE_ID_PREFIX: &str = "disrobe-recovery-percent-value-";
 const RECOVERY_COUNT_PAIR_VALUE_ID_PREFIX: &str = "disrobe-recovery-count-pair-value-";
+const RECOVERY_PERCENT_TIER_ID_PREFIX: &str = "disrobe-recovery-percent-tier-";
+const RECOVERY_COUNT_PAIR_TIER_ID_PREFIX: &str = "disrobe-recovery-count-pair-tier-";
+const RECOVERY_STAT_TIER_ID_PREFIX: &str = "disrobe-recovery-stat-tier-";
 const SVG_NAMESPACE: &str = "http://www.w3.org/2000/svg";
 const XML_NAMESPACE: &str = "http://www.w3.org/XML/1998/namespace";
 const RECOVERY_FORBIDDEN_PRESENTATION_ATTRIBUTES: [&str; 9] = [
@@ -136,6 +152,7 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         }
         if name == RECOVERY_CHART {
             recovery_value_labels_are_rendered(root, name, rendered)?;
+            recovery_tiers_match_their_evidence(root, name, rendered)?;
         }
     }
     for name in MIRRORED {
@@ -205,6 +222,41 @@ fn svg_reflects_its_data(root: &Path, asset: &str, data_file: &str, rendered: &s
     Ok(())
 }
 
+fn recovery_tiers_match_their_evidence(root: &Path, asset: &str, rendered: &str) -> Result<()> {
+    let readme: Vec<u8> = read_bytes_bounded(&root.join("README.md"), MAX_DATA_BYTES)
+        .wrap_err_with(|| "reading README.md, which defines the grading vocabulary".to_string())?;
+    let readme_text: &str =
+        std::str::from_utf8(&readme).wrap_err("README.md is not valid utf-8")?;
+    for name in RECOVERY_STRENGTH_NAMES {
+        if !readme_text.contains(&format!("`{name}`")) {
+            bail!(
+                "docs/assets/{asset} prints a legend entry for grading strength `{name}`, which \
+                 README.md no longer defines under its section on how the numbers are checked. one \
+                 definition serves both, so a reader cannot be shown a word the prose has dropped"
+            );
+        }
+        if !rendered.contains(&format!(">{name}<")) {
+            bail!(
+                "docs/assets/{asset} omits the legend entry for grading strength `{name}` that \
+                 README.md defines; a colour with no legend entry tells a reader nothing. \
+                 regenerate with `node xtask/graphgen/build.mjs`"
+            );
+        }
+    }
+    let digest: String = crate::evidence::chart_binding_digest(root)?;
+    let expected: String = format!("<desc>graded from evidence/descriptors sha256:{digest}</desc>");
+    if !rendered.contains(&expected) {
+        bail!(
+            "docs/assets/{asset} colours its bars by a grading strength that evidence/descriptors \
+             no longer states. the chart reserves its strongest colour for a figure an external \
+             reference could reject, so a descriptor whose oracle_strength or ci changed without a \
+             re-render leaves the picture claiming more than the evidence does. regenerate it with \
+             `node xtask/graphgen/build.mjs`"
+        );
+    }
+    Ok(())
+}
+
 fn verification_cells_are_rendered(root: &Path, asset: &str, rendered: &str) -> Result<()> {
     let doc: VerificationDoc = load_verification(root)?;
     let mut missing: Vec<String> = Vec::new();
@@ -234,9 +286,102 @@ fn verification_cells_are_rendered(root: &Path, asset: &str, rendered: &str) -> 
 
 fn recovery_value_labels_are_rendered(root: &Path, asset: &str, rendered: &str) -> Result<()> {
     let doc: RecoveryDoc = load_recovery_doc(root)?;
-    let slots: Vec<RecoveryLabelSlot> = recovery_label_slots(&doc)?;
     let document: roxmltree::Document<'_> = parse_recovery_svg(rendered)?;
+    let tags: Vec<String> = verify_recovery_tier_tags(asset, &document, &doc)?;
+    let slots: Vec<RecoveryLabelSlot> = recovery_label_slots(&doc, recovery_tag_gutter(&tags))?;
     verify_recovery_label_slots(asset, &document, &slots)
+}
+
+fn recovery_tag_gutter(tags: &[String]) -> f64 {
+    let widest: f64 = tags
+        .iter()
+        .map(|tag: &String| tag.chars().count() as f64 * RECOVERY_TAG_SIZE * 0.6)
+        .fold(0.0_f64, f64::max);
+    (RECOVERY_TAG_MARKER + RECOVERY_TAG_MARKER_GAP + widest + RECOVERY_TAG_GUTTER_PAD).ceil()
+}
+
+fn verify_recovery_tier_tags(
+    asset: &str,
+    document: &roxmltree::Document<'_>,
+    doc: &RecoveryDoc,
+) -> Result<Vec<String>> {
+    let expected: BTreeMap<&'static str, usize> = recovery_tier_populations(doc);
+    let mut seen: BTreeMap<&'static str, BTreeMap<usize, String>> = BTreeMap::new();
+    for node in document.descendants() {
+        let Some(id): Option<&str> = node.attribute("id") else {
+            continue;
+        };
+        let Some((prefix, index)): Option<(&'static str, usize)> = recovery_tier_id(id) else {
+            continue;
+        };
+        let text: String = svg_text(node);
+        if !recovery_tier_tag_is_legal(&text) {
+            bail!(
+                "docs/assets/{asset} tags bar `{id}` {text:?}, which is not one of the {} grading \
+                 strengths followed by {} or {}; the tag beside a bar is the only channel a reader \
+                 without colour has, so it may not say something the tier vocabulary does not \
+                 define. regenerate with `node xtask/graphgen/build.mjs`",
+                RECOVERY_STRENGTH_TAGS.len(),
+                RECOVERY_REPRODUCIBILITY_TAGS[0],
+                RECOVERY_REPRODUCIBILITY_TAGS[1]
+            );
+        }
+        if seen
+            .entry(prefix)
+            .or_default()
+            .insert(index, text)
+            .is_some()
+        {
+            bail!(
+                "docs/assets/{asset} repeats grading tag id `{id}`; regenerate with `node xtask/graphgen/build.mjs`"
+            );
+        }
+    }
+    let mut tags: Vec<String> = Vec::new();
+    for (prefix, count) in &expected {
+        let drawn: &BTreeMap<usize, String> = match seen.get(prefix) {
+            Some(drawn) => drawn,
+            None if *count == 0 => continue,
+            None => bail!(
+                "docs/assets/{asset} draws no `{prefix}` grading tag at all, though recovery.json \
+                 carries {count} bar(s) of that kind; every bar must state how it was graded, or \
+                 the chart presents a self-reported count as strongly as a proven one. regenerate \
+                 with `node xtask/graphgen/build.mjs`"
+            ),
+        };
+        if drawn.len() != *count {
+            bail!(
+                "docs/assets/{asset} draws {} `{prefix}` grading tag(s) for {count} bar(s) in \
+                 recovery.json; regenerate with `node xtask/graphgen/build.mjs`",
+                drawn.len()
+            );
+        }
+        for index in 0..*count {
+            let Some(tag): Option<&String> = drawn.get(&index) else {
+                bail!(
+                    "docs/assets/{asset} skips grading tag `{prefix}{index}`; regenerate with `node xtask/graphgen/build.mjs`"
+                );
+            };
+            tags.push(tag.clone());
+        }
+    }
+    Ok(tags)
+}
+
+fn recovery_tier_id(id: &str) -> Option<(&'static str, usize)> {
+    for prefix in [
+        RECOVERY_PERCENT_TIER_ID_PREFIX,
+        RECOVERY_COUNT_PAIR_TIER_ID_PREFIX,
+        RECOVERY_STAT_TIER_ID_PREFIX,
+    ] {
+        if let Some(rest) = id.strip_prefix(prefix) {
+            return rest
+                .parse::<usize>()
+                .ok()
+                .map(|index: usize| (prefix, index));
+        }
+    }
+    None
 }
 
 fn load_recovery_doc(root: &Path) -> Result<RecoveryDoc> {
@@ -246,7 +391,28 @@ fn load_recovery_doc(root: &Path) -> Result<RecoveryDoc> {
     serde_json::from_slice(&raw).wrap_err_with(|| format!("parsing {}", data_path.display()))
 }
 
-fn recovery_label_slots(doc: &RecoveryDoc) -> Result<Vec<RecoveryLabelSlot>> {
+fn recovery_tier_populations(doc: &RecoveryDoc) -> BTreeMap<&'static str, usize> {
+    let mut population: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for group in &doc.groups {
+        let prefix: &'static str = match group.kind.as_str() {
+            PERCENT_KIND => RECOVERY_PERCENT_TIER_ID_PREFIX,
+            COUNT_PAIR_KIND => RECOVERY_COUNT_PAIR_TIER_ID_PREFIX,
+            _ => RECOVERY_STAT_TIER_ID_PREFIX,
+        };
+        *population.entry(prefix).or_default() += group.bars.len();
+    }
+    population
+}
+
+fn recovery_tier_tag_is_legal(text: &str) -> bool {
+    let Some((strength, reproducibility)): Option<(&str, &str)> = text.split_once(' ') else {
+        return false;
+    };
+    RECOVERY_STRENGTH_TAGS.contains(&strength)
+        && RECOVERY_REPRODUCIBILITY_TAGS.contains(&reproducibility)
+}
+
+fn recovery_label_slots(doc: &RecoveryDoc, tag_gutter: f64) -> Result<Vec<RecoveryLabelSlot>> {
     let mut percent_labels: Vec<String> = Vec::new();
     let mut count_pair_labels: Vec<String> = Vec::new();
     for group in &doc.groups {
@@ -277,7 +443,7 @@ fn recovery_label_slots(doc: &RecoveryDoc) -> Result<Vec<RecoveryLabelSlot>> {
     }
 
     let percent_grid_right: f64 =
-        recovery_label_gutter(&percent_labels, RECOVERY_PERCENT_LABEL_GAP)?;
+        recovery_label_gutter(&percent_labels, RECOVERY_PERCENT_LABEL_GAP)? + tag_gutter;
     let pair_grid_right: f64 = recovery_label_gutter(&count_pair_labels, RECOVERY_PAIR_LABEL_GAP)?;
     let percent_x: f64 =
         RECOVERY_LEFT + RECOVERY_INNER - percent_grid_right + RECOVERY_PERCENT_LABEL_GAP;
@@ -304,7 +470,7 @@ fn recovery_label_slots(doc: &RecoveryDoc) -> Result<Vec<RecoveryLabelSlot>> {
         let y: f64 = (index as f64 + 0.5).mul_add(
             RECOVERY_PAIR_ROW_HEIGHT,
             pair_chart_top + RECOVERY_PAIR_GRID_TOP,
-        );
+        ) - RECOVERY_PAIR_STACKED_OFFSET;
         slots.push(recovery_label_slot(
             format!("{RECOVERY_COUNT_PAIR_VALUE_ID_PREFIX}{index}"),
             text,
@@ -434,7 +600,7 @@ fn verify_recovery_label_slots(
         let Some(id): Option<&str> = node.attribute("id") else {
             continue;
         };
-        if !id.starts_with(RECOVERY_VALUE_ID_PREFIX) {
+        if !id.starts_with(RECOVERY_VALUE_ID_PREFIX) || recovery_tier_id(id).is_some() {
             continue;
         }
         if !expected.contains_key(id) {
@@ -847,9 +1013,12 @@ mod tests {
         }
     }
 
+    const TEST_TAG_GUTTER: f64 = 0.0;
+
     #[test]
     fn recovery_value_labels_bind_data_to_root_svg_slots() -> Result<()> {
-        let slots: Vec<RecoveryLabelSlot> = recovery_label_slots(&test_recovery_doc())?;
+        let slots: Vec<RecoveryLabelSlot> =
+            recovery_label_slots(&test_recovery_doc(), TEST_TAG_GUTTER)?;
         let rendered: String = render_test_svg(&slots);
         let document: roxmltree::Document<'_> = parse_recovery_svg(&rendered)?;
         verify_recovery_label_slots(RECOVERY_CHART, &document, &slots)?;
@@ -862,7 +1031,8 @@ mod tests {
 
     #[test]
     fn recovery_value_labels_reject_a_cropped_root_viewport() -> Result<()> {
-        let slots: Vec<RecoveryLabelSlot> = recovery_label_slots(&test_recovery_doc())?;
+        let slots: Vec<RecoveryLabelSlot> =
+            recovery_label_slots(&test_recovery_doc(), TEST_TAG_GUTTER)?;
         let rendered: String = render_test_svg(&slots);
         let cropped: String = rendered.replacen(
             "height=\"300\" viewBox=\"0 0 920 300\"",
@@ -884,7 +1054,8 @@ mod tests {
 
     #[test]
     fn recovery_value_labels_reject_document_wide_style_elements() -> Result<()> {
-        let slots: Vec<RecoveryLabelSlot> = recovery_label_slots(&test_recovery_doc())?;
+        let slots: Vec<RecoveryLabelSlot> =
+            recovery_label_slots(&test_recovery_doc(), TEST_TAG_GUTTER)?;
         let rendered: String = render_test_svg(&slots);
         let styled: String = rendered.replacen(
             "</svg>",
@@ -898,7 +1069,8 @@ mod tests {
 
     #[test]
     fn recovery_value_labels_reject_changed_or_duplicate_slots() -> Result<()> {
-        let slots: Vec<RecoveryLabelSlot> = recovery_label_slots(&test_recovery_doc())?;
+        let slots: Vec<RecoveryLabelSlot> =
+            recovery_label_slots(&test_recovery_doc(), TEST_TAG_GUTTER)?;
         let rendered: String = render_test_svg(&slots);
         let moved: String = rendered.replacen(&format!("x=\"{}\"", slots[0].x), "x=\"0.00\"", 1);
         let moved_error: String = slot_validation_error(&moved, &slots)?;
@@ -916,7 +1088,8 @@ mod tests {
 
     #[test]
     fn recovery_value_labels_reject_nested_and_unowned_metrics() -> Result<()> {
-        let slots: Vec<RecoveryLabelSlot> = recovery_label_slots(&test_recovery_doc())?;
+        let slots: Vec<RecoveryLabelSlot> =
+            recovery_label_slots(&test_recovery_doc(), TEST_TAG_GUTTER)?;
         let first_label: String = render_test_label(&slots[0]);
         let nested: String =
             render_test_svg(&slots).replacen(&first_label, &format!("<g>{first_label}</g>"), 1);
