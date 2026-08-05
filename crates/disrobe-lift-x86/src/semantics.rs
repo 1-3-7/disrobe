@@ -662,7 +662,7 @@ fn lift_shift(
     let count_mask: u64 = if width == 8 { 0x3f } else { 0x1f };
     let count: u32 = u32::try_from(raw_count & count_mask).ok()?;
     if count == 0 {
-        return (instruction.op_kind(0) == OpKind::Register).then(Vec::new);
+        return unchanged_shift(instruction);
     }
     if count > width_bits {
         return None;
@@ -701,6 +701,24 @@ fn lift_shift(
         &mut ops,
     )?;
     write_destination(destination, result, allocator, &mut ops)?;
+    Some(ops)
+}
+
+pub(super) fn unchanged_shift(instruction: &Instruction) -> Option<Vec<PcodeOp>> {
+    if instruction.op_kind(0) != OpKind::Register {
+        return None;
+    }
+    let selected: Register = instruction.op_register(0);
+    let retained: Varnode = register(selected)?;
+    if retained.size_bytes != 4 {
+        return Some(Vec::new());
+    }
+    let mut ops: Vec<PcodeOp> = Vec::new();
+    let full: Varnode = full_gpr(selected)?;
+    ops.push(PcodeOp::IntZext {
+        output: full,
+        input: retained,
+    });
     Some(ops)
 }
 
@@ -875,7 +893,7 @@ fn lift_jump(instruction: &Instruction, allocator: &mut UniqueAllocator) -> Opti
                 target: ram_address(instruction.near_branch_target()),
             }])
         }
-        OpKind::Register | OpKind::Memory => {
+        OpKind::Register | OpKind::Memory if instruction.is_jmp_near_indirect() => {
             let mut ops: Vec<PcodeOp> = Vec::new();
             let target: Varnode = read_operand(instruction, 0, 8, allocator, &mut ops)?;
             ops.push(PcodeOp::BranchIndirect { target });
@@ -911,6 +929,9 @@ fn lift_call(instruction: &Instruction, allocator: &mut UniqueAllocator) -> Opti
         instruction.op_kind(0),
         OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64
     );
+    if !direct && !instruction.is_call_near_indirect() {
+        return None;
+    }
     let target: Varnode = if direct {
         ram_address(instruction.near_branch_target())
     } else {

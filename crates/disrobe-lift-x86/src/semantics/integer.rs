@@ -5,8 +5,8 @@ use crate::registers::{CF, OF, PF, SF, UniqueAllocator, ZF, constant, is_gpr, re
 
 use super::{
     Destination, ShiftKind, destination_width, emit_add_flags, emit_declared_undefined_flags,
-    emit_shift_flags, memory_pointer, read_destination, read_operand, snapshot, write_destination,
-    write_register,
+    emit_shift_flags, memory_pointer, read_destination, read_operand, snapshot, unchanged_shift,
+    write_destination, write_register,
 };
 
 pub(super) fn lift_bit_test(
@@ -458,7 +458,7 @@ pub(super) fn lift_double_shift(
     let count_mask: u64 = if width == 8 { 0x3f } else { 0x1f };
     let count: u32 = u32::try_from(raw_count & count_mask).ok()?;
     if count == 0 {
-        return (instruction.op_kind(0) == OpKind::Register).then(Vec::new);
+        return unchanged_shift(instruction);
     }
     if count > width_bits {
         return None;
