@@ -28,7 +28,7 @@ const TRACKED_V96_SAMPLES: [[&str; 2]; 5] = [
 
 const BUNDLE_OPCODES_DECODED: usize = 5_765_066;
 const BUNDLE_DISTINCT_OPCODES: usize = 167;
-const BUNDLE_STRUCTURED_FLOOR: usize = 112_869;
+const BUNDLE_STRUCTURED_FLOOR: usize = 112_823;
 const BUNDLE_TAIL_REPORT_WIDTH: usize = 12;
 
 fn corpus(parts: &[&str]) -> PathBuf {
@@ -275,7 +275,10 @@ fn the_production_bundle_structures_the_bulk_of_its_functions_and_names_every_re
     assert!(
         report.structured_functions >= BUNDLE_STRUCTURED_FLOOR,
         "structuring over this bundle has reached {BUNDLE_STRUCTURED_FLOOR} of \
-         {PUBLISHED_FUNCTION_COUNT} functions; got {}",
+         {PUBLISHED_FUNCTION_COUNT} functions; got {}. This floor is the rate measured with object \
+         identity threaded through a variable. Re-materialising an allocation at each use site \
+         structures a few dozen more functions, and every one of them returns a fresh empty object \
+         instead of the mutated one, so the lower rate is the correct one",
         report.structured_functions
     );
 

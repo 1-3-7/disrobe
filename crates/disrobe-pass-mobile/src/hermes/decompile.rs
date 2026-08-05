@@ -2321,8 +2321,61 @@ fn back_edge_regions(instructions: &[Instruction]) -> Vec<(usize, usize)> {
 }
 
 #[must_use]
+fn allocates_fresh_identity(name: &str) -> bool {
+    matches!(
+        name,
+        "NewArray"
+            | "NewArrayWithBuffer"
+            | "NewArrayWithBufferLong"
+            | "NewObject"
+            | "NewObjectWithBuffer"
+            | "NewObjectWithBufferLong"
+            | "NewObjectWithParent"
+            | "CreateRegExp"
+    )
+}
+
+#[must_use]
+fn mutates_receiver_in_place(name: &str) -> bool {
+    name.starts_with("PutOwn") || name.starts_with("Del") || matches!(name, "PutByVal")
+}
+
+#[must_use]
+fn mutated_then_read_again(instructions: &[Instruction], from: usize, reg: u32) -> bool {
+    let mut mutated: bool = false;
+    for later in &instructions[from..] {
+        let receiver: Option<u32> = match later.operands.first() {
+            Some(OperandValue::Reg(r)) => Some(*r),
+            _ => None,
+        };
+        if mutated && inst_read_regs(later).contains(&reg) {
+            return true;
+        }
+        if receiver == Some(reg) && mutates_receiver_in_place(&later.name) {
+            mutated = true;
+        }
+        if inst_dest(later) == Some(reg) {
+            break;
+        }
+    }
+    false
+}
+
+#[must_use]
 fn compute_materialized(instructions: &[Instruction]) -> BTreeSet<u32> {
     let mut materialized: BTreeSet<u32> = BTreeSet::new();
+
+    for (i, inst) in instructions.iter().enumerate() {
+        if !allocates_fresh_identity(&inst.name) {
+            continue;
+        }
+        let Some(d): Option<u32> = inst_dest(inst) else {
+            continue;
+        };
+        if mutated_then_read_again(instructions, i + 1, d) {
+            materialized.insert(d);
+        }
+    }
 
     for (header, latch) in back_edge_regions(instructions) {
         let region: &[Instruction] = &instructions[header..=latch];
