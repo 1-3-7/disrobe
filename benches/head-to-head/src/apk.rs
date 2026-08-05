@@ -83,15 +83,16 @@ pub fn measure(root: &Path) -> Result<(String, Value)> {
         "status": "ok",
         "ecosystem": "android",
         "dataset": dataset,
-        "oracle": "real javac (JDK), per-method recompile error-free against a STUBBED (empty) classpath so a wrong recovered signature cannot resolve against the original classes",
-        "metric": format!("clean / emitted main-EdgeCases methods. The original main class declares {denominator} methods (counted at runtime); each decompiler also emits synthetic accessor/lambda/bridge methods, so the per-tool EMITTED count differs by design. The honest comparable number is the recompile-clean RATE (clean/emitted) plus the absolute clean-method count, both shown."),
+        "oracle": "real javac (JDK), per-method recompile error-free against a STUBBED (empty) classpath so a wrong recovered signature cannot resolve against the original classes. A method is certified clean only from a file javac type-checked end to end; javac reports no method-level result for a file it stopped parsing, so such a file certifies nothing rather than scoring zero",
+        "metric": format!("clean / emitted main-EdgeCases methods, from files the compiler type-checked. The original main class declares {denominator} methods (counted at runtime); each decompiler also emits synthetic accessor/lambda/bridge methods, so the per-tool EMITTED count differs by design. The comparable number is the recompile-clean RATE (clean/emitted) plus the absolute clean-method count, both shown. A tool whose recovered file javac stopped parsing publishes its emitted-method count and no rate at all."),
         "reproduce": "cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr",
         "fairness": [
             "identical input bytes per leg: disrobe and jadx both decompile EdgeCases.dex; disrobe and cfr both decompile the EdgeCases-baseline.jar (cfr cannot read DEX)",
-            "same oracle scores every tool: the same javac error-line map over each tool's recovered MAIN EdgeCases class",
-            "only the main class is scored, so the DEX path's separately-emitted EdgeCases$N synthetic classes do not inflate any count",
+            "same oracle scores every tool: the same javac run and the same error-line map over each tool's recovered MAIN EdgeCases class",
+            "same certification rule for every tool: clean methods are counted only from a file javac type-checked, and a file javac stopped parsing certifies no method for either side and faults none either",
+            "only the main class is scored. disrobe emits its EdgeCases$N classes beside the main class and they are cut from the scored file, while jadx nests its synthetic types inside the main class and they stay in it, so a defect in a synthetic type can stop the compiler on the jadx side where the same defect could not on the disrobe side",
             "stubbed classpath: no original-jar leak (the section-0.4 #1 defect is fixed)",
-            "a tool that produces no EdgeCases source counts 0 clean, not an excluded sample"
+            "a tool that produces no EdgeCases source at all is a miss, never an excluded sample"
         ],
         "tools": tools,
         "honest_note": measured_summary(&legs),
@@ -101,8 +102,17 @@ pub fn measure(root: &Path) -> Result<(String, Value)> {
 
 const IN_PROCESS_VERSION: &str = "n/a (in-process)";
 const OK_STATUS: &str = "ok";
-const SHARED_ORACLE: &str =
-    "All rows use the same stubbed real-`javac` oracle and are recompile-only.";
+const UNCERTIFIED_STATUS: &str = "uncertified";
+const METRIC: &str = "recompile-clean main-class methods (clean / emitted)";
+const SHARED_ORACLE: &str = "All rows use the same stubbed real-`javac` oracle and are recompile-only. A method counts \
+     clean only when javac type-checked the whole recovered file: a file the compiler stopped \
+     parsing certifies nothing, for either side, and is reported with the method count its tool \
+     did emit rather than as a zero. The same rule scores `disrobe` and every competitor, and a \
+     leg states no lead unless the compiler certified both of its sides.";
+const ATTRIBUTION_PROBE_FILE: &str = "TypeCheckReached.java";
+const ATTRIBUTION_PROBE_SOURCE: &str = "final class TypeCheckReached {\n    static final Object \
+                                        VALUE = typeCheckReachedSymbolThatCannotResolve;\n}\n";
+const ATTRIBUTION_PROBE_DIAGNOSTIC: &str = "TypeCheckReached.java:";
 
 fn dataset_description(dex_sha256: &str, jar_sha256: &str) -> String {
     format!(
@@ -190,10 +200,11 @@ impl Leg {
             CompetitorOutcome::Scored { version, score } => (version.as_str(), score),
         };
         let theirs_phrase: String = score_phrase(theirs);
-        if self.disrobe.status != OK_STATUS || theirs.status != OK_STATUS {
+        if !self.disrobe.is_certified() || !theirs.is_certified() {
             return format!(
                 "{label}: `disrobe` recovers {ours}; `{short}` ({version}) recovers \
-                 {theirs_phrase}. No lead is stated, because one side produced nothing scorable.",
+                 {theirs_phrase}. No lead is stated, because the compiler did not certify both \
+                 sides.",
                 label = self.label,
                 short = self.competitor_short,
             );
@@ -203,7 +214,7 @@ impl Leg {
              {counts}; {rates}.",
             label = self.label,
             short = self.competitor_short,
-            counts = count_verdict(self.disrobe.clean, self.competitor_short, theirs.clean),
+            counts = count_verdict(self.disrobe.clean(), self.competitor_short, theirs.clean()),
             rates = rate_verdict(self.disrobe.rate(), self.competitor_short, theirs.rate()),
         )
     }
@@ -216,15 +227,39 @@ fn measured_summary(legs: &[Leg]) -> String {
 }
 
 fn score_phrase(score: &ToolScore) -> String {
-    if score.status == OK_STATUS {
-        return format!(
-            "{} clean of {} emitted ({:.1}%)",
-            score.clean,
-            score.emitted,
-            score.rate()
-        );
+    match score {
+        ToolScore::Certified {
+            clean,
+            emitted,
+            class_level_defects: 0,
+            ..
+        } => format!("{clean} clean of {emitted} emitted ({:.1}%)", score.rate()),
+        ToolScore::Certified {
+            clean,
+            emitted,
+            class_level_defects,
+            ..
+        } => format!(
+            "{clean} clean of {emitted} emitted ({:.1}%), beside {class_level_defects} compiler \
+             {} outside any method",
+            score.rate(),
+            defects(*class_level_defects)
+        ),
+        ToolScore::Uncertified {
+            emitted,
+            first_defect_line,
+            ..
+        } => format!(
+            "{emitted} emitted {}, none of them certified, because javac stopped at a defect on \
+             line {first_defect_line} of the recovered file",
+            methods(*emitted)
+        ),
+        ToolScore::Missing { detail, .. } => format!("nothing scorable ({detail})"),
     }
-    format!("nothing scorable ({})", score.detail)
+}
+
+const fn defects(count: usize) -> &'static str {
+    if count == 1 { "defect" } else { "defects" }
 }
 
 fn count_verdict(ours: usize, competitor_short: &str, theirs: usize) -> String {
@@ -261,53 +296,122 @@ const fn methods(count: usize) -> &'static str {
 }
 
 #[derive(Debug)]
-struct ToolScore {
-    clean: usize,
-    emitted: usize,
-    original: usize,
-    status: String,
-    detail: String,
+enum ToolScore {
+    Certified {
+        clean: usize,
+        emitted: usize,
+        class_level_defects: usize,
+        original: usize,
+        detail: String,
+    },
+    Uncertified {
+        emitted: usize,
+        first_defect_line: usize,
+        original: usize,
+        detail: String,
+    },
+    Missing {
+        original: usize,
+        detail: String,
+    },
 }
 
 impl ToolScore {
-    fn measured(clean: usize, emitted: usize, original: usize, detail: String) -> Self {
-        Self {
-            clean,
-            emitted,
-            original,
-            status: "ok".to_owned(),
-            detail,
+    const fn miss(original: usize, detail: String) -> Self {
+        Self::Missing { original, detail }
+    }
+
+    const fn status(&self) -> &'static str {
+        match self {
+            Self::Certified { .. } => OK_STATUS,
+            Self::Uncertified { .. } => UNCERTIFIED_STATUS,
+            Self::Missing { .. } => "miss",
         }
     }
 
-    fn miss(original: usize, detail: String) -> Self {
-        Self {
-            clean: 0,
-            emitted: 0,
-            original,
-            status: "miss".to_owned(),
-            detail,
+    const fn is_certified(&self) -> bool {
+        matches!(self, Self::Certified { .. })
+    }
+
+    const fn clean(&self) -> usize {
+        match self {
+            Self::Certified { clean, .. } => *clean,
+            Self::Uncertified { .. } | Self::Missing { .. } => 0,
         }
     }
 
     fn rate(&self) -> f64 {
-        100.0 * self.clean as f64 / self.emitted.max(1) as f64
+        match self {
+            Self::Certified { clean, emitted, .. } => {
+                100.0 * *clean as f64 / (*emitted).max(1) as f64
+            }
+            Self::Uncertified { .. } | Self::Missing { .. } => 0.0,
+        }
+    }
+
+    const fn original(&self) -> usize {
+        match self {
+            Self::Certified { original, .. }
+            | Self::Uncertified { original, .. }
+            | Self::Missing { original, .. } => *original,
+        }
+    }
+
+    fn detail(&self) -> &str {
+        match self {
+            Self::Certified { detail, .. }
+            | Self::Uncertified { detail, .. }
+            | Self::Missing { detail, .. } => detail,
+        }
     }
 
     fn to_json(&self, name: &str, version: &str) -> Value {
-        json!({
+        let mut row: Value = json!({
             "name": name,
             "version": version,
-            "metric": "recompile-clean main-class methods (clean / emitted)",
-            "value": self.rate(),
-            "clean": self.clean,
-            "emitted": self.emitted,
-            "original_methods": self.original,
-            "display": format!("{} clean / {} emitted ({:.1}%)", self.clean, self.emitted, self.rate()),
-            "status": self.status,
-            "detail": self.detail,
-        })
+            "metric": METRIC,
+            "original_methods": self.original(),
+            "status": self.status(),
+            "detail": self.detail(),
+        });
+        match self {
+            Self::Certified {
+                clean,
+                emitted,
+                class_level_defects,
+                ..
+            } => {
+                row["value"] = json!(self.rate());
+                row["clean"] = json!(clean);
+                row["emitted"] = json!(emitted);
+                row["class_level_defects"] = json!(class_level_defects);
+                row["display"] = Value::String(format!(
+                    "{clean} clean / {emitted} emitted ({:.1}%)",
+                    self.rate()
+                ));
+            }
+            Self::Uncertified {
+                emitted,
+                first_defect_line,
+                ..
+            } => {
+                row["emitted"] = json!(emitted);
+                row["first_defect_line"] = json!(first_defect_line);
+                row["display"] = Value::String(uncertified_display(*emitted));
+            }
+            Self::Missing { .. } => {
+                row["value"] = json!(0.0);
+                row["clean"] = json!(0);
+                row["emitted"] = json!(0);
+                row["display"] = Value::String("0 clean / 0 emitted (0.0%)".to_owned());
+            }
+        }
+        row
     }
+}
+
+fn uncertified_display(emitted: usize) -> String {
+    format!("not certified: {emitted} methods emitted")
 }
 
 fn score_disrobe_dex(javac: &Path, dex_bytes: &[u8], denominator: usize) -> ToolScore {
@@ -324,33 +428,31 @@ fn score_disrobe_dex(javac: &Path, dex_bytes: &[u8], denominator: usize) -> Tool
 }
 
 fn score_disrobe_jar(javac: &Path, jar_bytes: &[u8], denominator: usize) -> ToolScore {
+    match disrobe_jar_source(jar_bytes) {
+        Ok(source) => score_source(javac, &source, denominator),
+        Err(defect) => ToolScore::miss(denominator, defect),
+    }
+}
+
+fn disrobe_jar_source(jar_bytes: &[u8]) -> std::result::Result<String, String> {
     let Some(classes): Option<Vec<(String, Vec<u8>)>> = classes_from_jar(jar_bytes) else {
-        return ToolScore::miss(
-            denominator,
-            "could not read classes from the baseline jar".to_owned(),
-        );
+        return Err("could not read classes from the baseline jar".to_owned());
     };
     let Some((_n, bytes)): Option<&(String, Vec<u8>)> =
         classes.iter().find(|(n, _)| n == "EdgeCases.class")
     else {
-        return ToolScore::miss(
-            denominator,
-            "EdgeCases.class absent from the baseline jar".to_owned(),
-        );
+        return Err("EdgeCases.class absent from the baseline jar".to_owned());
     };
     let Ok(cf): disrobe_pass_jvm::Result<ClassFile> = parse_classfile(bytes) else {
-        return ToolScore::miss(
-            denominator,
-            "disrobe failed to parse EdgeCases.class".to_owned(),
-        );
+        return Err("disrobe failed to parse EdgeCases.class".to_owned());
     };
     let inners: BTreeMap<String, ClassFile> = classes
         .iter()
         .filter(|(n, _)| n.contains('$'))
         .filter_map(|(n, b)| parse_classfile(b).ok().map(|c| (n.clone(), c)))
         .collect();
-    let d: DecompiledClass = decompile_class_with_inners(&cf, &inners);
-    score_source(javac, &d.source, denominator)
+    let decompiled: DecompiledClass = decompile_class_with_inners(&cf, &inners);
+    Ok(decompiled.source)
 }
 
 fn score_jadx(javac: &Path, dex_bytes: &[u8], denominator: usize) -> ToolScore {
@@ -403,39 +505,77 @@ fn score_source(javac: &Path, source: &str, original: usize) -> ToolScore {
             "recovered source contains no main-EdgeCases methods".to_owned(),
         );
     }
-    score_method_ranges(original, &ranges, javac_error_lines(javac, source))
+    score_method_ranges(original, &ranges, javac_verdict(javac, source))
+}
+
+#[derive(Debug)]
+struct OracleVerdict {
+    error_lines: Vec<usize>,
+    type_checked: bool,
 }
 
 fn score_method_ranges(
     original: usize,
     ranges: &[(usize, usize)],
-    diagnostics: std::result::Result<Vec<usize>, String>,
+    diagnostics: std::result::Result<OracleVerdict, String>,
 ) -> ToolScore {
-    let errors: Vec<usize> = match diagnostics {
-        Ok(errors) => errors,
+    let verdict: OracleVerdict = match diagnostics {
+        Ok(verdict) => verdict,
         Err(error) => return ToolScore::miss(original, format!("javac oracle failed: {error}")),
     };
-    if let Some(line) = errors.iter().copied().find(|line: &usize| {
-        !ranges
-            .iter()
-            .any(|(start, end): &(usize, usize)| *line >= *start && *line < *end)
-    }) {
-        return ToolScore::miss(
-            original,
-            format!("javac reported a diagnostic outside a recovered method at line {line}"),
-        );
-    }
     let emitted: usize = ranges.len();
+    if !verdict.type_checked {
+        let Some(first_defect_line): Option<usize> = verdict.error_lines.first().copied() else {
+            return ToolScore::miss(
+                original,
+                "javac neither type-checked the recovered file nor reported where it stopped"
+                    .to_owned(),
+            );
+        };
+        let detail: String = format!(
+            "javac stopped at a defect on line {first_defect_line} of the recovered file and never type-checked it, so none of the {emitted} recovered main-EdgeCases methods can be certified clean and none can be called unclean either (the original main class declares {original} methods)"
+        );
+        return ToolScore::Uncertified {
+            emitted,
+            first_defect_line,
+            original,
+            detail,
+        };
+    }
+    let errors: Vec<usize> = verdict.error_lines;
+    let in_a_method = |line: usize| -> bool {
+        ranges
+            .iter()
+            .any(|(start, end): &(usize, usize)| line >= *start && line < *end)
+    };
+    let class_level_defects: usize = errors
+        .iter()
+        .filter(|line: &&usize| !in_a_method(**line))
+        .count();
     let clean: usize = ranges
         .iter()
         .filter(|(start, end): &&(usize, usize)| {
             !errors.iter().any(|&l: &usize| l >= *start && l < *end)
         })
         .count();
+    let outside: String = if class_level_defects == 0 {
+        String::new()
+    } else {
+        format!(
+            ", beside {class_level_defects} compiler {} outside any method, which belong to the recovered class structure rather than to one method",
+            defects(class_level_defects)
+        )
+    };
     let detail: String = format!(
-        "{clean} of {emitted} recovered main-EdgeCases methods compile clean under javac against a stubbed classpath (the original main class declares {original} methods; decompilers also emit synthetic accessor/lambda/bridge methods, so emitted counts differ per tool by design)"
+        "{clean} of {emitted} recovered main-EdgeCases methods compile clean under javac against a stubbed classpath{outside} (the original main class declares {original} methods; decompilers also emit synthetic accessor/lambda/bridge methods, so emitted counts differ per tool by design)"
     );
-    ToolScore::measured(clean, emitted, original, detail)
+    ToolScore::Certified {
+        clean,
+        emitted,
+        class_level_defects,
+        original,
+        detail,
+    }
 }
 
 fn main_edgecases_source(sources: &BTreeMap<String, String>) -> String {
@@ -524,7 +664,7 @@ fn classes_from_jar_with_limits(
     Some(out)
 }
 
-fn javac_error_lines(javac: &Path, source: &str) -> std::result::Result<Vec<usize>, String> {
+fn javac_verdict(javac: &Path, source: &str) -> std::result::Result<OracleVerdict, String> {
     let scratch: ScratchDir = ScratchDir::create("disrobe_h2h_javac")
         .map_err(|error: std::io::Error| format!("could not create javac workspace: {error}"))?;
     let dir: &Path = scratch.path();
@@ -534,25 +674,79 @@ fn javac_error_lines(javac: &Path, source: &str) -> std::result::Result<Vec<usiz
     let stub: PathBuf = dir.join("cp");
     std::fs::create_dir(&stub)
         .map_err(|error: std::io::Error| format!("could not create javac classpath: {error}"))?;
-    let out: std::process::Output = Command::new(javac)
+    let out: std::process::Output = compile(javac, &stub, &dir.join("out"), &[&path])?;
+    if out.status.success() {
+        require_emitted_edgecases_class(dir)?;
+        return Ok(OracleVerdict {
+            error_lines: Vec::new(),
+            type_checked: true,
+        });
+    }
+    let diagnostics: String = combined_output(&out);
+    let error_lines: Vec<usize> = failed_javac_error_lines(&diagnostics)
+        .map_err(|error: String| format!("javac exited with {}: {error}", out.status))?;
+    let type_checked: bool = type_check_was_reached(javac, dir, &stub, &path)?;
+    Ok(OracleVerdict {
+        error_lines,
+        type_checked,
+    })
+}
+
+fn type_check_was_reached(
+    javac: &Path,
+    dir: &Path,
+    stub: &Path,
+    source_path: &Path,
+) -> std::result::Result<bool, String> {
+    let probe_path: PathBuf = dir.join(ATTRIBUTION_PROBE_FILE);
+    std::fs::write(&probe_path, ATTRIBUTION_PROBE_SOURCE).map_err(|error: std::io::Error| {
+        format!("could not write the type-check probe: {error}")
+    })?;
+    let out: std::process::Output = compile(
+        javac,
+        stub,
+        &dir.join("probe-out"),
+        &[source_path, &probe_path],
+    )?;
+    if out.status.success() {
+        return Err(
+            "the type-check probe compiled without reporting its unresolvable symbol, so it can no \
+             longer tell a parsed file from an unparsed one"
+                .to_owned(),
+        );
+    }
+    Ok(combined_output(&out).contains(ATTRIBUTION_PROBE_DIAGNOSTIC))
+}
+
+fn compile(
+    javac: &Path,
+    stub: &Path,
+    out_dir: &Path,
+    sources: &[&Path],
+) -> std::result::Result<std::process::Output, String> {
+    std::fs::create_dir_all(out_dir).map_err(|error: std::io::Error| {
+        format!("could not create the javac output directory: {error}")
+    })?;
+    let mut command: Command = Command::new(javac);
+    command
         .arg("-nowarn")
         .arg("-proc:none")
         .arg("-cp")
-        .arg(&stub)
+        .arg(stub)
         .arg("-d")
-        .arg(dir)
-        .arg(&path)
-        .output()
-        .map_err(|error: std::io::Error| format!("could not start javac: {error}"))?;
-    if out.status.success() {
-        require_emitted_edgecases_class(dir)?;
-        return Ok(Vec::new());
+        .arg(out_dir);
+    for source in sources {
+        command.arg(source);
     }
+    command
+        .output()
+        .map_err(|error: std::io::Error| format!("could not start javac: {error}"))
+}
+
+fn combined_output(out: &std::process::Output) -> String {
     let stderr: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&out.stderr);
     let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&out.stdout);
-    let diagnostics: String = format!("{stderr}\n{stdout}");
-    failed_javac_error_lines(&diagnostics)
-        .map_err(|error: String| format!("javac exited with {}: {error}", out.status))
+    format!("{stderr}\n{stdout}")
 }
 
 fn require_emitted_edgecases_class(dir: &Path) -> std::result::Result<(), String> {
@@ -728,6 +922,18 @@ fn cfr_version(cfr: &CfrInvoke) -> String {
 mod tests {
     use super::*;
 
+    impl ToolScore {
+        fn measured(clean: usize, emitted: usize, original: usize, detail: String) -> Self {
+            Self::Certified {
+                clean,
+                emitted,
+                class_level_defects: 0,
+                original,
+                detail,
+            }
+        }
+    }
+
     const SAMPLE: &str = "package p;\npublic class EdgeCases {\n  public int a() {\n    return 1;\n  }\n  static class Inner {\n    void hidden() {}\n  }\n  private void b(int x) {\n    System.out.println(x);\n  }\n}\nclass EdgeCases$1 {\n  void synthetic() {}\n}\n";
 
     #[test]
@@ -797,13 +1003,12 @@ mod tests {
             .map_err(|error: std::io::Error| error.to_string())?;
         let missing: PathBuf = scratch.path().join("javac-that-does-not-exist");
         let score: ToolScore = score_source(&missing, SAMPLE, 2);
-        assert_eq!(score.status, "miss");
-        assert_eq!(score.clean, 0);
-        assert_eq!(score.emitted, 0);
+        assert_eq!(score.status(), "miss");
+        assert_eq!(score.clean(), 0);
         assert!(
-            score.detail.contains("could not start javac"),
+            score.detail().contains("could not start javac"),
             "a failed compiler spawn must not be counted as all-clean: {}",
-            score.detail
+            score.detail()
         );
         Ok(())
     }
@@ -841,18 +1046,329 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn only_method_bound_javac_failures_are_scored_partially() {
-        let ranges: Vec<(usize, usize)> = vec![(3, 6), (10, 13)];
-        let partial: ToolScore = score_method_ranges(2, &ranges, Ok(vec![3]));
-        assert_eq!(partial.status, "ok");
-        assert_eq!(partial.clean, 1);
-        assert_eq!(partial.emitted, 2);
+    const fn type_checked(error_lines: Vec<usize>) -> OracleVerdict {
+        OracleVerdict {
+            error_lines,
+            type_checked: true,
+        }
+    }
 
-        let outside: ToolScore = score_method_ranges(2, &ranges, Ok(vec![2]));
-        assert_eq!(outside.status, "miss");
-        assert_eq!(outside.clean, 0);
-        assert_eq!(outside.emitted, 0);
+    const fn never_type_checked(error_lines: Vec<usize>) -> OracleVerdict {
+        OracleVerdict {
+            error_lines,
+            type_checked: false,
+        }
+    }
+
+    #[test]
+    fn a_diagnostic_inside_a_method_costs_that_method_only() {
+        let ranges: Vec<(usize, usize)> = vec![(3, 6), (10, 13)];
+        let partial: ToolScore = score_method_ranges(2, &ranges, Ok(type_checked(vec![3])));
+        assert_eq!(partial.status(), "ok");
+        assert_eq!(partial.clean(), 1);
+        assert!(
+            matches!(
+                partial,
+                ToolScore::Certified {
+                    emitted: 2,
+                    class_level_defects: 0,
+                    ..
+                }
+            ),
+            "one bad method leaves the other scored: {partial:?}"
+        );
+    }
+
+    #[test]
+    fn a_diagnostic_outside_every_method_costs_no_method_and_zeroes_no_tool() {
+        let ranges: Vec<(usize, usize)> = vec![(3, 6), (10, 13)];
+        let outside: ToolScore = score_method_ranges(2, &ranges, Ok(type_checked(vec![2])));
+        assert_eq!(
+            outside.status(),
+            "ok",
+            "a defect in the class structure of a file the compiler type-checked says nothing about \
+             the methods it did check, so it cannot delete the whole measurement: {outside:?}"
+        );
+        assert_eq!(outside.clean(), 2);
+        assert!(
+            matches!(
+                outside,
+                ToolScore::Certified {
+                    emitted: 2,
+                    class_level_defects: 1,
+                    ..
+                }
+            ),
+            "the defect is still published, as a class-level count beside the methods: {outside:?}"
+        );
+        assert!(
+            outside.detail().contains("outside any method"),
+            "the row has to name the defect it did not charge to a method: {}",
+            outside.detail()
+        );
+    }
+
+    #[test]
+    fn a_file_the_compiler_never_type_checked_certifies_nothing_and_zeroes_nothing() {
+        let ranges: Vec<(usize, usize)> = vec![(3, 6), (10, 13)];
+        let score: ToolScore = score_method_ranges(2, &ranges, Ok(never_type_checked(vec![2, 4])));
+        assert_eq!(score.status(), "uncertified");
+        assert!(
+            matches!(
+                score,
+                ToolScore::Uncertified {
+                    emitted: 2,
+                    first_defect_line: 2,
+                    ..
+                }
+            ),
+            "the tool emitted two methods and that count is what gets published: {score:?}"
+        );
+        assert!(
+            !score.to_json("t", "v").as_object().is_some_and(
+                |row: &serde_json::Map<String, Value>| row.contains_key("clean")
+                    || row.contains_key("value")
+            ),
+            "a file that was never type-checked must publish neither a clean count nor a rate, \
+             because the compiler established neither"
+        );
+        assert_eq!(
+            score.to_json("t", "v")["display"],
+            Value::String("not certified: 2 methods emitted".to_owned()),
+            "the row states what the tool produced, never that it produced nothing"
+        );
+    }
+
+    #[test]
+    fn the_uncertified_rule_reads_the_same_whichever_side_trips_it() {
+        let ranges: Vec<(usize, usize)> = vec![(3, 6), (10, 13)];
+        let ours: ToolScore = score_method_ranges(2, &ranges, Ok(never_type_checked(vec![2])));
+        let theirs: ToolScore = score_method_ranges(2, &ranges, Ok(never_type_checked(vec![2])));
+        assert_eq!(ours.status(), theirs.status());
+        assert_eq!(score_phrase(&ours), score_phrase(&theirs));
+
+        let sentence: String = dex_leg(
+            ours,
+            CompetitorOutcome::Scored {
+                version: "1.5.5".to_owned(),
+                score: ToolScore::measured(128, 130, 106, "measured".to_owned()),
+            },
+        )
+        .sentence();
+        assert!(
+            sentence.contains("No lead is stated"),
+            "a leg the compiler certified on one side only cannot carry a verdict: {sentence}"
+        );
+        assert!(
+            !sentence.contains("leads by"),
+            "a leg the compiler certified on one side only cannot claim a lead: {sentence}"
+        );
+        assert!(
+            sentence.contains("2 emitted methods, none of them certified"),
+            "the uncertified side still reports what it emitted: {sentence}"
+        );
+    }
+
+    #[test]
+    fn the_published_note_states_the_rule_it_scored_by() {
+        assert!(
+            SHARED_ORACLE.contains("A method counts clean only when javac type-checked the whole"),
+            "a reader cannot check a rule the published note does not state"
+        );
+        assert!(
+            SHARED_ORACLE.contains("for either side"),
+            "the note has to say the rule binds both sides, not only the competitor"
+        );
+    }
+
+    const JAVAC: crate::published::CompetitorTool = crate::published::CompetitorTool {
+        program: "javac",
+        require_var: "DISROBE_REQUIRE_JAVAC",
+        install_hint: "install a JDK and put javac on PATH",
+    };
+
+    fn javac_or_announce(graded: &str) -> Option<PathBuf> {
+        let found: Option<PathBuf> = find_on_path("javac");
+        if found.is_none() {
+            crate::published::enforce_requirement(
+                &JAVAC,
+                graded,
+                "javac is not on PATH",
+                crate::published::requirement_for(&JAVAC),
+            );
+        }
+        found
+    }
+
+    fn insert_after_line(source: &str, line: usize, inserted: &str) -> String {
+        let mut lines: Vec<String> = source.lines().map(str::to_owned).collect();
+        lines.insert(line, inserted.to_owned());
+        lines.join("\n")
+    }
+
+    #[test]
+    fn one_seeded_defect_costs_one_recovered_method_of_the_real_jar()
+    -> core::result::Result<(), String> {
+        let Some(javac): Option<PathBuf> =
+            javac_or_announce("the seeded-defect check over the recovered baseline jar")
+        else {
+            return Ok(());
+        };
+        let root: PathBuf = crate::published::checked_workspace_root();
+        let jar: Vec<u8> = read_bounded_file(
+            &root
+                .join("corpus")
+                .join("jvm")
+                .join("megafile")
+                .join("EdgeCases-baseline.jar"),
+            MAX_FIXTURE_BYTES,
+        )
+        .map_err(|error: eyre::Report| error.to_string())?;
+        let source: String = disrobe_jar_source(&jar)?;
+
+        let ToolScore::Certified {
+            clean: baseline_clean,
+            emitted,
+            ..
+        } = score_source(&javac, &source, 106)
+        else {
+            return Err(
+                "the recovered baseline jar has to compile for a seeded defect to mean anything"
+                    .to_owned(),
+            );
+        };
+        assert_eq!(
+            baseline_clean, emitted,
+            "the unmodified recovered class compiles clean, so every emitted method is certified"
+        );
+
+        let ranges: Vec<(usize, usize)> = main_class_method_ranges(&source);
+        let Some((first_method_start, _end)): Option<&(usize, usize)> = ranges.first() else {
+            return Err("the recovered class declares no method to seed".to_owned());
+        };
+        let seeded: String = insert_after_line(
+            &source,
+            *first_method_start,
+            "        int seededTypeDefect = \"this is not an int\";",
+        );
+        let ToolScore::Certified {
+            clean: seeded_clean,
+            emitted: seeded_emitted,
+            class_level_defects,
+            ..
+        } = score_source(&javac, &seeded, 106)
+        else {
+            return Err(
+                "one bad statement inside a method body still parses, so the file stays \
+                        certifiable"
+                    .to_owned(),
+            );
+        };
+        assert_eq!(
+            seeded_emitted, emitted,
+            "seeding a defect changes what compiles, never how many methods were recovered"
+        );
+        assert_eq!(class_level_defects, 0, "the defect sits inside a method");
+        assert_eq!(
+            seeded_clean,
+            baseline_clean - 1,
+            "one broken method costs exactly one clean method. A rule that zeroes the tool here \
+             would report a decompiler that recovered {emitted} methods as recovering nothing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_seeded_defect_outside_every_method_costs_no_method_of_the_real_jar()
+    -> core::result::Result<(), String> {
+        let Some(javac): Option<PathBuf> = javac_or_announce(
+            "the class-level seeded-defect check over the recovered baseline jar",
+        ) else {
+            return Ok(());
+        };
+        let root: PathBuf = crate::published::checked_workspace_root();
+        let jar: Vec<u8> = read_bounded_file(
+            &root
+                .join("corpus")
+                .join("jvm")
+                .join("megafile")
+                .join("EdgeCases-baseline.jar"),
+            MAX_FIXTURE_BYTES,
+        )
+        .map_err(|error: eyre::Report| error.to_string())?;
+        let source: String = disrobe_jar_source(&jar)?;
+        let ToolScore::Certified {
+            clean: baseline_clean,
+            ..
+        } = score_source(&javac, &source, 106)
+        else {
+            return Err("the recovered baseline jar has to compile first".to_owned());
+        };
+
+        let seeded: String = insert_after_line(
+            &source,
+            1,
+            "    private NoSuchTypeAnywhere seededClassLevelDefect;",
+        );
+        let ToolScore::Certified {
+            clean,
+            class_level_defects,
+            ..
+        } = score_source(&javac, &seeded, 106)
+        else {
+            return Err(
+                "an unresolvable field type parses, so the file is still type-checked".to_owned(),
+            );
+        };
+        assert_eq!(
+            class_level_defects, 1,
+            "the defect belongs to the class structure and is published as such"
+        );
+        assert_eq!(
+            clean, baseline_clean,
+            "a defect outside every method costs no method and, above all, does not zero the tool"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_type_check_probe_separates_a_parse_failure_from_a_resolution_failure()
+    -> core::result::Result<(), String> {
+        let Some(javac): Option<PathBuf> =
+            javac_or_announce("the probe that decides whether javac reached type checking")
+        else {
+            return Ok(());
+        };
+
+        let unparseable: &str = "public class EdgeCases {\n    public int a() {\n        return 1;\n    }\n    enum \
+             Broken extends Object {\n        private Broken() { }\n    }\n}\n";
+        let resolvable_only: &str = "public class EdgeCases {\n    private MissingType field;\n    \
+                                     public int a() {\n        return 1;\n    }\n}\n";
+
+        let stopped: OracleVerdict = javac_verdict(&javac, unparseable)?;
+        assert!(
+            !stopped.type_checked,
+            "javac cannot type-check a file it failed to parse, so the probe must say so"
+        );
+        let unresolved: OracleVerdict = javac_verdict(&javac, resolvable_only)?;
+        assert!(
+            unresolved.type_checked,
+            "a file that parses and only fails to resolve a name was type-checked, so its methods \
+             stay scorable"
+        );
+        assert!(
+            !unresolved.error_lines.is_empty(),
+            "the unresolved field is still a diagnostic the scorer has to see"
+        );
+
+        let ranges: Vec<(usize, usize)> = main_class_method_ranges(unparseable);
+        let refused: ToolScore = score_method_ranges(1, &ranges, Ok(stopped));
+        assert_eq!(
+            refused.status(),
+            "uncertified",
+            "real javac stopping at a parse defect must not be published as clean methods"
+        );
+        Ok(())
     }
 
     fn dex_leg(disrobe: ToolScore, competitor: CompetitorOutcome) -> Leg {
@@ -929,12 +1445,14 @@ mod tests {
         ];
         assert_eq!(
             measured_summary(&legs),
-            "DEX leg: `disrobe` recovers 129 clean of 132 emitted (97.7%); `jadx` (1.5.5) \
-             recovers 128 clean of 130 emitted (98.5%). `disrobe` leads by 1 clean method; `jadx` \
-             leads on clean rate, 98.5% to 97.7%. JAR leg: `disrobe` recovers 131 clean of 131 \
-             emitted (100.0%); `cfr` (CFR 0.152) recovers 105 clean of 106 emitted (99.1%). \
-             `disrobe` leads by 26 clean methods; `disrobe` leads on clean rate, 100.0% to 99.1%. \
-             All rows use the same stubbed real-`javac` oracle and are recompile-only."
+            format!(
+                "DEX leg: `disrobe` recovers 129 clean of 132 emitted (97.7%); `jadx` (1.5.5) \
+                 recovers 128 clean of 130 emitted (98.5%). `disrobe` leads by 1 clean method; \
+                 `jadx` leads on clean rate, 98.5% to 97.7%. JAR leg: `disrobe` recovers 131 clean \
+                 of 131 emitted (100.0%); `cfr` (CFR 0.152) recovers 105 clean of 106 emitted \
+                 (99.1%). `disrobe` leads by 26 clean methods; `disrobe` leads on clean rate, \
+                 100.0% to 99.1%. {SHARED_ORACLE}"
+            )
         );
     }
 

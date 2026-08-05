@@ -7,17 +7,17 @@ Regenerate with `cargo run -p disrobe-bench-head-to-head`; `--check` fails if th
 ## APK / DEX decompilation: disrobe vs JADX vs CFR (recompile-clean main-class methods under real javac)
 
 - dataset: corpus/jvm/dex/EdgeCases.dex (SHA-256 fdc012bd9b9596256ee2bb319ef3e215a34b6d58c3b0856d7ea8bdb290910e26) for the DEX leg; corpus/jvm/megafile/EdgeCases-baseline.jar (SHA-256 9e68bd1344b5a0143966d80a7b53fe71b23809c18dac139b38e41edc9dd413a6) for the JAR leg; both committed, fully offline
-- oracle: real javac (JDK), per-method recompile error-free against a STUBBED (empty) classpath so a wrong recovered signature cannot resolve against the original classes
+- oracle: real javac (JDK), per-method recompile error-free against a STUBBED (empty) classpath so a wrong recovered signature cannot resolve against the original classes. A method is certified clean only from a file javac type-checked end to end; javac reports no method-level result for a file it stopped parsing, so such a file certifies nothing rather than scoring zero
 - reproduce: `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`
 
 | tool | version | metric | value | status |
 |---|---|---|---|---|
-| disrobe (in-house Dalvik, DEX input) | n/a (in-process) | recompile-clean main-class methods (clean / emitted) | 129 clean / 132 emitted (97.7%) | ok |
-| jadx (DEX input) | 1.5.5 | recompile-clean main-class methods (clean / emitted) | 128 clean / 130 emitted (98.5%) | ok |
+| disrobe (in-house Dalvik, DEX input) | n/a (in-process) | recompile-clean main-class methods (clean / emitted) | not certified: 132 methods emitted | uncertified |
+| jadx (DEX input) | 1.5.5 | recompile-clean main-class methods (clean / emitted) | not certified: 130 methods emitted | uncertified |
 | disrobe (in-house JVM, JAR input) | n/a (in-process) | recompile-clean main-class methods (clean / emitted) | 131 clean / 131 emitted (100.0%) | ok |
-| cfr (JAR input) | CFR 0.152 | recompile-clean main-class methods (clean / emitted) | 105 clean / 106 emitted (99.1%) | ok |
+| cfr (JAR input) | CFR 0.152 | recompile-clean main-class methods (clean / emitted) | not certified: 106 methods emitted | uncertified |
 
-DEX leg: `disrobe` recovers 129 clean of 132 emitted (97.7%); `jadx` (1.5.5) recovers 128 clean of 130 emitted (98.5%). `disrobe` leads by 1 clean method; `jadx` leads on clean rate, 98.5% to 97.7%. JAR leg: `disrobe` recovers 131 clean of 131 emitted (100.0%); `cfr` (CFR 0.152) recovers 105 clean of 106 emitted (99.1%). `disrobe` leads by 26 clean methods; `disrobe` leads on clean rate, 100.0% to 99.1%. All rows use the same stubbed real-`javac` oracle and are recompile-only.
+DEX leg: `disrobe` recovers 132 emitted methods, none of them certified, because javac stopped at a defect on line 2 of the recovered file; `jadx` (1.5.5) recovers 130 emitted methods, none of them certified, because javac stopped at a defect on line 619 of the recovered file. No lead is stated, because the compiler did not certify both sides. JAR leg: `disrobe` recovers 131 clean of 131 emitted (100.0%); `cfr` (CFR 0.152) recovers 106 emitted methods, none of them certified, because javac stopped at a defect on line 173 of the recovered file. No lead is stated, because the compiler did not certify both sides. All rows use the same stubbed real-`javac` oracle and are recompile-only. A method counts clean only when javac type-checked the whole recovered file: a file the compiler stopped parsing certifies nothing, for either side, and is reported with the method count its tool did emit rather than as a zero. The same rule scores `disrobe` and every competitor, and a leg states no lead unless the compiler certified both of its sides.
 
 ## Secret / IOC recall: disrobe frisk vs apkleaks (same APK, hand-verified planted ground truth)
 

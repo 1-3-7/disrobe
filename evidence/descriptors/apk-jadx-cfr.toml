@@ -1,15 +1,15 @@
 id = "apk-jadx-cfr"
 ecosystem = "android"
 title = "APK / DEX decompilation: disrobe vs JADX vs CFR"
-claim = "On their respective committed EdgeCases inputs, disrobe recovers at least as many recompile-clean main-class methods as JADX on DEX and CFR on JAR under real javac, with no original-jar classpath leak."
+claim = "On their respective committed EdgeCases inputs, one real javac run scores every tool by the same rule, and a main-class method counts clean only from a recovered file that javac type-checked end to end. A leg publishes a lead only when the compiler certified both of its sides, so a file javac stopped parsing ends its leg for both tools instead of scoring either one."
 oracle_strength = "recompile-only"
 ci = true
 
 [oracle]
 kind = "headtohead-import"
-external = "real javac (JDK), per-method recompile error-free against a STUBBED (empty) classpath so a wrong recovered signature cannot resolve against the original classes; the SAME oracle scores every tool"
+external = "real javac (JDK), per-method recompile error-free against a STUBBED (empty) classpath so a wrong recovered signature cannot resolve against the original classes; the SAME oracle and the same certification rule score every tool, and a file the compiler stopped parsing certifies no method for either side"
 reproduce = "cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr"
-note = "Needs javac, jadx, and cfr on PATH, with cfr.jar provisioned by evidence/competitors/install-linux.sh. Recompile-only: each method body compiles clean, not asserted byte-equivalent. The DEX leg compares disrobe with JADX on EdgeCases.dex; the JAR leg compares disrobe with CFR on EdgeCases-baseline.jar, because CFR cannot read DEX. The STRONG asserted JVM number is the 131/131 per-method recompile gate (jvm-javac descriptor). Both decompilers emit synthetic accessor/lambda/bridge methods, so the per-tool emitted-method count differs by design; the claim therefore compares clean-method counts within each leg while reporting recompile-clean rates alongside them."
+note = "Needs javac, jadx, and cfr on PATH, with cfr.jar provisioned by evidence/competitors/install-linux.sh. Recompile-only: each method body compiles clean, not asserted byte-equivalent. The DEX leg compares disrobe with JADX on EdgeCases.dex; the JAR leg compares disrobe with CFR on EdgeCases-baseline.jar, because CFR cannot read DEX. The STRONG asserted JVM number is the 131/131 per-method recompile gate (jvm-javac descriptor). Both decompilers emit synthetic accessor/lambda/bridge methods, so the per-tool emitted-method count differs by design; the claim therefore compares clean-method counts within each leg while reporting recompile-clean rates alongside them. A recovered file that javac stops parsing yields no method-level verdict at all, so its row publishes the method count the tool emitted and no rate, and its leg publishes no lead; the row is neither a zero nor a win for the other side."
 
 [measured]
 result_file = "apk-jadx-cfr.json"

@@ -10,7 +10,7 @@ Oracle strength: `strong` = external-equivalence, execution, or byte-identity; `
 
 | ecosystem | claim | measured | strength | CI | evidence basis | reproduce |
 |---|---|---|---|---|---|---|
-| android | On their respective committed EdgeCases inputs, disrobe recovers at least as many recompile-clean main-class methods as JADX on DEX and CFR on JAR under real javac, with no original-jar classpath leak. | Android DEX: `disrobe` 129 / 132 (97.7%) vs JADX 128 / 130 (98.5%); JVM classfile: `disrobe` 131 / 131 (100.0%) vs CFR 105 / 106 (99.1%) | recompile-only | [CI] | real javac (JDK), per-method recompile error-free against a STUBBED (empty) classpath so a wrong recovered signature cannot resolve against the original classes; the SAME oracle scores every tool | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr` |
+| android | On their respective committed EdgeCases inputs, one real javac run scores every tool by the same rule, and a main-class method counts clean only from a recovered file that javac type-checked end to end. A leg publishes a lead only when the compiler certified both of its sides, so a file javac stopped parsing ends its leg for both tools instead of scoring either one. | Android DEX: `disrobe` not certified (132 methods emitted; the compiler stopped on line 2) vs JADX not certified (130 methods emitted; the compiler stopped on line 619); JVM classfile: `disrobe` 131 / 131 (100.0%) vs CFR not certified (106 methods emitted; the compiler stopped on line 173) | recompile-only | [CI] | real javac (JDK), per-method recompile error-free against a STUBBED (empty) classpath so a wrong recovered signature cannot resolve against the original classes; the SAME oracle and the same certification rule score every tool, and a file the compiler stopped parsing certifies no method for either side | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr` |
 | recon | apkleaks 2.6.3 recalls 5 of the 8 planted secrets in the committed planted-secrets.apk, measured by running the tool rather than by quoting its documentation. | 62.50% | strong | [CI] | the raw --json output apkleaks 2.6.3 wrote over this same committed apk, captured at evidence/competitors/apkleaks-2.6.3-planted-secrets.json and hash-pinned by the provenance record beside it, with its findings compared against the same planted token list | `cargo test -p disrobe-bench-head-to-head published_planted_apk_secret_bars_are_pinned_by_membership, defined in benches/head-to-head/src/frisk.rs` |
 | beam | On 18 of 19 committed Erlang modules, disrobe's stripped-Dbgi Core Erlang lift emits source that recompiles with the original exports and returns the same test/0 result under Erlang/OTP 27.3.4. | 94.74% | strong | [CI] | real erlc and erl from Erlang/OTP 27.3.4: compile the original source, strip Dbgi and Docs, recover through disrobe's Core Erlang path, recompile, compare exports, then compare test/0 exit status and stdout | `DISROBE_REQUIRE_ERLANG=1 cargo test -p disrobe-pass-beam --test erlc_recompile_equivalence -- --nocapture` |
 | binfmt | disrobe declares 100 container, archive, and firmware formats and carries an in-tree payload extractor for each, with no metadata-only or external-tool-gated formats. 33 of the 100 are driven to member bytes on disk by an input this repository commits. The other 67 have no committed input, so they are unverified rather than shown to fail. | 33 extracted from a committed input / 100 detected | coverage-self-reported | [CI] | the delivered count is disrobe extracting from its own committed corpus and counting the formats that wrote bytes, not an independent check. A member-byte diff against an external extractor is the proof this row does not yet have, and the 67 formats with no committed input carry no measurement at all | `cargo test -p disrobe-binfmt published_container_counts_match_this_enum` |
@@ -43,16 +43,16 @@ Within each declared leg, `disrobe` and the competing tool receive byte-identica
 
 ### APK / DEX decompilation: disrobe vs JADX vs CFR
 
-On their respective committed EdgeCases inputs, disrobe recovers at least as many recompile-clean main-class methods as JADX on DEX and CFR on JAR under real javac, with no original-jar classpath leak.
+On their respective committed EdgeCases inputs, one real javac run scores every tool by the same rule, and a main-class method counts clean only from a recovered file that javac type-checked end to end. A leg publishes a lead only when the compiler certified both of its sides, so a file javac stopped parsing ends its leg for both tools instead of scoring either one.
 
-`disrobe` meets the declared clean-count comparison on every required leg. CI-attested: [CI]
+comparison incomplete on this run (see tool statuses). CI-attested: [CI]
 
 | tool | version | metric | result | status |
 |---|---|---|---|---|
-| **disrobe (in-house Dalvik, DEX input)** | n/a (in-process) | recompile-clean main-class methods (clean / emitted) | 129 clean / 132 emitted (97.7%) | ok |
-| jadx (DEX input) | 1.5.5 | recompile-clean main-class methods (clean / emitted) | 128 clean / 130 emitted (98.5%) | ok |
+| **disrobe (in-house Dalvik, DEX input)** | n/a (in-process) | recompile-clean main-class methods (clean / emitted) | not certified: 132 methods emitted | uncertified |
+| jadx (DEX input) | 1.5.5 | recompile-clean main-class methods (clean / emitted) | not certified: 130 methods emitted | uncertified |
 | **disrobe (in-house JVM, JAR input)** | n/a (in-process) | recompile-clean main-class methods (clean / emitted) | 131 clean / 131 emitted (100.0%) | ok |
-| cfr (JAR input) | CFR 0.152 | recompile-clean main-class methods (clean / emitted) | 105 clean / 106 emitted (99.1%) | ok |
+| cfr (JAR input) | CFR 0.152 | recompile-clean main-class methods (clean / emitted) | not certified: 106 methods emitted | uncertified |
 
 Reproduce: `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`
 
@@ -75,7 +75,7 @@ Floors sit a declared margin below the measured value so a regression masked by 
 
 | id | measured | floor | holds |
 |---|---|---|---|
-| apk-jadx-cfr | Android DEX: `disrobe` 129 / 132 (97.7%) vs JADX 128 / 130 (98.5%); JVM classfile: `disrobe` 131 / 131 (100.0%) vs CFR 105 / 106 (99.1%) | 95.00 | yes |
+| apk-jadx-cfr | Android DEX: `disrobe` not certified (132 methods emitted; the compiler stopped on line 2) vs JADX not certified (130 methods emitted; the compiler stopped on line 619); JVM classfile: `disrobe` 131 / 131 (100.0%) vs CFR not certified (106 methods emitted; the compiler stopped on line 173) | 95.00 | yes |
 | apkleaks-planted-apk-secret-recall | 62.50% | n/a | n/a |
 | beam-erlang-recompile | 94.74% | 94.74 | yes |
 | binfmt-extract | 33 extracted from a committed input / 100 detected | n/a | n/a |
