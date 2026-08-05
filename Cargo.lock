@@ -2080,6 +2080,8 @@ dependencies = [
  "disrobe-core",
  "disrobe-sleigh",
  "iced-x86",
+ "rand 0.10.1",
+ "sha2",
 ]
 
 [[package]]

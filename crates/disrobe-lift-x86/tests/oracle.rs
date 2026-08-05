@@ -13,6 +13,19 @@ use disrobe_lift_x86::decode_block_x86;
 use disrobe_sleigh::lifter::DecodedBlock;
 use disrobe_sleigh::pcode::{DecodeStatus, PcodeInstr, PcodeOp, Space, Varnode};
 
+#[allow(clippy::redundant_pub_crate)]
+#[path = "oracle/differential.rs"]
+mod differential;
+#[allow(clippy::redundant_pub_crate)]
+#[path = "oracle/evaluator.rs"]
+mod evaluator;
+#[allow(clippy::redundant_pub_crate)]
+#[path = "oracle/generator.rs"]
+mod generator;
+#[allow(clippy::redundant_pub_crate)]
+#[path = "oracle/machine.rs"]
+mod machine;
+
 const EXPECTED_INSTRUCTIONS: usize = 281;
 const EXPECTED_MODELED: usize = 223;
 const EXPECTED_CALLOTHER: usize = 58;
