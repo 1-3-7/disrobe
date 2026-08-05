@@ -13,7 +13,7 @@ pub mod state_machine;
 pub use crate::pass::{Determinism, PassMeta, SafetyClass};
 pub use chain_json::{
     ChainDocument, ChainInputDoc, ChainSpecDoc, ChainStats, DetectorPickDoc, NodeDoc,
-    OutputKindDoc, SCHEMA_VERSION, Topology, VerdictDoc,
+    OutputKindDoc, SCHEMA_VERSION, Topology, VerdictDoc, VerdictGrade, VerdictThreshold,
 };
 pub use detection::{
     ArtifactRef, ChildArtifact, ChildHandle, ConfidenceBand, DetectContext, DetectVerdict,

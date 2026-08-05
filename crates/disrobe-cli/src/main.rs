@@ -1042,6 +1042,12 @@ enum Cmd {
             help = "directory containing recovery.json (the chain/auto out dir, e.g. ./out/<stem>-chain)"
         )]
         out: Option<PathBuf>,
+        #[arg(
+            long,
+            value_name = "THRESHOLD",
+            help = "exit non-zero when the worst chain verdict under --out grades at or above never|incomplete|failed|any, instead of printing the summary"
+        )]
+        fail_on: Option<String>,
     },
     #[command(
         about = "show the resolved `.disrobe.toml` config or write a documented template (`disrobe config init`)"
@@ -1966,7 +1972,7 @@ fn main() -> miette::Result<()> {
             }
         }
         Cmd::Init { ide, force } => init_cmd::run(ide, force, fmt),
-        Cmd::Context { out } => context::run(out, fmt),
+        Cmd::Context { out, fail_on } => context::run(out, fail_on, fmt),
         Cmd::Config { action } => config::run(action, config_explicit.as_deref(), fmt),
         #[cfg(feature = "chain")]
         Cmd::Report {

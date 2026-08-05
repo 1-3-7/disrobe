@@ -10,6 +10,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::chain::{VerdictDoc, VerdictGrade, VerdictThreshold};
 use serde_yaml_ng::Value;
 
 fn workspace_root() -> PathBuf {
@@ -196,4 +197,133 @@ fn ci_mirrors_the_weekly_cron_pattern() {
         !crons(&doc).is_empty(),
         "ci.yml must keep its scheduled cron trigger"
     );
+}
+
+fn action_yaml() -> Value {
+    parse_yaml(&workspace_root().join("action.yml"))
+}
+
+fn action_run_script() -> String {
+    let doc: Value = action_yaml();
+    let steps: &Vec<Value> = doc
+        .get("runs")
+        .and_then(|runs: &Value| runs.get("steps"))
+        .and_then(Value::as_sequence)
+        .expect("action.yml runs.steps");
+    steps
+        .iter()
+        .filter_map(|step: &Value| step.get("run").and_then(Value::as_str))
+        .collect::<Vec<&str>>()
+        .join("\n")
+}
+
+#[test]
+fn every_chain_verdict_grades_to_a_fail_on_rung() {
+    let cases: [(VerdictDoc, VerdictGrade); 10] = [
+        (VerdictDoc::Ok, VerdictGrade::Ok),
+        (VerdictDoc::Complete, VerdictGrade::Ok),
+        (VerdictDoc::FanOut, VerdictGrade::Ok),
+        (VerdictDoc::Extracted, VerdictGrade::Ok),
+        (VerdictDoc::FanOutPartial, VerdictGrade::Incomplete),
+        (VerdictDoc::Stalled, VerdictGrade::Incomplete),
+        (VerdictDoc::Cycle, VerdictGrade::Incomplete),
+        (VerdictDoc::CapReached, VerdictGrade::Incomplete),
+        (VerdictDoc::DryRun, VerdictGrade::Incomplete),
+        (VerdictDoc::Error, VerdictGrade::Failed),
+    ];
+    for (verdict, expected) in &cases {
+        assert_eq!(
+            verdict.grade(),
+            *expected,
+            "{verdict:?} must grade to {expected:?}; a new chain verdict needs a stated rung here \
+             before the action can present it to a reader"
+        );
+    }
+    let named: BTreeSet<String> = cases
+        .iter()
+        .map(|(verdict, _): &(VerdictDoc, VerdictGrade)| format!("{verdict:?}"))
+        .collect();
+    let declared: BTreeSet<String> = read(
+        &workspace_root()
+            .join("crates")
+            .join("disrobe-core")
+            .join("src")
+            .join("chain")
+            .join("chain_json.rs"),
+    )
+    .lines()
+    .skip_while(|line: &&str| !line.contains("pub enum VerdictDoc {"))
+    .skip(1)
+    .take_while(|line: &&str| !line.contains('}'))
+    .filter_map(|line: &str| {
+        let trimmed: &str = line.trim().trim_end_matches(',');
+        (!trimmed.is_empty()).then(|| trimmed.to_owned())
+    })
+    .collect();
+    assert_eq!(
+        named, declared,
+        "the graded cases above and the VerdictDoc variants have drifted, so some verdict reaches \
+         the action with no rung"
+    );
+}
+
+#[test]
+fn every_threshold_decides_every_grade() {
+    let cases: [(VerdictThreshold, VerdictGrade, bool); 12] = [
+        (VerdictThreshold::Never, VerdictGrade::Ok, false),
+        (VerdictThreshold::Never, VerdictGrade::Incomplete, false),
+        (VerdictThreshold::Never, VerdictGrade::Failed, false),
+        (VerdictThreshold::Incomplete, VerdictGrade::Ok, false),
+        (VerdictThreshold::Incomplete, VerdictGrade::Incomplete, true),
+        (VerdictThreshold::Incomplete, VerdictGrade::Failed, true),
+        (VerdictThreshold::Failed, VerdictGrade::Ok, false),
+        (VerdictThreshold::Failed, VerdictGrade::Incomplete, false),
+        (VerdictThreshold::Failed, VerdictGrade::Failed, true),
+        (VerdictThreshold::Any, VerdictGrade::Ok, false),
+        (VerdictThreshold::Any, VerdictGrade::Incomplete, true),
+        (VerdictThreshold::Any, VerdictGrade::Failed, true),
+    ];
+    for (threshold, grade, expected) in cases {
+        assert_eq!(
+            grade.meets(threshold),
+            expected,
+            "grade {grade:?} against fail-on {threshold:?}"
+        );
+    }
+    for raw in ["never", "incomplete", "failed", "any"] {
+        assert!(
+            VerdictThreshold::parse(raw).is_some(),
+            "the action documents fail-on {raw}, which the parser must accept"
+        );
+    }
+    assert!(VerdictThreshold::parse("sometimes").is_none());
+}
+
+#[test]
+fn the_action_reads_its_verdict_from_the_recovery_report() {
+    let script: String = action_run_script();
+    assert!(
+        script.contains("context --out") && script.contains("--fail-on"),
+        "action.yml must ask the disrobe binary for the chain verdict rather than deciding it in shell"
+    );
+    assert!(
+        script.contains("disrobe-verdict:"),
+        "action.yml must read the verdict marker the context command prints"
+    );
+    let sarif_drives_verdict: bool = script
+        .lines()
+        .any(|line: &str| line.contains("verdict=\"incomplete\"") && line.contains("results"));
+    assert!(
+        !sarif_drives_verdict,
+        "the SARIF finding count must not decide the verdict; a clean chain that reported a secret \
+         is a complete run"
+    );
+    let doc: Value = action_yaml();
+    let outputs: &Value = doc.get("outputs").expect("action.yml outputs");
+    for name in ["verdict", "chain-verdict", "summary", "sarif"] {
+        assert!(
+            outputs.get(name).is_some(),
+            "action.yml must declare the {name} output it writes"
+        );
+    }
 }

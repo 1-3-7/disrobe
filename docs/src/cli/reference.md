@@ -112,6 +112,7 @@ The authoritative source is always `disrobe <command> --help`. This page is a co
 | `disrobe yara generate <input> [--name N] [--sha256 H] [--date D]` | [Generate a candidate YARA rule](./analysis-depth.md#yara-rule-generation) from an artifact; output round-trips through the parser. |
 | `disrobe status` | Summarize `./out/`: per-stage counts, sizes, manifests. |
 | `disrobe context --out <dir>` | Summarize a recovery report (status, confidence, verdict, provenance). |
+| `disrobe context --out <dir> --fail-on <threshold>` | Grade the worst chain verdict under the directory and exit non-zero when it reaches `never`, `incomplete`, `failed` or `any`. |
 | `disrobe report <dir-or-input> [--format text\|json\|markdown\|html]` | Consolidate a completed run (or raw input) into a [forensic summary](./report.md): identity, topology, per-stage verdicts/scores, artifact inventory, timings. `--format html` emits a self-contained, offline, dark-theme report (inline SVG bars, IOC + ATT&CK tables, XSS-escaped). |
 
 ## Workspace and meta

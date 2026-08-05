@@ -22,7 +22,7 @@ inputs:
     required: false
     default: ""
   fail-on:
-    description: Fail the step when the chain verdict is at or above this threshold. One of `never`, `incomplete`, `failed`, `any`.
+    description: Fail the step when the chain verdict is at or above this threshold. One of `never`, `incomplete`, `failed`, `any`. The verdict comes from the chain recovery report, not from the number of SARIF findings, so a clean chain that reported a secret stays `ok`.
     required: false
     default: never
   sarif-file:
@@ -54,8 +54,11 @@ outputs:
     description: One-line human-readable summary of the run.
     value: ${{ steps.run.outputs.summary }}
   verdict:
-    description: Worst chain verdict observed across analyzed inputs.
+    description: Worst chain verdict observed across analyzed inputs, graded to `ok`, `incomplete` or `failed`.
     value: ${{ steps.run.outputs.verdict }}
+  chain-verdict:
+    description: The chain verdict itself, before grading, for example `complete`, `stalled` or `cap-reached`.
+    value: ${{ steps.run.outputs.chain-verdict }}
 
 runs:
   using: composite
@@ -233,38 +236,62 @@ runs:
           results="$(DR_SARIF="${DR_SARIF}" python3 -c 'import json,os,sys; d=json.load(open(os.environ["DR_SARIF"],encoding="utf-8")); print(sum(len(r.get("results",[])) for r in d.get("runs",[])))' 2>/dev/null || echo 0)"
         fi
 
+        chain_verdict="unknown"
         verdict="ok"
+        threshold_met="no"
+        marker=""
+        report_present="no"
+        if [ -d "${DR_OUT}" ] && [ -n "$(find "${DR_OUT}" -name recovery.json -print -quit 2>/dev/null)" ]; then
+          report_present="yes"
+          set +e
+          marker="$("${DR_BIN}" context --out "${DR_OUT}" --fail-on "${DR_FAIL_ON}" 2>&1 >/dev/null)"
+          set -e
+        fi
+        marker_line="$(printf '%s\n' "${marker}" | grep -m1 '^disrobe-verdict:' || true)"
+        if [ -n "${marker_line}" ]; then
+          graded_from="the chain recovery report"
+          chain_verdict="$(printf '%s\n' "${marker_line}" | sed -n 's/.* verdict=\([^ ]*\).*/\1/p')"
+          verdict="$(printf '%s\n' "${marker_line}" | sed -n 's/.* grade=\([^ ]*\).*/\1/p')"
+          threshold_met="$(printf '%s\n' "${marker_line}" | sed -n 's/.* result=\([^ ]*\).*/\1/p')"
+          if [ -z "${verdict}" ] || [ -z "${threshold_met}" ]; then
+            echo "::error::disrobe context printed a verdict marker this action cannot read: ${marker_line}"
+            exit 1
+          fi
+          if [ "${threshold_met}" = "fail" ]; then
+            threshold_met="yes"
+          else
+            threshold_met="no"
+          fi
+        elif [ "${report_present}" = "yes" ]; then
+          verdict="failed"
+          threshold_met="yes"
+          graded_from="a recovery report that could not be read, which is a defect rather than a clean run"
+        else
+          graded_from="the disrobe exit status, because no chain recovery report was written"
+        fi
         if [ "${status}" -ne 0 ]; then
           verdict="failed"
-        elif [ "${results}" -gt 0 ]; then
-          verdict="incomplete"
+          graded_from="${graded_from}, raised to failed by a non-zero disrobe exit status"
+          if [ "${DR_FAIL_ON}" != "never" ]; then
+            threshold_met="yes"
+          fi
         fi
         echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
+        echo "chain-verdict=${chain_verdict}" >> "$GITHUB_OUTPUT"
 
-        summary="disrobe ${DR_COMMAND} on ${DR_PATH}: verdict=${verdict}, sarif-results=${results}"
+        summary="disrobe ${DR_COMMAND} on ${DR_PATH}: verdict=${verdict} (from ${graded_from}), chain-verdict=${chain_verdict}, sarif-results=${results}"
         echo "summary=${summary}" >> "$GITHUB_OUTPUT"
         {
           echo "### disrobe"
           echo ""
           echo "- command: \`${DR_COMMAND}\`"
           echo "- path: \`${DR_PATH}\`"
-          echo "- verdict: \`${verdict}\`"
+          echo "- verdict: \`${verdict}\`, graded from ${graded_from}"
+          echo "- chain verdict: \`${chain_verdict}\`"
           echo "- SARIF results: \`${results}\`"
         } >> "$GITHUB_STEP_SUMMARY"
 
-        rank() {
-          case "$1" in
-            never) echo 0 ;;
-            ok) echo 0 ;;
-            incomplete) echo 1 ;;
-            failed) echo 2 ;;
-            any) echo 1 ;;
-            *) echo 0 ;;
-          esac
-        }
-        threshold="$(rank "${DR_FAIL_ON}")"
-        observed="$(rank "${verdict}")"
-        if [ "${DR_FAIL_ON}" != "never" ] && [ "${observed}" -ge "${threshold}" ] && [ "${observed}" -gt 0 ]; then
+        if [ "${threshold_met}" = "yes" ]; then
           echo "::error::disrobe verdict ${verdict} meets fail-on threshold ${DR_FAIL_ON}"
           exit 1
         fi

@@ -108,6 +108,87 @@ pub enum VerdictDoc {
     DryRun,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VerdictGrade {
+    Ok,
+    Incomplete,
+    Failed,
+}
+
+impl VerdictGrade {
+    #[inline]
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Incomplete => "incomplete",
+            Self::Failed => "failed",
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn meets(self, threshold: VerdictThreshold) -> bool {
+        match threshold {
+            VerdictThreshold::Never => false,
+            VerdictThreshold::Incomplete | VerdictThreshold::Any => {
+                matches!(self, Self::Incomplete | Self::Failed)
+            }
+            VerdictThreshold::Failed => matches!(self, Self::Failed),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum VerdictThreshold {
+    Never,
+    Incomplete,
+    Failed,
+    Any,
+}
+
+impl VerdictThreshold {
+    #[inline]
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Never => "never",
+            Self::Incomplete => "incomplete",
+            Self::Failed => "failed",
+            Self::Any => "any",
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "never" => Some(Self::Never),
+            "incomplete" => Some(Self::Incomplete),
+            "failed" => Some(Self::Failed),
+            "any" => Some(Self::Any),
+            _ => None,
+        }
+    }
+}
+
+impl VerdictDoc {
+    #[inline]
+    #[must_use]
+    pub const fn grade(&self) -> VerdictGrade {
+        match self {
+            Self::Ok | Self::Complete | Self::FanOut | Self::Extracted => VerdictGrade::Ok,
+            Self::FanOutPartial | Self::Stalled | Self::Cycle | Self::CapReached | Self::DryRun => {
+                VerdictGrade::Incomplete
+            }
+            Self::Error => VerdictGrade::Failed,
+        }
+    }
+}
+
 impl From<&Verdict> for VerdictDoc {
     fn from(v: &Verdict) -> Self {
         match v {
