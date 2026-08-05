@@ -32,14 +32,14 @@ const CLASS_SCOPE_GRADED_FLOOR: usize = 3_223;
 
 const CLASS_SCOPE_REPEAT_RUNS: usize = 8;
 
-const CLASS_SCOPE_CLEAN: usize = 2_986;
+const CLASS_SCOPE_CLEAN: usize = 2_988;
 
-const CLASS_SCOPE_CLEAN_METHODS: usize = 13_819;
+const CLASS_SCOPE_CLEAN_METHODS: usize = 13_866;
 
-const CLASS_SCOPE_REJECTABLE: usize = 253;
+const CLASS_SCOPE_REJECTABLE: usize = 251;
 
 const CLASS_SCOPE_JAR_SHA256: &str =
-    "72eeec49158b731e29d5ef328efaefc6559acc25fade786d4c1182fe5a850e64";
+    "7f92715eb115daa764e5087d8f88394896bbfcb1ebf89af9f1217bdbf13427e5";
 
 fn class_verify_golden() -> PathBuf {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

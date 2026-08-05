@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::dalvik::DalvikInsn;
@@ -5,6 +6,12 @@ use crate::descriptor::{JavaType, MethodDescriptor};
 use crate::dex::DexFile;
 
 const MAX_FIXPOINT_ITERS: usize = 50_000;
+
+const MAX_SUPERCLASS_DEPTH: usize = 256;
+
+const MAX_ARRAY_JOIN_DEPTH: usize = 16;
+
+pub(crate) const OBJECT_INTERNAL: &str = "java/lang/Object";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RegType {
@@ -79,20 +86,134 @@ fn array_descriptor(ty: &JavaType) -> String {
     }
 }
 
-fn merge(a: &RegType, b: &RegType) -> RegType {
-    if a == b {
-        return a.clone();
+fn component_name(desc: &str) -> Option<String> {
+    match desc.as_bytes().first() {
+        Some(b'[') => Some(desc.to_string()),
+        Some(b'L') if desc.ends_with(';') => Some(strip_object(desc)),
+        _ => None,
     }
-    match (a, b) {
-        (RegType::ZeroOrNull, RegType::Int) | (RegType::Int, RegType::ZeroOrNull) => RegType::Int,
-        (RegType::ZeroOrNull | RegType::NullRef, RegType::Ref(r))
-        | (RegType::Ref(r), RegType::ZeroOrNull | RegType::NullRef) => RegType::Ref(r.clone()),
-        (RegType::ZeroOrNull, RegType::NullRef) | (RegType::NullRef, RegType::ZeroOrNull) => {
-            RegType::NullRef
+}
+
+fn element_descriptor(name: &str) -> String {
+    if name.starts_with('[') {
+        name.to_string()
+    } else {
+        format!("L{name};")
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct TypeLattice<'a> {
+    dex: &'a DexFile,
+    superclass_chains: RefCell<BTreeMap<String, Vec<String>>>,
+}
+
+impl<'a> TypeLattice<'a> {
+    pub(crate) const fn new(dex: &'a DexFile) -> Self {
+        Self {
+            dex,
+            superclass_chains: RefCell::new(BTreeMap::new()),
         }
-        (RegType::Ref(x), RegType::Ref(y)) if x == y => RegType::Ref(x.clone()),
-        (RegType::Ref(_), RegType::Ref(_)) => RegType::Ref("java/lang/Object".to_string()),
-        _ => RegType::Top,
+    }
+
+    fn root_first_chain(&self, internal: &str) -> Vec<String> {
+        if let Some(cached) = self.superclass_chains.borrow().get(internal) {
+            return cached.clone();
+        }
+        let mut chain: Vec<String> = Vec::new();
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut cursor: String = internal.to_string();
+        while chain.len() < MAX_SUPERCLASS_DEPTH && seen.insert(cursor.clone()) {
+            chain.push(cursor.clone());
+            if cursor == OBJECT_INTERNAL {
+                break;
+            }
+            let Some(parent): Option<&String> =
+                self.dex.class_super_descriptors.get(&format!("L{cursor};"))
+            else {
+                break;
+            };
+            cursor = strip_object(parent);
+        }
+        if chain.last().map(String::as_str) != Some(OBJECT_INTERNAL) {
+            chain.push(OBJECT_INTERNAL.to_string());
+        }
+        chain.reverse();
+        self.superclass_chains
+            .borrow_mut()
+            .insert(internal.to_string(), chain.clone());
+        chain
+    }
+
+    fn join_class(&self, a: &str, b: &str) -> String {
+        let left: Vec<String> = self.root_first_chain(a);
+        let right: Vec<String> = self.root_first_chain(b);
+        let mut common: &str = OBJECT_INTERNAL;
+        for (x, y) in left.iter().zip(right.iter()) {
+            if x != y {
+                break;
+            }
+            common = x.as_str();
+        }
+        common.to_string()
+    }
+
+    fn join_ref(&self, a: &str, b: &str, depth: usize) -> String {
+        if a == b {
+            return a.to_string();
+        }
+        if depth >= MAX_ARRAY_JOIN_DEPTH {
+            return OBJECT_INTERNAL.to_string();
+        }
+        match (a.starts_with('['), b.starts_with('[')) {
+            (true, true) => {
+                let (Some(left), Some(right)): (Option<String>, Option<String>) = (
+                    a.get(1..).and_then(component_name),
+                    b.get(1..).and_then(component_name),
+                ) else {
+                    return OBJECT_INTERNAL.to_string();
+                };
+                let element: String = self.join_ref(&left, &right, depth + 1);
+                format!("[{}", element_descriptor(&element))
+            }
+            (false, false) => self.join_class(a, b),
+            _ => OBJECT_INTERNAL.to_string(),
+        }
+    }
+
+    pub(crate) fn join(&self, a: &RegType, b: &RegType) -> RegType {
+        if a == b {
+            return a.clone();
+        }
+        match (a, b) {
+            (RegType::ZeroOrNull, RegType::Int) | (RegType::Int, RegType::ZeroOrNull) => {
+                RegType::Int
+            }
+            (RegType::ZeroOrNull | RegType::NullRef, RegType::Ref(r))
+            | (RegType::Ref(r), RegType::ZeroOrNull | RegType::NullRef) => RegType::Ref(r.clone()),
+            (RegType::ZeroOrNull, RegType::NullRef) | (RegType::NullRef, RegType::ZeroOrNull) => {
+                RegType::NullRef
+            }
+            (RegType::Ref(x), RegType::Ref(y)) => RegType::Ref(self.join_ref(x, y, 0)),
+            _ => RegType::Top,
+        }
+    }
+
+    fn join_state(&self, into: &mut RegState, from: &RegState) -> bool {
+        let mut changed: bool = false;
+        let keys: BTreeSet<u16> = into.keys().chain(from.keys()).copied().collect();
+        for k in keys {
+            let merged: RegType = match (into.get(&k), from.get(&k)) {
+                (Some(x), Some(y)) => self.join(x, y),
+                (Some(_), None) | (None, Some(_)) => RegType::Top,
+                (None, None) => continue,
+            };
+            if into.get(&k) != Some(&merged) {
+                into.insert(k, merged);
+                changed = true;
+            }
+        }
+        changed
     }
 }
 
@@ -119,23 +240,6 @@ fn reinitialize_aliases(regs: &mut RegState, marker: &RegType, initialized: &Reg
     for reg in aliases {
         regs.insert(reg, initialized.clone());
     }
-}
-
-fn merge_state(into: &mut RegState, from: &RegState) -> bool {
-    let mut changed: bool = false;
-    let keys: BTreeSet<u16> = into.keys().chain(from.keys()).copied().collect();
-    for k in keys {
-        let merged: RegType = match (into.get(&k), from.get(&k)) {
-            (Some(x), Some(y)) => merge(x, y),
-            (Some(_), None) | (None, Some(_)) => RegType::Top,
-            (None, None) => continue,
-        };
-        if into.get(&k) != Some(&merged) {
-            into.insert(k, merged);
-            changed = true;
-        }
-    }
-    changed
 }
 
 #[derive(Debug)]
@@ -252,6 +356,7 @@ pub(crate) fn analyze(
         materialize_new_pcs: shape.materialize_new_pcs,
     };
 
+    let lattice: TypeLattice<'_> = TypeLattice::new(dex);
     let mut state_in: Vec<Option<RegState>> = vec![None; n];
     let mut reached: Vec<bool> = vec![false; n];
     state_in[0] = Some(entry);
@@ -278,7 +383,7 @@ pub(crate) fn analyze(
                 let hidx: usize = *pc_to_idx.get(&hpc)?;
                 match &mut state_in[hidx] {
                     Some(existing) => {
-                        if merge_state(existing, &cur) {
+                        if lattice.join_state(existing, &cur) {
                             worklist.push(hidx);
                         }
                     }
@@ -298,7 +403,7 @@ pub(crate) fn analyze(
             let propagate: RegState = out.clone();
             match &mut state_in[sidx] {
                 Some(existing) => {
-                    if merge_state(existing, &propagate) {
+                    if lattice.join_state(existing, &propagate) {
                         worklist.push(sidx);
                     }
                 }
@@ -810,5 +915,224 @@ const fn arith_result(op: u8) -> RegType {
         0xA6..=0xAA => RegType::Float,
         0xAB..=0xAF => RegType::Double,
         _ => RegType::Int,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::dex_builder::{ClassDef, DexBuilder};
+
+    const HIERARCHY: &[(&str, &str)] = &[
+        ("Lp/Base;", "Ljava/lang/Object;"),
+        ("Lp/Mid;", "Lp/Base;"),
+        ("Lp/Left;", "Lp/Mid;"),
+        ("Lp/Right;", "Lp/Mid;"),
+        ("Lp/Other;", "Lp/Base;"),
+        ("Lp/Iface;", "Ljava/lang/Object;"),
+        ("Lp/Framework;", "Landroid/app/Activity;"),
+        ("Lp/Framework2;", "Landroid/app/Activity;"),
+        ("Lp/Detached;", "Landroid/content/Context;"),
+        ("Lp/CycleA;", "Lp/CycleB;"),
+        ("Lp/CycleB;", "Lp/CycleA;"),
+    ];
+
+    fn hierarchy_dex() -> DexFile {
+        let mut builder: DexBuilder = DexBuilder::new();
+        for (class, super_class) in HIERARCHY {
+            builder.add_class(ClassDef {
+                class: (*class).to_owned(),
+                super_class: (*super_class).to_owned(),
+                access_flags: 0x1,
+                static_fields: Vec::new(),
+                static_values: Vec::new(),
+                direct_methods: Vec::new(),
+                virtual_methods: Vec::new(),
+            });
+        }
+        crate::dex::parse(&builder.build()).expect("the crafted hierarchy dex parses")
+    }
+
+    fn universe() -> Vec<RegType> {
+        let mut out: Vec<RegType> = vec![
+            RegType::Top,
+            RegType::Int,
+            RegType::Float,
+            RegType::Long,
+            RegType::Double,
+            RegType::ZeroOrNull,
+            RegType::NullRef,
+            RegType::UninitializedThis,
+            RegType::Uninitialized(4),
+            RegType::Uninitialized(12),
+        ];
+        for name in [
+            "java/lang/Object",
+            "p/Base",
+            "p/Mid",
+            "p/Left",
+            "p/Right",
+            "p/Other",
+            "p/Iface",
+            "p/Framework",
+            "p/Framework2",
+            "p/Detached",
+            "p/CycleA",
+            "p/CycleB",
+            "absent/Unknown",
+            "[I",
+            "[J",
+            "[Lp/Left;",
+            "[Lp/Right;",
+            "[Lp/Base;",
+            "[[Lp/Left;",
+            "[[I",
+            "[Ljava/lang/Cloneable;",
+        ] {
+            out.push(RegType::Ref(name.to_owned()));
+        }
+        out
+    }
+
+    #[test]
+    fn the_register_join_is_a_semilattice_over_every_regtype_variant() {
+        let dex: DexFile = hierarchy_dex();
+        let lattice: TypeLattice<'_> = TypeLattice::new(&dex);
+        let values: Vec<RegType> = universe();
+        for a in &values {
+            assert_eq!(
+                lattice.join(a, a),
+                a.clone(),
+                "the join is not idempotent at {a:?}"
+            );
+            for b in &values {
+                assert_eq!(
+                    lattice.join(a, b),
+                    lattice.join(b, a),
+                    "the join is not commutative at {a:?} and {b:?}"
+                );
+                for c in &values {
+                    let left: RegType = lattice.join(&lattice.join(a, b), c);
+                    let right: RegType = lattice.join(a, &lattice.join(b, c));
+                    assert_eq!(
+                        left, right,
+                        "the join is not associative at {a:?}, {b:?} and {c:?}; a fixpoint over a \
+                         non-associative join reaches a different answer per visit order"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_register_join_is_monotone_in_both_arguments() {
+        let dex: DexFile = hierarchy_dex();
+        let lattice: TypeLattice<'_> = TypeLattice::new(&dex);
+        let values: Vec<RegType> = universe();
+        let below = |low: &RegType, high: &RegType| -> bool { lattice.join(low, high) == *high };
+        for a in &values {
+            for b in &values {
+                for upper in &values {
+                    if !below(a, upper) {
+                        continue;
+                    }
+                    let widened: RegType = lattice.join(upper, b);
+                    let narrow: RegType = lattice.join(a, b);
+                    assert!(
+                        below(&narrow, &widened),
+                        "the join is not monotone: {a:?} sits below {upper:?}, yet joining each \
+                         with {b:?} gives {narrow:?} which is not below {widened:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sibling_classes_join_to_their_nearest_common_superclass() {
+        let dex: DexFile = hierarchy_dex();
+        let lattice: TypeLattice<'_> = TypeLattice::new(&dex);
+        let cases: &[(&str, &str, &str)] = &[
+            ("p/Left", "p/Right", "p/Mid"),
+            ("p/Left", "p/Other", "p/Base"),
+            ("p/Left", "p/Mid", "p/Mid"),
+            ("p/Mid", "p/Left", "p/Mid"),
+            ("p/Left", "java/lang/Object", "java/lang/Object"),
+            ("p/Left", "p/Iface", "java/lang/Object"),
+            ("p/Framework", "p/Framework2", "android/app/Activity"),
+            ("p/Framework", "p/Detached", "java/lang/Object"),
+            ("p/Left", "absent/Unknown", "java/lang/Object"),
+            ("p/CycleA", "p/CycleB", "java/lang/Object"),
+        ];
+        for (a, b, expected) in cases {
+            let joined: RegType = lattice.join(
+                &RegType::Ref((*a).to_owned()),
+                &RegType::Ref((*b).to_owned()),
+            );
+            assert_eq!(
+                joined,
+                RegType::Ref((*expected).to_owned()),
+                "{a} joined with {b} must reach {expected}; widening every unequal reference pair \
+                 to java/lang/Object types the frame with something no later use site accepts"
+            );
+        }
+    }
+
+    #[test]
+    fn array_joins_follow_component_assignability() {
+        let dex: DexFile = hierarchy_dex();
+        let lattice: TypeLattice<'_> = TypeLattice::new(&dex);
+        let cases: &[(&str, &str, &str)] = &[
+            ("[Lp/Left;", "[Lp/Right;", "[Lp/Mid;"),
+            ("[Lp/Left;", "[Lp/Base;", "[Lp/Base;"),
+            ("[I", "[J", "java/lang/Object"),
+            ("[[Lp/Left;", "[Lp/Left;", "[Ljava/lang/Object;"),
+            ("[[I", "[I", "java/lang/Object"),
+            ("[Lp/Left;", "p/Left", "java/lang/Object"),
+            ("[Lp/Left;", "[Ljava/lang/Cloneable;", "[Ljava/lang/Object;"),
+        ];
+        for (a, b, expected) in cases {
+            let joined: RegType = lattice.join(
+                &RegType::Ref((*a).to_owned()),
+                &RegType::Ref((*b).to_owned()),
+            );
+            assert_eq!(
+                joined,
+                RegType::Ref((*expected).to_owned()),
+                "{a} joined with {b} must reach {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_superclass_cycle_terminates_and_stays_symmetric() {
+        let dex: DexFile = hierarchy_dex();
+        let lattice: TypeLattice<'_> = TypeLattice::new(&dex);
+        let forward: RegType = lattice.join(
+            &RegType::Ref("p/CycleA".to_owned()),
+            &RegType::Ref("p/CycleB".to_owned()),
+        );
+        let backward: RegType = lattice.join(
+            &RegType::Ref("p/CycleB".to_owned()),
+            &RegType::Ref("p/CycleA".to_owned()),
+        );
+        assert_eq!(forward, backward);
+        assert_eq!(forward, RegType::Ref(OBJECT_INTERNAL.to_owned()));
+    }
+
+    #[test]
+    fn a_register_absent_from_one_predecessor_joins_to_top() {
+        let dex: DexFile = hierarchy_dex();
+        let lattice: TypeLattice<'_> = TypeLattice::new(&dex);
+        let mut into: RegState = RegState::new();
+        into.insert(0, RegType::Ref("p/Left".to_owned()));
+        into.insert(1, RegType::Int);
+        let mut from: RegState = RegState::new();
+        from.insert(0, RegType::Ref("p/Right".to_owned()));
+        assert!(lattice.join_state(&mut into, &from));
+        assert_eq!(into.get(&0), Some(&RegType::Ref("p/Mid".to_owned())));
+        assert_eq!(into.get(&1), Some(&RegType::Top));
+        assert!(!lattice.join_state(&mut into, &from));
     }
 }

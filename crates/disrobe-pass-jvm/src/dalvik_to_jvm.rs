@@ -188,6 +188,25 @@ struct SwitchFixup {
 
 type SwitchPatch = (usize, usize, u32, Vec<(usize, u32)>);
 
+type StackMapFrame = (usize, Vec<crate::dalvik_typestate::RegType>, Option<String>);
+
+fn dedup_frames_by_offset(frames: Vec<StackMapFrame>) -> Option<Vec<StackMapFrame>> {
+    let mut out: Vec<StackMapFrame> = Vec::with_capacity(frames.len());
+    for frame in frames {
+        match out.last() {
+            Some(prev) if prev.0 == frame.0 => {
+                if prev.1 != frame.1 || prev.2 != frame.2 {
+                    #[cfg(any(test, feature = "lifter-diag"))]
+                    record_bail_kind("frame-offset-conflict");
+                    return None;
+                }
+            }
+            _ => out.push(frame),
+        }
+    }
+    Some(out)
+}
+
 #[must_use]
 pub(crate) fn emit_method_code(
     dex: &DexFile,
@@ -2267,8 +2286,7 @@ impl Emitter<'_> {
             }
             locals
         };
-        let mut frames: Vec<(usize, Vec<crate::dalvik_typestate::RegType>, Option<String>)> =
-            Vec::new();
+        let mut frames: Vec<StackMapFrame> = Vec::new();
         for (&pc, regs) in &cfg.frame_types {
             if !branch_target_pcs.contains(&pc) {
                 continue;
@@ -2287,13 +2305,19 @@ impl Emitter<'_> {
             ));
         }
         frames.sort_by_key(|(off, _, _)| *off);
+        let frames: Vec<StackMapFrame> = dedup_frames_by_offset(frames)?;
         if frames.is_empty() {
             return Some(Vec::new());
         }
         let jvm_off: BTreeMap<u32, usize> = cfg.jvm_offset_of_pc.clone();
 
+        let Ok(frame_count): Result<u16, _> = u16::try_from(frames.len()) else {
+            #[cfg(any(test, feature = "lifter-diag"))]
+            record_bail_kind("stackmap-frame-count-limit");
+            return None;
+        };
         let mut body: Vec<u8> = Vec::new();
-        body.extend_from_slice(&(frames.len() as u16).to_be_bytes());
+        body.extend_from_slice(&frame_count.to_be_bytes());
         let mut prev: Option<usize> = None;
         for (offset, locals, stack) in &frames {
             let delta: usize = match prev {
@@ -2302,7 +2326,12 @@ impl Emitter<'_> {
             };
             body.push(255);
             body.extend_from_slice(&u16::try_from(delta).ok()?.to_be_bytes());
-            body.extend_from_slice(&u16::try_from(locals.len()).ok()?.to_be_bytes());
+            let Ok(local_count): Result<u16, _> = u16::try_from(locals.len()) else {
+                #[cfg(any(test, feature = "lifter-diag"))]
+                record_bail_kind("stackmap-local-count-limit");
+                return None;
+            };
+            body.extend_from_slice(&local_count.to_be_bytes());
             for ty in locals {
                 self.append_verification_type(&mut body, ty, &jvm_off)?;
             }
@@ -4789,5 +4818,62 @@ fn primitive_atype(descriptor: &str) -> Option<u8> {
         "I" => Some(10),
         "J" => Some(11),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::dalvik_typestate::RegType;
+
+    fn frame(offset: usize, local: RegType, stack: Option<&str>) -> StackMapFrame {
+        (offset, vec![local], stack.map(str::to_owned))
+    }
+
+    #[test]
+    fn frames_computed_twice_at_one_offset_collapse_to_one_entry() {
+        let frames: Vec<StackMapFrame> = vec![
+            frame(0, RegType::Int, None),
+            frame(14, RegType::Ref("p/Left".to_owned()), None),
+            frame(14, RegType::Ref("p/Left".to_owned()), None),
+            frame(40, RegType::Int, Some("java/lang/Throwable")),
+        ];
+        let deduped: Vec<StackMapFrame> =
+            dedup_frames_by_offset(frames).expect("two identical frames at one offset collapse");
+        let offsets: Vec<usize> = deduped.iter().map(|f: &StackMapFrame| f.0).collect();
+        assert_eq!(
+            offsets,
+            vec![0, 14, 40],
+            "a duplicate offset survived, and the delta loop that follows subtracts one from a zero \
+             gap and rejects the whole method"
+        );
+    }
+
+    #[test]
+    fn two_frames_at_one_offset_that_disagree_reject_the_method() {
+        let frames: Vec<StackMapFrame> = vec![
+            frame(0, RegType::Int, None),
+            frame(14, RegType::Ref("p/Left".to_owned()), None),
+            frame(14, RegType::Int, None),
+        ];
+        assert!(
+            dedup_frames_by_offset(frames).is_none(),
+            "two disagreeing frames at one offset have no single correct entry, so the method has \
+             to be rejected rather than have one of the two picked"
+        );
+    }
+
+    #[test]
+    fn a_handler_stub_frame_sharing_a_branch_target_offset_still_emits_a_table() {
+        let stack: Option<&str> = Some("java/lang/Throwable");
+        let frames: Vec<StackMapFrame> = vec![
+            frame(6, RegType::Ref("p/Left".to_owned()), stack),
+            frame(6, RegType::Ref("p/Left".to_owned()), stack),
+        ];
+        let deduped: Vec<StackMapFrame> = dedup_frames_by_offset(frames)
+            .expect("a handler stub landing on a branch target offset is not a conflict");
+        assert_eq!(deduped.len(), 1);
+        assert_eq!(deduped.first().map(|f: &StackMapFrame| f.0), Some(6));
     }
 }

@@ -421,6 +421,7 @@ CLEAN androidx.core.app.DialogCompat$Api28Impl
 CLEAN androidx.core.app.FrameMetricsAggregator
 CLEAN androidx.core.app.FrameMetricsAggregator$FrameMetricsBaseImpl
 CLEAN androidx.core.app.FrameMetricsAggregator$MetricType
+CLEAN androidx.core.app.JobIntentService
 CLEAN androidx.core.app.JobIntentService$CommandProcessor
 CLEAN androidx.core.app.JobIntentService$CompatJobEngine
 CLEAN androidx.core.app.JobIntentService$CompatWorkEnqueuer
@@ -1188,6 +1189,7 @@ CLEAN androidx.emoji2.text.DefaultEmojiCompatConfig$DefaultEmojiCompatConfigFact
 CLEAN androidx.emoji2.text.DefaultEmojiCompatConfig$DefaultEmojiCompatConfigHelper
 CLEAN androidx.emoji2.text.DefaultEmojiCompatConfig$DefaultEmojiCompatConfigHelper_API19
 CLEAN androidx.emoji2.text.DefaultEmojiCompatConfig$DefaultEmojiCompatConfigHelper_API28
+CLEAN androidx.emoji2.text.EmojiCompat
 CLEAN androidx.emoji2.text.EmojiCompat$CompatInternal
 CLEAN androidx.emoji2.text.EmojiCompat$CompatInternal19
 CLEAN androidx.emoji2.text.EmojiCompat$CompatInternal19$1
@@ -3076,7 +3078,6 @@ REJECTABLE androidx.concurrent.futures.ResolvableFuture
 REJECTABLE androidx.coordinatorlayout.widget.CoordinatorLayout
 REJECTABLE androidx.coordinatorlayout.widget.CoordinatorLayout$Behavior
 REJECTABLE androidx.core.app.ActivityRecreator
-REJECTABLE androidx.core.app.JobIntentService
 REJECTABLE androidx.core.app.NotificationCompat$Builder
 REJECTABLE androidx.core.app.NotificationCompat$MessagingStyle$Message
 REJECTABLE androidx.core.app.NotificationCompatBuilder
@@ -3130,7 +3131,6 @@ REJECTABLE androidx.core.widget.TextViewCompat
 REJECTABLE androidx.core.widget.TextViewOnReceiveContentListener
 REJECTABLE androidx.customview.widget.ViewDragHelper
 REJECTABLE androidx.drawerlayout.widget.DrawerLayout
-REJECTABLE androidx.emoji2.text.EmojiCompat
 REJECTABLE androidx.emoji2.text.EmojiProcessor
 REJECTABLE androidx.emoji2.text.EmojiSpan
 REJECTABLE androidx.emoji2.text.SpannableBuilder
