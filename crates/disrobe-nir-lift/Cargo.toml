@@ -46,6 +46,11 @@ path = "tests/wasm_query_facts.rs"
 required-features = ["wasm"]
 
 [[test]]
+name = "wasm_opcode_completeness"
+path = "tests/wasm_opcode_completeness.rs"
+required-features = ["wasm"]
+
+[[test]]
 name = "surface_lift_oracle"
 path = "tests/surface_lift_oracle.rs"
 required-features = ["wasm"]
