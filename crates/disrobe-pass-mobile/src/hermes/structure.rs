@@ -761,22 +761,34 @@ fn binds_continue(stmts: &[JsStmt]) -> bool {
     })
 }
 
-fn resugar_loop(mut body: Vec<JsStmt>) -> JsStmt {
+fn strip_trailing_continues(mut body: Vec<JsStmt>) -> Vec<JsStmt> {
     while matches!(body.last(), Some(JsStmt::Continue)) {
         body.pop();
     }
-    if let Some(JsStmt::If { cond, then, els }) = body.first() {
-        let guard: Option<String> = match (then.as_slice(), els.as_slice()) {
-            ([JsStmt::Break], []) => Some(negate_cond(cond)),
-            ([], [JsStmt::Break]) => Some(cond.clone()),
-            _ => None,
-        };
-        if let Some(guard) = guard {
-            return JsStmt::While {
-                cond: guard,
-                body: body[1..].to_vec(),
-            };
-        }
+    body
+}
+
+fn as_while_loop(body: &[JsStmt]) -> Option<JsStmt> {
+    let [JsStmt::If { cond, then, els }, rest @ ..] = body else {
+        return None;
+    };
+    let (guard, inner): (String, Vec<JsStmt>) = match (then.as_slice(), els.as_slice()) {
+        ([JsStmt::Break], []) => (negate_cond(cond), rest.to_vec()),
+        ([], [JsStmt::Break]) => (cond.clone(), rest.to_vec()),
+        ([JsStmt::Break], taken) if rest.is_empty() => (negate_cond(cond), taken.to_vec()),
+        (taken, [JsStmt::Break]) if rest.is_empty() => (cond.clone(), taken.to_vec()),
+        _ => return None,
+    };
+    Some(JsStmt::While {
+        cond: guard,
+        body: strip_trailing_continues(inner),
+    })
+}
+
+fn resugar_loop(body: Vec<JsStmt>) -> JsStmt {
+    let body: Vec<JsStmt> = strip_trailing_continues(body);
+    if let Some(guarded) = as_while_loop(&body) {
+        return guarded;
     }
     if let Some(JsStmt::If { cond, then, els }) = body.last() {
         let repeat: Option<String> = match (then.as_slice(), els.as_slice()) {
