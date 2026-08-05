@@ -2,7 +2,9 @@
 use disrobe_bytes::{
     AddressError, ByteReadError, ByteReader, CStrOptions, CStrRun, CStrSpan, FileOffset, Rva,
     SectionMap, SectionSpan, Size, Va, align_down_u32, align_down_u64, align_up_u32, align_up_u64,
-    align_up_usize, cstr_runs, read_cstr_at, read_cstr_span_at,
+    align_up_usize, cstr_runs, read_cstr_at, read_cstr_span_at, read_u32_be_at,
+    read_u32_be_at_zero_pad_tail, read_u32_le_at, read_u32_le_at_or, read_u32_le_at_zero_pad_tail,
+    read_u64_le_at, read_u64_le_at_or, read_u64_le_at_zero_pad_tail,
 };
 use proptest::prelude::*;
 
@@ -41,6 +43,28 @@ fn reference_utf8_split(bytes: &[u8]) -> Vec<String> {
         }
     }
     out
+}
+
+fn reference_default_on_absent_u32_le(bytes: &[u8], offset: usize) -> u32 {
+    let Some(end): Option<usize> = offset.checked_add(4) else {
+        return 0;
+    };
+    let Some(field): Option<&[u8]> = bytes.get(offset..end) else {
+        return 0;
+    };
+    let mut raw: [u8; 4] = [0u8; 4];
+    raw.copy_from_slice(field);
+    u32::from_le_bytes(raw)
+}
+
+fn reference_zero_filled_tail_u64_le(bytes: &[u8], offset: usize) -> u64 {
+    let mut raw: [u8; 8] = [0u8; 8];
+    let Some(tail): Option<&[u8]> = bytes.get(offset..) else {
+        return 0;
+    };
+    let taken: usize = tail.len().min(8);
+    raw[..taken].copy_from_slice(&tail[..taken]);
+    u64::from_le_bytes(raw)
 }
 
 fn nul_heavy_bytes(max: usize) -> impl Strategy<Value = Vec<u8>> {
@@ -543,6 +567,79 @@ proptest! {
             let span: CStrSpan = read_cstr_span_at(&bytes, start, CStrOptions::LENIENT).unwrap();
             prop_assert_eq!(reader.position(), span.end());
         }
+    }
+
+    #[test]
+    fn the_default_form_never_panics_and_matches_the_result_form(
+        bytes in proptest::collection::vec(any::<u8>(), 0..48),
+        offset in 0usize..64,
+        default in any::<u32>(),
+    ) {
+        let value: u32 = read_u32_le_at_or(&bytes, offset, default);
+        if let Ok(expected) = read_u32_le_at(&bytes, offset) {
+            prop_assert_eq!(value, expected);
+        } else {
+            prop_assert_eq!(value, default);
+        }
+        prop_assert_eq!(
+            read_u32_le_at_or(&bytes, offset, 0),
+            reference_default_on_absent_u32_le(&bytes, offset)
+        );
+    }
+
+    #[test]
+    fn the_default_form_never_panics_at_extreme_offsets(
+        bytes in proptest::collection::vec(any::<u8>(), 0..16),
+        default in any::<u64>(),
+    ) {
+        for offset in [0usize, bytes.len(), bytes.len() + 1, usize::MAX - 1, usize::MAX] {
+            let value: u64 = read_u64_le_at_or(&bytes, offset, default);
+            if offset >= bytes.len() {
+                prop_assert_eq!(value, default);
+            }
+        }
+    }
+
+    #[test]
+    fn the_zero_pad_form_never_panics_and_matches_a_zero_filled_array(
+        bytes in proptest::collection::vec(any::<u8>(), 0..48),
+        offset in 0usize..64,
+    ) {
+        prop_assert_eq!(
+            read_u64_le_at_zero_pad_tail(&bytes, offset),
+            reference_zero_filled_tail_u64_le(&bytes, offset)
+        );
+        if let Ok(expected) = read_u64_le_at(&bytes, offset) {
+            prop_assert_eq!(read_u64_le_at_zero_pad_tail(&bytes, offset), expected);
+        }
+        if let Ok(expected) = read_u32_be_at(&bytes, offset) {
+            prop_assert_eq!(read_u32_be_at_zero_pad_tail(&bytes, offset), expected);
+        }
+    }
+
+    #[test]
+    fn the_zero_pad_form_never_panics_at_extreme_offsets(
+        bytes in proptest::collection::vec(any::<u8>(), 0..16),
+    ) {
+        for offset in [0usize, bytes.len(), bytes.len() + 1, usize::MAX - 1, usize::MAX] {
+            let little: u64 = read_u64_le_at_zero_pad_tail(&bytes, offset);
+            let big: u32 = read_u32_be_at_zero_pad_tail(&bytes, offset);
+            if offset > bytes.len() {
+                prop_assert_eq!(little, 0);
+                prop_assert_eq!(big, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn the_two_byte_orders_pad_opposite_ends_of_the_value(
+        bytes in proptest::collection::vec(any::<u8>(), 1..4),
+    ) {
+        let little: u32 = read_u32_le_at_zero_pad_tail(&bytes, 0);
+        let big: u32 = read_u32_be_at_zero_pad_tail(&bytes, 0);
+        let present: u32 = u32::try_from(bytes.len()).unwrap();
+        prop_assert_eq!(little >> (present * 8), 0);
+        prop_assert_eq!(big << (present * 8), 0);
     }
 
     #[test]
