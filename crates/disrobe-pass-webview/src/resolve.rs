@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
+use object::read::macho::{FatArch, FatArch32, FatArch64, MachOFatFile32, MachOFatFile64};
 use object::read::{File as ObjFile, Object, ObjectSection};
-use object::{RelocationFlags, RelocationTarget, SectionFlags};
+use object::{Endianness, FileKind, RelocationFlags, RelocationTarget, SectionFlags};
 
 use crate::error::{Error, Result};
 
@@ -11,6 +12,7 @@ const MACHO_PURE_INSTRUCTIONS: u32 = 0x8000_0000;
 const MACHO_SOME_INSTRUCTIONS: u32 = 0x0000_0400;
 pub(crate) const MAX_SPANS: usize = 4096;
 const MAX_OVERLAP_WALK: usize = 64;
+const MAX_FAT_SLICES: usize = 64;
 
 #[derive(Debug, Clone, Copy)]
 struct Span {
@@ -25,16 +27,52 @@ struct Span {
 pub(crate) struct SectionMap<'a> {
     bytes: &'a [u8],
     ptr_size: usize,
+    endian: Endianness,
     spans: Vec<Span>,
     span_index: Vec<(u64, u64, usize)>,
     relocs: BTreeMap<u64, u64>,
 }
 
 impl<'a> SectionMap<'a> {
+    pub(crate) fn build_slices(bytes: &'a [u8]) -> Result<Vec<Self>> {
+        let ranges: Vec<(u64, u64)> = fat_slice_ranges(bytes);
+        if ranges.is_empty() {
+            return Self::build(bytes).map(|map: Self| vec![map]);
+        }
+        let mut maps: Vec<Self> = Vec::new();
+        let mut last_failure: Option<String> = None;
+        for (offset, size) in ranges.into_iter().take(MAX_FAT_SLICES) {
+            let (Ok(start), Ok(len)): (
+                core::result::Result<usize, _>,
+                core::result::Result<usize, _>,
+            ) = (usize::try_from(offset), usize::try_from(size)) else {
+                continue;
+            };
+            let Some(end) = start.checked_add(len) else {
+                continue;
+            };
+            let Some(slice) = bytes.get(start..end) else {
+                continue;
+            };
+            match Self::build(slice) {
+                Ok(map) => maps.push(map),
+                Err(Error::NativeParse(detail)) => last_failure = Some(detail),
+                Err(other) => return Err(other),
+            }
+        }
+        if maps.is_empty() {
+            return Err(Error::NativeParse(last_failure.unwrap_or_else(|| {
+                "universal binary declares no slice inside the file".to_owned()
+            })));
+        }
+        Ok(maps)
+    }
+
     pub(crate) fn build(bytes: &'a [u8]) -> Result<Self> {
         let file: ObjFile<'a, &'a [u8]> =
             ObjFile::parse(bytes).map_err(|e| Error::NativeParse(e.to_string()))?;
         let ptr_size: usize = if file.is_64() { 8 } else { 4 };
+        let endian: Endianness = file.endianness();
         let mut spans: Vec<Span> = Vec::new();
         for section in file.sections() {
             if spans.len() >= MAX_SPANS {
@@ -80,6 +118,7 @@ impl<'a> SectionMap<'a> {
         Ok(Self {
             bytes,
             ptr_size,
+            endian,
             spans,
             span_index,
             relocs,
@@ -141,9 +180,11 @@ impl<'a> SectionMap<'a> {
         let off: usize = self.va_to_off(va)?;
         let end: usize = off.checked_add(self.ptr_size)?;
         let raw: &[u8] = self.bytes.get(off..end)?;
-        Some(match self.ptr_size {
-            8 => u64::from_le_bytes(raw.try_into().ok()?),
-            4 => u64::from(u32::from_le_bytes(raw.try_into().ok()?)),
+        Some(match (self.ptr_size, self.endian) {
+            (8, Endianness::Little) => u64::from_le_bytes(raw.try_into().ok()?),
+            (8, Endianness::Big) => u64::from_be_bytes(raw.try_into().ok()?),
+            (4, Endianness::Little) => u64::from(u32::from_le_bytes(raw.try_into().ok()?)),
+            (4, Endianness::Big) => u64::from(u32::from_be_bytes(raw.try_into().ok()?)),
             _ => return None,
         })
     }
@@ -160,7 +201,12 @@ impl<'a> SectionMap<'a> {
     }
 
     #[cfg(test)]
-    pub(crate) fn from_single_span(bytes: &'a [u8], va: u64, ptr_size: usize) -> Self {
+    pub(crate) fn from_single_span(
+        bytes: &'a [u8],
+        va: u64,
+        ptr_size: usize,
+        endian: Endianness,
+    ) -> Self {
         let span: Span = Span {
             va,
             vsize: bytes.len() as u64,
@@ -172,10 +218,35 @@ impl<'a> SectionMap<'a> {
         Self {
             bytes,
             ptr_size,
+            endian,
             spans: vec![span],
             span_index,
             relocs: BTreeMap::new(),
         }
+    }
+}
+
+fn fat_slice_ranges(bytes: &[u8]) -> Vec<(u64, u64)> {
+    match FileKind::parse(bytes) {
+        Ok(FileKind::MachOFat32) => MachOFatFile32::parse(bytes).map_or_else(
+            |_| Vec::new(),
+            |fat: MachOFatFile32<'_>| {
+                fat.arches()
+                    .iter()
+                    .map(|arch: &FatArch32| arch.file_range())
+                    .collect()
+            },
+        ),
+        Ok(FileKind::MachOFat64) => MachOFatFile64::parse(bytes).map_or_else(
+            |_| Vec::new(),
+            |fat: MachOFatFile64<'_>| {
+                fat.arches()
+                    .iter()
+                    .map(|arch: &FatArch64| arch.file_range())
+                    .collect()
+            },
+        ),
+        _ => Vec::new(),
     }
 }
 
@@ -227,6 +298,7 @@ mod tests {
         let map: SectionMap<'_> = SectionMap {
             bytes: &[],
             ptr_size: 8,
+            endian: Endianness::Little,
             spans,
             span_index,
             relocs: BTreeMap::new(),
@@ -298,6 +370,74 @@ mod tests {
         header[60..62].copy_from_slice(&shnum.to_le_bytes());
         header[62..64].copy_from_slice(&shstrndx.to_le_bytes());
         out
+    }
+
+    #[test]
+    fn words_are_read_in_the_endianness_the_image_declares() {
+        let raw: [u8; 8] = 0x0102_0304_0506_0708u64.to_be_bytes();
+        let big: SectionMap<'_> = SectionMap::from_single_span(&raw, 0x1000, 8, Endianness::Big);
+        assert_eq!(big.read_word(0x1000), Some(0x0102_0304_0506_0708));
+        assert_eq!(big.read_ptr(0x1000), Some(0x0102_0304_0506_0708));
+        let little: SectionMap<'_> =
+            SectionMap::from_single_span(&raw, 0x1000, 8, Endianness::Little);
+        assert_eq!(
+            little.read_word(0x1000),
+            Some(0x0807_0605_0403_0201),
+            "reading a big-endian image little-endian yields a byte-swapped address that resolves \
+             to nothing, which is why the endianness must come from the header"
+        );
+        let big32: SectionMap<'_> = SectionMap::from_single_span(&raw, 0x1000, 4, Endianness::Big);
+        assert_eq!(big32.read_word(0x1000), Some(0x0102_0304));
+        let little32: SectionMap<'_> =
+            SectionMap::from_single_span(&raw, 0x1000, 4, Endianness::Little);
+        assert_eq!(little32.read_word(0x1000), Some(0x0403_0201));
+    }
+
+    #[test]
+    fn a_thin_image_yields_exactly_one_slice() {
+        let bytes: Vec<u8> = many_section_elf(4);
+        let maps: Vec<SectionMap<'_>> = SectionMap::build_slices(&bytes).unwrap();
+        assert_eq!(maps.len(), 1);
+        assert_eq!(maps[0].endian, Endianness::Little);
+    }
+
+    fn fat32(entries: &[(u32, u32)], body_len: usize) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(&0xcafe_babeu32.to_be_bytes());
+        out.extend_from_slice(&u32::try_from(entries.len()).unwrap().to_be_bytes());
+        for (offset, size) in entries {
+            out.extend_from_slice(&0x0100_0007u32.to_be_bytes());
+            out.extend_from_slice(&3u32.to_be_bytes());
+            out.extend_from_slice(&offset.to_be_bytes());
+            out.extend_from_slice(&size.to_be_bytes());
+            out.extend_from_slice(&14u32.to_be_bytes());
+        }
+        out.resize(out.len() + body_len, 0x41);
+        out
+    }
+
+    #[test]
+    fn a_universal_header_pointing_outside_the_file_is_refused_without_panic() {
+        for entries in [
+            [(0xFFFF_FF00u32, 0x1000u32)].as_slice(),
+            [(0x10u32, 0xFFFF_FF00u32)].as_slice(),
+            [(0x28u32, 0u32), (0xFFFF_FFFFu32, 0xFFFF_FFFFu32)].as_slice(),
+        ] {
+            let bytes: Vec<u8> = fat32(entries, 512);
+            let err: Error = SectionMap::build_slices(&bytes).expect_err("must refuse");
+            assert!(matches!(err, Error::NativeParse(_)), "got {err:?}");
+        }
+    }
+
+    #[test]
+    fn a_universal_arch_count_past_the_file_falls_back_to_a_thin_parse() {
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(&0xcafe_babeu32.to_be_bytes());
+        bytes.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes());
+        bytes.resize(256, 0);
+        assert!(fat_slice_ranges(&bytes).is_empty());
+        let err: Error = SectionMap::build_slices(&bytes).expect_err("must refuse");
+        assert!(matches!(err, Error::NativeParse(_)), "got {err:?}");
     }
 
     #[test]

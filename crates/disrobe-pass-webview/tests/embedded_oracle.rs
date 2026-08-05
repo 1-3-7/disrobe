@@ -235,6 +235,134 @@ fn carves_go_embed_linux_pie_elf() {
     );
 }
 
+const BIG_ENDIAN_TARGETS: [(&str, &str); 3] =
+    [("s390x", "64-bit"), ("ppc64", "64-bit"), ("mips", "32-bit")];
+const LITTLE_ENDIAN_CONTROLS: [(&str, &str); 2] = [("ppc64le", "64-bit"), ("386", "32-bit")];
+
+#[test]
+fn carves_go_embed_in_both_endiannesses() {
+    if !have_cmd("go") {
+        eprintln!("CORPUS: go toolchain unavailable; skipping the endianness grade");
+        return;
+    }
+    let expected: BTreeMap<String, Vec<u8>> = expected_embed_map("web/", &web_tree());
+    let mut graded: usize = 0;
+    for (goarch, width) in BIG_ENDIAN_TARGETS.iter().chain(&LITTLE_ENDIAN_CONTROLS) {
+        let bytes: Vec<u8> = build_go(
+            Some("linux"),
+            Some(goarch),
+            false,
+            &format!("app-{goarch}.elf"),
+        )
+        .unwrap_or_else(|| panic!("go build for linux/{goarch} failed"));
+        let report: CarveReport =
+            carve_report(&bytes).unwrap_or_else(|e| panic!("{goarch} ({width}) carve failed: {e}"));
+        assert_eq!(
+            assets_map(&report),
+            expected,
+            "{goarch} ({width}) recovered a tree that differs from the source dist, so pointer \
+             words are being read in the wrong byte order for this image"
+        );
+        graded += 1;
+    }
+    assert_eq!(
+        graded,
+        BIG_ENDIAN_TARGETS.len() + LITTLE_ENDIAN_CONTROLS.len(),
+        "every endianness and pointer width in the declared input space must be graded"
+    );
+}
+
+const FAT_MAGIC_32: u32 = 0xcafe_babe;
+const FAT_MAGIC_64: u32 = 0xcafe_babf;
+const CPU_TYPE_X86_64: u32 = 0x0100_0007;
+const CPU_TYPE_ARM64: u32 = 0x0100_000c;
+const FAT_SLICE_ALIGN: usize = 1 << 14;
+const FAT_ALIGN_POWER: u32 = 14;
+
+fn universal_macho(magic: u32, slices: &[(u32, &[u8])]) -> Vec<u8> {
+    let arch_size: usize = if magic == FAT_MAGIC_64 { 32 } else { 20 };
+    let mut header: Vec<u8> = Vec::new();
+    header.extend_from_slice(&magic.to_be_bytes());
+    header.extend_from_slice(&u32::try_from(slices.len()).unwrap().to_be_bytes());
+    let start: usize = (8 + slices.len() * arch_size).div_ceil(FAT_SLICE_ALIGN) * FAT_SLICE_ALIGN;
+    let mut cursor: usize = start;
+    for (cputype, data) in slices {
+        header.extend_from_slice(&cputype.to_be_bytes());
+        header.extend_from_slice(&0u32.to_be_bytes());
+        if magic == FAT_MAGIC_64 {
+            header.extend_from_slice(&(cursor as u64).to_be_bytes());
+            header.extend_from_slice(&(data.len() as u64).to_be_bytes());
+            header.extend_from_slice(&FAT_ALIGN_POWER.to_be_bytes());
+            header.extend_from_slice(&0u32.to_be_bytes());
+        } else {
+            header.extend_from_slice(&u32::try_from(cursor).unwrap().to_be_bytes());
+            header.extend_from_slice(&u32::try_from(data.len()).unwrap().to_be_bytes());
+            header.extend_from_slice(&FAT_ALIGN_POWER.to_be_bytes());
+        }
+        cursor = (cursor + data.len()).div_ceil(FAT_SLICE_ALIGN) * FAT_SLICE_ALIGN;
+    }
+    let mut out: Vec<u8> = header;
+    let mut cursor: usize = start;
+    for (_, data) in slices {
+        out.resize(cursor, 0);
+        out.extend_from_slice(data);
+        cursor = (cursor + data.len()).div_ceil(FAT_SLICE_ALIGN) * FAT_SLICE_ALIGN;
+    }
+    out
+}
+
+#[test]
+fn carves_thin_and_universal_macho_go_embed() {
+    if !have_cmd("go") {
+        eprintln!("CORPUS: go toolchain unavailable; skipping the Mach-O grade");
+        return;
+    }
+    let expected: BTreeMap<String, Vec<u8>> = expected_embed_map("web/", &web_tree());
+    let intel: Vec<u8> = build_go(Some("darwin"), Some("amd64"), false, "app-amd64.macho")
+        .unwrap_or_else(|| panic!("go build for darwin/amd64 failed"));
+    let arm: Vec<u8> = build_go(Some("darwin"), Some("arm64"), false, "app-arm64.macho")
+        .unwrap_or_else(|| panic!("go build for darwin/arm64 failed"));
+    for (label, thin) in [("amd64", &intel), ("arm64", &arm)] {
+        let report: CarveReport =
+            carve_report(thin).unwrap_or_else(|e| panic!("thin Mach-O {label} carve failed: {e}"));
+        assert_eq!(assets_map(&report), expected, "thin Mach-O {label}");
+    }
+    for magic in [FAT_MAGIC_32, FAT_MAGIC_64] {
+        let fat: Vec<u8> = universal_macho(
+            magic,
+            &[
+                (CPU_TYPE_X86_64, intel.as_slice()),
+                (CPU_TYPE_ARM64, arm.as_slice()),
+            ],
+        );
+        let report: CarveReport = carve_report(&fat)
+            .unwrap_or_else(|e| panic!("universal Mach-O {magic:#x} carve failed: {e}"));
+        assert_eq!(
+            assets_map(&report),
+            expected,
+            "a universal binary must carve the same tree its slices carry, not fall through as an \
+             unsupported container"
+        );
+    }
+}
+
+#[test]
+fn a_universal_binary_whose_slices_carry_nothing_is_refused() {
+    let junk: Vec<u8> = vec![0x41u8; 4096];
+    let fat: Vec<u8> = universal_macho(
+        FAT_MAGIC_32,
+        &[
+            (CPU_TYPE_X86_64, junk.as_slice()),
+            (CPU_TYPE_ARM64, junk.as_slice()),
+        ],
+    );
+    let err: Error = carve_report(&fat).expect_err("a slice-free universal binary must abstain");
+    assert!(
+        matches!(err, Error::NotDetected | Error::FamilyNotExtractable { .. }),
+        "got {err:?}"
+    );
+}
+
 #[test]
 fn carves_clang_static_pie_elf_via_relocations() {
     let Some(bytes) = clang_static_pie(CLANG_TABLE_SRC, "webview-clang-table") else {
