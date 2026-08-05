@@ -12,12 +12,51 @@
 #[allow(clippy::redundant_pub_crate, dead_code, clippy::panic)]
 mod packer_fixture;
 
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{RecvTimeoutError, channel};
+use std::thread;
+use std::time::Duration;
+
 use disrobe_pass_native::packers::section_recovery::{GranuleRecovery, SectionRole};
 use disrobe_pass_native::packers::yodas_protector_phase2::{
     ForcedRc4Replay, HashInputSource, StubProgress, YodasProtectorPhase2,
     unpack_yodas_protector_phase2,
 };
 use packer_fixture::{PackerFixture, load_fixture};
+
+struct PeakTrackingAlloc;
+
+static PEAK_SINGLE_ALLOC: AtomicUsize = AtomicUsize::new(0);
+
+unsafe impl GlobalAlloc for PeakTrackingAlloc {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let size: usize = layout.size();
+        let mut observed: usize = PEAK_SINGLE_ALLOC.load(Ordering::Relaxed);
+        while size > observed {
+            match PEAK_SINGLE_ALLOC.compare_exchange_weak(
+                observed,
+                size,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(current) => observed = current,
+            }
+        }
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
+    }
+}
+
+#[global_allocator]
+static ALLOC: PeakTrackingAlloc = PeakTrackingAlloc;
+
+const STUB_WALL_CLOCK_BUDGET: Duration = Duration::from_mins(2);
+const STUB_ALLOC_CEILING: usize = 16 * 1024 * 1024;
 
 fn corpus(name: &str) -> Option<Vec<u8>> {
     load_fixture(PackerFixture {
@@ -239,6 +278,47 @@ fn yp_encrypted_content_is_not_falsely_claimed_recovered() {
             rsrc.recovery_pct() >= 97.0,
             "{packed_n}: .rsrc (in-place resources) must recover, got {:.2}%",
             rsrc.recovery_pct(),
+        );
+        tested += 1;
+    }
+    assert!(tested > 0, "no Yoda's Protector fixtures present");
+}
+
+#[test]
+fn yp_stub_emulation_terminates_under_a_wall_clock_and_allocation_bound() {
+    let mut tested: usize = 0;
+    for (packed_n, orig_n, _f) in CASES {
+        let (Some(packed), Some(orig)): (Option<Vec<u8>>, Option<Vec<u8>>) =
+            (corpus(packed_n), corpus(orig_n))
+        else {
+            continue;
+        };
+        PEAK_SINGLE_ALLOC.store(0, Ordering::Relaxed);
+        let (sender, receiver) = channel::<StubProgress>();
+        let worker: thread::JoinHandle<()> = thread::spawn(move || {
+            if let Ok(out) = unpack_yodas_protector_phase2(&packed, Some(&orig)) {
+                let _ = sender.send(out.stub_progress);
+            }
+        });
+        let progress: StubProgress = match receiver.recv_timeout(STUB_WALL_CLOCK_BUDGET) {
+            Ok(progress) => progress,
+            Err(RecvTimeoutError::Timeout) => panic!(
+                "{packed_n}: the .yP stub emulation did not terminate within {STUB_WALL_CLOCK_BUDGET:?}. \
+                 The emulator interprets hostile code, so a change that drives it further can also \
+                 drive it into a loop it never leaves; that is a defect, not a slow machine",
+            ),
+            Err(RecvTimeoutError::Disconnected) => {
+                panic!("{packed_n}: the stub emulation ended without reporting progress")
+            }
+        };
+        let peak: usize = PEAK_SINGLE_ALLOC.load(Ordering::Relaxed);
+        let _ = worker.join();
+        println!("YP-BOUND {packed_n}: {progress:?} peak_single_alloc={peak}");
+        assert!(
+            peak < STUB_ALLOC_CEILING,
+            "{packed_n}: emulating the stub forced a {peak}-byte single allocation, past the \
+             {STUB_ALLOC_CEILING}-byte ceiling; a size field inside the sample must never size an \
+             allocation directly",
         );
         tested += 1;
     }
