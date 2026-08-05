@@ -46,10 +46,10 @@ Try it in your browser at [`1-3-7.github.io/disrobe/playground`](https://1-3-7.g
 | PyArmor | Recover | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> manifest-named v8/v9 default-trial wrappers decode one complete header-anchored root `CodeObject` | coverage-self-reported `[CI]` | [python](docs/src/languages/python.md) |
 | Python pickle | Recover | 470 / 470 re-execute equal | strong `[CI]` | [pickle](docs/src/languages/pickle.md) |
 | JVM classfile | Recover | <!-- m:jvm_per_method_count -->131 of 131<!-- /m --> methods recompile | recompile-only `[CI]` | [jvm](docs/src/languages/jvm-android.md) |
-| Android DEX | Recover | 118 / 118 verifier-presented classes | strong `[CI]` | [android](docs/src/languages/jvm-android.md) |
+| Android DEX | Recover | <!-- m:dalvik_verifier_frac -->118 / 118<!-- /m --> verifier-presented classes | strong `[CI]` | [android](docs/src/languages/jvm-android.md) |
 | .NET CIL | Recover | Eazfuscator VM and KoiVM lifted | strong `[CI]` | [dotnet](docs/src/languages/dotnet.md) |
 | JavaScript, TypeScript | Recover | obfuscator.io, JS-Confuser, Jscrambler | pass-gated | [js](docs/src/languages/javascript.md) |
-| WebAssembly | Recover | 57 / 57 eligible functions execute equal | strong `[CI]` | [wasm](docs/src/languages/wasm.md) |
+| WebAssembly | Recover | <!-- m:wasm_execution_frac -->57 / 57<!-- /m --> eligible functions execute equal | strong `[CI]` | [wasm](docs/src/languages/wasm.md) |
 | Native symbols, disasm, IR | Recover | DWARF, PDB, STABS, demangle, RTTI | pass-gated | [native](docs/src/languages/native.md) |
 | Native decompile | Recover | x86-64 C and Rust output re-executes equal; AArch64 emits pseudo-C | pass-gated | [decompile](docs/src/languages/native-decompile.md) |
 | Native packers | Recover | UPX `.text` and `.pdata` byte-identical | strong `[CI]` | [unpack](docs/src/languages/native-unpack.md) |
@@ -59,7 +59,7 @@ Try it in your browser at [`1-3-7.github.io/disrobe/playground`](https://1-3-7.g
 | Lua | Recover | IronBrew2 devirt runs equal | strong `[CI]` | [lua](docs/src/languages/lua.md) |
 | Ruby | Recover | greeter <!-- m:ruby_greeter_pct -->100%<!-- /m --> under MRI recompile | strong `[CI]` | [ruby](docs/src/languages/ruby.md) |
 | PHP | Partial | eval-chain peel, Phar decode | pass-gated | [php](docs/src/languages/php.md) |
-| BEAM | Recover | 18 / 19 stripped Core Erlang cases match `test/0` | strong `[CI]` | [beam](docs/src/languages/beam.md) |
+| BEAM | Recover | <!-- m:beam_recompile_frac -->18 / 19<!-- /m --> stripped Core Erlang cases match `test/0` | strong `[CI]` | [beam](docs/src/languages/beam.md) |
 | AS3, Flash | Recover | ABC method-body source | pass-gated | [as3](docs/src/languages/as3.md) |
 | Hermes, React Native | Recover | <!-- m:hermes_opcoverage_count -->8 of 8<!-- /m --> functions, no fallback ops | strong `[CI]` | [mobile](docs/src/languages/mobile.md) |
 | Flutter Dart AOT | Partial | class and method attribution | pass-gated | [mobile](docs/src/languages/mobile.md) |
@@ -105,11 +105,11 @@ The Oracle column names the independent reference in a few words. What that refe
 | Python legacy 1.0-3.7 | <!-- m:py_legacy_count -->150 of 191<!-- /m --> gate-verified `[CI]` | recompile or token match | `crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs` |
 | Pickle safety | 102 / 102 fixtures classify `[CI]` | pickletools semantics | `crates/disrobe-pass-pickle/tests/corpus.rs` |
 | Pickle reconstruction roundtrip | 470 / 470 re-execute equal, floor 100% `[CI]` | CPython re-execution | `crates/disrobe-pass-pickle/tests/roundtrip.rs` |
-| Android DEX, committed corpus | 118 / 118 verifier-presented classes clean, 317 re-hosted bodies clean `[CI]` | real JVM verifier | `crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs` |
+| Android DEX, committed corpus | <!-- m:dalvik_verifier_frac -->118 / 118<!-- /m --> verifier-presented classes clean, 317 re-hosted bodies clean `[CI]` | real JVM verifier | `crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs` |
 | .NET Eazfuscator VM | 57 / 57 instructions lifted, ordered-CIL match `[CI]` | independent clean DLL | `crates/disrobe-pass-dotnet/tests/real_eazvm.rs` |
 | .NET KoiVM | 6 / 6 bodies lifted, structural recovery >= 75% `[CI]` | independent clean build | `crates/disrobe-pass-dotnet/tests/real_koivm.rs` |
 | .NET protectors | <!-- m:dotnet_protectors -->23<!-- /m --> classified, ConfuserEx2 decrypted `[CI]` | plaintext-absent check | `crates/disrobe-pass-dotnet/tests/confuserex2_full.rs` |
-| WebAssembly, execution-equiv | 57 / 57 eligible functions equal, 6 byte-identical `[CI]` | wasmtime differential | `crates/disrobe-pass-wasm-deob/tests/semantic_differential.rs` |
+| WebAssembly, execution-equiv | <!-- m:wasm_execution_frac -->57 / 57<!-- /m --> eligible functions equal, 6 byte-identical `[CI]` | wasmtime differential | `crates/disrobe-pass-wasm-deob/tests/semantic_differential.rs` |
 | BEAM, stripped Core Erlang | 18 / 19 committed cases recompile, preserve exports, and match `test/0` `[CI]` | real `erlc` and `erl`, OTP 27.3.4 | `crates/disrobe-pass-beam/tests/erlc_recompile_equivalence.rs` |
 | WebAssembly obfuscator helpers | <!-- m:wasm_direct_helpers -->4<!-- /m --> cataloged direct-helper families; 3 transformations run through `wasm deob`, while Tigress-via-Emscripten is detected only `[CI]` | parser and execution gates | `crates/disrobe-pass-wasm-deob/tests/obfuscators_e2e.rs` |
 | Lua IronBrew2 2.7.0 devirt | runs equal, standard and MAX mode `[CI]` | real-`lua` differential | `crates/disrobe-pass-lua/tests/ironbrew2_real_oracle.rs` |
