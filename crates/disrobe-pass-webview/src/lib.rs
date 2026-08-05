@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::redundant_pub_crate)]
 
+pub mod chain_detector;
 mod decompress;
 mod detect;
 mod electron;
@@ -9,7 +10,7 @@ mod error;
 mod model;
 mod resolve;
 
-pub use detect::detect_family;
+pub use detect::{FamilyEvidence, classify, classify_all, detect_family};
 pub use disrobe_binfmt::ExtractionQuota;
 pub use error::{Error, Result};
 pub use model::{

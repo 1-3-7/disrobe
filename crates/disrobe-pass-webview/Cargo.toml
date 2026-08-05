@@ -14,9 +14,14 @@ categories.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+chain = ["disrobe-core/chain"]
+
 [dependencies]
 disrobe-bytes = { workspace = true }
 disrobe-binfmt = { workspace = true }
+disrobe-core = { workspace = true }
 object = { workspace = true }
 sha2 = { workspace = true }
 serde = { workspace = true }
