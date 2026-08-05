@@ -1,7 +1,9 @@
 #![allow(clippy::needless_pass_by_value)]
 use std::path::{Path, PathBuf};
 
-use disrobe_core::chain::{ChainPassRecovery, ChainRecoveryReport, VerdictDoc};
+use disrobe_core::chain::{
+    ChainPassRecovery, ChainRecoveryReport, VerdictDoc, VerdictGrade, VerdictThreshold,
+};
 use disrobe_core::recovery::{ConfidenceTier, TierHistogram};
 use serde::Serialize;
 
@@ -71,8 +73,101 @@ fn read_terminal_reason(out_dir: &Path) -> Option<String> {
         .map(str::to_owned)
 }
 
-pub(crate) fn run(out: Option<PathBuf>, fmt: OutputFormat) -> miette::Result<()> {
+const MAX_REPORT_SEARCH_DEPTH: usize = 4;
+const MAX_REPORTS_GRADED: usize = 4096;
+pub(crate) const VERDICT_MARKER: &str = "disrobe-verdict:";
+
+fn find_reports(out_dir: &Path) -> Vec<PathBuf> {
+    let direct: PathBuf = out_dir.join("recovery.json");
+    if direct.is_file() {
+        return vec![direct];
+    }
+    let mut found: Vec<PathBuf> = Vec::new();
+    for entry in walkdir::WalkDir::new(out_dir)
+        .max_depth(MAX_REPORT_SEARCH_DEPTH)
+        .sort_by_file_name()
+        .into_iter()
+        .flatten()
+    {
+        if found.len() >= MAX_REPORTS_GRADED {
+            break;
+        }
+        if entry.file_type().is_file() && entry.file_name() == "recovery.json" {
+            found.push(entry.into_path());
+        }
+    }
+    found
+}
+
+fn grade_reports(out_dir: &Path, threshold: VerdictThreshold) -> miette::Result<VerdictGrade> {
+    let reports: Vec<PathBuf> = find_reports(out_dir);
+    if reports.is_empty() {
+        return Err(miette::miette!(
+            "DR-CLI-0322: no recovery.json under {}, so there is no chain verdict to grade against `--fail-on {}`; run `disrobe chain <input>` or `disrobe auto <input>` first",
+            out_dir.display(),
+            threshold.as_str()
+        ));
+    }
+    let mut worst: Option<(VerdictGrade, VerdictDoc)> = None;
+    for path in &reports {
+        let report: ChainRecoveryReport = load_recovery(path)?;
+        let grade: VerdictGrade = report.verdict.grade();
+        if worst
+            .as_ref()
+            .is_none_or(|(seen, _): &(VerdictGrade, VerdictDoc)| grade > *seen)
+        {
+            worst = Some((grade, report.verdict.clone()));
+        }
+    }
+    let Some((worst, worst_verdict)): Option<(VerdictGrade, VerdictDoc)> = worst else {
+        return Err(miette::miette!(
+            "DR-CLI-0325: {} report(s) were found under {} but none could be graded",
+            reports.len(),
+            out_dir.display()
+        ));
+    };
+    let met: bool = worst.meets(threshold);
+    eprintln!(
+        "{VERDICT_MARKER} verdict={verdict} grade={grade} fail-on={threshold} reports={count} result={result}",
+        verdict = serde_json::to_value(&worst_verdict)
+            .ok()
+            .and_then(|v: serde_json::Value| v.as_str().map(str::to_owned))
+            .unwrap_or_else(|| "unknown".to_owned()),
+        grade = worst.as_str(),
+        threshold = threshold.as_str(),
+        count = reports.len(),
+        result = if met { "fail" } else { "pass" }
+    );
+    if met {
+        return Err(miette::miette!(
+            "DR-CLI-0323: chain verdict {} grades {} across {} report(s), which meets `--fail-on {}`",
+            serde_json::to_value(&worst_verdict)
+                .ok()
+                .and_then(|v: serde_json::Value| v.as_str().map(str::to_owned))
+                .unwrap_or_else(|| "unknown".to_owned()),
+            worst.as_str(),
+            reports.len(),
+            threshold.as_str()
+        ));
+    }
+    Ok(worst)
+}
+
+pub(crate) fn run(
+    out: Option<PathBuf>,
+    fail_on: Option<String>,
+    fmt: OutputFormat,
+) -> miette::Result<()> {
     let out_dir: PathBuf = out.unwrap_or_else(|| PathBuf::from("./out"));
+    if let Some(raw) = fail_on {
+        let Some(threshold): Option<VerdictThreshold> = VerdictThreshold::parse(raw.trim()) else {
+            return Err(miette::miette!(
+                "DR-CLI-0324: `--fail-on {raw}` is not one of never, incomplete, failed, any"
+            ));
+        };
+        grade_reports(&out_dir, threshold)?;
+        return Ok(());
+    }
     let recovery_path: PathBuf = out_dir.join("recovery.json");
     let report: ChainRecoveryReport = load_recovery(&recovery_path)?;
     let histogram: TierHistogram = report.histogram;
