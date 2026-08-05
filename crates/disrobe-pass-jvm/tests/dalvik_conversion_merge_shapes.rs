@@ -14,7 +14,7 @@ use std::process::Command;
 
 use common::find_on_path;
 use disrobe_pass_jvm::dex_builder::{
-    ClassDef, DexBuilder, EncodedMethod, MethodRef, ProtoRef, Reloc, insn,
+    CatchHandler, ClassDef, DexBuilder, EncodedMethod, MethodRef, ProtoRef, Reloc, TryItem, insn,
 };
 use disrobe_pass_jvm::dex2jar::{Dex2JarResult, translate_dex_bytes};
 use disrobe_pass_jvm::{ClassFile, ConstantPoolEntry, parse_classfile};
@@ -86,6 +86,8 @@ enum Shape {
     LoopBackEdge,
     ArgumentUse,
     WideRegisterFile,
+    TryBody,
+    HandlerEntry,
 }
 
 impl Shape {
@@ -97,6 +99,8 @@ impl Shape {
             Self::LoopBackEdge => "Loop",
             Self::ArgumentUse => "Arg",
             Self::WideRegisterFile => "Wide",
+            Self::TryBody => "Try",
+            Self::HandlerEntry => "Handler",
         }
     }
 
@@ -133,6 +137,7 @@ fn ctor(class: &str) -> EncodedMethod {
     });
     units.extend(insn::fmt10x(0x0E));
     EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: format!("L{class};"),
             proto: ProtoRef {
@@ -163,6 +168,7 @@ struct Body {
     return_type: &'static str,
     params: Vec<String>,
     relocations: Vec<Reloc>,
+    tries: Vec<TryItem>,
 }
 
 const SINK: &str = "ConvSink";
@@ -181,6 +187,7 @@ fn sink_ref(desc: &str) -> MethodRef {
 fn sink_method(desc: &'static str) -> EncodedMethod {
     let slots: u16 = if is_wide(desc) { 2 } else { 1 };
     EncodedMethod {
+        tries: Vec::new(),
         method: sink_ref(desc),
         access_flags: 0x9,
         is_direct: true,
@@ -235,6 +242,7 @@ fn alias_source_body(conv: &Conversion) -> Body {
         return_type: conv.dest,
         params: vec![conv.src.to_owned(), "I".to_owned()],
         relocations: Vec::new(),
+        tries: Vec::new(),
     }
 }
 
@@ -259,6 +267,7 @@ fn overwrite_wide_high_body(conv: &Conversion) -> Body {
         return_type: conv.dest,
         params: vec![conv.src.to_owned(), "I".to_owned()],
         relocations: Vec::new(),
+        tries: Vec::new(),
     }
 }
 
@@ -287,6 +296,7 @@ fn branch_merge_body(conv: &Conversion) -> Body {
         return_type: "V",
         params: vec![conv.src.to_owned(), "I".to_owned()],
         relocations: Vec::new(),
+        tries: Vec::new(),
     }
 }
 
@@ -313,6 +323,7 @@ fn loop_back_edge_body(conv: &Conversion) -> Body {
         return_type: conv.dest,
         params: vec![conv.src.to_owned(), "I".to_owned()],
         relocations: Vec::new(),
+        tries: Vec::new(),
     }
 }
 
@@ -348,6 +359,7 @@ fn argument_use_body(conv: &Conversion) -> Body {
             unit: call_at + 1,
             method: sink_ref(conv.dest),
         }],
+        tries: Vec::new(),
     }
 }
 
@@ -378,6 +390,106 @@ fn wide_register_file_body(conv: &Conversion) -> Body {
         return_type: conv.dest,
         params: vec![conv.src.to_owned(), "I".to_owned()],
         relocations: Vec::new(),
+        tries: Vec::new(),
+    }
+}
+
+const CAUGHT: &str = "Ljava/lang/Exception;";
+
+fn sink_call(units: &mut Vec<u16>, relocations: &mut Vec<Reloc>, first: u16, desc: &'static str) {
+    let at: usize = units.len();
+    let low: u8 = u8::try_from(first).expect("register index fits u8");
+    if is_wide(desc) {
+        units.extend(insn::fmt35c_two(0x71, low, low + 1, 0));
+    } else {
+        units.extend(insn::fmt35c_one(0x71, low, 0));
+    }
+    relocations.push(Reloc::MethodIndex {
+        unit: at + 1,
+        method: sink_ref(desc),
+    });
+}
+
+fn try_body_body(conv: &Conversion) -> Body {
+    let dest_slots: u16 = conv.dest_slots();
+    let src_slots: u16 = conv.src_slots();
+    let exception: u16 = dest_slots;
+    let source: u16 = dest_slots + 1;
+    let registers_size: u16 = dest_slots + 1 + src_slots;
+
+    let mut units: Vec<u16> = Vec::new();
+    let mut relocations: Vec<Reloc> = Vec::new();
+    units.extend(insn::fmt12x(
+        conv.op,
+        0,
+        u8::try_from(source).expect("register index fits u8"),
+    ));
+    sink_call(&mut units, &mut relocations, 0, conv.dest);
+    units.push(0x28 | (3u16 << 8));
+    units.extend(insn::fmt11x(
+        0x0D,
+        u8::try_from(exception).expect("register index fits u8"),
+    ));
+    units.extend(insn::fmt10x(0x00));
+    units.extend(insn::fmt10x(0x0E));
+    Body {
+        registers_size,
+        ins_size: src_slots,
+        outs_size: dest_slots,
+        insns: units,
+        return_type: "V",
+        params: vec![conv.src.to_owned()],
+        relocations,
+        tries: vec![TryItem {
+            start_unit: 0,
+            unit_count: 5,
+            handlers: vec![CatchHandler {
+                exception_type: Some(CAUGHT.to_owned()),
+                handler_unit: 5,
+            }],
+        }],
+    }
+}
+
+fn handler_entry_body(conv: &Conversion) -> Body {
+    let dest_slots: u16 = conv.dest_slots();
+    let src_slots: u16 = conv.src_slots();
+    let exception: u16 = dest_slots;
+    let source: u16 = dest_slots + 1;
+    let registers_size: u16 = dest_slots + 1 + src_slots;
+
+    let mut units: Vec<u16> = Vec::new();
+    let mut relocations: Vec<Reloc> = Vec::new();
+    sink_call(&mut units, &mut relocations, source, conv.src);
+    units.push(0x28 | (7u16 << 8));
+    units.extend(insn::fmt11x(
+        0x0D,
+        u8::try_from(exception).expect("register index fits u8"),
+    ));
+    units.extend(insn::fmt12x(
+        conv.op,
+        0,
+        u8::try_from(source).expect("register index fits u8"),
+    ));
+    sink_call(&mut units, &mut relocations, 0, conv.dest);
+    units.extend(insn::fmt10x(0x0E));
+    units.extend(insn::fmt10x(0x0E));
+    Body {
+        registers_size,
+        ins_size: src_slots,
+        outs_size: dest_slots.max(src_slots),
+        insns: units,
+        return_type: "V",
+        params: vec![conv.src.to_owned()],
+        relocations,
+        tries: vec![TryItem {
+            start_unit: 0,
+            unit_count: 4,
+            handlers: vec![CatchHandler {
+                exception_type: Some(CAUGHT.to_owned()),
+                handler_unit: 4,
+            }],
+        }],
     }
 }
 
@@ -389,6 +501,8 @@ fn body_for(shape: Shape, conv: &Conversion) -> Body {
         Shape::LoopBackEdge => loop_back_edge_body(conv),
         Shape::ArgumentUse => argument_use_body(conv),
         Shape::WideRegisterFile => wide_register_file_body(conv),
+        Shape::TryBody => try_body_body(conv),
+        Shape::HandlerEntry => handler_entry_body(conv),
     }
 }
 
@@ -411,6 +525,7 @@ fn shape_class(shape: Shape, conv: &Conversion) -> ClassDef {
         outs_size: body.outs_size,
         insns: body.insns,
         relocations: body.relocations,
+        tries: body.tries,
     };
     ClassDef {
         class: format!("L{name};"),
@@ -430,6 +545,8 @@ const SHAPES: &[Shape] = &[
     Shape::LoopBackEdge,
     Shape::ArgumentUse,
     Shape::WideRegisterFile,
+    Shape::TryBody,
+    Shape::HandlerEntry,
 ];
 
 fn emitted_classes() -> Vec<(Shape, &'static Conversion, String)> {

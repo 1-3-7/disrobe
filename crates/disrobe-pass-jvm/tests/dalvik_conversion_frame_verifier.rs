@@ -59,6 +59,7 @@ fn conv_ctor(class: &str) -> EncodedMethod {
     });
     units.extend(insn::fmt10x(0x0E));
     EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: format!("L{class};"),
             proto: ProtoRef {
@@ -94,6 +95,7 @@ fn conv_method(op: u8, class: &str, src: &str, ret: &str) -> EncodedMethod {
     units.extend(insn::fmt11x(ret_op, 0));
 
     EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: format!("L{class};"),
             proto: ProtoRef {

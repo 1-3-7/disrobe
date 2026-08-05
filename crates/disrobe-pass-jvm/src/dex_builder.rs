@@ -36,6 +36,19 @@ pub enum Reloc {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatchHandler {
+    pub exception_type: Option<String>,
+    pub handler_unit: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TryItem {
+    pub start_unit: u32,
+    pub unit_count: u16,
+    pub handlers: Vec<CatchHandler>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedMethod {
     pub method: MethodRef,
     pub access_flags: u32,
@@ -45,6 +58,7 @@ pub struct EncodedMethod {
     pub outs_size: u16,
     pub insns: Vec<u16>,
     pub relocations: Vec<Reloc>,
+    pub tries: Vec<TryItem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +125,15 @@ impl DexBuilder {
                 for p in &method.method.proto.params {
                     pool.intern(p);
                 }
+                for handler in method
+                    .tries
+                    .iter()
+                    .flat_map(|t: &TryItem| t.handlers.iter())
+                {
+                    if let Some(descriptor) = handler.exception_type.as_deref() {
+                        pool.intern(descriptor);
+                    }
+                }
                 for reloc in &method.relocations {
                     match reloc {
                         Reloc::StringIndex { value, .. } => pool.intern(value),
@@ -154,6 +177,15 @@ impl DexBuilder {
                 types.intern(&pool, &method.method.proto.return_type);
                 for p in &method.method.proto.params {
                     types.intern(&pool, p);
+                }
+                for handler in method
+                    .tries
+                    .iter()
+                    .flat_map(|t: &TryItem| t.handlers.iter())
+                {
+                    if let Some(descriptor) = handler.exception_type.as_deref() {
+                        types.intern(&pool, descriptor);
+                    }
                 }
                 for reloc in &method.relocations {
                     match reloc {
@@ -319,14 +351,21 @@ impl DexBuilder {
                         }
                     }
                 }
+                let tries_size: u16 = u16::try_from(method.tries.len()).unwrap_or(0);
                 data.extend_from_slice(&method.registers_size.to_le_bytes());
                 data.extend_from_slice(&method.ins_size.to_le_bytes());
                 data.extend_from_slice(&method.outs_size.to_le_bytes());
-                data.extend_from_slice(&0u16.to_le_bytes());
+                data.extend_from_slice(&tries_size.to_le_bytes());
                 data.extend_from_slice(&0u32.to_le_bytes());
                 data.extend_from_slice(&(units.len() as u32).to_le_bytes());
                 for unit in &units {
                     data.extend_from_slice(&unit.to_le_bytes());
+                }
+                if tries_size > 0 {
+                    if !units.len().is_multiple_of(2) {
+                        data.extend_from_slice(&0u16.to_le_bytes());
+                    }
+                    write_try_table(&mut data, &method.tries, types, pool);
                 }
                 code_offsets.insert((ci, mi), off);
             }
@@ -899,6 +938,76 @@ fn shorty_char(descriptor: &str) -> char {
     }
 }
 
+fn write_sleb128(out: &mut Vec<u8>, mut value: i32) {
+    loop {
+        let byte: u8 = (value & 0x7F) as u8;
+        value >>= 7;
+        let done: bool = (value == 0 && byte & 0x40 == 0) || (value == -1 && byte & 0x40 != 0);
+        out.push(if done { byte } else { byte | 0x80 });
+        if done {
+            break;
+        }
+    }
+}
+
+fn encode_catch_handler(
+    out: &mut Vec<u8>,
+    handlers: &[CatchHandler],
+    types: &TypePool,
+    pool: &StringPool,
+) {
+    let typed: Vec<&CatchHandler> = handlers
+        .iter()
+        .filter(|h: &&CatchHandler| h.exception_type.is_some())
+        .collect();
+    let catch_all: Option<&CatchHandler> = handlers
+        .iter()
+        .find(|h: &&CatchHandler| h.exception_type.is_none());
+    let typed_len: i32 = i32::try_from(typed.len()).unwrap_or(0);
+    write_sleb128(
+        out,
+        if catch_all.is_some() {
+            -typed_len
+        } else {
+            typed_len
+        },
+    );
+    for handler in typed {
+        let Some(descriptor): Option<&str> = handler.exception_type.as_deref() else {
+            continue;
+        };
+        write_uleb128(out, types.id_of(pool.index_of(descriptor)));
+        write_uleb128(out, handler.handler_unit);
+    }
+    if let Some(handler) = catch_all {
+        write_uleb128(out, handler.handler_unit);
+    }
+}
+
+fn write_try_table(out: &mut Vec<u8>, tries: &[TryItem], types: &TypePool, pool: &StringPool) {
+    let mut lists: Vec<Vec<u8>> = Vec::with_capacity(tries.len());
+    let mut list_offsets: Vec<u16> = Vec::with_capacity(tries.len());
+    let mut header: Vec<u8> = Vec::new();
+    write_uleb128(&mut header, u32::try_from(tries.len()).unwrap_or(0));
+    let mut cursor: usize = header.len();
+    for item in tries {
+        let mut encoded: Vec<u8> = Vec::new();
+        encode_catch_handler(&mut encoded, &item.handlers, types, pool);
+        list_offsets.push(u16::try_from(cursor).unwrap_or(0));
+        cursor = cursor.saturating_add(encoded.len());
+        lists.push(encoded);
+    }
+    for (item, offset) in tries.iter().zip(list_offsets.iter()) {
+        out.extend_from_slice(&item.start_unit.to_le_bytes());
+        out.extend_from_slice(&item.unit_count.to_le_bytes());
+        out.extend_from_slice(&offset.to_le_bytes());
+    }
+    out.extend_from_slice(&header);
+    for list in &lists {
+        out.extend_from_slice(list);
+    }
+}
+
 fn write_uleb128(out: &mut Vec<u8>, mut value: u32) {
     loop {
         let mut byte: u8 = (value & 0x7F) as u8;
@@ -1425,6 +1534,7 @@ pub fn dexguard_reflect_sample(plaintexts: &[&str], key: u8) -> Vec<u8> {
     fetch.op11x(0x11, 0);
 
     let decrypt_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: class.clone(),
             proto: ProtoRef {
@@ -1442,6 +1552,7 @@ pub fn dexguard_reflect_sample(plaintexts: &[&str], key: u8) -> Vec<u8> {
         relocations: decrypt.relocations,
     };
     let fetch_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: class.clone(),
             proto: ProtoRef {
@@ -1459,6 +1570,7 @@ pub fn dexguard_reflect_sample(plaintexts: &[&str], key: u8) -> Vec<u8> {
         relocations: fetch.relocations,
     };
     let clinit_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: class.clone(),
             proto: ProtoRef {
@@ -1598,6 +1710,7 @@ pub fn dexguard_seeded_random_sample(plaintexts: &[&str]) -> Vec<u8> {
     decrypt.op11x(0x11, 0);
 
     let decrypt_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: class.clone(),
             proto: ProtoRef {
@@ -1615,6 +1728,7 @@ pub fn dexguard_seeded_random_sample(plaintexts: &[&str]) -> Vec<u8> {
         relocations: decrypt.relocations,
     };
     let clinit_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: class.clone(),
             proto: ProtoRef {
@@ -1734,6 +1848,7 @@ pub fn dexguard_native_key_sample(plaintexts: &[&str], key: u8) -> Vec<u8> {
     decrypt.op11x(0x11, 0);
 
     let native_key_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: native_key,
         access_flags: 0x0108,
         is_direct: true,
@@ -1744,6 +1859,7 @@ pub fn dexguard_native_key_sample(plaintexts: &[&str], key: u8) -> Vec<u8> {
         relocations: Vec::new(),
     };
     let decrypt_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: class.clone(),
             proto: ProtoRef {
@@ -1761,6 +1877,7 @@ pub fn dexguard_native_key_sample(plaintexts: &[&str], key: u8) -> Vec<u8> {
         relocations: decrypt.relocations,
     };
     let clinit_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: class.clone(),
             proto: ProtoRef {
@@ -1921,6 +2038,7 @@ pub fn dexguard_name_keyed_sample(plaintexts: &[&str]) -> Vec<u8> {
     decrypt.op11x(0x11, 0);
 
     let decrypt_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: class.clone(),
             proto: ProtoRef {
@@ -1938,6 +2056,7 @@ pub fn dexguard_name_keyed_sample(plaintexts: &[&str]) -> Vec<u8> {
         relocations: decrypt.relocations,
     };
     let clinit_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: class.clone(),
             proto: ProtoRef {
@@ -2033,6 +2152,7 @@ pub fn xor_bytearray_callsite_sample(pairs: &[(&[u8], u8)]) -> Vec<u8> {
     caller.op10x(0x0E);
 
     let decrypt_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: decrypt_ref,
         access_flags: 0x000A,
         is_direct: true,
@@ -2043,6 +2163,7 @@ pub fn xor_bytearray_callsite_sample(pairs: &[(&[u8], u8)]) -> Vec<u8> {
         relocations: decrypt.relocations,
     };
     let caller_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: class.clone(),
             proto: ProtoRef {
@@ -2145,6 +2266,7 @@ pub fn clinit_key_table_sample(ciphers: &[&[u8]]) -> Vec<u8> {
     caller.op10x(0x0E);
 
     let decrypt_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: decrypt_ref,
         access_flags: 0x000A,
         is_direct: true,
@@ -2155,6 +2277,7 @@ pub fn clinit_key_table_sample(ciphers: &[&[u8]]) -> Vec<u8> {
         relocations: decrypt.relocations,
     };
     let clinit_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: class.clone(),
             proto: ProtoRef {
@@ -2172,6 +2295,7 @@ pub fn clinit_key_table_sample(ciphers: &[&[u8]]) -> Vec<u8> {
         relocations: clinit.relocations,
     };
     let caller_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: class.clone(),
             proto: ProtoRef {
@@ -2283,6 +2407,7 @@ pub fn stringbuilder_decrypt_sample(pairs: &[(&[u8], u8)]) -> Vec<u8> {
     caller.op10x(0x0E);
 
     let decrypt_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: decrypt_ref,
         access_flags: 0x000A,
         is_direct: true,
@@ -2293,6 +2418,7 @@ pub fn stringbuilder_decrypt_sample(pairs: &[(&[u8], u8)]) -> Vec<u8> {
         relocations: decrypt.relocations,
     };
     let caller_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: class.clone(),
             proto: ProtoRef {
@@ -2391,6 +2517,7 @@ pub fn base64_xor_chain_sample(pairs: &[(&str, u8)]) -> Vec<u8> {
     caller.op10x(0x0E);
 
     let decrypt_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: decrypt_ref,
         access_flags: 0x000A,
         is_direct: true,
@@ -2401,6 +2528,7 @@ pub fn base64_xor_chain_sample(pairs: &[(&str, u8)]) -> Vec<u8> {
         relocations: decrypt.relocations,
     };
     let caller_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: class.clone(),
             proto: ProtoRef {
@@ -2531,6 +2659,7 @@ pub fn chained_double_decrypt_sample(cipher: &[u8], k1: u8, k2: u8) -> Vec<u8> {
     caller.op10x(0x0E);
 
     let stage1_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: stage1_ref,
         access_flags: 0x000A,
         is_direct: true,
@@ -2541,6 +2670,7 @@ pub fn chained_double_decrypt_sample(cipher: &[u8], k1: u8, k2: u8) -> Vec<u8> {
         relocations: stage1.relocations,
     };
     let stage2_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: stage2_ref,
         access_flags: 0x000A,
         is_direct: true,
@@ -2551,6 +2681,7 @@ pub fn chained_double_decrypt_sample(cipher: &[u8], k1: u8, k2: u8) -> Vec<u8> {
         relocations: stage2.relocations,
     };
     let caller_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: class.clone(),
             proto: ProtoRef {
@@ -2646,6 +2777,7 @@ pub fn native_call_wall_sample(cipher: &[u8]) -> Vec<u8> {
     caller.op10x(0x0E);
 
     let native_key_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: native_key,
         access_flags: 0x0108,
         is_direct: true,
@@ -2656,6 +2788,7 @@ pub fn native_call_wall_sample(cipher: &[u8]) -> Vec<u8> {
         relocations: Vec::new(),
     };
     let decrypt_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: decrypt_ref,
         access_flags: 0x000A,
         is_direct: true,
@@ -2666,6 +2799,7 @@ pub fn native_call_wall_sample(cipher: &[u8]) -> Vec<u8> {
         relocations: decrypt.relocations,
     };
     let caller_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: class.clone(),
             proto: ProtoRef {
@@ -2724,6 +2858,7 @@ pub fn filled_new_array_string_sample(bytes: [u8; 3]) -> Vec<u8> {
     demo.op11x(0x11, 4);
 
     let demo_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: class.clone(),
             proto: ProtoRef {
@@ -2767,6 +2902,7 @@ pub fn infinite_loop_sample() -> Vec<u8> {
     spin.goto_back(loop_start);
 
     let spin_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: class.clone(),
             proto: ProtoRef {
@@ -2811,6 +2947,7 @@ pub fn heap_bomb_sample() -> Vec<u8> {
     bomb.goto_back(loop_start);
 
     let bomb_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: class.clone(),
             proto: ProtoRef {

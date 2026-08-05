@@ -13,6 +13,7 @@ const ACC_STATIC_NATIVE: u32 = 0x0008 | 0x0100;
 
 fn native_method(name: &str, params: Vec<String>, ret: &str, flags: u32) -> EncodedMethod {
     EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: "Lcom/disrobe/fixture/NativeProbe;".to_owned(),
             proto: ProtoRef {

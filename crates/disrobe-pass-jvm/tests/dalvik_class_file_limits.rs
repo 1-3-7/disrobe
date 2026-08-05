@@ -45,6 +45,7 @@ fn ctor() -> EncodedMethod {
     units.extend(insn::fmt35c_one(0x70, 0, 0));
     units.extend(insn::fmt10x(0x0E));
     EncodedMethod {
+        tries: Vec::new(),
         method: init_ref(HOST),
         access_flags: 0x1,
         is_direct: true,
@@ -65,6 +66,7 @@ fn counter(name: &str, registers_size: u16) -> EncodedMethod {
     units.extend(insn::fmt22b(0xD8, 0, 0, 4));
     units.extend(insn::fmt11x(0x0F, 0));
     EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: descriptor_of(HOST),
             proto: ProtoRef {

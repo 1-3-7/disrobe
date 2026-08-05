@@ -2176,6 +2176,7 @@ pub(crate) fn partial_code_failure_fixture() -> (DexFile, Vec<u8>) {
     let methods: Vec<EncodedMethod> = ["a", "b"]
         .into_iter()
         .map(|name: &str| EncodedMethod {
+            tries: Vec::new(),
             method: MethodRef {
                 class: "Lcom/disrobe/Partial;".to_owned(),
                 proto: ProtoRef {

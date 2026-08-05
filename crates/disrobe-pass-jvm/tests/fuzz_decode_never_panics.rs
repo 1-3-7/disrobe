@@ -126,6 +126,7 @@ fn tiny_stub_loader_dex_for_fuzz() -> Vec<u8> {
         static_fields: Vec::new(),
         static_values: Vec::new(),
         direct_methods: vec![EncodedMethod {
+            tries: Vec::new(),
             method: MethodRef {
                 class: "Lcom/example/pack/StubApp;".to_owned(),
                 proto: ProtoRef {

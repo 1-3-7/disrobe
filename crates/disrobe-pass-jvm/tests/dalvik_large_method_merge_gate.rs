@@ -75,6 +75,7 @@ fn ctor(class: &str, super_class: &str) -> EncodedMethod {
     units.extend(insn::fmt35c_one(0x70, 0, 0));
     units.extend(insn::fmt10x(0x0E));
     EncodedMethod {
+        tries: Vec::new(),
         method: init_ref(class),
         access_flags: 0x1,
         is_direct: true,
@@ -94,6 +95,7 @@ fn tag_method() -> EncodedMethod {
     units.extend(insn::fmt11n(0x12, 0, 7));
     units.extend(insn::fmt11x(0x0F, 0));
     EncodedMethod {
+        tries: Vec::new(),
         method: tag_ref(),
         access_flags: 0x1,
         is_direct: false,
@@ -156,6 +158,7 @@ fn run_method() -> EncodedMethod {
     }
     units.extend(insn::fmt11x(0x0F, 0));
     EncodedMethod {
+        tries: Vec::new(),
         method: run_ref(),
         access_flags: 0x9,
         is_direct: true,

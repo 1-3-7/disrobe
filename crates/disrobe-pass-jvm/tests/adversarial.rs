@@ -138,6 +138,7 @@ fn build_minimal_dex() -> Vec<u8> {
         static_values: Vec::new(),
         direct_methods: Vec::new(),
         virtual_methods: vec![EncodedMethod {
+            tries: Vec::new(),
             method: MethodRef {
                 class: "Lcom/disrobe/A;".to_owned(),
                 proto: ProtoRef {
@@ -169,6 +170,7 @@ fn build_two_class_dex() -> Vec<u8> {
             static_values: Vec::new(),
             direct_methods: Vec::new(),
             virtual_methods: vec![EncodedMethod {
+                tries: Vec::new(),
                 method: MethodRef {
                     class: class.to_owned(),
                     proto: ProtoRef {
@@ -200,6 +202,7 @@ fn build_body_state_dex(access_flags: u32, insns: Vec<u16>) -> Vec<u8> {
         static_values: Vec::new(),
         direct_methods: Vec::new(),
         virtual_methods: vec![EncodedMethod {
+            tries: Vec::new(),
             method: MethodRef {
                 class: "Lcom/disrobe/Bodyless;".to_owned(),
                 proto: ProtoRef {
@@ -230,6 +233,7 @@ fn build_single_method_dex(insns: Vec<u16>) -> Vec<u8> {
         static_values: Vec::new(),
         direct_methods: Vec::new(),
         virtual_methods: vec![EncodedMethod {
+            tries: Vec::new(),
             method: MethodRef {
                 class: "Lcom/disrobe/Instructions;".to_owned(),
                 proto: ProtoRef {

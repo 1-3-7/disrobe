@@ -54,6 +54,7 @@ fn build_fill_method(
     insns[rel_lo_pos + 1] = ((rel >> 16) & 0xFFFF) as u16;
 
     EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: CLASS.to_owned(),
             proto: ProtoRef {
