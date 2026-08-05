@@ -171,7 +171,9 @@ impl Runner {
             };
         }
         let Some(baseline): Option<&PathBuf> = fx.baseline_path.as_ref() else {
-            return OracleVerdict::Recovered;
+            return OracleVerdict::Ungraded {
+                reason: crate::oracle::ungraded_differential_reason(&fx.fixture_id),
+            };
         };
         let Ok(clean): Result<String, std::io::Error> = std::fs::read_to_string(baseline) else {
             return OracleVerdict::NoRecovery {
@@ -181,6 +183,18 @@ impl Runner {
                 ),
             };
         };
+        if let Some(declared) = fx.baseline_sha256.as_ref() {
+            let actual: String = sha256_hex(clean.as_bytes());
+            if !actual.eq_ignore_ascii_case(declared) {
+                return OracleVerdict::PassError {
+                    error: format!(
+                        "clean-source baseline {} does not match the digest its manifest declares: \
+                         declared {declared}, found {actual}",
+                        baseline.display()
+                    ),
+                };
+            }
+        }
         let Some(text): Option<&String> = doc.recovered_text.as_ref() else {
             return OracleVerdict::NoRecovery {
                 note: "recovered capture is not utf-8, so it cannot be compared to the baseline"
@@ -598,6 +612,12 @@ fn run_chain_capture(
         recovered_text,
         error,
     })
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    let digest: [u8; 32] = sha2::Sha256::digest(bytes).into();
+    disrobe_core::codec::hex::encode(&digest)
 }
 
 fn baseline_anchors(clean: &str) -> Vec<String> {

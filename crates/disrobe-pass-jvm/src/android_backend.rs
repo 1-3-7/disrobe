@@ -77,6 +77,68 @@ pub fn decompile_dex(
 }
 
 fn decompile_dex_in_house(dex_bytes: &[u8]) -> Result<AndroidDecompileOutput> {
+    let translated: crate::dex2jar::Dex2JarResult = crate::dex2jar::translate_dex_bytes(dex_bytes)?;
+    let mut classes: BTreeMap<String, crate::classfile::ClassFile> = BTreeMap::new();
+    let mut unparsed: Vec<String> = Vec::new();
+    for (entry, bytes) in &translated.jar_entries {
+        match crate::parse_classfile(bytes) {
+            Ok(parsed) => {
+                classes.insert(entry.clone(), parsed);
+            }
+            Err(error) => unparsed.push(format!("{entry}: {error}")),
+        }
+    }
+    let sources: BTreeMap<String, String> = render_translated_classes(&classes);
+    if sources.is_empty() {
+        return decompile_dex_directly(dex_bytes);
+    }
+    let mut notes: Vec<String> = vec![format!(
+        "in-house Dalvik decompiler: {} of {} method bodies recovered, {} stubbed",
+        translated.bodies_recovered, translated.method_total, translated.stubbed_body_count
+    )];
+    if !unparsed.is_empty() {
+        notes.push(format!(
+            "{} translated class file(s) did not parse back and carry no recovered source: {}",
+            unparsed.len(),
+            unparsed.join("; ")
+        ));
+    }
+    Ok(AndroidDecompileOutput {
+        engine: AndroidDecompiler::InHouseDalvik,
+        class_count: sources.len(),
+        method_count: translated.method_total,
+        sources,
+        notes,
+    })
+}
+
+fn render_translated_classes(
+    classes: &BTreeMap<String, crate::classfile::ClassFile>,
+) -> BTreeMap<String, String> {
+    let mut sources: BTreeMap<String, String> = BTreeMap::new();
+    for (entry, class) in classes {
+        let stem: &str = entry.trim_end_matches(".class");
+        if stem.contains('$') {
+            continue;
+        }
+        let nested_prefix: String = format!("{stem}$");
+        let inners: BTreeMap<String, crate::classfile::ClassFile> = classes
+            .iter()
+            .filter(|(other, _): &(&String, &crate::classfile::ClassFile)| {
+                other.trim_end_matches(".class").starts_with(&nested_prefix)
+            })
+            .map(|(other, inner): (&String, &crate::classfile::ClassFile)| {
+                (other.clone(), inner.clone())
+            })
+            .collect();
+        let rendered: crate::decompile::DecompiledClass =
+            crate::decompile::decompile_class_with_inners(class, &inners);
+        sources.insert(format!("{stem}.java"), rendered.source);
+    }
+    sources
+}
+
+fn decompile_dex_directly(dex_bytes: &[u8]) -> Result<AndroidDecompileOutput> {
     let decompiled: DecompiledDex = decompile_dex_bytes(dex_bytes)?;
     let mut sources: BTreeMap<String, String> = decompiled.sources;
     if sources.is_empty() {

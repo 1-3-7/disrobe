@@ -67,7 +67,7 @@ The authoritative source is always `disrobe <command> --help`. This page is a co
 | `disrobe native graph <bin>` | Import/export table as Graphviz DOT. |
 | `disrobe query <bin\|.dr> <q...>` | Queryable IR: `functions`, `calls-to <sym>`, `xrefs-to <sym>`, `string-decoders`, `complexity-over <n>`, `capability <network\|crypto\|filesystem\|process>`. Accepts a raw binary or a Disasm- or Mir-rung `.dr` envelope. |
 | `disrobe capabilities <bin\|.dr>` | Rule engine over the IR, mapping behaviors to MITRE ATT&CK + MBC with per-match evidence. |
-| `disrobe taint <input>` | Track a value from source calls to sink calls across the normalized IR (native / wasm / JVM / Dalvik / `.dr`). `--source <SYM>` / `--sink <SYM>` override the built-in source/sink sets (repeatable). |
+| `disrobe taint <input>` | Track a value from source calls to sink calls across the normalized IR (native / wasm / JVM / Dalvik / CIL / ABC / Ruby / Lua / BEAM / `.pyc` / `.dr`). `--source <SYM>` / `--sink <SYM>` override the built-in source/sink sets (repeatable). With `--cfg`, `--dfg` or a pack that names them it also writes the control-flow and data-flow metadata categories; see [metadata sidecar](../llm-sidecar.md#control-flow-and-data-flow). |
 
 ## Other languages
 

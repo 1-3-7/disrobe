@@ -59,7 +59,7 @@ required-features = ["full"]
 
 [features]
 default = ["full"]
-full = ["server", "chain", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle", "scriptlang", "nativelang", "nir-lift", "devirt"]
+full = ["server", "chain", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle", "scriptlang", "nativelang", "nir-lift", "devirt", "irsummary"]
 server = ["dep:axum", "dep:tower-http", "dep:utoipa", "dep:lsp-server", "dep:lsp-types", "dep:tokio-util", "dep:tonic", "dep:tonic-health", "dep:tonic-reflection", "dep:prost", "dep:tonic-build", "dep:protoc-bin-vendored"]
 
 py = []
@@ -67,6 +67,7 @@ native = []
 binfmt = []
 
 nir-lift = ["dep:disrobe-nir-lift"]
+irsummary = ["dep:disrobe-irsummary", "nir-lift"]
 devirt = ["dep:disrobe-mba", "disrobe-mba/smt-solver", "nir-lift"]
 js = ["dep:disrobe-pass-js-deob", "disrobe-pass-js-deob/chain", "disrobe-passes?/js", "disrobe-mcp/js"]
 wasm = ["dep:disrobe-pass-wasm-deob", "nir-lift", "disrobe-nir-lift/wasm", "disrobe-passes?/wasm", "disrobe-mcp/wasm"]
@@ -164,6 +165,7 @@ disrobe-py-marshal = { workspace = true }
 disrobe-nir = { workspace = true }
 disrobe-similarity = { workspace = true }
 disrobe-nir-lift = { workspace = true, optional = true }
+disrobe-irsummary = { workspace = true, features = ["llm-metadata"], optional = true }
 disrobe-mba = { workspace = true, optional = true }
 disrobe-typerec = { workspace = true }
 disrobe-taint = { workspace = true }

@@ -1,5 +1,5 @@
 {
-  "descriptor_count": 28,
+  "descriptor_count": 29,
   "descriptors": [
     {
       "ci_attested": true,
@@ -7,16 +7,16 @@
       "comparison_basis": "no comparison: at least one declared leg has a side the compiler never type-checked",
       "competitors": [
         {
-          "clean": 22,
-          "emitted": 132,
+          "clean": 45,
+          "emitted": 131,
           "is_disrobe": true,
           "leg": "dex",
           "metric": "recompile-clean main-class methods (clean / emitted)",
           "name": "disrobe (in-house Dalvik, DEX input)",
-          "result": "22 clean / 132 emitted (16.7%)",
+          "result": "45 clean / 131 emitted (34.4%)",
           "role": "disrobe",
           "status": "ok",
-          "value": 16.666666666666668,
+          "value": 34.35114503816794,
           "version": "n/a (in-process)"
         },
         {
@@ -67,7 +67,7 @@
       "floor": null,
       "floor_holds": true,
       "id": "apk-jadx-cfr",
-      "measured": "Android DEX: `disrobe` 22 / 132 (16.7%) vs JADX not certified (130 methods emitted; the compiler stopped on line 619); JVM classfile: `disrobe` 131 / 131 (100.0%) vs CFR not certified (106 methods emitted; the compiler stopped on line 173)",
+      "measured": "Android DEX: `disrobe` 45 / 131 (34.4%) vs JADX not certified (130 methods emitted; the compiler stopped on line 619); JVM classfile: `disrobe` 131 / 131 (100.0%) vs CFR not certified (106 methods emitted; the compiler stopped on line 173)",
       "oracle_strength": "recompile-only",
       "pairs": [
         {
@@ -82,10 +82,10 @@
           },
           "disrobe": {
             "certified": true,
-            "clean": 22,
-            "emitted": 132,
+            "clean": 45,
+            "emitted": 131,
             "name": "disrobe (in-house Dalvik, DEX input)",
-            "value": 16.666666666666668,
+            "value": 34.35114503816794,
             "version": "n/a (in-process)"
           },
           "id": "dex",
@@ -386,6 +386,22 @@
     },
     {
       "ci_attested": true,
+      "claim": "across the 316 committed mixed-boolean-arithmetic cases, every answer disrobe returns agrees with the held-out original, and a case whose simplification exceeds a 2 second per-entry budget is named as a refusal rather than counted either way. The reference run recorded 254 answers and 62 refusals.",
+      "comparison_basis": null,
+      "competitors": [],
+      "disrobe_leads": null,
+      "ecosystem": "mba",
+      "external_oracle": "the originals are held out of the input the pass receives. 100 of the 316 cases were produced by MBA-Obfuscator (ICICS 2021, MIT, pinned at commit 8574ef8) run over integer kernels this repository chose, so their obfuscated form is third-party and the original is the pre-transform kernel. The other 216 come from a forward rewriter under evidence/generators/mba that links no disrobe crate at all, which the workspace health check proves over the resolved dependency graph. Grading is a behavioural differential against check vectors the generator computed with its own evaluator, so a wrong answer cannot agree with a value the recovery path produced.",
+      "floor": null,
+      "floor_holds": null,
+      "id": "mba-groundtruth-corpus",
+      "measured": "316 corpus entries with a held-out original",
+      "oracle_strength": "coverage-self-reported",
+      "pairs": [],
+      "reproduce": "cargo test -p disrobe-mba --test evidence_corpus_gate"
+    },
+    {
+      "ci_attested": true,
       "claim": "disrobe reaches 9 of the 9 states the dispatchers of the two committed ollvm-16 -fla functions can select, and reports a named reason for any state it does not reach rather than dropping it.",
       "comparison_basis": null,
       "competitors": [],
@@ -586,6 +602,7 @@
     "hermes",
     "jvm",
     "lua",
+    "mba",
     "native",
     "pickle",
     "pyarmor",

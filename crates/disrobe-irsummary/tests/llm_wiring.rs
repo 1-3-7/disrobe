@@ -41,16 +41,47 @@ fn cfg_flows_through_the_emit_metadata_envelope() {
         Some("disrobe-irsummary")
     );
     let value: &Json = envelope.get("value").expect("cfg value present");
+    assert!(
+        value.get("function").and_then(Json::as_str).is_some(),
+        "the bundle renderer keys every control-flow row on `function`, so a value without it \
+         renders as no control flow at all: {value}"
+    );
+    let blocks: &Vec<Json> = value
+        .get("blocks")
+        .and_then(Json::as_array)
+        .expect("blocks array");
+    assert!(!blocks.is_empty(), "the lifted module has basic blocks");
+    let edges: &Vec<Json> = value
+        .get("edges")
+        .and_then(Json::as_array)
+        .expect("edges array");
+    assert!(
+        !edges.is_empty(),
+        "the branch in this module produces control-flow edges: {value}"
+    );
+    for edge in edges {
+        let from: u64 = edge.get("from").and_then(Json::as_u64).expect("edge from");
+        let to: u64 = edge.get("to").and_then(Json::as_u64).expect("edge to");
+        assert!(
+            from < blocks.len() as u64 && to < blocks.len() as u64,
+            "every edge endpoint indexes a block that is present: {edge}"
+        );
+    }
     let functions: &Vec<Json> = value
         .get("functions")
         .and_then(Json::as_array)
         .expect("functions array");
     assert!(!functions.is_empty(), "the lifted module has a function");
-    let has_block: bool = functions
+    let labelled: usize = blocks
         .iter()
-        .filter_map(|f: &Json| f.get("blocks").and_then(Json::as_array))
-        .any(|b: &Vec<Json>| !b.is_empty());
-    assert!(has_block, "each function carries its basic blocks");
+        .filter_map(|b: &Json| b.get("label").and_then(Json::as_str))
+        .count();
+    assert_eq!(
+        labelled,
+        blocks.len(),
+        "every block names the function it belongs to, which is how a consumer regroups the \
+         module graph per function"
+    );
 }
 
 #[test]
@@ -66,10 +97,33 @@ fn dfg_flows_through_the_emit_metadata_envelope() {
         Some(true)
     );
     let value: &Json = envelope.get("value").expect("dfg value present");
+    assert!(value.get("function").and_then(Json::as_str).is_some());
+    let defs: &Vec<Json> = value
+        .get("defs")
+        .and_then(Json::as_array)
+        .expect("defs array");
+    let uses: &Vec<Json> = value
+        .get("uses")
+        .and_then(Json::as_array)
+        .expect("uses array");
     assert!(
-        value.get("functions").and_then(Json::as_array).is_some(),
-        "dfg value is the serialized summary"
+        !defs.is_empty(),
+        "the i32.store in this module is a memory write: {value}"
     );
+    let def_sites: Vec<u64> = defs
+        .iter()
+        .filter_map(|d: &Json| d.get("pc").and_then(Json::as_u64))
+        .collect();
+    for entry in uses {
+        let def_pc: u64 = entry
+            .get("def_pc")
+            .and_then(Json::as_u64)
+            .expect("every use names the def that reaches it");
+        assert!(
+            def_sites.contains(&def_pc),
+            "a use points at a def that the same value reports: {entry}"
+        );
+    }
 }
 
 #[test]

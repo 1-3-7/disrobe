@@ -237,14 +237,13 @@ fn maybe_emit_llm_deob(
         "surface",
         duration_ms,
     );
-    let outputs: llm_cli::LlmOutputs = llm_cli::write_llm_bundle(
-        llm_flags,
-        &selection,
-        input,
-        bytes,
-        out_path,
-        vec![(step, envelope_map)],
-    )?;
+    let mut passes: Vec<(disrobe_llm_metadata::PipelineStep, serde_json::Value)> =
+        vec![(step, envelope_map)];
+    passes.extend(crate::cli::ir_metadata::pass_for_bytes(
+        &selection, input, bytes,
+    ));
+    let outputs: llm_cli::LlmOutputs =
+        llm_cli::write_llm_bundle(llm_flags, &selection, input, bytes, out_path, passes)?;
     Ok(Some(outputs))
 }
 

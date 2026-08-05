@@ -133,6 +133,8 @@ struct RecoveryBar {
     delivered_label: Option<String>,
     #[serde(default)]
     denominator_label: Option<String>,
+    #[serde(default)]
+    unit: Option<String>,
     source: String,
 }
 
@@ -1234,7 +1236,10 @@ fn format_measured(group: &RecoveryGroup, bar: &RecoveryBar) -> Result<String> {
             || "n/a".to_owned(),
             |v: f64| {
                 let amount: i64 = v as i64;
-                let unit: &str = if amount == 1 { "family" } else { "families" };
+                let unit: &str =
+                    bar.unit
+                        .as_deref()
+                        .unwrap_or(if amount == 1 { "family" } else { "families" });
                 format!("{amount} {unit}")
             },
         ),
@@ -1887,6 +1892,7 @@ mod tests {
             delivered: None,
             delivered_label: None,
             denominator_label: None,
+            unit: None,
             source: "s".to_owned(),
         }
     }
@@ -2491,6 +2497,13 @@ mod tests {
         };
         assert_eq!(format_measured(&count, &bar(Some(1.0)))?, "1 family");
         assert_eq!(format_measured(&count, &bar(Some(2.0)))?, "2 families");
+
+        let mut counted_unit: RecoveryBar = bar(Some(316.0));
+        counted_unit.unit = Some("corpus entries with a held-out original".to_owned());
+        assert_eq!(
+            format_measured(&count, &counted_unit)?,
+            "316 corpus entries with a held-out original"
+        );
 
         let pair: RecoveryGroup = RecoveryGroup {
             heading: "h".to_owned(),

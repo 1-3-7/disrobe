@@ -1826,7 +1826,7 @@ fn main() -> miette::Result<()> {
             input,
             source,
             sink,
-        } => taint::run(input, source, sink, fmt),
+        } => taint::run(input, source, sink, fmt, &llm_flags),
         Cmd::Vulnmatch { input } => vulnmatch::run(input, fmt),
         #[cfg(feature = "chain")]
         Cmd::Auto {

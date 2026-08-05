@@ -19,6 +19,7 @@ pub struct OracleFixture {
     pub fixture_id: String,
     pub input_rel: String,
     pub baseline_rel: Option<String>,
+    pub baseline_sha256: Option<String>,
     pub expected_detection: Option<String>,
     pub byte_identical_floor_bp: Option<u32>,
 }
@@ -110,6 +111,7 @@ impl ManifestIndex {
                     .as_ref()
                     .map(|r: &String| join_rel(corpus_root, r)),
                 baseline_rel: f.baseline_rel.clone(),
+                baseline_sha256: f.baseline_sha256.clone(),
                 expected_detection: f.expected_detection.clone(),
                 byte_identical_floor_bp: f.byte_identical_floor_bp,
             })
@@ -202,6 +204,7 @@ fn push_packer_run(packer_name: &str, run: &Value, out: &mut Vec<OracleFixture>)
         pass_under_test: "native.packer-unpack".to_owned(),
         fixture_id,
         input_rel: packed.to_owned(),
+        baseline_sha256: None,
         baseline_rel: Some(baseline.to_owned()),
         expected_detection: None,
         byte_identical_floor_bp: Some(0),
@@ -252,12 +255,17 @@ fn push_obfuscator_entry(tool: &str, name: &str, entry: &Value, out: &mut Vec<Or
         .get("clean_source")
         .and_then(Value::as_str)
         .map(str::to_owned);
+    let baseline_sha256: Option<String> = entry
+        .get("clean_sha256")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     out.push(OracleFixture {
         oracle: OracleKind::DifferentialVsSource,
         pass_under_test: pass.to_owned(),
         fixture_id: format!("{tool}:{name}"),
         input_rel: path.to_owned(),
         baseline_rel,
+        baseline_sha256,
         expected_detection: None,
         byte_identical_floor_bp: None,
     });
@@ -272,6 +280,7 @@ fn extract_detection_manifest(category: &str, value: &Value, out: &mut Vec<Oracl
             pass_under_test: expected_pass.to_owned(),
             fixture_id: format!("{category}:{id}"),
             input_rel: format!("{path_prefix}{path}"),
+            baseline_sha256: None,
             baseline_rel: None,
             expected_detection: Some(expected_pass.to_owned()),
             byte_identical_floor_bp: None,
@@ -362,6 +371,7 @@ fn discover_recompile_pyc(corpus_root: &Path, out: &mut Vec<OracleFixture>) {
             pass_under_test: "py.decompile".to_owned(),
             fixture_id: format!("decompile:{id}"),
             input_rel: rel_str,
+            baseline_sha256: None,
             baseline_rel: None,
             expected_detection: None,
             byte_identical_floor_bp: None,
@@ -424,6 +434,7 @@ fn discover_packed_pairs(corpus_root: &Path, out: &mut Vec<OracleFixture>) {
             pass_under_test: "native.packer-unpack".to_owned(),
             fixture_id: format!("{packer}:{}", sanitize(stem)),
             input_rel: format!("corpus/{}", packed_rel.to_string_lossy().replace('\\', "/")),
+            baseline_sha256: None,
             baseline_rel: Some(format!(
                 "corpus/{}",
                 base_rel.to_string_lossy().replace('\\', "/")

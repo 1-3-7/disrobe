@@ -1,0 +1,24 @@
+[package]
+name = "disrobe-evidence-mba"
+description = "Ground-truth corpus generator for mixed-boolean-arithmetic recovery. Holds its own expression model, evaluator, parser and forward obfuscator, links no recovery crate, and emits obfuscated cases separately from the originals that grade them."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "disrobe-evidence-mba"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

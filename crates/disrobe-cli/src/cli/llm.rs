@@ -196,23 +196,8 @@ impl LlmFlags {
             || !self.metadata_include.is_empty()
     }
 
-    pub(crate) fn to_selection(&self) -> miette::Result<Option<MetadataSelection>> {
-        if !self.is_active() {
-            return Ok(None);
-        }
-
-        let mut builder: SelectionBuilder = SelectionBuilder::new();
-        if self.pack_4 || self.llm || self.llm_briefs {
-            builder = builder.pack(Pack::Pack4);
-        } else if self.pack_3 {
-            builder = builder.pack(Pack::Pack3);
-        } else if self.pack_2 {
-            builder = builder.pack(Pack::Pack2);
-        } else if self.pack_1 {
-            builder = builder.pack(Pack::Pack1);
-        }
-
-        let category_flag_map: [(bool, Category); 18] = [
+    pub(crate) const fn flag_categories(&self) -> [(bool, Category); 18] {
+        [
             (self.ast, Category::Ast),
             (self.disasm, Category::Disasm),
             (self.cfg, Category::Cfg),
@@ -231,8 +216,26 @@ impl LlmFlags {
             (self.confidence, Category::Confidence),
             (self.opcode_coverage, Category::OpcodeCoverage),
             (self.pii_map, Category::PiiMap),
-        ];
-        for (set, cat) in category_flag_map {
+        ]
+    }
+
+    pub(crate) fn to_selection(&self) -> miette::Result<Option<MetadataSelection>> {
+        if !self.is_active() {
+            return Ok(None);
+        }
+
+        let mut builder: SelectionBuilder = SelectionBuilder::new();
+        if self.pack_4 || self.llm || self.llm_briefs {
+            builder = builder.pack(Pack::Pack4);
+        } else if self.pack_3 {
+            builder = builder.pack(Pack::Pack3);
+        } else if self.pack_2 {
+            builder = builder.pack(Pack::Pack2);
+        } else if self.pack_1 {
+            builder = builder.pack(Pack::Pack1);
+        }
+
+        for (set, cat) in self.flag_categories() {
             if set {
                 builder = builder.category(cat);
             }

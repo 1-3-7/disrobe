@@ -54,6 +54,7 @@ pub(crate) mod init;
 pub(crate) mod install;
 pub(crate) mod install_deps;
 pub(crate) mod ioc;
+pub(crate) mod ir_metadata;
 #[cfg(feature = "js")]
 pub(crate) mod js;
 #[cfg(feature = "jvm")]
@@ -64,10 +65,13 @@ pub(crate) mod lua;
 #[cfg(feature = "swift")]
 pub(crate) mod macho;
 pub(crate) mod man;
+#[cfg(test)]
+mod metadata_coverage;
 #[cfg(feature = "mobile")]
 pub(crate) mod mobile;
 pub(crate) mod native;
 pub(crate) mod native_match;
+pub(crate) mod nir_source;
 pub(crate) mod nuitka;
 pub(crate) mod output;
 pub(crate) mod pass_registry;

@@ -28,7 +28,7 @@ serde_json = { workspace = true }
 llm-metadata = ["dep:disrobe-llm-metadata"]
 
 [dev-dependencies]
-disrobe-nir-lift = { workspace = true }
+disrobe-nir-lift = { workspace = true, features = ["wasm"] }
 disrobe-pass-native = { workspace = true }
 iced-x86 = { workspace = true, features = ["code_asm"] }
 object = { workspace = true }

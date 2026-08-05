@@ -16,6 +16,7 @@ pub struct OracleKindRow {
     pub lossy: u32,
     pub no_recovery: u32,
     pub pass_error: u32,
+    pub ungraded: u32,
     pub ceiling_residual_bp: u32,
 }
 
@@ -33,6 +34,7 @@ impl OracleKindRow {
             lossy: 0,
             no_recovery: 0,
             pass_error: 0,
+            ungraded: 0,
             ceiling_residual_bp: 0,
         }
     }
@@ -61,6 +63,7 @@ impl OracleKindRow {
             OracleVerdict::ToolMissing { .. } => self.tool_missing += 1,
             OracleVerdict::FixtureAbsent { .. } => self.fixture_absent += 1,
             OracleVerdict::PassError { .. } => self.pass_error += 1,
+            OracleVerdict::Ungraded { .. } => self.ungraded += 1,
         }
     }
 
