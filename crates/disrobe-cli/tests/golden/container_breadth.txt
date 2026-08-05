@@ -23,6 +23,7 @@ par2	extract	corpus/binfmt/par2/recovery.par2
 vhd	extract	corpus/binfmt/disk/fat-dynamic.vhd
 vhdx	extract	corpus/binfmt/disk/fat.vhdx
 wim	extract	corpus/binfmt/wim/files_lzx.wim
+xz	extract	corpus/r/objects/altrep_intseq.v2.xz.rds
 gz	extract	corpus/binfmt/bare-stream/payload-multi.gz
 bz2	extract	corpus/binfmt/bare-stream/payload.bz2
 zst	extract	corpus/binfmt/bare-stream/payload.zst

@@ -42,6 +42,7 @@ pub(crate) mod glob;
 pub(crate) mod globals;
 #[cfg(feature = "go")]
 pub(crate) mod go;
+#[cfg(feature = "server")]
 pub(crate) mod grpc;
 #[cfg(feature = "chain")]
 pub(crate) mod guard;
@@ -93,6 +94,7 @@ pub(crate) mod ruby;
 pub(crate) mod sarif;
 pub(crate) mod scan;
 pub(crate) mod self_update;
+#[cfg(feature = "server")]
 pub(crate) mod serve;
 #[cfg(feature = "shell")]
 pub(crate) mod shell;

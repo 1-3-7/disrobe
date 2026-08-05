@@ -33,7 +33,6 @@ pub(crate) struct EffectiveGlobals {
     pub(crate) json: bool,
     pub(crate) ndjson: bool,
     pub(crate) sarif: bool,
-    pub(crate) seed: Option<u64>,
     pub(crate) in_place: bool,
     pub(crate) force: bool,
     pub(crate) threads: Option<u32>,
@@ -52,7 +51,6 @@ pub(crate) struct CliGlobalsSnapshot {
     pub(crate) json: bool,
     pub(crate) ndjson: bool,
     pub(crate) sarif: bool,
-    pub(crate) seed: Option<u64>,
     pub(crate) in_place: bool,
     pub(crate) force: bool,
     pub(crate) threads: Option<u32>,
@@ -93,7 +91,6 @@ pub(crate) fn merge_globals(
         json: merge_bool(matches, "json", cli.json, cfg.output.json),
         ndjson: merge_bool(matches, "ndjson", cli.ndjson, cfg.output.ndjson),
         sarif: merge_bool(matches, "sarif", cli.sarif, cfg.output.sarif),
-        seed: merge_opt(matches, "seed", cli.seed, cfg.execution.seed),
         in_place: merge_bool(matches, "in_place", cli.in_place, cfg.execution.in_place),
         force: merge_bool(matches, "force", cli.force, cfg.execution.force),
         threads: merge_opt(matches, "threads", cli.threads, cfg.execution.threads),
@@ -125,11 +122,6 @@ mod tests {
             .arg(Arg::new("ndjson").long("ndjson").action(ArgAction::SetTrue))
             .arg(Arg::new("sarif").long("sarif").action(ArgAction::SetTrue))
             .arg(
-                Arg::new("seed")
-                    .long("seed")
-                    .value_parser(clap::value_parser!(u64)),
-            )
-            .arg(
                 Arg::new("in_place")
                     .long("in-place")
                     .action(ArgAction::SetTrue),
@@ -160,7 +152,6 @@ mod tests {
             json: matches.get_flag("json"),
             ndjson: matches.get_flag("ndjson"),
             sarif: matches.get_flag("sarif"),
-            seed: matches.get_one::<u64>("seed").copied(),
             in_place: matches.get_flag("in_place"),
             force: matches.get_flag("force"),
             threads: matches.get_one::<u32>("threads").copied(),

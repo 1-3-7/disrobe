@@ -102,7 +102,6 @@ pub(crate) struct ExecutionConfig {
     pub(crate) no_cache: Option<bool>,
     pub(crate) cache_dir: Option<PathBuf>,
     pub(crate) dry_run: Option<bool>,
-    pub(crate) seed: Option<u64>,
     pub(crate) max_depth: Option<u8>,
 }
 
@@ -231,8 +230,6 @@ const TEMPLATE: &str = r#"# .disrobe.toml - disrobe project configuration
 # Directory for the content-addressed .dr envelope cache (defaults to the OS cache dir).
 # cache_dir = "/var/cache/disrobe"
 # dry_run = false
-# RNG seed for non-deterministic backends.
-# seed = 42
 # Default maximum chain depth for `auto`.
 # max_depth = 8
 
@@ -360,7 +357,6 @@ fn run_show(explicit: Option<&Path>, fmt: OutputFormat) -> miette::Result<()> {
                 .map(|p: &PathBuf| p.display().to_string()),
         );
         print_opt("    dry_run", c.execution.dry_run.map(bool_label));
-        print_opt("    seed", c.execution.seed.map(|v: u64| v.to_string()));
         print_opt(
             "    max_depth",
             c.execution.max_depth.map(|v: u8| v.to_string()),
