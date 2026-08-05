@@ -1,6 +1,6 @@
-use std::ops::Range;
-
 use regex::{Captures, Regex};
+
+use crate::scan_utils::replace_in_code;
 
 const MAX_PASSES: usize = 16;
 
@@ -19,82 +19,6 @@ pub(super) fn fold_binary(source: &str) -> (String, usize) {
         }
     }
     (current, total)
-}
-
-fn replace_in_code(
-    source: &str,
-    re: &Regex,
-    mut fold: impl FnMut(&Captures<'_>) -> Option<String>,
-) -> (String, usize) {
-    let skips: Vec<Range<usize>> = skip_ranges(source);
-    let mut out: String = String::with_capacity(source.len());
-    let mut last: usize = 0;
-    let mut count: usize = 0;
-    for caps in re.captures_iter(source) {
-        let Some(whole): Option<regex::Match<'_>> = caps.get(0) else {
-            continue;
-        };
-        if overlaps_skip(&skips, whole.start(), whole.end()) {
-            continue;
-        }
-        let Some(replacement): Option<String> = fold(&caps) else {
-            continue;
-        };
-        out.push_str(&source[last..whole.start()]);
-        out.push_str(&replacement);
-        last = whole.end();
-        count += 1;
-    }
-    out.push_str(&source[last..]);
-    (out, count)
-}
-
-fn overlaps_skip(skips: &[Range<usize>], start: usize, end: usize) -> bool {
-    skips.iter().any(|r| start < r.end && r.start < end)
-}
-
-fn skip_ranges(source: &str) -> Vec<Range<usize>> {
-    let bytes: &[u8] = source.as_bytes();
-    let mut ranges: Vec<Range<usize>> = Vec::new();
-    let mut i: usize = 0;
-    let mut prev_significant: u8 = b';';
-    while i < bytes.len() {
-        let b: u8 = bytes[i];
-        match b {
-            b'\'' | b'"' | b'`' => {
-                let end: usize = skip_quoted(bytes, i, b);
-                ranges.push(i..end);
-                prev_significant = b;
-                i = end;
-                continue;
-            }
-            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
-                let end: usize = skip_line_comment(bytes, i);
-                ranges.push(i..end);
-                i = end;
-                continue;
-            }
-            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
-                let end: usize = skip_block_comment(bytes, i);
-                ranges.push(i..end);
-                i = end;
-                continue;
-            }
-            b'/' if regex_allowed(prev_significant) => {
-                let end: usize = skip_regex(bytes, i);
-                ranges.push(i..end);
-                prev_significant = b'/';
-                i = end;
-                continue;
-            }
-            _ => {}
-        }
-        if !matches!(b, b' ' | b'\t' | b'\r' | b'\n') {
-            prev_significant = b;
-        }
-        i += 1;
-    }
-    ranges
 }
 
 fn fold_mul_div(source: &str) -> (String, usize) {
@@ -221,11 +145,20 @@ pub(super) fn decimalize_radix_literals(source: &str) -> (String, usize) {
             i = end;
             continue;
         }
-        out.push(b as char);
-        if !matches!(b, b' ' | b'\t' | b'\r' | b'\n') {
-            prev_significant = b;
+        if b.is_ascii() {
+            out.push(b as char);
+            if !matches!(b, b' ' | b'\t' | b'\r' | b'\n') {
+                prev_significant = b;
+            }
+            i += 1;
+            continue;
         }
-        i += 1;
+        let Some(wide): Option<char> = source[i..].chars().next() else {
+            break;
+        };
+        out.push(wide);
+        prev_significant = b;
+        i += wide.len_utf8();
     }
     (out, count)
 }
@@ -261,7 +194,7 @@ const fn is_radix_digit(b: u8, radix: u32) -> bool {
 }
 
 const fn is_ident_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || !b.is_ascii()
 }
 
 const fn regex_allowed(prev: u8) -> bool {
@@ -484,6 +417,45 @@ mod tests {
         let (out, n): (String, usize) = reverse_function_call("var k = f.call(obj, 1, 2);");
         assert_eq!(out, "var k = f.call(obj, 1, 2);");
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn decimalize_preserves_non_ascii_identifiers_and_literals() {
+        for source in [
+            "var \u{e9} = 1;",
+            "var caf\u{e9} = 'caf\u{e9}';",
+            "var astral = '\u{1d54f}\u{3c0}';",
+            "var mixed = { '\u{4e2d}\u{6587}': 0x10 };",
+        ] {
+            let (out, _): (String, usize) = decimalize_radix_literals(source);
+            assert_eq!(
+                out.chars().filter(|c: &char| !c.is_ascii()).count(),
+                source.chars().filter(|c: &char| !c.is_ascii()).count(),
+                "{source}: non-ascii characters must survive byte-oriented scanning intact, not \
+                 re-encode into mojibake that grows on every fixpoint pass"
+            );
+        }
+        let (decimalized, count): (String, usize) =
+            decimalize_radix_literals("var caf\u{e9} = 0x10;");
+        assert_eq!(decimalized, "var caf\u{e9} = 16;");
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn decimalize_leaves_a_radix_suffixed_identifier_untouched() {
+        let (out, count): (String, usize) = decimalize_radix_literals("var caf\u{e9}0x10 = 1;");
+        assert_eq!(out, "var caf\u{e9}0x10 = 1;");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn unminify_is_idempotent_on_non_ascii_source() {
+        let source: &str = "var caf\u{e9} = '\u{3c0}\u{2248}3.14';\n";
+        let (once, _): (String, crate::unminify::UnminifyStats) = crate::unminify::unminify(source);
+        let (twice, _): (String, crate::unminify::UnminifyStats) = crate::unminify::unminify(&once);
+        assert_eq!(once, twice);
+        assert!(once.contains("caf\u{e9}"));
+        assert!(once.len() <= source.len() + 1);
     }
 
     #[test]

@@ -1500,7 +1500,7 @@ impl Interp {
             }
             (Value::Str(s), Some(k)) => {
                 if k == "length" {
-                    return Value::Num(s.chars().count() as f64);
+                    return Value::Num(s.encode_utf16().count() as f64);
                 }
                 self.member_sym(&obj_val, property, ctx)
             }
@@ -1774,6 +1774,9 @@ impl Interp {
                 };
                 let sep: String = sep?;
                 let parts: Vec<Value> = if sep.is_empty() {
+                    if s.chars().any(|c: char| c.len_utf16() != 1) {
+                        return None;
+                    }
                     s.chars().map(|c: char| Value::Str(c.to_string())).collect()
                 } else {
                     s.split(&sep)
@@ -1788,8 +1791,8 @@ impl Interp {
                     .and_then(Value::as_concrete_num)
                     .unwrap_or(f64::NAN);
                 let code: Option<u32> = js_string_index(raw_idx)
-                    .and_then(|idx: usize| s.chars().nth(idx))
-                    .map(|c: char| c as u32);
+                    .and_then(|idx: usize| s.encode_utf16().nth(idx))
+                    .map(u32::from);
                 Some(code.map_or(Value::Num(f64::NAN), |c| Value::Num(f64::from(c))))
             }
             _ => None,
@@ -2772,6 +2775,33 @@ mod tests {
             panic!("array binding missing");
         };
         assert!(items.borrow().is_empty());
+    }
+
+    #[test]
+    fn string_length_and_char_code_at_count_utf16_code_units() {
+        let astral: &str = "\u{1d54f}b";
+        let callee: Expr = Expr::Member {
+            object: Box::new(Expr::Str(astral.to_owned())),
+            property: Box::new(Expr::Str("charCodeAt".to_owned())),
+            computed: false,
+        };
+        for (index, want) in [
+            (0.0_f64, f64::from(0xd835_u32)),
+            (1.0, f64::from(0xdd4f_u32)),
+            (2.0, 98.0),
+        ] {
+            let value: Value = Interp::builtin_call(
+                &callee,
+                Some(&Value::Str(astral.to_owned())),
+                &[Value::Num(index)],
+            )
+            .expect("charCodeAt folds over a concrete string");
+            let Value::Num(got): Value = value else {
+                panic!("charCodeAt({index}) must fold to a number");
+            };
+            assert!((got - want).abs() < f64::EPSILON, "charCodeAt({index})");
+        }
+        assert_eq!(astral.encode_utf16().count(), 3);
     }
 
     #[test]

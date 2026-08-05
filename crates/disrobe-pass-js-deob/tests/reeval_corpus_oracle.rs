@@ -14,11 +14,13 @@ use common::{
 use disrobe_core::scratch::ScratchDir;
 use disrobe_core::subprocess::{CapturedOutput, wait_with_output_timeout};
 use disrobe_pass_js_deob::{
-    DeobOptions, Detection, JsObfuscator, OBFUSCATOR_IO_MAX_PASS_CEILING, ObfuscatorIoControl,
-    ObfuscatorIoOptions, ObfuscatorIoOutput, deobfuscate_all, detect, obfuscator_io_deobfuscate,
+    DeobOptions, DeobOutput, Detection, JsObfuscator, OBFUSCATOR_IO_MAX_PASS_CEILING,
+    ObfuscatorIoControl, ObfuscatorIoOptions, ObfuscatorIoOutput, deobfuscate_all, detect,
+    obfuscator_io_deobfuscate,
 };
 
 const DIFFERENTIAL_FLOOR: usize = 37;
+const SAMPLE_COUNT: usize = 41;
 const EVAL_TIMEOUT: Duration = Duration::from_secs(12);
 const HIGH_CLEAN: &str = "src/javascript/obfuscator-io-high.js";
 const REQUESTED_ROOTS: &[&str] = &["js/javascript-obfuscator", "js/jsconfuser"];
@@ -26,6 +28,640 @@ const WORKER_REQUEST_ENV: &str = "DISROBE_JS_BOA_ORACLE_REQUEST";
 const WORKER_RESPONSE_ENV: &str = "DISROBE_JS_BOA_ORACLE_RESPONSE";
 const WORKER_CAPTURE_LIMIT: usize = 256 * 1024;
 const WORKER_RESPONSE_LIMIT: u64 = 32 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum RewriterFamily {
+    StringArrayDecode,
+    LiteralEncoding,
+    ProxyObjectInlining,
+    ControlFlowFlattening,
+    OpaquePredicates,
+    SelfDefendingStrip,
+}
+
+const NAMED_FAMILIES: &[RewriterFamily] = &[
+    RewriterFamily::ProxyObjectInlining,
+    RewriterFamily::ControlFlowFlattening,
+    RewriterFamily::SelfDefendingStrip,
+];
+
+const ALL_FAMILIES: &[RewriterFamily] = &[
+    RewriterFamily::StringArrayDecode,
+    RewriterFamily::LiteralEncoding,
+    RewriterFamily::ProxyObjectInlining,
+    RewriterFamily::ControlFlowFlattening,
+    RewriterFamily::OpaquePredicates,
+    RewriterFamily::SelfDefendingStrip,
+];
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RewriteActivity {
+    string_array_call_sites_inlined: u64,
+    unminify_literal_folds: u64,
+    arithmetic_folded: u64,
+    string_conceal_call_sites_decoded: u64,
+    string_compression_blocks_reversed: u64,
+    control_flow_objects_merged: u64,
+    dispatcher_calls_inlined: u64,
+    calculator_calls_inlined: u64,
+    variable_masking_proxies_eliminated: u64,
+    control_flow_switches_unflattened: u64,
+    flatten_dispatches_collapsed: u64,
+    state_sum_machines_linearized: u64,
+    unminify_control_flow: u64,
+    opaque_predicates_folded: u64,
+    unminify_protection: u64,
+    integrity_loops_stripped: u64,
+    lock_guards_stripped: u64,
+}
+
+impl RewriteActivity {
+    const fn merge(&mut self, other: &Self) {
+        self.string_array_call_sites_inlined = self
+            .string_array_call_sites_inlined
+            .saturating_add(other.string_array_call_sites_inlined);
+        self.unminify_literal_folds = self
+            .unminify_literal_folds
+            .saturating_add(other.unminify_literal_folds);
+        self.arithmetic_folded = self
+            .arithmetic_folded
+            .saturating_add(other.arithmetic_folded);
+        self.string_conceal_call_sites_decoded = self
+            .string_conceal_call_sites_decoded
+            .saturating_add(other.string_conceal_call_sites_decoded);
+        self.string_compression_blocks_reversed = self
+            .string_compression_blocks_reversed
+            .saturating_add(other.string_compression_blocks_reversed);
+        self.control_flow_objects_merged = self
+            .control_flow_objects_merged
+            .saturating_add(other.control_flow_objects_merged);
+        self.dispatcher_calls_inlined = self
+            .dispatcher_calls_inlined
+            .saturating_add(other.dispatcher_calls_inlined);
+        self.calculator_calls_inlined = self
+            .calculator_calls_inlined
+            .saturating_add(other.calculator_calls_inlined);
+        self.variable_masking_proxies_eliminated = self
+            .variable_masking_proxies_eliminated
+            .saturating_add(other.variable_masking_proxies_eliminated);
+        self.control_flow_switches_unflattened = self
+            .control_flow_switches_unflattened
+            .saturating_add(other.control_flow_switches_unflattened);
+        self.flatten_dispatches_collapsed = self
+            .flatten_dispatches_collapsed
+            .saturating_add(other.flatten_dispatches_collapsed);
+        self.state_sum_machines_linearized = self
+            .state_sum_machines_linearized
+            .saturating_add(other.state_sum_machines_linearized);
+        self.unminify_control_flow = self
+            .unminify_control_flow
+            .saturating_add(other.unminify_control_flow);
+        self.opaque_predicates_folded = self
+            .opaque_predicates_folded
+            .saturating_add(other.opaque_predicates_folded);
+        self.unminify_protection = self
+            .unminify_protection
+            .saturating_add(other.unminify_protection);
+        self.integrity_loops_stripped = self
+            .integrity_loops_stripped
+            .saturating_add(other.integrity_loops_stripped);
+        self.lock_guards_stripped = self
+            .lock_guards_stripped
+            .saturating_add(other.lock_guards_stripped);
+    }
+
+    fn families(&self) -> BTreeSet<RewriterFamily> {
+        REGEX_REWRITERS
+            .iter()
+            .filter_map(|rewriter: &RegexRewriter| {
+                let (family, probe): (RewriterFamily, ActivityProbe) =
+                    rewriter.coverage.graded()?;
+                (probe(self) != 0).then_some(family)
+            })
+            .collect()
+    }
+}
+
+const fn activity_from_obfuscator_io(out: &ObfuscatorIoOutput) -> RewriteActivity {
+    let stats: &disrobe_pass_js_deob::UnminifyStats = &out.unminify_stats;
+    RewriteActivity {
+        string_array_call_sites_inlined: out.string_array_call_sites_inlined as u64,
+        unminify_literal_folds: (stats.bool_shorthand_reversed
+            + stats.void_undefined_reversed
+            + stats.double_not_reversed
+            + stats.merged_string_concat
+            + stats.string_split_literals_merged
+            + stats.radix_literals_decimalized) as u64,
+        arithmetic_folded: stats.arithmetic_folded as u64,
+        string_conceal_call_sites_decoded: 0,
+        string_compression_blocks_reversed: 0,
+        control_flow_objects_merged: (out.control_flow_objects_merged
+            + out.scope_proxy_objects_merged) as u64,
+        dispatcher_calls_inlined: out.dispatcher_call_sites_inlined as u64,
+        calculator_calls_inlined: 0,
+        variable_masking_proxies_eliminated: 0,
+        control_flow_switches_unflattened: out.control_flow_switches_unflattened as u64,
+        flatten_dispatches_collapsed: out.flatten_dispatches_collapsed as u64,
+        state_sum_machines_linearized: 0,
+        unminify_control_flow: (stats.control_flow_blocks_unflattened
+            + stats.control_flow_cases_inlined) as u64,
+        opaque_predicates_folded: out.opaque_predicates_folded as u64,
+        unminify_protection: (stats.debugger_loops_removed
+            + stats.set_interval_watchdogs_removed
+            + stats.function_debugger_removed
+            + stats.self_defending_iifes_removed
+            + stats.self_defending_checkers_removed
+            + stats.self_defending_wrappers_removed
+            + stats.debug_protection_ratchets_removed
+            + stats.debug_ratchet_functions_removed) as u64,
+        integrity_loops_stripped: 0,
+        lock_guards_stripped: 0,
+    }
+}
+
+const fn activity_from_jsconfuser(out: &DeobOutput) -> RewriteActivity {
+    RewriteActivity {
+        string_array_call_sites_inlined: 0,
+        unminify_literal_folds: out.string_literals_decoded as u64,
+        arithmetic_folded: 0,
+        string_conceal_call_sites_decoded: out.string_conceal_call_sites_decoded as u64,
+        string_compression_blocks_reversed: out.string_compression_blocks_reversed as u64,
+        control_flow_objects_merged: 0,
+        dispatcher_calls_inlined: out.dispatcher_calls_inlined as u64,
+        calculator_calls_inlined: out.calculator_calls_inlined as u64,
+        variable_masking_proxies_eliminated: out.variable_masking_proxies_eliminated as u64,
+        control_flow_switches_unflattened: 0,
+        flatten_dispatches_collapsed: (out.flatten_dispatches_collapsed
+            + out.cff_generators_devirtualized) as u64,
+        state_sum_machines_linearized: out.state_sum_machines_linearized as u64,
+        unminify_control_flow: 0,
+        opaque_predicates_folded: out.opaque_predicates_folded as u64,
+        unminify_protection: 0,
+        integrity_loops_stripped: (out.integrity_loops_stripped
+            + out.integrity_self_checks_unwrapped) as u64,
+        lock_guards_stripped: out.lock_guards_stripped as u64,
+    }
+}
+
+type ActivityProbe = fn(&RewriteActivity) -> u64;
+
+#[derive(Debug, Clone, Copy)]
+enum Coverage {
+    Corpus {
+        family: RewriterFamily,
+        probe: ActivityProbe,
+    },
+    Witness {
+        family: RewriterFamily,
+        probe: ActivityProbe,
+    },
+    Ungraded(&'static str),
+}
+
+impl Coverage {
+    const fn graded(&self) -> Option<(RewriterFamily, ActivityProbe)> {
+        match *self {
+            Self::Corpus { family, probe } | Self::Witness { family, probe } => {
+                Some((family, probe))
+            }
+            Self::Ungraded(_) => None,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RegexRewriter {
+    module: &'static str,
+    coverage: Coverage,
+}
+
+const REASON_BUNDLE: &str = "bundle graph recovery rewrites module wrappers rather than obfuscated \
+                             program text, and is graded by the bundler round-trip suites";
+const REASON_DETECT: &str = "detection only; the module classifies input and rewrites no source";
+const REASON_JSCRAMBLER: &str = "the Jscrambler chain is graded against real Jscrambler 8.5 output \
+                                 by tests/jscrambler_template_all.rs";
+const REASON_ESOTERIC: &str =
+    "esoteric encodings are graded by tests/esoteric_recovery_graded.rs and its siblings";
+const REASON_TYPESCRIPT: &str =
+    "TypeScript and Closure recovery is graded by tests/ts_type_recover.rs and its siblings";
+const REASON_PROTECTOR: &str =
+    "commercial protector recovery is graded by tests/protectors_chain.rs and its siblings";
+const REASON_JSOBFU: &str = "the jsobfu chain is graded by tests/real_jsobfu_recovery_oracle.rs";
+
+static REGEX_REWRITERS: &[RegexRewriter] = &[
+    RegexRewriter {
+        module: "src/bundle/amd.rs",
+        coverage: Coverage::Ungraded(REASON_BUNDLE),
+    },
+    RegexRewriter {
+        module: "src/bundle/browserify.rs",
+        coverage: Coverage::Ungraded(REASON_BUNDLE),
+    },
+    RegexRewriter {
+        module: "src/bundle/bun.rs",
+        coverage: Coverage::Ungraded(REASON_BUNDLE),
+    },
+    RegexRewriter {
+        module: "src/bundle/esbuild.rs",
+        coverage: Coverage::Ungraded(REASON_BUNDLE),
+    },
+    RegexRewriter {
+        module: "src/bundle/parcel.rs",
+        coverage: Coverage::Ungraded(REASON_BUNDLE),
+    },
+    RegexRewriter {
+        module: "src/bundle/require_rewrite.rs",
+        coverage: Coverage::Ungraded(REASON_BUNDLE),
+    },
+    RegexRewriter {
+        module: "src/bundle/rolldown.rs",
+        coverage: Coverage::Ungraded(REASON_BUNDLE),
+    },
+    RegexRewriter {
+        module: "src/bundle/rollup.rs",
+        coverage: Coverage::Ungraded(REASON_BUNDLE),
+    },
+    RegexRewriter {
+        module: "src/bundle/systemjs.rs",
+        coverage: Coverage::Ungraded(REASON_BUNDLE),
+    },
+    RegexRewriter {
+        module: "src/bundle/turbopack.rs",
+        coverage: Coverage::Ungraded(REASON_BUNDLE),
+    },
+    RegexRewriter {
+        module: "src/bundle/vite.rs",
+        coverage: Coverage::Ungraded(REASON_BUNDLE),
+    },
+    RegexRewriter {
+        module: "src/bundle/webpack4.rs",
+        coverage: Coverage::Ungraded(REASON_BUNDLE),
+    },
+    RegexRewriter {
+        module: "src/bundle/webpack5.rs",
+        coverage: Coverage::Ungraded(REASON_BUNDLE),
+    },
+    RegexRewriter {
+        module: "src/detect.rs",
+        coverage: Coverage::Ungraded(REASON_DETECT),
+    },
+    RegexRewriter {
+        module: "src/esoteric/atob_indirection.rs",
+        coverage: Coverage::Ungraded(REASON_ESOTERIC),
+    },
+    RegexRewriter {
+        module: "src/esoteric/eval_indirection.rs",
+        coverage: Coverage::Ungraded(REASON_ESOTERIC),
+    },
+    RegexRewriter {
+        module: "src/esoteric/packer.rs",
+        coverage: Coverage::Ungraded(REASON_ESOTERIC),
+    },
+    RegexRewriter {
+        module: "src/jsconfuser/calculator.rs",
+        coverage: Coverage::Ungraded(
+            "calculator inlining is graded by tests/jsconfuser_calculator.rs; no requested corpus sample carries the shape",
+        ),
+    },
+    RegexRewriter {
+        module: "src/jsconfuser/dispatcher.rs",
+        coverage: Coverage::Ungraded(
+            "dispatcher inlining is graded by tests/jsconfuser_dispatcher.rs; no requested corpus sample carries the shape",
+        ),
+    },
+    RegexRewriter {
+        module: "src/jsconfuser/flatten.rs",
+        coverage: Coverage::Corpus {
+            family: RewriterFamily::ControlFlowFlattening,
+            probe: |activity: &RewriteActivity| activity.flatten_dispatches_collapsed,
+        },
+    },
+    RegexRewriter {
+        module: "src/jsconfuser/integrity.rs",
+        coverage: Coverage::Corpus {
+            family: RewriterFamily::SelfDefendingStrip,
+            probe: |activity: &RewriteActivity| activity.integrity_loops_stripped,
+        },
+    },
+    RegexRewriter {
+        module: "src/jsconfuser/lock.rs",
+        coverage: Coverage::Ungraded(
+            "environment locks are graded by tests/jsconfuser_lock.rs; no requested corpus sample carries the shape",
+        ),
+    },
+    RegexRewriter {
+        module: "src/jsconfuser/moved_declarations.rs",
+        coverage: Coverage::Ungraded(
+            "declaration hoisting is graded by tests/jsconfuser_moved_decls.rs",
+        ),
+    },
+    RegexRewriter {
+        module: "src/jsconfuser/opaque.rs",
+        coverage: Coverage::Corpus {
+            family: RewriterFamily::OpaquePredicates,
+            probe: |activity: &RewriteActivity| activity.opaque_predicates_folded,
+        },
+    },
+    RegexRewriter {
+        module: "src/jsconfuser/packing.rs",
+        coverage: Coverage::Ungraded(
+            "packed-block expansion is graded by tests/jsconfuser_packing.rs",
+        ),
+    },
+    RegexRewriter {
+        module: "src/jsconfuser/rgf.rs",
+        coverage: Coverage::Ungraded(
+            "runtime-generated functions are graded by tests/jsconfuser_rgf.rs",
+        ),
+    },
+    RegexRewriter {
+        module: "src/jsconfuser/rgf_eval.rs",
+        coverage: Coverage::Ungraded(
+            "runtime-generated eval wrappers are graded by tests/jsconfuser_rgf.rs",
+        ),
+    },
+    RegexRewriter {
+        module: "src/jsconfuser/shuffle.rs",
+        coverage: Coverage::Ungraded("array shuffling is graded by tests/jsconfuser_shuffle.rs"),
+    },
+    RegexRewriter {
+        module: "src/jsconfuser/state_sum.rs",
+        coverage: Coverage::Corpus {
+            family: RewriterFamily::ControlFlowFlattening,
+            probe: |activity: &RewriteActivity| activity.state_sum_machines_linearized,
+        },
+    },
+    RegexRewriter {
+        module: "src/jsconfuser/string_compression.rs",
+        coverage: Coverage::Corpus {
+            family: RewriterFamily::LiteralEncoding,
+            probe: |activity: &RewriteActivity| activity.string_compression_blocks_reversed,
+        },
+    },
+    RegexRewriter {
+        module: "src/jsconfuser/string_conceal.rs",
+        coverage: Coverage::Corpus {
+            family: RewriterFamily::LiteralEncoding,
+            probe: |activity: &RewriteActivity| activity.string_conceal_call_sites_decoded,
+        },
+    },
+    RegexRewriter {
+        module: "src/jsconfuser/variable_masking.rs",
+        coverage: Coverage::Ungraded(
+            "variable masking is graded by tests/jsconfuser_variable_masking.rs; no requested corpus sample carries the shape",
+        ),
+    },
+    RegexRewriter {
+        module: "src/jscrambler/detect.rs",
+        coverage: Coverage::Ungraded(REASON_DETECT),
+    },
+    RegexRewriter {
+        module: "src/jscrambler/transforms/anti_debugging.rs",
+        coverage: Coverage::Ungraded(REASON_JSCRAMBLER),
+    },
+    RegexRewriter {
+        module: "src/jscrambler/transforms/anti_monkey_patching.rs",
+        coverage: Coverage::Ungraded(REASON_JSCRAMBLER),
+    },
+    RegexRewriter {
+        module: "src/jscrambler/transforms/anti_tampering.rs",
+        coverage: Coverage::Ungraded(REASON_JSCRAMBLER),
+    },
+    RegexRewriter {
+        module: "src/jscrambler/transforms/boolean_to_anything.rs",
+        coverage: Coverage::Ungraded(REASON_JSCRAMBLER),
+    },
+    RegexRewriter {
+        module: "src/jscrambler/transforms/browser_lock.rs",
+        coverage: Coverage::Ungraded(REASON_JSCRAMBLER),
+    },
+    RegexRewriter {
+        module: "src/jscrambler/transforms/char_to_ternary.rs",
+        coverage: Coverage::Ungraded(REASON_JSCRAMBLER),
+    },
+    RegexRewriter {
+        module: "src/jscrambler/transforms/constant_folding.rs",
+        coverage: Coverage::Ungraded(REASON_JSCRAMBLER),
+    },
+    RegexRewriter {
+        module: "src/jscrambler/transforms/control_flow_flattening.rs",
+        coverage: Coverage::Ungraded(REASON_JSCRAMBLER),
+    },
+    RegexRewriter {
+        module: "src/jscrambler/transforms/date_lock.rs",
+        coverage: Coverage::Ungraded(REASON_JSCRAMBLER),
+    },
+    RegexRewriter {
+        module: "src/jscrambler/transforms/dead_code_injection.rs",
+        coverage: Coverage::Ungraded(REASON_JSCRAMBLER),
+    },
+    RegexRewriter {
+        module: "src/jscrambler/transforms/dead_objects.rs",
+        coverage: Coverage::Ungraded(REASON_JSCRAMBLER),
+    },
+    RegexRewriter {
+        module: "src/jscrambler/transforms/domain_lock.rs",
+        coverage: Coverage::Ungraded(REASON_JSCRAMBLER),
+    },
+    RegexRewriter {
+        module: "src/jscrambler/transforms/duplicate_literals_removal.rs",
+        coverage: Coverage::Ungraded(REASON_JSCRAMBLER),
+    },
+    RegexRewriter {
+        module: "src/jscrambler/transforms/extend_predicates.rs",
+        coverage: Coverage::Ungraded(REASON_JSCRAMBLER),
+    },
+    RegexRewriter {
+        module: "src/jscrambler/transforms/global_variable_indirection.rs",
+        coverage: Coverage::Ungraded(REASON_JSCRAMBLER),
+    },
+    RegexRewriter {
+        module: "src/jscrambler/transforms/identifiers_renaming.rs",
+        coverage: Coverage::Ungraded(REASON_JSCRAMBLER),
+    },
+    RegexRewriter {
+        module: "src/jscrambler/transforms/number_to_string.rs",
+        coverage: Coverage::Ungraded(REASON_JSCRAMBLER),
+    },
+    RegexRewriter {
+        module: "src/jscrambler/transforms/os_lock.rs",
+        coverage: Coverage::Ungraded(REASON_JSCRAMBLER),
+    },
+    RegexRewriter {
+        module: "src/jscrambler/transforms/self_defending.rs",
+        coverage: Coverage::Ungraded(REASON_JSCRAMBLER),
+    },
+    RegexRewriter {
+        module: "src/jscrambler/transforms/self_healing.rs",
+        coverage: Coverage::Ungraded(REASON_JSCRAMBLER),
+    },
+    RegexRewriter {
+        module: "src/jscrambler/transforms/string_concealing.rs",
+        coverage: Coverage::Ungraded(REASON_JSCRAMBLER),
+    },
+    RegexRewriter {
+        module: "src/jscrambler/transforms/variable_masking.rs",
+        coverage: Coverage::Ungraded(REASON_JSCRAMBLER),
+    },
+    RegexRewriter {
+        module: "src/jsobfu/detect.rs",
+        coverage: Coverage::Ungraded(REASON_DETECT),
+    },
+    RegexRewriter {
+        module: "src/jsobfu/rewrite.rs",
+        coverage: Coverage::Ungraded(REASON_JSOBFU),
+    },
+    RegexRewriter {
+        module: "src/obfuscator_io/control_flow_object.rs",
+        coverage: Coverage::Corpus {
+            family: RewriterFamily::ProxyObjectInlining,
+            probe: |activity: &RewriteActivity| activity.control_flow_objects_merged,
+        },
+    },
+    RegexRewriter {
+        module: "src/obfuscator_io/control_flow_switch.rs",
+        coverage: Coverage::Witness {
+            family: RewriterFamily::ControlFlowFlattening,
+            probe: |activity: &RewriteActivity| activity.control_flow_switches_unflattened,
+        },
+    },
+    RegexRewriter {
+        module: "src/obfuscator_io/detection.rs",
+        coverage: Coverage::Ungraded(REASON_DETECT),
+    },
+    RegexRewriter {
+        module: "src/protectors/arxan.rs",
+        coverage: Coverage::Ungraded(REASON_PROTECTOR),
+    },
+    RegexRewriter {
+        module: "src/protectors/jsdefender.rs",
+        coverage: Coverage::Ungraded(REASON_PROTECTOR),
+    },
+    RegexRewriter {
+        module: "src/protectors/pace.rs",
+        coverage: Coverage::Ungraded(REASON_PROTECTOR),
+    },
+    RegexRewriter {
+        module: "src/rename/hex_idents.rs",
+        coverage: Coverage::Ungraded(
+            "hexadecimal identifier renaming is graded by tests/obfuscator_io_differential_oracle.rs \
+             against the clean source's identifier set",
+        ),
+    },
+    RegexRewriter {
+        module: "src/rename/scope_aware.rs",
+        coverage: Coverage::Ungraded(
+            "scope-aware renaming is graded by tests/mangled_usage_context_oracle.rs",
+        ),
+    },
+    RegexRewriter {
+        module: "src/string_array/detect.rs",
+        coverage: Coverage::Ungraded(REASON_DETECT),
+    },
+    RegexRewriter {
+        module: "src/string_array/inline.rs",
+        coverage: Coverage::Corpus {
+            family: RewriterFamily::StringArrayDecode,
+            probe: |activity: &RewriteActivity| activity.string_array_call_sites_inlined,
+        },
+    },
+    RegexRewriter {
+        module: "src/string_array/modern.rs",
+        coverage: Coverage::Ungraded(
+            "modern string-array shapes are graded by tests/obfuscator_io_modern_string_array.rs",
+        ),
+    },
+    RegexRewriter {
+        module: "src/typescript/closure_advanced.rs",
+        coverage: Coverage::Ungraded(REASON_TYPESCRIPT),
+    },
+    RegexRewriter {
+        module: "src/typescript/dts_reverse.rs",
+        coverage: Coverage::Ungraded(REASON_TYPESCRIPT),
+    },
+    RegexRewriter {
+        module: "src/unminify/arithmetic.rs",
+        coverage: Coverage::Corpus {
+            family: RewriterFamily::LiteralEncoding,
+            probe: |activity: &RewriteActivity| activity.arithmetic_folded,
+        },
+    },
+    RegexRewriter {
+        module: "src/unminify/control_flow.rs",
+        coverage: Coverage::Ungraded(
+            "minifier control-flow unflattening is graded by tests/full_pipeline.rs; no requested corpus sample carries the shape",
+        ),
+    },
+    RegexRewriter {
+        module: "src/unminify/globals.rs",
+        coverage: Coverage::Ungraded(
+            "global-call evaluation is graded by tests/full_pipeline.rs against decoded output",
+        ),
+    },
+    RegexRewriter {
+        module: "src/unminify/peepholes.rs",
+        coverage: Coverage::Corpus {
+            family: RewriterFamily::LiteralEncoding,
+            probe: |activity: &RewriteActivity| activity.unminify_literal_folds,
+        },
+    },
+    RegexRewriter {
+        module: "src/unminify/protection.rs",
+        coverage: Coverage::Corpus {
+            family: RewriterFamily::SelfDefendingStrip,
+            probe: |activity: &RewriteActivity| activity.unminify_protection,
+        },
+    },
+];
+
+const REGEX_CONSTRUCTORS: &[&str] = &["Regex::new(", "RegexBuilder::new("];
+
+fn crate_source_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")
+}
+
+fn discover_regex_rewriter_modules() -> Result<BTreeSet<String>, String> {
+    let root: PathBuf = crate_source_root();
+    let mut discovered: BTreeSet<String> = BTreeSet::new();
+    let mut pending: Vec<PathBuf> = vec![root.clone()];
+    while let Some(directory) = pending.pop() {
+        let entries: fs::ReadDir = fs::read_dir(&directory)
+            .map_err(|error: std::io::Error| format!("{}: {error}", directory.display()))?;
+        for entry_result in entries {
+            let entry: fs::DirEntry = entry_result
+                .map_err(|error: std::io::Error| format!("{}: {error}", directory.display()))?;
+            let path: PathBuf = entry.path();
+            let file_type: fs::FileType = entry
+                .file_type()
+                .map_err(|error: std::io::Error| format!("{}: {error}", path.display()))?;
+            if file_type.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if !file_type.is_file()
+                || path.extension().and_then(std::ffi::OsStr::to_str) != Some("rs")
+            {
+                continue;
+            }
+            let body: String = fs::read_to_string(&path)
+                .map_err(|error: std::io::Error| format!("{}: {error}", path.display()))?;
+            if !REGEX_CONSTRUCTORS
+                .iter()
+                .any(|marker: &&str| body.contains(*marker))
+            {
+                continue;
+            }
+            let relative: &Path =
+                path.strip_prefix(&root)
+                    .map_err(|error: std::path::StripPrefixError| {
+                        format!("{}: {error}", path.display())
+                    })?;
+            let normalized: String = normalize_corpus_relative(relative)?;
+            discovered.insert(format!("src/{normalized}"));
+        }
+    }
+    Ok(discovered)
+}
 
 #[derive(Clone, Copy)]
 enum Reference {
@@ -346,9 +982,11 @@ enum GuardedBatch {
 }
 
 enum Outcome {
-    Passed,
+    Passed(RewriteActivity),
     CannotExecute(String),
     Diverged(String),
+    TimedOut(String),
+    Truncated(String),
     HarnessFailure(String),
 }
 
@@ -513,6 +1151,103 @@ fn try_load(rel: &str) -> Result<String, String> {
 
 fn load(rel: &str) -> String {
     try_load(rel).unwrap_or_else(|error: String| panic!("failed to read fixture: {error}"))
+}
+
+#[test]
+fn every_regex_rewriter_is_graded_or_recorded_ungraded() {
+    let discovered: BTreeSet<String> =
+        discover_regex_rewriter_modules().expect("crate source census must be readable");
+    let recorded: BTreeSet<String> = REGEX_REWRITERS
+        .iter()
+        .map(|rewriter: &RegexRewriter| rewriter.module.to_owned())
+        .collect();
+    assert_eq!(
+        recorded.len(),
+        REGEX_REWRITERS.len(),
+        "the regex rewriter roster must not list a module twice"
+    );
+    assert_eq!(
+        recorded, discovered,
+        "every module that builds a regular expression over source text must be recorded as graded \
+         by this differential or ungraded with a reason; add the new module to REGEX_REWRITERS in \
+         the same change that adds the regular expression"
+    );
+    let graded: Vec<&'static str> = REGEX_REWRITERS
+        .iter()
+        .filter(|rewriter: &&RegexRewriter| rewriter.coverage.graded().is_some())
+        .map(|rewriter: &RegexRewriter| rewriter.module)
+        .collect();
+    eprintln!(
+        "regex rewriter census: {} modules, {} graded by execution differential, {} recorded ungraded",
+        REGEX_REWRITERS.len(),
+        graded.len(),
+        REGEX_REWRITERS.len() - graded.len()
+    );
+    for rewriter in REGEX_REWRITERS {
+        match rewriter.coverage {
+            Coverage::Corpus { family, .. } => {
+                eprintln!("  graded {family:?} by corpus sample: {}", rewriter.module);
+            }
+            Coverage::Witness { family, .. } => {
+                eprintln!("  graded {family:?} by family witness: {}", rewriter.module);
+            }
+            Coverage::Ungraded(reason) => {
+                assert!(
+                    !reason.is_empty(),
+                    "{}: an ungraded rewriter must record why",
+                    rewriter.module
+                );
+                eprintln!("  ungraded: {} ({reason})", rewriter.module);
+            }
+        }
+    }
+    for family in NAMED_FAMILIES {
+        let members: Vec<&'static str> = family_modules(*family);
+        assert!(
+            !members.is_empty(),
+            "{family:?} is named by this item and must resolve to at least one module"
+        );
+        eprintln!("  {family:?} resolves to {members:?}");
+    }
+    for family in ALL_FAMILIES {
+        assert!(
+            !family_modules(*family).is_empty(),
+            "{family:?} has no module, so the taxonomy and the roster have drifted"
+        );
+    }
+}
+
+fn family_modules(family: RewriterFamily) -> Vec<&'static str> {
+    REGEX_REWRITERS
+        .iter()
+        .filter(|rewriter: &&RegexRewriter| {
+            rewriter
+                .coverage
+                .graded()
+                .is_some_and(|(graded, _): (RewriterFamily, ActivityProbe)| graded == family)
+        })
+        .map(|rewriter: &RegexRewriter| rewriter.module)
+        .collect()
+}
+
+#[test]
+fn sample_roster_size_is_pinned_by_equality() {
+    assert_eq!(
+        SAMPLES.len(),
+        SAMPLE_COUNT,
+        "the corpus sample count is pinned by equality so growing the denominator cannot hide a \
+         regression behind the pass floor"
+    );
+    let reachable: usize = SAMPLES.len();
+    assert!(
+        reachable >= DIFFERENTIAL_FLOOR,
+        "the pass floor can never exceed the number of samples that could reach it"
+    );
+    assert_eq!(
+        FAMILY_WITNESSES.len(),
+        NAMED_FAMILIES.len(),
+        "every named rewriter family carries exactly one faithful-and-wrong-rewrite witness"
+    );
 }
 
 #[test]
@@ -965,15 +1700,49 @@ fn boa_subprocess_reports_the_engine_step_limit() {
     assert_eq!(outcome.terminal, Terminal::ExecutionLimitExceeded);
 }
 
-fn recover_full(sample: &Sample, obf_src: &str) -> Result<String, String> {
-    if sample.obf.starts_with("js/jsconfuser/") {
-        let opts: DeobOptions = DeobOptions::all();
-        Ok(deobfuscate_all(obf_src, &opts).source)
-    } else {
-        let opts: ObfuscatorIoOptions = ObfuscatorIoOptions::all();
-        obfuscator_io_deobfuscate(obf_src, &opts)
-            .map(|output: ObfuscatorIoOutput| output.source)
-            .map_err(|error: disrobe_pass_js_deob::Error| error.to_string())
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pipeline {
+    JsConfuser,
+    ObfuscatorIo,
+}
+
+impl Pipeline {
+    fn for_path(path: &str) -> Self {
+        if path.starts_with("js/jsconfuser/") {
+            Self::JsConfuser
+        } else {
+            Self::ObfuscatorIo
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Recovery {
+    source: String,
+    activity: RewriteActivity,
+}
+
+fn recover_with(pipeline: Pipeline, obf_src: &str) -> Result<Recovery, String> {
+    match pipeline {
+        Pipeline::JsConfuser => {
+            let opts: DeobOptions = DeobOptions::all();
+            let out: DeobOutput = deobfuscate_all(obf_src, &opts);
+            let activity: RewriteActivity = activity_from_jsconfuser(&out);
+            Ok(Recovery {
+                source: out.source,
+                activity,
+            })
+        }
+        Pipeline::ObfuscatorIo => {
+            let opts: ObfuscatorIoOptions = ObfuscatorIoOptions::all();
+            let out: ObfuscatorIoOutput = obfuscator_io_deobfuscate(obf_src, &opts)
+                .map_err(|error: disrobe_pass_js_deob::Error| error.to_string())?;
+            let activity: RewriteActivity = activity_from_obfuscator_io(&out);
+            Ok(Recovery {
+                source: out.source,
+                activity,
+            })
+        }
     }
 }
 
@@ -1087,40 +1856,140 @@ fn unsupported_reference_reason(outcome: &EvalOutcome) -> Option<String> {
 
 const LOOP_LIMIT_DESCRIPTION: &str = "2,000,000-iteration execution limit";
 
+fn truncation_reason(outcome: &EvalOutcome) -> Option<String> {
+    let Terminal::ObservationLimitExceeded(reason) = &outcome.terminal else {
+        return None;
+    };
+    if reason.contains("exceeded") || reason.contains("exceeds") {
+        return Some(reason.clone());
+    }
+    None
+}
+
 fn collect_reference_outcomes(
-    sample: &Sample,
+    name: &str,
+    argv_battery: &[&[&str]],
     reference_kind: &str,
     evaluations: Vec<Result<EvalOutcome, String>>,
-) -> Result<Vec<EvalOutcome>, Outcome> {
-    if evaluations.len() != sample.argv_battery.len() {
-        return Err(Outcome::HarnessFailure(format!(
-            "{}: Boa worker returned {} {reference_kind} evaluations for {} argument cases",
-            sample.name,
+) -> Result<Vec<EvalOutcome>, Box<Outcome>> {
+    if evaluations.len() != argv_battery.len() {
+        return Err(Box::new(Outcome::HarnessFailure(format!(
+            "{name}: Boa worker returned {} {reference_kind} evaluations for {} argument cases",
             evaluations.len(),
-            sample.argv_battery.len()
-        )));
+            argv_battery.len()
+        ))));
     }
     let mut outcomes: Vec<EvalOutcome> = Vec::with_capacity(evaluations.len());
     for (index, evaluation) in evaluations.into_iter().enumerate() {
-        let argv: &[&str] = sample.argv_battery[index];
+        let argv: &[&str] = argv_battery[index];
         let outcome: EvalOutcome = match evaluation {
             Ok(outcome) => outcome,
             Err(reason) => {
-                return Err(Outcome::HarnessFailure(format!(
-                    "{}: {reference_kind} evaluation harness failed for argv {argv:?}: {reason}",
-                    sample.name,
-                )));
+                return Err(Box::new(Outcome::HarnessFailure(format!(
+                    "{name}: {reference_kind} evaluation harness failed for argv {argv:?}: {reason}",
+                ))));
             }
         };
+        if let Some(reason) = truncation_reason(&outcome) {
+            return Err(Box::new(Outcome::Truncated(format!(
+                "{name}: {reference_kind} observation truncated for argv {argv:?}: {reason}"
+            ))));
+        }
         if let Some(reason) = unsupported_reference_reason(&outcome) {
-            return Err(Outcome::CannotExecute(format!(
-                "{} for argv {argv:?}: {reason}",
-                sample.name
-            )));
+            return Err(Box::new(Outcome::CannotExecute(format!(
+                "{name} for argv {argv:?}: {reason}"
+            ))));
         }
         outcomes.push(outcome);
     }
     Ok(outcomes)
+}
+
+struct DifferentialCase<'a> {
+    name: &'a str,
+    pipeline: Pipeline,
+    reference_kind: &'a str,
+    reference_src: &'a str,
+    obf_src: &'a str,
+    argv_battery: &'a [&'a [&'a str]],
+}
+
+fn run_differential(case: &DifferentialCase<'_>) -> Outcome {
+    let name: &str = case.name;
+    let reference_kind: &str = case.reference_kind;
+    let reference_evaluations: Vec<Result<EvalOutcome, String>> = match eval_batch_guarded(
+        case.reference_src,
+        case.argv_battery,
+    ) {
+        GuardedBatch::Completed(evaluations) => evaluations,
+        GuardedBatch::WallTimeExceeded => {
+            return Outcome::TimedOut(format!(
+                "{name}: {reference_kind} source exceeded the hard {EVAL_TIMEOUT:?} subprocess limit"
+            ));
+        }
+        GuardedBatch::HarnessFailure(reason) => {
+            return Outcome::HarnessFailure(format!("{name}: {reason}"));
+        }
+    };
+    let want: Vec<EvalOutcome> = match collect_reference_outcomes(
+        name,
+        case.argv_battery,
+        reference_kind,
+        reference_evaluations,
+    ) {
+        Ok(outcomes) => outcomes,
+        Err(outcome) => return *outcome,
+    };
+    let recovery: Recovery = match recover_with(case.pipeline, case.obf_src) {
+        Ok(recovery) => recovery,
+        Err(reason) => {
+            return Outcome::Diverged(format!(
+                "{name}: recovery failed before execution: {reason}"
+            ));
+        }
+    };
+    let recovered_evaluations: Vec<Result<EvalOutcome, String>> =
+        match eval_batch_guarded(&recovery.source, case.argv_battery) {
+            GuardedBatch::Completed(evaluations) => evaluations,
+            GuardedBatch::WallTimeExceeded => {
+                return Outcome::TimedOut(format!(
+                    "{name}: recovered source exceeded the hard {EVAL_TIMEOUT:?} subprocess limit"
+                ));
+            }
+            GuardedBatch::HarnessFailure(reason) => {
+                return Outcome::HarnessFailure(format!("{name}: {reason}"));
+            }
+        };
+    if recovered_evaluations.len() != case.argv_battery.len() {
+        return Outcome::HarnessFailure(format!(
+            "{name}: Boa worker returned {} recovered evaluations for {} argument cases",
+            recovered_evaluations.len(),
+            case.argv_battery.len()
+        ));
+    }
+    for (index, evaluation) in recovered_evaluations.into_iter().enumerate() {
+        let argv: &[&str] = case.argv_battery[index];
+        let got: EvalOutcome = match evaluation {
+            Ok(outcome) => outcome,
+            Err(reason) => {
+                return Outcome::HarnessFailure(format!(
+                    "{name}: recovered evaluation harness failed for argv {argv:?}: {reason}"
+                ));
+            }
+        };
+        if let Some(reason) = truncation_reason(&got) {
+            return Outcome::Truncated(format!(
+                "{name}: recovered observation truncated for argv {argv:?}: {reason}"
+            ));
+        }
+        let expected: &EvalOutcome = &want[index];
+        if expected != &got {
+            return Outcome::Diverged(format!(
+                "{name}: recovered behavior diverged from {reference_kind} source for argv {argv:?}\n--reference--\n{expected:?}\n--recovered--\n{got:?}"
+            ));
+        }
+    }
+    Outcome::Passed(recovery.activity)
 }
 
 fn comparison_description(sample: &Sample) -> String {
@@ -1158,77 +2027,14 @@ fn check_sample(sample: &Sample) -> Outcome {
         || ("obfuscated", obf_src.as_str()),
         |source: &str| ("clean", source),
     );
-    let reference_evaluations: Vec<Result<EvalOutcome, String>> = match eval_batch_guarded(
+    run_differential(&DifferentialCase {
+        name: sample.name,
+        pipeline: Pipeline::for_path(sample.obf),
+        reference_kind,
         reference_src,
-        sample.argv_battery,
-    ) {
-        GuardedBatch::Completed(evaluations) => evaluations,
-        GuardedBatch::WallTimeExceeded => {
-            return Outcome::CannotExecute(format!(
-                "{}: {reference_kind} source exceeded the hard {EVAL_TIMEOUT:?} subprocess limit",
-                sample.name,
-            ));
-        }
-        GuardedBatch::HarnessFailure(reason) => {
-            return Outcome::HarnessFailure(format!("{}: {reason}", sample.name));
-        }
-    };
-    let want: Vec<EvalOutcome> =
-        match collect_reference_outcomes(sample, reference_kind, reference_evaluations) {
-            Ok(outcomes) => outcomes,
-            Err(outcome) => return outcome,
-        };
-    let recovered: String = match recover_full(sample, &obf_src) {
-        Ok(source) => source,
-        Err(reason) => {
-            return Outcome::Diverged(format!(
-                "{}: recovery failed before execution: {reason}",
-                sample.name
-            ));
-        }
-    };
-    let recovered_evaluations: Vec<Result<EvalOutcome, String>> =
-        match eval_batch_guarded(&recovered, sample.argv_battery) {
-            GuardedBatch::Completed(evaluations) => evaluations,
-            GuardedBatch::WallTimeExceeded => {
-                return Outcome::Diverged(format!(
-                    "{}: recovered source exceeded the hard {EVAL_TIMEOUT:?} subprocess limit",
-                    sample.name
-                ));
-            }
-            GuardedBatch::HarnessFailure(reason) => {
-                return Outcome::HarnessFailure(format!("{}: {reason}", sample.name));
-            }
-        };
-    if recovered_evaluations.len() != sample.argv_battery.len() {
-        return Outcome::HarnessFailure(format!(
-            "{}: Boa worker returned {} recovered evaluations for {} argument cases",
-            sample.name,
-            recovered_evaluations.len(),
-            sample.argv_battery.len()
-        ));
-    }
-    for (index, evaluation) in recovered_evaluations.into_iter().enumerate() {
-        let argv: &[&str] = sample.argv_battery[index];
-        let got: EvalOutcome = match evaluation {
-            Ok(outcome) => outcome,
-            Err(reason) => {
-                return Outcome::HarnessFailure(format!(
-                    "{}: recovered evaluation harness failed for argv {argv:?}: {reason}",
-                    sample.name
-                ));
-            }
-        };
-        let expected: &EvalOutcome = &want[index];
-        if expected != &got {
-            return Outcome::Diverged(format!(
-                "{}: recovered behavior diverged from {reference_kind} source for argv {argv:?}\n--reference--\n{expected:?}\n--recovered--\n{got:?}",
-                sample.name,
-            ));
-        }
-    }
-
-    Outcome::Passed
+        obf_src: &obf_src,
+        argv_battery: sample.argv_battery,
+    })
 }
 
 fn is_requested(sample: &Sample) -> bool {
@@ -1252,60 +2058,83 @@ fn corpus_wide_differential_reexec() {
     );
 
     let mut passed: Vec<&str> = Vec::new();
+    let mut unexercised: Vec<String> = Vec::new();
     let mut cannot_execute: Vec<String> = Vec::new();
     let mut diverged: Vec<String> = Vec::new();
+    let mut timed_out: Vec<String> = Vec::new();
+    let mut truncated: Vec<String> = Vec::new();
     let mut harness_failures: Vec<String> = Vec::new();
+    let mut requested_classified: usize = 0;
     let mut requested_passed: usize = 0;
-    let mut requested_cannot: usize = 0;
-    let mut requested_diverged: usize = 0;
-    let mut requested_harness_failures: usize = 0;
+    let mut aggregate: RewriteActivity = RewriteActivity::default();
 
     for sample in SAMPLES {
         let requested: bool = is_requested(sample);
+        if requested {
+            requested_classified += 1;
+        }
         let comparison: String = comparison_description(sample);
         match check_sample(sample) {
-            Outcome::Passed => {
+            Outcome::Passed(activity) => {
                 passed.push(sample.name);
+                aggregate.merge(&activity);
                 if requested {
                     requested_passed += 1;
                 }
-                eprintln!("  pass: {} [{comparison}]", sample.name);
+                let families: BTreeSet<RewriterFamily> = activity.families();
+                if families.is_empty() {
+                    unexercised.push(format!(
+                        "{}: behavior is preserved but no tracked regex rewriter fired, so this sample grades no family [{comparison}]",
+                        sample.name
+                    ));
+                }
+                eprintln!(
+                    "  pass: {} exercises {families:?} [{comparison}]",
+                    sample.name
+                );
             }
             Outcome::CannotExecute(reason) => {
-                if requested {
-                    requested_cannot += 1;
-                }
                 cannot_execute.push(format!("{reason} [{comparison}]"));
             }
-            Outcome::Diverged(reason) => {
-                if requested {
-                    requested_diverged += 1;
-                }
-                diverged.push(format!("{reason} [{comparison}]"));
-            }
+            Outcome::Diverged(reason) => diverged.push(format!("{reason} [{comparison}]")),
+            Outcome::TimedOut(reason) => timed_out.push(format!("{reason} [{comparison}]")),
+            Outcome::Truncated(reason) => truncated.push(format!("{reason} [{comparison}]")),
             Outcome::HarnessFailure(reason) => {
-                if requested {
-                    requested_harness_failures += 1;
-                }
                 harness_failures.push(format!("{reason} [{comparison}]"));
             }
         }
     }
 
     eprintln!(
-        "requested corpus execution differential: {requested_passed} passed, {requested_diverged} diverged, {requested_cannot} cannot execute, {requested_harness_failures} harness failures (of {} samples)",
+        "requested corpus execution differential: {requested_passed} passed of {} samples",
         manifest.obfuscated.len()
     );
     eprintln!(
-        "extended execution differential total: {} passed, {} diverged, {} cannot execute, {} harness failures (of {} samples)",
+        "extended execution differential total: {} passed ({} of them exercising no tracked family), {} diverged, {} timed out, {} truncated, {} cannot execute, {} harness failures (of {} samples)",
         passed.len(),
+        unexercised.len(),
         diverged.len(),
+        timed_out.len(),
+        truncated.len(),
         cannot_execute.len(),
         harness_failures.len(),
         SAMPLES.len()
     );
+    eprintln!(
+        "families exercised by passing corpus samples: {:?}",
+        aggregate.families()
+    );
+    for reason in &unexercised {
+        eprintln!("  unexercised: {reason}");
+    }
     for reason in &cannot_execute {
         eprintln!("  cannot execute: {reason}");
+    }
+    for reason in &timed_out {
+        eprintln!("  timed out: {reason}");
+    }
+    for reason in &truncated {
+        eprintln!("  truncated: {reason}");
     }
     for reason in &diverged {
         eprintln!("  diverged: {reason}");
@@ -1325,16 +2154,51 @@ fn corpus_wide_differential_reexec() {
         diverged.join("\n\n")
     );
     assert!(
+        timed_out.is_empty(),
+        "samples that exceeded the hard subprocess limit:\n\n{}",
+        timed_out.join("\n\n")
+    );
+    assert!(
+        truncated.is_empty(),
+        "samples whose observation was truncated, so their comparison graded a prefix:\n\n{}",
+        truncated.join("\n\n")
+    );
+    assert!(
         passed.len() >= DIFFERENTIAL_FLOOR,
         "differential coverage regressed: {} samples verified < floor {DIFFERENTIAL_FLOOR}",
         passed.len()
     );
-    let requested_classified: usize =
-        requested_passed + requested_cannot + requested_diverged + requested_harness_failures;
     assert_eq!(requested_classified, manifest.obfuscated.len());
-    let total_classified: usize =
-        passed.len() + cannot_execute.len() + diverged.len() + harness_failures.len();
+    let total_classified: usize = passed.len()
+        + cannot_execute.len()
+        + diverged.len()
+        + timed_out.len()
+        + truncated.len()
+        + harness_failures.len();
     assert_eq!(total_classified, SAMPLES.len());
+
+    let corpus_graded_but_silent: Vec<&'static str> = REGEX_REWRITERS
+        .iter()
+        .filter_map(|rewriter: &RegexRewriter| match rewriter.coverage {
+            Coverage::Corpus { probe, .. } if probe(&aggregate) == 0 => Some(rewriter.module),
+            Coverage::Corpus { .. } | Coverage::Witness { .. } | Coverage::Ungraded(_) => None,
+        })
+        .collect();
+    assert!(
+        corpus_graded_but_silent.is_empty(),
+        "these modules are recorded as graded by a corpus sample but no passing sample fires them; move them to a family witness or record them ungraded with a reason: {corpus_graded_but_silent:?}"
+    );
+}
+
+fn assert_verified(outcome: Outcome) -> RewriteActivity {
+    match outcome {
+        Outcome::Passed(activity) => activity,
+        Outcome::CannotExecute(reason)
+        | Outcome::Diverged(reason)
+        | Outcome::TimedOut(reason)
+        | Outcome::Truncated(reason)
+        | Outcome::HarnessFailure(reason) => panic!("{reason}"),
+    }
 }
 
 fn assert_sample_verified(name: &str) {
@@ -1342,12 +2206,8 @@ fn assert_sample_verified(name: &str) {
         .iter()
         .find(|s: &&Sample| s.name == name)
         .unwrap_or_else(|| panic!("unknown sample {name}"));
-    match check_sample(sample) {
-        Outcome::Passed => {}
-        Outcome::CannotExecute(reason)
-        | Outcome::Diverged(reason)
-        | Outcome::HarnessFailure(reason) => panic!("{reason}"),
-    }
+    let activity: RewriteActivity = assert_verified(check_sample(sample));
+    eprintln!("  {name} exercises {:?}", activity.families());
 }
 
 #[test]
@@ -1362,12 +2222,7 @@ fn sample_without_clean_original_uses_obfuscated_reference() {
         comparison_description(&sample),
         "obfuscated js/javascript-obfuscator/browser/obf_base64.js vs recovered"
     );
-    match check_sample(&sample) {
-        Outcome::Passed => {}
-        Outcome::CannotExecute(reason)
-        | Outcome::Diverged(reason)
-        | Outcome::HarnessFailure(reason) => panic!("{reason}"),
-    }
+    assert_verified(check_sample(&sample));
 }
 
 #[test]
@@ -1469,17 +2324,228 @@ fn browser_host_samples_move_from_skipped_to_verified() {
             "{name}: the browser-host shim must let the clean source run to completion; got {hosted:?}"
         );
 
-        match check_sample(sample) {
-            Outcome::Passed => moved += 1,
-            Outcome::CannotExecute(reason)
-            | Outcome::Diverged(reason)
-            | Outcome::HarnessFailure(reason) => panic!("{name}: {reason}"),
-        }
+        assert_verified(check_sample(sample));
+        moved += 1;
     }
     eprintln!("browser-host shim moved {moved} sample(s) from skipped to differential-verified");
     assert_eq!(
         moved,
         BROWSER_SAMPLES.len(),
         "every browser-targeted sample must move from skipped to differentially verified once the host shim is present"
+    );
+}
+
+const WITNESS_CLEAN_PROXY: &str = r"
+function calculate(op, a, b) {
+  if (op === 'add') { return a + b; }
+  if (op === 'sub') { return a - b; }
+  return a * b;
+}
+console.log(calculate('add', 7, 3));
+console.log(calculate('sub', 7, 3));
+console.log(calculate('mul', 7, 3));
+";
+
+const WITNESS_OBF_PROXY: &str = r"
+function calculate(op, a, b) {
+  var _0xw1 = {
+    'poLyL': function (x, y) { return x + y; },
+    'FatOg': function (x, y) { return x - y; },
+    'xvNoh': function (x, y) { return x * y; }
+  };
+  if (op === 'add') { return _0xw1['poLyL'](a, b); }
+  if (op === 'sub') { return _0xw1['FatOg'](a, b); }
+  return _0xw1['xvNoh'](a, b);
+}
+console.log(calculate('add', 7, 3));
+console.log(calculate('sub', 7, 3));
+console.log(calculate('mul', 7, 3));
+";
+
+const WITNESS_WRONG_PROXY: &str = r"
+function calculate(op, a, b) {
+  if (op === 'add') { return a - b; }
+  if (op === 'sub') { return a + b; }
+  return a * b;
+}
+console.log(calculate('add', 7, 3));
+console.log(calculate('sub', 7, 3));
+console.log(calculate('mul', 7, 3));
+";
+
+const WITNESS_CLEAN_DISPATCH: &str = r"
+function compute() {
+  var acc = 0;
+  acc = acc + 5;
+  acc = acc * 3;
+  acc = acc - 2;
+  return acc;
+}
+console.log(compute());
+";
+
+const WITNESS_OBF_DISPATCH: &str = r"
+function compute() {
+  var acc = 0;
+  var order = '0|1|2'['split']('|');
+  var ptr = 0;
+  while (true) {
+    switch (order[ptr++]) {
+      case '0': acc = acc + 5; continue;
+      case '1': acc = acc * 3; continue;
+      case '2': acc = acc - 2; continue;
+    }
+    break;
+  }
+  return acc;
+}
+console.log(compute());
+";
+
+const WITNESS_WRONG_DISPATCH: &str = r"
+function compute() {
+  var acc = 0;
+  acc = acc * 3;
+  acc = acc + 5;
+  acc = acc - 2;
+  return acc;
+}
+console.log(compute());
+";
+
+const WITNESS_CLEAN_GUARD: &str = r"
+function report() {
+  var total = 0;
+  total = total + 11;
+  return total;
+}
+console.log(report());
+";
+
+const WITNESS_OBF_GUARD: &str = r"
+function report() {
+  var total = 0;
+  setInterval(function () { debugger; }, 4000);
+  total = total + 11;
+  return total;
+}
+console.log(report());
+";
+
+const WITNESS_WRONG_GUARD: &str = r"
+function report() {
+  var total = 0;
+  return total;
+}
+console.log(report());
+";
+
+struct FamilyWitness {
+    family: RewriterFamily,
+    clean: &'static str,
+    obfuscated: &'static str,
+    wrong_rewrite: &'static str,
+    probe: ActivityProbe,
+    obfuscation_is_trace_neutral: bool,
+}
+
+static FAMILY_WITNESSES: &[FamilyWitness] = &[
+    FamilyWitness {
+        family: RewriterFamily::ProxyObjectInlining,
+        clean: WITNESS_CLEAN_PROXY,
+        obfuscated: WITNESS_OBF_PROXY,
+        wrong_rewrite: WITNESS_WRONG_PROXY,
+        probe: |activity: &RewriteActivity| activity.control_flow_objects_merged,
+        obfuscation_is_trace_neutral: true,
+    },
+    FamilyWitness {
+        family: RewriterFamily::ControlFlowFlattening,
+        clean: WITNESS_CLEAN_DISPATCH,
+        obfuscated: WITNESS_OBF_DISPATCH,
+        wrong_rewrite: WITNESS_WRONG_DISPATCH,
+        probe: |activity: &RewriteActivity| activity.control_flow_switches_unflattened,
+        obfuscation_is_trace_neutral: true,
+    },
+    FamilyWitness {
+        family: RewriterFamily::SelfDefendingStrip,
+        clean: WITNESS_CLEAN_GUARD,
+        obfuscated: WITNESS_OBF_GUARD,
+        wrong_rewrite: WITNESS_WRONG_GUARD,
+        probe: |activity: &RewriteActivity| activity.unminify_protection,
+        obfuscation_is_trace_neutral: false,
+    },
+];
+
+fn single_outcome(program: &str, label: &str) -> EvalOutcome {
+    match eval_batch_guarded(program, NO_ARGS) {
+        GuardedBatch::Completed(mut evaluations) => {
+            let evaluation: Result<EvalOutcome, String> = evaluations
+                .pop()
+                .unwrap_or_else(|| panic!("{label}: worker returned no evaluation"));
+            evaluation.unwrap_or_else(|reason: String| panic!("{label}: {reason}"))
+        }
+        GuardedBatch::WallTimeExceeded => {
+            panic!("{label}: exceeded the hard {EVAL_TIMEOUT:?} subprocess limit")
+        }
+        GuardedBatch::HarnessFailure(reason) => panic!("{label}: {reason}"),
+    }
+}
+
+#[test]
+fn a_wrong_rewrite_in_each_named_family_fails_the_differential() {
+    assert_eq!(FAMILY_WITNESSES.len(), NAMED_FAMILIES.len());
+    let mut aggregate: RewriteActivity = RewriteActivity::default();
+    for witness in FAMILY_WITNESSES {
+        let family: RewriterFamily = witness.family;
+        assert!(
+            NAMED_FAMILIES.contains(&family),
+            "{family:?} is not one of the families this item names"
+        );
+        let want: EvalOutcome = single_outcome(witness.clean, "clean witness");
+        let before: EvalOutcome = single_outcome(witness.obfuscated, "obfuscated witness");
+        if witness.obfuscation_is_trace_neutral {
+            assert_eq!(
+                want, before,
+                "{family:?}: the witness fixture must be behaviorally faithful before recovery"
+            );
+        } else {
+            assert_ne!(
+                want, before,
+                "{family:?}: the guard this family strips must be visible in the trace before recovery, otherwise the strip is graded against nothing"
+            );
+        }
+        let recovery: Recovery = recover_with(Pipeline::ObfuscatorIo, witness.obfuscated)
+            .unwrap_or_else(|reason: String| panic!("{family:?}: recovery failed: {reason}"));
+        aggregate.merge(&recovery.activity);
+        let fired: u64 = (witness.probe)(&recovery.activity);
+        assert!(
+            fired > 0,
+            "{family:?}: the witness must actually exercise the family, otherwise the wrong-rewrite check grades nothing"
+        );
+        let got: EvalOutcome = single_outcome(&recovery.source, "recovered witness");
+        assert_eq!(
+            want, got,
+            "{family:?}: recovered behavior diverged from the clean original\n--recovered src--\n{}",
+            recovery.source
+        );
+        let wrong: EvalOutcome = single_outcome(witness.wrong_rewrite, "wrong rewrite");
+        assert_ne!(
+            want, wrong,
+            "{family:?}: a deliberately wrong rewrite of this family produced the original trace, so the differential cannot detect a wrong rewrite here"
+        );
+        eprintln!(
+            "  {family:?}: faithful recovery verified, wrong rewrite rejected, probe fired {fired} time(s)"
+        );
+    }
+    let witness_graded_but_silent: Vec<&'static str> = REGEX_REWRITERS
+        .iter()
+        .filter_map(|rewriter: &RegexRewriter| match rewriter.coverage {
+            Coverage::Witness { probe, .. } if probe(&aggregate) == 0 => Some(rewriter.module),
+            Coverage::Corpus { .. } | Coverage::Witness { .. } | Coverage::Ungraded(_) => None,
+        })
+        .collect();
+    assert!(
+        witness_graded_but_silent.is_empty(),
+        "these modules are recorded as graded by a family witness but no witness fires them; record them ungraded with a reason instead: {witness_graded_but_silent:?}"
     );
 }

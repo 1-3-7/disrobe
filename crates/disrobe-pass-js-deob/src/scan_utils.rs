@@ -1,3 +1,203 @@
+use std::ops::Range;
+
+use regex::{Captures, Regex};
+
+#[must_use]
+pub(crate) fn literal_and_comment_ranges(source: &str) -> Vec<Range<usize>> {
+    let bytes: &[u8] = source.as_bytes();
+    let mut ranges: Vec<Range<usize>> = Vec::new();
+    let mut i: usize = 0;
+    let mut prev_significant: u8 = b';';
+    while i < bytes.len() {
+        let b: u8 = bytes[i];
+        match b {
+            b'\'' | b'"' | b'`' => {
+                let end: usize = skip_quoted_span(bytes, i, b);
+                ranges.push(i..end);
+                prev_significant = b;
+                i = end;
+                continue;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                let end: usize = skip_line_comment_span(bytes, i);
+                ranges.push(i..end);
+                i = end;
+                continue;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                let end: usize = skip_block_comment_span(bytes, i);
+                ranges.push(i..end);
+                i = end;
+                continue;
+            }
+            b'/' if regex_literal_allowed(prev_significant) => {
+                let end: usize = skip_regex_span(bytes, i);
+                ranges.push(i..end);
+                prev_significant = b'/';
+                i = end;
+                continue;
+            }
+            _ => {}
+        }
+        if !matches!(b, b' ' | b'\t' | b'\r' | b'\n') {
+            prev_significant = b;
+        }
+        i += 1;
+    }
+    ranges
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SpanScope {
+    Code,
+    CodeOrWholeLiteral,
+}
+
+#[must_use]
+pub(crate) fn span_is_code(ranges: &[Range<usize>], start: usize, end: usize) -> bool {
+    span_in_scope(ranges, start, end, SpanScope::Code)
+}
+
+#[must_use]
+pub(crate) fn span_in_scope(
+    ranges: &[Range<usize>],
+    start: usize,
+    end: usize,
+    scope: SpanScope,
+) -> bool {
+    let starts_inside: bool = ranges.iter().any(|range: &Range<usize>| match scope {
+        SpanScope::Code => range.start <= start && start < range.end,
+        SpanScope::CodeOrWholeLiteral => range.start < start && start < range.end,
+    });
+    let ends_inside: bool = ranges
+        .iter()
+        .any(|range: &Range<usize>| range.start < end && end < range.end);
+    !starts_inside && !ends_inside
+}
+
+pub(crate) fn replace_in_code(
+    source: &str,
+    re: &Regex,
+    fold: impl FnMut(&Captures<'_>) -> Option<String>,
+) -> (String, usize) {
+    replace_in_scope(source, re, SpanScope::Code, fold)
+}
+
+pub(crate) fn replace_in_scope(
+    source: &str,
+    re: &Regex,
+    scope: SpanScope,
+    mut fold: impl FnMut(&Captures<'_>) -> Option<String>,
+) -> (String, usize) {
+    let skips: Vec<Range<usize>> = literal_and_comment_ranges(source);
+    let mut out: String = String::with_capacity(source.len());
+    let mut last: usize = 0;
+    let mut count: usize = 0;
+    for caps in re.captures_iter(source) {
+        let Some(whole): Option<regex::Match<'_>> = caps.get(0) else {
+            continue;
+        };
+        if whole.start() < last || !span_in_scope(&skips, whole.start(), whole.end(), scope) {
+            continue;
+        }
+        let Some(replacement): Option<String> = fold(&caps) else {
+            continue;
+        };
+        out.push_str(&source[last..whole.start()]);
+        out.push_str(&replacement);
+        last = whole.end();
+        count += 1;
+    }
+    out.push_str(&source[last..]);
+    (out, count)
+}
+
+const fn regex_literal_allowed(prev: u8) -> bool {
+    matches!(
+        prev,
+        b'(' | b','
+            | b'='
+            | b':'
+            | b'['
+            | b'!'
+            | b'&'
+            | b'|'
+            | b'?'
+            | b'{'
+            | b'}'
+            | b';'
+            | b'+'
+            | b'-'
+            | b'*'
+            | b'%'
+            | b'<'
+            | b'>'
+            | b'~'
+            | b'^'
+            | b'\n'
+            | b'\r'
+    )
+}
+
+fn skip_quoted_span(bytes: &[u8], start: usize, quote: u8) -> usize {
+    let mut i: usize = start + 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b if b == quote => return i + 1,
+            _ => i += 1,
+        }
+    }
+    bytes.len()
+}
+
+fn skip_line_comment_span(bytes: &[u8], start: usize) -> usize {
+    let mut i: usize = start + 2;
+    while i < bytes.len() && bytes[i] != b'\n' {
+        i += 1;
+    }
+    i
+}
+
+fn skip_block_comment_span(bytes: &[u8], start: usize) -> usize {
+    let mut i: usize = start + 2;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+            return i + 2;
+        }
+        i += 1;
+    }
+    bytes.len()
+}
+
+fn skip_regex_span(bytes: &[u8], start: usize) -> usize {
+    let mut i: usize = start + 1;
+    let mut in_class: bool = false;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'[' => {
+                in_class = true;
+                i += 1;
+            }
+            b']' => {
+                in_class = false;
+                i += 1;
+            }
+            b'/' if !in_class => {
+                i += 1;
+                while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+                    i += 1;
+                }
+                return i;
+            }
+            b'\n' => return start + 1,
+            _ => i += 1,
+        }
+    }
+    bytes.len()
+}
+
 #[must_use]
 pub(crate) fn reparses(source: &str) -> bool {
     let allocator: oxc_allocator::Allocator = oxc_allocator::Allocator::default();
