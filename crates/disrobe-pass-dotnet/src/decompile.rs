@@ -2,7 +2,10 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::cil::{FlowControl, Instruction, MethodBody, OperandValue, parse_method_body};
+use crate::cil::{
+    FlowControl, Instruction, MethodBody, OperandValue, SlotAccess, SlotOp, decode_slot,
+    parse_method_body,
+};
 use crate::error::Result;
 use crate::metadata::{MetadataRoot, metadata_slice, parse_metadata_root};
 use crate::model::{IsInstTargetKind, MethodModel, Resolver, TypeModel};
@@ -735,21 +738,11 @@ fn infer_param_names_from_field_stores(
 }
 
 fn ldarg_param_slot(ins: &Instruction, has_this: bool) -> Option<u32> {
-    let raw: u32 = match ins.name.as_str() {
-        "ldarg.0" => 0,
-        "ldarg.1" => 1,
-        "ldarg.2" => 2,
-        "ldarg.3" => 3,
-        "ldarg" | "ldarg.s" | "ldarga" | "ldarga.s" => match ins.operand {
-            OperandValue::U8(v) => u32::from(v),
-            OperandValue::U16(v) => u32::from(v),
-            OperandValue::I32(v) => u32::try_from(v).ok()?,
-            _ => return None,
-        },
-        _ => return None,
-    };
-    let base: u32 = u32::from(has_this);
-    raw.checked_sub(base)
+    let access: SlotAccess = decode_slot(ins).ok()?;
+    if !matches!(access.op, SlotOp::LoadArgument | SlotOp::ArgumentAddress) {
+        return None;
+    }
+    u32::from(access.index).checked_sub(u32::from(has_this))
 }
 
 fn param_name_from_field(field: &str) -> Option<String> {
@@ -904,6 +897,62 @@ mod tests {
         };
         assert_eq!(ldarg_param_slot(&load, true), Some(0));
         assert_eq!(ldarg_param_slot(&load, false), Some(1));
+    }
+
+    fn arg_ins(name: &str, operand: OperandValue) -> Instruction {
+        Instruction {
+            offset: 0,
+            opcode: 0,
+            name: name.to_owned(),
+            operand,
+            flow: FlowControl::Next,
+        }
+    }
+
+    #[test]
+    fn ldarg_param_slot_reads_every_argument_form() {
+        for (name, operand, raw) in [
+            ("ldarg.0", OperandValue::None, 0_u32),
+            ("ldarg.3", OperandValue::None, 3),
+            ("ldarg.s", OperandValue::U8(255), 255),
+            ("ldarga.s", OperandValue::U8(4), 4),
+            ("ldarg", OperandValue::U16(65_535), 65_535),
+            ("ldarga", OperandValue::U16(256), 256),
+        ] {
+            assert_eq!(
+                ldarg_param_slot(&arg_ins(name, operand), false),
+                Some(raw),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn ldarg_param_slot_rejects_an_operand_it_cannot_read_and_every_non_argument_access() {
+        for operand in [
+            OperandValue::None,
+            OperandValue::I32(-1),
+            OperandValue::I32(7),
+            OperandValue::I64(2),
+            OperandValue::Token(0x0A00_0001),
+        ] {
+            assert_eq!(
+                ldarg_param_slot(&arg_ins("ldarg.s", operand.clone()), false),
+                None,
+                "{operand:?}"
+            );
+        }
+        for name in ["ldloc.0", "stloc.s", "starg.s", "ldloca", "ret"] {
+            assert_eq!(
+                ldarg_param_slot(&arg_ins(name, OperandValue::U8(1)), false),
+                None,
+                "{name}"
+            );
+        }
+        assert_eq!(
+            ldarg_param_slot(&arg_ins("ldarg.0", OperandValue::None), true),
+            None
+        );
     }
 
     #[test]
