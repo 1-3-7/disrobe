@@ -2,10 +2,14 @@
 use std::time::Duration;
 
 use disrobe_pass_pyinstaller::{
-    Cookie, MEI_MAGIC, TocEntry, extract_archive, extract_pyz, find_cookie, walk_toc,
+    Cookie, MEI_MAGIC, PyzEntry, TocEntry, extract_archive, extract_pyz, find_cookie, walk_toc,
 };
-use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, XorShift64};
+use disrobe_py_marshal::PyVersion;
+use disrobe_testkit::{
+    CorpusEntry, ReachTally, SeedReach, ShapelessSeed, StressCase, StressConfig, XorShift64,
+};
 
+const MEI_PYZ_MAGIC: &[u8; 4] = b"PYZ\0";
 const RANDOM_SPAN_BYTES: usize = 1024;
 const CASES_PER_INPUT: usize = 11_264;
 const BATCH_SIZE: usize = 5_632;
@@ -70,12 +74,48 @@ fn pyinstaller_seed() -> Vec<u8> {
     image
 }
 
+const PYZ_PYC_MAGIC_PY37: u32 = 0x0a0d_0d42;
+const PYZ_HEADER_LEN: usize = 12;
+const PYZ_MODULE_NAME: &[u8] = b"seedmod";
+const PYZ_ZLIB_PAYLOAD: [u8; 14] = [
+    0x78, 0xda, 0x4b, 0x61, 0x60, 0x60, 0x08, 0x66, 0x00, 0x00, 0x03, 0x04, 0x00, 0xb8,
+];
+
+fn marshal_tuple_header(out: &mut Vec<u8>, count: u32) {
+    out.push(b'(');
+    out.extend_from_slice(&count.to_le_bytes());
+}
+
+fn marshal_int(out: &mut Vec<u8>, value: i32) {
+    out.push(b'i');
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn marshal_string(out: &mut Vec<u8>, value: &[u8]) {
+    out.push(b's');
+    out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+    out.extend_from_slice(value);
+}
+
 fn pyz_seed() -> Vec<u8> {
-    let mut bytes: Vec<u8> = Vec::new();
-    bytes.extend_from_slice(b"PYZ\x00");
-    bytes.extend_from_slice(&0x0a0du32.to_be_bytes());
-    bytes.extend_from_slice(&64u32.to_be_bytes());
-    bytes.resize(64, 0);
+    let payload_offset: usize = PYZ_HEADER_LEN;
+    let toc_offset: usize = payload_offset + PYZ_ZLIB_PAYLOAD.len();
+
+    let mut toc: Vec<u8> = Vec::new();
+    marshal_tuple_header(&mut toc, 1);
+    marshal_tuple_header(&mut toc, 2);
+    marshal_string(&mut toc, PYZ_MODULE_NAME);
+    marshal_tuple_header(&mut toc, 3);
+    marshal_int(&mut toc, 0);
+    marshal_int(&mut toc, payload_offset as i32);
+    marshal_int(&mut toc, PYZ_ZLIB_PAYLOAD.len() as i32);
+
+    let mut bytes: Vec<u8> = Vec::with_capacity(toc_offset + toc.len());
+    bytes.extend_from_slice(MEI_PYZ_MAGIC);
+    bytes.extend_from_slice(&PYZ_PYC_MAGIC_PY37.to_le_bytes());
+    bytes.extend_from_slice(&(toc_offset as u32).to_be_bytes());
+    bytes.extend_from_slice(&PYZ_ZLIB_PAYLOAD);
+    bytes.extend_from_slice(&toc);
     bytes
 }
 
@@ -112,11 +152,58 @@ fn saturate(bytes: &[u8], case_seed: u64) -> Vec<u8> {
 }
 
 fn probe(bytes: &[u8]) {
-    if let Ok(cookie) = find_cookie(bytes) {
-        let _ = walk_toc(bytes, &cookie);
+    drop(measured_probe(bytes));
+}
+
+fn measured_probe(bytes: &[u8]) -> SeedReach {
+    let mut reach: SeedReach = SeedReach::new();
+    match find_cookie(bytes) {
+        Ok(cookie) => reach.record_result(
+            "carchive-toc",
+            &walk_toc(bytes, &cookie),
+            |entries: &Vec<TocEntry>| !entries.is_empty(),
+        ),
+        Err(_) => reach.drove(),
     }
-    let _ = extract_archive(bytes);
-    let _ = extract_pyz(bytes);
+    reach.record_result(
+        "carchive-entries",
+        &extract_archive(bytes),
+        |output: &disrobe_pass_pyinstaller::ExtractOutput| !output.entries.is_empty(),
+    );
+    reach.record_result(
+        "pyz-modules",
+        &extract_pyz(bytes),
+        |(_, entries): &(PyVersion, Vec<PyzEntry>)| !entries.is_empty(),
+    );
+    reach
+}
+
+const SHAPELESS: [ShapelessSeed; 3] = [
+    ShapelessSeed {
+        name: "empty",
+        reason: "the zero-length input every entry point must refuse rather than parse",
+    },
+    ShapelessSeed {
+        name: "random-span",
+        reason: "a kilobyte of zero bytes, present so the readers are driven over a buffer none of \
+                 them can claim",
+    },
+    ShapelessSeed {
+        name: "entropy-span",
+        reason: "a pseudo-random span whose purpose is to be unparseable by every reader",
+    },
+];
+
+#[test]
+fn every_unmutated_seed_reaches_the_surface_it_is_named_for() {
+    let mut tally: ReachTally = ReachTally::new();
+    for entry in corpus() {
+        let reach: SeedReach = measured_probe(entry.bytes());
+        tally.observe(entry.name(), &reach, &SHAPELESS);
+    }
+    println!("\n{}\n", tally.summary("pyinstaller"));
+    tally.assert_every_seed_reaches("pyinstaller");
+    assert_eq!(tally.total(), corpus().len());
 }
 
 fn check(case: &StressCase<'_>) {

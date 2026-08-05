@@ -1,7 +1,7 @@
 use crate::decompile::luau_lift::{LStmt, LiftedStmt};
 use crate::decompile::luau_structure::StructuredBlock;
 
-const MAX_STRUCT_RECURSION: usize = 4096;
+const MAX_STRUCTURE_DEPTH: usize = 256;
 
 #[derive(Debug, Clone)]
 enum Node {
@@ -37,7 +37,7 @@ struct PcNode {
 struct Ctx<'a> {
     nodes: &'a [PcNode],
     end_pc: usize,
-    guard: usize,
+    depth: usize,
     repeats: Vec<RepeatEdge>,
     active_repeats: Vec<usize>,
     label_candidates: std::collections::BTreeSet<usize>,
@@ -79,7 +79,7 @@ pub(super) fn structure_standard(stmts: &[LiftedStmt], code_len: usize) -> Struc
     let mut ctx: Ctx<'_> = Ctx {
         nodes: &nodes,
         end_pc: code_len + 1,
-        guard: 0,
+        depth: 0,
         repeats,
         active_repeats: Vec::new(),
         label_candidates,
@@ -283,11 +283,14 @@ fn structure_seq(
     cur_loop: Option<LoopCtx>,
 ) -> Vec<StructuredBlock> {
     let mut out: Vec<StructuredBlock> = Vec::new();
-    ctx.guard += 1;
-    if ctx.guard > MAX_STRUCT_RECURSION {
+    if ctx.depth >= MAX_STRUCTURE_DEPTH {
         ctx.truncated_regions = ctx.truncated_regions.saturating_add(1);
+        out.push(StructuredBlock::Raw(format!(
+            "-- nesting deeper than {MAX_STRUCTURE_DEPTH} left this region unstructured"
+        )));
         return out;
     }
+    ctx.depth += 1;
     while *pos < ctx.nodes.len() {
         let cur: PcNode = ctx.nodes[*pos].clone();
         let cur_index: usize = *pos;
@@ -382,6 +385,7 @@ fn structure_seq(
             }
         }
     }
+    ctx.depth -= 1;
     out
 }
 
@@ -514,6 +518,7 @@ fn skip_block_end(nodes: &[PcNode], pos: &mut usize) {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -575,6 +580,84 @@ mod tests {
                 _ => 0,
             })
             .sum()
+    }
+
+    fn nested_conditionals(depth: usize) -> Vec<LiftedStmt> {
+        let span: usize = depth * 2;
+        let mut stmts: Vec<LiftedStmt> = Vec::with_capacity(span);
+        for i in 0..depth {
+            stmts.push(lifted(
+                i,
+                LStmt::Cond {
+                    cond: format!("r0 == {i}"),
+                    target: span - i,
+                },
+            ));
+        }
+        stmts.push(lifted(depth, LStmt::Raw("r1 = 1".to_owned())));
+        stmts
+    }
+
+    fn nesting_of(blocks: &[StructuredBlock]) -> usize {
+        blocks
+            .iter()
+            .map(|b: &StructuredBlock| match b {
+                StructuredBlock::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => 1 + nesting_of(then_body).max(nesting_of(else_body)),
+                StructuredBlock::While { body, .. }
+                | StructuredBlock::Repeat { body, .. }
+                | StructuredBlock::NumericFor { body, .. }
+                | StructuredBlock::GenericFor { body, .. } => 1 + nesting_of(body),
+                _ => 0,
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn carries_depth_marker(blocks: &[StructuredBlock]) -> bool {
+        blocks.iter().any(|b: &StructuredBlock| match b {
+            StructuredBlock::Raw(text) => text.contains("nesting deeper than"),
+            StructuredBlock::If {
+                then_body,
+                else_body,
+                ..
+            } => carries_depth_marker(then_body) || carries_depth_marker(else_body),
+            StructuredBlock::While { body, .. }
+            | StructuredBlock::Repeat { body, .. }
+            | StructuredBlock::NumericFor { body, .. }
+            | StructuredBlock::GenericFor { body, .. } => carries_depth_marker(body),
+            _ => false,
+        })
+    }
+
+    #[test]
+    fn nesting_far_past_the_limit_returns_instead_of_exhausting_the_stack() {
+        let depth: usize = MAX_STRUCTURE_DEPTH * 8;
+        let stmts: Vec<LiftedStmt> = nested_conditionals(depth);
+
+        let worker: std::thread::JoinHandle<StructureResult> = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || structure_standard(&stmts, depth * 2))
+            .expect("spawn a thread whose stack this walk overflowed before the limit existed");
+        let result: StructureResult = worker.join().expect("the walk must return, never overflow");
+
+        assert!(
+            result.truncated_regions > 0,
+            "nesting {depth} deep is past the limit, so the walk must refuse and count it"
+        );
+        assert!(
+            nesting_of(&result.blocks) <= MAX_STRUCTURE_DEPTH,
+            "the recovered tree must not nest past the limit that bounds the walk building it, \
+             because every consumer of that tree walks it to the same depth; got {}",
+            nesting_of(&result.blocks)
+        );
+        assert!(
+            carries_depth_marker(&result.blocks),
+            "a reader of the recovered source has to see where structure stopped"
+        );
     }
 
     #[test]
@@ -706,27 +789,58 @@ mod tests {
     }
 
     #[test]
-    fn a_ladder_past_the_budget_flattens_its_branches_and_says_so() {
-        let branches: usize = MAX_STRUCT_RECURSION + 64;
+    fn a_ladder_of_siblings_costs_nothing_against_a_limit_that_counts_nesting() {
+        let branches: usize = 5000;
         let stmts: Vec<LiftedStmt> = branch_ladder(branches);
 
         let result: StructureResult = structure_standard(&stmts, branches * 2);
 
-        assert!(
-            result.truncated_regions > 0,
-            "the structuring budget counts calls rather than depth, so a ladder longer than it \
-             leaves regions unstructured and the count must say how many"
-        );
-        let emptied: usize = empty_conditionals(&result.blocks);
-        assert!(
-            emptied > 0,
-            "a truncated branch renders with an empty body while its statement moves out of the \
-             branch, which is the loss the count above reports"
+        assert_eq!(
+            result.truncated_regions, 0,
+            "{branches} sibling branches nest one deep, so a limit on nesting must refuse none of \
+             them; a counter that never released would refuse every branch past its value"
         );
         assert_eq!(
-            result.truncated_regions, emptied,
-            "every truncated region is one branch that lost its body, so the reported count is the \
-             measured loss rather than an estimate"
+            count_conditionals(&result.blocks),
+            branches,
+            "every branch is recovered"
+        );
+        assert_eq!(
+            empty_conditionals(&result.blocks),
+            0,
+            "and every one of them keeps the statement it guards, which is the defect this limit \
+             shape removes"
+        );
+        assert_eq!(nesting_of(&result.blocks), 1, "the ladder is flat");
+    }
+
+    #[test]
+    fn a_chain_deeper_than_the_limit_is_still_refused_and_counted() {
+        let depth: usize = MAX_STRUCTURE_DEPTH + 40;
+        let stmts: Vec<LiftedStmt> = nested_conditionals(depth);
+
+        let result: StructureResult = structure_standard(&stmts, depth * 2);
+
+        assert!(
+            result.truncated_regions > 0,
+            "trading a total budget for a nesting limit moves where the refusal happens; it must \
+             not remove it"
+        );
+        assert!(carries_depth_marker(&result.blocks));
+    }
+
+    #[test]
+    fn nesting_inside_the_limit_is_recovered_at_its_real_depth() {
+        let depth: usize = MAX_STRUCTURE_DEPTH - 8;
+        let stmts: Vec<LiftedStmt> = nested_conditionals(depth);
+
+        let result: StructureResult = structure_standard(&stmts, depth * 2);
+
+        assert_eq!(result.truncated_regions, 0);
+        assert_eq!(
+            nesting_of(&result.blocks),
+            depth,
+            "a body that fits the limit keeps its real shape rather than being flattened"
         );
     }
 }

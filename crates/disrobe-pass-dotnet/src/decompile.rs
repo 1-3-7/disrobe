@@ -653,7 +653,16 @@ fn build_name_table(
         param_names = crate::names::canonical_parameter_names(&param_names, lang);
     }
     let local_types: Vec<String> = resolver.local_types(body.local_var_sig_tok, lang);
+    let param_kinds: Vec<crate::signature::ConditionKind> = m
+        .signature
+        .params
+        .iter()
+        .map(crate::signature::TypeSig::condition_kind)
+        .collect();
+    let local_kinds: Vec<crate::signature::ConditionKind> =
+        resolver.local_condition_kinds(body.local_var_sig_tok);
     NameTable::new(!m.is_static(), param_names, param_types, local_types)
+        .with_kinds(param_kinds, local_kinds)
 }
 
 fn infer_param_names_from_field_stores(

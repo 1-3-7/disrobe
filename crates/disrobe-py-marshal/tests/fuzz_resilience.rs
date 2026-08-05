@@ -2,9 +2,11 @@
 use std::time::Duration;
 
 use disrobe_py_marshal::{
-    Object, PyVersion, RefTableDump, dump_reftable, load, load_with_reftable, read_pyc,
+    Object, PyVersion, PycFile, RefTableDump, dump_reftable, load, load_with_reftable, read_pyc,
 };
-use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, XorShift64};
+use disrobe_testkit::{
+    CorpusEntry, ReachTally, SeedReach, ShapelessSeed, StressCase, StressConfig, XorShift64,
+};
 
 const VERSIONS: [PyVersion; 4] = [
     PyVersion::PY15,
@@ -40,10 +42,13 @@ fn marshal_seed() -> Vec<u8> {
     v
 }
 
+const PYC_MAGIC_PY37: u32 = 0x0a0d_0d42;
+const PYC_PEP552_HEADER_TAIL: usize = 12;
+
 fn pyc_seed() -> Vec<u8> {
     let mut v: Vec<u8> = Vec::new();
-    v.extend_from_slice(&0x0a0d_0d33u32.to_le_bytes());
-    v.extend_from_slice(&[0u8; 12]);
+    v.extend_from_slice(&PYC_MAGIC_PY37.to_le_bytes());
+    v.extend_from_slice(&[0u8; PYC_PEP552_HEADER_TAIL]);
     v.extend_from_slice(&marshal_seed());
     v
 }
@@ -74,12 +79,35 @@ fn retag_collections(bytes: &[u8], case_seed: u64) -> Vec<u8> {
 }
 
 fn probe(bytes: &[u8]) {
-    let _ = read_pyc(bytes);
+    drop(measured_probe(bytes));
+}
+
+fn measured_probe(bytes: &[u8]) -> SeedReach {
+    let mut reach: SeedReach = SeedReach::new();
+    reach.record_result("pyc-code-object", &read_pyc(bytes), |pyc: &PycFile| {
+        is_structured(&pyc.code)
+    });
     for version in VERSIONS {
-        let _ = load(bytes, version);
-        let _ = load_with_reftable(bytes, version);
-        let _ = dump_reftable(bytes, version);
+        reach.record_result("marshal-object", &load(bytes, version), is_structured);
+        reach.record_result(
+            "marshal-reftable",
+            &load_with_reftable(bytes, version),
+            |(_, dump): &(Object, RefTableDump)| !dump.entries.is_empty(),
+        );
+        reach.record_result(
+            "reftable-dump",
+            &dump_reftable(bytes, version),
+            |(_, dump): &(Object, RefTableDump)| !dump.entries.is_empty(),
+        );
     }
+    reach
+}
+
+const fn is_structured(object: &Object) -> bool {
+    !matches!(
+        object,
+        Object::None | Object::StopIteration | Object::Ellipsis
+    )
 }
 
 fn check(case: &StressCase<'_>) {
@@ -100,7 +128,7 @@ fn corpus() -> Vec<CorpusEntry> {
     vec![
         CorpusEntry::new("marshal-tuple", marshal_seed()),
         CorpusEntry::new("pyc-header", pyc_seed()),
-        CorpusEntry::new("random-span", vec![0u8; RANDOM_SPAN_BYTES]),
+        CorpusEntry::new("zero-span", vec![0u8; RANDOM_SPAN_BYTES]),
         CorpusEntry::new("entropy-span", entropy_span(RANDOM_SPAN_BYTES)),
     ]
 }
@@ -121,6 +149,30 @@ mod resilience {
         corpus: super::corpus,
         config: super::config
     );
+}
+
+const SHAPELESS: [ShapelessSeed; 2] = [
+    ShapelessSeed {
+        name: "zero-span",
+        reason: "a kilobyte of zero bytes carries no marshal type tag, and exists so every entry \
+                 point is driven over a buffer none of them can claim",
+    },
+    ShapelessSeed {
+        name: "entropy-span",
+        reason: "a pseudo-random span whose whole purpose is to be unparseable by every reader",
+    },
+];
+
+#[test]
+fn every_unmutated_seed_reaches_the_surface_it_is_named_for() {
+    let mut tally: ReachTally = ReachTally::new();
+    for entry in corpus() {
+        let reach: SeedReach = measured_probe(entry.bytes());
+        tally.observe(entry.name(), &reach, &SHAPELESS);
+    }
+    println!("\n{}\n", tally.summary("py-marshal"));
+    tally.assert_every_seed_reaches("py-marshal");
+    assert_eq!(tally.total(), corpus().len());
 }
 
 #[test]

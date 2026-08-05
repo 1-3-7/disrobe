@@ -23,7 +23,7 @@ The authoritative source is always `disrobe <command> --help`. This page is a co
 | Command | Purpose |
 |---|---|
 | `disrobe js deob <js>` | Deobfuscate (obfuscator.io, JS-Confuser, Jscrambler, esoteric encoders). |
-| `disrobe js unbundle <js>` | Split a bundle into per-module sources (<!-- m:js_bundlers -->11<!-- /m --> bundlers). |
+| `disrobe js unbundle <js>` | Split a bundle into per-module sources; the unbundler routes <!-- m:js_bundlers -->11<!-- /m --> catalogued bundler families. |
 | `disrobe js v8 <blob>` | Inspect V8 `.jsc` / Node SEA / nexe / nw.js / Electron `.asar`. |
 | `disrobe wasm decompile <wasm>` | Lift to `--target json\|rust\|ts\|wat\|c`. |
 | `disrobe wasm deob <wasm>` | Reverse Wasm obfuscator families. |

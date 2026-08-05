@@ -2,7 +2,9 @@
 use std::time::Duration;
 
 use disrobe_pass_nativelang::{analyze, demangle_crystal, demangle_d, demangle_nim, demangle_zig};
-use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, XorShift64};
+use disrobe_testkit::{
+    CorpusEntry, ReachTally, SeedReach, ShapelessSeed, StressCase, StressConfig, XorShift64,
+};
 
 const RANDOM_SPAN_BYTES: usize = 1024;
 const CASES_PER_INPUT: usize = 13_000;
@@ -32,21 +34,44 @@ fn entropy_span(len: usize) -> Vec<u8> {
     out
 }
 
+const ELF64_HEADER_LEN: usize = 64;
+const ELF64_SECTION_HEADER_LEN: usize = 64;
+const ELF64_SECTION_COUNT: usize = 2;
+const ELF64_SHSTRTAB: &[u8] = b"\0.shstrtab\0";
+const ZIG_RUNTIME_MARKER: &[u8] = b"__zig_probe_stack\0";
+
 fn elf64_seed() -> Vec<u8> {
-    let mut bytes: Vec<u8> = Vec::with_capacity(256);
-    bytes.extend_from_slice(&[0x7f, b'E', b'L', b'F', 2, 1, 1]);
-    bytes.resize(16, 0);
-    bytes.extend_from_slice(&2u16.to_le_bytes());
-    bytes.extend_from_slice(&0x3eu16.to_le_bytes());
-    bytes.extend_from_slice(&1u32.to_le_bytes());
-    bytes.resize(256, 0);
+    let section_table: usize = ELF64_HEADER_LEN;
+    let strtab_offset: usize = section_table + ELF64_SECTION_COUNT * ELF64_SECTION_HEADER_LEN;
+    let mut bytes: Vec<u8> = vec![0u8; strtab_offset + ELF64_SHSTRTAB.len()];
+
+    bytes[0..7].copy_from_slice(&[0x7f, b'E', b'L', b'F', 2, 1, 1]);
+    bytes[16..18].copy_from_slice(&2u16.to_le_bytes());
+    bytes[18..20].copy_from_slice(&0x3eu16.to_le_bytes());
+    bytes[20..24].copy_from_slice(&1u32.to_le_bytes());
+    bytes[40..48].copy_from_slice(&(section_table as u64).to_le_bytes());
+    bytes[52..54].copy_from_slice(&(ELF64_HEADER_LEN as u16).to_le_bytes());
+    bytes[54..56].copy_from_slice(&56u16.to_le_bytes());
+    bytes[58..60].copy_from_slice(&(ELF64_SECTION_HEADER_LEN as u16).to_le_bytes());
+    bytes[60..62].copy_from_slice(&(ELF64_SECTION_COUNT as u16).to_le_bytes());
+    bytes[62..64].copy_from_slice(&1u16.to_le_bytes());
+
+    let shstrtab: usize = section_table + ELF64_SECTION_HEADER_LEN;
+    bytes[shstrtab..shstrtab + 4].copy_from_slice(&1u32.to_le_bytes());
+    bytes[shstrtab + 4..shstrtab + 8].copy_from_slice(&3u32.to_le_bytes());
+    bytes[shstrtab + 24..shstrtab + 32].copy_from_slice(&(strtab_offset as u64).to_le_bytes());
+    bytes[shstrtab + 32..shstrtab + 40]
+        .copy_from_slice(&(ELF64_SHSTRTAB.len() as u64).to_le_bytes());
+
+    bytes[strtab_offset..].copy_from_slice(ELF64_SHSTRTAB);
+    bytes.extend_from_slice(ZIG_RUNTIME_MARKER);
     bytes
 }
 
 fn corpus() -> Vec<CorpusEntry> {
     vec![
         CorpusEntry::new("empty", Vec::<u8>::new()),
-        CorpusEntry::new("elf64-header", elf64_seed()),
+        CorpusEntry::new("zig-elf64", elf64_seed()),
         CorpusEntry::new("mangled-symbols", MANGLED_SEED_TEXT.to_vec()),
         CorpusEntry::new("random-span", vec![0u8; RANDOM_SPAN_BYTES]),
         CorpusEntry::new("entropy-span", entropy_span(RANDOM_SPAN_BYTES)),
@@ -91,7 +116,51 @@ fn mangled_from_seed(case_seed: u64) -> String {
 }
 
 fn probe_image(bytes: &[u8]) {
-    let _ = analyze(bytes);
+    drop(measured_probe(bytes));
+}
+
+fn measured_probe(bytes: &[u8]) -> SeedReach {
+    let mut reach: SeedReach = SeedReach::new();
+    reach.record_result(
+        "native-image",
+        &analyze(bytes),
+        |report: &disrobe_pass_nativelang::NativeLangAnalysis| report.ptr_size > 0u8,
+    );
+    let text: String = String::from_utf8_lossy(bytes).into_owned();
+    reach.record("nim-symbol", demangle_nim(&text).is_some());
+    drop(demangle_zig(&text));
+    reach.drove();
+    reach.record("crystal-symbol", demangle_crystal(&text).is_some());
+    reach.record("d-symbol", demangle_d(&text).is_some());
+    reach
+}
+
+const SHAPELESS: [ShapelessSeed; 3] = [
+    ShapelessSeed {
+        name: "empty",
+        reason: "the zero-length input every entry point must refuse rather than parse",
+    },
+    ShapelessSeed {
+        name: "random-span",
+        reason: "a kilobyte of zero bytes, present so the readers are driven over a buffer none of \
+                 them can claim",
+    },
+    ShapelessSeed {
+        name: "entropy-span",
+        reason: "a pseudo-random span whose purpose is to be unparseable by every reader",
+    },
+];
+
+#[test]
+fn every_unmutated_seed_reaches_the_surface_it_is_named_for() {
+    let mut tally: ReachTally = ReachTally::new();
+    for entry in corpus() {
+        let reach: SeedReach = measured_probe(entry.bytes());
+        tally.observe(entry.name(), &reach, &SHAPELESS);
+    }
+    println!("\n{}\n", tally.summary("nativelang"));
+    tally.assert_every_seed_reaches("nativelang");
+    assert_eq!(tally.total(), corpus().len());
 }
 
 fn probe_symbol(text: &str) {

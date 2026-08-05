@@ -3,7 +3,9 @@ use std::time::Duration;
 
 use disrobe_pass_as3::abc;
 use disrobe_pass_as3::swf;
-use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, XorShift64};
+use disrobe_testkit::{
+    CorpusEntry, ReachTally, SeedReach, ShapelessSeed, StressCase, StressConfig, XorShift64,
+};
 
 const RANDOM_SPAN_BYTES: usize = 1024;
 const CASES_PER_INPUT: usize = 8_704;
@@ -24,11 +26,20 @@ fn entropy_span(len: usize) -> Vec<u8> {
     out
 }
 
+const ABC_CONSTANT_POOL_KINDS: usize = 7;
+
 fn abc_seed() -> Vec<u8> {
     let mut bytes: Vec<u8> = Vec::new();
-    bytes.extend_from_slice(&16u16.to_le_bytes());
-    bytes.extend_from_slice(&46u16.to_le_bytes());
-    bytes.extend(std::iter::repeat_n(0x01u8, 8));
+    bytes.extend_from_slice(&abc::ABC_MINOR.to_le_bytes());
+    bytes.extend_from_slice(&abc::ABC_MAJOR.to_le_bytes());
+    bytes.extend(std::iter::repeat_n(0x00u8, ABC_CONSTANT_POOL_KINDS));
+    bytes.push(0x01);
+    bytes.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+    bytes.push(0x00);
+    bytes.push(0x00);
+    bytes.push(0x01);
+    bytes.extend_from_slice(&[0x00, 0x00]);
+    bytes.push(0x00);
     bytes
 }
 
@@ -74,10 +85,52 @@ fn saturate(bytes: &[u8], case_seed: u64) -> Vec<u8> {
 }
 
 fn probe(bytes: &[u8]) {
-    let _ = abc::parse(bytes);
-    let _ = abc::disasm(bytes);
-    let _ = swf::detect(bytes);
-    let _ = swf::parse(bytes);
+    drop(measured_probe(bytes));
+}
+
+fn measured_probe(bytes: &[u8]) -> SeedReach {
+    let mut reach: SeedReach = SeedReach::new();
+    reach.record_result(
+        "abc-constant-pool",
+        &abc::parse(bytes),
+        |file: &abc::AbcFile| {
+            !file.methods.is_empty() || !file.scripts.is_empty() || !file.classes.is_empty()
+        },
+    );
+    drop(abc::disasm(bytes));
+    reach.drove();
+    reach.record("swf-compression", swf::detect(bytes).is_some());
+    reach.record_result("swf-tags", &swf::parse(bytes), |movie: &swf::Swf| {
+        !movie.tags.is_empty()
+    });
+    reach
+}
+
+const SHAPELESS: [ShapelessSeed; 3] = [
+    ShapelessSeed {
+        name: "empty",
+        reason: "the zero-length input every entry point must refuse rather than parse",
+    },
+    ShapelessSeed {
+        name: "random-span",
+        reason: "a kilobyte of zero bytes, present so the readers are driven over a buffer none of                  them can claim",
+    },
+    ShapelessSeed {
+        name: "entropy-span",
+        reason: "a pseudo-random span whose purpose is to be unparseable by every reader",
+    },
+];
+
+#[test]
+fn every_unmutated_seed_reaches_the_surface_it_is_named_for() {
+    let mut tally: ReachTally = ReachTally::new();
+    for entry in corpus() {
+        let reach: SeedReach = measured_probe(entry.bytes());
+        tally.observe(entry.name(), &reach, &SHAPELESS);
+    }
+    println!("\n{}\n", tally.summary("as3"));
+    tally.assert_every_seed_reaches("as3");
+    assert_eq!(tally.total(), corpus().len());
 }
 
 fn check(case: &StressCase<'_>) {

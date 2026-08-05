@@ -1424,8 +1424,13 @@ fn member_annotations_recompile_with_retention_and_runtime_equivalence() {
         let cf: ClassFile = parse_classfile(&bytes).expect("parse enum class");
         let source: String = decompile_class(&cf).source;
         assert!(
-            source.contains("<unresolved-enum-constants>;"),
+            source.contains("/* unresolved enum constants */"),
             "enum source-only constant state was not rejected: {source}"
+        );
+        assert!(
+            !source.contains("<unresolved"),
+            "the marker has to be written as a comment java can parse, not as a statement that \
+             stops the compiler at the parser and takes every method in the file with it: {source}"
         );
         assert!(!source.contains("sealed enum"));
         assert!(!source.contains(" permits "));

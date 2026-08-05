@@ -2346,6 +2346,42 @@ impl Resolver {
     }
 
     #[must_use]
+    pub fn local_condition_kinds(
+        &self,
+        local_var_sig_tok: u32,
+    ) -> Vec<crate::signature::ConditionKind> {
+        self.local_signatures(local_var_sig_tok)
+            .iter()
+            .map(TypeSig::condition_kind)
+            .collect()
+    }
+
+    fn local_signatures(&self, local_var_sig_tok: u32) -> Vec<TypeSig> {
+        if local_var_sig_tok == 0 {
+            return Vec::new();
+        }
+        let table_idx: u8 = u8::try_from(local_var_sig_tok >> 24).unwrap_or(0xFF);
+        if TableId::from_index(table_idx) != Some(TableId::StandAloneSig) {
+            return Vec::new();
+        }
+        let Some(rid): Option<usize> = (local_var_sig_tok & 0x00FF_FFFF)
+            .checked_sub(1)
+            .map(|r: u32| r as usize)
+        else {
+            return Vec::new();
+        };
+        let Some(row): Option<&crate::tables::StandAloneSigRow> =
+            self.tables.standalone_sigs.get(rid)
+        else {
+            return Vec::new();
+        };
+        let Some(blob): Option<&[u8]> = self.blob(row.signature) else {
+            return Vec::new();
+        };
+        crate::signature::parse_local_sig(blob).unwrap_or_default()
+    }
+
+    #[must_use]
     pub fn callee_signature(&self, token: u32) -> Option<MethodSig> {
         let table_idx: u8 = u8::try_from(token >> 24).unwrap_or(0xFF);
         let rid: usize = (token & 0x00FF_FFFF).checked_sub(1)? as usize;

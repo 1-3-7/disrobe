@@ -3,6 +3,8 @@
     reason = "pub(crate) is the right visibility for these crate-internal symbolic-execution helpers; redundant_pub_crate (nursery) and the workspace unreachable_pub lint cannot both hold for a private submodule, matching the crate-level allow already shipped across the workspace"
 )]
 
+#[cfg(feature = "smt-solver")]
+pub(crate) mod cross_check;
 pub(crate) mod explore;
 pub(crate) mod interp;
 pub(crate) mod memory;

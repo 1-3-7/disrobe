@@ -321,7 +321,7 @@ fn model_environment(
     env
 }
 
-fn model_satisfies(
+pub(crate) fn model_satisfies(
     manager: &TermManager,
     assumptions: &[TermId],
     env: &BTreeMap<TermId, u64>,
@@ -345,7 +345,7 @@ enum RawOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Enumerated {
+pub(crate) enum Enumerated {
     NoModel,
     ModelFound,
     Undecided,
@@ -376,7 +376,7 @@ fn enumeration_domain(manager: &TermManager, free: &[TermId]) -> Option<(Vec<(Te
     Some((domain, total))
 }
 
-fn enumerate_conjunction(
+pub(crate) fn enumerate_conjunction(
     manager: &TermManager,
     assumptions: &[TermId],
     free: &[TermId],
@@ -481,23 +481,12 @@ fn certify(
     match raw {
         RawOutcome::Sat(Some(env)) if model_satisfies(manager, assumptions, &env) => Certified::Sat,
         RawOutcome::Unsat => {
-            match enumerate_conjunction(manager, assumptions, free, budget.node_budget) {
-                Enumerated::ModelFound => Certified::Abstain,
-                Enumerated::NoModel => Certified::Unsat,
-                Enumerated::Undecided => {
-                    if crate::verify::term_conjunction_unsat(
-                        manager,
-                        assumptions,
-                        budget.node_budget,
-                    ) || crate::verify::term_conjunction_unsat_via_polynomial(
-                        manager,
-                        assumptions,
-                    ) {
-                        Certified::Unsat
-                    } else {
-                        Certified::Abstain
-                    }
-                }
+            if super::cross_check::independent_refutation(manager, assumptions, free, budget)
+                .confirms()
+            {
+                Certified::Unsat
+            } else {
+                Certified::Abstain
             }
         }
         RawOutcome::Sat(_) | RawOutcome::Unknown => Certified::Abstain,

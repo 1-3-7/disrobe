@@ -16,6 +16,11 @@ const MAX_ANNOTATION_RENDER_BYTES: usize = 4 * 1024 * 1024;
 const UNRESOLVED_ANNOTATION: &str = "@<unresolved-annotation>";
 const UNRESOLVED_ANNOTATION_VALUE: &str = "<unresolved-annotation-value>";
 
+#[must_use]
+pub(crate) fn is_unresolved_annotation_value(value: &str) -> bool {
+    value == UNRESOLVED_ANNOTATION_VALUE
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AnnotationError(&'static str);
 

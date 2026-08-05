@@ -188,8 +188,8 @@ pub fn lift_structured(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Optio
     if structured.truncated_regions > 0 {
         state.fully_structured = false;
         state.warnings.push(format!(
-            "{} region(s) exceeded the structuring budget, so their statements stand outside the \
-             block that held them",
+            "{} region(s) nested deeper than the structuring limit, so their statements stand \
+             outside the block that held them",
             structured.truncated_regions
         ));
     }
@@ -2415,21 +2415,23 @@ mod tests {
 
     const OP51_CLOSURE: u32 = 36;
 
-    fn branch_ladder_code(branches: usize) -> Vec<u32> {
-        let mut code: Vec<u32> = Vec::with_capacity(branches * 3 + 1);
-        for _ in 0..branches {
+    fn nested_branch_code(depth: usize) -> Vec<u32> {
+        let exit: usize = depth * 2 + 1;
+        let mut code: Vec<u32> = Vec::with_capacity(exit + 1);
+        for i in 0..depth {
+            let sbx: usize = exit - (i * 2 + 1) - 1;
             code.push(enc_abc(OP51_LT, 1, 0, 1));
-            code.push(enc_abx(OP51_JMP, 0, 1 + SBX_BIAS_51));
-            code.push(enc_abc(OP51_LOADBOOL, 2, 0, 0));
+            code.push(enc_abx(OP51_JMP, 0, sbx as u32 + SBX_BIAS_51));
         }
+        code.push(enc_abc(OP51_LOADBOOL, 2, 0, 0));
         code.push(enc_abc(OP51_RETURN, 0, 1, 0));
         code
     }
 
     #[test]
-    fn a_ladder_past_the_structuring_budget_refuses_to_claim_a_complete_structure() {
-        let branches: usize = 4200;
-        let p: LuaProto = proto(branch_ladder_code(branches), 2, 4);
+    fn a_body_nested_past_the_structuring_limit_refuses_to_claim_a_complete_structure() {
+        let depth: usize = 300;
+        let p: LuaProto = proto(nested_branch_code(depth), 2, 4);
 
         let out: LiftedProto =
             lift_structured(&p, LuaDialect::Lua51, 0).expect("structured lift succeeds");
@@ -2442,16 +2444,16 @@ mod tests {
         assert!(
             out.warnings
                 .iter()
-                .any(|warning: &String| warning.contains("structuring budget")),
-            "the refusal must name the budget so a reader can act on it, got {:?}",
+                .any(|warning: &String| warning.contains("structuring limit")),
+            "the refusal must name the limit so a reader can act on it, got {:?}",
             out.warnings
         );
     }
 
     #[test]
-    fn a_child_that_ran_past_the_budget_lowers_the_flag_of_the_function_holding_it() {
-        let branches: usize = 4200;
-        let mut child: LuaProto = proto(branch_ladder_code(branches), 2, 4);
+    fn a_child_nested_past_the_limit_lowers_the_flag_of_the_function_holding_it() {
+        let depth: usize = 300;
+        let mut child: LuaProto = proto(nested_branch_code(depth), 2, 4);
         child.num_params = 2;
         let mut parent: LuaProto = proto(
             vec![enc_abx(OP51_CLOSURE, 0, 0), enc_abc(OP51_RETURN, 0, 2, 0)],
@@ -2472,7 +2474,7 @@ mod tests {
         assert!(
             out.warnings
                 .iter()
-                .any(|warning: &String| warning.contains("structuring budget")),
+                .any(|warning: &String| warning.contains("structuring limit")),
             "the child's reason must reach the parent rather than being dropped at the boundary, \
              got {:?}",
             out.warnings

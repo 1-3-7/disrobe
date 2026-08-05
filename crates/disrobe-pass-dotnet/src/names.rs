@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use crate::signature::ConditionKind;
 use crate::structurize::{TargetLang, csharp_escape_identifier, is_simple_identifier};
 
 fn is_managed_byref_type(ty: &str) -> bool {
@@ -98,6 +99,8 @@ pub struct NameTable {
     param_names: Vec<String>,
     param_types: Vec<String>,
     local_types: Vec<String>,
+    param_kinds: Vec<ConditionKind>,
+    local_kinds: Vec<ConditionKind>,
 }
 
 impl NameTable {
@@ -113,7 +116,37 @@ impl NameTable {
             param_names,
             param_types,
             local_types,
+            param_kinds: Vec::new(),
+            local_kinds: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_kinds(
+        mut self,
+        param_kinds: Vec<ConditionKind>,
+        local_kinds: Vec<ConditionKind>,
+    ) -> Self {
+        self.param_kinds = param_kinds;
+        self.local_kinds = local_kinds;
+        self
+    }
+
+    #[must_use]
+    pub fn arg_condition_kind(&self, slot: u32) -> ConditionKind {
+        let index: usize = (slot as usize).wrapping_sub(1);
+        self.param_kinds
+            .get(index)
+            .copied()
+            .unwrap_or(ConditionKind::Unknown)
+    }
+
+    #[must_use]
+    pub fn local_condition_kind(&self, slot: u32) -> ConditionKind {
+        self.local_kinds
+            .get(slot as usize)
+            .copied()
+            .unwrap_or(ConditionKind::Unknown)
     }
 
     #[must_use]
