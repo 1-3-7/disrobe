@@ -2053,7 +2053,16 @@ fn decompile_function_inlined(
 
     let (body, structure_decline): (String, Option<StructureDecline>) =
         match structure_function(&lifted, &cfg) {
-            Ok(structured) => (structured, None),
+            Ok(structured) if !structured.contains("goto ") => (structured, None),
+            Ok(_) => {
+                let reason: StructureDecline = StructureDecline::IncompleteCover;
+                let mut fallback: String = format!(
+                    "  /* unstructured ({}): edges below are goto form, not JavaScript */\n",
+                    reason.as_str()
+                );
+                fallback.push_str(&render_structured(&lifted, &cfg, &instructions));
+                (fallback, Some(reason))
+            }
             Err(reason) => {
                 let mut fallback: String = format!(
                     "  /* unstructured ({}): edges below are goto form, not JavaScript */\n",
