@@ -13,9 +13,10 @@
 )]
 
 use disrobe_pass_mobile::{
-    DisassemblyReport, HERMES_MAGIC_LE_BYTES, HermesHeader, HermesModule, JsLiftReport,
-    disassemble_hermes, header_size_for_version, hermes_lift_to_js_surface, parse_hermes_header,
-    parse_hermes_module,
+    DecompileReport, DisassemblyReport, Error, HERMES_LIFT_VERSION, HERMES_MAGIC_LE_BYTES,
+    HERMES_MAX_VERSION, HERMES_MIN_VERSION, HermesHeader, HermesModule, JsLiftReport,
+    decompile_hermes_module, disassemble_hermes, header_size_for_version,
+    hermes_lift_to_js_surface, parse_hermes_header, parse_hermes_module,
 };
 
 fn synth(version: u32) -> Vec<u8> {
@@ -115,14 +116,49 @@ fn parse_header_matches_synth_v90() {
 }
 
 #[test]
-fn parse_module_v60_through_v96() {
-    for v in [60u32, 70, 76, 84, 87, 90, 94, 96] {
-        let bytes: Vec<u8> = synth(v);
-        let module: HermesModule = parse_hermes_module(&bytes).expect("parse module");
-        assert_eq!(module.header.version, v);
-        assert_eq!(module.functions.len(), 1);
-        assert_eq!(module.identifiers.len(), 3);
-        assert_eq!(module.strings.len(), 2);
+fn the_layout_probe_reads_every_version_the_reader_accepts() {
+    let mut probed: u32 = 0;
+    for version in HERMES_MIN_VERSION..=HERMES_MAX_VERSION {
+        let bytes: Vec<u8> = synth(version);
+        let module: HermesModule = parse_hermes_module(&bytes)
+            .unwrap_or_else(|error: Error| panic!("v{version} is accepted by the reader: {error}"));
+        assert_eq!(module.header.version, version);
+        assert_eq!(module.functions.len(), 1, "v{version}");
+        assert_eq!(module.identifiers.len(), 3, "v{version}");
+        assert_eq!(module.strings.len(), 2, "v{version}");
+        assert_eq!(
+            module.header.debug_info_offset, 0,
+            "v{version}: this probe is the only place a header declaring no debug info section is \
+             read, so the field must stay zero here"
+        );
+        let report: DecompileReport = decompile_hermes_module(&module);
+        assert_eq!(
+            report.lift_supported,
+            version == HERMES_LIFT_VERSION,
+            "v{version}: only v{HERMES_LIFT_VERSION} carries an opcode table, so every other \
+             version must refuse a body rather than emit one nothing grades"
+        );
+        probed = probed.saturating_add(1);
+    }
+    assert_eq!(
+        probed,
+        HERMES_MAX_VERSION - HERMES_MIN_VERSION + 1,
+        "every version the reader accepts is read here, because a version accepted and never read \
+         is a layout nothing exercises"
+    );
+}
+
+#[test]
+fn a_version_outside_the_accepted_band_is_refused_by_number() {
+    for version in [HERMES_MIN_VERSION - 1, HERMES_MAX_VERSION + 1] {
+        let bytes: Vec<u8> = synth(version);
+        let error: Error = parse_hermes_module(&bytes)
+            .err()
+            .unwrap_or_else(|| panic!("v{version} is outside the accepted band"));
+        assert!(
+            matches!(error, Error::HermesUnsupportedVersion(reported) if reported == version),
+            "v{version} must be refused by number; got {error:?}"
+        );
     }
 }
 

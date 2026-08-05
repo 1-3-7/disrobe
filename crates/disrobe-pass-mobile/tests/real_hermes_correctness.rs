@@ -28,13 +28,24 @@ fn sample(file: &str) -> PathBuf {
         .join(file)
 }
 
-fn load_report() -> Option<DecompileReport> {
-    let bytes: Vec<u8> = std::fs::read(sample("sample.hbc.v96")).ok()?;
-    if bytes.len() < 12 || bytes[8..12] != 96u32.to_le_bytes() {
-        return None;
-    }
-    let module: HermesModule = parse_hermes_module(&bytes).ok()?;
-    Some(decompile_hermes_module(&module))
+fn load_report() -> DecompileReport {
+    let path: PathBuf = sample("sample.hbc.v96");
+    let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "the graded bytecode is committed to this repository, so a run that cannot read {} \
+             must fail rather than report a green over nothing: {error}",
+            path.display()
+        )
+    });
+    assert!(
+        bytes.len() >= 12 && bytes[8..12] == 96u32.to_le_bytes(),
+        "{} must still declare bytecode version 96; every figure below is measured at that \
+         version and a swapped file must fail rather than skip",
+        path.display()
+    );
+    let module: HermesModule = parse_hermes_module(&bytes)
+        .unwrap_or_else(|error: disrobe_pass_mobile::Error| panic!("{}: {error}", path.display()));
+    decompile_hermes_module(&module)
 }
 
 fn function<'a>(report: &'a DecompileReport, name: &str) -> &'a DecompiledFunction {
@@ -208,18 +219,83 @@ const SPECS: &[BehaviorSpec] = &[
     },
 ];
 
-const SPEC_LESS_FUNCTIONS: &[&str] = &[];
-
 const PINNED_FUNCTIONS: usize = 8;
 const PINNED_BEHAVIORALLY_CORRECT: usize = 8;
 const CORRECTNESS_FLOOR_PERCENT: usize = 100;
 
+const PINNED_EXECUTION_ELIGIBLE: usize = 8;
+const PINNED_STRUCTURE_GRADED_ONLY: usize = 0;
+
+#[test]
+fn the_two_grading_populations_partition_the_pinned_function_count() {
+    let report: DecompileReport = load_report();
+
+    let mut execution_eligible: Vec<&str> = Vec::new();
+    let mut structure_graded_only: Vec<&str> = Vec::new();
+    for recovered in &report.functions {
+        if SPECS
+            .iter()
+            .any(|spec: &BehaviorSpec| spec.name == recovered.name)
+        {
+            execution_eligible.push(&recovered.name);
+        } else {
+            structure_graded_only.push(&recovered.name);
+        }
+    }
+
+    assert_eq!(
+        execution_eligible.len() + structure_graded_only.len(),
+        report.function_count,
+        "every function lands in exactly one grading population, so none can be dropped from both"
+    );
+    assert_eq!(
+        report.function_count, PINNED_FUNCTIONS,
+        "the denominator is pinned by equality, so a change that raises a rate by grading fewer \
+         functions fails instead"
+    );
+    assert_eq!(
+        execution_eligible.len(),
+        PINNED_EXECUTION_ELIGIBLE,
+        "execution-graded population: {execution_eligible:?}"
+    );
+    assert_eq!(
+        structure_graded_only.len(),
+        PINNED_STRUCTURE_GRADED_ONLY,
+        "structure-graded population: {structure_graded_only:?}"
+    );
+
+    let mut structure_graded_correct: usize = 0;
+    for name in &structure_graded_only {
+        let recovered: &DecompiledFunction = function(&report, name);
+        assert!(
+            recovered.structured && recovered.structure_decline.is_none(),
+            "{name}: a function with no behavior spec is graded on structure, so a decline here is \
+             a failure and not a skip; src:\n{}",
+            recovered.source
+        );
+        assert!(
+            parses_as_javascript(&recovered.source),
+            "{name}: src:\n{}",
+            recovered.source
+        );
+        structure_graded_correct += 1;
+    }
+
+    eprintln!(
+        "hermes v96 sample grading populations: execution-equivalent {}/{} functions, \
+         structure-graded {}/{} functions; the two denominators sum to the pinned {} and are \
+         never added together into one rate",
+        PINNED_BEHAVIORALLY_CORRECT,
+        execution_eligible.len(),
+        structure_graded_correct,
+        structure_graded_only.len(),
+        PINNED_FUNCTIONS
+    );
+}
+
 #[test]
 fn hbc_v96_sample_decompile_is_behaviorally_correct_against_real_js_engine() {
-    let Some(report): Option<DecompileReport> = load_report() else {
-        eprintln!("hermes v96 sample missing; skipping correctness oracle");
-        return;
-    };
+    let report: DecompileReport = load_report();
 
     let total_functions: usize = report.function_count;
     assert_eq!(
@@ -308,10 +384,7 @@ fn has_bare_register_token(src: &str) -> bool {
 
 #[test]
 fn hbc_v96_loop_and_call_frame_recovery_is_locked() {
-    let Some(report): Option<DecompileReport> = load_report() else {
-        eprintln!("hermes v96 sample missing; skipping recovery-lock audit");
-        return;
-    };
+    let report: DecompileReport = load_report();
 
     let sum_range: String = function(&report, "sumRange").source.clone();
     assert!(
@@ -336,16 +409,6 @@ fn hbc_v96_loop_and_call_frame_recovery_is_locked() {
         "main must thread its call results through materialized variables, not leak bare registers.\nsrc:\n{}",
         main_src
     );
-
-    for name in SPEC_LESS_FUNCTIONS {
-        assert!(
-            report
-                .functions
-                .iter()
-                .any(|f: &DecompiledFunction| f.name == *name),
-            "structural-shell function {name} must still be present in the report"
-        );
-    }
 }
 
 #[test]
@@ -365,4 +428,42 @@ fn correctness_oracle_rejects_a_deliberately_wrong_body() {
         parses_as_javascript(wrong_add),
         "the wrong body still parses, proving parse-validity alone is insufficient and the behavioral differential is load-bearing"
     );
+}
+
+const NON_DETERMINISTIC_SOURCES: &[&str] = &["Date", "Math.random", "performance", " in "];
+
+#[test]
+fn neither_side_of_the_differential_reads_a_value_that_can_change_between_runs() {
+    let report: DecompileReport = load_report();
+    for spec in SPECS {
+        let recovered: String = (spec.recovered_driver)(&report);
+        for token in NON_DETERMINISTIC_SOURCES {
+            assert!(
+                !spec.original_unit.contains(token),
+                "{}: the reference unit reads {token}, so a match between the two sides could \
+                 come from both reading the same changing value rather than from equal behavior",
+                spec.name
+            );
+            assert!(
+                !recovered.contains(token),
+                "{}: the recovered driver reads {token}, so its output is not repeatable and the \
+                 differential cannot grade it",
+                spec.name
+            );
+        }
+    }
+
+    for spec in SPECS {
+        let driver: String = (spec.recovered_driver)(&report);
+        let first: String = eval_capture(&driver)
+            .unwrap_or_else(|| panic!("{}: recovered driver must evaluate", spec.name));
+        let second: String = eval_capture(&driver)
+            .unwrap_or_else(|| panic!("{}: recovered driver must evaluate twice", spec.name));
+        assert_eq!(
+            first, second,
+            "{}: two runs of the same recovered driver must produce the same output, or the \
+             single run the correctness figure rests on proves nothing",
+            spec.name
+        );
+    }
 }
