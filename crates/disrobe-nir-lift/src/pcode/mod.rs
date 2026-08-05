@@ -1,18 +1,67 @@
 use std::collections::BTreeSet;
+use std::sync::OnceLock;
 
 use disrobe_lift_x86::decode_block_x86;
 use disrobe_nir::{NirClass, NirFunction, NirInstr, NirOp, SourceLang, SourceRef};
-use disrobe_sleigh::lifter::{DecodedBlock, Language, decode_block_for_language};
+use disrobe_sleigh::lifter::{ArmMode, DecodedBlock, Language, decode_block_for_language};
 use disrobe_sleigh::pcode::{DecodeStatus, PcodeInstr, PcodeOp, Space, Varnode};
+use disrobe_sleigh::syntax::Endian;
+use disrobe_sleigh::vendor::{
+    preprocessed_arm32_source, preprocessed_mips32be_source, preprocessed_mips32le_source,
+};
 
 use crate::error::{LiftError, Result};
 
+mod arch;
 mod flags;
 mod ops;
+mod registers;
 mod varnode;
 
+pub use arch::{PcodeArch, lower_for_arch};
+use registers::{SpecRegisters, canonical_registers};
 pub use varnode::RegisterCell;
 use varnode::VarnodeLowerer;
+
+type CachedRegisters = core::result::Result<SpecRegisters, String>;
+
+static ARM32_REGISTERS: OnceLock<CachedRegisters> = OnceLock::new();
+static MIPS32BE_REGISTERS: OnceLock<CachedRegisters> = OnceLock::new();
+static MIPS32LE_REGISTERS: OnceLock<CachedRegisters> = OnceLock::new();
+
+const ARM32_DISCARDED: [&str; 9] = [
+    "NG",
+    "ZR",
+    "CY",
+    "OV",
+    "tmpNG",
+    "tmpZR",
+    "tmpCY",
+    "tmpOV",
+    "shift_carry",
+];
+
+const MIPS32_DISCARDED: [&str; 1] = ["zero"];
+
+fn cached_registers(
+    cache: &'static OnceLock<CachedRegisters>,
+    source: fn() -> core::result::Result<String, disrobe_sleigh::SleighError>,
+) -> Result<SpecRegisters> {
+    let cached: &CachedRegisters = cache.get_or_init(|| {
+        let text: String = source().map_err(|error: disrobe_sleigh::SleighError| {
+            format!("compiled spec did not preprocess: {error}")
+        })?;
+        canonical_registers(&text).map_err(|error: LiftError| error.to_string())
+    });
+    match cached {
+        Ok(value) => Ok(value.clone()),
+        Err(reason) => Err(LiftError::InvalidPcode {
+            address: 0,
+            operation: "REGISTER_MAP".to_owned(),
+            reason: reason.clone(),
+        }),
+    }
+}
 
 const MAX_PCODE_INSTRUCTIONS: usize = 65_536;
 const MAX_PCODE_OPERATIONS: usize = 1_048_576;
@@ -30,6 +79,7 @@ pub struct PcodeLiftConfig {
     x86_callother_contracts: bool,
     discarded_registers: BTreeSet<String>,
     fold_condition_codes: bool,
+    big_endian_register_space: bool,
 }
 
 impl PcodeLiftConfig {
@@ -46,6 +96,7 @@ impl PcodeLiftConfig {
             x86_callother_contracts: false,
             discarded_registers: BTreeSet::new(),
             fold_condition_codes: false,
+            big_endian_register_space: false,
         }
     }
 
@@ -137,6 +188,67 @@ impl PcodeLiftConfig {
         config
     }
 
+    pub fn arm32() -> Result<Self> {
+        let spec: SpecRegisters = cached_registers(&ARM32_REGISTERS, preprocessed_arm32_source)?;
+        let mut config: Self = Self::new(SourceLang::NativeArm, spec.cells)
+            .with_return_value("r0")
+            .with_condition_code_folding()
+            .with_big_endian_register_space(spec.big_endian);
+        config.require_registers(&["r0", "sp", "lr", "pc", "NG", "ZR", "CY", "OV"])?;
+        for name in ARM32_DISCARDED {
+            config.discarded_registers.insert(name.to_owned());
+        }
+        Ok(config)
+    }
+
+    pub fn mips32(endian: Endian) -> Result<Self> {
+        let spec: SpecRegisters = match endian {
+            Endian::Big => cached_registers(&MIPS32BE_REGISTERS, preprocessed_mips32be_source)?,
+            Endian::Little => cached_registers(&MIPS32LE_REGISTERS, preprocessed_mips32le_source)?,
+        };
+        let mut config: Self = Self::new(SourceLang::Unknown, spec.cells)
+            .with_return_value("v0")
+            .with_big_endian_register_space(spec.big_endian);
+        config.require_registers(&["zero", "v0", "a0", "sp", "ra", "pc", "hi", "lo"])?;
+        for name in MIPS32_DISCARDED {
+            config.discarded_registers.insert(name.to_owned());
+        }
+        Ok(config)
+    }
+
+    #[must_use]
+    pub fn registers(&self) -> &[RegisterCell] {
+        &self.registers
+    }
+
+    #[must_use]
+    pub fn is_discarded_register(&self, name: &str) -> bool {
+        self.discarded_registers.contains(name)
+    }
+
+    fn require_registers(&self, names: &[&str]) -> Result<()> {
+        for name in names {
+            if !self
+                .registers
+                .iter()
+                .any(|cell: &RegisterCell| cell.name.eq_ignore_ascii_case(name))
+            {
+                return Err(LiftError::InvalidPcode {
+                    address: 0,
+                    operation: "REGISTER_MAP".to_owned(),
+                    reason: format!("compiled spec defines no whole register cell named {name}"),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub const fn with_big_endian_register_space(mut self, big_endian: bool) -> Self {
+        self.big_endian_register_space = big_endian;
+        self
+    }
+
     #[must_use]
     pub const fn with_limits(mut self, max_instructions: usize, max_operations: usize) -> Self {
         self.max_instructions = if max_instructions < MAX_PCODE_INSTRUCTIONS {
@@ -201,6 +313,22 @@ pub fn lower_aarch64(bytes: &[u8], address: u64, name: &str) -> Result<NirFuncti
     lower_pcode_block(&block, name, &PcodeLiftConfig::aarch64())
 }
 
+pub fn lower_arm32(bytes: &[u8], address: u64, name: &str, mode: ArmMode) -> Result<NirFunction> {
+    let arch: PcodeArch = match mode {
+        ArmMode::A32 => PcodeArch::Arm32A32,
+        ArmMode::Thumb => PcodeArch::Arm32Thumb,
+    };
+    lower_for_arch(arch, bytes, address, name)
+}
+
+pub fn lower_mips32(bytes: &[u8], address: u64, name: &str, endian: Endian) -> Result<NirFunction> {
+    let arch: PcodeArch = match endian {
+        Endian::Big => PcodeArch::Mips32Be,
+        Endian::Little => PcodeArch::Mips32Le,
+    };
+    lower_for_arch(arch, bytes, address, name)
+}
+
 pub fn lower_pcode_block(
     block: &DecodedBlock,
     name: &str,
@@ -252,7 +380,11 @@ pub fn lower_pcode_block(
             });
         }
     }
-    let mut lowerer: VarnodeLowerer = VarnodeLowerer::new(config.lang, &config.registers)?;
+    let mut lowerer: VarnodeLowerer = VarnodeLowerer::new(
+        config.lang,
+        &config.registers,
+        config.big_endian_register_space,
+    )?;
     let mut instructions: Vec<NirInstr> = Vec::new();
     let branch_targets: BTreeSet<u64> = explicit_branch_targets(block);
     let has_indirect_branch: bool = block.instructions.iter().any(|instruction: &PcodeInstr| {
