@@ -370,21 +370,91 @@ mod tests {
         assert_eq!(check_unsat(&[], SmtBudget::default()), SmtVerdict::Sat);
     }
 
-    #[test]
-    fn tiny_conflict_budget_yields_indeterminate_not_a_guess() {
+    fn live_masked_product() -> Predicate {
         let live_bits: Expr = Expr::or(
             Expr::or(Expr::var(1), Expr::var(2)),
             Expr::or(Expr::var(3), Expr::var(4)),
         );
-        let masked: Expr = Expr::and(x_squared_plus_x(), live_bits);
-        let predicate: Predicate = Predicate::eq(masked, Expr::konst(0));
+        Predicate::eq(Expr::and(x_squared_plus_x(), live_bits), Expr::konst(0))
+    }
+
+    #[test]
+    fn an_exhausted_encode_budget_yields_indeterminate() {
+        let budget: SmtBudget = SmtBudget {
+            max_encode_nodes: 2,
+            ..SmtBudget::bounded_default()
+        };
+        let constraints: [(Predicate, bool, Width); 1] =
+            [(live_masked_product(), true, Width::W64)];
+        assert_eq!(check_unsat(&constraints, budget), SmtVerdict::Indeterminate);
+    }
+
+    #[test]
+    fn a_predicate_deeper_than_the_depth_cap_yields_indeterminate() {
+        let mut deep: Expr = Expr::var(0);
+        for _ in 0..=crate::expr::MAX_MBA_DEPTH {
+            deep = Expr::add(deep, Expr::konst(1));
+        }
+        let predicate: Predicate = Predicate::eq(deep, Expr::konst(0));
+        assert!(predicate.depth() > crate::expr::MAX_MBA_DEPTH);
+        let constraints: [(Predicate, bool, Width); 1] = [(predicate, true, Width::W8)];
+        assert_eq!(
+            check_unsat(&constraints, SmtBudget::default()),
+            SmtVerdict::Indeterminate
+        );
+    }
+
+    #[test]
+    fn an_exhausted_conflict_budget_yields_indeterminate() {
+        let budget: SmtBudget = SmtBudget {
+            max_conflicts: 0,
+            ..SmtBudget::bounded_default()
+        };
+        let constraints: [(Predicate, bool, Width); 1] =
+            [(live_masked_product(), true, Width::W64)];
+        assert_eq!(check_unsat(&constraints, budget), SmtVerdict::Indeterminate);
+    }
+
+    #[test]
+    fn an_exhausted_decision_budget_yields_indeterminate() {
+        let budget: SmtBudget = SmtBudget {
+            max_decisions: 0,
+            ..SmtBudget::bounded_default()
+        };
+        let constraints: [(Predicate, bool, Width); 1] =
+            [(live_masked_product(), true, Width::W64)];
+        assert_eq!(check_unsat(&constraints, budget), SmtVerdict::Indeterminate);
+    }
+
+    #[test]
+    fn an_exhausted_timeout_never_yields_an_unconfirmed_refutation() {
+        let budget: SmtBudget = SmtBudget {
+            timeout: Duration::from_nanos(1),
+            ..SmtBudget::bounded_default()
+        };
+        let predicate: Predicate = live_masked_product();
+        let constraints: [(Predicate, bool, Width); 1] = [(predicate.clone(), true, Width::W64)];
+        let verdict: SmtVerdict = check_unsat(&constraints, budget);
+        assert_ne!(verdict, SmtVerdict::Unsat);
+        if verdict == SmtVerdict::Sat {
+            let env: [u64; 5] = [0, 0, 0, 0, 0];
+            assert!(
+                predicate.evaluate(&env, Width::W64),
+                "a Sat verdict under an exhausted timeout must still describe a satisfiable query"
+            );
+        }
+    }
+
+    #[test]
+    fn tiny_conflict_budget_yields_indeterminate_not_a_guess() {
         let budget: SmtBudget = SmtBudget {
             timeout: Duration::from_nanos(1),
             max_conflicts: 0,
             max_decisions: 0,
             max_encode_nodes: 0,
         };
-        let constraints: [(Predicate, bool, Width); 1] = [(predicate, true, Width::W64)];
+        let constraints: [(Predicate, bool, Width); 1] =
+            [(live_masked_product(), true, Width::W64)];
         let verdict: SmtVerdict = check_unsat(&constraints, budget);
         assert_eq!(verdict, SmtVerdict::Indeterminate);
     }

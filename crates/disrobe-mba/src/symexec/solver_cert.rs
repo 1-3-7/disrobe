@@ -109,8 +109,11 @@ fn eval_term(
         }
         TermKind::Var(_) => {
             let width: u32 = bitvec_width(manager, id)?;
-            let value: u64 = env.get(&id).copied().unwrap_or(0) & mask_bits(width);
-            TermVal::Bv { width, value }
+            let &bound: &u64 = env.get(&id)?;
+            TermVal::Bv {
+                width,
+                value: bound & mask_bits(width),
+            }
         }
         TermKind::Not(a) => TermVal::Bool(!eval_bool(manager, a, env, cache, budget)?),
         TermKind::And(args) => {
@@ -188,6 +191,9 @@ fn eval_term(
             }
         })?,
         TermKind::BvAshr(a, b) => bv_binary(manager, a, b, env, cache, budget, |w, x, y| {
+            if w == 0 {
+                return None;
+            }
             let sign: bool = (x >> (w - 1)) & 1 == 1;
             if y >= u64::from(w) {
                 Some(if sign { mask_bits(w) } else { 0 })
@@ -217,7 +223,7 @@ fn eval_term(
             let (high_width, high_value): (u32, u64) = eval_bv(manager, high, env, cache, budget)?;
             let (low_width, low_value): (u32, u64) = eval_bv(manager, low, env, cache, budget)?;
             let width: u32 = high_width + low_width;
-            if width > 64 {
+            if width > 64 || low_width >= 64 {
                 return None;
             }
             let value: u64 = (high_value.wrapping_shl(low_width) | low_value) & mask_bits(width);
@@ -338,6 +344,85 @@ enum RawOutcome {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Enumerated {
+    NoModel,
+    ModelFound,
+    Undecided,
+}
+
+const MAX_ENUM_VARS: usize = 6;
+const MAX_ENUM_VAR_BITS: u32 = 16;
+const MAX_ENUM_ASSIGNMENTS: u64 = 1u64 << 12;
+const MAX_ENUM_STEPS: usize = 1usize << 15;
+
+fn enumeration_domain(manager: &TermManager, free: &[TermId]) -> Option<(Vec<(TermId, u32)>, u64)> {
+    if free.is_empty() || free.len() > MAX_ENUM_VARS {
+        return None;
+    }
+    let mut domain: Vec<(TermId, u32)> = Vec::with_capacity(free.len());
+    let mut total: u64 = 1;
+    for &var in free {
+        let width: u32 = bitvec_width(manager, var)?;
+        if width == 0 || width > MAX_ENUM_VAR_BITS {
+            return None;
+        }
+        total = total.checked_mul(1u64 << width)?;
+        if total > MAX_ENUM_ASSIGNMENTS {
+            return None;
+        }
+        domain.push((var, width));
+    }
+    Some((domain, total))
+}
+
+fn enumerate_conjunction(
+    manager: &TermManager,
+    assumptions: &[TermId],
+    free: &[TermId],
+    step_budget: usize,
+) -> Enumerated {
+    let Some((domain, total)): Option<(Vec<(TermId, u32)>, u64)> =
+        enumeration_domain(manager, free)
+    else {
+        return Enumerated::Undecided;
+    };
+    let mut budget: usize = step_budget.min(MAX_ENUM_STEPS);
+    for index in 0..total {
+        let mut env: BTreeMap<TermId, u64> = BTreeMap::new();
+        let mut rest: u64 = index;
+        for &(var, width) in &domain {
+            let modulus: u64 = 1u64 << width;
+            env.insert(var, rest % modulus);
+            rest /= modulus;
+        }
+        let mut cache: BTreeMap<TermId, TermVal> = BTreeMap::new();
+        let mut refuted: bool = false;
+        let mut undecided: bool = false;
+        for &assumption in assumptions {
+            match eval_term(manager, assumption, &env, &mut cache, &mut budget) {
+                Some(TermVal::Bool(true)) => {}
+                Some(TermVal::Bool(false)) => {
+                    refuted = true;
+                    undecided = false;
+                    break;
+                }
+                Some(TermVal::Bv { .. }) | None => undecided = true,
+            }
+        }
+        if undecided {
+            return Enumerated::Undecided;
+        }
+        if !refuted {
+            return Enumerated::ModelFound;
+        }
+        if budget == 0 {
+            return Enumerated::Undecided;
+        }
+    }
+    Enumerated::NoModel
+}
+
 pub(crate) fn certified_check(
     manager: &mut TermManager,
     assumptions: &[TermId],
@@ -353,38 +438,66 @@ fn run(manager: &mut TermManager, assumptions: &[TermId], budget: CertBudget) ->
         return Certified::Sat;
     }
     let free: Vec<TermId> = collect_free_vars(manager, assumptions);
-    let raw: RawOutcome = {
-        let mut solver: Solver = Solver::new();
-        for &assumption in assumptions {
-            solver.assert(assumption, manager);
+    let raw: RawOutcome = raw_solve(manager, assumptions, &free, budget);
+    certify(manager, assumptions, &free, raw, budget)
+}
+
+fn raw_solve(
+    manager: &mut TermManager,
+    assumptions: &[TermId],
+    free: &[TermId],
+    budget: CertBudget,
+) -> RawOutcome {
+    let mut solver: Solver = Solver::new();
+    for &assumption in assumptions {
+        solver.assert(assumption, manager);
+    }
+    solver.set_timeout(budget.timeout);
+    solver.set_conflict_limit(budget.max_conflicts);
+    solver.set_decision_limit(budget.max_decisions);
+    let limits: ResourceLimits = ResourceLimits::new()
+        .with_timeout(budget.timeout)
+        .with_max_conflicts(budget.max_conflicts)
+        .with_max_decisions(budget.max_decisions);
+    match solver.check_with_limits(manager, &limits) {
+        Ok(SolverResult::Sat) => {
+            let env: Option<BTreeMap<TermId, u64>> = solver
+                .model()
+                .map(|model: &Model| model_environment(model, free, manager));
+            RawOutcome::Sat(env)
         }
-        solver.set_timeout(budget.timeout);
-        solver.set_conflict_limit(budget.max_conflicts);
-        solver.set_decision_limit(budget.max_decisions);
-        let limits: ResourceLimits = ResourceLimits::new()
-            .with_timeout(budget.timeout)
-            .with_max_conflicts(budget.max_conflicts)
-            .with_max_decisions(budget.max_decisions);
-        match solver.check_with_limits(manager, &limits) {
-            Ok(SolverResult::Sat) => {
-                let env: Option<BTreeMap<TermId, u64>> = solver
-                    .model()
-                    .map(|model: &Model| model_environment(model, &free, manager));
-                RawOutcome::Sat(env)
-            }
-            Ok(SolverResult::Unsat) => RawOutcome::Unsat,
-            Ok(SolverResult::Unknown) | Err(_) => RawOutcome::Unknown,
-        }
-    };
+        Ok(SolverResult::Unsat) => RawOutcome::Unsat,
+        Ok(SolverResult::Unknown) | Err(_) => RawOutcome::Unknown,
+    }
+}
+
+fn certify(
+    manager: &TermManager,
+    assumptions: &[TermId],
+    free: &[TermId],
+    raw: RawOutcome,
+    budget: CertBudget,
+) -> Certified {
     match raw {
         RawOutcome::Sat(Some(env)) if model_satisfies(manager, assumptions, &env) => Certified::Sat,
         RawOutcome::Unsat => {
-            if crate::verify::term_conjunction_unsat(manager, assumptions, budget.node_budget)
-                || crate::verify::term_conjunction_unsat_via_polynomial(manager, assumptions)
-            {
-                Certified::Unsat
-            } else {
-                Certified::Abstain
+            match enumerate_conjunction(manager, assumptions, free, budget.node_budget) {
+                Enumerated::ModelFound => Certified::Abstain,
+                Enumerated::NoModel => Certified::Unsat,
+                Enumerated::Undecided => {
+                    if crate::verify::term_conjunction_unsat(
+                        manager,
+                        assumptions,
+                        budget.node_budget,
+                    ) || crate::verify::term_conjunction_unsat_via_polynomial(
+                        manager,
+                        assumptions,
+                    ) {
+                        Certified::Unsat
+                    } else {
+                        Certified::Abstain
+                    }
+                }
             }
         }
         RawOutcome::Sat(_) | RawOutcome::Unknown => Certified::Abstain,
@@ -395,6 +508,7 @@ fn run(manager: &mut TermManager, assumptions: &[TermId], budget: CertBudget) ->
 #[allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::verify::{term_conjunction_unsat, term_conjunction_unsat_via_polynomial};
 
     const FUZZ_BUDGET: CertBudget = CertBudget {
         timeout: Duration::from_millis(250),
@@ -661,6 +775,529 @@ mod tests {
         let not_one: TermId = manager.mk_not(equal_one);
         let verdict: Certified = certified_check(&mut manager, &[not_one], FUZZ_BUDGET);
         assert_eq!(verdict, Certified::Unsat);
+    }
+
+    const CONFIRM_NODE_BUDGET: usize = 1usize << 16;
+
+    fn free_of(manager: &TermManager, assumptions: &[TermId]) -> Vec<TermId> {
+        collect_free_vars(manager, assumptions)
+    }
+
+    fn enumerated(manager: &TermManager, assumptions: &[TermId]) -> Enumerated {
+        let free: Vec<TermId> = free_of(manager, assumptions);
+        enumerate_conjunction(manager, assumptions, &free, CONFIRM_NODE_BUDGET)
+    }
+
+    fn certify_raw(manager: &TermManager, assumptions: &[TermId], raw: RawOutcome) -> Certified {
+        let free: Vec<TermId> = free_of(manager, assumptions);
+        certify(manager, assumptions, &free, raw, FUZZ_BUDGET)
+    }
+
+    #[test]
+    fn an_injected_unsat_on_a_satisfiable_bv_and_ult_conjunction_abstains() {
+        let mut manager: TermManager = TermManager::new();
+        let bv_sort: oxiz::SortId = sort(&mut manager, 8);
+        let x: TermId = manager.mk_var("x", bv_sort);
+        let three: TermId = manager.mk_bitvec(3u64, 8);
+        let sixteen: TermId = manager.mk_bitvec(16u64, 8);
+        let low_bits: TermId = manager.mk_bv_and(x, three);
+        let odd_low: TermId = manager.mk_eq(low_bits, three);
+        let bounded: TermId = manager.mk_bv_ult(x, sixteen);
+        let assumptions: [TermId; 2] = [odd_low, bounded];
+        assert_eq!(enumerated(&manager, &assumptions), Enumerated::ModelFound);
+        assert_eq!(
+            certify_raw(&manager, &assumptions, RawOutcome::Unsat),
+            Certified::Abstain
+        );
+    }
+
+    #[test]
+    fn an_injected_unsat_on_a_refutable_bv_and_ult_conjunction_still_certifies() {
+        let mut manager: TermManager = TermManager::new();
+        let bv_sort: oxiz::SortId = sort(&mut manager, 8);
+        let x: TermId = manager.mk_var("x", bv_sort);
+        let one: TermId = manager.mk_bitvec(1u64, 8);
+        let low_bit: TermId = manager.mk_bv_and(x, one);
+        let odd: TermId = manager.mk_eq(low_bit, one);
+        let below_one: TermId = manager.mk_bv_ult(x, one);
+        let assumptions: [TermId; 2] = [odd, below_one];
+        assert_eq!(enumerated(&manager, &assumptions), Enumerated::NoModel);
+        assert_eq!(
+            certify_raw(&manager, &assumptions, RawOutcome::Unsat),
+            Certified::Unsat
+        );
+    }
+
+    #[test]
+    fn a_disequality_conjunction_needs_the_whole_conjunction() {
+        let mut manager: TermManager = TermManager::new();
+        let bv_sort: oxiz::SortId = sort(&mut manager, 2);
+        let x: TermId = manager.mk_var("x", bv_sort);
+        let assumptions: Vec<TermId> = (0..4u64)
+            .map(|value: u64| {
+                let konst: TermId = manager.mk_bitvec(value, 2);
+                let equal: TermId = manager.mk_eq(x, konst);
+                manager.mk_not(equal)
+            })
+            .collect();
+        for &assumption in &assumptions {
+            let single: [TermId; 1] = [assumption];
+            assert!(
+                !term_conjunction_unsat(&manager, &single, CONFIRM_NODE_BUDGET),
+                "a single disequality over a free variable is satisfiable"
+            );
+        }
+        assert!(!term_conjunction_unsat_via_polynomial(
+            &manager,
+            &assumptions
+        ));
+        assert!(term_conjunction_unsat(
+            &manager,
+            &assumptions,
+            CONFIRM_NODE_BUDGET
+        ));
+        assert_eq!(enumerated(&manager, &assumptions), Enumerated::NoModel);
+        assert_eq!(
+            certify_raw(&manager, &assumptions, RawOutcome::Unsat),
+            Certified::Unsat
+        );
+    }
+
+    #[test]
+    fn enumeration_declines_above_the_width_threshold() {
+        let mut manager: TermManager = TermManager::new();
+        let bv_sort: oxiz::SortId = sort(&mut manager, 32);
+        let x: TermId = manager.mk_var("x", bv_sort);
+        let five: TermId = manager.mk_bitvec(5u64, 32);
+        let six: TermId = manager.mk_bitvec(6u64, 32);
+        let eq_five: TermId = manager.mk_eq(x, five);
+        let eq_six: TermId = manager.mk_eq(x, six);
+        let assumptions: [TermId; 2] = [eq_five, eq_six];
+        assert_eq!(enumerated(&manager, &assumptions), Enumerated::Undecided);
+    }
+
+    #[test]
+    fn enumeration_declines_when_a_point_cannot_be_evaluated() {
+        let mut manager: TermManager = TermManager::new();
+        let bv_sort: oxiz::SortId = sort(&mut manager, 4);
+        let x: TermId = manager.mk_var("x", bv_sort);
+        let y: TermId = manager.mk_var("y", bv_sort);
+        let quotient: TermId = manager.mk_bv_udiv(x, y);
+        let zero: TermId = manager.mk_bitvec(0u64, 4);
+        let one: TermId = manager.mk_bitvec(1u64, 4);
+        let is_zero: TermId = manager.mk_eq(quotient, zero);
+        let is_one: TermId = manager.mk_eq(quotient, one);
+        let assumptions: [TermId; 2] = [is_zero, is_one];
+        assert_eq!(enumerated(&manager, &assumptions), Enumerated::Undecided);
+        assert_eq!(
+            certify_raw(&manager, &assumptions, RawOutcome::Unsat),
+            Certified::Abstain
+        );
+    }
+
+    #[test]
+    fn enumeration_declines_when_the_step_budget_is_spent() {
+        let mut manager: TermManager = TermManager::new();
+        let bv_sort: oxiz::SortId = sort(&mut manager, 8);
+        let x: TermId = manager.mk_var("x", bv_sort);
+        let five: TermId = manager.mk_bitvec(5u64, 8);
+        let six: TermId = manager.mk_bitvec(6u64, 8);
+        let eq_five: TermId = manager.mk_eq(x, five);
+        let eq_six: TermId = manager.mk_eq(x, six);
+        let assumptions: [TermId; 2] = [eq_five, eq_six];
+        let free: Vec<TermId> = free_of(&manager, &assumptions);
+        assert_eq!(
+            enumerate_conjunction(&manager, &assumptions, &free, 0),
+            Enumerated::Undecided
+        );
+        assert_eq!(
+            enumerate_conjunction(&manager, &assumptions, &free, CONFIRM_NODE_BUDGET),
+            Enumerated::NoModel
+        );
+    }
+
+    #[test]
+    fn no_procedure_covers_a_wide_variable_divisor_so_the_accept_is_refused() {
+        let mut manager: TermManager = TermManager::new();
+        let bv_sort: oxiz::SortId = sort(&mut manager, 32);
+        let x: TermId = manager.mk_var("x", bv_sort);
+        let y: TermId = manager.mk_var("y", bv_sort);
+        let quotient: TermId = manager.mk_bv_udiv(x, y);
+        let zero: TermId = manager.mk_bitvec(0u64, 32);
+        let one: TermId = manager.mk_bitvec(1u64, 32);
+        let is_zero: TermId = manager.mk_eq(quotient, zero);
+        let is_one: TermId = manager.mk_eq(quotient, one);
+        let assumptions: [TermId; 2] = [is_zero, is_one];
+        assert_eq!(enumerated(&manager, &assumptions), Enumerated::Undecided);
+        assert!(!term_conjunction_unsat(
+            &manager,
+            &assumptions,
+            CONFIRM_NODE_BUDGET
+        ));
+        assert!(!term_conjunction_unsat_via_polynomial(
+            &manager,
+            &assumptions
+        ));
+        assert_eq!(
+            certify_raw(&manager, &assumptions, RawOutcome::Unsat),
+            Certified::Abstain
+        );
+    }
+
+    fn reference_ashr_four_bits(value: u64, shift: u64) -> u64 {
+        let signed: i64 = if value & 0b1000 == 0 {
+            (value & 0b0111) as i64
+        } else {
+            (value & 0b1111) as i64 - 16
+        };
+        if shift >= 4 {
+            if signed < 0 { 0b1111 } else { 0 }
+        } else {
+            (signed >> shift) as u64 & 0b1111
+        }
+    }
+
+    #[test]
+    fn the_blaster_matches_a_hand_written_arithmetic_shift_at_four_bits() {
+        for shift in 0..6u64 {
+            for target in 0..16u64 {
+                let mut manager: TermManager = TermManager::new();
+                let bv_sort: oxiz::SortId = sort(&mut manager, 4);
+                let x: TermId = manager.mk_var("x", bv_sort);
+                let amount: TermId = manager.mk_bitvec(shift, 4);
+                let shifted: TermId = manager.mk_bv_ashr(x, amount);
+                let konst: TermId = manager.mk_bitvec(target, 4);
+                let equal: TermId = manager.mk_eq(shifted, konst);
+                let assumptions: [TermId; 1] = [equal];
+                let reachable: bool =
+                    (0..16u64).any(|value: u64| reference_ashr_four_bits(value, shift) == target);
+                assert_eq!(
+                    term_conjunction_unsat(&manager, &assumptions, CONFIRM_NODE_BUDGET),
+                    !reachable,
+                    "shift {shift} target {target}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_blaster_matches_a_hand_written_arithmetic_shift_under_a_symbolic_amount() {
+        for value in 0..16u64 {
+            for shift in 0..16u64 {
+                let mut manager: TermManager = TermManager::new();
+                let bv_sort: oxiz::SortId = sort(&mut manager, 4);
+                let x: TermId = manager.mk_var("x", bv_sort);
+                let y: TermId = manager.mk_var("y", bv_sort);
+                let shifted: TermId = manager.mk_bv_ashr(x, y);
+                let value_term: TermId = manager.mk_bitvec(value, 4);
+                let shift_term: TermId = manager.mk_bitvec(shift, 4);
+                let pin_value: TermId = manager.mk_eq(x, value_term);
+                let pin_shift: TermId = manager.mk_eq(y, shift_term);
+                let expected: u64 = reference_ashr_four_bits(value, shift);
+                let expected_term: TermId = manager.mk_bitvec(expected, 4);
+                let agrees: TermId = manager.mk_eq(shifted, expected_term);
+                let differs: TermId = manager.mk_not(agrees);
+                assert!(
+                    term_conjunction_unsat(
+                        &manager,
+                        &[pin_value, pin_shift, differs],
+                        CONFIRM_NODE_BUDGET
+                    ),
+                    "blasted shift of {value} by {shift} must equal {expected}"
+                );
+                let wrong_term: TermId = manager.mk_bitvec((expected + 1) & 0b1111, 4);
+                let wrong: TermId = manager.mk_eq(shifted, wrong_term);
+                assert!(
+                    term_conjunction_unsat(
+                        &manager,
+                        &[pin_value, pin_shift, wrong],
+                        CONFIRM_NODE_BUDGET
+                    ),
+                    "blasted shift of {value} by {shift} must reject a neighbouring value"
+                );
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct Coverage {
+        operation: &'static str,
+        blasted: bool,
+        enumerated: bool,
+    }
+
+    type BinaryBuilder = fn(&mut TermManager, TermId, TermId) -> TermId;
+
+    fn measure(operation: &'static str, manager: &TermManager, assumptions: &[TermId]) -> Coverage {
+        Coverage {
+            operation,
+            blasted: term_conjunction_unsat(manager, assumptions, CONFIRM_NODE_BUDGET),
+            enumerated: enumerated(manager, assumptions) == Enumerated::NoModel,
+        }
+    }
+
+    #[test]
+    fn the_confirmer_coverage_over_the_emitted_operator_set_is_pinned() {
+        let mut measured: Vec<Coverage> = Vec::new();
+        let word_ops: [(&'static str, BinaryBuilder); 15] = [
+            ("add", TermManager::mk_bv_add),
+            ("sub", TermManager::mk_bv_sub),
+            ("mul", TermManager::mk_bv_mul),
+            ("and", TermManager::mk_bv_and),
+            ("or", TermManager::mk_bv_or),
+            ("xor", TermManager::mk_bv_xor),
+            ("shl", TermManager::mk_bv_shl),
+            ("lshr", TermManager::mk_bv_lshr),
+            ("ashr", TermManager::mk_bv_ashr),
+            ("udiv", TermManager::mk_bv_udiv),
+            ("sdiv", TermManager::mk_bv_sdiv),
+            ("urem", TermManager::mk_bv_urem),
+            ("srem", TermManager::mk_bv_srem),
+            (
+                "not",
+                |manager: &mut TermManager, left: TermId, _: TermId| manager.mk_bv_not(left),
+            ),
+            (
+                "neg",
+                |manager: &mut TermManager, left: TermId, _: TermId| manager.mk_bv_neg(left),
+            ),
+        ];
+        for (name, build) in word_ops {
+            let mut manager: TermManager = TermManager::new();
+            let bv_sort: oxiz::SortId = sort(&mut manager, 4);
+            let x: TermId = manager.mk_var("x", bv_sort);
+            let three: TermId = manager.mk_bitvec(3u64, 4);
+            let value: TermId = build(&mut manager, x, three);
+            let zero: TermId = manager.mk_bitvec(0u64, 4);
+            let one: TermId = manager.mk_bitvec(1u64, 4);
+            let is_zero: TermId = manager.mk_eq(value, zero);
+            let is_one: TermId = manager.mk_eq(value, one);
+            measured.push(measure(name, &manager, &[is_zero, is_one]));
+        }
+
+        let mut manager: TermManager = TermManager::new();
+        let bv_sort: oxiz::SortId = sort(&mut manager, 4);
+        let x: TermId = manager.mk_var("x", bv_sort);
+        let y: TermId = manager.mk_var("y", bv_sort);
+        let zero: TermId = manager.mk_bitvec(0u64, 4);
+        let one: TermId = manager.mk_bitvec(1u64, 4);
+        let narrow_zero: TermId = manager.mk_bitvec(0u64, 2);
+        let narrow_one: TermId = manager.mk_bitvec(1u64, 2);
+
+        let low_x: TermId = manager.mk_bv_extract(1, 0, x);
+        let low_y: TermId = manager.mk_bv_extract(1, 0, y);
+        let joined: TermId = manager.mk_bv_concat(low_x, low_y);
+        let joined_zero: TermId = manager.mk_eq(joined, zero);
+        let joined_one: TermId = manager.mk_eq(joined, one);
+        measured.push(measure("concat", &manager, &[joined_zero, joined_one]));
+
+        let extract_zero: TermId = manager.mk_eq(low_x, narrow_zero);
+        let extract_one: TermId = manager.mk_eq(low_x, narrow_one);
+        measured.push(measure("extract", &manager, &[extract_zero, extract_one]));
+
+        let widened: TermId = manager.mk_bv_concat(narrow_zero, low_x);
+        let widened_zero: TermId = manager.mk_eq(widened, zero);
+        let widened_one: TermId = manager.mk_eq(widened, one);
+        measured.push(measure(
+            "zero-extend",
+            &manager,
+            &[widened_zero, widened_one],
+        ));
+
+        let selector: TermId = manager.mk_bv_ult(x, y);
+        let chosen: TermId = manager.mk_ite(selector, x, y);
+        let chosen_zero: TermId = manager.mk_eq(chosen, zero);
+        let chosen_one: TermId = manager.mk_eq(chosen, one);
+        measured.push(measure("ite", &manager, &[chosen_zero, chosen_one]));
+
+        let predicates: [(&'static str, BinaryBuilder); 5] = [
+            ("eq", TermManager::mk_eq),
+            ("ult", TermManager::mk_bv_ult),
+            ("ule", TermManager::mk_bv_ule),
+            ("slt", TermManager::mk_bv_slt),
+            ("sle", TermManager::mk_bv_sle),
+        ];
+        for (name, build) in predicates {
+            let mut manager: TermManager = TermManager::new();
+            let bv_sort: oxiz::SortId = sort(&mut manager, 4);
+            let x: TermId = manager.mk_var("x", bv_sort);
+            let y: TermId = manager.mk_var("y", bv_sort);
+            let predicate: TermId = build(&mut manager, x, y);
+            let negated: TermId = manager.mk_not(predicate);
+            measured.push(measure(name, &manager, &[predicate, negated]));
+        }
+
+        let mut manager: TermManager = TermManager::new();
+        let bv_sort: oxiz::SortId = sort(&mut manager, 4);
+        let x: TermId = manager.mk_var("x", bv_sort);
+        let y: TermId = manager.mk_var("y", bv_sort);
+        let equal: TermId = manager.mk_eq(x, y);
+        let distinct: TermId = manager.mk_not(equal);
+        let doubly_distinct: TermId = manager.mk_not(distinct);
+        measured.push(measure("distinct", &manager, &[distinct, doubly_distinct]));
+
+        let expected: [Coverage; 25] = [
+            Coverage {
+                operation: "add",
+                blasted: true,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "sub",
+                blasted: true,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "mul",
+                blasted: true,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "and",
+                blasted: true,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "or",
+                blasted: true,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "xor",
+                blasted: true,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "shl",
+                blasted: true,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "lshr",
+                blasted: true,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "ashr",
+                blasted: true,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "udiv",
+                blasted: false,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "sdiv",
+                blasted: false,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "urem",
+                blasted: false,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "srem",
+                blasted: false,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "not",
+                blasted: true,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "neg",
+                blasted: true,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "concat",
+                blasted: true,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "extract",
+                blasted: true,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "zero-extend",
+                blasted: true,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "ite",
+                blasted: true,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "eq",
+                blasted: true,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "ult",
+                blasted: true,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "ule",
+                blasted: true,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "slt",
+                blasted: true,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "sle",
+                blasted: true,
+                enumerated: true,
+            },
+            Coverage {
+                operation: "distinct",
+                blasted: true,
+                enumerated: true,
+            },
+        ];
+        assert_eq!(measured.as_slice(), expected.as_slice());
+    }
+
+    #[test]
+    fn the_two_confirmers_never_split_on_a_random_narrow_conjunction() {
+        let mut rng: Rng = Rng::new(0x51DE_B00B_5EED_1234_u64);
+        let mut agreements: u32 = 0;
+        for iteration in 0..400u32 {
+            let mut manager: TermManager = TermManager::new();
+            let width: u32 = 1 + rng.below(4);
+            let var_count: usize = 1 + rng.below(2) as usize;
+            let bv_sort: oxiz::SortId = sort(&mut manager, width);
+            let vars: Vec<TermId> = (0..var_count)
+                .map(|index: usize| manager.mk_var(&format!("x{index}"), bv_sort))
+                .collect();
+            let conjuncts: usize = 1 + rng.below(3) as usize;
+            let assumptions: Vec<TermId> = (0..conjuncts)
+                .map(|_| random_predicate(&mut manager, &mut rng, &vars, width, 2))
+                .collect();
+            let blasted: bool = term_conjunction_unsat(&manager, &assumptions, CONFIRM_NODE_BUDGET);
+            let enumerated_verdict: Enumerated = enumerated(&manager, &assumptions);
+            if enumerated_verdict == Enumerated::Undecided {
+                continue;
+            }
+            agreements += 1;
+            assert_eq!(
+                blasted,
+                enumerated_verdict == Enumerated::NoModel,
+                "bit-blasting and enumeration split on iteration {iteration}"
+            );
+        }
+        assert!(
+            agreements > 200,
+            "cross-check decided too few queries ({agreements})"
+        );
     }
 
     #[test]
