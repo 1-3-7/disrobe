@@ -1006,4 +1006,25 @@ mod tests {
         assert_eq!(skip_magic_label(b"%PDF-1.4"), Some("pdf"));
         assert_eq!(skip_magic_label(b"PK\x03\x04"), None);
     }
+
+    #[test]
+    fn carve_output_directories_are_tool_named_not_archive_derived() {
+        let source: &str = include_str!("carve.rs");
+        let mut sites: Vec<&str> = Vec::new();
+        for line in source.lines() {
+            if line.contains("split_once") || line.contains("include_str!") {
+                continue;
+            }
+            let Some(rest) = line.split_once(".join(") else {
+                continue;
+            };
+            sites.push(rest.1);
+        }
+        assert_eq!(sites.len(), 1, "carve gained a new path-building site");
+        assert!(
+            sites[0].starts_with("format!(\"d{depth}-c{index}\")"),
+            "carve output directories must stay tool-numbered: {}",
+            sites[0]
+        );
+    }
 }

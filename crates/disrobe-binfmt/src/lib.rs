@@ -46,5 +46,8 @@ pub use native::{
 };
 pub use native_graph::{ImportGraph, import_graph_dot};
 pub use native_image::{NativeImage, NativeImageSection, parse_native_image};
-pub use quota::{ExtractionQuota, QuotaGuard, QuotaReport, sanitize_entry_path};
+pub use quota::{
+    ExtractionQuota, QuotaGuard, QuotaReport, prepare_entry_dir, prepare_entry_path,
+    sanitize_entry_path,
+};
 pub use structural::{StructuralFormat, identify_by_structure, locate_pe_header};
