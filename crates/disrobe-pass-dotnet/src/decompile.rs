@@ -604,15 +604,20 @@ fn rewrite_one_param(raw: &str, inferred: Option<&str>) -> String {
     };
     let trimmed: &str = raw.trim();
     let Some((ty, name)): Option<(&str, &str)> = trimmed.rsplit_once(' ') else {
-        return trimmed.to_owned();
+        if inferred.is_empty() {
+            return trimmed.to_owned();
+        }
+        return format!("{trimmed} {inferred}");
     };
     let invalid: bool = !crate::structurize::is_simple_identifier(name)
         && !name
             .strip_prefix('@')
             .is_some_and(crate::structurize::is_simple_identifier);
-    if (name.starts_with("arg") || name.is_empty() || invalid)
+    if (crate::names::is_positional_parameter_name(name) || name.is_empty() || invalid)
         && !inferred.is_empty()
-        && (invalid || inferred.starts_with('@') || !inferred.starts_with("arg"))
+        && (invalid
+            || inferred.starts_with('@')
+            || !crate::names::is_positional_parameter_name(inferred))
     {
         format!("{ty} {inferred}")
     } else {
@@ -634,76 +639,12 @@ fn build_name_table(
         .map(|p: &crate::signature::TypeSig| resolver.render_type(p, lang))
         .collect();
     if lang == TargetLang::CSharp {
-        canonicalize_csharp_parameter_names(&mut param_names);
+        param_names = crate::names::canonical_parameter_names(&param_names, lang);
         infer_param_names_from_field_stores(resolver, m, body, &mut param_names);
-        canonicalize_csharp_parameter_names(&mut param_names);
+        param_names = crate::names::canonical_parameter_names(&param_names, lang);
     }
     let local_types: Vec<String> = resolver.local_types(body.local_var_sig_tok, lang);
     NameTable::new(!m.is_static(), param_names, param_types, local_types)
-}
-
-fn canonicalize_csharp_parameter_names(param_names: &mut [String]) {
-    let mut used: BTreeSet<String> = BTreeSet::new();
-    for (index, name) in param_names.iter_mut().enumerate() {
-        let base: String = csharp_parameter_name(name, index);
-        let mut candidate: String = base.clone();
-        let mut suffix: usize = 2;
-        while !used.insert(candidate.clone()) {
-            candidate = format!("{base}_{suffix}");
-            suffix = suffix.saturating_add(1);
-        }
-        *name = candidate;
-    }
-}
-
-fn csharp_parameter_name(name: &str, index: usize) -> String {
-    if let Some(suffix) = name.strip_prefix("<>h__TransparentIdentifier")
-        && !suffix.is_empty()
-        && suffix.bytes().all(|byte: u8| byte.is_ascii_digit())
-    {
-        return format!("transparentIdentifier{suffix}");
-    }
-    if crate::structurize::is_simple_identifier(name) {
-        return crate::structurize::csharp_escape_identifier(name);
-    }
-    if name
-        .strip_prefix('@')
-        .is_some_and(crate::structurize::is_simple_identifier)
-    {
-        return name.to_owned();
-    }
-    if let Some(readable) = compiler_generated_parameter_name(name) {
-        return readable;
-    }
-    format!("arg{}", index.saturating_add(1))
-}
-
-fn compiler_generated_parameter_name(name: &str) -> Option<String> {
-    let rest: &str = name.strip_prefix('<')?;
-    let close: usize = rest.find('>')?;
-    let inner: &str = rest.get(..close)?;
-    let after: &str = rest.get(close.saturating_add(1)..)?;
-    let core: &str = if inner.is_empty() {
-        let digits: usize = after.bytes().take_while(u8::is_ascii_digit).count();
-        if digits == 0 {
-            return None;
-        }
-        let tail: &str = after.get(digits..)?;
-        let underscores: usize = tail.bytes().take_while(|byte: &u8| *byte == b'_').count();
-        if underscores < 2 {
-            return None;
-        }
-        tail.get(underscores..)?
-    } else {
-        inner
-    };
-    if !crate::structurize::is_simple_identifier(core) {
-        return None;
-    }
-    let mut chars: std::str::Chars<'_> = core.chars();
-    let first: char = chars.next()?;
-    let lowered: String = first.to_ascii_lowercase().to_string() + chars.as_str();
-    Some(crate::structurize::csharp_escape_identifier(&lowered))
 }
 
 fn infer_param_names_from_field_stores(
@@ -728,7 +669,7 @@ fn infer_param_names_from_field_stores(
         let Some(name): Option<&mut String> = param_names.get_mut(slot as usize) else {
             continue;
         };
-        if !name.is_empty() && !name.starts_with("arg") {
+        if !name.is_empty() && !crate::names::is_positional_parameter_name(name) {
             continue;
         }
         if let Some(inferred) = param_name_from_field(&resolver.resolve_token(field_tok)) {
@@ -966,65 +907,6 @@ mod tests {
         let sig: &str = "// Sample.Box\npublic void .ctor(int arg1)";
         let out: String = apply_inferred_param_names(sig, &names);
         assert!(out.contains("(int count)"), "got:\n{out}");
-    }
-
-    #[test]
-    fn csharp_parameter_name_recovers_transparent_identifiers_and_refuses_invalid_metadata() {
-        assert_eq!(
-            csharp_parameter_name("<>h__TransparentIdentifier12", 0),
-            "transparentIdentifier12"
-        );
-        assert_eq!(csharp_parameter_name("bad-name", 1), "arg2");
-        assert_eq!(csharp_parameter_name("class", 2), "@class");
-    }
-
-    #[test]
-    fn csharp_parameter_name_reads_a_compiler_generated_metadata_name() {
-        assert_eq!(csharp_parameter_name("<>1__state", 0), "state");
-        assert_eq!(csharp_parameter_name("<>2__current", 0), "current");
-        assert_eq!(csharp_parameter_name("<>7__wrap1", 0), "wrap1");
-        assert_eq!(
-            csharp_parameter_name("<Length>k__BackingField", 0),
-            "length"
-        );
-        assert_eq!(csharp_parameter_name("<>1__object", 0), "@object");
-    }
-
-    #[test]
-    fn compiler_generated_parameter_name_refuses_a_shape_it_cannot_read() {
-        for name in [
-            "state",
-            "<>1state",
-            "<>__state",
-            "<>1__",
-            "<>1__two words",
-            "<>1__9leading",
-            "<unclosed",
-            "<>",
-            "",
-        ] {
-            assert_eq!(compiler_generated_parameter_name(name), None, "{name}");
-        }
-    }
-
-    #[test]
-    fn csharp_parameter_names_are_deterministically_unique() {
-        let mut names: Vec<String> = vec![
-            "transparentIdentifier0".to_owned(),
-            "<>h__TransparentIdentifier0".to_owned(),
-            "arg4".to_owned(),
-            "bad-name".to_owned(),
-        ];
-        canonicalize_csharp_parameter_names(&mut names);
-        assert_eq!(
-            names,
-            [
-                "transparentIdentifier0",
-                "transparentIdentifier0_2",
-                "arg4",
-                "arg4_2",
-            ]
-        );
     }
 
     #[test]
