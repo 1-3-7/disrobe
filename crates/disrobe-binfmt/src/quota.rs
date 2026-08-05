@@ -193,47 +193,92 @@ fn is_reserved_device_component(component: &str) -> bool {
     RESERVED_DEVICE_STEMS.contains(&folded.as_str())
 }
 
-fn is_hostile_component(component: &str) -> bool {
-    if component.len() > MAX_ENTRY_COMPONENT_BYTES {
-        return true;
-    }
-    if component.contains(':') {
-        return true;
-    }
-    if component.chars().all(|c: char| c == '.') {
-        return true;
-    }
-    if component.ends_with('.') || component.ends_with(' ') {
-        return true;
-    }
-    is_reserved_device_component(component)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EntryPathClause {
+    OverlongName,
+    ControlCharacter,
+    RootAnchored,
+    OverlongComponent,
+    ColonInComponent,
+    ParentTraversal,
+    TrailingDotOrSpace,
+    ReservedDeviceName,
+    NothingLeftAfterCleaning,
 }
 
-pub fn sanitize_entry_path(name: &str) -> Result<String> {
-    if name.is_empty() || name.len() > MAX_ENTRY_PATH_BYTES {
-        return Err(Error::UnsafeEntryPath(name.to_owned()));
+#[cfg(test)]
+pub(crate) const ENTRY_PATH_CLAUSES: [EntryPathClause; 9] = [
+    EntryPathClause::OverlongName,
+    EntryPathClause::ControlCharacter,
+    EntryPathClause::RootAnchored,
+    EntryPathClause::OverlongComponent,
+    EntryPathClause::ColonInComponent,
+    EntryPathClause::ParentTraversal,
+    EntryPathClause::TrailingDotOrSpace,
+    EntryPathClause::ReservedDeviceName,
+    EntryPathClause::NothingLeftAfterCleaning,
+];
+
+fn note(found: &mut Vec<EntryPathClause>, clause: EntryPathClause) {
+    if !found.contains(&clause) {
+        found.push(clause);
+    }
+}
+
+fn component_clauses(component: &str, found: &mut Vec<EntryPathClause>) {
+    if component.len() > MAX_ENTRY_COMPONENT_BYTES {
+        note(found, EntryPathClause::OverlongComponent);
+    }
+    if component.contains(':') {
+        note(found, EntryPathClause::ColonInComponent);
+    }
+    if component.chars().all(|c: char| c == '.') {
+        note(found, EntryPathClause::ParentTraversal);
+    } else if component.ends_with('.') || component.ends_with(' ') {
+        note(found, EntryPathClause::TrailingDotOrSpace);
+    }
+    if is_reserved_device_component(component) {
+        note(found, EntryPathClause::ReservedDeviceName);
+    }
+}
+
+fn inspect_entry_path(name: &str) -> (Vec<EntryPathClause>, String) {
+    let mut found: Vec<EntryPathClause> = Vec::new();
+    if name.len() > MAX_ENTRY_PATH_BYTES {
+        note(&mut found, EntryPathClause::OverlongName);
     }
     if name.chars().any(char::is_control) {
-        return Err(Error::UnsafeEntryPath(name.to_owned()));
+        note(&mut found, EntryPathClause::ControlCharacter);
     }
     let normalized: String = name.replace('\\', "/");
     if normalized.starts_with('/') {
-        return Err(Error::UnsafeEntryPath(name.to_owned()));
+        note(&mut found, EntryPathClause::RootAnchored);
     }
     let mut kept: Vec<&str> = Vec::new();
     for component in normalized.split('/') {
         if component.is_empty() || component == "." {
             continue;
         }
-        if is_hostile_component(component) {
-            return Err(Error::UnsafeEntryPath(name.to_owned()));
-        }
+        component_clauses(component, &mut found);
         kept.push(component);
     }
     if kept.is_empty() {
-        return Err(Error::UnsafeEntryPath(name.to_owned()));
+        note(&mut found, EntryPathClause::NothingLeftAfterCleaning);
     }
-    Ok(kept.join("/"))
+    (found, kept.join("/"))
+}
+
+#[cfg(test)]
+pub(crate) fn entry_path_clauses_violated(name: &str) -> Vec<EntryPathClause> {
+    inspect_entry_path(name).0
+}
+
+pub fn sanitize_entry_path(name: &str) -> Result<String> {
+    let (violations, cleaned): (Vec<EntryPathClause>, String) = inspect_entry_path(name);
+    if violations.is_empty() {
+        return Ok(cleaned);
+    }
+    Err(Error::UnsafeEntryPath(name.to_owned()))
 }
 
 fn lexically_contained(root: &Path, candidate: &Path) -> bool {
@@ -379,6 +424,89 @@ mod tests {
                         "`{name}` cleaned into `{cleaned}`"
                     );
                 }
+            }
+        }
+    }
+
+    fn clause_witnesses() -> Vec<(EntryPathClause, String)> {
+        vec![
+            (
+                EntryPathClause::OverlongName,
+                format!("{}/x.txt", vec!["dir"; 2048].join("/")),
+            ),
+            (
+                EntryPathClause::ControlCharacter,
+                "evil\u{0}.txt".to_owned(),
+            ),
+            (EntryPathClause::RootAnchored, "/etc/passwd".to_owned()),
+            (
+                EntryPathClause::OverlongComponent,
+                "a".repeat(MAX_ENTRY_COMPONENT_BYTES + 1),
+            ),
+            (
+                EntryPathClause::ColonInComponent,
+                "dir/file.txt:stream".to_owned(),
+            ),
+            (EntryPathClause::ParentTraversal, "../escape.txt".to_owned()),
+            (EntryPathClause::TrailingDotOrSpace, "evil.".to_owned()),
+            (EntryPathClause::ReservedDeviceName, "CON".to_owned()),
+            (EntryPathClause::NothingLeftAfterCleaning, "./".to_owned()),
+        ]
+    }
+
+    #[test]
+    fn every_guard_clause_owns_a_witness_no_other_clause_refuses() {
+        let witnesses: Vec<(EntryPathClause, String)> = clause_witnesses();
+        for clause in ENTRY_PATH_CLAUSES {
+            let matching: Vec<&(EntryPathClause, String)> = witnesses
+                .iter()
+                .filter(|(c, _): &&(EntryPathClause, String)| *c == clause)
+                .collect();
+            assert_eq!(
+                matching.len(),
+                1,
+                "{clause:?} needs exactly one witness, found {}",
+                matching.len()
+            );
+        }
+        for (clause, witness) in &witnesses {
+            let violated: Vec<EntryPathClause> = entry_path_clauses_violated(witness);
+            assert_eq!(
+                violated,
+                vec![*clause],
+                "`{witness}` must be refused by {clause:?} alone, got {violated:?}"
+            );
+            assert!(
+                matches!(sanitize_entry_path(witness), Err(Error::UnsafeEntryPath(_))),
+                "`{witness}` must be refused while {clause:?} is present"
+            );
+        }
+    }
+
+    #[test]
+    fn an_accepted_name_can_never_carry_a_traversal_component() {
+        let accepted: Vec<String> = HOSTILE_ENTRY_NAMES
+            .iter()
+            .filter_map(|(name, _): &(&str, HostileNameVerdict)| sanitize_entry_path(name).ok())
+            .chain(
+                ["pkg/mod.pyc", "a/b/c.txt", ".hidden"]
+                    .into_iter()
+                    .filter_map(|name: &str| sanitize_entry_path(name).ok()),
+            )
+            .collect();
+        assert!(accepted.len() >= 12, "too few accepted names to prove this");
+        for cleaned in &accepted {
+            assert!(
+                !cleaned.starts_with('/') && !cleaned.contains('\\'),
+                "`{cleaned}` stayed anchored or kept a native separator"
+            );
+            for component in cleaned.split('/') {
+                assert!(
+                    !component.is_empty()
+                        && !component.chars().all(|c: char| c == '.')
+                        && !component.contains(':'),
+                    "`{cleaned}` kept the component `{component}`"
+                );
             }
         }
     }

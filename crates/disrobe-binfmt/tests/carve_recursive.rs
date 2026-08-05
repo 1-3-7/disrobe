@@ -371,3 +371,61 @@ fn every_path_a_destination_carve_claims_still_exists_afterwards() {
         );
     }
 }
+
+fn build_nested_gz_with_hostile_inner_name() -> Vec<u8> {
+    let inner_zip: Vec<u8> = zip_stored("../../escape.txt", INNERMOST);
+    let tarball: Vec<u8> = tar_single("payload.zip", &inner_zip);
+    gzip(&tarball)
+}
+
+#[test]
+fn a_hostile_name_in_a_nested_archive_never_escapes_the_destination_root() {
+    let nested: Vec<u8> = build_nested_gz_with_hostile_inner_name();
+    let destination: tempfile::TempDir = tempfile::tempdir().expect("destination");
+    let report: CarveReport = carve_recursive(
+        &nested,
+        "nested.tar.gz",
+        CarveConfig::default(),
+        Some(destination.path()),
+    );
+    let mut claimed: Vec<std::path::PathBuf> = Vec::new();
+    claimed_paths(&report.root, &mut claimed);
+    let destination_real: std::path::PathBuf =
+        std::fs::canonicalize(destination.path()).expect("canonical destination");
+    for path in &claimed {
+        let real: std::path::PathBuf = std::fs::canonicalize(path).expect("canonical claimed path");
+        assert!(
+            real.starts_with(&destination_real),
+            "{} escaped the destination root {}",
+            real.display(),
+            destination_real.display()
+        );
+    }
+    let parent: &std::path::Path = destination.path().parent().expect("destination parent");
+    assert!(
+        !parent.join("escape.txt").exists(),
+        "the inner archive's traversal entry landed beside the destination root"
+    );
+    assert!(
+        !walk_names(destination.path()).contains(&"escape.txt".to_owned()),
+        "a refused entry name must never be written under any nested root either"
+    );
+}
+
+fn walk_names(root: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return names;
+    };
+    for entry in entries.flatten() {
+        let path: std::path::PathBuf = entry.path();
+        if path.is_dir() {
+            names.extend(walk_names(&path));
+            continue;
+        }
+        if let Some(name) = path.file_name().and_then(|n: &std::ffi::OsStr| n.to_str()) {
+            names.push(name.to_owned());
+        }
+    }
+    names
+}
