@@ -1791,6 +1791,9 @@ fn states_refusal(methods: &[UserMethod]) -> bool {
     methods.iter().any(|m: &UserMethod| {
         m.source
             .contains(disrobe_pass_dotnet::iterator_reverse::UNRECONSTRUCTED_STATE_MACHINE_MARKER)
+            || m.source.contains(
+                disrobe_pass_dotnet::iterator_reverse::UNLOWERED_COMPILER_CONSTRUCT_MARKER,
+            )
     })
 }
 
@@ -1865,7 +1868,7 @@ fn edgecases_whole_type_recompile_fraction_is_published_as_measured() {
     );
     eprintln!("  recompiled: {compiled:?}");
     eprintln!(
-        "  parses but carries a stated refusal for at least one state machine, so it does not count as recovered: {refused:?}"
+        "  parses but carries a stated refusal for at least one member, a state machine that was not reconstructed or a compiler-generated construct that was not lowered, so it does not count as recovered: {refused:?}"
     );
     eprintln!(
         "  withheld because metadata requires one recovered value-type constructor: {constructor_refused:?}"
