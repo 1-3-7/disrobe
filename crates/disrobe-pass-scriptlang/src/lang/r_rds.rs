@@ -57,6 +57,8 @@ const S4SXP: u32 = 25u32;
 const HAS_ATTR_BIT: u32 = 1u32 << 9;
 const HAS_TAG_BIT: u32 = 1u32 << 10;
 
+const R_NA_REAL_BITS: u64 = 0x7FF0_0000_0000_07A2u64;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RdsEncoding {
@@ -65,8 +67,21 @@ pub enum RdsEncoding {
     Ascii,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RdsContainer {
+    Rds,
+    Rda,
+}
+
+const RDA_MAGICS: [&[u8; 5]; 6] = [
+    b"RDX2\n", b"RDX3\n", b"RDA2\n", b"RDA3\n", b"RDB2\n", b"RDB3\n",
+];
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RdsHeader {
+    pub container: RdsContainer,
+    pub container_magic: Option<String>,
     pub encoding: RdsEncoding,
     pub version: u32,
     pub writer_version: String,
@@ -133,6 +148,8 @@ pub struct RdsAltrep {
     pub class: Option<String>,
     pub package: Option<String>,
     pub serialized_type: Option<i64>,
+    pub represented_type: Option<String>,
+    pub represented_length: Option<usize>,
     pub materialized: Option<String>,
     pub note: Option<String>,
 }
@@ -165,35 +182,65 @@ pub struct RdsObject {
     pub altrep_objects: Vec<RdsAltrep>,
     pub external_pointers: Vec<RdsExternalPointer>,
     pub weak_references: Vec<RdsWeakReference>,
+    pub bytecode_expressions: Vec<String>,
     pub node_count: usize,
 }
 
 #[must_use]
 pub fn is_rds(bytes: &[u8]) -> bool {
-    detect_encoding(bytes).is_some()
+    detect_stream(bytes).is_some()
 }
 
-fn detect_encoding(bytes: &[u8]) -> Option<RdsEncoding> {
-    if bytes.len() < 2 {
-        return None;
+fn detect_container(bytes: &[u8]) -> Option<(RdsContainer, &'static str, usize)> {
+    let head: &[u8] = bytes.get(..5)?;
+    for magic in RDA_MAGICS {
+        if head == magic.as_slice() {
+            let label: &'static str = match core::str::from_utf8(&magic[..4]) {
+                Ok(text) => match text {
+                    "RDX2" => "RDX2",
+                    "RDX3" => "RDX3",
+                    "RDA2" => "RDA2",
+                    "RDA3" => "RDA3",
+                    "RDB2" => "RDB2",
+                    _ => "RDB3",
+                },
+                Err(_) => return None,
+            };
+            return Some((RdsContainer::Rda, label, 5usize));
+        }
     }
-    match (bytes[0], bytes[1]) {
-        (b'X', b'\n') => Some(RdsEncoding::Xdr),
-        (b'B', b'\n') => Some(RdsEncoding::Binary),
-        (b'A', b'\n') => Some(RdsEncoding::Ascii),
+    None
+}
+
+fn detect_stream(bytes: &[u8]) -> Option<(RdsEncoding, usize)> {
+    let frame: usize = detect_container(bytes).map_or(0usize, |(_, _, len)| len);
+    let rest: &[u8] = bytes.get(frame..)?;
+    let (&first, &second): (&u8, &u8) = (rest.first()?, rest.get(1)?);
+    let encoding: RdsEncoding = match first {
+        b'X' => RdsEncoding::Xdr,
+        b'B' => RdsEncoding::Binary,
+        b'A' => RdsEncoding::Ascii,
+        _ => return None,
+    };
+    match (encoding, second) {
+        (_, b'\n') => Some((encoding, frame + 2usize)),
+        (RdsEncoding::Ascii, b'\r') if rest.get(2) == Some(&b'\n') => {
+            Some((encoding, frame + 3usize))
+        }
         _ => None,
     }
 }
 
-struct XdrReader<'a> {
+struct StreamReader<'a> {
     reader: ByteReader<'a>,
+    encoding: RdsEncoding,
 }
 
-impl<'a> XdrReader<'a> {
-    fn new(bytes: &'a [u8], pos: usize) -> Result<Self> {
+impl<'a> StreamReader<'a> {
+    fn new(bytes: &'a [u8], pos: usize, encoding: RdsEncoding) -> Result<Self> {
         let mut reader: ByteReader<'a> = ByteReader::new(bytes);
         reader.seek(pos).map_err(Self::truncated)?;
-        Ok(Self { reader })
+        Ok(Self { reader, encoding })
     }
 
     fn truncated(error: ByteReadError) -> Error {
@@ -201,6 +248,14 @@ impl<'a> XdrReader<'a> {
             offset: error.offset,
             needed: error.needed,
             had: error.available,
+        }
+    }
+
+    fn exhausted(&self, needed: usize) -> Error {
+        Error::RdsTruncated {
+            offset: self.reader.position(),
+            needed,
+            had: self.reader.remaining(),
         }
     }
 
@@ -214,26 +269,155 @@ impl<'a> XdrReader<'a> {
         disrobe_bytes::bounded_element_capacity(count as u64, elem_bytes, self.remaining())
     }
 
+    fn ascii_token(&mut self) -> Result<&'a [u8]> {
+        while let Ok(byte) = self.reader.peek_u8() {
+            if byte.is_ascii_whitespace() {
+                self.reader.skip(1usize).map_err(Self::truncated)?;
+            } else {
+                break;
+            }
+        }
+        let start: usize = self.reader.position();
+        while let Ok(byte) = self.reader.peek_u8() {
+            if byte.is_ascii_whitespace() {
+                break;
+            }
+            self.reader.skip(1usize).map_err(Self::truncated)?;
+        }
+        let end: usize = self.reader.position();
+        if end == start {
+            return Err(self.exhausted(1usize));
+        }
+        self.reader
+            .as_slice()
+            .get(start..end)
+            .ok_or_else(|| self.exhausted(end - start))
+    }
+
+    fn ascii_word(&mut self) -> Result<String> {
+        let token: &[u8] = self.ascii_token()?;
+        Ok(String::from_utf8_lossy(token).into_owned())
+    }
+
     fn i32(&mut self) -> Result<i32> {
-        self.reader.read_i32_be().map_err(Self::truncated)
+        match self.encoding {
+            RdsEncoding::Xdr => self.reader.read_i32_be().map_err(Self::truncated),
+            RdsEncoding::Binary => self.reader.read_i32_le().map_err(Self::truncated),
+            RdsEncoding::Ascii => {
+                let word: String = self.ascii_word()?;
+                if word == "NA" {
+                    return Ok(i32::MIN);
+                }
+                word.parse::<i32>()
+                    .map_err(|_| Error::RdsAsciiToken { token: word })
+            }
+        }
     }
 
     fn u32(&mut self) -> Result<u32> {
-        self.reader.read_u32_be().map_err(Self::truncated)
+        match self.encoding {
+            RdsEncoding::Xdr => self.reader.read_u32_be().map_err(Self::truncated),
+            RdsEncoding::Binary => self.reader.read_u32_le().map_err(Self::truncated),
+            RdsEncoding::Ascii => self.i32().map(|value: i32| value as u32),
+        }
     }
 
     fn f64(&mut self) -> Result<f64> {
-        let bits: u64 = self.reader.read_u64_be().map_err(Self::truncated)?;
-        Ok(f64::from_bits(bits))
+        match self.encoding {
+            RdsEncoding::Xdr => {
+                let bits: u64 = self.reader.read_u64_be().map_err(Self::truncated)?;
+                Ok(f64::from_bits(bits))
+            }
+            RdsEncoding::Binary => {
+                let bits: u64 = self.reader.read_u64_le().map_err(Self::truncated)?;
+                Ok(f64::from_bits(bits))
+            }
+            RdsEncoding::Ascii => {
+                let word: String = self.ascii_word()?;
+                match word.as_str() {
+                    "NA" => Ok(f64::from_bits(R_NA_REAL_BITS)),
+                    "NaN" => Ok(f64::NAN),
+                    "Inf" => Ok(f64::INFINITY),
+                    "-Inf" => Ok(f64::NEG_INFINITY),
+                    other => other.parse::<f64>().map_err(|_| Error::RdsAsciiToken {
+                        token: word.clone(),
+                    }),
+                }
+            }
+        }
     }
 
-    fn skip(&mut self, n: usize) -> Result<()> {
-        self.reader.skip(n).map_err(Self::truncated)
+    fn skip_ints(&mut self, count: usize) -> Result<()> {
+        match self.encoding {
+            RdsEncoding::Xdr | RdsEncoding::Binary => self
+                .reader
+                .skip(count.saturating_mul(4usize))
+                .map_err(Self::truncated),
+            RdsEncoding::Ascii => {
+                for _ in 0..count {
+                    let _value: i32 = self.i32()?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn skip_reals(&mut self, count: usize) -> Result<()> {
+        match self.encoding {
+            RdsEncoding::Xdr | RdsEncoding::Binary => self
+                .reader
+                .skip(count.saturating_mul(8usize))
+                .map_err(Self::truncated),
+            RdsEncoding::Ascii => {
+                for _ in 0..count {
+                    let _value: f64 = self.f64()?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn skip_raw(&mut self, count: usize) -> Result<()> {
+        match self.encoding {
+            RdsEncoding::Xdr | RdsEncoding::Binary => {
+                self.reader.skip(count).map_err(Self::truncated)
+            }
+            RdsEncoding::Ascii => {
+                for _ in 0..count {
+                    let _byte: u8 = self.raw_byte()?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn raw_byte(&mut self) -> Result<u8> {
+        match self.encoding {
+            RdsEncoding::Xdr | RdsEncoding::Binary => {
+                self.reader.read_u8().map_err(Self::truncated)
+            }
+            RdsEncoding::Ascii => {
+                let word: String = self.ascii_word()?;
+                u8::from_str_radix(&word, 16).map_err(|_| Error::RdsAsciiToken {
+                    token: word.clone(),
+                })
+            }
+        }
     }
 
     fn raw_bytes(&mut self, n: usize) -> Result<Vec<u8>> {
-        let out: Vec<u8> = self.reader.read_bytes(n).map_err(Self::truncated)?.to_vec();
-        Ok(out)
+        match self.encoding {
+            RdsEncoding::Xdr | RdsEncoding::Binary => {
+                Ok(self.reader.read_bytes(n).map_err(Self::truncated)?.to_vec())
+            }
+            RdsEncoding::Ascii => {
+                let mut out: Vec<u8> = Vec::with_capacity(self.bounded_capacity(n, 2usize));
+                for _ in 0..n {
+                    out.push(self.raw_byte()?);
+                }
+                Ok(out)
+            }
+        }
     }
 
     fn string(&mut self, len: usize) -> Result<String> {
@@ -244,9 +428,60 @@ impl<'a> XdrReader<'a> {
                 max: MAX_STRING_BYTES,
             });
         }
-        let raw: &[u8] = self.reader.read_bytes(len).map_err(Self::truncated)?;
-        let s: String = String::from_utf8_lossy(raw).into_owned();
-        Ok(s)
+        match self.encoding {
+            RdsEncoding::Xdr | RdsEncoding::Binary => {
+                let raw: &[u8] = self.reader.read_bytes(len).map_err(Self::truncated)?;
+                Ok(String::from_utf8_lossy(raw).into_owned())
+            }
+            RdsEncoding::Ascii => self.ascii_string(len),
+        }
+    }
+
+    fn ascii_string(&mut self, len: usize) -> Result<String> {
+        if len == 0usize {
+            return Ok(String::new());
+        }
+        while let Ok(byte) = self.reader.peek_u8() {
+            if byte.is_ascii_whitespace() {
+                self.reader.skip(1usize).map_err(Self::truncated)?;
+            } else {
+                break;
+            }
+        }
+        let mut out: Vec<u8> = Vec::with_capacity(self.bounded_capacity(len, 1usize));
+        for _ in 0..len {
+            let byte: u8 = self.reader.read_u8().map_err(Self::truncated)?;
+            if byte != b'\\' {
+                out.push(byte);
+                continue;
+            }
+            let escape: u8 = self.reader.read_u8().map_err(Self::truncated)?;
+            match escape {
+                b'n' => out.push(b'\n'),
+                b't' => out.push(b'\t'),
+                b'v' => out.push(0x0bu8),
+                b'b' => out.push(0x08u8),
+                b'r' => out.push(b'\r'),
+                b'f' => out.push(0x0cu8),
+                b'a' => out.push(0x07u8),
+                b'0'..=b'7' => {
+                    let mut value: u32 = u32::from(escape - b'0');
+                    for _ in 0..2 {
+                        let Ok(digit) = self.reader.peek_u8() else {
+                            break;
+                        };
+                        if !(b'0'..=b'7').contains(&digit) {
+                            break;
+                        }
+                        self.reader.skip(1usize).map_err(Self::truncated)?;
+                        value = value.saturating_mul(8u32) + u32::from(digit - b'0');
+                    }
+                    out.push(u8::try_from(value & 0xFFu32).unwrap_or(0u8));
+                }
+                other => out.push(other),
+            }
+        }
+        Ok(String::from_utf8_lossy(&out).into_owned())
     }
 }
 
@@ -263,6 +498,7 @@ struct Walk {
     altrep_objects: Vec<RdsAltrep>,
     external_pointers: Vec<RdsExternalPointer>,
     weak_references: Vec<RdsWeakReference>,
+    bytecode_expressions: Vec<String>,
     ref_table: Vec<String>,
     bc_reps: usize,
     node_count: usize,
@@ -283,6 +519,7 @@ impl Walk {
             altrep_objects: Vec::new(),
             external_pointers: Vec::new(),
             weak_references: Vec::new(),
+            bytecode_expressions: Vec::new(),
             ref_table: Vec::new(),
             bc_reps: 0usize,
             node_count: 0usize,
@@ -314,16 +551,18 @@ fn require_rvalue_vector_length(kind: &'static str, count: usize) -> Result<()> 
 }
 
 pub fn read_rds(bytes: &[u8]) -> Result<RdsObject> {
-    let encoding: RdsEncoding = detect_encoding(bytes).ok_or_else(|| {
-        Error::NotRds([
-            bytes.first().copied().map_or(0u8, |value: u8| value),
-            bytes.get(1).copied().map_or(0u8, |value: u8| value),
-        ])
-    })?;
-    if encoding != RdsEncoding::Xdr {
-        return Err(Error::RdsFormat(bytes[0]));
-    }
-    let mut r: XdrReader<'_> = XdrReader::new(bytes, 2)?;
+    let (encoding, payload_offset): (RdsEncoding, usize) =
+        detect_stream(bytes).ok_or_else(|| {
+            Error::NotRds([
+                bytes.first().copied().map_or(0u8, |value: u8| value),
+                bytes.get(1).copied().map_or(0u8, |value: u8| value),
+            ])
+        })?;
+    let (container, container_magic): (RdsContainer, Option<String>) = detect_container(bytes)
+        .map_or((RdsContainer::Rds, None), |(kind, magic, _)| {
+            (kind, Some(magic.to_owned()))
+        });
+    let mut r: StreamReader<'_> = StreamReader::new(bytes, payload_offset, encoding)?;
     let version: u32 = r.u32()?;
     let writer_version: String = decode_version(r.u32()?);
     let min_reader_version: String = decode_version(r.u32()?);
@@ -339,6 +578,8 @@ pub fn read_rds(bytes: &[u8]) -> Result<RdsObject> {
     };
 
     let header: RdsHeader = RdsHeader {
+        container,
+        container_magic,
         encoding,
         version,
         writer_version,
@@ -368,11 +609,16 @@ pub fn read_rds(bytes: &[u8]) -> Result<RdsObject> {
         altrep_objects: walk.altrep_objects,
         external_pointers: walk.external_pointers,
         weak_references: walk.weak_references,
+        bytecode_expressions: walk.bytecode_expressions,
         node_count: walk.node_count,
     })
 }
 
-fn walk_item(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Result<(String, Option<usize>)> {
+fn walk_item(
+    r: &mut StreamReader<'_>,
+    w: &mut Walk,
+    depth: usize,
+) -> Result<(String, Option<usize>)> {
     if depth > MAX_DEPTH {
         return Err(Error::RdsDepthExceeded(MAX_DEPTH));
     }
@@ -381,7 +627,7 @@ fn walk_item(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Result<(Strin
 }
 
 fn walk_item_body(
-    r: &mut XdrReader<'_>,
+    r: &mut StreamReader<'_>,
     w: &mut Walk,
     flags: u32,
     depth: usize,
@@ -419,8 +665,15 @@ fn walk_item_body(
         }
         ALTREP_SXP => {
             let altrep: RdsAltrep = read_altrep(r, w, depth + 1)?;
+            let represented: (String, Option<usize>) = (
+                altrep
+                    .represented_type
+                    .clone()
+                    .unwrap_or_else(|| label.clone()),
+                altrep.represented_length,
+            );
             w.altrep_objects.push(altrep);
-            return Ok((label, None));
+            return Ok(represented);
         }
         SYMSXP => {
             let (_t, _l): (String, Option<usize>) = walk_item(r, w, depth + 1)?;
@@ -463,7 +716,7 @@ fn walk_item_body(
             return Ok((label, None));
         }
         BCODESXP => {
-            walk_bytecode(r, w, depth + 1)?;
+            let _expression: Option<RValue> = read_bytecode(r, w, depth + 1)?;
             return Ok((label, None));
         }
         CHARSXP => {
@@ -479,7 +732,7 @@ fn walk_item_body(
         LGLSXP | INTSXP => {
             let n: i32 = r.i32()?;
             let count: usize = n.max(0) as usize;
-            r.skip(count.saturating_mul(4))?;
+            r.skip_ints(count)?;
             Some(count)
         }
         REALSXP => {
@@ -516,7 +769,7 @@ fn walk_item_body(
             let count: usize = n.max(0) as usize;
             let keep: usize = count.min(RAW_VECTOR_CAP);
             let bytes: Vec<u8> = r.raw_bytes(keep)?;
-            r.skip(count - keep)?;
+            r.skip_raw(count - keep)?;
             w.raw_vectors.push(RdsRawVector {
                 length: count,
                 bytes,
@@ -541,37 +794,41 @@ fn walk_item_body(
             Some(count)
         }
         S4SXP => {
-            if has_attr {
-                let s4: RdsS4Object = read_s4_slots(r, w, depth + 1)?;
-                w.s4_objects.push(s4);
+            let slot: usize = reserve_s4(w);
+            let recovered: RdsS4Object = if has_attr {
+                read_s4_slots(r, w, depth + 1)?
             } else {
-                w.s4_objects.push(RdsS4Object {
+                RdsS4Object {
                     class: None,
                     package: None,
                     slots: Vec::new(),
-                });
+                }
+            };
+            if let Some(entry) = w.s4_objects.get_mut(slot) {
+                *entry = recovered;
             }
             return Ok((label, None));
         }
         ENVSXP => {
             w.ref_table.push(String::new());
+            let slot: usize = reserve_environment(w);
             let _locked: i32 = r.i32()?;
             let enclos: (String, Option<usize>) = walk_item(r, w, depth + 1)?;
-            let frame_before: usize = w.symbols.len();
             let frame_bindings: Vec<String> = collect_env_frame(r, w, depth + 1)?;
             let hashed: bool = frame_bindings.is_empty();
             let hashtab_bindings: Vec<String> = collect_env_hashtab(r, w, depth + 1)?;
             let _attr: (String, Option<usize>) = walk_item(r, w, depth + 1)?;
-            let _ = frame_before;
             let mut bindings: Vec<String> = frame_bindings;
             bindings.extend(hashtab_bindings);
             bindings.sort_unstable();
             bindings.dedup();
-            w.environments.push(RdsEnvironmentInfo {
-                bindings,
-                enclosing: enclos.0,
-                is_hashed: hashed,
-            });
+            if let Some(entry) = w.environments.get_mut(slot) {
+                *entry = RdsEnvironmentInfo {
+                    bindings,
+                    enclosing: enclos.0,
+                    is_hashed: hashed,
+                };
+            }
             return Ok((label, None));
         }
         SPECIALSXP | BUILTINSXP => {
@@ -598,7 +855,27 @@ fn walk_item_body(
     Ok((label, length))
 }
 
-fn read_altrep(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Result<RdsAltrep> {
+fn reserve_s4(w: &mut Walk) -> usize {
+    let slot: usize = w.s4_objects.len();
+    w.s4_objects.push(RdsS4Object {
+        class: None,
+        package: None,
+        slots: Vec::new(),
+    });
+    slot
+}
+
+fn reserve_environment(w: &mut Walk) -> usize {
+    let slot: usize = w.environments.len();
+    w.environments.push(RdsEnvironmentInfo {
+        bindings: Vec::new(),
+        enclosing: String::new(),
+        is_hashed: false,
+    });
+    slot
+}
+
+fn read_altrep(r: &mut StreamReader<'_>, w: &mut Walk, depth: usize) -> Result<RdsAltrep> {
     if depth > MAX_DEPTH {
         return Err(Error::RdsDepthExceeded(MAX_DEPTH));
     }
@@ -610,6 +887,10 @@ fn read_altrep(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Result<RdsA
     let materialized: Option<String> = class
         .as_deref()
         .and_then(|c: &str| materialize_altrep(c, &state));
+    let represented_type: Option<String> = serialized_type
+        .and_then(|value: i64| u32::try_from(value).ok())
+        .map(sxp_label);
+    let represented_length: Option<usize> = altrep_length(&state);
     let note: Option<String> = if materialized.is_none() {
         Some(format!(
             "altrep class '{}' is reconstructed lazily by R from this state; static materialization not modeled",
@@ -622,9 +903,26 @@ fn read_altrep(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Result<RdsA
         class,
         package,
         serialized_type,
+        represented_type,
+        represented_length,
         materialized,
         note,
     })
+}
+
+fn altrep_length(state: &RValue) -> Option<usize> {
+    match state {
+        RValue::RealVec(values) if values.len() == 3 => {
+            let count: f64 = *values.first()?;
+            if count.is_finite() && count >= 0.0 {
+                usize::try_from(count as u64).ok()
+            } else {
+                None
+            }
+        }
+        RValue::StringVec(values) => Some(values.len()),
+        _ => None,
+    }
 }
 
 fn altrep_info(info: &RValue) -> (Option<String>, Option<String>, Option<i64>) {
@@ -682,7 +980,7 @@ fn materialize_altrep(class: &str, state: &RValue) -> Option<String> {
 }
 
 fn capture_symbol_or_string(
-    r: &mut XdrReader<'_>,
+    r: &mut StreamReader<'_>,
     w: &mut Walk,
     depth: usize,
 ) -> Result<Option<String>> {
@@ -696,7 +994,7 @@ fn capture_symbol_or_string(
         .filter(|s: &String| !s.is_empty()))
 }
 
-fn read_s4_slots(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Result<RdsS4Object> {
+fn read_s4_slots(r: &mut StreamReader<'_>, w: &mut Walk, depth: usize) -> Result<RdsS4Object> {
     let mut slots: Vec<String> = Vec::new();
     let mut class: Option<String> = None;
     let mut package: Option<String> = None;
@@ -743,7 +1041,7 @@ fn read_s4_slots(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Result<Rd
     })
 }
 
-fn collect_env_frame(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Result<Vec<String>> {
+fn collect_env_frame(r: &mut StreamReader<'_>, w: &mut Walk, depth: usize) -> Result<Vec<String>> {
     let flags: u32 = r.u32()?;
     let sxp: u32 = flags & 0xFFu32;
     if sxp == NILVALUE_SXP || sxp == NILSXP {
@@ -753,7 +1051,11 @@ fn collect_env_frame(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Resul
     Ok(pairlist_tags(&value))
 }
 
-fn collect_env_hashtab(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Result<Vec<String>> {
+fn collect_env_hashtab(
+    r: &mut StreamReader<'_>,
+    w: &mut Walk,
+    depth: usize,
+) -> Result<Vec<String>> {
     let flags: u32 = r.u32()?;
     let sxp: u32 = flags & 0xFFu32;
     if sxp == NILVALUE_SXP || sxp == NILSXP {
@@ -789,48 +1091,78 @@ fn pairlist_tags(value: &RValue) -> Vec<String> {
     }
 }
 
-fn walk_bytecode(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Result<()> {
+fn read_bytecode(r: &mut StreamReader<'_>, w: &mut Walk, depth: usize) -> Result<Option<RValue>> {
     if depth > MAX_DEPTH {
         return Err(Error::RdsDepthExceeded(MAX_DEPTH));
     }
-    let reps: i32 = r.i32()?;
-    w.bc_reps = reps.max(0) as usize;
-    walk_bytecode_body(r, w, depth + 1)
+    let declared_reps: i32 = r.i32()?;
+    let table_len: usize = declared_reps.max(0) as usize;
+    w.bc_reps = table_len;
+    let mut table: Vec<RValue> = vec![RValue::Null; r.bounded_capacity(table_len, 4usize)];
+    let expression: Option<RValue> = read_bytecode_body(r, w, &mut table, depth + 1)?;
+    if let Some(ref value) = expression {
+        w.bytecode_expressions.push(render_rvalue(value));
+    }
+    Ok(expression)
 }
 
-fn walk_bytecode_body(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Result<()> {
+fn read_bytecode_body(
+    r: &mut StreamReader<'_>,
+    w: &mut Walk,
+    table: &mut Vec<RValue>,
+    depth: usize,
+) -> Result<Option<RValue>> {
     if depth > MAX_DEPTH {
         return Err(Error::RdsDepthExceeded(MAX_DEPTH));
     }
     let _code: (String, Option<usize>) = walk_item(r, w, depth + 1)?;
-    let n: i32 = r.i32()?;
-    let count: usize = n.max(0) as usize;
-    for _ in 0..count {
-        let type_hint: u32 = r.u32()?;
-        match type_hint {
-            BCODESXP => walk_bytecode_body(r, w, depth + 1)?,
+    let declared: i32 = r.i32()?;
+    let count: usize = declared.max(0) as usize;
+    let mut expression: Option<RValue> = None;
+    for index in 0..count {
+        let type_tag: u32 = r.u32()?;
+        let wanted: bool = index == 0usize;
+        let value: Option<RValue> = match type_tag {
+            BCODESXP => read_bytecode_body(r, w, table, depth + 1)?,
             LANGSXP | LISTSXP | BCREPDEF | BCREPREF | ATTRLANGSXP | ATTRLISTSXP => {
-                walk_bclang(r, w, type_hint, depth + 1)?;
+                Some(read_bclang(r, w, table, type_tag, depth + 1)?)
             }
+            _ if wanted => Some(read_rvalue(r, w, depth + 1)?),
             _ => {
-                let _const: (String, Option<usize>) = walk_item(r, w, depth + 1)?;
+                let _constant: (String, Option<usize>) = walk_item(r, w, depth + 1)?;
+                None
             }
+        };
+        if wanted {
+            expression = value;
         }
     }
-    Ok(())
+    Ok(expression)
 }
 
-fn walk_bclang(r: &mut XdrReader<'_>, w: &mut Walk, type_hint: u32, depth: usize) -> Result<()> {
+fn read_bclang(
+    r: &mut StreamReader<'_>,
+    w: &mut Walk,
+    table: &mut Vec<RValue>,
+    type_hint: u32,
+    depth: usize,
+) -> Result<RValue> {
     if depth > MAX_DEPTH {
         return Err(Error::RdsDepthExceeded(MAX_DEPTH));
     }
     if type_hint == BCREPREF {
-        let _index: i32 = r.i32()?;
-        return Ok(());
+        let index: i32 = r.i32()?;
+        let resolved: RValue = usize::try_from(index)
+            .ok()
+            .and_then(|slot: usize| table.get(slot).cloned())
+            .unwrap_or(RValue::Other);
+        return Ok(resolved);
     }
     let mut effective: u32 = type_hint;
+    let mut slot: Option<usize> = None;
     if effective == BCREPDEF {
-        let _pos: i32 = r.i32()?;
+        let declared: i32 = r.i32()?;
+        slot = usize::try_from(declared).ok();
         effective = r.u32()?;
     }
     let mut has_attr: bool = false;
@@ -841,43 +1173,38 @@ fn walk_bclang(r: &mut XdrReader<'_>, w: &mut Walk, type_hint: u32, depth: usize
         effective = LISTSXP;
         has_attr = true;
     }
-    match effective {
-        LANGSXP | LISTSXP => {
-            if has_attr {
-                let _attr: (String, Option<usize>) = walk_item(r, w, depth + 1)?;
-            }
-            let _tag: (String, Option<usize>) = walk_item(r, w, depth + 1)?;
-            let car_hint: u32 = r.u32()?;
-            walk_bclang_child(r, w, car_hint, depth + 1)?;
-            let cdr_hint: u32 = r.u32()?;
-            walk_bclang_child(r, w, cdr_hint, depth + 1)?;
-            Ok(())
-        }
-        _ => {
-            let _walked: (String, Option<usize>) = walk_item(r, w, depth + 1)?;
-            Ok(())
-        }
+    if !matches!(effective, LANGSXP | LISTSXP) {
+        return read_rvalue(r, w, depth + 1);
     }
+    if has_attr {
+        let _attributes: (String, Option<usize>) = walk_item(r, w, depth + 1)?;
+    }
+    let tag: Option<String> = match read_rvalue(r, w, depth + 1)? {
+        RValue::Symbol(name) if !name.is_empty() => Some(name),
+        _ => None,
+    };
+    let car_hint: u32 = r.u32()?;
+    let car: RValue = read_bclang(r, w, table, car_hint, depth + 1)?;
+    let cdr_hint: u32 = r.u32()?;
+    let cdr: RValue = read_bclang(r, w, table, cdr_hint, depth + 1)?;
+    let value: RValue = if effective == LANGSXP {
+        let mut items: Vec<RValue> = vec![car];
+        flatten_pairlist(cdr, &mut items);
+        RValue::Lang(items)
+    } else {
+        let mut pairs: Vec<(Option<String>, RValue)> = vec![(tag, car)];
+        flatten_named_pairlist(cdr, &mut pairs);
+        RValue::Pairlist(pairs)
+    };
+    if let Some(index) = slot
+        && let Some(entry) = table.get_mut(index)
+    {
+        entry.clone_from(&value);
+    }
+    Ok(value)
 }
 
-fn walk_bclang_child(
-    r: &mut XdrReader<'_>,
-    w: &mut Walk,
-    type_hint: u32,
-    depth: usize,
-) -> Result<()> {
-    match type_hint {
-        BCREPREF | BCREPDEF | LANGSXP | LISTSXP | ATTRLANGSXP | ATTRLISTSXP => {
-            walk_bclang(r, w, type_hint, depth + 1)
-        }
-        _ => {
-            let _walked: (String, Option<usize>) = walk_item(r, w, depth + 1)?;
-            Ok(())
-        }
-    }
-}
-
-fn walk_attributes(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Result<()> {
+fn walk_attributes(r: &mut StreamReader<'_>, w: &mut Walk, depth: usize) -> Result<()> {
     let mut next: u32 = r.u32()?;
     loop {
         let sxp: u32 = next & 0xFFu32;
@@ -908,7 +1235,7 @@ fn walk_attributes(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Result<
 }
 
 fn recurse_closure(
-    r: &mut XdrReader<'_>,
+    r: &mut StreamReader<'_>,
     w: &mut Walk,
     has_attr: bool,
     has_tag: bool,
@@ -962,7 +1289,7 @@ enum RValue {
     Other,
 }
 
-fn read_rvalue(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Result<RValue> {
+fn read_rvalue(r: &mut StreamReader<'_>, w: &mut Walk, depth: usize) -> Result<RValue> {
     if depth > MAX_DEPTH {
         return Err(Error::RdsDepthExceeded(MAX_DEPTH));
     }
@@ -971,7 +1298,7 @@ fn read_rvalue(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Result<RVal
 }
 
 fn read_rvalue_with_flags(
-    r: &mut XdrReader<'_>,
+    r: &mut StreamReader<'_>,
     w: &mut Walk,
     flags: u32,
     depth: usize,
@@ -1110,10 +1437,7 @@ fn read_rvalue_with_flags(
             }
             Ok(RValue::Other)
         }
-        BCODESXP => {
-            walk_bytecode(r, w, depth + 1)?;
-            Ok(RValue::Other)
-        }
+        BCODESXP => Ok(read_bytecode(r, w, depth + 1)?.unwrap_or(RValue::Other)),
         _ => {
             let mut tmp: Walk = Walk {
                 ref_table: std::mem::take(&mut w.ref_table),
@@ -1134,7 +1458,7 @@ fn read_rvalue_with_flags(
 }
 
 fn rewind_and_walk(
-    r: &mut XdrReader<'_>,
+    r: &mut StreamReader<'_>,
     w: &mut Walk,
     _flags: u32,
     sxp: u32,
@@ -1145,11 +1469,12 @@ fn rewind_and_walk(
     match sxp {
         CPLXSXP => {
             let n: i32 = r.i32()?;
-            r.skip((n.max(0) as usize).saturating_mul(16))?;
+            let complex_count: usize = n.max(0) as usize;
+            r.skip_reals(complex_count.saturating_mul(2usize))?;
         }
         RAWSXP => {
             let n: i32 = r.i32()?;
-            r.skip(n.max(0) as usize)?;
+            r.skip_raw(n.max(0) as usize)?;
         }
         VECSXP => {
             let n: i32 = r.i32()?;
@@ -1191,7 +1516,11 @@ fn rewind_and_walk(
     Ok(())
 }
 
-fn read_environment(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Result<RdsEnvironment> {
+fn read_environment(
+    r: &mut StreamReader<'_>,
+    w: &mut Walk,
+    depth: usize,
+) -> Result<RdsEnvironment> {
     let _locked: i32 = r.i32()?;
     let enclos: RValue = read_rvalue(r, w, depth + 1)?;
     let frame: RValue = read_rvalue(r, w, depth + 1)?;
@@ -1215,13 +1544,13 @@ fn read_environment(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Result
     })
 }
 
-fn ref_index(flags: u32, r: &mut XdrReader<'_>) -> Result<usize> {
+fn ref_index(flags: u32, r: &mut StreamReader<'_>) -> Result<usize> {
     let packed: u32 = flags >> 8;
     let index: u32 = if packed == 0 { r.u32()? } else { packed };
     Ok((index as usize).saturating_sub(1))
 }
 
-fn read_in_stringvec(r: &mut XdrReader<'_>, w: &mut Walk) -> Result<Vec<String>> {
+fn read_in_stringvec(r: &mut StreamReader<'_>, w: &mut Walk) -> Result<Vec<String>> {
     let _leading: i32 = r.i32()?;
     let n: i32 = r.i32()?;
     let count: usize = n.max(0) as usize;
@@ -1317,11 +1646,11 @@ fn render_rvalue(value: &RValue) -> String {
                 .collect::<Vec<String>>()
                 .join(", ")
         ),
-        RValue::IntVec(v) if v.len() == 1 => format!("{}L", v[0]),
+        RValue::IntVec(v) if v.len() == 1 => render_int(v[0]),
         RValue::IntVec(v) => format!(
             "c({})",
             v.iter()
-                .map(|x: &i64| format!("{x}L"))
+                .map(|x: &i64| render_int(*x))
                 .collect::<Vec<String>>()
                 .join(", ")
         ),
@@ -1335,14 +1664,26 @@ fn render_call(items: &[RValue]) -> String {
         return "()".to_owned();
     };
     let head_name: String = render_rvalue(head);
-    if let Some(symbol) = binary_operator(&head_name)
-        && args.len() == 2
+    if let Some(rendered) = render_control_flow(&head_name, args) {
+        return rendered;
+    }
+    if let Some(rendered) = render_indexing(&head_name, args) {
+        return rendered;
+    }
+    if args.len() == 2
+        && let Some(symbol) = binary_operator(&head_name)
     {
+        let spacing: &str = if tight_operator(&head_name) { "" } else { " " };
         return format!(
-            "{} {symbol} {}",
+            "{}{spacing}{symbol}{spacing}{}",
             render_rvalue(&args[0]),
             render_rvalue(&args[1])
         );
+    }
+    if args.len() == 1
+        && let Some(symbol) = unary_operator(&head_name)
+    {
+        return format!("{symbol}{}", render_rvalue(&args[0]));
     }
     if head_name == "{" {
         let body: String = args
@@ -1352,12 +1693,96 @@ fn render_call(items: &[RValue]) -> String {
             .join("; ");
         return format!("{{ {body} }}");
     }
+    if head_name == "(" && args.len() == 1 {
+        return format!("({})", render_rvalue(&args[0]));
+    }
     let rendered_args: String = args
         .iter()
         .map(render_rvalue)
         .collect::<Vec<String>>()
         .join(", ");
     format!("{head_name}({rendered_args})")
+}
+
+fn render_control_flow(head: &str, args: &[RValue]) -> Option<String> {
+    match (head, args.len()) {
+        ("if", 2) => Some(format!(
+            "if ({}) {}",
+            render_rvalue(&args[0]),
+            render_rvalue(&args[1])
+        )),
+        ("if", 3) => Some(format!(
+            "if ({}) {} else {}",
+            render_rvalue(&args[0]),
+            render_rvalue(&args[1]),
+            render_rvalue(&args[2])
+        )),
+        ("for", 3) => Some(format!(
+            "for ({} in {}) {}",
+            render_rvalue(&args[0]),
+            render_rvalue(&args[1]),
+            render_rvalue(&args[2])
+        )),
+        ("while", 2) => Some(format!(
+            "while ({}) {}",
+            render_rvalue(&args[0]),
+            render_rvalue(&args[1])
+        )),
+        ("repeat", 1) => Some(format!("repeat {}", render_rvalue(&args[0]))),
+        ("break" | "next", 0) => Some(head.to_owned()),
+        ("function", 2 | 3) => Some(format!(
+            "function({}) {}",
+            render_formal_pairlist(&args[0]),
+            render_rvalue(&args[1])
+        )),
+        _ => None,
+    }
+}
+
+fn render_formal_pairlist(value: &RValue) -> String {
+    let RValue::Pairlist(pairs) = value else {
+        return String::new();
+    };
+    pairs
+        .iter()
+        .map(|(tag, default): &(Option<String>, RValue)| {
+            let name: &str = tag.as_deref().unwrap_or_default();
+            match formal_default(default) {
+                Some(rendered) => format!("{name} = {rendered}"),
+                None => name.to_owned(),
+            }
+        })
+        .collect::<Vec<String>>()
+        .join(", ")
+}
+
+fn render_indexing(head: &str, args: &[RValue]) -> Option<String> {
+    let (target, rest): (&RValue, &[RValue]) = args.split_first()?;
+    let subscripts: String = rest
+        .iter()
+        .map(render_rvalue)
+        .collect::<Vec<String>>()
+        .join(", ");
+    match head {
+        "[" => Some(format!("{}[{subscripts}]", render_rvalue(target))),
+        "[[" => Some(format!("{}[[{subscripts}]]", render_rvalue(target))),
+        "$" | "@" => Some(format!("{}{head}{subscripts}", render_rvalue(target))),
+        _ => None,
+    }
+}
+
+const fn tight_operator(name: &str) -> bool {
+    matches!(name.as_bytes(), b":" | b"^")
+}
+
+fn unary_operator(name: &str) -> Option<&'static str> {
+    match name {
+        "-" => Some("-"),
+        "+" => Some("+"),
+        "!" => Some("!"),
+        "~" => Some("~"),
+        _ => None,
+    }
 }
 
 fn binary_operator(name: &str) -> Option<&'static str> {
@@ -1367,25 +1792,56 @@ fn binary_operator(name: &str) -> Option<&'static str> {
         "*" => Some("*"),
         "/" => Some("/"),
         "^" => Some("^"),
+        ":" => Some(":"),
         "%%" => Some("%%"),
+        "%/%" => Some("%/%"),
+        "%in%" => Some("%in%"),
+        "%o%" => Some("%o%"),
+        "%*%" => Some("%*%"),
         "==" => Some("=="),
         "!=" => Some("!="),
         "<" => Some("<"),
         ">" => Some(">"),
         "<=" => Some("<="),
         ">=" => Some(">="),
+        "&" => Some("&"),
+        "|" => Some("|"),
         "&&" => Some("&&"),
         "||" => Some("||"),
         "<-" => Some("<-"),
+        "<<-" => Some("<<-"),
+        "=" => Some("="),
+        "~" => Some("~"),
         _ => None,
     }
 }
 
 fn render_real(x: f64) -> String {
+    if x.to_bits() == R_NA_REAL_BITS {
+        return "NA".to_owned();
+    }
+    if x.is_nan() {
+        return "NaN".to_owned();
+    }
+    if x.is_infinite() {
+        return if x.is_sign_negative() {
+            "-Inf".to_owned()
+        } else {
+            "Inf".to_owned()
+        };
+    }
     if x.fract() == 0.0 && x.abs() < 1e15 {
         format!("{x:.0}")
     } else {
         format!("{x}")
+    }
+}
+
+fn render_int(x: i64) -> String {
+    if x == i64::from(i32::MIN) {
+        "NA".to_owned()
+    } else {
+        format!("{x}L")
     }
 }
 
@@ -1406,7 +1862,7 @@ fn sxp_label(sxp: u32) -> String {
         REALSXP => "double",
         CPLXSXP => "complex",
         STRSXP => "character",
-        DOTSXP => "dots",
+        DOTSXP => "...",
         ANYSXP => "any",
         VECSXP => "list",
         EXPRSXP => "expression",
@@ -1509,7 +1965,8 @@ mod tests {
         for _ in 0..count {
             bytes.extend_from_slice(&0f64.to_bits().to_be_bytes());
         }
-        let mut reader: XdrReader<'_> = XdrReader::new(&bytes, 0usize).expect("reader");
+        let mut reader: StreamReader<'_> =
+            StreamReader::new(&bytes, 0usize, RdsEncoding::Xdr).expect("reader");
         let mut walk: Walk = Walk::empty();
 
         let result: Result<RValue> = read_rvalue(&mut reader, &mut walk, 0usize);
@@ -1607,7 +2064,7 @@ mod tests {
     #[test]
     fn bounded_capacity_caps_untrusted_length_to_buffer() {
         let buffer: [u8; 16] = [0u8; 16];
-        let reader: XdrReader<'_> = XdrReader::new(&buffer, 0).unwrap();
+        let reader: StreamReader<'_> = StreamReader::new(&buffer, 0, RdsEncoding::Xdr).unwrap();
         let bounded_f64: usize = reader.bounded_capacity(i32::MAX as usize, 8);
         let bounded_i32: usize = reader.bounded_capacity(i32::MAX as usize, 4);
         let bounded_str: usize = reader.bounded_capacity(i32::MAX as usize, 8);
@@ -1620,7 +2077,7 @@ mod tests {
     #[test]
     fn bounded_capacity_preserves_legitimate_length() {
         let buffer: [u8; 4096] = [0u8; 4096];
-        let reader: XdrReader<'_> = XdrReader::new(&buffer, 0).unwrap();
+        let reader: StreamReader<'_> = StreamReader::new(&buffer, 0, RdsEncoding::Xdr).unwrap();
         assert_eq!(reader.bounded_capacity(3, 8), 3);
         assert_eq!(reader.bounded_capacity(0, 8), 0);
     }
@@ -1628,8 +2085,8 @@ mod tests {
     #[test]
     fn skip_rejects_overflowing_count() {
         let buffer: [u8; 0] = [];
-        let mut reader: XdrReader<'_> = XdrReader::new(&buffer, 0).unwrap();
-        assert!(reader.skip(usize::MAX).is_err());
+        let mut reader: StreamReader<'_> = StreamReader::new(&buffer, 0, RdsEncoding::Xdr).unwrap();
+        assert!(reader.skip_raw(usize::MAX).is_err());
     }
 
     fn closure_with_oversized_vector(sxp: u32) -> Vec<u8> {

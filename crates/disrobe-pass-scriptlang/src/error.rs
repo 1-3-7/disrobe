@@ -71,6 +71,21 @@ pub enum Error {
         max: usize,
     },
 
+    #[error("DR-SCRIPT-0308: RDS ascii stream carries an undecodable token {token:?}")]
+    RdsAsciiToken { token: String },
+
+    #[error("DR-SCRIPT-0309: RDS bzip2 decode failed: {source}")]
+    RdsBzip2 {
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("DR-SCRIPT-0310: RDS xz decode failed: {source}")]
+    RdsXz {
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("DR-SCRIPT-0400: not a Tcl starkit/tclkit container")]
     NotStarkit,
 

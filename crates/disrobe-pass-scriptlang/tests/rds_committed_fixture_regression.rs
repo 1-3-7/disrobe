@@ -6,14 +6,15 @@ const HELLO_RDS: &[u8] = include_bytes!("fixtures/hello.rds");
 const HELLO_GZ_RDS: &[u8] = include_bytes!("fixtures/hello_gz.rds");
 
 #[test]
-fn real_uncompressed_rds_parses() {
-    let obj: RdsObject = read_rds(HELLO_RDS).expect("real saveRDS uncompressed must parse");
+fn committed_uncompressed_fixture_parses() {
+    let obj: RdsObject =
+        read_rds(HELLO_RDS).expect("the committed uncompressed fixture must parse");
     assert_eq!(obj.header.encoding, RdsEncoding::Xdr);
     assert_eq!(obj.header.version, 3);
 }
 
 #[test]
-fn real_rds_recovers_list_names_oracle() {
+fn committed_fixture_recovers_list_names() {
     let obj: RdsObject = read_rds(HELLO_RDS).expect("parse");
     for expected in ["greeting", "numbers", "pi_approx", "labels"] {
         assert!(
@@ -25,7 +26,7 @@ fn real_rds_recovers_list_names_oracle() {
 }
 
 #[test]
-fn real_rds_recovers_class_attribute_oracle() {
+fn committed_fixture_recovers_class_attribute() {
     let obj: RdsObject = read_rds(HELLO_RDS).expect("parse");
     assert!(
         obj.class.iter().any(|c: &String| c == "disrobe_demo"),
@@ -35,7 +36,7 @@ fn real_rds_recovers_class_attribute_oracle() {
 }
 
 #[test]
-fn real_rds_recovers_string_values_oracle() {
+fn committed_fixture_recovers_string_values() {
     let obj: RdsObject = read_rds(HELLO_RDS).expect("parse");
     assert!(
         obj.string_values
@@ -53,14 +54,14 @@ fn real_rds_recovers_string_values_oracle() {
 }
 
 #[test]
-fn real_rds_root_is_list_of_four() {
+fn committed_fixture_root_is_a_list_of_four() {
     let obj: RdsObject = read_rds(HELLO_RDS).expect("parse");
     assert_eq!(obj.root_type, "list");
     assert_eq!(obj.root_length, Some(4));
 }
 
 #[test]
-fn gzip_compressed_rds_is_classified_and_analyzed() {
+fn gzip_compressed_fixture_is_classified_and_analyzed() {
     assert_eq!(classify(HELLO_GZ_RDS), Some(ScriptLang::R));
     let art: ScriptArtifact = analyze(HELLO_GZ_RDS).expect("gzip rds analyze");
     match art {

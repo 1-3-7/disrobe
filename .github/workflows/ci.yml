@@ -305,6 +305,27 @@ jobs:
           fi
           echo "elixir $elixir_version"
           echo "DISROBE_REQUIRE_ELIXIR=1" >> "$GITHUB_ENV"
+      - name: provision R so the serialization reader is graded against R instead of returning early
+        uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6
+        with:
+          r-version: "4.6.0"
+          use-public-rspm: true
+      - name: require R 4.6.0, the release corpus/r/MANIFEST.toml records for every committed object
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v Rscript >/dev/null 2>&1; then
+            echo "Rscript is not callable after provisioning, so the R comparison would grade nothing"
+            exit 1
+          fi
+          expected_r_version="4.6.0"
+          r_version="$(Rscript -e 'cat(as.character(getRversion()))')"
+          if [ "$r_version" != "$expected_r_version" ]; then
+            echo "setup-r provisioned R $r_version, expected exactly $expected_r_version, which is the release corpus/r/MANIFEST.toml records for every file under corpus/r/objects"
+            exit 1
+          fi
+          echo "r $r_version"
+          echo "DISROBE_REQUIRE_R=1" >> "$GITHUB_ENV"
       - name: require the interpreters and archivers this runner already carries, so an absent one fails instead of skipping
         shell: bash
         run: |
@@ -405,6 +426,8 @@ jobs:
           clang --target=aarch64-unknown-linux-gnu -x c -c -o /dev/null - <<< 'int dense_switch_probe(void) { return 0; }'
       - name: elixir recompile differential, printing the graded export count
         run: cargo test -p disrobe-pass-beam --test elixir_source_recover -- --nocapture
+      - name: R serialization differential, printing the graded object count
+        run: cargo test -p disrobe-pass-scriptlang --test real_r_reference_grade -- --nocapture
       - run: cargo test --workspace --all-features --no-fail-fast
       - name: stage this OS leg's cross-platform determinism hash file
         shell: bash

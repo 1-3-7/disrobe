@@ -11,13 +11,14 @@ use disrobe_core::error::{CoreError, Result as CoreResult};
 use disrobe_core::pass::PassId;
 use serde::Serialize;
 
+use crate::error::Result as ScriptResult;
 use crate::lang::haxe::{HaxeFingerprint, HaxeTarget};
 use crate::lang::perl_decompile::DecompileWalker;
-use crate::lang::r_rds::RdsObject;
+use crate::lang::r_rds::{RdsContainer, RdsEncoding, RdsObject};
 use crate::lang::rcpp::RcppFingerprint;
 use crate::lang::tcl::{StarkitContainer, StarkitEntry};
 use crate::lang::winscript::WinScriptRecovery;
-use crate::lang::{ScriptArtifact, ScriptLang, analyze, analyze_rcpp, classify};
+use crate::lang::{ScriptArtifact, ScriptLang, analyze, analyze_r, analyze_rcpp, classify};
 
 pub const PASS_ID: PassId = "scriptlang.classify";
 
@@ -444,6 +445,18 @@ fn push_line(out: &mut String, line: &str) {
     out.push('\n');
 }
 
+fn rds_marker(bytes: &[u8]) -> &'static str {
+    let Ok(object): ScriptResult<RdsObject> = analyze_r(bytes) else {
+        return "rds-magic";
+    };
+    match (object.header.container, object.header.encoding) {
+        (RdsContainer::Rda, _) => "rda-workspace-magic",
+        (_, RdsEncoding::Xdr) => "rds-xdr-magic",
+        (_, RdsEncoding::Binary) => "rds-native-magic",
+        (_, RdsEncoding::Ascii) => "rds-ascii-magic",
+    }
+}
+
 fn verdict_for(bytes: &[u8], lang: ScriptLang) -> DetectVerdict {
     let (tag, family, confidence, specificity, marker, explain): (
         &'static str,
@@ -466,7 +479,7 @@ fn verdict_for(bytes: &[u8], lang: ScriptLang) -> DetectVerdict {
             FAMILY_INTERPRETER_BYTECODE,
             0.94,
             32,
-            "rds-xdr-magic",
+            rds_marker(bytes),
             "r RDS (saveRDS) serialized object".to_string(),
         ),
         ScriptLang::Tcl => (
