@@ -59,6 +59,7 @@ pub enum ConditionKind {
     Boolean,
     Integral,
     Reference,
+    GenericParameter,
     #[default]
     Unknown,
 }
@@ -141,12 +142,10 @@ impl TypeSig {
             }
             Self::GenericInst { base, .. } => base.condition_kind(),
             Self::Pinned(inner) => inner.condition_kind(),
-            Self::Void
-            | Self::TypedByRef
-            | Self::ByRef(_)
-            | Self::Var(_)
-            | Self::MVar(_)
-            | Self::Unknown => ConditionKind::Unknown,
+            Self::Var(_) | Self::MVar(_) => ConditionKind::GenericParameter,
+            Self::Void | Self::TypedByRef | Self::ByRef(_) | Self::Unknown => {
+                ConditionKind::Unknown
+            }
         }
     }
 

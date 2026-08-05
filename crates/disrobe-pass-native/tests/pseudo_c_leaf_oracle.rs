@@ -8636,8 +8636,15 @@ fn gcc_o0_frame_reload_compare_returns_integer() {
         recovery.source
     );
     assert_eq!(
-        recovery.return_width_bits, 64,
-        "the frame-reloaded comparison must retain a 64-bit integer ABI return: {}",
+        recovery.return_width_bits, 32,
+        "gcc completes this long long return with `movzx eax, al` and no `cdqe`, because a 32-bit \
+         write zeroes the upper half of rax and the comparison result is 0 or 1. The declared \
+         return width is not present in the object: gcc -O0 emits byte-identical bodies for the \
+         long long, int, unsigned long long and short spellings of this same function, so no rule \
+         can read 64 out of these bytes. clang emits the `cdqe` and so reports 64 for the same \
+         source. This figure states what the codegen carries, not what the C declared. That all 64 \
+         bits agree is proven by the behavior check further down, which declares the original as \
+         long long and compares the whole register with no mask: {}",
         recovery.source
     );
 

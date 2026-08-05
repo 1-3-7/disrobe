@@ -78,8 +78,10 @@ pub fn decompile_dex(
 
 fn decompile_dex_in_house(dex_bytes: &[u8]) -> Result<AndroidDecompileOutput> {
     let decompiled: DecompiledDex = decompile_dex_bytes(dex_bytes)?;
-    let mut sources: BTreeMap<String, String> = BTreeMap::new();
-    sources.insert("decompiled.java".to_string(), decompiled.source);
+    let mut sources: BTreeMap<String, String> = decompiled.sources;
+    if sources.is_empty() {
+        sources.insert("decompiled.java".to_string(), decompiled.source);
+    }
     Ok(AndroidDecompileOutput {
         engine: AndroidDecompiler::InHouseDalvik,
         sources,

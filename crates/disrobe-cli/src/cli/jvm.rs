@@ -1001,6 +1001,7 @@ fn apk_summary(
 fn decompile_apk_dexes(apk_bytes: &[u8]) -> DecompiledDex {
     let mut combined: DecompiledDex = DecompiledDex {
         source: String::new(),
+        sources: std::collections::BTreeMap::new(),
         class_count: 0,
         method_count: 0,
         fully_lifted_methods: 0,
@@ -1029,6 +1030,7 @@ fn decompile_apk_dexes(apk_bytes: &[u8]) -> DecompiledDex {
         };
         let part: DecompiledDex = decompile_dex(&dx, &entry.bytes);
         combined.source.push_str(&part.source);
+        combined.sources.extend(part.sources);
         combined.class_count += part.class_count;
         combined.method_count += part.method_count;
         combined.fully_lifted_methods += part.fully_lifted_methods;

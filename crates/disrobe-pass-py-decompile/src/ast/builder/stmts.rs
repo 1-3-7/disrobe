@@ -2159,7 +2159,9 @@ pub(super) fn structure_stmts(
         None => jumped,
     };
     let none_jump: bool = stream.none_jump_kind.contains_key(&jump_idx);
+    let pre311_guard_absorbs_jumped_arm: bool = stream.is_pre_311();
     if then_arm_is_bare_continue
+        && (jumped.is_empty() || pre311_guard_absorbs_jumped_arm)
         && !fallthrough.is_empty()
         && !matches!(
             fallthrough.last(),

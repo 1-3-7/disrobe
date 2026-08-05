@@ -992,7 +992,11 @@ mod tests {
         let SNode::Seq(items): SNode = tree else {
             panic!("expected sequence, got {tree:?}");
         };
-        assert_eq!(items.len(), 3, "entry work, loop, then exit case: {items:?}");
+        assert_eq!(
+            items.len(),
+            3,
+            "entry work, loop, then exit case: {items:?}"
+        );
         assert!(matches!(items[0], SNode::Work(0)));
         assert!(
             matches!(items[1], SNode::Loop { header: 1, .. }),

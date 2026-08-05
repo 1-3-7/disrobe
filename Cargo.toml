@@ -169,7 +169,7 @@ disrobe-emit = { path = "crates/disrobe-emit", version = "0.10.4" }
 disrobe-ir = { path = "crates/disrobe-ir", version = "0.10.4" }
 disrobe-llm-metadata = { path = "crates/disrobe-llm-metadata", version = "0.10.4" }
 disrobe-mba = { path = "crates/disrobe-mba", version = "0.10.4" }
-disrobe-mcp = { path = "crates/disrobe-mcp", version = "0.10.4" }
+disrobe-mcp = { path = "crates/disrobe-mcp", version = "0.10.4", default-features = false }
 disrobe-nir = { path = "crates/disrobe-nir", version = "0.10.4" }
 disrobe-nir-lift = { path = "crates/disrobe-nir-lift", version = "0.10.4" }
 disrobe-semdiff = { path = "crates/disrobe-semdiff", version = "0.10.4" }

@@ -16,7 +16,8 @@ categories = ["development-tools", "command-line-utilities"]
 workspace = true
 
 [features]
-default = ["chain"]
+default = ["full"]
+full = ["chain", "js", "wasm", "php", "ruby", "shell", "mobile", "lua", "swift", "jvm", "dotnet", "go", "beam", "as3", "nativelang", "scriptlang"]
 chain = [
     "disrobe-core/chain",
     "disrobe-binfmt/chain",
@@ -41,22 +42,23 @@ chain = [
     "disrobe-passes/py-decompile",
     "disrobe-passes/pyinstaller",
     "disrobe-passes/pickle",
-    "disrobe-passes/js",
-    "disrobe-passes/wasm",
-    "disrobe-passes/php",
-    "disrobe-passes/ruby",
-    "disrobe-passes/shell",
-    "disrobe-passes/mobile",
-    "disrobe-passes/lua",
-    "disrobe-passes/swift",
-    "disrobe-passes/jvm",
-    "disrobe-passes/dotnet",
-    "disrobe-passes/go",
-    "disrobe-passes/beam",
-    "disrobe-passes/as3",
-    "disrobe-passes/nativelang",
-    "disrobe-passes/scriptlang",
 ]
+
+js = ["chain", "disrobe-passes/js"]
+wasm = ["chain", "disrobe-passes/wasm"]
+php = ["chain", "disrobe-passes/php"]
+ruby = ["chain", "disrobe-passes/ruby"]
+shell = ["chain", "disrobe-passes/shell"]
+mobile = ["chain", "disrobe-passes/mobile"]
+lua = ["chain", "disrobe-passes/lua"]
+swift = ["chain", "disrobe-passes/swift"]
+jvm = ["chain", "disrobe-passes/jvm"]
+dotnet = ["chain", "disrobe-passes/dotnet"]
+go = ["chain", "disrobe-passes/go"]
+beam = ["chain", "disrobe-passes/beam"]
+as3 = ["chain", "disrobe-passes/as3"]
+nativelang = ["chain", "disrobe-passes/nativelang"]
+scriptlang = ["chain", "disrobe-passes/scriptlang"]
 
 [dependencies]
 disrobe-core = { workspace = true, features = ["chain"] }

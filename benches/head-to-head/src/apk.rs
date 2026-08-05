@@ -465,12 +465,13 @@ fn score_jadx(javac: &Path, dex_bytes: &[u8], denominator: usize) -> ToolScore {
             "jadx crashed or produced no .java on EdgeCases.dex".to_owned(),
         );
     };
-    let source: String = out
-        .sources
-        .values()
-        .find(|s: &&String| s.contains("class EdgeCases"))
-        .cloned()
-        .unwrap_or_default();
+    let source: String = main_class_file(&out.sources).cloned().unwrap_or_else(|| {
+        out.sources
+            .values()
+            .find(|s: &&String| s.contains("class EdgeCases"))
+            .cloned()
+            .unwrap_or_default()
+    });
     if source.is_empty() {
         return ToolScore::miss(denominator, "jadx produced no EdgeCases source".to_owned());
     }
@@ -579,13 +580,27 @@ fn score_method_ranges(
     }
 }
 
+const MAIN_CLASS_FILE: &str = "EdgeCases.java";
+
+fn main_class_file(sources: &BTreeMap<String, String>) -> Option<&String> {
+    sources
+        .iter()
+        .find(|(path, _): &(&String, &String)| {
+            let normalized: String = path.replace('\\', "/");
+            normalized == MAIN_CLASS_FILE || normalized.ends_with(&format!("/{MAIN_CLASS_FILE}"))
+        })
+        .map(|(_path, source): (&String, &String)| source)
+}
+
 fn main_edgecases_source(sources: &BTreeMap<String, String>) -> String {
-    let concatenated: String = sources
-        .values()
-        .find(|s: &&String| s.contains("class EdgeCases"))
-        .cloned()
-        .unwrap_or_else(|| sources.values().next().cloned().unwrap_or_default());
-    extract_main_edgecases_block(&concatenated).unwrap_or(concatenated)
+    let selected: String = main_class_file(sources).cloned().unwrap_or_else(|| {
+        sources
+            .values()
+            .find(|s: &&String| s.contains("class EdgeCases"))
+            .cloned()
+            .unwrap_or_else(|| sources.values().next().cloned().unwrap_or_default())
+    });
+    extract_main_edgecases_block(&selected).unwrap_or(selected)
 }
 
 fn extract_main_edgecases_block(src: &str) -> Option<String> {
@@ -963,6 +978,29 @@ mod tests {
             "only EdgeCases.a and EdgeCases.b are depth-1 members; Inner.hidden and the EdgeCases$1 sibling are excluded"
         );
         Ok(())
+    }
+
+    #[test]
+    fn the_main_class_is_selected_by_name_not_by_whichever_file_sorts_first() {
+        let mut sources: BTreeMap<String, String> = BTreeMap::new();
+        sources.insert(
+            "EdgeCases$_0.java".to_owned(),
+            "public class EdgeCases$_0 {\n    public static int m() {\n        return 1;\n    }\n}\n"
+                .to_owned(),
+        );
+        sources.insert(
+            "EdgeCases.java".to_owned(),
+            "public class EdgeCases {\n    public int real() {\n        return 2;\n    }\n}\n"
+                .to_owned(),
+        );
+        let selected: String = main_edgecases_source(&sources);
+        assert!(
+            selected.contains("public int real()"),
+            "the scored file has to be the main class. `EdgeCases$_0.java` sorts first and its text \
+             contains `class EdgeCases` as a substring, so a substring search silently scores a \
+             synthetic sibling and reports its method count as the main class: {selected}"
+        );
+        assert!(!selected.contains("EdgeCases$_0"));
     }
 
     #[test]

@@ -339,7 +339,14 @@ jobs:
             ("$probe" --version 2>&1 || true) | head -1
             echo "$var=1" >> "$GITHUB_ENV"
           }
-          perl -MB::Concise -e 'print $^V, qq(\n)'
+          if ! command -v perl >/dev/null 2>&1; then
+            echo "perl is expected on $RUNNER_OS but is not callable, so the op-tree tests behind DISROBE_REQUIRE_PERL would grade nothing"
+            exit 1
+          fi
+          if ! perl -MB::Concise -e 'print $^V, qq(\n)'; then
+            echo "perl is callable on $RUNNER_OS but its B::Concise module is not, so the op-tree differential would grade nothing"
+            exit 1
+          fi
           demand ruby DISROBE_REQUIRE_RUBY
           if [ "$RUNNER_OS" != "macOS" ]; then
             demand php DISROBE_REQUIRE_PHP

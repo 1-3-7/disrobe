@@ -285,7 +285,8 @@ fn decompile_class_scoped(cf: &ClassFile) -> DecompiledClass {
                 let _ = writeln!(source, "    ;");
             }
         } else {
-            let _ = writeln!(source, "    <unresolved-enum-constants>;");
+            let _ = writeln!(source, "    /* unresolved enum constants */");
+            let _ = writeln!(source, "    ;");
         }
     }
     for (field_index, field) in cf.fields.iter().enumerate() {
@@ -341,7 +342,7 @@ fn decompile_class_scoped(cf: &ClassFile) -> DecompiledClass {
                     "    ",
                 );
                 if !annotations.is_empty() {
-                    source.push_str("    <unresolved-static-initializer-annotations>\n");
+                    source.push_str("    /* unresolved static initializer annotations */\n");
                 }
             }
             continue;
@@ -361,7 +362,7 @@ fn decompile_class_scoped(cf: &ClassFile) -> DecompiledClass {
             .is_ok_and(|name: &str| name == "<clinit>")
             && !rendered_annotations.is_empty()
         {
-            source.push_str("    <unresolved-static-initializer-annotations>\n");
+            source.push_str("    /* unresolved static initializer annotations */\n");
         } else {
             source.push_str(&rendered_annotations);
         }
@@ -905,7 +906,11 @@ fn render_method_mode(
     }
 
     let _: Option<()> = annotation_default.map(|value: &str| {
-        let _: std::fmt::Result = write!(signature, " default {value}");
+        let _: std::fmt::Result = if crate::attributes::is_unresolved_annotation_value(value) {
+            write!(signature, " /* unresolved default value */")
+        } else {
+            write!(signature, " default {value}")
+        };
     });
     if annotation_default.is_some() || is_bodyless {
         return match method_code {
@@ -9869,7 +9874,7 @@ const INNER_CLASS_SHARED_FLAGS: u16 = ACC_PUBLIC
     | ACC_SYNTHETIC
     | ACC_ANNOTATION
     | ACC_ENUM;
-const REJECTED_INNER_CLASSES: &str = "<unresolved-inner-classes>\n";
+const REJECTED_INNER_CLASSES: &str = "    /* unresolved inner classes */\n";
 
 fn append_inner_output(out: &mut String, text: &str, limit: usize) -> bool {
     let Some(new_len): Option<usize> = out.len().checked_add(text.len()) else {
@@ -10859,7 +10864,7 @@ mod tests {
             attributes: Vec::new(),
         };
         let source: String = decompile_class(&cf).source;
-        assert!(source.contains("<unresolved-static-initializer-annotations>"));
+        assert!(source.contains("/* unresolved static initializer annotations */"));
         assert!(!source.contains("@Mark\n    static"));
     }
 

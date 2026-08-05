@@ -2842,6 +2842,7 @@ enum CondKind {
     Bool,
     Reference,
     Integral,
+    GenericParameter,
 }
 
 fn is_comparison_or_logical(op: &str) -> bool {
@@ -2918,6 +2919,7 @@ const fn cond_kind_of(kind: ConditionKind) -> Option<CondKind> {
         ConditionKind::Boolean => Some(CondKind::Bool),
         ConditionKind::Integral => Some(CondKind::Integral),
         ConditionKind::Reference => Some(CondKind::Reference),
+        ConditionKind::GenericParameter => Some(CondKind::GenericParameter),
         ConditionKind::Unknown => None,
     }
 }
@@ -2953,10 +2955,13 @@ fn classify_cond_kind(e: &Expr, names: &NameTable) -> CondKind {
         | Expr::This
         | Expr::NewObj { .. }
         | Expr::NewArr { .. } => CondKind::Reference,
-        Expr::Local(n) => names
-            .local_type(*n)
-            .map_or(CondKind::Bool, classify_type_str),
-        Expr::Arg(n) => names.arg_type(*n).map_or(CondKind::Bool, classify_type_str),
+        Expr::Local(n) => cond_kind_of(names.local_condition_kind(*n)).unwrap_or_else(|| {
+            names
+                .local_type(*n)
+                .map_or(CondKind::Bool, classify_type_str)
+        }),
+        Expr::Arg(n) => cond_kind_of(names.arg_condition_kind(*n))
+            .unwrap_or_else(|| names.arg_type(*n).map_or(CondKind::Bool, classify_type_str)),
         Expr::Cast(ty, _) => classify_type_str(ty),
         _ => CondKind::Bool,
     }
@@ -2993,6 +2998,10 @@ fn branch_condition(e: Expr, brtrue: bool, lang: TargetLang, names: &NameTable) 
     match kind {
         CondKind::Bool if brtrue => e.render(lang, names),
         CondKind::Bool => render_bounded_expression(Expr::Unary("!", Box::new(e)), lang, names),
+        CondKind::GenericParameter => {
+            let pattern: &str = if brtrue { "is not null" } else { "is null" };
+            format!("{} {pattern}", paren(&e, lang, names))
+        }
         CondKind::Reference => {
             let op: &'static str = if brtrue { "!=" } else { "==" };
             render_bounded_expression(

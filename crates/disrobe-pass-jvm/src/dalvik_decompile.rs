@@ -22,6 +22,8 @@ use crate::dex::{
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecompiledDex {
     pub source: String,
+    #[serde(default)]
+    pub sources: BTreeMap<String, String>,
     pub class_count: usize,
     pub method_count: usize,
     pub fully_lifted_methods: usize,
@@ -109,6 +111,7 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
             .collect();
 
     let mut source: String = String::with_capacity(4096);
+    let mut sources: BTreeMap<String, String> = BTreeMap::new();
     let mut class_count: usize = 0;
     let mut method_count: usize = 0;
     let mut fully_lifted: usize = 0;
@@ -128,6 +131,16 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
         );
         source.push_str(&rendered.text);
         source.push('\n');
+        match sources.entry(rendered.source_path) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(rendered.text);
+            }
+            std::collections::btree_map::Entry::Occupied(mut slot) => {
+                let merged: &mut String = slot.get_mut();
+                merged.push('\n');
+                merged.push_str(&strip_package_header(&rendered.text));
+            }
+        }
         class_count += 1;
         method_count += rendered.method_count;
         fully_lifted += rendered.fully_lifted;
@@ -144,6 +157,7 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
 
     DecompiledDex {
         source,
+        sources,
         class_count,
         method_count,
         fully_lifted_methods: fully_lifted,
@@ -155,9 +169,38 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
 
 struct RenderedClass {
     text: String,
+    source_path: String,
     method_count: usize,
     fully_lifted: usize,
     fallback: usize,
+}
+
+fn strip_package_header(rendered: &str) -> String {
+    let mut out: String = String::with_capacity(rendered.len());
+    let mut skipping: bool = true;
+    for line in rendered.lines() {
+        if skipping {
+            let trimmed: &str = line.trim_start();
+            if trimmed.starts_with("package ") && trimmed.ends_with(';') {
+                continue;
+            }
+            if trimmed.is_empty() {
+                continue;
+            }
+            skipping = false;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+fn java_source_path(package: Option<&str>, simple: &str) -> String {
+    let leaf: &str = simple.split('.').next_back().unwrap_or(simple);
+    match package {
+        Some(pkg) if !pkg.is_empty() => format!("{}/{leaf}.java", pkg.replace('.', "/")),
+        _ => format!("{leaf}.java"),
+    }
 }
 
 fn render_class(
@@ -253,6 +296,7 @@ fn render_class(
     let _ = writeln!(text, "}}");
     RenderedClass {
         text,
+        source_path: java_source_path(package, simple),
         method_count,
         fully_lifted,
         fallback,
