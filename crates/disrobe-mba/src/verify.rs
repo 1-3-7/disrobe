@@ -838,7 +838,7 @@ fn shift_left(
     amount: &[NodeId],
     bits: usize,
 ) -> Option<Vec<NodeId>> {
-    barrel_shift(bdd, value, amount, bits, ShiftDir::Left)
+    barrel_shift(bdd, value, amount, bits, ShiftDir::Left, ZERO)
 }
 
 fn shift_right(
@@ -847,7 +847,18 @@ fn shift_right(
     amount: &[NodeId],
     bits: usize,
 ) -> Option<Vec<NodeId>> {
-    barrel_shift(bdd, value, amount, bits, ShiftDir::Right)
+    barrel_shift(bdd, value, amount, bits, ShiftDir::Right, ZERO)
+}
+
+#[cfg(feature = "smt-solver")]
+fn shift_right_arithmetic(
+    bdd: &mut Bdd,
+    value: &[NodeId],
+    amount: &[NodeId],
+    bits: usize,
+) -> Option<Vec<NodeId>> {
+    let &sign: &NodeId = value.last()?;
+    barrel_shift(bdd, value, amount, bits, ShiftDir::Right, sign)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -862,18 +873,19 @@ fn barrel_shift(
     amount: &[NodeId],
     bits: usize,
     dir: ShiftDir,
+    fill: NodeId,
 ) -> Option<Vec<NodeId>> {
-    let zero_word: Vec<NodeId> = const_bits(0, bits);
+    let fill_word: Vec<NodeId> = vec![fill; bits];
     let stages: u32 = stage_count(bits);
     let in_range: NodeId = amount_in_range(bdd, amount, stages, bits)?;
     let mut current: Vec<NodeId> = value.to_vec();
     for stage in 0..stages {
         let distance: usize = 1usize << stage;
-        let shifted: Vec<NodeId> = static_shift(&current, distance, dir);
+        let shifted: Vec<NodeId> = static_shift(&current, distance, dir, fill);
         let selector: NodeId = node_at_or_zero(amount, stage as usize);
         current = select_word(bdd, selector, &shifted, &current)?;
     }
-    select_word(bdd, in_range, &current, &zero_word)
+    select_word(bdd, in_range, &current, &fill_word)
 }
 
 fn node_at_or_zero(nodes: &[NodeId], index: usize) -> NodeId {
@@ -905,9 +917,9 @@ fn amount_in_range(bdd: &mut Bdd, amount: &[NodeId], stages: u32, bits: usize) -
     Some(in_range)
 }
 
-fn static_shift(value: &[NodeId], distance: usize, dir: ShiftDir) -> Vec<NodeId> {
+fn static_shift(value: &[NodeId], distance: usize, dir: ShiftDir, fill: NodeId) -> Vec<NodeId> {
     let bits: usize = value.len();
-    let mut out: Vec<NodeId> = vec![ZERO; bits];
+    let mut out: Vec<NodeId> = vec![fill; bits];
     for index in 0..bits {
         match dir {
             ShiftDir::Left => {
@@ -1010,6 +1022,12 @@ impl TermBlaster<'_> {
                 let y: Vec<NodeId> = self.bv(b)?;
                 let bits: usize = x.len();
                 shift_right(&mut self.bdd, &x, &y, bits)?
+            }
+            TermKind::BvAshr(a, b) => {
+                let x: Vec<NodeId> = self.bv(a)?;
+                let y: Vec<NodeId> = self.bv(b)?;
+                let bits: usize = x.len();
+                shift_right_arithmetic(&mut self.bdd, &x, &y, bits)?
             }
             TermKind::Ite(c, t, e) => {
                 let selector: NodeId = self.bool(c)?;
