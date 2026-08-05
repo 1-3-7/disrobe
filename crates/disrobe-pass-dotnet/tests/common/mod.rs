@@ -1,4 +1,5 @@
 #![allow(dead_code, clippy::redundant_pub_crate, unreachable_pub)]
+pub(crate) mod indirect_metadata;
 pub(crate) mod protector_pe;
 
 pub(crate) const PE_BASE_LEN: usize = 0x600;

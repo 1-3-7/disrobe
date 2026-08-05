@@ -2064,8 +2064,8 @@ impl Resolver {
             .filter(|s: &String| !s.is_empty());
 
         let type_count: u32 = self.tables.type_defs.len() as u32;
-        let field_total: u32 = self.tables.fields.len() as u32;
-        let method_total: u32 = self.tables.methods.len() as u32;
+        let field_total: u32 = self.tables.list_rows(TableId::Field);
+        let method_total: u32 = self.tables.list_rows(TableId::MethodDef);
         let field_constants: BTreeMap<u32, FieldConstant> = self.materialize_field_constants();
 
         let mut types: Vec<TypeModel> = Vec::with_capacity(self.tables.type_defs.len());
@@ -2150,9 +2150,13 @@ impl Resolver {
         let lo: u32 = start.clamp(1, total.saturating_add(1));
         let hi: u32 = end.clamp(lo, total.saturating_add(1));
         let mut out: Vec<FieldModel> = Vec::with_capacity((hi - lo) as usize);
-        for rid in lo..hi {
-            let Some(row) = self.tables.fields.get((rid - 1) as usize) else {
-                break;
+        for list_rid in lo..hi {
+            let Some(rid): Option<u32> = self.tables.resolve_list_rid(TableId::Field, list_rid)
+            else {
+                continue;
+            };
+            let Some(row) = self.tables.fields.get((rid.saturating_sub(1)) as usize) else {
+                continue;
             };
             let signature: FieldSig = self
                 .blob(row.signature)
@@ -2177,10 +2181,15 @@ impl Resolver {
         let lo: u32 = start.clamp(1, total.saturating_add(1));
         let hi: u32 = end.clamp(lo, total.saturating_add(1));
         let mut out: Vec<MethodModel> = Vec::with_capacity((hi - lo) as usize);
-        for rid in lo..hi {
-            let Some(row): Option<&MethodDefRow> = self.tables.methods.get((rid - 1) as usize)
+        for list_rid in lo..hi {
+            let Some(rid): Option<u32> = self.tables.resolve_list_rid(TableId::MethodDef, list_rid)
             else {
-                break;
+                continue;
+            };
+            let Some(row): Option<&MethodDefRow> =
+                self.tables.methods.get((rid.saturating_sub(1)) as usize)
+            else {
+                continue;
             };
             let signature: MethodSig = self
                 .blob(row.signature)
@@ -2206,16 +2215,20 @@ impl Resolver {
             return Vec::new();
         };
         let start: u32 = row.param_list;
-        let total: u32 = self.tables.params.len() as u32;
+        let total: u32 = self.tables.list_rows(TableId::Param);
         let end: u32 = methods
             .get(method_rid as usize)
             .map_or(total + 1, |n: &MethodDefRow| n.param_list);
         let lo: u32 = start.clamp(1, total.saturating_add(1));
         let hi: u32 = end.clamp(lo, total.saturating_add(1));
         let mut out: Vec<ParamModel> = Vec::new();
-        for rid in lo..hi {
-            let Some(p) = self.tables.params.get((rid - 1) as usize) else {
-                break;
+        for list_rid in lo..hi {
+            let Some(rid): Option<u32> = self.tables.resolve_list_rid(TableId::Param, list_rid)
+            else {
+                continue;
+            };
+            let Some(p) = self.tables.params.get((rid.saturating_sub(1)) as usize) else {
+                continue;
             };
             out.push(ParamModel {
                 sequence: p.sequence,

@@ -14,8 +14,11 @@ pub enum TableId {
     Module = 0x00,
     TypeRef = 0x01,
     TypeDef = 0x02,
+    FieldPtr = 0x03,
     Field = 0x04,
+    MethodPtr = 0x05,
     MethodDef = 0x06,
+    ParamPtr = 0x07,
     Param = 0x08,
     InterfaceImpl = 0x09,
     MemberRef = 0x0A,
@@ -27,8 +30,10 @@ pub enum TableId {
     FieldLayout = 0x10,
     StandAloneSig = 0x11,
     EventMap = 0x12,
+    EventPtr = 0x13,
     Event = 0x14,
     PropertyMap = 0x15,
+    PropertyPtr = 0x16,
     Property = 0x17,
     MethodSemantics = 0x18,
     MethodImpl = 0x19,
@@ -58,8 +63,11 @@ impl TableId {
             0x00 => Self::Module,
             0x01 => Self::TypeRef,
             0x02 => Self::TypeDef,
+            0x03 => Self::FieldPtr,
             0x04 => Self::Field,
+            0x05 => Self::MethodPtr,
             0x06 => Self::MethodDef,
+            0x07 => Self::ParamPtr,
             0x08 => Self::Param,
             0x09 => Self::InterfaceImpl,
             0x0A => Self::MemberRef,
@@ -71,8 +79,10 @@ impl TableId {
             0x10 => Self::FieldLayout,
             0x11 => Self::StandAloneSig,
             0x12 => Self::EventMap,
+            0x13 => Self::EventPtr,
             0x14 => Self::Event,
             0x15 => Self::PropertyMap,
+            0x16 => Self::PropertyPtr,
             0x17 => Self::Property,
             0x18 => Self::MethodSemantics,
             0x19 => Self::MethodImpl,
@@ -283,7 +293,47 @@ pub struct Tables {
     pub class_layouts: Vec<ClassLayoutRow>,
     pub field_rvas: Vec<FieldRvaRow>,
     pub manifest_resources: Vec<ManifestResourceRow>,
+    pub field_ptrs: Vec<u32>,
+    pub method_ptrs: Vec<u32>,
+    pub param_ptrs: Vec<u32>,
+    pub event_ptrs: Vec<u32>,
+    pub property_ptrs: Vec<u32>,
     pub row_counts: BTreeMap<u8, u32>,
+}
+
+impl Tables {
+    #[must_use]
+    pub fn indirection(&self, base: TableId) -> Option<&[u32]> {
+        let rows: &[u32] = match base {
+            TableId::Field => &self.field_ptrs,
+            TableId::MethodDef => &self.method_ptrs,
+            TableId::Param => &self.param_ptrs,
+            TableId::Event => &self.event_ptrs,
+            TableId::Property => &self.property_ptrs,
+            _ => return None,
+        };
+        (!rows.is_empty()).then_some(rows)
+    }
+
+    #[must_use]
+    pub fn resolve_list_rid(&self, base: TableId, rid: u32) -> Option<u32> {
+        let Some(rows): Option<&[u32]> = self.indirection(base) else {
+            return Some(rid);
+        };
+        let index: usize = usize::try_from(rid.checked_sub(1)?).ok()?;
+        rows.get(index).copied().filter(|target: &u32| *target != 0)
+    }
+
+    #[must_use]
+    pub fn list_rows(&self, base: TableId) -> u32 {
+        let indirect: u32 = self
+            .indirection(base)
+            .map_or(0, |rows: &[u32]| rows.len() as u32);
+        if indirect > 0 {
+            return indirect;
+        }
+        self.row_counts.get(&base.index()).copied().unwrap_or(0)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -492,6 +542,18 @@ struct Sizing {
     row_counts: BTreeMap<u8, u32>,
 }
 
+#[must_use]
+pub const fn indirection_for(base: TableId) -> Option<TableId> {
+    Some(match base {
+        TableId::Field => TableId::FieldPtr,
+        TableId::MethodDef => TableId::MethodPtr,
+        TableId::Param => TableId::ParamPtr,
+        TableId::Event => TableId::EventPtr,
+        TableId::Property => TableId::PropertyPtr,
+        _ => return None,
+    })
+}
+
 impl Sizing {
     #[inline]
     fn table_rows(&self, id: TableId) -> u32 {
@@ -512,6 +574,15 @@ impl Sizing {
         ci.index_size(&self.row_counts)
     }
 
+    #[inline]
+    fn list_index(&self, base: TableId) -> usize {
+        self.simple_index(
+            indirection_for(base)
+                .filter(|id: &TableId| self.table_rows(*id) > 0)
+                .unwrap_or(base),
+        )
+    }
+
     #[allow(clippy::match_same_arms)]
     fn row_width(&self, id: TableId) -> usize {
         let h: HeapWidths = self.heap;
@@ -524,12 +595,17 @@ impl Sizing {
             TableId::TypeDef => {
                 4 + 2 * s
                     + self.coded_index(CodedIndex::TypeDefOrRef)
-                    + self.simple_index(TableId::Field)
-                    + self.simple_index(TableId::MethodDef)
+                    + self.list_index(TableId::Field)
+                    + self.list_index(TableId::MethodDef)
             }
             TableId::Field => 2 + s + b,
-            TableId::MethodDef => 4 + 2 + 2 + s + b + self.simple_index(TableId::Param),
+            TableId::MethodDef => 4 + 2 + 2 + s + b + self.list_index(TableId::Param),
             TableId::Param => 2 + 2 + s,
+            TableId::FieldPtr => self.simple_index(TableId::Field),
+            TableId::MethodPtr => self.simple_index(TableId::MethodDef),
+            TableId::ParamPtr => self.simple_index(TableId::Param),
+            TableId::EventPtr => self.simple_index(TableId::Event),
+            TableId::PropertyPtr => self.simple_index(TableId::Property),
             TableId::InterfaceImpl => {
                 self.simple_index(TableId::TypeDef) + self.coded_index(CodedIndex::TypeDefOrRef)
             }
@@ -546,11 +622,11 @@ impl Sizing {
             TableId::FieldLayout => 4 + self.simple_index(TableId::Field),
             TableId::StandAloneSig => b,
             TableId::EventMap => {
-                self.simple_index(TableId::TypeDef) + self.simple_index(TableId::Event)
+                self.simple_index(TableId::TypeDef) + self.list_index(TableId::Event)
             }
             TableId::Event => 2 + s + self.coded_index(CodedIndex::TypeDefOrRef),
             TableId::PropertyMap => {
-                self.simple_index(TableId::TypeDef) + self.simple_index(TableId::Property)
+                self.simple_index(TableId::TypeDef) + self.list_index(TableId::Property)
             }
             TableId::Property => 2 + s + b,
             TableId::MethodSemantics => {
@@ -589,6 +665,44 @@ impl Sizing {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TableSpan {
+    pub offset: usize,
+    pub row_width: usize,
+    pub rows: u32,
+}
+
+pub fn table_spans(metadata_bytes: &[u8], header: StreamHeader) -> Result<BTreeMap<u8, TableSpan>> {
+    let ts: TableStream = crate::metadata::parse_table_stream(metadata_bytes, header)?;
+    let sizing: Sizing = Sizing {
+        heap: HeapWidths::from_flags(ts.heap_sizes),
+        row_counts: ts.row_counts.clone(),
+    };
+    let present: usize = ts.row_counts.keys().filter(|&&k: &&u8| k < 64).count();
+    let mut offset: usize = 24 + 4 * present;
+    let mut out: BTreeMap<u8, TableSpan> = BTreeMap::new();
+    for index in 0u8..64u8 {
+        let rows: u32 = ts.row_counts.get(&index).copied().unwrap_or(0);
+        if rows == 0 {
+            continue;
+        }
+        let Some(id): Option<TableId> = TableId::from_index(index) else {
+            return Err(Error::UnknownStream(format!("table 0x{index:02X}")));
+        };
+        let row_width: usize = sizing.row_width(id);
+        out.insert(
+            index,
+            TableSpan {
+                offset,
+                row_width,
+                rows,
+            },
+        );
+        offset = offset.saturating_add(row_width.saturating_mul(rows as usize));
+    }
+    Ok(out)
+}
+
 pub fn parse_tables(metadata_bytes: &[u8], header: StreamHeader) -> Result<Tables> {
     let off: usize = header.offset as usize;
     let end: usize = off.saturating_add(header.size as usize);
@@ -617,44 +731,44 @@ pub fn parse_tables(metadata_bytes: &[u8], header: StreamHeader) -> Result<Table
             cap: MAX_TABLE_ROWS,
         });
     }
-    let heap: HeapWidths = HeapWidths::from_flags(ts.heap_sizes);
-
-    let present: u32 = ts.row_counts.keys().filter(|&&k: &&u8| k < 64).count() as u32;
-    let header_size: usize = 24 + 4 * present as usize;
     let sizing: Sizing = Sizing {
-        heap,
+        heap: HeapWidths::from_flags(ts.heap_sizes),
         row_counts: ts.row_counts.clone(),
     };
 
     let mut tables: Tables = Tables {
-        row_counts: ts.row_counts.clone(),
+        row_counts: ts.row_counts,
         ..Tables::default()
     };
 
-    let mut pos: usize = header_size;
-    for i in 0u8..64u8 {
-        let count: u32 = ts.row_counts.get(&i).copied().unwrap_or(0);
-        if count == 0 {
-            continue;
-        }
-        let Some(id): Option<TableId> = TableId::from_index(i) else {
-            return Err(Error::UnknownStream(format!("table 0x{i:02X}")));
+    for (index, span) in table_spans(metadata_bytes, header)? {
+        let Some(id): Option<TableId> = TableId::from_index(index) else {
+            return Err(Error::UnknownStream(format!("table 0x{index:02X}")));
         };
-        let width: usize = sizing.row_width(id);
-        let table_bytes: usize = width.checked_mul(count as usize).ok_or(Error::Truncated {
-            offset: pos,
-            needed: usize::MAX,
-            had: stream.len(),
-        })?;
-        if pos.saturating_add(table_bytes) > stream.len() {
+        let table_bytes: usize =
+            span.row_width
+                .checked_mul(span.rows as usize)
+                .ok_or(Error::Truncated {
+                    offset: span.offset,
+                    needed: usize::MAX,
+                    had: stream.len(),
+                })?;
+        if span.offset.saturating_add(table_bytes) > stream.len() {
             return Err(Error::Truncated {
-                offset: pos,
+                offset: span.offset,
                 needed: table_bytes,
-                had: stream.len().saturating_sub(pos),
+                had: stream.len().saturating_sub(span.offset),
             });
         }
-        decode_table(id, stream, pos, width, count, &sizing, &mut tables)?;
-        pos += table_bytes;
+        decode_table(
+            id,
+            stream,
+            span.offset,
+            span.row_width,
+            span.rows,
+            &sizing,
+            &mut tables,
+        )?;
     }
     Ok(tables)
 }
@@ -886,6 +1000,32 @@ fn decode_table(
                     sequence,
                     name,
                 });
+            }
+        }
+        TableId::FieldPtr
+        | TableId::MethodPtr
+        | TableId::ParamPtr
+        | TableId::EventPtr
+        | TableId::PropertyPtr => {
+            let target: TableId = match id {
+                TableId::FieldPtr => TableId::Field,
+                TableId::MethodPtr => TableId::MethodDef,
+                TableId::ParamPtr => TableId::Param,
+                TableId::EventPtr => TableId::Event,
+                _ => TableId::Property,
+            };
+            let index_width: usize = sz.simple_index(target);
+            let rows: &mut Vec<u32> = match id {
+                TableId::FieldPtr => &mut out.field_ptrs,
+                TableId::MethodPtr => &mut out.method_ptrs,
+                TableId::ParamPtr => &mut out.param_ptrs,
+                TableId::EventPtr => &mut out.event_ptrs,
+                _ => &mut out.property_ptrs,
+            };
+            rows.reserve(count as usize);
+            for k in 0..count as usize {
+                let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
+                rows.push(c.index(index_width)?);
             }
         }
         TableId::InterfaceImpl => {
