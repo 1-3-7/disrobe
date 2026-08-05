@@ -910,10 +910,49 @@ fn remcos_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>
     );
 }
 
+fn push_malware_decode(
+    family: malware_config::MalwareFamily,
+    decode: &malware_config::ConfigDecode,
+    bytes: &[u8],
+    path: Option<&str>,
+    out: &mut Vec<ReconFinding>,
+) {
+    for field in decode {
+        push_malware_field(
+            family,
+            &field.key.to_uppercase(),
+            &field.value,
+            bytes,
+            field.offset,
+            path,
+            out,
+        );
+    }
+    push_malware_truncation(family, decode, bytes, path, out);
+}
+
+fn push_malware_truncation(
+    family: malware_config::MalwareFamily,
+    decode: &malware_config::ConfigDecode,
+    bytes: &[u8],
+    path: Option<&str>,
+    out: &mut Vec<ReconFinding>,
+) {
+    if !decode.truncated {
+        return;
+    }
+    let summary: String = format!(
+        "decode stopped at the {} work-unit bound with {} field(s) recovered",
+        malware_config::MALWARE_CONFIG_WORK_UNITS,
+        decode.len()
+    );
+    push_malware_field(family, "TRUNCATED", &summary, bytes, 0, path, out);
+}
+
 fn asyncrat_lineage_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>) {
     match malware_config::asyncrat_lineage_decode(bytes, 0) {
-        Ok(fields) => {
-            for field in &fields {
+        Ok(decode) => {
+            for field in &decode {
                 push_malware_field(
                     field.family,
                     &field.key.to_uppercase(),
@@ -924,6 +963,11 @@ fn asyncrat_lineage_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<Rec
                     out,
                 );
             }
+            let family: malware_config::MalwareFamily = decode
+                .iter()
+                .next()
+                .map_or(malware_config::MalwareFamily::AsyncRat, |f| f.family);
+            push_malware_truncation(family, &decode, bytes, path, out);
         }
         Err(wall) => {
             let summary: String = format!("wall={} {}", wall.kind.label(), wall.evidence);
@@ -933,65 +977,47 @@ fn asyncrat_lineage_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<Rec
 }
 
 fn quasar_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>) {
-    let fields: Vec<malware_config::ConfigField> = malware_config::quasar_config_decode(bytes, 0);
-    for field in &fields {
-        push_malware_field(
-            malware_config::MalwareFamily::QuasarRat,
-            &field.key.to_uppercase(),
-            &field.value,
-            bytes,
-            field.offset,
-            path,
-            out,
-        );
-    }
+    let decode: malware_config::ConfigDecode = malware_config::quasar_config_decode(bytes, 0);
+    push_malware_decode(
+        malware_config::MalwareFamily::QuasarRat,
+        &decode,
+        bytes,
+        path,
+        out,
+    );
 }
 
 fn xworm_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>) {
-    let fields: Vec<malware_config::ConfigField> = malware_config::xworm_config_decode(bytes, 0);
-    for field in &fields {
-        push_malware_field(
-            malware_config::MalwareFamily::XWorm,
-            &field.key.to_uppercase(),
-            &field.value,
-            bytes,
-            field.offset,
-            path,
-            out,
-        );
-    }
+    let decode: malware_config::ConfigDecode = malware_config::xworm_config_decode(bytes, 0);
+    push_malware_decode(
+        malware_config::MalwareFamily::XWorm,
+        &decode,
+        bytes,
+        path,
+        out,
+    );
 }
 
 fn agent_tesla_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>) {
-    let fields: Vec<malware_config::ConfigField> =
-        malware_config::agent_tesla_config_decode(bytes, 0);
-    for field in &fields {
-        push_malware_field(
-            malware_config::MalwareFamily::AgentTesla,
-            &field.key.to_uppercase(),
-            &field.value,
-            bytes,
-            field.offset,
-            path,
-            out,
-        );
-    }
+    let decode: malware_config::ConfigDecode = malware_config::agent_tesla_config_decode(bytes, 0);
+    push_malware_decode(
+        malware_config::MalwareFamily::AgentTesla,
+        &decode,
+        bytes,
+        path,
+        out,
+    );
 }
 
 fn darkcomet_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>) {
-    let fields: Vec<malware_config::ConfigField> =
-        malware_config::darkcomet_config_decode(bytes, 0);
-    for field in &fields {
-        push_malware_field(
-            malware_config::MalwareFamily::DarkComet,
-            &field.key.to_uppercase(),
-            &field.value,
-            bytes,
-            field.offset,
-            path,
-            out,
-        );
-    }
+    let decode: malware_config::ConfigDecode = malware_config::darkcomet_config_decode(bytes, 0);
+    push_malware_decode(
+        malware_config::MalwareFamily::DarkComet,
+        &decode,
+        bytes,
+        path,
+        out,
+    );
 }
 
 fn first_self_describing_rc4(region: &[u8]) -> Option<usize> {
