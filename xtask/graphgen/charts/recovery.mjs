@@ -8,7 +8,13 @@ import {
   thousands,
   firstSentence,
 } from "../lib/kit.mjs";
-import { TIERS, percentBarTiers, tierFor } from "../lib/tiers.mjs";
+import {
+  REPRODUCIBILITY,
+  TIERS,
+  barTiers,
+  reproducibilityFor,
+  tierFor,
+} from "../lib/tiers.mjs";
 
 const WIDTH = 920;
 const LEFT = 28;
@@ -20,12 +26,17 @@ const PERCENT_LABEL_GAP = 8;
 const PAIR_LABEL_GAP = 10;
 const LABEL_GUTTER_PAD = 8;
 const MIN_PAIR_PLOT_WIDTH = 300;
+const TAG_SIZE = 9.5;
+const TAG_MARKER = 8;
+const TAG_MARKER_GAP = 5;
+const TAG_GUTTER_PAD = 10;
 const PERCENT_GRID_TOP = 8;
 const PERCENT_GRID_BOTTOM = 8;
 const PERCENT_ROW_HEIGHT = 27;
 const PAIR_GRID_TOP = 7;
 const PAIR_GRID_BOTTOM = 7;
-const PAIR_ROW_HEIGHT = 30;
+const PAIR_ROW_HEIGHT = 36;
+const PAIR_STACKED_OFFSET = 8;
 
 function labelGutter(labels, gap) {
   const widest = Math.max(
@@ -45,9 +56,9 @@ function trackSeries(rowCount, color) {
   };
 }
 
-function emitValueLabels(svg, labels, x, chartTop, gridTop, rowHeight, prefix) {
+function emitValueLabels(svg, labels, x, chartTop, gridTop, rowHeight, prefix, dy = 0) {
   labels.forEach((label, index) => {
-    svg.text(x, chartTop + gridTop + (index + 0.5) * rowHeight, label, {
+    svg.text(x, chartTop + gridTop + (index + 0.5) * rowHeight + dy, label, {
       size: VALUE_LABEL_SIZE,
       fill: C.text,
       mono: true,
@@ -106,12 +117,60 @@ function parentheticalHint(label) {
   return words[0] ? words[0].toLowerCase() : "";
 }
 
+function tierTag(resolved) {
+  return `${tierFor(resolved.strength).tag} ${reproducibilityFor(resolved.ci).tag}`;
+}
+
+function tagGutter(tags) {
+  const widest = Math.max(...tags.map((tag) => monoWidth(tag, TAG_SIZE)));
+  return Math.ceil(TAG_MARKER + TAG_MARKER_GAP + widest + TAG_GUTTER_PAD);
+}
+
+function emitTierTags(svg, rows, x, chartTop, gridTop, rowHeight, prefix, dy = 0) {
+  rows.forEach((row, index) => {
+    const centre = chartTop + gridTop + (index + 0.5) * rowHeight + dy;
+    const tier = tierFor(row.strength);
+    if (row.ci) {
+      svg.rect(x, centre - TAG_MARKER / 2, TAG_MARKER, TAG_MARKER, {
+        rx: 1.5,
+        fill: tier.color,
+      });
+    } else {
+      svg.rect(x + 0.5, centre - TAG_MARKER / 2 + 0.5, TAG_MARKER - 1, TAG_MARKER - 1, {
+        rx: 1.5,
+        fill: "none",
+        stroke: tier.color,
+      });
+    }
+    svg.text(x + TAG_MARKER + TAG_MARKER_GAP, centre, row.tag, {
+      size: TAG_SIZE,
+      fill: C.muted,
+      mono: true,
+      anchor: "start",
+      id: `${prefix}${index}`,
+      dominantBaseline: "central",
+      preserveSpace: true,
+    });
+  });
+}
+
 function tierLegend(svg, y) {
   let x = LEFT;
   for (const tier of TIERS) {
     svg.rect(x, y - 7.5, 9, 9, { rx: 2, fill: tier.color });
     svg.text(x + 14, y, tier.label, { size: 10.5, fill: C.muted });
-    x += 14 + Math.ceil(sansWidth(tier.label, 10.5)) + 20;
+    x += 14 + Math.ceil(sansWidth(tier.label, 10.5)) + 18;
+  }
+}
+
+function reproducibilityLegend(svg, y) {
+  let x = LEFT;
+  for (const entry of REPRODUCIBILITY) {
+    if (entry.ci) svg.rect(x, y - 7.5, 9, 9, { rx: 2, fill: C.muted });
+    else svg.rect(x + 0.5, y - 7, 8, 8, { rx: 2, fill: "none", stroke: C.muted });
+    const text = `${entry.tag}, ${entry.label}`;
+    svg.text(x + 14, y, text, { size: 10.5, fill: C.faint });
+    x += 14 + Math.ceil(sansWidth(text, 10.5)) + 18;
   }
 }
 
@@ -169,19 +228,33 @@ function validateCountPairBars(doc) {
 
 export function renderRecovery(doc) {
   validateCountPairBars(doc);
-  const tiers = percentBarTiers(doc);
+  const tiers = barTiers(doc);
+  const tierOf = (group, bar) => {
+    const resolved = tiers.resolved.get(tiers.key(group.heading, bar.label));
+    if (!resolved) {
+      throw new Error(
+        `recovery.json bar "${tiers.key(group.heading, bar.label)}" reached the renderer with no ` +
+          "grading tier, so the chart would present it as strongly as a proven one",
+      );
+    }
+    return {
+      strength: resolved.strength,
+      ci: resolved.ci,
+      tag: tierTag(resolved),
+      color: tierFor(resolved.strength).color,
+    };
+  };
   const percentBars = [];
   for (const group of doc.groups) {
     if (group.kind !== "percent") continue;
     const eco = ecoShort(group.heading);
     for (const bar of group.bars) {
       const qual = qualShort(bar.label);
-      const resolved = tiers.resolved.get(tiers.key(group.heading, bar.label));
       percentBars.push({
         label: `${eco} ${qual}`.trim(),
         hint: parentheticalHint(bar.label),
         value: bar.value,
-        color: tierFor(resolved.strength).color,
+        ...tierOf(group, bar),
       });
     }
   }
@@ -223,6 +296,7 @@ export function renderRecovery(doc) {
         delivered: bar.delivered,
         denominatorLabel,
         pairLabel,
+        ...tierOf(group, bar),
       });
     }
   }
@@ -231,7 +305,11 @@ export function renderRecovery(doc) {
   for (const group of doc.groups) {
     if (group.kind === "count") {
       for (const bar of group.bars) {
-        stats.push({ value: thousands(bar.value), label: statLabel(bar.label) });
+        stats.push({
+          value: thousands(bar.value),
+          label: statLabel(bar.label),
+          ...tierOf(group, bar),
+        });
       }
     }
     if (group.kind === "scalar") {
@@ -239,15 +317,20 @@ export function renderRecovery(doc) {
         stats.push({
           value: thousands(bar.value),
           label: `${ecoShort(group.heading)} fns parsed`,
+          ...tierOf(group, bar),
         });
       }
     }
   }
 
+  const tagGutterWidth = tagGutter(
+    [...percentBars, ...pairBars, ...stats].map((b) => b.tag),
+  );
   const percentLabels = percentBars.map((b) => `${b.value.toFixed(2)}%`);
   const labelMax = Math.max(...percentBars.map((b) => sansWidth(b.label, 12)));
   const gridLeftA = Math.min(240, Math.max(150, Math.ceil(labelMax) + 18));
-  const gridRightA = labelGutter(percentLabels, PERCENT_LABEL_GAP);
+  const gridRightA =
+    labelGutter(percentLabels, PERCENT_LABEL_GAP) + tagGutterWidth;
   const chartAh = 16 + percentBars.length * PERCENT_ROW_HEIGHT;
   const chartA = renderChart(INNER, chartAh, {
     grid: {
@@ -310,23 +393,34 @@ export function renderRecovery(doc) {
       trackSeries(pairBars.length, C.subtle),
       {
         type: "bar",
-        data: pairBars.map((b) =>
-          b.detected > 0 ? (b.delivered / b.detected) * 100 : 0,
-        ),
+        data: pairBars.map((b) => ({
+          value: b.detected > 0 ? (b.delivered / b.detected) * 100 : 0,
+          itemStyle: { color: b.color },
+        })),
         barWidth: BAR_WIDTH,
-        itemStyle: { color: C.accent, borderRadius: BAR_RADIUS },
+        itemStyle: { borderRadius: BAR_RADIUS },
         z: 2,
       },
     ],
   });
 
   const svg = new Svg(WIDTH);
+  svg.push(
+    `  <desc>graded from evidence/descriptors sha256:${tiers.digest}</desc>`,
+  );
   svg.header(doc.title, doc.subtitle);
 
   let y = 104;
-  sectionLabel(svg, y, "measured recovery", "bar color = how the number was checked, %");
+  sectionLabel(
+    svg,
+    y,
+    "measured recovery",
+    "color and tag = how the number was checked, %",
+  );
   y += 17;
   tierLegend(svg, y);
+  y += 15;
+  reproducibilityLegend(svg, y);
   y += 9;
   svg.embed(chartA, LEFT, y);
   emitValueLabels(
@@ -337,6 +431,15 @@ export function renderRecovery(doc) {
     PERCENT_GRID_TOP,
     PERCENT_ROW_HEIGHT,
     "disrobe-recovery-percent-value-",
+  );
+  emitTierTags(
+    svg,
+    percentBars,
+    LEFT + INNER - tagGutterWidth,
+    y,
+    PERCENT_GRID_TOP,
+    PERCENT_ROW_HEIGHT,
+    "disrobe-recovery-percent-tier-",
   );
   y += chartAh + 22;
 
@@ -354,6 +457,17 @@ export function renderRecovery(doc) {
     PAIR_GRID_TOP,
     PAIR_ROW_HEIGHT,
     "disrobe-recovery-count-pair-value-",
+    -PAIR_STACKED_OFFSET,
+  );
+  emitTierTags(
+    svg,
+    pairBars,
+    LEFT + INNER - gridRightB + PAIR_LABEL_GAP,
+    y,
+    PAIR_GRID_TOP,
+    PAIR_ROW_HEIGHT,
+    "disrobe-recovery-count-pair-tier-",
+    PAIR_STACKED_OFFSET,
   );
   y += chartBh + 24;
 
@@ -368,12 +482,19 @@ export function renderRecovery(doc) {
     const sy = y + row * 24;
     svg.text(sx, sy, s.value, {
       size: 15,
-      fill: C.accent,
+      fill: s.color,
       mono: true,
       weight: 600,
     });
     const vw = Math.ceil(s.value.length * 15 * 0.6) + 12;
     svg.text(sx + vw, sy, s.label, { size: 12, fill: C.muted });
+    svg.text(sx + vw + Math.ceil(sansWidth(s.label, 12)) + 8, sy, s.tag, {
+      size: TAG_SIZE,
+      fill: C.faint,
+      mono: true,
+      id: `disrobe-recovery-stat-tier-${i}`,
+      preserveSpace: true,
+    });
   });
   y += perCol * 24 + 10;
 

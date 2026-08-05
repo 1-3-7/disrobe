@@ -36,6 +36,10 @@ Every figure below comes from a committed test gate or a local measurement harne
 
 ![Measured recovery by ecosystem](./assets/recovery.svg)
 
+Colour and tag together state how each bar was checked. A lighter bar means a stronger reference
+could have rejected the number, a filled mark means a committed gate reproduces it on every run, and
+a hollow mark means the input stays outside the tree.
+
 | Ecosystem | Measured | Oracle |
 |---|---|---|
 | Python bytecode | <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per-code-object equivalence on the full CPython 3.14 stdlib (<!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m -->); <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> on the pinned 200-module corpus (<!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m -->). Whole-module exact, where a module counts only if all of its code objects pass: 122 of <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules on the pinned corpus | recompile on CPython 3.14.5, opcode diff |

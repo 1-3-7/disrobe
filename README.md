@@ -136,6 +136,12 @@ The Oracle column names the independent reference in a few words. What that refe
 
 ![Measured recovery by ecosystem](docs/assets/recovery.svg)
 
+Each bar states how it was checked, in colour and again in the tag beside it. A lighter bar means a
+stronger reference could have rejected the number. A filled mark means a committed gate reproduces
+the figure on every run, and a hollow mark means the input stays outside the tree and the stated
+command reproduces it locally. Each tier comes from the evidence descriptor that owns the figure, so
+a bar cannot be drawn stronger than the reference behind it.
+
 The Python figures count code objects, not modules. The full-stdlib row covers <!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m --> objects across <!-- m:py_stdlib_full_modules -->574<!-- /m --> modules; the pinned row covers <!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m --> objects across <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules, and the same legacy gate reaches <!-- m:py_legacy_local_count -->166 of 191<!-- /m --> locally. The Go row is measured on a stripped go1.26.3 fixture, its gate pins the count and holds the ratio above a <!-- m:go_typename_pct -->85%<!-- /m --> floor, and `go_garble_undo.rs` covers the garble leg beside it.
 
 The Android committed-corpus row is measured on small methods; <!-- m:dalvik_link_skipped_count -->37 of 155<!-- /m --> classes are link-skipped and ungraded, and the real-apk row further down carries the production scale. The WebAssembly execution row covers the functions that can be run at all, which is a smaller population than the 133-function corpus: a function needs a callable signature and no host imports before wasmtime can run it. The .NET Eazfuscator row has a second `[CI]` leg in which the recovered CIL re-injects to byte-identical stdout; CI provisions the required .NET runtime.
