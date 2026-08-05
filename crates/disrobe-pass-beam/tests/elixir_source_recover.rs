@@ -11,7 +11,6 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::process::Command;
 
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_beam::{
@@ -32,7 +31,7 @@ fn corpus(rel: &str) -> PathBuf {
 
 mod common;
 
-use common::erlang_toolchain::{ELIXIRC, require};
+use common::erlang_toolchain::{ELIXIRC, command_for, require};
 
 const GRADED: &str = "the recovered-elixir recompile check";
 
@@ -99,12 +98,14 @@ fn real_elixir_recovered_source_recompiles_with_elixirc() {
     let dir: PathBuf = scratch.path().to_path_buf();
     let src_path: PathBuf = dir.join("hello_recovered.ex");
     std::fs::write(&src_path, &surface.source).expect("write recovered ex");
-    let out: std::process::Output = Command::new(&elixirc)
+    let out: std::process::Output = command_for(&elixirc)
         .arg("-o")
         .arg(&dir)
         .arg(&src_path)
         .output()
-        .expect("elixirc");
+        .unwrap_or_else(|error: std::io::Error| {
+            panic!("running {} failed: {error}", elixirc.display())
+        });
     assert!(
         out.status.success(),
         "recovered Elixir source failed elixirc:\nstdout:\n{}\nstderr:\n{}\nsource:\n{}",

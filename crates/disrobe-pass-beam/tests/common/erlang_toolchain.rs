@@ -74,6 +74,21 @@ pub fn find_on_path(name: &str) -> Option<PathBuf> {
     None
 }
 
+pub fn command_for(program: &Path) -> Command {
+    let is_script: bool = program
+        .extension()
+        .and_then(|ext: &std::ffi::OsStr| ext.to_str())
+        .is_some_and(|ext: &str| {
+            ext.eq_ignore_ascii_case("bat") || ext.eq_ignore_ascii_case("cmd")
+        });
+    if cfg!(windows) && is_script {
+        let mut cmd: Command = Command::new("cmd");
+        cmd.arg("/C").arg(program);
+        return cmd;
+    }
+    Command::new(program)
+}
+
 pub fn run_bounded(mut cmd: Command) -> Option<(bool, String, String)> {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child: std::process::Child = cmd.spawn().expect("spawn subprocess");
