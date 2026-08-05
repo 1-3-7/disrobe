@@ -715,10 +715,14 @@ pub(super) fn build_linear_stmts_sim_seed(
                 });
             }
             CanonicalOp::LoadSpecial(slot) => {
-                let value: Expr = sim.pop_or_synth(code, idx);
+                drop(sim.pop_or_synth(code, idx));
+                let Some(attr): Option<&'static str> = special_method_name(*slot) else {
+                    sim.push(unrecovered_context());
+                    continue;
+                };
                 sim.push(Expr::Attribute {
-                    value: Box::new(value),
-                    attr: special_method_name(*slot).to_owned(),
+                    value: Box::new(unrecovered_context()),
+                    attr: attr.to_owned(),
                     ctx: ExprCtx::Load,
                 });
             }
@@ -2827,6 +2831,7 @@ pub(super) const DR_BUILD_CLASS_MARKER: &str = "__DR_BUILD_CLASS__";
 const DR_ASSERTION_ERROR_MARKER: &str = "__DR_ASSERTION_ERROR__";
 pub(super) const DR_NULL_MARKER: &str = "__DR_NULL__";
 pub(super) const DR_UNRECOVERED_TARGET: &str = "__DR_UNRECOVERED_TARGET__";
+pub(super) const DR_UNRECOVERED_CONTEXT: &str = "__DR_UNRECOVERED_CONTEXT__";
 const DR_KW_NAMES_PREFIX: &str = "__DR_KW_NAMES__\u{0}";
 pub(super) const DR_TYPE_ALIAS_MARKER: &str = "__DR_TYPE_ALIAS__";
 pub(super) const DR_TYPEVAR_MARKER: &str = "__DR_TYPEVAR__";
@@ -2842,6 +2847,14 @@ const fn bounded_import_level(level: u32) -> u32 {
 
 pub(super) fn is_build_class_marker(expr: &Expr) -> bool {
     matches!(expr, Expr::Name { id, .. } if id == DR_BUILD_CLASS_MARKER)
+}
+
+pub(super) fn unrecovered_context() -> Expr {
+    Expr::Name {
+        id: DR_UNRECOVERED_CONTEXT.to_owned(),
+        ctx: ExprCtx::Load,
+        line: None,
+    }
 }
 
 fn is_walrus_store(ops: &[CanonicalOp], idx: usize, target_name: &str) -> bool {
