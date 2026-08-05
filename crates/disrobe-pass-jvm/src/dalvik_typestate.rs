@@ -1106,6 +1106,91 @@ mod tests {
     }
 
     #[test]
+    fn a_null_or_zero_constant_takes_the_type_of_whatever_it_meets() {
+        let dex: DexFile = hierarchy_dex();
+        let lattice: TypeLattice<'_> = TypeLattice::new(&dex);
+        let left: RegType = RegType::Ref("p/Left".to_owned());
+        let cases: &[(RegType, RegType, RegType)] = &[
+            (RegType::ZeroOrNull, RegType::Int, RegType::Int),
+            (RegType::ZeroOrNull, left.clone(), left.clone()),
+            (RegType::NullRef, left.clone(), left),
+            (RegType::ZeroOrNull, RegType::NullRef, RegType::NullRef),
+            (RegType::ZeroOrNull, RegType::Float, RegType::Top),
+            (RegType::ZeroOrNull, RegType::Long, RegType::Top),
+            (RegType::ZeroOrNull, RegType::Double, RegType::Top),
+            (RegType::NullRef, RegType::Int, RegType::Top),
+        ];
+        for (a, b, expected) in cases {
+            assert_eq!(
+                &lattice.join(a, b),
+                expected,
+                "{a:?} joined with {b:?} must reach {expected:?}; a const-zero register reaching a \
+                 join as an int on one path and a null on another is the shape that types a slot \
+                 the next use site refuses"
+            );
+        }
+    }
+
+    #[test]
+    fn wide_and_uninitialized_rows_join_to_top_rather_than_to_either_side() {
+        let dex: DexFile = hierarchy_dex();
+        let lattice: TypeLattice<'_> = TypeLattice::new(&dex);
+        let left: RegType = RegType::Ref("p/Left".to_owned());
+        let cases: &[(RegType, RegType, RegType)] = &[
+            (RegType::Long, RegType::Double, RegType::Top),
+            (RegType::Long, RegType::Int, RegType::Top),
+            (RegType::Double, RegType::Float, RegType::Top),
+            (RegType::Long, RegType::Top, RegType::Top),
+            (
+                RegType::Uninitialized(4),
+                RegType::Uninitialized(4),
+                RegType::Uninitialized(4),
+            ),
+            (
+                RegType::Uninitialized(4),
+                RegType::Uninitialized(12),
+                RegType::Top,
+            ),
+            (RegType::Uninitialized(4), left.clone(), RegType::Top),
+            (RegType::UninitializedThis, left, RegType::Top),
+            (
+                RegType::UninitializedThis,
+                RegType::Uninitialized(4),
+                RegType::Top,
+            ),
+            (RegType::UninitializedThis, RegType::NullRef, RegType::Top),
+        ];
+        for (a, b, expected) in cases {
+            assert_eq!(
+                &lattice.join(a, b),
+                expected,
+                "{a:?} joined with {b:?} must reach {expected:?}. Two new sites that reach one join \
+                 are two distinct uninitialized values, and naming either one lets a later \
+                 constructor call run against the other"
+            );
+        }
+    }
+
+    #[test]
+    fn an_array_joined_with_a_plain_class_reaches_object() {
+        let dex: DexFile = hierarchy_dex();
+        let lattice: TypeLattice<'_> = TypeLattice::new(&dex);
+        for name in ["java/lang/Cloneable", "java/io/Serializable", "p/Iface"] {
+            let joined: RegType = lattice.join(
+                &RegType::Ref("[Lp/Left;".to_owned()),
+                &RegType::Ref(name.to_owned()),
+            );
+            assert_eq!(
+                joined,
+                RegType::Ref(OBJECT_INTERNAL.to_owned()),
+                "an array joined with {name} must reach {OBJECT_INTERNAL}; the verifier assigns \
+                 every interface through {OBJECT_INTERNAL}, so naming the interface in the frame \
+                 states more than the frame can prove"
+            );
+        }
+    }
+
+    #[test]
     fn a_superclass_cycle_terminates_and_stays_symmetric() {
         let dex: DexFile = hierarchy_dex();
         let lattice: TypeLattice<'_> = TypeLattice::new(&dex);
