@@ -340,6 +340,8 @@ jobs:
           dotnet tool run ilspycmd --allow-roll-forward -- --version
       - name: provision the installer and elf toolchains so their round trips run instead of returning early
         shell: bash
+        env:
+          WIX_VERSION: "5.0.2"
         run: |
           demand() {
             probe="$1"
@@ -352,9 +354,18 @@ jobs:
             echo "$var=1" >> "$GITHUB_ENV"
           }
           if [ "$RUNNER_OS" = "Windows" ]; then
-            dotnet tool install --global wix || dotnet tool update --global wix
+            dotnet tool install --global wix --version "$WIX_VERSION" \
+              || dotnet tool update --global wix --version "$WIX_VERSION"
             export PATH="$HOME/.dotnet/tools:$PATH"
             echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+            resolved_wix="$(wix --version 2>&1 | head -1 | tr -d '\r')"
+            case "$resolved_wix" in
+              "$WIX_VERSION"*) : ;;
+              *)
+                echo "wix resolved to '$resolved_wix' but this job pins $WIX_VERSION; a v7 toolset refuses to run until the Open Source Maintenance Fee licence is accepted, so the msi tests would fail during provisioning"
+                exit 1
+                ;;
+            esac
             demand wix DISROBE_REQUIRE_WIX
           fi
           if [ "$RUNNER_OS" = "Linux" ]; then
