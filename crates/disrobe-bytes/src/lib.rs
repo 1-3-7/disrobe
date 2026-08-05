@@ -1,12 +1,14 @@
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
 
+mod address;
 mod align;
 mod at;
 mod capacity;
 mod leb128;
 mod reader;
 
+pub use address::{AddressError, FileOffset, Rva, SectionMap, SectionSpan, Size, Va};
 pub use align::{
     align_down_u32, align_down_u64, align_down_usize, align_up_u32, align_up_u64, align_up_usize,
 };
