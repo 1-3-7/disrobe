@@ -84,6 +84,8 @@ enum Shape {
     OverwriteWideHigh,
     BranchMergeToTop,
     LoopBackEdge,
+    ArgumentUse,
+    WideRegisterFile,
 }
 
 impl Shape {
@@ -93,6 +95,8 @@ impl Shape {
             Self::OverwriteWideHigh => "High",
             Self::BranchMergeToTop => "Merge",
             Self::LoopBackEdge => "Loop",
+            Self::ArgumentUse => "Arg",
+            Self::WideRegisterFile => "Wide",
         }
     }
 
@@ -154,9 +158,56 @@ const fn return_op(desc: &str) -> u8 {
 struct Body {
     registers_size: u16,
     ins_size: u16,
+    outs_size: u16,
     insns: Vec<u16>,
     return_type: &'static str,
     params: Vec<String>,
+    relocations: Vec<Reloc>,
+}
+
+const SINK: &str = "ConvSink";
+
+fn sink_ref(desc: &str) -> MethodRef {
+    MethodRef {
+        class: format!("L{SINK};"),
+        proto: ProtoRef {
+            return_type: "V".to_owned(),
+            params: vec![desc.to_owned()],
+        },
+        name: "take".to_owned(),
+    }
+}
+
+fn sink_method(desc: &'static str) -> EncodedMethod {
+    let slots: u16 = if is_wide(desc) { 2 } else { 1 };
+    EncodedMethod {
+        method: sink_ref(desc),
+        access_flags: 0x9,
+        is_direct: true,
+        registers_size: slots,
+        ins_size: slots,
+        outs_size: 0,
+        insns: insn::fmt10x(0x0E),
+        relocations: Vec::new(),
+    }
+}
+
+fn sink_class() -> ClassDef {
+    ClassDef {
+        class: format!("L{SINK};"),
+        super_class: "Ljava/lang/Object;".to_owned(),
+        access_flags: 0x1,
+        static_fields: Vec::new(),
+        static_values: Vec::new(),
+        direct_methods: vec![
+            ctor(SINK),
+            sink_method("I"),
+            sink_method("J"),
+            sink_method("F"),
+            sink_method("D"),
+        ],
+        virtual_methods: Vec::new(),
+    }
 }
 
 const fn move_op(desc: &str) -> u8 {
@@ -179,9 +230,11 @@ fn alias_source_body(conv: &Conversion) -> Body {
     Body {
         registers_size,
         ins_size,
+        outs_size: 0,
         insns: units,
         return_type: conv.dest,
         params: vec![conv.src.to_owned(), "I".to_owned()],
+        relocations: Vec::new(),
     }
 }
 
@@ -201,9 +254,11 @@ fn overwrite_wide_high_body(conv: &Conversion) -> Body {
     Body {
         registers_size,
         ins_size,
+        outs_size: 0,
         insns: units,
         return_type: conv.dest,
         params: vec![conv.src.to_owned(), "I".to_owned()],
+        relocations: Vec::new(),
     }
 }
 
@@ -227,9 +282,11 @@ fn branch_merge_body(conv: &Conversion) -> Body {
     Body {
         registers_size,
         ins_size,
+        outs_size: 0,
         insns: units,
         return_type: "V",
         params: vec![conv.src.to_owned(), "I".to_owned()],
+        relocations: Vec::new(),
     }
 }
 
@@ -251,9 +308,76 @@ fn loop_back_edge_body(conv: &Conversion) -> Body {
     Body {
         registers_size,
         ins_size,
+        outs_size: 0,
         insns: units,
         return_type: conv.dest,
         params: vec![conv.src.to_owned(), "I".to_owned()],
+        relocations: Vec::new(),
+    }
+}
+
+fn argument_use_body(conv: &Conversion) -> Body {
+    let dest_slots: u16 = conv.dest_slots();
+    let src_slots: u16 = conv.src_slots();
+    let ins_size: u16 = src_slots + 1;
+    let registers_size: u16 = dest_slots + ins_size;
+    let dest: u8 = 0;
+    let src: u8 = u8::try_from(dest_slots).expect("register index fits u8");
+    let cond: u8 = u8::try_from(dest_slots + src_slots).expect("register index fits u8");
+
+    let mut units: Vec<u16> = Vec::new();
+    units.extend(insn::fmt12x(conv.op, dest, src));
+    units.push(0x38 | (u16::from(cond) << 8));
+    units.push(3);
+    units.extend(insn::fmt10x(0x00));
+    let call_at: usize = units.len();
+    if dest_slots == 2 {
+        units.extend(insn::fmt35c_two(0x71, dest, dest + 1, 0));
+    } else {
+        units.extend(insn::fmt35c_one(0x71, dest, 0));
+    }
+    units.extend(insn::fmt10x(0x0E));
+    Body {
+        registers_size,
+        ins_size,
+        outs_size: dest_slots,
+        insns: units,
+        return_type: "V",
+        params: vec![conv.src.to_owned(), "I".to_owned()],
+        relocations: vec![Reloc::MethodIndex {
+            unit: call_at + 1,
+            method: sink_ref(conv.dest),
+        }],
+    }
+}
+
+const WIDE_SCRATCH: u16 = 20;
+
+fn wide_register_file_body(conv: &Conversion) -> Body {
+    let dest_slots: u16 = conv.dest_slots();
+    let src_slots: u16 = conv.src_slots();
+    let ins_size: u16 = src_slots + 1;
+    let registers_size: u16 = WIDE_SCRATCH + ins_size;
+    let source: u16 = WIDE_SCRATCH;
+    let cond: u8 = u8::try_from(WIDE_SCRATCH + src_slots).expect("register index fits u8");
+    let wide_move: u8 = if is_wide(conv.src) { 0x06 } else { 0x03 };
+
+    let mut units: Vec<u16> = Vec::new();
+    units.extend(insn::fmt32x(wide_move, 0, source));
+    units.extend(insn::fmt12x(conv.op, 0, 0));
+    units.push(0x38 | (u16::from(cond) << 8));
+    units.push(2);
+    units.extend(insn::fmt10x(0x00));
+    units.extend(insn::fmt11x(return_op(conv.dest), 0));
+    let _ = dest_slots;
+    Body {
+        registers_size,
+        ins_size,
+        outs_size: 0,
+        insns: units,
+        return_type: conv.dest,
+        params: vec![conv.src.to_owned(), "I".to_owned()],
+        relocations: Vec::new(),
     }
 }
 
@@ -263,6 +387,8 @@ fn body_for(shape: Shape, conv: &Conversion) -> Body {
         Shape::OverwriteWideHigh => overwrite_wide_high_body(conv),
         Shape::BranchMergeToTop => branch_merge_body(conv),
         Shape::LoopBackEdge => loop_back_edge_body(conv),
+        Shape::ArgumentUse => argument_use_body(conv),
+        Shape::WideRegisterFile => wide_register_file_body(conv),
     }
 }
 
@@ -282,9 +408,9 @@ fn shape_class(shape: Shape, conv: &Conversion) -> ClassDef {
         is_direct: true,
         registers_size: body.registers_size,
         ins_size: body.ins_size,
-        outs_size: 0,
+        outs_size: body.outs_size,
         insns: body.insns,
-        relocations: Vec::new(),
+        relocations: body.relocations,
     };
     ClassDef {
         class: format!("L{name};"),
@@ -302,6 +428,8 @@ const SHAPES: &[Shape] = &[
     Shape::OverwriteWideHigh,
     Shape::BranchMergeToTop,
     Shape::LoopBackEdge,
+    Shape::ArgumentUse,
+    Shape::WideRegisterFile,
 ];
 
 fn emitted_classes() -> Vec<(Shape, &'static Conversion, String)> {
@@ -318,10 +446,21 @@ fn emitted_classes() -> Vec<(Shape, &'static Conversion, String)> {
 
 fn shapes_dex() -> Vec<u8> {
     let mut builder: DexBuilder = DexBuilder::new();
+    builder.add_class(sink_class());
     for (shape, conv, _name) in emitted_classes() {
         builder.add_class(shape_class(shape, conv));
     }
     builder.build()
+}
+
+fn all_class_names() -> Vec<String> {
+    let mut names: Vec<String> = vec![SINK.to_owned()];
+    names.extend(
+        emitted_classes()
+            .into_iter()
+            .map(|(_shape, _conv, name): (Shape, &Conversion, String)| name),
+    );
+    names
 }
 
 fn cp_utf8(cf: &ClassFile, idx: u16) -> Option<&str> {
@@ -627,8 +766,158 @@ fn probe_source(names: &[String]) -> String {
     PROBE_SRC.replace("__NAMES__", &list)
 }
 
-#[test]
-fn every_conversion_shape_passes_xverify_all() {
+const SECOND_CLASS_FILE_MAJOR: u16 = 51;
+
+struct ProbeOutcome {
+    clean: usize,
+    fail: usize,
+    other: usize,
+    detail: String,
+}
+
+fn stamped_major(bytes: &[u8], major: u16) -> Vec<u8> {
+    let mut out: Vec<u8> = bytes.to_vec();
+    out[6..8].copy_from_slice(&major.to_be_bytes());
+    out
+}
+
+fn class_bytes(result: &Dex2JarResult, name: &str) -> Vec<u8> {
+    result
+        .jar_entries
+        .get(&format!("{name}.class"))
+        .unwrap_or_else(|| panic!("{name}.class present in translation"))
+        .clone()
+}
+
+fn stack_map_body_range(cf: &ClassFile, info: &[u8]) -> Option<(usize, usize)> {
+    let code_len: usize =
+        usize::try_from(u32::from_be_bytes([info[4], info[5], info[6], info[7]])).ok()?;
+    let mut cursor: usize = 8 + code_len;
+    let exception_len: usize = usize::from(u16::from_be_bytes([info[cursor], info[cursor + 1]]));
+    cursor += 2 + exception_len * 8;
+    let attribute_count: usize = usize::from(u16::from_be_bytes([info[cursor], info[cursor + 1]]));
+    cursor += 2;
+    for _ in 0..attribute_count {
+        let name_index: u16 = u16::from_be_bytes([info[cursor], info[cursor + 1]]);
+        let length: usize = usize::try_from(u32::from_be_bytes([
+            info[cursor + 2],
+            info[cursor + 3],
+            info[cursor + 4],
+            info[cursor + 5],
+        ]))
+        .ok()?;
+        let start: usize = cursor + 6;
+        if cp_utf8(cf, name_index) == Some("StackMapTable") {
+            return Some((start, length));
+        }
+        cursor = start + length;
+    }
+    None
+}
+
+fn frame_tag_offsets(body: &[u8]) -> Vec<usize> {
+    let mut offsets: Vec<usize> = Vec::new();
+    let mut p: usize = 0;
+    let entries: usize = usize::from(u16::from_be_bytes([body[p], body[p + 1]]));
+    p += 2;
+    for _ in 0..entries {
+        assert_eq!(body[p], 255, "the lifter emits full_frame entries only");
+        p += 3;
+        let locals: usize = usize::from(u16::from_be_bytes([body[p], body[p + 1]]));
+        p += 2;
+        for _ in 0..locals {
+            offsets.push(p);
+            let tag: u8 = body[p];
+            p += 1;
+            if tag == 7 || tag == 8 {
+                p += 2;
+            }
+        }
+        let stack: usize = usize::from(u16::from_be_bytes([body[p], body[p + 1]]));
+        p += 2;
+        for _ in 0..stack {
+            offsets.push(p);
+            let tag: u8 = body[p];
+            p += 1;
+            if tag == 7 || tag == 8 {
+                p += 2;
+            }
+        }
+    }
+    offsets
+}
+
+const fn swapped_tag(tag: u8) -> u8 {
+    match tag {
+        1 => 2,
+        2 => 1,
+        3 => 4,
+        4 => 3,
+        other => other,
+    }
+}
+
+fn conv_code_info(cf: &ClassFile) -> Vec<u8> {
+    let method = cf
+        .methods
+        .iter()
+        .find(|m| cp_utf8(cf, m.name_index) == Some("conv"))
+        .expect("conv method present");
+    method
+        .attributes
+        .iter()
+        .find(|a| cp_utf8(cf, a.name_index) == Some("Code"))
+        .expect("conv has Code")
+        .info
+        .clone()
+}
+
+fn swap_frame_tags(name: &str, bytes: &[u8]) -> Vec<u8> {
+    let cf: ClassFile = parse_classfile(bytes).expect("parse a lifted conversion-shape class");
+    let info: Vec<u8> = conv_code_info(&cf);
+    let occurrences: Vec<usize> = bytes
+        .windows(info.len())
+        .enumerate()
+        .filter_map(|(at, window): (usize, &[u8])| (window == info.as_slice()).then_some(at))
+        .collect();
+    assert_eq!(
+        occurrences.len(),
+        1,
+        "{name} carries {} copies of its conv Code attribute, so the patch below cannot name which \
+         one it rewrites",
+        occurrences.len()
+    );
+    let code_at: usize = occurrences[0];
+    let (body_at, body_len): (usize, usize) = stack_map_body_range(&cf, &info)
+        .unwrap_or_else(|| panic!("{name} carries a StackMapTable"));
+    let body: &[u8] = &info[body_at..body_at + body_len];
+    let offsets: Vec<usize> = frame_tag_offsets(body);
+
+    let mut out: Vec<u8> = bytes.to_vec();
+    let mut swapped: usize = 0;
+    for offset in offsets {
+        let at: usize = code_at + body_at + offset;
+        let tag: u8 = out[at];
+        let replacement: u8 = swapped_tag(tag);
+        if replacement != tag {
+            out[at] = replacement;
+            swapped += 1;
+        }
+    }
+    assert!(
+        swapped > 0,
+        "{name} carries no int, float, long or double frame tag to swap. A frame typed Top \
+         everywhere satisfies the verifier and destroys the recovery, so a shape with nothing to \
+         perturb is the failure this gate exists to catch"
+    );
+    out
+}
+
+fn run_probe(
+    label: &str,
+    classes: &[(String, Vec<u8>)],
+    graded: &[String],
+) -> Option<ProbeOutcome> {
     let required: bool = std::env::var_os(REQUIRE_JVM).is_some();
     let (Some(java), Some(javac)): (Option<PathBuf>, Option<PathBuf>) =
         (find_on_path("java"), find_on_path("javac"))
@@ -638,31 +927,20 @@ fn every_conversion_shape_passes_xverify_all() {
             "{REQUIRE_JVM} is set, so the conversion-shape frames must be graded by a real jvm \
              rather than skipped; java and javac have to be on PATH"
         );
-        eprintln!("SKIP conversion-shape -Xverify:all gate: java or javac not on PATH");
-        return;
+        eprintln!("SKIP conversion-shape {label} gate: java or javac not on PATH");
+        return None;
     };
 
-    let result: Dex2JarResult =
-        translate_dex_bytes(&shapes_dex()).expect("translate the conversion-shape dex");
-    let purpose: String = format!("disrobe_conv_shape_verifier_{}", std::process::id());
+    let purpose: String = format!("disrobe_conv_shape_{label}_{}", std::process::id());
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
     let dir: PathBuf = scratch.path().to_path_buf();
-
-    let names: Vec<String> = emitted_classes()
-        .into_iter()
-        .map(|(_shape, _conv, name): (Shape, &Conversion, String)| name)
-        .collect();
-    for name in &names {
-        let entry: &Vec<u8> = result
-            .jar_entries
-            .get(&format!("{name}.class"))
-            .unwrap_or_else(|| panic!("{name}.class present in translation"));
-        std::fs::write(dir.join(format!("{name}.class")), entry).expect("write class");
+    for (name, bytes) in classes {
+        std::fs::write(dir.join(format!("{name}.class")), bytes).expect("write class");
     }
 
     let probe_path: PathBuf = dir.join("Probe.java");
-    std::fs::write(&probe_path, probe_source(&names)).expect("write probe");
+    std::fs::write(&probe_path, probe_source(graded)).expect("write probe");
     let compiled: std::process::Output = Command::new(&javac)
         .arg("-d")
         .arg(&dir)
@@ -682,43 +960,138 @@ fn every_conversion_shape_passes_xverify_all() {
         .arg("Probe")
         .output()
         .expect("run the java probe");
-    let out: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&run.stdout);
+    let out: String = String::from_utf8_lossy(&run.stdout).into_owned();
     eprintln!(
-        "CONVERSION SHAPE VERIFY: shapes={} status={} stdout={} stderr={}",
-        names.len(),
+        "CONVERSION SHAPE {label}: graded={} status={} stdout={} stderr={}",
+        graded.len(),
         run.status,
         out.trim(),
         String::from_utf8_lossy(&run.stderr).trim()
     );
-
+    assert!(
+        run.status.success() && out.contains("shape_clean="),
+        "the conversion-shape probe did not run to completion under -Xverify:all"
+    );
     let metric = |key: &str| -> usize {
         out.split_whitespace()
             .find_map(|t: &str| t.strip_prefix(key))
             .and_then(|v: &str| v.parse::<usize>().ok())
             .unwrap_or(usize::MAX)
     };
-    assert!(
-        run.status.success() && out.contains("shape_clean="),
-        "the conversion-shape probe did not run to completion under -Xverify:all"
-    );
+    Some(ProbeOutcome {
+        clean: metric("shape_clean="),
+        fail: metric("shape_fail="),
+        other: metric("shape_other="),
+        detail: out.trim().to_owned(),
+    })
+}
+
+fn translated_classes(major: Option<u16>) -> Vec<(String, Vec<u8>)> {
+    let result: Dex2JarResult =
+        translate_dex_bytes(&shapes_dex()).expect("translate the conversion-shape dex");
+    all_class_names()
+        .into_iter()
+        .map(|name: String| {
+            let raw: Vec<u8> = class_bytes(&result, &name);
+            let bytes: Vec<u8> = major.map_or_else(|| raw.clone(), |m: u16| stamped_major(&raw, m));
+            (name, bytes)
+        })
+        .collect()
+}
+
+fn graded_shape_names() -> Vec<String> {
+    emitted_classes()
+        .into_iter()
+        .map(|(_shape, _conv, name): (Shape, &Conversion, String)| name)
+        .collect()
+}
+
+#[test]
+fn every_conversion_shape_passes_xverify_all() {
+    let graded: Vec<String> = graded_shape_names();
+    let Some(outcome): Option<ProbeOutcome> =
+        run_probe("verify", &translated_classes(None), &graded)
+    else {
+        return;
+    };
     assert_eq!(
-        metric("shape_fail="),
-        0,
+        outcome.fail, 0,
         "the real jvm verifier rejected at least one lifted conversion shape: {}",
-        out.trim()
+        outcome.detail
     );
     assert_eq!(
-        metric("shape_other="),
-        0,
+        outcome.other, 0,
         "a conversion shape failed to load for a reason other than verification: {}",
-        out.trim()
+        outcome.detail
     );
     assert_eq!(
-        metric("shape_clean="),
-        names.len(),
+        outcome.clean,
+        graded.len(),
         "expected all {} conversion shapes to pass -Xverify:all: {}",
-        names.len(),
-        out.trim()
+        graded.len(),
+        outcome.detail
+    );
+}
+
+#[test]
+fn every_conversion_shape_passes_xverify_all_at_a_second_class_file_version() {
+    let graded: Vec<String> = graded_shape_names();
+    let classes: Vec<(String, Vec<u8>)> = translated_classes(Some(SECOND_CLASS_FILE_MAJOR));
+    let Some(outcome): Option<ProbeOutcome> = run_probe("second-version", &classes, &graded) else {
+        return;
+    };
+    assert_eq!(
+        outcome.fail, 0,
+        "the emitted frames satisfy the type-checking verifier at the version the lifter writes \
+         but not at major {SECOND_CLASS_FILE_MAJOR}, which is the version the strict verifier was \
+         introduced at: {}",
+        outcome.detail
+    );
+    assert_eq!(
+        outcome.other, 0,
+        "a conversion shape restamped at major {SECOND_CLASS_FILE_MAJOR} failed to load for a \
+         reason other than verification: {}",
+        outcome.detail
+    );
+    assert_eq!(outcome.clean, graded.len(), "{}", outcome.detail);
+}
+
+#[test]
+fn swapping_the_frame_tags_of_every_conversion_shape_is_rejected() {
+    let graded: Vec<String> = graded_shape_names();
+    let classes: Vec<(String, Vec<u8>)> = translated_classes(None)
+        .into_iter()
+        .map(|(name, bytes): (String, Vec<u8>)| {
+            if graded.contains(&name) {
+                let patched: Vec<u8> = swap_frame_tags(&name, &bytes);
+                (name, patched)
+            } else {
+                (name, bytes)
+            }
+        })
+        .collect();
+    let Some(outcome): Option<ProbeOutcome> = run_probe("tag-swap", &classes, &graded) else {
+        return;
+    };
+    assert_eq!(
+        outcome.clean, 0,
+        "a conversion shape still passed -Xverify:all after every int, float, long and double tag \
+         in its StackMapTable was swapped for the other width of the same slot count. A frame that \
+         can be swapped without the verifier noticing is a frame that describes nothing: {}",
+        outcome.detail
+    );
+    assert_eq!(
+        outcome.other, 0,
+        "a swapped shape failed for a reason other than verification, so this perturbation is not \
+         grading the frame it claims to: {}",
+        outcome.detail
+    );
+    assert_eq!(
+        outcome.fail,
+        graded.len(),
+        "all {} conversion shapes have to be rejected once their frame tags are swapped: {}",
+        graded.len(),
+        outcome.detail
     );
 }
 

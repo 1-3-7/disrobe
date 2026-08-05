@@ -2915,6 +2915,11 @@ pub mod insn {
     }
 
     #[must_use]
+    pub fn fmt32x(op: u8, a: u16, b: u16) -> Vec<u16> {
+        vec![u16::from(op), a, b]
+    }
+
+    #[must_use]
     pub fn fmt35c_zero(op: u8, index: u16) -> Vec<u16> {
         vec![u16::from(op), index, 0]
     }
