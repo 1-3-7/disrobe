@@ -186,6 +186,8 @@ impl<'a> ByteReader<'a> {
         i128,
         16
     );
+    endian_methods!(read_f32_le, read_f32_be, peek_f32_le, peek_f32_be, f32, 4);
+    endian_methods!(read_f64_le, read_f64_be, peek_f64_le, peek_f64_be, f64, 8);
 
     pub fn read_u24_le(&mut self) -> Result<u32, ByteReadError> {
         let raw: [u8; 3] = self.read_array::<3>()?;
@@ -228,7 +230,9 @@ impl<'a> ByteReader<'a> {
     }
 }
 
-const fn sign_extend_24(raw: u32) -> i32 {
+#[inline]
+#[must_use]
+pub const fn sign_extend_24(raw: u32) -> i32 {
     ((raw << 8) as i32) >> 8
 }
 
