@@ -1,0 +1,49 @@
+rules_version = 1
+
+[filler]
+rule = "a filler word that says nothing"
+tokens = [
+    "leverage",
+    "leverages",
+    "leveraging",
+    "utilize",
+    "utilizes",
+    "utilizing",
+    "seamless",
+    "seamlessly",
+    "cutting-edge",
+    "delve",
+    "delves",
+    "delving",
+    "facilitate",
+    "facilitates",
+    "out of the box",
+    "best-in-class",
+    "game-changing",
+    "revolutionary",
+    "unparalleled",
+]
+
+[hedging]
+rule = "a hedge that weakens a statement of fact"
+tokens = [
+    "it is worth noting",
+    "it should be noted",
+    "it is important to note",
+    "arguably",
+    "somewhat",
+    "fairly robust",
+    "quite possibly",
+]
+
+[marketing]
+rule = "a marketing adjective that a measurement should replace"
+tokens = [
+    "blazing",
+    "blazingly",
+    "lightning-fast",
+    "world-class",
+    "industry-leading",
+    "state-of-the-art",
+    "next-generation",
+]
