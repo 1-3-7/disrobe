@@ -9,23 +9,14 @@ use crate::fileio::read_text_bounded;
 const MAX_RECOVERY_JSON_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 
-const UNPINNED_BARS: [(&str, &str); 6] = [
-    (
-        "CPython 3.10 (161 of the pinned modules)",
-        "the interpreter-band figures are measured by the python harness under each interpreter in \
-         turn, and no crate holds a constant to compare them against",
-    ),
-    (
-        "CPython 3.12 (177 of the pinned modules)",
-        "same interpreter-band harness as the 3.10 bar",
-    ),
+const UNPINNED_BARS: [(&str, &str); 3] = [
     (
         "CPython 3.14 (all 200 pinned modules)",
-        "same interpreter-band harness as the 3.10 bar",
-    ),
-    (
-        "CPython 3.15 (199 of the pinned modules)",
-        "same interpreter-band harness as the 3.10 bar",
+        "the 3.10, 3.12 and 3.15 bands are each pinned by an arbitrary_recompile_gate_<band> test \
+         whose BAND_LABEL is the published label verbatim, so those three left this list. The 3.14 \
+         band has no such test: arbitrary_recompile_gate.rs pins the bar labelled \
+         \"200-module pinned corpus\" instead, which is a different bar, so this band still has no \
+         constant to compare against",
     ),
     (
         "proven-correct (local, full period interpreter set)",
