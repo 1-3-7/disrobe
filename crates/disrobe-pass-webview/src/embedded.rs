@@ -49,27 +49,29 @@ pub(crate) struct Assembled {
 }
 
 pub(crate) fn scan(bytes: &[u8], cfg: &CarveConfig) -> Result<Assembled> {
-    let map: SectionMap<'_> = SectionMap::build(bytes)?;
-    let ptr: usize = map.ptr_size();
-    let strides: &[usize] = strides_for(ptr);
+    let maps: Vec<SectionMap<'_>> = SectionMap::build_slices(bytes)?;
     let mut candidates: Vec<Vec<Record<'_>>> = Vec::new();
     let mut budget: u64 = cfg.max_table_probes;
     let mut retained: usize = 0;
-    for (span_va, span_vsize) in map.scan_ranges() {
-        for order in ORDERS {
-            for &stride in strides {
-                collect_runs(
-                    &map,
-                    span_va,
-                    span_vsize,
-                    stride,
-                    order,
-                    ptr,
-                    &mut budget,
-                    &mut retained,
-                    MAX_SCAN_RECORDS,
-                    &mut candidates,
-                );
+    for map in &maps {
+        let ptr: usize = map.ptr_size();
+        let strides: &[usize] = strides_for(ptr);
+        for (span_va, span_vsize) in map.scan_ranges() {
+            for order in ORDERS {
+                for &stride in strides {
+                    collect_runs(
+                        map,
+                        span_va,
+                        span_vsize,
+                        stride,
+                        order,
+                        ptr,
+                        &mut budget,
+                        &mut retained,
+                        MAX_SCAN_RECORDS,
+                        &mut candidates,
+                    );
+                }
             }
         }
     }
@@ -532,7 +534,8 @@ mod tests {
     }
 
     fn run_totals(cap: usize, buf: &[u8]) -> (usize, usize, usize) {
-        let map: SectionMap<'_> = SectionMap::from_single_span(buf, TEST_VA, 8);
+        let map: SectionMap<'_> =
+            SectionMap::from_single_span(buf, TEST_VA, 8, object::Endianness::Little);
         let span_vsize: u64 = buf.len() as u64;
         let mut budget: u64 = 1_000_000;
         let mut retained: usize = 0;
