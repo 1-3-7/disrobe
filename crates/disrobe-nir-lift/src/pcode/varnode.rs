@@ -8,7 +8,7 @@ use crate::error::{LiftError, Result};
 use super::valid_identifier;
 
 const MAX_REGISTER_CELLS: usize = 4096;
-const MAX_VARNODE_BYTES: u32 = 4096;
+pub(super) const MAX_VARNODE_BYTES: u32 = 4096;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RegisterCell {
@@ -67,17 +67,23 @@ struct RegisterView<'a> {
 pub(super) struct VarnodeLowerer<'a> {
     lang: SourceLang,
     registers: &'a [RegisterCell],
+    big_endian_register_space: bool,
     unique_names: BTreeMap<(u64, u32), String>,
     known_constants: BTreeMap<Varnode, u64>,
     next_name: u64,
 }
 
 impl<'a> VarnodeLowerer<'a> {
-    pub(super) fn new(lang: SourceLang, registers: &'a [RegisterCell]) -> Result<Self> {
+    pub(super) fn new(
+        lang: SourceLang,
+        registers: &'a [RegisterCell],
+        big_endian_register_space: bool,
+    ) -> Result<Self> {
         validate_registers(registers)?;
         Ok(Self {
             lang,
             registers,
+            big_endian_register_space,
             unique_names: BTreeMap::new(),
             known_constants: BTreeMap::new(),
             next_name: 0,
@@ -337,6 +343,15 @@ impl<'a> VarnodeLowerer<'a> {
                 .checked_add(u64::from(cell.size))
                 .ok_or_else(|| invalid(address, operation, "register cell range overflow"))?;
             if varnode.offset >= cell.offset && varnode_end <= cell_end {
+                let whole_cell: bool =
+                    (varnode.offset, varnode.size_bytes) == (cell.offset, cell.size);
+                if self.big_endian_register_space && !whole_cell {
+                    return Err(invalid(
+                        address,
+                        operation,
+                        "a partial view of a big-endian register cell has no byte-offset model",
+                    ));
+                }
                 let relative: u64 = varnode.offset.saturating_sub(cell.offset);
                 let relative_offset: u32 = u32::try_from(relative).map_err(|_| {
                     invalid(address, operation, "register relative offset exceeds u32")
