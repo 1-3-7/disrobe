@@ -20,17 +20,17 @@ Artifacts committed here (Hermes magic c6 1f bc 03 c1 03 19 1f, little-endian):
   sample.hbc.v96     HBC bytecode version 96 (byte at offset 8 = 0x60).
                      hermesc release 0.12.0 (hermes-cli-windows, tag v0.13.0 asset).
                      size 1467 bytes.
-                     sha256 830c75e06d4f9240595ffbcd4227d023558b214e0ab83e92718c7b937f964b5d
+                     sha256 48ca9d83ed9fe683458b92f26dcb2e1fdfe6bddd0f7ad112aabf94aa38acb0e7
 
   sample.hbc.v84     HBC bytecode version 84 (byte at offset 8 = 0x54).
                      hermesc release 0.11.0 (hermes-cli-windows, tag v0.11.0).
                      size 1203 bytes.
-                     sha256 d20af4934937c51f127b944cbc6cf405f80f72eaf2a2cd1e465f01295ec50bc9
+                     sha256 0e1a0a3019afaefdf8fa8a8e50c1a249fcdfa476b894c7a405c427607bd40913
 
   sample.hbc.v76     HBC bytecode version 76 (byte at offset 8 = 0x4c).
                      hermesc release 0.7.2 (hermes-cli-windows, tag v0.7.2).
                      size 1203 bytes.
-                     sha256 a7dae2ae8d2b7dad344f00315c0709d3050962db8e3c25424c804ecd1e6754bf
+                     sha256 3eb217fcceb2c0bcc789227059577a2b07050059a258bd2d2c079ff855a7eeff
 
 Exact build command (per version, run against the matching hermesc.exe):
 

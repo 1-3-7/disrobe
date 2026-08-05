@@ -1,5 +1,5 @@
-C:\Users\-\Documents\Projects\disrobe\crates\disrobe-pass-go\tests\fixtures\bench_generics_linux_arm64: go1.26.3
-	path	_/C_/Users/-/Documents/Projects/disrobe/crates/disrobe-pass-go/tests/fixtures/benchsrc
+bench_generics_linux_arm64: go1.26.3
+	path	_/C_/workdir/Documents/Projects/disrobe/crates/disrobe-pass-go/tests/fixtures/benchsrc
 	build	-buildmode=exe
 	build	-compiler=gc
 	build	-trimpath=true

@@ -28,7 +28,7 @@ name = "erlang/hello.beam"
 source_tool = "Erlang/OTP 29 erlc +debug_info"
 source_file = "erlang/hello.erl"
 size_bytes = 876
-sha256 = "b37be3bf0acc67a0f914a44e4d46844acef5d286596695b420e060d46e07a316"
+sha256 = "bae5979343c36ef4cb4d3698bd1e4127deccf9107252fe59eb28553622b5262f"
 notes = "Smoke fixture: one export main/0 printing hello world."
 
 [[sample]]
@@ -36,15 +36,15 @@ name = "elixir/Elixir.Hello.beam"
 source_tool = "Elixir 1.18.4 elixirc"
 source_file = "elixir/hello.ex"
 size_bytes = 1568
-sha256 = "2cef713586fafac82c79ae21771e955392b1507613074d515a40ff4f48bf25b4"
+sha256 = "25347bf23d754eed992fc882504b48d267fcd741188bfe01ed3410306aa1e8c8"
 notes = "Smoke fixture: single Elixir module Hello with one def main."
 
 [[sample]]
 name = "ez/hello.ez"
 source_tool = "PowerShell Compress-Archive (zip-of-beams)"
 source_files = ["erlang/hello.beam", "ebin/hello.app"]
-size_bytes = 1099
-sha256 = "13e3ad2c9d7f30942b8f47e23d6ab153f8a18c7e5d4e33aa635af772e0f2b760"
+size_bytes = 1113
+sha256 = "05395b032311c93f3a21f871f8812f516b01739e1155b957091d762dddcc8414"
 notes = "Smoke .ez archive containing hello-1.0/ebin/{hello.beam, hello.app}."
 
 [[sample]]
@@ -52,7 +52,7 @@ name = "megafile/edge_cases.beam"
 source_tool = "Erlang/OTP 29 erlc +debug_info"
 source_file = "megafile/edge_cases.erl"
 size_bytes = 23744
-sha256 = "b9162c6999012803428d067d484231a52e1a82cbdacf39cc10d2307888e8f6fe"
+sha256 = "be12281848d95f0405a98d07d5df90f27b4c30de54d3125d4b47944c0956cfd9"
 notes = "Erlang megafile: gen_server behaviour, records, maps, bit-syntax, list/binary comprehensions, processes, ets/dets, try/catch/of/after, fun closures, BIFs, big ints."
 
 [[sample]]
@@ -95,6 +95,6 @@ source_files = [
     "megafile/Elixir.EdgeCases.Renderable.Integer.beam",
     "megafile/Elixir.EdgeCases.Renderable.List.beam",
 ]
-size_bytes = 68206
-sha256 = "7c0bb13781d0c0a0b074f053672cc5e6a6dc8b3a114d86f822255a432ea52f63"
+size_bytes = 69211
+sha256 = "96dc117edc543cba958c246b0738e1db06cef42f7e4d24a84aaa51a206f9924b"
 notes = ".ez archive bundling Erlang + 11 Elixir modules into hello-1.0/ebin/."

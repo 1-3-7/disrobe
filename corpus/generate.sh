@@ -53,7 +53,7 @@ build_python() {
         local name
         name="$(basename "$f" .py)"
         log_run "python: compiling $name"
-        "$py" -m py_compile "$f"
+        (cd "$(dirname "$f")" && "$py" -m py_compile "$(basename "$f")")
         local pyc
         pyc="$(find "${SRC}/python/__pycache__" -name "${name}.cpython-*.pyc" 2>/dev/null | head -1 || true)"
         if [ -n "$pyc" ]; then
@@ -306,7 +306,7 @@ build_edge_python() {
         local name
         name="$(basename "$f" .py)"
         log_run "python-edge: compiling $name"
-        "$py" -m py_compile "$f" || log_skip "python-edge: failed on $name"
+        (cd "$(dirname "$f")" && "$py" -m py_compile "$(basename "$f")") || log_skip "python-edge: failed on $name"
         local pyc
         pyc="$(find "$dir/__pycache__" -name "${name}.cpython-*.pyc" 2>/dev/null | head -1 || true)"
         if [ -n "$pyc" ]; then

@@ -1051,7 +1051,7 @@ mod tests {
         assert!(is_runtime_module("C:\\foo\\pytransform\\__init__.py"));
         assert!(is_runtime_module("/home/u/pytransform/__init__.py"));
         assert!(is_runtime_module("/lib/python3.9/runpy.py"));
-        assert!(is_runtime_module("C:/Users/-/disrobe_v6v7_helper.py"));
+        assert!(is_runtime_module("C:/staging/disrobe_v6v7_helper.py"));
         assert!(is_runtime_module(&format!(
             "{}/v6v7_dynamic_hook-4321-0123456789abcdef.py",
             disrobe_core::scratch::scratch_root().display()

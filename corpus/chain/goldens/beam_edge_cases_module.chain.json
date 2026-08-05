@@ -1,7 +1,7 @@
 {
   "final_format": "Erlang",
   "input": {
-    "blake3": "f06ab550a7900e3bd6322dc23eef594a6bbc5aa62fe264b1e79ea566e23da295",
+    "blake3": "d704e3be0a5687e82776fc5ac9a0491252231ee60caf227760f51f4ccd01952a",
     "detected": [
       "beam-file"
     ],
@@ -18,7 +18,7 @@
       "error": null,
       "format_tag_in": null,
       "id": 0,
-      "input_blake3": "f06ab550a7900e3bd6322dc23eef594a6bbc5aa62fe264b1e79ea566e23da295",
+      "input_blake3": "d704e3be0a5687e82776fc5ac9a0491252231ee60caf227760f51f4ccd01952a",
       "input_size": 23744,
       "metadata": {},
       "output_blake3": null,
@@ -51,7 +51,7 @@
       "error": null,
       "format_tag_in": "beam-file",
       "id": 1,
-      "input_blake3": "f06ab550a7900e3bd6322dc23eef594a6bbc5aa62fe264b1e79ea566e23da295",
+      "input_blake3": "d704e3be0a5687e82776fc5ac9a0491252231ee60caf227760f51f4ccd01952a",
       "input_size": 23744,
       "metadata": {},
       "output_blake3": "923bb3aeb87bc334d420669aa683679bc1ca01369ce5fd2e638d1e01905337bc",

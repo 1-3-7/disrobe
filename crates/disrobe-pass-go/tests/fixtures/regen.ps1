@@ -12,6 +12,17 @@ if (-not (Test-Path $mainGo)) {
 if (-not (Get-Command 'go' -ErrorAction SilentlyContinue)) {
     throw "missing toolchain dependency: go (install with: winget install GoLang.Go)"
 }
+function Set-VmHeaderLeaf {
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Lines,
+        [Parameter(Mandatory)][string]$BinPath
+    )
+    if ($Lines.Count -gt 0 -and $Lines[0].StartsWith($BinPath)) {
+        $Lines[0] = (Split-Path -Leaf $BinPath) + $Lines[0].Substring($BinPath.Length)
+    }
+    return ,$Lines
+}
+
 $haveGarble = [bool](Get-Command 'garble' -ErrorAction SilentlyContinue)
 if (-not $haveGarble) {
     Write-Warning "garble not on PATH; hello_garble.exe will be left as-is (install: go install mvdan.cc/garble@latest)"
@@ -106,8 +117,10 @@ if (Test-Path (Join-Path $benchSrc 'main.go')) {
         }
         $utf8NoBom = New-Object System.Text.UTF8Encoding $false
         [System.IO.File]::WriteAllLines((Join-Path $here 'bench_generics.nm.txt'), $textSyms, $utf8NoBom)
-        $benchVm = & go version -m (Join-Path $here 'bench_generics.exe')
+        $benchBin = Join-Path $here 'bench_generics.exe'
+        $benchVm = & go version -m $benchBin
         if ($LASTEXITCODE -ne 0) { throw "go version -m (bench windows/amd64) failed" }
+        $benchVm = Set-VmHeaderLeaf $benchVm $benchBin
         [System.IO.File]::WriteAllLines((Join-Path $here 'bench_generics.govm.txt'), $benchVm, $utf8NoBom)
 
         # Cross-compile the same generics benchmark for the dominant real-world/malware Go
@@ -146,6 +159,7 @@ if (Test-Path (Join-Path $benchSrc 'main.go')) {
                 [System.IO.File]::WriteAllLines(($binPath + '.nm_itab.txt'), $crossItab, $utf8NoBom)
                 $crossVm = & go version -m $binPath
                 if ($LASTEXITCODE -ne 0) { throw ("go version -m (cross {0}/{1}) failed" -f $t.os, $t.arch) }
+                $crossVm = Set-VmHeaderLeaf $crossVm $binPath
                 [System.IO.File]::WriteAllLines(($binPath + '.govm.txt'), $crossVm, $utf8NoBom)
             }
         }
@@ -174,6 +188,7 @@ if (Test-Path (Join-Path $go124Src 'main.go')) {
         $itab = $rawNm | Where-Object { ($_ -split '\s+') | Where-Object { $_ -like 'go:itab.*' } }
         [System.IO.File]::WriteAllLines(($go124Bin + '.nm_itab.txt'), $itab, $utf8NoBom)
         $vm = & go version -m $go124Bin
+        $vm = Set-VmHeaderLeaf $vm $go124Bin
         [System.IO.File]::WriteAllLines(($go124Bin + '.govm.txt'), $vm, $utf8NoBom)
         $env:GO111MODULE = 'auto'
     } finally {

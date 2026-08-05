@@ -7,8 +7,8 @@ host_platform = "win_amd64"
 
 [shiv]
 file = "shiv/hello.pyz"
-sha256 = "4ff1a2f007680451fdd6a941bc392600447ddc714582b843c3ac69a0b7c4cd79"
-size = 83343
+sha256 = "39660da5eb165a37fbf864a323be61490ef1b9cb1bd0e16f63856c86e0432e34"
+size = 84864
 tool = "shiv"
 tool_version = "1.0.8"
 generation_command = "shiv -c hello -o hello.pyz hello-0.1.0-py3-none-any.whl --no-deps"
@@ -81,7 +81,7 @@ NB (2026-06-13): the index parse is now the exact python-packed-resources v3 for
 
 [zipapp]
 file = "zipapp/hello.pyz"
-sha256 = "d1a7891afe1b0a47494df8ed5b2a41c632d8116fe97c25f5cab1325cb2d9dd42"
+sha256 = "e90196bb95f77afb3f4f492bd5336a19709a07146c14a7140f78d9e106d6738d"
 size = 150068
 tool = "stdlib.zipapp"
 tool_version = "cpython-3.12.10"

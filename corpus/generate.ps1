@@ -35,7 +35,8 @@ function Build-Python {
     New-Item -ItemType Directory -Force -Path $outDir | Out-Null
     foreach ($f in Get-PySources) {
         Write-Run "python: compiling $($f.BaseName)"
-        & $py -m py_compile $f.FullName
+        Push-Location $f.DirectoryName
+        try { & $py -m py_compile $f.Name } finally { Pop-Location }
         $cache = Join-Path $f.DirectoryName '__pycache__'
         if (Test-Path $cache) {
             $pyc = Get-ChildItem -Path $cache -Filter "$($f.BaseName).cpython-*.pyc" -File | Select-Object -First 1
@@ -207,7 +208,8 @@ function Build-EdgePython {
     New-Item -ItemType Directory -Force -Path $outDir | Out-Null
     foreach ($f in $files) {
         Write-Run "python-edge: compiling $($f.BaseName)"
-        try { & $py -m py_compile $f.FullName } catch { Write-Skip "python-edge: failed on $($f.BaseName)" }
+        Push-Location $f.DirectoryName
+        try { & $py -m py_compile $f.Name } catch { Write-Skip "python-edge: failed on $($f.BaseName)" } finally { Pop-Location }
         $cache = Join-Path $f.DirectoryName '__pycache__'
         if (Test-Path $cache) {
             $pyc = Get-ChildItem -Path $cache -Filter "$($f.BaseName).cpython-*.pyc" -File -ErrorAction SilentlyContinue | Select-Object -First 1

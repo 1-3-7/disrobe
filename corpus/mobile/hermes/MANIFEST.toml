@@ -13,7 +13,7 @@ source_url = "self-authored regexes.js compiled with hermesc (FOSS, facebook/her
 upstream_repo = "https://github.com/facebook/hermes"
 license = "self-authored (disrobe regression fixture, freely redistributable)"
 size_bytes = 3032
-sha256 = "4448f399264398acddf319179e29feec991775b9745dcc59e14bda7cc651edfb"
+sha256 = "3d09ed4059904e914584d6c7948cb5e759a5c6835264871d69025b4ce914b70d"
 hermes_version_detected = 96
 notes = """
 Real Hermes bytecode (HBC v96) holding 23 compiled regex literals. The regex
@@ -28,7 +28,7 @@ source_url = "self-authored edge.js compiled with hermesc (FOSS, facebook/hermes
 upstream_repo = "https://github.com/facebook/hermes"
 license = "self-authored (disrobe regression fixture, freely redistributable)"
 size_bytes = 1315
-sha256 = "fd5d2f718c832406648f6e452cc94868a0d4cfcf9a485629fe043d6499055c3f"
+sha256 = "a5fd9ab6f0a8d9ff02eaa32b4364dff8c98c1208cace2349604ff92f0c8ce35a"
 hermes_version_detected = 96
 notes = """
 Real Hermes bytecode (HBC v96) holding 8 harder regex constructs: lookbehind,
@@ -42,7 +42,7 @@ source_url = "self-authored nest.js compiled with hermesc (FOSS, facebook/hermes
 upstream_repo = "https://github.com/facebook/hermes"
 license = "self-authored (disrobe regression fixture, freely redistributable)"
 size_bytes = 1400
-sha256 = "16ae5cbe7be52019205f10e7b5fe79efb8d42c074be0f466db0974039077c63f"
+sha256 = "0577cb83f4cafe4cd49c6d865db0a05cd264dce33d231cd83218c6f0e97f3884"
 hermes_version_detected = 96
 notes = """
 Real Hermes bytecode (HBC v96) holding 7 nested regex constructs: quantified groups,
@@ -56,7 +56,7 @@ source_url = "self-authored sample.js compiled with hermesc (FOSS, facebook/herm
 upstream_repo = "https://github.com/facebook/hermes"
 license = "self-authored (disrobe regression fixture, freely redistributable)"
 size_bytes = 1467
-sha256 = "830c75e06d4f9240595ffbcd4227d023558b214e0ab83e92718c7b937f964b5d"
+sha256 = "48ca9d83ed9fe683458b92f26dcb2e1fdfe6bddd0f7ad112aabf94aa38acb0e7"
 hermes_version_detected = 96
 notes = """
 Real Hermes bytecode (HBC v96) from hermesc release 0.12.0. CI-gated: the lifter
@@ -69,7 +69,7 @@ name = "sample/sample.hbc.v84"
 source_url = "self-authored sample.js compiled with hermesc 0.11.0 (FOSS)"
 license = "self-authored (disrobe regression fixture, freely redistributable)"
 size_bytes = 1203
-sha256 = "d20af4934937c51f127b944cbc6cf405f80f72eaf2a2cd1e465f01295ec50bc9"
+sha256 = "0e1a0a3019afaefdf8fa8a8e50c1a249fcdfa476b894c7a405c427607bd40913"
 hermes_version_detected = 84
 notes = "HBC v84. Parses and recovers function names; opcode bodies decode under the v96 table only."
 
@@ -78,7 +78,7 @@ name = "sample/sample.hbc.v76"
 source_url = "self-authored sample.js compiled with hermesc 0.7.2 (FOSS)"
 license = "self-authored (disrobe regression fixture, freely redistributable)"
 size_bytes = 1203
-sha256 = "a7dae2ae8d2b7dad344f00315c0709d3050962db8e3c25424c804ecd1e6754bf"
+sha256 = "3eb217fcceb2c0bcc789227059577a2b07050059a258bd2d2c079ff855a7eeff"
 hermes_version_detected = 76
 notes = "HBC v76. Parses and recovers function names; opcode bodies decode under the v96 table only."
 
