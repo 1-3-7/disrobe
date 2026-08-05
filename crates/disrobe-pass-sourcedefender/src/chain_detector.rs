@@ -49,7 +49,6 @@ impl Detector for SourceDefenderDetector {
 pub struct SourceDefenderPass;
 
 impl Pass for SourceDefenderPass {
-
     #[inline]
     fn meta(&self) -> disrobe_core::chain::PassMeta {
         META

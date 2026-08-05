@@ -156,9 +156,7 @@ mod tests {
         let r: PassRegistry = registry();
         let carries_a_gated_mode: bool = r
             .iter_passes()
-            .any(|p: &dyn disrobe_core::chain::Pass| {
-                p.meta().safety == SafetyClass::GatedDynamic
-            });
+            .any(|p: &dyn disrobe_core::chain::Pass| p.meta().safety == SafetyClass::GatedDynamic);
         assert!(
             carries_a_gated_mode,
             "no pass the mcp surface registers declares a gated-dynamic mode, so the default-off \
