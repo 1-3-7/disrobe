@@ -4,8 +4,10 @@ use disrobe_binfmt::containers::bare_stream::{detect_gzip, detect_zstd};
 use disrobe_binfmt::{QuotaGuard, sanitize_entry_path};
 use sha2::{Digest, Sha256};
 
+use disrobe_binfmt::ExtractionQuota;
+
 use crate::CarveConfig;
-use crate::decompress::decode_blob;
+use crate::decompress::{Decoded, decode_blob};
 use crate::error::{Error, Result};
 use crate::model::{Compression, IntegrityStatus, RecoveredAsset};
 use crate::resolve::SectionMap;
@@ -324,7 +326,19 @@ fn assemble(run: &[Record<'_>], cfg: &CarveConfig) -> Result<Assembled> {
         }
         declared += 1;
         let (bytes, compression): (Vec<u8>, Compression) =
-            decode_blob(record.data, cfg.quota.max_per_entry_uncompressed);
+            match decode_blob(record.data, decode_cap(record.data.len(), &cfg.quota)) {
+                Decoded::Bytes { data, compression } => (data, compression),
+                Decoded::QuotaRefused { reason, .. } => {
+                    return Err(Error::Quota {
+                        entry: safe,
+                        reason: format!(
+                            "{reason}, capped by the per-entry expansion ratio {}",
+                            cfg.quota.max_per_entry_ratio
+                        ),
+                    });
+                }
+                Decoded::Corrupt { .. } => continue,
+            };
         guard.admit_entry(&safe, bytes.len() as u64, record.data.len() as u64)?;
         recovered += 1;
         assets.push(RecoveredAsset {
@@ -341,6 +355,12 @@ fn assemble(run: &[Record<'_>], cfg: &CarveConfig) -> Result<Assembled> {
         declared,
         recovered,
     })
+}
+
+fn decode_cap(compressed_len: usize, quota: &ExtractionQuota) -> u64 {
+    (compressed_len as u64)
+        .saturating_mul(quota.max_per_entry_ratio)
+        .min(quota.max_per_entry_uncompressed)
 }
 
 fn normalize_key(name: &str) -> Option<String> {
