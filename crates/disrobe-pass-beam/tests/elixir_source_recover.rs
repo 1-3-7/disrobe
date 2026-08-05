@@ -117,7 +117,16 @@ fn real_elixir_recovered_source_recompiles_with_elixirc() {
         .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", compiled_path.display()));
     let compiled: BeamFile = BeamFile::parse(&compiled_bytes).expect("parse recompiled beam");
     assert_eq!(compiled.module_name(), original.module_name());
-    assert_eq!(semantic_exports(&compiled), semantic_exports(&original));
+    let expected: BTreeSet<(String, u32)> = semantic_exports(&original);
+    assert!(
+        !expected.is_empty(),
+        "{GRADED} compared an empty export set, so it would pass on a module that exports nothing"
+    );
+    assert_eq!(semantic_exports(&compiled), expected);
+    println!(
+        "{GRADED}: {} export(s) graded against real elixirc",
+        expected.len()
+    );
 }
 
 #[test]
