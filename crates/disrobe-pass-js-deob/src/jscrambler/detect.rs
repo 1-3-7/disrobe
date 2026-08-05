@@ -73,6 +73,19 @@ pub struct JscramblerDetection {
 
 const HEAD_SCAN_BYTES: usize = 128 * 1024;
 const FREE_TIER_IDENT_DENSITY_FLOOR: usize = 5;
+pub(crate) const STATE_MACHINE_DENSITY_FLOOR: usize = 3;
+const STATE_MACHINE_DISPATCHER_PATTERN: &str =
+    r"for\s*\(\s*;\s*[A-Za-z_$][\w$]*\s*!==?\s*\d+\s*;?\s*\)\s*\{\s*switch\s*\(";
+
+#[must_use]
+pub(crate) fn state_machine_dispatcher_count(text: &str) -> usize {
+    let Ok(re): core::result::Result<Regex, regex::Error> =
+        Regex::new(STATE_MACHINE_DISPATCHER_PATTERN)
+    else {
+        return 0;
+    };
+    re.find_iter(text).count()
+}
 
 #[must_use]
 pub fn detect_free_tier(source: &str) -> JscramblerDetection {
@@ -85,6 +98,7 @@ pub fn detect_full(source: &str) -> JscramblerDetection {
     let banner: bool = head.contains("jscrambler") || head.contains("Jscrambler");
     let a0_hex_ident_count: usize = count_a0_hex_idents(head);
     let integrity_loop_count: usize = count_integrity_loops(head);
+    let state_machine_count: usize = state_machine_dispatcher_count(head);
 
     let mut markers: Vec<String> = Vec::new();
     if banner {
@@ -96,22 +110,29 @@ pub fn detect_full(source: &str) -> JscramblerDetection {
     if integrity_loop_count > 0 {
         markers.push(format!("integrity-loop:{integrity_loop_count}"));
     }
+    if state_machine_count >= STATE_MACHINE_DENSITY_FLOOR {
+        markers.push(format!("state-machine-dispatcher:{state_machine_count}"));
+    }
 
     let dense_idents: bool = a0_hex_ident_count >= FREE_TIER_IDENT_DENSITY_FLOOR;
     let has_integrity: bool = integrity_loop_count > 0;
-    let matched: bool = dense_idents && (has_integrity || banner);
-    let tier: JscramblerTier = if matched {
+    let free_tier_shape: bool = dense_idents && (has_integrity || banner);
+    let dense_state_machines: bool = state_machine_count >= STATE_MACHINE_DENSITY_FLOOR;
+    let matched: bool = free_tier_shape || dense_state_machines;
+    let tier: JscramblerTier = if free_tier_shape {
         JscramblerTier::Free
-    } else if banner {
+    } else if banner || dense_state_machines {
         JscramblerTier::Paid
     } else {
         JscramblerTier::Unknown
     };
-    let confidence: f32 = if matched {
+    let confidence: f32 = if free_tier_shape {
         let base: f32 = 0.6;
         let banner_bonus: f32 = if banner { 0.15 } else { 0.0 };
         let integrity_bonus: f32 = if has_integrity { 0.15 } else { 0.0 };
         (base + banner_bonus + integrity_bonus).min(0.97)
+    } else if dense_state_machines {
+        if banner { 0.95 } else { 0.85 }
     } else if banner {
         0.5
     } else {

@@ -8,7 +8,7 @@
     clippy::cast_precision_loss
 )]
 
-mod detect;
+pub(crate) mod detect;
 mod integrity;
 mod scanner;
 mod templates;

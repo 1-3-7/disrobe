@@ -87,6 +87,18 @@ pub fn detect(source: &[u8]) -> Detection {
         crate::debug::dbg_kv("markers", || detection.markers.join(","));
         return detection;
     }
+    let state_machines: usize = crate::jscrambler::detect::state_machine_dispatcher_count(head);
+    if state_machines >= crate::jscrambler::detect::STATE_MACHINE_DENSITY_FLOOR {
+        markers.push(format!(
+            "jscrambler-state-machine-dispatcher:{state_machines}"
+        ));
+        return classified(
+            JsObfuscator::Jscrambler,
+            0.85,
+            markers,
+            "jscrambler-state-machine-dispatcher",
+        );
+    }
     if head.contains("var _0x") && head.contains("function _0x") {
         markers.push("hex-prefix-identifiers".to_owned());
         return classified(

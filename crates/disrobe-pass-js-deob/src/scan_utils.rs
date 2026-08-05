@@ -1,4 +1,14 @@
 #[must_use]
+pub(crate) fn reparses(source: &str) -> bool {
+    let allocator: oxc_allocator::Allocator = oxc_allocator::Allocator::default();
+    let source_type: oxc_span::SourceType =
+        oxc_span::SourceType::from_path("reparse.js").unwrap_or_default();
+    let parsed: oxc_parser::ParserReturn<'_> =
+        oxc_parser::Parser::new(&allocator, source, source_type).parse();
+    !parsed.panicked && parsed.errors.is_empty()
+}
+
+#[must_use]
 pub(crate) fn head(text: &str, max_bytes: usize) -> &str {
     let mut end: usize = text.len().min(max_bytes);
     while end > 0 && !text.is_char_boundary(end) {
