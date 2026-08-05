@@ -12,9 +12,12 @@ pub enum Error {
     NotDetected,
 
     #[error(
-        "DR-WEBVIEW-0002: {family} frontend detected but the asset table could not be located (abstaining rather than guessing)"
+        "DR-WEBVIEW-0002: {family} frontend detected but no asset table is present in the static image: {detail}"
     )]
-    FamilyNotExtractable { family: WebviewFamily },
+    FamilyNotExtractable {
+        family: WebviewFamily,
+        detail: String,
+    },
 
     #[error("DR-WEBVIEW-0003: asar header malformed: {0}")]
     AsarHeader(String),

@@ -19,6 +19,7 @@ pub const PASS_ID: PassId = "webview.carve";
 const TAG_ELECTRON: &str = "electron-asar";
 const TAG_TAURI: &str = "tauri-embedded";
 const TAG_WAILS: &str = "wails-embedded";
+const TAG_UNKNOWN: &str = "webview-unclassified";
 
 const ARCHIVE_SPECIFICITY: u16 = 30;
 const MARKER_SPECIFICITY: u16 = 12;
@@ -255,6 +256,7 @@ const fn tag_for(family: WebviewFamily) -> &'static str {
         WebviewFamily::Electron => TAG_ELECTRON,
         WebviewFamily::Tauri => TAG_TAURI,
         WebviewFamily::Wails => TAG_WAILS,
+        WebviewFamily::Unknown => TAG_UNKNOWN,
     }
 }
 

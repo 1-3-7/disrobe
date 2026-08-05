@@ -29,6 +29,7 @@ pub enum WebviewFamily {
     Electron,
     Tauri,
     Wails,
+    Unknown,
 }
 
 impl WebviewFamily {
@@ -38,6 +39,7 @@ impl WebviewFamily {
             Self::Electron => "electron",
             Self::Tauri => "tauri",
             Self::Wails => "wails",
+            Self::Unknown => "unknown",
         }
     }
 }

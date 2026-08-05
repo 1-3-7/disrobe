@@ -24,6 +24,7 @@ const DEFAULT_MAX_ASSETS: usize = 100_000;
 const DEFAULT_MAX_SCAN_CANDIDATES: usize = 256;
 const DEFAULT_MAX_DEPTH: usize = 64;
 const DEFAULT_MAX_TABLE_PROBES: u64 = 32_000_000;
+const DEFAULT_MAX_EXPANSION_RATIO: u64 = 100;
 
 #[derive(Debug, Clone, Copy)]
 pub struct CarveConfig {
@@ -40,8 +41,8 @@ impl Default for CarveConfig {
                 max_entries: DEFAULT_MAX_ASSETS,
                 max_total_uncompressed: 4 * GIBIBYTE,
                 max_per_entry_uncompressed: 512 * 1024 * 1024,
-                max_per_entry_ratio: 100,
-                max_aggregate_ratio: 10,
+                max_per_entry_ratio: DEFAULT_MAX_EXPANSION_RATIO,
+                max_aggregate_ratio: DEFAULT_MAX_EXPANSION_RATIO,
             },
             max_scan_candidates: DEFAULT_MAX_SCAN_CANDIDATES,
             max_depth: DEFAULT_MAX_DEPTH,
@@ -64,7 +65,7 @@ pub fn carve_with_config(bytes: &[u8], cfg: &CarveConfig) -> Result<CarveReport>
     }
     match embedded::scan(bytes, cfg) {
         Ok(assembled) => Ok(CarveReport {
-            family: detect::family_guess(bytes),
+            family: detect::embedded_family(bytes),
             assets: assembled.assets,
             external_unpacked: Vec::new(),
             symlinks: Vec::new(),
@@ -72,12 +73,15 @@ pub fn carve_with_config(bytes: &[u8], cfg: &CarveConfig) -> Result<CarveReport>
             declared: assembled.declared,
             recovered: assembled.recovered,
         }),
-        Err(Error::NativeParse(_) | Error::NoEmbeddedTable(_)) => match detect_family(bytes) {
-            Some(family @ (WebviewFamily::Tauri | WebviewFamily::Wails)) => {
-                Err(Error::FamilyNotExtractable { family })
+        Err(reason @ (Error::NativeParse(_) | Error::NoEmbeddedTable(_))) => {
+            match detect::embedded_family(bytes) {
+                WebviewFamily::Unknown => Err(Error::NotDetected),
+                family => Err(Error::FamilyNotExtractable {
+                    family,
+                    detail: reason.to_string(),
+                }),
             }
-            _ => Err(Error::NotDetected),
-        },
+        }
         Err(other) => Err(other),
     }
 }
