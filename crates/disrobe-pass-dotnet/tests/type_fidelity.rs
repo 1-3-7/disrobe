@@ -627,6 +627,90 @@ fn shift_resolves_ldarga_to_named_param_not_positional() {
     );
 }
 
+const BASELINE_MERGE_RECOVERED: [(u32, &str); 4] = [
+    (
+        0x0600_0014,
+        "a value live across a two-arm merge, stored to a field at the join",
+    ),
+    (
+        0x0600_010e,
+        "a value live across a two-arm merge, stored to a local after a loop",
+    ),
+    (
+        0x0600_01a3,
+        "a value live across a two-arm merge inside a loop body",
+    ),
+    (
+        0x0600_01bb,
+        "two values live across two consecutive two-arm merges",
+    ),
+];
+
+const BASELINE_MERGE_UNRECOVERED: [(u32, &str); 3] = [
+    (
+        0x0600_0006,
+        "a two-arm merge whose false arm writes a generic default through an address before pushing, so the arm is not a pure operand push",
+    ),
+    (
+        0x0600_000c,
+        "a two-arm merge whose false arm writes a generic default through an address before pushing, so the arm is not a pure operand push",
+    ),
+    (
+        0x0600_0223,
+        "a two-arm merge whose taken arm assigns the cached delegate field before pushing, so the arm is not a pure operand push",
+    ),
+];
+
+fn baseline_method_by_token(asm: &DecompiledAssembly, token: u32) -> &StructuredMethod {
+    asm.methods
+        .iter()
+        .find(|m: &&StructuredMethod| m.token == token)
+        .unwrap_or_else(|| panic!("clean baseline carries method 0x{token:08x}"))
+}
+
+#[test]
+fn clean_baseline_merge_bodies_recover_their_conditional_value() {
+    let asm: DecompiledAssembly = baseline();
+    for (token, cause) in BASELINE_MERGE_RECOVERED {
+        let method: &StructuredMethod = baseline_method_by_token(&asm, token);
+        assert!(
+            !method.body.contains(STACK_UNDERFLOW),
+            "0x{token:08x} is {cause}; the value is carried across the join, so the body must \
+             recover with no placeholder:\n{}",
+            method.body
+        );
+        assert!(
+            method.body.contains(" ? "),
+            "0x{token:08x} is {cause}; the merged value must read as a conditional \
+             expression:\n{}",
+            method.body
+        );
+    }
+}
+
+#[test]
+fn clean_baseline_merge_bodies_that_still_abstain_keep_their_recorded_cause() {
+    let asm: DecompiledAssembly = baseline();
+    let golden: Vec<RecoveredBody> = read_underflow_golden();
+    for (token, cause) in BASELINE_MERGE_UNRECOVERED {
+        let method: &StructuredMethod = baseline_method_by_token(&asm, token);
+        assert!(
+            method.body.contains(STACK_UNDERFLOW),
+            "0x{token:08x} was recorded as {cause}; if it now recovers, drop it from \
+             {} and from this list rather than leaving the cause on record:\n{}",
+            golden_path(STACK_UNDERFLOW_GOLDEN_REL).display(),
+            method.body
+        );
+        assert!(
+            golden
+                .iter()
+                .any(|b: &RecoveredBody| b.key() == ("megafile/EdgeCases.baseline.dll", token)),
+            "0x{token:08x} abstains because it is {cause}, so it has to stay listed in {}",
+            golden_path(STACK_UNDERFLOW_GOLDEN_REL).display()
+        );
+    }
+}
+
 #[test]
 fn typed_local_rate_is_total_on_clean_baseline() {
     let asm: DecompiledAssembly = baseline();

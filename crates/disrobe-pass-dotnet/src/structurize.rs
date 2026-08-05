@@ -4,6 +4,7 @@ use std::fmt::Write as _;
 use serde::{Deserialize, Serialize};
 
 use crate::cil::{FlowControl, Instruction, MethodBody, OperandValue};
+use crate::debug::dbg_kv;
 use crate::model::{IsInstTargetKind, Resolver};
 use crate::names::NameTable;
 
@@ -288,7 +289,7 @@ impl TokenNamer for HexNamer {
 }
 
 #[derive(Debug, Clone)]
-enum Expr {
+pub(crate) enum Expr {
     Const(String),
     Local(u32),
     Arg(u32),
@@ -310,6 +311,11 @@ enum Expr {
     },
     Tuple(Vec<Self>),
     Coalesce(Box<Self>, Box<Self>),
+    Cond {
+        condition: Box<Self>,
+        when_true: Box<Self>,
+        when_false: Box<Self>,
+    },
     Cast(String, Box<Self>),
     IsInst {
         ty: String,
@@ -344,11 +350,17 @@ enum Expr {
     MethodHandle(u32),
     OpaqueHandle(u32),
     TypeOf(String),
+    StackUnderflow {
+        block_offset: u32,
+        opcode: String,
+    },
     Raw(String),
 }
 
 const MAX_EXPR_DEPTH: usize = 256;
+const ATOM_EXPRESSION_DEPTH: usize = 1;
 const UNRECOVERED_EXPRESSION: &str = "__unrecovered_expression";
+const STACK_UNDERFLOW: &str = "__stack_underflow";
 const UNRECONSTRUCTED_RUNTIME_HANDLE: &str = "__unreconstructed_runtime_handle";
 const UNRESOLVED_ISINST_TARGET: &str = "__unresolved_isinst_target";
 const UNRESOLVED_UNBOX_ANY_TARGET: &str = "__unresolved_unbox_any_target";
@@ -397,6 +409,21 @@ impl Expr {
                 pending.push(lhs);
                 pending.push(rhs);
             }
+            Self::Cond {
+                condition,
+                when_true,
+                when_false,
+            } => {
+                let condition: Self =
+                    std::mem::replace(condition.as_mut(), Self::Raw(String::new()));
+                let when_true: Self =
+                    std::mem::replace(when_true.as_mut(), Self::Raw(String::new()));
+                let when_false: Self =
+                    std::mem::replace(when_false.as_mut(), Self::Raw(String::new()));
+                pending.push(condition);
+                pending.push(when_true);
+                pending.push(when_false);
+            }
             Self::Call { args, .. } | Self::NewObj { args, .. } | Self::Tuple(args) => {
                 pending.extend(std::mem::take(args));
             }
@@ -417,6 +444,7 @@ impl Expr {
             | Self::MethodHandle(_)
             | Self::OpaqueHandle(_)
             | Self::TypeOf(_)
+            | Self::StackUnderflow { .. }
             | Self::Raw(_) => {}
         }
     }
@@ -439,7 +467,20 @@ impl Expr {
                 | Self::LoadLen(_)
                 | Self::MethodPtr { .. }
                 | Self::TypeOf(_)
+                | Self::StackUnderflow { .. }
         )
+    }
+
+    fn abstention_reason(&self) -> Option<String> {
+        match self {
+            Self::StackUnderflow {
+                block_offset,
+                opcode,
+            } => Some(format!(
+                "block IL_{block_offset:04x} reached {opcode} with an empty operand stack"
+            )),
+            _ => None,
+        }
     }
 
     fn is_known_boolean(&self, names: &NameTable) -> bool {
@@ -459,6 +500,11 @@ impl Expr {
                 returns_boolean, ..
             } => *returns_boolean,
             Self::Coalesce(lhs, rhs) => lhs.is_known_boolean(names) && rhs.is_known_boolean(names),
+            Self::Cond {
+                when_true,
+                when_false,
+                ..
+            } => when_true.is_known_boolean(names) && when_false.is_known_boolean(names),
             Self::Cast(ty, _)
             | Self::UnboxAny {
                 target: Some(ty), ..
@@ -482,6 +528,7 @@ impl Expr {
             | Self::MethodHandle(_)
             | Self::OpaqueHandle(_)
             | Self::TypeOf(_)
+            | Self::StackUnderflow { .. }
             | Self::Raw(_) => false,
         }
     }
@@ -534,6 +581,15 @@ fn expression_depth(expression: &Expr) -> usize {
                 pending.push((lhs, child_depth));
                 pending.push((rhs, child_depth));
             }
+            Expr::Cond {
+                condition,
+                when_true,
+                when_false,
+            } => {
+                pending.push((condition, child_depth));
+                pending.push((when_true, child_depth));
+                pending.push((when_false, child_depth));
+            }
             Expr::Call { args, .. } | Expr::NewObj { args, .. } | Expr::Tuple(args) => {
                 for child in args {
                     pending.push((child, child_depth));
@@ -552,6 +608,7 @@ fn expression_depth(expression: &Expr) -> usize {
             | Expr::MethodHandle(_)
             | Expr::OpaqueHandle(_)
             | Expr::TypeOf(_)
+            | Expr::StackUnderflow { .. }
             | Expr::Raw(_) => {}
         }
     }
@@ -623,6 +680,7 @@ fn render_expr(initial: RenderAction<'_>, lang: TargetLang, names: &NameTable) -
                 Expr::Const(text) | Expr::Raw(text) => {
                     output.push_str(text);
                 }
+                Expr::StackUnderflow { .. } => output.push_str(STACK_UNDERFLOW),
                 Expr::Field { text, .. } => output.push_str(text),
                 Expr::TypeHandle(_) => {
                     output.push_str(&runtime_handle_refusal(
@@ -709,6 +767,39 @@ fn render_expr(initial: RenderAction<'_>, lang: TargetLang, names: &NameTable) -
                     pending.push(RenderAction::Text(")"));
                     pending.push(RenderAction::Args(elements, 0));
                 }
+                Expr::Cond {
+                    condition,
+                    when_true,
+                    when_false,
+                } => match lang {
+                    TargetLang::CSharp => {
+                        pending.push(RenderAction::Text(")"));
+                        pending.push(RenderAction::Paren(when_false));
+                        pending.push(RenderAction::Text(" : "));
+                        pending.push(RenderAction::Paren(when_true));
+                        pending.push(RenderAction::Text(" ? "));
+                        pending.push(RenderAction::Paren(condition));
+                        output.push('(');
+                    }
+                    TargetLang::FSharp => {
+                        pending.push(RenderAction::Text(")"));
+                        pending.push(RenderAction::Paren(when_false));
+                        pending.push(RenderAction::Text(" else "));
+                        pending.push(RenderAction::Paren(when_true));
+                        pending.push(RenderAction::Text(" then "));
+                        pending.push(RenderAction::Paren(condition));
+                        output.push_str("(if ");
+                    }
+                    TargetLang::VbNet => {
+                        pending.push(RenderAction::Text(")"));
+                        pending.push(RenderAction::Paren(when_false));
+                        pending.push(RenderAction::Text(", "));
+                        pending.push(RenderAction::Paren(when_true));
+                        pending.push(RenderAction::Text(", "));
+                        pending.push(RenderAction::Paren(condition));
+                        output.push_str("If(");
+                    }
+                },
                 Expr::Coalesce(lhs, rhs) => match lang {
                     TargetLang::CSharp => {
                         pending.push(RenderAction::Paren(rhs));
@@ -1373,6 +1464,9 @@ struct Lifter<'a, N: TokenNamer> {
     locals_assigned: BTreeSet<u32>,
     pending_null_cond: bool,
     next_array_id: u64,
+    entry_deficit: usize,
+    at: (u32, String),
+    abstentions: Vec<String>,
 }
 
 impl<'a, N: TokenNamer> Lifter<'a, N> {
@@ -1388,6 +1482,9 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             locals_assigned: BTreeSet::new(),
             pending_null_cond: false,
             next_array_id: 0,
+            entry_deficit: 0,
+            at: (0, String::new()),
+            abstentions: Vec::new(),
         }
     }
 
@@ -1411,12 +1508,23 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
 
     #[inline]
     fn pop_with_depth(&mut self) -> (Expr, usize) {
-        let expression: Expr = self
-            .stack
-            .pop()
-            .unwrap_or_else(|| Expr::Raw("__stack_underflow".to_owned()));
-        let depth: usize = self.stack_depths.pop().unwrap_or(1);
-        (expression, depth)
+        match (self.stack.pop(), self.stack_depths.pop()) {
+            (Some(expression), Some(depth)) => (expression, depth),
+            _ => (self.abstain_on_underflow(), ATOM_EXPRESSION_DEPTH),
+        }
+    }
+
+    fn abstain_on_underflow(&mut self) -> Expr {
+        self.entry_deficit = self.entry_deficit.saturating_add(1);
+        let (block_offset, opcode): (u32, String) = self.at.clone();
+        let abstention: Expr = Expr::StackUnderflow {
+            block_offset,
+            opcode,
+        };
+        if let Some(reason) = abstention.abstention_reason() {
+            self.abstentions.push(reason);
+        }
+        abstention
     }
 
     fn clear_stack(&mut self) {
@@ -2519,6 +2627,8 @@ pub(crate) struct BlockCode {
     pub condition: Option<String>,
     pub switch_selector: Option<String>,
     pub locals_used: BTreeSet<u32>,
+    pub entry_deficit: usize,
+    pub exit_stack: Vec<Expr>,
 }
 
 fn branch_target(ins: &Instruction) -> Option<u32> {
@@ -2851,10 +2961,27 @@ pub(crate) fn lift_block<N: TokenNamer>(
     first: usize,
     last: usize,
 ) -> BlockCode {
+    lift_block_with_entry(namer, names, lang, instrs, first, last, Vec::new())
+}
+
+pub(crate) fn lift_block_with_entry<N: TokenNamer>(
+    namer: &N,
+    names: &NameTable,
+    lang: TargetLang,
+    instrs: &[Instruction],
+    first: usize,
+    last: usize,
+    entry_stack: Vec<Expr>,
+) -> BlockCode {
     let mut lifter: Lifter<'_, N> = Lifter::new(namer, names, lang);
+    for expression in entry_stack {
+        lifter.push(expression);
+    }
     let mut condition: Option<String> = None;
     let mut switch_selector: Option<String> = None;
+    let block_offset: u32 = instrs.get(first).map_or(0, |ins: &Instruction| ins.offset);
     for ins in &instrs[first..=last] {
+        lifter.at = (block_offset, ins.name.clone());
         match ins.flow {
             FlowControl::CondBranch => match ins.name.as_str() {
                 "brtrue" | "brtrue.s" => {
@@ -2886,12 +3013,20 @@ pub(crate) fn lift_block<N: TokenNamer>(
             _ => lifter.lift_one(ins),
         }
     }
-    let stmts: Vec<LinearStmt> = lifter.stmts.into_iter().map(stmt_to_linear).collect();
+    for reason in &lifter.abstentions {
+        dbg_kv("dotnet.structurize.stack_underflow", || reason.clone());
+    }
+    let stmts: Vec<LinearStmt> = std::mem::take(&mut lifter.stmts)
+        .into_iter()
+        .map(stmt_to_linear)
+        .collect();
     BlockCode {
         stmts,
         condition,
         switch_selector,
-        locals_used: lifter.locals_used,
+        locals_used: std::mem::take(&mut lifter.locals_used),
+        entry_deficit: lifter.entry_deficit,
+        exit_stack: std::mem::take(&mut lifter.stack),
     }
 }
 

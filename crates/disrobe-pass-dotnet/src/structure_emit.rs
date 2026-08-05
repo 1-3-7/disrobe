@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use crate::cfg::{BlockId, Cfg, NaturalLoop, Terminator};
+use crate::cfg::{BasicBlock, BlockId, Cfg, NaturalLoop, Terminator};
 use crate::cil::{ExceptionClause, ExceptionClauseKind, Instruction, MethodBody};
 use crate::names::NameTable;
 use crate::structurize::{
-    BlockCode, LinearStmt, TargetLang, TokenNamer, lift_block, lift_filter_condition,
+    BlockCode, Expr, LinearStmt, TargetLang, TokenNamer, lift_block, lift_block_with_entry,
+    lift_filter_condition,
 };
 
 #[derive(Debug, Clone)]
@@ -198,6 +199,9 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             Terminator::EndFinally => None,
             Terminator::FallThrough(next) | Terminator::Goto(next) => self.flow_to(next, stop, seq),
             Terminator::Cond { taken, fallthrough } => {
+                if let Some(join) = self.fold_conditional_expression(bid, taken, fallthrough) {
+                    return self.flow_to(join, stop, seq);
+                }
                 self.emit_if(bid, taken, fallthrough, stop, seq)
             }
             Terminator::Switch { cases, fallthrough } => {
@@ -306,6 +310,85 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             Terminator::Throw => body_seq.push(self.throw_stmt(header)),
             Terminator::EndFinally => {}
         }
+    }
+
+    fn conditional_arm_join(&self, arm: BlockId, cond_block: BlockId) -> Option<BlockId> {
+        let code: &BlockCode = self.block_code.get(arm)?;
+        let block: &BasicBlock = self.cfg.blocks.get(arm)?;
+        let arm_is_a_pure_push: bool = code.stmts.is_empty()
+            && code.condition.is_none()
+            && code.switch_selector.is_none()
+            && code.entry_deficit == 0
+            && code.exit_stack.len() == 1;
+        if !arm_is_a_pure_push
+            || self.visited[arm]
+            || self.loop_header[arm]
+            || !self.cfg.is_reachable(arm)
+            || block.preds.as_slice() != [cond_block]
+            || self.try_starts.contains_key(&block.start)
+        {
+            return None;
+        }
+        match self.cfg.terminators.get(arm)? {
+            Terminator::FallThrough(next) | Terminator::Goto(next) => Some(*next),
+            Terminator::Cond { .. }
+            | Terminator::Switch { .. }
+            | Terminator::Return
+            | Terminator::Throw
+            | Terminator::EndFinally => None,
+        }
+    }
+
+    fn fold_conditional_expression(
+        &mut self,
+        bid: BlockId,
+        taken: BlockId,
+        fallthrough: BlockId,
+    ) -> Option<BlockId> {
+        if taken == fallthrough {
+            return None;
+        }
+        let condition: String = self.block_code[bid].condition.clone()?;
+        let join: BlockId = self.conditional_arm_join(taken, bid)?;
+        if self.conditional_arm_join(fallthrough, bid)? != join {
+            return None;
+        }
+        let carried: Vec<Expr> = self.block_code[bid].exit_stack.clone();
+        let join_block: &BasicBlock = self.cfg.blocks.get(join)?;
+        if self.block_code[join].entry_deficit != carried.len() + 1
+            || join_block.preds.len() != 2
+            || self.visited[join]
+            || self.loop_header[join]
+            || !self.cfg.is_reachable(join)
+            || self.try_starts.contains_key(&join_block.start)
+        {
+            return None;
+        }
+        let folded: Expr = Expr::Cond {
+            condition: Box::new(Expr::Raw(condition)),
+            when_true: Box::new(self.block_code[taken].exit_stack.first()?.clone()),
+            when_false: Box::new(self.block_code[fallthrough].exit_stack.first()?.clone()),
+        };
+        let (first, last): (usize, usize) = (join_block.first, join_block.last);
+        let mut entry_stack: Vec<Expr> = carried;
+        entry_stack.push(folded);
+        let rebuilt: BlockCode = lift_block_with_entry(
+            self.namer,
+            self.names,
+            self.lang,
+            self.instrs,
+            first,
+            last,
+            entry_stack,
+        );
+        if rebuilt.entry_deficit != 0 {
+            return None;
+        }
+        self.visited[taken] = true;
+        self.visited[fallthrough] = true;
+        self.locals_used.extend(rebuilt.locals_used.iter().copied());
+        self.block_code[join] = rebuilt;
+        Some(join)
     }
 
     fn is_pure_cond_block(&self, bid: BlockId) -> bool {
