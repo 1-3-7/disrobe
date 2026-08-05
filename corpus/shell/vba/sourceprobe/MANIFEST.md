@@ -55,7 +55,7 @@ $wb.Close($false); $xl.Quit()
 
 ```
 e2cb74279a1aa011df7fe38bd09084ed1ff11338eaf2d62795066386398c2089  sourceprobe.docm
-c6a2f63df2c67a0790447707666c109232ba9122905009ca805013aedc049080  sourceprobe.xlsm
+d750a7014478fb497b3d556ac20b804878514ce6b26ed2b12d97ffd9d7aafcec  sourceprobe.xlsm
 0630dc5fc7931f323f334dc8d3d4704ca6bd82de93dffd226196a00402c6432b  sourceprobe/SourceProbe.bas
 ```
 

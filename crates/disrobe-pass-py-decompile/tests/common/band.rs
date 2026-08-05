@@ -76,12 +76,14 @@ pub(crate) fn find_interpreter(alias: &str) -> Option<PathBuf> {
     }
     let tag: String = alias.replace('.', "");
     if cfg!(windows) {
-        let base: &str = "C:/Users/-/AppData/Local/Programs/Python";
-        let candidates: [PathBuf; 3] = [
-            PathBuf::from(format!("{base}/Python{tag}/python.exe")),
-            PathBuf::from(format!("C:/Python{tag}/python.exe")),
-            PathBuf::from(format!("C:/Python{tag}-32/python.exe")),
-        ];
+        let mut candidates: Vec<PathBuf> = Vec::with_capacity(3);
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            candidates.push(PathBuf::from(format!(
+                "{local}/Programs/Python/Python{tag}/python.exe"
+            )));
+        }
+        candidates.push(PathBuf::from(format!("C:/Python{tag}/python.exe")));
+        candidates.push(PathBuf::from(format!("C:/Python{tag}-32/python.exe")));
         return candidates.into_iter().find(|p: &PathBuf| p.is_file());
     }
     let candidates: [PathBuf; 3] = [

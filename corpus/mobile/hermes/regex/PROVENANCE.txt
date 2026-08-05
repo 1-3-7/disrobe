@@ -22,7 +22,7 @@ Artifacts (Hermes magic c6 1f bc 03 c1 03 19 1f, little-endian):
                     sha256 463732627fecc031d2748dedf14f0ca5fbbb70d82d75702c2c9ec630370ddcb7
 
   regexes.hbc.v96   HBC version 96, 3032 bytes, RegExp count 23.
-                    sha256 4448f399264398acddf319179e29feec991775b9745dcc59e14bda7cc651edfb
+                    sha256 3d09ed4059904e914584d6c7948cb5e759a5c6835264871d69025b4ce914b70d
 
   edge.js           ground-truth source: 8 regex literals for the harder constructs:
                     lookbehind (positive and negative), \B, a simple-loop with an
@@ -32,7 +32,7 @@ Artifacts (Hermes magic c6 1f bc 03 c1 03 19 1f, little-endian):
                     sha256 (see file)
 
   edge.hbc.v96      HBC version 96, 1315 bytes, RegExp count 8.
-                    sha256 fd5d2f718c832406648f6e452cc94868a0d4cfcf9a485629fe043d6499055c3f
+                    sha256 a5fd9ab6f0a8d9ff02eaa32b4364dff8c98c1208cace2349604ff92f0c8ce35a
 
   nest.js           ground-truth source: 7 regex literals for nested structure:
                     a captured group under a quantifier, alternation inside a group,
@@ -42,7 +42,7 @@ Artifacts (Hermes magic c6 1f bc 03 c1 03 19 1f, little-endian):
                     sha256 606a2b1135d55abfea8a6ed8092e3bc2cebe493221dc50f37110ba23d7e423b2
 
   nest.hbc.v96      HBC version 96, 1400 bytes, RegExp count 7.
-                    sha256 16ae5cbe7be52019205f10e7b5fe79efb8d42c074be0f466db0974039077c63f
+                    sha256 0577cb83f4cafe4cd49c6d865db0a05cd264dce33d231cd83218c6f0e97f3884
 
 Scope of recovery, stated plainly:
 

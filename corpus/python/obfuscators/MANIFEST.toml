@@ -160,7 +160,7 @@ runtime = "python 3.14"
 
 [obfuscators.pyminifier.metadata]
 tool_version = "pyminifier 2.1 (PyPI, lib2to3-dependent → Python 3.7 only)"
-runtime = "python 3.7.9 via C:/Users/-/AppData/Local/Programs/Python/Python37/python.exe"
+runtime = "python 3.7.9 via a per-user cpython install at %LOCALAPPDATA%/Programs/Python/Python37/python.exe"
 
 [obfuscators.pyminifier.fixtures]
 "edge_cases_3_6_obfuscate" = { path = "corpus/python/obfuscators/pyminifier/real_edge_cases_3_6_obfuscate.py", sha256 = "3097ce3914b820a681f44c6bd6b176df17b26c8a91ea6735108c311b6e115619", bytes = 7839 }
@@ -233,7 +233,7 @@ note = "two-stage loader: stage1 .py decrypts an embedded stage2 (base85 + xor-c
 
 [obfuscators.patchwork.fixtures]
 "hello_world" = { path = "corpus/python/obfuscators/patchwork/real_hello_world.py", sha256 = "d19f4490d8fb7a7233e3a798c97d68fd8090d94b2a3384704e5ebc2f6c03872b", bytes = 45474, transform = "full default pipeline" }
-"hello_world_pyc" = { path = "corpus/python/obfuscators/patchwork/real_hello_world.pyc", sha256 = "6025505e21fbeb0422711990e0c5d8c2c9c02e0a6cf59d39b7ae16421de699cc", bytes = 49473, transform = "full default pipeline compiled to pyc" }
+"hello_world_pyc" = { path = "corpus/python/obfuscators/patchwork/real_hello_world.pyc", sha256 = "76f18f91eb29b797ec4699a6bd089e7bdd537d4266b866bbf9851795855a95d4", bytes = 49473, transform = "full default pipeline compiled to pyc" }
 "hello_world_norename" = { path = "corpus/python/obfuscators/patchwork/real_hello_world_norename.py", sha256 = "0b608ed7faa5afe61d74ab708a9b42f2b2c9772d07b24051c26623277c937243", bytes = 25767, transform = "no-rename no-lazy" }
 "features" = { path = "corpus/python/obfuscators/patchwork/real_features.py", sha256 = "63ceb842ea54422486a3816e852c5b661cde84a7c1a82c061e134aa9ff836d53", bytes = 58558, transform = "full default pipeline" }
 "orig_hello" = { path = "corpus/python/obfuscators/patchwork/orig_hello.py", sha256 = "9d0c4d38ac3e78faa7333ab43f4f5233965daa1bf543dc26ae8e6049f69ee89e", bytes = 231, transform = "ground-truth source" }

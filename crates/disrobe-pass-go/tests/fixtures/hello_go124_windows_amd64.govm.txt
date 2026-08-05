@@ -1,4 +1,4 @@
-C:\Users\-\Documents\Projects\disrobe\crates\disrobe-pass-go\tests\fixtures\hello_go124_windows_amd64: go1.24.0
+hello_go124_windows_amd64: go1.24.0
 	path	disrobe.example/go124fix
 	mod	disrobe.example/go124fix	v0.10.5-0.20260709204743-2462935c7741	
 	build	-buildmode=exe

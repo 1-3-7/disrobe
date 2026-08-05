@@ -1,7 +1,7 @@
 {
   "final_format": "Python",
   "input": {
-    "blake3": "2c4b928e9759ce9877a0cbaa29cfadef7fc056d3c7eeca33801d6c6fc082be23",
+    "blake3": "81f4b922718d01b34fdfc3383d9307a20e2c78017976cf1cdb5e4c7b6e6298d9",
     "detected": [
       "pyc-3.12"
     ],
@@ -18,7 +18,7 @@
       "error": null,
       "format_tag_in": null,
       "id": 0,
-      "input_blake3": "2c4b928e9759ce9877a0cbaa29cfadef7fc056d3c7eeca33801d6c6fc082be23",
+      "input_blake3": "81f4b922718d01b34fdfc3383d9307a20e2c78017976cf1cdb5e4c7b6e6298d9",
       "input_size": 13806,
       "metadata": {},
       "output_blake3": null,
@@ -51,7 +51,7 @@
       "error": null,
       "format_tag_in": "pyc-3.12",
       "id": 1,
-      "input_blake3": "2c4b928e9759ce9877a0cbaa29cfadef7fc056d3c7eeca33801d6c6fc082be23",
+      "input_blake3": "81f4b922718d01b34fdfc3383d9307a20e2c78017976cf1cdb5e4c7b6e6298d9",
       "input_size": 13806,
       "metadata": {},
       "output_blake3": "fda8eee1e36f481cb8cecec749839adc8c030034970b70ac2b6699077fe87afc",
