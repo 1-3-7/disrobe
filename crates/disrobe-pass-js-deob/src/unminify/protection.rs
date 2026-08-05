@@ -1,6 +1,8 @@
 use regex::{Captures, Regex};
 use serde::Serialize;
 
+use crate::scan_utils::replace_in_code;
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize)]
 pub(super) struct ProtectionStripStats {
     pub(super) if_true_inlined: usize,
@@ -48,12 +50,9 @@ fn remove_if_true_blocks(source: &str) -> (String, usize) {
     else {
         return (source.to_owned(), 0);
     };
-    let mut count: usize = 0;
-    let out: std::borrow::Cow<'_, str> = re.replace_all(source, |caps: &Captures<'_>| {
-        count += 1;
-        caps[1].trim().to_owned()
-    });
-    (out.into_owned(), count)
+    replace_in_code(source, &re, |caps: &Captures<'_>| {
+        Some(caps.get(1)?.as_str().trim().to_owned())
+    })
 }
 
 fn remove_if_false_blocks(source: &str) -> (String, usize) {
@@ -63,23 +62,22 @@ fn remove_if_false_blocks(source: &str) -> (String, usize) {
     else {
         return (source.to_owned(), 0);
     };
-    let stage1: std::borrow::Cow<'_, str> = with_else.replace_all(source, |caps: &Captures<'_>| {
-        count += 1;
-        caps[1].trim().to_owned()
-    });
-    let intermediate: String = stage1.into_owned();
+    let (intermediate, with_else_count): (String, usize) =
+        replace_in_code(source, &with_else, |caps: &Captures<'_>| {
+            Some(caps.get(1)?.as_str().trim().to_owned())
+        });
+    count += with_else_count;
 
     let Ok(without_else): Result<Regex, regex::Error> =
         Regex::new(r"(?ms)\bif\s*\(\s*false\s*\)\s*\{[^{}]*\}")
     else {
         return (intermediate, count);
     };
-    let stage2: std::borrow::Cow<'_, str> =
-        without_else.replace_all(&intermediate, |_: &Captures<'_>| {
-            count += 1;
-            String::new()
+    let (stage2, without_else_count): (String, usize) =
+        replace_in_code(&intermediate, &without_else, |_: &Captures<'_>| {
+            Some(String::new())
         });
-    (stage2.into_owned(), count)
+    (stage2, count + without_else_count)
 }
 
 fn remove_debugger_setinterval(source: &str) -> (String, usize) {
@@ -88,12 +86,7 @@ fn remove_debugger_setinterval(source: &str) -> (String, usize) {
     ) else {
         return (source.to_owned(), 0);
     };
-    let mut count: usize = 0;
-    let out: std::borrow::Cow<'_, str> = re.replace_all(source, |_: &Captures<'_>| {
-        count += 1;
-        String::new()
-    });
-    (out.into_owned(), count)
+    replace_in_code(source, &re, |_: &Captures<'_>| Some(String::new()))
 }
 
 fn remove_function_debugger_call(source: &str) -> (String, usize) {
@@ -102,12 +95,7 @@ fn remove_function_debugger_call(source: &str) -> (String, usize) {
     ) else {
         return (source.to_owned(), 0);
     };
-    let mut count: usize = 0;
-    let out: std::borrow::Cow<'_, str> = re.replace_all(source, |_: &Captures<'_>| {
-        count += 1;
-        String::new()
-    });
-    (out.into_owned(), count)
+    replace_in_code(source, &re, |_: &Captures<'_>| Some(String::new()))
 }
 
 fn remove_lone_debugger_iife(source: &str) -> (String, usize) {
@@ -116,12 +104,7 @@ fn remove_lone_debugger_iife(source: &str) -> (String, usize) {
     else {
         return (source.to_owned(), 0);
     };
-    let mut count: usize = 0;
-    let out: std::borrow::Cow<'_, str> = re.replace_all(source, |_: &Captures<'_>| {
-        count += 1;
-        String::new()
-    });
-    (out.into_owned(), count)
+    replace_in_code(source, &re, |_: &Captures<'_>| Some(String::new()))
 }
 
 fn remove_self_defending_iife(source: &str) -> (String, usize) {
@@ -130,18 +113,26 @@ fn remove_self_defending_iife(source: &str) -> (String, usize) {
     ) else {
         return (source.to_owned(), 0);
     };
-    let mut count: usize = 0;
-    let out: std::borrow::Cow<'_, str> = re.replace_all(source, |_: &Captures<'_>| {
-        count += 1;
-        String::new()
-    });
-    (out.into_owned(), count)
+    replace_in_code(source, &re, |_: &Captures<'_>| Some(String::new()))
 }
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guard_shaped_text_inside_a_literal_or_comment_survives() {
+        let quoted: &str =
+            r#"var doc = "setInterval(function () { debugger; }, 4000); if (false) { dead(); }";"#;
+        let (out, stats): (String, ProtectionStripStats) = strip_protection(quoted);
+        assert_eq!(out, quoted);
+        assert_eq!(stats, ProtectionStripStats::default());
+        let commented: &str = "/* setInterval(function(){debugger;}, 1000); */\nreal();";
+        let (out, stats): (String, ProtectionStripStats) = strip_protection(commented);
+        assert_eq!(out, commented);
+        assert_eq!(stats.set_interval_watchdogs_removed, 0);
+    }
 
     #[test]
     fn if_true_inlines_body() {

@@ -49,7 +49,8 @@ pub(super) fn merge_control_flow_objects(source: &str) -> ControlFlowObjectResul
     if objects.is_empty() {
         return passthrough(source);
     }
-    let guarded: Vec<Range<usize>> = self_defending_spans(source);
+    let mut guarded: Vec<Range<usize>> = self_defending_spans(source);
+    guarded.extend(crate::scan_utils::literal_and_comment_ranges(source));
 
     let mut edits: Vec<(Range<usize>, Option<String>)> = Vec::new();
     let mut objects_merged: usize = 0;
