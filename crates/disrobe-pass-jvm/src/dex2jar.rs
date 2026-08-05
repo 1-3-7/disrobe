@@ -984,6 +984,7 @@ mod tests {
             static_values: Vec::new(),
             direct_methods: Vec::new(),
             virtual_methods: vec![EncodedMethod {
+                tries: Vec::new(),
                 method: MethodRef {
                     class: "Lcom/disrobe/Invalid;".to_owned(),
                     proto: ProtoRef {

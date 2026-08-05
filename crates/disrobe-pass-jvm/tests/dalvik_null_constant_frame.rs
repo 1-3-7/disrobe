@@ -40,6 +40,7 @@ fn sample_ctor() -> EncodedMethod {
     });
     units.extend(insn::fmt10x(0x0E));
     EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: "LSample;".to_owned(),
             proto: ProtoRef {
@@ -73,6 +74,7 @@ fn pick_method() -> EncodedMethod {
     units.extend(insn::fmt11n(0x12, 1, 1));
     units.extend(insn::fmt11x(0x11, 0));
     EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: "LSample;".to_owned(),
             proto: ProtoRef {
@@ -101,6 +103,7 @@ fn count_method() -> EncodedMethod {
     units.extend(insn::fmt11n(0x12, 1, 1));
     units.extend(insn::fmt11x(0x0F, 0));
     EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: "LSample;".to_owned(),
             proto: ProtoRef {

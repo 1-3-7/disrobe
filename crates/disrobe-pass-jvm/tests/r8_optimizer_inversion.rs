@@ -86,6 +86,7 @@ fn method(
     asm: Asm,
 ) -> EncodedMethod {
     EncodedMethod {
+        tries: Vec::new(),
         method: method_ref,
         access_flags,
         is_direct: true,

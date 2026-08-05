@@ -49,6 +49,7 @@ fn make_dex() -> Vec<u8> {
     foo_init_units.extend(insn::fmt10x(0x0E));
 
     let foo_ctor: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: foo_init(),
         access_flags: 0x1,
         is_direct: true,
@@ -69,6 +70,7 @@ fn make_dex() -> Vec<u8> {
     });
     sample_init_units.extend(insn::fmt10x(0x0E));
     let sample_ctor: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: "LSample;".to_owned(),
             proto: ProtoRef {
@@ -108,6 +110,7 @@ fn make_dex() -> Vec<u8> {
     units.extend(insn::fmt11x(0x11, 0));
 
     let make_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: "LSample;".to_owned(),
             proto: ProtoRef {
@@ -403,6 +406,7 @@ fn make_alias_dex() -> Vec<u8> {
     });
     foo_init_units.extend(insn::fmt10x(0x0E));
     let foo_ctor: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: foo_init(),
         access_flags: 0x1,
         is_direct: true,
@@ -422,6 +426,7 @@ fn make_alias_dex() -> Vec<u8> {
     });
     sample_init_units.extend(insn::fmt10x(0x0E));
     let sample_ctor: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: "LSample;".to_owned(),
             proto: ProtoRef {
@@ -465,6 +470,7 @@ fn make_alias_dex() -> Vec<u8> {
     units.extend(insn::fmt11x(0x11, 0));
 
     let make_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: "LSample;".to_owned(),
             proto: ProtoRef {
@@ -748,6 +754,7 @@ fn foo_class_with_last() -> ClassDef {
     });
     u.extend(insn::fmt10x(0x0E));
     let ctor: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: foo_init(),
         access_flags: 0x1,
         is_direct: true,
@@ -781,6 +788,7 @@ fn make_twonews_dex() -> Vec<u8> {
     });
     sample_init_units.extend(insn::fmt10x(0x0E));
     let sample_ctor: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: "LSample;".to_owned(),
             proto: ProtoRef {
@@ -826,6 +834,7 @@ fn make_twonews_dex() -> Vec<u8> {
     units.extend(insn::fmt11x(0x11, 0));
 
     let make2: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
         method: MethodRef {
             class: "LSample;".to_owned(),
             proto: ProtoRef {
