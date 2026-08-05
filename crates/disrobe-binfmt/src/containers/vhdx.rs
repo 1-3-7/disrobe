@@ -1,3 +1,4 @@
+use disrobe_bytes::{ByteReadError, read_bytes_at, read_u16_le_at, read_u32_le_at, read_u64_le_at};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -64,72 +65,69 @@ pub struct VhdxImage {
     pub allocated_block_count: u32,
 }
 
-fn read_u16_le(bytes: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
-}
+pub(crate) const VHDX_HEADER_LEN: usize = 80;
+pub(crate) const VHDX_REGION_TABLE_HEAD_LEN: usize = 16;
+pub(crate) const VHDX_REGION_ENTRY_LEN: usize = 32;
+pub(crate) const VHDX_METADATA_TABLE_HEAD_LEN: usize = 32;
+pub(crate) const VHDX_METADATA_ENTRY_LEN: usize = 32;
+pub(crate) const VHDX_MAX_REGION_ENTRIES: u32 = 2047;
+pub(crate) const VHDX_BAT_ENTRY_LEN: u64 = 8;
 
-fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes([
-        bytes[offset],
-        bytes[offset + 1],
-        bytes[offset + 2],
-        bytes[offset + 3],
-    ])
-}
-
-fn read_u64_le(bytes: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes([
-        bytes[offset],
-        bytes[offset + 1],
-        bytes[offset + 2],
-        bytes[offset + 3],
-        bytes[offset + 4],
-        bytes[offset + 5],
-        bytes[offset + 6],
-        bytes[offset + 7],
-    ])
+fn truncated(context: &'static str, e: &ByteReadError) -> Error {
+    Error::Decompression(format!(
+        "{context} truncated at offset {} (needed {}, available {})",
+        e.offset, e.needed, e.available
+    ))
 }
 
 fn parse_header(bytes: &[u8], offset: usize) -> Option<VhdxHeader> {
-    let header: &[u8] = bytes.get(offset..offset + 80)?;
-    if &header[0..4] != VHDX_HEADER_SIGNATURE {
+    let header: &[u8] = read_bytes_at(bytes, offset, VHDX_HEADER_LEN).ok()?;
+    if header.get(0..4)? != VHDX_HEADER_SIGNATURE {
         return None;
     }
     Some(VhdxHeader {
-        sequence_number: read_u64_le(header, 8),
-        log_version: read_u16_le(header, 64),
-        format_version: read_u16_le(header, 66),
-        log_length: read_u32_le(header, 68),
-        log_offset: read_u64_le(header, 72),
+        sequence_number: read_u64_le_at(header, 8).ok()?,
+        log_version: read_u16_le_at(header, 64).ok()?,
+        format_version: read_u16_le_at(header, 66).ok()?,
+        log_length: read_u32_le_at(header, 68).ok()?,
+        log_offset: read_u64_le_at(header, 72).ok()?,
     })
 }
 
 fn parse_region_table(bytes: &[u8], offset: usize) -> Result<Vec<VhdxRegion>> {
-    let head: &[u8] = bytes
-        .get(offset..offset + 16)
-        .ok_or_else(|| Error::Decompression("vhdx region table truncated".to_owned()))?;
-    if &head[0..4] != VHDX_REGION_SIGNATURE {
+    let head: &[u8] = read_bytes_at(bytes, offset, VHDX_REGION_TABLE_HEAD_LEN)
+        .map_err(|e: ByteReadError| truncated("vhdx region table", &e))?;
+    if head.get(0..4) != Some(VHDX_REGION_SIGNATURE.as_slice()) {
         return Err(Error::Decompression(
             "vhdx region signature mismatch".to_owned(),
         ));
     }
-    let entry_count: u32 = read_u32_le(head, 8);
-    if entry_count > 2047 {
+    let entry_count: u32 = read_u32_le_at(head, 8)
+        .map_err(|e: ByteReadError| truncated("vhdx region entry count", &e))?;
+    if entry_count > VHDX_MAX_REGION_ENTRIES {
         return Err(Error::Decompression(
             "vhdx region entry count out of range".to_owned(),
         ));
     }
+    let table_start: usize = offset
+        .checked_add(VHDX_REGION_TABLE_HEAD_LEN)
+        .ok_or_else(|| Error::Decompression("vhdx region table offset overflow".to_owned()))?;
     let mut regions: Vec<VhdxRegion> = Vec::with_capacity(entry_count as usize);
     for index in 0..entry_count as usize {
-        let entry_off: usize = offset + 16 + index * 32;
-        let Some(entry): Option<&[u8]> = bytes.get(entry_off..entry_off + 32) else {
+        let Some(entry_off): Option<usize> = index
+            .checked_mul(VHDX_REGION_ENTRY_LEN)
+            .and_then(|delta: usize| table_start.checked_add(delta))
+        else {
             break;
         };
+        let entry: &[u8] = read_bytes_at(bytes, entry_off, VHDX_REGION_ENTRY_LEN)
+            .map_err(|e: ByteReadError| truncated("vhdx region entry", &e))?;
+        let field = |e: ByteReadError| truncated("vhdx region entry", &e);
         let mut guid: [u8; 16] = [0u8; 16];
         guid.copy_from_slice(&entry[0..16]);
-        let file_offset: u64 = read_u64_le(entry, 16);
-        let length: u64 = u64::from(read_u32_le(entry, 24));
-        let required: bool = read_u32_le(entry, 28) & 1 == 1;
+        let file_offset: u64 = read_u64_le_at(entry, 16).map_err(field)?;
+        let length: u64 = u64::from(read_u32_le_at(entry, 24).map_err(field)?);
+        let required: bool = read_u32_le_at(entry, 28).map_err(field)? & 1 == 1;
         regions.push(VhdxRegion {
             guid,
             file_offset,
@@ -142,35 +140,35 @@ fn parse_region_table(bytes: &[u8], offset: usize) -> Result<Vec<VhdxRegion>> {
 
 fn parse_metadata(bytes: &[u8], region: &VhdxRegion) -> Option<VhdxMetadata> {
     let region_off: usize = usize::try_from(region.file_offset).ok()?;
-    let table: &[u8] = bytes.get(region_off..region_off + 32)?;
-    if &table[0..8] != VHDX_METADATA_SIGNATURE {
+    let table: &[u8] = read_bytes_at(bytes, region_off, VHDX_METADATA_TABLE_HEAD_LEN).ok()?;
+    if table.get(0..8)? != VHDX_METADATA_SIGNATURE {
         return None;
     }
-    let entry_count: u16 = read_u16_le(table, 10);
+    let entry_count: u16 = read_u16_le_at(table, 10).ok()?;
+    let entries_start: usize = region_off.checked_add(VHDX_METADATA_TABLE_HEAD_LEN)?;
     let mut block_size: u32 = 0;
     let mut leave_blocks_allocated: bool = false;
     let mut has_parent: bool = false;
     let mut logical_sector_size: u32 = 0;
     let mut virtual_disk_size: u64 = 0;
     for index in 0..entry_count as usize {
-        let entry_off: usize = region_off + 32 + index * 32;
-        let entry: &[u8] = bytes.get(entry_off..entry_off + 32)?;
+        let entry_off: usize = index
+            .checked_mul(VHDX_METADATA_ENTRY_LEN)
+            .and_then(|delta: usize| entries_start.checked_add(delta))?;
+        let entry: &[u8] = read_bytes_at(bytes, entry_off, VHDX_METADATA_ENTRY_LEN).ok()?;
         let mut item_guid: [u8; 16] = [0u8; 16];
         item_guid.copy_from_slice(&entry[0..16]);
-        let item_offset: u32 = read_u32_le(entry, 16);
+        let item_offset: u32 = read_u32_le_at(entry, 16).ok()?;
         let item_abs: usize = region_off.checked_add(item_offset as usize)?;
         if item_guid == VHDX_META_FILE_PARAMETERS_GUID {
-            let item: &[u8] = bytes.get(item_abs..item_abs + 8)?;
-            block_size = read_u32_le(item, 0);
-            let flags: u32 = read_u32_le(item, 4);
+            block_size = read_u32_le_at(bytes, item_abs).ok()?;
+            let flags: u32 = read_u32_le_at(bytes, item_abs.checked_add(4)?).ok()?;
             leave_blocks_allocated = flags & 0x1 != 0;
             has_parent = flags & 0x2 != 0;
         } else if item_guid == VHDX_META_LOGICAL_SECTOR_SIZE_GUID {
-            let item: &[u8] = bytes.get(item_abs..item_abs + 4)?;
-            logical_sector_size = read_u32_le(item, 0);
+            logical_sector_size = read_u32_le_at(bytes, item_abs).ok()?;
         } else if item_guid == VHDX_META_VIRTUAL_DISK_SIZE_GUID {
-            let item: &[u8] = bytes.get(item_abs..item_abs + 8)?;
-            virtual_disk_size = read_u64_le(item, 0);
+            virtual_disk_size = read_u64_le_at(bytes, item_abs).ok()?;
         }
     }
     Some(VhdxMetadata {
@@ -201,26 +199,30 @@ fn count_allocated_bat_blocks(bytes: &[u8], region: &VhdxRegion, metadata: &Vhdx
     let mut payload_index: u64 = 0;
     let mut entry_index: u64 = 0;
     while payload_index < payload_blocks {
-        let entry_off: usize = match region_off.checked_add((entry_index * 8) as usize) {
-            Some(value) => value,
-            None => break,
+        let Some(entry_off): Option<usize> = bat_entry_offset(region_off, entry_index) else {
+            break;
         };
-        let Some(slice): Option<&[u8]> = bytes.get(entry_off..entry_off + 8) else {
+        let Ok(raw): std::result::Result<u64, ByteReadError> = read_u64_le_at(bytes, entry_off)
+        else {
             break;
         };
         let is_bitmap_entry: bool =
             entry_index != 0 && (entry_index % (chunk_ratio + 1)) == chunk_ratio;
         if !is_bitmap_entry {
-            let raw: u64 = read_u64_le(slice, 0);
             let state: u64 = raw & 0x7;
             if state == 6 || state == 7 {
-                allocated += 1;
+                allocated = allocated.saturating_add(1);
             }
             payload_index += 1;
         }
         entry_index += 1;
     }
     allocated
+}
+
+fn bat_entry_offset(region_off: usize, entry_index: u64) -> Option<usize> {
+    let delta: usize = usize::try_from(entry_index.checked_mul(VHDX_BAT_ENTRY_LEN)?).ok()?;
+    region_off.checked_add(delta)
 }
 
 const VHDX_PAYLOAD_BLOCK_MB_SHIFT: u32 = 20;
@@ -265,17 +267,16 @@ pub fn materialize_logical_disk(bytes: &[u8], image: &VhdxImage, cap: u64) -> Re
     let mut payload_index: u64 = 0;
     let mut entry_index: u64 = 0;
     while payload_index < payload_blocks {
-        let entry_off: usize = match region_off.checked_add((entry_index * 8) as usize) {
-            Some(value) => value,
-            None => break,
+        let Some(entry_off): Option<usize> = bat_entry_offset(region_off, entry_index) else {
+            break;
         };
-        let Some(slice): Option<&[u8]> = bytes.get(entry_off..entry_off + 8) else {
+        let Ok(raw): std::result::Result<u64, ByteReadError> = read_u64_le_at(bytes, entry_off)
+        else {
             break;
         };
         let is_bitmap_entry: bool =
             entry_index != 0 && (entry_index % (chunk_ratio + 1)) == chunk_ratio;
         if !is_bitmap_entry {
-            let raw: u64 = read_u64_le(slice, 0);
             let state: u64 = raw & 0x7;
             if state == 6 || state == 7 {
                 let file_off: usize = usize::try_from(
@@ -290,8 +291,11 @@ pub fn materialize_logical_disk(bytes: &[u8], image: &VhdxImage, cap: u64) -> Re
                     .ok_or_else(|| Error::Decompression("vhdx disk offset overflow".to_owned()))?;
                 if disk_off < logical_size {
                     let copy_len: usize = block_size.min(logical_size - disk_off);
-                    if let Some(src) = bytes.get(file_off..file_off + copy_len) {
-                        disk[disk_off..disk_off + copy_len].copy_from_slice(src);
+                    if let Ok(src) = read_bytes_at(bytes, file_off, copy_len) {
+                        let disk_end: usize = disk_off.checked_add(copy_len).ok_or_else(|| {
+                            Error::Decompression("vhdx disk write range overflow".to_owned())
+                        })?;
+                        disk[disk_off..disk_end].copy_from_slice(src);
                     }
                 }
             }
@@ -303,10 +307,12 @@ pub fn materialize_logical_disk(bytes: &[u8], image: &VhdxImage, cap: u64) -> Re
 }
 
 pub fn parse_vhdx(bytes: &[u8]) -> Result<VhdxImage> {
-    if bytes.len() < VHDX_REGION_1_OFFSET + 16 {
+    if bytes.len() < VHDX_REGION_1_OFFSET + VHDX_REGION_TABLE_HEAD_LEN {
         return Err(Error::Decompression("vhdx image too small".to_owned()));
     }
-    if &bytes[0..8] != VHDX_SIGNATURE {
+    let signature: &[u8] = read_bytes_at(bytes, 0, 8)
+        .map_err(|e: ByteReadError| truncated("vhdx file identifier", &e))?;
+    if signature != VHDX_SIGNATURE {
         return Err(Error::Decompression("vhdx signature mismatch".to_owned()));
     }
     let header_1: Option<VhdxHeader> = parse_header(bytes, VHDX_HEADER_1_OFFSET);
@@ -440,6 +446,109 @@ mod tests {
         assert_eq!(meta.logical_sector_size, LOGICAL_SECTOR);
         assert_eq!(meta.virtual_disk_size, VIRTUAL_DISK_SIZE);
         assert_eq!(parsed.allocated_block_count, 2);
+    }
+
+    #[test]
+    fn vhdx_parse_output_is_stable_for_a_spec_correct_image() {
+        let image: Vec<u8> = build_vhdx();
+        let parsed: VhdxImage = parse_vhdx(&image).expect("parse vhdx");
+        let encoded: String = serde_json::to_string(&parsed).expect("encode vhdx image");
+        assert_eq!(
+            encoded,
+            r#"{"header":{"sequence_number":5,"log_version":0,"format_version":1,"log_length":0,"log_offset":0},"regions":[{"guid":[102,119,194,45,35,246,0,66,157,100,17,94,155,253,74,8],"file_offset":2097152,"length":1048576,"required":true},{"guid":[6,162,124,139,144,71,154,75,184,254,87,95,5,15,136,110],"file_offset":1048576,"length":1048576,"required":true}],"bat_region":{"guid":[102,119,194,45,35,246,0,66,157,100,17,94,155,253,74,8],"file_offset":2097152,"length":1048576,"required":true},"metadata_region":{"guid":[6,162,124,139,144,71,154,75,184,254,87,95,5,15,136,110],"file_offset":1048576,"length":1048576,"required":true},"metadata":{"block_size":2097152,"leave_blocks_allocated":false,"has_parent":false,"logical_sector_size":512,"virtual_disk_size":6291456},"allocated_block_count":2}"#
+        );
+    }
+
+    #[test]
+    fn every_truncation_of_a_valid_image_errors_without_panicking() {
+        let image: Vec<u8> = build_vhdx();
+        for len in [
+            0usize,
+            1,
+            7,
+            8,
+            VHDX_HEADER_1_OFFSET,
+            VHDX_HEADER_1_OFFSET + VHDX_HEADER_LEN - 1,
+            VHDX_HEADER_2_OFFSET + VHDX_HEADER_LEN - 1,
+            VHDX_REGION_1_OFFSET - 1,
+            VHDX_REGION_1_OFFSET + VHDX_REGION_TABLE_HEAD_LEN - 1,
+            VHDX_REGION_1_OFFSET + VHDX_REGION_TABLE_HEAD_LEN,
+            VHDX_REGION_1_OFFSET + VHDX_REGION_TABLE_HEAD_LEN + VHDX_REGION_ENTRY_LEN - 1,
+        ] {
+            let view: &[u8] = &image[..len.min(image.len())];
+            let _: Result<VhdxImage> = parse_vhdx(view);
+        }
+        assert!(parse_vhdx(&image[..VHDX_REGION_1_OFFSET + 15]).is_err());
+        let mut short_regions: Vec<u8> = image;
+        short_regions.truncate(VHDX_REGION_1_OFFSET + VHDX_REGION_TABLE_HEAD_LEN);
+        assert!(parse_vhdx(&short_regions).is_err());
+    }
+
+    #[test]
+    fn a_bat_entry_pointing_outside_the_file_leaves_the_block_zeroed() {
+        let mut image: Vec<u8> = build_vhdx();
+        let bat: usize = BAT_REGION_OFFSET as usize;
+        let outside: u64 = (u64::MAX >> VHDX_PAYLOAD_BLOCK_MB_SHIFT) << VHDX_PAYLOAD_BLOCK_MB_SHIFT;
+        image[bat..bat + 8].copy_from_slice(&(outside | 6).to_le_bytes());
+        image[bat + 8..bat + 16].copy_from_slice(&0u64.to_le_bytes());
+        image[bat + 16..bat + 24].copy_from_slice(&0u64.to_le_bytes());
+        let parsed: VhdxImage = parse_vhdx(&image).expect("parse vhdx");
+        let disk: Vec<u8> =
+            materialize_logical_disk(&image, &parsed, 1 << 30).expect("materialize vhdx");
+        assert_eq!(disk.len(), VIRTUAL_DISK_SIZE as usize);
+        assert!(
+            disk.iter().all(|&b: &u8| b == 0),
+            "an out-of-file BAT entry must contribute nothing"
+        );
+    }
+
+    #[test]
+    fn a_bat_entry_pointing_at_its_own_region_terminates() {
+        let mut image: Vec<u8> = build_vhdx();
+        let bat: usize = BAT_REGION_OFFSET as usize;
+        let self_referential: u64 =
+            (BAT_REGION_OFFSET >> VHDX_PAYLOAD_BLOCK_MB_SHIFT << VHDX_PAYLOAD_BLOCK_MB_SHIFT) | 6;
+        for slot in 0..3usize {
+            let off: usize = bat + slot * 8;
+            image[off..off + 8].copy_from_slice(&self_referential.to_le_bytes());
+        }
+        let parsed: VhdxImage = parse_vhdx(&image).expect("parse vhdx");
+        assert_eq!(parsed.allocated_block_count, 3);
+        let disk: Vec<u8> =
+            materialize_logical_disk(&image, &parsed, 1 << 30).expect("materialize vhdx");
+        assert_eq!(disk.len(), VIRTUAL_DISK_SIZE as usize);
+    }
+
+    #[test]
+    fn a_bat_region_offset_at_the_top_of_the_address_space_does_not_overflow() {
+        let mut image: Vec<u8> = build_vhdx();
+        let entry_0: usize = VHDX_REGION_1_OFFSET + 16;
+        image[entry_0 + 16..entry_0 + 24].copy_from_slice(&u64::MAX.to_le_bytes());
+        let parsed: VhdxImage = parse_vhdx(&image).expect("parse vhdx");
+        assert_eq!(parsed.allocated_block_count, 0);
+        let disk: Vec<u8> =
+            materialize_logical_disk(&image, &parsed, 1 << 30).expect("materialize vhdx");
+        assert!(disk.iter().all(|&b: &u8| b == 0));
+    }
+
+    #[test]
+    fn an_oversized_metadata_entry_count_stops_at_the_end_of_the_image() {
+        let mut image: Vec<u8> = build_vhdx();
+        let meta: usize = META_REGION_OFFSET as usize;
+        image[meta + 10..meta + 12].copy_from_slice(&u16::MAX.to_le_bytes());
+        let inside: VhdxImage = parse_vhdx(&image).expect("parse vhdx");
+        assert_eq!(
+            inside.metadata.map(|m: VhdxMetadata| m.block_size),
+            Some(BLOCK_SIZE),
+            "zero-filled trailing metadata entries are inert, not fatal"
+        );
+        image.truncate(meta + 32 + 4 * VHDX_METADATA_ENTRY_LEN);
+        let clipped: VhdxImage = parse_vhdx(&image).expect("parse vhdx");
+        assert!(
+            clipped.metadata.is_none(),
+            "a metadata table that runs off the image must not be trusted"
+        );
+        assert_eq!(clipped.allocated_block_count, 0);
     }
 
     #[test]

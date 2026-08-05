@@ -1,3 +1,4 @@
+use disrobe_bytes::{ByteReadError, read_bytes_at, read_u16_le_at, read_u32_le_at, read_u64_le_at};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -72,88 +73,88 @@ pub struct WimArchive {
     pub images: Vec<WimImageEntry>,
 }
 
-fn read_u16_le(bytes: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
+fn truncated(context: &'static str, e: &ByteReadError) -> Error {
+    Error::Decompression(format!(
+        "{context} truncated at offset {} (needed {}, available {})",
+        e.offset, e.needed, e.available
+    ))
 }
 
-fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes([
-        bytes[offset],
-        bytes[offset + 1],
-        bytes[offset + 2],
-        bytes[offset + 3],
-    ])
-}
-
-fn read_u64_le(bytes: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes([
-        bytes[offset],
-        bytes[offset + 1],
-        bytes[offset + 2],
-        bytes[offset + 3],
-        bytes[offset + 4],
-        bytes[offset + 5],
-        bytes[offset + 6],
-        bytes[offset + 7],
-    ])
-}
-
-fn parse_reshdr(bytes: &[u8], offset: usize) -> WimResource {
+fn parse_reshdr(bytes: &[u8], offset: usize) -> std::result::Result<WimResource, ByteReadError> {
+    let packed: &[u8] = read_bytes_at(bytes, offset, 8)?;
     let size: u64 = u64::from_le_bytes([
-        bytes[offset],
-        bytes[offset + 1],
-        bytes[offset + 2],
-        bytes[offset + 3],
-        bytes[offset + 4],
-        bytes[offset + 5],
-        bytes[offset + 6],
-        0,
+        packed[0], packed[1], packed[2], packed[3], packed[4], packed[5], packed[6], 0,
     ]);
-    let flags: u8 = bytes[offset + 7];
-    let file_offset: u64 = read_u64_le(bytes, offset + 8);
-    let original_size: u64 = read_u64_le(bytes, offset + 16);
-    WimResource {
+    let flags: u8 = packed[7];
+    let file_offset: u64 = read_u64_le_at(bytes, offset.saturating_add(8))?;
+    let original_size: u64 = read_u64_le_at(bytes, offset.saturating_add(16))?;
+    Ok(WimResource {
         size,
         flags,
         offset: file_offset,
         original_size,
-    }
+    })
 }
 
 #[must_use]
 pub fn parse_reshdr_at(bytes: &[u8], offset: usize) -> WimResource {
-    if offset.saturating_add(RESHDR_LEN) > bytes.len() {
-        return WimResource {
-            size: 0,
-            flags: 0,
-            offset: 0,
-            original_size: 0,
-        };
+    parse_reshdr(bytes, offset).unwrap_or(WimResource {
+        size: 0,
+        flags: 0,
+        offset: 0,
+        original_size: 0,
+    })
+}
+
+fn reject_overlapping_resource(name: &'static str, resource: &WimResource) -> Result<()> {
+    if resource.size == 0 {
+        return Ok(());
     }
-    parse_reshdr(bytes, offset)
+    if resource.offset < WIM_HEADER_LEN as u64 {
+        return Err(Error::Decompression(format!(
+            "wim {name} at offset {} overlaps the {WIM_HEADER_LEN}-byte header",
+            resource.offset
+        )));
+    }
+    Ok(())
 }
 
 pub fn parse_wim_header(bytes: &[u8]) -> Result<WimHeader> {
     if bytes.len() < WIM_HEADER_LEN {
         return Err(Error::Decompression("wim header truncated".to_owned()));
     }
-    if &bytes[0..8] != WIM_MAGIC {
+    let magic: &[u8] =
+        read_bytes_at(bytes, 0, 8).map_err(|e: ByteReadError| truncated("wim magic", &e))?;
+    if magic != WIM_MAGIC {
         return Err(Error::Decompression("wim magic mismatch".to_owned()));
     }
-    let header_size: u32 = read_u32_le(bytes, 8);
-    let version: u32 = read_u32_le(bytes, 12);
-    let flags: u32 = read_u32_le(bytes, 16);
-    let chunk_size: u32 = read_u32_le(bytes, 20);
+    let field = |e: ByteReadError| truncated("wim header field", &e);
+    let header_size: u32 = read_u32_le_at(bytes, 8).map_err(field)?;
+    let version: u32 = read_u32_le_at(bytes, 12).map_err(field)?;
+    let flags: u32 = read_u32_le_at(bytes, 16).map_err(field)?;
+    let chunk_size: u32 = read_u32_le_at(bytes, 20).map_err(field)?;
     let mut guid: [u8; 16] = [0u8; 16];
-    guid.copy_from_slice(&bytes[24..40]);
-    let part_number: u16 = read_u16_le(bytes, 40);
-    let total_parts: u16 = read_u16_le(bytes, 42);
-    let image_count: u32 = read_u32_le(bytes, 44);
-    let offset_table: WimResource = parse_reshdr(bytes, 48);
-    let xml_data: WimResource = parse_reshdr(bytes, 72);
-    let boot_metadata: WimResource = parse_reshdr(bytes, 96);
-    let boot_index: u32 = read_u32_le(bytes, 120);
-    let integrity: WimResource = parse_reshdr(bytes, 124);
+    guid.copy_from_slice(
+        read_bytes_at(bytes, 24, 16).map_err(|e: ByteReadError| truncated("wim guid", &e))?,
+    );
+    let part_number: u16 = read_u16_le_at(bytes, 40).map_err(field)?;
+    let total_parts: u16 = read_u16_le_at(bytes, 42).map_err(field)?;
+    if total_parts > 0 && (part_number == 0 || part_number > total_parts) {
+        return Err(Error::Decompression(format!(
+            "wim part number {part_number} is outside the declared span of {total_parts} parts"
+        )));
+    }
+    let image_count: u32 = read_u32_le_at(bytes, 44).map_err(field)?;
+    let reshdr = |e: ByteReadError| truncated("wim resource header", &e);
+    let offset_table: WimResource = parse_reshdr(bytes, 48).map_err(reshdr)?;
+    let xml_data: WimResource = parse_reshdr(bytes, 72).map_err(reshdr)?;
+    let boot_metadata: WimResource = parse_reshdr(bytes, 96).map_err(reshdr)?;
+    let boot_index: u32 = read_u32_le_at(bytes, 120).map_err(field)?;
+    let integrity: WimResource = parse_reshdr(bytes, 124).map_err(reshdr)?;
+    reject_overlapping_resource("lookup table", &offset_table)?;
+    reject_overlapping_resource("xml data", &xml_data)?;
+    reject_overlapping_resource("boot metadata", &boot_metadata)?;
+    reject_overlapping_resource("integrity table", &integrity)?;
     let compression: WimCompression = if flags & WIM_FLAG_COMPRESSION == 0 {
         WimCompression::None
     } else if flags & WIM_FLAG_COMPRESS_LZX != 0 {
@@ -190,10 +191,9 @@ fn decode_utf16le_lossy(bytes: &[u8]) -> String {
     } else {
         0
     };
-    let mut index: usize = start;
-    while index + 1 < bytes.len() {
-        units.push(u16::from_le_bytes([bytes[index], bytes[index + 1]]));
-        index += 2;
+    let tail: &[u8] = bytes.get(start..).unwrap_or_default();
+    for pair in tail.chunks_exact(2) {
+        units.push(u16::from_le_bytes([pair[0], pair[1]]));
     }
     String::from_utf16_lossy(&units)
 }
@@ -391,6 +391,97 @@ mod tests {
         assert_eq!(parsed.header.xml_data.size, xml.len() as u64);
         assert_eq!(parsed.header.xml_data.offset, WIM_HEADER_LEN as u64);
         assert!(parsed.images.is_empty());
+    }
+
+    #[test]
+    fn wim_parse_output_is_stable_for_a_spec_correct_image() {
+        let xml: Vec<u8> =
+            encode_utf16le_with_bom("<WIM><IMAGE INDEX=\"1\"><NAME>Setup</NAME></IMAGE></WIM>");
+        let image: Vec<u8> = build_wim(&xml);
+        let parsed: WimArchive = parse_wim(&image).expect("parse wim");
+        let encoded: String = serde_json::to_string(&parsed).expect("encode wim archive");
+        assert_eq!(
+            encoded,
+            r#"{"header":{"header_size":208,"version":65536,"flags":262146,"compression":"lzx","chunk_size":32768,"guid":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"part_number":1,"total_parts":1,"image_count":2,"offset_table":{"size":0,"flags":0,"offset":0,"original_size":0},"xml_data":{"size":110,"flags":0,"offset":208,"original_size":110},"boot_metadata":{"size":0,"flags":0,"offset":0,"original_size":0},"boot_index":0,"integrity":{"size":0,"flags":0,"offset":0,"original_size":0}},"images":[{"index":1,"name":"Setup","dir_count":null,"file_count":null,"total_bytes":null}]}"#
+        );
+    }
+
+    #[test]
+    fn rejects_a_lookup_table_that_overlaps_the_header() {
+        let mut image: Vec<u8> = build_wim(&encode_utf16le_with_bom("<WIM></WIM>"));
+        image[48..55].copy_from_slice(&64u64.to_le_bytes()[..7]);
+        image[56..64].copy_from_slice(&16u64.to_le_bytes());
+        let err: Error = parse_wim(&image).expect_err("overlapping lookup table must be refused");
+        assert!(
+            matches!(&err, Error::Decompression(m) if m.contains("overlaps the")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_part_number_outside_the_declared_span() {
+        for (part, total) in [(0u16, 1u16), (2, 1), (5, 3), (u16::MAX, 2)] {
+            let mut image: Vec<u8> = build_wim(&encode_utf16le_with_bom("<WIM></WIM>"));
+            image[40..42].copy_from_slice(&part.to_le_bytes());
+            image[42..44].copy_from_slice(&total.to_le_bytes());
+            let err: Error = parse_wim(&image).expect_err("swm part number must be checked");
+            assert!(
+                matches!(&err, Error::Decompression(m) if m.contains("outside the declared span")),
+                "part={part} total={total} got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_every_in_range_spanned_part_number() {
+        for part in 1u16..=3 {
+            let mut image: Vec<u8> = build_wim(&encode_utf16le_with_bom("<WIM></WIM>"));
+            image[40..42].copy_from_slice(&part.to_le_bytes());
+            image[42..44].copy_from_slice(&3u16.to_le_bytes());
+            let parsed: WimArchive = parse_wim(&image).expect("in-range part must parse");
+            assert_eq!(parsed.header.part_number, part);
+            assert_eq!(parsed.header.total_parts, 3);
+        }
+    }
+
+    #[test]
+    fn every_truncation_of_a_valid_image_errors_without_panicking() {
+        let image: Vec<u8> = build_wim(&encode_utf16le_with_bom("<WIM></WIM>"));
+        for len in 0..image.len() {
+            let view: &[u8] = &image[..len];
+            let _: Result<WimArchive> = parse_wim(view);
+            let _: Result<WimHeader> = parse_wim_header(view);
+            let _: WimResource = parse_reshdr_at(view, 48);
+        }
+        assert!(parse_wim(&image[..WIM_HEADER_LEN - 1]).is_err());
+        assert_eq!(parse_reshdr_at(&image, usize::MAX).size, 0);
+        assert_eq!(parse_reshdr_at(&image, image.len() - 1).size, 0);
+    }
+
+    #[test]
+    fn every_declared_compression_flag_maps_to_a_named_codec() {
+        let cases: [(u32, WimCompression); 5] = [
+            (0, WimCompression::None),
+            (
+                WIM_FLAG_COMPRESSION | WIM_FLAG_COMPRESS_LZX,
+                WimCompression::Lzx,
+            ),
+            (
+                WIM_FLAG_COMPRESSION | WIM_FLAG_COMPRESS_XPRESS,
+                WimCompression::Xpress,
+            ),
+            (
+                WIM_FLAG_COMPRESSION | WIM_FLAG_COMPRESS_LZMS,
+                WimCompression::Lzms,
+            ),
+            (WIM_FLAG_COMPRESSION, WimCompression::Unknown),
+        ];
+        for (flags, expected) in cases {
+            let mut image: Vec<u8> = build_wim(&encode_utf16le_with_bom("<WIM></WIM>"));
+            image[16..20].copy_from_slice(&flags.to_le_bytes());
+            let parsed: WimArchive = parse_wim(&image).expect("parse wim");
+            assert_eq!(parsed.header.compression, expected, "flags={flags:#x}");
+        }
     }
 
     #[test]
