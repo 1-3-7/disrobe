@@ -10,21 +10,24 @@ pub mod builtins;
 pub mod decompile;
 pub mod literals;
 pub mod regex;
+pub mod structure;
 
 pub use bigint::{bigint_literal, recover_bigints};
 pub use builtins::{builtin_name, is_template_object_builtin};
 pub use decompile::{
-    DecompileReport, DecompiledFunction, decompile_function, decompile_module,
+    DeclineCount, DecompileReport, DecompiledFunction, decompile_function, decompile_module,
     disassemble_function_instructions,
 };
 pub use literals::{BufferKind, LiteralValue, decode_literals};
 pub use regex::{RecoveredRegExp, recover_regexp, recover_regexps};
+pub use structure::StructureDecline;
 
 pub const HERMES_MAGIC: u64 = 0x1f19_03c1_03bc_1fc6;
 pub const HERMES_MAGIC_LE_BYTES: [u8; 8] = HERMES_MAGIC.to_le_bytes();
 
 pub const HERMES_MIN_VERSION: u32 = 60;
 pub const HERMES_MAX_VERSION: u32 = 96;
+pub const HERMES_LIFT_VERSION: u32 = 96;
 
 const SMALL_STRING_INVALID_LENGTH: u32 = 0xff;
 const HERMES_HEADER_TOTAL_SIZE: usize = 128;
