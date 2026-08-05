@@ -22,6 +22,7 @@ use crate::structuring;
 pub(crate) mod aarch64;
 mod aarch64_callsite;
 pub mod fp_semantics;
+mod return_channel;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Reg {
@@ -1674,7 +1675,6 @@ struct LeafItems {
     insns: Vec<DisasmInsn>,
     items: Vec<Item>,
     return_width: Width,
-    fp_return: Option<FpWidth>,
 }
 
 fn build_leaf_items(
@@ -1699,7 +1699,6 @@ fn build_leaf_items(
     let mut flags_mark: usize = 0;
     let mut next_sel: u32 = 0;
     let mut dividend_high: Option<DividendHigh> = None;
-    let mut fp_return: Option<FpWidth> = None;
     let mut saw_ret: bool = false;
     let mut max_branch_target: u64 = 0;
     let mut df_backward: bool = false;
@@ -1756,7 +1755,6 @@ fn build_leaf_items(
                 && dest.reg == Reg::Rax
             {
                 return_width = Width::W64;
-                fp_return = None;
             }
             flags = None;
             dividend_high = None;
@@ -1774,16 +1772,10 @@ fn build_leaf_items(
             continue;
         }
         if let Some(fp_stmt) = lift_fp(&insn.mnemonic, &insn.operands, insn.address, consts)? {
-            if let Some((dest, width)) = fp_stmt_result_xmm(&fp_stmt)
-                && dest == Xmm::Xmm0
-            {
-                fp_return = Some(width);
-            }
             if let Stmt::FpToInt { dest, .. } | Stmt::XmmToGpr { dest, .. } = &fp_stmt
                 && dest.reg == Reg::Rax
             {
                 return_width = dest.width;
-                fp_return = None;
             }
             flags = None;
             items.push(Item {
@@ -1813,7 +1805,6 @@ fn build_leaf_items(
             flags = None;
             return_width = divisor.width;
             let divide: Stmt = Stmt::Divide { divisor, signed };
-            fp_return = fp_return_after(fp_return, &divide);
             items.push(Item {
                 address: insn.address,
                 kind: ItemKind::Stmt(divide),
@@ -1830,7 +1821,6 @@ fn build_leaf_items(
                 args: abi.arg_order().to_vec(),
                 name: None,
             };
-            fp_return = fp_return_after(fp_return, &call);
             items.push(Item {
                 address: insn.address,
                 kind: ItemKind::Stmt(call),
@@ -1942,7 +1932,6 @@ fn build_leaf_items(
                 kind: cond_kind,
                 flags: used_flags,
             };
-            fp_return = fp_return_after(fp_return, &stmt);
             items.push(Item {
                 address: insn.address,
                 kind: ItemKind::Stmt(stmt),
@@ -1977,14 +1966,12 @@ fn build_leaf_items(
             )?;
             if dest.reg == Reg::Rax {
                 return_width = dest.width;
-                fp_return = None;
             }
             let setcc: Stmt = Stmt::SetCc {
                 dest,
                 kind: cond_kind,
                 flags: used_flags,
             };
-            fp_return = fp_return_after(fp_return, &setcc);
             items.push(Item {
                 address: insn.address,
                 kind: ItemKind::Stmt(setcc),
@@ -2003,7 +1990,6 @@ fn build_leaf_items(
             {
                 return_width = dest.width;
             }
-            fp_return = fp_return_after(fp_return, &stmt);
             items.push(Item {
                 address: insn.address,
                 kind: ItemKind::Stmt(stmt),
@@ -2030,13 +2016,10 @@ fn build_leaf_items(
             && dest.reg == Reg::Rax
         {
             return_width = dest.width;
-            fp_return = None;
         }
         if matches!(&stmt, Stmt::WideMul { .. }) {
             return_width = Width::W64;
-            fp_return = None;
         }
-        fp_return = fp_return_after(fp_return, &stmt);
         dividend_high = track_dividend_high(dividend_high, &stmt);
         match &stmt {
             Stmt::Assign { .. } => {
@@ -2114,7 +2097,6 @@ fn build_leaf_items(
         insns,
         items,
         return_width,
-        fp_return,
     })
 }
 
@@ -2156,7 +2138,6 @@ fn recover_leaf_function_calls_impl(
         insns,
         items,
         mut return_width,
-        fp_return,
     } = build_leaf_items(machine_code, base, abi, consts, packed_consts)?;
     let mut structured: Structured = structure_items(&items)?;
     if !calls.is_empty() {
@@ -2164,6 +2145,7 @@ fn recover_leaf_function_calls_impl(
             calls.iter().map(|c: &ResolvedCall| (c.target, c)).collect();
         annotate_calls_block(&mut structured.body, &call_map, abi);
     }
+    let fp_return: Option<FpWidth> = scalar_fp_return_channel(&structured.body)?;
     let mut call_targets: Vec<u64> = Vec::new();
     collect_call_targets(&structured.body, &mut call_targets);
     if fp_return.is_none() {
@@ -2243,6 +2225,16 @@ pub fn recover_leaf_function_rust_abi(machine_code: &[u8], base: u64, abi: Abi) 
                 .to_owned(),
         )
     })
+}
+
+fn scalar_fp_return_channel(body: &Block) -> Result<Option<FpWidth>> {
+    if !return_channel::block_has_scalar_fp(body) {
+        return Ok(None);
+    }
+    match return_channel::infer_scalar_return(body)? {
+        FnReturn::Fp(width) => Ok(Some(width)),
+        FnReturn::Int(_) | FnReturn::Void | FnReturn::Vec(_) => Ok(None),
+    }
 }
 
 const fn scalar_of_fp(width: FpWidth) -> ScalarType {

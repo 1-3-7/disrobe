@@ -1,3 +1,4 @@
+use super::return_channel;
 use super::{
     Abi, AggregatePlan, BinOp, Block, CondKind, Error, ExtSource, FP_ARG_ORDER, Flags, FnReturn,
     FnSignature, FpFmaKind, FpMinMaxKind, FpOp, FpOperand, FpToIntRound, FpUnaryOp,
@@ -5,9 +6,8 @@ use super::{
     MemRef, Node, ReduceOp, Reg, RegRef, ResolvedCall, Result, RoundMode, ScalarType, Source,
     SretPlan, SretReturn, StackFrameExtent, Stmt, Structured, UnOp, VecArrangement, VecBinOp,
     VecElem, VecStmt, Width, Xmm, annotate_calls_block_with_order, collect_block_xmm,
-    collect_call_targets, condition_is_sound, detect_sret, emit_c, emit_rust, fp_stmt_result_xmm,
-    infer_aggregate_plan, infer_fp_params, infer_params, plan_frame, rax_write_width,
-    stmt_writes_rax_int, structure_items,
+    collect_call_targets, condition_is_sound, detect_sret, emit_c, emit_rust, infer_aggregate_plan,
+    infer_fp_params, infer_params, plan_frame, stmt_writes_rax_int, structure_items,
 };
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1524,7 +1524,7 @@ fn recover_with_calls_and_image<'image>(
     }
     let has_scalar_fp: bool = items
         .iter()
-        .any(|item: &Item| matches!(&item.kind, ItemKind::Stmt(stmt) if stmt_is_scalar_fp(stmt)));
+        .any(|item: &Item| matches!(&item.kind, ItemKind::Stmt(stmt) if return_channel::stmt_is_scalar_fp(stmt)));
     let has_vector: bool = items
         .iter()
         .any(|item: &Item| matches!(item.kind, ItemKind::Stmt(Stmt::Vector(_))));
@@ -2475,35 +2475,6 @@ fn block_contains_switch(body: &[Node]) -> bool {
     })
 }
 
-fn stmt_is_scalar_fp(stmt: &Stmt) -> bool {
-    if matches!(
-        stmt,
-        Stmt::FpBin { .. }
-            | Stmt::FpMov { .. }
-            | Stmt::FpStore { .. }
-            | Stmt::IntToFp { .. }
-            | Stmt::FpToInt { .. }
-            | Stmt::FpConvert { .. }
-            | Stmt::FpMinMax { .. }
-            | Stmt::FpFma { .. }
-            | Stmt::FpCsel { .. }
-            | Stmt::FpSqrt { .. }
-            | Stmt::FpUnary { .. }
-            | Stmt::FpRound { .. }
-            | Stmt::GprToXmm { .. }
-            | Stmt::XmmToGpr { .. }
-    ) {
-        return true;
-    }
-    matches!(
-        stmt,
-        Stmt::Cond { flags, .. }
-            | Stmt::SetCc { flags, .. }
-            | Stmt::FlagSnapshot { flags, .. }
-        if flags_read_fp_compare(flags)
-    )
-}
-
 fn aarch64_fp_params(body: &Block) -> Result<Vec<(Xmm, FpWidth)>> {
     let mut touched: Vec<Xmm> = Vec::new();
     collect_block_xmm(body, &mut touched);
@@ -2531,284 +2502,6 @@ fn aarch64_fp_params(body: &Block) -> Result<Vec<(Xmm, FpWidth)>> {
     Ok(params)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ScalarReturnPath {
-    int: Option<Width>,
-    fp: Option<FpWidth>,
-    fp_stored: bool,
-    observable: bool,
-    fp_compare_snapshot: Option<u32>,
-}
-
-impl ScalarReturnPath {
-    const fn entry() -> Self {
-        Self {
-            int: None,
-            fp: None,
-            fp_stored: false,
-            observable: false,
-            fp_compare_snapshot: None,
-        }
-    }
-
-    fn materializes_fp_compare_into_return(&self, stmt: &Stmt) -> bool {
-        let (dest, flags): (Reg, &Flags) = match stmt {
-            Stmt::Cond { dest, flags, .. } | Stmt::SetCc { dest, flags, .. } => (dest.reg, flags),
-            _ => return false,
-        };
-        if dest != Reg::Rax {
-            return false;
-        }
-        if flags_read_fp_compare(flags) {
-            return true;
-        }
-        matches!(flags, Flags::Snapshot { var } if self.fp_compare_snapshot == Some(*var))
-    }
-
-    fn apply(&mut self, stmt: &Stmt) {
-        if let Some(width) = rax_write_width(stmt) {
-            self.int = Some(width);
-        }
-        if matches!(
-            stmt,
-            Stmt::FpToInt { dest, src, .. }
-                if dest.reg == Reg::Rax && *src == Xmm::Xmm0
-        ) {
-            self.fp = None;
-            self.fp_stored = false;
-        }
-        if let Some((dest, width)) = fp_stmt_result_xmm(stmt)
-            && dest == Xmm::Xmm0
-        {
-            self.fp = Some(width);
-            self.fp_stored = false;
-        }
-        if let Stmt::FlagSnapshot { var, flags, .. } = stmt
-            && flags_read_fp_compare(flags)
-        {
-            self.fp_compare_snapshot = Some(*var);
-        }
-        if self.materializes_fp_compare_into_return(stmt) {
-            self.fp = None;
-            self.fp_stored = false;
-        }
-        if matches!(
-            stmt,
-            Stmt::IntToFp { dest, src, .. }
-                if *dest == Xmm::Xmm0 && src.reg == Reg::Rax
-        ) {
-            self.int = None;
-        }
-        if let Stmt::FpStore { src, .. } = stmt
-            && *src == Xmm::Xmm0
-            && self.fp.is_some()
-        {
-            self.fp_stored = true;
-        }
-        if stmt_has_observable_effect(stmt) {
-            self.observable = true;
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-struct ScalarReturnFlow {
-    next: Vec<ScalarReturnPath>,
-    breaks: Vec<ScalarReturnPath>,
-    continues: Vec<ScalarReturnPath>,
-    returns: Vec<ScalarReturnPath>,
-}
-
-fn stmt_has_observable_effect(stmt: &Stmt) -> bool {
-    matches!(
-        stmt,
-        Stmt::Store { .. }
-            | Stmt::MemRmw { .. }
-            | Stmt::FpStore { .. }
-            | Stmt::BlockMove { .. }
-            | Stmt::BlockFill { .. }
-            | Stmt::Call { .. }
-            | Stmt::Vector(VecStmt::Store { .. })
-    )
-}
-
-fn flags_read_fp_compare(flags: &Flags) -> bool {
-    match flags {
-        Flags::FpCmp { .. } => true,
-        Flags::CondCmp { prior, taken, .. } => {
-            flags_read_fp_compare(prior) || flags_read_fp_compare(taken)
-        }
-        _ => false,
-    }
-}
-
-fn extend_unique_paths(target: &mut Vec<ScalarReturnPath>, source: Vec<ScalarReturnPath>) {
-    for state in source {
-        if !target.contains(&state) {
-            target.push(state);
-        }
-    }
-}
-
-fn merge_scalar_flow(target: &mut ScalarReturnFlow, source: ScalarReturnFlow) {
-    extend_unique_paths(&mut target.next, source.next);
-    extend_unique_paths(&mut target.breaks, source.breaks);
-    extend_unique_paths(&mut target.continues, source.continues);
-    extend_unique_paths(&mut target.returns, source.returns);
-}
-
-fn scan_scalar_return_loop(
-    body: &[Node],
-    incoming: Vec<ScalarReturnPath>,
-    executes_once: bool,
-) -> Result<ScalarReturnFlow> {
-    let mut result: ScalarReturnFlow = ScalarReturnFlow::default();
-    if !executes_once {
-        extend_unique_paths(&mut result.next, incoming.clone());
-    }
-    let mut pending: Vec<ScalarReturnPath> = incoming;
-    let mut visited: Vec<ScalarReturnPath> = Vec::new();
-    while let Some(state) = pending.pop() {
-        if visited.contains(&state) {
-            continue;
-        }
-        visited.push(state);
-        let iteration: ScalarReturnFlow = scan_scalar_return_block(body, vec![state])?;
-        extend_unique_paths(&mut result.returns, iteration.returns);
-        extend_unique_paths(&mut result.next, iteration.breaks);
-        let mut post_condition: Vec<ScalarReturnPath> = iteration.next;
-        extend_unique_paths(&mut post_condition, iteration.continues);
-        extend_unique_paths(&mut result.next, post_condition.clone());
-        for next_state in post_condition {
-            if !visited.contains(&next_state) && !pending.contains(&next_state) {
-                pending.push(next_state);
-            }
-        }
-    }
-    Ok(result)
-}
-
-fn scan_scalar_return_block(
-    body: &[Node],
-    incoming: Vec<ScalarReturnPath>,
-) -> Result<ScalarReturnFlow> {
-    let mut active: Vec<ScalarReturnPath> = incoming;
-    let mut result: ScalarReturnFlow = ScalarReturnFlow::default();
-    for node in body {
-        match node {
-            Node::Stmt(stmt) => {
-                for state in &mut active {
-                    state.apply(stmt);
-                }
-            }
-            Node::If {
-                then_body,
-                else_body,
-                ..
-            } => {
-                let then_flow: ScalarReturnFlow =
-                    scan_scalar_return_block(then_body, active.clone())?;
-                let else_flow: ScalarReturnFlow = match else_body {
-                    Some(else_body) => scan_scalar_return_block(else_body, active.clone())?,
-                    None => ScalarReturnFlow {
-                        next: active.clone(),
-                        ..ScalarReturnFlow::default()
-                    },
-                };
-                let mut branch_flow: ScalarReturnFlow = ScalarReturnFlow::default();
-                merge_scalar_flow(&mut branch_flow, then_flow);
-                merge_scalar_flow(&mut branch_flow, else_flow);
-                active = core::mem::take(&mut branch_flow.next);
-                extend_unique_paths(&mut result.breaks, branch_flow.breaks);
-                extend_unique_paths(&mut result.continues, branch_flow.continues);
-                extend_unique_paths(&mut result.returns, branch_flow.returns);
-            }
-            Node::While { body, .. } => {
-                let mut loop_flow: ScalarReturnFlow = scan_scalar_return_loop(body, active, false)?;
-                active = core::mem::take(&mut loop_flow.next);
-                extend_unique_paths(&mut result.returns, loop_flow.returns);
-            }
-            Node::DoWhile { body, .. } => {
-                let mut loop_flow: ScalarReturnFlow = scan_scalar_return_loop(body, active, true)?;
-                active = core::mem::take(&mut loop_flow.next);
-                extend_unique_paths(&mut result.returns, loop_flow.returns);
-            }
-            Node::Switch { cases, default, .. } => {
-                let mut switch_flow: ScalarReturnFlow = ScalarReturnFlow::default();
-                for case in cases {
-                    let case_flow: ScalarReturnFlow =
-                        scan_scalar_return_block(&case.body, active.clone())?;
-                    merge_scalar_flow(&mut switch_flow, case_flow);
-                }
-                let default_flow: ScalarReturnFlow =
-                    scan_scalar_return_block(default, active.clone())?;
-                merge_scalar_flow(&mut switch_flow, default_flow);
-                active = core::mem::take(&mut switch_flow.next);
-                extend_unique_paths(&mut active, switch_flow.breaks);
-                extend_unique_paths(&mut result.continues, switch_flow.continues);
-                extend_unique_paths(&mut result.returns, switch_flow.returns);
-            }
-            Node::Return => {
-                extend_unique_paths(&mut result.returns, core::mem::take(&mut active));
-            }
-            Node::Break => {
-                extend_unique_paths(&mut result.breaks, core::mem::take(&mut active));
-            }
-            Node::Continue => {
-                extend_unique_paths(&mut result.continues, core::mem::take(&mut active));
-            }
-            Node::CondSnapshot { .. } | Node::Label(_) => {}
-            Node::Goto(_) => {
-                return Err(reject(
-                    "scalar floating-point return inference does not accept unstructured goto",
-                ));
-            }
-        }
-    }
-    result.next = active;
-    Ok(result)
-}
-
-fn classify_scalar_return_path(path: ScalarReturnPath) -> Result<FnReturn> {
-    let fp: Option<FpWidth> = if path.fp_stored { None } else { path.fp };
-    match (path.int, fp) {
-        (Some(_), Some(_)) => Err(reject(
-            "x0 and v0 both hold result-shaped values at a return",
-        )),
-        (Some(width), None) => Ok(FnReturn::Int(width)),
-        (None, Some(width)) => Ok(FnReturn::Fp(width)),
-        (None, None) if path.observable => Ok(FnReturn::Void),
-        (None, None) => Err(reject(
-            "return has no result write or observable void effect",
-        )),
-    }
-}
-
-fn infer_aarch64_scalar_return(body: &[Node]) -> Result<FnReturn> {
-    let mut flow: ScalarReturnFlow =
-        scan_scalar_return_block(body, vec![ScalarReturnPath::entry()])?;
-    if !flow.breaks.is_empty() || !flow.continues.is_empty() {
-        return Err(reject(
-            "scalar floating-point control flow does not terminate at every path",
-        ));
-    }
-    extend_unique_paths(&mut flow.returns, core::mem::take(&mut flow.next));
-    let mut unified: Option<FnReturn> = None;
-    for path in flow.returns {
-        let candidate: FnReturn = classify_scalar_return_path(path)?;
-        match unified {
-            Some(existing) if existing != candidate => {
-                return Err(reject(
-                    "scalar return class or width differs across return paths",
-                ));
-            }
-            Some(_) => {}
-            None => unified = Some(candidate),
-        }
-    }
-    unified.ok_or_else(|| reject("scalar floating-point function has no reachable return"))
-}
-
 fn finish(
     insns: &[DisasmInsn],
     items: &mut Vec<Item>,
@@ -2820,7 +2513,7 @@ fn finish(
 ) -> Result<LeafRecovery> {
     let has_scalar_fp: bool = items
         .iter()
-        .any(|item: &Item| matches!(&item.kind, ItemKind::Stmt(stmt) if stmt_is_scalar_fp(stmt)));
+        .any(|item: &Item| matches!(&item.kind, ItemKind::Stmt(stmt) if return_channel::stmt_is_scalar_fp(stmt)));
     let mut structured: Structured =
         match aarch64_cfg::structure(items, insns, base, flag_definitions, next_sel) {
             aarch64_cfg::Attempt::Structured(structured) => structured,
@@ -2845,7 +2538,7 @@ fn finish(
         Vec::new()
     };
     let ret: FnReturn = if has_scalar_fp {
-        infer_aarch64_scalar_return(&structured.body)?
+        return_channel::infer_scalar_return(&structured.body)?
     } else {
         match context.vec_abi.ret {
             VectorRet::Vector(arr) => FnReturn::Vec(arr),
