@@ -1504,6 +1504,7 @@ fn parse_u64_auto(s: &str) -> Result<u64, String> {
         )
 }
 
+#[cfg(feature = "swift")]
 fn parse_u8_auto(s: &str) -> Result<u8, String> {
     let value: u64 = parse_u64_auto(s)?;
     u8::try_from(value).map_err(|e: std::num::TryFromIntError| e.to_string())
@@ -2056,6 +2057,16 @@ fn print_passes() -> miette::Result<()> {
     Ok(())
 }
 
+#[cfg(not(feature = "chain"))]
+fn print_chain_registry() {
+    println!();
+    println!(
+        "chain passes reachable from `disrobe auto` in this build: none, because this binary was \
+         built without the chain feature"
+    );
+}
+
+#[cfg(feature = "chain")]
 fn print_chain_registry() {
     let registry: disrobe_core::chain::PassRegistry = disrobe_passes::build_registry();
     println!();
@@ -2077,6 +2088,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(feature = "swift")]
     fn parse_u8_auto_accepts_decimal_and_hexadecimal_values() {
         assert_eq!(parse_u8_auto("85"), Ok(85));
         assert_eq!(parse_u8_auto("0x55"), Ok(85));
