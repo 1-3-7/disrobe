@@ -339,6 +339,60 @@ mod tests {
     }
 
     #[test]
+    fn a_stream_landing_exactly_on_the_cap_is_admitted_and_one_byte_over_is_refused() {
+        let raw: Vec<u8> = payload();
+        let exact: u64 = raw.len() as u64;
+        for (blob, expected) in [
+            (gzip(&raw), Compression::Gzip),
+            (zstd(&raw), Compression::Zstd),
+        ] {
+            let (data, compression): (Vec<u8>, Compression) = decoded(decode_blob(&blob, exact));
+            assert_eq!(compression, expected);
+            assert_eq!(
+                data, raw,
+                "{expected:?}: an asset whose decoded size equals the cap is inside the budget and \
+                 must be returned whole"
+            );
+            match decode_blob(&blob, exact - 1) {
+                Decoded::QuotaRefused {
+                    compression,
+                    reason,
+                } => {
+                    assert_eq!(compression, expected);
+                    assert!(
+                        reason.contains(&(exact - 1).to_string()),
+                        "the refusal must name the cap it enforced, got {reason}"
+                    );
+                }
+                other => panic!(
+                    "{expected:?}: one byte past the cap must be a quota outcome, got {other:?}"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn high_entropy_bytes_under_no_codec_pass_through_unchanged() {
+        let mut raw: Vec<u8> = Vec::with_capacity(8192);
+        let mut state: u32 = 0x9E37_79B9;
+        for _ in 0..8192 {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            raw.push((state >> 24) as u8);
+        }
+        assert!(
+            looks_compressed(&raw),
+            "high-entropy bytes open the gate, which is the recorded false-positive case"
+        );
+        let (data, compression): (Vec<u8>, Compression) = decoded(decode_blob(&raw, AMPLE_CAP));
+        assert_eq!(
+            compression,
+            Compression::None,
+            "no codec claims the blob, so it must be reported raw rather than under a codec label"
+        );
+        assert_eq!(data, raw);
+    }
+
+    #[test]
     fn a_zero_cap_refuses_a_framed_blob_instead_of_reporting_it_raw() {
         let blob: Vec<u8> = zstd(&payload());
         match decode_blob(&blob, 0) {
