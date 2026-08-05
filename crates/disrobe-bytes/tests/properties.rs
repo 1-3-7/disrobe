@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used)]
 use disrobe_bytes::{
-    ByteReadError, ByteReader, align_down_u32, align_down_u64, align_up_u32, align_up_u64,
-    align_up_usize,
+    AddressError, ByteReadError, ByteReader, FileOffset, Rva, SectionMap, SectionSpan, Size, Va,
+    align_down_u32, align_down_u64, align_up_u32, align_up_u64, align_up_usize,
 };
 use proptest::prelude::*;
 
@@ -281,6 +281,129 @@ proptest! {
         let decoded: i64 = reader.read_sleb128().unwrap();
         prop_assert_eq!(decoded, value);
         prop_assert_eq!(reader.position(), bytes.len());
+    }
+
+    #[test]
+    fn va_addition_never_wraps(base in any::<u64>(), delta in any::<u64>()) {
+        let result: Option<Va> = Va::new(base).checked_add(Size::new(delta));
+        let wide: u128 = u128::from(base) + u128::from(delta);
+        if wide > u128::from(u64::MAX) {
+            prop_assert_eq!(result, None);
+        } else {
+            prop_assert_eq!(result, Some(Va::new(base + delta)));
+        }
+    }
+
+    #[test]
+    fn file_offset_subtraction_never_wraps(base in any::<u64>(), delta in any::<u64>()) {
+        let result: Option<FileOffset> = FileOffset::new(base).checked_sub(Size::new(delta));
+        if delta > base {
+            prop_assert_eq!(result, None);
+        } else {
+            prop_assert_eq!(result, Some(FileOffset::new(base - delta)));
+        }
+    }
+
+    #[test]
+    fn rva_addition_never_wraps(base in any::<u32>(), delta in any::<u64>()) {
+        let result: Option<Rva> = Rva::new(base).checked_add(Size::new(delta));
+        let wide: u64 = u64::from(base) + delta;
+        if wide > u64::from(u32::MAX) {
+            prop_assert_eq!(result, None);
+        } else {
+            prop_assert_eq!(result, Some(Rva::new(base + (delta as u32))));
+        }
+    }
+
+    #[test]
+    fn va_to_rva_round_trips_within_the_thirty_two_bit_window(
+        image_base in any::<u64>(),
+        delta in any::<u32>(),
+    ) {
+        let base: Va = Va::new(image_base);
+        let Some(address): Option<Va> = base.checked_add(Rva::new(delta).to_size()) else {
+            return Ok(());
+        };
+        let recovered: Rva = address.to_rva(base).unwrap();
+        prop_assert_eq!(recovered, Rva::new(delta));
+        prop_assert_eq!(recovered.to_va(base).unwrap(), address);
+    }
+
+    #[test]
+    fn va_to_rva_below_the_base_always_fails(image_base in 1u64..=u64::MAX, below in any::<u64>()) {
+        let base: Va = Va::new(image_base);
+        let address: Va = Va::new(below % image_base);
+        prop_assert_eq!(
+            address.to_rva(base),
+            Err(AddressError::BelowImageBase { address, image_base: base })
+        );
+    }
+
+    #[test]
+    fn checked_align_up_is_aligned_or_rejected(value in any::<u64>(), align in any::<u64>()) {
+        let Some(aligned): Option<Size> = Size::new(value).checked_align_up(Size::new(align)) else {
+            let wide: u128 = if align == 0 {
+                u128::from(value)
+            } else {
+                u128::from(value).div_ceil(u128::from(align)) * u128::from(align)
+            };
+            prop_assert!(wide > u128::from(u64::MAX));
+            return Ok(());
+        };
+        prop_assert!(aligned.get() >= value);
+        if align != 0 {
+            prop_assert_eq!(aligned.get() % align, 0);
+            prop_assert!(aligned.get() - value < align);
+        }
+    }
+
+    #[test]
+    fn a_checked_range_never_escapes_the_file(
+        start in any::<u64>(),
+        len in any::<u64>(),
+        file_len in 0u64..4096,
+    ) {
+        let result: Result<std::ops::Range<usize>, AddressError> =
+            FileOffset::new(start).checked_range(Size::new(len), Size::new(file_len));
+        if let Ok(range) = result {
+            prop_assert_eq!(range.start as u64, start);
+            prop_assert_eq!((range.end - range.start) as u64, len);
+            prop_assert!(range.end as u64 <= file_len);
+        } else {
+            let wide: u128 = u128::from(start) + u128::from(len);
+            prop_assert!(wide > u128::from(file_len));
+        }
+    }
+
+    #[test]
+    fn section_translation_stays_inside_the_raw_bytes(
+        section_rva in any::<u32>(),
+        virtual_size in any::<u32>(),
+        file_offset in any::<u64>(),
+        raw_size in any::<u32>(),
+        probe in any::<u32>(),
+    ) {
+        let span: SectionSpan = SectionSpan::new(
+            Rva::new(section_rva),
+            Size::new(u64::from(virtual_size)),
+            FileOffset::new(file_offset),
+            Size::new(u64::from(raw_size)),
+        );
+        let map: SectionMap = std::iter::once(span).collect();
+        let rva: Rva = Rva::new(probe);
+        if let Ok(offset) = map.file_offset_for(rva) {
+            let delta: Size = rva.distance_from(span.rva).unwrap();
+            prop_assert!(delta.get() < u64::from(raw_size));
+            prop_assert_eq!(offset, FileOffset::new(file_offset + delta.get()));
+            prop_assert_eq!(map.rva_for(offset).unwrap(), rva);
+        } else {
+            let contained: bool = span.contains(rva);
+            let has_bytes: bool = rva
+                .distance_from(span.rva)
+                .is_some_and(|delta: Size| delta.get() < u64::from(raw_size));
+            let overflows: bool = file_offset.checked_add(u64::from(probe)).is_none();
+            prop_assert!(!contained || !has_bytes || overflows);
+        }
     }
 
     #[test]
