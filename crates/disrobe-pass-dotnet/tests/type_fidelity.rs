@@ -10,6 +10,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use disrobe_pass_dotnet::decompile::{DecompiledAssembly, decompile_assembly};
+use disrobe_pass_dotnet::iterator_reverse::is_mangled_metadata_identifier;
 use disrobe_pass_dotnet::metadata::{MetadataRoot, parse_metadata_root};
 use disrobe_pass_dotnet::model::{AssemblyModel, MethodModel, ParamModel, Resolver, TypeModel};
 use disrobe_pass_dotnet::pe::{ClrHeader, PeImage, parse, parse_clr_header};
@@ -873,6 +874,99 @@ fn typed_local_rate_is_total_on_clean_baseline() {
             .collect::<Vec<String>>()
             .join("\n")
     );
+}
+
+fn declares_compiler_generated_member(signature: &str) -> bool {
+    signature
+        .lines()
+        .take(2)
+        .any(|line: &str| is_mangled_metadata_identifier(line))
+}
+
+fn live_statement_lines(body: &str) -> impl Iterator<Item = (usize, &str)> {
+    body.lines()
+        .enumerate()
+        .skip_while(|(_, line): &(usize, &str)| line.trim() != "{")
+        .filter(|(_, line): &(usize, &str)| !line.trim_start().starts_with("//"))
+}
+
+#[test]
+fn no_recovered_body_emits_a_mangled_metadata_identifier_as_live_code() {
+    let asm: DecompiledAssembly = baseline();
+    let mut offenders: Vec<String> = Vec::new();
+    let mut scanned: usize = 0;
+    for m in &asm.methods {
+        if declares_compiler_generated_member(&m.signature) {
+            continue;
+        }
+        scanned += 1;
+        for (index, line) in live_statement_lines(&m.body) {
+            let Some(token): Option<&str> = line
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '<' || c == '>'))
+                .find(|t: &&str| is_mangled_metadata_identifier(t))
+            else {
+                continue;
+            };
+            offenders.push(format!(
+                "  0x{:08x} line {} emits `{token}`, which no C# compiler can parse as an \
+                 identifier:\n    {}",
+                m.token,
+                index + 1,
+                line.trim()
+            ));
+        }
+    }
+    assert!(
+        scanned > 100,
+        "this has to scan a real body of user methods to prove anything; saw {scanned}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a name the compiler mangled is not a legal C# identifier, so a body that still refers to \
+         one has not been lowered and must state a refusal instead of emitting text no compiler \
+         accepts; {} of {scanned} user methods do not:\n{}",
+        offenders.len(),
+        offenders
+            .iter()
+            .take(10)
+            .cloned()
+            .collect::<Vec<String>>()
+            .join("\n")
+    );
+}
+
+#[test]
+fn a_mangled_identifier_is_told_apart_from_a_generic_type() {
+    for mangled in [
+        "<>c__DisplayClass1_0",
+        "<CrossJoin>b__0",
+        "<Length>k__BackingField",
+        "<>1__state",
+        "<>t__builder",
+        "<>9__0",
+        "<EvenSquares>d__0",
+    ] {
+        assert!(
+            is_mangled_metadata_identifier(mangled),
+            "{mangled} is a mangled metadata name"
+        );
+    }
+    for legal in [
+        "List<int>",
+        "System.Collections.Generic.IEnumerable<int>",
+        "Dictionary<string,double>",
+        "values",
+        "local0",
+        "Func<int,bool>",
+        "a<b",
+        "x>y",
+        "",
+    ] {
+        assert!(
+            !is_mangled_metadata_identifier(legal),
+            "{legal} is legal C# and must not be flagged"
+        );
+    }
 }
 
 const PARAMETER_NAME_BASELINES: [&str; 3] = [

@@ -7,6 +7,7 @@ use crate::cil::{FlowControl, Instruction, MethodBody, OperandValue};
 use crate::debug::dbg_kv;
 use crate::model::{IsInstTargetKind, Resolver};
 use crate::names::NameTable;
+use crate::signature::ConditionKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TargetLang {
@@ -92,6 +93,14 @@ pub trait TokenNamer {
 
     fn call_returns_boolean(&self, _token: u32) -> bool {
         false
+    }
+
+    fn call_return_condition_kind(&self, _token: u32) -> ConditionKind {
+        ConditionKind::Unknown
+    }
+
+    fn field_condition_kind(&self, _token: u32) -> ConditionKind {
+        ConditionKind::Unknown
     }
 
     fn enum_param_type(&self, _token: u32, _param_index: usize) -> Option<String> {
@@ -183,6 +192,17 @@ impl TokenNamer for Resolver {
         })
     }
 
+    fn call_return_condition_kind(&self, token: u32) -> ConditionKind {
+        match self.callee_signature(token).map(|sig| sig.return_type) {
+            Some(crate::signature::TypeSigOrVoid::Type(ty)) => ty.condition_kind(),
+            _ => ConditionKind::Unknown,
+        }
+    }
+
+    fn field_condition_kind(&self, token: u32) -> ConditionKind {
+        self.field_token_condition_kind(token)
+    }
+
     fn enum_param_type(&self, token: u32, param_index: usize) -> Option<String> {
         self.enum_param_type_name(token, param_index)
     }
@@ -247,6 +267,14 @@ impl TokenNamer for MethodNamer<'_> {
         self.resolver.call_returns_boolean(token)
     }
 
+    fn call_return_condition_kind(&self, token: u32) -> ConditionKind {
+        self.resolver.call_return_condition_kind(token)
+    }
+
+    fn field_condition_kind(&self, token: u32) -> ConditionKind {
+        self.resolver.field_condition_kind(token)
+    }
+
     #[inline]
     fn enum_param_type(&self, token: u32, param_index: usize) -> Option<String> {
         self.resolver.enum_param_type_name(token, param_index)
@@ -296,6 +324,7 @@ pub(crate) enum Expr {
     Field {
         text: String,
         is_boolean: bool,
+        kind: ConditionKind,
     },
     Unary(&'static str, Box<Self>),
     Binary(&'static str, Box<Self>, Box<Self>),
@@ -303,6 +332,7 @@ pub(crate) enum Expr {
         target: String,
         args: Vec<Self>,
         returns_boolean: bool,
+        return_kind: ConditionKind,
     },
     NewObj {
         ctor: String,
@@ -1765,6 +1795,13 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         }
     }
 
+    fn stored_field_kind(&self, ins: &Instruction) -> ConditionKind {
+        match ins.operand {
+            OperandValue::Token(t) => self.namer.field_condition_kind(t),
+            _ => ConditionKind::Unknown,
+        }
+    }
+
     fn is_inherited_call(&self, raw: &str) -> bool {
         let Some((declaring, _)): Option<(&str, &str)> = raw.rsplit_once("::") else {
             return false;
@@ -1876,6 +1913,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         let arg_count: usize = info.map_or(0, |c: CallInfo| c.arg_count);
         let returns_value: bool = info.map_or(!is_ctor, |c: CallInfo| c.returns_value);
         let returns_boolean: bool = self.namer.call_returns_boolean(token);
+        let return_kind: ConditionKind = self.namer.call_return_condition_kind(token);
         let has_this: bool = info.map_or_else(|| raw.contains("::"), |c: CallInfo| c.has_this);
         let base_call: bool = self.lang == TargetLang::CSharp
             && ins.name == "call"
@@ -1975,6 +2013,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 self.push(Expr::Field {
                     text: format!("{}.{prop}", self.receiver_text(&recv, base_call)),
                     is_boolean: returns_boolean,
+                    kind: return_kind,
                 });
                 return;
             }
@@ -1982,6 +2021,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 self.push(Expr::Field {
                     text: prop.to_owned(),
                     is_boolean: returns_boolean,
+                    kind: return_kind,
                 });
                 return;
             }
@@ -1996,6 +2036,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 self.push(Expr::Field {
                     text: format!("{}[{subscript}]", self.receiver_text(&recv, base_call)),
                     is_boolean: returns_boolean,
+                    kind: return_kind,
                 });
                 return;
             }
@@ -2053,12 +2094,14 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 ),
                 args: rendered_args,
                 returns_boolean,
+                return_kind,
             }
         } else {
             Expr::Call {
                 target: static_call_target(&raw, self.lang),
                 args: rendered_args,
                 returns_boolean,
+                return_kind,
             }
         };
         if is_ctor || !returns_value {
@@ -2375,9 +2418,11 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                     .stored_field_type(ins)
                     .as_deref()
                     .is_some_and(is_bool_type_name);
+                let kind: ConditionKind = self.stored_field_kind(ins);
                 self.push(Expr::Field {
                     text: format!("{}.{}", paren(&obj, self.lang, self.names), fld),
                     is_boolean,
+                    kind,
                 });
             }
             "ldflda" => {
@@ -2387,9 +2432,11 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                     .stored_field_type(ins)
                     .as_deref()
                     .is_some_and(is_bool_type_name);
+                let kind: ConditionKind = self.stored_field_kind(ins);
                 self.push(Expr::AddressOf(Box::new(Expr::Field {
                     text: format!("{}.{}", paren(&obj, self.lang, self.names), fld),
                     is_boolean,
+                    kind,
                 })));
             }
             "ldsfld" => {
@@ -2398,9 +2445,11 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                     .stored_field_type(ins)
                     .as_deref()
                     .is_some_and(is_bool_type_name);
+                let kind: ConditionKind = self.stored_field_kind(ins);
                 self.push(Expr::Field {
                     text: fld,
                     is_boolean,
+                    kind,
                 });
             }
             "ldsflda" => {
@@ -2409,9 +2458,11 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                     .stored_field_type(ins)
                     .as_deref()
                     .is_some_and(is_bool_type_name);
+                let kind: ConditionKind = self.stored_field_kind(ins);
                 self.push(Expr::AddressOf(Box::new(Expr::Field {
                     text: fld,
                     is_boolean,
+                    kind,
                 })));
             }
             "stfld" => {
@@ -2736,15 +2787,12 @@ fn reconstruct_conjuncts<N: TokenNamer>(
         }
         match name {
             "brfalse" | "brfalse.s" if branch_target(ins) == false_sink => {
-                conjuncts.push(lifter.pop().render(lang, names));
+                let e: Expr = lifter.pop();
+                conjuncts.push(branch_condition(e, true, lang, names));
             }
             "brtrue" | "brtrue.s" if branch_target(ins) == false_sink => {
                 let e: Expr = lifter.pop();
-                conjuncts.push(render_bounded_expression(
-                    Expr::Unary("!", Box::new(e)),
-                    lang,
-                    names,
-                ));
+                conjuncts.push(branch_condition(e, false, lang, names));
             }
             "isinst" | "castclass" => {
                 let _: Expr = lifter.pop();
@@ -2865,8 +2913,19 @@ fn classify_type_str(ty: &str) -> CondKind {
     }
 }
 
+const fn cond_kind_of(kind: ConditionKind) -> Option<CondKind> {
+    match kind {
+        ConditionKind::Boolean => Some(CondKind::Bool),
+        ConditionKind::Integral => Some(CondKind::Integral),
+        ConditionKind::Reference => Some(CondKind::Reference),
+        ConditionKind::Unknown => None,
+    }
+}
+
 fn classify_cond_kind(e: &Expr, names: &NameTable) -> CondKind {
     match e {
+        Expr::Call { return_kind, .. } => cond_kind_of(*return_kind).unwrap_or(CondKind::Bool),
+        Expr::Field { kind, .. } => cond_kind_of(*kind).unwrap_or(CondKind::Bool),
         Expr::Binary(op, _, _) => {
             if is_comparison_or_logical(op) {
                 CondKind::Bool
@@ -4494,6 +4553,7 @@ mod tests {
         let field_recv: Expr = Expr::AddressOf(Box::new(Expr::Field {
             text: "this.x".to_owned(),
             is_boolean: false,
+            kind: ConditionKind::Unknown,
         }));
         assert_eq!(
             call_receiver(&field_recv, TargetLang::CSharp, &names),

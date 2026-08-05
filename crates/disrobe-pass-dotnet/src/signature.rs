@@ -54,6 +54,15 @@ pub(crate) struct FieldSig {
     pub required_modifiers: Vec<u32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConditionKind {
+    Boolean,
+    Integral,
+    Reference,
+    #[default]
+    Unknown,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TypeSig {
     Void,
@@ -101,6 +110,46 @@ pub enum TypeSig {
 }
 
 impl TypeSig {
+    #[must_use]
+    pub fn condition_kind(&self) -> ConditionKind {
+        match self {
+            Self::Boolean => ConditionKind::Boolean,
+            Self::Char
+            | Self::I1
+            | Self::U1
+            | Self::I2
+            | Self::U2
+            | Self::I4
+            | Self::U4
+            | Self::I8
+            | Self::U8
+            | Self::R4
+            | Self::R8
+            | Self::IntPtr
+            | Self::UIntPtr
+            | Self::Ptr(_)
+            | Self::FnPtr => ConditionKind::Integral,
+            Self::String | Self::Object | Self::SzArray(_) | Self::Array { .. } => {
+                ConditionKind::Reference
+            }
+            Self::NamedType { is_value_type, .. } => {
+                if *is_value_type {
+                    ConditionKind::Integral
+                } else {
+                    ConditionKind::Reference
+                }
+            }
+            Self::GenericInst { base, .. } => base.condition_kind(),
+            Self::Pinned(inner) => inner.condition_kind(),
+            Self::Void
+            | Self::TypedByRef
+            | Self::ByRef(_)
+            | Self::Var(_)
+            | Self::MVar(_)
+            | Self::Unknown => ConditionKind::Unknown,
+        }
+    }
+
     #[must_use]
     pub fn render(&self) -> String {
         self.render_in(TargetLang::CSharp)

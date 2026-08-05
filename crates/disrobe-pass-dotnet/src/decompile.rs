@@ -63,6 +63,14 @@ impl TokenNamer for AssemblyNamer<'_> {
         self.method.call_returns_boolean(token)
     }
 
+    fn call_return_condition_kind(&self, token: u32) -> crate::signature::ConditionKind {
+        self.method.call_return_condition_kind(token)
+    }
+
+    fn field_condition_kind(&self, token: u32) -> crate::signature::ConditionKind {
+        self.method.field_condition_kind(token)
+    }
+
     fn enum_param_type(&self, token: u32, param_index: usize) -> Option<String> {
         self.method.enum_param_type(token, param_index)
     }
@@ -181,6 +189,7 @@ pub fn decompile_assembly_in(image: &[u8], lang: TargetLang) -> Result<Decompile
             &mut methods,
             &record_struct_types,
         );
+        let _ = crate::iterator_reverse::refuse_unlowered_compiler_constructs(&mut methods);
     }
     let decompiled: u32 = u32::try_from(methods.len()).unwrap_or(u32::MAX);
     Ok(DecompiledAssembly {

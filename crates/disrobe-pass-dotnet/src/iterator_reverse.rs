@@ -11,6 +11,126 @@ fn push_format(out: &mut String, args: std::fmt::Arguments<'_>) {
 
 pub const UNRECONSTRUCTED_STATE_MACHINE_MARKER: &str = "disrobe: state machine not reconstructed";
 
+pub const UNLOWERED_COMPILER_CONSTRUCT_MARKER: &str =
+    "disrobe: compiler-generated construct not lowered";
+
+#[must_use]
+pub fn is_mangled_metadata_identifier(token: &str) -> bool {
+    if token.contains("<>") {
+        return true;
+    }
+    let bytes: &[u8] = token.as_bytes();
+    let mut index: usize = 0;
+    while let Some(open) = token.get(index..).and_then(|rest: &str| rest.find('<')) {
+        let start: usize = index.saturating_add(open);
+        let Some(rest): Option<&str> = token.get(start.saturating_add(1)..) else {
+            return false;
+        };
+        let Some(close): Option<usize> = rest.find('>') else {
+            return false;
+        };
+        let inner: &str = rest.get(..close).unwrap_or("");
+        let after: usize = start
+            .saturating_add(1)
+            .saturating_add(close)
+            .saturating_add(1);
+        let follows_identifier: bool = bytes
+            .get(after)
+            .is_some_and(|b: &u8| b.is_ascii_alphanumeric() || *b == b'_');
+        let inner_is_identifier: bool = !inner.is_empty()
+            && inner
+                .bytes()
+                .all(|b: u8| b.is_ascii_alphanumeric() || b == b'_');
+        if inner_is_identifier && follows_identifier {
+            return true;
+        }
+        index = after;
+    }
+    false
+}
+
+pub fn refuse_unlowered_compiler_constructs(methods: &mut [StructuredMethod]) -> u32 {
+    let mut refused: u32 = 0;
+    for m in methods.iter_mut() {
+        if declaring_type(&m.signature).is_some_and(is_state_machine_type) {
+            continue;
+        }
+        if m.body.contains(UNRECONSTRUCTED_STATE_MACHINE_MARKER) {
+            continue;
+        }
+        if !body_carries_unlowered_construct(&m.body) {
+            continue;
+        }
+        let Some(body): Option<String> = unlowered_construct_refusal(&m.body) else {
+            continue;
+        };
+        m.body = body;
+        refused = refused.saturating_add(1);
+    }
+    refused
+}
+
+fn body_carries_unlowered_construct(body: &str) -> bool {
+    body.lines()
+        .skip_while(|l: &&str| l.trim() != "{")
+        .filter(|l: &&str| !l.trim_start().starts_with("//"))
+        .any(|l: &str| {
+            code_outside_string_literals(l)
+                .split_whitespace()
+                .any(is_mangled_metadata_identifier)
+        })
+}
+
+fn code_outside_string_literals(line: &str) -> String {
+    let mut out: String = String::with_capacity(line.len());
+    let mut in_string: bool = false;
+    let mut escaped: bool = false;
+    for ch in line.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if ch == '"' {
+            in_string = true;
+            out.push(' ');
+            continue;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn unlowered_construct_refusal(body: &str) -> Option<String> {
+    let inner: String = method_inner_block(body)?;
+    let mut out: String = String::with_capacity(body.len().saturating_mul(2));
+    push_format(
+        &mut out,
+        format_args!(
+            "    // {UNLOWERED_COMPILER_CONSTRUCT_MARKER}; the compiler-emitted plumbing below is kept verbatim as the only static evidence\n"
+        ),
+    );
+    for line in inner.lines() {
+        let trimmed: &str = line.trim_end();
+        if trimmed.trim().is_empty() {
+            continue;
+        }
+        push_format(&mut out, format_args!("    // {}\n", trimmed.trim_start()));
+    }
+    push_format(
+        &mut out,
+        format_args!(
+            "    throw new System.NotSupportedException(\"{UNLOWERED_COMPILER_CONSTRUCT_MARKER}\");"
+        ),
+    );
+    Some(rewrap_method(body, &out))
+}
+
 pub fn reconstruct_iterator_stubs(
     methods: &mut [StructuredMethod],
     hoisted_types: &BTreeMap<String, BTreeMap<String, String>>,

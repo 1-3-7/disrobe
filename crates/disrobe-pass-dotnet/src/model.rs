@@ -2856,6 +2856,24 @@ impl Resolver {
     }
 
     #[must_use]
+    pub fn field_token_condition_kind(&self, token: u32) -> crate::signature::ConditionKind {
+        let Some(sig): Option<TypeSig> = self.field_token_signature(token) else {
+            return crate::signature::ConditionKind::Unknown;
+        };
+        sig.condition_kind()
+    }
+
+    fn field_token_signature(&self, token: u32) -> Option<TypeSig> {
+        let table_idx: u8 = u8::try_from(token >> 24).unwrap_or(0xFF);
+        let rid: usize = (token & 0x00FF_FFFF).checked_sub(1)? as usize;
+        let blob_index: u32 = match TableId::from_index(table_idx)? {
+            TableId::Field => self.tables.fields.get(rid)?.signature,
+            TableId::MemberRef => self.tables.member_refs.get(rid)?.signature,
+            _ => return None,
+        };
+        parse_field_sig(self.blob(blob_index)?).ok()
+    }
+
     pub fn field_token_type_name(&self, token: u32) -> Option<String> {
         let table_idx: u8 = u8::try_from(token >> 24).unwrap_or(0xFF);
         let rid: usize = (token & 0x00FF_FFFF).checked_sub(1)? as usize;
