@@ -65,6 +65,12 @@ impl<'a> ByteReader<'a> {
 
     #[inline]
     #[must_use]
+    pub const fn as_slice(&self) -> &'a [u8] {
+        self.bytes
+    }
+
+    #[inline]
+    #[must_use]
     pub const fn total_len(&self) -> usize {
         self.bytes.len()
     }

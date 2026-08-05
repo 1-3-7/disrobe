@@ -5,6 +5,7 @@ mod address;
 mod align;
 mod at;
 mod capacity;
+mod cstr;
 mod leb128;
 mod reader;
 
@@ -19,5 +20,8 @@ pub use at::{
     read_u64_le_at, read_u128_be_at, read_u128_le_at,
 };
 pub use capacity::bounded_element_capacity;
+pub use cstr::{
+    CStrOptions, CStrRun, CStrRuns, CStrSpan, cstr_runs, read_cstr_at, read_cstr_span_at,
+};
 pub use leb128::{LebError, read_sleb128_at, read_uleb128_at};
 pub use reader::{ByteReadError, ByteReader};
