@@ -4326,7 +4326,12 @@ fn carve_gpt(
             "partition{index:02}.{}.img",
             gpt_type_label(&part.type_guid)
         );
-        carve_partition_to_disk(&label, part.byte_range(), ctx, &mut sink)?;
+        carve_partition_to_disk(
+            &label,
+            part.byte_range(table.logical_sector_size),
+            ctx,
+            &mut sink,
+        )?;
     }
     Ok(ExtractionResult {
         kind: ContainerKind::Gpt,

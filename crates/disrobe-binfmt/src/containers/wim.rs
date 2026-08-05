@@ -80,12 +80,13 @@ fn truncated(context: &'static str, e: &ByteReadError) -> Error {
     ))
 }
 
+const RESHDR_SIZE_MASK: u64 = 0x00ff_ffff_ffff_ffff;
+const RESHDR_FLAG_SHIFT: u32 = 56;
+
 fn parse_reshdr(bytes: &[u8], offset: usize) -> std::result::Result<WimResource, ByteReadError> {
-    let packed: &[u8] = read_bytes_at(bytes, offset, 8)?;
-    let size: u64 = u64::from_le_bytes([
-        packed[0], packed[1], packed[2], packed[3], packed[4], packed[5], packed[6], 0,
-    ]);
-    let flags: u8 = packed[7];
+    let packed: u64 = read_u64_le_at(bytes, offset)?;
+    let size: u64 = packed & RESHDR_SIZE_MASK;
+    let flags: u8 = (packed >> RESHDR_FLAG_SHIFT) as u8;
     let file_offset: u64 = read_u64_le_at(bytes, offset.saturating_add(8))?;
     let original_size: u64 = read_u64_le_at(bytes, offset.saturating_add(16))?;
     Ok(WimResource {
@@ -404,6 +405,38 @@ mod tests {
             encoded,
             r#"{"header":{"header_size":208,"version":65536,"flags":262146,"compression":"lzx","chunk_size":32768,"guid":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"part_number":1,"total_parts":1,"image_count":2,"offset_table":{"size":0,"flags":0,"offset":0,"original_size":0},"xml_data":{"size":110,"flags":0,"offset":208,"original_size":110},"boot_metadata":{"size":0,"flags":0,"offset":0,"original_size":0},"boot_index":0,"integrity":{"size":0,"flags":0,"offset":0,"original_size":0}},"images":[{"index":1,"name":"Setup","dir_count":null,"file_count":null,"total_bytes":null}]}"#
         );
+    }
+
+    #[test]
+    fn the_packed_resource_header_splits_size_from_flags_at_every_boundary() {
+        let cases: [(u64, u8); 6] = [
+            (0, 0),
+            (1, RESHDR_FLAG_COMPRESSED),
+            (208, RESHDR_FLAG_METADATA),
+            (0x00ff_ffff_ffff_ffff, 0xff),
+            (0x00ff_ffff_ffff_ffff, 0),
+            (
+                0x0000_0000_0000_00ff,
+                RESHDR_FLAG_FREE | RESHDR_FLAG_SPANNED,
+            ),
+        ];
+        for (size, flags) in cases {
+            let mut raw: Vec<u8> = vec![0u8; RESHDR_LEN];
+            let packed: u64 = size | (u64::from(flags) << RESHDR_FLAG_SHIFT);
+            raw[0..8].copy_from_slice(&packed.to_le_bytes());
+            raw[8..16].copy_from_slice(&0xdead_beefu64.to_le_bytes());
+            raw[16..24].copy_from_slice(&0x1234_5678u64.to_le_bytes());
+            let resource: WimResource = parse_reshdr(&raw, 0).expect("packed resource header");
+            assert_eq!(resource.size, size, "size for flags {flags:#x}");
+            assert_eq!(resource.flags, flags, "flags for size {size:#x}");
+            assert_eq!(resource.offset, 0xdead_beef);
+            assert_eq!(resource.original_size, 0x1234_5678);
+            let legacy_size: u64 =
+                u64::from_le_bytes([raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], 0]);
+            assert_eq!(resource.size, legacy_size);
+            assert_eq!(resource.flags, raw[7]);
+        }
+        assert!(parse_reshdr(&[0u8; RESHDR_LEN - 1], 0).is_err());
     }
 
     #[test]

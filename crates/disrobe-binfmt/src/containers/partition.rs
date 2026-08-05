@@ -72,16 +72,26 @@ pub struct GptPartition {
 
 impl GptPartition {
     #[must_use]
-    pub fn byte_range(&self) -> Option<(usize, usize)> {
-        if self.end_lba < self.start_lba {
+    pub fn byte_range(&self, logical_sector_size: u32) -> Option<(usize, usize)> {
+        if self.end_lba < self.start_lba || logical_sector_size == 0 {
             return None;
         }
+        let sector: u64 = u64::from(logical_sector_size);
         let sector_count: u64 = self.end_lba.checked_sub(self.start_lba)?.checked_add(1)?;
-        let start: usize = usize::try_from(self.start_lba.checked_mul(SECTOR_SIZE as u64)?).ok()?;
-        let len: usize = usize::try_from(sector_count.checked_mul(SECTOR_SIZE as u64)?).ok()?;
+        let start: usize = usize::try_from(self.start_lba.checked_mul(sector)?).ok()?;
+        let len: usize = usize::try_from(sector_count.checked_mul(sector)?).ok()?;
         let end: usize = start.checked_add(len)?;
         Some((start, end))
     }
+}
+
+const fn default_logical_sector_size() -> u32 {
+    SECTOR_SIZE as u32
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_default_logical_sector_size(value: &u32) -> bool {
+    *value == default_logical_sector_size()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +99,11 @@ pub struct GptTable {
     pub header: GptHeader,
     pub partitions: Vec<GptPartition>,
     pub entries_crc32_valid: bool,
+    #[serde(
+        default = "default_logical_sector_size",
+        skip_serializing_if = "is_default_logical_sector_size"
+    )]
+    pub logical_sector_size: u32,
 }
 
 pub(crate) const MBR_ENTRY_LEN: usize = 16;
@@ -227,8 +242,32 @@ fn decode_partition_name(bytes: &[u8]) -> String {
     String::from_utf16_lossy(&units)
 }
 
+pub const GPT_LOGICAL_SECTOR_SIZES: [u32; 2] = [512, 4096];
+
+fn gpt_header_offset(logical_sector_size: u32) -> Option<usize> {
+    usize::try_from(logical_sector_size)
+        .ok()?
+        .checked_mul(GPT_HEADER_LBA)
+}
+
+#[must_use]
+pub fn detect_gpt_logical_sector_size(bytes: &[u8]) -> Option<u32> {
+    GPT_LOGICAL_SECTOR_SIZES.into_iter().find(|sector: &u32| {
+        gpt_header_offset(*sector)
+            .and_then(|offset: usize| read_bytes_at(bytes, offset, GPT_SIGNATURE.len()).ok())
+            .is_some_and(|signature: &[u8]| signature == GPT_SIGNATURE)
+    })
+}
+
 pub fn parse_gpt(bytes: &[u8]) -> Result<GptTable> {
-    let header_offset: usize = GPT_HEADER_LBA * SECTOR_SIZE;
+    let logical_sector_size: u32 =
+        detect_gpt_logical_sector_size(bytes).unwrap_or_else(default_logical_sector_size);
+    let sector_size: usize =
+        usize::try_from(logical_sector_size).map_err(|_e: std::num::TryFromIntError| {
+            Error::Decompression("gpt logical sector size overflow".to_owned())
+        })?;
+    let header_offset: usize = gpt_header_offset(logical_sector_size)
+        .ok_or_else(|| Error::Decompression("gpt header offset overflow".to_owned()))?;
     let header: GptHeader = parse_gpt_header(bytes, header_offset)?;
     let entry_size: usize = header.partition_entry_size as usize;
     if entry_size < GPT_ENTRY_MIN_LEN {
@@ -243,7 +282,7 @@ pub fn parse_gpt(bytes: &[u8]) -> Result<GptTable> {
     }
     let array_offset: usize = usize::try_from(header.partition_entry_lba)
         .ok()
-        .and_then(|lba: usize| lba.checked_mul(SECTOR_SIZE))
+        .and_then(|lba: usize| lba.checked_mul(sector_size))
         .ok_or_else(|| Error::Decompression("gpt entry array offset overflow".to_owned()))?;
     if array_offset > bytes.len() {
         return Err(Error::Decompression(
@@ -301,6 +340,7 @@ pub fn parse_gpt(bytes: &[u8]) -> Result<GptTable> {
         header,
         partitions,
         entries_crc32_valid,
+        logical_sector_size,
     })
 }
 
@@ -518,11 +558,90 @@ mod tests {
         assert_eq!(table.partitions[0].start_lba, 2048);
         assert_eq!(table.partitions[0].type_guid, esp_type);
         assert_eq!(
-            table.partitions[0].byte_range(),
+            table.partitions[0].byte_range(table.logical_sector_size),
             Some((2048 * 512, 206_848 * 512))
         );
         assert_eq!(table.partitions[1].name, "Linux");
         assert_eq!(table.partitions[1].start_lba, 206_848);
+    }
+
+    fn build_gpt_disk_with_sector_size(sector: usize) -> Vec<u8> {
+        let mut disk: Vec<u8> = vec![0u8; sector * 40];
+        disk[MBR_SIGNATURE_OFFSET..MBR_SIGNATURE_OFFSET + 2].copy_from_slice(MBR_SIGNATURE);
+        write_mbr_entry(&mut disk, 0, 0x00, MBR_TYPE_GPT_PROTECTIVE, 1, 0xffff_ffff);
+        let header_off: usize = sector;
+        disk[header_off..header_off + 8].copy_from_slice(GPT_SIGNATURE);
+        disk[header_off + 8..header_off + 12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
+        disk[header_off + 12..header_off + 16].copy_from_slice(&92u32.to_le_bytes());
+        disk[header_off + 24..header_off + 32].copy_from_slice(&1u64.to_le_bytes());
+        disk[header_off + 32..header_off + 40].copy_from_slice(&39u64.to_le_bytes());
+        disk[header_off + 72..header_off + 80].copy_from_slice(&2u64.to_le_bytes());
+        disk[header_off + 80..header_off + 84].copy_from_slice(&128u32.to_le_bytes());
+        disk[header_off + 84..header_off + 88].copy_from_slice(&128u32.to_le_bytes());
+        let array_off: usize = sector * 2;
+        disk[array_off..array_off + 16].copy_from_slice(&[0x11u8; 16]);
+        disk[array_off + 32..array_off + 40].copy_from_slice(&4u64.to_le_bytes());
+        disk[array_off + 40..array_off + 48].copy_from_slice(&11u64.to_le_bytes());
+        finalize_gpt_crcs(&mut disk, header_off, array_off, 128 * 128);
+        disk
+    }
+
+    #[test]
+    fn a_4kn_gpt_disk_parses_and_scales_every_partition_range_by_its_sector_size() {
+        let disk: Vec<u8> = build_gpt_disk_with_sector_size(4096);
+        let table: GptTable = parse_gpt(&disk).expect("parse 4kn gpt");
+        assert_eq!(table.logical_sector_size, 4096);
+        assert!(
+            table.header.header_crc32_valid && table.entries_crc32_valid,
+            "a spec-correct 4kn disk must validate both crcs"
+        );
+        assert_eq!(table.partitions.len(), 1);
+        assert_eq!(
+            table.partitions[0].byte_range(table.logical_sector_size),
+            Some((4 * 4096, 12 * 4096))
+        );
+        assert_eq!(
+            table.partitions[0].byte_range(512),
+            Some((4 * 512, 12 * 512)),
+            "the caller chooses the scale, the partition never assumes one"
+        );
+    }
+
+    #[test]
+    fn the_logical_sector_size_is_detected_from_where_the_signature_actually_sits() {
+        assert_eq!(
+            detect_gpt_logical_sector_size(&build_gpt_disk_with_sector_size(512)),
+            Some(512)
+        );
+        assert_eq!(
+            detect_gpt_logical_sector_size(&build_gpt_disk_with_sector_size(4096)),
+            Some(4096)
+        );
+        assert_eq!(detect_gpt_logical_sector_size(&[]), None);
+        assert_eq!(
+            detect_gpt_logical_sector_size(&vec![0u8; 4096 * 4]),
+            None,
+            "a disk with no signature at either sector size is not a gpt"
+        );
+    }
+
+    #[test]
+    fn a_512_byte_sector_disk_serializes_without_a_sector_size_field() {
+        let table: GptTable = parse_gpt(&build_gpt_disk()).expect("parse gpt");
+        let encoded: String = serde_json::to_string(&table).expect("encode gpt table");
+        assert!(
+            !encoded.contains("logical_sector_size"),
+            "the default sector size must stay out of the serialized shape: {encoded}"
+        );
+        let round_tripped: GptTable = serde_json::from_str(&encoded).expect("decode gpt table");
+        assert_eq!(round_tripped, table);
+        let wide: GptTable = parse_gpt(&build_gpt_disk_with_sector_size(4096)).expect("parse 4kn");
+        let wide_encoded: String = serde_json::to_string(&wide).expect("encode 4kn table");
+        assert!(wide_encoded.contains(r#""logical_sector_size":4096"#));
+        assert_eq!(
+            serde_json::from_str::<GptTable>(&wide_encoded).expect("decode 4kn table"),
+            wide
+        );
     }
 
     #[test]
