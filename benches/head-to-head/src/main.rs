@@ -65,9 +65,6 @@ where
             other => bail!("unknown argument `{other}`"),
         }
     }
-    if options.only.is_some() && !options.check {
-        bail!("--only is supported only with --check");
-    }
     Ok(options)
 }
 
@@ -88,16 +85,23 @@ fn run(options: Options) -> Result<()> {
         let scope: &str = options.only.as_deref().unwrap_or("all results");
         println!("disrobe-bench-head-to-head --check: {scope} match regeneration");
     } else {
-        let report_md: String = render_report(&outputs);
         for (id, value) in &outputs {
             write_json(&measured_dir.join(format!("{id}.json")), value)?;
         }
-        write_file(&bench_dir.join("results.md"), &report_md)?;
         println!(
             "disrobe-bench-head-to-head: wrote {} measured result(s) into {}",
             outputs.len(),
             measured_dir.display()
         );
+        if options.only.is_none() {
+            write_file(&bench_dir.join("results.md"), &render_report(&outputs))?;
+        } else {
+            println!(
+                "disrobe-bench-head-to-head: {} was left as it is, because one selected result \
+                 cannot rebuild a table that reports all three; rerun without --only to refresh it",
+                bench_dir.join("results.md").display()
+            );
+        }
     }
     Ok(())
 }
@@ -274,8 +278,19 @@ mod tests {
     }
 
     #[test]
-    fn target_selection_requires_a_non_mutating_check() {
-        assert!(parse(&["disrobe-bench-head-to-head", "--only", "apk-jadx-cfr"]).is_err());
+    fn one_result_can_be_regenerated_on_its_own() -> Result<()> {
+        assert_eq!(
+            parse(&["disrobe-bench-head-to-head", "--only", "apk-jadx-cfr"])?,
+            Options {
+                check: false,
+                only: Some("apk-jadx-cfr".to_owned()),
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn target_selection_rejects_a_missing_or_repeated_id() {
         assert!(parse(&["disrobe-bench-head-to-head", "--check", "--only"]).is_err());
         assert!(
             parse(&[

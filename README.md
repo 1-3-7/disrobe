@@ -209,8 +209,8 @@ Most tools specialize in one layer. `disrobe` chains unpacking, bytecode and nat
 
 | Surface | `disrobe` | Leading tool | Result | Reproduce |
 |---|---|---|---|---|
-| <!-- evidence-pair:apk-jadx-cfr:jar -->JVM classfile | 131 / 131 methods recompile | CFR 0.152: 105 / 106 | `disrobe` leads on clean methods and clean rate | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |
-| <!-- evidence-pair:apk-jadx-cfr:dex -->Android DEX | 129 / 132 methods recompile | JADX 1.5.5: 128 / 130 | mixed: `disrobe` recovers one more clean method; JADX has the higher clean rate | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |
+| <!-- evidence-pair:apk-jadx-cfr:jar -->JVM classfile | 131 / 131 methods recompile | CFR 0.152: not certified: 106 methods emitted | no lead: the shared compiler never type-checked the CFR file, so its methods are neither certified nor faulted | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |
+| <!-- evidence-pair:apk-jadx-cfr:dex -->Android DEX | not certified: 132 methods emitted | JADX 1.5.5: not certified: 130 methods emitted | no lead: the shared compiler type-checked neither recovered file, so it certified no method on either side | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |
 | APK secrets | 8 / 8 planted secrets | apkleaks 2.6.3: 5 / 8 | `disrobe` catches the AWS secret key, Basic credential, and JWT apkleaks misses | `cargo run -p disrobe-bench-head-to-head` |
 
 Missing rows are not implied wins. Every surface without a same-input runner stays in the edge table below until one exists.

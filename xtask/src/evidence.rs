@@ -169,6 +169,7 @@ struct CompetitorRow {
     clean: Option<u64>,
     emitted: Option<u64>,
     value: Option<f64>,
+    first_defect_line: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -185,10 +186,56 @@ struct ResolvedPair {
 struct PairScore {
     name: String,
     version: String,
-    clean: u64,
-    emitted: u64,
-    value: f64,
+    outcome: PairOutcome,
 }
+
+#[derive(Debug, Clone)]
+enum PairOutcome {
+    Certified {
+        clean: u64,
+        emitted: u64,
+        value: f64,
+    },
+    Uncertified {
+        emitted: u64,
+        first_defect_line: u64,
+    },
+}
+
+impl PairScore {
+    const fn certified_clean(&self) -> Option<u64> {
+        match self.outcome {
+            PairOutcome::Certified { clean, .. } => Some(clean),
+            PairOutcome::Uncertified { .. } => None,
+        }
+    }
+
+    const fn certified_value(&self) -> Option<f64> {
+        match self.outcome {
+            PairOutcome::Certified { value, .. } => Some(value),
+            PairOutcome::Uncertified { .. } => None,
+        }
+    }
+
+    fn result_phrase(&self) -> String {
+        match self.outcome {
+            PairOutcome::Certified { clean, emitted, .. } => {
+                format!("{clean} / {emitted} methods recompile")
+            }
+            PairOutcome::Uncertified { emitted, .. } => {
+                format!("not certified: {emitted} methods emitted")
+            }
+        }
+    }
+}
+
+impl ResolvedPair {
+    const fn both_certified(&self) -> bool {
+        self.disrobe.certified_clean().is_some() && self.competitor.certified_clean().is_some()
+    }
+}
+
+const UNCERTIFIED_ROW_STATUS: &str = "uncertified";
 
 #[derive(Debug)]
 struct Failures {
@@ -598,20 +645,31 @@ fn resolve_headtohead(descriptor: &Descriptor, root: &Path) -> Result<ResolvedCo
             (status == "ok").then(|| "highest reported numeric value".to_owned()),
         )
     } else {
-        let floor_holds: Option<bool> = binding.disrobe_floor.map(|floor: f64| {
-            pairs
-                .iter()
-                .all(|pair: &ResolvedPair| pair.disrobe.value >= floor)
+        let certified_rates: Vec<f64> = pairs
+            .iter()
+            .filter_map(|pair: &ResolvedPair| pair.disrobe.certified_value())
+            .collect();
+        let floor_holds: Option<bool> = binding.disrobe_floor.and_then(|floor: f64| {
+            (!certified_rates.is_empty())
+                .then(|| certified_rates.iter().all(|rate: &f64| *rate >= floor))
+        });
+        let every_leg_certified: bool = pairs.iter().all(ResolvedPair::both_certified);
+        let disrobe_leads: Option<bool> = every_leg_certified.then(|| {
+            pairs.iter().all(|pair: &ResolvedPair| {
+                pair.disrobe.certified_clean() >= pair.competitor.certified_clean()
+            })
         });
         (
             format_pair_summary(&pairs),
             floor_holds,
-            Some(
-                pairs
-                    .iter()
-                    .all(|pair: &ResolvedPair| pair.disrobe.clean >= pair.competitor.clean),
-            ),
-            Some("clean-method count within each declared leg".to_owned()),
+            disrobe_leads,
+            Some(if every_leg_certified {
+                "clean-method count within each declared leg".to_owned()
+            } else {
+                "no comparison: at least one declared leg has a side the compiler never \
+                 type-checked"
+                    .to_owned()
+            }),
         )
     };
     let note: Option<String> = doc
@@ -660,13 +718,15 @@ fn resolve_pairs(binding: &MeasuredBinding, rows: &[CompetitorRow]) -> Result<Ve
             "competitor",
             &pair.metric,
         )?;
-        if disrobe.clean < competitor.clean {
+        let certified_counts: (Option<u64>, Option<u64>) =
+            (disrobe.certified_clean(), competitor.certified_clean());
+        if let (Some(ours), Some(theirs)) = certified_counts
+            && ours < theirs
+        {
             bail!(
-                "head-to-head declared pair `{}` violates its clean-method claim: disrobe {} < {} {}",
+                "head-to-head declared pair `{}` violates its clean-method claim: disrobe {ours} < {} {theirs}",
                 pair.id,
-                disrobe.clean,
                 pair.competitor_label,
-                competitor.clean
             );
         }
         out.push(ResolvedPair {
@@ -701,7 +761,7 @@ fn find_unique_row<'a>(rows: &'a [CompetitorRow], name: &str) -> Result<&'a Comp
 }
 
 fn pair_score(row: &CompetitorRow, leg: &str, role: &str, metric: &str) -> Result<PairScore> {
-    if row.status != "ok" {
+    if row.status != "ok" && row.status != UNCERTIFIED_ROW_STATUS {
         bail!(
             "head-to-head row `{}` for {leg}/{role} is not publishable: {}",
             row.name,
@@ -732,12 +792,25 @@ fn pair_score(row: &CompetitorRow, leg: &str, role: &str, metric: &str) -> Resul
             row.metric
         );
     }
-    let clean: u64 = row
-        .clean
-        .ok_or_else(|| eyre::eyre!("head-to-head row `{}` has no raw clean count", row.name))?;
     let emitted: u64 = row
         .emitted
         .ok_or_else(|| eyre::eyre!("head-to-head row `{}` has no raw emitted count", row.name))?;
+    let outcome: PairOutcome = if row.status == UNCERTIFIED_ROW_STATUS {
+        uncertified_outcome(row, emitted)?
+    } else {
+        certified_outcome(row, emitted)?
+    };
+    Ok(PairScore {
+        name: row.name.clone(),
+        version: row.version.clone(),
+        outcome,
+    })
+}
+
+fn certified_outcome(row: &CompetitorRow, emitted: u64) -> Result<PairOutcome> {
+    let clean: u64 = row
+        .clean
+        .ok_or_else(|| eyre::eyre!("head-to-head row `{}` has no raw clean count", row.name))?;
     let value: f64 = row
         .value
         .ok_or_else(|| eyre::eyre!("head-to-head row `{}` has no numeric rate", row.name))?;
@@ -762,12 +835,45 @@ fn pair_score(row: &CompetitorRow, leg: &str, role: &str, metric: &str) -> Resul
             row.display
         );
     }
-    Ok(PairScore {
-        name: row.name.clone(),
-        version: row.version.clone(),
+    Ok(PairOutcome::Certified {
         clean,
         emitted,
         value,
+    })
+}
+
+fn uncertified_outcome(row: &CompetitorRow, emitted: u64) -> Result<PairOutcome> {
+    if row.clean.is_some() || row.value.is_some() {
+        bail!(
+            "head-to-head row `{}` is uncertified yet still carries a clean count or a rate; a run \
+             the compiler never type-checked established neither",
+            row.name
+        );
+    }
+    if emitted == 0 {
+        bail!(
+            "head-to-head row `{}` is uncertified and reports no emitted method, so it recovered \
+             nothing and belongs in a miss row instead",
+            row.name
+        );
+    }
+    let first_defect_line: u64 = row.first_defect_line.ok_or_else(|| {
+        eyre::eyre!(
+            "head-to-head row `{}` is uncertified without saying where the compiler stopped",
+            row.name
+        )
+    })?;
+    let expected_display: String = format!("not certified: {emitted} methods emitted");
+    if row.display != expected_display {
+        bail!(
+            "head-to-head row `{}` has display `{}`, expected `{expected_display}`",
+            row.name,
+            row.display
+        );
+    }
+    Ok(PairOutcome::Uncertified {
+        emitted,
+        first_defect_line,
     })
 }
 
@@ -776,19 +882,32 @@ fn format_pair_summary(pairs: &[ResolvedPair]) -> String {
         .iter()
         .map(|pair: &ResolvedPair| {
             format!(
-                "{}: `disrobe` {} / {} ({:.1}%) vs {} {} / {} ({:.1}%)",
+                "{}: `disrobe` {} vs {} {}",
                 pair.label,
-                pair.disrobe.clean,
-                pair.disrobe.emitted,
-                pair.disrobe.value,
+                summary_side(&pair.disrobe),
                 pair.competitor_label,
-                pair.competitor.clean,
-                pair.competitor.emitted,
-                pair.competitor.value,
+                summary_side(&pair.competitor),
             )
         })
         .collect::<Vec<String>>()
         .join("; ")
+}
+
+fn summary_side(score: &PairScore) -> String {
+    match score.outcome {
+        PairOutcome::Certified {
+            clean,
+            emitted,
+            value,
+        } => format!("{clean} / {emitted} ({value:.1}%)"),
+        PairOutcome::Uncertified {
+            emitted,
+            first_defect_line,
+        } => format!(
+            "not certified ({emitted} methods emitted; the compiler stopped on line \
+             {first_defect_line})"
+        ),
+    }
 }
 
 fn expected_readme_pair_rows(resolved: &[Resolved]) -> Result<BTreeMap<String, String>> {
@@ -807,13 +926,11 @@ fn expected_readme_pair_rows(resolved: &[Resolved]) -> Result<BTreeMap<String, S
 
 fn render_readme_pair(record: &Resolved, pair: &ResolvedPair) -> String {
     format!(
-        "{} | {} / {} methods recompile | {}: {} / {} | {} | `{}`",
+        "{} | {} | {}: {} | {} | `{}`",
         pair.label,
-        pair.disrobe.clean,
-        pair.disrobe.emitted,
+        pair.disrobe.result_phrase(),
         competitor_display(pair),
-        pair.competitor.clean,
-        pair.competitor.emitted,
+        pair.competitor.result_phrase(),
         pair_verdict(pair),
         record.reproduce,
     )
@@ -829,23 +946,55 @@ fn competitor_display(pair: &ResolvedPair) -> String {
 }
 
 fn pair_verdict(pair: &ResolvedPair) -> String {
-    let count: String = match pair.disrobe.clean.cmp(&pair.competitor.clean) {
+    let (Some(ours), Some(theirs)): (Option<u64>, Option<u64>) = (
+        pair.disrobe.certified_clean(),
+        pair.competitor.certified_clean(),
+    ) else {
+        return uncertified_verdict(pair);
+    };
+    certified_verdict(pair, ours, theirs)
+}
+
+fn uncertified_verdict(pair: &ResolvedPair) -> String {
+    let ours: bool = pair.disrobe.certified_clean().is_some();
+    let theirs: bool = pair.competitor.certified_clean().is_some();
+    match (ours, theirs) {
+        (false, false) => {
+            "no lead: the shared compiler type-checked neither recovered file, so it \
+                           certified no method on either side"
+                .to_owned()
+        }
+        (true, false) => format!(
+            "no lead: the shared compiler never type-checked the {} file, so its methods are \
+             neither certified nor faulted",
+            pair.competitor_label
+        ),
+        (false | true, _) => "no lead: the shared compiler never type-checked the `disrobe` file, \
+                              so its methods are neither certified nor faulted"
+            .to_owned(),
+    }
+}
+
+fn certified_verdict(pair: &ResolvedPair, ours: u64, theirs: u64) -> String {
+    let count: String = match ours.cmp(&theirs) {
         std::cmp::Ordering::Greater => format!(
             "`disrobe` recovers {} more clean {}",
-            method_count(pair.disrobe.clean - pair.competitor.clean),
-            method_noun(pair.disrobe.clean - pair.competitor.clean)
+            method_count(ours - theirs),
+            method_noun(ours - theirs)
         ),
         std::cmp::Ordering::Less => format!(
             "{} recovers {} more clean {}",
             pair.competitor_label,
-            method_count(pair.competitor.clean - pair.disrobe.clean),
-            method_noun(pair.competitor.clean - pair.disrobe.clean)
+            method_count(theirs - ours),
+            method_noun(theirs - ours)
         ),
         std::cmp::Ordering::Equal => "the tools recover the same clean-method count".to_owned(),
     };
-    let rate: String = if (pair.disrobe.value - pair.competitor.value).abs() <= 1e-9 {
+    let our_rate: f64 = pair.disrobe.certified_value().unwrap_or_default();
+    let their_rate: f64 = pair.competitor.certified_value().unwrap_or_default();
+    let rate: String = if (our_rate - their_rate).abs() <= 1e-9 {
         "the clean rates are equal".to_owned()
-    } else if pair.disrobe.value > pair.competitor.value {
+    } else if our_rate > their_rate {
         "`disrobe` has the higher clean rate".to_owned()
     } else {
         format!("{} has the higher clean rate", pair.competitor_label)
@@ -998,6 +1147,7 @@ fn competitor_row(tool: &Value) -> CompetitorRow {
         clean: tool.get("clean").and_then(Value::as_u64),
         emitted: tool.get("emitted").and_then(Value::as_u64),
         value: tool.get("value").and_then(Value::as_f64),
+        first_defect_line: tool.get("first_defect_line").and_then(Value::as_u64),
     }
 }
 
@@ -1177,35 +1327,56 @@ fn pairs_json(pairs: &[ResolvedPair]) -> Vec<Value> {
     pairs
         .iter()
         .map(|pair: &ResolvedPair| {
+            let mut competitor: Value = pair_side_json(&pair.competitor);
+            competitor["label"] = Value::String(pair.competitor_label.clone());
             json!({
                 "id": pair.id,
                 "label": pair.label,
-                "comparison_basis": "clean-method count",
+                "comparison_basis": if pair.both_certified() {
+                    "clean-method count"
+                } else {
+                    "none: a side of this leg was never type-checked"
+                },
                 "metric": pair.metric,
-                "disrobe": {
-                    "name": pair.disrobe.name,
-                    "version": pair.disrobe.version,
-                    "clean": pair.disrobe.clean,
-                    "emitted": pair.disrobe.emitted,
-                    "value": pair.disrobe.value,
-                },
-                "competitor": {
-                    "name": pair.competitor.name,
-                    "label": pair.competitor_label,
-                    "version": pair.competitor.version,
-                    "clean": pair.competitor.clean,
-                    "emitted": pair.competitor.emitted,
-                    "value": pair.competitor.value,
-                },
+                "disrobe": pair_side_json(&pair.disrobe),
+                "competitor": competitor,
             })
         })
         .collect()
 }
 
+fn pair_side_json(score: &PairScore) -> Value {
+    let mut side: Value = json!({
+        "name": score.name,
+        "version": score.version,
+    });
+    match score.outcome {
+        PairOutcome::Certified {
+            clean,
+            emitted,
+            value,
+        } => {
+            side["certified"] = Value::Bool(true);
+            side["clean"] = json!(clean);
+            side["emitted"] = json!(emitted);
+            side["value"] = json!(value);
+        }
+        PairOutcome::Uncertified {
+            emitted,
+            first_defect_line,
+        } => {
+            side["certified"] = Value::Bool(false);
+            side["emitted"] = json!(emitted);
+            side["first_defect_line"] = json!(first_defect_line);
+        }
+    }
+    side
+}
+
 fn competitors_json(rows: &[CompetitorRow]) -> Vec<Value> {
     rows.iter()
         .map(|c: &CompetitorRow| {
-            json!({
+            let mut row: Value = json!({
                 "name": c.name,
                 "version": c.version,
                 "metric": c.metric,
@@ -1217,7 +1388,11 @@ fn competitors_json(rows: &[CompetitorRow]) -> Vec<Value> {
                 "clean": c.clean,
                 "emitted": c.emitted,
                 "value": c.value,
-            })
+            });
+            if let Some(line) = c.first_defect_line {
+                row["first_defect_line"] = json!(line);
+            }
+            row
         })
         .collect()
 }
@@ -1734,9 +1909,27 @@ mod tests {
         PairScore {
             name: name.to_owned(),
             version: version.to_owned(),
-            clean,
-            emitted,
-            value: 100.0 * clean as f64 / emitted as f64,
+            outcome: PairOutcome::Certified {
+                clean,
+                emitted,
+                value: 100.0 * clean as f64 / emitted as f64,
+            },
+        }
+    }
+
+    fn uncertified_pair_score(
+        name: &str,
+        version: &str,
+        emitted: u64,
+        first_defect_line: u64,
+    ) -> PairScore {
+        PairScore {
+            name: name.to_owned(),
+            version: version.to_owned(),
+            outcome: PairOutcome::Uncertified {
+                emitted,
+                first_defect_line,
+            },
         }
     }
 
@@ -1793,6 +1986,7 @@ mod tests {
                 clean: Some(129),
                 emitted: Some(132),
                 value: Some(100.0 * 129.0 / 132.0),
+                first_defect_line: None,
             },
             CompetitorRow {
                 name: "jadx (DEX input)".to_owned(),
@@ -1807,6 +2001,7 @@ mod tests {
                 clean: Some(128),
                 emitted: Some(130),
                 value: Some(100.0 * 128.0 / 130.0),
+                first_defect_line: None,
             },
             CompetitorRow {
                 name: "disrobe (in-house JVM, JAR input)".to_owned(),
@@ -1821,6 +2016,7 @@ mod tests {
                 clean: Some(131),
                 emitted: Some(131),
                 value: Some(100.0),
+                first_defect_line: None,
             },
             CompetitorRow {
                 name: "cfr (JAR input)".to_owned(),
@@ -1835,6 +2031,7 @@ mod tests {
                 clean: Some(105),
                 emitted: Some(106),
                 value: Some(100.0 * 105.0 / 106.0),
+                first_defect_line: None,
             },
         ]
     }
@@ -1871,12 +2068,10 @@ mod tests {
         let pairs: Vec<ResolvedPair> = resolve_pairs(&binding, &paired_rows())?;
         assert_eq!(pairs.len(), 2);
         assert_eq!(pairs[0].id, "dex");
-        assert_eq!(pairs[0].disrobe.clean, 129);
-        assert!(
-            pairs
-                .iter()
-                .all(|pair: &ResolvedPair| { pair.disrobe.clean >= pair.competitor.clean })
-        );
+        assert_eq!(pairs[0].disrobe.certified_clean(), Some(129));
+        assert!(pairs.iter().all(|pair: &ResolvedPair| {
+            pair.disrobe.certified_clean() >= pair.competitor.certified_clean()
+        }));
 
         let mut trailing: Vec<CompetitorRow> = paired_rows();
         trailing.push(CompetitorRow {
@@ -1892,6 +2087,7 @@ mod tests {
             clean: Some(0),
             emitted: Some(1),
             value: Some(0.0),
+            first_defect_line: None,
         });
         let error: eyre::Report = match resolve_pairs(&binding, &trailing) {
             Ok(_) => bail!("an unpaired row must fail"),
@@ -1928,6 +2124,108 @@ mod tests {
         };
         let error: String = error.to_string();
         assert!(error.contains("has display"), "{error}");
+        Ok(())
+    }
+
+    fn uncertify(row: &mut CompetitorRow, emitted: u64, first_defect_line: u64) {
+        row.status = UNCERTIFIED_ROW_STATUS.to_owned();
+        row.clean = None;
+        row.value = None;
+        row.emitted = Some(emitted);
+        row.first_defect_line = Some(first_defect_line);
+        row.display = format!("not certified: {emitted} methods emitted");
+    }
+
+    #[test]
+    fn a_side_the_compiler_never_type_checked_ends_the_leg_for_both_tools() -> Result<()> {
+        let binding: MeasuredBinding = apk_binding();
+
+        let mut competitor_stopped: Vec<CompetitorRow> = paired_rows();
+        uncertify(&mut competitor_stopped[1], 130, 619);
+        let pairs: Vec<ResolvedPair> = resolve_pairs(&binding, &competitor_stopped)?;
+        assert!(
+            !pairs[0].both_certified(),
+            "a leg whose competitor was never type-checked is not a comparison"
+        );
+        let verdict: String = pair_verdict(&pairs[0]);
+        assert!(
+            verdict.starts_with("no lead"),
+            "an uncertified competitor cannot hand `disrobe` the leg: {verdict}"
+        );
+        assert!(
+            !verdict.contains("recovers"),
+            "an uncertified competitor cannot be given a clean-method comparison: {verdict}"
+        );
+
+        let mut disrobe_stopped: Vec<CompetitorRow> = paired_rows();
+        uncertify(&mut disrobe_stopped[0], 132, 2);
+        let ours: Vec<ResolvedPair> = resolve_pairs(&binding, &disrobe_stopped)?;
+        let our_verdict: String = pair_verdict(&ours[0]);
+        assert!(
+            our_verdict.starts_with("no lead"),
+            "the same rule has to end the leg when it is `disrobe` that was never type-checked: \
+             {our_verdict}"
+        );
+        assert!(
+            !our_verdict.contains("recovers"),
+            "an uncertified `disrobe` side cannot be handed to the competitor either: {our_verdict}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_uncertified_row_cannot_smuggle_a_rate_or_hide_where_it_stopped() -> Result<()> {
+        let binding: MeasuredBinding = apk_binding();
+
+        let mut with_clean: Vec<CompetitorRow> = paired_rows();
+        uncertify(&mut with_clean[1], 130, 619);
+        with_clean[1].clean = Some(128);
+        let error: String = match resolve_pairs(&binding, &with_clean) {
+            Ok(_) => bail!("an uncertified row carrying a clean count must fail"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("established neither"), "{error}");
+
+        let mut without_line: Vec<CompetitorRow> = paired_rows();
+        uncertify(&mut without_line[1], 130, 619);
+        without_line[1].first_defect_line = None;
+        let error: String = match resolve_pairs(&binding, &without_line) {
+            Ok(_) => bail!("an uncertified row must say where the compiler stopped"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("without saying where"), "{error}");
+
+        let mut empty: Vec<CompetitorRow> = paired_rows();
+        uncertify(&mut empty[1], 0, 1);
+        let error: String = match resolve_pairs(&binding, &empty) {
+            Ok(_) => bail!("an uncertified row that emitted nothing must fail"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("belongs in a miss row"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn an_uncertified_leg_renders_what_each_tool_produced_and_claims_nothing() -> Result<()> {
+        let mut record: Resolved = apk_record();
+        record.pairs[0].competitor = uncertified_pair_score("jadx (DEX input)", "1.5.5", 130, 619);
+        record.disrobe_leads = None;
+        let rows: BTreeMap<String, String> = expected_readme_pair_rows(&[record])?;
+        let dex: &String = rows
+            .get("apk-jadx-cfr:dex")
+            .ok_or_else(|| eyre::eyre!("the dex row must still be rendered"))?;
+        assert!(
+            dex.contains("JADX 1.5.5: not certified: 130 methods emitted"),
+            "a tool that emitted 130 methods is never reported as producing nothing: {dex}"
+        );
+        assert!(
+            dex.contains("129 / 132 methods recompile"),
+            "the certified side still reports its own measurement: {dex}"
+        );
+        assert!(
+            dex.contains("no lead"),
+            "a leg with an uncertified side publishes no lead: {dex}"
+        );
         Ok(())
     }
 
@@ -1978,8 +2276,8 @@ mod tests {
         assert_eq!(
             once,
             concat!(
-                "| <!-- evidence-pair:apk-jadx-cfr:jar -->JVM classfile | 131 / 131 methods recompile | CFR 0.152: 105 / 106 | `disrobe` leads on clean methods and clean rate | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |\n",
-                "| <!-- evidence-pair:apk-jadx-cfr:dex -->Android DEX | 129 / 132 methods recompile | JADX 1.5.5: 128 / 130 | mixed: `disrobe` recovers one more clean method; JADX has the higher clean rate | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |\n",
+                "| <!-- evidence-pair:apk-jadx-cfr:jar -->JVM classfile | 131 / 131 methods recompile | CFR 0.152: 105 / 106 methods recompile | `disrobe` leads on clean methods and clean rate | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |\n",
+                "| <!-- evidence-pair:apk-jadx-cfr:dex -->Android DEX | 129 / 132 methods recompile | JADX 1.5.5: 128 / 130 methods recompile | mixed: `disrobe` recovers one more clean method; JADX has the higher clean rate | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |\n",
                 "| APK secrets | 8 / 8 | apkleaks | win | command |\n",
             )
         );
@@ -2020,8 +2318,8 @@ mod tests {
     fn readme_pair_numeric_mutation_is_stale() -> Result<()> {
         let expected: BTreeMap<String, String> = expected_readme_pair_rows(&[apk_record()])?;
         let source: &str = concat!(
-            "| <!-- evidence-pair:apk-jadx-cfr:jar -->JVM classfile | 131 / 131 methods recompile | CFR 0.152: 105 / 106 | `disrobe` leads on clean methods and clean rate | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |\n",
-            "| <!-- evidence-pair:apk-jadx-cfr:dex -->Android DEX | 130 / 132 methods recompile | JADX 1.5.5: 128 / 130 | mixed: `disrobe` recovers two more clean methods; JADX has the higher clean rate | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |\n",
+            "| <!-- evidence-pair:apk-jadx-cfr:jar -->JVM classfile | 131 / 131 methods recompile | CFR 0.152: 105 / 106 methods recompile | `disrobe` leads on clean methods and clean rate | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |\n",
+            "| <!-- evidence-pair:apk-jadx-cfr:dex -->Android DEX | 130 / 132 methods recompile | JADX 1.5.5: 128 / 130 methods recompile | mixed: `disrobe` recovers two more clean methods; JADX has the higher clean rate | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |\n",
         );
         let rendered: String = rewrite_readme_pairs(source, &expected)?;
         let dir: tempfile::TempDir = tempfile::tempdir()?;
