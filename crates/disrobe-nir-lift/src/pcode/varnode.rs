@@ -68,6 +68,7 @@ pub(super) struct VarnodeLowerer<'a> {
     lang: SourceLang,
     registers: &'a [RegisterCell],
     big_endian_register_space: bool,
+    constant_zero_cells: BTreeSet<String>,
     unique_names: BTreeMap<(u64, u32), String>,
     known_constants: BTreeMap<Varnode, u64>,
     next_name: u64,
@@ -78,16 +79,37 @@ impl<'a> VarnodeLowerer<'a> {
         lang: SourceLang,
         registers: &'a [RegisterCell],
         big_endian_register_space: bool,
+        constant_zero_registers: &BTreeSet<String>,
     ) -> Result<Self> {
         validate_registers(registers)?;
+        let constant_zero_cells: BTreeSet<String> = constant_zero_registers.clone();
+        for name in &constant_zero_cells {
+            if !registers
+                .iter()
+                .any(|cell: &RegisterCell| cell.name.eq_ignore_ascii_case(name))
+            {
+                return Err(invalid(
+                    0,
+                    "REGISTER_MAP",
+                    "a constant-zero register names no canonical cell",
+                ));
+            }
+        }
         Ok(Self {
             lang,
             registers,
             big_endian_register_space,
+            constant_zero_cells,
             unique_names: BTreeMap::new(),
             known_constants: BTreeMap::new(),
             next_name: 0,
         })
+    }
+
+    fn is_constant_zero(&self, cell: &RegisterCell) -> bool {
+        self.constant_zero_cells
+            .iter()
+            .any(|name: &String| name.eq_ignore_ascii_case(&cell.name))
     }
 
     pub(super) fn read(
@@ -231,7 +253,15 @@ impl<'a> VarnodeLowerer<'a> {
     pub(super) fn resolved_constant(&self, varnode: Varnode) -> Option<u64> {
         match varnode.space {
             Space::Constant => Some(mask_value(varnode.offset, varnode.size_bytes)),
-            Space::Register | Space::Unique => self.known_constants.get(&varnode).copied(),
+            Space::Register => {
+                if let Ok(view) = self.register_view(varnode, 0, "CONSTANT")
+                    && self.is_constant_zero(view.cell)
+                {
+                    return Some(0);
+                }
+                self.known_constants.get(&varnode).copied()
+            }
+            Space::Unique => self.known_constants.get(&varnode).copied(),
             Space::Ram => None,
         }
     }
@@ -278,6 +308,9 @@ impl<'a> VarnodeLowerer<'a> {
         instructions: &mut Vec<NirInstr>,
     ) -> Result<String> {
         let view: RegisterView<'_> = self.register_view(varnode, address, operation)?;
+        if self.is_constant_zero(view.cell) {
+            return Ok(format_constant(0, varnode.size_bytes));
+        }
         if view.relative_offset == 0 && varnode.size_bytes == view.cell.size {
             return Ok(view.cell.name.clone());
         }
@@ -304,6 +337,12 @@ impl<'a> VarnodeLowerer<'a> {
         operation: &str,
     ) -> Result<PendingOutput> {
         let view: RegisterView<'_> = self.register_view(varnode, address, operation)?;
+        if self.is_constant_zero(view.cell) {
+            return Ok(PendingOutput {
+                value: self.fresh_name(),
+                destination: OutputDestination::Direct,
+            });
+        }
         if view.relative_offset == 0 && varnode.size_bytes == view.cell.size {
             return Ok(PendingOutput {
                 value: view.cell.name.clone(),

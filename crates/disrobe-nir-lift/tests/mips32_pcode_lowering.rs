@@ -3,7 +3,11 @@
 use std::collections::BTreeMap;
 
 use disrobe_nir::{CallOtherEffect, NirFunction, NirInstr, NirOp, ValueOp};
-use disrobe_nir_lift::{LiftError, PcodeArch, PcodeLiftConfig, RegisterCell, lower_mips32};
+use disrobe_nir_lift::{
+    ArchLift, LiftGap, PcodeArch, PcodeLiftConfig, RegisterCell, lower_arch, lower_mips32,
+};
+use disrobe_sleigh::lifter::{DecodedBlock, Language, decode_block_for_language};
+use disrobe_sleigh::pcode::{DecodeStatus, PcodeOp, Space};
 use disrobe_sleigh::syntax::Endian;
 
 const MIPS32_CANONICAL_CELLS: usize = 451;
@@ -167,35 +171,12 @@ fn a_delay_slot_executes_before_the_transfer_it_follows() {
         Endian::Little,
         0x4000,
     );
-    let slot_position: usize = lowered
-        .instructions
-        .iter()
-        .position(|instruction: &NirInstr| {
-            matches!(
-                &instruction.op,
-                NirOp::Value {
-                    op: ValueOp::IntAdd,
-                    ..
-                }
-            ) && instruction
-                .operands
-                .first()
-                .is_some_and(|out: &String| out == "a0")
-        })
-        .expect("the delay slot addiu must survive lowering");
-    let transfer_position: usize = lowered
-        .instructions
-        .iter()
-        .position(|instruction: &NirInstr| matches!(instruction.op, NirOp::CondBranch { .. }))
-        .expect("the branch must lower to a conditional branch");
+    let slot_position: usize = position_of_slot_add(&lowered, "a0");
+    let transfer_position: usize = position_of_cond_branch(&lowered);
     assert!(
         slot_position < transfer_position,
         "the delay slot must execute before the transfer: {:?}",
-        lowered
-            .instructions
-            .iter()
-            .map(|instruction: &NirInstr| (instruction.address, instruction.mnemonic.clone()))
-            .collect::<Vec<(u64, String)>>()
+        lifted_order(&lowered)
     );
     let scheduled_at: u64 = lowered.instructions[slot_position].address;
     assert_eq!(
@@ -213,6 +194,151 @@ fn a_delay_slot_executes_before_the_transfer_it_follows() {
         NirOp::Nop,
         "the slot must not execute a second time at its own address"
     );
+}
+
+#[test]
+fn a_delay_slot_cannot_disturb_the_comparison_the_branch_it_follows_reads() {
+    let lowered: NirFunction = lower(
+        &[0x1082_0001, 0x2484_0001, 0x00e8_3821],
+        Endian::Little,
+        0x4000,
+    );
+    let comparison: usize = lowered
+        .instructions
+        .iter()
+        .position(|instruction: &NirInstr| {
+            matches!(
+                &instruction.op,
+                NirOp::Value {
+                    op: ValueOp::IntEqual,
+                    ..
+                }
+            )
+        })
+        .expect("beq must lower to an equality test");
+    let slot_position: usize = position_of_slot_add(&lowered, "a0");
+    let transfer_position: usize = position_of_cond_branch(&lowered);
+    assert!(
+        comparison < slot_position && slot_position < transfer_position,
+        "beq reads a0 before the slot rewrites it, and both precede the transfer: {:?}",
+        lifted_order(&lowered)
+    );
+    let NirOp::Value { inputs, .. } = &lowered.instructions[comparison].op else {
+        panic!("the comparison must carry its inputs");
+    };
+    assert_eq!(
+        inputs,
+        &["a0".to_owned(), "v0".to_owned()],
+        "the comparison must read the architectural registers the branch names"
+    );
+}
+
+#[test]
+fn the_lifted_order_matches_the_schedule_the_decoder_itself_published() {
+    let words: [u32; 3] = [0x1082_0001, 0x2484_0001, 0x00e8_3821];
+    let bytes: Vec<u8> = words
+        .iter()
+        .flat_map(|word: &u32| word.to_le_bytes())
+        .collect();
+    let block: DecodedBlock =
+        decode_block_for_language(Language::Mips32(Endian::Little), &bytes, 0x4000);
+    let reference: Vec<&'static str> = block
+        .ordered_ops
+        .iter()
+        .filter_map(|operation: &PcodeOp| match operation {
+            PcodeOp::IntEqual { .. } => Some("compare"),
+            PcodeOp::IntAdd { output, .. } if output.space == Space::Register => Some("add"),
+            PcodeOp::CBranch { .. } => Some("transfer"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        reference,
+        ["compare", "add", "transfer", "add"],
+        "the decoder publishes the branch comparison before the delay slot it schedules"
+    );
+    let lowered: NirFunction = lower(&words, Endian::Little, 0x4000);
+    let lifted: Vec<&'static str> = lowered
+        .instructions
+        .iter()
+        .filter_map(|instruction: &NirInstr| match &instruction.op {
+            NirOp::Value {
+                op: ValueOp::IntEqual,
+                ..
+            } => Some("compare"),
+            NirOp::Value {
+                op: ValueOp::IntAdd,
+                ..
+            } => Some("add"),
+            NirOp::CondBranch { .. } => Some("transfer"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        lifted, reference,
+        "the lifted order must agree with the decoder's own delay-slot schedule"
+    );
+}
+
+#[test]
+fn the_zero_register_reads_as_the_constant_it_is_wired_to() {
+    let lowered: NirFunction = lower(&[0x0000_2021], Endian::Little, 0xa000);
+    let addition: &NirInstr = lowered
+        .instructions
+        .iter()
+        .find(|instruction: &&NirInstr| {
+            matches!(
+                &instruction.op,
+                NirOp::Value {
+                    op: ValueOp::IntAdd,
+                    ..
+                }
+            )
+        })
+        .expect("addu must lower to an addition");
+    let NirOp::Value { inputs, .. } = &addition.op else {
+        panic!("the addition must carry its inputs");
+    };
+    assert_eq!(
+        inputs,
+        &["0x0".to_owned(), "0x0".to_owned()],
+        "a read of the zero register is the constant zero, never a value the program can set"
+    );
+}
+
+fn position_of_slot_add(function: &NirFunction, destination: &str) -> usize {
+    function
+        .instructions
+        .iter()
+        .position(|instruction: &NirInstr| {
+            matches!(
+                &instruction.op,
+                NirOp::Value {
+                    op: ValueOp::IntAdd,
+                    ..
+                }
+            ) && instruction
+                .operands
+                .first()
+                .is_some_and(|out: &String| out == destination)
+        })
+        .expect("the delay slot addiu must survive lowering")
+}
+
+fn position_of_cond_branch(function: &NirFunction) -> usize {
+    function
+        .instructions
+        .iter()
+        .position(|instruction: &NirInstr| matches!(instruction.op, NirOp::CondBranch { .. }))
+        .expect("the branch must lower to a conditional branch")
+}
+
+fn lifted_order(function: &NirFunction) -> Vec<(u64, String)> {
+    function
+        .instructions
+        .iter()
+        .map(|instruction: &NirInstr| (instruction.address, instruction.mnemonic.clone()))
+        .collect()
 }
 
 #[test]
@@ -318,29 +444,48 @@ fn a_big_endian_image_read_as_little_endian_does_not_decode_as_the_same_program(
         0x3c09_1234,
         0x014b_0018,
     ];
-    let correct: NirFunction = lower(&words, Endian::Big, 0x3000);
+    let bytes: Vec<u8> = words
+        .iter()
+        .flat_map(|word: &u32| word.to_be_bytes())
+        .collect();
+    let correct: ArchLift = lower_arch(PcodeArch::Mips32Be, &bytes, 0x3000, "probe")
+        .expect("the correctly ordered image lifts");
     assert!(
         correct
+            .gaps
+            .iter()
+            .all(|gap: &LiftGap| gap.status != DecodeStatus::NoMatch),
+        "every word of the correctly ordered image matches an instruction: {:?}",
+        correct.gaps
+    );
+    assert!(
+        correct
+            .function
             .instructions
             .iter()
             .any(|instruction: &NirInstr| matches!(instruction.op, NirOp::RawLoad { .. })),
         "the correctly ordered image must lift its load"
     );
-    let misread_bytes: Vec<u8> = words
-        .iter()
-        .flat_map(|word: &u32| word.to_be_bytes())
-        .collect();
-    let error: LiftError = lower_mips32(&misread_bytes, 0x3000, "probe", Endian::Little)
-        .expect_err("a big-endian image read as little-endian must not lift as a program");
-    let LiftError::InvalidPcode {
-        address, reason, ..
-    } = &error
-    else {
-        panic!("expected a typed p-code error, got {error}");
-    };
-    assert_eq!(*address, 0x300c);
+    let misread: ArchLift = lower_arch(PcodeArch::Mips32Le, &bytes, 0x3000, "probe")
+        .expect("a misread image still reports what it could not decode");
     assert!(
-        reason.contains("no P-code semantics"),
-        "the refusal must name the missing semantics: {reason}"
+        !misread.gaps.is_empty(),
+        "a big-endian image read as little-endian must report the words it cannot model"
+    );
+    assert!(
+        misread
+            .gaps
+            .iter()
+            .any(|gap: &LiftGap| gap.status == DecodeStatus::NoMatch),
+        "the misread image must name at least one word that matches no instruction: {:?}",
+        misread.gaps
+    );
+    assert!(
+        !misread
+            .function
+            .instructions
+            .iter()
+            .any(|instruction: &NirInstr| matches!(instruction.op, NirOp::RawLoad { .. })),
+        "the misread image must not reproduce the load the correct order recovers"
     );
 }

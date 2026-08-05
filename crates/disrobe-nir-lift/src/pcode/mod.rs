@@ -1,35 +1,30 @@
 use std::collections::BTreeSet;
-use std::sync::OnceLock;
 
 use disrobe_lift_x86::decode_block_x86;
 use disrobe_nir::{NirClass, NirFunction, NirInstr, NirOp, SourceLang, SourceRef};
 use disrobe_sleigh::lifter::{ArmMode, DecodedBlock, Language, decode_block_for_language};
 use disrobe_sleigh::pcode::{DecodeStatus, PcodeInstr, PcodeOp, Space, Varnode};
 use disrobe_sleigh::syntax::Endian;
-use disrobe_sleigh::vendor::{
-    preprocessed_arm32_source, preprocessed_mips32be_source, preprocessed_mips32le_source,
-};
 
 use crate::error::{LiftError, Result};
 
 mod arch;
 mod flags;
 mod ops;
-mod registers;
+mod spec;
 mod varnode;
 
-pub use arch::{PcodeArch, lower_for_arch};
-use registers::{SpecRegisters, canonical_registers};
+pub use arch::{ArchLift, LiftGap, PcodeArch, block_gaps, lower_arch, lower_for_arch};
+use spec::{SpecRegisterMap, SpecRegisters};
 pub use varnode::RegisterCell;
 use varnode::VarnodeLowerer;
 
-type CachedRegisters = core::result::Result<SpecRegisters, String>;
+const ARM32_REQUIRED_CELLS: &[&str] = &[
+    "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12", "sp", "lr",
+    "pc", "cpsr", "NG", "ZR", "CY", "OV",
+];
 
-static ARM32_REGISTERS: OnceLock<CachedRegisters> = OnceLock::new();
-static MIPS32BE_REGISTERS: OnceLock<CachedRegisters> = OnceLock::new();
-static MIPS32LE_REGISTERS: OnceLock<CachedRegisters> = OnceLock::new();
-
-const ARM32_DISCARDED: [&str; 9] = [
+const ARM32_DISCARDED_CELLS: &[&str] = &[
     "NG",
     "ZR",
     "CY",
@@ -41,27 +36,13 @@ const ARM32_DISCARDED: [&str; 9] = [
     "shift_carry",
 ];
 
-const MIPS32_DISCARDED: [&str; 1] = ["zero"];
+const MIPS32_REQUIRED_CELLS: &[&str] = &[
+    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "gp", "sp", "s8", "ra", "pc", "hi", "lo",
+];
 
-fn cached_registers(
-    cache: &'static OnceLock<CachedRegisters>,
-    source: fn() -> core::result::Result<String, disrobe_sleigh::SleighError>,
-) -> Result<SpecRegisters> {
-    let cached: &CachedRegisters = cache.get_or_init(|| {
-        let text: String = source().map_err(|error: disrobe_sleigh::SleighError| {
-            format!("compiled spec did not preprocess: {error}")
-        })?;
-        canonical_registers(&text).map_err(|error: LiftError| error.to_string())
-    });
-    match cached {
-        Ok(value) => Ok(value.clone()),
-        Err(reason) => Err(LiftError::InvalidPcode {
-            address: 0,
-            operation: "REGISTER_MAP".to_owned(),
-            reason: reason.clone(),
-        }),
-    }
-}
+const MIPS32_DISCARDED_CELLS: &[&str] = &["zero"];
+
+const MIPS32_CONSTANT_ZERO_CELLS: &[&str] = &["zero"];
 
 const MAX_PCODE_INSTRUCTIONS: usize = 65_536;
 const MAX_PCODE_OPERATIONS: usize = 1_048_576;
@@ -78,6 +59,7 @@ pub struct PcodeLiftConfig {
     return_value: Option<String>,
     x86_callother_contracts: bool,
     discarded_registers: BTreeSet<String>,
+    constant_zero_registers: BTreeSet<String>,
     fold_condition_codes: bool,
     big_endian_register_space: bool,
     branch_delay_slots: bool,
@@ -96,6 +78,7 @@ impl PcodeLiftConfig {
             return_value: None,
             x86_callother_contracts: false,
             discarded_registers: BTreeSet::new(),
+            constant_zero_registers: BTreeSet::new(),
             fold_condition_codes: false,
             big_endian_register_space: false,
             branch_delay_slots: false,
@@ -191,30 +174,30 @@ impl PcodeLiftConfig {
     }
 
     pub fn arm32() -> Result<Self> {
-        let spec: SpecRegisters = cached_registers(&ARM32_REGISTERS, preprocessed_arm32_source)?;
-        let mut config: Self = Self::new(SourceLang::NativeArm, spec.cells)
+        let map: SpecRegisters = spec::registers(SpecRegisterMap::Arm32)?;
+        spec::require_cells(&map.cells, ARM32_REQUIRED_CELLS, "arm32")?;
+        let mut config: Self = Self::new(SourceLang::NativeArm, map.cells)
             .with_return_value("r0")
             .with_condition_code_folding()
-            .with_big_endian_register_space(spec.big_endian);
-        config.require_registers(&["r0", "sp", "lr", "pc", "NG", "ZR", "CY", "OV"])?;
-        for name in ARM32_DISCARDED {
-            config.discarded_registers.insert(name.to_owned());
+            .with_big_endian_register_space(map.big_endian);
+        for name in ARM32_DISCARDED_CELLS {
+            config.discarded_registers.insert((*name).to_owned());
         }
         Ok(config)
     }
 
     pub fn mips32(endian: Endian) -> Result<Self> {
-        let spec: SpecRegisters = match endian {
-            Endian::Big => cached_registers(&MIPS32BE_REGISTERS, preprocessed_mips32be_source)?,
-            Endian::Little => cached_registers(&MIPS32LE_REGISTERS, preprocessed_mips32le_source)?,
-        };
-        let mut config: Self = Self::new(SourceLang::Unknown, spec.cells)
+        let map: SpecRegisters = spec::registers(SpecRegisterMap::mips32(endian))?;
+        spec::require_cells(&map.cells, MIPS32_REQUIRED_CELLS, "mips32")?;
+        let mut config: Self = Self::new(SourceLang::Unknown, map.cells)
             .with_return_value("v0")
-            .with_big_endian_register_space(spec.big_endian)
+            .with_big_endian_register_space(map.big_endian)
             .with_branch_delay_slots();
-        config.require_registers(&["zero", "v0", "a0", "sp", "ra", "pc", "hi", "lo"])?;
-        for name in MIPS32_DISCARDED {
-            config.discarded_registers.insert(name.to_owned());
+        for name in MIPS32_DISCARDED_CELLS {
+            config.discarded_registers.insert((*name).to_owned());
+        }
+        for name in MIPS32_CONSTANT_ZERO_CELLS {
+            config.constant_zero_registers.insert((*name).to_owned());
         }
         Ok(config)
     }
@@ -227,23 +210,6 @@ impl PcodeLiftConfig {
     #[must_use]
     pub fn is_discarded_register(&self, name: &str) -> bool {
         self.discarded_registers.contains(name)
-    }
-
-    fn require_registers(&self, names: &[&str]) -> Result<()> {
-        for name in names {
-            if !self
-                .registers
-                .iter()
-                .any(|cell: &RegisterCell| cell.name.eq_ignore_ascii_case(name))
-            {
-                return Err(LiftError::InvalidPcode {
-                    address: 0,
-                    operation: "REGISTER_MAP".to_owned(),
-                    reason: format!("compiled spec defines no whole register cell named {name}"),
-                });
-            }
-        }
-        Ok(())
     }
 
     #[must_use]
@@ -376,11 +342,6 @@ pub fn lower_pcode_block(
         });
     }
     let end: u64 = validate_instruction_order(block)?;
-    let scheduled: Vec<PcodeInstr> = if config.branch_delay_slots {
-        schedule_delay_slots(&block.instructions)
-    } else {
-        block.instructions.clone()
-    };
     let mut operation_count: usize = 0;
     for instruction in &block.instructions {
         operation_count = operation_count.checked_add(instruction.ops.len()).ok_or(
@@ -398,22 +359,37 @@ pub fn lower_pcode_block(
         config.lang,
         &config.registers,
         config.big_endian_register_space,
+        &config.constant_zero_registers,
     )?;
     let mut instructions: Vec<NirInstr> = Vec::new();
     let branch_targets: BTreeSet<u64> = explicit_branch_targets(block);
-    let has_indirect_branch: bool = scheduled.iter().any(|instruction: &PcodeInstr| {
+    let has_indirect_branch: bool = block.instructions.iter().any(|instruction: &PcodeInstr| {
         instruction
             .ops
             .iter()
             .any(|operation: &PcodeOp| matches!(operation, PcodeOp::BranchIndirect { .. }))
     });
+    let scheduled: ScheduledBlock = if config.branch_delay_slots {
+        schedule_delay_slots(&block.instructions)
+    } else {
+        ScheduledBlock {
+            instructions: block.instructions.clone(),
+            consumed_slots: BTreeSet::new(),
+        }
+    };
     let mut previous_stops_fallthrough: bool = false;
-    for instruction in &scheduled {
+    for (index, instruction) in scheduled.instructions.iter().enumerate() {
         let clear_registers: bool = has_indirect_branch
             || previous_stops_fallthrough
             || branch_targets.contains(&instruction.address);
         lowerer.begin_instruction(clear_registers);
-        lower_instruction(instruction, config, &mut lowerer, &mut instructions)?;
+        lower_instruction(
+            instruction,
+            scheduled.consumed_slots.contains(&index),
+            config,
+            &mut lowerer,
+            &mut instructions,
+        )?;
         previous_stops_fallthrough = instruction_stops_fallthrough(instruction, config);
     }
     let instructions: Vec<NirInstr> = if config.fold_condition_codes {
@@ -434,28 +410,30 @@ pub fn lower_pcode_block(
     })
 }
 
-fn schedule_delay_slots(instructions: &[PcodeInstr]) -> Vec<PcodeInstr> {
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ScheduledBlock {
+    instructions: Vec<PcodeInstr>,
+    consumed_slots: BTreeSet<usize>,
+}
+
+fn schedule_delay_slots(instructions: &[PcodeInstr]) -> ScheduledBlock {
     let mut scheduled: Vec<PcodeInstr> = instructions.to_vec();
-    let pairs: Vec<usize> = scheduled
+    let mut consumed_slots: BTreeSet<usize> = BTreeSet::new();
+    let pairs: Vec<(usize, usize)> = scheduled
         .iter()
         .enumerate()
-        .filter(|(index, transfer): &(usize, &PcodeInstr)| {
-            transfer.ops.last().is_some_and(is_delayed_transfer)
-                && u64::try_from(transfer.length).is_ok_and(|length: u64| {
-                    scheduled
-                        .get(index.saturating_add(1))
-                        .is_some_and(|slot: &PcodeInstr| {
-                            slot.address == transfer.address.wrapping_add(length)
-                                && !slot.ops.is_empty()
-                                && !slot.ops.iter().any(is_delayed_transfer)
-                        })
-                })
+        .filter_map(|(index, transfer): (usize, &PcodeInstr)| {
+            let slot: &PcodeInstr = scheduled.get(index.saturating_add(1))?;
+            Some((index, delay_slot_transfer(transfer, slot)?))
         })
-        .map(|(index, _transfer): (usize, &PcodeInstr)| index)
         .collect();
-    for index in pairs {
+    for (index, transfer_op) in pairs {
+        let slot_index: usize = index.saturating_add(1);
+        if consumed_slots.contains(&index) {
+            continue;
+        }
         let Some(slot_ops): Option<Vec<PcodeOp>> = scheduled
-            .get_mut(index.saturating_add(1))
+            .get_mut(slot_index)
             .map(|slot: &mut PcodeInstr| std::mem::take(&mut slot.ops))
         else {
             continue;
@@ -463,14 +441,33 @@ fn schedule_delay_slots(instructions: &[PcodeInstr]) -> Vec<PcodeInstr> {
         let Some(transfer): Option<&mut PcodeInstr> = scheduled.get_mut(index) else {
             continue;
         };
-        let mut merged: Vec<PcodeOp> = slot_ops;
-        merged.append(&mut transfer.ops);
-        transfer.ops = merged;
+        let splice_at: usize = transfer_op.min(transfer.ops.len());
+        let tail: Vec<PcodeOp> = transfer.ops.split_off(splice_at);
+        transfer.ops.extend(slot_ops);
+        transfer.ops.extend(tail);
+        consumed_slots.insert(slot_index);
     }
-    scheduled
+    ScheduledBlock {
+        instructions: scheduled,
+        consumed_slots,
+    }
 }
 
-const fn is_delayed_transfer(operation: &PcodeOp) -> bool {
+fn delay_slot_transfer(transfer: &PcodeInstr, slot: &PcodeInstr) -> Option<usize> {
+    if transfer.status != DecodeStatus::Supported || transfer.length == 0 {
+        return None;
+    }
+    let length: u64 = u64::try_from(transfer.length).ok()?;
+    if transfer.address.checked_add(length)? != slot.address {
+        return None;
+    }
+    if slot.ops.is_empty() || slot.ops.iter().any(is_machine_transfer) {
+        return None;
+    }
+    transfer.ops.iter().rposition(is_machine_transfer)
+}
+
+const fn is_machine_transfer(operation: &PcodeOp) -> bool {
     matches!(
         operation,
         PcodeOp::Branch { .. }
@@ -571,12 +568,13 @@ const fn explicit_target(target: Varnode) -> Option<u64> {
 
 fn lower_instruction(
     instruction: &PcodeInstr,
+    slot_was_consumed: bool,
     config: &PcodeLiftConfig,
     lowerer: &mut VarnodeLowerer<'_>,
     instructions: &mut Vec<NirInstr>,
 ) -> Result<()> {
     if instruction.ops.is_empty() {
-        if instruction.status != DecodeStatus::Supported {
+        if !slot_was_consumed && instruction.status != DecodeStatus::Supported {
             return Err(LiftError::InvalidPcode {
                 address: instruction.address,
                 operation: "BLOCK".to_owned(),
@@ -591,25 +589,20 @@ fn lower_instruction(
         ));
         return Ok(());
     }
-    for (index, operation) in instruction.ops.iter().enumerate() {
-        let operation: &PcodeOp = operation;
-        let emitted_start: usize = instructions.len();
-        ops::lower(operation, instruction, config, lowerer, instructions)?;
-        let has_following_operation: bool = index.saturating_add(1) < instruction.ops.len();
-        let emitted_terminal: bool = instructions
-            .get(emitted_start..)
-            .is_some_and(|emitted: &[NirInstr]| emitted.iter().any(nir_stops_machine_instruction));
-        if has_following_operation && emitted_terminal {
-            let next_operation: String = instruction.ops.get(index.saturating_add(1)).map_or_else(
-                || "PCODE".to_owned(),
-                |next: &PcodeOp| next.name().to_owned(),
-            );
+    let mut terminated: bool = false;
+    for operation in &instruction.ops {
+        if terminated {
             return Err(LiftError::InvalidPcode {
                 address: instruction.address,
-                operation: next_operation,
+                operation: operation.name().to_owned(),
                 reason: "operation follows a machine control-flow terminator".to_owned(),
             });
         }
+        let emitted_start: usize = instructions.len();
+        ops::lower(operation, instruction, config, lowerer, instructions)?;
+        terminated = instructions
+            .get(emitted_start..)
+            .is_some_and(|emitted: &[NirInstr]| emitted.iter().any(nir_stops_machine_instruction));
     }
     Ok(())
 }
