@@ -553,8 +553,6 @@ const UNITYFS_MAGIC: &[u8; 8] = b"UnityFS\x00";
 const VHDX_MAGIC: &[u8; 8] = b"vhdxfile";
 const VHD_COOKIE: &[u8; 8] = b"conectix";
 const VHD_FOOTER_LEN: usize = 512;
-const GPT_SIGNATURE: &[u8; 8] = b"EFI PART";
-const GPT_HEADER_OFFSET: usize = 512;
 const MBR_SIGNATURE_OFFSET: usize = 510;
 const MBR_PARTITION_TABLE_OFFSET: usize = 446;
 const MBR_SIGNATURE: &[u8; 2] = &[0x55, 0xaa];
@@ -1013,11 +1011,7 @@ fn smells_like_vhd(bytes: &[u8]) -> bool {
 }
 
 fn smells_like_gpt(bytes: &[u8]) -> bool {
-    let need: usize = GPT_HEADER_OFFSET + GPT_SIGNATURE.len();
-    if bytes.len() < need {
-        return false;
-    }
-    &bytes[GPT_HEADER_OFFSET..GPT_HEADER_OFFSET + GPT_SIGNATURE.len()] == GPT_SIGNATURE
+    crate::containers::partition::detect_gpt_logical_sector_size(bytes).is_some()
 }
 
 fn fat_boot_jump(bytes: &[u8]) -> bool {

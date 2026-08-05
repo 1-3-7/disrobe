@@ -484,6 +484,115 @@ mod tests {
         assert!(parse_vhdx(&short_regions).is_err());
     }
 
+    fn structural_read_ends() -> Vec<(&'static str, usize)> {
+        let meta: usize = META_REGION_OFFSET as usize;
+        let bat: usize = BAT_REGION_OFFSET as usize;
+        let item_data: usize = meta + 256;
+        let entries_1: usize = VHDX_REGION_1_OFFSET + VHDX_REGION_TABLE_HEAD_LEN;
+        vec![
+            ("file identifier", 8),
+            ("header 1", VHDX_HEADER_1_OFFSET + VHDX_HEADER_LEN),
+            ("header 2", VHDX_HEADER_2_OFFSET + VHDX_HEADER_LEN),
+            ("region table 1 head", entries_1),
+            ("region entry 0", entries_1 + VHDX_REGION_ENTRY_LEN),
+            ("region entry 1", entries_1 + 2 * VHDX_REGION_ENTRY_LEN),
+            (
+                "region table 2 head",
+                VHDX_REGION_2_OFFSET + VHDX_REGION_TABLE_HEAD_LEN,
+            ),
+            ("metadata table head", meta + VHDX_METADATA_TABLE_HEAD_LEN),
+            (
+                "metadata entry 0",
+                meta + VHDX_METADATA_TABLE_HEAD_LEN + VHDX_METADATA_ENTRY_LEN,
+            ),
+            (
+                "metadata entry 1",
+                meta + VHDX_METADATA_TABLE_HEAD_LEN + 2 * VHDX_METADATA_ENTRY_LEN,
+            ),
+            (
+                "metadata entry 2",
+                meta + VHDX_METADATA_TABLE_HEAD_LEN + 3 * VHDX_METADATA_ENTRY_LEN,
+            ),
+            ("file parameters item", item_data + 8),
+            ("virtual disk size item", item_data + 16 + 8),
+            ("logical sector size item", item_data + 32 + 4),
+            ("bat entry 0", bat + 8),
+            ("bat entry 1", bat + 16),
+            ("bat entry 2", bat + 24),
+        ]
+    }
+
+    #[test]
+    fn a_cut_one_byte_short_of_every_structural_read_errors_or_degrades_without_panicking() {
+        let image: Vec<u8> = build_vhdx();
+        let minimum: usize = VHDX_REGION_1_OFFSET + VHDX_REGION_TABLE_HEAD_LEN;
+        for (label, end) in structural_read_ends() {
+            assert!(end <= image.len(), "{label} sits outside the built image");
+            let view: &[u8] = &image[..end - 1];
+            match parse_vhdx(view) {
+                Ok(parsed) => {
+                    assert!(
+                        view.len() >= minimum,
+                        "{label}: a cut below the region table must not parse"
+                    );
+                    let materialized: Result<Vec<u8>> =
+                        materialize_logical_disk(view, &parsed, 1 << 30);
+                    if let Ok(disk) = materialized {
+                        assert_eq!(disk.len(), VIRTUAL_DISK_SIZE as usize);
+                    }
+                }
+                Err(e) => assert!(
+                    matches!(e, Error::Decompression(_)),
+                    "{label}: expected a typed refusal, got {e:?}"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn a_4096_byte_logical_sector_materializes_the_same_payload_blocks_as_512() {
+        let mut image: Vec<u8> = build_vhdx();
+        let baseline: VhdxImage = parse_vhdx(&image).expect("parse 512-sector vhdx");
+        let baseline_disk: Vec<u8> =
+            materialize_logical_disk(&image, &baseline, 1 << 30).expect("materialize 512");
+        let lss: usize = META_REGION_OFFSET as usize + 256 + 32;
+        image[lss..lss + 4].copy_from_slice(&4096u32.to_le_bytes());
+        let wide: VhdxImage = parse_vhdx(&image).expect("parse 4096-sector vhdx");
+        assert_eq!(
+            wide.metadata.map(|m: VhdxMetadata| m.logical_sector_size),
+            Some(4096)
+        );
+        assert_eq!(wide.allocated_block_count, baseline.allocated_block_count);
+        let wide_disk: Vec<u8> =
+            materialize_logical_disk(&image, &wide, 1 << 30).expect("materialize 4096");
+        assert_eq!(wide_disk.len(), baseline_disk.len());
+        let payload_block_0_field: std::ops::Range<usize> = 288..292;
+        let differing: Vec<usize> = (0..wide_disk.len())
+            .filter(|i: &usize| wide_disk[*i] != baseline_disk[*i])
+            .collect();
+        assert!(
+            differing
+                .iter()
+                .all(|i: &usize| payload_block_0_field.contains(i)),
+            "changing the declared sector size moved payload bytes at {differing:?}"
+        );
+    }
+
+    #[test]
+    fn a_zero_logical_sector_size_is_refused_instead_of_dividing_by_it() {
+        let mut image: Vec<u8> = build_vhdx();
+        let lss: usize = META_REGION_OFFSET as usize + 256 + 32;
+        image[lss..lss + 4].copy_from_slice(&0u32.to_le_bytes());
+        let parsed: VhdxImage = parse_vhdx(&image).expect("parse vhdx");
+        assert_eq!(parsed.allocated_block_count, 0);
+        let err: Error = materialize_logical_disk(&image, &parsed, 1 << 30)
+            .expect_err("a zero sector size must be refused");
+        assert!(
+            matches!(&err, Error::Decompression(m) if m.contains("block/sector/disk size")),
+            "got {err:?}"
+        );
+    }
+
     #[test]
     fn a_bat_entry_pointing_outside_the_file_leaves_the_block_zeroed() {
         let mut image: Vec<u8> = build_vhdx();
